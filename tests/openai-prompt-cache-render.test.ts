@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { promptCacheKey } from '../src/agents/openai-prompt-cache.ts';
-import { sharedSystemBlock } from '../src/agents/shared-prefix.ts';
+import { sharedSystemBlock } from '../src/agents/shared-prefix-layout.ts';
 
 const ALPHA: SlackRequestVariant = {
   workspace: 'T0ALPHA0001', channel: 'C0GENERAL01', thread: '1787000000.000100', user: 'U0ALICE0001',

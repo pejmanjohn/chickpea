@@ -7,12 +7,16 @@ import type {
 } from '../config/state-rpc.ts';
 import type { UsagePersistenceEvent } from '../usage/runtime-recorder.ts';
 import type { WorkspaceInstallation } from '../config/types.ts';
+import type { SlackCredentialControl, SlackCredentialRevision } from '../identity/types.ts';
 import { installationObjectName } from '../config/installation-scope.ts';
 import { RUN_REVIEW_PSEUDONYM_SETTING } from '../review/capture.ts';
 import { runReviewConfigured } from '../review/port.ts';
+import type { AdmissionStatusMark } from './admission-activity.ts';
+import type { AdmissionAgentWake } from './admission-agent-wake.ts';
 import { SLACK_SETTING_KEYS } from './credentials.ts';
 import { GATEWAY_DEPLOYMENT_IDENTITY_SETTING } from './gateway/identity.ts';
 import { GATEWAY_BINDING_SETTING } from './gateway/settings.ts';
+import type { CarriedGatewayIdentity } from './installation-execution.ts';
 import type { SlackInteractionIntent } from './interaction-intent.ts';
 import type { MidRunReplyOutcome, MidRunReplyRequest } from './midrun-reply.ts';
 import type {
@@ -93,6 +97,11 @@ export interface RunnerTurnBegin {
    * Absent when the turn has no V3 presentation or the state store predates it.
    */
   latestThreadSessionGeneration?: number | null;
+  slackCredentials?: {
+    identityId: string;
+    control: SlackCredentialControl | null;
+    active: SlackCredentialRevision | null;
+  };
   /** The Worker version the state store serves (see `servingVersion`). */
   servingVersion?: string;
 }
@@ -128,10 +137,39 @@ export interface ThreadRunnerJobPayload {
    * runner keeps the authoritative copy from then on.
    */
   presentation?: SlackRunPresentation;
+  /**
+   * The gateway bot identity the state store verified within the window
+   * (installation-execution.ts), taken into the runner's cache instead of an
+   * `auth.test` of its own. Absent from an older state store, or when the
+   * state store holds no fresh verification: the runner verifies as before.
+   * Never stored: `admit` keeps no payload.
+   */
+  gatewayIdentity?: CarriedGatewayIdentity;
+  /**
+   * The wake the state store sent the turn's Agent object as it handed the
+   * turn over (admission-agent-wake.ts). Kept in memory for the turn's first
+   * attempt, whose freeze then sends no second wake to that object. Absent
+   * from an older state store: the freeze wakes it as before. Never stored.
+   */
+  agentWake?: AdmissionAgentWake;
+  /**
+   * The status write the state store made before the hand-off
+   * (admission-activity.ts), for the first attempt's `turn_latency` only:
+   * whether the status showed is the presentation's to say. Absent from an
+   * older state store, or when it made none. Never stored.
+   */
+  admissionStatus?: AdmissionStatusMark;
 }
 
 /** The RPC surface of one `SlackThreadRunner` (see thread-runner.ts). */
 export interface SlackThreadRunnerRpc {
+  /**
+   * Activate the runner while the state store admits a delivery whose turn
+   * it will hand here (sent at receipt, never awaited). `sentAt` is the state
+   * store's clock and `turnJobId` the turn the delivery would become. Stores
+   * nothing.
+   */
+  wake(sentAt: number, turnJobId?: string): Promise<void>;
   /**
    * Persist a hand-off. `refused` (a reason token) means the runner did not
    * take the job, so the state store keeps it a hand-off and retries.

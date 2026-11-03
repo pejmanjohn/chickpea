@@ -14,6 +14,7 @@ import {
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import type { SlackPublicContextEntryInput } from '../config/types.ts';
+import type { IdentityStore } from '../identity/types.ts';
 import { tagStateStub, type StateRpcResult } from '../config/state-rpc.ts';
 import {
   cloudflareCodingWorkerStopClient,
@@ -32,11 +33,13 @@ import {
   type ObjectRestoreRequest,
   type ObjectRestoreRestartRequest,
 } from '../state/object-host.ts';
+import { RunnerBootMarks, type TurnLatencyContext } from '../observability/runtime-latency.ts';
 import { createPlatformProductTelemetry } from '../telemetry/platform.ts';
 import {
   cacheSlackInstallationExecutionContexts,
   effectiveTurnSlackInstallationId,
   resolveSlackInstallationExecutionContext,
+  seedGatewayIdentity,
   verifySlackInstallationTurnAccess,
 } from './installation-execution.ts';
 import { resolveSlackPublicUrl } from './credentials.ts';
@@ -68,6 +71,8 @@ import {
   runnerTurnJobsPort,
   runThreadRunnerAlarm,
 } from './thread-runner-loop.ts';
+import { parseAdmissionAgentWake, type AdmissionAgentWake } from './admission-agent-wake.ts';
+import { parseAdmissionStatusMark } from './admission-activity.ts';
 import { RunnerStops, runnerStopRecorded } from './runner-stops.ts';
 import type {
   RunnerTurnBegin,
@@ -78,6 +83,17 @@ import { executeTurnJob, type TurnExecutionPorts } from './turn-executor.ts';
 import { processSlackAgentAsks, processSlackFrontDeskHandoff } from '../channels/slack.ts';
 import type { FlueObservationTarget, TurnStopNotice } from './turn-job-types.ts';
 import { MAX_TURN_DRAIN_BATCH } from './turn-jobs.ts';
+
+/**
+ * The longest a receipt wake counts toward the next hand-off's
+ * `runnerWakeLeadMs`: an older wake belongs to a delivery that became no turn.
+ * Also how long a turn's first attempt trusts the wake admission sent its
+ * Agent object.
+ */
+const RUNNER_WAKE_LEAD_WINDOW_MS = 60_000;
+
+/** What a hand-off tells its turn's first attempt for `turn_latency`. */
+type HandoffLatency = Pick<TurnLatencyContext, 'handoffMs' | 'runnerWakeLeadMs' | 'admissionStatusMs' | 'admissionStatusAt'>;
 
 /**
  * Per-thread Slack turn runner (binding `SLACK_THREAD_RUNNER`, migration v11),
@@ -91,6 +107,21 @@ import { MAX_TURN_DRAIN_BATCH } from './turn-jobs.ts';
  * Jobs already handed here always finish here, whatever the switch says.
  */
 export class SlackThreadRunner extends DurableObject implements SlackThreadRunnerRpc, InstallationObjectHostRpc {
+  /** This activation's `runner_boot` marks; every entry point reports its call first. */
+  private readonly boot = new RunnerBootMarks();
+  /**
+   * Hand-off delays of the jobs this activation admitted (`admit` start minus
+   * the state store's send time), how long before the hand-off the state
+   * store woke this activation, its status write before the hand-off, and the
+   * wake it sent the turn's Agent object, by job id, until the job's first
+   * attempt here takes its own.
+   */
+  private readonly handoffs = new Map<string, HandoffLatency & {
+    handoffMs: number;
+    agentWake?: AdmissionAgentWake;
+  }>();
+  /** The state store's send time of the last receipt wake this activation served, until a hand-off counts it. */
+  private wokenAt: number | undefined;
   private jobs: ThreadRunnerJobStore | undefined;
   private presentations: SlackRunPresentationStoreLogic | undefined;
   /**
@@ -101,7 +132,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   /** Jobs an alarm returned without at its hard cap, still running here. */
   private readonly carried = new Map<string, Promise<void>>();
   /** Wakes a running alarm's drain when a job is admitted. */
-  private wake: (() => void) | undefined;
+  private wakeDrain: (() => void) | undefined;
   /** Observation targets of this runner's turns, one lookup per submission. */
   private readonly targets = new Map<string, FlueObservationTarget>();
   /** Consecutive failed alarms, for the retry backoff. */
@@ -126,11 +157,16 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     // does a stop whose abort or coding cascade is still owed.
     void this.ctx.blockConcurrencyWhile(async () => {
       try {
+        // A runner never handed a job (one a receipt woke) has no tables, and
+        // this check creates none.
+        if (!ThreadRunnerJobStore.existsIn(new DoSqlStateDb(this.ctx.storage))) return;
         if (!this.store().hasRunning() && !this.store().hasOwedStops()) return;
         const existing = await this.ctx.storage.getAlarm();
         if (existing === null || existing > Date.now()) await this.ctx.storage.setAlarm(Date.now());
       } catch {
         // The 5 s backstop armed while the job ran still brings it back.
+      } finally {
+        this.boot.constructed();
       }
     });
   }
@@ -179,7 +215,21 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     return this.presentations;
   }
 
+  /**
+   * The state store's wake at a delivery's receipt: it activates this runner
+   * while the turn is admitted, so the hand-off finds it in memory. It only
+   * reports the activation and keeps the send time for that hand-off's lead;
+   * it writes nothing, and runs no job or alarm.
+   */
+  async wake(sentAt: number, turnJobId?: string): Promise<void> {
+    this.boot.call('wake', { sentAt, turnJobId });
+    this.wokenAt = sentAt;
+  }
+
   async admit(job: ThreadRunnerJob): Promise<{ admitted: boolean; refused?: string }> {
+    const sentAt = job?.sentAt;
+    this.boot.call('admit', { sentAt, turnJobId: job?.id });
+    const enteredAt = Date.now();
     try {
       assertInstallationOwnership(job?.installation, this.env as PlatformEnv);
     } catch {
@@ -187,6 +237,9 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       return { admitted: false, refused: 'installation_mismatch' };
     }
     const payload = (job?.payload ?? {}) as ThreadRunnerJobPayload;
+    // Only after the ownership check: this installation's identity, checked
+    // again against the runner's own reads when the turn resolves it.
+    seedGatewayIdentity(payload.gatewayIdentity);
     // The presentation first: the job never runs here without its copy.
     if (payload.presentation) {
       try {
@@ -197,13 +250,26 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       }
     }
     const result = this.store().admit({ ...job, payload: {} }, Date.now());
+    if (result.admitted && sentAt !== undefined) {
+      const lead = this.wokenAt === undefined ? undefined : sentAt - this.wokenAt;
+      this.wokenAt = undefined;
+      const agentWake = parseAdmissionAgentWake(payload.agentWake);
+      const admissionStatus = parseAdmissionStatusMark(payload.admissionStatus);
+      this.handoffs.set(job.id, {
+        handoffMs: enteredAt - sentAt,
+        ...(lead !== undefined && lead >= 0 && lead <= RUNNER_WAKE_LEAD_WINDOW_MS ? { runnerWakeLeadMs: lead } : {}),
+        ...(admissionStatus ? { admissionStatusMs: admissionStatus.waitedMs } : {}),
+        ...(admissionStatus?.shownAt === undefined ? {} : { admissionStatusAt: admissionStatus.shownAt }),
+        ...(agentWake ? { agentWake } : {}),
+      });
+    }
     // The turn runs in this object's alarm, never in the admitting request.
     // Work left running after that request returns belongs to no invocation:
     // its logs are dropped, objects it creates are bound to a closed request,
     // and nothing retries it when the object is replaced. The alarm is due
     // now (an earlier one is kept); a running alarm's drain takes the job at
     // once.
-    this.wake?.();
+    this.wakeDrain?.();
     const existing = await this.ctx.storage.getAlarm();
     if (existing === null || existing > Date.now()) await this.ctx.storage.setAlarm(Date.now());
     return result;
@@ -221,6 +287,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
    * so the outbox is never held for the up to 14 s a coding cascade can take.
    */
   async stop(notice: TurnStopNotice): Promise<{ acknowledged: boolean }> {
+    this.boot.call('stop');
     let taken: { acknowledged: boolean; wake: boolean };
     try {
       taken = await this.stops().receive(notice);
@@ -229,7 +296,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       return { acknowledged: false };
     }
     if (taken.wake) {
-      this.wake?.();
+      this.wakeDrain?.();
       const existing = await this.ctx.storage.getAlarm();
       if (existing === null || existing > Date.now()) await this.ctx.storage.setAlarm(Date.now());
     }
@@ -237,6 +304,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   }
 
   async status(): Promise<ThreadRunnerStatus> {
+    this.boot.call('status');
     return this.store().status();
   }
 
@@ -250,6 +318,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     submissionId: string,
     status: TypedActivityStatus,
   ): Promise<StateRpcResult<null>> {
+    this.boot.call('observedStatus');
     try {
       if (!isSafeTypedActivityStatus(status)) return { ok: true, value: null };
       const key = `${instanceId}\n${submissionId}`;
@@ -280,6 +349,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     submissionId: string,
     request: MidRunReplyRequest,
   ): Promise<MidRunReplyOutcome> {
+    this.boot.call('midRunReply');
     const parsed = parseMidRunReplyRequest(request);
     if (!parsed) return { posted: false, refusal: 'unavailable' };
     try {
@@ -298,6 +368,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
    * started here.
    */
   async runFacts(turnJobId: string): Promise<StateRpcResult<SlackRunFactsView | null>> {
+    this.boot.call('runFacts');
     try {
       return { ok: true, value: this.registry.runFactsView(turnJobId) ?? null };
     } catch (error) {
@@ -309,12 +380,14 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   }
 
   async presentationGet(runId: string): Promise<StateRpcResult<SlackRunPresentation | null>> {
+    this.boot.call('presentationGet');
     return presentationResult(() => this.presentationStore().get(runId) ?? null);
   }
 
   async presentationTransition(
     input: SlackPresentationTransitionInput,
   ): Promise<StateRpcResult<SlackPresentationTransitionResult>> {
+    this.boot.call('presentationTransition');
     const result = presentationResult(() => this.presentationStore().transition(input));
     if (result.ok && result.value.outcome === 'applied') {
       // Keep the state store's readers current; best-effort like any publish.
@@ -326,6 +399,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   }
 
   async alarm(): Promise<void> {
+    this.boot.call('alarm');
     await this.runSoon();
   }
 
@@ -362,6 +436,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   }
 
   private host(): InstallationObjectHostRpc {
+    this.boot.call('host');
     return objectHostFunctions({
       env: this.env as PlatformEnv,
       storage: this.ctx.storage,
@@ -375,6 +450,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
         this.registry = this.statusRegistry();
         this.targets.clear();
         this.carried.clear();
+        this.handoffs.clear();
       },
       cancel: (now) => {
         const { settled, running } = this.store().cancelOpen(now);
@@ -383,6 +459,25 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       // What its constructor resumes on waking would move the storage before a restore is scheduled.
       quiesce: async () => quiesceThreadRunnerForRestore(this.store()),
     });
+  }
+
+  /**
+   * A job's hand-off delay and wake lead for its `turn_latency`, and the wake
+   * admission sent its Agent object, once: a later attempt of the job carries
+   * none. An Agent object woken longer ago than the window may have been
+   * evicted since, so its turn's freeze wakes it again.
+   */
+  private takeHandoff(jobId: string): {
+    latency: HandoffLatency;
+    agentWake?: AdmissionAgentWake;
+  } {
+    const handoff = this.handoffs.get(jobId);
+    this.handoffs.delete(jobId);
+    if (!handoff) return { latency: {} };
+    const { agentWake, ...latency } = handoff;
+    return agentWake && Date.now() - agentWake.sentAt <= RUNNER_WAKE_LEAD_WINDOW_MS
+      ? { latency, agentWake }
+      : { latency };
   }
 
   /** The state store, over a fresh stub per call (see CfTurnJobsForRunner). */
@@ -418,7 +513,12 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
               : getConfigStore(env).getWorkspaceInstallation(id),
         },
         settings: start ? prefetchedSettings(settings, start.settings) : settings,
-        credentialDependencies: { state: getIdentityStore(env), env },
+        credentialDependencies: {
+          state: start?.slackCredentials
+            ? prefetchedCredentials(getIdentityStore(env), start.slackCredentials)
+            : getIdentityStore(env),
+          env,
+        },
       });
     }), env);
     const config = {
@@ -438,6 +538,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
         markCodingActiveWork: (key, generation) => rows.markCodingActiveWork(key, generation),
         isCodingActiveWork: (key, generation) => rows.isCodingActiveWork(key, generation),
         release: (key) => rows.release(key),
+        noteFrontDeskHandoff: (note) => rows.noteFrontDeskHandoff(note),
       }, jobs),
       config,
       presentationState: presentation.state,
@@ -470,8 +571,10 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
           env,
           prefetchedSettings(getSettingsStore(env), start.settings),
         ).then((value) => value ?? null, () => undefined);
+        const handoff = this.takeHandoff(job.id);
         return executeTurnJob(job, ports, {
-          latency: { lane: 'cloudflare', executor: 'runner' },
+          latency: { lane: 'cloudflare', executor: 'runner', ...handoff.latency },
+          ...(handoff.agentWake ? { agentWake: handoff.agentWake } : {}),
           observationRoute: { executor: 'runner', runnerKey: threadKey },
           control,
           onRetry,
@@ -526,9 +629,9 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       },
       carried: this.carried,
       onWake: (wake) => {
-        this.wake = wake;
+        this.wakeDrain = wake;
         return () => {
-          if (this.wake === wake) this.wake = undefined;
+          if (this.wakeDrain === wake) this.wakeDrain = undefined;
         };
       },
     });
@@ -556,6 +659,18 @@ function presentationResult<T>(fn: () => T): StateRpcResult<T> {
       error: { code: 'internal', message: error instanceof Error ? error.message : String(error) },
     };
   }
+}
+
+function prefetchedCredentials(
+  store: IdentityStore,
+  read: NonNullable<RunnerTurnBegin['slackCredentials']>,
+): IdentityStore {
+  return Object.assign(Object.create(store) as IdentityStore, {
+    getSlackCredentialControl: async (installationId?: string) =>
+      installationId === undefined ? read.control ?? undefined : store.getSlackCredentialControl(installationId),
+    getActiveSlackCredentialRevision: async (identityId: string) =>
+      identityId === read.identityId ? read.active ?? undefined : store.getActiveSlackCredentialRevision(identityId),
+  });
 }
 
 /** A settings store that answers the given keys from a read already made. */

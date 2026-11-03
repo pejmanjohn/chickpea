@@ -4,11 +4,10 @@ import {
   parseCodingWorkerBinding,
   type CodingWorkerBinding,
 } from '../sandbox/coding-worker-binding.ts';
-import { sha256Hex } from '../security/digest.ts';
 import { isStorableRequestText } from '../usage/validation.ts';
 import { FLUE_CLOUDFLARE_EXTENSION_BRAND, installationAgentObject } from './cloudflare-extension.ts';
 import { CHICKPEA_CODING_WORKER_AGENT_NAME } from './names.ts';
-import type { TurnInputSql } from './turn-input.ts';
+import { keyedSubmissionId, type TurnInputSql } from './turn-input.ts';
 
 /**
  * What the coordinator stages in the coding worker's own object before it
@@ -205,15 +204,6 @@ export async function readStagedCodingWorkerRun(submissionId: string): Promise<S
   if (!isCloudflareTarget()) return undefined;
   const { getCloudflareContext } = await import('@flue/runtime/cloudflare');
   return readStagedCodingWorkerRunFrom(getCloudflareContext().storage.sql, submissionId);
-}
-
-/**
- * The submission ID Flue gives a dispatch that carries an idempotency key.
- * Flue documents this derivation as a frozen wire format.
- */
-async function keyedSubmissionId(agentName: string, instanceId: string, idempotencyKey: string): Promise<string> {
-  const digest = await sha256Hex(`flue-submission-key\n${agentName}\n${instanceId}\n${idempotencyKey}`);
-  return `sub_ik_${digest.slice(0, 32)}`;
 }
 
 export function codingWorkerSubmissionId(instanceId: string, taskKey: string): Promise<string> {

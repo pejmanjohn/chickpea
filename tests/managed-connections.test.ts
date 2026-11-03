@@ -26,7 +26,7 @@ import {
   ManagedAuthorizationExpiredError,
   ManagedProviderRequestError,
 } from '../src/connections/managed-errors.ts';
-import { createManagedConnectionTools } from '../src/connections/managed-tools.ts';
+import { createLoadedManagedConnectionTools } from './helpers/managed-tools.ts';
 import { ComposioManagedConnectionProvider } from '../src/connections/providers/composio.ts';
 import { resolveEffectiveConnectionAccounts } from '../src/connections/runtime.ts';
 import {
@@ -885,7 +885,7 @@ test('Google productivity tools execute reads and writes through the Agent runti
       });
     }
 
-    const tools = createManagedConnectionTools({
+    const tools = await createLoadedManagedConnectionTools({
       connections,
       workspaceId: 'T_MANAGED',
       agentId: 'agent_productivity',
@@ -1017,7 +1017,7 @@ test('managed Notion reads and writes through its exact Agent-bound account with
         allowedCapabilities: ['notion.pages.get', 'notion.pages.create'],
       },
     });
-    const tools = createManagedConnectionTools({
+    const tools = await createLoadedManagedConnectionTools({
       connections: [{
         id: account.id, providerId: 'notion', adapterId: 'composio', toolkit: 'notion',
         allowedCapabilities: ['notion.pages.get', 'notion.pages.create'],
@@ -3150,14 +3150,14 @@ test('pre-dispatch validation releases only provably unused YouTube quota bucket
   }
 });
 
-test('managed tool projection withholds ambiguous accounts instead of crashing the turn', () => {
+test('managed tool projection withholds ambiguous accounts instead of crashing the turn', async () => {
   const context = {
     workspaceId: 'T_MANAGED',
     agentId: 'agent_mail',
     actorMembershipId: 'membership_alice',
     resolvePlatformEnv: async () => undefined,
   };
-  const one = createManagedConnectionTools({
+  const one = await createLoadedManagedConnectionTools({
     ...context,
     connections: [{
       id: 'connection_one', providerId: 'google',
@@ -3167,7 +3167,7 @@ test('managed tool projection withholds ambiguous accounts instead of crashing t
   });
   assert.deepEqual(one.map(({ name }) => name), ['gmail_get_profile', 'gmail_search_messages']);
 
-  const ambiguous = createManagedConnectionTools({
+  const ambiguous = await createLoadedManagedConnectionTools({
     ...context,
     connections: [
       {

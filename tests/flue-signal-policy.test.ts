@@ -3,7 +3,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { test } from 'node:test';
 import type { FlueEventContext, FlueObservation } from '@flue/runtime';
 import { CHICKPEA_SLACK_AGENT_NAME } from '../src/agents/names.ts';
-import { createManagedConnectionTools } from '../src/connections/managed-tools.ts';
+import { createLoadedManagedConnectionTools } from './helpers/managed-tools.ts';
 import {
   assertArtifactDeliveryAllowed,
   memoryToolPolicyInterceptor,
@@ -46,7 +46,7 @@ test('actual Flue Slack signal preserves identity while the approved Sheets tool
   assert.equal(parseCurrentRequestEnvelope(rendered), undefined, 'raw terminal-marker parser cannot read a signal');
   assert.deepEqual(parseModelVisibleCurrentRequestEnvelope(rendered)?.managedCapabilityIntents, []);
   let reachedProvider = 0;
-  const [tool] = createManagedConnectionTools({
+  const [tool] = await createLoadedManagedConnectionTools({
     workspaceId: 'T_FIXTURE', agentId: 'agent_fixture', actorMembershipId: 'membership_fixture',
     connections: [{ id: 'connection_fixture', providerId: 'google', adapterId: 'composio', toolkit: 'googlesheets', allowedCapabilities: ['sheets.values.update'] }],
     resolvePlatformEnv: async () => undefined,

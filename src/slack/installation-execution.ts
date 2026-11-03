@@ -23,6 +23,7 @@ import { GatewayDeploymentClient } from './gateway/client.ts';
 import { loadCredentialKeyring } from './credential-keyring.ts';
 import { resolveChickpeaGatewayUrl } from './gateway/runtime.ts';
 import { createGatewaySlackWebClient } from './gateway/web-client.ts';
+import { sha256HexNode } from '../security/digest.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 import { slackTurnSurface } from './thread-key.ts';
 
@@ -141,17 +142,26 @@ export async function resolveSlackInstallationExecutionContext(
       { retryable: true },
     );
   }
-  if (!credentials.botToken) {
+  const { botToken } = credentials;
+  if (!botToken) {
     throw new SlackInstallationUnavailableError(workspaceId, 'credentials_missing');
   }
-  const auth = await slackIdentityAuthTest(credentials.botToken);
-  if (!auth.ok || !auth.botUserId || !auth.teamId) {
-    throw new SlackInstallationUnavailableError(
-      workspaceId,
-      auth.error ?? 'bot_identity_missing',
-      auth.retryAfterMs === undefined ? {} : { retryAfterMs: auth.retryAfterMs },
-    );
-  }
+  const auth = await verifiedIdentity(`${workspaceId}:${sha256HexNode(botToken)}`, async () => {
+    const result = await slackIdentityAuthTest(botToken);
+    if (!result.ok || !result.botUserId || !result.teamId) {
+      throw new SlackInstallationUnavailableError(
+        workspaceId,
+        result.error ?? 'bot_identity_missing',
+        result.retryAfterMs === undefined ? {} : { retryAfterMs: result.retryAfterMs },
+      );
+    }
+    return {
+      botUserId: result.botUserId,
+      teamId: result.teamId,
+      ...(result.appId ? { appId: result.appId } : {}),
+      ...(result.botName ? { botName: result.botName } : {}),
+    };
+  });
   if (auth.teamId !== workspaceId || (installation.teamId && installation.teamId !== auth.teamId)) {
     throw new SlackInstallationUnavailableError(workspaceId, 'workspace_mismatch');
   }
@@ -165,12 +175,14 @@ export async function resolveSlackInstallationExecutionContext(
     workspaceId,
     transportMode: 'direct',
     sharedAppReads: sharesSlackAppReadBudget({ transportMode: 'direct', env }),
-    botToken: credentials.botToken,
+    botToken,
     botUserId: auth.botUserId,
     ...(auth.botName ? { displayName: auth.botName } : {}),
-    client: createSlackWebClient(credentials.botToken, { rejectRateLimitedCalls: options.rejectRateLimitedCalls === true }),
+    client: createSlackWebClient(botToken, { rejectRateLimitedCalls: options.rejectRateLimitedCalls === true }),
   };
 }
+
+const ADMISSION_MEMBERSHIP_TTL_MS = 60_000;
 
 export async function verifySlackInstallationTurnAccess(
   context: SlackInstallationExecutionContext,
@@ -180,6 +192,11 @@ export async function verifySlackInstallationTurnAccess(
     throw new SlackInstallationUnavailableError(context.workspaceId, 'workspace_mismatch');
   }
   if (slackTurnSurface(turn) === 'direct') return;
+  const membership = turn.channelMembership;
+  if (membership && membership.botUserId === context.botUserId) {
+    const age = Date.now() - membership.verifiedAt;
+    if (age >= 0 && age < ADMISSION_MEMBERSHIP_TTL_MS) return;
+  }
   if (context.transportMode === 'direct' && context.botToken) {
     const conversation = await slackConversationsInfo(context.botToken, turn.channelId);
     if (
@@ -231,8 +248,8 @@ async function resolveGatewayExecutionContext(
     );
   }
   const client = createGatewaySlackWebClient(gateway);
-  const { botUserId, teamId } = await verifiedGatewayIdentity(
-    `${installation.workspaceId}:${binding.bindingId}:${installation.botUserId ?? ''}`,
+  const { botUserId, teamId } = await verifiedIdentity(
+    gatewayIdentityKey(installation.workspaceId, binding.bindingId, installation.botUserId),
     async () => {
       let auth: Awaited<ReturnType<typeof client.auth.test>>;
       try {
@@ -275,54 +292,142 @@ async function resolveGatewayExecutionContext(
 }
 
 /**
- * How long one gateway auth.test vouches for a binding's identity. Every turn
+ * How long one auth.test vouches for an installation's identity. Every turn
  * attempt resolves its installation (once per TagStateStore drain, once per
- * thread-runner alarm), and each auth.test spends one operation of the shared
- * gateway's per-binding window, so a burst of threads verified the same
- * unchanged identity once per turn. The key carries the workspace, binding and
- * expected bot user, so a reinstall or rebinding is verified afresh; a revoked
- * token still fails the turn's first real Slack call. Only a successful,
- * matching verification is reused; a failure is never cached.
+ * thread-runner alarm), so a burst of threads verified the same unchanged
+ * identity once per turn: on the gateway each auth.test spends one operation
+ * of the shared gateway's per-binding window, and on a direct installation it
+ * is a Slack round trip before the turn's first visible write. The gateway key
+ * carries the workspace, binding and expected bot user, and the direct key a
+ * digest of the bot token, so a reinstall, rebinding or rotated token is
+ * verified afresh; a revoked token still fails the turn's first real Slack
+ * call. Only a successful verification is reused, and the identity checks
+ * still run against it on every resolution; a failure is never cached. A
+ * thread runner, often in a fresh isolate, starts with the state
+ * store's gateway verification when its turn's hand-off carries one.
  */
-export const GATEWAY_IDENTITY_VERIFICATION_TTL_MS = 60_000;
+export const IDENTITY_VERIFICATION_TTL_MS = 60_000;
 
-interface GatewayIdentity {
+interface VerifiedIdentity {
   botUserId: string;
   teamId: string;
+  appId?: string;
+  botName?: string;
 }
 
-const gatewayIdentityVerifications = new Map<
-  string,
-  { expiresAt: number; identity: Promise<GatewayIdentity> }
->();
+interface IdentityVerification {
+  expiresAt: number;
+  identity: Promise<VerifiedIdentity>;
+  /** Set once the verification succeeded. */
+  verified?: VerifiedIdentity;
+}
 
-async function verifiedGatewayIdentity(
+const identityVerifications = new Map<string, IdentityVerification>();
+
+function gatewayIdentityKey(workspaceId: string, bindingId: string, botUserId: string | undefined): string {
+  return `${workspaceId}:${bindingId}:${botUserId ?? ''}`;
+}
+
+async function verifiedIdentity(
   key: string,
-  verify: () => Promise<GatewayIdentity>,
+  verify: () => Promise<VerifiedIdentity>,
   now: () => number = Date.now,
-): Promise<GatewayIdentity> {
-  const cached = gatewayIdentityVerifications.get(key);
+): Promise<VerifiedIdentity> {
+  const cached = identityVerifications.get(key);
   if (cached && cached.expiresAt > now()) return cached.identity;
   // Concurrent resolutions share one in-flight auth.test.
   const identity = verify();
-  const entry = { expiresAt: now() + GATEWAY_IDENTITY_VERIFICATION_TTL_MS, identity };
-  gatewayIdentityVerifications.set(key, entry);
+  const entry: IdentityVerification = { expiresAt: now() + IDENTITY_VERIFICATION_TTL_MS, identity };
+  identityVerifications.set(key, entry);
   try {
-    return await identity;
+    entry.verified = await identity;
+    return entry.verified;
   } catch (error) {
-    if (gatewayIdentityVerifications.get(key) === entry) gatewayIdentityVerifications.delete(key);
+    if (identityVerifications.get(key) === entry) identityVerifications.delete(key);
     throw error;
   } finally {
-    if (gatewayIdentityVerifications.size > 64) {
-      const at = now();
-      for (const [candidate, value] of gatewayIdentityVerifications) {
-        if (value.expiresAt <= at) gatewayIdentityVerifications.delete(candidate);
-      }
-    }
+    pruneIdentityVerifications(now());
   }
 }
 
-/** Test seam: forget every cached gateway identity verification. */
-export function resetGatewayIdentityVerificationsForTests(): void {
-  gatewayIdentityVerifications.clear();
+function pruneIdentityVerifications(at: number): void {
+  if (identityVerifications.size <= 64) return;
+  for (const [candidate, value] of identityVerifications) {
+    if (value.expiresAt <= at) identityVerifications.delete(candidate);
+  }
+}
+
+/**
+ * A gateway installation's bot identity as an `auth.test` in this isolate
+ * verified it, for the state store to hand a thread runner with a turn: the
+ * workspace, the binding the gateway answered for, the bot's user id, and
+ * when this isolate stops reusing the answer. These are the bot's own Slack
+ * ids, not a credential: the runner still reads its installation and
+ * binding itself, keys the reuse by them, and checks the identity against
+ * them, and every Slack call it makes is authorized by the gateway as
+ * before.
+ */
+export interface CarriedGatewayIdentity {
+  workspaceId: string;
+  bindingId: string;
+  botUserId: string;
+  expiresAt: number;
+}
+
+/**
+ * This isolate's unexpired verification of a gateway installation's
+ * identity, when its answer matched the installation (a mismatch never
+ * travels); undefined otherwise.
+ */
+export function carriedGatewayIdentity(
+  installation: Pick<WorkspaceInstallation, 'workspaceId' | 'transportMode' | 'gatewayBindingId' | 'botUserId'> |
+    undefined,
+  now = Date.now(),
+): CarriedGatewayIdentity | undefined {
+  if (installation?.transportMode !== 'gateway' || !installation.gatewayBindingId || !installation.botUserId) {
+    return undefined;
+  }
+  const entry = identityVerifications.get(
+    gatewayIdentityKey(installation.workspaceId, installation.gatewayBindingId, installation.botUserId),
+  );
+  if (!entry?.verified || entry.expiresAt <= now ||
+      entry.verified.teamId !== installation.workspaceId ||
+      entry.verified.botUserId !== installation.botUserId) return undefined;
+  return {
+    workspaceId: installation.workspaceId,
+    bindingId: installation.gatewayBindingId,
+    botUserId: entry.verified.botUserId,
+    expiresAt: entry.expiresAt,
+  };
+}
+
+/**
+ * Reuse a verification another isolate made (carriedGatewayIdentity) until
+ * it expires there, and never longer than one window from now, so a
+ * revocation is honored no later than that isolate would honor it. A
+ * verification here that lasts at least as long is kept. Anything malformed
+ * is ignored, and the next resolution verifies for itself.
+ */
+export function seedGatewayIdentity(carried: unknown, now = Date.now()): void {
+  if (!isCarriedGatewayIdentity(carried)) return;
+  const expiresAt = Math.min(carried.expiresAt, now + IDENTITY_VERIFICATION_TTL_MS);
+  if (expiresAt <= now) return;
+  const key = gatewayIdentityKey(carried.workspaceId, carried.bindingId, carried.botUserId);
+  const existing = identityVerifications.get(key);
+  if (existing && existing.expiresAt >= expiresAt) return;
+  const verified = { botUserId: carried.botUserId, teamId: carried.workspaceId };
+  identityVerifications.set(key, { expiresAt, identity: Promise.resolve(verified), verified });
+  pruneIdentityVerifications(now);
+}
+
+function isCarriedGatewayIdentity(value: unknown): value is CarriedGatewayIdentity {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  return ['workspaceId', 'bindingId', 'botUserId'].every((field) =>
+    typeof record[field] === 'string' && record[field] !== '') &&
+    typeof record.expiresAt === 'number' && Number.isFinite(record.expiresAt);
+}
+
+export function resetIdentityVerificationsForTests(): void {
+  identityVerifications.clear();
 }

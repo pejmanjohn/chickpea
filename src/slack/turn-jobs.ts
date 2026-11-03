@@ -373,6 +373,9 @@ const OPERATOR_CANCELLED = 'operator_cancelled';
 const NOT_OPERATOR_CANCELLED = `recovery_reason IS NOT '${OPERATOR_CANCELLED}'`;
 
 /** One undelivered row of a thread, as a stop or check-in weighs it. */
+/** How long a receipt note nothing released outlives its making (noteReceipt). */
+const RECEIPT_NOTE_TTL_MS = 60_000;
+
 interface StopThreadRow {
   id: string;
   messageTs?: string;
@@ -383,8 +386,8 @@ interface StopThreadRow {
 }
 
 export class TurnJobStoreLogic {
-  /** Receipt times of gateway deliveries being turned into jobs, by event ID. */
-  private readonly receiptTimes = new Map<string, number>();
+  /** Receipt times of deliveries being turned into jobs, by event ID, with when each was noted. */
+  private readonly receiptTimes = new Map<string, { receivedAt: number; notedAt: number }>();
 
   constructor(
     private readonly db: StateDb,
@@ -614,12 +617,20 @@ export class TurnJobStoreLogic {
   /**
    * While a queued delivery is processed, jobs admitted for its Slack event
    * record when the delivery was received rather than when it was admitted.
-   * Returns the release function; call it once processing ends.
+   * Returns the release function; call it once processing ends. The direct
+   * path's receipt (TagStateStore.noteSlackDelivery) releases nothing, its
+   * turn being admitted from the Worker, so a note is dropped a minute after
+   * it was made (RECEIPT_NOTE_TTL_MS): a delivery that becomes no turn keeps
+   * no entry.
    */
   noteReceipt(eventId: string, receivedAt: number): () => void {
-    this.receiptTimes.set(eventId, receivedAt);
+    const notedAt = this.now();
+    for (const [noted, note] of this.receiptTimes) {
+      if (notedAt - note.notedAt > RECEIPT_NOTE_TTL_MS) this.receiptTimes.delete(noted);
+    }
+    this.receiptTimes.set(eventId, { receivedAt, notedAt });
     return () => {
-      if (this.receiptTimes.get(eventId) === receivedAt) this.receiptTimes.delete(eventId);
+      if (this.receiptTimes.get(eventId)?.receivedAt === receivedAt) this.receiptTimes.delete(eventId);
     };
   }
 
@@ -644,7 +655,7 @@ export class TurnJobStoreLogic {
       job.runId ?? null,
       executionAuthority,
       enqueuedAt,
-      Math.min(this.receiptTimes.get(job.turn.eventId) ?? enqueuedAt, enqueuedAt),
+      Math.min(this.receiptTimes.get(job.turn.eventId)?.receivedAt ?? enqueuedAt, enqueuedAt),
       threadKey ?? null,
       messageTs,
       // The mid-run 👀 is the turn's receipt from the start (KTD9): Chickpea's
@@ -1685,6 +1696,29 @@ export class TurnJobStoreLogic {
     return jobs;
   }
 
+  dispatchableNow(id: string): PendingTurnJob | undefined {
+    const row = this.db.get(
+      `SELECT ${TURN_JOB_SELECT_COLUMNS}, thread_key FROM turn_jobs
+       WHERE id = ? AND executor = 'alarm' AND dispatch_started_at IS NULL
+         AND ${PENDING_ROW} AND execution_authority = 'legacy'`,
+      id,
+    ) as unknown as (TurnJobRow & { thread_key: string | null }) | undefined;
+    if (typeof row?.thread_key !== 'string') return undefined;
+    const job = this.decodeRow(row);
+    const runner = runnerKeyOf(job);
+    const held = this.db.all(
+      `SELECT turn_json, assignment_json FROM turn_jobs
+       WHERE (thread_key = ? OR thread_key IS NULL) AND id != ? AND executor != 'runner'
+         AND ${PENDING_ROW} AND execution_authority = 'legacy'`,
+      row.thread_key,
+      id,
+    ).some((other) => runnerKeyOf({
+      turn: JSON.parse(String(other.turn_json)) as NormalizedSlackTurn,
+      assignment: JSON.parse(String(other.assignment_json)) as ResolvedAssignment,
+    }) === runner);
+    return !held && this.assignRunner(id) ? job : undefined;
+  }
+
   /** Visit pending rows in enqueue order, a page at a time, until `done()`. */
   private scanPending(
     executionAuthority: RunExecutionAuthority,
@@ -1714,6 +1748,30 @@ export class TurnJobStoreLogic {
     // would move the next page's offset past an unread row, and a later turn
     // of that row's thread could be listed ahead of it.
     this.quarantineUnreadable(unreadable);
+  }
+
+  /**
+   * Whether an undelivered turn of the same conversation was enqueued before
+   * this one: one running or waiting ahead of it there. A row without a
+   * conversation key counts as behind.
+   */
+  queuedBehind(id: string): boolean {
+    const self = this.db.get(
+      'SELECT rowid AS row_order, thread_key, enqueued_at FROM turn_jobs WHERE id = ?',
+      id,
+    );
+    if (typeof self?.thread_key !== 'string') return true;
+    return this.db.get(
+      `SELECT 1 AS ahead FROM turn_jobs
+       WHERE thread_key = ? AND id != ? AND ${PENDING_ROW}
+         AND (enqueued_at < ? OR (enqueued_at = ? AND rowid < ?))
+       LIMIT 1`,
+      self.thread_key,
+      id,
+      Number(self.enqueued_at),
+      Number(self.enqueued_at),
+      Number(self.row_order),
+    ) !== undefined;
   }
 
   /**
@@ -2121,6 +2179,8 @@ export class TurnJobStoreLogic {
     admittedListIds?: readonly string[],
     turnEnvelope?: TurnEnvelopeV1,
     threadFileIds?: readonly string[],
+    /** Mount the change tools in the turn's first request; frozen with the envelope like every attribute. */
+    workspaceChangeTools?: boolean,
   ): FlueDispatchEnvelopeV1 {
     if (typeof message !== 'string' || message.length === 0) {
       throw new Error('Flue dispatch message must be non-empty.');
@@ -2206,6 +2266,7 @@ export class TurnJobStoreLogic {
             ...(serializedThreadImages ? { threadImages: serializedThreadImages } : {}),
             ...(serializedThreadFileIds ? { threadFileIds: serializedThreadFileIds } : {}),
             ...(serializedAdmittedListIds ? { admittedListIds: serializedAdmittedListIds } : {}),
+            ...(workspaceChangeTools === true ? { workspaceChangeTools: 'mounted' as const } : {}),
             ...((turn.attachmentIntake || turn.attachments?.length)
               ? {
                   attachmentIntakeStatus: turn.attachmentIntake?.status ?? 'ok',
@@ -2551,6 +2612,22 @@ export class TurnJobStoreLogic {
       },
       envelope.previousBinding,
     );
+  }
+
+  /**
+   * When this store's newest person's turn row was enqueued: an Agent's ask
+   * and a setup wake are the host's own turns and do not count, as in
+   * TagStateStore.admitSlackTurn. Undefined with no such row. One scan of a
+   * table retention keeps small, read once per instance (TagStateStore keeps
+   * the answer in memory).
+   */
+  newestEnqueuedAt(): number | undefined {
+    const row = this.db.get(
+      `SELECT MAX(enqueued_at) AS newest FROM turn_jobs
+       WHERE json_extract(turn_json, '$.agentAsk') IS NULL
+         AND json_extract(turn_json, '$.setupWake') IS NULL`,
+    );
+    return row?.newest == null ? undefined : Number(row.newest);
   }
 
   /** Pending rows the state store's alarm owns; runner rows wake their runner. */
@@ -3450,6 +3527,7 @@ function parseSlackSignalMessage(
     'threadImages',
     'threadFileIds',
     'admittedListIds',
+    'workspaceChangeTools',
   ]);
   const parsed = {
     workspaceId: validateBoundedString(attributes.workspaceId, 'Slack workspace id', 128),
@@ -3491,6 +3569,9 @@ function parseSlackSignalMessage(
     ...(attributes.admittedListIds === undefined
       ? {}
       : { admittedListIds: validateAdmittedListIds(attributes.admittedListIds) }),
+    ...(attributes.workspaceChangeTools === undefined
+      ? {}
+      : { workspaceChangeTools: validateWorkspaceChangeTools(attributes.workspaceChangeTools) }),
   };
   if ((parsed.attachmentIntakeStatus === undefined) !== (parsed.attachmentCount === undefined)) {
     throw new Error('Flue Slack attachment intake metadata is incomplete.');
@@ -3526,6 +3607,11 @@ function validateAdmittedListIds(value: unknown): string {
   const parsed = parseAdmittedSlackListIds(value);
   if (!parsed) throw new Error('Flue Slack List admission metadata is invalid.');
   return serializeAdmittedSlackListIds(parsed)!;
+}
+
+function validateWorkspaceChangeTools(value: unknown): 'mounted' {
+  if (value === 'mounted') return value;
+  throw new Error('Flue Slack change-tools signal is invalid.');
 }
 
 function validateConversationKind(value: unknown): 'channel' | 'im' | 'mpim' {

@@ -41,7 +41,12 @@ import {
   stageSlackCredentialBundle,
   writeHostedSlackBotCredentials,
 } from '../src/slack/installation-credentials.ts';
-import { resolveSlackInstallationExecutionContext } from '../src/slack/installation-execution.ts';
+import {
+  IDENTITY_VERIFICATION_TTL_MS,
+  resetIdentityVerificationsForTests,
+  resolveSlackInstallationExecutionContext,
+  SlackInstallationUnavailableError,
+} from '../src/slack/installation-execution.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
 /**
@@ -65,6 +70,7 @@ function installation(t: TestContext) {
     config.close();
     settings.close();
     invalidateSlackInstallationCredentialCache();
+    resetIdentityVerificationsForTests();
   });
   const credentials = { state: identity, keyring: generateCredentialKeyring() };
   return { identity, config, settings, credentials, resolution: { ...credentials, env: ENV } };
@@ -142,6 +148,63 @@ test('a durable turn of a hosted installation runs as the installation\'s own bo
   });
   assert.equal(context.botToken, 'xoxb-hosted');
   assert.deepEqual(tokens, ['Bearer xoxb-hosted']);
+});
+
+test('a direct installation verifies an unchanged bot token once per window, never caching a failure', async (t) => {
+  const { config, credentials, resolution } = installation(t);
+  const writeBot = (expectedRevision: string | null, botToken: string) =>
+    writeHostedSlackBotCredentials(credentials, expectedRevision, {
+      botToken, botUserId: 'UBOT', appId: APP.appId, teamId: TEAM,
+      grantedScopes: ['chat:write'], validatedAt: 1_800_000_000_000,
+    });
+  const firstRevision = await writeBot(null, 'xoxb-first');
+  await syncHostedWorkspaceInstallation(ENV, { teamId: TEAM, appId: APP.appId, botUserId: 'UBOT' }, config);
+  let installedBot = 'UBOT';
+  const reader = {
+    getWorkspaceInstallation: async (id: string) => {
+      const row = await config.getWorkspaceInstallation(id);
+      return row && { ...row, botUserId: installedBot };
+    },
+  };
+  const previousFetch = globalThis.fetch;
+  const authTests: string[] = [];
+  let failuresLeft = 1;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = input instanceof Request ? input : new Request(String(input), init);
+    authTests.push(request.headers.get('authorization') ?? '');
+    if (failuresLeft > 0) {
+      failuresLeft -= 1;
+      return Response.json({ ok: false, error: 'internal_error' });
+    }
+    return Response.json({ ok: true, team_id: TEAM, user_id: 'UBOT', app_id: APP.appId, bot_id: 'BBOT' });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = previousFetch; });
+  t.mock.timers.enable({ apis: ['Date'], now: 1_800_000_000_000 });
+  const resolve = () => resolveSlackInstallationExecutionContext(TEAM, ENV, {
+    config: reader, credentialDependencies: resolution,
+  });
+
+  await assert.rejects(resolve(), (error: unknown) =>
+    error instanceof SlackInstallationUnavailableError && error.reasonCode === 'internal_error');
+  assert.equal((await resolve()).botUserId, 'UBOT');
+  assert.equal((await resolve()).botUserId, 'UBOT');
+  assert.deepEqual(authTests, ['Bearer xoxb-first', 'Bearer xoxb-first'],
+    'a failed auth.test is asked again, a successful one is reused within the window');
+
+  installedBot = 'UOTHER';
+  await assert.rejects(resolve(), (error: unknown) =>
+    error instanceof SlackInstallationUnavailableError && error.reasonCode === 'bot_identity_mismatch');
+  installedBot = 'UBOT';
+  assert.equal(authTests.length, 2, 'the reused identity is still checked against the installation');
+
+  await writeBot(firstRevision, 'xoxb-rotated');
+  assert.equal((await resolve()).botToken, 'xoxb-rotated');
+  t.mock.timers.tick(IDENTITY_VERIFICATION_TTL_MS - 1);
+  await resolve();
+  t.mock.timers.tick(1);
+  await resolve();
+  assert.deepEqual(authTests.slice(2), ['Bearer xoxb-rotated', 'Bearer xoxb-rotated'],
+    'a rotated token is verified afresh, and again once the window ends');
 });
 
 test('a hosted deactivation is checked against the installation\'s own bot revision', async (t) => {

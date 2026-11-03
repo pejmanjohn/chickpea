@@ -371,7 +371,7 @@ async function openFixture(t: TestContext, contract: BetterAuthBackendContract):
     secret: randomBytes(32).toString('base64url'),
     privateSeam: { resolveAdmissionOperation: async (id: string) => admissions.get(id) ?? null },
   };
-  const auth = createBetterAuth(options);
+  const auth = await createBetterAuth(options);
   const handler = createBetterAuthPublicHandler(options);
   // Better Auth initializes against the database in the background.
   await auth.$context;

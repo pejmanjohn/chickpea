@@ -441,18 +441,25 @@ test("a person's reply right after a proposal is judged at admission; after anot
     proposedMessageTs: proposing.turn.messageTs,
   });
 
+  assert.equal(proposing.turn.managementProposalPending, undefined, 'nothing waited when the request was admitted');
+
   // This harness grants the judge no model access, so its side call fails.
   const adjacent = await reply('yes, go ahead', '1900000201.000100');
   assert.equal(await judged('1900000201.000100'), true, 'the reply right after the proposal is judged');
   assert.equal(adjacent.turn.managementApprovalProposalId, undefined, 'a failed judgment applies nothing');
   assert.equal((await h.stores.management.getChangeSetProposal(proposalId))?.status, 'pending');
+  // Defect caught: a typed reply that left the change set waiting dispatches
+  // without the pre-mount flag, so the Agent's first request lacks the change tools.
+  assert.equal(adjacent.turn.managementProposalPending, true, 'the change set still waits on the requester');
 
   const later = await reply('sounds good', '1900000202.000100');
   assert.equal(await judged('1900000202.000100'), false, 'the Agent took a turn since the proposal');
   assert.equal(later.turn.managementApprovalProposalId, undefined);
+  assert.equal(later.turn.managementProposalPending, true, 'still waiting, judged or not');
 
   const typed = await reply('approve', '1900000203.000100');
   assert.equal(typed.turn.managementApprovalProposalId, proposalId, 'the exact word needs no model and no adjacency');
+  assert.equal(typed.turn.managementProposalPending, undefined, 'an approval carries no pre-mount flag');
 }));
 
 test("a stop phrase in a DM thread keeps its host meaning and is never judged as a decline", async (t) => withHarness(t, async (h) => {

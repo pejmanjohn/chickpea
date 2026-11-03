@@ -4,15 +4,13 @@ import {
   type McpConnectionDefinition,
   type ToolDefinition,
 } from '@flue/runtime';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { CfWorkerJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/cfworker';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
+import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 
 import { McpBlockedUrlError } from './mcp-errors.ts';
 import { MAX_MCP_TOOLS } from './mcp-limits.ts';
+import { mcpClientSdk } from './mcp-sdk.ts';
 import {
   META_ADS_ACCOUNT_HELPER,
   META_ADS_FIELD_HELPER,
@@ -125,6 +123,7 @@ async function discoverProtocolTools(
 ): Promise<McpDiscoveryResult> {
   const validated = validateMcpUrl(input.url);
   if (!validated.ok) throw new McpBlockedUrlError(validated.reason);
+  const sdk = await mcpClientSdk.load();
   const controller = new AbortController();
   const fetch = createGuardedFetch({
     allowedOrigin: new URL(validated.url).origin,
@@ -133,12 +132,12 @@ async function discoverProtocolTools(
   });
   const options = { requestInit: { headers: input.headers }, fetch };
   const transport = input.transport === 'sse'
-    ? new SSEClientTransport(new URL(validated.url), options)
-    : new StreamableHTTPClientTransport(new URL(validated.url), options);
+    ? new sdk.SSEClientTransport(new URL(validated.url), options)
+    : new sdk.StreamableHTTPClientTransport(new URL(validated.url), options);
   // Tool output schemas are compiled during listTools. Use the SDK's
   // interpreter so discovery also works where dynamic code is prohibited.
-  const client = new Client({ name: 'chickpea', version: '1' }, {
-    jsonSchemaValidator: new CfWorkerJsonSchemaValidator(),
+  const client = new sdk.Client({ name: 'chickpea', version: '1' }, {
+    jsonSchemaValidator: new sdk.CfWorkerJsonSchemaValidator(),
   });
   try {
     await raceDeadline(

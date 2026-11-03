@@ -17,6 +17,7 @@ import { activityStatusForObservation } from '../src/activity/status.ts';
 import type { CustomAgentConfig, ResolvedAssignment } from '../src/config/types.ts';
 import type { EffectiveConnectionAccount } from '../src/connections/types.ts';
 import { serializeCurrentRequestEnvelope } from '../src/memory/tool-policy.ts';
+import { preloadManagedConnectionDetails } from '../src/connections/catalog/index.ts';
 
 const PROJECT_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const HOOK_MODEL = 'openai/gpt-5.4-mini';
@@ -145,6 +146,8 @@ function slackDelivery(plan: RuntimePlanV2, attachments = false) {
 }
 
 async function renderChickpeaHook(plan: RuntimePlanV2, id: string, attachments = false) {
+  // As turn staging does before every dispatch.
+  await preloadManagedConnectionDetails(plan.managedConnections);
   const context = createFlueContext({
     id,
     agentName: 'chickpea-slack-v2',

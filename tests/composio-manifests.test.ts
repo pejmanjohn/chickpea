@@ -7,7 +7,6 @@ import * as v from 'valibot';
 
 import type { ConnectionAccountManagedPolicy } from '../src/config/types.ts';
 import {
-  COMPOSIO_MANIFESTS,
   HELD_COMPOSIO_MANIFESTS,
   compileComposioManifest,
   parseComposioManifest,
@@ -15,7 +14,12 @@ import {
 } from '../src/connections/catalog/composio-manifests.ts';
 import googleMaps from '../src/connections/catalog/manifests/google_maps.json' with { type: 'json' };
 import linkedin from '../src/connections/catalog/manifests/linkedin.json' with { type: 'json' };
-import { MANAGED_CONNECTOR_CATALOG, createManagedConnectorCatalog } from '../src/connections/catalog/index.ts';
+import {
+  MANAGED_CONNECTOR_CATALOG,
+  createManagedConnectorCatalog,
+  loadConnectorDetails,
+} from '../src/connections/catalog/index.ts';
+import { loadManagedCapability } from './helpers/managed-tools.ts';
 import { ManagedProviderRequestError } from '../src/connections/managed-errors.ts';
 import { ComposioManagedConnectionProvider } from '../src/connections/providers/composio.ts';
 import {
@@ -23,6 +27,7 @@ import {
   checkComposioManifest,
   checkComposioManifestDirectory,
   draftComposioManifest,
+  readBundledComposioManifests,
   fetchComposioToolkit,
   readSnapshot,
   reviewedTools,
@@ -65,7 +70,7 @@ function lanes(manifest: ComposioManifest): Record<string, string> {
 }
 
 const PILOT_MANIFESTS = [
-  ...COMPOSIO_MANIFESTS,
+  ...await readBundledComposioManifests(),
   ...[googleMaps, linkedin].map((value) => parseComposioManifest(value)),
 ];
 
@@ -951,7 +956,7 @@ test('review.allowValues leaves out a tool whose argument defaults to a value th
   }
 });
 
-test('paid-ads status writes can only pause, and a new Reddit campaign starts paused', () => {
+test('paid-ads status writes can only pause, and a new Reddit campaign starts paused', async () => {
   const pinterest = (status: string) => ({ ad_account_id: '1', updates: [{ id: '2', status }] });
   const pauseOnly: Array<[capability: string, input: (status: string) => Record<string, unknown>]> = [
     ['pinterest_ads.update_ad_groups', pinterest],
@@ -962,13 +967,13 @@ test('paid-ads status writes can only pause, and a new Reddit campaign starts pa
       (status) => ({ ad_account_id: 'a2_x', data: { name: 'Draft', objective: 'CLICKS', configured_status: status } })],
   ];
   for (const [id, input] of pauseOnly) {
-    const schema = MANAGED_CONNECTOR_CATALOG.capability(id)!.input;
+    const schema = (await loadManagedCapability(id))!.input;
     assert.equal(v.is(schema, input('PAUSED')), true, `${id} pauses`);
     for (const status of ['ACTIVE', 'ARCHIVED', 'DELETED']) {
       assert.equal(v.is(schema, input(status)), false, `${id} refuses ${status}`);
     }
   }
-  assert.equal(v.is(MANAGED_CONNECTOR_CATALOG.capability('reddit_ads.create_campaign')!.input,
+  assert.equal(v.is((await loadManagedCapability('reddit_ads.create_campaign'))!.input,
     { ad_account_id: 'a2_x', data: { name: 'Draft', objective: 'CLICKS' } }), false,
   'a new campaign must name its status, and PAUSED is the only one');
 });
@@ -1220,12 +1225,12 @@ test('write tools lose recipient arguments, and a tool that needs one is adminis
   assert.match(report.excluded.find(({ tool: slug }) => slug === 'ACME_FORWARD_THREAD')!.reason, /^administrative: required argument to /);
 });
 
-test('Freshdesk replies cannot add recipients, and forwarding and outbound email are absent', () => {
+test('Freshdesk replies cannot add recipients, and forwarding and outbound email are absent', async () => {
   const ids = MANAGED_CONNECTOR_CATALOG.connector('freshdesk')!.capabilities.map(({ id }) => id);
   assert.equal(ids.includes('freshdesk.reply_to_forward_ticket'), false);
   assert.equal(ids.includes('freshdesk.create_ticket_outbound_email'), false);
 
-  const reply = MANAGED_CONNECTOR_CATALOG.capability('freshdesk.reply_to_ticket')!.input;
+  const reply = (await loadManagedCapability('freshdesk.reply_to_ticket'))!.input;
   const answer = { ticket_id: 42, body: 'Thanks, fixed.' };
   assert.equal(v.safeParse(reply, answer).success, true);
   for (const field of ['to_emails', 'cc_emails', 'bcc_emails']) {
@@ -1233,7 +1238,7 @@ test('Freshdesk replies cannot add recipients, and forwarding and outbound email
   }
   assert.equal(v.safeParse(reply, { ...answer, from_email: 'support@example.com' }).success, false);
 
-  const note = MANAGED_CONNECTOR_CATALOG.capability('freshdesk.add_note_to_ticket')!.input;
+  const note = (await loadManagedCapability('freshdesk.add_note_to_ticket'))!.input;
   assert.equal(v.safeParse(note, { ticket_id: 42, body: 'Internal.', notify_emails: ['a@example.com'] }).success, false);
 });
 
@@ -1322,12 +1327,13 @@ test('every held manifest compiles into the managed catalog beside the shipped c
     const manifest = parseComposioManifest(
       JSON.parse(await readFile(path.join(MANIFEST_DIRECTORY, `${toolkit}.json`), 'utf8')),
     );
+    const shipped = await loadConnectorDetails(MANAGED_CONNECTOR_CATALOG.list().map(({ toolkit: shippedToolkit }) => shippedToolkit));
     const catalog = createManagedConnectorCatalog([
-      ...MANAGED_CONNECTOR_CATALOG.list(),
+      ...[...shipped.values()].map(({ connector }) => connector),
       compileComposioManifest(manifest),
     ]);
-    const connector = catalog.connector(toolkit);
-    assert.ok(connector, toolkit);
+    assert.ok(catalog.connector(toolkit), toolkit);
+    const { connector } = await catalog.detail(toolkit)!.load();
     for (const capability of connector.capabilities) assert.ok(capability.input, capability.id);
   }
 });
@@ -1541,7 +1547,7 @@ test('an update tool whose required argument changes the requester is administra
     /^administrative: required argument requester_id /);
 });
 
-test('write tools lose domain, assignee, follower, owner, and webhook arguments', () => {
+test('write tools lose domain, assignee, follower, owner, and webhook arguments', async () => {
   const text = { type: 'string' };
   const list = { type: 'array', items: text };
   const { manifest } = draftComposioManifest(snapshot([
@@ -1571,20 +1577,20 @@ test('write tools lose domain, assignee, follower, owner, and webhook arguments'
   assert.ok(Object.values(company.withheldArguments!).every((reason) => reason.includes('who acts')),
     JSON.stringify(company.withheldArguments));
 
-  const update = MANAGED_CONNECTOR_CATALOG.capability('freshdesk.update_companies')!.input;
+  const update = (await loadManagedCapability('freshdesk.update_companies'))!.input;
   assert.equal(v.safeParse(update, { company_id: 9, name: 'Acme' }).success, true);
   assert.equal(v.safeParse(update, { company_id: 9, domains: ['example.com'] }).success, false);
 });
 
-test('a Freshdesk ticket can only be opened for someone already in the helpdesk, so a reply cannot reach a new address', () => {
-  const create = MANAGED_CONNECTOR_CATALOG.capability('freshdesk.create_ticket')!.input;
+test('a Freshdesk ticket can only be opened for someone already in the helpdesk, so a reply cannot reach a new address', async () => {
+  const create = (await loadManagedCapability('freshdesk.create_ticket'))!.input;
   const ticket = { subject: 'Printer jam', description: 'Tray 2 is stuck.' };
   assert.equal(v.safeParse(create, { ...ticket, requester_id: 7 }).success, true);
   assert.equal(v.safeParse(create, { ...ticket, email: 'someone@example.com' }).success, false);
   assert.equal(v.safeParse(create, { ...ticket, requester_id: 7, email_config_id: 3 }).success, false);
 });
 
-test('create and update tools lose company and product IDs unless a reviewer keeps them', () => {
+test('create and update tools lose company and product IDs unless a reviewer keeps them', async () => {
   const ticket = (required: string[]) => ({
     type: 'object',
     properties: {
@@ -1635,7 +1641,7 @@ test('create and update tools lose company and product IDs unless a reviewer kee
   assert.deepEqual(capability(reviewed, 'ACME_DELETE_PRODUCT')!.input.required, ['product_id']);
 
   for (const id of ['freshdesk.create_ticket', 'freshdesk.update_ticket']) {
-    const input = MANAGED_CONNECTOR_CATALOG.capability(id)!.input;
+    const input = (await loadManagedCapability(id))!.input;
     const base = id === 'freshdesk.create_ticket'
       ? { subject: 'Printer jam', description: 'Tray 2 is stuck.', requester_id: 7 }
       : { ticket_id: 42, subject: 'Printer jam' };

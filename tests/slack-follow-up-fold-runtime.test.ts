@@ -13,6 +13,10 @@ import * as v from 'valibot';
 import { CHICKPEA_SLACK_AGENT_NAME } from '../src/agents/names.ts';
 import { compileRuntimePlanV2, type RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { RunReviewCollector } from '../src/review/collector.ts';
+import {
+  configureModelRequestRecorder, createModelAccessInterceptor, resetModelAccessForTests,
+} from '../src/config/model-access.ts';
+import { registerPiProvider, registeredPiProvider } from '../src/config/pi-provider-registry.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import type { EffectiveConnectionAccount } from '../src/connections/types.ts';
 import { parseSlackManagementSignal } from '../src/management/slack-tools.ts';
@@ -60,6 +64,13 @@ interface Scenario {
 }
 
 let scenario: Scenario;
+/**
+ * Each model request's usage record write: how many store fold calls the
+ * scenario had made when it started and when it was written. With
+ * `holdRecords`, a write stays in flight until a fold call arrives (or 500 ms).
+ */
+let recordWrites: Array<{ foldsAtStart: number; foldsAtEnd: number }> = [];
+let holdRecords = false;
 let deliveries: DeliveredMessage[] = [];
 /** Model-visible `slack_message` signals of each model request. */
 let requests: string[][] = [];
@@ -225,8 +236,23 @@ test('messages sent while the Agent works join its response before the reply', {
       generation: GENERATION, turnJobId: 'head', instanceId, submissionId,
     }),
   });
+  const modelAccess = createModelAccessInterceptor({
+    lookup: async () => ({ env: undefined, deploymentLane: true, agentId: 'agent_fold' }),
+    installationGrants: async () => [],
+  });
+  configureModelRequestRecorder(async () => {
+    const foldsAtStart = scenario.calls.length;
+    const deadline = Date.now() + 500;
+    while (holdRecords && scenario.calls.length === foldsAtStart && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    recordWrites.push({ foldsAtStart, foldsAtEnd: scenario.calls.length });
+  });
+  t.after(resetModelAccessForTests);
+  registerPiProvider(faux.provider);
   const interceptor: FlueExecutionInterceptor = (operation, context, next) =>
-    memoryToolPolicyInterceptor(operation, context, () => observation(operation, context, next));
+    modelAccess(operation, context, () =>
+      memoryToolPolicyInterceptor(operation, context, () => observation(operation, context, next)));
   const stopInstrumentation = instrument({
     interceptor,
     observe(event, context) {
@@ -241,12 +267,13 @@ test('messages sent while the Agent works join its response before the reply', {
   });
   const runtime = await start({
     agents: [{ agent: FoldProbe, name: CHICKPEA_SLACK_AGENT_NAME }],
-    providers: [faux.provider],
+    providers: [registeredPiProvider(faux.provider.id)!],
   });
 
   async function run(responses: FauxResponseStep[]) {
     deliveries = [];
     requests = [];
+    recordWrites = [];
     faux.setResponses(responses);
     const callsBefore = faux.state.callCount;
     const statuses: string[] = [];
@@ -278,8 +305,12 @@ test('messages sent while the Agent works join its response before the reply', {
   const finishCalls = () => scenario.calls.map(({ received, take }) => ({ received, take }));
 
   try {
+    // Also caught: the would-stop's store call waiting for the model
+    // request's usage record write (the record holds until a fold call
+    // arrives, and the response settles only once it is written).
     await t.test('one fold, then one reply that answers both messages', async () => {
       scenario = openScenario();
+      holdRecords = true;
       try {
         const { result, statuses, review, modelCalls } = await run([
           arrivesDuring('late', 'Also mention the pricing change.', answer('A launch note.')),
@@ -291,6 +322,10 @@ test('messages sent while the Agent works join its response before the reply', {
           { received: 0, take: true },
           { received: 1, take: true },
         ], 'the second would-stop confirms the fold and finds nothing new');
+        assert.deepEqual(recordWrites, [
+          { foldsAtStart: 0, foldsAtEnd: 1 },
+          { foldsAtStart: 1, foldsAtEnd: 2 },
+        ], 'each would-stop fold call ran while its request\'s record was being written, which settlement awaited');
         assert.deepEqual(statuses, ['Reading 1 new message…']);
 
         const late = scenario.turns.runnerView('late').job!;
@@ -321,6 +356,7 @@ test('messages sent while the Agent works join its response before the reply', {
         assert.ok(parseModelVisibleCurrentRequestEnvelope(finalRequest[1]!, scenario.plan.conversation),
           'the fold keeps the turn\'s envelope authority');
       } finally {
+        holdRecords = false;
         scenario.close();
       }
     });

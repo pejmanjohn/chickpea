@@ -12,7 +12,7 @@ import {
   getCurrentTools,
   type Context,
 } from '@earendil-works/pi-ai';
-import { init, useDelivery, useModel, useTool } from '@flue/runtime';
+import { init, useDelivery, useModel, useTool, type AgentProps } from '@flue/runtime';
 import { start } from '@flue/runtime/node';
 
 import type { RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
@@ -129,7 +129,7 @@ test('Slack management signal rejects malformed List admission metadata', () => 
 });
 
 /** Mirror ChickpeaSlack's delivery-derived tool seams without its live stores. */
-function UploadTurnProbe() {
+function UploadTurnProbe({ id }: AgentProps) {
   useModel(MODEL);
   const delivery = useDelivery();
   const record: RenderRecord = {
@@ -145,11 +145,12 @@ function UploadTurnProbe() {
   };
   renders.push(record);
 
-  const mountSkillUpload = useWorkspaceManagementSlackTools(PLAN, async () => undefined, () => false);
+  const management = useWorkspaceManagementSlackTools(PLAN, id, async () => undefined, () => false);
   useSlackListsTools(PLAN, async () => undefined);
   useTool(createSlackPresentTableTool(() => {}));
   const presentationIntent = slackPresentationIntentCapability(parseCurrentRequestEnvelope(delivery.body));
   if (presentationIntent) useTool(presentationIntent.tool);
+  management?.changeTools?.();
   useSlackAttachmentContext(PLAN, async () => undefined, async () => MODEL, () => ({
     readAttachment: async (fileId) => {
       if (!readableFile) throw new Error('Synthetic file unavailable');
@@ -162,7 +163,7 @@ function UploadTurnProbe() {
       };
     },
   }));
-  mountSkillUpload?.();
+  management?.skillUpload?.();
   return 'Answer the request.';
 }
 

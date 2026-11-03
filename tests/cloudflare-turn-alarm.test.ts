@@ -9,6 +9,11 @@ import {
   retryableDependencyRetryAfterMs,
 } from '../src/slack/transport/types.ts';
 import { drainAlarmTurnJobs } from '../src/slack/alarm-turn-drain.ts';
+import {
+  carriedGatewayIdentity,
+  resetIdentityVerificationsForTests,
+  seedGatewayIdentity,
+} from '../src/slack/installation-execution.ts';
 import { slackTurnExecutor } from '../src/slack/turn-executor-flag.ts';
 import { removeEndedReceipts } from '../src/slack/turn-executor.ts';
 import {
@@ -37,6 +42,7 @@ import { installationOwnershipOf, installationScopeOf } from '../src/config/inst
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { turnJob as maintenanceTurnJob } from './fixtures/state-db/maintenance.ts';
 import { createAgentAskCollector } from '../src/slack/agent-asks.ts';
+import { admissionStatusPresentation, showAdmissionStatus } from '../src/slack/admission-activity.ts';
 import { givenUpRecoveryText } from '../src/usage/run-settlement.ts';
 
 // What the transplanted turn executor imports for stop records.
@@ -55,8 +61,8 @@ const stateClass = source.statements.find((node) =>
   ts.isClassDeclaration(node) && node.name?.text === 'TagStateStore');
 assert.ok(stateClass && ts.isClassDeclaration(stateClass));
 const methodNames = [
-  'enqueueTurn', 'resumeTurnAfterOAuth', 'slackInstallationRecoveryRetry',
-  'maintainWork', 'armAlarmNoLaterThan',
+  'enqueueTurn', 'admitSlackTurn', 'resumeTurnAfterOAuth', 'slackInstallationRecoveryRetry',
+  'maintainWork', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode', 'keepWarmTickAt',
 ];
 const methods = methodNames.map((name) => {
   const method = stateClass.members.find((member) =>
@@ -68,6 +74,13 @@ const batchDeclaration = source.statements.find((node) =>
   ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) =>
     declaration.name.getText(source) === 'RELAY_BATCH_WINDOW_MS'));
 assert.ok(batchDeclaration);
+const keepWarmDeclarations = ['KEEP_WARM_WINDOW_MS', 'KEEP_WARM_TICK_MS', 'RETENTION_SWEEP_INTERVAL_MS'].map((name) => {
+  const declaration = source.statements.find((node) =>
+    ts.isVariableStatement(node) && node.declarationList.declarations.some((candidate) =>
+      candidate.name.getText(source) === name));
+  assert.ok(declaration, `production ${name} exists`);
+  return declaration.getText(source);
+}).join('\n');
 // The alarm runs each job through the shared turn executor; evaluate that
 // production function beside it so the same injected collaborators apply.
 const executorSource = ts.createSourceFile(
@@ -87,15 +100,17 @@ const portFunction = source.statements.find((node) =>
 assert.ok(portFunction);
 const portCode = portFunction.getText(source);
 const compiled = ts.transpileModule(
-  `${batchDeclaration.getText(source)}\nclass AlarmProbe { ${methods.join('\n')} }\nAlarmProbe`,
+  `${batchDeclaration.getText(source)}\n${keepWarmDeclarations}\nclass AlarmProbe { ${methods.join('\n')} }\nAlarmProbe`,
   { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
 ).outputText;
 
 type Result = { ok: true; value: unknown } | { ok: false; error: { code: string } };
 type Probe = {
+  env: object;
   ctx: { storage: { getAlarm(): Promise<number | null>; setAlarm(at: number): Promise<void> } };
   call: (callback: (stores: unknown) => unknown) => Result;
   enqueueTurn(job: object): Promise<Result>;
+  admitSlackTurn(input: object): Promise<Result>;
   resumeTurnAfterOAuth(taskId: string, continuationId: string): Promise<Result>;
   slackInstallationRecoveryRetry(workspaceId: string): Promise<Result>;
   maintainWork(at: number): Promise<Result>;
@@ -103,18 +118,40 @@ type Probe = {
 const ProbeClass = vm.runInNewContext(compiled, {
   Date,
   oauthResumeTurnJobId: (id: string) => `oauthresume:${id}`,
+  slackTurnExecutor: (env: Record<string, unknown>) => slackTurnExecutor(env, {}),
 }) as new () => Probe;
 const NOW = 1_800_000_000_000;
 const BATCH_MS = 250;
-const entryPoints: Array<{ name: string; invoke(probe: Probe): Promise<Result>; inactive: unknown }> = [
-  { name: 'new turn', invoke: (probe) => probe.enqueueTurn({ id: 'new' }), inactive: null },
-  { name: 'OAuth resume', invoke: (probe) => probe.resumeTurnAfterOAuth('task', 'continuation'), inactive: false },
-  { name: 'installation recovery', invoke: (probe) => probe.slackInstallationRecoveryRetry('workspace'), inactive: 0 },
-  { name: 'work maintenance', invoke: (probe) => probe.maintainWork(NOW), inactive: false },
+/** The keep-warm tick (src/cloudflare.ts): a person's turn handed to its runner arms the alarm this far ahead. */
+const KEEP_WARM_TICK_MS = 20_000;
+const RUNNER_ENV = { SLACK_THREAD_RUNNER: {} };
+const executors = [
+  { name: 'runner executor', env: RUNNER_ENV, admissionWake: NOW },
+  { name: 'alarm executor', env: { ...RUNNER_ENV, SLACK_TAG_TURN_EXECUTOR: 'alarm' }, admissionWake: NOW + BATCH_MS },
+  { name: 'no runner binding', env: {}, admissionWake: NOW + BATCH_MS },
+];
+const entryPoints: Array<{
+  name: string; invoke(probe: Probe): Promise<Result>; inactive: unknown; admission: boolean;
+}> = [
+  { name: 'new turn', invoke: (probe) => probe.enqueueTurn({ id: 'new' }), inactive: null, admission: true },
+  {
+    name: 'canonical admission', invoke: (probe) => probe.admitSlackTurn({ turnJob: { id: 'new', turn: {} } }),
+    inactive: { claimed: false }, admission: true,
+  },
+  {
+    name: 'OAuth resume', invoke: (probe) => probe.resumeTurnAfterOAuth('task', 'continuation'),
+    inactive: false, admission: true,
+  },
+  {
+    name: 'installation recovery', invoke: (probe) => probe.slackInstallationRecoveryRetry('workspace'),
+    inactive: 0, admission: false,
+  },
+  { name: 'work maintenance', invoke: (probe) => probe.maintainWork(NOW), inactive: false, admission: false },
 ];
 
-function fixture(initialAlarm: number | null, result?: Result) {
+function fixture(initialAlarm: number | null, result?: Result, env: object = RUNNER_ENV) {
   const probe = new ProbeClass();
+  probe.env = env;
   let alarm = initialAlarm;
   let persisted = false;
   const writes: number[] = [];
@@ -125,11 +162,13 @@ function fixture(initialAlarm: number | null, result?: Result) {
         enqueue() {},
         resumeAfterOAuth: () => true,
         runnerView: () => ({ status: 'pending', executor: 'alarm' }),
+        dispatchableNow: () => undefined,
         retrySlackInstallationRecovery: () => 1,
         hasPending: () => true,
       },
       work: { purgeContent() {} },
       presentations: { maintain() {} },
+      slack: { admitCanonical: () => ({ claimed: true, admission: {} }) },
     });
     persisted = true;
     return { ok: true, value };
@@ -146,20 +185,23 @@ function fixture(initialAlarm: number | null, result?: Result) {
 }
 
 for (const entry of entryPoints) {
-  for (const [label, initial] of [
-    ['missing', null], ['later retry', NOW + 120_000],
-    ['earlier', NOW + 100], ['equal', NOW + BATCH_MS], ['overdue', NOW - 100],
-  ] as const) {
-    test(`${entry.name} respects its wake policy for a ${label} alarm`, async (context) => {
-      context.mock.method(Date, 'now', () => NOW);
-      const { probe, writes, alarm } = fixture(initial);
-      assert.equal((await entry.invoke(probe)).ok, true);
-      const expected = entry.name === 'work maintenance' && initial !== null
-        ? initial
-        : Math.min(initial ?? Infinity, NOW + BATCH_MS);
-      assert.equal(alarm(), expected);
-      assert.deepEqual(writes, initial === expected ? [] : [expected]);
-    });
+  for (const executor of executors) {
+    for (const [label, initial] of [
+      ['missing', null], ['later retry', NOW + 120_000], ['100 ms', NOW + 100],
+      ['window-end', NOW + BATCH_MS], ['due now', NOW], ['overdue', NOW - 100],
+    ] as const) {
+      test(`${entry.name} respects its wake policy for a ${label} alarm (${executor.name})`, async (context) => {
+        context.mock.method(Date, 'now', () => NOW);
+        const { probe, writes, alarm } = fixture(initial, undefined, executor.env);
+        assert.equal((await entry.invoke(probe)).ok, true);
+        const wake = entry.admission ? executor.admissionWake : NOW + BATCH_MS;
+        const expected = entry.name === 'work maintenance' && initial !== null
+          ? initial
+          : Math.min(initial ?? Infinity, wake);
+        assert.equal(alarm(), expected);
+        assert.deepEqual(writes, initial === expected ? [] : [expected]);
+      });
+    }
   }
 
   test(`${entry.name} does not arm an alarm after a failed store operation`, async () => {
@@ -218,10 +260,10 @@ for (const withPendingTurn of [false, true]) {
       return method.getText(source);
     });
     const alarmCode = ts.transpileModule(
-      `${batchDeclaration.getText(source)}\n${executorCode}\n${portCode}\nclass AlarmProbe { ${methods.join('\n')}\n${alarmMethods.join('\n')} }\nAlarmProbe`,
+      `${batchDeclaration.getText(source)}\n${keepWarmDeclarations}\n${executorCode}\n${portCode}\nclass AlarmProbe { ${methods.join('\n')}\n${alarmMethods.join('\n')} }\nAlarmProbe`,
       { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
     ).outputText;
-    const { probe: storageProbe, alarm, writes } = fixture(null);
+    const { probe: storageProbe, alarm, writes } = fixture(null, undefined, {});
     const relayAlarmRecords: object[] = [];
     const AlarmProbe = vm.runInNewContext(alarmCode, {
       ...stopGlobals,
@@ -287,6 +329,7 @@ for (const withPendingTurn of [false, true]) {
         hasPending: () => withPendingTurn,
         hasPendingSlackInteractionCleanup: () => false,
         hasHandoffs: () => false,
+        newestEnqueuedAt: () => undefined,
       },
       gatewayInbox: { hasPending: () => false, nextPendingDueAt: () => undefined },
     };
@@ -341,12 +384,14 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
   duringChores?: (jobs: Map<string, AlarmJob>, admit: () => Promise<void>) => Promise<void>;
   /** The store's stop aborts in flight (a class field the probe does not carry). */
   stopAborts?: StopAbortFence;
+  /** When the store's newest person's turn row was enqueued, read when the instance starts cold. */
+  newestEnqueuedAt?: number;
 } = {}) {
   const { AgentObservationYield, AgentPromptFailure } = await import('../src/slack/flue-dispatch.ts');
   const { alarmYieldIsFree } = await import('../src/slack/alarm-turn-drain.ts');
   const alarmMethods = [
-    'armAlarmNoLaterThan', 'alarm', 'drainRelayAlarm', 'dispatchToRunners', 'admitToRunner',
-    'dispatchingWhile', 'deliverStopNotices',
+    'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'alarm', 'drainRelayAlarm', 'dispatchToRunners', 'admitToRunner', 'wakeAgentAtHandoff',
+    'showStatusAtHandoff', 'dispatchingWhile', 'deliverStopNotices', 'keepWarmTickAt',
   ].map((name) => {
     const method = (stateClass as ts.ClassDeclaration).members.find((member) =>
       ts.isMethodDeclaration(member) && member.name.getText(source) === name);
@@ -379,6 +424,8 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     Date, setTimeout, clearTimeout, AbortController, Promise,
     MAX_TURN_DRAIN_BATCH: 16,
     RUNNER_DISPATCH_MAX_PAGES: 16,
+    admissionStatusPresentation,
+    showAdmissionStatus,
     slackTurnExecutor: (env: Record<string, unknown>) => slackTurnExecutor(env, {}),
     sandboxTurnReaders: () => () => [],
     installationOwnershipOf,
@@ -404,6 +451,9 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     MAX_TURN_ATTEMPTS: 2,
     MAX_POST_DISPATCH_ATTEMPTS: 8,
     RELAY_RETRY_BACKOFF_MS: 2_000,
+    KEEP_WARM_WINDOW_MS: 600_000,
+    KEEP_WARM_TICK_MS: 20_000,
+    RETENTION_SWEEP_INTERVAL_MS: 300_000,
     ALARM_TURN_BUDGET_MS: 40,
     ALARM_TURN_HARD_CAP_MS: 400,
     ALARM_PENDING_PER_THREAD: 4,
@@ -448,6 +498,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     slackAgentThreadKey: (turn: { thread: string }) => turn.thread,
     StateStoreUnavailable: class StateStoreUnavailable extends Error {},
     effectiveTurnSlackInstallationId: () => 'workspace',
+    carriedGatewayIdentity,
     verifySlackInstallationTurnAccess: async () => {},
     replayTextForTurnProgress: () => 'Pull request #12 is already open',
     recordDeliveredSlackAgentMessage() {},
@@ -494,6 +545,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
   };
   (probe as unknown as { carriedAlarmTurns: Map<string, string> }).carriedAlarmTurns = new Map();
   (probe as unknown as { admissionsSeen: number }).admissionsSeen = 0;
+  (probe as unknown as { firstHandoffs: Set<string> }).firstHandoffs = new Set();
   (probe as unknown as { stopAborts: StopAbortFence }).stopAborts = hooks.stopAborts ?? new StopAbortFence();
   probe.ctx = { storage: {
     async getAlarm() { return record.alarmAt; },
@@ -512,6 +564,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
       hasPending: (lane = 'legacy') =>
         lane === 'legacy' && [...jobs.values()].some(alarmOwned),
       hasPendingSlackInteractionCleanup: () => false,
+      newestEnqueuedAt: () => hooks.newestEnqueuedAt,
       // Same contract as TurnJobStoreLogic.listDispatchable (tested there).
       listDispatchable: (input: { limit: number }) => {
         const threads = new Set<unknown>();
@@ -556,6 +609,11 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     },
     gatewayInbox: { hasPending: () => false, nextPendingDueAt: () => undefined },
     presentations: { get: (runId: string) => ({ runId, projectionVersion: 3 }) },
+    config: {
+      getWorkspaceInstallation: (workspaceId: string) => ({
+        workspaceId, transportMode: 'gateway', gatewayBindingId: 'binding_alarm', botUserId: 'U_ALARM_BOT',
+      }),
+    },
   };
   return { probe, record };
 }
@@ -671,6 +729,32 @@ test('by default the alarm hands new turns to their thread runners without runni
   assert.equal(record.alarmAt, null, 'nothing is left for the alarm to wake for');
 });
 
+// Defects caught: a hand-off that drops this store's fresh verification (the
+// runner asks Slack again before its first status), and one that invents an
+// identity this store never verified.
+test("a hand-off carries the gateway bot identity this store verified within the window, and none without one", async () => {
+  resetIdentityVerificationsForTests();
+  try {
+    const unverified = await alarmHarness([channelJob('u1', 'thread-u')], {});
+    await unverified.probe.alarm();
+    assert.equal(JSON.stringify(unverified.record.admissions[0]!.payload), '{}',
+      'nothing verified here: the runner verifies for itself');
+
+    const gatewayIdentity = {
+      workspaceId: 'workspace', bindingId: 'binding_alarm', botUserId: 'U_ALARM_BOT', expiresAt: Date.now() + 30_000,
+    };
+    seedGatewayIdentity(gatewayIdentity);
+    const verified = await alarmHarness([{ ...channelJob('v1', 'thread-v'), runId: 'run-v1' } as AlarmJob], {});
+    await verified.probe.alarm();
+    assert.deepEqual(JSON.parse(JSON.stringify(verified.record.admissions[0]!.payload)), {
+      presentation: { runId: 'run-v1', projectionVersion: 3 },
+      gatewayIdentity,
+    });
+  } finally {
+    resetIdentityVerificationsForTests();
+  }
+});
+
 test('SLACK_TAG_TURN_EXECUTOR=alarm keeps new turns on the alarm and hands nothing to runners', async () => {
   const { probe, record } = await alarmHarness(
     [channelJob('a1', 'thread-a'), channelJob('b1', 'thread-b')],
@@ -780,7 +864,9 @@ test('the default runner executor hands a message admitted mid-drain to its runn
 
 test('an OAuth continuation already handed to a thread runner is admitted there again', async (context) => {
   context.mock.method(Date, 'now', () => NOW);
-  const resumeMethods = ['resumeTurnAfterOAuth', 'admitToRunner', 'armAlarmNoLaterThan'].map((name) => {
+  const resumeMethods = [
+    'resumeTurnAfterOAuth', 'admitToRunner', 'wakeAgentAtHandoff', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode',
+  ].map((name) => {
     const method = stateClass.members.find((member) =>
       ts.isMethodDeclaration(member) && member.name.getText(source) === name);
     assert.ok(method, `production method ${name} exists`);
@@ -796,8 +882,11 @@ test('an OAuth continuation already handed to a thread runner is admitted there 
     Date,
     console: { warn() {} },
     oauthResumeTurnJobId: (id: string) => `oauthresume:${id}`,
+    slackTurnExecutor: (env: Record<string, unknown>) => slackTurnExecutor(env, {}),
     slackAgentThreadKey: () => 'T1:C1:1.0:owner-i1',
     installationOwnershipOf,
+    effectiveTurnSlackInstallationId: () => 'workspace',
+    carriedGatewayIdentity: () => undefined,
     threadRunnerStub: (_env: unknown, threadKey: string) => ({
       async admit(job: { id: string }) {
         admissions.push({ id: job.id, threadKey });
@@ -819,6 +908,7 @@ test('an OAuth continuation already handed to a thread runner is admitted there 
         confirmRunner: (id: string) => confirmed.push(id),
       },
       presentations: { get: () => undefined },
+      config: { getWorkspaceInstallation: () => undefined },
     };
     probe.stores = stores;
     probe.env = {};
@@ -839,6 +929,142 @@ test('an OAuth continuation already handed to a thread runner is admitted there 
     }
   }
   assert.deepEqual(confirmed, ['oauthresume:c1']);
+});
+
+function admissionHarness(runner: { refuse?: boolean } = {}) {
+  const methods = [
+    'admitSlackTurn', 'admitToRunner', 'wakeAgentAtHandoff', 'showStatusAtHandoff', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan',
+    'admissionWakeAt', 'runnerMode', 'keepWarmTickAt',
+  ].map((name) => {
+    const method = (stateClass as ts.ClassDeclaration).members.find((member) =>
+      ts.isMethodDeclaration(member) && member.name.getText(source) === name);
+    assert.ok(method, `production method ${name} exists`);
+    return method.getText(source);
+  });
+  const code = ts.transpileModule(
+    `${batchDeclaration!.getText(source)}\n${keepWarmDeclarations}\nclass AdmissionProbe { ${methods.join('\n')} }\nAdmissionProbe`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  const admissions: Array<{ id: string; threadKey: string }> = [];
+  const AdmissionProbe = vm.runInNewContext(code, {
+    Date,
+    console: { warn() {} },
+    admissionStatusPresentation,
+    showAdmissionStatus,
+    slackTurnExecutor: (env: Record<string, unknown>) => slackTurnExecutor(env, {}),
+    slackAgentThreadKey,
+    installationOwnershipOf,
+    effectiveTurnSlackInstallationId: () => 'workspace',
+    carriedGatewayIdentity: () => undefined,
+    threadRunnerStub: (_env: unknown, threadKey: string) => ({
+      async admit(job: { id: string }) {
+        admissions.push({ id: job.id, threadKey });
+        return runner.refuse ? { admitted: false, refused: 'presentation_import_failed' } : { admitted: true };
+      },
+    }),
+  }) as new () => Probe & { stores: object };
+  const db = openStateDb(':memory:');
+  let clock = NOW;
+  const turns = new TurnJobStoreLogic(db, () => clock++);
+  const probe = Object.assign(new AdmissionProbe(), { firstHandoffs: new Set<string>() });
+  probe.stores = {
+    turnJobs: turns,
+    presentations: { get: () => undefined },
+    config: { getWorkspaceInstallation: () => undefined },
+    slack: {
+      admitCanonical: (input: { turnJob: TurnJob }, _work: unknown, turnJobs: TurnJobStoreLogic) => {
+        turnJobs.enqueue(input.turnJob);
+        return { claimed: true, admission: {} };
+      },
+    },
+  };
+  probe.env = RUNNER_ENV;
+  probe.call = (run) => {
+    try {
+      return { ok: true, value: run(probe.stores) };
+    } catch {
+      return { ok: false, error: { code: 'internal' } };
+    }
+  };
+  let alarm: number | null = null;
+  const writes: number[] = [];
+  probe.ctx = { storage: {
+    async getAlarm() { return alarm; },
+    async setAlarm(at) { alarm = at; writes.push(at); },
+  } };
+  return {
+    probe, db, turns, admissions, writes,
+    executor: (id: string) => db.get('SELECT executor FROM turn_jobs WHERE id = ?', id)?.executor,
+    clearAlarm: () => { alarm = null; writes.length = 0; },
+    close: () => db.close(),
+  };
+}
+
+type TurnJob = ReturnType<typeof maintenanceTurnJob>;
+
+function threadJob(id: string, threadTs = '1800000000.000001'): TurnJob {
+  const job = maintenanceTurnJob(id);
+  return { ...job, turn: { ...job.turn, threadTs, messageTs: threadTs } };
+}
+
+test('a canonical admission in runner mode hands its turn to its thread runner and arms only the keep-warm tick', async (context) => {
+  context.mock.method(Date, 'now', () => NOW);
+  const h = admissionHarness();
+  try {
+    const job = threadJob('new');
+    const admitted = await h.probe.admitSlackTurn({ turnJob: job });
+    assert.equal(admitted.ok, true);
+    assert.deepEqual(h.admissions, [{ id: 'new', threadKey: slackAgentThreadKey(job.turn, job.assignment) }],
+      'handed to its runner before the admission answers');
+    assert.equal(h.executor('new'), 'runner', 'the hand-off is confirmed');
+    assert.deepEqual(h.writes, [NOW + KEEP_WARM_TICK_MS],
+      'the alarm is not needed for this turn; it keeps the store warm for the next one');
+  } finally { h.close(); }
+});
+
+test('a hand-off its runner refuses at admission stays a hand-off and arms the alarm', async (context) => {
+  context.mock.method(Date, 'now', () => NOW);
+  const h = admissionHarness({ refuse: true });
+  try {
+    await h.probe.admitSlackTurn({ turnJob: threadJob('new') });
+    assert.deepEqual(h.admissions.map(({ id }) => id), ['new']);
+    assert.equal(h.executor('new'), 'handoff', 'the alarm admits it again (listHandoffs)');
+    assert.deepEqual(h.writes, [NOW]);
+  } finally { h.close(); }
+});
+
+test('an admitted turn waits for the alarm while an earlier turn of its thread is not with its runner', async (context) => {
+  context.mock.method(Date, 'now', () => NOW);
+  const h = admissionHarness();
+  try {
+    const ahead: Array<[string, string, () => void]> = [
+      ['an unconfirmed hand-off', '1800000000.000001', () => h.turns.assignRunner('ahead-1')],
+      ['an alarm turn whose Flue dispatch started', '1800000000.000002', () => {
+        h.db.run("UPDATE turn_jobs SET dispatch_started_at = 1 WHERE id = 'ahead-2'");
+      }],
+      ['an alarm turn an older release wrote without its thread key', '1800000000.000003', () => {
+        h.db.run("UPDATE turn_jobs SET thread_key = NULL WHERE id = 'ahead-3'");
+      }],
+    ];
+    for (const [index, [name, threadTs, arrange]] of ahead.entries()) {
+      h.clearAlarm();
+      h.turns.enqueue(threadJob(`ahead-${index + 1}`, threadTs));
+      arrange();
+      await h.probe.admitSlackTurn({ turnJob: threadJob(`behind-${index + 1}`, threadTs) });
+      assert.deepEqual(h.admissions, [], `${name} holds its thread`);
+      assert.equal(h.executor(`behind-${index + 1}`), 'alarm', `${name}: listDispatchable hands it over in order`);
+      assert.deepEqual(h.writes, [NOW], `${name}: its alarm is armed`);
+    }
+
+    h.clearAlarm();
+    h.turns.enqueue(threadJob('running', '1800000000.000004'));
+    h.turns.assignRunner('running');
+    h.turns.confirmRunner('running');
+    await h.probe.admitSlackTurn({ turnJob: threadJob('follow-up', '1800000000.000004') });
+    assert.deepEqual(h.admissions.map(({ id }) => id), ['follow-up'],
+      'a turn its runner already holds does not hold the next one');
+    assert.deepEqual(h.writes, [NOW + KEEP_WARM_TICK_MS], 'only the keep-warm tick');
+  } finally { h.close(); }
 });
 
 test('the default runner executor: one runner failing its admissions holds only its own thread', async () => {
@@ -884,6 +1110,16 @@ test('the default runner executor hands over a turn admitted while the alarm run
   assert.deepEqual(record.admissions.map(({ id }) => id), ['late'],
     'handed to its runner before this alarm returned');
   assert.equal(record.relayAlarms.at(-1)!.jobsDispatched, 1);
+});
+
+test("the default runner executor keeps a store warm whose newest person's turn is recent", async (context) => {
+  context.mock.method(Date, 'now', () => NOW);
+  const { probe, record } = await alarmHarness([], { newestEnqueuedAt: NOW - 60_000 });
+  await probe.alarm();
+  assert.ok(record.events.includes('tick:receipts'), 'the ordinary idle drain ran, under whileDispatching');
+  assert.equal(record.relayAlarms.at(-1)!.outcome, 'idle');
+  assert.equal(record.relayAlarms.at(-1)!.keepWarm, true);
+  assert.equal(record.alarmAt, NOW + KEEP_WARM_TICK_MS, 'the tick is the alarm it armed');
 });
 
 test('the default runner executor hands each admitted turn over at once, side by side with admissions in flight', async () => {
@@ -1121,7 +1357,7 @@ function stopOutboxHarness(input: {
   runner?: boolean;
 }) {
   const methods = [
-    'deliverStopNotices', 'armAlarmNoLaterThan', 'slackTurnSteer', 'admitSlackTurn', 'offerCreatedStop',
+    'deliverStopNotices', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'slackTurnSteer', 'admitSlackTurn', 'offerCreatedStop',
   ].map((name) => {
     const method = (stateClass as ts.ClassDeclaration).members.find((member) =>
       ts.isMethodDeclaration(member) && member.name.getText(source) === name);
@@ -1340,4 +1576,99 @@ test('a late fold over the state RPC takes follow-ups only for a head its thread
       db.close();
     }
   }
+});
+
+/** The production inbox drain, with its collaborators injected. */
+function inboxDrainProbe(context: Record<string, unknown>) {
+  const declarations = source.statements.filter((node) =>
+    (ts.isFunctionDeclaration(node) && ['drainGatewayInbox', 'gatewayConversationKey'].includes(node.name?.text ?? '')) ||
+    (ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) =>
+      declaration.name.getText(source) === 'GATEWAY_INBOX_CONVERSATION_CONCURRENCY')));
+  assert.equal(declarations.length, 3);
+  const code = ts.transpileModule(`${declarations.map((node) => node.getText(source)).join('\n')}\ndrainGatewayInbox`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  return vm.runInNewContext(code, {
+    Promise, Map, Array, Math,
+    GATEWAY_INBOX_MAX_DRAIN_BATCH: 8,
+    localGatewayAppStores: () => ({ settings: {}, config: {} }),
+    localGatewayDeploymentClient: () => ({}),
+    createPlatformProductTelemetry: () => ({}),
+    localTurnEnqueue: () => undefined,
+    gatewayDeliveryRetryDelayMs: () => 0,
+    gatewayDeliveryFailureReason: () => 'failed',
+    recordGatewayDeliveryDeadLetter() {},
+    ...context,
+  }) as (stores: unknown, env: unknown, onAdmitted?: () => void) => Promise<boolean>;
+}
+
+// Defects caught: a runner-mode drain that never verifies the identity (every
+// hand-off goes without it), one that makes the admission wait for it, one
+// that returns with the verification still running (it would belong to no
+// invocation), and a verification failure that fails a delivery.
+test('a runner-mode inbox drain verifies the bot identity beside the admissions and waits for it', async () => {
+  for (const verificationFails of [false, true]) {
+    const events: string[] = [];
+    let releaseVerification!: () => void;
+    const verification = new Promise<void>((resolve) => { releaseVerification = resolve; });
+    const completed: string[] = [];
+    const drain = inboxDrainProbe({
+      processGatewaySlackEnvelope: async (envelope: { eventId: string }) => {
+        events.push(`admitted:${envelope.eventId}`);
+        return 'accepted';
+      },
+      resolveSlackInstallationExecutionContext: async (workspaceId: string) => {
+        events.push(`verify:${workspaceId}`);
+        await verification;
+        events.push('verified');
+        if (verificationFails) throw new Error('gateway_rate_limited');
+        return {};
+      },
+    });
+    const stores = {
+      config: { getWorkspaceInstallation: () => undefined },
+      turnJobs: { noteReceipt: () => () => undefined },
+      gatewayInbox: {
+        claimPending: () => [{
+          id: 'inbox_1', attempts: 0, acceptedAt: 1,
+          delivery: {
+            kind: 'event.deliver',
+            envelope: { eventId: 'Ev1', workspaceId: 'T_INBOX', event: { channel: 'C1', ts: '1.1' } },
+          },
+        }],
+        complete: (id: string) => { completed.push(id); },
+        hasPending: () => false,
+      },
+    };
+    const drained = drain(stores, {}, () => events.push('handed_off'));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(events, ['verify:T_INBOX', 'admitted:Ev1', 'handed_off'],
+      'the admission and its hand-off do not wait for the verification');
+    let returned = false;
+    void drained.then(() => { returned = true; });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(returned, false, 'the drain waits for the verification it started');
+    releaseVerification();
+    assert.equal(await drained, false);
+    assert.deepEqual(completed, ['inbox_1'], 'a failed verification fails no delivery');
+  }
+
+  // The alarm executor resolves the identity itself, as before: nothing is verified here.
+  let verified = 0;
+  const alarmDrain = inboxDrainProbe({
+    processGatewaySlackEnvelope: async () => 'accepted',
+    resolveSlackInstallationExecutionContext: async () => { verified += 1; return {}; },
+  });
+  await alarmDrain({
+    turnJobs: { noteReceipt: () => () => undefined },
+    gatewayInbox: {
+      claimPending: () => [{
+        id: 'inbox_2', attempts: 0, acceptedAt: 1,
+        delivery: { kind: 'event.deliver', envelope: { eventId: 'Ev2', workspaceId: 'T_INBOX', event: {} } },
+      }],
+      complete() {},
+      hasPending: () => false,
+    },
+  }, {});
+  assert.equal(verified, 0);
 });

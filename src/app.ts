@@ -20,12 +20,13 @@ import {
   repairPendingOAuthContinuationResumes,
 } from './connections/oauth-continuation.ts';
 import type { OAuthContinuation } from './connections/types.ts';
-import { createBetterAuthRuntimeRoutes } from './auth/better-auth-runtime.ts';
-import { createMcpOAuthRuntimeRoutes } from './auth/mcp-oauth-routes.ts';
+import { BETTER_AUTH_PUBLIC_PATHS, MCP_OAUTH_PATHS } from './auth/public-auth-paths.ts';
+import { lazyRoutes } from './http/lazy-routes.ts';
 import { recoveryOnlyGate } from './auth/request-auth-control.ts';
 import { createManagementSetupRoutes } from './management/setup-routes.ts';
 import { createConnectRoutes } from './management/connect-routes.ts';
 import { activityStatusForObservation } from './activity/status.ts';
+import { noteAgentAuthoringActivation } from './management/workspace-change-tools.ts';
 import {
   observeProviderAuthRoute,
   providerAuthRouteInterceptor,
@@ -93,6 +94,17 @@ instrument({
     ) {
       publishActivityStatus(event.instanceId, status, context.env, event.submissionId);
     }
+  },
+  dispose() {},
+});
+
+// A Slack thread mounts the workspace change tools on the render after its
+// model activates agent-authoring.
+instrument({
+  key: Symbol.for('chickpea.agent-authoring-activation'),
+  interceptor: async (_operation, _context, next) => next(),
+  observe(event, context) {
+    if (context.agentName === CHICKPEA_SLACK_AGENT_NAME) noteAgentAuthoringActivation(event);
   },
   dispose() {},
 });
@@ -249,8 +261,12 @@ if (!isCloudflareTarget()) {
   );
   oauthRepairTimer.unref();
 }
-app.route('/', createBetterAuthRuntimeRoutes());
-app.route('/', createMcpOAuthRuntimeRoutes({ productTelemetry: productTelemetryForRequest }));
+// Better Auth and the MCP resource load on their first request; a Slack turn
+// never needs them, and their modules are about 1.5 MiB of the static closure.
+app.route('/', lazyRoutes('Better Auth routes', BETTER_AUTH_PUBLIC_PATHS, async () =>
+  (await import('./auth/better-auth-runtime.ts')).createBetterAuthRuntimeRoutes()));
+app.route('/', lazyRoutes('MCP OAuth routes', MCP_OAUTH_PATHS, async () =>
+  (await import('./auth/mcp-oauth-routes.ts')).createMcpOAuthRuntimeRoutes({ productTelemetry: productTelemetryForRequest })));
 app.route('/', createManagementSetupRoutes({
   productTelemetry: productTelemetryForRequest,
   wakeAgent: admitSetupWake,

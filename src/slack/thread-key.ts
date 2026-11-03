@@ -2,7 +2,10 @@ import type { NormalizedSlackTurn } from './types.ts';
 import type { AssignmentSurface } from '../config/resolver.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 
-export function slackThreadKey(turn: NormalizedSlackTurn): string {
+/** The coordinates a thread key is made of: a turn's, or a prediction's before the turn exists. */
+export type SlackThreadCoordinates = Pick<NormalizedSlackTurn, 'workspaceId' | 'channelId' | 'threadTs' | 'sessionThreadTs'>;
+
+export function slackThreadKey(turn: SlackThreadCoordinates): string {
   return `${turn.workspaceId}:${turn.channelId}:${turn.sessionThreadTs ?? turn.threadTs}`;
 }
 
@@ -53,7 +56,7 @@ export function slackTurnSurface(
  * ownership transfer. Legacy installations retain their channel-wide DM key.
  */
 export function slackAgentThreadKey(
-  turn: NormalizedSlackTurn,
+  turn: SlackThreadCoordinates,
   assignment: Pick<ResolvedAssignment, 'runtimeContract' | 'ownerIncarnation'>,
 ): string {
   if (assignment.runtimeContract !== 'chickpea-v1') return slackThreadKey(turn);

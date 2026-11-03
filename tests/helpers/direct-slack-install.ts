@@ -35,8 +35,12 @@ export interface DirectSlackInstall {
   ownerMembershipId: string;
   /** Every Slack Web API call, in order. */
   calls: DirectSlackCall[];
-  /** POST a delivery signed with the install's signing secret, with the env a host would give Core. */
-  deliver(kind: 'events' | 'interactions', body: Record<string, unknown>, env?: PlatformEnv): Promise<Response>;
+  deliver(
+    kind: 'events' | 'interactions',
+    body: Record<string, unknown>,
+    env?: PlatformEnv,
+    secret?: string,
+  ): Promise<Response>;
 }
 
 export async function withDirectSlackInstall(
@@ -120,12 +124,12 @@ export async function withDirectSlackInstall(
       stores,
       ownerMembershipId: owner.membership.id,
       calls,
-      async deliver(kind, body, env) {
+      async deliver(kind, body, env, secret = signingSecret) {
         const raw = kind === 'events'
           ? JSON.stringify(body)
           : new URLSearchParams({ payload: JSON.stringify(body) }).toString();
         const timestamp = String(Math.floor(Date.now() / 1_000));
-        const signature = createHmac('sha256', signingSecret).update(`v0:${timestamp}:${raw}`).digest('hex');
+        const signature = createHmac('sha256', secret).update(`v0:${timestamp}:${raw}`).digest('hex');
         return ingress.request(`/channels/slack/${kind}`, {
           method: 'POST',
           headers: {

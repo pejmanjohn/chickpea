@@ -16,9 +16,10 @@ import { givenUpRecoveryText } from '../usage/run-settlement.ts';
 import type { UsageStore } from '../usage/types.ts';
 import type { WorkStore } from '../work/types.ts';
 import { isPlatformReset, settlementFailureFacts } from './agent-failure-diagnostics.ts';
+import type { AdmissionAgentWake } from './admission-agent-wake.ts';
 import type { SlackPresentationStatePort } from './agent-view-presentation.ts';
 import { alarmYieldIsFree, type AlarmTurnJobControl } from './alarm-turn-drain.ts';
-import type { SlackStateLogic } from './claim-store.ts';
+import type { SlackStateLogic, SlackStateStore } from './claim-store.ts';
 import type { SlackStatusRegistry } from './status-registry.ts';
 import { postSteeringReply, steeringReplyTarget } from './steering-replies.ts';
 import {
@@ -114,11 +115,15 @@ export interface TurnExecutionPorts {
     | 'markError'
     | 'finishStop'
   >> & Partial<AsyncCapable<Pick<TurnJobStoreLogic, 'fold'>>>;
-  /** Slack claims and the per-thread active-work flag. */
+  /**
+   * Slack claims and the per-thread active-work flag; and, from a thread
+   * runner, the note of a front desk hand-off the state store wakes the
+   * Agent's runner on (absent where turns run in the state store itself).
+   */
   slack: AsyncCapable<Pick<
     SlackStateLogic,
     'setActiveWork' | 'markCodingActiveWork' | 'isCodingActiveWork' | 'release'
-  >>;
+  >> & Pick<SlackStateStore, 'noteFrontDeskHandoff'>;
   /** Thread context for every Agent message the turn delivers. */
   config: Parameters<typeof recordDeliveredSlackAgentMessage>[0];
   /**
@@ -171,8 +176,13 @@ export interface SandboxTurnReader {
 }
 
 export interface TurnExecutionOptions {
-  /** Which lane and executor the turn_latency record names. */
-  latency: Pick<TurnLatencyContext, 'lane' | 'executor'>;
+  /** Which lane and executor the turn_latency record names, and what a runner's hand-off measured. */
+  latency: Pick<
+    TurnLatencyContext,
+    'lane' | 'executor' | 'handoffMs' | 'runnerWakeLeadMs' | 'admissionStatusMs' | 'admissionStatusAt'
+  >;
+  /** The wake admission sent this turn's Agent object as it handed the turn over (see RunTurnOptions). */
+  agentWake?: AdmissionAgentWake;
   /**
    * Recorded with the dispatch so the agent relays observed activity to the
    * executor that registered this turn's status (see status-relay.ts).
@@ -272,9 +282,8 @@ export async function executeTurnJob(
   let activeWorkKey = job.turn.interactionIntent?.disposition === 'work'
     ? slackAgentThreadKey(job.turn, job.assignment)
     : undefined;
-  // Advance the attempt count before running the turn: a crash mid-turn
-  // then re-fires with the count already committed, bounding retries.
-  await ports.turnJobs.recordAttempt(job.id, attempt);
+  const attemptRecorded = Promise.resolve(ports.turnJobs.recordAttempt(job.id, attempt));
+  attemptRecorded.catch(() => undefined);
   // A stop recorded after this row was read: dispatch preparation refused it.
   let stopRefused = false;
   // The turn entered its stopped ending: nothing may post a failure for it.
@@ -294,6 +303,7 @@ export async function executeTurnJob(
       admittedListIds?: readonly string[],
       turnEnvelope?: TurnEnvelopeV1,
       threadFileIds?: readonly string[],
+      workspaceChangeTools?: boolean,
     ) => {
       try {
         return await ports.turnJobs.prepareFlueDispatch(
@@ -304,6 +314,7 @@ export async function executeTurnJob(
           admittedListIds,
           turnEnvelope,
           threadFileIds,
+          workspaceChangeTools,
         );
       } catch (error) {
         if (!isTurnJobStopRefusal(error)) throw error;
@@ -488,6 +499,9 @@ export async function executeTurnJob(
         return false;
       }
     };
+    const claimsFollowUps = ports.turnJobs.fold !== undefined && replayText === undefined &&
+      !stoppedBeforeDispatch;
+    if (!claimsFollowUps) await attemptRecorded;
     await ports.runTurn(job.turn, job.assignment, ports.env, {
       client,
       installationContext,
@@ -510,6 +524,7 @@ export async function executeTurnJob(
         : {}),
       ...(ports.statusRegistry ? { statusRegistry: ports.statusRegistry } : {}),
       ...(runtimePlanDecision ? { runtimePlanDecision } : {}),
+      ...(options.agentWake ? { admissionAgentWake: options.agentWake } : {}),
       onRuntimePlan: async (candidate) => {
         const decision = await ports.turnJobs.freezeRuntimePlan(job.id, candidate);
         frozenPlan = decision.runtimePlan;
@@ -522,7 +537,10 @@ export async function executeTurnJob(
       // its own head took could run again.
       ...(ports.turnJobs.fold
         ? {
-            claimFold: (request) => ports.turnJobs.fold!(request),
+            claimFold: async (request) => {
+              const [claim] = await Promise.all([ports.turnJobs.fold!(request), attemptRecorded]);
+              return claim;
+            },
             recordFollowUpProgress: async (id, patch) => {
               await ports.turnJobs.recordSlackInteractionProgress(id, patch);
             },
@@ -560,7 +578,24 @@ export async function executeTurnJob(
         agentAsks.note(delivery);
         return recordDeliveredSlackAgentMessage(ports.config, job.turn, job.assignment, delivery);
       },
-      onFrontDeskHandoff: (request) => { frontDeskHandoff = request; },
+      onFrontDeskHandoff: (request) => {
+        frontDeskHandoff = request;
+        // The state store wakes the Agent's runner now, about two seconds
+        // before the takeover is admitted (TagStateStore.noteFrontDeskHandoff).
+        // The run never waits for it, and a failure fails nothing.
+        try {
+          void Promise.resolve(ports.slack.noteFrontDeskHandoff?.({
+            workspaceId: request.turn.workspaceId,
+            channelId: request.turn.channelId,
+            threadTs: request.turn.threadTs,
+            messageTs: request.turn.messageTs,
+            agentId: request.agentId,
+            decidedAt: Date.now(),
+          })).catch(() => undefined);
+        } catch {
+          // The hand-off addresses the runner either way.
+        }
+      },
       ...(replayText === undefined ? {} : { replayText }),
       stopEnding: stoppedEnding,
       ...(job.previousStop ? { previousStop: job.previousStop } : {}),
@@ -623,6 +658,7 @@ export async function executeTurnJob(
       console.warn('[chickpea] post-delivery cleanup did not complete');
       return true;
     }
+    await attemptRecorded;
     if (stopRefused) {
       // Nothing was dispatched: give the attempt back and wait like a held row.
       await Promise.resolve(ports.turnJobs.recordAttempt(job.id, job.attempts)).catch(() => undefined);

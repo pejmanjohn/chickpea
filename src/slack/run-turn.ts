@@ -13,7 +13,7 @@ import {
   type RuntimePlanV2,
 } from '../agents/runtime-plan.ts';
 import { agentTeammateHandles } from '../config/effective-config.ts';
-import { slackTenantInstructions } from '../agents/shared-prefix.ts';
+import { slackTenantInstructions } from '../agents/shared-prefix-layout.ts';
 import { CHICKPEA_AGENT_NAME } from '../config/agent-id.ts';
 import {
   codingOnAgentModel,
@@ -57,6 +57,9 @@ import {
 } from '../config/installation-scope.ts';
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
 import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
+import { wakeSlackAgentObject } from '../agents/turn-input.ts';
+import type { AdmissionAgentWake } from './admission-agent-wake.ts';
+import { admissionStatusFresh } from './admission-activity.ts';
 import { buildTurnEnvelope } from './turn-envelope-builder.ts';
 import {
   compileFrontDeskPlan,
@@ -83,11 +86,9 @@ import { parseMemoryCommand } from '../memory/commands.ts';
 import { handleMemoryCommand, prepareMemoryTurn } from '../memory/runtime.ts';
 import {
   handleRoutineSlackRequest,
-  parseRoutineCommand,
   routineResponseVisibility,
   shouldHandleRoutineCommandTurn,
 } from '../routines/commands.ts';
-import { isRoutineSlackTurn } from '../routines/slack-context.ts';
 import { replyFooterModelLabel } from './message-format.ts';
 import { createMidRunReplyHandler } from './midrun-reply.ts';
 import { isSandboxDisconnect } from '../sandbox/reconnect.ts';
@@ -127,20 +128,20 @@ import {
   type RunReviewSession,
 } from '../review/capture.ts';
 import type { RunReviewOutcome } from '../review/record.ts';
-import { readAgentHistoryBounded } from './bounded-agent-observation.ts';
+import { CHICKPEA_SLACK_AGENT_BINDING, readAgentHistoryBounded } from './bounded-agent-observation.ts';
 import { collectAdmittedSlackListIds } from './lists/admission.ts';
 import { conversationThreadTs, slackAgentContinuityKey, slackAgentThreadKey, slackConversationKind, slackTurnSurface } from './thread-key.ts';
 import { slackTimestampMs } from './timestamp.ts';
 import {
-  assembleRetainedSlackContext, formatSlackPublicHandoff, type SlackPublicDelivery,
+  assembleRetainedSlackContext, formatSlackPublicHandoff, type SlackPublicDelivery, type SlackPublicHandoffMessage,
 } from './public-context.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 import {
   isAgentAskSilentReply,
   isHandedBackTurn,
-  isLaterCoAddressedTurn,
   personRequestText,
 } from './agent-asks.ts';
+import { isDeterministicSlackCommand, slackTurnTypedByPerson } from './turn-commands.ts';
 import {
   effectiveTurnSlackInstallationId,
   resolveSlackInstallationExecutionContext,
@@ -220,7 +221,8 @@ import { createWorkExecutionLifecycle } from '../work/executor.ts';
 import type { ShadowWorkLifecycle } from '../work/lifecycle.ts';
 import type { RunExecutionAuthority, WorkStore } from '../work/types.ts';
 import {
-  classifySlackInteraction,
+  judgeGuaranteedInteraction,
+  type SlackInteractionClassification,
   type SlackInteractionIntent,
 } from './interaction-intent.ts';
 import {
@@ -284,6 +286,14 @@ export interface RunTurnOptions {
   installationContext?: SlackInstallationExecutionContext;
   /** Focused-test override for proving replay and delivery lifecycle behavior. */
   agentPrompt?: typeof promptSlackThreadAgent;
+  /** Focused seam; production wakes the thread's agent object on Cloudflare only. */
+  wakeAgentObject?: (instanceId: string) => Promise<void>;
+  /**
+   * The wake the state store sent the thread's Agent object as it handed
+   * this turn to its runner. The freeze sends no second wake to the instance
+   * it named, and the turn's lead counts from this one.
+   */
+  admissionAgentWake?: AdmissionAgentWake;
   /** Adapter-owned dispatch/read checkpoints restored by the relay. */
   flueDispatch?: SlackFlueDispatchState;
   /** Durable turn key forwarded to the sandbox for cap/idempotency state. */
@@ -448,6 +458,13 @@ export interface RunTurnOptions {
   onRead?: () => void;
   /** Set by `runTurn` itself when `turnLatency` is present: the Agent posted a reply mid-run. */
   onMidRunReply?: () => void;
+  /** Set by `runTurn` itself when `turnLatency` is present: how long staging the turn's input took. */
+  onAgentStaged?: (ms: number) => void;
+  /**
+   * Set by `runTurn` itself when `turnLatency` is present: the turn's Agent
+   * object was woken, by the freeze now or by admission (`admissionSentAt`).
+   */
+  onAgentWake?: (admissionSentAt?: number) => void;
 }
 
 /** How a stopped turn ends (see RunTurnOptions.stopEnding). */
@@ -544,6 +561,8 @@ export async function runTurn(
       onFollowUpsInformed: (count) => tracker.markFoldedInformed(count),
       onRead: () => tracker.markRead(),
       onMidRunReply: () => tracker.markMidRunReply(),
+      onAgentStaged: (ms) => tracker.markAgentStage(ms),
+      onAgentWake: (admissionSentAt) => tracker.markAgentWake(admissionSentAt),
       onDelivered: async (outcome) => {
         tracker.markFinal('delivered');
         if (outcome === 'stopped') stopped = true;
@@ -665,7 +684,7 @@ async function runTurnAttempt(
   // (typedByPerson in processSlackEvent); this is the runtime's own gate. A
   // message that mentioned several Agents is one command, for the first. A
   // setup's wake is Chickpea's note.
-  const typedByPerson = !turn.agentAsk && !turn.setupWake && !isLaterCoAddressedTurn(turn);
+  const typedByPerson = slackTurnTypedByPerson(turn);
   // The thread's own Agent, handed a teammate's answer: it may end the turn
   // silently, so its reply never streams before it is known.
   const handedBack = isHandedBackTurn(turn, assignment);
@@ -710,9 +729,7 @@ async function runTurnAttempt(
     }
   }
   const memoryCommand = typedByPerson ? parseMemoryCommand(turn.text) : undefined;
-  const deterministicCommand = Boolean(memoryCommand) ||
-    Boolean(turn.managementApprovalProposalId) ||
-    (typedByPerson && isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text, commandAddress)));
+  const deterministicCommand = isDeterministicSlackCommand(turn, commandAddress);
   // Delivery-only recovery replays the exact persisted answer. It must not
   // re-resolve current Agent memory (which could both block recovery
   // on a changed lease and unnecessarily touch live state).
@@ -843,10 +860,17 @@ async function runTurnAttempt(
   const semanticStatusCarriesSession = () => semanticActivityEnabled &&
     presenter.preferredActivitySurface() === 'assistant_status' &&
     !presenter.activityReceipt().unavailable;
+  /**
+   * The custom status the state store showed before the hand-off carries the
+   * session (admission-activity.ts): Slack's native processing never started
+   * for this Run, so showing it again starts it (`showNativeAgain`).
+   */
+  const admissionCarriesSession = admittedVisibleStatus !== undefined &&
+    frozenPresentation?.schemaVersion === 3 && frozenPresentation.agentSession.operation === undefined;
   /** Native processing shows and has not yet been handed to the custom status. */
   let nativeHeld = false;
   /** Native processing was handed to the custom status. */
-  let nativeReleased = false;
+  let nativeReleased = admissionCarriesSession;
   /**
    * The turn's status registration: while native processing is held, it
    * sends it again before Slack's hour runs out, and it stops at the
@@ -861,14 +885,20 @@ async function runTurnAttempt(
   // that text. Otherwise the native start is made at most once per attempt:
   // one that fails is not retried, and the custom status (or its settle) is
   // what the turn shows instead.
-  const startNativeIndicator = async (): Promise<void> => {
-    if (admittedVisibleStatus !== undefined || !agentViewPresentation) return;
+  let nativeStart: Promise<void> | undefined;
+  const startNativeIndicator = (): Promise<void> => {
+    if (admittedVisibleStatus !== undefined || !agentViewPresentation) return Promise.resolve();
+    const issued = Promise.withResolvers<void>();
     // True also for a retry whose earlier attempt started native processing
     // and stopped before its custom write, so that write hands over too. A
     // start whose outcome is unknown returns false: its custom writes do not
     // hand over, and may stay hidden until the turn settles (cosmetic).
-    nativeHeld = await agentViewPresentation.beginAgentSessionProcessing();
-    if (nativeHeld) options.onSlackWrite?.('agent_session');
+    nativeStart = agentViewPresentation.beginAgentSessionProcessing(() => issued.resolve()).then((held) => {
+      nativeHeld = held;
+      if (held) options.onSlackWrite?.('agent_session');
+    });
+    nativeStart.catch(() => undefined);
+    return Promise.race([issued.promise, nativeStart]);
   };
   /**
    * Hand the working indicator from native `processing` to the custom status
@@ -885,12 +915,15 @@ async function runTurnAttempt(
     nativeHeld = false;
     nativeReleased = await agentViewPresentation.releaseNativeProcessing();
   };
+  const showNativeAgain = async (): Promise<boolean> => agentViewPresentation !== undefined && (
+    await agentViewPresentation.reassertNativeProcessing() ||
+    (admissionCarriesSession && await agentViewPresentation.beginAgentSessionProcessing()));
   // Nothing custom is (or can be) visible after a hand-over: show Slack's
   // native indicator again. The next custom write hands over again.
   const beginNativeSessionFallback = async (): Promise<void> => {
     if (!nativeReleased || !agentViewPresentation) return;
     nativeReleased = false;
-    if (await agentViewPresentation.reassertNativeProcessing()) {
+    if (await showNativeAgain()) {
       nativeHeld = true;
       nativeKeepalive?.holdNative(true);
       options.onSlackWrite?.('agent_session');
@@ -972,9 +1005,7 @@ async function runTurnAttempt(
      */
     async showNativeIndicator(): Promise<boolean> {
       if (nativeHeld) return true;
-      if (!agentViewPresentation || !(await agentViewPresentation.reassertNativeProcessing())) {
-        return false;
-      }
+      if (!(await showNativeAgain())) return false;
       nativeHeld = true;
       nativeReleased = false;
       nativeKeepalive?.holdNative(true);
@@ -997,6 +1028,8 @@ async function runTurnAttempt(
   };
   const statusRegistry = options.statusRegistry ?? defaultSlackStatusRegistry;
   let admissionStatusAttempted = false;
+  /** Settles once the admitted activity's custom status landed or failed; none: settled. */
+  let admittedStatusShown: Promise<unknown> = Promise.resolve();
   /**
    * The turn's first Slack writes, which need only the client and the frozen
    * presentation: the native indicator, then the admitted pending activity as
@@ -1028,15 +1061,20 @@ async function runTurnAttempt(
             ].join(':'),
             ...(admittedVisibleStatus ? { initialAppliedStatus: admittedVisibleStatus } : {}),
             // A stopped turn ends at once: nothing is refreshed, only cleared.
-            ...(admittedVisibleStatus && !stoppedBeforeDispatch ? { refreshInitialStatus: true } : {}),
+            // One the state store showed at this attempt's hand-off is fresh
+            // enough for the registry's ordinary refresh.
+            ...(admittedVisibleStatus && !stoppedBeforeDispatch &&
+                !admissionStatusFresh(options.turnLatency?.admissionStatusAt)
+              ? { refreshInitialStatus: true }
+              : {}),
           }
         : {}),
     });
     nativeKeepalive = registration;
     return registration;
   };
-  const beginVisibleWork = async (statusInstanceId: string) => {
-    await startNativeIndicator();
+  const showAdmittedStatus = async (statusInstanceId: string) => {
+    await nativeStart;
     const registered = registerStatusTurn(statusInstanceId);
     // Native processing shows from the start (sent now, or by an earlier
     // attempt): keep it alive until a custom status takes over.
@@ -1045,7 +1083,9 @@ async function runTurnAttempt(
         frozenPresentation.currentActivity?.operation.certainty === 'pending') {
       admissionStatusAttempted = true;
       const admitted = frozenPresentation.currentActivity;
-      await registered.setStatus(activityStatus(
+      // Not awaited here: the turn reads while Slack takes it, and its first
+      // visible write after those reads waits for it (`openingStatusShown`).
+      admittedStatusShown = registered.setStatus(activityStatus(
         admitted.kind,
         admitted.action,
         admitted.object,
@@ -1059,56 +1099,54 @@ async function runTurnAttempt(
     }
     return registered;
   };
-  // A frozen V3 presentation shows its admitted activity before the turn
+  const beginVisibleWork = async (statusInstanceId: string) => {
+    await startNativeIndicator();
+    return showAdmittedStatus(statusInstanceId);
+  };
+  // A frozen V3 presentation issues Slack's native indicator before the turn
   // reads anything else (classification, memory, plan, Work lifecycle): in a
-  // thread runner each of those is a round trip to the state store. What it
-  // shows is the admission's own pending activity, whatever the turn decides
-  // later. Observed activity is routed by the Agent instance, known once the
-  // plan is frozen; nothing is observed before dispatch.
+  // thread runner each of those is a round trip to the state store. Those
+  // reads start once the native call is issued, not acknowledged; the status
+  // turn waits for the acknowledgement, hands the session over and issues the
+  // admitted activity as the custom status, and is awaited where it is first
+  // used. What it shows is the admission's own pending activity, whatever the
+  // turn decides later. Observed activity is routed by the Agent instance,
+  // known once the plan is frozen; nothing is observed before dispatch.
   // A stopped turn that never dispatched shows nothing new: its status turn
   // only lets the stopped ending clear what an earlier attempt showed.
   const earlyStatusInstanceId = options.runtimePlanDecision?.instanceId ??
     options.continuityKey ??
     slackAgentThreadKey(turn, assignment);
-  const earlyStatusTurn = frozenPresentation?.schemaVersion !== 3
-    ? undefined
-    : stoppedBeforeDispatch
-      ? registerStatusTurn(earlyStatusInstanceId)
-      : await beginVisibleWork(earlyStatusInstanceId);
-  let interactionIntent = turn.interactionIntent;
-  // Classification and the memory → plan → Work lifecycle chain read
-  // independent state; each chain keeps its own writes in order.
-  const classifyTurn = async (): Promise<void> => {
-    if (deterministicCommand || interactionIntent || stoppedBeforeDispatch) return;
-    const classification = await classifySlackInteraction({
-      workspaceId: turn.workspaceId,
-      channelId: turn.channelId,
-      eventId: turn.eventId,
-      text: requestText,
-      source: turn.source,
-      guaranteed: true,
-      ...(turn.activeWorkAtAdmission === undefined
-        ? {}
-        : { activeWork: turn.activeWorkAtAdmission }),
-      profileInstructions:
-        'instructions' in assignment && typeof assignment.instructions === 'string'
-          ? assignment.instructions
-          : assignment.agent.instructions,
-      requestedModel: resolvedModel ?? null,
-    }, platformEnv, undefined, undefined, {
-      ...(settingsStore ? { settings: settingsStore } : {}),
-    });
-    interactionIntent = classification.intent;
-    turn.interactionIntent = interactionIntent;
-    await options.onInteractionIntent?.(interactionIntent);
-    await recordExplicitInteractionClassifierUsage({
-      turn,
-      assignment,
-      classification,
-      requestedModel: resolvedModel ?? null,
-      platformEnv,
-      options,
-    });
+  let earlyStatusWork:
+    | ReturnType<typeof showAdmittedStatus>
+    | ReturnType<typeof registerStatusTurn>
+    | undefined;
+  if (frozenPresentation?.schemaVersion === 3) {
+    if (stoppedBeforeDispatch) {
+      earlyStatusWork = registerStatusTurn(earlyStatusInstanceId);
+    } else {
+      await startNativeIndicator();
+      earlyStatusWork = showAdmittedStatus(earlyStatusInstanceId);
+    }
+  }
+  // Once the plan is frozen it is durable and names the thread's Agent
+  // instance, which may then be addressed: waking it lets its activation
+  // overlap the rest of this preparation instead of delaying its staging. A
+  // turn already judged react_only never stages. A failed wake is ignored:
+  // staging activates the object itself. Admission's wake of the same
+  // instance came first, so it stands, and is the one the lead counts from.
+  const wakeAgentObject = (instanceId: string): void => {
+    if (turn.interactionIntent?.disposition === 'react_only') return;
+    if (options.admissionAgentWake?.instanceId === instanceId) {
+      options.onAgentWake?.(options.admissionAgentWake.sentAt);
+      return;
+    }
+    const wake = options.wakeAgentObject ?? (isCloudflareTarget()
+      ? (id: string) => wakeSlackAgentObject(platformEnv, CHICKPEA_SLACK_AGENT_BINDING, id, options.turnId)
+      : undefined);
+    if (!wake) return;
+    options.onAgentWake?.();
+    void Promise.resolve().then(() => wake(instanceId)).catch(() => undefined);
   };
   const prepareTurn = async () => {
     const memory = skipMemory
@@ -1154,6 +1192,9 @@ async function runTurnAttempt(
             ...(options.getBoundRuntimePlan
               ? { getBoundRuntimePlan: options.getBoundRuntimePlan }
               : {}),
+          }).then((frozen) => {
+            wakeAgentObject(frozen.decision.instanceId);
+            return frozen;
           }).catch((error: unknown) => {
             // A model that needs repair ends the turn with its reply, below;
             // a retry could not change that.
@@ -1213,16 +1254,87 @@ async function runTurnAttempt(
       modelRepairText: undefined,
     };
   };
+  let earlyStatusTurn: ReturnType<typeof registerStatusTurn> | undefined;
   let prepared: Awaited<ReturnType<typeof prepareTurn>>;
+  // The judgment and the memory → plan → Work lifecycle chain read
+  // independent state; each chain keeps its own writes in order. A retry
+  // restores its recorded basis on `turn.interactionIntent` and judges nothing.
+  const judgment = deterministicCommand || turn.interactionIntent || stoppedBeforeDispatch
+    ? undefined
+    : judgeGuaranteedInteraction({
+        workspaceId: turn.workspaceId,
+        channelId: turn.channelId,
+        eventId: turn.eventId,
+        text: requestText,
+        source: turn.source,
+        guaranteed: true,
+        ...(turn.activeWorkAtAdmission === undefined
+          ? {}
+          : { activeWork: turn.activeWorkAtAdmission }),
+        profileInstructions:
+          'instructions' in assignment && typeof assignment.instructions === 'string'
+            ? assignment.instructions
+            : assignment.agent.instructions,
+        requestedModel: resolvedModel ?? null,
+      }, {
+        env: platformEnv,
+        ...(settingsStore ? { settings: settingsStore } : {}),
+        ...(options.turnId ? { turnJobId: options.turnId } : {}),
+        record: async (intent) => {
+          turn.interactionIntent = intent;
+          await options.onInteractionIntent?.(intent);
+        },
+        meter: (classification) => recordExplicitInteractionClassifierUsage({
+          turn,
+          assignment,
+          classification,
+          requestedModel: resolvedModel ?? null,
+          platformEnv,
+          options,
+        }),
+      });
+  const preparing = prepareTurn();
+  const turnConfig = () => options.appStores?.config ?? getConfigStore(platformEnv);
+  /** The thread record is Chickpea's contract's, and only when no hand-off's context stands in. */
+  const threadRecordFor = (frozenHandoff: readonly SlackPublicHandoffMessage[]) =>
+    assignment.runtimeContract === 'chickpea-v1' && frozenHandoff.length === 0 ? turnConfig() : undefined;
+  const readThread = async (threadRecord: ReturnType<typeof turnConfig> | undefined) => hydrateTurnSlackContext({
+    client,
+    turn,
+    ...(installationContext ? { botUserId: installationContext.botUserId } : {}),
+    siblingBotUserIds: await siblingBotUserIds(assignment, installationContext?.botUserId, turnConfig(), turn.workspaceId),
+    sharedAppReads,
+    state: options.appStores?.slackState ?? getSlackStateStore(platformEnv),
+    ...(threadRecord ? { record: threadRecord } : {}),
+    followUps,
+  });
+  // The thread's messages wait for neither the memory nor the plan: only a
+  // hand-off's context, which comes from the assignment, can stand in for
+  // them. A turn that may dispatch reads them beside its preparation, once
+  // the native indicator is issued; one that then does not (judged
+  // react_only, a model to repair) drops what it read.
+  const earlyThreadRead = !stoppedBeforeDispatch && !deterministicCommand &&
+      turn.interactionIntent?.disposition !== 'react_only' && !assignment.handoffContext?.length &&
+      !options.runtimePlanDecision?.runtimePlan.handoffContext?.length
+    ? readThread(threadRecordFor([]))
+    : undefined;
+  const earlyThreadReadSettled = earlyThreadRead?.catch(() => undefined);
   try {
-    const [classified, preparation] = await Promise.allSettled([classifyTurn(), prepareTurn()]);
-    if (classified.status === 'rejected') throw classified.reason;
+    const [visible, preparation] = await Promise.allSettled([
+      earlyStatusWork,
+      preparing,
+    ]);
+    if (visible.status === 'rejected') throw visible.reason;
+    earlyStatusTurn = visible.value;
     if (preparation.status === 'rejected') throw preparation.reason;
     prepared = preparation.value;
   } catch (error) {
     // Only the status turn is open yet. Like any failed V3 attempt, it keeps
     // the admitted activity visible for the next attempt.
+    await admittedStatusShown;
     earlyStatusTurn?.close();
+    await judgment?.settled;
+    await earlyThreadReadSettled;
     throw error;
   }
   const {
@@ -1259,9 +1371,13 @@ async function runTurnAttempt(
     : await beginVisibleWork(statusInstanceId));
   // A reattached turn showed it on its first attempt.
   const readingFollowUps = followUps.length > 0 && !options.flueDispatch?.dispatchReceipt;
-  if (readingFollowUps) {
-    await statusTurn.setStatus(foldActivityStatus(followUps, 'start')).catch(() => false);
-  }
+  // The turn's opening status writes, in order: the admitted activity, then
+  // the follow-ups it reads. The lease check, the context read and the
+  // judgment do not wait for them; every visible write after those does.
+  const openingStatusShown = readingFollowUps
+    ? admittedStatusShown.then(() =>
+        statusTurn.setStatus(foldActivityStatus(followUps, 'start')).catch(() => false))
+    : admittedStatusShown;
   // Once per turn; a failed hint never holds back the task's progress.
   let codingTaskSignalled = false;
   const signalCodingTaskStarted = async () => {
@@ -1277,6 +1393,8 @@ async function runTurnAttempt(
   };
   let terminalStatusFinished = false;
   let yielded = false;
+  /** Labels the model sent after a Clef `work` basis, adopted while the run is under way. */
+  let latePlan: Promise<void> | undefined;
   const finishStatus = async (result: 'answer' | 'failure'): Promise<void> => {
     // Close the sink first. Agent observations are relayed best-effort from a
     // different Cloudflare isolate and may still arrive after settlement
@@ -1349,9 +1467,6 @@ async function runTurnAttempt(
         }
       : undefined;
   let workChecklistTs = interactionProgress.checklist?.messageTs;
-  const workChecklist = interactionIntent?.disposition === 'work'
-    ? interactionIntent.checklist
-    : undefined;
   const triggerCoordinate = {
     channelId: turn.channelId,
     messageTs: turn.reactionTargetTs ?? turn.messageTs,
@@ -1465,10 +1580,12 @@ async function runTurnAttempt(
     await options.onDelivered?.(outcome);
     await presenter.markCanonicalPresentationFinalized();
     await usageRecorder?.repairAfterDelivery();
-    if (workChecklistTs && workChecklist &&
+    const intent = turn.interactionIntent;
+    const checklist = intent?.disposition === 'work' ? intent.checklist : undefined;
+    if (workChecklistTs && checklist &&
         !interactionProgress.checklist?.supersededByNative) {
       try {
-        await presenter.updateWorkChecklist(workChecklistTs, workChecklist, true);
+        await presenter.updateWorkChecklist(workChecklistTs, checklist, true);
         const checklistProgress = interactionProgress.checklist;
         if (checklistProgress) {
           await recordInteractionProgress({
@@ -1535,10 +1652,53 @@ async function runTurnAttempt(
     await finishDelivery('stopped');
   };
 
+  const dispatchExpected = modelRepairText === undefined && !turn.managementApprovalProposalId &&
+    !memoryCommand && turn.interactionIntent?.disposition !== 'react_only';
+  const turnEnvelope = dispatchExpected && options.replayText === undefined &&
+      !stoppedBeforeDispatch && !options.flueDispatch?.dispatchEnvelope
+    ? turnEnvelopeBuilder(runtimePlanDecision?.runtimePlan, settingsStore, options.appStores?.config, platformEnv)
+    : {};
+  const readTurnContext = async () => {
+    const continuationRead = readThreadContinuation(options, runtimePlanDecision, turn);
+    // A hand-off's context stands in for the thread's messages only while the
+    // transcript holds no earlier turn of the thread; without one, the
+    // messages are read (or were, beside the preparation) without waiting
+    // for the continuation.
+    const handoff = runtimePlanDecision?.runtimePlan.handoffContext ?? assignment.handoffContext ?? [];
+    const frozenHandoff = handoff.length > 0 && !(await continuationRead) ? handoff : [];
+    const threadRecord = threadRecordFor(frozenHandoff);
+    const hydratedContext = frozenHandoff.length > 0
+      ? currentMessageOnlyContext(turn)
+      : await (earlyThreadRead ?? readThread(threadRecord));
+    const context = await resolveSlackContextNames(
+      client,
+      turn.workspaceId,
+      await assembleRetainedSlackContext(hydratedContext, turn, {
+        followUps,
+        visibilityBarrierAt: preparedMemory?.visibilityBarrierAt ?? null,
+        ...(threadRecord ? { store: threadRecord, agentId: assignment.agentId } : {}),
+      }),
+    );
+    const continuation = await continuationRead;
+    const promptContext = continuation
+      ? slackContextSinceWatermark(context, continuation.messageTs, assignment.agentId)
+      : context;
+    const continuityNote = continuation && runtimePlanDecision
+      ? threadContinuityNote({
+          previous: continuation,
+          plan: runtimePlanDecision.runtimePlan,
+          turn,
+          sharedThread: slackConversationKind(turn) !== 'im',
+        })
+      : undefined;
+    return { frozenHandoff, context, promptContext, continuityNote };
+  };
+
   // 1. Visible work: set best-effort native status. A rejection degrades to
   //    Agent Session lifecycle only and never creates a progress message.
   try {
     if (stoppedBeforeDispatch) {
+      await openingStatusShown;
       // The stop refused this turn's dispatch: nothing ran, so it ends now.
       stopping = true;
       const facts = await options.stopEnding!.finish();
@@ -1551,7 +1711,16 @@ async function runTurnAttempt(
     // Owner-native memory is authorized live, independently of the frozen
     // config snapshot. Fence every visible Slack effect as well as model/tool
     // execution when the selected owner lease has already gone stale.
-    if (preparedMemory?.ownerBound && !(await preparedMemory.validateLease())) {
+    const leaseCheck = preparedMemory?.ownerBound ? preparedMemory.validateLease() : undefined;
+    leaseCheck?.catch(() => undefined);
+    const contextRead = dispatchExpected ? readTurnContext() : undefined;
+    const contextReadSettled = contextRead?.catch(() => undefined);
+    // Nothing below acts before the basis is recorded; a retry restores it and
+    // never judges again.
+    const intent = await judgment?.basis ?? turn.interactionIntent;
+    const leaseHeld = await leaseCheck;
+    await openingStatusShown;
+    if (preparedMemory?.ownerBound && !leaseHeld) {
       // Fail closed, never silently: the durable relay only retires a turn job
       // once delivery is tombstoned, so an early `return` here left the job
       // pending and the alarm re-armed forever behind a live "Thinking…"
@@ -1562,6 +1731,7 @@ async function runTurnAttempt(
       await presenter.deliverFinal(failureFinalText(turn, AGENT_FAILURE_TEXT), 'plain_text', 'error');
       await finishStatus('failure');
       await finishDelivery('failed');
+      await contextReadSettled;
       return;
     }
     // The turn's model cannot run until Model providers is repaired: say so
@@ -1578,11 +1748,12 @@ async function runTurnAttempt(
     // A click's or form's text is host-authored, and an ask or a later
     // co-addressed turn joins a thread a person's message already titled.
     const personTypedText = typedByPerson && !turn.uiResponse;
-    if (personTypedText) {
-      await agentViewPresentation?.setTitle(turn.text).catch(() => {
-        console.warn('[chickpea] Slack Agent View title could not be recorded');
-      });
-    }
+    const titleSet = personTypedText
+      ? agentViewPresentation?.setTitle(turn.text).catch(() => {
+          console.warn('[chickpea] Slack Agent View title could not be recorded');
+        })
+      : undefined;
+    if (!dispatchExpected) await titleSet;
     if (turn.managementApprovalProposalId && options.replayText === undefined &&
         options.invokeManagementApproval && !options.managementApproval) {
       const persisted = await workLifecycle?.prepareExecution('Slack management approval');
@@ -1706,9 +1877,10 @@ async function runTurnAttempt(
         return;
       }
     }
-    if (interactionIntent?.disposition === 'react_only') {
+    if (intent?.disposition === 'react_only') {
+      await titleSet;
       const prepared = await workLifecycle?.prepareExecution(
-        `Slack reaction response: ${interactionIntent.reaction}`,
+        `Slack reaction response: ${intent.reaction}`,
       );
       await workLifecycle?.settleExecution({
         outcome: 'succeeded',
@@ -1722,10 +1894,10 @@ async function runTurnAttempt(
           !(await agentViewPresentation.prepareDeferredTerminalDelivery('answer'))) {
         throw new Error('Slack reaction delivery requires reconciliation.');
       }
-      const reactionCoordinate = resolveReactionCoordinate(turn, interactionIntent.target);
+      const reactionCoordinate = resolveReactionCoordinate(turn, intent.target);
       let delivered: SlackReactionReceipt;
       try {
-        delivered = await presenter.deliverReaction(interactionIntent.reaction, reactionCoordinate);
+        delivered = await presenter.deliverReaction(intent.reaction, reactionCoordinate);
       } catch (error) {
         await agentViewPresentation?.recordTerminalDeliveryReceipt(slackDeliveryFailureOutcome(error));
         throw error;
@@ -1739,6 +1911,10 @@ async function runTurnAttempt(
       return;
     }
     if (usageRecordingEnabled && options.replayText === undefined) await openUsageRecorder();
+    await titleSet;
+    const working = intent?.disposition === 'work';
+    // Empty for a `work` basis Clef decided: its labels can only come late.
+    const workChecklist = intent?.disposition === 'work' && intent.checklist.length > 0 ? intent.checklist : undefined;
     // A substantive @-mention is classified late (above), AFTER Work admission
     // froze the presentation without a plan — whereas ambient and obvious-work
     // turns carry their plan from admission. Attach the late-classified work
@@ -1752,10 +1928,20 @@ async function runTurnAttempt(
         console.warn('[chickpea] Slack late native plan attachment failed');
       });
     }
+    // Labels owed after a Clef `work` basis. Started after the title, as the
+    // early plan is; the store refuses them once a stream or a terminal
+    // delivery began, and the reply then stands without a plan.
+    latePlan = judgment?.lateChecklist.then(async (labels) => {
+      if (!labels) return;
+      await agentViewPresentation?.adoptLatePlan(labels).catch(() => {
+        console.warn('[chickpea] Slack late native plan attachment failed');
+      });
+    });
     // The eyes reaction is a lightweight receipt on the user's root message,
     // distinct from the native activity status. Persist whether this run
     // created it so terminal cleanup never removes a pre-existing reaction.
-    if (workChecklist && !interactionProgress.acknowledgment) {
+    // It follows the disposition, so a Clef `work` basis gets it at once.
+    if (working && !interactionProgress.acknowledgment) {
       try {
         workAcknowledgment = await presenter.addSemanticReaction(
           'work_ack',
@@ -1791,51 +1977,9 @@ async function runTurnAttempt(
       await statusTurn.setStatus(initialStatus);
     }
 
-    // 2. Hydrate bounded context (degrades to current-message-only on failure).
-    // A turn that continues the thread's transcript sends only what arrived
-    // since the previous turn; the transcript already holds the rest,
-    // including any ownership handoff context its first turn carried.
-    const continuation = await readThreadContinuation(options, runtimePlanDecision, turn);
-    const frozenHandoff = continuation
-      ? []
-      : runtimePlanDecision?.runtimePlan.handoffContext ?? assignment.handoffContext ?? [];
-    const turnConfig = options.appStores?.config ?? getConfigStore(platformEnv);
-    const threadRecord = assignment.runtimeContract === 'chickpea-v1' && frozenHandoff.length === 0
-      ? turnConfig
-      : undefined;
-    const hydratedContext = frozenHandoff.length > 0
-      ? currentMessageOnlyContext(turn)
-      : await hydrateTurnSlackContext({
-          client,
-          turn,
-          ...(installationContext ? { botUserId: installationContext.botUserId } : {}),
-          siblingBotUserIds: await siblingBotUserIds(assignment, installationContext?.botUserId, turnConfig, turn.workspaceId),
-          sharedAppReads,
-          state: options.appStores?.slackState ?? getSlackStateStore(platformEnv),
-          ...(threadRecord ? { record: threadRecord } : {}),
-          followUps,
-        });
-    const context = await resolveSlackContextNames(
-      client,
-      turn.workspaceId,
-      await assembleRetainedSlackContext(hydratedContext, turn, {
-        followUps,
-        visibilityBarrierAt: preparedMemory?.visibilityBarrierAt ?? null,
-        ...(threadRecord ? { store: threadRecord, agentId: assignment.agentId } : {}),
-      }),
-    );
-    const promptContext = continuation
-      ? slackContextSinceWatermark(context, continuation.messageTs, assignment.agentId)
-      : context;
+    const { frozenHandoff, context, promptContext, continuityNote } =
+      await (contextRead ?? readTurnContext());
     review.context = promptContext;
-    const continuityNote = continuation && runtimePlanDecision
-      ? threadContinuityNote({
-          previous: continuation,
-          plan: runtimePlanDecision.runtimePlan,
-          turn,
-          sharedThread: slackConversationKind(turn) !== 'im',
-        })
-      : undefined;
     // A frozen plan reaches the render with the turn's staged input, so the
     // memory is rendered as an instruction there, once, instead of piling up
     // in the thread's transcript turn after turn.
@@ -1851,6 +1995,9 @@ async function runTurnAttempt(
           agentId: assignment.agentId,
         })
       : [];
+    // Started with the judgment and bounded by it; the Agent's first render mounts the change tools on it.
+    const workspaceChangeTools = runtimePlanDecision !== undefined &&
+      (turn.managementProposalPending === true || await (judgment?.managementLikely ?? false));
     const handoffBlock = formatSlackPublicHandoff(frozenHandoff);
     const progressiveRelayFactory = options.prepareProgressiveRelay ??
       (agentViewPresentation
@@ -1950,14 +2097,19 @@ async function runTurnAttempt(
           }
         : {}),
     });
-    const persistedPrompt = await workLifecycle?.prepareExecution(prompt);
     // Usage names the execution only once it exists. A creation queued behind
     // a slow Work store links when it lands; usage recorded before then names
     // none, never one that may not exist.
-    workLifecycle?.whenExecutionRecorded((executionId) => {
-      usageRecorder?.linkRunExecution(executionId);
-    });
-    const executionPrompt = persistedPrompt ?? prompt;
+    const executionPrepared = workLifecycle
+      ? workLifecycle.prepareExecution(prompt).then((persisted) => {
+          workLifecycle.whenExecutionRecorded((executionId) => {
+            usageRecorder?.linkRunExecution(executionId);
+          });
+          return persisted;
+        })
+      : undefined;
+    executionPrepared?.catch(() => undefined);
+    const executionPrompt = (ledgerAuthority ? await executionPrepared : undefined) ?? prompt;
 
     // 3 + 4. Prompt the durable agent, then deliver the final — with clearStatus
     //    in a finally so a status that was actually set is cleared even if
@@ -1972,9 +2124,24 @@ async function runTurnAttempt(
     // retry loop from the claims being released on an uncaught throw).
     let text: string;
     let agentResult: AgentDispatchResult | undefined;
+    let earlyLeaseCheck: Promise<boolean> | undefined;
+    let settledLeaseCheck: Promise<boolean> | undefined;
     // A settled answer replayed from its checkpoint carries no display
     // components; they are read back from the turn's stored surfaces.
     const settledBeforePrompt = options.flueDispatch?.flueSettlement?.outcome === 'completed';
+    const surfaceState = options.appStores?.slackState ?? getSlackStateStore(platformEnv);
+    const surfaceTurnJobId = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
+    const readDisplaySurfaces = () => prepareDisplaySurfaces({
+      state: surfaceState,
+      turn,
+      agentId: assignment.agent.id,
+      turnJobId: surfaceTurnJobId,
+      ...(settledBeforePrompt ? {} : { fresh: agentResult?.displayComponents ?? [] }),
+    }).catch(() => {
+      console.warn('[chickpea] display components were not stored; the answer posts without them');
+      return [];
+    });
+    let earlyDisplaySurfaces: ReturnType<typeof readDisplaySurfaces> | undefined;
     let tablePresentation: SlackTablePresentation | undefined =
       options.flueDispatch?.flueSettlement?.outcome === 'completed'
         ? options.flueDispatch.flueSettlement.result.tablePresentations?.[0]
@@ -2042,8 +2209,10 @@ async function runTurnAttempt(
             ...(threadImages ? { threadImages } : {}),
             ...(threadFiles.length ? { threadFileIds: threadFiles.map(({ id }) => id) } : {}),
             ...(admittedListIds.length ? { admittedListIds } : {}),
-            ...turnEnvelopeBuilder(runtimePlanDecision?.runtimePlan, settingsStore, options.appStores?.config, platformEnv),
+            ...(workspaceChangeTools ? { workspaceChangeTools } : {}),
+            ...turnEnvelope,
             ...(platformEnv ? { env: platformEnv } : {}),
+            ...(executionPrepared ? { executionPrepared } : {}),
             ...(workLifecycle && options.runId
               ? {
                   workCorrelation: {
@@ -2057,6 +2226,16 @@ async function runTurnAttempt(
             ...(options.observationSignal ? { observationSignal: options.observationSignal } : {}),
             ...(options.onObservationStarted
               ? { onObservationStarted: options.onObservationStarted }
+              : {}),
+            ...(options.onAgentStaged ? { onAgentStaged: options.onAgentStaged } : {}),
+            ...(preparedMemory
+              ? {
+                  onSettlementObserved: (settled) => {
+                    if (!plainAnswer(settled)) return;
+                    settledLeaseCheck = preparedMemory.validateLease();
+                    settledLeaseCheck.catch(() => undefined);
+                  },
+                }
               : {}),
             ...(options.codingTaskStarted ? { codingTaskStarted: true } : {}),
             ...(reviewSession
@@ -2072,6 +2251,7 @@ async function runTurnAttempt(
           });
         } finally {
           await streamAgeChecks?.stop();
+          await executionPrepared?.catch(() => undefined);
         }
         text = sandboxUnavailableFallback
           ? `${SANDBOX_UNAVAILABLE_FALLBACK_NOTICE}\n\n${agentResult.text}`
@@ -2088,14 +2268,25 @@ async function runTurnAttempt(
           presenter.setFooterModelLabel(codingFooterLabel);
           agentViewPresentation?.setFooterModelLabel(codingFooterLabel);
         }
-        await workLifecycle?.settleExecution({
+        const settling = workLifecycle?.settleExecution({
           outcome: 'succeeded',
           rawStatus: 'flue_succeeded',
           ...(agentResult.flueSubmissionRef
             ? { flueSubmissionRef: agentResult.flueSubmissionRef }
             : {}),
         });
-        await usageRecorder?.recordSuccess(agentResult);
+        const recordingUsage = usageRecorder?.recordSuccess(agentResult);
+        recordingUsage?.catch(() => undefined);
+        const plain = plainAnswer(agentResult);
+        if (preparedMemory && plain) {
+          earlyLeaseCheck = settledLeaseCheck ?? preparedMemory.validateLease();
+          earlyLeaseCheck.catch(() => undefined);
+        }
+        if (!handedBack && plain && options.replayTerminalResult === undefined) {
+          earlyDisplaySurfaces = readDisplaySurfaces();
+        }
+        await settling;
+        await recordingUsage;
       } catch (err) {
         // A Flue identity or idempotency conflict is not an ordinary model
         // failure. Its TurnJob already entered recovery_required and must not
@@ -2286,7 +2477,7 @@ async function runTurnAttempt(
     };
     const frontDeskPlan = runtimePlanDecision?.runtimePlan.frontDesk;
     const frontDeskDecision = agentResult?.frontDeskHandoff && frontDeskPlan
-      ? decideFrontDesk(agentResult.frontDeskHandoff, frontDeskPlan, await readFrontDeskMessage(turnConfig, turn))
+      ? decideFrontDesk(agentResult.frontDeskHandoff, frontDeskPlan, await readFrontDeskMessage(turnConfig(), turn))
       : undefined;
     if (frontDeskDecision) {
       await preparedMemory?.confirmInjection();
@@ -2294,19 +2485,22 @@ async function runTurnAttempt(
         await endWithoutReply();
         return;
       }
-      // The host's line, never the model's draft.
-      review.answer = frontDeskDecision.line;
-      await statusTurn.prepareFinal();
-      await presenter.deliverFinal(frontDeskDecision.line, 'plain_text', 'complete');
-      const turnJobId = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
       if (frontDeskDecision.kind === 'handoff') {
+        // Known before the line is posted: the executor wakes the Agent's
+        // runner on it now, and admits the takeover once the line is settled.
         options.onFrontDeskHandoff?.({
           turn,
           fromAgentId: assignment.agentId,
           agentId: frontDeskDecision.option.agentId,
           agentName: frontDeskDecision.option.name,
         });
-      } else if (frontDeskDecision.kind === 'card') {
+      }
+      // The host's line, never the model's draft.
+      review.answer = frontDeskDecision.line;
+      await statusTurn.prepareFinal();
+      await presenter.deliverFinal(frontDeskDecision.line, 'plain_text', 'complete');
+      const turnJobId = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
+      if (frontDeskDecision.kind === 'card') {
         await deliverAgentChoiceSurface({
           turn,
           assignment,
@@ -2407,7 +2601,8 @@ async function runTurnAttempt(
     // this one finishes; that bookkeeping race must not discard a completed,
     // lease-valid answer.
     await preparedMemory?.confirmInjection();
-    const leaseValid = acknowledgeMemoryUpdate || (await preparedMemory?.validateLease() ?? true);
+    const leaseValid = acknowledgeMemoryUpdate ||
+      (await (earlyLeaseCheck ?? preparedMemory?.validateLease()) ?? true);
     if (preparedMemory?.ownerBound && !leaseValid && !recoveredText) {
       logMemoryLeaseFailure('after_run', assignment.agentId, preparedMemory.quarantined === true);
       await statusTurn.prepareFinal();
@@ -2442,23 +2637,10 @@ async function runTurnAttempt(
     const deliverableArtifacts = recoveredText === undefined && leaseValid && terminalResult === 'answer'
       ? artifacts
       : undefined;
-    const surfaceState = options.appStores?.slackState ?? getSlackStateStore(platformEnv);
-    const surfaceTurnJobId = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
     // Components travel only with the model's own lease-valid answer.
     const ownAnswer = terminalResult === 'answer' && recoveredText === undefined && leaseValid &&
       !(acknowledgeMemoryUpdate && agentResult?.memoryUpdate?.preservesContext !== true);
-    const displaySurfaces = ownAnswer
-      ? await prepareDisplaySurfaces({
-          state: surfaceState,
-          turn,
-          agentId: assignment.agent.id,
-          turnJobId: surfaceTurnJobId,
-          ...(settledBeforePrompt ? {} : { fresh: agentResult?.displayComponents ?? [] }),
-        }).catch(() => {
-          console.warn('[chickpea] display components were not stored; the answer posts without them');
-          return [];
-        })
-      : [];
+    const displaySurfaces = ownAnswer ? await (earlyDisplaySurfaces ?? readDisplaySurfaces()) : [];
     const displayComponents = renderDisplayComponents(displaySurfaces);
     await presenter.deliverFinal(
       text,
@@ -2533,6 +2715,8 @@ async function runTurnAttempt(
     }
     throw err;
   } finally {
+    // An attempt that ended before its opening status writes landed leaves none in flight.
+    await openingStatusShown;
     // A yielded turn is still running: it ends nothing a reattaching attempt
     // needs (its status and acknowledgment), the same as an attempt the
     // platform killed mid-observation.
@@ -2550,6 +2734,12 @@ async function runTurnAttempt(
       }
       await removeWorkAcknowledgment();
     }
+    // After a Clef basis the classifier is still answering for its late labels
+    // and its usage record; both land here, within the classifier's own bound.
+    await latePlan;
+    await judgment?.settled;
+    // A thread read the turn did not use (it did not dispatch) ends here too.
+    await earlyThreadReadSettled;
     // Work writes queued behind a slow Work store are recorded now, within a
     // bound. The reply and its cleanup are done, so the user waits for none of
     // them. A yielded turn waits too: work left running after the alarm
@@ -2628,7 +2818,7 @@ export async function repairSlackInteractionProgress(
 async function recordExplicitInteractionClassifierUsage(input: {
   turn: NormalizedSlackTurn;
   assignment: ResolvedAssignment;
-  classification: Awaited<ReturnType<typeof classifySlackInteraction>>;
+  classification: SlackInteractionClassification;
   requestedModel: string | null;
   platformEnv: PlatformEnv | undefined;
   options: RunTurnOptions;
@@ -2860,8 +3050,10 @@ export async function resolveCodingWorkspaceDecision(
 
 /**
  * On Cloudflare the Agent runs in its own Durable Object, where every settings
- * read is an RPC back into this state object. Freeze what its tools read
- * (host-local reads here) so they do not call back per tool.
+ * read is an RPC back into the state object. Freeze what its tools read so
+ * they do not call back per tool: local reads in the state object, RPCs like
+ * every other read in a thread runner, started here so they overlap the
+ * context read.
  */
 function turnEnvelopeBuilder(
   plan: RuntimePlanV2 | undefined,
@@ -2869,10 +3061,15 @@ function turnEnvelopeBuilder(
   config: AppStores['config'] | undefined,
   env: PlatformEnv | undefined,
 ): { buildTurnEnvelope?: () => Promise<TurnEnvelopeV1 | undefined> } {
-  if (!plan || !settings || !config || !isCloudflareTarget()) return {};
-  return {
-    buildTurnEnvelope: () => buildTurnEnvelope({ plan, settings, config, ...(env ? { env } : {}) }),
-  };
+  if (!plan || !isCloudflareTarget()) return {};
+  const building = buildTurnEnvelope({
+    plan,
+    settings: settings ?? getSettingsStore(env),
+    config: config ?? getConfigStore(env),
+    ...(env ? { env } : {}),
+  });
+  building.catch(() => undefined);
+  return { buildTurnEnvelope: () => building };
 }
 
 /**
@@ -2934,9 +3131,18 @@ export async function freezeRuntimePlanForTurn(input: {
         actorMembershipId: input.turn.actorMembershipId,
       }
     : undefined;
-  // Independent reads: the workspace policy, the actor's connections, and
-  // the thread's previous plan.
-  const [workspaceDecision, connectionContext, previous] = await Promise.all([
+  const canonicalModel = resolvedAssignmentModel(input.assignment);
+  if (!canonicalModel) {
+    throw new Error('Runtime plan compilation requires a frozen model.');
+  }
+  const settingsStore = input.settingsStore ?? getSettingsStore(input.platformEnv);
+  // Independent reads, in one round to the state store: the workspace
+  // policy, the actor's connections, the thread's previous plan, the runtime
+  // model, the image role, the browser capability, and the granted website
+  // logins.
+  const [
+    workspaceDecision, connectionContext, previous, runtimeModel, imageRole, browserCapability, websiteLogins,
+  ] = await Promise.all([
     resolveCodingWorkspaceDecision(
       input.assignment,
       input.platformEnv,
@@ -2951,33 +3157,6 @@ export async function freezeRuntimePlanForTurn(input: {
           input.turn.actorMembershipId, input.assignment.agentId,
         )
       : undefined,
-  ]);
-  // The constant guidance opens the agent's system prompt in code
-  // (shared-prefix.ts); the plan carries only what names this Agent.
-  const instructions = slackTenantInstructions(input.assignment);
-  const allEffectiveConnections = connectionContext?.effective ?? [];
-  const connectionAuthorizations = connectionContext?.authorizations;
-  const teamReconnects = connectionContext?.teamReconnects;
-  const sameActorThread = previous && input.turn.actorMembershipId &&
-    previous.actorMembershipId === input.turn.actorMembershipId &&
-    previous.agentId === input.assignment.agentId &&
-    previous.ownerIncarnation === (input.assignment.ownerIncarnation ?? 1) &&
-    previous.conversation.workspaceId === input.turn.workspaceId &&
-    previous.conversation.channelId === input.turn.channelId &&
-    previous.conversation.threadTs === input.turn.threadTs;
-  const connectionResolution = selectConnectionsForRequest({
-    connections: allEffectiveConnections,
-    requestText: input.requestText ?? input.turn.text,
-    ...(sameActorThread && previous.connectionSelections ? { previousSelections: previous.connectionSelections } : {}),
-  });
-  const canonicalModel = resolvedAssignmentModel(input.assignment);
-  if (!canonicalModel) {
-    throw new Error('Runtime plan compilation requires a frozen model.');
-  }
-  const settingsStore = input.settingsStore ?? getSettingsStore(input.platformEnv);
-  // The runtime model, the image role, the browser capability, and the
-  // granted website logins resolve independently.
-  const [runtimeModel, imageRole, browserCapability, websiteLogins] = await Promise.all([
     resolveRuntimeModel(
       input.assignment.agentId,
       canonicalModel,
@@ -3004,6 +3183,24 @@ export async function freezeRuntimePlanForTurn(input: {
     // Login metadata only; passwords are decrypted at call time.
     websiteLoginsForTurn(settingsStore, input.assignment.agent.websiteLogins),
   ]);
+  // The constant guidance opens the agent's system prompt in code
+  // (shared-prefix.ts); the plan carries only what names this Agent.
+  const instructions = slackTenantInstructions(input.assignment);
+  const allEffectiveConnections = connectionContext?.effective ?? [];
+  const connectionAuthorizations = connectionContext?.authorizations;
+  const teamReconnects = connectionContext?.teamReconnects;
+  const sameActorThread = previous && input.turn.actorMembershipId &&
+    previous.actorMembershipId === input.turn.actorMembershipId &&
+    previous.agentId === input.assignment.agentId &&
+    previous.ownerIncarnation === (input.assignment.ownerIncarnation ?? 1) &&
+    previous.conversation.workspaceId === input.turn.workspaceId &&
+    previous.conversation.channelId === input.turn.channelId &&
+    previous.conversation.threadTs === input.turn.threadTs;
+  const connectionResolution = selectConnectionsForRequest({
+    connections: allEffectiveConnections,
+    requestText: input.requestText ?? input.turn.text,
+    ...(sameActorThread && previous.connectionSelections ? { previousSelections: previous.connectionSelections } : {}),
+  });
   // The image role is the store's alone. Freezing its bounded capability here
   // is what mounts `generate_image` on the Agent; an unresolved or
   // uncredentialed role freezes an unfilled capability instead.
@@ -3147,6 +3344,11 @@ async function resolveCodingModelRoute(input: Parameters<typeof freezeCodingMode
 
 const MEMORY_CHANGED_RETRY_TEXT =
   'Agent memory or Slack access changed while I was answering, so I withheld the draft. Before trying again, check whether any requested external action already completed.';
+
+/** An answer whose delivery no memory write, Agent creation or hand-off decides: the lease alone fences it. */
+function plainAnswer(result: AgentDispatchResult): boolean {
+  return !result.memoryUpdate && !result.agentCreationTerminal && !result.frontDeskHandoff;
+}
 
 function resolveMemoryDeliveryText(
   draft: string,

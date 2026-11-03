@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { DEFAULT_INTERACTION_TIMEOUT_MS, type SlackInteractionIntent } from '../src/slack/interaction-intent.ts';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,17 +7,23 @@ import { after, before, test } from 'node:test';
 
 import { ErrorCode, type WebClient } from '@slack/web-api';
 
+import { deriveRuntimePlanInstanceId } from '../src/agents/runtime-plan.ts';
+import { configureModelAccessResolver, resetModelAccessForTests } from '../src/config/model-access.ts';
 import { closeNodeStateStores, resolveStores, type AppStores } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import type { SlackPresentationStatePort } from '../src/slack/agent-view-presentation.ts';
-import { SlackRunPresentationStoreLogic } from '../src/slack/run-presentations.ts';
+import { SlackRunPresentationStoreLogic, type SlackRunPresentation } from '../src/slack/run-presentations.ts';
+import { CLEF_TIMEOUT_MS } from '../src/slack/clef-intent.ts';
 import { runTurn, type RunTurnOptions } from '../src/slack/run-turn.ts';
+import type { FrozenRuntimePlanDecision } from '../src/slack/turn-job-types.ts';
 import { SlackStatusRegistry } from '../src/slack/status-registry.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
+import { fakeClefEnv } from './helpers/fake-clef.ts';
+import { SCRIPTED_MODEL, scriptedMessage, scriptedProvider } from './helpers/scripted-provider.ts';
 
 /**
  * How many state-store calls a turn makes before its first Slack write. In a
@@ -54,6 +61,14 @@ before(async () => {
   process.env.SLACK_STATE_DB_PATH = statePath;
   const store = new SqliteConfigStore(statePath, agentRoutineDeletion, { agents: [] });
   await store.createAgent(assignment.agent);
+  const installation = await store.ensureWorkspaceInstallation({
+    workspaceId: assignment.workspaceId,
+    transportMode: 'direct',
+    defaultAgentId: assignment.agentId,
+    teamId: assignment.workspaceId,
+    botUserId: 'U_CHICKPEA',
+  });
+  await store.updateWorkspaceInstallation(assignment.workspaceId, { health: 'healthy' }, installation.revision);
   store.close();
 });
 
@@ -127,15 +142,53 @@ function surfaceTurn(surface: Surface): NormalizedSlackTurn {
 }
 
 let turns = 0;
+/** The harness's Slack calls that read the thread rather than write to it. */
+const SLACK_READS = new Set(['slack:conversations.replies', 'slack:conversations.history']);
 /** Slack rejects the custom assistant status (a platform error), when set. */
 let rejectCustomStatus = false;
+let holdCustomStatus: ((timeline: string[]) => Promise<void>) | undefined;
+let holdNativeStart: ((timeline: string[]) => Promise<void>) | undefined;
+/** Holds Slack's answer to a thread read; its end is marked `answered:<method>`. */
+let holdThreadRead: ((timeline: string[]) => Promise<void>) | undefined;
+type PresentationRead = () => SlackRunPresentation | undefined;
+let holdClassifierAnswer: ((timeline: string[], presentation: PresentationRead) => Promise<void>) | undefined;
+const REPLY_ANSWER = '{"disposition":"reply","reason":"substantive_request"}';
+/** The classifier's JSON answer once released. */
+let classifierAnswer = REPLY_ANSWER;
+/** Runs inside the Agent stand-in before it answers. */
+let holdAgentPrompt: ((timeline: string[], presentation: PresentationRead) => Promise<void>) | undefined;
+/** The running turn's timeline, for a hook that waits on it. */
+let currentTimeline: string[] = [];
+/** The platform env the turn runs under; an `AI` on it is Clef's binding. */
+let platformEnv: Record<string, unknown> | undefined;
+
+async function waitUntil(ready: () => boolean): Promise<void> {
+  const deadline = Date.now() + DEFAULT_INTERACTION_TIMEOUT_MS / 4;
+  while (!ready() && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
 
 async function firstStatusTimeline(
   surface: Surface,
   publicUrl?: string | null,
   overrides: Partial<RunTurnOptions> = {},
+  turnAssignment: ResolvedAssignment = assignment,
+  turnOverrides: Partial<NormalizedSlackTurn> = {},
 ) {
   const timeline: string[] = [];
+  currentTimeline = timeline;
+  const recordedIntents: SlackInteractionIntent[] = [];
+  const reactionsAdded: Array<Record<string, unknown>> = [];
+  let presentation: SlackRunPresentation | undefined;
+  const readPresentation: PresentationRead = () => presentation;
+  if (holdClassifierAnswer) {
+    const hold = holdClassifierAnswer;
+    scriptedProvider([async (model) => {
+      await hold(timeline, readPresentation);
+      return scriptedMessage(model, [{ type: 'text', text: classifierAnswer }], 'stop');
+    }], { providerId: 'anthropic' });
+  }
   turns += 1;
   const base = surfaceTurn(surface);
   // A distinct message per call, in the same Slack thread shape.
@@ -145,10 +198,11 @@ async function firstStatusTimeline(
     eventId: `${base.eventId}_${turns}`,
     messageTs,
     threadTs: surface === 'thread_follow_up' ? base.threadTs : messageTs,
+    ...turnOverrides,
   };
   const real = resolveStores();
   const admitted = await real.work.admitShadowRun(prepareSlackShadowAdmission({
-    turn, assignment, sourceVisibility: 'private', admittedAt: Date.now(),
+    turn, assignment: turnAssignment, sourceVisibility: 'private', admittedAt: Date.now(),
   }));
   const runId = admitted.run.id;
   const stores = Object.fromEntries(
@@ -156,6 +210,8 @@ async function firstStatusTimeline(
   ) as unknown as AppStores;
   const db = openStateDb(':memory:');
   const presentations = new SlackRunPresentationStoreLogic(db);
+  presentation = undefined;
+  const refreshPresentation = () => { presentation = presentations.get(runId); };
   const sessionGeneration = Number(turn.messageTs.replace('.', ''));
   presentations.create({
     schemaVersion: 3,
@@ -188,12 +244,20 @@ async function firstStatusTimeline(
   // A runner owns this state locally, except the thread's generation fence,
   // which it reads from the state store.
   const presentationState: SlackPresentationStatePort = {
-    getRunPresentation: (id) => presentations.get(id),
+    getRunPresentation: (id) => {
+      const current = presentations.get(id);
+      if (id === runId) presentation = current;
+      return current;
+    },
     getLatestThreadSessionGeneration: (root) => {
       timeline.push('presentations.getLatestThreadSessionGeneration');
       return presentations.getLatestThreadSessionGeneration(root);
     },
-    transitionRunPresentation: (input) => presentations.transition(input),
+    transitionRunPresentation: (input) => {
+      const result = presentations.transition(input);
+      refreshPresentation();
+      return result;
+    },
     reserveSlackAppend: (workspaceId) => presentations.reserveAppend(workspaceId),
     applySlackAppendCooldown: (workspaceId, retryAfterMs) =>
       presentations.applyAppendCooldown(workspaceId, retryAfterMs),
@@ -207,16 +271,34 @@ async function firstStatusTimeline(
         data: { ok: false, error: 'not_allowed' },
       });
     }
+    if (holdCustomStatus && method === 'assistant.threads.setStatus') {
+      await holdCustomStatus(timeline);
+      timeline.push('acknowledged:assistant.threads.setStatus');
+    }
+    if (holdThreadRead && SLACK_READS.has(`slack:${method}`)) {
+      await holdThreadRead(timeline);
+      timeline.push(`answered:${method}`);
+    }
     return { ok: true, ts: '1788000100.000100', channel: turn.channelId, messages: [] };
   };
   const client = {
     // agents.sessions.setStatus, labelled by the session status it sets.
     apiCall: async (_method: string, input: Record<string, unknown>) => {
       timeline.push(`slack:session:${String(input.status)}`);
+      if (holdNativeStart && input.status === 'processing') {
+        await holdNativeStart(timeline);
+        timeline.push('acknowledged:session:processing');
+      }
       return { ok: true };
     },
     assistant: { threads: { setStatus: slack('assistant.threads.setStatus') } },
-    reactions: { add: slack('reactions.add'), remove: slack('reactions.remove') },
+    reactions: {
+      add: async (input: Record<string, unknown>) => {
+        reactionsAdded.push(input);
+        return slack('reactions.add')();
+      },
+      remove: slack('reactions.remove'),
+    },
     conversations: { replies: slack('conversations.replies'), history: slack('conversations.history') },
     chat: {
       postMessage: slack('chat.postMessage'),
@@ -240,7 +322,10 @@ async function firstStatusTimeline(
     usageRecordingEnabled: false,
     ...(publicUrl === undefined ? {} : { publicUrl }),
     // The runner's per-turn state-store writes (see runnerTurnJobsPort).
-    onInteractionIntent: async () => { timeline.push('turnJobs.recordInteractionIntent'); },
+    onInteractionIntent: async (intent) => {
+      timeline.push('turnJobs.recordInteractionIntent');
+      recordedIntents.push(intent);
+    },
     onRuntimePlan: async (candidate) => {
       timeline.push('turnJobs.freezeRuntimePlan');
       const { deriveRuntimePlanInstanceId } = await import('../src/agents/runtime-plan.ts');
@@ -250,17 +335,22 @@ async function firstStatusTimeline(
       timeline.push('turnJobs.getBoundRuntimePlan');
       return undefined;
     },
-    agentPrompt: async () => ({
-      text: 'Done.',
-      requestedModel: assignment.model ?? null,
-      returnedModel: null,
-      reportedUsage: null,
-      usageCompleteness: 'not_reported',
-    }),
+    agentPrompt: async () => {
+      timeline.push('agentPrompt');
+      await holdAgentPrompt?.(timeline, readPresentation);
+      return {
+        text: 'Done.',
+        requestedModel: assignment.model ?? null,
+        returnedModel: null,
+        reportedUsage: null,
+        usageCompleteness: 'not_reported',
+      };
+    },
   };
   try {
-    await runTurn(turn, assignment, undefined, { ...options, ...overrides });
+    await runTurn(turn, turnAssignment, platformEnv, { ...options, ...overrides });
   } finally {
+    refreshPresentation();
     db.close();
   }
   const first = timeline.findIndex((entry) => entry.startsWith('slack:'));
@@ -268,8 +358,13 @@ async function firstStatusTimeline(
   return {
     timeline,
     beforeFirstWrite: timeline.slice(0, first),
-    slackWrites: timeline.filter((entry) => entry.startsWith('slack:')),
+    // The thread's reads run beside these writes; they never come first (`firstSlackCall`).
+    slackWrites: timeline.filter((entry) => entry.startsWith('slack:') && !SLACK_READS.has(entry)),
+    firstSlackCall: timeline[first],
     firstWrite: first,
+    presentation: readPresentation(),
+    recordedIntents,
+    reactionsAdded,
   };
 }
 
@@ -280,16 +375,21 @@ async function firstStatusTimeline(
  * Work lifecycle, all serial. Now the first write is Slack's native
  * `processing` indicator (the fast write); the session is then handed over and
  * the admitted activity is written as the custom status, which replaces it
- * (#207). Only the public URL precedes the native start, and the thread's
- * generation fence (checked by the hand-over and by the custom write)
- * precedes the custom write; a thread runner answers both from its `begin`
- * round trip. Classification, memory, the plan, and the Work
- * lifecycle all follow.
+ * (#207). Only the public URL precedes the native start. Classification,
+ * memory, the plan, and the Work lifecycle start once that call is issued
+ * and run while Slack acknowledges it. The custom status waits for the
+ * acknowledgement (its hand-over releases an acknowledged session) and is
+ * issued next; the reads do not wait for it either. The thread's generation
+ * fence (checked by the hand-over and by the custom write) is the status
+ * path's only other state read; a thread runner answers it from its `begin`
+ * round trip.
  */
 for (const surface of ['channel_mention', 'dm', 'thread_follow_up'] as const) {
-  test(`${surface}: native first, then the custom status, before classification, memory, and the plan`, async () => {
-    const { beforeFirstWrite, slackWrites, timeline } = await firstStatusTimeline(surface);
-    assert.deepEqual(beforeFirstWrite, ['settings.getSetting'], 'only the public URL');
+  test(`${surface}: native first, before any other read, then the custom status`, async () => {
+    const { beforeFirstWrite, firstSlackCall, slackWrites, timeline } = await firstStatusTimeline(surface);
+    assert.deepEqual(beforeFirstWrite, ['settings.getSetting'],
+      'only the public URL is read before the native start');
+    assert.equal(firstSlackCall, 'slack:session:processing', 'no Slack read goes before the native start');
     assert.deepEqual(slackWrites.slice(0, 3), [
       'slack:session:processing', // the fast first write
       'slack:session:active', // hand-over, so the custom text renders
@@ -299,9 +399,8 @@ for (const surface of ['channel_mention', 'dm', 'thread_follow_up'] as const) {
     // The hand-over and the custom write each check the thread's generation
     // fence; a runner answers both from the cache its `begin` round trip seeds.
     assert.deepEqual(
-      timeline.slice(0, custom).filter((entry) => !entry.startsWith('slack:')),
+      timeline.slice(0, custom).filter((entry) => entry.startsWith('presentations.')),
       [
-        'settings.getSetting',
         'presentations.getLatestThreadSessionGeneration',
         'presentations.getLatestThreadSessionGeneration',
       ],
@@ -309,13 +408,6 @@ for (const surface of ['channel_mention', 'dm', 'thread_follow_up'] as const) {
     );
     assert.equal(timeline.filter((entry) => entry === 'slack:session:processing').length, 1,
       'one native start');
-    for (const later of ['turnJobs.freezeRuntimePlan', 'work.getRun']) {
-      assert.ok(timeline.indexOf(later) > custom, `${later} runs after the custom status`);
-    }
-    if (surface !== 'thread_follow_up') {
-      // Classified late: the admitted activity shows before the disposition.
-      assert.ok(timeline.indexOf('turnJobs.recordInteractionIntent') > custom);
-    }
   });
 
   test(`${surface}: a runner that read the public URL at begin writes to Slack first`, async () => {
@@ -325,7 +417,7 @@ for (const surface of ['channel_mention', 'dm', 'thread_follow_up'] as const) {
     // The generation fence before the custom write: the runner seeds it from
     // the same `begin` round trip (see slack-thread-runner-execution tests).
     const custom = timeline.indexOf('slack:assistant.threads.setStatus');
-    assert.deepEqual(timeline.slice(0, custom).filter((entry) => !entry.startsWith('slack:')), [
+    assert.deepEqual(timeline.slice(0, custom).filter((entry) => entry.startsWith('presentations.')), [
       'presentations.getLatestThreadSessionGeneration',
       'presentations.getLatestThreadSessionGeneration',
     ]);
@@ -387,21 +479,482 @@ test('memory preparation that fails while the plan is still reading fails the tu
   }
 });
 
-test('a rejected custom status shows native again, still before classification and the plan', async () => {
+test('a rejected custom status shows native again, without a second start', async () => {
   rejectCustomStatus = true;
   try {
-    const { slackWrites, timeline } = await firstStatusTimeline('channel_mention', null);
+    const { slackWrites } = await firstStatusTimeline('channel_mention', null);
     assert.deepEqual(slackWrites.slice(0, 4), [
       'slack:session:processing',
       'slack:session:active',
       'slack:assistant.threads.setStatus', // rejected
       'slack:session:processing', // native shown again, not a second start
     ]);
-    const fallback = timeline.lastIndexOf('slack:session:processing');
-    for (const later of ['turnJobs.recordInteractionIntent', 'turnJobs.freezeRuntimePlan', 'work.getRun']) {
-      assert.ok(timeline.indexOf(later) > fallback, `${later} runs after the native fallback`);
-    }
   } finally {
     rejectCustomStatus = false;
   }
+});
+
+// Defects caught: the thread's context read waiting for the opening status
+// writes again (the 864 ms chain in the Amber d3 trace), and the reply
+// overtaking the admitted status.
+test('classification, the plan and the thread context do not wait for the custom status acknowledgement; the reply does', async () => {
+  const reads = ['turnJobs.recordInteractionIntent', 'turnJobs.freezeRuntimePlan', 'slack:conversations.replies'];
+  holdCustomStatus = (timeline) => waitUntil(() => reads.every((read) => timeline.includes(read)));
+  try {
+    const { timeline } = await firstStatusTimeline('channel_mention', null);
+    const acknowledged = timeline.indexOf('acknowledged:assistant.threads.setStatus');
+    assert.ok(acknowledged > timeline.indexOf('slack:assistant.threads.setStatus'));
+    for (const read of reads) {
+      const at = timeline.indexOf(read);
+      assert.ok(at >= 0, `${read} happens`);
+      assert.ok(at < acknowledged, `${read} does not wait for the custom status acknowledgement`);
+    }
+    const reply = timeline.findIndex((entry) => entry.startsWith('slack:chat.'));
+    assert.ok(reply > acknowledged, `the reply follows the admitted status: ${timeline.join(' ')}`);
+  } finally {
+    holdCustomStatus = undefined;
+  }
+});
+
+test('classification and the plan start once the native start is issued, before Slack acknowledges it', async () => {
+  const reads = ['turnJobs.recordInteractionIntent', 'turnJobs.getBoundRuntimePlan'];
+  holdNativeStart = (timeline) => waitUntil(() => reads.every((read) => timeline.includes(read)));
+  try {
+    const { timeline } = await firstStatusTimeline('channel_mention', null);
+    const issued = timeline.indexOf('slack:session:processing');
+    const acknowledged = timeline.indexOf('acknowledged:session:processing');
+    assert.ok(issued >= 0 && acknowledged > issued, 'the native start was issued and acknowledged');
+    for (const read of reads) {
+      const at = timeline.indexOf(read);
+      assert.ok(at > issued, `${read} follows the native start`);
+      assert.ok(at < acknowledged, `${read} does not wait for the native acknowledgement`);
+    }
+    assert.ok(timeline.indexOf('slack:session:active') > acknowledged,
+      'the hand-over waits for the native acknowledgement');
+  } finally {
+    holdNativeStart = undefined;
+  }
+});
+
+test('the context is read before the classifier answers; the dispatch waits for the answer and its record', async () => {
+  holdClassifierAnswer = async (timeline) => {
+    await waitUntil(() => timeline.some((entry) => entry.startsWith('slack:conversations.')));
+    timeline.push('classifier:answered');
+  };
+  const previousKey = process.env.ANTHROPIC_API_KEY;
+  process.env.ANTHROPIC_API_KEY = 'anthropic-first-status-key';
+  configureModelAccessResolver({ resolve: async () => ({ apiKey: 'anthropic-first-status-key' }) });
+  try {
+    const { timeline } = await firstStatusTimeline('dm', null, {}, {
+      ...assignment,
+      channelId: 'D_FIRST_STATUS',
+      model: `anthropic/${SCRIPTED_MODEL}`,
+      modelAttribution: { source: 'pinned', providerId: 'anthropic' },
+    });
+    const contextRead = timeline.findIndex((entry) => entry.startsWith('slack:conversations.'));
+    const answered = timeline.indexOf('classifier:answered');
+    const recorded = timeline.indexOf('turnJobs.recordInteractionIntent');
+    const dispatched = timeline.indexOf('agentPrompt');
+    assert.ok(contextRead >= 0 && answered >= 0 && recorded >= 0 && dispatched >= 0,
+      `the turn read, classified, recorded and dispatched: ${timeline.join(' ')}`);
+    assert.ok(contextRead < answered, `the context read does not wait for the classifier: ${timeline.join(' ')}`);
+    assert.ok(answered < dispatched && recorded < dispatched,
+      `the dispatch waits for the classifier's answer and its record: ${timeline.join(' ')}`);
+  } finally {
+    holdClassifierAnswer = undefined;
+    if (previousKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = previousKey;
+    resetModelAccessForTests();
+  }
+});
+
+/** The DM assignment whose classifier runs on the scripted anthropic provider. */
+const classifiedAssignment: ResolvedAssignment = {
+  ...assignment,
+  channelId: 'D_FIRST_STATUS',
+  model: `anthropic/${SCRIPTED_MODEL}`,
+  modelAttribution: { source: 'pinned', providerId: 'anthropic' },
+};
+
+async function withScriptedClassifier<T>(run: () => Promise<T>): Promise<T> {
+  const previousKey = process.env.ANTHROPIC_API_KEY;
+  process.env.ANTHROPIC_API_KEY = 'anthropic-first-status-key';
+  configureModelAccessResolver({ resolve: async () => ({ apiKey: 'anthropic-first-status-key' }) });
+  try {
+    return await run();
+  } finally {
+    holdClassifierAnswer = undefined;
+    holdAgentPrompt = undefined;
+    platformEnv = undefined;
+    classifierAnswer = REPLY_ANSWER;
+    if (previousKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = previousKey;
+    resetModelAccessForTests();
+  }
+}
+
+const WORK_ANSWER = JSON.stringify({
+  disposition: 'work', reason: 'substantive_request', checklist: ['Release summary', 'Notable changes'],
+});
+
+/** Releases the classifier once the Agent has been dispatched. */
+const answerAfterDispatch = async (timeline: string[]) => {
+  await waitUntil(() => timeline.includes('agentPrompt'));
+  timeline.push('classifier:answered');
+};
+
+// Defect caught: the gain is lost because the dispatch still waits for the
+// model, or the dispatch no longer waits for the recorded basis.
+test('a confident Clef reply dispatches on its record before the classifier answers', async () => {
+  const clef = fakeClefEnv('reply');
+  platformEnv = clef.env;
+  holdClassifierAnswer = answerAfterDispatch;
+  await withScriptedClassifier(async () => {
+    const { timeline, recordedIntents } = await firstStatusTimeline('dm', null, {}, classifiedAssignment);
+    const recorded = timeline.indexOf('turnJobs.recordInteractionIntent');
+    const dispatched = timeline.indexOf('agentPrompt');
+    const answered = timeline.indexOf('classifier:answered');
+    assert.ok(recorded >= 0 && dispatched >= 0 && answered >= 0,
+      `the turn recorded, dispatched, and the classifier answered: ${timeline.join(' ')}`);
+    assert.ok(recorded < dispatched, `the dispatch waits for the record: ${timeline.join(' ')}`);
+    assert.ok(dispatched < answered, `the dispatch does not wait for the classifier: ${timeline.join(' ')}`);
+    assert.deepEqual(recordedIntents, [{ disposition: 'reply', reason: 'substantive_request' }]);
+    assert.equal(clef.calls.length, 1);
+  });
+});
+
+// Defect caught: the eyes wait for the model's labels, or the labels never
+// reach the presentation once the model answers.
+test('a confident Clef work shows the eyes before the classifier answers and adopts its labels late', async () => {
+  const clef = fakeClefEnv('work');
+  platformEnv = clef.env;
+  classifierAnswer = WORK_ANSWER;
+  holdClassifierAnswer = answerAfterDispatch;
+  holdAgentPrompt = async (_timeline, presentation) => {
+    await waitUntil(() => presentation()?.plan !== undefined);
+  };
+  await withScriptedClassifier(async () => {
+    const { timeline, presentation, recordedIntents } = await firstStatusTimeline('dm', null, {}, classifiedAssignment);
+    const eyes = timeline.indexOf('slack:reactions.add');
+    const dispatched = timeline.indexOf('agentPrompt');
+    const answered = timeline.indexOf('classifier:answered');
+    assert.ok(eyes >= 0 && eyes < dispatched && dispatched < answered,
+      `the eyes precede the dispatch, which precedes the classifier: ${timeline.join(' ')}`);
+    assert.deepEqual(recordedIntents, [{ disposition: 'work', reason: 'substantive_request', checklist: [] }],
+      'the record keeps an empty checklist; the labels are presentation');
+    assert.deepEqual(
+      presentation?.plan?.tasks.map((task) => task.title),
+      ['Release summary', 'Notable changes'],
+      'the model\'s labels became the plan while the stream was absent',
+    );
+    assert.equal(clef.calls.length, 1);
+  });
+});
+
+// Defect caught: a plan attaches to a finished reply, or its refusal warns on
+// every such turn.
+test('labels that arrive after the final began attach no plan and raise no warning', async () => {
+  platformEnv = fakeClefEnv('work').env;
+  classifierAnswer = WORK_ANSWER;
+  holdClassifierAnswer = async (timeline, presentation) => {
+    await waitUntil(() => {
+      const current = presentation();
+      return current?.schemaVersion === 3 && current.terminalDelivery.state !== 'none';
+    });
+    timeline.push('classifier:answered');
+  };
+  const warnings: string[] = [];
+  const warn = console.warn;
+  console.warn = (...values: unknown[]) => { warnings.push(values.map(String).join(' ')); };
+  try {
+    await withScriptedClassifier(async () => {
+      const { timeline, presentation } = await firstStatusTimeline('dm', null, {}, classifiedAssignment);
+      assert.ok(timeline.indexOf('agentPrompt') < timeline.indexOf('classifier:answered'), timeline.join(' '));
+      assert.equal(presentation?.schemaVersion === 3 && presentation.terminalDelivery.state !== 'none', true);
+      assert.equal(presentation?.plan, undefined);
+      assert.deepEqual(warnings.filter((entry) => entry.includes('late native plan')), []);
+    });
+  } finally {
+    console.warn = warn;
+  }
+});
+
+// Defect caught: Clef's emoji or target is used (right 19 of 35 and 1 of 35
+// times), or a confident react_only dispatches the Agent.
+test('a confident Clef react_only takes the classifier\'s reaction and target and never dispatches', async () => {
+  const clef = fakeClefEnv('react_only');
+  platformEnv = clef.env;
+  classifierAnswer = JSON.stringify({ disposition: 'react_only', reason: 'pure_ack', reaction: 'seen', target: 'thread_root' });
+  holdClassifierAnswer = async (timeline) => { timeline.push('classifier:answered'); };
+  await withScriptedClassifier(async () => {
+    const { timeline, recordedIntents, reactionsAdded } = await firstStatusTimeline('dm', null, {}, classifiedAssignment);
+    assert.equal(timeline.includes('agentPrompt'), false, `no dispatch: ${timeline.join(' ')}`);
+    assert.deepEqual(recordedIntents, [
+      { disposition: 'react_only', reason: 'pure_ack', reaction: 'seen', target: 'thread_root' },
+    ]);
+    assert.deepEqual(reactionsAdded.map((reaction) => reaction.name), ['eyes']);
+    assert.equal(clef.calls.length, 1);
+  });
+});
+
+// Defects caught: a thread read started for a turn its start already knows
+// will not dispatch (a command, a stop, a basis restored as react_only), and
+// one a turn judged react_only later leaves running after it returns.
+test("a turn reads its thread beside its preparation only if it may dispatch, and never returns before that read ends", async () => {
+  const threadReads = (timeline: string[]) => timeline.filter((entry) => SLACK_READS.has(entry)).length;
+  const dispatching = await firstStatusTimeline('dm', null, {}, dmAssignment);
+  assert.equal(threadReads(dispatching.timeline), 1, 'the same turn shape reads its thread once');
+  const command = await firstStatusTimeline('dm', null, {}, dmAssignment, { text: '!memory help' });
+  const stopped = await firstStatusTimeline('dm', null, {
+    stopEnding: {
+      beforeDispatch: true,
+      finish: async () => ({ stopperUserId: 'U_STOPPER', unread: 1, pullRequests: [], windingDown: false }),
+    },
+  }, dmAssignment);
+  const restored = await firstStatusTimeline('dm', null, {}, dmAssignment, {
+    interactionIntent: { disposition: 'react_only', reason: 'pure_ack', reaction: 'seen', target: 'thread_root' },
+  });
+  for (const [name, { timeline }] of [['a command', command], ['a stopped turn', stopped], ['a restored react_only', restored]] as const) {
+    assert.equal(threadReads(timeline), 0, `${name} reads no thread: ${timeline.join(' ')}`);
+  }
+
+  platformEnv = fakeClefEnv('react_only').env;
+  classifierAnswer = JSON.stringify({ disposition: 'react_only', reason: 'pure_ack', reaction: 'seen', target: 'thread_root' });
+  holdClassifierAnswer = async () => undefined;
+  holdThreadRead = () => new Promise((resolve) => setTimeout(resolve, 100));
+  try {
+    await withScriptedClassifier(async () => {
+      const { timeline } = await firstStatusTimeline('dm', null, {}, classifiedAssignment);
+      assert.equal(timeline.includes('agentPrompt'), false, `judged react_only, it never dispatches: ${timeline.join(' ')}`);
+      assert.equal(threadReads(timeline), 1, 'the read it started beside its preparation is its only one');
+      assert.ok(timeline.some((entry) => entry.startsWith('answered:')), `the attempt waited for it: ${timeline.join(' ')}`);
+    });
+  } finally {
+    holdThreadRead = undefined;
+  }
+});
+
+// Defect caught: a retry judges again and may answer differently from the
+// basis the first attempt recorded.
+test('a restored intent asks neither Clef nor the classifier and records nothing', async () => {
+  const clef = fakeClefEnv('reply');
+  platformEnv = clef.env;
+  try {
+    const { timeline } = await firstStatusTimeline('thread_follow_up');
+    assert.equal(clef.calls.length, 0);
+    assert.equal(timeline.includes('turnJobs.recordInteractionIntent'), false);
+  } finally {
+    platformEnv = undefined;
+  }
+});
+
+// Defect caught: Clef's management signal or a waiting change set never
+// reaches the dispatch, or a quiet, failed, or timed-out management call
+// mounts the change tools anyway.
+test('Clef\'s management signal or a waiting change set reaches the dispatch; a quiet, failed, or slow call does not', async () => {
+  const carried = async (
+    manage: number | 'error' | 'hang',
+    turnOverrides: Partial<NormalizedSlackTurn> = {},
+  ) => {
+    let dispatched: boolean | undefined | 'not dispatched' = 'not dispatched';
+    platformEnv = fakeClefEnv('reply', { manage }).env;
+    holdClassifierAnswer = async () => undefined;
+    await withScriptedClassifier(() => firstStatusTimeline('dm', null, {
+      agentPrompt: async (input) => {
+        dispatched = input.workspaceChangeTools;
+        return {
+          text: 'Done.', requestedModel: classifiedAssignment.model ?? null, returnedModel: null,
+          reportedUsage: null, usageCompleteness: 'not_reported',
+        };
+      },
+    }, classifiedAssignment, turnOverrides));
+    return dispatched;
+  };
+  assert.equal(await carried(0.97), true, 'Clef fired');
+  assert.equal(await carried(0.1), undefined, 'Clef stayed quiet');
+  assert.equal(await carried('error'), undefined, 'the call failed');
+  const started = Date.now();
+  assert.equal(await carried('hang'), undefined, 'the call never answered');
+  assert.ok(Date.now() - started < CLEF_TIMEOUT_MS + 2_000, 'the turn went on at Clef\'s bound');
+  assert.equal(await carried(0.1, { managementProposalPending: true }), true, 'a change set waits on the requester');
+});
+
+/** The DM's own Agent, so its memory prepares and the turn reaches the dispatch. */
+const dmAssignment: ResolvedAssignment = { ...assignment, channelId: 'D_FIRST_STATUS' };
+
+const AGENT_ANSWER = {
+  text: 'Done.',
+  requestedModel: assignment.model ?? null,
+  returnedModel: null,
+  reportedUsage: null,
+  usageCompleteness: 'not_reported' as const,
+};
+
+// Defects caught: the wake goes out before the plan is saved (or names an
+// instance the freeze did not record), more than once, after the staging, or
+// not at all; the turn record loses its lead.
+test('a turn wakes its Agent object once its plan is saved, before it stages, and records the lead', async (t) => {
+  const latency: Record<string, unknown>[] = [];
+  t.mock.method(console, 'info', (record: unknown) => {
+    if ((record as { event?: unknown } | undefined)?.event === 'turn_latency') {
+      latency.push(record as Record<string, unknown>);
+    }
+  });
+  const events: string[] = [];
+  let instanceId: string | undefined;
+  await firstStatusTimeline('dm', null, {
+    turnLatency: { lane: 'cloudflare', executor: 'runner' },
+    onRuntimePlan: async (candidate) => {
+      events.push('freeze');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      instanceId = deriveRuntimePlanInstanceId(candidate);
+      events.push('freeze:saved');
+      return { runtimePlan: candidate, instanceId };
+    },
+    wakeAgentObject: async (id) => { events.push(`wake:${id}`); },
+    agentPrompt: async ({ onAgentStaged }) => {
+      events.push('stage');
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      onAgentStaged?.(0);
+      return AGENT_ANSWER;
+    },
+  }, dmAssignment);
+  assert.deepEqual(events, ['freeze', 'freeze:saved', `wake:${instanceId}`, 'stage']);
+  assert.equal(latency.length, 1);
+  assert.ok(Number(latency[0]?.agentWakeLeadMs) >= 25, `the lead covers the wait to stage: ${latency[0]?.agentWakeLeadMs}`);
+});
+
+// Defect caught: the plan's model, image-role, browser and login reads
+// waiting for its workspace, connection and previous-plan reads: two rounds
+// to the state store, one after the other, instead of one.
+test("the plan's independent reads go to the state store in one round", async () => {
+  const { timeline } = await firstStatusTimeline('dm', null, {
+    // The previous plan's read answers only once the image role was asked for (or after the bound).
+    getBoundRuntimePlan: async () => {
+      currentTimeline.push('turnJobs.getBoundRuntimePlan');
+      await waitUntil(() => currentTimeline.includes('config.getAgentModelRole'));
+      currentTimeline.push('answered:turnJobs.getBoundRuntimePlan');
+      return undefined;
+    },
+  }, dmAssignment);
+  const role = timeline.indexOf('config.getAgentModelRole');
+  assert.ok(role >= 0, `the image role was read: ${timeline.join(' ')}`);
+  assert.ok(role < timeline.indexOf('answered:turnJobs.getBoundRuntimePlan'),
+    `it did not wait for the previous plan's read: ${timeline.join(' ')}`);
+  assert.ok(timeline.includes('agentPrompt'), 'the turn dispatched');
+});
+
+// Defects caught: a freeze that wakes the object admission already woke (two
+// wakes per turn), a lead counted from the freeze when admission's wake came
+// first; and when admission woke another instance, a freeze that then skips
+// its own object's wake or counts its lead from admission's.
+test("admission's wake of the instance the plan names stands; one of another instance changes nothing", async (t) => {
+  const latency: Record<string, unknown>[] = [];
+  t.mock.method(console, 'info', (record: unknown) => {
+    if ((record as { event?: unknown } | undefined)?.event === 'turn_latency') {
+      latency.push(record as Record<string, unknown>);
+    }
+  });
+  const frozenInstance = `agent_${'d'.repeat(40)}`;
+  const run = async (admissionAgentWake?: RunTurnOptions['admissionAgentWake']) => {
+    const events: string[] = [];
+    await firstStatusTimeline('dm', null, {
+      turnLatency: { lane: 'cloudflare', executor: 'runner' },
+      ...(admissionAgentWake ? { admissionAgentWake } : {}),
+      onRuntimePlan: async (candidate) => {
+        events.push('freeze');
+        return { runtimePlan: candidate, instanceId: frozenInstance };
+      },
+      wakeAgentObject: async (id) => { events.push(`wake:${id}`); },
+      agentPrompt: async ({ onAgentStaged }) => {
+        events.push('stage');
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        onAgentStaged?.(0);
+        return AGENT_ANSWER;
+      },
+    }, dmAssignment);
+    return { events, record: latency.at(-1)! };
+  };
+  const sentAt = Date.now() - 5_000;
+  const admitted = await run({ instanceId: frozenInstance, sentAt });
+  assert.deepEqual(admitted.events, ['freeze', 'stage'], 'no second wake of the object admission woke');
+  assert.equal(admitted.record.agentWakeSource, 'admission');
+  assert.ok(Number(admitted.record.agentWakeLeadMs) >= 5_000, `the lead counts from admission's wake: ${admitted.record.agentWakeLeadMs}`);
+
+  const baseline = await run();
+  const other = await run({ instanceId: `agent_${'e'.repeat(40)}`, sentAt });
+  assert.deepEqual(other.events, baseline.events, 'the turn freezes, wakes and stages as with no admission wake');
+  assert.deepEqual(other.events, ['freeze', `wake:${frozenInstance}`, 'stage']);
+  assert.equal(other.record.agentWakeSource, 'plan');
+  assert.ok(Number(other.record.agentWakeLeadMs) < 5_000, `the lead counts from the freeze's wake: ${other.record.agentWakeLeadMs}`);
+});
+
+// Defect caught: a wake hung on anything but this attempt's freeze (an
+// instance already known, the thread key) reaches a turn that never stages.
+test('a replayed turn, a command, and a turn stopped before dispatch send no wake', async () => {
+  const wakes: string[] = [];
+  const wakeAgentObject = async (id: string) => { wakes.push(id); };
+  let decision: FrozenRuntimePlanDecision | undefined;
+  const fresh = await firstStatusTimeline('dm', null, {
+    wakeAgentObject,
+    onRuntimePlan: async (candidate) => {
+      decision = { runtimePlan: candidate, instanceId: deriveRuntimePlanInstanceId(candidate) };
+      return decision;
+    },
+  }, dmAssignment);
+  assert.ok(fresh.timeline.includes('agentPrompt'), 'the same turn shape dispatches when it freezes its plan');
+  assert.equal(wakes.length, 1, 'and wakes its Agent object');
+  wakes.length = 0;
+  const replayed = await firstStatusTimeline('dm', null, {
+    wakeAgentObject,
+    replayText: 'The recorded answer.',
+    ...(decision ? { runtimePlanDecision: decision } : {}),
+  }, dmAssignment);
+  const command = await firstStatusTimeline('dm', null, { wakeAgentObject }, dmAssignment, { text: '!memory help' });
+  const stopped = await firstStatusTimeline('dm', null, {
+    wakeAgentObject,
+    stopEnding: {
+      beforeDispatch: true,
+      finish: async () => ({ stopperUserId: 'U_STOPPER', unread: 1, pullRequests: [], windingDown: false }),
+    },
+  }, dmAssignment);
+  for (const { timeline } of [replayed, command, stopped]) {
+    assert.equal(timeline.includes('agentPrompt'), false, `it never dispatches: ${timeline.join(' ')}`);
+  }
+  assert.deepEqual(wakes, []);
+});
+
+// Defects caught: the turn awaits the wake, or lets its failure escape.
+test('a wake that rejects, throws, or never answers does not hold or fail the turn', async () => {
+  const wakes = [
+    async () => { throw new Error('no such method'); },
+    () => { throw new Error('binding unavailable'); },
+    () => new Promise<void>(() => undefined),
+  ] as Array<(id: string) => Promise<void>>;
+  for (const wakeAgentObject of wakes) {
+    const { timeline } = await firstStatusTimeline('dm', null, { wakeAgentObject }, dmAssignment);
+    assert.ok(timeline.includes('agentPrompt'), `the turn still dispatched: ${timeline.join(' ')}`);
+  }
+});
+
+// Defect caught: a turn already judged react_only, which never stages, wakes anyway.
+test('a turn judged react_only before its plan is saved sends no wake', async () => {
+  platformEnv = fakeClefEnv('react_only').env;
+  classifierAnswer = JSON.stringify({ disposition: 'react_only', reason: 'pure_ack', reaction: 'seen', target: 'thread_root' });
+  holdClassifierAnswer = async () => undefined;
+  const wakes: string[] = [];
+  let judged!: () => void;
+  const judgment = new Promise<void>((resolve) => { judged = resolve; });
+  await withScriptedClassifier(async () => {
+    const { timeline } = await firstStatusTimeline('dm', null, {
+      wakeAgentObject: async (id) => { wakes.push(id); },
+      onInteractionIntent: async () => { judged(); },
+      onRuntimePlan: async (candidate) => {
+        await judgment;
+        return { runtimePlan: candidate, instanceId: deriveRuntimePlanInstanceId(candidate) };
+      },
+    }, classifiedAssignment);
+    assert.equal(timeline.includes('agentPrompt'), false, `no dispatch: ${timeline.join(' ')}`);
+  });
+  assert.deepEqual(wakes, []);
 });

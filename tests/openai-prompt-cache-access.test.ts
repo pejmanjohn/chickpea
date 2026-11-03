@@ -6,7 +6,8 @@ import { normalizeContext } from '@earendil-works/pi-ai';
 import type { Api, Context, Model, StreamOptions } from '@earendil-works/pi-ai';
 
 import { promptCacheKey } from '../src/agents/openai-prompt-cache.ts';
-import { sharedSystemBlock, type SharedPrefixId } from '../src/agents/shared-prefix.ts';
+import type { SharedPrefixId } from '../src/agents/shared-prefix.ts';
+import { sharedSystemBlock } from '../src/agents/shared-prefix-layout.ts';
 import {
   configureInstallationAdmission,
   resetInstallationAdmissionForTests,

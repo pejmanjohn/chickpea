@@ -2,8 +2,18 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
+import vm from 'node:vm';
+
+import ts from 'typescript';
 
 import { activityStatus } from '../src/activity/status.ts';
+import {
+  carriedGatewayIdentity,
+  resetIdentityVerificationsForTests,
+  seedGatewayIdentity,
+} from '../src/slack/installation-execution.ts';
+import { parseAdmissionAgentWake } from '../src/slack/admission-agent-wake.ts';
+import { parseAdmissionStatusMark } from '../src/slack/admission-activity.ts';
 import { SlackStatusRegistry } from '../src/slack/status-registry.ts';
 import { ThreadRunnerJobStore } from '../src/slack/thread-runner-jobs.ts';
 import { NodeStateDb } from '../src/state/node-state-db.ts';
@@ -55,15 +65,152 @@ test('a runner instance resumes a running job at once and runs admitted jobs onl
   const runner = readFileSync(new URL('../src/slack/thread-runner.ts', import.meta.url), 'utf8');
   // On first load after a replacement: a running job, or a stop that still
   // owes its abort or coding cascade, re-arms the alarm now.
-  assert.match(runner, /blockConcurrencyWhile\(async \(\) => \{\s*try \{\s*if \(!this\.store\(\)\.hasRunning\(\) && !this\.store\(\)\.hasOwedStops\(\)\) return;[\s\S]{0,200}setAlarm\(Date\.now\(\)\)/);
+  // A runner without its job table (one a receipt woke) has nothing to
+  // resume, and checking for the table creates none.
+  assert.match(runner, /blockConcurrencyWhile\(async \(\) => \{\s*try \{[\s\S]{0,200}if \(!ThreadRunnerJobStore\.existsIn\(new DoSqlStateDb\(this\.ctx\.storage\)\)\) return;\s*if \(!this\.store\(\)\.hasRunning\(\) && !this\.store\(\)\.hasOwedStops\(\)\) return;[\s\S]{0,200}setAlarm\(Date\.now\(\)\)/);
   // admit never starts the loop in the admitting request (work left running
   // after it returns loses its logs and is not resumed after a replacement):
   // it wakes a running drain and makes the alarm due now, keeping an earlier one.
   const admit = runner.slice(runner.indexOf('async admit('), runner.indexOf('async status('));
   assert.doesNotMatch(admit, /runSoon|runAlarm/);
-  assert.match(admit, /this\.wake\?\.\(\);\s*const existing = await this\.ctx\.storage\.getAlarm\(\);\s*if \(existing === null \|\| existing > Date\.now\(\)\) await this\.ctx\.storage\.setAlarm\(Date\.now\(\)\);/);
+  assert.match(admit, /this\.wakeDrain\?\.\(\);\s*const existing = await this\.ctx\.storage\.getAlarm\(\);\s*if \(existing === null \|\| existing > Date\.now\(\)\) await this\.ctx\.storage\.setAlarm\(Date\.now\(\)\);/);
   assert.equal(runner.match(/this\.runSoon\(\)/g)?.length, 1, 'only the alarm runs the loop');
-  assert.match(runner, /async alarm\(\): Promise<void> \{\s*await this\.runSoon\(\);/);
+  assert.match(runner, /async alarm\(\): Promise<void> \{\s*this\.boot\.call\('alarm'\);\s*await this\.runSoon\(\);/);
+});
+
+test('every runner entry point reports its call to the activation marks before it touches the instance', () => {
+  const path = new URL('../src/slack/thread-runner.ts', import.meta.url);
+  const source = ts.createSourceFile('thread-runner.ts', readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true);
+  const runner = source.statements.find((node): node is ts.ClassDeclaration =>
+    ts.isClassDeclaration(node) && node.name?.text === 'SlackThreadRunner');
+  assert.ok(runner);
+  // The first statement that reaches the instance (a plain local may come before it).
+  const firstStatement = (method: ts.MethodDeclaration) =>
+    method.body?.statements.map((statement) => statement.getText(source))
+      .find((text) => text.includes('this.')) ?? '';
+  const methods = runner.members.filter((member): member is ts.MethodDeclaration => ts.isMethodDeclaration(member));
+  const entries = methods.filter((method) =>
+    !method.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.PrivateKeyword));
+  assert.ok(entries.length >= 10, 'the RPC methods, the alarm and the host functions');
+  for (const method of entries) {
+    const name = method.name.getText(source);
+    // A missed entry point would credit its activation to a later call.
+    if (name.startsWith('chickpeaHost')) {
+      assert.match(firstStatement(method), new RegExp(`^return this\\.host\\(\\)\\.${name}\\(`), name);
+    } else {
+      assert.equal(firstStatement(method).startsWith(`this.boot.call('${name}'`), true, name);
+    }
+  }
+  const host = methods.find((method) => method.name.getText(source) === 'host');
+  assert.equal(host && firstStatement(host), "this.boot.call('host');");
+  // The constructor's end is marked however its resume check exits.
+  assert.match(readFileSync(path, 'utf8'), /\} finally \{\s*this\.boot\.constructed\(\);\s*\}\s*\}\);/);
+});
+
+test("the runner's admit reports the hand-off's send time and keeps its delay for that job's first attempt", async () => {
+  const text = readFileSync(new URL('../src/slack/thread-runner.ts', import.meta.url), 'utf8');
+  const source = ts.createSourceFile('thread-runner.ts', text, ts.ScriptTarget.Latest, true);
+  const runner = source.statements.find((node): node is ts.ClassDeclaration =>
+    ts.isClassDeclaration(node) && node.name?.text === 'SlackThreadRunner');
+  const member = (name: string) => runner?.members.find((node) =>
+    (ts.isMethodDeclaration(node) || ts.isPropertyDeclaration(node)) && node.name.getText(source) === name);
+  const parts = ['handoffs', 'admit', 'takeHandoff'].map(member);
+  assert.ok(parts.every(Boolean));
+  const AdmitProbe = vm.runInNewContext(
+    ts.transpileModule(`class AdmitProbe { ${parts.map((part) => part!.getText(source)).join('\n')} }\nAdmitProbe`, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText,
+    { Date: { now: () => 70_000 }, assertInstallationOwnership: () => undefined, seedGatewayIdentity, parseAdmissionAgentWake, parseAdmissionStatusMark, console },
+  ) as new () => Record<string, unknown> & {
+    admit(job: unknown): Promise<Record<string, unknown>>;
+    takeHandoff(jobId: string): { latency: Record<string, unknown> };
+  };
+  const probe = () => {
+    const marks: unknown[][] = [];
+    const answers = [{ admitted: true }];
+    const instance = new AdmitProbe();
+    Object.assign(instance, {
+      env: {},
+      boot: { call: (method: string, from: Record<string, unknown>) => marks.push([method, { ...from }]) },
+      store: () => ({ admit: () => answers.shift() ?? { admitted: false } }),
+      ctx: { storage: { getAlarm: async () => null, setAlarm: async () => undefined } },
+    });
+    return { instance, marks };
+  };
+
+  const sent = probe();
+  assert.deepEqual({ ...await sent.instance.admit({ id: 'turn_1', threadKey: 'k', payload: {}, sentAt: 68_100 }) },
+    { admitted: true });
+  assert.deepEqual(sent.marks, [['admit', { sentAt: 68_100, turnJobId: 'turn_1' }]]);
+  // The state store retrying a hand-off the runner already holds keeps the first delay.
+  await sent.instance.admit({ id: 'turn_1', threadKey: 'k', payload: {}, sentAt: 69_500 });
+  assert.deepEqual({ ...sent.instance.takeHandoff('turn_2').latency }, {}, "another job never reads this job's delay");
+  assert.deepEqual({ ...sent.instance.takeHandoff('turn_1').latency }, { handoffMs: 1_900 });
+  assert.deepEqual({ ...sent.instance.takeHandoff('turn_1').latency }, {}, 'a later attempt of the job carries none');
+
+  // A state store on an older version sends no clock: no delay, no send time.
+  const older = probe();
+  assert.deepEqual({ ...await older.instance.admit({ id: 'turn_1', threadKey: 'k', payload: {} }) },
+    { admitted: true });
+  assert.deepEqual(older.marks, [['admit', { sentAt: undefined, turnJobId: 'turn_1' }]]);
+  assert.deepEqual({ ...older.instance.takeHandoff('turn_1').latency }, {});
+});
+
+// Defects caught: a runner that drops the carried identity (its turn asks
+// Slack again before its first status), one that stores it with the job, and
+// one that takes it from a hand-off of another installation.
+test("the runner's admit takes a carried gateway identity into its cache and stores no payload", async () => {
+  const text = readFileSync(new URL('../src/slack/thread-runner.ts', import.meta.url), 'utf8');
+  const source = ts.createSourceFile('thread-runner.ts', text, ts.ScriptTarget.Latest, true);
+  const runner = source.statements.find((node): node is ts.ClassDeclaration =>
+    ts.isClassDeclaration(node) && node.name?.text === 'SlackThreadRunner');
+  const admit = runner?.members.find((node) => ts.isMethodDeclaration(node) && node.name.getText(source) === 'admit');
+  assert.ok(admit);
+  const AdmitProbe = vm.runInNewContext(
+    ts.transpileModule(`class AdmitProbe { handoffs = new Map();\n${admit.getText(source)} }\nAdmitProbe`, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText,
+    {
+      Date,
+      assertInstallationOwnership: (installation: unknown) => {
+        if (installation === 'another') throw new Error('installation mismatch');
+      },
+      seedGatewayIdentity,
+      parseAdmissionAgentWake,
+      parseAdmissionStatusMark,
+      console: { warn() {} },
+    },
+  ) as new () => { admit(job: unknown): Promise<Record<string, unknown>> };
+  const stored: unknown[] = [];
+  const instance = Object.assign(new AdmitProbe(), {
+    env: {},
+    boot: { call() {} },
+    store: () => ({
+      admit: (job: { payload: unknown }) => {
+        stored.push(job.payload);
+        return { admitted: true };
+      },
+    }),
+    ctx: { storage: { getAlarm: async () => null, setAlarm: async () => undefined } },
+  });
+  const installation = {
+    workspaceId: 'TGATEWAY', transportMode: 'gateway' as const, gatewayBindingId: 'binding_test', botUserId: 'UBOT',
+  };
+  const gatewayIdentity = {
+    workspaceId: 'TGATEWAY', bindingId: 'binding_test', botUserId: 'UBOT', expiresAt: Date.now() + 30_000,
+  };
+  resetIdentityVerificationsForTests();
+  try {
+    await instance.admit({ id: 'turn_other', threadKey: 'k', payload: { gatewayIdentity }, installation: 'another' });
+    assert.equal(carriedGatewayIdentity(installation), undefined, 'another installation\'s hand-off seeds nothing');
+
+    await instance.admit({ id: 'turn_1', threadKey: 'k', payload: { gatewayIdentity } });
+    assert.deepEqual(carriedGatewayIdentity(installation), gatewayIdentity,
+      "the turn's resolution finds the state store's verification (no auth.test)");
+    assert.equal(JSON.stringify(stored), '[{}]', 'the job is stored without its payload');
+  } finally {
+    resetIdentityVerificationsForTests();
+  }
 });
 
 test('the Worker entry exports SlackThreadRunner for its v11 binding', () => {
@@ -73,7 +220,9 @@ test('the Worker entry exports SlackThreadRunner for its v11 binding', () => {
 
 test('the runner executes through the shared turn executor as the runner executor', () => {
   const runner = readFileSync(new URL('../src/slack/thread-runner.ts', import.meta.url), 'utf8');
-  assert.match(runner, /executeTurnJob\(job, ports, \{\s*latency: \{ lane: 'cloudflare', executor: 'runner' \}/);
+  // The turn's latency context takes the hand-off delay of the job it runs,
+  // and the turn the wake admission sent its Agent object.
+  assert.match(runner, /const handoff = this\.takeHandoff\(job\.id\);\s*return executeTurnJob\(job, ports, \{\s*latency: \{ lane: 'cloudflare', executor: 'runner', \.\.\.handoff\.latency \},\s*\.\.\.\(handoff\.agentWake \? \{ agentWake: handoff\.agentWake \} : \{\}\),/);
   assert.match(runner, /observationRoute: \{ executor: 'runner'/);
   assert.match(runner, /statusRegistry: this\.registry/);
 });
@@ -228,7 +377,7 @@ test("the runner's stop RPC persists the stop first, leaves slow work to its ala
   const rpc = runner.slice(runner.indexOf('async stop('), runner.indexOf('async status('));
   // Persist (and abort) through the runner's stops, then make the alarm due
   // now as admit does; never run the loop or a cascade in the RPC's request.
-  assert.match(rpc, /taken = await this\.stops\(\)\.receive\(notice\);[\s\S]*this\.wake\?\.\(\);\s*const existing = await this\.ctx\.storage\.getAlarm\(\);\s*if \(existing === null \|\| existing > Date\.now\(\)\) await this\.ctx\.storage\.setAlarm\(Date\.now\(\)\);/);
+  assert.match(rpc, /taken = await this\.stops\(\)\.receive\(notice\);[\s\S]*this\.wakeDrain\?\.\(\);\s*const existing = await this\.ctx\.storage\.getAlarm\(\);\s*if \(existing === null \|\| existing > Date\.now\(\)\) await this\.ctx\.storage\.setAlarm\(Date\.now\(\)\);/);
   assert.doesNotMatch(rpc, /runSoon|runAlarm|codingReport|stopCodingTasks/);
   assert.match(rpc, /return \{ acknowledged: false \};/, 'a stop it could not persist stays owed');
   // The host abort is the Flue handle built from the persisted envelope, and

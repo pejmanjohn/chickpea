@@ -471,7 +471,7 @@ const BUILT_IN_SKILL_LABELS: Readonly<Record<string, string>> = {
  */
 export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimePlanV2 {
   const threadTs = conversationThreadTs(input.turn, input.assignment.runtimeContract);
-  const continuityKey = opaqueId('agent', slackAgentContinuityKey(input.turn, input.assignment));
+  const continuityKey = slackTurnContinuityKey(input.turn, input.assignment);
   const artifactThreadTs = input.artifactThreadTs === undefined
     ? input.turn.threadTs
     : input.artifactThreadTs ?? undefined;
@@ -793,13 +793,43 @@ export function deriveRuntimePlanInstanceId(plan: RuntimePlanV2 | AdmittedRuntim
   return threadInstanceId(parseRuntimePlanV2(plan));
 }
 
-function threadInstanceId(validated: RuntimePlanV2): string {
-  return installationInstanceId(validated, opaqueId(
+/**
+ * The instance the plan a Slack turn freezes will name, from the turn, its
+ * assignment and the installation alone: the fields compileRuntimePlanV2
+ * copies into a Slack turn's plan (the continuity key, the Agent, the default
+ * continuity policy), derived as deriveRuntimePlanInstanceId derives them.
+ * Admission wakes the object by it; the frozen plan names it for everything
+ * else.
+ */
+export function deriveSlackTurnInstanceId(
+  turn: NormalizedSlackTurn,
+  assignment: ResolvedAssignment,
+  installation: InstallationOwnership | undefined,
+): string {
+  return threadInstanceId({
+    ...(installation ? { installation: parseInstallationOwnership(installation) } : {}),
+    conversation: { continuityKey: slackTurnContinuityKey(turn, assignment) },
+    agentId: assignment.agent.id,
+    continuityPolicy: DEFAULT_CONTINUITY_POLICY,
+  });
+}
+
+/** The opaque continuity key a Slack turn's plan carries (see slackAgentContinuityKey). */
+export function slackTurnContinuityKey(turn: NormalizedSlackTurn, assignment: ResolvedAssignment): string {
+  return opaqueId('agent', slackAgentContinuityKey(turn, assignment));
+}
+
+function threadInstanceId(
+  plan: Pick<RuntimePlanV2, 'installation' | 'agentId' | 'continuityPolicy'> & {
+    conversation: Pick<RuntimePlanV2['conversation'], 'continuityKey'>;
+  },
+): string {
+  return installationInstanceId(plan, opaqueId(
     'agent',
     [
-      validated.conversation.continuityKey,
-      validated.agentId,
-      validated.continuityPolicy,
+      plan.conversation.continuityKey,
+      plan.agentId,
+      plan.continuityPolicy,
       RUNTIME_PLAN_THREAD_CONTINUITY_EPOCH,
     ].join(':'),
   ));
@@ -822,7 +852,7 @@ function legacyInstanceId(validated: RuntimePlanV2): string {
 }
 
 /** A plan's instance is named under the installation that admitted it. */
-function installationInstanceId(plan: RuntimePlanV2, instanceId: string): string {
+function installationInstanceId(plan: Pick<RuntimePlanV2, 'installation'>, instanceId: string): string {
   return plan.installation ? scopedObjectName(plan.installation, instanceId) : instanceId;
 }
 

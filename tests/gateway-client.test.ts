@@ -34,8 +34,11 @@ import { createGatewaySlackTransport } from '../src/slack/transport/gateway.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
 import type { ProductTelemetryEventInput } from '../src/telemetry/events.ts';
 import {
-  resetGatewayIdentityVerificationsForTests,
+  carriedGatewayIdentity,
+  IDENTITY_VERIFICATION_TTL_MS,
+  resetIdentityVerificationsForTests,
   resolveSlackInstallationExecutionContext,
+  seedGatewayIdentity,
   SlackInstallationUnavailableError,
   verifySlackInstallationTurnAccess,
 } from '../src/slack/installation-execution.ts';
@@ -1317,7 +1320,7 @@ test('gateway execution uses the shared app without resolving or storing a bot t
     fetch: fake.fetch,
     now: () => NOW,
   });
-  resetGatewayIdentityVerificationsForTests();
+  resetIdentityVerificationsForTests();
   try {
     await client.beginClaim();
     await client.refreshClaim();
@@ -1372,7 +1375,7 @@ test('gateway execution verifies an unchanged binding identity once per window, 
     },
     now: () => NOW,
   });
-  resetGatewayIdentityVerificationsForTests();
+  resetIdentityVerificationsForTests();
   try {
     await client.beginClaim();
     await client.refreshClaim();
@@ -1389,7 +1392,93 @@ test('gateway execution verifies an unchanged binding identity once per window, 
     for (const execution of [first, second, third]) assert.equal(execution.transportMode, 'gateway');
     assert.deepEqual(fake.operations.map(({ operation }) => operation), ['auth.test']);
   } finally {
-    resetGatewayIdentityVerificationsForTests();
+    resetIdentityVerificationsForTests();
+    settings.close();
+    config.close();
+  }
+});
+
+// Defects caught: a carried verification that a runner ignores (it asks
+// Slack again before its first status), one reused for another binding or
+// past its expiry, one that outlives the window it was verified in, and a
+// mismatched answer handed on as if it were verified.
+test('a gateway verification carried from another isolate stands in for auth.test until it expires there, for its own binding only', async () => {
+  const { settings, config } = gatewayStores(() => NOW);
+  const fake = new FakeGateway();
+  let authAnswer: Record<string, unknown> | undefined;
+  const client = new GatewayDeploymentClient({
+    settings,
+    config,
+    keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test',
+    fetch: async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      const request = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      if (url.pathname === '/v1/workspaces/TGATEWAY/operations' && request.operation === 'auth.test' && authAnswer) {
+        fake.operations.push({ operation: 'auth.test', input: {} });
+        return json({
+          protocolVersion: CHICKPEA_GATEWAY_PROTOCOL_VERSION, requestId: request.requestId, ok: true, result: authAnswer,
+        });
+      }
+      return fake.fetch(input, init);
+    },
+    now: () => NOW,
+  });
+  const authTests = () => fake.operations.filter(({ operation }) => operation === 'auth.test').length;
+  const resolve = () => resolveSlackInstallationExecutionContext(
+    'TGATEWAY', undefined, { config, settings, gatewayClient: client },
+  );
+  resetIdentityVerificationsForTests();
+  try {
+    await client.beginClaim();
+    await client.refreshClaim();
+    const installation = await config.getWorkspaceInstallation('TGATEWAY');
+    assert.equal(carriedGatewayIdentity(installation), undefined, 'nothing verified yet, nothing to carry');
+    await resolve();
+    assert.equal(authTests(), 1);
+    const carried = carriedGatewayIdentity(installation);
+    assert.ok(carried);
+    assert.deepEqual({ ...carried, expiresAt: 0 },
+      { workspaceId: 'TGATEWAY', bindingId: 'binding_test', botUserId: 'UBOT', expiresAt: 0 },
+      'only the ids cross: no token, no credential');
+    assert.ok(carried.expiresAt > Date.now() && carried.expiresAt <= Date.now() + IDENTITY_VERIFICATION_TTL_MS);
+
+    // A fresh isolate (a new thread runner) handed it asks Slack nothing.
+    resetIdentityVerificationsForTests();
+    seedGatewayIdentity(JSON.parse(JSON.stringify(carried)));
+    assert.equal((await resolve()).botUserId, 'UBOT');
+    assert.equal(authTests(), 1, 'the carried verification stands in for auth.test');
+
+    // A hand-off without one verifies as before.
+    resetIdentityVerificationsForTests();
+    seedGatewayIdentity(undefined);
+    seedGatewayIdentity({ workspaceId: 'TGATEWAY', bindingId: 'binding_test' });
+    await resolve();
+    assert.equal(authTests(), 2, 'nothing carried, or nothing well formed: the runner asks Slack itself');
+
+    // Another binding's verification, or an expired one, is not this one's.
+    resetIdentityVerificationsForTests();
+    seedGatewayIdentity({ ...carried, bindingId: 'binding_previous' });
+    seedGatewayIdentity({ ...carried, expiresAt: Date.now() - 1 });
+    await resolve();
+    assert.equal(authTests(), 3);
+
+    // It lasts no longer than one window from now, and never shortens a fresher one.
+    resetIdentityVerificationsForTests();
+    seedGatewayIdentity({ ...carried, expiresAt: Date.now() + 10 * IDENTITY_VERIFICATION_TTL_MS });
+    assert.ok(carriedGatewayIdentity(installation)!.expiresAt <= Date.now() + IDENTITY_VERIFICATION_TTL_MS);
+    const kept = carriedGatewayIdentity(installation)!.expiresAt;
+    seedGatewayIdentity({ ...carried, expiresAt: Date.now() + 1_000 });
+    assert.equal(carriedGatewayIdentity(installation)!.expiresAt, kept);
+
+    // An answer that does not match the installation fails the turn here and is never handed on.
+    resetIdentityVerificationsForTests();
+    authAnswer = { ok: true, team_id: 'TGATEWAY', user_id: 'U_SOMEONE_ELSE', app_id: 'AGATEWAY' };
+    await assert.rejects(resolve(), (error: unknown) =>
+      error instanceof SlackInstallationUnavailableError && error.reasonCode === 'gateway_binding_mismatch');
+    assert.equal(carriedGatewayIdentity(installation), undefined);
+  } finally {
+    resetIdentityVerificationsForTests();
     settings.close();
     config.close();
   }

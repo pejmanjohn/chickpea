@@ -1950,7 +1950,7 @@ test('direct apply creates a standalone base Agent and applies its follow-on edi
   }
 });
 
-test('authoring proposals reject Agent creation in favor of immediate direct apply', async () => {
+test('authoring proposals reject Agent creation and setup requests in favor of immediate direct apply', async () => {
   const f = await createManagementAdapterFixture('proposal-safety');
   const context: ManagementActorContext = {
     userId: f.admin.user.id,
@@ -1985,6 +1985,16 @@ test('authoring proposals reject Agent creation in favor of immediate direct app
       }),
       (error: unknown) => error instanceof Error &&
         'code' in error && error.code === 'invalid_request',
+    );
+    // The Slack and eval schemas no longer offer either operation; the service still refuses them.
+    await assert.rejects(
+      () => f.service.proposeWorkspaceChanges({
+        context,
+        ...authoringProposalMetadata('proposal-safety-setup', 'agent_edit'),
+        operations: [{ itemId: 'key', kind: 'request_setup', target: { kind: 'provider_credential', providerId: 'anthropic' } }],
+      }),
+      (error: unknown) => error instanceof Error && 'code' in error && error.code === 'invalid_request' &&
+        /setup separately/.test(error.message),
     );
     await assert.rejects(
       () => f.service.applyWorkspaceChanges({

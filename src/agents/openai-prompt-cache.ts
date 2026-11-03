@@ -13,7 +13,8 @@ import type { Api, Model, OpenAIResponsesCompat } from '@earendil-works/pi-ai';
 import { isRecord } from '../security/content-validation.ts';
 import { sha256Hex } from '../security/digest.ts';
 import type { ModelRequestPurpose } from '../usage/model-requests.ts';
-import { SHARED_PREFIX_LAST_TOOL, classifySlackSystemText, type SharedPrefixDecision } from './shared-prefix.ts';
+import type { SharedPrefixDecision } from './shared-prefix.ts';
+import { SHARED_PREFIX_LAST_TOOL, classifySlackSystemText } from './shared-prefix-layout.ts';
 
 type Payload = Record<string, unknown>;
 

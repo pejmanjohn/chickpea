@@ -142,6 +142,8 @@ interface ModelAccessCell {
   readonly purpose: ModelRequestPurpose;
   readonly compactionTurns: Set<string>;
   readonly fees: RunFees | undefined;
+  /** Each finished request's usage record write while it is in flight (see runInCell). */
+  readonly records: Set<Promise<void>>;
 }
 
 class RunFees {
@@ -314,11 +316,24 @@ export function createModelAccessInterceptor(
     );
     const chatFee = cell.fees?.postChatFee();
     try {
-      return await cells.run(cell, next);
+      return await runInCell(cell, next);
     } finally {
       await chatFee;
     }
   };
+}
+
+/**
+ * Runs `fn` with `cell` bound and ends once every usage record its requests
+ * started is written or out of budget: a request's caller reads its result
+ * before that write (see forwardStream), and the attempt settles after it.
+ */
+async function runInCell<T>(cell: ModelAccessCell, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await cells.run(cell, fn);
+  } finally {
+    while (cell.records.size > 0) await Promise.all(cell.records);
+  }
 }
 
 export function currentRunFees(): RunFees | undefined {
@@ -365,7 +380,7 @@ export async function withModelAccess<T>(
   fn: () => Promise<T>,
 ): Promise<T> {
   const hosted = deploymentServesManyInstallations(env);
-  return cells.run(await resolveCell([grant], env, hosted, undefined, grant.runId, null, purpose), fn);
+  return runInCell(await resolveCell([grant], env, hosted, undefined, grant.runId, null, purpose), fn);
 }
 
 /**
@@ -379,7 +394,7 @@ export async function withDeploymentLane<T>(
   fn: () => Promise<T>,
 ): Promise<T> {
   if (deploymentServesManyInstallations(env)) throw providerNotOffered('this provider');
-  return cells.run(await resolveCell([], env, false, undefined, runId, null, purpose), fn);
+  return runInCell(await resolveCell([], env, false, undefined, runId, null, purpose), fn);
 }
 
 export type ImageEndpointFetch = (
@@ -436,10 +451,11 @@ export async function sendImageRequest(
   const attribution = cells.getStore()?.attribution ?? {
     installationId: usageInstallationId(env), runId: grant.runId, attemptId: crypto.randomUUID(), agentId: null,
   };
-  await settleRecord(env, sentRequest, platformGrant, null, () => sentImageRequestRecord({
+  const { charged, recorded } = settleRecord(env, sentRequest, platformGrant, null, () => sentImageRequestRecord({
     requestId: sentRequest.requestId, attribution, provider: grant.providerId, model,
     fundingSource: grant.fundingSource, result, finishedAt: Date.now(),
   }));
+  await Promise.all([charged, recorded]);
   return result;
 }
 
@@ -480,6 +496,7 @@ async function resolveCell(
     : undefined;
   return Object.freeze({
     instanceId, hosted, installationId, bound, env, attribution, purpose, compactionTurns: new Set<string>(), fees,
+    records: new Set<Promise<void>>(),
   });
 }
 
@@ -725,7 +742,7 @@ function settleRequest(
 ): (final: AssistantMessage) => Promise<void> {
   const listPriced = platformGrant && listPricedProvider(platformGrant.providerId);
   const mode = listPriced && LIST_PRICE_MODES[listPriced];
-  return (final) => settleRecord(cell.env, request, platformGrant, payloadHook?.sharedPrefix() ?? null, async () => {
+  return (final) => heldForCharge(cell, settleRecord(cell.env, request, platformGrant, payloadHook?.sharedPrefix() ?? null, async () => {
     const finishedAt = Date.now();
     const report = await reader?.report() ?? NO_PROVIDER_REPORT;
     const record = modelRequestRecord({
@@ -744,7 +761,14 @@ function settleRequest(
       });
     }
     return record;
-  });
+  }));
+}
+
+/** The caller waits for the request's charge; the cell's scope waits for its record (see runInCell). */
+function heldForCharge(cell: ModelAccessCell, { charged, recorded }: ReturnType<typeof settleRecord>): Promise<void> {
+  cell.records.add(recorded);
+  void recorded.then(() => cell.records.delete(recorded));
+  return charged;
 }
 
 function offList(reported: string | null, listPriced: readonly string[]): boolean {
@@ -779,28 +803,31 @@ function requestPayload(
   };
 }
 
-async function settleRecord(
+/**
+ * Starts a finished request's record write and, when Chickpea pays, its
+ * charge, both from one built record. Each settles when its step does, or
+ * when RECORD_BUDGET_MS from now ends first; neither rejects.
+ */
+function settleRecord(
   env: PlatformEnv | undefined,
   request: SentRequest,
   platformGrant: ModelAccessGrant | undefined,
   sharedPrefix: SharedPrefixId | null,
   build: () => ModelRequestRecord | Promise<ModelRequestRecord>,
-): Promise<void> {
+): { charged: Promise<void>; recorded: Promise<void> } {
   const writeRecord = recorder;
-  if (!writeRecord && !platformGrant) return;
+  if (!writeRecord && !platformGrant) return { charged: Promise.resolve(), recorded: Promise.resolve() };
   const record = Promise.resolve().then(build);
-  const settled = [
-    writeRecord && record.then((built) => writeRecord(built, env))
-      .catch((error: unknown) => logSettleFailure('record', request, error)),
-    platformGrant && record.then((built) => chargePlatformRequest(platformGrant, built, sharedPrefix))
-      .catch((error: unknown) => logSettleFailure('charge', request, error)),
-  ];
+  const recording = writeRecord && record.then(async (built) => { await writeRecord(built, env); })
+    .catch((error: unknown) => logSettleFailure('record', request, error));
+  const charging = platformGrant && record.then((built) => chargePlatformRequest(platformGrant, built, sharedPrefix))
+    .catch((error: unknown) => logSettleFailure('charge', request, error));
   let timer: ReturnType<typeof setTimeout> | undefined;
   const budget = new Promise<void>((resolve) => {
     timer = setTimeout(resolve, RECORD_BUDGET_MS);
   });
-  await Promise.race([Promise.all(settled), budget]);
-  clearTimeout(timer);
+  void Promise.all([recording, charging]).then(() => clearTimeout(timer));
+  return { charged: Promise.race([charging, budget]), recorded: Promise.race([recording, budget]) };
 }
 
 function logSettleFailure(step: 'record' | 'charge', request: SentRequest, error: unknown): void {
@@ -853,7 +880,8 @@ function withoutKeyInErrors(source: AssistantMessageEventStream, apiKey: string)
  * it is. As Pi forwards a stream, the final result is read last, since it
  * may arrive without an event. With `settle`, the terminal event is held until
  * it has run on the final result: pushing that event resolves the caller's
- * `result()`, after which the caller may finish and the isolate may go.
+ * `result()`. Settling holds it for the request's charge, not for its usage
+ * record, whose write the cell's scope waits for instead (see runInCell).
  */
 async function forwardStream(
   source: AssistantMessageEventStream,

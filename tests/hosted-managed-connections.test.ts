@@ -23,7 +23,7 @@ import { SqliteConfigStore } from '../src/config/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
-import { MANAGED_CONNECTOR_CATALOG, composioManifest } from '../src/connections/catalog/index.ts';
+import { MANAGED_CONNECTOR_CATALOG, composioHeader } from '../src/connections/catalog/index.ts';
 import {
   ComposioPlatformConfigurationError,
   ComposioPlatformReconciliationRequiredError,
@@ -186,7 +186,7 @@ class FakeComposioProject {
 }
 
 function compatible(toolkit: string, id: string): ComposioAuthConfigLike {
-  const apiKey = composioManifest(toolkit)?.auth.mode === 'api_key';
+  const apiKey = composioHeader(toolkit)?.auth.mode === 'api_key';
   return {
     id,
     name: `Chickpea default — ${toolkit} v1`,

@@ -602,7 +602,7 @@ export class SlackAgentViewPresentation {
    * before the API call so admission replay cannot blindly duplicate an
    * outcome whose receipt is unknown.
    */
-  async beginAgentSessionProcessing(): Promise<boolean> {
+  async beginAgentSessionProcessing(onIssued?: () => void): Promise<boolean> {
     let presentation = await this.requirePresentation();
     if (presentation.schemaVersion !== 3 || presentation.agentSession.disposition ||
         presentation.agentSession.desired !== 'processing') return false;
@@ -623,13 +623,15 @@ export class SlackAgentViewPresentation {
     }
     if (presentation.schemaVersion !== 3) return false;
     try {
-      await setAgentSessionStatus(this.options.client, {
+      const call = setAgentSessionStatus(this.options.client, {
         channel_id: presentation.root.channelId,
         thread_ts: presentation.root.threadTs,
         status: 'processing',
         initiator_user_id: presentation.root.requesterUserId,
         ...ownerPersonaFields(presentation.owner),
       });
+      onIssued?.();
+      await call;
       await this.recordAgentSessionReceipt(operationId, 'acknowledged', 'processing');
       return true;
     } catch (error) {
@@ -1752,7 +1754,8 @@ export class SlackAgentViewPresentation {
    * off (legacy checklist path is preserved), a plan already exists
    * (ambient/obvious-work — never double-attach or reorder), the checklist is
    * outside the 1..4 native range, or any Slack effect has already begun
-   * (delivery-only replay, a streaming or finalized presentation).
+   * (delivery-only replay, a streaming or finalized presentation, or a V3
+   * terminal delivery under way, which late labels can arrive after).
    */
   async adoptLatePlan(taskLabels: readonly string[]): Promise<void> {
     if (taskLabels.length < 1 || taskLabels.length > 4) return;
@@ -1761,6 +1764,7 @@ export class SlackAgentViewPresentation {
     if (presentation.schemaVersion === 3 && taskLabels.length < 2) return;
     if (presentation.plan) return;
     if (presentation.stream.state !== 'absent') return;
+    if (presentation.schemaVersion === 3 && presentation.terminalDelivery.state !== 'none') return;
     await this.transition(presentation, { kind: 'adopt_plan', taskLabels });
   }
 
@@ -1838,8 +1842,7 @@ export class SlackAgentViewPresentation {
     if (slot === 'reserved') {
       this.appendSlot = undefined;
     } else {
-      const delay = Math.max(0, this.nextAppendAt - this.now());
-      if (delay > 0) await this.wait(delay);
+      await this.waitForAppendPace(control);
       if (!(await this.reserveAppendSlot(presentation.root.workspaceId, control))) return;
       // The wait may have outlived this writer's view of the row.
       presentation = await this.requirePresentation();
@@ -1907,11 +1910,16 @@ export class SlackAgentViewPresentation {
     if (this.degradedReason || control.closing()) return;
     const presentation = await this.requirePresentation();
     if (presentation.stream.state !== 'streaming' || !presentation.stream.messageTs) return;
-    const delay = Math.max(0, this.nextAppendAt - this.now());
-    if (delay > 0) await this.wait(delay);
+    await this.waitForAppendPace(control);
     this.appendSlot = await this.reserveAppendSlot(presentation.root.workspaceId, control)
       ? 'reserved'
       : 'yielded';
+  }
+
+  private async waitForAppendPace(control: ProgressiveAppendControl | undefined): Promise<void> {
+    const delay = Math.max(0, this.nextAppendAt - this.now());
+    if (delay <= 0) return;
+    await (control ? Promise.race([this.wait(delay), control.closed]) : this.wait(delay));
   }
 
   /**

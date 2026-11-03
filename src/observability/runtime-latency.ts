@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import type { GatewayInboundDelivery } from '../slack/gateway/protocol.ts';
 import type { GatewaySessionRunnerHealthSnapshot } from '../slack/gateway/session-runner.ts';
+import type { SlackThreadRunnerRpc } from '../slack/thread-runner-rpc.ts';
 
 /**
  * Content-free latency logs for the turn relay (see
@@ -22,7 +23,10 @@ export type RuntimeLatencyEvent =
   | 'gateway_delivery'
   | 'thread_runner_alarm'
   | 'thread_runner_superseded'
-  | 'slack_read';
+  | 'runner_boot'
+  | 'agent_boot'
+  | 'slack_read'
+  | 'interaction_judgment';
 
 type RuntimeLatencyValue = number | boolean | string;
 
@@ -43,6 +47,7 @@ const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
   firstWrite: TOKEN,
   final: TOKEN,
   method: TOKEN,
+  firstMethod: TOKEN,
   op: TOKEN,
   transport: TOKEN,
   deliveryKind: TOKEN,
@@ -54,10 +59,20 @@ const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
   filterReason: TOKEN,
   order: TOKEN,
   reason: TOKEN,
+  recordedBy: TOKEN,
+  basis: TOKEN,
+  clef: TOKEN,
+  clefChoice: TOKEN,
+  management: TOKEN,
+  gate: TOKEN,
+  model: TOKEN,
+  refinement: TOKEN,
   runRef: OPAQUE_REF,
   turnRef: OPAQUE_REF,
   versionId: VERSION_ID,
   supersededBy: VERSION_ID,
+  agentClass: TOKEN,
+  agentWakeSource: TOKEN,
 };
 
 export function emitRuntimeLatency(
@@ -118,6 +133,23 @@ export interface RelayAlarmMetrics {
   yielded: boolean;
   /** Turns handed to their thread runners (the default executor). */
   jobsDispatched: number;
+  /**
+   * An idle firing inside a conversation's keep-warm window (TagStateStore):
+   * it re-armed the tick that keeps the store in memory.
+   */
+  keepWarm: boolean;
+  /**
+   * An idle firing's parts, in milliseconds: the management retention sweep,
+   * then the ledger, interaction-cleanup, presentation-repair,
+   * schedule-action and management-receipt drains. Absent on a drained
+   * record, whose drains run among its turns.
+   */
+  retentionMs?: number;
+  ledgerMs?: number;
+  cleanupsMs?: number;
+  repairsMs?: number;
+  scheduleMs?: number;
+  receiptsMs?: number;
 }
 
 export function startRelayAlarmMetrics(now: () => number = Date.now): RelayAlarmMetrics {
@@ -136,6 +168,7 @@ export function startRelayAlarmMetrics(now: () => number = Date.now): RelayAlarm
     rearmed: false,
     yielded: false,
     jobsDispatched: 0,
+    keepWarm: false,
   };
 }
 
@@ -159,6 +192,13 @@ export function emitRelayAlarm(
     rearmed: metrics.rearmed,
     yielded: metrics.yielded,
     jobsDispatched: metrics.jobsDispatched,
+    keepWarm: metrics.keepWarm,
+    retentionMs: metrics.retentionMs,
+    ledgerMs: metrics.ledgerMs,
+    cleanupsMs: metrics.cleanupsMs,
+    repairsMs: metrics.repairsMs,
+    scheduleMs: metrics.scheduleMs,
+    receiptsMs: metrics.receiptsMs,
   }, sink);
 }
 
@@ -213,13 +253,114 @@ export function emitThreadRunnerSuperseded(
 }
 
 // ---------------------------------------------------------------------------
+// runner_boot and agent_boot: one record per in-memory activation of a
+// SlackThreadRunner, or of a Flue agent's Durable Object.
+
+/** What a runner activation served first: an RPC, its alarm, or a host function. */
+export type RunnerBootMethod = keyof SlackThreadRunnerRpc | 'alarm' | 'host';
+
+/**
+ * What an agent activation served first: the runner's wake once the turn's
+ * plan froze, a staged turn input, a request (a Flue dispatch or
+ * observation), its alarm, or a host function. Naming the object (`setName`)
+ * precedes the first of these and is not one.
+ */
+export type AgentBootMethod = 'wake' | 'stage' | 'fetch' | 'alarm' | 'host';
+
+/** Activations this isolate has constructed, by kind. */
+const activations = { runner_boot: 0, agent_boot: 0 };
+
+/**
+ * The marks of one object activation (an instance constructed in memory),
+ * logged once when it serves its first call. Workers clocks read 0 while a
+ * script evaluates and advance only on I/O, so placement, isolate start and
+ * script evaluation all fall in `sentToConstructMs`, and a span without I/O
+ * reads 0.
+ */
+class ObjectBootMarks<Method extends string> {
+  /** The first object of its kind this isolate constructed. */
+  private readonly cold: boolean;
+  private readonly constructStartedAt: number;
+  private constructedAt: number | undefined;
+  private served = false;
+
+  constructor(
+    private readonly event: keyof typeof activations,
+    private readonly fields: { agentClass?: string },
+    private readonly now: () => number,
+    private readonly sink: RuntimeLatencySink | undefined,
+  ) {
+    activations[event] += 1;
+    this.cold = activations[event] === 1;
+    this.constructStartedAt = now();
+  }
+
+  /** The constructor finished. */
+  constructed(): void {
+    this.constructedAt ??= this.now();
+  }
+
+  /**
+   * The activation serves a call; only the first is logged. `sentAt` is the
+   * caller's clock when it sent the call.
+   */
+  call(
+    method: Method,
+    from: { sentAt?: number | undefined; turnJobId?: string | undefined } = {},
+  ): void {
+    if (this.served) return;
+    this.served = true;
+    const at = this.now();
+    const constructedAt = this.constructedAt ?? at;
+    emitRuntimeLatency(this.event, {
+      ...this.fields,
+      firstMethod: method,
+      cold: this.cold,
+      turnRef: opaqueTurnRef(from.turnJobId),
+      sentToConstructMs: from.sentAt === undefined ? undefined : this.constructStartedAt - from.sentAt,
+      constructMs: constructedAt - this.constructStartedAt,
+      constructToFirstCallMs: at - constructedAt,
+    }, this.sink);
+  }
+}
+
+/** A SlackThreadRunner activation's marks, logged as `runner_boot`; `constructed` follows its `blockConcurrencyWhile`. */
+export class RunnerBootMarks extends ObjectBootMarks<RunnerBootMethod> {
+  constructor(now: () => number = Date.now, sink?: RuntimeLatencySink) {
+    super('runner_boot', {}, now, sink);
+  }
+}
+
+/**
+ * A Flue agent object's activation marks, logged as `agent_boot`. A wake and
+ * a staged turn input carry the runner's clock from before it addressed the
+ * object, so `sentToConstructMs` covers activating it.
+ */
+export class AgentBootMarks extends ObjectBootMarks<AgentBootMethod> {
+  constructor(agentClass: string, now: () => number = Date.now, sink?: RuntimeLatencySink) {
+    super('agent_boot', { agentClass }, now, sink);
+  }
+}
+
+/** Focused tests only: the next activation of each kind is this isolate's first. */
+export function resetRunnerActivationsForTest(): void {
+  activations.runner_boot = 0;
+  activations.agent_boot = 0;
+}
+
+// ---------------------------------------------------------------------------
 // turn_latency: one record per relay attempt of one turn.
 
 export type TurnLatencyLane = 'cloudflare' | 'node';
 export type TurnLatencyExecutor = 'alarm' | 'runner' | 'node';
 
-/** The first Slack-visible effect this attempt had acknowledged. */
+/**
+ * The first Slack-visible effect this attempt had acknowledged:
+ * `admission_status` is the status the state store showed before the turn's
+ * hand-off (TurnLatencyContext.admissionStatusAt).
+ */
 export type TurnFirstWrite =
+  | 'admission_status'
   | 'agent_session'
   | 'activity_status'
   | 'reaction'
@@ -232,6 +373,21 @@ export interface TurnLatencyContext {
   admittedAt?: number;
   /** `turn_jobs.received_at`: gateway inbox acceptance, else admission. */
   receivedAt?: number;
+  /** A runner turn's first attempt: the runner's `admit` start minus the state store's send time (two clocks). */
+  handoffMs?: number;
+  /**
+   * A runner turn's first attempt, when the state store woke that runner at
+   * the delivery's receipt: the hand-off's send time minus the wake's (both
+   * the state store's clock).
+   */
+  runnerWakeLeadMs?: number;
+  /**
+   * A runner turn's first attempt, when the state store tried to show its
+   * status before the hand-off: how long the hand-off waited for that write.
+   */
+  admissionStatusMs?: number;
+  /** When that status showed (the state store's clock): the attempt's first write. */
+  admissionStatusAt?: number;
   lane: TurnLatencyLane;
   executor: TurnLatencyExecutor;
 }
@@ -244,6 +400,10 @@ export class TurnLatencyTracker {
   private foldedInformed = 0;
   private read = 0;
   private midRunReplies = 0;
+  private agentStageMs: number | undefined;
+  private agentWake: { sentAt: number; source: 'admission' | 'plan' } | undefined;
+  private agentWakeLeadMs: number | undefined;
+  private startToStageMs: number | undefined;
   private emitted = false;
 
   constructor(
@@ -253,6 +413,9 @@ export class TurnLatencyTracker {
     private readonly sink?: RuntimeLatencySink,
   ) {
     this.startedAt = now();
+    if (context.admissionStatusAt !== undefined) {
+      this.firstWrite = { surface: 'admission_status', at: context.admissionStatusAt };
+    }
   }
 
   /** Record an acknowledged Slack write; only the first one is kept. */
@@ -278,6 +441,24 @@ export class TurnLatencyTracker {
   /** The Agent posted a reply mid-run (KTD14). */
   markMidRunReply(): void {
     this.midRunReplies += 1;
+  }
+
+  /**
+   * The turn's Agent object was woken: by admission at `admissionSentAt` (the
+   * state store's clock), or by the turn now. Only the first wake is kept.
+   */
+  markAgentWake(admissionSentAt?: number): void {
+    this.agentWake ??= admissionSentAt === undefined
+      ? { sentAt: this.now(), source: 'plan' }
+      : { sentAt: admissionSentAt, source: 'admission' };
+  }
+
+  /** Staging the turn's input beside its Agent took this long; only the first staging is kept. */
+  markAgentStage(ms: number): void {
+    if (this.agentStageMs !== undefined) return;
+    this.agentStageMs = ms;
+    if (this.agentWake !== undefined) this.agentWakeLeadMs = this.now() - ms - this.agentWake.sentAt;
+    this.startToStageMs = Math.max(0, this.now() - ms - this.startedAt);
   }
 
   /** The terminal was delivered, or handed to a durable outbox. */
@@ -315,6 +496,13 @@ export class TurnLatencyTracker {
       admissionToFinalMs: this.final?.kind === 'delivered' ? since(this.final.at) : undefined,
       receiptToAdmissionMs: sinceReceipt(admittedAt),
       receiptToFirstWriteMs: sinceReceipt(this.firstWrite?.at),
+      handoffMs: this.context.handoffMs,
+      runnerWakeLeadMs: this.context.runnerWakeLeadMs,
+      admissionStatusMs: this.context.admissionStatusMs,
+      agentStageMs: this.agentStageMs,
+      agentWakeLeadMs: this.agentWakeLeadMs,
+      agentWakeSource: this.agentWakeLeadMs === undefined ? undefined : this.agentWake?.source,
+      startToStageMs: this.startToStageMs,
       attemptMs: end - this.startedAt,
       folded: this.folded > 0 ? this.folded : undefined,
       foldedInformed: this.foldedInformed > 0 ? this.foldedInformed : undefined,
@@ -378,6 +566,70 @@ export function emitCodingTaskSteering(
   }, sink);
 }
 
+/**
+ * One guaranteed turn's interaction judgment, once everything it started has
+ * ended: who recorded the basis (`shortcut`, `clef`, `model`, `unrecorded`),
+ * how Clef ended, its choice and probabilities (in thousandths), the gate's
+ * decision, the model's answer and what became of it after a Clef basis, and
+ * whether the two agreed. Clef is platform infrastructure, so this event, not
+ * a tenant usage record, is where its calls and input tokens are counted.
+ */
+export function emitInteractionJudgment(
+  record: {
+    turnJobId?: string | undefined;
+    recordedBy: string;
+    basis?: string;
+    basisMs?: number;
+    clef: string;
+    clefMs?: number;
+    clefInputTokens?: number;
+    clefChoice?: string;
+    clefTop?: number;
+    clefTextMass?: number;
+    clefMemory?: number;
+    gate?: string;
+    clefLate?: boolean;
+    model?: string;
+    modelFailed?: boolean;
+    modelMs?: number;
+    refinement?: string;
+    agreed?: boolean;
+    management?: string;
+    managementMs?: number;
+    managementInputTokens?: number;
+    managementTop?: number;
+    managementFired?: boolean;
+  },
+  sink?: RuntimeLatencySink,
+): void {
+  const thousandths = (value: number | undefined) => (value === undefined ? undefined : value * 1000);
+  emitRuntimeLatency('interaction_judgment', {
+    turnRef: opaqueTurnRef(record.turnJobId),
+    recordedBy: record.recordedBy,
+    basis: record.basis,
+    basisMs: record.basisMs,
+    clef: record.clef,
+    clefMs: record.clefMs,
+    clefInputTokens: record.clefInputTokens,
+    clefChoice: record.clefChoice,
+    clefTop: thousandths(record.clefTop),
+    clefTextMass: thousandths(record.clefTextMass),
+    clefMemory: thousandths(record.clefMemory),
+    gate: record.gate,
+    clefLate: record.clefLate,
+    model: record.model,
+    modelFailed: record.modelFailed,
+    modelMs: record.modelMs,
+    refinement: record.refinement,
+    agreed: record.agreed,
+    management: record.management,
+    managementMs: record.managementMs,
+    managementInputTokens: record.managementInputTokens,
+    managementTop: thousandths(record.managementTop),
+    managementFired: record.managementFired,
+  }, sink);
+}
+
 // ---------------------------------------------------------------------------
 // state_rpc: sampled timing of calls from the Cf*Store proxies into TagStateStore.
 
@@ -387,6 +639,8 @@ export const STATE_RPC_SLOW_MS = 250;
 export const STATE_RPC_SAMPLE_EVERY = 100;
 
 const stateRpcCounters = { calls: 0, slow: 0 };
+
+const PERF_STATE_RPC_DELAY_MS = Math.max(0, Number(process.env.CHICKPEA_PERF_STATE_RPC_DELAY_MS ?? 0) || 0);
 
 /**
  * Time one RPC at the Cf*Store class boundary. Callers pass the in-flight
@@ -401,6 +655,7 @@ export async function timedStateRpc<T>(
   const startedAt = Date.now();
   let ok = false;
   try {
+    if (PERF_STATE_RPC_DELAY_MS > 0) await new Promise((resolve) => setTimeout(resolve, PERF_STATE_RPC_DELAY_MS));
     const result = await pending;
     ok = true;
     return result;

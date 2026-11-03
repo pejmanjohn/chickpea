@@ -1,6 +1,6 @@
 import type { GoogleWorkspaceService } from './api-oauth-policy.ts';
 import { BUGSNAG_MCP_SERVER_URL } from './bugsnag-policy.ts';
-import { MANAGED_CONNECTOR_CATALOG, composioManifest } from '../connections/catalog/index.ts';
+import { MANAGED_CONNECTOR_CATALOG, composioHeader } from '../connections/catalog/index.ts';
 import {
   META_ADS_OAUTH_DEFAULT_SCOPE,
   META_ADS_OAUTH_MANAGEMENT_SCOPE,
@@ -231,16 +231,16 @@ export const MANAGED_CONNECTOR_PRESETS: ManagedConnectorPreset[] = [
     logoId: 'youtube',
   },
   ...MANAGED_CONNECTOR_CATALOG.list().flatMap(({ id, toolkit }) => {
-    const manifest = composioManifest(toolkit);
-    return manifest ? [{
+    const header = composioHeader(toolkit);
+    return header ? [{
       id,
       managedToolkit: toolkit,
       providerId: toolkit,
-      name: manifest.label,
-      ...(manifest.preset.aliases ? { aliases: manifest.preset.aliases } : {}),
-      description: manifest.description,
-      category: manifest.preset.category,
-      accent: manifest.preset.accent,
+      name: header.label,
+      ...(header.preset.aliases ? { aliases: header.preset.aliases } : {}),
+      description: header.description,
+      category: header.preset.category,
+      accent: header.preset.accent,
       logoId: toolkit,
     }] : [];
   }),

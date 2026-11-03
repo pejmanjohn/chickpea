@@ -15,6 +15,8 @@ export interface ThreadRunnerJob {
   payload: unknown;
   /** The installation that handed it over; absent on standalone. */
   installation?: InstallationOwnership;
+  /** When the state store sent this hand-off, on its clock. For latency only; never stored. */
+  sentAt?: number;
 }
 
 export interface ThreadRunnerStatus {
@@ -104,6 +106,11 @@ const SETTLED_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
  * on Node in tests.
  */
 export class ThreadRunnerJobStore {
+  /** Whether a runner's storage holds its job table; reading this creates nothing. */
+  static existsIn(db: StateDb): boolean {
+    return db.get("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'runner_jobs'") !== undefined;
+  }
+
   constructor(private readonly db: StateDb) {
     db.exec(`CREATE TABLE IF NOT EXISTS runner_jobs (
       id TEXT PRIMARY KEY,

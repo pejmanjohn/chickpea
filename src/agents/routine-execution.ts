@@ -16,7 +16,7 @@ import {
 } from './runtime-plan.ts';
 import { CHICKPEA_SUBMISSION_DURABILITY } from './coding-worker-task.ts';
 import { useRuntimePlanAgent } from './slack-thread.ts';
-import { installationAgentExtension } from './cloudflare-extension.ts';
+import { routineExecutionCloudflareExtension } from './cloudflare-extension.ts';
 import { RoutineModelResultSchema } from '../routines/prompt.ts';
 import { useChickpeaResponseMetadata } from '../usage/response-metadata.ts';
 import { requestTokens } from '../web/page.ts';
@@ -109,7 +109,7 @@ export function routineArtifactPlan(
 // value for runtime policy, and `tests/agent-names.test.ts` asserts the two
 // never drift apart.
 ChickpeaRoutineExecution.agentName = 'chickpea-routine-execution-v2';
-export const cloudflare = installationAgentExtension;
+export const cloudflare = routineExecutionCloudflareExtension;
 ChickpeaRoutineExecution.durability = CHICKPEA_SUBMISSION_DURABILITY;
 ChickpeaRoutineExecution.initialData = v.custom<RoutineExecutionInitialData>((value) => {
   try {

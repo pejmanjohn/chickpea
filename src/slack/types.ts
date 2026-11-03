@@ -214,6 +214,7 @@ export interface NormalizedSlackTurn {
    * or about to be. Absent when admission read no facts, as for a DM.
    */
   sharedChannel?: boolean;
+  channelMembership?: { botUserId: string; verifiedAt: number };
   contextMode: SlackContextMode;
   reaction?: string;
   reactionTargetTs?: string;
@@ -232,6 +233,13 @@ export interface NormalizedSlackTurn {
    * Slack conversation, and acting Agent binding. Slack text cannot supply this id.
    */
   managementApprovalProposalId?: string;
+  /**
+   * Set only by host admission: a change set from this requester still waits
+   * on them in this conversation after their typed message neither approved
+   * nor declined it. The turn's first request then mounts the workspace
+   * change tools, so the Agent can revise or re-propose it.
+   */
+  managementProposalPending?: true;
   /**
    * A pending browser action this exact reply approved at admission, for the
    * same requester, thread, and Agent. The action is bound to this message's

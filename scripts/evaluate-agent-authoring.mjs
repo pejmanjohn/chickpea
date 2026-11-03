@@ -10,6 +10,7 @@ import {
 } from '@earendil-works/pi-ai';
 import {
   init,
+  observe,
   useDataWriter,
   useInstruction,
   useModel,
@@ -40,6 +41,11 @@ import {
   testConnectionValibotSchema,
   tryConnectionValibotSchema,
 } from '../src/management/schemas.ts';
+import {
+  WORKSPACE_CHANGE_TOOLS_INSTRUCTION,
+  noteAgentAuthoringActivation,
+  useWorkspaceChangeToolsMounted,
+} from '../src/management/workspace-change-tools.ts';
 import { WEB_CONTENT_INSTRUCTION } from '../src/web/page.ts';
 import { createWebTools, webRequest } from '../src/web/tools.ts';
 import { createWebTurn } from '../src/web/turn.ts';
@@ -213,6 +219,15 @@ function evalSearchHits(query) {
 }
 
 let selectedModel = FAUX_MODEL;
+/**
+ * `full` mounts every tool up front. `lean` mounts the change tools the way a
+ * Slack turn does: once the guide is active in the conversation. `signal` is
+ * `lean` plus a perfect stand-in for Clef's management signal: a case whose
+ * expectation allows activation has them from its first request.
+ */
+let evalMount = 'full';
+/** Under `--mount signal`, the case being run would carry the host's change-tools signal. */
+let currentCaseSignaled = false;
 /** The requester message being answered; the web tools read it as a Slack turn does. */
 let currentRequesterMessage = '';
 /** The web turn of the message being answered, fresh for each message as a Slack turn's is. */
@@ -424,7 +439,47 @@ function useEvalResponseMetadata() {
   }));
 }
 
-function useEvaluationTools() {
+/** The eval's stand-ins for the change tools a Slack thread mounts once agent-authoring is active. */
+function useEvalChangeTools() {
+  useTool({
+    name: 'propose_workspace_changes',
+    description: 'Create a read-only, exact proposal for consequential, generated, compound, skill-bearing, capability, reach, or scheduled Agent edits. Agent creation is invalid here. This does not apply anything. Show presentation.slack verbatim as the bounded human preview and retain proposalId only as control data for confirmation.',
+    input: proposeWorkspaceChangesValibotSchema,
+    output: v.string(),
+    run: () => ({
+      output: JSON.stringify({
+        proposalId: EVAL_PROPOSAL_ID,
+        status: 'pending',
+        applied: false,
+        preview: {
+          summary: '1 reviewed workspace change',
+          changes: [{
+            itemId: 'description',
+            operationKind: 'update_agent',
+            target: 'agent:agent_support',
+            before: { name: 'Support Triage', description: 'Handles support triage.' },
+            after: {
+              name: 'Support Triage',
+              description: 'A warm and practical support partner.',
+            },
+          }],
+          missingSetup: [],
+        },
+        presentation: { slack: EVAL_PROPOSAL_PRESENTATION },
+      }),
+    }),
+  });
+  useTool({
+    name: 'apply_workspace_changes',
+    description: 'Create one sufficiently understood base Agent immediately with one standalone create_agent operation, or apply another explicit reversible edit when policy allows. Do not propose Agent creation. Keep generated, inferred, skill-bearing, compound follow-on, and consequential edits on their existing policy paths. A request_setup operation returns a setup link for the person; for an API connection, set its path to the read endpoint the setup page checks the key at.',
+    input: applyWorkspaceChangesValibotSchema,
+    output: v.string(),
+    run: ({ data }) => ({ output: JSON.stringify(evalApplyWorkspaceChanges(data)) }),
+  });
+}
+
+/** `changeToolsAt`: where the change tools mount, `inline` among the others, `last`, or `none`. */
+function useEvaluationTools(changeToolsAt) {
   const writeAssessment = useDataWriter(EVAL_DATA_NAME, { schema: EvalAssessmentSchema });
   useTool({
     name: 'record_eval_assessment',
@@ -536,41 +591,7 @@ function useEvaluationTools() {
       }),
     }),
   });
-  useTool({
-    name: 'propose_workspace_changes',
-    description: 'Create a read-only, exact proposal for consequential, generated, compound, skill-bearing, capability, reach, or scheduled Agent edits. Agent creation is invalid here. This does not apply anything. Show presentation.slack verbatim as the bounded human preview and retain proposalId only as control data for confirmation.',
-    input: proposeWorkspaceChangesValibotSchema,
-    output: v.string(),
-    run: () => ({
-      output: JSON.stringify({
-        proposalId: EVAL_PROPOSAL_ID,
-        status: 'pending',
-        applied: false,
-        preview: {
-          summary: '1 reviewed workspace change',
-          changes: [{
-            itemId: 'description',
-            operationKind: 'update_agent',
-            target: 'agent:agent_support',
-            before: { name: 'Support Triage', description: 'Handles support triage.' },
-            after: {
-              name: 'Support Triage',
-              description: 'A warm and practical support partner.',
-            },
-          }],
-          missingSetup: [],
-        },
-        presentation: { slack: EVAL_PROPOSAL_PRESENTATION },
-      }),
-    }),
-  });
-  useTool({
-    name: 'apply_workspace_changes',
-    description: 'Create one sufficiently understood base Agent immediately with one standalone create_agent operation, or apply another explicit reversible edit when policy allows. Do not propose Agent creation. Keep generated, inferred, skill-bearing, compound follow-on, and consequential edits on their existing policy paths. A request_setup operation returns a setup link for the person; for an API connection, set its path to the read endpoint the setup page checks the key at.',
-    input: applyWorkspaceChangesValibotSchema,
-    output: v.string(),
-    run: ({ data }) => ({ output: JSON.stringify(evalApplyWorkspaceChanges(data)) }),
-  });
+  if (changeToolsAt === 'inline') useEvalChangeTools();
   useTool({
     name: 'save_connection_key',
     description: workspaceManagementToolDescription('save_connection_key'),
@@ -621,6 +642,13 @@ function useEvaluationTools() {
     output: v.string(),
     run: ({ data }) => ({ output: JSON.stringify({ handoff: data.reason }) }),
   });
+  if (changeToolsAt === 'last') useEvalChangeTools();
+}
+
+/** A guided agent's change-tool mount; a baseline has no guide to activate, so it keeps every tool. */
+function guidedChangeToolsAt(id) {
+  if (evalMount === 'full') return 'inline';
+  return useWorkspaceChangeToolsMounted(id, currentCaseSignaled) ? 'last' : 'none';
 }
 
 const EVAL_COMMON_INSTRUCTION = [
@@ -641,12 +669,13 @@ const SYSTEM_CHICKPEA_EVAL_INSTRUCTION = [
   ...EVAL_COMMON_INSTRUCTION,
 ].join('\n');
 
-function CurrentGuideEvalAgent() {
+function CurrentGuideEvalAgent({ id }) {
   useModel(selectedModel);
   useInstruction(USER_AGENT_EVAL_INSTRUCTION);
   useInstruction(AGENT_AUTHORING_ROUTER_INSTRUCTION);
+  if (evalMount !== 'full') useInstruction(WORKSPACE_CHANGE_TOOLS_INSTRUCTION);
   useAgentAuthoringSkill();
-  useEvaluationTools();
+  useEvaluationTools(guidedChangeToolsAt(id));
   useEvalResponseMetadata();
   return 'Apply the mounted product guidance when it matches. Do not activate it for ordinary work.';
 }
@@ -655,18 +684,19 @@ CurrentGuideEvalAgent.agentName = 'agent-authoring-eval-current';
 function BaselineEvalAgent() {
   useModel(selectedModel);
   useInstruction(USER_AGENT_EVAL_INSTRUCTION);
-  useEvaluationTools();
+  useEvaluationTools('inline');
   useEvalResponseMetadata();
   return 'Handle the request with the available tools and record the requested assessment.';
 }
 BaselineEvalAgent.agentName = 'agent-authoring-eval-baseline';
 
-function CurrentGuideSystemEvalAgent() {
+function CurrentGuideSystemEvalAgent({ id }) {
   useModel(selectedModel);
   useInstruction(SYSTEM_CHICKPEA_EVAL_INSTRUCTION);
   useInstruction(AGENT_AUTHORING_ROUTER_INSTRUCTION);
+  if (evalMount !== 'full') useInstruction(WORKSPACE_CHANGE_TOOLS_INSTRUCTION);
   useAgentAuthoringSkill();
-  useEvaluationTools();
+  useEvaluationTools(guidedChangeToolsAt(id));
   useEvalResponseMetadata();
   return 'Apply the mounted product guidance when it matches. Do not activate it for ordinary work.';
 }
@@ -675,18 +705,19 @@ CurrentGuideSystemEvalAgent.agentName = 'agent-authoring-eval-current-system';
 function BaselineSystemEvalAgent() {
   useModel(selectedModel);
   useInstruction(SYSTEM_CHICKPEA_EVAL_INSTRUCTION);
-  useEvaluationTools();
+  useEvaluationTools('inline');
   useEvalResponseMetadata();
   return 'Handle the request with the available tools and record the requested assessment.';
 }
 BaselineSystemEvalAgent.agentName = 'agent-authoring-eval-baseline-system';
 
 function parseArgs(argv) {
-  const options = { live: false, variant: 'both', caseId: undefined, output: undefined };
+  const options = { live: false, variant: 'both', mount: 'full', caseId: undefined, output: undefined };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--live') options.live = true;
     else if (arg === '--variant') options.variant = argv[++index];
+    else if (arg === '--mount') options.mount = argv[++index];
     else if (arg === '--case') options.caseId = argv[++index];
     else if (arg === '--output') options.output = argv[++index];
     else if (arg === '--help') options.help = true;
@@ -695,15 +726,20 @@ function parseArgs(argv) {
   if (!['current', 'baseline', 'both'].includes(options.variant)) {
     throw new Error('--variant must be current, baseline, or both.');
   }
+  if (!['full', 'lean', 'signal'].includes(options.mount)) throw new Error('--mount must be full, lean, or signal.');
   return options;
 }
 
 function printHelp() {
   process.stdout.write([
-    'Usage: npm run evaluate:agent-authoring -- [--live] [--case ID] [--variant current|baseline|both] [--output PATH]',
+    'Usage: npm run evaluate:agent-authoring -- [--live] [--case ID] [--variant current|baseline|both] [--mount full|lean|signal] [--output PATH]',
     '',
     'Without --live, validates the versioned corpus and runs a deterministic Flue boundary smoke test.',
     'With --live, AGENT_AUTHORING_EVAL_MODEL is required and each selected case uses a fresh conversation.',
+    'With --mount lean, the guided variant mounts propose_workspace_changes and apply_workspace_changes only',
+    'once agent-authoring is active in the conversation, as a Slack thread does; a call before that is counted.',
+    'With --mount signal, a case whose expectation allows activation has them from its first request, as a',
+    'perfect pre-dispatch signal would mount them; any other case is lean.',
     'Output contains case IDs, token counts, tool names, and assertion tokens; never prompts or assistant text.',
     '',
   ].join('\n'));
@@ -972,6 +1008,109 @@ async function runConnectionTrialSmoke(corpus, faux) {
   assert(triedOthers.secretInToolInput && triedEvaluation.criticalFailure &&
     !triedEvaluation.assertions.find(({ id }) => id === 'no_key_tried')?.passed,
   'Trying a key from another person\'s message passed the boundary.');
+}
+
+/**
+ * The lean mount, as a Slack thread mounts the change tools: they are there
+ * once agent-authoring is active, a call before that runs nothing and costs
+ * one model request, activating recovers them, and a follow-up keeps them.
+ */
+async function runLeanMountSmoke(corpus, faux) {
+  const creation = corpus.cases.find(({ id }) => id === 'new-agent-single-approval');
+  const followUp = corpus.cases.find(({ id }) => id === 'successful-proposal-confirmation');
+  assert(creation && followUp, 'Lean mount smoke cases are missing.');
+  const call = (name, input) => fauxAssistantMessage([fauxToolCall(name, input)], { stopReason: 'toolUse' });
+  const activate = () => call('activate_skill', { name: 'agent-authoring' });
+  const create = () => call('apply_workspace_changes', {
+    idempotencyKey: 'create-scout',
+    operations: [{
+      itemId: 'agent',
+      kind: 'create_agent',
+      agent: {
+        id: 'agent_scout', name: 'Scout', description: 'Triages support email.', requestedHandle: 'scout',
+        editPolicy: 'all_workspace_members', instructions: 'Triage support email by urgency.', enabled: true,
+        skills: [], mcpServers: [], apiConnections: [], repositories: [],
+      },
+    }],
+  });
+  const recorded = (posture, placements, approvalPosture) => call('record_eval_assessment', {
+    posture, placements, approvalPosture, capabilityClaimsGrounded: true,
+  });
+  const created = () => recorded('commit', ['identity', 'instructions'], 'direct_allowed');
+  const passes = (result) => evaluateResult(result, creation.expected).assertions.every(({ passed }) => passed);
+
+  faux.setResponses([activate(), create(), created()]);
+  const activatedFirst = await runCase('current', creation);
+  assert(activatedFirst.unavailableToolCalls === 0 && passes(activatedFirst),
+    'Lean mount: activating first did not leave apply_workspace_changes mounted.');
+
+  faux.setResponses([create(), activate(), create(), created()]);
+  const recovered = await runCase('current', creation);
+  assert(recovered.unavailableToolCalls === 1 && passes(recovered) &&
+    recovered.toolNames.filter((name) => name === 'apply_workspace_changes').length === 1,
+  'Lean mount: activation did not recover a change tool called before it, at one extra request.');
+
+  faux.setResponses([create(), created()]);
+  const unrecovered = await runCase('current', creation);
+  assert(unrecovered.unavailableToolCalls === 1 && !unrecovered.toolNames.includes('apply_workspace_changes') &&
+    evaluateResult(unrecovered, creation.expected).criticalFailure,
+  'Lean mount: a change tool call that ran nothing passed as applied.');
+
+  const propose = () => call('propose_workspace_changes', {
+    idempotencyKey: 'describe-support',
+    guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
+    authoringReason: 'agent_edit',
+    operations: [{
+      itemId: 'description', kind: 'update_agent', agentId: 'agent_support', expectedRevision: 5,
+      patch: { description: 'A warm and practical support partner.' },
+    }],
+  });
+  faux.setResponses([
+    activate(), propose(), recorded('commit', ['identity'], 'proposal_required'),
+    propose(), recorded('commit', ['identity'], 'proposal_required'),
+  ]);
+  const kept = await runCase('current', followUp);
+  // The follow-up's own calls come last; reading its reply first replays the first message's.
+  assert(kept.unavailableToolCalls === 0 && JSON.stringify(kept.toolCalls.slice(-2).map(({ name, message }) => `${message}:${name}`)) ===
+    JSON.stringify(['1:propose_workspace_changes', '1:record_eval_assessment']),
+  'Lean mount: the follow-up message lost the change tools.');
+}
+
+/**
+ * The signal mount: a case that may activate has the change tools in its
+ * first request, so a call before activation runs; a case that must not
+ * activate stays lean, so the same call runs nothing.
+ */
+async function runSignalMountSmoke(corpus, faux) {
+  const creation = corpus.cases.find(({ id }) => id === 'new-agent-single-approval');
+  const ordinary = corpus.cases.find(({ id }) => id === 'ordinary-support-work');
+  assert(creation && ordinary && ordinary.expected.activation === 'forbidden', 'Signal mount smoke cases are missing.');
+  const call = (name, input) => fauxAssistantMessage([fauxToolCall(name, input)], { stopReason: 'toolUse' });
+  const create = () => call('apply_workspace_changes', {
+    idempotencyKey: 'create-scout',
+    operations: [{
+      itemId: 'agent',
+      kind: 'create_agent',
+      agent: {
+        id: 'agent_scout', name: 'Scout', description: 'Triages support email.', requestedHandle: 'scout',
+        editPolicy: 'all_workspace_members', instructions: 'Triage support email by urgency.', enabled: true,
+        skills: [], mcpServers: [], apiConnections: [], repositories: [],
+      },
+    }],
+  });
+  const recorded = (posture, placements, approvalPosture) => call('record_eval_assessment', {
+    posture, placements, approvalPosture, capabilityClaimsGrounded: true,
+  });
+
+  faux.setResponses([create(), recorded('commit', ['identity', 'instructions'], 'direct_allowed')]);
+  const signaled = await runCase('current', creation);
+  assert(signaled.signaled && signaled.unavailableToolCalls === 0 && signaled.toolNames.includes('apply_workspace_changes'),
+    'Signal mount: a signaled case did not have apply_workspace_changes in its first request.');
+
+  faux.setResponses([create(), recorded('ordinary_work', [], 'none')]);
+  const unsignaled = await runCase('current', ordinary);
+  assert(!unsignaled.signaled && unsignaled.unavailableToolCalls === 1 && !unsignaled.toolNames.includes('apply_workspace_changes'),
+    'Signal mount: a case that must not activate had the change tools mounted.');
 }
 
 async function runDeterministicConfirmationCase(entry, faux) {
@@ -1648,9 +1787,12 @@ async function runDeterministicSmoke(corpus) {
       'An answer from search results that cites no source passed.');
 
     await runConnectionTrialSmoke(corpus, faux);
+    if (evalMount === 'lean') await runLeanMountSmoke(corpus, faux);
+    if (evalMount === 'signal') await runSignalMountSmoke(corpus, faux);
 
     return {
       mode: 'deterministic_smoke',
+      mount: evalMount,
       corpusVersion: corpus.corpusVersion,
       guideVersion: corpus.guideVersion,
       baselineId: corpus.baseline.id,
@@ -1683,6 +1825,16 @@ async function runDeterministicSmoke(corpus) {
         'connection_trial_routes_observed',
         'connection_trial_boundaries_observed',
         'usage_observed',
+        ...(evalMount === 'lean' ? [
+          'lean_mount_activation_first_observed',
+          'lean_mount_recovery_via_activation_observed',
+          'lean_mount_unmounted_call_counted',
+          'lean_mount_kept_for_follow_up',
+        ] : []),
+        ...(evalMount === 'signal' ? [
+          'signal_mount_first_request_observed',
+          'signal_mount_unsignaled_lean_observed',
+        ] : []),
       ],
     };
   } finally {
@@ -1731,7 +1883,9 @@ async function runLive(corpus, options) {
 
 async function runCase(variant, entry) {
   const actingScope = entry.actingScope ?? 'user_agent';
+  currentCaseSignaled = evalMount === 'signal' && entry.expected.activation !== 'forbidden';
   const handle = init(evalAgentFor(variant, entry));
+  const calls = [];
   const toolNames = [];
   const toolCalls = [];
   let secretInToolInput = false;
@@ -1746,13 +1900,24 @@ async function runCase(variant, entry) {
     const receipt = await handle.dispatch(index === 0 ? withThreadContext(entry, prompt) : prompt);
     replies.push(await handle.read(receipt, {
       onEvent(chunk) {
+        if (chunk.type === 'tool-output-error') {
+          const call = calls.find(({ toolCallId }) => toolCallId === chunk.toolCallId);
+          if (call && chunk.errorText === `Tool ${call.name} not found`) call.unavailable = true;
+          return;
+        }
         if (chunk.type !== 'tool-input') return;
-        toolNames.push(chunk.toolName);
-        toolCalls.push({ name: chunk.toolName, input: chunk.input, message: index });
+        calls.push({ toolCallId: chunk.toolCallId, name: chunk.toolName, input: chunk.input, message: index });
         if (secretOutsideSavedKey(chunk.toolName, chunk.input, requesterMessages.slice(0, index + 1))) secretInToolInput = true;
       },
     }));
   }
+  // A call to a tool not mounted yet ran nothing: it costs a model request, and counts only as that.
+  for (const { unavailable, toolCallId: _toolCallId, ...call } of calls) {
+    if (unavailable) continue;
+    toolNames.push(call.name);
+    toolCalls.push(call);
+  }
+  const unavailableToolCalls = calls.filter(({ unavailable }) => unavailable).length;
   const durationMs = Math.round(performance.now() - startedAt);
   const finalReply = replies.at(-1);
   const assessments = replies.flatMap((reply) => reply.data[EVAL_DATA_NAME] ?? []);
@@ -1771,10 +1936,12 @@ async function runCase(variant, entry) {
     caseId: entry.id,
     variant,
     actingScope,
+    signaled: currentCaseSignaled,
     durationMs,
     usage,
     toolNames,
     toolCalls,
+    unavailableToolCalls,
     assessment: isAssessment(assessment) ? assessment : undefined,
     secretInToolInput,
     secretEchoed,
@@ -1809,8 +1976,10 @@ function buildReport(corpus, model, rawResults) {
       durationMs: raw.durationMs,
       usage: raw.usage,
       activation: raw.toolNames.includes('activate_skill'),
+      ...(evalMount === 'signal' ? { signaled: raw.signaled } : {}),
       skillCreationRead: raw.toolNames.includes('read_skill_resource'),
       toolNames: [...new Set(raw.toolNames)],
+      unavailableToolCalls: raw.unavailableToolCalls,
       toolClass: actualToolClass(raw.toolNames, raw.toolCalls),
       posture: raw.assessment?.posture ?? 'missing',
       placements: raw.assessment?.placements ?? [],
@@ -1831,6 +2000,7 @@ function buildReport(corpus, model, rawResults) {
   return {
     schemaVersion: 1,
     mode: 'live_model',
+    mount: evalMount,
     corpusVersion: corpus.corpusVersion,
     guideVersion: corpus.guideVersion,
     baselineId: corpus.baseline.id,
@@ -1840,6 +2010,9 @@ function buildReport(corpus, model, rawResults) {
       current,
       baseline,
       delta: current.rate - baseline.rate,
+      // Cases whose model called a change tool before it was mounted: one extra model request each.
+      unavailableToolCallCases: results.filter((result) => result.variant === 'current' && result.unavailableToolCalls > 0)
+        .map(({ caseId }) => caseId),
       gate: 'pending',
     },
     results,
@@ -2304,6 +2477,8 @@ async function main() {
     printHelp();
     return;
   }
+  evalMount = options.mount;
+  if (evalMount !== 'full') observe(noteAgentAuthoringActivation);
   const corpus = await loadCorpus();
   const report = options.live
     ? await runLive(corpus, options)

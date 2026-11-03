@@ -656,6 +656,9 @@ export function runnerSlackPort(
     markCodingActiveWork: (...args) => storeCall(() => remote.markCodingActiveWork(...args)),
     isCodingActiveWork: (...args) => storeCall(() => remote.isCodingActiveWork(...args)),
     release: (...args) => storeCall(() => remote.release(...args)),
+    // Never awaited by the turn (see TurnExecutionPorts.slack): a store that
+    // cannot be reached loses one wake, so its failure is left as it is.
+    ...(remote.noteFrontDeskHandoff ? { noteFrontDeskHandoff: (note) => remote.noteFrontDeskHandoff!(note) } : {}),
   };
 }
 
@@ -806,12 +809,12 @@ export function runnerPresentationState(input: {
       console.warn('[chickpea] thread runner presentation publish failed');
     }
   };
-  const lifecycleChanged = async (presentation: SlackRunPresentation) => {
+  const lifecycleChanged = (presentation: SlackRunPresentation): void => {
     const runId = presentation.runId;
     if (published.get(runId) === lifecycleFingerprint(presentation) || trailing.has(runId)) return;
     const wait = lastPublishAt + interval - now();
     if (wait <= 0) {
-      await put(runId);
+      void put(runId);
       return;
     }
     trailing.set(runId, setTimeout(() => {
@@ -856,7 +859,7 @@ export function runnerPresentationState(input: {
           if (before) published.set(transition.runId, lifecycleFingerprint(before));
         }
         const result = input.local.transition(transition);
-        if (result.outcome === 'applied') await lifecycleChanged(result.presentation);
+        if (result.outcome === 'applied') lifecycleChanged(result.presentation);
         return result;
       },
     },

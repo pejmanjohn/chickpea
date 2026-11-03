@@ -51,6 +51,8 @@ const CARRIED_SLACK_TURN_ATTRIBUTE_KEYS = [
   'admittedListIds',
   'attachmentFileIds',
   'threadFileIds',
+  // The turn's first render mounted the change tools on it; later renders keep them.
+  'workspaceChangeTools',
 ] as const;
 
 const MAX_ATTACHMENT_SIGNAL_CHARS = 12_000;

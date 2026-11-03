@@ -300,7 +300,7 @@ from `src/slack/claim-store.ts` rather than resending the request.
 
 ## Turn latency and relay alarm logs
 
-Five content-free events measure inbound delivery and turn scheduling. Each is one structured
+These content-free events measure inbound delivery and turn scheduling. Each is one structured
 console object with `component: "runtime"` and an `event` name, so Workers Logs
 indexes its top-level fields. Values are non-negative integer milliseconds,
 booleans, fixed tokens, or opaque references; no message text, Slack user or
@@ -308,15 +308,18 @@ channel IDs, settings keys or values, or error text. Emission never throws.
 
 | `event` | Emitted | Fields |
 | --- | --- | --- |
-| `relay_alarm` | Once per `TagStateStore.alarm()` invocation (Cloudflare) | `outcome` (`idle`, `drained`, `threw`), `durationMs`, `jobsListed`, `groups`, `jobsRun`, `jobsSettled`, `jobsRetained`, `jobsCarried`, `longestJobMs`, `turnsMs`, `needsRetry`, `rearmed`, `yielded`, `jobsDispatched` |
+| `relay_alarm` | Once per `TagStateStore.alarm()` invocation (Cloudflare) | `outcome` (`idle`, `drained`, `threw`), `durationMs`, `jobsListed`, `groups`, `jobsRun`, `jobsSettled`, `jobsRetained`, `jobsCarried`, `longestJobMs`, `turnsMs`, `needsRetry`, `rearmed`, `yielded`, `jobsDispatched`, `keepWarm`, and on an `idle` record its parts: `retentionMs`, `ledgerMs`, `cleanupsMs`, `repairsMs`, `scheduleMs`, `receiptsMs` |
 | `thread_runner_alarm` | Once per `SlackThreadRunner.alarm()` invocation (Cloudflare) | `outcome` (`idle`, `drained`, `threw`), `jobs`, `ran`, `yielded`, `carried`, `dropped`, `durationMs` |
-| `turn_latency` | Once per relay attempt of one turn (both lanes) | `turnRef`, `runRef`, `lane` (`cloudflare`, `node`), `executor` (`alarm`, `runner`, `node`), `attempt`, `outcome` (`returned`, `threw`, `stopped`: a stopped run's ending), `firstWrite`, `final` (`delivered`, `deferred`, `none`), `admissionToStartMs`, `admissionToFirstWriteMs`, `admissionToFinalMs`, `receiptToAdmissionMs`, `receiptToFirstWriteMs`, `attemptMs`, `folded` (present when the turn took follow-ups: how many queued messages it read with its own), `foldedInformed` (of those, how many were a teammate's, read as information only), `read` (present when the turn replaced a mid-run 👀 with 👍: how many) |
+| `runner_boot` | Once per `SlackThreadRunner` activation (an instance constructed in memory), at the first call it serves (Cloudflare) | `firstMethod` (`wake` for the state store waking it at a delivery's receipt, `admit`, `alarm`, `stop`, `status`, `observedStatus`, `midRunReply`, `runFacts`, `presentationGet`, `presentationTransition`, or `host` for a host function), `cold` (the first runner its isolate constructed), `constructMs` (the constructor through its resume check), `constructToFirstCallMs`, and with `wake` or `admit`: `turnRef` and `sentToConstructMs` (the state store's send to the constructor's start) |
+| `agent_boot` | Once per Flue agent object activation (a Slack thread's Agent, a routine run, a coding worker), at the first call it serves (Cloudflare) | `agentClass` (the generated Durable Object class), `firstMethod` (`wake` for the state store waking a thread's object as it hands the turn to its runner, or a runner waking it once the turn's plan froze, `stage` for a runner staging a turn's input, `fetch` for a Flue dispatch or read, `alarm`, or `host`), `cold` (the first agent object its isolate constructed), `constructMs`, `constructToFirstCallMs`, and with `wake` or `stage`: `turnRef` and `sentToConstructMs` (the sender's clock before it addressed the object, to the constructor's start) |
+| `turn_latency` | Once per relay attempt of one turn (both lanes) | `turnRef`, `runRef`, `lane` (`cloudflare`, `node`), `executor` (`alarm`, `runner`, `node`), `attempt`, `outcome` (`returned`, `threw`, `stopped`: a stopped run's ending), `firstWrite`, `final` (`delivered`, `deferred`, `none`), `admissionToStartMs`, `admissionToFirstWriteMs`, `admissionToFinalMs`, `receiptToAdmissionMs`, `receiptToFirstWriteMs`, `handoffMs` (a runner turn's first attempt: see below), `runnerWakeLeadMs` (a runner turn's first attempt, when the state store woke its runner at receipt: how long before the hand-off it sent the wake), `admissionStatusMs` (a runner turn's first attempt, when the state store tried to show its status before the hand-off: how long the hand-off waited for it; see below), `agentStageMs` (staging the turn's input beside the thread's Agent before dispatch, and loading the connector details its render reads: see below), `agentWakeLeadMs` (a Cloudflare turn whose Agent object was woken: how long before staging the wake was sent), `agentWakeSource` (with `agentWakeLeadMs`: `admission` or `plan`, which wake it counts from), `startToStageMs` (from the attempt's start to that staging's start: see below), `attemptMs`, `folded` (present when the turn took follow-ups: how many queued messages it read with its own), `foldedInformed` (of those, how many were a teammate's, read as information only), `read` (present when the turn replaced a mid-run 👀 with 👍: how many) |
 | `turn_fold` | When the state store confirms that a running turn's model read messages sent while it worked (both lanes) | `turnRef`, `late` (how many messages this confirmation covers; each message is counted once), `informed` (of those, how many were a teammate's, read as information only), `turn` (of those, how many it read after a tool step rather than before its reply), `edits` (edits of messages it had already read, counted apart from `late`) |
 | `turn_fold` (edit) | Once per delivery of a person's edit of a message (both lanes) | `op` (`edit_admission`), `outcome` (`admitted`, `already_admitted` for a redelivery, `no_live_turn`, `not_foldable`, `not_author`, `stale`, `unchanged`, `unsupported` for a state store without edit admission, or `failed` when admission threw and the delivery is retried) |
 | `turn_fold` (coding job) | When a coding job's wait pauses for new messages, a later wait for it ends, or the Agent passes it guidance | `turnRef`, `op` (`coding_pause`, `coding_resume` or `coding_relay`), `outcome` (pause: `messages` or `unchecked`; resume: `completed`, `paused` or a failure reason; relay: `sent`, `finished`, `stopped` or `not_sent`) |
 | `state_rpc` | Sampled calls from a `Cf*Store` proxy into `TagStateStore` | `method` (RPC name), `op` (request kind for `*Execute` RPCs), `ms`, `slow`, `ok`, `isolateCalls`, `isolateSlowCalls` |
 | `gateway_delivery` | Once per authenticated gateway delivery at Worker admission (Cloudflare) | `transport` (`http`, `socket`), `deliveryKind` (`event`, `agent_selected`, `channel_agent_add`), `eventType` and `subtype` (Slack's event vocabulary), `outcome` (`accepted`, `duplicate`, `rejected`, `failed`, `filtered`), `lagMs`, `slackLagMs`, socket only: `source` (`store`, `recent`, `filter`), `filterReason`, `queueMs`, `admitMs`, `inFlight`, `sessionPhase`, `sessionHealth`, `sessionAttempt`, `sessionGeneration`, `sessionAgeMs` |
 | `slack_read` | Once per Slack `conversations.history` or `conversations.replies` read for context or a read tool | `source` (`prefetch`, `tool`), `method` (`history`, `replies`), `outcome` (`ok`, `refused` by the shared read budget, `rate_limited`), `gated` (the shared app's one-a-minute budget applies), `limit`, `returned`, `includesRoot`, `reachesAnchor` (the page reached the triggering message), `hasCursor`, `order` (`oldest_first`, `newest_first`, `mixed`) |
+| `interaction_judgment` | Once per guaranteed Slack turn (a DM or a mention) the turn judged itself, after its classifier settled (both lanes) | `turnRef`, `recordedBy` (`shortcut`, `clef`, `model`, `unrecorded`), `basis` (the recorded disposition), `basisMs`, `clef` (`read`, `unavailable`, `timeout`, `error`, `unparseable`, `skipped`), `clefMs`, `clefInputTokens` (Clef is platform infrastructure, so this is where its cost is counted), `clefChoice`, `clefTop`, `clefTextMass` (P(reply) + P(work)) and `clefMemory` (each in thousandths), `gate` (`dispatch`, `await_model`), `clefLate` (Clef would have dispatched but the model recorded first), `model` (the classifier's disposition), `modelFailed`, `modelMs`, `refinement` (after a Clef basis: `none`, `labels`, `disagreed`, `model_unavailable`), `agreed` (Clef's disposition equals the model's), and from Clef's separate management call (absent after a shortcut): `management` (`read`, `unavailable`, `timeout`, `error`, `unparseable`), `managementMs`, `managementInputTokens`, `managementTop` (its noul, in thousandths), `managementFired` (at or above 0.5, so the turn's first request mounts the workspace change tools) |
 
 - `relay_alarm.durationMs` is the whole invocation; `turnsMs` is the turn
   drain and `longestJobMs` the slowest single turn attempt in it. `jobsListed`
@@ -327,6 +330,28 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   still running at the 12-minute hard cap (they settle after this record), and
   `yielded` whether the 10-minute observation budget ended with work
   observing.
+- An `idle` record (no turn pending) also times each part of the firing:
+  `retentionMs` is the management retention sweep (run at most every 5
+  minutes per instance; 0 when skipped), then `ledgerMs`,
+  `cleanupsMs` (0 when no cleanup was pending), `repairsMs`, `scheduleMs` and
+  `receiptsMs` are the ledger-run, interaction-cleanup, presentation-repair,
+  schedule-action and management-receipt drains, in that order. They sum to at
+  most `durationMs`; the rest is admission, hand-offs and stop notices. A
+  `drained` record has none of them: its drains run among its turns. On
+  Cloudflare `Date.now()` does not advance during synchronous execution, so a
+  part made of synchronous SQLite work reads 0 ms (and so does `durationMs`
+  for a firing with no awaited work): the fields measure awaited work, such
+  as a Slack call inside a drain.
+- `keepWarm`: while a person has talked to the installation in the last 10
+  minutes, the state store arms its alarm no later than 20 s ahead so the
+  object stays in memory (it is evicted about 30 s after its last activity,
+  and the next message then waits about a second at ingress for its first
+  state read). An idle firing inside that window reports `keepWarm: true` and
+  re-arms the tick; a due time earlier than the tick is kept. Expect up to
+  three idle records a minute per installation during a conversation, and
+  none once it has been quiet for 10 minutes. A store that starts cold reads
+  the window from its newest turn row; an Agent's ask or a setup wake opens
+  no window.
 - Cloudflare turns run in per-thread `SlackThreadRunner` Durable Objects by
   default: the alarm hands each new turn to its thread's runner and returns,
   so on a default deployment `relay_alarm.jobsDispatched` counts those
@@ -359,16 +384,127 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   presentation in its own storage and repairs it itself; the state store's
   presentation copy is refreshed at lifecycle changes, and its repair sweep
   skips runner-owned turns.
+- `runner_boot` and `turn_latency.handoffMs` split the wait between the
+  state store handing a turn over and its runner starting it. `handoffMs` is
+  the runner's `admit` start minus the state store's send time: it compares
+  two objects' clocks, often in different locations, so it carries their
+  skew, and a negative difference logs as 0. The runner keeps it in memory by
+  turn and gives it to the first attempt it runs, so later attempts omit it.
+  It is also absent when the runner was evicted or erased between `admit`
+  and the turn's start, when that first try was put off before it ran (its
+  Slack installation unavailable), and when either object runs a version
+  without the field. Joined by `turnRef`, `runner_boot.sentToConstructMs` is
+  the part of `handoffMs` before the runner's constructor: placing and
+  activating the object, and for a `cold` one starting the isolate and
+  evaluating the script. Workers clocks read 0 while a script evaluates and
+  advance only on I/O, so script evaluation is not timed apart, and
+  `constructMs` and `constructToFirstCallMs` read 0 unless the constructor's
+  resume check reached storage. An `admit` with no `runner_boot` of its
+  `turnRef` reached an instance already in memory.
+- `turn_latency.runnerWakeLeadMs` is how long before handing a turn over
+  the state store sent its runner a wake. The state store sends it at the
+  delivery's receipt, without waiting, when the delivery can become a turn:
+  a message that mentions the app, a DM, a top-level mention of one of the
+  installation's Agents, or a reply in a thread an Agent owns. On the gateway
+  the receipt is the state store's own; on a direct installation on
+  Cloudflare the Worker that verified the delivery tells the state store of
+  it (`noteSlackDelivery`) before admitting it over the store's RPCs, and the
+  state store sends the wake from that note. On Node nothing is woken. The runner's
+  activation overlaps the lead, so when the wake reached a runner not in
+  memory, its `runner_boot` shows `firstMethod` `wake` (with the turn's
+  `turnRef`), no `admit` boot follows, and `handoffMs` drops by up to the
+  lead. Both ends are the state store's clock. The field is absent when no
+  wake reached the runner's current activation within the minute before the
+  hand-off: a reaction, a click, an evicted runner, or a thread whose owner
+  changed (its wake reached the previous owner's runner). A wake that becomes
+  no turn (a refused guest, a mention routing declines) costs one runner
+  activation and stores nothing. A front desk hand-off wakes the Agent's
+  runner at the decision: when Chickpea's run decides to hand its root DM to
+  an Agent, its runner tells the state store (`noteFrontDeskHandoff`) before
+  the line is posted, and the state store wakes the runner the takeover turn
+  will be handed to (the thread's next owner incarnation) and keeps the
+  decision time as that turn's receipt, so the takeover's `runnerWakeLeadMs`
+  and `receiptToAdmissionMs` measure from the decision, about two seconds
+  before its admission.
+- `turn_latency.admissionStatusMs` is how long the state store's hand-off
+  waited for the turn's opening status ("Thinking…" as its Agent), shown
+  from the state store before a turn's first hand-off instead of at the
+  runner's start. It is tried only on a turn that will dispatch (not one
+  held or stopped, already dispatched, judged react_only, a command, an
+  approval, or one whose Agent has no model), with a V3 presentation
+  nothing was shown for yet, no other undelivered turn ahead of it in its
+  conversation, and not for an Agent with its own Slack app. The wait is
+  capped at 1.5 s (`ADMISSION_STATUS_CAP_MS`). When Slack acknowledged the
+  status within it, the hand-off carries the presentation with the status
+  shown, the runner makes no native start and no opening write, and
+  `firstWrite` is `admission_status`: `receiptToFirstWriteMs` and
+  `admissionToFirstWriteMs` then count to the state store's record of it
+  (one clock with receipt and admission). Otherwise (the cap, a Slack
+  failure, a write refused before any call by the thread fence or an
+  unavailable projection, or a row that moved meanwhile) nothing is
+  recorded and the runner shows the status as before; `admissionStatusMs`
+  is present and `firstWrite` is the runner's. A status that lands after
+  the cap shows until the runner's own writes replace it. The wait comes
+  before the hand-off is sent, so `admissionToStartMs` and
+  `runnerWakeLeadMs` include it and `handoffMs` does not. Absent on later
+  attempts, on hand-offs made again, and from an older state store or
+  runner.
+- `turn_latency.agentStageMs` is the runner's wait to stage a turn's input
+  beside its thread's Agent object, which also loads the connector details
+  (tool descriptions and input schemas) the turn's managed connections need
+  before the Agent renders: on a thread's first turn, or after the object was
+  evicted, that wait includes activating the object. Joined by
+  `turnRef`, `agent_boot.sentToConstructMs` is the part before the Agent
+  object's constructor. A turn that dispatched nothing, and a retry that
+  reused an earlier dispatch, omit `agentStageMs`.
+- `turn_latency.agentWakeLeadMs` is how long before staging a Cloudflare
+  turn its Agent object was sent a wake, without waiting for it. The state
+  store sends it as it hands the turn to its runner, to the instance the
+  turn's plan will name (derived as the freeze derives it, and recorded in
+  the inventory first), unless it already knows the turn freezes no plan: a
+  stop, a plan already frozen, a react_only judgment, a command or an
+  approval. The hand-off carries that wake to the runner, and when the
+  frozen plan names the same instance the turn sends no second wake:
+  `agentWakeSource` is `admission` and the lead counts from the state
+  store's send (two clocks). Otherwise the turn wakes the object once its
+  plan froze, and `agentWakeSource` is `plan`: an older state store, an
+  evicted runner, a wake older than a minute, or a plan that names another
+  instance. The object's activation overlaps the lead, so when the wake
+  reached an object not in memory, the turn's `agent_boot` shows
+  `firstMethod` `wake` and no staging boot follows it, and `agentStageMs`
+  drops by up to the lead. Whether that wake activated the object is the
+  `agent_boot` record's to say (joined by `turnRef`): the turn never waits
+  for it. A turn that froze no plan (a retry that restored one, a replay, a
+  stopped turn, a command) or staged nothing omits both fields.
+- `turn_latency.startToStageMs` is the attempt's own work before it stages
+  that input: memory and the plan, the opening status, the judgment, the
+  lease check, the thread's context read, the usage admission and the
+  dispatch's preparation. The context read's Slack messages are read beside
+  memory and the plan; the transcript's continuation, memory's visibility
+  barrier and the people's names in it follow the plan. The installation's
+  identity check and the start
+  claim come before the attempt starts, in `admissionToStartMs`.
+  `admissionToStartMs` plus `startToStageMs` plus `agentStageMs` is
+  admission to the input staged. Present exactly when `agentStageMs` is.
 - `turn_latency` measures from `turn_jobs.enqueued_at` (durable admission)
   and from `turn_jobs.received_at` (receipt). A gateway delivery becomes a turn
   row only when an alarm drains the gateway inbox, so while a long turn holds
   the alarm it waits before admission: `receiptToAdmissionMs` is that wait
   (receipt = the inbox's `accepted_at`) and `receiptToFirstWriteMs` is the
-  user-facing first-status latency. For HTTP and Node admissions receipt equals
-  admission. Rows admitted before this field existed omit the receipt fields.
+  user-facing first-status latency. A direct installation on Cloudflare is
+  admitted by the Worker over the state store's RPCs: its receipt is the
+  Worker's clock when it verified the delivery, sent to the state store with
+  the wake above (`noteSlackDelivery`), so `receiptToAdmissionMs` is the
+  Worker's admission chain. A front desk hand-off's turn (the takeover row)
+  takes its receipt from Chickpea's decision (`noteFrontDeskHandoff`), so its
+  receipt fields measure the takeover's own admission chain, not the person's
+  message; keep such rows apart when aggregating first-status latency. For
+  Node admissions receipt equals admission. Rows admitted before this field
+  existed omit the receipt fields.
   `firstWrite` names the first Slack effect the attempt saw acknowledged:
-  `agent_session` (Agent View processing), `activity_status`, `reaction`,
-  `stream`, or `final`. A durations field is absent when it cannot be measured,
+  `admission_status` (the status the state store showed before the hand-off,
+  above), `agent_session` (Agent View processing), `activity_status`,
+  `reaction`, `stream`, or `final`. A durations field is absent when it cannot be measured,
   for example `admissionToFinalMs` on a `deferred` terminal. A retried turn logs
   one record per attempt. A durable recovery notice runs a second `runTurn` in
   the same attempt, so a turn can log two records with the same `attempt`

@@ -4,6 +4,7 @@ import {
   chargedRequestId,
   chargedSharedPrefix,
   renderSlackRequest,
+  renderSlackThread,
   renderToolPayloads,
   type RenderedRequest,
   type SlackRequestVariant,
@@ -15,21 +16,24 @@ import test from 'node:test';
 import { withEnv } from './helpers/env.ts';
 
 import {
-  RUNTIME_PLAN_INSTRUCTIONS,
-  SHARED_PREFIX_LAST_TOOL,
   SHARED_PREFIX_SHAPES,
   WARMED_SHARED_PREFIX_SHAPES,
   sharePromptPrefix,
   sharedPrefixMisses,
   sharedPrefixRequests,
-  sharedSystemBlock,
   type WarmedSharedPrefixShape,
 } from '../src/agents/shared-prefix.ts';
+import {
+  RUNTIME_PLAN_INSTRUCTIONS,
+  SHARED_PREFIX_LAST_TOOL,
+  reducedSystemBlocks,
+  sharedSystemBlock,
+} from '../src/agents/shared-prefix-layout.ts';
 import { SLACK_INTERACTION_DEFAULTS, SLACK_RUNTIME_GUARDRAIL } from '../src/config/effective-config.ts';
 import type { AgentKind } from '../src/config/types.ts';
 import { EXTERNAL_ACTION_AUTHORITY_PREAMBLE } from '../src/connections/runtime.ts';
 import { AGENT_AUTHORING_ROUTER_INSTRUCTION } from '../src/management/agent-authoring/index.ts';
-import { SLACK_MANAGEMENT_GUIDANCE } from '../src/management/slack-tools.ts';
+import { SLACK_MANAGEMENT_GUIDANCE, USER_AGENT_CREATION_HANDOFF_INSTRUCTION } from '../src/management/slack-tools.ts';
 import { FILE_COMPLETION_INSTRUCTION } from '../src/slack/file-delivery-completion.ts';
 import { SLACK_LISTS_INSTRUCTION } from '../src/slack/lists/tools.ts';
 import { SLACK_ACTION_LINK_INSTRUCTION } from '../src/slack/message-format.ts';
@@ -41,6 +45,7 @@ import { EMPTY_WORKSPACE_ROSTER, createWorkspaceRoster } from '../src/sandbox/wo
 import { WORKSPACE_TOOL_NAMES } from '../src/sandbox/workspace-tools.ts';
 import { FRONT_DESK_TOOL_NAME } from '../src/slack/front-desk.ts';
 import { createFrontDeskTool } from '../src/slack/front-desk-tool.ts';
+import { WORKSPACE_CHANGE_TOOL_NAMES } from '../src/management/workspace-change-tools.ts';
 
 const SNAPSHOT = new URL('../src/agents/shared-prefix-tools.json', import.meta.url);
 const REQUEST_ID = 'req_shared_prefix_test';
@@ -139,6 +144,23 @@ for (const agentKind of ['system', 'user'] as const) {
       'the tenant block opens with the Agent\'s own instructions');
   });
 }
+
+// Defect caught: system Chickpea, which creates Agents, is told to hand
+// creation off; a user Agent loses the hand-off; or a turn without the
+// management tools is told to call one.
+test('the creation hand-off is in a user Agent\'s shared block only, and only with the management tools', async () => {
+  assert.ok(sharedSystemBlock('user').includes(USER_AGENT_CREATION_HANDOFF_INSTRUCTION));
+  assert.ok(!sharedSystemBlock('system').includes(USER_AGENT_CREATION_HANDOFF_INSTRUCTION));
+  assert.ok(!SLACK_MANAGEMENT_GUIDANCE.includes(USER_AGENT_CREATION_HANDOFF_INSTRUCTION));
+  for (const [block, reason] of reducedSystemBlocks()) {
+    if (reason === 'management_unmounted') assert.ok(!block.includes(USER_AGENT_CREATION_HANDOFF_INSTRUCTION));
+  }
+  const [userConstant, userTenant] = (await render({ ...ALPHA, agentKind: 'user' })).system.map((block: any) => block.text);
+  assert.ok(userConstant.includes(USER_AGENT_CREATION_HANDOFF_INSTRUCTION));
+  assert.ok(!userTenant.includes(USER_AGENT_CREATION_HANDOFF_INSTRUCTION));
+  const systemPrompt = (await render({ ...ALPHA, agentKind: 'system' })).system.map((block: any) => block.text).join('\n');
+  assert.ok(!systemPrompt.includes(USER_AGENT_CREATION_HANDOFF_INSTRUCTION));
+});
 
 for (const agentKind of ['system', 'user'] as const) {
   for (const shape of WARMED_SHARED_PREFIX_SHAPES) {
@@ -335,8 +357,8 @@ const CODING_BRAVO: CodingTenant = {
   coordinatorId: 'coordinator_bravo', conversationKey: `${BRAVO.workspace}:${BRAVO.channel}:1787009000.000100`, openWorkspace: 'ledger-fix',
 };
 
-test('shapes compose the capability segments in mount order, and only interactive shapes without coding or a front desk are warmed', () => {
-  assert.equal(Object.keys(SHARED_PREFIX_SHAPES).length, 32);
+test('shapes compose the capability segments in mount order, and only interactive shapes without management, coding or a front desk are warmed', () => {
+  assert.equal(Object.keys(SHARED_PREFIX_SHAPES).length, 64);
   for (const [shape, segments] of Object.entries(SHARED_PREFIX_SHAPES)) {
     assert.equal(shape, segments.join('_') || 'bare');
   }
@@ -368,6 +390,40 @@ const FRONT_DESK = {
   omitted: 0,
   incomplete: false,
 };
+
+/**
+ * A thread whose model activated agent-authoring, and the first request of
+ * its next turn, which mounts the change tools from its start.
+ */
+async function renderManagementTurn(variant: SlackRequestVariant): Promise<RenderedRequest> {
+  const [, second] = await renderSlackThread(variant, [
+    { text: 'Create an Agent named Scout.', replies: [{ toolCall: { name: 'activate_skill', input: { name: 'agent-authoring' } } }, { text: 'Done.' }] },
+    { text: 'Rename it Ranger.', replies: [] },
+  ]);
+  return second![0]!;
+}
+
+/** The change tools as a turn that mounts them from its start carries them. */
+async function renderManagementTools(): Promise<unknown[]> {
+  const request = await renderManagementTurn({ ...ALPHA, thread: '1787007200.000100' });
+  const tools = request.tools.filter((tool: any) => (WORKSPACE_CHANGE_TOOL_NAMES as readonly string[]).includes(tool.name));
+  assert.deepEqual(tools.map((tool: any) => tool.name), [...WORKSPACE_CHANGE_TOOL_NAMES], 'every change tool renders');
+  return withoutMarkers(tools) as unknown[];
+}
+
+test('a later turn of a thread that activated agent-authoring carries the management shape and caches B for an hour', async () => {
+  for (const agentKind of ['system', 'user'] as const) {
+    const before = sharedPrefixMisses();
+    const request = await renderManagementTurn({ ...ALPHA, agentKind, thread: agentKind === 'system' ? '1787008100.000100' : '1787008200.000100' });
+    assert.equal(sharedPrefixMisses(), before);
+    const anchor = anchorIndex(request);
+    assert.deepEqual(request.tools.slice(anchor + 1).map((tool: any) => tool.name),
+      [...SHAPE_TOOLS.interactive_streaming, ...WORKSPACE_CHANGE_TOOL_NAMES, ...PI_TRAILER_TOOLS]);
+    assert.equal(chargedSharedPrefix(request), `${agentKind}/interactive_streaming_management`);
+    assert.deepEqual(markers(request), [`tools[${anchor}] ${SHARED_PREFIX_LAST_TOOL} 1h`, 'system[0] 1h', 'system[1] 5m', 'user 5m']);
+    assert.equal(request.system[0].text, sharedSystemBlock(agentKind));
+  }
+});
 
 /** The hand-off tool as a request carries it; its definition names no Agent. */
 async function renderFrontDeskTools(): Promise<unknown[]> {
@@ -565,6 +621,7 @@ test('sharedPrefixRequests sends the bytes rendered turns send under the ID thei
     }
   }
   // A Node render never mounts a coding workspace; the segment comes from the tools a coordinator mounts.
+  snapshot.segments.management = await renderManagementTools();
   snapshot.segments.coding = await renderCodingTools(CODING_ALPHA);
   snapshot.segments.front_desk = await renderFrontDeskTools();
   const stored = JSON.stringify(snapshot, null, 1) + '\n';

@@ -236,7 +236,7 @@ test('native Slack capability declaration follows an actor-less Lists mount', as
     for (const toolName of SLACK_LIST_TOOL_NAMES) {
       assert.equal(mountedToolNames.includes(toolName), false, toolName);
     }
-    assert.ok(mountedToolNames.includes('propose_workspace_changes'));
+    assert.ok(mountedToolNames.includes('inspect_workspace'));
   } finally {
     await harness.close();
   }

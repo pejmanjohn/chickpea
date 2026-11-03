@@ -11,7 +11,7 @@ import {
   shareOpenAIPromptCache,
   type PromptCacheKey,
 } from '../src/agents/openai-prompt-cache.ts';
-import { sharedSystemBlock, slackSystemBase } from '../src/agents/shared-prefix.ts';
+import { sharedSystemBlock, slackSystemBase } from '../src/agents/shared-prefix-layout.ts';
 import { BUNDLED_MODEL_CATALOG } from '../src/model-catalog/bundled.ts';
 import { resolveActiveCatalogRoute } from '../src/model-catalog/catalog.ts';
 import { getBuiltinModel } from '../src/model-catalog/pi-builtin-models.ts';

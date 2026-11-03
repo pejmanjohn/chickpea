@@ -316,7 +316,7 @@ async function dispatchMcp(c: Context, options: McpOAuthRuntimeOptions): Promise
   const runtime = await resolveMcpRuntime(c, options);
   if (!runtime) return new Response('Not Found', { status: 404 });
 
-  const handler = authenticatedRuntimeHandler({
+  const handler = await authenticatedRuntimeHandler({
     environment: runtime.environment,
     identity: runtime.identity,
     betterAuthOrganizationId: runtime.betterAuthOrganizationId,
@@ -355,14 +355,14 @@ async function resolveMcpRuntime(c: Context, options: McpOAuthRuntimeOptions): P
   };
 }
 
-function authenticatedRuntimeHandler(input: {
+async function authenticatedRuntimeHandler(input: {
   environment: BetterAuthEnvironment;
   identity: IdentityStore;
   betterAuthOrganizationId: string;
   hostedLogin: HostedLoginFence | undefined;
   createServer: McpServerFactory;
-}): McpRequestHandler {
-  const auth = createBetterAuth(input.environment);
+}): Promise<McpRequestHandler> {
+  const auth = await createBetterAuth(input.environment);
   const directory = new BetterAuthDirectory({
     backend: input.environment.backend,
     access: input.identity,
@@ -527,7 +527,7 @@ export async function lookupMcpClientName(
 ): Promise<string | undefined> {
   if (!clientId) return undefined;
   try {
-    const auth = createBetterAuth(environment);
+    const auth = await createBetterAuth(environment);
     const client = await (auth.api as unknown as PublicOAuthClientApi).getOAuthClientPublic({ query: { client_id: clientId }, headers });
     return typeof client?.client_name === 'string' ? client.client_name : undefined;
   } catch {

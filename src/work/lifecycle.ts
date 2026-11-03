@@ -181,18 +181,16 @@ export class ShadowWorkLifecycle {
     });
     if (prepared === 'gap') return undefined;
     let preparedBody: string | undefined;
-    // A deferred input is checked by its execution, which requires it.
-    if (prepared === 'recorded') {
+    if (prepared === 'recorded' && this.options.mode !== 'enforce') {
+      preparedBody = preparedInput;
+    } else if (prepared === 'recorded') {
       const preparedContent = preparedRun?.preparedInputRef
         ? await this.options.store.getContent(preparedRun.preparedInputRef)
         : undefined;
       if (!preparedContent?.body) {
         this.usable = false;
         this.options.onGap?.('prepare_input');
-        if (this.options.mode === 'enforce') {
-          throw new Error('Ledger prepared input could not be read after persistence.');
-        }
-        return undefined;
+        throw new Error('Ledger prepared input could not be read after persistence.');
       }
       preparedBody = preparedContent.body;
     }

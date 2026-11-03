@@ -9,13 +9,17 @@ import ts from 'typescript';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import {
   emitGatewayDelivery,
+  emitInteractionJudgment,
   emitRelayAlarm,
   emitThreadRunnerAlarm,
   emitRuntimeLatency,
   opaqueRunRef,
   opaqueTurnRef,
   recordStateRpc,
+  AgentBootMarks,
+  resetRunnerActivationsForTest,
   resetStateRpcCountersForTest,
+  RunnerBootMarks,
   startRelayAlarmMetrics,
   STATE_RPC_SAMPLE_EVERY,
   STATE_RPC_SLOW_MS,
@@ -118,6 +122,81 @@ test('runtime latency records keep only numbers, booleans, tokens, and opaque re
   assertContentFree(record!);
 });
 
+// Defect caught: a free-text or probability field reaches Workers Logs as
+// written, or the fields production monitoring reads are dropped.
+test('interaction_judgment keeps its tokens, scales probabilities to thousandths, and drops free text', () => {
+  const { records, sink } = captureSink();
+  emitInteractionJudgment({
+    turnJobId: 'turn_judgment_raw_identifier',
+    recordedBy: 'clef',
+    basis: 'reply',
+    basisMs: 312.4,
+    clef: 'read',
+    clefMs: 260,
+    clefInputTokens: 878,
+    clefChoice: 'reply',
+    clefTop: 0.81,
+    clefTextMass: 0.91,
+    clefMemory: 0.02,
+    gate: 'dispatch',
+    model: 'react_only',
+    modelFailed: false,
+    modelMs: 2410,
+    refinement: 'disagreed',
+    agreed: false,
+    management: 'read',
+    managementMs: 240.6,
+    managementInputTokens: 414,
+    managementTop: 0.973,
+    managementFired: true,
+  }, sink);
+  emitInteractionJudgment({
+    recordedBy: 'Complete the verification.',
+    clef: 'unavailable',
+    gate: 'await_model',
+    model: 'slack.botToken',
+    clefLate: true,
+    management: 'Create an Agent named Scout.',
+    managementFired: false,
+  }, sink);
+  assert.equal(records.length, 2);
+  assert.deepEqual(records[0], {
+    component: 'runtime',
+    event: 'interaction_judgment',
+    turnRef: opaqueTurnRef('turn_judgment_raw_identifier'),
+    recordedBy: 'clef',
+    basis: 'reply',
+    basisMs: 312,
+    clef: 'read',
+    clefMs: 260,
+    clefInputTokens: 878,
+    clefChoice: 'reply',
+    clefTop: 810,
+    clefTextMass: 910,
+    clefMemory: 20,
+    gate: 'dispatch',
+    model: 'react_only',
+    modelFailed: false,
+    modelMs: 2410,
+    refinement: 'disagreed',
+    agreed: false,
+    management: 'read',
+    managementMs: 241,
+    managementInputTokens: 414,
+    managementTop: 973,
+    managementFired: true,
+  });
+  assert.deepEqual(records[1], {
+    component: 'runtime',
+    event: 'interaction_judgment',
+    clef: 'unavailable',
+    gate: 'await_model',
+    clefLate: true,
+    managementFired: false,
+  });
+  for (const record of records) assertContentFree(record!);
+});
+
 test('runtime latency emission never throws when the sink fails', () => {
   assert.doesNotThrow(() => emitRuntimeLatency('relay_alarm', { durationMs: 1 }, {
     info() {
@@ -169,6 +248,7 @@ test('relay_alarm reports the documented fields for one invocation', () => {
     rearmed: true,
     yielded: false,
     jobsDispatched: 2,
+    keepWarm: false,
   }]);
 });
 
@@ -187,6 +267,79 @@ test('thread_runner_alarm reports one runner alarm with fixed fields only', () =
     durationMs: 600_010,
     outcome: 'drained',
   }]);
+});
+
+test('runner_boot logs an activation once, at its first call, and only the first in an isolate is cold', () => {
+  resetRunnerActivationsForTest();
+  const time = clock(50_000);
+  const { records, sink } = captureSink();
+  const first = new RunnerBootMarks(time.now, sink);
+  time.advance(30);
+  first.constructed();
+  time.advance(5);
+  first.call('admit', { sentAt: 48_100, turnJobId: 'evt:T_LATENCY:1785509000.000100' });
+  time.advance(100);
+  first.call('alarm');
+  first.call('admit', { sentAt: 50_100, turnJobId: 'evt:T_LATENCY:1785509000.000100' });
+  assert.deepEqual(records, [{
+    component: 'runtime',
+    event: 'runner_boot',
+    firstMethod: 'admit',
+    cold: true,
+    turnRef: opaqueTurnRef('evt:T_LATENCY:1785509000.000100'),
+    sentToConstructMs: 1_900,
+    constructMs: 30,
+    constructToFirstCallMs: 5,
+  }], 'later calls on the same activation log nothing');
+  assertContentFree(records[0]!);
+
+  // Another runner in the same isolate, woken by its alarm: no caller clock.
+  const next = new RunnerBootMarks(time.now, sink);
+  next.constructed();
+  next.call('alarm');
+  assert.deepEqual(records[1], {
+    component: 'runtime',
+    event: 'runner_boot',
+    firstMethod: 'alarm',
+    cold: false,
+    constructMs: 0,
+    constructToFirstCallMs: 0,
+  });
+  assert.equal(records.length, 2);
+});
+
+test('agent_boot logs an agent activation once, names its class, and counts cold apart from runners', () => {
+  resetRunnerActivationsForTest();
+  const time = clock(70_000);
+  const { records, sink } = captureSink();
+  new RunnerBootMarks(time.now, sink).call('alarm');
+  const agent = new AgentBootMarks('ChickpeaSlackV2', time.now, sink);
+  agent.constructed();
+  time.advance(40);
+  agent.call('stage', { sentAt: 68_800, turnJobId: 'evt:T_LATENCY:1785509000.000100' });
+  agent.call('fetch');
+  const routine = new AgentBootMarks('ChickpeaRoutineExecutionV2', time.now, sink);
+  routine.call('alarm');
+  assert.deepEqual(records.slice(1), [{
+    component: 'runtime',
+    event: 'agent_boot',
+    agentClass: 'ChickpeaSlackV2',
+    firstMethod: 'stage',
+    cold: true,
+    turnRef: opaqueTurnRef('evt:T_LATENCY:1785509000.000100'),
+    sentToConstructMs: 1_200,
+    constructMs: 0,
+    constructToFirstCallMs: 40,
+  }, {
+    component: 'runtime',
+    event: 'agent_boot',
+    agentClass: 'ChickpeaRoutineExecutionV2',
+    firstMethod: 'alarm',
+    cold: false,
+    constructMs: 0,
+    constructToFirstCallMs: 0,
+  }], 'the runner before it does not make the first agent warm, and a later call logs nothing');
+  assertContentFree(records[1]!);
 });
 
 // Execute the production alarm entry point, not a copy: it must emit one
@@ -243,6 +396,65 @@ test('alarm() emits a threw record and still rethrows a store failure', async ()
   assert.equal(alarmSink.records[0]?.outcome, 'threw');
 });
 
+// The production hand-off, not a copy: it sends its clock with the job.
+const admitToRunnerMethod = stateClass.members.find((member) =>
+  ts.isMethodDeclaration(member) && member.name.getText(cloudflareSource) === 'admitToRunner');
+assert.ok(admitToRunnerMethod, 'production admitToRunner() exists');
+
+function handoffProbe(answer: Record<string, unknown>) {
+  const sent: LogRecord[] = [];
+  const confirmed: unknown[][] = [];
+  const runner = {
+    admit: async (job: LogRecord) => {
+      sent.push({ ...job });
+      return answer;
+    },
+  };
+  const HandoffProbe = vm.runInNewContext(
+    ts.transpileModule(
+      `class HandoffProbe { ${admitToRunnerMethod!.getText(cloudflareSource)} }\nHandoffProbe`,
+      { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+    ).outputText,
+    {
+      Date: { now: () => 70_000 },
+      console: { warn: () => undefined },
+      slackAgentThreadKey: () => 'T1:C1:1.0',
+      threadRunnerStub: () => runner,
+      installationOwnershipOf: () => undefined,
+      effectiveTurnSlackInstallationId: () => 'workspace',
+      carriedGatewayIdentity: () => undefined,
+    },
+  ) as new () => {
+    stores: unknown;
+    env: unknown;
+    wakeAgentAtHandoff: () => undefined;
+    admitToRunner(job: unknown): Promise<boolean>;
+  };
+  const probe = new HandoffProbe();
+  probe.env = {};
+  // The Agent wake beside the hand-off is agent-wake-admission.test.ts's.
+  probe.wakeAgentAtHandoff = () => undefined;
+  probe.stores = {
+    presentations: { get: () => undefined },
+    config: { getWorkspaceInstallation: () => undefined },
+    turnJobs: {
+      confirmRunner: (...args: unknown[]) => confirmed.push(args),
+    },
+  };
+  return { admit: () => probe.admitToRunner({ id: 'turn_1', turn: {}, assignment: {} }), sent, confirmed };
+}
+
+test("a runner hand-off sends the state store's clock with the job", async () => {
+  const admitted = handoffProbe({ admitted: true });
+  assert.equal(await admitted.admit(), true);
+  assert.equal(admitted.sent[0]?.sentAt, 70_000);
+  assert.deepEqual(admitted.confirmed, [['turn_1']]);
+
+  const refused = handoffProbe({ admitted: false, refused: 'installation_mismatch' });
+  assert.equal(await refused.admit(), false);
+  assert.deepEqual(refused.confirmed, [], 'a refused hand-off is retried, never confirmed');
+});
+
 test('turn_latency measures admission to the first acknowledged write and to final', () => {
   const time = clock(10_000);
   const { records, sink } = captureSink();
@@ -278,6 +490,126 @@ test('turn_latency measures admission to the first acknowledged write and to fin
     attemptMs: 5_100,
   }]);
   assertContentFree(records[0]!);
+});
+
+// Defect caught: a record that drops the receipt wake's lead its runner measured.
+test("turn_latency logs a runner turn's hand-off delay and wake lead from its context", () => {
+  const { records, sink } = captureSink();
+  new TurnLatencyTracker(
+    { admittedAt: 9_000, handoffMs: 1_900, runnerWakeLeadMs: 640, lane: 'cloudflare', executor: 'runner' },
+    { turnJobId: 'evt:T_LATENCY:1785509000.000100', attempt: 1 },
+    clock(10_000).now,
+    sink,
+  ).emit('returned');
+  assert.equal(records[0]?.handoffMs, 1_900);
+  assert.equal(records[0]?.runnerWakeLeadMs, 640);
+  new TurnLatencyTracker(
+    { admittedAt: 9_000, handoffMs: 1_900, lane: 'cloudflare', executor: 'runner' }, {}, clock(10_000).now, sink,
+  ).emit('returned');
+  assert.equal('runnerWakeLeadMs' in records[1]!, false, 'a turn whose runner no wake reached omits the field');
+  records.forEach(assertContentFree);
+});
+
+// Defects caught: a first write that ignores the status the state store
+// showed before the hand-off (receiptToFirstWriteMs would then count to the
+// runner's later write), one a later write replaces, a wait that is not
+// logged, and fields on a turn whose hand-off tried no status.
+test('turn_latency counts the first write from the status the state store showed before the hand-off', () => {
+  const { records, sink } = captureSink();
+  const time = clock(10_000);
+  const tracker = new TurnLatencyTracker({
+    receivedAt: 8_000, admittedAt: 8_300, handoffMs: 40, admissionStatusMs: 310, admissionStatusAt: 8_610,
+    lane: 'cloudflare', executor: 'runner',
+  }, { turnJobId: 'msg:C1:1785509000.000100', attempt: 1 }, time.now, sink);
+  time.advance(700);
+  tracker.markSlackWrite('activity_status');
+  tracker.emit('returned');
+  assert.equal(records[0]?.firstWrite, 'admission_status');
+  assert.equal(records[0]?.receiptToFirstWriteMs, 610);
+  assert.equal(records[0]?.admissionToFirstWriteMs, 310);
+  assert.equal(records[0]?.admissionStatusMs, 310);
+  // The cap or a failure: the wait is logged, and the runner's write is the first.
+  const missed = new TurnLatencyTracker({
+    receivedAt: 8_000, admittedAt: 8_300, admissionStatusMs: 600, lane: 'cloudflare', executor: 'runner',
+  }, {}, clock(10_000).now, sink);
+  missed.markSlackWrite('agent_session');
+  missed.emit('returned');
+  assert.equal(records[1]?.firstWrite, 'agent_session');
+  assert.equal(records[1]?.receiptToFirstWriteMs, 2_000);
+  assert.equal(records[1]?.admissionStatusMs, 600);
+  new TurnLatencyTracker({ admittedAt: 9_000, lane: 'cloudflare', executor: 'runner' }, {}, clock(10_000).now, sink)
+    .emit('returned');
+  assert.equal('admissionStatusMs' in records[2]!, false, 'a hand-off that tried no status omits the field');
+  records.forEach(assertContentFree);
+});
+
+// Defects caught: a start-to-stage time that includes the staging itself, one
+// a later staging (a retry's) overwrites, and a field present on a turn that
+// staged nothing.
+test('turn_latency logs how long staging the turn input took and how soon it began, from its first staging', () => {
+  const { records, sink } = captureSink();
+  const time = clock(10_000);
+  const tracker = new TurnLatencyTracker(
+    { admittedAt: 9_000, lane: 'cloudflare', executor: 'runner' }, {}, time.now, sink,
+  );
+  // The attempt prepares for 1.2 s, then staging takes 240 ms.
+  time.advance(1_440);
+  tracker.markAgentStage(240);
+  time.advance(500);
+  tracker.markAgentStage(15);
+  tracker.emit('returned');
+  assert.equal(records[0]?.agentStageMs, 240);
+  assert.equal(records[0]?.startToStageMs, 1_200);
+  new TurnLatencyTracker({ lane: 'node', executor: 'node' }, {}, clock(0).now, sink).emit('returned');
+  assert.equal('agentStageMs' in records[1]!, false, 'a turn that staged nothing omits the field');
+  assert.equal('startToStageMs' in records[1]!, false);
+});
+
+// Defects caught: the lead is measured to the end of staging instead of its
+// send, a later wake or staging moves it, or a turn that did not both wake
+// and stage reports one.
+test('turn_latency logs how long before staging the turn woke its Agent object', () => {
+  const time = clock(10_000);
+  const { records, sink } = captureSink();
+  const tracker = new TurnLatencyTracker({ lane: 'cloudflare', executor: 'runner' }, {}, time.now, sink);
+  tracker.markAgentWake();
+  time.advance(1_300);
+  tracker.markAgentWake();
+  time.advance(200);
+  tracker.markAgentStage(200);
+  time.advance(50);
+  tracker.markAgentStage(10);
+  tracker.emit('returned');
+  assert.equal(records[0]?.agentStageMs, 200);
+  assert.equal(records[0]?.agentWakeLeadMs, 1_300, 'from the first wake to the first staging send');
+  assert.equal(records[0]?.agentWakeSource, 'plan');
+
+  const wokenOnly = new TurnLatencyTracker({ lane: 'cloudflare', executor: 'runner' }, {}, time.now, sink);
+  wokenOnly.markAgentWake();
+  wokenOnly.emit('returned');
+  const stagedOnly = new TurnLatencyTracker({ lane: 'cloudflare', executor: 'runner' }, {}, time.now, sink);
+  stagedOnly.markAgentStage(900);
+  stagedOnly.emit('returned');
+  assert.equal('agentWakeLeadMs' in records[1]!, false, 'a woken turn that staged nothing omits the field');
+  assert.equal('agentWakeLeadMs' in records[2]!, false, 'a turn that staged without a wake omits the field');
+  assert.equal('agentWakeSource' in records[1]! || 'agentWakeSource' in records[2]!, false, 'and its source');
+});
+
+// Defects caught: the lead counted from the turn's own clock when admission's
+// wake came first, a later wake that moves it, and a record that does not
+// say which wake it counts from.
+test("turn_latency counts the lead from admission's wake of the Agent object when that came first", () => {
+  const time = clock(10_000);
+  const { records, sink } = captureSink();
+  const tracker = new TurnLatencyTracker({ lane: 'cloudflare', executor: 'runner' }, {}, time.now, sink);
+  time.advance(900);
+  tracker.markAgentWake(7_600);
+  tracker.markAgentWake();
+  time.advance(400);
+  tracker.markAgentStage(100);
+  tracker.emit('returned');
+  assert.equal(records[0]?.agentWakeLeadMs, 3_600, "from admission's send (the state store's clock) to the staging send");
+  assert.equal(records[0]?.agentWakeSource, 'admission');
 });
 
 test('turn_latency omits durations it cannot measure and never throws', () => {
@@ -805,6 +1137,7 @@ test('HTTP gateway admission logs gateway_delivery with the signed issuedAt lag'
   let verifyFails = false;
   let delivery: object = gatewayEvent();
   let queued = 0;
+  const woken: string[] = [];
   const Probe = vm.runInNewContext(
     ts.transpileModule(`class Probe { ${method.getText(source)} }\nProbe`,
       { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText,
@@ -813,7 +1146,6 @@ test('HTTP gateway admission logs gateway_delivery with the signed issuedAt lag'
       Date: { now: () => GATEWAY_NOW },
       GATEWAY_BINDING_SETTING: 'binding',
       GATEWAY_HTTP_SETTING: 'slack.gateway.httpDelivery.v1',
-      RELAY_BATCH_WINDOW_MS: 250,
       HttpDeliveryError,
       GatewayInboxConflictError: class extends Error {},
       parseHttpDeliveryState,
@@ -834,7 +1166,9 @@ test('HTTP gateway admission logs gateway_delivery with the signed issuedAt lag'
   ) as new () => { receiveGatewayHttp(input: object): Promise<{ status: number; body: unknown }> };
   const probe = Object.assign(new Probe(), {
     env: {},
+    admissionWakeAt: () => GATEWAY_NOW,
     armAlarmNoLaterThan: async () => {},
+    wakeRunnerAtReceipt: (received: { kind: string }) => woken.push(received.kind),
     call(fn: (stores: object) => unknown) {
       try {
         return { ok: true, value: fn({
@@ -876,4 +1210,5 @@ test('HTTP gateway admission logs gateway_delivery with the signed issuedAt lag'
     responseAction: { response_action: 'clear' },
   });
   assert.equal(queued, 1, 'only the earlier event was queued');
+  assert.deepEqual(woken, ['event.deliver'], 'only the accepted event woke a runner at receipt');
 });

@@ -10,81 +10,28 @@
  * `sharePromptPrefix`. Any per-workspace text placed before the boundary, or
  * an unconditional instruction registered outside `slackSystemBase`, breaks
  * sharing; tests/shared-prefix.test.ts pins both.
+ *
+ * This module reads the rendered tools. The Worker loads it on that hook's
+ * first use, and the hosted prewarm imports it. A turn takes its text and
+ * tool order from shared-prefix-layout.ts, and
+ * tests/worker-startup-imports.test.ts keeps this module out of the
+ * Worker's startup imports.
  */
 import type { AgentKind } from '../config/types.ts';
-import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
 import {
-  SLACK_INTERACTION_DEFAULTS,
-  SLACK_RUNTIME_GUARDRAIL,
-  agentTeammateInstructions,
-  runtimeIdentityInstruction,
-} from '../config/effective-config.ts';
-import type { ResolvedAssignment } from '../config/types.ts';
-import { EXTERNAL_ACTION_AUTHORITY_PREAMBLE, savedAgentInstructionsBlock } from '../connections/runtime.ts';
-import { AGENT_AUTHORING_ROUTER_INSTRUCTION } from '../management/agent-authoring/index.ts';
-import { firstTeammateInstruction } from '../management/first-teammate.ts';
-import { SLACK_MANAGEMENT_GUIDANCE, slackManagementInstruction } from '../management/slack-tools.ts';
-import { FILE_COMPLETION_INSTRUCTION } from '../slack/file-delivery-completion.ts';
-import { SLACK_LISTS_INSTRUCTION } from '../slack/lists/tools.ts';
-import { SLACK_ACTION_LINK_INSTRUCTION } from '../slack/message-format.ts';
-import { SLACK_READING_INSTRUCTION } from '../slack/reading/tools.ts';
-import { SLACK_PRESENT_TABLE_INSTRUCTION } from '../slack/table-presentation.ts';
-import { SLACK_PRESENT_DETAILS_TOOL_NAME } from '../slack/ui/presentation-tools.ts';
+  AGENT_KINDS,
+  SHARED_PREFIX_LAST_TOOL,
+  classifySlackSystemText,
+  sharedSystemBlock,
+} from './shared-prefix-layout.ts';
 import rendered from './shared-prefix-tools.json' with { type: 'json' };
 
-/** The last universal tool: breakpoint A. */
-export const SHARED_PREFIX_LAST_TOOL = SLACK_PRESENT_DETAILS_TOOL_NAME;
-
-/** Tools that open every Slack turn's tool list, before any capability or tenant tool. */
-export const UNIVERSAL_ARTIFACT_TOOL_NAMES: ReadonlySet<string> = new Set(['post_artifact', 'complete_file_delivery']);
-
-/** Unconditional runtime-plan instructions. A routine registers them; a Slack turn opens its system block with them. */
-export const RUNTIME_PLAN_INSTRUCTIONS = {
-  honesty: 'Never invent facts or claim access to context and tools you do not have.',
-  sandboxMemory: 'Sandbox files are temporary working data, not durable Agent memory. They do not follow this Agent into a fresh conversation. A successful file or shell write cannot establish that a fact was remembered. Never promise future recall from a sandbox file.',
-  freshSandbox: 'This virtual sandbox starts with a fresh filesystem for each new request, including a follow-up in the same Slack thread. Files from an earlier request are gone. When the current user asks to return or revise those files, recreate them from the available contents in this request before attaching them; do not assume an earlier path still exists. The internal file-delivery check continues the current request and may only read and export existing files.',
-  selfContained: 'The final Slack answer must be self-contained. Earlier assistant steps are working narration. After an interrupted response, write the complete final answer again, not just the remaining words of the partial response.',
-} as const;
-
-const AGENT_KINDS: readonly AgentKind[] = ['system', 'user'];
-
-/** Flue joins an agent's instruction parts with a blank line. */
-const PART_SEPARATOR = '\n\n';
-
-export function slackAgentKind(agentId: string): AgentKind {
-  return agentId === CHICKPEA_AGENT_ID ? 'system' : 'user';
-}
-
 /**
- * The instruction a Slack turn's agent returns, which opens its system
- * prompt. With the management tools and the requester's Lists and reading
- * tools mounted it is exactly `sharedSystemBlock(kind)`.
+ * The capability tools a turn may mount after breakpoint A, in mount order.
+ * `management` is the workspace change tools, which a thread mounts from
+ * the turn after its model activates agent-authoring.
  */
-export function slackSystemBase(input: {
-  kind: AgentKind;
-  managementMounted: boolean;
-  memberToolsMounted: boolean;
-}): string {
-  return [
-    [SLACK_INTERACTION_DEFAULTS, SLACK_RUNTIME_GUARDRAIL, EXTERNAL_ACTION_AUTHORITY_PREAMBLE].join('\n'),
-    RUNTIME_PLAN_INSTRUCTIONS.honesty,
-    RUNTIME_PLAN_INSTRUCTIONS.sandboxMemory,
-    RUNTIME_PLAN_INSTRUCTIONS.freshSandbox,
-    SLACK_ACTION_LINK_INSTRUCTION,
-    RUNTIME_PLAN_INSTRUCTIONS.selfContained,
-    FILE_COMPLETION_INSTRUCTION,
-    AGENT_AUTHORING_ROUTER_INSTRUCTION,
-    // A user Agent's routing sentence names its own ID, so it goes in the tenant block.
-    ...(!input.managementMounted ? [] : input.kind === 'system'
-      ? [slackManagementInstruction(CHICKPEA_AGENT_ID), firstTeammateInstruction()]
-      : [SLACK_MANAGEMENT_GUIDANCE]),
-    ...(input.memberToolsMounted ? [SLACK_LISTS_INSTRUCTION, SLACK_READING_INSTRUCTION] : []),
-    SLACK_PRESENT_TABLE_INSTRUCTION,
-  ].join(PART_SEPARATOR);
-}
-
-/** The capability tools a turn may mount after breakpoint A, in mount order. */
-const SHAPE_SEGMENTS = ['interactive', 'streaming', 'coding', 'image', 'front_desk'] as const;
+const SHAPE_SEGMENTS = ['interactive', 'streaming', 'management', 'coding', 'image', 'front_desk'] as const;
 type ShapeSegment = (typeof SHAPE_SEGMENTS)[number];
 
 /** Every non-empty ordered selection of `Segments`, joined with underscores. */
@@ -109,86 +56,22 @@ export type SharedPrefixId = `${AgentKind}/${SharedPrefixShape}`;
 
 /**
  * Channel and DM turns mount the interactive tools, so these are the shapes
- * worth warming. Coding and front-desk shapes are not warmed: their first
- * request writes the prefix and later ones, in any workspace, read it. Only
- * the system kind ever mounts the front desk, and warming it would double
- * the warmed set.
+ * worth warming. Management, coding and front-desk shapes are not warmed:
+ * their first request writes the prefix and later ones, in any workspace,
+ * read it. Only the system kind ever mounts the front desk, and warming any
+ * of them would double the warmed set.
  */
 export type WarmedSharedPrefixShape = Exclude<
   Extract<SharedPrefixShape, 'interactive' | `interactive_${string}`>,
-  `${string}coding${string}` | `${string}front_desk${string}`
+  `${string}management${string}` | `${string}coding${string}` | `${string}front_desk${string}`
 >;
 
-const UNWARMED_SEGMENTS: readonly ShapeSegment[] = ['coding', 'front_desk'];
+const UNWARMED_SEGMENTS: readonly ShapeSegment[] = ['management', 'coding', 'front_desk'];
 
 export const WARMED_SHARED_PREFIX_SHAPES = (Object.keys(SHARED_PREFIX_SHAPES) as SharedPrefixShape[])
   .filter((shape): shape is WarmedSharedPrefixShape =>
     SHARED_PREFIX_SHAPES[shape].includes('interactive') &&
     !UNWARMED_SEGMENTS.some((segment) => SHARED_PREFIX_SHAPES[shape].includes(segment)));
-
-const sharedBlocks = new Map<AgentKind, string>();
-
-/** The constant system block every platform-funded Slack turn of `kind` opens with: breakpoint B. */
-export function sharedSystemBlock(kind: AgentKind): string {
-  let block = sharedBlocks.get(kind);
-  if (block === undefined) {
-    block = slackSystemBase({ kind, managementMounted: true, memberToolsMounted: true });
-    sharedBlocks.set(kind, block);
-  }
-  return block;
-}
-
-/** Why a Slack turn mounts fewer tools than a shared shape, so its system block is not shared. */
-type ReducedTurn = 'requester_not_member' | 'management_unmounted';
-
-let reducedBlocks: ReadonlyArray<readonly [string, ReducedTurn]> | undefined;
-
-function reducedSystemBlocks(): ReadonlyArray<readonly [string, ReducedTurn]> {
-  reducedBlocks ??= AGENT_KINDS.flatMap((kind) => [
-    [slackSystemBase({ kind, managementMounted: true, memberToolsMounted: false }), 'requester_not_member'] as const,
-    [slackSystemBase({ kind, managementMounted: false, memberToolsMounted: false }), 'management_unmounted'] as const,
-  ]);
-  return reducedBlocks;
-}
-
-/**
- * How a system prompt opens: with an Agent kind's constant block and its
- * separator, then the tenant tail; with a reduced turn's block; or with
- * neither.
- */
-export type SlackSystemText =
-  | { readonly kind: 'shared'; readonly agentKind: AgentKind; readonly constant: string; readonly tail: string }
-  | { readonly kind: 'reduced'; readonly reason: ReducedTurn }
-  | { readonly kind: 'other' };
-
-export function classifySlackSystemText(text: string | undefined): SlackSystemText {
-  if (text === undefined) return { kind: 'other' };
-  const opensWith = (block: string) => text.startsWith(block + PART_SEPARATOR);
-  const agentKind = AGENT_KINDS.find((candidate) => opensWith(sharedSystemBlock(candidate)));
-  if (agentKind !== undefined) {
-    const constant = sharedSystemBlock(agentKind);
-    return { kind: 'shared', agentKind, constant, tail: text.slice(constant.length + PART_SEPARATOR.length) };
-  }
-  const reason = reducedSystemBlocks().find(([block]) => opensWith(block))?.[1];
-  return reason ? { kind: 'reduced', reason } : { kind: 'other' };
-}
-
-/**
- * The first tenant instruction: the Agent's saved instructions, its identity
- * in this workspace and channel, the saved instructions again inside the
- * external-action boundary, and the teammates it may ask.
- */
-export function slackTenantInstructions(
-  assignment: Pick<ResolvedAssignment, 'workspaceId' | 'channelId' | 'agent' | 'teammates' | 'threadGuest'>,
-): string {
-  const teammates = agentTeammateInstructions(assignment);
-  return [
-    assignment.agent.instructions,
-    runtimeIdentityInstruction(assignment),
-    savedAgentInstructionsBlock(assignment.agent.instructions),
-    ...(teammates ? [teammates] : []),
-  ].join('\n');
-}
 
 type CacheControl = { type: 'ephemeral'; ttl: '1h' | '5m' };
 const ONE_HOUR: CacheControl = { type: 'ephemeral', ttl: '1h' };

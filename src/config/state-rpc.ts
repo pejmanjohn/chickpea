@@ -95,7 +95,9 @@ import type {
 import type {
   SlackCanonicalAdmissionInput,
   SlackCanonicalAdmissionResult,
+  SlackDeliveryNote,
   SlackEditAdmission,
+  SlackFrontDeskHandoffNote,
 } from '../slack/claim-store.ts';
 import type { SlackMessageEdit } from '../slack/edits.ts';
 import type {
@@ -584,6 +586,8 @@ export interface TagStateRpc {
     /** Additive and optional: the per-turn settings envelope to freeze. */
     turnEnvelope?: TurnEnvelopeV1,
     threadFileIds?: readonly string[],
+    /** Additive and optional: an older store ignores it, and the turn's first request stays lean. */
+    workspaceChangeTools?: boolean,
   ): Promise<StateRpcResult<FlueDispatchEnvelopeV1>>;
   /** The settings envelope frozen with a turn's dispatch; the Agent reads it once per turn. */
   slackTurnEnvelopeGet(id: string): Promise<StateRpcResult<TurnEnvelopeV1 | null>>;
@@ -763,6 +767,18 @@ export interface TagStateRpc {
   admitGatewayDelivery(
     delivery: GatewayInboundDelivery,
   ): Promise<StateRpcResult<GatewayAdmissionResult>>;
+  /**
+   * The direct path's receipt (SlackStateStore.noteDelivery): wake the runner
+   * the delivery's turn will be handed to, keep its receipt time, and verify
+   * the installation's identity while the Worker admits the delivery.
+   */
+  noteSlackDelivery(note: SlackDeliveryNote): Promise<StateRpcResult<null>>;
+  /**
+   * A thread runner's note that Chickpea's run decided a front desk hand-off
+   * (SlackStateStore.noteFrontDeskHandoff): wake the runner the takeover turn
+   * will be handed to and keep the decision time as that turn's receipt.
+   */
+  noteFrontDeskHandoff(note: SlackFrontDeskHandoffNote): Promise<StateRpcResult<null>>;
   /** Clone a completed authorization-link turn into one idempotent resume turn. */
   resumeTurnAfterOAuth(
     originalTaskId: string,

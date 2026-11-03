@@ -50,7 +50,7 @@ test('Sign out ends the Better Auth session and lands on Slack sign-in; a cross-
   const settings = new SqliteSettingsStore(':memory:');
   try {
     let admission: BetterAuthAdmissionOperation | null = null;
-    const auth = createBetterAuth({
+    const auth = await createBetterAuth({
       backend, baseURL: origin, secret,
       privateSeam: { async resolveAdmissionOperation() { return admission; } },
     });

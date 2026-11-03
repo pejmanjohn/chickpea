@@ -1,5 +1,4 @@
-import { getResolvedPDFJS } from 'unpdf';
-
+import { onDemand } from '../runtime/on-demand.ts';
 import { isTextMimeType, sniffFileKind } from '../files/magic.ts';
 import { ZipArchiveError } from '../files/zip.ts';
 import { archiveListing } from './archive-attachments.ts';
@@ -323,6 +322,9 @@ async function normalizeReadAttachment(input: {
   throw new AttachmentNormalizationError('unsupported_attachment_type', 'convert_file');
 }
 
+/** pdfjs (2 MiB built), loaded by the first PDF attachment read in an isolate and never at Worker startup. */
+const pdfjs = onDemand('pdfjs', () => import('unpdf').then(({ getResolvedPDFJS }) => getResolvedPDFJS()));
+
 export async function extractPdfTextSequentially(input: {
   bytes: Uint8Array;
   signal?: AbortSignal;
@@ -334,7 +336,7 @@ export async function extractPdfTextSequentially(input: {
   const maxCharacters = input.maxCharacters ?? MAX_SLACK_ATTACHMENT_CHARACTERS;
   assertWithinDeadline(input.signal, input.deadlineAt, input.now);
   const { getDocument } = await awaitAttachmentPdfOperation(
-    getResolvedPDFJS(),
+    pdfjs.load(),
     input,
   );
   const loadingTask = getDocument({

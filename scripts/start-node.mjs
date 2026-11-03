@@ -71,6 +71,9 @@ export async function startNodeApplication({
   let flueLifecycle;
   let backgroundAttempted = false;
   try {
+    // A restart resumes submissions while the application assembles, so the
+    // connector details must be in memory before a render can run.
+    await ownership.ready?.();
     const loadedApplication = application ?? await loadApplication();
     flueLifecycle = await loadedApplication.startFlueNodeServer(serverOptions);
     backgroundAttempted = true;

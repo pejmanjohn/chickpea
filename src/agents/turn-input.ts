@@ -1,5 +1,13 @@
 import { isCloudflareTarget } from '../config/runtime-target.ts';
-import { FLUE_CLOUDFLARE_EXTENSION_BRAND, installationAgentObject } from './cloudflare-extension.ts';
+import { loadConnectorDetails, preloadManagedConnectionDetails } from '../connections/catalog/index.ts';
+import { sha256Hex } from '../security/digest.ts';
+import type { FlueObservationTarget, FlueTurnObservationV1 } from '../slack/turn-job-types.ts';
+import {
+  FLUE_CLOUDFLARE_EXTENSION_BRAND,
+  installationAgentObject,
+  reportAgentObjectCall,
+} from './cloudflare-extension.ts';
+import { CHICKPEA_SLACK_AGENT_NAME } from './names.ts';
 import {
   deriveRuntimePlanInstanceId,
   isRuntimePlanInstanceId,
@@ -8,6 +16,7 @@ import {
   type AdmittedRuntimePlanData,
   type RuntimePlanV2,
 } from './runtime-plan.ts';
+import { parseTurnEnvelope, type TurnEnvelopeV1 } from './turn-envelope.ts';
 
 /**
  * The turn input: what one Slack turn's render needs that Flue cannot carry.
@@ -44,6 +53,9 @@ export interface SlackTurnInputV1 {
   runtimePlan: AdmittedRuntimePlanData;
   /** This turn's Agent memory, rendered as an instruction. */
   memoryBlock?: string;
+  submissionId?: string;
+  observation?: FlueTurnObservationV1;
+  turnEnvelope?: TurnEnvelopeV1;
 }
 
 export interface SlackTurnInput {
@@ -51,6 +63,9 @@ export interface SlackTurnInput {
   instanceId: string;
   runtimePlan: RuntimePlanV2;
   memoryBlock?: string;
+  submissionId?: string;
+  observation?: FlueTurnObservationV1;
+  turnEnvelope?: TurnEnvelopeV1;
 }
 
 export function createSlackTurnInput(input: {
@@ -58,6 +73,9 @@ export function createSlackTurnInput(input: {
   instanceId: string;
   runtimePlan: RuntimePlanV2 | AdmittedRuntimePlanData;
   memoryBlock?: string | undefined;
+  submissionId?: string | undefined;
+  observation?: FlueTurnObservationV1 | undefined;
+  turnEnvelope?: TurnEnvelopeV1 | undefined;
 }): SlackTurnInputV1 {
   const record: SlackTurnInputV1 = {
     schemaVersion: SLACK_TURN_INPUT_SCHEMA_VERSION,
@@ -65,9 +83,26 @@ export function createSlackTurnInput(input: {
     instanceId: input.instanceId,
     runtimePlan: structuredClone(input.runtimePlan) as AdmittedRuntimePlanData,
     ...(input.memoryBlock ? { memoryBlock: input.memoryBlock } : {}),
+    ...(input.submissionId ? { submissionId: input.submissionId } : {}),
+    ...(input.observation ? { observation: structuredClone(input.observation) } : {}),
+    ...(input.turnEnvelope ? { turnEnvelope: structuredClone(input.turnEnvelope) } : {}),
   };
   parseSlackTurnInput(record);
   return record;
+}
+
+/**
+ * The submission id Flue gives a dispatch that carries an idempotency key.
+ * Flue documents the derivation as a frozen wire format;
+ * `tests/sandbox-workspace-task.test.ts` checks it against a real receipt.
+ */
+export async function keyedSubmissionId(agentName: string, instanceId: string, idempotencyKey: string): Promise<string> {
+  const digest = await sha256Hex(`flue-submission-key\n${agentName}\n${instanceId}\n${idempotencyKey}`);
+  return `sub_ik_${digest.slice(0, 32)}`;
+}
+
+export function slackTurnSubmissionId(instanceId: string, turnJobId: string): Promise<string> {
+  return keyedSubmissionId(CHICKPEA_SLACK_AGENT_NAME, instanceId, turnJobId);
 }
 
 export function serializeSlackTurnInput(input: SlackTurnInputV1): string {
@@ -84,11 +119,10 @@ export function parseSlackTurnInput(value: unknown): SlackTurnInput {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('Slack turn input must be an object.');
   }
-  const record = parsed as Record<string, unknown>;
-  const allowed = new Set(['schemaVersion', 'turnJobId', 'instanceId', 'runtimePlan', 'memoryBlock']);
-  for (const key of Object.keys(record)) {
-    if (!allowed.has(key)) throw new Error(`Slack turn input has an unknown field: ${key}.`);
-  }
+  const record = exactRecord(parsed, 'Slack turn input', [
+    'schemaVersion', 'turnJobId', 'instanceId', 'runtimePlan', 'memoryBlock',
+    'submissionId', 'observation', 'turnEnvelope',
+  ]);
   if (record.schemaVersion !== SLACK_TURN_INPUT_SCHEMA_VERSION) {
     throw new Error('Slack turn input schemaVersion is unsupported.');
   }
@@ -108,11 +142,19 @@ export function parseSlackTurnInput(value: unknown): SlackTurnInput {
     }
     memoryBlock = record.memoryBlock;
   }
+  const submissionId = record.submissionId === undefined
+    ? undefined
+    : boundedString(record.submissionId, 'submissionId', MAX_TURN_JOB_ID_CHARS);
+  const observation = record.observation === undefined ? undefined : parseStagedObservation(record.observation);
+  const turnEnvelope = record.turnEnvelope === undefined ? undefined : parseTurnEnvelope(record.turnEnvelope);
   return {
     turnJobId,
     instanceId: record.instanceId,
     runtimePlan,
     ...(memoryBlock ? { memoryBlock } : {}),
+    ...(submissionId ? { submissionId } : {}),
+    ...(observation ? { observation } : {}),
+    ...(turnEnvelope ? { turnEnvelope } : {}),
   };
 }
 
@@ -123,12 +165,80 @@ export function validTurnJobId(value: unknown): string {
   return value;
 }
 
+function parseStagedObservation(value: unknown): FlueTurnObservationV1 {
+  const record = exactRecord(value, 'Slack turn input observation', [
+    'generation', 'workCorrelation', 'harnessRevision', 'configurationRevision', 'executor', 'runnerKey',
+  ]);
+  const observation: FlueTurnObservationV1 = {
+    generation: boundedString(record.generation, 'observation generation', 256),
+  };
+  if (record.workCorrelation !== undefined) {
+    const correlation = exactRecord(record.workCorrelation, 'Slack turn input work correlation', [
+      'runId', 'runExecutionId', 'mode',
+    ]);
+    if (correlation.mode !== 'observe' && correlation.mode !== 'enforce') {
+      throw new Error('Slack turn input work correlation mode is invalid.');
+    }
+    observation.workCorrelation = {
+      runId: boundedString(correlation.runId, 'work correlation runId', 128),
+      runExecutionId: boundedString(correlation.runExecutionId, 'work correlation runExecutionId', 128),
+      mode: correlation.mode,
+    };
+  }
+  if (record.harnessRevision !== undefined) {
+    const revision = boundedString(record.harnessRevision, 'observation harnessRevision', 64);
+    if (!/^[a-f0-9]{64}$/.test(revision)) throw new Error('Slack turn input observation harnessRevision is invalid.');
+    observation.harnessRevision = revision;
+  }
+  if (record.configurationRevision !== undefined) {
+    const revision = exactRecord(record.configurationRevision, 'Slack turn input configuration revision', [
+      'agent', 'channel',
+    ]);
+    observation.configurationRevision = {
+      agent: positiveInteger(revision.agent, 'configuration revision agent'),
+      ...(revision.channel === undefined ? {} : { channel: positiveInteger(revision.channel, 'configuration revision channel') }),
+    };
+  }
+  if (record.executor !== undefined || record.runnerKey !== undefined) {
+    if (record.executor !== 'runner') throw new Error('Slack turn input observation executor is invalid.');
+    observation.executor = 'runner';
+    observation.runnerKey = boundedString(record.runnerKey, 'observation runnerKey', 512);
+  }
+  return observation;
+}
+
+function exactRecord(value: unknown, label: string, allowed: readonly string[]): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${label} must be an object.`);
+  }
+  const record = value as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (!allowed.includes(key)) throw new Error(`${label} has an unknown field: ${key}.`);
+  }
+  return record;
+}
+
+function boundedString(value: unknown, label: string, max: number): string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > max) {
+    throw new Error(`Slack turn input ${label} is invalid.`);
+  }
+  return value;
+}
+
+function positiveInteger(value: unknown, label: string): number {
+  if (!Number.isSafeInteger(value) || Number(value) < 1) {
+    throw new Error(`Slack turn input ${label} is invalid.`);
+  }
+  return Number(value);
+}
+
 /** Minimal structural view of Durable Object (and test) SQLite storage. */
 export interface TurnInputSql {
   exec(query: string, ...bindings: unknown[]): { toArray(): Record<string, unknown>[] };
 }
 
 const TURN_INPUT_TABLE = 'chickpea_turn_inputs';
+const TURN_INPUT_SUBMISSION_TABLE = 'chickpea_turn_input_submissions';
 
 function ensureTurnInputTable(sql: TurnInputSql): void {
   sql.exec(
@@ -138,13 +248,19 @@ function ensureTurnInputTable(sql: TurnInputSql): void {
       staged_at INTEGER NOT NULL
     )`,
   );
+  sql.exec(
+    `CREATE TABLE IF NOT EXISTS ${TURN_INPUT_SUBMISSION_TABLE} (
+      submission_id TEXT PRIMARY KEY,
+      turn_job_id TEXT NOT NULL
+    )`,
+  );
 }
 
 /**
  * Agent-object side of staging. The first write for a TurnJob wins: its plan
  * is frozen, and a retry must see what the first attempt dispatched against.
  */
-export function writeStagedTurnInput(sql: TurnInputSql, json: string, now: number): void {
+export function writeStagedTurnInput(sql: TurnInputSql, json: string, now: number): SlackTurnInput {
   const input = parseSlackTurnInput(json);
   ensureTurnInputTable(sql);
   sql.exec(
@@ -152,12 +268,34 @@ export function writeStagedTurnInput(sql: TurnInputSql, json: string, now: numbe
      ON CONFLICT(turn_job_id) DO NOTHING`,
     input.turnJobId, json, now,
   );
+  if (input.submissionId) {
+    sql.exec(
+      `INSERT INTO ${TURN_INPUT_SUBMISSION_TABLE} (submission_id, turn_job_id) VALUES (?, ?)
+       ON CONFLICT(submission_id) DO NOTHING`,
+      input.submissionId, input.turnJobId,
+    );
+  }
   sql.exec(
     `DELETE FROM ${TURN_INPUT_TABLE} WHERE turn_job_id NOT IN (
        SELECT turn_job_id FROM ${TURN_INPUT_TABLE} ORDER BY staged_at DESC, rowid DESC LIMIT ?
      )`,
     MAX_STAGED_TURN_INPUTS,
   );
+  sql.exec(
+    `DELETE FROM ${TURN_INPUT_SUBMISSION_TABLE} WHERE turn_job_id NOT IN (
+       SELECT turn_job_id FROM ${TURN_INPUT_TABLE}
+     )`,
+  );
+  return input;
+}
+
+/** The toolkits of every staged input's managed connections, read without parsing the inputs. */
+export function stagedConnectionToolkits(sql: TurnInputSql): string[] {
+  ensureTurnInputTable(sql);
+  return sql.exec(
+    `SELECT DISTINCT json_extract(connection.value, '$.toolkit') AS toolkit
+     FROM ${TURN_INPUT_TABLE}, json_each(input_json, '$.runtimePlan.managedConnections') AS connection`,
+  ).toArray().flatMap(({ toolkit }) => typeof toolkit === 'string' ? [toolkit] : []);
 }
 
 export function readStagedTurnInputJson(sql: TurnInputSql, turnJobId: string): string | undefined {
@@ -169,8 +307,20 @@ export function readStagedTurnInputJson(sql: TurnInputSql, turnJobId: string): s
   return typeof row?.input_json === 'string' ? row.input_json : undefined;
 }
 
+export function readStagedTurnInputJsonBySubmission(sql: TurnInputSql, submissionId: string): string | undefined {
+  ensureTurnInputTable(sql);
+  const row = sql.exec(
+    `SELECT inputs.input_json AS input_json FROM ${TURN_INPUT_SUBMISSION_TABLE} submissions
+       JOIN ${TURN_INPUT_TABLE} inputs ON inputs.turn_job_id = submissions.turn_job_id
+     WHERE submissions.submission_id = ?`,
+    submissionId,
+  ).toArray()[0];
+  return typeof row?.input_json === 'string' ? row.input_json : undefined;
+}
+
 interface AgentObjectInstance {
   ctx: { storage: { sql: TurnInputSql } };
+  onStart?(props?: unknown): unknown;
 }
 
 type AgentObjectClass = new (...args: never[]) => object;
@@ -180,10 +330,43 @@ export const slackThreadCloudflareExtension = {
     class ChickpeaSlackThreadObject extends (
       installationAgentObject(Base) as new (...args: never[]) => AgentObjectInstance
     ) {
-      /** Host RPC: stage one turn's input before its dispatch. */
-      chickpeaStageTurnInput(json: string): void {
+      /**
+       * Host RPC: activate the object once its turn's plan froze, so the
+       * staging that follows finds it in memory. It writes nothing beyond the
+       * schema every activation's constructor ensures, and runs no start: the
+       * Agents SDK starts an object for a request, an alarm, or naming it,
+       * never for an RPC like this one.
+       */
+      async chickpeaWake(sentAt?: unknown, turnJobId?: unknown): Promise<void> {
+        reportAgentObjectCall(this, 'wake', {
+          sentAt: typeof sentAt === 'number' ? sentAt : undefined,
+          turnJobId: typeof turnJobId === 'string' ? turnJobId : undefined,
+        });
+      }
+
+      /**
+       * Host RPC: stage one turn's input before its dispatch, and load the
+       * connector details its render reads. `sentAt` is the runner's clock
+       * before it addressed this object, for `agent_boot`.
+       */
+      async chickpeaStageTurnInput(json: string, sentAt?: unknown): Promise<void> {
         if (typeof json !== 'string') throw new Error('Slack turn input must be serialized.');
-        writeStagedTurnInput(this.ctx.storage.sql, json, Date.now());
+        const input = writeStagedTurnInput(this.ctx.storage.sql, json, Date.now());
+        reportAgentObjectCall(this, 'stage', {
+          sentAt: typeof sentAt === 'number' ? sentAt : undefined,
+          turnJobId: input.turnJobId,
+        });
+        await preloadManagedConnectionDetails(input.runtimePlan.managedConnections);
+      }
+
+      /**
+       * An object evicted after staging resumes its submissions without a new
+       * staging, so its start loads what the staged inputs' renders read. A
+       * failure leaves the render to fail its turn, which retries.
+       */
+      async onStart(props?: unknown): Promise<unknown> {
+        await loadConnectorDetails(stagedConnectionToolkits(this.ctx.storage.sql)).catch(() => undefined);
+        return super.onStart?.(props);
       }
     },
   [FLUE_CLOUDFLARE_EXTENSION_BRAND]: true as const,
@@ -192,9 +375,35 @@ export const slackThreadCloudflareExtension = {
 interface AgentObjectNamespace {
   idFromName(name: string): unknown;
   get(id: unknown): {
-    setName?(name: string): Promise<void>;
-    chickpeaStageTurnInput(json: string): Promise<void>;
+    chickpeaWake(sentAt: number, turnJobId?: string): Promise<void>;
+    chickpeaStageTurnInput(json: string, sentAt: number): Promise<void>;
   };
+}
+
+function agentObjectNamespace(
+  env: Record<string, unknown> | undefined,
+  bindingName: string,
+): AgentObjectNamespace {
+  const binding = env?.[bindingName] as AgentObjectNamespace | undefined;
+  if (!binding || typeof binding.idFromName !== 'function' || typeof binding.get !== 'function') {
+    throw new Error(`Agent object binding ${bindingName} is unavailable.`);
+  }
+  return binding;
+}
+
+/**
+ * Host side on Cloudflare: activate the thread's agent object, addressed as
+ * its staging addresses it, while the turn still prepares.
+ */
+export async function wakeSlackAgentObject(
+  env: Record<string, unknown> | undefined,
+  bindingName: string,
+  instanceId: string,
+  turnJobId?: string,
+  sentAt = Date.now(),
+): Promise<void> {
+  const binding = agentObjectNamespace(env, bindingName);
+  await binding.get(binding.idFromName(instanceId)).chickpeaWake(sentAt, turnJobId);
 }
 
 /**
@@ -206,16 +415,10 @@ export async function stageSlackTurnInputOnAgentObject(
   bindingName: string,
   input: SlackTurnInputV1,
 ): Promise<void> {
-  const binding = env?.[bindingName] as AgentObjectNamespace | undefined;
-  if (!binding || typeof binding.idFromName !== 'function' || typeof binding.get !== 'function') {
-    throw new Error(`Agent object binding ${bindingName} is unavailable.`);
-  }
+  const binding = agentObjectNamespace(env, bindingName);
   const json = serializeSlackTurnInput(input);
   const stub = binding.get(binding.idFromName(input.instanceId));
-  // Flue's own addressing (getAgentByName) names the object first; a staging
-  // call can be the object's first contact on a thread's first turn.
-  await stub.setName?.(input.instanceId);
-  await stub.chickpeaStageTurnInput(json);
+  await stub.chickpeaStageTurnInput(json, Date.now());
 }
 
 type CloudflareContextReader = () => { storage: { sql: TurnInputSql } };
@@ -227,6 +430,26 @@ if (isCloudflareTarget()) {
   void import('@flue/runtime/cloudflare')
     .then((module) => { cloudflareContext = module.getCloudflareContext as unknown as CloudflareContextReader; })
     .catch(() => undefined);
+}
+
+export function useAgentObjectStorageForTests(reader: CloudflareContextReader | undefined): void {
+  cloudflareContext = reader;
+}
+
+export function readStagedSlackObservationTarget(
+  instanceId: string,
+  submissionId: string,
+): FlueObservationTarget | undefined {
+  if (!isCloudflareTarget() || !cloudflareContext) return undefined;
+  const json = readStagedTurnInputJsonBySubmission(cloudflareContext().storage.sql, submissionId);
+  if (json === undefined) return undefined;
+  const input = parseSlackTurnInput(json);
+  if (input.submissionId === undefined) return undefined;
+  if (input.instanceId !== instanceId || input.submissionId !== submissionId) {
+    throw new Error('Staged Slack turn input belongs to another submission.');
+  }
+  if (!input.observation) return undefined;
+  return { ...input.observation, turnJobId: input.turnJobId, instanceId, submissionId };
 }
 
 /** Node: the agent renders in the host process, so staging also lands here. */
@@ -265,11 +488,11 @@ export function readStagedSlackTurnInput(
 }
 
 /**
- * Which plan and memory the render uses. A staged input for the turn always
- * wins. Without one, an instance created by a release that addressed
- * instances by exact plan runs its creation data, which is that plan; a
- * thread instance (the current derivation) must never fall back to its
- * creation plan, which may name another speaker's authority or an older
+ * Which plan, memory, and envelope the render uses. A staged input for the
+ * turn always wins. Without one, an instance created by a release that
+ * addressed instances by exact plan runs its creation data, which is that
+ * plan; a thread instance (the current derivation) must never fall back to
+ * its creation plan, which may name another speaker's authority or an older
  * configuration. A render with no Slack turn behind it (a bare harness) uses
  * the creation data.
  */
@@ -279,7 +502,7 @@ export function resolveSlackTurnRenderInput(input: {
   turnJobId: string | undefined;
   /** `durable`: also consult a store outside this process (Node restart). */
   read: (turnJobId: string, durable: boolean) => SlackTurnInput | undefined;
-}): { runtimePlan: RuntimePlanV2; memoryBlock?: string } {
+}): { runtimePlan: RuntimePlanV2; memoryBlock?: string; turnEnvelope?: TurnEnvelopeV1 } {
   if (input.turnJobId === undefined) return { runtimePlan: input.initialData };
   const threadInstance = deriveRuntimePlanInstanceId(input.initialData) === input.instanceId;
   const staged = input.read(input.turnJobId, threadInstance);
@@ -290,6 +513,7 @@ export function resolveSlackTurnRenderInput(input: {
     return {
       runtimePlan: staged.runtimePlan,
       ...(staged.memoryBlock ? { memoryBlock: staged.memoryBlock } : {}),
+      ...(staged.turnEnvelope ? { turnEnvelope: staged.turnEnvelope } : {}),
     };
   }
   if (threadInstance) {

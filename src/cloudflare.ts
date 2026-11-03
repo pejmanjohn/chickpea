@@ -43,6 +43,7 @@ import { gitIdentityConfigCommand, resolveWorkspaceGitIdentity } from './sandbox
 import { recordDeliveredSlackAgentMessage } from './slack/public-context.ts';
 import {
   cacheSlackInstallationExecutionContexts,
+  carriedGatewayIdentity,
   effectiveTurnSlackInstallationId,
   resolveSlackInstallationExecutionContext,
   verifySlackInstallationTurnAccess,
@@ -199,7 +200,7 @@ import {
   type WarmWindowStorage,
   workspaceWarmWindowMs,
 } from './sandbox/warm-window.ts';
-import type { SlackCanonicalAdmissionInput } from './slack/claim-store.ts';
+import type { SlackCanonicalAdmissionInput, SlackDeliveryNote, SlackFrontDeskHandoffNote } from './slack/claim-store.ts';
 import type { SlackMessageEdit } from './slack/edits.ts';
 import {
   SlackPresentationStateError,
@@ -250,6 +251,15 @@ import {
   type ThreadRunnerTurnOp,
   type ThreadRunnerTurnResult,
 } from './slack/thread-runner-rpc.ts';
+import { receiptRunnerWake, type ReceiptRunnerWake, type ReceiptWakeDelivery } from './slack/receipt-runner-wake.ts';
+import { admissionAgentInstance, type AdmissionAgentFacts, type AdmissionAgentWake } from './slack/admission-agent-wake.ts';
+import {
+  admissionStatusPresentation,
+  showAdmissionStatus,
+  type AdmissionStatusMark,
+} from './slack/admission-activity.ts';
+import { CHICKPEA_SLACK_AGENT_BINDING } from './slack/bounded-agent-observation.ts';
+import { wakeSlackAgentObject } from './agents/turn-input.ts';
 import { localSlackPresentationStatePort } from './slack/presentation-state-port.ts';
 import {
   drainSlackPresentationRepairs,
@@ -299,6 +309,7 @@ import {
 } from './slack/gateway/client.ts';
 import { resolveChickpeaGatewayUrl } from './slack/gateway/runtime.ts';
 import { loadCredentialKeyring } from './slack/credential-keyring.ts';
+import { slackInstallationCredentialId } from './slack/hosted-slack-app.ts';
 import {
   processGatewayAgentSelection,
   processGatewayPrivateChannelSetup,
@@ -327,7 +338,7 @@ import { createLiveWorkspaceManagementService } from './management/live-service.
 import { createPlatformProductTelemetry } from './telemetry/platform.ts';
 import type { ProductTelemetryCapture } from './telemetry/client.ts';
 import type { SlackAgentAskDispatcher } from './slack/agent-asks.ts';
-import type { SlackFrontDeskHandoffDispatcher } from './slack/front-desk.ts';
+import { frontDeskHandoffRunnerWake, type SlackFrontDeskHandoffDispatcher } from './slack/front-desk.ts';
 import { createWaitUntilTelemetryLifecycle } from './telemetry/runtime.ts';
 import {
   invokeSlackWorkspaceManagementTool,
@@ -392,7 +403,9 @@ instrument({
 // the generated entry's guarded default so `cloudflare/*` remains keyless but
 // calls env.AI directly, without the default payload-logging AI Gateway.
 // Importable `env` is Cloudflare's ambient binding object; no I/O runs here.
-registerCloudflareBindingProvider(env.AI);
+// A deployment serving many installations keeps the binding for its own
+// judgments and registers no model provider from it.
+registerCloudflareBindingProvider(env.AI, env as unknown as Record<string, unknown>);
 
 export { ContainerProxy } from '@cloudflare/sandbox';
 
@@ -769,12 +782,26 @@ Sandbox.outbound = denySandboxOutbound;
 // would likely re-fail; a couple of seconds lets a transient Slack blip clear.
 const RELAY_RETRY_BACKOFF_MS = 2_000;
 
-// A tiny first-fire window lets Slack events from the same burst land in the
-// queue before the alarm snapshots it. The alarm already fans independent
-// conversations out concurrently; without this window, the first event can
-// start a long turn milliseconds before its neighbors enqueue and serialize
-// the whole burst behind it.
 const RELAY_BATCH_WINDOW_MS = 250;
+
+/**
+ * Keep-warm: while a person has talked to this installation in the last
+ * KEEP_WARM_WINDOW_MS, the state store's alarm fires at least every
+ * KEEP_WARM_TICK_MS so the object stays in memory. Measured on Chickpea Cloud
+ * staging: the object leaves memory about 30 s after its last activity, and a
+ * message after that pays 0.9-1.3 s at ingress for its first state read. A
+ * tick runs the ordinary idle drain (see keepWarmTickAt). Constants, not
+ * settings; Node has no alarms.
+ */
+const KEEP_WARM_WINDOW_MS = 10 * 60_000;
+const KEEP_WARM_TICK_MS = 20_000;
+
+/**
+ * The management retention sweep (a 30-day cutoff) runs on an alarm firing at
+ * most this often per instance: the keep-warm ticks fire far more often than
+ * it can find anything. An instance that starts cold sweeps on its first firing.
+ */
+const RETENTION_SWEEP_INTERVAL_MS = 5 * 60_000;
 
 // Pages of MAX_TURN_DRAIN_BATCH threads one alarm hands to thread runners.
 // Each hand-off is one short admission RPC; the rest waits for the next alarm.
@@ -834,6 +861,21 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
   private dispatchWake: (() => void) | undefined;
   /** Slack turns admitted in this isolate (events, deliveries, OAuth resumes). */
   private admissionsSeen = 0;
+  /**
+   * When a person's turn was last admitted here (keepWarmTickAt). In memory
+   * only: an instance that starts cold reads it once from its newest turn
+   * row that is a person's (an Agent's ask or a setup wake is not one); 0
+   * when there is none.
+   */
+  private lastHumanTurnAt: number | undefined;
+  /** When this instance last ran the management retention sweep (drainRelayAlarm). */
+  private lastRetentionSweepAt: number | undefined;
+  /**
+   * Turns whose first hand-off waits here for its status (showStatusAtHandoff).
+   * No re-admission overtakes one: it would hand the runner the presentation
+   * from before the status, then the first hand-off a later one.
+   */
+  private readonly firstHandoffs = new Set<string>();
   /**
    * This instance, as the owner of the gateway inbox leases it takes. Only one
    * instance owns this object's storage at a time; a lease under any other
@@ -1711,6 +1753,27 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     if (result.ok && result.value.claimed && 'steered' in result.value) {
       await this.offerCreatedStop(result.value.steered);
     }
+    if (result.ok && input.turnJob && 'admission' in result.value) {
+      const turnJobId = input.turnJob.id;
+      // A person's turn opens the keep-warm window; the host's own turns, an
+      // Agent's ask and a setup wake, do not.
+      const { agentAsk, setupWake } = input.turnJob.turn;
+      if (!agentAsk && !setupWake) this.lastHumanTurnAt = Date.now();
+      const ready = this.runnerMode()
+        ? this.call((stores) => stores.turnJobs.dispatchableNow(turnJobId))
+        : undefined;
+      const handedOver = ready?.ok && ready.value
+        ? await this.admitToRunner(ready.value, true).catch(() => false)
+        : false;
+      if (!handedOver) {
+        await this.armAlarmNoLaterThan(this.admissionWakeAt(), true);
+      } else {
+        // The runner has the turn; the alarm only keeps this store warm for
+        // the next one, so a running alarm's dispatch loop is not woken for it.
+        const tick = this.keepWarmTickAt();
+        if (tick !== undefined) await this.setAlarmNoLaterThan(tick);
+      }
+    }
     return result;
   }
 
@@ -1744,10 +1807,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     admittedListIds?: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[4],
     turnEnvelope?: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[5],
     threadFileIds?: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[6],
+    workspaceChangeTools?: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[7],
   ) {
     return this.call((stores) =>
       stores.turnJobs.prepareFlueDispatch(
-        id, message, observation, threadImages, admittedListIds, turnEnvelope, threadFileIds,
+        id, message, observation, threadImages, admittedListIds, turnEnvelope, threadFileIds, workspaceChangeTools,
       ),
     );
   }
@@ -2076,12 +2140,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     });
     // Arm the alarm only after the row is written, and AWAIT it: the job + the
     // armed alarm must both be durable before this RPC resolves, because the
-    // events handler acks Slack the instant it does. A small, non-sliding batch
-    // window lets near-simultaneous independent threads reach the existing
-    // bounded fan-out. Bring a later receipt/retry alarm forward for new work,
-    // but never move an already-armed alarm later.
+    // events handler acks Slack the instant it does. Under the alarm executor
+    // a small, non-sliding batch window lets near-simultaneous independent
+    // threads reach the existing bounded fan-out. Bring a later receipt/retry
+    // alarm forward for new work, but never move an already-armed alarm later.
     if (result.ok) {
-      await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS, true);
+      await this.armAlarmNoLaterThan(this.admissionWakeAt(), true);
     }
     return result;
   }
@@ -2095,7 +2159,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     const decision = result.value;
     if (decision.outcome === 'enqueue' && decision.enqueued) {
       // As enqueueTurn: the row and its alarm are durable before the reply.
-      await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS, true);
+      await this.armAlarmNoLaterThan(this.admissionWakeAt(), true);
     } else {
       await this.offerCreatedStop(decision);
     }
@@ -2246,9 +2310,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
         return {status:200, body:{...httpDeliveryReceipt(value, admitted.value.outcome), interaction:admitted.value.interaction}};
       }
       if (admitted.value !== 'verified') outcome = admitted.value;
+      if (admitted.value === 'accepted') this.wakeRunnerAtReceipt(value.delivery!);
       // A duplicate also arms recovery: a previous insert may have survived an
       // alarm-write failure or loss of the HTTP response.
-      if (admitted.value !== 'verified') await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS, true);
+      if (admitted.value !== 'verified') await this.armAlarmNoLaterThan(this.admissionWakeAt(), true);
       return {status:200, body:httpDeliveryReceipt(value, admitted.value)};
     } catch (error) {
       return {status:error instanceof HttpDeliveryError ? error.status : 503,
@@ -2267,9 +2332,103 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       return gatewayUiReceiptNow(delivery, stores.uiSurfaces) ?? stores.gatewayInbox.admit(delivery);
     });
     if (result.ok && typeof result.value === 'string') {
-      await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS, true);
+      if (result.value === 'accepted') this.wakeRunnerAtReceipt(delivery);
+      await this.armAlarmNoLaterThan(this.admissionWakeAt(), true);
     }
     return result;
+  }
+
+  /**
+   * The direct path's receipt (CfSlackStateStore.noteDelivery): the Worker
+   * verified a direct installation's delivery and goes on to admit it over
+   * this store's RPCs. In one store turn, keep the receipt time for the turn
+   * admitted later (turnJobs.noteReceipt, so receiptToAdmissionMs means the
+   * same as on the gateway's path) and wake the runner the turn will be
+   * handed to (wakeRunnerAtReceipt); when one was predicted, the delivery
+   * becomes a turn whose status write needs the installation's identity, so
+   * start verifying it, held in this invocation (waitUntil) so the runtime
+   * carries the auth.test to its end, and the admission status write finds
+   * it fresh in this isolate (showStatusAtHandoff) instead of paying
+   * auth.test inside its cap. A delivery that wakes no runner (a join, an
+   * edit, a bot's post) verifies nothing. The Worker awaits none of it and
+   * nothing here changes what it admits: a failure fails nothing, and the
+   * identity is never logged.
+   */
+  async noteSlackDelivery(note: SlackDeliveryNote): Promise<StateRpcResult<null>> {
+    const { workspaceId, eventId, eventTime, event, receivedAt } = note;
+    const noted = this.call((stores) => {
+      const installation = stores.config.getWorkspaceInstallation(workspaceId);
+      if (!installation || installation.transportMode !== 'direct' || installation.health === 'revoked') return undefined;
+      if (Number.isFinite(receivedAt)) stores.turnJobs.noteReceipt(eventId, receivedAt);
+      return this.createAlarmIdentityResolver(stores);
+    });
+    if (!noted.ok) return noted;
+    if (noted.value) {
+      const woken = this.wakeRunnerAtReceipt({ kind: 'event.deliver', envelope: { workspaceId, eventId, eventTime, event } });
+      if (woken) {
+        const verifying = noted.value(workspaceId).then(() => undefined, () => undefined);
+        // The runtime has waitUntil on DurableObjectState; the module declaration omits it.
+        const state = this.ctx as DurableObjectState & { waitUntil?(promise: Promise<unknown>): void };
+        if (typeof state.waitUntil === 'function') state.waitUntil(verifying);
+      }
+    }
+    return { ok: true, value: null };
+  }
+
+  /**
+   * Wake the thread runner a just-received delivery's turn will be handed
+   * to, so that runner activates while the turn is admitted (see
+   * receiptRunnerWake for which deliveries). Never awaited: the gateway's
+   * acknowledgement waits for this receipt, and the direct path's note
+   * (noteSlackDelivery) is itself unawaited. Nothing here changes the receipt.
+   * Returns whether a runner was woken.
+   */
+  private wakeRunnerAtReceipt(delivery: ReceiptWakeDelivery): boolean {
+    if (!this.runnerMode()) return false;
+    const predicted = this.call((stores) => receiptRunnerWake(delivery, stores.config));
+    return predicted.ok && predicted.value !== undefined && this.sendRunnerWake(predicted.value);
+  }
+
+  /**
+   * A thread runner's note that Chickpea's run decided to hand its root DM
+   * to an Agent (CfSlackStateStore.noteFrontDeskHandoff). That Agent's
+   * takeover turn is admitted about two seconds later, once the run has
+   * posted its line and settled. In one store turn, predict the runner the
+   * takeover will be handed to as admission will key it
+   * (frontDeskHandoffRunnerWake) and keep the decision time as that turn's
+   * receipt (turnJobs.noteReceipt, so its receiptToAdmissionMs and
+   * runnerWakeLeadMs measure from the decision); then wake the runner
+   * (sendRunnerWake). The runner awaits none of it, and nothing here changes
+   * what is admitted: a wrong prediction costs one activation.
+   */
+  async noteFrontDeskHandoff(note: SlackFrontDeskHandoffNote): Promise<StateRpcResult<null>> {
+    const predicted = this.call((stores) => {
+      const wake = frontDeskHandoffRunnerWake(note, stores.config);
+      if (wake && Number.isFinite(note.decidedAt)) stores.turnJobs.noteReceipt(wake.eventId, note.decidedAt);
+      return wake;
+    });
+    if (!predicted.ok) return predicted;
+    if (predicted.value) this.sendRunnerWake(predicted.value);
+    return { ok: true, value: null };
+  }
+
+  /**
+   * Wake the runner at `threadKey`, naming the turn it will be handed, so it
+   * activates while that turn is admitted. Never awaited: the gateway's
+   * acknowledgement waits for its receipt, and the direct path's and the
+   * runner's notes are themselves unawaited. Returns whether a wake was sent.
+   */
+  private sendRunnerWake({ threadKey, turnJobId }: ReceiptRunnerWake): boolean {
+    try {
+      if (!this.runnerMode()) return false;
+      const runner = threadRunnerStub(this.env as PlatformEnv, threadKey);
+      if (!runner) return false;
+      void Promise.resolve(runner.wake(Date.now(), turnJobId)).catch(() => undefined);
+      return true;
+    } catch {
+      // The hand-off addresses the runner either way.
+      return false;
+    }
   }
 
   async resumeTurnAfterOAuth(
@@ -2293,7 +2452,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       ? await this.admitToRunner(result.value.runnerJob)
       : false;
     if (result.value.resumed && !readmitted) {
-      await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS, true);
+      await this.armAlarmNoLaterThan(this.admissionWakeAt(), true);
     }
     return { ok: true, value: result.value.resumed };
   }
@@ -2352,7 +2511,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       return { ok: true, value: (servingVersion ?? null) as ThreadRunnerTurnResult<K> };
     }
     const result = this.call((stores) =>
-      applyThreadRunnerTurnOp(stores, op as ThreadRunnerTurnOp) as ThreadRunnerTurnResult<K>);
+      applyThreadRunnerTurnOp(stores, op as ThreadRunnerTurnOp, this.env as PlatformEnv) as ThreadRunnerTurnResult<K>);
     if (op.kind === 'begin' && result.ok && servingVersion !== undefined) {
       return { ok: true, value: { ...(result.value as RunnerTurnBegin), servingVersion } as ThreadRunnerTurnResult<K> };
     }
@@ -2394,12 +2553,23 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       throw new Error(`state store unavailable in alarm: ${this.initError ?? 'unknown'}`);
     }
     const stores = this.stores;
+    // A store woken cold learns from its newest turn row whether a conversation is live.
+    this.lastHumanTurnAt ??= stores.turnJobs.newestEnqueuedAt() ?? 0;
     const productTelemetry = createPlatformProductTelemetry({
       env: this.env as PlatformEnv,
       settings: localSettingsStore(stores),
       config: localGatewayAppStores(stores).config,
     });
-    stores.management.cleanupRetention(Date.now(), 250);
+    // The retention sweep at most once per RETENTION_SWEEP_INTERVAL_MS; a
+    // skipped sweep reports 0 ms.
+    const retentionStartedAt = Date.now();
+    let retentionMs = 0;
+    if (this.lastRetentionSweepAt === undefined ||
+        retentionStartedAt - this.lastRetentionSweepAt >= RETENTION_SWEEP_INTERVAL_MS) {
+      stores.management.cleanupRetention(retentionStartedAt, 250);
+      this.lastRetentionSweepAt = retentionStartedAt;
+      retentionMs = Date.now() - retentionStartedAt;
+    }
     // New turns go to their thread's SlackThreadRunner (the default executor)
     // and this alarm only finishes turns it already dispatched to Flue: rows
     // admitted before the runner became the default. The emergency gate
@@ -2475,44 +2645,66 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     const pending = listPendingTurns();
     metrics.jobsListed = pending.length;
     if (pending.length === 0) {
-      const cleanupPending = stores.turnJobs.hasPendingSlackInteractionCleanup();
       const resolveInstallation = this.createAlarmIdentityResolver(stores);
-      const { ledgerDrain, presentationRepairs, scheduleActions } = await whileDispatching(async () => {
-        const ledgerDrain = await drainLedgerRuns(
+      /** Runs one part of the idle drain and records how long it took. */
+      const timed = async <T>(
+        part: 'ledgerMs' | 'cleanupsMs' | 'repairsMs' | 'scheduleMs' | 'receiptsMs',
+        work: () => Promise<T>,
+      ): Promise<T> => {
+        const startedAt = Date.now();
+        try {
+          return await work();
+        } finally {
+          metrics[part] = Date.now() - startedAt;
+        }
+      };
+      metrics.retentionMs = retentionMs;
+      const { ledgerDrain, presentationRepairs, scheduleActions, cleanupPending } = await whileDispatching(async () => {
+        const ledgerDrain = await timed('ledgerMs', () => drainLedgerRuns(
           stores,
           this.env as PlatformEnv,
           resolveInstallation,
           productTelemetry,
-        );
+        ));
+        // One scan per firing: after the ledger drain (a ledger run ending
+        // here can leave a receipt to clean), reused by the retry below.
+        const cleanupPending = stores.turnJobs.hasPendingSlackInteractionCleanup();
         if (cleanupPending) {
-          await drainSlackInteractionCleanups(stores, resolveInstallation, carriedJobIds());
+          await timed('cleanupsMs', () => drainSlackInteractionCleanups(stores, resolveInstallation, carriedJobIds()));
+        } else {
+          metrics.cleanupsMs = 0;
         }
-        const presentationRepairs = await drainTerminalPresentationRepairs(
+        const presentationRepairs = await timed('repairsMs', () => drainTerminalPresentationRepairs(
           stores,
           this.env as PlatformEnv,
           resolveInstallation,
           carriedJobIds(),
-        );
-        const scheduleActions = await drainCloudflareScheduleActions(stores, this.env as PlatformEnv);
-        await drainCloudflareManagementReceipts(stores, this.env as PlatformEnv, resolveInstallation, this.presentationRunnerOf);
-        return { ledgerDrain, presentationRepairs, scheduleActions };
+        ));
+        const scheduleActions = await timed('scheduleMs', () =>
+          drainCloudflareScheduleActions(stores, this.env as PlatformEnv));
+        await timed('receiptsMs', () =>
+          drainCloudflareManagementReceipts(stores, this.env as PlatformEnv, resolveInstallation, this.presentationRunnerOf));
+        return { ledgerDrain, presentationRepairs, scheduleActions, cleanupPending };
       });
       const turnRetry = gatewayNeedsRetry || stores.gatewayInbox.hasPending() ||
-        stores.turnJobs.hasPending('ledger') || stores.turnJobs.hasPendingSlackInteractionCleanup() ||
+        stores.turnJobs.hasPending('ledger') || cleanupPending ||
         stores.turnJobs.hasHandoffs() ||
         (runnerMode && stores.turnJobs.hasPending('legacy'))
         ? Date.now() + runDriverRetryDelayMs(ledgerDrain, RELAY_RETRY_BACKOFF_MS)
         : undefined;
       const outboxRetry = stores.management.nextOutboxDueAt();
+      const keepWarmAt = this.keepWarmTickAt();
       const nextWake = earliestDefined(
         turnRetry,
         presentationRepairs.nextRetryAt,
         scheduleActions.nextDueAt,
         outboxRetry,
         stores.gatewayInbox.nextPendingDueAt(),
+        keepWarmAt,
       );
       metrics.needsRetry = turnRetry !== undefined;
       metrics.rearmed = nextWake !== undefined;
+      metrics.keepWarm = keepWarmAt !== undefined;
       if (nextWake !== undefined) await this.armAlarmNoLaterThan(nextWake);
       return;
     }
@@ -2678,6 +2870,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       scheduleActions.nextDueAt,
       outboxRetry,
       stores.gatewayInbox.nextPendingDueAt(),
+      this.keepWarmTickAt(),
     );
     metrics.needsRetry = needsRetry;
     metrics.rearmed = nextWake !== undefined;
@@ -2694,22 +2887,46 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
    * Admit one runner-owned turn to its thread's SlackThreadRunner, with the
    * presentation as this store holds it, and confirm the hand-off. Idempotent:
    * a runner keeps a job it already holds. False leaves the row a hand-off for
-   * the next alarm to admit again.
+   * the next alarm to admit again. A turn's first hand-off may show its status
+   * first (showStatusAtHandoff); a hand-off made again never does.
    */
-  private async admitToRunner(job: PendingTurnJob): Promise<boolean> {
+  private async admitToRunner(job: PendingTurnJob, firstHandoff = false): Promise<boolean> {
     const stores = this.stores;
     const threadKey = slackAgentThreadKey(job.turn, job.assignment);
     const runner = threadRunnerStub(this.env as PlatformEnv, threadKey);
     if (!stores || !runner) return false;
-    const presentation = job.runId ? stores.presentations.get(job.runId) : undefined;
-    const payload: ThreadRunnerJobPayload = presentation ? { presentation } : {};
+    const slackInstallation = stores.config.getWorkspaceInstallation(effectiveTurnSlackInstallationId(job.turn));
+    // The bot identity this store verified within the window, so the runner
+    // does not ask Slack for it again before the turn's first status.
+    const gatewayIdentity = carriedGatewayIdentity(slackInstallation);
     const installation = installationOwnershipOf(this.env as PlatformEnv);
+    const agentWake = this.wakeAgentAtHandoff(job, {
+      installation, botUserId: slackInstallation?.botUserId, inventory: stores.objectInventory,
+    });
+    let admissionStatus: AdmissionStatusMark | undefined;
+    if (firstHandoff) {
+      this.firstHandoffs.add(job.id);
+      try {
+        admissionStatus = await this.showStatusAtHandoff(job, slackInstallation?.botUserId);
+      } finally {
+        this.firstHandoffs.delete(job.id);
+      }
+    }
+    // Read after the status: the runner's copy is the only one from here on.
+    const presentation = job.runId ? stores.presentations.get(job.runId) : undefined;
+    const payload: ThreadRunnerJobPayload = {
+      ...(presentation ? { presentation } : {}),
+      ...(gatewayIdentity ? { gatewayIdentity } : {}),
+      ...(agentWake ? { agentWake } : {}),
+      ...(admissionStatus ? { admissionStatus } : {}),
+    };
     try {
       const result = await runner.admit({
         id: job.id,
         threadKey,
         payload,
         ...(installation ? { installation } : {}),
+        sentAt: Date.now(),
       });
       if (result.refused) throw new Error(result.refused);
     } catch {
@@ -2718,6 +2935,63 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     }
     stores.turnJobs.confirmRunner(job.id);
     return true;
+  }
+
+  /**
+   * Wake the Flue agent object a handed-over turn's plan will name, so its
+   * activation overlaps the hand-off, the runner's start and the turn's
+   * preparation instead of starting once the plan froze. The name is
+   * recorded in the inventory before it is addressed (admissionAgentInstance).
+   * Sent before the hand-off and never awaited; nothing here changes the
+   * hand-off. Returns what the hand-off carries, so the turn's freeze sends
+   * no second wake to the same object and measures its lead from this one.
+   */
+  private wakeAgentAtHandoff(job: PendingTurnJob, facts: AdmissionAgentFacts): AdmissionAgentWake | undefined {
+    try {
+      const instanceId = admissionAgentInstance(job, facts);
+      if (!instanceId) return undefined;
+      const sentAt = Date.now();
+      void wakeSlackAgentObject(this.env as PlatformEnv, CHICKPEA_SLACK_AGENT_BINDING, instanceId, job.id, sentAt)
+        .catch(() => undefined);
+      return { instanceId, sentAt };
+    } catch {
+      // The freeze wakes the object instead.
+      return undefined;
+    }
+  }
+
+  /**
+   * Show a turn's opening status as its Agent before its first hand-off,
+   * instead of at the runner's start: only on a turn that will dispatch, has
+   * nothing ahead of it in its conversation (a turn waiting behind another
+   * must not replace that turn's status), and is not an Agent with its own
+   * Slack app (admissionStatusPresentation). The hand-off waits at most
+   * ADMISSION_STATUS_CAP_MS. The row records the status only if Slack
+   * acknowledged it in time and nothing else moved the row meanwhile; the
+   * runner otherwise shows it as before. Never fails the hand-off.
+   */
+  private async showStatusAtHandoff(
+    job: PendingTurnJob,
+    botUserId: string | undefined,
+  ): Promise<AdmissionStatusMark | undefined> {
+    try {
+      const stores = this.stores;
+      if (!stores || !job.runId) return undefined;
+      const presentation = admissionStatusPresentation(job, stores.presentations.get(job.runId), botUserId);
+      if (!presentation || stores.turnJobs.queuedBehind(job.id)) return undefined;
+      const resolveInstallation = this.createAlarmIdentityResolver(stores);
+      return await showAdmissionStatus({
+        presentation,
+        agentId: job.assignment.agent.id,
+        state: localSlackPresentationState(stores, this.env as PlatformEnv),
+        client: async () => (await resolveInstallation(effectiveTurnSlackInstallationId(job.turn))).client,
+        commit: (shown) =>
+          stores.presentations.get(shown.runId)?.projectionVersion === presentation.projectionVersion &&
+          stores.presentations.putSnapshot(shown),
+      });
+    } catch {
+      return undefined;
+    }
   }
 
   /**
@@ -2735,18 +3009,21 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     readmitHandoffs = true,
   ): Promise<number> {
     let dispatched = 0;
-    const admitAll = async (jobs: PendingTurnJob[]) => {
-      const admitted = await Promise.all(jobs.map((job) => this.admitToRunner(job)));
+    const admitAll = async (jobs: PendingTurnJob[], firstHandoff: boolean) => {
+      const admitted = await Promise.all(jobs.map((job) => this.admitToRunner(job, firstHandoff)));
       dispatched += admitted.filter(Boolean).length;
     };
-    if (readmitHandoffs) await admitAll(stores.turnJobs.listHandoffs(MAX_TURN_DRAIN_BATCH));
+    if (readmitHandoffs) {
+      await admitAll(stores.turnJobs.listHandoffs(MAX_TURN_DRAIN_BATCH)
+        .filter((job) => !this.firstHandoffs.has(job.id)), false);
+    }
     for (let page = 0; newTurns && page < RUNNER_DISPATCH_MAX_PAGES; page += 1) {
       const jobs = stores.turnJobs.listDispatchable({
         limit: MAX_TURN_DRAIN_BATCH,
         threadKey: (job) => slackAgentThreadKey(job.turn, job.assignment),
       }).filter((job) => stores.turnJobs.assignRunner(job.id));
       if (jobs.length === 0) break;
-      await admitAll(jobs);
+      await admitAll(jobs, true);
     }
     return dispatched;
   }
@@ -2796,12 +3073,40 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     }
   }
 
+  private admissionWakeAt(): number {
+    return this.runnerMode() ? Date.now() : Date.now() + RELAY_BATCH_WINDOW_MS;
+  }
+
+  private runnerMode(): boolean {
+    return Boolean((this.env as PlatformEnv).SLACK_THREAD_RUNNER) &&
+      slackTurnExecutor(this.env as PlatformEnv) === 'runner';
+  }
+
+  /**
+   * The next keep-warm tick while a person's turn was admitted here within
+   * KEEP_WARM_WINDOW_MS; undefined outside the window, and before any turn is
+   * known. Armed as the latest the alarm may wait (armAlarmNoLaterThan keeps
+   * an earlier due time), so a firing inside the window re-arms it and the
+   * store never leaves memory during a conversation.
+   */
+  private keepWarmTickAt(): number | undefined {
+    const now = Date.now();
+    return this.lastHumanTurnAt !== undefined && now < this.lastHumanTurnAt + KEEP_WARM_WINDOW_MS
+      ? now + KEEP_WARM_TICK_MS
+      : undefined;
+  }
+
   private async armAlarmNoLaterThan(at: number, admission = false): Promise<void> {
     // Every admission arms the alarm after its durable write. A running alarm
     // cannot be re-entered, so let its drain pick the new work up directly.
     this.alarmAdmissionWake?.();
     if (admission) this.admissionsSeen += 1;
     this.dispatchWake?.();
+    await this.setAlarmNoLaterThan(at);
+  }
+
+  /** Arms the alarm at `at` unless an earlier one is set; wakes nothing. */
+  private async setAlarmNoLaterThan(at: number): Promise<void> {
     const existing = await this.ctx.storage.getAlarm();
     if (existing === null || at < existing) await this.ctx.storage.setAlarm(at);
   }
@@ -2991,10 +3296,29 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
   }
 }
 
+function runnerSlackCredentials(
+  stores: TagStateStores,
+  env: PlatformEnv,
+): Pick<RunnerTurnBegin, 'slackCredentials'> {
+  const identityId = slackInstallationCredentialId(env);
+  try {
+    return {
+      slackCredentials: {
+        identityId,
+        control: stores.identity.getSlackCredentialControl() ?? null,
+        active: stores.identity.getActiveSlackCredentialRevision(identityId) ?? null,
+      },
+    };
+  } catch {
+    return {};
+  }
+}
+
 /** One per-turn operation of a SlackThreadRunner (see thread-runner-rpc.ts). */
 function applyThreadRunnerTurnOp(
   stores: TagStateStores,
   op: ThreadRunnerTurnOp,
+  env: PlatformEnv,
 ): ThreadRunnerTurnResult<ThreadRunnerTurnKind> {
   const turnJobs = stores.turnJobs;
   switch (op.kind) {
@@ -3011,6 +3335,7 @@ function applyThreadRunnerTurnOp(
       return {
         view,
         ...(installation ? { installation } : {}),
+        ...(installation?.transportMode === 'direct' ? runnerSlackCredentials(stores, env) : {}),
         ...(presentation?.schemaVersion === 3
           ? {
               latestThreadSessionGeneration:
@@ -3287,6 +3612,19 @@ async function drainGatewayInbox(
     }
     return stores.gatewayInbox.hasPending();
   }
+  // Runner mode: verify the bot identity while the deliveries are admitted,
+  // so each turn's hand-off can carry it (admitToRunner). A verification
+  // still fresh in this isolate is reused, and a failure here fails nothing.
+  const event = onAdmitted
+    ? pending.map((item) => item.delivery).find((delivery) => delivery.kind === 'event.deliver')
+    : undefined;
+  const verifyingIdentity = event?.kind === 'event.deliver'
+    ? resolveSlackInstallationExecutionContext(event.envelope.workspaceId, platformEnv, {
+        config: { getWorkspaceInstallation: (id) => stores.config.getWorkspaceInstallation(id) },
+        settings: appStores.settings,
+        gatewayClient: client,
+      }).then(() => undefined, () => undefined)
+    : undefined;
   let needsRetry = false;
   const uiExecution = { stores: appStores, enqueueTurn: localTurnEnqueue(stores) };
   const admit = async (item: (typeof pending)[number]) => {
@@ -3360,6 +3698,7 @@ async function drainGatewayInbox(
       }
     },
   ));
+  await verifyingIdentity;
   return needsRetry || stores.gatewayInbox.hasPending();
 }
 

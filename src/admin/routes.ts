@@ -187,9 +187,10 @@ import {
 } from '../connections/providers/composio.ts';
 import {
   MANAGED_CONNECTOR_CATALOG,
+  loadConnectorDetails,
   managedAccessLane,
   type ManagedConnectorCatalog,
-  type ManagedConnectorDefinition,
+  type ManagedConnectorHeader,
 } from '../connections/catalog/index.ts';
 import { verifyComposioWebhook } from '../connections/composio-webhook.ts';
 import {
@@ -721,7 +722,6 @@ import {
 } from '../auth/better-auth-environment.ts';
 import { SlackAdmissionService } from '../auth/slack-admission.ts';
 import { SlackOidcError } from '../auth/slack-oidc.ts';
-import { createBetterAuthEnvironmentPublicHandler } from '../auth/better-auth-runtime.ts';
 import {
   AuthorizationError,
   canEditAgent,
@@ -1779,7 +1779,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     Promise<ResolvedManagedProviderContext>
   >();
   const managedCatalog = options.managedConnectorCatalog ?? MANAGED_CONNECTOR_CATALOG;
-  const managedCatalogDescriptor = (connector: ManagedConnectorDefinition) => ({
+  const managedCatalogDescriptor = (connector: ManagedConnectorHeader) => ({
     id: connector.id,
     toolkit: connector.toolkit,
     providerId: connector.providerId,
@@ -6741,6 +6741,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     authResponseHeaders(c);
     const context = await betterAuthContext(c);
     if (!context) return c.redirect('/auth/slack/sign-in?destination=%2Fadmin', 303);
+    const { createBetterAuthEnvironmentPublicHandler } = await import('../auth/better-auth-runtime.ts');
     const handler = createBetterAuthEnvironmentPublicHandler({
       environment: context.environment,
     });
@@ -9167,10 +9168,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (!canEditAgent(principal, agent)) throw new AuthorizationError();
       const organization = await identity(c).getOrganization();
       if (organization?.slackTeamId !== workspaceId) throw new AuthorizationError();
-      const [views, bindings, providerContext] = await Promise.all([
+      const [views, bindings, providerContext, details] = await Promise.all([
         connectionAccounts(c).listViews(workspaceId),
         store(c).listAgentConnectionBindings(agent.id),
         resolvedManagedProviderContext(c),
+        // Every connector's tool descriptions, which load per toolkit.
+        loadConnectorDetails(managedCatalog.list().map(({ toolkit }) => toolkit), managedCatalog),
       ]);
       const byId = new Map(views.map((account) => [account.id, account]));
       const summaries = await connectionAccounts(c).pageSummaries(
@@ -9183,7 +9186,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const managedConnectorCatalog = managedCatalog.list().map((connector) => ({
         ...managedCatalogDescriptor(connector),
         securityDescription: connector.securityDescription,
-        capabilities: connector.capabilities.map((capability) => ({
+        capabilities: details.get(connector.toolkit)!.connector.capabilities.map((capability) => ({
           id: capability.id,
           accessLane: capability.accessLane,
           description: capability.description,

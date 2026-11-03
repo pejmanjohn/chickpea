@@ -134,11 +134,52 @@ test('a delivered turn settles its row, clears active work, and lets the thread 
   assert.equal(run?.observationSignal, undefined, 'no control, no observation signal');
 });
 
+// Defect caught: the wake admission sent the turn's Agent object never reaches
+// the turn, whose freeze then wakes that object a second time.
+test("the wake admission sent the turn's Agent object reaches the turn", async () => {
+  const agentWake = { instanceId: `agent_${'c'.repeat(40)}`, sentAt: 1_785_900_000_500 };
+  const h = fakePorts(async (options) => { await options.onDelivered?.('completed' as never); });
+  assert.equal(await executeTurnJob(pendingJob(), h.ports, { ...h.options, agentWake }), true);
+  assert.deepEqual(h.runs[0]?.admissionAgentWake, agentWake);
+  const none = fakePorts(async (options) => { await options.onDelivered?.('completed' as never); });
+  await executeTurnJob(pendingJob(), none.ports, none.options);
+  assert.equal(none.runs[0]?.admissionAgentWake, undefined);
+});
+
 test('a failed first attempt is retained for a retry and ends its thread for this drain', async () => {
   const h = fakePorts(async () => { throw new Error('model unavailable'); });
   assert.equal(await executeTurnJob(pendingJob(), h.ports, h.options), false);
   assert.deepEqual(h.calls, ['recordAttempt("turn_1",1)']);
   assert.deepEqual(h.retries, [undefined]);
+});
+
+test('a run that claims its follow-ups records its attempt beside the claim, and goes on only once both are in', async () => {
+  const events: string[] = [];
+  const committed = Promise.withResolvers<void>();
+  const h = fakePorts(async (options) => {
+    const claim = options.claimFold!({ phase: 'start', headId: 'turn_1' });
+    events.push('claim started');
+    await claim;
+    events.push('claim answered');
+  });
+  Object.assign(h.ports.turnJobs, {
+    recordAttempt: async () => {
+      events.push('attempt sent');
+      await committed.promise;
+      events.push('attempt committed');
+    },
+    fold: async () => {
+      events.push('fold');
+      return { messages: [], requesterText: '' };
+    },
+  });
+  const run = executeTurnJob(pendingJob(), h.ports, h.options);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, ['attempt sent', 'fold', 'claim started'],
+    'the claim starts while the attempt is in flight, and the run waits for both');
+  committed.resolve();
+  assert.equal(await run, true);
+  assert.deepEqual(events.slice(3), ['attempt committed', 'claim answered']);
 });
 
 test('a rate-limited attempt asks for a retry no sooner than the gateway allows, bounded to one window', async () => {
@@ -188,6 +229,44 @@ test('an installation that cannot recover holds the row for operator recovery', 
   assert.equal(await executeTurnJob(pendingJob(), h.ports, h.options), false);
   assert.deepEqual(h.calls, ['markRecoveryRequired("turn_1","slack_installation_unavailable")']);
   assert.deepEqual(h.retries, []);
+});
+
+test('a Channel turn reads its Channel again unless admission found the same bot a member within the last minute', async (t) => {
+  const channel = { ok: true, channel: { id: 'C1', is_member: true, context_team_id: 'T1' } };
+  let reads = 0;
+  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL) => {
+    if (String(input).endsWith('/conversations.info')) reads += 1;
+    return Response.json(channel);
+  });
+  const contexts = {
+    direct: { workspaceId: 'T1', transportMode: 'direct', botToken: 'xoxb-test', botUserId: 'UBOT', client: {} },
+    gateway: {
+      workspaceId: 'T1', transportMode: 'gateway', botUserId: 'UBOT',
+      client: { conversations: { info: async () => { reads += 1; return channel; } } },
+    },
+  };
+  const now = Date.now();
+  const cases = [
+    ['fresh', { botUserId: 'UBOT', verifiedAt: now - 5_000 }, 0],
+    ['older than a minute', { botUserId: 'UBOT', verifiedAt: now - 61_000 }, 1],
+    ['read by another bot', { botUserId: 'UCHICKPEA', verifiedAt: now - 5_000 }, 1],
+    ['absent, as on a row admitted before the fact existed', undefined, 1],
+  ] as const;
+  for (const [mode, context] of Object.entries(contexts)) {
+    for (const [label, channelMembership, expected] of cases) {
+      reads = 0;
+      const h = fakePorts(async (options) => { await options.onDelivered?.(); }, async () => context);
+      const job = pendingJob({
+        turn: {
+          workspaceId: 'T1', channelId: 'C1', channelType: 'channel', threadTs: '1785900000.000100',
+          messageTs: '1785900000.000100', userId: 'U1', text: 'question', source: 'app_mention',
+          eventId: 'Ev1', contextMode: 'thread', ...(channelMembership ? { channelMembership } : {}),
+        },
+      });
+      assert.equal(await executeTurnJob(job, h.ports, h.options), true, `${mode}, ${label}`);
+      assert.equal(reads, expected, `${mode}, ${label}: conversations.info reads`);
+    }
+  }
 });
 
 test('a dispatch that needs reconciliation posts the recovery notice once and settles as an error', async () => {
@@ -415,7 +494,8 @@ test('runner ports: a delivered turn records the same writes and passes its regi
     await options.onInteractionIntent?.({ disposition: 'work' } as never);
     await options.onDelivered?.('completed' as never);
   });
-  assert.equal(await executeTurnJob(pendingJob(), h.ports, h.options), true);
+  const latency = { ...h.options.latency, handoffMs: 1_900 };
+  assert.equal(await executeTurnJob(pendingJob(), h.ports, { ...h.options, latency }), true);
   assert.deepEqual(h.calls.map((call) => call.replace(/\(.*/, '')), [
     'recordAttempt', 'recordInteractionIntent', 'setActiveWork', 'markDelivered', 'setActiveWork',
     'telemetry',
@@ -423,7 +503,13 @@ test('runner ports: a delivered turn records the same writes and passes its regi
   const [run] = h.runs;
   assert.equal(run?.statusRegistry, h.statusRegistry);
   assert.equal(run?.settingsStore, undefined, 'the runner reaches settings over RPC');
-  assert.equal(run?.turnLatency?.executor, 'runner');
+  assert.deepEqual(run?.turnLatency, {
+    admittedAt: 1_785_900_000_000,
+    receivedAt: 1_785_899_999_000,
+    handoffMs: 1_900,
+    lane: 'cloudflare',
+    executor: 'runner',
+  }, "the runner's hand-off delay reaches turn_latency with the row's times");
   assert.deepEqual(h.prepared, [{
     generation: 'g1', executor: 'runner', runnerKey: 'T1:D1:1785900000.000100',
   }], 'the dispatch records where observed activity must go');

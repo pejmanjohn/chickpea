@@ -80,7 +80,11 @@ key and is refused on credits. Pi's `cost` metadata never sets a charge.
    `UPDATE_SHARED_PREFIX=1 node --import tsx --test tests/shared-prefix.test.ts`.
    Review the diff before you accept it. The shared-prefix snapshot,
    `src/agents/shared-prefix-tools.json`, also feeds the hosted prewarm:
-   `sharedPrefixRequests()` builds each prewarm from it. A prewarm carries
+   `sharedPrefixRequests()` builds each prewarm from it, one per Agent kind
+   and interactive shape, eight per model. The `management`, `coding` and
+   `front_desk` segments are never warmed: their first request writes the
+   prefix, and a charge may name a shape that includes one of them, such as
+   `system/interactive_streaming_management`. A prewarm carries
    `betas` beside its wire `body`, because the Anthropic API refuses `betas`
    in the body. The hosted prewarm must POST `body` as JSON to
    `https://api.anthropic.com/v1/messages?beta=true`. When `betas` is not

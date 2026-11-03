@@ -468,6 +468,8 @@ async function runChickpeaHandOff(lane: FrontDeskLane, job: TurnJob, agentIds: s
   const posts: Array<Record<string, unknown>> = [];
   const client = recordingClient(posts);
   const handoffs: SlackFrontDeskHandoffRequest[] = [];
+  // How many messages the client had posted when the hand-off was known.
+  let postsAtHandoff: number | undefined;
   let delivered: string | undefined;
   await runTurn(job.turn, assignment, undefined, {
     client, turnId: job.id,
@@ -485,10 +487,10 @@ async function runChickpeaHandOff(lane: FrontDeskLane, job: TurnJob, agentIds: s
         data: { slackFrontDeskHandoff: [{ agentIds, note }] }, submissionId: 'sub_front_desk', uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAV',
       }, null, input.runtimePlan?.frontDesk);
     },
-    onFrontDeskHandoff: (request) => { handoffs.push(request); },
+    onFrontDeskHandoff: (request) => { handoffs.push(request); postsAtHandoff ??= posts.length; },
     onDelivered: (outcome) => { delivered = outcome; },
   });
-  return { posts, handoffs, delivered };
+  return { posts, handoffs, delivered, postsAtHandoff };
 }
 
 /** The card a hand-off to several Agents left on the person's message, and a pick on it. */
@@ -543,9 +545,11 @@ test('the takeover is metered as its own Agent\'s turn, for the same requester a
 
 test('Chickpea\'s hand-off to an Agent the person made posts the host\'s line, then asks the executor to admit the takeover', async () => {
   await withFrontDeskLane(async (lane) => {
-    const { chickpea, posts, handoffs, delivered } = await runHandOff(lane, ['agent_support'], 'It has the portal login.');
+    const { chickpea, posts, handoffs, delivered, postsAtHandoff } = await runHandOff(lane, ['agent_support'], 'It has the portal login.');
     assert.equal(delivered, 'succeeded');
     assert.deepEqual(posts.map(({ text }) => text), ['Support Desk is taking this. It has the portal login.']);
+    // The executor wakes the Agent's runner on the hand-off, so it must know it before the line's post.
+    assert.equal(postsAtHandoff, 0, 'the hand-off is known before the line is posted');
     assert.ok(!JSON.stringify(posts).includes('A draft the person never sees.'));
     assert.deepEqual(handoffs, [{
       turn: chickpea.turn, fromAgentId: CHICKPEA_AGENT_ID, agentId: 'agent_support', agentName: 'Support Desk',

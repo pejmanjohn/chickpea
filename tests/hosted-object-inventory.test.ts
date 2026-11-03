@@ -481,12 +481,15 @@ const ADDRESSING_SITES: Record<string, { covered: string; sites: readonly string
     sites: ['return namespace.getByName(tagStateInstanceName(env));'],
   },
   'slack/thread-runner-rpc.ts': {
-    covered: 'thread_runner, recorded at turn enqueue',
+    covered: "thread_runner, recorded at turn enqueue; a receipt's wake may reach it first, and a runner never handed a job stores nothing",
     sites: ['return namespace.getByName(installationObjectName(env, threadKey));'],
   },
   'agents/turn-input.ts': {
-    covered: 'slack_agent, recorded when the turn freezes its plan',
-    sites: ['const stub = binding.get(binding.idFromName(input.instanceId));'],
+    covered: "slack_agent, recorded when the turn freezes its plan, or by admission just before its wake (admissionAgentInstance)",
+    sites: [
+      'await binding.get(binding.idFromName(instanceId)).chickpeaWake(sentAt, turnJobId);',
+      'const stub = binding.get(binding.idFromName(input.instanceId));',
+    ],
   },
   'slack/bounded-agent-observation.ts': {
     covered: 'slack_agent of a dispatched envelope',
@@ -586,10 +589,12 @@ test('every Durable Object addressing site in Core is covered by the inventory o
 });
 
 /**
- * Every place Core names a Flue instance: derives one from a runtime plan,
- * or references one in the Work ledger. A name is safe only when it comes
- * from a plan its recording store froze (TurnJobStore.freezeRuntimePlan) or
- * an envelope its store persisted, both recorded in the inventory first. A
+ * Every place Core names a Flue instance: derives one from a runtime plan
+ * (or, at a turn's hand-off, from what that plan will be made of), or
+ * references one in the Work ledger. A name is safe only when it comes from
+ * a plan its recording store froze (TurnJobStore.freezeRuntimePlan), an
+ * envelope its store persisted, or a hand-off that records it before its
+ * wake, all recorded in the inventory first. A
  * reference made up from anything else (a thread key, a fallback) names an
  * object nothing recorded: a census counts it as residue erasure cannot
  * reach. A new site, or a site whose code changes, fails here until it is
@@ -606,6 +611,10 @@ const FLUE_INSTANCE_NAMING_SITES: Record<string, { covered: string; sites: reado
       "createSlackShadowLifecycle input: opaqueId('flueinstance', runtimePlanDecision.instanceId)",
       'freezeRuntimePlanForTurn: deriveRuntimePlanInstanceId(candidate)',
     ],
+  },
+  'slack/admission-agent-wake.ts': {
+    covered: 'recorded in the inventory on the next line, before the wake addresses it',
+    sites: ['admissionAgentInstance: deriveSlackTurnInstanceId(job.turn, job.assignment, facts.installation)'],
   },
   'agents/turn-input.ts': {
     covered: 'compares a staged plan with the instance it was staged for; names nothing',
@@ -650,8 +659,8 @@ test('every Flue instance Core names comes from a recorded plan or envelope, nev
       const visit = (node: ts.Node) => {
         if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
           const [first, second] = node.arguments;
-          const site = node.expression.text === 'deriveRuntimePlanInstanceId'
-            ? `deriveRuntimePlanInstanceId(${node.arguments.map((arg) => arg.getText(source)).join(', ')})`
+          const site = ['deriveRuntimePlanInstanceId', 'deriveSlackTurnInstanceId'].includes(node.expression.text)
+            ? `${node.expression.text}(${node.arguments.map((arg) => arg.getText(source)).join(', ')})`
             : node.expression.text === 'opaqueId' && first && ts.isStringLiteral(first) && first.text === 'flueinstance'
               ? `opaqueId('flueinstance', ${second?.getText(source) ?? ''})`
               : undefined;
