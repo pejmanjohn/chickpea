@@ -15,6 +15,7 @@ import {
 import type { GatewayInboundDelivery } from '../src/slack/gateway/protocol.ts';
 import { seedGatewayIdentity } from '../src/slack/installation-execution.ts';
 import { parseAdmissionAgentWake } from '../src/slack/admission-agent-wake.ts';
+import { parseAdmissionStatusMark } from '../src/slack/admission-activity.ts';
 import { SlackStatusRegistry } from '../src/slack/status-registry.ts';
 import { slackAgentThreadKey } from '../src/slack/thread-key.ts';
 import { ThreadRunnerJobStore } from '../src/slack/thread-runner-jobs.ts';
@@ -200,6 +201,7 @@ function runnerOver(storage: FakeObjectStorage, clock: { now: number }, records:
       assertInstallationOwnership,
       seedGatewayIdentity,
       parseAdmissionAgentWake,
+      parseAdmissionStatusMark,
       ThreadRunnerJobStore,
       DoSqlStateDb,
       SlackStatusRegistry,
@@ -274,4 +276,32 @@ test("a hand-off carries admission's Agent wake to its turn's first attempt only
   await runner.admit({ id: 'j3', threadKey, payload: { agentWake }, sentAt: 19_950 });
   clock.now = agentWake.sentAt + 60_001;
   assert.equal(runner.takeHandoff('j3').agentWake, undefined, 'a wake over a minute old at the attempt is none');
+});
+
+// Defects caught: the runner drops admission's status mark (turn_latency then
+// counts the first write from the runner's later one), gives it to a later
+// attempt, stores it, or takes a malformed one.
+test("a hand-off carries admission's status mark to its turn's first attempt only", async () => {
+  const clock = { now: 30_000 };
+  const storage = new FakeObjectStorage();
+  const { runner, settled } = runnerOver(storage, clock, []);
+  await settled();
+  const threadKey = 'T1:C1:5000.000100:owner-i1';
+  await runner.admit({ id: 's1', threadKey, payload: { admissionStatus: { waitedMs: 320, shownAt: 29_900 } }, sentAt: 29_950 });
+  assert.deepEqual({ ...runner.takeHandoff('s1').latency },
+    { handoffMs: 50, admissionStatusMs: 320, admissionStatusAt: 29_900 });
+  assert.deepEqual({ ...runner.takeHandoff('s1').latency }, {}, 'a later attempt carries none');
+  assert.equal(JSON.stringify(storage.database.prepare('SELECT * FROM runner_jobs').all()).includes('admissionStatus'), false,
+    'the mark is never stored');
+  // A write that missed the cap: its wait only.
+  await runner.admit({ id: 's2', threadKey, payload: { admissionStatus: { waitedMs: 600 } }, sentAt: 29_950 });
+  assert.deepEqual({ ...runner.takeHandoff('s2').latency }, { handoffMs: 50, admissionStatusMs: 600 });
+  for (const [name, admissionStatus] of [
+    ['no wait', { shownAt: 29_900 }],
+    ['a negative wait', { waitedMs: -1, shownAt: 29_900 }],
+    ['a wait that is not a number', { waitedMs: '320', shownAt: 29_900 }],
+  ] as const) {
+    await runner.admit({ id: name, threadKey, payload: { admissionStatus }, sentAt: 29_950 });
+    assert.deepEqual({ ...runner.takeHandoff(name).latency }, { handoffMs: 50 }, `${name}: no mark`);
+  }
 });

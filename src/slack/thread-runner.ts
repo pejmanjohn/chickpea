@@ -33,7 +33,7 @@ import {
   type ObjectRestoreRequest,
   type ObjectRestoreRestartRequest,
 } from '../state/object-host.ts';
-import { RunnerBootMarks } from '../observability/runtime-latency.ts';
+import { RunnerBootMarks, type TurnLatencyContext } from '../observability/runtime-latency.ts';
 import { createPlatformProductTelemetry } from '../telemetry/platform.ts';
 import {
   cacheSlackInstallationExecutionContexts,
@@ -72,6 +72,7 @@ import {
   runThreadRunnerAlarm,
 } from './thread-runner-loop.ts';
 import { parseAdmissionAgentWake, type AdmissionAgentWake } from './admission-agent-wake.ts';
+import { parseAdmissionStatusMark } from './admission-activity.ts';
 import { RunnerStops, runnerStopRecorded } from './runner-stops.ts';
 import type {
   RunnerTurnBegin,
@@ -91,6 +92,9 @@ import { MAX_TURN_DRAIN_BATCH } from './turn-jobs.ts';
  */
 const RUNNER_WAKE_LEAD_WINDOW_MS = 60_000;
 
+/** What a hand-off tells its turn's first attempt for `turn_latency`. */
+type HandoffLatency = Pick<TurnLatencyContext, 'handoffMs' | 'runnerWakeLeadMs' | 'admissionStatusMs' | 'admissionStatusAt'>;
+
 /**
  * Per-thread Slack turn runner (binding `SLACK_THREAD_RUNNER`, migration v11),
  * addressed by `idFromName(threadKey)`. By default (unless the emergency gate
@@ -108,12 +112,12 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   /**
    * Hand-off delays of the jobs this activation admitted (`admit` start minus
    * the state store's send time), how long before the hand-off the state
-   * store woke this activation, and the wake it sent the turn's Agent object,
-   * by job id, until the job's first attempt here takes its own.
+   * store woke this activation, its status write before the hand-off, and the
+   * wake it sent the turn's Agent object, by job id, until the job's first
+   * attempt here takes its own.
    */
-  private readonly handoffs = new Map<string, {
+  private readonly handoffs = new Map<string, HandoffLatency & {
     handoffMs: number;
-    runnerWakeLeadMs?: number;
     agentWake?: AdmissionAgentWake;
   }>();
   /** The state store's send time of the last receipt wake this activation served, until a hand-off counts it. */
@@ -250,9 +254,12 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       const lead = this.wokenAt === undefined ? undefined : sentAt - this.wokenAt;
       this.wokenAt = undefined;
       const agentWake = parseAdmissionAgentWake(payload.agentWake);
+      const admissionStatus = parseAdmissionStatusMark(payload.admissionStatus);
       this.handoffs.set(job.id, {
         handoffMs: enteredAt - sentAt,
         ...(lead !== undefined && lead >= 0 && lead <= RUNNER_WAKE_LEAD_WINDOW_MS ? { runnerWakeLeadMs: lead } : {}),
+        ...(admissionStatus ? { admissionStatusMs: admissionStatus.waitedMs } : {}),
+        ...(admissionStatus?.shownAt === undefined ? {} : { admissionStatusAt: admissionStatus.shownAt }),
         ...(agentWake ? { agentWake } : {}),
       });
     }
@@ -461,7 +468,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
    * evicted since, so its turn's freeze wakes it again.
    */
   private takeHandoff(jobId: string): {
-    latency: { handoffMs?: number; runnerWakeLeadMs?: number };
+    latency: HandoffLatency;
     agentWake?: AdmissionAgentWake;
   } {
     const handoff = this.handoffs.get(jobId);

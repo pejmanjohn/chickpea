@@ -1228,10 +1228,7 @@ export class SlackRunPresentationStoreLogic {
       }
       const current = decodePresentation(row);
       const at = this.now();
-      const next = applyMutation(current, input.mutation, at);
-      if (next.schemaVersion === 3) next.repairRequired = v3RepairRequired(next);
-      next.projectionVersion = current.projectionVersion + 1;
-      next.updatedAt = at;
+      const next = nextPresentation(current, input.mutation, at);
 
       if (next.stream.messageTs && next.stream.messageTs !== current.stream.messageTs) {
         const conflict = this.db.get(
@@ -1836,6 +1833,45 @@ export class SlackRunPresentationStoreLogic {
       workspaceId,
     ) as BudgetRow | undefined;
   }
+}
+
+/** `mutation` applied to `current` at `at`: the next version, as a transition stores it. */
+function nextPresentation(
+  current: SlackRunPresentation,
+  mutation: SlackPresentationMutation,
+  at: number,
+): SlackRunPresentation {
+  const next = applyMutation(current, mutation, at);
+  if (next.schemaVersion === 3) next.repairRequired = v3RepairRequired(next);
+  next.projectionVersion = current.projectionVersion + 1;
+  next.updatedAt = at;
+  return next;
+}
+
+/**
+ * A transition of a copy held apart from any store, with the checks and the
+ * next version the store's `transition` makes. A copy cannot check a Slack
+ * coordinate against other Runs, so a transition that sets one is stale.
+ */
+export function transitionPresentationCopy(
+  current: SlackRunPresentation,
+  input: SlackPresentationTransitionInput,
+  at: number,
+): SlackPresentationTransitionResult {
+  validateTransitionInput(input);
+  if (input.runId !== current.runId) return { outcome: 'missing' };
+  if (
+    current.workBindingGeneration !== input.workBindingGeneration ||
+    current.runFencingToken !== input.runFencingToken ||
+    current.projectionVersion !== input.expectedProjectionVersion ||
+    current.stream.state !== input.expectedStreamState
+  ) {
+    return { outcome: 'stale' };
+  }
+  const next = nextPresentation(current, input.mutation, at);
+  return next.stream.messageTs === current.stream.messageTs
+    ? { outcome: 'applied', presentation: next }
+    : { outcome: 'stale' };
 }
 
 function applyMutation(
@@ -3753,7 +3789,7 @@ function v3RepairRequired(presentation: SlackRunPresentationV3): boolean {
 }
 
 /** An admitted V3 presentation nothing has been shown for or intended through yet. */
-function presentationUnstarted(presentation: SlackRunPresentationV3): boolean {
+export function presentationUnstarted(presentation: SlackRunPresentationV3): boolean {
   return presentation.lifecyclePhase === 'admitted' &&
     presentation.stream.state === 'absent' && presentation.stream.messageTs === undefined &&
     presentation.terminalDelivery.state === 'none' &&

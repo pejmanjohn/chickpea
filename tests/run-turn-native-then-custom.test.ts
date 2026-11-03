@@ -11,9 +11,16 @@ import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { activityStatus } from '../src/activity/status.ts';
 import { deriveRuntimePlanInstanceId } from '../src/agents/runtime-plan.ts';
+import { showAdmissionStatus } from '../src/slack/admission-activity.ts';
 import { SlackAgentViewPresentation } from '../src/slack/agent-view-presentation.ts';
-import { SlackRunPresentationStoreLogic } from '../src/slack/run-presentations.ts';
-import { runTurn } from '../src/slack/run-turn.ts';
+import type { FoldedMessage } from '../src/slack/follow-ups.ts';
+import type { SlackStopNoteFacts } from '../src/slack/web-client-presenter.ts';
+import {
+  SlackRunPresentationStoreLogic,
+  type SlackRunPresentation,
+  type SlackRunPresentationV3,
+} from '../src/slack/run-presentations.ts';
+import { runTurn, type RunTurnOptions } from '../src/slack/run-turn.ts';
 import { SlackStatusRegistry } from '../src/slack/status-registry.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
@@ -161,6 +168,7 @@ function harness(turn: NormalizedSlackTurn, options: {
       replies: async () => ({ ok: true, messages: [] }),
       history: async () => ({ ok: true, messages: [] }),
     },
+    reactions: { add: async () => { effects.push('reaction'); return { ok: true }; } },
     chat: {
       startStream: async () => { effects.push('final'); return { ok: true, ts: '1790000100.000100' }; },
       stopStream: async () => ({ ok: true }),
@@ -573,4 +581,259 @@ test('KTD6: a run that ends while quiet stops its keepalive at the terminal', as
     await new Promise((resolve) => setTimeout(resolve, 250));
     assert.equal(h.effects.length, settled, 'no keepalive after the terminal');
   } finally { h.db.close(); work.close(); }
+});
+
+/**
+ * The status the state store shows before a turn's hand-off
+ * (showAdmissionStatus, called by TagStateStore.showStatusAtHandoff), on the
+ * harness's row. Returns the time the hand-off carries.
+ */
+async function showAtAdmission(h: ReturnType<typeof harness>): Promise<number> {
+  const presentation = h.store.get(h.runId) as SlackRunPresentationV3;
+  const mark = await showAdmissionStatus({
+    presentation,
+    agentId: assignment.agentId,
+    state: h.state,
+    client: async () => h.client,
+    commit: (shown) => h.store.putSnapshot(shown),
+  });
+  assert.ok(mark.shownAt !== undefined, 'the status showed before the hand-off');
+  return mark.shownAt;
+}
+
+/** What a person sees of a Run at its end, and what its record says shows. */
+function visibleEnd(h: ReturnType<typeof harness>) {
+  const stored = h.store.get(h.runId) as SlackRunPresentation;
+  assert.equal(stored.schemaVersion, 3);
+  const custom = h.effects.filter((effect) => effect.startsWith('custom:'));
+  const sessions = h.effects.filter((effect) => effect.startsWith('session:'));
+  return {
+    statusLeftShowing: custom.length > 0 && custom.at(-1) !== 'custom:clear',
+    sessionLastWord: sessions.at(-1),
+    replied: h.effects.includes('final') || h.effects.includes('reaction'),
+    projectionState: stored.schemaVersion === 3 && stored.activityProjection.state === 'visible' ? 'visible' : 'not_visible',
+    sessionAcknowledged: stored.schemaVersion === 3 ? stored.agentSession.acknowledged : undefined,
+  };
+}
+
+// Defects caught: a runner that starts native processing (which would hide
+// the status admission showed) or writes the opening status again, on its
+// start or as an immediate refresh, and one that leaves it showing.
+test('a status the state store showed before the hand-off is kept: no native start, no second write, then settled and cleared', async () => {
+  const run = async (ts: string, shownFirst: boolean) => {
+    const turn = surfaceTurn('dm', ts);
+    const dmAssignment: ResolvedAssignment = { ...assignment, channelId: turn.channelId };
+    const work = new SqliteWorkStore(':memory:');
+    const admitted = await work.admitShadowRun(prepareSlackShadowAdmission({
+      turn, assignment: dmAssignment, sourceVisibility: 'private', admittedAt: Date.now(),
+    }));
+    const h = harness(turn, { runId: admitted.run.id });
+    try {
+      const shownAt = shownFirst ? await showAtAdmission(h) : undefined;
+      if (shownFirst) {
+        assert.deepEqual(h.effects, ['custom:Preparing your request…'],
+          'admission shows the custom status itself, with no native processing to hide it');
+      }
+      await runTurn(turn, dmAssignment, undefined, {
+        client: h.client,
+        runId: h.runId,
+        turnId: `turn_${h.runId}`,
+        presentationState: h.state,
+        statusRegistry: new SlackStatusRegistry(),
+        workStore: work,
+        usageRecordingEnabled: false,
+        // The hand-off's mark, as the runner gives it to the first attempt.
+        ...(shownAt === undefined
+          ? {}
+          : { turnLatency: { lane: 'cloudflare' as const, executor: 'runner' as const, admissionStatusAt: shownAt } }),
+        agentPrompt: async () => {
+          // Long enough for a refresh made at the start to land.
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          return {
+            text: 'Done.', requestedModel: assignment.model ?? null, returnedModel: null,
+            reportedUsage: null, usageCompleteness: 'not_reported',
+          };
+        },
+      });
+      return { effects: [...h.effects], end: visibleEnd(h) };
+    } finally { h.db.close(); work.close(); }
+  };
+  const today = await run('1790000020.000100', false);
+  const shown = await run('1790000021.000100', true);
+  assert.deepEqual(today.effects.slice(0, 3), ['session:processing', 'session:active', 'custom:Preparing your request…']);
+  assert.deepEqual(shown.effects, [
+    'custom:Preparing your request…', // admission's, before the hand-off
+    ...today.effects.slice(3), // then what today follows the runner's own opening write with
+  ]);
+  assert.deepEqual(shown.end, today.end, 'it ends as a turn the runner opened itself');
+});
+
+// Defects caught: a write that misses the cap yet reaches the record (the
+// runner would then skip its opening writes, or find the activity mid-write
+// and show nothing), and a late landing that moves the record afterwards.
+test('a status write that misses the cap leaves the record as admitted, and the runner opens the turn as today', async () => {
+  const turn = surfaceTurn('channel', '1790000023.000100');
+  const h = harness(turn);
+  let land!: () => void;
+  const landing = new Promise<void>((resolve) => { land = resolve; });
+  const late: string[] = [];
+  const slow = {
+    apiCall: async (_method: string, input: Record<string, unknown>) => {
+      late.push(`session:${String(input.status)}`);
+      return { ok: true };
+    },
+    assistant: { threads: { setStatus: async (input: Record<string, unknown>) => {
+      await landing;
+      late.push(`custom:${String(input.status)}`);
+      return { ok: true };
+    } } },
+  } as unknown as WebClient;
+  try {
+    const admitted = h.store.get(h.runId) as SlackRunPresentationV3;
+    const mark = await showAdmissionStatus({
+      presentation: admitted,
+      agentId: assignment.agentId,
+      state: h.state,
+      client: async () => slow,
+      commit: (shown) => h.store.putSnapshot(shown),
+      capMs: 20,
+    });
+    assert.equal(mark.shownAt, undefined);
+    assert.ok(mark.waitedMs >= 19, JSON.stringify(mark));
+    land();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(late, ['custom:Preparing your request…'], 'the write landed after the cap');
+    assert.deepEqual(h.store.get(h.runId), admitted, 'and moved no record');
+    await answer(turn, h);
+    assert.deepEqual(h.effects, [
+      'session:processing',
+      'session:active',
+      'custom:Preparing your request…',
+      'final',
+      'session:active',
+      'custom:clear',
+    ], 'the runner opens the turn as it does with no write before the hand-off');
+  } finally { h.db.close(); }
+});
+
+// Defect caught: a status admission showed carries the session, so native
+// processing never started; without a start the quiet hand-back fails and the
+// run keeps its custom text with no Stop button.
+test("after the state store showed the status, a quiet run starts native processing, and progress releases it", async () => {
+  const turn = surfaceTurn('dm', '1790000022.000100');
+  const dmAssignment: ResolvedAssignment = { ...assignment, channelId: turn.channelId };
+  const work = new SqliteWorkStore(':memory:');
+  const admitted = await work.admitShadowRun(prepareSlackShadowAdmission({
+    turn, assignment: dmAssignment, sourceVisibility: 'private', admittedAt: Date.now(),
+  }));
+  const h = harness(turn, { runId: admitted.run.id });
+  const registry = new SlackStatusRegistry({ quietAfterMs: 50 });
+  const observed = activityStatus('reading', 'Reading', 'the thread');
+  const shown = 'custom:Preparing your request…';
+  const waitFor = async (condition: () => boolean) => {
+    for (let tries = 0; tries < 100 && !condition(); tries += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.ok(condition(), JSON.stringify(h.effects));
+  };
+  try {
+    const shownAt = await showAtAdmission(h);
+    await runTurn(turn, dmAssignment, undefined, {
+      client: h.client,
+      runId: h.runId,
+      turnId: `turn_${h.runId}`,
+      presentationState: h.state,
+      statusRegistry: registry,
+      workStore: work,
+      usageRecordingEnabled: false,
+      turnLatency: { lane: 'cloudflare', executor: 'runner', admissionStatusAt: shownAt, admissionStatusMs: 5 },
+      agentPrompt: async ({ runtimePlan, conversationKey }) => {
+        await waitFor(() => h.effects.includes('session:processing'));
+        const instanceId = runtimePlan ? deriveRuntimePlanInstanceId(runtimePlan) : conversationKey;
+        assert.equal(registry.setObservedStatus(instanceId, `turn_${h.runId}`, observed), true);
+        await waitFor(() => h.effects.includes(`custom:${observed.text}`));
+        return {
+          text: 'Done.',
+          requestedModel: assignment.model ?? null,
+          returnedModel: null,
+          reportedUsage: null,
+          usageCompleteness: 'not_reported',
+        };
+      },
+    });
+    assert.deepEqual(h.effects.slice(0, 4), [
+      shown, // admission's
+      'session:processing', // quiet: Slack's working indicator and its Stop button, started now
+      'session:active', // released first, so the custom text renders
+      `custom:${observed.text}`,
+    ]);
+    assert.deepEqual(h.effects.slice(-2), ['session:active', 'custom:clear'], 'settled, then cleared');
+  } finally { h.db.close(); work.close(); }
+});
+
+const STOP_FACTS: SlackStopNoteFacts = { stopperUserId: 'U_NATIVE_FIRST', unread: 1, pullRequests: [], windingDown: false };
+const TEAMMATE_NOTE: FoldedMessage = {
+  turnJobId: 'follow_up', userId: 'U_NATIVE_FIRST', messageTs: '1790000030.000200', text: 'Only the API changes, please.',
+};
+
+// Defects caught: an ending that leaves admission's status showing (a stop
+// that refused the turn's dispatch, a turn judged react_only after
+// admission, a turn that read queued messages), or one whose replacement or
+// clear differs from the turn the runner opened itself.
+test('a stopped, reacted or folded turn after the state store showed its status ends as it does today', async () => {
+  const done = async () => ({
+    text: 'Done.', requestedModel: assignment.model ?? null, returnedModel: null,
+    reportedUsage: null, usageCompleteness: 'not_reported' as const,
+  });
+  const endings: Array<[string, Partial<NormalizedSlackTurn>, Partial<RunTurnOptions>]> = [
+    ['stopped before its dispatch', {}, { stopEnding: { beforeDispatch: true, finish: async () => STOP_FACTS } }],
+    ['judged react_only', {
+      text: 'thanks',
+      interactionIntent: { disposition: 'react_only', reason: 'pure_ack', reaction: 'appreciation', target: 'trigger' },
+    }, {}],
+    ['reading a queued message', {}, { claimFold: async () => ({ messages: [TEAMMATE_NOTE], requesterText: '' }) }],
+  ];
+  let ts = 1790000040;
+  for (const [name, turnFields, options] of endings) {
+    const run = async (shownFirst: boolean) => {
+      const turn = { ...surfaceTurn('dm', `${ts++}.000100`), ...turnFields };
+      const dmAssignment: ResolvedAssignment = { ...assignment, channelId: turn.channelId };
+      const work = new SqliteWorkStore(':memory:');
+      const admitted = await work.admitShadowRun(prepareSlackShadowAdmission({
+        turn, assignment: dmAssignment, sourceVisibility: 'private', admittedAt: Date.now(),
+      }));
+      const h = harness(turn, { runId: admitted.run.id });
+      try {
+        const shownAt = shownFirst ? await showAtAdmission(h) : undefined;
+        await runTurn(turn, dmAssignment, undefined, {
+          client: h.client,
+          runId: h.runId,
+          turnId: `turn_${h.runId}`,
+          presentationState: h.state,
+          statusRegistry: new SlackStatusRegistry(),
+          workStore: work,
+          usageRecordingEnabled: false,
+          agentPrompt: done,
+          ...(shownAt === undefined
+            ? {}
+            : { turnLatency: { lane: 'cloudflare' as const, executor: 'runner' as const, admissionStatusAt: shownAt } }),
+          ...options,
+        });
+        return { effects: [...h.effects], end: visibleEnd(h) };
+      } finally { h.db.close(); work.close(); }
+    };
+    const today = await run(false);
+    const shown = await run(true);
+    const trace = JSON.stringify([today.effects, shown.effects]);
+    assert.deepEqual(shown.end, today.end, `${name}: ${trace}`);
+    assert.equal(shown.end.statusLeftShowing, false, `${name}: nothing left showing`);
+    assert.equal(shown.effects.includes('session:processing'), false, `${name}: no native start: ${trace}`);
+    const writes = (effects: string[]) => effects.filter((effect) => effect.startsWith('custom:') && effect !== 'custom:clear');
+    // A turn that runs writes what it writes today, admission's first in
+    // place of the runner's own; a stop that came after admission's write
+    // ends with it cleared, where today the runner never showed one.
+    assert.deepEqual(writes(shown.effects), writes(today.effects).length > 0
+      ? writes(today.effects)
+      : ['custom:Preparing your request…'], `${name}: ${trace}`);
+  }
 });

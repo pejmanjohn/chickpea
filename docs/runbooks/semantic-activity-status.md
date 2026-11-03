@@ -54,6 +54,15 @@ Slack shows either Chickpea's custom status text or its own working indicator
 with the Stop button, never both: the native indicator is hidden while a
 custom status shows. So the status line follows real progress:
 
+- **At the start**, the state store shows the turn's opening status (its
+  admitted activity, as its Agent) before handing the turn to its thread
+  runner, waiting at most 1 s (`showStatusAtHandoff` in
+  `src/cloudflare.ts`). When Slack acknowledged it in time, the runner keeps
+  it: no native `processing` and no hand-over at the start, so the custom
+  text shows from the first moment and native starts at the first quiet
+  stretch. Otherwise, and for a turn waiting behind another in its
+  conversation or an Agent with its own Slack app, the runner starts native
+  first and hands over to the custom status as before.
 - **Real progress** is a tool starting or settling, a coding worker's stage,
   and a workspace milestone. Each is timed by its own event: observed
   activity as it arrives from the Agent, a workspace milestone by its
@@ -70,8 +79,8 @@ custom status shows. So the status line follows real progress:
   Stop button. Nothing custom is written while the run is quiet. A final
   delivered during a quiet stretch waits for that hand-back, so native never
   lands after the session settles.
-- **While the native indicator shows** (the run's first moments and every
-  quiet stretch), the turn sends `processing` again at most every 45 minutes
+- **While the native indicator shows** (a runner's start and every quiet
+  stretch), the turn sends `processing` again at most every 45 minutes
   (`SLACK_NATIVE_PROCESSING_KEEPALIVE_MS`). Slack moves an Agent Session out
   of `processing` an hour after its status was last sent, and the Stop button
   goes with it, so the keepalive keeps the button on runs longer than an

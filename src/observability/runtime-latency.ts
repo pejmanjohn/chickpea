@@ -329,8 +329,13 @@ export function resetRunnerActivationsForTest(): void {
 export type TurnLatencyLane = 'cloudflare' | 'node';
 export type TurnLatencyExecutor = 'alarm' | 'runner' | 'node';
 
-/** The first Slack-visible effect this attempt had acknowledged. */
+/**
+ * The first Slack-visible effect this attempt had acknowledged:
+ * `admission_status` is the status the state store showed before the turn's
+ * hand-off (TurnLatencyContext.admissionStatusAt).
+ */
 export type TurnFirstWrite =
+  | 'admission_status'
   | 'agent_session'
   | 'activity_status'
   | 'reaction'
@@ -351,6 +356,13 @@ export interface TurnLatencyContext {
    * the state store's clock).
    */
   runnerWakeLeadMs?: number;
+  /**
+   * A runner turn's first attempt, when the state store tried to show its
+   * status before the hand-off: how long the hand-off waited for that write.
+   */
+  admissionStatusMs?: number;
+  /** When that status showed (the state store's clock): the attempt's first write. */
+  admissionStatusAt?: number;
   lane: TurnLatencyLane;
   executor: TurnLatencyExecutor;
 }
@@ -376,6 +388,9 @@ export class TurnLatencyTracker {
     private readonly sink?: RuntimeLatencySink,
   ) {
     this.startedAt = now();
+    if (context.admissionStatusAt !== undefined) {
+      this.firstWrite = { surface: 'admission_status', at: context.admissionStatusAt };
+    }
   }
 
   /** Record an acknowledged Slack write; only the first one is kept. */
@@ -458,6 +473,7 @@ export class TurnLatencyTracker {
       receiptToFirstWriteMs: sinceReceipt(this.firstWrite?.at),
       handoffMs: this.context.handoffMs,
       runnerWakeLeadMs: this.context.runnerWakeLeadMs,
+      admissionStatusMs: this.context.admissionStatusMs,
       agentStageMs: this.agentStageMs,
       agentWakeLeadMs: this.agentWakeLeadMs,
       agentWakeSource: this.agentWakeLeadMs === undefined ? undefined : this.agentWake?.source,

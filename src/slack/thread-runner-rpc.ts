@@ -11,6 +11,7 @@ import type { SlackCredentialControl, SlackCredentialRevision } from '../identit
 import { installationObjectName } from '../config/installation-scope.ts';
 import { RUN_REVIEW_PSEUDONYM_SETTING } from '../review/capture.ts';
 import { runReviewConfigured } from '../review/port.ts';
+import type { AdmissionStatusMark } from './admission-activity.ts';
 import type { AdmissionAgentWake } from './admission-agent-wake.ts';
 import { SLACK_SETTING_KEYS } from './credentials.ts';
 import { GATEWAY_DEPLOYMENT_IDENTITY_SETTING } from './gateway/identity.ts';
@@ -151,6 +152,13 @@ export interface ThreadRunnerJobPayload {
    * from an older state store: the freeze wakes it as before. Never stored.
    */
   agentWake?: AdmissionAgentWake;
+  /**
+   * The status write the state store made before the hand-off
+   * (admission-activity.ts), for the first attempt's `turn_latency` only:
+   * whether the status showed is the presentation's to say. Absent from an
+   * older state store, or when it made none. Never stored.
+   */
+  admissionStatus?: AdmissionStatusMark;
 }
 
 /** The RPC surface of one `SlackThreadRunner` (see thread-runner.ts). */

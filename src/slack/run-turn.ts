@@ -59,6 +59,7 @@ import { resolveModelCredentialAttribution } from '../config/model-credential-re
 import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
 import { wakeSlackAgentObject } from '../agents/turn-input.ts';
 import type { AdmissionAgentWake } from './admission-agent-wake.ts';
+import { admissionStatusFresh } from './admission-activity.ts';
 import { buildTurnEnvelope } from './turn-envelope-builder.ts';
 import {
   compileFrontDeskPlan,
@@ -859,10 +860,17 @@ async function runTurnAttempt(
   const semanticStatusCarriesSession = () => semanticActivityEnabled &&
     presenter.preferredActivitySurface() === 'assistant_status' &&
     !presenter.activityReceipt().unavailable;
+  /**
+   * The custom status the state store showed before the hand-off carries the
+   * session (admission-activity.ts): Slack's native processing never started
+   * for this Run, so showing it again starts it (`showNativeAgain`).
+   */
+  const admissionCarriesSession = admittedVisibleStatus !== undefined &&
+    frozenPresentation?.schemaVersion === 3 && frozenPresentation.agentSession.operation === undefined;
   /** Native processing shows and has not yet been handed to the custom status. */
   let nativeHeld = false;
   /** Native processing was handed to the custom status. */
-  let nativeReleased = false;
+  let nativeReleased = admissionCarriesSession;
   /**
    * The turn's status registration: while native processing is held, it
    * sends it again before Slack's hour runs out, and it stops at the
@@ -907,12 +915,15 @@ async function runTurnAttempt(
     nativeHeld = false;
     nativeReleased = await agentViewPresentation.releaseNativeProcessing();
   };
+  const showNativeAgain = async (): Promise<boolean> => agentViewPresentation !== undefined && (
+    await agentViewPresentation.reassertNativeProcessing() ||
+    (admissionCarriesSession && await agentViewPresentation.beginAgentSessionProcessing()));
   // Nothing custom is (or can be) visible after a hand-over: show Slack's
   // native indicator again. The next custom write hands over again.
   const beginNativeSessionFallback = async (): Promise<void> => {
     if (!nativeReleased || !agentViewPresentation) return;
     nativeReleased = false;
-    if (await agentViewPresentation.reassertNativeProcessing()) {
+    if (await showNativeAgain()) {
       nativeHeld = true;
       nativeKeepalive?.holdNative(true);
       options.onSlackWrite?.('agent_session');
@@ -994,9 +1005,7 @@ async function runTurnAttempt(
      */
     async showNativeIndicator(): Promise<boolean> {
       if (nativeHeld) return true;
-      if (!agentViewPresentation || !(await agentViewPresentation.reassertNativeProcessing())) {
-        return false;
-      }
+      if (!(await showNativeAgain())) return false;
       nativeHeld = true;
       nativeReleased = false;
       nativeKeepalive?.holdNative(true);
@@ -1052,7 +1061,12 @@ async function runTurnAttempt(
             ].join(':'),
             ...(admittedVisibleStatus ? { initialAppliedStatus: admittedVisibleStatus } : {}),
             // A stopped turn ends at once: nothing is refreshed, only cleared.
-            ...(admittedVisibleStatus && !stoppedBeforeDispatch ? { refreshInitialStatus: true } : {}),
+            // One the state store showed at this attempt's hand-off is fresh
+            // enough for the registry's ordinary refresh.
+            ...(admittedVisibleStatus && !stoppedBeforeDispatch &&
+                !admissionStatusFresh(options.turnLatency?.admissionStatusAt)
+              ? { refreshInitialStatus: true }
+              : {}),
           }
         : {}),
     });
