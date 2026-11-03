@@ -473,8 +473,12 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   admitted by the Worker over the state store's RPCs: its receipt is the
   Worker's clock when it verified the delivery, sent to the state store with
   the wake above (`noteSlackDelivery`), so `receiptToAdmissionMs` is the
-  Worker's admission chain. For Node admissions receipt equals admission. Rows
-  admitted before this field existed omit the receipt fields.
+  Worker's admission chain. A front desk hand-off's turn (the takeover row)
+  takes its receipt from Chickpea's decision (`noteFrontDeskHandoff`), so its
+  receipt fields measure the takeover's own admission chain, not the person's
+  message; keep such rows apart when aggregating first-status latency. For
+  Node admissions receipt equals admission. Rows admitted before this field
+  existed omit the receipt fields.
   `firstWrite` names the first Slack effect the attempt saw acknowledged:
   `admission_status` (the status the state store showed before the hand-off,
   above), `agent_session` (Agent View processing), `activity_status`,
