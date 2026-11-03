@@ -66,7 +66,8 @@ export type UiSurfaceRpcRequest =
     }
   | { kind: 'list_open_surfaces'; scope: UiSurfaceScope; limit?: number }
   | { kind: 'list_turn_surfaces'; turnJobId: string }
-  | { kind: 'open_surface'; id: string };
+  | { kind: 'open_surface'; id: string }
+  | { kind: 'replace_surface_spec'; id: string; expected: UiSurfaceSpec; spec: UiSurfaceSpec; settled?: true };
 
 export type UiSurfaceRpcResponse =
   | { kind: 'surface'; surface: UiSurfaceRecord | null }
@@ -310,6 +311,24 @@ export class UiSurfaceStoreLogic {
     return this.get(id);
   }
 
+  replaceSpec(id: string, expected: UiSurfaceSpec, spec: UiSurfaceSpec, settled: boolean): UiSurfaceRecord | undefined {
+    const next = JSON.stringify(spec);
+    if (new TextEncoder().encode(next).byteLength > UI_SURFACE_MAX_SPEC_BYTES) {
+      throw new Error('UI surface spec exceeds 16 KiB.');
+    }
+    const changed = this.db.run(
+      `UPDATE ui_surfaces
+       SET spec_json = ?, status = CASE WHEN ? THEN 'resolved' ELSE status END, updated_at = ?
+       WHERE id = ? AND spec_json = ? AND status IN ('open', 'pending_delivery')`,
+      next,
+      settled ? 1 : 0,
+      this.now(),
+      id,
+      JSON.stringify(expected),
+    ).changes === 1;
+    return changed ? this.get(id) : undefined;
+  }
+
   /** One RPC entry point, so a remote state owner exposes a single method. */
   execute(request: UiSurfaceRpcRequest): UiSurfaceRpcResponse {
     switch (request.kind) {
@@ -343,6 +362,11 @@ export class UiSurfaceStoreLogic {
         return { kind: 'surface', surface: this.open(request.id) ?? null };
       case 'list_turn_surfaces':
         return { kind: 'surfaces', surfaces: this.listForTurn(request.turnJobId) };
+      case 'replace_surface_spec':
+        return {
+          kind: 'surface',
+          surface: this.replaceSpec(request.id, request.expected, request.spec, request.settled === true) ?? null,
+        };
     }
   }
 

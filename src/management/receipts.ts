@@ -34,6 +34,7 @@ import type {
   ManagementRoutineSavedAcknowledgement,
   ManagementScheduleActionAcknowledgement,
   ManagementSetupReceipt,
+  ManagementSetupCompletionAuthority,
   ManagementSetupRecord,
   ManagementSetupWake,
 } from './types.ts';
@@ -61,9 +62,8 @@ const PERSONA_FALLBACK_CODES = new Set([
   'invalid_name',
 ]);
 
-interface CompleteManagementSetupReceiptInput {
+type CompleteManagementSetupReceiptInput = ManagementSetupCompletionAuthority & {
   setup: ManagementSetupRecord;
-  browserSessionDigest: string;
   completedByUserId?: string;
   completedByMembershipId?: string;
   connectionAccountId?: string;
@@ -80,7 +80,7 @@ interface CompleteManagementSetupReceiptInput {
   avatarUrl?: string;
   /** The Agent the setup wakes in its Slack thread instead of posting the receipt (setupWakeAgent). */
   wake?: ManagementSetupWake;
-}
+};
 
 export async function completeManagementSetupReceipt(
   management: ManagementStore,
@@ -124,7 +124,7 @@ export async function completeManagementSetupReceipt(
   };
   return management.completeSetup({
     setupOperationId: input.setup.setupOperationId,
-    browserSessionDigest: input.browserSessionDigest,
+    ...(input.slackForm ? { slackForm: input.slackForm } : { browserSessionDigest: input.browserSessionDigest }),
     ...(input.completedByUserId ? { completedByUserId: input.completedByUserId } : {}),
     ...(input.completedByMembershipId
       ? { completedByMembershipId: input.completedByMembershipId }

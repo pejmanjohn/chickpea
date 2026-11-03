@@ -519,6 +519,7 @@ export interface ManagementSetupTarget {
    * when issued. Without it the page checks the key at the first prefix.
    */
   checkPath?: string;
+  form?: 'slack';
 }
 
 export interface ManagementSetupReceipt {
@@ -864,6 +865,7 @@ export type ManagementOperationResult = ManagementApplyResult | ManagementSetupP
  */
 export type ManagementDeferredSetup =
   | { kind: 'issued'; itemId: string; label: string; setupUrl: string }
+  | { kind: 'form'; itemId: string; label: string }
   | { kind: 'not_issued'; itemId: string; code: string };
 
 export interface ManagementApplyResult {
@@ -1705,16 +1707,19 @@ export interface AuthorizeManagementSetupInput {
   at: number;
 }
 
-export interface CompleteManagementSetupInput {
+export type ManagementSetupCompletionAuthority =
+  | { browserSessionDigest: string; slackForm?: undefined }
+  | { slackForm: { userId: string; membershipId: string }; browserSessionDigest?: undefined };
+
+export type CompleteManagementSetupInput = ManagementSetupCompletionAuthority & {
   setupOperationId: string;
-  browserSessionDigest: string;
   receipt: ManagementSetupCompletionReceipt;
   outbox: ManagementReceiptOutboxRecord;
   completedByUserId?: string;
   completedByMembershipId?: string;
   connectionAccountId?: string;
   at: number;
-}
+};
 
 export interface RevokeManagementSetupInput {
   setupOperationId: string;
@@ -1844,6 +1849,16 @@ export type ManagementRpcRequest =
       requesterMembershipId: string;
       proposalId: string;
     }
+  | {
+      kind: 'list_slack_form_setups';
+      workspaceId: string;
+      channelId: string;
+      threadTs: string;
+      messageTs: string;
+      agentId: string;
+      actorMembershipId: string;
+      at: number;
+    }
   | { kind: 'claim_due_outbox'; at: number; limit: number; leaseUntil: number }
   | {
       kind: 'settle_outbox';
@@ -1864,6 +1879,7 @@ export type ManagementRpcResponse =
   | { kind: 'change_set_proposals'; proposals: ManagementChangeSetProposalRecord[] }
   | { kind: 'undo'; undo: ManagementUndoRecord | null }
   | { kind: 'setup'; setup: ManagementSetupRecord | null }
+  | { kind: 'setups'; setups: ManagementSetupRecord[] }
   | { kind: 'private_channel_setup'; intent: PrivateChannelSetupIntent | null }
   | { kind: 'private_channel_setup_claim'; result: ClaimPrivateChannelSetupIntentResult }
   | { kind: 'outbox'; outbox: ManagementReceiptOutboxRecord | null }

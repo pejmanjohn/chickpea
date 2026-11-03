@@ -515,6 +515,29 @@ export class ManagementStoreLogic {
         ) as unknown as ManagementOutboxRow | undefined;
         return { kind: 'outbox', outbox: row ? outboxFromRow(row) : null };
       }
+      case 'list_slack_form_setups': {
+        const rows = this.db.all(
+          `SELECT * FROM management_setup_operations
+           WHERE status = 'pending' AND expires_at > ? AND actor_membership_id = ?
+             AND action IN ('api_credential', 'mcp_credentials')
+             AND json_extract(target_json, '$.form') = 'slack'
+             AND json_extract(origin_json, '$.kind') = 'slack'
+             AND json_extract(origin_json, '$.workspaceId') = ?
+             AND json_extract(origin_json, '$.channelId') = ?
+             AND json_extract(origin_json, '$.threadTs') = ?
+             AND json_extract(origin_json, '$.messageTs') = ?
+             AND json_extract(origin_json, '$.agentId') = ?
+           ORDER BY created_at, setup_operation_id LIMIT 10`,
+          request.at,
+          request.actorMembershipId,
+          request.workspaceId,
+          request.channelId,
+          request.threadTs,
+          request.messageTs,
+          request.agentId,
+        ) as unknown as ManagementSetupRow[];
+        return { kind: 'setups', setups: rows.map(setupFromRow) };
+      }
       case 'claim_due_outbox':
         return {
           kind: 'outbox_batch',
@@ -1197,21 +1220,23 @@ export class ManagementStoreLogic {
           existing.tokenDigest,
         );
       } else {
-        setup = this.requireBrowserSetup(
-          input.setupOperationId,
-          input.browserSessionDigest,
-          input.at,
-        );
-        if (setup.status !== 'authorizing' || catalog &&
-            (!input.completedByUserId || !input.completedByMembershipId)) {
+        setup = input.slackForm
+          ? existing
+          : this.requireBrowserSetup(input.setupOperationId, input.browserSessionDigest, input.at);
+        const from = input.slackForm ? 'pending' : 'authorizing';
+        if (setup.status !== from || catalog &&
+            (!input.completedByUserId || !input.completedByMembershipId) ||
+            input.slackForm && (setup.target.form !== 'slack' ||
+              input.slackForm.userId !== setup.actorUserId || input.slackForm.membershipId !== setup.actorMembershipId ||
+              (setup.action !== 'api_credential' && setup.action !== 'mcp_credentials'))) {
           throw setupError('setup_unavailable');
         }
         completionActorUserId = catalog ? input.completedByUserId! : setup.actorUserId;
         completionActorMembershipId = catalog
           ? input.completedByMembershipId!
           : setup.actorMembershipId;
-        authorization = catalog
-          ? 'eligible_agent_editor_browser_session'
+        authorization = input.slackForm ? 'initiating_member_slack_form'
+          : catalog ? 'eligible_agent_editor_browser_session'
           : 'initiating_membership_browser_session';
         updated = this.db.run(
           `UPDATE management_setup_operations
@@ -1219,7 +1244,7 @@ export class ManagementStoreLogic {
                token_digest = NULL, browser_session_digest = NULL,
                completed_by_user_id = ?, completed_by_membership_id = ?,
                connection_account_id = ?, completed_at = ?, updated_at = ?
-           WHERE setup_operation_id = ? AND status = 'authorizing'`,
+           WHERE setup_operation_id = ? AND status = ?`,
           JSON.stringify(input.receipt),
           completionActorUserId,
           completionActorMembershipId,
@@ -1227,6 +1252,7 @@ export class ManagementStoreLogic {
           input.at,
           input.at,
           input.setupOperationId,
+          from,
         );
       }
       if (updated.changes !== 1) throw setupError('setup_unavailable');

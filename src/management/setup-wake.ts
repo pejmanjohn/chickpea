@@ -41,7 +41,7 @@ export type SavedKeyCheck = Exclude<ApiConnectionCheck['kind'], 'key_rejected'>;
 
 /** How the person finished the setup, as the wake's note tells the Agent. */
 export type SetupWakeCompletion =
-  | { kind: 'key'; check?: SavedKeyCheck }
+  | { kind: 'key'; check?: SavedKeyCheck; via?: 'slack_form' }
   | { kind: 'sign_in'; access?: 'read' | 'write' };
 
 const KEY_CHECK_FINDING: Record<SavedKeyCheck, string> = {
@@ -66,8 +66,11 @@ export function setupWakeNote(input: {
   connectorTools: boolean;
 }): string {
   const { person, connector, completion } = input;
+  const where = completion.kind === 'key' && completion.via === 'slack_form'
+    ? 'with Chickpea\'s Add key form in Slack'
+    : 'on its setup page';
   const finished = completion.kind === 'key'
-    ? `${person} saved the key for ${connector} on its setup page. ${completion.check ? KEY_CHECK_FINDING[completion.check] : ''}`.trimEnd()
+    ? `${person} saved the key for ${connector} ${where}. ${completion.check ? KEY_CHECK_FINDING[completion.check] : ''}`.trimEnd()
     : `${person} signed in to ${connector}${completion.access ? `, granting ${completion.access === 'read' ? 'read-only' : 'read and write'} access` : ''}.`;
   const read = input.connectorTools
     ? `one real read with ${connector}'s tools`
