@@ -15,16 +15,18 @@ import test from 'node:test';
 import { withEnv } from './helpers/env.ts';
 
 import {
-  RUNTIME_PLAN_INSTRUCTIONS,
-  SHARED_PREFIX_LAST_TOOL,
   SHARED_PREFIX_SHAPES,
   WARMED_SHARED_PREFIX_SHAPES,
   sharePromptPrefix,
   sharedPrefixMisses,
   sharedPrefixRequests,
-  sharedSystemBlock,
   type WarmedSharedPrefixShape,
 } from '../src/agents/shared-prefix.ts';
+import {
+  RUNTIME_PLAN_INSTRUCTIONS,
+  SHARED_PREFIX_LAST_TOOL,
+  sharedSystemBlock,
+} from '../src/agents/shared-prefix-layout.ts';
 import { SLACK_INTERACTION_DEFAULTS, SLACK_RUNTIME_GUARDRAIL } from '../src/config/effective-config.ts';
 import type { AgentKind } from '../src/config/types.ts';
 import { EXTERNAL_ACTION_AUTHORITY_PREAMBLE } from '../src/connections/runtime.ts';

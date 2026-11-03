@@ -19,7 +19,7 @@ import { toJsonSchema } from '@valibot/to-json-schema';
 import { validateToolArguments } from '@earendil-works/pi-ai';
 import { proposeWorkspaceChangesValibotSchema } from '../src/management/schemas.ts';
 import { scheduleActionInputSchema, scheduleActionDescription, slackManagementInstruction } from '../src/management/slack-tools.ts';
-import { RUNTIME_PLAN_INSTRUCTIONS, sharedSystemBlock } from '../src/agents/shared-prefix.ts';
+import { RUNTIME_PLAN_INSTRUCTIONS, sharedSystemBlock } from '../src/agents/shared-prefix-layout.ts';
 
 test('canonical Agent-authoring package is versioned, complete, and digest-bound', async () => {
   assert.equal(AGENT_AUTHORING_SKILL_NAME, 'agent-authoring');

@@ -13,7 +13,7 @@ import {
   type RuntimePlanV2,
 } from '../agents/runtime-plan.ts';
 import { agentTeammateHandles } from '../config/effective-config.ts';
-import { slackTenantInstructions } from '../agents/shared-prefix.ts';
+import { slackTenantInstructions } from '../agents/shared-prefix-layout.ts';
 import { CHICKPEA_AGENT_NAME } from '../config/agent-id.ts';
 import {
   codingOnAgentModel,
