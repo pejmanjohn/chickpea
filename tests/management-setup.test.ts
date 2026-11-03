@@ -1960,7 +1960,6 @@ test('a key the setup page saves where the API answers 404 is never called accep
   }
 });
 
-/** The Tasks setup link the Agent issued from its Slack thread with the owner, claimed in the browser. */
 async function slackTasksSetup(suffix: string, wake: 'queued' | 'refused', options: { otherDrainHolds?: boolean } = {}) {
   const woken: SetupWakeRequest[] = [];
   const posted: string[] = [];
@@ -1981,8 +1980,8 @@ async function slackTasksSetup(suffix: string, wake: 'queued' | 'refused', optio
       organizationId: f.owner.membership.organizationId,
       actingAgentId: f.agent.id,
       origin: {
-        kind: 'slack', workspaceId: f.owner.user.slackTeamId, channelId: 'D1', threadTs: '100.000100',
-        messageTs: '100.000200', conversationKind: 'im', agentId: f.agent.id, requestText: 'send me the Tasks setup link',
+        kind: 'slack', workspaceId: f.owner.user.slackTeamId, channelId: 'G1', threadTs: '100.000100',
+        messageTs: '100.000200', conversationKind: 'mpim', agentId: f.agent.id, requestText: 'send me the Tasks setup link',
       },
     },
     idempotencyKey: `slack-setup-${suffix}`,
@@ -2006,9 +2005,9 @@ test('a key saved on the page wakes the Agent that asked from Slack, and the pag
     assert.equal(f.woken.length, 1);
     const [request] = f.woken;
     assert.equal(request?.setupOperationId, f.setupId);
-    assert.deepEqual([request?.workspaceId, request?.channelId, request?.threadTs], [f.owner.user.slackTeamId, 'D1', '100.000100']);
+    assert.deepEqual([request?.workspaceId, request?.channelId, request?.threadTs], [f.owner.user.slackTeamId, 'G1', '100.000100']);
     assert.deepEqual([request?.wake.agentId, request?.wake.slackUserId, request?.wake.conversationKind],
-      [f.agent.id, f.owner.user.slackUserId, 'im']);
+      [f.agent.id, f.owner.user.slackUserId, 'mpim']);
     assert.match(request?.wake.note ?? '', /saved the key for Tasks on its setup page\. Chickpea checked it with one request, and the service accepted it\./);
     for (const secretOrId of ['sk-wake-123', f.setupId, f.agent.id, f.owner.user.slackUserId]) {
       assert.ok(!request?.wake.note.includes(secretOrId), `the note holds no ${secretOrId}`);

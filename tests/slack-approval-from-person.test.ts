@@ -260,9 +260,8 @@ test('"rewrite Desk and connect Zendesk": the person\'s approval applies the rew
 
     const approval = await hostApproves(chickpea, turn('approve'), held!.proposalId!);
     assert.equal(approval.kind, 'message');
-    assert.match(approval.kind === 'message' ? approval.text : '',
-      /^Applied the approved changes\.\n\n\[Connect Zendesk\]\(http:\/\/localhost\/setup\/setup_[^#)]+#setup=c{43}\)$/,
-      'the receipt carries the one-time Zendesk link');
+    assert.equal(approval.kind === 'message' ? approval.text : '', 'Applied the approved changes.',
+      'the Zendesk key comes as an Add key card under the receipt, not a link');
     assert.equal((await f.config.getAgent(desk.id)).instructions, 'Greet every visitor by name.');
 
     const call = await tool(signal(CHICKPEA_AGENT_ID, turn('Rewrite Desk to greet visitors and connect Zendesk.')), 'apply_workspace_changes', {
@@ -277,8 +276,10 @@ test('"rewrite Desk and connect Zendesk": the person\'s approval applies the rew
     });
     assert.deepEqual(outcomes(call).map(({ itemId, disposition }) => [itemId, disposition]),
       [['profile', 'applied'], ['zendesk-setup', 'setup_required']], 'the call the change set held is settled');
+    assert.equal(outcomes(call)[1]!.setupUrl, undefined, 'no setup link exists for the form to replace');
     const setup = await f.management.getSetup(outcomes(call)[1]!.setupOperationId!);
     assert.equal(setup?.origin.kind, 'slack');
+    assert.deepEqual([setup?.action, setup?.status, setup?.target.form], ['mcp_credentials', 'pending', 'slack']);
     assert.equal('approvedProposalId' in setup!.origin, false, 'the setup record keeps no approval stamp');
   } finally {
     f.close();
@@ -609,9 +610,8 @@ test('a recipe imported in Slack creates the bare Agent and its capabilities wai
     assert.deepEqual(await agentConnections(f, scout.id), [], 'the Agent exists without its capabilities');
 
     const approval = await hostApproves(chickpea, turn('approve'), result[1]!.proposalId!);
-    assert.match(approval.kind === 'message' ? approval.text : '',
-      /^Applied the approved changes\.\n\n\[Connect tracker\]\(http:\/\/localhost\/setup\/[^)]+\)$/,
-      'the approval receipt carries the setup link');
+    assert.equal(approval.kind === 'message' ? approval.text : '', 'Applied the approved changes.',
+      'the tracker key comes as an Add key card under the receipt');
     assert.deepEqual(await agentConnections(f, scout.id), [['tracker', 'pending']]);
   } finally {
     f.close();
@@ -637,9 +637,8 @@ test('in Slack, a later new Agent in the same recipe is created by the approval 
       ['configure_b', 'create_c']);
 
     const approval = await hostApproves(chickpea, turn('approve'), result[1]!.proposalId!);
-    assert.match(approval.kind === 'message' ? approval.text : '',
-      /^Applied the approved changes\.\n\n\[Connect wiki\]\(http:\/\/localhost\/setup\/[^)]+\)$/,
-      'the receipt carries the one setup link the approval issues and no setup issue');
+    assert.equal(approval.kind === 'message' ? approval.text : '', 'Applied the approved changes.',
+      'the one setup the approval issues comes as an Add key card, with no setup issue');
     const agents = new Map((await f.config.listUserAgents()).map((agent) => [agent.name, agent.id]));
     assert.deepEqual([
       (await agentConnections(f, agents.get('Pilot')!)).map(([id]) => id),

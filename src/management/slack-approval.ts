@@ -400,7 +400,6 @@ async function formatHostSlackManagementReceipt(input: {
   const attention = result.outcomes.filter(({ disposition }) => disposition !== 'applied');
   const warnings = result.outcomes.flatMap(({ warning }) => warning ? [warning] : []);
   const codes = attention.flatMap(({ code }) => code ? [code] : []);
-  // The setup the person asked for alongside the change reaches them only here.
   const deferredSetup = result.deferredSetup ?? [];
   const message = (text: string, details: readonly string[] = []): HostSlackManagementApprovalResult => {
     const lines = [

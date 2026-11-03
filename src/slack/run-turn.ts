@@ -43,6 +43,7 @@ import {
   abandonTurnSurfaces,
   deliverAgentChoiceSurface,
   deliverHostApprovalSurfaces,
+  deliverHostKeyCard,
   deliverInteractiveSurfaces,
   markDisplaySurfacesDelivered,
   prepareDisplaySurfaces,
@@ -1295,6 +1296,17 @@ async function runTurnAttempt(
       });
   const preparing = prepareTurn();
   const turnConfig = () => options.appStores?.config ?? getConfigStore(platformEnv);
+  const deliverTurnKeyCard = () => deliverHostKeyCard({
+    turn,
+    assignment,
+    turnJobId: options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`,
+    state: options.appStores?.slackState ?? getSlackStateStore(platformEnv),
+    management: options.appStores?.management ?? getManagementStore(platformEnv),
+    config: turnConfig(),
+    messenger: { post: (rendered) => presenter.postSurfaceMessage(rendered) },
+  }).catch(() => {
+    console.warn('[chickpea] Slack Add key card was not posted');
+  });
   /** The thread record is Chickpea's contract's, and only when no hand-off's context stands in. */
   const threadRecordFor = (frozenHandoff: readonly SlackPublicHandoffMessage[]) =>
     assignment.runtimeContract === 'chickpea-v1' && frozenHandoff.length === 0 ? turnConfig() : undefined;
@@ -1781,6 +1793,7 @@ async function runTurnAttempt(
       if (approval.kind === 'message') {
         await statusTurn.prepareFinal();
         await presenter.deliverFinal(approval.text, 'markdown');
+        await deliverTurnKeyCard();
       }
       await finishStatus('answer');
       await finishDelivery();
@@ -1847,6 +1860,7 @@ async function runTurnAttempt(
       if (approval.kind === 'message') {
         await statusTurn.prepareFinal();
         await presenter.deliverFinal(approval.text, 'markdown');
+        await deliverTurnKeyCard();
       }
       await finishStatus('answer');
       await finishDelivery();
@@ -2691,6 +2705,7 @@ async function runTurnAttempt(
       }).catch(() => {
         console.warn('[chickpea] Slack approval buttons were not posted');
       });
+      await deliverTurnKeyCard();
     }
     // Clear after the final reaches Slack. A custom Agent persona does not
     // reliably trigger Slack's automatic app-status cleanup, and clearing

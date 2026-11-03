@@ -3,7 +3,7 @@ import { withAgentAppExecution } from './slack/agent-apps/index.ts';
 import { GATEWAY_HTTP_SETTING, parseHttpDeliveryState, verifyHttpDelivery, httpDeliveryReceipt, HttpDeliveryError } from './slack/gateway/http-delivery.ts';
 import { GATEWAY_BINDING_SETTING } from './slack/gateway/client.ts';
 import type { GatewayAdmissionResult, GatewayInboundDelivery, GatewayWorkspaceBinding } from './slack/gateway/protocol.ts';
-import { gatewayUiReceiptNow } from './slack/gateway/ui-receipt.ts';
+import { gatewayUiReceiptNow, isKeyFormDelivery } from './slack/gateway/ui-receipt.ts';
 import { scheduleActionRpcResult } from './management/slack-schedule-rpc.ts';
 import {
   DurableObject,
@@ -2275,6 +2275,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       const state = parseHttpDeliveryState(snapshot.value.delivery)!;
       const value = await verifyHttpDelivery({...input, binding, state, keyring:loadCredentialKeyring(this.env as PlatformEnv)});
       if (value.kind === 'gateway.delivery') observed = {delivery:value.delivery!, issuedAt:value.issuedAt};
+      const keyForm = value.kind === 'gateway.delivery' ? await loadKeyFormFor(value.delivery!) : undefined;
       // Crypto yields. Recheck the exact settings and installation in the owning
       // state turn, with no await between authorization and insertion.
       let admissionError: unknown;
@@ -2289,7 +2290,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
             installation.botUserId !== binding.botUserId) throw new HttpDeliveryError(409, 'delivery_binding_rejected');
         if (value.kind === 'gateway.challenge') return 'verified' as const;
         // A modal click or submission is answered in the receipt from its stored card.
-        const receipt = gatewayUiReceiptNow(value.delivery!, stores.uiSurfaces);
+        const receipt = keyForm
+          ? keyForm.keyFormReceiptNow(value.delivery!, stores)
+          : gatewayUiReceiptNow(value.delivery!, stores.uiSurfaces);
         const outcome = receipt ?? stores.gatewayInbox.admit(value.delivery!);
         // Only a real delivery proves gateway activation. A challenge must not
         // retire the old route before the gateway commits its compare-and-swap.
@@ -2327,9 +2330,13 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
   async admitGatewayDelivery(
     delivery: Parameters<TagStateRpc['admitGatewayDelivery']>[0],
   ): ReturnType<TagStateRpc['admitGatewayDelivery']> {
+    const keyForm = await loadKeyFormFor(delivery);
     const result = this.call((stores): GatewayAdmissionResult => {
       if (parseHttpDeliveryState(stores.settings.getSetting(GATEWAY_HTTP_SETTING))?.mode === 'http') throw new Error('Socket delivery is disabled.');
-      return gatewayUiReceiptNow(delivery, stores.uiSurfaces) ?? stores.gatewayInbox.admit(delivery);
+      const receipt = keyForm
+        ? keyForm.keyFormReceiptNow(delivery, stores)
+        : gatewayUiReceiptNow(delivery, stores.uiSurfaces);
+      return receipt ?? stores.gatewayInbox.admit(delivery);
     });
     if (result.ok && typeof result.value === 'string') {
       if (result.value === 'accepted') this.wakeRunnerAtReceipt(delivery);
@@ -3792,6 +3799,10 @@ function localTurnEnqueue(stores: TagStateStores) {
     stores.turnJobs.enqueue(job);
     return { ok: true as const, value: null };
   };
+}
+
+async function loadKeyFormFor(delivery: GatewayInboundDelivery): Promise<typeof import('./slack/key-form.ts') | undefined> {
+  return isKeyFormDelivery(delivery) ? import('./slack/key-form.ts') : undefined;
 }
 
 function localGatewayAppStores(stores: TagStateStores): AppStores {
