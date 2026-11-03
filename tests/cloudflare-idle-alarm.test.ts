@@ -43,9 +43,9 @@ const moduleStatement = (name: string) => {
   return statement.getText(source);
 };
 const compiled = ts.transpileModule(
-  `${['RELAY_BATCH_WINDOW_MS', 'KEEP_WARM_WINDOW_MS', 'KEEP_WARM_TICK_MS', 'earliestDefined'].map(moduleStatement).join('\n')}
+  `${['RELAY_BATCH_WINDOW_MS', 'KEEP_WARM_WINDOW_MS', 'KEEP_WARM_TICK_MS', 'RETENTION_SWEEP_INTERVAL_MS', 'earliestDefined'].map(moduleStatement).join('\n')}
 class StateStoreProbe { ${[
-    'alarm', 'drainRelayAlarm', 'deliverStopNotices', 'admitSlackTurn', 'armAlarmNoLaterThan', 'admissionWakeAt',
+    'alarm', 'drainRelayAlarm', 'deliverStopNotices', 'admitSlackTurn', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'admissionWakeAt',
     'runnerMode', 'keepWarmTickAt',
   ].map(stateMethod).join('\n')} }\nStateStoreProbe`,
   { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
@@ -55,7 +55,23 @@ const NOW = 1_800_000_000_000;
 /** The product's keep-warm window and tick (src/cloudflare.ts). */
 const KEEP_WARM_WINDOW_MS = 10 * 60_000;
 const KEEP_WARM_TICK_MS = 20_000;
+const RETENTION_SWEEP_INTERVAL_MS = 5 * 60_000;
 const RUNNER_ENV = { SLACK_THREAD_RUNNER: {} };
+
+type TurnJob = ReturnType<typeof maintenanceTurnJob>;
+/** The host's own enqueue path (src/cloudflare.ts), which writes an Agent's ask or a setup wake. */
+const localTurnEnqueue = vm.runInNewContext(
+  ts.transpileModule(`${moduleStatement('localTurnEnqueue')}\nlocalTurnEnqueue`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText,
+  {},
+) as (stores: { turnJobs: TurnJobStoreLogic }) => (job: TurnJob) => Promise<unknown>;
+function hostTurnJob(id: string, turn: Partial<TurnJob['turn']>): TurnJob {
+  const job = maintenanceTurnJob(id);
+  return { ...job, turn: { ...job.turn, ...turn } };
+}
+const AGENT_ASK = { fromAgentId: 'agent_b', fromAgentName: 'B', originMessageTs: '1800000000.000001' };
+const SETUP_WAKE = { setupOperationId: 'op_1', notice: 'Connected.' };
 
 type LogRecord = { [field: string]: number | boolean | string };
 type Result = { ok: true; value: unknown } | { ok: false; error: { code: string } };
@@ -80,6 +96,8 @@ interface Probe {
   stopAborts: StopAbortFence;
   carriedAlarmTurns: Map<string, string>;
   lastHumanTurnAt?: number;
+  alarmAdmissionWake?: () => void;
+  dispatchWake?: () => void;
   createAlarmIdentityResolver(): unknown;
   admitToRunner(): Promise<boolean>;
   offerCreatedStop(): Promise<void>;
@@ -159,24 +177,32 @@ function newProbe(costs: PartCosts, duringDrain?: (armAt: (at: number) => void) 
  */
 function idleStore(costs: PartCosts, options: {
   lastHumanTurnAt?: number;
-  newestEnqueuedAt?: number;
+  newestEnqueuedAt?: number | undefined;
   nextOutboxDueAt?: number;
   duringDrain?: (armAt: (at: number) => void) => void;
 } = {}) {
   const store = newProbe(costs, options.duringDrain);
   let reads = 0;
+  let sweeps = 0;
+  let cleanupChecks = 0;
   store.probe.env = {};
   if (options.lastHumanTurnAt !== undefined) store.probe.lastHumanTurnAt = options.lastHumanTurnAt;
   store.probe.createAlarmIdentityResolver = () => async () => ({ client: {} });
   store.probe.stores = {
     management: {
-      cleanupRetention() { store.advance(costs.retention); },
+      cleanupRetention() {
+        sweeps += 1;
+        store.advance(costs.retention);
+      },
       nextOutboxDueAt: () => options.nextOutboxDueAt,
     },
     turnJobs: {
       listPendingByThread: () => [],
       hasPending: () => false,
-      hasPendingSlackInteractionCleanup: () => costs.cleanups !== undefined,
+      hasPendingSlackInteractionCleanup: () => {
+        cleanupChecks += 1;
+        return costs.cleanups !== undefined;
+      },
       hasHandoffs: () => false,
       nextStopNoticeDueAt: () => undefined,
       newestEnqueuedAt: () => {
@@ -186,7 +212,7 @@ function idleStore(costs: PartCosts, options: {
     },
     gatewayInbox: { hasPending: () => false, nextPendingDueAt: () => undefined },
   };
-  return { ...store, reads: () => reads };
+  return { ...store, reads: () => reads, sweeps: () => sweeps, cleanupChecks: () => cleanupChecks };
 }
 
 /**
@@ -240,6 +266,25 @@ test("a person's turn handed to its runner arms the alarm no later than the keep
   assert.equal((await store.probe.admitSlackTurn({ turnJob: { id: 'turn_person', turn: {} } })).ok, true);
   assert.deepEqual(store.writes, [NOW + KEEP_WARM_TICK_MS]);
   assert.equal(store.alarm(), NOW + KEEP_WARM_TICK_MS);
+});
+
+test('a tick armed from a handed-over admission wakes no running alarm', async () => {
+  const wakes: string[] = [];
+  const listening = (store: ReturnType<typeof admissionStore>) => {
+    store.probe.alarmAdmissionWake = () => { wakes.push('admission'); };
+    store.probe.dispatchWake = () => { wakes.push('dispatch'); };
+    return store;
+  };
+  const handed = listening(admissionStore());
+  assert.equal((await handed.probe.admitSlackTurn({ turnJob: { id: 'turn_person', turn: {} } })).ok, true);
+  assert.deepEqual(handed.writes, [NOW + KEEP_WARM_TICK_MS]);
+  assert.deepEqual(wakes, [], 'the runner has the turn; a running alarm has nothing to pick up');
+  // A turn its runner did not take is the alarm's: that admission wakes it.
+  const kept = listening(admissionStore());
+  kept.probe.admitToRunner = async () => false;
+  assert.equal((await kept.probe.admitSlackTurn({ turnJob: { id: 'turn_kept', turn: {} } })).ok, true);
+  assert.deepEqual(kept.writes, [NOW]);
+  assert.deepEqual(wakes, ['admission', 'dispatch']);
 });
 
 test("an Agent's ask, a setup wake, or a stop alone arms no tick", async () => {
@@ -306,6 +351,34 @@ test('a store that starts cold derives the window from its newest turn row, once
   assert.equal(empty.reads(), 1, 'an empty table is read once too');
 });
 
+test('idle firings run the retention sweep once per interval, not once per tick', async () => {
+  const store = idleStore({ ...QUIET, retention: 300 });
+  await store.fire();
+  assert.equal(store.sweeps(), 1, 'an instance that starts cold sweeps on its first firing');
+  assert.equal(store.records[0]?.retentionMs, 300);
+  store.advance(KEEP_WARM_TICK_MS);
+  await store.fire();
+  assert.equal(store.sweeps(), 1, 'a tick 20 s later skips the sweep');
+  assert.equal(store.records[1]?.retentionMs, 0, 'a skipped sweep reads 0');
+  store.advance(RETENTION_SWEEP_INTERVAL_MS);
+  await store.fire();
+  assert.equal(store.sweeps(), 2, 'the interval re-opens it');
+  assert.equal(store.records[2]?.retentionMs, 300);
+});
+
+test('an idle firing checks for pending cleanups once; a pending one still owes a retry', async () => {
+  const none = idleStore(QUIET);
+  await none.fire();
+  assert.equal(none.cleanupChecks(), 1);
+  assert.equal(none.records[0]?.needsRetry, false);
+  const pending = idleStore({ ...QUIET, cleanups: 50 });
+  await pending.fire();
+  assert.equal(pending.cleanupChecks(), 1);
+  assert.equal(pending.records[0]?.cleanupsMs, 50, 'the one check decided the cleanup drain');
+  assert.equal(pending.records[0]?.needsRetry, true, 'and the retry');
+  assert.deepEqual(pending.writes, [NOW + 50 + 2_000]);
+});
+
 test("newestEnqueuedAt is the newest turn row's enqueue time, or undefined with none", () => {
   const db = openStateDb(':memory:');
   try {
@@ -316,6 +389,39 @@ test("newestEnqueuedAt is the newest turn row's enqueue time, or undefined with 
     clock += 90_000;
     turnJobs.enqueue(maintenanceTurnJob('second'));
     assert.equal(turnJobs.newestEnqueuedAt(), NOW + 90_000);
+  } finally {
+    db.close();
+  }
+});
+
+test("a store that starts cold counts only a person's turn rows: an Agent's ask or a setup wake opens no window", async () => {
+  const db = openStateDb(':memory:');
+  try {
+    let clock = NOW - 16 * 60_000;
+    const turnJobs = new TurnJobStoreLogic(db, () => clock);
+    const enqueueHostTurn = localTurnEnqueue({ turnJobs });
+    await enqueueHostTurn(hostTurnJob('ask-0', { agentAsk: AGENT_ASK }));
+    assert.equal(turnJobs.newestEnqueuedAt(), undefined, "an Agent's ask alone is no person's turn");
+    // The person spoke 15 minutes ago; the host's own turns came since.
+    clock = NOW - 15 * 60_000;
+    turnJobs.enqueue(maintenanceTurnJob('person'));
+    clock = NOW - 60_000;
+    await enqueueHostTurn(hostTurnJob('ask', { agentAsk: AGENT_ASK }));
+    clock = NOW - 30_000;
+    await enqueueHostTurn(hostTurnJob('setup', { setupWake: SETUP_WAKE }));
+    assert.equal(turnJobs.newestEnqueuedAt(), NOW - 15 * 60_000, "the person's turn, not the host's later ones");
+    const quiet = idleStore(QUIET, { newestEnqueuedAt: turnJobs.newestEnqueuedAt() });
+    await quiet.fire();
+    assert.deepEqual(quiet.writes, [], 'no window: the person has been quiet for 15 minutes');
+    assert.equal(quiet.records[0]?.keepWarm, false);
+    // The person speaks again, 2 minutes ago: the window is open.
+    clock = NOW - 2 * 60_000;
+    turnJobs.enqueue(maintenanceTurnJob('person-2'));
+    assert.equal(turnJobs.newestEnqueuedAt(), NOW - 2 * 60_000);
+    const live = idleStore(QUIET, { newestEnqueuedAt: turnJobs.newestEnqueuedAt() });
+    await live.fire();
+    assert.deepEqual(live.writes, [NOW + KEEP_WARM_TICK_MS]);
+    assert.equal(live.records[0]?.keepWarm, true);
   } finally {
     db.close();
   }

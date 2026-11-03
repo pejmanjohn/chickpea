@@ -62,7 +62,7 @@ const stateClass = source.statements.find((node) =>
 assert.ok(stateClass && ts.isClassDeclaration(stateClass));
 const methodNames = [
   'enqueueTurn', 'admitSlackTurn', 'resumeTurnAfterOAuth', 'slackInstallationRecoveryRetry',
-  'maintainWork', 'armAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode', 'keepWarmTickAt',
+  'maintainWork', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode', 'keepWarmTickAt',
 ];
 const methods = methodNames.map((name) => {
   const method = stateClass.members.find((member) =>
@@ -74,7 +74,7 @@ const batchDeclaration = source.statements.find((node) =>
   ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) =>
     declaration.name.getText(source) === 'RELAY_BATCH_WINDOW_MS'));
 assert.ok(batchDeclaration);
-const keepWarmDeclarations = ['KEEP_WARM_WINDOW_MS', 'KEEP_WARM_TICK_MS'].map((name) => {
+const keepWarmDeclarations = ['KEEP_WARM_WINDOW_MS', 'KEEP_WARM_TICK_MS', 'RETENTION_SWEEP_INTERVAL_MS'].map((name) => {
   const declaration = source.statements.find((node) =>
     ts.isVariableStatement(node) && node.declarationList.declarations.some((candidate) =>
       candidate.name.getText(source) === name));
@@ -384,11 +384,13 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
   duringChores?: (jobs: Map<string, AlarmJob>, admit: () => Promise<void>) => Promise<void>;
   /** The store's stop aborts in flight (a class field the probe does not carry). */
   stopAborts?: StopAbortFence;
+  /** When the store's newest person's turn row was enqueued, read when the instance starts cold. */
+  newestEnqueuedAt?: number;
 } = {}) {
   const { AgentObservationYield, AgentPromptFailure } = await import('../src/slack/flue-dispatch.ts');
   const { alarmYieldIsFree } = await import('../src/slack/alarm-turn-drain.ts');
   const alarmMethods = [
-    'armAlarmNoLaterThan', 'alarm', 'drainRelayAlarm', 'dispatchToRunners', 'admitToRunner', 'wakeAgentAtHandoff',
+    'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'alarm', 'drainRelayAlarm', 'dispatchToRunners', 'admitToRunner', 'wakeAgentAtHandoff',
     'showStatusAtHandoff', 'dispatchingWhile', 'deliverStopNotices', 'keepWarmTickAt',
   ].map((name) => {
     const method = (stateClass as ts.ClassDeclaration).members.find((member) =>
@@ -451,6 +453,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     RELAY_RETRY_BACKOFF_MS: 2_000,
     KEEP_WARM_WINDOW_MS: 600_000,
     KEEP_WARM_TICK_MS: 20_000,
+    RETENTION_SWEEP_INTERVAL_MS: 300_000,
     ALARM_TURN_BUDGET_MS: 40,
     ALARM_TURN_HARD_CAP_MS: 400,
     ALARM_PENDING_PER_THREAD: 4,
@@ -561,7 +564,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
       hasPending: (lane = 'legacy') =>
         lane === 'legacy' && [...jobs.values()].some(alarmOwned),
       hasPendingSlackInteractionCleanup: () => false,
-      newestEnqueuedAt: () => undefined,
+      newestEnqueuedAt: () => hooks.newestEnqueuedAt,
       // Same contract as TurnJobStoreLogic.listDispatchable (tested there).
       listDispatchable: (input: { limit: number }) => {
         const threads = new Set<unknown>();
@@ -862,7 +865,7 @@ test('the default runner executor hands a message admitted mid-drain to its runn
 test('an OAuth continuation already handed to a thread runner is admitted there again', async (context) => {
   context.mock.method(Date, 'now', () => NOW);
   const resumeMethods = [
-    'resumeTurnAfterOAuth', 'admitToRunner', 'wakeAgentAtHandoff', 'armAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode',
+    'resumeTurnAfterOAuth', 'admitToRunner', 'wakeAgentAtHandoff', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode',
   ].map((name) => {
     const method = stateClass.members.find((member) =>
       ts.isMethodDeclaration(member) && member.name.getText(source) === name);
@@ -930,7 +933,7 @@ test('an OAuth continuation already handed to a thread runner is admitted there 
 
 function admissionHarness(runner: { refuse?: boolean } = {}) {
   const methods = [
-    'admitSlackTurn', 'admitToRunner', 'wakeAgentAtHandoff', 'showStatusAtHandoff', 'armAlarmNoLaterThan',
+    'admitSlackTurn', 'admitToRunner', 'wakeAgentAtHandoff', 'showStatusAtHandoff', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan',
     'admissionWakeAt', 'runnerMode', 'keepWarmTickAt',
   ].map((name) => {
     const method = (stateClass as ts.ClassDeclaration).members.find((member) =>
@@ -1107,6 +1110,16 @@ test('the default runner executor hands over a turn admitted while the alarm run
   assert.deepEqual(record.admissions.map(({ id }) => id), ['late'],
     'handed to its runner before this alarm returned');
   assert.equal(record.relayAlarms.at(-1)!.jobsDispatched, 1);
+});
+
+test("the default runner executor keeps a store warm whose newest person's turn is recent", async (context) => {
+  context.mock.method(Date, 'now', () => NOW);
+  const { probe, record } = await alarmHarness([], { newestEnqueuedAt: NOW - 60_000 });
+  await probe.alarm();
+  assert.ok(record.events.includes('tick:receipts'), 'the ordinary idle drain ran, under whileDispatching');
+  assert.equal(record.relayAlarms.at(-1)!.outcome, 'idle');
+  assert.equal(record.relayAlarms.at(-1)!.keepWarm, true);
+  assert.equal(record.alarmAt, NOW + KEEP_WARM_TICK_MS, 'the tick is the alarm it armed');
 });
 
 test('the default runner executor hands each admitted turn over at once, side by side with admissions in flight', async () => {
@@ -1344,7 +1357,7 @@ function stopOutboxHarness(input: {
   runner?: boolean;
 }) {
   const methods = [
-    'deliverStopNotices', 'armAlarmNoLaterThan', 'slackTurnSteer', 'admitSlackTurn', 'offerCreatedStop',
+    'deliverStopNotices', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'slackTurnSteer', 'admitSlackTurn', 'offerCreatedStop',
   ].map((name) => {
     const method = (stateClass as ts.ClassDeclaration).members.find((member) =>
       ts.isMethodDeclaration(member) && member.name.getText(source) === name);

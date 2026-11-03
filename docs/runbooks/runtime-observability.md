@@ -331,12 +331,17 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   `yielded` whether the 10-minute observation budget ended with work
   observing.
 - An `idle` record (no turn pending) also times each part of the firing:
-  `retentionMs` is the management retention sweep, then `ledgerMs`,
+  `retentionMs` is the management retention sweep (run at most every 5
+  minutes per instance; 0 when skipped), then `ledgerMs`,
   `cleanupsMs` (0 when no cleanup was pending), `repairsMs`, `scheduleMs` and
   `receiptsMs` are the ledger-run, interaction-cleanup, presentation-repair,
   schedule-action and management-receipt drains, in that order. They sum to at
   most `durationMs`; the rest is admission, hand-offs and stop notices. A
-  `drained` record has none of them: its drains run among its turns.
+  `drained` record has none of them: its drains run among its turns. On
+  Cloudflare `Date.now()` does not advance during synchronous execution, so a
+  part made of synchronous SQLite work reads 0 ms (and so does `durationMs`
+  for a firing with no awaited work): the fields measure awaited work, such
+  as a Slack call inside a drain.
 - `keepWarm`: while a person has talked to the installation in the last 10
   minutes, the state store arms its alarm no later than 20 s ahead so the
   object stays in memory (it is evicted about 30 s after its last activity,

@@ -71,7 +71,7 @@ const HandoffProbe = vm.runInNewContext(
     `${['RELAY_BATCH_WINDOW_MS', 'KEEP_WARM_WINDOW_MS', 'KEEP_WARM_TICK_MS', 'localSlackPresentationState'].map(moduleStatement).join('\n')}
 class HandoffProbe { ${[
       'admitSlackTurn', 'dispatchToRunners', 'admitToRunner', 'wakeAgentAtHandoff', 'showStatusAtHandoff',
-      'armAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode', 'keepWarmTickAt',
+      'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode', 'keepWarmTickAt',
     ].map(stateMethod).join('\n')} }\nHandoffProbe`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
   ).outputText,

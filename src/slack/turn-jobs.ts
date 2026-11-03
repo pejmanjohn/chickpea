@@ -2615,12 +2615,18 @@ export class TurnJobStoreLogic {
   }
 
   /**
-   * When this store's newest turn row was enqueued, whatever the turn's kind;
-   * undefined with no rows. One scan of a table retention keeps small, read
-   * once per instance (TagStateStore keeps the answer in memory).
+   * When this store's newest person's turn row was enqueued: an Agent's ask
+   * and a setup wake are the host's own turns and do not count, as in
+   * TagStateStore.admitSlackTurn. Undefined with no such row. One scan of a
+   * table retention keeps small, read once per instance (TagStateStore keeps
+   * the answer in memory).
    */
   newestEnqueuedAt(): number | undefined {
-    const row = this.db.get('SELECT MAX(enqueued_at) AS newest FROM turn_jobs');
+    const row = this.db.get(
+      `SELECT MAX(enqueued_at) AS newest FROM turn_jobs
+       WHERE json_extract(turn_json, '$.agentAsk') IS NULL
+         AND json_extract(turn_json, '$.setupWake') IS NULL`,
+    );
     return row?.newest == null ? undefined : Number(row.newest);
   }
 

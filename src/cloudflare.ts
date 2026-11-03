@@ -794,6 +794,13 @@ const RELAY_BATCH_WINDOW_MS = 250;
 const KEEP_WARM_WINDOW_MS = 10 * 60_000;
 const KEEP_WARM_TICK_MS = 20_000;
 
+/**
+ * The management retention sweep (a 30-day cutoff) runs on an alarm firing at
+ * most this often per instance: the keep-warm ticks fire far more often than
+ * it can find anything. An instance that starts cold sweeps on its first firing.
+ */
+const RETENTION_SWEEP_INTERVAL_MS = 5 * 60_000;
+
 // Pages of MAX_TURN_DRAIN_BATCH threads one alarm hands to thread runners.
 // Each hand-off is one short admission RPC; the rest waits for the next alarm.
 const RUNNER_DISPATCH_MAX_PAGES = 16;
@@ -855,9 +862,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
   /**
    * When a person's turn was last admitted here (keepWarmTickAt). In memory
    * only: an instance that starts cold reads it once from its newest turn
-   * row, whatever that turn's kind; 0 when there is none.
+   * row that is a person's (an Agent's ask or a setup wake is not one); 0
+   * when there is none.
    */
   private lastHumanTurnAt: number | undefined;
+  /** When this instance last ran the management retention sweep (drainRelayAlarm). */
+  private lastRetentionSweepAt: number | undefined;
   /**
    * Turns whose first hand-off waits here for its status (showStatusAtHandoff).
    * No re-admission overtakes one: it would hand the runner the presentation
@@ -1756,9 +1766,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       if (!handedOver) {
         await this.armAlarmNoLaterThan(this.admissionWakeAt(), true);
       } else {
-        // The runner has the turn; the alarm only keeps this store warm for the next one.
+        // The runner has the turn; the alarm only keeps this store warm for
+        // the next one, so a running alarm's dispatch loop is not woken for it.
         const tick = this.keepWarmTickAt();
-        if (tick !== undefined) await this.armAlarmNoLaterThan(tick);
+        if (tick !== undefined) await this.setAlarmNoLaterThan(tick);
       }
     }
     return result;
@@ -2547,9 +2558,16 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       settings: localSettingsStore(stores),
       config: localGatewayAppStores(stores).config,
     });
+    // The retention sweep at most once per RETENTION_SWEEP_INTERVAL_MS; a
+    // skipped sweep reports 0 ms.
     const retentionStartedAt = Date.now();
-    stores.management.cleanupRetention(retentionStartedAt, 250);
-    const retentionMs = Date.now() - retentionStartedAt;
+    let retentionMs = 0;
+    if (this.lastRetentionSweepAt === undefined ||
+        retentionStartedAt - this.lastRetentionSweepAt >= RETENTION_SWEEP_INTERVAL_MS) {
+      stores.management.cleanupRetention(retentionStartedAt, 250);
+      this.lastRetentionSweepAt = retentionStartedAt;
+      retentionMs = Date.now() - retentionStartedAt;
+    }
     // New turns go to their thread's SlackThreadRunner (the default executor)
     // and this alarm only finishes turns it already dispatched to Flue: rows
     // admitted before the runner became the default. The emergency gate
@@ -2625,7 +2643,6 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     const pending = listPendingTurns();
     metrics.jobsListed = pending.length;
     if (pending.length === 0) {
-      const cleanupPending = stores.turnJobs.hasPendingSlackInteractionCleanup();
       const resolveInstallation = this.createAlarmIdentityResolver(stores);
       /** Runs one part of the idle drain and records how long it took. */
       const timed = async <T>(
@@ -2640,13 +2657,16 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
         }
       };
       metrics.retentionMs = retentionMs;
-      const { ledgerDrain, presentationRepairs, scheduleActions } = await whileDispatching(async () => {
+      const { ledgerDrain, presentationRepairs, scheduleActions, cleanupPending } = await whileDispatching(async () => {
         const ledgerDrain = await timed('ledgerMs', () => drainLedgerRuns(
           stores,
           this.env as PlatformEnv,
           resolveInstallation,
           productTelemetry,
         ));
+        // One scan per firing: after the ledger drain (a ledger run ending
+        // here can leave a receipt to clean), reused by the retry below.
+        const cleanupPending = stores.turnJobs.hasPendingSlackInteractionCleanup();
         if (cleanupPending) {
           await timed('cleanupsMs', () => drainSlackInteractionCleanups(stores, resolveInstallation, carriedJobIds()));
         } else {
@@ -2662,10 +2682,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
           drainCloudflareScheduleActions(stores, this.env as PlatformEnv));
         await timed('receiptsMs', () =>
           drainCloudflareManagementReceipts(stores, this.env as PlatformEnv, resolveInstallation, this.presentationRunnerOf));
-        return { ledgerDrain, presentationRepairs, scheduleActions };
+        return { ledgerDrain, presentationRepairs, scheduleActions, cleanupPending };
       });
       const turnRetry = gatewayNeedsRetry || stores.gatewayInbox.hasPending() ||
-        stores.turnJobs.hasPending('ledger') || stores.turnJobs.hasPendingSlackInteractionCleanup() ||
+        stores.turnJobs.hasPending('ledger') || cleanupPending ||
         stores.turnJobs.hasHandoffs() ||
         (runnerMode && stores.turnJobs.hasPending('legacy'))
         ? Date.now() + runDriverRetryDelayMs(ledgerDrain, RELAY_RETRY_BACKOFF_MS)
@@ -3080,6 +3100,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     this.alarmAdmissionWake?.();
     if (admission) this.admissionsSeen += 1;
     this.dispatchWake?.();
+    await this.setAlarmNoLaterThan(at);
+  }
+
+  /** Arms the alarm at `at` unless an earlier one is set; wakes nothing. */
+  private async setAlarmNoLaterThan(at: number): Promise<void> {
     const existing = await this.ctx.storage.getAlarm();
     if (existing === null || at < existing) await this.ctx.storage.setAlarm(at);
   }
