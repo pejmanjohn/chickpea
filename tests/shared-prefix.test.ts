@@ -4,6 +4,7 @@ import {
   chargedRequestId,
   chargedSharedPrefix,
   renderSlackRequest,
+  renderSlackThread,
   renderToolPayloads,
   type RenderedRequest,
   type SlackRequestVariant,
@@ -43,6 +44,7 @@ import { EMPTY_WORKSPACE_ROSTER, createWorkspaceRoster } from '../src/sandbox/wo
 import { WORKSPACE_TOOL_NAMES } from '../src/sandbox/workspace-tools.ts';
 import { FRONT_DESK_TOOL_NAME } from '../src/slack/front-desk.ts';
 import { createFrontDeskTool } from '../src/slack/front-desk-tool.ts';
+import { WORKSPACE_CHANGE_TOOL_NAMES } from '../src/management/workspace-change-tools.ts';
 
 const SNAPSHOT = new URL('../src/agents/shared-prefix-tools.json', import.meta.url);
 const REQUEST_ID = 'req_shared_prefix_test';
@@ -337,8 +339,8 @@ const CODING_BRAVO: CodingTenant = {
   coordinatorId: 'coordinator_bravo', conversationKey: `${BRAVO.workspace}:${BRAVO.channel}:1787009000.000100`, openWorkspace: 'ledger-fix',
 };
 
-test('shapes compose the capability segments in mount order, and only interactive shapes without coding or a front desk are warmed', () => {
-  assert.equal(Object.keys(SHARED_PREFIX_SHAPES).length, 32);
+test('shapes compose the capability segments in mount order, and only interactive shapes without management, coding or a front desk are warmed', () => {
+  assert.equal(Object.keys(SHARED_PREFIX_SHAPES).length, 64);
   for (const [shape, segments] of Object.entries(SHARED_PREFIX_SHAPES)) {
     assert.equal(shape, segments.join('_') || 'bare');
   }
@@ -370,6 +372,40 @@ const FRONT_DESK = {
   omitted: 0,
   incomplete: false,
 };
+
+/**
+ * A thread whose model activated agent-authoring, and the first request of
+ * its next turn, which mounts the change tools from its start.
+ */
+async function renderManagementTurn(variant: SlackRequestVariant): Promise<RenderedRequest> {
+  const [, second] = await renderSlackThread(variant, [
+    { text: 'Create an Agent named Scout.', replies: [{ toolCall: { name: 'activate_skill', input: { name: 'agent-authoring' } } }, { text: 'Done.' }] },
+    { text: 'Rename it Ranger.', replies: [] },
+  ]);
+  return second![0]!;
+}
+
+/** The change tools as a turn that mounts them from its start carries them. */
+async function renderManagementTools(): Promise<unknown[]> {
+  const request = await renderManagementTurn({ ...ALPHA, thread: '1787007200.000100' });
+  const tools = request.tools.filter((tool: any) => (WORKSPACE_CHANGE_TOOL_NAMES as readonly string[]).includes(tool.name));
+  assert.deepEqual(tools.map((tool: any) => tool.name), [...WORKSPACE_CHANGE_TOOL_NAMES], 'every change tool renders');
+  return withoutMarkers(tools) as unknown[];
+}
+
+test('a later turn of a thread that activated agent-authoring carries the management shape and caches B for an hour', async () => {
+  for (const agentKind of ['system', 'user'] as const) {
+    const before = sharedPrefixMisses();
+    const request = await renderManagementTurn({ ...ALPHA, agentKind, thread: agentKind === 'system' ? '1787008100.000100' : '1787008200.000100' });
+    assert.equal(sharedPrefixMisses(), before);
+    const anchor = anchorIndex(request);
+    assert.deepEqual(request.tools.slice(anchor + 1).map((tool: any) => tool.name),
+      [...SHAPE_TOOLS.interactive_streaming, ...WORKSPACE_CHANGE_TOOL_NAMES, ...PI_TRAILER_TOOLS]);
+    assert.equal(chargedSharedPrefix(request), `${agentKind}/interactive_streaming_management`);
+    assert.deepEqual(markers(request), [`tools[${anchor}] ${SHARED_PREFIX_LAST_TOOL} 1h`, 'system[0] 1h', 'system[1] 5m', 'user 5m']);
+    assert.equal(request.system[0].text, sharedSystemBlock(agentKind));
+  }
+});
 
 /** The hand-off tool as a request carries it; its definition names no Agent. */
 async function renderFrontDeskTools(): Promise<unknown[]> {
@@ -567,6 +603,7 @@ test('sharedPrefixRequests sends the bytes rendered turns send under the ID thei
     }
   }
   // A Node render never mounts a coding workspace; the segment comes from the tools a coordinator mounts.
+  snapshot.segments.management = await renderManagementTools();
   snapshot.segments.coding = await renderCodingTools(CODING_ALPHA);
   snapshot.segments.front_desk = await renderFrontDeskTools();
   const stored = JSON.stringify(snapshot, null, 1) + '\n';

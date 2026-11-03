@@ -1,8 +1,9 @@
 /**
- * Render the exact Anthropic Messages request one Slack turn sends, through
- * the production ChickpeaSlack harness, model access and pi-ai, without
- * egress: the SDK's `beta.messages.create`, which pi-ai sends every Anthropic
- * request through, captures its params and throws, and
+ * Render the exact Anthropic Messages or OpenAI Responses request one Slack
+ * turn sends, through the production ChickpeaSlack harness, model access and
+ * pi-ai, without egress: the SDK method pi-ai sends every such request
+ * through (`beta.messages.create`, `responses.create`) captures its params and
+ * answers with the next scripted reply, or throws when none is left, and
  * `fetch` refuses. Import this module before any `src/` module: it scopes the
  * process's state database and provider key first.
  */
@@ -20,8 +21,9 @@ process.env.EXA_API_KEY = 'render-only-not-a-key';
 process.env.SLACK_STATE_DB_PATH = join(mkdtempSync(join(tmpdir(), 'render-slack-request-')), 'state.db');
 
 const Anthropic = (await import('@anthropic-ai/sdk')).default as any;
+const OpenAI = (await import('openai')).default as any;
 const { createFlueContext, resolveModel } = await import('@flue/runtime/internal');
-const { useModel, useTool } = await import('@flue/runtime');
+const { observe, useModel, useTool } = await import('@flue/runtime');
 const { ChickpeaSlack } = await import('../../src/agents/slack-thread.ts');
 const { freezeRuntimePlanForTurn } = await import('../../src/slack/run-turn.ts');
 const { compileRuntimePlanV2 } = await import('../../src/agents/runtime-plan.ts');
@@ -35,6 +37,7 @@ const { configureInstallationAdmission } = await import('../../src/config/instal
 const { scopeInstallationEnv } = await import('../../src/config/installation-scope.ts');
 const { NO_RUN_FEES } = await import('./platform-funding.ts');
 const { serializeThreadImageRecords } = await import('../../src/slack/thread-images.ts');
+const { noteAgentAuthoringActivation } = await import('../../src/management/workspace-change-tools.ts');
 
 export type RenderedRequest = Record<string, any>;
 
@@ -45,6 +48,8 @@ export interface SlackRequestVariant {
   user: string;
   text: string;
   agentKind?: 'system' | 'user';
+  /** The Agent's model provider: Anthropic Messages, or OpenAI Responses. */
+  provider?: 'anthropic' | 'openai';
   model?: string;
   funding?: 'platform' | 'customer';
   progressiveStreamingOffered?: boolean;
@@ -72,13 +77,68 @@ export interface SlackRequestVariant {
 
 export const USER_AGENT_ID = 'agent_brief_writer';
 
-let captured: unknown;
+/** What the model answers one request with: a tool call, which the turn runs, or a final text. */
+export type ScriptedReply =
+  | { toolCall: { name: string; input: Record<string, unknown> } }
+  | { text: string };
+
+let captured: RenderedRequest | undefined;
 let charged: { sharedPrefix: SharedPrefixId | null; requestId: string } | undefined;
 const chargedRecords = new WeakMap<RenderedRequest, { sharedPrefix: SharedPrefixId | null; requestId: string }>();
 const blockedUrls: string[] = [];
-Anthropic.Beta.Messages.prototype.create = function (params: unknown) {
-  captured = structuredClone(params);
-  throw new Error('render only');
+let replies: ScriptedReply[] = [];
+let sent: RenderedRequest[] = [];
+
+/** Capture a request's params; answer with the next scripted reply, or refuse it when none is left. */
+function answer(params: unknown): ScriptedReply {
+  captured = structuredClone(params) as RenderedRequest;
+  sent.push(captured);
+  const reply = replies.shift();
+  if (!reply) throw new Error('render only');
+  return reply;
+}
+
+Anthropic.Beta.Messages.prototype.create = function (params: { model: string }) {
+  const reply = answer(params);
+  const id = `toolu_render_${sent.length}`;
+  const content = 'text' in reply
+    ? [
+        { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+        { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: reply.text } },
+      ]
+    : [
+        { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id, name: reply.toolCall.name, input: {} } },
+        { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify(reply.toolCall.input) } },
+      ];
+  const events = [
+    { type: 'message_start', message: { id: `msg_render_${sent.length}`, model: params.model, usage: { input_tokens: 1, output_tokens: 0 } } },
+    ...content,
+    { type: 'content_block_stop', index: 0 },
+    { type: 'message_delta', delta: { stop_reason: 'text' in reply ? 'end_turn' : 'tool_use' }, usage: { output_tokens: 1 } },
+    { type: 'message_stop' },
+  ];
+  const body = events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join('');
+  return { asResponse: async () => new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }) };
+};
+
+OpenAI.Responses.prototype.create = function (params: unknown) {
+  const reply = answer(params);
+  const item = 'text' in reply
+    ? { type: 'message', id: `msg_render_${sent.length}`, role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: reply.text, annotations: [] }] }
+    : {
+        type: 'function_call', id: `fc_render_${sent.length}`, call_id: `call_render_${sent.length}`, status: 'completed',
+        name: reply.toolCall.name, arguments: JSON.stringify(reply.toolCall.input),
+      };
+  const events = [
+    { type: 'response.output_item.added', output_index: 0, item: { ...item, ...('arguments' in item ? { arguments: '' } : { content: [] }) } },
+    { type: 'response.output_item.done', output_index: 0, item },
+    {
+      type: 'response.completed',
+      response: { id: `resp_render_${sent.length}`, status: 'completed', output: [item], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    },
+  ];
+  async function* stream() { yield* events; }
+  return { withResponse: async () => ({ data: stream(), response: new Response(null, { status: 200 }) }) };
 };
 globalThis.fetch = (async (url: unknown) => {
   blockedUrls.push(String(url));
@@ -91,10 +151,15 @@ const userAgent = {
   instructions: 'You write one-page briefs for the sales team.', enabled: true, lifecycle: 'active',
   editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [], repositories: [],
 };
+const DEFAULT_MODELS = { anthropic: 'claude-opus-5-5', openai: 'gpt-5.6-terra' } as const;
+function providerOf(variant: SlackRequestVariant): 'anthropic' | 'openai' {
+  return variant.provider ?? 'anthropic';
+}
 function currentAgent(): any {
   const variant = current!;
   const agent = variant.agentKind === 'user' ? userAgent : createChickpeaAgent();
-  return { ...agent, model: `anthropic/${variant.model ?? 'claude-opus-5-5'}`, ...variant.agentOverrides };
+  const provider = providerOf(variant);
+  return { ...agent, model: `${provider}/${variant.model ?? DEFAULT_MODELS[provider]}`, ...variant.agentOverrides };
 }
 const store: any = getConfigStore();
 const identity: any = getIdentityStore();
@@ -110,6 +175,10 @@ identity.getMembershipAccessOverlay = async () => undefined;
 identity.getUser = async () => ({ id: 'user', slackTeamId: current!.workspace, slackUserId: current!.user });
 identity.resolveSlackIdentity = async () => ({ user: { id: 'user' }, membership: { id: 'member' }, binding: { membershipId: 'member' } });
 configureInstallationAdmission(async () => 'admitted');
+// As app.ts observes a Slack turn's tool calls.
+observe((event, context) => {
+  if (context.agentName === 'chickpea-slack-v2') noteAgentAuthoringActivation(event);
+});
 configureModelAccessResolver({ resolve: async () => ({ apiKey: 'render-only-not-a-key' }) });
 configurePlatformFunding({
   ...NO_RUN_FEES,
@@ -117,6 +186,8 @@ configurePlatformFunding({
   admit: async () => 'admitted',
   charge: async (record: { requestId: string }, sharedPrefix: SharedPrefixId | null) => {
     charged = { sharedPrefix, requestId: record.requestId };
+    // Each request settles its charge before the next one goes out.
+    if (captured) chargedRecords.set(captured, charged);
   },
 } as any);
 
@@ -165,21 +236,65 @@ function chargedRecord(request: RenderedRequest) {
 }
 
 export async function renderSlackRequest(variant: SlackRequestVariant): Promise<RenderedRequest> {
+  const [requests] = await renderSlackThread(variant, [{ text: variant.text, replies: [] }]);
+  return requests![0]!;
+}
+
+/** One message in a thread and what the model answers each of the turn's requests with, in order. */
+export interface SlackThreadTurn {
+  text: string;
+  replies: readonly ScriptedReply[];
+}
+
+/**
+ * Every request each turn of one Slack thread sends: the same agent instance,
+ * transcript and persistent state from turn to turn. A turn ends at its final
+ * text reply, or at the request after its last reply, which is refused. The
+ * render prompts the harness directly, which runs no `useAgentFinish` hook: a
+ * delivered submission does.
+ */
+export async function renderSlackThread(
+  variant: SlackRequestVariant,
+  turns: readonly SlackThreadTurn[],
+): Promise<RenderedRequest[][]> {
+  current = variant;
+  const context = createFlueContext({
+    id: `render-${variant.workspace}-${variant.channel}-${variant.thread}`,
+    agentName: 'chickpea-slack-v2', env: {}, agentConfig: { resolveModel } as any,
+  });
+  const rendered: RenderedRequest[][] = [];
+  for (const [index, turn] of turns.entries()) {
+    rendered.push(await renderSlackTurn(context, { ...variant, text: turn.text }, index, turn.replies));
+  }
+  return rendered;
+}
+
+async function renderSlackTurn(
+  context: any,
+  variant: SlackRequestVariant,
+  index: number,
+  scripted: readonly ScriptedReply[],
+): Promise<RenderedRequest[]> {
   current = variant;
   captured = undefined;
   charged = undefined;
+  replies = [...scripted];
+  sent = [];
   const agent = currentAgent();
+  const provider = providerOf(variant);
   const conversationKind = variant.conversationKind ?? 'channel';
   // A front-desk turn is the root of its DM thread.
-  const messageTs = variant.frontDesk ? variant.thread : (Number(variant.thread) + 0.0001).toFixed(6);
+  const messageTs = variant.frontDesk && index === 0
+    ? variant.thread
+    : (Number(variant.thread) + 0.0001 * (index + 1)).toFixed(6);
   const assignment = {
     workspaceId: variant.workspace, channelId: variant.channel, agentId: agent.id, agent, model: agent.model,
-    modelAttribution: { source: 'workspace_default', providerId: 'anthropic', workspaceDefaultRevision: 1 },
+    modelAttribution: { source: 'workspace_default', providerId: provider, workspaceDefaultRevision: 1 },
     ...(variant.frontDesk ? { runtimeContract: 'chickpea-v1', frontDesk: variant.frontDesk } : {}),
   } as any;
   const turn = {
-    workspaceId: variant.workspace, channelId: variant.channel, eventId: `E_${variant.thread}`, text: variant.text,
-    userId: variant.user, ...(variant.member === false ? {} : { actorMembershipId: 'member' }), messageTs,
+    workspaceId: variant.workspace, channelId: variant.channel, eventId: `E_${variant.thread}${index ? `_${index}` : ''}`,
+    text: variant.text, userId: variant.user, ...(variant.member === false ? {} : { actorMembershipId: 'member' }), messageTs,
     threadTs: variant.thread, contextMode: 'thread',
     ...(conversationKind === 'channel' ? { source: 'app_mention' } : { source: 'dm_message', channelType: conversationKind }),
   };
@@ -196,17 +311,13 @@ export async function renderSlackRequest(variant: SlackRequestVariant): Promise<
         codingWorkspace: true,
       } as any)
     : decision.runtimePlan;
-  const context = createFlueContext({
-    id: `render-${variant.workspace}-${variant.channel}-${variant.thread}`,
-    agentName: 'chickpea-slack-v2', env: {}, agentConfig: { resolveModel } as any,
-  });
   const body = serializeCurrentRequestEnvelope(variant.text, false, variant.user, messageTs, {
     schemaVersion: 2, progressiveStreamingOffered: variant.progressiveStreamingOffered ?? true,
     ...(variant.progressiveStreamingMode ? { progressiveStreamingMode: variant.progressiveStreamingMode } : {}),
   });
   const attributes = {
     workspaceId: variant.workspace, channelId: variant.channel, threadTs: variant.thread, conversationKind,
-    slackUserId: variant.user, eventId: turn.eventId, messageTs, turnJobId: `job_${variant.thread}`,
+    slackUserId: variant.user, eventId: turn.eventId, messageTs, turnJobId: `job_${variant.thread}${index ? `_${index}` : ''}`,
     ...(variant.threadImages ? { threadImages: serializeThreadImageRecords(variant.threadImages)! } : {}),
   };
   const signal = variant.delivery === 'file_delivery_check'
@@ -218,8 +329,8 @@ export async function renderSlackRequest(variant: SlackRequestVariant): Promise<
   const harness: any = await context.initializeRootHarness(
     variant.codingWorkspace ? renderedOnWorker(ChickpeaSlack) : ChickpeaSlack, signal as any, plan);
   const grant = {
-    installationId: `inst_${variant.workspace}`, providerId: 'anthropic', runId: `run_${variant.thread}`,
-    fundingSource: variant.funding ?? 'platform', credentialRefId: 'platform:anthropic', credentialVersion: 1,
+    installationId: `inst_${variant.workspace}`, providerId: provider, runId: `run_${variant.thread}_${index}`,
+    fundingSource: variant.funding ?? 'platform', credentialRefId: `platform:${provider}`, credentialVersion: 1,
   } as any;
   const env = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: grant.installationId }) as any;
   try {
@@ -227,9 +338,9 @@ export async function renderSlackRequest(variant: SlackRequestVariant): Promise<
   } catch (error) {
     if (!captured) throw error;
   }
-  if (!captured) throw new Error('No Anthropic request was captured.');
-  if (charged !== undefined) chargedRecords.set(captured as RenderedRequest, charged);
-  return captured as RenderedRequest;
+  if (!captured) throw new Error('No provider request was captured.');
+  if (replies.length > 0) throw new Error(`The turn ended with ${replies.length} scripted replies unsent.`);
+  return sent;
 }
 
 let toolsOnly: { model: string; tools: readonly unknown[] } | undefined;
@@ -250,6 +361,8 @@ export async function renderToolPayloads(
 ): Promise<RenderedRequest['tools']> {
   toolsOnly = { model, tools };
   captured = undefined;
+  replies = [];
+  sent = [];
   const context = createFlueContext({
     id: `render-tools-${blockedUrls.length}-${Date.now()}`, agentName: 'render-tools', env: {}, agentConfig: { resolveModel } as any,
   });
@@ -264,6 +377,7 @@ export async function renderToolPayloads(
   } catch (error) {
     if (!captured) throw error;
   }
-  if (!captured) throw new Error('No Anthropic request was captured.');
-  return (captured as RenderedRequest).tools;
+  const request = captured as RenderedRequest | undefined;
+  if (!request) throw new Error('No Anthropic request was captured.');
+  return request.tools;
 }

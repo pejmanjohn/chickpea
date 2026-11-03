@@ -23,6 +23,18 @@ AGENT_AUTHORING_EVAL_MODEL=provider/model \
 
 Useful filters are `--case <case-id>` and `--variant current|baseline|both`. A supplied output path must not already exist. Generated reports are disposable evidence and must not be committed.
 
+### Lean mount
+
+A Slack thread mounts `propose_workspace_changes`, `apply_workspace_changes`, `undo_workspace_change`, and `get_operation` only once its model activates `agent-authoring`, and keeps them for the rest of the thread. `--mount lean` evaluates the current variant the same way: its proposal and apply tools mount after activation. The baseline has no guide to activate, so it keeps every tool.
+
+```sh
+npm run evaluate:agent-authoring:lean
+AGENT_AUTHORING_EVAL_MODEL=provider/model \
+  npm run evaluate:agent-authoring:live -- --mount lean --variant current --output /tmp/agent-authoring-lean.json
+```
+
+The deterministic run adds four checks: activation first leaves the tools mounted, activation recovers a tool called before it, that earlier call counts for nothing, and a follow-up message keeps the tools. A live report records `mount` and, per result, `unavailableToolCalls`: calls to a tool that was not mounted yet, each one extra model request. `summary.unavailableToolCallCases` lists the current cases with one. Compare a lean run with a full run of the same model: the lean mount must add no critical failure, pass within one case of the full run, and add an extra request in at most a tenth of the cases that require activation.
+
 ## Corpus contract
 
 For schedule creation/admission diagnosis, also use the bounded

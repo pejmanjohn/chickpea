@@ -134,8 +134,8 @@ test('Slack offers the model no tool that confirms a workspace change', () => {
   // tests/shared-prefix.test.ts pins this file to a fresh render of the Slack tool set.
   const rendered = JSON.parse(readFileSync(
     new URL('../src/agents/shared-prefix-tools.json', import.meta.url), 'utf8',
-  )) as { tools: Array<{ name: string }> };
-  const names = rendered.tools.map(({ name }) => name);
+  )) as { tools: Array<{ name: string }>; segments: Record<string, Array<{ name: string }>> };
+  const names = [...rendered.tools, ...Object.values(rendered.segments).flat()].map(({ name }) => name);
   assert.ok(names.includes('apply_workspace_changes'), 'the snapshot is the management tool set');
   assert.ok(!names.includes('confirm_workspace_change'), 'no Slack tool applies a held change');
 });
