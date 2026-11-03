@@ -331,9 +331,23 @@ export const slackThreadCloudflareExtension = {
       installationAgentObject(Base) as new (...args: never[]) => AgentObjectInstance
     ) {
       /**
+       * Host RPC: activate the object once its turn's plan froze, so the
+       * staging that follows finds it in memory. It writes nothing beyond the
+       * schema every activation's constructor ensures, and runs no start: the
+       * Agents SDK starts an object for a request, an alarm, or naming it,
+       * never for an RPC like this one.
+       */
+      async chickpeaWake(sentAt?: unknown, turnJobId?: unknown): Promise<void> {
+        reportAgentObjectCall(this, 'wake', {
+          sentAt: typeof sentAt === 'number' ? sentAt : undefined,
+          turnJobId: typeof turnJobId === 'string' ? turnJobId : undefined,
+        });
+      }
+
+      /**
        * Host RPC: stage one turn's input before its dispatch, and load the
        * connector details its render reads. `sentAt` is the runner's clock
-       * before it named this object, for `agent_boot`.
+       * before it addressed this object, for `agent_boot`.
        */
       async chickpeaStageTurnInput(json: string, sentAt?: unknown): Promise<void> {
         if (typeof json !== 'string') throw new Error('Slack turn input must be serialized.');
@@ -361,8 +375,34 @@ export const slackThreadCloudflareExtension = {
 interface AgentObjectNamespace {
   idFromName(name: string): unknown;
   get(id: unknown): {
+    chickpeaWake(sentAt: number, turnJobId?: string): Promise<void>;
     chickpeaStageTurnInput(json: string, sentAt: number): Promise<void>;
   };
+}
+
+function agentObjectNamespace(
+  env: Record<string, unknown> | undefined,
+  bindingName: string,
+): AgentObjectNamespace {
+  const binding = env?.[bindingName] as AgentObjectNamespace | undefined;
+  if (!binding || typeof binding.idFromName !== 'function' || typeof binding.get !== 'function') {
+    throw new Error(`Agent object binding ${bindingName} is unavailable.`);
+  }
+  return binding;
+}
+
+/**
+ * Host side on Cloudflare: activate the thread's agent object, addressed as
+ * its staging addresses it, while the turn still prepares.
+ */
+export async function wakeSlackAgentObject(
+  env: Record<string, unknown> | undefined,
+  bindingName: string,
+  instanceId: string,
+  turnJobId?: string,
+): Promise<void> {
+  const binding = agentObjectNamespace(env, bindingName);
+  await binding.get(binding.idFromName(instanceId)).chickpeaWake(Date.now(), turnJobId);
 }
 
 /**
@@ -374,10 +414,7 @@ export async function stageSlackTurnInputOnAgentObject(
   bindingName: string,
   input: SlackTurnInputV1,
 ): Promise<void> {
-  const binding = env?.[bindingName] as AgentObjectNamespace | undefined;
-  if (!binding || typeof binding.idFromName !== 'function' || typeof binding.get !== 'function') {
-    throw new Error(`Agent object binding ${bindingName} is unavailable.`);
-  }
+  const binding = agentObjectNamespace(env, bindingName);
   const json = serializeSlackTurnInput(input);
   const stub = binding.get(binding.idFromName(input.instanceId));
   await stub.chickpeaStageTurnInput(json, Date.now());

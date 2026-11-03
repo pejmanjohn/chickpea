@@ -233,11 +233,12 @@ export function emitThreadRunnerSuperseded(
 export type RunnerBootMethod = keyof SlackThreadRunnerRpc | 'alarm' | 'host';
 
 /**
- * What an agent activation served first: a staged turn input, a request (a
- * Flue dispatch or observation), its alarm, or a host function. Naming the
- * object (`setName`) precedes the first of these and is not one.
+ * What an agent activation served first: the runner's wake once the turn's
+ * plan froze, a staged turn input, a request (a Flue dispatch or
+ * observation), its alarm, or a host function. Naming the object (`setName`)
+ * precedes the first of these and is not one.
  */
-export type AgentBootMethod = 'stage' | 'fetch' | 'alarm' | 'host';
+export type AgentBootMethod = 'wake' | 'stage' | 'fetch' | 'alarm' | 'host';
 
 /** Activations this isolate has constructed, by kind. */
 const activations = { runner_boot: 0, agent_boot: 0 };
@@ -304,10 +305,9 @@ export class RunnerBootMarks extends ObjectBootMarks<RunnerBootMethod> {
 }
 
 /**
- * A Flue agent object's activation marks, logged as `agent_boot`. A staged
- * turn input carries the runner's clock from before it named the object, so
- * `sentToConstructMs` covers activating it, and `constructToFirstCallMs`
- * includes the start (`onStart`) that naming it ran.
+ * A Flue agent object's activation marks, logged as `agent_boot`. A wake and
+ * a staged turn input carry the runner's clock from before it addressed the
+ * object, so `sentToConstructMs` covers activating it.
  */
 export class AgentBootMarks extends ObjectBootMarks<AgentBootMethod> {
   constructor(agentClass: string, now: () => number = Date.now, sink?: RuntimeLatencySink) {
@@ -356,6 +356,8 @@ export class TurnLatencyTracker {
   private read = 0;
   private midRunReplies = 0;
   private agentStageMs: number | undefined;
+  private agentWakeSentAt: number | undefined;
+  private agentWakeLeadMs: number | undefined;
   private emitted = false;
 
   constructor(
@@ -392,9 +394,16 @@ export class TurnLatencyTracker {
     this.midRunReplies += 1;
   }
 
+  /** The turn sent its wake to its Agent's object; only the first wake is kept. */
+  markAgentWake(): void {
+    this.agentWakeSentAt ??= this.now();
+  }
+
   /** Staging the turn's input beside its Agent took this long; only the first staging is kept. */
   markAgentStage(ms: number): void {
-    this.agentStageMs ??= ms;
+    if (this.agentStageMs !== undefined) return;
+    this.agentStageMs = ms;
+    if (this.agentWakeSentAt !== undefined) this.agentWakeLeadMs = this.now() - ms - this.agentWakeSentAt;
   }
 
   /** The terminal was delivered, or handed to a durable outbox. */
@@ -434,6 +443,7 @@ export class TurnLatencyTracker {
       receiptToFirstWriteMs: sinceReceipt(this.firstWrite?.at),
       handoffMs: this.context.handoffMs,
       agentStageMs: this.agentStageMs,
+      agentWakeLeadMs: this.agentWakeLeadMs,
       attemptMs: end - this.startedAt,
       folded: this.folded > 0 ? this.folded : undefined,
       foldedInformed: this.foldedInformed > 0 ? this.foldedInformed : undefined,

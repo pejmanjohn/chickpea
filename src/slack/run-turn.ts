@@ -57,6 +57,7 @@ import {
 } from '../config/installation-scope.ts';
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
 import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
+import { wakeSlackAgentObject } from '../agents/turn-input.ts';
 import { buildTurnEnvelope } from './turn-envelope-builder.ts';
 import {
   compileFrontDeskPlan,
@@ -127,7 +128,7 @@ import {
   type RunReviewSession,
 } from '../review/capture.ts';
 import type { RunReviewOutcome } from '../review/record.ts';
-import { readAgentHistoryBounded } from './bounded-agent-observation.ts';
+import { CHICKPEA_SLACK_AGENT_BINDING, readAgentHistoryBounded } from './bounded-agent-observation.ts';
 import { collectAdmittedSlackListIds } from './lists/admission.ts';
 import { conversationThreadTs, slackAgentContinuityKey, slackAgentThreadKey, slackConversationKind, slackTurnSurface } from './thread-key.ts';
 import { slackTimestampMs } from './timestamp.ts';
@@ -285,6 +286,8 @@ export interface RunTurnOptions {
   installationContext?: SlackInstallationExecutionContext;
   /** Focused-test override for proving replay and delivery lifecycle behavior. */
   agentPrompt?: typeof promptSlackThreadAgent;
+  /** Focused seam; production wakes the thread's agent object on Cloudflare only. */
+  wakeAgentObject?: (instanceId: string) => Promise<void>;
   /** Adapter-owned dispatch/read checkpoints restored by the relay. */
   flueDispatch?: SlackFlueDispatchState;
   /** Durable turn key forwarded to the sandbox for cap/idempotency state. */
@@ -451,6 +454,8 @@ export interface RunTurnOptions {
   onMidRunReply?: () => void;
   /** Set by `runTurn` itself when `turnLatency` is present: how long staging the turn's input took. */
   onAgentStaged?: (ms: number) => void;
+  /** Set by `runTurn` itself when `turnLatency` is present: the turn sent its Agent object's wake. */
+  onAgentWake?: () => void;
 }
 
 /** How a stopped turn ends (see RunTurnOptions.stopEnding). */
@@ -548,6 +553,7 @@ export async function runTurn(
       onRead: () => tracker.markRead(),
       onMidRunReply: () => tracker.markMidRunReply(),
       onAgentStaged: (ms) => tracker.markAgentStage(ms),
+      onAgentWake: () => tracker.markAgentWake(),
       onDelivered: async (outcome) => {
         tracker.markFinal('delivered');
         if (outcome === 'stopped') stopped = true;
@@ -1099,6 +1105,19 @@ async function runTurnAttempt(
       earlyStatusWork = showAdmittedStatus(earlyStatusInstanceId);
     }
   }
+  // Once the plan is frozen it is durable and names the thread's Agent
+  // instance, which may then be addressed: waking it lets its activation
+  // overlap the rest of this preparation instead of delaying its staging. A
+  // turn already judged react_only never stages. A failed wake is ignored:
+  // staging activates the object itself.
+  const wakeAgentObject = (instanceId: string): void => {
+    const wake = options.wakeAgentObject ?? (isCloudflareTarget()
+      ? (id: string) => wakeSlackAgentObject(platformEnv, CHICKPEA_SLACK_AGENT_BINDING, id, options.turnId)
+      : undefined);
+    if (!wake || turn.interactionIntent?.disposition === 'react_only') return;
+    options.onAgentWake?.();
+    void Promise.resolve().then(() => wake(instanceId)).catch(() => undefined);
+  };
   const prepareTurn = async () => {
     const memory = skipMemory
       ? undefined
@@ -1143,6 +1162,9 @@ async function runTurnAttempt(
             ...(options.getBoundRuntimePlan
               ? { getBoundRuntimePlan: options.getBoundRuntimePlan }
               : {}),
+          }).then((frozen) => {
+            wakeAgentObject(frozen.decision.instanceId);
+            return frozen;
           }).catch((error: unknown) => {
             // A model that needs repair ends the turn with its reply, below;
             // a retry could not change that.

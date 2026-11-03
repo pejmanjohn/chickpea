@@ -30,8 +30,10 @@ import {
   stagedConnectionToolkits,
   type TurnInputSql,
   useAgentObjectStorageForTests,
+  wakeSlackAgentObject,
   writeStagedTurnInput,
 } from '../src/agents/turn-input.ts';
+import { opaqueTurnRef } from '../src/observability/runtime-latency.ts';
 import { requireConnectorDetails } from '../src/connections/catalog/index.ts';
 import type { EffectiveConnectionAccount } from '../src/connections/types.ts';
 import { CapabilityNotLoadedError } from '../src/runtime/on-demand.ts';
@@ -408,6 +410,7 @@ test('the Cloudflare extension is branded as Flue expects and stages into the ob
 });
 
 type AgentObject = new (ctx: { id: { name?: string } }, env: unknown) => {
+  chickpeaWake(sentAt?: number, turnJobId?: string): Promise<void>;
   chickpeaStageTurnInput(json: string, sentAt?: number): Promise<void>;
   onStart(props?: unknown): Promise<unknown>;
   started: number;
@@ -421,6 +424,49 @@ function agentObject(sql: TurnInputSql): AgentObject {
   }
   return slackThreadCloudflareExtension.base(Base as never) as unknown as AgentObject;
 }
+
+// Defects caught: the wake writes (a table, a name) that staging would then
+// repeat, or starts the object early; the staging after it logs a second
+// boot or loses the wake's clock; the host addresses another object or names
+// it first.
+test('a wake activates the Agent object without writing or starting it, and its staging finds it awake', async (t) => {
+  const boots: Record<string, unknown>[] = [];
+  t.mock.method(console, 'info', (record: Record<string, unknown>) => {
+    if (record?.event === 'agent_boot') boots.push(record);
+  });
+  const sql = sqlStorage();
+  const current = plan();
+  const instanceId = deriveRuntimePlanInstanceId(current);
+  const input = createSlackTurnInput({ turnJobId: 'turn_woken', instanceId, runtimePlan: current });
+  const Agent = agentObject(sql);
+  const object = new Agent({ id: { name: instanceId } }, {});
+  const wokenAt = Date.now() - 1_500;
+  await object.chickpeaWake(wokenAt, 'turn_woken');
+  assert.deepEqual(sql.db.prepare('SELECT name FROM sqlite_master').all(), [], 'the wake writes nothing');
+  assert.equal(object.started, 0, 'the wake runs no start');
+
+  await object.chickpeaStageTurnInput(serializeSlackTurnInput(input), Date.now());
+  assert.equal(parseSlackTurnInput(readStagedTurnInputJson(sql, 'turn_woken')).turnJobId, 'turn_woken');
+  assert.equal(boots.length, 1, 'staging reuses the activation the wake made');
+  assert.equal(boots[0]?.firstMethod, 'wake');
+  assert.equal(boots[0]?.turnRef, opaqueTurnRef('turn_woken'));
+  assert.ok(Number(boots[0]?.sentToConstructMs) >= 1_500, 'the activation is timed from the wake');
+
+  const calls: unknown[][] = [];
+  const binding = {
+    idFromName: (name: string) => `id:${name}`,
+    get: (id: string) => ({
+      async setName(name: string) { calls.push(['setName', id, name]); },
+      async chickpeaWake(...args: unknown[]) { calls.push(['wake', id, ...args]); },
+      async chickpeaStageTurnInput() { calls.push(['stage', id]); },
+    }),
+  };
+  await wakeSlackAgentObject({ FLUE_AGENT: binding }, 'FLUE_AGENT', instanceId, 'turn_woken');
+  assert.equal(calls.length, 1, 'the wake is the one call');
+  assert.deepEqual([calls[0]![0], calls[0]![1], typeof calls[0]![2], calls[0]![3]],
+    ['wake', `id:${instanceId}`, 'number', 'turn_woken'], 'addressed by name, as staging addresses it');
+  await assert.rejects(wakeSlackAgentObject({}, 'FLUE_AGENT', instanceId), /unavailable/);
+});
 
 test('staging a turn loads the connector details its render reads', async () => {
   const policy = {

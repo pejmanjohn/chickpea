@@ -7,6 +7,7 @@ import { after, before, test } from 'node:test';
 
 import { ErrorCode, type WebClient } from '@slack/web-api';
 
+import { deriveRuntimePlanInstanceId } from '../src/agents/runtime-plan.ts';
 import { configureModelAccessResolver, resetModelAccessForTests } from '../src/config/model-access.ts';
 import { closeNodeStateStores, resolveStores, type AppStores } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
@@ -15,6 +16,7 @@ import type { ResolvedAssignment } from '../src/config/types.ts';
 import type { SlackPresentationStatePort } from '../src/slack/agent-view-presentation.ts';
 import { SlackRunPresentationStoreLogic, type SlackRunPresentation } from '../src/slack/run-presentations.ts';
 import { runTurn, type RunTurnOptions } from '../src/slack/run-turn.ts';
+import type { FrozenRuntimePlanDecision } from '../src/slack/turn-job-types.ts';
 import { SlackStatusRegistry } from '../src/slack/status-registry.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
@@ -165,6 +167,7 @@ async function firstStatusTimeline(
   publicUrl?: string | null,
   overrides: Partial<RunTurnOptions> = {},
   turnAssignment: ResolvedAssignment = assignment,
+  turnOverrides: Partial<NormalizedSlackTurn> = {},
 ) {
   const timeline: string[] = [];
   const recordedIntents: SlackInteractionIntent[] = [];
@@ -187,6 +190,7 @@ async function firstStatusTimeline(
     eventId: `${base.eventId}_${turns}`,
     messageTs,
     threadTs: surface === 'thread_follow_up' ? base.threadTs : messageTs,
+    ...turnOverrides,
   };
   const real = resolveStores();
   const admitted = await real.work.admitShadowRun(prepareSlackShadowAdmission({
@@ -685,4 +689,119 @@ test('a restored intent asks neither Clef nor the classifier and records nothing
   } finally {
     platformEnv = undefined;
   }
+});
+
+/** The DM's own Agent, so its memory prepares and the turn reaches the dispatch. */
+const dmAssignment: ResolvedAssignment = { ...assignment, channelId: 'D_FIRST_STATUS' };
+
+const AGENT_ANSWER = {
+  text: 'Done.',
+  requestedModel: assignment.model ?? null,
+  returnedModel: null,
+  reportedUsage: null,
+  usageCompleteness: 'not_reported' as const,
+};
+
+// Defects caught: the wake goes out before the plan is saved (or names an
+// instance the freeze did not record), more than once, after the staging, or
+// not at all; the turn record loses its lead.
+test('a turn wakes its Agent object once its plan is saved, before it stages, and records the lead', async (t) => {
+  const latency: Record<string, unknown>[] = [];
+  t.mock.method(console, 'info', (record: unknown) => {
+    if ((record as { event?: unknown } | undefined)?.event === 'turn_latency') {
+      latency.push(record as Record<string, unknown>);
+    }
+  });
+  const events: string[] = [];
+  let instanceId: string | undefined;
+  await firstStatusTimeline('dm', null, {
+    turnLatency: { lane: 'cloudflare', executor: 'runner' },
+    onRuntimePlan: async (candidate) => {
+      events.push('freeze');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      instanceId = deriveRuntimePlanInstanceId(candidate);
+      events.push('freeze:saved');
+      return { runtimePlan: candidate, instanceId };
+    },
+    wakeAgentObject: async (id) => { events.push(`wake:${id}`); },
+    agentPrompt: async ({ onAgentStaged }) => {
+      events.push('stage');
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      onAgentStaged?.(0);
+      return AGENT_ANSWER;
+    },
+  }, dmAssignment);
+  assert.deepEqual(events, ['freeze', 'freeze:saved', `wake:${instanceId}`, 'stage']);
+  assert.equal(latency.length, 1);
+  assert.ok(Number(latency[0]?.agentWakeLeadMs) >= 25, `the lead covers the wait to stage: ${latency[0]?.agentWakeLeadMs}`);
+});
+
+// Defect caught: a wake hung on anything but this attempt's freeze (an
+// instance already known, the thread key) reaches a turn that never stages.
+test('a replayed turn, a command, and a turn stopped before dispatch send no wake', async () => {
+  const wakes: string[] = [];
+  const wakeAgentObject = async (id: string) => { wakes.push(id); };
+  let decision: FrozenRuntimePlanDecision | undefined;
+  const fresh = await firstStatusTimeline('dm', null, {
+    wakeAgentObject,
+    onRuntimePlan: async (candidate) => {
+      decision = { runtimePlan: candidate, instanceId: deriveRuntimePlanInstanceId(candidate) };
+      return decision;
+    },
+  }, dmAssignment);
+  assert.ok(fresh.timeline.includes('agentPrompt'), 'the same turn shape dispatches when it freezes its plan');
+  assert.equal(wakes.length, 1, 'and wakes its Agent object');
+  wakes.length = 0;
+  const replayed = await firstStatusTimeline('dm', null, {
+    wakeAgentObject,
+    replayText: 'The recorded answer.',
+    ...(decision ? { runtimePlanDecision: decision } : {}),
+  }, dmAssignment);
+  const command = await firstStatusTimeline('dm', null, { wakeAgentObject }, dmAssignment, { text: '!memory help' });
+  const stopped = await firstStatusTimeline('dm', null, {
+    wakeAgentObject,
+    stopEnding: {
+      beforeDispatch: true,
+      finish: async () => ({ stopperUserId: 'U_STOPPER', unread: 1, pullRequests: [], windingDown: false }),
+    },
+  }, dmAssignment);
+  for (const { timeline } of [replayed, command, stopped]) {
+    assert.equal(timeline.includes('agentPrompt'), false, `it never dispatches: ${timeline.join(' ')}`);
+  }
+  assert.deepEqual(wakes, []);
+});
+
+// Defects caught: the turn awaits the wake, or lets its failure escape.
+test('a wake that rejects, throws, or never answers does not hold or fail the turn', async () => {
+  const wakes = [
+    async () => { throw new Error('no such method'); },
+    () => { throw new Error('binding unavailable'); },
+    () => new Promise<void>(() => undefined),
+  ] as Array<(id: string) => Promise<void>>;
+  for (const wakeAgentObject of wakes) {
+    const { timeline } = await firstStatusTimeline('dm', null, { wakeAgentObject }, dmAssignment);
+    assert.ok(timeline.includes('agentPrompt'), `the turn still dispatched: ${timeline.join(' ')}`);
+  }
+});
+
+// Defect caught: a turn already judged react_only, which never stages, wakes anyway.
+test('a turn judged react_only before its plan is saved sends no wake', async () => {
+  platformEnv = fakeClefEnv('react_only').env;
+  classifierAnswer = JSON.stringify({ disposition: 'react_only', reason: 'pure_ack', reaction: 'seen', target: 'thread_root' });
+  holdClassifierAnswer = async () => undefined;
+  const wakes: string[] = [];
+  let judged!: () => void;
+  const judgment = new Promise<void>((resolve) => { judged = resolve; });
+  await withScriptedClassifier(async () => {
+    const { timeline } = await firstStatusTimeline('dm', null, {
+      wakeAgentObject: async (id) => { wakes.push(id); },
+      onInteractionIntent: async () => { judged(); },
+      onRuntimePlan: async (candidate) => {
+        await judgment;
+        return { runtimePlan: candidate, instanceId: deriveRuntimePlanInstanceId(candidate) };
+      },
+    }, classifiedAssignment);
+    assert.equal(timeline.includes('agentPrompt'), false, `no dispatch: ${timeline.join(' ')}`);
+  });
+  assert.deepEqual(wakes, []);
 });

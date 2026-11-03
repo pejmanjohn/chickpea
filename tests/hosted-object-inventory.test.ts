@@ -485,8 +485,11 @@ const ADDRESSING_SITES: Record<string, { covered: string; sites: readonly string
     sites: ['return namespace.getByName(installationObjectName(env, threadKey));'],
   },
   'agents/turn-input.ts': {
-    covered: 'slack_agent, recorded when the turn freezes its plan',
-    sites: ['const stub = binding.get(binding.idFromName(input.instanceId));'],
+    covered: 'slack_agent, recorded when the turn freezes its plan; the wake waits for that freeze, as staging does',
+    sites: [
+      'await binding.get(binding.idFromName(instanceId)).chickpeaWake(Date.now(), turnJobId);',
+      'const stub = binding.get(binding.idFromName(input.instanceId));',
+    ],
   },
   'slack/bounded-agent-observation.ts': {
     covered: 'slack_agent of a dispatched envelope',
