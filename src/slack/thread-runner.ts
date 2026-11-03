@@ -39,6 +39,7 @@ import {
   cacheSlackInstallationExecutionContexts,
   effectiveTurnSlackInstallationId,
   resolveSlackInstallationExecutionContext,
+  seedGatewayIdentity,
   verifySlackInstallationTurnAccess,
 } from './installation-execution.ts';
 import { resolveSlackPublicUrl } from './credentials.ts';
@@ -202,6 +203,9 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       return { admitted: false, refused: 'installation_mismatch' };
     }
     const payload = (job?.payload ?? {}) as ThreadRunnerJobPayload;
+    // Only after the ownership check: this installation's identity, checked
+    // again against the runner's own reads when the turn resolves it.
+    seedGatewayIdentity(payload.gatewayIdentity);
     // The presentation first: the job never runs here without its copy.
     if (payload.presentation) {
       try {

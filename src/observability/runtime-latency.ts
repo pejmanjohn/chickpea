@@ -358,6 +358,7 @@ export class TurnLatencyTracker {
   private agentStageMs: number | undefined;
   private agentWakeSentAt: number | undefined;
   private agentWakeLeadMs: number | undefined;
+  private startToStageMs: number | undefined;
   private emitted = false;
 
   constructor(
@@ -404,6 +405,7 @@ export class TurnLatencyTracker {
     if (this.agentStageMs !== undefined) return;
     this.agentStageMs = ms;
     if (this.agentWakeSentAt !== undefined) this.agentWakeLeadMs = this.now() - ms - this.agentWakeSentAt;
+    this.startToStageMs = Math.max(0, this.now() - ms - this.startedAt);
   }
 
   /** The terminal was delivered, or handed to a durable outbox. */
@@ -444,6 +446,7 @@ export class TurnLatencyTracker {
       handoffMs: this.context.handoffMs,
       agentStageMs: this.agentStageMs,
       agentWakeLeadMs: this.agentWakeLeadMs,
+      startToStageMs: this.startToStageMs,
       attemptMs: end - this.startedAt,
       folded: this.folded > 0 ? this.folded : undefined,
       foldedInformed: this.foldedInformed > 0 ? this.foldedInformed : undefined,

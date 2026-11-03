@@ -219,7 +219,11 @@ test('a rate-limited delivery lease check retries the attempt, and the retry del
   }
 });
 
-test('the context read runs while the owner lease is checked, and the title waits for the lease', async () => {
+// Defects caught (with the admitted status held): the context read waiting
+// for the opening status writes, and the title, a presentation transition,
+// landing before the lease fence decided or while the admitted status's own
+// transitions are still in flight.
+test('the context read runs while the owner lease is checked and the admitted status is written; the title waits for both', async () => {
   const messageTs = '1790000300.000100';
   const turn = leaseTurn('Ev_LEASE_OVERLAP', messageTs);
   const work = new SqliteWorkStore(':memory:');
@@ -237,10 +241,21 @@ test('the context read runs while the owner lease is checked, and the title wait
     return result;
   };
   let membersChecks = 0;
+  let statusWrites = 0;
   const client = {
     apiCall: async () => ({ ok: true }),
     assistant: { threads: {
-      setStatus: async () => ({ ok: true }),
+      setStatus: async () => {
+        statusWrites += 1;
+        if (statusWrites === 1) {
+          const deadline = Date.now() + 500;
+          while (!timeline.includes('conversations.replies') && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 5));
+          }
+          timeline.push('status:admitted_acknowledged');
+        }
+        return { ok: true };
+      },
       setTitle: seen('assistant.threads.setTitle', { ok: true }),
     } },
     auth: { test: async () => ({ ok: true, user_id: 'U_CHICKPEA' }) },
@@ -292,10 +307,14 @@ test('the context read runs while the owner lease is checked, and the title wait
     });
     const read = timeline.indexOf('conversations.replies');
     const leaseAnswered = timeline.indexOf('lease:members_answered');
+    const statusShown = timeline.indexOf('status:admitted_acknowledged');
     const titled = timeline.indexOf('assistant.threads.setTitle');
-    assert.ok(read >= 0 && leaseAnswered >= 0 && titled >= 0, `read, lease and title all happen: ${timeline.join(' ')}`);
+    assert.ok(read >= 0 && leaseAnswered >= 0 && statusShown >= 0 && titled >= 0,
+      `read, lease, status and title all happen: ${timeline.join(' ')}`);
     assert.ok(read < leaseAnswered, `the context read does not wait for the lease: ${timeline.join(' ')}`);
+    assert.ok(read < statusShown, `the context read does not wait for the admitted status: ${timeline.join(' ')}`);
     assert.ok(titled > leaseAnswered, `the title waits for the lease: ${timeline.join(' ')}`);
+    assert.ok(titled > statusShown, `the title waits for the admitted status: ${timeline.join(' ')}`);
     assert.equal(finals.length, 1);
     assert.match(finals[0]!, /three fixes/);
   } finally {

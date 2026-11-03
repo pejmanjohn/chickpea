@@ -158,6 +158,8 @@ function turnLogMetrics(output, logStart) {
       admissionToStartMs: fields.admissionToStartMs,
       admissionToFirstWriteMs: fields.admissionToFirstWriteMs,
       admissionToFinalMs: fields.admissionToFinalMs,
+      startToStageMs: fields.startToStageMs,
+      agentStageMs: fields.agentStageMs,
       attemptMs: fields.attemptMs,
     })),
     relayAlarms: runtimeRecords(slice, 'relay_alarm').length,

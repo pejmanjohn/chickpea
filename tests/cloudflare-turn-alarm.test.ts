@@ -9,6 +9,11 @@ import {
   retryableDependencyRetryAfterMs,
 } from '../src/slack/transport/types.ts';
 import { drainAlarmTurnJobs } from '../src/slack/alarm-turn-drain.ts';
+import {
+  carriedGatewayIdentity,
+  resetIdentityVerificationsForTests,
+  seedGatewayIdentity,
+} from '../src/slack/installation-execution.ts';
 import { slackTurnExecutor } from '../src/slack/turn-executor-flag.ts';
 import { removeEndedReceipts } from '../src/slack/turn-executor.ts';
 import {
@@ -475,6 +480,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     slackAgentThreadKey: (turn: { thread: string }) => turn.thread,
     StateStoreUnavailable: class StateStoreUnavailable extends Error {},
     effectiveTurnSlackInstallationId: () => 'workspace',
+    carriedGatewayIdentity,
     verifySlackInstallationTurnAccess: async () => {},
     replayTextForTurnProgress: () => 'Pull request #12 is already open',
     recordDeliveredSlackAgentMessage() {},
@@ -583,6 +589,11 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     },
     gatewayInbox: { hasPending: () => false, nextPendingDueAt: () => undefined },
     presentations: { get: (runId: string) => ({ runId, projectionVersion: 3 }) },
+    config: {
+      getWorkspaceInstallation: (workspaceId: string) => ({
+        workspaceId, transportMode: 'gateway', gatewayBindingId: 'binding_alarm', botUserId: 'U_ALARM_BOT',
+      }),
+    },
   };
   return { probe, record };
 }
@@ -696,6 +707,32 @@ test('by default the alarm hands new turns to their thread runners without runni
   assert.deepEqual([...record.jobs.values()].map((job) => job.executor), ['runner', 'runner', 'runner']);
   assert.equal(record.relayAlarms.at(-1)!.jobsDispatched, 3);
   assert.equal(record.alarmAt, null, 'nothing is left for the alarm to wake for');
+});
+
+// Defects caught: a hand-off that drops this store's fresh verification (the
+// runner asks Slack again before its first status), and one that invents an
+// identity this store never verified.
+test("a hand-off carries the gateway bot identity this store verified within the window, and none without one", async () => {
+  resetIdentityVerificationsForTests();
+  try {
+    const unverified = await alarmHarness([channelJob('u1', 'thread-u')], {});
+    await unverified.probe.alarm();
+    assert.equal(JSON.stringify(unverified.record.admissions[0]!.payload), '{}',
+      'nothing verified here: the runner verifies for itself');
+
+    const gatewayIdentity = {
+      workspaceId: 'workspace', bindingId: 'binding_alarm', botUserId: 'U_ALARM_BOT', expiresAt: Date.now() + 30_000,
+    };
+    seedGatewayIdentity(gatewayIdentity);
+    const verified = await alarmHarness([{ ...channelJob('v1', 'thread-v'), runId: 'run-v1' } as AlarmJob], {});
+    await verified.probe.alarm();
+    assert.deepEqual(JSON.parse(JSON.stringify(verified.record.admissions[0]!.payload)), {
+      presentation: { runId: 'run-v1', projectionVersion: 3 },
+      gatewayIdentity,
+    });
+  } finally {
+    resetIdentityVerificationsForTests();
+  }
 });
 
 test('SLACK_TAG_TURN_EXECUTOR=alarm keeps new turns on the alarm and hands nothing to runners', async () => {
@@ -828,6 +865,8 @@ test('an OAuth continuation already handed to a thread runner is admitted there 
     slackTurnExecutor: (env: Record<string, unknown>) => slackTurnExecutor(env, {}),
     slackAgentThreadKey: () => 'T1:C1:1.0:owner-i1',
     installationOwnershipOf,
+    effectiveTurnSlackInstallationId: () => 'workspace',
+    carriedGatewayIdentity: () => undefined,
     threadRunnerStub: (_env: unknown, threadKey: string) => ({
       async admit(job: { id: string }) {
         admissions.push({ id: job.id, threadKey });
@@ -849,6 +888,7 @@ test('an OAuth continuation already handed to a thread runner is admitted there 
         confirmRunner: (id: string) => confirmed.push(id),
       },
       presentations: { get: () => undefined },
+      config: { getWorkspaceInstallation: () => undefined },
     };
     probe.stores = stores;
     probe.env = {};
@@ -891,6 +931,8 @@ function admissionHarness(runner: { refuse?: boolean } = {}) {
     slackTurnExecutor: (env: Record<string, unknown>) => slackTurnExecutor(env, {}),
     slackAgentThreadKey,
     installationOwnershipOf,
+    effectiveTurnSlackInstallationId: () => 'workspace',
+    carriedGatewayIdentity: () => undefined,
     threadRunnerStub: (_env: unknown, threadKey: string) => ({
       async admit(job: { id: string }) {
         admissions.push({ id: job.id, threadKey });
@@ -905,6 +947,7 @@ function admissionHarness(runner: { refuse?: boolean } = {}) {
   probe.stores = {
     turnJobs: turns,
     presentations: { get: () => undefined },
+    config: { getWorkspaceInstallation: () => undefined },
     slack: {
       admitCanonical: (input: { turnJob: TurnJob }, _work: unknown, turnJobs: TurnJobStoreLogic) => {
         turnJobs.enqueue(input.turnJob);
@@ -1499,4 +1542,99 @@ test('a late fold over the state RPC takes follow-ups only for a head its thread
       db.close();
     }
   }
+});
+
+/** The production inbox drain, with its collaborators injected. */
+function inboxDrainProbe(context: Record<string, unknown>) {
+  const declarations = source.statements.filter((node) =>
+    (ts.isFunctionDeclaration(node) && ['drainGatewayInbox', 'gatewayConversationKey'].includes(node.name?.text ?? '')) ||
+    (ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) =>
+      declaration.name.getText(source) === 'GATEWAY_INBOX_CONVERSATION_CONCURRENCY')));
+  assert.equal(declarations.length, 3);
+  const code = ts.transpileModule(`${declarations.map((node) => node.getText(source)).join('\n')}\ndrainGatewayInbox`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  return vm.runInNewContext(code, {
+    Promise, Map, Array, Math,
+    GATEWAY_INBOX_MAX_DRAIN_BATCH: 8,
+    localGatewayAppStores: () => ({ settings: {}, config: {} }),
+    localGatewayDeploymentClient: () => ({}),
+    createPlatformProductTelemetry: () => ({}),
+    localTurnEnqueue: () => undefined,
+    gatewayDeliveryRetryDelayMs: () => 0,
+    gatewayDeliveryFailureReason: () => 'failed',
+    recordGatewayDeliveryDeadLetter() {},
+    ...context,
+  }) as (stores: unknown, env: unknown, onAdmitted?: () => void) => Promise<boolean>;
+}
+
+// Defects caught: a runner-mode drain that never verifies the identity (every
+// hand-off goes without it), one that makes the admission wait for it, one
+// that returns with the verification still running (it would belong to no
+// invocation), and a verification failure that fails a delivery.
+test('a runner-mode inbox drain verifies the bot identity beside the admissions and waits for it', async () => {
+  for (const verificationFails of [false, true]) {
+    const events: string[] = [];
+    let releaseVerification!: () => void;
+    const verification = new Promise<void>((resolve) => { releaseVerification = resolve; });
+    const completed: string[] = [];
+    const drain = inboxDrainProbe({
+      processGatewaySlackEnvelope: async (envelope: { eventId: string }) => {
+        events.push(`admitted:${envelope.eventId}`);
+        return 'accepted';
+      },
+      resolveSlackInstallationExecutionContext: async (workspaceId: string) => {
+        events.push(`verify:${workspaceId}`);
+        await verification;
+        events.push('verified');
+        if (verificationFails) throw new Error('gateway_rate_limited');
+        return {};
+      },
+    });
+    const stores = {
+      config: { getWorkspaceInstallation: () => undefined },
+      turnJobs: { noteReceipt: () => () => undefined },
+      gatewayInbox: {
+        claimPending: () => [{
+          id: 'inbox_1', attempts: 0, acceptedAt: 1,
+          delivery: {
+            kind: 'event.deliver',
+            envelope: { eventId: 'Ev1', workspaceId: 'T_INBOX', event: { channel: 'C1', ts: '1.1' } },
+          },
+        }],
+        complete: (id: string) => { completed.push(id); },
+        hasPending: () => false,
+      },
+    };
+    const drained = drain(stores, {}, () => events.push('handed_off'));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(events, ['verify:T_INBOX', 'admitted:Ev1', 'handed_off'],
+      'the admission and its hand-off do not wait for the verification');
+    let returned = false;
+    void drained.then(() => { returned = true; });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(returned, false, 'the drain waits for the verification it started');
+    releaseVerification();
+    assert.equal(await drained, false);
+    assert.deepEqual(completed, ['inbox_1'], 'a failed verification fails no delivery');
+  }
+
+  // The alarm executor resolves the identity itself, as before: nothing is verified here.
+  let verified = 0;
+  const alarmDrain = inboxDrainProbe({
+    processGatewaySlackEnvelope: async () => 'accepted',
+    resolveSlackInstallationExecutionContext: async () => { verified += 1; return {}; },
+  });
+  await alarmDrain({
+    turnJobs: { noteReceipt: () => () => undefined },
+    gatewayInbox: {
+      claimPending: () => [{
+        id: 'inbox_2', attempts: 0, acceptedAt: 1,
+        delivery: { kind: 'event.deliver', envelope: { eventId: 'Ev2', workspaceId: 'T_INBOX', event: {} } },
+      }],
+      complete() {},
+      hasPending: () => false,
+    },
+  }, {});
+  assert.equal(verified, 0);
 });
