@@ -1,5 +1,5 @@
 import type { ConnectionAccount, ConnectionAccountOwnerKind } from '../config/types.ts';
-import type { ManagedConnectorDefinition } from './catalog/index.ts';
+import type { ManagedConnectorHeader } from './catalog/index.ts';
 
 /*
  * Notion keeps one page list per person for Composio's Notion app, so one
@@ -9,7 +9,7 @@ import type { ManagedConnectorDefinition } from './catalog/index.ts';
  */
 
 interface SignInLane {
-  connector: ManagedConnectorDefinition;
+  connector: ManagedConnectorHeader;
   adapterId: string;
   /** The owner kind of the connection being signed in. */
   ownerKind: ConnectionAccountOwnerKind;
@@ -64,7 +64,7 @@ export class ManagedSignInOtherKindError extends Error {
 }
 
 export function signInOtherKindNotice(
-  connector: ManagedConnectorDefinition,
+  connector: ManagedConnectorHeader,
   otherKind: ConnectionAccountOwnerKind,
 ): string {
   const { label } = connector;
@@ -75,7 +75,7 @@ export function signInOtherKindNotice(
 }
 
 export function signInMixRefusal(
-  connector: ManagedConnectorDefinition,
+  connector: ManagedConnectorHeader,
   otherKind: ConnectionAccountOwnerKind,
   mix: {
     /** Whether the provider named the same person on both sign-ins, or the signer alone matched. */

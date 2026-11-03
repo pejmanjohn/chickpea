@@ -24,6 +24,7 @@ export type RuntimeLatencyEvent =
   | 'thread_runner_alarm'
   | 'thread_runner_superseded'
   | 'runner_boot'
+  | 'agent_boot'
   | 'slack_read'
   | 'interaction_judgment';
 
@@ -69,6 +70,7 @@ const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
   turnRef: OPAQUE_REF,
   versionId: VERSION_ID,
   supersededBy: VERSION_ID,
+  agentClass: TOKEN,
 };
 
 export function emitRuntimeLatency(
@@ -224,55 +226,66 @@ export function emitThreadRunnerSuperseded(
 }
 
 // ---------------------------------------------------------------------------
-// runner_boot: one record per in-memory activation of a SlackThreadRunner.
+// runner_boot and agent_boot: one record per in-memory activation of a
+// SlackThreadRunner, or of a Flue agent's Durable Object.
 
 /** What a runner activation served first: an RPC, its alarm, or a host function. */
 export type RunnerBootMethod = keyof SlackThreadRunnerRpc | 'alarm' | 'host';
 
-/** Runner activations this isolate has constructed. */
-let runnerActivations = 0;
+/**
+ * What an agent activation served first: a staged turn input, a request (a
+ * Flue dispatch or observation), its alarm, or a host function. Naming the
+ * object (`setName`) precedes the first of these and is not one.
+ */
+export type AgentBootMethod = 'stage' | 'fetch' | 'alarm' | 'host';
+
+/** Activations this isolate has constructed, by kind. */
+const activations = { runner_boot: 0, agent_boot: 0 };
 
 /**
- * The marks of one SlackThreadRunner activation (an instance constructed in
- * memory), logged once as `runner_boot` when it serves its first call.
- * Workers clocks read 0 while a script evaluates and advance only on I/O, so
- * placement, isolate start and script evaluation all fall in
- * `sentToConstructMs`, and a span without I/O reads 0.
+ * The marks of one object activation (an instance constructed in memory),
+ * logged once when it serves its first call. Workers clocks read 0 while a
+ * script evaluates and advance only on I/O, so placement, isolate start and
+ * script evaluation all fall in `sentToConstructMs`, and a span without I/O
+ * reads 0.
  */
-export class RunnerBootMarks {
-  /** The first runner this isolate constructed. */
+class ObjectBootMarks<Method extends string> {
+  /** The first object of its kind this isolate constructed. */
   private readonly cold: boolean;
   private readonly constructStartedAt: number;
   private constructedAt: number | undefined;
   private served = false;
 
   constructor(
-    private readonly now: () => number = Date.now,
-    private readonly sink?: RuntimeLatencySink,
+    private readonly event: keyof typeof activations,
+    private readonly fields: { agentClass?: string },
+    private readonly now: () => number,
+    private readonly sink: RuntimeLatencySink | undefined,
   ) {
-    runnerActivations += 1;
-    this.cold = runnerActivations === 1;
+    activations[event] += 1;
+    this.cold = activations[event] === 1;
     this.constructStartedAt = now();
   }
 
-  /** The constructor's `blockConcurrencyWhile` finished. */
+  /** The constructor finished. */
   constructed(): void {
     this.constructedAt ??= this.now();
   }
 
   /**
    * The activation serves a call; only the first is logged. `sentAt` is the
-   * caller's clock when it sent a hand-off.
+   * caller's clock when it sent the call.
    */
   call(
-    method: RunnerBootMethod,
+    method: Method,
     from: { sentAt?: number | undefined; turnJobId?: string | undefined } = {},
   ): void {
     if (this.served) return;
     this.served = true;
     const at = this.now();
     const constructedAt = this.constructedAt ?? at;
-    emitRuntimeLatency('runner_boot', {
+    emitRuntimeLatency(this.event, {
+      ...this.fields,
       firstMethod: method,
       cold: this.cold,
       turnRef: opaqueTurnRef(from.turnJobId),
@@ -283,9 +296,29 @@ export class RunnerBootMarks {
   }
 }
 
-/** Focused tests only: the next activation is this isolate's first. */
+/** A SlackThreadRunner activation's marks, logged as `runner_boot`; `constructed` follows its `blockConcurrencyWhile`. */
+export class RunnerBootMarks extends ObjectBootMarks<RunnerBootMethod> {
+  constructor(now: () => number = Date.now, sink?: RuntimeLatencySink) {
+    super('runner_boot', {}, now, sink);
+  }
+}
+
+/**
+ * A Flue agent object's activation marks, logged as `agent_boot`. A staged
+ * turn input carries the runner's clock from before it named the object, so
+ * `sentToConstructMs` covers activating it, and `constructToFirstCallMs`
+ * includes the start (`onStart`) that naming it ran.
+ */
+export class AgentBootMarks extends ObjectBootMarks<AgentBootMethod> {
+  constructor(agentClass: string, now: () => number = Date.now, sink?: RuntimeLatencySink) {
+    super('agent_boot', { agentClass }, now, sink);
+  }
+}
+
+/** Focused tests only: the next activation of each kind is this isolate's first. */
 export function resetRunnerActivationsForTest(): void {
-  runnerActivations = 0;
+  activations.runner_boot = 0;
+  activations.agent_boot = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -322,6 +355,7 @@ export class TurnLatencyTracker {
   private foldedInformed = 0;
   private read = 0;
   private midRunReplies = 0;
+  private agentStageMs: number | undefined;
   private emitted = false;
 
   constructor(
@@ -356,6 +390,11 @@ export class TurnLatencyTracker {
   /** The Agent posted a reply mid-run (KTD14). */
   markMidRunReply(): void {
     this.midRunReplies += 1;
+  }
+
+  /** Staging the turn's input beside its Agent took this long; only the first staging is kept. */
+  markAgentStage(ms: number): void {
+    this.agentStageMs ??= ms;
   }
 
   /** The terminal was delivered, or handed to a durable outbox. */
@@ -394,6 +433,7 @@ export class TurnLatencyTracker {
       receiptToAdmissionMs: sinceReceipt(admittedAt),
       receiptToFirstWriteMs: sinceReceipt(this.firstWrite?.at),
       handoffMs: this.context.handoffMs,
+      agentStageMs: this.agentStageMs,
       attemptMs: end - this.startedAt,
       folded: this.folded > 0 ? this.folded : undefined,
       foldedInformed: this.foldedInformed > 0 ? this.foldedInformed : undefined,

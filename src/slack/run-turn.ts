@@ -449,6 +449,8 @@ export interface RunTurnOptions {
   onRead?: () => void;
   /** Set by `runTurn` itself when `turnLatency` is present: the Agent posted a reply mid-run. */
   onMidRunReply?: () => void;
+  /** Set by `runTurn` itself when `turnLatency` is present: how long staging the turn's input took. */
+  onAgentStaged?: (ms: number) => void;
 }
 
 /** How a stopped turn ends (see RunTurnOptions.stopEnding). */
@@ -545,6 +547,7 @@ export async function runTurn(
       onFollowUpsInformed: (count) => tracker.markFoldedInformed(count),
       onRead: () => tracker.markRead(),
       onMidRunReply: () => tracker.markMidRunReply(),
+      onAgentStaged: (ms) => tracker.markAgentStage(ms),
       onDelivered: async (outcome) => {
         tracker.markFinal('delivered');
         if (outcome === 'stopped') stopped = true;
@@ -2140,6 +2143,7 @@ async function runTurnAttempt(
             ...(options.onObservationStarted
               ? { onObservationStarted: options.onObservationStarted }
               : {}),
+            ...(options.onAgentStaged ? { onAgentStaged: options.onAgentStaged } : {}),
             ...(options.codingTaskStarted ? { codingTaskStarted: true } : {}),
             ...(reviewSession
               ? { onConversationChunk: (chunk, submissionId) => reviewSession.ingest(chunk, submissionId) }

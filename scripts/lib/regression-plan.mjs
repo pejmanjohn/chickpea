@@ -51,7 +51,7 @@ const rules = [
 // so they run together as one group. The Node proofs share one Node build
 // instead of each rebuilding dist/. The clean export stays last and alone.
 const SERIAL_STEPS = new Set([
-  'verify:hygiene', 'build', 'test', 'typecheck', 'verify:cf-smoke:alarm', 'verify:oss-export',
+  'verify:hygiene', 'build', 'verify:worker-closure', 'test', 'typecheck', 'verify:cf-smoke:alarm', 'verify:oss-export',
 ]);
 const NODE_BUILD_SCRIPTS = new Set(['verify:node-scheduler-capability', 'verify:providers', 'verify:durability', 'verify:node-scheduler-offline']);
 function groupProofs(steps) {
@@ -119,6 +119,8 @@ export function createRegressionPlan({ mode = 'changed', areas = [], files = [],
     // The full suite typechecks beside its tests instead.
     if (!fullTests) npm('typecheck');
     npm('build');
+    // Reads the build the previous step left in dist-cf; later steps rebuild it.
+    npm('verify:worker-closure');
     if (fullTests) npm('test');
     else steps.push({ kind: 'tests', files: requestedTests });
   }

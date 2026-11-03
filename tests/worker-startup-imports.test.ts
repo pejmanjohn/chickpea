@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -20,8 +20,17 @@ const LAZY_MODULES: Record<string, string> = {
   'src/agents/shared-prefix.ts': "the Anthropic platform-funded payload hook (config/model-access.ts)",
   'src/agents/shared-prefix-tools.json': "the Anthropic platform-funded payload hook (config/model-access.ts)",
   '@composio/core': 'the Composio client (config/composio-settings.ts)',
+  'src/connections/catalog/manifests':
+    "a connector's detail (connections/catalog/index.ts): turn staging, an Agent object's start, the Composio provider, Admin",
   'image-in-browser': 'image output preparation (images/prepare-output.ts)',
 };
+
+/**
+ * Source bytes of the repository modules Worker startup loads, comments and
+ * types included. Lower it when a change moves modules behind import();
+ * scripts/worker-closure.mjs holds the built artifact to its own ceiling.
+ */
+const STARTUP_SOURCE_BUDGET_BYTES = Math.round(10.5 * 2 ** 20);
 
 type Edge = { to: string; local: boolean; dynamic: boolean };
 
@@ -121,4 +130,13 @@ test('the lazily loaded modules stay out of what the Worker loads at startup', (
       `${module} loads at Worker startup through ${loaded?.[1].join(' -> ')}. ` +
       `Import it with import() where it is used: ${firstLoad}.`);
   }
+});
+
+test('the repository modules Worker startup loads stay within their budget', () => {
+  const startup = [...reachable(workerEntries(), false).keys()].filter((node) => node.startsWith('src/'));
+  const bytes = startup.reduce((sum, file) => sum + statSync(join(ROOT, file)).size, 0);
+  assert.ok(bytes <= STARTUP_SOURCE_BUDGET_BYTES,
+    `Worker startup loads ${startup.length} repository modules, ${bytes} bytes, over the ` +
+    `${STARTUP_SOURCE_BUDGET_BYTES}-byte budget. Load new code with import() where it is used, ` +
+    'or raise STARTUP_SOURCE_BUDGET_BYTES deliberately.');
 });

@@ -27,9 +27,14 @@ import {
   slackThreadCloudflareExtension,
   slackTurnSubmissionId,
   stageSlackTurnInputOnAgentObject,
+  stagedConnectionToolkits,
+  type TurnInputSql,
   useAgentObjectStorageForTests,
   writeStagedTurnInput,
 } from '../src/agents/turn-input.ts';
+import { requireConnectorDetails } from '../src/connections/catalog/index.ts';
+import type { EffectiveConnectionAccount } from '../src/connections/types.ts';
+import { CapabilityNotLoadedError } from '../src/runtime/on-demand.ts';
 import type { CustomAgentConfig, ResolvedAssignment } from '../src/config/types.ts';
 import { slackContextSinceWatermark, threadContinuityNote } from '../src/slack/thread-continuity.ts';
 import type { SlackTurnContext } from '../src/slack/thread-context.ts';
@@ -353,7 +358,11 @@ test('the real ChickpeaSlack render runs the staged turn plan, not its creation 
   assert.equal(CURRENT_SLACK_TURN_STATE_NAME, 'chickpeaSlackTurn');
 });
 
-test('the Cloudflare extension is branded as Flue expects and stages into the object storage', async () => {
+test('the Cloudflare extension is branded as Flue expects and stages into the object storage', async (t) => {
+  const boots: Record<string, unknown>[] = [];
+  t.mock.method(console, 'info', (record: Record<string, unknown>) => {
+    if (record?.event === 'agent_boot') boots.push(record);
+  });
   assert.equal(FLUE_CLOUDFLARE_EXTENSION_BRAND, Symbol.for('@flue/runtime/cloudflare-extension'));
   // The installed Flue must still recognize extensions by this registry key.
   const dist = fileURLToPath(new URL('../node_modules/@flue/runtime/dist/', import.meta.url));
@@ -368,25 +377,100 @@ test('the Cloudflare extension is branded as Flue expects and stages into the ob
     ctx: { id: { name?: string } },
     env: unknown,
   ) => {
-    chickpeaStageTurnInput(json: string): void;
+    chickpeaStageTurnInput(json: string, sentAt?: number): Promise<void>;
   };
   const current = plan();
   const instanceId = deriveRuntimePlanInstanceId(current);
   const input = createSlackTurnInput({ turnJobId: 'turn_do', instanceId, runtimePlan: current });
-  new Extended({ id: { name: instanceId } }, {}).chickpeaStageTurnInput(serializeSlackTurnInput(input));
+  const sentAt = Date.now() - 1_000;
+  const object = new Extended({ id: { name: instanceId } }, {});
+  await object.chickpeaStageTurnInput(serializeSlackTurnInput(input), sentAt);
+  await object.chickpeaStageTurnInput(serializeSlackTurnInput(input), sentAt);
   assert.equal(parseSlackTurnInput(readStagedTurnInputJson(sql, 'turn_do')).instanceId, instanceId);
+  assert.equal(boots.length, 1, 'the activation logs agent_boot at its first staging only');
+  assert.equal(boots[0]?.firstMethod, 'stage');
+  assert.equal(boots[0]?.agentClass, 'ChickpeaSlackThreadObject', 'the most derived class, which Flue names per agent');
+  assert.ok(Number(boots[0]?.sentToConstructMs) >= 1_000);
 
   const calls: string[] = [];
   const binding = {
     idFromName: (name: string) => `id:${name}`,
     get: (id: string) => ({
       async setName(name: string) { calls.push(`setName:${id}:${name}`); },
-      async chickpeaStageTurnInput(json: string) { calls.push(`stage:${parseSlackTurnInput(json).turnJobId}`); },
+      async chickpeaStageTurnInput(json: string, sent: number) {
+        calls.push(`stage:${parseSlackTurnInput(json).turnJobId}:${typeof sent}`);
+      },
     }),
   };
   await stageSlackTurnInputOnAgentObject({ FLUE_AGENT: binding }, 'FLUE_AGENT', input);
-  assert.deepEqual(calls, ['stage:turn_do'], 'the object is addressed by name; staging is the one call');
+  assert.deepEqual(calls, ['stage:turn_do:number'], 'the object is addressed by name; staging is the one call');
   await assert.rejects(stageSlackTurnInputOnAgentObject({}, 'FLUE_AGENT', input), /unavailable/);
+});
+
+type AgentObject = new (ctx: { id: { name?: string } }, env: unknown) => {
+  chickpeaStageTurnInput(json: string, sentAt?: number): Promise<void>;
+  onStart(props?: unknown): Promise<unknown>;
+  started: number;
+};
+
+function agentObject(sql: TurnInputSql): AgentObject {
+  class Base {
+    ctx = { storage: { sql } };
+    started = 0;
+    onStart() { this.started += 1; }
+  }
+  return slackThreadCloudflareExtension.base(Base as never) as unknown as AgentObject;
+}
+
+test('staging a turn loads the connector details its render reads', async () => {
+  const policy = {
+    kind: 'managed' as const, adapterId: 'composio', toolkit: 'pagerduty',
+    principalRef: 'principal_stage', accountRef: 'account_stage',
+    allowedCapabilities: ['pagerduty.fetch_incident_list'],
+  };
+  const connection: EffectiveConnectionAccount = {
+    account: {
+      id: 'pagerduty-account', workspaceId: 'T_CONT', revision: 1, ownerKind: 'team',
+      createdByMembershipId: 'membership_alice', providerId: 'pagerduty', label: 'On call', policy,
+      secretRefId: 'secret_stage', lifecycle: 'ready', createdAt: 1, updatedAt: 1,
+    },
+    binding: {
+      agentId: AGENT.id, connectionAccountId: 'pagerduty-account', providerId: 'pagerduty',
+      allowedCapabilities: policy.allowedCapabilities, enabled: true, createdAt: 1, updatedAt: 1,
+    },
+    policy,
+    scope: 'team',
+  };
+  const current = compileRuntimePlanV2({
+    turn: turn(), assignment: assignment(), instructions: AGENT.instructions, memoryEpoch: 1,
+    effectiveConnections: [connection],
+  });
+  assert.deepEqual(current.managedConnections?.map(({ toolkit }) => toolkit), ['pagerduty']);
+  assert.throws(() => requireConnectorDetails(['pagerduty']), CapabilityNotLoadedError);
+  const input = createSlackTurnInput({
+    turnJobId: 'turn_stage_details', instanceId: deriveRuntimePlanInstanceId(current), runtimePlan: current,
+  });
+  const Agent = agentObject(sqlStorage());
+  await new Agent({ id: { name: input.instanceId } }, {}).chickpeaStageTurnInput(serializeSlackTurnInput(input));
+  assert.equal(requireConnectorDetails(['pagerduty']).get('pagerduty')?.manifest?.toolkit, 'pagerduty');
+});
+
+test('an Agent object loads its staged turns\' connector details when it starts', async () => {
+  const sql = sqlStorage();
+  assert.deepEqual(stagedConnectionToolkits(sql), []);
+  const stage = (turnJobId: string, runtimePlan: unknown) => sql.exec(
+    'INSERT INTO chickpea_turn_inputs (turn_job_id, input_json, staged_at) VALUES (?, ?, ?)',
+    turnJobId, JSON.stringify({ turnJobId, runtimePlan }), 1,
+  );
+  stage('turn_zoom', { managedConnections: [{ toolkit: 'zoom' }, { toolkit: 'zoom' }] });
+  stage('turn_without_connections', {});
+  assert.deepEqual(stagedConnectionToolkits(sql), ['zoom']);
+  assert.throws(() => requireConnectorDetails(['zoom']), CapabilityNotLoadedError);
+  const Agent = agentObject(sql);
+  const object = new Agent({ id: { name: 'thread_instance' } }, {});
+  await object.onStart();
+  assert.equal(object.started, 1, "the Agents SDK's own start still runs");
+  assert.equal(requireConnectorDetails(['zoom']).get('zoom')?.manifest?.toolkit, 'zoom');
 });
 
 test('a continuing turn sends only rows after the watermark, edits since, and never its own replies', () => {

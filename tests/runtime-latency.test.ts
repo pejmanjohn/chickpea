@@ -16,6 +16,7 @@ import {
   opaqueRunRef,
   opaqueTurnRef,
   recordStateRpc,
+  AgentBootMarks,
   resetRunnerActivationsForTest,
   resetStateRpcCountersForTest,
   RunnerBootMarks,
@@ -293,6 +294,40 @@ test('runner_boot logs an activation once, at its first call, and only the first
   assert.equal(records.length, 2);
 });
 
+test('agent_boot logs an agent activation once, names its class, and counts cold apart from runners', () => {
+  resetRunnerActivationsForTest();
+  const time = clock(70_000);
+  const { records, sink } = captureSink();
+  new RunnerBootMarks(time.now, sink).call('alarm');
+  const agent = new AgentBootMarks('ChickpeaSlackV2', time.now, sink);
+  agent.constructed();
+  time.advance(40);
+  agent.call('stage', { sentAt: 68_800, turnJobId: 'evt:T_LATENCY:1785509000.000100' });
+  agent.call('fetch');
+  const routine = new AgentBootMarks('ChickpeaRoutineExecutionV2', time.now, sink);
+  routine.call('alarm');
+  assert.deepEqual(records.slice(1), [{
+    component: 'runtime',
+    event: 'agent_boot',
+    agentClass: 'ChickpeaSlackV2',
+    firstMethod: 'stage',
+    cold: true,
+    turnRef: opaqueTurnRef('evt:T_LATENCY:1785509000.000100'),
+    sentToConstructMs: 1_200,
+    constructMs: 0,
+    constructToFirstCallMs: 40,
+  }, {
+    component: 'runtime',
+    event: 'agent_boot',
+    agentClass: 'ChickpeaRoutineExecutionV2',
+    firstMethod: 'alarm',
+    cold: false,
+    constructMs: 0,
+    constructToFirstCallMs: 0,
+  }], 'the runner before it does not make the first agent warm, and a later call logs nothing');
+  assertContentFree(records[1]!);
+});
+
 // Execute the production alarm entry point, not a copy: it must emit one
 // record whether the drain returns or throws, and never swallow the throw.
 const cloudflareSource = ts.createSourceFile(
@@ -442,6 +477,19 @@ test("turn_latency logs a runner turn's hand-off delay from its context", () => 
     sink,
   ).emit('returned');
   assert.equal(records[0]?.handoffMs, 1_900);
+});
+
+test('turn_latency logs how long staging the turn input took, from its first staging', () => {
+  const { records, sink } = captureSink();
+  const tracker = new TurnLatencyTracker(
+    { admittedAt: 9_000, lane: 'cloudflare', executor: 'runner' }, {}, clock(10_000).now, sink,
+  );
+  tracker.markAgentStage(240);
+  tracker.markAgentStage(15);
+  tracker.emit('returned');
+  assert.equal(records[0]?.agentStageMs, 240);
+  new TurnLatencyTracker({ lane: 'node', executor: 'node' }, {}, clock(0).now, sink).emit('returned');
+  assert.equal('agentStageMs' in records[1]!, false, 'a turn that staged nothing omits the field');
 });
 
 test('turn_latency omits durations it cannot measure and never throws', () => {

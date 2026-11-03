@@ -14,7 +14,12 @@ import {
   parseRuntimePlanV2,
   runtimePlanInstanceIdMatches,
 } from '../src/agents/runtime-plan.ts';
-import { installationAgentObject } from '../src/agents/cloudflare-extension.ts';
+import {
+  installationAgentObject,
+  routineExecutionCloudflareExtension,
+} from '../src/agents/cloudflare-extension.ts';
+import { MANAGED_CONNECTOR_CATALOG, requireConnectorDetails } from '../src/connections/catalog/index.ts';
+import { CapabilityNotLoadedError } from '../src/runtime/on-demand.ts';
 import { saveOpenAiAuthMethod } from '../src/config/openai-auth.ts';
 import { createSlackTurnInput, parseSlackTurnInput } from '../src/agents/turn-input.ts';
 import { CfIdentityStore, CfSettingsStore, FreshTagStateStubs } from '../src/config/cf-state-proxies.ts';
@@ -395,15 +400,33 @@ test('the state store, thread runners and Flue agents serve the installation the
   assert.match(source('slack/thread-runner.ts'), /super\(ctx, objectInstallationEnv\(ctx, env\)\)/);
   assert.match(source('agents/turn-input.ts'), /extends \(\s*installationAgentObject\(Base\)/);
   assert.match(source('agents/coding-worker-staging.ts'), /extends \(\s*installationAgentObject\(Base\)/);
-  for (const agent of ['routine-execution.ts', 'routine-intent.ts']) {
-    assert.match(source(`agents/${agent}`), /export const cloudflare = installationAgentExtension;/);
-  }
+  assert.match(source('agents/routine-intent.ts'), /export const cloudflare = installationAgentExtension;/);
+  assert.match(source('agents/routine-execution.ts'), /export const cloudflare = routineExecutionCloudflareExtension;/);
+  assert.match(source('agents/cloudflare-extension.ts'),
+    /routineExecutionCloudflareExtension = \{[\s\S]*?installationAgentObject\(Base\)/);
   assert.match(source('agents/slack-thread.ts'), /export const cloudflare = slackThreadCloudflareExtension;/);
   assert.match(source('agents/coding-worker.ts'), /export const cloudflare = codingWorkerCloudflareExtension;/);
   assert.match(
     source('cloudflare.ts'),
     /class Sandbox extends CloudflareSandbox[\s\S]*?super\(ctx, sandboxObjectEnv\(ctx as unknown as SandboxObjectContext, env\)\)/,
   );
+});
+
+test('a routine run object loads every connector detail when it starts, since no staging precedes its render', async () => {
+  class FakeAgentBase {
+    started = 0;
+    constructor(_ctx: unknown, _env: unknown) {}
+    onStart() { this.started += 1; }
+  }
+  const Routine = routineExecutionCloudflareExtension.base(FakeAgentBase as never) as unknown as new (
+    ctx: { id: { name?: string } }, env: unknown,
+  ) => { onStart(): Promise<unknown>; started: number };
+  const toolkits = MANAGED_CONNECTOR_CATALOG.list().map(({ toolkit }) => toolkit);
+  assert.throws(() => requireConnectorDetails(toolkits), CapabilityNotLoadedError);
+  const routine = new Routine({ id: { name: 'routine_run' } }, {});
+  await routine.onStart();
+  assert.equal(routine.started, 1);
+  assert.equal(requireConnectorDetails(toolkits).size, toolkits.length);
 });
 
 test('a Flue agent object hands its base the env of the installation its instance ID names', () => {

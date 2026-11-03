@@ -49,6 +49,7 @@ import {
 import { CREDITS_EXHAUSTED_CODE } from '../config/platform-funding.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
+import { preloadManagedConnectionDetails } from '../connections/catalog/index.ts';
 import {
   CODING_WORKSPACE_USE_DATA_NAME,
   codingWorkspaceOpenedFromReplyData,
@@ -261,6 +262,11 @@ interface PromptSlackAgentInput {
   memoryBlock?: string;
   /** Focused seam; production stages in the agent object or the host process. */
   stageTurnInput?: (input: SlackTurnInputV1) => Promise<void>;
+  /**
+   * The milliseconds staging this turn's input took. On Cloudflare that is
+   * naming the thread's agent object and its staging call, which activate it.
+   */
+  onAgentStaged?: (ms: number) => void;
   /** Images already in this Slack conversation, collected by the host fetch. */
   threadImages?: readonly ThreadImageRecord[];
   threadFileIds?: readonly string[];
@@ -341,19 +347,25 @@ async function stageTurnInputForDispatch(
     observation,
     turnEnvelope,
   });
+  const now = input.now ?? Date.now;
+  const startedAt = now();
   try {
     if (input.stageTurnInput) {
       await input.stageTurnInput(turnInput);
     } else if (isCloudflareTarget()) {
+      // The agent object loads the connector details its render reads.
       await stageSlackTurnInputOnAgentObject(input.env, CHICKPEA_SLACK_AGENT_BINDING, turnInput);
     } else {
       rememberInProcessTurnInput(turnInput);
       await input.state.stageTurnInput?.(serializeSlackTurnInput(turnInput));
     }
+    // Node renders in this process.
+    if (!isCloudflareTarget()) await preloadManagedConnectionDetails(runtimePlan.managedConnections);
   } catch (error) {
     // Nothing was admitted: the turn retries like any failed dispatch.
     throw new AgentPromptFailure('agent', 503, false, true, error);
   }
+  input.onAgentStaged?.(now() - startedAt);
 }
 
 /** A Slack thread's coordinator instance, as a persisted dispatch envelope names it. */

@@ -192,5 +192,13 @@ move back into a server template. `npm run build` fails when the uncompressed
 Worker upload exceeds the budget in `scripts/verify-worker-size.mjs`; Cloudflare's
 platform-wide limit is 64 MiB uncompressed across all plans.
 
+Every Durable Object activation that starts an isolate loads the Worker's
+static closure (the chunks its entry imports without `import()`) before its
+constructor runs. `npm run verify:regression` fails when that closure exceeds
+the ceiling in `scripts/worker-closure.mjs`, and
+`tests/worker-startup-imports.test.ts` keeps the modules it lists off Worker
+startup. Load code the reply path does not need with `import()` where it is
+used, and lower the ceiling when a change shrinks the closure.
+
 Contributions are provided under the repository's [Apache-2.0 license](LICENSE).
 Be respectful in issues and reviews; criticize the work, not the person.

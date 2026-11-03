@@ -16,7 +16,12 @@ import type { IdentityStore } from '../identity/types.ts';
 import { freezeWorkspaceArtifact, workspaceArtifactPath } from '../sandbox/artifact-tool.ts';
 import type { UsageStore } from '../usage/types.ts';
 import { currentFlueObservationContext } from '../work/model-invocation.ts';
-import { MANAGED_CONNECTOR_CATALOG } from './catalog/index.ts';
+import type { Loaded } from '../runtime/on-demand.ts';
+import {
+  managedCapabilityDefinition,
+  requireConnectorDetails,
+  type ConnectorDetail,
+} from './catalog/index.ts';
 import {
   MANAGED_ARTIFACT_ARGUMENT,
   type ManagedConnectionArtifact,
@@ -85,6 +90,8 @@ export const MANAGED_CONNECTION_RESULT_INSTRUCTION =
 
 export function createManagedConnectionTools(input: {
   connections: readonly ManagedToolConnection[];
+  /** The connections' connector details, by toolkit (loadConnectorDetails). */
+  details: ReadonlyMap<string, Loaded<ConnectorDetail>>;
   /** Tool/skill names already claimed by the surrounding runtime. */
   reservedToolNames?: readonly string[];
 } & ManagedToolInput): ToolDefinition[] {
@@ -125,9 +132,11 @@ export function createManagedConnectionTools(input: {
     // A stable Chickpea tool cannot safely choose among several remote
     // accounts, even when those accounts currently expose disjoint tools.
     if (group.connectionIds.size !== 1) continue;
+    const connection = group.connection;
+    const detail = input.details.get(connection.toolkit.trim().toLowerCase());
+    if (!detail) continue;
     for (const capability of group.allowedCapabilities) {
-      const connection = group.connection;
-      const tool = createCapabilityTool(connection, capability, context);
+      const tool = createCapabilityTool(connection, capability, detail, context);
       if (!tool) continue;
       if (reservedToolNames.has(tool.name)) continue;
       nameCounts.set(tool.name, (nameCounts.get(tool.name) ?? 0) + 1);
@@ -184,6 +193,8 @@ export function useManagedConnectionTools(
   useInstruction(MANAGED_CONNECTION_RESULT_INSTRUCTION);
   return createManagedConnectionTools({
     connections: plan.managedConnections,
+    // Loaded before the render: by turn staging, or when the agent object or the Node process starts.
+    details: requireConnectorDetails(plan.managedConnections.map(({ toolkit }) => toolkit)),
     workspaceId: plan.conversation.workspaceId,
     agentId: plan.agentId,
     actorMembershipId: plan.actorMembershipId,
@@ -199,9 +210,10 @@ export function useManagedConnectionTools(
 function createCapabilityTool(
   connection: ManagedToolConnection,
   capability: string,
+  detail: Loaded<ConnectorDetail>,
   context: ManagedToolContext,
 ): ToolDefinition | undefined {
-  const definition = MANAGED_CONNECTOR_CATALOG.capability(capability);
+  const definition = managedCapabilityDefinition(detail, capability);
   if (!definition || definition.connectorToolkit !== connection.toolkit) return undefined;
   if (definition.artifact) {
     const artifact = definition.artifact;

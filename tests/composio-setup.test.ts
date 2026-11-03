@@ -11,7 +11,7 @@ import {
   type ComposioConfigurationDependencies,
 } from '../src/config/composio-settings.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
-import { MANAGED_CONNECTOR_CATALOG, composioManifest } from '../src/connections/catalog/index.ts';
+import { MANAGED_CONNECTOR_CATALOG, composioHeader } from '../src/connections/catalog/index.ts';
 import {
   ComposioProjectKeyValidationError,
   ComposioSetupInProgressError,
@@ -497,7 +497,7 @@ function compatible(
   id: string,
   createdAt = '2026-08-24T00:00:00.000Z',
 ): ComposioAuthConfigLike {
-  const apiKey = composioManifest(toolkit)?.auth.mode === 'api_key';
+  const apiKey = composioHeader(toolkit)?.auth.mode === 'api_key';
   return {
     id,
     name: `Chickpea default — ${toolkit} v1`,

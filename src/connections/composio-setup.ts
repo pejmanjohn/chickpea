@@ -16,7 +16,7 @@ import { deploymentTenancy } from '../config/installation-scope.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import {
   MANAGED_CONNECTOR_CATALOG,
-  composioManifest,
+  composioHeader,
   type ManagedAccessLane,
 } from './catalog/index.ts';
 import {
@@ -55,7 +55,7 @@ const AUTH_CONFIG_MODES = {
 } as const;
 
 function authConfigMode(toolkit: string): (typeof AUTH_CONFIG_MODES)[keyof typeof AUTH_CONFIG_MODES] {
-  return AUTH_CONFIG_MODES[composioManifest(toolkit)?.auth.mode ?? 'managed_oauth'];
+  return AUTH_CONFIG_MODES[composioHeader(toolkit)?.auth.mode ?? 'managed_oauth'];
 }
 
 interface SetupLease {

@@ -1,4 +1,6 @@
 import { objectInstallationEnv, type ObjectContext } from '../config/installation-scope.ts';
+import { AgentBootMarks, type AgentBootMethod } from '../observability/runtime-latency.ts';
+import { preloadAllConnectorDetails } from '../connections/catalog/index.ts';
 import {
   objectHostFunctions,
   type HostObjectStorage,
@@ -22,6 +24,24 @@ export const FLUE_CLOUDFLARE_EXTENSION_BRAND = Symbol.for('@flue/runtime/cloudfl
 
 type AgentObjectClass = new (...args: never[]) => object;
 
+/** The Durable Object entry points of Flue's agent base that an activation can serve first. */
+interface AgentObjectEntries {
+  fetch(request: Request): Promise<Response>;
+  alarm(...args: unknown[]): unknown;
+}
+
+/** Each agent object's `agent_boot` marks, kept off the instance Flue and the Agents SDK own. */
+const agentBoots = new WeakMap<object, AgentBootMarks>();
+
+/** Report the agent object's call to its activation's `agent_boot` marks. */
+export function reportAgentObjectCall(
+  agent: object,
+  method: AgentBootMethod,
+  from?: { sentAt?: number | undefined; turnJobId?: string | undefined },
+): void {
+  agentBoots.get(agent)?.call(method, from);
+}
+
 /** What the host functions read from the Durable Object an agent instance is. */
 interface AgentObjectState {
   readonly ctx: HostObjectRestoreContext & { readonly storage: HostObjectStorage };
@@ -39,26 +59,43 @@ interface AgentObjectState {
  * instance ID scopes.
  */
 export function installationAgentObject(Base: AgentObjectClass): AgentObjectClass {
-  const Agent = Base as new (ctx: ObjectContext, env: unknown) => object;
+  const Agent = Base as new (ctx: ObjectContext, env: unknown) => AgentObjectEntries;
   return class InstallationAgentObject extends Agent {
     constructor(ctx: ObjectContext, env: unknown) {
+      const boot = new AgentBootMarks(new.target.name);
       super(ctx, objectInstallationEnv(ctx, env));
+      agentBoots.set(this, boot);
+      boot.constructed();
+    }
+
+    fetch(request: Request): Promise<Response> {
+      reportAgentObjectCall(this, 'fetch');
+      return super.fetch(request);
+    }
+
+    alarm(...args: unknown[]): unknown {
+      reportAgentObjectCall(this, 'alarm');
+      return super.alarm(...args);
     }
 
     /** Host RPC: one page of this instance's storage (its transcript and Flue's own records). */
     async chickpeaHostExportPage(request: ObjectExportRequest) {
+      reportAgentObjectCall(this, 'host');
       return agentHost(this).chickpeaHostExportPage(request);
     }
 
     async chickpeaHostRestoreBookmarks(request: ObjectRestoreBookmarksRequest) {
+      reportAgentObjectCall(this, 'host');
       return agentHost(this).chickpeaHostRestoreBookmarks(request);
     }
 
     async chickpeaHostRestore(request: ObjectRestoreRequest) {
+      reportAgentObjectCall(this, 'host');
       return agentHost(this).chickpeaHostRestore(request);
     }
 
     async chickpeaHostRestoreRestart(request: ObjectRestoreRestartRequest) {
+      reportAgentObjectCall(this, 'host');
       return agentHost(this).chickpeaHostRestoreRestart(request);
     }
 
@@ -68,6 +105,7 @@ export function installationAgentObject(Base: AgentObjectClass): AgentObjectClas
      * constructs it again, and Flue re-creates its storage, empty.
      */
     async chickpeaHostErase(request: ObjectHostRequest) {
+      reportAgentObjectCall(this, 'host');
       return agentHost(this).chickpeaHostErase(request);
     }
 
@@ -77,6 +115,7 @@ export function installationAgentObject(Base: AgentObjectClass): AgentObjectClas
      * refused by the installation's admission check while it is suspended.
      */
     async chickpeaHostCancelPendingWork(request: ObjectHostRequest) {
+      reportAgentObjectCall(this, 'host');
       return agentHost(this).chickpeaHostCancelPendingWork(request);
     }
   };
@@ -90,5 +129,26 @@ function agentHost(agent: object): InstallationObjectHostRpc {
 /** The `cloudflare` export of an agent with no other object extension. */
 export const installationAgentExtension = {
   base: installationAgentObject,
+  [FLUE_CLOUDFLARE_EXTENSION_BRAND]: true as const,
+};
+
+/**
+ * The `cloudflare` export of a routine run. Its render reads its plan from
+ * creation data, which no staging precedes, so the object loads every
+ * connector's detail when it starts. A failure leaves the render to fail its
+ * run, as a failed start would.
+ */
+export const routineExecutionCloudflareExtension = {
+  base: (Base: AgentObjectClass): AgentObjectClass => {
+    const Installation = installationAgentObject(Base) as new (...args: never[]) => {
+      onStart?(props?: unknown): unknown;
+    };
+    return class ChickpeaRoutineExecutionObject extends Installation {
+      async onStart(props?: unknown): Promise<unknown> {
+        await preloadAllConnectorDetails().catch(() => undefined);
+        return super.onStart?.(props);
+      }
+    };
+  },
   [FLUE_CLOUDFLARE_EXTENSION_BRAND]: true as const,
 };

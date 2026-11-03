@@ -3,9 +3,9 @@ import { test } from 'node:test';
 import type { SessionEnv } from '@flue/runtime';
 
 import {
-  createManagedConnectionTools,
   MANAGED_CONNECTION_RESULT_INSTRUCTION,
 } from '../src/connections/managed-tools.ts';
+import { createLoadedManagedConnectionTools } from './helpers/managed-tools.ts';
 import { createManagedConnectionProviderRegistry } from '../src/connections/managed.ts';
 
 const context = {
@@ -15,8 +15,8 @@ const context = {
   resolvePlatformEnv: async () => undefined,
 };
 
-test('managed tools withhold a normalized adapter and toolkit group backed by several accounts', () => {
-  const tools = createManagedConnectionTools({
+test('managed tools withhold a normalized adapter and toolkit group backed by several accounts', async () => {
+  const tools = await createLoadedManagedConnectionTools({
     ...context,
     connections: [
       {
@@ -39,8 +39,8 @@ test('managed tools withhold a normalized adapter and toolkit group backed by se
   assert.deepEqual(tools, []);
 });
 
-test('managed tools retain merged capabilities for one account in a group', () => {
-  const tools = createManagedConnectionTools({
+test('managed tools retain merged capabilities for one account in a group', async () => {
+  const tools = await createLoadedManagedConnectionTools({
     ...context,
     connections: [
       {
@@ -66,8 +66,8 @@ test('managed tools retain merged capabilities for one account in a group', () =
   ]);
 });
 
-test('a zero-capability declaration cannot withhold a usable managed sibling', () => {
-  const tools = createManagedConnectionTools({
+test('a zero-capability declaration cannot withhold a usable managed sibling', async () => {
+  const tools = await createLoadedManagedConnectionTools({
     ...context,
     connections: [
       {
@@ -90,8 +90,8 @@ test('a zero-capability declaration cannot withhold a usable managed sibling', (
   assert.deepEqual(tools.map(({ name }) => name), ['gmail_search_messages']);
 });
 
-test('managed tools fail closed when a skill already owns the stable tool name', () => {
-  const tools = createManagedConnectionTools({
+test('managed tools fail closed when a skill already owns the stable tool name', async () => {
+  const tools = await createLoadedManagedConnectionTools({
     ...context,
     connections: [{
       id: 'connection_gmail',
@@ -108,7 +108,7 @@ test('managed tools fail closed when a skill already owns the stable tool name',
 
 test('managed tools retry provider resolution after a transient failure', async () => {
   let resolutions = 0;
-  const tools = createManagedConnectionTools({
+  const tools = await createLoadedManagedConnectionTools({
     ...context,
     connections: [{
       id: 'connection_gmail',
@@ -145,7 +145,7 @@ test('managed tools retry provider resolution after a transient failure', async 
 
 test('managed tools memoize a successful provider resolution for the turn', async () => {
   let resolutions = 0;
-  const tools = createManagedConnectionTools({
+  const tools = await createLoadedManagedConnectionTools({
     ...context,
     connections: [{
       id: 'connection_gmail',
@@ -177,8 +177,8 @@ test('managed tools memoize a successful provider resolution for the turn', asyn
   assert.equal(resolutions, 1);
 });
 
-test('managed Google toolkits project only their curated Chickpea capability surface', () => {
-  const tools = createManagedConnectionTools({
+test('managed Google toolkits project only their curated Chickpea capability surface', async () => {
+  const tools = await createLoadedManagedConnectionTools({
     ...context,
     connections: [
       {
@@ -256,8 +256,8 @@ test('managed Google toolkits project only their curated Chickpea capability sur
   ]);
 });
 
-test('a read-only productivity binding never advertises write tools', () => {
-  const tools = createManagedConnectionTools({
+test('a read-only productivity binding never advertises write tools', async () => {
+  const tools = await createLoadedManagedConnectionTools({
     ...context,
     connections: [{
       id: 'connection_sheets_read',
@@ -282,8 +282,8 @@ test('a read-only productivity binding never advertises write tools', () => {
   assert.equal(tools.some(({ name }) => /create|update|append|upsert|add/.test(name)), false);
 });
 
-test('Gong projects a read-only surface and its runtime instruction treats transcripts as untrusted', () => {
-  const tools = createManagedConnectionTools({
+test('Gong projects a read-only surface and its runtime instruction treats transcripts as untrusted', async () => {
+  const tools = await createLoadedManagedConnectionTools({
     ...context,
     connections: [{
       id: 'connection_gong',
@@ -319,13 +319,13 @@ test('Gong projects a read-only surface and its runtime instruction treats trans
 });
 
 test('YouTube upload tools freeze a workspace artifact and reject mismatched content before dispatch', async () => {
-  const tool = createManagedConnectionTools({
+  const tool = (await createLoadedManagedConnectionTools({
     ...context,
     connections: [{
       id: 'connection_youtube', providerId: 'google', adapterId: 'composio',
       toolkit: 'youtube', allowedCapabilities: ['youtube.videos.upload'],
     }],
-  }).find(({ name }) => name === 'youtube_upload_video');
+  })).find(({ name }) => name === 'youtube_upload_video');
   assert.ok(tool);
   const run = tool.run as unknown as (input: {
     toolCallId: string;

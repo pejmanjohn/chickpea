@@ -6,8 +6,8 @@ import {
   SLACK_MENTION_BREAK,
 } from '../slack/message-format.ts';
 import type {
-  ManagedCapabilityDefinition,
-  ManagedConnectorDefinition,
+  ManagedCapabilityHeader,
+  ManagedConnectorHeader,
   ManagedEffectClass,
 } from '../connections/catalog/types.ts';
 
@@ -468,8 +468,8 @@ export function semanticDescriptorForCoreTool(toolName: string): SemanticActivit
 }
 
 export function managedConnectorSemanticDescriptor(
-  connector: ManagedConnectorDefinition,
-  capability: ManagedCapabilityDefinition,
+  connector: ManagedConnectorHeader,
+  capability: ManagedCapabilityHeader,
 ): SemanticActivityDescriptor {
   const parts = capability.id.split('.');
   const operationToken = parts.at(-1) ?? '';

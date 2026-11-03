@@ -1,5 +1,6 @@
 import type { ToolInputSchema } from '@flue/runtime';
 import type { ManagedCapabilitySemanticOverride } from '../../activity/semantic.ts';
+import type { ComposioManifest } from './composio-manifests.ts';
 export type ManagedAccessLane = 'read' | 'write';
 
 export type ManagedEffectClass =
@@ -69,6 +70,26 @@ export interface ManagedConnectorDefinition {
   pageScope?: { key: 'notionPages' };
   resources?: readonly ManagedResourceDefinition[];
   capabilities: readonly ManagedCapabilityDefinition[];
+}
+
+/**
+ * What the catalog lists for a capability before its connector's detail
+ * loads: everything but the tool's description and input schema.
+ */
+export type ManagedCapabilityHeader = Omit<ManagedCapabilityDefinition, 'description' | 'input'>;
+
+/** What the catalog lists for a connector before its detail loads. */
+export interface ManagedConnectorHeader extends Omit<ManagedConnectorDefinition, 'capabilities'> {
+  capabilities: readonly ManagedCapabilityHeader[];
+}
+
+/**
+ * A connector's whole definition, loaded on demand (see catalog/index.ts),
+ * and for a Composio toolkit the manifest it was compiled from.
+ */
+export interface ConnectorDetail {
+  connector: ManagedConnectorDefinition;
+  manifest?: ComposioManifest;
 }
 
 export type ManagedProviderAvailabilityStatus =
