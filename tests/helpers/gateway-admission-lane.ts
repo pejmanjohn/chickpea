@@ -60,7 +60,7 @@ const stateMethod = (name: string) => {
 };
 const ReceiptProbe = vm.runInNewContext(
   ts.transpileModule(
-    `class ReceiptProbe { ${['admitGatewayDelivery', 'wakeRunnerAtReceipt', 'runnerMode', 'admitToRunner', 'wakeAgentAtHandoff']
+    `class ReceiptProbe { ${['admitGatewayDelivery', 'wakeRunnerAtReceipt', 'sendRunnerWake', 'runnerMode', 'admitToRunner', 'wakeAgentAtHandoff']
       .map(stateMethod).join('\n')} }\nReceiptProbe`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
   ).outputText,
