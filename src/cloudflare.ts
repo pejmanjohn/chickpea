@@ -2517,7 +2517,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       settings: localSettingsStore(stores),
       config: localGatewayAppStores(stores).config,
     });
-    stores.management.cleanupRetention(Date.now(), 250);
+    const retentionStartedAt = Date.now();
+    stores.management.cleanupRetention(retentionStartedAt, 250);
+    const retentionMs = Date.now() - retentionStartedAt;
     // New turns go to their thread's SlackThreadRunner (the default executor)
     // and this alarm only finishes turns it already dispatched to Flue: rows
     // admitted before the runner became the default. The emergency gate
@@ -2595,24 +2597,41 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     if (pending.length === 0) {
       const cleanupPending = stores.turnJobs.hasPendingSlackInteractionCleanup();
       const resolveInstallation = this.createAlarmIdentityResolver(stores);
+      /** Runs one part of the idle drain and records how long it took. */
+      const timed = async <T>(
+        part: 'ledgerMs' | 'cleanupsMs' | 'repairsMs' | 'scheduleMs' | 'receiptsMs',
+        work: () => Promise<T>,
+      ): Promise<T> => {
+        const startedAt = Date.now();
+        try {
+          return await work();
+        } finally {
+          metrics[part] = Date.now() - startedAt;
+        }
+      };
+      metrics.retentionMs = retentionMs;
       const { ledgerDrain, presentationRepairs, scheduleActions } = await whileDispatching(async () => {
-        const ledgerDrain = await drainLedgerRuns(
+        const ledgerDrain = await timed('ledgerMs', () => drainLedgerRuns(
           stores,
           this.env as PlatformEnv,
           resolveInstallation,
           productTelemetry,
-        );
+        ));
         if (cleanupPending) {
-          await drainSlackInteractionCleanups(stores, resolveInstallation, carriedJobIds());
+          await timed('cleanupsMs', () => drainSlackInteractionCleanups(stores, resolveInstallation, carriedJobIds()));
+        } else {
+          metrics.cleanupsMs = 0;
         }
-        const presentationRepairs = await drainTerminalPresentationRepairs(
+        const presentationRepairs = await timed('repairsMs', () => drainTerminalPresentationRepairs(
           stores,
           this.env as PlatformEnv,
           resolveInstallation,
           carriedJobIds(),
-        );
-        const scheduleActions = await drainCloudflareScheduleActions(stores, this.env as PlatformEnv);
-        await drainCloudflareManagementReceipts(stores, this.env as PlatformEnv, resolveInstallation, this.presentationRunnerOf);
+        ));
+        const scheduleActions = await timed('scheduleMs', () =>
+          drainCloudflareScheduleActions(stores, this.env as PlatformEnv));
+        await timed('receiptsMs', () =>
+          drainCloudflareManagementReceipts(stores, this.env as PlatformEnv, resolveInstallation, this.presentationRunnerOf));
         return { ledgerDrain, presentationRepairs, scheduleActions };
       });
       const turnRetry = gatewayNeedsRetry || stores.gatewayInbox.hasPending() ||
