@@ -83,6 +83,12 @@ import type { FlueObservationTarget, TurnStopNotice } from './turn-job-types.ts'
 import { MAX_TURN_DRAIN_BATCH } from './turn-jobs.ts';
 
 /**
+ * The longest a receipt wake counts toward the next hand-off's
+ * `runnerWakeLeadMs`: an older wake belongs to a delivery that became no turn.
+ */
+const RUNNER_WAKE_LEAD_WINDOW_MS = 60_000;
+
+/**
  * Per-thread Slack turn runner (binding `SLACK_THREAD_RUNNER`, migration v11),
  * addressed by `idFromName(threadKey)`. By default (unless the emergency gate
  * `SLACK_TAG_TURN_EXECUTOR=alarm` is set) the state store's alarm hands each
@@ -98,10 +104,13 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   private readonly boot = new RunnerBootMarks();
   /**
    * Hand-off delays of the jobs this activation admitted (`admit` start minus
-   * the state store's send time), by job id, until the job's first attempt
-   * here takes its own.
+   * the state store's send time), and how long before the hand-off the state
+   * store woke this activation, by job id, until the job's first attempt here
+   * takes its own.
    */
-  private readonly handoffs = new Map<string, number>();
+  private readonly handoffs = new Map<string, { handoffMs: number; runnerWakeLeadMs?: number }>();
+  /** The state store's send time of the last receipt wake this activation served, until a hand-off counts it. */
+  private wokenAt: number | undefined;
   private jobs: ThreadRunnerJobStore | undefined;
   private presentations: SlackRunPresentationStoreLogic | undefined;
   /**
@@ -112,7 +121,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   /** Jobs an alarm returned without at its hard cap, still running here. */
   private readonly carried = new Map<string, Promise<void>>();
   /** Wakes a running alarm's drain when a job is admitted. */
-  private wake: (() => void) | undefined;
+  private wakeDrain: (() => void) | undefined;
   /** Observation targets of this runner's turns, one lookup per submission. */
   private readonly targets = new Map<string, FlueObservationTarget>();
   /** Consecutive failed alarms, for the retry backoff. */
@@ -137,6 +146,9 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     // does a stop whose abort or coding cascade is still owed.
     void this.ctx.blockConcurrencyWhile(async () => {
       try {
+        // A runner never handed a job (one a receipt woke) has no tables, and
+        // this check creates none.
+        if (!ThreadRunnerJobStore.existsIn(new DoSqlStateDb(this.ctx.storage))) return;
         if (!this.store().hasRunning() && !this.store().hasOwedStops()) return;
         const existing = await this.ctx.storage.getAlarm();
         if (existing === null || existing > Date.now()) await this.ctx.storage.setAlarm(Date.now());
@@ -192,6 +204,17 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     return this.presentations;
   }
 
+  /**
+   * The state store's wake at a delivery's receipt: it activates this runner
+   * while the turn is admitted, so the hand-off finds it in memory. It only
+   * reports the activation and keeps the send time for that hand-off's lead;
+   * it writes nothing, and runs no job or alarm.
+   */
+  async wake(sentAt: number, turnJobId?: string): Promise<void> {
+    this.boot.call('wake', { sentAt, turnJobId });
+    this.wokenAt = sentAt;
+  }
+
   async admit(job: ThreadRunnerJob): Promise<{ admitted: boolean; refused?: string }> {
     const sentAt = job?.sentAt;
     this.boot.call('admit', { sentAt, turnJobId: job?.id });
@@ -216,14 +239,21 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       }
     }
     const result = this.store().admit({ ...job, payload: {} }, Date.now());
-    if (result.admitted && sentAt !== undefined) this.handoffs.set(job.id, enteredAt - sentAt);
+    if (result.admitted && sentAt !== undefined) {
+      const lead = this.wokenAt === undefined ? undefined : sentAt - this.wokenAt;
+      this.wokenAt = undefined;
+      this.handoffs.set(job.id, {
+        handoffMs: enteredAt - sentAt,
+        ...(lead !== undefined && lead >= 0 && lead <= RUNNER_WAKE_LEAD_WINDOW_MS ? { runnerWakeLeadMs: lead } : {}),
+      });
+    }
     // The turn runs in this object's alarm, never in the admitting request.
     // Work left running after that request returns belongs to no invocation:
     // its logs are dropped, objects it creates are bound to a closed request,
     // and nothing retries it when the object is replaced. The alarm is due
     // now (an earlier one is kept); a running alarm's drain takes the job at
     // once.
-    this.wake?.();
+    this.wakeDrain?.();
     const existing = await this.ctx.storage.getAlarm();
     if (existing === null || existing > Date.now()) await this.ctx.storage.setAlarm(Date.now());
     return result;
@@ -250,7 +280,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       return { acknowledged: false };
     }
     if (taken.wake) {
-      this.wake?.();
+      this.wakeDrain?.();
       const existing = await this.ctx.storage.getAlarm();
       if (existing === null || existing > Date.now()) await this.ctx.storage.setAlarm(Date.now());
     }
@@ -415,11 +445,11 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     });
   }
 
-  /** A job's hand-off delay for its `turn_latency`, once: a later attempt of the job carries none. */
-  private takeHandoff(jobId: string): { handoffMs?: number } {
-    const handoffMs = this.handoffs.get(jobId);
+  /** A job's hand-off delay and wake lead for its `turn_latency`, once: a later attempt of the job carries none. */
+  private takeHandoff(jobId: string): { handoffMs?: number; runnerWakeLeadMs?: number } {
+    const handoff = this.handoffs.get(jobId);
     this.handoffs.delete(jobId);
-    return handoffMs === undefined ? {} : { handoffMs };
+    return handoff ?? {};
   }
 
   /** The state store, over a fresh stub per call (see CfTurnJobsForRunner). */
@@ -568,9 +598,9 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       },
       carried: this.carried,
       onWake: (wake) => {
-        this.wake = wake;
+        this.wakeDrain = wake;
         return () => {
-          if (this.wake === wake) this.wake = undefined;
+          if (this.wakeDrain === wake) this.wakeDrain = undefined;
         };
       },
     });

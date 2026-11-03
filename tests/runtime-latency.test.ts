@@ -471,15 +471,22 @@ test('turn_latency measures admission to the first acknowledged write and to fin
   assertContentFree(records[0]!);
 });
 
-test("turn_latency logs a runner turn's hand-off delay from its context", () => {
+// Defect caught: a record that drops the receipt wake's lead its runner measured.
+test("turn_latency logs a runner turn's hand-off delay and wake lead from its context", () => {
   const { records, sink } = captureSink();
   new TurnLatencyTracker(
-    { admittedAt: 9_000, handoffMs: 1_900, lane: 'cloudflare', executor: 'runner' },
+    { admittedAt: 9_000, handoffMs: 1_900, runnerWakeLeadMs: 640, lane: 'cloudflare', executor: 'runner' },
     { turnJobId: 'evt:T_LATENCY:1785509000.000100', attempt: 1 },
     clock(10_000).now,
     sink,
   ).emit('returned');
   assert.equal(records[0]?.handoffMs, 1_900);
+  assert.equal(records[0]?.runnerWakeLeadMs, 640);
+  new TurnLatencyTracker(
+    { admittedAt: 9_000, handoffMs: 1_900, lane: 'cloudflare', executor: 'runner' }, {}, clock(10_000).now, sink,
+  ).emit('returned');
+  assert.equal('runnerWakeLeadMs' in records[1]!, false, 'a turn whose runner no wake reached omits the field');
+  records.forEach(assertContentFree);
 });
 
 // Defects caught: a start-to-stage time that includes the staging itself, one
@@ -1057,6 +1064,7 @@ test('HTTP gateway admission logs gateway_delivery with the signed issuedAt lag'
   let verifyFails = false;
   let delivery: object = gatewayEvent();
   let queued = 0;
+  const woken: string[] = [];
   const Probe = vm.runInNewContext(
     ts.transpileModule(`class Probe { ${method.getText(source)} }\nProbe`,
       { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText,
@@ -1087,6 +1095,7 @@ test('HTTP gateway admission logs gateway_delivery with the signed issuedAt lag'
     env: {},
     admissionWakeAt: () => GATEWAY_NOW,
     armAlarmNoLaterThan: async () => {},
+    wakeRunnerAtReceipt: (received: { kind: string }) => woken.push(received.kind),
     call(fn: (stores: object) => unknown) {
       try {
         return { ok: true, value: fn({
@@ -1128,4 +1137,5 @@ test('HTTP gateway admission logs gateway_delivery with the signed issuedAt lag'
     responseAction: { response_action: 'clear' },
   });
   assert.equal(queued, 1, 'only the earlier event was queued');
+  assert.deepEqual(woken, ['event.deliver'], 'only the accepted event woke a runner at receipt');
 });

@@ -343,6 +343,12 @@ export interface TurnLatencyContext {
   receivedAt?: number;
   /** A runner turn's first attempt: the runner's `admit` start minus the state store's send time (two clocks). */
   handoffMs?: number;
+  /**
+   * A runner turn's first attempt, when the state store woke that runner at
+   * the delivery's receipt: the hand-off's send time minus the wake's (both
+   * the state store's clock).
+   */
+  runnerWakeLeadMs?: number;
   lane: TurnLatencyLane;
   executor: TurnLatencyExecutor;
 }
@@ -444,6 +450,7 @@ export class TurnLatencyTracker {
       receiptToAdmissionMs: sinceReceipt(admittedAt),
       receiptToFirstWriteMs: sinceReceipt(this.firstWrite?.at),
       handoffMs: this.context.handoffMs,
+      runnerWakeLeadMs: this.context.runnerWakeLeadMs,
       agentStageMs: this.agentStageMs,
       agentWakeLeadMs: this.agentWakeLeadMs,
       startToStageMs: this.startToStageMs,

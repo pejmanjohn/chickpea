@@ -148,6 +148,13 @@ export interface ThreadRunnerJobPayload {
 /** The RPC surface of one `SlackThreadRunner` (see thread-runner.ts). */
 export interface SlackThreadRunnerRpc {
   /**
+   * Activate the runner while the state store admits a delivery whose turn
+   * it will hand here (sent at receipt, never awaited). `sentAt` is the state
+   * store's clock and `turnJobId` the turn the delivery would become. Stores
+   * nothing.
+   */
+  wake(sentAt: number, turnJobId?: string): Promise<void>;
+  /**
    * Persist a hand-off. `refused` (a reason token) means the runner did not
    * take the job, so the state store keeps it a hand-off and retries.
    */

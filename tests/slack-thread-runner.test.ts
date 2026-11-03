@@ -63,13 +63,15 @@ test('a runner instance resumes a running job at once and runs admitted jobs onl
   const runner = readFileSync(new URL('../src/slack/thread-runner.ts', import.meta.url), 'utf8');
   // On first load after a replacement: a running job, or a stop that still
   // owes its abort or coding cascade, re-arms the alarm now.
-  assert.match(runner, /blockConcurrencyWhile\(async \(\) => \{\s*try \{\s*if \(!this\.store\(\)\.hasRunning\(\) && !this\.store\(\)\.hasOwedStops\(\)\) return;[\s\S]{0,200}setAlarm\(Date\.now\(\)\)/);
+  // A runner without its job table (one a receipt woke) has nothing to
+  // resume, and checking for the table creates none.
+  assert.match(runner, /blockConcurrencyWhile\(async \(\) => \{\s*try \{[\s\S]{0,200}if \(!ThreadRunnerJobStore\.existsIn\(new DoSqlStateDb\(this\.ctx\.storage\)\)\) return;\s*if \(!this\.store\(\)\.hasRunning\(\) && !this\.store\(\)\.hasOwedStops\(\)\) return;[\s\S]{0,200}setAlarm\(Date\.now\(\)\)/);
   // admit never starts the loop in the admitting request (work left running
   // after it returns loses its logs and is not resumed after a replacement):
   // it wakes a running drain and makes the alarm due now, keeping an earlier one.
   const admit = runner.slice(runner.indexOf('async admit('), runner.indexOf('async status('));
   assert.doesNotMatch(admit, /runSoon|runAlarm/);
-  assert.match(admit, /this\.wake\?\.\(\);\s*const existing = await this\.ctx\.storage\.getAlarm\(\);\s*if \(existing === null \|\| existing > Date\.now\(\)\) await this\.ctx\.storage\.setAlarm\(Date\.now\(\)\);/);
+  assert.match(admit, /this\.wakeDrain\?\.\(\);\s*const existing = await this\.ctx\.storage\.getAlarm\(\);\s*if \(existing === null \|\| existing > Date\.now\(\)\) await this\.ctx\.storage\.setAlarm\(Date\.now\(\)\);/);
   assert.equal(runner.match(/this\.runSoon\(\)/g)?.length, 1, 'only the alarm runs the loop');
   assert.match(runner, /async alarm\(\): Promise<void> \{\s*this\.boot\.call\('alarm'\);\s*await this\.runSoon\(\);/);
 });
@@ -370,7 +372,7 @@ test("the runner's stop RPC persists the stop first, leaves slow work to its ala
   const rpc = runner.slice(runner.indexOf('async stop('), runner.indexOf('async status('));
   // Persist (and abort) through the runner's stops, then make the alarm due
   // now as admit does; never run the loop or a cascade in the RPC's request.
-  assert.match(rpc, /taken = await this\.stops\(\)\.receive\(notice\);[\s\S]*this\.wake\?\.\(\);\s*const existing = await this\.ctx\.storage\.getAlarm\(\);\s*if \(existing === null \|\| existing > Date\.now\(\)\) await this\.ctx\.storage\.setAlarm\(Date\.now\(\)\);/);
+  assert.match(rpc, /taken = await this\.stops\(\)\.receive\(notice\);[\s\S]*this\.wakeDrain\?\.\(\);\s*const existing = await this\.ctx\.storage\.getAlarm\(\);\s*if \(existing === null \|\| existing > Date\.now\(\)\) await this\.ctx\.storage\.setAlarm\(Date\.now\(\)\);/);
   assert.doesNotMatch(rpc, /runSoon|runAlarm|codingReport|stopCodingTasks/);
   assert.match(rpc, /return \{ acknowledged: false \};/, 'a stop it could not persist stays owed');
   // The host abort is the Flue handle built from the persisted envelope, and

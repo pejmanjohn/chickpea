@@ -718,7 +718,7 @@ function isWorkspaceManagementRoute(
     (source === 'default_agent' && turn.source === 'app_mention');
 }
 
-function agentIsActive(agent: CustomAgentConfig): boolean {
+export function agentIsActive(agent: CustomAgentConfig): boolean {
   return agent.enabled && agent.lifecycle !== 'archived' && agent.lifecycle !== 'draft';
 }
 
