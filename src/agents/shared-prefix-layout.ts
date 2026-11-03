@@ -108,6 +108,29 @@ export function reducedSystemBlocks(): ReadonlyArray<readonly [string, ReducedTu
 }
 
 /**
+ * How a system prompt opens: with an Agent kind's constant block and its
+ * separator, then the tenant tail; with a reduced turn's block; or with
+ * neither. The Anthropic hook (shared-prefix.ts) and the OpenAI planner
+ * (openai-prompt-cache.ts) cut their cache prefix at the same place.
+ */
+export type SlackSystemText =
+  | { readonly kind: 'shared'; readonly agentKind: AgentKind; readonly constant: string; readonly tail: string }
+  | { readonly kind: 'reduced'; readonly reason: ReducedTurn }
+  | { readonly kind: 'other' };
+
+export function classifySlackSystemText(text: string | undefined): SlackSystemText {
+  if (text === undefined) return { kind: 'other' };
+  const opensWith = (block: string) => text.startsWith(block + PART_SEPARATOR);
+  const agentKind = AGENT_KINDS.find((candidate) => opensWith(sharedSystemBlock(candidate)));
+  if (agentKind !== undefined) {
+    const constant = sharedSystemBlock(agentKind);
+    return { kind: 'shared', agentKind, constant, tail: text.slice(constant.length + PART_SEPARATOR.length) };
+  }
+  const reason = reducedSystemBlocks().find(([block]) => opensWith(block))?.[1];
+  return reason ? { kind: 'reduced', reason } : { kind: 'other' };
+}
+
+/**
  * The first tenant instruction: the Agent's saved instructions, its identity
  * in this workspace and channel, the saved instructions again inside the
  * external-action boundary, and the teammates it may ask.

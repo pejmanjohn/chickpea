@@ -51,6 +51,8 @@ export interface SlackRequestVariant {
   /** The Agent's model provider: Anthropic Messages, or OpenAI Responses. */
   provider?: 'anthropic' | 'openai';
   model?: string;
+  /** The endpoint model access resolves, as a standalone deployment's base URL override sets it. */
+  baseUrl?: string;
   funding?: 'platform' | 'customer';
   progressiveStreamingOffered?: boolean;
   progressiveStreamingMode?: 'early' | 'final_answer';
@@ -181,7 +183,13 @@ configureInstallationAdmission(async () => 'admitted');
 observe((event, context) => {
   if (context.agentName === 'chickpea-slack-v2') noteAgentAuthoringActivation(event);
 });
-configureModelAccessResolver({ resolve: async () => ({ apiKey: 'render-only-not-a-key' }) });
+// pi-ai sends a key without `sk-` on OpenAI's endpoint as a ChatGPT sign-in, which drops request fields.
+configureModelAccessResolver({
+  resolve: async () => ({
+    apiKey: current?.provider === 'openai' ? 'sk-render-only-not-a-key' : 'render-only-not-a-key',
+    ...(current?.baseUrl ? { baseUrl: current.baseUrl } : {}),
+  }),
+});
 configurePlatformFunding({
   ...NO_RUN_FEES,
   funding: async () => current!.funding ?? 'platform',
