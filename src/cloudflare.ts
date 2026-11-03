@@ -200,7 +200,7 @@ import {
   type WarmWindowStorage,
   workspaceWarmWindowMs,
 } from './sandbox/warm-window.ts';
-import type { SlackCanonicalAdmissionInput } from './slack/claim-store.ts';
+import type { SlackCanonicalAdmissionInput, SlackDeliveryNote } from './slack/claim-store.ts';
 import type { SlackMessageEdit } from './slack/edits.ts';
 import {
   SlackPresentationStateError,
@@ -251,7 +251,7 @@ import {
   type ThreadRunnerTurnOp,
   type ThreadRunnerTurnResult,
 } from './slack/thread-runner-rpc.ts';
-import { receiptRunnerWake } from './slack/receipt-runner-wake.ts';
+import { receiptRunnerWake, type ReceiptWakeDelivery } from './slack/receipt-runner-wake.ts';
 import { admissionAgentInstance, type AdmissionAgentFacts, type AdmissionAgentWake } from './slack/admission-agent-wake.ts';
 import {
   admissionStatusPresentation,
@@ -2298,21 +2298,62 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
   }
 
   /**
+   * The direct path's receipt (CfSlackStateStore.noteDelivery): the Worker
+   * verified a direct installation's delivery and goes on to admit it over
+   * this store's RPCs. In one store turn, keep the receipt time for the turn
+   * admitted later (turnJobs.noteReceipt, so receiptToAdmissionMs means the
+   * same as on the gateway's path) and wake the runner the turn will be
+   * handed to (wakeRunnerAtReceipt); when one was predicted, the delivery
+   * becomes a turn whose status write needs the installation's identity, so
+   * start verifying it, held in this invocation (waitUntil) so the runtime
+   * carries the auth.test to its end, and the admission status write finds
+   * it fresh in this isolate (showStatusAtHandoff) instead of paying
+   * auth.test inside its cap. A delivery that wakes no runner (a join, an
+   * edit, a bot's post) verifies nothing. The Worker awaits none of it and
+   * nothing here changes what it admits: a failure fails nothing, and the
+   * identity is never logged.
+   */
+  async noteSlackDelivery(note: SlackDeliveryNote): Promise<StateRpcResult<null>> {
+    const { workspaceId, eventId, eventTime, event, receivedAt } = note;
+    const noted = this.call((stores) => {
+      const installation = stores.config.getWorkspaceInstallation(workspaceId);
+      if (!installation || installation.transportMode !== 'direct' || installation.health === 'revoked') return undefined;
+      if (Number.isFinite(receivedAt)) stores.turnJobs.noteReceipt(eventId, receivedAt);
+      return this.createAlarmIdentityResolver(stores);
+    });
+    if (!noted.ok) return noted;
+    if (noted.value) {
+      const woken = this.wakeRunnerAtReceipt({ kind: 'event.deliver', envelope: { workspaceId, eventId, eventTime, event } });
+      if (woken) {
+        const verifying = noted.value(workspaceId).then(() => undefined, () => undefined);
+        // The runtime has waitUntil on DurableObjectState; the module declaration omits it.
+        const state = this.ctx as DurableObjectState & { waitUntil?(promise: Promise<unknown>): void };
+        if (typeof state.waitUntil === 'function') state.waitUntil(verifying);
+      }
+    }
+    return { ok: true, value: null };
+  }
+
+  /**
    * Wake the thread runner a just-received delivery's turn will be handed
    * to, so that runner activates while the turn is admitted (see
    * receiptRunnerWake for which deliveries). Never awaited: the gateway's
-   * acknowledgement waits for this receipt. Nothing here changes the receipt.
+   * acknowledgement waits for this receipt, and the direct path's note
+   * (noteSlackDelivery) is itself unawaited. Nothing here changes the receipt.
+   * Returns whether a runner was woken.
    */
-  private wakeRunnerAtReceipt(delivery: GatewayInboundDelivery): void {
+  private wakeRunnerAtReceipt(delivery: ReceiptWakeDelivery): boolean {
     try {
-      if (!this.runnerMode()) return;
+      if (!this.runnerMode()) return false;
       const predicted = this.call((stores) => receiptRunnerWake(delivery, stores.config));
-      if (!predicted.ok || !predicted.value) return;
+      if (!predicted.ok || !predicted.value) return false;
       const runner = threadRunnerStub(this.env as PlatformEnv, predicted.value.threadKey);
-      if (!runner) return;
+      if (!runner) return false;
       void Promise.resolve(runner.wake(Date.now(), predicted.value.turnJobId)).catch(() => undefined);
+      return true;
     } catch {
       // The hand-off addresses the runner either way.
+      return false;
     }
   }
 

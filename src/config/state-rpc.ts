@@ -95,6 +95,7 @@ import type {
 import type {
   SlackCanonicalAdmissionInput,
   SlackCanonicalAdmissionResult,
+  SlackDeliveryNote,
   SlackEditAdmission,
 } from '../slack/claim-store.ts';
 import type { SlackMessageEdit } from '../slack/edits.ts';
@@ -765,6 +766,12 @@ export interface TagStateRpc {
   admitGatewayDelivery(
     delivery: GatewayInboundDelivery,
   ): Promise<StateRpcResult<GatewayAdmissionResult>>;
+  /**
+   * The direct path's receipt (SlackStateStore.noteDelivery): wake the runner
+   * the delivery's turn will be handed to, keep its receipt time, and verify
+   * the installation's identity while the Worker admits the delivery.
+   */
+  noteSlackDelivery(note: SlackDeliveryNote): Promise<StateRpcResult<null>>;
   /** Clone a completed authorization-link turn into one idempotent resume turn. */
   resumeTurnAfterOAuth(
     originalTaskId: string,

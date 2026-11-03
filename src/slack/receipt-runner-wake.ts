@@ -1,6 +1,6 @@
 import type { ConfigStoreLogic } from '../config/store.ts';
 import { agentIsActive, parseAgentUserGroupMentions } from './agent-routing.ts';
-import type { GatewayInboundDelivery } from './gateway/protocol.ts';
+import type { GatewayEventDelivery, GatewayInboundDelivery } from './gateway/protocol.ts';
 import { slackAgentThreadKey } from './thread-key.ts';
 import { normalizeSlackTurn } from './turn-normalization.ts';
 
@@ -14,6 +14,9 @@ export interface ReceiptRunnerWake {
   turnJobId: string;
 }
 
+/** A delivery as the wake reads it: the gateway's whole, or the direct path's event alone. */
+export type ReceiptWakeDelivery = GatewayInboundDelivery | Pick<GatewayEventDelivery, 'kind' | 'envelope'>;
+
 /**
  * The thread runner a just-received delivery's turn will be handed to, keyed
  * as `slackAgentThreadKey` keys it once admission has routed the turn; or
@@ -26,19 +29,21 @@ export interface ReceiptRunnerWake {
  * Slack read), a click or modal submission, an edit or delete, a join, a
  * profile or lifecycle event, a bot or system message, an unaddressed
  * Channel message, a reply in a thread no Agent owns, or a delivery to an
- * installation that is not chickpea-v1. The owner is the stored route's: a
+ * installation that is not chickpea-v1. The gateway's receipt and the direct
+ * path's (TagStateStore.noteSlackDelivery) both ask; each has checked that
+ * the installation's transport is its own. The owner is the stored route's: a
  * message that hands the thread to another Agent is admitted under the next
  * incarnation, so its wake reached the previous owner's runner.
  */
 export function receiptRunnerWake(
-  delivery: GatewayInboundDelivery,
+  delivery: ReceiptWakeDelivery,
   reads: ReceiptWakeReads,
 ): ReceiptRunnerWake | undefined {
   if (delivery.kind !== 'event.deliver') return undefined;
   const { envelope } = delivery;
   const installation = reads.getWorkspaceInstallation(envelope.workspaceId);
   if (
-    !installation || installation.health === 'revoked' || installation.transportMode !== 'gateway' ||
+    !installation || installation.health === 'revoked' ||
     installation.runtimeContract !== 'chickpea-v1' || !installation.botUserId
   ) return undefined;
   const normalized = normalizeSlackTurn({

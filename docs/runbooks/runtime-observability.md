@@ -383,7 +383,11 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   the state store sent its runner a wake. The state store sends it at the
   delivery's receipt, without waiting, when the delivery can become a turn:
   a message that mentions the app, a DM, a top-level mention of one of the
-  installation's Agents, or a reply in a thread an Agent owns. The runner's
+  installation's Agents, or a reply in a thread an Agent owns. On the gateway
+  the receipt is the state store's own; on a direct installation on
+  Cloudflare the Worker that verified the delivery tells the state store of
+  it (`noteSlackDelivery`) before admitting it over the store's RPCs, and the
+  state store sends the wake from that note. On Node nothing is woken. The runner's
   activation overlaps the lead, so when the wake reached a runner not in
   memory, its `runner_boot` shows `firstMethod` `wake` (with the turn's
   `turnRef`), no `admit` boot follows, and `handoffMs` drops by up to the
@@ -458,8 +462,12 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   row only when an alarm drains the gateway inbox, so while a long turn holds
   the alarm it waits before admission: `receiptToAdmissionMs` is that wait
   (receipt = the inbox's `accepted_at`) and `receiptToFirstWriteMs` is the
-  user-facing first-status latency. For HTTP and Node admissions receipt equals
-  admission. Rows admitted before this field existed omit the receipt fields.
+  user-facing first-status latency. A direct installation on Cloudflare is
+  admitted by the Worker over the state store's RPCs: its receipt is the
+  Worker's clock when it verified the delivery, sent to the state store with
+  the wake above (`noteSlackDelivery`), so `receiptToAdmissionMs` is the
+  Worker's admission chain. For Node admissions receipt equals admission. Rows
+  admitted before this field existed omit the receipt fields.
   `firstWrite` names the first Slack effect the attempt saw acknowledged:
   `admission_status` (the status the state store showed before the hand-off,
   above), `agent_session` (Agent View processing), `activity_status`,

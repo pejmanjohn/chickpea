@@ -373,6 +373,9 @@ const OPERATOR_CANCELLED = 'operator_cancelled';
 const NOT_OPERATOR_CANCELLED = `recovery_reason IS NOT '${OPERATOR_CANCELLED}'`;
 
 /** One undelivered row of a thread, as a stop or check-in weighs it. */
+/** How long a receipt note nothing released outlives its making (noteReceipt). */
+const RECEIPT_NOTE_TTL_MS = 60_000;
+
 interface StopThreadRow {
   id: string;
   messageTs?: string;
@@ -383,8 +386,8 @@ interface StopThreadRow {
 }
 
 export class TurnJobStoreLogic {
-  /** Receipt times of gateway deliveries being turned into jobs, by event ID. */
-  private readonly receiptTimes = new Map<string, number>();
+  /** Receipt times of deliveries being turned into jobs, by event ID, with when each was noted. */
+  private readonly receiptTimes = new Map<string, { receivedAt: number; notedAt: number }>();
 
   constructor(
     private readonly db: StateDb,
@@ -614,12 +617,20 @@ export class TurnJobStoreLogic {
   /**
    * While a queued delivery is processed, jobs admitted for its Slack event
    * record when the delivery was received rather than when it was admitted.
-   * Returns the release function; call it once processing ends.
+   * Returns the release function; call it once processing ends. The direct
+   * path's receipt (TagStateStore.noteSlackDelivery) releases nothing, its
+   * turn being admitted from the Worker, so a note is dropped a minute after
+   * it was made (RECEIPT_NOTE_TTL_MS): a delivery that becomes no turn keeps
+   * no entry.
    */
   noteReceipt(eventId: string, receivedAt: number): () => void {
-    this.receiptTimes.set(eventId, receivedAt);
+    const notedAt = this.now();
+    for (const [noted, note] of this.receiptTimes) {
+      if (notedAt - note.notedAt > RECEIPT_NOTE_TTL_MS) this.receiptTimes.delete(noted);
+    }
+    this.receiptTimes.set(eventId, { receivedAt, notedAt });
     return () => {
-      if (this.receiptTimes.get(eventId) === receivedAt) this.receiptTimes.delete(eventId);
+      if (this.receiptTimes.get(eventId)?.receivedAt === receivedAt) this.receiptTimes.delete(eventId);
     };
   }
 
@@ -644,7 +655,7 @@ export class TurnJobStoreLogic {
       job.runId ?? null,
       executionAuthority,
       enqueuedAt,
-      Math.min(this.receiptTimes.get(job.turn.eventId) ?? enqueuedAt, enqueuedAt),
+      Math.min(this.receiptTimes.get(job.turn.eventId)?.receivedAt ?? enqueuedAt, enqueuedAt),
       threadKey ?? null,
       messageTs,
       // The mid-run 👀 is the turn's receipt from the start (KTD9): Chickpea's
