@@ -1,4 +1,5 @@
 import { sha256HexNode } from '../../security/digest.ts';
+import type { KeyCardSpec } from './key-card.ts';
 import type {
   AskUserSpec,
   OfferActionsSpec,
@@ -98,6 +99,7 @@ export function isDisplaySurface(spec: UiSurfaceSpec): spec is DisplaySurfaceSpe
 export type UiSurfaceSpec =
   | HostApprovalSpec
   | HostAgentChoiceSpec
+  | KeyCardSpec
   | QuestionSurfaceSpec
   | ActionsSurfaceSpec
   | FormSurfaceSpec
@@ -168,6 +170,14 @@ export function uiBlockId(namespace: UiNamespace, surfaceId: string, index: numb
 
 export function uiValue(surfaceId: string, index: number): string {
   return `${surfaceId}:${index}`;
+}
+
+// The shared gateway forwards only `chickpea.ui.v1.` view callbacks.
+export const KEY_FORM_CALLBACK_ID = 'chickpea.ui.v1.key';
+const KEY_ADD_ACTION = /^chickpea\.host\.v1\.key_add\.\d{1,3}$/;
+
+export function isKeyFormAction(actionId: string): boolean {
+  return KEY_ADD_ACTION.test(actionId);
 }
 
 const ACTION_ID = /^chickpea\.(ui|host)\.v1\.([a-z_]{1,24})(?:\.(\d{1,3}))?$/;
