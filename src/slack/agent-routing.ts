@@ -96,6 +96,7 @@ interface ResolveAgentRouteInput {
     | 'putAgentThreadRoute'
     | 'listSlackPublicContext'
   >;
+  installation?: NonNullable<Awaited<ReturnType<ConfigStore['getWorkspaceInstallation']>>>;
   /** Trusted Agent seed from App Home interactivity, never Slack message text. */
   appHomeAgentId?: string;
   /** The Agent whose own Slack app received this delivery; never Slack message text. */
@@ -181,7 +182,7 @@ export async function resolveAgentRoute(
   input: ResolveAgentRouteInput,
 ): Promise<AgentRoutingResult> {
   const { turn, config, surface, actor } = input;
-  const installation = await config.getWorkspaceInstallation(turn.workspaceId);
+  const installation = input.installation ?? await config.getWorkspaceInstallation(turn.workspaceId);
   if (!installation) {
     return denied('installation_unavailable', []);
   }

@@ -62,6 +62,7 @@ import {
 import { validateRequestForm } from '../src/slack/ui/presentation-tools.ts';
 import { formFieldActionId, formFieldBlockId } from '../src/slack/ui/render-form.ts';
 import { uiActionId, uiBlockId, uiSurfaceId, type UiSurfaceRecord } from '../src/slack/ui/surface.ts';
+import { withDirectSlackInstall } from './helpers/direct-slack-install.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
 /**
@@ -321,6 +322,48 @@ test('a hosted delivery with a bad signature is refused before any store is read
     // A verified delivery reads the installation's own state as before.
     assert.equal((await h.deliver('events', home)).status, 200);
     assert.ok(reads.includes('getWorkspaceInstallation'));
+  });
+});
+
+test('a standalone delivery reads its installation beside its credentials, once each; a forged one never waits on that read', async () => {
+  await withDirectSlackInstall({}, async (install) => {
+    const reads: string[] = [];
+    const hold = (store: object, name: string) => {
+      const target = store as Record<string, (...args: unknown[]) => Promise<unknown>>;
+      const original = target[name]!.bind(store);
+      const held = Promise.withResolvers<void>();
+      const reached = Promise.withResolvers<void>();
+      target[name] = async (...args) => {
+        reads.push(name);
+        reached.resolve();
+        await held.promise;
+        return original(...args);
+      };
+      return { read: reached.promise, release: held.resolve };
+    };
+    const event = (eventId: string) => ({
+      token: '', team_id: 'T1', api_app_id: 'A1', type: 'event_callback', event_id: eventId,
+      event_time: Math.floor(Date.now() / 1_000), event: { type: 'app_context_changed' },
+    });
+
+    const installation = hold(install.stores.config, 'getWorkspaceInstallation');
+    const forged = await Promise.race([
+      install.deliver('events', event('EvForged'), undefined, 'forged-secret'),
+      new Promise<'waited'>((resolve) => setTimeout(resolve, 1_000, 'waited')),
+    ]);
+    assert.notEqual(forged, 'waited', 'a forged delivery is answered without its installation read');
+    assert.equal((forged as Response).status, 401);
+    installation.release();
+
+    reads.length = 0;
+    const credentials = hold(install.stores.identity, 'getActiveSlackCredentialRevision');
+    const signed = install.deliver('events', event('EvSigned'));
+    await credentials.read;
+    assert.ok(reads.includes('getWorkspaceInstallation'), 'the installation is read while the credentials are');
+    credentials.release();
+    assert.equal((await signed).status, 200);
+    assert.deepEqual(reads.toSorted(), ['getActiveSlackCredentialRevision', 'getWorkspaceInstallation'],
+      'the handler reuses both reads');
   });
 });
 

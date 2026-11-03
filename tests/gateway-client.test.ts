@@ -34,7 +34,7 @@ import { createGatewaySlackTransport } from '../src/slack/transport/gateway.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
 import type { ProductTelemetryEventInput } from '../src/telemetry/events.ts';
 import {
-  resetGatewayIdentityVerificationsForTests,
+  resetIdentityVerificationsForTests,
   resolveSlackInstallationExecutionContext,
   SlackInstallationUnavailableError,
   verifySlackInstallationTurnAccess,
@@ -1317,7 +1317,7 @@ test('gateway execution uses the shared app without resolving or storing a bot t
     fetch: fake.fetch,
     now: () => NOW,
   });
-  resetGatewayIdentityVerificationsForTests();
+  resetIdentityVerificationsForTests();
   try {
     await client.beginClaim();
     await client.refreshClaim();
@@ -1372,7 +1372,7 @@ test('gateway execution verifies an unchanged binding identity once per window, 
     },
     now: () => NOW,
   });
-  resetGatewayIdentityVerificationsForTests();
+  resetIdentityVerificationsForTests();
   try {
     await client.beginClaim();
     await client.refreshClaim();
@@ -1389,7 +1389,7 @@ test('gateway execution verifies an unchanged binding identity once per window, 
     for (const execution of [first, second, third]) assert.equal(execution.transportMode, 'gateway');
     assert.deepEqual(fake.operations.map(({ operation }) => operation), ['auth.test']);
   } finally {
-    resetGatewayIdentityVerificationsForTests();
+    resetIdentityVerificationsForTests();
     settings.close();
     config.close();
   }

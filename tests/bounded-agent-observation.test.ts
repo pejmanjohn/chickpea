@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { AgentInstanceNotFoundError } from '@flue/runtime';
+import { AgentInstanceNotFoundError, AgentRunError } from '@flue/runtime';
 
 import {
   AgentObjectBindingUnavailableError,
@@ -27,6 +27,7 @@ interface Page {
   upToDate?: boolean;
   status?: number;
   body?: unknown;
+  snapshot?: unknown;
 }
 
 function fakeRoute(pages: Page[]) {
@@ -38,6 +39,7 @@ function fakeRoute(pages: Page[]) {
     if (page.status && page.status !== 200) {
       return Response.json(page.body ?? {}, { status: page.status });
     }
+    if (page.snapshot) return Response.json(page.snapshot);
     return Response.json([CHECKPOINT, ...(page.items ?? [])], {
       headers: {
         ...(page.next ? { 'Stream-Next-Offset': page.next } : {}),
@@ -50,9 +52,26 @@ function fakeRoute(pages: Page[]) {
 
 const TARGET = { agentName: 'chickpea-slack-v2', instanceId: 'agent_1', submissionId: 'sub_1' };
 
-function settled(submissionId = 'sub_1', outcome = 'completed') {
-  return { type: 'submission-settled', submissionId, outcome };
+function settled(submissionId = 'sub_1', outcome = 'completed', error?: unknown) {
+  return { type: 'submission-settled', submissionId, outcome, ...(error === undefined ? {} : { error }) };
 }
+
+function historyWithReply(submissionId: string, text: string) {
+  return {
+    v: 1,
+    conversationId: 'conv_1',
+    offset: '0_9',
+    messages: [
+      { id: 'm_user', role: 'user', parts: [{ type: 'text', text: 'hi' }] },
+      { id: 'm_reply', role: 'assistant', submissionId, parts: [{ type: 'text', text }], metadata: { k: 'v' } },
+    ],
+    settlements: [{ submissionId, outcome: 'completed' }],
+  };
+}
+
+const unusedHandle = {
+  async read(): Promise<never> { throw new Error('Flue read() must not run after the observed settlement'); },
+};
 
 test('checkpoint-only idle pages with an unchanged cursor sleep between reads', async () => {
   // The reviewer's production-shape reproducer: two idle pages, then settlement.
@@ -67,7 +86,7 @@ test('checkpoint-only idle pages with an unchanged cursor sleep between reads', 
   });
   assert.deepEqual(settlement, { outcome: 'completed' });
   assert.equal(requests.length, 3);
-  assert.deepEqual(sleeps, [250, 250], 'every caught-up page without settlement waits');
+  assert.deepEqual(sleeps, [150, 150], 'every caught-up page without settlement waits');
   assert.deepEqual(requests.map((url) => url.searchParams.get('offset')), ['-1', '0_7', '0_7']);
 });
 
@@ -80,7 +99,7 @@ test('idle pages sleep even when the route omits the up-to-date header', async (
   const sleeps: number[] = [];
   await observeAgentSettlementBounded(route, TARGET, { sleep: async (ms) => { sleeps.push(ms); } });
   // The first read from -1 moves the cursor to the head; the second does not.
-  assert.deepEqual(sleeps, [750]);
+  assert.deepEqual(sleeps, [150]);
 });
 
 test('continuously arriving data never busy-loops and lagging pages drain at once', async () => {
@@ -150,18 +169,12 @@ test('a missing stream and an abort surface as errors without further reads', as
   assert.equal(requests.length, 1);
 });
 
-test('the reply reader observes to settlement, then reads once through Flue', async () => {
+test('the reply reader observes to settlement, then reads the history view once', async () => {
   const { route, requests } = fakeRoute([
     { next: '0_1', upToDate: true },
     { items: [{ type: 'message-delta', kind: 'text', delta: 'x' }, settled('sub_9')], next: '0_3' },
+    { snapshot: historyWithReply('sub_9', 'final') },
   ]);
-  const reads: unknown[] = [];
-  const handle = {
-    async read(receipt: unknown) {
-      reads.push(receipt);
-      return { text: 'final', data: {}, submissionId: 'sub_9' };
-    },
-  };
   const seen: string[] = [];
   const reader = createBoundedAgentReplyReader({
     agentName: 'chickpea-slack-v2',
@@ -170,15 +183,34 @@ test('the reply reader observes to settlement, then reads once through Flue', as
     sleep: async () => {},
   });
   const reply = await reader({
-    handle, instanceId: 'agent_9',
+    handle: unusedHandle, instanceId: 'agent_9',
     receipt: { submissionId: 'sub_9', acceptedAt: 'now', uid: 'uid' },
     onEvent: (chunk) => seen.push(chunk.type),
   });
-  assert.equal(reply.text, 'final');
-  assert.equal(requests.length, 2);
+  assert.deepEqual(reply, { text: 'final', data: {}, metadata: { k: 'v' }, uid: 'uid', submissionId: 'sub_9' },
+    'the reply is Flue\'s shape: the snapshot\'s reply plus the receipt\'s uid and submission');
   assert.deepEqual(seen, ['message-delta', 'submission-settled']);
-  assert.deepEqual(reads, [{ submissionId: 'sub_9', acceptedAt: 'now', uid: 'uid' }],
-    'Flue read runs once, after settlement, with no event callback to long-poll for');
+  assert.deepEqual(requests.map((url) => url.searchParams.get('view')), ['updates', 'updates', 'history'],
+    'after the observed settlement only the history view is read, once, and nothing replays the updates');
+  assert.equal(requests[2]?.searchParams.has('live'), false);
+});
+
+test('a settled failure is an AgentRunError with the settlement\'s cause, and reads no history', async () => {
+  const { route, requests } = fakeRoute([
+    { items: [settled('sub_f', 'failed', { message: 'provider refused' })], next: '0_2' },
+  ]);
+  const reader = createBoundedAgentReplyReader({ agentName: 'chickpea-slack-v2', resolveRoute: () => route });
+  await assert.rejects(
+    reader({
+      handle: unusedHandle, instanceId: 'agent_f',
+      receipt: { submissionId: 'sub_f', acceptedAt: 'now', uid: 'uid' },
+      onEvent: () => {},
+    }),
+    (error: unknown) => error instanceof AgentRunError && error.outcome === 'failed' &&
+      error.submissionId === 'sub_f' &&
+      (error.cause as { message?: string } | undefined)?.message === 'provider refused',
+  );
+  assert.equal(requests.length, 1, 'a failed settlement needs no reply read');
 });
 
 test('the Cloudflare reader reaches the agent namespace binding and fails clearly without it', async () => {
@@ -191,7 +223,10 @@ test('the Cloudflare reader reaches the agent namespace binding and fails clearl
     AgentObjectBindingUnavailableError,
   );
 
-  const { route, requests } = fakeRoute([{ items: [settled('sub_c')], next: '0_1' }]);
+  const { route, requests } = fakeRoute([
+    { items: [settled('sub_c')], next: '0_1' },
+    { snapshot: historyWithReply('sub_c', 'ok') },
+  ]);
   const calls: string[] = [];
   const namespace = {
     idFromName: (name: string) => { calls.push(`idFromName:${name}`); return { name }; },
@@ -199,14 +234,14 @@ test('the Cloudflare reader reaches the agent namespace binding and fails clearl
   };
   const reader = createCloudflareBoundedAgentReplyReader({ FLUE_CHICKPEA_SLACK_V2_AGENT: namespace });
   const reply = await reader({
-    handle: { read: async () => ({ text: 'ok', data: {}, submissionId: 'sub_c' }) },
+    handle: unusedHandle,
     instanceId: 'agent_c',
     receipt: { submissionId: 'sub_c', acceptedAt: 'now', uid: 'uid' },
     onEvent: () => {},
   });
   assert.equal(reply.text, 'ok');
-  assert.deepEqual(calls, ['idFromName:agent_c', 'get:agent_c']);
-  assert.equal(requests[0]?.searchParams.has('live'), false);
+  assert.deepEqual(calls, ['idFromName:agent_c', 'get:agent_c'], 'one stub serves the observation and the reply read');
+  assert.deepEqual(requests.map((url) => url.searchParams.has('live')), [false, false]);
 });
 
 /** A fake clock the fake sleep advances, so idle time is measured in sleeps. */
@@ -237,7 +272,7 @@ test('adaptive polling backs off after 10 s of quiet following a milestone start
   const relay = createWorkspaceMilestoneRelay('sub_1', async () => {});
   const { route, requests } = fakeRoute([
     { items: [{ type: 'message-started', submissionId: 'sub_1', messageId: 'msg_1' }, milestoneStart()], next: '0_2', upToDate: true },
-    ...idlePages(17),
+    ...idlePages(33),
     { items: [settled()], next: '0_3' },
   ]);
   const clock = fakeClock();
@@ -245,18 +280,17 @@ test('adaptive polling backs off after 10 s of quiet following a milestone start
     ...TARGET, onEvent: relay.onEvent, isIdleCandidate: relay.isIdleCandidate,
   }, { adaptive: {}, sleep: clock.sleep, now: clock.now });
   assert.deepEqual(settlement, { outcome: 'completed' });
-  assert.equal(requests.length, 19);
-  // Quiet since t=0: reads at t < 10 s keep the 750 ms cadence, then it doubles to the 5 s ceiling.
-  assert.deepEqual(clock.sleeps, [...Array(14).fill(750), 1500, 3000, 5000, 5000]);
+  assert.equal(requests.length, 35);
+  assert.deepEqual(clock.sleeps, [...Array(20).fill(150), ...Array(10).fill(750), 1500, 3000, 5000, 5000]);
   await relay.drain();
 });
 
-test('a delivered chunk returns the adaptive poll to the base interval', async () => {
+test('a delivered chunk ends the adaptive backoff and polls hot again', async () => {
   let hint = true;
   const delta = { type: 'message-delta', kind: 'text', delta: 'x' };
   const { route } = fakeRoute([
     { next: '0_1', upToDate: true },
-    ...idlePages(15, '0_1'),
+    ...idlePages(31, '0_1'),
     { items: [delta], next: '0_2', upToDate: true },
     ...idlePages(2),
     { items: [settled()], next: '0_3' },
@@ -268,22 +302,42 @@ test('a delivered chunk returns the adaptive poll to the base interval', async (
     onEvent: () => { hint = true; },
     isIdleCandidate: () => hint,
   }, { adaptive: {}, sleep: clock.sleep, now: clock.now });
-  assert.deepEqual(clock.sleeps, [...Array(14).fill(750), 1500, 3000, 750, 750, 750]);
+  assert.deepEqual(clock.sleeps, [...Array(20).fill(150), ...Array(10).fill(750), 1500, 3000, 150, 150, 150]);
 });
 
-test('without an idle hint, or with adaptive off, the cadence stays at the base interval', async () => {
+test('without an idle hint, or with adaptive off, a quiet stream stays at the base interval', async () => {
   for (const variant of [
     { hint: undefined, adaptive: {} },
     { hint: () => false, adaptive: {} },
     { hint: () => true, adaptive: undefined },
   ]) {
-    const { route } = fakeRoute([...idlePages(20), { items: [settled()], next: '0_3' }]);
+    const { route } = fakeRoute([...idlePages(36), { items: [settled()], next: '0_3' }]);
     const clock = fakeClock();
     await observeAgentSettlementBounded(route, {
       ...TARGET, ...(variant.hint ? { isIdleCandidate: variant.hint } : {}),
     }, { ...(variant.adaptive ? { adaptive: variant.adaptive } : {}), sleep: clock.sleep, now: clock.now });
-    assert.deepEqual(clock.sleeps, Array(20).fill(750));
+    assert.deepEqual(clock.sleeps, [...Array(20).fill(150), ...Array(16).fill(750)]);
   }
+});
+
+test('a delivered chunk polls at 150 ms until the stream has been quiet for 3 s, then at 750 ms', async () => {
+  const delta = (text: string) => ({ type: 'message-delta', kind: 'text', delta: text });
+  const { route } = fakeRoute([
+    { items: [delta('a')], next: '0_1', upToDate: true },
+    { next: '0_1', upToDate: true },
+    { next: '0_1', upToDate: true },
+    { items: [delta('b')], next: '0_2', upToDate: true },
+    { items: [settled()], next: '0_3' },
+  ]);
+  const advances = [2_999, 1, 60_000];
+  let time = 0;
+  const sleeps: number[] = [];
+  await observeAgentSettlementBounded(route, TARGET, {
+    adaptive: {},
+    now: () => time,
+    sleep: async (ms) => { sleeps.push(ms); time += advances.shift() ?? 0; },
+  });
+  assert.deepEqual(sleeps, [150, 150, 750, 150]);
 });
 
 test('the milestone relay marks only a milestone start as the last chunk as an idle candidate', () => {
@@ -325,10 +379,10 @@ test('a reattached observation seeded as coding backs off after 10 s idle, then 
     // The replay catches up and ends on something other than the milestone start.
     { items: [delta('replayed')], next: '0_5' },
     { items: [delta('tail')], next: '0_6', upToDate: true },
-    ...idlePages(16, '0_6'),
+    ...idlePages(32, '0_6'),
     // Live output after catching up: the cadence resets and the seed ends.
     { items: [delta('live')], next: '0_7', upToDate: true },
-    ...idlePages(15, '0_7'),
+    ...idlePages(31, '0_7'),
     { items: [settled()], next: '0_8' },
   ]);
   const clock = fakeClock();
@@ -336,7 +390,7 @@ test('a reattached observation seeded as coding backs off after 10 s idle, then 
     ...TARGET, isIdleCandidate: () => false, initialIdleCandidate: true,
   }, { adaptive: {}, sleep: clock.sleep, now: clock.now });
   assert.deepEqual(clock.sleeps, [
-    ...Array(14).fill(750), 1500, 3000, 5000,
-    ...Array(16).fill(750),
+    ...Array(20).fill(150), ...Array(10).fill(750), 1500, 3000, 5000,
+    ...Array(20).fill(150), ...Array(12).fill(750),
   ]);
 });

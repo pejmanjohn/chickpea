@@ -813,7 +813,6 @@ test('HTTP gateway admission logs gateway_delivery with the signed issuedAt lag'
       Date: { now: () => GATEWAY_NOW },
       GATEWAY_BINDING_SETTING: 'binding',
       GATEWAY_HTTP_SETTING: 'slack.gateway.httpDelivery.v1',
-      RELAY_BATCH_WINDOW_MS: 250,
       HttpDeliveryError,
       GatewayInboxConflictError: class extends Error {},
       parseHttpDeliveryState,
@@ -834,6 +833,7 @@ test('HTTP gateway admission logs gateway_delivery with the signed issuedAt lag'
   ) as new () => { receiveGatewayHttp(input: object): Promise<{ status: number; body: unknown }> };
   const probe = Object.assign(new Probe(), {
     env: {},
+    admissionWakeAt: () => GATEWAY_NOW,
     armAlarmNoLaterThan: async () => {},
     call(fn: (stores: object) => unknown) {
       try {

@@ -139,6 +139,68 @@ test('listen serves the same core over HTTP', { skip: loopbackSkipReason }, asyn
   }
 });
 
+test('slack.latencyMs holds HTTP Slack responses and stamps arrival and response times', { skip: loopbackSkipReason }, async () => {
+  const backend = new FakeSlackBackend();
+  const server = await backend.listen();
+  const post = async (method: string) => {
+    const startedAt = Date.now();
+    await (await fetch(`${server.url}/api/${method}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ channel: 'C_EXEC', thread_ts: '1.1', text: 'hi' }),
+    })).json();
+    return Date.now() - startedAt;
+  };
+
+  try {
+    const undelayedMs = await post('chat.postMessage');
+    const configured = await fetch(`${server.url}/__config`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slack: { latencyMs: 200 } }),
+    });
+    assert.equal(configured.status, 200);
+    const delayedMs = await post('chat.postMessage');
+    const [undelayed, delayed] = backend.callsOfMethod('chat.postMessage');
+
+    assert.ok(undelayedMs < 150, `undelayed round trip ${undelayedMs}ms`);
+    assert.ok(delayedMs >= 200, `delayed round trip ${delayedMs}ms`);
+    assert.ok(delayed!.respondedAt! - delayed!.at >= 200);
+    assert.ok(undelayed!.respondedAt! - undelayed!.at < 150);
+
+    const inProcessStartedAt = Date.now();
+    await backend.asFetch()('https://slack.com/api/chat.postMessage', {
+      method: 'POST', body: JSON.stringify({ channel: 'C_EXEC', text: 'hi' }),
+    });
+    assert.ok(Date.now() - inProcessStartedAt < 150, 'asFetch ignores slack.latencyMs');
+  } finally {
+    await server.close();
+  }
+});
+
+test('a held provider still answers the interaction classifier with a classification', { skip: loopbackSkipReason }, async () => {
+  const backend = new FakeSlackBackend({ provider: { mode: 'ok', delayMs: 50 } });
+  const server = await backend.listen();
+
+  try {
+    const response = await fetch(`${server.url}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        stream: true,
+        messages: [{ role: 'system', content: 'Classify one Slack interaction.' }],
+      }),
+    });
+    const stream = await response.text();
+
+    assert.match(stream, /\\"disposition\\":\\"reply\\"/);
+    assert.doesNotMatch(stream, new RegExp(STUB_REPLY_MARKER));
+    assert.equal(typeof backend.providerCalls()[0]?.at, 'number');
+  } finally {
+    await server.close();
+  }
+});
+
 test('http_500 provider mode surfaces a 500 with the raw marker for leak checks', async () => {
   const backend = new FakeSlackBackend({ provider: { mode: 'http_500' } });
   const fetchImpl = backend.asFetch();
@@ -241,4 +303,17 @@ test('memory Slack mapper preserves unsupported shared-channel flags from the fa
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('a provider delay spread moves the Agent hold and the classifier hold in opposite steps', () => {
+  const backend = new FakeSlackBackend({ provider: { mode: 'ok', delayMs: 1500, delaySpreadMs: 750 } });
+  const held = (classifier: boolean) =>
+    (backend as unknown as { heldDelayMs(classifier: boolean): number }).heldDelayMs(classifier);
+  const turns = [0, 1, 2].map(() => ({ classifier: held(true), agent: held(false) }));
+  for (const turn of turns) {
+    assert.equal(turn.classifier + turn.agent, 3000, `a turn's two holds sum to twice the delay: ${JSON.stringify(turn)}`);
+  }
+  assert.notEqual(turns[0]!.agent, turns[1]!.agent, 'the Agent hold changes from turn to turn');
+  assert.equal(held(true), held(true), 'a classifier call does not advance the spread');
+  assert.notEqual(held(false), turns[2]!.agent, 'an Agent call advances the spread');
 });
