@@ -326,7 +326,7 @@ function currentKeyForHosts(key, hosts) {
 function evalTryConnection(data) {
   const turnTries = connectionState.trials.filter(({ message }) => message === currentRequesterMessage).length;
   if (turnTries >= EVAL_TRIES_PER_TURN) {
-    return toolRefusal('Nothing was sent: this turn already made 8 try_connection calls, the most in one turn. Tell the person what was tried, without the key, and the one next step, and give them a setup link with request_setup.');
+    return toolRefusal('Nothing was sent: this turn already made 8 try_connection calls, the most in one turn. Tell the person what was tried, without the key, and the one next step, and ask for the key with request_setup.');
   }
   let tried;
   const record = (result) => {

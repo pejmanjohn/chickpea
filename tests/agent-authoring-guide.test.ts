@@ -305,7 +305,7 @@ test('Slack connector setup skips broad workspace inspection for a named service
   );
 });
 
-test('Slack and the guide route a catalog gap to a custom connection and default its key to a setup link', () => {
+test('Slack and the guide route a catalog gap to a custom connection and ask for its key with request_setup', () => {
   const slack = slackManagementInstruction('agent_synthetic');
   for (const text of [slack, AGENT_AUTHORING_GUIDE]) {
     assert.match(text, /HubSpot.s sign-in covers its CRM, not its Knowledge Base/);
@@ -313,7 +313,7 @@ test('Slack and the guide route a catalog gap to a custom connection and default
     assert.match(text, /DELETE only when asked/);
     assert.match(text, /request_setup/);
     assert.match(text, /pasted the key in their own current message, troubleshoot with/);
-    assert.match(text, /rotate the key and use the setup link next time/);
+    assert.match(text, /rotate the key and let you ask for it with `?request_setup`? next time/);
     assert.match(text, /`?try_connection`?, which sends one GET and saves nothing/);
     assert.match(text, /HTTP Basic with the key as the username/);
     assert.match(text, /On a 401,? try the other auth shapes the docs allow, then (?:say|tell the person) where to get a working key/);
@@ -326,10 +326,11 @@ test('Slack and the guide route a catalog gap to a custom connection and default
     assert.match(text, /Never write to the service/);
     assert.match(text, /add the connection anyway/);
     assert.match(text, /`?test_connection`?, then `?try_connection`? with its `?connectionId`? and no key/);
-    assert.match(text, /its refusal carries a setup link for the connection; give the (?:requester|person) that link/);
+    assert.match(text, /its refusal says how the (?:requester|person) adds the key instead; follow it/);
     assert.match(text, /never repeat a key/i);
   }
   assert.match(slack, /Never ask anyone to paste a key in chat/);
+  assert.match(slack, /point the requester to the Add key button its result says Chickpea posts, or give them the setup link it returns/);
   assert.match(slack, /such as “connect HubSpot”, call prepare_connector_setup directly/);
   assert.doesNotMatch(slack, /never ask for credentials in Slack/);
 });
