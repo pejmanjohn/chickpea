@@ -171,8 +171,8 @@ export interface SandboxTurnReader {
 }
 
 export interface TurnExecutionOptions {
-  /** Which lane and executor the turn_latency record names. */
-  latency: Pick<TurnLatencyContext, 'lane' | 'executor'>;
+  /** Which lane and executor the turn_latency record names, and a runner's hand-off delay. */
+  latency: Pick<TurnLatencyContext, 'lane' | 'executor' | 'handoffMs'>;
   /**
    * Recorded with the dispatch so the agent relays observed activity to the
    * executor that registered this turn's status (see status-relay.ts).

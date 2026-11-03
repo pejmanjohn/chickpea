@@ -33,6 +33,7 @@ import {
   type ObjectRestoreRequest,
   type ObjectRestoreRestartRequest,
 } from '../state/object-host.ts';
+import { RunnerBootMarks } from '../observability/runtime-latency.ts';
 import { createPlatformProductTelemetry } from '../telemetry/platform.ts';
 import {
   cacheSlackInstallationExecutionContexts,
@@ -92,6 +93,14 @@ import { MAX_TURN_DRAIN_BATCH } from './turn-jobs.ts';
  * Jobs already handed here always finish here, whatever the switch says.
  */
 export class SlackThreadRunner extends DurableObject implements SlackThreadRunnerRpc, InstallationObjectHostRpc {
+  /** This activation's `runner_boot` marks; every entry point reports its call first. */
+  private readonly boot = new RunnerBootMarks();
+  /**
+   * Hand-off delays of the jobs this activation admitted (`admit` start minus
+   * the state store's send time), by job id, until the job's first attempt
+   * here takes its own.
+   */
+  private readonly handoffs = new Map<string, number>();
   private jobs: ThreadRunnerJobStore | undefined;
   private presentations: SlackRunPresentationStoreLogic | undefined;
   /**
@@ -132,6 +141,8 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
         if (existing === null || existing > Date.now()) await this.ctx.storage.setAlarm(Date.now());
       } catch {
         // The 5 s backstop armed while the job ran still brings it back.
+      } finally {
+        this.boot.constructed();
       }
     });
   }
@@ -181,6 +192,9 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   }
 
   async admit(job: ThreadRunnerJob): Promise<{ admitted: boolean; refused?: string }> {
+    const sentAt = job?.sentAt;
+    this.boot.call('admit', { sentAt, turnJobId: job?.id });
+    const enteredAt = Date.now();
     try {
       assertInstallationOwnership(job?.installation, this.env as PlatformEnv);
     } catch {
@@ -198,6 +212,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       }
     }
     const result = this.store().admit({ ...job, payload: {} }, Date.now());
+    if (result.admitted && sentAt !== undefined) this.handoffs.set(job.id, enteredAt - sentAt);
     // The turn runs in this object's alarm, never in the admitting request.
     // Work left running after that request returns belongs to no invocation:
     // its logs are dropped, objects it creates are bound to a closed request,
@@ -222,6 +237,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
    * so the outbox is never held for the up to 14 s a coding cascade can take.
    */
   async stop(notice: TurnStopNotice): Promise<{ acknowledged: boolean }> {
+    this.boot.call('stop');
     let taken: { acknowledged: boolean; wake: boolean };
     try {
       taken = await this.stops().receive(notice);
@@ -238,6 +254,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   }
 
   async status(): Promise<ThreadRunnerStatus> {
+    this.boot.call('status');
     return this.store().status();
   }
 
@@ -251,6 +268,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     submissionId: string,
     status: TypedActivityStatus,
   ): Promise<StateRpcResult<null>> {
+    this.boot.call('observedStatus');
     try {
       if (!isSafeTypedActivityStatus(status)) return { ok: true, value: null };
       const key = `${instanceId}\n${submissionId}`;
@@ -281,6 +299,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     submissionId: string,
     request: MidRunReplyRequest,
   ): Promise<MidRunReplyOutcome> {
+    this.boot.call('midRunReply');
     const parsed = parseMidRunReplyRequest(request);
     if (!parsed) return { posted: false, refusal: 'unavailable' };
     try {
@@ -299,6 +318,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
    * started here.
    */
   async runFacts(turnJobId: string): Promise<StateRpcResult<SlackRunFactsView | null>> {
+    this.boot.call('runFacts');
     try {
       return { ok: true, value: this.registry.runFactsView(turnJobId) ?? null };
     } catch (error) {
@@ -310,12 +330,14 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   }
 
   async presentationGet(runId: string): Promise<StateRpcResult<SlackRunPresentation | null>> {
+    this.boot.call('presentationGet');
     return presentationResult(() => this.presentationStore().get(runId) ?? null);
   }
 
   async presentationTransition(
     input: SlackPresentationTransitionInput,
   ): Promise<StateRpcResult<SlackPresentationTransitionResult>> {
+    this.boot.call('presentationTransition');
     const result = presentationResult(() => this.presentationStore().transition(input));
     if (result.ok && result.value.outcome === 'applied') {
       // Keep the state store's readers current; best-effort like any publish.
@@ -327,6 +349,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   }
 
   async alarm(): Promise<void> {
+    this.boot.call('alarm');
     await this.runSoon();
   }
 
@@ -363,6 +386,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   }
 
   private host(): InstallationObjectHostRpc {
+    this.boot.call('host');
     return objectHostFunctions({
       env: this.env as PlatformEnv,
       storage: this.ctx.storage,
@@ -376,6 +400,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
         this.registry = this.statusRegistry();
         this.targets.clear();
         this.carried.clear();
+        this.handoffs.clear();
       },
       cancel: (now) => {
         const { settled, running } = this.store().cancelOpen(now);
@@ -384,6 +409,13 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       // What its constructor resumes on waking would move the storage before a restore is scheduled.
       quiesce: async () => quiesceThreadRunnerForRestore(this.store()),
     });
+  }
+
+  /** A job's hand-off delay for its `turn_latency`, once: a later attempt of the job carries none. */
+  private takeHandoff(jobId: string): { handoffMs?: number } {
+    const handoffMs = this.handoffs.get(jobId);
+    this.handoffs.delete(jobId);
+    return handoffMs === undefined ? {} : { handoffMs };
   }
 
   /** The state store, over a fresh stub per call (see CfTurnJobsForRunner). */
@@ -477,7 +509,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
           prefetchedSettings(getSettingsStore(env), start.settings),
         ).then((value) => value ?? null, () => undefined);
         return executeTurnJob(job, ports, {
-          latency: { lane: 'cloudflare', executor: 'runner' },
+          latency: { lane: 'cloudflare', executor: 'runner', ...this.takeHandoff(job.id) },
           observationRoute: { executor: 'runner', runnerKey: threadKey },
           control,
           onRetry,

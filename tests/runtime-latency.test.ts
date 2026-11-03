@@ -16,7 +16,9 @@ import {
   opaqueRunRef,
   opaqueTurnRef,
   recordStateRpc,
+  resetRunnerActivationsForTest,
   resetStateRpcCountersForTest,
+  RunnerBootMarks,
   startRelayAlarmMetrics,
   STATE_RPC_SAMPLE_EVERY,
   STATE_RPC_SLOW_MS,
@@ -252,6 +254,45 @@ test('thread_runner_alarm reports one runner alarm with fixed fields only', () =
   }]);
 });
 
+test('runner_boot logs an activation once, at its first call, and only the first in an isolate is cold', () => {
+  resetRunnerActivationsForTest();
+  const time = clock(50_000);
+  const { records, sink } = captureSink();
+  const first = new RunnerBootMarks(time.now, sink);
+  time.advance(30);
+  first.constructed();
+  time.advance(5);
+  first.call('admit', { sentAt: 48_100, turnJobId: 'evt:T_LATENCY:1785509000.000100' });
+  time.advance(100);
+  first.call('alarm');
+  first.call('admit', { sentAt: 50_100, turnJobId: 'evt:T_LATENCY:1785509000.000100' });
+  assert.deepEqual(records, [{
+    component: 'runtime',
+    event: 'runner_boot',
+    firstMethod: 'admit',
+    cold: true,
+    turnRef: opaqueTurnRef('evt:T_LATENCY:1785509000.000100'),
+    sentToConstructMs: 1_900,
+    constructMs: 30,
+    constructToFirstCallMs: 5,
+  }], 'later calls on the same activation log nothing');
+  assertContentFree(records[0]!);
+
+  // Another runner in the same isolate, woken by its alarm: no caller clock.
+  const next = new RunnerBootMarks(time.now, sink);
+  next.constructed();
+  next.call('alarm');
+  assert.deepEqual(records[1], {
+    component: 'runtime',
+    event: 'runner_boot',
+    firstMethod: 'alarm',
+    cold: false,
+    constructMs: 0,
+    constructToFirstCallMs: 0,
+  });
+  assert.equal(records.length, 2);
+});
+
 // Execute the production alarm entry point, not a copy: it must emit one
 // record whether the drain returns or throws, and never swallow the throw.
 const cloudflareSource = ts.createSourceFile(
@@ -306,6 +347,55 @@ test('alarm() emits a threw record and still rethrows a store failure', async ()
   assert.equal(alarmSink.records[0]?.outcome, 'threw');
 });
 
+// The production hand-off, not a copy: it sends its clock with the job.
+const admitToRunnerMethod = stateClass.members.find((member) =>
+  ts.isMethodDeclaration(member) && member.name.getText(cloudflareSource) === 'admitToRunner');
+assert.ok(admitToRunnerMethod, 'production admitToRunner() exists');
+
+function handoffProbe(answer: Record<string, unknown>) {
+  const sent: LogRecord[] = [];
+  const confirmed: unknown[][] = [];
+  const runner = {
+    admit: async (job: LogRecord) => {
+      sent.push({ ...job });
+      return answer;
+    },
+  };
+  const HandoffProbe = vm.runInNewContext(
+    ts.transpileModule(
+      `class HandoffProbe { ${admitToRunnerMethod!.getText(cloudflareSource)} }\nHandoffProbe`,
+      { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+    ).outputText,
+    {
+      Date: { now: () => 70_000 },
+      console: { warn: () => undefined },
+      slackAgentThreadKey: () => 'T1:C1:1.0',
+      threadRunnerStub: () => runner,
+      installationOwnershipOf: () => undefined,
+    },
+  ) as new () => { stores: unknown; env: unknown; admitToRunner(job: unknown): Promise<boolean> };
+  const probe = new HandoffProbe();
+  probe.env = {};
+  probe.stores = {
+    presentations: { get: () => undefined },
+    turnJobs: {
+      confirmRunner: (...args: unknown[]) => confirmed.push(args),
+    },
+  };
+  return { admit: () => probe.admitToRunner({ id: 'turn_1', turn: {}, assignment: {} }), sent, confirmed };
+}
+
+test("a runner hand-off sends the state store's clock with the job", async () => {
+  const admitted = handoffProbe({ admitted: true });
+  assert.equal(await admitted.admit(), true);
+  assert.equal(admitted.sent[0]?.sentAt, 70_000);
+  assert.deepEqual(admitted.confirmed, [['turn_1']]);
+
+  const refused = handoffProbe({ admitted: false, refused: 'installation_mismatch' });
+  assert.equal(await refused.admit(), false);
+  assert.deepEqual(refused.confirmed, [], 'a refused hand-off is retried, never confirmed');
+});
+
 test('turn_latency measures admission to the first acknowledged write and to final', () => {
   const time = clock(10_000);
   const { records, sink } = captureSink();
@@ -341,6 +431,17 @@ test('turn_latency measures admission to the first acknowledged write and to fin
     attemptMs: 5_100,
   }]);
   assertContentFree(records[0]!);
+});
+
+test("turn_latency logs a runner turn's hand-off delay from its context", () => {
+  const { records, sink } = captureSink();
+  new TurnLatencyTracker(
+    { admittedAt: 9_000, handoffMs: 1_900, lane: 'cloudflare', executor: 'runner' },
+    { turnJobId: 'evt:T_LATENCY:1785509000.000100', attempt: 1 },
+    clock(10_000).now,
+    sink,
+  ).emit('returned');
+  assert.equal(records[0]?.handoffMs, 1_900);
 });
 
 test('turn_latency omits durations it cannot measure and never throws', () => {

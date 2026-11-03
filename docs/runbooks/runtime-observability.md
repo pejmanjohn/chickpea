@@ -300,7 +300,7 @@ from `src/slack/claim-store.ts` rather than resending the request.
 
 ## Turn latency and relay alarm logs
 
-Five content-free events measure inbound delivery and turn scheduling. Each is one structured
+These content-free events measure inbound delivery and turn scheduling. Each is one structured
 console object with `component: "runtime"` and an `event` name, so Workers Logs
 indexes its top-level fields. Values are non-negative integer milliseconds,
 booleans, fixed tokens, or opaque references; no message text, Slack user or
@@ -310,7 +310,8 @@ channel IDs, settings keys or values, or error text. Emission never throws.
 | --- | --- | --- |
 | `relay_alarm` | Once per `TagStateStore.alarm()` invocation (Cloudflare) | `outcome` (`idle`, `drained`, `threw`), `durationMs`, `jobsListed`, `groups`, `jobsRun`, `jobsSettled`, `jobsRetained`, `jobsCarried`, `longestJobMs`, `turnsMs`, `needsRetry`, `rearmed`, `yielded`, `jobsDispatched` |
 | `thread_runner_alarm` | Once per `SlackThreadRunner.alarm()` invocation (Cloudflare) | `outcome` (`idle`, `drained`, `threw`), `jobs`, `ran`, `yielded`, `carried`, `dropped`, `durationMs` |
-| `turn_latency` | Once per relay attempt of one turn (both lanes) | `turnRef`, `runRef`, `lane` (`cloudflare`, `node`), `executor` (`alarm`, `runner`, `node`), `attempt`, `outcome` (`returned`, `threw`, `stopped`: a stopped run's ending), `firstWrite`, `final` (`delivered`, `deferred`, `none`), `admissionToStartMs`, `admissionToFirstWriteMs`, `admissionToFinalMs`, `receiptToAdmissionMs`, `receiptToFirstWriteMs`, `attemptMs`, `folded` (present when the turn took follow-ups: how many queued messages it read with its own), `foldedInformed` (of those, how many were a teammate's, read as information only), `read` (present when the turn replaced a mid-run 👀 with 👍: how many) |
+| `runner_boot` | Once per `SlackThreadRunner` activation (an instance constructed in memory), at the first call it serves (Cloudflare) | `firstMethod` (`admit`, `alarm`, `stop`, `status`, `observedStatus`, `midRunReply`, `runFacts`, `presentationGet`, `presentationTransition`, or `host` for a host function), `cold` (the first runner its isolate constructed), `constructMs` (the constructor through its resume check), `constructToFirstCallMs`, and with `admit`: `turnRef` and `sentToConstructMs` (the state store's send to the constructor's start) |
+| `turn_latency` | Once per relay attempt of one turn (both lanes) | `turnRef`, `runRef`, `lane` (`cloudflare`, `node`), `executor` (`alarm`, `runner`, `node`), `attempt`, `outcome` (`returned`, `threw`, `stopped`: a stopped run's ending), `firstWrite`, `final` (`delivered`, `deferred`, `none`), `admissionToStartMs`, `admissionToFirstWriteMs`, `admissionToFinalMs`, `receiptToAdmissionMs`, `receiptToFirstWriteMs`, `handoffMs` (a runner turn's first attempt: see below), `attemptMs`, `folded` (present when the turn took follow-ups: how many queued messages it read with its own), `foldedInformed` (of those, how many were a teammate's, read as information only), `read` (present when the turn replaced a mid-run 👀 with 👍: how many) |
 | `turn_fold` | When the state store confirms that a running turn's model read messages sent while it worked (both lanes) | `turnRef`, `late` (how many messages this confirmation covers; each message is counted once), `informed` (of those, how many were a teammate's, read as information only), `turn` (of those, how many it read after a tool step rather than before its reply), `edits` (edits of messages it had already read, counted apart from `late`) |
 | `turn_fold` (edit) | Once per delivery of a person's edit of a message (both lanes) | `op` (`edit_admission`), `outcome` (`admitted`, `already_admitted` for a redelivery, `no_live_turn`, `not_foldable`, `not_author`, `stale`, `unchanged`, `unsupported` for a state store without edit admission, or `failed` when admission threw and the delivery is retried) |
 | `turn_fold` (coding job) | When a coding job's wait pauses for new messages, a later wait for it ends, or the Agent passes it guidance | `turnRef`, `op` (`coding_pause`, `coding_resume` or `coding_relay`), `outcome` (pause: `messages` or `unchecked`; resume: `completed`, `paused` or a failure reason; relay: `sent`, `finished`, `stopped` or `not_sent`) |
@@ -360,6 +361,23 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   presentation in its own storage and repairs it itself; the state store's
   presentation copy is refreshed at lifecycle changes, and its repair sweep
   skips runner-owned turns.
+- `runner_boot` and `turn_latency.handoffMs` split the wait between the
+  state store handing a turn over and its runner starting it. `handoffMs` is
+  the runner's `admit` start minus the state store's send time: it compares
+  two objects' clocks, often in different locations, so it carries their
+  skew, and a negative difference logs as 0. The runner keeps it in memory by
+  turn and gives it to the first attempt it runs, so later attempts omit it.
+  It is also absent when the runner was evicted or erased between `admit`
+  and the turn's start, when that first try was put off before it ran (its
+  Slack installation unavailable), and when either object runs a version
+  without the field. Joined by `turnRef`, `runner_boot.sentToConstructMs` is
+  the part of `handoffMs` before the runner's constructor: placing and
+  activating the object, and for a `cold` one starting the isolate and
+  evaluating the script. Workers clocks read 0 while a script evaluates and
+  advance only on I/O, so script evaluation is not timed apart, and
+  `constructMs` and `constructToFirstCallMs` read 0 unless the constructor's
+  resume check reached storage. An `admit` with no `runner_boot` of its
+  `turnRef` reached an instance already in memory.
 - `turn_latency` measures from `turn_jobs.enqueued_at` (durable admission)
   and from `turn_jobs.received_at` (receipt). A gateway delivery becomes a turn
   row only when an alarm drains the gateway inbox, so while a long turn holds

@@ -15,6 +15,8 @@ export interface ThreadRunnerJob {
   payload: unknown;
   /** The installation that handed it over; absent on standalone. */
   installation?: InstallationOwnership;
+  /** When the state store sent this hand-off, on its clock. For latency only; never stored. */
+  sentAt?: number;
 }
 
 export interface ThreadRunnerStatus {

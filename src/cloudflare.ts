@@ -2716,6 +2716,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
         threadKey,
         payload,
         ...(installation ? { installation } : {}),
+        sentAt: Date.now(),
       });
       if (result.refused) throw new Error(result.refused);
     } catch {

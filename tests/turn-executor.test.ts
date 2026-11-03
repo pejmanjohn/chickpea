@@ -482,7 +482,8 @@ test('runner ports: a delivered turn records the same writes and passes its regi
     await options.onInteractionIntent?.({ disposition: 'work' } as never);
     await options.onDelivered?.('completed' as never);
   });
-  assert.equal(await executeTurnJob(pendingJob(), h.ports, h.options), true);
+  const latency = { ...h.options.latency, handoffMs: 1_900 };
+  assert.equal(await executeTurnJob(pendingJob(), h.ports, { ...h.options, latency }), true);
   assert.deepEqual(h.calls.map((call) => call.replace(/\(.*/, '')), [
     'recordAttempt', 'recordInteractionIntent', 'setActiveWork', 'markDelivered', 'setActiveWork',
     'telemetry',
@@ -490,7 +491,13 @@ test('runner ports: a delivered turn records the same writes and passes its regi
   const [run] = h.runs;
   assert.equal(run?.statusRegistry, h.statusRegistry);
   assert.equal(run?.settingsStore, undefined, 'the runner reaches settings over RPC');
-  assert.equal(run?.turnLatency?.executor, 'runner');
+  assert.deepEqual(run?.turnLatency, {
+    admittedAt: 1_785_900_000_000,
+    receivedAt: 1_785_899_999_000,
+    handoffMs: 1_900,
+    lane: 'cloudflare',
+    executor: 'runner',
+  }, "the runner's hand-off delay reaches turn_latency with the row's times");
   assert.deepEqual(h.prepared, [{
     generation: 'g1', executor: 'runner', runnerKey: 'T1:D1:1785900000.000100',
   }], 'the dispatch records where observed activity must go');

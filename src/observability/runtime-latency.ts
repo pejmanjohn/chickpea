@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import type { GatewayInboundDelivery } from '../slack/gateway/protocol.ts';
 import type { GatewaySessionRunnerHealthSnapshot } from '../slack/gateway/session-runner.ts';
+import type { SlackThreadRunnerRpc } from '../slack/thread-runner-rpc.ts';
 
 /**
  * Content-free latency logs for the turn relay (see
@@ -22,6 +23,7 @@ export type RuntimeLatencyEvent =
   | 'gateway_delivery'
   | 'thread_runner_alarm'
   | 'thread_runner_superseded'
+  | 'runner_boot'
   | 'slack_read'
   | 'interaction_judgment';
 
@@ -44,6 +46,7 @@ const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
   firstWrite: TOKEN,
   final: TOKEN,
   method: TOKEN,
+  firstMethod: TOKEN,
   op: TOKEN,
   transport: TOKEN,
   deliveryKind: TOKEN,
@@ -221,6 +224,71 @@ export function emitThreadRunnerSuperseded(
 }
 
 // ---------------------------------------------------------------------------
+// runner_boot: one record per in-memory activation of a SlackThreadRunner.
+
+/** What a runner activation served first: an RPC, its alarm, or a host function. */
+export type RunnerBootMethod = keyof SlackThreadRunnerRpc | 'alarm' | 'host';
+
+/** Runner activations this isolate has constructed. */
+let runnerActivations = 0;
+
+/**
+ * The marks of one SlackThreadRunner activation (an instance constructed in
+ * memory), logged once as `runner_boot` when it serves its first call.
+ * Workers clocks read 0 while a script evaluates and advance only on I/O, so
+ * placement, isolate start and script evaluation all fall in
+ * `sentToConstructMs`, and a span without I/O reads 0.
+ */
+export class RunnerBootMarks {
+  /** The first runner this isolate constructed. */
+  private readonly cold: boolean;
+  private readonly constructStartedAt: number;
+  private constructedAt: number | undefined;
+  private served = false;
+
+  constructor(
+    private readonly now: () => number = Date.now,
+    private readonly sink?: RuntimeLatencySink,
+  ) {
+    runnerActivations += 1;
+    this.cold = runnerActivations === 1;
+    this.constructStartedAt = now();
+  }
+
+  /** The constructor's `blockConcurrencyWhile` finished. */
+  constructed(): void {
+    this.constructedAt ??= this.now();
+  }
+
+  /**
+   * The activation serves a call; only the first is logged. `sentAt` is the
+   * caller's clock when it sent a hand-off.
+   */
+  call(
+    method: RunnerBootMethod,
+    from: { sentAt?: number | undefined; turnJobId?: string | undefined } = {},
+  ): void {
+    if (this.served) return;
+    this.served = true;
+    const at = this.now();
+    const constructedAt = this.constructedAt ?? at;
+    emitRuntimeLatency('runner_boot', {
+      firstMethod: method,
+      cold: this.cold,
+      turnRef: opaqueTurnRef(from.turnJobId),
+      sentToConstructMs: from.sentAt === undefined ? undefined : this.constructStartedAt - from.sentAt,
+      constructMs: constructedAt - this.constructStartedAt,
+      constructToFirstCallMs: at - constructedAt,
+    }, this.sink);
+  }
+}
+
+/** Focused tests only: the next activation is this isolate's first. */
+export function resetRunnerActivationsForTest(): void {
+  runnerActivations = 0;
+}
+
+// ---------------------------------------------------------------------------
 // turn_latency: one record per relay attempt of one turn.
 
 export type TurnLatencyLane = 'cloudflare' | 'node';
@@ -240,6 +308,8 @@ export interface TurnLatencyContext {
   admittedAt?: number;
   /** `turn_jobs.received_at`: gateway inbox acceptance, else admission. */
   receivedAt?: number;
+  /** A runner turn's first attempt: the runner's `admit` start minus the state store's send time (two clocks). */
+  handoffMs?: number;
   lane: TurnLatencyLane;
   executor: TurnLatencyExecutor;
 }
@@ -323,6 +393,7 @@ export class TurnLatencyTracker {
       admissionToFinalMs: this.final?.kind === 'delivered' ? since(this.final.at) : undefined,
       receiptToAdmissionMs: sinceReceipt(admittedAt),
       receiptToFirstWriteMs: sinceReceipt(this.firstWrite?.at),
+      handoffMs: this.context.handoffMs,
       attemptMs: end - this.startedAt,
       folded: this.folded > 0 ? this.folded : undefined,
       foldedInformed: this.foldedInformed > 0 ? this.foldedInformed : undefined,

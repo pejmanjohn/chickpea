@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
+import vm from 'node:vm';
+
+import ts from 'typescript';
 
 import { activityStatus } from '../src/activity/status.ts';
 import { SlackStatusRegistry } from '../src/slack/status-registry.ts';
@@ -63,7 +66,85 @@ test('a runner instance resumes a running job at once and runs admitted jobs onl
   assert.doesNotMatch(admit, /runSoon|runAlarm/);
   assert.match(admit, /this\.wake\?\.\(\);\s*const existing = await this\.ctx\.storage\.getAlarm\(\);\s*if \(existing === null \|\| existing > Date\.now\(\)\) await this\.ctx\.storage\.setAlarm\(Date\.now\(\)\);/);
   assert.equal(runner.match(/this\.runSoon\(\)/g)?.length, 1, 'only the alarm runs the loop');
-  assert.match(runner, /async alarm\(\): Promise<void> \{\s*await this\.runSoon\(\);/);
+  assert.match(runner, /async alarm\(\): Promise<void> \{\s*this\.boot\.call\('alarm'\);\s*await this\.runSoon\(\);/);
+});
+
+test('every runner entry point reports its call to the activation marks before it touches the instance', () => {
+  const path = new URL('../src/slack/thread-runner.ts', import.meta.url);
+  const source = ts.createSourceFile('thread-runner.ts', readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true);
+  const runner = source.statements.find((node): node is ts.ClassDeclaration =>
+    ts.isClassDeclaration(node) && node.name?.text === 'SlackThreadRunner');
+  assert.ok(runner);
+  // The first statement that reaches the instance (a plain local may come before it).
+  const firstStatement = (method: ts.MethodDeclaration) =>
+    method.body?.statements.map((statement) => statement.getText(source))
+      .find((text) => text.includes('this.')) ?? '';
+  const methods = runner.members.filter((member): member is ts.MethodDeclaration => ts.isMethodDeclaration(member));
+  const entries = methods.filter((method) =>
+    !method.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.PrivateKeyword));
+  assert.ok(entries.length >= 10, 'the RPC methods, the alarm and the host functions');
+  for (const method of entries) {
+    const name = method.name.getText(source);
+    // A missed entry point would credit its activation to a later call.
+    if (name.startsWith('chickpeaHost')) {
+      assert.match(firstStatement(method), new RegExp(`^return this\\.host\\(\\)\\.${name}\\(`), name);
+    } else {
+      assert.equal(firstStatement(method).startsWith(`this.boot.call('${name}'`), true, name);
+    }
+  }
+  const host = methods.find((method) => method.name.getText(source) === 'host');
+  assert.equal(host && firstStatement(host), "this.boot.call('host');");
+  // The constructor's end is marked however its resume check exits.
+  assert.match(readFileSync(path, 'utf8'), /\} finally \{\s*this\.boot\.constructed\(\);\s*\}\s*\}\);/);
+});
+
+test("the runner's admit reports the hand-off's send time and keeps its delay for that job's first attempt", async () => {
+  const text = readFileSync(new URL('../src/slack/thread-runner.ts', import.meta.url), 'utf8');
+  const source = ts.createSourceFile('thread-runner.ts', text, ts.ScriptTarget.Latest, true);
+  const runner = source.statements.find((node): node is ts.ClassDeclaration =>
+    ts.isClassDeclaration(node) && node.name?.text === 'SlackThreadRunner');
+  const member = (name: string) => runner?.members.find((node) =>
+    (ts.isMethodDeclaration(node) || ts.isPropertyDeclaration(node)) && node.name.getText(source) === name);
+  const parts = ['handoffs', 'admit', 'takeHandoff'].map(member);
+  assert.ok(parts.every(Boolean));
+  const AdmitProbe = vm.runInNewContext(
+    ts.transpileModule(`class AdmitProbe { ${parts.map((part) => part!.getText(source)).join('\n')} }\nAdmitProbe`, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText,
+    { Date: { now: () => 70_000 }, assertInstallationOwnership: () => undefined, console },
+  ) as new () => Record<string, unknown> & {
+    admit(job: unknown): Promise<Record<string, unknown>>;
+    takeHandoff(jobId: string): Record<string, unknown>;
+  };
+  const probe = () => {
+    const marks: unknown[][] = [];
+    const answers = [{ admitted: true }];
+    const instance = new AdmitProbe();
+    Object.assign(instance, {
+      env: {},
+      boot: { call: (method: string, from: Record<string, unknown>) => marks.push([method, { ...from }]) },
+      store: () => ({ admit: () => answers.shift() ?? { admitted: false } }),
+      ctx: { storage: { getAlarm: async () => null, setAlarm: async () => undefined } },
+    });
+    return { instance, marks };
+  };
+
+  const sent = probe();
+  assert.deepEqual({ ...await sent.instance.admit({ id: 'turn_1', threadKey: 'k', payload: {}, sentAt: 68_100 }) },
+    { admitted: true });
+  assert.deepEqual(sent.marks, [['admit', { sentAt: 68_100, turnJobId: 'turn_1' }]]);
+  // The state store retrying a hand-off the runner already holds keeps the first delay.
+  await sent.instance.admit({ id: 'turn_1', threadKey: 'k', payload: {}, sentAt: 69_500 });
+  assert.deepEqual({ ...sent.instance.takeHandoff('turn_2') }, {}, "another job never reads this job's delay");
+  assert.deepEqual({ ...sent.instance.takeHandoff('turn_1') }, { handoffMs: 1_900 });
+  assert.deepEqual({ ...sent.instance.takeHandoff('turn_1') }, {}, 'a later attempt of the job carries none');
+
+  // A state store on an older version sends no clock: no delay, no send time.
+  const older = probe();
+  assert.deepEqual({ ...await older.instance.admit({ id: 'turn_1', threadKey: 'k', payload: {} }) },
+    { admitted: true });
+  assert.deepEqual(older.marks, [['admit', { sentAt: undefined, turnJobId: 'turn_1' }]]);
+  assert.deepEqual({ ...older.instance.takeHandoff('turn_1') }, {});
 });
 
 test('the Worker entry exports SlackThreadRunner for its v11 binding', () => {
@@ -73,7 +154,8 @@ test('the Worker entry exports SlackThreadRunner for its v11 binding', () => {
 
 test('the runner executes through the shared turn executor as the runner executor', () => {
   const runner = readFileSync(new URL('../src/slack/thread-runner.ts', import.meta.url), 'utf8');
-  assert.match(runner, /executeTurnJob\(job, ports, \{\s*latency: \{ lane: 'cloudflare', executor: 'runner' \}/);
+  // The turn's latency context takes the hand-off delay of the job it runs.
+  assert.match(runner, /executeTurnJob\(job, ports, \{\s*latency: \{ lane: 'cloudflare', executor: 'runner', \.\.\.this\.takeHandoff\(job\.id\) \},/);
   assert.match(runner, /observationRoute: \{ executor: 'runner'/);
   assert.match(runner, /statusRegistry: this\.registry/);
 });
