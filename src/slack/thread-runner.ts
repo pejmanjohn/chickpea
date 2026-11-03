@@ -71,6 +71,7 @@ import {
   runnerTurnJobsPort,
   runThreadRunnerAlarm,
 } from './thread-runner-loop.ts';
+import { parseAdmissionAgentWake, type AdmissionAgentWake } from './admission-agent-wake.ts';
 import { RunnerStops, runnerStopRecorded } from './runner-stops.ts';
 import type {
   RunnerTurnBegin,
@@ -85,6 +86,8 @@ import { MAX_TURN_DRAIN_BATCH } from './turn-jobs.ts';
 /**
  * The longest a receipt wake counts toward the next hand-off's
  * `runnerWakeLeadMs`: an older wake belongs to a delivery that became no turn.
+ * Also how long a turn's first attempt trusts the wake admission sent its
+ * Agent object.
  */
 const RUNNER_WAKE_LEAD_WINDOW_MS = 60_000;
 
@@ -104,11 +107,15 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   private readonly boot = new RunnerBootMarks();
   /**
    * Hand-off delays of the jobs this activation admitted (`admit` start minus
-   * the state store's send time), and how long before the hand-off the state
-   * store woke this activation, by job id, until the job's first attempt here
-   * takes its own.
+   * the state store's send time), how long before the hand-off the state
+   * store woke this activation, and the wake it sent the turn's Agent object,
+   * by job id, until the job's first attempt here takes its own.
    */
-  private readonly handoffs = new Map<string, { handoffMs: number; runnerWakeLeadMs?: number }>();
+  private readonly handoffs = new Map<string, {
+    handoffMs: number;
+    runnerWakeLeadMs?: number;
+    agentWake?: AdmissionAgentWake;
+  }>();
   /** The state store's send time of the last receipt wake this activation served, until a hand-off counts it. */
   private wokenAt: number | undefined;
   private jobs: ThreadRunnerJobStore | undefined;
@@ -242,9 +249,11 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     if (result.admitted && sentAt !== undefined) {
       const lead = this.wokenAt === undefined ? undefined : sentAt - this.wokenAt;
       this.wokenAt = undefined;
+      const agentWake = parseAdmissionAgentWake(payload.agentWake);
       this.handoffs.set(job.id, {
         handoffMs: enteredAt - sentAt,
         ...(lead !== undefined && lead >= 0 && lead <= RUNNER_WAKE_LEAD_WINDOW_MS ? { runnerWakeLeadMs: lead } : {}),
+        ...(agentWake ? { agentWake } : {}),
       });
     }
     // The turn runs in this object's alarm, never in the admitting request.
@@ -445,11 +454,23 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     });
   }
 
-  /** A job's hand-off delay and wake lead for its `turn_latency`, once: a later attempt of the job carries none. */
-  private takeHandoff(jobId: string): { handoffMs?: number; runnerWakeLeadMs?: number } {
+  /**
+   * A job's hand-off delay and wake lead for its `turn_latency`, and the wake
+   * admission sent its Agent object, once: a later attempt of the job carries
+   * none. An Agent object woken longer ago than the window may have been
+   * evicted since, so its turn's freeze wakes it again.
+   */
+  private takeHandoff(jobId: string): {
+    latency: { handoffMs?: number; runnerWakeLeadMs?: number };
+    agentWake?: AdmissionAgentWake;
+  } {
     const handoff = this.handoffs.get(jobId);
     this.handoffs.delete(jobId);
-    return handoff ?? {};
+    if (!handoff) return { latency: {} };
+    const { agentWake, ...latency } = handoff;
+    return agentWake && Date.now() - agentWake.sentAt <= RUNNER_WAKE_LEAD_WINDOW_MS
+      ? { latency, agentWake }
+      : { latency };
   }
 
   /** The state store, over a fresh stub per call (see CfTurnJobsForRunner). */
@@ -542,8 +563,10 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
           env,
           prefetchedSettings(getSettingsStore(env), start.settings),
         ).then((value) => value ?? null, () => undefined);
+        const handoff = this.takeHandoff(job.id);
         return executeTurnJob(job, ports, {
-          latency: { lane: 'cloudflare', executor: 'runner', ...this.takeHandoff(job.id) },
+          latency: { lane: 'cloudflare', executor: 'runner', ...handoff.latency },
+          ...(handoff.agentWake ? { agentWake: handoff.agentWake } : {}),
           observationRoute: { executor: 'runner', runnerKey: threadKey },
           control,
           onRetry,

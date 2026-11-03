@@ -20,6 +20,12 @@ import { GATEWAY_HTTP_SETTING, parseHttpDeliveryState } from '../../src/slack/ga
 import type { GatewayInboundDelivery } from '../../src/slack/gateway/protocol.ts';
 import { gatewayUiReceiptNow } from '../../src/slack/gateway/ui-receipt.ts';
 import { receiptRunnerWake } from '../../src/slack/receipt-runner-wake.ts';
+import { admissionAgentInstance } from '../../src/slack/admission-agent-wake.ts';
+import { wakeSlackAgentObject } from '../../src/agents/turn-input.ts';
+import { CHICKPEA_SLACK_AGENT_BINDING } from '../../src/slack/bounded-agent-observation.ts';
+import type { ThreadRunnerJob } from '../../src/slack/thread-runner-jobs.ts';
+import type { PendingTurnJob } from '../../src/slack/turn-jobs.ts';
+import type { InstallationObjectRecorder } from '../../src/state/object-inventory.ts';
 import { slackAgentThreadKey } from '../../src/slack/thread-key.ts';
 import { threadRunnerStub } from '../../src/slack/thread-runner-rpc.ts';
 import { slackTurnExecutor } from '../../src/slack/turn-executor-flag.ts';
@@ -54,7 +60,7 @@ const stateMethod = (name: string) => {
 };
 const ReceiptProbe = vm.runInNewContext(
   ts.transpileModule(
-    `class ReceiptProbe { ${['admitGatewayDelivery', 'wakeRunnerAtReceipt', 'runnerMode', 'admitToRunner']
+    `class ReceiptProbe { ${['admitGatewayDelivery', 'wakeRunnerAtReceipt', 'runnerMode', 'admitToRunner', 'wakeAgentAtHandoff']
       .map(stateMethod).join('\n')} }\nReceiptProbe`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
   ).outputText,
@@ -72,13 +78,19 @@ const ReceiptProbe = vm.runInNewContext(
     installationOwnershipOf,
     effectiveTurnSlackInstallationId,
     carriedGatewayIdentity,
+    admissionAgentInstance,
+    wakeSlackAgentObject,
+    CHICKPEA_SLACK_AGENT_BINDING,
   },
 ) as new () => {
   admitGatewayDelivery(delivery: GatewayInboundDelivery): Promise<unknown>;
-  admitToRunner(job: TurnJob): Promise<boolean>;
+  admitToRunner(job: TurnJob | PendingTurnJob): Promise<boolean>;
 };
 
 export interface Wake { name: string; sentAt: number; turnJobId?: string }
+
+/** The installation the receipt store's env is scoped to. */
+export const RECEIPT_INSTALLATION_ID = 'inst_receipt_wake';
 
 /**
  * A state store that receives deliveries into an inbox answering `outcome`,
@@ -88,9 +100,21 @@ export function receiptStore(config: ConfigStoreLogic, options: {
   env?: Record<string, unknown>;
   outcome?: 'accepted' | 'duplicate';
   wake?: () => Promise<void>;
+  /** What the thread's Agent object answers a wake with. */
+  agentWake?: () => Promise<void>;
+  /** The installation's object inventory; by default one that records nothing. */
+  inventory?: Pick<InstallationObjectRecorder, 'recordAgentInstance'>;
+  /** A standalone deployment's state store, which names no installation. */
+  standalone?: boolean;
 } = {}) {
   const wakes: Wake[] = [];
+  const agentWakes: Wake[] = [];
   const handoffs: string[] = [];
+  /** What each hand-off sent its runner, in order. */
+  const admitted: ThreadRunnerJob[] = [];
+  /** Agent wakes and runner hand-offs, in the order they were sent. */
+  const sent: string[] = [];
+  const confirmed: string[] = [];
   let armed = 0;
   const namespace = {
     getByName: (name: string) => ({
@@ -98,23 +122,39 @@ export function receiptStore(config: ConfigStoreLogic, options: {
         wakes.push({ name, sentAt, ...(turnJobId === undefined ? {} : { turnJobId }) });
         return options.wake ? options.wake() : Promise.resolve();
       },
-      admit: async () => {
+      admit: async (job: ThreadRunnerJob) => {
+        sent.push(`runner:${name}`);
         handoffs.push(name);
+        admitted.push(job);
         return { admitted: true };
       },
     }),
   };
-  const env = scopeInstallationEnv(
-    { CHICKPEA_TENANCY: 'installation', SLACK_THREAD_RUNNER: namespace, ...options.env } as PlatformEnv,
-    { installationId: 'inst_receipt_wake' },
-  );
+  const agents = {
+    idFromName: (name: string) => name,
+    get: (name: string) => ({
+      chickpeaWake: (sentAt: number, turnJobId?: string) => {
+        sent.push(`agent:${name}`);
+        agentWakes.push({ name, sentAt, ...(turnJobId === undefined ? {} : { turnJobId }) });
+        return options.agentWake ? options.agentWake() : Promise.resolve();
+      },
+    }),
+  };
+  const bindings = { SLACK_THREAD_RUNNER: namespace, [CHICKPEA_SLACK_AGENT_BINDING]: agents, ...options.env };
+  const env = options.standalone
+    ? bindings as PlatformEnv
+    : scopeInstallationEnv(
+      { CHICKPEA_TENANCY: 'installation', ...bindings } as PlatformEnv,
+      { installationId: RECEIPT_INSTALLATION_ID },
+    );
   const stores = {
     settings: { getSetting: () => undefined },
     uiSurfaces: { get: () => undefined },
     gatewayInbox: { admit: () => options.outcome ?? 'accepted' },
     config,
     presentations: { get: () => undefined },
-    turnJobs: { confirmRunner() {} },
+    turnJobs: { confirmRunner: (id: string) => { confirmed.push(id); } },
+    objectInventory: options.inventory ?? { recordAgentInstance() {} },
   };
   const probe = Object.assign(new ReceiptProbe(), {
     env,
@@ -131,7 +171,7 @@ export function receiptStore(config: ConfigStoreLogic, options: {
       armed += 1;
     },
   });
-  return { probe, wakes, handoffs, armed: () => armed };
+  return { probe, env, wakes, agentWakes, handoffs, admitted, sent, confirmed, armed: () => armed };
 }
 
 export const HELP_GROUP = 'SHELP';

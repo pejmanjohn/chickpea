@@ -11,6 +11,7 @@ import type { SlackCredentialControl, SlackCredentialRevision } from '../identit
 import { installationObjectName } from '../config/installation-scope.ts';
 import { RUN_REVIEW_PSEUDONYM_SETTING } from '../review/capture.ts';
 import { runReviewConfigured } from '../review/port.ts';
+import type { AdmissionAgentWake } from './admission-agent-wake.ts';
 import { SLACK_SETTING_KEYS } from './credentials.ts';
 import { GATEWAY_DEPLOYMENT_IDENTITY_SETTING } from './gateway/identity.ts';
 import { GATEWAY_BINDING_SETTING } from './gateway/settings.ts';
@@ -143,6 +144,13 @@ export interface ThreadRunnerJobPayload {
    * Never stored: `admit` keeps no payload.
    */
   gatewayIdentity?: CarriedGatewayIdentity;
+  /**
+   * The wake the state store sent the turn's Agent object as it handed the
+   * turn over (admission-agent-wake.ts). Kept in memory for the turn's first
+   * attempt, whose freeze then sends no second wake to that object. Absent
+   * from an older state store: the freeze wakes it as before. Never stored.
+   */
+  agentWake?: AdmissionAgentWake;
 }
 
 /** The RPC surface of one `SlackThreadRunner` (see thread-runner.ts). */

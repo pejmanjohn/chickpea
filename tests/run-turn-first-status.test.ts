@@ -142,10 +142,14 @@ function surfaceTurn(surface: Surface): NormalizedSlackTurn {
 }
 
 let turns = 0;
+/** The harness's Slack calls that read the thread rather than write to it. */
+const SLACK_READS = new Set(['slack:conversations.replies', 'slack:conversations.history']);
 /** Slack rejects the custom assistant status (a platform error), when set. */
 let rejectCustomStatus = false;
 let holdCustomStatus: ((timeline: string[]) => Promise<void>) | undefined;
 let holdNativeStart: ((timeline: string[]) => Promise<void>) | undefined;
+/** Holds Slack's answer to a thread read; its end is marked `answered:<method>`. */
+let holdThreadRead: ((timeline: string[]) => Promise<void>) | undefined;
 type PresentationRead = () => SlackRunPresentation | undefined;
 let holdClassifierAnswer: ((timeline: string[], presentation: PresentationRead) => Promise<void>) | undefined;
 const REPLY_ANSWER = '{"disposition":"reply","reason":"substantive_request"}';
@@ -153,6 +157,8 @@ const REPLY_ANSWER = '{"disposition":"reply","reason":"substantive_request"}';
 let classifierAnswer = REPLY_ANSWER;
 /** Runs inside the Agent stand-in before it answers. */
 let holdAgentPrompt: ((timeline: string[], presentation: PresentationRead) => Promise<void>) | undefined;
+/** The running turn's timeline, for a hook that waits on it. */
+let currentTimeline: string[] = [];
 /** The platform env the turn runs under; an `AI` on it is Clef's binding. */
 let platformEnv: Record<string, unknown> | undefined;
 
@@ -171,6 +177,7 @@ async function firstStatusTimeline(
   turnOverrides: Partial<NormalizedSlackTurn> = {},
 ) {
   const timeline: string[] = [];
+  currentTimeline = timeline;
   const recordedIntents: SlackInteractionIntent[] = [];
   const reactionsAdded: Array<Record<string, unknown>> = [];
   let presentation: SlackRunPresentation | undefined;
@@ -268,6 +275,10 @@ async function firstStatusTimeline(
       await holdCustomStatus(timeline);
       timeline.push('acknowledged:assistant.threads.setStatus');
     }
+    if (holdThreadRead && SLACK_READS.has(`slack:${method}`)) {
+      await holdThreadRead(timeline);
+      timeline.push(`answered:${method}`);
+    }
     return { ok: true, ts: '1788000100.000100', channel: turn.channelId, messages: [] };
   };
   const client = {
@@ -347,7 +358,9 @@ async function firstStatusTimeline(
   return {
     timeline,
     beforeFirstWrite: timeline.slice(0, first),
-    slackWrites: timeline.filter((entry) => entry.startsWith('slack:')),
+    // The thread's reads run beside these writes; they never come first (`firstSlackCall`).
+    slackWrites: timeline.filter((entry) => entry.startsWith('slack:') && !SLACK_READS.has(entry)),
+    firstSlackCall: timeline[first],
     firstWrite: first,
     presentation: readPresentation(),
     recordedIntents,
@@ -373,9 +386,10 @@ async function firstStatusTimeline(
  */
 for (const surface of ['channel_mention', 'dm', 'thread_follow_up'] as const) {
   test(`${surface}: native first, before any other read, then the custom status`, async () => {
-    const { beforeFirstWrite, slackWrites, timeline } = await firstStatusTimeline(surface);
+    const { beforeFirstWrite, firstSlackCall, slackWrites, timeline } = await firstStatusTimeline(surface);
     assert.deepEqual(beforeFirstWrite, ['settings.getSetting'],
       'only the public URL is read before the native start');
+    assert.equal(firstSlackCall, 'slack:session:processing', 'no Slack read goes before the native start');
     assert.deepEqual(slackWrites.slice(0, 3), [
       'slack:session:processing', // the fast first write
       'slack:session:active', // hand-over, so the custom text renders
@@ -683,6 +697,43 @@ test('a confident Clef react_only takes the classifier\'s reaction and target an
   });
 });
 
+// Defects caught: a thread read started for a turn its start already knows
+// will not dispatch (a command, a stop, a basis restored as react_only), and
+// one a turn judged react_only later leaves running after it returns.
+test("a turn reads its thread beside its preparation only if it may dispatch, and never returns before that read ends", async () => {
+  const threadReads = (timeline: string[]) => timeline.filter((entry) => SLACK_READS.has(entry)).length;
+  const dispatching = await firstStatusTimeline('dm', null, {}, dmAssignment);
+  assert.equal(threadReads(dispatching.timeline), 1, 'the same turn shape reads its thread once');
+  const command = await firstStatusTimeline('dm', null, {}, dmAssignment, { text: '!memory help' });
+  const stopped = await firstStatusTimeline('dm', null, {
+    stopEnding: {
+      beforeDispatch: true,
+      finish: async () => ({ stopperUserId: 'U_STOPPER', unread: 1, pullRequests: [], windingDown: false }),
+    },
+  }, dmAssignment);
+  const restored = await firstStatusTimeline('dm', null, {}, dmAssignment, {
+    interactionIntent: { disposition: 'react_only', reason: 'pure_ack', reaction: 'seen', target: 'thread_root' },
+  });
+  for (const [name, { timeline }] of [['a command', command], ['a stopped turn', stopped], ['a restored react_only', restored]] as const) {
+    assert.equal(threadReads(timeline), 0, `${name} reads no thread: ${timeline.join(' ')}`);
+  }
+
+  platformEnv = fakeClefEnv('react_only').env;
+  classifierAnswer = JSON.stringify({ disposition: 'react_only', reason: 'pure_ack', reaction: 'seen', target: 'thread_root' });
+  holdClassifierAnswer = async () => undefined;
+  holdThreadRead = () => new Promise((resolve) => setTimeout(resolve, 100));
+  try {
+    await withScriptedClassifier(async () => {
+      const { timeline } = await firstStatusTimeline('dm', null, {}, classifiedAssignment);
+      assert.equal(timeline.includes('agentPrompt'), false, `judged react_only, it never dispatches: ${timeline.join(' ')}`);
+      assert.equal(threadReads(timeline), 1, 'the read it started beside its preparation is its only one');
+      assert.ok(timeline.some((entry) => entry.startsWith('answered:')), `the attempt waited for it: ${timeline.join(' ')}`);
+    });
+  } finally {
+    holdThreadRead = undefined;
+  }
+});
+
 // Defect caught: a retry judges again and may answer differently from the
 // basis the first attempt recorded.
 test('a restored intent asks neither Clef nor the classifier and records nothing', async () => {
@@ -771,6 +822,71 @@ test('a turn wakes its Agent object once its plan is saved, before it stages, an
   assert.deepEqual(events, ['freeze', 'freeze:saved', `wake:${instanceId}`, 'stage']);
   assert.equal(latency.length, 1);
   assert.ok(Number(latency[0]?.agentWakeLeadMs) >= 25, `the lead covers the wait to stage: ${latency[0]?.agentWakeLeadMs}`);
+});
+
+// Defect caught: the plan's model, image-role, browser and login reads
+// waiting for its workspace, connection and previous-plan reads: two rounds
+// to the state store, one after the other, instead of one.
+test("the plan's independent reads go to the state store in one round", async () => {
+  const { timeline } = await firstStatusTimeline('dm', null, {
+    // The previous plan's read answers only once the image role was asked for (or after the bound).
+    getBoundRuntimePlan: async () => {
+      currentTimeline.push('turnJobs.getBoundRuntimePlan');
+      await waitUntil(() => currentTimeline.includes('config.getAgentModelRole'));
+      currentTimeline.push('answered:turnJobs.getBoundRuntimePlan');
+      return undefined;
+    },
+  }, dmAssignment);
+  const role = timeline.indexOf('config.getAgentModelRole');
+  assert.ok(role >= 0, `the image role was read: ${timeline.join(' ')}`);
+  assert.ok(role < timeline.indexOf('answered:turnJobs.getBoundRuntimePlan'),
+    `it did not wait for the previous plan's read: ${timeline.join(' ')}`);
+  assert.ok(timeline.includes('agentPrompt'), 'the turn dispatched');
+});
+
+// Defects caught: a freeze that wakes the object admission already woke (two
+// wakes per turn), a lead counted from the freeze when admission's wake came
+// first; and when admission woke another instance, a freeze that then skips
+// its own object's wake or counts its lead from admission's.
+test("admission's wake of the instance the plan names stands; one of another instance changes nothing", async (t) => {
+  const latency: Record<string, unknown>[] = [];
+  t.mock.method(console, 'info', (record: unknown) => {
+    if ((record as { event?: unknown } | undefined)?.event === 'turn_latency') {
+      latency.push(record as Record<string, unknown>);
+    }
+  });
+  const frozenInstance = `agent_${'d'.repeat(40)}`;
+  const run = async (admissionAgentWake?: RunTurnOptions['admissionAgentWake']) => {
+    const events: string[] = [];
+    await firstStatusTimeline('dm', null, {
+      turnLatency: { lane: 'cloudflare', executor: 'runner' },
+      ...(admissionAgentWake ? { admissionAgentWake } : {}),
+      onRuntimePlan: async (candidate) => {
+        events.push('freeze');
+        return { runtimePlan: candidate, instanceId: frozenInstance };
+      },
+      wakeAgentObject: async (id) => { events.push(`wake:${id}`); },
+      agentPrompt: async ({ onAgentStaged }) => {
+        events.push('stage');
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        onAgentStaged?.(0);
+        return AGENT_ANSWER;
+      },
+    }, dmAssignment);
+    return { events, record: latency.at(-1)! };
+  };
+  const sentAt = Date.now() - 5_000;
+  const admitted = await run({ instanceId: frozenInstance, sentAt });
+  assert.deepEqual(admitted.events, ['freeze', 'stage'], 'no second wake of the object admission woke');
+  assert.equal(admitted.record.agentWakeSource, 'admission');
+  assert.ok(Number(admitted.record.agentWakeLeadMs) >= 5_000, `the lead counts from admission's wake: ${admitted.record.agentWakeLeadMs}`);
+
+  const baseline = await run();
+  const other = await run({ instanceId: `agent_${'e'.repeat(40)}`, sentAt });
+  assert.deepEqual(other.events, baseline.events, 'the turn freezes, wakes and stages as with no admission wake');
+  assert.deepEqual(other.events, ['freeze', `wake:${frozenInstance}`, 'stage']);
+  assert.equal(other.record.agentWakeSource, 'plan');
+  assert.ok(Number(other.record.agentWakeLeadMs) < 5_000, `the lead counts from the freeze's wake: ${other.record.agentWakeLeadMs}`);
 });
 
 // Defect caught: a wake hung on anything but this attempt's freeze (an

@@ -16,6 +16,7 @@ import { givenUpRecoveryText } from '../usage/run-settlement.ts';
 import type { UsageStore } from '../usage/types.ts';
 import type { WorkStore } from '../work/types.ts';
 import { isPlatformReset, settlementFailureFacts } from './agent-failure-diagnostics.ts';
+import type { AdmissionAgentWake } from './admission-agent-wake.ts';
 import type { SlackPresentationStatePort } from './agent-view-presentation.ts';
 import { alarmYieldIsFree, type AlarmTurnJobControl } from './alarm-turn-drain.ts';
 import type { SlackStateLogic } from './claim-store.ts';
@@ -173,6 +174,8 @@ export interface SandboxTurnReader {
 export interface TurnExecutionOptions {
   /** Which lane and executor the turn_latency record names, and a runner's hand-off delay and wake lead. */
   latency: Pick<TurnLatencyContext, 'lane' | 'executor' | 'handoffMs' | 'runnerWakeLeadMs'>;
+  /** The wake admission sent this turn's Agent object as it handed the turn over (see RunTurnOptions). */
+  agentWake?: AdmissionAgentWake;
   /**
    * Recorded with the dispatch so the agent relays observed activity to the
    * executor that registered this turn's status (see status-relay.ts).
@@ -514,6 +517,7 @@ export async function executeTurnJob(
         : {}),
       ...(ports.statusRegistry ? { statusRegistry: ports.statusRegistry } : {}),
       ...(runtimePlanDecision ? { runtimePlanDecision } : {}),
+      ...(options.agentWake ? { admissionAgentWake: options.agentWake } : {}),
       onRuntimePlan: async (candidate) => {
         const decision = await ports.turnJobs.freezeRuntimePlan(job.id, candidate);
         frozenPlan = decision.runtimePlan;

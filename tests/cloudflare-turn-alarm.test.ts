@@ -377,7 +377,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
   const { AgentObservationYield, AgentPromptFailure } = await import('../src/slack/flue-dispatch.ts');
   const { alarmYieldIsFree } = await import('../src/slack/alarm-turn-drain.ts');
   const alarmMethods = [
-    'armAlarmNoLaterThan', 'alarm', 'drainRelayAlarm', 'dispatchToRunners', 'admitToRunner',
+    'armAlarmNoLaterThan', 'alarm', 'drainRelayAlarm', 'dispatchToRunners', 'admitToRunner', 'wakeAgentAtHandoff',
     'dispatchingWhile', 'deliverStopNotices',
   ].map((name) => {
     const method = (stateClass as ts.ClassDeclaration).members.find((member) =>
@@ -845,7 +845,7 @@ test('the default runner executor hands a message admitted mid-drain to its runn
 test('an OAuth continuation already handed to a thread runner is admitted there again', async (context) => {
   context.mock.method(Date, 'now', () => NOW);
   const resumeMethods = [
-    'resumeTurnAfterOAuth', 'admitToRunner', 'armAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode',
+    'resumeTurnAfterOAuth', 'admitToRunner', 'wakeAgentAtHandoff', 'armAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode',
   ].map((name) => {
     const method = stateClass.members.find((member) =>
       ts.isMethodDeclaration(member) && member.name.getText(source) === name);
@@ -913,7 +913,7 @@ test('an OAuth continuation already handed to a thread runner is admitted there 
 
 function admissionHarness(runner: { refuse?: boolean } = {}) {
   const methods = [
-    'admitSlackTurn', 'admitToRunner', 'armAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode',
+    'admitSlackTurn', 'admitToRunner', 'wakeAgentAtHandoff', 'armAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode',
   ].map((name) => {
     const method = (stateClass as ts.ClassDeclaration).members.find((member) =>
       ts.isMethodDeclaration(member) && member.name.getText(source) === name);

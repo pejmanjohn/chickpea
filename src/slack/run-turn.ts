@@ -58,6 +58,7 @@ import {
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
 import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
 import { wakeSlackAgentObject } from '../agents/turn-input.ts';
+import type { AdmissionAgentWake } from './admission-agent-wake.ts';
 import { buildTurnEnvelope } from './turn-envelope-builder.ts';
 import {
   compileFrontDeskPlan,
@@ -84,11 +85,9 @@ import { parseMemoryCommand } from '../memory/commands.ts';
 import { handleMemoryCommand, prepareMemoryTurn } from '../memory/runtime.ts';
 import {
   handleRoutineSlackRequest,
-  parseRoutineCommand,
   routineResponseVisibility,
   shouldHandleRoutineCommandTurn,
 } from '../routines/commands.ts';
-import { isRoutineSlackTurn } from '../routines/slack-context.ts';
 import { replyFooterModelLabel } from './message-format.ts';
 import { createMidRunReplyHandler } from './midrun-reply.ts';
 import { isSandboxDisconnect } from '../sandbox/reconnect.ts';
@@ -133,15 +132,15 @@ import { collectAdmittedSlackListIds } from './lists/admission.ts';
 import { conversationThreadTs, slackAgentContinuityKey, slackAgentThreadKey, slackConversationKind, slackTurnSurface } from './thread-key.ts';
 import { slackTimestampMs } from './timestamp.ts';
 import {
-  assembleRetainedSlackContext, formatSlackPublicHandoff, type SlackPublicDelivery,
+  assembleRetainedSlackContext, formatSlackPublicHandoff, type SlackPublicDelivery, type SlackPublicHandoffMessage,
 } from './public-context.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 import {
   isAgentAskSilentReply,
   isHandedBackTurn,
-  isLaterCoAddressedTurn,
   personRequestText,
 } from './agent-asks.ts';
+import { isDeterministicSlackCommand, slackTurnTypedByPerson } from './turn-commands.ts';
 import {
   effectiveTurnSlackInstallationId,
   resolveSlackInstallationExecutionContext,
@@ -288,6 +287,12 @@ export interface RunTurnOptions {
   agentPrompt?: typeof promptSlackThreadAgent;
   /** Focused seam; production wakes the thread's agent object on Cloudflare only. */
   wakeAgentObject?: (instanceId: string) => Promise<void>;
+  /**
+   * The wake the state store sent the thread's Agent object as it handed
+   * this turn to its runner. The freeze sends no second wake to the instance
+   * it named, and the turn's lead counts from this one.
+   */
+  admissionAgentWake?: AdmissionAgentWake;
   /** Adapter-owned dispatch/read checkpoints restored by the relay. */
   flueDispatch?: SlackFlueDispatchState;
   /** Durable turn key forwarded to the sandbox for cap/idempotency state. */
@@ -454,8 +459,11 @@ export interface RunTurnOptions {
   onMidRunReply?: () => void;
   /** Set by `runTurn` itself when `turnLatency` is present: how long staging the turn's input took. */
   onAgentStaged?: (ms: number) => void;
-  /** Set by `runTurn` itself when `turnLatency` is present: the turn sent its Agent object's wake. */
-  onAgentWake?: () => void;
+  /**
+   * Set by `runTurn` itself when `turnLatency` is present: the turn's Agent
+   * object was woken, by the freeze now or by admission (`admissionSentAt`).
+   */
+  onAgentWake?: (admissionSentAt?: number) => void;
 }
 
 /** How a stopped turn ends (see RunTurnOptions.stopEnding). */
@@ -553,7 +561,7 @@ export async function runTurn(
       onRead: () => tracker.markRead(),
       onMidRunReply: () => tracker.markMidRunReply(),
       onAgentStaged: (ms) => tracker.markAgentStage(ms),
-      onAgentWake: () => tracker.markAgentWake(),
+      onAgentWake: (admissionSentAt) => tracker.markAgentWake(admissionSentAt),
       onDelivered: async (outcome) => {
         tracker.markFinal('delivered');
         if (outcome === 'stopped') stopped = true;
@@ -675,7 +683,7 @@ async function runTurnAttempt(
   // (typedByPerson in processSlackEvent); this is the runtime's own gate. A
   // message that mentioned several Agents is one command, for the first. A
   // setup's wake is Chickpea's note.
-  const typedByPerson = !turn.agentAsk && !turn.setupWake && !isLaterCoAddressedTurn(turn);
+  const typedByPerson = slackTurnTypedByPerson(turn);
   // The thread's own Agent, handed a teammate's answer: it may end the turn
   // silently, so its reply never streams before it is known.
   const handedBack = isHandedBackTurn(turn, assignment);
@@ -720,9 +728,7 @@ async function runTurnAttempt(
     }
   }
   const memoryCommand = typedByPerson ? parseMemoryCommand(turn.text) : undefined;
-  const deterministicCommand = Boolean(memoryCommand) ||
-    Boolean(turn.managementApprovalProposalId) ||
-    (typedByPerson && isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text, commandAddress)));
+  const deterministicCommand = isDeterministicSlackCommand(turn, commandAddress);
   // Delivery-only recovery replays the exact persisted answer. It must not
   // re-resolve current Agent memory (which could both block recovery
   // on a changed lease and unnecessarily touch live state).
@@ -1113,12 +1119,18 @@ async function runTurnAttempt(
   // instance, which may then be addressed: waking it lets its activation
   // overlap the rest of this preparation instead of delaying its staging. A
   // turn already judged react_only never stages. A failed wake is ignored:
-  // staging activates the object itself.
+  // staging activates the object itself. Admission's wake of the same
+  // instance came first, so it stands, and is the one the lead counts from.
   const wakeAgentObject = (instanceId: string): void => {
+    if (turn.interactionIntent?.disposition === 'react_only') return;
+    if (options.admissionAgentWake?.instanceId === instanceId) {
+      options.onAgentWake?.(options.admissionAgentWake.sentAt);
+      return;
+    }
     const wake = options.wakeAgentObject ?? (isCloudflareTarget()
       ? (id: string) => wakeSlackAgentObject(platformEnv, CHICKPEA_SLACK_AGENT_BINDING, id, options.turnId)
       : undefined);
-    if (!wake || turn.interactionIntent?.disposition === 'react_only') return;
+    if (!wake) return;
     options.onAgentWake?.();
     void Promise.resolve().then(() => wake(instanceId)).catch(() => undefined);
   };
@@ -1267,10 +1279,36 @@ async function runTurnAttempt(
           options,
         }),
       });
+  const preparing = prepareTurn();
+  const turnConfig = () => options.appStores?.config ?? getConfigStore(platformEnv);
+  /** The thread record is Chickpea's contract's, and only when no hand-off's context stands in. */
+  const threadRecordFor = (frozenHandoff: readonly SlackPublicHandoffMessage[]) =>
+    assignment.runtimeContract === 'chickpea-v1' && frozenHandoff.length === 0 ? turnConfig() : undefined;
+  const readThread = async (threadRecord: ReturnType<typeof turnConfig> | undefined) => hydrateTurnSlackContext({
+    client,
+    turn,
+    ...(installationContext ? { botUserId: installationContext.botUserId } : {}),
+    siblingBotUserIds: await siblingBotUserIds(assignment, installationContext?.botUserId, turnConfig(), turn.workspaceId),
+    sharedAppReads,
+    state: options.appStores?.slackState ?? getSlackStateStore(platformEnv),
+    ...(threadRecord ? { record: threadRecord } : {}),
+    followUps,
+  });
+  // The thread's messages wait for neither the memory nor the plan: only a
+  // hand-off's context, which comes from the assignment, can stand in for
+  // them. A turn that may dispatch reads them beside its preparation, once
+  // the native indicator is issued; one that then does not (judged
+  // react_only, a model to repair) drops what it read.
+  const earlyThreadRead = !stoppedBeforeDispatch && !deterministicCommand &&
+      turn.interactionIntent?.disposition !== 'react_only' && !assignment.handoffContext?.length &&
+      !options.runtimePlanDecision?.runtimePlan.handoffContext?.length
+    ? readThread(threadRecordFor([]))
+    : undefined;
+  const earlyThreadReadSettled = earlyThreadRead?.catch(() => undefined);
   try {
     const [visible, preparation] = await Promise.allSettled([
       earlyStatusWork,
-      prepareTurn(),
+      preparing,
     ]);
     if (visible.status === 'rejected') throw visible.reason;
     earlyStatusTurn = visible.value;
@@ -1282,6 +1320,7 @@ async function runTurnAttempt(
     await admittedStatusShown;
     earlyStatusTurn?.close();
     await judgment?.settled;
+    await earlyThreadReadSettled;
     throw error;
   }
   const {
@@ -1605,27 +1644,18 @@ async function runTurnAttempt(
       !stoppedBeforeDispatch && !options.flueDispatch?.dispatchEnvelope
     ? turnEnvelopeBuilder(runtimePlanDecision?.runtimePlan, settingsStore, options.appStores?.config, platformEnv)
     : {};
-  const turnConfig = () => options.appStores?.config ?? getConfigStore(platformEnv);
   const readTurnContext = async () => {
-    const continuation = await readThreadContinuation(options, runtimePlanDecision, turn);
-    const frozenHandoff = continuation
-      ? []
-      : runtimePlanDecision?.runtimePlan.handoffContext ?? assignment.handoffContext ?? [];
-    const threadRecord = assignment.runtimeContract === 'chickpea-v1' && frozenHandoff.length === 0
-      ? turnConfig()
-      : undefined;
+    const continuationRead = readThreadContinuation(options, runtimePlanDecision, turn);
+    // A hand-off's context stands in for the thread's messages only while the
+    // transcript holds no earlier turn of the thread; without one, the
+    // messages are read (or were, beside the preparation) without waiting
+    // for the continuation.
+    const handoff = runtimePlanDecision?.runtimePlan.handoffContext ?? assignment.handoffContext ?? [];
+    const frozenHandoff = handoff.length > 0 && !(await continuationRead) ? handoff : [];
+    const threadRecord = threadRecordFor(frozenHandoff);
     const hydratedContext = frozenHandoff.length > 0
       ? currentMessageOnlyContext(turn)
-      : await hydrateTurnSlackContext({
-          client,
-          turn,
-          ...(installationContext ? { botUserId: installationContext.botUserId } : {}),
-          siblingBotUserIds: await siblingBotUserIds(assignment, installationContext?.botUserId, turnConfig(), turn.workspaceId),
-          sharedAppReads,
-          state: options.appStores?.slackState ?? getSlackStateStore(platformEnv),
-          ...(threadRecord ? { record: threadRecord } : {}),
-          followUps,
-        });
+      : await (earlyThreadRead ?? readThread(threadRecord));
     const context = await resolveSlackContextNames(
       client,
       turn.workspaceId,
@@ -1635,6 +1665,7 @@ async function runTurnAttempt(
         ...(threadRecord ? { store: threadRecord, agentId: assignment.agentId } : {}),
       }),
     );
+    const continuation = await continuationRead;
     const promptContext = continuation
       ? slackContextSinceWatermark(context, continuation.messageTs, assignment.agentId)
       : context;
@@ -2690,6 +2721,8 @@ async function runTurnAttempt(
     // and its usage record; both land here, within the classifier's own bound.
     await latePlan;
     await judgment?.settled;
+    // A thread read the turn did not use (it did not dispatch) ends here too.
+    await earlyThreadReadSettled;
     // Work writes queued behind a slow Work store are recorded now, within a
     // bound. The reply and its cleanup are done, so the user waits for none of
     // them. A yielded turn waits too: work left running after the alarm
@@ -3081,9 +3114,18 @@ export async function freezeRuntimePlanForTurn(input: {
         actorMembershipId: input.turn.actorMembershipId,
       }
     : undefined;
-  // Independent reads: the workspace policy, the actor's connections, and
-  // the thread's previous plan.
-  const [workspaceDecision, connectionContext, previous] = await Promise.all([
+  const canonicalModel = resolvedAssignmentModel(input.assignment);
+  if (!canonicalModel) {
+    throw new Error('Runtime plan compilation requires a frozen model.');
+  }
+  const settingsStore = input.settingsStore ?? getSettingsStore(input.platformEnv);
+  // Independent reads, in one round to the state store: the workspace
+  // policy, the actor's connections, the thread's previous plan, the runtime
+  // model, the image role, the browser capability, and the granted website
+  // logins.
+  const [
+    workspaceDecision, connectionContext, previous, runtimeModel, imageRole, browserCapability, websiteLogins,
+  ] = await Promise.all([
     resolveCodingWorkspaceDecision(
       input.assignment,
       input.platformEnv,
@@ -3098,33 +3140,6 @@ export async function freezeRuntimePlanForTurn(input: {
           input.turn.actorMembershipId, input.assignment.agentId,
         )
       : undefined,
-  ]);
-  // The constant guidance opens the agent's system prompt in code
-  // (shared-prefix.ts); the plan carries only what names this Agent.
-  const instructions = slackTenantInstructions(input.assignment);
-  const allEffectiveConnections = connectionContext?.effective ?? [];
-  const connectionAuthorizations = connectionContext?.authorizations;
-  const teamReconnects = connectionContext?.teamReconnects;
-  const sameActorThread = previous && input.turn.actorMembershipId &&
-    previous.actorMembershipId === input.turn.actorMembershipId &&
-    previous.agentId === input.assignment.agentId &&
-    previous.ownerIncarnation === (input.assignment.ownerIncarnation ?? 1) &&
-    previous.conversation.workspaceId === input.turn.workspaceId &&
-    previous.conversation.channelId === input.turn.channelId &&
-    previous.conversation.threadTs === input.turn.threadTs;
-  const connectionResolution = selectConnectionsForRequest({
-    connections: allEffectiveConnections,
-    requestText: input.requestText ?? input.turn.text,
-    ...(sameActorThread && previous.connectionSelections ? { previousSelections: previous.connectionSelections } : {}),
-  });
-  const canonicalModel = resolvedAssignmentModel(input.assignment);
-  if (!canonicalModel) {
-    throw new Error('Runtime plan compilation requires a frozen model.');
-  }
-  const settingsStore = input.settingsStore ?? getSettingsStore(input.platformEnv);
-  // The runtime model, the image role, the browser capability, and the
-  // granted website logins resolve independently.
-  const [runtimeModel, imageRole, browserCapability, websiteLogins] = await Promise.all([
     resolveRuntimeModel(
       input.assignment.agentId,
       canonicalModel,
@@ -3151,6 +3166,24 @@ export async function freezeRuntimePlanForTurn(input: {
     // Login metadata only; passwords are decrypted at call time.
     websiteLoginsForTurn(settingsStore, input.assignment.agent.websiteLogins),
   ]);
+  // The constant guidance opens the agent's system prompt in code
+  // (shared-prefix.ts); the plan carries only what names this Agent.
+  const instructions = slackTenantInstructions(input.assignment);
+  const allEffectiveConnections = connectionContext?.effective ?? [];
+  const connectionAuthorizations = connectionContext?.authorizations;
+  const teamReconnects = connectionContext?.teamReconnects;
+  const sameActorThread = previous && input.turn.actorMembershipId &&
+    previous.actorMembershipId === input.turn.actorMembershipId &&
+    previous.agentId === input.assignment.agentId &&
+    previous.ownerIncarnation === (input.assignment.ownerIncarnation ?? 1) &&
+    previous.conversation.workspaceId === input.turn.workspaceId &&
+    previous.conversation.channelId === input.turn.channelId &&
+    previous.conversation.threadTs === input.turn.threadTs;
+  const connectionResolution = selectConnectionsForRequest({
+    connections: allEffectiveConnections,
+    requestText: input.requestText ?? input.turn.text,
+    ...(sameActorThread && previous.connectionSelections ? { previousSelections: previous.connectionSelections } : {}),
+  });
   // The image role is the store's alone. Freezing its bounded capability here
   // is what mounts `generate_image` on the Agent; an unresolved or
   // uncredentialed role freezes an unfilled capability instead.
