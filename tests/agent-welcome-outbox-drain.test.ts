@@ -31,7 +31,7 @@ const source = ts.createSourceFile(
 const stateClass = source.statements.find((node) =>
   ts.isClassDeclaration(node) && node.name?.text === 'TagStateStore');
 assert.ok(stateClass && ts.isClassDeclaration(stateClass));
-const methods = ['identityExecute', 'managementExecute', 'armReceiptDrainAfter', 'armAlarmNoLaterThan'].map((name) => {
+const methods = ['identityExecute', 'managementExecute', 'armReceiptDrainAfter', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan'].map((name) => {
   const method = stateClass.members.find((member) =>
     ts.isMethodDeclaration(member) && member.name.getText(source) === name);
   assert.ok(method, `production method ${name} exists`);

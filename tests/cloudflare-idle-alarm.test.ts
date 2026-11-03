@@ -1,0 +1,428 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import test from 'node:test';
+import vm from 'node:vm';
+import ts from 'typescript';
+
+import {
+  emitRelayAlarm,
+  startRelayAlarmMetrics,
+  type RelayAlarmMetrics,
+} from '../src/observability/runtime-latency.ts';
+import { StopAbortFence } from '../src/slack/runner-stops.ts';
+import { slackTurnExecutor } from '../src/slack/turn-executor-flag.ts';
+import { TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
+import { openStateDb } from '../src/state/node-state-db.ts';
+import { turnJob as maintenanceTurnJob } from './fixtures/state-db/maintenance.ts';
+
+// The production alarm(), its idle drain (no turn pending) and the admission
+// RPC, over stubbed stores: the idle drains advance a scripted clock, so each
+// part's timing is exact, and the alarm storage records every write. The
+// complete Worker is exercised by verify:cf-smoke.
+const source = ts.createSourceFile(
+  'cloudflare.ts',
+  readFileSync(new URL('../src/cloudflare.ts', import.meta.url), 'utf8'),
+  ts.ScriptTarget.Latest,
+  true,
+);
+const stateClass = source.statements.find((node) =>
+  ts.isClassDeclaration(node) && node.name?.text === 'TagStateStore');
+assert.ok(stateClass && ts.isClassDeclaration(stateClass));
+const stateMethod = (name: string) => {
+  const method = stateClass.members.find((member) =>
+    ts.isMethodDeclaration(member) && member.name.getText(source) === name);
+  assert.ok(method, `production method ${name} exists`);
+  return method.getText(source);
+};
+const moduleStatement = (name: string) => {
+  const statement = source.statements.find((node) =>
+    (ts.isFunctionDeclaration(node) && node.name?.text === name) ||
+    (ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) =>
+      declaration.name.getText(source) === name)));
+  assert.ok(statement, `production ${name} exists`);
+  return statement.getText(source);
+};
+const compiled = ts.transpileModule(
+  `${['RELAY_BATCH_WINDOW_MS', 'KEEP_WARM_WINDOW_MS', 'KEEP_WARM_TICK_MS', 'RETENTION_SWEEP_INTERVAL_MS', 'earliestDefined'].map(moduleStatement).join('\n')}
+class StateStoreProbe { ${[
+    'alarm', 'drainRelayAlarm', 'deliverStopNotices', 'admitSlackTurn', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'admissionWakeAt',
+    'runnerMode', 'keepWarmTickAt',
+  ].map(stateMethod).join('\n')} }\nStateStoreProbe`,
+  { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+).outputText;
+
+const NOW = 1_800_000_000_000;
+/** The product's keep-warm window and tick (src/cloudflare.ts). */
+const KEEP_WARM_WINDOW_MS = 10 * 60_000;
+const KEEP_WARM_TICK_MS = 20_000;
+const RETENTION_SWEEP_INTERVAL_MS = 5 * 60_000;
+const RUNNER_ENV = { SLACK_THREAD_RUNNER: {} };
+
+type TurnJob = ReturnType<typeof maintenanceTurnJob>;
+/** The host's own enqueue path (src/cloudflare.ts), which writes an Agent's ask or a setup wake. */
+const localTurnEnqueue = vm.runInNewContext(
+  ts.transpileModule(`${moduleStatement('localTurnEnqueue')}\nlocalTurnEnqueue`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText,
+  {},
+) as (stores: { turnJobs: TurnJobStoreLogic }) => (job: TurnJob) => Promise<unknown>;
+function hostTurnJob(id: string, turn: Partial<TurnJob['turn']>): TurnJob {
+  const job = maintenanceTurnJob(id);
+  return { ...job, turn: { ...job.turn, ...turn } };
+}
+const AGENT_ASK = { fromAgentId: 'agent_b', fromAgentName: 'B', originMessageTs: '1800000000.000001' };
+const SETUP_WAKE = { setupOperationId: 'op_1', notice: 'Connected.' };
+
+type LogRecord = { [field: string]: number | boolean | string };
+type Result = { ok: true; value: unknown } | { ok: false; error: { code: string } };
+
+/** How long each stubbed part of the idle drain takes, in milliseconds. */
+interface PartCosts {
+  retention: number;
+  ledger: number;
+  /** Undefined: no cleanup is pending, so the drain is skipped. */
+  cleanups?: number;
+  repairs: number;
+  schedule: number;
+  receipts: number;
+}
+const QUIET: PartCosts = { retention: 0, ledger: 0, repairs: 0, schedule: 0, receipts: 0 };
+
+interface Probe {
+  env: object;
+  ctx: object;
+  stores: object;
+  call: (callback: (stores: unknown) => unknown) => Result;
+  stopAborts: StopAbortFence;
+  carriedAlarmTurns: Map<string, string>;
+  lastHumanTurnAt?: number;
+  alarmAdmissionWake?: () => void;
+  dispatchWake?: () => void;
+  createAlarmIdentityResolver(): unknown;
+  admitToRunner(): Promise<boolean>;
+  offerCreatedStop(): Promise<void>;
+  alarm(): Promise<void>;
+  admitSlackTurn(input: object): Promise<Result>;
+}
+
+/**
+ * A probe over the test's clock, with alarm storage that records writes and
+ * a sink that collects relay_alarm records as they would be logged. The idle
+ * drains each advance the clock by their cost; `duringDrain` runs inside the
+ * first of them, as an RPC arming the alarm while the drain awaits would.
+ */
+function newProbe(costs: PartCosts, duringDrain?: (armAt: (at: number) => void) => void) {
+  let clock = NOW;
+  const records: LogRecord[] = [];
+  let alarm: number | null = null;
+  const writes: number[] = [];
+  const armAt = (at: number) => { alarm = at; };
+  const advance = (ms: number | undefined) => async () => {
+    clock += ms ?? 0;
+    return {};
+  };
+  const ProbeClass = vm.runInNewContext(compiled, {
+    Date: { now: () => clock },
+    console: { warn() {} },
+    startRelayAlarmMetrics: () => startRelayAlarmMetrics(() => clock),
+    emitRelayAlarm: (metrics: RelayAlarmMetrics) =>
+      emitRelayAlarm(metrics, () => clock, { info: (record) => records.push(record as LogRecord) }),
+    createPlatformProductTelemetry: () => ({}),
+    localSettingsStore: () => ({}),
+    localGatewayAppStores: () => ({ config: {} }),
+    slackTurnExecutor: (env: Record<string, unknown>) => slackTurnExecutor(env, {}),
+    MAX_TURN_DRAIN_BATCH: 16,
+    ALARM_PENDING_PER_THREAD: 4,
+    RELAY_RETRY_BACKOFF_MS: 2_000,
+    drainGatewayInbox: async () => false,
+    deliverDueStopNotices: async () => undefined,
+    drainLedgerRuns: async () => {
+      clock += costs.ledger;
+      duringDrain?.(armAt);
+      return {};
+    },
+    drainSlackInteractionCleanups: advance(costs.cleanups),
+    drainTerminalPresentationRepairs: advance(costs.repairs),
+    drainCloudflareScheduleActions: advance(costs.schedule),
+    drainCloudflareManagementReceipts: advance(costs.receipts),
+    runDriverRetryDelayMs: (_drain: object, retryDelay: number) => retryDelay,
+  }) as new () => Probe;
+  const probe = new ProbeClass();
+  probe.ctx = { storage: {
+    async getAlarm() { return alarm; },
+    async setAlarm(at: number) { writes.push(at); alarm = at; },
+  } };
+  // Class fields the method-only probe does not carry.
+  probe.stopAborts = new StopAbortFence();
+  probe.carriedAlarmTurns = new Map();
+  return {
+    probe,
+    records,
+    writes,
+    alarm: () => alarm,
+    /** The platform fires the alarm: it is cleared, then alarm() runs. */
+    async fire() {
+      alarm = null;
+      await probe.alarm();
+    },
+    advance(ms: number) { clock += ms; },
+  };
+}
+
+/**
+ * A state store with no turn pending whose idle drains cost `costs`.
+ * `lastHumanTurnAt`: a person's turn this instance admitted; `newestEnqueuedAt`:
+ * what its newest turn row says when it starts cold; `nextOutboxDueAt`: a
+ * receipt due later; `duringDrain`: see newProbe.
+ */
+function idleStore(costs: PartCosts, options: {
+  lastHumanTurnAt?: number;
+  newestEnqueuedAt?: number | undefined;
+  nextOutboxDueAt?: number;
+  duringDrain?: (armAt: (at: number) => void) => void;
+} = {}) {
+  const store = newProbe(costs, options.duringDrain);
+  let reads = 0;
+  let sweeps = 0;
+  let cleanupChecks = 0;
+  store.probe.env = {};
+  if (options.lastHumanTurnAt !== undefined) store.probe.lastHumanTurnAt = options.lastHumanTurnAt;
+  store.probe.createAlarmIdentityResolver = () => async () => ({ client: {} });
+  store.probe.stores = {
+    management: {
+      cleanupRetention() {
+        sweeps += 1;
+        store.advance(costs.retention);
+      },
+      nextOutboxDueAt: () => options.nextOutboxDueAt,
+    },
+    turnJobs: {
+      listPendingByThread: () => [],
+      hasPending: () => false,
+      hasPendingSlackInteractionCleanup: () => {
+        cleanupChecks += 1;
+        return costs.cleanups !== undefined;
+      },
+      hasHandoffs: () => false,
+      nextStopNoticeDueAt: () => undefined,
+      newestEnqueuedAt: () => {
+        reads += 1;
+        return options.newestEnqueuedAt;
+      },
+    },
+    gatewayInbox: { hasPending: () => false, nextPendingDueAt: () => undefined },
+  };
+  return { ...store, reads: () => reads, sweeps: () => sweeps, cleanupChecks: () => cleanupChecks };
+}
+
+/**
+ * A state store admitting turns under the default runner executor, whose
+ * runner takes every dispatchable turn at once: admission arms no admission
+ * wake, so only the keep-warm tick can arm the alarm. `admission` is what the
+ * canonical admission answers.
+ */
+function admissionStore(admission: object = { claimed: true, admission: {} }) {
+  const store = newProbe(QUIET);
+  store.probe.env = RUNNER_ENV;
+  store.probe.call = (callback) => ({
+    ok: true,
+    value: callback({
+      slack: { admitCanonical: () => admission },
+      turnJobs: { dispatchableNow: (id: string) => ({ id }) },
+    }),
+  });
+  store.probe.admitToRunner = async () => true;
+  store.probe.offerCreatedStop = async () => undefined;
+  return store;
+}
+
+for (const cleanupPending of [false, true]) {
+  test(`an idle alarm's record times each of its parts (${cleanupPending ? 'a' : 'no'} cleanup pending)`, async () => {
+    const costs: PartCosts = {
+      retention: 300, ledger: 100, ...(cleanupPending ? { cleanups: 50 } : {}),
+      repairs: 70, schedule: 20, receipts: 400,
+    };
+    const store = idleStore(costs);
+    await store.fire();
+    assert.equal(store.records.length, 1);
+    const record = store.records[0]!;
+    assert.equal(record.outcome, 'idle');
+    assert.equal(record.keepWarm, false, 'no person has talked to this store');
+    const parts = {
+      retentionMs: 300, ledgerMs: 100, cleanupsMs: cleanupPending ? 50 : 0,
+      repairsMs: 70, scheduleMs: 20, receiptsMs: 400,
+    };
+    for (const [field, expected] of Object.entries(parts)) {
+      assert.equal(record[field], expected, `${field} is the part's own time`);
+    }
+    const sum = Object.values(parts).reduce((total, part) => total + part, 0);
+    assert.equal(typeof record.durationMs, 'number');
+    assert.ok(sum <= (record.durationMs as number), 'the parts sum to no more than the whole firing');
+  });
+}
+
+test("a person's turn handed to its runner arms the alarm no later than the keep-warm tick", async () => {
+  const store = admissionStore();
+  assert.equal((await store.probe.admitSlackTurn({ turnJob: { id: 'turn_person', turn: {} } })).ok, true);
+  assert.deepEqual(store.writes, [NOW + KEEP_WARM_TICK_MS]);
+  assert.equal(store.alarm(), NOW + KEEP_WARM_TICK_MS);
+});
+
+test('a tick armed from a handed-over admission wakes no running alarm', async () => {
+  const wakes: string[] = [];
+  const listening = (store: ReturnType<typeof admissionStore>) => {
+    store.probe.alarmAdmissionWake = () => { wakes.push('admission'); };
+    store.probe.dispatchWake = () => { wakes.push('dispatch'); };
+    return store;
+  };
+  const handed = listening(admissionStore());
+  assert.equal((await handed.probe.admitSlackTurn({ turnJob: { id: 'turn_person', turn: {} } })).ok, true);
+  assert.deepEqual(handed.writes, [NOW + KEEP_WARM_TICK_MS]);
+  assert.deepEqual(wakes, [], 'the runner has the turn; a running alarm has nothing to pick up');
+  // A turn its runner did not take is the alarm's: that admission wakes it.
+  const kept = listening(admissionStore());
+  kept.probe.admitToRunner = async () => false;
+  assert.equal((await kept.probe.admitSlackTurn({ turnJob: { id: 'turn_kept', turn: {} } })).ok, true);
+  assert.deepEqual(kept.writes, [NOW]);
+  assert.deepEqual(wakes, ['admission', 'dispatch']);
+});
+
+test("an Agent's ask, a setup wake, or a stop alone arms no tick", async () => {
+  const cases: Array<[string, object, object | undefined]> = [
+    ["an Agent's ask", { id: 'turn_ask', turn: { agentAsk: { exchangeId: 'exchange_1' } } }, undefined],
+    ['a setup wake', { id: 'turn_setup', turn: { setupWake: { operationId: 'op_1' } } }, undefined],
+    ['a stop alone', { id: 'turn_stop', turn: {} }, { claimed: true, steered: { created: false } }],
+  ];
+  for (const [name, turnJob, admission] of cases) {
+    const store = admissionStore(admission);
+    assert.equal((await store.probe.admitSlackTurn({ turnJob })).ok, true);
+    assert.deepEqual(store.writes, [], `${name} arms nothing`);
+  }
+});
+
+test('an idle alarm inside the window re-arms the tick and says so; outside it, nothing', async () => {
+  const inside = idleStore(QUIET, { lastHumanTurnAt: NOW - 60_000 });
+  await inside.fire();
+  assert.deepEqual(inside.writes, [NOW + KEEP_WARM_TICK_MS]);
+  assert.equal(inside.records[0]?.keepWarm, true);
+  assert.equal(inside.records[0]?.rearmed, true);
+  for (const [name, at] of [
+    ["at the window's end", NOW - KEEP_WARM_WINDOW_MS],
+    ['11 minutes on', NOW - 11 * 60_000],
+  ] as const) {
+    const outside = idleStore(QUIET, { lastHumanTurnAt: at });
+    await outside.fire();
+    assert.deepEqual(outside.writes, [], `${name}: no tick`);
+    assert.equal(outside.records[0]?.keepWarm, false, `${name}: not a keep-warm firing`);
+    assert.equal(outside.records[0]?.rearmed, false, `${name}: nothing re-armed`);
+  }
+});
+
+test('a due time earlier than the tick wins, and a tick never moves an armed alarm later', async () => {
+  const due = idleStore(QUIET, { lastHumanTurnAt: NOW - 1_000, nextOutboxDueAt: NOW + 5_000 });
+  await due.fire();
+  assert.deepEqual(due.writes, [NOW + 5_000]);
+  const armed = idleStore(QUIET, {
+    lastHumanTurnAt: NOW - 1_000,
+    duringDrain: (armAt) => armAt(NOW + 3_000),
+  });
+  await armed.fire();
+  assert.deepEqual(armed.writes, []);
+  assert.equal(armed.alarm(), NOW + 3_000);
+});
+
+test('a store that starts cold derives the window from its newest turn row, once', async () => {
+  const recent = idleStore(QUIET, { newestEnqueuedAt: NOW - 2 * 60_000 });
+  await recent.fire();
+  assert.deepEqual(recent.writes, [NOW + KEEP_WARM_TICK_MS]);
+  assert.equal(recent.records[0]?.keepWarm, true);
+  recent.advance(KEEP_WARM_TICK_MS);
+  await recent.fire();
+  assert.deepEqual(recent.writes, [NOW + KEEP_WARM_TICK_MS, NOW + 2 * KEEP_WARM_TICK_MS]);
+  assert.equal(recent.reads(), 1, 'the newest row is read once per instance');
+  const stale = idleStore(QUIET, { newestEnqueuedAt: NOW - 15 * 60_000 });
+  await stale.fire();
+  assert.deepEqual(stale.writes, []);
+  assert.equal(stale.records[0]?.keepWarm, false);
+  const empty = idleStore(QUIET);
+  await empty.fire();
+  await empty.fire();
+  assert.deepEqual(empty.writes, []);
+  assert.equal(empty.reads(), 1, 'an empty table is read once too');
+});
+
+test('idle firings run the retention sweep once per interval, not once per tick', async () => {
+  const store = idleStore({ ...QUIET, retention: 300 });
+  await store.fire();
+  assert.equal(store.sweeps(), 1, 'an instance that starts cold sweeps on its first firing');
+  assert.equal(store.records[0]?.retentionMs, 300);
+  store.advance(KEEP_WARM_TICK_MS);
+  await store.fire();
+  assert.equal(store.sweeps(), 1, 'a tick 20 s later skips the sweep');
+  assert.equal(store.records[1]?.retentionMs, 0, 'a skipped sweep reads 0');
+  store.advance(RETENTION_SWEEP_INTERVAL_MS);
+  await store.fire();
+  assert.equal(store.sweeps(), 2, 'the interval re-opens it');
+  assert.equal(store.records[2]?.retentionMs, 300);
+});
+
+test('an idle firing checks for pending cleanups once; a pending one still owes a retry', async () => {
+  const none = idleStore(QUIET);
+  await none.fire();
+  assert.equal(none.cleanupChecks(), 1);
+  assert.equal(none.records[0]?.needsRetry, false);
+  const pending = idleStore({ ...QUIET, cleanups: 50 });
+  await pending.fire();
+  assert.equal(pending.cleanupChecks(), 1);
+  assert.equal(pending.records[0]?.cleanupsMs, 50, 'the one check decided the cleanup drain');
+  assert.equal(pending.records[0]?.needsRetry, true, 'and the retry');
+  assert.deepEqual(pending.writes, [NOW + 50 + 2_000]);
+});
+
+test("newestEnqueuedAt is the newest turn row's enqueue time, or undefined with none", () => {
+  const db = openStateDb(':memory:');
+  try {
+    let clock = NOW;
+    const turnJobs = new TurnJobStoreLogic(db, () => clock);
+    assert.equal(turnJobs.newestEnqueuedAt(), undefined);
+    turnJobs.enqueue(maintenanceTurnJob('first'));
+    clock += 90_000;
+    turnJobs.enqueue(maintenanceTurnJob('second'));
+    assert.equal(turnJobs.newestEnqueuedAt(), NOW + 90_000);
+  } finally {
+    db.close();
+  }
+});
+
+test("a store that starts cold counts only a person's turn rows: an Agent's ask or a setup wake opens no window", async () => {
+  const db = openStateDb(':memory:');
+  try {
+    let clock = NOW - 16 * 60_000;
+    const turnJobs = new TurnJobStoreLogic(db, () => clock);
+    const enqueueHostTurn = localTurnEnqueue({ turnJobs });
+    await enqueueHostTurn(hostTurnJob('ask-0', { agentAsk: AGENT_ASK }));
+    assert.equal(turnJobs.newestEnqueuedAt(), undefined, "an Agent's ask alone is no person's turn");
+    // The person spoke 15 minutes ago; the host's own turns came since.
+    clock = NOW - 15 * 60_000;
+    turnJobs.enqueue(maintenanceTurnJob('person'));
+    clock = NOW - 60_000;
+    await enqueueHostTurn(hostTurnJob('ask', { agentAsk: AGENT_ASK }));
+    clock = NOW - 30_000;
+    await enqueueHostTurn(hostTurnJob('setup', { setupWake: SETUP_WAKE }));
+    assert.equal(turnJobs.newestEnqueuedAt(), NOW - 15 * 60_000, "the person's turn, not the host's later ones");
+    const quiet = idleStore(QUIET, { newestEnqueuedAt: turnJobs.newestEnqueuedAt() });
+    await quiet.fire();
+    assert.deepEqual(quiet.writes, [], 'no window: the person has been quiet for 15 minutes');
+    assert.equal(quiet.records[0]?.keepWarm, false);
+    // The person speaks again, 2 minutes ago: the window is open.
+    clock = NOW - 2 * 60_000;
+    turnJobs.enqueue(maintenanceTurnJob('person-2'));
+    assert.equal(turnJobs.newestEnqueuedAt(), NOW - 2 * 60_000);
+    const live = idleStore(QUIET, { newestEnqueuedAt: turnJobs.newestEnqueuedAt() });
+    await live.fire();
+    assert.deepEqual(live.writes, [NOW + KEEP_WARM_TICK_MS]);
+    assert.equal(live.records[0]?.keepWarm, true);
+  } finally {
+    db.close();
+  }
+});

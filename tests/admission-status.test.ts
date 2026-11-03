@@ -68,10 +68,10 @@ const moduleStatement = (name: string) => {
 };
 const HandoffProbe = vm.runInNewContext(
   ts.transpileModule(
-    `${['RELAY_BATCH_WINDOW_MS', 'localSlackPresentationState'].map(moduleStatement).join('\n')}
+    `${['RELAY_BATCH_WINDOW_MS', 'KEEP_WARM_WINDOW_MS', 'KEEP_WARM_TICK_MS', 'localSlackPresentationState'].map(moduleStatement).join('\n')}
 class HandoffProbe { ${[
       'admitSlackTurn', 'dispatchToRunners', 'admitToRunner', 'wakeAgentAtHandoff', 'showStatusAtHandoff',
-      'armAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode',
+      'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode', 'keepWarmTickAt',
     ].map(stateMethod).join('\n')} }\nHandoffProbe`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
   ).outputText,

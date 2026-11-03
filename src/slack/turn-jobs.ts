@@ -2614,6 +2614,22 @@ export class TurnJobStoreLogic {
     );
   }
 
+  /**
+   * When this store's newest person's turn row was enqueued: an Agent's ask
+   * and a setup wake are the host's own turns and do not count, as in
+   * TagStateStore.admitSlackTurn. Undefined with no such row. One scan of a
+   * table retention keeps small, read once per instance (TagStateStore keeps
+   * the answer in memory).
+   */
+  newestEnqueuedAt(): number | undefined {
+    const row = this.db.get(
+      `SELECT MAX(enqueued_at) AS newest FROM turn_jobs
+       WHERE json_extract(turn_json, '$.agentAsk') IS NULL
+         AND json_extract(turn_json, '$.setupWake') IS NULL`,
+    );
+    return row?.newest == null ? undefined : Number(row.newest);
+  }
+
   /** Pending rows the state store's alarm owns; runner rows wake their runner. */
   hasPending(executionAuthority: RunExecutionAuthority = 'legacy'): boolean {
     return this.db.get(
