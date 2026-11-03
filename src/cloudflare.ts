@@ -782,6 +782,18 @@ const RELAY_RETRY_BACKOFF_MS = 2_000;
 
 const RELAY_BATCH_WINDOW_MS = 250;
 
+/**
+ * Keep-warm: while a person has talked to this installation in the last
+ * KEEP_WARM_WINDOW_MS, the state store's alarm fires at least every
+ * KEEP_WARM_TICK_MS so the object stays in memory. Measured on Chickpea Cloud
+ * staging: the object leaves memory about 30 s after its last activity, and a
+ * message after that pays 0.9-1.3 s at ingress for its first state read. A
+ * tick runs the ordinary idle drain (see keepWarmTickAt). Constants, not
+ * settings; Node has no alarms.
+ */
+const KEEP_WARM_WINDOW_MS = 10 * 60_000;
+const KEEP_WARM_TICK_MS = 20_000;
+
 // Pages of MAX_TURN_DRAIN_BATCH threads one alarm hands to thread runners.
 // Each hand-off is one short admission RPC; the rest waits for the next alarm.
 const RUNNER_DISPATCH_MAX_PAGES = 16;
@@ -840,6 +852,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
   private dispatchWake: (() => void) | undefined;
   /** Slack turns admitted in this isolate (events, deliveries, OAuth resumes). */
   private admissionsSeen = 0;
+  /**
+   * When a person's turn was last admitted here (keepWarmTickAt). In memory
+   * only: an instance that starts cold reads it once from its newest turn
+   * row, whatever that turn's kind; 0 when there is none.
+   */
+  private lastHumanTurnAt: number | undefined;
   /**
    * Turns whose first hand-off waits here for its status (showStatusAtHandoff).
    * No re-admission overtakes one: it would hand the runner the presentation
@@ -1725,13 +1743,23 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     }
     if (result.ok && input.turnJob && 'admission' in result.value) {
       const turnJobId = input.turnJob.id;
+      // A person's turn opens the keep-warm window; the host's own turns, an
+      // Agent's ask and a setup wake, do not.
+      const { agentAsk, setupWake } = input.turnJob.turn;
+      if (!agentAsk && !setupWake) this.lastHumanTurnAt = Date.now();
       const ready = this.runnerMode()
         ? this.call((stores) => stores.turnJobs.dispatchableNow(turnJobId))
         : undefined;
       const handedOver = ready?.ok && ready.value
         ? await this.admitToRunner(ready.value, true).catch(() => false)
         : false;
-      if (!handedOver) await this.armAlarmNoLaterThan(this.admissionWakeAt(), true);
+      if (!handedOver) {
+        await this.armAlarmNoLaterThan(this.admissionWakeAt(), true);
+      } else {
+        // The runner has the turn; the alarm only keeps this store warm for the next one.
+        const tick = this.keepWarmTickAt();
+        if (tick !== undefined) await this.armAlarmNoLaterThan(tick);
+      }
     }
     return result;
   }
@@ -2512,6 +2540,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       throw new Error(`state store unavailable in alarm: ${this.initError ?? 'unknown'}`);
     }
     const stores = this.stores;
+    // A store woken cold learns from its newest turn row whether a conversation is live.
+    this.lastHumanTurnAt ??= stores.turnJobs.newestEnqueuedAt() ?? 0;
     const productTelemetry = createPlatformProductTelemetry({
       env: this.env as PlatformEnv,
       settings: localSettingsStore(stores),
@@ -2641,15 +2671,18 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
         ? Date.now() + runDriverRetryDelayMs(ledgerDrain, RELAY_RETRY_BACKOFF_MS)
         : undefined;
       const outboxRetry = stores.management.nextOutboxDueAt();
+      const keepWarmAt = this.keepWarmTickAt();
       const nextWake = earliestDefined(
         turnRetry,
         presentationRepairs.nextRetryAt,
         scheduleActions.nextDueAt,
         outboxRetry,
         stores.gatewayInbox.nextPendingDueAt(),
+        keepWarmAt,
       );
       metrics.needsRetry = turnRetry !== undefined;
       metrics.rearmed = nextWake !== undefined;
+      metrics.keepWarm = keepWarmAt !== undefined;
       if (nextWake !== undefined) await this.armAlarmNoLaterThan(nextWake);
       return;
     }
@@ -2815,6 +2848,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       scheduleActions.nextDueAt,
       outboxRetry,
       stores.gatewayInbox.nextPendingDueAt(),
+      this.keepWarmTickAt(),
     );
     metrics.needsRetry = needsRetry;
     metrics.rearmed = nextWake !== undefined;
@@ -3024,6 +3058,20 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
   private runnerMode(): boolean {
     return Boolean((this.env as PlatformEnv).SLACK_THREAD_RUNNER) &&
       slackTurnExecutor(this.env as PlatformEnv) === 'runner';
+  }
+
+  /**
+   * The next keep-warm tick while a person's turn was admitted here within
+   * KEEP_WARM_WINDOW_MS; undefined outside the window, and before any turn is
+   * known. Armed as the latest the alarm may wait (armAlarmNoLaterThan keeps
+   * an earlier due time), so a firing inside the window re-arms it and the
+   * store never leaves memory during a conversation.
+   */
+  private keepWarmTickAt(): number | undefined {
+    const now = Date.now();
+    return this.lastHumanTurnAt !== undefined && now < this.lastHumanTurnAt + KEEP_WARM_WINDOW_MS
+      ? now + KEEP_WARM_TICK_MS
+      : undefined;
   }
 
   private async armAlarmNoLaterThan(at: number, admission = false): Promise<void> {

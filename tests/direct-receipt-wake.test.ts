@@ -88,10 +88,10 @@ const moduleStatement = (name: string) => {
 };
 const ReceiptProbe = vm.runInNewContext(
   ts.transpileModule(
-    `${['RELAY_BATCH_WINDOW_MS', 'localSlackPresentationState'].map(moduleStatement).join('\n')}
+    `${['RELAY_BATCH_WINDOW_MS', 'KEEP_WARM_WINDOW_MS', 'KEEP_WARM_TICK_MS', 'localSlackPresentationState'].map(moduleStatement).join('\n')}
 class ReceiptProbe { ${[
       'noteSlackDelivery', 'wakeRunnerAtReceipt', 'sendRunnerWake', 'createAlarmIdentityResolver', 'admitSlackTurn', 'admitToRunner',
-      'wakeAgentAtHandoff', 'showStatusAtHandoff', 'armAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode',
+      'wakeAgentAtHandoff', 'showStatusAtHandoff', 'armAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode', 'keepWarmTickAt',
     ].map(stateMethod).join('\n')} }\nReceiptProbe`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
   ).outputText,

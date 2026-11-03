@@ -308,7 +308,7 @@ channel IDs, settings keys or values, or error text. Emission never throws.
 
 | `event` | Emitted | Fields |
 | --- | --- | --- |
-| `relay_alarm` | Once per `TagStateStore.alarm()` invocation (Cloudflare) | `outcome` (`idle`, `drained`, `threw`), `durationMs`, `jobsListed`, `groups`, `jobsRun`, `jobsSettled`, `jobsRetained`, `jobsCarried`, `longestJobMs`, `turnsMs`, `needsRetry`, `rearmed`, `yielded`, `jobsDispatched`, and on an `idle` record its parts: `retentionMs`, `ledgerMs`, `cleanupsMs`, `repairsMs`, `scheduleMs`, `receiptsMs` |
+| `relay_alarm` | Once per `TagStateStore.alarm()` invocation (Cloudflare) | `outcome` (`idle`, `drained`, `threw`), `durationMs`, `jobsListed`, `groups`, `jobsRun`, `jobsSettled`, `jobsRetained`, `jobsCarried`, `longestJobMs`, `turnsMs`, `needsRetry`, `rearmed`, `yielded`, `jobsDispatched`, `keepWarm`, and on an `idle` record its parts: `retentionMs`, `ledgerMs`, `cleanupsMs`, `repairsMs`, `scheduleMs`, `receiptsMs` |
 | `thread_runner_alarm` | Once per `SlackThreadRunner.alarm()` invocation (Cloudflare) | `outcome` (`idle`, `drained`, `threw`), `jobs`, `ran`, `yielded`, `carried`, `dropped`, `durationMs` |
 | `runner_boot` | Once per `SlackThreadRunner` activation (an instance constructed in memory), at the first call it serves (Cloudflare) | `firstMethod` (`wake` for the state store waking it at a delivery's receipt, `admit`, `alarm`, `stop`, `status`, `observedStatus`, `midRunReply`, `runFacts`, `presentationGet`, `presentationTransition`, or `host` for a host function), `cold` (the first runner its isolate constructed), `constructMs` (the constructor through its resume check), `constructToFirstCallMs`, and with `wake` or `admit`: `turnRef` and `sentToConstructMs` (the state store's send to the constructor's start) |
 | `agent_boot` | Once per Flue agent object activation (a Slack thread's Agent, a routine run, a coding worker), at the first call it serves (Cloudflare) | `agentClass` (the generated Durable Object class), `firstMethod` (`wake` for the state store waking a thread's object as it hands the turn to its runner, or a runner waking it once the turn's plan froze, `stage` for a runner staging a turn's input, `fetch` for a Flue dispatch or read, `alarm`, or `host`), `cold` (the first agent object its isolate constructed), `constructMs`, `constructToFirstCallMs`, and with `wake` or `stage`: `turnRef` and `sentToConstructMs` (the sender's clock before it addressed the object, to the constructor's start) |
@@ -337,6 +337,16 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   schedule-action and management-receipt drains, in that order. They sum to at
   most `durationMs`; the rest is admission, hand-offs and stop notices. A
   `drained` record has none of them: its drains run among its turns.
+- `keepWarm`: while a person has talked to the installation in the last 10
+  minutes, the state store arms its alarm no later than 20 s ahead so the
+  object stays in memory (it is evicted about 30 s after its last activity,
+  and the next message then waits about a second at ingress for its first
+  state read). An idle firing inside that window reports `keepWarm: true` and
+  re-arms the tick; a due time earlier than the tick is kept. Expect up to
+  three idle records a minute per installation during a conversation, and
+  none once it has been quiet for 10 minutes. A store that starts cold reads
+  the window from its newest turn row; an Agent's ask or a setup wake opens
+  no window.
 - Cloudflare turns run in per-thread `SlackThreadRunner` Durable Objects by
   default: the alarm hands each new turn to its thread's runner and returns,
   so on a default deployment `relay_alarm.jobsDispatched` counts those

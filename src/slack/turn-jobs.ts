@@ -2614,6 +2614,16 @@ export class TurnJobStoreLogic {
     );
   }
 
+  /**
+   * When this store's newest turn row was enqueued, whatever the turn's kind;
+   * undefined with no rows. One scan of a table retention keeps small, read
+   * once per instance (TagStateStore keeps the answer in memory).
+   */
+  newestEnqueuedAt(): number | undefined {
+    const row = this.db.get('SELECT MAX(enqueued_at) AS newest FROM turn_jobs');
+    return row?.newest == null ? undefined : Number(row.newest);
+  }
+
   /** Pending rows the state store's alarm owns; runner rows wake their runner. */
   hasPending(executionAuthority: RunExecutionAuthority = 'legacy'): boolean {
     return this.db.get(

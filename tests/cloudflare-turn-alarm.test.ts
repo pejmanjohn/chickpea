@@ -62,7 +62,7 @@ const stateClass = source.statements.find((node) =>
 assert.ok(stateClass && ts.isClassDeclaration(stateClass));
 const methodNames = [
   'enqueueTurn', 'admitSlackTurn', 'resumeTurnAfterOAuth', 'slackInstallationRecoveryRetry',
-  'maintainWork', 'armAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode',
+  'maintainWork', 'armAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode', 'keepWarmTickAt',
 ];
 const methods = methodNames.map((name) => {
   const method = stateClass.members.find((member) =>
@@ -74,6 +74,13 @@ const batchDeclaration = source.statements.find((node) =>
   ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) =>
     declaration.name.getText(source) === 'RELAY_BATCH_WINDOW_MS'));
 assert.ok(batchDeclaration);
+const keepWarmDeclarations = ['KEEP_WARM_WINDOW_MS', 'KEEP_WARM_TICK_MS'].map((name) => {
+  const declaration = source.statements.find((node) =>
+    ts.isVariableStatement(node) && node.declarationList.declarations.some((candidate) =>
+      candidate.name.getText(source) === name));
+  assert.ok(declaration, `production ${name} exists`);
+  return declaration.getText(source);
+}).join('\n');
 // The alarm runs each job through the shared turn executor; evaluate that
 // production function beside it so the same injected collaborators apply.
 const executorSource = ts.createSourceFile(
@@ -93,7 +100,7 @@ const portFunction = source.statements.find((node) =>
 assert.ok(portFunction);
 const portCode = portFunction.getText(source);
 const compiled = ts.transpileModule(
-  `${batchDeclaration.getText(source)}\nclass AlarmProbe { ${methods.join('\n')} }\nAlarmProbe`,
+  `${batchDeclaration.getText(source)}\n${keepWarmDeclarations}\nclass AlarmProbe { ${methods.join('\n')} }\nAlarmProbe`,
   { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
 ).outputText;
 
@@ -115,6 +122,8 @@ const ProbeClass = vm.runInNewContext(compiled, {
 }) as new () => Probe;
 const NOW = 1_800_000_000_000;
 const BATCH_MS = 250;
+/** The keep-warm tick (src/cloudflare.ts): a person's turn handed to its runner arms the alarm this far ahead. */
+const KEEP_WARM_TICK_MS = 20_000;
 const RUNNER_ENV = { SLACK_THREAD_RUNNER: {} };
 const executors = [
   { name: 'runner executor', env: RUNNER_ENV, admissionWake: NOW },
@@ -126,7 +135,7 @@ const entryPoints: Array<{
 }> = [
   { name: 'new turn', invoke: (probe) => probe.enqueueTurn({ id: 'new' }), inactive: null, admission: true },
   {
-    name: 'canonical admission', invoke: (probe) => probe.admitSlackTurn({ turnJob: { id: 'new' } }),
+    name: 'canonical admission', invoke: (probe) => probe.admitSlackTurn({ turnJob: { id: 'new', turn: {} } }),
     inactive: { claimed: false }, admission: true,
   },
   {
@@ -251,7 +260,7 @@ for (const withPendingTurn of [false, true]) {
       return method.getText(source);
     });
     const alarmCode = ts.transpileModule(
-      `${batchDeclaration.getText(source)}\n${executorCode}\n${portCode}\nclass AlarmProbe { ${methods.join('\n')}\n${alarmMethods.join('\n')} }\nAlarmProbe`,
+      `${batchDeclaration.getText(source)}\n${keepWarmDeclarations}\n${executorCode}\n${portCode}\nclass AlarmProbe { ${methods.join('\n')}\n${alarmMethods.join('\n')} }\nAlarmProbe`,
       { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
     ).outputText;
     const { probe: storageProbe, alarm, writes } = fixture(null, undefined, {});
@@ -320,6 +329,7 @@ for (const withPendingTurn of [false, true]) {
         hasPending: () => withPendingTurn,
         hasPendingSlackInteractionCleanup: () => false,
         hasHandoffs: () => false,
+        newestEnqueuedAt: () => undefined,
       },
       gatewayInbox: { hasPending: () => false, nextPendingDueAt: () => undefined },
     };
@@ -379,7 +389,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
   const { alarmYieldIsFree } = await import('../src/slack/alarm-turn-drain.ts');
   const alarmMethods = [
     'armAlarmNoLaterThan', 'alarm', 'drainRelayAlarm', 'dispatchToRunners', 'admitToRunner', 'wakeAgentAtHandoff',
-    'showStatusAtHandoff', 'dispatchingWhile', 'deliverStopNotices',
+    'showStatusAtHandoff', 'dispatchingWhile', 'deliverStopNotices', 'keepWarmTickAt',
   ].map((name) => {
     const method = (stateClass as ts.ClassDeclaration).members.find((member) =>
       ts.isMethodDeclaration(member) && member.name.getText(source) === name);
@@ -439,6 +449,8 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     MAX_TURN_ATTEMPTS: 2,
     MAX_POST_DISPATCH_ATTEMPTS: 8,
     RELAY_RETRY_BACKOFF_MS: 2_000,
+    KEEP_WARM_WINDOW_MS: 600_000,
+    KEEP_WARM_TICK_MS: 20_000,
     ALARM_TURN_BUDGET_MS: 40,
     ALARM_TURN_HARD_CAP_MS: 400,
     ALARM_PENDING_PER_THREAD: 4,
@@ -549,6 +561,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
       hasPending: (lane = 'legacy') =>
         lane === 'legacy' && [...jobs.values()].some(alarmOwned),
       hasPendingSlackInteractionCleanup: () => false,
+      newestEnqueuedAt: () => undefined,
       // Same contract as TurnJobStoreLogic.listDispatchable (tested there).
       listDispatchable: (input: { limit: number }) => {
         const threads = new Set<unknown>();
@@ -918,7 +931,7 @@ test('an OAuth continuation already handed to a thread runner is admitted there 
 function admissionHarness(runner: { refuse?: boolean } = {}) {
   const methods = [
     'admitSlackTurn', 'admitToRunner', 'wakeAgentAtHandoff', 'showStatusAtHandoff', 'armAlarmNoLaterThan',
-    'admissionWakeAt', 'runnerMode',
+    'admissionWakeAt', 'runnerMode', 'keepWarmTickAt',
   ].map((name) => {
     const method = (stateClass as ts.ClassDeclaration).members.find((member) =>
       ts.isMethodDeclaration(member) && member.name.getText(source) === name);
@@ -926,7 +939,7 @@ function admissionHarness(runner: { refuse?: boolean } = {}) {
     return method.getText(source);
   });
   const code = ts.transpileModule(
-    `${batchDeclaration!.getText(source)}\nclass AdmissionProbe { ${methods.join('\n')} }\nAdmissionProbe`,
+    `${batchDeclaration!.getText(source)}\n${keepWarmDeclarations}\nclass AdmissionProbe { ${methods.join('\n')} }\nAdmissionProbe`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
   ).outputText;
   const admissions: Array<{ id: string; threadKey: string }> = [];
@@ -991,7 +1004,7 @@ function threadJob(id: string, threadTs = '1800000000.000001'): TurnJob {
   return { ...job, turn: { ...job.turn, threadTs, messageTs: threadTs } };
 }
 
-test('a canonical admission in runner mode hands its turn to its thread runner and arms no alarm', async (context) => {
+test('a canonical admission in runner mode hands its turn to its thread runner and arms only the keep-warm tick', async (context) => {
   context.mock.method(Date, 'now', () => NOW);
   const h = admissionHarness();
   try {
@@ -1001,7 +1014,8 @@ test('a canonical admission in runner mode hands its turn to its thread runner a
     assert.deepEqual(h.admissions, [{ id: 'new', threadKey: slackAgentThreadKey(job.turn, job.assignment) }],
       'handed to its runner before the admission answers');
     assert.equal(h.executor('new'), 'runner', 'the hand-off is confirmed');
-    assert.deepEqual(h.writes, [], 'the state store alarm is not needed');
+    assert.deepEqual(h.writes, [NOW + KEEP_WARM_TICK_MS],
+      'the alarm is not needed for this turn; it keeps the store warm for the next one');
   } finally { h.close(); }
 });
 
@@ -1046,7 +1060,7 @@ test('an admitted turn waits for the alarm while an earlier turn of its thread i
     await h.probe.admitSlackTurn({ turnJob: threadJob('follow-up', '1800000000.000004') });
     assert.deepEqual(h.admissions.map(({ id }) => id), ['follow-up'],
       'a turn its runner already holds does not hold the next one');
-    assert.deepEqual(h.writes, []);
+    assert.deepEqual(h.writes, [NOW + KEEP_WARM_TICK_MS], 'only the keep-warm tick');
   } finally { h.close(); }
 });
 

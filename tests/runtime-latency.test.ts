@@ -248,6 +248,7 @@ test('relay_alarm reports the documented fields for one invocation', () => {
     rearmed: true,
     yielded: false,
     jobsDispatched: 2,
+    keepWarm: false,
   }]);
 });
 

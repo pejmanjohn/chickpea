@@ -134,6 +134,11 @@ export interface RelayAlarmMetrics {
   /** Turns handed to their thread runners (the default executor). */
   jobsDispatched: number;
   /**
+   * An idle firing inside a conversation's keep-warm window (TagStateStore):
+   * it re-armed the tick that keeps the store in memory.
+   */
+  keepWarm: boolean;
+  /**
    * An idle firing's parts, in milliseconds: the management retention sweep,
    * then the ledger, interaction-cleanup, presentation-repair,
    * schedule-action and management-receipt drains. Absent on a drained
@@ -163,6 +168,7 @@ export function startRelayAlarmMetrics(now: () => number = Date.now): RelayAlarm
     rearmed: false,
     yielded: false,
     jobsDispatched: 0,
+    keepWarm: false,
   };
 }
 
@@ -186,6 +192,7 @@ export function emitRelayAlarm(
     rearmed: metrics.rearmed,
     yielded: metrics.yielded,
     jobsDispatched: metrics.jobsDispatched,
+    keepWarm: metrics.keepWarm,
     retentionMs: metrics.retentionMs,
     ledgerMs: metrics.ledgerMs,
     cleanupsMs: metrics.cleanupsMs,
