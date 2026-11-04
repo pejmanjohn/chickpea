@@ -98,7 +98,9 @@ function recolor(rgba, mask, face, entry, target, faces) {
     const w = face ? face.data[i] / 255 : 0;
     // Under a pose's own face, recover the felt by unmixing the ink out.
     const felt = w === 0 ? lab : w > 0.95 ? entry.body : lab.map((v, c) => (v - w * ink[c]) / (1 - w));
-    const k = sourceChroma > 1 ? Math.hypot(felt[1], felt[2]) / sourceChroma : 1;
+    // A weak-chroma source's chroma ratio is mostly noise, which a
+    // saturated target would turn into mottling; damp it toward 1.
+    const k = sourceChroma > 1 ? 1 + (Math.hypot(felt[1], felt[2]) / sourceChroma - 1) * Math.min(1, sourceChroma / 50) : 1;
     let result = [toneMap(felt[0], entry.lightness, target.lightness), ta * k, tb * k];
     if (w > 0) {
       const fill = faceFill(target.face, faces, creamShade(face.data, face.width, face.height, i % face.width, (i / face.width) | 0));
@@ -111,16 +113,24 @@ function recolor(rgba, mask, face, entry, target, faces) {
   return out;
 }
 
-// Composite a face matte onto a body so its anchor lands on the body's.
+// Composite a face matte onto a body so its anchor lands exactly on the
+// body's: the matte and its cream shading are sampled bilinearly at the
+// subpixel offset.
 function placeFace(body, size, matte, offset, kind, faces) {
+  const shade = Float32Array.from(matte.data, (_, i) => creamShade(matte.data, matte.width, matte.height, i % matte.width, (i / matte.width) | 0));
+  const sample = (plane, x, y) => {
+    const x0 = Math.floor(x), y0 = Math.floor(y), tx = x - x0, ty = y - y0;
+    const at = (sx, sy) => (sx < 0 || sy < 0 || sx >= matte.width || sy >= matte.height ? 0 : plane[sy * matte.width + sx]);
+    return (at(x0, y0) * (1 - tx) + at(x0 + 1, y0) * tx) * (1 - ty) + (at(x0, y0 + 1) * (1 - tx) + at(x0 + 1, y0 + 1) * tx) * ty;
+  };
   const out = Buffer.from(body);
-  for (let y = 0; y < matte.height; y++) for (let x = 0; x < matte.width; x++) {
-    const tx = x + offset[0], ty = y + offset[1];
+  const left = Math.floor(offset[0]), top = Math.floor(offset[1]);
+  for (let ty = top; ty <= top + matte.height; ty++) for (let tx = left; tx <= left + matte.width; tx++) {
     if (tx < 0 || ty < 0 || tx >= size || ty >= size) continue;
     const i = ty * size + tx;
-    const w = (matte.data[y * matte.width + x] / 255) * (body[i * 4 + 3] / 255);
+    const w = (sample(matte.data, tx - offset[0], ty - offset[1]) / 255) * (body[i * 4 + 3] / 255);
     if (!w) continue;
-    const fill = toRgb(...faceFill(kind, faces, creamShade(matte.data, matte.width, matte.height, x, y)));
+    const fill = toRgb(...faceFill(kind, faces, sample(shade, tx - offset[0], ty - offset[1])));
     for (let c = 0; c < 3; c++) out[i * 4 + c] = Math.round(body[i * 4 + c] * (1 - w) + fill[c] * w);
   }
   return out;
@@ -144,6 +154,8 @@ async function withShadow(rgba, size, mask, groundY) {
 // carries its own face. In the master's native color with no face change the
 // master's pixels come back unchanged; outside the body mask nothing changes.
 export async function renderChickpea({ master, color, face, size, format = 'png', shadow = false }) {
+  if (format !== 'png' && format !== 'webp') throw new Error(`format must be 'png' or 'webp', not ${JSON.stringify(format)}`);
+  if (size !== undefined && !(Number.isInteger(size) && size > 0)) throw new Error(`size must be a positive integer, not ${JSON.stringify(size)}`);
   const { palette, manifest } = await loadKit();
   const entry = manifest.masters[master];
   if (!entry) throw new Error(`Unknown master "${master}". Masters: ${Object.keys(manifest.masters).join(', ')}`);
@@ -167,7 +179,7 @@ export async function renderChickpea({ master, color, face, size, format = 'png'
   if (faceName !== undefined && faceName !== 'none') {
     const matte = await plane(manifest.faces[faceName].file, 1);
     const anchor = manifest.faces[faceName].anchor;
-    const offset = [Math.round(entry.face.anchor[0] - anchor[0]), Math.round(entry.face.anchor[1] - anchor[1])];
+    const offset = [entry.face.anchor[0] - anchor[0], entry.face.anchor[1] - anchor[1]];
     rgba = placeFace(rgba, native, matte, offset, target.face, palette.faces);
   }
   if (shadow) rgba = await withShadow(rgba, native, mask, entry.groundY);
