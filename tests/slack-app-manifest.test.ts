@@ -14,7 +14,6 @@ import {
 } from '../src/slack/app-manifest.ts';
 import {
   AGENT_APP_BOT_SCOPES,
-  REQUESTED_SLACK_BOT_SCOPES,
   REQUIRED_SLACK_BOT_SCOPES,
   SLACK_FEATURE_SCOPES,
 } from '../src/slack/scopes.ts';
@@ -182,9 +181,9 @@ test('new manifests hear group DM messages and read their history, and an app wi
 test('an Agent\'s own app neither hears group DMs nor reads their history', () => {
   assert.equal(AGENT_APP_BOT_SCOPES.includes('mpim:history'), false);
   assert.equal(AGENT_APP_BOT_EVENTS.includes('message.mpim'), false);
-  assert.deepEqual(
-    AGENT_APP_BOT_SCOPES,
-    REQUESTED_SLACK_BOT_SCOPES.filter((scope) => !scope.startsWith('usergroups:') &&
-      !['chat:write.customize', 'users:read.email', 'mpim:history'].includes(scope)),
-  );
+  assert.deepEqual(AGENT_APP_BOT_SCOPES, [
+    'app_mentions:read', 'assistant:write', 'channels:history', 'channels:join', 'channels:read', 'chat:write',
+    'files:read', 'files:write', 'groups:history', 'groups:read', 'im:history', 'im:write', 'mpim:read',
+    'reactions:read', 'reactions:write', 'users:read', 'lists:read', 'lists:write',
+  ]);
 });
