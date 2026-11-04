@@ -9,6 +9,7 @@ import {
   requireCurrentLegacySetupAuthority,
   safeFailureCode,
   SetupKeyRejectedError,
+  SetupKeyUnconfirmedError,
   type ManagementSetupRoutesOptions,
   type SetupDependencies,
 } from './setup-routes.ts';
@@ -17,6 +18,7 @@ import type { ManagementSetupRecord } from './types.ts';
 export type SlackFormKeyOutcome =
   | { kind: 'saved'; check: SavedKeyCheck }
   | { kind: 'rejected'; host: string }
+  | { kind: 'unconfirmed'; host: string; check: Exclude<SavedKeyCheck, 'ok'> }
   | { kind: 'target_changed' }
   | { kind: 'expired' }
   | { kind: 'access_lost' }
@@ -55,6 +57,7 @@ export async function saveSlackFormKey(input: {
     result = await completeFormAction(setup, { [field]: input.key }, dependencies, input.options ?? {}, now());
   } catch (error) {
     if (error instanceof SetupKeyRejectedError) return { kind: 'rejected', host: error.host };
+    if (error instanceof SetupKeyUnconfirmedError) return { kind: 'unconfirmed', host: error.host, check: error.check };
     return safeFailureCode(error) === 'target_changed' ? { kind: 'target_changed' } : { kind: 'not_saved' };
   }
   await completeSetupWithReceipt(setup, { ...result, via: 'slack_form' }, {

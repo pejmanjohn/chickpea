@@ -75,7 +75,12 @@ async function keyedAgent(
   const service = new WorkspaceManagementService({
     identity: stores.identity, config: stores.config, management: stores.management, setupBaseUrl: 'https://chickpea.example',
   });
-  const requestSetup = async (channelId: string, conversationKind: 'im' | 'mpim', messageTs = MESSAGE_TS) => {
+  const requestSetup = async (
+    channelId: string,
+    conversationKind: 'im' | 'mpim',
+    messageTs = MESSAGE_TS,
+    path?: string,
+  ) => {
     const result = await service.applyWorkspaceChanges({
       context: {
         userId: owner.user.id,
@@ -88,7 +93,11 @@ async function keyedAgent(
         },
       },
       idempotencyKey: `key-form-${channelId}-${messageTs}`,
-      operations: [{ itemId: 'setup', kind: 'request_setup', target: { kind: 'api_connection', agentId: agent.id, connectionId: 'tasks' } }],
+      operations: [{
+        itemId: 'setup',
+        kind: 'request_setup',
+        target: { kind: 'api_connection', agentId: agent.id, connectionId: 'tasks', ...(path ? { path } : {}) },
+      }],
     }) as ManagementApplyResult;
     const [outcome] = result.outcomes;
     assert.equal(outcome?.disposition, 'setup_required', JSON.stringify(result));
@@ -329,6 +338,90 @@ test('a key the service rejects saves nothing, offers Try again and wakes the Ag
     assert.deepEqual(added.spec.rows[0]!.state, { is: 'added' }, 'Try again checks the row again and saves');
     assert.equal((await stores.management.getSetup(setupOperationId!))?.status, 'completed');
     assert.match(updates.at(-1)!, /:white_check_mark: <@U1> added the \*Tasks\* key\./);
+  });
+});
+
+function formContext(stores: Stores) {
+  const updates: Array<{ text: string; blocks: string }> = [];
+  const notices: string[] = [];
+  const woken: SetupWakeRequest[] = [];
+  const context: KeyFormContext = {
+    stores,
+    platformEnv: undefined,
+    slack: {
+      update: async (_channel, _ts, rendered) => { updates.push({ text: rendered.text, blocks: JSON.stringify(rendered.blocks) }); },
+      notice: async ({ text }) => { notices.push(text); },
+    },
+    wake: async (request) => { woken.push(request); },
+    checkOptions: { cloudflare: true },
+  };
+  return { context, updates, notices, woken };
+}
+
+async function formSubmission(stores: Stores, card: UiSurfaceRecord, setupOperationId: string, key = KEY) {
+  const record = (await stores.management.getSetup(setupOperationId))!;
+  const metadata = `${card.id}|${setupOperationId}|${record.target.credentialBinding}`;
+  const form = submission(card, metadata, key).view;
+  return {
+    workspaceId: 'T1', userId: 'U1', viewId: 'V1', callbackId: form.callback_id, privateMetadata: metadata,
+    state: form.state.values, triggerId: null,
+  };
+}
+
+test('a setup that names no read path saves a form key only on a 2xx, and asks the Agent for one that does', async () => {
+  await withDirectSlackInstall({}, async ({ stores }) => {
+    const fixture = await keyedAgent(stores, 'api.tasks.example');
+    const { setupOperationId } = await fixture.requestSetup('D1', 'im');
+    const card = await postCard(stores, fixture);
+    const { context, updates, woken } = formContext(stores);
+    const submitted = await formSubmission(stores, card, setupOperationId!);
+
+    await withConnectionNetwork(() => Response.json({ message: 'no route' }, { status: 404 }), async (requests) => {
+      await saveKeyFromForm(context, submitted);
+      assert.deepEqual(requests.map(({ url }) => url), ['https://api.tasks.example/v1'], 'the check ran at the bare prefix');
+    });
+    const account = (await stores.config.listConnectionAccounts('T1')).find(({ label }) => label === 'Tasks')!;
+    assert.equal(await stores.settings.getSetting(connectionAccountSecretSettingKey(account.secretRefId)), undefined,
+      'a 404 at the bare prefix saves nothing');
+    assert.equal(account.lifecycle, 'pending');
+    const unconfirmed = await surface(stores, card.id);
+    assert.ok(isKeyCard(unconfirmed));
+    assert.deepEqual(unconfirmed.spec.rows[0]!.state, { is: 'unconfirmed' });
+    assert.equal(unconfirmed.status, 'resolved', 'the row is final, so the card settles');
+    assert.match(updates.at(-1)!.blocks, /api\.tasks\.example didn't confirm that key, so it wasn't saved\./);
+    assert.doesNotMatch(updates.at(-1)!.blocks, /"button"/, 'no Add key or Try again');
+    assert.equal(updates.at(-1)!.text, 'api.tasks.example didn\'t confirm that key, so it wasn\'t saved.');
+
+    assert.deepEqual(woken.map(({ setupOperationId: id }) => id), [`${setupOperationId}.unconfirmed`]);
+    assert.match(woken[0]!.wake.note, /api\.tasks\.example, which answered 404/);
+    assert.match(woken[0]!.wake.note, /Call request_setup for Tasks again with path set to a read endpoint/);
+    assert.equal(woken[0]!.notice, 'api.tasks.example didn\'t confirm the key for Tasks, so it wasn\'t saved.');
+    assert.ok(!JSON.stringify({ woken, updates }).includes(KEY), 'the wake and the card never hold the key');
+
+    await withConnectionNetwork(() => Response.json({ tasks: [] }), async (requests) => {
+      await saveKeyFromForm(context, submitted);
+      assert.deepEqual(requests, [], 'a form still open on the settled row checks nothing');
+    });
+    assert.equal(woken.length, 1, 'one wake');
+  });
+});
+
+test('a setup with the Agent\'s read path keeps the setup page\'s rule and saves a key that path answers 404 for', async () => {
+  await withDirectSlackInstall({}, async ({ stores }) => {
+    const fixture = await keyedAgent(stores, 'api.tasks.example');
+    const { setupOperationId } = await fixture.requestSetup('D1', 'im', MESSAGE_TS, '/v1/tasks');
+    const card = await postCard(stores, fixture);
+    const { context, woken } = formContext(stores);
+
+    await withConnectionNetwork(() => Response.json({ message: 'no route' }, { status: 404 }), async (requests) => {
+      await saveKeyFromForm(context, await formSubmission(stores, card, setupOperationId!));
+      assert.deepEqual(requests.map(({ url }) => url), ['https://api.tasks.example/v1/tasks']);
+    });
+    const added = await surface(stores, card.id);
+    assert.ok(isKeyCard(added));
+    assert.deepEqual(added.spec.rows[0]!.state, { is: 'added_warning', check: 'path_not_found' });
+    assert.equal((await stores.management.getSetup(setupOperationId!))?.status, 'completed');
+    assert.deepEqual(woken, [], 'a saved key wakes the Agent through its setup receipt');
   });
 });
 

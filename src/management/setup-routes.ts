@@ -2513,6 +2513,10 @@ export async function completeFormAction(
         .catch(() => undefined))?.account.revision === entry.account.revision,
     }, options.connectionCheck);
     if (check.kind === 'key_rejected') throw new SetupKeyRejectedError(policy.allowedHosts[0]!);
+    // A bare prefix often answers 404 whatever the key, so a Slack form key checked there needs a 2xx.
+    if (check.kind !== 'ok' && path === undefined && setup.target.form === 'slack') {
+      throw new SetupKeyUnconfirmedError(policy.allowedHosts[0]!, check.kind);
+    }
     await completeSetupCredential(setup, dependencies, entry, credential, {});
     return { connector: setup.target.targetLabel, check: check.kind };
   }
@@ -3287,6 +3291,12 @@ const KEY_SAVED_TEXT: Record<KeySavedCheck, { finding: string; alone: string }> 
 export class SetupKeyRejectedError extends Error {
   constructor(readonly host: string) {
     super(`${host} rejected this key. Check that you copied the whole key, then try again.`);
+  }
+}
+
+export class SetupKeyUnconfirmedError extends Error {
+  constructor(readonly host: string, readonly check: KeySavedCheck) {
+    super(`${host} did not confirm this key.`);
   }
 }
 

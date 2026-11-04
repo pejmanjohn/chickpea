@@ -83,6 +83,9 @@ test('a row moves only along its state machine', () => {
     [checking, { kind: 'saved', check: 'ok' }, { is: 'added' }],
     [checking, { kind: 'saved', check: 'not_permitted' }, { is: 'added_warning', check: 'not_permitted' }],
     [checking, { kind: 'unsaved', because: 'rejected' }, { is: 'rejected' }],
+    [checking, { kind: 'unsaved', because: 'unconfirmed' }, { is: 'unconfirmed' }],
+    [{ is: 'unconfirmed' }, { kind: 'check', at: NOW }, undefined],
+    [{ is: 'unconfirmed' }, { kind: 'expired', at: NOW }, undefined],
     [checking, { kind: 'unsaved', because: 'changed' }, { is: 'superseded' }],
     [checking, { kind: 'unsaved', because: 'expired' }, { is: 'expired' }],
     [checking, { kind: 'unsaved', because: 'error' }, { is: 'waiting' }],
@@ -138,12 +141,14 @@ test('a rejected row offers Try again and a finished card collapses to its lines
     row({ state: { is: 'added' } }),
     row({ setupOperationId: 'setup_two', label: 'Notion', kind: 'mcp_credentials', state: { is: 'expired' } }),
     row({ setupOperationId: 'setup_three', label: 'Sentry', state: { is: 'added_warning', check: 'not_permitted' } }),
+    row({ setupOperationId: 'setup_four', label: 'Mistral', state: { is: 'unconfirmed' } }),
   ]);
   const collapsed = renderKeyCard(done, done.spec);
   assert.equal(collapsed.text, [
     '<@U1> added the Linear key.',
     'Notion: This key request expired. Ask Ops for a new one.',
     '<@U1> added the Sentry key. The service turned down Chickpea\'s check, so the key may be missing a permission.',
+    'Mistral: api.linear.app didn\'t confirm that key, so it wasn\'t saved.',
   ].join('\n'), 'notifications and search read what the card now says');
   assert.equal(collapsed.blocks.length, 1);
   assert.equal(checkSlackBlocks(collapsed.blocks, { text: collapsed.text }).ok, true);
@@ -151,6 +156,7 @@ test('a rejected row offers Try again and a finished card collapses to its lines
     ':white_check_mark: <@U1> added the *Linear* key.',
     '*Notion*: This key request expired. Ask Ops for a new one.',
     ':white_check_mark: <@U1> added the *Sentry* key. The service turned down Chickpea\'s check, so the key may be missing a permission.',
+    '*Mistral*: api.linear.app didn\'t confirm that key, so it wasn\'t saved.',
   ]);
 });
 

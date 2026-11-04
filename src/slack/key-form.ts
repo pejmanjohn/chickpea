@@ -35,7 +35,7 @@ import {
   keyModalView,
   keyNotSavedNotice,
   keyRefusalNotice,
-  keyRejectedNotice,
+  keyUnsavedNotice,
   keyRowAvailability,
   MAX_KEY_ROWS,
   parseKeyFormMetadata,
@@ -49,6 +49,7 @@ import {
   type KeySubmissionReading,
   type KeyTarget,
   type KeyUnsaved,
+  type KeyWarning,
 } from './ui/key-card.ts';
 import { parseUiControl, uiSurfaceId, UI_SURFACE_TTL_MS, type UiSurfaceRecord } from './ui/surface.ts';
 
@@ -372,6 +373,7 @@ export async function explainKeyCardClick(context: KeyFormContext, action: Slack
 
 const SAVE_EVENT: Record<Exclude<SlackFormKeyOutcome['kind'], 'saved'>, KeyUnsaved> = {
   rejected: 'rejected',
+  unconfirmed: 'unconfirmed',
   target_changed: 'changed',
   expired: 'expired',
   access_lost: 'error',
@@ -426,26 +428,29 @@ export async function saveKeyFromForm(context: KeyFormContext, submission: Slack
   await redraw(context.slack, card);
   if (outcome.kind === 'saved') {
     context.deliverSetupReceipt?.();
-  } else if (outcome.kind === 'rejected') {
-    await wakeOnRejectedKey(context, live.setup, reading.row, submission.userId);
+  } else if (outcome.kind === 'rejected' || outcome.kind === 'unconfirmed') {
+    await wakeOnUnsavedKey(context, live.setup, reading.row, submission.userId, outcome);
   } else if (outcome.kind === 'access_lost' || outcome.kind === 'not_saved') {
     await notify(context.slack, card, submission.userId, keyNotSavedNotice(card));
   }
 }
 
-/** One wake per setup: a later rejection updates the card, and the thread admits its wake once. */
-async function wakeOnRejectedKey(
+type KeyFinding = { kind: 'rejected' } | { kind: 'unconfirmed'; check: KeyWarning };
+
+/** One wake per setup and finding: a later rejection updates the card, and the thread admits its wake once. */
+async function wakeOnUnsavedKey(
   context: KeyFormContext,
   setup: ManagementSetupRecord | undefined,
   row: KeyRow,
   slackUserId: string,
+  finding: KeyFinding,
 ): Promise<void> {
   const agent = setup ? setupWakeAgent(setup) : undefined;
   if (!context.wake || !setup || !agent || setup.origin.kind !== 'slack') return;
   const person = await context.stores.identity.getUser(setup.actorUserId).catch(() => undefined);
   const host = keyHost(row);
   await context.wake({
-    setupOperationId: `${setup.setupOperationId}.rejected`,
+    setupOperationId: `${setup.setupOperationId}.${finding.kind}`,
     workspaceId: setup.origin.workspaceId,
     channelId: setup.origin.channelId,
     threadTs: setup.origin.threadTs,
@@ -453,9 +458,9 @@ async function wakeOnRejectedKey(
       agentId: agent.agentId,
       slackUserId,
       ...(setup.origin.conversationKind ? { conversationKind: setup.origin.conversationKind } : {}),
-      note: setupKeyRejectedNote({ person: person?.displayName ?? 'The person', connector: row.label, host }),
+      note: setupKeyUnsavedNote({ person: person?.displayName ?? 'The person', connector: row.label, host, finding }),
     },
-    notice: keyRejectedNotice(row),
+    notice: keyUnsavedNotice(row, finding.kind),
   }).catch(() => {
     console.warn('[chickpea] Slack key form could not wake the Agent');
   });
@@ -553,10 +558,24 @@ async function postKeyCard(input: Omit<KeyCardDelivery, 'state' | 'management'> 
   emitKeyForm('posted');
 }
 
-function setupKeyRejectedNote(input: { person: string; connector: string; host: string }): string {
-  const { person, connector, host } = input;
+const UNCONFIRMED_ANSWER: Record<KeyWarning, string> = {
+  not_permitted: 'answered 403',
+  path_not_found: 'answered 404, as many APIs do at a base path whatever the key',
+  unreachable: 'could not be reached or answered with a server error',
+  inconclusive: 'answered in a way that neither accepts nor rejects a key',
+};
+
+function setupKeyUnsavedNote(input: { person: string; connector: string; host: string; finding: KeyFinding }): string {
+  const { person, connector, host, finding } = input;
+  const gave = `Chickpea note, not typed by ${person}: ${person} gave a key for ${connector} with Chickpea's Add key form in Slack`;
+  if (finding.kind === 'rejected') {
+    return [
+      `${gave}, and ${host} rejected it (HTTP 401), so nothing was saved. The form offers Try again.`,
+      `Reply here in one or two sentences: what usually causes this for ${connector}, and where they get a working key. Do not request another setup, and never ask them to paste a key here.`,
+    ].join('\n\n');
+  }
   return [
-    `Chickpea note, not typed by ${person}: ${person} gave a key for ${connector} with Chickpea's Add key form in Slack, and ${host} rejected it (HTTP 401), so nothing was saved. The form offers Try again.`,
-    `Reply here in one or two sentences: what usually causes this for ${connector}, and where they get a working key. Do not request another setup, and never ask them to paste a key here.`,
+    `${gave}. Chickpea checked it with one request to the connection's base path at ${host}, which ${UNCONFIRMED_ANSWER[finding.check]}, so it could not confirm the key, nothing was saved, and the form is closed.`,
+    `Call request_setup for ${connector} again with path set to a read endpoint inside the connection that a working key can read, such as a list endpoint, never the bare prefix. Chickpea then posts a new Add key button: tell the person in one sentence to use it, and never ask them to paste a key here.`,
   ].join('\n\n');
 }

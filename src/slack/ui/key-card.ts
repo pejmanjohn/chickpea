@@ -18,6 +18,8 @@ export type KeyRowState =
   | { is: 'added' }
   | { is: 'added_warning'; check: KeyWarning }
   | { is: 'rejected' }
+  /** Checked at the connection's bare prefix with no 2xx: not saved, and the Agent asks again with a read path. */
+  | { is: 'unconfirmed' }
   | { is: 'expired' }
   | { is: 'superseded' };
 
@@ -36,7 +38,7 @@ export interface KeyCardSpec {
   rows: KeyRow[];
 }
 
-export type KeyUnsaved = 'rejected' | 'changed' | 'expired' | 'error';
+export type KeyUnsaved = 'rejected' | 'unconfirmed' | 'changed' | 'expired' | 'error';
 
 export type KeyRowEvent =
   | { kind: 'check'; at: number }
@@ -47,6 +49,7 @@ export type KeyRowEvent =
 
 const UNSAVED: Record<KeyUnsaved, KeyRowState> = {
   rejected: { is: 'rejected' },
+  unconfirmed: { is: 'unconfirmed' },
   changed: { is: 'superseded' },
   expired: { is: 'expired' },
   error: { is: 'waiting' },
@@ -57,8 +60,8 @@ export const MAX_KEY_LENGTH = 3_000;
 export const MAX_KEY_ROWS = 10;
 
 export function keyRowFinal(state: KeyRowState): boolean {
-  return state.is === 'added' || state.is === 'added_warning' || state.is === 'expired' ||
-    state.is === 'superseded';
+  return state.is === 'added' || state.is === 'added_warning' || state.is === 'unconfirmed' ||
+    state.is === 'expired' || state.is === 'superseded';
 }
 
 function checkingFresh(state: KeyRowState, at: number): boolean {
@@ -163,6 +166,8 @@ function statusLine(spec: KeyCardSpec, row: KeyRow, requester: string, style = I
       return `${style.icon(':white_check_mark:')}${requester} added the ${style.label(row)} key. ${WARNING[row.state.check]}.`;
     case 'rejected':
       return `${style.icon(':x:')}${host} rejected that key, so it wasn't saved.`;
+    case 'unconfirmed':
+      return `${host} didn't confirm that key, so it wasn't saved.`;
     case 'expired':
       return `This key request expired. Ask ${agent(spec)} for a new one.`;
     case 'superseded':
@@ -188,7 +193,9 @@ function rowButton(record: UiSurfaceRecord, row: KeyRow, index: number): Block |
 
 function finalLine(spec: KeyCardSpec, row: KeyRow, requester: string, many: boolean, style = IN_BLOCKS): string {
   const line = statusLine(spec, row, requester, style)!;
-  return many && (row.state.is === 'expired' || row.state.is === 'superseded') ? `${style.label(row)}: ${line}` : line;
+  return many && (row.state.is === 'unconfirmed' || row.state.is === 'expired' || row.state.is === 'superseded')
+    ? `${style.label(row)}: ${line}`
+    : line;
 }
 
 /** The card as one plain message text, kept current with every redraw. */
@@ -287,6 +294,7 @@ export function keyRowAvailability(input: {
   if (!row) return { ok: false, refusal: 'unavailable' };
   if (input.userId !== card.requesterUserId) return { ok: false, refusal: 'wrong_user', row };
   if (row.state.is === 'expired' || row.state.is === 'superseded') return { ok: false, refusal: row.state.is, row };
+  if (row.state.is === 'unconfirmed') return { ok: false, refusal: 'unavailable', row };
   if (keyRowFinal(row.state)) return { ok: false, refusal: 'done', row };
   if (checkingFresh(row.state, now)) return { ok: false, refusal: 'busy', row };
   const { setup, target } = facts;
@@ -326,8 +334,11 @@ export function keyNotSavedNotice(card: UiSurfaceRecord & { spec: KeyCardSpec })
 }
 
 /** The setup's notice, which the thread shows if the Agent's wake fails before it replies. */
-export function keyRejectedNotice(row: KeyRow): string {
-  return `${escapeMrkdwn(keyHost(row))} rejected the key for ${name(row)}, so it wasn't saved.`;
+export function keyUnsavedNotice(row: KeyRow, finding: 'rejected' | 'unconfirmed'): string {
+  const host = escapeMrkdwn(keyHost(row));
+  return finding === 'rejected'
+    ? `${host} rejected the key for ${name(row)}, so it wasn't saved.`
+    : `${host} didn't confirm the key for ${name(row)}, so it wasn't saved.`;
 }
 
 export interface KeyFormMetadata {
