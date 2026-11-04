@@ -171,6 +171,41 @@ test('shared-channel facts cover every Slack sharing flag', () => {
   assert.equal(slackReadConversationFacts({ id: 'C1', context_team_id: 'T9', team_id: 'T1' })?.teamId, 'T9');
 });
 
+const DM_CURRENT = { ...CURRENT, channelId: 'D0DANA' };
+
+/** Slack for an app whose DM facts are `dm`, or `missing_scope` without im:read. */
+function dmClient(dm: Record<string, unknown> | 'missing_scope') {
+  const infoCalls: string[] = [];
+  return {
+    infoCalls,
+    conversations: {
+      async info({ channel }: { channel: string }) {
+        infoCalls.push(channel);
+        if (channel === 'C0OTHER') return { ok: true, channel: { id: channel, name: 'deploys', is_member: true, context_team_id: WORKSPACE } };
+        if (channel !== DM_CURRENT.channelId) throw Object.assign(new Error('x'), { data: { error: 'channel_not_found' } });
+        if (dm === 'missing_scope') throw Object.assign(new Error('x'), { code: 'slack_webapi_platform_error', data: { error: 'missing_scope', needed: 'im:read' } });
+        return { ok: true, channel: { id: channel, is_im: true, user: REQUESTER, ...dm } };
+      },
+      async members() { return { ok: true, members: [REQUESTER] }; },
+    },
+  };
+}
+
+function dmPorts(client: ReturnType<typeof dmClient>): SlackReadAuthorityPorts {
+  return slackReadAuthorityPorts({
+    workspaceId: WORKSPACE, agentId: 'agent_oncall', requesterSlackUserId: REQUESTER, current: DM_CURRENT,
+    client: client as never, assertActive: async () => {}, hasActiveGrant: async () => true,
+  });
+}
+
+test('from the app\'s DM, another granted channel is readable without im:read', async () => {
+  // Defect: conversations.info on the DM fails with missing_scope, and the
+  // shared-conversation check turned that into "Slack could not be read".
+  const client = dmClient('missing_scope');
+  const conversation = await authorizeSlackRead(dmPorts(client), 'C0OTHER');
+  assert.deepEqual(conversation, { id: 'C0OTHER', name: 'deploys', kind: 'channel', current: false });
+});
+
 test('membership is cached for one render only, and a missing channel is not a member', async () => {
   let pages = 0;
   const client = {
