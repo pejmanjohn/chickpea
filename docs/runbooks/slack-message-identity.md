@@ -84,15 +84,25 @@ that Channel.
 - Apps created before this change don't receive `member_joined_channel`,
   because Chickpea never updates an existing app's manifest.
 - Admin's Add to channels and the offer's Add button bring the app's bot in
-  as they add the Agent. The bot joins a public Channel itself, with the
-  app's `channels:join`; Chickpea's bot has no scope to invite it, and adding
-  one would ask every installation to approve it. A bot cannot join a private
-  Channel, so there Chickpea only checks that someone has added it. When the
-  bot is not in the Channel, the Agent is still added: Admin's result and the
-  offer's reply tell the person to add it from the channel's Add people or
-  agents, and `chickpea.agent_app.bot_left_out` logs Slack's reason. Apps
-  created before `channels:join` was requested are refused the join
-  (`missing_scope`) and reported the same way.
+  as they add the Agent. When the app's bot is not in the Channel yet,
+  Chickpea's bot invites it (`conversations.invite`), with `channels:manage`
+  in a public Channel and `groups:write` in a private one. Slack's
+  `already_in_channel` counts as in. Any other refusal is logged as
+  `chickpea.agent_app.slack_refused` with `step: "invite"` and Slack's code,
+  and Chickpea falls back to the way in it used before those scopes: the bot
+  joins a public Channel itself, with the app's `channels:join`, and a private
+  Channel is left to a person. An installation granted before those scopes is
+  refused with `missing_scope` and takes this fallback until an Owner updates
+  Chickpea's Slack permissions.
+- When the bot is still not in the Channel, the Agent is still added: Admin's
+  result and the offer's reply tell the person to add it from the channel's
+  Add people or agents, and `chickpea.agent_app.bot_left_out` logs why
+  (`private_channel`, the join's Slack code, or `bot_unavailable` when the
+  app's token cannot be read). Apps created before `channels:join` was
+  requested are refused the join (`missing_scope`) and reported the same way.
+- Adding the Agent to a Channel brings the bot into that Channel only. Its
+  bot is not invited into Channels the Agent was added to before its app went
+  live; a person adds it there from Slack.
 - In a public Channel, the bot that was brought in posts the Agent's welcome
   after it joins, whichever way the Agent was added. The welcome posts once,
   when the grant becomes active: adding the Agent again, a retry, or the bot's

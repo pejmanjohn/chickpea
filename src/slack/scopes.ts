@@ -47,8 +47,8 @@ export const SLACK_USER_GROUP_SCOPES = Object.freeze(['usergroups:read', 'usergr
  * of the group's earlier messages. It also leaves out the scopes requested
  * for upcoming features: an Agent app made before them was never granted
  * them, and its consent must keep passing. It keeps `channels:join` so that
- * adding the Agent to a public Channel brings its bot in: Chickpea's bot
- * cannot invite it without a scope every installation would have to approve.
+ * adding the Agent to a public Channel brings its bot in where Chickpea's bot
+ * cannot invite it: an installation granted before `channels:manage` lacks it.
  */
 const AGENT_APP_LEAVES_OUT = new Set([
   'chat:write.customize', 'users:read.email', 'mpim:history', ...UPCOMING_FEATURE_SCOPES,
