@@ -32,6 +32,7 @@ const WORKSPACE = 'T0WORK';
 const REQUESTER = 'U0REQ';
 const CREATED = 'C0ACME';
 const POSTED_TS = '1800000000.000200';
+const ALREADY_IN = 'already_in_channel';
 const ASKED = 'spin up a private channel for the Acme renewal with <@U0SAM> and <@U0PRIYA|priya> and post a kickoff summary';
 
 function person(id: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
@@ -329,6 +330,34 @@ test('one channel per request: a second call points to the first and creates not
   assert.equal(again.status, 'already_created');
   assert.deepEqual(again.channel, { id: CREATED, visibility: 'private', link: 'https://slack.com/archives/C0ACME' });
   assert.equal(calls.create.length, 1);
+  assert.equal(calls.post.length, 1, 'the opening message is never posted twice');
+});
+
+test('a retry after the invites were lost puts the requester into the private channel it already created', async (t) => {
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => settings.close());
+  const receipt = channelReceipt(settings);
+  const lost = channels(t, fakeSlack({ inviteErrors: [platformError('internal_error')], members: new Error('timeout') }), { receipt });
+  assert.deepEqual((await lost.service().create(request())).invited, []);
+
+  const alreadyIn = platformError(ALREADY_IN, { errors: [{ user: 'U0SAM', ok: false, error: ALREADY_IN }] });
+  const retry = channels(t, fakeSlack({ inviteErrors: [alreadyIn] }), { receipt });
+  const healed = await retry.service().create(request());
+  assert.equal(healed.status, 'already_created');
+  assert.deepEqual(healed.invited, [REQUESTER, 'U0SAM', 'U0PRIYA']);
+  assert.deepEqual(retry.calls.invite, [`${REQUESTER},U0SAM,U0PRIYA`, `${REQUESTER},U0PRIYA`]);
+  assert.deepEqual([retry.calls.create, retry.calls.post], [[], []]);
+});
+
+test('one person Slack will not invite keeps their reason, and one already there counts as invited', async (t) => {
+  const refused = channels(t, fakeSlack({ inviteErrors: [platformError('ura_max_channels')] }));
+  const alone = await refused.service().create(request({ people: [] }));
+  assert.deepEqual([alone.invited, alone.notInvited], [[], [{ id: REQUESTER, reason: 'guest' }]]);
+  assert.deepEqual(refused.calls.members, [], 'no readback is needed to know why');
+
+  const present = channels(t, fakeSlack({ inviteErrors: [platformError(ALREADY_IN)] }));
+  const joined = await present.service().create(request({ people: [] }));
+  assert.deepEqual([joined.invited, joined.notInvited], [[REQUESTER], undefined]);
 });
 
 test('a creation Slack did not confirm blocks every later call in the request, and nobody is invited', async (t) => {

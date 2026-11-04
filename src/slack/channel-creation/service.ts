@@ -127,6 +127,14 @@ const INVITE_REFUSALS: Record<string, InviteRefusal> = {
   user_not_found: 'not_found',
 };
 
+const ALREADY_IN_CHANNEL = 'already_in_channel';
+
+/** Codes about the one person invited, which Slack returns without a per-person list. */
+const PERSON_INVITE_ERRORS = new Set([
+  ALREADY_IN_CHANNEL, ...Object.keys(INVITE_REFUSALS), 'cant_invite', 'cant_invite_self',
+  'org_user_not_in_team', 'invitee_cant_see_channel', 'no_external_invite_permission',
+]);
+
 export class SlackChannelCreateRefusal extends Error {
   constructor(
     readonly code: ChannelCreateRefusalCode,
@@ -187,12 +195,12 @@ export class SlackChannelCreateService {
     const refused = await refusedPeople(this.options.chickpeaBot, this.options.workspaceId, admission.others, { guests: 'refused' });
     if (refused.length) throw new SlackChannelCreateRefusal('person_not_eligible', refused);
 
+    const people = [admission.requester, ...admission.others];
     const claim = await this.options.receipt.claim();
     if (!claim.claimed) {
-      if (claim.previous !== 'pending' && claim.previous.status === 'not_created') {
-        throw new SlackChannelCreateRefusal('too_many_attempts');
-      }
-      return alreadyAttempted(claim.previous);
+      if (claim.previous === 'pending') return { status: 'unverified', code: 'already_attempted', message: CREATE_UNCONFIRMED };
+      if (claim.previous.status === 'not_created') throw new SlackChannelCreateRefusal('too_many_attempts');
+      return this.alreadyCreated(claim.previous, people);
     }
     const failedAttempts = claim.previous?.status === 'not_created' ? claim.previous.attempts : 0;
     let channelId: string;
@@ -208,7 +216,7 @@ export class SlackChannelCreateService {
     }
     await this.options.receipt.settle({ status: 'created', channelId, visibility: request.visibility });
 
-    const invites = await this.invite(channelId, [admission.requester, ...admission.others]);
+    const invites = await this.invite(channelId, people);
     const purposeSet = request.purpose ? await this.setPurpose(channelId, request.purpose) : true;
     const opening = await this.post(channelId, request.message);
     if (opening.status === 'posted') {
@@ -242,31 +250,54 @@ export class SlackChannelCreateService {
     return id;
   }
 
+  /** The opening message is never posted again: only the invites, so the requester is in the channel. */
+  private async alreadyCreated(
+    previous: Extract<ChannelCreateReceipt, { status: 'created' }>,
+    people: readonly string[],
+  ): Promise<JsonObject> {
+    const invites = await this.invite(previous.channelId, people);
+    return {
+      status: 'already_created',
+      channel: { id: previous.channelId, visibility: previous.visibility, link: channelLink(previous.channelId) },
+      invited: invites.invited,
+      ...(invites.notInvited.length ? { notInvited: invites.notInvited } : {}),
+      message: 'This request already created this channel. Do not create another; point the requester to it.',
+    };
+  }
+
   // Without `force`, Slack invites nobody when it refuses any one person.
   private async invite(channelId: string, people: readonly string[]): Promise<{
     invited: string[];
     notInvited: { id: string; reason: InviteRefusal }[];
   }> {
+    const alreadyIn = new Set<string>();
     const refusedByUser = new Map<string, InviteRefusal>();
+    const outcome = (inChannel: (id: string) => boolean, unknownReason: InviteRefusal) => ({
+      invited: people.filter(inChannel),
+      notInvited: people.filter((id) => !inChannel(id))
+        .map((id) => ({ id, reason: refusedByUser.get(id) ?? unknownReason })),
+    });
     let remaining = [...people];
     for (let attempt = 0; attempt < 2 && remaining.length; attempt++) {
       try {
         await this.options.chickpeaBot.conversations.invite({ channel: channelId, users: remaining.join(',') });
-        return { invited: remaining, notInvited: [...refusedByUser].map(([id, reason]) => ({ id, reason })) };
+        const invited = new Set(remaining);
+        return outcome((id) => alreadyIn.has(id) || invited.has(id), 'not_allowed');
       } catch (error) {
-        const perUser = inviteErrorsByUser(error);
+        const perUser = inviteErrorsByUser(error, remaining);
         if (!perUser.size) break;
-        for (const [id, code] of perUser) refusedByUser.set(id, INVITE_REFUSALS[code] ?? 'not_allowed');
-        remaining = remaining.filter((id) => !refusedByUser.has(id));
+        for (const [id, code] of perUser) {
+          if (code === ALREADY_IN_CHANNEL) alreadyIn.add(id);
+          else refusedByUser.set(id, INVITE_REFUSALS[code] ?? 'not_allowed');
+        }
+        remaining = remaining.filter((id) => !perUser.has(id));
       }
     }
+    if (!remaining.length) return outcome((id) => alreadyIn.has(id), 'not_allowed');
     const members = await this.members(channelId);
-    return {
-      invited: members ? people.filter((id) => members.has(id)) : [],
-      notInvited: people
-        .filter((id) => !members?.has(id))
-        .map((id) => ({ id, reason: refusedByUser.get(id) ?? (members ? 'not_allowed' : 'unconfirmed') })),
-    };
+    return members
+      ? outcome((id) => members.has(id), 'not_allowed')
+      : outcome((id) => alreadyIn.has(id), 'unconfirmed');
   }
 
   private async members(channelId: string): Promise<ReadonlySet<string> | undefined> {
@@ -341,26 +372,21 @@ function asRefusal(error: unknown): SlackChannelCreateRefusal {
   return new SlackChannelCreateRefusal('unavailable');
 }
 
-function alreadyAttempted(previous: Extract<ChannelCreateReceipt, { status: 'created' }> | 'pending'): JsonObject {
-  if (previous === 'pending') return { status: 'unverified', code: 'already_attempted', message: CREATE_UNCONFIRMED };
-  return {
-    status: 'already_created',
-    channel: { id: previous.channelId, visibility: previous.visibility, link: channelLink(previous.channelId) },
-    message: 'This request already created this channel. Do not create another; point the requester to it.',
-  };
-}
-
 function agentAccessFields(access: ChannelAgentAccess, openingPosted: boolean): JsonObject {
   if (access.status === 'not_needed') return openingPosted ? { replies: REPLIES_REACH_YOU } : {};
   const adminUrl = access.status === 'add_in_admin' ? access.adminUrl : undefined;
   return { agentAccess: { status: access.status, message: AGENT_ACCESS[access.status], ...(adminUrl ? { adminUrl } : {}) } };
 }
 
-function inviteErrorsByUser(error: unknown): ReadonlyMap<string, string> {
+function inviteErrorsByUser(error: unknown, invited: readonly string[]): ReadonlyMap<string, string> {
   const data = isRecord(error) && isRecord(error.data) ? error.data : undefined;
   const errors = Array.isArray(data?.errors) ? data.errors : [];
-  return new Map(errors.flatMap((entry) =>
-    isRecord(entry) && typeof entry.user === 'string' && typeof entry.error === 'string' ? [[entry.user, entry.error] as const] : []));
+  if (errors.length) {
+    return new Map(errors.flatMap((entry) =>
+      isRecord(entry) && typeof entry.user === 'string' && typeof entry.error === 'string' ? [[entry.user, entry.error] as const] : []));
+  }
+  const code = slackPlatformErrorCode(error);
+  return invited.length === 1 && code && PERSON_INVITE_ERRORS.has(code) ? new Map([[invited[0]!, code]]) : new Map();
 }
 
 function channelLink(channelId: string): string {

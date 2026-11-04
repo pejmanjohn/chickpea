@@ -119,9 +119,11 @@ One channel per request. A content-free receipt keyed by the turn, holding the
 channel ID and whether it is private, is written before Slack is asked to
 create anything. A creation Slack did not confirm blocks any further attempt in
 that request, so a retry never creates two channels; such a channel, if it
-exists, holds only Chickpea's bot. A name Slack refused, or a missing
-permission, leaves the request free to try again, up to three attempts.
-Receipts expire with their turn.
+exists, holds only Chickpea's bot. A later call in a request that already
+created its channel creates and posts nothing; it invites the requester and the
+named people again, so a channel whose invites were lost still reaches them.
+A name Slack refused, or a missing permission, leaves the request free to try
+again, up to three attempts. Receipts expire with their turn.
 
 A refusal before anything is created does not make the reply a task.
 
