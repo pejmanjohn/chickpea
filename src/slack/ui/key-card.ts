@@ -295,6 +295,15 @@ export function keyRefusalNotice(card: UiSurfaceRecord & { spec: KeyCardSpec }, 
   }
 }
 
+export function keyNotSavedNotice(card: UiSurfaceRecord & { spec: KeyCardSpec }): string {
+  return `That key wasn't saved. Try again, or ask ${agent(card.spec)} for help.`;
+}
+
+/** The setup's notice, which the thread shows if the Agent's wake fails before it replies. */
+export function keyRejectedNotice(row: KeyRow): string {
+  return `${escapeMrkdwn(keyHost(row))} rejected the key for ${escapeMrkdwn(clampDisplay(row.label, 100))}, so it wasn't saved.`;
+}
+
 export interface KeyFormMetadata {
   cardId: string;
   setupOperationId: string;

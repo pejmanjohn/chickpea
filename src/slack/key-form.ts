@@ -30,7 +30,9 @@ import {
   keyCardTransition,
   keyHost,
   keyModalView,
+  keyNotSavedNotice,
   keyRefusalNotice,
+  keyRejectedNotice,
   keyRowAvailability,
   MAX_KEY_ROWS,
   parseKeyFormMetadata,
@@ -432,8 +434,7 @@ export async function saveKeyFromForm(context: KeyFormContext, submission: Slack
   } else if (outcome.kind === 'rejected') {
     await wakeOnRejectedKey(context, live.setup, reading.row, submission.userId);
   } else if (outcome.kind === 'access_lost' || outcome.kind === 'not_saved') {
-    await notify(context.slack, card, submission.userId,
-      `That key wasn't saved. Try again, or ask ${card.spec.agentName} for help.`);
+    await notify(context.slack, card, submission.userId, keyNotSavedNotice(card));
   }
 }
 
@@ -459,7 +460,7 @@ async function wakeOnRejectedKey(
       ...(setup.origin.conversationKind ? { conversationKind: setup.origin.conversationKind } : {}),
       note: setupKeyRejectedNote({ person: person?.displayName ?? 'The person', connector: row.label, host }),
     },
-    notice: `${host} rejected the key for ${row.label}, so it wasn't saved.`,
+    notice: keyRejectedNotice(row),
   }).catch(() => {
     console.warn('[chickpea] Slack key form could not wake the Agent');
   });

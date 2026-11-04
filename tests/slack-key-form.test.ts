@@ -331,6 +331,54 @@ test('a key the service rejects saves nothing, offers Try again and wakes the Ag
   });
 });
 
+test('names the model chose reach Slack escaped in the form\'s private notice and the wake\'s notice', async () => {
+  await withDirectSlackInstall({}, async ({ stores }) => {
+    const fixture = await keyedAgent(stores, 'api.tasks.example');
+    const { setupOperationId } = await fixture.requestSetup('D1', 'im');
+    const posted = await postCard(stores, fixture);
+    assert.ok(isKeyCard(posted));
+    const spec = {
+      ...posted.spec,
+      agentName: 'Ops <!channel>',
+      rows: posted.spec.rows.map((row) => ({ ...row, label: 'Tasks <!here>' })),
+    };
+    await stores.slackState.executeUiSurface!({ kind: 'replace_surface_spec', id: posted.id, expected: posted.spec, spec });
+    const record = (await stores.management.getSetup(setupOperationId!))!;
+    const notices: string[] = [];
+    const woken: SetupWakeRequest[] = [];
+    const context = (settings = stores.settings): KeyFormContext => ({
+      stores: { ...stores, settings },
+      platformEnv: undefined,
+      slack: { update: async () => {}, notice: async ({ text }) => { notices.push(text); } },
+      wake: async (request) => { woken.push(request); },
+      checkOptions: { cloudflare: true },
+    });
+    const metadata = `${posted.id}|${setupOperationId}|${record.target.credentialBinding}`;
+    const form = submission(posted, metadata, KEY).view;
+    const submitted = {
+      workspaceId: 'T1', userId: 'U1', viewId: 'V1', callbackId: form.callback_id, privateMetadata: metadata,
+      state: form.state.values, triggerId: null,
+    };
+
+    await withConnectionNetwork(() => Response.json({ message: 'invalid token' }, { status: 401 }), async () => {
+      await saveKeyFromForm(context(), submitted);
+    });
+    assert.equal(woken[0]?.notice, 'api.tasks.example rejected the key for Tasks &lt;!here&gt;, so it wasn\'t saved.');
+
+    const unsaved = new Proxy(stores.settings, {
+      get(target, property) {
+        if (property === 'setSetting') return async () => { throw new Error('settings unavailable'); };
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    await withConnectionNetwork(() => Response.json({ tasks: [] }), async () => {
+      await saveKeyFromForm(context(unsaved), submitted);
+    });
+    assert.equal(notices.at(-1), 'That key wasn\'t saved. Try again, or ask Ops &lt;!channel&gt; for help.');
+  });
+});
+
 test('a row whose connection changed refuses the click, settles as changed, and says so privately', async () => {
   await withDirectSlackInstall({}, async (install) => {
     const { stores } = install;
