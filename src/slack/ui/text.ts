@@ -32,6 +32,11 @@ export function slackTime(at: number): string {
   return `<!date^${Math.floor(at / 1000)}^{time}|${utcTime(at)}>`;
 }
 
+/** A day Slack renders in the reader's zone ("Nov 7, 2026"), with a UTC fallback. */
+export function slackDate(at: number): string {
+  return `<!date^${Math.floor(at / 1000)}^{date_short}|${UTC_DATE.format(at)}>`;
+}
+
 /** A day and time Slack renders in the reader's zone ("tomorrow at 5:00 PM"), with utcDateTime as its fallback. */
 export function slackDateTime(at: number): string {
   return `<!date^${Math.floor(at / 1000)}^{date_short_pretty} at {time}|${utcDateTime(at)}>`;

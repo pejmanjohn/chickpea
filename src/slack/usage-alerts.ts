@@ -1,4 +1,5 @@
 import { deploymentTenancy } from '../config/installation-scope.ts';
+import type { DailyLimitScope } from '../config/platform-funding.ts';
 import { getConfigStore, getIdentityStore, type PlatformEnv } from '../config/state-backend.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type { IdentityStore } from '../identity/types.ts';
@@ -8,6 +9,7 @@ import {
   resolveSlackInstallationExecutionContext,
   type SlackInstallationExecutionResolver,
 } from './installation-execution.ts';
+import { slackDate, slackDateTime } from './ui/text.ts';
 
 export interface UsageAlert {
   readonly threshold: 75 | 90 | 100;
@@ -18,6 +20,13 @@ export interface UsageAlert {
   readonly runOutAt: Date | null;
   /** The plan auto-upgrade would move to, when enabled and unused this period; null otherwise. */
   readonly nextPlan: { readonly key: string; readonly priceCents: number } | null;
+  readonly planPageUrl: string;
+}
+
+/** The first time in a day an installation's platform-funded usage is paused by a daily limit. */
+export interface DailyLimitNotice {
+  readonly scope: DailyLimitScope;
+  readonly resumesAt: Date;
   readonly planPageUrl: string;
 }
 
@@ -58,10 +67,39 @@ const ALERT_COPY: Record<UsageAlert['threshold'], (alert: UsageAlert) => AlertCo
   }),
 };
 
-const UTC_DATE = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
-
 export function usageAlertMessage(alert: UsageAlert): UsageAlertMessage {
   const { text, buttons } = ALERT_COPY[alert.threshold](alert);
+  return ownerMessage({ text, buttons }, alert.planPageUrl);
+}
+
+/** The limit's day can end in the reader's afternoon, so the copy never says "today". */
+export function dailyLimitNoticeMessage(notice: DailyLimitNotice): UsageAlertMessage {
+  const until = slackDateTime(notice.resumesAt.getTime());
+  const text = notice.scope === 'workspace'
+    ? `This workspace has reached its daily trial limit, so Chickpea is paused until ${until}. ` +
+      'Choose a plan to continue now.'
+    : `Chickpea has paused trial usage for now, so this workspace's requests are paused until ${until}. ` +
+      'Choose a plan to continue now.';
+  return ownerMessage({ text, buttons: ['upgrade'] }, notice.planPageUrl);
+}
+
+export async function deliverUsageAlert(
+  env: PlatformEnv | undefined,
+  alert: UsageAlert,
+  dependencies: UsageAlertDependencies = {},
+): Promise<'sent' | 'no_owner'> {
+  return deliverToOwners(env, usageAlertMessage(alert), dependencies);
+}
+
+export async function deliverDailyLimitNotice(
+  env: PlatformEnv | undefined,
+  notice: DailyLimitNotice,
+  dependencies: UsageAlertDependencies = {},
+): Promise<'sent' | 'no_owner'> {
+  return deliverToOwners(env, dailyLimitNoticeMessage(notice), dependencies);
+}
+
+function ownerMessage({ text, buttons }: AlertCopy, planPageUrl: string): UsageAlertMessage {
   const section = { type: 'section', text: { type: 'mrkdwn', text } };
   if (buttons.length === 0) return { text, blocks: [section] };
   const actions = {
@@ -70,23 +108,22 @@ export function usageAlertMessage(alert: UsageAlert): UsageAlertMessage {
       type: 'button',
       action_id: BUTTONS[button].actionId,
       text: { type: 'plain_text', text: BUTTONS[button].label, emoji: false },
-      url: alert.planPageUrl,
+      url: planPageUrl,
     })),
   };
   return { text, blocks: [section, actions] };
 }
 
-export async function deliverUsageAlert(
+async function deliverToOwners(
   env: PlatformEnv | undefined,
-  alert: UsageAlert,
-  dependencies: UsageAlertDependencies = {},
+  message: UsageAlertMessage,
+  dependencies: UsageAlertDependencies,
 ): Promise<'sent' | 'no_owner'> {
   if (deploymentTenancy(env) !== 'installation') return 'no_owner';
   const identity = dependencies.identity ?? getIdentityStore(env);
   const config = dependencies.config ?? getConfigStore(env);
   const resolveExecution = dependencies.installationExecution ??
     ((workspaceId: string) => resolveSlackInstallationExecutionContext(workspaceId, env));
-  const message = usageAlertMessage(alert);
   const installations = await config.listWorkspaceInstallations().catch(() => {
     console.warn('[chickpea] A usage alert could not read the workspace installations');
     return [];
@@ -112,10 +149,6 @@ function usageSentence(alert: UsageAlert): string {
   const used = `You've used ${usagePercent(alert.usedMicros, alert.includedMicros)}% of your plan ` +
     `(${formatUsageDollars(alert.usedMicros, 'down')} of ${formatUsageDollars(alert.includedMicros)})`;
   return alert.runOutAt
-    ? `${used}, on pace to run out around ${slackDate(alert.runOutAt)}.`
-    : `${used}. Usage resets ${slackDate(alert.periodEnd)}.`;
-}
-
-function slackDate(date: Date): string {
-  return `<!date^${Math.floor(date.getTime() / 1000)}^{date_short}|${UTC_DATE.format(date)}>`;
+    ? `${used}, on pace to run out around ${slackDate(alert.runOutAt.getTime())}.`
+    : `${used}. Usage resets ${slackDate(alert.periodEnd.getTime())}.`;
 }
