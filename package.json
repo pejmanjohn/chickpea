@@ -163,6 +163,7 @@
     "connectors:composio": "node --import tsx scripts/composio-manifests.mjs",
     "avatars:build": "node scripts/build-agent-avatar-pool.mjs",
     "brand:build": "node scripts/build-chickpea-product-mark.mjs",
+    "art:chickpea": "node scripts/chickpea-art.mjs",
     "catalog:reconcile": "node scripts/reconcile-model-catalog.mjs",
     "verify:model-catalog": "node --import tsx scripts/verify-model-catalog.mjs",
     "verify:model-catalog:served": "node scripts/check-model-catalog-freshness.mjs",
