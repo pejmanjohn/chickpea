@@ -200,14 +200,18 @@ async function facePixels(name: string, face: string, color: string) {
   const matte = await gray(manifest.faces[face]!.file);
   const anchor = manifest.faces[face]!.anchor;
   const native = 'anchor' in entry.face ? entry.face.anchor : [0, 0];
-  const offset = [Math.round(native[0]! - anchor[0]), Math.round(native[1]! - anchor[1])];
+  // The matte lands at a subpixel offset, so a pixel is solid face when all
+  // four matte pixels around its sample point are, and outside the face
+  // when none is.
+  const offset = [native[0]! - anchor[0], native[1]! - anchor[1]];
+  const at = (x: number, y: number) => (x >= 0 && y >= 0 && x < matte.width && y < matte.height ? matte.data[y * matte.width + x]! : 0);
   const solid: number[] = [], changedOutside: number[] = [];
   for (let i = 0; i < bare.data.length / 4; i++) {
-    const x = i % manifest.size - offset[0]!, y = Math.floor(i / manifest.size) - offset[1]!;
-    const inMatte = x >= 0 && y >= 0 && x < matte.width && y < matte.height ? matte.data[y * matte.width + x]! : 0;
+    const x = Math.floor(i % manifest.size - offset[0]!), y = Math.floor(Math.floor(i / manifest.size) - offset[1]!);
+    const corners = [at(x, y), at(x + 1, y), at(x, y + 1), at(x + 1, y + 1)];
     const changed = bare.data.readUInt32BE(i * 4) !== withFace.data.readUInt32BE(i * 4);
-    if (inMatte === 255) solid.push(lightnessAt(withFace.data, i));
-    else if (!inMatte && changed) changedOutside.push(i);
+    if (corners.every((v) => v === 255)) solid.push(lightnessAt(withFace.data, i));
+    else if (corners.every((v) => v === 0) && changed) changedOutside.push(i);
   }
   return { solid, changedOutside, bodyL: palette.colors[color]!.body.lab[0] };
 }
@@ -255,11 +259,69 @@ test('the generator is deterministic across calls, formats and sizes', async () 
   assert.deepEqual([small.format, small.width, small.height, small.hasAlpha], ['webp', 128, 128, true]);
 });
 
+test('a pose\'s mask weighs the seam where a prop meets the body by how much felt each pixel holds', async () => {
+  // A flat half-weight rim leaves brand orange on dark recolors where the
+  // laptop meets the body; the weight has to follow the pixel's content.
+  const rank = (values: number[]) => {
+    const order = values.map((value, index) => [value, index] as const).sort((a, b) => a[0] - b[0]);
+    const ranks = new Array<number>(values.length);
+    order.forEach(([, index], position) => { ranks[index] = position; });
+    return ranks;
+  };
+  const correlation = (x: number[], y: number[]) => {
+    const mean = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
+    const mx = mean(x), my = mean(y);
+    let xy = 0, xx = 0, yy = 0;
+    x.forEach((value, i) => { xy += (value - mx) * (y[i]! - my); xx += (value - mx) ** 2; yy += (y[i]! - my) ** 2; });
+    return xy / Math.sqrt(xx * yy);
+  };
+  for (const name of ['pose-coding', 'pose-coding-done']) {
+    const entry = manifest.masters[name]!;
+    const master = await rgba(join(KIT, entry.file));
+    const mask = await gray(entry.mask);
+    const weights: number[] = [], feltness: number[] = [];
+    for (let i = 0; i < mask.data.length; i++) {
+      if (mask.data[i] === 0 || mask.data[i] === 255 || master.data[i * 4 + 3]! < 250) continue;
+      const lab = (toLab as (r: number, g: number, b: number) => Lab)(master.data[i * 4]!, master.data[i * 4 + 1]!, master.data[i * 4 + 2]!);
+      weights.push(mask.data[i]!);
+      feltness.push(-Math.hypot(lab[0] - entry.body[0], lab[1] - entry.body[1], lab[2] - entry.body[2]));
+    }
+    assert.ok(weights.length > 50, `${name} has a seam rim`);
+    const rho = correlation(rank(weights), rank(feltness));
+    assert.ok(rho > 0.3, `${name} rim weight follows felt content (rank correlation ${rho.toFixed(2)})`);
+  }
+});
+
+test('a weak-chroma body recolored into a saturated color stays as smooth as the color\'s own body', async () => {
+  const chromaSpread = async (master: string) => {
+    const output = await rgba(await render({ master, color: '11-apricot', face: 'none' }));
+    const chroma: number[] = [];
+    const size = manifest.size;
+    for (let y = 8; y < size - 8; y++) for (let x = 8; x < size - 8; x++) {
+      const i = y * size + x;
+      if ([i, i - 8, i + 8, i - 8 * size, i + 8 * size].some((j) => output.data[j * 4 + 3] !== 255)) continue;
+      const [, a, b] = (toLab as (r: number, g: number, b: number) => Lab)(output.data[i * 4]!, output.data[i * 4 + 1]!, output.data[i * 4 + 2]!);
+      chroma.push(Math.hypot(a, b));
+    }
+    const mean = chroma.reduce((sum, value) => sum + value, 0) / chroma.length;
+    return Math.sqrt(chroma.reduce((sum, value) => sum + (value - mean) ** 2, 0) / chroma.length);
+  };
+  const native = await chromaSpread('stand-11-apricot');
+  for (const master of ['stand-10-midnight-indigo', 'stand-06-deep-moss']) {
+    const spread = await chromaSpread(master);
+    assert.ok(spread < native * 2, `${master} in apricot: chroma SD ${spread.toFixed(2)} vs ${native.toFixed(2)} native`);
+  }
+});
+
 test('the generator refuses unknown names and impossible requests', async () => {
   await assert.rejects(render({ master: 'stand-99-nope', color: 'brand' }), /Unknown master/);
   await assert.rejects(render({ master: 'stand-01-sage', color: 'chartreuse' }), /Unknown color/);
   await assert.rejects(render({ master: 'stand-01-sage', color: 'brand', face: 'wink' }), /Unknown face/);
   await assert.rejects(render({ master: 'pose-hello', color: 'brand', face: 'smile' }), /carries its own face/);
+  await assert.rejects(render({ master: 'stand-01-sage', color: 'brand', format: 'jpeg' as 'png' }), /format must be 'png' or 'webp'/);
+  for (const size of [0, -5, 10.5, '64']) {
+    await assert.rejects(render({ master: 'stand-01-sage', color: 'brand', size: size as number }), /size must be a positive integer/, String(size));
+  }
   const fixed = Object.entries(manifest.masters).find(([, entry]) => !entry.recolor);
   if (fixed) await assert.rejects(render({ master: fixed[0], color: '01-sage' }), /not recolorable/);
 });
