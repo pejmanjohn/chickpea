@@ -8,20 +8,19 @@ import {
   type PlatformEnv,
 } from '../../config/state-backend.ts';
 import type { ConfigStore } from '../../config/store.ts';
-import type { CustomAgentConfig } from '../../config/types.ts';
+import type { AgentChannelGrant, CustomAgentConfig } from '../../config/types.ts';
 import type { IdentityStore } from '../../identity/types.ts';
-import { isActiveConnectionActor } from '../../connections/runtime.ts';
-import { resolveSlackManagementActor, type SlackManagementSignal } from '../../management/slack-tools.ts';
+import type { SlackManagementSignal } from '../../management/slack-tools.ts';
 import { resolveGroupDmEligibility, type PrivateAgentPlacementFacts } from '../agent-access.ts';
-import { agentSlackAppsHost } from '../agent-apps/index.ts';
 import { agentAvatarInstallation, agentAvatarUrlForPresentation } from '../agent-presence/avatar-assets.ts';
 import { resolveSlackPublicUrl } from '../credentials.ts';
-import { agentIsActive } from '../agent-routing.ts';
 import { resolveSlackInstallationExecutionContext } from '../installation-execution.ts';
 import { slackConversationFacts } from '../reading/authority.ts';
+import { routeRepliesToAgent } from '../requested-conversations/replies.ts';
+import { requesterAgentRefusal } from '../requested-conversations/standing.ts';
 import { createDirectSlackTransportFromWebClient } from '../transport/direct.ts';
 import { GroupDmReceipts } from './receipts.ts';
-import { groupDmFailure, routeGroupDmRepliesToAgent, SlackGroupDmRefusal, SlackGroupDmService } from './service.ts';
+import { groupDmFailure, SlackGroupDmRefusal, SlackGroupDmService } from './service.ts';
 
 export async function startSlackGroupDm(
   plan: Pick<RuntimePlanV2, 'agentId' | 'actorMembershipId'>,
@@ -73,7 +72,7 @@ async function slackGroupDmService(
       placementFacts: createDirectSlackTransportFromWebClient(workspace.client),
     }),
     receipts: new GroupDmReceipts(settings, signal.turnJobId),
-    routeRepliesToAgent: (channelId, messageTs, message) => routeGroupDmRepliesToAgent(config, {
+    routeRepliesToAgent: (channelId, messageTs, message) => routeRepliesToAgent(config, {
       workspaceId: signal.workspaceId,
       channelId,
       messageTs,
@@ -92,25 +91,16 @@ export async function assertGroupDmStanding(input: {
   identity: IdentityStore;
   placementFacts: PrivateAgentPlacementFacts;
 }): Promise<void> {
-  const { plan, signal, agent, identity } = input;
-  const actor = await resolveSlackManagementActor(signal, identity).catch(() => undefined);
-  if (!actor || actor.membershipId !== plan.actorMembershipId ||
-      !await isActiveConnectionActor({ identity, workspaceId: signal.workspaceId, actorMembershipId: actor.membershipId })) {
-    throw new SlackGroupDmRefusal('requester_unavailable');
-  }
-  if (!agentIsActive(agent)) throw new SlackGroupDmRefusal('agent_unavailable');
-  if (agentSlackAppsHost() && agent.slackPresence?.kind === 'agent_app') throw new SlackGroupDmRefusal('agent_app');
+  const { signal, agent } = input;
+  let grants: Promise<AgentChannelGrant[]> | undefined;
+  const listGrants = () => grants ??= input.config.listAgentChannelGrants(signal.workspaceId);
+  const refusal = await requesterAgentRefusal({ ...input, grants: listGrants });
+  if (refusal) throw new SlackGroupDmRefusal(refusal);
   if (agent.kind !== 'user') return;
-  const grants = await input.config.listAgentChannelGrants(signal.workspaceId);
-  const direct = signal.conversationKind === 'im' || signal.conversationKind === 'mpim';
-  if (!direct && !grants.some((grant) =>
-    grant.channelId === signal.channelId && grant.agentId === agent.id && grant.status === 'active')) {
-    throw new SlackGroupDmRefusal('agent_unavailable');
-  }
   const eligibility = await resolveGroupDmEligibility({
     agent,
     workspaceId: signal.workspaceId,
-    grants,
+    grants: await listGrants(),
     transport: input.placementFacts,
   });
   if (eligibility === 'unknown') throw new SlackGroupDmRefusal('unavailable');

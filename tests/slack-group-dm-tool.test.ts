@@ -13,11 +13,11 @@ import { slackConversationFacts } from '../src/slack/reading/authority.ts';
 import { admitGroupDmPeople } from '../src/slack/group-dm/admission.ts';
 import { GroupDmReceipts, SLACK_GROUP_DM_RECEIPT_PREFIX } from '../src/slack/group-dm/receipts.ts';
 import {
-  routeGroupDmRepliesToAgent,
   SlackGroupDmRefusal,
   SlackGroupDmService,
   type SlackGroupDmServiceOptions,
 } from '../src/slack/group-dm/service.ts';
+import { routeRepliesToAgent } from '../src/slack/requested-conversations/replies.ts';
 import { assertGroupDmStanding } from '../src/slack/group-dm/runtime.ts';
 import { TURN_JOB_TTL_MS, TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
@@ -415,7 +415,7 @@ test('a reply in the opening message\'s thread reaches the Agent that started th
     await store.ensureWorkspaceInstallation({
       workspaceId: WORKSPACE, transportMode: 'direct', defaultAgentId: chickpea.id, runtimeContract: 'chickpea-v1',
     });
-    await routeGroupDmRepliesToAgent(store, { workspaceId: WORKSPACE, channelId: GROUP_DM, messageTs: POSTED_TS, text: 'Where we landed', agent });
+    await routeRepliesToAgent(store, { workspaceId: WORKSPACE, channelId: GROUP_DM, messageTs: POSTED_TS, text: 'Where we landed', agent });
 
     const routed = await resolveAgentRoute({
       turn: {
