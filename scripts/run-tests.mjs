@@ -60,7 +60,7 @@ const MAX_RETRIED_FILES = CONCURRENCY;
 const SLOW_FIRST = [
   'environment-registry', 'upgrade-cli', 'verification-record', 'node-installer-bootstrap',
   'flue-progressive-characterization', 'environment-preflight', 'deploy-with-epilogue',
-  'live-contract-coordinator', 'environment-wait', 'images-openai-client-workerd', 'admin-visual-fixture',
+  'live-contract-coordinator', 'environment-wait', 'chickpea-art', 'images-openai-client-workerd', 'admin-visual-fixture',
 ];
 
 const args = process.argv.slice(2);
