@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import * as creditsAsk from '../src/slack/credits-ask.ts';
-import { usageAlertMessage, type UsageAlert } from '../src/slack/usage-alerts.ts';
-import { CREDITS_EXHAUSTED_TEXT } from '../src/slack/web-client-presenter.ts';
+import { dailyLimitNoticeMessage, usageAlertMessage, type UsageAlert } from '../src/slack/usage-alerts.ts';
+import { CREDITS_EXHAUSTED_TEXT, dailyLimitText } from '../src/slack/web-client-presenter.ts';
 import type { UsageMicros } from '../src/usage/usage-display.ts';
 
 const HIDDEN_WORDS = /\b(credits?|steps|multiplier|cache|prefix|working reply|refunds?|markup)\b/i;
@@ -48,6 +48,15 @@ test('no customer string about plan usage names an internal of how usage is mete
     creditsAsk.creditsAskOwnerDmText('UMEMBER1', 'CCHANNEL1'),
     creditsAsk.creditsAskOwnerDmText('UMEMBER1', 'DDIRECT1'),
     ...ALERTS.flatMap(alertStrings),
+    ...(['workspace', 'fleet'] as const).flatMap((scope) => {
+      const limit = { scope, resumesAt: Date.UTC(2026, 10, 5) };
+      return [
+        dailyLimitText(limit),
+        dailyLimitText(limit, 'utc'),
+        creditsAsk.dailyLimitAskOwnerDmText('UMEMBER1', 'CCHANNEL1', limit),
+        dailyLimitNoticeMessage({ ...limit, resumesAt: new Date(limit.resumesAt), planPageUrl: base.planPageUrl }).text,
+      ];
+    }),
   ];
   for (const text of strings) assert.doesNotMatch(text, HIDDEN_WORDS);
 });

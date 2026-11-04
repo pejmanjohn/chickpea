@@ -35,7 +35,7 @@ import {
 } from '../config/installation-admission.ts';
 import { isCredentialKeyringUnavailable } from '../slack/credential-keyring.ts';
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
-import { isCreditsExhausted, postRunFee } from '../config/platform-funding.ts';
+import { dailyLimitOf, isCreditsExhausted, postRunFee } from '../config/platform-funding.ts';
 import { qualifiesAsTask } from '../usage/run-fees.ts';
 import {
   creditBackFailedRun,
@@ -95,7 +95,11 @@ import {
   deliverRoutineResult,
   routineDeliveryFailure,
 } from './delivery.ts';
-import { CREDITS_EXHAUSTED_TEXT, SANDBOX_UNAVAILABLE_FALLBACK_NOTICE } from '../slack/web-client-presenter.ts';
+import {
+  CREDITS_EXHAUSTED_TEXT,
+  dailyLimitText,
+  SANDBOX_UNAVAILABLE_FALLBACK_NOTICE,
+} from '../slack/web-client-presenter.ts';
 import {
   normalizeRoutineModelResult,
   prepareRoutinePrompt,
@@ -1352,6 +1356,9 @@ function runtimeFailure(
       publicError: 'The routine stopped after a tool call with an outcome that may require inspection.',
     };
   }
+  // A routine's public error is shown where Slack does not format dates, so the time is written in UTC.
+  const dailyLimit = dailyLimitOf(error);
+  if (dailyLimit) return { failureClass: 'spend_limited', publicError: dailyLimitText(dailyLimit, 'utc') };
   if (isCreditsExhausted(error)) return { failureClass: 'spend_limited', publicError: CREDITS_EXHAUSTED_TEXT };
   if (error instanceof RoutineRuntimeError) {
     return { failureClass: error.failureClass, publicError: error.publicError };

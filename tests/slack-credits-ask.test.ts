@@ -12,6 +12,7 @@ import {
   resetInstallationAdmissionForTests,
 } from '../src/config/installation-admission.ts';
 import { installationOwnershipOf, scopeInstallationEnv } from '../src/config/installation-scope.ts';
+import type { PlatformFundingRefusal } from '../src/config/platform-funding.ts';
 import { closeNodeStateStores, getIdentityStore, type PlatformEnv } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
@@ -27,7 +28,11 @@ import {
   CREDITS_ASK_UNREACHABLE_TEXT,
   CREDITS_OWNER_HINT_TEXT,
   creditsAskOwnerDmText,
-  creditsExhaustedComponents,
+  DAILY_LIMIT_ASK_ACTION,
+  DAILY_LIMIT_ASK_CONFIRMATION_TEXT,
+  DAILY_LIMIT_OWNER_HINT_TEXT,
+  dailyLimitAskOwnerDmText,
+  fundingRefusalComponents,
   parseCreditsAskAction,
   type CreditsAskAction,
   type CreditsAskClient,
@@ -39,17 +44,17 @@ import { runTurn } from '../src/slack/run-turn.ts';
 import { SlackStatusRegistry } from '../src/slack/status-registry.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { parseSlackUiBlockAction } from '../src/slack/ui/interaction-payload.ts';
-import { CREDITS_EXHAUSTED_TEXT } from '../src/slack/web-client-presenter.ts';
+import { CREDITS_EXHAUSTED_TEXT, dailyLimitText } from '../src/slack/web-client-presenter.ts';
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
 /**
- * A hosted turn that stops because the installation is out of credits offers
- * its requester an "Ask an Owner" button. A click DMs each active Owner at
- * most once an hour and redraws the reply with a confirmation. Standalone
- * never shows any of it.
+ * A hosted turn that stops because the installation is out of credits, or at
+ * a daily limit, offers its requester an "Ask an Owner" button. A click DMs
+ * each active Owner at most once an hour and redraws the reply with a
+ * confirmation. Standalone never shows any of it.
  */
 
 const TEAM = 'TCREDITS1';
@@ -58,6 +63,11 @@ const REPLY_TS = '1800000000.000600';
 const THREAD_TS = '1800000000.000100';
 const HOUR_MS = 3_600_000;
 const HOSTED_ENV = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_credits' });
+const RESUMES_AT = Date.UTC(2026, 10, 5);
+const RESUMES = '<!date^1793836800^{date_short_pretty} at {time}|Nov 5, 2026 at 00:00 UTC>';
+const WORKSPACE_LIMIT = { kind: 'daily_limit', scope: 'workspace', resumesAt: RESUMES_AT } as const;
+const FLEET_LIMIT = { ...WORKSPACE_LIMIT, scope: 'fleet' } as const;
+const DAILY_LIMIT = new AgentPromptFailure(WORKSPACE_LIMIT);
 
 const ASSIGNMENT: ResolvedAssignment = {
   workspaceId: TEAM,
@@ -284,6 +294,65 @@ test('a standalone out-of-credits reply shows neither the button nor the Owner h
   }
 });
 
+test('a hosted member\'s daily-limit reply says when Chickpea resumes and offers its own Ask an Owner button', async (t) => {
+  const identity = await turnState(t);
+  await createSlackOwner(identity, { teamId: TEAM, userId: 'UOWNER1' });
+  await identity.provisionSlackMember({ slackTeamId: TEAM, slackUserId: 'UMEMBER1' });
+  const reply = 'This workspace has reached its daily trial limit. ' +
+    `Chickpea resumes ${RESUMES}, or an Owner can choose a plan to continue now.`;
+  assert.equal(dailyLimitText(WORKSPACE_LIMIT), reply);
+  const streamed = await outOfCreditsTurn(t, HOSTED_ENV, 'UMEMBER1', { failure: DAILY_LIMIT });
+  const posted = await outOfCreditsTurn(t, HOSTED_ENV, 'UMEMBER1', { failure: DAILY_LIMIT, streamRejected: true });
+  assert.deepEqual(posted.map(({ method }) => method), ['chat.postMessage']);
+  for (const calls of [streamed, posted]) {
+    assert.ok(visibleTexts(calls).includes(reply), JSON.stringify(visibleTexts(calls)));
+    assert.deepEqual(buttons(writtenBlocks(calls)), [{
+      type: 'button',
+      action_id: DAILY_LIMIT_ASK_ACTION,
+      text: { type: 'plain_text', text: 'Ask an Owner', emoji: false },
+      value: `${TEAM}:workspace:1793836800`,
+    }]);
+    assert.equal(JSON.stringify(calls).includes(CREDITS_EXHAUSTED_TEXT), false);
+  }
+  assert.equal(posted[0]!.input.text, 'This workspace has reached its daily trial limit. ' +
+    'Chickpea resumes Nov 5, 2026 at 00:00 UTC, or an Owner can choose a plan to continue now.',
+  'a notification shows the time\'s fallback, not the date token');
+});
+
+test('a hosted member paused by the fleet limit is not told the workspace reached its own', async (t) => {
+  const identity = await turnState(t);
+  await createSlackOwner(identity, { teamId: TEAM, userId: 'UOWNER1' });
+  await identity.provisionSlackMember({ slackTeamId: TEAM, slackUserId: 'UMEMBER1' });
+  const reply = `Chickpea has paused trial usage for now. It resumes ${RESUMES}, or an Owner can choose a plan to continue now.`;
+  assert.equal(dailyLimitText(FLEET_LIMIT), reply);
+  const calls = await outOfCreditsTurn(t, HOSTED_ENV, 'UMEMBER1', { failure: new AgentPromptFailure(FLEET_LIMIT) });
+  assert.ok(visibleTexts(calls).includes(reply), JSON.stringify(visibleTexts(calls)));
+  assert.equal(JSON.stringify(calls).includes('This workspace has reached'), false);
+  assert.deepEqual(buttons(writtenBlocks(calls)).map(({ value }) => value), [`${TEAM}:fleet:1793836800`]);
+});
+
+test('a hosted Owner\'s daily-limit reply has no button, only the Owner hint', async (t) => {
+  const identity = await turnState(t);
+  await createSlackOwner(identity, { teamId: TEAM, userId: 'UOWNER1' });
+  const calls = await outOfCreditsTurn(t, HOSTED_ENV, 'UOWNER1', { failure: DAILY_LIMIT });
+  assert.ok(visibleTexts(calls).includes(dailyLimitText(WORKSPACE_LIMIT)));
+  const blocks = writtenBlocks(calls);
+  assert.deepEqual(buttons(blocks), []);
+  assert.ok(contextTexts(blocks).includes("You're an Owner, so you can choose a plan in Chickpea to continue now."),
+    JSON.stringify(blocks));
+  assert.equal(contextTexts(blocks).includes(CREDITS_OWNER_HINT_TEXT), false);
+});
+
+test('a daily-limit reply with no button still keeps its date token live', async (t) => {
+  await turnState(t);
+  for (const streamRejected of [false, true]) {
+    const calls = await outOfCreditsTurn(t, undefined, 'UMEMBER1', { failure: DAILY_LIMIT, streamRejected });
+    assert.ok(visibleTexts(calls).includes(dailyLimitText(WORKSPACE_LIMIT)), JSON.stringify(calls));
+    assert.equal(JSON.stringify(calls).includes('&lt;!date'), false);
+    assert.equal(JSON.stringify(calls).includes(DAILY_LIMIT_ASK_ACTION), false);
+  }
+});
+
 test('a hosted turn that fails for another reason offers no button', async (t) => {
   const identity = await turnState(t);
   await createSlackOwner(identity, { teamId: TEAM, userId: 'UOWNER1' });
@@ -343,8 +412,8 @@ function slack(options: { failDms?: boolean } = {}) {
 const FOOTER: Block = { type: 'context', elements: [{ type: 'mrkdwn', text: 'Credits Agent' }] };
 
 /** The reply as Slack echoes it in a click: its text, the button, and the footer. */
-async function replyBlocks(): Promise<Block[]> {
-  const components = await creditsExhaustedComponents({
+async function replyBlocks(refusal: PlatformFundingRefusal = 'credits_exhausted'): Promise<Block[]> {
+  const components = await fundingRefusalComponents({
     env: HOSTED_ENV,
     identity: {
       resolveSlackIdentity: async () => undefined,
@@ -353,6 +422,7 @@ async function replyBlocks(): Promise<Block[]> {
     },
     workspaceId: TEAM,
     userId: 'UMEMBER1',
+    refusal,
   });
   assert.ok(components);
   return [{ type: 'rich_text', elements: [] }, ...components.blocks, FOOTER];
@@ -415,6 +485,62 @@ test('a click DMs each active Owner once and swaps only the button for a confirm
   assert.equal(creditsAskOwnerDmText('UMEMBER1', 'DCREDITS1'),
     '<@UMEMBER1> asked you to add usage to Chickpea. ' +
     'A request in a direct message stopped because this workspace has used all of its plan\'s usage.');
+});
+
+test('a daily-limit click DMs each active Owner its own request and confirms with its own text', async (t) => {
+  const identity = await workspace(t);
+  const claims = new SqliteSlackStateStore(':memory:');
+  t.after(() => claims.close());
+  const { client, of } = slack();
+  const blocks = await replyBlocks(WORKSPACE_LIMIT);
+  const [button] = buttons(blocks);
+  const action = parseCreditsAskAction(await clickPayload({
+    actionId: String(button!.action_id), value: String(button!.value), blocks,
+  }));
+  assert.ok(action);
+  assert.deepEqual(action.refusal, WORKSPACE_LIMIT);
+  assert.equal(await askOwnersForCredits(action, { identity, claims, client }), 'asked');
+
+  const dm = '<@UMEMBER1> asked you to choose a plan for Chickpea. ' +
+    `A request in <#CCREDITS1> stopped because this workspace reached its daily trial limit. Chickpea resumes ${RESUMES}.`;
+  assert.equal(dailyLimitAskOwnerDmText('UMEMBER1', CHANNEL, WORKSPACE_LIMIT), dm);
+  assert.deepEqual(
+    of('chat.postMessage').sort((a, b) => String(a.channel).localeCompare(String(b.channel))),
+    [{ channel: 'DOWNER1', text: dm }, { channel: 'DOWNER2', text: dm }],
+  );
+  assert.deepEqual(of('chat.update').map(({ blocks: updated }) => updated), [[
+    blocks[0],
+    { type: 'context', elements: [{ type: 'plain_text', text: "I asked this workspace's Owners to choose a plan.", emoji: false }] },
+    FOOTER,
+  ]]);
+  assert.equal(DAILY_LIMIT_ASK_CONFIRMATION_TEXT, "I asked this workspace's Owners to choose a plan.");
+
+  const owner = slack();
+  const ownerClick = parseCreditsAskAction(await clickPayload({
+    user: 'UOWNER1', actionId: String(button!.action_id), value: String(button!.value), blocks,
+  }));
+  assert.ok(ownerClick);
+  assert.equal(await askOwnersForCredits(ownerClick, { identity, claims, client: owner.client }), 'owner');
+  assert.deepEqual(owner.of('chat.postEphemeral').map(({ text }) => text), [DAILY_LIMIT_OWNER_HINT_TEXT]);
+});
+
+test('a fleet-limit click DMs the Owners that trial usage is paused, not that the workspace hit its limit', async (t) => {
+  const identity = await workspace(t);
+  const claims = new SqliteSlackStateStore(':memory:');
+  t.after(() => claims.close());
+  const { client, of } = slack();
+  const blocks = await replyBlocks(FLEET_LIMIT);
+  const [button] = buttons(blocks);
+  const action = parseCreditsAskAction(await clickPayload({
+    actionId: String(button!.action_id), value: String(button!.value), blocks,
+  }));
+  assert.ok(action);
+  assert.deepEqual(action.refusal, FLEET_LIMIT);
+  assert.equal(await askOwnersForCredits(action, { identity, claims, client }), 'asked');
+  const dm = '<@UMEMBER1> asked you to choose a plan for Chickpea. ' +
+    `A request in <#CCREDITS1> stopped because Chickpea has paused trial usage for now. It resumes ${RESUMES}.`;
+  assert.deepEqual([...new Set(of('chat.postMessage').map(({ text }) => text))], [dm]);
+  assert.ok(contextTexts(of('chat.update')[0]!.blocks as Block[]).includes(DAILY_LIMIT_ASK_CONFIRMATION_TEXT));
 });
 
 test('Owners are asked at most once an hour per installation', async (t) => {
@@ -512,6 +638,7 @@ test('a reply whose echoed blocks lack its text gets the confirmation privately 
 test('the click parser accepts only this installation\'s own button on a shared message', async () => {
   const valid = await clickPayload();
   assert.deepEqual(parseCreditsAskAction(valid), {
+    refusal: 'credits_exhausted',
     workspaceId: TEAM,
     userId: 'UMEMBER1',
     channelId: CHANNEL,
@@ -529,4 +656,17 @@ test('the click parser accepts only this installation\'s own button on a shared 
     assert.equal(parseCreditsAskAction(await clickPayload({ actionId })), undefined, actionId);
   }
   assert.equal(parseCreditsAskAction({ ...valid, actions: [...valid.actions, ...valid.actions] }), undefined);
+
+  const dailyLimit = (value: string, actionId = DAILY_LIMIT_ASK_ACTION) => clickPayload({ actionId, value });
+  assert.deepEqual(parseCreditsAskAction(await dailyLimit(`${TEAM}:workspace:1793836800`))?.refusal, WORKSPACE_LIMIT);
+  assert.deepEqual(parseCreditsAskAction(await dailyLimit(`${TEAM}:fleet:1793836800`))?.refusal, FLEET_LIMIT);
+  for (const value of [
+    'TOTHERTEAM:workspace:1793836800', TEAM, `${TEAM}:`, `${TEAM}:1793836800`, `${TEAM}:team:1793836800`,
+    `${TEAM}:workspace:`, `${TEAM}:workspace:0`, `${TEAM}:fleet:-1`, `${TEAM}:fleet:1.5`, `${TEAM}:workspace:soon`,
+    `${TEAM}:workspace:1793836800:1`, `${TEAM}:workspace:1793836800000000`, ` ${TEAM}:workspace:1793836800`,
+  ]) {
+    assert.equal(parseCreditsAskAction(await dailyLimit(value)), undefined, value);
+  }
+  assert.equal(parseCreditsAskAction(await dailyLimit(`${TEAM}:workspace:1793836800`, CREDITS_ASK_ADMIN_ACTION)),
+    undefined, 'the credits button carries only its workspace');
 });

@@ -1138,7 +1138,7 @@ export function markdownFallbackText(markdown: string): string {
 
 function readableMarkdownText(markdown: string): string {
   const withoutCodeFences = linearizeMarkdownTables(
-    markdown.replace(/```[a-zA-Z0-9_-]*\n?([\s\S]*?)```/g, '$1'),
+    withSlackDateFallbacks(markdown).replace(/```[a-zA-Z0-9_-]*\n?([\s\S]*?)```/g, '$1'),
   );
   return withoutCodeFences
     .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
@@ -1153,6 +1153,14 @@ function readableMarkdownText(markdown: string): string {
     .replace(/_([^_\n]+)_/g, '$1')
     .replace(/^\s{0,3}[-*+]\s+/gm, '- ')
     .replace(/[ \t]+\n/g, '\n');
+}
+
+/** Escaped fallback text never formats a `<!date^…|fallback>`, so it shows the fallback, outside code. */
+function withSlackDateFallbacks(markdown: string): string {
+  return markdown
+    .split(SLACK_CODE_SEGMENT)
+    .map((segment, index) => index % 2 === 1 ? segment : segment.replace(/<!date\^[^|<>\n]*\|([^<>\n]*)>/g, '$1'))
+    .join('');
 }
 
 /** Markdown as escaped Slack mrkdwn: links and emphasis kept, control syntax never live. */

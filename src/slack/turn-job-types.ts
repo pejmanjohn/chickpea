@@ -1,5 +1,6 @@
 import { type SlackMemoryUpdate } from './memory-update-terminal.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
+import type { DailyLimitAdmission } from '../config/platform-funding.ts';
 import type { RunExecutionAuthority } from '../work/types.ts';
 import type { AdmittedRuntimePlanData, RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import type { WorkTraceCorrelation } from '../work/trace-correlation.ts';
@@ -125,22 +126,30 @@ export type FlueSettlementCheckpointV1 =
         flueSubmissionRef?: string | null;
       };
     }
-  | {
+  | ({
       outcome: 'failed' | 'aborted';
       settledAt: number;
-      failureKind:
-        | 'agent'
-        | 'provider'
-        | 'invalid-output'
-        | 'openai-subscription-reconnect'
-        | 'openai-subscription-quota'
-        | 'openai-subscription-policy'
-        | 'credits-exhausted'
-        | 'sandbox'
-        | 'sandbox-session-cap';
       /** The tools the run called, when it called any: an invalid result after one is not the provider's failure. */
       toolCallCount?: number;
-    };
+    } & (
+      | {
+          failureKind:
+            | 'agent'
+            | 'provider'
+            | 'invalid-output'
+            | 'openai-subscription-reconnect'
+            | 'openai-subscription-quota'
+            | 'openai-subscription-policy'
+            | 'credits-exhausted'
+            | 'sandbox'
+            | 'sandbox-session-cap';
+        }
+      | {
+          failureKind: 'daily-limit';
+          /** The limit's scope, and when platform-funded usage resumes in epoch milliseconds. */
+          dailyLimit: Pick<DailyLimitAdmission, 'scope' | 'resumesAt'>;
+        }
+    ));
 
 /** Model-invisible facts observers recover from app-owned state. */
 export interface FlueTurnObservationV1 {

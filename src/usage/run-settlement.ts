@@ -46,6 +46,7 @@ const FAILURE_OWNERS: Record<FailureKind, Owner> = {
   'openai-subscription-quota': notOurs('customer_account'),
   'openai-subscription-policy': notOurs('customer_account'),
   'credits-exhausted': notOurs('out_of_usage'),
+  'daily-limit': notOurs('out_of_usage'),
   sandbox: ours('sandbox'),
   'sandbox-session-cap': notOurs('workspace_limit'),
   'recovery-failure': ours('evicted'),

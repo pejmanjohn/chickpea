@@ -162,6 +162,45 @@ test('a failed settlement keeps the tools its run called through durable storage
   } finally { db.close(); }
 });
 
+test('a daily-limit settlement keeps its scope and resume time through durable storage, and no other kind has one', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const turns = new TurnJobStoreLogic(db, () => NOW);
+    const id = 'daily-limit-replay';
+    turns.enqueue({ id, evtKey: id, msgKey: id, turn: turn(), assignment: assignment() });
+    turns.freezeRuntimePlan(id, compileRuntimePlanV2({
+      turn: turn(), assignment: assignment(), instructions: 'Test the limit.', memoryEpoch: 1,
+    }));
+    turns.prepareFlueDispatch(id, 'Test the limit.', { generation: id });
+    turns.recordFlueReceipt(id, { submissionId: id, acceptedAt: '2026-08-01T12:00:00.000Z', uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAV' });
+    const dailyLimit = { scope: 'workspace', resumesAt: 1_793_836_800_000 };
+    const failed = (fields: Record<string, unknown>) => ({ outcome: 'failed', settledAt: NOW, ...fields });
+    for (const malformed of [
+      failed({ failureKind: 'daily-limit' }),
+      failed({ failureKind: 'daily-limit', resumesAt: dailyLimit.resumesAt }),
+      ...[0, -1, 1.5, '1793836800000', null].map((resumesAt) =>
+        failed({ failureKind: 'daily-limit', dailyLimit: { ...dailyLimit, resumesAt } })),
+      ...['team', '', null].map((scope) => failed({ failureKind: 'daily-limit', dailyLimit: { ...dailyLimit, scope } })),
+      failed({ failureKind: 'daily-limit', dailyLimit: { ...dailyLimit, kind: 'daily_limit' } }),
+      failed({ failureKind: 'credits-exhausted', dailyLimit }),
+      {
+        outcome: 'completed', settledAt: NOW, dailyLimit, result: {
+          text: 'Answered.', requestedModel: null, returnedModel: null, reportedUsage: null, usageCompleteness: 'not_reported',
+        },
+      },
+    ]) {
+      assert.throws(() => turns.recordFlueSettlement(id, malformed as never), /daily limit|outcome is invalid|unknown field/i,
+        JSON.stringify(malformed));
+    }
+    const settlement = {
+      outcome: 'failed' as const, settledAt: NOW, failureKind: 'daily-limit' as const,
+      dailyLimit: { scope: 'fleet' as const, resumesAt: 1_793_836_800_000 },
+    };
+    turns.recordFlueSettlement(id, settlement);
+    assert.deepEqual(turns.getFlueSettlement(id), settlement);
+  } finally { db.close(); }
+});
+
 test('pull request recovery uses descriptive link text', () => {
   assert.equal(replayTextForTurnProgress({
     pullRequest: {
