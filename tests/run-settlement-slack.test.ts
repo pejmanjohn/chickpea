@@ -155,6 +155,8 @@ type Ending =
   | { kind: 'throws'; error: unknown };
 
 let turnCount = 0;
+const RESUMES_AT = Date.UTC(2026, 10, 5);
+const DAILY_LIMIT = { kind: 'daily_limit', scope: 'workspace', resumesAt: RESUMES_AT } as const;
 
 /** Runs one turn on a durable V3 presentation and returns every Slack write. */
 async function settledTurn(
@@ -250,9 +252,14 @@ async function settledTurn(
       if (ending.kind === 'answer') return ANSWER;
       if (ending.kind === 'throws') throw ending.error;
       dispatch.flueSettlement = {
-        outcome: ending.outcome ?? 'failed', settledAt: Date.now(), failureKind: ending.recorded,
+        outcome: ending.outcome ?? 'failed', settledAt: Date.now(),
+        ...(ending.recorded === 'daily-limit'
+          ? { failureKind: ending.recorded, dailyLimit: { scope: 'workspace' as const, resumesAt: RESUMES_AT } }
+          : { failureKind: ending.recorded }),
       };
-      throw ending.thrown ?? new AgentPromptFailure(ending.recorded as ConstructorParameters<typeof AgentPromptFailure>[0]);
+      throw ending.thrown ?? new AgentPromptFailure(ending.recorded === 'daily-limit'
+        ? DAILY_LIMIT
+        : ending.recorded as ConstructorParameters<typeof AgentPromptFailure>[0]);
     },
     ...options.extra,
   });
@@ -318,6 +325,10 @@ for (const { name, ending, error, reason } of OURS) {
 
 const NOT_OURS: Array<{ name: string; ending: Ending; error: AgentPromptFailure }> = [
   { name: 'credits_exhausted', ending: failureEnding('credits-exhausted'), error: new AgentPromptFailure('credits-exhausted') },
+  {
+    name: 'daily_limit', ending: failureEnding('daily-limit'),
+    error: new AgentPromptFailure(DAILY_LIMIT),
+  },
   {
     name: 'subscription_reconnect', ending: failureEnding('openai-subscription-reconnect'),
     error: new AgentPromptFailure('openai-subscription-reconnect'),

@@ -25,9 +25,30 @@ export function mrkdwn(text: string): { type: 'mrkdwn'; text: string } {
   return { type: 'mrkdwn', text };
 }
 
+const UTC_DATE = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+
 /** A timestamp Slack renders in the reader's zone, with a UTC fallback. */
 export function slackTime(at: number): string {
-  return `<!date^${Math.floor(at / 1000)}^{time}|${new Date(at).toISOString().slice(11, 16)} UTC>`;
+  return `<!date^${Math.floor(at / 1000)}^{time}|${utcTime(at)}>`;
+}
+
+/** A day Slack renders in the reader's zone ("Nov 7, 2026"), with a UTC fallback. */
+export function slackDate(at: number): string {
+  return `<!date^${Math.floor(at / 1000)}^{date_short}|${UTC_DATE.format(at)}>`;
+}
+
+/** A day and time Slack renders in the reader's zone ("tomorrow at 5:00 PM"), with utcDateTime as its fallback. */
+export function slackDateTime(at: number): string {
+  return `<!date^${Math.floor(at / 1000)}^{date_short_pretty} at {time}|${utcDateTime(at)}>`;
+}
+
+/** The same instant where Slack does not format dates: "Nov 4, 2026 at 00:00 UTC". */
+export function utcDateTime(at: number): string {
+  return `${UTC_DATE.format(at)} at ${utcTime(at)}`;
+}
+
+function utcTime(at: number): string {
+  return `${new Date(at).toISOString().slice(11, 16)} UTC`;
 }
 
 export const SLACK_USER_ID = /^[UW][A-Z0-9]{2,30}$/;

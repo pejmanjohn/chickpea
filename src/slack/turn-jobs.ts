@@ -48,6 +48,7 @@ import { parseSlackArtifactReceipts } from './artifact-receipts.ts';
 import { parseSlackAgentCreationTerminalIntents } from './agent-creation-terminal.ts';
 import { personRequestText, personRequestTextSource } from './agent-asks.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
+import { isDailyLimitScope, type DailyLimitAdmission } from '../config/platform-funding.ts';
 import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 import type { InstallationObjectRecorder } from '../state/object-inventory.ts';
 import type { SlackThreadAgentTarget } from './flue-dispatch.ts';
@@ -3700,6 +3701,7 @@ function parseFlueSettlement(value: unknown): FlueSettlementCheckpointV1 {
     'settledAt',
     'result',
     'failureKind',
+    'dailyLimit',
     'toolCallCount',
     // Read compatibility for the bounded diagnostic briefly written by the
     // disposable authoring investigation. New checkpoints never write it.
@@ -3719,14 +3721,19 @@ function parseFlueSettlement(value: unknown): FlueSettlementCheckpointV1 {
     if (toolCallCount !== undefined && (!Number.isSafeInteger(toolCallCount) || (toolCallCount as number) < 1)) {
       throw new Error('Flue settlement tool call count is invalid.');
     }
+    if (failureKind !== 'daily-limit' && record.dailyLimit !== undefined) {
+      throw new Error('Flue settlement daily limit is invalid.');
+    }
     return {
       outcome: record.outcome,
       settledAt,
-      failureKind,
+      ...(failureKind === 'daily-limit'
+        ? { failureKind, dailyLimit: parseSettledDailyLimit(record.dailyLimit) }
+        : { failureKind }),
       ...(toolCallCount === undefined ? {} : { toolCallCount: toolCallCount as number }),
     };
   }
-  if (record.outcome !== 'completed' || record.failureKind !== undefined ||
+  if (record.outcome !== 'completed' || record.failureKind !== undefined || record.dailyLimit !== undefined ||
       record.toolCallCount !== undefined || record.debugDiagnostic !== undefined) {
     throw new Error('Flue settlement outcome is invalid.');
   }
@@ -3745,9 +3752,18 @@ const FLUE_FAILURE_KINDS = [
   'openai-subscription-quota',
   'openai-subscription-policy',
   'credits-exhausted',
+  'daily-limit',
   'sandbox',
   'sandbox-session-cap',
 ] as const;
+
+function parseSettledDailyLimit(value: unknown): Pick<DailyLimitAdmission, 'scope' | 'resumesAt'> {
+  const { scope, resumesAt } = exactObject(value, 'Flue settlement daily limit', ['scope', 'resumesAt']);
+  if (!isDailyLimitScope(scope) || !Number.isSafeInteger(resumesAt) || (resumesAt as number) < 1) {
+    throw new Error('Flue settlement daily limit is invalid.');
+  }
+  return { scope, resumesAt: resumesAt as number };
+}
 
 function parseSettledResult(value: unknown): Extract<FlueSettlementCheckpointV1, {
   outcome: 'completed';

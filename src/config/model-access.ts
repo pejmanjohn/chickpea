@@ -36,11 +36,12 @@ import { deploymentServesManyInstallations, installationScopeOf } from './instal
 import {
   admitRunTask,
   chargePlatformRequest,
-  CreditsExhaustedError,
   platformFundingConfigured,
+  platformFundingRefusalError,
   postRunFee,
   requirePlatformFundingAdmitted,
   type FeePost,
+  type PlatformFundingRefusal,
 } from './platform-funding.ts';
 import type { PlatformEnv } from './state-backend.ts';
 import type { PromptCacheScope } from '../agents/openai-prompt-cache.ts';
@@ -149,7 +150,7 @@ interface ModelAccessCell {
 class RunFees {
   readonly #kind: RunKind;
   readonly #run: Omit<FeePost, 'tier'>;
-  #taskFee: 'unposted' | Promise<void> | 'posted' | 'refused' = 'unposted';
+  #taskFee: 'unposted' | Promise<void> | 'posted' | { readonly refused: PlatformFundingRefusal } = 'unposted';
   #admission: Promise<void> | undefined;
   /** Set by the attempt's sandbox, the one place that knows which repository credentials minted. */
   repositoryShell = false;
@@ -165,37 +166,37 @@ class RunFees {
       : { kind: 'interactive', repositoryShell: this.repositoryShell };
   }
 
-  get refused(): boolean {
-    return this.#taskFee === 'refused';
+  /** Throws the refusal once the task is refused, by the attempt's one admission or by its post. */
+  throwIfRefused(): void {
+    const fee = this.#taskFee;
+    if (typeof fee === 'object' && 'refused' in fee) throw platformFundingRefusalError(fee.refused);
   }
 
-  /**
-   * Throws once the task is refused, by the attempt's one admission or by its
-   * post. Parallel calls await the same admission in flight, so the host is asked once.
-   */
+  /** Parallel calls await the same admission in flight, so the host is asked once. */
   async requireTaskAdmitted(): Promise<void> {
     this.#admission ??= this.#admitTask();
     await this.#admission;
-    if (this.refused) throw new CreditsExhaustedError();
+    this.throwIfRefused();
   }
 
   async #admitTask(): Promise<void> {
-    if (await admitRunTask(this.#run) === 'refused') this.#taskFee = 'refused';
+    const admission = await admitRunTask(this.#run);
+    if (admission !== 'admitted') this.#taskFee = { refused: admission === 'refused' ? 'credits_exhausted' : admission };
   }
 
   async postChatFee(): Promise<void> {
     await postRunFee({ ...this.#run, tier: 'chat' });
   }
 
-  /** One post per run; a refusal only sets `refused`, which the proxy reads before the next request. */
+  /** One post per run; a refusal is only recorded, and the proxy throws it before the next request. */
   postTaskFee(): Promise<void> {
     if (this.#taskFee === 'unposted') this.#taskFee = this.#postTaskFee();
-    return typeof this.#taskFee === 'string' ? Promise.resolve() : this.#taskFee;
+    return this.#taskFee instanceof Promise ? this.#taskFee : Promise.resolve();
   }
 
   async #postTaskFee(): Promise<void> {
     const { kind } = await postRunFee({ ...this.#run, tier: 'task' });
-    this.#taskFee = kind === 'refused' ? 'refused' : kind === 'unanswered' ? 'unposted' : 'posted';
+    this.#taskFee = kind === 'refused' ? { refused: 'credits_exhausted' } : kind === 'unanswered' ? 'unposted' : 'posted';
   }
 }
 
@@ -679,7 +680,7 @@ function sendRequest<TModel extends Model<Api>>(
   void (async () => {
     let source: AssistantMessageEventStream;
     try {
-      if (cell.fees?.refused) throw new CreditsExhaustedError();
+      cell.fees?.throwIfRefused();
       if (installationId) await requireInstallationAdmitted(installationId);
       source = start(platformGrant ? await platformFundedModel(platformGrant, model, request) : model);
     } catch (error) {

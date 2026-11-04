@@ -32,6 +32,7 @@ import { registeredPiProvider } from '../src/config/pi-provider-registry.ts';
 import {
   configurePlatformFunding,
   resetPlatformFundingForTests,
+  type DailyLimitAdmission,
   type FeeOutcome,
   type FeePost,
   type RunRef,
@@ -50,7 +51,7 @@ import { createSlackReadGate } from '../src/slack/read-budget.ts';
 import { SlackReadingService } from '../src/slack/reading/service.ts';
 import { createSlackReadingTools } from '../src/slack/reading/tools.ts';
 import type { FlueDispatchEnvelopeV1 } from '../src/slack/turn-job-types.ts';
-import { CREDITS_EXHAUSTED_TEXT } from '../src/slack/web-client-presenter.ts';
+import { CREDITS_EXHAUSTED_TEXT, dailyLimitText } from '../src/slack/web-client-presenter.ts';
 import type { RunKind } from '../src/usage/run-fees.ts';
 import { withEnv } from './helpers/env.ts';
 import { NO_RUN_FEES } from './helpers/platform-funding.ts';
@@ -82,7 +83,7 @@ function hostedPort(
     refuse?: FeePost['tier'];
     fail?: FeePost['tier'];
     stall?: FeePost['tier'];
-    admission?: 'refused' | 'stall' | 'fail' | 'stop';
+    admission?: 'refused' | 'stall' | 'fail' | 'stop' | 'malformed' | DailyLimitAdmission;
     port?: boolean;
   } = {},
 ) {
@@ -104,6 +105,7 @@ function hostedPort(
         admissions.push(run);
         if (options.admission === 'stall') return new Promise<never>(() => {});
         if (options.admission === 'fail') throw new Error('ledger unavailable');
+        if (options.admission === 'malformed') return { kind: 'daily_limit', scope: 'workspace', resumesAt: Number.NaN };
         if (options.admission === 'stop') {
           await stopTurn();
           timeline.push('admit:admitted');
@@ -111,7 +113,7 @@ function hostedPort(
         }
         await new Promise((resolve) => setTimeout(resolve, ADMISSION_DELAY_MS));
         const answer = options.admission ?? 'admitted';
-        timeline.push(`admit:${answer}`);
+        timeline.push(`admit:${typeof answer === 'string' ? answer : answer.kind}`);
         return answer;
       },
       postFee: async (post) => {
@@ -362,6 +364,23 @@ test('an own-key turn with nothing spendable runs no tool, not even a parallel o
   assert.equal(sent.length, 1, 'no provider request after the refusal');
   assert.deepEqual(ran, [], 'no tool ran');
   assert.equal(admissions.length, 1);
+  assert.deepEqual(tiers(posts), ['chat:posted']);
+});
+
+test('a turn at its daily limit runs no tool and ends with the daily-limit reply, not the credits one', { timeout: 20_000 }, async (t) => {
+  const limit = { kind: 'daily_limit', scope: 'fleet', resumesAt: Date.UTC(2026, 10, 5) } as const;
+  const posts = hostedPort(t, { admission: limit });
+  interceptors(t, replyRun(hostedEnv()));
+  const { sent } = scriptedProvider([callsTools('read_slack_channel'), answers]);
+  ran.length = 0;
+
+  const failure = await slackTurn('fees-daily-limit');
+
+  assert.ok(failure instanceof AgentPromptFailure, String(failure));
+  assert.deepEqual([failure.kind, failure.dailyLimit, failure.retryable], ['daily-limit', limit, false]);
+  assert.equal(agentFailureText(failure), dailyLimitText(limit));
+  assert.equal(sent.length, 1, 'no provider request after the refusal');
+  assert.deepEqual(ran, [], 'no tool ran');
   assert.deepEqual(tiers(posts), ['chat:posted']);
 });
 
@@ -640,7 +659,9 @@ test('a task row the host cannot post lets the tool run, and the next qualifying
   assert.ok(logged.every((line) => !line.includes(INSTALLATION) && !line.includes('sub_')), 'the log names no installation or run');
 });
 
-for (const [admission, how] of [['stall', 'never answers'], ['fail', 'fails']] as const) {
+for (const [admission, how] of [
+  ['stall', 'never answers'], ['fail', 'fails'], ['malformed', 'answers with a malformed daily limit'],
+] as const) {
   test(`an admission the host ${how} admits the task: the tool runs and the task row posts`, { timeout: 20_000 }, async (t) => {
     const posts = hostedPort(t, { admission });
     const warn = t.mock.method(console, 'warn', () => undefined);

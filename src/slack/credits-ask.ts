@@ -1,25 +1,72 @@
 import type { WebClient } from '@slack/web-api';
 
 import { deploymentTenancy } from '../config/installation-scope.ts';
+import {
+  CREDITS_EXHAUSTED_CODE,
+  isDailyLimitScope,
+  type DailyLimitAdmission,
+  type PlatformFundingRefusal,
+} from '../config/platform-funding.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import type { SlackClaimStore } from './claim-store.ts';
 import type { RenderedSlackComponents } from './reply-continuations.ts';
+import { slackDateTime } from './ui/text.ts';
 
 /** Outside the host UI namespaces, so the UI click parser never claims it. */
 export const CREDITS_ASK_ADMIN_ACTION = 'chickpea.credits.v1.ask_admin';
+/** A daily limit's ask; its value is `WORKSPACE:SCOPE:SECONDS`, with when usage resumes in epoch seconds. */
+export const DAILY_LIMIT_ASK_ACTION = 'chickpea.credits.v1.ask_admin_daily_limit';
 export const CREDITS_ASK_ADMIN_BLOCK = 'chickpea.credits.v1.ask_admin_block';
 
 export const CREDITS_ASK_OWNER_LABEL = 'Ask an Owner';
 export const CREDITS_OWNER_HINT_TEXT = "You're an Owner, so you can add extra usage or change the plan in Chickpea.";
+export const DAILY_LIMIT_OWNER_HINT_TEXT = "You're an Owner, so you can choose a plan in Chickpea to continue now.";
 export const CREDITS_ASK_CONFIRMATION_TEXT = "I asked this workspace's Owners to add usage.";
+export const DAILY_LIMIT_ASK_CONFIRMATION_TEXT = "I asked this workspace's Owners to choose a plan.";
 export const CREDITS_ASK_UNREACHABLE_TEXT =
   "I couldn't reach this workspace's Owners. Try again in a few minutes.";
 
 export function creditsAskOwnerDmText(clickerUserId: string, channelId: string): string {
-  const where = channelId.startsWith('D') ? 'a direct message' : `<#${channelId}>`;
   return `<@${clickerUserId}> asked you to add usage to Chickpea. ` +
-    `A request in ${where} stopped because this workspace has used all of its plan's usage.`;
+    `A request in ${requestPlace(channelId)} stopped because this workspace has used all of its plan's usage.`;
+}
+
+export function dailyLimitAskOwnerDmText(
+  clickerUserId: string,
+  channelId: string,
+  { scope, resumesAt }: Pick<DailyLimitAdmission, 'scope' | 'resumesAt'>,
+): string {
+  const why = scope === 'workspace'
+    ? `this workspace reached its daily trial limit. Chickpea resumes ${slackDateTime(resumesAt)}.`
+    : `Chickpea has paused trial usage for now. It resumes ${slackDateTime(resumesAt)}.`;
+  return `<@${clickerUserId}> asked you to choose a plan for Chickpea. ` +
+    `A request in ${requestPlace(channelId)} stopped because ${why}`;
+}
+
+function requestPlace(channelId: string): string {
+  return channelId.startsWith('D') ? 'a direct message' : `<#${channelId}>`;
+}
+
+/** What the reply and its button say for each refusal. */
+function refusalCopy(refusal: PlatformFundingRefusal) {
+  return refusal === CREDITS_EXHAUSTED_CODE
+    ? {
+        ownerHint: CREDITS_OWNER_HINT_TEXT,
+        confirmation: CREDITS_ASK_CONFIRMATION_TEXT,
+        ownerDm: creditsAskOwnerDmText,
+        button: (workspaceId: string) => ({ action_id: CREDITS_ASK_ADMIN_ACTION, value: workspaceId }),
+      }
+    : {
+        ownerHint: DAILY_LIMIT_OWNER_HINT_TEXT,
+        confirmation: DAILY_LIMIT_ASK_CONFIRMATION_TEXT,
+        ownerDm: (clickerUserId: string, channelId: string) =>
+          dailyLimitAskOwnerDmText(clickerUserId, channelId, refusal),
+        button: (workspaceId: string) => ({
+          action_id: DAILY_LIMIT_ASK_ACTION,
+          value: `${workspaceId}:${refusal.scope}:${Math.floor(refusal.resumesAt / 1000)}`,
+        }),
+      };
 }
 
 type CreditsIdentity = Pick<IdentityStore, 'resolveSlackIdentity' | 'listMemberships' | 'listExternalIdentities'>;
@@ -36,6 +83,8 @@ export interface OwnerDmClient {
 }
 
 export interface CreditsAskAction {
+  /** What the clicked button asks the Owners to fix. */
+  refusal: PlatformFundingRefusal;
   workspaceId: string;
   userId: string;
   channelId: string;
@@ -54,31 +103,39 @@ export interface CreditsAskDeps {
 
 export type CreditsAskOutcome = 'asked' | 'already_asked' | 'owner' | 'unreachable';
 
-const OUTCOME_PRESENTATION: Record<CreditsAskOutcome, { text: string; replacesButton: boolean }> = {
-  asked: { text: CREDITS_ASK_CONFIRMATION_TEXT, replacesButton: true },
-  already_asked: { text: CREDITS_ASK_CONFIRMATION_TEXT, replacesButton: true },
-  owner: { text: CREDITS_OWNER_HINT_TEXT, replacesButton: false },
-  unreachable: { text: CREDITS_ASK_UNREACHABLE_TEXT, replacesButton: false },
-};
+function outcomePresentation(
+  outcome: CreditsAskOutcome,
+  refusal: PlatformFundingRefusal,
+): { text: string; replacesButton: boolean } {
+  const copy = refusalCopy(refusal);
+  switch (outcome) {
+    case 'asked':
+    case 'already_asked': return { text: copy.confirmation, replacesButton: true };
+    case 'owner': return { text: copy.ownerHint, replacesButton: false };
+    case 'unreachable': return { text: CREDITS_ASK_UNREACHABLE_TEXT, replacesButton: false };
+  }
+}
 
 const HOUR_MS = 3_600_000;
 const SLACK_TS = /^\d{1,16}\.\d{1,16}$/;
 const TEXT_BLOCK_TYPES = new Set(['markdown', 'rich_text', 'section']);
 
-export async function creditsExhaustedComponents(input: {
+export async function fundingRefusalComponents(input: {
   env: PlatformEnv | undefined;
   identity: CreditsIdentity;
   workspaceId: string;
   userId: string;
+  refusal: PlatformFundingRefusal;
 }): Promise<RenderedSlackComponents | undefined> {
   if (deploymentTenancy(input.env) !== 'installation') return undefined;
   const owner = await isActiveOwner(input.identity, input.workspaceId, input.userId).catch(() => {
     console.warn('[chickpea] The out-of-credits reply could not read the requester\'s role');
     return false;
   });
+  const copy = refusalCopy(input.refusal);
   return owner
-    ? { blocks: [contextBlock(CREDITS_OWNER_HINT_TEXT)], fallbackText: CREDITS_OWNER_HINT_TEXT }
-    : { blocks: [askAdminBlock(input.workspaceId)], fallbackText: '' };
+    ? { blocks: [contextBlock(copy.ownerHint)], fallbackText: copy.ownerHint }
+    : { blocks: [askAdminBlock(copy.button(input.workspaceId))], fallbackText: '' };
 }
 
 /** Parsing grants no authority. Call only after Slack signature verification. */
@@ -93,12 +150,14 @@ export function parseCreditsAskAction(payload: unknown): CreditsAskAction | unde
   const channel = record(root.channel);
   const container = record(root.container);
   const message = record(root.message);
-  if (action?.action_id !== CREDITS_ASK_ADMIN_ACTION || !safeId(team?.id) || action.value !== team.id ||
-      !safeId(user?.id) || !safeId(channel?.id) ||
+  if (!safeId(team?.id) || !safeId(user?.id) || !safeId(channel?.id) ||
       container?.type !== 'message' || container.is_ephemeral === true ||
       container.channel_id !== channel.id || !slackTs(container.message_ts)) return undefined;
+  const refusal = clickedRefusal(action?.action_id, action?.value, team.id);
+  if (!refusal) return undefined;
   const blocks = Array.isArray(message?.blocks) ? message.blocks : [];
   return {
+    refusal,
     workspaceId: team.id,
     userId: user.id,
     channelId: channel.id,
@@ -116,8 +175,20 @@ export async function askOwnersForCredits(action: CreditsAskAction, deps: Credit
     console.warn('[chickpea] A credits request could not be checked');
     return 'unreachable';
   });
-  await present(action, OUTCOME_PRESENTATION[outcome], deps.client);
+  await present(action, outcomePresentation(outcome, action.refusal), deps.client);
   return outcome;
+}
+
+/** A button carries its own workspace, so a value for another workspace is refused. */
+function clickedRefusal(actionId: unknown, value: unknown, workspaceId: string): PlatformFundingRefusal | undefined {
+  if (actionId === CREDITS_ASK_ADMIN_ACTION) return value === workspaceId ? CREDITS_EXHAUSTED_CODE : undefined;
+  if (actionId !== DAILY_LIMIT_ASK_ACTION || typeof value !== 'string' || !value.startsWith(`${workspaceId}:`)) {
+    return undefined;
+  }
+  const [, scope, seconds] = /^([a-z]+):(\d{1,12})$/.exec(value.slice(workspaceId.length + 1)) ?? [];
+  return isDailyLimitScope(scope) && Number(seconds) > 0
+    ? { kind: 'daily_limit', scope, resumesAt: Number(seconds) * 1000 }
+    : undefined;
 }
 
 async function ask(action: CreditsAskAction, deps: CreditsAskDeps): Promise<CreditsAskOutcome> {
@@ -128,7 +199,7 @@ async function ask(action: CreditsAskAction, deps: CreditsAskDeps): Promise<Cred
     console.warn('[chickpea] The installation\'s Owners could not be read for a credits request');
     return [];
   });
-  const message = { text: creditsAskOwnerDmText(action.userId, action.channelId) };
+  const message = { text: refusalCopy(action.refusal).ownerDm(action.userId, action.channelId) };
   let delivered = 0;
   for (const owner of owners) {
     if (await sendOwnerDm(deps.client, owner, message)) delivered += 1;
@@ -241,15 +312,15 @@ function withoutButton(blocks: SlackBlock[], text: string): SlackBlock[] | undef
   return blocks.with(index, contextBlock(text));
 }
 
-function askAdminBlock(workspaceId: string): SlackBlock {
+function askAdminBlock(button: { action_id: string; value: string }): SlackBlock {
   return {
     type: 'actions',
     block_id: CREDITS_ASK_ADMIN_BLOCK,
     elements: [{
       type: 'button',
-      action_id: CREDITS_ASK_ADMIN_ACTION,
+      action_id: button.action_id,
       text: { type: 'plain_text', text: CREDITS_ASK_OWNER_LABEL, emoji: false },
-      value: workspaceId,
+      value: button.value,
     }],
   };
 }

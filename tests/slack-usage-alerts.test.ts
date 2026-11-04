@@ -7,7 +7,13 @@ import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import type { InstallationHealth, WorkspaceInstallation } from '../src/config/types.ts';
 import type { Membership, MembershipStatus, OrganizationRole, SlackIdentityBinding } from '../src/identity/types.ts';
 import type { SlackInstallationExecutionResolver } from '../src/slack/installation-execution.ts';
-import { deliverUsageAlert, type UsageAlert } from '../src/slack/usage-alerts.ts';
+import {
+  dailyLimitNoticeMessage,
+  deliverDailyLimitNotice,
+  deliverUsageAlert,
+  type DailyLimitNotice,
+  type UsageAlert,
+} from '../src/slack/usage-alerts.ts';
 import type { UsageMicros } from '../src/usage/usage-display.ts';
 
 const TEAM = 'TUSAGE1';
@@ -266,4 +272,42 @@ test('standalone never sends usage alerts and reads nothing', async () => {
     assert.deepEqual(slack.resolved, [], JSON.stringify(env));
     assert.deepEqual(slack.of('conversations.open'), [], JSON.stringify(env));
   }
+});
+
+const RESUMES = '<!date^1793836800^{date_short_pretty} at {time}|Nov 5, 2026 at 00:00 UTC>';
+const NOTICE: DailyLimitNotice = { scope: 'workspace', resumesAt: new Date(Date.UTC(2026, 10, 5)), planPageUrl: PLAN_PAGE };
+const CHOOSE_PLAN = [{
+  type: 'button', action_id: 'chickpea.usage.v1.upgrade',
+  text: { type: 'plain_text', text: 'Choose a plan', emoji: false }, url: PLAN_PAGE,
+}];
+
+test('a workspace at its daily limit tells each active Owner, and no one else, when it resumes', async () => {
+  const slack = workspace();
+  assert.equal(await deliverDailyLimitNotice(HOSTED_ENV, NOTICE, slack.dependencies), 'sent');
+
+  const text = `This workspace has reached its daily trial limit, so Chickpea is paused until ${RESUMES}. ` +
+    'Choose a plan to continue now.';
+  const blocks = [{ type: 'section', text: { type: 'mrkdwn', text } }, { type: 'actions', elements: CHOOSE_PLAN }];
+  assert.deepEqual(dailyLimitNoticeMessage(NOTICE), { text, blocks });
+  assert.deepEqual(slack.of('conversations.open').map(({ users }) => users).sort(), ['UOWNER1', 'UOWNER2']);
+  assert.deepEqual(
+    slack.of('chat.postMessage').sort((a, b) => String(a.channel).localeCompare(String(b.channel))),
+    [{ channel: 'DOWNER1', text, blocks }, { channel: 'DOWNER2', text, blocks }],
+  );
+});
+
+test('a workspace paused by the fleet limit is told trial usage is paused, not that it reached its own limit', () => {
+  const { text, blocks } = dailyLimitNoticeMessage({ ...NOTICE, scope: 'fleet' });
+  assert.equal(text, "Chickpea has paused trial usage for now, so this workspace's requests are paused until " +
+    `${RESUMES}. Choose a plan to continue now.`);
+  assert.deepEqual(buttons([...blocks]), CHOOSE_PLAN);
+});
+
+test('a daily-limit notice reaches no one without an active Owner, or on standalone', async () => {
+  const ownerless = workspace({ memberships: MEMBERSHIPS.filter(({ role }) => role !== 'owner') });
+  assert.equal(await deliverDailyLimitNotice(HOSTED_ENV, NOTICE, ownerless.dependencies), 'no_owner');
+  assert.deepEqual(ownerless.of('chat.postMessage'), []);
+  const standalone = workspace();
+  assert.equal(await deliverDailyLimitNotice(undefined, NOTICE, standalone.dependencies), 'no_owner');
+  assert.deepEqual(standalone.reads, []);
 });

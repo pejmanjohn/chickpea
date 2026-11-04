@@ -603,6 +603,13 @@ test('fallback text is plain enough for notifications and accessibility', () => 
   const fallback = markdownFallbackText('## Hello <team>\n\n**Ship** [docs](https://example.com)');
 
   assert.equal(fallback, 'Hello &lt;team&gt;\n\nShip docs (https://example.com)');
+
+  assert.equal(
+    markdownFallbackText('Resumes <!date^1793836800^{date_short_pretty} at {time}|Nov 5, 2026 at 00:00 UTC>. ' +
+      'Write `<!date^1793836800^{time}|now>` for a time.'),
+    'Resumes Nov 5, 2026 at 00:00 UTC. Write &lt;!date^1793836800^{time}|now&gt; for a time.',
+    'a date token shows its own fallback, except as code',
+  );
 });
 
 test('classic file sections retain all 12,000 canonical characters and one context footer', () => {
