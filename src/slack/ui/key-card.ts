@@ -157,9 +157,13 @@ function statusLine(spec: KeyCardSpec, row: KeyRow, requester: string): string |
   }
 }
 
+/**
+ * A checking row keeps Try again: while the check runs a click only says so
+ * privately, and a check that never finished leaves the row open again.
+ */
 function rowButton(record: UiSurfaceRecord, row: KeyRow, index: number): Block | undefined {
-  const text = row.state.is === 'waiting' ? 'Add key' : row.state.is === 'rejected' ? 'Try again' : undefined;
-  if (!text) return undefined;
+  if (keyRowFinal(row.state)) return undefined;
+  const text = row.state.is === 'waiting' ? 'Add key' : 'Try again';
   return {
     type: 'button',
     action_id: uiActionId('host', 'key_add', index),

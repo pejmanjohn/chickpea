@@ -8,6 +8,7 @@ import {
   keyCardTransition,
   keyFieldBlockId,
   keyModalView,
+  keyRowAvailability,
   keyRowTransition,
   parseKeyFormMetadata,
   readKeySubmission,
@@ -153,7 +154,19 @@ test('several rows each carry their own button and status', () => {
   assert.match(text, /:key: \*2 connections need a key\*/);
   assert.match(text, /\*Notion\*\\nChecking the key with api\.linear\.app…/);
   assert.match(text, /Only <@U1> can add them\./);
-  assert.equal((text.match(/chickpea\.host\.v1\.key_add\./g) ?? []).length, 1, 'only the waiting row has a button');
+  assert.deepEqual(text.match(/"(Add key|Try again)"/g), ['"Add key"', '"Try again"'], 'each open row has its button');
+});
+
+test('a checking row offers Try again, which opens the form only once the check is stale', () => {
+  const record = card([row({ state: { is: 'checking', since: NOW } })]);
+  const shown = JSON.stringify(renderKeyCard(record, record.spec).blocks);
+  assert.match(shown, /Checking the key with api\.linear\.app….*"Try again"/);
+  const facts = { ...LIVE, setup: { ...LIVE.setup!, expiresAt: NOW + 86_400_000 } };
+  const click = (now: number) => keyRowAvailability({
+    card: record, workspaceId: 'T1', userId: 'U1', setupOperationId: 'setup_one', facts, now,
+  });
+  assert.equal((click(NOW + 1_000) as { refusal?: string }).refusal, 'busy', 'a running check answers privately');
+  assert.equal(click(NOW + KEY_CHECK_STALE_MS).ok, true, 'a check that never finished leaves the row open again');
 });
 
 test('the form names where the key goes and who it serves, and carries no key', () => {
