@@ -182,8 +182,8 @@ function dmClient(dm: Record<string, unknown> | 'missing_scope') {
       async info({ channel }: { channel: string }) {
         infoCalls.push(channel);
         if (channel === 'C0OTHER') return { ok: true, channel: { id: channel, name: 'deploys', is_member: true, context_team_id: WORKSPACE } };
-        if (channel !== DM_CURRENT.channelId) throw Object.assign(new Error('x'), { data: { error: 'channel_not_found' } });
         if (dm === 'missing_scope') throw Object.assign(new Error('x'), { code: 'slack_webapi_platform_error', data: { error: 'missing_scope', needed: 'im:read' } });
+        if (channel !== DM_CURRENT.channelId) throw Object.assign(new Error('x'), { data: { error: 'channel_not_found' } });
         return { ok: true, channel: { id: channel, is_im: true, user: REQUESTER, ...dm } };
       },
       async members() { return { ok: true, members: [REQUESTER] }; },
@@ -204,6 +204,19 @@ test('from the app\'s DM, another granted channel is readable without im:read', 
   const client = dmClient('missing_scope');
   const conversation = await authorizeSlackRead(dmPorts(client), 'C0OTHER');
   assert.deepEqual(conversation, { id: 'C0OTHER', name: 'deploys', kind: 'channel', current: false });
+  assert.deepEqual(client.infoCalls, [DM_CURRENT.channelId, 'C0OTHER']);
+  // Only the DM that delivered the request is taken as the app's own.
+  assert.equal(await refusal(authorizeSlackRead(dmPorts(client), 'D0SOMEONE')), 'unavailable');
+});
+
+test('with im:read, Slack\'s facts about the DM decide, and a Slack Connect DM reads only itself', async () => {
+  const conversation = await authorizeSlackRead(dmPorts(dmClient({})), 'C0OTHER');
+  assert.deepEqual(conversation, { id: 'C0OTHER', name: 'deploys', kind: 'channel', current: false });
+  for (const flag of ['is_ext_shared', 'is_pending_ext_shared', 'is_shared', 'is_org_shared']) {
+    const ports = dmPorts(dmClient({ [flag]: true }));
+    assert.equal(await refusal(authorizeSlackRead(ports, 'C0OTHER')), 'shared_conversation_only', flag);
+    assert.equal((await authorizeSlackRead(ports, DM_CURRENT.channelId)).kind, 'dm', flag);
+  }
 });
 
 test('membership is cached for one render only, and a missing channel is not a member', async () => {
@@ -277,7 +290,7 @@ function slackClient(options: {
   };
 }
 
-function service(client: ReturnType<typeof slackClient>, readGate = gate(), record?: SqliteConfigStore, authority = ports()) {
+function service(client: ReturnType<typeof slackClient>, readGate = gate(), record?: SqliteConfigStore, authority: SlackReadAuthorityPorts = ports()) {
   clearSlackContextNameCache();
   return new SlackReadingService({
     client: client as never,
@@ -503,12 +516,14 @@ test('from a Slack Connect or org-shared conversation, people are not looked up'
   assert.equal(slackReadFailure(await service(client, gate(), undefined, hidden)
     .lookupUser({ user: 'U0DANA' }).catch((error: unknown) => error)).code, 'unavailable');
   assert.deepEqual(client.lookups, []);
-  // The app's DM with the requester needs no conversations.info (no im:read).
-  const dm = ports({
-    current: { ...CURRENT, channelId: 'D0DANA' },
-    conversation: async () => { throw new SlackReadError('unavailable'); },
-  });
-  assert.equal((await service(client, gate(), undefined, dm).lookupUser({ user: 'U0DANA' })).status, 'ok');
+  // The app's own DM answers, with or without im:read; a Slack Connect DM does not.
+  for (const dm of ['missing_scope', {}] as const) {
+    assert.equal((await service(client, gate(), undefined, dmPorts(dmClient(dm))).lookupUser({ user: 'U0DANA' })).status, 'ok');
+  }
+  assert.deepEqual(client.lookups, ['U0DANA', 'U0DANA']);
+  assert.equal(slackReadFailure(await service(client, gate(), undefined, dmPorts(dmClient({ is_ext_shared: true })))
+    .lookupUser({ user: 'U0DANA' }).catch((error: unknown) => error)).code, 'shared_conversation_only');
+  assert.equal(client.lookups.length, 2);
 });
 
 test('each call honors its own abort signal, not an earlier call\'s', async () => {

@@ -205,11 +205,7 @@ export class SlackReadingService {
     await authority.assertActive();
     // Profiles are internal details: never answered where another
     // organization can read the answer, as other reads are refused there.
-    // The app's own DM with the requester is not shared (and the app has no
-    // im:read to ask); any other conversation fails closed.
-    if (!authority.current.channelId.startsWith('D')) {
-      await assertCurrentConversationNotShared(authority, SHARED_LOOKUP_MESSAGE);
-    }
+    await assertCurrentConversationNotShared(authority, SHARED_LOOKUP_MESSAGE);
     input.signal?.throwIfAborted();
     this.lookups += 1;
     let response;

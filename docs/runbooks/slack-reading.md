@@ -135,3 +135,10 @@ Reading uses scopes the app already has: `channels:history`, `groups:history`,
 needed. A group DM also needs `mpim:history`, which apps made before group DM
 support lack. Without it, a group DM turn sees only its own message, and the
 reading tools cannot read that group DM.
+
+Reading another channel, or looking up a person, from a DM first checks that
+the DM is not shared with another organization. With `im:read`, Slack's
+`conversations.info` answers for the DM, and a Slack Connect DM reads only
+itself. Without it, which is every Agent app and every installation whose
+Owner has not updated yet, the DM that delivered the request is taken as the
+app's own DM with the requester, which Slack never shares.
