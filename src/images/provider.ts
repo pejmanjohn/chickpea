@@ -5,6 +5,7 @@ import { ModelCredentialRevisionError } from '../config/model-credential-refs.ts
 import { modelProviderUnavailable, pricedModelRoute } from '../config/model-policy.ts';
 import {
   CreditsExhaustedError,
+  DailyLimitError,
   installationFunding,
   PlatformFundingUnavailableError,
 } from '../config/platform-funding.ts';
@@ -140,6 +141,7 @@ function refusal(err: unknown): Extract<ImageCallResult, { ok: false }> | undefi
   if (err instanceof RuntimeModelReadinessError) return { ok: false, reason: 'misconfigured', detail: 'missing_api_key' };
   if (
     err instanceof CreditsExhaustedError ||
+    err instanceof DailyLimitError ||
     err instanceof PlatformFundingUnavailableError ||
     err instanceof InstallationNotAdmittedError
   ) return { ok: false, reason: 'unreachable', detail: err.code };

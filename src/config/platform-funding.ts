@@ -20,7 +20,29 @@ import type { SharedPrefixId } from '../agents/shared-prefix.ts';
 import type { ModelRequestFundingSource, ModelRequestRecord } from '../usage/model-requests.ts';
 import type { UsageMicros } from '../usage/usage-display.ts';
 
-export type PlatformFundingAdmission = 'admitted' | 'credits_exhausted';
+/**
+ * Platform-funded usage is paused until `resumesAt` by a daily cap, even
+ * though credits may remain.
+ */
+export interface DailyLimitAdmission {
+  readonly kind: 'daily_limit';
+  /** `workspace`: this installation's own daily cap. `fleet`: the host paused this usage for every installation. */
+  readonly scope: DailyLimitScope;
+  /** When platform-funded usage may resume, epoch milliseconds. */
+  readonly resumesAt: number;
+}
+
+export const DAILY_LIMIT_SCOPES = ['workspace', 'fleet'] as const;
+export type DailyLimitScope = typeof DAILY_LIMIT_SCOPES[number];
+
+export function isDailyLimitScope(value: unknown): value is DailyLimitScope {
+  return DAILY_LIMIT_SCOPES.includes(value as DailyLimitScope);
+}
+
+/** Why platform-funded work is refused. */
+export type PlatformFundingRefusal = 'credits_exhausted' | DailyLimitAdmission;
+
+export type PlatformFundingAdmission = 'admitted' | PlatformFundingRefusal;
 
 /** `provider` is the price catalog's id for the request's route, as the request's record names it. */
 export interface PlatformFundedModel {
@@ -63,7 +85,7 @@ export interface PlatformFundingPort {
   /**
    * Before a platform-funded request, unless one of the installation's was
    * admitted in the last 30 seconds: `credits_exhausted` unless the balance
-   * is above zero.
+   * is above zero, or a daily limit until its usage resumes.
    */
   admit(grant: ModelAccessGrant, model: PlatformFundedModel): Promise<PlatformFundingAdmission>;
   /**
@@ -83,14 +105,17 @@ export interface PlatformFundingPort {
   /**
    * Before a reply run's first qualifying tool call, once per attempt.
    * Read-only: writes no row. `refused` exactly when a task-tier `postFee`
-   * for the run would answer `refused`.
+   * for the run would answer `refused`; a daily limit refuses with its own reason.
    */
-  admitTask(run: RunRef): Promise<'admitted' | 'refused'>;
+  admitTask(run: RunRef): Promise<TaskAdmission>;
   /** Restores what a run that failed on Chickpea's side was charged. Idempotent per run. */
   creditBack(run: RunRef, reason: CreditBackReason): Promise<CreditBackOutcome>;
 }
 
+export type TaskAdmission = 'admitted' | 'refused' | DailyLimitAdmission;
+
 export const CREDITS_EXHAUSTED_CODE = 'credits_exhausted';
+export const DAILY_LIMIT_CODE = 'daily_limit';
 
 /** The installation's credits are spent: the request is refused before it is sent. */
 export class CreditsExhaustedError extends Error {
@@ -99,6 +124,27 @@ export class CreditsExhaustedError extends Error {
   constructor() {
     super(`This installation is out of Chickpea credits (${CREDITS_EXHAUSTED_CODE}).`);
   }
+}
+
+/**
+ * A daily limit paused the installation's platform-funded usage: the request
+ * is refused before it is sent. The message carries the code, the scope and
+ * the resume time in epoch seconds, since a Flue failure keeps only its text
+ * (see dailyLimitOf).
+ */
+export class DailyLimitError extends Error {
+  readonly name = 'DailyLimitError';
+  readonly code = DAILY_LIMIT_CODE;
+  readonly limit: DailyLimitAdmission;
+  constructor(limit: Pick<DailyLimitAdmission, 'scope' | 'resumesAt'>) {
+    super('Platform-funded usage is paused by a daily limit ' +
+      `(${DAILY_LIMIT_CODE}:${limit.scope}:${Math.floor(limit.resumesAt / 1000)}).`);
+    this.limit = { kind: DAILY_LIMIT_CODE, scope: limit.scope, resumesAt: limit.resumesAt };
+  }
+}
+
+export function platformFundingRefusalError(refusal: PlatformFundingRefusal): CreditsExhaustedError | DailyLimitError {
+  return refusal === CREDITS_EXHAUSTED_CODE ? new CreditsExhaustedError() : new DailyLimitError(refusal);
 }
 
 /** The host could not say whether a platform-funded request may be sent or what it costs. */
@@ -181,7 +227,9 @@ export async function requirePlatformFundingAdmitted(
   }
   if (admission !== 'admitted') {
     forgetAdmission(installationId);
-    throw admission === CREDITS_EXHAUSTED_CODE ? new CreditsExhaustedError() : new PlatformFundingUnavailableError();
+    throw admission === CREDITS_EXHAUSTED_CODE || isDailyLimitAdmission(admission)
+      ? platformFundingRefusalError(admission)
+      : new PlatformFundingUnavailableError();
   }
   // A port replaced, or a refusal answered, while this read was in flight wins over it.
   if (port !== current || refusals !== refusalsBefore) return;
@@ -224,10 +272,19 @@ export async function postRunFee(post: FeePost): Promise<FeeOutcome | typeof FEE
     ?? FEE_UNANSWERED;
 }
 
-/** A host that does not answer in time, fails, or is not configured admits: a slow ledger never blocks a task. */
-export async function admitRunTask({ installationId, runId }: RunRef): Promise<'admitted' | 'refused'> {
-  return (await askWithinBudget((current) => current.admitTask({ installationId, runId }), { event: 'task_admission_failed' }))
-    ?? 'admitted';
+/**
+ * A host that does not answer in time, fails, or is not configured admits: a
+ * slow ledger never blocks a task. So does a malformed daily limit; the
+ * run's next model request asks `admit`, which refuses one.
+ */
+export async function admitRunTask({ installationId, runId }: RunRef): Promise<TaskAdmission> {
+  const answer = await askWithinBudget((current) => current.admitTask({ installationId, runId }),
+    { event: 'task_admission_failed' });
+  if (answer === 'refused' || isDailyLimitAdmission(answer)) return answer;
+  if (answer !== undefined && answer !== 'admitted') {
+    console.warn(JSON.stringify({ component: 'platform_funding', event: 'task_admission_failed', error: 'malformed' }));
+  }
+  return 'admitted';
 }
 
 export function creditBackRun(run: RunRef, reason: CreditBackReason): Promise<CreditBackOutcome | undefined> {
@@ -282,6 +339,46 @@ export function isCreditsExhausted(error: unknown): boolean {
   return port !== undefined && errorChainIncludes(error, (link) => link instanceof CreditsExhaustedError ||
     (typeof link.message === 'string' && link.message.includes(`(${CREDITS_EXHAUSTED_CODE})`)));
 }
+
+/**
+ * The daily limit an error reports, however it travelled: the error itself,
+ * or the `(daily_limit:SCOPE:SECONDS)` a Flue failure's text carries.
+ * Undefined for anything else, and, as with isCreditsExhausted, always
+ * without a port.
+ */
+export function dailyLimitOf(error: unknown): DailyLimitAdmission | undefined {
+  if (port === undefined) return undefined;
+  let limit: DailyLimitAdmission | undefined;
+  errorChainIncludes(error, (link) => {
+    limit = link instanceof DailyLimitError
+      ? link.limit
+      : typeof link.message === 'string' ? dailyLimitInText(link.message) : undefined;
+    return limit !== undefined;
+  });
+  return limit;
+}
+
+const DAILY_LIMIT_TEXT = /\(daily_limit:([a-z]+):(\d{1,13})\)/;
+
+function dailyLimitInText(message: string): DailyLimitAdmission | undefined {
+  const match = DAILY_LIMIT_TEXT.exec(message);
+  const limit = match && { kind: DAILY_LIMIT_CODE, scope: match[1], resumesAt: Number(match[2]) * 1000 };
+  return isDailyLimitAdmission(limit) ? limit : undefined;
+}
+
+/** The port is the host's boundary: a daily limit Core cannot say the scope and time of is no answer. */
+function isDailyLimitAdmission(value: unknown): value is DailyLimitAdmission {
+  if (typeof value !== 'object' || value === null) return false;
+  const { kind, scope, resumesAt } = value as Partial<Record<keyof DailyLimitAdmission, unknown>>;
+  return kind === DAILY_LIMIT_CODE && isDailyLimitScope(scope) && validResumesAt(resumesAt);
+}
+
+/** Whole epoch milliseconds a Date can hold. */
+function validResumesAt(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) > 0 && (value as number) <= MAX_DATE_MS;
+}
+
+const MAX_DATE_MS = 8.64e15;
 
 export function resetPlatformFundingForTests(options: { now?: () => number } = {}): void {
   configurePlatformFunding(undefined);

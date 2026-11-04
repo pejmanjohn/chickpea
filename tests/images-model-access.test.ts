@@ -284,6 +284,20 @@ test('a platform-funded image request at zero credits is refused with the credit
   });
 });
 
+test('a platform-funded image request at a daily limit is refused with that reason before anything is sent', async (t) => {
+  const { settings, recorded } = useModelAccess(t, 'sk-platform-images');
+  const { env, fundingCalls } = creditsInstallation(t, () => ({
+    kind: 'daily_limit', scope: 'workspace', resumesAt: Date.UTC(2026, 10, 5),
+  }));
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    const { sent, fetchImpl } = provider();
+    const result = await (await imageClient(env, settings, fetchImpl)).generate(generation);
+
+    assert.deepEqual(result, { ok: false, reason: 'unreachable', detail: 'daily_limit' });
+    assert.deepEqual([fundingCalls.admit.length, sent.length, recorded.length, fundingCalls.charge.length], [1, 0, 0, 0]);
+  });
+});
+
 test('an image request of an installation that is not admitted is refused before anything is sent', async (t) => {
   const { settings, recorded } = useModelAccess(t, 'sk-platform-images');
   const { env, fundingCalls } = creditsInstallation(t, () => 'admitted', 'refused');
