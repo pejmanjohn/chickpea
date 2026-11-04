@@ -213,7 +213,11 @@ import {
   type ConnectionCheckOutcome,
 } from '../connections/connection-check.ts';
 import type { SlackMessageQuery, SlackTypedMessage } from '../slack/turn-jobs.ts';
-import { approvedNewKeyedApiConnections, CONNECTION_APPROVAL_WINDOW_MS } from './connection-approval.ts';
+import {
+  approvedNewKeyedApiConnections,
+  approvedNewKeyedConnections,
+  CONNECTION_APPROVAL_WINDOW_MS,
+} from './connection-approval.ts';
 import { setupWakeAgent } from './setup-wake.ts';
 import {
   assertPathInsideConnection,
@@ -2534,23 +2538,61 @@ export class WorkspaceManagementService {
     agentId: string,
     connectionId: string,
   ): Promise<SetupDelivery | undefined> {
-    const operation: Extract<ManagementOperation, { kind: 'request_setup' }> = {
+    return (await this.immediateSetup(actor, {
       itemId: 'save_connection_key',
       kind: 'request_setup',
       target: { kind: 'api_connection', agentId, connectionId },
-    };
+    }))?.delivery;
+  }
+
+  /**
+   * The setup request_setup would issue the person now, outside a call of
+   * theirs that asked for it. Undefined when that request would not apply at
+   * once, or issuing fails; the person then has no setup from it.
+   */
+  private async immediateSetup(
+    actor: LiveManagementActor,
+    operation: Extract<ManagementOperation, { kind: 'request_setup' }>,
+  ): Promise<{ record: ManagementSetupRecord; delivery: SetupDelivery } | undefined> {
     try {
       const policy = classifyManagementOperation(await this.policyFacts(actor, operation, { operationCount: 1 }));
       if (!policy.allowed || policy.posture !== 'immediate') return undefined;
-      return (await this.issueSetup(actor, operation)).delivery;
+      return await this.issueSetup(actor, operation);
     } catch (error) {
       if (!isExpectedMutationError(error)) {
-        console.warn('[chickpea:management] no setup link for a refused connection key', JSON.stringify({
+        console.warn('[chickpea:management] no setup for a connection key', JSON.stringify({
           errorName: error instanceof Error ? error.name : typeof error,
         }));
       }
       return undefined;
     }
+  }
+
+  /**
+   * Whether the message that proposed this approved change set holds a key
+   * for an API connection it added, as the approval window reads that
+   * message (keyFromApprovedConnection): one key-shaped word it would admit.
+   * The person's next message then lets the Agent test it.
+   */
+  async approvedProposalHoldsKey(context: ManagementActorContext, proposalId: string): Promise<boolean> {
+    const actor = await this.requireLiveActor(context);
+    const { origin } = actor;
+    if (origin.kind !== 'slack' || !this.stores.typedSlackMessage) return false;
+    const proposal = await this.stores.management.getChangeSetProposal(proposalId);
+    const approved = proposal ? approvedNewKeyedApiConnections(proposal) : [];
+    if (!proposal?.proposedMessageTs || approved.length === 0) return false;
+    const [message, user] = await Promise.all([
+      this.stores.typedSlackMessage({
+        workspaceId: origin.workspaceId,
+        channelId: origin.channelId,
+        messageTs: proposal.proposedMessageTs,
+      }),
+      this.stores.identity.getUser(actor.userId),
+    ]);
+    if (!message || !user || message.userId !== user.slackUserId) return false;
+    const text = addressedRequestText(message.text, actor.commandAddress);
+    return text !== undefined && keyShapedWords(text).some((key) =>
+      approved.some((connection) => keyTypedForApprovedConnection(text, key, connection)));
   }
 
   async inspectMemory(
@@ -3583,13 +3625,44 @@ export class WorkspaceManagementService {
       this.now(),
       proposal.updatedAt,
     );
-    const deferredSetup = proposal.requestOperationId
+    const requested = proposal.requestOperationId
       ? await this.settleApprovedRequest(actor, proposal.requestOperationId)
       : [];
+    const deferredSetup = requested.length > 0
+      ? requested
+      : await this.keySetupsAfterApproval(actor, { ...proposal, status: 'completed', result });
     return emitOperationOutcomes(
       actor.origin.kind,
       deferredSetup.length > 0 ? { ...result, deferredSetup } : result,
     );
+  }
+
+  /**
+   * The keys a Slack change set's new connections need, asked for when the
+   * person approves it and it asked for none: what request_setup would issue
+   * them now, an Add key card where the form applies and a setup link
+   * elsewhere. A connection that signs in, or needs no key, gets nothing.
+   */
+  private async keySetupsAfterApproval(
+    actor: LiveManagementActor,
+    proposal: Parameters<typeof approvedNewKeyedConnections>[0],
+  ): Promise<ManagementDeferredSetup[]> {
+    if (actor.origin.kind !== 'slack') return [];
+    const setups: ManagementDeferredSetup[] = [];
+    for (const { lane, agentId, connectionId } of approvedNewKeyedConnections(proposal)) {
+      const itemId = `key_${lane}_${connectionId}`;
+      const setup = await this.immediateSetup(actor, {
+        itemId,
+        kind: 'request_setup',
+        target: { kind: lane === 'api' ? 'api_connection' : 'mcp_connection', agentId, connectionId },
+      });
+      if (!setup) continue;
+      const label = setup.record.target.targetLabel;
+      setups.push(setup.delivery.kind === 'link'
+        ? { kind: 'issued', itemId, label, setupUrl: setup.delivery.url }
+        : { kind: 'form', itemId, label });
+    }
+    return setups;
   }
 
   /**
@@ -3970,7 +4043,7 @@ export class WorkspaceManagementService {
     operation: Extract<ManagementOperation, { kind: 'request_setup' }>,
   ): Promise<{ record: ManagementSetupRecord; delivery: SetupDelivery }> {
     const frozen = await this.resolveSetupTarget(actor, operation.target);
-    if (!asksKeyInSlackForm(actor, frozen.action)) {
+    if (!asksKeyInSlackForm(actor, frozen)) {
       const { record, url } = await this.issueSetupRecord(actor, frozen);
       return { record, delivery: { kind: 'link', url } };
     }
@@ -8759,9 +8832,17 @@ function linkSetupTarget({ form: _form, ...target }: ManagementSetupTarget): Man
   return target;
 }
 
-function asksKeyInSlackForm(actor: LiveManagementActor, action: ManagementSetupRecord['action']): boolean {
+/**
+ * The Add key card names the Agent of the thread and is posted under its
+ * reply, so it asks only for that Agent's own connection keys; a setup for
+ * another Agent's connection keeps its link.
+ */
+function asksKeyInSlackForm(
+  actor: LiveManagementActor,
+  { action, target }: Pick<ManagementSetupRecord, 'action' | 'target'>,
+): boolean {
   const { origin } = actor;
-  return origin.kind === 'slack' && Boolean(origin.agentId) &&
+  return origin.kind === 'slack' && Boolean(origin.agentId) && origin.agentId === target.agentId &&
     (origin.conversationKind === 'channel' || origin.conversationKind === 'im') &&
     (action === 'api_credential' || action === 'mcp_credentials');
 }
@@ -9236,6 +9317,17 @@ function requesterTextContainsExactSource(requestText: string, source: string): 
     if (beforeBoundary && afterBoundary) return true;
   }
   return false;
+}
+
+/**
+ * The words of a message shaped like an API key: 16 or more key characters
+ * with a letter and a digit, not starting with a slash. A word, a path or a
+ * URL is none.
+ */
+function keyShapedWords(text: string): string[] {
+  return text.split(/\s+/)
+    .map((word) => word.replace(/^[(\[{'"`]+|[)\]}'"`.,;:!?]+$/g, ''))
+    .filter((word) => /^[A-Za-z0-9_\-+=][A-Za-z0-9_\-+/=]{15,}$/.test(word) && /[A-Za-z]/.test(word) && /\d/.test(word));
 }
 
 /** Characters a key can continue with, so a key found among them is only part of a longer token. */
