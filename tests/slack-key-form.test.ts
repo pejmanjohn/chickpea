@@ -343,9 +343,8 @@ test('a row whose connection changed refuses the click, settles as changed, and 
 });
 
 test('the gateway answers a click and a submission in the receipt from the state store\'s own tables', async () => {
-  const tag = buildTagStateStores(new DoSqlStateDb(new FakeObjectStorage().asDurableObjectStorage()), {} as PlatformEnv, {
-    gatewayLeaseOwner: 'key-form-test',
-  });
+  const db = new DoSqlStateDb(new FakeObjectStorage().asDurableObjectStorage());
+  const tag = buildTagStateStores(db, {} as PlatformEnv, { gatewayLeaseOwner: 'key-form-test' });
   const stores = {
     identity: promiseBackedStatePort(tag.identity),
     config: promiseBackedStatePort(tag.config),
@@ -390,4 +389,17 @@ test('the gateway answers a click and a submission in the receipt from the state
     state: { [keyFieldBlockId(card.id)]: { [KEY_FIELD_ACTION_ID]: { type: 'plain_text_input', value: KEY } } },
   };
   assert.equal(keyFormReceiptNow(valid, tag), undefined, 'a clean key is admitted to the inbox and checked there');
+
+  const inbox = () => JSON.stringify(db.all('SELECT * FROM gateway_inbox'));
+  assert.equal(tag.gatewayInbox.admit({ ...valid, deliveryId: 'Dv2' }), 'accepted');
+  assert.equal(tag.gatewayInbox.admit({ ...clicked, userId: 'U2', deliveryId: 'Dv3' }), 'accepted');
+  const claimed = tag.gatewayInbox.claimPending();
+  assert.ok(JSON.stringify(claimed.find(({ id }) => id === 'Dv2')?.delivery).includes(KEY),
+    'the drain that claimed the submission holds the key in memory to check it');
+  assert.ok(!inbox().includes(KEY), 'once claimed, the inbox row no longer holds the key');
+  assert.match(inbox(), /"id":"Dv3"[^}]*"payload_json":"\{/, 'a click keeps its payload for a retry');
+  tag.gatewayInbox.retryOrRecover('Dv2', 'check_failed');
+  assert.deepEqual(tag.gatewayInbox.claimPending().map(({ id }) => id), [], 'a retry has no key to check again');
+  assert.deepEqual(db.get("SELECT status, recovery_reason FROM gateway_inbox WHERE id = 'Dv2'"),
+    { status: 'recovery_required', recovery_reason: 'missing_payload' });
 });
