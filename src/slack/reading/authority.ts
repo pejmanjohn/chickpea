@@ -39,7 +39,10 @@ export interface SlackReadAuthorityPorts {
   current: SlackReadCurrentConversation;
   /** Throws a SlackReadError when the requester or the Agent is no longer active. */
   assertActive(): Promise<void>;
-  /** undefined when Slack does not show the conversation to the app. */
+  /**
+   * undefined when Slack does not show the conversation to the app. The
+   * current DM without `im:read` is taken as an unshared app DM.
+   */
   conversation(channelId: string): Promise<SlackReadConversationFacts | undefined>;
   /** Whether a Slack user is in the conversation. Throws on a transient failure. */
   isMember(channelId: string, userId: string): Promise<boolean>;
@@ -162,7 +165,6 @@ export function slackReadAuthorityPorts(input: {
   assertActive: SlackReadAuthorityPorts['assertActive'];
   hasActiveGrant: SlackReadAuthorityPorts['hasActiveGrant'];
 }): SlackReadAuthorityPorts {
-  const conversations = new Map<string, Promise<SlackReadConversationFacts | undefined>>();
   const members = new Map<string, Promise<boolean>>();
   const membersPage = async (page: SlackApiInput): Promise<SlackApiResult> =>
     (await input.client.conversations.members(page as { channel: string; limit?: number; cursor?: string })) as unknown as SlackApiResult;
@@ -174,23 +176,7 @@ export function slackReadAuthorityPorts(input: {
     current: input.current,
     assertActive: input.assertActive,
     hasActiveGrant: input.hasActiveGrant,
-    conversation(channelId) {
-      let facts = conversations.get(channelId);
-      if (!facts) {
-        facts = (async () => {
-          try {
-            const response = await input.client.conversations.info({ channel: channelId });
-            return slackReadConversationFacts(response.channel);
-          } catch (error) {
-            if (isConversationUnavailableError(error)) return undefined;
-            conversations.delete(channelId);
-            throw new SlackReadError('unavailable');
-          }
-        })();
-        conversations.set(channelId, facts);
-      }
-      return facts;
-    },
+    conversation: slackConversationFacts(input.client, input.current),
     isMember(channelId, userId) {
       const key = `${channelId}\u0000${userId}`;
       const cached = members.get(key);
@@ -209,5 +195,37 @@ export function slackReadAuthorityPorts(input: {
       members.set(key, member);
       return member;
     },
+  };
+}
+
+/** Conversation facts for these ports, cached for one turn; a transient failure is not cached. */
+export function slackConversationFacts(
+  client: Pick<WebClient, 'conversations'>,
+  current: Pick<SlackReadCurrentConversation, 'channelId'>,
+): SlackReadAuthorityPorts['conversation'] {
+  const conversations = new Map<string, Promise<SlackReadConversationFacts | undefined>>();
+  return (channelId) => {
+    let facts = conversations.get(channelId);
+    if (!facts) {
+      facts = (async () => {
+        try {
+          const response = await client.conversations.info({ channel: channelId });
+          return slackReadConversationFacts(response.channel);
+        } catch (error) {
+          if (isConversationUnavailableError(error)) return undefined;
+          // Without im:read Slack answers missing_scope for a DM. The DM that
+          // delivered the request is then taken as unshared: a DM an app
+          // receives events from is an app's DM with one member of its
+          // workspace, and a Slack Connect DM joins people, never an app.
+          if (channelId === current.channelId && channelId.startsWith('D') && slackPlatformErrorCode(error) === 'missing_scope') {
+            return { id: channelId, im: true, mpim: false, private: false, member: true, shared: false };
+          }
+          conversations.delete(channelId);
+          throw new SlackReadError('unavailable');
+        }
+      })();
+      conversations.set(channelId, facts);
+    }
+    return facts;
   };
 }

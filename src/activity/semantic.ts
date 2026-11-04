@@ -452,6 +452,7 @@ export function semanticDescriptorForCoreTool(toolName: string): SemanticActivit
   if (['create_slack_list_item', 'create_slack_task_list'].includes(toolName)) return descriptor('create', 'workspace', 'tasks', 'reversible_write', 'built_in');
   if (toolName === 'update_slack_list_item') return descriptor('update', 'workspace', 'tasks', 'reversible_write', 'built_in');
   if (toolName === 'share_slack_list') return descriptor('share', 'workspace', 'tasks', 'reversible_write', 'built_in');
+  if (toolName === 'start_slack_group_dm') return descriptor('send', 'workspace', 'messages', 'external_publish', 'built_in');
   if (toolName === 'read_slack_canvas') return descriptor('read', 'workspace', 'documents', 'read', 'built_in');
   if (toolName === 'create_slack_canvas') return descriptor('create', 'workspace', 'documents', 'reversible_write', 'built_in');
   if (toolName === 'update_slack_canvas') return descriptor('update', 'workspace', 'documents', 'reversible_write', 'built_in');

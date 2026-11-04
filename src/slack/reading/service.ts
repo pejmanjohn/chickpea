@@ -205,11 +205,7 @@ export class SlackReadingService {
     await authority.assertActive();
     // Profiles are internal details: never answered where another
     // organization can read the answer, as other reads are refused there.
-    // The app's own DM with the requester is not shared (and the app has no
-    // im:read to ask); any other conversation fails closed.
-    if (!authority.current.channelId.startsWith('D')) {
-      await assertCurrentConversationNotShared(authority, SHARED_LOOKUP_MESSAGE);
-    }
+    await assertCurrentConversationNotShared(authority, SHARED_LOOKUP_MESSAGE);
     input.signal?.throwIfAborted();
     this.lookups += 1;
     let response;
@@ -220,12 +216,9 @@ export class SlackReadingService {
     }
     const user = (response.user ?? {}) as Record<string, unknown>;
     const profile = (user.profile ?? {}) as Record<string, unknown>;
-    const teamId = typeof user.team_id === 'string' ? user.team_id : undefined;
-    const workspaceId = authority.workspaceId;
-    // Another organization's user (Slack Connect): no profile details.
-    // Enterprise Grid members of this org carry enterprise_user and stay.
-    if (user.is_stranger === true || (teamId !== undefined && teamId !== workspaceId && !user.enterprise_user)) {
-      return { status: 'ok', user: { id, kind: 'external' }, notice: SLACK_READ_NOTICE };
+    const kind = slackUserKind(user, authority.workspaceId);
+    if (kind === 'external') {
+      return { status: 'ok', user: { id, kind }, notice: SLACK_READ_NOTICE };
     }
     const name = boundedDisplayName(readSlackIdentityProfile(user).displayName);
     const realName = typeof profile.real_name === 'string' ? boundedDisplayName(profile.real_name) : undefined;
@@ -235,7 +228,7 @@ export class SlackReadingService {
       status: 'ok',
       user: {
         id,
-        kind: userKind(user),
+        kind,
         ...(name ? { name } : {}),
         ...(realName ? { realName } : {}),
         ...(title ? { title } : {}),
@@ -449,7 +442,17 @@ function rowAuthor(row: SlackContextMessage, name: string | undefined): SlackRea
   return { kind: 'person', id: row.userId, ...named };
 }
 
-function userKind(user: Record<string, unknown>): 'deactivated' | 'app' | 'guest' | 'person' {
+export type SlackUserKind = 'external' | 'deactivated' | 'app' | 'guest' | 'person';
+
+/**
+ * `external` is another organization's (Slack Connect); Enterprise Grid
+ * members of this org carry enterprise_user and are not.
+ */
+export function slackUserKind(user: Record<string, unknown>, workspaceId: string): SlackUserKind {
+  const teamId = typeof user.team_id === 'string' ? user.team_id : undefined;
+  if (user.is_stranger === true || (teamId !== undefined && teamId !== workspaceId && !user.enterprise_user)) {
+    return 'external';
+  }
   if (user.deleted === true) return 'deactivated';
   if (user.is_bot === true || user.is_app_user === true) return 'app';
   if (user.is_restricted === true || user.is_ultra_restricted === true) return 'guest';

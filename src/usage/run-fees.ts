@@ -11,6 +11,7 @@ import { WORKSPACE_TOOL_NAMES } from '../sandbox/workspace-tools.ts';
 import { READ_SLACK_FILE_TOOL_NAME } from '../slack/thread-files.ts';
 import { COMPLETE_FILE_DELIVERY_TOOL } from '../slack/file-delivery-completion.ts';
 import { SLACK_REPLY_IN_THREAD_TOOL_NAME } from '../slack/follow-ups.ts';
+import { SLACK_GROUP_DM_TOOL_NAME } from '../slack/group-dm/tools.ts';
 import type { SLACK_CANVAS_TOOL_NAMES } from '../slack/canvases/tools.ts';
 import type { SLACK_LIST_TOOL_NAMES } from '../slack/lists/tools.ts';
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from '../slack/presentation-intent.ts';
@@ -66,6 +67,7 @@ const QUALIFYING_TOOLS: readonly string[] = [
   ATTACH_FILE_TO_CONNECTION_TOOL_NAME,
   ...BROWSER_TOOL_NAMES,
   ...WORKSPACE_TOOL_NAMES,
+  SLACK_GROUP_DM_TOOL_NAME,
 ];
 
 const NON_QUALIFYING_TOOLS: readonly string[] = [

@@ -47,6 +47,9 @@ import { runFeeInterceptor } from '../src/config/run-fee-interceptor.ts';
 import type { PlatformEnv } from '../src/config/state-backend.ts';
 import { ANTHROPIC_COMPAT_PROVIDER_ID } from '../src/model-catalog/provider-alias.ts';
 import { AgentPromptFailure, agentFailureText, promptSlackThreadAgent } from '../src/slack/flue-dispatch.ts';
+import { GroupDmReceipts } from '../src/slack/group-dm/receipts.ts';
+import { SlackGroupDmService } from '../src/slack/group-dm/service.ts';
+import { createSlackGroupDmTool } from '../src/slack/group-dm/tools.ts';
 import { createSlackReadGate } from '../src/slack/read-budget.ts';
 import { SlackReadingService } from '../src/slack/reading/service.ts';
 import { createSlackReadingTools } from '../src/slack/reading/tools.ts';
@@ -233,6 +236,40 @@ function ChannelMentionProbe() {
 
 const readsChannel = (channel: string) => (model: Parameters<typeof answers>[0]) => scriptedMessage(model, [
   { type: 'toolCall', id: 'call_read_channel', name: 'read_slack_channel', arguments: { channel } },
+], 'toolUse');
+
+const groupDmCalls: string[] = [];
+
+function GroupDmProbe() {
+  useModel(`${ANTHROPIC_COMPAT_PROVIDER_ID}/${SCRIPTED_MODEL}`);
+  const record = (method: string, answer: Record<string, unknown>) => async () => {
+    groupDmCalls.push(method);
+    return { ok: true, ...answer };
+  };
+  useTool(createSlackGroupDmTool((people, message) => new SlackGroupDmService({
+    workspaceId: MENTION.workspaceId,
+    requesterSlackUserId: 'U_REQUESTER',
+    requesterText: 'start a group DM with <@U0SAM>',
+    requesterTextSource: undefined,
+    currentConversation: {
+      current: { channelId: 'D_REQUESTER', threadTs: '1000.000100', messageTs: '1000.000100' },
+      conversation: async (id) => ({ id, im: true, mpim: false, private: false, member: true, shared: false }),
+    },
+    chickpeaBot: {
+      users: { info: record('users.info', { user: { id: 'U0SAM', team_id: MENTION.workspaceId } }) },
+      conversations: { open: record('conversations.open', { channel: { id: 'C0GROUP' } }) },
+      chat: { postMessage: record('chat.postMessage', { channel: 'C0GROUP', ts: '1000.000200' }) },
+    } as never,
+    persona: { username: 'Fee Agent' },
+    assertStanding: async () => {},
+    receipts: new GroupDmReceipts(new SqliteSettingsStore(':memory:'), `fees-group-dm-${groupDmCalls.length}`),
+    routeRepliesToAgent: async () => {},
+  }).start(people, message)));
+  return 'Start the group DM.';
+}
+
+const startsGroupDm = (person: string) => (model: Parameters<typeof answers>[0]) => scriptedMessage(model, [
+  { type: 'toolCall', id: 'call_group_dm', name: 'start_slack_group_dm', arguments: { people: [person], message: 'Hello' } },
 ], 'toolUse');
 
 const DOCS = 'https://docs.fees.example/api';
@@ -503,6 +540,28 @@ test('a read of a channel this Agent was never added to posts no task row, and S
   assert.deepEqual(slackHistoryCalls, []);
   assert.deepEqual(admissionAnswers(), ['admit:admitted'], 'the read was admitted, then charged nothing');
   assert.deepEqual(tiers(posts), ['chat:posted']);
+});
+
+test('a group DM refused before anything is posted posts no task row, and Slack is never called', { timeout: 20_000 }, async (t) => {
+  const posts = hostedPort(t);
+  interceptors(t, replyRun(hostedEnv()));
+  scriptedProvider([startsGroupDm('U0NOTNAMED'), answers]);
+  groupDmCalls.length = 0;
+
+  assert.deepEqual(await slackTurn('fees-group-dm-refused', GroupDmProbe), { text: 'done' });
+  assert.deepEqual(groupDmCalls, []);
+  assert.deepEqual(tiers(posts), ['chat:posted']);
+});
+
+test('a group DM that posted its opening message posts the task row', { timeout: 20_000 }, async (t) => {
+  const posts = hostedPort(t);
+  interceptors(t, replyRun(hostedEnv()));
+  scriptedProvider([startsGroupDm('U0SAM'), answers]);
+  groupDmCalls.length = 0;
+
+  assert.deepEqual(await slackTurn('fees-group-dm-posted', GroupDmProbe), { text: 'done' });
+  assert.deepEqual(groupDmCalls, ['users.info', 'conversations.open', 'chat.postMessage']);
+  assert.deepEqual(tiers(posts), ['chat:posted', 'task:posted']);
 });
 
 test('a read_web_page refused before anything is fetched posts no task row', { timeout: 20_000 }, async (t) => {

@@ -294,6 +294,10 @@ test('reading a Slack List makes a reply a task', () => {
   for (const name of ['read_slack_list', 'read_slack_list_item']) assert.equal(interactive(name), true, name);
 });
 
+test('starting a group DM makes a reply a task', () => {
+  assert.equal(interactive('start_slack_group_dm'), true);
+});
+
 test('reading or writing a Slack canvas makes a reply a task', () => {
   for (const name of ['read_slack_canvas', 'create_slack_canvas', 'update_slack_canvas']) assert.equal(interactive(name), true, name);
 });

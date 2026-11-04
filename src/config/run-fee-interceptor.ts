@@ -1,6 +1,7 @@
 import type { FlueExecutionInterceptor } from '@flue/runtime';
 
 import { registeredToolDescriptor } from '../activity/status.ts';
+import { SLACK_GROUP_DM_TOOL_NAME } from '../slack/group-dm/tools.ts';
 import { qualifiesAsTask } from '../usage/run-fees.ts';
 import { WEB_TOOL_NAMES } from '../web/names.ts';
 import { currentRunFees } from './model-access.ts';
@@ -51,6 +52,7 @@ function refusedBeforeStart(error: unknown): boolean {
  */
 const REFUSALS_BEFORE_WORK = new Map<string, (output: { status?: unknown; outcome?: unknown }) => boolean>([
   ['read_slack_channel', (output) => output.status === 'not_read'],
+  [SLACK_GROUP_DM_TOOL_NAME, (output) => output.status === 'refused'],
   ['read_slack_canvas', (output) => output.status === 'not_read'],
   ...WEB_TOOL_NAMES.map((name) => [name, (output: { outcome?: unknown }) => output.outcome === 'refused'] as const),
 ]);

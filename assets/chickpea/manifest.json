@@ -1,0 +1,387 @@
+{
+  "version": 1,
+  "size": 512,
+  "groundY": 448,
+  "bodyHeight": 384,
+  "faces": {
+    "smile": {
+      "file": "faces/smile.png",
+      "anchor": [85.5, 26.3],
+      "from": "08-seafoam"
+    },
+    "line": {
+      "file": "faces/line.png",
+      "anchor": [85.2, 27.7],
+      "from": "07-periwinkle"
+    },
+    "o": {
+      "file": "faces/o.png",
+      "anchor": [78.8, 23.9],
+      "from": "09-warm-oat"
+    }
+  },
+  "masters": {
+    "stand-01-sage": {
+      "file": "masters/stand-01-sage.png",
+      "kind": "stand",
+      "color": "01-sage",
+      "mask": "masters/stand-01-sage.body.png",
+      "groundY": 448,
+      "body": [58.5, -9.2, 43.4],
+      "lightness": [38.3, 46.9, 51.8, 55.9, 58.5, 61.1, 63.8, 66.1, 69.1],
+      "face": {
+        "native": "smile",
+        "anchor": [255.9, 298.8]
+      },
+      "recolor": true,
+      "source": {
+        "file": "assets/chickpea-avatars/agent-defaults/01-sage.png",
+        "scale": 0.9593,
+        "offset": [11.9, -21.6]
+      }
+    },
+    "stand-02-coral": {
+      "file": "masters/stand-02-coral.png",
+      "kind": "stand",
+      "color": "02-coral",
+      "mask": "masters/stand-02-coral.body.png",
+      "groundY": 448,
+      "body": [48.9, 56, 49.6],
+      "lightness": [35.4, 41.8, 44.9, 47.4, 48.9, 50.2, 51.8, 53, 54.7],
+      "face": {
+        "native": "o",
+        "anchor": [256.4, 297.8]
+      },
+      "recolor": true,
+      "source": {
+        "file": "assets/chickpea-avatars/agent-defaults/02-coral.png",
+        "scale": 0.9786,
+        "offset": [6, -43.7]
+      }
+    },
+    "stand-03-lilac": {
+      "file": "masters/stand-03-lilac.png",
+      "kind": "stand",
+      "color": "03-lilac",
+      "mask": "masters/stand-03-lilac.body.png",
+      "groundY": 448,
+      "body": [44.4, 32.5, -15.8],
+      "lightness": [23.2, 32.2, 37, 41.8, 44.4, 47.5, 50.3, 52.2, 53.9],
+      "face": {
+        "native": "line",
+        "anchor": [257, 274.8]
+      },
+      "recolor": true,
+      "source": {
+        "file": "assets/chickpea-avatars/agent-defaults/03-lilac.png",
+        "scale": 1,
+        "offset": [1, -44]
+      }
+    },
+    "stand-04-mineral-blue": {
+      "file": "masters/stand-04-mineral-blue.png",
+      "kind": "stand",
+      "color": "04-mineral-blue",
+      "mask": "masters/stand-04-mineral-blue.body.png",
+      "groundY": 448,
+      "body": [48.7, -18.1, -10.7],
+      "lightness": [28.1, 38, 42.7, 46.4, 48.7, 51, 53.9, 56.5, 59.5],
+      "face": {
+        "native": "smile",
+        "anchor": [257.9, 290.1]
+      },
+      "recolor": true,
+      "source": {
+        "file": "assets/chickpea-avatars/agent-defaults/04-mineral-blue.png",
+        "scale": 0.9772,
+        "offset": [9.3, -31.9]
+      }
+    },
+    "stand-05-dusty-rose": {
+      "file": "masters/stand-05-dusty-rose.png",
+      "kind": "stand",
+      "color": "05-dusty-rose",
+      "mask": "masters/stand-05-dusty-rose.body.png",
+      "groundY": 448,
+      "body": [47.9, 45, 20.6],
+      "lightness": [26.4, 36.3, 41.5, 45.2, 47.9, 50.6, 53.3, 55.6, 57.7],
+      "face": {
+        "native": "o",
+        "anchor": [254.4, 286.1]
+      },
+      "recolor": true,
+      "source": {
+        "file": "assets/chickpea-avatars/agent-defaults/05-dusty-rose.png",
+        "scale": 1.0157,
+        "offset": [-4, -48.6]
+      }
+    },
+    "stand-06-deep-moss": {
+      "file": "masters/stand-06-deep-moss.png",
+      "kind": "stand",
+      "color": "06-deep-moss",
+      "mask": "masters/stand-06-deep-moss.body.png",
+      "groundY": 448,
+      "body": [33.7, -4.2, 24.8],
+      "lightness": [18.8, 25.6, 28.9, 31.6, 33.7, 35.6, 37.8, 40.2, 43.6],
+      "face": {
+        "native": "smile",
+        "anchor": [255.5, 292.8]
+      },
+      "recolor": true,
+      "source": {
+        "file": "assets/chickpea-avatars/agent-defaults/06-deep-moss.png",
+        "scale": 0.9928,
+        "offset": [2.3, -49.2]
+      }
+    },
+    "stand-07-periwinkle": {
+      "file": "masters/stand-07-periwinkle.png",
+      "kind": "stand",
+      "color": "07-periwinkle",
+      "mask": "masters/stand-07-periwinkle.body.png",
+      "groundY": 448,
+      "body": [46.2, 17.2, -41],
+      "lightness": [26.5, 35.6, 40.3, 43.7, 46.2, 48.5, 51, 52.6, 54.3],
+      "face": {
+        "native": "line",
+        "anchor": [254.2, 283.7]
+      },
+      "recolor": true,
+      "source": {
+        "file": "assets/chickpea-avatars/agent-defaults/07-periwinkle.png",
+        "scale": 0.9726,
+        "offset": [6.5, -36.3]
+      }
+    },
+    "stand-08-seafoam": {
+      "file": "masters/stand-08-seafoam.png",
+      "kind": "stand",
+      "color": "08-seafoam",
+      "mask": "masters/stand-08-seafoam.body.png",
+      "groundY": 448,
+      "body": [60.9, -23.9, 10.8],
+      "lightness": [33.4, 46.6, 52.8, 57.8, 60.9, 63.7, 66.5, 68.8, 72.2],
+      "face": {
+        "native": "smile",
+        "anchor": [255.5, 286.3]
+      },
+      "recolor": true,
+      "source": {
+        "file": "assets/chickpea-avatars/agent-defaults/08-seafoam.png",
+        "scale": 0.9899,
+        "offset": [3.6, -39]
+      }
+    },
+    "stand-09-warm-oat": {
+      "file": "masters/stand-09-warm-oat.png",
+      "kind": "stand",
+      "color": "09-warm-oat",
+      "mask": "masters/stand-09-warm-oat.body.png",
+      "groundY": 448,
+      "body": [68.6, 9.1, 32.7],
+      "lightness": [43.6, 56.2, 61.8, 66.1, 68.6, 71, 73.7, 75.9, 78.6],
+      "face": {
+        "native": "o",
+        "anchor": [256.8, 293.9]
+      },
+      "recolor": true,
+      "source": {
+        "file": "assets/chickpea-avatars/agent-defaults/09-warm-oat.png",
+        "scale": 0.9775,
+        "offset": [7.2, -30]
+      }
+    },
+    "stand-10-midnight-indigo": {
+      "file": "masters/stand-10-midnight-indigo.png",
+      "kind": "stand",
+      "color": "10-midnight-indigo",
+      "mask": "masters/stand-10-midnight-indigo.body.png",
+      "groundY": 448,
+      "body": [19.2, 7.6, -17.6],
+      "lightness": [8.1, 13.4, 15.6, 18.1, 19.2, 20.7, 23.4, 26.4, 28.7],
+      "face": {
+        "native": "line",
+        "anchor": [256.2, 277]
+      },
+      "recolor": true,
+      "source": {
+        "file": "assets/chickpea-avatars/agent-defaults/10-midnight-indigo.png",
+        "scale": 0.9892,
+        "offset": [3.2, -50.8]
+      }
+    },
+    "stand-11-apricot": {
+      "file": "masters/stand-11-apricot.png",
+      "kind": "stand",
+      "color": "11-apricot",
+      "mask": "masters/stand-11-apricot.body.png",
+      "groundY": 448,
+      "body": [55.2, 48.2, 57.2],
+      "lightness": [39.9, 47.3, 50.4, 53.3, 55.2, 57, 59.2, 61, 62.6],
+      "face": {
+        "native": "smile",
+        "anchor": [261.1, 277.8]
+      },
+      "recolor": true,
+      "source": {
+        "file": "assets/chickpea-avatars/agent-defaults/11-apricot.png",
+        "scale": 1,
+        "offset": [7, -47]
+      }
+    },
+    "stand-12-muted-berry": {
+      "file": "masters/stand-12-muted-berry.png",
+      "kind": "stand",
+      "color": "12-muted-berry",
+      "mask": "masters/stand-12-muted-berry.body.png",
+      "groundY": 448,
+      "body": [36.4, 47.7, 12.6],
+      "lightness": [23.5, 29.1, 32.2, 34.7, 36.4, 38.1, 39.7, 41.4, 42.7],
+      "face": {
+        "native": "o",
+        "anchor": [256.9, 296.8]
+      },
+      "recolor": true,
+      "source": {
+        "file": "assets/chickpea-avatars/agent-defaults/12-muted-berry.png",
+        "scale": 0.959,
+        "offset": [12.4, -25.4]
+      }
+    },
+    "pose-hello": {
+      "file": "masters/pose-hello.png",
+      "kind": "pose",
+      "pose": "hello",
+      "color": "brand",
+      "mask": "masters/pose-hello.body.png",
+      "groundY": 448,
+      "body": [64.5, 24.5, 67],
+      "lightness": [48.1, 54.3, 58, 61.7, 64.5, 67.5, 70.2, 72.7, 76],
+      "face": {
+        "matte": "masters/pose-hello.face.png"
+      },
+      "recolor": true,
+      "source": {
+        "file": "assets/onboarding/pose-hello.webp",
+        "scale": 1,
+        "offset": [-10, 24]
+      }
+    },
+    "pose-chat": {
+      "file": "masters/pose-chat.png",
+      "kind": "pose",
+      "pose": "chat",
+      "color": "brand",
+      "mask": "masters/pose-chat.body.png",
+      "groundY": 448,
+      "body": [65.4, 24.1, 67.4],
+      "lightness": [48.1, 53.2, 57.4, 61.8, 65.4, 68.1, 71.1, 73.7, 76.8],
+      "face": {
+        "matte": "masters/pose-chat.face.png"
+      },
+      "recolor": true,
+      "source": {
+        "file": "assets/onboarding/pose-chat.webp",
+        "scale": 1,
+        "offset": [-3, 30]
+      }
+    },
+    "pose-celebrate": {
+      "file": "masters/pose-celebrate.png",
+      "kind": "pose",
+      "pose": "celebrate",
+      "color": "brand",
+      "mask": "masters/pose-celebrate.body.png",
+      "groundY": 448,
+      "body": [66.2, 25.2, 68.6],
+      "lightness": [50.8, 54.4, 58.5, 63, 66.2, 68.7, 71.1, 73.8, 77.4],
+      "face": {
+        "matte": "masters/pose-celebrate.face.png"
+      },
+      "recolor": true,
+      "source": {
+        "file": "assets/onboarding/pose-celebrate.webp",
+        "scale": 1,
+        "offset": [-11, 32]
+      }
+    },
+    "pose-coding": {
+      "file": "masters/pose-coding.png",
+      "kind": "pose",
+      "pose": "coding",
+      "color": "brand",
+      "mask": "masters/pose-coding.body.png",
+      "groundY": 448,
+      "body": [67.3, 25, 68.3],
+      "lightness": [54.1, 58.5, 61.3, 64.7, 67.3, 69.7, 72.2, 74.6, 77.2],
+      "face": {
+        "matte": "masters/pose-coding.face.png"
+      },
+      "recolor": true,
+      "source": {
+        "file": "assets/onboarding/pose-coding.webp",
+        "scale": 1,
+        "offset": [-3, 74]
+      }
+    },
+    "pose-coding-done": {
+      "file": "masters/pose-coding-done.png",
+      "kind": "pose",
+      "pose": "coding-done",
+      "color": "brand",
+      "mask": "masters/pose-coding-done.body.png",
+      "groundY": 448,
+      "body": [65.8, 26.2, 68],
+      "lightness": [45.1, 54.8, 59.1, 63.3, 65.8, 68.4, 71.5, 74, 76.8],
+      "face": {
+        "matte": "masters/pose-coding-done.face.png"
+      },
+      "recolor": true,
+      "source": {
+        "file": "assets/onboarding/pose-coding-done.webp",
+        "scale": 1,
+        "offset": [-12, 48]
+      }
+    },
+    "pose-moving-in": {
+      "file": "masters/pose-moving-in.png",
+      "kind": "pose",
+      "pose": "moving-in",
+      "color": "brand",
+      "mask": "masters/pose-moving-in.body.png",
+      "groundY": 448,
+      "body": [66.5, 24.5, 68.5],
+      "lightness": [42.4, 51.5, 58.4, 63.3, 66.5, 68.7, 71.5, 73.9, 76.9],
+      "face": {
+        "matte": "masters/pose-moving-in.face.png"
+      },
+      "recolor": true,
+      "source": {
+        "file": "assets/onboarding/pose-moving-in.webp",
+        "scale": 1,
+        "offset": [-40, 49]
+      }
+    },
+    "pose-setup": {
+      "file": "masters/pose-setup.png",
+      "kind": "pose",
+      "pose": "setup",
+      "color": "brand",
+      "mask": "masters/pose-setup.body.png",
+      "groundY": 448,
+      "body": [64.6, 26.8, 67],
+      "lightness": [37.9, 50.5, 55.6, 60.9, 64.6, 67.6, 71.6, 75.2, 81.1],
+      "face": {
+        "matte": "masters/pose-setup.face.png"
+      },
+      "recolor": false,
+      "reason": "The hard hat shares the body's color and touches it, so no color rule separates them.",
+      "source": {
+        "file": "assets/onboarding/pose-setup.webp",
+        "scale": 1,
+        "offset": [-14, 30]
+      }
+    }
+  }
+}

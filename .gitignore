@@ -43,6 +43,7 @@ docs/
 !docs/
 docs/*
 !docs/shared-gateway-data-handling.md
+!docs/chickpea-art.md
 !docs/design/
 docs/design/*
 !docs/design/installation-restore.md
@@ -66,6 +67,7 @@ docs/plans/*
 docs/plans/evidence/*
 !docs/runbooks/operations.md
 !docs/runbooks/slack-lists.md
+!docs/runbooks/slack-group-dms.md
 !docs/runbooks/slack-canvases.md
 !docs/runbooks/slack-reading.md
 !docs/runbooks/agent-conversations.md
