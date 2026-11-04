@@ -37,7 +37,10 @@ export interface SlackReadAuthorityPorts {
   current: SlackReadCurrentConversation;
   /** Throws a SlackReadError when the requester or the Agent is no longer active. */
   assertActive(): Promise<void>;
-  /** undefined when Slack does not show the conversation to the app. */
+  /**
+   * undefined when Slack does not show the conversation to the app. The
+   * current DM without `im:read` is taken as an unshared app DM.
+   */
   conversation(channelId: string): Promise<SlackReadConversationFacts | undefined>;
   /** Whether a Slack user is in the conversation. Throws on a transient failure. */
   isMember(channelId: string, userId: string): Promise<boolean>;
@@ -178,6 +181,13 @@ export function slackReadAuthorityPorts(input: {
             return slackReadConversationFacts(response.channel);
           } catch (error) {
             if (isConversationUnavailableError(error)) return undefined;
+            // Without im:read Slack answers missing_scope for a DM. The DM that
+            // delivered the request is then taken as unshared: a DM an app
+            // receives events from is an app's DM with one member of its
+            // workspace, and a Slack Connect DM joins people, never an app.
+            if (channelId === input.current.channelId && channelId.startsWith('D') && slackPlatformErrorCode(error) === 'missing_scope') {
+              return { id: channelId, im: true, mpim: false, private: false, member: true, shared: false };
+            }
             conversations.delete(channelId);
             throw new SlackReadError('unavailable');
           }
