@@ -307,6 +307,37 @@ test('a Slack journey page can carry the onboarding step bar and a success badge
   assert.equal(renderSlackJourneyPage({ ...base, badge: '   ' }), plain, 'an empty badge shows nothing');
 });
 
+test('a host can put a small same-origin link in the journey badge, after the workspace name', () => {
+  const base = { surface: 'add-to-slack', eyebrow: 'Step 1 of 3', title: 'Now add Chickpea to Slack', body: '<p>Body</p>', badge: 'Acme <Ops>' };
+  const plain = renderSlackJourneyPage(base);
+  const html = renderSlackJourneyPage({ ...base, badgeAction: { href: '/start/workspace?from="slack"&step=1', label: ' Change <workspace> ' } });
+  const badge = '<div class="auth-badge"><span class="auth-badge-logo slack-logo-image" aria-hidden="true"></span>' +
+    '<p class="auth-badge-line"><span class="auth-badge-name">Acme &lt;Ops&gt;</span>' +
+    '<a class="auth-badge-action" href="/start/workspace?from=&quot;slack&quot;&amp;step=1">Change &lt;workspace&gt;</a></p>' +
+    '<span class="auth-badge-check" aria-hidden="true">&#10003;</span></div>';
+  assert.ok(html.includes(`${badge}<p class="auth-eyebrow">`), 'the escaped link follows the escaped name, and the check mark stays');
+  const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
+  const classes = new Set([...badge.matchAll(/class="([^"]+)"/g)].flatMap((match) => match[1]!.split(' ')));
+  for (const name of classes) assert.ok(style.includes(`.${name}`), `.${name} has a rule in the shell`);
+  assert.match(style, /\.auth-badge-action:focus-visible\{outline:2px solid #36592a/, 'keyboard focus shows a ring');
+
+  const page = 'https://chickpea.example';
+  for (const href of ['//evil.example/x', '/\\evil.example/x', '/\t/evil.example/x', '/\n/evil.example/x', 'https://evil.example/x', 'javascript:alert(1)']) {
+    assert.notEqual(new URL(href, page).origin, page, `${JSON.stringify(href)} leaves the page's origin`);
+    assert.equal(renderSlackJourneyPage({ ...base, badgeAction: { href, label: 'Change workspace' } }), plain, `${JSON.stringify(href)} is not linked`);
+  }
+  for (const href of ['start/workspace', ' /start/workspace', '']) {
+    assert.equal(renderSlackJourneyPage({ ...base, badgeAction: { href, label: 'Change workspace' } }), plain, `${JSON.stringify(href)} is not a path from the root`);
+  }
+  assert.equal(renderSlackJourneyPage({ ...base, badgeAction: { href: '/start/workspace', label: '  ' } }), plain, 'a blank label shows no link');
+  assert.equal(renderSlackJourneyPage({ ...base, badgeAction: undefined }), plain);
+
+  const action = { href: '/start/workspace', label: 'Change workspace' };
+  const noBadge = renderSlackJourneyPage({ ...base, badge: undefined });
+  assert.equal(renderSlackJourneyPage({ ...base, badge: undefined, badgeAction: action }), noBadge, 'no badge, no link');
+  assert.equal(renderSlackJourneyPage({ ...base, badge: '  ', badgeAction: action }), noBadge, 'an empty badge carries no link either');
+});
+
 test('the shell step bar marks every step done before the current one, and none after', () => {
   const steps = onboardingSteps({ selfHosted: false, onChickpeaModels: false, githubOffered: true });
   const states = (current: 'slack' | 'github') => {
