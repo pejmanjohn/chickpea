@@ -174,6 +174,27 @@ test('several rows each carry their own button and status', () => {
   assert.deepEqual(text.match(/"(Add key|Try again)"/g), ['"Add key"', '"Try again"'], 'each open row has its button');
 });
 
+test('the several-row header and message text count only the rows still needing a key', () => {
+  const record = card([
+    row({ state: { is: 'added' } }),
+    row({ setupOperationId: 'setup_two', label: 'Notion', kind: 'mcp_credentials' }),
+    row({ setupOperationId: 'setup_three', label: 'Sentry', state: { is: 'rejected' } }),
+  ]);
+  const two = renderKeyCard(record, record.spec);
+  assert.equal(two.text, '2 connections need a key.');
+  assert.match(JSON.stringify(two.blocks), /:key: \*2 connections need a key\*/);
+
+  const next = keyCardTransition(keyCardTransition(record.spec, 'setup_three', { kind: 'check', at: NOW })!,
+    'setup_three', { kind: 'saved', check: 'ok' })!;
+  const one = renderKeyCard({ ...record, spec: next }, next);
+  assert.equal(one.text, '1 connection needs a key.', 'notifications and search stop counting the added rows');
+  assert.equal(checkSlackBlocks(one.blocks, { text: one.text }).ok, true);
+  const shown = JSON.stringify(one.blocks);
+  assert.match(shown, /:key: \*1 connection needs a key\*/);
+  assert.match(shown, /Only <@U1> can add it\./);
+  assert.deepEqual(shown.match(/"(Add key|Try again)"/g), ['"Add key"'], 'only the open row keeps a button');
+});
+
 test('a checking row offers Try again, which opens the form only once the check is stale', () => {
   const record = card([row({ state: { is: 'checking', since: NOW } })]);
   const shown = JSON.stringify(renderKeyCard(record, record.spec).blocks);

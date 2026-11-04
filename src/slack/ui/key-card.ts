@@ -198,11 +198,17 @@ function finalLine(spec: KeyCardSpec, row: KeyRow, requester: string, many: bool
     : line;
 }
 
+/** How many of several rows still need a key; a finished row no longer counts. */
+function stillNeeded(spec: KeyCardSpec): { open: number; line: string } {
+  const open = spec.rows.filter((row) => !keyRowFinal(row.state)).length;
+  return { open, line: open === 1 ? '1 connection needs a key' : `${open} connections need a key` };
+}
+
 /** The card as one plain message text, kept current with every redraw. */
 function cardText(spec: KeyCardSpec, requester: string): string {
   const many = spec.rows.length > 1;
   if (keyCardFinal(spec)) return spec.rows.map((row) => finalLine(spec, row, requester, many, IN_TEXT)).join('\n');
-  if (many) return `${spec.rows.length} connections need a key.`;
+  if (many) return `${stillNeeded(spec).line}.`;
   const row = spec.rows[0]!;
   const line = statusLine(spec, row, requester, IN_TEXT);
   return `${name(row)} ${needs(row)}.${line ? ` ${line}` : ''}`;
@@ -233,13 +239,14 @@ export function renderKeyCard(record: UiSurfaceRecord, spec: KeyCardSpec): Rende
       ],
     };
   }
+  const needed = stillNeeded(spec);
   return {
     text,
     blocks: [
       {
         type: 'section',
         block_id: uiBlockId('host', record.id, 0),
-        text: mrkdwn(`:key: *${spec.rows.length} connections need a key*`),
+        text: mrkdwn(`:key: *${needed.line}*`),
       },
       ...spec.rows.map((row, index) => {
         const line = statusLine(spec, row, requester);
@@ -253,7 +260,7 @@ export function renderKeyCard(record: UiSurfaceRecord, spec: KeyCardSpec): Rende
           ...(button ? { accessory: button } : {}),
         };
       }),
-      { type: 'context', elements: [mrkdwn(`Only ${requester} can add them.`)] },
+      { type: 'context', elements: [mrkdwn(`Only ${requester} can add ${needed.open === 1 ? 'it' : 'them'}.`)] },
     ],
   };
 }
