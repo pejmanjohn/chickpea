@@ -38,10 +38,12 @@ export interface UsageAlertDependencies {
   installationExecution?: SlackInstallationExecutionResolver;
 }
 
-type UsageAlertButton = 'upgrade' | 'add_extra_usage' | 'turn_off_auto_upgrade';
+type UsageAlertButton = 'upgrade' | 'choose_plan' | 'add_extra_usage' | 'turn_off_auto_upgrade';
 
 const BUTTONS: Record<UsageAlertButton, { readonly actionId: string; readonly label: string }> = {
   upgrade: { actionId: 'chickpea.usage.v1.upgrade', label: 'Upgrade' },
+  /** The same plan page; a trial workspace has no plan to upgrade. */
+  choose_plan: { actionId: 'chickpea.usage.v1.upgrade', label: 'Choose a plan' },
   add_extra_usage: { actionId: 'chickpea.usage.v1.add_extra_usage', label: 'Add extra usage' },
   turn_off_auto_upgrade: { actionId: 'chickpea.usage.v1.turn_off_auto_upgrade', label: 'Turn off auto-upgrade' },
 };
@@ -80,7 +82,7 @@ export function dailyLimitNoticeMessage(notice: DailyLimitNotice): UsageAlertMes
       'Choose a plan to continue now.'
     : `Chickpea has paused trial usage for now, so this workspace's requests are paused until ${until}. ` +
       'Choose a plan to continue now.';
-  return ownerMessage({ text, buttons: ['upgrade'] }, notice.planPageUrl);
+  return ownerMessage({ text, buttons: ['choose_plan'] }, notice.planPageUrl);
 }
 
 export async function deliverUsageAlert(

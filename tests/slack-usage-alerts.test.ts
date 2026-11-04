@@ -276,7 +276,10 @@ test('standalone never sends usage alerts and reads nothing', async () => {
 
 const RESUMES = '<!date^1793836800^{date_short_pretty} at {time}|Nov 5, 2026 at 00:00 UTC>';
 const NOTICE: DailyLimitNotice = { scope: 'workspace', resumesAt: new Date(Date.UTC(2026, 10, 5)), planPageUrl: PLAN_PAGE };
-const CHOOSE_PLAN = [UPGRADE_BUTTONS[0]];
+const CHOOSE_PLAN = [{
+  type: 'button', action_id: 'chickpea.usage.v1.upgrade',
+  text: { type: 'plain_text', text: 'Choose a plan', emoji: false }, url: PLAN_PAGE,
+}];
 
 test('a workspace at its daily limit tells each active Owner, and no one else, when it resumes', async () => {
   const slack = workspace();
