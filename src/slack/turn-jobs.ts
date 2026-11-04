@@ -191,6 +191,8 @@ export function oauthResumeTurnJobId(continuationId: string): string {
 // Terminal rows need only outlive Slack's redelivery horizon. Nonterminal rows
 // and their claims are retained until explicitly resolved and terminalized.
 export const TURN_JOB_TTL_MS = CLAIM_TTL_MS;
+
+const TURN_RECEIPT_KEY_PREFIXES = ['slack_lists.writes.v1:', 'slack_group_dm.v1:', 'slack_channel_create.v1:'];
 const SLACK_AGENT_BINDING_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 const TURN_JOB_RECOVERY_BACKSTOP_MS = SLACK_AGENT_BINDING_TTL_MS;
 
@@ -2985,11 +2987,12 @@ export class TurnJobStoreLogic {
     // Isolated TurnJob stores may not have installed SettingsStore yet.
     const purgeTerminalRows = () => {
       if (this.db.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'app_settings'")) {
+        const receiptKeys = TURN_RECEIPT_KEY_PREFIXES
+          .map(() => `SELECT ? || id FROM turn_jobs ${expiredTerminalPredicate}`)
+          .join(' UNION ALL ');
         this.db.run(
-          `DELETE FROM app_settings WHERE key IN (SELECT 'slack_lists.writes.v1:' || id FROM turn_jobs ${expiredTerminalPredicate}
-            UNION ALL SELECT 'slack_group_dm.v1:' || id FROM turn_jobs ${expiredTerminalPredicate})`,
-          now - TURN_JOB_TTL_MS,
-          now - TURN_JOB_TTL_MS,
+          `DELETE FROM app_settings WHERE key IN (${receiptKeys})`,
+          ...TURN_RECEIPT_KEY_PREFIXES.flatMap((prefix) => [prefix, now - TURN_JOB_TTL_MS]),
         );
       }
       this.db.run(`DELETE FROM turn_jobs ${expiredTerminalPredicate}`, now - TURN_JOB_TTL_MS);

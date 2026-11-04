@@ -72,7 +72,7 @@ export async function offerAgentForChannel(input: {
   threadTs?: string;
   agent: CustomAgentConfig;
   postingBotAbsent?: boolean;
-  actor: AddingActor;
+  actor: { principal?: Pick<AuthPrincipal, 'role' | 'membershipId'> | undefined };
   identity: OfferIdentity;
   transport: Pick<SlackTransport, 'lookupChannel'>;
   client: EphemeralClient;
@@ -135,7 +135,7 @@ export async function addAgentToChannel(
   const key = ['agent-channel-add', request.workspaceId, request.channelId, request.agentId, request.userId, request.requestId];
   if (!await deps.claim(key.join(':'))) return;
   const [actor, agent] = await Promise.all([deps.resolveActor(), deps.getAgent(request.agentId)]);
-  const handle = agent?.kind === 'user' ? agentSlackHandle(agent)?.handle : undefined;
+  const handle = addableAgentHandle(agent);
   let text: string;
   if (!agent || !handle || !actor.routing.fullMember || !actor.routing.channelMember) {
     text = 'That Agent is not available here.';
@@ -158,6 +158,11 @@ export async function addAgentToChannel(
     text,
     ...(request.threadTs ? { thread_ts: request.threadTs } : {}),
   });
+}
+
+/** The handle an Add click adds an Agent by; undefined when a click cannot add it. */
+export function addableAgentHandle(agent: CustomAgentConfig | undefined): string | undefined {
+  return agent?.kind === 'user' ? agentSlackHandle(agent)?.handle : undefined;
 }
 
 function addButtonLabel(handle: string, channelName: string | undefined): string {

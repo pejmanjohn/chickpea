@@ -39,6 +39,8 @@ const LAZY_MODULES: Record<string, string> = {
   'src/management/recipes.ts': 'a workspace recipe export or preview (management/service.ts)',
   'src/slack/group-dm/runtime.ts': "start_slack_group_dm's first call (slack/group-dm/tools.ts)",
   'src/slack/group-dm/service.ts': "start_slack_group_dm's first call (slack/group-dm/runtime.ts)",
+  'src/slack/channel-creation/runtime.ts': "create_slack_channel's first call (slack/channel-creation/tools.ts)",
+  'src/slack/channel-creation/service.ts': "create_slack_channel's first call (slack/channel-creation/runtime.ts)",
   'src/management/slack-key-setup.ts': "an Add key setup's issue, its approval-time setups, or a pasted-key check (management/service.ts)",
   'src/slack/key-form.ts': 'an Add key card, click or form (channels/slack.ts, cloudflare.ts, slack/run-turn.ts)',
 };

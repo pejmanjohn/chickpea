@@ -298,6 +298,10 @@ test('starting a group DM makes a reply a task', () => {
   assert.equal(interactive('start_slack_group_dm'), true);
 });
 
+test('creating a Slack channel makes a reply a task', () => {
+  assert.equal(interactive('create_slack_channel'), true);
+});
+
 test('reading another Slack channel makes a reply a task, the current thread does not', () => {
   assert.equal(interactive('read_slack_channel'), true);
   assert.equal(interactive('read_slack_thread'), false);

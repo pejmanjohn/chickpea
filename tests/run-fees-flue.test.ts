@@ -47,11 +47,18 @@ import { runFeeInterceptor } from '../src/config/run-fee-interceptor.ts';
 import type { PlatformEnv } from '../src/config/state-backend.ts';
 import { ANTHROPIC_COMPAT_PROVIDER_ID } from '../src/model-catalog/provider-alias.ts';
 import { AgentPromptFailure, agentFailureText, promptSlackThreadAgent } from '../src/slack/flue-dispatch.ts';
+import {
+  CHANNEL_CREATE_RECEIPT_CODEC,
+  SlackChannelCreateService,
+  type ChannelCreateReceipt,
+} from '../src/slack/channel-creation/service.ts';
+import { createSlackCreateChannelTool } from '../src/slack/channel-creation/tools.ts';
 import { GroupDmReceipts } from '../src/slack/group-dm/receipts.ts';
 import { SlackGroupDmService } from '../src/slack/group-dm/service.ts';
 import { createSlackGroupDmTool } from '../src/slack/group-dm/tools.ts';
 import { createSlackReadGate } from '../src/slack/read-budget.ts';
 import { SlackReadingService } from '../src/slack/reading/service.ts';
+import { RequestReceipt } from '../src/slack/requested-conversations/receipts.ts';
 import { createSlackReadingTools } from '../src/slack/reading/tools.ts';
 import type { FlueDispatchEnvelopeV1 } from '../src/slack/turn-job-types.ts';
 import { CREDITS_EXHAUSTED_TEXT, dailyLimitText } from '../src/slack/web-client-presenter.ts';
@@ -270,6 +277,46 @@ function GroupDmProbe() {
 
 const startsGroupDm = (person: string) => (model: Parameters<typeof answers>[0]) => scriptedMessage(model, [
   { type: 'toolCall', id: 'call_group_dm', name: 'start_slack_group_dm', arguments: { people: [person], message: 'Hello' } },
+], 'toolUse');
+
+const channelCalls: string[] = [];
+
+function CreateChannelProbe() {
+  useModel(`${ANTHROPIC_COMPAT_PROVIDER_ID}/${SCRIPTED_MODEL}`);
+  const record = (method: string, answer: Record<string, unknown>) => async () => {
+    channelCalls.push(method);
+    return { ok: true, ...answer };
+  };
+  useTool(createSlackCreateChannelTool((request) => new SlackChannelCreateService({
+    workspaceId: MENTION.workspaceId,
+    requesterSlackUserId: 'U_REQUESTER',
+    requesterText: 'make a channel for the launch with <@U0SAM>',
+    requesterTextSource: undefined,
+    currentConversation: {
+      current: { channelId: 'D_REQUESTER', threadTs: '1000.000100', messageTs: '1000.000100' },
+      conversation: async (id) => ({ id, im: true, mpim: false, private: false, member: true, shared: false }),
+    },
+    chickpeaBot: {
+      users: { info: record('users.info', { user: { id: 'U0SAM', team_id: MENTION.workspaceId } }) },
+      conversations: {
+        create: record('conversations.create', { channel: { id: 'C0LAUNCH' } }),
+        invite: record('conversations.invite', {}),
+      },
+      chat: { postMessage: record('chat.postMessage', { channel: 'C0LAUNCH', ts: '1000.000200' }) },
+    } as never,
+    persona: { username: 'Fee Agent' },
+    assertStanding: async () => {},
+    receipt: new RequestReceipt<ChannelCreateReceipt>(
+      new SqliteSettingsStore(':memory:'), `fees-channel-${channelCalls.length}`, CHANNEL_CREATE_RECEIPT_CODEC,
+    ),
+    routeRepliesToAgent: async () => {},
+    agentAccess: async () => ({ status: 'not_needed' }),
+  }).create(request)));
+  return 'Create the channel.';
+}
+
+const createsChannel = (person: string) => (model: Parameters<typeof answers>[0]) => scriptedMessage(model, [
+  { type: 'toolCall', id: 'call_create_channel', name: 'create_slack_channel', arguments: { name: 'launch', people: [person], message: 'Hello' } },
 ], 'toolUse');
 
 const DOCS = 'https://docs.fees.example/api';
@@ -561,6 +608,28 @@ test('a group DM that posted its opening message posts the task row', { timeout:
 
   assert.deepEqual(await slackTurn('fees-group-dm-posted', GroupDmProbe), { text: 'done' });
   assert.deepEqual(groupDmCalls, ['users.info', 'conversations.open', 'chat.postMessage']);
+  assert.deepEqual(tiers(posts), ['chat:posted', 'task:posted']);
+});
+
+test('a channel refused before anything is created posts no task row, and Slack is never called', { timeout: 20_000 }, async (t) => {
+  const posts = hostedPort(t);
+  interceptors(t, replyRun(hostedEnv()));
+  scriptedProvider([createsChannel('U0NOTNAMED'), answers]);
+  channelCalls.length = 0;
+
+  assert.deepEqual(await slackTurn('fees-channel-refused', CreateChannelProbe), { text: 'done' });
+  assert.deepEqual(channelCalls, []);
+  assert.deepEqual(tiers(posts), ['chat:posted']);
+});
+
+test('a channel the Agent created posts the task row', { timeout: 20_000 }, async (t) => {
+  const posts = hostedPort(t);
+  interceptors(t, replyRun(hostedEnv()));
+  scriptedProvider([createsChannel('U0SAM'), answers]);
+  channelCalls.length = 0;
+
+  assert.deepEqual(await slackTurn('fees-channel-created', CreateChannelProbe), { text: 'done' });
+  assert.deepEqual(channelCalls, ['users.info', 'conversations.create', 'conversations.invite', 'chat.postMessage']);
   assert.deepEqual(tiers(posts), ['chat:posted', 'task:posted']);
 });
 
