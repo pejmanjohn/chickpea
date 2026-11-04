@@ -13,10 +13,11 @@ import sharp from 'sharp';
 
 import { LIGHTNESS_QUANTILES, labToHex, toLab } from '../chickpea-art.mjs';
 import {
-  decontaminate, findFace, inkCoverage, inpaint, keyMatte, medianLab, paintOutArch, softenHardEdge, unmixMatte, visionLift,
+  decontaminate, findFace, inkCoverage, inpaint, keyMatte, medianLab, paintOutArch, smoothBase, softenHardEdge, unmix,
+  unmixMatte, visionLift,
 } from './cutout.mjs';
 import {
-  bounds, flood, islands, median, morph, place, quantile, readRgba, regionIndexes, writePng,
+  blur, bounds, flood, islands, median, morph, normalizedBlur, place, quantile, readRgba, regionIndexes, smoothstep, writePng,
 } from './raster.mjs';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
@@ -102,9 +103,9 @@ async function readSource(file) {
   const path = join(ROOT, file);
   const { width, height } = await sharp(path).metadata();
   if (width !== height) throw new Error(`${file} must be square`);
-  if (width === SIZE) return readRgba(path);
+  if (width === SIZE) return { ...await readRgba(path), originalSize: width };
   const { data } = await sharp(path).ensureAlpha().resize(SIZE, SIZE).raw().toBuffer({ resolveWithObject: true });
-  return { data, width: SIZE, height: SIZE };
+  return { data, width: SIZE, height: SIZE, originalSize: width };
 }
 
 function sample(rgba, regions) {
@@ -147,6 +148,8 @@ async function normalizeStand(rgba) {
       master: place(data, width, height, 4, SIZE, left, top),
       carry: async (plane) => place(await resize(Buffer.from(plane), 1, width, height), width, height, 1, SIZE, left, top),
       point: ([x, y]) => [round1((x - crop.left) * (width / crop.width) + left), round1((y - crop.top) * (height / crop.height) + top)],
+      scale: width / crop.width,
+      offset: [left - crop.left * (width / crop.width), top - crop.top * (width / crop.width)],
     };
   }
   throw new Error(`no scale near ${estimate} gives a body ${BODY_HEIGHT}px tall`);
@@ -204,7 +207,8 @@ async function buildStand({ key, name, face, kind, file, scene: layout }, scratc
   const unmixed = Float32Array.from(unmixMatte(render, coarse, Object.values(scene)));
   const soft = softenHardEdge(smooth(smooth(unmixed, Math.max, Math.min), Math.min, Math.max), SIZE, SIZE);
   const reach = morph(soft.map((a) => (a >= 230 ? 1 : 0)), SIZE, SIZE, 2.5, Math.max);
-  const cut = decontaminate(render, trimBase(soft.map((a, i) => a * reach[i])));
+  const base = smoothBase(trimBase(soft.map((a, i) => a * reach[i])), SIZE, SIZE);
+  const cut = decontaminate(render, base.alpha, { rim: base.rim });
   const { core, region } = findFace(cut, SIZE, SIZE, kind);
   const faceless = inpaint(cut, SIZE, SIZE, region);
   const normalized = await normalizeStand(faceless);
@@ -215,6 +219,11 @@ async function buildStand({ key, name, face, kind, file, scene: layout }, scratc
     key, name, kind, face, layout, scene, mask,
     master: normalized.master,
     faceAnchor: normalized.point(eyeMidpoint(core)),
+    origin: {
+      file,
+      scale: normalized.scale * (SIZE / render.originalSize),
+      offset: normalized.offset,
+    },
     faceLab: medianLab(faceLabs),
     coverage: inkL === undefined ? undefined : await normalized.carry(inkCoverage(cut, faceless, region, inkL)),
     ...feltStats(normalized.master, mask),
@@ -243,7 +252,7 @@ function hardAlpha(rgba) {
 // a tongue.
 function poseBodyMask(rgba) {
   const n = SIZE * SIZE;
-  const felt = new Uint8Array(n), strong = new Uint8Array(n), ink = new Uint8Array(n);
+  const felt = new Uint8Array(n), strong = new Uint8Array(n), ink = new Uint8Array(n), bodyLike = new Uint8Array(n);
   const hue = new Float32Array(n), lightness = new Float32Array(n);
   for (let i = 0; i < n; i++) {
     if (!rgba[i * 4 + 3]) continue;
@@ -253,6 +262,7 @@ function poseBodyMask(rgba) {
     lightness[i] = L;
     const bodyHue = h >= 48 && h <= 92 && L > 25;
     felt[i] = bodyHue && C >= 0.74 * L ? 1 : 0;
+    bodyLike[i] = h >= 48 && h <= 92 && C >= 0.71 * L ? 1 : 0;
     strong[i] = bodyHue && C >= 0.95 * L && rgba[i * 4 + 3] >= 128 ? 1 : 0;
     ink[i] = L < 40 && (C < 8 || (h >= 15 && h <= 74)) ? 1 : 0;
   }
@@ -266,9 +276,37 @@ function poseBodyMask(rgba) {
     const seam = median(hole.map((i) => hue[i])) >= 46 || median(hole.map((i) => lightness[i])) < 40;
     if (enclosed && seam && hole.length <= MAX_SEAM_HOLE) for (const i of hole) mask[i] = 255;
   }
-  const grown = morph(Float32Array.from(mask), SIZE, SIZE, 1, Math.max);
-  for (let i = 0; i < n; i++) if (!mask[i] && grown[i] && rgba[i * 4 + 3]) mask[i] = 128;
-  return mask;
+  return seamRim(rgba, mask, (i) => bodyLike[i] || ink[i]);
+}
+
+// Pixels where a prop meets the body mix the two colors. Within 3px of the
+// body, a pixel that still reads as body (felt hue, or dark shading) joins
+// it; any other gets the fraction of felt it holds, unmixed between the
+// felt and the prop color next to it, or nothing when no prop is near (a
+// thin prop such as a handle).
+function seamRim(rgba, mask, looksLikeBody) {
+  const n = SIZE * SIZE;
+  const channel = (c) => Float32Array.from({ length: n }, (_, i) => rgba[i * 4 + c]);
+  const solid = Float32Array.from(mask, (v) => (v === 255 ? 1 : 0));
+  const near = morph(solid, SIZE, SIZE, 3, Math.max);
+  const touching = morph(solid, SIZE, SIZE, 1, Math.max);
+  const prop = Float32Array.from({ length: n }, (_, i) => (!near[i] && rgba[i * 4 + 3] >= 128 ? 1 : 0));
+  const body = [0, 1, 2].map((c) => normalizedBlur(channel(c), solid, SIZE, SIZE, 3));
+  const props = [0, 1, 2].map((c) => normalizedBlur(channel(c), prop, SIZE, SIZE, 3));
+  const propWeight = blur(prop, SIZE, SIZE, 3);
+  const out = Buffer.from(mask);
+  for (let i = 0; i < n; i++) {
+    if (mask[i] || !near[i] || !rgba[i * 4 + 3]) continue;
+    if (looksLikeBody(i)) { out[i] = 255; continue; }
+    if (propWeight[i] < 0.02) continue;
+    const fg = body.map((p) => p[i]), bg = props.map((p) => p[i]);
+    // A prop close to the felt's color (a tan suitcase) cannot be unmixed;
+    // there the pixel touching the body takes half, as an anti-aliased seam.
+    const trust = smoothstep(45, 90, Math.hypot(fg[0] - bg[0], fg[1] - bg[1], fg[2] - bg[2]));
+    const fraction = unmix([rgba[i * 4], rgba[i * 4 + 1], rgba[i * 4 + 2]], fg, bg) * trust + (touching[i] ? 0.5 : 0) * (1 - trust);
+    out[i] = Math.round(255 * fraction);
+  }
+  return out;
 }
 
 // A pose's own face: ink inside the body, with its coverage unmixed against
@@ -296,6 +334,7 @@ const bodyBounds = (rgba, mask) => bounds(SIZE, SIZE, (i) => mask[i] === 255 && 
 
 async function buildPose({ pose, file, recolor = true, reason }, inkL) {
   const source = await readSource(file);
+  const sourceSize = source.originalSize;
   const cutOut = regionIndexes(SIZE, FLAT_SCENE.background).some((i) => source.data[i * 4 + 3] < 255);
   // A cut-out source has a hard 1-bit alpha to soften. A flat-background
   // render is keyed against its background, which keeps props that float
@@ -304,7 +343,10 @@ async function buildPose({ pose, file, recolor = true, reason }, inkL) {
   const alpha = cutOut
     ? softenHardEdge(hardAlpha(source.data), SIZE, SIZE)
     : softenHardEdge(Float32Array.from(unmixMatte(source, keyMatte(source, background), [background])), SIZE, SIZE);
-  const soft = decontaminate(source, alpha, { largestOnly: false });
+  // The body mask from a first pass bounds the base smoothing to the body.
+  const body = morph(Float32Array.from(poseBodyMask(decontaminate(source, alpha, { largestOnly: false })), (v) => (v === 255 ? 1 : 0)), SIZE, SIZE, 6, Math.max);
+  const base = smoothBase(alpha, SIZE, SIZE, (i) => body[i] > 0);
+  const soft = decontaminate(source, base.alpha, { largestOnly: false, rim: base.rim });
   const sourceMask = poseBodyMask(soft);
   const [x0, , x1, y1] = bodyBounds(soft, sourceMask);
   const [ax0, , ax1] = bounds(SIZE, SIZE, (i) => soft[i * 4 + 3] > 0);
@@ -313,7 +355,8 @@ async function buildPose({ pose, file, recolor = true, reason }, inkL) {
   const master = place(soft, SIZE, SIZE, 4, SIZE, dx, dy);
   const mask = place(sourceMask, SIZE, SIZE, 1, SIZE, dx, dy);
   const face = poseFace(master, mask, inkL, feltStats(master, mask).lab[0]);
-  return { pose, recolor, reason, master, mask, face, ...feltStats(master, mask, (i) => face[i] > 0) };
+  const origin = { file, scale: SIZE / sourceSize, offset: [dx, dy] };
+  return { pose, recolor, reason, master, mask, face, origin, ...feltStats(master, mask, (i) => face[i] > 0) };
 }
 
 async function overlay(pose, file) {
@@ -349,6 +392,12 @@ function palette(stands, poses, faces) {
   };
 }
 
+// Where a master came from: its source file, and the scale and offset that
+// carry a source pixel to the master (master = source * scale + offset).
+const provenance = ({ file, scale, offset }) => ({
+  file, scale: Math.round(scale * 1e4) / 1e4, offset: offset.map(round1),
+});
+
 function manifest(stands, poses, mattes) {
   return {
     version: 1,
@@ -369,6 +418,7 @@ function manifest(stands, poses, mattes) {
         lightness: stand.lightness,
         face: { native: stand.face, anchor: stand.faceAnchor },
         recolor: true,
+        source: provenance(stand.origin),
       }]),
       ...poses.map((pose) => [`pose-${pose.pose}`, {
         file: `masters/pose-${pose.pose}.png`,
@@ -382,6 +432,7 @@ function manifest(stands, poses, mattes) {
         face: { matte: `masters/pose-${pose.pose}.face.png` },
         recolor: pose.recolor,
         ...(pose.reason ? { reason: pose.reason } : {}),
+        source: provenance(pose.origin),
       }]),
     ]),
   };

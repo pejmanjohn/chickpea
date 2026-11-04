@@ -53,31 +53,45 @@ export function keyMatte({ data, width, height }, background, threshold = 40) {
 }
 
 // Recompute alpha in the band just inside the coarse edge by unmixing each
-// pixel between the local body color and the nearest scene color
-// (background, arch, doorway, floor): alpha is how far the pixel sits from
-// the scene color toward the body, through smoothstep(0.3, 0.8). Nothing
-// outside the coarse mask is added back.
+// pixel between the body color and the scene color next to it: alpha is how
+// far the pixel sits from the scene color toward the body, through
+// smoothstep(0.3, 0.8). Both colors are local averages, the body's from the
+// opaque core and the scene's from just outside the coarse mask, so a dark
+// base unmixes against the floor under it, not against a dark doorway
+// elsewhere. Where no scene pixel is near, the nearest of `sceneColors`
+// stands in. Nothing outside the coarse mask is added back.
 export function unmixMatte({ data, width, height }, coarse, sceneColors, band = 4) {
   const n = width * height;
+  const channel = (c) => Float32Array.from({ length: n }, (_, i) => data[i * 4 + c]);
   const core = morph(coarse.map((a) => (a >= 250 ? 1 : 0)), width, height, band, Math.min);
-  const local = [0, 1, 2].map((c) => normalizedBlur(Float32Array.from({ length: n }, (_, i) => data[i * 4 + c]), core, width, height, 4));
-  const weight = blur(core, width, height, 4);
+  const outside = coarse.map((a) => (a ? 0 : 1));
+  const body = [0, 1, 2].map((c) => normalizedBlur(channel(c), core, width, height, 4));
+  const scene = [0, 1, 2].map((c) => normalizedBlur(channel(c), outside, width, height, 4));
+  const bodyWeight = blur(core, width, height, 4);
+  const sceneWeight = blur(outside, width, height, 4);
   const alpha = new Uint8Array(n);
   for (let i = 0; i < n; i++) {
     if (core[i]) { alpha[i] = 255; continue; }
-    if (!coarse[i] || weight[i] < 1e-3) { alpha[i] = Math.round(coarse[i]); continue; }
+    if (!coarse[i] || bodyWeight[i] < 1e-3) { alpha[i] = Math.round(coarse[i]); continue; }
     const px = [data[i * 4], data[i * 4 + 1], data[i * 4 + 2]];
-    const fg = local.map((plane) => plane[i]);
-    const bg = sceneColors.reduce((best, color) => (dist2(px, color) < dist2(px, best) ? color : best));
-    const d = fg.map((v, c) => v - bg[c]);
-    const separation = d[0] ** 2 + d[1] ** 2 + d[2] ** 2;
-    const along = ((px[0] - bg[0]) * d[0] + (px[1] - bg[1]) * d[1] + (px[2] - bg[2]) * d[2]) / Math.max(1, separation);
+    const fg = body.map((plane) => plane[i]);
+    const bg = sceneWeight[i] > 0.02
+      ? scene.map((plane) => plane[i])
+      : sceneColors.reduce((best, color) => (dist2(px, color) < dist2(px, best) ? color : best));
     // Where the body and the scene color are too close to tell apart (a dark
     // base on a dark floor), the unmix is noise; keep Vision's alpha there.
-    const trust = smoothstep(45, 90, Math.sqrt(separation));
-    alpha[i] = Math.round(coarse[i] * (1 - trust) + 255 * smoothstep(0.3, 0.8, along) * trust);
+    const trust = smoothstep(45, 90, Math.sqrt(dist2(fg, bg)));
+    alpha[i] = Math.round(coarse[i] * (1 - trust) + 255 * unmix(px, fg, bg) * trust);
   }
   return alpha;
+}
+
+// How much of `px` is `fg` rather than `bg`: its position along the line
+// from bg to fg, through smoothstep(0.3, 0.8).
+export function unmix(px, fg, bg) {
+  const d = fg.map((v, c) => v - bg[c]);
+  const along = ((px[0] - bg[0]) * d[0] + (px[1] - bg[1]) * d[1] + (px[2] - bg[2]) * d[2]) / Math.max(1, dist2(fg, bg));
+  return smoothstep(0.3, 0.8, along);
 }
 
 const dist2 = (p, q) => (p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2 + (p[2] - q[2]) ** 2;
@@ -88,12 +102,31 @@ export function softenHardEdge(alpha, width, height) {
   return blur(morph(alpha, width, height, 1, Math.min), width, height, 0.7).map(Math.round);
 }
 
+// Fit a smooth contour to the base, where a body met a floor close to its
+// own color: blur the solid shape and threshold it with a 2px ramp, in a
+// band over the lowest 40 rows of the body and fading in over 15 rows
+// above. `near` limits it to pixels around the body (a pose's props keep
+// their edges). The rest of the silhouette is unchanged. Returns the alpha
+// and `rim`, the pixels within 3px of the new base edge, whose colors still
+// follow the old one and need decontaminating.
+export function smoothBase(alpha, width, height, near = () => true) {
+  const solid = Float32Array.from(alpha, (a) => (a >= 128 ? 1 : 0));
+  const contour = blur(solid, width, height, 7);
+  let bottom = -1;
+  for (let i = 0; i < alpha.length; i++) if (solid[i] && near(i)) bottom = Math.max(bottom, (i / width) | 0);
+  const band = (i) => (near(i) ? smoothstep(bottom - 55, bottom - 40, (i / width) | 0) : 0);
+  const smoothed = Float32Array.from(alpha, (a, i) => a * (1 - band(i)) + 255 * smoothstep(0.4, 0.6, contour[i]) * band(i));
+  const inner = morph(smoothed.map((a) => (a >= 245 ? 1 : 0)), width, height, 3, Math.min);
+  return { alpha: smoothed, rim: (i) => band(i) > 0 && !inner[i] };
+}
+
 // Give every pixel under the opaque core's rim the core's nearby color, so no
-// scene tint survives on a soft edge. Returns RGBA with `alpha`, by default
-// keeping only the largest visible island.
-export function decontaminate({ data, width, height }, alpha, { largestOnly = true } = {}) {
+// scene tint survives on a soft edge. `rim` widens the rim to more pixels
+// (opaque ones whose color still carries the old edge). Returns RGBA with
+// `alpha`, by default keeping only the largest visible island.
+export function decontaminate({ data, width, height }, alpha, { largestOnly = true, rim: widen = () => false } = {}) {
   const n = width * height;
-  const core = Float32Array.from(alpha, (a) => (a >= 245 ? 1 : 0));
+  const core = Float32Array.from(alpha, (a, i) => (a >= 245 && !widen(i) ? 1 : 0));
   const rim = [0, 1, 2].map((c) => normalizedBlur(Float32Array.from({ length: n }, (_, i) => data[i * 4 + c]), core, width, height, 3));
   const weight = blur(core, width, height, 3);
   const out = Buffer.alloc(n * 4);
