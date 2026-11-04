@@ -229,8 +229,8 @@ export class SlackCanvasService {
    * An edit lands wherever the canvas is, so it must not carry content to an
    * organization that cannot read the current conversation: rule 4 of
    * authorizeSlackRead for writes. In a shared conversation, the canvas must
-   * be its own and in no other conversation, so any external reader is that
-   * conversation's.
+   * be its own and in no other conversation Slack lists; its external readers
+   * are then assumed to be that conversation's.
    */
   private async assertNotSharedOutside(file: CanvasFile): Promise<void> {
     const ports = this.options.authority;

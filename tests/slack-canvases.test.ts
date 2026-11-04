@@ -379,6 +379,19 @@ test('an edit never carries this workspace\'s content to a canvas another organi
   assert.equal((await failure(fromShared.service().update('call-3', { operation: 'append', markdown: 'x' }))).code, 'shared_outside',
     'a shared conversation\'s canvas that is also elsewhere may reach a third organization');
 
+  const unseen = fixture(t, { conversations: { ...conversations, CFOREIGN: facts({ id: 'CFOREIGN', teamId: 'TOTHER' }) } });
+  unseen.slack.canvases.set('FUNSEEN', { content: '# Plan\n', owner: BOT, title: 'Plan', channels: ['COTHER', 'CUNKNOWN'] });
+  unseen.slack.canvases.set('FFOREIGN', { content: '# Plan\n', owner: BOT, title: 'Plan', channels: ['COTHER', 'CFOREIGN'] });
+  for (const id of ['FUNSEEN', 'FFOREIGN']) {
+    assert.equal((await failure(unseen.service().update(`call-${id}`, { canvasUrl: link(id), operation: 'append', markdown: 'x' }))).code, 'shared_outside',
+      `${id}: a conversation the bot cannot see, or one in another workspace, counts as outside`);
+  }
+  assert.deepEqual(unseen.slack.writes(), []);
+
+  const chickpea = fixture(t, { managementAgent: true });
+  assert.equal((await failure(chickpea.service().update('call-1', { canvasUrl: link('FREPORT'), operation: 'append', markdown: 'x' }))).code, 'current_conversation_only');
+  assert.ok(!chickpea.slack.calls.some((call) => call.method === 'files.info'), '@Chickpea edits refuse before any lookup');
+
   const wide = fixture(t, { conversations });
   wide.slack.canvases.set('FWIDE', { content: '# Wide\n', owner: BOT, title: 'Wide', channels: ['COTHER', ...Array.from({ length: 8 }, (_, n) => `C0WIDE${n}`)] });
   assert.equal((await failure(wide.service().update('call-1', { canvasUrl: link('FWIDE'), operation: 'append', markdown: 'x' }))).code, 'too_widely_shared');

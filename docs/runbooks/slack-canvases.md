@@ -58,6 +58,15 @@ with another organization, only that conversation's own canvas is edited, and
 only when it is in no other conversation. A canvas in more than eight
 conversations is not edited, because Chickpea cannot check them all.
 
+From a conversation shared with another organization, a canvas link is refused
+unless it is that conversation's own canvas, even when the canvas was posted
+there: knowing where a canvas lives takes a lookup that could show whether it
+exists.
+
+One case is not yet checked. A shared conversation's own canvas that Slack
+lists in no other conversation may still be shared directly with a person from
+a third organization. Probe item 6 records what `files.info` reports for that.
+
 - **Append** adds Markdown at the end (`canvases.edit`, `insert_at_end`).
 - **Replace a section** finds the one section that contains the given text
   (`canvases.sections.lookup`) and replaces it (`canvases.edit`, `replace`).
@@ -124,7 +133,10 @@ Use it to confirm the Slack facts the tools rest on:
 5. On a free plan, the same call returns `free_team_canvas_tab_already_exists`.
 6. `files.info` on a canvas posted in a Slack Connect channel lists that
    channel, or reports `external_workspaces_with_read_access` or
-   `private_external_workspaces_with_read_access_count`.
+   `private_external_workspaces_with_read_access_count`. Record both fields,
+   and `conversations.info` `shared_team_ids`, for a Slack Connect channel's
+   canvas before and after sharing it directly with a person from another
+   organization.
 
 Raw API success is compatibility evidence. Full acceptance also needs a real
 routed Agent request and the canvas checked in Slack, using
