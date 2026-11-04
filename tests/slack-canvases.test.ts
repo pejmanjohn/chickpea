@@ -4,7 +4,7 @@ import * as v from 'valibot';
 
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { createGatewaySlackWebClient } from '../src/slack/gateway/web-client.ts';
-import { CANVAS_NOT_AVAILABLE, createSlackCanvasesCall, SlackCanvasService } from '../src/slack/canvases/service.ts';
+import { CANVAS_MISSING_OR_UNREADABLE, createSlackCanvasesCall, SlackCanvasService } from '../src/slack/canvases/service.ts';
 import { createSlackCanvasTools, SLACK_CANVAS_TOOL_NAMES } from '../src/slack/canvases/tools.ts';
 import { SLACK_CANVAS_OPERATIONS, type JsonObject, type SlackCanvasOperation } from '../src/slack/canvases/types.ts';
 import { parseSlackCanvasUrl, verifiedCanvasPermalink } from '../src/slack/canvases/urls.ts';
@@ -22,9 +22,11 @@ const BOT = 'UCHICKPEA';
 const CURRENT = { channelId: 'CCURRENT', threadTs: '1800000000.000100', messageTs: '1800000000.000200' };
 const link = (id: string) => `https://acme.slack.com/docs/${WORKSPACE}/${id}`;
 
-interface FakeCanvas { content: string; owner: string; title: string; channels?: string[]; groups?: string[]; linked?: string }
+interface FakeCanvas {
+  content: string; owner: string; title: string; channels?: string[]; groups?: string[]; linked?: string;
+  externalWorkspaces?: string[]; hiddenExternalWorkspaces?: number;
+}
 
-/** Slack as the canvas methods answer it, refusing anything the docs do not allow. */
 class FakeCanvasSlack {
   readonly calls: { method: SlackCanvasOperation; input: JsonObject }[] = [];
   readonly canvases = new Map<string, FakeCanvas>();
@@ -44,6 +46,8 @@ class FakeCanvasSlack {
           id: input.file, title: canvas.title, user: canvas.owner, permalink: `${link(String(input.file))}?origin=team`,
           channels: canvas.channels ?? [], groups: canvas.groups ?? [], ims: [],
           ...(canvas.linked ? { linked_channel_id: canvas.linked } : {}),
+          ...(canvas.externalWorkspaces ? { external_workspaces_with_read_access: canvas.externalWorkspaces } : {}),
+          ...(canvas.hiddenExternalWorkspaces ? { private_external_workspaces_with_read_access_count: canvas.hiddenExternalWorkspaces } : {}),
         } };
       }
       case 'canvases.getContent': {
@@ -190,7 +194,7 @@ test('a canvas link reads only through a conversation the requester and Agent ma
 
   const secret = await failure(f.service().read({ canvasUrl: link('FSECRET') }));
   const missing = await failure(f.service().read({ canvasUrl: link('FMISSING') }));
-  assert.deepEqual(secret, { code: 'not_available', message: CANVAS_NOT_AVAILABLE });
+  assert.deepEqual(secret, { code: 'not_available', message: CANVAS_MISSING_OR_UNREADABLE });
   assert.deepEqual(missing, secret, 'a canvas in a channel the requester cannot read looks like one that does not exist');
   assert.ok(!f.slack.calls.some((call) => call.method === 'canvases.getContent' && ['FSECRET', 'FMISSING'].includes(String(call.input.canvas_id))));
 
@@ -336,10 +340,37 @@ test('only this conversation\'s canvas and canvases Chickpea created can be edit
   assert.equal((await f.service().update('call-2', { canvasUrl: link('FCHANNEL'), operation: 'append', markdown: 'More' })).status, 'updated');
   assert.equal((await failure(f.service().update('call-3', { canvasUrl: link('FPEOPLE'), operation: 'append', markdown: 'More' }))).code, 'not_editable');
   assert.deepEqual(await failure(f.service().update('call-4', { canvasUrl: link('FSECRET'), operation: 'append', markdown: 'More' })),
-    { code: 'not_available', message: CANVAS_NOT_AVAILABLE }, 'Chickpea\'s canvas in a channel the requester cannot read stays unseen');
+    { code: 'not_available', message: CANVAS_MISSING_OR_UNREADABLE }, 'Chickpea\'s canvas in a channel the requester cannot read stays unseen');
   assert.deepEqual(await failure(f.service().update('call-5', { canvasUrl: link('FHIDDEN'), operation: 'append', markdown: 'More' })),
-    { code: 'not_available', message: CANVAS_NOT_AVAILABLE }, 'a refusal never says who owns a canvas the requester cannot read');
+    { code: 'not_available', message: CANVAS_MISSING_OR_UNREADABLE }, 'a refusal never says who owns a canvas the requester cannot read');
   assert.deepEqual(f.slack.calls.filter((call) => call.method === 'canvases.edit').map((call) => call.input.canvas_id), ['FREPORT', 'FCHANNEL']);
+});
+
+test('an edit never carries this workspace\'s content to a canvas another organization can see', async (t) => {
+  const conversations = {
+    [CURRENT.channelId]: facts({ id: CURRENT.channelId, canvasId: 'FCHANNEL' }),
+    COTHER: facts({ id: 'COTHER' }),
+    CPARTNER: facts({ id: 'CPARTNER', shared: true }),
+  };
+  const f = fixture(t, { conversations });
+  f.slack.canvases.set('FBOTH', { content: '# Plan\n', owner: BOT, title: 'Plan', channels: ['COTHER', 'CPARTNER'] });
+  f.slack.canvases.set('FCONNECT', { content: '# Plan\n', owner: BOT, title: 'Plan', channels: ['COTHER'], externalWorkspaces: ['E0PARTNER'] });
+  f.slack.canvases.set('FHIDDENCONNECT', { content: '# Plan\n', owner: BOT, title: 'Plan', channels: ['COTHER'], hiddenExternalWorkspaces: 1 });
+  for (const id of ['FBOTH', 'FCONNECT', 'FHIDDENCONNECT']) {
+    assert.equal((await failure(f.service().update(`call-${id}`, { canvasUrl: link(id), operation: 'append', markdown: 'Internal numbers' }))).code, 'shared_outside', id);
+  }
+  f.slack.canvases.get('FCHANNEL')!.channels = ['CPARTNER'];
+  assert.equal((await failure(f.service().update('call-own', { operation: 'append', markdown: 'Internal numbers' }))).code, 'shared_outside',
+    'this conversation\'s canvas also posted in a Slack Connect channel');
+  assert.deepEqual(f.slack.writes(), []);
+  assert.equal((await f.service().read({ canvasUrl: link('FBOTH') })).status, 'read', 'reading it here moves nothing outside');
+
+  const fromShared = fixture(t, { conversations: { ...conversations, [CURRENT.channelId]: facts({ id: CURRENT.channelId, canvasId: 'FCHANNEL', shared: true }) } });
+  fromShared.slack.canvases.set('FTAB', { content: '# Tab\n', owner: BOT, title: 'Tab', channels: [CURRENT.channelId], externalWorkspaces: ['E0PARTNER'] });
+  assert.equal((await failure(fromShared.service().update('call-1', { canvasUrl: link('FTAB'), operation: 'append', markdown: 'x' }))).code, 'shared_outside',
+    'from a Slack Connect conversation only its own canvas is edited');
+  fromShared.slack.canvases.get('FCHANNEL')!.externalWorkspaces = ['E0PARTNER'];
+  assert.equal((await fromShared.service().update('call-2', { operation: 'append', markdown: 'x' })).status, 'updated');
 });
 
 test('without the canvas scopes every tool says an Owner must update Chickpea\'s Slack permissions', async (t) => {
@@ -371,7 +402,7 @@ test('tool results carry structured refusals, Slack\'s Markdown detail, and the 
   assert.equal(created.status, 'not_written');
   assert.equal(created.detail, "'content' error: line 3: Unsupported block type (List) within block quote");
   const refused = JSON.parse(await run('read_slack_canvas', { canvasUrl: link('FSECRET') }) as string);
-  assert.deepEqual(refused, { status: 'not_read', code: 'not_available', message: CANVAS_NOT_AVAILABLE });
+  assert.deepEqual(refused, { status: 'not_read', code: 'not_available', message: CANVAS_MISSING_OR_UNREADABLE });
 });
 
 test('the three tool contracts take no Slack IDs or operations beyond the reviewed ones', () => {

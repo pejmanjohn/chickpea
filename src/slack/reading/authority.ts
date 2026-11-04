@@ -20,7 +20,6 @@ export interface SlackReadConversationFacts {
   member: boolean;
   /** Any Slack Connect or cross-workspace sharing, pending or not. */
   shared: boolean;
-  /** The conversation's own canvas, when it has one. */
   canvasId?: string;
 }
 

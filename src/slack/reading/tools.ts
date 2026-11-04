@@ -159,7 +159,6 @@ export async function slackReadingService(
   });
 }
 
-/** This turn's reading authority, as seen by the bot `client` reads as. */
 export function turnSlackReadAuthority(
   plan: Pick<RuntimePlanV2, 'agentId' | 'actorMembershipId'>,
   signal: SlackManagementSignal,

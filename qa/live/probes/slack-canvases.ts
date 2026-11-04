@@ -1,4 +1,3 @@
-/** Raw, attended Slack canvas experiments. Never mounted as an Agent tool. */
 export const CANVASES_PROBE_METHODS = [
   'auth.test', 'conversations.info', 'files.info',
   'canvases.getContent', 'canvases.sections.lookup',
@@ -7,15 +6,16 @@ export const CANVASES_PROBE_METHODS = [
 ] as const;
 
 export type CanvasesProbeMethod = typeof CANVASES_PROBE_METHODS[number];
+const JSON_METHODS: ReadonlySet<CanvasesProbeMethod> = new Set([
+  'canvases.getContent', 'canvases.sections.lookup', 'conversations.canvases.create',
+  'canvases.create', 'canvases.edit', 'canvases.access.set', 'canvases.delete',
+]);
 type JsonObject = Record<string, unknown>;
 
 export interface CanvasesProbeSpec {
   workspaceId: string;
-  /** Exact QA channels, including a free-plan control when the run has one. */
   channelIds: readonly string[];
-  /** Exact fixture canvases, including human-owned negative controls. */
   canvasIds: readonly string[];
-  /** Deletion is restricted to exact run-owned canvases. */
   cleanupCanvasIds: readonly string[];
 }
 
@@ -31,11 +31,6 @@ export interface CanvasesProbeReceipt {
   response?: JsonObject;
 }
 
-/**
- * Credentials stay in the invoking QA process. Persist receipts in a private
- * attended run directory. A receipt must be saved before dispatch; after a
- * restart, the operator reconciles it before attempting another write.
- */
 export class SlackCanvasesProbe {
   readonly #token: string;
   readonly #fetch: typeof fetch;
@@ -70,8 +65,7 @@ export class SlackCanvasesProbe {
     await this.#record({ ...base, phase: 'dispatching', request: input });
     let receipt: CanvasesProbeReceipt;
     try {
-      // Classic read helpers accept form parameters; canvas methods accept JSON.
-      const json = method.includes('canvases.');
+      const json = JSON_METHODS.has(method);
       const bodyText = json ? serialized : new URLSearchParams(
         Object.entries(input).map(([key, value]) => [key, String(value)]),
       ).toString();
@@ -98,7 +92,6 @@ export class SlackCanvasesProbe {
         if (!this.#authenticatedWorkspace) receipt.response = { ...auth, probe_identity_verified: false };
       }
     } catch {
-      // Never serialize fetch errors: they can include request credentials.
       receipt = { ...base, phase: 'unknown' };
     }
     await this.#record(receipt);

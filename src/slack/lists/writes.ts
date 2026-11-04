@@ -5,7 +5,6 @@ import { SlackListError, type JsonObject, type SlackListOperation } from './type
 
 export const SLACK_LIST_WRITE_KEY_PREFIX = 'slack_lists.writes.v1:';
 export type WriteStatus = 'pending' | 'confirmed' | 'failed' | 'unknown';
-/** Lists and canvas writes share one receipt per turn: an uncertain write of either blocks both. */
 export type SlackWriteOperation = SlackListOperation | SlackCanvasOperation;
 export interface ListWriteReceipt {
   toolCallId: string;
@@ -24,7 +23,6 @@ export class ListWriteLedger {
     private readonly store: SettingsStore,
     private readonly workspaceId: string,
     turnJobId: string,
-    /** What this ledger's messages call the thing being written. */
     private readonly noun: 'List' | 'canvas' = 'List',
   ) {
     if (!turnJobId || turnJobId.length > 256) throw new SlackListError('invalid_context', 'A verified Slack turn is required.');
@@ -70,6 +68,11 @@ export class ListWriteLedger {
       if (await this.store.applySettingsPatch({ expected: { key: this.key, value: raw ?? null }, set: [{ key: this.key, value: JSON.stringify(ledger) }] })) return;
     }
     throw new SlackListError('write_receipt_unconfirmed', `The ${this.noun} action could not be durably verified. Do not repeat it.`);
+  }
+
+  /** finish for a write that did not succeed. Never throws: a reservation left pending still blocks redispatch. */
+  async settle(receipt: ListWriteReceipt, status: 'failed' | 'unknown', ids: { listId?: string; itemId?: string } = {}): Promise<void> {
+    try { await this.finish(receipt, status, ids); } catch {}
   }
 
   async confirmedCreatedListIds(): Promise<string[]> {

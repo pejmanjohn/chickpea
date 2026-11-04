@@ -1,9 +1,5 @@
 import { CANVAS_ID, SlackCanvasError } from './types.ts';
 
-/**
- * A canvas link names a canvas, never where it may be read: the caller
- * authorizes the conversations Slack says it lives in. URLs are never fetched.
- */
 export function parseSlackCanvasUrl(value: string, workspaceId: string): string {
   const trimmed = value.trim().replace(/^<([^|>]+)(\|[^>]*)?>$/, '$1');
   let url: URL;
@@ -16,7 +12,6 @@ export function parseSlackCanvasUrl(value: string, workspaceId: string): string 
   return match[2]!;
 }
 
-/** Slack's own link for a canvas, kept only when it names that canvas in this workspace. */
 export function verifiedCanvasPermalink(value: unknown, workspaceId: string, canvasId: string): string | undefined {
   if (typeof value !== 'string') return undefined;
   try {

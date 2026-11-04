@@ -50,6 +50,13 @@ An Agent edits only two kinds of canvas: this conversation's canvas, and a
 canvas the Chickpea app owns because it created it. The second kind must also
 pass the reading rules above. A person's own canvas elsewhere is not edited.
 
+An edit lands wherever the canvas is, so it must not carry this workspace's
+content to another organization. Chickpea refuses an edit when Slack shows the
+canvas in a conversation shared with another organization, or readable by an
+external workspace, unless the current conversation is that shared one and the
+canvas is its own. From a conversation shared with another organization, only
+that conversation's own canvas is edited.
+
 - **Append** adds Markdown at the end (`canvases.edit`, `insert_at_end`).
 - **Replace a section** finds the one section that contains the given text
   (`canvases.sections.lookup`) and replaces it (`canvases.edit`, `replace`).
@@ -100,6 +107,9 @@ attended probe in `qa/live/probes/slack-canvases.ts` accepts only an identified
 bot token, its workspace, and declared fixture channels and canvases. It deletes
 only run-owned canvases. Keep its credentials, receipts and readbacks private.
 
+Save each receipt before its request goes out. After a restart, reconcile an
+unfinished receipt before another write.
+
 Use it to confirm the Slack facts the tools rest on:
 
 1. `conversations.info` returns `properties.canvas.file_id` for a channel's
@@ -111,6 +121,9 @@ Use it to confirm the Slack facts the tools rest on:
 4. On a paid plan, `canvases.create` with `channel_id` in a channel that has a
    canvas succeeds, and a channel member can open the result.
 5. On a free plan, the same call returns `free_team_canvas_tab_already_exists`.
+6. `files.info` on a canvas posted in a Slack Connect channel lists that
+   channel, or reports `external_workspaces_with_read_access` or
+   `private_external_workspaces_with_read_access_count`.
 
 Raw API success is compatibility evidence. Full acceptance also needs a real
 routed Agent request and the canvas checked in Slack, using
