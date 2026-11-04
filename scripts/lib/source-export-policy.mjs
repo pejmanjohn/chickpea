@@ -168,6 +168,7 @@ export const liveVerifierExportPolicy = Object.freeze({
     exportPath('qa', 'live', 'operator', 'profiles', 'standalone.md'),
     exportPath('qa', 'live', 'privacy.ts'),
     exportPath('qa', 'live', 'private-config.ts'),
+    exportPath('qa', 'live', 'probes', 'slack-canvases.ts'),
     exportPath('qa', 'live', 'probes', 'slack-lists.ts'),
     exportPath('qa', 'live', 'public-sources.ts'),
     exportPath('qa', 'live', 'report.ts'),

@@ -30,6 +30,7 @@ import {
 } from '../src/review/record.ts';
 import { encodeBase64Url } from '../src/security/base64url.ts';
 import { followUpSignalBody, followUpSignalMessages } from '../src/slack/follow-ups.ts';
+import { SLACK_CANVAS_TOOL_NAMES } from '../src/slack/canvases/tools.ts';
 import { SLACK_LIST_TOOL_NAMES } from '../src/slack/lists/tools.ts';
 import { SLACK_READ_TOOL_NAMES } from '../src/slack/reading/tools.ts';
 import { RUNNER_PREFETCHED_SETTINGS, runnerPrefetchedSettings } from '../src/slack/thread-runner-rpc.ts';
@@ -363,6 +364,19 @@ test('every Slack List tool, which says nothing of where its List is shared, kee
     ['update_slack_list_item', false, true],
   ]);
   assert.equal(JSON.stringify(record).includes('partner notes'), false);
+});
+
+test('every Slack canvas tool, whose canvas may be shared through Slack Connect, keeps its call but not its output or error', () => {
+  const canvas = JSON.stringify({ status: 'read', canvas: { id: 'F0CANVAS12' }, content: '# Partner notes' });
+  const call = (name: string, result: { output?: string; error?: string }) => ({
+    kind: 'tool' as const, name, input: '{"canvasUrl":"https://x.slack.com/docs/T1/F0CANVAS12"}', ...result,
+  });
+  const record = buildRunReviewRecord(input({
+    steps: SLACK_CANVAS_TOOL_NAMES.map((name) => call(name, { output: canvas, error: 'Partner notes' })),
+  }), runReviewPseudonymizer(KEY));
+  assert.deepEqual(record.steps.map((step) => step.kind === 'tool' && [step.name, step.input, step.output, step.error]),
+    SLACK_CANVAS_TOOL_NAMES.map((name) => [name, '{"canvasUrl":"https://x.slack.com/docs/T1/F0CANVAS12"}', OTHER_CONVERSATION_OMITTED, OTHER_CONVERSATION_OMITTED]));
+  assert.equal(JSON.stringify(record).includes('Partner notes'), false);
 });
 
 test('credentials are redacted before the cap, and the builder adds no Slack coordinates', () => {

@@ -45,14 +45,15 @@ function refusedBeforeStart(error: unknown): boolean {
 
 /**
  * Tools that return a refusal made before any work for the model to explain,
- * rather than throwing. read_slack_channel says not_read. The web tools say
- * outcome refused when nothing went out: a URL or query they may not send, or
- * a turn whose budget is spent. A page or search that went out and failed is
- * work, and charges.
+ * rather than throwing. read_slack_channel and read_slack_canvas say
+ * not_read. The web tools say outcome refused when nothing went out: a URL or
+ * query they may not send, or a turn whose budget is spent. A page or search
+ * that went out and failed is work, and charges.
  */
 const REFUSALS_BEFORE_WORK = new Map<string, (output: { status?: unknown; outcome?: unknown }) => boolean>([
   ['read_slack_channel', (output) => output.status === 'not_read'],
   [SLACK_GROUP_DM_TOOL_NAME, (output) => output.status === 'refused'],
+  ['read_slack_canvas', (output) => output.status === 'not_read'],
   ...WEB_TOOL_NAMES.map((name) => [name, (output: { outcome?: unknown }) => output.outcome === 'refused'] as const),
 ]);
 

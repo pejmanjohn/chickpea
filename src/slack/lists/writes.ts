@@ -1,12 +1,14 @@
 import { createHash } from 'node:crypto';
 import type { SettingsStore } from '../../config/settings-store.ts';
+import type { SlackCanvasOperation } from '../canvases/types.ts';
 import { SlackListError, type JsonObject, type SlackListOperation } from './types.ts';
 
 export const SLACK_LIST_WRITE_KEY_PREFIX = 'slack_lists.writes.v1:';
 export type WriteStatus = 'pending' | 'confirmed' | 'failed' | 'unknown';
+export type SlackWriteOperation = SlackListOperation | SlackCanvasOperation;
 export interface ListWriteReceipt {
   toolCallId: string;
-  operation: SlackListOperation;
+  operation: SlackWriteOperation;
   inputSha256: string;
   status: WriteStatus;
   listId?: string;
@@ -17,19 +19,24 @@ interface Ledger { schemaVersion: 1; workspaceId: string; entries: ListWriteRece
 /** Awaited settings CAS commits independently of Flue's eventual tool batch. */
 export class ListWriteLedger {
   readonly key: string;
-  constructor(private readonly store: SettingsStore, private readonly workspaceId: string, turnJobId: string) {
+  constructor(
+    private readonly store: SettingsStore,
+    private readonly workspaceId: string,
+    turnJobId: string,
+    private readonly noun: 'List' | 'canvas' = 'List',
+  ) {
     if (!turnJobId || turnJobId.length > 256) throw new SlackListError('invalid_context', 'A verified Slack turn is required.');
     this.key = `${SLACK_LIST_WRITE_KEY_PREFIX}${turnJobId}`;
   }
 
-  async reserve(toolCallId: string, operation: SlackListOperation, input: JsonObject): Promise<{ reserved: boolean; receipt: ListWriteReceipt }> {
+  async reserve(toolCallId: string, operation: SlackWriteOperation, input: JsonObject): Promise<{ reserved: boolean; receipt: ListWriteReceipt }> {
     const inputSha256 = createHash('sha256').update(JSON.stringify(canonical(input))).digest('hex');
     for (let attempt = 0; attempt < 12; attempt++) {
       const raw = await this.store.getSetting(this.key);
       const ledger = this.parse(raw);
       const sameCall = ledger.entries.find(e => e.toolCallId === toolCallId);
       if (sameCall && (sameCall.inputSha256 !== inputSha256 || sameCall.operation !== operation)) {
-        throw new SlackListError('write_identity_mismatch', 'This tool call already belongs to a different List operation.');
+        throw new SlackListError('write_identity_mismatch', `This tool call already belongs to a different ${this.noun} operation.`);
       }
       // Stop the whole request after uncertainty, including a model retry with
       // rephrased arguments. Read-only reconciliation remains available.
@@ -37,7 +44,7 @@ export class ListWriteLedger {
         ledger.entries.find(e => e.operation === operation && e.inputSha256 === inputSha256 && e.status === 'confirmed');
       if (previous) return { reserved: false, receipt: previous };
       if (!toolCallId || toolCallId.length > 256 || ledger.entries.length >= 16) {
-        throw new SlackListError('write_limit', 'This request has reached its limit of 16 List write attempts.');
+        throw new SlackListError('write_limit', `This request has reached its limit of 16 ${this.noun} write attempts.`);
       }
       const receipt: ListWriteReceipt = { toolCallId, operation, inputSha256, status: 'pending' };
       if (typeof input.list_id === 'string') receipt.listId = input.list_id;
@@ -46,7 +53,7 @@ export class ListWriteLedger {
         return { reserved: true, receipt };
       }
     }
-    throw new SlackListError('write_busy', 'Another List action is updating this request. No new write was sent.');
+    throw new SlackListError('write_busy', `Another ${this.noun} action is updating this request. No new write was sent.`);
   }
 
   async finish(receipt: ListWriteReceipt, status: Exclude<WriteStatus, 'pending'>, ids: { listId?: string; itemId?: string } = {}): Promise<void> {
@@ -54,13 +61,18 @@ export class ListWriteLedger {
       const raw = await this.store.getSetting(this.key);
       const ledger = this.parse(raw);
       const index = ledger.entries.findIndex(e => e.toolCallId === receipt.toolCallId && e.inputSha256 === receipt.inputSha256 && e.operation === receipt.operation);
-      if (index < 0) throw new SlackListError('write_receipt_missing', 'The List action could not be durably verified. Do not repeat it.');
+      if (index < 0) throw new SlackListError('write_receipt_missing', `The ${this.noun} action could not be durably verified. Do not repeat it.`);
       const previous = ledger.entries[index]!;
       if (previous.status === 'confirmed') return;
       ledger.entries[index] = { ...previous, ...ids, status };
       if (await this.store.applySettingsPatch({ expected: { key: this.key, value: raw ?? null }, set: [{ key: this.key, value: JSON.stringify(ledger) }] })) return;
     }
-    throw new SlackListError('write_receipt_unconfirmed', 'The List action could not be durably verified. Do not repeat it.');
+    throw new SlackListError('write_receipt_unconfirmed', `The ${this.noun} action could not be durably verified. Do not repeat it.`);
+  }
+
+  /** finish for a write that did not succeed. Never throws: a reservation left pending still blocks redispatch. */
+  async settle(receipt: ListWriteReceipt, status: 'failed' | 'unknown', ids: { listId?: string; itemId?: string } = {}): Promise<void> {
+    try { await this.finish(receipt, status, ids); } catch {}
   }
 
   async confirmedCreatedListIds(): Promise<string[]> {
@@ -80,7 +92,7 @@ export class ListWriteLedger {
           data.entries.some(e => !e || typeof e.toolCallId !== 'string' || typeof e.operation !== 'string' || !/^[a-f0-9]{64}$/.test(e.inputSha256) ||
             !['pending', 'confirmed', 'failed', 'unknown'].includes(e.status))) throw new Error();
       return data;
-    } catch { throw new SlackListError('write_receipt_invalid', 'This request has an unreadable List action receipt. Read-only inspection is still available; do not repeat its writes.'); }
+    } catch { throw new SlackListError('write_receipt_invalid', `This request has an unreadable ${this.noun} action receipt. Read-only inspection is still available; do not repeat its writes.`); }
   }
 }
 

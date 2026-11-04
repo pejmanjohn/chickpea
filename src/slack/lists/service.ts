@@ -168,7 +168,7 @@ export class SlackListsService {
     } catch (error) {
       const code = errorCode(error);
       const failed = !acknowledged && (DEFINITE_FAILURES.has(code) || (error instanceof SlackTransportError && error.effectOutcome === 'failed') || code === 'cancelled_before_call' || code === 'call_budget');
-      try { await this.options.ledger.finish(reservation.receipt, failed ? 'failed' : 'unknown', ids); } catch { /* The durable pending reservation still blocks redispatch. */ }
+      await this.options.ledger.settle(reservation.receipt, failed ? 'failed' : 'unknown', ids);
       return { status: failed ? 'not_written' : 'unverified', code, ...ids, message: failed ? explainError(code, this.hosted) : 'This List write may have taken effect, but could not be fully verified. Do not repeat it. Inspect the known List/item; if a new List has no returned ID, its creation cannot be reconciled through these tools.', ...(error instanceof SlackListError ? error.context : {}) };
     }
   }

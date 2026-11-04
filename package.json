@@ -54,6 +54,7 @@
     "docs/runbooks/slack-auth-recovery.md",
     "docs/runbooks/slack-lists.md",
     "docs/runbooks/slack-group-dms.md",
+    "docs/runbooks/slack-canvases.md",
     "docs/runbooks/slack-steering.md",
     "docs/runbooks/workspace-management-mcp.md",
     "evals",
