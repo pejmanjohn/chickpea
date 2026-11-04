@@ -37,6 +37,8 @@ const LAZY_MODULES: Record<string, string> = {
   'src/auth/mcp-oauth-routes.ts': 'the MCP resource and its sign-in pages (app.ts)',
   'src/management/mcp.ts': 'the management MCP server (auth/mcp-oauth-routes.ts)',
   'src/management/recipes.ts': 'a workspace recipe export or preview (management/service.ts)',
+  'src/slack/group-dm/runtime.ts': "start_slack_group_dm's first call (slack/group-dm/tools.ts)",
+  'src/slack/group-dm/service.ts': "start_slack_group_dm's first call (slack/group-dm/runtime.ts)",
   'src/management/slack-key-setup.ts': "an Add key setup's issue, its approval-time setups, or a pasted-key check (management/service.ts)",
   'src/slack/key-form.ts': 'an Add key card, click or form (channels/slack.ts, cloudflare.ts, slack/run-turn.ts)',
 };
@@ -46,7 +48,7 @@ const LAZY_MODULES: Record<string, string> = {
  * types included. Lower it when a change moves modules behind import();
  * scripts/worker-closure.mjs holds the built artifact to its own ceiling.
  */
-const STARTUP_SOURCE_BUDGET_BYTES = Math.round(10.44 * 2 ** 20);
+const STARTUP_SOURCE_BUDGET_BYTES = Math.round(10.45 * 2 ** 20);
 
 type Edge = { to: string; local: boolean; dynamic: boolean };
 

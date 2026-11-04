@@ -1299,6 +1299,35 @@
    }
   },
   {
+   "name": "start_slack_group_dm",
+   "description": "Start a Slack group DM with the requester and the people they @-mentioned in this request (one to seven others), post your opening message there under your name, and return its link. One per request. Apps, bots, deactivated accounts, people from other organizations and anyone the requester did not @-mention are refused.",
+   "eager_input_streaming": true,
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "people": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 64
+      },
+      "minItems": 1,
+      "maxItems": 16
+     },
+     "message": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 12000
+     }
+    },
+    "required": [
+     "people",
+     "message"
+    ]
+   }
+  },
+  {
    "name": "reply_in_thread",
    "description": "Post a short reply in this Slack thread now, as yourself, while you keep working, to a message that arrived while you worked: answer its question, or give the progress update it asked for. Never post progress updates nobody asked for. Your final reply still answers everything.",
    "eager_input_streaming": true,

@@ -2982,12 +2982,13 @@ export class TurnJobStoreLogic {
              WHERE prior.runtime_plan_json IS NOT NULL AND prior.dispatch_receipt_json IS NOT NULL
            ) WHERE position = 1
          )`;
-    // Content-free Lists write receipts live exactly as long as their turn.
     // Isolated TurnJob stores may not have installed SettingsStore yet.
     const purgeTerminalRows = () => {
       if (this.db.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'app_settings'")) {
         this.db.run(
-          `DELETE FROM app_settings WHERE key IN (SELECT 'slack_lists.writes.v1:' || id FROM turn_jobs ${expiredTerminalPredicate})`,
+          `DELETE FROM app_settings WHERE key IN (SELECT 'slack_lists.writes.v1:' || id FROM turn_jobs ${expiredTerminalPredicate}
+            UNION ALL SELECT 'slack_group_dm.v1:' || id FROM turn_jobs ${expiredTerminalPredicate})`,
+          now - TURN_JOB_TTL_MS,
           now - TURN_JOB_TTL_MS,
         );
       }

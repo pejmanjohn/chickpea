@@ -304,6 +304,7 @@ import { resolveImageProvider } from '../images/provider.ts';
 import { createSlackFileTransport, type SlackFileTransport } from '../slack/file-transport.ts';
 import { SLACK_LIST_TOOL_NAMES, useSlackListsTools } from '../slack/lists/tools.ts';
 import { SLACK_READ_TOOL_NAMES, useSlackReadingTools } from '../slack/reading/tools.ts';
+import { SLACK_GROUP_DM_TOOL_NAME, useSlackGroupDmTool } from '../slack/group-dm/tools.ts';
 import {
   parseSlackManagementSignal,
   useWorkspaceManagementSlackTools,
@@ -1010,6 +1011,7 @@ export function useChickpeaSlackRuntimeCapabilities(
       );
       useSlackListsTools(plan, resolveAgentPlatformEnv);
       useSlackReadingTools(plan, resolveAgentPlatformEnv);
+      useSlackGroupDmTool(plan, resolveAgentPlatformEnv);
       useSlackMidRunReplyTool(followUps);
       useTool(createSlackPresentTableTool(writeTablePresentation));
       useSlackInteractiveComponents(plan, writeInteractiveQuestion, writeDisplayComponent);
@@ -1584,6 +1586,7 @@ function slackActivityToolDescriptors(input: {
     descriptors.push(...SLACK_LIST_TOOL_NAMES.map(toolName => ({ toolName, descriptor: semanticDescriptorForCoreTool(toolName) })));
     if (input.plan.actorMembershipId) {
       descriptors.push(...SLACK_READ_TOOL_NAMES.map(toolName => ({ toolName, descriptor: semanticDescriptorForCoreTool(toolName) })));
+      descriptors.push({ toolName: SLACK_GROUP_DM_TOOL_NAME, descriptor: semanticDescriptorForCoreTool(SLACK_GROUP_DM_TOOL_NAME) });
     }
     descriptors.push({
       toolName: 'update_agent_memory',
