@@ -7,6 +7,7 @@ import {
   type SemanticActivityTelemetrySink,
   type SemanticActivityTelemetrySurface,
 } from '../activity/telemetry.ts';
+import type { DailyLimitAdmission } from '../config/platform-funding.ts';
 import type { SlackInteractionProgress, TurnPullRequestProgress } from '../config/state-rpc.ts';
 import {
   canonicalSlackReplyText,
@@ -49,7 +50,7 @@ import type {
   SlackPresentationPlanV3,
   SlackPresentationReceiptCertainty,
 } from './run-presentations.ts';
-import { escapeMrkdwn } from './ui/text.ts';
+import { escapeMrkdwn, slackDateTime, utcDateTime } from './ui/text.ts';
 import { slackClientMessageId } from './transport/message-id.ts';
 import { SlackTransportError } from './transport/types.ts';
 import { slackPlatformErrorCode } from './errors.ts';
@@ -78,6 +79,22 @@ export const OPENAI_SUBSCRIPTION_QUOTA_TEXT =
 
 export const CREDITS_EXHAUSTED_TEXT =
   "This workspace has used all of its plan's usage, so I can't continue. An Owner can add extra usage or change the plan in Chickpea.";
+
+/**
+ * The reply to a request refused for a daily limit. `slack` renders the time
+ * in each reader's zone; `utc` writes it out where Slack does not format it.
+ * The limit's day can end in the reader's afternoon, so the copy never says "today".
+ */
+export function dailyLimitText(
+  { scope, resumesAt }: Pick<DailyLimitAdmission, 'scope' | 'resumesAt'>,
+  time: 'slack' | 'utc' = 'slack',
+): string {
+  const resumes = time === 'slack' ? slackDateTime(resumesAt) : utcDateTime(resumesAt);
+  return scope === 'workspace'
+    ? `This workspace has reached its daily trial limit. Chickpea resumes ${resumes}, ` +
+      'or an Owner can choose a plan to continue now.'
+    : `Chickpea has paused trial usage for now. It resumes ${resumes}, or an Owner can choose a plan to continue now.`;
+}
 
 export const OPENAI_SUBSCRIPTION_POLICY_TEXT =
   'The connected ChatGPT subscription did not authorize this request. An administrator can review the Subscription status in Settings; I did not switch to OpenAI API-key billing.';

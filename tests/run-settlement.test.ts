@@ -37,6 +37,7 @@ const EXPECTED: Record<
   'openai-subscription-quota': { platform: null, customer: null, platformAfterToolCall: null },
   'openai-subscription-policy': { platform: null, customer: null, platformAfterToolCall: null },
   'credits-exhausted': { platform: null, customer: null, platformAfterToolCall: null },
+  'daily-limit': { platform: null, customer: null, platformAfterToolCall: null },
   sandbox: { platform: 'sandbox', customer: 'sandbox', platformAfterToolCall: 'sandbox' },
   'sandbox-session-cap': { platform: null, customer: null, platformAfterToolCall: null },
   'recovery-failure': { platform: 'evicted', customer: 'evicted', platformAfterToolCall: 'evicted' },

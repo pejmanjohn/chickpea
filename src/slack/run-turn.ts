@@ -56,6 +56,7 @@ import {
   installationOwnershipOf,
 } from '../config/installation-scope.ts';
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
+import type { PlatformFundingRefusal } from '../config/platform-funding.ts';
 import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
 import { wakeSlackAgentObject } from '../agents/turn-input.ts';
 import type { AdmissionAgentWake } from './admission-agent-wake.ts';
@@ -110,7 +111,7 @@ import { activityStatus, initialActivityStatus } from '../activity/status.ts';
 import { abandonTerminalSlackPresentationBestEffort } from './presentation-repair.ts';
 import { defaultSlackStatusRegistry, type SlackStatusRegistry } from './status-registry.ts';
 import { createCodingTaskProgress } from './coding-task-progress.ts';
-import { creditsExhaustedComponents } from './credits-ask.ts';
+import { fundingRefusalComponents } from './credits-ask.ts';
 import {
   creditBackFailedRun,
   creditBackReason,
@@ -2357,12 +2358,14 @@ async function runTurnAttempt(
           await finishDelivery(undefined, 'succeeded');
           return;
         }
-        const components = err instanceof AgentPromptFailure && err.kind === 'credits-exhausted'
-          ? await creditsExhaustedComponents({
+        const refusal = fundingRefusal(err);
+        const components = refusal
+          ? await fundingRefusalComponents({
               env: platformEnv,
               identity: options.appStores?.identity ?? getIdentityStore(platformEnv),
               workspaceId: turnWorkspaceId,
               userId: turn.userId,
+              refusal,
             })
           : undefined;
         const failureText = withCreditedBack(agentFailureText(err), await creditBackFailedRun(
@@ -2377,9 +2380,10 @@ async function runTurnAttempt(
         ));
         await statusTurn.prepareFinal();
         const shownText = failureFinalText(turn, failureText);
-        // A plain_text final drops its text when it carries blocks; this text has no markdown syntax.
-        await (components
-          ? presenter.deliverFinal(shownText, 'markdown', 'error', { components })
+        // A plain_text final drops its text when it carries blocks, and escapes a
+        // daily limit's <!date> token; neither text has other markdown syntax.
+        await (refusal
+          ? presenter.deliverFinal(shownText, 'markdown', 'error', components ? { components } : undefined)
           : presenter.deliverFinal(shownText, 'plain_text', 'error'));
         await finishStatus('failure');
         await finishDelivery('failed');
@@ -2993,6 +2997,11 @@ function slackFailureKind(error: unknown, settlement: FlueSettlementCheckpointV1
   return error instanceof AgentPromptFailure ? error.kind : 'agent';
 }
 
+function fundingRefusal(error: unknown): PlatformFundingRefusal | undefined {
+  if (!(error instanceof AgentPromptFailure)) return undefined;
+  return error.kind === 'credits-exhausted' ? 'credits_exhausted' : error.dailyLimit;
+}
+
 function agentFailureSafeCode(error: unknown): string {
   if (!(error instanceof AgentPromptFailure)) return 'agent_failed';
   switch (error.kind) {
@@ -3002,6 +3011,7 @@ function agentFailureSafeCode(error: unknown): string {
     case 'openai-subscription-quota': return 'subscription_quota';
     case 'openai-subscription-policy': return 'subscription_policy';
     case 'credits-exhausted': return 'credits_exhausted';
+    case 'daily-limit': return 'daily_limit';
     default: return 'agent_failed';
   }
 }

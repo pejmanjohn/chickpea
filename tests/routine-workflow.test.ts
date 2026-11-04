@@ -32,6 +32,7 @@ import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import {
   configurePlatformFunding,
   CreditsExhaustedError,
+  DailyLimitError,
   platformCredentialRefId,
   resetPlatformFundingForTests,
   type CreditBackReason,
@@ -65,7 +66,7 @@ import {
   ROUTINE_RESULT_DATA_NAME,
 } from '../src/agents/routine-execution.ts';
 import { settleCancelledOccurrences } from '../src/state/pending-work.ts';
-import { CREDITS_EXHAUSTED_TEXT } from '../src/slack/web-client-presenter.ts';
+import { CREDITS_EXHAUSTED_TEXT, dailyLimitText } from '../src/slack/web-client-presenter.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import type { UsageMicros } from '../src/usage/usage-display.ts';
 import type { UsageStore } from '../src/usage/types.ts';
@@ -911,6 +912,38 @@ test('a scheduled run gets the out-of-usage notice only for a hosted installatio
     });
     assert.deepEqual([run?.status, run?.failureClass, run?.publicError], expected, suffix);
     assert.equal(JSON.stringify(messages).includes(CREDITS_EXHAUSTED_TEXT), expected[1] === 'spend_limited', suffix);
+  }
+});
+
+test('a scheduled run at a daily limit fails spend-limited with its scope\'s notice in UTC, only when hosted', async (t) => {
+  const limit = { scope: 'workspace', resumesAt: Date.UTC(2026, 10, 5) } as const;
+  const notice = 'This workspace has reached its daily trial limit. ' +
+    'Chickpea resumes Nov 5, 2026 at 00:00 UTC, or an Owner can choose a plan to continue now.';
+  assert.equal(dailyLimitText(limit, 'utc'), notice);
+  const fleetNotice = 'Chickpea has paused trial usage for now. ' +
+    'It resumes Nov 5, 2026 at 00:00 UTC, or an Owner can choose a plan to continue now.';
+  const dailyLimit = () => new AgentRunError({
+    outcome: 'failed',
+    submissionId: 'submission_test',
+    cause: { type: 'operation_failed', message: `dispatch(submission_test) failed: ${new DailyLimitError(limit).message}` },
+  });
+  const cases = [
+    ['standalone_daily_limit_text', { port: false, env: {} }, dailyLimit,
+      ['failed', 'tool_failed', 'The routine could not complete safely.']],
+    ['hosted_flue_daily_limit', {}, dailyLimit, ['failed', 'spend_limited', notice]],
+    ['hosted_daily_limit', {}, () => new DailyLimitError(limit), ['failed', 'spend_limited', notice]],
+    ['hosted_fleet_limit', {}, () => new DailyLimitError({ ...limit, scope: 'fleet' }),
+      ['failed', 'spend_limited', fleetNotice]],
+  ] as const;
+  for (const [suffix, setup, error, expected] of cases) {
+    const { run, messages, creditBacks } = await scheduledRunSettlement(t, suffix, {
+      ...setup, handle: () => fakeHandle({ readError: error() }),
+    });
+    assert.deepEqual([run?.status, run?.failureClass, run?.publicError], expected, suffix);
+    assert.ok(JSON.stringify(messages).includes(expected[2]), suffix);
+    assert.equal(JSON.stringify(messages).includes('trial'), expected[1] === 'spend_limited', suffix);
+    assert.equal(JSON.stringify(messages).includes(CREDITS_EXHAUSTED_TEXT), false, suffix);
+    assert.deepEqual(creditBacks, [], suffix);
   }
 });
 

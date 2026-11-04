@@ -46,7 +46,7 @@ import {
   createCloudflareBoundedAgentReplyReader,
   type BoundedReplyReader,
 } from './bounded-agent-observation.ts';
-import { CREDITS_EXHAUSTED_CODE } from '../config/platform-funding.ts';
+import { CREDITS_EXHAUSTED_CODE, dailyLimitOf, type DailyLimitAdmission } from '../config/platform-funding.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { preloadManagedConnectionDetails } from '../connections/catalog/index.ts';
@@ -86,6 +86,7 @@ import {
 import {
   AGENT_FAILURE_TEXT,
   CREDITS_EXHAUSTED_TEXT,
+  dailyLimitText,
   OPENAI_SUBSCRIPTION_POLICY_TEXT,
   OPENAI_SUBSCRIPTION_QUOTA_TEXT,
   OPENAI_SUBSCRIPTION_RECONNECT_TEXT,
@@ -99,7 +100,11 @@ type AgentPromptFailureKind =
   | 'openai-subscription-reconnect'
   | 'openai-subscription-quota'
   | 'openai-subscription-policy'
-  | 'credits-exhausted';
+  | 'credits-exhausted'
+  | 'daily-limit';
+
+/** A failure's kind, or the daily limit that is a `daily-limit` failure. */
+export type AgentFailure = Exclude<AgentPromptFailureKind, 'daily-limit'> | DailyLimitAdmission;
 
 type AgentUsageCompleteness = 'complete' | 'partial' | 'not_reported';
 
@@ -152,16 +157,22 @@ export interface AgentDispatchResult {
 export class AgentPromptFailure extends Error {
   /** Tools the settled submission called, as this attempt observed them; a replayed settlement has none. */
   toolCallCount?: number;
+  readonly kind: AgentPromptFailureKind;
+  /** A `daily-limit` failure's limit; undefined for every other kind. */
+  readonly dailyLimit: DailyLimitAdmission | undefined;
   constructor(
-    readonly kind: AgentPromptFailureKind,
+    failure: AgentFailure,
     readonly status = 500,
     readonly recoveryRequired = false,
     readonly retryable = false,
     /** Only for content-free diagnostics (settlementFailureFacts). */
     cause?: unknown,
   ) {
+    const kind = typeof failure === 'string' ? failure : 'daily-limit';
     super(`agent prompt failed (${kind})`, cause === undefined ? undefined : { cause });
     this.name = 'AgentPromptFailure';
+    this.kind = kind;
+    this.dailyLimit = typeof failure === 'string' ? undefined : failure;
   }
 }
 
@@ -172,7 +183,7 @@ export class AgentPromptFailure extends Error {
  * one stays an ordinary Agent failure.
  */
 export class AgentRunAborted extends AgentPromptFailure {
-  constructor(kind: AgentPromptFailureKind = 'agent') {
+  constructor(kind: AgentFailure = 'agent') {
     super(kind);
     this.name = 'AgentRunAborted';
   }
@@ -212,6 +223,7 @@ export function agentFailureText(error: unknown): string {
   if (error.kind === 'openai-subscription-quota') return OPENAI_SUBSCRIPTION_QUOTA_TEXT;
   if (error.kind === 'openai-subscription-policy') return OPENAI_SUBSCRIPTION_POLICY_TEXT;
   if (error.kind === 'credits-exhausted') return CREDITS_EXHAUSTED_TEXT;
+  if (error.dailyLimit) return dailyLimitText(error.dailyLimit);
   return AGENT_FAILURE_TEXT;
 }
 
@@ -632,7 +644,7 @@ export async function promptSlackThreadAgent(
       checkpoint = await input.state.recordSettlement({
         outcome: error.outcome,
         settledAt: now(),
-        failureKind: kind,
+        ...settledFailure(kind),
         ...toolCalls.settled(),
       });
     } catch (settlementError) {
@@ -1151,13 +1163,21 @@ function resultFromSettlement(
   if (settlement.outcome === 'completed') return settlement.result;
   // An attached container (v0.1.26 and earlier) could settle a turn as a
   // sandbox failure. Such a record replays as an ordinary Agent failure.
-  const kind = settlement.failureKind === 'sandbox' || settlement.failureKind === 'sandbox-session-cap'
+  const kind: AgentFailure = settlement.failureKind === 'sandbox' || settlement.failureKind === 'sandbox-session-cap'
     ? 'agent'
-    : settlement.failureKind;
+    : settlement.failureKind === 'daily-limit'
+      ? { kind: 'daily_limit', ...settlement.dailyLimit }
+      : settlement.failureKind;
   // A replayed abort ends the same way as the live one.
   if (settlement.outcome === 'aborted') throw new AgentRunAborted(kind);
   throw Object.assign(new AgentPromptFailure(kind),
     settlement.toolCallCount === undefined ? {} : { toolCallCount: settlement.toolCallCount });
+}
+
+function settledFailure(failure: AgentFailure) {
+  return typeof failure === 'string'
+    ? { failureKind: failure }
+    : { failureKind: 'daily-limit' as const, dailyLimit: { scope: failure.scope, resumesAt: failure.resumesAt } };
 }
 
 function boundedReceipt(receipt: DispatchReceipt): FlueDispatchReceiptV1 {
@@ -1275,12 +1295,12 @@ export function parseAgentDispatchEnvelope(
 export function classifyAgentPromptFailure(
   _status: number,
   rawEnvelope: string,
-): AgentPromptFailureKind {
+): AgentFailure {
   const error = parseFlueErrorEnvelope(rawEnvelope);
   return classifyFailureText(error.type, error.message);
 }
 
-function classifyFlueRunFailure(error: unknown): AgentPromptFailureKind {
+function classifyFlueRunFailure(error: unknown): AgentFailure {
   const seen = new Set<unknown>();
   let current: unknown = error;
   let type = '';
@@ -1296,10 +1316,12 @@ function classifyFlueRunFailure(error: unknown): AgentPromptFailureKind {
   return classifyFailureText(type, message);
 }
 
-function classifyFailureText(typeValue: string, messageValue: string): AgentPromptFailureKind {
+function classifyFailureText(typeValue: string, messageValue: string): AgentFailure {
   const type = typeValue.toLowerCase();
   const message = messageValue.toLowerCase();
   const searchable = `${type} ${message}`;
+  const dailyLimit = dailyLimitOf({ message: messageValue });
+  if (dailyLimit) return dailyLimit;
   if (message.includes(`(${CREDITS_EXHAUSTED_CODE})`)) return 'credits-exhausted';
   if (
     message.includes('openai subscription operation failed (auth_reconnect_required)') ||

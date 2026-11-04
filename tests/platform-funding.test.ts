@@ -46,9 +46,14 @@ import {
 import { registerPiProvider, registeredPiProvider } from '../src/config/pi-provider-registry.ts';
 import {
   configurePlatformFunding,
+  CreditsExhaustedError,
+  dailyLimitOf,
+  DailyLimitError,
   installationFunding,
+  isCreditsExhausted,
   resetPlatformFundingForTests,
   type PlatformFundedModel,
+  type PlatformFundingAdmission,
   type PlatformFundingPort,
 } from '../src/config/platform-funding.ts';
 import { invalidateProviderKeyCache } from '../src/config/provider-keys.ts';
@@ -59,9 +64,14 @@ import { SqliteConfigStore } from '../src/config/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { ANTHROPIC_COMPAT_PROVIDER_ID } from '../src/model-catalog/provider-alias.ts';
-import { AgentPromptFailure, agentFailureText, promptSlackThreadAgent } from '../src/slack/flue-dispatch.ts';
-import type { FlueDispatchEnvelopeV1 } from '../src/slack/turn-job-types.ts';
-import { CREDITS_EXHAUSTED_TEXT } from '../src/slack/web-client-presenter.ts';
+import {
+  AgentPromptFailure,
+  agentFailureText,
+  classifyAgentPromptFailure,
+  promptSlackThreadAgent,
+} from '../src/slack/flue-dispatch.ts';
+import type { FlueDispatchEnvelopeV1, FlueSettlementCheckpointV1 } from '../src/slack/turn-job-types.ts';
+import { CREDITS_EXHAUSTED_TEXT, dailyLimitText } from '../src/slack/web-client-presenter.ts';
 import type { ModelRequestRecord } from '../src/usage/model-requests.ts';
 import { priceCatalogFor, RELEASE_PRICE_CATALOGS } from '../src/usage/pricing/catalog.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
@@ -71,6 +81,9 @@ import { withEnv } from './helpers/env.ts';
 import { NO_RUN_FEES } from './helpers/platform-funding.ts';
 
 const NOW = Date.UTC(2026, 9, 7, 12);
+const RESUMES_AT = Date.UTC(2026, 9, 8);
+const DAILY_LIMIT = { kind: 'daily_limit', scope: 'workspace', resumesAt: RESUMES_AT } as const;
+const FLEET_LIMIT = { ...DAILY_LIMIT, scope: 'fleet' } as const;
 const SONNET = 'claude-sonnet-5-5';
 const KIMI = 'moonshotai/kimi-k3';
 const HOSTED = { CHICKPEA_TENANCY: 'installation' } as const;
@@ -456,6 +469,78 @@ test('a refusal answered while an earlier admission is in flight is not overwrit
   assert.deepEqual([calls.admit.length, sentModels.length], [3, 1]);
 });
 
+test('a daily limit is refused before any provider call with its own reason, scope and time, and is not reused', async (t) => {
+  const { env, recorded } = hostedProxy(t);
+  let answer: PlatformFundingAdmission = DAILY_LIMIT;
+  const calls = fakePort({ admit: async () => answer });
+  const { model, sentModels } = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, SONNET, 'anthropic-messages', [completes()]);
+  const platform = grant('inst_daily', 'platform');
+
+  const refused = await withModelAccess(platform, env, 'reply', () => modelCall(model));
+
+  assert.equal(refused.stopReason, 'error');
+  assert.match(refused.errorMessage ?? '', new RegExp(String.raw`\(daily_limit:workspace:${RESUMES_AT / 1000}\)`));
+  assert.doesNotMatch(refused.errorMessage ?? '', /\(credits_exhausted\)/);
+  assert.deepEqual([sentModels.length, recorded.length, calls.charge.length], [0, 0, 0]);
+
+  answer = FLEET_LIMIT;
+  const fleet = await withModelAccess(platform, env, 'reply', () => modelCall(model));
+  assert.equal(calls.admit.length, 2, 'a daily limit is asked again, so a plan chosen meanwhile applies at once');
+  assert.match(fleet.errorMessage ?? '', new RegExp(String.raw`\(daily_limit:fleet:${RESUMES_AT / 1000}\)`));
+  assert.equal(sentModels.length, 0);
+});
+
+test('a malformed daily limit fails closed as unavailable', async (t) => {
+  const { env } = hostedProxy(t);
+  let answer: unknown;
+  fakePort({ admit: async () => answer as PlatformFundingAdmission });
+  const { model, sentModels } = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, SONNET, 'anthropic-messages', [completes()]);
+  for (const malformed of [
+    { kind: 'daily_limit', scope: 'workspace' },
+    ...[Number.NaN, Number.POSITIVE_INFINITY, 0, -RESUMES_AT, RESUMES_AT + 0.5, 9e15, String(RESUMES_AT)]
+      .map((resumesAt) => ({ ...DAILY_LIMIT, resumesAt })),
+    { kind: 'daily_limit', resumesAt: RESUMES_AT },
+    ...['team', 'Workspace', '', null].map((scope) => ({ ...DAILY_LIMIT, scope })),
+    { ...DAILY_LIMIT, kind: 'weekly_limit' },
+    'daily_limit',
+    null,
+  ]) {
+    answer = malformed;
+    const refused = await withModelAccess(grant('inst_daily', 'platform'), env, 'reply', () => modelCall(model));
+    assert.match(refused.errorMessage ?? '', /\(credits_unavailable\)/, JSON.stringify(malformed));
+  }
+  assert.equal(sentModels.length, 0);
+});
+
+test('a daily limit\'s text is read back only as itself, with its scope, and only with a port', () => {
+  resetPlatformFundingForTests();
+  const flueFailure = (message: string) => ({ type: 'operation_failed', message: `dispatch(sub_1) failed: ${message}` });
+  const daily = flueFailure(new DailyLimitError(DAILY_LIMIT).message);
+  const fleet = flueFailure(new DailyLimitError(FLEET_LIMIT).message);
+  const credits = flueFailure(new CreditsExhaustedError().message);
+  const envelope = (failure: { type: string; message: string }) => JSON.stringify({ error: failure });
+
+  assert.equal(dailyLimitOf(new DailyLimitError(DAILY_LIMIT)), undefined, 'no port, no daily limit');
+  assert.equal(dailyLimitOf(daily), undefined);
+  assert.equal(classifyAgentPromptFailure(500, envelope(daily)), 'agent');
+
+  fakePort();
+  assert.deepEqual(dailyLimitOf(new DailyLimitError(DAILY_LIMIT)), DAILY_LIMIT);
+  assert.deepEqual(dailyLimitOf({ message: 'run failed', cause: { cause: daily } }), DAILY_LIMIT, 'deep in a chain');
+  assert.deepEqual(classifyAgentPromptFailure(500, envelope(daily)), DAILY_LIMIT);
+  assert.deepEqual(classifyAgentPromptFailure(500, envelope(fleet)), FLEET_LIMIT);
+  assert.equal(isCreditsExhausted(daily), false, 'a daily limit is not taken for credits');
+  assert.equal(dailyLimitOf(credits), undefined, 'nor credits for a daily limit');
+  assert.equal(classifyAgentPromptFailure(500, envelope(credits)), 'credits-exhausted');
+  for (const text of [
+    '(daily_limit:workspace:0)', '(daily_limit:workspace:)', '(daily_limit:fleet:soon)', '(daily_limit:fleet:-1)',
+    '(daily_limit:team:1793836800)', '(daily_limit:1793836800)', 'daily_limit:workspace:1793836800',
+  ]) {
+    assert.equal(dailyLimitOf(flueFailure(text)), undefined, text);
+  }
+  resetPlatformFundingForTests();
+});
+
 test('a positive answer serves an installation for at most 30 seconds, and only that installation', async (t) => {
   hostedProxy(t);
   let now = NOW;
@@ -769,6 +854,61 @@ test('a Slack turn refused for credits ends with the credits reply, its own kind
     "This workspace has used all of its plan's usage, so I can't continue. " +
     'An Owner can add extra usage or change the plan in Chickpea.');
   assert.equal(agentFailureText(failure), CREDITS_EXHAUSTED_TEXT);
+  assert.equal(sentModels.length, 0);
+  assert.equal(calls.admit.length, 1, 'Flue did not retry the refused request');
+});
+
+test('a Slack turn at a daily limit ends with the daily-limit reply, its time, no retry, and the same on replay', { timeout: 20_000 }, async (t) => {
+  const { env } = hostedProxy(t, 'inst_flue_daily');
+  const calls = fakePort({ admit: async () => DAILY_LIMIT });
+  const { sentModels } = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, SONNET, 'anthropic-messages', []);
+  const interceptor = createModelAccessInterceptor({
+    lookup: async () => ({ env, grant: grant('inst_flue_daily', 'platform'), agentId: 'agent_daily' }),
+    installationGrants: async () => [],
+  });
+  t.after(instrument({ key: Symbol('daily-limit'), interceptor, observe() {}, dispose() {} }));
+  function DailyLimitProbe() {
+    useModel(`${ANTHROPIC_COMPAT_PROVIDER_ID}/${SONNET}`);
+    return 'Answer briefly.';
+  }
+  const runtime = await start({
+    agents: [{ agent: DailyLimitProbe, name: 'daily-limit-probe' }],
+    providers: [registeredPiProvider(ANTHROPIC_COMPAT_PROVIDER_ID)!],
+  });
+  const settlements: FlueSettlementCheckpointV1[] = [];
+  const state = (flueSettlement?: FlueSettlementCheckpointV1) => ({
+    dispatchEnvelope: { instanceId: 'daily-limit-turn' } as FlueDispatchEnvelopeV1,
+    ...(flueSettlement ? { flueSettlement } : {}),
+    prepare: () => { throw new Error('Must reuse saved dispatch'); },
+    reconcileExistingInstance: () => { throw new Error('Must reuse saved instance'); },
+    recordReceipt: (value: never) => value,
+    recordSettlement: (value: FlueSettlementCheckpointV1) => { settlements.push(value); return value; },
+    markRecoveryRequired: () => {},
+  });
+  const prompt = (input: Pick<Parameters<typeof promptSlackThreadAgent>[0], 'handle' | 'state'>) => promptSlackThreadAgent({
+    ...input, message: 'unused saved dispatch', turnId: 'daily-limit-turn',
+    conversationKey: 'T_FIXTURE:C_FIXTURE:1', requestedModel: `anthropic/${SONNET}`,
+  }).then(() => undefined, (error: unknown) => error);
+  let failure: unknown;
+  let replayed: unknown;
+  try {
+    const agent = init(DailyLimitProbe, { id: 'daily-limit-turn' });
+    const receipt = await agent.dispatch('Hello');
+    failure = await prompt({ handle: agent, state: { ...state(), dispatchReceipt: receipt } });
+    replayed = await prompt({ handle: agent, state: { ...state(settlements[0]), dispatchReceipt: receipt } });
+  } finally {
+    await runtime.stop();
+  }
+
+  assert.ok(failure instanceof AgentPromptFailure, String(failure));
+  assert.deepEqual([failure.kind, failure.dailyLimit, failure.retryable], ['daily-limit', DAILY_LIMIT, false]);
+  assert.equal(agentFailureText(failure), dailyLimitText(DAILY_LIMIT));
+  assert.notEqual(agentFailureText(failure), CREDITS_EXHAUSTED_TEXT);
+  assert.deepEqual(settlements.map(({ settledAt: _at, ...rest }) => rest), [{
+    outcome: 'failed', failureKind: 'daily-limit', dailyLimit: { scope: 'workspace', resumesAt: RESUMES_AT },
+  }]);
+  assert.ok(replayed instanceof AgentPromptFailure, String(replayed));
+  assert.deepEqual([replayed.kind, replayed.dailyLimit], ['daily-limit', DAILY_LIMIT], 'the replayed settlement says the same');
   assert.equal(sentModels.length, 0);
   assert.equal(calls.admit.length, 1, 'Flue did not retry the refused request');
 });
