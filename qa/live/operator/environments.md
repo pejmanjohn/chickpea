@@ -252,10 +252,17 @@
    `src/auth/setup-capability.mjs` are hard-gated against the lane baseline; a
    mismatch refuses with `INSTALL_CONTINUATION_REQUIRED`, and the recovery is to
    prove a fresh install on a disposable target and re-record the baseline.
-   An existing installation may omit the optional `lists:read` and `lists:write`
-   scopes when its entire manifest otherwise matches. That deployment preserves
-   the baseline and still verifies the exact recorded live grant; it needs no
-   Slack reinstall or baseline rewrite.
+   An existing installation may omit whole feature scope groups (`lists:read`,
+   `lists:write`, `mpim:history`, and the seven scopes requested for upcoming
+   features as one group) and optional events (`agent_session_stopped`,
+   `message.mpim`) when its entire manifest otherwise matches; the local
+   contract lists every combination, 64 today, and admits at most 256. That
+   deployment preserves the baseline and still verifies the exact recorded live
+   grant; it needs no Slack reinstall or baseline rewrite. To give a lane the
+   seven, add them under **OAuth & Permissions** on the lane's app, reinstall
+   it, and re-record the lane baseline with `writeEnvironmentBaseline`, since
+   live authority must match the baseline's exact grant or the deploy refuses
+   with `SLACK_SCOPE_MISMATCH`.
    Changes to the setup flow (`src/auth/setup-handoff.ts`,
    `src/management/setup-routes.ts`, `src/config/onboarding-state.ts`,
    `src/admin/onboarding-proof.ts`) deploy normally and mark the lane

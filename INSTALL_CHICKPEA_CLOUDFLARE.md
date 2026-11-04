@@ -375,7 +375,10 @@ follow [Slack's Stop button](SETUP_AGENT.md#slacks-stop-button). The same
 manifest subscribes to `message.mpim` and requests `mpim:history`, so Agents
 in group DMs hear their handles and thread replies; for an adopted app
 without them, see
-[Group DMs](SETUP_AGENT.md#group-dms).
+[Group DMs](SETUP_AGENT.md#group-dms). The same manifest also requests seven
+permissions for upcoming features, which no feature uses yet; an adopted app
+without them works, see
+[Permissions for upcoming features](SETUP_AGENT.md#permissions-for-upcoming-features).
 
 ## 5. Choose the provider and model
 

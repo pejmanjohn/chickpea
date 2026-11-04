@@ -143,12 +143,26 @@ The lane baseline records the Slack manifest digest, the required bot scopes, an
 is still recorded so older baselines and receipts stay comparable.
 
 Only the manifest digest, the scopes, and the install contract are hard-gated.
-An existing installation may omit `lists:read` and `lists:write` if removing
-exactly those optional scopes from the candidate produces the baseline's entire
-manifest and scope set. The baseline remains unchanged, live authority must still
-match its exact grant, and deployment metadata continues to describe that installed
-contract. This compatibility does not prove a fresh install or clear setup-flow
-evidence.
+An existing installation may omit whole feature scope groups and optional
+events if removing exactly those from the candidate produces the baseline's
+entire manifest and scope set. The groups are `SLACK_FEATURE_SCOPE_GROUPS` in
+`src/slack/scopes.ts`: `lists:read`, `lists:write`, `mpim:history`, and, as one
+group, the seven scopes requested for upcoming features (`channels:manage`,
+`groups:write`, `im:read`, `mpim:write`, `team:read`, `canvases:read`,
+`canvases:write`). The optional events are `SLACK_OPTIONAL_BOT_EVENTS`
+(`agent_session_stopped`, `message.mpim`). The local contract lists every
+combination as an installed variant, 64 today, and admits at most 256. The
+baseline remains unchanged, live authority must still match its exact grant,
+and deployment metadata continues to describe that installed contract. This
+compatibility does not prove a fresh install or clear setup-flow evidence.
+
+A new scope group needs nothing on a lane's Slack app for a deploy or a smoke
+to pass. The lane keeps its narrower grant through the installed variants. To
+give a lane the seven, add them under **OAuth & Permissions** on the lane's
+app, reinstall it, and re-record the lane baseline with
+`writeEnvironmentBaseline` (no `env` subcommand records one), because live
+authority must match the baseline's exact grant or the deploy refuses with
+`SLACK_SCOPE_MISMATCH`.
 
 Any other mismatch refuses the deploy with `INSTALL_CONTINUATION_REQUIRED`; recover by
 proving a fresh install on a disposable target and re-recording the lane baseline,

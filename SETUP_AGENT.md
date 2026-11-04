@@ -111,6 +111,30 @@ installation on it gets the permission when an Owner or Admin uses
 **Reconnect with Slack** in **Settings → Slack**, and hears only `@Chickpea` in
 group DMs until then.
 
+## Permissions for upcoming features
+
+A customer-owned app created from this release's manifest requests seven
+more permissions: `channels:manage`, `groups:write`, `im:read`,
+`mpim:write`, `team:read`, `canvases:read` and `canvases:write`. This
+release uses none of them. Upcoming releases will.
+
+An app created earlier keeps working without them: setup and recovery still
+pass. To add them to such an app, including a local Worker lane's own app,
+add all seven, not some of them. Recovery recognizes an app that holds all
+seven or none, and one that holds some of them only while its installed
+grant matches its configuration.
+
+1. Open [api.slack.com/apps](https://api.slack.com/apps) and select the app.
+2. Go to **OAuth & Permissions**. Under **Bot Token Scopes**, add
+   `channels:manage`, `groups:write`, `im:read`, `mpim:write`, `team:read`,
+   `canvases:read` and `canvases:write`, then **Save Changes**.
+3. When Slack asks to reinstall the app, reinstall it to the workspace so it
+   grants the new permissions.
+
+Credential recovery never adds them. An installation on the shared Chickpea
+app gets them when an Owner or Admin uses **Reconnect with Slack** in
+**Settings → Slack** after its maintainer adds them to that app.
+
 ## Recovery
 
 If credential key material or the installed Slack app credentials are lost, use the hidden scoped recovery flow in [docs/runbooks/slack-auth-recovery.md](docs/runbooks/slack-auth-recovery.md). It can repair only the unchanged app and workspace. It cannot create an Owner, grant a role, or sign anyone in.
