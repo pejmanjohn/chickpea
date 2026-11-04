@@ -310,7 +310,7 @@ import {
   parseFormValues,
   readFormSubmission,
 } from '../slack/ui/render-form.ts';
-import { approvalChoice, uiResponseTurnText, type RenderedUiSurface } from '../slack/ui/render.ts';
+import { approvalChoice, uiResponseTurnText } from '../slack/ui/render.ts';
 import { escapeMrkdwn } from '../slack/ui/text.ts';
 import {
   interactiveAnswer,
@@ -321,9 +321,12 @@ import {
   closeAgentChoiceSurface,
   redrawUiSurface,
   retireApprovalSurfacesForTypedAnswer,
+  surfaceMessenger,
   uiSurfaceRecord,
 } from '../slack/ui/host-surfaces.ts';
 import {
+  isKeyFormAction,
+  KEY_FORM_CALLBACK_ID,
   parseUiControl,
   type HostAgentChoiceSpec,
   type UiSurfaceRecord,
@@ -860,7 +863,7 @@ function handleAgentAppSlackInteractions(
       execution, botUserId: bot.botUserId,
     };
     const uiAction = parseSlackUiBlockAction(payload);
-    if (uiAction && isModalControl(parseUiControl(uiAction)) && await openSlackUiModal(uiAction, context)) return;
+    if (uiAction && opensModal(uiAction) && await openSlackUiModal(uiAction, context)) return;
     if (uiAction) {
       detach(c, handleSlackUiAction({ ...context, action: uiAction }).catch((error) => {
         console.error('[chickpea] Slack click failed:', sanitizeError(error));
@@ -1019,7 +1022,7 @@ function handleDirectSlackInteractions(): NonNullable<SlackChannelOptions['inter
     const uiAction = parseSlackUiBlockAction(payload);
     // A modal opens now, inside Slack's three-second trigger window; a click
     // that cannot open one goes on to ordinary admission, which says why.
-    if (uiAction && isModalControl(parseUiControl(uiAction)) &&
+    if (uiAction && opensModal(uiAction) &&
         await openDirectSlackUiModal(uiAction, payload.api_app_id ?? '', c.env as PlatformEnv | undefined)) {
       return;
     }
@@ -1582,7 +1585,7 @@ async function resolveInstallationBotUserId(
 ): Promise<string | undefined> {
   return credentials.botUserId ?? installedBotUserId ?? resolveBotUserId(platformEnv);
 }
-interface SlackEventExecution {
+export interface SlackEventExecution {
   transport: SlackTransport;
   client: ReturnType<typeof createSlackWebClient>;
   botUserId: string;
@@ -2394,6 +2397,10 @@ async function handleSlackUiAction(input: SlackUiContext & { action: SlackUiActi
   const { action, stores, client } = input;
   const addClick = parseAgentChannelAddClick(action);
   if (addClick) return addRequestedAgentToChannel({ ...input, request: addClick });
+  if (isKeyFormAction(action.actionId)) {
+    const keyForm = await import('../slack/key-form.ts');
+    return keyForm.explainKeyCardClick(keyForm.keyFormContextOf(input), action);
+  }
   const control = parseUiControl(action);
   // Link buttons also send block_actions, and so does choosing a value in a
   // form's field (in a message or a modal); only Submit answers a form.
@@ -2601,6 +2608,10 @@ async function handleSlackUiViewSubmission(
   input: SlackUiContext & { submission: SlackUiViewSubmission },
 ): Promise<void> {
   const { submission, stores, client } = input;
+  if (submission.callbackId === KEY_FORM_CALLBACK_ID) {
+    const keyForm = await import('../slack/key-form.ts');
+    return keyForm.saveKeyFromForm(keyForm.keyFormContextOf(input), submission);
+  }
   const surfaceId = viewSubmissionSurfaceId(submission);
   if (!surfaceId || !stores.slackState.executeUiSurface) return;
   const state = stores.slackState as UiSurfaceState;
@@ -2728,23 +2739,6 @@ function answerPicksUser(surface: UiSurfaceRecord, answer: InteractiveAnswer, us
 
 function emitUiInteraction(outcome: 'received' | 'refused' | 'resolved', reason?: UiRefusal): void {
   console.info('[chickpea] slack_ui.click', { outcome, ...(reason ? { reason } : {}) });
-}
-
-/** Edits a host surface message in place; `chat.update` keeps the sender. */
-function surfaceMessenger(
-  client: ReturnType<typeof createSlackWebClient>,
-  channelId: string,
-): { update(messageTs: string, rendered: RenderedUiSurface): Promise<void> } {
-  return {
-    async update(messageTs, rendered) {
-      await client.chat.update({
-        channel: channelId,
-        ts: messageTs,
-        text: rendered.text,
-        blocks: rendered.blocks,
-      } as unknown as Parameters<typeof client.chat.update>[0]);
-    },
-  };
 }
 
 /** The offer's Add button, or Slack's own Add of an Agent's app bot: Admin's Add to channels, from Slack. */
@@ -2875,7 +2869,9 @@ async function openSlackUiModal(action: SlackUiAction, context: SlackUiContext):
   try {
     const control = parseUiControl(action);
     if (!control) return false;
-    const view = modalForClick(action, await readUiSurface(context.stores, control.surfaceId));
+    const view = isKeyFormAction(action.actionId)
+      ? await (await import('../slack/key-form.ts')).keyFormForClick(action, context.stores)
+      : modalForClick(action, await readUiSurface(context.stores, control.surfaceId));
     if (!view) return false;
     await context.client.views.open({
       trigger_id: action.triggerId,
@@ -2911,6 +2907,14 @@ async function receiveSlackUiViewSubmission(
   platformEnv: PlatformEnv | undefined,
   pendingContext: SlackUiContext | undefined | Promise<SlackUiContext | undefined>,
 ): Promise<Response | undefined> {
+  if (submission.callbackId === KEY_FORM_CALLBACK_ID) {
+    const { answerKeyFormSubmission } = await import('../slack/key-form.ts');
+    return answerKeyFormSubmission(submission, platformEnv, pendingContext, (context) => {
+      detach(c, handleSlackUiViewSubmission({ ...context, submission }).catch((error) => {
+        console.error('[chickpea] Slack key form failed:', error instanceof Error ? error.name : 'unknown');
+      }));
+    });
+  }
   const surfaceId = viewSubmissionSurfaceId(submission);
   const [context, surface] = await Promise.all([
     pendingContext,
@@ -2924,6 +2928,10 @@ async function receiveSlackUiViewSubmission(
     console.error('[chickpea] Slack form submission failed:', sanitizeError(error));
   }));
   return undefined;
+}
+
+function opensModal(action: SlackUiAction): boolean {
+  return isModalControl(parseUiControl(action)) || isKeyFormAction(action.actionId);
 }
 
 type GatewayUiExecution = {

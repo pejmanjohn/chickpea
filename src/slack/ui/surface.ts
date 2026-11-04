@@ -1,4 +1,5 @@
 import { sha256HexNode } from '../../security/digest.ts';
+import type { KeyCardSpec } from './key-card.ts';
 import type {
   AskUserSpec,
   OfferActionsSpec,
@@ -98,6 +99,7 @@ export function isDisplaySurface(spec: UiSurfaceSpec): spec is DisplaySurfaceSpe
 export type UiSurfaceSpec =
   | HostApprovalSpec
   | HostAgentChoiceSpec
+  | KeyCardSpec
   | QuestionSurfaceSpec
   | ActionsSurfaceSpec
   | FormSurfaceSpec
@@ -168,6 +170,27 @@ export function uiBlockId(namespace: UiNamespace, surfaceId: string, index: numb
 
 export function uiValue(surfaceId: string, index: number): string {
   return `${surfaceId}:${index}`;
+}
+
+// The shared gateway forwards only `chickpea.ui.v1.` view callbacks.
+export const KEY_FORM_CALLBACK_ID = 'chickpea.ui.v1.key';
+const KEY_ADD_ACTION = /^chickpea\.host\.v1\.key_add\.\d{1,3}$/;
+
+export function isKeyFormAction(actionId: string): boolean {
+  return KEY_ADD_ACTION.test(actionId);
+}
+
+/**
+ * Reply data a Slack turn writes when it ran a management tool that can ask
+ * for a key with the Add key card (apply_workspace_changes,
+ * save_connection_key). Only such a turn looks for the card's setups after
+ * its reply. Not persisted with the settlement: a replayed answer looks.
+ */
+export const KEY_SETUP_TOOL_DATA_NAME = 'slackKeySetupTool';
+
+export function keySetupToolRanFromReplyData(value: unknown): boolean {
+  return Array.isArray(value) && value.some((entry) =>
+    typeof entry === 'object' && entry !== null && (entry as { ran?: unknown }).ran === true);
 }
 
 const ACTION_ID = /^chickpea\.(ui|host)\.v1\.([a-z_]{1,24})(?:\.(\d{1,3}))?$/;

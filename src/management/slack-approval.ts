@@ -21,7 +21,6 @@ import { conversationThreadTs, slackConversationKind } from '../slack/thread-key
 import type { SlackLatestAgentTurnQuery } from '../slack/turn-jobs.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import type { ManagementStore } from './store.ts';
-import { approvedNewKeyedApiConnections } from './connection-approval.ts';
 import { agentWelcomeInGroupDm } from './receipts.ts';
 import { slackManagementOrigin, WorkspaceManagementService } from './service.ts';
 import {
@@ -34,6 +33,7 @@ import {
   type ManagementActorContext,
   type ManagementApplyResult,
   type ManagementChangeSetProposalRecord,
+  type ManagementDeferredSetup,
   type ManagementOperation,
   type ManagementReceiptOutboxRecord,
 } from './types.ts';
@@ -291,6 +291,7 @@ export async function executeHostSlackManagementApproval(input: {
       turn: input.turn,
       proposalId: input.proposalId,
       actorMembershipId: actor.membershipId,
+      pastedKey: (asked) => input.dependencies.service.approvedProposalHoldsKey(actor, input.proposalId, asked),
       config: input.dependencies.config,
       management: input.dependencies.management,
       ...(input.presentationRunId ? { presentationRunId: input.presentationRunId } : {}),
@@ -386,6 +387,8 @@ async function formatHostSlackManagementReceipt(input: {
   turn: NormalizedSlackTurn;
   proposalId: string;
   actorMembershipId: string;
+  /** Whether the message that proposed the change set holds a key, for a connection not in `asked`, that the person's next message can have tested. */
+  pastedKey: (asked: readonly string[]) => Promise<boolean>;
   config: Pick<ConfigStore, 'getAgent'>;
   management: Pick<ManagementStore, 'putOutbox'> & {
     getChangeSetProposal?: ManagementStore['getChangeSetProposal'];
@@ -400,7 +403,6 @@ async function formatHostSlackManagementReceipt(input: {
   const attention = result.outcomes.filter(({ disposition }) => disposition !== 'applied');
   const warnings = result.outcomes.flatMap(({ warning }) => warning ? [warning] : []);
   const codes = attention.flatMap(({ code }) => code ? [code] : []);
-  // The setup the person asked for alongside the change reaches them only here.
   const deferredSetup = result.deferredSetup ?? [];
   const message = (text: string, details: readonly string[] = []): HostSlackManagementApprovalResult => {
     const lines = [
@@ -499,7 +501,7 @@ async function formatHostSlackManagementReceipt(input: {
   return message(receipt, [
     ...codes.map((code) => `Issue: ${escapeSlackControlCharacters(code)}`),
     ...warnings.map(escapeSlackControlCharacters),
-    ...(deferredSetup.length === 0 && await createdPendingKeyedConnection(input) ? [TEST_PASTED_KEY] : []),
+    ...(await input.pastedKey(askedConnections(deferredSetup)).catch(() => false) ? [TEST_PASTED_KEY] : []),
   ]);
 }
 
@@ -509,12 +511,9 @@ async function formatHostSlackManagementReceipt(input: {
  */
 const TEST_PASTED_KEY = 'Reply here and I’ll test the key you pasted.';
 
-async function createdPendingKeyedConnection(input: {
-  proposalId: string;
-  management: { getChangeSetProposal?: ManagementStore['getChangeSetProposal'] };
-}): Promise<boolean> {
-  const proposal = await input.management.getChangeSetProposal?.(input.proposalId);
-  return proposal !== undefined && approvedNewKeyedApiConnections(proposal).length > 0;
+/** The connections whose key the receipt itself asks for, with an Add key card or a setup link. */
+function askedConnections(deferredSetup: readonly ManagementDeferredSetup[]): string[] {
+  return deferredSetup.flatMap((setup) => setup.kind !== 'not_issued' && setup.connectionId ? [setup.connectionId] : []);
 }
 
 async function formatAppliedSkillReceipt(input: {

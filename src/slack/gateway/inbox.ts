@@ -1,6 +1,7 @@
 import { addColumnIfMissing } from '../../state/schema-links.ts';
 import { schemaInstallRequired, type StateDb } from '../../state/state-db.ts';
 import type { GatewayInboundDelivery } from './protocol.ts';
+import { KEY_FORM_CALLBACK_ID } from '../ui/surface.ts';
 import {
   isRetryableDependencyFailure,
   MAX_DEPENDENCY_RETRY_AFTER_MS,
@@ -326,13 +327,18 @@ export class GatewayInboxStoreLogic {
           continue;
         }
         const attempts = Number(row.attempts) + 1;
+        const readOnce = holdsKey(delivery) ? 1 : 0;
         const updated = this.db.run(
           `UPDATE gateway_inbox
-           SET status = 'in_flight', attempts = ?, lease_until = ?, lease_owner = ?
+           SET status = 'in_flight', attempts = ?, lease_until = ?, lease_owner = ?,
+               payload_json = CASE WHEN ? THEN NULL ELSE payload_json END,
+               payload_bytes = CASE WHEN ? THEN 0 ELSE payload_bytes END
            WHERE id = ? AND status = 'pending'`,
           attempts,
           this.now() + this.limits.leaseMs,
           this.leaseOwner ?? null,
+          readOnce,
+          readOnce,
           row.id,
         );
         if (updated.changes !== 1) continue;
@@ -453,6 +459,17 @@ export class GatewayInboxStoreLogic {
       now,
       this.limits.maxAttempts,
     ).changes;
+    // An Add key form's key is checked within a lease of its submission or never, so it is not kept.
+    const keysUnchecked = this.db.run(
+      `UPDATE gateway_inbox
+       SET status = 'recovery_required', payload_json = NULL, payload_bytes = 0,
+           lease_until = NULL, terminal_at = ?, recovery_reason = 'key_not_checked'
+       WHERE status = 'pending' AND kind = 'interaction.view_submission' AND accepted_at < ?
+         AND CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.callbackId') END = ?`,
+      now,
+      now - this.limits.leaseMs,
+      KEY_FORM_CALLBACK_ID,
+    ).changes;
     const agedToRecovery = this.db.run(
       `UPDATE gateway_inbox
        SET status = 'recovery_required', payload_json = NULL, payload_bytes = 0,
@@ -460,7 +477,7 @@ export class GatewayInboxStoreLogic {
        WHERE status IN ('pending', 'in_flight') AND accepted_at < ?`,
       now,
       now - this.limits.maxActiveAgeMs,
-    ).changes + expiredAtAttemptCap + orphanedAtAttemptCap;
+    ).changes + expiredAtAttemptCap + orphanedAtAttemptCap + keysUnchecked;
     const tombstonesPurged = this.db.run(
       `DELETE FROM gateway_inbox
        WHERE status IN ('completed', 'recovery_required') AND terminal_at < ?`,
@@ -540,6 +557,15 @@ const STORED_DELIVERY_KINDS: ReadonlySet<string> = new Set<GatewayInboundDeliver
   'interaction.ui_action',
   'interaction.view_submission',
 ]);
+
+/**
+ * An Add key form's submission carries the key. Its claim takes the payload
+ * out of the row, so the key is never kept past the drain that checks it, and
+ * a retry finds no payload and parks instead of checking the key again.
+ */
+function holdsKey(delivery: GatewayInboundDelivery): boolean {
+  return delivery.kind === 'interaction.view_submission' && delivery.callbackId === KEY_FORM_CALLBACK_ID;
+}
 
 /** The stored delivery, or undefined when it is malformed or of a kind this release does not know. */
 function readStoredDelivery(payload: string): GatewayInboundDelivery | undefined {

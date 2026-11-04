@@ -161,6 +161,7 @@ export function renderUiSurface(
   if (isDisplaySurface(spec)) {
     throw new Error('Display components render inside the answer, not as their own message.');
   }
+  if (spec.kind === 'key_card') throw new Error('The Add key card renders through the key form.');
   if (spec.kind === 'form') return renderForm(record, spec.form);
   return renderInteractiveSurface(record, spec, options);
 }
@@ -179,6 +180,7 @@ export function uiResponseTurnText(record: UiSurfaceRecord, answer: InteractiveA
   // Never reached: a pick is handled before admission and re-admits the
   // person's own message. The branch only narrows the spec below.
   if (spec.kind === 'agent_choice') return 'Picked an Agent.';
+  if (spec.kind === 'key_card') throw new Error('An Add key card is never admitted as a message.');
   if (spec.kind !== 'approval') return interactiveTurnText(record, spec, answer, byUserId);
   const decision = approvalChoice(answer.choice);
   if (spec.approval === 'workspace_change') {

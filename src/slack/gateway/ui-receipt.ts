@@ -1,5 +1,5 @@
 import { isModalControl, modalForClick, readViewSubmission, viewSubmissionSurfaceId } from '../ui/modals.ts';
-import { parseUiControl, type UiSurfaceRecord } from '../ui/surface.ts';
+import { isKeyFormAction, KEY_FORM_CALLBACK_ID, parseUiControl, type UiSurfaceRecord } from '../ui/surface.ts';
 import type { GatewayInboundDelivery, GatewayInteractionReceipt } from './protocol.ts';
 
 /**
@@ -10,6 +10,7 @@ import type { GatewayInboundDelivery, GatewayInteractionReceipt } from './protoc
  * including a click whose modal cannot open, is admitted as usual.
  */
 export function gatewayReceiptSurfaceId(delivery: GatewayInboundDelivery): { surfaceId: string | undefined } | undefined {
+  if (isKeyFormDelivery(delivery)) return undefined;
   if (delivery.kind === 'interaction.view_submission') return { surfaceId: viewSubmissionSurfaceId(delivery) };
   if (delivery.kind !== 'interaction.ui_action') return undefined;
   const control = parseUiControl(delivery);
@@ -51,4 +52,9 @@ export function gatewayUiReceiptNow(
   const target = gatewayReceiptSurfaceId(delivery);
   if (!target) return undefined;
   return gatewayUiReceipt(delivery, target.surfaceId ? surfaces.get(target.surfaceId) : undefined);
+}
+
+export function isKeyFormDelivery(delivery: GatewayInboundDelivery): boolean {
+  return delivery.kind === 'interaction.ui_action' ? isKeyFormAction(delivery.actionId)
+    : delivery.kind === 'interaction.view_submission' && delivery.callbackId === KEY_FORM_CALLBACK_ID;
 }

@@ -1,3 +1,5 @@
+import type { WebClient } from '@slack/web-api';
+
 import { getBrowserActionForThread } from '../../browser/actions.ts';
 import type { SettingsStore } from '../../config/settings-store.ts';
 import type { ResolvedAssignment } from '../../config/types.ts';
@@ -33,6 +35,20 @@ import {
 export interface UiSurfaceMessenger {
   post(rendered: RenderedUiSurface): Promise<string | undefined>;
   update(messageTs: string, rendered: RenderedUiSurface): Promise<void>;
+}
+
+/** Edits a host surface message in place; `chat.update` keeps the sender. */
+export function surfaceMessenger(client: Pick<WebClient, 'chat'>, channelId: string): Pick<UiSurfaceMessenger, 'update'> {
+  return {
+    async update(messageTs, rendered) {
+      await client.chat.update({
+        channel: channelId,
+        ts: messageTs,
+        text: rendered.text,
+        blocks: rendered.blocks,
+      } as unknown as Parameters<WebClient['chat']['update']>[0]);
+    },
+  };
 }
 
 type SurfaceState = Required<Pick<SlackStateStore, 'executeUiSurface'>>;

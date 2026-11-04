@@ -189,6 +189,59 @@ test('runTurn carries hydrated same-root references and thread images into agent
   }
 });
 
+// Defect caught: every reply awaited a management read for Add key setups before its status cleared.
+test('a reply looks for Add key setups only when a tool that can ask for a key ran', async () => {
+  const f = await createManagementAdapterFixture('key-card-lookup');
+  try {
+    const agent = await f.config.createAgent({ ...assignment.agent,
+      creatorMembershipId: f.admin.membership.id, editPolicy: 'creator_and_admins' });
+    const workspaceId = f.admin.binding.slackTeamId;
+    await f.config.ensureWorkspaceInstallation({ workspaceId, transportMode: 'direct', defaultAgentId: agent.id });
+    const kinds: string[] = [];
+    const management = new Proxy(f.management, {
+      get(target, property) {
+        const value = Reflect.get(target, property, target);
+        if (typeof value !== 'function') return value;
+        return (...args: unknown[]) => {
+          if (property === 'execute') kinds.push((args[0] as { kind: string }).kind);
+          return (value as (...values: unknown[]) => unknown).apply(target, args);
+        };
+      },
+    });
+    const client = {
+      conversations: { replies: async () => ({ ok: true, messages: [] }) },
+      chat: {
+        postMessage: async () => ({ ok: true, ts: '1785509300.000100' }),
+        startStream: async () => ({ ok: true, ts: '1785509300.000100' }),
+        stopStream: async () => ({ ok: true }),
+      },
+    } as unknown as WebClient;
+    const reply = async (eventId: string, messageTs: string, keySetupToolRan: boolean) => {
+      const turn: NormalizedSlackTurn = {
+        ...workTurn(eventId), workspaceId, userId: f.admin.binding.slackUserId,
+        actorMembershipId: f.admin.membership.id, messageTs, threadTs: messageTs,
+        interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+      };
+      await runTurn(turn, { ...assignment, workspaceId, agent, runtimeContract: 'chickpea-v1' }, undefined, {
+        client, usageRecordingEnabled: false,
+        appStores: { config: f.config, memory: f.memory, identity: f.identity, management } as never,
+        agentPrompt: async () => ({
+          text: 'Done.', requestedModel: null, returnedModel: null, reportedUsage: null,
+          usageCompleteness: 'not_reported', keySetupToolRan,
+        }),
+      });
+    };
+    const lookups = () => kinds.filter((kind) => kind === 'list_slack_form_setups').length;
+
+    await reply('Ev_KEY_LOOKUP_PLAIN', '1785509401.000100', false);
+    assert.equal(lookups(), 0, 'an ordinary reply makes no management call for a card');
+    await reply('Ev_KEY_LOOKUP_TOOL', '1785509402.000100', true);
+    assert.equal(lookups(), 1, 'a turn that could have asked for a key looks for its card');
+  } finally {
+    await f.close();
+  }
+});
+
 test('runTurn withholds the thread images when the frozen plan has no image capability', async () => {
   const f = await createManagementAdapterFixture('thread-images-unfilled');
   try {

@@ -78,7 +78,10 @@ function recording<T extends object>(target: T, calls: string[]): T {
   });
 }
 
-async function fixture(options: { memberTries?: number[] } = {}) {
+async function fixture(options: { memberTries?: number[]; groupDm?: boolean } = {}) {
+  const conversation = options.groupDm
+    ? { channelId: 'G_SCRIBE', kind: 'mpim' as const }
+    : { channelId: DM, kind: 'im' as const };
   const managementCalls: string[] = [];
   const settingCalls: string[] = [];
   const clock = { now: 1_800_000_000_000 };
@@ -135,7 +138,7 @@ async function fixture(options: { memberTries?: number[] } = {}) {
     requesterText: string,
     by: IdentityResolution = f.admin,
     source?: 'click' | 'setup' | 'ask',
-    channelId = DM,
+    channelId = conversation.channelId,
   ): Promise<WorkspaceManagementToolResult> => {
     turn += 1;
     const messageTs = `500.${turn + 1}`;
@@ -145,7 +148,7 @@ async function fixture(options: { memberTries?: number[] } = {}) {
       workspaceId,
       channelId,
       threadTs: '500.1',
-      conversationKind: 'im',
+      conversationKind: channelId === conversation.channelId ? conversation.kind : 'im',
       slackUserId: by.binding.slackUserId,
       eventId: `Ev_SCRIBE_${turn}`,
       messageTs,
@@ -188,7 +191,7 @@ async function fixture(options: { memberTries?: number[] } = {}) {
   const approve = async (proposalId: string, by: IdentityResolution = f.admin) => {
     turn += 1;
     const click: NormalizedSlackTurn = {
-      workspaceId, channelId: DM, threadTs: '500.1', channelType: 'im',
+      workspaceId, channelId: conversation.channelId, threadTs: '500.1', channelType: conversation.kind,
       eventId: `Ev_SCRIBE_${turn}`, messageTs: `500.${turn + 1}`,
       text: 'Approved.', userId: by.binding.slackUserId,
       source: 'dm_message', contextMode: 'dm_history',
@@ -196,7 +199,7 @@ async function fixture(options: { memberTries?: number[] } = {}) {
     };
     return executeHostSlackManagementApproval({
       turn: click,
-      assignment: { workspaceId, channelId: DM, agentId: agent.id, runtimeContract: 'chickpea-v1', agent },
+      assignment: { workspaceId, channelId: conversation.channelId, agentId: agent.id, runtimeContract: 'chickpea-v1', agent },
       turnJobId: `turn_SCRIBE_${turn}`,
       proposalId,
       dependencies: { identity: f.identity, config: f.config, management, service: f.service },
@@ -209,9 +212,14 @@ async function fixture(options: { memberTries?: number[] } = {}) {
   };
   const savedKey = async (label = CONNECTION.displayName) =>
     await f.settings.getSetting(connectionAccountSecretSettingKey((await account(label)).secretRefId)) ?? undefined;
+  /** Every setup issued, as the person would be asked for it. */
+  const setups = () => (management as unknown as { db: { all(sql: string): Array<Record<string, unknown>> } }).db.all(
+    `SELECT action, status, json_extract(target_json, '$.targetLabel') AS label,
+       json_extract(target_json, '$.form') AS form FROM management_setup_operations ORDER BY created_at`,
+  ).map((row) => ({ ...row }));
   return {
     ...f, management, agent, member, workspaceId, clock, typed, managementCalls, settingCalls, results,
-    slack, mcp, update, approve, account, savedKey,
+    slack, mcp, update, approve, account, savedKey, setups,
   };
 }
 
@@ -471,7 +479,8 @@ test('an approved connection admits the key from the message that proposed it, o
   const f = await fixture();
   try {
     const receipt = await approvedConnection(f);
-    assert.equal(receipt, 'Applied the approved changes.\n\nReply here and I’ll test the key you pasted.');
+    assert.equal(receipt, 'Applied the approved changes.', 'the Add key card asks for the key, so the receipt does not also offer to test the pasted one');
+    assert.deepEqual(f.setups(), [{ action: 'api_credential', status: 'pending', label: 'Statusboard', form: 'slack' }]);
     await withConnectionNetwork(statusboard, async (requests) => {
       const tried = ok<TryConnectionResult>(await f.slack('try_connection', { connectionId: CONNECTION.id, key: KEY, path: INCIDENTS }, 'ok, go ahead'));
       assert.equal(tried.check.kind, 'ok');
@@ -485,6 +494,36 @@ test('an approved connection admits the key from the message that proposed it, o
       'the key never entered a management record, not even through the proposal that carried its message');
     assert.deepEqual(f.results.filter((result) => result.includes(KEY)), [], 'no result returned the key');
   } finally { f.close(); }
+});
+
+test('approving a new connection that asked for no key asks for it with the Add key card, and a group DM with a link', async () => {
+  const f = await fixture();
+  try {
+    assert.equal(await approvedConnection(f, KEY_LATER), 'Applied the approved changes.',
+      'no word of the request was a key, so the receipt offers no test of one');
+    assert.deepEqual(f.setups(), [{ action: 'api_credential', status: 'pending', label: 'Statusboard', form: 'slack' }]);
+  } finally { f.close(); }
+
+  const mcp = await fixture();
+  try {
+    const held = ok<ManagementApplyResult>(await mcp.slack('apply_workspace_changes', await mcp.update({
+      mcpServers: [{
+        id: 'tracker', displayName: 'Tracker', url: 'https://mcp.tracker.example/mcp', transport: 'streamable-http',
+        authMode: 'bearer', headerNames: [], enabled: true, allowedTools: [],
+      }],
+    }), 'connect our Tracker MCP server, I have a token whenever you are ready'));
+    const receipt = await mcp.approve(held.outcomes[0]!.proposalId!);
+    assert.equal(receipt.kind === 'message' ? receipt.text : '', 'Applied the approved changes.');
+    assert.deepEqual(mcp.setups(), [{ action: 'mcp_credentials', status: 'pending', label: 'Tracker', form: 'slack' }],
+      'an MCP server\'s token is asked for the same way');
+  } finally { mcp.close(); }
+
+  const group = await fixture({ groupDm: true });
+  try {
+    assert.match(await approvedConnection(group, KEY_LATER),
+      /^Applied the approved changes\.\n\n\[Connect Statusboard\]\(http:\/\/localhost\/setup\/setup_[^)]+\)$/);
+    assert.deepEqual(group.setups(), [{ action: 'api_credential', status: 'pending', label: 'Statusboard', form: null }]);
+  } finally { group.close(); }
 });
 
 test('an approved connection admits a key the person sends alone in a later message, and saving it posts no notice', async () => {
@@ -647,6 +686,36 @@ test('Chickpea\'s setup note is never the person\'s typed words: it carries no k
       await f.update({ instructions: 'Track incidents closely.' }), 'make your instructions say to track incidents closely'));
     assert.equal(typed.outcomes[0]?.disposition, 'applied', 'the same change from the person\'s own message applies');
   } finally { f.close(); }
+});
+
+test('a receipt offers to test a pasted key only for a connection it asks no key for', async () => {
+  const notes: ManagementApiConnection = {
+    ...CONNECTION, id: 'notes', displayName: 'Notes', allowedHosts: ['api.notes.example'],
+  };
+  const f = await fixture();
+  try {
+    const held = ok<ManagementApplyResult>(await f.slack('apply_workspace_changes', {
+      idempotencyKey: 'notes-setup',
+      operations: [
+        ...(await f.update({ apiConnections: [CONNECTION, notes] })).operations,
+        { itemId: 'key', kind: 'request_setup', dependsOn: ['connect'], target: { kind: 'api_connection', agentId: f.agent.id, connectionId: notes.id } },
+      ],
+    }, UNTYPED_HOST));
+    const proposalId = held.outcomes.find(({ proposalId: id }) => id)?.proposalId;
+    assert.ok(proposalId, JSON.stringify(held));
+    const receipt = await f.approve(proposalId);
+    assert.equal(receipt.kind === 'message' ? receipt.text : '',
+      'Applied the approved changes.\n\nReply here and I’ll test the key you pasted.',
+      'Notes gets the Add key card; the key pasted for Statusboard, which got none, can still be tested');
+    assert.deepEqual(f.setups(), [{ action: 'api_credential', status: 'pending', label: 'Notes', form: 'slack' }]);
+  } finally { f.close(); }
+
+  const group = await fixture({ groupDm: true });
+  try {
+    assert.match(await approvedConnection(group),
+      /^Applied the approved changes\.\n\n\[Connect Statusboard\]\(http:\/\/localhost\/setup\/setup_[^)]+\)$/,
+      'a group DM\'s receipt links the setup and does not also offer to test the pasted key');
+  } finally { group.close(); }
 });
 
 test('a receipt that issued a setup link does not offer to test a pasted key', async () => {

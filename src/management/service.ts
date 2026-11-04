@@ -196,13 +196,7 @@ import {
   validateManagementOperations,
 } from './contracts.ts';
 import { classifyManagementOperation, removesMemberAccess } from './policy.ts';
-import {
-  exportWorkspaceRecipe,
-  previewWorkspaceRecipe,
-  type PreviewWorkspaceRecipeInput,
-  type WorkspaceRecipe,
-  type WorkspaceRecipePreview,
-} from './recipes.ts';
+import type { PreviewWorkspaceRecipeInput, WorkspaceRecipe, WorkspaceRecipePreview } from './recipes.ts';
 import { matchesEgressPrefix } from '../config/egress.ts';
 import {
   connectionUrlPrefixes,
@@ -214,6 +208,7 @@ import {
 } from '../connections/connection-check.ts';
 import type { SlackMessageQuery, SlackTypedMessage } from '../slack/turn-jobs.ts';
 import { approvedNewKeyedApiConnections, CONNECTION_APPROVAL_WINDOW_MS } from './connection-approval.ts';
+import type { IssuedSetup, SetupDelivery } from './slack-key-setup.ts';
 import { setupWakeAgent } from './setup-wake.ts';
 import {
   assertPathInsideConnection,
@@ -2297,9 +2292,11 @@ export class WorkspaceManagementService {
       });
     } catch (error) {
       if (!(error instanceof ConnectionKeyRefusedError)) throw error;
-      const url = await this.setupLinkAfterRefusedKey(actor, agent.id, account.id);
-      throw url
-        ? new ConnectionKeyRefusedError(error.check, { url, pastedInChat: actor.origin.kind === 'slack' })
+      const setup = await this.setupAfterRefusedKey(actor, agent.id, account.id);
+      throw setup
+        ? new ConnectionKeyRefusedError(error.check, setup.kind === 'link'
+          ? { url: setup.url, pastedInChat: actor.origin.kind === 'slack' }
+          : { form: true })
         : error;
     }
     return {
@@ -2312,7 +2309,7 @@ export class WorkspaceManagementService {
       },
       check,
       instruction: actor.origin.kind === 'slack'
-        ? `${SAVED_KEY_INSTRUCTION} Because the person pasted the key in Slack, suggest they rotate it at the service and use the setup link next time.`
+        ? `${SAVED_KEY_INSTRUCTION} Because the person pasted the key in Slack, suggest they rotate it at the service and let you ask for the key through Chickpea next time instead of pasting it.`
         : SAVED_KEY_INSTRUCTION,
     };
   }
@@ -2370,7 +2367,7 @@ export class WorkspaceManagementService {
     if (left === undefined) {
       throw new ManagementError(
         'invalid_request',
-        `Nothing was sent: this person used all ${MEMBER_CONNECTION_TRIES.tries} try_connection tries for the last 10 minutes. Tell them what was tried, without the key, and the one next step, or send a setup link with request_setup.`,
+        `Nothing was sent: this person used all ${MEMBER_CONNECTION_TRIES.tries} try_connection tries for the last 10 minutes. Tell them what was tried, without the key, and the one next step, or ask for the key with request_setup.`,
       );
     }
     return left;
@@ -2422,7 +2419,7 @@ export class WorkspaceManagementService {
       if (account.lifecycle === 'pending') {
         throw new ManagementError(
           'invalid_request',
-          'Nothing was sent: this connection has no saved key yet. Try the key the person gave you with key, or send a setup link with request_setup.',
+          'Nothing was sent: this connection has no saved key yet. Try the key the person gave you with key, or ask for the key with request_setup.',
         );
       }
       return { scope, authShape, credential: { kind: 'saved', within } };
@@ -2466,7 +2463,7 @@ export class WorkspaceManagementService {
         'invalid_request',
         resolveAgentConnectionId(connections, 'mcp', id) === undefined
           ? 'The API connection was not found.'
-          : `${tool} for API connections only. For an MCP server, send a setup link with request_setup.`,
+          : `${tool} for API connections only. For an MCP server, ask for the key with request_setup.`,
       );
     }
     const { policy } = entry.account;
@@ -2527,34 +2524,48 @@ export class WorkspaceManagementService {
     return text !== undefined && requesterTextContainsExactKey(text, key);
   }
 
-  /**
-   * The setup link request_setup would issue the requester for this
-   * connection, so a refused key still leaves the person a way to finish.
-   * Undefined when that request would not issue one now, or issuing fails;
-   * the refusal then stands without it.
-   */
-  private async setupLinkAfterRefusedKey(
+  private async setupAfterRefusedKey(
     actor: LiveManagementActor,
     agentId: string,
     connectionId: string,
-  ): Promise<string | undefined> {
-    const operation: Extract<ManagementOperation, { kind: 'request_setup' }> = {
+  ): Promise<SetupDelivery | undefined> {
+    return (await this.immediateSetup(actor, {
       itemId: 'save_connection_key',
       kind: 'request_setup',
       target: { kind: 'api_connection', agentId, connectionId },
-    };
+    }))?.delivery;
+  }
+
+  /**
+   * The setup request_setup would issue the person now, outside a call of
+   * theirs that asked for it. Undefined when that request would not apply at
+   * once, or issuing fails; the person then has no setup from it.
+   */
+  private async immediateSetup(
+    actor: LiveManagementActor,
+    operation: Extract<ManagementOperation, { kind: 'request_setup' }>,
+  ): Promise<IssuedSetup | undefined> {
     try {
       const policy = classifyManagementOperation(await this.policyFacts(actor, operation, { operationCount: 1 }));
       if (!policy.allowed || policy.posture !== 'immediate') return undefined;
-      return (await this.issueSetup(actor, operation)).url;
+      return await this.issueSetup(actor, operation);
     } catch (error) {
       if (!isExpectedMutationError(error)) {
-        console.warn('[chickpea:management] no setup link for a refused connection key', JSON.stringify({
+        console.warn('[chickpea:management] no setup for a connection key', JSON.stringify({
           errorName: error instanceof Error ? error.name : typeof error,
         }));
       }
       return undefined;
     }
+  }
+
+  async approvedProposalHoldsKey(
+    context: ManagementActorContext,
+    proposalId: string,
+    asked: readonly string[] = [],
+  ): Promise<boolean> {
+    const actor = await this.requireLiveActor(context);
+    return (await import('./slack-key-setup.ts')).approvedProposalHoldsKey(actor, proposalId, asked, this.stores);
   }
 
   async inspectMemory(
@@ -2669,6 +2680,7 @@ export class WorkspaceManagementService {
       target: { kind: 'workspace', id: actor.organizationId },
     });
     const editable = await this.editableAgentsWithConnections(actor);
+    const { exportWorkspaceRecipe } = await import('./recipes.ts');
     return exportWorkspaceRecipe({ listUserAgents: async () => editable }, input);
   }
 
@@ -2686,6 +2698,7 @@ export class WorkspaceManagementService {
     const readiness = actor.role === 'member' || !this.stores.modelReadiness
       ? keyLaneUnconfigured
       : await this.stores.modelReadiness();
+    const { previewWorkspaceRecipe } = await import('./recipes.ts');
     const preview = await previewWorkspaceRecipe({ listUserAgents: async () => editable }, readiness, input);
     emitManagementMetric('recipe.preview', {
       surface: context.origin.kind,
@@ -2881,8 +2894,7 @@ export class WorkspaceManagementService {
             operationKind: operation.kind,
             disposition: 'setup_required',
             setupOperationId: setup.record.setupOperationId,
-            setupUrl: setup.url,
-            ...setupWakeInstruction(setup.record),
+            ...setupDelivery(setup),
           });
         } else {
           const mutation = await this.executeProgressiveItem(
@@ -3151,10 +3163,9 @@ export class WorkspaceManagementService {
           ...item,
           disposition: 'setup_required',
           setupOperationId: setup.record.setupOperationId,
-          setupUrl: setup.url,
-          ...setupWakeInstruction(setup.record),
+          ...setupDelivery(setup),
         },
-        deferred: { kind: 'issued', itemId, label: setup.record.target.targetLabel, setupUrl: setup.url },
+        deferred: deferredSetupOf(operation, setup),
       };
     } catch (error) {
       if (!isExpectedMutationError(error)) throw error;
@@ -3586,9 +3597,15 @@ export class WorkspaceManagementService {
       this.now(),
       proposal.updatedAt,
     );
-    const deferredSetup = proposal.requestOperationId
+    const requested = proposal.requestOperationId
       ? await this.settleApprovedRequest(actor, proposal.requestOperationId)
       : [];
+    const deferredSetup = requested.length > 0 || actor.origin.kind !== 'slack'
+      ? requested
+      : await (await import('./slack-key-setup.ts')).keySetupsAfterApproval(
+        { ...proposal, status: 'completed', result },
+        (operation) => this.immediateSetup(actor, operation),
+      );
     return emitOperationOutcomes(
       actor.origin.kind,
       deferredSetup.length > 0 ? { ...result, deferredSetup } : result,
@@ -3939,7 +3956,7 @@ export class WorkspaceManagementService {
     if (!reissue) return { revoked: await this.setupPublicStatus(revoked) };
     const replacement = await this.issueSetupRecord(actor, {
       action: existing.action,
-      target: existing.target,
+      target: linkSetupTarget(existing.target),
       scopes: existing.scopes,
       supersedesSetupOperationId: existing.setupOperationId,
     });
@@ -3971,9 +3988,15 @@ export class WorkspaceManagementService {
   private async issueSetup(
     actor: LiveManagementActor,
     operation: Extract<ManagementOperation, { kind: 'request_setup' }>,
-  ): Promise<{ record: ManagementSetupRecord; url: string }> {
+  ): Promise<IssuedSetup> {
     const frozen = await this.resolveSetupTarget(actor, operation.target);
-    return this.issueSetupRecord(actor, frozen);
+    if (!asksKeyInSlackForm(actor, frozen)) {
+      const { record, url } = await this.issueSetupRecord(actor, frozen);
+      return { record, delivery: { kind: 'link', url } };
+    }
+    const { record } = await this.issueSetupRecord(actor, { ...frozen, target: { ...frozen.target, form: 'slack' } });
+    const { formSetupInstruction } = await import('./slack-key-setup.ts');
+    return { record, delivery: { kind: 'form', instruction: formSetupInstruction(record) } };
   }
 
   private async issueSetupRecord(
@@ -8750,6 +8773,44 @@ function memoryMutation(memory: AgentMemory, inverse?: ManagementOperation): Imm
   };
 }
 
+/** A reissued setup is the link the person asked for, never the form again. */
+function linkSetupTarget({ form: _form, ...target }: ManagementSetupTarget): ManagementSetupTarget {
+  return target;
+}
+
+/**
+ * The Add key card names the Agent of the thread and is posted under its
+ * reply, so it asks only for that Agent's own connection keys; a setup for
+ * another Agent's connection keeps its link.
+ */
+function asksKeyInSlackForm(
+  actor: LiveManagementActor,
+  { action, target }: Pick<ManagementSetupRecord, 'action' | 'target'>,
+): boolean {
+  const { origin } = actor;
+  return origin.kind === 'slack' && Boolean(origin.agentId) && origin.agentId === target.agentId &&
+    (origin.conversationKind === 'channel' || origin.conversationKind === 'im') &&
+    (action === 'api_credential' || action === 'mcp_credentials');
+}
+
+export function deferredSetupOf(
+  operation: Extract<ManagementOperation, { kind: 'request_setup' }>,
+  { record, delivery }: IssuedSetup,
+): ManagementDeferredSetup {
+  const { itemId } = operation;
+  const label = record.target.targetLabel;
+  const named = 'connectionId' in operation.target ? { connectionId: operation.target.connectionId } : {};
+  return delivery.kind === 'link'
+    ? { kind: 'issued', itemId, label, setupUrl: delivery.url, ...named }
+    : { kind: 'form', itemId, label, ...named };
+}
+
+function setupDelivery({ record, delivery }: IssuedSetup): Pick<ManagementItemOutcome, 'setupUrl' | 'instruction'> {
+  return delivery.kind === 'link'
+    ? { setupUrl: delivery.url, ...setupWakeInstruction(record) }
+    : { instruction: delivery.instruction };
+}
+
 /**
  * A setup link whose completion wakes this Agent (setupWakeAgent): it says
  * it will carry on by itself, never that the person should come back.
@@ -8760,7 +8821,7 @@ function setupWakeInstruction(setup: ManagementSetupRecord): { instruction?: str
     : {};
 }
 
-const SETUP_LINK_ON_APPROVAL = 'The person gets this setup link with the receipt when they approve the change set. Tell them it follows their approval, and do not prepare it yourself.';
+const SETUP_LINK_ON_APPROVAL = 'The person gets this setup with the receipt when they approve the change set: an Add key button for a key asked for in Slack, else a setup link. Tell them it follows their approval, and do not prepare it yourself.';
 const CHANGE_AFTER_APPROVAL = 'This change conflicts with the pending change set. Make it in a new request after the person approves that one.';
 const SAVED_KEY_INSTRUCTION = 'The key is saved and the connection is ready. Tell the person the connection name, where its requests go (sendsKeyTo), what it may do (allowedMethods), and that a test request with the key worked. Then make one real read with connection_request, such as a short list, and show a brief sample; when connection_request is not available in this turn, say they can ask for one in their next message. Never repeat the key.';
 
@@ -9151,7 +9212,7 @@ function requestAddressedHere(actor: LiveManagementActor): string | undefined {
 }
 
 /** A person's message without the routed Agent's leading mention; undefined when it mentions anyone else. */
-function addressedRequestText(text: string, address: LiveManagementActor['commandAddress']): string | undefined {
+export function addressedRequestText(text: string, address: LiveManagementActor['commandAddress']): string | undefined {
   const stripped = stripResolvedSlackCommandAddress(text, address);
   return /<[@!][^>]*>/.test(stripped) ? undefined : stripped;
 }
@@ -9230,7 +9291,7 @@ function requesterTextContainsExactKey(requestText: string, key: string): boolea
  * approved connection. A phrase is no key, and a message about another
  * service's URL is about another service's key.
  */
-function keyTypedForApprovedConnection(
+export function keyTypedForApprovedConnection(
   requestText: string,
   key: string,
   approved: { allowedHosts: readonly string[] },
@@ -9268,8 +9329,8 @@ function slackPastedKeyRefusal(
 }
 
 const SAVE_KEY_REFUSALS: Record<PastedKeyRefusal['reason'], (untyped: readonly string[]) => string> = {
-  key_not_typed: () => 'Nothing was saved: save_connection_key takes only a key the requester typed in their own current message to this Agent, or, when they approved this connection in this conversation in the last 30 minutes, in the message that proposed it. Send a setup link with request_setup instead, and never ask anyone to paste a key in chat.',
-  urls_not_typed: (untyped) => `Nothing was saved: this connection sends its key to ${untyped.join(', ')}, which the requester did not type in the same message as the key. Send a setup link with request_setup instead; its page shows where the key goes.`,
+  key_not_typed: () => 'Nothing was saved: save_connection_key takes only a key the requester typed in their own current message to this Agent, or, when they approved this connection in this conversation in the last 30 minutes, in the message that proposed it. Ask for the key with request_setup instead, and never ask anyone to paste a key in chat.',
+  urls_not_typed: (untyped) => `Nothing was saved: this connection sends its key to ${untyped.join(', ')}, which the requester did not type in the same message as the key. Ask for the key with request_setup instead, which shows the person where the key goes.`,
 };
 
 const TRY_KEY_REFUSALS: Record<PastedKeyRefusal['reason'], (untyped: readonly string[]) => string> = {
@@ -9282,8 +9343,8 @@ const TRY_KEY_REFUSALS: Record<PastedKeyRefusal['reason'], (untyped: readonly st
  * split a `user:pass` key sent as the username and reject it.
  */
 const BASIC_USERNAME_COLON_REFUSAL = {
-  try: 'Nothing was sent: authShape basic_username sends the key as an HTTP Basic username, which cannot hold a colon. If the key is a username and password, send a setup link for the connection with request_setup instead.',
-  save: 'Nothing was saved: authShape basic_username saves the key as an HTTP Basic username, which cannot hold a colon. If the key is a username and password, send a setup link for the connection with request_setup instead.',
+  try: 'Nothing was sent: authShape basic_username sends the key as an HTTP Basic username, which cannot hold a colon. If the key is a username and password, ask for the key with request_setup instead.',
+  save: 'Nothing was saved: authShape basic_username saves the key as an HTTP Basic username, which cannot hold a colon. If the key is a username and password, ask for the key with request_setup instead.',
 } as const;
 
 /** What an admitted try sends, short of the request coordinates. */

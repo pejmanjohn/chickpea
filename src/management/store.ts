@@ -515,6 +515,29 @@ export class ManagementStoreLogic {
         ) as unknown as ManagementOutboxRow | undefined;
         return { kind: 'outbox', outbox: row ? outboxFromRow(row) : null };
       }
+      case 'list_slack_form_setups': {
+        const rows = this.db.all(
+          `SELECT * FROM management_setup_operations
+           WHERE status = 'pending' AND expires_at > ? AND actor_membership_id = ?
+             AND action IN ('api_credential', 'mcp_credentials')
+             AND json_extract(target_json, '$.form') = 'slack'
+             AND json_extract(origin_json, '$.kind') = 'slack'
+             AND json_extract(origin_json, '$.workspaceId') = ?
+             AND json_extract(origin_json, '$.channelId') = ?
+             AND json_extract(origin_json, '$.threadTs') = ?
+             AND json_extract(origin_json, '$.messageTs') = ?
+             AND json_extract(origin_json, '$.agentId') = ?
+           ORDER BY created_at, setup_operation_id LIMIT 10`,
+          request.at,
+          request.actorMembershipId,
+          request.workspaceId,
+          request.channelId,
+          request.threadTs,
+          request.messageTs,
+          request.agentId,
+        ) as unknown as ManagementSetupRow[];
+        return { kind: 'setups', setups: rows.map(setupFromRow) };
+      }
       case 'claim_due_outbox':
         return {
           kind: 'outbox_batch',
@@ -1197,29 +1220,40 @@ export class ManagementStoreLogic {
           existing.tokenDigest,
         );
       } else {
-        setup = this.requireBrowserSetup(
-          input.setupOperationId,
-          input.browserSessionDigest,
-          input.at,
-        );
-        if (setup.status !== 'authorizing' || catalog &&
-            (!input.completedByUserId || !input.completedByMembershipId)) {
-          throw setupError('setup_unavailable');
+        let from: 'pending' | 'authorizing';
+        if (input.slackForm) {
+          // The Slack key form has no browser session to authorize: it finishes a pending setup, as its requester.
+          if (existing.status !== 'pending' || existing.target.form !== 'slack' ||
+              (existing.action !== 'api_credential' && existing.action !== 'mcp_credentials') ||
+              input.slackForm.userId !== existing.actorUserId ||
+              input.slackForm.membershipId !== existing.actorMembershipId) {
+            throw setupError('setup_unavailable');
+          }
+          setup = existing;
+          from = 'pending';
+          authorization = 'initiating_member_slack_form';
+        } else {
+          setup = this.requireBrowserSetup(input.setupOperationId, input.browserSessionDigest, input.at);
+          if (setup.status !== 'authorizing' || catalog &&
+              (!input.completedByUserId || !input.completedByMembershipId)) {
+            throw setupError('setup_unavailable');
+          }
+          from = 'authorizing';
+          authorization = catalog
+            ? 'eligible_agent_editor_browser_session'
+            : 'initiating_membership_browser_session';
         }
         completionActorUserId = catalog ? input.completedByUserId! : setup.actorUserId;
         completionActorMembershipId = catalog
           ? input.completedByMembershipId!
           : setup.actorMembershipId;
-        authorization = catalog
-          ? 'eligible_agent_editor_browser_session'
-          : 'initiating_membership_browser_session';
         updated = this.db.run(
           `UPDATE management_setup_operations
            SET status = 'completed', receipt_json = ?, failure_code = NULL,
                token_digest = NULL, browser_session_digest = NULL,
                completed_by_user_id = ?, completed_by_membership_id = ?,
                connection_account_id = ?, completed_at = ?, updated_at = ?
-           WHERE setup_operation_id = ? AND status = 'authorizing'`,
+           WHERE setup_operation_id = ? AND status = ?`,
           JSON.stringify(input.receipt),
           completionActorUserId,
           completionActorMembershipId,
@@ -1227,6 +1261,7 @@ export class ManagementStoreLogic {
           input.at,
           input.at,
           input.setupOperationId,
+          from,
         );
       }
       if (updated.changes !== 1) throw setupError('setup_unavailable');

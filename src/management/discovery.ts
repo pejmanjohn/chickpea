@@ -217,19 +217,18 @@ const CONNECTION_CHANGED = 'The connection changed while the key was being saved
 /** A check whose answer did not show the key works, so nothing was saved. */
 export type RefusedConnectionKeyCheck = Exclude<ApiConnectionCheck, { kind: 'ok' }>;
 
-/**
- * save_connection_key's refusal once its check saved nothing. With a setup
- * link for the same connection the model only relays it; without one, as
- * when the link could not be issued, the model is told how to get one.
- */
+export type RefusedKeySetup = { url: string; pastedInChat: boolean } | { form: true };
+
 export class ConnectionKeyRefusedError extends ManagementError {
   constructor(
     readonly check: RefusedConnectionKeyCheck,
-    setupLink?: { url: string; pastedInChat: boolean },
+    setup?: RefusedKeySetup,
   ) {
     super(
       check.kind === 'key_rejected' ? 'key_rejected' : 'key_unconfirmed',
-      setupLink ? refusalWithSetupLink(check, setupLink) : refusalWithoutSetupLink(check),
+      !setup ? refusalWithoutSetupLink(check)
+        : 'form' in setup ? refusalWithKeyForm(check)
+          : refusalWithSetupLink(check, setup),
     );
   }
 }
@@ -248,8 +247,13 @@ function checkFinding(check: RefusedConnectionKeyCheck): string {
 
 function refusalWithoutSetupLink(check: RefusedConnectionKeyCheck): string {
   return check.kind === 'key_rejected'
-    ? `${checkFinding(check)} Tell the person the key did not work and send a setup link with request_setup for this connection, where they can enter a working key. Never ask them to paste a key in chat.`
-    : `${checkFinding(check)} To check it, call save_connection_key again with path set to a read endpoint of this API that the key can read, such as a list endpoint, or send a setup link with request_setup. Never repeat the key.`;
+    ? `${checkFinding(check)} Tell the person the key did not work and ask for a working key with request_setup for this connection. Never ask them to paste a key in chat.`
+    : `${checkFinding(check)} To check it, call save_connection_key again with path set to a read endpoint of this API that the key can read, such as a list endpoint, or ask for the key with request_setup. Never repeat the key.`;
+}
+
+function refusalWithKeyForm(check: RefusedConnectionKeyCheck): string {
+  const outcome = check.kind === 'key_rejected' ? 'the key did not work' : 'Chickpea could not confirm the key works';
+  return `${checkFinding(check)} Tell the person ${outcome}, suggest they rotate the key at the service because they pasted it in chat, and point them to the Add key button Chickpea posts under your reply, where they add the key in a private Slack form. Never repeat the key, and never ask them to paste a key in chat.`;
 }
 
 function refusalWithSetupLink(
@@ -283,7 +287,7 @@ export async function saveManagedConnectionKey(
   if (input.surface === 'slack' && await keySavedOnAnotherConnection({ ...input, key: credential }, entry.account.id)) {
     throw new ManagementError(
       'invalid_request',
-      'Nothing was saved: this key is already saved on another of this Agent\'s connections, and a key pasted in chat fills one connection. Send a setup link with request_setup for this one.',
+      'Nothing was saved: this key is already saved on another of this Agent\'s connections, and a key pasted in chat fills one connection. Ask for its key with request_setup instead.',
     );
   }
   const unchanged = async () =>

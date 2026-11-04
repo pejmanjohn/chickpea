@@ -65,7 +65,10 @@ function recording<T extends object>(target: T, calls: string[]): T {
   });
 }
 
-async function fixture(editPolicy: 'creator_and_admins' | 'all_workspace_members' = 'creator_and_admins') {
+async function fixture(
+  editPolicy: 'creator_and_admins' | 'all_workspace_members' = 'creator_and_admins',
+  conversationKind: 'im' | 'mpim' = 'im',
+) {
   const managementCalls: string[] = [];
   const settingWrites: string[] = [];
   const telemetry: ProductTelemetryEventInput[] = [];
@@ -113,9 +116,9 @@ async function fixture(editPolicy: 'creator_and_admins' | 'all_workspace_members
     const signal: SlackManagementSignal = {
       agentId: agent.id,
       workspaceId,
-      channelId: 'D_SCRIBE',
+      channelId: conversationKind === 'im' ? 'D_SCRIBE' : 'G_SCRIBE',
       threadTs: '500.1',
-      conversationKind: 'im',
+      conversationKind,
       slackUserId: by.binding.slackUserId,
       eventId: `Ev_SCRIBE_${turn}`,
       messageTs: `500.${turn + 1}`,
@@ -419,7 +422,7 @@ test('save_connection_key refuses a member a team connection, as its setup link 
 });
 
 test('a working key checked where the API answers 404 saves nothing and hands back a setup link for that connection', async () => {
-  const f = await fixture();
+  const f = await fixture('creator_and_admins', 'mpim');
   try {
     await addKeyedConnection(f);
     const response = await withConnectionNetwork(hubspot(KEY), async () =>
@@ -444,7 +447,7 @@ test('a working key checked where the API answers 404 saves nothing and hands ba
 });
 
 test('a 401 saves nothing and says the key did not work, without the key', async () => {
-  const f = await fixture();
+  const f = await fixture('creator_and_admins', 'mpim');
   try {
     await addKeyedConnection(f);
     const response = await withConnectionNetwork(hubspot(OTHER_KEY), async () => f.slack('save_connection_key', SAVE, PASTED));
@@ -468,7 +471,7 @@ test('when no setup link can be issued, a refused key still saves nothing and th
       f.slack('save_connection_key', { ...SAVE, path: KB_PATH }, PASTED)));
     const error = refusal(response);
     assert.equal(error.code, 'key_unconfirmed');
-    assert.equal(error.message, `Nothing was saved, because Chickpea could not confirm the key. ${KB_URL} answered HTTP 404. To check it, call save_connection_key again with path set to a read endpoint of this API that the key can read, such as a list endpoint, or send a setup link with request_setup. Never repeat the key.`);
+    assert.equal(error.message, `Nothing was saved, because Chickpea could not confirm the key. ${KB_URL} answered HTTP 404. To check it, call save_connection_key again with path set to a read endpoint of this API that the key can read, such as a list endpoint, or ask for the key with request_setup. Never repeat the key.`);
     assert.doesNotMatch(logs, new RegExp(KEY));
     assert.equal(await f.savedKey(), undefined, 'a working key is still not saved when its link fails');
     assert.equal((await f.account()).lifecycle, 'pending');
@@ -476,7 +479,7 @@ test('when no setup link can be issued, a refused key still saves nothing and th
 });
 
 test('the setup link a refused key returns completes like a request_setup link, for the requester only', async () => {
-  const f = await fixture();
+  const f = await fixture('creator_and_admins', 'mpim');
   try {
     await addKeyedConnection(f);
     const error = refusal(await withConnectionNetwork(hubspot(OTHER_KEY), async () =>
@@ -531,7 +534,7 @@ test('the setup link a refused key returns completes like a request_setup link, 
 });
 
 test('a bogus key checked at a prefix that answers 404 saves nothing; a read path that needs the key rejects it', async () => {
-  const f = await fixture();
+  const f = await fixture('creator_and_admins', 'mpim');
   try {
     await addKeyedConnection(f);
     const unchecked = await withConnectionNetwork(hubspot(OTHER_KEY), async (requests) => {
@@ -557,7 +560,7 @@ test('a bogus key checked at a prefix that answers 404 saves nothing; a read pat
 });
 
 test('a 5xx, an unreadable answer or a failed request saves nothing either, over Slack and MCP', async () => {
-  const f = await fixture();
+  const f = await fixture('creator_and_admins', 'mpim');
   try {
     await addKeyedConnection(f);
     for (const [respond, said] of [
@@ -601,7 +604,7 @@ test('a key typed with its URLs is checked, saved and makes the connection ready
       check: { kind: 'ok', url: `${KB_URL}/articles?limit=1`, status: 200 },
       instruction: saved(result).instruction,
     });
-    assert.match(saved(result).instruction, /rotate it at the service and use the setup link next time/);
+    assert.match(saved(result).instruction, /rotate it at the service and let you ask for the key through Chickpea next time/);
     assert.equal(await f.savedKey(), KEY);
     assert.equal((await f.account()).lifecycle, 'ready');
     assert.deepEqual(f.telemetry.map(({ event, ...rest }) => ({ event, surface: (rest as { surface?: string }).surface })),
@@ -631,7 +634,7 @@ test('a key typed with its URLs is checked, saved and makes the connection ready
 });
 
 test('with no key in the message, the same call adds the connection and returns its setup link', async () => {
-  const f = await fixture();
+  const f = await fixture('creator_and_admins', 'mpim');
   try {
     const call = await f.update({ apiConnections: [KB_CONNECTION] });
     const response = await f.slack('apply_workspace_changes', {
@@ -653,7 +656,7 @@ test('with no key in the message, the same call adds the connection and returns 
 });
 
 test('a setup link the same call asks for with a read endpoint checks the key there, where the bare prefix answers 404', async () => {
-  const f = await fixture();
+  const f = await fixture('creator_and_admins', 'mpim');
   try {
     const call = await f.update({ apiConnections: [KB_CONNECTION] });
     const response = await f.slack('apply_workspace_changes', {
@@ -715,7 +718,7 @@ test('a setup link the same call asks for with a read endpoint checks the key th
 });
 
 test('a 403 saves nothing from chat, since some APIs answer 403 to an invalid key', async () => {
-  const f = await fixture();
+  const f = await fixture('creator_and_admins', 'mpim');
   try {
     await addKeyedConnection(f);
     const response = await withConnectionNetwork((request) => request.headers.get('authorization') === `Bearer ${KEY}`

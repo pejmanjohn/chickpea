@@ -5,7 +5,7 @@ import { SLACK_MEMORY_UPDATE_DATA_NAME, parseSlackMemoryUpdate, type SlackMemory
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from './presentation-intent.ts';
 import { SLACK_INTERACTIVE_QUESTION_DATA_NAME } from './ui/interactive-tools.ts';
 import { parseDisplayComponents, SLACK_DISPLAY_COMPONENTS_DATA_NAME } from './ui/display-tools.ts';
-import type { DisplaySurfaceSpec } from './ui/surface.ts';
+import { KEY_SETUP_TOOL_DATA_NAME, keySetupToolRanFromReplyData, type DisplaySurfaceSpec } from './ui/surface.ts';
 import {
   CODING_WORKER_RUN_DATA_NAME,
   CODING_WORKER_USAGE_DATA_NAME,
@@ -152,6 +152,12 @@ export interface AgentDispatchResult {
    * leaves it undefined (unknown).
    */
   codingWorkspaceOpened?: boolean;
+  /**
+   * Whether a management tool that can ask for a key ran, read from this
+   * attempt's own reply. Never persisted with the settlement, so a replayed
+   * settlement leaves it undefined (unknown).
+   */
+  keySetupToolRan?: boolean;
 }
 
 export class AgentPromptFailure extends Error {
@@ -715,6 +721,7 @@ export async function promptSlackThreadAgent(
     codingWorkspaceOpened: codingWorkspaceOpenedFromReplyData(
       reply.data?.[CODING_WORKSPACE_USE_DATA_NAME],
     ),
+    keySetupToolRan: keySetupToolRanFromReplyData(reply.data?.[KEY_SETUP_TOOL_DATA_NAME]),
   };
 }
 

@@ -71,6 +71,7 @@ const ReceiptProbe = vm.runInNewContext(
     GATEWAY_HTTP_SETTING,
     parseHttpDeliveryState,
     gatewayUiReceiptNow,
+    loadKeyFormFor: async () => undefined,
     receiptRunnerWake,
     threadRunnerStub,
     slackTurnExecutor: (env: Record<string, unknown>) => slackTurnExecutor(env, {}),

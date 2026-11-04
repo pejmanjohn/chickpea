@@ -1151,6 +1151,7 @@ test('HTTP gateway admission logs gateway_delivery with the signed issuedAt lag'
       parseHttpDeliveryState,
       httpDeliveryReceipt,
       gatewayUiReceiptNow,
+      loadKeyFormFor: async () => undefined,
       loadCredentialKeyring: () => ({}),
       verifyHttpDelivery: async () => {
         if (verifyFails) throw new HttpDeliveryError(401, 'delivery_unauthorized');

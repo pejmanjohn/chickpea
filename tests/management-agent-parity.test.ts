@@ -994,6 +994,7 @@ test('creation follow-on approval keeps Chickpea ownership until the exact propo
           },
           service: {
             confirmWorkspaceChange: async () => result,
+            approvedProposalHoldsKey: async () => false,
           } as unknown as WorkspaceManagementService,
         },
       });

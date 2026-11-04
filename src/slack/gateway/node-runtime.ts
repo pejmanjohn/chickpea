@@ -28,7 +28,7 @@ import {
   type GatewayInboundDelivery,
   type GatewaySessionCapability,
 } from './protocol.ts';
-import { answerGatewayUiAtReceipt } from './ui-receipt.ts';
+import { answerGatewayUiAtReceipt, isKeyFormDelivery } from './ui-receipt.ts';
 import { uiSurfaceRecord } from '../ui/host-surfaces.ts';
 import type { UiSurfaceRecord } from '../ui/surface.ts';
 import {
@@ -285,8 +285,10 @@ export function startNodeGatewaySession(
     const onEvent = async (delivery: GatewayInboundDelivery): Promise<GatewayAdmissionResult> => {
       if (runtimeQuiescing || generation !== lifecycleGeneration) return 'rejected';
       // A modal click or submission is answered in the ack from its stored card.
-      const receipt = await answerGatewayUiAtReceipt(delivery, (id) => readNodeUiSurface(env, id))
-        .catch(() => undefined);
+      const receipt = await (isKeyFormDelivery(delivery)
+        ? import('../key-form.ts').then(({ keyFormReceipt }) => keyFormReceipt(delivery, resolveStores(env)))
+        : answerGatewayUiAtReceipt(delivery, (id) => readNodeUiSurface(env, id))
+      ).catch(() => undefined);
       if (receipt) return receipt;
       const outcome = getInbox().admit(delivery, binding);
       if (outcome !== 'rejected') inboxWorker?.wake();

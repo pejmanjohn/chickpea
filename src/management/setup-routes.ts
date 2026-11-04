@@ -162,9 +162,11 @@ import {
 import { resolveSlackInstallationExecutionContext } from '../slack/installation-execution.ts';
 import { slackPresentationStatePort } from '../slack/presentation-state-port.ts';
 import {
-  agentConnections,
   connectionSetupBinding,
+  findSetupConnection,
   mcpCredentialField,
+  setupAgentCurrent,
+  setupConnectionTarget,
   type AgentConnectionEntry,
 } from './agent-connections.ts';
 import {
@@ -180,6 +182,7 @@ import { setupWakeAgent, setupWakeNote, type SavedKeyCheck, type SetupWakeComple
 import type { ManagementStore } from './store.ts';
 import {
   ManagementError,
+  type ManagementSetupCompletionAuthority,
   type ManagementSetupRecord,
   type ManagementSetupWake,
 } from './types.ts';
@@ -203,7 +206,7 @@ const SETUP_ID_PATTERN = /^setup_[A-Za-z0-9_-]{1,128}$/;
 const MAX_FORM_BYTES = 16 * 1024;
 const SESSION_COOKIE = '__Secure-chickpea-setup';
 
-interface ManagementSetupRoutesOptions {
+export interface ManagementSetupRoutesOptions {
   management?: ManagementStore;
   config?: ConfigStore;
   settings?: SettingsStore;
@@ -1223,7 +1226,7 @@ async function completeManagementMcpOAuthCallback(
   }
 }
 
-interface SetupDependencies {
+export interface SetupDependencies {
   management: ManagementStore;
   config: ConfigStore;
   settings: SettingsStore;
@@ -1376,7 +1379,7 @@ function isLegacySetupAction(
 }
 
 /** Recheck live authority before a delegated legacy setup can mutate or call a provider. */
-async function requireCurrentLegacySetupAuthority(
+export async function requireCurrentLegacySetupAuthority(
   principal: AuthPrincipal,
   setup: ManagementSetupRecord,
   dependencies: SetupDependencies,
@@ -2446,7 +2449,7 @@ function principalMatchesSetup(
     principal.organizationId === setup.organizationId);
 }
 
-async function completeFormAction(
+export async function completeFormAction(
   setup: ManagementSetupRecord,
   fields: Record<string, string>,
   dependencies: SetupDependencies,
@@ -2510,6 +2513,10 @@ async function completeFormAction(
         .catch(() => undefined))?.account.revision === entry.account.revision,
     }, options.connectionCheck);
     if (check.kind === 'key_rejected') throw new SetupKeyRejectedError(policy.allowedHosts[0]!);
+    // A bare prefix often answers 404 whatever the key, so a Slack form key checked there needs a 2xx.
+    if (check.kind !== 'ok' && path === undefined && setup.target.form === 'slack') {
+      throw new SetupKeyUnconfirmedError(policy.allowedHosts[0]!, check.kind);
+    }
     await completeSetupCredential(setup, dependencies, entry, credential, {});
     return { connector: setup.target.targetLabel, check: check.kind };
   }
@@ -2576,6 +2583,7 @@ async function completeFormAction(
 
 /** What finishing a setup produced, as each setup kind's route reports it. */
 interface SetupCompletion {
+  via?: 'slack_form';
   connector?: string;
   accountLabel?: string;
   connectionAccountId?: string;
@@ -2594,9 +2602,6 @@ async function finishSetup(
   options: ManagementSetupRoutesOptions,
   at: number,
 ): Promise<void> {
-  const browserSessionDigest = digest(setupSession(c, setup.setupOperationId)!);
-  // A wake that cannot be built leaves the notice; it never fails the setup.
-  const wake = await setupWakeFor(setup, result, dependencies).catch(() => undefined);
   const connectionReceipt = ['managed_connection', 'catalog_connection'].includes(setup.action) &&
       setup.target.agentId
     ? await dependencies.config.getAgent(setup.target.agentId).then((agent) => {
@@ -2614,32 +2619,9 @@ async function finishSetup(
         };
       })
     : undefined;
-  const initiator = connectionReceipt
-    ? setup.actorUserId
-    : (await dependencies.identity.getUser(setup.actorUserId))?.displayName ?? setup.actorUserId;
-  await completeManagementSetupReceipt(dependencies.management, {
-    setup,
-    browserSessionDigest,
-    ...(result.completedByUserId
-      ? { completedByUserId: result.completedByUserId }
-      : {}),
-    ...(result.completedByMembershipId
-      ? { completedByMembershipId: result.completedByMembershipId }
-      : {}),
-    ...(result.connectionAccountId
-      ? { connectionAccountId: result.connectionAccountId }
-      : {}),
-    ...(result.connector ? { connector: result.connector } : {}),
-    ...(result.accountLabel ? { accountLabel: result.accountLabel } : {}),
-    initiator,
-    at,
-    ...(connectionReceipt ?? {}),
-    ...(wake ? { wake } : {}),
-  });
-  emitManagementMetric('setup.lifecycle', {
-    action: setup.action,
-    outcome: 'completed',
-  });
+  await completeSetupWithReceipt(setup, result, {
+    browserSessionDigest: digest(setupSession(c, setup.setupOperationId)!),
+  }, dependencies, at, connectionReceipt);
   const presentationState = slackPresentationStatePort(
     getSlackStateStore(dependencies.platformEnv),
     dependencies.platformEnv,
@@ -2680,6 +2662,45 @@ async function finishSetup(
   }).catch(() => undefined);
 }
 
+export async function completeSetupWithReceipt(
+  setup: ManagementSetupRecord,
+  result: SetupCompletion,
+  authority: ManagementSetupCompletionAuthority,
+  dependencies: SetupDependencies,
+  at: number,
+  connectionReceipt?: Pick<Parameters<typeof completeManagementSetupReceipt>[1],
+    'receiptKind' | 'agentId' | 'agentName' | 'ownerKind' | 'accessLane' | 'toolkit' | 'avatarUrl'>,
+): Promise<void> {
+  // A wake that cannot be built leaves the notice; it never fails the setup.
+  const wake = await setupWakeFor(setup, result, dependencies).catch(() => undefined);
+  const initiator = connectionReceipt
+    ? setup.actorUserId
+    : (await dependencies.identity.getUser(setup.actorUserId))?.displayName ?? setup.actorUserId;
+  await completeManagementSetupReceipt(dependencies.management, {
+    setup,
+    ...authority,
+    ...(result.completedByUserId
+      ? { completedByUserId: result.completedByUserId }
+      : {}),
+    ...(result.completedByMembershipId
+      ? { completedByMembershipId: result.completedByMembershipId }
+      : {}),
+    ...(result.connectionAccountId
+      ? { connectionAccountId: result.connectionAccountId }
+      : {}),
+    ...(result.connector ? { connector: result.connector } : {}),
+    ...(result.accountLabel ? { accountLabel: result.accountLabel } : {}),
+    initiator,
+    at,
+    ...(connectionReceipt ?? {}),
+    ...(wake ? { wake } : {}),
+  });
+  emitManagementMetric('setup.lifecycle', {
+    action: setup.action,
+    outcome: 'completed',
+  });
+}
+
 /**
  * The wake a finished setup queues for the Agent that asked for it, as the
  * person who finished it, or undefined when it posts its notice instead
@@ -2700,7 +2721,7 @@ async function setupWakeFor(
   // An MCP key is saved only once the server answered with it.
   const check = setup.action === 'mcp_credentials' ? 'ok' : result.check;
   const completion: SetupWakeCompletion = keyed
-    ? { kind: 'key', ...(check ? { check } : {}) }
+    ? { kind: 'key', ...(check ? { check } : {}), ...(result.via ? { via: result.via } : {}) }
     : { kind: 'sign_in', ...await signInAccess(setup, result, dependencies) };
   return {
     agentId: agent.agentId,
@@ -2863,8 +2884,7 @@ async function currentSetupAgent(
 ): Promise<CustomAgentConfig> {
   if (!setup.target.agentId) throw new Error('target_changed');
   const agent = await config.getAgent(setup.target.agentId);
-  if (!setup.setupOperationId.startsWith('setup_welcome_') &&
-      agent.revision !== setup.target.expectedRevision) throw new Error('target_changed');
+  if (!setupAgentCurrent(setup, agent)) throw new Error('target_changed');
   return agent;
 }
 
@@ -2874,11 +2894,9 @@ async function currentSetupConnection(
   dependencies: SetupDependencies,
 ): Promise<AgentConnectionEntry & { agent: CustomAgentConfig }> {
   const agent = await currentSetupAgent(setup, dependencies.config);
-  const entry = await setupConnectionEntry(setup, dependencies);
-  if (!entry || entry.account.label !== setup.target.targetLabel ||
-      connectionSetupBinding(entry) !== setup.target.credentialBinding) {
-    throw new Error('target_changed');
-  }
+  const listed = await setupConnectionLists(setup, dependencies);
+  const entry = listed && setupConnectionTarget(setup, agent, listed.accounts, listed.bindings);
+  if (!entry) throw new Error('target_changed');
   return { agent, ...entry };
 }
 
@@ -2887,15 +2905,21 @@ async function setupConnectionEntry(
   setup: ManagementSetupRecord,
   dependencies: SetupDependencies,
 ): Promise<AgentConnectionEntry | undefined> {
-  const lane = setup.target.kind === 'mcp_connection' ? 'mcp' : 'api';
+  const listed = await setupConnectionLists(setup, dependencies);
+  return listed && findSetupConnection(setup, listed.accounts, listed.bindings);
+}
+
+async function setupConnectionLists(
+  setup: ManagementSetupRecord,
+  dependencies: SetupDependencies,
+): Promise<{ accounts: ConnectionAccount[]; bindings: AgentConnectionBinding[] } | undefined> {
   const workspaceId = await setupWorkspaceId(setup, dependencies.identity);
   if (!workspaceId || !setup.target.agentId) return undefined;
   const [accounts, bindings] = await Promise.all([
     dependencies.config.listConnectionAccounts(workspaceId),
     dependencies.config.listAgentConnectionBindings(setup.target.agentId),
   ]);
-  return [...agentConnections(accounts, bindings, setup.actorMembershipId)[lane].values()]
-    .find(({ account }) => account.id === setup.target.connectionId);
+  return { accounts, bindings };
 }
 
 async function setupWorkspaceId(
@@ -3264,9 +3288,15 @@ const KEY_SAVED_TEXT: Record<KeySavedCheck, { finding: string; alone: string }> 
   },
 };
 
-class SetupKeyRejectedError extends Error {
-  constructor(host: string) {
+export class SetupKeyRejectedError extends Error {
+  constructor(readonly host: string) {
     super(`${host} rejected this key. Check that you copied the whole key, then try again.`);
+  }
+}
+
+export class SetupKeyUnconfirmedError extends Error {
+  constructor(readonly host: string, readonly check: KeySavedCheck) {
+    super(`${host} did not confirm this key.`);
   }
 }
 
@@ -3423,7 +3453,7 @@ function digest(value: string): string {
   return createHash('sha256').update(value).digest('base64url');
 }
 
-function safeFailureCode(error: unknown): string {
+export function safeFailureCode(error: unknown): string {
   if (error instanceof SetupKeyRejectedError) return 'key_rejected';
   if (error instanceof ManagementError) return error.code;
   if (error instanceof McpOAuthError) return error.code;

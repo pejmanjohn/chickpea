@@ -279,6 +279,7 @@ test('"rewrite Desk and connect Zendesk": the person\'s approval applies the rew
       [['profile', 'applied'], ['zendesk-setup', 'setup_required']], 'the call the change set held is settled');
     const setup = await f.management.getSetup(outcomes(call)[1]!.setupOperationId!);
     assert.equal(setup?.origin.kind, 'slack');
+    assert.equal(setup?.target.form, undefined, 'a key for another Agent than the thread\'s keeps its link');
     assert.equal('approvedProposalId' in setup!.origin, false, 'the setup record keeps no approval stamp');
   } finally {
     f.close();
