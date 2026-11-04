@@ -269,6 +269,12 @@ export function renderSlackJourneyPage(input: {
   progress?: { steps: readonly OnboardingStep[]; current: OnboardingStepId } | undefined;
   /** A success card above the eyebrow, such as the Slack workspace a person signed in to. */
   badge?: string | undefined;
+  /**
+   * A small link in the badge, after its text, such as one to pick a
+   * different workspace. Only a same-origin path is linked; any other `href`
+   * leaves the badge without it.
+   */
+  badgeAction?: SlackJourneyBadgeAction | undefined;
   /** Onboarding's split screen: this scene on the left, the page on the right. */
   scene?: Extract<OnboardingSceneId, 'sign-in' | 'add-to-slack'> | undefined;
 }): string {
@@ -276,9 +282,8 @@ export function renderSlackJourneyPage(input: {
   const progress = bar
     ? onboardingOrientationHtml(bar.steps, bar.steps.findIndex((step) => step.id === bar.current), false)
     : '';
-  const badge = input.badge?.trim()
-    ? `<div class="auth-badge"><span class="auth-badge-logo slack-logo-image" aria-hidden="true"></span><p>${escapeHtml(input.badge.trim())}</p><span class="auth-badge-check" aria-hidden="true">&#10003;</span></div>`
-    : '';
+  const badgeText = input.badge?.trim();
+  const badge = badgeText ? slackJourneyBadgeHtml(badgeText, input.badgeAction) : '';
   const alert = input.alert
     ? `<div class="auth-alert" id="auth-error" role="alert" tabindex="-1">${escapeHtml(input.alert)}</div>`
     : '';
@@ -308,12 +313,33 @@ ${JOURNEY_FONT_FACES_CSS}
 ${progress || input.scene ? ONBOARDING_SCENE_CSS : ''}${progress ? SLACK_JOURNEY_PROGRESS_CSS : ''}${badge ? SLACK_JOURNEY_BADGE_CSS : ''}${input.scene ? SLACK_JOURNEY_SCENE_CSS : ''}</style></head>${page}</html>`;
 }
 
+interface SlackJourneyBadgeAction {
+  href: string;
+  label: string;
+}
+
+// The URL parser reads `\` as `/` and drops tabs and newlines, so `/\host` and
+// `/<tab>/host` leave the origin just as `//host` does.
+const SAME_ORIGIN_PATH = /^\/(?![/\\])[^\s\\]*$/;
+
+function slackJourneyBadgeHtml(text: string, action: SlackJourneyBadgeAction | undefined): string {
+  const label = action?.label.trim();
+  const content = action && label && SAME_ORIGIN_PATH.test(action.href)
+    ? `<p class="auth-badge-line"><span class="auth-badge-name">${escapeHtml(text)}</span><a class="auth-badge-action" href="${escapeHtml(action.href)}">${escapeHtml(label)}</a></p>`
+    : `<p>${escapeHtml(text)}</p>`;
+  return `<div class="auth-badge"><span class="auth-badge-logo slack-logo-image" aria-hidden="true"></span>${content}<span class="auth-badge-check" aria-hidden="true">&#10003;</span></div>`;
+}
+
 const JOURNEY_FONT_FACES_CSS = fontFaceCss(JOURNEY_FONTS);
 
 // The journey shell's own layout around the shared scene and step bar
 // (ONBOARDING_SCENE_CSS), and the signed-in card Admin's stylesheet also draws.
 const SLACK_JOURNEY_PROGRESS_CSS = '.onboarding-orientation{margin:0 0 30px}\n';
-const SLACK_JOURNEY_BADGE_CSS = '.auth-badge{align-items:center;background:#e7f1e3;border-radius:16px;display:flex;gap:14px;margin:0 0 26px;padding:14px 16px}.auth-badge p{color:#36592a;flex:1;font-weight:700;margin:0}.auth-badge-logo{background-color:#fff;background-size:22px;border-radius:11px;box-shadow:0 1px 0 rgba(0,0,0,.08);flex:none;height:42px;width:42px}.auth-badge-check{align-items:center;background:#6fa25b;border-radius:50%;color:#fff;display:inline-flex;flex:none;font-size:.85rem;height:28px;justify-content:center;width:28px}\n';
+// Beside a badge link, the name gives way first, truncating down to about 6em;
+// only then does the link wrap under it. Containment keeps the unwrapped name
+// from widening the plain card past a phone's screen.
+const SLACK_JOURNEY_BADGE_CSS = '.auth-badge{align-items:center;background:#e7f1e3;border-radius:16px;display:flex;gap:14px;margin:0 0 26px;padding:14px 16px}.auth-badge p{color:#36592a;flex:1;font-weight:700;margin:0}.auth-badge-logo{background-color:#fff;background-size:22px;border-radius:11px;box-shadow:0 1px 0 rgba(0,0,0,.08);flex:none;height:42px;width:42px}.auth-badge-check{align-items:center;background:#6fa25b;border-radius:50%;color:#fff;display:inline-flex;flex:none;font-size:.85rem;height:28px;justify-content:center;width:28px}' +
+  '.auth-badge-line{align-items:baseline;column-gap:12px;contain:inline-size;display:flex;flex-wrap:wrap;min-width:0}.auth-badge-name{flex:1 1 6em;max-width:max-content;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.auth-badge-action{border-radius:4px;color:#3d6d31;flex:none;font-size:.875rem;font-weight:600;margin:-4px 0;max-width:100%;overflow:hidden;padding:4px 0;text-decoration:none;text-overflow:ellipsis;white-space:nowrap}.auth-badge-action:hover,.auth-badge-action:focus-visible{text-decoration:underline;text-underline-offset:3px}.auth-badge-action:focus-visible{outline:2px solid #36592a;outline-offset:2px}\n';
 const SLACK_JOURNEY_SCENE_CSS = 'body.auth-scened{background:var(--card);display:block;padding:0;place-items:normal}.auth-split{display:grid;grid-template-columns:minmax(0,44fr) minmax(0,56fr);grid-template-rows:auto 1fr;min-height:100dvh}.auth-split-brand{grid-column:2;grid-row:1;padding:34px clamp(28px,5vw,72px) 0}.auth-split-brand .auth-brand{margin:0;min-height:52px}.auth-split>.auth-card{background:transparent;border:0;border-radius:0;box-shadow:none;display:flex;flex-direction:column;grid-column:2;grid-row:2;padding:48px clamp(28px,5vw,72px) 48px;width:auto}.auth-split .onboarding-orientation{margin:0;max-width:620px}.auth-body{margin:auto 0;max-width:620px;padding:24px 0}.auth-scened .auth-eyebrow{color:#8a6410;font-size:.78rem;font-weight:700;letter-spacing:.12em}.auth-scened .auth-title{font-size:clamp(2.25rem,3.6vw,3.3rem);margin:10px 0 14px}.auth-scened .auth-intro{font-size:1.1875rem;max-width:34em}.auth-scened .auth-button{border-radius:16px;font-size:1.0625rem;font-weight:700;min-height:56px;padding:12px 24px;width:auto}.auth-scened .auth-actions,.auth-scened form{margin-top:30px}' +
   '.onboarding-scene{grid-column:1;grid-row:1/3}' +
   '@media(max-width:720px){.auth-split{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto 1fr}.auth-split-brand{grid-column:1;grid-row:1;padding:14px 20px 0;position:relative;z-index:2}.auth-split-brand .auth-brand{min-height:0}.auth-split-brand .brand-wordmark{height:28px}.auth-split-brand .auth-brand-mark{height:34px;width:34px}.auth-split>.auth-card{grid-column:1;grid-row:3;padding:18px 20px 40px}.auth-body{margin:0;padding:22px 0 0}.auth-scened .auth-title{font-size:2.125rem}.auth-scened .auth-intro{font-size:1.0625rem}.auth-scened .auth-button{width:100%}.auth-badge{margin-bottom:20px;padding:12px 14px}}\n';
