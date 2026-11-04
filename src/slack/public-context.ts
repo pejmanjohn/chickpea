@@ -120,7 +120,7 @@ export interface SlackPublicDelivery {
 
 export async function recordDeliveredSlackAgentMessage(
   store: SlackPublicContextWriter,
-  turn: NormalizedSlackTurn,
+  turn: Pick<NormalizedSlackTurn, 'workspaceId' | 'channelId' | 'threadTs'>,
   assignment: Pick<ResolvedAssignment, 'runtimeContract' | 'agentId'>,
   delivery: SlackPublicDelivery,
 ): Promise<void> {
