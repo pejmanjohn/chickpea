@@ -653,6 +653,8 @@ export function useWorkspaceManagementSlackTools(
   pageRead: () => boolean,
   writeAgentCreationTerminal?: (intent: SlackAgentCreationTerminalIntent) => void,
   writeMemoryUpdate?: (receipt: SlackMemoryUpdate) => void,
+  /** Called when a tool that can ask for a key with the Add key card runs. */
+  noteKeySetupTool?: () => void,
 ): DeferredSlackManagementTools | undefined {
   const signal = parseSlackManagementSignal(useDelivery(), plan);
   if (!signal) return undefined;
@@ -738,6 +740,7 @@ export function useWorkspaceManagementSlackTools(
     description: workspaceManagementToolDescription('save_connection_key'),
     input: saveConnectionKeyValibotSchema,
     async run({ data }) {
+      noteKeySetupTool?.();
       return slackToolOutput(await invokeLiveSlackTool(
         signal, resolvePlatformEnv, 'save_connection_key', data, turnGuard,
       ));
@@ -902,6 +905,7 @@ export function useWorkspaceManagementSlackTools(
       description: workspaceManagementToolDescription('apply_workspace_changes'),
       input: slackApplyWorkspaceChangesValibotSchema,
       async run({ data }) {
+        noteKeySetupTool?.();
         const prepared = creationCoordinator.prepare({
           idempotencyKey: data.idempotencyKey,
           operations: data.operations as ManagementOperation[],

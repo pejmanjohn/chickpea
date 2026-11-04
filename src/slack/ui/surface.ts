@@ -180,6 +180,19 @@ export function isKeyFormAction(actionId: string): boolean {
   return KEY_ADD_ACTION.test(actionId);
 }
 
+/**
+ * Reply data a Slack turn writes when it ran a management tool that can ask
+ * for a key with the Add key card (apply_workspace_changes,
+ * save_connection_key). Only such a turn looks for the card's setups after
+ * its reply. Not persisted with the settlement: a replayed answer looks.
+ */
+export const KEY_SETUP_TOOL_DATA_NAME = 'slackKeySetupTool';
+
+export function keySetupToolRanFromReplyData(value: unknown): boolean {
+  return Array.isArray(value) && value.some((entry) =>
+    typeof entry === 'object' && entry !== null && (entry as { ran?: unknown }).ran === true);
+}
+
 const ACTION_ID = /^chickpea\.(ui|host)\.v1\.([a-z_]{1,24})(?:\.(\d{1,3}))?$/;
 const BLOCK_ID = /^chickpea\.(ui|host)\.v1\.([a-f0-9]{32})\.(\d{1,3})$/;
 const VALUE = /^([a-f0-9]{32}):(\d{1,3})$/;

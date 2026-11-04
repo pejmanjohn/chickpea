@@ -258,6 +258,7 @@ import {
   SlackDisplayComponentsSchema,
   type SlackDisplayComponentPart,
 } from '../slack/ui/display-tools.ts';
+import { KEY_SETUP_TOOL_DATA_NAME } from '../slack/ui/surface.ts';
 import { replyDisplayHistory } from '../slack/presentation-tool-policy.ts';
 
 /** Display components the guide describes wherever they mount. */
@@ -866,6 +867,7 @@ export function ChickpeaSlack({ id }: AgentProps) {
   const writeDisplayComponent = useDataWriter(SLACK_DISPLAY_COMPONENTS_DATA_NAME, {
     schema: SlackDisplayComponentsSchema,
   });
+  const writeKeySetupTool = useDataWriter(KEY_SETUP_TOOL_DATA_NAME, { schema: v.object({ ran: v.literal(true) }) });
   const managementEnabled = !!parseSlackManagementSignal(delivery, plan);
   const turn = runtimePlanTurnContext(plan, delivery, turnEnvelope);
   // The returned shared block opens the system prompt; this Agent's own
@@ -883,6 +885,7 @@ export function ChickpeaSlack({ id }: AgentProps) {
     turn,
     writeInteractiveQuestion,
     writeDisplayComponent,
+    () => writeKeySetupTool({ ran: true }),
   );
   useSlackAttachmentContext(
     plan,
@@ -971,6 +974,8 @@ export function useChickpeaSlackRuntimeCapabilities(
   turn?: TurnEnvelopeContext,
   writeInteractiveQuestion?: (record: SlackInteractiveQuestion) => void,
   writeDisplayComponent?: (parts: SlackDisplayComponentPart[]) => void,
+  /** Marks the turn as one whose tools could ask for a key with the Add key card. */
+  noteKeySetupTool?: () => void,
 ): void {
   const signal = parseSlackManagementSignal(useDelivery(), plan);
   const webTurn = useWebTurn(signal?.turnJobId);
@@ -1001,6 +1006,7 @@ export function useChickpeaSlackRuntimeCapabilities(
       useAgentAuthoringSkill();
       management = useWorkspaceManagementSlackTools(
         plan, id, resolveAgentPlatformEnv, webTurn.pageRead, writeAgentCreationTerminal, writeMemoryUpdate,
+        noteKeySetupTool,
       );
       useSlackListsTools(plan, resolveAgentPlatformEnv);
       useSlackReadingTools(plan, resolveAgentPlatformEnv);
