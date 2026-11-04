@@ -22,6 +22,7 @@ export const SLACK_BOT_SCOPES = Object.freeze([
   'im:history', 'im:write', 'mpim:history', 'mpim:read', 'reactions:read', 'reactions:write', 'users:read',
   'usergroups:read', 'usergroups:write', 'users:read.email',
   'lists:read', 'lists:write',
+  'channels:manage', 'groups:write', 'im:read', 'mpim:write', 'team:read', 'canvases:read', 'canvases:write',
 ] as const);
 
 const SHARED_BOT_EVENTS = Object.freeze([

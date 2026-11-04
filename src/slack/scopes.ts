@@ -18,10 +18,12 @@ export const REQUESTED_SLACK_BOT_SCOPES = Object.freeze([
  *
  * An app made from an older manifest lacks whole groups, so recovery and the
  * lane preflight enumerate groups, not scopes. The first three stay single so
- * every manifest a lane could have installed since Lists still matches.
+ * every manifest a lane could have installed since Lists still matches. The
+ * fourth group is requested for upcoming features; no feature uses it yet.
  */
 export const SLACK_FEATURE_SCOPE_GROUPS: readonly (readonly string[])[] = Object.freeze([
   ['lists:read'], ['lists:write'], ['mpim:history'],
+  ['channels:manage', 'groups:write', 'im:read', 'mpim:write', 'team:read', 'canvases:read', 'canvases:write'],
 ]);
 export const SLACK_FEATURE_SCOPES: readonly string[] = Object.freeze(SLACK_FEATURE_SCOPE_GROUPS.flat());
 /** Feature scopes are additive: a core-only installation must keep serving ordinary chat. */
@@ -42,13 +44,17 @@ export const SLACK_USER_GROUP_SCOPES = Object.freeze(['usergroups:read', 'usergr
  * Agent that is its own bot needs, and without group DM history: group DMs
  * are served through the workspace app, and an Agent app's scopes and events
  * are not changed for them, so a mention of its bot in a group DM reads none
- * of the group's earlier messages. It keeps `channels:join` so that adding
- * the Agent to a public Channel brings its bot in: Chickpea's bot cannot
- * invite it without a scope every installation would have to approve.
+ * of the group's earlier messages. It also leaves out the scopes requested
+ * for upcoming features: an Agent app made before them was never granted
+ * them, and its consent must keep passing. It keeps `channels:join` so that
+ * adding the Agent to a public Channel brings its bot in: Chickpea's bot
+ * cannot invite it without a scope every installation would have to approve.
  */
+const AGENT_APP_LEAVES_OUT = new Set([
+  'chat:write.customize', 'users:read.email', 'mpim:history', ...SLACK_FEATURE_SCOPE_GROUPS[3]!,
+]);
 export const AGENT_APP_BOT_SCOPES: readonly string[] = Object.freeze(REQUESTED_SLACK_BOT_SCOPES.filter((scope) =>
-  !scope.startsWith('usergroups:') && scope !== 'chat:write.customize' && scope !== 'users:read.email' &&
-  scope !== 'mpim:history'
+  !scope.startsWith('usergroups:') && !AGENT_APP_LEAVES_OUT.has(scope)
 ));
 
 /**

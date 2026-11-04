@@ -779,25 +779,29 @@ test('the local contract splits the setup sources into an install contract and a
   const contract = readLocalEnvironmentContract({ projectRoot: process.cwd() });
   assert.equal(
     contract.manifestDigest,
-    'sha256:bb35f04605397a4eba7576c3c3dbbc9a721d4b02c788f79652f0d737ff98c981',
+    'sha256:38219abe3167ecad0d56e1c0132bcf6157cbfba73b1cd207f39ee70e1ee01969',
   );
   assert.equal(
     contract.existingInstallManifestDigest,
     'sha256:b04a3b0ac2802fe79e68ed0e0e70f8e5b726ecae3b0ff599f3163b644d231d1a',
   );
   assert.deepEqual(contract.withoutOptionalEvents, {
-    manifestDigest: 'sha256:0d291901fa1e394f964ea8ccf32bab4983125519790070ec5d84df6817b5a13d',
+    manifestDigest: 'sha256:aecead80549460d5c1a3ee17dafc613775002c0c3635de7c217a738eced9552d',
     existingInstallManifestDigest: 'sha256:ebb63684f95e53b72033bd3f1b709268e6ec6a73aeac8c8ba119e5c66366e248',
   });
   assert.deepEqual(
     contract.existingInstallScopes,
-    contract.requiredScopes.filter((scope: string) => !['lists:read', 'lists:write', 'mpim:history'].includes(scope)),
+    contract.requiredScopes.filter((scope: string) => ![
+      'lists:read', 'lists:write', 'mpim:history',
+      'channels:manage', 'groups:write', 'im:read', 'mpim:write', 'team:read', 'canvases:read', 'canvases:write',
+    ].includes(scope)),
   );
   // The manifests lane baselines were recorded from before group DMs, with and
   // without Lists and the Stop event, so those baselines still match.
   const variants = new Map(contract.installedVariants.map((variant: { manifestDigest: string; requiredScopes: string[] }) =>
     [variant.manifestDigest, variant.requiredScopes.length]));
-  assert.equal(variants.size, 32);
+  assert.equal(variants.size, 64, 'every whole-group and optional-event combination');
+  assert.equal(variants.get(contract.manifestDigest), 30, 'the full manifest is a variant');
   for (const [digest, scopes] of [
     ['sha256:7e1ebdc8f52c672ce81774caec2efd40a68dcda3161ce60fccb8a3f60fd671c4', 22],
     ['sha256:bd807ce3a06b6cff935ec316251f3ba3cc3cdf71e7ba5de09e95beac7ad94120', 20],

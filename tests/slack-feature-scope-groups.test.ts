@@ -11,7 +11,10 @@ import {
   subsets,
 } from '../src/slack/scopes.ts';
 
-const FEATURE_SCOPES = ['lists:read', 'lists:write', 'mpim:history'];
+const UPCOMING_FEATURE_SCOPES = [
+  'channels:manage', 'groups:write', 'im:read', 'mpim:write', 'team:read', 'canvases:read', 'canvases:write',
+];
+const FEATURE_SCOPES = ['lists:read', 'lists:write', 'mpim:history', ...UPCOMING_FEATURE_SCOPES];
 
 test('the feature scope groups flatten to the pinned feature scopes, none required, all requested', () => {
   assert.deepEqual(SLACK_FEATURE_SCOPE_GROUPS.flat(), FEATURE_SCOPES);
@@ -56,8 +59,10 @@ test('recoverable feature scope sets start with the grant, hold every whole-grou
   }
 });
 
-test('an Agent\'s own app asks for none of the feature scopes added after group DMs', () => {
-  for (const scope of SLACK_FEATURE_SCOPE_GROUPS.slice(3).flat()) {
-    assert.equal(AGENT_APP_BOT_SCOPES.includes(scope), false, scope);
+test('the scopes requested for upcoming features are one group, and an Agent\'s own app asks for none of them', () => {
+  assert.deepEqual(SLACK_FEATURE_SCOPE_GROUPS[3], UPCOMING_FEATURE_SCOPES);
+  for (const scope of UPCOMING_FEATURE_SCOPES) {
+    assert.ok(REQUESTED_SLACK_BOT_SCOPES.includes(scope), `${scope} is requested`);
+    assert.equal(AGENT_APP_BOT_SCOPES.includes(scope), false, `${scope} is not an Agent app scope`);
   }
 });

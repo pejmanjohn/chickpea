@@ -430,6 +430,46 @@ test('staging refuses a session whose active revision moved after it began', asy
   } finally { fixture.close(); }
 });
 
+const LEGACY_FEATURE_SCOPES = ['lists:read', 'lists:write', 'mpim:history'];
+const UPCOMING_FEATURE_SCOPES = [
+  'channels:manage', 'groups:write', 'im:read', 'mpim:write', 'team:read', 'canvases:read', 'canvases:write',
+];
+// Apps and tokens that hold different feature scopes after the seven were requested for upcoming features.
+for (const [name, featureScopes, grantedFeatureScopes] of [
+  ['an app holding the legacy scopes and two of the new ones, with a matching grant',
+    [...LEGACY_FEATURE_SCOPES, 'im:read', 'team:read'], [...LEGACY_FEATURE_SCOPES, 'im:read', 'team:read']],
+  ['an app holding only the legacy scopes whose token has every feature scope (Reconnect happened)',
+    LEGACY_FEATURE_SCOPES, [...LEGACY_FEATURE_SCOPES, ...UPCOMING_FEATURE_SCOPES]],
+  ['an app holding every feature scope whose token has the legacy three (added by hand, not reinstalled)',
+    [...LEGACY_FEATURE_SCOPES, ...UPCOMING_FEATURE_SCOPES], LEGACY_FEATURE_SCOPES],
+] as const) test(`${name} recovers with the app's own feature scopes`, async () => {
+  for (const repairUrls of [false, true]) {
+    const fixture = await recoveryFixture({ featureScopes, grantedFeatureScopes, manifestFlow: repairUrls, initialOrigin: repairUrls ? 'https://old-chickpea.example' : ORIGIN });
+    try {
+      const authority = { ...await fixture.service.begin({ recoveryToken: TOKEN, browserBinding: BROWSER }), browserBinding: BROWSER };
+      const current = buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN });
+      const held = structuredClone(current);
+      held.oauth_config.scopes.bot = REQUESTED_SLACK_BOT_SCOPES.filter(scope => !SLACK_FEATURE_SCOPES.includes(scope) || featureScopes.includes(scope));
+      if (repairUrls) {
+        await fixture.service.repairUrls({ ...authority, configurationToken: 'xoxe.configuration-token-secret', expectedManifest: current });
+        assert.deepEqual(fixture.updatedManifest?.oauth_config.scopes.bot, held.oauth_config.scopes.bot, 'URL repair keeps the app\'s feature grant');
+      }
+      await fixture.service.stageAppCredentials({ ...authority, appId: 'A12345678', teamId: 'TACME', clientId: '123.456', clientSecret: 'replacement-client-secret', signingSecret: 'replacement-signing-secret', manifest: current });
+      const started = await fixture.service.startBotOAuth({ ...authority, redirectUri: REDIRECT });
+      assert.equal(
+        new URL(started.authorizationUrl).searchParams.get('scope'),
+        REQUESTED_SLACK_BOT_SCOPES.filter(scope => !SLACK_FEATURE_SCOPES.includes(scope) || grantedFeatureScopes.includes(scope)).join(','),
+        'OAuth asks for the feature scopes the token already has',
+      );
+      await fixture.service.callback({ ...authority, state: started.state, redirectUri: REDIRECT, code: `feature-grant-recovery-${repairUrls}` });
+      await fixture.recordChallenge('replacement-signing-secret');
+      assert.deepEqual(await fixture.service.finalize(authority), { status: 'repaired' });
+      const active = await fixture.identity.getActiveSlackCredentialRevision(WORKSPACE_SLACK_INSTALLATION_ID);
+      assert.equal(active?.manifestFingerprint, slackManifestFingerprint(held));
+    } finally { fixture.close(); }
+  }
+});
+
 // Apps made before the Stop event, and before group DM messages.
 for (const repairUrls of [false, true]) test(`an app made before an optional event recovers without subscribing it (URL repair: ${repairUrls})`, async () => {
   for (const [coreOnly, optionalEvents] of [
