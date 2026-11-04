@@ -459,6 +459,17 @@ export class GatewayInboxStoreLogic {
       now,
       this.limits.maxAttempts,
     ).changes;
+    // An Add key form's key is checked within a lease of its submission or never, so it is not kept.
+    const keysUnchecked = this.db.run(
+      `UPDATE gateway_inbox
+       SET status = 'recovery_required', payload_json = NULL, payload_bytes = 0,
+           lease_until = NULL, terminal_at = ?, recovery_reason = 'key_not_checked'
+       WHERE status = 'pending' AND kind = 'interaction.view_submission' AND accepted_at < ?
+         AND CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.callbackId') END = ?`,
+      now,
+      now - this.limits.leaseMs,
+      KEY_FORM_CALLBACK_ID,
+    ).changes;
     const agedToRecovery = this.db.run(
       `UPDATE gateway_inbox
        SET status = 'recovery_required', payload_json = NULL, payload_bytes = 0,
@@ -466,7 +477,7 @@ export class GatewayInboxStoreLogic {
        WHERE status IN ('pending', 'in_flight') AND accepted_at < ?`,
       now,
       now - this.limits.maxActiveAgeMs,
-    ).changes + expiredAtAttemptCap + orphanedAtAttemptCap;
+    ).changes + expiredAtAttemptCap + orphanedAtAttemptCap + keysUnchecked;
     const tombstonesPurged = this.db.run(
       `DELETE FROM gateway_inbox
        WHERE status IN ('completed', 'recovery_required') AND terminal_at < ?`,

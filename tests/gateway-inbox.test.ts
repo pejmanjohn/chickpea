@@ -14,6 +14,7 @@ import { SlackTransportError } from '../src/slack/transport/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import type {
   GatewayEventDelivery,
+  GatewayInboundDelivery,
   GatewayPrivateChannelSetupDelivery,
 } from '../src/slack/gateway/protocol.ts';
 
@@ -319,6 +320,38 @@ test('gateway inbox ages abandoned accepted work into body-free recovery state',
     assert.equal(row?.payload_json, null);
     assert.equal(row?.status, 'recovery_required');
     assert.equal(row?.recovery_reason, 'active_age_exceeded');
+  } finally {
+    db.close();
+  }
+});
+
+test('an Add key form submission no drain claimed within the lease is parked without its key', () => {
+  let now = NOW;
+  const db = openStateDb(':memory:');
+  try {
+    const inbox = new GatewayInboxStoreLogic(db, () => now);
+    const key = ['sk', 'unclaimed', '4c1d9e7a2b6f'].join('-');
+    const form = (deliveryId: string, callbackId: string): GatewayInboundDelivery => ({
+      protocolVersion: 1, deliveryId, bindingId: 'binding_1', kind: 'interaction.view_submission',
+      workspaceId: 'T1', userId: 'U1', viewId: 'V1', callbackId, privateMetadata: 'card|setup_1|v1:binding',
+      state: { field: { input: { type: 'plain_text_input', value: key } } }, triggerId: null,
+    });
+    assert.equal(inbox.admit(form('delivery:key', 'chickpea.ui.v1.key')), 'accepted');
+    assert.equal(inbox.admit(form('delivery:answer', 'chickpea.ui.v1.form')), 'accepted');
+
+    now += 2 * 60_000;
+    inbox.maintain();
+    assert.ok(JSON.stringify(db.all('SELECT * FROM gateway_inbox')).includes(key), 'a drain may still claim it within the lease');
+
+    now += 1;
+    inbox.maintain();
+    assert.deepEqual(
+      { ...db.get("SELECT status, recovery_reason, payload_json, payload_bytes FROM gateway_inbox WHERE id = 'delivery:key'") },
+      { status: 'recovery_required', recovery_reason: 'key_not_checked', payload_json: null, payload_bytes: 0 },
+    );
+    assert.equal(db.get("SELECT status FROM gateway_inbox WHERE id = 'delivery:answer'")?.status, 'pending',
+      'another form\'s answer waits for its drain');
+    assert.deepEqual(inbox.claimPending().map(({ id }) => id), ['delivery:answer']);
   } finally {
     db.close();
   }
