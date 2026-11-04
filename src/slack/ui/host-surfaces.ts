@@ -189,29 +189,6 @@ export async function deliverHostApprovalSurfaces(input: {
   }
 }
 
-export async function deliverHostKeyCard(
-  input: Omit<Parameters<typeof import('../key-form.ts').postKeyCard>[0], 'setups' | 'state'> & {
-    state: SlackStateStore;
-    management: Pick<ManagementStore, 'execute'>;
-  },
-): Promise<void> {
-  const { turn, assignment } = input;
-  if (!input.state.executeUiSurface || !turn.actorMembershipId || slackConversationKind(turn) === 'mpim') return;
-  const listed = await input.management.execute({
-    kind: 'list_slack_form_setups',
-    workspaceId: turn.workspaceId,
-    channelId: turn.channelId,
-    threadTs: conversationThreadTs(turn, assignment.runtimeContract),
-    messageTs: turn.messageTs,
-    agentId: assignment.agent.id,
-    actorMembershipId: turn.actorMembershipId,
-    at: input.now ?? Date.now(),
-  });
-  if (listed.kind !== 'setups' || listed.setups.length === 0) return;
-  const { postKeyCard } = await import('../key-form.ts');
-  await postKeyCard({ ...input, setups: listed.setups, state: input.state as SurfaceState });
-}
-
 /**
  * After Chickpea's front-desk reply offers a choice (several Agents, or one
  * the person has not used beside Chickpea), post the card the person picks

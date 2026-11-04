@@ -12,6 +12,7 @@ import type {
 import { connectionUrlPrefixes, type ConnectionCheckOptions } from '../connections/connection-check.ts';
 import { connectionSetupBinding, setupConnectionTarget } from '../management/agent-connections.ts';
 import type { SetupWakeRequest } from '../management/receipts.ts';
+import type { ManagementStore } from '../management/store.ts';
 import type { SlackFormKeyOutcome } from '../management/slack-key-save.ts';
 import { setupWakeAgent, type SavedKeyCheck } from '../management/setup-wake.ts';
 import type { ManagementSetupRecord } from '../management/types.ts';
@@ -460,16 +461,40 @@ async function wakeOnRejectedKey(
   });
 }
 
-export async function postKeyCard(input: {
-  setups: readonly ManagementSetupRecord[];
+interface KeyCardDelivery {
   turn: Pick<NormalizedSlackTurn, 'workspaceId' | 'channelId' | 'threadTs' | 'messageTs' | 'userId' |
     'actorMembershipId' | 'source' | 'channelType' | 'sessionThreadTs'>;
   assignment: { agent: { id: string; name: string }; runtimeContract?: ResolvedAssignment['runtimeContract'] };
   turnJobId: string;
-  state: SurfaceState;
+  state: SlackStateStore;
+  management: Pick<ManagementStore, 'execute'>;
   config: Pick<AppStores['config'], 'getAgent' | 'listConnectionAccounts' | 'listAgentConnectionBindings'>;
   messenger: Pick<UiSurfaceMessenger, 'post'>;
   now?: number;
+}
+
+/** The Add key card for the form setups the turn's tools issued, under its reply. */
+export async function deliverHostKeyCard(input: KeyCardDelivery): Promise<void> {
+  const { turn, assignment } = input;
+  const state = surfaceState({ slackState: input.state });
+  if (!state || !turn.actorMembershipId || slackConversationKind(turn) === 'mpim') return;
+  const listed = await input.management.execute({
+    kind: 'list_slack_form_setups',
+    workspaceId: turn.workspaceId,
+    channelId: turn.channelId,
+    threadTs: conversationThreadTs(turn, assignment.runtimeContract),
+    messageTs: turn.messageTs,
+    agentId: assignment.agent.id,
+    actorMembershipId: turn.actorMembershipId,
+    at: input.now ?? Date.now(),
+  });
+  if (listed.kind !== 'setups' || listed.setups.length === 0) return;
+  await postKeyCard({ ...input, setups: listed.setups, state });
+}
+
+async function postKeyCard(input: Omit<KeyCardDelivery, 'state' | 'management'> & {
+  setups: readonly ManagementSetupRecord[];
+  state: SurfaceState;
 }): Promise<void> {
   const { turn, assignment } = input;
   const agentId = assignment.agent.id;

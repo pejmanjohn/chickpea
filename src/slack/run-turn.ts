@@ -43,7 +43,6 @@ import {
   abandonTurnSurfaces,
   deliverAgentChoiceSurface,
   deliverHostApprovalSurfaces,
-  deliverHostKeyCard,
   deliverInteractiveSurfaces,
   markDisplaySurfacesDelivered,
   prepareDisplaySurfaces,
@@ -1299,6 +1298,7 @@ async function runTurnAttempt(
   /** The Add key card for setups this turn issued; never fails the delivered reply. */
   const deliverTurnKeyCard = async () => {
     try {
+      const { deliverHostKeyCard } = await import('./key-form.ts');
       await deliverHostKeyCard({
         turn,
         assignment,
