@@ -242,6 +242,8 @@ test('the requester adds a key with the form, and Slack, the card, the wake, log
     const redraws = install.calls.filter(({ method }) => method === 'chat.update').map(({ body }) => body.get('blocks') ?? '');
     assert.match(redraws.at(0)!, /Checking the key with api\.tasks\.invalid…/);
     assert.match(redraws.at(-1)!, /:white_check_mark: <@U1> added the \*Tasks\* key\."/);
+    assert.equal(install.calls.filter(({ method }) => method === 'chat.update').at(-1)!.body.get('text'),
+      '<@U1> added the Tasks key.', 'the message text follows the card');
 
     const outbox = await stores.management.getOutboxForOperation(setupOperationId!);
     const wake = outbox?.destination.kind === 'thread' ? outbox.destination.wake : undefined;

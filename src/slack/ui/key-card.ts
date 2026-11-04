@@ -125,8 +125,12 @@ export interface RenderedKeyCard {
   blocks: Block[];
 }
 
+function name(row: KeyRow): string {
+  return escapeMrkdwn(clampDisplay(row.label, 100));
+}
+
 function label(row: KeyRow): string {
-  return `*${escapeMrkdwn(clampDisplay(row.label, 100))}*`;
+  return `*${name(row)}*`;
 }
 
 function agent(spec: KeyCardSpec): string {
@@ -137,7 +141,16 @@ function needs(row: KeyRow): string {
   return row.kind === 'mcp_credentials' ? 'needs an access token' : 'needs an API key';
 }
 
-function statusLine(spec: KeyCardSpec, row: KeyRow, requester: string): string | undefined {
+/** The card's blocks mark up names and outcomes; its message text, which notifications and search read, does not. */
+interface LineStyle {
+  label(row: KeyRow): string;
+  icon(emoji: string): string;
+}
+
+const IN_BLOCKS: LineStyle = { label, icon: (emoji) => `${emoji} ` };
+const IN_TEXT: LineStyle = { label: name, icon: () => '' };
+
+function statusLine(spec: KeyCardSpec, row: KeyRow, requester: string, style = IN_BLOCKS): string | undefined {
   const host = escapeMrkdwn(keyHost(row));
   switch (row.state.is) {
     case 'waiting':
@@ -145,11 +158,11 @@ function statusLine(spec: KeyCardSpec, row: KeyRow, requester: string): string |
     case 'checking':
       return `Checking the key with ${host}…`;
     case 'added':
-      return `:white_check_mark: ${requester} added the ${label(row)} key.`;
+      return `${style.icon(':white_check_mark:')}${requester} added the ${style.label(row)} key.`;
     case 'added_warning':
-      return `:white_check_mark: ${requester} added the ${label(row)} key. ${WARNING[row.state.check]}.`;
+      return `${style.icon(':white_check_mark:')}${requester} added the ${style.label(row)} key. ${WARNING[row.state.check]}.`;
     case 'rejected':
-      return `:x: ${host} rejected that key, so it wasn't saved.`;
+      return `${style.icon(':x:')}${host} rejected that key, so it wasn't saved.`;
     case 'expired':
       return `This key request expired. Ask ${agent(spec)} for a new one.`;
     case 'superseded':
@@ -173,22 +186,30 @@ function rowButton(record: UiSurfaceRecord, row: KeyRow, index: number): Block |
   };
 }
 
-function finalLine(spec: KeyCardSpec, row: KeyRow, requester: string, many: boolean): string {
-  const line = statusLine(spec, row, requester)!;
-  return many && (row.state.is === 'expired' || row.state.is === 'superseded') ? `${label(row)}: ${line}` : line;
+function finalLine(spec: KeyCardSpec, row: KeyRow, requester: string, many: boolean, style = IN_BLOCKS): string {
+  const line = statusLine(spec, row, requester, style)!;
+  return many && (row.state.is === 'expired' || row.state.is === 'superseded') ? `${style.label(row)}: ${line}` : line;
+}
+
+/** The card as one plain message text, kept current with every redraw. */
+function cardText(spec: KeyCardSpec, requester: string): string {
+  const many = spec.rows.length > 1;
+  if (keyCardFinal(spec)) return spec.rows.map((row) => finalLine(spec, row, requester, many, IN_TEXT)).join('\n');
+  if (many) return `${spec.rows.length} connections need a key.`;
+  const row = spec.rows[0]!;
+  const line = statusLine(spec, row, requester, IN_TEXT);
+  return `${name(row)} ${needs(row)}.${line ? ` ${line}` : ''}`;
 }
 
 export function renderKeyCard(record: UiSurfaceRecord, spec: KeyCardSpec): RenderedKeyCard {
   const requester = `<@${record.requesterUserId}>`;
   const many = spec.rows.length > 1;
-  const fallback = many
-    ? `${spec.rows.length} connections need a key.`
-    : `${clampDisplay(spec.rows[0]?.label ?? 'A connection', 100)} ${needs(spec.rows[0]!)}.`;
+  const text = cardText(spec, requester);
   if (keyCardFinal(spec)) {
-    const text = spec.rows.map((row) => finalLine(spec, row, requester, many)).join('\n');
+    const lines = spec.rows.map((row) => finalLine(spec, row, requester, many)).join('\n');
     return {
-      text: fallback,
-      blocks: [{ type: 'section', block_id: uiBlockId('host', record.id, 0), text: mrkdwn(text) }],
+      text,
+      blocks: [{ type: 'section', block_id: uiBlockId('host', record.id, 0), text: mrkdwn(lines) }],
     };
   }
   if (!many) {
@@ -196,7 +217,7 @@ export function renderKeyCard(record: UiSurfaceRecord, spec: KeyCardSpec): Rende
     const line = statusLine(spec, row, requester);
     const button = rowButton(record, row, 0);
     return {
-      text: fallback,
+      text,
       blocks: [
         { type: 'section', block_id: uiBlockId('host', record.id, 0), text: mrkdwn(`:key: ${label(row)} ${needs(row)}`) },
         ...(line ? [{ type: 'context', elements: [mrkdwn(line)] }] : []),
@@ -206,7 +227,7 @@ export function renderKeyCard(record: UiSurfaceRecord, spec: KeyCardSpec): Rende
     };
   }
   return {
-    text: fallback,
+    text,
     blocks: [
       {
         type: 'section',
@@ -216,12 +237,12 @@ export function renderKeyCard(record: UiSurfaceRecord, spec: KeyCardSpec): Rende
       ...spec.rows.map((row, index) => {
         const line = statusLine(spec, row, requester);
         const button = rowButton(record, row, index);
-        const text = keyRowFinal(row.state) ? finalLine(spec, row, requester, true)
+        const rowText = keyRowFinal(row.state) ? finalLine(spec, row, requester, true)
           : line ? `${label(row)}\n${line}` : label(row);
         return {
           type: 'section',
           block_id: uiBlockId('host', record.id, index + 1),
-          text: mrkdwn(text),
+          text: mrkdwn(rowText),
           ...(button ? { accessory: button } : {}),
         };
       }),
@@ -301,7 +322,7 @@ export function keyNotSavedNotice(card: UiSurfaceRecord & { spec: KeyCardSpec })
 
 /** The setup's notice, which the thread shows if the Agent's wake fails before it replies. */
 export function keyRejectedNotice(row: KeyRow): string {
-  return `${escapeMrkdwn(keyHost(row))} rejected the key for ${escapeMrkdwn(clampDisplay(row.label, 100))}, so it wasn't saved.`;
+  return `${escapeMrkdwn(keyHost(row))} rejected the key for ${name(row)}, so it wasn't saved.`;
 }
 
 export interface KeyFormMetadata {

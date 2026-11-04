@@ -109,6 +109,7 @@ test('a card transition changes only the named row', () => {
 test('one waiting row renders its button for the requester only, bound to this card', () => {
   const record = card([row()]);
   const rendered = renderKeyCard(record, record.spec);
+  assert.equal(rendered.text, 'Linear needs an API key.');
   assert.equal(checkSlackBlocks(rendered.blocks, { text: rendered.text }).ok, true);
   const text = JSON.stringify(rendered.blocks);
   assert.match(text, /:key: \*Linear\* needs an API key/);
@@ -124,6 +125,10 @@ test('one waiting row renders its button for the requester only, bound to this c
 
 test('a rejected row offers Try again and a finished card collapses to its lines', () => {
   const rejected = card([row({ state: { is: 'rejected' } })]);
+  assert.equal(renderKeyCard(rejected, rejected.spec).text,
+    'Linear needs an API key. api.linear.app rejected that key, so it wasn\'t saved.');
+  const named = card([row({ label: 'Linear <!channel>', state: { is: 'added' } })]);
+  assert.equal(renderKeyCard(named, named.spec).text, '<@U1> added the Linear &lt;!channel&gt; key.');
   const shown = JSON.stringify(renderKeyCard(rejected, rejected.spec).blocks);
   assert.match(shown, /:x: api\.linear\.app rejected that key, so it wasn't saved\./);
   assert.match(shown, /"Try again"/);
@@ -134,6 +139,11 @@ test('a rejected row offers Try again and a finished card collapses to its lines
     row({ setupOperationId: 'setup_three', label: 'Sentry', state: { is: 'added_warning', check: 'not_permitted' } }),
   ]);
   const collapsed = renderKeyCard(done, done.spec);
+  assert.equal(collapsed.text, [
+    '<@U1> added the Linear key.',
+    'Notion: This key request expired. Ask Ops for a new one.',
+    '<@U1> added the Sentry key. The service turned down Chickpea\'s check, so the key may be missing a permission.',
+  ].join('\n'), 'notifications and search read what the card now says');
   assert.equal(collapsed.blocks.length, 1);
   assert.equal(checkSlackBlocks(collapsed.blocks, { text: collapsed.text }).ok, true);
   assert.deepEqual((collapsed.blocks[0]!.text as { text: string }).text.split('\n'), [
