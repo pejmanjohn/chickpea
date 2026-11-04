@@ -7,8 +7,8 @@ The committed files in `assets/chickpea/` are the truth. The tools that made the
 ## What the kit holds
 
 - `assets/chickpea/palette.json` has 13 colors. Twelve match the agent avatar renders, keyed like their files (`01-sage` to `12-muted-berry`). The thirteenth, `brand`, is the orange of the onboarding poses. Each color has a display name, a body color in Lab and hex, a face kind (`ink`, or `cream` for `06-deep-moss` and `10-midnight-indigo`), and 9 lightness quantiles at the probabilities in `lightnessQuantiles`. The twelve avatar colors also record their render's scene: `background`, `floor`, `arch`, and `doorway`. `faces` holds the ink and cream fill colors.
-- `assets/chickpea/manifest.json` lists every master: its file, kind (`stand` or `pose`), native palette color, body mask, ground line, felt Lab median, and lightness quantiles. A standing body records its native face and its face anchor, the point between the eyes. A pose records its face matte, and `recolor: false` with a `reason` when it cannot be recolored. `faces` lists each face matte with its anchor and source.
-- `assets/chickpea/masters/` has 12 faceless standing bodies (`stand-01-sage.png` and so on) and 7 poses (`pose-hello.png` and so on). Each master has a body mask (`*.body.png`), white where recoloring applies. Each pose also has a face matte (`*.face.png`) that marks its ink features.
+- `assets/chickpea/manifest.json` lists every master: its file, kind (`stand` or `pose`), native palette color, body mask, ground line, felt Lab median, lightness quantiles, and `source`, the file it was cut from with the scale and offset that carry a source pixel to the master. A standing body records its native face and its face anchor, the point between the eyes. A pose records its face matte, and `recolor: false` with a `reason` when it cannot be recolored. `faces` lists each face matte with its anchor and source.
+- `assets/chickpea/masters/` has 12 faceless standing bodies (`stand-01-sage.png` and so on) and 7 poses (`pose-hello.png` and so on). Each master has a body mask (`*.body.png`), white where recoloring applies and gray in proportion where a pixel mixes felt and a prop. Each pose also has a face matte (`*.face.png`) that marks its ink features.
 - `assets/chickpea/faces/` has the face mattes `smile`, `line`, and `o`. A matte is white where the face covers the body.
 - `scripts/chickpea-art.mjs` is the generator.
 - `scripts/art/` has the maintenance tools that build the kit from source renders.
@@ -54,7 +54,7 @@ A Slack avatar must stay under 512 KiB. Felt texture compresses poorly: the 512-
 The generator changes only the pixels its body mask covers.
 
 - **Lightness** maps by rank. A pixel's lightness gets its rank among the master's 9 quantiles, and takes the lightness at that rank among the target color's quantiles, piecewise-linearly. Past the outer quantiles the map follows the outer segment, never steeper than 1.
-- **Chroma** is the target's, scaled by the pixel's chroma relative to the master's felt median.
+- **Chroma** is the target's, scaled by the pixel's chroma relative to the master's felt median. For a master whose felt chroma is under 50, that ratio is damped toward 1 in proportion, because a weak source's chroma variation is mostly noise that a saturated target would turn into mottling.
 - **Hue** is the target's.
 
 Compressing texture is safe and stretching it is not. A body with a wide lightness range recolors cleanly into a color with a narrow one, but the reverse amplifies felt noise. `08-seafoam` and `09-warm-oat` have the widest ranges, and `02-coral`, `12-muted-berry`, and `10-midnight-indigo` the narrowest.
@@ -71,20 +71,23 @@ Make a source render to this spec:
 - One body color, in the brand orange for poses.
 - A flat background in a color that is in no palette. Never fake transparency with a checkerboard.
 - No cast shadow. Keep the baked darkening at the body's base and the felt texture. The generator has its own optional shadow.
-- The body's base at 0.92 of the canvas height.
-- A face drawn as near-black ink on a light body, or no face. Expressions come from the kit's face set. A new expression comes from a second render that differs from an existing one only in the face.
-- Props in hues outside the body's. A prop in the body's hue that touches the body cannot be masked by color, so its pose is not recolorable.
+- The body's base at 0.92 of the canvas height, so the body fills the render. The build then moves every master's base to row 448, 0.875 of the 512 canvas, which leaves room for props that hang below the body.
+- A face drawn in near-black ink on a light body. The build finds a face by its eyes, measured at 512 pixels: two features of at least 50 pixels each, at least 60 pixels apart, and level within a quarter of that distance. A render without such eyes fails the build. Expressions come from the kit's face set. A new expression comes from a second render that differs from an existing one only in the face.
+- Props that no rule mistakes for the body. The build takes as body every pixel connected to it whose Lab hue is between 48 and 92 degrees with chroma at least 0.74 times its lightness. It also takes any dark pixel touching the body as shading: lightness under 40, with hue between 15 and 74 degrees or chroma under 8. A prop that touches the body must stay outside both rules, or its pose is not recolorable.
+- A background more than 40 RGB units from the body and from every prop, because the build keys a pose out of its background at that distance.
 
 ### How the build cuts a master
 
 `node scripts/art/build-masters.mjs` rebuilds the whole kit and prints the lines for `allowedBinaryFiles` in `scripts/lib/source-export-policy.mjs`. It needs macOS, because `scripts/art/lift.swift` uses Vision. Pass `--debug DIR` to write each pose's mask overlay to `DIR`.
 
 1. A standing body starts from Vision's subject lift, which gives a coarse alpha. Where an avatar arch touches the chickpea, the build paints the arch to the background color first, so Vision sees one subject (`ARCH_PAINT`).
-2. Inside a band at the coarse edge, the build recomputes alpha by unmixing each pixel between the body's local color and the nearest scene color. Where the two colors are too close to tell apart, it keeps Vision's alpha.
-3. It closes and opens the alpha by 3 pixels, which rounds off steps that a floor or pillar corner leaves, then shaves and softens the edge by a pixel. It stops the soft edge 2.5 pixels from the solid body, fades out drips below the base, and gives the rim the color of the opaque interior. No scene tint survives on the edge.
-4. It finds the face, inpaints it with the surrounding felt plus felt texture from 70 pixels above, and scales the body to 384 pixels tall on the ground line.
-5. A pose on a flat background is keyed against that background, which keeps props that float free of the body. An onboarding pose is already cut out with a hard edge, which the build softens the same way.
-6. A pose's body mask comes from color and connectivity: felt in the body's hue connected to the body, the dark shading and ink it touches, and small seams between them. A felt island of at least 2000 pixels also counts, such as an arm behind a strap. No mask uses hand-drawn shapes.
+2. Inside a band at the coarse edge, the build recomputes alpha by unmixing each pixel between the body's local color and the scene color next to it: the average of the pixels just outside the coarse mask, or the nearest sampled scene color when none is near. Where the two colors are too close to tell apart, it keeps Vision's alpha.
+3. It closes and opens the alpha by 3 pixels, which rounds off steps that a floor or pillar corner leaves, then shaves and softens the edge by a pixel. It stops the soft edge 2.5 pixels from the solid body and fades out drips below the base.
+4. Over the lowest 40 rows of the body, where it met a floor, the build fits a smooth contour: it blurs the solid shape and thresholds it with a 2-pixel ramp. Every pose base goes through the same step. The rest of the silhouette keeps its cut.
+5. It gives the rim the color of the opaque interior, 3 pixels deep along the base, so no scene tint or old stair-step survives on the edge.
+6. It finds the face, inpaints it with the surrounding felt plus felt texture from 70 pixels above, and scales the body to 384 pixels tall on the ground line.
+7. A pose on a flat background is keyed against that background, which keeps props that float free of the body. An onboarding pose is already cut out with a hard edge, which the build softens the same way.
+8. A pose's body mask comes from color and connectivity: felt in the body's hue connected to the body, the dark shading and ink it touches, and small seams between them. A felt island of at least 2000 pixels also counts, such as an arm behind a strap. Within 3 pixels of the body, a pixel that mixes felt and a prop gets the fraction of felt it holds, unmixed between the felt and the prop color next to it. No mask uses hand-drawn shapes.
 
 ### Add a color
 
@@ -109,7 +112,9 @@ Make a source render to this spec:
 
 ## Review the kit
 
-`node scripts/art/contact-sheet.mjs <dir>` writes three review images. `bodies.jpg` shows every standing body in every color with every face. `poses.jpg` shows each pose in every color it allows, beside its masks. `edges.png` zooms into the edges where the avatar arch touched a body. Keep these images out of the repository.
+`node scripts/art/contact-sheet.mjs <dir>` writes four review images. `bodies.jpg` shows every standing body in every color with every face. `poses.jpg` shows each pose in every color it allows, beside its masks. `edges.png` zooms into the edges where the avatar arch touched a body, and into both corners of every master's base, next to the same place in the source render. `seams.png` zooms into the seams where a pose's props meet its body, in the brand color and two recolors. Keep these images out of the repository.
+
+The npm package leaves out the kit, the generator, and these tools (`!assets/chickpea`, `!scripts/art`, and `!scripts/chickpea-art.mjs` in `package.json#files`), because nothing at runtime reads them. This document stays out of the package too, since it is for work in the source repository.
 
 `tests/chickpea-art.test.ts` checks the palette and manifest, the files and their sizes, the native-color identity, that a recolor stays inside the body mask, the ink and cream faces, face placement, and determinism.
 
