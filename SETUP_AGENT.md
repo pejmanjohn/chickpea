@@ -118,8 +118,10 @@ more permissions: `channels:manage`, `groups:write`, `im:read`,
 `mpim:write`, `team:read`, `canvases:read` and `canvases:write`. This
 release uses none of them. Upcoming releases will.
 
-An app created earlier keeps working without them: setup and recovery still
-pass. To add them to such an app, including a local Worker lane's own app,
+An installation on an app created earlier keeps working without them, and
+credential recovery still passes. A fresh setup adopts only an app whose
+manifest matches this release's, so add them before adopting such an app.
+To add them to an app, including a local Worker lane's own app,
 add all seven, not some of them. Recovery recognizes an app that holds all
 seven or none, and one that holds some of them only while its installed
 grant matches its configuration.

@@ -160,8 +160,8 @@ A new scope group needs nothing on a lane's Slack app for a deploy or a smoke
 to pass. The lane keeps its narrower grant through the installed variants. To
 give a lane the seven, add them under **OAuth & Permissions** on the lane's
 app, reinstall it, and re-record the lane baseline with
-`writeEnvironmentBaseline`, because live authority must match the baseline's
-exact grant or the deploy refuses with `SLACK_SCOPE_MISMATCH`.
+`writeEnvironmentBaseline` (no `env` subcommand records one), because live
+authority must match the baseline's exact grant or the deploy refuses with `SLACK_SCOPE_MISMATCH`.
 
 Any other mismatch refuses the deploy with `INSTALL_CONTINUATION_REQUIRED`; recover by
 proving a fresh install on a disposable target and re-recording the lane baseline,

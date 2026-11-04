@@ -260,8 +260,8 @@
    deployment preserves the baseline and still verifies the exact recorded live
    grant; it needs no Slack reinstall or baseline rewrite. To give a lane the
    seven, add them under **OAuth & Permissions** on the lane's app, reinstall
-   it, and re-record the lane baseline with `writeEnvironmentBaseline`, since
-   live authority must match the baseline's exact grant or the deploy refuses
+   it, and re-record the lane baseline with `writeEnvironmentBaseline` (no `env`
+   subcommand records one), since live authority must match the baseline's exact grant or the deploy refuses
    with `SLACK_SCOPE_MISMATCH`.
    Changes to the setup flow (`src/auth/setup-handoff.ts`,
    `src/management/setup-routes.ts`, `src/config/onboarding-state.ts`,
