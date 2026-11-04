@@ -256,11 +256,17 @@ export class SlackChannelCreateService {
     people: readonly string[],
   ): Promise<JsonObject> {
     const invites = await this.invite(previous.channelId, people);
+    const requester = this.options.requesterSlackUserId;
+    const requesterJustJoined = invites.invited.includes(requester) && !invites.alreadyIn.has(requester);
+    const access = requesterJustJoined
+      ? await this.options.agentAccess({ id: previous.channelId, requesterInvited: true })
+      : undefined;
     return {
       status: 'already_created',
       channel: { id: previous.channelId, visibility: previous.visibility, link: channelLink(previous.channelId) },
       invited: invites.invited,
       ...(invites.notInvited.length ? { notInvited: invites.notInvited } : {}),
+      ...(access ? agentAccessFields(access, false) : {}),
       message: 'This request already created this channel. Do not create another; point the requester to it.',
     };
   }
@@ -269,10 +275,12 @@ export class SlackChannelCreateService {
   private async invite(channelId: string, people: readonly string[]): Promise<{
     invited: string[];
     notInvited: { id: string; reason: InviteRefusal }[];
+    alreadyIn: ReadonlySet<string>;
   }> {
     const alreadyIn = new Set<string>();
     const refusedByUser = new Map<string, InviteRefusal>();
     const outcome = (inChannel: (id: string) => boolean, unknownReason: InviteRefusal) => ({
+      alreadyIn,
       invited: people.filter(inChannel),
       notInvited: people.filter((id) => !inChannel(id))
         .map((id) => ({ id, reason: refusedByUser.get(id) ?? unknownReason })),
