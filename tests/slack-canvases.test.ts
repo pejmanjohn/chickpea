@@ -206,6 +206,8 @@ test('a canvas link reads only through a conversation the requester and Agent ma
 test('@Chickpea and a conversation shared with another organization read only the current conversation\'s canvas', async (t) => {
   const chickpea = fixture(t, { managementAgent: true });
   assert.equal((await failure(chickpea.service().read({ canvasUrl: link('FREPORT') }))).code, 'current_conversation_only');
+  assert.equal((await failure(chickpea.service().read({ canvasUrl: link('FMISSING') }))).code, 'current_conversation_only');
+  assert.deepEqual(chickpea.slack.calls, [], 'no Slack lookup can tell @Chickpea whether a canvas exists');
   assert.equal((await chickpea.service().read({})).status, 'read');
 
   const shared = fixture(t, { conversations: {
@@ -214,6 +216,7 @@ test('@Chickpea and a conversation shared with another organization read only th
   } });
   const refusal = await failure(shared.service().read({ canvasUrl: link('FREPORT') }));
   assert.deepEqual(refusal, { code: 'shared_conversation_only', message: SLACK_READ_MESSAGES.shared_conversation_only });
+  assert.deepEqual(shared.slack.calls, [], 'no Slack lookup can tell a shared conversation whether a canvas exists');
   assert.equal((await failure(shared.service().read({ channel: 'COTHER' }))).code, 'shared_conversation_only');
   assert.equal((await shared.service().read({})).content, '# Runbook\n\nRestart the worker.\n');
 });
@@ -367,10 +370,19 @@ test('an edit never carries this workspace\'s content to a canvas another organi
 
   const fromShared = fixture(t, { conversations: { ...conversations, [CURRENT.channelId]: facts({ id: CURRENT.channelId, canvasId: 'FCHANNEL', shared: true }) } });
   fromShared.slack.canvases.set('FTAB', { content: '# Tab\n', owner: BOT, title: 'Tab', channels: [CURRENT.channelId], externalWorkspaces: ['E0PARTNER'] });
-  assert.equal((await failure(fromShared.service().update('call-1', { canvasUrl: link('FTAB'), operation: 'append', markdown: 'x' }))).code, 'shared_outside',
+  assert.equal((await failure(fromShared.service().update('call-1', { canvasUrl: link('FTAB'), operation: 'append', markdown: 'x' }))).code, 'shared_conversation_only',
     'from a Slack Connect conversation only its own canvas is edited');
+  assert.ok(!fromShared.slack.calls.some((call) => call.method === 'files.info' && call.input.file === 'FTAB'), 'refused before any lookup');
   fromShared.slack.canvases.get('FCHANNEL')!.externalWorkspaces = ['E0PARTNER'];
   assert.equal((await fromShared.service().update('call-2', { operation: 'append', markdown: 'x' })).status, 'updated');
+  fromShared.slack.canvases.get('FCHANNEL')!.channels = ['COTHER'];
+  assert.equal((await failure(fromShared.service().update('call-3', { operation: 'append', markdown: 'x' }))).code, 'shared_outside',
+    'a shared conversation\'s canvas that is also elsewhere may reach a third organization');
+
+  const wide = fixture(t, { conversations });
+  wide.slack.canvases.set('FWIDE', { content: '# Wide\n', owner: BOT, title: 'Wide', channels: ['COTHER', ...Array.from({ length: 8 }, (_, n) => `C0WIDE${n}`)] });
+  assert.equal((await failure(wide.service().update('call-1', { canvasUrl: link('FWIDE'), operation: 'append', markdown: 'x' }))).code, 'too_widely_shared');
+  assert.deepEqual(wide.slack.writes(), []);
 });
 
 test('without the canvas scopes every tool says an Owner must update Chickpea\'s Slack permissions', async (t) => {

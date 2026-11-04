@@ -50,12 +50,13 @@ An Agent edits only two kinds of canvas: this conversation's canvas, and a
 canvas the Chickpea app owns because it created it. The second kind must also
 pass the reading rules above. A person's own canvas elsewhere is not edited.
 
-An edit lands wherever the canvas is, so it must not carry this workspace's
-content to another organization. Chickpea refuses an edit when Slack shows the
-canvas in a conversation shared with another organization, or readable by an
-external workspace, unless the current conversation is that shared one and the
-canvas is its own. From a conversation shared with another organization, only
-that conversation's own canvas is edited.
+An edit lands wherever the canvas is, so it must not carry content to an
+organization that cannot read the current conversation. Chickpea refuses an
+edit when Slack shows the canvas in a conversation shared with another
+organization, or readable by an external workspace. From a conversation shared
+with another organization, only that conversation's own canvas is edited, and
+only when it is in no other conversation. A canvas in more than eight
+conversations is not edited, because Chickpea cannot check them all.
 
 - **Append** adds Markdown at the end (`canvases.edit`, `insert_at_end`).
 - **Replace a section** finds the one section that contains the given text

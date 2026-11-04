@@ -4,6 +4,7 @@ import { slackPlatformErrorCode } from '../errors.ts';
 import { SlackListError } from '../lists/types.ts';
 import type { ListWriteLedger, ListWriteReceipt, SlackWriteOperation } from '../lists/writes.ts';
 import {
+  assertCurrentConversationNotShared,
   authorizeSlackRead,
   type AuthorizedSlackConversation,
   type SlackReadAuthorityPorts,
@@ -203,39 +204,48 @@ export class SlackCanvasService {
       throw new SlackCanvasError('no_canvas', 'This conversation has no canvas. Pass the link of a canvas Chickpea created, or create one.');
     }
     const own = canvasId === current.canvasId;
-    const { file } = own ? { file: await this.file(canvasId) } : await this.reachable(canvasId);
+    const { file } = own ? { file: await this.file(canvasId) } : await this.reachable(canvasId, SHARED_OUTSIDE);
     if (!own && file.ownerId !== this.options.botUserId) {
       throw new SlackCanvasError('not_editable', 'Only this conversation\'s canvas and canvases Chickpea created can be edited. Nothing was changed.');
     }
-    await this.assertNotSharedOutside(file, own);
+    await this.assertNotSharedOutside(file);
     return { canvasId, ...(file.link ? { link: file.link } : {}) };
   }
 
-  /** A canvas whose conversations the requester may read with this Agent. */
-  private async reachable(canvasId: string): Promise<{ file: CanvasFile; conversation: AuthorizedSlackConversation }> {
+  /**
+   * A canvas whose conversations the requester may read with this Agent.
+   * Rules 3 and 4 refuse before any Slack lookup, so their refusal never
+   * shows whether a canvas exists.
+   */
+  private async reachable(canvasId: string, sharedMessage?: string): Promise<{ file: CanvasFile; conversation: AuthorizedSlackConversation }> {
+    const ports = this.options.authority;
+    if (ports.managementAgent) throw new SlackReadError('current_conversation_only');
+    await assertCurrentConversationNotShared(ports, sharedMessage);
     const file = await this.file(canvasId);
-    return { file, conversation: await authorizeCanvasHome(this.options.authority, file.conversationIds) };
+    return { file, conversation: await authorizeCanvasHome(ports, file.conversationIds) };
   }
 
   /**
-   * An edit lands wherever the canvas is, so it must not carry this
-   * workspace's content to another organization: rule 4 of authorizeSlackRead
-   * for writes. From a conversation shared with another organization, only
-   * that conversation's own canvas is edited.
+   * An edit lands wherever the canvas is, so it must not carry content to an
+   * organization that cannot read the current conversation: rule 4 of
+   * authorizeSlackRead for writes. In a shared conversation, the canvas must
+   * be its own and in no other conversation, so any external reader is that
+   * conversation's.
    */
-  private async assertNotSharedOutside(file: CanvasFile, own: boolean): Promise<void> {
+  private async assertNotSharedOutside(file: CanvasFile): Promise<void> {
     const ports = this.options.authority;
     const current = await ports.conversation(ports.current.channelId);
     const others = file.conversationIds.filter((id) => id !== ports.current.channelId);
-    let outside = !current || (current.shared && !own) || file.externalWorkspaces.hidden > 0 ||
-      (!current.shared && file.externalWorkspaces.visible > 0) || others.length > MAX_CANVAS_CONVERSATIONS;
+    if (others.length > MAX_CANVAS_CONVERSATIONS) {
+      throw new SlackCanvasError('too_widely_shared', 'This canvas is in too many conversations to check who can see it, so it cannot be edited. Nothing was changed.');
+    }
+    let outside = !current || file.externalWorkspaces.hidden > 0 ||
+      (current.shared ? others.length > 0 : file.externalWorkspaces.visible > 0);
     for (const id of outside ? [] : others) {
       const facts = await ports.conversation(id);
       outside ||= !facts || facts.shared || (facts.teamId !== undefined && facts.teamId !== ports.workspaceId);
     }
-    if (outside) {
-      throw new SlackCanvasError('shared_outside', 'This canvas may be visible to another organization, so it can be edited only as the canvas of the current conversation, from a conversation that is not shared with another organization. Nothing was changed.');
-    }
+    if (outside) throw new SlackCanvasError('shared_outside', SHARED_OUTSIDE);
   }
 
   private async currentCanvas(): Promise<{ conversation: AuthorizedSlackConversation; canvasId?: string }> {
@@ -365,6 +375,7 @@ function notAvailable(error: unknown): unknown {
   return NOT_FOUND.has(errorCode(error)) ? new SlackReadError('not_available', CANVAS_MISSING_OR_UNREADABLE) : error;
 }
 
+const SHARED_OUTSIDE = 'This canvas may be visible to another organization, so it can be edited only as the canvas of the current conversation, from a conversation that is not shared with another organization. Nothing was changed.';
 const CHANNEL_UNAVAILABLE = 'The Chickpea app cannot see this conversation, so it cannot add a canvas here. Someone in the channel can invite the app. Nothing was created.';
 
 export function canvasToolFailure(error: unknown, status: 'not_read' | 'not_written', hosted = false): JsonObject {
