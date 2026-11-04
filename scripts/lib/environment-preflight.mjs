@@ -89,10 +89,6 @@ const VERSION = /^(?:version-[A-Za-z0-9._-]{1,96}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-
 const CREDENTIAL_CLASSES = Object.freeze([
   'auth', 'cookie', 'signing', 'recovery', 'setup', 'encryption',
 ]);
-// The feature scopes and optional events expose additive features. A lane
-// installed before one may keep its narrower grant, but no other manifest
-// difference is compatible with that existing installation. Its baseline is
-// re-recorded only after the shared app gains them.
 const OPTIONAL_EXISTING_INSTALL_BOT_SCOPE_SET = new Set(SLACK_FEATURE_SCOPES);
 const OPTIONAL_EXISTING_INSTALL_BOT_EVENT_SET = new Set(SLACK_OPTIONAL_BOT_EVENTS);
 const RUNTIME_SECRET_SOURCE_BINDINGS = Object.freeze({
@@ -1481,8 +1477,6 @@ export function readLocalEnvironmentContract(options = {}) {
       },
     },
   });
-  // A lane installed between two features holds the manifest less some whole
-  // feature scope groups and some optional events, not all of them.
   const installedVariants = subsets(SLACK_FEATURE_SCOPE_GROUPS).flatMap((lackingGroups) => {
     const lackingScopes = lackingGroups.flat();
     const bot = manifestBotScopes.filter((scope) => !lackingScopes.includes(scope));

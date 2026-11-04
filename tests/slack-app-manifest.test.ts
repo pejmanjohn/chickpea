@@ -181,9 +181,6 @@ test('new manifests hear group DM messages and read their history, and an app wi
 test('an Agent\'s own app neither hears group DMs nor reads their history', () => {
   assert.equal(AGENT_APP_BOT_SCOPES.includes('mpim:history'), false);
   assert.equal(AGENT_APP_BOT_EVENTS.includes('message.mpim'), false);
-  // Pinned: the workspace app's scopes without user groups, sender
-  // customization, email reads, group DM history, or the scopes requested for
-  // upcoming features.
   assert.deepEqual(AGENT_APP_BOT_SCOPES, [
     'app_mentions:read', 'assistant:write', 'channels:history', 'channels:join', 'channels:read', 'chat:write',
     'files:read', 'files:write', 'groups:history', 'groups:read', 'im:history', 'im:write', 'mpim:read',

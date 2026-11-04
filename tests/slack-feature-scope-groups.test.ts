@@ -47,20 +47,15 @@ test('recoverable feature scope sets start with the grant, hold every whole-grou
     }
   }
 
-  // A grant that is itself a whole-group combination adds no set of its own.
   assert.equal(recoverableSlackFeatureScopeSets([...REQUESTED_SLACK_BOT_SCOPES]).length, bound - 1);
   assert.equal(recoverableSlackFeatureScopeSets([]).length, bound - 1);
-  // A grant that is a partial group is the one set beyond the whole groups.
-  const partial = SLACK_FEATURE_SCOPE_GROUPS.find((group) => group.length > 1);
-  if (partial) {
-    const sets = recoverableSlackFeatureScopeSets([partial[0]!]);
-    assert.equal(sets.length, bound);
-    assert.deepEqual(sets[0], [partial[0]]);
-  }
+  const partial = recoverableSlackFeatureScopeSets([UPCOMING_FEATURE_SCOPES[0]!]);
+  assert.equal(partial.length, bound);
+  assert.deepEqual(partial[0], [UPCOMING_FEATURE_SCOPES[0]]);
 });
 
 test('the scopes requested for upcoming features are one group, and an Agent\'s own app asks for none of them', () => {
-  assert.deepEqual(SLACK_FEATURE_SCOPE_GROUPS[3], UPCOMING_FEATURE_SCOPES);
+  assert.deepEqual(SLACK_FEATURE_SCOPE_GROUPS[2], UPCOMING_FEATURE_SCOPES);
   for (const scope of UPCOMING_FEATURE_SCOPES) {
     assert.ok(REQUESTED_SLACK_BOT_SCOPES.includes(scope), `${scope} is requested`);
     assert.equal(AGENT_APP_BOT_SCOPES.includes(scope), false, `${scope} is not an Agent app scope`);

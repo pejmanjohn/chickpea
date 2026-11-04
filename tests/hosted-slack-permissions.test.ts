@@ -81,8 +81,6 @@ test('the scope gap names the requested scopes a grant lacks, and retired scopes
   assert.deepEqual(missingRequestedSlackBotScopes(['chat:write'], ['chat:write', 'lists:read', 'lists:read']),
     ['lists:read']);
 
-  // Lists, group DM history and the scopes requested for upcoming features stay
-  // features: a grant without them is accepted for reinstall and recovery.
   assert.deepEqual(SLACK_FEATURE_SCOPES, [
     'lists:read', 'lists:write', 'mpim:history',
     'channels:manage', 'groups:write', 'im:read', 'mpim:write', 'team:read', 'canvases:read', 'canvases:write',

@@ -800,7 +800,7 @@ test('the local contract splits the setup sources into an install contract and a
   // without Lists and the Stop event, so those baselines still match.
   const variants = new Map(contract.installedVariants.map((variant: { manifestDigest: string; requiredScopes: string[] }) =>
     [variant.manifestDigest, variant.requiredScopes.length]));
-  assert.equal(variants.size, 64, 'every whole-group and optional-event combination');
+  assert.equal(variants.size, 32, 'every whole-group and optional-event combination');
   assert.equal(variants.get(contract.manifestDigest), 30, 'the full manifest is a variant');
   for (const [digest, scopes] of [
     ['sha256:7e1ebdc8f52c672ce81774caec2efd40a68dcda3161ce60fccb8a3f60fd671c4', 22],

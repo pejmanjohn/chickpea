@@ -185,9 +185,7 @@ export class SlackCredentialRecoveryService {
     }
     const active = await this.dependencies.identity.getActiveSlackCredentialRevision(WORKSPACE_SLACK_INSTALLATION_ID);
     if (!active || active.revision !== session.baseRevision) throw new SlackCredentialRecoveryError('stale_revision');
-    // The UI builds today's manifest. Accept only an exact stored fingerprint:
-    // the app with the feature scopes its token holds, or with any whole
-    // release's feature scopes, each with any of the optional events.
+    // The UI sends today's manifest; the stored fingerprint is of the app as it was made.
     const matchesStored = recoverableSlackFeatureScopeSets(active.grantedScopes).some(scopes =>
       subsets(SLACK_OPTIONAL_BOT_EVENTS).some(events => slackManifestFingerprint(recoveryManifestScopes(
         slackManifestWithOptionalEvents(input.manifest, events),

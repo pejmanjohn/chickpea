@@ -8,6 +8,9 @@ import slackAppManifest from '../../slack-app-manifest.json' with { type: 'json'
 export const REQUESTED_SLACK_BOT_SCOPES = Object.freeze([
   ...slackAppManifest.oauth_config.scopes.bot,
 ]);
+const UPCOMING_FEATURE_SCOPES: readonly string[] = Object.freeze([
+  'channels:manage', 'groups:write', 'im:read', 'mpim:write', 'team:read', 'canvases:read', 'canvases:write',
+]);
 /**
  * Requested scopes an installation may lack while ordinary chat keeps working,
  * grouped by the release that added them. A scope added after an installation
@@ -17,13 +20,10 @@ export const REQUESTED_SLACK_BOT_SCOPES = Object.freeze([
  * reads none of its earlier messages.
  *
  * An app made from an older manifest lacks whole groups, so recovery and the
- * lane preflight enumerate groups, not scopes. The first three stay single so
- * every manifest a lane could have installed since Lists still matches. The
- * fourth group is requested for upcoming features; no feature uses it yet.
+ * lane preflight enumerate groups, not scopes.
  */
 export const SLACK_FEATURE_SCOPE_GROUPS: readonly (readonly string[])[] = Object.freeze([
-  ['lists:read'], ['lists:write'], ['mpim:history'],
-  ['channels:manage', 'groups:write', 'im:read', 'mpim:write', 'team:read', 'canvases:read', 'canvases:write'],
+  ['lists:read', 'lists:write'], ['mpim:history'], UPCOMING_FEATURE_SCOPES,
 ]);
 export const SLACK_FEATURE_SCOPES: readonly string[] = Object.freeze(SLACK_FEATURE_SCOPE_GROUPS.flat());
 /** Feature scopes are additive: a core-only installation must keep serving ordinary chat. */
@@ -51,7 +51,7 @@ export const SLACK_USER_GROUP_SCOPES = Object.freeze(['usergroups:read', 'usergr
  * cannot invite it without a scope every installation would have to approve.
  */
 const AGENT_APP_LEAVES_OUT = new Set([
-  'chat:write.customize', 'users:read.email', 'mpim:history', ...SLACK_FEATURE_SCOPE_GROUPS[3]!,
+  'chat:write.customize', 'users:read.email', 'mpim:history', ...UPCOMING_FEATURE_SCOPES,
 ]);
 export const AGENT_APP_BOT_SCOPES: readonly string[] = Object.freeze(REQUESTED_SLACK_BOT_SCOPES.filter((scope) =>
   !scope.startsWith('usergroups:') && !AGENT_APP_LEAVES_OUT.has(scope)

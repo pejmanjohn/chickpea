@@ -434,7 +434,6 @@ const LEGACY_FEATURE_SCOPES = ['lists:read', 'lists:write', 'mpim:history'];
 const UPCOMING_FEATURE_SCOPES = [
   'channels:manage', 'groups:write', 'im:read', 'mpim:write', 'team:read', 'canvases:read', 'canvases:write',
 ];
-// Apps and tokens that hold different feature scopes after the seven were requested for upcoming features.
 for (const [name, featureScopes, grantedFeatureScopes] of [
   ['an app holding the legacy scopes and two of the new ones, with a matching grant',
     [...LEGACY_FEATURE_SCOPES, 'im:read', 'team:read'], [...LEGACY_FEATURE_SCOPES, 'im:read', 'team:read']],
@@ -517,9 +516,7 @@ async function recoveryFixture(options: {
   serviceKeyring?: ReturnType<typeof generateCredentialKeyring>;
   initialOrigin?: string;
   manifestFlow?: boolean;
-  /** The feature scopes the app's manifest holds; every one by default. */
   featureScopes?: readonly string[];
-  /** The feature scopes the bot token was granted; the manifest's by default. */
   grantedFeatureScopes?: readonly string[];
   /** The optional events of the manifest the app was created from; every one by default. */
   optionalEvents?: readonly string[];
