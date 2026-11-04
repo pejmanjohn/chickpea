@@ -196,13 +196,7 @@ import {
   validateManagementOperations,
 } from './contracts.ts';
 import { classifyManagementOperation, removesMemberAccess } from './policy.ts';
-import {
-  exportWorkspaceRecipe,
-  previewWorkspaceRecipe,
-  type PreviewWorkspaceRecipeInput,
-  type WorkspaceRecipe,
-  type WorkspaceRecipePreview,
-} from './recipes.ts';
+import type { PreviewWorkspaceRecipeInput, WorkspaceRecipe, WorkspaceRecipePreview } from './recipes.ts';
 import { matchesEgressPrefix } from '../config/egress.ts';
 import {
   connectionUrlPrefixes,
@@ -2682,6 +2676,7 @@ export class WorkspaceManagementService {
       target: { kind: 'workspace', id: actor.organizationId },
     });
     const editable = await this.editableAgentsWithConnections(actor);
+    const { exportWorkspaceRecipe } = await import('./recipes.ts');
     return exportWorkspaceRecipe({ listUserAgents: async () => editable }, input);
   }
 
@@ -2699,6 +2694,7 @@ export class WorkspaceManagementService {
     const readiness = actor.role === 'member' || !this.stores.modelReadiness
       ? keyLaneUnconfigured
       : await this.stores.modelReadiness();
+    const { previewWorkspaceRecipe } = await import('./recipes.ts');
     const preview = await previewWorkspaceRecipe({ listUserAgents: async () => editable }, readiness, input);
     emitManagementMetric('recipe.preview', {
       surface: context.origin.kind,
