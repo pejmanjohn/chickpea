@@ -310,7 +310,7 @@ import {
   parseFormValues,
   readFormSubmission,
 } from '../slack/ui/render-form.ts';
-import { approvalChoice, uiResponseTurnText, type RenderedUiSurface } from '../slack/ui/render.ts';
+import { approvalChoice, uiResponseTurnText } from '../slack/ui/render.ts';
 import { escapeMrkdwn } from '../slack/ui/text.ts';
 import {
   interactiveAnswer,
@@ -321,6 +321,7 @@ import {
   closeAgentChoiceSurface,
   redrawUiSurface,
   retireApprovalSurfacesForTypedAnswer,
+  surfaceMessenger,
   uiSurfaceRecord,
 } from '../slack/ui/host-surfaces.ts';
 import {
@@ -1584,7 +1585,7 @@ async function resolveInstallationBotUserId(
 ): Promise<string | undefined> {
   return credentials.botUserId ?? installedBotUserId ?? resolveBotUserId(platformEnv);
 }
-interface SlackEventExecution {
+export interface SlackEventExecution {
   transport: SlackTransport;
   client: ReturnType<typeof createSlackWebClient>;
   botUserId: string;
@@ -2738,23 +2739,6 @@ function answerPicksUser(surface: UiSurfaceRecord, answer: InteractiveAnswer, us
 
 function emitUiInteraction(outcome: 'received' | 'refused' | 'resolved', reason?: UiRefusal): void {
   console.info('[chickpea] slack_ui.click', { outcome, ...(reason ? { reason } : {}) });
-}
-
-/** Edits a host surface message in place; `chat.update` keeps the sender. */
-function surfaceMessenger(
-  client: ReturnType<typeof createSlackWebClient>,
-  channelId: string,
-): { update(messageTs: string, rendered: RenderedUiSurface): Promise<void> } {
-  return {
-    async update(messageTs, rendered) {
-      await client.chat.update({
-        channel: channelId,
-        ts: messageTs,
-        text: rendered.text,
-        blocks: rendered.blocks,
-      } as unknown as Parameters<typeof client.chat.update>[0]);
-    },
-  };
 }
 
 /** The offer's Add button, or Slack's own Add of an Agent's app bot: Admin's Add to channels, from Slack. */

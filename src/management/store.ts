@@ -1220,24 +1220,33 @@ export class ManagementStoreLogic {
           existing.tokenDigest,
         );
       } else {
-        setup = input.slackForm
-          ? existing
-          : this.requireBrowserSetup(input.setupOperationId, input.browserSessionDigest, input.at);
-        const from = input.slackForm ? 'pending' : 'authorizing';
-        if (setup.status !== from || catalog &&
-            (!input.completedByUserId || !input.completedByMembershipId) ||
-            input.slackForm && (setup.target.form !== 'slack' ||
-              input.slackForm.userId !== setup.actorUserId || input.slackForm.membershipId !== setup.actorMembershipId ||
-              (setup.action !== 'api_credential' && setup.action !== 'mcp_credentials'))) {
-          throw setupError('setup_unavailable');
+        let from: 'pending' | 'authorizing';
+        if (input.slackForm) {
+          // The Slack key form has no browser session to authorize: it finishes a pending setup, as its requester.
+          if (existing.status !== 'pending' || existing.target.form !== 'slack' ||
+              (existing.action !== 'api_credential' && existing.action !== 'mcp_credentials') ||
+              input.slackForm.userId !== existing.actorUserId ||
+              input.slackForm.membershipId !== existing.actorMembershipId) {
+            throw setupError('setup_unavailable');
+          }
+          setup = existing;
+          from = 'pending';
+          authorization = 'initiating_member_slack_form';
+        } else {
+          setup = this.requireBrowserSetup(input.setupOperationId, input.browserSessionDigest, input.at);
+          if (setup.status !== 'authorizing' || catalog &&
+              (!input.completedByUserId || !input.completedByMembershipId)) {
+            throw setupError('setup_unavailable');
+          }
+          from = 'authorizing';
+          authorization = catalog
+            ? 'eligible_agent_editor_browser_session'
+            : 'initiating_membership_browser_session';
         }
         completionActorUserId = catalog ? input.completedByUserId! : setup.actorUserId;
         completionActorMembershipId = catalog
           ? input.completedByMembershipId!
           : setup.actorMembershipId;
-        authorization = input.slackForm ? 'initiating_member_slack_form'
-          : catalog ? 'eligible_agent_editor_browser_session'
-          : 'initiating_membership_browser_session';
         updated = this.db.run(
           `UPDATE management_setup_operations
            SET status = 'completed', receipt_json = ?, failure_code = NULL,

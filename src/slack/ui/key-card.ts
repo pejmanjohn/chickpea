@@ -316,6 +316,11 @@ export function keyRefusalNotice(card: UiSurfaceRecord & { spec: KeyCardSpec }, 
   }
 }
 
+/** A form answer checked after Slack had closed the form: what its field would have said. */
+export function keyInvalidNotice(problem: string): string {
+  return `That key wasn't saved. ${escapeMrkdwn(problem)}`;
+}
+
 export function keyNotSavedNotice(card: UiSurfaceRecord & { spec: KeyCardSpec }): string {
   return `That key wasn't saved. Try again, or ask ${agent(card.spec)} for help.`;
 }
@@ -398,7 +403,14 @@ export function keyModalView(input: {
 
 export type KeySubmissionReading =
   | { ok: true; key: string; row: KeyRow; target: KeyTarget }
-  | { ok: false; refusal: KeyRowRefusal | 'invalid'; responseAction: Record<string, unknown>; row?: KeyRow };
+  | {
+      ok: false;
+      refusal: KeyRowRefusal | 'invalid';
+      /** What the form's field says, as plain text. */
+      problem: string;
+      responseAction: Record<string, unknown>;
+      row?: KeyRow;
+    };
 
 export function readKeySubmission(input: {
   submission: { workspaceId: string; userId: string; privateMetadata: string; state: SlackUiState };
@@ -410,6 +422,7 @@ export function readKeySubmission(input: {
   const fail = (refusal: KeyRowRefusal | 'invalid', message: string, row?: KeyRow): KeySubmissionReading => ({
     ok: false,
     refusal,
+    problem: message,
     responseAction: metadata
       ? { response_action: 'errors', errors: { [keyFieldBlockId(metadata.cardId)]: message } }
       : { response_action: 'clear' },

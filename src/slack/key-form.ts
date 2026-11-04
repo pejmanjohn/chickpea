@@ -1,5 +1,6 @@
 import type { WebClient } from '@slack/web-api';
 
+import type { SlackEventExecution } from '../channels/slack.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { resolveStores, type AppStores, type PlatformEnv } from '../config/state-backend.ts';
 import type {
@@ -9,7 +10,7 @@ import type {
   ResolvedAssignment,
 } from '../config/types.ts';
 import { connectionUrlPrefixes, type ConnectionCheckOptions } from '../connections/connection-check.ts';
-import { agentConnections, connectionSetupBinding } from '../management/agent-connections.ts';
+import { connectionSetupBinding, setupConnectionTarget } from '../management/agent-connections.ts';
 import type { SetupWakeRequest } from '../management/receipts.ts';
 import type { SlackFormKeyOutcome } from '../management/slack-key-save.ts';
 import { setupWakeAgent, type SavedKeyCheck } from '../management/setup-wake.ts';
@@ -22,13 +23,14 @@ import type { GatewayInboundDelivery, GatewayInteractionReceipt } from './gatewa
 import { wakeNodeTurnRelay } from './node-turn-relay.ts';
 import { slackInteractionAckOf } from './interaction-ack.ts';
 import { checkSlackBlocks } from './ui/block-kit-limits.ts';
-import { uiSurfaceRecord, type UiSurfaceMessenger } from './ui/host-surfaces.ts';
+import { surfaceMessenger, uiSurfaceRecord, type UiSurfaceMessenger } from './ui/host-surfaces.ts';
 import type { SlackUiAction, SlackUiViewSubmission } from './ui/interaction-payload.ts';
 import {
   isKeyCard,
   keyCardFinal,
   keyCardTransition,
   keyHost,
+  keyInvalidNotice,
   keyModalView,
   keyNotSavedNotice,
   keyRefusalNotice,
@@ -75,7 +77,7 @@ interface KeyFormDelivery {
   platformEnv: PlatformEnv | undefined;
   client: Pick<WebClient, 'chat'>;
   gateway?: GatewayDeploymentClient;
-  execution?: { enqueueTurn?: NonNullable<Parameters<typeof import('../channels/slack.ts').admitSetupWake>[2]>['enqueueTurn'] };
+  execution?: Pick<SlackEventExecution, 'enqueueTurn'>;
 }
 
 export function keyFormContextOf(delivery: KeyFormDelivery): KeyFormContext {
@@ -84,10 +86,7 @@ export function keyFormContextOf(delivery: KeyFormDelivery): KeyFormContext {
     stores,
     platformEnv,
     slack: {
-      // chat.update keeps the card's sender.
-      update: async (channel, ts, rendered) => {
-        await client.chat.update({ channel, ts, ...rendered } as Parameters<WebClient['chat']['update']>[0]);
-      },
+      update: (channel, ts, rendered) => surfaceMessenger(client, channel).update(ts, rendered),
       notice: async ({ channelId, userId, text, threadTs }) => {
         await client.chat.postEphemeral({ channel: channelId, user: userId, text, thread_ts: threadTs });
       },
@@ -113,11 +112,8 @@ export function keyTargetOf(
   accounts: readonly ConnectionAccount[],
   bindings: readonly AgentConnectionBinding[],
 ): KeyTarget | undefined {
-  if (!agent || agent.revision !== setup.target.expectedRevision) return undefined;
-  const lane = setup.target.kind === 'mcp_connection' ? 'mcp' : 'api';
-  const entry = [...agentConnections(accounts, bindings, setup.actorMembershipId)[lane].values()]
-    .find(({ account }) => account.id === setup.target.connectionId);
-  if (!entry || entry.account.label !== setup.target.targetLabel) return undefined;
+  const entry = agent && setupConnectionTarget(setup, agent, accounts, bindings);
+  if (!entry) return undefined;
   const { policy, ownerKind } = entry.account;
   const binding = connectionSetupBinding(entry);
   if (policy.kind === 'api') {
@@ -399,10 +395,8 @@ export async function saveKeyFromForm(context: KeyFormContext, submission: Slack
       card = (await transitionRow(state, found.id, metadata.setupOperationId, { kind: reading.refusal, at: now })).card ?? found;
       await redraw(context.slack, card);
     }
-    const errors = reading.responseAction.errors as Record<string, string> | undefined;
-    const problem = errors ? Object.values(errors)[0] : undefined;
     await notify(context.slack, card, submission.userId, reading.refusal === 'invalid'
-      ? `That key wasn't saved. ${problem ?? ''}`.trimEnd()
+      ? keyInvalidNotice(reading.problem)
       : keyRefusalNotice(card, reading.refusal));
     return;
   }

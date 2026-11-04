@@ -17,7 +17,7 @@ import type {
 import { CONNECTION_ID_PATTERN } from '../config/agent-write-rules.ts';
 import { canonicalMcpServerUrl } from '../config/mcp-url.ts';
 import { canonicalJson } from './contracts.ts';
-import { AgentWriteRuleError } from './types.ts';
+import { AgentWriteRuleError, type ManagementSetupRecord } from './types.ts';
 
 /**
  * The connection fields a management client reads from inspect_workspace and
@@ -390,6 +390,41 @@ export function connectionSetupBinding(entry: AgentConnectionEntry): string {
   return connectionAccountCredentialBinding(account.secretRefId, account.policy.kind === 'mcp'
     ? { lane: 'mcp', policy: mcpConnectionFromAccount(account.id, entry) }
     : { lane: 'api', policy: apiConnectionFromAccount(account.id, entry) });
+}
+
+/** The setup's connection on its Agent as the requesting member manages it, if it is still there. */
+export function findSetupConnection(
+  setup: ManagementSetupRecord,
+  accounts: readonly ConnectionAccount[],
+  bindings: readonly AgentConnectionBinding[],
+): AgentConnectionEntry | undefined {
+  const lane = setup.target.kind === 'mcp_connection' ? 'mcp' : 'api';
+  return [...agentConnections(accounts, bindings, setup.actorMembershipId)[lane].values()]
+    .find(({ account }) => account.id === setup.target.connectionId);
+}
+
+/** Whether the setup's Agent is still the revision the setup froze; an Agent welcome's setup takes any. */
+export function setupAgentCurrent(setup: ManagementSetupRecord, agent: Pick<CustomAgentConfig, 'revision'>): boolean {
+  return setup.setupOperationId.startsWith('setup_welcome_') || agent.revision === setup.target.expectedRevision;
+}
+
+/**
+ * The setup's connection while its Agent, label and credential binding are
+ * as the setup froze them. The setup page and the Slack key form finish a
+ * connection's setup only then.
+ */
+export function setupConnectionTarget(
+  setup: ManagementSetupRecord,
+  agent: Pick<CustomAgentConfig, 'revision'>,
+  accounts: readonly ConnectionAccount[],
+  bindings: readonly AgentConnectionBinding[],
+): AgentConnectionEntry | undefined {
+  if (!setupAgentCurrent(setup, agent)) return undefined;
+  const entry = findSetupConnection(setup, accounts, bindings);
+  return entry && entry.account.label === setup.target.targetLabel &&
+      connectionSetupBinding(entry) === setup.target.credentialBinding
+    ? entry
+    : undefined;
 }
 
 /** The one setup form field an MCP connection's credential goes in. */

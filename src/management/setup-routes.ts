@@ -162,9 +162,11 @@ import {
 import { resolveSlackInstallationExecutionContext } from '../slack/installation-execution.ts';
 import { slackPresentationStatePort } from '../slack/presentation-state-port.ts';
 import {
-  agentConnections,
   connectionSetupBinding,
+  findSetupConnection,
   mcpCredentialField,
+  setupAgentCurrent,
+  setupConnectionTarget,
   type AgentConnectionEntry,
 } from './agent-connections.ts';
 import {
@@ -2878,8 +2880,7 @@ async function currentSetupAgent(
 ): Promise<CustomAgentConfig> {
   if (!setup.target.agentId) throw new Error('target_changed');
   const agent = await config.getAgent(setup.target.agentId);
-  if (!setup.setupOperationId.startsWith('setup_welcome_') &&
-      agent.revision !== setup.target.expectedRevision) throw new Error('target_changed');
+  if (!setupAgentCurrent(setup, agent)) throw new Error('target_changed');
   return agent;
 }
 
@@ -2889,11 +2890,9 @@ async function currentSetupConnection(
   dependencies: SetupDependencies,
 ): Promise<AgentConnectionEntry & { agent: CustomAgentConfig }> {
   const agent = await currentSetupAgent(setup, dependencies.config);
-  const entry = await setupConnectionEntry(setup, dependencies);
-  if (!entry || entry.account.label !== setup.target.targetLabel ||
-      connectionSetupBinding(entry) !== setup.target.credentialBinding) {
-    throw new Error('target_changed');
-  }
+  const listed = await setupConnectionLists(setup, dependencies);
+  const entry = listed && setupConnectionTarget(setup, agent, listed.accounts, listed.bindings);
+  if (!entry) throw new Error('target_changed');
   return { agent, ...entry };
 }
 
@@ -2902,15 +2901,21 @@ async function setupConnectionEntry(
   setup: ManagementSetupRecord,
   dependencies: SetupDependencies,
 ): Promise<AgentConnectionEntry | undefined> {
-  const lane = setup.target.kind === 'mcp_connection' ? 'mcp' : 'api';
+  const listed = await setupConnectionLists(setup, dependencies);
+  return listed && findSetupConnection(setup, listed.accounts, listed.bindings);
+}
+
+async function setupConnectionLists(
+  setup: ManagementSetupRecord,
+  dependencies: SetupDependencies,
+): Promise<{ accounts: ConnectionAccount[]; bindings: AgentConnectionBinding[] } | undefined> {
   const workspaceId = await setupWorkspaceId(setup, dependencies.identity);
   if (!workspaceId || !setup.target.agentId) return undefined;
   const [accounts, bindings] = await Promise.all([
     dependencies.config.listConnectionAccounts(workspaceId),
     dependencies.config.listAgentConnectionBindings(setup.target.agentId),
   ]);
-  return [...agentConnections(accounts, bindings, setup.actorMembershipId)[lane].values()]
-    .find(({ account }) => account.id === setup.target.connectionId);
+  return { accounts, bindings };
 }
 
 async function setupWorkspaceId(

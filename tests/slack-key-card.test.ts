@@ -6,6 +6,7 @@ import {
   KEY_CHECK_STALE_MS,
   KEY_FIELD_ACTION_ID,
   keyCardTransition,
+  keyInvalidNotice,
   keyFieldBlockId,
   keyModalView,
   keyRowAvailability,
@@ -233,4 +234,11 @@ test('a submission keeps the key only when it is one clean value for a live row'
   const checking = card([row({ state: { is: 'checking', since: NOW } })]);
   const busy = readKeySubmission({ submission: submission('lin_api_123'), card: checking, facts: LIVE, now: NOW + 1 });
   assert.equal(busy.ok ? undefined : busy.refusal, 'busy');
+
+  const named = card([row()]);
+  named.spec.agentName = 'Ops <!channel>';
+  const long = readKeySubmission({ submission: submission('k'.repeat(3_001)), card: named, facts: LIVE, now: NOW });
+  assert.equal(long.ok ? undefined : keyInvalidNotice(long.problem),
+    'That key wasn\'t saved. This key is too long for Slack. Ask Ops &lt;!channel&gt; for a setup link instead.',
+    'a form already closed gets the field\'s words privately, escaped for Slack');
 });
