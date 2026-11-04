@@ -862,10 +862,11 @@ export type ManagementOperationResult = ManagementApplyResult | ManagementSetupP
 /**
  * A setup request a Slack call held until the person approved its change set:
  * the one-time link issued once the set applied, or why none was issued.
+ * `connectionId` is the connection as the request named it.
  */
 export type ManagementDeferredSetup =
-  | { kind: 'issued'; itemId: string; label: string; setupUrl: string }
-  | { kind: 'form'; itemId: string; label: string }
+  | { kind: 'issued'; itemId: string; label: string; setupUrl: string; connectionId?: string }
+  | { kind: 'form'; itemId: string; label: string; connectionId?: string }
   | { kind: 'not_issued'; itemId: string; code: string };
 
 export interface ManagementApplyResult {

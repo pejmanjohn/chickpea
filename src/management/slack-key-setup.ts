@@ -1,6 +1,7 @@
 import { approvedNewKeyedApiConnections, approvedNewKeyedConnections } from './connection-approval.ts';
 import {
   addressedRequestText,
+  deferredSetupOf,
   keyTypedForApprovedConnection,
   type WorkspaceManagementServiceInput,
 } from './service.ts';
@@ -43,36 +44,35 @@ export async function keySetupsAfterApproval(
   ];
   const setups: ManagementDeferredSetup[] = [];
   for (const { lane, agentId, connection: { id: connectionId } } of added) {
-    const itemId = `key_${lane}_${connectionId}`;
-    const setup = await issue({
-      itemId,
+    const operation: RequestSetup = {
+      itemId: `key_${lane}_${connectionId}`,
       kind: 'request_setup',
       target: { kind: lane === 'api' ? 'api_connection' : 'mcp_connection', agentId, connectionId },
-    });
-    if (!setup) continue;
-    const label = setup.record.target.targetLabel;
-    setups.push(setup.delivery.kind === 'link'
-      ? { kind: 'issued', itemId, label, setupUrl: setup.delivery.url }
-      : { kind: 'form', itemId, label });
+    };
+    const setup = await issue(operation);
+    if (setup) setups.push(deferredSetupOf(operation, setup));
   }
   return setups;
 }
 
 /**
  * Whether the message that proposed this approved change set holds a key
- * for an API connection it added, as the approval window reads that
- * message (keyFromApprovedConnection): one key-shaped word it would admit.
- * The person's next message then lets the Agent test it.
+ * for an API connection it added and its receipt asks no key for, as the
+ * approval window reads that message (keyFromApprovedConnection): one
+ * key-shaped word it would admit. The person's next message then lets the
+ * Agent test it.
  */
 export async function approvedProposalHoldsKey(
   actor: LiveManagementActor,
   proposalId: string,
+  asked: readonly string[],
   stores: Pick<WorkspaceManagementServiceInput, 'management' | 'identity' | 'typedSlackMessage'>,
 ): Promise<boolean> {
   const { origin } = actor;
   if (origin.kind !== 'slack' || !stores.typedSlackMessage) return false;
   const proposal = await stores.management.getChangeSetProposal(proposalId);
-  const approved = proposal ? approvedNewKeyedApiConnections(proposal) : [];
+  const approved = (proposal ? approvedNewKeyedApiConnections(proposal) : [])
+    .filter(({ connectionId }) => !asked.includes(connectionId));
   if (!proposal?.proposedMessageTs || approved.length === 0) return false;
   const [message, user] = await Promise.all([
     stores.typedSlackMessage({

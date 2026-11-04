@@ -479,9 +479,8 @@ test('an approved connection admits the key from the message that proposed it, o
   const f = await fixture();
   try {
     const receipt = await approvedConnection(f);
-    assert.equal(receipt, 'Applied the approved changes.\n\nReply here and I’ll test the key you pasted.');
-    assert.deepEqual(f.setups(), [{ action: 'api_credential', status: 'pending', label: 'Statusboard', form: 'slack' }],
-      'the Add key card asks for the key too');
+    assert.equal(receipt, 'Applied the approved changes.', 'the Add key card asks for the key, so the receipt does not also offer to test the pasted one');
+    assert.deepEqual(f.setups(), [{ action: 'api_credential', status: 'pending', label: 'Statusboard', form: 'slack' }]);
     await withConnectionNetwork(statusboard, async (requests) => {
       const tried = ok<TryConnectionResult>(await f.slack('try_connection', { connectionId: CONNECTION.id, key: KEY, path: INCIDENTS }, 'ok, go ahead'));
       assert.equal(tried.check.kind, 'ok');
@@ -687,6 +686,36 @@ test('Chickpea\'s setup note is never the person\'s typed words: it carries no k
       await f.update({ instructions: 'Track incidents closely.' }), 'make your instructions say to track incidents closely'));
     assert.equal(typed.outcomes[0]?.disposition, 'applied', 'the same change from the person\'s own message applies');
   } finally { f.close(); }
+});
+
+test('a receipt offers to test a pasted key only for a connection it asks no key for', async () => {
+  const notes: ManagementApiConnection = {
+    ...CONNECTION, id: 'notes', displayName: 'Notes', allowedHosts: ['api.notes.example'],
+  };
+  const f = await fixture();
+  try {
+    const held = ok<ManagementApplyResult>(await f.slack('apply_workspace_changes', {
+      idempotencyKey: 'notes-setup',
+      operations: [
+        ...(await f.update({ apiConnections: [CONNECTION, notes] })).operations,
+        { itemId: 'key', kind: 'request_setup', dependsOn: ['connect'], target: { kind: 'api_connection', agentId: f.agent.id, connectionId: notes.id } },
+      ],
+    }, UNTYPED_HOST));
+    const proposalId = held.outcomes.find(({ proposalId: id }) => id)?.proposalId;
+    assert.ok(proposalId, JSON.stringify(held));
+    const receipt = await f.approve(proposalId);
+    assert.equal(receipt.kind === 'message' ? receipt.text : '',
+      'Applied the approved changes.\n\nReply here and I’ll test the key you pasted.',
+      'Notes gets the Add key card; the key pasted for Statusboard, which got none, can still be tested');
+    assert.deepEqual(f.setups(), [{ action: 'api_credential', status: 'pending', label: 'Notes', form: 'slack' }]);
+  } finally { f.close(); }
+
+  const group = await fixture({ groupDm: true });
+  try {
+    assert.match(await approvedConnection(group),
+      /^Applied the approved changes\.\n\n\[Connect Statusboard\]\(http:\/\/localhost\/setup\/setup_[^)]+\)$/,
+      'a group DM\'s receipt links the setup and does not also offer to test the pasted key');
+  } finally { group.close(); }
 });
 
 test('a receipt that issued a setup link does not offer to test a pasted key', async () => {

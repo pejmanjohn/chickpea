@@ -33,6 +33,7 @@ import {
   type ManagementActorContext,
   type ManagementApplyResult,
   type ManagementChangeSetProposalRecord,
+  type ManagementDeferredSetup,
   type ManagementOperation,
   type ManagementReceiptOutboxRecord,
 } from './types.ts';
@@ -290,7 +291,7 @@ export async function executeHostSlackManagementApproval(input: {
       turn: input.turn,
       proposalId: input.proposalId,
       actorMembershipId: actor.membershipId,
-      pastedKey: () => input.dependencies.service.approvedProposalHoldsKey(actor, input.proposalId),
+      pastedKey: (asked) => input.dependencies.service.approvedProposalHoldsKey(actor, input.proposalId, asked),
       config: input.dependencies.config,
       management: input.dependencies.management,
       ...(input.presentationRunId ? { presentationRunId: input.presentationRunId } : {}),
@@ -386,8 +387,8 @@ async function formatHostSlackManagementReceipt(input: {
   turn: NormalizedSlackTurn;
   proposalId: string;
   actorMembershipId: string;
-  /** Whether the message that proposed the change set holds a key the person's next message can have tested. */
-  pastedKey: () => Promise<boolean>;
+  /** Whether the message that proposed the change set holds a key, for a connection not in `asked`, that the person's next message can have tested. */
+  pastedKey: (asked: readonly string[]) => Promise<boolean>;
   config: Pick<ConfigStore, 'getAgent'>;
   management: Pick<ManagementStore, 'putOutbox'> & {
     getChangeSetProposal?: ManagementStore['getChangeSetProposal'];
@@ -500,7 +501,7 @@ async function formatHostSlackManagementReceipt(input: {
   return message(receipt, [
     ...codes.map((code) => `Issue: ${escapeSlackControlCharacters(code)}`),
     ...warnings.map(escapeSlackControlCharacters),
-    ...(await input.pastedKey().catch(() => false) ? [TEST_PASTED_KEY] : []),
+    ...(await input.pastedKey(askedConnections(deferredSetup)).catch(() => false) ? [TEST_PASTED_KEY] : []),
   ]);
 }
 
@@ -509,6 +510,11 @@ async function formatHostSlackManagementReceipt(input: {
  * the request waits for their next message, which may use it for 30 minutes.
  */
 const TEST_PASTED_KEY = 'Reply here and I’ll test the key you pasted.';
+
+/** The connections whose key the receipt itself asks for, with an Add key card or a setup link. */
+function askedConnections(deferredSetup: readonly ManagementDeferredSetup[]): string[] {
+  return deferredSetup.flatMap((setup) => setup.kind !== 'not_issued' && setup.connectionId ? [setup.connectionId] : []);
+}
 
 async function formatAppliedSkillReceipt(input: {
   proposalId: string;

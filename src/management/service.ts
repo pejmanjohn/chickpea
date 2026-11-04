@@ -2559,9 +2559,13 @@ export class WorkspaceManagementService {
     }
   }
 
-  async approvedProposalHoldsKey(context: ManagementActorContext, proposalId: string): Promise<boolean> {
+  async approvedProposalHoldsKey(
+    context: ManagementActorContext,
+    proposalId: string,
+    asked: readonly string[] = [],
+  ): Promise<boolean> {
     const actor = await this.requireLiveActor(context);
-    return (await import('./slack-key-setup.ts')).approvedProposalHoldsKey(actor, proposalId, this.stores);
+    return (await import('./slack-key-setup.ts')).approvedProposalHoldsKey(actor, proposalId, asked, this.stores);
   }
 
   async inspectMemory(
@@ -3154,7 +3158,6 @@ export class WorkspaceManagementService {
         });
       }
       const setup = await this.issueSetup(actor, operation);
-      const label = setup.record.target.targetLabel;
       return {
         outcome: {
           ...item,
@@ -3162,9 +3165,7 @@ export class WorkspaceManagementService {
           setupOperationId: setup.record.setupOperationId,
           ...setupDelivery(setup),
         },
-        deferred: setup.delivery.kind === 'link'
-          ? { kind: 'issued', itemId, label, setupUrl: setup.delivery.url }
-          : { kind: 'form', itemId, label },
+        deferred: deferredSetupOf(operation, setup),
       };
     } catch (error) {
       if (!isExpectedMutationError(error)) throw error;
@@ -8790,6 +8791,18 @@ function asksKeyInSlackForm(
   return origin.kind === 'slack' && Boolean(origin.agentId) && origin.agentId === target.agentId &&
     (origin.conversationKind === 'channel' || origin.conversationKind === 'im') &&
     (action === 'api_credential' || action === 'mcp_credentials');
+}
+
+export function deferredSetupOf(
+  operation: Extract<ManagementOperation, { kind: 'request_setup' }>,
+  { record, delivery }: IssuedSetup,
+): ManagementDeferredSetup {
+  const { itemId } = operation;
+  const label = record.target.targetLabel;
+  const named = 'connectionId' in operation.target ? { connectionId: operation.target.connectionId } : {};
+  return delivery.kind === 'link'
+    ? { kind: 'issued', itemId, label, setupUrl: delivery.url, ...named }
+    : { kind: 'form', itemId, label, ...named };
 }
 
 function setupDelivery({ record, delivery }: IssuedSetup): Pick<ManagementItemOutcome, 'setupUrl' | 'instruction'> {
