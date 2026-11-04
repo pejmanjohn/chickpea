@@ -34,7 +34,13 @@ import {
   validateSlackAppManifestUrlRepair,
   type SlackAppManifest,
 } from '../slack/app-manifest.ts';
-import { missingRequiredSlackBotScopes, REQUESTED_SLACK_BOT_SCOPES, SLACK_FEATURE_SCOPES } from '../slack/scopes.ts';
+import {
+  missingRequiredSlackBotScopes,
+  recoverableSlackFeatureScopeSets,
+  REQUESTED_SLACK_BOT_SCOPES,
+  SLACK_FEATURE_SCOPES,
+  subsets,
+} from '../slack/scopes.ts';
 import {
   decryptSlackSecretEnvelope,
   encryptSlackSecretEnvelope,
@@ -177,10 +183,10 @@ export class SlackCredentialRecoveryService {
     } catch {
       throw new SlackCredentialRecoveryError('manifest_mismatch');
     }
-    // The UI builds today's manifest. Accept only an exact stored fingerprint,
-    // including variants that predate any additive feature scope or optional
-    // event.
-    const matchesStored = subsets(SLACK_FEATURE_SCOPES).some(scopes =>
+    const active = await this.dependencies.identity.getActiveSlackCredentialRevision(WORKSPACE_SLACK_INSTALLATION_ID);
+    if (!active || active.revision !== session.baseRevision) throw new SlackCredentialRecoveryError('stale_revision');
+    // The UI sends today's manifest; the stored fingerprint is of the app as it was made.
+    const matchesStored = recoverableSlackFeatureScopeSets(active.grantedScopes).some(scopes =>
       subsets(SLACK_OPTIONAL_BOT_EVENTS).some(events => slackManifestFingerprint(recoveryManifestScopes(
         slackManifestWithOptionalEvents(input.manifest, events),
         scopes,
@@ -576,11 +582,6 @@ function recoveryEnvelopeContext(
     purpose: 'app_credentials',
     revision,
   };
-}
-
-/** Every subset of `values`, the empty one included, each in the order of `values`. */
-function subsets(values: readonly string[]): string[][] {
-  return values.reduce<string[][]>((all, value) => [...all, ...all.map((subset) => [...subset, value])], [[]]);
 }
 
 function recoveryManifestScopes(manifest: SlackAppManifest, granted: readonly string[]): SlackAppManifest {

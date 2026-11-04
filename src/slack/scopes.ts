@@ -8,15 +8,24 @@ import slackAppManifest from '../../slack-app-manifest.json' with { type: 'json'
 export const REQUESTED_SLACK_BOT_SCOPES = Object.freeze([
   ...slackAppManifest.oauth_config.scopes.bot,
 ]);
+const UPCOMING_FEATURE_SCOPES: readonly string[] = Object.freeze([
+  'channels:manage', 'groups:write', 'im:read', 'mpim:write', 'team:read', 'canvases:read', 'canvases:write',
+]);
 /**
- * Requested scopes an installation may lack while ordinary chat keeps working.
- * A scope added after an installation exists belongs here, never in the
- * required set, and its feature explains its absence: existing grants stay
- * valid for reinstall and recovery until an Owner updates them. Without
- * `mpim:history`, an Agent answering in a group DM reads none of its earlier
- * messages.
+ * Requested scopes an installation may lack while ordinary chat keeps working,
+ * grouped by the release that added them. A scope added after an installation
+ * exists belongs here, never in the required set, and its feature explains
+ * its absence: existing grants stay valid for reinstall and recovery until an
+ * Owner updates them. Without `mpim:history`, an Agent answering in a group DM
+ * reads none of its earlier messages.
+ *
+ * An app made from an older manifest lacks whole groups, so recovery and the
+ * lane preflight enumerate groups, not scopes.
  */
-export const SLACK_FEATURE_SCOPES = Object.freeze(['lists:read', 'lists:write', 'mpim:history']);
+export const SLACK_FEATURE_SCOPE_GROUPS: readonly (readonly string[])[] = Object.freeze([
+  ['lists:read', 'lists:write'], ['mpim:history'], UPCOMING_FEATURE_SCOPES,
+]);
+export const SLACK_FEATURE_SCOPES: readonly string[] = Object.freeze(SLACK_FEATURE_SCOPE_GROUPS.flat());
 /** Feature scopes are additive: a core-only installation must keep serving ordinary chat. */
 export const REQUIRED_SLACK_BOT_SCOPES = Object.freeze(REQUESTED_SLACK_BOT_SCOPES.filter(scope => !SLACK_FEATURE_SCOPES.includes(scope)));
 /**
@@ -35,14 +44,40 @@ export const SLACK_USER_GROUP_SCOPES = Object.freeze(['usergroups:read', 'usergr
  * Agent that is its own bot needs, and without group DM history: group DMs
  * are served through the workspace app, and an Agent app's scopes and events
  * are not changed for them, so a mention of its bot in a group DM reads none
- * of the group's earlier messages. It keeps `channels:join` so that adding
- * the Agent to a public Channel brings its bot in: Chickpea's bot cannot
- * invite it without a scope every installation would have to approve.
+ * of the group's earlier messages. It also leaves out the scopes requested
+ * for upcoming features: an Agent app made before them was never granted
+ * them, and its consent must keep passing. It keeps `channels:join` so that
+ * adding the Agent to a public Channel brings its bot in: Chickpea's bot
+ * cannot invite it without a scope every installation would have to approve.
  */
+const AGENT_APP_LEAVES_OUT = new Set([
+  'chat:write.customize', 'users:read.email', 'mpim:history', ...UPCOMING_FEATURE_SCOPES,
+]);
 export const AGENT_APP_BOT_SCOPES: readonly string[] = Object.freeze(REQUESTED_SLACK_BOT_SCOPES.filter((scope) =>
-  !scope.startsWith('usergroups:') && scope !== 'chat:write.customize' && scope !== 'users:read.email' &&
-  scope !== 'mpim:history'
+  !scope.startsWith('usergroups:') && !AGENT_APP_LEAVES_OUT.has(scope)
 ));
+
+/**
+ * The feature scope sets an installation's stored manifest can hold: what its
+ * token was granted, then every whole-group combination, each in manifest
+ * order and deduplicated. Bounded by 1 + 2^groups entries.
+ */
+export function recoverableSlackFeatureScopeSets(grantedScopes: readonly string[]): string[][] {
+  const granted = SLACK_FEATURE_SCOPES.filter((scope) => grantedScopes.includes(scope));
+  const seen = new Set<string>();
+  return [granted, ...subsets(SLACK_FEATURE_SCOPE_GROUPS).map((groups) => groups.flat())]
+    .filter((scopes) => {
+      const key = scopes.join(',');
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+/** Every subset of `values`, the empty one included, each in the order of `values`. */
+export function subsets<T>(values: readonly T[]): T[][] {
+  return values.reduce<T[][]>((all, value) => [...all, ...all.map((subset) => [...subset, value])], [[]]);
+}
 
 /** Parse Slack's comma-delimited `x-oauth-scopes` response header. */
 export function parseSlackGrantedScopes(value: string | null): string[] | undefined {

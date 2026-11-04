@@ -72,14 +72,19 @@ function liveSlack(answer: () => Partial<SlackAuthTestResult> | Error, now = () 
 
 test('the scope gap names the requested scopes a grant lacks, and retired scopes are tolerated', () => {
   assert.deepEqual(missingRequestedSlackBotScopes(REQUESTED_SLACK_BOT_SCOPES), []);
-  assert.deepEqual(missingRequestedSlackBotScopes(REQUIRED_SLACK_BOT_SCOPES), ['mpim:history', 'lists:read', 'lists:write']);
+  assert.deepEqual(missingRequestedSlackBotScopes(REQUIRED_SLACK_BOT_SCOPES), [
+    'mpim:history', 'lists:read', 'lists:write',
+    'channels:manage', 'groups:write', 'im:read', 'mpim:write', 'team:read', 'canvases:read', 'canvases:write',
+  ]);
   const shuffled = [...REQUESTED_SLACK_BOT_SCOPES].reverse();
   assert.deepEqual(missingRequestedSlackBotScopes([...shuffled, ...shuffled]), [], 'order and duplicates do not matter');
   assert.deepEqual(missingRequestedSlackBotScopes(['chat:write'], ['chat:write', 'lists:read', 'lists:read']),
     ['lists:read']);
 
-  // Lists and group DM history stay features: a grant without them is accepted for reinstall and recovery.
-  assert.deepEqual(SLACK_FEATURE_SCOPES, ['lists:read', 'lists:write', 'mpim:history']);
+  assert.deepEqual(SLACK_FEATURE_SCOPES, [
+    'lists:read', 'lists:write', 'mpim:history',
+    'channels:manage', 'groups:write', 'im:read', 'mpim:write', 'team:read', 'canvases:read', 'canvases:write',
+  ]);
   assert.ok(SLACK_FEATURE_SCOPES.every((scope) => !REQUIRED_SLACK_BOT_SCOPES.includes(scope)));
   assert.deepEqual(RETIRED_SLACK_BOT_SCOPES, []);
   assert.deepEqual(unexpectedSlackBotScopes([...REQUESTED_SLACK_BOT_SCOPES, 'old:scope']), ['old:scope']);
@@ -173,7 +178,10 @@ test('a gap Slack does not confirm is current and logged for operators, without 
     event: 'chickpea.slack_permissions.stored_scopes_behind',
     installationId: 'inst_a',
     revision: 'rev_1',
-    storedMissing: ['mpim:history', 'lists:read', 'lists:write'],
+    storedMissing: [
+      'mpim:history', 'lists:read', 'lists:write',
+      'channels:manage', 'groups:write', 'im:read', 'mpim:write', 'team:read', 'canvases:read', 'canvases:write',
+    ],
   }]);
 });
 

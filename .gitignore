@@ -43,6 +43,7 @@ docs/
 !docs/
 docs/*
 !docs/shared-gateway-data-handling.md
+!docs/chickpea-art.md
 !docs/design/
 docs/design/*
 !docs/design/installation-restore.md
