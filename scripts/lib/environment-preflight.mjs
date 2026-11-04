@@ -20,6 +20,8 @@ import path, { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { validQaFleet } from '../../src/config/qa-targets.ts';
+import { SLACK_OPTIONAL_BOT_EVENTS } from '../../src/slack/app-manifest.ts';
+import { SLACK_FEATURE_SCOPE_GROUPS, SLACK_FEATURE_SCOPES } from '../../src/slack/scopes.ts';
 
 import {
   acquireTargetLock,
@@ -87,26 +89,12 @@ const VERSION = /^(?:version-[A-Za-z0-9._-]{1,96}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-
 const CREDENTIAL_CLASSES = Object.freeze([
   'auth', 'cookie', 'signing', 'recovery', 'setup', 'encryption',
 ]);
-// These permissions expose an additive feature. A lane installed before the
-// feature may keep its narrower grant, but no other manifest difference is
-// compatible with that existing installation.
-const OPTIONAL_EXISTING_INSTALL_BOT_SCOPES = Object.freeze([
-  'lists:read', 'lists:write', 'mpim:history',
-]);
-const OPTIONAL_EXISTING_INSTALL_BOT_SCOPE_SET = new Set(
-  OPTIONAL_EXISTING_INSTALL_BOT_SCOPES,
-);
-// Likewise additive events: Slack draws its Stop button only for an app
-// subscribed to `agent_session_stopped` (typed stops still work), and group
-// DMs deliver Agent handles and thread replies only with `message.mpim`. A
-// lane installed before either keeps working without it. Its baseline is
-// re-recorded only after the shared app subscribes.
-const OPTIONAL_EXISTING_INSTALL_BOT_EVENTS = Object.freeze([
-  'agent_session_stopped', 'message.mpim',
-]);
-const OPTIONAL_EXISTING_INSTALL_BOT_EVENT_SET = new Set(
-  OPTIONAL_EXISTING_INSTALL_BOT_EVENTS,
-);
+// The feature scopes and optional events expose additive features. A lane
+// installed before one may keep its narrower grant, but no other manifest
+// difference is compatible with that existing installation. Its baseline is
+// re-recorded only after the shared app gains them.
+const OPTIONAL_EXISTING_INSTALL_BOT_SCOPE_SET = new Set(SLACK_FEATURE_SCOPES);
+const OPTIONAL_EXISTING_INSTALL_BOT_EVENT_SET = new Set(SLACK_OPTIONAL_BOT_EVENTS);
 const RUNTIME_SECRET_SOURCE_BINDINGS = Object.freeze({
   auth: 'CHICKPEA_AUTH_SECRET',
   cookie: 'hkdf(CHICKPEA_AUTH_SECRET,chickpea/cookie/v1)',
@@ -1493,11 +1481,12 @@ export function readLocalEnvironmentContract(options = {}) {
       },
     },
   });
-  // A lane installed between two features holds the manifest less some of
-  // the optional scopes and events, not all of them.
-  const installedVariants = subsets(OPTIONAL_EXISTING_INSTALL_BOT_SCOPES).flatMap((lackingScopes) => {
+  // A lane installed between two features holds the manifest less some whole
+  // feature scope groups and some optional events, not all of them.
+  const installedVariants = subsets(SLACK_FEATURE_SCOPE_GROUPS).flatMap((lackingGroups) => {
+    const lackingScopes = lackingGroups.flat();
     const bot = manifestBotScopes.filter((scope) => !lackingScopes.includes(scope));
-    return subsets(OPTIONAL_EXISTING_INSTALL_BOT_EVENTS).map((lackingEvents) => ({
+    return subsets(SLACK_OPTIONAL_BOT_EVENTS).map((lackingEvents) => ({
       manifestDigest: digest({
         ...manifest,
         oauth_config: { ...manifest.oauth_config, scopes: { ...manifest.oauth_config.scopes, bot } },
@@ -2259,7 +2248,7 @@ function validateLocalContract(input) {
     || !(input.installedVariants === undefined
       || (Array.isArray(input.installedVariants)
         && input.installedVariants.length > 0
-        && input.installedVariants.length <= 64
+        && input.installedVariants.length <= 256
         && input.installedVariants.every((variant) => isRecord(variant)
           && exactKeys(variant, ['manifestDigest', 'requiredScopes'])
           && DIGEST.test(variant.manifestDigest)

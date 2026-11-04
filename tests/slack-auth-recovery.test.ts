@@ -377,7 +377,7 @@ test('recovery sends its Slack Web API calls to a configured API base', async ()
 });
 
 for (const repairUrls of [false, true]) test(`core-only installation recovers without adding Lists or group DM permissions (URL repair: ${repairUrls})`, async () => {
-  const fixture = await recoveryFixture({ coreOnly: true, manifestFlow: repairUrls, initialOrigin: repairUrls ? 'https://old-chickpea.example' : ORIGIN });
+  const fixture = await recoveryFixture({ featureScopes: [], manifestFlow: repairUrls, initialOrigin: repairUrls ? 'https://old-chickpea.example' : ORIGIN });
   try {
     const authority = { ...await fixture.service.begin({ recoveryToken: TOKEN, browserBinding: BROWSER }), browserBinding: BROWSER };
     const current = buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN });
@@ -402,6 +402,34 @@ for (const repairUrls of [false, true]) test(`core-only installation recovers wi
   } finally { fixture.close(); }
 });
 
+test('staging refuses a session whose active revision moved after it began', async () => {
+  const fixture = await recoveryFixture();
+  try {
+    const authority = { ...await fixture.service.begin({ recoveryToken: TOKEN, browserBinding: BROWSER }), browserBinding: BROWSER };
+    const current = buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN });
+    const moved = await stageSlackCredentialBundle(fixture.credentials, {
+      identityId: WORKSPACE_SLACK_INSTALLATION_ID,
+      identityClass: 'workspace_installation', purpose: 'connected_credentials',
+      expectedActiveRevision: fixture.activeRevision, appId: 'A12345678', teamId: 'TACME', botUserId: 'UBOT',
+      grantedScopes: [...REQUESTED_SLACK_BOT_SCOPES], validatedAt: NOW,
+      manifestFingerprint: slackManifestFingerprint(current),
+      secrets: {
+        clientId: '123.456', clientSecret: 'old-client-secret', signingSecret: 'old-signing-secret',
+        botToken: 'xoxb-reconnected-token',
+      },
+    });
+    await promoteSlackCredentialBundle(fixture.credentials, {
+      identityId: WORKSPACE_SLACK_INSTALLATION_ID,
+      candidateRevision: moved.revision, expectedActiveRevision: fixture.activeRevision,
+    });
+    await assert.rejects(
+      fixture.service.stageAppCredentials({ ...authority, appId: 'A12345678', teamId: 'TACME', clientId: '123.456', clientSecret: 'replacement-client-secret', signingSecret: 'replacement-signing-secret', manifest: current }),
+      (e: unknown) => e instanceof SlackCredentialRecoveryError && e.code === 'stale_revision',
+    );
+    assert.equal((await fixture.identity.getSlackRecoverySession(authority.recoveryId))?.appCredentialRevision ?? null, null, 'nothing is staged');
+  } finally { fixture.close(); }
+});
+
 // Apps made before the Stop event, and before group DM messages.
 for (const repairUrls of [false, true]) test(`an app made before an optional event recovers without subscribing it (URL repair: ${repairUrls})`, async () => {
   for (const [coreOnly, optionalEvents] of [
@@ -409,7 +437,7 @@ for (const repairUrls of [false, true]) test(`an app made before an optional eve
   ] as const) {
     const fixture = await recoveryFixture({
       optionalEvents,
-      coreOnly,
+      ...(coreOnly ? { featureScopes: [] } : {}),
       manifestFlow: repairUrls,
       initialOrigin: repairUrls ? 'https://old-chickpea.example' : ORIGIN,
     });
@@ -449,7 +477,10 @@ async function recoveryFixture(options: {
   serviceKeyring?: ReturnType<typeof generateCredentialKeyring>;
   initialOrigin?: string;
   manifestFlow?: boolean;
-  coreOnly?: boolean;
+  /** The feature scopes the app's manifest holds; every one by default. */
+  featureScopes?: readonly string[];
+  /** The feature scopes the bot token was granted; the manifest's by default. */
+  grantedFeatureScopes?: readonly string[];
   /** The optional events of the manifest the app was created from; every one by default. */
   optionalEvents?: readonly string[];
   apiBaseUrl?: string;
@@ -462,10 +493,14 @@ async function recoveryFixture(options: {
   const manifest = buildSlackAppManifest({
     kind: 'workspace_app', origin: options.initialOrigin ?? ORIGIN,
   });
-  if (options.coreOnly) manifest.oauth_config.scopes.bot = manifest.oauth_config.scopes.bot.filter(scope => !SLACK_FEATURE_SCOPES.includes(scope));
+  const withFeatureScopes = (held: readonly string[]) =>
+    REQUESTED_SLACK_BOT_SCOPES.filter(scope => !SLACK_FEATURE_SCOPES.includes(scope) || held.includes(scope));
+  if (options.featureScopes) manifest.oauth_config.scopes.bot = withFeatureScopes(options.featureScopes);
   const created = options.optionalEvents ? slackManifestWithOptionalEvents(manifest, options.optionalEvents) : manifest;
   manifest.settings.event_subscriptions.bot_events = created.settings.event_subscriptions.bot_events;
-  const grantedScopes = [...manifest.oauth_config.scopes.bot];
+  const grantedScopes = options.grantedFeatureScopes
+    ? withFeatureScopes(options.grantedFeatureScopes)
+    : [...manifest.oauth_config.scopes.bot];
   const app = await stageSlackCredentialBundle(credentials, {
     identityId: WORKSPACE_SLACK_INSTALLATION_ID,
     identityClass: 'workspace_installation', purpose: 'app_credentials', expectedActiveRevision: null,
