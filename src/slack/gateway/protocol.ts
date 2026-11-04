@@ -5,6 +5,7 @@ import {
   type SlackUiAction,
   type SlackUiViewSubmission,
 } from '../ui/interaction-payload.ts';
+import { SLACK_CANVAS_OPERATIONS } from '../canvases/types.ts';
 import { SLACK_LIST_OPERATIONS } from '../lists/types.ts';
 
 export const CHICKPEA_GATEWAY_PROTOCOL_VERSION = 1 as const;
@@ -20,6 +21,7 @@ export type GatewaySessionCapability =
 
 const GATEWAY_SLACK_OPERATIONS = [
   ...SLACK_LIST_OPERATIONS,
+  ...SLACK_CANVAS_OPERATIONS,
   'auth.test',
   'users.info',
   'users.list',

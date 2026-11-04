@@ -2,6 +2,8 @@ import { defineTool, useDelivery, useTool } from '@flue/runtime';
 import * as v from 'valibot';
 
 import type { RuntimePlanV2 } from '../../agents/runtime-plan.ts';
+import type { ConfigStore } from '../../config/store.ts';
+import type { IdentityStore } from '../../identity/types.ts';
 import {
   getConfigStore,
   getIdentityStore,
@@ -21,7 +23,7 @@ import {
 import { assertSlackListsAccess } from '../lists/tools.ts';
 import { SlackListError } from '../lists/types.ts';
 import { createSlackReadGate } from '../read-budget.ts';
-import { slackReadAuthorityPorts } from './authority.ts';
+import { slackReadAuthorityPorts, type SlackReadAuthorityPorts } from './authority.ts';
 import { SlackReadError, SLACK_READ_MESSAGES } from './errors.ts';
 import { resolveSlackReadTarget } from './links.ts';
 import { byteLength, MAX_SLACK_READ_RESULT_BYTES, SlackReadingService, slackReadFailure } from './service.ts';
@@ -142,13 +144,37 @@ export async function slackReadingService(
   const client = reader.client;
   const siblingBotUserIds = [workspace.botUserId, ...appBots.map((bot) => bot.botUserId)]
     .filter((id): id is string => id !== undefined && id !== reader.botUserId);
-  const authority = slackReadAuthorityPorts({
+  const authority = turnSlackReadAuthority(plan, signal, config, identity, client, reader !== workspace);
+  return new SlackReadingService({
+    client,
+    gate: createSlackReadGate({
+      state: getSlackStateStore(env),
+      workspaceId: signal.workspaceId,
+      gated: reader.sharedAppReads,
+    }),
+    authority,
+    self: { botUserId: reader.botUserId, ...(siblingBotUserIds.length ? { siblingBotUserIds } : {}) },
+    record: config,
+    readThrough: async () => getSlackStateStore(env).turnReadThrough?.(signal.turnJobId),
+  });
+}
+
+/** This turn's reading authority, as seen by the bot `client` reads as. */
+export function turnSlackReadAuthority(
+  plan: Pick<RuntimePlanV2, 'agentId' | 'actorMembershipId'>,
+  signal: SlackManagementSignal,
+  config: ConfigStore,
+  identity: IdentityStore,
+  client: SlackInstallationExecutionContext['client'],
+  agentAppBot = false,
+): SlackReadAuthorityPorts {
+  return slackReadAuthorityPorts({
     workspaceId: signal.workspaceId,
     agentId: plan.agentId,
     requesterSlackUserId: signal.slackUserId,
     current: { channelId: signal.channelId, threadTs: signal.threadTs, messageTs: signal.messageTs },
     client,
-    ...(reader !== workspace ? { agentAppBot: true } : {}),
+    ...(agentAppBot ? { agentAppBot: true } : {}),
     // The same standing the Lists tools require: an active requester, an
     // enabled Agent, and the Agent's grant for the channel it is answering in.
     assertActive: async () => {
@@ -162,18 +188,6 @@ export async function slackReadingService(
     },
     hasActiveGrant: async (channelId) => (await config.listAgentChannelGrants(signal.workspaceId, channelId))
       .some((grant) => grant.agentId === plan.agentId && grant.status === 'active'),
-  });
-  return new SlackReadingService({
-    client,
-    gate: createSlackReadGate({
-      state: getSlackStateStore(env),
-      workspaceId: signal.workspaceId,
-      gated: reader.sharedAppReads,
-    }),
-    authority,
-    self: { botUserId: reader.botUserId, ...(siblingBotUserIds.length ? { siblingBotUserIds } : {}) },
-    record: config,
-    readThrough: async () => getSlackStateStore(env).turnReadThrough?.(signal.turnJobId),
   });
 }
 

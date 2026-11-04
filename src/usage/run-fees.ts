@@ -11,6 +11,7 @@ import { WORKSPACE_TOOL_NAMES } from '../sandbox/workspace-tools.ts';
 import { READ_SLACK_FILE_TOOL_NAME } from '../slack/thread-files.ts';
 import { COMPLETE_FILE_DELIVERY_TOOL } from '../slack/file-delivery-completion.ts';
 import { SLACK_REPLY_IN_THREAD_TOOL_NAME } from '../slack/follow-ups.ts';
+import type { SLACK_CANVAS_TOOL_NAMES } from '../slack/canvases/tools.ts';
 import type { SLACK_LIST_TOOL_NAMES } from '../slack/lists/tools.ts';
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from '../slack/presentation-intent.ts';
 import type { SLACK_READ_TOOL_NAMES } from '../slack/reading/tools.ts';
@@ -50,6 +51,12 @@ const SLACK_LIST_TOOLS: Record<(typeof SLACK_LIST_TOOL_NAMES)[number], boolean> 
   update_slack_list_item: true,
   create_slack_task_list: true,
   share_slack_list: true,
+};
+
+const SLACK_CANVAS_TOOLS: Record<(typeof SLACK_CANVAS_TOOL_NAMES)[number], boolean> = {
+  read_slack_canvas: true,
+  create_slack_canvas: true,
+  update_slack_canvas: true,
 };
 
 const QUALIFYING_TOOLS: readonly string[] = [
@@ -100,6 +107,7 @@ function closedTable(): ReadonlyMap<string, TaskRule> {
   const entries: [string, TaskRule][] = [
     ...Object.entries(SLACK_READ_TOOLS),
     ...Object.entries(SLACK_LIST_TOOLS),
+    ...Object.entries(SLACK_CANVAS_TOOLS),
     ...QUALIFYING_TOOLS.map((name): [string, boolean] => [name, true]),
     ...NON_QUALIFYING_TOOLS.map((name): [string, boolean] => [name, false]),
     ...REPOSITORY_SHELL_TOOLS.map((name): [string, TaskRule] => [name, 'with_repository_shell']),

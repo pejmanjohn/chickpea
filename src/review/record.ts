@@ -7,6 +7,7 @@
 import { createHmac } from 'node:crypto';
 
 import { CREDENTIAL_REPLACEMENT, redactCredentialLikeContent } from '../security/content-validation.ts';
+import { SLACK_CANVAS_TOOL_NAMES } from '../slack/canvases/tools.ts';
 import { SLACK_LIST_TOOL_NAMES } from '../slack/lists/tools.ts';
 
 export const RUN_REVIEW_RECORD_FORMAT = 'chickpea.run-review.v1';
@@ -141,7 +142,7 @@ export function runReviewPseudonymizer(key: Uint8Array): (slackUserId: string) =
  * save_connection_key or tried with try_connection and recognizable
  * credentials, then every Slack user
  * ID, then is cut to its cap; file notes keep only a
- * name and size; and a Slack List tool's output and error, and a Slack read's
+ * name and size; and a Slack List or canvas tool's output and error, and a Slack read's
  * result from another conversation, are omitted. The builder adds no Slack
  * team, channel, thread or message IDs. Past the record cap the oldest steps
  * go first, then the oldest context.
@@ -196,7 +197,7 @@ export function buildRunReviewRecord(
           ...(step.output === undefined ? {} : { output: field(keptOutput(step.name, step.output)) }),
           ...(step.error === undefined
             ? {}
-            : { error: field(slackListTool(step.name) ? OTHER_CONVERSATION_OMITTED : step.error) }),
+            : { error: field(slackListOrCanvasTool(step.name) ? OTHER_CONVERSATION_OMITTED : step.error) }),
           ...(step.durationMs === undefined ? {} : { durationMs: step.durationMs }),
         }
       : { kind: step.kind, text: field(step.text) }),
@@ -211,12 +212,13 @@ export function buildRunReviewRecord(
 }
 
 /**
- * A Slack List linked from an unshared Channel may be shared through Slack
- * Connect, no List tool says where its List is shared, and a List write's
- * result and error carry what it read back.
+ * A Slack List or canvas linked from an unshared Channel may be shared
+ * through Slack Connect, no List or canvas tool says where it is shared, and
+ * a write's result and error carry what it read back.
  */
-function slackListTool(toolName: string): boolean {
-  return (SLACK_LIST_TOOL_NAMES as readonly string[]).includes(toolName);
+function slackListOrCanvasTool(toolName: string): boolean {
+  return (SLACK_LIST_TOOL_NAMES as readonly string[]).includes(toolName) ||
+    (SLACK_CANVAS_TOOL_NAMES as readonly string[]).includes(toolName);
 }
 
 /** The tools whose input carries a key the person pasted. */
@@ -263,9 +265,9 @@ function withoutKey(input: string): boolean {
   }
 }
 
-/** None of a Slack List tool's; a Slack read's only when it says it read the current conversation, or read nothing. */
+/** None of a Slack List or canvas tool's; a Slack read's only when it says it read the current conversation, or read nothing. */
 function keptOutput(toolName: string, output: string): string {
-  if (slackListTool(toolName)) return OTHER_CONVERSATION_OMITTED;
+  if (slackListOrCanvasTool(toolName)) return OTHER_CONVERSATION_OMITTED;
   if (!RUN_REVIEW_READS_OMITTED_UNLESS_CURRENT.has(toolName)) return output;
   let result: { status?: unknown; conversation?: { current?: unknown } } | null;
   try {

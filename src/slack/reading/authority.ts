@@ -2,6 +2,7 @@ import type { WebClient } from '@slack/web-api';
 
 import { CHICKPEA_AGENT_ID } from '../../config/agent-id.ts';
 import { isRecord } from '../../security/content-validation.ts';
+import { CANVAS_ID } from '../canvases/types.ts';
 import { slackPlatformErrorCode } from '../errors.ts';
 import { channelIncludesMember, type SlackApiInput, type SlackApiResult } from '../transport/shared.ts';
 import { isConversationUnavailableError, SLACK_READ_AGENT_APP_INVITE, SlackReadError } from './errors.ts';
@@ -19,6 +20,8 @@ export interface SlackReadConversationFacts {
   member: boolean;
   /** Any Slack Connect or cross-workspace sharing, pending or not. */
   shared: boolean;
+  /** The conversation's own canvas, when it has one. */
+  canvasId?: string;
 }
 
 export interface SlackReadCurrentConversation {
@@ -122,6 +125,8 @@ export function slackReadConversationFacts(raw: unknown): SlackReadConversationF
   const teamId = typeof channel.context_team_id === 'string'
     ? channel.context_team_id
     : typeof channel.team_id === 'string' ? channel.team_id : undefined;
+  const canvas = isRecord(channel.properties) && isRecord(channel.properties.canvas) ? channel.properties.canvas : undefined;
+  const canvasId = typeof canvas?.file_id === 'string' && CANVAS_ID.test(canvas.file_id) ? canvas.file_id : undefined;
   return {
     id: raw.id,
     ...(typeof channel.name === 'string' && channel.name ? { name: channel.name } : {}),
@@ -132,6 +137,7 @@ export function slackReadConversationFacts(raw: unknown): SlackReadConversationF
     member: channel.is_member === true,
     shared: channel.is_shared === true || channel.is_ext_shared === true ||
       channel.is_org_shared === true || channel.is_pending_ext_shared === true || pending,
+    ...(canvasId ? { canvasId } : {}),
   };
 }
 
