@@ -249,7 +249,8 @@ function GroupDmProbe() {
   useTool(createSlackGroupDmTool((people, message) => new SlackGroupDmService({
     workspaceId: MENTION.workspaceId,
     requesterSlackUserId: 'U_REQUESTER',
-    requestText: 'start a group DM with <@U0SAM>',
+    requesterText: 'start a group DM with <@U0SAM>',
+    requesterTextSource: undefined,
     currentConversation: {
       current: { channelId: 'D_REQUESTER', threadTs: '1000.000100', messageTs: '1000.000100' },
       conversation: async (id) => ({ id, im: true, mpim: false, private: false, member: true, shared: false }),

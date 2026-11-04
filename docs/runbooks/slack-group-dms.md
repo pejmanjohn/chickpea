@@ -22,8 +22,7 @@ tool refuses them. Routines do not mount the tool at all.
 
 ## Who can be added
 
-Chickpea looks each person up with `users.info`, by the same rule the people
-lookup uses, and refuses:
+Chickpea looks each person up with `users.info` and refuses:
 
 - apps and bots;
 - deactivated accounts;
@@ -65,6 +64,10 @@ installations keep working without it. Without it, the tool posts nothing and
 tells the requester that a workspace Owner needs to update Chickpea's Slack
 permissions; on a hosted installation the Owner does that from Chickpea
 Admin, and a self-hosted owner updates the app's scopes and reinstalls.
+
+Replies reach the Agent only when the app subscribes to the `message.mpim`
+event, as every group DM answer does. Apps created before group DM support
+lack that event and `mpim:history`.
 
 Slack methods and scopes:
 

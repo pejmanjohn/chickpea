@@ -33,10 +33,11 @@ export class GroupDmReceipts {
   }
 
   async settle(receipt: Exclude<GroupDmReceipt, { status: 'pending' }>): Promise<void> {
+    // A receipt left pending blocks later calls in the request: the safe side.
     await this.store.applySettingsPatch({
       expected: { key: this.key, value: PENDING },
       set: [{ key: this.key, value: JSON.stringify(receipt) }],
-    });
+    }).catch(() => false);
   }
 }
 

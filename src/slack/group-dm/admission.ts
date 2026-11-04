@@ -1,3 +1,5 @@
+import type { RequesterTextSource } from '../requester-text-source.ts';
+
 /** A Slack group DM holds nine members: this app and eight people. */
 export const MAX_GROUP_DM_PEOPLE = 8;
 
@@ -11,11 +13,13 @@ export type GroupDmAdmission =
 
 export function admitGroupDmPeople(input: {
   requesterSlackUserId: string;
-  requestText: string | undefined;
+  requesterText: string | undefined;
+  requesterTextSource: RequesterTextSource | undefined;
   people: readonly string[];
 }): GroupDmAdmission {
-  if (!input.requestText) return { ok: false, code: 'requester_required' };
-  const named = new Set([...input.requestText.matchAll(USER_MENTION)].map((match) => match[1]!));
+  // Text the host wrote (a click, a setup note) names nobody; an ask from another Agent or a routine has none.
+  if (!input.requesterText || input.requesterTextSource) return { ok: false, code: 'requester_required' };
+  const named = new Set([...input.requesterText.matchAll(USER_MENTION)].map((match) => match[1]!));
   const others = [...new Set(input.people.map(slackUserFromMention))]
     .filter((id) => id !== input.requesterSlackUserId);
   const notNamed = others.filter((id) => !named.has(id));

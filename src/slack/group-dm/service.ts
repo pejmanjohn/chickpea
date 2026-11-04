@@ -11,6 +11,7 @@ import { SlackReadError } from '../reading/errors.ts';
 import { slackUserKind } from '../reading/service.ts';
 import { SlackTransportError } from '../transport/types.ts';
 import { admitGroupDmPeople, MAX_GROUP_DM_PEOPLE, type GroupDmAdmissionRefusal } from './admission.ts';
+import type { RequesterTextSource } from '../requester-text-source.ts';
 import type { GroupDmReceipt, GroupDmReceipts } from './receipts.ts';
 
 type JsonObject = Record<string, unknown>;
@@ -37,7 +38,7 @@ const REFUSALS: Record<Exclude<GroupDmRefusalCode, 'missing_scope'>, string> = {
   too_few: `A group DM needs at least one person besides the requester. ${NOTHING_OPENED}`,
   too_many: `A group DM holds at most ${MAX_GROUP_DM_PEOPLE} people, the requester included. ${NOTHING_OPENED}`,
   person_not_eligible: `Only active people in this workspace can be added. Apps, bots, deactivated accounts and people from other organizations cannot. ${NOTHING_OPENED}`,
-  shared_conversation: `In a conversation shared with another organization, I do not start group DMs, so nothing from here is carried elsewhere. ${NOTHING_OPENED}`,
+  shared_conversation: `Group DMs are not started from a conversation shared with another organization, so nothing from here is carried elsewhere. ${NOTHING_OPENED}`,
   agent_app: `This Agent answers as its own Slack app, which cannot start group DMs. ${NOTHING_OPENED}`,
   not_in_group_dms: `Only Agents everyone in this workspace can use work in group DMs, so this Agent cannot start one. ${NOTHING_OPENED}`,
   requester_unavailable: `The person asking no longer has active Chickpea access. ${NOTHING_OPENED}`,
@@ -69,7 +70,8 @@ export class SlackGroupDmRefusal extends Error {
 export interface SlackGroupDmServiceOptions {
   workspaceId: string;
   requesterSlackUserId: string;
-  requestText: string | undefined;
+  requesterText: string | undefined;
+  requesterTextSource: RequesterTextSource | undefined;
   currentConversation: Pick<SlackReadAuthorityPorts, 'current' | 'conversation'>;
   chickpeaBot: Pick<WebClient, 'users' | 'conversations' | 'chat'>;
   persona: { username: string; icon_url?: string };
@@ -93,7 +95,8 @@ export class SlackGroupDmService {
   private async startGroupDm(requested: readonly string[], message: string): Promise<JsonObject> {
     const admission = admitGroupDmPeople({
       requesterSlackUserId: this.options.requesterSlackUserId,
-      requestText: this.options.requestText,
+      requesterText: this.options.requesterText,
+      requesterTextSource: this.options.requesterTextSource,
       people: requested,
     });
     if (!admission.ok) {

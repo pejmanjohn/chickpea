@@ -59,7 +59,8 @@ async function slackGroupDmService(
   return new SlackGroupDmService({
     workspaceId: signal.workspaceId,
     requesterSlackUserId: signal.slackUserId,
-    requestText: signal.requesterTextSource ? undefined : signal.requesterText,
+    requesterText: signal.requesterText,
+    requesterTextSource: signal.requesterTextSource,
     currentConversation: { current, conversation: slackConversationFacts(workspace.client, current) },
     chickpeaBot: workspace.client,
     persona: { username: agent.name, ...(avatarUrl ? { icon_url: avatarUrl } : {}) },

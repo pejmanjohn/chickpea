@@ -93,7 +93,8 @@ function groupDms(t: { after(fn: () => void): void }, slack = fakeSlack(), overr
   const service = (more: Partial<SlackGroupDmServiceOptions> = {}) => new SlackGroupDmService({
     workspaceId: WORKSPACE,
     requesterSlackUserId: REQUESTER,
-    requestText: ASKED,
+    requesterText: ASKED,
+    requesterTextSource: undefined,
     currentConversation: conversationIn('C0PROJECT', slack.client),
     chickpeaBot: slack.client,
     persona: { username: 'Scout', icon_url: 'https://chickpea.example/avatars/scout.png' },
@@ -108,7 +109,7 @@ function groupDms(t: { after(fn: () => void): void }, slack = fakeSlack(), overr
 
 test('the requester is always in the group DM, first, with only the people they @-mentioned', () => {
   assert.deepEqual(
-    admitGroupDmPeople({ requesterSlackUserId: REQUESTER, requestText: ASKED, people: ['<@U0SAM>', 'U0PRIYA', REQUESTER, 'U0SAM'] }),
+    admitGroupDmPeople({ requesterSlackUserId: REQUESTER, requesterText: ASKED, requesterTextSource: undefined, people: ['<@U0SAM>', 'U0PRIYA', REQUESTER, 'U0SAM'] }),
     { ok: true, people: [REQUESTER, 'U0SAM', 'U0PRIYA'] },
   );
 });
@@ -116,23 +117,31 @@ test('the requester is always in the group DM, first, with only the people they 
 test('someone the requester named without an @-mention, or who appears only elsewhere, is not added', () => {
   const admission = admitGroupDmPeople({
     requesterSlackUserId: REQUESTER,
-    requestText: 'loop in Sam and <@U0PRIYA> on this',
+    requesterText: 'loop in Sam and <@U0PRIYA> on this',
+    requesterTextSource: undefined,
     people: ['U0SAM', 'U0PRIYA', 'U0LEE'],
   });
   assert.deepEqual(admission, { ok: false, code: 'not_named', people: ['U0SAM', 'U0LEE'] });
 });
 
-test('a request no person typed names nobody: an ask from another Agent, a click, a routine', () => {
-  assert.deepEqual(
-    admitGroupDmPeople({ requesterSlackUserId: REQUESTER, requestText: undefined, people: ['U0SAM'] }),
-    { ok: false, code: 'requester_required' },
-  );
+test('a request no person typed names nobody: an ask from another Agent or a routine, a click, a setup note', () => {
+  for (const [requesterText, requesterTextSource] of [
+    [undefined, undefined],
+    ['Chose: loop in <@U0SAM>', 'click'],
+    ['Setup finished. <@U0SAM>', 'setup'],
+  ] as const) {
+    assert.deepEqual(
+      admitGroupDmPeople({ requesterSlackUserId: REQUESTER, requesterText, requesterTextSource, people: ['U0SAM'] }),
+      { ok: false, code: 'requester_required' },
+      requesterTextSource ?? 'no requester text',
+    );
+  }
 });
 
 test('a group DM holds one to seven people besides the requester', () => {
   const ids = Array.from({ length: 8 }, (_, index) => `U0P${index}`);
   const text = ids.map((id) => `<@${id}>`).join(' ');
-  const admit = (people: string[]) => admitGroupDmPeople({ requesterSlackUserId: REQUESTER, requestText: text, people });
+  const admit = (people: string[]) => admitGroupDmPeople({ requesterSlackUserId: REQUESTER, requesterText: text, requesterTextSource: undefined, people });
   assert.deepEqual(admit([REQUESTER]), { ok: false, code: 'too_few' });
   assert.deepEqual(admit(ids.slice(0, 7)), { ok: true, people: [REQUESTER, ...ids.slice(0, 7)] });
   assert.deepEqual(admit(ids), { ok: false, code: 'too_many' });
@@ -173,7 +182,7 @@ test('apps, bots, deactivated accounts and people from other organizations are r
       U0CONNECT: person('U0CONNECT', { team_id: 'T0PARTNER' }),
     },
   });
-  const { service, calls } = groupDms(t, slack, { requestText: ids.map((id) => `<@${id}>`).join(' ') });
+  const { service, calls } = groupDms(t, slack, { requesterText: ids.map((id) => `<@${id}>`).join(' ') });
   const result = await service().start(ids, 'Hello');
 
   assert.equal(result.code, 'person_not_eligible');
@@ -198,14 +207,14 @@ test('a guest of this workspace can be added; an Enterprise Grid user of another
       U0NOTEAM: person('U0NOTEAM', { team_id: undefined }),
     },
   });
-  const { service } = groupDms(t, slack, { requestText: '<@U0GUEST> <@U0OTHERORG> <@U0SISTER> <@U0NOTEAM>' });
+  const { service } = groupDms(t, slack, { requesterText: '<@U0GUEST> <@U0OTHERORG> <@U0SISTER> <@U0NOTEAM>' });
   const refused = await service().start(['U0GUEST', 'U0OTHERORG', 'U0SISTER', 'U0NOTEAM'], 'Hello');
   assert.deepEqual(refused.people, [
     { id: 'U0OTHERORG', reason: 'outside_workspace' },
     { id: 'U0SISTER', reason: 'outside_workspace' },
     { id: 'U0NOTEAM', reason: 'outside_workspace' },
   ]);
-  assert.equal((await service({ requestText: '<@U0GUEST>' }).start(['U0GUEST'], 'Hello')).status, 'posted');
+  assert.equal((await service({ requesterText: '<@U0GUEST>' }).start(['U0GUEST'], 'Hello')).status, 'posted');
 });
 
 test('without mpim:write, the result says a workspace Owner must update Chickpea\'s Slack permissions, and nothing is posted', async (t) => {
@@ -241,6 +250,24 @@ test('one group DM per request: a second call, even from a later render, points 
   assert.equal(again.status, 'already_started');
   assert.deepEqual(again.groupDm, first.groupDm);
   assert.equal(calls.post.length, 1);
+});
+
+test('a post Slack confirmed is reported as posted even when its receipt cannot be saved', async (t) => {
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => settings.close());
+  let writes = 0;
+  const flaky = {
+    getSetting: (key: string) => settings.getSetting(key),
+    applySettingsPatch: async (patch: Parameters<typeof settings.applySettingsPatch>[0]) => {
+      writes += 1;
+      if (writes > 1) throw new Error('database is locked');
+      return settings.applySettingsPatch(patch);
+    },
+  };
+  const { service } = groupDms(t, fakeSlack(), { receipts: new GroupDmReceipts(flaky, 'turn-one') });
+  const result = await service().start(['U0SAM'], 'Hello');
+  assert.equal(result.status, 'posted');
+  assert.equal((await service().start(['U0SAM'], 'Hello again')).status, 'unverified', 'the pending receipt still blocks a second post');
 });
 
 test('a post Slack did not confirm blocks every later call in the request', async (t) => {
