@@ -302,7 +302,7 @@ test('a key the service rejects saves nothing, offers Try again and wakes the Ag
     assert.deepEqual([woken[0]!.channelId, woken[0]!.threadTs, woken[0]!.wake.agentId, woken[0]!.wake.slackUserId],
       ['D1', MESSAGE_TS, fixture.agent.id, 'U1']);
     assert.match(woken[0]!.wake.note, /gave a key for Tasks with Chickpea's Add key form in Slack, and api\.tasks\.example rejected it/);
-    assert.notEqual(woken[0]!.setupOperationId, setupOperationId, 'the saved key\'s own wake stays distinct');
+    assert.equal(woken[0]!.setupOperationId, `${setupOperationId}.rejected`, 'the saved key\'s own wake stays distinct');
     assert.ok(!JSON.stringify({ woken, updates, notices }).includes(KEY), 'the wake, the card and the notices never hold the key');
     const outbox = { outboxId: 'receipt_other', operationId: setupOperationId!, destination: { kind: 'thread' as const, workspaceId: 'T1', channelId: 'D1', threadTs: MESSAGE_TS }, receipt: { setupOperationId: setupOperationId!, connector: 'Tasks', target: 'Ops', scopes: [], initiator: 'U2', completedAt: Date.now() }, status: 'pending' as const, attempts: 0, nextAttemptAt: Date.now(), createdAt: Date.now(), updatedAt: Date.now() };
     await assert.rejects(() => stores.management.completeSetup({
@@ -310,6 +310,15 @@ test('a key the service rejects saves nothing, offers Try again and wakes the Ag
       receipt: outbox.receipt, outbox, at: Date.now(),
     }), (error: unknown) => (error as { code?: string }).code === 'setup_unavailable',
     'only the setup\'s own requester finishes it from Slack');
+
+    const redraws = updates.length;
+    await withConnectionNetwork(() => Response.json({ message: 'invalid token' }, { status: 401 }), async () => {
+      await saveKeyFromForm(context, submitted);
+    });
+    assert.equal(updates.length, redraws + 2, 'the card shows the second check and its result');
+    assert.match(updates.at(-1)!, /:x: api\.tasks\.example rejected that key/);
+    assert.deepEqual(woken.map(({ setupOperationId: id }) => id), [`${setupOperationId}.rejected`, `${setupOperationId}.rejected`],
+      'every rejection of one setup asks for the same wake, which the thread admits once');
 
     await withConnectionNetwork(() => Response.json({ tasks: [] }), async () => {
       await saveKeyFromForm(context, submitted);

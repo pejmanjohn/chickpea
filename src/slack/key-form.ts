@@ -430,26 +430,26 @@ export async function saveKeyFromForm(context: KeyFormContext, submission: Slack
   if (outcome.kind === 'saved') {
     context.deliverSetupReceipt?.();
   } else if (outcome.kind === 'rejected') {
-    await wakeOnRejectedKey(context, live.setup, reading.row, submission.userId, now);
+    await wakeOnRejectedKey(context, live.setup, reading.row, submission.userId);
   } else if (outcome.kind === 'access_lost' || outcome.kind === 'not_saved') {
     await notify(context.slack, card, submission.userId,
       `That key wasn't saved. Try again, or ask ${card.spec.agentName} for help.`);
   }
 }
 
+/** One wake per setup: a later rejection updates the card, and the thread admits its wake once. */
 async function wakeOnRejectedKey(
   context: KeyFormContext,
   setup: ManagementSetupRecord | undefined,
   row: KeyRow,
   slackUserId: string,
-  checkedAt: number,
 ): Promise<void> {
   const agent = setup ? setupWakeAgent(setup) : undefined;
   if (!context.wake || !setup || !agent || setup.origin.kind !== 'slack') return;
   const person = await context.stores.identity.getUser(setup.actorUserId).catch(() => undefined);
   const host = keyHost(row);
   await context.wake({
-    setupOperationId: `${setup.setupOperationId}.rejected.${checkedAt}`,
+    setupOperationId: `${setup.setupOperationId}.rejected`,
     workspaceId: setup.origin.workspaceId,
     channelId: setup.origin.channelId,
     threadTs: setup.origin.threadTs,
