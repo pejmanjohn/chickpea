@@ -1,7 +1,7 @@
 import { UnknownAgentError } from '../../config/errors.ts';
 import type { SettingsStore } from '../../config/settings-store.ts';
 import { getSettingsStore, type PlatformEnv, resolveStores } from '../../config/state-backend.ts';
-import type { AgentAppPresenceHooks } from '../agent-presence/reconciler.ts';
+import type { AgentAppBot, AgentAppPresenceHooks } from '../agent-presence/reconciler.ts';
 import { resolveSlackPublicUrl } from '../credentials.ts';
 import { hostedSlackUpdateGrantsUserGroupToken } from '../hosted-permissions.ts';
 import { slackInstallationCredentialId } from '../hosted-slack-app.ts';
@@ -22,8 +22,9 @@ import { FINISH_APP_ACTION, START_APP_ACTION, TRY_AGAIN_ACTION } from './pages.t
 import { agentAppIsLive, agentAppRecord } from './lifecycle.ts';
 import { loggedUnreadableAsNone, readAppSecrets, type SecretDeps, unreadableAsNone } from './secrets.ts';
 import { AgentSlackApps, type AgentAppTransport } from './service.ts';
-import { createAgentAppSlackApi } from './slack-api.ts';
+import { createAgentAppSlackApi, logSlackRefusal } from './slack-api.ts';
 import { loadCredentialKeyring } from '../credential-keyring.ts';
+import { slackPlatformErrorCode } from '../errors.ts';
 
 function secretDeps(env: PlatformEnv | undefined): SecretDeps {
   return { credentials: getSettingsStore(env), keyring: loadCredentialKeyring(env), slack: createAgentAppSlackApi() };
@@ -201,36 +202,53 @@ export function agentAppPresenceHooks(env: PlatformEnv | undefined): AgentAppPre
     async bringBotIn(agent, channel) {
       const presence = agent.slackPresence;
       if (!agentAppIsLive(presence)) return undefined;
-      const appId = presence.app.app.appId;
+      const ids = { agentId: agent.id, appId: presence.app.app.appId, channelId: channel.id };
       const lookup = await agentAppExecutionBot(env, agent.id).catch(() => undefined);
-      const bot = lookup?.kind === 'live' ? createDirectSlackTransport(lookup.bot.botToken, undefined) : undefined;
-      const reason = bot ? await botLeftOutReason(bot, channel) : 'bot_unavailable';
-      if (bot && !reason) return { placement: 'in_channel', transport: bot };
-      console.warn({ event: 'chickpea.agent_app.bot_left_out', agentId: agent.id, appId, channelId: channel.id, reason });
-      return { placement: 'left_out' };
+      if (lookup?.kind !== 'live') return leftOut(ids, 'bot_unavailable');
+      const bot = createDirectSlackTransport(lookup.bot.botToken, undefined);
+      const inChannel: AgentAppBot = { placement: 'in_channel', transport: bot };
+      // Slack answers a bot's look-up of a private Channel it is not in `channel_not_found`.
+      if (await bot.lookupChannel(channel.id).then((found) => found.member, () => false)) return inChannel;
+      const refused = await inviteRefusal(installationCredentials(env), channel.id, lookup.bot.botUserId);
+      if (!refused) return inChannel;
+      logSlackRefusal('invite', ids, { code: refused });
+      const reason = await joinRefusal(bot, channel);
+      return reason ? leftOut(ids, reason) : inChannel;
     },
   };
 }
 
-/**
- * Why the app's bot is not in the Channel after trying, or undefined when it
- * is. It joins a public Channel itself; only someone in a private Channel can
- * add it there, so for one of those it is only looked for. Slack answers that
- * look-up `channel_not_found` when the bot is not in the private Channel.
- */
-async function botLeftOutReason(
-  bot: Pick<SlackTransport, 'joinPublicChannel' | 'lookupChannel'>,
+function leftOut(ids: { agentId: string; appId: string; channelId: string }, reason: string): AgentAppBot {
+  console.warn({ event: 'chickpea.agent_app.bot_left_out', ...ids, reason });
+  return { placement: 'left_out' };
+}
+
+async function inviteRefusal(
+  credentials: () => Promise<ResolvedSlackInstallationCredentials>,
+  channelId: string,
+  botUserId: string,
+): Promise<string | undefined> {
+  const botToken = await credentials().then((resolved) => resolved.botToken, () => undefined);
+  if (!botToken) return 'credentials_unavailable';
+  try {
+    await createSlackWebClient(botToken).conversations.invite({ channel: channelId, users: botUserId });
+    return undefined;
+  } catch (error) {
+    const code = slackPlatformErrorCode(error) ?? 'failed';
+    return code === 'already_in_channel' ? undefined : code;
+  }
+}
+
+async function joinRefusal(
+  bot: Pick<SlackTransport, 'joinPublicChannel'>,
   channel: { id: string; private: boolean },
 ): Promise<string | undefined> {
+  if (channel.private) return 'private_channel';
   try {
-    if (!channel.private) {
-      await bot.joinPublicChannel(channel.id);
-      return undefined;
-    }
-    return (await bot.lookupChannel(channel.id)).member ? undefined : 'private_channel';
+    await bot.joinPublicChannel(channel.id);
+    return undefined;
   } catch (error) {
-    if (!(error instanceof SlackTransportError)) return 'failed';
-    return channel.private && error.code === 'channel_not_found' ? 'private_channel' : error.code;
+    return error instanceof SlackTransportError ? error.code : 'failed';
   }
 }
 

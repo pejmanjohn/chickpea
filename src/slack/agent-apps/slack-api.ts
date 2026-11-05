@@ -32,12 +32,12 @@ export class SlackRefused extends Error {
   }
 }
 
-export type AgentAppSlackStep = 'rotate' | 'release_handle' | 'create' | 'update' | 'icon' | 'exchange' | 'uninstall' | 'delete';
+export type AgentAppSlackStep = 'rotate' | 'release_handle' | 'create' | 'update' | 'icon' | 'exchange' | 'uninstall' | 'delete' | 'invite';
 
 /** One structured line per Slack refusal in an Agent app's lifecycle; for the operator, never the customer. */
 export function logSlackRefusal(
   step: AgentAppSlackStep,
-  ids: { agentId?: string; appId?: string },
+  ids: { agentId?: string; appId?: string; channelId?: string },
   refusal: { code: string; errors?: readonly SlackManifestProblem[] },
 ): void {
   console.warn({
@@ -45,6 +45,7 @@ export function logSlackRefusal(
     step,
     agentId: ids.agentId ?? null,
     appId: ids.appId ?? null,
+    ...(ids.channelId ? { channelId: ids.channelId } : {}),
     code: refusal.code,
     errors: refusal.errors ?? [],
   });
