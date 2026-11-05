@@ -7,6 +7,7 @@ export interface LoggedSlackRefusal {
   step: AgentAppSlackStep;
   agentId: string | null;
   appId: string | null;
+  channelId?: string;
   code: string;
   errors: SlackManifestProblem[];
 }

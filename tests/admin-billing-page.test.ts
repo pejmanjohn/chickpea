@@ -13,14 +13,17 @@ import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import {
   BillingRefusal,
   configurePlatformBilling,
+  type AutoTopUpUpdate,
   type BillingSummary,
   type PlatformBillingPort,
+  type SavedCardResult,
   type UsageMicros,
 } from '../src/config/platform-billing.ts';
 import type { ProviderKeyId } from '../src/config/provider-keys.ts';
 import { renderAdminPageWithInlineAssets as renderAdminPage } from './helpers/admin-ui.ts';
 import {
-  NO_PLAN, OFFERS, OWN_KEY_NO_PLAN, PERIOD, PLAN_NO_PERIOD, STARTER_PLAN, TEAM_DOWNGRADING, TEAM_ENDING, TEAM_PLAN, TRIAL_GRANT, usd,
+  NO_PLAN, OFFERS, OWN_KEY_NO_PLAN, PERIOD, PLAN_NO_PERIOD, STARTER_AT_LIMIT, STARTER_PLAN, STARTER_TOP_UP, STARTER_TOPPED, TEAM_DOWNGRADING,
+  TEAM_ENDING, TEAM_PLAN, TOP_UP_OFFERS, TOP_UP_ON, TRIAL_GRANT, TWO_FEE_OFFERS, usd,
 } from './helpers/billing-summaries.ts';
 
 interface FakeResponse {
@@ -78,10 +81,15 @@ const TRY = {
   providerId: 'anthropic', modelId: 'anthropic/claude-sonnet-5-5', tryStartedAt: 1_800_000_000_000,
 };
 
-function fakePort(initial: BillingSummary, fails: { switch?: Error | undefined; stripe?: Error | undefined }) {
+function fakePort(
+  initial: BillingSummary,
+  fails: { switch?: Error | undefined; stripe?: Error | undefined },
+  extra: Partial<PlatformBillingPort> = {},
+) {
   const calls: unknown[][] = [];
   let summary = initial;
   const port: PlatformBillingPort = {
+    ...extra,
     async summary() { return summary; },
     async checkout(_installationId, request) {
       calls.push(['checkout', request]);
@@ -98,7 +106,7 @@ function fakePort(initial: BillingSummary, fails: { switch?: Error | undefined; 
       summary = { ...summary, funding };
     },
   };
-  return { port, calls };
+  return { port, calls, setSummary: (next: BillingSummary) => { summary = next; } };
 }
 
 /**
@@ -129,6 +137,10 @@ async function harness(options: {
   platformHeld?: boolean;
   switchFails?: Error;
   stripeFails?: Error;
+  /** Port methods beyond the ones every host has: auto top-up, and purchases on the saved card. */
+  port?: Partial<PlatformBillingPort>;
+  /** Rewrites what the billing API answers, as a server from another release would. */
+  billingResponse?: (path: string, body: unknown) => unknown;
 }) {
   let html = '';
   const renders: string[] = [];
@@ -161,7 +173,9 @@ async function harness(options: {
     getElementById(id: string) {
       return id === 'app' ? app : { innerHTML: '', textContent: '', focus() {}, setAttribute() {}, scrollIntoView() {} };
     },
-    querySelector() { return null; },
+    querySelector(selector: string) {
+      return { focus() { focused.push(selector); } };
+    },
     querySelectorAll() { return []; },
     addEventListener(type: string, listener: Listener) { listeners[type] = listener; },
   };
@@ -172,7 +186,8 @@ async function harness(options: {
     organizationId: 'org_page', role, authenticatorKind: 'test_slack_session',
     credentialId: 'credential_page', correlationId: 'request_page', machine: false,
   };
-  const billing = options.summary ? fakePort(options.summary, { switch: options.switchFails, stripe: options.stripeFails }) : undefined;
+  const billing = options.summary ? fakePort(options.summary, { switch: options.switchFails, stripe: options.stripeFails }, options.port) : undefined;
+  const focused: string[] = [];
   const ownKey = options.ownKey ?? KEYED;
   const savedKeys = new Set(ownKey.savedKeys);
   const billingApi = new Hono();
@@ -188,16 +203,19 @@ async function harness(options: {
     personNames: async () => new Map([['membership_maya', 'Maya Chen']]),
     ownKeyFacts: async () => ({ ...ownKey, savedKeys }),
     choseChickpeaModels: async () => undefined,
+    actor: async () => ({ membershipId: principal.membershipId, slackUserId: 'U_OWNER' }),
   }));
-  const fetch = async (path: string, init?: { method?: string; body?: string }): Promise<FakeResponse> => {
+  const fetch = async (path: string, init?: { method?: string; body?: string; headers?: Record<string, string> }): Promise<FakeResponse> => {
     const method = init?.method ?? 'GET';
     const body = init?.body ? JSON.parse(init.body) : undefined;
     requests.push({ path, method, body });
     if (path.startsWith('/admin/api/billing')) {
       configurePlatformBilling(billing?.port);
-      return billingApi.request(path, {
-        method, headers: { 'content-type': 'application/json' }, ...(init?.body ? { body: init.body } : {}),
+      const served = await billingApi.request(path, {
+        method, headers: { 'content-type': 'application/json', ...init?.headers }, ...(init?.body ? { body: init.body } : {}),
       }, ENV);
+      if (!options.billingResponse) return served;
+      return response(options.billingResponse(path, JSON.parse(await served.text())), served.status);
     }
     if (path === '/admin/api/agents') return response({ agents: options.agents ?? [] });
     if (path === '/admin/api/assignments') return response({ assignments: [] });
@@ -275,6 +293,11 @@ async function harness(options: {
     listeners.click!({ target: actionTarget(attributes), preventDefault() {} });
     await flush();
   };
+  /** Picks an option in a select by its action. */
+  const select = async (action: string, value: string) => {
+    listeners.change!({ target: actionTarget({ 'data-action': action }, value) });
+    await flush();
+  };
   /** Picks a plan size in a plan card's select. */
   const choose = (cardKey: 'platform' | 'own_key', planKey: string) => {
     listeners.change!({ target: actionTarget({ 'data-action': 'billing-plan-level', 'data-card': cardKey }, planKey) });
@@ -291,8 +314,9 @@ async function harness(options: {
     await flush();
   };
   return {
-    html: () => html, renders, timerDelays, requests, assigned, location, click, choose, saveKey, firePoll, serverHtml,
+    html: () => html, renders, timerDelays, requests, assigned, location, click, choose, select, saveKey, firePoll, serverHtml,
     portCalls: billing?.calls ?? [], releasePlatform: () => releasePlatform(), releaseModels: () => releaseModels(),
+    setSummary: (next: BillingSummary) => billing?.setSummary(next), focused,
   };
 }
 
@@ -380,7 +404,7 @@ const OWN_KEY_PLUS: BillingSummary = {
 const STARTER_USED_UP: BillingSummary = { ...STARTER_PLAN, planUsage: { usedMicros: usd(60), includedMicros: usd(60), onPacePercent: null } };
 const OWN_KEY_USED_UP: BillingSummary = { ...OWN_KEY_PLUS, planUsage: { usedMicros: usd(120), includedMicros: usd(120), onPacePercent: null } };
 
-test('an Owner on the Team plan reads what is left, the tasks it covers, the meter, and what carried over, with Add usage beside it', async () => {
+test('an Owner on the Team plan reads what is left of the plan, the tasks it covers, the meter, and a line each for what carried over and extra usage, with Add usage beside it', async () => {
   const page = await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN });
   const html = page.html();
   assert.equal(page.location.pathname, '/admin/plan');
@@ -390,11 +414,12 @@ test('an Owner on the Team plan reads what is left, the tasks it covers, the met
   assert.equal(lede(html), 'Your workspace is on the $200 plan with models included.');
   assert.match(html, /data-action="billing-manage">Manage billing<\/button>/);
   const status = hero(html);
-  assertShows(status, 'This month $172 left About 375 tasks · Renews Nov 7');
+  assertShows(status, 'This month $132 left About 275 tasks · Renews Nov 7');
   assert.match(status, /role="meter" aria-label="Plan usage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="53"><span class="plan-meter-fill" style="width: 53%"><\/span><span class="plan-meter-pace" style="left: 80%"><\/span>/);
   assertShows(status, '$128 of $240 plan usage On pace for 80% by Nov 7');
-  assertShows(status, '+$20 carried over until Nov 7');
-  assertShows(status, '+$40 extra usage until Sep 14, 2027');
+  assertShows(status, 'Includes $20 carried over from last month, which expires Nov 7.');
+  assertShows(status, 'Plus $40 of extra usage for when this runs out. It keeps until Sep 14, 2027.');
+  assert.doesNotMatch(status, /plan-chip|is-extra/, 'no chips and no extra usage bar while the plan has usage left');
   assertShows(status, 'Add usage $25 $50 $100 Keeps 12 months');
   for (const dollars of [25, 50, 100]) {
     assert.match(status, new RegExp(`class="btn btn-soft" data-action="billing-add-extra-usage" data-key="extra_usage_${dollars}" aria-label="Add \\$${dollars} of extra usage">\\$${dollars}</button>`));
@@ -430,13 +455,13 @@ test('a rate card whose tasks draw nothing shows what is left in dollars and siz
 test('used up, the meter turns red, Add usage turns primary, and the alert says what is paused and when it starts again', async () => {
   const cases: Array<[string, BillingSummary, boolean, string]> = [
     ['models included', STARTER_USED_UP, true,
-      'Your Agents are paused. Add usage to keep them working now, or they start again when your plan renews Nov 7.'],
+      'Your Agents are paused. Add usage to keep them working, or they start again when your plan renews Nov 7.'],
     ['an own key', OWN_KEY_USED_UP, true,
       'Tasks are paused, and your Agents can still chat. Add usage to keep tasks going, or they start again when your plan renews Nov 7.'],
     ['a plan that ends', { ...STARTER_USED_UP, pendingChange: TEAM_ENDING.pendingChange }, true,
-      'Your Agents are paused. Add usage to keep them working now.'],
+      'Your Agents are paused. Add usage to keep them working.'],
     ['a Member on models included', STARTER_USED_UP, false,
-      'Your Agents are paused. An Owner can add usage to keep them working now, or they start again when your plan renews Nov 7.'],
+      'Your Agents are paused. An Owner can add usage to keep them working, or they start again when your plan renews Nov 7.'],
     ['a Member on an own key', OWN_KEY_USED_UP, false,
       'Tasks are paused, and your Agents can still chat. An Owner can add usage to keep tasks going, or they start again when your plan renews Nov 7.'],
   ];
@@ -454,12 +479,24 @@ test('used up, the meter turns red, Add usage turns primary, and the alert says 
   assertShows(hero((await harness({ path: '/admin/plan', billingOffered: true, summary: OWN_KEY_USED_UP })).html()), '0 tasks left $0 of usage left');
 });
 
-test('the plan\'s usage used up is not the workspace\'s: what carried over and extra usage keep the Agents working, and debt counts against them', async () => {
-  const planUsedUp: BillingSummary = { ...TEAM_PLAN, planUsage: { usedMicros: usd(240), includedMicros: usd(240), onPacePercent: null } };
+test('the plan\'s usage used up is not the workspace\'s: extra usage keeps the Agents working under its own bar, and debt counts against it', async () => {
+  const planUsedUp: BillingSummary = {
+    ...TEAM_PLAN,
+    planUsage: { usedMicros: usd(240), includedMicros: usd(240), onPacePercent: null },
+    rollover: null,
+    extraUsage: { ...TEAM_PLAN.extraUsage!, remainingMicros: usd(42.1), totalMicros: usd(50) },
+  };
   const working = hero((await harness({ path: '/admin/plan', billingOffered: true, summary: planUsedUp })).html());
-  assertShows(working, '$60 left About 125 tasks');
-  assertShows(working, '$240 of $240 plan usage Used up');
+  assertShows(working, 'Your usage $42.10 left About 90 tasks');
+  assertHides(working, 'This month');
+  assertShows(working, '$240 of $240 plan usage Used up, renews Nov 7');
+  assert.match(working, /class="plan-meter is-extra" role="meter" aria-label="Extra usage"[^>]*aria-valuenow="15"/);
+  assertShows(working, '$7.90 of $50 extra usage $42.10 left, keeps until Sep 14, 2027');
+  assertHides(working, 'Plus $42.10');
   assert.doesNotMatch(working, /is-out|plan-hero-alert|btn-primary/);
+  const noTotal = hero((await harness({ path: '/admin/plan', billingOffered: true, summary: { ...planUsedUp, extraUsage: TEAM_PLAN.extraUsage } })).html());
+  assert.doesNotMatch(noTotal, /is-extra/, 'with no total from the host there is no bar to fill');
+  assertShows(noTotal, '$40 left, keeps until Sep 14, 2027');
   const owing = hero((await harness({ path: '/admin/plan', billingOffered: true, summary: { ...planUsedUp, debtMicros: usd(60) } })).html());
   assertShows(owing, '$0 left');
   assert.match(owing, /plan-hero-alert/, 'what the workspace owes uses up what it has');
@@ -483,7 +520,7 @@ test('a trial shows what is left, the tasks that covers, when it ends, and how m
   assert.match(usedUp, /plan-meter is-out/);
 
   const beside = hero((await harness({ path: '/admin/plan', billingOffered: true, summary: { ...TEAM_PLAN, trial: TRIAL_GRANT } })).html());
-  assertShows(beside, 'This month $204.50 left', );
+  assertShows(beside, 'This month $164.50 left', );
   assertShows(beside, '+$32.50 trial usage until Nov 6');
 });
 
@@ -524,7 +561,7 @@ test('models included with no plan or trial says the Agents are paused, and extr
 test('a plan with no period yet shows its monthly usage and the tasks it covers, with no meter', async () => {
   const status = hero((await harness({ path: '/admin/plan', billingOffered: true, summary: PLAN_NO_PERIOD })).html());
   assertShows(status, 'Each month $240 of usage a month About 500 tasks');
-  assertShows(status, '+$40 extra usage');
+  assertShows(status, 'Plus $40 of extra usage for when this runs out.');
   assert.doesNotMatch(status, /role="meter"|plan-hero-alert/);
   assertHides(status, 'Renews');
   assert.match(status, /billing-add-extra-usage/, 'extra usage stays on sale with a plan');
@@ -537,10 +574,10 @@ test('a plan with no period yet shows its monthly usage and the tasks it covers,
 test('a plan cancelled in Stripe\'s portal says when it ends, and a downgrade names the plan it changes to, in place of when it renews, to everyone', async () => {
   for (const owner of [true, false]) {
     const ending = hero((await harness({ path: '/admin/plan', billingOffered: true, owner, summary: TEAM_ENDING })).html());
-    assertShows(ending, 'About 375 tasks · Ends Nov 7');
+    assertShows(ending, 'About 275 tasks · Ends Nov 7');
     assertHides(ending, 'Renews');
     const downgrading = hero((await harness({ path: '/admin/plan', billingOffered: true, owner, summary: TEAM_DOWNGRADING })).html());
-    assertShows(downgrading, 'About 375 tasks · Changes to the Chickpea $50 plan on Nov 7');
+    assertShows(downgrading, 'About 275 tasks · Changes to the Chickpea $50 plan on Nov 7');
     assertHides(downgrading, 'Renews');
   }
 });
@@ -714,7 +751,7 @@ test('an Owner on the plan with a saved key switches to it from its card only af
   assert.equal(cardTag(html, 'own_key'), 'Current plan');
   assert.equal(cardStep(html, 'own_key'), 'Your current plan (disabled)');
   assert.equal(cardStep(html, 'platform'), 'Switch to models included [soft]');
-  assertShows(hero(html), '573 tasks left');
+  assertShows(hero(html), '440 tasks left');
 });
 
 test('the confirmation names each Agent whose pinned model has no saved key, in the singular for one', async () => {
@@ -869,6 +906,7 @@ test('how usage works compares the two ways to pay, marks yours, and says what c
     'However many steps it takes, it’s one task and one 30¢ fee.');
   assertShows(how, '“Make this reply friendlier” Chat “Summarize #support and file the bugs in Linear” 1 task “Research three competitors’ pricing and write it up” 1 task');
   assertShows(how, '20% bonus usage on every plan Unused plan usage carries over one month Extra usage keeps 12 months');
+  assertHides(how, 'paid from it');
   assert.match((await harness({ path: '/admin/plan', billingOffered: true, summary: OWN_KEY_TEAM })).html(), /<th scope="col">Your own API key <span class="plan-yours">Yours<\/span><\/th>/);
   const chatFee = (await harness({ path: '/admin/plan', billingOffered: true, summary: { ...TEAM_PLAN, offers: { ...OFFERS, chatReplyFeeMicros: usd(0.05) } } })).html();
   assertShows(chatFee, 'Chat reply Model tokens + 5¢ 5¢');
@@ -879,8 +917,8 @@ test('a Member sees the status and that an Owner changes the plan, with no butto
   const html = page.html();
   assert.equal(page.location.pathname, '/admin/plan', 'a Member may open the page');
   assert.equal(lede(html), 'Your workspace is on the $200 plan with models included.');
-  assertShows(hero(html), 'This month $172 left About 375 tasks · Renews Nov 7');
-  assertShows(hero(html), '+$20 carried over until Nov 7');
+  assertShows(hero(html), 'This month $132 left About 275 tasks · Renews Nov 7');
+  assertShows(hero(html), 'Includes $20 carried over from last month, which expires Nov 7.');
   assert.match(html, /<p class="plan-member-note"><span class="plan-chip-dot" aria-hidden="true"><\/span>An Owner can change the plan, add usage, or switch how your workspace pays for models\.<\/p>/);
   assert.match(html, /data-action="open-billing"[^>]*>Plan<\/button>/);
   assert.doesNotMatch(html, /data-action="billing-|<select|plan-card|plan-use|plan-how/);
@@ -925,7 +963,7 @@ test('every date reads as its UTC day, whatever timezone the server and browser 
   const plan = (await harness({ path: '/admin/plan', billingOffered: true, summary: edges })).html();
   assertShows(plan, 'Renews Nov 7');
   assertShows(plan, 'On pace for 80% by Nov 7');
-  assertShows(plan, '+$20 carried over until Nov 7');
+  assertShows(plan, 'Includes $20 carried over from last month, which expires Nov 7.');
   assertShows(plan, 'Since Oct 7.');
   assertShows(plan, '+$32.50 trial usage until Nov 6');
   const frozen = (await harness({
@@ -1268,4 +1306,537 @@ test('the server paints the same scene and step bar the script paints first, at 
       }
     }
   }
+});
+
+/** The When usage runs out card. */
+function autoCard(html: string): string {
+  const start = html.indexOf('<section class="plan-auto');
+  assert.ok(start >= 0, 'the page shows the When usage runs out card');
+  return html.slice(start, html.indexOf('</section>', start) + '</section>'.length);
+}
+
+/** A host with auto top-up that records each update. */
+function topUpHost(updates: AutoTopUpUpdate[]): Partial<PlatformBillingPort> {
+  return { async updateAutoTopUp(_installationId, update) { updates.push(update); } };
+}
+
+test('an Owner on a plan reads auto top-up under the usage card: what it adds, its monthly limit, this month\'s top-ups, and the card it charges', async () => {
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: STARTER_TOP_UP });
+  const html = page.html();
+  assert.ok(html.indexOf('plan-hero') < html.indexOf('plan-auto') && html.indexOf('plan-auto') < html.indexOf('plan-card'), 'between the usage card and the plan cards');
+  const card = autoCard(html);
+  assertShows(card, 'When usage runs out Auto top-up On When your usage runs out, adds $50 of extra usage so your Agents keep working. Up to $50 a month. Extra usage keeps 12 months. Edit');
+  assertShows(card, 'Top-ups this month: $0 of your $50 limit Limit resets Nov 7');
+  assertShows(card, 'Top-ups are charged to Visa ending 4242, plus tax. Update card');
+  assert.match(card, /<input type="checkbox" data-action="billing-top-up-toggle" aria-label="Auto top-up" checked>/);
+  assertHides(card, 'You allow');
+  assertShows(hero(html), 'This month $23.40 left About 50 tasks · Renews Nov 7');
+});
+
+test('editing auto top-up shows the authorization only when the pack or the limit rises, and Save sends the version the Owner agreed to', async () => {
+  const updates: AutoTopUpUpdate[] = [];
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: STARTER_TOP_UP, port: topUpHost(updates) });
+  await page.click({ 'data-action': 'billing-top-up-edit' });
+  let card = autoCard(page.html());
+  assertShows(card, 'Adds extra usage when your plan’s usage runs out, up to a monthly limit. Extra usage keeps 12 months while you have a plan.');
+  assertHides(card, 'paid from it');
+  assertShows(card, 'Each time, add $25 $50 $100 About 100 tasks with models included');
+  assert.deepEqual([...card.matchAll(/<option value="([^"]*)"( selected)?>([^<]*)<\/option>/g)].map((option) => decoded(option[3]!)),
+    ['Same as your plan · $50 a month', '$100 a month', '$150 a month', '$200 a month', '$300 a month', '$500 a month']);
+  assert.match(card, /data-key="extra_usage_100" disabled>\$100</, 'a pack larger than the limit could never fire');
+  assertShows(card, 'Top-ups stop at the limit until your plan renews.');
+  assertHides(card, 'You allow', );
+  await page.select('billing-top-up-limit', '10000');
+  card = autoCard(page.html());
+  assertShows(card, 'You allow Chickpea to charge Visa ending 4242 up to $100 a month, plus tax, for extra usage. You can turn this off at any time. Cancel Save');
+  await page.click({ 'data-action': 'billing-top-up-save' });
+  assert.deepEqual(billingWrites(page.requests).at(-1), ['POST', '/admin/api/billing/auto-top-up',
+    { change: 'on', pack: 'plan', limit: 10000, consentVersion: '2026-11-04' }]);
+  assert.deepEqual(updates, [{
+    change: { kind: 'on', pack: { rule: 'plan' }, limit: { rule: 'fixed', cents: 10000 } },
+    by: { membershipId: 'membership_owner', slackUserId: 'U_OWNER' },
+    consentVersion: '2026-11-04',
+  }]);
+
+  await page.click({ 'data-action': 'billing-top-up-edit' });
+  await page.click({ 'data-action': 'billing-top-up-pack', 'data-key': 'extra_usage_25' });
+  assertHides(autoCard(page.html()), 'You allow');
+  await page.click({ 'data-action': 'billing-top-up-save' });
+  assert.deepEqual(billingWrites(page.requests).at(-1), ['POST', '/admin/api/billing/auto-top-up', { change: 'on', pack: 'extra_usage_25', limit: 'plan' }]);
+  assert.deepEqual(updates[1], {
+    change: { kind: 'on', pack: { rule: 'fixed', key: 'extra_usage_25' }, limit: { rule: 'plan' } },
+    by: { membershipId: 'membership_owner', slackUserId: 'U_OWNER' },
+    consentVersion: null,
+  }, 'a smaller pack raises nothing, so no consent is recorded');
+});
+
+test('turning auto top-up off works at once; turning it on opens its settings with the authorization, and nothing changes until the Owner confirms', async () => {
+  const updates: AutoTopUpUpdate[] = [];
+  const on = await harness({ path: '/admin/plan', billingOffered: true, summary: STARTER_TOP_UP, port: topUpHost(updates) });
+  await on.click({ 'data-action': 'billing-top-up-toggle' });
+  assert.deepEqual(updates.map((update) => [update.change, update.consentVersion]), [[{ kind: 'off' }, null]]);
+
+  const offSummary: BillingSummary = { ...STARTER_TOP_UP, autoTopUp: { ...TOP_UP_ON, enabled: false, explicitlyOff: true } };
+  const off = await harness({ path: '/admin/plan', billingOffered: true, summary: offSummary, port: topUpHost(updates) });
+  let card = autoCard(off.html());
+  assertShows(card, 'When usage runs out, your Agents pause until your plan renews Nov 7. Auto top-up Adds extra usage when your plan’s usage runs out, up to a monthly limit.');
+  assert.match(card, /aria-label="Auto top-up">/, 'the switch is off');
+  assertHides(card, 'Top-ups this month');
+  await off.click({ 'data-action': 'billing-top-up-toggle' });
+  card = autoCard(off.html());
+  assertShows(card, 'You allow Chickpea to charge Visa ending 4242 up to $50 a month, plus tax, for extra usage. You can turn this off at any time. Cancel Turn on auto top-up');
+  assert.equal(updates.length, 1, 'opening the settings charges and changes nothing');
+  await off.click({ 'data-action': 'billing-top-up-cancel' });
+  assertHides(autoCard(off.html()), 'You allow');
+  await off.click({ 'data-action': 'billing-top-up-toggle' });
+  await off.click({ 'data-action': 'billing-top-up-save' });
+  assert.deepEqual(updates[1]!.change, { kind: 'on', pack: { rule: 'plan' }, limit: { rule: 'plan' } });
+  assert.equal(updates[1]!.consentVersion, '2026-11-04');
+});
+
+test('the page sends the version of the authorization it shows, not one the API hands it, so a page from before the copy changed records no consent to text it never showed', async () => {
+  const calls: unknown[][] = [];
+  const page = await harness({
+    path: '/admin/plan', billingOffered: true, summary: STARTER_TOP_UP,
+    port: { ...topUpHost([]), ...savedCardHost(calls) },
+    billingResponse: (_path, body) => JSON.parse(JSON.stringify(body).replaceAll('"2026-11-04"', '"2099-01-01"')),
+  });
+  await page.click({ 'data-action': 'billing-top-up-edit' });
+  await page.select('billing-top-up-limit', '10000');
+  assertShows(autoCard(page.html()), 'You allow Chickpea to charge Visa ending 4242 up to $100 a month');
+  await page.click({ 'data-action': 'billing-top-up-save' });
+  assert.deepEqual(billingWrites(page.requests).at(-1), ['POST', '/admin/api/billing/auto-top-up',
+    { change: 'on', pack: 'plan', limit: 10000, consentVersion: '2026-11-04' }]);
+
+  page.choose('platform', 'plus');
+  await page.click({ 'data-action': 'billing-plan-change', 'data-key': 'plus', 'data-at': 'platform' });
+  assertShows(card(page.html(), 'platform'), 'You allow Chickpea to charge Visa ending 4242 up to $100 a month');
+  await page.click({ 'data-action': 'billing-plan-change-confirm' });
+  assert.deepEqual(billingWrites(page.requests).at(-1), ['POST', '/admin/api/billing/plan-change', { key: 'plus', consentVersion: '2026-11-04' }]);
+
+  const down = await harness({ path: '/admin/plan', billingOffered: true, summary: STARTER_TOP_UP, port: savedCardHost(calls) });
+  down.choose('platform', 'solo');
+  await down.click({ 'data-action': 'billing-plan-change', 'data-key': 'solo', 'data-at': 'platform' });
+  await down.click({ 'data-action': 'billing-plan-change-confirm' });
+  assert.deepEqual(billingWrites(down.requests).at(-1), ['POST', '/admin/api/billing/plan-change', { key: 'solo' }],
+    'a change that shows no authorization sends no version');
+});
+
+test('paused at the limit, the Owner reads why, Raise limit opens the settings, and the card compares the next plan in usage', async () => {
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: STARTER_AT_LIMIT });
+  const html = page.html();
+  assert.equal(decoded(/<p class="plan-hero-alert" role="status">.*?<span>([^<]*)<\/span><\/p>/.exec(hero(html))?.[1] ?? ''),
+    'Your Agents are paused. Auto top-up added its $50 limit for this month. Raise the limit or upgrade to keep them working, or they start again when your plan renews Nov 7.');
+  const card = autoCard(html);
+  assertShows(card, 'Auto top-up Limit reached When your usage runs out, adds $50 of extra usage');
+  assert.match(card, /class="btn btn-primary btn-sm" data-action="billing-top-up-edit">Raise limit</);
+  assertShows(card, 'Top-ups this month: $50 of your $50 limit Limit resets Nov 7');
+  assert.match(card, /class="plan-meter is-out" role="meter" aria-label="Top-ups this month"/);
+  assertShows(card, 'Your $50 plan and $50 of top-ups covered $110 of usage this month. The $100 plan includes $120 a month. See the $100 plan');
+  await page.click({ 'data-action': 'billing-top-up-edit' });
+  assertShows(autoCard(page.html()), 'Monthly limit');
+
+  const largest: BillingSummary = {
+    ...STARTER_AT_LIMIT,
+    plan: { key: 'business', name: 'Business', priceCents: 50_000 },
+    planUsage: { usedMicros: usd(600), includedMicros: usd(600), onPacePercent: null },
+    autoTopUp: { ...TOP_UP_ON, pack: { rule: 'plan', key: 'extra_usage_100' }, limit: { rule: 'plan', cents: 50_000 }, usedCents: 50_000 },
+  };
+  const top = (await harness({ path: '/admin/plan', billingOffered: true, summary: largest })).html();
+  assertShows(hero(top), 'Auto top-up added its $500 limit for this month. Raise the limit to keep them working, or they start again');
+  assertHides(autoCard(top), 'See the');
+});
+
+test('with the plan used up and the limit reached, extra usage left keeps the Agents working and the card says no more top-ups this month', async () => {
+  const html = (await harness({ path: '/admin/plan', billingOffered: true, summary: STARTER_TOPPED })).html();
+  assertShows(hero(html), 'Your usage $42.10 left About 90 tasks');
+  assertShows(hero(html), '$7.90 of $50 extra usage $42.10 left, keeps until Oct 28, 2027');
+  const card = autoCard(html);
+  assertShows(card, 'No more top-ups this month. When this extra usage runs out, your Agents pause until Nov 7. Auto top-up On');
+  assert.match(card, /data-action="billing-top-up-edit">Edit</);
+  assertHides(card, 'See the');
+});
+
+test('with a 25¢ task fee on plan usage and 30¢ on extra usage, plan cards and how usage works show 25¢, and a 0% bonus shows no bonus', async () => {
+  const twoFees: BillingSummary = { ...TEAM_PLAN, offers: TWO_FEE_OFFERS, planUsage: { usedMicros: usd(128), includedMicros: usd(200), onPacePercent: 80 } };
+  const html = (await harness({ path: '/admin/plan', billingOffered: true, summary: twoFees })).html();
+  assertShows(hero(html), 'This month $92 left About 225 tasks');
+  const how = html.slice(html.indexOf('id="plan-how-heading"'));
+  assertShows(how, 'Chat reply Model tokens at list price Included Task Model tokens + 25¢ 25¢ Who bills tokens');
+  assertShows(how, 'it’s one task and one 25¢ fee.');
+  assertShows(how, 'Unused plan usage carries over one month Extra usage keeps 12 months, and tasks paid from it are 30¢');
+  assertShows(card(html, 'platform'), '$200 of usage a month. Task counts assume a typical mix on the default model.');
+  assertShows(card(html, 'platform'), 'Model tokens at list price, no markup Unused usage rolls over for one month Every feature and connector');
+  for (const which of ['platform', 'own_key'] as const) assertHides(card(html, which), '30¢');
+  assertHides(html, 'bonus');
+  assertHides(html, 'more than you pay');
+
+  const ownKey = (await harness({ path: '/admin/plan', billingOffered: true, summary: { ...twoFees, funding: 'own_key' } })).html();
+  assertShows(card(ownKey, 'own_key'), 'Your provider bills tokens, so the whole plan goes to tasks, 25¢ each.');
+  assertShows(hero(ownKey), 'This month 368 tasks left');
+});
+
+test('with a 30¢ task fee on extra usage, auto top-up and buying extra usage say so, and count extra usage\'s tasks at 30¢', async () => {
+  const twoFees: BillingSummary = { ...STARTER_TOP_UP, offers: TWO_FEE_OFFERS, planUsage: { usedMicros: usd(36.6), includedMicros: usd(50), onPacePercent: 96 } };
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: twoFees, port: savedCardHost([]) });
+  assertShows(autoCard(page.html()), 'When your usage runs out, adds $50 of extra usage so your Agents keep working. Up to $50 a month. ' +
+    'Extra usage keeps 12 months. Tasks paid from it are 30¢. Edit');
+  await page.click({ 'data-action': 'billing-top-up-edit' });
+  assertShows(autoCard(page.html()), 'Adds extra usage when your plan’s usage runs out, up to a monthly limit. ' +
+    'Extra usage keeps 12 months while you have a plan. Tasks paid from it are 30¢.');
+  assertShows(autoCard(page.html()), 'Each time, add $25 $50 $100 About 100 tasks with models included');
+  await page.click({ 'data-action': 'billing-top-up-cancel' });
+  await page.click({ 'data-action': 'billing-add-extra-usage', 'data-key': 'extra_usage_50' });
+  assertShows(hero(page.html()), 'Add $50 of usage? It’s charged to Visa ending 4242, plus tax, and keeps 12 months. Tasks paid from it are 30¢. Cancel Add $50');
+
+  const ownKey: BillingSummary = {
+    ...twoFees,
+    funding: 'own_key',
+    plan: { key: 'plus', name: 'Plus', priceCents: 10_000 },
+    planUsage: { usedMicros: usd(36.6), includedMicros: usd(100), onPacePercent: 64 },
+    autoTopUp: { ...TOP_UP_ON, pack: { rule: 'plan', key: 'extra_usage_100' }, limit: { rule: 'plan', cents: 10_000 } },
+  };
+  assertShows(autoCard((await harness({ path: '/admin/plan', billingOffered: true, summary: ownKey })).html()),
+    'On your own key your Agents can always chat. Only tasks use your plan, and $100 of extra usage is 333 tasks.');
+
+  const topped: BillingSummary = { ...STARTER_TOPPED, offers: TWO_FEE_OFFERS, planUsage: { usedMicros: usd(50), includedMicros: usd(50), onPacePercent: null } };
+  assertShows(hero((await harness({ path: '/admin/plan', billingOffered: true, summary: topped })).html()), 'Your usage $42.10 left About 90 tasks');
+});
+
+test('with two task fees, at the top-up limit the card compares the next plan\'s task fee, and says it covers this month only when its usage does', async () => {
+  const starter: BillingSummary = { ...STARTER_AT_LIMIT, offers: TWO_FEE_OFFERS, planUsage: { usedMicros: usd(50), includedMicros: usd(50), onPacePercent: null } };
+  assertShows(autoCard((await harness({ path: '/admin/plan', billingOffered: true, summary: starter })).html()),
+    'Your $50 plan and $50 of top-ups covered $100 of usage this month. The $100 plan covers that as plan usage, at 25¢ a task instead of 30¢. See the $100 plan');
+  const team: BillingSummary = {
+    ...starter,
+    plan: { key: 'team', name: 'Team', priceCents: 20_000 },
+    planUsage: { usedMicros: usd(200), includedMicros: usd(200), onPacePercent: null },
+    autoTopUp: { ...TOP_UP_ON, pack: { rule: 'plan', key: 'extra_usage_100' }, limit: { rule: 'plan', cents: 20_000 }, usedCents: 20_000 },
+  };
+  assertShows(autoCard((await harness({ path: '/admin/plan', billingOffered: true, summary: team })).html()),
+    'Your $200 plan and $200 of top-ups covered $400 of usage this month. The $300 plan includes $300 a month, at 25¢ a task instead of 30¢. See the $300 plan');
+});
+
+test('a declined card pauses auto top-up: the Owner reads why and when, updates the card, and tries again once', async () => {
+  const updates: AutoTopUpUpdate[] = [];
+  const declined: BillingSummary = {
+    ...STARTER_AT_LIMIT,
+    autoTopUp: { ...TOP_UP_ON, pause: { kind: 'declined', at: new Date('2026-10-28T20:00:00Z') } },
+  };
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: declined, port: topUpHost(updates) });
+  const html = page.html();
+  assertShows(hero(html), 'Your Agents are paused. Auto top-up couldn’t charge your card. Update it, or add usage, to keep them working.');
+  const card = autoCard(html);
+  assertShows(card, 'Auto top-up is paused because your card was declined. Auto top-up Paused');
+  assertShows(card, 'Your card was declined on Oct 28, so auto top-up is paused. Update your card, then try again. Update card Try again');
+  assert.equal([...card.matchAll(/data-action="billing-update-card"/g)].length, 1, 'the foot drops its own Update card');
+  await page.click({ 'data-action': 'billing-top-up-retry' });
+  assert.deepEqual(updates.map((update) => update.change), [{ kind: 'retry' }]);
+  await page.click({ 'data-action': 'billing-update-card' });
+  assert.deepEqual(page.assigned, ['https://billing.stripe.com/p/session/portal']);
+
+  const unconfirmed = autoCard((await harness({
+    path: '/admin/plan', billingOffered: true,
+    summary: { ...declined, autoTopUp: { ...TOP_UP_ON, pause: { kind: 'needs_confirmation', amountCents: 5_000, url: 'https://invoice.stripe.com/i/test' } } },
+  })).html());
+  assertShows(unconfirmed, 'Your bank asked you to confirm a $50 charge. Confirm it to turn auto top-up back on. Confirm payment');
+  assert.match(unconfirmed, /<a class="btn btn-primary btn-sm" data-action="billing-confirm-payment" href="https:\/\/invoice\.stripe\.com\/i\/test">/);
+});
+
+test('Admins and Members read only whether auto top-up is on and reached its limit: no amounts, card, or reasons', async () => {
+  for (const role of [{ owner: false }, { admin: true }]) {
+    const html = (await harness({ path: '/admin/plan', billingOffered: true, summary: STARTER_AT_LIMIT, ...role })).html();
+    assertShows(hero(html), 'Your Agents are paused. An Owner can raise the auto top-up limit or upgrade to keep them working, or they start again when your plan renews Nov 7.');
+    const card = autoCard(html);
+    assertShows(card, 'When usage runs out Auto top-up On. Limit reached this month.');
+    for (const hidden of ['$', 'Visa', '4242', 'declined', 'Edit', 'Raise']) assertHides(card, hidden);
+    const declined = autoCard((await harness({
+      path: '/admin/plan', billingOffered: true, ...role,
+      summary: { ...STARTER_TOP_UP, autoTopUp: { ...TOP_UP_ON, pause: { kind: 'declined', at: new Date('2026-10-28T20:00:00Z') } } },
+    })).html());
+    assertShows(declined, 'Auto top-up On');
+    assertHides(declined, 'declined');
+  }
+  const off = autoCard((await harness({
+    path: '/admin/plan', billingOffered: true, owner: false, summary: { ...STARTER_TOP_UP, autoTopUp: { ...TOP_UP_ON, enabled: false } },
+  })).html());
+  assertShows(off, 'Auto top-up Off');
+});
+
+test('a cancelled plan turns auto top-up off until a new plan, and its switch is locked', async () => {
+  const card = autoCard((await harness({
+    path: '/admin/plan', billingOffered: true, summary: { ...STARTER_TOP_UP, pendingChange: { kind: 'ends', at: PERIOD.end } },
+  })).html());
+  assert.match(card, /class="plan-auto is-muted"/);
+  assertShows(card, 'Your plan ends Nov 7, so auto top-up is off. Auto top-up Turned off when the plan was cancelled. It turns on again with a new plan.');
+  assert.match(card, /aria-label="Auto top-up" disabled>/);
+  assertHides(card, 'charged to');
+});
+
+test('on an own key, auto top-up states its pack in exact tasks', async () => {
+  const ownKey: BillingSummary = {
+    ...STARTER_TOP_UP,
+    funding: 'own_key',
+    plan: { key: 'plus', name: 'Plus', priceCents: 10_000 },
+    planUsage: { usedMicros: usd(36.6), includedMicros: usd(120), onPacePercent: 64 },
+    autoTopUp: { ...TOP_UP_ON, pack: { rule: 'plan', key: 'extra_usage_100' }, limit: { rule: 'plan', cents: 10_000 } },
+  };
+  const card = autoCard((await harness({ path: '/admin/plan', billingOffered: true, summary: ownKey })).html());
+  assertShows(card, 'On your own key your Agents can always chat. Only tasks use your plan, and $100 of extra usage is 333 tasks.');
+  assertShows(card, 'When your tasks run out, adds $100 of extra usage so your Agents keep working. Up to $100 a month.');
+});
+
+test('a trial says auto top-up turns on with a plan, and each plan card discloses it before Checkout', async () => {
+  const trial: BillingSummary = { ...NO_PLAN, trial: TRIAL_GRANT, autoTopUp: null, offers: TOP_UP_OFFERS };
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: trial });
+  const html = page.html();
+  const auto = autoCard(html);
+  assert.match(auto, /class="plan-auto is-muted"/);
+  assertShows(auto, 'When usage runs out Auto top-up turns on with your plan. During the free trial, your Agents pause when its usage runs out.');
+  assertHides(auto, 'Auto top-up On');
+  page.choose('platform', 'starter');
+  await flush();
+  assertShows(card(page.html(), 'platform'), 'Choose the $50 plan Includes auto top-up. When the plan’s usage runs out, we add $50 of extra usage, up to $50 a month. You can change it any time.');
+  page.choose('platform', 'team');
+  await flush();
+  assertShows(card(page.html(), 'platform'), 'we add $100 of extra usage, up to $200 a month.');
+  assertShows(card(page.html(), 'own_key'), 'Includes auto top-up. When the plan’s usage runs out, we add $100 of extra usage, up to $100 a month.');
+  const unsized = (await harness({ path: '/admin/plan', billingOffered: true, summary: { ...trial, offers: OFFERS } })).html();
+  assertShows(card(unsized, 'platform'), 'Includes auto top-up. When the plan’s usage runs out, we add extra usage, up to $100 a month.');
+});
+
+test('a host with no auto top-up shows none of it: no card, no disclosure, no settings', async () => {
+  for (const summary of [TEAM_PLAN, { ...NO_PLAN, trial: TRIAL_GRANT }, STARTER_USED_UP]) {
+    const html = (await harness({ path: '/admin/plan', billingOffered: true, summary })).html();
+    assertHides(html, 'When usage runs out');
+    assertHides(html, 'auto top-up');
+    assertHides(html, 'Auto top-up');
+  }
+});
+
+/** A host that changes plans and sells extra usage on the saved card, recording each call. */
+function savedCardHost(calls: unknown[][], result: SavedCardResult = { kind: 'done' }): Partial<PlatformBillingPort> {
+  return {
+    async previewPlanChange(_installationId, planKey) {
+      calls.push(['preview', planKey]);
+      return planKey === 'solo'
+        ? { kind: 'downgrade', at: PERIOD.end }
+        : { kind: 'upgrade', todayCents: 1_613, addedMicros: usd(19.35) };
+    },
+    async changePlan(_installationId, request) { calls.push(['changePlan', request]); return result; },
+    async buyExtraUsage(_installationId, request) { calls.push(['buyExtraUsage', request]); return result; },
+  };
+}
+
+test('with a host that changes plans on the saved card, an upgrade is confirmed in its card: today\'s charge, the usage it adds, and auto top-up\'s new limit', async () => {
+  const calls: unknown[][] = [];
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: STARTER_TOP_UP, port: savedCardHost(calls) });
+  page.choose('platform', 'plus');
+  await flush();
+  assert.equal(cardStep(page.html(), 'platform'), 'Change to the $100 plan [primary plus]');
+  await page.click({ 'data-action': 'billing-plan-change', 'data-key': 'plus', 'data-at': 'platform' });
+  const platform = card(page.html(), 'platform');
+  assertShows(platform, 'Move to the $100 plan? Today you pay $16.13 for the rest of this month, and $19.35 of usage is added right away. From Nov 7, it’s $100 a month with $120 of usage.');
+  assertShows(platform, 'Auto top-up’s limit becomes $100 a month, the same as your new plan. You allow Chickpea to charge Visa ending 4242 up to $100 a month, plus tax, for extra usage.');
+  assertShows(platform, 'Charged to Visa ending 4242, plus tax. Cancel Move to the $100 plan');
+  await page.click({ 'data-action': 'billing-plan-change-confirm' });
+  const changed = calls[1]![1] as { idempotencyKey: string };
+  assert.deepEqual(calls, [['preview', 'plus'], ['changePlan', {
+    planKey: 'plus', by: { membershipId: 'membership_owner', slackUserId: 'U_OWNER' }, consentVersion: '2026-11-04', idempotencyKey: changed.idempotencyKey,
+  }]]);
+  assert.match(changed.idempotencyKey, /^admin-ui:billing:plan_change:/);
+  assert.deepEqual(page.assigned, [], 'paid on the saved card, with no Stripe page');
+  assert.match(page.html(), /<p class="plan-banner" role="status">/);
+  assertShows(page.html(), 'You’re on the $100 plan. $19.35 of usage was added for the rest of this month.');
+});
+
+test('an upgrade raises no limit an Owner fixed, a downgrade waits for the renewal, and a bank that asks to confirm opens Stripe\'s page', async () => {
+  const calls: unknown[][] = [];
+  const fixed: BillingSummary = {
+    ...STARTER_TOP_UP, autoTopUp: { ...TOP_UP_ON, pack: { rule: 'fixed', key: 'extra_usage_50' }, limit: { rule: 'fixed', cents: 20_000 } },
+  };
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: fixed, port: savedCardHost(calls) });
+  page.choose('platform', 'plus');
+  await page.click({ 'data-action': 'billing-plan-change', 'data-key': 'plus', 'data-at': 'platform' });
+  assertHides(card(page.html(), 'platform'), 'Auto top-up');
+  await page.click({ 'data-action': 'billing-plan-change-confirm' });
+  assert.equal((calls.at(-1)![1] as { consentVersion: string | null }).consentVersion, null);
+
+  const packFollows = await harness({
+    path: '/admin/plan', billingOffered: true, port: savedCardHost(calls),
+    summary: { ...STARTER_TOP_UP, autoTopUp: { ...TOP_UP_ON, limit: { rule: 'fixed', cents: 20_000 } } },
+  });
+  packFollows.choose('platform', 'plus');
+  await packFollows.click({ 'data-action': 'billing-plan-change', 'data-key': 'plus', 'data-at': 'platform' });
+  assertShows(card(packFollows.html(), 'platform'),
+    'Auto top-up adds $100 each time on your new plan. You allow Chickpea to charge Visa ending 4242 up to $200 a month, plus tax, for extra usage.');
+  await packFollows.click({ 'data-action': 'billing-plan-change-confirm' });
+  assert.equal((calls.at(-1)![1] as { consentVersion: string | null }).consentVersion, '2026-11-04');
+
+  const down = await harness({ path: '/admin/plan', billingOffered: true, summary: STARTER_TOP_UP, port: savedCardHost(calls) });
+  down.choose('platform', 'solo');
+  await down.click({ 'data-action': 'billing-plan-change', 'data-key': 'solo', 'data-at': 'platform' });
+  assertShows(card(down.html(), 'platform'), 'Move to the $25 plan on Nov 7? You keep this month’s usage until then. Cancel Move to the $25 plan');
+  await down.click({ 'data-action': 'billing-plan-change-cancel' });
+  assert.equal(cardStep(down.html(), 'platform'), 'Change to the $25 plan [primary solo]');
+
+  const sca = await harness({
+    path: '/admin/plan', billingOffered: true, summary: STARTER_TOP_UP,
+    port: savedCardHost(calls, { kind: 'redirect', url: 'https://invoice.stripe.com/i/confirm' }),
+  });
+  sca.choose('platform', 'plus');
+  await sca.click({ 'data-action': 'billing-plan-change', 'data-key': 'plus', 'data-at': 'platform' });
+  await sca.click({ 'data-action': 'billing-plan-change-confirm' });
+  assert.deepEqual(sca.assigned, ['https://invoice.stripe.com/i/confirm']);
+});
+
+test('with a host that sells on the saved card, Add usage asks to confirm in the usage card; without one, it opens Checkout as before', async () => {
+  const calls: unknown[][] = [];
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: STARTER_AT_LIMIT, port: savedCardHost(calls) });
+  await page.click({ 'data-action': 'billing-add-extra-usage', 'data-key': 'extra_usage_50' });
+  assertShows(hero(page.html()), 'Add $50 of usage? It’s charged to Visa ending 4242, plus tax, and keeps 12 months. Cancel Add $50');
+  assert.deepEqual(calls, [], 'nothing is bought until the Owner confirms');
+  await page.click({ 'data-action': 'billing-extra-usage-confirm', 'data-key': 'extra_usage_50' });
+  const bought = calls[0]![1] as { idempotencyKey: string };
+  assert.deepEqual(calls, [['buyExtraUsage', {
+    key: 'extra_usage_50', by: { membershipId: 'membership_owner', slackUserId: 'U_OWNER' }, idempotencyKey: bought.idempotencyKey,
+  }]]);
+  assert.match(bought.idempotencyKey, /^admin-ui:billing:extra_usage:/);
+  assertShows(page.html(), 'Added $50 of usage. Your Agents are working again.');
+
+  const checkout = await harness({ path: '/admin/plan', billingOffered: true, summary: STARTER_AT_LIMIT });
+  await checkout.click({ 'data-action': 'billing-add-extra-usage', 'data-key': 'extra_usage_50' });
+  assert.deepEqual(checkout.assigned, ['https://checkout.stripe.com/c/pay/extra_usage_50']);
+  const noCard = await harness({
+    path: '/admin/plan', billingOffered: true, summary: { ...STARTER_AT_LIMIT, autoTopUp: { ...TOP_UP_ON, card: null } }, port: savedCardHost(calls),
+  });
+  await noCard.click({ 'data-action': 'billing-add-extra-usage', 'data-key': 'extra_usage_25' });
+  assert.deepEqual(noCard.assigned, ['https://checkout.stripe.com/c/pay/extra_usage_25'], 'with no card to charge, Checkout takes it');
+});
+
+test('a Slack button\'s step opens its control on the Plan page, once', async () => {
+  const calls: unknown[][] = [];
+  const add = await harness({ path: '/admin/plan?step=add', billingOffered: true, summary: STARTER_AT_LIMIT, port: savedCardHost(calls) });
+  assertShows(hero(add.html()), 'Add $50 of usage?');
+  assert.equal(add.location.search, '', 'the step leaves the address once read');
+
+  const raise = await harness({ path: '/admin/plan?step=raise-limit', billingOffered: true, summary: STARTER_AT_LIMIT });
+  assertShows(autoCard(raise.html()), 'Monthly limit');
+  const turnOn = await harness({
+    path: '/admin/plan?step=auto-top-up', billingOffered: true, summary: { ...STARTER_TOP_UP, autoTopUp: { ...TOP_UP_ON, enabled: false } },
+  });
+  assertShows(autoCard(turnOn.html()), 'Turn on auto top-up');
+
+  const upgrade = await harness({ path: '/admin/plan?step=upgrade', billingOffered: true, summary: STARTER_AT_LIMIT, port: savedCardHost(calls) });
+  assertShows(card(upgrade.html(), 'platform'), 'Move to the $100 plan?');
+  const upgradeCheckout = await harness({ path: '/admin/plan?step=upgrade', billingOffered: true, summary: STARTER_USED_UP });
+  assert.equal(cardLevels(upgradeCheckout.html(), 'platform').selected, 'plus', 'without in-app changes, the next plan is chosen in its card');
+  assert.ok(upgradeCheckout.focused.includes('[data-action="billing-choose-plan"]'));
+
+  const cardStepPage = await harness({
+    path: '/admin/plan?step=card', billingOffered: true,
+    summary: { ...STARTER_AT_LIMIT, autoTopUp: { ...TOP_UP_ON, pause: { kind: 'needs_confirmation', amountCents: 5_000, url: 'https://invoice.stripe.com/i/test' } } },
+  });
+  assert.ok(cardStepPage.focused.includes('[data-action="billing-confirm-payment"]'));
+  const choose = await harness({ path: '/admin/plan?step=choose', billingOffered: true, summary: { ...NO_PLAN, trial: TRIAL_GRANT } });
+  assert.ok(choose.focused.includes('[data-action="billing-choose-plan"]'));
+
+  const member = await harness({ path: '/admin/plan?step=raise-limit', billingOffered: true, owner: false, summary: STARTER_AT_LIMIT });
+  assertHides(member.html(), 'Monthly limit');
+});
+
+test('back from Stripe, the page says the payment is in while the usage is added, then what was added', async () => {
+  const pending: BillingSummary = { ...STARTER_TOP_UP, lastPurchase: { kind: 'extra_usage', granted: false, usageMicros: usd(50) } };
+  const page = await harness({ path: '/admin/plan?billing=done', billingOffered: true, summary: pending, manualPolls: true });
+  assert.match(page.html(), /<p class="plan-banner is-wait" role="status">/);
+  assertShows(page.html(), 'Payment received. Adding your usage…');
+  page.setSummary({ ...pending, lastPurchase: { kind: 'extra_usage', granted: true, usageMicros: usd(50) } });
+  await page.firePoll();
+  assertShows(page.html(), 'Added $50 of usage.');
+  assertHides(page.html(), 'Adding your usage');
+
+  const first = await harness({
+    path: '/admin/plan?billing=done', billingOffered: true,
+    summary: { ...STARTER_TOP_UP, lastPurchase: { kind: 'plan', granted: true, first: true, addedMicros: usd(60) } },
+  });
+  assertShows(first.html(), 'You’re on the $50 plan, with $60 of usage this month. Auto top-up is on.');
+  const upgraded = await harness({
+    path: '/admin/plan?billing=done', billingOffered: true,
+    summary: { ...STARTER_TOP_UP, lastPurchase: { kind: 'plan', granted: true, first: false, addedMicros: usd(19.35) } },
+  });
+  assertShows(upgraded.html(), 'You’re on the $50 plan. $19.35 of usage was added for the rest of this month.');
+
+  const unreported = await harness({ path: '/admin/plan?billing=done', billingOffered: true, summary: STARTER_TOP_UP });
+  assert.doesNotMatch(unreported.html(), /plan-banner/, 'a host that reports no purchase gets no banner');
+  const cancelled = await harness({ path: '/admin/plan', billingOffered: true, summary: pending });
+  assert.doesNotMatch(cancelled.html(), /plan-banner/, 'without billing=done, as after a cancelled Checkout, there is no banner');
+});
+
+test('trying a saved-card purchase again after its answer was lost sends the same key, so the host charges once', async () => {
+  const keys: (string | undefined)[] = [];
+  let fail = true;
+  const page = await harness({
+    path: '/admin/plan', billingOffered: true, summary: STARTER_AT_LIMIT,
+    port: {
+      async buyExtraUsage(_installationId, request) {
+        keys.push(request.idempotencyKey);
+        if (fail) { fail = false; throw new Error('the answer was lost'); }
+        return { kind: 'done' };
+      },
+    },
+  });
+  await page.click({ 'data-action': 'billing-add-extra-usage', 'data-key': 'extra_usage_50' });
+  await page.click({ 'data-action': 'billing-extra-usage-confirm', 'data-key': 'extra_usage_50' });
+  assertShows(hero(page.html()), 'Usage could not be added. Try again.');
+  await page.click({ 'data-action': 'billing-extra-usage-confirm', 'data-key': 'extra_usage_50' });
+  assert.equal(keys.length, 2);
+  assert.ok(keys[0]);
+  assert.equal(keys[0], keys[1]);
+  assertShows(page.html(), 'Added $50 of usage.');
+  await page.click({ 'data-action': 'billing-add-extra-usage', 'data-key': 'extra_usage_25' });
+  await page.click({ 'data-action': 'billing-extra-usage-confirm', 'data-key': 'extra_usage_25' });
+  assert.notEqual(keys[2], keys[0], 'a new confirm is a new charge');
+});
+
+test('trying a paused top-up again after its answer was lost sends the same key; once the host answers, the next try is a new charge', async () => {
+  const keys: (string | undefined)[] = [];
+  let answers = 0;
+  const declined: BillingSummary = {
+    ...STARTER_AT_LIMIT,
+    autoTopUp: { ...TOP_UP_ON, pause: { kind: 'declined', at: new Date('2026-10-28T20:00:00Z') } },
+  };
+  const page = await harness({
+    path: '/admin/plan', billingOffered: true, summary: declined,
+    port: {
+      async updateAutoTopUp(_installationId, update) {
+        keys.push(update.idempotencyKey);
+        if (answers++ === 0) throw new Error('the answer was lost');
+      },
+    },
+  });
+  await page.click({ 'data-action': 'billing-top-up-retry' });
+  assertShows(autoCard(page.html()), 'Auto top-up could not be changed. Try again.');
+  await page.click({ 'data-action': 'billing-top-up-retry' });
+  assert.equal(keys.length, 2);
+  assert.match(keys[0] ?? '', /^admin-ui:billing:top_up_retry:/);
+  assert.equal(keys[0], keys[1], 'the lost answer may have charged, so the host sees one key');
+  await page.click({ 'data-action': 'billing-top-up-retry' });
+  assert.equal(keys.length, 3);
+  assert.notEqual(keys[2], keys[0], 'after an answer, trying again is a new charge');
+});
+
+test('an Owner who picked a pack follows the plan again by picking the plan\'s own pack', async () => {
+  const updates: AutoTopUpUpdate[] = [];
+  const fixed: BillingSummary = { ...STARTER_TOP_UP, autoTopUp: { ...TOP_UP_ON, pack: { rule: 'fixed', key: 'extra_usage_25' } } };
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: fixed, port: topUpHost(updates) });
+  await page.click({ 'data-action': 'billing-top-up-edit' });
+  await page.click({ 'data-action': 'billing-top-up-pack', 'data-key': 'extra_usage_50' });
+  await page.click({ 'data-action': 'billing-top-up-save' });
+  assert.deepEqual(billingWrites(page.requests).at(-1), ['POST', '/admin/api/billing/auto-top-up',
+    { change: 'on', pack: 'plan', limit: 'plan', consentVersion: '2026-11-04' }]);
+  assert.deepEqual(updates.map((update) => update.change), [{ kind: 'on', pack: { rule: 'plan' }, limit: { rule: 'plan' } }]);
+  await page.click({ 'data-action': 'billing-top-up-edit' });
+  await page.click({ 'data-action': 'billing-top-up-save' });
+  assert.deepEqual(billingWrites(page.requests).at(-1)?.[2], { change: 'on', pack: 'extra_usage_25', limit: 'plan' },
+    'an untouched fixed pack stays fixed');
 });

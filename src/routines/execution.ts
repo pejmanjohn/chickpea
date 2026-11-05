@@ -90,8 +90,8 @@ import type { RunExecutionRecord, RunId } from '../work/types.ts';
 import type { WorkStore } from '../work/types.ts';
 import type { UsageStore } from '../usage/types.ts';
 import {
-  deliverRoutineRecoveryNotice,
   deliverRoutineFailureNotice,
+  deliverRoutineRecoveryNotice,
   deliverRoutineResult,
   routineDeliveryFailure,
 } from './delivery.ts';
@@ -315,7 +315,7 @@ export async function executeRoutineOccurrence(
   }
   if (prepared.run.flueAgentSettlement) {
     try {
-      await recordUsage(prepared, prepared.run.flueAgentSettlement);
+      await recordUsage(prepared, prepared.run.flueAgentSettlement, prepared.receipt?.submissionId);
       if (refused) return await skipWithoutResult(prepared, REFUSED_SKIP, now());
       return await finalizeSettlement(prepared, prepared.run.flueAgentSettlement, now(), prepared.receipt?.submissionId);
     } finally {
@@ -475,7 +475,7 @@ export async function executeRoutineOccurrence(
       });
     }
   }
-  await recordUsage(prepared, settlement);
+  await recordUsage(prepared, settlement, receipt?.submissionId);
   try {
     prepared.run = await input.store.recordAgentSettlement({
       occurrenceId: prepared.run.id,
@@ -953,7 +953,6 @@ async function finalizeSettlement(
   if (settlement.outcome === 'completed') {
     prepared.run = await prepared.store.getRun(prepared.run.id) ?? prepared.run;
     let failure: RoutineRuntimeError | undefined;
-    let refusedTask: RoutineRuntimeError | undefined;
     if (settlement.result.status === 'succeeded') {
       if (prepared.run.deliveryStatus === 'leased') {
         // A concurrent post may still be in flight. Keep its lease intact.
@@ -962,13 +961,8 @@ async function finalizeSettlement(
           occurrenceId: prepared.run.id, outcome: 'unknown', at, failureClass: 'delivery_unknown',
         });
       }
-      if (prepared.run.deliveryStatus === 'none') refusedTask = failure = await requireDeliveryTaskFee(prepared, submissionId);
-      if (refusedTask) {
-        await prepared.workLifecycle?.settleWithoutDelivery({
-          terminalDisposition: 'failed',
-          safeFailureCode: routineLifecycleFailureCode(refusedTask.failureClass),
-        });
-      } else if (prepared.run.deliveryStatus === 'none') {
+      if (prepared.run.deliveryStatus === 'none') {
+        await postDeliveryTaskFee(prepared, submissionId);
         try {
           await deliverRoutineResult({
             store: prepared.store, run: prepared.run, routine: prepared.routine,
@@ -1026,15 +1020,8 @@ async function finalizeSettlement(
       suppressedAsNoOp: settlement.result.suppressedAsNoOp,
     });
     captureScheduledRun(prepared, failure ? 'failed' : settlement.result.status);
-    if (refusedTask) {
-      await deliverFailureNoticeBestEffort({
-        store: prepared.store,
-        runId: prepared.run.id,
-        access: prepared.access,
-        ...(prepared.workLifecycle ? { workLifecycle: prepared.workLifecycle } : {}),
-      }, refusedTask.publicError);
-    }
     if (failure) await deliverPauseNoticeBestEffort(prepared);
+    else await closePauseNoticeBestEffort(prepared);
     return 'completed';
   }
   const creditedBack = await creditBackFailedRun(
@@ -1075,14 +1062,15 @@ async function finalizeSettlement(
   return 'completed';
 }
 
-async function requireDeliveryTaskFee(
-  prepared: PreparedExecution,
-  submissionId: string | undefined,
-): Promise<RoutineRuntimeError | undefined> {
+/**
+ * A routine posts its task row as it delivers. Its run was admitted as a task
+ * before its first model request, so its finished output is delivered
+ * whatever the post answers.
+ */
+async function postDeliveryTaskFee(prepared: PreparedExecution, submissionId: string | undefined): Promise<void> {
   const run = hostedRun(prepared.env, submissionId);
-  if (!run || !qualifiesAsTask({ kind: 'scheduled' }, { kind: 'post' })) return undefined;
-  const outcome = await postRunFee({ ...run, tier: 'task', agentId: prepared.access.config.agentId });
-  return outcome.kind === 'refused' ? new RoutineRuntimeError('spend_limited', CREDITS_EXHAUSTED_TEXT) : undefined;
+  if (!run || !qualifiesAsTask({ kind: 'scheduled' }, { kind: 'post' })) return;
+  await postRunFee({ ...run, tier: 'task', agentId: prepared.access.config.agentId });
 }
 
 function captureScheduledRun(
@@ -1126,6 +1114,7 @@ function routineRunReviewEnding(
 async function recordUsage(
   prepared: PreparedExecution,
   settlement: RoutineAgentSettlementV1,
+  submissionId: string | undefined,
 ): Promise<void> {
   const usage = settlement.outcome === 'completed' ? settlement.result.usage : settlement.usage;
   await prepared.usageRecorder?.recordTerminal({
@@ -1142,6 +1131,7 @@ async function recordUsage(
       : {}),
     ...(usage?.returnedModel ? { returnedModel: usage.returnedModel } : {}),
     ...(usage ? {} : { unknownReason: 'provider_request_unknown' }),
+    billingRunId: submissionId,
   });
 }
 
@@ -1539,6 +1529,7 @@ export async function settleRefusedWithoutPreparation(
       operationId: run.id,
       executionId,
       ...(execution ? { runExecutionId: execution.id } : {}),
+      billingRunId: admission.flueAgentReceipt?.submissionId,
       status: 'failed',
       unknownReason: 'provider_request_unknown',
       at: now(),
@@ -1615,14 +1606,16 @@ async function deliverFailureNoticeBestEffort(
     if (!run || run.status !== 'failed' || run.deliveryStatus !== 'none') return;
     const routine = await input.store.getRoutine(run.routineId);
     if (!routine) return;
-    await deliverRoutineFailureNotice({
+    const notice = {
       store: input.store,
       run,
       routine,
       access: input.access,
-      publicError,
       ...(input.workLifecycle ? { workLifecycle: input.workLifecycle } : {}),
-    }, input.access.client);
+    };
+    await (run.failureClass === 'spend_limited'
+      ? (await import('./pause-notice.ts')).deliverRoutinePauseNotice(notice)
+      : deliverRoutineFailureNotice({ ...notice, publicError }, input.access.client));
   } catch (error) {
     if (error instanceof RoutineRuntimeError &&
         error.failureClass === 'direct_thread_unavailable') {
@@ -1640,6 +1633,16 @@ async function deliverFailureNoticeBestEffort(
       })().catch(() => undefined);
     }
     // The failed occurrence remains available through its authorized management surface.
+  }
+}
+
+/** A run that succeeds after an out-of-usage pause edits the pause's notice. */
+async function closePauseNoticeBestEffort(prepared: PreparedExecution): Promise<void> {
+  try {
+    const { closeRoutinePauseNotice } = await import('./pause-notice.ts');
+    await closeRoutinePauseNotice(prepared);
+  } catch {
+    console.warn('[chickpea] A routine\'s out-of-usage notice could not be edited');
   }
 }
 

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { estimateUsage } from '../src/usage/pricing/estimate.ts';
-import { SqliteUsageStore, UsageStateError } from '../src/usage/store.ts';
+import { SqliteUsageStore, UsageStateError, UsageStoreLogic } from '../src/usage/store.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import type { AdmitUsageOperationInput, RecordUsageTerminalInput } from '../src/usage/types.ts';
 
@@ -448,6 +448,120 @@ test('a credential epoch takes a new label in place, audited, but refuses any ot
         store.putCredential({ ...epoch, ...changed }),
         (error: unknown) => error instanceof UsageStateError && error.code === 'usage_credential_conflict',
         JSON.stringify(changed),
+      );
+    }
+  } finally {
+    store.close();
+  }
+});
+
+test('a measurement keeps the billing run key its charges carry, and a replay only fills a missing one', async () => {
+  const store = new SqliteUsageStore(':memory:');
+  try {
+    await store.admitOperation(operation('op_keyed'));
+    const keyed = await store.recordTerminal(terminal('op_keyed', { billingRunId: 'sub_ik_keyed' }));
+    assert.equal(keyed.measurements[0]?.billingRunId, 'sub_ik_keyed');
+    for (const replay of [{}, { billingRunId: null }, { billingRunId: 'sub_ik_other' }]) {
+      const replayed = await store.recordTerminal(terminal('op_keyed', replay));
+      assert.equal(replayed.measurements[0]?.billingRunId, 'sub_ik_keyed', `a replay with ${JSON.stringify(replay)} keeps the first key`);
+    }
+
+    await store.admitOperation(operation('op_unkeyed'));
+    assert.equal((await store.recordTerminal(terminal('op_unkeyed'))).measurements[0]?.billingRunId, null);
+    const filled = await store.recordTerminal(terminal('op_unkeyed', { billingRunId: 'sub_ik_late' }));
+    assert.equal(filled.measurements[0]?.billingRunId, 'sub_ik_late');
+
+    await store.admitOperation(operation('op_bad_key'));
+    await assert.rejects(
+      store.recordTerminal(terminal('op_bad_key', { billingRunId: 'sub ik/1' })),
+      (error: unknown) => error instanceof UsageStateError && error.code === 'usage_invalid_input',
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test('a usage store created before billing run keys gains the column in place and fills it on replay', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const before = new UsageStoreLogic(db);
+    before.admitOperation(operation('op_before_keys'));
+    before.recordTerminal(terminal('op_before_keys'));
+    db.exec('ALTER TABLE usage_measurements DROP COLUMN billing_run_id');
+
+    const upgraded = new UsageStoreLogic(db);
+    const column = db.all('PRAGMA table_info(usage_measurements)').find((row) => row.name === 'billing_run_id');
+    assert.deepEqual([column?.type, column?.notnull, column?.dflt_value], ['TEXT', 0, null], 'added nullable, with no default');
+    assert.equal(upgraded.getOperation('op_before_keys')?.measurements[0]?.billingRunId, null);
+    const replayed = upgraded.recordTerminal(terminal('op_before_keys', { billingRunId: 'sub_ik_after_upgrade' }));
+    assert.equal(replayed.measurements[0]?.billingRunId, 'sub_ik_after_upgrade');
+  } finally {
+    db.close();
+  }
+});
+
+test('activity attributions list public customer work in range, oldest first, with its model, estimate and run keys', async () => {
+  const store = new SqliteUsageStore(':memory:');
+  const priced = (micros: number): Partial<RecordUsageTerminalInput> => ({
+    estimateCompleteness: 'complete', estimateAmountMicros: micros, estimateCurrency: 'USD',
+    priceVersionId: 'openai-2026-07', priceUnknownReason: null,
+  });
+  try {
+    // A turn whose coding worker ran on another model under the same submission.
+    await store.admitOperation(operation('op_turn', { startedAt: START + 10, requesterMembershipId: 'membership_maya' }));
+    await store.recordTerminal(terminal('op_turn', {
+      executionId: 'exec_turn:coding:1', observedAt: START + 500, finishedAt: START + 500,
+      returnedModel: 'gpt-5-codex', billingRunId: 'sub_ik_turn', ...priced(400),
+    }));
+    await store.recordTerminal(terminal('op_turn', { billingRunId: 'sub_ik_turn', ...priced(1_000) }));
+    // A routine retried: one submission per attempt; the second attempt returned no model.
+    await store.admitOperation(operation('op_routine', {
+      operationKind: 'routine_run', startedAt: START, routineId: 'routine_daily', routineLabel: 'Daily', routineRunId: 'op_routine',
+      requesterMembershipId: 'membership_maya',
+    }));
+    // Priced in another currency, which a USD estimate cannot add.
+    await store.recordTerminal(terminal('op_routine', {
+      executionId: 'exec_routine:1', billingRunId: 'sub_ik_attempt_1', ...priced(700), estimateCurrency: 'EUR',
+    }));
+    await store.recordTerminal(terminal('op_routine', {
+      executionId: 'exec_routine:2', observedAt: START + 3_000, finishedAt: START + 3_000, billingRunId: 'sub_ik_attempt_2',
+      returnedProvider: null, returnedModel: null, requestedModel: 'gpt-4.1',
+      usageCompleteness: 'not_reported', inputTokens: null, outputTokens: null, totalTokens: null,
+      usageUnknownReason: 'provider_request_unknown',
+    }));
+    // A turn still running: no measurement yet.
+    await store.admitOperation(operation('op_running', { startedAt: START + 20, agentId: null, requesterMembershipId: null }));
+    // Never listed: a private routine, an internal classification, and work outside the range.
+    await store.admitOperation(operation('op_private_routine', {
+      operationKind: 'routine_run', conversationKind: 'direct_message', channelLabel: null,
+      routineId: 'routine_private', routineLabel: 'Mine', routineRunId: 'op_private_routine',
+    }));
+    await store.recordTerminal(terminal('op_private_routine', { billingRunId: 'sub_ik_private' }));
+    await store.admitOperation(operation('op_classify', { operationKind: 'interaction_classification' }));
+    await store.admitOperation(operation('op_before', { startedAt: START - 1 }));
+    await store.admitOperation(operation('op_after', { startedAt: START + 60_000 }));
+
+    assert.deepEqual(await store.listActivityAttributions({ from: START, to: START + 60_000 }), [
+      {
+        operationId: 'op_routine', operationKind: 'routine_run', startedAt: START, agentId: 'agent_default',
+        requesterMembershipId: 'membership_maya', model: 'openai/gpt-4.1', estimateMicros: null,
+        billingRunIds: ['sub_ik_attempt_1', 'sub_ik_attempt_2'],
+      },
+      {
+        operationId: 'op_turn', operationKind: 'interactive_turn', startedAt: START + 10, agentId: 'agent_default',
+        requesterMembershipId: 'membership_maya', model: 'openai/gpt-4.1-mini-2025-04-14', estimateMicros: 1_400,
+        billingRunIds: ['sub_ik_turn'],
+      },
+      {
+        operationId: 'op_running', operationKind: 'interactive_turn', startedAt: START + 20, agentId: null,
+        requesterMembershipId: null, model: 'openai/gpt-4.1-mini', estimateMicros: null, billingRunIds: [],
+      },
+    ]);
+
+    for (const range of [{ from: START, to: START }, { from: START, to: START + 367 * 86_400_000 }]) {
+      await assert.rejects(
+        store.listActivityAttributions(range),
+        (error: unknown) => error instanceof UsageStateError && error.code === 'usage_query_invalid',
       );
     }
   } finally {

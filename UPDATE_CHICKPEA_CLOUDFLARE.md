@@ -97,6 +97,13 @@ the `message.mpim` event and has the `mpim:history` permission. Tell the user
 this optional step is in [Group DMs](SETUP_AGENT.md#group-dms), and change
 their Slack app only if they ask.
 
+Releases that request permissions for upcoming features need nothing to
+configure. A customer-owned Slack app created before them keeps working
+without them, and no feature in this release uses them. Tell the user this
+optional step is in
+[Permissions for upcoming features](SETUP_AGENT.md#permissions-for-upcoming-features),
+and change their Slack app only if they ask.
+
 v0.1.27, v0.1.28 and v0.1.29 cannot read two kinds of record that v0.1.30
 writes, and a single one stalls them after a rollback. On a shared-gateway
 installation, a button click or form submission that is still queued stops the

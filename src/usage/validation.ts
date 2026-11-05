@@ -124,6 +124,7 @@ export function normalizeRecordUsageTerminal(
     ...(input.runExecutionId
       ? { runExecutionId: opaqueId(input.runExecutionId, 'Run execution ID') }
       : {}),
+    ...(input.billingRunId ? { billingRunId: opaqueId(input.billingRunId, 'Billing run ID') } : {}),
     status: terminalStatus(input.status),
     finishedAt: timestamp(input.finishedAt, 'finished time'),
     observedAt: timestamp(input.observedAt, 'observed time'),

@@ -1,4 +1,5 @@
 import type { WebAPICallResult, WebClient } from '@slack/web-api';
+import { SLACK_CANVAS_OPERATIONS } from '../canvases/types.ts';
 import { SLACK_LIST_OPERATIONS } from '../lists/types.ts';
 
 import type { GatewayOperationClient } from './client.ts';
@@ -69,6 +70,7 @@ const ASSISTANT_THREAD_OPERATIONS = new Set<GatewaySlackOperation>([
 /** Untyped operations reached through `apiCall`, mirroring the SDK bridge. */
 const API_CALL_OPERATIONS = new Set<GatewaySlackOperation>([
   ...SLACK_LIST_OPERATIONS,
+  ...SLACK_CANVAS_OPERATIONS,
   AGENT_SESSION_SET_STATUS_OPERATION,
   'chickpea.files.stage',
   'chickpea.files.getShare',

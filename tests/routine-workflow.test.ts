@@ -591,14 +591,11 @@ test('a quiet scheduled run posts no task row', async (t) => {
   assert.deepEqual(events, []);
 });
 
-test('a scheduled run whose task row is refused fails out of usage, and its destination gets the notice, not the result', async (t) => {
+test('a scheduled run whose task row is refused still delivers its result, since it was admitted before it ran', async (t) => {
   const { run, events, messages } = await scheduledRunWithFees(t, 'fee_refused', { outcome: 'refused' });
-  assert.deepEqual([run?.status, run?.failureClass, run?.publicError], ['failed', 'spend_limited', CREDITS_EXHAUSTED_TEXT]);
+  assert.deepEqual([run?.status, run?.failureClass], ['succeeded', null]);
   assert.deepEqual(events, ['fee:task', 'slack-post']);
-  assert.equal(messages.length, 1);
-  assert.match(messages[0]!, /Routine needs attention/);
-  assert.ok(messages[0]!.includes(CREDITS_EXHAUSTED_TEXT), messages[0]!);
-  assert.doesNotMatch(messages[0]!, /Routine result/);
+  assert.deepEqual(messages.map((message) => message.includes('Routine result')), [true], 'the finished output is not thrown away');
 });
 
 function RoutineFeeProbe() {
@@ -729,6 +726,8 @@ async function scheduledRunSettlement(
     deadlinePassesBeforeReattach?: boolean;
     /** The channel's membership changed while the run worked, so its memory lease no longer holds. */
     accessChanged?: boolean;
+    /** Records the run's usage here. */
+    usage?: UsageStore;
   } = {},
 ) {
   const store = new SqliteRoutineStore(':memory:', () => NOW);
@@ -741,6 +740,7 @@ async function scheduledRunSettlement(
     resetPlatformFundingForTests();
   });
   const events: string[] = [];
+  const feeRuns: string[] = [];
   const creditBacks: Array<{ run: RunRef; reason: CreditBackReason }> = [];
   const statusesAtCreditBack: Array<string | undefined> = [];
   let occurrenceId: string | undefined;
@@ -753,6 +753,7 @@ async function scheduledRunSettlement(
       charge: async () => {},
       postFee: async (post) => {
         events.push(`fee:${post.tier}`);
+        feeRuns.push(post.runId);
         return { kind: input.fee ?? 'posted' };
       },
       creditBack: async (run, reason) => {
@@ -799,6 +800,7 @@ async function scheduledRunSettlement(
         }
       : {}),
     handle: input.handle?.(clock) ?? fakeHandle({ reply: successfulReply() }),
+    ...(input.usage ? { usageRecordingEnabled: true, usageStore: input.usage } : {}),
   };
   const occurrence = { env, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt };
   if (input.deadlinePassesBeforeReattach) {
@@ -806,7 +808,7 @@ async function scheduledRunSettlement(
     clock.at = NOW + 120_000;
   }
   assert.equal(await executeRoutineOccurrence(occurrence, deps), 'completed');
-  return { run: await store.getRun(fixture.run.id), events, creditBacks, statusesAtCreditBack, messages };
+  return { run: await store.getRun(fixture.run.id), events, feeRuns, creditBacks, statusesAtCreditBack, messages };
 }
 
 /** A handle whose read reports what the Agent did, then ends as told. */
@@ -829,6 +831,21 @@ test('a delivered scheduled result posts its task row, then a footer that says n
     assert.deepEqual(delivered.events, ['fee:task', 'slack-post']);
     assert.deepEqual(routineFooter(delivered.messages[0]), ['Chickpea', 'anthropic/claude-sonnet-4-6', 'Scheduled']);
   }
+});
+
+test('a routine attempt\'s usage measurement keeps the run key its task fee and credit-back used', async (t) => {
+  const usage = new SqliteUsageStore(':memory:');
+  t.after(() => usage.close());
+  const delivered = await scheduledRunSettlement(t, 'keyed_delivered', { platformFunded: true, usage });
+  const failed = await scheduledRunSettlement(t, 'keyed_failed', {
+    platformFunded: true, usage, handle: () => fakeHandle({ readError: PROVIDER_FAILED() }),
+  });
+  const measuredKey = async (occurrenceId: string) =>
+    (await usage.getOperation(occurrenceId))?.measurements.map((measurement) => measurement.billingRunId);
+  assert.deepEqual(delivered.feeRuns, ['submission_test']);
+  assert.deepEqual(await measuredKey(delivered.run!.id), delivered.feeRuns);
+  assert.deepEqual(failed.creditBacks.map((credit) => credit.run.runId), ['submission_test']);
+  assert.deepEqual(await measuredKey(failed.run!.id), failed.creditBacks.map((credit) => credit.run.runId));
 });
 
 test('a platform-funded scheduled run that failed as a whole is credited back, and its notice says so', async (t) => {
@@ -904,14 +921,18 @@ test('a scheduled run gets the out-of-usage notice only for a hosted installatio
     ['standalone_refusal_text', { port: false, env: {} }, OUT_OF_USAGE, ordinary],
     ['hosted_provider_text', {}, PROVIDER_CREDITS_TEXT, ordinary],
     ['hosted_flue_refusal', {}, OUT_OF_USAGE, ['failed', 'spend_limited', CREDITS_EXHAUSTED_TEXT]],
-    ['hosted_refusal', {}, () => new CreditsExhaustedError(), ['failed', 'spend_limited', CREDITS_EXHAUSTED_TEXT]],
+    ['hosted_refusal', {}, () => new CreditsExhaustedError({ kind: 'top_up_limit', limitCents: 5_000 }),
+      ['failed', 'spend_limited', CREDITS_EXHAUSTED_TEXT]],
   ] as const;
   for (const [suffix, setup, error, expected] of cases) {
     const { run, messages } = await scheduledRunSettlement(t, suffix, {
       ...setup, handle: () => fakeHandle({ readError: error() }),
     });
     assert.deepEqual([run?.status, run?.failureClass, run?.publicError], expected, suffix);
-    assert.equal(JSON.stringify(messages).includes(CREDITS_EXHAUSTED_TEXT), expected[1] === 'spend_limited', suffix);
+    const notice = JSON.stringify(messages);
+    assert.equal(notice.includes('because this workspace is out of usage'), expected[1] === 'spend_limited', suffix);
+    assert.equal(notice.includes('Execution fixture is paused'), expected[1] === 'spend_limited', suffix);
+    assert.equal(notice.includes('$50'), false, 'the channel is told no amount');
   }
 });
 
@@ -935,14 +956,20 @@ test('a scheduled run at a daily limit fails spend-limited with its scope\'s not
     ['hosted_fleet_limit', {}, () => new DailyLimitError({ ...limit, scope: 'fleet' }),
       ['failed', 'spend_limited', fleetNotice]],
   ] as const;
+  const shown = {
+    standalone_daily_limit_text: 'The routine could not complete safely.',
+    hosted_flue_daily_limit: "because this workspace reached today's free trial limit. It runs again on schedule after the limit resets.",
+    hosted_daily_limit: "because this workspace reached today's free trial limit.",
+    hosted_fleet_limit: 'because Chickpea has paused free trial usage for now. It runs again on schedule once trials resume.',
+  };
   for (const [suffix, setup, error, expected] of cases) {
     const { run, messages, creditBacks } = await scheduledRunSettlement(t, suffix, {
       ...setup, handle: () => fakeHandle({ readError: error() }),
     });
     assert.deepEqual([run?.status, run?.failureClass, run?.publicError], expected, suffix);
-    assert.ok(JSON.stringify(messages).includes(expected[2]), suffix);
+    assert.ok(JSON.stringify(messages).includes(shown[suffix]), suffix);
     assert.equal(JSON.stringify(messages).includes('trial'), expected[1] === 'spend_limited', suffix);
-    assert.equal(JSON.stringify(messages).includes(CREDITS_EXHAUSTED_TEXT), false, suffix);
+    assert.equal(JSON.stringify(messages).includes('out of usage'), false, suffix);
     assert.deepEqual(creditBacks, [], suffix);
   }
 });
@@ -986,11 +1013,101 @@ test('a platform-funded scheduled run that ended without a valid result is credi
   assert.equal(JSON.stringify(afterTool.messages).includes(CREDITED_BACK), false);
 });
 
-test('a scheduled run whose task row is refused is not credited back', async (t) => {
+test('a scheduled run whose task row is refused delivers and is not credited back', async (t) => {
   const { run, creditBacks, messages } = await scheduledRunSettlement(t, 'task_refused', { platformFunded: true, fee: 'refused' });
-  assert.deepEqual([run?.status, run?.failureClass], ['failed', 'spend_limited']);
+  assert.deepEqual([run?.status, run?.failureClass], ['succeeded', null]);
   assert.deepEqual(creditBacks, []);
   assert.equal(JSON.stringify(messages).includes(CREDITED_BACK), false);
+});
+
+test('a routine out of usage posts one notice for the pause, edits it at its next good run, and is never paused for it', async (t) => {
+  const store = new SqliteRoutineStore(':memory:', () => NOW);
+  resetInstallationAdmissionForTests();
+  resetPlatformFundingForTests();
+  configureInstallationAdmission(async () => 'admitted');
+  configurePlatformFunding({ ...NO_RUN_FEES, funding: async () => 'customer', admit: async () => 'admitted', charge: async () => {} });
+  t.after(() => {
+    store.close();
+    resetInstallationAdmissionForTests();
+    resetPlatformFundingForTests();
+  });
+  const posts: Array<{ text?: string }> = [];
+  const updates: Array<{ channel: string; ts: string; text: string }> = [];
+  let refuseNextPost = false;
+  const client = {
+    chat: {
+      postMessage: async (message: { text?: string }) => {
+        if (refuseNextPost) {
+          refuseNextPost = false;
+          throw { data: { ok: false, error: 'not_in_channel' } };
+        }
+        posts.push(message);
+        return { ok: true, channel: 'C_TEST', ts: `178515360${posts.length}.000000` };
+      },
+      update: async (message: { channel: string; ts: string; text: string }) => {
+        updates.push(message);
+        return { ok: true };
+      },
+    },
+  } as unknown as WebClient;
+  const fixture = await admittedFixture(store, 'pause_notice', async (routine) => {
+    for (let index = 0; index < 11; index += 1) {
+      await store.createOccurrence({
+        runId: `rrun_pause_notice_later_${index}`, idempotencyKey: `run:pause_notice:later:${index}`,
+        routineId: routine.id, routineVersion: 1, scheduledFor: NOW + 3_600_000 + index, triggerSource: 'schedule',
+        queuedAt: NOW, deadlineAt: NOW + 7_200_000,
+      });
+      await (store as unknown as Pick<RoutineStoreLogic, 'cancelPendingWork'>)
+        .cancelPendingWork(NOW, { failureClass: null, publicError: null, skipReason: 'operator_restore' });
+    }
+  });
+  const env = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_pause_notice' });
+  const base = dependencies();
+  const occurrence = async (index: number, handle: AgentInstanceHandle) => {
+    let { run, attempt } = fixture;
+    if (index > 0) {
+      run = await store.createOccurrence({
+        runId: `rrun_pause_notice_${index}`, idempotencyKey: `run:pause_notice:${index}`, routineId: fixture.routine.id,
+        routineVersion: 1, scheduledFor: NOW + index * 60_000, triggerSource: 'schedule', queuedAt: NOW,
+        deadlineAt: NOW + 600_000,
+      });
+      attempt = await store.startAdmissionAttempt({
+        occurrenceId: run.id, owner: 'heartbeat', invokeStartedAt: NOW, leaseUntil: NOW + 30_000,
+      });
+    }
+    assert.equal(await executeRoutineOccurrence({ env, store, occurrenceId: run.id, attempt: attempt.attempt }, {
+      ...base,
+      resolveAccess: async (...args: Parameters<typeof base.resolveAccess>) => ({ ...await base.resolveAccess(...args), client }),
+      handle,
+    }), 'completed');
+  };
+
+  for (const index of [0, 1, 2]) await occurrence(index, fakeHandle({ readError: OUT_OF_USAGE() }));
+  assert.equal(posts.length, 1, 'only the pause\'s first skipped run posts, though skipped later runs sort before it');
+  assert.match(posts[0]!.text ?? '', /^⏸️ Execution fixture is paused\n/);
+  assert.match(posts[0]!.text ?? '', /It didn't run at \d{1,2}:\d{2} [AP]M UTC because this workspace is out of usage\./);
+  assert.match(posts[0]!.text ?? '', /Until then I'll skip runs without posting again\./);
+  const routine = await store.getRoutine(fixture.routine.id);
+  assert.deepEqual([routine?.state, routine?.consecutiveFailures], ['active', 0], 'running out of usage never pauses a routine');
+
+  await occurrence(3, fakeHandle({ reply: successfulReply() }));
+  assert.equal(posts.length, 2);
+  assert.match(posts[1]!.text ?? '', /Routine result/);
+  assert.equal(updates.length, 1);
+  assert.deepEqual([updates[0]!.channel, updates[0]!.ts], ['C_TEST', '1785153601.000000'], 'the pause\'s notice is edited');
+  assert.match(updates[0]!.text, /^▶️ Execution fixture is back on\n/);
+  assert.match(updates[0]!.text, /It skipped 3 runs and ran again /);
+
+  await occurrence(4, fakeHandle({ reply: successfulReply() }));
+  assert.equal(updates.length, 1, 'a later good run edits nothing');
+  refuseNextPost = true;
+  await occurrence(5, fakeHandle({ readError: OUT_OF_USAGE() }));
+  assert.equal(posts.length, 3, 'a new pause\'s notice that Slack refused');
+  await occurrence(6, fakeHandle({ readError: OUT_OF_USAGE() }));
+  assert.equal(posts.length, 4, 'is posted by the pause\'s next skipped run');
+  assert.match(posts[3]!.text ?? '', /is paused/);
+  await occurrence(7, fakeHandle({ readError: OUT_OF_USAGE() }));
+  assert.equal(posts.length, 4);
 });
 
 test('a result Slack could not take is credited back only when Slack refused it for load', async (t) => {

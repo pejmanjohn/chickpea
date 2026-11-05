@@ -314,6 +314,7 @@ test('the page only references images the deployment actually serves', async () 
   for (const path of referenced) {
     assert.ok(PUBLIC_ASSET_PATHS.includes(path.replace(/^\//, '')), path);
   }
+  assert.ok(PUBLIC_ASSET_PATHS.every((path) => !path.startsWith('chickpea/')), 'the art kit is never served');
 });
 
 test('the first-Agent prompt is the connect line, then a request for the first Agent', () => {

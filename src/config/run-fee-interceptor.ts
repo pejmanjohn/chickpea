@@ -1,8 +1,10 @@
 import type { FlueExecutionInterceptor } from '@flue/runtime';
 
 import { registeredToolDescriptor } from '../activity/status.ts';
+import type { SLACK_CANVAS_TOOL_NAMES } from '../slack/canvases/tools.ts';
 import { SLACK_CREATE_CHANNEL_TOOL_NAME } from '../slack/channel-creation/tools.ts';
 import { SLACK_GROUP_DM_TOOL_NAME } from '../slack/group-dm/tools.ts';
+import type { SLACK_LIST_TOOL_NAMES } from '../slack/lists/tools.ts';
 import { qualifiesAsTask } from '../usage/run-fees.ts';
 import { WEB_TOOL_NAMES } from '../web/names.ts';
 import { currentRunFees } from './model-access.ts';
@@ -44,17 +46,33 @@ function refusedBeforeStart(error: unknown): boolean {
   return cause instanceof Error && error.message === cause.message;
 }
 
-/**
- * Tools that return a refusal made before any work for the model to explain,
- * rather than throwing. read_slack_channel says not_read. The web tools say
- * outcome refused when nothing went out: a URL or query they may not send, or
- * a turn whose budget is spent. A page or search that went out and failed is
- * work, and charges.
- */
-const REFUSALS_BEFORE_WORK = new Map<string, (output: { status?: unknown; outcome?: unknown }) => boolean>([
-  ['read_slack_channel', (output) => output.status === 'not_read'],
-  [SLACK_GROUP_DM_TOOL_NAME, (output) => output.status === 'refused'],
-  [SLACK_CREATE_CHANNEL_TOOL_NAME, (output) => output.status === 'refused'],
+type Refusal = (output: { status?: unknown; outcome?: unknown }) => boolean;
+
+const notRead: Refusal = (output) => output.status === 'not_read';
+const notWritten: Refusal = (output) => output.status === 'not_written';
+const refused: Refusal = (output) => output.status === 'refused';
+
+const SLACK_CANVAS_REFUSALS: Record<(typeof SLACK_CANVAS_TOOL_NAMES)[number], Refusal> = {
+  read_slack_canvas: notRead,
+  create_slack_canvas: notWritten,
+  update_slack_canvas: notWritten,
+};
+
+const SLACK_LIST_REFUSALS: Record<(typeof SLACK_LIST_TOOL_NAMES)[number], Refusal> = {
+  read_slack_list: notWritten,
+  read_slack_list_item: notWritten,
+  create_slack_list_item: notWritten,
+  update_slack_list_item: notWritten,
+  create_slack_task_list: notWritten,
+  share_slack_list: notWritten,
+};
+
+const REFUSALS_BEFORE_WORK = new Map<string, Refusal>([
+  ['read_slack_channel', notRead],
+  [SLACK_GROUP_DM_TOOL_NAME, refused],
+  [SLACK_CREATE_CHANNEL_TOOL_NAME, refused],
+  ...Object.entries(SLACK_CANVAS_REFUSALS),
+  ...Object.entries(SLACK_LIST_REFUSALS),
   ...WEB_TOOL_NAMES.map((name) => [name, (output: { outcome?: unknown }) => output.outcome === 'refused'] as const),
 ]);
 

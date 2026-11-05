@@ -5,27 +5,47 @@ import { isOwnerSession } from '../auth/permissions.ts';
 import { requestPrincipal } from '../auth/service.ts';
 import { requireInstallationScope } from '../config/installation-scope.ts';
 import {
+  AUTO_TOP_UP_CONSENT_VERSION,
   BillingRefusal,
   platformBilling,
+  type AutoTopUpChange,
+  type BillingActor,
   type BillingFunding,
   type BillingSummary,
+  type ExtraUsageOffer,
   type PlanOffer,
   type PlatformBillingPort,
+  type SavedCardResult,
   type UsageRow,
 } from '../config/platform-billing.ts';
 import { isProviderKeyId, type ProviderKeyId } from '../config/provider-keys.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
-import { formatPriceCents, formatUsageDollars, usagePercent, type UsageMicros } from '../usage/usage-display.ts';
-import { invalidRequest, noStore, readJson } from './api-support.ts';
-import { formatTasks } from './billing-tasks.ts';
+import { formatCard, formatFee, formatPriceCents, formatUsageDollars, usagePercent, type UsageMicros } from '../usage/usage-display.ts';
+import { invalidRequest, noStore, readIdempotencyKey, readJson } from './api-support.ts';
+import { balance, type BillingBalance } from './billing-balance.ts';
+import { formatTasks, planTaskSaving, taskFee, taskRates } from './billing-tasks.ts';
 
 export const PLAN_PATH = '/admin/plan';
 
 const MAX_BILLING_BODY_BYTES = 512;
 const MICROS_PER_CENT = 10_000;
+/** The highest monthly auto top-up limit an Owner can set, $10,000, so a typo can't authorize more. */
+const MAX_TOP_UP_LIMIT_CENTS = 1_000_000;
 const rateCardKey = v.pipe(v.string(), v.regex(/^[a-z][a-z0-9_]{0,63}$/));
+const consentVersion = v.optional(v.pipe(v.string(), v.maxLength(64)));
 const checkoutSchema = v.strictObject({ kind: v.picklist(['plan', 'extra_usage']), key: rateCardKey });
 const fundingSchema = v.strictObject({ funding: v.picklist(['platform', 'own_key']) });
+const autoTopUpSchema = v.variant('change', [
+  v.strictObject({ change: v.picklist(['off', 'retry']) }),
+  v.strictObject({
+    change: v.literal('on'),
+    pack: v.union([v.literal('plan'), rateCardKey]),
+    limit: v.union([v.literal('plan'), v.pipe(v.number(), v.integer(), v.minValue(100), v.maxValue(MAX_TOP_UP_LIMIT_CENTS))]),
+    consentVersion,
+  }),
+]);
+const planChangeSchema = v.strictObject({ key: rateCardKey, consentVersion });
+const extraUsageSchema = v.strictObject({ key: rateCardKey });
 
 interface BillingAdminApiOptions {
   agentNames: (c: Context) => Promise<ReadonlyMap<string, string>>;
@@ -34,6 +54,8 @@ interface BillingAdminApiOptions {
   ownKeyFacts: (c: Context) => Promise<OwnKeyFacts>;
   /** After an Owner switches to Chickpea's models, sets what onboarding sets with them. */
   choseChickpeaModels: (c: Context) => Promise<void>;
+  /** The Owner making a billing change, for the host's consent records. */
+  actor: (c: Context) => Promise<BillingActor>;
 }
 
 /** What paying with the installation's own key would rely on. */
@@ -50,6 +72,7 @@ interface OwnerFacts {
   readonly agentNames: ReadonlyMap<string, string>;
   readonly personNames: ReadonlyMap<string, string>;
   readonly ownKey: OwnKeyFacts;
+  readonly inApp: { readonly planChange: boolean; readonly extraUsage: boolean };
 }
 
 /** One row of use; a null name gathers use with no Agent or person, or one with no name. */
@@ -83,14 +106,66 @@ interface BillingStatus {
   } | null;
   /** Null when nothing carried over. */
   rollover: { remaining: string; until: string } | null;
-  extraUsage: { remaining: string; frozen: boolean; until: string } | null;
+  /** Null when none is left. `bar` is what the packs that still have usage left held, and how much of it is used; null when the host doesn't say. */
+  extraUsage: {
+    remaining: string; frozen: boolean; until: string;
+    bar: { used: string; total: string; percent: number } | null;
+  } | null;
   trial: { remaining: string; granted: string; used: string; percent: number; until: string } | null;
   ownKeyWithoutPlan: { minimumPrice: string; minimumTasks: string | null } | null;
-  /** What the workspace can spend now, and the tasks it covers; null for an own key without a plan. `tasksLeft` is null when a task draws nothing. */
-  balance: { left: string; tasksLeft: string | null; exhausted: boolean } | null;
-  /** The flat usage a task draws, "30¢". */
+  /** What the big number counts, in the order usage is spent; null for an own key without a plan. */
+  balance: BillingBalance | null;
+  /** Null where the host offers no auto top-up. Everyone sees whether it is on and whether it reached its limit; only an Owner sees more. */
+  autoTopUp: { kind: 'no_plan' } | { kind: 'plan'; on: boolean; limitReached: boolean } | null;
+  /** The flat usage a task paid from plan usage draws, "25¢". */
   taskFee: string;
 }
+
+/**
+ * Auto top-up as an Owner manages it. Amounts are formatted dollars, with
+ * cents beside the ones the editor compares; `limitReached` means the next
+ * pack would not fit under the limit this period.
+ */
+interface OwnerAutoTopUp {
+  enabled: boolean;
+  /** The plan ends at renewal, so auto top-up is off until a new plan. */
+  ending: boolean;
+  pack: { rule: 'plan' | 'fixed'; key: string; price: string; cents: number };
+  limit: { rule: 'plan' | 'fixed'; amount: string; cents: number };
+  used: string;
+  percent: number;
+  resets: string | null;
+  limitReached: boolean;
+  pause:
+    | { kind: 'declined'; on: string }
+    | { kind: 'needs_confirmation'; amount: string; url: string | null }
+    | { kind: 'billing_details' }
+    | { kind: 'past_due' }
+    | null;
+  /** "Visa ending 4242"; null without a card. */
+  card: string | null;
+  /** The plan's price, which a "same as your plan" limit follows. */
+  plan: { price: string; cents: number };
+  /** Each pack an Owner can choose, with the tasks it covers. */
+  packs: { key: string; price: string; cents: number; tasks: string | null }[];
+  /** The pack that follows the plan, which the pack "plan" stands for; null when the host doesn't say. */
+  planPack: string | null;
+  /**
+   * The next plan up, with the usage it includes, what this month's plan and
+   * top-ups covered, and whether the next plan's usage covers that. `taskFees`
+   * compares a task's fee from plan usage and from extra usage while plan
+   * usage's is lower. Null on the largest plan.
+   */
+  upgrade: {
+    key: string; price: string; included: string; covered: string; coversThisMonth: boolean;
+    taskFees: { plan: string; extra: string } | null;
+  } | null;
+}
+
+/** What the Owner's latest purchase did, for the banner when they come back from Stripe. */
+type PurchaseView =
+  | { kind: 'extra_usage'; granted: boolean; usage: string }
+  | { kind: 'plan'; granted: boolean; first: boolean; added: string };
 
 /**
  * What paying with the installation's own key needs, whatever the funding is
@@ -118,6 +193,8 @@ export type BillingView =
     offers: {
       plans: {
         key: string; name: string; price: string; included: string; ownKeyMinimum: boolean; ownKeyEligible: boolean;
+        /** What auto top-up adds each time on this plan, for the first plan's disclosure; null when the host doesn't say. */
+        topUpPack: string | null;
         /** Tasks the plan covers each month; `ownKey` is null for a plan an own key cannot choose, both when a task draws nothing. */
         tasks: { platform: string | null; ownKey: string | null };
       }[];
@@ -126,10 +203,27 @@ export type BillingView =
       bonusPercent: number;
       /** The flat usage a chat reply draws: "$0" for none, or "30¢". */
       chatReplyFee: string;
+      /** The flat usage a task paid from extra usage draws; the status's `taskFee` where the host prices both the same. */
+      extraUsageTaskFee: string;
       rolloverMonths: number;
     };
     ownKey: OwnKeySetup;
+    /** Null without a plan, or where the host offers no auto top-up. */
+    topUp: OwnerAutoTopUp | null;
+    /** Purchases the host makes on the saved card, in the page, instead of Stripe Checkout. */
+    inApp: { planChange: boolean; extraUsage: boolean };
+    purchase: PurchaseView | null;
   });
+
+/** An in-app plan change, before the Owner confirms it. */
+type PlanChangeView =
+  | {
+    kind: 'upgrade'; key: string; price: string; included: string; today: string; added: string; from: string | null;
+    /** What the upgrade raises in auto top-up that follows the plan, with the monthly limit after it; null for nothing. */
+    topUpRaise: { limit: string; limitRises: boolean; pack: string | null } | null;
+    card: string | null;
+  }
+  | { kind: 'downgrade'; key: string; price: string; at: string };
 
 /**
  * The Plan page's API. It exists only where the host installed a billing
@@ -147,8 +241,13 @@ export function createBillingAdminApi(options: BillingAdminApiOptions): Hono {
     const [agentNames, personNames, ownKey] = await Promise.all([
       options.agentNames(c), options.personNames(c), options.ownKeyFacts(c),
     ]);
-    return billingView(summary, { agentNames, personNames, ownKey });
+    const inApp = { planChange: !!(port.previewPlanChange && port.changePlan), extraUsage: !!port.buyExtraUsage };
+    return billingView(summary, { agentNames, personNames, ownKey, inApp });
   };
+
+  /** A purchase on the saved card answers the fresh view, or the Stripe page that finishes it. */
+  const purchased = async (c: Context, port: PlatformBillingPort, installationId: string, result: SavedCardResult) =>
+    result.kind === 'redirect' ? redirect(c, result) : c.json({ billing: await view(c, port, installationId) });
 
   app.get('/billing', (c) => withBilling(c, async (port, installationId) =>
     c.json(await view(c, port, installationId))));
@@ -176,7 +275,218 @@ export function createBillingAdminApi(options: BillingAdminApiOptions): Hono {
   app.post('/billing/portal', (c) => withOwnerBilling(c, async (port, installationId) =>
     redirect(c, await port.portal(installationId, PLAN_PATH))));
 
+  app.post('/billing/auto-top-up', (c) => withOwnerBilling(c, async (port, installationId) => {
+    if (!port.updateAutoTopUp) return c.json({ error: 'not_found' }, 404);
+    const parsed = v.safeParse(autoTopUpSchema, await readJson(c, MAX_BILLING_BODY_BYTES));
+    if (!parsed.success) return invalidRequest(c);
+    const body = parsed.output;
+    const summary = await port.summary(installationId);
+    const current = summary.autoTopUp;
+    if (!current || !summary.plan) return c.json({ error: 'plan_required' }, 409);
+    let change: AutoTopUpChange = { kind: 'off' };
+    let raises = false;
+    if (body.change === 'on') {
+      if (summary.pendingChange?.kind === 'ends') return c.json({ error: 'plan_required' }, 409);
+      const planPackKey = current.pack.rule === 'plan' ? current.pack.key : currentPlanOffer(summary)?.autoTopUpPackKey;
+      const packKey = body.pack === 'plan' ? planPackKey : body.pack;
+      const pack = packKey === undefined ? undefined : extraUsageOffer(summary, packKey);
+      const limitCents = body.limit === 'plan' ? summary.plan.priceCents : body.limit;
+      if (!pack || pack.priceCents > limitCents) return invalidRequest(c);
+      const before = extraUsageOffer(summary, current.pack.key);
+      raises = !current.enabled || pack.priceCents > (before?.priceCents ?? 0) || limitCents > current.limit.cents;
+      if (raises && body.consentVersion !== AUTO_TOP_UP_CONSENT_VERSION) return c.json({ error: 'consent_outdated' }, 409);
+      change = {
+        kind: 'on',
+        pack: body.pack === 'plan' ? { rule: 'plan' } : { rule: 'fixed', key: body.pack },
+        limit: body.limit === 'plan' ? { rule: 'plan' } : { rule: 'fixed', cents: body.limit },
+      };
+    } else {
+      change = { kind: body.change };
+    }
+    const idempotencyKey = readIdempotencyKey(c);
+    await port.updateAutoTopUp(installationId, {
+      change, by: await options.actor(c), consentVersion: raises ? AUTO_TOP_UP_CONSENT_VERSION : null,
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    });
+    return c.json(await view(c, port, installationId));
+  }));
+
+  app.post('/billing/plan-change/preview', (c) => withOwnerBilling(c, async (port, installationId) => {
+    if (!port.previewPlanChange || !port.changePlan) return c.json({ error: 'not_found' }, 404);
+    const parsed = v.safeParse(planChangeSchema, await readJson(c, MAX_BILLING_BODY_BYTES));
+    if (!parsed.success) return invalidRequest(c);
+    const summary = await port.summary(installationId);
+    const target = planChangeTarget(summary, parsed.output.key);
+    if (!target) return invalidRequest(c);
+    return c.json(planChangeView(summary, target, await port.previewPlanChange(installationId, target.key)));
+  }));
+
+  app.post('/billing/plan-change', (c) => withOwnerBilling(c, async (port, installationId) => {
+    if (!port.previewPlanChange || !port.changePlan) return c.json({ error: 'not_found' }, 404);
+    const parsed = v.safeParse(planChangeSchema, await readJson(c, MAX_BILLING_BODY_BYTES));
+    if (!parsed.success) return invalidRequest(c);
+    const summary = await port.summary(installationId);
+    const target = planChangeTarget(summary, parsed.output.key);
+    if (!target) return invalidRequest(c);
+    const raises = topUpRaise(summary, target) !== null;
+    if (raises && parsed.output.consentVersion !== AUTO_TOP_UP_CONSENT_VERSION) return c.json({ error: 'consent_outdated' }, 409);
+    const idempotencyKey = readIdempotencyKey(c);
+    const result = await port.changePlan(installationId, {
+      planKey: target.key, by: await options.actor(c), consentVersion: raises ? AUTO_TOP_UP_CONSENT_VERSION : null,
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    });
+    return purchased(c, port, installationId, result);
+  }));
+
+  app.post('/billing/extra-usage', (c) => withOwnerBilling(c, async (port, installationId) => {
+    if (!port.buyExtraUsage) return c.json({ error: 'not_found' }, 404);
+    const parsed = v.safeParse(extraUsageSchema, await readJson(c, MAX_BILLING_BODY_BYTES));
+    if (!parsed.success) return invalidRequest(c);
+    const idempotencyKey = readIdempotencyKey(c);
+    const result = await port.buyExtraUsage(installationId, {
+      key: parsed.output.key, by: await options.actor(c), ...(idempotencyKey ? { idempotencyKey } : {}),
+    });
+    return purchased(c, port, installationId, result);
+  }));
+
   return app;
+}
+
+function topUpPackPrice(summary: BillingSummary, plan: PlanOffer): string | null {
+  const pack = plan.autoTopUpPackKey === undefined ? undefined : extraUsageOffer(summary, plan.autoTopUpPackKey);
+  return pack ? formatPriceCents(pack.priceCents) : null;
+}
+
+function extraUsageOffer(summary: BillingSummary, key: string): ExtraUsageOffer | undefined {
+  return summary.offers.extraUsage.find((offer) => offer.key === key);
+}
+
+/** The plans this installation's funding can move to, cheapest first. */
+function fundingPlans(summary: BillingSummary): PlanOffer[] {
+  return summary.offers.plans
+    .filter((offer) => summary.funding === 'platform' || offer.ownKeyEligible)
+    .toSorted((left, right) => left.priceCents - right.priceCents);
+}
+
+/** Another plan on sale for the same funding; an in-app change never switches funding. */
+function planChangeTarget(summary: BillingSummary, key: string): PlanOffer | undefined {
+  if (!summary.plan || summary.plan.key === key) return undefined;
+  return fundingPlans(summary).find((offer) => offer.key === key);
+}
+
+function currentPlanOffer(summary: BillingSummary): PlanOffer | undefined {
+  return summary.plan ? summary.offers.plans.find((offer) => offer.key === summary.plan?.key) : undefined;
+}
+
+/**
+ * What a plan change raises in auto top-up that follows the plan: a "same as
+ * your plan" limit rises to the new price, and a pack that follows the plan to
+ * the new plan's pack. Either raises what Chickpea may charge, so the Owner
+ * agrees again. Null when it raises neither.
+ */
+function topUpRaise(summary: BillingSummary, target: PlanOffer): { limitCents: number; limitRises: boolean; packCents: number | null } | null {
+  const topUp = summary.autoTopUp;
+  if (!topUp?.enabled || !summary.plan) return null;
+  const limitRises = topUp.limit.rule === 'plan' && target.priceCents > summary.plan.priceCents;
+  const before = extraUsageOffer(summary, topUp.pack.key);
+  const after = topUp.pack.rule === 'plan' && target.autoTopUpPackKey !== undefined ? extraUsageOffer(summary, target.autoTopUpPackKey) : undefined;
+  const packCents = after && after.priceCents > (before?.priceCents ?? 0) ? after.priceCents : null;
+  if (!limitRises && packCents === null) return null;
+  return { limitCents: limitRises ? target.priceCents : topUp.limit.cents, limitRises, packCents };
+}
+
+function planChangeView(
+  summary: BillingSummary,
+  target: PlanOffer,
+  preview: Awaited<ReturnType<NonNullable<PlatformBillingPort['previewPlanChange']>>>,
+): PlanChangeView {
+  const price = formatPriceCents(target.priceCents);
+  if (preview.kind === 'downgrade') return { kind: 'downgrade', key: target.key, price, at: SHORT_DATE.format(preview.at) };
+  const raise = topUpRaise(summary, target);
+  return {
+    kind: 'upgrade',
+    key: target.key,
+    price,
+    included: formatUsageDollars(target.includedMicros),
+    today: formatPriceCents(preview.todayCents),
+    added: formatUsageDollars(preview.addedMicros, 'down'),
+    from: summary.period ? SHORT_DATE.format(summary.period.end) : null,
+    topUpRaise: raise && {
+      limit: formatPriceCents(raise.limitCents),
+      limitRises: raise.limitRises,
+      pack: raise.packCents === null ? null : formatPriceCents(raise.packCents),
+    },
+    card: cardLabel(summary),
+  };
+}
+
+/** The saved card, from the auto top-up view. */
+function cardLabel(summary: BillingSummary): string | null {
+  return formatCard(summary.autoTopUp?.card);
+}
+
+/** The next pack would not fit under the limit this period. */
+function topUpLimitReached(summary: BillingSummary): boolean {
+  const topUp = summary.autoTopUp;
+  const pack = topUp && extraUsageOffer(summary, topUp.pack.key);
+  return !!topUp && !!pack && topUp.usedCents + pack.priceCents > topUp.limit.cents;
+}
+
+function autoTopUpStatus(summary: BillingSummary): BillingStatus['autoTopUp'] {
+  const topUp = summary.autoTopUp;
+  if (topUp === undefined) return null;
+  if (!summary.plan) return { kind: 'no_plan' };
+  if (topUp === null) return null;
+  const on = topUp.enabled && summary.pendingChange?.kind !== 'ends';
+  return { kind: 'plan', on, limitReached: on && topUpLimitReached(summary) };
+}
+
+function ownerAutoTopUp(summary: BillingSummary, planOffer: PlanOffer | undefined): OwnerAutoTopUp | null {
+  const topUp = summary.autoTopUp;
+  const pack = topUp && extraUsageOffer(summary, topUp.pack.key);
+  if (!topUp || !summary.plan || !pack) return null;
+  const ending = summary.pendingChange?.kind === 'ends';
+  const next = fundingPlans(summary).find((offer) => offer.priceCents > (summary.plan?.priceCents ?? 0));
+  const pause = topUp.pause;
+  const covered = ((planOffer?.includedMicros ?? 0) + topUp.usedCents * MICROS_PER_CENT) as UsageMicros;
+  return {
+    enabled: topUp.enabled && !ending,
+    ending,
+    pack: { rule: topUp.pack.rule, key: pack.key, price: formatPriceCents(pack.priceCents), cents: pack.priceCents },
+    limit: { rule: topUp.limit.rule, amount: formatPriceCents(topUp.limit.cents), cents: topUp.limit.cents },
+    used: formatPriceCents(topUp.usedCents),
+    percent: topUp.limit.cents > 0 ? Math.min(100, Math.floor(topUp.usedCents * 100 / topUp.limit.cents)) : 0,
+    resets: topUp.resetsAt && SHORT_DATE.format(topUp.resetsAt),
+    limitReached: topUpLimitReached(summary),
+    pause: !pause ? null
+      : pause.kind === 'declined' ? { kind: 'declined', on: SHORT_DATE.format(pause.at) }
+      : pause.kind === 'needs_confirmation'
+        ? { kind: 'needs_confirmation', amount: formatPriceCents(pause.amountCents), url: isHttps(pause.url) ? pause.url : null }
+      : { kind: pause.kind },
+    card: cardLabel(summary),
+    plan: { price: formatPriceCents(summary.plan.priceCents), cents: summary.plan.priceCents },
+    packs: summary.offers.extraUsage.map((offer) => ({
+      key: offer.key, price: formatPriceCents(offer.priceCents), cents: offer.priceCents,
+      tasks: formatTasks(offer.usageMicros, summary.funding, taskRates(summary.offers, 'extra')),
+    })),
+    planPack: (topUp.pack.rule === 'plan' ? topUp.pack.key : planOffer?.autoTopUpPackKey) ?? null,
+    upgrade: next ? {
+      key: next.key,
+      price: formatPriceCents(next.priceCents),
+      included: formatUsageDollars(next.includedMicros),
+      covered: formatUsageDollars(covered),
+      coversThisMonth: next.includedMicros >= covered,
+      taskFees: planTaskSaving(summary.offers),
+    } : null,
+  };
+}
+
+function purchaseView(summary: BillingSummary): PurchaseView | null {
+  const purchase = summary.lastPurchase;
+  if (!purchase) return null;
+  return purchase.kind === 'extra_usage'
+    ? { kind: 'extra_usage', granted: purchase.granted, usage: formatUsageDollars(purchase.usageMicros) }
+    : { kind: 'plan', granted: purchase.granted, first: purchase.first, added: formatUsageDollars(purchase.addedMicros, 'down') };
 }
 
 function billingView(summary: BillingSummary, owner: OwnerFacts | null): BillingView {
@@ -184,6 +494,7 @@ function billingView(summary: BillingSummary, owner: OwnerFacts | null): Billing
   const status = billingStatus(summary, minimum);
   if (!owner) return { manage: false, ...status };
   const { offers } = summary;
+  const planOffer = summary.plan ? offers.plans.find((offer) => offer.key === summary.plan?.key) : undefined;
   return {
     manage: true,
     ...status,
@@ -200,6 +511,7 @@ function billingView(summary: BillingSummary, owner: OwnerFacts | null): Billing
         included: formatUsageDollars(offer.includedMicros),
         ownKeyMinimum: offer.key === minimum.key,
         ownKeyEligible: offer.ownKeyEligible,
+        topUpPack: topUpPackPrice(summary, offer),
         tasks: {
           platform: formatTasks(offer.includedMicros, 'platform', offers),
           ownKey: offer.ownKeyEligible ? formatTasks(offer.includedMicros, 'own_key', offers) : null,
@@ -213,9 +525,13 @@ function billingView(summary: BillingSummary, owner: OwnerFacts | null): Billing
       })),
       bonusPercent: bonusPercent(offers.plans),
       chatReplyFee: formatFee(offers.chatReplyFeeMicros),
+      extraUsageTaskFee: formatFee(taskFee(offers, 'extra')),
       rolloverMonths: offers.rolloverMonths,
     },
     ownKey: ownKeySetup(summary, minimum, owner.ownKey),
+    topUp: ownerAutoTopUp(summary, planOffer),
+    inApp: owner.inApp,
+    purchase: purchaseView(summary),
   };
 }
 
@@ -250,7 +566,12 @@ function billingStatus(summary: BillingSummary, minimum: PlanOffer): BillingStat
       ? { remaining: formatUsageDollars(rollover.remainingMicros), until: SHORT_DATE.format(rollover.expiresAt) }
       : null,
     extraUsage: extraUsage && extraUsage.remainingMicros > 0
-      ? { remaining: formatUsageDollars(extraUsage.remainingMicros), frozen: extraUsage.frozen, until: LONG_DATE.format(extraUsage.expiresAt) }
+      ? {
+        remaining: formatUsageDollars(extraUsage.remainingMicros),
+        frozen: extraUsage.frozen,
+        until: LONG_DATE.format(extraUsage.expiresAt),
+        bar: extraUsageBar(extraUsage),
+      }
       : null,
     trial: trial && {
       remaining: formatUsageDollars(trial.remainingMicros),
@@ -263,36 +584,23 @@ function billingStatus(summary: BillingSummary, minimum: PlanOffer): BillingStat
       ? { minimumPrice: formatPriceCents(minimum.priceCents), minimumTasks: formatTasks(minimum.includedMicros, 'own_key', offers) }
       : null,
     balance: funding === 'own_key' && summary.plan === null ? null : balance(summary, planOffer),
+    autoTopUp: autoTopUpStatus(summary),
     taskFee: formatFee(offers.taskFeeMicros),
   };
 }
 
-/**
- * What the workspace can spend now, as the host counts it: what is left of
- * the plan's usage, what carried over, extra usage a plan unfreezes, and any
- * trial usage, less what the workspace owes. A plan with no meter yet counts
- * its whole usage.
- */
-function balance(summary: BillingSummary, planOffer: PlanOffer | null | undefined): NonNullable<BillingStatus['balance']> {
-  const { planUsage, rollover, extraUsage, trial } = summary;
-  const plan = !summary.plan ? 0
-    : planUsage ? Math.max(0, planUsage.includedMicros - planUsage.usedMicros)
-    : planOffer?.includedMicros ?? 0;
-  const spendable = plan + (rollover?.remainingMicros ?? 0) + (extraUsage && !extraUsage.frozen ? extraUsage.remainingMicros : 0) +
-    (trial?.remainingMicros ?? 0) - summary.debtMicros;
-  const left = Math.max(0, spendable) as UsageMicros;
-  return { left: formatUsageDollars(left, 'down'), tasksLeft: formatTasks(left, summary.funding, summary.offers), exhausted: left === 0 };
+/** The packs that still have usage left, and how much of them is used; the total is never below what remains. */
+function extraUsageBar(extraUsage: NonNullable<BillingSummary['extraUsage']>): NonNullable<BillingStatus['extraUsage']>['bar'] {
+  if (extraUsage.totalMicros === undefined) return null;
+  const total = Math.max(extraUsage.totalMicros, extraUsage.remainingMicros) as UsageMicros;
+  const used = (total - extraUsage.remainingMicros) as UsageMicros;
+  return { used: formatUsageDollars(used, 'down'), total: formatUsageDollars(total), percent: usagePercent(used, total) };
 }
 
 /** The bonus every plan includes over its price, in whole percent; the smallest, so no plan promises more than it gives. */
 function bonusPercent(plans: readonly PlanOffer[]): number {
   const bonuses = plans.map((offer) => Math.floor(offer.includedMicros * 100 / (offer.priceCents * MICROS_PER_CENT)) - 100);
   return Math.max(0, Math.min(...bonuses));
-}
-
-/** A fee under a dollar in cents, "30¢"; none as "$0". */
-function formatFee(micros: UsageMicros): string {
-  return micros > 0 && micros < 100 * MICROS_PER_CENT ? `${Math.round(micros / MICROS_PER_CENT)}¢` : formatUsageDollars(micros);
 }
 
 /** The port answered inconsistent data when the lowest plan for an own key is not on sale; `withBilling` makes that a 503. */
@@ -358,9 +666,13 @@ function withOwnerBilling(
     isOwner(c) ? handle(port, installationId) : c.json({ error: 'forbidden' }, 403));
 }
 
+function isHttps(url: string): boolean {
+  return URL.canParse(url) && new URL(url).protocol === 'https:';
+}
+
 /** The browser follows this URL, so only HTTPS gets through. */
 function redirect(c: Context, target: { url: string }): Response {
-  if (!URL.canParse(target.url) || new URL(target.url).protocol !== 'https:') {
+  if (!isHttps(target.url)) {
     throw new Error('The billing port returned a URL that is not HTTPS.');
   }
   return c.json({ url: target.url });

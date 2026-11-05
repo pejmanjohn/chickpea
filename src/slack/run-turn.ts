@@ -111,7 +111,6 @@ import { activityStatus, initialActivityStatus } from '../activity/status.ts';
 import { abandonTerminalSlackPresentationBestEffort } from './presentation-repair.ts';
 import { defaultSlackStatusRegistry, type SlackStatusRegistry } from './status-registry.ts';
 import { createCodingTaskProgress } from './coding-task-progress.ts';
-import { fundingRefusalComponents } from './credits-ask.ts';
 import {
   creditBackFailedRun,
   creditBackReason,
@@ -1463,6 +1462,7 @@ async function runTurnAttempt(
       store: options.usageStore ?? options.appStores?.usage ?? getUsageStore(platformEnv),
       ...(options.flueDispatch?.flueSettlement
         ? { replaySettlementAt: options.flueDispatch.flueSettlement.settledAt } : {}),
+      billingRunId: () => options.flueDispatch?.dispatchReceipt?.submissionId,
       ...(options.runId ? { runId: options.runId } : {}),
       ...(platformEnv ? { platformEnv } : {}),
       ...(options.usageWriteBudgetMs === undefined
@@ -2378,13 +2378,15 @@ async function runTurnAttempt(
           return;
         }
         const refusal = fundingRefusal(err);
-        const components = refusal
-          ? await fundingRefusalComponents({
+        const replies = refusal ? await import('./funding-refusal-reply.ts').catch(() => undefined) : undefined;
+        const refusalReply = refusal
+          ? await replies?.fundingRefusalReply({
               env: platformEnv,
               identity: options.appStores?.identity ?? getIdentityStore(platformEnv),
               workspaceId: turnWorkspaceId,
               userId: turn.userId,
               refusal,
+              ...(publicUrl ? { publicUrl } : {}),
             })
           : undefined;
         const failureText = withCreditedBack(agentFailureText(err), await creditBackFailedRun(
@@ -2402,8 +2404,10 @@ async function runTurnAttempt(
         // A plain_text final drops its text when it carries blocks, and escapes a
         // daily limit's <!date> token; neither text has other markdown syntax.
         await (refusal
-          ? presenter.deliverFinal(shownText, 'markdown', 'error', components ? { components } : undefined)
+          ? presenter.deliverFinal(shownText, 'markdown', 'error',
+            refusalReply ? { components: refusalReply.components } : undefined)
           : presenter.deliverFinal(shownText, 'plain_text', 'error'));
+        if (refusalReply?.ownerNote) await presenter.deliverPrivateNote(refusalReply.ownerNote);
         await finishStatus('failure');
         await finishDelivery('failed');
         return;
@@ -3020,7 +3024,7 @@ function slackFailureKind(error: unknown, settlement: FlueSettlementCheckpointV1
 
 function fundingRefusal(error: unknown): PlatformFundingRefusal | undefined {
   if (!(error instanceof AgentPromptFailure)) return undefined;
-  return error.kind === 'credits-exhausted' ? 'credits_exhausted' : error.dailyLimit;
+  return error.kind === 'credits-exhausted' ? error.outOfUsage ?? { kind: 'credits_exhausted' } : error.dailyLimit;
 }
 
 function agentFailureSafeCode(error: unknown): string {

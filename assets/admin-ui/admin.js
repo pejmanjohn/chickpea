@@ -146,6 +146,18 @@
     billingSelection: {},
     billingUseBy: "agent",
     billingUseAll: false,
+    // The auto top-up editor while open: the pack ("plan" or a key) and the
+    // limit ("plan" or cents) the Owner picked, and whether it turns it on.
+    billingTopUpEdit: null,
+    // An in-app purchase waiting for the Owner's OK: extra usage by key, or a
+    // plan change with the host's preview.
+    billingConfirm: null,
+    // The key of the top-up the Owner asked to try again, kept until the host
+    // answers, so trying once more after a lost answer charges once.
+    billingTopUpRetryKey: null,
+    // The banner over the page after a purchase: "wait" while the usage is
+    // being added, or what it added.
+    billingBanner: null,
     planReturnSwitchFailed: false,
     teamError: "",
     teamBusy: "",
@@ -441,7 +453,14 @@
     usageLoading: false,
     usageLoadingMore: false,
     usageError: "",
-    usagePeriod: "last_30_days",
+    usagePeriod: BILLING_OFFERED ? "this_billing_period" : "last_30_days",
+    // Where the host bills: the report for the chosen period and Agent, and
+    // whether the last one offered billing periods.
+    usageReport: null,
+    usageBillingPeriod: true,
+    usageAgent: "",
+    usageOpenRow: "",
+    usageActivityError: "",
     usageCustomFrom: "",
     usageCustomTo: "",
     usageCustomDraftFrom: "",
@@ -740,10 +759,10 @@
     });
   }
 
-  function postJson(path, method, body) {
+  function postJson(path, method, body, headers) {
     return api(path, {
       method: method,
-      headers: { "content-type": "application/json" },
+      headers: Object.assign({ "content-type": "application/json" }, headers || {}),
       body: JSON.stringify(body)
     });
   }
@@ -1030,7 +1049,7 @@
       try { return decodeURIComponent(part); } catch (err) { return part; }
     });
     state.leavePrompt = null;
-    if (parts[1] === "plan" && BILLING_OFFERED) { openBilling(); return; }
+    if (parts[1] === "plan" && BILLING_OFFERED) { openBilling(new URLSearchParams(location.search || "")); return; }
     // Coding agents is the one Settings page every member can open; any other
     // settings path collapses onto it rather than bouncing back to the Agent.
     if (!WORKSPACE_ADMIN_UI && parts[1] === "settings") {
@@ -1827,7 +1846,7 @@
   function usageRailHtml() {
     return '<nav class="rail primary-shell-sidebar" aria-label="Usage">' + primaryShellBrandHtml() + '<div class="rail-context">' +
       '<div class="rail-head"><span class="section-eyebrow">Usage</span></div>' +
-      '<button type="button" class="chan-item active" data-action="open-usage"><span class="chan-name">Overview</span><span class="chan-meta">Spend and usage</span></button>' +
+      '<button type="button" class="chan-item active" data-action="open-usage"><span class="chan-name">Overview</span><span class="chan-meta">' + (BILLING_OFFERED ? 'Usage' : 'Spend and usage') + '</span></button>' +
       '</div>' + sectionSwitcherHtml() + '</nav>';
   }
 
@@ -1979,6 +1998,17 @@
     return { from: usageDateValue(from), to: usageDateValue(to) };
   }
 
+  function prepareUsageCustomDates() {
+    var appliedCustom = usageCustomRange(state.usageCustomFrom, state.usageCustomTo);
+    if (appliedCustom.error) {
+      var customDefaults = usageDefaultCustomDates();
+      state.usageCustomFrom = customDefaults.from;
+      state.usageCustomTo = customDefaults.to;
+    }
+    state.usageCustomDraftFrom = state.usageCustomFrom;
+    state.usageCustomDraftTo = state.usageCustomTo;
+  }
+
   function usageStartOfWeek(date) {
     var start = new Date(date.getFullYear(), date.getMonth(), date.getDate());
     start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
@@ -2005,6 +2035,7 @@
   }
 
   function applyUsageQuery(search) {
+    if (BILLING_OFFERED) return applyBilledUsageQuery(search);
     if (!search) return;
     var params = new URLSearchParams(search);
     var allowedPeriods = ["last_7_days", "last_30_days", "last_90_days", "this_month", "last_month", "this_week", "last_week", "custom"];
@@ -2033,6 +2064,7 @@
 
   function syncUsageQueryUrl() {
     if (!canNavigate || !routeReady || state.view !== "usage") return;
+    if (BILLING_OFFERED) return syncBilledUsageQueryUrl();
     var params = new URLSearchParams();
     params.set("period", state.usagePeriod);
     if (state.usagePeriod === "custom") {
@@ -2196,6 +2228,7 @@
   }
 
   function loadUsage(forceMetadata) {
+    if (BILLING_OFFERED) return loadBilledUsage();
     var requestId = ++state.usageRequestId;
     state.usageLoading = true;
     state.usageError = "";
@@ -2447,14 +2480,19 @@
       loadMore;
   }
 
-  function usageMainHtml() {
-    var periods = [["last_7_days", "Last 7 days"], ["last_30_days", "Last 30 days"], ["last_90_days", "Last 90 days"], ["this_month", "This month"], ["last_month", "Last month"], ["this_week", "This week"], ["last_week", "Last week"], ["custom", "Custom"]];
-    var customControls = state.usagePeriod === "custom"
+  function usageCustomControlsHtml() {
+    return state.usagePeriod === "custom"
       ? '<label class="field" for="usage-custom-from"><span class="field-label">From</span><input class="input" id="usage-custom-from" name="usage-custom-from" type="date" max="' + usageDateValue(new Date()) + '" value="' + esc(state.usageCustomDraftFrom) + '" data-action="usage-custom-from"></label>' +
         '<label class="field" for="usage-custom-to"><span class="field-label">To</span><input class="input" id="usage-custom-to" name="usage-custom-to" type="date" max="' + usageDateValue(new Date()) + '" value="' + esc(state.usageCustomDraftTo) + '" data-action="usage-custom-to"></label>' +
         '<button type="button" class="btn btn-soft usage-apply" data-action="usage-custom-apply">Apply dates</button>' +
         (state.usageCustomError ? '<p class="field-error usage-custom-error" role="alert">' + esc(state.usageCustomError) + '</p>' : '')
       : '';
+  }
+
+  function usageMainHtml() {
+    if (BILLING_OFFERED) return billedUsageMainHtml();
+    var periods = [["last_7_days", "Last 7 days"], ["last_30_days", "Last 30 days"], ["last_90_days", "Last 90 days"], ["this_month", "This month"], ["last_month", "Last month"], ["this_week", "This week"], ["last_week", "Last week"], ["custom", "Custom"]];
+    var customControls = usageCustomControlsHtml();
     var controls = '<div class="usage-controls"><div class="usage-control-row' + (state.usagePeriod === "custom" ? ' has-custom' : '') + '"><label class="field"><span class="field-label">Period</span><span class="select-wrap"><select class="input" name="usage-period" data-action="usage-range">' +
       periods.map(function (period) { return '<option value="' + period[0] + '"' + (state.usagePeriod === period[0] ? ' selected' : '') + '>' + period[1] + '</option>'; }).join("") +
       '</select><span class="select-caret">' + icon("chevron-down") + '</span></span></label><label class="field"><span class="field-label">Break down by</span><span class="select-wrap"><select class="input" name="usage-group" data-action="usage-group">' +
@@ -2486,6 +2524,549 @@
       '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Recent ' + usageActivityLabelHtml("activity") + '</h2><p class="hint">Hover over total tokens to see the input, cached input, and output split.</p></div>' + filter + '</div>' + usageOperationsHtml() + '</section>';
   }
 
+  // ---- Usage where the host bills --------------------------------------------
+  // With a billing port, the page reports what the Plan page counts, from
+  // /admin/api/usage/report. The report's measure decides what its amounts
+  // are: billed usage, activity counts, or an own key's provider estimate.
+
+  var BILLED_USAGE_PERIODS = [["this_billing_period", "This billing period"], ["last_billing_period", "Last billing period"], ["last_7_days", "Last 7 days"], ["last_30_days", "Last 30 days"], ["last_90_days", "Last 90 days"], ["custom", "Custom"]];
+  // Chart series in order, then the row gathering the rest. Checked for
+  // colorblind contrast as a set.
+  var BILLED_USAGE_COLORS = ["#2a78d6", "#c4861a", "#1baf7a", "#6250d6"];
+  var BILLED_USAGE_OTHER_COLOR = "#b9ad95";
+
+  function billedUsageIsBillingPeriod(period) {
+    return period === "this_billing_period" || period === "last_billing_period";
+  }
+
+  function applyBilledUsageQuery(search) {
+    var params = new URLSearchParams(search || "");
+    var period = params.get("period");
+    if (period === "custom") {
+      var customFrom = params.get("from") || "";
+      var customTo = params.get("to") || "";
+      if (!usageCustomRange(customFrom, customTo).error) {
+        state.usagePeriod = period;
+        state.usageCustomFrom = state.usageCustomDraftFrom = customFrom;
+        state.usageCustomTo = state.usageCustomDraftTo = customTo;
+      }
+    } else if (BILLED_USAGE_PERIODS.some(function (choice) { return choice[0] === period; })) {
+      state.usagePeriod = period;
+    }
+    state.usageAgent = params.get("agent") || "";
+  }
+
+  function syncBilledUsageQueryUrl() {
+    var params = new URLSearchParams();
+    params.set("period", state.usagePeriod);
+    if (state.usagePeriod === "custom") {
+      params.set("from", state.usageCustomFrom);
+      params.set("to", state.usageCustomTo);
+    }
+    if (state.usageAgent) params.set("agent", state.usageAgent);
+    history.replaceState(null, "", "/admin/usage?" + params.toString());
+  }
+
+  function selectBilledUsageAgent(agentId) {
+    state.usageAgent = agentId;
+    syncUsageQueryUrl();
+    loadBilledUsage();
+  }
+
+  // The report sets the range, so activity loads after it, for the same days.
+  function loadBilledUsage() {
+    var requestId = ++state.usageRequestId;
+    state.usageLoading = true;
+    state.usageError = "";
+    state.usageOperations = null;
+    state.usageNextCursor = null;
+    state.usageActivityError = "";
+    state.usageRoutineNames = null;
+    state.usageOpenRow = "";
+    render();
+    var params = new URLSearchParams();
+    if (billedUsageIsBillingPeriod(state.usagePeriod)) {
+      params.set("period", state.usagePeriod);
+    } else {
+      var range = usageRange();
+      params.set("from", String(range.from));
+      params.set("to", String(range.to));
+    }
+    if (state.usageAgent) params.set("agent", state.usageAgent);
+    return api("/admin/api/usage/report?" + params.toString()).then(function (report) {
+      if (requestId !== state.usageRequestId) return;
+      state.usageReport = report;
+      state.usageBillingPeriod = report.billingPeriod;
+      state.usageLoading = false;
+      var agentId = report.agent ? report.agent.id : "";
+      // Without a billing period the server answers for the last 30 days.
+      var period = !report.billingPeriod && billedUsageIsBillingPeriod(state.usagePeriod) ? "last_30_days" : state.usagePeriod;
+      if (agentId !== state.usageAgent || period !== state.usagePeriod) {
+        state.usageAgent = agentId;
+        state.usagePeriod = period;
+        syncUsageQueryUrl();
+      }
+      return loadBilledUsageOperations(true);
+    }).catch(function (error) {
+      if (requestId !== state.usageRequestId) return;
+      state.usageLoading = false;
+      state.usageReport = null;
+      state.usageError = error.serverMessage || error.message || "Usage reporting is unavailable.";
+      render();
+    });
+  }
+
+  function loadBilledUsageOperations(reset) {
+    var report = state.usageReport;
+    if (!report || (!reset && (!state.usageNextCursor || state.usageLoadingMore))) return Promise.resolve();
+    var requestId = state.usageRequestId;
+    var params = new URLSearchParams();
+    params.set("from", String(report.range.from));
+    params.set("to", String(report.range.to));
+    params.set("limit", "50");
+    if (report.agent) params.set("agent", report.agent.id);
+    if (!reset) params.set("cursor", state.usageNextCursor);
+    state.usageLoadingMore = true;
+    state.usageActivityError = "";
+    render();
+    return api("/admin/api/usage/operations?" + params.toString()).then(function (body) {
+      if (requestId !== state.usageRequestId) return;
+      var items = body.items || [];
+      state.usageOperations = reset ? items : (state.usageOperations || []).concat(items);
+      state.usageNextCursor = body.nextCursor || null;
+      state.usageLoadingMore = false;
+      render();
+      loadUsageRoutineNames();
+    }).catch(function (error) {
+      if (requestId !== state.usageRequestId) return;
+      state.usageLoadingMore = false;
+      if (reset) state.usageOperations = [];
+      state.usageActivityError = error.serverMessage || error.message || "Recent activity could not be loaded.";
+      render();
+    });
+  }
+
+  function billedUsageChangeText(change) {
+    return change == null ? "" : (change > 0 ? "+" : "") + change + "% vs last period";
+  }
+
+  function billedUsageProviderName(report) {
+    return report.providers.length === 1 ? esc(providerMeta(report.providers[0]).name) : "";
+  }
+
+  function billedUsageCardHtml(label, value, hint, primary) {
+    return '<div class="usage-card' + (primary ? ' usage-card-primary' : '') + '"><span class="usage-card-label">' + label + '</span>' +
+      '<span class="usage-card-value">' + esc(value) + '</span>' + (hint ? '<span class="hint">' + hint + '</span>' : '') + '</div>';
+  }
+
+  function billedUsageShareHtml(share) {
+    var width = Math.max(0, Math.min(100, Number(share) || 0));
+    return '<span class="u-share"><span class="plan-use-track" aria-hidden="true"><span style="width: ' + width + '%"></span></span>' + esc(String(share)) + '%</span>';
+  }
+
+  // An Agent shows its Slack picture when it has one; a model shows the first
+  // letter of its family ("Claude Sonnet 5.5" is S); the row gathering the
+  // rest shows no letter.
+  function billedUsageAvatarHtml(kind, row) {
+    if (row.key === null) return '<span class="plan-use-avatar is-other" aria-hidden="true"></span>';
+    var agent = kind === "agent" ? agentById(row.key) : null;
+    var url = agent ? agentAvatarUrlForAdmin(agent) : "";
+    if (url) return '<span class="plan-use-avatar" aria-hidden="true"><img src="' + esc(url) + '" alt=""></span>';
+    var words = String(row.name || "").split(/\s+/);
+    var word = kind === "model" && words[1] ? words[1] : words[0];
+    return '<span class="plan-use-avatar is-letter" aria-hidden="true">' + esc((Array.from(word || "")[0] || "").toUpperCase()) + '</span>';
+  }
+
+  var BILLED_USAGE_AGENT_COLUMN = { head: "Agent", number: false, cell: function (row) {
+    var name = row.key === null
+      ? '<b class="usage-work-label">' + esc(row.name) + '</b>'
+      : '<button type="button" class="usage-row-action" data-action="usage-agent-row" data-agent="' + esc(row.key) + '">' + esc(row.name) + '</button>';
+    return '<span class="u-who">' + billedUsageAvatarHtml("agent", row) + name + '</span>';
+  } };
+  var BILLED_USAGE_SHARE_COLUMN = { head: "Share", number: true, cell: function (row) { return billedUsageShareHtml(row.share); } };
+  var BILLED_USAGE_PERSON_COLUMN = { head: "Most used by", number: false, cell: function (row) { return esc(row.topPerson || "—"); } };
+  var BILLED_USAGE_MODEL_COLUMN = { head: "Main model", number: false, cell: function (row) { return esc(row.mainModel || "—"); } };
+
+  function billedUsageAmountColumn(head) {
+    return { head: head, number: true, cell: function (row) { return esc(row.amount.text); } };
+  }
+
+  // Whether an activity still counts after any credit back. Amounts arrive as
+  // text, and only a zero amount has no digit 1-9 ("<$0.01" has one).
+  function billedUsageRemains(billed) {
+    return !billed.creditedBack || /[1-9]/.test(billed.amount);
+  }
+
+  // What changes with the report's measure. Activity counts have no amounts,
+  // so lists show shares; an own key's amounts are Core's provider estimate.
+  var BILLED_USAGE_MODES = {
+    usage: {
+      hint: "How much your Agents used, who used them, and on which models. The same usage your Plan page counts.",
+      empty: "No usage yet in this period.",
+      chartTitle: function (agent) { return agent ? agent.name + "’s usage by day" : "Usage by day"; },
+      tiles: function (report) {
+        var since = esc(report.range.since);
+        var change = billedUsageChangeText(report.change);
+        var first = report.agent
+          ? billedUsageCardHtml(esc(report.agent.name) + " since " + since, report.total.text, report.share == null ? "" : report.share + "% of your workspace&rsquo;s usage", true)
+          : billedUsageCardHtml("Used since " + since, report.total.text, change, true);
+        var paceHint = report.pace ? "On pace for " + Number(report.pace.percent) + "% of your plan by " + esc(report.pace.by) : report.agent ? change : "";
+        return first + billedUsageCardHtml("Per day", report.perDay.text, paceHint, false);
+      },
+      agentsHint: "Select an Agent to see only its usage.",
+      agentColumns: [BILLED_USAGE_AGENT_COLUMN, billedUsageAmountColumn("Usage"), BILLED_USAGE_SHARE_COLUMN, BILLED_USAGE_PERSON_COLUMN, BILLED_USAGE_MODEL_COLUMN],
+      listAmount: function (row) { return esc(row.amount.text); },
+      activityHead: "Usage",
+      activityAmount: function (detail) {
+        var billed = detail.hosted && detail.hosted.billed;
+        if (!billed) return "—";
+        return billedUsageRemains(billed) ? esc(billed.amount) : "Credited back";
+      },
+      note: true
+    },
+    activity: {
+      hint: "What your Agents did, who used them, and on which models. Amounts and what&rsquo;s left are on your Plan page.",
+      empty: "No activity yet in this period.",
+      chartTitle: function () { return "Activity by day"; },
+      tiles: function (report) {
+        var hint = report.agent
+          ? (report.share == null ? "" : report.share + "% of your workspace&rsquo;s activity")
+          : billedUsageChangeText(report.change);
+        return billedUsageCardHtml("Activity since " + esc(report.range.since), report.total.text, hint, true) +
+          billedUsageCardHtml("Per day", report.perDay.text, "Messages answered and routine runs", false);
+      },
+      agentsHint: "Select an Agent to see only its activity.",
+      agentColumns: [BILLED_USAGE_AGENT_COLUMN, billedUsageAmountColumn("Activity"), BILLED_USAGE_SHARE_COLUMN, BILLED_USAGE_PERSON_COLUMN, BILLED_USAGE_MODEL_COLUMN],
+      listAmount: function (row) { return esc(String(row.share)) + "%"; },
+      activityHead: "Tokens",
+      activityAmount: function (detail) {
+        var total = usageOperationTokens(detail, "totalTokens");
+        return total == null ? "—" : usageInt(total);
+      },
+      note: false
+    },
+    estimate: {
+      hint: "How much your Agents used, who used them, and on which models. Tasks are the usage your Plan page counts.",
+      empty: "No usage yet in this period.",
+      chartTitle: function () { return "Estimated provider spend by day"; },
+      // The report has no activity count for an own key, so without the
+      // plan's task count the estimate leads and the per-day pace follows.
+      tiles: function (report) {
+        var provider = billedUsageProviderName(report);
+        var spendHint = "Billed by " + (provider || "your providers") + ", not Chickpea";
+        if (!report.tasks) {
+          return billedUsageCardHtml("Estimated provider spend", report.total.text, spendHint, true) +
+            billedUsageCardHtml("Per day", report.perDay.text, billedUsageChangeText(report.change), false);
+        }
+        var tasksHint = report.tasks.left != null ? esc(report.tasks.left) + " left on your plan" : billedUsageChangeText(report.change);
+        return billedUsageCardHtml("Tasks since " + esc(report.range.since), report.tasks.used, tasksHint, true) +
+          billedUsageCardHtml("Estimated provider spend", report.total.text, spendHint, false);
+      },
+      agentsHint: "Select an Agent to see only its usage.",
+      agentColumns: [
+        BILLED_USAGE_AGENT_COLUMN,
+        { head: "Tasks", number: true, cell: function (row) { return esc(row.tasks || "—"); } },
+        billedUsageAmountColumn("Estimated provider spend"),
+        BILLED_USAGE_PERSON_COLUMN
+      ],
+      listAmount: function (row) { return esc(row.amount.text); },
+      activityHead: "Estimated spend",
+      activityAmount: function (detail) {
+        var amount = usageOperationAmount(detail);
+        return amount == null ? "—" : usageMoney(amount, "USD");
+      },
+      note: false
+    }
+  };
+
+  function billedUsageMode(report) {
+    return BILLED_USAGE_MODES[report.measure];
+  }
+
+  function billedUsageSelectHtml(label, name, action, options, selected) {
+    return '<label class="field"><span class="field-label">' + label + '</span><span class="select-wrap"><select class="input" name="' + name + '" data-action="' + action + '">' +
+      options.map(function (option) { return '<option value="' + esc(option[0]) + '"' + (option[0] === selected ? ' selected' : '') + '>' + esc(option[1]) + '</option>'; }).join("") +
+      '</select><span class="select-caret">' + icon("chevron-down") + '</span></span></label>';
+  }
+
+  function billedUsageControlsHtml(report) {
+    var periods = BILLED_USAGE_PERIODS.filter(function (choice) {
+      return state.usageBillingPeriod || !billedUsageIsBillingPeriod(choice[0]);
+    });
+    var agents = (report ? report.agentChoices : []).map(function (agent) { return [agent.id, agent.name]; });
+    if (state.usageAgent && !agents.some(function (agent) { return agent[0] === state.usageAgent; })) {
+      // Before the report names the chosen Agent, the Agents list may.
+      var known = agentById(state.usageAgent);
+      if (known && known.name) agents.push([known.id, known.name]);
+    }
+    return '<div class="usage-controls"><div class="usage-control-row' + (state.usagePeriod === "custom" ? ' has-custom' : '') + '">' +
+      billedUsageSelectHtml("Period", "usage-period", "usage-billed-period", periods, state.usagePeriod) +
+      billedUsageSelectHtml("Agent", "usage-agent", "usage-agent", [["", "All Agents"]].concat(agents), state.usageAgent) +
+      usageCustomControlsHtml() + '</div></div>';
+  }
+
+  function billedUsageStripHtml(report) {
+    var action = '<button type="button" class="btn btn-ghost btn-sm" data-action="open-billing">Plan</button>';
+    var copy = "<strong>Your plan&rsquo;s usage and what&rsquo;s left are on the Plan page.</strong>";
+    if (report.measure === "estimate") {
+      var provider = billedUsageProviderName(report);
+      copy = "<strong>Your provider bills model tokens directly.</strong> Set a spending limit with " + (provider || "each provider") + ". Chickpea estimates that spend at list prices.";
+      action = '<button type="button" class="btn btn-ghost btn-sm" data-action="usage-open-settings">Model settings</button>';
+    } else if (report.measure === "usage" && report.plan) {
+      var topUp = report.plan.autoTopUp === "on" ? " Auto top-up is on." : report.plan.autoTopUp === "off" ? " Auto top-up is off." : "";
+      copy = "<strong>" + esc(report.plan.left) + " left.</strong>" + topUp;
+    }
+    return '<div class="usage-contract"><p>' + copy + '</p>' + action + '</div>';
+  }
+
+  // Three gridlines at 0, half and a round maximum. Money axes round in
+  // dollars; count axes keep whole halves.
+  function billedUsageAxisMax(peak, money) {
+    if (!(peak > 0)) return money ? 1 : 2;
+    var scale = Math.pow(10, Math.floor(Math.log10(peak)));
+    var max = [1, 2, 3, 4, 6, 8, 10].map(function (step) { return Number((step * scale).toPrecision(6)); })
+      .find(function (candidate) { return candidate >= peak; });
+    return money ? max : Math.max(2, Math.ceil(max / 2) * 2);
+  }
+
+  function billedUsageAxisText(value, money) {
+    if (!money) return Math.round(value).toLocaleString("en-US");
+    return "$" + (Number.isInteger(value) ? value.toLocaleString("en-US") : value.toFixed(2));
+  }
+
+  function billedUsageTickIndexes(count) {
+    var every = Math.max(1, Math.ceil((count - 1) / 4));
+    var ticks = [];
+    for (var index = 0; index < count; index += every) ticks.push(index);
+    var last = count - 1;
+    if (ticks[ticks.length - 1] !== last) {
+      if (last - ticks[ticks.length - 1] < every / 2) ticks.pop();
+      ticks.push(last);
+    }
+    return ticks;
+  }
+
+  // Stacked bars per day for the days so far, the same days last period as a
+  // line across the whole range, and a marker at today.
+  function billedUsageChartHtml(report, title) {
+    var chart = report.chart;
+    var days = chart.days;
+    var count = days.length;
+    if (!count) return '';
+    var money = report.measure !== "activity";
+    var unit = money ? 1000000 : 1;
+    var elapsed = Math.max(0, Math.min(count, chart.elapsed));
+    var series = chart.series.map(function (row, index) {
+      return { name: row.name, values: row.values, color: row.key === null ? BILLED_USAGE_OTHER_COLOR : BILLED_USAGE_COLORS[index % BILLED_USAGE_COLORS.length] };
+    });
+    var peak = 0;
+    for (var day = 0; day < elapsed; day += 1) {
+      peak = Math.max(peak, series.reduce(function (sum, row) { return sum + (Number(row.values[day]) || 0); }, 0));
+    }
+    (chart.prior || []).forEach(function (value) { peak = Math.max(peak, Number(value) || 0); });
+    var axisMax = billedUsageAxisMax(peak / unit, money);
+    var max = axisMax * unit;
+    function fixed(value) { return Number(value.toFixed(1)); }
+    function amount(value) { return money ? usageMoney(value, "USD") : usageInt(Math.round(value)); }
+    // One viewBox can't suit both a desktop column and a phone: text scales
+    // with the drawing. CSS shows the drawing whose proportions fit.
+    function drawing(className, width, height, left) {
+      var right = 4, top = 10, bottom = 24;
+      var step = (width - left - right) / count;
+      var gap = Math.min(4, step * 0.25);
+      var y = function (value) { return height - bottom - value / max * (height - bottom - top); };
+      var grid = [0, axisMax / 2, axisMax].map(function (value) {
+        var lineY = fixed(y(value * unit));
+        return '<line x1="' + left + '" x2="' + (width - right) + '" y1="' + lineY + '" y2="' + lineY + '" class="u-grid"/>' +
+          '<text x="' + (left - 6) + '" y="' + fixed(lineY + 4) + '" text-anchor="end">' + esc(billedUsageAxisText(value, money)) + '</text>';
+      }).join("");
+      var bars = "";
+      for (var index = 0; index < elapsed; index += 1) {
+        var base = 0;
+        series.forEach(function (row, layer) {
+          var value = Number(row.values[index]) || 0;
+          if (value <= 0) return;
+          var y0 = y(base);
+          var y1 = y(base + value);
+          base += value;
+          var barHeight = Math.max(0, y0 - y1 - (layer && y0 - y1 > 3 ? 2 : 0));
+          bars += '<rect x="' + fixed(left + index * step + gap / 2) + '" y="' + fixed(y1) + '" width="' + fixed(step - gap) + '" height="' + fixed(barHeight) + '" rx="2" fill="' + row.color + '">' +
+            '<title>' + esc(days[index] + ", " + row.name + ": " + amount(value)) + '</title></rect>';
+        });
+      }
+      var prior = chart.prior
+        ? '<polyline class="u-prior" points="' + chart.prior.map(function (value, index) {
+          return fixed(left + index * step + step / 2) + "," + fixed(y(Number(value) || 0));
+        }).join(" ") + '"/>'
+        : '';
+      var todayX = fixed(left + elapsed * step);
+      var today = elapsed > 0 && elapsed < count
+        ? '<line class="u-today" x1="' + todayX + '" x2="' + todayX + '" y1="' + top + '" y2="' + (height - bottom) + '"/>'
+        : '';
+      var ticks = billedUsageTickIndexes(count).map(function (index) {
+        var anchor = index === 0 && count > 1 ? "start" : index === count - 1 && count > 1 ? "end" : "middle";
+        var x = anchor === "start" ? left + gap / 2 : anchor === "end" ? width - right - gap / 2 : left + index * step + step / 2;
+        return '<text x="' + fixed(x) + '" y="' + (height - 6) + '" text-anchor="' + anchor + '">' + esc(days[index]) + '</text>';
+      }).join("");
+      return '<svg class="' + className + '" viewBox="0 0 ' + width + ' ' + height + '" role="img" aria-label="' + esc(title) + '">' +
+        grid + bars + prior + today + ticks + '</svg>';
+    }
+    var legend = (report.agent ? [] : series).map(function (row) {
+      return '<span><i style="background: ' + row.color + '"></i>' + esc(row.name) + '</span>';
+    }).join("") + (chart.prior ? '<span><i class="dash"></i>Same days last period</span>' : '');
+    return '<div class="u-chart">' + drawing("u-chart-wide", 640, 180, 46) + drawing("u-chart-narrow", 360, 220, 40) +
+      (legend ? '<div class="u-legend">' + legend + '</div>' : '') + '</div>';
+  }
+
+  function billedUsageListHtml(rows, kind, mode) {
+    return '<ul class="plan-use">' + rows.map(function (row) {
+      var width = Math.max(0, Math.min(100, Number(row.share) || 0));
+      return '<li class="plan-use-row">' + billedUsageAvatarHtml(kind, row) + '<span class="plan-use-name">' + esc(row.name) + '</span>' +
+        '<span class="plan-use-track" aria-hidden="true"><span style="width: ' + width + '%"></span></span><span class="plan-use-amount">' + mode.listAmount(row) + '</span></li>';
+    }).join("") + '</ul>';
+  }
+
+  function billedUsagePanelsHtml(report, mode) {
+    var panels = [
+      ["Top models", report.models, "model"],
+      [report.agent ? "Who uses " + esc(report.agent.name) : "Top people", report.people, "person"]
+    ].filter(function (panel) { return panel[1] && panel[1].length; }).map(function (panel) {
+      return '<section class="u-panel"><h2 class="section-title">' + panel[0] + '</h2>' + billedUsageListHtml(panel[1], panel[2], mode) + '</section>';
+    });
+    return panels.length ? '<div class="u-two">' + panels.join("") + '</div>' : '';
+  }
+
+  function billedUsageSectionHtml(title, hint, body) {
+    return '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">' + title + '</h2>' +
+      (hint ? '<p class="hint">' + hint + '</p>' : '') + '</div></div>' + body + '</section>';
+  }
+
+  function billedUsageAgentsHtml(report, mode) {
+    if (!report.agents || !report.agents.length) return '';
+    // Only an Owner sees who used what, so the report sends no people to anyone else.
+    var columns = report.people ? mode.agentColumns : mode.agentColumns.filter(function (column) { return column !== BILLED_USAGE_PERSON_COLUMN; });
+    var cell = function (column, html) { return '<td' + (column.number ? ' class="number"' : '') + '>' + html + '</td>'; };
+    var table = '<div class="usage-table-wrap"><table class="usage-table"><thead><tr>' +
+      columns.map(function (column) { return '<th' + (column.number ? ' class="number"' : '') + '>' + column.head + '</th>'; }).join("") +
+      '</tr></thead><tbody>' + report.agents.map(function (row) {
+        return '<tr>' + columns.map(function (column) { return cell(column, column.cell(row)); }).join("") + '</tr>';
+      }).join("") + '</tbody></table></div>';
+    return billedUsageSectionHtml("Agents", mode.agentsHint, table);
+  }
+
+  function billedUsageWhen(time) {
+    return new Date(time).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  }
+
+  function billedUsageDuration(ms) {
+    var seconds = Math.max(0, Math.round(ms / 1000));
+    if (seconds < 60) return seconds + " s";
+    var minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return minutes + " min" + (seconds % 60 ? " " + (seconds % 60) + " s" : "");
+    return Math.floor(minutes / 60) + " h" + (minutes % 60 ? " " + (minutes % 60) + " min" : "");
+  }
+
+  function billedUsageAgentName(operation) {
+    var report = state.usageReport;
+    var choice = report && report.agentChoices.find(function (agent) { return agent.id === operation.agentId; });
+    var agent = operation.agentId ? agentById(operation.agentId) : null;
+    return operation.agentLabel || (choice && choice.name) || (agent && agent.name) || (operation.agentId === "agent_chickpea" ? "Chickpea" : "—");
+  }
+
+  // The task fee shows only here, inside an opened activity's usage.
+  function billedUsageBreakdownHtml(billed) {
+    if (!billedUsageRemains(billed)) return 'Credited back because it stopped on an error.';
+    var fee = billed.fee && /[1-9]/.test(billed.fee) ? billed.fee : "";
+    var parts = esc(billed.model) + " for the model" + (billed.task ? " and " + esc(billed.fee) + " for the task" : fee ? " and " + esc(fee) + " for the reply" : "");
+    return '<b>' + esc(billed.amount) + '</b> <small>' + parts + '</small>';
+  }
+
+  function billedUsageDetailHtml(detail, where, mode, detailId) {
+    var operation = detail.operation;
+    var hosted = detail.hosted || {};
+    var field = function (label, html) { return '<div><span class="field-label">' + label + '</span><span>' + html + '</span></div>'; };
+    var requester = operation.operationKind === "routine_run" ? "" : hosted.requester;
+    var fields = state.usageReport && state.usageReport.people ? [field("Asked by", esc(requester ? requester + " in " + where : where))] : [];
+    if (mode === BILLED_USAGE_MODES.usage && hosted.billed) fields.push(field("Usage", billedUsageBreakdownHtml(hosted.billed)));
+    fields.push(field("Model", esc(hosted.modelName || "—")));
+    var total = usageOperationTokens(detail, "totalTokens");
+    if (total != null) {
+      var count = function (name) { var value = usageOperationTokens(detail, name); return usageInt(value == null ? 0 : value); };
+      var cached = usageOperationCachedTokens(detail);
+      fields.push(field("Tokens", '<b>' + usageInt(total) + '</b> <small>' + count("inputTokens") + ' input · ' + usageInt(cached == null ? 0 : cached) + ' cached · ' + count("outputTokens") + ' output</small>'));
+    }
+    var took = operation.finishedAt != null ? ", took " + billedUsageDuration(operation.finishedAt - operation.startedAt) : "";
+    fields.push(field("When", esc(billedUsageWhen(operation.startedAt) + took)));
+    var slack = typeof operation.slackMessagePath === "string" && operation.slackMessagePath.indexOf("/admin/api/usage/operations/") === 0
+      ? '<div class="u-detail-acts"><a class="btn btn-ghost btn-sm" href="' + esc(operation.slackMessagePath) + '" target="_blank" rel="noopener noreferrer">Open in Slack</a></div>'
+      : '';
+    return '<tr class="u-detail" id="' + detailId + '"><td colspan="5"><div class="u-detail-grid">' + fields.join("") + '</div>' + slack + '</td></tr>';
+  }
+
+  function billedUsageActivityHtml(mode) {
+    var retry = '<button type="button" class="btn btn-ghost" data-action="usage-retry">Retry</button>';
+    if (!state.usageOperations) return '<div class="empty"><p class="hint">Loading activity&hellip;</p></div>';
+    var error = state.usageActivityError ? '<p class="field-error">' + esc(state.usageActivityError) + '</p>' : '';
+    var visible = state.usageOperations.filter(function (detail) {
+      return detail && detail.operation && detail.operation.operationKind !== "interaction_classification";
+    });
+    var loadMore = state.usageNextCursor ? '<button type="button" class="btn btn-ghost" data-action="usage-billed-more"' + (state.usageLoadingMore ? ' disabled' : '') + '>' + (state.usageLoadingMore ? 'Loading&hellip;' : 'Load more') + '</button>' : '';
+    if (!visible.length) return '<div class="empty">' + (error ? error + retry : '<p class="hint">' + mode.empty + '</p>') + loadMore + '</div>';
+    var people = !!(state.usageReport && state.usageReport.people);
+    var rows = visible.map(function (detail, index) {
+      var operation = detail.operation;
+      var hosted = detail.hosted || {};
+      var open = state.usageOpenRow === operation.operationId;
+      var where = usageWorkLabel(operation);
+      var rowId = "usage-activity-" + index;
+      var toggle = 'data-action="usage-activity-row" data-operation="' + esc(operation.operationId) + '"';
+      return '<tr class="u-row' + (open ? ' is-open' : '') + '" ' + toggle + '><td><button type="button" class="u-row-toggle" id="' + rowId + '" ' + toggle +
+        ' aria-expanded="' + open + '"' + (open ? ' aria-controls="' + rowId + '-detail"' : '') + '><b class="usage-work-label">' + esc(where) + '</b></button>' +
+        '<div class="hint">' + esc(billedUsageWhen(operation.startedAt)) + '</div></td>' +
+        '<td>' + esc(billedUsageAgentName(operation)) + '</td>' + (people ? '<td class="u-wide-only">' + esc(hosted.requester || "—") + '</td>' : '') +
+        '<td class="u-wide-only">' + esc(hosted.modelName || "—") + '</td>' +
+        '<td class="number">' + mode.activityAmount(detail) + '<span class="u-caret" aria-hidden="true">' + (open ? '&#9662;' : '&#9656;') + '</span></td></tr>' +
+        (open ? billedUsageDetailHtml(detail, where, mode, rowId + "-detail") : '');
+    }).join("");
+    return '<div class="usage-table-wrap"><table class="usage-table u-acts"><thead><tr><th>Where</th><th>Agent</th>' + (people ? '<th class="u-wide-only">Person</th>' : '') + '<th class="u-wide-only">Model</th><th class="number">' + mode.activityHead + '</th></tr></thead><tbody>' +
+      rows + '</tbody></table></div>' + error + loadMore;
+  }
+
+  function billedUsageEmpty(report) {
+    return !report.total.value && !report.models.length && !(report.people || []).length && !(report.agents || []).length &&
+      !(report.tasks && /[1-9]/.test(report.tasks.used));
+  }
+
+  // "Other" gathers usage the report can't attribute, so the note explains it
+  // only when such a row carries an amount.
+  function billedUsageHasOther(report) {
+    return [report.models, report.people || [], report.agents || []].some(function (rows) {
+      return rows.some(function (row) { return row.key === null && row.amount.value > 0; });
+    });
+  }
+
+  function billedUsageMainHtml() {
+    var report = state.usageReport;
+    var mode = report ? billedUsageMode(report) : null;
+    var head = '<div class="usage-head"><div class="usage-head-copy"><span class="section-eyebrow">Reporting</span><h1 class="page-title">Usage</h1>' +
+      (mode ? '<p class="hint">' + mode.hint + '</p>' : '') + '</div></div>' + billedUsageControlsHtml(report);
+    if (state.usageError) return head + '<div class="empty"><p class="field-error">' + esc(state.usageError) + '</p><button type="button" class="btn btn-ghost" data-action="usage-retry">Retry</button></div>';
+    if (!report) return head + '<div class="empty"><p class="hint">Loading usage&hellip;</p></div>';
+    var strip = billedUsageStripHtml(report);
+    if (billedUsageEmpty(report)) return head + strip + '<div class="empty"><p class="hint">' + mode.empty + '</p></div>';
+    var chartTitle = mode.chartTitle(report.agent);
+    var note = mode.note
+      ? '<p class="usage-data-note">Usage is what your plan counts. Work that stopped on an error was credited back, so it isn&rsquo;t included.' +
+        (billedUsageHasOther(report) ? ' Other is usage from private routines and from activity Chickpea no longer has details for.' : '') + '</p>'
+      : '';
+    return head + strip + '<div class="usage-grid u-tiles">' + mode.tiles(report) + '</div>' +
+      billedUsageSectionHtml(esc(chartTitle), "", billedUsageChartHtml(report, chartTitle)) +
+      billedUsagePanelsHtml(report, mode) +
+      (report.agent ? '' : billedUsageAgentsHtml(report, mode)) +
+      billedUsageSectionHtml("Activity", "Select a row to see its details.", billedUsageActivityHtml(mode)) +
+      note;
+  }
+
   // ---- Plan ------------------------------------------------------------------
   // The host keeps the plan and its usage and sells through Stripe. Admin
   // shows its answer, with every amount and task count already formatted, and
@@ -2509,7 +3090,9 @@
     return billingRequest;
   }
 
-  function openBilling() {
+  // A link from Slack names a step to open, and Stripe sends the Owner back
+  // with billing=done; each is read once, then dropped from the address.
+  function openBilling(query) {
     state.view = "billing";
     state.profileScreen = "list";
     state.disableConfirm = false;
@@ -2517,8 +3100,219 @@
     state.billingFundingConfirm = false;
     state.billingUseBy = "agent";
     state.billingUseAll = false;
+    state.billingTopUpEdit = null;
+    state.billingConfirm = null;
+    state.billingTopUpRetryKey = null;
+    state.billingBanner = null;
+    var step = query ? query.get("step") || "" : "";
+    var returned = !!query && query.get("billing") === "done";
+    if ((step || returned) && canNavigate) history.replaceState(null, "", "/admin/plan");
     render();
-    loadBilling();
+    loadBilling().then(function () {
+      if (!state.billing || !state.billing.manage) return;
+      if (returned) awaitPurchase(0);
+      if (step) openBillingStep(step);
+    });
+  }
+
+  // The version of the authorization sentences this page shows, in
+  // topUpEditorHtml and planChangeConfirmHtml. The server refuses a change that
+  // raises what Chickpea may charge unless the page agreed to its own version,
+  // so a page from before the copy changed records no consent to text it never
+  // showed. Bump it with those sentences and with AUTO_TOP_UP_CONSENT_VERSION
+  // in src/config/platform-billing.ts.
+  var AUTO_TOP_UP_CONSENT_VERSION = "2026-11-04";
+
+  var PURCHASE_POLL_MS = 2000;
+  var PURCHASE_POLLS = 30;
+
+  // Back from Stripe, the banner waits for the host to add the usage, then
+  // says what was added.
+  function awaitPurchase(attempt) {
+    var billing = state.billing;
+    var purchase = billing && billing.purchase;
+    if (!purchase) return;
+    state.billingBanner = purchase.granted ? { text: purchaseBannerText(billing, purchase) } : { wait: true };
+    render();
+    if (purchase.granted || attempt >= PURCHASE_POLLS) return;
+    setTimeout(function () {
+      if (state.view === "billing") loadBilling().then(function () { awaitPurchase(attempt + 1); });
+    }, PURCHASE_POLL_MS);
+  }
+
+  function purchaseBannerText(billing, purchase) {
+    if (purchase.kind === "extra_usage") return 'Added ' + esc(purchase.usage) + ' of usage.';
+    var plan = billing.plan;
+    if (!plan) return 'Payment received.';
+    if (purchase.first) {
+      return 'You&rsquo;re on the ' + esc(plan.price) + ' plan' + (plan.included ? ', with ' + esc(plan.included) + ' of usage this month' : '') + '.' +
+        (billing.topUp && billing.topUp.enabled ? ' Auto top-up is on.' : '');
+    }
+    return 'You&rsquo;re on the ' + esc(plan.price) + ' plan.' + (purchase.added !== "$0" ? ' ' + esc(purchase.added) + ' of usage was added for the rest of this month.' : '');
+  }
+
+  function billingBannerHtml() {
+    var banner = state.billingBanner;
+    if (!banner) return '';
+    return '<p class="plan-banner' + (banner.wait ? ' is-wait' : '') + '" role="status"><span class="plan-banner-mark" aria-hidden="true">' + (banner.wait ? '&hellip;' : '&#10003;') + '</span>' +
+      '<span>' + (banner.wait ? 'Payment received. Adding your usage&hellip;' : banner.text) + '</span></p>';
+  }
+
+  // The plan after this one for the same way of paying; offers come cheapest first.
+  function nextPlanKey(billing) {
+    var plans = planCardPlans(billing, billing.funding);
+    var index = plans.findIndex(function (plan) { return billing.plan && plan.key === billing.plan.key; });
+    return index >= 0 && plans[index + 1] ? plans[index + 1].key : "";
+  }
+
+  function openBillingStep(step) {
+    var billing = state.billing;
+    var topUp = billing.topUp;
+    if (step === "add" && billing.plan && billing.offers.extraUsage.length) {
+      var key = topUp ? topUp.pack.key : billing.offers.extraUsage[0].key;
+      if (billingExtraUsageOnCard(billing)) {
+        state.billingConfirm = { kind: "extra_usage", key: key, chargeKey: billingChargeKey("extra_usage") };
+        render();
+        focusAction("billing-extra-usage-confirm");
+      } else {
+        focusAction("billing-add-extra-usage");
+      }
+      return;
+    }
+    if ((step === "raise-limit" || step === "auto-top-up") && topUp && !topUp.ending) { editTopUp(); return; }
+    if (step === "upgrade" && billing.plan) {
+      var next = topUp && topUp.upgrade ? topUp.upgrade.key : nextPlanKey(billing);
+      if (next) seePlan(next);
+      return;
+    }
+    if (step === "card" && topUp) {
+      focusAction(topUp.pause && topUp.pause.kind === "needs_confirmation" && topUp.pause.url ? "billing-confirm-payment" : "billing-update-card");
+      return;
+    }
+    if (step === "choose" || !billing.plan) focusAction("billing-choose-plan");
+  }
+
+  // The plan cards with this plan chosen in the card for how the workspace
+  // pays now, and its in-app confirm open where the host offers one.
+  function seePlan(key) {
+    var card = state.billing.funding;
+    state.billingSelection[card] = key;
+    state.billingFundingConfirm = false;
+    state.billingConfirm = null;
+    if (state.billing.inApp && state.billing.inApp.planChange) {
+      previewPlanChange(key, card);
+      return;
+    }
+    render();
+    focusAction("billing-choose-plan");
+  }
+
+  function previewPlanChange(key, card) {
+    if (state.billingBusy) return;
+    state.billingBusy = "preview:" + card;
+    state.billingError = null;
+    render();
+    postJson("/admin/api/billing/plan-change/preview", "POST", { key: key }).then(function (preview) {
+      state.billingConfirm = { kind: "plan", card: card, preview: preview, chargeKey: billingChargeKey("plan_change") };
+    }).catch(function (error) {
+      state.billingError = { at: "plan:" + card, text: billingFailureText(error, "The plan change could not be checked. Try again.") };
+    }).then(function () {
+      state.billingBusy = "";
+      render();
+      focusAction("billing-plan-change-confirm");
+    });
+  }
+
+  // A charge's key lasts as long as the confirm the Owner opened, so trying
+  // again after a lost answer charges once.
+  function billingChargeKey(action) {
+    return "admin-ui:billing:" + action + ":" + Date.now() + ":" + Math.random().toString(36).slice(2);
+  }
+
+  // An in-app purchase answers the fresh page, or a Stripe page to finish it on.
+  function purchaseOnCard(path, body, busy, at, done) {
+    if (state.billingBusy) return;
+    state.billingBusy = busy;
+    state.billingError = null;
+    render();
+    postJson(path, "POST", body, { "idempotency-key": state.billingConfirm.chargeKey }).then(function (response) {
+      if (response.url) { location.assign(response.url); return; }
+      state.billing = response.billing;
+      state.billingConfirm = null;
+      state.billingSelection = {};
+      state.billingBusy = "";
+      state.billingBanner = done();
+      render();
+    }).catch(function (error) {
+      state.billingBusy = "";
+      state.billingError = { at: at, text: billingFailureText(error, at === "extra_usage" ? "Usage could not be added. Try again." : "Your plan could not be changed. Try again.") };
+      render();
+    });
+  }
+
+  function confirmPlanChange() {
+    var confirm = state.billingConfirm;
+    if (!confirm || confirm.kind !== "plan") return;
+    var preview = confirm.preview;
+    var body = { key: preview.key };
+    if (preview.kind === "upgrade" && preview.topUpRaise) body.consentVersion = AUTO_TOP_UP_CONSENT_VERSION;
+    purchaseOnCard("/admin/api/billing/plan-change", body, "plan_change", "plan:" + confirm.card, function () {
+      return preview.kind === "upgrade"
+        ? { text: 'You&rsquo;re on the ' + esc(preview.price) + ' plan.' + (preview.added !== "$0" ? ' ' + esc(preview.added) + ' of usage was added for the rest of this month.' : '') }
+        : null;
+    });
+  }
+
+  function buyExtraUsage(key) {
+    var offer = state.billing.offers.extraUsage.find(function (candidate) { return candidate.key === key; });
+    if (!offer) return;
+    var wasOut = !!(state.billing.balance && state.billing.balance.exhausted);
+    purchaseOnCard("/admin/api/billing/extra-usage", { key: key }, "extra_usage:" + key, "extra_usage", function () {
+      return { text: 'Added ' + esc(offer.usage) + ' of usage.' + (wasOut ? ' Your Agents are working again.' : '') };
+    });
+  }
+
+  function editTopUp() {
+    var topUp = state.billing && state.billing.topUp;
+    if (!topUp || topUp.ending || state.billingBusy) return;
+    state.billingTopUpEdit = {
+      pack: topUp.pack.key,
+      packChosen: false,
+      limit: topUp.limit.rule === "plan" ? "plan" : topUp.limit.cents,
+      on: !topUp.enabled
+    };
+    state.billingError = null;
+    render();
+    focusAction("billing-top-up-limit");
+  }
+
+  function updateTopUp(body, busy, headers) {
+    if (state.billingBusy) return;
+    state.billingBusy = busy;
+    state.billingError = null;
+    render();
+    postJson("/admin/api/billing/auto-top-up", "POST", body, headers).then(function (view) {
+      state.billing = view;
+      state.billingTopUpEdit = null;
+      state.billingTopUpRetryKey = null;
+    }).catch(function (error) {
+      state.billingError = { at: "top_up", text: billingFailureText(error, "Auto top-up could not be changed. Try again.") };
+    }).then(function () {
+      state.billingBusy = "";
+      render();
+    });
+  }
+
+  // The pack keeps following the plan unless the Owner picked another, and
+  // picking the plan's own pack follows the plan again.
+  function saveTopUp() {
+    var topUp = state.billing.topUp;
+    var edit = state.billingTopUpEdit;
+    if (!topUp || !edit) return;
+    var follows = edit.packChosen ? edit.pack === topUp.planPack : topUp.pack.rule === "plan";
+    var body = { change: "on", pack: follows ? "plan" : edit.pack, limit: edit.limit };
+    if (topUpEditRaises(topUp, edit)) body.consentVersion = AUTO_TOP_UP_CONSENT_VERSION;
+    updateTopUp(body, "top_up");
   }
 
   var BILLING_REFUSALS = {
@@ -2528,6 +3322,15 @@
     own_key_plan_required: function (billing) {
       var minimum = billing.offers.plans.find(function (plan) { return plan.ownKeyMinimum; });
       return "Your own API key needs the " + minimum.price + " plan or higher.";
+    },
+    card_required: function () {
+      return "Add a card in Manage billing first, then try again.";
+    },
+    past_due: function () {
+      return "Your plan's last payment didn't go through. Update your card in Manage billing, then try again.";
+    },
+    consent_outdated: function () {
+      return "This page is out of date. Reload it and try again.";
     }
   };
 
@@ -2661,34 +3464,83 @@
       : '';
   }
 
-  function billingMeterHtml(label, percent, onPacePercent, out, legend, note) {
+  function billingMeterHtml(label, percent, onPacePercent, out, legend, note, tone) {
     var fill = Math.max(0, Math.min(percent, 100));
     var pace = onPacePercent == null ? '' : '<span class="plan-meter-pace" style="left: ' + Math.max(0, Math.min(onPacePercent, 100)) + '%"></span>';
-    return '<div class="plan-meter' + (out ? ' is-out' : '') + '" role="meter" aria-label="' + label + '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + fill + '">' +
+    return '<div class="plan-meter' + (out ? ' is-out' : '') + (tone ? ' ' + tone : '') + '" role="meter" aria-label="' + label + '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + fill + '">' +
       '<span class="plan-meter-fill" style="width: ' + fill + '%"></span>' + pace + '</div>' +
       '<div class="plan-meter-legend"><span>' + legend + '</span>' + (note ? '<span>' + note + '</span>' : '') + '</div>';
   }
 
-  // Usage the workspace holds beyond the plan's own: carried over, extra
-  // usage, and trial usage left beside a plan.
+  // Extra usage waiting for a plan, and trial usage left beside a plan.
   function billingChipsHtml(billing) {
     var chips = [];
     var chip = function (tone, text, until) {
       return '<li class="plan-chip ' + tone + '"><span class="plan-chip-dot" aria-hidden="true"></span><span>' + text + '</span> <small>until ' + esc(until) + '</small></li>';
     };
-    if (billing.rollover) chips.push(chip("is-rollover", '+' + esc(billing.rollover.remaining) + ' carried over', billing.rollover.until));
-    if (billing.extraUsage) {
-      chips.push(billing.extraUsage.frozen
-        ? chip("is-extra", esc(billing.extraUsage.remaining) + ' of extra usage waits for a plan', billing.extraUsage.until)
-        : chip("is-extra", '+' + esc(billing.extraUsage.remaining) + ' extra usage', billing.extraUsage.until));
+    if (billing.extraUsage && billing.extraUsage.frozen) {
+      chips.push(chip("is-extra", esc(billing.extraUsage.remaining) + ' of extra usage waits for a plan', billing.extraUsage.until));
     }
     if (billing.trial && billing.plan) chips.push(chip("is-trial", '+' + esc(billing.trial.remaining) + ' trial usage', billing.trial.until));
     return chips.length ? '<ul class="plan-chips">' + chips.join("") + '</ul>' : '';
   }
 
+  // Usage beyond the plan's, in the order it is spent. While the plan's
+  // usage is left, what carried over and extra usage are a plain line each.
+  // Once it is used up, extra usage gets its own bar, filled with what is
+  // used, like the plan's.
+  function billingBeyondPlanHtml(billing) {
+    var extra = billing.extraUsage && !billing.extraUsage.frozen ? billing.extraUsage : null;
+    var lines = [];
+    var bar = '';
+    if (billing.rollover) {
+      lines.push('Includes ' + esc(billing.rollover.remaining) + ' carried over from last month, which expires ' + esc(billing.rollover.until) + '.');
+    }
+    if (extra && billing.balance && billing.balance.stage === "extra") {
+      var left = esc(extra.remaining) + ' left, keeps until ' + esc(extra.until);
+      if (extra.bar) bar = billingMeterHtml("Extra usage", extra.bar.percent, null, false, '<b>' + esc(extra.bar.used) + '</b> of ' + esc(extra.bar.total) + ' extra usage', left, "is-extra");
+      else lines.push(left);
+    } else if (extra) {
+      lines.push('Plus ' + esc(extra.remaining) + ' of extra usage for when this runs out. It keeps until ' + esc(extra.until) + '.');
+    }
+    return bar + lines.map(function (line) { return '<p class="plan-extra-note">' + line + '</p>'; }).join("") + billingChipsHtml(billing);
+  }
+
+  // With the host buying on the saved card, extra usage is confirmed here;
+  // without it, or with no card to charge, Checkout takes the purchase.
+  function billingExtraUsageOnCard(billing) {
+    return !!(billing.inApp && billing.inApp.extraUsage) && !(billing.topUp && !billing.topUp.card);
+  }
+
+  // A task paid from extra usage costs its own fee where the host prices it
+  // apart from the plan's; empty while one fee covers both.
+  function billingExtraUsageFee(billing) {
+    var fee = billing.offers.extraUsageTaskFee;
+    return fee && fee !== billing.taskFee ? esc(fee) : '';
+  }
+
+  function billingExtraUsageFeeSentence(billing) {
+    var fee = billingExtraUsageFee(billing);
+    return fee ? ' Tasks paid from it are ' + fee + '.' : '';
+  }
+
+  function billingExtraUsageConfirmHtml(billing, key) {
+    var offer = billing.offers.extraUsage.find(function (candidate) { return candidate.key === key; });
+    if (!offer) return '';
+    var card = billing.topUp && billing.topUp.card ? esc(billing.topUp.card) : 'your card';
+    var busy = !!state.billingBusy;
+    return '<div class="plan-confirm" role="group" aria-label="Confirm extra usage"><p><b>Add ' + esc(offer.usage) + ' of usage?</b></p>' +
+      '<p>It&rsquo;s charged to ' + card + ', plus tax, and keeps ' + offer.validMonths + ' months.' + billingExtraUsageFeeSentence(billing) + '</p><div class="plan-confirm-actions">' +
+      '<button type="button" class="btn btn-ghost btn-sm" data-action="billing-extra-usage-cancel"' + (busy ? ' disabled' : '') + '>Cancel</button>' +
+      '<button type="button" class="btn btn-primary btn-sm" data-action="billing-extra-usage-confirm" data-key="' + esc(offer.key) + '"' + (busy ? ' disabled' : '') + '>' +
+      (state.billingBusy === "extra_usage:" + offer.key ? 'Adding&hellip;' : 'Add ' + esc(offer.price)) + '</button></div></div>';
+  }
+
   // Extra usage is spent only while a plan is active, so it is sold only then.
   function billingAddUsageHtml(billing, out) {
     if (!billing.manage || !billing.plan || !billing.offers.extraUsage.length) return '';
+    var confirm = state.billingConfirm;
+    if (confirm && confirm.kind === "extra_usage") return billingExtraUsageConfirmHtml(billing, confirm.key);
     var offers = billing.offers.extraUsage;
     return '<div class="plan-add" role="group" aria-labelledby="plan-add-label"><span class="plan-add-label" id="plan-add-label">Add usage</span><div class="plan-add-row">' +
       offers.map(function (offer) {
@@ -2697,14 +3549,35 @@
       }).join("") + '</div><span class="hint">Keeps ' + offers[0].validMonths + ' months</span></div>';
   }
 
-  // Why Agents stopped, and what starts them again; an Owner is the one who
-  // can add usage.
+  // Why Agents stopped, and what starts them again. Only an Owner reads why
+  // auto top-up didn't add usage; everyone reads whether it reached its limit.
+  var TOP_UP_PAUSED = {
+    declined: function (them) { return 'Auto top-up couldn&rsquo;t charge your card. Update it, or add usage, to keep ' + them + '.'; },
+    needs_confirmation: function (them) { return 'Your bank asked you to confirm an auto top-up charge. Confirm it, or add usage, to keep ' + them + '.'; },
+    billing_details: function (them) { return 'Auto top-up needs your billing details. Update them, or add usage, to keep ' + them + '.'; },
+    past_due: function (them) { return 'Your plan&rsquo;s last payment didn&rsquo;t go through. Update your card to keep ' + them + '.'; }
+  };
+
   function billingPausedText(billing) {
-    var who = billing.manage ? 'Add usage' : 'An Owner can add usage';
+    var own = billing.funding === "own_key";
+    var paused = own ? 'Tasks are paused, and your Agents can still chat. ' : 'Your Agents are paused. ';
+    var them = own ? 'tasks going' : 'them working';
     var ending = billing.pendingChange && billing.pendingChange.kind === "ends";
     var renews = !ending && billing.meter ? ', or they start again when your plan renews ' + esc(billing.meter.resets) : '';
-    if (billing.funding === "own_key") return 'Tasks are paused, and your Agents can still chat. ' + who + ' to keep tasks going' + renews + '.';
-    return 'Your Agents are paused. ' + who + ' to keep them working now' + renews + '.';
+    var topUp = billing.manage ? billing.topUp : null;
+    var status = billing.autoTopUp;
+    if (topUp && topUp.enabled) {
+      if (topUp.pause) return paused + TOP_UP_PAUSED[topUp.pause.kind](them);
+      if (topUp.limitReached) {
+        return paused + 'Auto top-up added its ' + esc(topUp.limit.amount) + ' limit for this month. ' +
+          (topUp.upgrade ? 'Raise the limit or upgrade' : 'Raise the limit') + ' to keep ' + them + renews + '.';
+      }
+      return own ? 'Tasks are paused while auto top-up adds usage, and your Agents can still chat.' : 'Your Agents are paused while auto top-up adds usage.';
+    }
+    if (!billing.manage && status && status.kind === "plan" && status.limitReached) {
+      return paused + 'An Owner can raise the auto top-up limit or upgrade to keep ' + them + renews + '.';
+    }
+    return paused + (billing.manage ? 'Add usage' : 'An Owner can add usage') + ' to keep ' + them + renews + '.';
   }
 
   // "About 375 tasks", or nothing once the usage is gone or when a task draws
@@ -2754,23 +3627,212 @@
         own ? 'Your provider bills tokens' : ''
       ]);
     } else {
+      // Once the plan's usage is used up, the big number is the extra usage
+      // left, which doesn't renew, so the renewal moves onto the plan's bar.
       var used = billing.meter;
-      var note = used.percent >= 100 ? 'Used up' : used.onPacePercent == null ? '' : 'On pace for ' + used.onPacePercent + '% by ' + esc(used.resets);
-      eyebrow = 'This month';
+      var extraStage = balance.stage === "extra";
+      var periodEnd = billingPeriodEndText(billing);
+      var usedUp = extraStage && periodEnd ? 'Used up, ' + periodEnd.charAt(0).toLowerCase() + periodEnd.slice(1) : 'Used up';
+      var note = used.percent >= 100 ? usedUp : used.onPacePercent == null ? '' : 'On pace for ' + used.onPacePercent + '% by ' + esc(used.resets);
+      var renews = extraStage ? '' : periodEnd;
+      eyebrow = extraStage ? 'Your usage' : 'This month';
       if (own && balance.tasksLeft) {
         big = '<b>' + esc(balance.tasksLeft) + '</b> tasks left';
-        sub = billingSubHtml([esc(balance.left) + ' of usage left', billingPeriodEndText(billing), 'Your provider bills tokens']);
+        sub = billingSubHtml([esc(balance.left) + ' of usage left', renews, 'Your provider bills tokens']);
         meter = billingMeterHtml("Plan tasks", used.percent, used.onPacePercent, out, '<b>' + esc(used.tasksUsed) + '</b> of ' + esc(used.tasksIncluded) + ' tasks used', note);
       } else {
         big = '<b>' + esc(balance.left) + '</b> left';
-        sub = billingSubHtml([billingTasksLeft(balance, out), billingPeriodEndText(billing), own ? 'Your provider bills tokens' : '']);
+        sub = billingSubHtml([billingTasksLeft(balance, out), renews, own ? 'Your provider bills tokens' : '']);
         meter = billingMeterHtml("Plan usage", used.percent, used.onPacePercent, out, '<b>' + esc(used.used) + '</b> of ' + esc(used.included) + ' plan usage', note);
       }
     }
     if (out && billing.plan) alert = billingAlertHtml(billingPausedText(billing));
     return '<section class="plan-hero' + (out ? ' is-out' : '') + '" aria-label="Your usage"><div class="plan-hero-top"><div class="plan-hero-copy">' +
       '<span class="section-eyebrow">' + eyebrow + '</span><p class="plan-hero-big">' + big + '</p>' + sub + '</div>' +
-      billingAddUsageHtml(billing, out) + '</div>' + billingErrorHtml("extra_usage") + alert + meter + billingChipsHtml(billing) + '</section>';
+      billingAddUsageHtml(billing, out) + '</div>' + billingErrorHtml("extra_usage") + alert + meter +
+      (billing.plan ? billingBeyondPlanHtml(billing) : billingChipsHtml(billing)) + '</section>';
+  }
+
+  // ---- Plan: when usage runs out ----
+  // Auto top-up adds extra usage when the workspace runs out, up to a monthly
+  // limit. Only an Owner changes it or reads its amounts, card, and why it
+  // paused; everyone else reads whether it is on and reached its limit.
+
+  // "$1,000", or "$12.50" with cents.
+  function billingDollars(cents) {
+    var whole = Math.floor(cents / 100);
+    var rest = cents % 100;
+    return '$' + String(whole).replace(/\B(?=(\d{3})+(?!\d))/g, ",") + (rest ? '.' + (rest < 10 ? '0' : '') + rest : '');
+  }
+
+  function topUpSectionHtml(status, body, muted, foot) {
+    return '<section class="plan-auto' + (muted ? ' is-muted' : '') + '" aria-labelledby="plan-auto-heading"><h2 class="section-title" id="plan-auto-heading">When usage runs out</h2>' +
+      (status ? '<p class="auto-status">' + status + '</p>' : '') + body + (foot || '') + '</section>';
+  }
+
+  function topUpRowHtml(row) {
+    var lock = row.disabled || !!state.billingBusy;
+    return '<div class="auto-row' + (row.disabled ? ' is-off' : '') + '"><span class="toggle"><span class="thumb"></span>' +
+      '<input type="checkbox" data-action="billing-top-up-toggle" aria-label="Auto top-up"' + (row.on ? ' checked' : '') + (lock ? ' disabled' : '') + '></span>' +
+      '<div><p class="auto-title">Auto top-up' + (row.pill || '') + '</p><p class="auto-desc">' + row.desc + '</p></div><div>' + (row.action || '') + '</div>' + (row.extra || '') + '</div>';
+  }
+
+  function topUpPillHtml(text, warn) {
+    return '<span class="auto-pill' + (warn ? ' is-warn' : '') + '">' + text + '</span>';
+  }
+
+  // The pack and limit the editor shows: what the Owner picked, or what is set.
+  function topUpEditValues(topUp, edit) {
+    var pack = topUp.packs.find(function (candidate) { return candidate.key === edit.pack; }) || topUp.packs[0];
+    return { pack: pack, limitCents: edit.limit === "plan" ? topUp.plan.cents : edit.limit };
+  }
+
+  // Turning it on, a bigger pack, or a higher limit raises what Chickpea may
+  // charge, so the Owner agrees to it again.
+  function topUpEditRaises(topUp, edit) {
+    var values = topUpEditValues(topUp, edit);
+    return edit.on || !topUp.enabled || values.pack.cents > topUp.pack.cents || values.limitCents > topUp.limit.cents;
+  }
+
+  // "Same as your plan" follows the plan; the others are multiples of the
+  // pack, with the limit set now kept even when it is none of them.
+  function topUpLimitOptionsHtml(topUp, packCents, chosen) {
+    var values = [2, 3, 4, 6, 10].map(function (times) { return packCents * times; });
+    if (chosen !== "plan" && values.indexOf(chosen) < 0) values.push(chosen);
+    values = values.filter(function (cents, index) {
+      return values.indexOf(cents) === index && (cents !== topUp.plan.cents || cents === chosen);
+    }).sort(function (left, right) { return left - right; });
+    return '<option value="plan"' + (chosen === "plan" ? ' selected' : '') + '>Same as your plan &middot; ' + esc(topUp.plan.price) + ' a month</option>' +
+      values.map(function (cents) {
+        return '<option value="' + cents + '"' + (cents === chosen ? ' selected' : '') + '>' + billingDollars(cents) + ' a month</option>';
+      }).join("");
+  }
+
+  function topUpEditorHtml(billing, topUp, edit) {
+    var values = topUpEditValues(topUp, edit);
+    var busy = !!state.billingBusy;
+    var packs = '<span class="seg" role="radiogroup" aria-labelledby="plan-auto-pack">' + topUp.packs.map(function (pack) {
+      var chosen = pack.key === values.pack.key;
+      return '<button type="button" role="radio" aria-checked="' + chosen + '"' + (chosen ? ' class="on"' : '') + ' data-action="billing-top-up-pack" data-key="' + esc(pack.key) + '"' +
+        (busy || pack.cents > values.limitCents ? ' disabled' : '') + '>' + esc(pack.price) + '</button>';
+    }).join("") + '</span>';
+    var tasks = values.pack.tasks
+      ? '<span class="hint">' + billingSentence(esc(values.pack.tasks)) + ' tasks' + (billing.funding === "platform" ? ' with models included' : '') + '</span>'
+      : '';
+    var consent = topUpEditRaises(topUp, edit)
+      ? '<p class="auto-consent">You allow Chickpea to charge ' + (topUp.card ? esc(topUp.card) : 'your card') + ' up to ' + billingDollars(values.limitCents) +
+        ' a month, plus tax, for extra usage. You can turn this off at any time.</p>'
+      : '';
+    return '<div class="auto-set">' +
+      '<div class="auto-field"><span class="field-label" id="plan-auto-pack">Each time, add</span>' + packs + tasks + '</div>' +
+      '<div class="auto-field"><label class="field-label" for="plan-auto-limit">Monthly limit</label>' +
+      '<select class="auto-select" id="plan-auto-limit" data-action="billing-top-up-limit"' + (busy ? ' disabled' : '') + '>' + topUpLimitOptionsHtml(topUp, values.pack.cents, edit.limit) + '</select>' +
+      '<span class="hint">Top-ups stop at the limit until your plan renews.</span></div>' + consent + billingErrorHtml("top_up") +
+      '<div class="auto-actions"><button type="button" class="btn btn-ghost" data-action="billing-top-up-cancel"' + (busy ? ' disabled' : '') + '>Cancel</button>' +
+      '<button type="button" class="btn btn-primary" data-action="billing-top-up-save"' + (busy ? ' disabled' : '') + '>' +
+      (state.billingBusy === "top_up" ? 'Saving&hellip;' : edit.on ? 'Turn on auto top-up' : 'Save') + '</button></div></div>';
+  }
+
+  // Why auto top-up paused, and the buttons that fix it.
+  function topUpPauseHtml(topUp) {
+    var pause = topUp.pause;
+    var busy = !!state.billingBusy;
+    var retry = '<button type="button" class="btn btn-primary btn-sm" data-action="billing-top-up-retry"' + (busy ? ' disabled' : '') + '>' +
+      (state.billingBusy === "top_up_retry" ? 'Trying&hellip;' : 'Try again') + '</button>';
+    var portal = function (label, tone) { return billingButtonHtml("billing-update-card", label, "", "portal", tone + " btn-sm"); };
+    var text, buttons;
+    if (pause.kind === "declined") {
+      text = 'Your card was declined on ' + esc(pause.on) + ', so auto top-up is paused. Update your card, then try again.';
+      buttons = portal("Update card", "btn-soft") + retry;
+    } else if (pause.kind === "needs_confirmation") {
+      text = 'Your bank asked you to confirm a ' + esc(pause.amount) + ' charge. Confirm it to turn auto top-up back on.';
+      buttons = pause.url
+        ? '<a class="btn btn-primary btn-sm" data-action="billing-confirm-payment" href="' + esc(pause.url) + '">Confirm payment</a>'
+        : portal("Update card", "btn-primary");
+    } else if (pause.kind === "billing_details") {
+      text = 'Your billing details are incomplete, so auto top-up couldn&rsquo;t add usage. Update them, then try again.';
+      buttons = portal("Update billing details", "btn-soft") + retry;
+    } else {
+      text = 'Your plan&rsquo;s last payment didn&rsquo;t go through, so auto top-up is paused. Update your card to pay it.';
+      buttons = portal("Update card", "btn-primary");
+    }
+    return '<p class="plan-hero-alert auto-alert" role="status"><span class="plan-hero-alert-mark" aria-hidden="true">!</span><span>' + text + '</span></p>' +
+      '<div class="auto-actions auto-alert">' + buttons + '</div>' + billingErrorHtml("top_up");
+  }
+
+  var TOP_UP_PAUSE_STATUS = {
+    declined: 'Auto top-up is paused because your card was declined.',
+    needs_confirmation: 'Auto top-up is paused until you confirm a payment with your bank.',
+    billing_details: 'Auto top-up is paused because your billing details are incomplete.',
+    past_due: 'Auto top-up is paused because your plan&rsquo;s last payment didn&rsquo;t go through.'
+  };
+
+  function billingTopUpHtml(billing) {
+    var status = billing.autoTopUp;
+    if (!status) return '';
+    if (status.kind === "no_plan") {
+      return billing.trial && billing.funding === "platform"
+        ? topUpSectionHtml('Auto top-up turns on with your plan. During the free trial, your Agents pause when its usage runs out.', '', true)
+        : '';
+    }
+    if (!billing.manage) {
+      var reads = status.on ? (status.limitReached ? 'On. Limit reached this month.' : 'On') : 'Off';
+      return topUpSectionHtml('', '<div class="auto-ro"><p><b>Auto top-up</b><span>' + reads + '</span></p></div>', false);
+    }
+    var topUp = billing.topUp;
+    if (!topUp) return '';
+    if (topUp.ending) {
+      return topUpSectionHtml('Your plan ends ' + esc(billing.pendingChange.on) + ', so auto top-up is off.',
+        topUpRowHtml({ disabled: true, desc: 'Turned off when the plan was cancelled. It turns on again with a new plan.' }), true);
+    }
+    var own = billing.funding === "own_key";
+    var out = !!(billing.balance && billing.balance.exhausted);
+    var edit = state.billingTopUpEdit;
+    var renews = topUp.resets || (billing.meter && billing.meter.resets);
+    var pack = billing.offers.extraUsage.find(function (offer) { return offer.key === topUp.pack.key; });
+    var months = pack ? pack.validMonths : 12;
+    var packTasks = (topUp.packs.find(function (candidate) { return candidate.key === topUp.pack.key; }) || {}).tasks;
+    var general = 'Adds extra usage when your plan&rsquo;s usage runs out, up to a monthly limit. Extra usage keeps ' + months + ' months while you have a plan.' +
+      billingExtraUsageFeeSentence(billing);
+    var foot = '<div class="auto-foot"><span>' + (topUp.card ? 'Top-ups are charged to ' + esc(topUp.card) + ', plus tax.' : 'Auto top-up needs a saved card.') + '</span>' +
+      (topUp.pause ? '' : billingButtonHtml("billing-update-card", topUp.card ? "Update card" : "Add card", "", "portal", "btn-ghost btn-sm")) + '</div>';
+    if (!topUp.enabled) {
+      var offStatus = 'When usage runs out, your Agents pause until your plan renews' + (renews ? ' ' + esc(renews) : '') + '.';
+      return topUpSectionHtml(offStatus, topUpRowHtml(edit
+        ? { on: true, desc: general, extra: topUpEditorHtml(billing, topUp, edit) }
+        : { on: false, desc: general, extra: billingErrorHtml("top_up") }), false, foot);
+    }
+    var pausedAtLimit = topUp.limitReached && out;
+    var statusText = topUp.pause ? TOP_UP_PAUSE_STATUS[topUp.pause.kind]
+      : topUp.limitReached && !out ? 'No more top-ups this month. When this extra usage runs out, your Agents pause until ' + (renews ? esc(renews) : 'your plan renews') + '.'
+      : own && packTasks ? 'On your own key your Agents can always chat. Only tasks use your plan, and ' + esc(topUp.pack.price) + ' of extra usage is ' + esc(packTasks) + ' tasks.'
+      : '';
+    var desc = edit ? general
+      : 'When your ' + (own ? 'tasks run' : 'usage runs') + ' out, adds ' + esc(topUp.pack.price) + ' of extra usage so your Agents keep working. Up to ' +
+        esc(topUp.limit.amount) + ' a month. Extra usage keeps ' + months + ' months.' + billingExtraUsageFeeSentence(billing);
+    var busy = !!state.billingBusy;
+    var action = edit ? ''
+      : pausedAtLimit ? '<button type="button" class="btn btn-primary btn-sm" data-action="billing-top-up-edit"' + (busy ? ' disabled' : '') + '>Raise limit</button>'
+      : '<button type="button" class="btn btn-ghost btn-sm" data-action="billing-top-up-edit"' + (busy ? ' disabled' : '') + '>Edit</button>';
+    var pill = topUp.pause ? topUpPillHtml('Paused', true) : pausedAtLimit ? topUpPillHtml('Limit reached', true) : topUpPillHtml('On', false);
+    var extra;
+    if (edit) {
+      extra = topUpEditorHtml(billing, topUp, edit);
+    } else {
+      extra = topUp.pause ? '' : '<div class="auto-use">' + billingMeterHtml("Top-ups this month", topUp.percent, null, pausedAtLimit,
+        'Top-ups this month: <b>' + esc(topUp.used) + '</b> of your ' + esc(topUp.limit.amount) + ' limit', topUp.resets ? 'Limit resets ' + esc(topUp.resets) : '') + '</div>';
+      if (pausedAtLimit && topUp.upgrade) {
+        var fees = topUp.upgrade.taskFees;
+        var nextPlan = 'The ' + esc(topUp.upgrade.price) + ' plan ' +
+          (fees && topUp.upgrade.coversThisMonth ? 'covers that as plan usage' : 'includes ' + esc(topUp.upgrade.included) + ' a month') +
+          (fees ? ', at ' + esc(fees.plan) + ' a task instead of ' + esc(fees.extra) : '') + '.';
+        extra += '<div class="plan-confirm auto-alert"><p>Your ' + esc(topUp.plan.price) + ' plan and ' + esc(topUp.used) + ' of top-ups covered ' + esc(topUp.upgrade.covered) +
+          ' of usage this month. ' + nextPlan + '</p><div class="plan-confirm-actions">' +
+          '<button type="button" class="btn btn-soft btn-sm" data-action="billing-see-plan" data-key="' + esc(topUp.upgrade.key) + '"' + (busy ? ' disabled' : '') + '>See the ' + esc(topUp.upgrade.price) + ' plan</button></div></div>';
+      }
+      extra += topUp.pause ? topUpPauseHtml(topUp) : billingErrorHtml("top_up");
+    }
+    return topUpSectionHtml(statusText, topUpRowHtml({ on: true, pill: pill, desc: desc, action: action, extra: extra }), false, foot);
   }
 
   // ---- Plan: the two ways to pay, as cards ----
@@ -2813,13 +3875,16 @@
 
   // The next step toward paying this card's way at the selected size:
   //   current   the selected size is the plan the workspace pays this way now
+  //   change    an in-app change of the plan, on the saved card
   //   checkout  Stripe Checkout for the selected plan
   //   add_key   Model providers, for the key the default model needs
   //   switch    switch how the workspace pays, after the Owner confirms
   function planCardStep(billing, card, selected) {
     var current = billing.plan ? billing.plan.key : "";
     if (card === billing.funding) {
-      return selected.key === current ? { kind: "current" } : { kind: "checkout", key: selected.key, price: selected.price, change: !!billing.plan };
+      if (selected.key === current) return { kind: "current" };
+      if (billing.plan && billing.inApp && billing.inApp.planChange) return { kind: "change", key: selected.key, price: selected.price };
+      return { kind: "checkout", key: selected.key, price: selected.price, change: !!billing.plan };
     }
     if (card === "platform") return { kind: "switch", to: "platform" };
     if (selected.key !== current) return { kind: "checkout", key: selected.key, price: selected.price, change: false };
@@ -2850,8 +3915,34 @@
       (busy ? 'Switching&hellip;' : to === "platform" ? 'Switch to models included' : 'Switch to your own key') + '</button></div></div>';
   }
 
+  function planChangeConfirmHtml(preview) {
+    var busy = !!state.billingBusy;
+    var actions = '<div class="plan-confirm-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="billing-plan-change-cancel"' + (busy ? ' disabled' : '') + '>Cancel</button>' +
+      '<button type="button" class="btn btn-primary btn-sm" data-action="billing-plan-change-confirm"' + (busy ? ' disabled' : '') + '>' +
+      (state.billingBusy === "plan_change" ? 'Changing&hellip;' : 'Move to the ' + esc(preview.price) + ' plan') + '</button></div>';
+    if (preview.kind === "downgrade") {
+      return '<div class="plan-confirm" role="group" aria-label="Confirm the plan change"><p><b>Move to the ' + esc(preview.price) + ' plan on ' + esc(preview.at) + '?</b> ' +
+        'You keep this month&rsquo;s usage until then.</p>' + actions + '</div>';
+    }
+    var card = preview.card ? esc(preview.card) : 'your card';
+    var raise = preview.topUpRaise;
+    return '<div class="plan-confirm" role="group" aria-label="Confirm the plan change"><p><b>Move to the ' + esc(preview.price) + ' plan?</b></p>' +
+      '<p>Today you pay ' + esc(preview.today) + ' for the rest of this month, and ' + esc(preview.added) + ' of usage is added right away.</p>' +
+      (preview.from ? '<p>From ' + esc(preview.from) + ', it&rsquo;s ' + esc(preview.price) + ' a month with ' + esc(preview.included) + ' of usage.</p>' : '') +
+      (raise ? '<p>' + (raise.limitRises ? 'Auto top-up&rsquo;s limit becomes ' + esc(raise.limit) + ' a month, the same as your new plan.'
+        : 'Auto top-up adds ' + esc(raise.pack) + ' each time on your new plan.') +
+        ' You allow Chickpea to charge ' + card + ' up to ' + esc(raise.limit) + ' a month, plus tax, for extra usage.</p>' : '') +
+      '<p class="hint">Charged to ' + card + ', plus tax.</p>' + actions + '</div>';
+  }
+
   function planCardActionHtml(billing, card, step) {
     if (step.kind === "current") return '<button type="button" class="btn btn-soft plan-card-action" disabled>Your current plan</button>';
+    if (step.kind === "change") {
+      var confirm = state.billingConfirm;
+      if (confirm && confirm.kind === "plan" && confirm.card === card && confirm.preview.key === step.key) return planChangeConfirmHtml(confirm.preview);
+      return '<button type="button" class="btn btn-primary plan-card-action" data-action="billing-plan-change" data-key="' + esc(step.key) + '" data-at="' + card + '"' +
+        (state.billingBusy ? ' disabled' : '') + '>' + (state.billingBusy === "preview:" + card ? 'Checking&hellip;' : 'Change to the ' + esc(step.price) + ' plan') + '</button>';
+    }
     if (step.kind === "checkout") {
       return billingButtonHtml("billing-choose-plan", (step.change ? "Change to the " : "Choose the ") + esc(step.price) + " plan", step.key, "plan:" + card,
         (card === billing.funding ? "btn-primary" : "btn-soft") + " plan-card-action", ' data-at="' + card + '"');
@@ -2909,6 +4000,14 @@
       '</ul></div>';
   }
 
+  // Auto top-up turns on with a first plan, so its card says so before
+  // Checkout, which says it again.
+  function planCardDisclosureHtml(billing, selected, step) {
+    if (step.kind !== "checkout" || billing.plan || !billing.autoTopUp || billing.autoTopUp.kind !== "no_plan") return '';
+    return '<p class="hint plan-card-disclosure">Includes auto top-up. When the plan&rsquo;s usage runs out, we add ' +
+      (selected.topUpPack ? esc(selected.topUpPack) + ' of extra usage' : 'extra usage') + ', up to ' + esc(selected.price) + ' a month. You can change it any time.</p>';
+  }
+
   function planCardHtml(billing, card) {
     var meta = PLAN_CARDS[card];
     var selected = planCardSelection(billing, card);
@@ -2926,7 +4025,7 @@
       '<p class="plan-card-price"><b>' + esc(selected.price) + '</b> / month</p>' +
       '<select class="plan-card-level" data-action="billing-plan-level" data-card="' + card + '" aria-label="' + meta.levelLabel + '"' + (state.billingBusy ? ' disabled' : '') + '>' + options + '</select>' +
       '<p class="plan-card-note">' + planCardNote(billing, card, selected) + '</p>' +
-      planCardActionHtml(billing, card, step) + billingErrorHtml("plan:" + card) + (step.kind === "switch" ? billingErrorHtml("switch") : '') +
+      planCardActionHtml(billing, card, step) + planCardDisclosureHtml(billing, selected, step) + billingErrorHtml("plan:" + card) + (step.kind === "switch" ? billingErrorHtml("switch") : '') +
       details + '</article>';
   }
 
@@ -2978,7 +4077,8 @@
       }).join("") + '</ul>' + more
       : '<p class="plan-use-empty">' + (period ? 'No usage yet this period.' : 'No usage yet.') + '</p>';
     return '<section class="plan-section" aria-labelledby="plan-use-heading"><div class="plan-section-head"><div><h2 class="section-title" id="plan-use-heading">' +
-      (period ? 'Usage this period' : 'Usage') + '</h2>' + (period ? '<p class="hint">Since ' + esc(period.start) + '.</p>' : '') + '</div>' + toggle + '</div>' + body + '</section>';
+      (period ? 'Usage this period' : 'Usage') + '</h2>' + (period ? '<p class="hint">Since ' + esc(period.start) + '.</p>' : '') + '</div>' + toggle + '</div>' + body +
+      (USAGE_ADMIN_UI ? '<button type="button" class="btn btn-ghost btn-sm plan-use-more" data-action="open-usage">See all usage</button>' : '') + '</section>';
   }
 
   // ---- Plan: how usage works ----
@@ -2991,12 +4091,13 @@
     var offers = billing.offers;
     var yours = function (card) { return billing.funding === card ? ' <span class="plan-yours">Yours</span>' : ''; };
     var fee = esc(billing.taskFee);
+    var extraFee = billingExtraUsageFee(billing);
     var chatFree = offers.chatReplyFee === "$0";
     var row = function (label, platform, ownKey) { return '<tr><th scope="row">' + label + '</th><td>' + platform + '</td><td>' + ownKey + '</td></tr>'; };
     var facts = [
       offers.bonusPercent > 0 ? ['is-bonus', offers.bonusPercent + '% bonus usage on every plan'] : null,
       offers.rolloverMonths > 0 ? ['is-rollover', 'Unused plan usage carries over ' + billingMonths(offers.rolloverMonths)] : null,
-      offers.extraUsage.length ? ['is-extra', 'Extra usage keeps ' + offers.extraUsage[0].validMonths + ' months'] : null
+      offers.extraUsage.length ? ['is-extra', 'Extra usage keeps ' + offers.extraUsage[0].validMonths + ' months' + (extraFee ? ', and tasks paid from it are ' + extraFee : '')] : null
     ].filter(Boolean);
     var example = function (ask, counts) { return '<li><span>&ldquo;' + ask + '&rdquo;</span><b>' + counts + '</b></li>'; };
     return '<section class="plan-section plan-how" aria-labelledby="plan-how-heading"><div class="plan-section-head"><div><h2 class="section-title" id="plan-how-heading">How usage works</h2>' +
@@ -3022,9 +4123,9 @@
       if (state.billingError) return head + '<div class="empty"><p class="field-error">' + esc(state.billingError.text) + '</p><button type="button" class="btn btn-ghost" data-action="billing-retry">Retry</button></div>';
       return head + '<div class="empty"><p class="hint">Loading your plan&hellip;</p></div>';
     }
-    var status = billingErrorHtml("load") + billingHeroHtml(billing);
+    var status = billingErrorHtml("load") + billingHeroHtml(billing) + billingTopUpHtml(billing);
     if (!billing.manage) return head + status + '<p class="plan-member-note"><span class="plan-chip-dot" aria-hidden="true"></span>An Owner can change the plan, add usage, or switch how your workspace pays for models.</p>';
-    return head + status + billingPlansHtml(billing) + billingUseHtml(billing) + billingHowHtml(billing);
+    return billingBannerHtml() + head + status + billingPlansHtml(billing) + billingUseHtml(billing) + billingHowHtml(billing);
   }
 
   function isOnboardingSlackConnection() {
@@ -14987,9 +16088,60 @@
     if (action === "open-usage" && USAGE_ADMIN_UI) { openUsage(); }
     if (action === "open-billing" && BILLING_OFFERED) { openBilling(); }
     if (action === "billing-retry") { loadBilling(); }
-    if (action === "billing-add-extra-usage") {
+    if (action === "billing-add-extra-usage" && state.billing && !state.billingBusy) {
       var extraUsageKey = target.getAttribute("data-key") || "";
-      openStripe("/admin/api/billing/checkout", { kind: "extra_usage", key: extraUsageKey }, "extra_usage:" + extraUsageKey, "extra_usage");
+      if (billingExtraUsageOnCard(state.billing)) {
+        state.billingConfirm = { kind: "extra_usage", key: extraUsageKey, chargeKey: billingChargeKey("extra_usage") };
+        state.billingError = null;
+        render();
+        focusAction("billing-extra-usage-confirm");
+      } else {
+        openStripe("/admin/api/billing/checkout", { kind: "extra_usage", key: extraUsageKey }, "extra_usage:" + extraUsageKey, "extra_usage");
+      }
+    }
+    if (action === "billing-extra-usage-cancel" && !state.billingBusy) {
+      state.billingConfirm = null;
+      state.billingError = null;
+      render();
+      focusAction("billing-add-extra-usage");
+    }
+    if (action === "billing-extra-usage-confirm") buyExtraUsage(target.getAttribute("data-key") || "");
+    if (action === "billing-plan-change") previewPlanChange(target.getAttribute("data-key") || "", target.getAttribute("data-at") === "own_key" ? "own_key" : "platform");
+    if (action === "billing-plan-change-cancel" && !state.billingBusy) {
+      state.billingConfirm = null;
+      state.billingError = null;
+      render();
+      focusAction("billing-plan-change");
+    }
+    if (action === "billing-plan-change-confirm" && !state.billingBusy) confirmPlanChange();
+    if (action === "billing-see-plan" && state.billing && !state.billingBusy) seePlan(target.getAttribute("data-key") || "");
+    if (action === "billing-update-card") openStripe("/admin/api/billing/portal", {}, "portal", "portal");
+    if (action === "billing-top-up-toggle" && state.billing && state.billing.topUp && !state.billingBusy) {
+      if (state.billingTopUpEdit && state.billingTopUpEdit.on) {
+        state.billingTopUpEdit = null;
+        render();
+      } else if (state.billing.topUp.enabled) {
+        updateTopUp({ change: "off" }, "top_up_off");
+      } else {
+        editTopUp();
+      }
+    }
+    if (action === "billing-top-up-edit") editTopUp();
+    if (action === "billing-top-up-pack" && state.billingTopUpEdit && !state.billingBusy) {
+      state.billingTopUpEdit.pack = target.getAttribute("data-key") || state.billingTopUpEdit.pack;
+      state.billingTopUpEdit.packChosen = true;
+      render();
+    }
+    if (action === "billing-top-up-cancel" && !state.billingBusy) {
+      state.billingTopUpEdit = null;
+      state.billingError = null;
+      render();
+      focusAction("billing-top-up-edit");
+    }
+    if (action === "billing-top-up-save" && !state.billingBusy) saveTopUp();
+    if (action === "billing-top-up-retry") {
+      state.billingTopUpRetryKey = state.billingTopUpRetryKey || billingChargeKey("top_up_retry");
+      updateTopUp({ change: "retry" }, "top_up_retry", { "idempotency-key": state.billingTopUpRetryKey });
     }
     if (action === "billing-choose-plan") {
       var planAt = target.getAttribute("data-at") || "";
@@ -15370,6 +16522,16 @@
       loadUsageOperations(true);
     }
     if (action === "usage-open-settings") { openSettings("providers"); }
+    if (action === "usage-billed-more") { loadBilledUsageOperations(false); }
+    if (action === "usage-agent-row") {
+      selectBilledUsageAgent(target.getAttribute("data-agent") || "");
+      window.scrollTo(0, 0);
+    }
+    if (action === "usage-activity-row") {
+      var activityOperation = target.getAttribute("data-operation") || "";
+      state.usageOpenRow = state.usageOpenRow === activityOperation ? "" : activityOperation;
+      renderPreservingPagePosition();
+    }
     if (action === "audit-tab-scheduled" && state.auditDomain !== "scheduled-work") { openScheduledWork(""); }
     if (action === "scheduled-retry") { loadScheduledRoutines(); }
     if (action === "scheduled-back-list") {
@@ -16111,10 +17273,26 @@
       var levelCard = target.getAttribute("data-card") === "own_key" ? "own_key" : "platform";
       state.billingSelection[levelCard] = target.value || "";
       state.billingFundingConfirm = false;
+      state.billingConfirm = null;
       if (state.billingError && state.billingError.at !== "load") state.billingError = null;
       render();
       var level = document.querySelector('[data-action="billing-plan-level"][data-card="' + levelCard + '"]');
       if (level && level.focus) level.focus();
+    }
+    if (action === "billing-top-up-limit" && state.billingTopUpEdit && state.billing && state.billing.topUp && !state.billingBusy) {
+      var limitEdit = state.billingTopUpEdit;
+      var limitValue = target.value === "plan" ? "plan" : parseInt(target.value, 10);
+      if (limitValue === "plan" || limitValue > 0) {
+        limitEdit.limit = limitValue;
+        // A pack bigger than the new limit could never fire, so the largest one that fits takes its place.
+        var fitting = topUpEditValues(state.billing.topUp, limitEdit);
+        if (fitting.pack.cents > fitting.limitCents) {
+          var fits = state.billing.topUp.packs.filter(function (pack) { return pack.cents <= fitting.limitCents; });
+          if (fits.length) { limitEdit.pack = fits[fits.length - 1].key; limitEdit.packChosen = true; }
+        }
+      }
+      render();
+      focusAction("billing-top-up-limit");
     }
     if (action === "team-role-select" && !state.teamBusy) {
       var roleMembershipId = target.getAttribute("data-membership") || "";
@@ -16239,21 +17417,21 @@
       var usagePeriod = String(target.value || "last_30_days");
       var allowedUsagePeriods = ["last_7_days", "last_30_days", "last_90_days", "this_month", "last_month", "this_week", "last_week", "custom"];
       state.usagePeriod = allowedUsagePeriods.includes(usagePeriod) ? usagePeriod : "last_30_days";
-      if (state.usagePeriod === "custom") {
-        var appliedCustom = usageCustomRange(state.usageCustomFrom, state.usageCustomTo);
-        if (appliedCustom.error) {
-          var customDefaults = usageDefaultCustomDates();
-          state.usageCustomFrom = customDefaults.from;
-          state.usageCustomTo = customDefaults.to;
-        }
-        state.usageCustomDraftFrom = state.usageCustomFrom;
-        state.usageCustomDraftTo = state.usageCustomTo;
-      }
+      if (state.usagePeriod === "custom") prepareUsageCustomDates();
       state.usageCustomError = "";
       state.usageOperationFilter = null;
       syncUsageQueryUrl();
       loadUsage(true);
     }
+    if (action === "usage-billed-period") {
+      var billedPeriod = String(target.value || "");
+      state.usagePeriod = BILLED_USAGE_PERIODS.some(function (choice) { return choice[0] === billedPeriod; }) ? billedPeriod : "last_30_days";
+      if (state.usagePeriod === "custom") prepareUsageCustomDates();
+      state.usageCustomError = "";
+      syncUsageQueryUrl();
+      loadUsage(true);
+    }
+    if (action === "usage-agent") { selectBilledUsageAgent(String(target.value || "")); }
     if (action === "usage-custom-from") {
       state.usageCustomDraftFrom = String(target.value || "");
       state.usageCustomError = "";
@@ -17195,8 +18373,6 @@
     return "#" + channelName + " was added, but the connected Slack app isn't a member of it yet, so it won't hear mentions there. Invite it to #" + channelName + " in Slack — no need to come back here.";
   }
 
-  // An Agent with its own Slack app answers as that app's bot. Chickpea cannot
-  // bring that bot into a private Channel, so a person adds it in Slack.
   function appBotLeftOutText(agent, channelName) {
     var handle = (agent.slackPresence && agent.slackPresence.normalizedHandle) || handleFromAgentName(agent.name);
     return "To let @" + handle + " answer in #" + channelName + ", add it from the channel's Add people or agents in Slack.";

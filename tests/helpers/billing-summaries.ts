@@ -78,3 +78,52 @@ export const STARTER_PLAN: BillingSummary = {
   period: PERIOD,
   planUsage: { usedMicros: usd(21.37), includedMicros: usd(60), onPacePercent: null },
 };
+
+/** The rate card's plans with the pack auto top-up buys on each: the largest at or below the plan's price. */
+export const TOP_UP_OFFERS: BillingSummary['offers'] = {
+  ...OFFERS,
+  plans: OFFERS.plans.map((plan) => ({
+    ...plan, autoTopUpPackKey: `extra_usage_${Math.min(100, plan.priceCents / 100)}`,
+  })),
+};
+
+/** Plans whose usage is their price, and a task that costs 25¢ from plan usage and 30¢ from extra usage. */
+export const TWO_FEE_OFFERS: BillingSummary['offers'] = {
+  ...TOP_UP_OFFERS,
+  plans: TOP_UP_OFFERS.plans.map((plan) => ({ ...plan, includedMicros: usd(plan.priceCents / 100) })),
+  taskFeeMicros: usd(0.25),
+  extraUsageTaskFeeMicros: usd(0.3),
+};
+
+/** Auto top-up on by default for the $50 plan: $50 packs up to $50 a month, nothing added yet. */
+export const TOP_UP_ON: NonNullable<BillingSummary['autoTopUp']> = {
+  enabled: true,
+  explicitlyOff: false,
+  pack: { rule: 'plan', key: 'extra_usage_50' },
+  limit: { rule: 'plan', cents: 5_000 },
+  usedCents: 0,
+  resetsAt: PERIOD.end,
+  pause: null,
+  card: { brand: 'visa', last4: '4242' },
+};
+
+/** Oct 26 on the $50 plan: $23.40 of its $60 left, auto top-up on. */
+export const STARTER_TOP_UP: BillingSummary = {
+  ...STARTER_PLAN,
+  planUsage: { usedMicros: usd(36.6), includedMicros: usd(60), onPacePercent: 96 },
+  autoTopUp: TOP_UP_ON,
+  offers: TOP_UP_OFFERS,
+};
+
+/** Oct 30: the plan's $60 and this month's $50 of top-ups are used up, so the Agents are paused. */
+export const STARTER_AT_LIMIT: BillingSummary = {
+  ...STARTER_TOP_UP,
+  planUsage: { usedMicros: usd(60), includedMicros: usd(60), onPacePercent: null },
+  autoTopUp: { ...TOP_UP_ON, usedCents: 5_000 },
+};
+
+/** Oct 29: the plan's usage is used up and auto top-up added its $50, of which $42.10 is left. */
+export const STARTER_TOPPED: BillingSummary = {
+  ...STARTER_AT_LIMIT,
+  extraUsage: { remainingMicros: usd(42.1), frozen: false, expiresAt: new Date('2027-10-28T17:00:00Z'), totalMicros: usd(50) },
+};

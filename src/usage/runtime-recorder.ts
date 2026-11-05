@@ -48,6 +48,8 @@ interface InteractiveUsageRecorderOptions {
   onPersistence?: (event: UsagePersistenceEvent) => void;
   /** A saved Flue settlement is being delivered again, not a new model call. */
   replaySettlementAt?: number;
+  /** Read as each terminal is built: the dispatch sets it once accepted. */
+  billingRunId?: () => string | undefined;
 }
 
 export class InteractiveUsageRecorder {
@@ -248,6 +250,8 @@ export class InteractiveUsageRecorder {
       operationId: this.admission.operationId,
       executionId: `${this.options.executionId}:coding:${index + 1}`,
       ...(this.runExecutionId ? { runExecutionId: this.runExecutionId } : {}),
+      // Charged to the turn's run.
+      billingRunId: this.options.billingRunId?.() ?? null,
       status: record.status,
       finishedAt,
       observedAt: finishedAt,
@@ -321,6 +325,7 @@ export class InteractiveUsageRecorder {
       ...(this.runExecutionId
         ? { runExecutionId: this.runExecutionId }
         : {}),
+      billingRunId: this.options.billingRunId?.() ?? null,
       finishedAt,
       observedAt: finishedAt,
       requestedProvider: this.admission.requestedProvider,
@@ -649,6 +654,8 @@ export class RoutineUsageRecorder {
     usage?: RoutineReportedUsage | null;
     returnedModel?: { provider: string; id: string } | null;
     unknownReason?: UsageUnknownReason;
+    /** The attempt's Flue submission. */
+    billingRunId?: string | undefined;
   }): Promise<void> {
     if (this.terminalInput) return;
     const usage = normalizeRoutineUsage(input.usage ?? null);
@@ -662,6 +669,7 @@ export class RoutineUsageRecorder {
       ...(this.runExecutionId
         ? { runExecutionId: this.runExecutionId }
         : {}),
+      billingRunId: input.billingRunId ?? null,
       status: input.status,
       finishedAt,
       observedAt: finishedAt,
@@ -759,6 +767,7 @@ export async function recordRoutineTerminalWithoutRecorder(input: {
   operationId: string;
   executionId: string;
   runExecutionId?: string;
+  billingRunId?: string | undefined;
   status: UsageTerminalStatus;
   unknownReason: UsageUnknownReason;
   at: number;
@@ -772,6 +781,7 @@ export async function recordRoutineTerminalWithoutRecorder(input: {
     operationId: operation.operationId,
     executionId: input.executionId,
     ...(input.runExecutionId ? { runExecutionId: input.runExecutionId } : {}),
+    billingRunId: input.billingRunId ?? null,
     status: input.status,
     finishedAt: input.at,
     observedAt: input.at,

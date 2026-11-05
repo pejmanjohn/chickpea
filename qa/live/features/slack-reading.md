@@ -1,6 +1,6 @@
 # Slack reading tools
 
-Docs: `/slack/conversations/`; operator detail in [Reading Slack](../../../docs/runbooks/slack-reading.md) and [Native Slack Lists](../../../docs/runbooks/slack-lists.md). Record areas: `delivery`. Legacy contracts: none.
+Docs: `/slack/conversations/`; operator detail in [Reading Slack](../../../docs/runbooks/slack-reading.md), [Native Slack Lists](../../../docs/runbooks/slack-lists.md) and [Slack canvases](../../../docs/runbooks/slack-canvases.md). Record areas: `delivery`. Legacy contracts: none.
 
 ## What it covers
 
@@ -10,7 +10,8 @@ Docs: `/slack/conversations/`; operator detail in [Reading Slack](../../../docs/
 - A refusal never says whether a private channel exists. For a member it says whether the Agent must be added or the app invited.
 - The thread record keeps the Slack-visible messages of threads an Agent is in: at most 200 per thread, gone after 30 idle days, with edits and deletions applied. Shared files are kept by Slack file id, never contents, including files the Agent itself shared.
 - Slack Lists: `read_slack_list`, `read_slack_list_item`, `create_slack_list_item`, `update_slack_list_item`, `create_slack_task_list` and `share_slack_list`. There is no List discovery, deletion, bulk change or Slack search.
-- Everything read from Slack or a List is information for the Agent, never an instruction or a permission.
+- Slack canvases: `read_slack_canvas` reads this conversation's canvas, another channel's, or one from a link, as Markdown, under the same scope rules as a channel read. `create_slack_canvas` creates the channel canvas, or adds a canvas to a channel that has one. `update_slack_canvas` appends to, or replaces one section of, this conversation's canvas or a canvas Chickpea created. A channel's canvases are its canvas tabs; with several, a read or edit that names no canvas lists them with links and changes nothing. There is no canvas deletion, renaming or access change.
+- Everything read from Slack, a List or a canvas is information for the Agent, never an instruction or a permission.
 
 ## How a person reaches it
 
@@ -21,6 +22,7 @@ Docs: `/slack/conversations/`; operator detail in [Reading Slack](../../../docs/
 - Case shape: `--area delivery --proof slack --max-wait-ms 120000`, with separate cases for thread link, channel window, user lookup, cross-channel refusal and each List operation you changed.
 - For an app-authored root, a Slackbot channel reminder gives a real bot post. Reply under it with the Agent's handle.
 - Cross-channel reads need a second QA channel where the Agent is granted, plus a negative where it is not, as the same member.
+- Canvases need `canvases:read` and `canvases:write` on the lane's installation, and a gateway lane needs the gateway's canvas allowlist. Without them, record the case as blocked, not failed. Put the run marker in every canvas title, register each created canvas as a run-owned resource, and delete it in Slack (or with the attended probe) at cleanup. A free-plan control needs a free workspace; the shared lanes are paid.
 - Lists need `lists:read` and `lists:write` on the lane's installation. A missing scope returns a Lists-specific reconnect instruction; record that case as blocked, not failed. On a gateway lane, a gateway without the Lists allowlist returns an unsupported-operation result, which is infrastructure too.
 - Put the run marker in every List and item name, and register each one: `record resource --case <case> --provider slack --kind list-item --resource-id <item id> --ownership owned --cleanup-preset absent --evidence <readback>`.
 - Cleanup: Chickpea cannot delete Lists or items, so remove the run-owned ones in Slack and record the cleanup readback. Delete any reminder the case created.

@@ -41,6 +41,7 @@ import {
   postRunFee,
   requirePlatformFundingAdmitted,
   type FeePost,
+  type PlatformFundedModel,
   type PlatformFundingRefusal,
 } from './platform-funding.ts';
 import type { PlatformEnv } from './state-backend.ts';
@@ -145,6 +146,12 @@ interface ModelAccessCell {
   readonly fees: RunFees | undefined;
   /** Each finished request's usage record write while it is in flight (see runInCell). */
   readonly records: Set<Promise<void>>;
+  /**
+   * Who admitted this attempt's platform-funded requests: once the host
+   * itself has, later ones ask as `continue`; after a cached answer, the
+   * next one asks the host.
+   */
+  readonly runAdmission: { by: 'none' | 'cache' | 'host' };
 }
 
 class RunFees {
@@ -172,6 +179,12 @@ class RunFees {
     if (typeof fee === 'object' && 'refused' in fee) throw platformFundingRefusalError(fee.refused);
   }
 
+  /** A routine is a task from its start, so it is admitted as one before its first request. */
+  async beforeRequest(): Promise<void> {
+    if (this.#kind === 'scheduled') await this.requireTaskAdmitted();
+    else this.throwIfRefused();
+  }
+
   /** Parallel calls await the same admission in flight, so the host is asked once. */
   async requireTaskAdmitted(): Promise<void> {
     this.#admission ??= this.#admitTask();
@@ -181,7 +194,7 @@ class RunFees {
 
   async #admitTask(): Promise<void> {
     const admission = await admitRunTask(this.#run);
-    if (admission !== 'admitted') this.#taskFee = { refused: admission === 'refused' ? 'credits_exhausted' : admission };
+    if (admission !== 'admitted') this.#taskFee = { refused: admission };
   }
 
   async postChatFee(): Promise<void> {
@@ -195,8 +208,10 @@ class RunFees {
   }
 
   async #postTaskFee(): Promise<void> {
-    const { kind } = await postRunFee({ ...this.#run, tier: 'task' });
-    this.#taskFee = kind === 'refused' ? { refused: 'credits_exhausted' } : kind === 'unanswered' ? 'unposted' : 'posted';
+    const outcome = await postRunFee({ ...this.#run, tier: 'task' });
+    this.#taskFee = outcome.kind === 'refused'
+      ? { refused: outcome.cause ? { kind: 'credits_exhausted', cause: outcome.cause } : { kind: 'credits_exhausted' } }
+      : outcome.kind === 'unanswered' ? 'unposted' : 'posted';
   }
 }
 
@@ -426,7 +441,7 @@ export async function sendImageRequest(
   const platformGrant = grant.fundingSource === 'platform' ? grant : undefined;
   if (platformGrant) {
     if (!currentImagePrice(grant.providerId, model, Date.now())) throw unpricedModel();
-    await requirePlatformFundingAdmitted(platformGrant, { provider: grant.providerId, model });
+    await admitPlatformRequest(cells.getStore(), platformGrant, { provider: grant.providerId, model });
   }
   const access = await requireResolver().resolve(grant, env);
   const endpoint = (access.baseUrl ?? request.defaultBaseUrl).replace(/\/+$/, '');
@@ -497,7 +512,7 @@ async function resolveCell(
     : undefined;
   return Object.freeze({
     instanceId, hosted, installationId, bound, env, attribution, purpose, compactionTurns: new Set<string>(), fees,
-    records: new Set<Promise<void>>(),
+    records: new Set<Promise<void>>(), runAdmission: { by: 'none' as ModelAccessCell['runAdmission']['by'] },
   });
 }
 
@@ -680,9 +695,9 @@ function sendRequest<TModel extends Model<Api>>(
   void (async () => {
     let source: AssistantMessageEventStream;
     try {
-      cell.fees?.throwIfRefused();
+      await cell.fees?.beforeRequest();
       if (installationId) await requireInstallationAdmitted(installationId);
-      source = start(platformGrant ? await platformFundedModel(platformGrant, model, request) : model);
+      source = start(platformGrant ? await platformFundedModel(cell, platformGrant, model, request) : model);
     } catch (error) {
       const failed = errorMessageFor(model, error instanceof Error ? error.message : String(error));
       target.push({ type: 'error', reason: 'error', error: failed });
@@ -701,6 +716,7 @@ function sendRequest<TModel extends Model<Api>>(
  * the most it may cost: the catalog price, which is the model maker's own.
  */
 async function platformFundedModel<TModel extends Model<Api>>(
+  cell: ModelAccessCell,
   grant: ModelAccessGrant,
   model: TModel,
   request: SentRequest,
@@ -708,7 +724,7 @@ async function platformFundedModel<TModel extends Model<Api>>(
   const provider = canonicalPriceProviderId(request.route);
   const price = priceCatalogFor('standard_input_output', provider, request.model, Date.now());
   if (!price || Date.now() >= price.version.staleAfter) throw unpricedModel();
-  await requirePlatformFundingAdmitted(grant, { provider, model: request.model });
+  await admitPlatformRequest(cell, grant, { provider, model: request.model });
   if (provider !== 'openrouter') return model;
   // A long prompt is charged at the long-context rates, so the cap allows them.
   const perMillionTokens = (standard: number, longContext = 0) =>
@@ -727,6 +743,18 @@ async function platformFundedModel<TModel extends Model<Api>>(
       },
     },
   };
+}
+
+async function admitPlatformRequest(
+  cell: ModelAccessCell | undefined,
+  grant: ModelAccessGrant,
+  model: PlatformFundedModel,
+): Promise<void> {
+  const admission: ModelAccessCell['runAdmission'] = cell?.runAdmission ?? { by: 'none' };
+  const by = await requirePlatformFundingAdmitted(grant, model, admission.by === 'host' ? 'continue' : 'start', {
+    reuse: admission.by !== 'cache',
+  });
+  if (admission.by !== 'host') admission.by = by;
 }
 
 function unpricedModel(): ModelAccessError {

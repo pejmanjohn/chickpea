@@ -229,6 +229,8 @@ import {
   type ReleaseConnectorQuotaInput,
   type ReserveConnectorQuotaInput,
   type RecordUsageTerminalInput,
+  type UsageActivityAttribution,
+  type UsageActivityQuery,
   type UsageOperation,
   type UsageOperationDetail,
   type UsageOperationPage,
@@ -2978,6 +2980,12 @@ export class CfUsageStore implements UsageStore {
     const response = await this.execute({ kind: 'summarize', query });
     if (response.kind !== 'summary') throw unexpectedUsageResponse();
     return response.summary;
+  }
+
+  async listActivityAttributions(query: UsageActivityQuery): Promise<UsageActivityAttribution[]> {
+    const response = await this.execute({ kind: 'list_activity_attributions', query });
+    if (response.kind !== 'activity_attributions') throw unexpectedUsageResponse();
+    return response.attributions;
   }
 
   async putCredential(input: PutModelCredentialInput): Promise<ModelCredentialRecord> {

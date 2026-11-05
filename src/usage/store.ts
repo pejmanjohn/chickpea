@@ -41,6 +41,8 @@ import {
   type NormalizedUsageQuery,
   type RecordUsageTerminalInput,
   type PutModelCredentialInput,
+  type UsageActivityAttribution,
+  type UsageActivityQuery,
   type UsageMeasurement,
   type UsageOperation,
   type UsageOperationDetail,
@@ -125,6 +127,19 @@ interface MeasurementRow {
   price_version_id: string | null;
   price_unknown_reason: UsageMeasurement['priceUnknownReason'];
   recorded_at: number;
+  billing_run_id: string | null;
+}
+
+interface ActivityAttributionRow {
+  operationId: string;
+  operationKind: UsageActivityAttribution['operationKind'];
+  startedAt: number;
+  agentId: string | null;
+  requesterMembershipId: string | null;
+  model: string | null;
+  estimateMicros: number | null;
+  /** `group_concat` of the distinct keys, or null for none. */
+  billingRunIds: string | null;
 }
 
 interface CredentialRow {
@@ -222,7 +237,7 @@ const MEASUREMENT_COLUMNS = `
   output_tokens, cache_read_tokens, cache_write_tokens, total_tokens,
   usage_unknown_reason, estimate_completeness,
   estimate_amount_micros, estimate_currency, price_version_id,
-  price_unknown_reason, recorded_at`;
+  price_unknown_reason, recorded_at, billing_run_id`;
 
 export class UsageStoreLogic {
   private readonly audit: AuditStoreLogic;
@@ -316,12 +331,20 @@ export class UsageStoreLogic {
             { operationId: input.operationId, executionId: input.executionId },
           );
         }
+        // A replay may fill a missing billing key, never replace one.
+        if (input.billingRunId && !measurement.billingRunId) {
+          this.db.run(
+            'UPDATE usage_measurements SET billing_run_id = ? WHERE execution_id = ?',
+            input.billingRunId,
+            input.executionId,
+          );
+        }
         return requiredDetail(this.getOperation(input.operationId));
       }
       const recordedAt = this.now();
       this.db.run(
         `INSERT INTO usage_measurements (${MEASUREMENT_COLUMNS}) VALUES (
-          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         )`,
         input.executionId,
         input.operationId,
@@ -348,6 +371,7 @@ export class UsageStoreLogic {
         input.priceVersionId,
         input.priceUnknownReason,
         recordedAt,
+        input.billingRunId ?? null,
       );
       this.db.run(
         `UPDATE usage_operations
@@ -793,6 +817,26 @@ export class UsageStoreLogic {
     };
   }
 
+  listActivityAttributions(raw: UsageActivityQuery): UsageActivityAttribution[] {
+    const query = normalizeUsageQuery(raw);
+    // `||` with NULL is NULL: a model names its provider and ID, or falls through.
+    return (this.db.all(
+      `SELECT o.operation_id AS operationId, o.operation_kind AS operationKind, o.started_at AS startedAt,
+         o.profile_id AS agentId, o.requester_membership_id AS requesterMembershipId,
+         COALESCE((SELECT COALESCE(l.returned_provider || '/' || l.returned_model, l.requested_provider || '/' || l.requested_model)
+           FROM usage_measurements l WHERE l.operation_id = o.operation_id ORDER BY l.observed_at DESC, l.execution_id DESC LIMIT 1),
+           o.requested_provider || '/' || o.requested_model) AS model,
+         SUM(CASE WHEN m.estimate_currency = 'USD' THEN m.estimate_amount_micros END) AS estimateMicros,
+         group_concat(DISTINCT m.billing_run_id) AS billingRunIds
+       FROM usage_operations o LEFT JOIN usage_measurements m ON m.operation_id = o.operation_id
+       WHERE o.started_at >= ? AND o.started_at < ? AND o.operation_kind IN ('interactive_turn', 'routine_run')
+         AND NOT (o.operation_kind = 'routine_run' AND o.conversation_kind = 'direct_message')
+       GROUP BY o.operation_id ORDER BY o.started_at, o.operation_id`,
+      query.from,
+      query.to,
+    ) as unknown as ActivityAttributionRow[]).map(mapActivityAttribution);
+  }
+
   putCredential(raw: PutModelCredentialInput): ModelCredentialRecord {
     const input = normalizeModelCredential(raw);
     return this.db.transaction(() => {
@@ -1113,6 +1157,8 @@ export class UsageStoreLogic {
         return { kind: 'operation_page', page: this.listOperations(request.query) };
       case 'summarize':
         return { kind: 'summary', summary: this.summarize(request.query) };
+      case 'list_activity_attributions':
+        return { kind: 'activity_attributions', attributions: this.listActivityAttributions(request.query) };
       case 'put_credential':
         return { kind: 'credential', credential: this.putCredential(request.input) };
       case 'retire_credential':
@@ -1299,7 +1345,8 @@ export class UsageStoreLogic {
         estimate_currency TEXT,
         price_version_id TEXT,
         price_unknown_reason TEXT,
-        recorded_at INTEGER NOT NULL
+        recorded_at INTEGER NOT NULL,
+        billing_run_id TEXT
       )`,
     );
     this.db.exec(
@@ -1464,6 +1511,7 @@ export class UsageStoreLogic {
     for (const [name, definition] of [
       ['cache_read_tokens', 'INTEGER'],
       ['cache_write_tokens', 'INTEGER'],
+      ['billing_run_id', 'TEXT'],
     ] as const) {
       addColumnIfMissing(this.db, 'usage_measurements', name, definition);
     }
@@ -1700,6 +1748,7 @@ function mapMeasurement(row: MeasurementRow): UsageMeasurement {
     priceVersionId: row.price_version_id,
     priceUnknownReason: row.price_unknown_reason,
     recordedAt: Number(row.recorded_at),
+    billingRunId: row.billing_run_id,
   };
 }
 
@@ -1928,6 +1977,20 @@ function sameConnectorQuotaReservation(
     record.limit === input.limit &&
     record.periodStart === input.periodStart &&
     record.periodEnd === input.periodEnd;
+}
+
+function mapActivityAttribution(row: ActivityAttributionRow): UsageActivityAttribution {
+  return {
+    operationId: row.operationId,
+    operationKind: row.operationKind,
+    startedAt: Number(row.startedAt),
+    agentId: row.agentId,
+    requesterMembershipId: row.requesterMembershipId,
+    model: row.model,
+    estimateMicros: nullableNumber(row.estimateMicros),
+    // Billing run IDs are opaque IDs, which have no comma for group_concat to split on.
+    billingRunIds: row.billingRunIds === null ? [] : row.billingRunIds.split(','),
+  };
 }
 
 function nullableNumber(value: number | null): number | null {

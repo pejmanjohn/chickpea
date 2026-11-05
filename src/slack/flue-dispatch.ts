@@ -46,7 +46,7 @@ import {
   createCloudflareBoundedAgentReplyReader,
   type BoundedReplyReader,
 } from './bounded-agent-observation.ts';
-import { CREDITS_EXHAUSTED_CODE, dailyLimitOf, type DailyLimitAdmission } from '../config/platform-funding.ts';
+import { dailyLimitOf, outOfUsageOf, type DailyLimitAdmission, type OutOfUsage } from '../config/platform-funding.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { preloadManagedConnectionDetails } from '../connections/catalog/index.ts';
@@ -83,10 +83,9 @@ import {
   SLACK_AGENT_CREATION_TERMINAL_DATA_NAME,
   type SlackAgentCreationTerminalIntent,
 } from './agent-creation-terminal.ts';
+import { fundingRefusalText } from './credits-ask.ts';
 import {
   AGENT_FAILURE_TEXT,
-  CREDITS_EXHAUSTED_TEXT,
-  dailyLimitText,
   OPENAI_SUBSCRIPTION_POLICY_TEXT,
   OPENAI_SUBSCRIPTION_QUOTA_TEXT,
   OPENAI_SUBSCRIPTION_RECONNECT_TEXT,
@@ -103,8 +102,11 @@ type AgentPromptFailureKind =
   | 'credits-exhausted'
   | 'daily-limit';
 
-/** A failure's kind, or the daily limit that is a `daily-limit` failure. */
-export type AgentFailure = Exclude<AgentPromptFailureKind, 'daily-limit'> | DailyLimitAdmission;
+/**
+ * A failure's kind, the daily limit that is a `daily-limit` failure, or the
+ * refusal with a cause that is a `credits-exhausted` failure.
+ */
+export type AgentFailure = Exclude<AgentPromptFailureKind, 'daily-limit'> | DailyLimitAdmission | OutOfUsage;
 
 type AgentUsageCompleteness = 'complete' | 'partial' | 'not_reported';
 
@@ -166,6 +168,11 @@ export class AgentPromptFailure extends Error {
   readonly kind: AgentPromptFailureKind;
   /** A `daily-limit` failure's limit; undefined for every other kind. */
   readonly dailyLimit: DailyLimitAdmission | undefined;
+  /**
+   * A `credits-exhausted` failure's cause, when the host gave one; never
+   * persisted with the settlement, so a replayed one has none.
+   */
+  readonly outOfUsage: OutOfUsage | undefined;
   constructor(
     failure: AgentFailure,
     readonly status = 500,
@@ -174,11 +181,12 @@ export class AgentPromptFailure extends Error {
     /** Only for content-free diagnostics (settlementFailureFacts). */
     cause?: unknown,
   ) {
-    const kind = typeof failure === 'string' ? failure : 'daily-limit';
+    const kind = typeof failure === 'string' ? failure : failure.kind === 'daily_limit' ? 'daily-limit' : 'credits-exhausted';
     super(`agent prompt failed (${kind})`, cause === undefined ? undefined : { cause });
     this.name = 'AgentPromptFailure';
     this.kind = kind;
-    this.dailyLimit = typeof failure === 'string' ? undefined : failure;
+    this.dailyLimit = typeof failure === 'object' && failure.kind === 'daily_limit' ? failure : undefined;
+    this.outOfUsage = typeof failure === 'object' && failure.kind === 'credits_exhausted' ? failure : undefined;
   }
 }
 
@@ -228,8 +236,8 @@ export function agentFailureText(error: unknown): string {
   if (error.kind === 'openai-subscription-reconnect') return OPENAI_SUBSCRIPTION_RECONNECT_TEXT;
   if (error.kind === 'openai-subscription-quota') return OPENAI_SUBSCRIPTION_QUOTA_TEXT;
   if (error.kind === 'openai-subscription-policy') return OPENAI_SUBSCRIPTION_POLICY_TEXT;
-  if (error.kind === 'credits-exhausted') return CREDITS_EXHAUSTED_TEXT;
-  if (error.dailyLimit) return dailyLimitText(error.dailyLimit);
+  if (error.kind === 'credits-exhausted') return fundingRefusalText(error.outOfUsage ?? { kind: 'credits_exhausted' });
+  if (error.dailyLimit) return fundingRefusalText(error.dailyLimit);
   return AGENT_FAILURE_TEXT;
 }
 
@@ -1182,8 +1190,9 @@ function resultFromSettlement(
 }
 
 function settledFailure(failure: AgentFailure) {
-  return typeof failure === 'string'
-    ? { failureKind: failure }
+  if (typeof failure === 'string') return { failureKind: failure };
+  return failure.kind === 'credits_exhausted'
+    ? { failureKind: 'credits-exhausted' as const }
     : { failureKind: 'daily-limit' as const, dailyLimit: { scope: failure.scope, resumesAt: failure.resumesAt } };
 }
 
@@ -1329,7 +1338,8 @@ function classifyFailureText(typeValue: string, messageValue: string): AgentFail
   const searchable = `${type} ${message}`;
   const dailyLimit = dailyLimitOf({ message: messageValue });
   if (dailyLimit) return dailyLimit;
-  if (message.includes(`(${CREDITS_EXHAUSTED_CODE})`)) return 'credits-exhausted';
+  const outOfUsage = outOfUsageOf({ message: messageValue });
+  if (outOfUsage) return outOfUsage.cause ? outOfUsage : 'credits-exhausted';
   if (
     message.includes('openai subscription operation failed (auth_reconnect_required)') ||
     message.includes('openai subscription operation failed (authorization_missing)') ||
