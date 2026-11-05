@@ -54,7 +54,7 @@ export const CHANNEL_ROUTINE_CONSECUTIVE_FAILURE_NOTICE =
 export const CHANNEL_ROUTINE_UNKNOWN_OUTCOME_NOTICE =
   'Chickpea paused scheduled work because a result may have been delivered without a confirmed outcome. Ask Chickpea in this channel to list schedules before resuming it.';
 
-interface RoutineDeliveryReceipt {
+export interface RoutineDeliveryReceipt {
   channelId: string;
   messageTs: string;
 }
@@ -197,27 +197,26 @@ export async function deliverRoutineFailureNotice(
         : []),
   ].join('\n');
   return deliverRoutineSlackMessage(
-    {
-      ...input,
-      changeKeyHash: null,
-      approvedOutput: canonicalSlackReplyText(text, 'markdown'),
-    },
-    appendSlackReplyFooter(
-      appendRoutineRunContext(
-        renderSlackMessage(text, 'markdown'),
-        input.routine,
-        input.run,
-        input.access.publicUrl,
-        input.access.config.agentId,
-        direct,
-      ),
-      routineReplyFooter(input.access, input.routine),
-    ),
+    { ...input, changeKeyHash: null, approvedOutput: canonicalSlackReplyText(text, 'markdown') },
+    routineNotice(text, input.routine, input.run, input.access),
     client,
   );
 }
 
-interface ClaimedRoutineMessageInput {
+export function routineNotice(
+  text: string,
+  routine: RoutineDefinition,
+  run: RoutineRun,
+  access: RoutineRuntimeAccess,
+): RenderedSlackMessage {
+  const direct = routine.destination.kind === 'direct_thread';
+  return appendSlackReplyFooter(
+    appendRoutineRunContext(renderSlackMessage(text, 'markdown'), routine, run, access.publicUrl, access.config.agentId, direct),
+    routineReplyFooter(access, routine),
+  );
+}
+
+export interface ClaimedRoutineMessageInput {
   store: RoutineStore;
   run: RoutineRun;
   routine: RoutineDefinition;
@@ -230,7 +229,12 @@ interface ClaimedRoutineMessageInput {
   sleep?: (delayMs: number) => Promise<void>;
 }
 
-async function deliverRoutineSlackMessage(
+/** The client a routine posts with: its access's own, or one for its bot token. */
+export function routineSlackClient(access: RoutineRuntimeAccess): WebClient {
+  return access.client ?? createRoutineSlackClient(requiredRoutineBotToken(access));
+}
+
+export async function deliverRoutineSlackMessage(
   input: ClaimedRoutineMessageInput,
   message: string | RenderedSlackMessage,
   client: WebClient,
@@ -502,7 +506,7 @@ function routineRunContext(
   return `Scheduled ${scheduled} · <${detail.toString()}|View schedule>`;
 }
 
-function formatScheduledTime(timestamp: number, timezone: string): string {
+export function formatScheduledTime(timestamp: number, timezone: string): string {
   try {
     return new Intl.DateTimeFormat('en-US', {
       timeZone: timezone,

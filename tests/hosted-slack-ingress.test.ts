@@ -44,15 +44,9 @@ import {
   stageSlackCredentialBundle,
   writeHostedSlackBotCredentials,
 } from '../src/slack/installation-credentials.ts';
-import {
-  CREDITS_ASK_ADMIN_ACTION,
-  CREDITS_ASK_ADMIN_BLOCK,
-  CREDITS_ASK_CONFIRMATION_TEXT,
-  creditsAskOwnerDmText,
-  DAILY_LIMIT_ASK_CONFIRMATION_TEXT,
-  dailyLimitAskOwnerDmText,
-  fundingRefusalComponents,
-} from '../src/slack/credits-ask.ts';
+import { configurePlatformFunding, resetPlatformFundingForTests } from '../src/config/platform-funding.ts';
+import { CREDITS_ASK_ADMIN_ACTION, CREDITS_ASK_ADMIN_BLOCK } from '../src/slack/credits-ask.ts';
+import { creditsAskOwnerDmText, fundingRefusalReply } from '../src/slack/funding-refusal-reply.ts';
 import { resolveSlackInstallationExecutionContext } from '../src/slack/installation-execution.ts';
 import { stopNodeTurnRelay } from '../src/slack/node-turn-relay.ts';
 import { repairSlackInteractionProgress } from '../src/slack/run-turn.ts';
@@ -66,6 +60,7 @@ import { formFieldActionId, formFieldBlockId } from '../src/slack/ui/render-form
 import { uiActionId, uiBlockId, uiSurfaceId, type UiSurfaceRecord } from '../src/slack/ui/surface.ts';
 import { withDirectSlackInstall } from './helpers/direct-slack-install.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
+import { NO_RUN_FEES } from './helpers/platform-funding.ts';
 
 /**
  * A host serving many installations verifies each Slack delivery with its one
@@ -667,9 +662,9 @@ test('a valid hosted modal Core answers after the host\'s deadline is admitted o
 
 test('a hosted Ask an Owner click DMs the Owner through the installation\'s own bot', async (t) => {
   await withHostedInstallation(t, async (h) => {
-    const components = await fundingRefusalComponents({
-      env: h.env, identity: h.stores.identity, workspaceId: TEAM, userId: 'U2', refusal: 'credits_exhausted',
-    });
+    const components = (await fundingRefusalReply({
+      env: h.env, identity: h.stores.identity, workspaceId: TEAM, userId: 'U2', refusal: { kind: 'credits_exhausted' },
+    }))?.components;
     assert.ok(components);
     const replyTs = '1800000002.000100';
     const response = await h.deliver('interactions', {
@@ -687,24 +682,67 @@ test('a hosted Ask an Owner click DMs the Owner through the installation\'s own 
     const of = (method: string) => h.calls.filter((call) => call.method === method).map(({ body }) => body);
     assert.deepEqual(of('conversations.open').map((body) => body.get('users')), ['U1']);
     assert.deepEqual(of('chat.postMessage').map((body) => [body.get('channel'), body.get('text')]),
-      [['DHOME', creditsAskOwnerDmText('U2', 'C1')]]);
+      [['DHOME', creditsAskOwnerDmText('U2', 'C1', { kind: 'credits_exhausted' })]]);
     const update = of('chat.update')[0]!;
     assert.equal(update.get('ts'), replyTs);
-    assert.ok(update.get('blocks')?.includes(CREDITS_ASK_CONFIRMATION_TEXT));
+    assert.ok(update.get('blocks')?.includes('I asked'));
+    assert.ok(update.get('blocks')?.includes("once they've added usage"));
     assert.equal(update.get('blocks')?.includes(CREDITS_ASK_ADMIN_ACTION), false);
     assert.deepEqual(tokensUsed(h.calls), [BOT_TOKEN]);
+  });
+});
+
+test('a hosted Owner\'s Ask an Owner click asks the host why now and tells only that Owner the private cause', async (t) => {
+  await withHostedInstallation(t, async (h) => {
+    const asked: Array<{ installationId: string; runId: string }> = [];
+    configurePlatformFunding({
+      ...NO_RUN_FEES,
+      funding: async () => 'platform',
+      admit: async () => 'admitted',
+      charge: async () => {},
+      admitTask: async (run) => {
+        asked.push(run);
+        return { kind: 'credits_exhausted', cause: { kind: 'top_up_declined' } };
+      },
+    });
+    t.after(() => resetPlatformFundingForTests());
+    const components = (await fundingRefusalReply({
+      env: h.env, identity: h.stores.identity, workspaceId: TEAM, userId: 'U2', refusal: { kind: 'credits_exhausted' },
+    }))?.components;
+    assert.ok(components);
+    assert.equal(JSON.stringify(components).includes('card'), false, 'the thread reply names no cause');
+    const replyTs = '1800000002.000300';
+    const response = await h.deliver('interactions', {
+      type: 'block_actions', api_app_id: APP.appId, team: { id: TEAM }, user: { id: 'U1' },
+      trigger_id: 'trigger1', channel: { id: 'C1' },
+      container: { type: 'message', channel_id: 'C1', message_ts: replyTs },
+      message: { ts: replyTs, thread_ts: '1800000002.000100', text: 'Out of usage.', blocks: [{ type: 'rich_text', elements: [] }, ...components.blocks] },
+      actions: [{
+        action_id: CREDITS_ASK_ADMIN_ACTION, block_id: CREDITS_ASK_ADMIN_BLOCK, type: 'button',
+        value: TEAM, action_ts: '1800000003.000300',
+      }],
+    });
+    assert.equal(response.status, 200);
+    await h.settle(() => h.calls.some(({ method }) => method === 'chat.postEphemeral'));
+    const [note] = h.calls.filter(({ method }) => method === 'chat.postEphemeral').map(({ body }) => body);
+    assert.deepEqual([note!.get('channel'), note!.get('user'), note!.get('thread_ts')], ['C1', 'U1', '1800000002.000100']);
+    assert.equal(note!.get('text'), "Auto top-up couldn't charge your card. Update it or add usage, then send this again.");
+    assert.deepEqual(asked.map(({ installationId, runId }) => [installationId, runId.startsWith('ask_owner_')]),
+      [['inst_tenant_a', true]], 'one read-only ask, for a run ID that names no run');
+    assert.deepEqual(h.calls.filter(({ method }) => ['chat.postMessage', 'chat.update', 'conversations.open'].includes(method)), [],
+      'no Owner is messaged and the reply is not redrawn');
   });
 });
 
 test('a hosted daily-limit Ask an Owner click DMs the Owner when Chickpea resumes', async (t) => {
   await withHostedInstallation(t, async (h) => {
     const resumesAt = Date.UTC(2026, 10, 5);
-    const components = await fundingRefusalComponents({
+    const components = (await fundingRefusalReply({
       env: h.env, identity: h.stores.identity, workspaceId: TEAM, userId: 'U2',
       refusal: { kind: 'daily_limit', scope: 'workspace', resumesAt },
-    });
+    }))?.components;
     assert.ok(components);
-    const button = (components.blocks[0]!.elements as Array<Record<string, unknown>>)[0]!;
+    const button = (components.blocks.find(({ type }) => type === 'actions')!.elements as Array<Record<string, unknown>>)[0]!;
     const replyTs = '1800000002.000200';
     const response = await h.deliver('interactions', {
       type: 'block_actions', api_app_id: APP.appId, team: { id: TEAM }, user: { id: 'U2' },
@@ -720,8 +758,8 @@ test('a hosted daily-limit Ask an Owner click DMs the Owner when Chickpea resume
     await h.settle(() => h.calls.some(({ method }) => method === 'chat.update'));
     const of = (method: string) => h.calls.filter((call) => call.method === method).map(({ body }) => body);
     assert.deepEqual(of('chat.postMessage').map((body) => [body.get('channel'), body.get('text')]),
-      [['DHOME', dailyLimitAskOwnerDmText('U2', 'C1', { scope: 'workspace', resumesAt })]]);
-    assert.ok(of('chat.update')[0]!.get('blocks')?.includes(DAILY_LIMIT_ASK_CONFIRMATION_TEXT));
+      [['DHOME', creditsAskOwnerDmText('U2', 'C1', { kind: 'daily_limit', scope: 'workspace', resumesAt })]]);
+    assert.ok(of('chat.update')[0]!.get('blocks')?.includes("once they've chosen a plan"));
   });
 });
 

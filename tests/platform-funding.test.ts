@@ -51,7 +51,10 @@ import {
   DailyLimitError,
   installationFunding,
   isCreditsExhausted,
+  PLATFORM_ADMISSION_TTL_MS,
+  outOfUsageOf,
   resetPlatformFundingForTests,
+  type AdmissionStage,
   type PlatformFundedModel,
   type PlatformFundingAdmission,
   type PlatformFundingPort,
@@ -71,7 +74,7 @@ import {
   promptSlackThreadAgent,
 } from '../src/slack/flue-dispatch.ts';
 import type { FlueDispatchEnvelopeV1, FlueSettlementCheckpointV1 } from '../src/slack/turn-job-types.ts';
-import { CREDITS_EXHAUSTED_TEXT, dailyLimitText } from '../src/slack/web-client-presenter.ts';
+import { fundingRefusalText } from '../src/slack/credits-ask.ts';
 import type { ModelRequestRecord } from '../src/usage/model-requests.ts';
 import { priceCatalogFor, RELEASE_PRICE_CATALOGS } from '../src/usage/pricing/catalog.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
@@ -104,6 +107,7 @@ function fakePort(overrides: Partial<PlatformFundingPort> = {}) {
   const calls = {
     funding: [] as string[],
     admit: [] as Array<{ grant: ModelAccessGrant; model: PlatformFundedModel }>,
+    stages: [] as AdmissionStage[],
     charge: [] as ModelRequestRecord[],
   };
   configurePlatformFunding({
@@ -111,9 +115,10 @@ function fakePort(overrides: Partial<PlatformFundingPort> = {}) {
       calls.funding.push(installationId);
       return overrides.funding ? overrides.funding(installationId) : 'platform';
     },
-    admit: async (grant, model) => {
+    admit: async (grant, model, stage) => {
       calls.admit.push({ grant, model });
-      return overrides.admit ? overrides.admit(grant, model) : 'admitted';
+      calls.stages.push(stage);
+      return overrides.admit ? overrides.admit(grant, model, stage) : 'admitted';
     },
     charge: async (record, sharedPrefix) => {
       calls.charge.push(record);
@@ -541,6 +546,143 @@ test('a daily limit\'s text is read back only as itself, with its scope, and onl
   resetPlatformFundingForTests();
 });
 
+test('a refusal carries the host\'s cause through the text a Flue failure keeps, with no digit Flue would retry on', async (t) => {
+  const { env } = hostedProxy(t);
+  let answer: PlatformFundingAdmission = {
+    kind: 'credits_exhausted', cause: { kind: 'top_up_limit', limitCents: 50_000 },
+  };
+  fakePort({ admit: async () => answer });
+  const { model, sentModels } = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, SONNET, 'anthropic-messages', [completes()]);
+  const platform = grant('inst_credits', 'platform');
+
+  const refused = await withModelAccess(platform, env, 'reply', () => modelCall(model));
+  const text = refused.errorMessage ?? '';
+  assert.match(text, /\(credits_exhausted:top_up_limit:limitCents=faaaa\)/);
+  assert.doesNotMatch(text, /\d/, 'Flue retries a failure whose text holds 500 anywhere');
+  const flueFailure = { type: 'operation_failed', message: `dispatch(sub_1) failed: ${text}` };
+  assert.deepEqual(outOfUsageOf({ message: 'run failed', cause: flueFailure }),
+    { kind: 'credits_exhausted', cause: { kind: 'top_up_limit', limitCents: 50_000 } });
+  assert.equal(isCreditsExhausted(flueFailure), true);
+
+  answer = { kind: 'credits_exhausted', cause: { kind: 'trial_used', plansFromCents: 2_500, bonusPercent: 20 } };
+  const trial = await withModelAccess(platform, env, 'reply', () => modelCall(model));
+  assert.deepEqual(outOfUsageOf({ message: trial.errorMessage }),
+    { kind: 'credits_exhausted', cause: { kind: 'trial_used', plansFromCents: 2_500, bonusPercent: 20 } });
+
+  for (const [hostCause, read] of [
+    [{ kind: 'auto_upgrade_off' }, undefined],
+    [{ kind: 'top_up_limit', limitCents: -1 }, { kind: 'top_up_limit' }],
+    [{ kind: 'top_up_limit', limitCents: 12.5 }, { kind: 'top_up_limit' }],
+    [{ kind: 'top_up_limit', limitCents: 1e12 }, { kind: 'top_up_limit' }],
+    [{ kind: 'plan_used', limitCents: 5_000 }, { kind: 'plan_used' }],
+    [{ kind: 'toString' }, undefined],
+    ['top_up_limit', undefined],
+  ] as const) {
+    answer = { kind: 'credits_exhausted', cause: hostCause } as unknown as PlatformFundingAdmission;
+    const result = await withModelAccess(platform, env, 'reply', () => modelCall(model));
+    assert.deepEqual(outOfUsageOf({ message: result.errorMessage }),
+      read ? { kind: 'credits_exhausted', cause: read } : { kind: 'credits_exhausted' }, JSON.stringify(hostCause));
+  }
+  assert.equal(sentModels.length, 0);
+});
+
+test('a cause\'s text is read back only whole, and only with a port', () => {
+  resetPlatformFundingForTests();
+  const limit = new CreditsExhaustedError({ kind: 'top_up_limit', limitCents: 5_000 });
+  assert.equal(outOfUsageOf(limit), undefined, 'no port, no refusal');
+  fakePort();
+  assert.deepEqual(outOfUsageOf(limit), { kind: 'credits_exhausted', cause: { kind: 'top_up_limit', limitCents: 5_000 } });
+  assert.deepEqual(outOfUsageOf({ message: new CreditsExhaustedError().message }), { kind: 'credits_exhausted' });
+  assert.deepEqual(outOfUsageOf({ message: '(credits_exhausted:a_later_cause:limitCents=faaa)' }),
+    { kind: 'credits_exhausted' }, 'a cause another Core version names is still a refusal, in general words');
+  assert.deepEqual(outOfUsageOf({ message: '(credits_exhausted:plan_used:laterAmount=b)' }),
+    { kind: 'credits_exhausted', cause: { kind: 'plan_used' } }, 'an amount it does not know is left out');
+  for (const text of [
+    '(credits_exhausted:top_up_limit:limitCents=5000)', '(credits_exhausted:)', 'credits_exhausted:plan_used',
+    '(credits_exhausted:top_up_limit:limitCents=)',
+  ]) {
+    assert.equal(outOfUsageOf({ message: text }), undefined, text);
+  }
+  resetPlatformFundingForTests();
+});
+
+test('a top-up in flight is asked again each second, and refused as out of usage after 10 seconds', async (t) => {
+  const { env } = hostedProxy(t);
+  let now = NOW;
+  resetPlatformFundingForTests({ now: () => now, sleep: async (ms) => { now += ms; } });
+  let answers: PlatformFundingAdmission[] = ['pending', 'pending', 'admitted'];
+  const calls = fakePort({ admit: async () => answers.shift() ?? 'pending' });
+  const { model, sentModels } = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, SONNET, 'anthropic-messages', [completes()]);
+  const platform = grant('inst_topup', 'platform');
+
+  const landed = await withModelAccess(platform, env, 'reply', () => modelCall(model));
+  assert.equal(landed.stopReason, 'stop');
+  assert.deepEqual([calls.admit.length, now - NOW], [3, 2_000], 'it waited for the charge to land');
+
+  now += PLATFORM_ADMISSION_TTL_MS;
+  const before = now;
+  answers = [];
+  const refused = await withModelAccess(platform, env, 'reply', () => modelCall(model));
+  assert.match(refused.errorMessage ?? '', /\(credits_exhausted\)/);
+  assert.deepEqual([calls.admit.length - 3, now - before], [11, 10_000], 'one ask, then one a second for 10 seconds');
+  assert.equal(sentModels.length, 1);
+});
+
+test('an attempt\'s first request starts its run and later ones continue it, and a running run never lets a new one start', async (t) => {
+  hostedProxy(t);
+  let now = NOW;
+  resetPlatformFundingForTests({ now: () => now });
+  const env = hostedEnv('inst_credits');
+  let aboveZero = true;
+  const calls = fakePort({
+    admit: async (_grant, _model, stage) => stage === 'continue' || aboveZero ? 'admitted' : 'credits_exhausted',
+  });
+  const { model, sentModels } = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, SONNET, 'anthropic-messages',
+    Array.from({ length: 9 }, () => completes()));
+  const platform = grant('inst_credits', 'platform');
+
+  await withModelAccess(platform, env, 'reply', async () => {
+    await modelCall(model);
+    await modelCall(model);
+    assert.deepEqual(calls.stages, ['start'], 'a start admission serves the run\'s next request');
+    aboveZero = false;
+    now += PLATFORM_ADMISSION_TTL_MS;
+    assert.equal((await modelCall(model)).stopReason, 'stop', 'an admitted run keeps going past zero');
+  });
+  assert.deepEqual(calls.stages, ['start', 'continue']);
+
+  const next = await withModelAccess(platform, env, 'reply', () => modelCall(model));
+  assert.match(next.errorMessage ?? '', /\(credits_exhausted\)/, 'the continue just admitted does not admit a new run');
+  assert.deepEqual(calls.stages, ['start', 'continue', 'start']);
+
+  const startFresh = async () => {
+    aboveZero = true;
+    now += PLATFORM_ADMISSION_TTL_MS;
+    await withModelAccess(platform, env, 'reply', () => modelCall(model));
+  };
+  await startFresh();
+  const admittedLater = await withModelAccess(platform, env, 'reply', async () => {
+    assert.equal((await modelCall(model)).stopReason, 'stop', 'a recent start admission serves a new run\'s first request');
+    await modelCall(model);
+    aboveZero = false;
+    now += PLATFORM_ADMISSION_TTL_MS;
+    return modelCall(model);
+  });
+  assert.equal(admittedLater.stopReason, 'stop', 'once the host itself admitted the run, it keeps going past zero');
+  assert.deepEqual(calls.stages.slice(3), ['start', 'start', 'continue'], 'its next request asked the host, at once');
+
+  await startFresh();
+  aboveZero = false;
+  const refusedLater = await withModelAccess(platform, env, 'reply', async () => {
+    assert.equal((await modelCall(model)).stopReason, 'stop');
+    return modelCall(model);
+  });
+  assert.match(refusedLater.errorMessage ?? '', /\(credits_exhausted\)/,
+    'a run the host never admitted asks as start, so a cached answer never lets it go on past zero');
+  assert.deepEqual(calls.stages.slice(6), ['start', 'start']);
+  assert.equal(sentModels.length, 9);
+});
+
 test('a positive answer serves an installation for at most 30 seconds, and only that installation', async (t) => {
   hostedProxy(t);
   let now = NOW;
@@ -808,9 +950,10 @@ test('a platform-funded request past the long-context threshold is charged at th
     'the long-context list rates in USD per million tokens');
 });
 
-test('a Slack turn refused for credits ends with the credits reply, its own kind, and no retry', { timeout: 20_000 }, async (t) => {
+test('a Slack turn refused for credits ends with the out-of-usage reply, the host\'s cause, and no retry', { timeout: 20_000 }, async (t) => {
   const { env } = hostedProxy(t, 'inst_flue');
-  const calls = fakePort({ admit: async () => 'credits_exhausted' });
+  const refusal = { kind: 'credits_exhausted', cause: { kind: 'top_up_limit', limitCents: 50_000 } } as const;
+  const calls = fakePort({ admit: async () => refusal });
   const { sentModels } = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, SONNET, 'anthropic-messages', []);
   const interceptor = createModelAccessInterceptor({
     lookup: async () => ({ env, grant: grant('inst_flue', 'platform'), agentId: 'agent_credits' }),
@@ -850,12 +993,12 @@ test('a Slack turn refused for credits ends with the credits reply, its own kind
   assert.ok(failure instanceof AgentPromptFailure, String(failure));
   assert.equal(failure.kind, 'credits-exhausted');
   assert.equal(failure.retryable, false);
+  assert.deepEqual(failure.outOfUsage, refusal, 'the cause survived the Flue failure\'s text');
   assert.equal(agentFailureText(failure),
-    "This workspace has used all of its plan's usage, so I can't continue. " +
-    'An Owner can add extra usage or change the plan in Chickpea.');
-  assert.equal(agentFailureText(failure), CREDITS_EXHAUSTED_TEXT);
+    "This workspace is out of usage for now, so I can't start this one. Once an Owner adds more, send it again.",
+    'the public reply names no amount and no cause');
   assert.equal(sentModels.length, 0);
-  assert.equal(calls.admit.length, 1, 'Flue did not retry the refused request');
+  assert.equal(calls.admit.length, 1, 'Flue did not retry the refused request, though its limit holds 500');
 });
 
 test('a Slack turn at a daily limit ends with the daily-limit reply, its time, no retry, and the same on replay', { timeout: 20_000 }, async (t) => {
@@ -902,8 +1045,7 @@ test('a Slack turn at a daily limit ends with the daily-limit reply, its time, n
 
   assert.ok(failure instanceof AgentPromptFailure, String(failure));
   assert.deepEqual([failure.kind, failure.dailyLimit, failure.retryable], ['daily-limit', DAILY_LIMIT, false]);
-  assert.equal(agentFailureText(failure), dailyLimitText(DAILY_LIMIT));
-  assert.notEqual(agentFailureText(failure), CREDITS_EXHAUSTED_TEXT);
+  assert.equal(agentFailureText(failure), fundingRefusalText(DAILY_LIMIT));
   assert.deepEqual(settlements.map(({ settledAt: _at, ...rest }) => rest), [{
     outcome: 'failed', failureKind: 'daily-limit', dailyLimit: { scope: 'workspace', resumesAt: RESUMES_AT },
   }]);

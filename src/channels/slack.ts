@@ -42,6 +42,7 @@ import {
 } from '../config/errors.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { deploymentTenancy, requireInstallationScope } from '../config/installation-scope.ts';
+import { currentFundingRefusal } from '../config/platform-funding.ts';
 import { emitSlackEditAdmission } from '../observability/runtime-latency.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import { createPlatformProductTelemetry } from '../telemetry/platform.ts';
@@ -255,7 +256,7 @@ import {
   privateChannelSetupUnavailableText,
   type PrivateChannelSetupAction,
 } from '../slack/private-channel-setup.ts';
-import { askOwnersForCredits, parseCreditsAskAction, type CreditsAskAction } from '../slack/credits-ask.ts';
+import { parseCreditsAskAction, type CreditsAskAction } from '../slack/credits-ask.ts';
 import {
   addAgentToChannel,
   offerAgentForChannel,
@@ -2817,10 +2818,14 @@ async function processDirectCreditsAsk(
 ): Promise<void> {
   const context = await directSlackUiContext(action.workspaceId, appId, platformEnv);
   if (!context) return;
+  const publicUrl = await resolveSlackPublicUrl(platformEnv, context.stores.settings, context.stores.identity);
+  const { askOwnersForCredits } = await import('../slack/funding-refusal-reply.ts');
   await askOwnersForCredits(action, {
     identity: context.stores.identity,
     claims: context.stores.slackState,
     client: context.client,
+    ...(publicUrl ? { publicUrl } : {}),
+    currentRefusal: () => currentFundingRefusal(platformEnv),
   });
 }
 
