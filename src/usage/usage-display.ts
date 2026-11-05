@@ -19,6 +19,21 @@ export function formatPriceCents(cents: number): string {
   return cents < 0 ? `-${amount}` : amount;
 }
 
+const CARD_BRANDS = new Map([
+  ['visa', 'Visa'], ['mastercard', 'Mastercard'], ['amex', 'American Express'], ['discover', 'Discover'],
+  ['diners', 'Diners Club'], ['jcb', 'JCB'], ['unionpay', 'UnionPay'],
+]);
+
+/**
+ * "Visa ending 4242" from Stripe's card brand and last four digits. Null
+ * without a card, or with last digits that aren't four digits, since the
+ * label lands in the page and in Slack text.
+ */
+export function formatCard(card: { readonly brand: string; readonly last4: string } | null | undefined): string | null {
+  if (!card || !/^\d{4}$/.test(card.last4)) return null;
+  return `${CARD_BRANDS.get(card.brand.toLowerCase()) ?? 'Card'} ending ${card.last4}`;
+}
+
 export function usagePercent(used: UsageMicros, included: UsageMicros): number {
   return included > 0 ? Math.floor(used * 100 / included) : 0;
 }

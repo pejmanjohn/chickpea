@@ -44,6 +44,7 @@ const LAZY_MODULES: Record<string, string> = {
   'src/slack/canvases/service.ts': 'a canvas tool call (slack/canvases/tools.ts)',
   'src/slack/funding-refusal-reply.ts': 'an out-of-usage reply or an Ask an Owner click (slack/run-turn.ts, channels/slack.ts)',
   'src/routines/pause-notice.ts': "a routine's out-of-usage pause, or the good run after it (routines/execution.ts)",
+  'src/admin/billing-api.ts': "the Plan page's API, on its first request (admin/routes.ts)",
 };
 
 /**
@@ -51,7 +52,7 @@ const LAZY_MODULES: Record<string, string> = {
  * types included. Lower it when a change moves modules behind import();
  * scripts/worker-closure.mjs holds the built artifact to its own ceiling.
  */
-const STARTUP_SOURCE_BUDGET_BYTES = Math.round(10.47 * 2 ** 20);
+const STARTUP_SOURCE_BUDGET_BYTES = Math.round(10.46 * 2 ** 20);
 
 type Edge = { to: string; local: boolean; dynamic: boolean };
 
