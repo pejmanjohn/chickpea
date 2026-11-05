@@ -102,8 +102,8 @@ function fixture(t: { after(fn: () => void): void }, options: {
   t.after(() => store.close());
   const slack = new FakeCanvasSlack();
   const conversations = options.conversations ?? {
-    [CURRENT.channelId]: facts({ id: CURRENT.channelId, canvasId: 'FCHANNEL' }),
-    COTHER: facts({ id: 'COTHER', canvasId: 'FOTHER' }),
+    [CURRENT.channelId]: facts({ id: CURRENT.channelId, canvasIds: ['FCHANNEL'] }),
+    COTHER: facts({ id: 'COTHER', canvasIds: ['FOTHER'] }),
     GSECRET: facts({ id: 'GSECRET', private: true }),
   };
   const members = options.members ?? { COTHER: [REQUESTER], GSECRET: [] };
@@ -188,7 +188,7 @@ test('another channel\'s canvas follows read_slack_channel\'s authority exactly'
   assert.equal((await failure(noGrant.service().read({ channel: 'COTHER' }))).code, 'needs_agent_access');
   const noBot = fixture(t, { conversations: {
     [CURRENT.channelId]: facts({ id: CURRENT.channelId }),
-    COTHER: facts({ id: 'COTHER', canvasId: 'FOTHER', member: false }),
+    COTHER: facts({ id: 'COTHER', canvasIds: ['FOTHER'], member: false }),
   } });
   assert.equal((await failure(noBot.service().read({ channel: 'https://acme.slack.com/archives/COTHER' }))).code, 'needs_bot_invite');
   for (const refused of [notMember, noGrant, noBot]) assert.deepEqual(refused.slack.calls, [], 'a refused read never asks Slack for the canvas');
@@ -222,8 +222,8 @@ test('@Chickpea and a conversation shared with another organization read only th
   assert.equal((await chickpea.service().read({})).status, 'read');
 
   const shared = fixture(t, { conversations: {
-    [CURRENT.channelId]: facts({ id: CURRENT.channelId, canvasId: 'FCHANNEL', shared: true }),
-    COTHER: facts({ id: 'COTHER', canvasId: 'FOTHER' }),
+    [CURRENT.channelId]: facts({ id: CURRENT.channelId, canvasIds: ['FCHANNEL'], shared: true }),
+    COTHER: facts({ id: 'COTHER', canvasIds: ['FOTHER'] }),
   } });
   const refusal = await failure(shared.service().read({ canvasUrl: link('FREPORT') }));
   assert.deepEqual(refusal, { code: 'shared_conversation_only', message: SLACK_READ_MESSAGES.shared_conversation_only });
@@ -244,21 +244,16 @@ test('canvas links name a canvas in this workspace only', () => {
   assert.equal(verifiedCanvasPermalink(link('F0OTHER'), WORKSPACE, 'F0ABC123'), undefined);
 });
 
-test('conversations.info gives a channel its canvas; malformed values give none', () => {
-  assert.equal(slackReadConversationFacts({ id: 'C1', properties: { canvas: { file_id: 'F0CANVAS', is_empty: false } } })?.canvasId, 'F0CANVAS');
-  for (const properties of [undefined, {}, { canvas: null }, { canvas: { file_id: 'C0NOTAFILE' } }, { canvas: { file_id: 7 } }]) {
-    assert.equal(slackReadConversationFacts({ id: 'C1', properties })?.canvasId, undefined);
-  }
-});
-
 test('conversations.info lists a channel\'s canvases as tabs, and properties.canvas still counts when Slack sends it', () => {
   const tab = (fileId: unknown, type = 'canvas') => ({ type, id: 'Ct0TAB', label: 'Plan', data: { file_id: fileId, shared_ts: '1793837583.842049' } });
   const files = { type: 'files', id: 'files', label: '', data: null };
   assert.deepEqual(slackReadConversationFacts({ id: 'C1', properties: { tabs: [files, tab('F0PLAN'), tab('F0LIST', 'list'), tab('F0PLANB')] } })?.canvasIds,
     ['F0PLAN', 'F0PLANB']);
+  assert.deepEqual(slackReadConversationFacts({ id: 'C1', properties: { canvas: { file_id: 'F0CANVAS', is_empty: false } } })?.canvasIds, ['F0CANVAS']);
   assert.deepEqual(slackReadConversationFacts({ id: 'C1', properties: { canvas: { file_id: 'F0CANVAS' }, tabs: [tab('F0CANVAS'), tab('F0PLAN')] } })?.canvasIds,
     ['F0CANVAS', 'F0PLAN']);
-  for (const properties of [{ tabs: null }, { tabs: [files] }, { tabs: [tab('C0NOTAFILE'), tab(7), { type: 'canvas' }, { type: 'canvas', data: null }, null] }]) {
+  for (const properties of [undefined, {}, { canvas: null }, { canvas: { file_id: 'C0NOTAFILE' } }, { canvas: { file_id: 7 } },
+    { tabs: null }, { tabs: [files] }, { tabs: [tab('C0NOTAFILE'), tab(7), { type: 'canvas' }, { type: 'canvas', data: null }, null] }]) {
     assert.equal(slackReadConversationFacts({ id: 'C1', properties })?.canvasIds, undefined);
   }
 });
@@ -441,7 +436,7 @@ test('only this conversation\'s canvas and canvases Chickpea created can be edit
 
 test('an edit never carries this workspace\'s content to a canvas another organization can see', async (t) => {
   const conversations = {
-    [CURRENT.channelId]: facts({ id: CURRENT.channelId, canvasId: 'FCHANNEL' }),
+    [CURRENT.channelId]: facts({ id: CURRENT.channelId, canvasIds: ['FCHANNEL'] }),
     COTHER: facts({ id: 'COTHER' }),
     CPARTNER: facts({ id: 'CPARTNER', shared: true }),
   };
@@ -458,7 +453,7 @@ test('an edit never carries this workspace\'s content to a canvas another organi
   assert.deepEqual(f.slack.writes(), []);
   assert.equal((await f.service().read({ canvasUrl: link('FBOTH') })).status, 'read', 'reading it here moves nothing outside');
 
-  const fromShared = fixture(t, { conversations: { ...conversations, [CURRENT.channelId]: facts({ id: CURRENT.channelId, canvasId: 'FCHANNEL', shared: true }) } });
+  const fromShared = fixture(t, { conversations: { ...conversations, [CURRENT.channelId]: facts({ id: CURRENT.channelId, canvasIds: ['FCHANNEL'], shared: true }) } });
   fromShared.slack.canvases.set('FTAB', { content: '# Tab\n', owner: BOT, title: 'Tab', channels: [CURRENT.channelId], externalWorkspaces: ['E0PARTNER'] });
   assert.equal((await failure(fromShared.service().update('call-1', { canvasUrl: link('FTAB'), operation: 'append', markdown: 'x' }))).code, 'shared_conversation_only',
     'from a Slack Connect conversation only its own canvas is edited');
