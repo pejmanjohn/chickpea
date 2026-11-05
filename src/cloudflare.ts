@@ -3927,6 +3927,7 @@ function localUsageStore(stores: TagStateStores): UsageStore {
     getOperationByRunId: async (runId) => stores.usage.getOperationByRunId(runId),
     listOperations: async (query) => stores.usage.listOperations(query),
     summarize: async (query) => stores.usage.summarize(query),
+    listActivityAttributions: async (query) => stores.usage.listActivityAttributions(query),
     putCredential: async (input) => stores.usage.putCredential(input),
     retireCredential: async (credentialRefId, version, retiredAt) =>
       stores.usage.retireCredential(credentialRefId, version, retiredAt),

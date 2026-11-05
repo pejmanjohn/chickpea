@@ -41,6 +41,8 @@ import {
   type NormalizedUsageQuery,
   type RecordUsageTerminalInput,
   type PutModelCredentialInput,
+  type UsageActivityAttribution,
+  type UsageActivityQuery,
   type UsageMeasurement,
   type UsageOperation,
   type UsageOperationDetail,
@@ -58,6 +60,7 @@ import {
   normalizeCredentialRetirement,
   normalizeModelCredential,
   normalizeModelRequestRecord,
+  normalizeQueryRange,
   normalizeRecordUsageTerminal,
   normalizeUsageQuery,
 } from './validation.ts';
@@ -125,6 +128,7 @@ interface MeasurementRow {
   price_version_id: string | null;
   price_unknown_reason: UsageMeasurement['priceUnknownReason'];
   recorded_at: number;
+  billing_run_id: string | null;
 }
 
 interface CredentialRow {
@@ -222,7 +226,7 @@ const MEASUREMENT_COLUMNS = `
   output_tokens, cache_read_tokens, cache_write_tokens, total_tokens,
   usage_unknown_reason, estimate_completeness,
   estimate_amount_micros, estimate_currency, price_version_id,
-  price_unknown_reason, recorded_at`;
+  price_unknown_reason, recorded_at, billing_run_id`;
 
 export class UsageStoreLogic {
   private readonly audit: AuditStoreLogic;
@@ -316,12 +320,21 @@ export class UsageStoreLogic {
             { operationId: input.operationId, executionId: input.executionId },
           );
         }
+        // The billing key is not part of what was measured: a replay that
+        // knows it fills one recorded without it, and never replaces one.
+        if (input.billingRunId && !measurement.billingRunId) {
+          this.db.run(
+            'UPDATE usage_measurements SET billing_run_id = ? WHERE execution_id = ?',
+            input.billingRunId,
+            input.executionId,
+          );
+        }
         return requiredDetail(this.getOperation(input.operationId));
       }
       const recordedAt = this.now();
       this.db.run(
         `INSERT INTO usage_measurements (${MEASUREMENT_COLUMNS}) VALUES (
-          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         )`,
         input.executionId,
         input.operationId,
@@ -348,6 +361,7 @@ export class UsageStoreLogic {
         input.priceVersionId,
         input.priceUnknownReason,
         recordedAt,
+        input.billingRunId ?? null,
       );
       this.db.run(
         `UPDATE usage_operations
@@ -793,6 +807,46 @@ export class UsageStoreLogic {
     };
   }
 
+  listActivityAttributions(raw: UsageActivityQuery): UsageActivityAttribution[] {
+    const query = normalizeQueryRange(raw);
+    const model = (table: string) => `CASE WHEN ${table}.returned_provider IS NOT NULL AND ${table}.returned_model IS NOT NULL
+        THEN ${table}.returned_provider || '/' || ${table}.returned_model
+      WHEN ${table}.requested_provider IS NOT NULL AND ${table}.requested_model IS NOT NULL
+        THEN ${table}.requested_provider || '/' || ${table}.requested_model END`;
+    const rows = this.db.all(
+      `SELECT o.operation_id, o.operation_kind, o.started_at, o.profile_id, o.requester_membership_id,
+         COALESCE(
+           (SELECT ${model('m')} FROM usage_measurements m WHERE m.operation_id = o.operation_id
+            ORDER BY m.observed_at DESC, m.execution_id DESC LIMIT 1),
+           CASE WHEN o.requested_provider IS NOT NULL AND o.requested_model IS NOT NULL
+             THEN o.requested_provider || '/' || o.requested_model END
+         ) AS model,
+         (SELECT SUM(m.estimate_amount_micros) FROM usage_measurements m
+          WHERE m.operation_id = o.operation_id AND m.estimate_completeness = 'complete'
+            AND m.estimate_currency = 'USD') AS estimate_micros,
+         (SELECT group_concat(DISTINCT m.billing_run_id) FROM usage_measurements m
+          WHERE m.operation_id = o.operation_id AND m.billing_run_id IS NOT NULL) AS billing_run_ids
+       FROM usage_operations o
+       WHERE o.started_at >= ? AND o.started_at < ?
+         AND o.operation_kind IN ('interactive_turn', 'routine_run')
+         AND NOT (o.operation_kind = 'routine_run' AND o.conversation_kind = 'direct_message')
+       ORDER BY o.started_at, o.operation_id`,
+      query.from,
+      query.to,
+    );
+    return rows.map((row) => ({
+      operationId: String(row.operation_id),
+      operationKind: row.operation_kind as UsageActivityAttribution['operationKind'],
+      startedAt: Number(row.started_at),
+      agentId: row.profile_id === null ? null : String(row.profile_id),
+      requesterMembershipId: row.requester_membership_id === null ? null : String(row.requester_membership_id),
+      model: row.model === null ? null : String(row.model),
+      estimateMicros: row.estimate_micros === null ? null : Number(row.estimate_micros),
+      // Run IDs match [A-Za-z0-9_-], so group_concat's comma never splits one.
+      billingRunIds: row.billing_run_ids === null ? [] : String(row.billing_run_ids).split(','),
+    }));
+  }
+
   putCredential(raw: PutModelCredentialInput): ModelCredentialRecord {
     const input = normalizeModelCredential(raw);
     return this.db.transaction(() => {
@@ -1113,6 +1167,8 @@ export class UsageStoreLogic {
         return { kind: 'operation_page', page: this.listOperations(request.query) };
       case 'summarize':
         return { kind: 'summary', summary: this.summarize(request.query) };
+      case 'list_activity_attributions':
+        return { kind: 'activity_attributions', attributions: this.listActivityAttributions(request.query) };
       case 'put_credential':
         return { kind: 'credential', credential: this.putCredential(request.input) };
       case 'retire_credential':
@@ -1299,7 +1355,8 @@ export class UsageStoreLogic {
         estimate_currency TEXT,
         price_version_id TEXT,
         price_unknown_reason TEXT,
-        recorded_at INTEGER NOT NULL
+        recorded_at INTEGER NOT NULL,
+        billing_run_id TEXT
       )`,
     );
     this.db.exec(
@@ -1464,6 +1521,7 @@ export class UsageStoreLogic {
     for (const [name, definition] of [
       ['cache_read_tokens', 'INTEGER'],
       ['cache_write_tokens', 'INTEGER'],
+      ['billing_run_id', 'TEXT'],
     ] as const) {
       addColumnIfMissing(this.db, 'usage_measurements', name, definition);
     }
@@ -1700,6 +1758,7 @@ function mapMeasurement(row: MeasurementRow): UsageMeasurement {
     priceVersionId: row.price_version_id,
     priceUnknownReason: row.price_unknown_reason,
     recordedAt: Number(row.recorded_at),
+    billingRunId: row.billing_run_id,
   };
 }
 

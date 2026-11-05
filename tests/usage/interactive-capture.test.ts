@@ -388,6 +388,7 @@ test('slow telemetry cannot hold delivery beyond the budget and one repair recor
     getOperationByRunId: (runId) => durable.getOperationByRunId(runId),
     listOperations: (query) => durable.listOperations(query),
     summarize: (query) => durable.summarize(query),
+    listActivityAttributions: (query) => durable.listActivityAttributions(query),
     putCredential: (input) => durable.putCredential(input),
     retireCredential: (ref, version, at) => durable.retireCredential(ref, version, at),
     listCredentials: (provider) => durable.listCredentials(provider),
