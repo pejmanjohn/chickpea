@@ -13,14 +13,24 @@ An Agent reads one of three canvases:
 - Another channel's canvas, named by channel.
 - A canvas named by its link.
 
+A channel's canvases are its canvas tabs. Slack lists them in
+`conversations.info` as `properties.tabs` entries with `type` `canvas`, and
+Chickpea also takes `properties.canvas.file_id` if Slack sends it. When a
+channel has one canvas tab, that tab is the channel's canvas. When it has
+several, a read or an edit that names no canvas changes nothing and returns
+each canvas's title and link. The Agent asks which one the requester means and
+passes its link.
+
 Reading follows the same authority as reading a channel
-([Reading Slack](slack-reading.md)). The current conversation's canvas is always
-readable. Another channel's canvas needs the requester to be a member, the
-Agent to be added to the channel, and the Chickpea app to be in it. A canvas
-link is readable when Slack lists the canvas in a conversation that passes
-these rules. `@Chickpea`, and any Agent in a conversation shared with another
-organization, reads only the current conversation's canvas. A refusal does not
-say whether a canvas exists.
+([Reading Slack](slack-reading.md)). The current conversation's canvases are
+always readable, also by link, with no lookup first. A canvas that was only
+posted in the conversation is not one of its canvases, and its link follows the
+rules for other canvases. Another channel's canvas needs the requester to be a
+member, the Agent to be added to the channel, and the Chickpea app to be in it.
+A canvas link is readable when Slack lists the canvas in a conversation that
+passes these rules. `@Chickpea`, and any Agent in a conversation shared with
+another organization, reads only the current conversation's canvases. A
+refusal does not say whether a canvas exists.
 
 The workspace app's bot reads the canvas, so Slack also decides what the bot
 can view. A read returns about 24 KB of Markdown and an offset for the next
@@ -31,9 +41,9 @@ page.
 An Agent creates a canvas only when asked, and only in a channel. In a direct
 message or group DM it says so and creates nothing.
 
-- A channel without a canvas gets the new canvas as its channel canvas
+- A channel without a canvas tab gets the new canvas as its channel canvas
   (`conversations.canvases.create`).
-- A channel that already has one gets a new canvas added to the channel
+- A channel that already has a canvas tab gets a new canvas added to the channel
   (`canvases.create` with the channel), which channel members can view and
   edit. It appears as a channel tab.
 
@@ -46,7 +56,7 @@ creates nothing, and can offer to add to the channel's canvas instead.
 
 ## Updating
 
-An Agent edits only two kinds of canvas: this conversation's canvas, and a
+An Agent edits only two kinds of canvas: this conversation's canvases, and a
 canvas the Chickpea app owns because it created it. The second kind must also
 pass the reading rules above. A person's own canvas elsewhere is not edited.
 
@@ -54,12 +64,12 @@ An edit lands wherever the canvas is, so it must not carry content to an
 organization that cannot read the current conversation. Chickpea refuses an
 edit when Slack shows the canvas in a conversation shared with another
 organization, or readable by an external workspace. From a conversation shared
-with another organization, only that conversation's own canvas is edited, and
-only when it is in no other conversation. A canvas in more than eight
-conversations is not edited, because Chickpea cannot check them all.
+with another organization, only that conversation's own canvases are edited,
+and only when Slack lists them in no other conversation. A canvas in more than
+eight conversations is not edited, because Chickpea cannot check them all.
 
 From a conversation shared with another organization, a canvas link is refused
-unless it is that conversation's own canvas, even when the canvas was posted
+unless it is one of that conversation's own canvases, even when the canvas was posted
 there: knowing where a canvas lives takes a lookup that could show whether it
 exists.
 
@@ -120,16 +130,25 @@ only run-owned canvases. Keep its credentials, receipts and readbacks private.
 Save each receipt before its request goes out. After a restart, reconcile an
 unfinished receipt before another write.
 
-Use it to confirm the Slack facts the tools rest on:
+Use it to confirm the Slack facts the tools rest on. A hosted check on a paid
+workspace on 2026-11-05 observed facts 1 and 2 and part of 4. The others are
+not yet observed.
 
-1. `conversations.info` returns `properties.canvas.file_id` for a channel's
-   canvas.
-2. `files.info` on a canvas returns `permalink`, `title`, `user` (the bot user
-   for a canvas the bot created) and the conversations it is in
-   (`linked_channel_id`, `channels`, `groups`, `ims`).
+1. Observed: `conversations.info` lists a channel's canvases only as
+   `properties.tabs` entries with `type` `canvas` and `data.file_id`. It returned
+   no `properties.canvas`, even right after `conversations.canvases.create` made
+   the canvas.
+2. Observed: `files.info` on a canvas returns `permalink`, `title`, `user` (the
+   bot user for a canvas the bot created) and the conversations it is in
+   (`channels`, `groups`, `ims`). For a canvas the bot created in an unshared
+   channel, `channels` named that channel, `filetype` was `quip`, and there was
+   no `linked_channel_id` and neither external-access field.
 3. `canvases.sections.lookup` accepts criteria with `contains_text` alone.
 4. On a paid plan, `canvases.create` with `channel_id` in a channel that has a
-   canvas succeeds, and a channel member can open the result.
+   canvas tab succeeds and adds a tab, and a channel member can open the result.
+   Observed so far: a second `conversations.canvases.create` in such a channel
+   also succeeded and added a second canvas tab, instead of returning
+   `channel_canvas_already_exists`.
 5. On a free plan, the same call returns `free_team_canvas_tab_already_exists`.
 6. `files.info` on a canvas posted in a Slack Connect channel lists that
    channel, or reports `external_workspaces_with_read_access` or
