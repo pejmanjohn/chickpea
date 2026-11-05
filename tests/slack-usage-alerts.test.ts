@@ -9,7 +9,6 @@ import type { InstallationHealth, WorkspaceInstallation } from '../src/config/ty
 import type { Membership, MembershipStatus, OrganizationRole, SlackIdentityBinding } from '../src/identity/types.ts';
 import type { SlackInstallationExecutionResolver } from '../src/slack/installation-execution.ts';
 import {
-  cardLabel,
   dailyLimitNoticeMessage,
   deliverDailyLimitNotice,
   deliverOwnerBillingNotice,
@@ -20,7 +19,7 @@ import {
   type OwnerBillingNotice,
   type UsageAlert,
 } from '../src/slack/usage-alerts.ts';
-import type { UsageMicros } from '../src/usage/usage-display.ts';
+import { formatCard, type UsageMicros } from '../src/usage/usage-display.ts';
 
 const TEAM = 'TUSAGE1';
 const OTHER_TEAM = 'TOTHER1';
@@ -253,8 +252,18 @@ test('the 90% alert with auto top-up on names the pack and what the limit still 
     `You've used 90% of your plan ($216 of $240). ${RESETS} When it runs out, auto top-up adds $50 of extra usage ` +
     'so nothing stops. It can add up to $150 this month.');
   assert.deepEqual(buttons([...message.blocks]), [button('change_auto_top_up', 'Change auto top-up', at('auto-top-up'))]);
-  const spent = usageAlertMessage(alert({ threshold: 90, autoTopUp: { ...TOP_UP_ON, usedCents: 25_000 } }));
-  assert.match(spent.text, / It can add up to \$0 this month\.$/);
+});
+
+test('the 90% alert with auto top-up at its limit says the Agents pause, and offers Raise limit first', () => {
+  for (const usedCents of [20_000, 25_000]) {
+    const message = usageAlertMessage(alert({ threshold: 90, usedMicros: 216_000_000 as UsageMicros, autoTopUp: { ...TOP_UP_ON, usedCents } }));
+    assert.equal(message.text,
+      `You've used 90% of your plan ($216 of $240). ${RESETS} When it runs out, your Agents pause until ${NOV_7}, because auto top-up ` +
+      'reached its limit for this month. Raise the limit or upgrade so nothing stops.', String(usedCents));
+    assert.deepEqual(buttons([...message.blocks]), [
+      button('raise_limit', 'Raise limit', at('raise-limit'), true), button('upgrade', 'Upgrade plan', at('upgrade')),
+    ]);
+  }
 });
 
 test('the 90% alert with auto top-up off offers usage first, then an upgrade or auto top-up', () => {
@@ -331,13 +340,16 @@ function sections(blocks: readonly Block[]): string[] {
   return blocks.filter((block) => block.type === 'section').map((block) => (block.text as { text: string }).text);
 }
 
-test('a card reads by its brand and last four digits, and an unknown brand reads as a card', () => {
-  const brands = ['visa', 'mastercard', 'amex', 'discover', 'diners', 'jcb', 'unionpay', 'link', 'constructor'];
-  assert.deepEqual(brands.map((brand) => cardLabel({ brand, last4: '4242' })), [
+test('a card reads by its brand and last four digits, an unknown brand reads as a card, and last digits that aren\'t four digits read as no card', () => {
+  const brands = ['visa', 'mastercard', 'amex', 'discover', 'diners', 'jcb', 'unionpay', 'link', 'constructor', 'VISA'];
+  assert.deepEqual(brands.map((brand) => formatCard({ brand, last4: '4242' })), [
     'Visa ending 4242', 'Mastercard ending 4242', 'American Express ending 4242', 'Discover ending 4242',
-    'Diners Club ending 4242', 'JCB ending 4242', 'UnionPay ending 4242', 'Card ending 4242', 'Card ending 4242',
+    'Diners Club ending 4242', 'JCB ending 4242', 'UnionPay ending 4242', 'Card ending 4242', 'Card ending 4242', 'Visa ending 4242',
   ]);
-  assert.equal(cardLabel(null), null);
+  assert.equal(formatCard(null), null);
+  for (const last4 of ['<!here>', '42', '42424']) assert.equal(formatCard({ brand: 'visa', last4 }), null, last4);
+  assert.equal(sections([...ownerBillingNoticeMessage({ kind: 'top_up_declined', card: { brand: 'visa', last4: '<!here>' }, planPageUrl: PLAN_PAGE }).blocks])[0],
+    "Auto top-up couldn't charge your card. The card was declined, so your Agents are paused.");
 });
 
 const ADDED = {

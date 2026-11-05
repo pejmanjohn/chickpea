@@ -384,10 +384,9 @@ function planChangeView(
   };
 }
 
-/** The saved card, from the auto top-up view; only four digits pass, since the label lands in the page. */
+/** The saved card, from the auto top-up view. */
 function cardLabel(summary: BillingSummary): string | null {
-  const card = summary.autoTopUp?.card;
-  return card && /^\d{4}$/.test(card.last4) ? formatCard(card) : null;
+  return formatCard(summary.autoTopUp?.card);
 }
 
 /** The next pack would not fit under the limit this period. */

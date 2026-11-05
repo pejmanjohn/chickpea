@@ -5,7 +5,7 @@ import type { DailyLimitScope } from '../config/platform-funding.ts';
 import { getConfigStore, getIdentityStore, type PlatformEnv } from '../config/state-backend.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type { IdentityStore } from '../identity/types.ts';
-import { formatPriceCents, formatUsageDollars, usagePercent, type UsageMicros } from '../usage/usage-display.ts';
+import { formatCard, formatPriceCents, formatUsageDollars, usagePercent, type UsageMicros } from '../usage/usage-display.ts';
 import { activeOwnerSlackUserIds, sendOwnerDm } from './credits-ask.ts';
 import {
   resolveSlackInstallationExecutionContext,
@@ -149,8 +149,16 @@ const ALERT_COPY: Record<UsageAlert['threshold'], (alert: UsageAlert) => Message
     const usage = usageSentence(alert);
     const topUp = alert.autoTopUp;
     if (!topUp) return { text: `${usage} Add extra usage or upgrade so nothing stops.`, buttons: ['upgrade', 'add_extra_usage'] };
+    if (topUp.enabled && topUp.usedCents + topUp.packCents > topUp.limitCents) {
+      return {
+        text: `${usage} When it runs out, your Agents pause until ${slackDate(alert.periodEnd.getTime())}, because auto top-up ` +
+          'reached its limit for this month. Raise the limit or upgrade so nothing stops.',
+        buttons: ['raise_limit', 'upgrade_plan'],
+        primary: true,
+      };
+    }
     if (topUp.enabled) {
-      const left = Math.max(0, topUp.limitCents - topUp.usedCents);
+      const left = topUp.limitCents - topUp.usedCents;
       return {
         text: `${usage} When it runs out, auto top-up adds ${formatPriceCents(topUp.packCents)} of extra usage so nothing stops. ` +
           `It can add up to ${formatPriceCents(left)} this month.`,
@@ -210,7 +218,7 @@ function noticeCopy(notice: OwnerBillingNotice): MessageCopy {
       const receiptUrl = httpsUrl(notice.receiptUrl);
       return {
         text: `Auto top-up added ${formatPriceCents(notice.packCents)} of extra usage, so your Agents keep working.`,
-        context: `Charged to ${cardLabel(notice.card ?? null) ?? 'your card'}, plus tax. ` +
+        context: `Charged to ${formatCard(notice.card) ?? 'your card'}, plus tax. ` +
           `Extra usage keeps ${notice.validMonths} ${notice.validMonths === 1 ? 'month' : 'months'} while you have a plan. ${limit}`,
         buttons: [
           ...(receiptUrl ? [{ kind: 'view_receipt', url: receiptUrl } as const] : []),
@@ -240,7 +248,7 @@ function noticeCopy(notice: OwnerBillingNotice): MessageCopy {
     }
     case 'top_up_declined':
       return {
-        text: `Auto top-up couldn't charge ${cardLabel(notice.card ?? null) ?? 'your card'}. ` +
+        text: `Auto top-up couldn't charge ${formatCard(notice.card) ?? 'your card'}. ` +
           'The card was declined, so your Agents are paused.',
         buttons: ['update_card', 'try_again'],
         primary: true,
@@ -290,22 +298,6 @@ function noticeCopy(notice: OwnerBillingNotice): MessageCopy {
         }
         : { text: 'Your workspace is out of usage, so your Agents are paused.', buttons: ['add_usage'], primary: true };
   }
-}
-
-const CARD_BRANDS = new Map([
-  ['visa', 'Visa'],
-  ['mastercard', 'Mastercard'],
-  ['amex', 'American Express'],
-  ['discover', 'Discover'],
-  ['diners', 'Diners Club'],
-  ['jcb', 'JCB'],
-  ['unionpay', 'UnionPay'],
-]);
-
-/** "Visa ending 4242"; null without a card. */
-export function cardLabel(card: CardSummary | null): string | null {
-  if (!card) return null;
-  return `${CARD_BRANDS.get(card.brand.toLowerCase()) ?? 'Card'} ending ${card.last4}`;
 }
 
 const SLACK_USER_ID = /^[UW][A-Z0-9]{2,}$/;
