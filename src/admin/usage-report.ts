@@ -319,7 +319,9 @@ export function buildUsageReport(inputs: UsageReportInputs): UsageReport {
     agents: agentId !== null ? null : listed([
       ...agentChoices.map(({ id, name }) => ({ key: id, name, value: byAgent.rows.find((agent) => agent.key === id)?.value ?? 0 }))
         .sort(largestFirst),
-      ...(byAgent.unnamed === null ? [] : [{ key: null, name: OTHER, value: byAgent.unnamed }]),
+      // On an own key, tasks of runs Core has no activity for still need a row.
+      ...(byAgent.unnamed === null && !tasks?.some((task) => agentRow(task) === null)
+        ? [] : [{ key: null, name: OTHER, value: byAgent.unnamed ?? 0 }]),
     ]).map((agent) => {
       const own = current.filter((charge) => agentRow(charge.agentId) === agent.key);
       return {

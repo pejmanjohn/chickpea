@@ -210,6 +210,16 @@ test('on its own key a workspace sees Core\'s estimate, its providers, and the t
   assert.equal(report({ summary: OWN_KEY_TEAM, billed: null, request: { period: 'last_billing_period' } }).tasks, null);
   assert.equal(report({ summary: OWN_KEY_TEAM, billed: null, agentId: 'agent_a' }).tasks, null, 'the meter is not one Agent\'s');
   assert.equal(report({ summary: OWN_KEY_NO_PLAN }).plan, null);
+
+  // A private routine's task, with no activity Core lists, still counts in the Agents table.
+  const privateTask = report({
+    summary: OWN_KEY_TEAM,
+    attributions: ACTIVITY.filter((item) => item.agentId !== 'agent_gone'),
+    billed: { ...BILLED, current: [...BILLED.current, billedRow('sub_private_task', '2026-10-16', 0, { feeMicros: usd(0.3), task: true })] },
+  });
+  assert.equal(privateTask.tasks?.used, '3');
+  assert.deepEqual(privateTask.agents?.map((agent) => [agent.name, agent.tasks]).at(-1), ['Other', '1']);
+  assert.equal(sum(privateTask.agents?.map((agent) => Number(agent.tasks)) ?? []), 3);
 });
 
 test('ranges: this and last billing period, a month clamped to its end, 30 days without a period, any range\'s prior', () => {
