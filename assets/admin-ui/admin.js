@@ -441,7 +441,14 @@
     usageLoading: false,
     usageLoadingMore: false,
     usageError: "",
-    usagePeriod: "last_30_days",
+    usagePeriod: BILLING_OFFERED ? "this_billing_period" : "last_30_days",
+    // Where the host bills: the report for the chosen period and Agent, and
+    // whether the last one offered billing periods.
+    usageReport: null,
+    usageBillingPeriod: true,
+    usageAgent: "",
+    usageOpenRow: "",
+    usageActivityError: "",
     usageCustomFrom: "",
     usageCustomTo: "",
     usageCustomDraftFrom: "",
@@ -1827,7 +1834,7 @@
   function usageRailHtml() {
     return '<nav class="rail primary-shell-sidebar" aria-label="Usage">' + primaryShellBrandHtml() + '<div class="rail-context">' +
       '<div class="rail-head"><span class="section-eyebrow">Usage</span></div>' +
-      '<button type="button" class="chan-item active" data-action="open-usage"><span class="chan-name">Overview</span><span class="chan-meta">Spend and usage</span></button>' +
+      '<button type="button" class="chan-item active" data-action="open-usage"><span class="chan-name">Overview</span><span class="chan-meta">' + (BILLING_OFFERED ? 'Usage' : 'Spend and usage') + '</span></button>' +
       '</div>' + sectionSwitcherHtml() + '</nav>';
   }
 
@@ -1979,6 +1986,17 @@
     return { from: usageDateValue(from), to: usageDateValue(to) };
   }
 
+  function prepareUsageCustomDates() {
+    var appliedCustom = usageCustomRange(state.usageCustomFrom, state.usageCustomTo);
+    if (appliedCustom.error) {
+      var customDefaults = usageDefaultCustomDates();
+      state.usageCustomFrom = customDefaults.from;
+      state.usageCustomTo = customDefaults.to;
+    }
+    state.usageCustomDraftFrom = state.usageCustomFrom;
+    state.usageCustomDraftTo = state.usageCustomTo;
+  }
+
   function usageStartOfWeek(date) {
     var start = new Date(date.getFullYear(), date.getMonth(), date.getDate());
     start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
@@ -2005,6 +2023,7 @@
   }
 
   function applyUsageQuery(search) {
+    if (BILLING_OFFERED) return applyBilledUsageQuery(search);
     if (!search) return;
     var params = new URLSearchParams(search);
     var allowedPeriods = ["last_7_days", "last_30_days", "last_90_days", "this_month", "last_month", "this_week", "last_week", "custom"];
@@ -2033,6 +2052,7 @@
 
   function syncUsageQueryUrl() {
     if (!canNavigate || !routeReady || state.view !== "usage") return;
+    if (BILLING_OFFERED) return syncBilledUsageQueryUrl();
     var params = new URLSearchParams();
     params.set("period", state.usagePeriod);
     if (state.usagePeriod === "custom") {
@@ -2196,6 +2216,7 @@
   }
 
   function loadUsage(forceMetadata) {
+    if (BILLING_OFFERED) return loadBilledUsage();
     var requestId = ++state.usageRequestId;
     state.usageLoading = true;
     state.usageError = "";
@@ -2447,14 +2468,19 @@
       loadMore;
   }
 
-  function usageMainHtml() {
-    var periods = [["last_7_days", "Last 7 days"], ["last_30_days", "Last 30 days"], ["last_90_days", "Last 90 days"], ["this_month", "This month"], ["last_month", "Last month"], ["this_week", "This week"], ["last_week", "Last week"], ["custom", "Custom"]];
-    var customControls = state.usagePeriod === "custom"
+  function usageCustomControlsHtml() {
+    return state.usagePeriod === "custom"
       ? '<label class="field" for="usage-custom-from"><span class="field-label">From</span><input class="input" id="usage-custom-from" name="usage-custom-from" type="date" max="' + usageDateValue(new Date()) + '" value="' + esc(state.usageCustomDraftFrom) + '" data-action="usage-custom-from"></label>' +
         '<label class="field" for="usage-custom-to"><span class="field-label">To</span><input class="input" id="usage-custom-to" name="usage-custom-to" type="date" max="' + usageDateValue(new Date()) + '" value="' + esc(state.usageCustomDraftTo) + '" data-action="usage-custom-to"></label>' +
         '<button type="button" class="btn btn-soft usage-apply" data-action="usage-custom-apply">Apply dates</button>' +
         (state.usageCustomError ? '<p class="field-error usage-custom-error" role="alert">' + esc(state.usageCustomError) + '</p>' : '')
       : '';
+  }
+
+  function usageMainHtml() {
+    if (BILLING_OFFERED) return billedUsageMainHtml();
+    var periods = [["last_7_days", "Last 7 days"], ["last_30_days", "Last 30 days"], ["last_90_days", "Last 90 days"], ["this_month", "This month"], ["last_month", "Last month"], ["this_week", "This week"], ["last_week", "Last week"], ["custom", "Custom"]];
+    var customControls = usageCustomControlsHtml();
     var controls = '<div class="usage-controls"><div class="usage-control-row' + (state.usagePeriod === "custom" ? ' has-custom' : '') + '"><label class="field"><span class="field-label">Period</span><span class="select-wrap"><select class="input" name="usage-period" data-action="usage-range">' +
       periods.map(function (period) { return '<option value="' + period[0] + '"' + (state.usagePeriod === period[0] ? ' selected' : '') + '>' + period[1] + '</option>'; }).join("") +
       '</select><span class="select-caret">' + icon("chevron-down") + '</span></span></label><label class="field"><span class="field-label">Break down by</span><span class="select-wrap"><select class="input" name="usage-group" data-action="usage-group">' +
@@ -2484,6 +2510,549 @@
     return head + summary + coverage + freshness +
       '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Spend by ' + esc(groupLabel) + '</h2><p class="hint">Compare where token usage and spend are concentrated.</p></div></div>' + usageGroupsHtml(current) + '</section>' +
       '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Recent ' + usageActivityLabelHtml("activity") + '</h2><p class="hint">Hover over total tokens to see the input, cached input, and output split.</p></div>' + filter + '</div>' + usageOperationsHtml() + '</section>';
+  }
+
+  // ---- Usage where the host bills --------------------------------------------
+  // With a billing port, the page reports what the Plan page counts, from
+  // /admin/api/usage/report. The report's measure decides what its amounts
+  // are: billed usage, activity counts, or an own key's provider estimate.
+
+  var BILLED_USAGE_PERIODS = [["this_billing_period", "This billing period"], ["last_billing_period", "Last billing period"], ["last_7_days", "Last 7 days"], ["last_30_days", "Last 30 days"], ["last_90_days", "Last 90 days"], ["custom", "Custom"]];
+  // Chart series in order, then the row gathering the rest. Checked for
+  // colorblind contrast as a set.
+  var BILLED_USAGE_COLORS = ["#2a78d6", "#c4861a", "#1baf7a", "#6250d6"];
+  var BILLED_USAGE_OTHER_COLOR = "#b9ad95";
+
+  function billedUsageIsBillingPeriod(period) {
+    return period === "this_billing_period" || period === "last_billing_period";
+  }
+
+  function applyBilledUsageQuery(search) {
+    var params = new URLSearchParams(search || "");
+    var period = params.get("period");
+    if (period === "custom") {
+      var customFrom = params.get("from") || "";
+      var customTo = params.get("to") || "";
+      if (!usageCustomRange(customFrom, customTo).error) {
+        state.usagePeriod = period;
+        state.usageCustomFrom = state.usageCustomDraftFrom = customFrom;
+        state.usageCustomTo = state.usageCustomDraftTo = customTo;
+      }
+    } else if (BILLED_USAGE_PERIODS.some(function (choice) { return choice[0] === period; })) {
+      state.usagePeriod = period;
+    }
+    state.usageAgent = params.get("agent") || "";
+  }
+
+  function syncBilledUsageQueryUrl() {
+    var params = new URLSearchParams();
+    params.set("period", state.usagePeriod);
+    if (state.usagePeriod === "custom") {
+      params.set("from", state.usageCustomFrom);
+      params.set("to", state.usageCustomTo);
+    }
+    if (state.usageAgent) params.set("agent", state.usageAgent);
+    history.replaceState(null, "", "/admin/usage?" + params.toString());
+  }
+
+  function selectBilledUsageAgent(agentId) {
+    state.usageAgent = agentId;
+    syncUsageQueryUrl();
+    loadBilledUsage();
+  }
+
+  // The report sets the range, so activity loads after it, for the same days.
+  function loadBilledUsage() {
+    var requestId = ++state.usageRequestId;
+    state.usageLoading = true;
+    state.usageError = "";
+    state.usageOperations = null;
+    state.usageNextCursor = null;
+    state.usageActivityError = "";
+    state.usageRoutineNames = null;
+    state.usageOpenRow = "";
+    render();
+    var params = new URLSearchParams();
+    if (billedUsageIsBillingPeriod(state.usagePeriod)) {
+      params.set("period", state.usagePeriod);
+    } else {
+      var range = usageRange();
+      params.set("from", String(range.from));
+      params.set("to", String(range.to));
+    }
+    if (state.usageAgent) params.set("agent", state.usageAgent);
+    return api("/admin/api/usage/report?" + params.toString()).then(function (report) {
+      if (requestId !== state.usageRequestId) return;
+      state.usageReport = report;
+      state.usageBillingPeriod = report.billingPeriod;
+      state.usageLoading = false;
+      var agentId = report.agent ? report.agent.id : "";
+      // Without a billing period the server answers for the last 30 days.
+      var period = !report.billingPeriod && billedUsageIsBillingPeriod(state.usagePeriod) ? "last_30_days" : state.usagePeriod;
+      if (agentId !== state.usageAgent || period !== state.usagePeriod) {
+        state.usageAgent = agentId;
+        state.usagePeriod = period;
+        syncUsageQueryUrl();
+      }
+      return loadBilledUsageOperations(true);
+    }).catch(function (error) {
+      if (requestId !== state.usageRequestId) return;
+      state.usageLoading = false;
+      state.usageReport = null;
+      state.usageError = error.serverMessage || error.message || "Usage reporting is unavailable.";
+      render();
+    });
+  }
+
+  function loadBilledUsageOperations(reset) {
+    var report = state.usageReport;
+    if (!report || (!reset && (!state.usageNextCursor || state.usageLoadingMore))) return Promise.resolve();
+    var requestId = state.usageRequestId;
+    var params = new URLSearchParams();
+    params.set("from", String(report.range.from));
+    params.set("to", String(report.range.to));
+    params.set("limit", "50");
+    if (report.agent) params.set("agent", report.agent.id);
+    if (!reset) params.set("cursor", state.usageNextCursor);
+    state.usageLoadingMore = true;
+    state.usageActivityError = "";
+    render();
+    return api("/admin/api/usage/operations?" + params.toString()).then(function (body) {
+      if (requestId !== state.usageRequestId) return;
+      var items = body.items || [];
+      state.usageOperations = reset ? items : (state.usageOperations || []).concat(items);
+      state.usageNextCursor = body.nextCursor || null;
+      state.usageLoadingMore = false;
+      render();
+      loadUsageRoutineNames();
+    }).catch(function (error) {
+      if (requestId !== state.usageRequestId) return;
+      state.usageLoadingMore = false;
+      if (reset) state.usageOperations = [];
+      state.usageActivityError = error.serverMessage || error.message || "Recent activity could not be loaded.";
+      render();
+    });
+  }
+
+  function billedUsageChangeText(change) {
+    return change == null ? "" : (change > 0 ? "+" : "") + change + "% vs last period";
+  }
+
+  function billedUsageProviderName(report) {
+    return report.providers.length === 1 ? esc(providerMeta(report.providers[0]).name) : "";
+  }
+
+  function billedUsageCardHtml(label, value, hint, primary) {
+    return '<div class="usage-card' + (primary ? ' usage-card-primary' : '') + '"><span class="usage-card-label">' + label + '</span>' +
+      '<span class="usage-card-value">' + esc(value) + '</span>' + (hint ? '<span class="hint">' + hint + '</span>' : '') + '</div>';
+  }
+
+  function billedUsageShareHtml(share) {
+    var width = Math.max(0, Math.min(100, Number(share) || 0));
+    return '<span class="u-share"><span class="plan-use-track" aria-hidden="true"><span style="width: ' + width + '%"></span></span>' + esc(String(share)) + '%</span>';
+  }
+
+  // An Agent shows its Slack picture when it has one; a model shows the first
+  // letter of its family ("Claude Sonnet 5.5" is S); the row gathering the
+  // rest shows no letter.
+  function billedUsageAvatarHtml(kind, row) {
+    if (row.key === null) return '<span class="plan-use-avatar is-other" aria-hidden="true"></span>';
+    var agent = kind === "agent" ? agentById(row.key) : null;
+    var url = agent ? agentAvatarUrlForAdmin(agent) : "";
+    if (url) return '<span class="plan-use-avatar" aria-hidden="true"><img src="' + esc(url) + '" alt=""></span>';
+    var words = String(row.name || "").split(/\s+/);
+    var word = kind === "model" && words[1] ? words[1] : words[0];
+    return '<span class="plan-use-avatar is-letter" aria-hidden="true">' + esc((Array.from(word || "")[0] || "").toUpperCase()) + '</span>';
+  }
+
+  function billedUsageColumn(head, number, cell) {
+    return { head: head, number: number, cell: cell };
+  }
+
+  var BILLED_USAGE_AGENT_COLUMN = billedUsageColumn("Agent", false, function (row) {
+    var name = row.key === null
+      ? '<b class="usage-work-label">' + esc(row.name) + '</b>'
+      : '<button type="button" class="usage-row-action" data-action="usage-agent-row" data-agent="' + esc(row.key) + '">' + esc(row.name) + '</button>';
+    return '<span class="u-who">' + billedUsageAvatarHtml("agent", row) + name + '</span>';
+  });
+  var BILLED_USAGE_SHARE_COLUMN = billedUsageColumn("Share", true, function (row) { return billedUsageShareHtml(row.share); });
+  var BILLED_USAGE_PERSON_COLUMN = billedUsageColumn("Most used by", false, function (row) { return esc(row.topPerson || "—"); });
+  var BILLED_USAGE_MODEL_COLUMN = billedUsageColumn("Main model", false, function (row) { return esc(row.mainModel || "—"); });
+
+  function billedUsageAmountColumn(head) {
+    return billedUsageColumn(head, true, function (row) { return esc(row.amount.text); });
+  }
+
+  // Billed usage for one activity: what is left after any credit back.
+  function billedUsageLeftOver(billed) {
+    return !(billed.creditedBack && !/[1-9]/.test(billed.amount));
+  }
+
+  // What changes with the report's measure. Activity counts have no amounts,
+  // so lists show shares; an own key's amounts are Core's provider estimate.
+  var BILLED_USAGE_MODES = {
+    usage: {
+      hint: "How much your Agents used, who used them, and on which models. The same usage your Plan page counts.",
+      empty: "No usage yet in this period.",
+      chartTitle: function (agent) { return agent ? agent.name + "’s usage by day" : "Usage by day"; },
+      tiles: function (report) {
+        var since = esc(report.range.since);
+        var change = billedUsageChangeText(report.change);
+        var first = report.agent
+          ? billedUsageCardHtml(esc(report.agent.name) + " since " + since, report.total.text, report.share == null ? "" : report.share + "% of your workspace&rsquo;s usage", true)
+          : billedUsageCardHtml("Used since " + since, report.total.text, change, true);
+        var paceHint = report.pace ? "On pace for " + report.pace.percent + "% of your plan by " + esc(report.pace.by) : report.agent ? change : "";
+        return first + billedUsageCardHtml("Per day", report.perDay.text, paceHint, false);
+      },
+      agentsHint: "Select an Agent to see only its usage.",
+      agentColumns: [BILLED_USAGE_AGENT_COLUMN, billedUsageAmountColumn("Usage"), BILLED_USAGE_SHARE_COLUMN, BILLED_USAGE_PERSON_COLUMN, BILLED_USAGE_MODEL_COLUMN],
+      listAmount: function (row) { return esc(row.amount.text); },
+      activityHead: "Usage",
+      activityAmount: function (detail) {
+        var billed = detail.hosted && detail.hosted.billed;
+        if (!billed) return "—";
+        return billedUsageLeftOver(billed) ? esc(billed.amount) : "Credited back";
+      },
+      note: true
+    },
+    activity: {
+      hint: "What your Agents did, who used them, and on which models. Amounts and what&rsquo;s left are on your Plan page.",
+      empty: "No activity yet in this period.",
+      chartTitle: function () { return "Activity by day"; },
+      tiles: function (report) {
+        var hint = report.agent
+          ? (report.share == null ? "" : report.share + "% of your workspace&rsquo;s activity")
+          : billedUsageChangeText(report.change);
+        return billedUsageCardHtml("Activity since " + esc(report.range.since), report.total.text, hint, true) +
+          billedUsageCardHtml("Per day", report.perDay.text, "Messages answered and routine runs", false);
+      },
+      agentsHint: "Select an Agent to see only its activity.",
+      agentColumns: [BILLED_USAGE_AGENT_COLUMN, billedUsageAmountColumn("Activity"), BILLED_USAGE_SHARE_COLUMN, BILLED_USAGE_PERSON_COLUMN, BILLED_USAGE_MODEL_COLUMN],
+      listAmount: function (row) { return esc(String(row.share)) + "%"; },
+      activityHead: "Tokens",
+      activityAmount: function (detail) {
+        var total = usageOperationTokens(detail, "totalTokens");
+        return total == null ? "—" : usageInt(total);
+      },
+      note: false
+    },
+    estimate: {
+      hint: "How much your Agents used, who used them, and on which models. Tasks are the usage your Plan page counts.",
+      empty: "No usage yet in this period.",
+      chartTitle: function () { return "Estimated provider spend by day"; },
+      // The report has no activity count for an own key, so without the
+      // plan's task count the estimate leads and the per-day pace follows.
+      tiles: function (report) {
+        var provider = billedUsageProviderName(report);
+        var spendHint = "Billed by " + (provider || "your providers") + ", not Chickpea";
+        if (!report.tasks) {
+          return billedUsageCardHtml("Estimated provider spend", report.total.text, spendHint, true) +
+            billedUsageCardHtml("Per day", report.perDay.text, billedUsageChangeText(report.change), false);
+        }
+        var tasksHint = report.tasks.left != null ? esc(report.tasks.left) + " left on your plan" : billedUsageChangeText(report.change);
+        return billedUsageCardHtml("Tasks since " + esc(report.range.since), report.tasks.used, tasksHint, true) +
+          billedUsageCardHtml("Estimated provider spend", report.total.text, spendHint, false);
+      },
+      agentsHint: "Select an Agent to see only its usage.",
+      agentColumns: [
+        BILLED_USAGE_AGENT_COLUMN,
+        billedUsageColumn("Tasks", true, function (row) { return esc(row.tasks || "—"); }),
+        billedUsageAmountColumn("Estimated provider spend"),
+        BILLED_USAGE_PERSON_COLUMN
+      ],
+      listAmount: function (row) { return esc(row.amount.text); },
+      activityHead: "Estimated spend",
+      activityAmount: function (detail) {
+        var amount = usageOperationAmount(detail);
+        return amount == null ? "—" : usageMoney(amount, "USD");
+      },
+      note: false
+    }
+  };
+
+  function billedUsageMode(report) {
+    return BILLED_USAGE_MODES[report.measure] || BILLED_USAGE_MODES.activity;
+  }
+
+  function billedUsageSelectHtml(label, name, action, options, selected) {
+    return '<label class="field"><span class="field-label">' + label + '</span><span class="select-wrap"><select class="input" name="' + name + '" data-action="' + action + '">' +
+      options.map(function (option) { return '<option value="' + esc(option[0]) + '"' + (option[0] === selected ? ' selected' : '') + '>' + esc(option[1]) + '</option>'; }).join("") +
+      '</select><span class="select-caret">' + icon("chevron-down") + '</span></span></label>';
+  }
+
+  function billedUsageControlsHtml(report) {
+    var periods = BILLED_USAGE_PERIODS.filter(function (choice) {
+      return state.usageBillingPeriod || !billedUsageIsBillingPeriod(choice[0]);
+    });
+    var agents = (report ? report.agentChoices : []).map(function (agent) { return [agent.id, agent.name]; });
+    if (state.usageAgent && !agents.some(function (agent) { return agent[0] === state.usageAgent; })) {
+      // Before the report names the chosen Agent, the Agents list may.
+      var known = agentById(state.usageAgent);
+      if (known && known.name) agents.push([known.id, known.name]);
+    }
+    return '<div class="usage-controls"><div class="usage-control-row' + (state.usagePeriod === "custom" ? ' has-custom' : '') + '">' +
+      billedUsageSelectHtml("Period", "usage-period", "usage-billed-period", periods, state.usagePeriod) +
+      billedUsageSelectHtml("Agent", "usage-agent", "usage-agent", [["", "All Agents"]].concat(agents), state.usageAgent) +
+      usageCustomControlsHtml() + '</div></div>';
+  }
+
+  function billedUsageStripHtml(report) {
+    var action = '<button type="button" class="btn btn-ghost btn-sm" data-action="open-billing">Plan</button>';
+    var copy = "<strong>Your plan&rsquo;s usage and what&rsquo;s left are on the Plan page.</strong>";
+    if (report.measure === "estimate") {
+      var provider = billedUsageProviderName(report);
+      copy = "<strong>Your provider bills model tokens directly.</strong> Set a spending limit with " + (provider || "each provider") + ". Chickpea estimates that spend at list prices.";
+      action = '<button type="button" class="btn btn-ghost btn-sm" data-action="usage-open-settings">Model settings</button>';
+    } else if (report.measure === "usage" && report.plan) {
+      var topUp = report.plan.autoTopUp === true ? " Auto top-up is on." : report.plan.autoTopUp === false ? " Auto top-up is off." : "";
+      copy = "<strong>" + esc(report.plan.left) + " left.</strong>" + topUp;
+    }
+    return '<div class="usage-contract"><p>' + copy + '</p>' + action + '</div>';
+  }
+
+  // Three gridlines at 0, half and a round maximum. Money axes round in
+  // dollars; count axes keep whole halves.
+  function billedUsageAxisMax(peak, money) {
+    if (!(peak > 0)) return money ? 1 : 2;
+    var scale = Math.pow(10, Math.floor(Math.log10(peak)));
+    var max = [1, 2, 3, 4, 6, 8, 10].map(function (step) { return Number((step * scale).toPrecision(6)); })
+      .find(function (candidate) { return candidate >= peak; });
+    return money ? max : Math.max(2, Math.ceil(max / 2) * 2);
+  }
+
+  function billedUsageAxisText(value, money) {
+    if (!money) return Math.round(value).toLocaleString("en-US");
+    return "$" + (Number.isInteger(value) ? value.toLocaleString("en-US") : value.toFixed(2));
+  }
+
+  function billedUsageTickIndexes(count) {
+    var every = Math.max(1, Math.ceil((count - 1) / 4));
+    var ticks = [];
+    for (var index = 0; index < count; index += every) ticks.push(index);
+    var last = count - 1;
+    if (ticks[ticks.length - 1] !== last) {
+      if (last - ticks[ticks.length - 1] < every / 2) ticks.pop();
+      ticks.push(last);
+    }
+    return ticks;
+  }
+
+  // Stacked bars per day for the days so far, the same days last period as a
+  // dashed line across the whole range, and a dotted line at today.
+  function billedUsageChartHtml(report, title) {
+    var chart = report.chart;
+    var days = chart.days;
+    var count = days.length;
+    if (!count) return '';
+    var money = report.measure !== "activity";
+    var unit = money ? 1000000 : 1;
+    var elapsed = Math.max(0, Math.min(count, chart.elapsed));
+    var series = chart.series.map(function (row, index) {
+      return { name: row.name, values: row.values, color: row.key === null ? BILLED_USAGE_OTHER_COLOR : BILLED_USAGE_COLORS[index % BILLED_USAGE_COLORS.length] };
+    });
+    var peak = 0;
+    for (var day = 0; day < elapsed; day += 1) {
+      peak = Math.max(peak, series.reduce(function (sum, row) { return sum + (Number(row.values[day]) || 0); }, 0));
+    }
+    (chart.prior || []).forEach(function (value) { peak = Math.max(peak, Number(value) || 0); });
+    var axisMax = billedUsageAxisMax(peak / unit, money);
+    var max = axisMax * unit;
+    function fixed(value) { return Number(value.toFixed(1)); }
+    function amount(value) { return money ? usageMoney(value, "USD") : usageInt(Math.round(value)); }
+    // One viewBox can't suit both a desktop column and a phone: text scales
+    // with the drawing. CSS shows the drawing whose proportions fit.
+    function drawing(className, width, height, left) {
+      var right = 4, top = 10, bottom = 24;
+      var step = (width - left - right) / count;
+      var gap = Math.min(4, step * 0.25);
+      var y = function (value) { return height - bottom - value / max * (height - bottom - top); };
+      var grid = [0, axisMax / 2, axisMax].map(function (value) {
+        var lineY = fixed(y(value * unit));
+        return '<line x1="' + left + '" x2="' + (width - right) + '" y1="' + lineY + '" y2="' + lineY + '" class="u-grid"/>' +
+          '<text x="' + (left - 6) + '" y="' + fixed(lineY + 4) + '" text-anchor="end">' + esc(billedUsageAxisText(value, money)) + '</text>';
+      }).join("");
+      var bars = "";
+      for (var index = 0; index < elapsed; index += 1) {
+        var base = 0;
+        series.forEach(function (row, layer) {
+          var value = Number(row.values[index]) || 0;
+          var y0 = y(base);
+          var y1 = y(base + value);
+          base += value;
+          if (value <= 0) return;
+          var barHeight = Math.max(0, y0 - y1 - (layer && y0 - y1 > 3 ? 2 : 0));
+          bars += '<rect x="' + fixed(left + index * step + gap / 2) + '" y="' + fixed(y1) + '" width="' + fixed(step - gap) + '" height="' + fixed(barHeight) + '" rx="2" fill="' + row.color + '">' +
+            '<title>' + esc(days[index] + ", " + row.name + ": " + amount(value)) + '</title></rect>';
+        });
+      }
+      var prior = chart.prior
+        ? '<polyline class="u-prior" points="' + chart.prior.map(function (value, index) {
+          return fixed(left + index * step + step / 2) + "," + fixed(y(Number(value) || 0));
+        }).join(" ") + '"/>'
+        : '';
+      var todayX = fixed(left + elapsed * step);
+      var today = elapsed > 0 && elapsed < count
+        ? '<line class="u-today" x1="' + todayX + '" x2="' + todayX + '" y1="' + top + '" y2="' + (height - bottom) + '"/>'
+        : '';
+      var ticks = billedUsageTickIndexes(count).map(function (index) {
+        var anchor = index === 0 && count > 1 ? "start" : index === count - 1 && count > 1 ? "end" : "middle";
+        var x = anchor === "start" ? left + gap / 2 : anchor === "end" ? width - right - gap / 2 : left + index * step + step / 2;
+        return '<text x="' + fixed(x) + '" y="' + (height - 6) + '" text-anchor="' + anchor + '">' + esc(days[index]) + '</text>';
+      }).join("");
+      return '<svg class="' + className + '" viewBox="0 0 ' + width + ' ' + height + '" role="img" aria-label="' + esc(title) + '">' +
+        grid + bars + prior + today + ticks + '</svg>';
+    }
+    var legend = (report.agent ? [] : series).map(function (row) {
+      return '<span><i style="background: ' + row.color + '"></i>' + esc(row.name) + '</span>';
+    }).join("") + (chart.prior ? '<span><i class="dash"></i>Same days last period</span>' : '');
+    return '<div class="u-chart">' + drawing("u-chart-wide", 640, 180, 46) + drawing("u-chart-narrow", 360, 220, 40) +
+      (legend ? '<div class="u-legend">' + legend + '</div>' : '') + '</div>';
+  }
+
+  function billedUsageListHtml(rows, kind, mode) {
+    return '<ul class="plan-use">' + rows.map(function (row) {
+      var width = Math.max(0, Math.min(100, Number(row.share) || 0));
+      return '<li class="plan-use-row">' + billedUsageAvatarHtml(kind, row) + '<span class="plan-use-name">' + esc(row.name) + '</span>' +
+        '<span class="plan-use-track" aria-hidden="true"><span style="width: ' + width + '%"></span></span><span class="plan-use-amount">' + mode.listAmount(row) + '</span></li>';
+    }).join("") + '</ul>';
+  }
+
+  function billedUsagePanelsHtml(report, mode) {
+    var panels = [
+      ["Top models", report.models, "model"],
+      [report.agent ? "Who uses " + esc(report.agent.name) : "Top people", report.people, "person"]
+    ].filter(function (panel) { return panel[1].length; }).map(function (panel) {
+      return '<section class="u-panel"><h2 class="section-title">' + panel[0] + '</h2>' + billedUsageListHtml(panel[1], panel[2], mode) + '</section>';
+    });
+    return panels.length ? '<div class="u-two">' + panels.join("") + '</div>' : '';
+  }
+
+  function billedUsageSectionHtml(title, hint, body) {
+    return '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">' + title + '</h2>' +
+      (hint ? '<p class="hint">' + hint + '</p>' : '') + '</div></div>' + body + '</section>';
+  }
+
+  function billedUsageAgentsHtml(report, mode) {
+    if (!report.agents || !report.agents.length) return '';
+    var columns = mode.agentColumns;
+    var cell = function (column, html) { return '<td' + (column.number ? ' class="number"' : '') + '>' + html + '</td>'; };
+    var table = '<div class="usage-table-wrap"><table class="usage-table"><thead><tr>' +
+      columns.map(function (column) { return '<th' + (column.number ? ' class="number"' : '') + '>' + column.head + '</th>'; }).join("") +
+      '</tr></thead><tbody>' + report.agents.map(function (row) {
+        return '<tr>' + columns.map(function (column) { return cell(column, column.cell(row)); }).join("") + '</tr>';
+      }).join("") + '</tbody></table></div>';
+    return billedUsageSectionHtml("Agents", mode.agentsHint, table);
+  }
+
+  function billedUsageWhen(time) {
+    return new Date(time).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  }
+
+  function billedUsageDuration(ms) {
+    var seconds = Math.max(0, Math.round(ms / 1000));
+    if (seconds < 60) return seconds + " s";
+    var minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return minutes + " min" + (seconds % 60 ? " " + (seconds % 60) + " s" : "");
+    return Math.floor(minutes / 60) + " h" + (minutes % 60 ? " " + (minutes % 60) + " min" : "");
+  }
+
+  function billedUsageAgentName(operation) {
+    var report = state.usageReport;
+    var choice = report && report.agentChoices.find(function (agent) { return agent.id === operation.agentId; });
+    var agent = operation.agentId ? agentById(operation.agentId) : null;
+    return operation.agentLabel || (choice && choice.name) || (agent && agent.name) || (operation.agentId === "agent_chickpea" ? "Chickpea" : "—");
+  }
+
+  // The task fee shows only here, inside an opened activity's usage.
+  function billedUsageBreakdownHtml(billed) {
+    if (!billedUsageLeftOver(billed)) return 'Credited back because it stopped on an error.';
+    var fee = billed.fee && /[1-9]/.test(billed.fee) ? billed.fee : "";
+    var parts = esc(billed.model) + " for the model" + (billed.task ? " and " + esc(billed.fee) + " for the task" : fee ? " and " + esc(fee) + " for the reply" : "");
+    return '<b>' + esc(billed.amount) + '</b> <small>' + parts + '</small>';
+  }
+
+  function billedUsageDetailHtml(detail, where, mode, detailId) {
+    var operation = detail.operation;
+    var hosted = detail.hosted || {};
+    var field = function (label, html) { return '<div><span class="field-label">' + label + '</span><span>' + html + '</span></div>'; };
+    var requester = operation.operationKind === "routine_run" ? "" : hosted.requester;
+    var fields = [field("Asked by", esc(requester ? requester + " in " + where : where))];
+    if (mode === BILLED_USAGE_MODES.usage && hosted.billed) fields.push(field("Usage", billedUsageBreakdownHtml(hosted.billed)));
+    fields.push(field("Model", esc(hosted.modelName || "—")));
+    var total = usageOperationTokens(detail, "totalTokens");
+    if (total != null) {
+      var count = function (name) { var value = usageOperationTokens(detail, name); return usageInt(value == null ? 0 : value); };
+      var cached = usageOperationCachedTokens(detail);
+      fields.push(field("Tokens", '<b>' + usageInt(total) + '</b> <small>' + count("inputTokens") + ' input · ' + usageInt(cached == null ? 0 : cached) + ' cached · ' + count("outputTokens") + ' output</small>'));
+    }
+    var took = operation.finishedAt != null ? ", took " + billedUsageDuration(operation.finishedAt - operation.startedAt) : "";
+    fields.push(field("When", esc(billedUsageWhen(operation.startedAt) + took)));
+    var slack = typeof operation.slackMessagePath === "string" && operation.slackMessagePath.indexOf("/admin/api/usage/operations/") === 0
+      ? '<div class="u-detail-acts"><a class="btn btn-ghost btn-sm" href="' + esc(operation.slackMessagePath) + '" target="_blank" rel="noopener noreferrer">Open in Slack</a></div>'
+      : '';
+    return '<tr class="u-detail" id="' + detailId + '"><td colspan="5"><div class="u-detail-grid">' + fields.join("") + '</div>' + slack + '</td></tr>';
+  }
+
+  function billedUsageActivityHtml(mode) {
+    var retry = '<button type="button" class="btn btn-ghost" data-action="usage-retry">Retry</button>';
+    if (!state.usageOperations) return '<div class="empty"><p class="hint">Loading activity&hellip;</p></div>';
+    var error = state.usageActivityError ? '<p class="field-error">' + esc(state.usageActivityError) + '</p>' : '';
+    var visible = state.usageOperations.filter(function (detail) {
+      return detail && detail.operation && detail.operation.operationKind !== "interaction_classification";
+    });
+    var loadMore = state.usageNextCursor ? '<button type="button" class="btn btn-ghost" data-action="usage-billed-more"' + (state.usageLoadingMore ? ' disabled' : '') + '>' + (state.usageLoadingMore ? 'Loading&hellip;' : 'Load more') + '</button>' : '';
+    if (!visible.length) return '<div class="empty">' + (error ? error + retry : '<p class="hint">' + mode.empty + '</p>') + loadMore + '</div>';
+    var rows = visible.map(function (detail, index) {
+      var operation = detail.operation;
+      var hosted = detail.hosted || {};
+      var open = state.usageOpenRow === operation.operationId;
+      var where = usageWorkLabel(operation);
+      var rowId = "usage-activity-" + index;
+      var toggle = 'data-action="usage-activity-row" data-operation="' + esc(operation.operationId) + '"';
+      return '<tr class="u-row' + (open ? ' is-open' : '') + '" ' + toggle + '><td><button type="button" class="u-row-toggle" id="' + rowId + '" ' + toggle +
+        ' aria-expanded="' + open + '"' + (open ? ' aria-controls="' + rowId + '-detail"' : '') + '><b class="usage-work-label">' + esc(where) + '</b></button>' +
+        '<div class="hint">' + esc(billedUsageWhen(operation.startedAt)) + '</div></td>' +
+        '<td>' + esc(billedUsageAgentName(operation)) + '</td><td class="u-wide-only">' + esc(hosted.requester || "—") + '</td><td class="u-wide-only">' + esc(hosted.modelName || "—") + '</td>' +
+        '<td class="number">' + mode.activityAmount(detail) + '<span class="u-caret" aria-hidden="true">' + (open ? '&#9662;' : '&#9656;') + '</span></td></tr>' +
+        (open ? billedUsageDetailHtml(detail, where, mode, rowId + "-detail") : '');
+    }).join("");
+    return '<div class="usage-table-wrap"><table class="usage-table u-acts"><thead><tr><th>Where</th><th>Agent</th><th class="u-wide-only">Person</th><th class="u-wide-only">Model</th><th class="number">' + mode.activityHead + '</th></tr></thead><tbody>' +
+      rows + '</tbody></table></div>' + error + loadMore;
+  }
+
+  function billedUsageEmpty(report) {
+    return !report.total.value && !report.models.length && !report.people.length && !(report.agents || []).length &&
+      !(report.tasks && /[1-9]/.test(report.tasks.used));
+  }
+
+  // "Other" gathers usage the report can't attribute, so the note explains it
+  // only when such a row carries an amount.
+  function billedUsageHasOther(report) {
+    return [report.models, report.people, report.agents || []].some(function (rows) {
+      return rows.some(function (row) { return row.key === null && row.amount.value > 0; });
+    });
+  }
+
+  function billedUsageMainHtml() {
+    var report = state.usageReport;
+    var mode = report ? billedUsageMode(report) : null;
+    var head = '<div class="usage-head"><div class="usage-head-copy"><span class="section-eyebrow">Reporting</span><h1 class="page-title">Usage</h1>' +
+      (mode ? '<p class="hint">' + mode.hint + '</p>' : '') + '</div></div>' + billedUsageControlsHtml(report);
+    if (state.usageError) return head + '<div class="empty"><p class="field-error">' + esc(state.usageError) + '</p><button type="button" class="btn btn-ghost" data-action="usage-retry">Retry</button></div>';
+    if (!report) return head + '<div class="empty"><p class="hint">Loading usage&hellip;</p></div>';
+    var strip = billedUsageStripHtml(report);
+    if (billedUsageEmpty(report)) return head + strip + '<div class="empty"><p class="hint">' + mode.empty + '</p></div>';
+    var chartTitle = mode.chartTitle(report.agent);
+    var note = mode.note
+      ? '<p class="usage-data-note">Usage is what your plan counts. Work that stopped on an error was credited back, so it isn&rsquo;t included.' +
+        (billedUsageHasOther(report) ? ' Other is usage from private routines and from activity Chickpea no longer has details for.' : '') + '</p>'
+      : '';
+    return head + strip + '<div class="usage-grid u-tiles">' + mode.tiles(report) + '</div>' +
+      billedUsageSectionHtml(esc(chartTitle), "", billedUsageChartHtml(report, chartTitle)) +
+      billedUsagePanelsHtml(report, mode) +
+      (report.agent ? '' : billedUsageAgentsHtml(report, mode)) +
+      billedUsageSectionHtml("Activity", "Select a row to see its details.", billedUsageActivityHtml(mode)) +
+      note;
   }
 
   // ---- Plan ------------------------------------------------------------------
@@ -2978,7 +3547,8 @@
       }).join("") + '</ul>' + more
       : '<p class="plan-use-empty">' + (period ? 'No usage yet this period.' : 'No usage yet.') + '</p>';
     return '<section class="plan-section" aria-labelledby="plan-use-heading"><div class="plan-section-head"><div><h2 class="section-title" id="plan-use-heading">' +
-      (period ? 'Usage this period' : 'Usage') + '</h2>' + (period ? '<p class="hint">Since ' + esc(period.start) + '.</p>' : '') + '</div>' + toggle + '</div>' + body + '</section>';
+      (period ? 'Usage this period' : 'Usage') + '</h2>' + (period ? '<p class="hint">Since ' + esc(period.start) + '.</p>' : '') + '</div>' + toggle + '</div>' + body +
+      (USAGE_ADMIN_UI ? '<button type="button" class="btn btn-ghost btn-sm plan-use-more" data-action="open-usage">See all usage</button>' : '') + '</section>';
   }
 
   // ---- Plan: how usage works ----
@@ -15370,6 +15940,16 @@
       loadUsageOperations(true);
     }
     if (action === "usage-open-settings") { openSettings("providers"); }
+    if (action === "usage-billed-more") { loadBilledUsageOperations(false); }
+    if (action === "usage-agent-row") {
+      selectBilledUsageAgent(target.getAttribute("data-agent") || "");
+      window.scrollTo(0, 0);
+    }
+    if (action === "usage-activity-row") {
+      var activityOperation = target.getAttribute("data-operation") || "";
+      state.usageOpenRow = state.usageOpenRow === activityOperation ? "" : activityOperation;
+      renderPreservingPagePosition();
+    }
     if (action === "audit-tab-scheduled" && state.auditDomain !== "scheduled-work") { openScheduledWork(""); }
     if (action === "scheduled-retry") { loadScheduledRoutines(); }
     if (action === "scheduled-back-list") {
@@ -16239,21 +16819,21 @@
       var usagePeriod = String(target.value || "last_30_days");
       var allowedUsagePeriods = ["last_7_days", "last_30_days", "last_90_days", "this_month", "last_month", "this_week", "last_week", "custom"];
       state.usagePeriod = allowedUsagePeriods.includes(usagePeriod) ? usagePeriod : "last_30_days";
-      if (state.usagePeriod === "custom") {
-        var appliedCustom = usageCustomRange(state.usageCustomFrom, state.usageCustomTo);
-        if (appliedCustom.error) {
-          var customDefaults = usageDefaultCustomDates();
-          state.usageCustomFrom = customDefaults.from;
-          state.usageCustomTo = customDefaults.to;
-        }
-        state.usageCustomDraftFrom = state.usageCustomFrom;
-        state.usageCustomDraftTo = state.usageCustomTo;
-      }
+      if (state.usagePeriod === "custom") prepareUsageCustomDates();
       state.usageCustomError = "";
       state.usageOperationFilter = null;
       syncUsageQueryUrl();
       loadUsage(true);
     }
+    if (action === "usage-billed-period") {
+      var billedPeriod = String(target.value || "");
+      state.usagePeriod = BILLED_USAGE_PERIODS.some(function (choice) { return choice[0] === billedPeriod; }) ? billedPeriod : "last_30_days";
+      if (state.usagePeriod === "custom") prepareUsageCustomDates();
+      state.usageCustomError = "";
+      syncUsageQueryUrl();
+      loadUsage(true);
+    }
+    if (action === "usage-agent") { selectBilledUsageAgent(String(target.value || "")); }
     if (action === "usage-custom-from") {
       state.usageCustomDraftFrom = String(target.value || "");
       state.usageCustomError = "";
