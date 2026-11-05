@@ -12,6 +12,7 @@ import {
   type BillingSummary,
   type CheckoutRequest,
   type PlatformBillingPort,
+  type SavedCardResult,
 } from '../src/config/platform-billing.ts';
 import { configurePlatformFunding, resetPlatformFundingForTests } from '../src/config/platform-funding.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
@@ -23,7 +24,8 @@ import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { NO_RUN_FEES } from './helpers/platform-funding.ts';
 import {
-  NO_PLAN, OFFERS, OWN_KEY_NO_PLAN, PERIOD, PLAN_NO_PERIOD, STARTER_PLAN, TEAM_DOWNGRADING, TEAM_ENDING, TEAM_PLAN, TRIAL_GRANT, usd,
+  NO_PLAN, OFFERS, OWN_KEY_NO_PLAN, PERIOD, PLAN_NO_PERIOD, STARTER_AT_LIMIT, STARTER_PLAN, STARTER_TOP_UP, TEAM_DOWNGRADING, TEAM_ENDING, TEAM_PLAN,
+  TOP_UP_ON, TRIAL_GRANT, usd,
 } from './helpers/billing-summaries.ts';
 import { formatTasks } from '../src/admin/billing-tasks.ts';
 
@@ -61,11 +63,14 @@ const people = {
   listMemberships: async () => [{ id: 'membership_maya', userId: 'user_maya' }],
   getUser: async (id: string) => (id === 'user_maya' ? { id, displayName: 'Maya Chen' } : undefined),
   recordAuthAudit: async () => undefined,
+  listExternalIdentities: async () => [],
 } as unknown as IdentityStore;
 
 function admin(t: TestContext, options: {
   role?: AuthPrincipal['role']; machine?: boolean; env?: Record<string, unknown>; port?: PlatformBillingPort;
   anthropicKeySaved?: boolean; openaiKeySaved?: boolean; config?: SqliteConfigStore;
+  /** Slack identities bound to memberships, as `[membershipId, slackUserId]`. */
+  slackUsers?: readonly (readonly [string, string])[];
 }) {
   configurePlatformBilling(options.port);
   const config = options.config ?? new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
@@ -74,7 +79,10 @@ function admin(t: TestContext, options: {
   t.after(() => { configurePlatformBilling(undefined); config.close(); settings.close(); usage.close(); });
   const app = createAdminRoutes({
     store: config, settings, usage,
-    ...testAdminAuthority(TOKEN, undefined, people, principal(options.role ?? 'owner', options.machine)),
+    ...testAdminAuthority(TOKEN, undefined, options.slackUsers ? {
+      ...people,
+      listExternalIdentities: async () => options.slackUsers!.map(([membershipId, slackUserId]) => ({ membershipId, slackUserId, slackTeamId: 'TBILLING' })),
+    } as unknown as IdentityStore : people, principal(options.role ?? 'owner', options.machine)),
   });
   const keyring = options.anthropicKeySaved || options.openaiKeySaved ? useDeploymentKeyring(t) : undefined;
   const save = (provider: 'anthropic' | 'openai', apiKey: string) => rotateInstallationModelCredential(
@@ -520,4 +528,175 @@ test('an Owner\'s personal token is not an Owner\'s own session: no use, no purc
   assert.equal((await request('/admin/api/billing/funding', post({ funding: 'platform' }))).status, 403);
   assert.equal((await request('/admin/api/billing/funding', post({ funding: 'own_key' }))).status, 403);
   assert.deepEqual(calls.filter(([name]) => name !== 'summary'), []);
+});
+
+/** A host with auto top-up and purchases on the saved card, recording what each is asked. */
+function savedCardPort(summary: BillingSummary, result: SavedCardResult = { kind: 'done' }) {
+  return fakePort(summary, {
+    async updateAutoTopUp(installationId, update) { fakeCalls.push(['updateAutoTopUp', installationId, update]); },
+    async previewPlanChange(installationId, planKey) {
+      fakeCalls.push(['previewPlanChange', installationId, planKey]);
+      return planKey === 'solo' ? { kind: 'downgrade', at: PERIOD.end } : { kind: 'upgrade', todayCents: 1_613, addedMicros: usd(19.35) };
+    },
+    async changePlan(installationId, request) { fakeCalls.push(['changePlan', installationId, request]); return result; },
+    async buyExtraUsage(installationId, request) { fakeCalls.push(['buyExtraUsage', installationId, request]); return result; },
+  });
+}
+const fakeCalls: unknown[][] = [];
+const OWNER = { membershipId: 'membership_owner', slackUserId: null };
+
+test('an Owner reads auto top-up formatted, with the next plan and what this month covered; everyone else reads whether it is on and at its limit', async (t) => {
+  const port = savedCardPort(STARTER_AT_LIMIT).port;
+  const owner = await (await admin(t, { port })('/admin/api/billing')).json() as Record<string, unknown>;
+  assert.deepEqual(owner.topUp, {
+    enabled: true, ending: false,
+    pack: { rule: 'plan', key: 'extra_usage_50', price: '$50', cents: 5_000 },
+    limit: { rule: 'plan', amount: '$50', cents: 5_000 },
+    used: '$50', percent: 100, resets: 'Nov 7', limitReached: true, pause: null,
+    card: 'Visa ending 4242',
+    plan: { price: '$50', cents: 5_000 },
+    packs: [
+      { key: 'extra_usage_25', price: '$25', cents: 2_500, tasks: 'about 50' },
+      { key: 'extra_usage_50', price: '$50', cents: 5_000, tasks: 'about 100' },
+      { key: 'extra_usage_100', price: '$100', cents: 10_000, tasks: 'about 200' },
+    ],
+    upgrade: { key: 'plus', price: '$100', included: '$120', covered: '$110' },
+    consentVersion: '2026-11-04',
+  });
+  assert.deepEqual(owner.inApp, { planChange: true, extraUsage: true });
+  assert.deepEqual(owner.autoTopUp, { kind: 'plan', on: true, limitReached: true });
+  const member = await (await admin(t, { port, role: 'member' })('/admin/api/billing')).json() as Record<string, unknown>;
+  assert.deepEqual(member.autoTopUp, { kind: 'plan', on: true, limitReached: true });
+  assert.equal(member.topUp, undefined);
+  assert.doesNotMatch(JSON.stringify(member), /4242|Visa|extra_usage_50"|consent/, 'no card or settings reach anyone but an Owner');
+
+  const status = async (summary: BillingSummary) => (await (await admin(t, { port: fakePort(summary).port, role: 'member' })('/admin/api/billing')).json() as Record<string, unknown>).autoTopUp;
+  assert.equal(await status(TEAM_PLAN), null, 'a host with no auto top-up');
+  assert.deepEqual(await status({ ...NO_PLAN, trial: TRIAL_GRANT, autoTopUp: null }), { kind: 'no_plan' });
+  assert.deepEqual(await status({ ...STARTER_TOP_UP, pendingChange: { kind: 'ends', at: PERIOD.end } }), { kind: 'plan', on: false, limitReached: false });
+});
+
+test('an Owner\'s pause reads its reason; a confirm page that is not HTTPS, or a card number that is not four digits, does not reach the page', async (t) => {
+  const pauseOf = async (autoTopUp: NonNullable<BillingSummary['autoTopUp']>) =>
+    (await (await admin(t, { port: fakePort({ ...STARTER_TOP_UP, autoTopUp }).port })('/admin/api/billing')).json() as { topUp: Record<string, unknown> }).topUp;
+  assert.deepEqual((await pauseOf({ ...TOP_UP_ON, pause: { kind: 'declined', at: new Date('2026-10-28T20:00:00Z') } })).pause, { kind: 'declined', on: 'Oct 28' });
+  assert.deepEqual((await pauseOf({ ...TOP_UP_ON, pause: { kind: 'needs_confirmation', amountCents: 5_000, url: 'http://invoice.example/i' } })).pause,
+    { kind: 'needs_confirmation', amount: '$50', url: null });
+  assert.deepEqual((await pauseOf({ ...TOP_UP_ON, pause: { kind: 'past_due' } })).pause, { kind: 'past_due' });
+  assert.equal((await pauseOf({ ...TOP_UP_ON, card: { brand: 'visa', last4: '<b>1' } })).card, null);
+  assert.equal((await pauseOf({ ...TOP_UP_ON, card: { brand: 'cartes_bancaires', last4: '0005' } })).card, 'Card ending 0005');
+});
+
+test('an Owner turns auto top-up on, raises it with the current authorization, lowers it with none, and turns it off', async (t) => {
+  fakeCalls.length = 0;
+  const off: BillingSummary = { ...STARTER_TOP_UP, autoTopUp: { ...TOP_UP_ON, enabled: false, explicitlyOff: true } };
+  const request = (summary: BillingSummary) => admin(t, { port: savedCardPort(summary).port });
+  const write = async (summary: BillingSummary, body: unknown) => (await request(summary)('/admin/api/billing/auto-top-up', post(body))).status;
+
+  assert.equal(await write(off, { change: 'on', pack: 'plan', limit: 'plan' }), 409, 'turning it on needs the authorization');
+  assert.equal(await write(off, { change: 'on', pack: 'plan', limit: 'plan', consentVersion: '2026-01-01' }), 409, 'an outdated one is refused');
+  assert.equal(await write(off, { change: 'on', pack: 'plan', limit: 'plan', consentVersion: '2026-11-04' }), 200);
+  assert.equal(await write(STARTER_TOP_UP, { change: 'on', pack: 'extra_usage_50', limit: 10_000 }), 409, 'a higher limit needs it');
+  assert.equal(await write(STARTER_TOP_UP, { change: 'on', pack: 'extra_usage_25', limit: 'plan' }), 200, 'a smaller pack needs none');
+  assert.equal(await write(STARTER_TOP_UP, { change: 'off' }), 200);
+  assert.equal(await write(STARTER_TOP_UP, { change: 'retry' }), 200);
+  assert.deepEqual(fakeCalls.map((call) => call.slice(0, 2).concat([(call[2] as Record<string, unknown>)])), [
+    ['updateAutoTopUp', INSTALLATION, { change: { kind: 'on', pack: { rule: 'plan' }, limit: { rule: 'plan' } }, by: OWNER, consentVersion: '2026-11-04' }],
+    ['updateAutoTopUp', INSTALLATION, { change: { kind: 'on', pack: { rule: 'fixed', key: 'extra_usage_25' }, limit: { rule: 'plan' } }, by: OWNER, consentVersion: null }],
+    ['updateAutoTopUp', INSTALLATION, { change: { kind: 'off' }, by: OWNER, consentVersion: null }],
+    ['updateAutoTopUp', INSTALLATION, { change: { kind: 'retry' }, by: OWNER, consentVersion: null }],
+  ]);
+});
+
+test('an auto top-up change that could never fire, or that the host cannot read, is refused before the port is asked', async (t) => {
+  fakeCalls.length = 0;
+  const write = async (summary: BillingSummary, body: unknown) =>
+    (await admin(t, { port: savedCardPort(summary).port })('/admin/api/billing/auto-top-up', post(body))).status;
+  const fixedPack: BillingSummary = { ...STARTER_TOP_UP, autoTopUp: { ...TOP_UP_ON, pack: { rule: 'fixed', key: 'extra_usage_25' } } };
+  for (const [summary, body] of [
+    [STARTER_TOP_UP, { change: 'on', pack: 'extra_usage_100', limit: 'plan', consentVersion: '2026-11-04' }],
+    [STARTER_TOP_UP, { change: 'on', pack: 'extra_usage_75', limit: 'plan', consentVersion: '2026-11-04' }],
+    [STARTER_TOP_UP, { change: 'on', pack: 'plan', limit: 99, consentVersion: '2026-11-04' }],
+    [STARTER_TOP_UP, { change: 'on', pack: 'plan', limit: 1_000_001, consentVersion: '2026-11-04' }],
+    [STARTER_TOP_UP, { change: 'on', pack: 'plan', limit: 50.5, consentVersion: '2026-11-04' }],
+    [STARTER_TOP_UP, { change: 'pause' }],
+    [fixedPack, { change: 'on', pack: 'plan', limit: 'plan', consentVersion: '2026-11-04' }],
+  ] as const) {
+    assert.equal(await write(summary, body), 400, JSON.stringify(body));
+  }
+  assert.equal(await write({ ...STARTER_TOP_UP, pendingChange: { kind: 'ends', at: PERIOD.end } }, { change: 'on', pack: 'plan', limit: 'plan', consentVersion: '2026-11-04' }), 409);
+  assert.equal(await write({ ...NO_PLAN, autoTopUp: null }, { change: 'off' }), 409);
+  assert.deepEqual(fakeCalls, []);
+  assert.equal((await admin(t, { port: fakePort(STARTER_TOP_UP).port })('/admin/api/billing/auto-top-up', post({ change: 'off' }))).status, 404,
+    'a host with no auto top-up has no route for it');
+});
+
+test('an Owner previews and confirms a plan change on the saved card; an upgrade that raises a "same as your plan" limit needs the authorization', async (t) => {
+  fakeCalls.length = 0;
+  const request = admin(t, { port: savedCardPort(STARTER_TOP_UP).port });
+  const preview = await request('/admin/api/billing/plan-change/preview', post({ key: 'plus' }));
+  assert.deepEqual(await preview.json(), {
+    kind: 'upgrade', key: 'plus', price: '$100', included: '$120', today: '$16.13', added: '$19.35', from: 'Nov 7',
+    limitRaise: '$100', card: 'Visa ending 4242', consentVersion: '2026-11-04',
+  });
+  assert.deepEqual(await (await request('/admin/api/billing/plan-change/preview', post({ key: 'solo' }))).json(),
+    { kind: 'downgrade', key: 'solo', price: '$25', at: 'Nov 7' });
+  assert.equal((await request('/admin/api/billing/plan-change', post({ key: 'plus' }))).status, 409);
+  const changed = await request('/admin/api/billing/plan-change', post({ key: 'plus', consentVersion: '2026-11-04' }));
+  assert.equal(changed.status, 200);
+  assert.equal(((await changed.json()) as { billing: { manage: boolean } }).billing.manage, true, 'answers the fresh page');
+  assert.equal((await request('/admin/api/billing/plan-change', post({ key: 'solo' }))).status, 200, 'a downgrade raises nothing');
+  assert.deepEqual(fakeCalls.filter(([name]) => name === 'changePlan').map((call) => call[2]), [
+    { planKey: 'plus', by: OWNER, consentVersion: '2026-11-04' },
+    { planKey: 'solo', by: OWNER, consentVersion: null },
+  ]);
+  for (const key of ['starter', 'retired_pro']) {
+    assert.equal((await request('/admin/api/billing/plan-change/preview', post({ key }))).status, 400, `${key}: not another plan on sale`);
+  }
+  const ownKey = admin(t, { port: savedCardPort({ ...STARTER_TOP_UP, funding: 'own_key', plan: { key: 'plus', name: 'Plus', priceCents: 10_000 } }).port });
+  assert.equal((await ownKey('/admin/api/billing/plan-change/preview', post({ key: 'starter' }))).status, 400, 'an own key cannot move below its lowest plan');
+  const fixed = admin(t, { port: savedCardPort({ ...STARTER_TOP_UP, autoTopUp: { ...TOP_UP_ON, limit: { rule: 'fixed', cents: 20_000 } } }).port });
+  assert.equal(((await (await fixed('/admin/api/billing/plan-change/preview', post({ key: 'plus' }))).json()) as { limitRaise: unknown }).limitRaise, null);
+  assert.equal((await fixed('/admin/api/billing/plan-change', post({ key: 'plus' }))).status, 200, 'a fixed limit is not raised by an upgrade');
+});
+
+test('extra usage on the saved card answers the fresh page, or the Stripe page that finishes it, and only an HTTPS one', async (t) => {
+  fakeCalls.length = 0;
+  const done = await admin(t, { port: savedCardPort(STARTER_TOP_UP).port })('/admin/api/billing/extra-usage', post({ key: 'extra_usage_50' }));
+  assert.equal(done.status, 200);
+  assert.ok('billing' in (await done.json() as object));
+  assert.deepEqual(fakeCalls.filter(([name]) => name === 'buyExtraUsage'), [['buyExtraUsage', INSTALLATION, { key: 'extra_usage_50', by: OWNER }]]);
+  const redirected = await admin(t, { port: savedCardPort(STARTER_TOP_UP, { kind: 'redirect', url: 'https://checkout.stripe.com/c/pay/cs_saved' }).port })(
+    '/admin/api/billing/extra-usage', post({ key: 'extra_usage_50' }));
+  assert.deepEqual(await redirected.json(), { url: 'https://checkout.stripe.com/c/pay/cs_saved' });
+  const insecure = await admin(t, { port: savedCardPort(STARTER_TOP_UP, { kind: 'redirect', url: 'http://checkout.example/pay' }).port })(
+    '/admin/api/billing/extra-usage', post({ key: 'extra_usage_50' }));
+  assert.equal(insecure.status, 503);
+  assert.equal((await admin(t, { port: fakePort(STARTER_TOP_UP).port })('/admin/api/billing/extra-usage', post({ key: 'extra_usage_50' }))).status, 404);
+  const refused = savedCardPort(STARTER_TOP_UP);
+  refused.port.buyExtraUsage = async () => { throw new BillingRefusal('card_required'); };
+  assert.deepEqual(await (await admin(t, { port: refused.port })('/admin/api/billing/extra-usage', post({ key: 'extra_usage_50' }))).json(), { error: 'card_required' });
+});
+
+test('only an Owner\'s own session changes auto top-up, the plan, or buys on the saved card', async (t) => {
+  fakeCalls.length = 0;
+  for (const [role, machine] of [['admin', false], ['member', false], ['owner', true]] as const) {
+    const request = admin(t, { role, machine, port: savedCardPort(STARTER_TOP_UP).port });
+    for (const [path, body] of [
+      ['/admin/api/billing/auto-top-up', { change: 'off' }],
+      ['/admin/api/billing/plan-change/preview', { key: 'plus' }],
+      ['/admin/api/billing/plan-change', { key: 'plus', consentVersion: '2026-11-04' }],
+      ['/admin/api/billing/extra-usage', { key: 'extra_usage_50' }],
+    ] as const) {
+      assert.equal((await request(path, post(body))).status, 403, `${role}${machine ? ' token' : ''} ${path}`);
+    }
+  }
+  assert.deepEqual(fakeCalls, []);
+});
+
+test('the host learns which Owner acted, with their Slack user, for its consent record and the other Owners\' note', async (t) => {
+  fakeCalls.length = 0;
+  const request = admin(t, { port: savedCardPort(STARTER_TOP_UP).port, slackUsers: [['membership_maya', 'U_MAYA'], ['membership_owner', 'U_OWNER']] });
+  assert.equal((await request('/admin/api/billing/auto-top-up', post({ change: 'off' }))).status, 200);
+  assert.deepEqual((fakeCalls[0]![2] as { by: unknown }).by, { membershipId: 'membership_owner', slackUserId: 'U_OWNER' });
 });
