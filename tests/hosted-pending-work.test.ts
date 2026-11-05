@@ -213,6 +213,7 @@ test('cancelling an installation\'s pending work parks its turns, skips its occu
   const usage = await a.stores.usage.getOperation(routinesA.running.id);
   assert.equal(usage?.operation.status, 'failed');
   assert.equal(usage?.measurements[0]?.usageUnknownReason, 'provider_request_unknown');
+  assert.equal(usage?.measurements[0]?.billingRunId, 'sub_routine', 'under the run key its attempt was charged to');
   assert.equal(reports.info.length, 1);
   assert.match(reports.info[0]!, /"usage":"recorded","work":"not_linked"/);
   assert.deepEqual(reports.errors, []);

@@ -461,6 +461,7 @@ test('coding worker usage is recorded once on the turn, under the coding model',
     runExecutionId: 'execution_coding_1',
     store,
     processEnv: { CHICKPEA_INSTALLATION_ID: 'installation_usage' },
+    billingRunId: () => 'sub_ik_coding',
   };
   try {
     const recorder = new InteractiveUsageRecorder({ ...options, now: () => 4_000_000 });
@@ -492,6 +493,7 @@ test('coding worker usage is recorded once on the turn, under the coding model',
       returnedModel: row.returnedModel,
       totalTokens: row.totalTokens,
       credentialRefId: row.credentialRefId,
+      billingRunId: row.billingRunId,
     })).sort((a, b) => a.executionId.localeCompare(b.executionId));
     assert.deepEqual(rows, [
       {
@@ -502,6 +504,7 @@ test('coding worker usage is recorded once on the turn, under the coding model',
         returnedModel: 'gpt-4.1-mini-2025-04-14',
         totalTokens: 180,
         credentialRefId: 'cred_openai_environment',
+        billingRunId: 'sub_ik_coding',
       },
       {
         executionId: 'exec:msg_coding:1:coding:1',
@@ -512,6 +515,8 @@ test('coding worker usage is recorded once on the turn, under the coding model',
         totalTokens: 5_500,
         // The turn's OpenAI credential is not the coding model's.
         credentialRefId: null,
+        // Its requests are charged to the turn's run.
+        billingRunId: 'sub_ik_coding',
       },
       {
         executionId: 'exec:msg_coding:1:coding:2',
@@ -521,6 +526,7 @@ test('coding worker usage is recorded once on the turn, under the coding model',
         returnedModel: null,
         totalTokens: null,
         credentialRefId: 'cred_openai_environment',
+        billingRunId: 'sub_ik_coding',
       },
     ]);
 

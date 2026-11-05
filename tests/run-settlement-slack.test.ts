@@ -43,6 +43,7 @@ import { DURABLE_RECOVERY_FAILURE_TEXT } from '../src/slack/web-client-presenter
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import type { UsageMicros } from '../src/usage/usage-display.ts';
+import { SqliteUsageStore } from '../src/usage/store.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
 import { NO_RUN_FEES } from './helpers/platform-funding.ts';
 
@@ -322,6 +323,26 @@ for (const { name, ending, error, reason } of OURS) {
     }
   });
 }
+
+test('a turn\'s usage measurement keeps the run key its credit-back used, read once the dispatch was accepted', async (t) => {
+  await turnState(t);
+  const port = fundingPort();
+  const usage = new SqliteUsageStore(':memory:');
+  t.after(() => usage.close());
+  // Sent a minute ago, so each turn finishes after it was admitted.
+  const sentAt = Math.floor(Date.now() / 1_000) - 60;
+  const extra = { usageRecordingEnabled: true, usageStore: usage };
+  await settledTurn(t, HOSTED_ENV, 'keyed_failure', failureEnding('provider'), {
+    platformFunded: true, extra, messageTs: `${sentAt}.000100`,
+  });
+  await settledTurn(t, HOSTED_ENV, 'keyed_answer', { kind: 'answer' }, {
+    platformFunded: true, extra, messageTs: `${sentAt + 1}.000100`,
+  });
+
+  const attributions = await usage.listActivityAttributions({ from: sentAt * 1_000, to: Date.now() + 1 });
+  assert.deepEqual(port.creditBacks.map((credit) => credit.run.runId), ['sub_keyed_failure']);
+  assert.deepEqual(attributions.map((attribution) => attribution.billingRunIds), [['sub_keyed_failure'], ['sub_keyed_answer']]);
+});
 
 const NOT_OURS: Array<{ name: string; ending: Ending; error: AgentPromptFailure }> = [
   { name: 'credits_exhausted', ending: failureEnding('credits-exhausted'), error: new AgentPromptFailure('credits-exhausted') },
