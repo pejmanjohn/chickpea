@@ -17,6 +17,7 @@ import { isProviderKeyId, type ProviderKeyId } from '../config/provider-keys.ts'
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { formatPriceCents, formatUsageDollars, usagePercent, type UsageMicros } from '../usage/usage-display.ts';
 import { invalidRequest, noStore, readJson } from './api-support.ts';
+import { balance, type BillingBalance } from './billing-balance.ts';
 import { formatTasks } from './billing-tasks.ts';
 
 export const PLAN_PATH = '/admin/plan';
@@ -87,7 +88,7 @@ interface BillingStatus {
   trial: { remaining: string; granted: string; used: string; percent: number; until: string } | null;
   ownKeyWithoutPlan: { minimumPrice: string; minimumTasks: string | null } | null;
   /** What the workspace can spend now, and the tasks it covers; null for an own key without a plan. `tasksLeft` is null when a task draws nothing. */
-  balance: { left: string; tasksLeft: string | null; exhausted: boolean } | null;
+  balance: BillingBalance | null;
   /** The flat usage a task draws, "30¢". */
   taskFee: string;
 }
@@ -265,23 +266,6 @@ function billingStatus(summary: BillingSummary, minimum: PlanOffer): BillingStat
     balance: funding === 'own_key' && summary.plan === null ? null : balance(summary, planOffer),
     taskFee: formatFee(offers.taskFeeMicros),
   };
-}
-
-/**
- * What the workspace can spend now, as the host counts it: what is left of
- * the plan's usage, what carried over, extra usage a plan unfreezes, and any
- * trial usage, less what the workspace owes. A plan with no meter yet counts
- * its whole usage.
- */
-function balance(summary: BillingSummary, planOffer: PlanOffer | null | undefined): NonNullable<BillingStatus['balance']> {
-  const { planUsage, rollover, extraUsage, trial } = summary;
-  const plan = !summary.plan ? 0
-    : planUsage ? Math.max(0, planUsage.includedMicros - planUsage.usedMicros)
-    : planOffer?.includedMicros ?? 0;
-  const spendable = plan + (rollover?.remainingMicros ?? 0) + (extraUsage && !extraUsage.frozen ? extraUsage.remainingMicros : 0) +
-    (trial?.remainingMicros ?? 0) - summary.debtMicros;
-  const left = Math.max(0, spendable) as UsageMicros;
-  return { left: formatUsageDollars(left, 'down'), tasksLeft: formatTasks(left, summary.funding, summary.offers), exhausted: left === 0 };
 }
 
 /** The bonus every plan includes over its price, in whole percent; the smallest, so no plan promises more than it gives. */

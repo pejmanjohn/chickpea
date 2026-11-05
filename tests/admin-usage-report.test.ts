@@ -1,0 +1,243 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+
+import {
+  buildUsageReport,
+  reportRanges,
+  type UsageReport,
+  type UsageReportNames,
+  type UsageReportRange,
+} from '../src/admin/usage-report.ts';
+import type { BilledUsageRow, BillingSummary } from '../src/config/platform-billing.ts';
+import type { UsageActivityAttribution } from '../src/usage/types.ts';
+import { NO_PLAN, OWN_KEY_NO_PLAN, PERIOD, TEAM_PLAN, usd } from './helpers/billing-summaries.ts';
+
+/** Oct 20, 12:00 UTC: day 14 of the Team plan's period, Oct 7 17:00 to Nov 7 17:00. */
+const NOW = Date.UTC(2026, 9, 20, 12);
+const OWN_KEY_TEAM: BillingSummary = { ...TEAM_PLAN, funding: 'own_key' };
+
+const NAMES: UsageReportNames = {
+  agents: new Map([['agent_a', 'Atlas'], ['agent_b', 'Birch'], ['agent_c', 'Cedar'], ['agent_d', 'Dune'], ['agent_e', 'Elm']]),
+  people: new Map([['membership_maya', 'Maya Chen'], ['membership_li', 'Li Wei']]),
+  model: (model) => model === 'anthropic/claude-sonnet-5' ? 'Claude Sonnet 5' : model.slice(model.indexOf('/') + 1),
+};
+
+function activity(id: string, agentId: string | null, at: string, overrides: Partial<UsageActivityAttribution> = {}): UsageActivityAttribution {
+  return {
+    operationId: `op_${id}`, operationKind: 'interactive_turn', startedAt: Date.parse(at), agentId,
+    requesterMembershipId: 'membership_maya', model: 'anthropic/claude-sonnet-5', estimateMicros: null,
+    billingRunIds: [`sub_${id}`], ...overrides,
+  };
+}
+
+function billedRow(runId: string | null, day: string, model: number, overrides: Partial<BilledUsageRow> = {}): BilledUsageRow {
+  return { runId, day, modelMicros: usd(model), feeMicros: usd(0), task: false, creditedBackMicros: usd(0), ...overrides };
+}
+
+const ACTIVITY = [
+  activity('p1', 'agent_a', '2026-09-08T09:00:00Z', { estimateMicros: usd(0.9) }),
+  activity('a1', 'agent_a', '2026-10-08T09:00:00Z', { estimateMicros: usd(1.2) }),
+  activity('a2', 'agent_a', '2026-10-10T09:00:00Z', { requesterMembershipId: 'membership_li', model: 'openai/gpt-6', estimateMicros: usd(0.8) }),
+  activity('b1', 'agent_b', '2026-10-10T10:00:00Z', { operationKind: 'routine_run', estimateMicros: usd(0.5) }),
+  activity('c1', 'agent_c', '2026-10-11T09:00:00Z', { model: 'anthropic/claude-haiku-5', estimateMicros: usd(0.3) }),
+  activity('d1', 'agent_d', '2026-10-12T09:00:00Z', { model: 'openai/gpt-6-mini', estimateMicros: usd(0.1) }),
+  activity('e1', 'agent_e', '2026-10-12T10:00:00Z', { model: 'openai/gpt-6-nano' }),
+  // An Agent deleted since: it has no name now.
+  activity('gone', 'agent_gone', '2026-10-13T09:00:00Z', { estimateMicros: usd(0.05) }),
+  activity('credited', 'agent_b', '2026-10-15T09:00:00Z', {
+    requesterMembershipId: 'membership_li', model: 'openai/gpt-6', estimateMicros: usd(0.4),
+  }),
+];
+
+const BILLED = {
+  current: [
+    billedRow('sub_a1', '2026-10-08', 2, { feeMicros: usd(0.3), task: true }),
+    billedRow('sub_a1', '2026-10-09', 0.5),
+    billedRow('sub_a2', '2026-10-10', 1),
+    billedRow('sub_b1', '2026-10-10', 0.4, { feeMicros: usd(0.3), task: true }),
+    billedRow('sub_c1', '2026-10-11', 0.6),
+    billedRow('sub_d1', '2026-10-12', 0.2),
+    billedRow('sub_e1', '2026-10-12', 0.1),
+    billedRow('sub_gone', '2026-10-13', 0.05),
+    // A private routine's run, which the store never lists, and a row that names no run.
+    billedRow('sub_private_routine', '2026-10-13', 0.25),
+    billedRow(null, '2026-10-14', 0.15),
+    billedRow('sub_credited', '2026-10-15', 0.8, { feeMicros: usd(0.3), task: true, creditedBackMicros: usd(1.1) }),
+  ],
+  prior: [billedRow('sub_p1', '2026-09-08', 1), billedRow('sub_last_month', '2026-09-25', 0.3)],
+};
+
+function report(options: {
+  summary?: BillingSummary;
+  request?: UsageReportRange;
+  billed?: typeof BILLED | null;
+  attributions?: UsageActivityAttribution[];
+  agentId?: string | null;
+} = {}): UsageReport {
+  const summary = options.summary ?? TEAM_PLAN;
+  return buildUsageReport({
+    summary,
+    ...reportRanges(options.request ?? { period: 'this_billing_period' }, summary, NOW),
+    billed: options.billed === undefined ? BILLED : options.billed,
+    attributions: options.attributions ?? ACTIVITY,
+    agentId: options.agentId ?? null,
+    names: NAMES,
+    now: NOW,
+  });
+}
+
+const sum = (values: number[]) => values.reduce((total, value) => total + value, 0);
+const rows = (list: UsageReport['models'] | null) => list?.map((row) => [row.key, row.name, row.amount.text, row.share]);
+
+/** Every list the page draws adds up to the total it shows. */
+function assertListsAddUp(shown: UsageReport): void {
+  const total = shown.total.value;
+  assert.equal(sum(shown.chart.series.flatMap((line) => line.values)), total, 'the chart');
+  assert.equal(sum(shown.models.map((row) => row.amount.value)), total, 'models');
+  assert.equal(sum(shown.people.map((row) => row.amount.value)), total, 'people');
+  if (shown.agents) assert.equal(sum(shown.agents.map((row) => row.amount.value)), total, 'Agents');
+}
+
+test('billed usage: every run counts toward its Agent, person and model, and unmatched rows gather under Other', () => {
+  const shown = report();
+  assertListsAddUp(shown);
+  assert.equal(shown.measure, 'usage');
+  assert.deepEqual(shown.total, { value: usd(5.85), text: '$5.85' }, 'a run credited back counts nothing; unmatched rows still count');
+  assert.deepEqual(shown.agents?.map((agent) => [agent.key, agent.name, agent.amount.text, agent.share, agent.topPerson, agent.mainModel, agent.tasks]), [
+    ['agent_a', 'Atlas', '$3.80', 65, 'Maya Chen', 'Claude Sonnet 5', null],
+    ['agent_b', 'Birch', '$0.70', 12, 'Routines', 'Claude Sonnet 5', null],
+    ['agent_c', 'Cedar', '$0.60', 10, 'Maya Chen', 'claude-haiku-5', null],
+    ['agent_d', 'Dune', '$0.20', 3, 'Maya Chen', 'gpt-6-mini', null],
+    ['agent_e', 'Elm', '$0.10', 2, 'Maya Chen', 'gpt-6-nano', null],
+    [null, 'Other', '$0.45', 8, 'Maya Chen', 'Claude Sonnet 5', null],
+  ]);
+  assert.deepEqual(rows(shown.models), [
+    ['anthropic/claude-sonnet-5', 'Claude Sonnet 5', '$3.55', 61],
+    ['openai/gpt-6', 'gpt-6', '$1', 17],
+    ['anthropic/claude-haiku-5', 'claude-haiku-5', '$0.60', 10],
+    ['openai/gpt-6-mini', 'gpt-6-mini', '$0.20', 3],
+    ['openai/gpt-6-nano', 'gpt-6-nano', '$0.10', 2],
+    [null, 'Other', '$0.40', 7],
+  ]);
+  assert.deepEqual(rows(shown.people), [
+    ['membership_maya', 'Maya Chen', '$3.75', 64],
+    ['membership_li', 'Li Wei', '$1', 17],
+    ['routines', 'Routines', '$0.70', 12],
+    [null, 'Everyone else', '$0.40', 7],
+  ]);
+  assert.deepEqual(shown.chart.series.map((line) => [line.key, line.name, sum(line.values)]), [
+    ['agent_a', 'Atlas', usd(3.8)], ['agent_b', 'Birch', usd(0.7)], ['agent_c', 'Cedar', usd(0.6)], ['agent_d', 'Dune', usd(0.2)],
+    [null, 'Other', usd(0.55)],
+  ], 'the four largest Agents, then one row gathering the rest');
+  assert.deepEqual(shown.chart.series[0]!.values.slice(0, 4), [0, usd(2.3), usd(0.5), usd(1)], 'each row on its own UTC day');
+  assert.deepEqual([shown.chart.days[0], shown.chart.days.at(-1), shown.chart.days.length, shown.chart.elapsed], ['Oct 7', 'Nov 7', 32, 14]);
+  assert.deepEqual(shown.agentChoices.map((choice) => choice.name), ['Atlas', 'Birch', 'Cedar', 'Dune', 'Elm']);
+  assert.deepEqual(shown.range, { from: PERIOD.start.getTime(), to: NOW + 1, since: 'Oct 7', period: 'this_billing_period' });
+  assert.deepEqual(shown.perDay, { value: Math.round(usd(5.85) / 14), text: '$0.41' });
+  // Sep 8's $1 is within the same 14 days last period; Sep 25's $0.30 is not.
+  assert.equal(shown.change, 485);
+  assert.deepEqual([shown.chart.prior?.[1], shown.chart.prior?.[18], sum(shown.chart.prior ?? [])], [usd(1), usd(0.3), usd(1.3)]);
+  assert.deepEqual(shown.pace, { percent: 80, by: 'Nov 7' });
+  assert.deepEqual(shown.plan, { left: '$172', autoTopUp: null });
+  assert.deepEqual([shown.share, shown.agent, shown.tasks, shown.providers, shown.billingPeriod], [null, null, null, [], true]);
+});
+
+test('with an Agent selected every number is that Agent\'s, and its share is of the workspace', () => {
+  const shown = report({ agentId: 'agent_a' });
+  assertListsAddUp(shown);
+  assert.deepEqual(shown.total, { value: usd(3.8), text: '$3.80' });
+  assert.deepEqual([shown.agent, shown.share, shown.agents, shown.pace], [{ id: 'agent_a', name: 'Atlas' }, 65, null, null]);
+  assert.deepEqual(shown.chart.series.map((line) => line.key), ['agent_a']);
+  assert.deepEqual(rows(shown.models), [
+    ['anthropic/claude-sonnet-5', 'Claude Sonnet 5', '$2.80', 74],
+    ['openai/gpt-6', 'gpt-6', '$1', 26],
+  ]);
+  assert.deepEqual(rows(shown.people), [['membership_maya', 'Maya Chen', '$2.80', 74], ['membership_li', 'Li Wei', '$1', 26]]);
+  assert.equal(shown.change, 280, 'against its own $1 the same days last period');
+  assert.deepEqual(shown.agentChoices.map((choice) => choice.id), ['agent_a', 'agent_b', 'agent_c', 'agent_d', 'agent_e']);
+});
+
+test('without billed usage the report counts activities, each once on the day it started', () => {
+  const shown = report({ billed: null });
+  assertListsAddUp(shown);
+  assert.equal(shown.measure, 'activity');
+  assert.deepEqual([shown.total, shown.perDay], [{ value: 8, text: '8' }, { value: 0.6, text: '0.6' }]);
+  assert.deepEqual(shown.agents?.map((agent) => [agent.name, agent.amount.text, agent.share]), [
+    ['Atlas', '2', 25], ['Birch', '2', 25], ['Cedar', '1', 13], ['Dune', '1', 13], ['Elm', '1', 13], ['Other', '1', 13],
+  ]);
+  assert.deepEqual(shown.chart.series.map((line) => [line.name, sum(line.values)]), [
+    ['Atlas', 2], ['Birch', 2], ['Cedar', 1], ['Dune', 1], ['Other', 2],
+  ]);
+  assert.deepEqual([shown.change, shown.pace], [700, null]);
+});
+
+test('a gathered row that would hold one item shows that item instead', () => {
+  const people = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7'];
+  const names: UsageReportNames = { ...NAMES, people: new Map(people.map((id) => [id, id.toUpperCase()])) };
+  const shownWith = (count: number) => buildUsageReport({
+    summary: TEAM_PLAN,
+    ...reportRanges({ period: 'this_billing_period' }, TEAM_PLAN, NOW),
+    billed: null,
+    attributions: people.slice(0, count).map((id, index) =>
+      activity(id, 'agent_a', '2026-10-08T09:00:00Z', { requesterMembershipId: id, startedAt: Date.parse('2026-10-08T09:00:00Z') + index })),
+    agentId: null,
+    names,
+    now: NOW,
+  });
+  assert.deepEqual(shownWith(6).people.map((row) => row.name), ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']);
+  assert.deepEqual(shownWith(7).people.map((row) => [row.name, row.amount.value]), [
+    ['P1', 1], ['P2', 1], ['P3', 1], ['P4', 1], ['P5', 1], ['Everyone else', 2],
+  ]);
+});
+
+test('on its own key a workspace sees Core\'s estimate, its providers, and the tasks the plan counted', () => {
+  const shown = report({ summary: OWN_KEY_TEAM });
+  assertListsAddUp(shown);
+  assert.equal(shown.measure, 'estimate');
+  assert.deepEqual(shown.total, { value: usd(3.35), text: '$3.35' });
+  assert.deepEqual(shown.providers, ['anthropic', 'openai']);
+  // a1 and b1 kept their task fee; the credited run did not.
+  assert.deepEqual(shown.tasks, { used: '2', left: '573' });
+  assert.deepEqual(shown.agents?.map((agent) => [agent.name, agent.amount.text, agent.tasks]), [
+    ['Atlas', '$2', '1'], ['Birch', '$0.90', '1'], ['Cedar', '$0.30', '0'], ['Dune', '$0.10', '0'], ['Elm', '$0', '0'], ['Other', '$0.05', '0'],
+  ]);
+  assert.deepEqual([shown.pace, shown.plan], [null, { left: '$172', autoTopUp: null }]);
+
+  assert.deepEqual(report({ summary: OWN_KEY_TEAM, agentId: 'agent_b' }).tasks, { used: '1', left: '573' });
+  const unbilled = report({ summary: OWN_KEY_TEAM, billed: null });
+  assert.deepEqual(unbilled.tasks, { used: '426', left: '573' }, 'this billing period, from the plan meter');
+  assert.equal(unbilled.agents?.[0]?.tasks, null);
+  assert.equal(report({ summary: OWN_KEY_TEAM, billed: null, request: { period: 'last_billing_period' } }).tasks, null);
+  assert.equal(report({ summary: OWN_KEY_TEAM, billed: null, agentId: 'agent_a' }).tasks, null, 'the meter is not one Agent\'s');
+  assert.equal(report({ summary: OWN_KEY_NO_PLAN }).plan, null);
+});
+
+test('ranges: this and last billing period, a month clamped to its end, 30 days without a period, any range\'s prior', () => {
+  const start = PERIOD.start.getTime();
+  const lastStart = Date.UTC(2026, 8, 7, 17);
+  assert.deepEqual(reportRanges({ period: 'this_billing_period' }, TEAM_PLAN, NOW), {
+    range: { from: start, to: NOW + 1, period: 'this_billing_period' }, prior: { from: lastStart, to: start },
+  });
+  assert.deepEqual(reportRanges({ period: 'last_billing_period' }, TEAM_PLAN, NOW), {
+    range: { from: lastStart, to: start, period: 'last_billing_period' }, prior: { from: Date.UTC(2026, 7, 7, 17), to: lastStart },
+  });
+  const march31: BillingSummary = { ...TEAM_PLAN, period: { start: new Date('2027-03-31T17:00:00Z'), end: new Date('2027-04-30T17:00:00Z') } };
+  assert.deepEqual(reportRanges({ period: 'last_billing_period' }, march31, NOW), {
+    range: { from: Date.UTC(2027, 1, 28, 17), to: Date.UTC(2027, 2, 31, 17), period: 'last_billing_period' },
+    prior: { from: Date.UTC(2027, 0, 31, 17), to: Date.UTC(2027, 1, 28, 17) },
+  });
+  const days30 = { from: Date.UTC(2026, 8, 21), to: Date.UTC(2026, 9, 21) };
+  for (const period of ['this_billing_period', 'last_billing_period'] as const) {
+    assert.deepEqual(reportRanges({ period }, NO_PLAN, NOW), {
+      range: { ...days30, period: null }, prior: { from: Date.UTC(2026, 7, 22), to: days30.from },
+    });
+  }
+  const custom = { from: Date.UTC(2026, 9, 1), to: Date.UTC(2026, 9, 11) };
+  assert.deepEqual(reportRanges(custom, TEAM_PLAN, NOW).prior, { from: Date.UTC(2026, 8, 21), to: custom.from });
+
+  const fallback = report({ summary: NO_PLAN, billed: null });
+  assert.deepEqual(
+    [fallback.billingPeriod, fallback.range.period, fallback.chart.days[0], fallback.chart.days.at(-1), fallback.chart.elapsed],
+    [false, null, 'Sep 21', 'Oct 20', 30],
+  );
+});
