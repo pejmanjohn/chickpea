@@ -1543,6 +1543,51 @@ test('a declined card pauses auto top-up: the Owner reads why and when, updates 
   assert.match(unconfirmed, /<a class="btn btn-primary btn-sm" data-action="billing-confirm-payment" href="https:\/\/invoice\.stripe\.com\/i\/test">/);
 });
 
+test('an Owner who pays with Link reads their Link account wherever the page names the card, never digits or "needs a saved card"', async () => {
+  const link = { ...TOP_UP_ON, card: { kind: 'link' } } as const;
+  const linked: BillingSummary = { ...STARTER_TOP_UP, autoTopUp: link };
+  const calls: unknown[][] = [];
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: linked, port: { ...topUpHost([]), ...savedCardHost(calls) } });
+  const auto = autoCard(page.html());
+  assertShows(auto, 'Top-ups are charged to your Link account, plus tax. Update payment method');
+  for (const hidden of ['needs a saved card', 'Update card', 'Add card', 'ending']) assertHides(auto, hidden);
+  await page.click({ 'data-action': 'billing-top-up-edit' });
+  await page.select('billing-top-up-limit', '10000');
+  assertShows(autoCard(page.html()), 'You allow Chickpea to charge your Link account up to $100 a month, plus tax, for extra usage. You can turn this off at any time.');
+
+  const upgrade = await harness({ path: '/admin/plan', billingOffered: true, summary: linked, port: savedCardHost(calls) });
+  upgrade.choose('platform', 'plus');
+  await flush();
+  await upgrade.click({ 'data-action': 'billing-plan-change', 'data-key': 'plus', 'data-at': 'platform' });
+  assertShows(card(upgrade.html(), 'platform'), 'You allow Chickpea to charge your Link account up to $100 a month, plus tax, for extra usage. Charged to your Link account, plus tax.');
+
+  const atLimit: BillingSummary = { ...STARTER_AT_LIMIT, autoTopUp: { ...STARTER_AT_LIMIT.autoTopUp!, card: { kind: 'link' } } };
+  const add = await harness({ path: '/admin/plan', billingOffered: true, summary: atLimit, port: savedCardHost(calls) });
+  await add.click({ 'data-action': 'billing-add-extra-usage', 'data-key': 'extra_usage_50' });
+  assertShows(hero(add.html()), 'Add $50 of usage? It’s charged to your Link account, plus tax, and keeps 12 months.');
+
+  const paused = async (pause: NonNullable<NonNullable<BillingSummary['autoTopUp']>['pause']>) =>
+    (await harness({ path: '/admin/plan', billingOffered: true, summary: { ...STARTER_AT_LIMIT, autoTopUp: { ...link, pause } } })).html();
+  const declined = await paused({ kind: 'declined', at: new Date('2026-10-28T20:00:00Z') });
+  assertShows(hero(declined), 'Your Agents are paused. Auto top-up couldn’t charge your Link account. Update it, or add usage, to keep them working.');
+  assertShows(autoCard(declined), 'Auto top-up is paused because your Link payment was declined. Auto top-up Paused');
+  assertShows(autoCard(declined), 'Your Link payment was declined on Oct 28, so auto top-up is paused. Update your payment method, then try again. Update payment method Try again');
+  const pastDue = await paused({ kind: 'past_due' });
+  assertShows(hero(pastDue), 'Your plan’s last payment didn’t go through. Update your payment method to keep them working.');
+  assertShows(autoCard(pastDue), 'Update your payment method to pay it. Update payment method');
+  for (const html of [declined, pastDue]) assertHides(autoCard(html) + hero(html), 'card');
+
+  const refused = await harness({
+    path: '/admin/plan', billingOffered: true, summary: linked,
+    port: { ...savedCardHost(calls), async changePlan() { throw new BillingRefusal('past_due'); } },
+  });
+  refused.choose('platform', 'plus');
+  await flush();
+  await refused.click({ 'data-action': 'billing-plan-change', 'data-key': 'plus', 'data-at': 'platform' });
+  await refused.click({ 'data-action': 'billing-plan-change-confirm' });
+  assertShows(refused.html(), 'Your plan\'s last payment didn\'t go through. Update your payment method in Manage billing, then try again.');
+});
+
 test('Admins and Members read only whether auto top-up is on and reached its limit: no amounts, card, or reasons', async () => {
   for (const role of [{ owner: false }, { admin: true }]) {
     const html = (await harness({ path: '/admin/plan', billingOffered: true, summary: STARTER_AT_LIMIT, ...role })).html();

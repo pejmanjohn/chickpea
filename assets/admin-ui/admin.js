@@ -3326,8 +3326,8 @@
     card_required: function () {
       return "Add a card in Manage billing first, then try again.";
     },
-    past_due: function () {
-      return "Your plan's last payment didn't go through. Update your card in Manage billing, then try again.";
+    past_due: function (billing) {
+      return "Your plan's last payment didn't go through. " + paymentWords(billing.topUp).update + " in Manage billing, then try again.";
     },
     consent_outdated: function () {
       return "This page is out of date. Reload it and try again.";
@@ -3507,9 +3507,9 @@
   }
 
   // With the host buying on the saved card, extra usage is confirmed here;
-  // without it, or with no card to charge, Checkout takes the purchase.
+  // without it, or with no card or Link to charge, Checkout takes the purchase.
   function billingExtraUsageOnCard(billing) {
-    return !!(billing.inApp && billing.inApp.extraUsage) && !(billing.topUp && !billing.topUp.card);
+    return !!(billing.inApp && billing.inApp.extraUsage) && !(billing.topUp && !billing.topUp.payment);
   }
 
   // A task paid from extra usage costs its own fee where the host prices it
@@ -3527,10 +3527,10 @@
   function billingExtraUsageConfirmHtml(billing, key) {
     var offer = billing.offers.extraUsage.find(function (candidate) { return candidate.key === key; });
     if (!offer) return '';
-    var card = billing.topUp && billing.topUp.card ? esc(billing.topUp.card) : 'your card';
+    var payment = billing.topUp && billing.topUp.payment ? esc(billing.topUp.payment.label) : 'your card';
     var busy = !!state.billingBusy;
     return '<div class="plan-confirm" role="group" aria-label="Confirm extra usage"><p><b>Add ' + esc(offer.usage) + ' of usage?</b></p>' +
-      '<p>It&rsquo;s charged to ' + card + ', plus tax, and keeps ' + offer.validMonths + ' months.' + billingExtraUsageFeeSentence(billing) + '</p><div class="plan-confirm-actions">' +
+      '<p>It&rsquo;s charged to ' + payment + ', plus tax, and keeps ' + offer.validMonths + ' months.' + billingExtraUsageFeeSentence(billing) + '</p><div class="plan-confirm-actions">' +
       '<button type="button" class="btn btn-ghost btn-sm" data-action="billing-extra-usage-cancel"' + (busy ? ' disabled' : '') + '>Cancel</button>' +
       '<button type="button" class="btn btn-primary btn-sm" data-action="billing-extra-usage-confirm" data-key="' + esc(offer.key) + '"' + (busy ? ' disabled' : '') + '>' +
       (state.billingBusy === "extra_usage:" + offer.key ? 'Adding&hellip;' : 'Add ' + esc(offer.price)) + '</button></div></div>';
@@ -3549,13 +3549,23 @@
       }).join("") + '</div><span class="hint">Keeps ' + offers[0].validMonths + ' months</span></div>';
   }
 
+  // How an Owner's sentences name the saved payment method. Link has no card to name.
+  var PAYMENT_WORDS = {
+    card: { charge: "your card", declined: "your card was declined", update: "Update your card", button: "Update card" },
+    link: { charge: "your Link account", declined: "your Link payment was declined", update: "Update your payment method", button: "Update payment method" }
+  };
+
+  function paymentWords(topUp) {
+    return PAYMENT_WORDS[topUp && topUp.payment && topUp.payment.kind === "link" ? "link" : "card"];
+  }
+
   // Why Agents stopped, and what starts them again. Only an Owner reads why
   // auto top-up didn't add usage; everyone reads whether it reached its limit.
   var TOP_UP_PAUSED = {
-    declined: function (them) { return 'Auto top-up couldn&rsquo;t charge your card. Update it, or add usage, to keep ' + them + '.'; },
+    declined: function (them, words) { return 'Auto top-up couldn&rsquo;t charge ' + words.charge + '. Update it, or add usage, to keep ' + them + '.'; },
     needs_confirmation: function (them) { return 'Your bank asked you to confirm an auto top-up charge. Confirm it, or add usage, to keep ' + them + '.'; },
     billing_details: function (them) { return 'Auto top-up needs your billing details. Update them, or add usage, to keep ' + them + '.'; },
-    past_due: function (them) { return 'Your plan&rsquo;s last payment didn&rsquo;t go through. Update your card to keep ' + them + '.'; }
+    past_due: function (them, words) { return 'Your plan&rsquo;s last payment didn&rsquo;t go through. ' + words.update + ' to keep ' + them + '.'; }
   };
 
   function billingPausedText(billing) {
@@ -3567,7 +3577,7 @@
     var topUp = billing.manage ? billing.topUp : null;
     var status = billing.autoTopUp;
     if (topUp && topUp.enabled) {
-      if (topUp.pause) return paused + TOP_UP_PAUSED[topUp.pause.kind](them);
+      if (topUp.pause) return paused + TOP_UP_PAUSED[topUp.pause.kind](them, paymentWords(topUp));
       if (topUp.limitReached) {
         return paused + 'Auto top-up added its ' + esc(topUp.limit.amount) + ' limit for this month. ' +
           (topUp.upgrade ? 'Raise the limit or upgrade' : 'Raise the limit') + ' to keep ' + them + renews + '.';
@@ -3720,7 +3730,7 @@
       ? '<span class="hint">' + billingSentence(esc(values.pack.tasks)) + ' tasks' + (billing.funding === "platform" ? ' with models included' : '') + '</span>'
       : '';
     var consent = topUpEditRaises(topUp, edit)
-      ? '<p class="auto-consent">You allow Chickpea to charge ' + (topUp.card ? esc(topUp.card) : 'your card') + ' up to ' + billingDollars(values.limitCents) +
+      ? '<p class="auto-consent">You allow Chickpea to charge ' + (topUp.payment ? esc(topUp.payment.label) : 'your card') + ' up to ' + billingDollars(values.limitCents) +
         ' a month, plus tax, for extra usage. You can turn this off at any time.</p>'
       : '';
     return '<div class="auto-set">' +
@@ -3740,31 +3750,32 @@
     var retry = '<button type="button" class="btn btn-primary btn-sm" data-action="billing-top-up-retry"' + (busy ? ' disabled' : '') + '>' +
       (state.billingBusy === "top_up_retry" ? 'Trying&hellip;' : 'Try again') + '</button>';
     var portal = function (label, tone) { return billingButtonHtml("billing-update-card", label, "", "portal", tone + " btn-sm"); };
+    var words = paymentWords(topUp);
     var text, buttons;
     if (pause.kind === "declined") {
-      text = 'Your card was declined on ' + esc(pause.on) + ', so auto top-up is paused. Update your card, then try again.';
-      buttons = portal("Update card", "btn-soft") + retry;
+      text = billingSentence(words.declined) + ' on ' + esc(pause.on) + ', so auto top-up is paused. ' + words.update + ', then try again.';
+      buttons = portal(words.button, "btn-soft") + retry;
     } else if (pause.kind === "needs_confirmation") {
       text = 'Your bank asked you to confirm a ' + esc(pause.amount) + ' charge. Confirm it to turn auto top-up back on.';
       buttons = pause.url
         ? '<a class="btn btn-primary btn-sm" data-action="billing-confirm-payment" href="' + esc(pause.url) + '">Confirm payment</a>'
-        : portal("Update card", "btn-primary");
+        : portal(words.button, "btn-primary");
     } else if (pause.kind === "billing_details") {
       text = 'Your billing details are incomplete, so auto top-up couldn&rsquo;t add usage. Update them, then try again.';
       buttons = portal("Update billing details", "btn-soft") + retry;
     } else {
-      text = 'Your plan&rsquo;s last payment didn&rsquo;t go through, so auto top-up is paused. Update your card to pay it.';
-      buttons = portal("Update card", "btn-primary");
+      text = 'Your plan&rsquo;s last payment didn&rsquo;t go through, so auto top-up is paused. ' + words.update + ' to pay it.';
+      buttons = portal(words.button, "btn-primary");
     }
     return '<p class="plan-hero-alert auto-alert" role="status"><span class="plan-hero-alert-mark" aria-hidden="true">!</span><span>' + text + '</span></p>' +
       '<div class="auto-actions auto-alert">' + buttons + '</div>' + billingErrorHtml("top_up");
   }
 
   var TOP_UP_PAUSE_STATUS = {
-    declined: 'Auto top-up is paused because your card was declined.',
-    needs_confirmation: 'Auto top-up is paused until you confirm a payment with your bank.',
-    billing_details: 'Auto top-up is paused because your billing details are incomplete.',
-    past_due: 'Auto top-up is paused because your plan&rsquo;s last payment didn&rsquo;t go through.'
+    declined: function (words) { return 'Auto top-up is paused because ' + words.declined + '.'; },
+    needs_confirmation: function () { return 'Auto top-up is paused until you confirm a payment with your bank.'; },
+    billing_details: function () { return 'Auto top-up is paused because your billing details are incomplete.'; },
+    past_due: function () { return 'Auto top-up is paused because your plan&rsquo;s last payment didn&rsquo;t go through.'; }
   };
 
   function billingTopUpHtml(billing) {
@@ -3794,8 +3805,8 @@
     var packTasks = (topUp.packs.find(function (candidate) { return candidate.key === topUp.pack.key; }) || {}).tasks;
     var general = 'Adds extra usage when your plan&rsquo;s usage runs out, up to a monthly limit. Extra usage keeps ' + months + ' months while you have a plan.' +
       billingExtraUsageFeeSentence(billing);
-    var foot = '<div class="auto-foot"><span>' + (topUp.card ? 'Top-ups are charged to ' + esc(topUp.card) + ', plus tax.' : 'Auto top-up needs a saved card.') + '</span>' +
-      (topUp.pause ? '' : billingButtonHtml("billing-update-card", topUp.card ? "Update card" : "Add card", "", "portal", "btn-ghost btn-sm")) + '</div>';
+    var foot = '<div class="auto-foot"><span>' + (topUp.payment ? 'Top-ups are charged to ' + esc(topUp.payment.label) + ', plus tax.' : 'Auto top-up needs a saved card.') + '</span>' +
+      (topUp.pause ? '' : billingButtonHtml("billing-update-card", topUp.payment ? paymentWords(topUp).button : "Add card", "", "portal", "btn-ghost btn-sm")) + '</div>';
     if (!topUp.enabled) {
       var offStatus = 'When usage runs out, your Agents pause until your plan renews' + (renews ? ' ' + esc(renews) : '') + '.';
       return topUpSectionHtml(offStatus, topUpRowHtml(edit
@@ -3803,7 +3814,7 @@
         : { on: false, desc: general, extra: billingErrorHtml("top_up") }), false, foot);
     }
     var pausedAtLimit = topUp.limitReached && out;
-    var statusText = topUp.pause ? TOP_UP_PAUSE_STATUS[topUp.pause.kind]
+    var statusText = topUp.pause ? TOP_UP_PAUSE_STATUS[topUp.pause.kind](paymentWords(topUp))
       : topUp.limitReached && !out ? 'No more top-ups this month. When this extra usage runs out, your Agents pause until ' + (renews ? esc(renews) : 'your plan renews') + '.'
       : own && packTasks ? 'On your own key your Agents can always chat. Only tasks use your plan, and ' + esc(topUp.pack.price) + ' of extra usage is ' + esc(packTasks) + ' tasks.'
       : '';
@@ -3924,15 +3935,15 @@
       return '<div class="plan-confirm" role="group" aria-label="Confirm the plan change"><p><b>Move to the ' + esc(preview.price) + ' plan on ' + esc(preview.at) + '?</b> ' +
         'You keep this month&rsquo;s usage until then.</p>' + actions + '</div>';
     }
-    var card = preview.card ? esc(preview.card) : 'your card';
+    var payment = preview.payment ? esc(preview.payment.label) : 'your card';
     var raise = preview.topUpRaise;
     return '<div class="plan-confirm" role="group" aria-label="Confirm the plan change"><p><b>Move to the ' + esc(preview.price) + ' plan?</b></p>' +
       '<p>Today you pay ' + esc(preview.today) + ' for the rest of this month, and ' + esc(preview.added) + ' of usage is added right away.</p>' +
       (preview.from ? '<p>From ' + esc(preview.from) + ', it&rsquo;s ' + esc(preview.price) + ' a month with ' + esc(preview.included) + ' of usage.</p>' : '') +
       (raise ? '<p>' + (raise.limitRises ? 'Auto top-up&rsquo;s limit becomes ' + esc(raise.limit) + ' a month, the same as your new plan.'
         : 'Auto top-up adds ' + esc(raise.pack) + ' each time on your new plan.') +
-        ' You allow Chickpea to charge ' + card + ' up to ' + esc(raise.limit) + ' a month, plus tax, for extra usage.</p>' : '') +
-      '<p class="hint">Charged to ' + card + ', plus tax.</p>' + actions + '</div>';
+        ' You allow Chickpea to charge ' + payment + ' up to ' + esc(raise.limit) + ' a month, plus tax, for extra usage.</p>' : '') +
+      '<p class="hint">Charged to ' + payment + ', plus tax.</p>' + actions + '</div>';
   }
 
   function planCardActionHtml(billing, card, step) {

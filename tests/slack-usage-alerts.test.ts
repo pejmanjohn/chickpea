@@ -19,7 +19,7 @@ import {
   type OwnerBillingNotice,
   type UsageAlert,
 } from '../src/slack/usage-alerts.ts';
-import { formatCard, type UsageMicros } from '../src/usage/usage-display.ts';
+import { formatPaymentMethod, type UsageMicros } from '../src/usage/usage-display.ts';
 
 const TEAM = 'TUSAGE1';
 const OTHER_TEAM = 'TOTHER1';
@@ -350,12 +350,13 @@ function sections(blocks: readonly Block[]): string[] {
 
 test('a card reads by its brand and last four digits, an unknown brand reads as a card, and last digits that aren\'t four digits read as no card', () => {
   const brands = ['visa', 'mastercard', 'amex', 'discover', 'diners', 'jcb', 'unionpay', 'link', 'constructor', 'VISA'];
-  assert.deepEqual(brands.map((brand) => formatCard({ brand, last4: '4242' })), [
+  assert.deepEqual(brands.map((brand) => formatPaymentMethod({ brand, last4: '4242' })), [
     'Visa ending 4242', 'Mastercard ending 4242', 'American Express ending 4242', 'Discover ending 4242',
     'Diners Club ending 4242', 'JCB ending 4242', 'UnionPay ending 4242', 'Card ending 4242', 'Card ending 4242', 'Visa ending 4242',
   ]);
-  assert.equal(formatCard(null), null);
-  for (const last4 of ['<!here>', '42', '42424']) assert.equal(formatCard({ brand: 'visa', last4 }), null, last4);
+  assert.equal(formatPaymentMethod({ kind: 'card', brand: 'visa', last4: '4242' }), 'Visa ending 4242');
+  assert.equal(formatPaymentMethod(null), null);
+  for (const last4 of ['<!here>', '42', '42424']) assert.equal(formatPaymentMethod({ brand: 'visa', last4 }), null, last4);
   assert.equal(sections([...ownerBillingNoticeMessage({ kind: 'top_up_declined', card: { brand: 'visa', last4: '<!here>' }, planPageUrl: PLAN_PAGE }).blocks])[0],
     "Auto top-up couldn't charge your card. The card was declined, so your Agents are paused.");
 });
@@ -372,6 +373,11 @@ test('a top-up under the limit names the card, how long the usage keeps, the lim
   assert.deepEqual(context(message.blocks), ['Charged to Visa ending 4242, plus tax. Extra usage keeps 12 months while ' +
     "you have a plan. That's $100 of your $200 limit this month."]);
   assert.deepEqual(buttons([...message.blocks]), [button('view_receipt', 'View receipt', ADDED.receiptUrl)]);
+});
+
+test('a top-up charged to Link names the Link account, with no digits', () => {
+  assert.deepEqual(context(notice({ ...ADDED, card: { kind: 'link' } }).blocks), ['Charged to your Link account, plus tax. Extra usage keeps 12 months while ' +
+    "you have a plan. That's $100 of your $200 limit this month."]);
 });
 
 test('a top-up that reaches the limit says so and offers to raise it, with no receipt unless it is https', () => {
@@ -444,6 +450,15 @@ test('a declined top-up names the card and offers to update it or try again', ()
   ]);
   assert.equal(notice({ kind: 'top_up_declined' }).text,
     "Auto top-up couldn't charge your card. The card was declined, so your Agents are paused.");
+});
+
+test('a declined Link payment names the Link account, never a card, and offers to update the payment method', () => {
+  const message = notice({ kind: 'top_up_declined', card: { kind: 'link' } });
+  assert.equal(message.text, "Auto top-up couldn't charge your Link account. The payment was declined, so your Agents are paused.");
+  assert.deepEqual(buttons([...message.blocks]), [
+    button('update_card', 'Update payment method', at('card'), true),
+    button('try_again', 'Try again', at('card')),
+  ]);
 });
 
 test('a top-up the bank wants confirmed asks the Owner to confirm the payment', () => {

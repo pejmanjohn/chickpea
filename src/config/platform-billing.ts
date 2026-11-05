@@ -50,9 +50,18 @@ export type PendingPlanChange =
 
 /** A saved card. `brand` is Stripe's card brand, such as "visa" or "amex". */
 export interface CardSummary {
+  /** Optional: a summary without `kind` is a card. */
+  readonly kind?: 'card';
   readonly brand: string;
   readonly last4: string;
 }
+
+/** A saved Stripe Link payment method, which has no card digits to show. */
+export interface LinkSummary {
+  readonly kind: 'link';
+}
+
+export type PaymentMethodSummary = CardSummary | LinkSummary;
 
 /**
  * Why auto top-up stopped charging until an Owner acts: a declined card, a
@@ -83,8 +92,8 @@ export interface AutoTopUpView {
   /** When `usedCents` starts over: the renewal. Null without a period. */
   readonly resetsAt: Date | null;
   readonly pause: AutoTopUpPause | null;
-  /** The card top-ups charge; null when the default payment method is not a card. */
-  readonly card: CardSummary | null;
+  /** The payment method top-ups charge, a card or Link; null when the default payment method is neither. */
+  readonly card: PaymentMethodSummary | null;
 }
 
 /**
@@ -223,7 +232,7 @@ export interface BillingRedirect {
 export type BillingRefusalReason =
   | 'plan_required'
   | 'own_key_plan_required'
-  /** Auto top-up, or a purchase on the saved card, needs a card. */
+  /** Auto top-up, or a purchase on the saved card, needs a card or Link. */
   | 'card_required'
   /** The plan's last invoice is unpaid, so the host takes no new charge. */
   | 'past_due';
@@ -237,8 +246,8 @@ export class BillingRefusal extends Error {
 }
 
 /**
- * One run's billed usage on one UTC day: the rows the plan's meter sums,
- * model and fee charges less what creditBack restored. Usage is
+ * One run's billed usage on one UTC day, whatever paid for it: model and fee
+ * charges less what creditBack restored. Usage is
  * `modelMicros + feeMicros - creditedBackMicros`.
  */
 export interface BilledUsageRow {
@@ -270,9 +279,10 @@ export interface PlatformBillingPort {
    * on the host's own origin, where Stripe sends the Owner back. Throws
    * `BillingRefusal` for extra usage without a plan (`plan_required`) or a
    * plan below the lowest one for an own key (`own_key_plan_required`); any
-   * other throw is an outage.
+   * other throw is an outage. `by` is the Owner who started it, for the
+   * consent record a plan's Checkout writes; Admin always passes it.
    */
-  checkout(installationId: string, request: CheckoutRequest, returnPath: string): Promise<BillingRedirect>;
+  checkout(installationId: string, request: CheckoutRequest, returnPath: string, by?: BillingActor): Promise<BillingRedirect>;
   /** The Stripe customer portal: cards, invoices, and plan changes. */
   portal(installationId: string, returnPath: string): Promise<BillingRedirect>;
   /**
@@ -283,10 +293,14 @@ export interface PlatformBillingPort {
    */
   chooseFunding(installationId: string, funding: BillingFunding): Promise<void>;
   /**
-   * Optional. Billed usage written in `[from, to)`, by run and UTC day, so
-   * its sum over the billing period equals the plan meter's. Admin's Usage
-   * page shows amounts only while the host answers; without the method, or
-   * when it throws, the page shows activity counts.
+   * Optional. Billed usage written in `[from, to)`, by run and UTC day,
+   * whatever paid for it. Over a billing period the rows total
+   * `use.byAgent`, the Plan page's "Usage this period". The plan meter,
+   * `planUsage.usedMicros`, differs when rollover or extra usage paid, a
+   * top-up paid off debt, debt was carried in, or a refund revoked part of
+   * the plan grant. Admin's Usage page shows amounts only while the host
+   * answers; without the method, or when it throws, the page shows activity
+   * counts.
    */
   usage?(installationId: string, range: { readonly from: Date; readonly to: Date }): Promise<BilledUsage>;
   /**

@@ -20,7 +20,7 @@ import {
 } from '../config/platform-billing.ts';
 import { isProviderKeyId, type ProviderKeyId } from '../config/provider-keys.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
-import { formatCard, formatFee, formatPriceCents, formatUsageDollars, usagePercent, type UsageMicros } from '../usage/usage-display.ts';
+import { formatFee, formatPaymentMethod, formatPriceCents, formatUsageDollars, usagePercent, type UsageMicros } from '../usage/usage-display.ts';
 import { invalidRequest, noStore, readIdempotencyKey, readJson } from './api-support.ts';
 import { balance, type BillingBalance } from './billing-balance.ts';
 import { formatTasks, planTaskSaving, taskFee, taskRates } from './billing-tasks.ts';
@@ -121,6 +121,12 @@ interface BillingStatus {
   taskFee: string;
 }
 
+/** The saved payment method, named for a sentence: "Visa ending 4242", or "your Link account". */
+interface PaymentView {
+  kind: 'card' | 'link';
+  label: string;
+}
+
 /**
  * Auto top-up as an Owner manages it. Amounts are formatted dollars, with
  * cents beside the ones the editor compares; `limitReached` means the next
@@ -142,8 +148,8 @@ interface OwnerAutoTopUp {
     | { kind: 'billing_details' }
     | { kind: 'past_due' }
     | null;
-  /** "Visa ending 4242"; null without a card. */
-  card: string | null;
+  /** Null without a card or Link. */
+  payment: PaymentView | null;
   /** The plan's price, which a "same as your plan" limit follows. */
   plan: { price: string; cents: number };
   /** Each pack an Owner can choose, with the tasks it covers. */
@@ -221,7 +227,7 @@ type PlanChangeView =
     kind: 'upgrade'; key: string; price: string; included: string; today: string; added: string; from: string | null;
     /** What the upgrade raises in auto top-up that follows the plan, with the monthly limit after it; null for nothing. */
     topUpRaise: { limit: string; limitRises: boolean; pack: string | null } | null;
-    card: string | null;
+    payment: PaymentView | null;
   }
   | { kind: 'downgrade'; key: string; price: string; at: string };
 
@@ -269,7 +275,7 @@ export function createBillingAdminApi(options: BillingAdminApiOptions): Hono {
   app.post('/billing/checkout', (c) => withOwnerBilling(c, async (port, installationId) => {
     const parsed = v.safeParse(checkoutSchema, await readJson(c, MAX_BILLING_BODY_BYTES));
     if (!parsed.success) return invalidRequest(c);
-    return redirect(c, await port.checkout(installationId, parsed.output, PLAN_PATH));
+    return redirect(c, await port.checkout(installationId, parsed.output, PLAN_PATH, await options.actor(c)));
   }));
 
   app.post('/billing/portal', (c) => withOwnerBilling(c, async (port, installationId) =>
@@ -416,13 +422,15 @@ function planChangeView(
       limitRises: raise.limitRises,
       pack: raise.packCents === null ? null : formatPriceCents(raise.packCents),
     },
-    card: cardLabel(summary),
+    payment: paymentView(summary),
   };
 }
 
-/** The saved card, from the auto top-up view. */
-function cardLabel(summary: BillingSummary): string | null {
-  return formatCard(summary.autoTopUp?.card);
+/** The saved payment method, from the auto top-up view. */
+function paymentView(summary: BillingSummary): PaymentView | null {
+  const method = summary.autoTopUp?.card;
+  const label = formatPaymentMethod(method);
+  return method && label ? { kind: method.kind === 'link' ? 'link' : 'card', label } : null;
 }
 
 /** The next pack would not fit under the limit this period. */
@@ -463,7 +471,7 @@ function ownerAutoTopUp(summary: BillingSummary, planOffer: PlanOffer | undefine
       : pause.kind === 'needs_confirmation'
         ? { kind: 'needs_confirmation', amount: formatPriceCents(pause.amountCents), url: isHttps(pause.url) ? pause.url : null }
       : { kind: pause.kind },
-    card: cardLabel(summary),
+    payment: paymentView(summary),
     plan: { price: formatPriceCents(summary.plan.priceCents), cents: summary.plan.priceCents },
     packs: summary.offers.extraUsage.map((offer) => ({
       key: offer.key, price: formatPriceCents(offer.priceCents), cents: offer.priceCents,

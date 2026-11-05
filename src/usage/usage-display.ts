@@ -1,3 +1,5 @@
+import type { PaymentMethodSummary } from '../config/platform-billing.ts';
+
 /** Millionths of a dollar of usage at metered rates. */
 export type UsageMicros = number & { readonly __unit: 'usage_micros' };
 
@@ -30,13 +32,15 @@ const CARD_BRANDS = new Map([
 ]);
 
 /**
- * "Visa ending 4242" from Stripe's card brand and last four digits. Null
- * without a card, or with last digits that aren't four digits, since the
- * label lands in the page and in Slack text.
+ * The saved payment method as a sentence names it: "Visa ending 4242" from
+ * Stripe's card brand and last four digits, or "your Link account", which
+ * has no digits to show. Null without one, or for a card whose last digits
+ * aren't four digits, since the label lands in the page and in Slack text.
  */
-export function formatCard(card: { readonly brand: string; readonly last4: string } | null | undefined): string | null {
-  if (!card || !/^\d{4}$/.test(card.last4)) return null;
-  return `${CARD_BRANDS.get(card.brand.toLowerCase()) ?? 'Card'} ending ${card.last4}`;
+export function formatPaymentMethod(method: PaymentMethodSummary | null | undefined): string | null {
+  if (method?.kind === 'link') return 'your Link account';
+  if (!method || !/^\d{4}$/.test(method.last4)) return null;
+  return `${CARD_BRANDS.get(method.brand.toLowerCase()) ?? 'Card'} ending ${method.last4}`;
 }
 
 export function usagePercent(used: UsageMicros, included: UsageMicros): number {
