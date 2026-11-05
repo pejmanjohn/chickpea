@@ -20,10 +20,10 @@ import {
 } from '../config/platform-billing.ts';
 import { isProviderKeyId, type ProviderKeyId } from '../config/provider-keys.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
-import { formatCard, formatPriceCents, formatUsageDollars, usagePercent, type UsageMicros } from '../usage/usage-display.ts';
+import { formatCard, formatFee, formatPriceCents, formatUsageDollars, usagePercent, type UsageMicros } from '../usage/usage-display.ts';
 import { invalidRequest, noStore, readIdempotencyKey, readJson } from './api-support.ts';
 import { balance, type BillingBalance } from './billing-balance.ts';
-import { formatTasks } from './billing-tasks.ts';
+import { formatTasks, planTaskSaving, taskFee, taskRates } from './billing-tasks.ts';
 
 export const PLAN_PATH = '/admin/plan';
 
@@ -117,7 +117,7 @@ interface BillingStatus {
   balance: BillingBalance | null;
   /** Null where the host offers no auto top-up. Everyone sees whether it is on and whether it reached its limit; only an Owner sees more. */
   autoTopUp: { kind: 'no_plan' } | { kind: 'plan'; on: boolean; limitReached: boolean } | null;
-  /** The flat usage a task draws, "30¢". */
+  /** The flat usage a task paid from plan usage draws, "25¢". */
   taskFee: string;
 }
 
@@ -150,8 +150,16 @@ interface OwnerAutoTopUp {
   packs: { key: string; price: string; cents: number; tasks: string | null }[];
   /** The pack that follows the plan, which the pack "plan" stands for; null when the host doesn't say. */
   planPack: string | null;
-  /** The next plan up, with the usage it includes, and what this month's plan and top-ups covered. Null on the largest plan. */
-  upgrade: { key: string; price: string; included: string; covered: string } | null;
+  /**
+   * The next plan up, with the usage it includes, what this month's plan and
+   * top-ups covered, and whether the next plan's usage covers that. `taskFees`
+   * compares a task's fee from plan usage and from extra usage while plan
+   * usage's is lower. Null on the largest plan.
+   */
+  upgrade: {
+    key: string; price: string; included: string; covered: string; coversThisMonth: boolean;
+    taskFees: { plan: string; extra: string } | null;
+  } | null;
 }
 
 /** What the Owner's latest purchase did, for the banner when they come back from Stripe. */
@@ -195,6 +203,8 @@ export type BillingView =
       bonusPercent: number;
       /** The flat usage a chat reply draws: "$0" for none, or "30¢". */
       chatReplyFee: string;
+      /** The flat usage a task paid from extra usage draws; the status's `taskFee` where the host prices both the same. */
+      extraUsageTaskFee: string;
       rolloverMonths: number;
     };
     ownKey: OwnKeySetup;
@@ -438,6 +448,7 @@ function ownerAutoTopUp(summary: BillingSummary, planOffer: PlanOffer | undefine
   const ending = summary.pendingChange?.kind === 'ends';
   const next = fundingPlans(summary).find((offer) => offer.priceCents > (summary.plan?.priceCents ?? 0));
   const pause = topUp.pause;
+  const covered = ((planOffer?.includedMicros ?? 0) + topUp.usedCents * MICROS_PER_CENT) as UsageMicros;
   return {
     enabled: topUp.enabled && !ending,
     ending,
@@ -456,14 +467,16 @@ function ownerAutoTopUp(summary: BillingSummary, planOffer: PlanOffer | undefine
     plan: { price: formatPriceCents(summary.plan.priceCents), cents: summary.plan.priceCents },
     packs: summary.offers.extraUsage.map((offer) => ({
       key: offer.key, price: formatPriceCents(offer.priceCents), cents: offer.priceCents,
-      tasks: formatTasks(offer.usageMicros, summary.funding, summary.offers),
+      tasks: formatTasks(offer.usageMicros, summary.funding, taskRates(summary.offers, 'extra')),
     })),
     planPack: (topUp.pack.rule === 'plan' ? topUp.pack.key : planOffer?.autoTopUpPackKey) ?? null,
     upgrade: next ? {
       key: next.key,
       price: formatPriceCents(next.priceCents),
       included: formatUsageDollars(next.includedMicros),
-      covered: formatUsageDollars(((planOffer?.includedMicros ?? 0) + topUp.usedCents * MICROS_PER_CENT) as UsageMicros),
+      covered: formatUsageDollars(covered),
+      coversThisMonth: next.includedMicros >= covered,
+      taskFees: planTaskSaving(summary.offers),
     } : null,
   };
 }
@@ -512,6 +525,7 @@ function billingView(summary: BillingSummary, owner: OwnerFacts | null): Billing
       })),
       bonusPercent: bonusPercent(offers.plans),
       chatReplyFee: formatFee(offers.chatReplyFeeMicros),
+      extraUsageTaskFee: formatFee(taskFee(offers, 'extra')),
       rolloverMonths: offers.rolloverMonths,
     },
     ownKey: ownKeySetup(summary, minimum, owner.ownKey),
@@ -587,11 +601,6 @@ function extraUsageBar(extraUsage: NonNullable<BillingSummary['extraUsage']>): N
 function bonusPercent(plans: readonly PlanOffer[]): number {
   const bonuses = plans.map((offer) => Math.floor(offer.includedMicros * 100 / (offer.priceCents * MICROS_PER_CENT)) - 100);
   return Math.max(0, Math.min(...bonuses));
-}
-
-/** A fee under a dollar in cents, "30¢"; none as "$0". */
-function formatFee(micros: UsageMicros): string {
-  return micros > 0 && micros < 100 * MICROS_PER_CENT ? `${Math.round(micros / MICROS_PER_CENT)}¢` : formatUsageDollars(micros);
 }
 
 /** The port answered inconsistent data when the lowest plan for an own key is not on sale; `withBilling` makes that a 503. */

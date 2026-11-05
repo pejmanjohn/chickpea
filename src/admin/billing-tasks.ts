@@ -1,8 +1,30 @@
 import type { BillingFunding, BillingSummary } from '../config/platform-billing.ts';
-import type { UsageMicros } from '../usage/usage-display.ts';
+import { formatFee, type UsageMicros } from '../usage/usage-display.ts';
 
 /** What a task draws: its fee, and with models included, a typical task's tokens. */
 export type TaskRates = Pick<BillingSummary['offers'], 'taskFeeMicros' | 'typicalTaskMicros'>;
+
+/** The task fee plan usage pays, and extra usage's where the host prices it apart. */
+export type TaskFees = Pick<BillingSummary['offers'], 'taskFeeMicros' | 'extraUsageTaskFeeMicros'>;
+
+/** Which usage pays a task: the plan's, with trial and carried-over usage beside it, or extra usage. */
+export type TaskPayer = 'plan' | 'extra';
+
+export function taskFee(fees: TaskFees, payer: TaskPayer): UsageMicros {
+  return payer === 'extra' ? fees.extraUsageTaskFeeMicros ?? fees.taskFeeMicros : fees.taskFeeMicros;
+}
+
+/** The rates for counting the tasks `payer`'s usage covers. */
+export function taskRates(rates: TaskRates & TaskFees, payer: TaskPayer): TaskRates {
+  return { taskFeeMicros: taskFee(rates, payer), typicalTaskMicros: rates.typicalTaskMicros };
+}
+
+/** Both task fees, formatted, while a task costs less from plan usage than from extra usage; otherwise null. */
+export function planTaskSaving(fees: TaskFees): { plan: string; extra: string } | null {
+  const plan = taskFee(fees, 'plan');
+  const extra = taskFee(fees, 'extra');
+  return plan < extra ? { plan: formatFee(plan), extra: formatFee(extra) } : null;
+}
 
 const MICROS_PER_CENT = 10_000;
 const TASKS = new Intl.NumberFormat('en-US');

@@ -194,8 +194,10 @@ export interface BillingSummary {
     readonly plans: readonly PlanOffer[];
     readonly extraUsage: readonly ExtraUsageOffer[];
     readonly ownKeyMinimumPlanKey: string;
-    /** The flat usage a task draws on top of its model tokens. */
+    /** The flat usage a task draws on top of its model tokens, unless extra usage pays it. */
     readonly taskFeeMicros: UsageMicros;
+    /** The flat usage a task paid from extra usage draws. Absent where the host charges `taskFeeMicros` either way. */
+    readonly extraUsageTaskFeeMicros?: UsageMicros;
     /** The flat usage a chat reply draws on top of its model tokens. */
     readonly chatReplyFeeMicros: UsageMicros;
     /**

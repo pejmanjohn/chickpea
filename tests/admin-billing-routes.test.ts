@@ -25,9 +25,9 @@ import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { NO_RUN_FEES } from './helpers/platform-funding.ts';
 import {
   NO_PLAN, OFFERS, OWN_KEY_NO_PLAN, PERIOD, PLAN_NO_PERIOD, STARTER_AT_LIMIT, STARTER_PLAN, STARTER_TOP_UP, TEAM_DOWNGRADING, TEAM_ENDING, TEAM_PLAN,
-  TOP_UP_ON, TRIAL_GRANT, usd,
+  TOP_UP_ON, TRIAL_GRANT, TWO_FEE_OFFERS, usd,
 } from './helpers/billing-summaries.ts';
-import { formatTasks } from '../src/admin/billing-tasks.ts';
+import { formatTasks, planTaskSaving } from '../src/admin/billing-tasks.ts';
 
 const TOKEN = 'billing-admin-token';
 const INSTALLATION = 'inst_billing';
@@ -168,6 +168,7 @@ test('an Owner reads the plan\'s usage in dollars and tasks, the offers with the
       ],
       bonusPercent: 20,
       chatReplyFee: '$0',
+      extraUsageTaskFee: '30¢',
       rolloverMonths: 1,
     },
     ownKey: { planReady: true, minimumPlan: { key: 'plus', price: '$100' }, key: { ready: false, provider: null } },
@@ -273,6 +274,57 @@ test('fees under a dollar read in cents, none as $0, and the bonus is the smalle
   assert.equal(priced.offers.rolloverMonths, 0);
   const uneven = await offers({ ...TEAM_PLAN, offers: { ...OFFERS, plans: OFFERS.plans.map((plan) => plan.key === 'business' ? { ...plan, includedMicros: usd(575) } : plan) } });
   assert.equal(uneven.offers.bonusPercent, 15);
+});
+
+test('with a 25¢ task fee on plan usage and 30¢ on extra usage, plan counts use 25¢ and every count extra usage pays uses 30¢', async (t) => {
+  const read = async (summary: BillingSummary) =>
+    await (await admin(t, { port: savedCardPort(summary).port })('/admin/api/billing')).json() as {
+      taskFee: string; balance: unknown; plan: { tasks: string };
+      offers: { extraUsageTaskFee: string; bonusPercent: number; plans: { key: string; tasks: unknown }[] };
+      topUp: { packs: { tasks: string }[]; upgrade: unknown };
+    };
+  const starter: BillingSummary = {
+    ...STARTER_TOP_UP, offers: TWO_FEE_OFFERS,
+    planUsage: { usedMicros: usd(10), includedMicros: usd(50), onPacePercent: null },
+  };
+  const platform = await read(starter);
+  assert.equal(platform.taskFee, '25¢');
+  assert.equal(platform.offers.extraUsageTaskFee, '30¢');
+  assert.equal(platform.offers.bonusPercent, 0);
+  // A typical task is 15¢ of tokens: 40¢ from plan usage, 45¢ from extra usage.
+  assert.deepEqual(platform.balance, { left: '$40', tasksLeft: 'about 100', exhausted: false, stage: 'plan' });
+  assert.equal(platform.plan.tasks, 'about 125');
+  assert.deepEqual(platform.offers.plans.find((plan) => plan.key === 'plus')?.tasks, { platform: 'about 250', ownKey: '400' });
+  assert.deepEqual(platform.topUp.packs.map((pack) => pack.tasks), ['about 50', 'about 100', 'about 200']);
+
+  const ownKey = await read({ ...starter, funding: 'own_key', plan: { key: 'plus', name: 'Plus', priceCents: 10_000 } });
+  assert.deepEqual(ownKey.topUp.packs.map((pack) => pack.tasks), ['83', '166', '333'], 'not 100, 200 and 400 at the plan\'s fee');
+
+  const usedUp: BillingSummary = { ...starter, planUsage: { usedMicros: usd(50), includedMicros: usd(50), onPacePercent: null },
+    extraUsage: { remainingMicros: usd(40), frozen: false, expiresAt: new Date('2027-10-28T17:00:00Z') } };
+  assert.deepEqual((await read(usedUp)).balance, { left: '$40', tasksLeft: 'about 80', exhausted: false, stage: 'extra' });
+  assert.deepEqual((await read({ ...usedUp, funding: 'own_key' })).balance, { left: '$40', tasksLeft: '133', exhausted: false, stage: 'extra' });
+});
+
+test('at the top-up limit, the next plan compares task fees while plan usage\'s is lower, and says it covers this month only when it does', async (t) => {
+  const upgrade = async (summary: BillingSummary) =>
+    (await (await admin(t, { port: savedCardPort(summary).port })('/admin/api/billing')).json() as { topUp: { upgrade: unknown } }).topUp.upgrade;
+  const starter: BillingSummary = { ...STARTER_AT_LIMIT, offers: TWO_FEE_OFFERS, planUsage: { usedMicros: usd(50), includedMicros: usd(50), onPacePercent: null } };
+  assert.deepEqual(await upgrade(starter),
+    { key: 'plus', price: '$100', included: '$100', covered: '$100', coversThisMonth: true, taskFees: { plan: '25¢', extra: '30¢' } });
+  const team: BillingSummary = {
+    ...starter,
+    plan: { key: 'team', name: 'Team', priceCents: 20_000 },
+    planUsage: { usedMicros: usd(200), includedMicros: usd(200), onPacePercent: null },
+    autoTopUp: { ...TOP_UP_ON, pack: { rule: 'plan', key: 'extra_usage_100' }, limit: { rule: 'plan', cents: 20_000 }, usedCents: 20_000 },
+  };
+  assert.deepEqual(await upgrade(team),
+    { key: 'growth', price: '$300', included: '$300', covered: '$400', coversThisMonth: false, taskFees: { plan: '25¢', extra: '30¢' } });
+
+  assert.deepEqual(planTaskSaving({ taskFeeMicros: usd(0.25), extraUsageTaskFeeMicros: usd(0.3) }), { plan: '25¢', extra: '30¢' });
+  assert.equal(planTaskSaving({ taskFeeMicros: usd(0.3) }), null, 'a host that prices extra usage\'s tasks the same says nothing');
+  assert.equal(planTaskSaving({ taskFeeMicros: usd(0.3), extraUsageTaskFeeMicros: usd(0.3) }), null);
+  assert.equal(planTaskSaving({ taskFeeMicros: usd(0.3), extraUsageTaskFeeMicros: usd(0.25) }), null, 'nothing to gain from a plan whose tasks cost more');
 });
 
 test('only an own key with no plan reads the price of the lowest plan an own key needs, and the tasks it covers', async (t) => {
@@ -561,7 +613,7 @@ test('an Owner reads auto top-up formatted, with the next plan and what this mon
       { key: 'extra_usage_100', price: '$100', cents: 10_000, tasks: 'about 200' },
     ],
     planPack: 'extra_usage_50',
-    upgrade: { key: 'plus', price: '$100', included: '$120', covered: '$110' },
+    upgrade: { key: 'plus', price: '$100', included: '$120', covered: '$110', coversThisMonth: true, taskFees: null },
   });
   assert.deepEqual(owner.inApp, { planChange: true, extraUsage: true });
   assert.deepEqual(owner.autoTopUp, { kind: 'plan', on: true, limitReached: true });

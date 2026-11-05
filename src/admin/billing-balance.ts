@@ -1,6 +1,6 @@
 import type { BillingSummary, PlanOffer } from '../config/platform-billing.ts';
 import { formatUsageDollars, type UsageMicros } from '../usage/usage-display.ts';
-import { formatTasks } from './billing-tasks.ts';
+import { formatTasks, taskRates } from './billing-tasks.ts';
 
 /** Formatted dollars and tasks; `stage` says whether they count the plan's usage or, once it is used up, extra usage. */
 export interface BillingBalance {
@@ -30,7 +30,7 @@ export function balance(summary: BillingSummary, planOffer: PlanOffer | null | u
   const left = (stage === 'plan' && summary.plan ? Math.max(0, first) : all) as UsageMicros;
   return {
     left: formatUsageDollars(left, 'down'),
-    tasksLeft: formatTasks(left, summary.funding, summary.offers),
+    tasksLeft: formatTasks(left, summary.funding, taskRates(summary.offers, stage)),
     exhausted: all === 0,
     stage,
   };

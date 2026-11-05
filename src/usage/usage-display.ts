@@ -11,6 +11,11 @@ export function formatUsageDollars(micros: UsageMicros, rounding: 'half_up' | 'd
   return formatPriceCents(micros < 0 ? -cents : cents);
 }
 
+/** A fee under a dollar in cents, "30¢"; none as "$0". */
+export function formatFee(micros: UsageMicros): string {
+  return micros > 0 && micros < 100 * MICROS_PER_CENT ? `${Math.round(micros / MICROS_PER_CENT)}¢` : formatUsageDollars(micros);
+}
+
 export function formatPriceCents(cents: number): string {
   const magnitude = Math.abs(cents);
   const dollars = WHOLE_DOLLARS.format(Math.floor(magnitude / 100));
