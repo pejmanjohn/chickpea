@@ -3512,13 +3512,25 @@
     return !!(billing.inApp && billing.inApp.extraUsage) && !(billing.topUp && !billing.topUp.card);
   }
 
+  // A task paid from extra usage costs its own fee where the host prices it
+  // apart from the plan's; empty while one fee covers both.
+  function billingExtraUsageFee(billing) {
+    var fee = billing.offers.extraUsageTaskFee;
+    return fee && fee !== billing.taskFee ? esc(fee) : '';
+  }
+
+  function billingExtraUsageFeeSentence(billing) {
+    var fee = billingExtraUsageFee(billing);
+    return fee ? ' Tasks paid from it are ' + fee + '.' : '';
+  }
+
   function billingExtraUsageConfirmHtml(billing, key) {
     var offer = billing.offers.extraUsage.find(function (candidate) { return candidate.key === key; });
     if (!offer) return '';
     var card = billing.topUp && billing.topUp.card ? esc(billing.topUp.card) : 'your card';
     var busy = !!state.billingBusy;
     return '<div class="plan-confirm" role="group" aria-label="Confirm extra usage"><p><b>Add ' + esc(offer.usage) + ' of usage?</b></p>' +
-      '<p>It&rsquo;s charged to ' + card + ', plus tax, and keeps ' + offer.validMonths + ' months.</p><div class="plan-confirm-actions">' +
+      '<p>It&rsquo;s charged to ' + card + ', plus tax, and keeps ' + offer.validMonths + ' months.' + billingExtraUsageFeeSentence(billing) + '</p><div class="plan-confirm-actions">' +
       '<button type="button" class="btn btn-ghost btn-sm" data-action="billing-extra-usage-cancel"' + (busy ? ' disabled' : '') + '>Cancel</button>' +
       '<button type="button" class="btn btn-primary btn-sm" data-action="billing-extra-usage-confirm" data-key="' + esc(offer.key) + '"' + (busy ? ' disabled' : '') + '>' +
       (state.billingBusy === "extra_usage:" + offer.key ? 'Adding&hellip;' : 'Add ' + esc(offer.price)) + '</button></div></div>';
@@ -3780,7 +3792,8 @@
     var pack = billing.offers.extraUsage.find(function (offer) { return offer.key === topUp.pack.key; });
     var months = pack ? pack.validMonths : 12;
     var packTasks = (topUp.packs.find(function (candidate) { return candidate.key === topUp.pack.key; }) || {}).tasks;
-    var general = 'Adds extra usage when your plan&rsquo;s usage runs out, up to a monthly limit. Extra usage keeps ' + months + ' months while you have a plan.';
+    var general = 'Adds extra usage when your plan&rsquo;s usage runs out, up to a monthly limit. Extra usage keeps ' + months + ' months while you have a plan.' +
+      billingExtraUsageFeeSentence(billing);
     var foot = '<div class="auto-foot"><span>' + (topUp.card ? 'Top-ups are charged to ' + esc(topUp.card) + ', plus tax.' : 'Auto top-up needs a saved card.') + '</span>' +
       (topUp.pause ? '' : billingButtonHtml("billing-update-card", topUp.card ? "Update card" : "Add card", "", "portal", "btn-ghost btn-sm")) + '</div>';
     if (!topUp.enabled) {
@@ -3796,7 +3809,7 @@
       : '';
     var desc = edit ? general
       : 'When your ' + (own ? 'tasks run' : 'usage runs') + ' out, adds ' + esc(topUp.pack.price) + ' of extra usage so your Agents keep working. Up to ' +
-        esc(topUp.limit.amount) + ' a month. Extra usage keeps ' + months + ' months.';
+        esc(topUp.limit.amount) + ' a month. Extra usage keeps ' + months + ' months.' + billingExtraUsageFeeSentence(billing);
     var busy = !!state.billingBusy;
     var action = edit ? ''
       : pausedAtLimit ? '<button type="button" class="btn btn-primary btn-sm" data-action="billing-top-up-edit"' + (busy ? ' disabled' : '') + '>Raise limit</button>'
@@ -3809,8 +3822,12 @@
       extra = topUp.pause ? '' : '<div class="auto-use">' + billingMeterHtml("Top-ups this month", topUp.percent, null, pausedAtLimit,
         'Top-ups this month: <b>' + esc(topUp.used) + '</b> of your ' + esc(topUp.limit.amount) + ' limit', topUp.resets ? 'Limit resets ' + esc(topUp.resets) : '') + '</div>';
       if (pausedAtLimit && topUp.upgrade) {
+        var fees = topUp.upgrade.taskFees;
+        var nextPlan = 'The ' + esc(topUp.upgrade.price) + ' plan ' +
+          (fees && topUp.upgrade.coversThisMonth ? 'covers that as plan usage' : 'includes ' + esc(topUp.upgrade.included) + ' a month') +
+          (fees ? ', at ' + esc(fees.plan) + ' a task instead of ' + esc(fees.extra) : '') + '.';
         extra += '<div class="plan-confirm auto-alert"><p>Your ' + esc(topUp.plan.price) + ' plan and ' + esc(topUp.used) + ' of top-ups covered ' + esc(topUp.upgrade.covered) +
-          ' of usage this month. The ' + esc(topUp.upgrade.price) + ' plan includes ' + esc(topUp.upgrade.included) + ' a month.</p><div class="plan-confirm-actions">' +
+          ' of usage this month. ' + nextPlan + '</p><div class="plan-confirm-actions">' +
           '<button type="button" class="btn btn-soft btn-sm" data-action="billing-see-plan" data-key="' + esc(topUp.upgrade.key) + '"' + (busy ? ' disabled' : '') + '>See the ' + esc(topUp.upgrade.price) + ' plan</button></div></div>';
       }
       extra += topUp.pause ? topUpPauseHtml(topUp) : billingErrorHtml("top_up");
@@ -4074,12 +4091,13 @@
     var offers = billing.offers;
     var yours = function (card) { return billing.funding === card ? ' <span class="plan-yours">Yours</span>' : ''; };
     var fee = esc(billing.taskFee);
+    var extraFee = billingExtraUsageFee(billing);
     var chatFree = offers.chatReplyFee === "$0";
     var row = function (label, platform, ownKey) { return '<tr><th scope="row">' + label + '</th><td>' + platform + '</td><td>' + ownKey + '</td></tr>'; };
     var facts = [
       offers.bonusPercent > 0 ? ['is-bonus', offers.bonusPercent + '% bonus usage on every plan'] : null,
       offers.rolloverMonths > 0 ? ['is-rollover', 'Unused plan usage carries over ' + billingMonths(offers.rolloverMonths)] : null,
-      offers.extraUsage.length ? ['is-extra', 'Extra usage keeps ' + offers.extraUsage[0].validMonths + ' months'] : null
+      offers.extraUsage.length ? ['is-extra', 'Extra usage keeps ' + offers.extraUsage[0].validMonths + ' months' + (extraFee ? ', and tasks paid from it are ' + extraFee : '')] : null
     ].filter(Boolean);
     var example = function (ask, counts) { return '<li><span>&ldquo;' + ask + '&rdquo;</span><b>' + counts + '</b></li>'; };
     return '<section class="plan-section plan-how" aria-labelledby="plan-how-heading"><div class="plan-section-head"><div><h2 class="section-title" id="plan-how-heading">How usage works</h2>' +

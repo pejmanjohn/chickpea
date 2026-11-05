@@ -1,4 +1,4 @@
-import { formatTasks, type TaskRates } from '../admin/billing-tasks.ts';
+import { formatTasks, planTaskSaving, taskRates, type TaskFees, type TaskRates } from '../admin/billing-tasks.ts';
 import { deploymentTenancy } from '../config/installation-scope.ts';
 import type { BillingActor, BillingFunding, CardSummary } from '../config/platform-billing.ts';
 import type { DailyLimitScope } from '../config/platform-funding.ts';
@@ -30,10 +30,10 @@ export interface UsageAlert {
     | { readonly enabled: true; readonly packCents: number; readonly limitCents: number; readonly usedCents: number }
     | { readonly enabled: false }
     | null;
-  /** At 100 only: the extra usage the Agents draw on now. */
+  /** At 100 only: the extra usage the Agents draw on now, with the rates to count its tasks at extra usage's fee. */
   readonly extraUsage?: {
     readonly remainingMicros: UsageMicros;
-    readonly tasks?: ({ readonly funding: BillingFunding } & TaskRates) | null;
+    readonly tasks?: ({ readonly funding: BillingFunding } & TaskRates & TaskFees) | null;
   } | null;
 }
 
@@ -64,6 +64,8 @@ export type OwnerBillingNotice = { readonly planPageUrl: string } & (
     readonly resumesAt: Date | null;
     readonly plan?: PlanAmounts | null;
     readonly nextPlan?: PlanAmounts | null;
+    /** Absent or null where the host doesn't say, which compares the plans in usage alone. */
+    readonly taskFees?: TaskFees | null;
   }
   | { readonly kind: 'top_up_declined'; readonly card?: CardSummary | null }
   | { readonly kind: 'top_up_unconfirmed'; readonly amountCents: number }
@@ -180,7 +182,7 @@ const ALERT_COPY: Record<UsageAlert['threshold'], (alert: UsageAlert) => Message
         buttons: ['upgrade', 'add_extra_usage'],
       };
     }
-    const tasks = extra.tasks ? formatTasks(extra.remainingMicros, extra.tasks.funding, extra.tasks) : null;
+    const tasks = extra.tasks ? formatTasks(extra.remainingMicros, extra.tasks.funding, taskRates(extra.tasks, 'extra')) : null;
     const taskCount = !tasks || tasks === '0' ? '' : `, ${tasks} ${tasks === '1' ? 'task' : 'tasks'}`;
     return {
       text: "You've used all of your plan's usage for this month. Your Agents are now using extra usage, " +
@@ -209,6 +211,18 @@ export function ownerBillingNoticeMessage(notice: OwnerBillingNotice): UsageAler
   return ownerMessage(noticeCopy(notice), notice.planPageUrl);
 }
 
+/** What this month's plan and top-ups covered, beside the next plan, which claims to cover that only when its usage does. */
+function nextPlanDetail(plan: PlanAmounts, nextPlan: PlanAmounts, usedCents: number, taskFees: TaskFees | null | undefined): string {
+  const covered = (plan.includedMicros + usedCents * MICROS_PER_CENT) as UsageMicros;
+  const fees = taskFees ? planTaskSaving(taskFees) : null;
+  const offer = fees && nextPlan.includedMicros >= covered
+    ? 'covers that as plan usage'
+    : `includes ${formatUsageDollars(nextPlan.includedMicros)} of usage a month`;
+  return `Your ${formatPriceCents(plan.priceCents)} plan and ${formatPriceCents(usedCents)} of top-ups ` +
+    `covered ${formatUsageDollars(covered)} of usage this month. ` +
+    `The ${formatPriceCents(nextPlan.priceCents)} plan ${offer}${fees ? `, at ${fees.plan} a task instead of ${fees.extra}` : ''}.`;
+}
+
 function noticeCopy(notice: OwnerBillingNotice): MessageCopy {
   switch (notice.kind) {
     case 'top_up_added': {
@@ -232,14 +246,7 @@ function noticeCopy(notice: OwnerBillingNotice): MessageCopy {
       return {
         text: `Your workspace has used this month's usage and its ${formatPriceCents(notice.limitCents)} auto top-up, ` +
           `so your Agents are ${paused}`,
-        ...(plan && nextPlan
-          ? {
-            detail: `Your ${formatPriceCents(plan.priceCents)} plan and ${formatPriceCents(notice.usedCents)} of top-ups ` +
-              `covered ${formatUsageDollars((plan.includedMicros + notice.usedCents * MICROS_PER_CENT) as UsageMicros)} of usage this month. ` +
-              `The ${formatPriceCents(nextPlan.priceCents)} plan includes ${formatUsageDollars(nextPlan.includedMicros)} ` +
-              'of usage a month.',
-          }
-          : {}),
+        ...(plan && nextPlan ? { detail: nextPlanDetail(plan, nextPlan, notice.usedCents, notice.taskFees) } : {}),
         buttons: nextPlan
           ? [{ kind: 'upgrade', label: `Upgrade to ${formatPriceCents(nextPlan.priceCents)}` }, 'raise_limit']
           : ['raise_limit'],

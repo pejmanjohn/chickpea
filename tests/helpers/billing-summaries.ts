@@ -87,6 +87,14 @@ export const TOP_UP_OFFERS: BillingSummary['offers'] = {
   })),
 };
 
+/** Plans whose usage is their price, and a task that costs 25¢ from plan usage and 30¢ from extra usage. */
+export const TWO_FEE_OFFERS: BillingSummary['offers'] = {
+  ...TOP_UP_OFFERS,
+  plans: TOP_UP_OFFERS.plans.map((plan) => ({ ...plan, includedMicros: usd(plan.priceCents / 100) })),
+  taskFeeMicros: usd(0.25),
+  extraUsageTaskFeeMicros: usd(0.3),
+};
+
 /** Auto top-up on by default for the $50 plan: $50 packs up to $50 a month, nothing added yet. */
 export const TOP_UP_ON: NonNullable<BillingSummary['autoTopUp']> = {
   enabled: true,

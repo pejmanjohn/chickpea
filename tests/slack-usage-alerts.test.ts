@@ -309,6 +309,14 @@ test('the 100% alert counts tasks exactly on an own key, and says under 10 for a
   );
 });
 
+test('the 100% alert counts extra usage\'s tasks at its own fee where the host prices it apart from the plan\'s', () => {
+  const fees = { taskFeeMicros: 250_000 as UsageMicros, extraUsageTaskFeeMicros: 300_000 as UsageMicros, typicalTaskMicros: 150_000 as UsageMicros };
+  assert.match(usageAlertMessage(alert({ ...FULL, extraUsage: { remainingMicros: FORTY, tasks: { funding: 'platform', ...fees } } })).text,
+    / with \$40 left, about 80 tasks\.$/, 'a typical task from extra usage is 45¢, not 40¢');
+  assert.match(usageAlertMessage(alert({ ...FULL, extraUsage: { remainingMicros: FORTY, tasks: { funding: 'own_key', ...fees } } })).text,
+    / with \$40 left, 133 tasks\.$/);
+});
+
 test('the 100% alert on extra usage ends at the amount left when tasks cannot be counted', () => {
   const free = { funding: 'own_key', taskFeeMicros: 0 as UsageMicros, typicalTaskMicros: 400_000 as UsageMicros } as const;
   for (const extraUsage of [{ remainingMicros: FORTY }, { remainingMicros: FORTY, tasks: free }]) {
@@ -398,6 +406,25 @@ test('reaching the top-up limit says the Agents are paused until renewal and com
     button('upgrade', 'Upgrade to $100', at('upgrade'), true),
     button('raise_limit', 'Raise limit', at('raise-limit')),
   ]);
+});
+
+test('reaching the top-up limit compares the next plan\'s lower task fee where the host gives two, and says it covers this month only when it does', () => {
+  const detail = (plan: number, used: number, next: number, taskFees?: { taskFeeMicros: UsageMicros; extraUsageTaskFeeMicros?: UsageMicros }) =>
+    sections(notice({
+      kind: 'top_up_limit', limitCents: used * 100, usedCents: used * 100, resumesAt: PERIOD_END,
+      plan: { priceCents: plan * 100, includedMicros: plan * 1_000_000 as UsageMicros },
+      nextPlan: { priceCents: next * 100, includedMicros: next * 1_000_000 as UsageMicros },
+      ...(taskFees ? { taskFees } : {}),
+    }).blocks)[1];
+  const twoFees = { taskFeeMicros: 250_000 as UsageMicros, extraUsageTaskFeeMicros: 300_000 as UsageMicros };
+  assert.equal(detail(50, 50, 100, twoFees),
+    'Your $50 plan and $50 of top-ups covered $100 of usage this month. The $100 plan covers that as plan usage, at 25¢ a task instead of 30¢.');
+  assert.equal(detail(200, 200, 300, twoFees),
+    'Your $200 plan and $200 of top-ups covered $400 of usage this month. The $300 plan includes $300 of usage a month, at 25¢ a task instead of 30¢.');
+  for (const sameFee of [undefined, { taskFeeMicros: 300_000 as UsageMicros }, { taskFeeMicros: 300_000 as UsageMicros, extraUsageTaskFeeMicros: 300_000 as UsageMicros }]) {
+    assert.equal(detail(50, 50, 100, sameFee),
+      'Your $50 plan and $50 of top-ups covered $100 of usage this month. The $100 plan includes $100 of usage a month.');
+  }
 });
 
 test('reaching the top-up limit with no renewal or next plan offers only to raise the limit', () => {

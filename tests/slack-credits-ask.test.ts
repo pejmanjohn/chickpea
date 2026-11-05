@@ -467,6 +467,8 @@ test('the Owner\'s private reply gives each cause and its Plan page buttons, wit
     [{ kind: 'credits_exhausted', cause: { kind: 'trial_used', plansFromCents: 2_500, bonusPercent: 20 } },
       'Choose a plan, then send this again. Plans start at $25 a month and include 20% more usage than they cost.',
       [['Choose a plan', 'choose']]],
+    [{ kind: 'credits_exhausted', cause: { kind: 'trial_used', plansFromCents: 2_500, bonusPercent: 0 } },
+      'Choose a plan, then send this again. Plans start at $25 a month.', [['Choose a plan', 'choose']]],
     [{ kind: 'credits_exhausted', cause: { kind: 'trial_ended', plansFromCents: 2_500 } },
       'Choose a plan, then send this again. Plans start at $25 a month.', [['Choose a plan', 'choose']]],
     [{ kind: 'credits_exhausted', cause: { kind: 'trial_ended' } }, 'Choose a plan, then send this again.',

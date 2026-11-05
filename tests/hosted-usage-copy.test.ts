@@ -44,6 +44,15 @@ const ALERTS: UsageAlert[] = [
       tasks: { funding: 'platform', taskFeeMicros: 100_000 as UsageMicros, typicalTaskMicros: 400_000 as UsageMicros },
     },
   },
+  {
+    ...base, threshold: 100, extraUsage: {
+      remainingMicros: 40_000_000 as UsageMicros,
+      tasks: {
+        funding: 'platform', taskFeeMicros: 250_000 as UsageMicros, extraUsageTaskFeeMicros: 300_000 as UsageMicros,
+        typicalTaskMicros: 150_000 as UsageMicros,
+      },
+    },
+  },
 ];
 
 const NOTICES: OwnerBillingNotice[] = [
@@ -52,6 +61,12 @@ const NOTICES: OwnerBillingNotice[] = [
     kind: 'top_up_limit', limitCents: 5_000, usedCents: 5_000, resumesAt: base.periodEnd,
     plan: { priceCents: 5_000, includedMicros: 60_000_000 as UsageMicros },
     nextPlan: { priceCents: 10_000, includedMicros: 120_000_000 as UsageMicros },
+  },
+  {
+    kind: 'top_up_limit', limitCents: 5_000, usedCents: 5_000, resumesAt: base.periodEnd,
+    plan: { priceCents: 5_000, includedMicros: 50_000_000 as UsageMicros },
+    nextPlan: { priceCents: 10_000, includedMicros: 100_000_000 as UsageMicros },
+    taskFees: { taskFeeMicros: 250_000 as UsageMicros, extraUsageTaskFeeMicros: 300_000 as UsageMicros },
   },
   { kind: 'top_up_declined', card: { brand: 'visa', last4: '4242' } },
   { kind: 'top_up_unconfirmed', amountCents: 5_000 },

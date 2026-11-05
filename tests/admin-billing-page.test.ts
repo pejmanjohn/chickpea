@@ -23,7 +23,7 @@ import type { ProviderKeyId } from '../src/config/provider-keys.ts';
 import { renderAdminPageWithInlineAssets as renderAdminPage } from './helpers/admin-ui.ts';
 import {
   NO_PLAN, OFFERS, OWN_KEY_NO_PLAN, PERIOD, PLAN_NO_PERIOD, STARTER_AT_LIMIT, STARTER_PLAN, STARTER_TOP_UP, STARTER_TOPPED, TEAM_DOWNGRADING,
-  TEAM_ENDING, TEAM_PLAN, TOP_UP_OFFERS, TOP_UP_ON, TRIAL_GRANT, usd,
+  TEAM_ENDING, TEAM_PLAN, TOP_UP_OFFERS, TOP_UP_ON, TRIAL_GRANT, TWO_FEE_OFFERS, usd,
 } from './helpers/billing-summaries.ts';
 
 interface FakeResponse {
@@ -906,6 +906,7 @@ test('how usage works compares the two ways to pay, marks yours, and says what c
     'However many steps it takes, it’s one task and one 30¢ fee.');
   assertShows(how, '“Make this reply friendlier” Chat “Summarize #support and file the bugs in Linear” 1 task “Research three competitors’ pricing and write it up” 1 task');
   assertShows(how, '20% bonus usage on every plan Unused plan usage carries over one month Extra usage keeps 12 months');
+  assertHides(how, 'paid from it');
   assert.match((await harness({ path: '/admin/plan', billingOffered: true, summary: OWN_KEY_TEAM })).html(), /<th scope="col">Your own API key <span class="plan-yours">Yours<\/span><\/th>/);
   const chatFee = (await harness({ path: '/admin/plan', billingOffered: true, summary: { ...TEAM_PLAN, offers: { ...OFFERS, chatReplyFeeMicros: usd(0.05) } } })).html();
   assertShows(chatFee, 'Chat reply Model tokens + 5¢ 5¢');
@@ -1338,6 +1339,7 @@ test('editing auto top-up shows the authorization only when the pack or the limi
   await page.click({ 'data-action': 'billing-top-up-edit' });
   let card = autoCard(page.html());
   assertShows(card, 'Adds extra usage when your plan’s usage runs out, up to a monthly limit. Extra usage keeps 12 months while you have a plan.');
+  assertHides(card, 'paid from it');
   assertShows(card, 'Each time, add $25 $50 $100 About 100 tasks with models included');
   assert.deepEqual([...card.matchAll(/<option value="([^"]*)"( selected)?>([^<]*)<\/option>/g)].map((option) => decoded(option[3]!)),
     ['Same as your plan · $50 a month', '$100 a month', '$150 a month', '$200 a month', '$300 a month', '$500 a month']);
@@ -1453,6 +1455,66 @@ test('with the plan used up and the limit reached, extra usage left keeps the Ag
   assertShows(card, 'No more top-ups this month. When this extra usage runs out, your Agents pause until Nov 7. Auto top-up On');
   assert.match(card, /data-action="billing-top-up-edit">Edit</);
   assertHides(card, 'See the');
+});
+
+test('with a 25¢ task fee on plan usage and 30¢ on extra usage, plan cards and how usage works show 25¢, and a 0% bonus shows no bonus', async () => {
+  const twoFees: BillingSummary = { ...TEAM_PLAN, offers: TWO_FEE_OFFERS, planUsage: { usedMicros: usd(128), includedMicros: usd(200), onPacePercent: 80 } };
+  const html = (await harness({ path: '/admin/plan', billingOffered: true, summary: twoFees })).html();
+  assertShows(hero(html), 'This month $92 left About 225 tasks');
+  const how = html.slice(html.indexOf('id="plan-how-heading"'));
+  assertShows(how, 'Chat reply Model tokens at list price Included Task Model tokens + 25¢ 25¢ Who bills tokens');
+  assertShows(how, 'it’s one task and one 25¢ fee.');
+  assertShows(how, 'Unused plan usage carries over one month Extra usage keeps 12 months, and tasks paid from it are 30¢');
+  assertShows(card(html, 'platform'), '$200 of usage a month. Task counts assume a typical mix on the default model.');
+  assertShows(card(html, 'platform'), 'Model tokens at list price, no markup Unused usage rolls over for one month Every feature and connector');
+  for (const which of ['platform', 'own_key'] as const) assertHides(card(html, which), '30¢');
+  assertHides(html, 'bonus');
+  assertHides(html, 'more than you pay');
+
+  const ownKey = (await harness({ path: '/admin/plan', billingOffered: true, summary: { ...twoFees, funding: 'own_key' } })).html();
+  assertShows(card(ownKey, 'own_key'), 'Your provider bills tokens, so the whole plan goes to tasks, 25¢ each.');
+  assertShows(hero(ownKey), 'This month 368 tasks left');
+});
+
+test('with a 30¢ task fee on extra usage, auto top-up and buying extra usage say so, and count extra usage\'s tasks at 30¢', async () => {
+  const twoFees: BillingSummary = { ...STARTER_TOP_UP, offers: TWO_FEE_OFFERS, planUsage: { usedMicros: usd(36.6), includedMicros: usd(50), onPacePercent: 96 } };
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: twoFees, port: savedCardHost([]) });
+  assertShows(autoCard(page.html()), 'When your usage runs out, adds $50 of extra usage so your Agents keep working. Up to $50 a month. ' +
+    'Extra usage keeps 12 months. Tasks paid from it are 30¢. Edit');
+  await page.click({ 'data-action': 'billing-top-up-edit' });
+  assertShows(autoCard(page.html()), 'Adds extra usage when your plan’s usage runs out, up to a monthly limit. ' +
+    'Extra usage keeps 12 months while you have a plan. Tasks paid from it are 30¢.');
+  assertShows(autoCard(page.html()), 'Each time, add $25 $50 $100 About 100 tasks with models included');
+  await page.click({ 'data-action': 'billing-top-up-cancel' });
+  await page.click({ 'data-action': 'billing-add-extra-usage', 'data-key': 'extra_usage_50' });
+  assertShows(hero(page.html()), 'Add $50 of usage? It’s charged to Visa ending 4242, plus tax, and keeps 12 months. Tasks paid from it are 30¢. Cancel Add $50');
+
+  const ownKey: BillingSummary = {
+    ...twoFees,
+    funding: 'own_key',
+    plan: { key: 'plus', name: 'Plus', priceCents: 10_000 },
+    planUsage: { usedMicros: usd(36.6), includedMicros: usd(100), onPacePercent: 64 },
+    autoTopUp: { ...TOP_UP_ON, pack: { rule: 'plan', key: 'extra_usage_100' }, limit: { rule: 'plan', cents: 10_000 } },
+  };
+  assertShows(autoCard((await harness({ path: '/admin/plan', billingOffered: true, summary: ownKey })).html()),
+    'On your own key your Agents can always chat. Only tasks use your plan, and $100 of extra usage is 333 tasks.');
+
+  const topped: BillingSummary = { ...STARTER_TOPPED, offers: TWO_FEE_OFFERS, planUsage: { usedMicros: usd(50), includedMicros: usd(50), onPacePercent: null } };
+  assertShows(hero((await harness({ path: '/admin/plan', billingOffered: true, summary: topped })).html()), 'Your usage $42.10 left About 90 tasks');
+});
+
+test('with two task fees, at the top-up limit the card compares the next plan\'s task fee, and says it covers this month only when its usage does', async () => {
+  const starter: BillingSummary = { ...STARTER_AT_LIMIT, offers: TWO_FEE_OFFERS, planUsage: { usedMicros: usd(50), includedMicros: usd(50), onPacePercent: null } };
+  assertShows(autoCard((await harness({ path: '/admin/plan', billingOffered: true, summary: starter })).html()),
+    'Your $50 plan and $50 of top-ups covered $100 of usage this month. The $100 plan covers that as plan usage, at 25¢ a task instead of 30¢. See the $100 plan');
+  const team: BillingSummary = {
+    ...starter,
+    plan: { key: 'team', name: 'Team', priceCents: 20_000 },
+    planUsage: { usedMicros: usd(200), includedMicros: usd(200), onPacePercent: null },
+    autoTopUp: { ...TOP_UP_ON, pack: { rule: 'plan', key: 'extra_usage_100' }, limit: { rule: 'plan', cents: 20_000 }, usedCents: 20_000 },
+  };
+  assertShows(autoCard((await harness({ path: '/admin/plan', billingOffered: true, summary: team })).html()),
+    'Your $200 plan and $200 of top-ups covered $400 of usage this month. The $300 plan includes $300 a month, at 25¢ a task instead of 30¢. See the $300 plan');
 });
 
 test('a declined card pauses auto top-up: the Owner reads why and when, updates the card, and tries again once', async () => {
