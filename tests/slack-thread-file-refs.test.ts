@@ -15,6 +15,7 @@ import {
   recordSlackThreadEventMessage,
 } from '../src/slack/public-context.ts';
 import { retainThreadFiles } from '../src/slack/thread-files.ts';
+import { conversationThreadImageInventory } from '../src/slack/thread-images.ts';
 import { hydrateTurnSlackContext } from '../src/slack/turn-context-reads.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
@@ -211,3 +212,44 @@ test('a file keeps its handle when the shared app switches from a Slack read on 
     assert.deepEqual(retainThreadFiles(fromRecord.files ?? []).map(({ id }) => id), firstList);
   } finally { store.close(); }
 });
+
+const UNDESCRIBED_FILE_NOTICES: ReadonlyArray<readonly [string, { files?: unknown[] }]> = [
+  ['file objects that carry only an id', {
+    files: [{ id: 'F0PEAR00001', mode: 'file_access', file_access: 'check_file_info', created: 1201, user: 'UBOT' }],
+  }],
+  ['no file list', {}],
+];
+
+for (const [shape, notice] of UNDESCRIBED_FILE_NOTICES) {
+  test(`the Agent's generated image is still an img handle on the next turn after a change notice with ${shape}`, async () => {
+    const store = await memoryStore();
+    try {
+      const THREAD = '1200.000100';
+      const REPLY = '1201.000100';
+      const PEAR = 'F0PEAR00001';
+      const request = turn({ threadTs: THREAD, messageTs: THREAD, contextMode: 'channel_history' });
+      await recordAcceptedSlackHumanMessage(store, request, { runtimeContract: 'chickpea-v1' } as never, undefined);
+      const { images } = recordedArtifactFiles([{
+        schemaVersion: 2, fileId: PEAR, filename: 'pear.png', kind: 'image', byteLength: 900, stagedAt: 1,
+        permalink: `https://example.slack.com/files/UBOT/${PEAR}/pear.png`,
+      } as never]);
+      await recordDeliveredSlackAgentMessage(store, request, { runtimeContract: 'chickpea-v1', agentId: 'agent_a' } as never,
+        { messageTs: REPLY, text: 'Here is the pear.', images });
+      await reconcileSlackPublicContextMutation(store, 'T1', {
+        type: 'message', subtype: 'message_changed', channel: 'C1', ts: '1201.500000', event_ts: '1201.500000',
+        message: {
+          type: 'message', user: 'UBOT', bot_id: 'B1', ts: REPLY, thread_ts: THREAD, ...notice,
+          text: `Here is the pear.\n\n<https://example.slack.com/files/UBOT/${PEAR}/pear.png|pear.png>`,
+        },
+      } as never);
+
+      const next = turn({ threadTs: THREAD, messageTs: '1202.000100', source: 'implicit_thread_reply', eventId: 'Ev3' });
+      const hydrated = await hydrateTurnSlackContext({
+        client: NO_SLACK_READ as never, turn: next, sharedAppReads: true, state: PACED_STATE as never, record: store,
+      });
+      assert.equal(hydrated.window?.reason, 'thread_record');
+      assert.match(conversationThreadImageInventory(next, hydrated.images).manifest,
+        /handle=img:1 \| origin=agent \| filename=pear\.png/);
+    } finally { store.close(); }
+  });
+}
