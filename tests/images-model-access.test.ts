@@ -128,8 +128,13 @@ function creditsInstallation(
   return { env, fundingCalls };
 }
 
-async function imageClient(env: PlatformEnv | undefined, settings: SqliteSettingsStore, fetchImpl: typeof fetch) {
-  const resolved = await resolveImageProvider(FLARE.id, env, settings, { baseUrl: BASE_URL, fetchImpl });
+async function imageClient(
+  env: PlatformEnv | undefined,
+  settings: SqliteSettingsStore,
+  fetchImpl: typeof fetch,
+  modelId: string = FLARE.id,
+) {
+  const resolved = await resolveImageProvider(modelId, env, settings, { baseUrl: BASE_URL, fetchImpl });
   assert.ok(resolved.ok, 'the image model resolves to a client');
   return resolved.client;
 }
@@ -266,6 +271,28 @@ test('a platform-funded image generation is admitted against credits, priced, an
     assert.equal(fundingCalls.charge[0]!.fundingSource, 'platform');
     assert.equal(fundingCalls.charge[0]!.priceVersionId, FLARE_PRICE_VERSION);
     assert.equal(fundingCalls.charge[0]!.listPriceUsdMicros, USAGE_PRICE_MICROS);
+  });
+});
+
+test('a platform-funded GPT Image 2.6 Flare edit is charged at its 2026-11-05 price', async (t) => {
+  const { settings, recorded } = useModelAccess(t, 'sk-platform-images');
+  t.mock.timers.setTime(Date.UTC(2026, 10, 5, 12));
+  const { env, fundingCalls } = creditsInstallation(t);
+  const usage = { input_tokens: 1_056, output_tokens: 824, total_tokens: 1_880, input_tokens_details: { text_tokens: 32, image_tokens: 1_024 } };
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    const { sent, fetchImpl } = provider(() => imagesResponse(200, { data: [{ b64_json: PIXEL_BASE64 }], usage }));
+    const client = await imageClient(env, settings, fetchImpl, 'openai/gpt-image-2.6-flare');
+    const result = await client.edit({ ...generation, inputs: [{ bytes: new Uint8Array([1, 2, 3]), mimeType: 'image/png' }] });
+
+    assert.ok(result.ok);
+    assert.equal(sent[0]!.url, `${BASE_URL}/images/edits`);
+    assert.deepEqual(fundingCalls.admit, [{ provider: 'openai', model: 'gpt-image-2.6-flare' }]);
+    assert.deepEqual(
+      fundingCalls.charge.map(({ model, priceVersionId, listPriceUsdMicros }) => ({ model, priceVersionId, listPriceUsdMicros })),
+      // 32×5 + 1,024×8 + 824×30 USD per million tokens.
+      [{ model: 'gpt-image-2.6-flare', priceVersionId: 'openai-image-gpt-image-2.6-flare_2026-11-05', listPriceUsdMicros: 33_072 }],
+    );
+    assert.deepEqual(fundingCalls.charge, recorded);
   });
 });
 
