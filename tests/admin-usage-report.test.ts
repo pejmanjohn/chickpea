@@ -274,14 +274,14 @@ test('each list\'s amounts read as cents that add up to the total as shown', () 
   }
 });
 
-test('the strip states auto top-up as the Plan page has it: on, paused or off', () => {
+test('the strip states auto top-up as the Plan page shows an Admin: on or off, never why it paused', () => {
   const topUp: NonNullable<BillingSummary['autoTopUp']> = {
     enabled: true, explicitlyOff: false, pack: { rule: 'plan', key: 'extra_usage_50' }, limit: { rule: 'plan', cents: 20_000 },
     usedCents: 0, resetsAt: PERIOD.end, pause: null, card: null,
   };
   const strip = (autoTopUp: NonNullable<BillingSummary['autoTopUp']>) => report({ summary: { ...TEAM_PLAN, autoTopUp } }).plan?.autoTopUp;
   assert.equal(strip(topUp), 'on');
-  assert.equal(strip({ ...topUp, pause: { kind: 'declined', at: PERIOD.start } }), 'paused');
+  assert.equal(strip({ ...topUp, pause: { kind: 'declined', at: PERIOD.start } }), 'on', 'a failed charge is an Owner\'s to see');
   assert.equal(strip({ ...topUp, enabled: false, explicitlyOff: true }), 'off');
   assert.equal(report({ summary: TEAM_PLAN }).plan?.autoTopUp, null, 'a host that offers no auto top-up');
 });

@@ -2813,7 +2813,7 @@
       copy = "<strong>Your provider bills model tokens directly.</strong> Set a spending limit with " + (provider || "each provider") + ". Chickpea estimates that spend at list prices.";
       action = '<button type="button" class="btn btn-ghost btn-sm" data-action="usage-open-settings">Model settings</button>';
     } else if (report.measure === "usage" && report.plan) {
-      var topUp = { on: " Auto top-up is on.", paused: " Auto top-up is paused.", off: " Auto top-up is off." }[report.plan.autoTopUp] || "";
+      var topUp = report.plan.autoTopUp === "on" ? " Auto top-up is on." : report.plan.autoTopUp === "off" ? " Auto top-up is off." : "";
       copy = "<strong>" + esc(report.plan.left) + " left.</strong>" + topUp;
     }
     return '<div class="usage-contract"><p>' + copy + '</p>' + action + '</div>';
