@@ -5,7 +5,19 @@ import { fileURLToPath } from 'node:url';
 
 import { isRecord } from '../../src/security/content-validation.ts';
 import { RELEASE_PRICE_CATALOGS } from '../../src/usage/pricing/catalog.ts';
-import { version } from '../../src/usage/pricing/catalogs/version.ts';
+import {
+  ANTHROPIC_PRICING_URL,
+  IMAGE_FIELDS,
+  TOKEN_FIELDS,
+  cloudflareModelUrl,
+  openAiModelUrl,
+  openRouterEndpointsUrl,
+  reviewVersionId,
+  reviewVersions,
+  type ReviewRates,
+  type ReviewRow,
+} from '../../src/usage/pricing/catalogs/review.ts';
+import { type RateInput, version } from '../../src/usage/pricing/catalogs/version.ts';
 import { currentPrices, type CurrentPrice } from '../../src/usage/pricing/review-due.ts';
 import type { UsagePriceRate, UsagePriceVersion } from '../../src/usage/pricing/types.ts';
 
@@ -14,24 +26,6 @@ const DAY = 24 * 60 * 60 * 1_000;
 export const REVIEW_INTERVAL_DAYS = 90;
 
 export const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models';
-export const ANTHROPIC_PRICING_URL = 'https://platform.claude.com/docs/en/about-claude/pricing.md';
-export const openRouterEndpointsUrl = (modelId: string) => `https://openrouter.ai/api/v1/models/${modelId}/endpoints`;
-export const openAiModelUrl = (modelId: string) => `https://developers.openai.com/api/docs/models/${modelId}.md`;
-export const cloudflareModelUrl = (modelId: string) =>
-  `https://raw.githubusercontent.com/cloudflare/cloudflare-docs/production/src/content/workers-ai-models/${modelId.slice(modelId.lastIndexOf('/') + 1)}.json`;
-
-const TOKEN_FIELDS = {
-  input: 'inputMicrosPerUnit',
-  output: 'outputMicrosPerUnit',
-  cacheRead: 'cacheReadMicrosPerUnit',
-  cacheWrite: 'cacheWriteMicrosPerUnit',
-  cacheWrite1h: 'cacheWrite1hMicrosPerUnit',
-} as const;
-const IMAGE_FIELDS = {
-  textInput: 'textInputMicrosPerUnit',
-  imageInput: 'imageInputMicrosPerUnit',
-  imageOutput: 'imageOutputMicrosPerUnit',
-} as const;
 type TokenField = keyof typeof TOKEN_FIELDS;
 type ImageField = keyof typeof IMAGE_FIELDS;
 export type PriceField = TokenField | ImageField | 'longContext.fromPromptTokens' | `longContext.${TokenField}`;
@@ -67,10 +61,6 @@ export interface FieldCheck {
   proposed?: number;
   reason?: string;
 }
-
-type RateInput = UsagePriceRate extends infer Rate
-  ? Rate extends UsagePriceRate ? Omit<Rate, 'priceVersionId'> : never
-  : never;
 
 export interface ProposedVersion {
   id: string;
@@ -292,11 +282,6 @@ function confirms(reading: SourceReading, fields: ReadonlyMap<PriceField, number
     const observation = reading.values[field]!;
     return 'value' in observation && observation.value === value;
   });
-}
-
-export function reviewVersionId(providerId: string, basis: UsagePriceRate['basis'], modelId: string, at: number): string {
-  const model = modelId.replace(/^@cf\//, '').replace(/[^a-z0-9.]+/g, '-');
-  return `${providerId}${basis === 'image_tokens' ? '-image' : ''}-${model}_${utcDay(at)}-review`;
 }
 
 function catalogFields(rate: UsagePriceRate): Map<PriceField, number> {
@@ -833,10 +818,15 @@ export async function writeReviewCatalog(result: PriceReviewResult, root = REPOS
   if (clashes.length > 0) throw new PriceReviewWriteRefused(`price version ids already exist: ${clashes.join(', ')}`);
 
   const versions = proposals.map((proposed) => version(versionInput(proposed, at)));
+  const reviewDueAt = at + REVIEW_INTERVAL_DAYS * DAY;
+  const rows = proposals.map((proposed) => reviewRow(proposed, reviewDueAt));
+  if (JSON.stringify(reviewVersions(at, reviewDueAt, rows)) !== JSON.stringify(versions)) {
+    throw new PriceReviewWriteRefused('the catalog rows would not reproduce the reviewed versions');
+  }
   const catalog = registerCatalog(await readFile(catalogFile, 'utf8'), exportName, `./catalogs/${day}-review.ts`);
   for (const { id, contentHash } of versions) hashes[id] = contentHash;
 
-  await writeFile(file, renderCatalogModule(proposals, at, exportName));
+  await writeFile(file, renderReviewCatalog(rows, at, exportName));
   await writeFile(catalogFile, catalog);
   await writeFile(hashesFile, `${JSON.stringify(hashes, null, 2)}\n`);
   return { file, exportName, versions };
@@ -870,48 +860,63 @@ function registerCatalog(source: string, exportName: string, modulePath: string)
     source.slice(listEnd);
 }
 
-function renderCatalogModule(proposals: readonly ProposedVersion[], at: number, exportName: string): string {
+/** Each source a row can name, so most rows name a builder instead of spelling the URL. */
+const ROW_SOURCES = { ANTHROPIC_PRICING_URL, cloudflareModelUrl, openAiModelUrl, openRouterEndpointsUrl };
+
+export function reviewRow(proposed: ProposedVersion, reviewDueAt: number): ReviewRow {
+  const { rate } = proposed;
+  const short = (values: object, fields: Record<string, string>): Record<string, unknown> => Object.fromEntries(Object.entries(fields)
+    .filter(([, field]) => (values as Record<string, unknown>)[field] !== undefined)
+    .map(([name, field]) => [name, (values as Record<string, number>)[field]]));
+  const rates = short(rate, rate.basis === 'image_tokens' ? IMAGE_FIELDS : TOKEN_FIELDS);
+  if (rate.basis === 'standard_input_output' && rate.longContext) {
+    rates.longContext = { fromPromptTokens: rate.longContext.fromPromptTokens, ...short(rate.longContext, TOKEN_FIELDS) };
+  }
+  const source = Object.values(ROW_SOURCES)
+    .find((named) => (typeof named === 'string' ? named : named(rate.modelId)) === proposed.sourceUrl) ?? proposed.sourceUrl;
+  const options = {
+    ...(rate.modelAliases.length === 1 && rate.modelAliases[0] === rate.modelId ? {} : { aliases: rate.modelAliases }),
+    ...(proposed.reviewDueAt === reviewDueAt ? {} : { reviewDueAt: proposed.reviewDueAt }),
+  };
+  return Object.keys(options).length > 0
+    ? [rate.providerId, rate.modelId, source, rates as ReviewRates, options]
+    : [rate.providerId, rate.modelId, source, rates as ReviewRates];
+}
+
+/** A review catalog module: one row per version, its long-context rates on a second line. */
+export function renderReviewCatalog(rows: readonly ReviewRow[], at: number, exportName: string): string {
   const day = utcDay(at);
-  const defaultDue = at + REVIEW_INTERVAL_DAYS * DAY;
+  const sourceName = (source: ReviewRow[2]) => Object.entries(ROW_SOURCES).find(([, named]) => named === source)?.[0];
+  const imports = [
+    ...Object.keys(ROW_SOURCES).filter((name) => rows.some(([, , source]) => sourceName(source) === name)),
+    'reviewVersions',
+  ];
   const lines = [
     `// Generated by \`npm run prices:review -- --write\` on ${day}. The pull request that adds this file is the approval.`,
-    "import type { UsagePriceVersion } from '../types.ts';",
-    "import { version } from './version.ts';",
+    `import { ${imports.join(', ')} } from './review.ts';`,
     '',
     `const REVIEWED_AT = ${dateUtc(at)};`,
     `const REVIEW_DUE_AT = REVIEWED_AT + ${REVIEW_INTERVAL_DAYS} * 24 * 60 * 60 * 1_000;`,
     '',
     `/** Prices checked against their sources on ${day}; each takes effect at the review instant. */`,
-    `export const ${exportName}: UsagePriceVersion[] = [`,
+    `export const ${exportName} = reviewVersions(REVIEWED_AT, REVIEW_DUE_AT, [`,
   ];
-  for (const proposed of proposals) {
-    lines.push(
-      '  version({',
-      `    id: ${quote(proposed.id)},`,
-      `    providerId: ${quote(proposed.rate.providerId)},`,
-      `    sourceUrl: ${quote(proposed.sourceUrl)},`,
-      '    effectiveFrom: REVIEWED_AT,',
-      '    reviewedAt: REVIEWED_AT,',
-      `    reviewDueAt: ${proposed.reviewDueAt === defaultDue ? 'REVIEW_DUE_AT' : dateUtc(proposed.reviewDueAt)},`,
-      "    currency: 'USD',",
-      '    rates: [{',
-      ...renderObject(proposed.rate, '      '),
-      '    }],',
-      '  }),',
-    );
+  for (const [providerId, modelId, source, rates, options] of rows) {
+    const { longContext, ...base } = rates as Record<string, number> & { longContext?: Record<string, number> };
+    const head = `  [${quote(providerId)}, ${quote(modelId)}, ${sourceName(source) ?? quote(source as string)}, { ${numbers(base)}`;
+    const rateText = longContext ? `${head},\n    longContext: { ${numbers(longContext)} } }` : `${head} }`;
+    const optionText = options && [
+      ...(options.aliases ? [`aliases: [${options.aliases.map(quote).join(', ')}]`] : []),
+      ...(options.reviewDueAt === undefined ? [] : [`reviewDueAt: ${dateUtc(options.reviewDueAt)}`]),
+    ].join(', ');
+    lines.push(`${rateText}${optionText ? `, { ${optionText} }` : ''}],`);
   }
-  lines.push('];', '');
+  lines.push(']);', '');
   return lines.join('\n');
 }
 
-function renderObject(value: object, indent: string): string[] {
-  return Object.entries(value).flatMap(([key, entry]) => {
-    if (Array.isArray(entry)) return [`${indent}${key}: [${entry.map((item) => quote(String(item))).join(', ')}],`];
-    if (typeof entry === 'object' && entry !== null) {
-      return [`${indent}${key}: {`, ...renderObject(entry as object, `${indent}  `), `${indent}},`];
-    }
-    return [`${indent}${key}: ${typeof entry === 'number' ? numberLiteral(entry) : quote(String(entry))},`];
-  });
+function numbers(values: Record<string, number>): string {
+  return Object.entries(values).map(([name, value]) => `${name}: ${numberLiteral(value)}`).join(', ');
 }
 
 function quote(text: string): string {

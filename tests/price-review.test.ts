@@ -7,25 +7,30 @@ import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
 import {
-  ANTHROPIC_PRICING_URL,
   OPENROUTER_MODELS_URL,
   PriceReviewUsageError,
   PriceReviewWriteRefused,
   REPOSITORY_ROOT,
   anthropicSlug,
-  cloudflareModelUrl,
-  openAiModelUrl,
-  openRouterEndpointsUrl,
   parseAccepts,
   renderReport,
   reviewPrices,
   scaledDecimal,
+  renderReviewCatalog,
+  reviewRow,
   writeReviewCatalog,
   type FetchImpl,
   type PriceReview,
   type PriceReviewResult,
 } from '../scripts/lib/price-review.ts';
+import {
+  ANTHROPIC_PRICING_URL,
+  cloudflareModelUrl,
+  openAiModelUrl,
+  openRouterEndpointsUrl,
+} from '../src/usage/pricing/catalogs/review.ts';
 import { version } from '../src/usage/pricing/catalogs/version.ts';
+import { PRICE_CATALOGS_2026_11_05_REVIEW } from '../src/usage/pricing/catalogs/2026-11-05-review.ts';
 import type { CurrentPrice } from '../src/usage/pricing/review-due.ts';
 import type { ImagePriceRate, TokenPriceRate, UsagePriceVersion } from '../src/usage/pricing/types.ts';
 
@@ -345,7 +350,7 @@ test('the report lists counts, then each verdict\'s section and the notes', asyn
 
 function tempRoot(): string {
   const root = mkdtempSync(path.join(os.tmpdir(), 'price-review-'));
-  for (const file of ['catalog.ts', 'types.ts', 'catalogs/version.ts', 'catalogs/released-hashes.json']) {
+  for (const file of ['catalog.ts', 'types.ts', 'catalogs/review.ts', 'catalogs/version.ts', 'catalogs/released-hashes.json']) {
     cpSync(path.join(REPOSITORY_ROOT, 'src/usage/pricing', file), path.join(root, 'src/usage/pricing', file));
   }
   return root;
@@ -391,7 +396,8 @@ test('--write adds one version per unchanged, changed or accepted price, registe
   assert.deepEqual((loaded[2]!.rates[0] as TokenPriceRate).longContext, GPT_6_SOL.longContext);
   assert.equal(loaded[1]!.sourceUrl, 'https://example.com/old-source', 'an unconfirmed accepted price keeps its old source');
   assert.equal(loaded[2]!.sourceUrl, openAiModelUrl('gpt-6-sol'));
-  assert.deepEqual(loaded.map(({ contentHash }) => contentHash), written?.versions.map(({ contentHash }) => contentHash));
+  assert.equal(JSON.stringify(loaded), JSON.stringify(written?.versions), 'the compact rows build the verbose versions, key order included');
+  assert.match(source, /^  \['openai', 'gpt-6-sol', openAiModelUrl, \{ input: 2_000_000,/m);
 
   const catalog = readFileSync(path.join(root, 'src/usage/pricing/catalog.ts'), 'utf8');
   assert.equal(catalog.split("import { PRICE_CATALOGS_2026_11_04_REVIEW } from './catalogs/2026-11-04-review.ts';").length, 2);
@@ -438,4 +444,14 @@ test('--write writes nothing when every price is current or unverified', async (
     price('cloudflare', '@cf/zai-org/glm-4.7-flash', GLM_4_7_FLASH),
   ]);
   assert.equal(await writeReviewCatalog(result, '/nonexistent-price-review-root'), null);
+});
+
+test('--write rerun on the 2026-11-05 review writes that file again, less its hand-written comments', () => {
+  const at = PRICE_CATALOGS_2026_11_05_REVIEW[0]!.reviewedAt;
+  const rows = PRICE_CATALOGS_2026_11_05_REVIEW.map(({ id, sourceUrl, reviewDueAt, rates }) => {
+    const { priceVersionId: _, ...rate } = rates[0]!;
+    return reviewRow({ id, sourceUrl, reviewDueAt, rate }, at + 90 * DAY);
+  });
+  const committed = readFileSync(path.join(REPOSITORY_ROOT, 'src/usage/pricing/catalogs/2026-11-05-review.ts'), 'utf8');
+  assert.equal(renderReviewCatalog(rows, at, 'PRICE_CATALOGS_2026_11_05_REVIEW'), committed.replace(/^  \/\/ .*\n/gm, ''));
 });
