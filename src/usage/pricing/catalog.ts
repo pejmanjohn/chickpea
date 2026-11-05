@@ -70,9 +70,10 @@ export function priceCatalogFor<Basis extends UsagePriceRate['basis']>(
   providerId: string,
   modelId: string,
   observedAt: number,
+  catalogs: readonly UsagePriceVersion[] = RELEASE_PRICE_CATALOGS,
 ): { version: UsagePriceVersion; rate: Extract<UsagePriceRate, { basis: Basis }> } | null {
   const pricedProviderId = canonicalPriceProviderId(providerId);
-  const candidates = RELEASE_PRICE_CATALOGS
+  const candidates = catalogs
     .filter((version) => version.providerId === pricedProviderId && version.effectiveFrom <= observedAt)
     .sort((left, right) => right.effectiveFrom - left.effectiveFrom);
   for (const version of candidates) {

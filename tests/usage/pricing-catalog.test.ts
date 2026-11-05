@@ -14,7 +14,10 @@ import { PRICE_CATALOGS_2026_10_24 } from '../../src/usage/pricing/catalogs/2026
 import { PRICE_CATALOGS_2026_11_05 } from '../../src/usage/pricing/catalogs/2026-11-05.ts';
 import type { ImagePriceRate, TokenPriceRate, UsagePriceVersion } from '../../src/usage/pricing/types.ts';
 
-const EARLIER_RELEASES = RELEASE_PRICE_CATALOGS.filter((version) =>
+/** The catalog without versions `npm run prices:review -- --write` adds; tests/price-review.test.ts covers those. */
+const HAND_WRITTEN = RELEASE_PRICE_CATALOGS.filter(({ id }) => !/_\d{4}-\d{2}-\d{2}-review$/.test(id));
+
+const EARLIER_RELEASES = HAND_WRITTEN.filter((version) =>
   ![
     ...PRICE_CATALOGS_2026_10_07,
     ...PRICE_CATALOGS_2026_10_07_OPENROUTER_MAKERS,
@@ -264,7 +267,7 @@ test('the OpenRouter makers catalog prices each model at its maker\'s own endpoi
   );
   assert.deepEqual(
     ['deepseek/deepseek-v4.1-flash', 'z-ai/glm-5.3-flash', 'moonshotai/kimi-k3'].map((slug) =>
-      [readAt - 1, readAt, reviewDueAt - 1].map((at) => priceCatalogFor('standard_input_output', 'openrouter', slug, at)?.version.id)),
+      [readAt - 1, readAt, reviewDueAt - 1].map((at) => priceCatalogFor('standard_input_output', 'openrouter', slug, at, HAND_WRITTEN)?.version.id)),
     [
       ['openrouter-deepseek-v4.1-flash_2026-10-07', 'openrouter-deepseek-v4.1-flash_2026-10-07-maker', 'openrouter-deepseek-v4.1-flash_2026-10-07-maker'],
       ['openrouter-glm-5.3-flash_2026-10-07', 'openrouter-glm-5.3-flash_2026-10-07-maker', 'openrouter-glm-5.3-flash_2026-10-07-maker'],

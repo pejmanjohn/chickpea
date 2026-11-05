@@ -5,6 +5,9 @@ import { test } from 'node:test';
 import { priceCatalogFor, RELEASE_PRICE_CATALOGS } from '../../src/usage/pricing/catalog.ts';
 import { currentPrices, priceReviewsDue } from '../../src/usage/pricing/review-due.ts';
 
+/** The catalog without versions `npm run prices:review -- --write` adds, so dated probes keep pinning this history. */
+const HAND_WRITTEN = RELEASE_PRICE_CATALOGS.filter(({ id }) => !/_\d{4}-\d{2}-\d{2}-review$/.test(id));
+
 const RELEASED_HASHES: Record<string, string> = JSON.parse(
   readFileSync(new URL('../../src/usage/pricing/catalogs/released-hashes.json', import.meta.url), 'utf8'),
 );
@@ -59,7 +62,7 @@ test('current prices are the versions serving charges, one per provider, basis a
 test('reviews due list the current prices due within the window or overdue, soonest first', () => {
   const at = Date.UTC(2026, 10, 5, 12);
   assert.deepEqual(
-    priceReviewsDue(at, { withinDays: 30 }).map(({ providerId, modelId, reviewDueAt, overdue }) =>
+    priceReviewsDue(at, { withinDays: 30, catalogs: HAND_WRITTEN }).map(({ providerId, modelId, reviewDueAt, overdue }) =>
       [providerId, modelId, new Date(reviewDueAt).toISOString().slice(0, 10), overdue]),
     [
       ['cloudflare', '@cf/zai-org/glm-5.2', '2026-11-15', false],
@@ -72,7 +75,7 @@ test('reviews due list the current prices due within the window or overdue, soon
     ],
   );
   const served = ['anthropic', 'openai', 'openrouter'];
-  const sol = priceReviewsDue(Date.UTC(2026, 10, 22), { withinDays: 30, providers: served })[0];
+  const sol = priceReviewsDue(Date.UTC(2026, 10, 22), { withinDays: 30, providers: served, catalogs: HAND_WRITTEN })[0];
   assert.deepEqual(sol, {
     providerId: 'openai',
     basis: 'standard_input_output',
@@ -81,8 +84,8 @@ test('reviews due list the current prices due within the window or overdue, soon
     reviewDueAt: Date.UTC(2026, 10, 22),
     overdue: true,
   });
-  const january = priceReviewsDue(Date.UTC(2027, 0, 6), { withinDays: 30, providers: served });
+  const january = priceReviewsDue(Date.UTC(2027, 0, 6), { withinDays: 30, providers: served, catalogs: HAND_WRITTEN });
   assert.ok(january.some(({ modelId, overdue }) => modelId === 'claude-opus-5-5' && overdue));
   assert.ok(january.every(({ providerId }) => served.includes(providerId)));
-  assert.deepEqual(priceReviewsDue(Date.UTC(2026, 10, 5, 12), { withinDays: 0, providers: served }), []);
+  assert.deepEqual(priceReviewsDue(Date.UTC(2026, 10, 5, 12), { withinDays: 0, providers: served, catalogs: HAND_WRITTEN }), []);
 });

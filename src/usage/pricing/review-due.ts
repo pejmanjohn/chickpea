@@ -14,15 +14,15 @@ export interface CurrentPrice {
 }
 
 /** The price each catalog model is charged at `at`, picked the way serving picks it. */
-export function currentPrices(at: number): CurrentPrice[] {
+export function currentPrices(at: number, catalogs: readonly UsagePriceVersion[] = RELEASE_PRICE_CATALOGS): CurrentPrice[] {
   const seen = new Set<string>();
   const prices: CurrentPrice[] = [];
-  for (const { providerId, rates } of RELEASE_PRICE_CATALOGS) {
+  for (const { providerId, rates } of catalogs) {
     for (const { basis, modelId } of rates) {
       const key = `${providerId}\n${basis}\n${modelId}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      const price = priceCatalogFor(basis, providerId, modelId, at);
+      const price = priceCatalogFor(basis, providerId, modelId, at, catalogs);
       if (price) prices.push({ providerId, modelId, version: price.version, rate: price.rate });
     }
   }
@@ -41,10 +41,10 @@ export interface PriceReviewDue {
 /** Current prices whose review is due within `withinDays` of `at`, or overdue, soonest first. */
 export function priceReviewsDue(
   at: number,
-  options: { withinDays: number; providers?: readonly string[] },
+  options: { withinDays: number; providers?: readonly string[]; catalogs?: readonly UsagePriceVersion[] },
 ): PriceReviewDue[] {
   const horizon = at + options.withinDays * DAY;
-  return currentPrices(at)
+  return currentPrices(at, options.catalogs)
     .filter(({ providerId, version }) =>
       version.reviewDueAt <= horizon && (!options.providers || options.providers.includes(providerId)))
     .map(({ providerId, modelId, version, rate }) => ({
