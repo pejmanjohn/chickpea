@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { RELEASE_PRICE_CATALOGS } from '../../src/usage/pricing/catalog.ts';
+import { priceCatalogFor, RELEASE_PRICE_CATALOGS } from '../../src/usage/pricing/catalog.ts';
 import { estimateUsage } from '../../src/usage/pricing/estimate.ts';
 
 const OBSERVED_AT = Date.UTC(2026, 6, 28, 12);
@@ -284,7 +284,8 @@ test('missing billable dimensions and effective dates never imply precision, and
     estimateUsage(measurement('openai', 'gpt-4.1-mini', 10, 5, { observedAt: AFTER_EVERY_REVIEW_DUE })),
     {
       estimateCompleteness: 'complete', estimateAmountMicros: 12, estimateCurrency: 'USD',
-      priceVersionId: 'openai_2026-10-06', priceUnknownReason: null,
+      priceVersionId: priceCatalogFor('standard_input_output', 'openai', 'gpt-4.1-mini', AFTER_EVERY_REVIEW_DUE)!.version.id,
+      priceUnknownReason: null,
     },
   );
 });
