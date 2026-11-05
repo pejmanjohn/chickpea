@@ -228,8 +228,9 @@ async function inviteRefusal(
   channelId: string,
   botUserId: string,
 ): Promise<string | undefined> {
+  const botToken = await credentials().then((resolved) => resolved.botToken, () => undefined);
+  if (!botToken) return 'credentials_unavailable';
   try {
-    const { botToken } = await credentials();
     await createSlackWebClient(botToken).conversations.invite({ channel: channelId, users: botUserId });
     return undefined;
   } catch (error) {

@@ -619,7 +619,7 @@ line is for the operator. It carries no token, secret, or URL.
 | `step` | `rotate` (configuration token), `release_handle`, `create`, `update` (adds the Request URLs), `icon`, `exchange` (the Allow callback), `uninstall`, `delete`, `invite` (Chickpea's bot inviting the app's bot into a Channel the Agent was added to) |
 | `agentId`, `appId` | The Agent and its Slack app, or `null` before Slack names the app; `rotate` names neither |
 | `channelId` | `invite` only: the Channel |
-| `code` | Slack's error code, such as `invalid_manifest` or `ratelimited` |
+| `code` | Slack's error code, such as `invalid_manifest` or `ratelimited`. `invite` also logs `credentials_unavailable` when Chickpea's bot token cannot be read, so nothing was sent, and `failed` when Slack gave no answer |
 | `errors` | Slack's `{ message, pointer }` list, as sent with `invalid_manifest`: at most five entries of 200 characters each, any URL replaced by `<url>`. A message that quotes one of the manifest's own strings, such as the Agent's name or description, is left out and only its `pointer` is logged |
 
 Filter a bounded capture with `wrangler tail --search agent_app.slack_refused`.

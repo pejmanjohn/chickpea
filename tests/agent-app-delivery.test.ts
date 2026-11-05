@@ -1298,9 +1298,21 @@ test("asking Chickpea to add the app Agent greets the Channel the same way", asy
     operations: [{ itemId: 'reach', kind: 'grant_agent_channel', workspaceId: TEAM, channelId: 'C2', agentId: 'agent_support', expectedRevision: 0 }],
   });
   assert.equal((applied as { result?: { status?: string } }).result?.status, 'completed', JSON.stringify(applied));
+  assert.deepEqual(invites(h), [[MAIN_BOT, 'C2', AGENT_BOT_USER]], "Chickpea's bot invites the app's bot here too");
+  assert.deepEqual(joins(h), [[MAIN_BOT, 'C2']]);
   assert.deepEqual(h.calls.filter((call) => call.method === 'chat.postMessage').map((call) => [call.token, call.body.get('channel'), call.body.get('text')]),
     [[AGENT_BOT, 'C2', SUPPORT_WELCOME_IN_THREADS]]);
 }, { notMemberOf: { [MAIN_BOT]: ['C2'], [AGENT_BOT]: ['C2'] } }));
+
+test("an unreadable Chickpea bot token sends no invite and falls back, logged apart from Slack's refusals", async (t) => withHarness(t, async (h) => {
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  const added = await addInAdmin(h, 'agent_support', 'C2');
+  assert.equal(added.status, 201);
+  assert.equal(added.body.appBot, 'in_channel', 'the app bot joins the public Channel itself');
+  assert.deepEqual(invites(h), [], 'nothing goes to Slack without the token');
+  assert.deepEqual(joins(h), [[AGENT_BOT, 'C2']]);
+  assert.deepEqual(invitesRefused(warn.mock.calls).map((line) => (line as { code: string }).code), ['credentials_unavailable']);
+}, { lostHostedBot: true, notMemberOf: { [AGENT_BOT]: ['C2'] } }));
 
 test("with the switch off, Admin's Add of an app Agent greets nobody, as before", async (t) => withHarness(t, async (h) => {
   configureAgentSlackApps(undefined);
