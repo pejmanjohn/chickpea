@@ -306,6 +306,7 @@ import { SLACK_CANVAS_TOOL_NAMES, useSlackCanvasTools } from '../slack/canvases/
 import { SLACK_LIST_TOOL_NAMES, useSlackListsTools } from '../slack/lists/tools.ts';
 import { SLACK_READ_TOOL_NAMES, useSlackReadingTools } from '../slack/reading/tools.ts';
 import { SLACK_GROUP_DM_TOOL_NAME, useSlackGroupDmTool } from '../slack/group-dm/tools.ts';
+import { SLACK_CREATE_CHANNEL_TOOL_NAME, useSlackCreateChannelTool } from '../slack/channel-creation/tools.ts';
 import {
   parseSlackManagementSignal,
   useWorkspaceManagementSlackTools,
@@ -1014,6 +1015,7 @@ export function useChickpeaSlackRuntimeCapabilities(
       useSlackReadingTools(plan, resolveAgentPlatformEnv);
       useSlackGroupDmTool(plan, resolveAgentPlatformEnv);
       useSlackCanvasTools(plan, resolveAgentPlatformEnv);
+      useSlackCreateChannelTool(plan, resolveAgentPlatformEnv, webTurn.pageRead);
       useSlackMidRunReplyTool(followUps);
       useTool(createSlackPresentTableTool(writeTablePresentation));
       useSlackInteractiveComponents(plan, writeInteractiveQuestion, writeDisplayComponent);
@@ -1588,8 +1590,7 @@ function slackActivityToolDescriptors(input: {
     descriptors.push(...SLACK_LIST_TOOL_NAMES.map(toolName => ({ toolName, descriptor: semanticDescriptorForCoreTool(toolName) })));
     if (input.plan.actorMembershipId) {
       descriptors.push(...SLACK_READ_TOOL_NAMES.map(toolName => ({ toolName, descriptor: semanticDescriptorForCoreTool(toolName) })));
-      descriptors.push({ toolName: SLACK_GROUP_DM_TOOL_NAME, descriptor: semanticDescriptorForCoreTool(SLACK_GROUP_DM_TOOL_NAME) });
-      descriptors.push(...SLACK_CANVAS_TOOL_NAMES.map(toolName => ({ toolName, descriptor: semanticDescriptorForCoreTool(toolName) })));
+      descriptors.push(...[SLACK_GROUP_DM_TOOL_NAME, SLACK_CREATE_CHANNEL_TOOL_NAME, ...SLACK_CANVAS_TOOL_NAMES].map(toolName => ({ toolName, descriptor: semanticDescriptorForCoreTool(toolName) })));
     }
     descriptors.push({
       toolName: 'update_agent_memory',

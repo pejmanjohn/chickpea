@@ -65,7 +65,7 @@ export function requirePermission(principal: AuthPrincipal | undefined, permissi
 }
 
 export function canEditAgent(
-  principal: AuthPrincipal | undefined,
+  principal: Pick<AuthPrincipal, 'role' | 'membershipId'> | undefined,
   agent: AgentAuthorityDescriptor,
 ): boolean {
   if (!principal) return false;

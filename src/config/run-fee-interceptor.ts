@@ -2,6 +2,7 @@ import type { FlueExecutionInterceptor } from '@flue/runtime';
 
 import { registeredToolDescriptor } from '../activity/status.ts';
 import type { SLACK_CANVAS_TOOL_NAMES } from '../slack/canvases/tools.ts';
+import { SLACK_CREATE_CHANNEL_TOOL_NAME } from '../slack/channel-creation/tools.ts';
 import { SLACK_GROUP_DM_TOOL_NAME } from '../slack/group-dm/tools.ts';
 import type { SLACK_LIST_TOOL_NAMES } from '../slack/lists/tools.ts';
 import { qualifiesAsTask } from '../usage/run-fees.ts';
@@ -49,6 +50,7 @@ type Refusal = (output: { status?: unknown; outcome?: unknown }) => boolean;
 
 const notRead: Refusal = (output) => output.status === 'not_read';
 const notWritten: Refusal = (output) => output.status === 'not_written';
+const refused: Refusal = (output) => output.status === 'refused';
 
 const SLACK_CANVAS_REFUSALS: Record<(typeof SLACK_CANVAS_TOOL_NAMES)[number], Refusal> = {
   read_slack_canvas: notRead,
@@ -67,7 +69,8 @@ const SLACK_LIST_REFUSALS: Record<(typeof SLACK_LIST_TOOL_NAMES)[number], Refusa
 
 const REFUSALS_BEFORE_WORK = new Map<string, Refusal>([
   ['read_slack_channel', notRead],
-  [SLACK_GROUP_DM_TOOL_NAME, (output) => output.status === 'refused'],
+  [SLACK_GROUP_DM_TOOL_NAME, refused],
+  [SLACK_CREATE_CHANNEL_TOOL_NAME, refused],
   ...Object.entries(SLACK_CANVAS_REFUSALS),
   ...Object.entries(SLACK_LIST_REFUSALS),
   ...WEB_TOOL_NAMES.map((name) => [name, (output: { outcome?: unknown }) => output.outcome === 'refused'] as const),

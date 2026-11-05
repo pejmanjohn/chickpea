@@ -1,4 +1,5 @@
 import type { SettingsStore } from '../../config/settings-store.ts';
+import { RequestReceipt } from '../requested-conversations/receipts.ts';
 
 export const SLACK_GROUP_DM_RECEIPT_PREFIX = 'slack_group_dm.v1:';
 
@@ -7,48 +8,35 @@ export type GroupDmReceipt =
   | { status: 'posted'; channelId: string; messageTs: string; people: string[] }
   | { status: 'not_posted' };
 
-const PENDING = JSON.stringify({ status: 'pending' });
+type SettledGroupDm = Exclude<GroupDmReceipt, { status: 'pending' }>;
 
 export class GroupDmReceipts {
-  readonly key: string;
+  private readonly receipt: RequestReceipt<SettledGroupDm>;
 
-  constructor(
-    private readonly store: Pick<SettingsStore, 'getSetting' | 'applySettingsPatch'>,
-    turnJobId: string,
-  ) {
-    this.key = `${SLACK_GROUP_DM_RECEIPT_PREFIX}${turnJobId}`;
+  constructor(store: Pick<SettingsStore, 'getSetting' | 'applySettingsPatch'>, turnJobId: string) {
+    this.receipt = new RequestReceipt(store, `${SLACK_GROUP_DM_RECEIPT_PREFIX}${turnJobId}`, {
+      parse: parseSettledGroupDm,
+      retryable: (settled) => settled.status === 'not_posted',
+    });
   }
 
   async claim(): Promise<Exclude<GroupDmReceipt, { status: 'not_posted' }> | undefined> {
-    for (let attempt = 0; attempt < 8; attempt++) {
-      const raw = await this.store.getSetting(this.key);
-      const previous = raw === undefined ? undefined : parseReceipt(raw);
-      if (previous && previous.status !== 'not_posted') return previous;
-      if (await this.store.applySettingsPatch({
-        expected: { key: this.key, value: raw ?? null },
-        set: [{ key: this.key, value: PENDING }],
-      })) return undefined;
-    }
-    return { status: 'pending' };
+    const claim = await this.receipt.claim();
+    if (claim.claimed) return undefined;
+    const { previous } = claim;
+    return previous === 'pending' || previous.status === 'not_posted' ? { status: 'pending' } : previous;
   }
 
-  async settle(receipt: Exclude<GroupDmReceipt, { status: 'pending' }>): Promise<void> {
-    // A receipt left pending blocks later calls in the request: the safe side.
-    await this.store.applySettingsPatch({
-      expected: { key: this.key, value: PENDING },
-      set: [{ key: this.key, value: JSON.stringify(receipt) }],
-    }).catch(() => false);
+  settle(receipt: SettledGroupDm): Promise<void> {
+    return this.receipt.settle(receipt);
   }
 }
 
-function parseReceipt(raw: string): GroupDmReceipt {
-  try {
-    const value = JSON.parse(raw) as Record<string, unknown>;
-    if (value.status === 'not_posted') return { status: 'not_posted' };
-    if (value.status === 'posted' && typeof value.channelId === 'string' && typeof value.messageTs === 'string' &&
-        Array.isArray(value.people) && value.people.every((id) => typeof id === 'string')) {
-      return { status: 'posted', channelId: value.channelId, messageTs: value.messageTs, people: value.people as string[] };
-    }
-  } catch {}
-  return { status: 'pending' };
+function parseSettledGroupDm(value: Record<string, unknown>): SettledGroupDm | undefined {
+  if (value.status === 'not_posted') return { status: 'not_posted' };
+  if (value.status === 'posted' && typeof value.channelId === 'string' && typeof value.messageTs === 'string' &&
+      Array.isArray(value.people) && value.people.every((id) => typeof id === 'string')) {
+    return { status: 'posted', channelId: value.channelId, messageTs: value.messageTs, people: value.people as string[] };
+  }
+  return undefined;
 }

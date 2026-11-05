@@ -1,14 +1,13 @@
 import type { WebClient } from '@slack/web-api';
 
-import type { ConfigStore } from '../../config/store.ts';
 import { isRecord } from '../../security/content-validation.ts';
 import { slackPlatformErrorCode } from '../errors.ts';
 import { renderSlackMessage } from '../message-format.ts';
-import { recordDeliveredSlackAgentMessage } from '../public-context.ts';
 import { isSlackRateLimitError } from '../read-budget.ts';
 import { assertCurrentConversationNotShared, type SlackReadAuthorityPorts } from '../reading/authority.ts';
 import { SlackReadError } from '../reading/errors.ts';
-import { slackUserKind } from '../reading/service.ts';
+import { refusedPeople, type NamedPersonRefusal } from '../requested-conversations/people.ts';
+import { slackWriteSurelyFailed } from '../requested-conversations/receipts.ts';
 import { SlackTransportError } from '../transport/types.ts';
 import { admitGroupDmPeople, MAX_GROUP_DM_PEOPLE, type GroupDmAdmissionRefusal } from './admission.ts';
 import type { RequesterTextSource } from '../requester-text-source.ts';
@@ -27,8 +26,6 @@ export type GroupDmRefusalCode =
   | 'missing_scope'
   | 'rate_limited'
   | 'unavailable';
-
-export type GroupDmPersonRefusal = 'not_named' | 'bot' | 'deactivated' | 'outside_workspace' | 'not_found';
 
 const NOTHING_OPENED = 'Nothing was opened or posted.';
 
@@ -55,12 +52,10 @@ const MISSING_SCOPE_STANDALONE =
 const MAY_HAVE_POSTED =
   'The opening message may have been posted, but Slack did not confirm it. Do not try again; tell the requester to check their group DMs.';
 
-const UNCERTAIN_POST_ERRORS = new Set(['internal_error', 'fatal_error', 'request_timeout', 'service_unavailable']);
-
 export class SlackGroupDmRefusal extends Error {
   constructor(
     readonly code: GroupDmRefusalCode,
-    readonly people?: readonly { id: string; reason: GroupDmPersonRefusal }[],
+    readonly people?: readonly { id: string; reason: NamedPersonRefusal }[],
   ) {
     super(code);
     this.name = 'SlackGroupDmRefusal';
@@ -120,7 +115,7 @@ export class SlackGroupDmService {
     try {
       messageTs = await this.post(channelId, message);
     } catch (error) {
-      if (!postSurelyFailed(error)) {
+      if (!slackWriteSurelyFailed(error)) {
         return { status: 'unverified', code: 'post_unconfirmed', message: MAY_HAVE_POSTED };
       }
       await this.options.receipts.settle({ status: 'not_posted' });
@@ -139,28 +134,8 @@ export class SlackGroupDmService {
   }
 
   private async assertPeopleEligible(people: readonly string[]): Promise<void> {
-    const refused = (await Promise.all(people.map(async (id) => {
-      const reason = await this.personRefusal(id);
-      return reason ? [{ id, reason }] : [];
-    }))).flat();
+    const refused = await refusedPeople(this.options.chickpeaBot, this.options.workspaceId, people, { guests: 'allowed' });
     if (refused.length) throw new SlackGroupDmRefusal('person_not_eligible', refused);
-  }
-
-  private async personRefusal(id: string): Promise<GroupDmPersonRefusal | undefined> {
-    let user: unknown;
-    try {
-      user = (await this.options.chickpeaBot.users.info({ user: id })).user;
-    } catch (error) {
-      if (slackPlatformErrorCode(error) === 'user_not_found') return 'not_found';
-      throw error;
-    }
-    if (!isRecord(user) || user.id !== id) return 'not_found';
-    const kind = slackUserKind(user, this.options.workspaceId);
-    // enterprise_user marks any Enterprise Grid user, another organization's too.
-    if (kind === 'external' || user.team_id !== this.options.workspaceId) return 'outside_workspace';
-    if (kind === 'app') return 'bot';
-    if (kind === 'deactivated') return 'deactivated';
-    return undefined;
   }
 
   private async open(people: readonly string[]): Promise<string> {
@@ -185,35 +160,6 @@ export class SlackGroupDmService {
   }
 }
 
-export async function routeGroupDmRepliesToAgent(
-  config: Pick<ConfigStore, 'putAgentThreadRoute' | 'putSlackPublicContext' | 'getWorkspaceInstallation'>,
-  input: {
-    workspaceId: string;
-    channelId: string;
-    messageTs: string;
-    text: string;
-    agent: { id: string; revision: number; configurationGeneration?: number | undefined };
-  },
-): Promise<void> {
-  const { workspaceId, channelId, messageTs, agent } = input;
-  await config.putAgentThreadRoute({
-    workspaceId,
-    channelId,
-    threadTs: messageTs,
-    agentId: agent.id,
-    agentGeneration: agent.configurationGeneration ?? agent.revision,
-    ownerIncarnation: 1,
-  }, 0);
-  const installation = await config.getWorkspaceInstallation(workspaceId);
-  if (!installation) return;
-  await recordDeliveredSlackAgentMessage(
-    config,
-    { workspaceId, channelId, threadTs: messageTs },
-    { runtimeContract: installation.runtimeContract, agentId: agent.id },
-    { messageTs, text: input.text },
-  );
-}
-
 export function groupDmFailure(error: unknown, hosted: boolean): JsonObject {
   const refusal = asRefusal(error);
   return {
@@ -233,13 +179,6 @@ function asRefusal(error: unknown): SlackGroupDmRefusal {
   }
   if (isSlackRateLimitError(error)) return new SlackGroupDmRefusal('rate_limited');
   return new SlackGroupDmRefusal(slackPlatformErrorCode(error) === 'missing_scope' ? 'missing_scope' : 'unavailable');
-}
-
-function postSurelyFailed(error: unknown): boolean {
-  if (error instanceof SlackTransportError) return error.effectOutcome === 'failed';
-  if (isSlackRateLimitError(error)) return true;
-  const code = slackPlatformErrorCode(error);
-  return code !== undefined && !UNCERTAIN_POST_ERRORS.has(code);
 }
 
 function alreadyStarted(previous: Exclude<GroupDmReceipt, { status: 'not_posted' }>): JsonObject {

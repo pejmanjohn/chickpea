@@ -1411,6 +1411,51 @@
    }
   },
   {
+   "name": "create_slack_channel",
+   "description": "Create a Slack channel (private unless the requester asks for public), invite the requester and the people they @-mentioned in this request, optionally set its purpose, post your opening message there under your name, and return its link. One per request. Guests, apps, bots, deactivated accounts, people from other organizations and anyone the requester did not @-mention are refused.",
+   "eager_input_streaming": true,
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+     },
+     "visibility": {
+      "enum": [
+       "private",
+       "public"
+      ],
+      "type": "string"
+     },
+     "people": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 64
+      },
+      "maxItems": 50
+     },
+     "purpose": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 250
+     },
+     "message": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 12000
+     }
+    },
+    "required": [
+     "name",
+     "message"
+    ]
+   }
+  },
+  {
    "name": "reply_in_thread",
    "description": "Post a short reply in this Slack thread now, as yourself, while you keep working, to a message that arrived while you worked: answer its question, or give the progress update it asked for. Never post progress updates nobody asked for. Your final reply still answers everything.",
    "eager_input_streaming": true,

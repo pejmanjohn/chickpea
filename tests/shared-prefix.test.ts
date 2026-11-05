@@ -35,6 +35,7 @@ import { EXTERNAL_ACTION_AUTHORITY_PREAMBLE } from '../src/connections/runtime.t
 import { AGENT_AUTHORING_ROUTER_INSTRUCTION } from '../src/management/agent-authoring/index.ts';
 import { SLACK_MANAGEMENT_GUIDANCE, USER_AGENT_CREATION_HANDOFF_INSTRUCTION } from '../src/management/slack-tools.ts';
 import { FILE_COMPLETION_INSTRUCTION } from '../src/slack/file-delivery-completion.ts';
+import { SLACK_CREATE_CHANNEL_INSTRUCTION } from '../src/slack/channel-creation/tools.ts';
 import { SLACK_GROUP_DM_INSTRUCTION } from '../src/slack/group-dm/tools.ts';
 import { SLACK_LISTS_INSTRUCTION } from '../src/slack/lists/tools.ts';
 import { SLACK_ACTION_LINK_INSTRUCTION } from '../src/slack/message-format.ts';
@@ -97,6 +98,7 @@ const UNCONDITIONAL_INSTRUCTIONS = [
   SLACK_LISTS_INSTRUCTION,
   SLACK_READING_INSTRUCTION,
   SLACK_GROUP_DM_INSTRUCTION,
+  SLACK_CREATE_CHANNEL_INSTRUCTION,
   SLACK_PRESENT_TABLE_INSTRUCTION,
 ];
 
@@ -535,6 +537,7 @@ const MOUNTED_GUIDANCE = [
   { text: SLACK_LISTS_INSTRUCTION, tool: 'read_slack_list' },
   { text: SLACK_READING_INSTRUCTION, tool: 'read_slack_thread' },
   { text: SLACK_GROUP_DM_INSTRUCTION, tool: 'start_slack_group_dm' },
+  { text: SLACK_CREATE_CHANNEL_INSTRUCTION, tool: 'create_slack_channel' },
   { text: SLACK_MANAGEMENT_GUIDANCE, tool: 'inspect_workspace' },
 ];
 
@@ -553,8 +556,8 @@ async function reducedTurnLogs<T>(run: () => Promise<T>): Promise<{ result: T; l
 }
 
 for (const [name, variant, unmounted, reason] of [
-  ['a requester with no membership', { ...ALPHA, member: false }, ['read_slack_list', 'read_slack_thread', 'start_slack_group_dm'], 'requester_not_member'],
-  ['a file-delivery check', { ...ALPHA, delivery: 'file_delivery_check' }, ['read_slack_list', 'read_slack_thread', 'start_slack_group_dm', 'inspect_workspace'], 'management_unmounted'],
+  ['a requester with no membership', { ...ALPHA, member: false }, ['read_slack_list', 'read_slack_thread', 'start_slack_group_dm', 'create_slack_channel'], 'requester_not_member'],
+  ['a file-delivery check', { ...ALPHA, delivery: 'file_delivery_check' }, ['read_slack_list', 'read_slack_thread', 'start_slack_group_dm', 'create_slack_channel', 'inspect_workspace'], 'management_unmounted'],
 ] as const) {
   test(`${name} gets guidance only for the tools it mounts, and goes out unchanged without counting a miss`, async () => {
     const before = sharedPrefixMisses();

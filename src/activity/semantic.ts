@@ -456,6 +456,7 @@ export function semanticDescriptorForCoreTool(toolName: string): SemanticActivit
   if (toolName === 'read_slack_canvas') return descriptor('read', 'workspace', 'documents', 'read', 'built_in');
   if (toolName === 'create_slack_canvas') return descriptor('create', 'workspace', 'documents', 'reversible_write', 'built_in');
   if (toolName === 'update_slack_canvas') return descriptor('update', 'workspace', 'documents', 'reversible_write', 'built_in');
+  if (toolName === 'create_slack_channel') return descriptor('create', 'workspace', 'channels', 'external_publish', 'built_in');
   if (toolName === 'stream_answer' || toolName === 'present_table' || SLACK_COMPONENT_TOOLS.has(toolName)) {
     return {
       ...descriptor('draft', 'response', 'the response', 'none', 'built_in'),
