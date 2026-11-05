@@ -161,7 +161,7 @@ export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
 
   app.get('/usage/report', async (c) => {
     try {
-      const report = platformBilling() && await (await import('./usage-report.ts')).hostedUsageReport(c, options);
+      const report = platformBilling() && await (await hostedUsage()).hostedUsageReport(c, options);
       return report ? c.json(report) : c.json({ error: 'not_found' }, 404);
     } catch (error) {
       return usageError(c, error);
@@ -170,11 +170,11 @@ export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
 
   app.get('/usage/operations', async (c) => {
     try {
-      const query = parseCustomerUsageQuery(c, false);
-      const page = await options.store(c).listOperations(query);
+      const page = await options.store(c).listOperations(parseCustomerUsageQuery(c, false));
       const visibility = await usageRunVisibility(options.work?.(c), page.items);
       const channelLabels = await currentChannelLabels(options, c, page.items, visibility);
-      const hosted = platformBilling() && await (await import('./usage-report.ts')).hostedActivity(c, options, page.items, query);
+      const hosted = platformBilling() && await (await hostedUsage()).hostedActivity(
+        c, options, page.items, (detail) => visibility.get(detail.operation.runId ?? '') === true);
       return c.json({
         items: await Promise.all(page.items.map(async (detail, index) => ({
           ...usageDetailProjection(
@@ -227,6 +227,11 @@ export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
   });
 
   return app;
+}
+
+/** The hosted report loads on first use, out of Worker startup. */
+function hostedUsage(): Promise<typeof import('./usage-report.ts')> {
+  return import('./usage-report.ts');
 }
 
 function redactAggregateLabels<T extends { groups: Array<{ key: string; label: string | null }> }>(

@@ -6787,6 +6787,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     ...(await store(c).listUserAgents()).map((agent) => [agent.id, agent.name] as const),
   ]);
   const usagePersonNames = async (c: Context) => {
+    // A personal token reads no names, as the Team API refuses it.
+    if (principalByContext.get(c)?.machine) return new Map<string, string>();
     const memberships = await identity(c).listMemberships();
     const users = await Promise.all(memberships.map((membership) => identity(c).getUser(membership.userId)));
     return new Map(memberships.flatMap((membership, index) => {

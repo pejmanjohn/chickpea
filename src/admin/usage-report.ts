@@ -168,6 +168,8 @@ interface Charge {
   person: string | null;
   /** `provider/model`. */
   model: string | null;
+  /** Whether Core lists the activity it came from. */
+  matched: boolean;
 }
 
 interface Row {
@@ -253,7 +255,7 @@ export function buildUsageReport(inputs: UsageReportInputs): UsageReport {
 
   const firstDay = dayNumber(range.from);
   const chartEnd = range.period === 'this_billing_period' && summary.period ? summary.period.end.getTime() : range.to;
-  const dayCount = dayNumber(chartEnd - 1) - firstDay + 1;
+  const dayCount = Math.max(0, dayNumber(chartEnd - 1) - firstDay + 1);
   const elapsed = Math.min(dayCount, Math.max(0, dayNumber(now) - firstDay + 1));
   const byDay = (list: readonly Charge[], first: number) => {
     const values = new Array<number>(dayCount).fill(0);
@@ -264,11 +266,16 @@ export function buildUsageReport(inputs: UsageReportInputs): UsageReport {
     return values;
   };
   const byAgent = tally(current, (charge) => agentRow(charge.agentId), agentName);
-  const lines = ranked(current, (charge) => agentRow(charge.agentId), agentName, CHARTED_AGENTS, OTHER);
+  // Usage Core can't attribute, mostly private routines', counts in totals and lists but never by day.
+  const attributable = current.filter((charge) => charge.matched);
+  const lines = ranked(attributable, (charge) => agentRow(charge.agentId), agentName, CHARTED_AGENTS, OTHER);
   const charted = new Set(lines.map((line) => line.key));
   const line = (charge: Charge) => charted.has(agentRow(charge.agentId)) ? agentRow(charge.agentId) : null;
   const priorDays = byDay(previous, dayNumber(prior.from));
-  const priorSoFar = sum(priorDays.slice(0, elapsed));
+  // A finished range compares whole sums, so a 31-day prior month keeps its last day.
+  const finished = elapsed >= dayCount;
+  const priorSoFar = finished ? sumOf(previous) : sum(priorDays.slice(0, elapsed));
+  const priorLine = byDay(previous.filter((charge) => charge.matched), dayNumber(prior.from));
 
   const choiceIds = new Set([...startedIn(range), ...workspace].flatMap((item) => {
     const id = agentRow(item.agentId);
@@ -297,7 +304,8 @@ export function buildUsageReport(inputs: UsageReportInputs): UsageReport {
     plan: planStrip(summary),
     total: amount(total),
     perDay: amount(elapsed === 0 ? 0 : measure === 'activity' ? Math.round(total * 10 / elapsed) / 10 : Math.round(total / elapsed)),
-    change: priorSoFar === 0 ? null : Math.round((sum(byDay(current, firstDay).slice(0, elapsed)) - priorSoFar) * 100 / priorSoFar),
+    change: priorSoFar === 0 ? null
+      : Math.round(((finished ? total : sum(byDay(current, firstDay).slice(0, elapsed))) - priorSoFar) * 100 / priorSoFar),
     share: agentId === null ? null : percent(total, sumOf(workspace)),
     pace: measure === 'usage' && thisPeriod && agentId === null && summary.period && onPace !== null
       ? { percent: onPace, by: SHORT_DATE.format(summary.period.end) }
@@ -311,8 +319,8 @@ export function buildUsageReport(inputs: UsageReportInputs): UsageReport {
     chart: {
       days: Array.from({ length: dayCount }, (_, index) => SHORT_DATE.format((firstDay + index) * DAY_MS)),
       elapsed,
-      series: lines.map(({ key, name }) => ({ key, name, values: byDay(current.filter((charge) => line(charge) === key), firstDay) })),
-      prior: priorDays.every((value) => value === 0) ? null : priorDays,
+      series: lines.map(({ key, name }) => ({ key, name, values: byDay(attributable.filter((charge) => line(charge) === key), firstDay) })),
+      prior: priorLine.every((value) => value === 0) ? null : priorLine,
     },
     models: listed(ranked(current, (charge) => charge.model, names.model, LISTED_ROWS, OTHER)).map(reportRow),
     people: listed(ranked(current, (charge) => charge.person, personName, LISTED_ROWS, 'Everyone else')).map(reportRow),
@@ -408,12 +416,13 @@ function runIndex(attributions: readonly UsageActivityAttribution[]): Map<string
   return new Map(attributions.flatMap((attribution) => attribution.billingRunIds.map((runId) => [runId, attribution] as const)));
 }
 
-function attributed(attribution: UsageActivityAttribution | undefined): Pick<Charge, 'agentId' | 'person' | 'model'> {
-  if (!attribution) return { agentId: null, person: null, model: null };
+function attributed(attribution: UsageActivityAttribution | undefined): Pick<Charge, 'agentId' | 'person' | 'model' | 'matched'> {
+  if (!attribution) return { agentId: null, person: null, model: null, matched: false };
   return {
     agentId: attribution.agentId,
     person: attribution.operationKind === 'routine_run' ? ROUTINES : attribution.requesterMembershipId,
     model: attribution.model,
+    matched: true,
   };
 }
 
@@ -426,7 +435,7 @@ function keptTasks(rows: readonly BilledUsageRow[], runs: ReadonlyMap<string, Us
   const loose: BilledUsageRow[][] = [];
   for (const row of rows) {
     if (row.runId === null) loose.push([row]);
-    else named.set(row.runId, [...named.get(row.runId) ?? [], row]);
+    else named.set(row.runId, (named.get(row.runId) ?? []).concat(row));
   }
   const kept = (runRows: readonly BilledUsageRow[]) =>
     runRows.some((row) => row.task) && runRows.every((row) => row.creditedBackMicros === 0);
@@ -441,18 +450,25 @@ function net(rows: readonly BilledUsageRow[]): number {
   return rows.reduce((total, row) => total + row.modelMicros + row.feeMicros - row.creditedBackMicros, 0);
 }
 
+/** `isPublic`: whether the item's run is public; a private channel's or DM's row names nobody, as its labels are redacted. */
 export function activityExtras(
   items: readonly UsageOperationDetail[],
   billed: readonly BilledUsageRow[] | null,
   names: UsageReportNames,
+  isPublic: (item: UsageOperationDetail) => boolean,
 ): ActivityExtras[] {
-  return items.map(({ operation, measurements }) => {
+  const byRun = new Map<string, BilledUsageRow[]>();
+  for (const row of billed ?? []) {
+    if (row.runId !== null) byRun.set(row.runId, (byRun.get(row.runId) ?? []).concat(row));
+  }
+  return items.map((item) => {
+    const { operation, measurements } = item;
     const model = detailModel(operation, measurements.at(-1));
     const runIds = new Set(measurements.flatMap((measurement) => measurement.billingRunId ? [measurement.billingRunId] : []));
-    const rows = (billed ?? []).filter((row) => row.runId !== null && runIds.has(row.runId));
+    const rows = [...runIds].flatMap((runId) => byRun.get(runId) ?? []);
     return {
       requester: operation.operationKind === 'routine_run' ? 'Routine'
-        : operation.requesterMembershipId === null ? null
+        : operation.requesterMembershipId === null || !isPublic(item) ? null
         : names.people.get(operation.requesterMembershipId) ?? null,
       modelName: model === null ? null : names.model(model),
       billed: rows.length === 0 ? null : {
@@ -555,15 +571,23 @@ export async function hostedActivity(
   c: Context,
   options: HostedUsageOptions,
   items: readonly UsageOperationDetail[],
-  window: Window,
+  isPublic: (item: UsageOperationDetail) => boolean,
+  now = Date.now(),
 ): Promise<ActivityExtras[] | undefined> {
   const hosted = hostedBilling(c);
   if (!hosted) return undefined;
+  // Only the page's own runs, whole: from the UTC day the oldest started to a day after the last finished.
+  const pageWindow = items.length === 0 ? null : {
+    from: dayNumber(Math.min(...items.map(({ operation }) => operation.startedAt))) * DAY_MS,
+    to: Math.min(now + 1, Math.max(...items.map(({ operation }) => operation.finishedAt ?? now)) + DAY_MS),
+  };
   const [rows, names] = await Promise.all([
-    billedUsage(hosted.port, (read) => billedRows(read, hosted.installationId, window)),
+    pageWindow && pageWindow.from < pageWindow.to
+      ? billedUsage(hosted.port, (read) => billedRows(read, hosted.installationId, pageWindow))
+      : null,
     reportNames(c, options),
   ]);
-  return activityExtras(items, rows, names);
+  return activityExtras(items, rows, names, isPublic);
 }
 
 function hostedBilling(c: Context): { port: PlatformBillingPort; installationId: string } | undefined {

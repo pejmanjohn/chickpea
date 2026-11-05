@@ -130,6 +130,18 @@ interface MeasurementRow {
   billing_run_id: string | null;
 }
 
+interface ActivityAttributionRow {
+  operationId: string;
+  operationKind: UsageActivityAttribution['operationKind'];
+  startedAt: number;
+  agentId: string | null;
+  requesterMembershipId: string | null;
+  model: string | null;
+  estimateMicros: number | null;
+  /** `group_concat` of the distinct keys, or null for none. */
+  billingRunIds: string | null;
+}
+
 interface CredentialRow {
   credential_ref_id: string;
   version: number;
@@ -808,7 +820,7 @@ export class UsageStoreLogic {
   listActivityAttributions(raw: UsageActivityQuery): UsageActivityAttribution[] {
     const query = normalizeUsageQuery(raw);
     // `||` with NULL is NULL: a model names its provider and ID, or falls through.
-    return this.db.all(
+    return (this.db.all(
       `SELECT o.operation_id AS operationId, o.operation_kind AS operationKind, o.started_at AS startedAt,
          o.profile_id AS agentId, o.requester_membership_id AS requesterMembershipId,
          COALESCE((SELECT COALESCE(l.returned_provider || '/' || l.returned_model, l.requested_provider || '/' || l.requested_model)
@@ -822,13 +834,7 @@ export class UsageStoreLogic {
        GROUP BY o.operation_id ORDER BY o.started_at, o.operation_id`,
       query.from,
       query.to,
-    ).map((row) => ({
-      ...row as unknown as UsageActivityAttribution,
-      startedAt: Number(row.startedAt),
-      estimateMicros: row.estimateMicros === null ? null : Number(row.estimateMicros),
-      // Billing run IDs are opaque IDs, which have no comma for group_concat to split on.
-      billingRunIds: row.billingRunIds === null ? [] : String(row.billingRunIds).split(','),
-    }));
+    ) as unknown as ActivityAttributionRow[]).map(mapActivityAttribution);
   }
 
   putCredential(raw: PutModelCredentialInput): ModelCredentialRecord {
@@ -1971,6 +1977,20 @@ function sameConnectorQuotaReservation(
     record.limit === input.limit &&
     record.periodStart === input.periodStart &&
     record.periodEnd === input.periodEnd;
+}
+
+function mapActivityAttribution(row: ActivityAttributionRow): UsageActivityAttribution {
+  return {
+    operationId: row.operationId,
+    operationKind: row.operationKind,
+    startedAt: Number(row.startedAt),
+    agentId: row.agentId,
+    requesterMembershipId: row.requesterMembershipId,
+    model: row.model,
+    estimateMicros: nullableNumber(row.estimateMicros),
+    // Billing run IDs are opaque IDs, which have no comma for group_concat to split on.
+    billingRunIds: row.billingRunIds === null ? [] : row.billingRunIds.split(','),
+  };
 }
 
 function nullableNumber(value: number | null): number | null {

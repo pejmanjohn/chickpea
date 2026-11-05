@@ -2665,22 +2665,18 @@
     return '<span class="plan-use-avatar is-letter" aria-hidden="true">' + esc((Array.from(word || "")[0] || "").toUpperCase()) + '</span>';
   }
 
-  function billedUsageColumn(head, number, cell) {
-    return { head: head, number: number, cell: cell };
-  }
-
-  var BILLED_USAGE_AGENT_COLUMN = billedUsageColumn("Agent", false, function (row) {
+  var BILLED_USAGE_AGENT_COLUMN = { head: "Agent", number: false, cell: function (row) {
     var name = row.key === null
       ? '<b class="usage-work-label">' + esc(row.name) + '</b>'
       : '<button type="button" class="usage-row-action" data-action="usage-agent-row" data-agent="' + esc(row.key) + '">' + esc(row.name) + '</button>';
     return '<span class="u-who">' + billedUsageAvatarHtml("agent", row) + name + '</span>';
-  });
-  var BILLED_USAGE_SHARE_COLUMN = billedUsageColumn("Share", true, function (row) { return billedUsageShareHtml(row.share); });
-  var BILLED_USAGE_PERSON_COLUMN = billedUsageColumn("Most used by", false, function (row) { return esc(row.topPerson || "—"); });
-  var BILLED_USAGE_MODEL_COLUMN = billedUsageColumn("Main model", false, function (row) { return esc(row.mainModel || "—"); });
+  } };
+  var BILLED_USAGE_SHARE_COLUMN = { head: "Share", number: true, cell: function (row) { return billedUsageShareHtml(row.share); } };
+  var BILLED_USAGE_PERSON_COLUMN = { head: "Most used by", number: false, cell: function (row) { return esc(row.topPerson || "—"); } };
+  var BILLED_USAGE_MODEL_COLUMN = { head: "Main model", number: false, cell: function (row) { return esc(row.mainModel || "—"); } };
 
   function billedUsageAmountColumn(head) {
-    return billedUsageColumn(head, true, function (row) { return esc(row.amount.text); });
+    return { head: head, number: true, cell: function (row) { return esc(row.amount.text); } };
   }
 
   // Whether an activity still counts after any credit back. Amounts arrive as
@@ -2702,7 +2698,7 @@
         var first = report.agent
           ? billedUsageCardHtml(esc(report.agent.name) + " since " + since, report.total.text, report.share == null ? "" : report.share + "% of your workspace&rsquo;s usage", true)
           : billedUsageCardHtml("Used since " + since, report.total.text, change, true);
-        var paceHint = report.pace ? "On pace for " + report.pace.percent + "% of your plan by " + esc(report.pace.by) : report.agent ? change : "";
+        var paceHint = report.pace ? "On pace for " + Number(report.pace.percent) + "% of your plan by " + esc(report.pace.by) : report.agent ? change : "";
         return first + billedUsageCardHtml("Per day", report.perDay.text, paceHint, false);
       },
       agentsHint: "Select an Agent to see only its usage.",
@@ -2757,7 +2753,7 @@
       agentsHint: "Select an Agent to see only its usage.",
       agentColumns: [
         BILLED_USAGE_AGENT_COLUMN,
-        billedUsageColumn("Tasks", true, function (row) { return esc(row.tasks || "—"); }),
+        { head: "Tasks", number: true, cell: function (row) { return esc(row.tasks || "—"); } },
         billedUsageAmountColumn("Estimated provider spend"),
         BILLED_USAGE_PERSON_COLUMN
       ],
@@ -2772,7 +2768,7 @@
   };
 
   function billedUsageMode(report) {
-    return BILLED_USAGE_MODES[report.measure] || BILLED_USAGE_MODES.activity;
+    return BILLED_USAGE_MODES[report.measure];
   }
 
   function billedUsageSelectHtml(label, name, action, options, selected) {
@@ -2877,10 +2873,10 @@
         var base = 0;
         series.forEach(function (row, layer) {
           var value = Number(row.values[index]) || 0;
+          if (value <= 0) return;
           var y0 = y(base);
           var y1 = y(base + value);
           base += value;
-          if (value <= 0) return;
           var barHeight = Math.max(0, y0 - y1 - (layer && y0 - y1 > 3 ? 2 : 0));
           bars += '<rect x="' + fixed(left + index * step + gap / 2) + '" y="' + fixed(y1) + '" width="' + fixed(step - gap) + '" height="' + fixed(barHeight) + '" rx="2" fill="' + row.color + '">' +
             '<title>' + esc(days[index] + ", " + row.name + ": " + amount(value)) + '</title></rect>';

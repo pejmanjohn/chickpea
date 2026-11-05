@@ -89,10 +89,14 @@ function report(options: {
 const sum = (values: number[]) => values.reduce((total, value) => total + value, 0);
 const rows = (list: UsageReport['models'] | null) => list?.map((row) => [row.key, row.name, row.amount.text, row.share]);
 
-/** Every list the page draws adds up to the total it shows. */
-function assertListsAddUp(shown: UsageReport): void {
+/**
+ * Every list the page draws adds up to the total it shows. The chart leaves
+ * out `unattributed`, usage Core lists no activity for, so a private
+ * routine's days never show.
+ */
+function assertListsAddUp(shown: UsageReport, unattributed = 0): void {
   const total = shown.total.value;
-  assert.equal(sum(shown.chart.series.flatMap((line) => line.values)), total, 'the chart');
+  assert.equal(sum(shown.chart.series.flatMap((line) => line.values)), total - unattributed, 'the chart');
   assert.equal(sum(shown.models.map((row) => row.amount.value)), total, 'models');
   assert.equal(sum(shown.people.map((row) => row.amount.value)), total, 'people');
   if (shown.agents) assert.equal(sum(shown.agents.map((row) => row.amount.value)), total, 'Agents');
@@ -100,7 +104,8 @@ function assertListsAddUp(shown: UsageReport): void {
 
 test('billed usage: every run counts toward its Agent, person and model, and unmatched rows gather under Other', () => {
   const shown = report();
-  assertListsAddUp(shown);
+  // The private routine's $0.25 and the row naming no run, $0.15.
+  assertListsAddUp(shown, usd(0.4));
   assert.equal(shown.measure, 'usage');
   assert.deepEqual(shown.total, { value: usd(5.85), text: '$5.85' }, 'a run credited back counts nothing; unmatched rows still count');
   assert.deepEqual(shown.agents?.map((agent) => [agent.key, agent.name, agent.amount.text, agent.share, agent.topPerson, agent.mainModel, agent.tasks]), [
@@ -127,8 +132,8 @@ test('billed usage: every run counts toward its Agent, person and model, and unm
   ]);
   assert.deepEqual(shown.chart.series.map((line) => [line.key, line.name, sum(line.values)]), [
     ['agent_a', 'Atlas', usd(3.8)], ['agent_b', 'Birch', usd(0.7)], ['agent_c', 'Cedar', usd(0.6)], ['agent_d', 'Dune', usd(0.2)],
-    [null, 'Other', usd(0.55)],
-  ], 'the four largest Agents, then one row gathering the rest');
+    [null, 'Other', usd(0.15)],
+  ], 'the four largest Agents, then one row gathering the rest, without usage Core can\'t attribute');
   assert.deepEqual(shown.chart.series[0]!.values.slice(0, 4), [0, usd(2.3), usd(0.5), usd(1)], 'each row on its own UTC day');
   assert.deepEqual([shown.chart.days[0], shown.chart.days.at(-1), shown.chart.days.length, shown.chart.elapsed], ['Oct 7', 'Nov 7', 32, 14]);
   assert.deepEqual(shown.agentChoices.map((choice) => choice.name), ['Atlas', 'Birch', 'Cedar', 'Dune', 'Elm']);
@@ -136,7 +141,8 @@ test('billed usage: every run counts toward its Agent, person and model, and unm
   assert.deepEqual(shown.perDay, { value: Math.round(usd(5.85) / 14), text: '$0.41' });
   // Sep 8's $1 is within the same 14 days last period; Sep 25's $0.30 is not.
   assert.equal(shown.change, 485);
-  assert.deepEqual([shown.chart.prior?.[1], shown.chart.prior?.[18], sum(shown.chart.prior ?? [])], [usd(1), usd(0.3), usd(1.3)]);
+  // Sep 25's $0.30 matches no activity, so the dashed line leaves it out.
+  assert.deepEqual([shown.chart.prior?.[1], shown.chart.prior?.[18], sum(shown.chart.prior ?? [])], [usd(1), 0, usd(1)]);
   assert.deepEqual(shown.pace, { percent: 80, by: 'Nov 7' });
   assert.deepEqual(shown.plan, { left: '$172', autoTopUp: null });
   assert.deepEqual([shown.share, shown.agent, shown.tasks, shown.providers, shown.billingPeriod], [null, null, null, [], true]);

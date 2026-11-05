@@ -15,6 +15,7 @@ import {
   type PlatformBillingPort,
 } from '../src/config/platform-billing.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import type { AuthPrincipal } from '../src/auth/types.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { RoutineStore } from '../src/routines/types.ts';
@@ -745,6 +746,16 @@ const REPORT_HOSTED = scopeInstallationEnv(
   { installationId: REPORT_INSTALLATION },
 );
 const DAY_MS = 86_400_000;
+const MACHINE_OWNER: AuthPrincipal = {
+  userId: 'user_test_owner',
+  membershipId: 'membership_test_owner',
+  organizationId: 'org_oss',
+  role: 'owner',
+  authenticatorKind: 'personal_token',
+  credentialId: 'token_test_owner',
+  correlationId: 'request_test_token',
+  machine: true,
+};
 const REPORT_PEOPLE = {
   listMemberships: async () => [{ id: 'membership_maya', userId: 'user_maya' }],
   getUser: async (id: string) => (id === 'user_maya' ? { id, displayName: 'Maya Chen' } : undefined),
@@ -756,7 +767,11 @@ const REPORT_PEOPLE = {
  * Claude Sonnet 5.5, charged to the run `sub_ik_report`, in a billing period
  * that began three days ago.
  */
-async function hostedUsageAdmin(t: TestContext, usageRead?: PlatformBillingPort['usage']) {
+async function hostedUsageAdmin(
+  t: TestContext,
+  usageRead?: PlatformBillingPort['usage'],
+  options: { publicRun?: boolean; principal?: AuthPrincipal } = {},
+) {
   const now = Date.now();
   const summary: BillingSummary = { ...TEAM_PLAN, period: { start: new Date(now - 3 * DAY_MS), end: new Date(now + 27 * DAY_MS) } };
   const reads: Array<{ installationId: string; from: number; to: number }> = [];
@@ -781,7 +796,7 @@ async function hostedUsageAdmin(t: TestContext, usageRead?: PlatformBillingPort[
   });
   const startedAt = now - DAY_MS;
   await usage.admitOperation({
-    operationId: 'op_report', operationKind: 'interactive_turn', sourceId: 'op_report', startedAt,
+    operationId: 'op_report', operationKind: 'interactive_turn', sourceId: 'op_report', runId: 'run_report', startedAt,
     installationId: REPORT_INSTALLATION, workspaceId: 'T_REPORT', agentId: 'agent_report', agentLabel: 'Reporter',
     channelId: 'C_REPORT', channelLabel: 'report', conversationKind: 'named_channel', requesterMembershipId: 'membership_maya',
     requestedProvider: 'anthropic', requestedModel: 'claude-sonnet-5-5', credentialRefId: null, credentialVersion: null,
@@ -794,7 +809,13 @@ async function hostedUsageAdmin(t: TestContext, usageRead?: PlatformBillingPort[
     totalTokens: 15, usageUnknownReason: null, estimateCompleteness: 'not_priced', estimateAmountMicros: null,
     estimateCurrency: null, priceVersionId: null, priceUnknownReason: 'price_unknown', billingRunId: 'sub_ik_report',
   });
-  const app = createAdminRoutes({ store: config, usage, ...testAdminAuthority(REPORT_TOKEN, undefined, REPORT_PEOPLE) });
+  // The Work ledger says whether the run is public; a private channel's or DM's run is not.
+  const work = {
+    getRunVisibilities: async (runIds: RunId[]) => runIds.map((runId) => ({ runId, public: options.publicRun ?? true })),
+  } as unknown as WorkStore;
+  const app = createAdminRoutes({
+    store: config, usage, work, ...testAdminAuthority(REPORT_TOKEN, undefined, REPORT_PEOPLE, options.principal),
+  });
   const get = async (path: string, env: Record<string, unknown> = REPORT_HOSTED) =>
     app.request(path, { headers: testAdminHeaders(REPORT_TOKEN) }, env);
   return { get, reads, summary, startedAt, yesterday: new Date(startedAt).toISOString().slice(0, 10) };
@@ -863,8 +884,30 @@ test('hosted activity rows carry who asked, the model and the billed usage of th
     billed: { amount: '$1.80', model: '$1.50', fee: '$0.30', task: true, creditedBack: false },
   }]);
   assert.equal(page.items[0]?.measurements[0]?.billingRunId, 'sub_ik_report');
-  assert.deepEqual(admin.reads.map(({ from, to }) => [from, to]), [[admin.startedAt - 1, admin.startedAt + 60_000]], 'one read for the page');
+  // One read for the page's own run, whole: from its start's UTC day to past the range, for charges written later.
+  assert.equal(admin.reads.length, 1);
+  assert.equal(admin.reads[0]!.from, Math.floor(admin.startedAt / DAY_MS) * DAY_MS);
+  assert.ok(admin.reads[0]!.to > admin.startedAt + 60_000);
 
   const standalone = await (await admin.get(path, {})).json() as { items: Array<Record<string, any>> };
   assert.equal('hosted' in standalone.items[0]!, false);
+});
+
+test('a private run\'s activity row names nobody, and a personal token reads no one\'s name', async (t) => {
+  const rowsFor = async (admin: Awaited<ReturnType<typeof hostedUsageAdmin>>) => {
+    const path = `/admin/api/usage/operations?from=${admin.startedAt - 1}&to=${admin.startedAt + 60_000}`;
+    return (await (await admin.get(path)).json() as { items: Array<Record<string, any>> }).items.map((item) => item.hosted);
+  };
+  const privateRun = await hostedUsageAdmin(t, async () => ({ rows: billedRows(privateRun.yesterday) }), { publicRun: false });
+  assert.deepEqual((await rowsFor(privateRun)).map((hosted) => [hosted.requester, hosted.billed?.amount]), [[null, '$1.80']]);
+  const report = await (await privateRun.get('/admin/api/usage/report?period=this_billing_period')).json() as UsageReport;
+  assert.deepEqual(report.people.map((person) => person.name), ['Maya Chen', 'Everyone else'], 'the run still counts toward who asked');
+
+  const token = await hostedUsageAdmin(t, async () => ({ rows: billedRows(token.yesterday) }), {
+    principal: { ...MACHINE_OWNER },
+  });
+  assert.deepEqual((await rowsFor(token)).map((hosted) => hosted.requester), [null]);
+  const tokenReport = await (await token.get('/admin/api/usage/report?period=this_billing_period')).json() as UsageReport;
+  assert.deepEqual(tokenReport.people.map((person) => person.name), ['Everyone else']);
+  assert.deepEqual(tokenReport.agents?.map((agent) => agent.topPerson), [null, null]);
 });
