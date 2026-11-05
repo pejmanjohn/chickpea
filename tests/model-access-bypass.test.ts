@@ -45,8 +45,6 @@ const ALLOWED = new Map<string, string>([
     'refuses the lane on a deployment serving many installations.'],
   ['src/model-catalog/profiles.ts', 'Catalog endpoint metadata; requests to it go through the proxy.'],
   ['src/model-catalog/image-profiles.ts', 'Catalog endpoint metadata; image requests to it go through the proxy.'],
-  ['src/usage/pricing/catalogs/2026-10-07-openrouter-makers.ts',
-    'Price provenance: cites the endpoints listing each price was read from; sends nothing.'],
   ['src/slack/attachment-model-context.ts',
     'Compares a model\'s endpoint origin to decide native PDF support; sends nothing.'],
   ['src/agents/openai-prompt-cache.ts',
@@ -66,11 +64,17 @@ function sourceFiles(directory: string): string[] {
   });
 }
 
+/** A price catalog's `sourceUrl` cites the listing, a provider's API among them, that a price was read from; it sends nothing. */
+const PRICE_CATALOGS = join('src', 'usage', 'pricing', 'catalogs') + sep;
+const PRICE_PROVENANCE = /^\s*sourceUrl: /;
+
 function modulesReachingModels(root: string): Map<string, string> {
   const found = new Map<string, string>();
   for (const path of sourceFiles(join(root, 'src'))) {
+    const catalog = relative(root, path).startsWith(PRICE_CATALOGS);
     const line = readFileSync(path, 'utf8').split('\n')
-      .find((text) => READS_MODEL_KEY.test(text) || NAMES_PROVIDER_HOST.test(text));
+      .find((text) => READS_MODEL_KEY.test(text) ||
+        (NAMES_PROVIDER_HOST.test(text) && !(catalog && PRICE_PROVENANCE.test(text))));
     if (line !== undefined) found.set(relative(root, path).split(sep).join('/'), line.trim());
   }
   return found;
