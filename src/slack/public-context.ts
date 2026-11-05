@@ -283,7 +283,7 @@ export async function reconcileSlackPublicContextMutation(
   // the notice that attaches the reply's file may not describe it, so a
   // rewrite would drop the image the delivery recorded.
   if (!message?.edited && (existing.role === 'agent' ||
-      existing.text === text && sameFileNames(existing.files ?? [], files))) return true;
+      (existing.text === text && sameFileNames(existing.files ?? [], files)))) return true;
   await store.putSlackPublicContext({
     workspaceId,
     channelId: event.channel,
