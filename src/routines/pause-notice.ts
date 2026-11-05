@@ -31,7 +31,9 @@ export async function deliverRoutinePauseNotice(
   },
 ): Promise<RoutineDeliveryReceipt | undefined> {
   const [previous] = await pauseSkips(input.store, input.run, 1);
-  if (previous && hasNotice(previous, (input.now ?? Date.now)())) return undefined;
+  // Inside a pause only the run whose notice was posted, or may have been,
+  // leaves the runs after it silent (`none`); a notice Slack refused posts again.
+  if (previous && previous.deliveryStatus !== 'failed') return undefined;
   const at = formatRoutineTime(input.run.scheduledFor, input.routine.timezone);
   const why = PAUSE_REASONS[dailyLimitScopeOfText(input.run.publicError) ?? 'usage'];
   const text = [
@@ -46,15 +48,6 @@ export async function deliverRoutinePauseNotice(
   );
 }
 
-/**
- * Inside a pause only the run whose notice was posted, or may have been,
- * leaves the runs after it silent (`none`); a post whose lease has not run
- * out may still land.
- */
-function hasNotice(run: RoutineRun, now: number): boolean {
-  if (run.deliveryStatus === 'leased') return (run.deliveryLeaseUntil ?? 0) > now;
-  return run.deliveryStatus === 'delivered' || run.deliveryStatus === 'unknown' || run.deliveryStatus === 'none';
-}
 
 const PAUSE_REASONS = {
   usage: 'this workspace is out of usage. It runs again on schedule once usage is added.',

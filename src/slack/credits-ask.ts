@@ -49,7 +49,11 @@ export function fundingRefusalText(refusal: PlatformFundingRefusal): string {
     case 'own_key_no_plan':
       return "This workspace needs a plan for tasks, so I can't do this one. I can still chat. " +
         'Once an Owner chooses a plan, send it again.';
-    default:
+    case undefined:
+    case 'plan_used':
+    case 'top_up_limit':
+    case 'top_up_declined':
+    case 'top_up_unconfirmed':
       return OUT_OF_USAGE_TEXT;
   }
 }

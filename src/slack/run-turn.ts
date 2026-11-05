@@ -2377,8 +2377,9 @@ async function runTurnAttempt(
           return;
         }
         const refusal = fundingRefusal(err);
+        const replies = refusal ? await import('./funding-refusal-reply.ts').catch(() => undefined) : undefined;
         const refusalReply = refusal
-          ? await (await import('./funding-refusal-reply.ts')).fundingRefusalReply({
+          ? await replies?.fundingRefusalReply({
               env: platformEnv,
               identity: options.appStores?.identity ?? getIdentityStore(platformEnv),
               workspaceId: turnWorkspaceId,

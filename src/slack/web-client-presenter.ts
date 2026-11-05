@@ -1186,10 +1186,12 @@ export class WebClientPresenter {
   async deliverPrivateNote(note: SlackNote): Promise<void> {
     const { channelId, threadTs, userId } = this.target;
     if (!userId) return;
-    const { postPrivateNote } = await import('./funding-refusal-reply.ts');
-    await postPrivateNote(this.client.chat, { channelId, threadTs, userId, persona: this.persona() }, note).catch(() => {
+    try {
+      const { postPrivateNote } = await import('./funding-refusal-reply.ts');
+      await postPrivateNote(this.client.chat, { channelId, threadTs, userId, persona: this.persona() }, note);
+    } catch {
       console.warn('[chickpea] A private note to the requester was not delivered');
-    });
+    }
   }
 
   private persona(): { username?: string; icon_url?: string } {
