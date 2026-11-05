@@ -3218,7 +3218,7 @@
     if (edit) {
       extra = topUpEditorHtml(billing, topUp, edit);
     } else {
-      extra = '<div class="auto-use">' + billingMeterHtml("Top-ups this month", topUp.percent, null, pausedAtLimit,
+      extra = topUp.pause ? '' : '<div class="auto-use">' + billingMeterHtml("Top-ups this month", topUp.percent, null, pausedAtLimit,
         'Top-ups this month: <b>' + esc(topUp.used) + '</b> of your ' + esc(topUp.limit.amount) + ' limit', topUp.resets ? 'Limit resets ' + esc(topUp.resets) : '') + '</div>';
       if (pausedAtLimit && topUp.upgrade) {
         extra += '<div class="plan-confirm auto-alert"><p>Your ' + esc(topUp.plan.price) + ' plan and ' + esc(topUp.used) + ' of top-ups covered ' + esc(topUp.upgrade.covered) +
