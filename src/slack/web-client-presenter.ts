@@ -7,7 +7,7 @@ import {
   type SemanticActivityTelemetrySink,
   type SemanticActivityTelemetrySurface,
 } from '../activity/telemetry.ts';
-import type { DailyLimitAdmission } from '../config/platform-funding.ts';
+import { DAILY_LIMIT_SCOPES, type DailyLimitAdmission, type DailyLimitScope } from '../config/platform-funding.ts';
 import type { SlackInteractionProgress, TurnPullRequestProgress } from '../config/state-rpc.ts';
 import {
   canonicalSlackReplyText,
@@ -50,6 +50,7 @@ import type {
   SlackPresentationPlanV3,
   SlackPresentationReceiptCertainty,
 } from './run-presentations.ts';
+import type { SlackNote } from './funding-refusal-reply.ts';
 import { escapeMrkdwn, slackDateTime, utcDateTime } from './ui/text.ts';
 import { slackClientMessageId } from './transport/message-id.ts';
 import { SlackTransportError } from './transport/types.ts';
@@ -91,9 +92,18 @@ export function dailyLimitText(
 ): string {
   const resumes = time === 'slack' ? slackDateTime(resumesAt) : utcDateTime(resumesAt);
   return scope === 'workspace'
-    ? `This workspace has reached its daily trial limit. Chickpea resumes ${resumes}, ` +
-      'or an Owner can choose a plan to continue now.'
-    : `Chickpea has paused trial usage for now. It resumes ${resumes}, or an Owner can choose a plan to continue now.`;
+    ? `${DAILY_LIMIT_LEAD.workspace} Chickpea resumes ${resumes}, or an Owner can choose a plan to continue now.`
+    : `${DAILY_LIMIT_LEAD.fleet} It resumes ${resumes}, or an Owner can choose a plan to continue now.`;
+}
+
+const DAILY_LIMIT_LEAD: Readonly<Record<DailyLimitScope, string>> = {
+  workspace: 'This workspace has reached its daily trial limit.',
+  fleet: 'Chickpea has paused trial usage for now.',
+};
+
+/** The scope of a daily limit's text, read back from a routine run's stored public error. */
+export function dailyLimitScopeOfText(text: string | null): DailyLimitScope | undefined {
+  return DAILY_LIMIT_SCOPES.find((scope) => text?.startsWith(DAILY_LIMIT_LEAD[scope]));
 }
 
 export const OPENAI_SUBSCRIPTION_POLICY_TEXT =
@@ -1167,6 +1177,21 @@ export class WebClientPresenter {
       memoryItems: this.target.memoryFooterItems,
       ...(this.target.modelRepair ? { modelRepair: true } : {}),
     };
+  }
+
+  /**
+   * A note only the requester sees in the thread, after the reply: an
+   * ephemeral message, or an ordinary reply in a DM. Best effort.
+   */
+  async deliverPrivateNote(note: SlackNote): Promise<void> {
+    const { channelId, threadTs, userId } = this.target;
+    if (!userId) return;
+    try {
+      const { postPrivateNote } = await import('./funding-refusal-reply.ts');
+      await postPrivateNote(this.client.chat, { channelId, threadTs, userId, persona: this.persona() }, note);
+    } catch {
+      console.warn('[chickpea] A private note to the requester was not delivered');
+    }
   }
 
   private persona(): { username?: string; icon_url?: string } {

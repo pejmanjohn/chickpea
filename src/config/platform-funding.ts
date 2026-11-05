@@ -39,10 +39,74 @@ export function isDailyLimitScope(value: unknown): value is DailyLimitScope {
   return DAILY_LIMIT_SCOPES.includes(value as DailyLimitScope);
 }
 
-/** Why platform-funded work is refused. */
-export type PlatformFundingRefusal = 'credits_exhausted' | DailyLimitAdmission;
+/**
+ * Why a workspace is out of usage, as the host chooses it, so the reply can
+ * say why. Each kind lists the amounts its words name: `plansFromCents` the
+ * lowest monthly plan price the workspace may choose, `bonusPercent` how much
+ * more usage than its price every plan includes, `limitCents` auto top-up's
+ * monthly limit. An amount is whole US cents or percent; the reply leaves out
+ * a sentence whose amount is missing.
+ */
+const OUT_OF_USAGE_CAUSES = {
+  /** The free trial's usage is used up. */
+  trial_used: ['plansFromCents', 'bonusPercent'],
+  /** The free trial ended by date. */
+  trial_ended: ['plansFromCents', 'bonusPercent'],
+  /** The plan's usage is used, and auto top-up is off. */
+  plan_used: [],
+  /** Auto top-up reached its monthly limit. */
+  top_up_limit: ['limitCents'],
+  /** Auto top-up's charge was declined. */
+  top_up_declined: [],
+  /** Auto top-up's charge waits for the bank's confirmation (SCA). */
+  top_up_unconfirmed: [],
+  /** A workspace on its own key used this month's tasks. */
+  own_key_tasks_used: [],
+  /** A workspace on its own key has no plan, which tasks need. */
+  own_key_no_plan: ['plansFromCents'],
+} as const satisfies Record<string, readonly OutOfUsageAmount[]>;
 
-export type PlatformFundingAdmission = 'admitted' | PlatformFundingRefusal;
+type OutOfUsageAmount = 'plansFromCents' | 'bonusPercent' | 'limitCents';
+export type OutOfUsageCauseKind = keyof typeof OUT_OF_USAGE_CAUSES;
+export const OUT_OF_USAGE_CAUSE_KINDS = Object.keys(OUT_OF_USAGE_CAUSES) as OutOfUsageCauseKind[];
+export type OutOfUsageCause = {
+  [K in OutOfUsageCauseKind]: { readonly kind: K } &
+    { readonly [A in (typeof OUT_OF_USAGE_CAUSES)[K][number]]?: number };
+}[OutOfUsageCauseKind];
+
+/** The workspace is out of usage. Without a cause the reply says so in general words. */
+export interface OutOfUsage {
+  readonly kind: typeof CREDITS_EXHAUSTED_CODE;
+  readonly cause?: OutOfUsageCause;
+}
+
+/** Why platform-funded work is refused. */
+export type PlatformFundingRefusal = OutOfUsage | DailyLimitAdmission;
+
+/**
+ * `pending`: a top-up charge is in flight. Core asks again each second, for
+ * up to 10 seconds from its first ask, then refuses as out of usage with no
+ * cause. A bare `credits_exhausted` is out of usage with no cause.
+ */
+export type PlatformFundingAdmission = 'admitted' | 'pending' | typeof CREDITS_EXHAUSTED_CODE | PlatformFundingRefusal;
+
+/**
+ * Where a platform-funded request falls in its attempt. `start` is the
+ * attempt's first request: it admits the run. `continue` is every later
+ * one, which an admitted run sends. A host refuses `start` once the balance
+ * is not above zero; it lets an admitted run `continue` past zero, down to
+ * its overdraw ceiling, and keeps a trial's daily caps on every request. A
+ * retried or resumed attempt starts again, and `grant.runId` names the run,
+ * so a host may let a run it admitted before continue.
+ *
+ * Core keeps a positive answer for 30 seconds per installation. A `start`
+ * reuses only a `start` admission; a `continue` reuses either. An attempt
+ * asks as `continue` only once the host itself admitted one of its requests,
+ * so neither a busy workspace's running work nor a cached answer lets a new
+ * run go on past zero. An attempt whose first request a cached answer
+ * served asks the host `start` with its next one.
+ */
+export type AdmissionStage = 'start' | 'continue';
 
 /** `provider` is the price catalog's id for the request's route, as the request's record names it. */
 export interface PlatformFundedModel {
@@ -68,8 +132,13 @@ export type FeeOutcome =
   | { readonly kind: 'duplicate' }
   /** No fee on this installation under the rate card in effect. */
   | { readonly kind: 'not_applicable' }
-  /** Task tier only: the spendable balance is not above zero, so the row was not written. */
-  | { readonly kind: 'refused' };
+  /**
+   * Task tier only: the row was not written, and the run may not become a
+   * task. `cause` says why, as `admit`'s refusal does. Core stops a reply
+   * run before its next request, but still delivers a routine's finished
+   * output (see postFee).
+   */
+  | { readonly kind: 'refused'; readonly cause?: OutOfUsageCause };
 
 export type CreditBackReason = 'provider' | 'timeout' | 'sandbox' | 'evicted' | 'chickpea';
 
@@ -83,11 +152,12 @@ export interface PlatformFundingPort {
   /** Whether the installation's model requests are paid from its credits. */
   funding(installationId: string): Promise<ModelRequestFundingSource>;
   /**
-   * Before a platform-funded request, unless one of the installation's was
-   * admitted in the last 30 seconds: `credits_exhausted` unless the balance
-   * is above zero, or a daily limit until its usage resumes.
+   * Before a platform-funded request, unless Core reuses a positive answer
+   * (see AdmissionStage): out of usage, with its cause, by the rules of the
+   * request's stage; a daily limit until its usage resumes; or `pending`. A
+   * host that ignores `stage` admits every request as a `start`.
    */
-  admit(grant: ModelAccessGrant, model: PlatformFundedModel): Promise<PlatformFundingAdmission>;
+  admit(grant: ModelAccessGrant, model: PlatformFundedModel, stage: AdmissionStage): Promise<PlatformFundingAdmission>;
   /**
    * Once per finished platform-funded request, and once more if that fails;
    * `record.requestId` is the idempotency key. `listPriceUsdMicros` is null
@@ -97,32 +167,46 @@ export interface PlatformFundingPort {
    */
   charge(record: ModelRequestRecord, sharedPrefix: SharedPrefixId | null): Promise<void>;
   /**
-   * A run's chat row as each attempt starts and its task row at its first
-   * qualifying action, on platform-funded and own-key installations alike.
-   * Idempotent on `(installationId, runId, tier)`: every attempt posts again.
+   * A run's chat row as each attempt starts, and its task row at a reply's
+   * first qualifying action or as a routine delivers its output, on
+   * platform-funded and own-key installations alike. Idempotent on
+   * `(installationId, runId, tier)`: every attempt posts again. Every task
+   * post follows the run's `admitTask`, so the host may write it as debt
+   * below zero. A routine's output is delivered whatever its post answers.
    */
   postFee(post: FeePost): Promise<FeeOutcome>;
   /**
-   * Before a reply run's first qualifying tool call, once per attempt.
-   * Read-only: writes no row. `refused` exactly when a task-tier `postFee`
-   * for the run would answer `refused`; a daily limit refuses with its own reason.
+   * Read-only: writes no row. Once per attempt, before a reply run's first
+   * qualifying tool call and before a routine run's first model request.
+   * Core also asks it for an `ask_owner_…` run ID that names no run, to tell
+   * an Owner who clicks Ask an Owner, and the Owners it DMs, the cause now.
+   * Refused, with its cause, once the balance is not above zero; a daily
+   * limit with its own reason; `pending` as for `admit`. A host that does
+   * not answer within 2 seconds admits, unless it answered `pending` first.
    */
   admitTask(run: RunRef): Promise<TaskAdmission>;
   /** Restores what a run that failed on Chickpea's side was charged. Idempotent per run. */
   creditBack(run: RunRef, reason: CreditBackReason): Promise<CreditBackOutcome>;
 }
 
-export type TaskAdmission = 'admitted' | 'refused' | DailyLimitAdmission;
+/** A bare `refused` is out of usage with no cause. */
+export type TaskAdmission = 'admitted' | 'pending' | 'refused' | PlatformFundingRefusal;
 
 export const CREDITS_EXHAUSTED_CODE = 'credits_exhausted';
 export const DAILY_LIMIT_CODE = 'daily_limit';
 
-/** The installation's credits are spent: the request is refused before it is sent. */
+/**
+ * The installation's credits are spent: the request is refused before it is
+ * sent. The message carries the code and the cause, since a Flue failure
+ * keeps only its text (see outOfUsageOf).
+ */
 export class CreditsExhaustedError extends Error {
   readonly name = 'CreditsExhaustedError';
   readonly code = CREDITS_EXHAUSTED_CODE;
-  constructor() {
-    super(`This installation is out of Chickpea credits (${CREDITS_EXHAUSTED_CODE}).`);
+  readonly refusal: OutOfUsage;
+  constructor(cause?: OutOfUsageCause) {
+    super(`This installation is out of Chickpea credits (${outOfUsageText(cause)}).`);
+    this.refusal = cause ? { kind: CREDITS_EXHAUSTED_CODE, cause } : { kind: CREDITS_EXHAUSTED_CODE };
   }
 }
 
@@ -144,7 +228,7 @@ export class DailyLimitError extends Error {
 }
 
 export function platformFundingRefusalError(refusal: PlatformFundingRefusal): CreditsExhaustedError | DailyLimitError {
-  return refusal === CREDITS_EXHAUSTED_CODE ? new CreditsExhaustedError() : new DailyLimitError(refusal);
+  return refusal.kind === CREDITS_EXHAUSTED_CODE ? new CreditsExhaustedError(refusal.cause) : new DailyLimitError(refusal);
 }
 
 /** The host could not say whether a platform-funded request may be sent or what it costs. */
@@ -158,12 +242,16 @@ export class PlatformFundingUnavailableError extends Error {
 
 export const PLATFORM_ADMISSION_TTL_MS = 30_000;
 const PORT_CALL_BUDGET_MS = 2_000;
+const PENDING_WAIT_MS = 10_000;
+const PENDING_POLL_MS = 1_000;
 const MAX_CACHED_INSTALLATIONS = 1_024;
 const LOG_INTERVAL_MS = 60_000;
 
 let port: PlatformFundingPort | undefined;
 let clock: () => number = Date.now;
-const admittedAt = new Map<string, number>();
+let sleep = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); });
+/** When each installation's request of a stage was last admitted; a `start` admission also counts for `continue`. */
+const admittedAt: Readonly<Record<AdmissionStage, Map<string, number>>> = { start: new Map(), continue: new Map() };
 /**
  * Advanced by every refusal and lost charge, so an admission read already in
  * flight is not cached over it; another installation's read is just asked again.
@@ -174,7 +262,8 @@ const loggedAt = new Map<string, number>();
 /** The composition seam: the host's port, installed once at module scope; undefined removes it. */
 export function configurePlatformFunding(next: PlatformFundingPort | undefined): void {
   port = next;
-  admittedAt.clear();
+  admittedAt.start.clear();
+  admittedAt.continue.clear();
 }
 
 export function platformFundingConfigured(): boolean {
@@ -209,36 +298,46 @@ export async function installationFunding(env: PlatformEnv | undefined): Promise
   }
 }
 
+/**
+ * `host` when the host itself admitted the request, `cache` when a recent
+ * admission served it. `reuse: false` always asks the host.
+ */
 export async function requirePlatformFundingAdmitted(
   grant: ModelAccessGrant,
   model: PlatformFundedModel,
-): Promise<void> {
+  stage: AdmissionStage,
+  { reuse = true }: { reuse?: boolean } = {},
+): Promise<'host' | 'cache'> {
   const { installationId } = grant;
-  const at = admittedAt.get(installationId);
-  if (at !== undefined && clock() - at < PLATFORM_ADMISSION_TTL_MS) return;
+  const at = admittedAt[stage].get(installationId);
+  if (reuse && at !== undefined && clock() - at < PLATFORM_ADMISSION_TTL_MS) return 'cache';
   const current = port;
   const refusalsBefore = refusals;
-  let admission: PlatformFundingAdmission;
+  let answer: PlatformFundingAdmission | typeof STILL_PENDING;
   try {
     if (!current) throw new Error('No platform funding port is configured.');
-    admission = await current.admit(grant, model);
+    answer = await pastPending(() => current.admit(grant, model, stage));
   } catch (error) {
     throw new PlatformFundingUnavailableError(error);
   }
-  if (admission !== 'admitted') {
+  if (answer !== 'admitted') {
     forgetAdmission(installationId);
-    throw admission === CREDITS_EXHAUSTED_CODE || isDailyLimitAdmission(admission)
-      ? platformFundingRefusalError(admission)
-      : new PlatformFundingUnavailableError();
+    if (answer === STILL_PENDING) throw new CreditsExhaustedError();
+    const refusal: PlatformFundingRefusal | undefined =
+      answer === CREDITS_EXHAUSTED_CODE ? { kind: CREDITS_EXHAUSTED_CODE } : refusalOf(answer);
+    throw refusal ? platformFundingRefusalError(refusal) : new PlatformFundingUnavailableError();
   }
   // A port replaced, or a refusal answered, while this read was in flight wins over it.
-  if (port !== current || refusals !== refusalsBefore) return;
-  admittedAt.delete(installationId);
-  admittedAt.set(installationId, clock());
-  if (admittedAt.size > MAX_CACHED_INSTALLATIONS) {
-    const oldest = admittedAt.keys().next();
-    if (!oldest.done) admittedAt.delete(oldest.value);
+  if (port !== current || refusals !== refusalsBefore) return 'host';
+  for (const admitted of stage === 'start' ? [admittedAt.start, admittedAt.continue] : [admittedAt.continue]) {
+    admitted.delete(installationId);
+    admitted.set(installationId, clock());
+    if (admitted.size > MAX_CACHED_INSTALLATIONS) {
+      const oldest = admitted.keys().next();
+      if (!oldest.done) admitted.delete(oldest.value);
+    }
   }
+  return 'host';
 }
 
 /**
@@ -268,23 +367,46 @@ export async function chargePlatformRequest(
 export const FEE_UNANSWERED = { kind: 'unanswered' } as const;
 
 export async function postRunFee(post: FeePost): Promise<FeeOutcome | typeof FEE_UNANSWERED> {
-  return (await askWithinBudget((current) => current.postFee(post), { event: 'fee_post_failed', tier: post.tier }))
-    ?? FEE_UNANSWERED;
+  const outcome = await askWithinBudget((current) => current.postFee(post), { event: 'fee_post_failed', tier: post.tier });
+  if (outcome?.kind !== 'refused') return outcome ?? FEE_UNANSWERED;
+  const cause = outOfUsageCause(outcome.cause);
+  return cause ? { kind: 'refused', cause } : { kind: 'refused' };
 }
 
 /**
  * A host that does not answer in time, fails, or is not configured admits: a
- * slow ledger never blocks a task. So does a malformed daily limit; the
- * run's next model request asks `admit`, which refuses one.
+ * slow ledger never blocks a task. So does a malformed refusal; the run's
+ * next model request asks `admit`, which refuses one. Once the host answers
+ * `pending`, only an answer admits, and the wait ends refused.
  */
-export async function admitRunTask({ installationId, runId }: RunRef): Promise<TaskAdmission> {
-  const answer = await askWithinBudget((current) => current.admitTask({ installationId, runId }),
-    { event: 'task_admission_failed' });
-  if (answer === 'refused' || isDailyLimitAdmission(answer)) return answer;
+export async function admitRunTask({ installationId, runId }: RunRef): Promise<'admitted' | PlatformFundingRefusal> {
+  let pending = false;
+  const answer = await pastPending(async () => {
+    const next = await askWithinBudget((current) => current.admitTask({ installationId, runId }),
+      { event: 'task_admission_failed' });
+    pending ||= next === 'pending';
+    return pending && (next === undefined || next === 'pending') ? 'pending' : next;
+  });
+  if (answer === STILL_PENDING) return { kind: CREDITS_EXHAUSTED_CODE };
+  if (answer === 'refused') return { kind: CREDITS_EXHAUSTED_CODE };
+  const refusal = refusalOf(answer);
+  if (refusal) return refusal;
   if (answer !== undefined && answer !== 'admitted') {
     console.warn(JSON.stringify({ component: 'platform_funding', event: 'task_admission_failed', error: 'malformed' }));
   }
   return 'admitted';
+}
+
+/**
+ * Why the installation is out of usage now, with the cause a public reply
+ * leaves out: a task admission for a run ID of Core's own that names no
+ * run. Undefined when it is admitted or the host does not say.
+ */
+export async function currentFundingRefusal(env: PlatformEnv | undefined): Promise<PlatformFundingRefusal | undefined> {
+  const installationId = port ? requireInstallationScope(env)?.installationId : undefined;
+  if (!installationId) return undefined;
+  const answer = await admitRunTask({ installationId, runId: `ask_owner_${crypto.randomUUID()}` });
+  return answer === 'admitted' ? undefined : answer;
 }
 
 export function creditBackRun(run: RunRef, reason: CreditBackReason): Promise<CreditBackOutcome | undefined> {
@@ -292,6 +414,23 @@ export function creditBackRun(run: RunRef, reason: CreditBackReason): Promise<Cr
 }
 
 const UNANSWERED_IN_TIME = Symbol('unanswered in time');
+const STILL_PENDING = Symbol('still pending');
+
+/**
+ * Asks again each second while the host answers `pending`, a top-up charge
+ * in flight, until PENDING_WAIT_MS after the first ask.
+ */
+async function pastPending<T>(ask: () => Promise<T>): Promise<Exclude<T, 'pending'> | typeof STILL_PENDING> {
+  const deadline = clock() + PENDING_WAIT_MS;
+  let answer = await ask();
+  while (answer === 'pending') {
+    const left = deadline - clock();
+    if (left <= 0) return STILL_PENDING;
+    await sleep(Math.min(PENDING_POLL_MS, left));
+    answer = await ask();
+  }
+  return answer as Exclude<T, 'pending'>;
+}
 
 async function askWithinBudget<T>(
   ask: (current: PlatformFundingPort) => Promise<T>,
@@ -317,7 +456,8 @@ async function askWithinBudget<T>(
 }
 
 function forgetAdmission(installationId: string): void {
-  admittedAt.delete(installationId);
+  admittedAt.start.delete(installationId);
+  admittedAt.continue.delete(installationId);
   refusals += 1;
 }
 
@@ -330,14 +470,25 @@ function logAtMostEachMinute(event: string): void {
 }
 
 /**
- * Whether an error is Chickpea's credits refusal, however it travelled: a Flue
- * failure carries only its text, so the parenthesized code in a message counts.
- * Without a port nothing refuses for credits, so a provider's own error that
- * uses the word is never taken for one.
+ * Chickpea's out-of-usage refusal an error reports, however it travelled:
+ * the error itself, or the `(credits_exhausted…)` code a Flue failure's text
+ * carries. Without a port nothing refuses for usage, so a provider's own
+ * error that uses the word is never taken for one.
  */
+export function outOfUsageOf(error: unknown): OutOfUsage | undefined {
+  if (port === undefined) return undefined;
+  let refusal: OutOfUsage | undefined;
+  errorChainIncludes(error, (link) => {
+    refusal = link instanceof CreditsExhaustedError
+      ? link.refusal
+      : typeof link.message === 'string' ? outOfUsageInText(link.message) : undefined;
+    return refusal !== undefined;
+  });
+  return refusal;
+}
+
 export function isCreditsExhausted(error: unknown): boolean {
-  return port !== undefined && errorChainIncludes(error, (link) => link instanceof CreditsExhaustedError ||
-    (typeof link.message === 'string' && link.message.includes(`(${CREDITS_EXHAUSTED_CODE})`)));
+  return outOfUsageOf(error) !== undefined;
 }
 
 /**
@@ -366,6 +517,61 @@ function dailyLimitInText(message: string): DailyLimitAdmission | undefined {
   return isDailyLimitAdmission(limit) ? limit : undefined;
 }
 
+/**
+ * Flue retries a failure whose text holds 429, 500, 502, 503 or 504
+ * anywhere, so an amount travels with each digit written as a letter, a for
+ * 0 through j for 9: `(credits_exhausted:top_up_limit:limitCents=faaa)`.
+ */
+function outOfUsageText(cause: OutOfUsageCause | undefined): string {
+  if (!cause) return CREDITS_EXHAUSTED_CODE;
+  const amounts = (OUT_OF_USAGE_CAUSES[cause.kind] as readonly OutOfUsageAmount[]).flatMap((field) => {
+    const amount = (cause as Partial<Record<OutOfUsageAmount, number>>)[field];
+    return amount === undefined ? [] : [`:${field}=${String(amount).replace(/\d/g, (digit) => DIGIT_LETTERS[Number(digit)]!)}`];
+  });
+  return `${CREDITS_EXHAUSTED_CODE}:${cause.kind}${amounts.join('')}`;
+}
+
+const DIGIT_LETTERS = 'abcdefghij';
+const OUT_OF_USAGE_TEXT = /\(credits_exhausted(?::([a-z_]{1,40})((?::[a-zA-Z]{1,20}=[a-j]{1,9})*))?\)/;
+
+function outOfUsageInText(message: string): OutOfUsage | undefined {
+  const match = OUT_OF_USAGE_TEXT.exec(message);
+  if (!match) return undefined;
+  if (match[1] === undefined) return { kind: CREDITS_EXHAUSTED_CODE };
+  const fields = Object.fromEntries((match[2] ?? '').split(':').slice(1).map((pair) => {
+    const [field, letters] = pair.split('=') as [string, string];
+    return [field, Number([...letters].map((letter) => DIGIT_LETTERS.indexOf(letter)).join(''))];
+  }));
+  const cause = outOfUsageCause({ ...fields, kind: match[1] });
+  return cause ? { kind: CREDITS_EXHAUSTED_CODE, cause } : { kind: CREDITS_EXHAUSTED_CODE };
+}
+
+/** The port is the host's boundary: a refusal Core cannot read is no answer. */
+function refusalOf(answer: unknown): PlatformFundingRefusal | undefined {
+  if (isDailyLimitAdmission(answer)) return answer;
+  if (typeof answer !== 'object' || answer === null || (answer as { kind?: unknown }).kind !== CREDITS_EXHAUSTED_CODE) {
+    return undefined;
+  }
+  const cause = outOfUsageCause((answer as { cause?: unknown }).cause);
+  return cause ? { kind: CREDITS_EXHAUSTED_CODE, cause } : { kind: CREDITS_EXHAUSTED_CODE };
+}
+
+/** A cause of a kind Core does not know is no cause, so the reply uses general words; an unreadable amount is left out. */
+function outOfUsageCause(value: unknown): OutOfUsageCause | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const { kind } = value as { kind?: unknown };
+  if (typeof kind !== 'string' || !Object.hasOwn(OUT_OF_USAGE_CAUSES, kind)) return undefined;
+  const cause: Record<string, unknown> = { kind };
+  for (const field of OUT_OF_USAGE_CAUSES[kind as OutOfUsageCauseKind] as readonly OutOfUsageAmount[]) {
+    const amount = (value as Record<string, unknown>)[field];
+    if (Number.isSafeInteger(amount) && (amount as number) >= 0 && (amount as number) <= MAX_AMOUNT) cause[field] = amount;
+  }
+  return cause as OutOfUsageCause;
+}
+
+/** Nine digits, so an amount's text stays within OUT_OF_USAGE_TEXT. */
+const MAX_AMOUNT = 999_999_999;
+
 /** The port is the host's boundary: a daily limit Core cannot say the scope and time of is no answer. */
 function isDailyLimitAdmission(value: unknown): value is DailyLimitAdmission {
   if (typeof value !== 'object' || value === null) return false;
@@ -380,8 +586,11 @@ function validResumesAt(value: unknown): value is number {
 
 const MAX_DATE_MS = 8.64e15;
 
-export function resetPlatformFundingForTests(options: { now?: () => number } = {}): void {
+export function resetPlatformFundingForTests(
+  options: { now?: () => number; sleep?: (ms: number) => Promise<void> } = {},
+): void {
   configurePlatformFunding(undefined);
   clock = options.now ?? Date.now;
+  sleep = options.sleep ?? ((ms) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }));
   loggedAt.clear();
 }

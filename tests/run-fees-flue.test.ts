@@ -35,6 +35,7 @@ import {
   type DailyLimitAdmission,
   type FeeOutcome,
   type FeePost,
+  type OutOfUsage,
   type RunRef,
 } from '../src/config/platform-funding.ts';
 import { buildSemanticActivityContext, registerActivityContext } from '../src/activity/status.ts';
@@ -62,7 +63,7 @@ import { createSlackReadGate } from '../src/slack/read-budget.ts';
 import { SlackReadingService } from '../src/slack/reading/service.ts';
 import { createSlackReadingTools } from '../src/slack/reading/tools.ts';
 import type { FlueDispatchEnvelopeV1 } from '../src/slack/turn-job-types.ts';
-import { CREDITS_EXHAUSTED_TEXT, dailyLimitText } from '../src/slack/web-client-presenter.ts';
+import { fundingRefusalText } from '../src/slack/credits-ask.ts';
 import type { RunKind } from '../src/usage/run-fees.ts';
 import { withEnv } from './helpers/env.ts';
 import { NO_RUN_FEES } from './helpers/platform-funding.ts';
@@ -95,7 +96,9 @@ function hostedPort(
     refuse?: FeePost['tier'];
     fail?: FeePost['tier'];
     stall?: FeePost['tier'];
-    admission?: 'refused' | 'stall' | 'fail' | 'stop' | 'malformed' | DailyLimitAdmission;
+    admission?: 'refused' | 'stall' | 'fail' | 'stop' | 'malformed' | 'pending' | DailyLimitAdmission | OutOfUsage;
+    /** The cause a refused task row gives. */
+    postRefusal?: OutOfUsage['cause'];
     port?: boolean;
   } = {},
 ) {
@@ -118,6 +121,7 @@ function hostedPort(
         if (options.admission === 'stall') return new Promise<never>(() => {});
         if (options.admission === 'fail') throw new Error('ledger unavailable');
         if (options.admission === 'malformed') return { kind: 'daily_limit', scope: 'workspace', resumesAt: Number.NaN };
+        if (options.admission === 'pending') return 'pending';
         if (options.admission === 'stop') {
           await stopTurn();
           timeline.push('admit:admitted');
@@ -142,7 +146,7 @@ function hostedPort(
         if (outcome === 'posted') rows.add(key);
         posts.push({ ...post, outcome });
         timeline.push(`${post.tier}:${outcome}`);
-        return { kind: outcome };
+        return outcome === 'refused' && options.postRefusal ? { kind: outcome, cause: options.postRefusal } : { kind: outcome };
       },
     });
   }
@@ -493,7 +497,8 @@ const replyRun = (env: PlatformEnv | undefined, runKind: RunKind = 'interactive'
   (runId: string | undefined): AttemptModelAccess => ({ env, grant: ownKeyGrant(runId!), agentId: 'agent_fees', runKind });
 
 test('an own-key turn with nothing spendable runs no tool, not even a parallel one, and ends out of usage before another request is sent', { timeout: 20_000 }, async (t) => {
-  const posts = hostedPort(t, { admission: 'refused', refuse: 'task' });
+  const refusal = { kind: 'credits_exhausted', cause: { kind: 'own_key_tasks_used' } } as const;
+  const posts = hostedPort(t, { admission: refusal, refuse: 'task' });
   interceptors(t, replyRun(hostedEnv()));
   const { sent } = scriptedProvider([callsTools('read_slack_channel', 'read_slack_channel'), answers]);
   ran.length = 0;
@@ -503,7 +508,9 @@ test('an own-key turn with nothing spendable runs no tool, not even a parallel o
   assert.ok(failure instanceof AgentPromptFailure, String(failure));
   assert.equal(failure.kind, 'credits-exhausted');
   assert.equal(failure.retryable, false);
-  assert.equal(agentFailureText(failure), CREDITS_EXHAUSTED_TEXT);
+  assert.deepEqual(failure.outOfUsage, refusal, 'the host\'s cause reaches the reply');
+  assert.equal(agentFailureText(failure), fundingRefusalText(refusal));
+  assert.match(agentFailureText(failure), /I can still chat/);
   assert.equal(sent.length, 1, 'no provider request after the refusal');
   assert.deepEqual(ran, [], 'no tool ran');
   assert.equal(admissions.length, 1);
@@ -521,7 +528,7 @@ test('a turn at its daily limit runs no tool and ends with the daily-limit reply
 
   assert.ok(failure instanceof AgentPromptFailure, String(failure));
   assert.deepEqual([failure.kind, failure.dailyLimit, failure.retryable], ['daily-limit', limit, false]);
-  assert.equal(agentFailureText(failure), dailyLimitText(limit));
+  assert.equal(agentFailureText(failure), fundingRefusalText(limit));
   assert.equal(sent.length, 1, 'no provider request after the refusal');
   assert.deepEqual(ran, [], 'no tool ran');
   assert.deepEqual(tiers(posts), ['chat:posted']);
@@ -557,7 +564,7 @@ test('an admitted task runs its qualifying call, then posts the task row', { tim
 });
 
 test('after an own-key post is refused, a parallel qualifying call that starts later never runs', { timeout: 20_000 }, async (t) => {
-  const posts = hostedPort(t, { refuse: 'task' });
+  const posts = hostedPort(t, { refuse: 'task', postRefusal: { kind: 'own_key_no_plan', plansFromCents: 10_000 } });
   const tick = () => new Promise((resolve) => setTimeout(resolve, 1));
   const secondStartsAfterRefusal: FlueExecutionInterceptor = async (operation, _context, next) => {
     if (operation.type === 'tool' && operation.toolCallId === 'call_1_read_slack_channel') {
@@ -574,7 +581,7 @@ test('after an own-key post is refused, a parallel qualifying call that starts l
 
   assert.ok(failure instanceof AgentPromptFailure, String(failure));
   assert.equal(failure.kind, 'credits-exhausted');
-  assert.equal(agentFailureText(failure), CREDITS_EXHAUSTED_TEXT);
+  assert.deepEqual(failure.outOfUsage?.cause, { kind: 'own_key_no_plan', plansFromCents: 10_000 });
   assert.equal(sent.length, 1, 'no provider request after the refusal');
   assert.deepEqual(ran, ['read_slack_channel'], 'only the call that started before the refusal ran');
   assert.deepEqual(tiers(posts), ['chat:posted', 'task:refused']);
@@ -909,7 +916,49 @@ test('a scheduled run posts its chat row and never a task row for a tool, even a
   assert.deepEqual(await slackTurn('fees-scheduled'), { text: 'done' });
   assert.deepEqual(ran, ['read_slack_channel']);
   assert.deepEqual(tiers(posts), ['chat:posted']);
-  assert.deepEqual(admissions, []);
+  assert.equal(admissions.length, 1, 'a routine is admitted as a task once, before its first request');
+});
+
+test('a scheduled run refused as a task sends no request and ends out of usage with the host\'s cause', { timeout: 20_000 }, async (t) => {
+  const refusal = { kind: 'credits_exhausted', cause: { kind: 'plan_used' } } as const;
+  const posts = hostedPort(t, { admission: refusal });
+  interceptors(t, replyRun(hostedEnv(), 'scheduled'));
+  const { sent } = scriptedProvider([callsTools('read_slack_channel'), answers]);
+  ran.length = 0;
+
+  const failure = await slackTurn('fees-scheduled-refused');
+
+  assert.ok(failure instanceof AgentPromptFailure, String(failure));
+  assert.deepEqual([failure.kind, failure.outOfUsage], ['credits-exhausted', refusal]);
+  assert.deepEqual([sent.length, ran], [0, []], 'no model request and no tool');
+  assert.deepEqual([admissions.length, tiers(posts)], [1, ['chat:posted']]);
+});
+
+test('a task admission the host answers pending is not taken as admitted when the host then stops answering', { timeout: 20_000 }, async (t) => {
+  let now = 0;
+  const posts = hostedPort(t, { admission: 'pending' });
+  resetPlatformFundingForTests({ now: () => now, sleep: async (ms) => { now += ms; } });
+  configurePlatformFunding({
+    ...NO_RUN_FEES,
+    funding: async () => 'customer',
+    admit: async () => 'admitted',
+    charge: async () => {},
+    postFee: async (post) => { posts.push({ ...post, outcome: 'posted' }); return { kind: 'posted' }; },
+    admitTask: async (run) => {
+      admissions.push(run);
+      if (admissions.length > 1) throw new Error('ledger unavailable');
+      return 'pending';
+    },
+  });
+  interceptors(t, replyRun(hostedEnv()));
+  const { sent } = scriptedProvider([callsTools('read_slack_channel'), answers]);
+  ran.length = 0;
+
+  const failure = await slackTurn('fees-pending');
+
+  assert.ok(failure instanceof AgentPromptFailure, String(failure));
+  assert.equal(failure.kind, 'credits-exhausted', 'a slow ledger admits a task, but not one whose top-up never landed');
+  assert.deepEqual([sent.length, ran, admissions.length, now], [1, [], 11, 10_000]);
 });
 
 test('an attempt with no reply run, such as a coding worker\'s, posts no fee row', { timeout: 20_000 }, async (t) => {
