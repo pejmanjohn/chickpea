@@ -25,6 +25,8 @@ export interface PlanOffer {
   readonly includedMicros: UsageMicros;
   /** At or above the lowest plan for an installation's own key. */
   readonly ownKeyEligible: boolean;
+  /** The extra usage offer auto top-up buys on this plan unless an Owner picks another; the plan cards disclose it. */
+  readonly autoTopUpPackKey?: string;
 }
 
 /** Extra usage the host's rate card sells, at face value. */
@@ -46,6 +48,103 @@ export type PendingPlanChange =
   | { readonly kind: 'ends'; readonly at: Date }
   | { readonly kind: 'plan'; readonly plan: { readonly name: string }; readonly at: Date };
 
+/** A saved card. `brand` is Stripe's card brand, such as "visa" or "amex". */
+export interface CardSummary {
+  readonly brand: string;
+  readonly last4: string;
+}
+
+/**
+ * Why auto top-up stopped charging until an Owner acts: a declined card, a
+ * charge the bank asks the cardholder to confirm on Stripe's hosted `url`,
+ * billing details too incomplete to tax an invoice, or a past-due plan.
+ */
+export type AutoTopUpPause =
+  | { readonly kind: 'declined'; readonly at: Date }
+  | { readonly kind: 'needs_confirmation'; readonly amountCents: number; readonly url: string }
+  | { readonly kind: 'billing_details' }
+  | { readonly kind: 'past_due' };
+
+/**
+ * Auto top-up on an installation with a plan. `rule: 'plan'` follows the
+ * plan ("same as your plan"); `fixed` is what an Owner chose. Amounts are US
+ * cents before tax.
+ */
+export interface AutoTopUpView {
+  readonly enabled: boolean;
+  /** An Owner turned it off, so it stays off through a cancel and a new plan. */
+  readonly explicitlyOff: boolean;
+  /** The extra usage offer each top-up buys. */
+  readonly pack: { readonly rule: 'plan' | 'fixed'; readonly key: string };
+  /** How much top-ups may charge each billing period. */
+  readonly limit: { readonly rule: 'plan' | 'fixed'; readonly cents: number };
+  /** Paid automatic top-ups this period, net of full refunds. */
+  readonly usedCents: number;
+  /** When `usedCents` starts over: the renewal. Null without a period. */
+  readonly resetsAt: Date | null;
+  readonly pause: AutoTopUpPause | null;
+  /** The card top-ups charge; null when the default payment method is not a card. */
+  readonly card: CardSummary | null;
+}
+
+/**
+ * The version of the off-session charge authorization Admin shows an Owner
+ * who turns auto top-up on or raises it. The page sends the version of the
+ * copy it shows, so bump it with that copy and its copy of this constant in
+ * assets/admin-ui/admin.js.
+ */
+export const AUTO_TOP_UP_CONSENT_VERSION = '2026-11-04';
+
+/** The Owner acting in Admin, for the host's consent records and the other Owners' DM. */
+export interface BillingActor {
+  readonly membershipId: string;
+  /** Null when the Owner has no Slack identity in this workspace. */
+  readonly slackUserId: string | null;
+}
+
+export type AutoTopUpChange =
+  | { readonly kind: 'off' }
+  /** Turns it on, or changes it while on. */
+  | {
+    readonly kind: 'on';
+    readonly pack: { readonly rule: 'plan' } | { readonly rule: 'fixed'; readonly key: string };
+    readonly limit: { readonly rule: 'plan' } | { readonly rule: 'fixed'; readonly cents: number };
+  }
+  /** Pays a fresh attempt once, after a pause an Owner fixed. */
+  | { readonly kind: 'retry' };
+
+export interface AutoTopUpUpdate {
+  readonly change: AutoTopUpChange;
+  readonly by: BillingActor;
+  /**
+   * The version of the authorization the Owner agreed to with this change,
+   * `AUTO_TOP_UP_CONSENT_VERSION`; null when the change raised neither the
+   * pack nor the limit, so Admin showed none.
+   */
+  readonly consentVersion: string | null;
+  /** The page's key for a `retry`, so the host can charge it once if the request arrives twice. */
+  readonly idempotencyKey?: string;
+}
+
+/** What a plan change would do, for the in-app confirm. */
+export type PlanChangePreview =
+  /** Charged now, prorated, before tax; `addedMicros` of usage is granted with it. */
+  | { readonly kind: 'upgrade'; readonly todayCents: number; readonly addedMicros: UsageMicros }
+  /** Takes effect at `at`, the renewal; nothing is charged now. */
+  | { readonly kind: 'downgrade'; readonly at: Date };
+
+/** A purchase on the saved card: paid or scheduled, or a Stripe page to finish it on. */
+export type SavedCardResult =
+  | { readonly kind: 'done' }
+  /** The bank asks the cardholder to confirm (SCA), or there is no saved card and Checkout takes over. */
+  | { readonly kind: 'redirect'; readonly url: string };
+
+/** The Owner's latest purchase, shown when they come back from Stripe; `granted` once its usage is added. */
+export type RecentPurchase =
+  | { readonly kind: 'extra_usage'; readonly granted: boolean; readonly usageMicros: UsageMicros }
+  /** `first` for the installation's first plan; `addedMicros` is what an upgrade added for the rest of the period. */
+  | { readonly kind: 'plan'; readonly granted: boolean; readonly first: boolean; readonly addedMicros: UsageMicros };
+
 export interface BillingSummary {
   readonly funding: BillingFunding;
   /** Null without a plan: a trial, or an own-key installation that never chose one. */
@@ -61,12 +160,29 @@ export interface BillingSummary {
     readonly onPacePercent: number | null;
   } | null;
   readonly rollover: { readonly remainingMicros: UsageMicros; readonly expiresAt: Date } | null;
-  /** Remaining extra usage; frozen while `plan` is null, with the soonest expiry. */
-  readonly extraUsage: { readonly remainingMicros: UsageMicros; readonly frozen: boolean; readonly expiresAt: Date } | null;
+  /**
+   * Remaining extra usage; frozen while `plan` is null, with the soonest
+   * expiry. `totalMicros` is what the packs that still have usage left held
+   * when bought, for the extra usage bar; without it Admin shows no bar.
+   */
+  readonly extraUsage: {
+    readonly remainingMicros: UsageMicros;
+    readonly frozen: boolean;
+    readonly expiresAt: Date;
+    readonly totalMicros?: UsageMicros;
+  } | null;
   /** `grantedMicros` is what the trial started with. */
   readonly trial: { readonly remainingMicros: UsageMicros; readonly grantedMicros: UsageMicros; readonly expiresAt: Date } | null;
   readonly debtMicros: UsageMicros;
-  readonly autoUpgrade: { readonly enabled: boolean; readonly usedThisPeriod: boolean } | null;
+  /** @deprecated Admin no longer reads it, and a later Core removes it. */
+  readonly autoUpgrade?: { readonly enabled: boolean; readonly usedThisPeriod: boolean } | null;
+  /**
+   * Absent where the host offers no auto top-up, and Admin shows none of it.
+   * Null where it offers it but there is no plan to top up.
+   */
+  readonly autoTopUp?: AutoTopUpView | null;
+  /** Absent where the host does not report it; Admin then shows no return banner. */
+  readonly lastPurchase?: RecentPurchase | null;
   readonly use: {
     /** Each row's `id` is an Agent ID. */
     readonly byAgent: readonly UsageRow[];
@@ -102,7 +218,13 @@ export interface BillingRedirect {
   readonly url: string;
 }
 
-export type BillingRefusalReason = 'plan_required' | 'own_key_plan_required';
+export type BillingRefusalReason =
+  | 'plan_required'
+  | 'own_key_plan_required'
+  /** Auto top-up, or a purchase on the saved card, needs a card. */
+  | 'card_required'
+  /** The plan's last invoice is unpaid, so the host takes no new charge. */
+  | 'past_due';
 
 /** A billing action the host refused for a reason the Owner can fix, which Admin shows instead of an outage. */
 export class BillingRefusal extends Error {
@@ -165,6 +287,29 @@ export interface PlatformBillingPort {
    * when it throws, the page shows activity counts.
    */
   usage?(installationId: string, range: { readonly from: Date; readonly to: Date }): Promise<BilledUsage>;
+  /**
+   * An Owner's auto top-up change. Takes effect at once; the host writes a
+   * consent record when `consentVersion` is set and DMs the other Owners.
+   * Throws `BillingRefusal` (`plan_required`, `card_required`, `past_due`).
+   */
+  updateAutoTopUp?(installationId: string, update: AutoTopUpUpdate): Promise<void>;
+  /** With `changePlan`, the in-app plan change; without both, a plan change opens Checkout. */
+  previewPlanChange?(installationId: string, planKey: string): Promise<PlanChangePreview>;
+  /**
+   * Changes the plan on the saved card: an upgrade is charged now, a
+   * downgrade waits for the renewal. `consentVersion` is set when the upgrade
+   * raises auto top-up's limit or pack that follow the plan. Throws `BillingRefusal`
+   * (`card_required`, `past_due`).
+   */
+  changePlan?(installationId: string, request: {
+    readonly planKey: string; readonly by: BillingActor; readonly consentVersion: string | null;
+    /** One per confirm the Owner opened, so the host charges a repeated request once. */
+    readonly idempotencyKey?: string;
+  }): Promise<SavedCardResult>;
+  /** Extra usage on the saved card; without it, extra usage opens Checkout. `idempotencyKey` as for `changePlan`. */
+  buyExtraUsage?(installationId: string, request: {
+    readonly key: string; readonly by: BillingActor; readonly idempotencyKey?: string;
+  }): Promise<SavedCardResult>;
 }
 
 let port: PlatformBillingPort | undefined;

@@ -4,17 +4,22 @@ import { test, type TestContext } from 'node:test';
 import type { WebClient } from '@slack/web-api';
 
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
+import type { BillingActor } from '../src/config/platform-billing.ts';
 import type { InstallationHealth, WorkspaceInstallation } from '../src/config/types.ts';
 import type { Membership, MembershipStatus, OrganizationRole, SlackIdentityBinding } from '../src/identity/types.ts';
 import type { SlackInstallationExecutionResolver } from '../src/slack/installation-execution.ts';
 import {
   dailyLimitNoticeMessage,
   deliverDailyLimitNotice,
+  deliverOwnerBillingNotice,
   deliverUsageAlert,
+  ownerBillingNoticeMessage,
+  usageAlertMessage,
   type DailyLimitNotice,
+  type OwnerBillingNotice,
   type UsageAlert,
 } from '../src/slack/usage-alerts.ts';
-import type { UsageMicros } from '../src/usage/usage-display.ts';
+import { formatCard, type UsageMicros } from '../src/usage/usage-display.ts';
 
 const TEAM = 'TUSAGE1';
 const OTHER_TEAM = 'TOTHER1';
@@ -24,6 +29,7 @@ const PERIOD_END = new Date(Date.UTC(2026, 10, 7));
 const RUN_OUT = new Date(Date.UTC(2026, 10, 2, 15));
 const RESETS = 'Usage resets <!date^1794009600^{date_short}|Nov 7, 2026>.';
 const RUNS_OUT = 'on pace to run out around <!date^1793631600^{date_short}|Nov 2, 2026>.';
+const NOV_7 = '<!date^1794009600^{date_short}|Nov 7, 2026>';
 
 type Block = Record<string, unknown>;
 
@@ -173,42 +179,21 @@ test('just under the whole plan the alert reads 99% and a used amount below the 
     `You've used 99% of your plan ($239.99 of $240). ${RESETS} Add extra usage or upgrade so nothing stops.`);
 });
 
-test('the 90% alert with auto-upgrade on names the next plan and offers to turn it off', async () => {
-  const message = await sent(alert({
-    threshold: 90,
-    usedMicros: 216_000_000 as UsageMicros,
-    runOutAt: RUN_OUT,
-    nextPlan: { key: 'plan_200', priceCents: 20_000 },
-  }));
-  assert.equal(message.text,
-    `You've used 90% of your plan ($216 of $240), ${RUNS_OUT} ` +
-    "When it runs out we'll move you to the $200 plan so nothing stops. " +
-    'You can add extra usage instead, or turn auto-upgrade off.');
-  assert.deepEqual(message.blocks[0], { type: 'section', text: { type: 'mrkdwn', text: message.text } });
-  assert.deepEqual(buttons(message.blocks), [
-    {
-      type: 'button', action_id: 'chickpea.usage.v1.add_extra_usage',
-      text: { type: 'plain_text', text: 'Add extra usage', emoji: false }, url: PLAN_PAGE,
-    },
-    {
-      type: 'button', action_id: 'chickpea.usage.v1.turn_off_auto_upgrade',
-      text: { type: 'plain_text', text: 'Turn off auto-upgrade', emoji: false }, url: PLAN_PAGE,
-    },
-  ]);
-});
+function button(name: string, label: string, url: string, primary = false): Record<string, unknown> {
+  return {
+    type: 'button', action_id: `chickpea.usage.v1.${name}`,
+    text: { type: 'plain_text', text: label, emoji: false }, url, ...(primary ? { style: 'primary' } : {}),
+  };
+}
+
+const at = (step: string) => `${PLAN_PAGE}?step=${step}`;
 
 const UPGRADE_BUTTONS = [
-  {
-    type: 'button', action_id: 'chickpea.usage.v1.upgrade',
-    text: { type: 'plain_text', text: 'Upgrade', emoji: false }, url: PLAN_PAGE,
-  },
-  {
-    type: 'button', action_id: 'chickpea.usage.v1.add_extra_usage',
-    text: { type: 'plain_text', text: 'Add extra usage', emoji: false }, url: PLAN_PAGE,
-  },
+  button('upgrade', 'Upgrade', at('upgrade')),
+  button('add_extra_usage', 'Add extra usage', at('add')),
 ];
 
-test('the 90% alert without a next plan asks for extra usage or an upgrade', async () => {
+test('the 90% alert without auto top-up asks for extra usage or an upgrade, each opening its step', async () => {
   const message = await sent(alert({ threshold: 90, usedMicros: 216_000_000 as UsageMicros }));
   assert.equal(message.text,
     `You've used 90% of your plan ($216 of $240). ${RESETS} Add extra usage or upgrade so nothing stops.`);
@@ -219,6 +204,318 @@ test('the 100% alert says the plan\'s usage is used up and offers extra usage or
   const message = await sent(alert({ threshold: 100, usedMicros: 240_000_000 as UsageMicros }));
   assert.equal(message.text, "You've used all of your plan's usage. Add extra usage or upgrade to keep going.");
   assert.deepEqual(buttons(message.blocks), UPGRADE_BUTTONS);
+});
+
+test('an older host\'s alert literal, with nextPlan and no auto top-up, reads today\'s copy without auto-upgrade', () => {
+  const older: UsageAlert = {
+    threshold: 90,
+    usedMicros: 216_000_000 as UsageMicros,
+    includedMicros: 240_000_000 as UsageMicros,
+    periodEnd: PERIOD_END,
+    onPacePercent: null,
+    runOutAt: null,
+    nextPlan: null,
+    planPageUrl: PLAN_PAGE,
+  };
+  assert.equal(usageAlertMessage({ ...older, threshold: 75 }).text, `You've used 90% of your plan ($216 of $240). ${RESETS}`);
+  assert.deepEqual(buttons([...usageAlertMessage({ ...older, threshold: 75 }).blocks]), []);
+  for (const nextPlan of [null, { key: 'plan_200', priceCents: 20_000 }]) {
+    const ninety = usageAlertMessage({ ...older, nextPlan });
+    assert.equal(ninety.text, `You've used 90% of your plan ($216 of $240). ${RESETS} Add extra usage or upgrade so nothing stops.`);
+    assert.deepEqual(buttons([...ninety.blocks]), UPGRADE_BUTTONS);
+  }
+  const hundred = usageAlertMessage({ ...older, threshold: 100 });
+  assert.equal(hundred.text, "You've used all of your plan's usage. Add extra usage or upgrade to keep going.");
+  assert.deepEqual(buttons([...hundred.blocks]), UPGRADE_BUTTONS);
+});
+
+const TOP_UP_ON = { enabled: true, packCents: 5_000, limitCents: 20_000, usedCents: 5_000 } as const;
+const TOP_UP_OFF = { enabled: false } as const;
+
+test('the 75% alert with auto top-up on says it adds a pack so nothing stops', () => {
+  const message = usageAlertMessage(alert({ threshold: 75, autoTopUp: TOP_UP_ON }));
+  assert.equal(message.text,
+    `You've used 75% of your plan ($180 of $240). ${RESETS} If it runs out, auto top-up adds $50 so nothing stops.`);
+  assert.deepEqual(buttons([...message.blocks]), []);
+});
+
+test('the 75% alert with auto top-up off says the Agents pause until renewal and links the plain Plan page', () => {
+  const message = usageAlertMessage(alert({ threshold: 75, autoTopUp: TOP_UP_OFF }));
+  assert.equal(message.text,
+    `You've used 75% of your plan ($180 of $240). ${RESETS} If it runs out, your Agents pause until your plan renews ${NOV_7}.`);
+  assert.deepEqual(buttons([...message.blocks]), [button('see_options', 'See options', PLAN_PAGE)]);
+});
+
+test('the 90% alert with auto top-up on names the pack and what the limit still allows', () => {
+  const message = usageAlertMessage(alert({ threshold: 90, usedMicros: 216_000_000 as UsageMicros, autoTopUp: TOP_UP_ON }));
+  assert.equal(message.text,
+    `You've used 90% of your plan ($216 of $240). ${RESETS} When it runs out, auto top-up adds $50 of extra usage ` +
+    'so nothing stops. It can add up to $150 this month.');
+  assert.deepEqual(buttons([...message.blocks]), [button('change_auto_top_up', 'Change auto top-up', at('auto-top-up'))]);
+});
+
+test('the 90% alert with auto top-up at its limit says the Agents pause, and offers Raise limit first', () => {
+  for (const usedCents of [20_000, 25_000]) {
+    const message = usageAlertMessage(alert({ threshold: 90, usedMicros: 216_000_000 as UsageMicros, autoTopUp: { ...TOP_UP_ON, usedCents } }));
+    assert.equal(message.text,
+      `You've used 90% of your plan ($216 of $240). ${RESETS} When it runs out, your Agents pause until ${NOV_7}, because auto top-up ` +
+      'reached its limit for this month. Raise the limit or upgrade so nothing stops.', String(usedCents));
+    assert.deepEqual(buttons([...message.blocks]), [
+      button('raise_limit', 'Raise limit', at('raise-limit'), true), button('upgrade', 'Upgrade plan', at('upgrade')),
+    ]);
+  }
+});
+
+test('the 90% alert with auto top-up off offers usage first, then an upgrade or auto top-up', () => {
+  const message = usageAlertMessage(alert({ threshold: 90, usedMicros: 216_000_000 as UsageMicros, autoTopUp: TOP_UP_OFF }));
+  assert.equal(message.text,
+    `You've used 90% of your plan ($216 of $240). ${RESETS} When it runs out, your Agents pause until ${NOV_7}. ` +
+    'Add usage, upgrade, or turn on auto top-up so nothing stops.');
+  assert.deepEqual(buttons([...message.blocks]), [
+    button('add_extra_usage', 'Add usage', at('add'), true),
+    button('upgrade', 'Upgrade plan', at('upgrade')),
+    button('turn_on_auto_top_up', 'Turn on auto top-up', at('auto-top-up')),
+  ]);
+});
+
+test('a Plan page URL that does not parse drops the buttons that open a step and keeps the plain one', () => {
+  const broken = 'admin/plan';
+  assert.deepEqual(buttons([...usageAlertMessage(alert({ threshold: 90, planPageUrl: broken })).blocks]), []);
+  assert.equal(usageAlertMessage(alert({ threshold: 90, planPageUrl: broken })).blocks.length, 1);
+  assert.deepEqual(
+    buttons([...usageAlertMessage(alert({ threshold: 75, autoTopUp: TOP_UP_OFF, planPageUrl: broken })).blocks]),
+    [button('see_options', 'See options', broken)],
+  );
+});
+
+const FULL = { threshold: 100, usedMicros: 240_000_000 as UsageMicros } as const;
+const FORTY = 40_000_000 as UsageMicros;
+const PLATFORM_RATES = { funding: 'platform', taskFeeMicros: 100_000 as UsageMicros, typicalTaskMicros: 400_000 as UsageMicros } as const;
+
+test('the 100% alert on extra usage says how much is left and about how many tasks it covers, with no buttons', () => {
+  const message = usageAlertMessage(alert({ ...FULL, extraUsage: { remainingMicros: FORTY, tasks: PLATFORM_RATES } }));
+  assert.equal(message.text, "You've used all of your plan's usage for this month. " +
+    'Your Agents are now using extra usage, with $40 left, about 80 tasks.');
+  assert.deepEqual(message.blocks, [{ type: 'section', text: { type: 'mrkdwn', text: message.text } }]);
+});
+
+test('the 100% alert counts tasks exactly on an own key, and says under 10 for a little', () => {
+  const ownKey = { funding: 'own_key', taskFeeMicros: 300_000 as UsageMicros, typicalTaskMicros: 400_000 as UsageMicros } as const;
+  assert.match(usageAlertMessage(alert({ ...FULL, extraUsage: { remainingMicros: FORTY, tasks: ownKey } })).text,
+    / with \$40 left, 133 tasks\.$/);
+  assert.match(
+    usageAlertMessage(alert({ ...FULL, extraUsage: { remainingMicros: 4_000_000 as UsageMicros, tasks: PLATFORM_RATES } })).text,
+    / with \$4 left, under 10 tasks\.$/,
+  );
+});
+
+test('the 100% alert on extra usage ends at the amount left when tasks cannot be counted', () => {
+  const free = { funding: 'own_key', taskFeeMicros: 0 as UsageMicros, typicalTaskMicros: 400_000 as UsageMicros } as const;
+  for (const extraUsage of [{ remainingMicros: FORTY }, { remainingMicros: FORTY, tasks: free }]) {
+    assert.equal(usageAlertMessage(alert({ ...FULL, extraUsage })).text,
+      "You've used all of your plan's usage for this month. Your Agents are now using extra usage, with $40 left.");
+  }
+});
+
+test('the 100% alert with no extra usage left asks for extra usage or an upgrade', () => {
+  const message = usageAlertMessage(alert({ ...FULL, extraUsage: { remainingMicros: 0 as UsageMicros, tasks: PLATFORM_RATES } }));
+  assert.equal(message.text, "You've used all of your plan's usage. Add extra usage or upgrade to keep going.");
+  assert.deepEqual(buttons([...message.blocks]), UPGRADE_BUTTONS);
+});
+
+const VISA = { brand: 'visa', last4: '4242' };
+
+type WithoutPage<N> = N extends unknown ? Omit<N, 'planPageUrl'> : never;
+
+function notice(value: WithoutPage<OwnerBillingNotice>) {
+  return ownerBillingNoticeMessage({ ...value, planPageUrl: PLAN_PAGE } as OwnerBillingNotice);
+}
+
+function context(blocks: readonly Block[]): string[] {
+  return blocks.filter((block) => block.type === 'context')
+    .flatMap((block) => (block.elements as Array<{ text: string }>).map(({ text }) => text));
+}
+
+function sections(blocks: readonly Block[]): string[] {
+  return blocks.filter((block) => block.type === 'section').map((block) => (block.text as { text: string }).text);
+}
+
+test('a card reads by its brand and last four digits, an unknown brand reads as a card, and last digits that aren\'t four digits read as no card', () => {
+  const brands = ['visa', 'mastercard', 'amex', 'discover', 'diners', 'jcb', 'unionpay', 'link', 'constructor', 'VISA'];
+  assert.deepEqual(brands.map((brand) => formatCard({ brand, last4: '4242' })), [
+    'Visa ending 4242', 'Mastercard ending 4242', 'American Express ending 4242', 'Discover ending 4242',
+    'Diners Club ending 4242', 'JCB ending 4242', 'UnionPay ending 4242', 'Card ending 4242', 'Card ending 4242', 'Visa ending 4242',
+  ]);
+  assert.equal(formatCard(null), null);
+  for (const last4 of ['<!here>', '42', '42424']) assert.equal(formatCard({ brand: 'visa', last4 }), null, last4);
+  assert.equal(sections([...ownerBillingNoticeMessage({ kind: 'top_up_declined', card: { brand: 'visa', last4: '<!here>' }, planPageUrl: PLAN_PAGE }).blocks])[0],
+    "Auto top-up couldn't charge your card. The card was declined, so your Agents are paused.");
+});
+
+const ADDED = {
+  kind: 'top_up_added', packCents: 5_000, usedCents: 10_000, limitCents: 20_000, validMonths: 12, card: VISA,
+  receiptUrl: 'https://pay.stripe.example/receipts/r_1',
+} as const;
+
+test('a top-up under the limit names the card, how long the usage keeps, the limit used, and links the receipt', () => {
+  const message = notice(ADDED);
+  assert.equal(message.text, 'Auto top-up added $50 of extra usage, so your Agents keep working.');
+  assert.deepEqual(sections(message.blocks), [message.text]);
+  assert.deepEqual(context(message.blocks), ['Charged to Visa ending 4242, plus tax. Extra usage keeps 12 months while ' +
+    "you have a plan. That's $100 of your $200 limit this month."]);
+  assert.deepEqual(buttons([...message.blocks]), [button('view_receipt', 'View receipt', ADDED.receiptUrl)]);
+});
+
+test('a top-up that reaches the limit says so and offers to raise it, with no receipt unless it is https', () => {
+  const message = notice({ ...ADDED, usedCents: 20_000, card: null, receiptUrl: 'http://pay.stripe.example/receipts/r_1' });
+  assert.deepEqual(context(message.blocks), ['Charged to your card, plus tax. Extra usage keeps 12 months while ' +
+    "you have a plan. That's your $200 limit for this month."]);
+  assert.deepEqual(buttons([...message.blocks]), [button('raise_limit', 'Raise limit', at('raise-limit'))]);
+});
+
+test('a top-up that leaves no room for another pack offers to raise the limit beside the receipt', () => {
+  const message = notice({ ...ADDED, usedCents: 17_500 });
+  assert.match(context(message.blocks)[0] ?? '', /That's \$175 of your \$200 limit this month\.$/);
+  assert.deepEqual(buttons([...message.blocks]), [
+    button('view_receipt', 'View receipt', ADDED.receiptUrl),
+    button('raise_limit', 'Raise limit', at('raise-limit')),
+  ]);
+});
+
+test('reaching the top-up limit says the Agents are paused until renewal and compares the next plan', () => {
+  const message = notice({
+    kind: 'top_up_limit', limitCents: 5_000, usedCents: 5_000, resumesAt: PERIOD_END,
+    plan: { priceCents: 5_000, includedMicros: 60_000_000 as UsageMicros },
+    nextPlan: { priceCents: 10_000, includedMicros: 120_000_000 as UsageMicros },
+  });
+  assert.deepEqual(sections(message.blocks), [
+    "Your workspace has used this month's usage and its $50 auto top-up, so your Agents are paused until " +
+      `${NOV_7}.`,
+    'Your $50 plan and $50 of top-ups covered $110 of usage this month. The $100 plan includes $120 of usage a month.',
+  ]);
+  assert.equal(message.text, sections(message.blocks)[0]);
+  assert.deepEqual(buttons([...message.blocks]), [
+    button('upgrade', 'Upgrade to $100', at('upgrade'), true),
+    button('raise_limit', 'Raise limit', at('raise-limit')),
+  ]);
+});
+
+test('reaching the top-up limit with no renewal or next plan offers only to raise the limit', () => {
+  const message = notice({ kind: 'top_up_limit', limitCents: 5_000, usedCents: 5_000, resumesAt: null });
+  assert.deepEqual(sections(message.blocks),
+    ["Your workspace has used this month's usage and its $50 auto top-up, so your Agents are paused."]);
+  assert.deepEqual(buttons([...message.blocks]), [button('raise_limit', 'Raise limit', at('raise-limit'), true)]);
+});
+
+test('a declined top-up names the card and offers to update it or try again', () => {
+  const message = notice({ kind: 'top_up_declined', card: { brand: 'amex', last4: '0005' } });
+  assert.equal(message.text,
+    "Auto top-up couldn't charge American Express ending 0005. The card was declined, so your Agents are paused.");
+  assert.deepEqual(buttons([...message.blocks]), [
+    button('update_card', 'Update card', at('card'), true),
+    button('try_again', 'Try again', at('card')),
+  ]);
+  assert.equal(notice({ kind: 'top_up_declined' }).text,
+    "Auto top-up couldn't charge your card. The card was declined, so your Agents are paused.");
+});
+
+test('a top-up the bank wants confirmed asks the Owner to confirm the payment', () => {
+  const message = notice({ kind: 'top_up_unconfirmed', amountCents: 5_000 });
+  assert.equal(message.text,
+    'Your bank wants you to confirm a $50 auto top-up charge. Confirm it to keep your Agents working.');
+  assert.deepEqual(buttons([...message.blocks]), [button('confirm_payment', 'Confirm payment', at('card'), true)]);
+});
+
+test('incomplete billing details ask the Owner to update them', () => {
+  const message = notice({ kind: 'billing_details' });
+  assert.equal(message.text, "Auto top-up couldn't add usage because your billing details are incomplete. " +
+    'Update them to keep your Agents working.');
+  assert.deepEqual(buttons([...message.blocks]), [button('update_billing_details', 'Update billing details', at('card'), true)]);
+});
+
+const BY_OWNER1: BillingActor = { membershipId: 'm_owner1', slackUserId: 'UOWNER1' };
+
+test('an auto top-up change names the Owner who made it and what it now does', () => {
+  const changed = (change: Extract<OwnerBillingNotice, { kind: 'auto_top_up_changed' }>['change'], by = BY_OWNER1) =>
+    notice({ kind: 'auto_top_up_changed', by, change });
+  const openPlan = [button('open_plan', 'Open Plan', PLAN_PAGE)];
+  const cases: Array<[ReturnType<typeof changed>, string, unknown[]]> = [
+    [changed({ kind: 'off' }),
+      '<@UOWNER1> turned off auto top-up. When usage runs out, your Agents pause until your plan renews.', openPlan],
+    [changed({ kind: 'on', packCents: 5_000, limitCents: 10_000 }),
+      '<@UOWNER1> turned on auto top-up. When usage runs out, it adds $50 of extra usage, up to $100 a month.', openPlan],
+    [changed({ kind: 'changed', packCents: 5_000, limitCents: 10_000, previous: { packCents: 5_000, limitCents: 5_000 } }),
+      '<@UOWNER1> raised the auto top-up limit to $100 a month.', []],
+    [changed({ kind: 'changed', packCents: 5_000, limitCents: 5_000, previous: { packCents: 5_000, limitCents: 10_000 } }),
+      '<@UOWNER1> lowered the auto top-up limit to $50 a month.', []],
+    [changed({ kind: 'changed', packCents: 2_500, limitCents: 10_000, previous: { packCents: 5_000, limitCents: 5_000 } }),
+      '<@UOWNER1> changed auto top-up. When usage runs out, it adds $25 of extra usage, up to $100 a month.', openPlan],
+    [changed({ kind: 'changed', packCents: 5_000, limitCents: 10_000 }, { membershipId: 'm_owner1', slackUserId: null }),
+      'An Owner changed auto top-up. When usage runs out, it adds $50 of extra usage, up to $100 a month.', openPlan],
+  ];
+  for (const [message, text, expected] of cases) {
+    assert.equal(message.text, text);
+    assert.deepEqual(buttons([...message.blocks]), expected, text);
+  }
+});
+
+test('running out says the Agents are paused until renewal and offers usage, an upgrade, or auto top-up', () => {
+  const message = notice({ kind: 'out', resumesAt: PERIOD_END });
+  assert.equal(message.text, `Your workspace is out of usage, so your Agents are paused until your plan renews ${NOV_7}.`);
+  assert.deepEqual(buttons([...message.blocks]), [
+    button('add_extra_usage', 'Add usage', at('add'), true),
+    button('upgrade', 'Upgrade plan', at('upgrade')),
+    button('turn_on_auto_top_up', 'Turn on auto top-up', at('auto-top-up')),
+  ]);
+});
+
+test('running out as the plan ends says the Agents are paused and offers only usage', () => {
+  const message = notice({ kind: 'out', resumesAt: null });
+  assert.equal(message.text, 'Your workspace is out of usage, so your Agents are paused.');
+  assert.deepEqual(buttons([...message.blocks]), [button('add_extra_usage', 'Add usage', at('add'), true)]);
+});
+
+const recipients = (slack: ReturnType<typeof workspace>) => slack.of('conversations.open').map(({ users }) => users).sort();
+
+test('an Owner billing notice reaches each active Owner of the workspace and no one else', async () => {
+  const slack = workspace();
+  const out: OwnerBillingNotice = { kind: 'out', resumesAt: null, planPageUrl: PLAN_PAGE };
+  assert.equal(await deliverOwnerBillingNotice(HOSTED_ENV, out, slack.dependencies), 'sent');
+  assert.deepEqual(recipients(slack), ['UOWNER1', 'UOWNER2']);
+  assert.deepEqual(slack.of('chat.postMessage').map(({ text }) => text), [
+    'Your workspace is out of usage, so your Agents are paused.',
+    'Your workspace is out of usage, so your Agents are paused.',
+  ]);
+});
+
+test('an auto top-up change reaches the other Owners, not the one who made it', async () => {
+  const change = { kind: 'off' } as const;
+  const byMembership = workspace();
+  assert.equal(await deliverOwnerBillingNotice(HOSTED_ENV, {
+    kind: 'auto_top_up_changed', by: { membershipId: 'm_owner1', slackUserId: null }, change, planPageUrl: PLAN_PAGE,
+  }, byMembership.dependencies), 'sent');
+  assert.deepEqual(recipients(byMembership), ['UOWNER2']);
+
+  const bySlackUser = workspace();
+  assert.equal(await deliverOwnerBillingNotice(HOSTED_ENV, {
+    kind: 'auto_top_up_changed', by: { membershipId: 'm_unbound', slackUserId: 'UOWNER2' }, change, planPageUrl: PLAN_PAGE,
+  }, bySlackUser.dependencies), 'sent');
+  assert.deepEqual(recipients(bySlackUser), ['UOWNER1']);
+});
+
+test('an auto top-up change by the only active Owner reaches no one', async () => {
+  const slack = workspace({ memberships: MEMBERSHIPS.filter(({ id }) => id !== 'm_owner2') });
+  assert.equal(await deliverOwnerBillingNotice(HOSTED_ENV, {
+    kind: 'auto_top_up_changed', by: BY_OWNER1, change: { kind: 'off' }, planPageUrl: PLAN_PAGE,
+  }, slack.dependencies), 'no_owner');
+  assert.deepEqual(slack.of('conversations.open'), []);
+});
+
+test('standalone never sends Owner billing notices', async () => {
+  const slack = workspace();
+  assert.equal(await deliverOwnerBillingNotice(undefined, { kind: 'billing_details', planPageUrl: PLAN_PAGE }, slack.dependencies),
+    'no_owner');
+  assert.deepEqual(slack.reads, []);
 });
 
 test('a workspace with no active Owner is not messaged', async () => {

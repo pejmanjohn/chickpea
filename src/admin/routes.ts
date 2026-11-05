@@ -67,7 +67,6 @@ import {
 } from '../management/agent-connections.ts';
 import { mcpClientsPayload } from '../management/mcp-client-config.ts';
 import { channelLabelKey, createUsageAdminApi } from './usage-api.ts';
-import { createBillingAdminApi, PLAN_PATH } from './billing-api.ts';
 import { createRunReviewAdminApi } from './run-review-api.ts';
 import { platformBilling } from '../config/platform-billing.ts';
 import { runReview } from '../review/port.ts';
@@ -708,7 +707,7 @@ import {
   type SlackInstallOAuthResult,
 } from '../slack/install-oauth.ts';
 import { setCookieValues } from '../auth/cookies.ts';
-import { AuthDeniedError, AuthService, AuthUnavailableError, setRequestPrincipal } from '../auth/service.ts';
+import { AuthDeniedError, AuthService, AuthUnavailableError, requestPrincipal, setRequestPrincipal } from '../auth/service.ts';
 import { runWithRequestTiming, serverTimingHeader, timed } from '../http/request-timing.ts';
 import {
   BetterAuthDirectory,
@@ -6828,7 +6827,18 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     },
   }));
   app.route('/admin/api', createRunReviewAdminApi({ identity }));
-  app.route('/admin/api', createBillingAdminApi({
+  // The Plan page's API loads with its first request, and stays loaded.
+  let billingApi: Promise<Hono> | undefined;
+  const billingRoutes = async (c: Context) => {
+    billingApi ??= import('./billing-api.ts')
+      .then(({ createBillingAdminApi }) => new Hono().route('/admin/api', createBillingAdminApi(billingOptions)))
+      .catch((error: unknown) => {
+        billingApi = undefined;
+        throw error;
+      });
+    return (await billingApi).fetch(c.req.raw, c.env);
+  };
+  const billingOptions: Parameters<typeof import('./billing-api.ts').createBillingAdminApi>[0] = {
     agentNames: async (c) => new Map([
       [CHICKPEA_AGENT_ID, 'Chickpea'],
       ...(await store(c).listUserAgents()).map((agent) => [agent.id, agent.name] as const),
@@ -6857,10 +6867,19 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     choseChickpeaModels: async (c) => {
       const installation = await modelDefaultInstallation(store(c));
       if (installation) {
-        await initializeChickpeaImageDefault(c, installation.workspaceId, principalByContext.get(c)?.membershipId);
+        await initializeChickpeaImageDefault(c, installation.workspaceId, requestPrincipal(c.req.raw)?.membershipId);
       }
     },
-  }));
+    actor: async (c) => {
+      const membershipId = requestPrincipal(c.req.raw)?.membershipId ?? '';
+      const [installation, bindings] = await Promise.all([modelDefaultInstallation(store(c)), identity(c).listExternalIdentities()]);
+      const binding = bindings.find((candidate) =>
+        candidate.membershipId === membershipId && (!installation || candidate.slackTeamId === installation.workspaceId));
+      return { membershipId, slackUserId: binding?.slackUserId ?? null };
+    },
+  };
+  app.all('/admin/api/billing', billingRoutes);
+  app.all('/admin/api/billing/*', billingRoutes);
   app.route('/admin/api', createWorkAdminApi({
     store: work,
     usage,
@@ -12840,7 +12859,7 @@ function permissionForAdminPage(path: string): Permission {
   // signed-in person may read.
   if (path === ADMIN_CODING_AGENTS_PATH) return 'account.view';
   // Everyone sees the plan's usage; only an Owner's page offers to buy.
-  if (path === PLAN_PATH) return 'account.view';
+  if (path === '/admin/plan') return 'account.view';
   return 'admin.configure';
 }
 

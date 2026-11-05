@@ -81,7 +81,8 @@ export interface UsageReport {
   /** The Agent picker: every Agent with activity or usage in the range, and the selected one. */
   agentChoices: { id: string; name: string }[];
   /** What's left, as the Plan page's balance counts it; null for an own key without a plan. */
-  plan: { left: string; autoTopUp: boolean | null } | null;
+  /** `autoTopUp` is null where the host offers none. */
+  plan: { left: string; autoTopUp: 'on' | 'paused' | 'off' | null } | null;
   total: ReportAmount;
   perDay: ReportAmount;
   /** Whole percent against the same days last period; null with nothing to compare. */
@@ -498,7 +499,8 @@ function pair(provider: string | null | undefined, model: string | null | undefi
 /** The strip's facts, from the summary as the Plan page reads it. */
 export function planStrip(summary: BillingSummary): UsageReport['plan'] {
   const left = planBalance(summary);
-  return left && { left: left.left, autoTopUp: null };
+  const topUp = summary.autoTopUp;
+  return left && { left: left.left, autoTopUp: !topUp ? null : topUp.pause ? 'paused' : topUp.enabled ? 'on' : 'off' };
 }
 
 /** The Plan page's balance, which it does not show for an own key without a plan. */

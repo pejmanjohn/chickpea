@@ -144,7 +144,7 @@ test('billed usage: every run counts toward its Agent, person and model, and unm
   // Sep 25's $0.30 matches no activity, so the dashed line leaves it out.
   assert.deepEqual([shown.chart.prior?.[1], shown.chart.prior?.[18], sum(shown.chart.prior ?? [])], [usd(1), 0, usd(1)]);
   assert.deepEqual(shown.pace, { percent: 80, by: 'Nov 7' });
-  assert.deepEqual(shown.plan, { left: '$172', autoTopUp: null });
+  assert.deepEqual(shown.plan, { left: '$132', autoTopUp: null });
   assert.deepEqual([shown.share, shown.agent, shown.tasks, shown.providers, shown.billingPeriod], [null, null, null, [], true]);
 });
 
@@ -203,15 +203,15 @@ test('on its own key a workspace sees Core\'s estimate, its providers, and the t
   assert.deepEqual(shown.total, { value: usd(3.35), text: '$3.35' });
   assert.deepEqual(shown.providers, ['anthropic', 'openai']);
   // a1 and b1 kept their task fee; the credited run did not.
-  assert.deepEqual(shown.tasks, { used: '2', left: '573' });
+  assert.deepEqual(shown.tasks, { used: '2', left: '440' });
   assert.deepEqual(shown.agents?.map((agent) => [agent.name, agent.amount.text, agent.tasks]), [
     ['Atlas', '$2', '1'], ['Birch', '$0.90', '1'], ['Cedar', '$0.30', '0'], ['Dune', '$0.10', '0'], ['Elm', '$0', '0'], ['Other', '$0.05', '0'],
   ]);
-  assert.deepEqual([shown.pace, shown.plan], [null, { left: '$172', autoTopUp: null }]);
+  assert.deepEqual([shown.pace, shown.plan], [null, { left: '$132', autoTopUp: null }]);
 
-  assert.deepEqual(report({ summary: OWN_KEY_TEAM, agentId: 'agent_b' }).tasks, { used: '1', left: '573' });
+  assert.deepEqual(report({ summary: OWN_KEY_TEAM, agentId: 'agent_b' }).tasks, { used: '1', left: '440' });
   const unbilled = report({ summary: OWN_KEY_TEAM, billed: null });
-  assert.deepEqual(unbilled.tasks, { used: '426', left: '573' }, 'this billing period, from the plan meter');
+  assert.deepEqual(unbilled.tasks, { used: '426', left: '440' }, 'this billing period, from the plan meter');
   assert.equal(unbilled.agents?.[0]?.tasks, null);
   assert.equal(report({ summary: OWN_KEY_TEAM, billed: null, request: { period: 'last_billing_period' } }).tasks, null);
   assert.equal(report({ summary: OWN_KEY_TEAM, billed: null, agentId: 'agent_a' }).tasks, null, 'the meter is not one Agent\'s');
@@ -272,4 +272,16 @@ test('each list\'s amounts read as cents that add up to the total as shown', () 
   for (const list of [result.agents ?? [], result.models, result.people]) {
     assert.equal(sum(list.map((row) => cents(row.amount.text))), cents(result.total.text), JSON.stringify(rows(list)));
   }
+});
+
+test('the strip states auto top-up as the Plan page has it: on, paused or off', () => {
+  const topUp: NonNullable<BillingSummary['autoTopUp']> = {
+    enabled: true, explicitlyOff: false, pack: { rule: 'plan', key: 'extra_usage_50' }, limit: { rule: 'plan', cents: 20_000 },
+    usedCents: 0, resetsAt: PERIOD.end, pause: null, card: null,
+  };
+  const strip = (autoTopUp: NonNullable<BillingSummary['autoTopUp']>) => report({ summary: { ...TEAM_PLAN, autoTopUp } }).plan?.autoTopUp;
+  assert.equal(strip(topUp), 'on');
+  assert.equal(strip({ ...topUp, pause: { kind: 'declined', at: PERIOD.start } }), 'paused');
+  assert.equal(strip({ ...topUp, enabled: false, explicitlyOff: true }), 'off');
+  assert.equal(report({ summary: TEAM_PLAN }).plan?.autoTopUp, null, 'a host that offers no auto top-up');
 });

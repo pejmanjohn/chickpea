@@ -146,6 +146,18 @@
     billingSelection: {},
     billingUseBy: "agent",
     billingUseAll: false,
+    // The auto top-up editor while open: the pack ("plan" or a key) and the
+    // limit ("plan" or cents) the Owner picked, and whether it turns it on.
+    billingTopUpEdit: null,
+    // An in-app purchase waiting for the Owner's OK: extra usage by key, or a
+    // plan change with the host's preview.
+    billingConfirm: null,
+    // The key of the top-up the Owner asked to try again, kept until the host
+    // answers, so trying once more after a lost answer charges once.
+    billingTopUpRetryKey: null,
+    // The banner over the page after a purchase: "wait" while the usage is
+    // being added, or what it added.
+    billingBanner: null,
     planReturnSwitchFailed: false,
     teamError: "",
     teamBusy: "",
@@ -747,10 +759,10 @@
     });
   }
 
-  function postJson(path, method, body) {
+  function postJson(path, method, body, headers) {
     return api(path, {
       method: method,
-      headers: { "content-type": "application/json" },
+      headers: Object.assign({ "content-type": "application/json" }, headers || {}),
       body: JSON.stringify(body)
     });
   }
@@ -1037,7 +1049,7 @@
       try { return decodeURIComponent(part); } catch (err) { return part; }
     });
     state.leavePrompt = null;
-    if (parts[1] === "plan" && BILLING_OFFERED) { openBilling(); return; }
+    if (parts[1] === "plan" && BILLING_OFFERED) { openBilling(new URLSearchParams(location.search || "")); return; }
     // Coding agents is the one Settings page every member can open; any other
     // settings path collapses onto it rather than bouncing back to the Agent.
     if (!WORKSPACE_ADMIN_UI && parts[1] === "settings") {
@@ -2801,7 +2813,7 @@
       copy = "<strong>Your provider bills model tokens directly.</strong> Set a spending limit with " + (provider || "each provider") + ". Chickpea estimates that spend at list prices.";
       action = '<button type="button" class="btn btn-ghost btn-sm" data-action="usage-open-settings">Model settings</button>';
     } else if (report.measure === "usage" && report.plan) {
-      var topUp = report.plan.autoTopUp === true ? " Auto top-up is on." : report.plan.autoTopUp === false ? " Auto top-up is off." : "";
+      var topUp = { on: " Auto top-up is on.", paused: " Auto top-up is paused.", off: " Auto top-up is off." }[report.plan.autoTopUp] || "";
       copy = "<strong>" + esc(report.plan.left) + " left.</strong>" + topUp;
     }
     return '<div class="usage-contract"><p>' + copy + '</p>' + action + '</div>';
@@ -3075,7 +3087,9 @@
     return billingRequest;
   }
 
-  function openBilling() {
+  // A link from Slack names a step to open, and Stripe sends the Owner back
+  // with billing=done; each is read once, then dropped from the address.
+  function openBilling(query) {
     state.view = "billing";
     state.profileScreen = "list";
     state.disableConfirm = false;
@@ -3083,8 +3097,219 @@
     state.billingFundingConfirm = false;
     state.billingUseBy = "agent";
     state.billingUseAll = false;
+    state.billingTopUpEdit = null;
+    state.billingConfirm = null;
+    state.billingTopUpRetryKey = null;
+    state.billingBanner = null;
+    var step = query ? query.get("step") || "" : "";
+    var returned = !!query && query.get("billing") === "done";
+    if ((step || returned) && canNavigate) history.replaceState(null, "", "/admin/plan");
     render();
-    loadBilling();
+    loadBilling().then(function () {
+      if (!state.billing || !state.billing.manage) return;
+      if (returned) awaitPurchase(0);
+      if (step) openBillingStep(step);
+    });
+  }
+
+  // The version of the authorization sentences this page shows, in
+  // topUpEditorHtml and planChangeConfirmHtml. The server refuses a change that
+  // raises what Chickpea may charge unless the page agreed to its own version,
+  // so a page from before the copy changed records no consent to text it never
+  // showed. Bump it with those sentences and with AUTO_TOP_UP_CONSENT_VERSION
+  // in src/config/platform-billing.ts.
+  var AUTO_TOP_UP_CONSENT_VERSION = "2026-11-04";
+
+  var PURCHASE_POLL_MS = 2000;
+  var PURCHASE_POLLS = 30;
+
+  // Back from Stripe, the banner waits for the host to add the usage, then
+  // says what was added.
+  function awaitPurchase(attempt) {
+    var billing = state.billing;
+    var purchase = billing && billing.purchase;
+    if (!purchase) return;
+    state.billingBanner = purchase.granted ? { text: purchaseBannerText(billing, purchase) } : { wait: true };
+    render();
+    if (purchase.granted || attempt >= PURCHASE_POLLS) return;
+    setTimeout(function () {
+      if (state.view === "billing") loadBilling().then(function () { awaitPurchase(attempt + 1); });
+    }, PURCHASE_POLL_MS);
+  }
+
+  function purchaseBannerText(billing, purchase) {
+    if (purchase.kind === "extra_usage") return 'Added ' + esc(purchase.usage) + ' of usage.';
+    var plan = billing.plan;
+    if (!plan) return 'Payment received.';
+    if (purchase.first) {
+      return 'You&rsquo;re on the ' + esc(plan.price) + ' plan' + (plan.included ? ', with ' + esc(plan.included) + ' of usage this month' : '') + '.' +
+        (billing.topUp && billing.topUp.enabled ? ' Auto top-up is on.' : '');
+    }
+    return 'You&rsquo;re on the ' + esc(plan.price) + ' plan.' + (purchase.added !== "$0" ? ' ' + esc(purchase.added) + ' of usage was added for the rest of this month.' : '');
+  }
+
+  function billingBannerHtml() {
+    var banner = state.billingBanner;
+    if (!banner) return '';
+    return '<p class="plan-banner' + (banner.wait ? ' is-wait' : '') + '" role="status"><span class="plan-banner-mark" aria-hidden="true">' + (banner.wait ? '&hellip;' : '&#10003;') + '</span>' +
+      '<span>' + (banner.wait ? 'Payment received. Adding your usage&hellip;' : banner.text) + '</span></p>';
+  }
+
+  // The plan after this one for the same way of paying; offers come cheapest first.
+  function nextPlanKey(billing) {
+    var plans = planCardPlans(billing, billing.funding);
+    var index = plans.findIndex(function (plan) { return billing.plan && plan.key === billing.plan.key; });
+    return index >= 0 && plans[index + 1] ? plans[index + 1].key : "";
+  }
+
+  function openBillingStep(step) {
+    var billing = state.billing;
+    var topUp = billing.topUp;
+    if (step === "add" && billing.plan && billing.offers.extraUsage.length) {
+      var key = topUp ? topUp.pack.key : billing.offers.extraUsage[0].key;
+      if (billingExtraUsageOnCard(billing)) {
+        state.billingConfirm = { kind: "extra_usage", key: key, chargeKey: billingChargeKey("extra_usage") };
+        render();
+        focusAction("billing-extra-usage-confirm");
+      } else {
+        focusAction("billing-add-extra-usage");
+      }
+      return;
+    }
+    if ((step === "raise-limit" || step === "auto-top-up") && topUp && !topUp.ending) { editTopUp(); return; }
+    if (step === "upgrade" && billing.plan) {
+      var next = topUp && topUp.upgrade ? topUp.upgrade.key : nextPlanKey(billing);
+      if (next) seePlan(next);
+      return;
+    }
+    if (step === "card" && topUp) {
+      focusAction(topUp.pause && topUp.pause.kind === "needs_confirmation" && topUp.pause.url ? "billing-confirm-payment" : "billing-update-card");
+      return;
+    }
+    if (step === "choose" || !billing.plan) focusAction("billing-choose-plan");
+  }
+
+  // The plan cards with this plan chosen in the card for how the workspace
+  // pays now, and its in-app confirm open where the host offers one.
+  function seePlan(key) {
+    var card = state.billing.funding;
+    state.billingSelection[card] = key;
+    state.billingFundingConfirm = false;
+    state.billingConfirm = null;
+    if (state.billing.inApp && state.billing.inApp.planChange) {
+      previewPlanChange(key, card);
+      return;
+    }
+    render();
+    focusAction("billing-choose-plan");
+  }
+
+  function previewPlanChange(key, card) {
+    if (state.billingBusy) return;
+    state.billingBusy = "preview:" + card;
+    state.billingError = null;
+    render();
+    postJson("/admin/api/billing/plan-change/preview", "POST", { key: key }).then(function (preview) {
+      state.billingConfirm = { kind: "plan", card: card, preview: preview, chargeKey: billingChargeKey("plan_change") };
+    }).catch(function (error) {
+      state.billingError = { at: "plan:" + card, text: billingFailureText(error, "The plan change could not be checked. Try again.") };
+    }).then(function () {
+      state.billingBusy = "";
+      render();
+      focusAction("billing-plan-change-confirm");
+    });
+  }
+
+  // A charge's key lasts as long as the confirm the Owner opened, so trying
+  // again after a lost answer charges once.
+  function billingChargeKey(action) {
+    return "admin-ui:billing:" + action + ":" + Date.now() + ":" + Math.random().toString(36).slice(2);
+  }
+
+  // An in-app purchase answers the fresh page, or a Stripe page to finish it on.
+  function purchaseOnCard(path, body, busy, at, done) {
+    if (state.billingBusy) return;
+    state.billingBusy = busy;
+    state.billingError = null;
+    render();
+    postJson(path, "POST", body, { "idempotency-key": state.billingConfirm.chargeKey }).then(function (response) {
+      if (response.url) { location.assign(response.url); return; }
+      state.billing = response.billing;
+      state.billingConfirm = null;
+      state.billingSelection = {};
+      state.billingBusy = "";
+      state.billingBanner = done();
+      render();
+    }).catch(function (error) {
+      state.billingBusy = "";
+      state.billingError = { at: at, text: billingFailureText(error, at === "extra_usage" ? "Usage could not be added. Try again." : "Your plan could not be changed. Try again.") };
+      render();
+    });
+  }
+
+  function confirmPlanChange() {
+    var confirm = state.billingConfirm;
+    if (!confirm || confirm.kind !== "plan") return;
+    var preview = confirm.preview;
+    var body = { key: preview.key };
+    if (preview.kind === "upgrade" && preview.topUpRaise) body.consentVersion = AUTO_TOP_UP_CONSENT_VERSION;
+    purchaseOnCard("/admin/api/billing/plan-change", body, "plan_change", "plan:" + confirm.card, function () {
+      return preview.kind === "upgrade"
+        ? { text: 'You&rsquo;re on the ' + esc(preview.price) + ' plan.' + (preview.added !== "$0" ? ' ' + esc(preview.added) + ' of usage was added for the rest of this month.' : '') }
+        : null;
+    });
+  }
+
+  function buyExtraUsage(key) {
+    var offer = state.billing.offers.extraUsage.find(function (candidate) { return candidate.key === key; });
+    if (!offer) return;
+    var wasOut = !!(state.billing.balance && state.billing.balance.exhausted);
+    purchaseOnCard("/admin/api/billing/extra-usage", { key: key }, "extra_usage:" + key, "extra_usage", function () {
+      return { text: 'Added ' + esc(offer.usage) + ' of usage.' + (wasOut ? ' Your Agents are working again.' : '') };
+    });
+  }
+
+  function editTopUp() {
+    var topUp = state.billing && state.billing.topUp;
+    if (!topUp || topUp.ending || state.billingBusy) return;
+    state.billingTopUpEdit = {
+      pack: topUp.pack.key,
+      packChosen: false,
+      limit: topUp.limit.rule === "plan" ? "plan" : topUp.limit.cents,
+      on: !topUp.enabled
+    };
+    state.billingError = null;
+    render();
+    focusAction("billing-top-up-limit");
+  }
+
+  function updateTopUp(body, busy, headers) {
+    if (state.billingBusy) return;
+    state.billingBusy = busy;
+    state.billingError = null;
+    render();
+    postJson("/admin/api/billing/auto-top-up", "POST", body, headers).then(function (view) {
+      state.billing = view;
+      state.billingTopUpEdit = null;
+      state.billingTopUpRetryKey = null;
+    }).catch(function (error) {
+      state.billingError = { at: "top_up", text: billingFailureText(error, "Auto top-up could not be changed. Try again.") };
+    }).then(function () {
+      state.billingBusy = "";
+      render();
+    });
+  }
+
+  // The pack keeps following the plan unless the Owner picked another, and
+  // picking the plan's own pack follows the plan again.
+  function saveTopUp() {
+    var topUp = state.billing.topUp;
+    var edit = state.billingTopUpEdit;
+    if (!topUp || !edit) return;
+    var follows = edit.packChosen ? edit.pack === topUp.planPack : topUp.pack.rule === "plan";
+    var body = { change: "on", pack: follows ? "plan" : edit.pack, limit: edit.limit };
+    if (topUpEditRaises(topUp, edit)) body.consentVersion = AUTO_TOP_UP_CONSENT_VERSION;
+    updateTopUp(body, "top_up");
   }
 
   var BILLING_REFUSALS = {
@@ -3094,6 +3319,15 @@
     own_key_plan_required: function (billing) {
       var minimum = billing.offers.plans.find(function (plan) { return plan.ownKeyMinimum; });
       return "Your own API key needs the " + minimum.price + " plan or higher.";
+    },
+    card_required: function () {
+      return "Add a card in Manage billing first, then try again.";
+    },
+    past_due: function () {
+      return "Your plan's last payment didn't go through. Update your card in Manage billing, then try again.";
+    },
+    consent_outdated: function () {
+      return "This page is out of date. Reload it and try again.";
     }
   };
 
@@ -3227,34 +3461,71 @@
       : '';
   }
 
-  function billingMeterHtml(label, percent, onPacePercent, out, legend, note) {
+  function billingMeterHtml(label, percent, onPacePercent, out, legend, note, tone) {
     var fill = Math.max(0, Math.min(percent, 100));
     var pace = onPacePercent == null ? '' : '<span class="plan-meter-pace" style="left: ' + Math.max(0, Math.min(onPacePercent, 100)) + '%"></span>';
-    return '<div class="plan-meter' + (out ? ' is-out' : '') + '" role="meter" aria-label="' + label + '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + fill + '">' +
+    return '<div class="plan-meter' + (out ? ' is-out' : '') + (tone ? ' ' + tone : '') + '" role="meter" aria-label="' + label + '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + fill + '">' +
       '<span class="plan-meter-fill" style="width: ' + fill + '%"></span>' + pace + '</div>' +
       '<div class="plan-meter-legend"><span>' + legend + '</span>' + (note ? '<span>' + note + '</span>' : '') + '</div>';
   }
 
-  // Usage the workspace holds beyond the plan's own: carried over, extra
-  // usage, and trial usage left beside a plan.
+  // Extra usage waiting for a plan, and trial usage left beside a plan.
   function billingChipsHtml(billing) {
     var chips = [];
     var chip = function (tone, text, until) {
       return '<li class="plan-chip ' + tone + '"><span class="plan-chip-dot" aria-hidden="true"></span><span>' + text + '</span> <small>until ' + esc(until) + '</small></li>';
     };
-    if (billing.rollover) chips.push(chip("is-rollover", '+' + esc(billing.rollover.remaining) + ' carried over', billing.rollover.until));
-    if (billing.extraUsage) {
-      chips.push(billing.extraUsage.frozen
-        ? chip("is-extra", esc(billing.extraUsage.remaining) + ' of extra usage waits for a plan', billing.extraUsage.until)
-        : chip("is-extra", '+' + esc(billing.extraUsage.remaining) + ' extra usage', billing.extraUsage.until));
+    if (billing.extraUsage && billing.extraUsage.frozen) {
+      chips.push(chip("is-extra", esc(billing.extraUsage.remaining) + ' of extra usage waits for a plan', billing.extraUsage.until));
     }
     if (billing.trial && billing.plan) chips.push(chip("is-trial", '+' + esc(billing.trial.remaining) + ' trial usage', billing.trial.until));
     return chips.length ? '<ul class="plan-chips">' + chips.join("") + '</ul>' : '';
   }
 
+  // Usage beyond the plan's, in the order it is spent. While the plan's
+  // usage is left, what carried over and extra usage are a plain line each.
+  // Once it is used up, extra usage gets its own bar, filled with what is
+  // used, like the plan's.
+  function billingBeyondPlanHtml(billing) {
+    var extra = billing.extraUsage && !billing.extraUsage.frozen ? billing.extraUsage : null;
+    var lines = [];
+    var bar = '';
+    if (billing.rollover) {
+      lines.push('Includes ' + esc(billing.rollover.remaining) + ' carried over from last month, which expires ' + esc(billing.rollover.until) + '.');
+    }
+    if (extra && billing.balance && billing.balance.stage === "extra") {
+      var left = esc(extra.remaining) + ' left, keeps until ' + esc(extra.until);
+      if (extra.bar) bar = billingMeterHtml("Extra usage", extra.bar.percent, null, false, '<b>' + esc(extra.bar.used) + '</b> of ' + esc(extra.bar.total) + ' extra usage', left, "is-extra");
+      else lines.push(left);
+    } else if (extra) {
+      lines.push('Plus ' + esc(extra.remaining) + ' of extra usage for when this runs out. It keeps until ' + esc(extra.until) + '.');
+    }
+    return bar + lines.map(function (line) { return '<p class="plan-extra-note">' + line + '</p>'; }).join("") + billingChipsHtml(billing);
+  }
+
+  // With the host buying on the saved card, extra usage is confirmed here;
+  // without it, or with no card to charge, Checkout takes the purchase.
+  function billingExtraUsageOnCard(billing) {
+    return !!(billing.inApp && billing.inApp.extraUsage) && !(billing.topUp && !billing.topUp.card);
+  }
+
+  function billingExtraUsageConfirmHtml(billing, key) {
+    var offer = billing.offers.extraUsage.find(function (candidate) { return candidate.key === key; });
+    if (!offer) return '';
+    var card = billing.topUp && billing.topUp.card ? esc(billing.topUp.card) : 'your card';
+    var busy = !!state.billingBusy;
+    return '<div class="plan-confirm" role="group" aria-label="Confirm extra usage"><p><b>Add ' + esc(offer.usage) + ' of usage?</b></p>' +
+      '<p>It&rsquo;s charged to ' + card + ', plus tax, and keeps ' + offer.validMonths + ' months.</p><div class="plan-confirm-actions">' +
+      '<button type="button" class="btn btn-ghost btn-sm" data-action="billing-extra-usage-cancel"' + (busy ? ' disabled' : '') + '>Cancel</button>' +
+      '<button type="button" class="btn btn-primary btn-sm" data-action="billing-extra-usage-confirm" data-key="' + esc(offer.key) + '"' + (busy ? ' disabled' : '') + '>' +
+      (state.billingBusy === "extra_usage:" + offer.key ? 'Adding&hellip;' : 'Add ' + esc(offer.price)) + '</button></div></div>';
+  }
+
   // Extra usage is spent only while a plan is active, so it is sold only then.
   function billingAddUsageHtml(billing, out) {
     if (!billing.manage || !billing.plan || !billing.offers.extraUsage.length) return '';
+    var confirm = state.billingConfirm;
+    if (confirm && confirm.kind === "extra_usage") return billingExtraUsageConfirmHtml(billing, confirm.key);
     var offers = billing.offers.extraUsage;
     return '<div class="plan-add" role="group" aria-labelledby="plan-add-label"><span class="plan-add-label" id="plan-add-label">Add usage</span><div class="plan-add-row">' +
       offers.map(function (offer) {
@@ -3263,14 +3534,35 @@
       }).join("") + '</div><span class="hint">Keeps ' + offers[0].validMonths + ' months</span></div>';
   }
 
-  // Why Agents stopped, and what starts them again; an Owner is the one who
-  // can add usage.
+  // Why Agents stopped, and what starts them again. Only an Owner reads why
+  // auto top-up didn't add usage; everyone reads whether it reached its limit.
+  var TOP_UP_PAUSED = {
+    declined: function (them) { return 'Auto top-up couldn&rsquo;t charge your card. Update it, or add usage, to keep ' + them + '.'; },
+    needs_confirmation: function (them) { return 'Your bank asked you to confirm an auto top-up charge. Confirm it, or add usage, to keep ' + them + '.'; },
+    billing_details: function (them) { return 'Auto top-up needs your billing details. Update them, or add usage, to keep ' + them + '.'; },
+    past_due: function (them) { return 'Your plan&rsquo;s last payment didn&rsquo;t go through. Update your card to keep ' + them + '.'; }
+  };
+
   function billingPausedText(billing) {
-    var who = billing.manage ? 'Add usage' : 'An Owner can add usage';
+    var own = billing.funding === "own_key";
+    var paused = own ? 'Tasks are paused, and your Agents can still chat. ' : 'Your Agents are paused. ';
+    var them = own ? 'tasks going' : 'them working';
     var ending = billing.pendingChange && billing.pendingChange.kind === "ends";
     var renews = !ending && billing.meter ? ', or they start again when your plan renews ' + esc(billing.meter.resets) : '';
-    if (billing.funding === "own_key") return 'Tasks are paused, and your Agents can still chat. ' + who + ' to keep tasks going' + renews + '.';
-    return 'Your Agents are paused. ' + who + ' to keep them working now' + renews + '.';
+    var topUp = billing.manage ? billing.topUp : null;
+    var status = billing.autoTopUp;
+    if (topUp && topUp.enabled) {
+      if (topUp.pause) return paused + TOP_UP_PAUSED[topUp.pause.kind](them);
+      if (topUp.limitReached) {
+        return paused + 'Auto top-up added its ' + esc(topUp.limit.amount) + ' limit for this month. ' +
+          (topUp.upgrade ? 'Raise the limit or upgrade' : 'Raise the limit') + ' to keep ' + them + renews + '.';
+      }
+      return own ? 'Tasks are paused while auto top-up adds usage, and your Agents can still chat.' : 'Your Agents are paused while auto top-up adds usage.';
+    }
+    if (!billing.manage && status && status.kind === "plan" && status.limitReached) {
+      return paused + 'An Owner can raise the auto top-up limit or upgrade to keep ' + them + renews + '.';
+    }
+    return paused + (billing.manage ? 'Add usage' : 'An Owner can add usage') + ' to keep ' + them + renews + '.';
   }
 
   // "About 375 tasks", or nothing once the usage is gone or when a task draws
@@ -3320,23 +3612,207 @@
         own ? 'Your provider bills tokens' : ''
       ]);
     } else {
+      // Once the plan's usage is used up, the big number is the extra usage
+      // left, which doesn't renew, so the renewal moves onto the plan's bar.
       var used = billing.meter;
-      var note = used.percent >= 100 ? 'Used up' : used.onPacePercent == null ? '' : 'On pace for ' + used.onPacePercent + '% by ' + esc(used.resets);
-      eyebrow = 'This month';
+      var extraStage = balance.stage === "extra";
+      var periodEnd = billingPeriodEndText(billing);
+      var usedUp = extraStage && periodEnd ? 'Used up, ' + periodEnd.charAt(0).toLowerCase() + periodEnd.slice(1) : 'Used up';
+      var note = used.percent >= 100 ? usedUp : used.onPacePercent == null ? '' : 'On pace for ' + used.onPacePercent + '% by ' + esc(used.resets);
+      var renews = extraStage ? '' : periodEnd;
+      eyebrow = extraStage ? 'Your usage' : 'This month';
       if (own && balance.tasksLeft) {
         big = '<b>' + esc(balance.tasksLeft) + '</b> tasks left';
-        sub = billingSubHtml([esc(balance.left) + ' of usage left', billingPeriodEndText(billing), 'Your provider bills tokens']);
+        sub = billingSubHtml([esc(balance.left) + ' of usage left', renews, 'Your provider bills tokens']);
         meter = billingMeterHtml("Plan tasks", used.percent, used.onPacePercent, out, '<b>' + esc(used.tasksUsed) + '</b> of ' + esc(used.tasksIncluded) + ' tasks used', note);
       } else {
         big = '<b>' + esc(balance.left) + '</b> left';
-        sub = billingSubHtml([billingTasksLeft(balance, out), billingPeriodEndText(billing), own ? 'Your provider bills tokens' : '']);
+        sub = billingSubHtml([billingTasksLeft(balance, out), renews, own ? 'Your provider bills tokens' : '']);
         meter = billingMeterHtml("Plan usage", used.percent, used.onPacePercent, out, '<b>' + esc(used.used) + '</b> of ' + esc(used.included) + ' plan usage', note);
       }
     }
     if (out && billing.plan) alert = billingAlertHtml(billingPausedText(billing));
     return '<section class="plan-hero' + (out ? ' is-out' : '') + '" aria-label="Your usage"><div class="plan-hero-top"><div class="plan-hero-copy">' +
       '<span class="section-eyebrow">' + eyebrow + '</span><p class="plan-hero-big">' + big + '</p>' + sub + '</div>' +
-      billingAddUsageHtml(billing, out) + '</div>' + billingErrorHtml("extra_usage") + alert + meter + billingChipsHtml(billing) + '</section>';
+      billingAddUsageHtml(billing, out) + '</div>' + billingErrorHtml("extra_usage") + alert + meter +
+      (billing.plan ? billingBeyondPlanHtml(billing) : billingChipsHtml(billing)) + '</section>';
+  }
+
+  // ---- Plan: when usage runs out ----
+  // Auto top-up adds extra usage when the workspace runs out, up to a monthly
+  // limit. Only an Owner changes it or reads its amounts, card, and why it
+  // paused; everyone else reads whether it is on and reached its limit.
+
+  // "$1,000", or "$12.50" with cents.
+  function billingDollars(cents) {
+    var whole = Math.floor(cents / 100);
+    var rest = cents % 100;
+    return '$' + String(whole).replace(/\B(?=(\d{3})+(?!\d))/g, ",") + (rest ? '.' + (rest < 10 ? '0' : '') + rest : '');
+  }
+
+  function topUpSectionHtml(status, body, muted, foot) {
+    return '<section class="plan-auto' + (muted ? ' is-muted' : '') + '" aria-labelledby="plan-auto-heading"><h2 class="section-title" id="plan-auto-heading">When usage runs out</h2>' +
+      (status ? '<p class="auto-status">' + status + '</p>' : '') + body + (foot || '') + '</section>';
+  }
+
+  function topUpRowHtml(row) {
+    var lock = row.disabled || !!state.billingBusy;
+    return '<div class="auto-row' + (row.disabled ? ' is-off' : '') + '"><span class="toggle"><span class="thumb"></span>' +
+      '<input type="checkbox" data-action="billing-top-up-toggle" aria-label="Auto top-up"' + (row.on ? ' checked' : '') + (lock ? ' disabled' : '') + '></span>' +
+      '<div><p class="auto-title">Auto top-up' + (row.pill || '') + '</p><p class="auto-desc">' + row.desc + '</p></div><div>' + (row.action || '') + '</div>' + (row.extra || '') + '</div>';
+  }
+
+  function topUpPillHtml(text, warn) {
+    return '<span class="auto-pill' + (warn ? ' is-warn' : '') + '">' + text + '</span>';
+  }
+
+  // The pack and limit the editor shows: what the Owner picked, or what is set.
+  function topUpEditValues(topUp, edit) {
+    var pack = topUp.packs.find(function (candidate) { return candidate.key === edit.pack; }) || topUp.packs[0];
+    return { pack: pack, limitCents: edit.limit === "plan" ? topUp.plan.cents : edit.limit };
+  }
+
+  // Turning it on, a bigger pack, or a higher limit raises what Chickpea may
+  // charge, so the Owner agrees to it again.
+  function topUpEditRaises(topUp, edit) {
+    var values = topUpEditValues(topUp, edit);
+    return edit.on || !topUp.enabled || values.pack.cents > topUp.pack.cents || values.limitCents > topUp.limit.cents;
+  }
+
+  // "Same as your plan" follows the plan; the others are multiples of the
+  // pack, with the limit set now kept even when it is none of them.
+  function topUpLimitOptionsHtml(topUp, packCents, chosen) {
+    var values = [2, 3, 4, 6, 10].map(function (times) { return packCents * times; });
+    if (chosen !== "plan" && values.indexOf(chosen) < 0) values.push(chosen);
+    values = values.filter(function (cents, index) {
+      return values.indexOf(cents) === index && (cents !== topUp.plan.cents || cents === chosen);
+    }).sort(function (left, right) { return left - right; });
+    return '<option value="plan"' + (chosen === "plan" ? ' selected' : '') + '>Same as your plan &middot; ' + esc(topUp.plan.price) + ' a month</option>' +
+      values.map(function (cents) {
+        return '<option value="' + cents + '"' + (cents === chosen ? ' selected' : '') + '>' + billingDollars(cents) + ' a month</option>';
+      }).join("");
+  }
+
+  function topUpEditorHtml(billing, topUp, edit) {
+    var values = topUpEditValues(topUp, edit);
+    var busy = !!state.billingBusy;
+    var packs = '<span class="seg" role="radiogroup" aria-labelledby="plan-auto-pack">' + topUp.packs.map(function (pack) {
+      var chosen = pack.key === values.pack.key;
+      return '<button type="button" role="radio" aria-checked="' + chosen + '"' + (chosen ? ' class="on"' : '') + ' data-action="billing-top-up-pack" data-key="' + esc(pack.key) + '"' +
+        (busy || pack.cents > values.limitCents ? ' disabled' : '') + '>' + esc(pack.price) + '</button>';
+    }).join("") + '</span>';
+    var tasks = values.pack.tasks
+      ? '<span class="hint">' + billingSentence(esc(values.pack.tasks)) + ' tasks' + (billing.funding === "platform" ? ' with models included' : '') + '</span>'
+      : '';
+    var consent = topUpEditRaises(topUp, edit)
+      ? '<p class="auto-consent">You allow Chickpea to charge ' + (topUp.card ? esc(topUp.card) : 'your card') + ' up to ' + billingDollars(values.limitCents) +
+        ' a month, plus tax, for extra usage. You can turn this off at any time.</p>'
+      : '';
+    return '<div class="auto-set">' +
+      '<div class="auto-field"><span class="field-label" id="plan-auto-pack">Each time, add</span>' + packs + tasks + '</div>' +
+      '<div class="auto-field"><label class="field-label" for="plan-auto-limit">Monthly limit</label>' +
+      '<select class="auto-select" id="plan-auto-limit" data-action="billing-top-up-limit"' + (busy ? ' disabled' : '') + '>' + topUpLimitOptionsHtml(topUp, values.pack.cents, edit.limit) + '</select>' +
+      '<span class="hint">Top-ups stop at the limit until your plan renews.</span></div>' + consent + billingErrorHtml("top_up") +
+      '<div class="auto-actions"><button type="button" class="btn btn-ghost" data-action="billing-top-up-cancel"' + (busy ? ' disabled' : '') + '>Cancel</button>' +
+      '<button type="button" class="btn btn-primary" data-action="billing-top-up-save"' + (busy ? ' disabled' : '') + '>' +
+      (state.billingBusy === "top_up" ? 'Saving&hellip;' : edit.on ? 'Turn on auto top-up' : 'Save') + '</button></div></div>';
+  }
+
+  // Why auto top-up paused, and the buttons that fix it.
+  function topUpPauseHtml(topUp) {
+    var pause = topUp.pause;
+    var busy = !!state.billingBusy;
+    var retry = '<button type="button" class="btn btn-primary btn-sm" data-action="billing-top-up-retry"' + (busy ? ' disabled' : '') + '>' +
+      (state.billingBusy === "top_up_retry" ? 'Trying&hellip;' : 'Try again') + '</button>';
+    var portal = function (label, tone) { return billingButtonHtml("billing-update-card", label, "", "portal", tone + " btn-sm"); };
+    var text, buttons;
+    if (pause.kind === "declined") {
+      text = 'Your card was declined on ' + esc(pause.on) + ', so auto top-up is paused. Update your card, then try again.';
+      buttons = portal("Update card", "btn-soft") + retry;
+    } else if (pause.kind === "needs_confirmation") {
+      text = 'Your bank asked you to confirm a ' + esc(pause.amount) + ' charge. Confirm it to turn auto top-up back on.';
+      buttons = pause.url
+        ? '<a class="btn btn-primary btn-sm" data-action="billing-confirm-payment" href="' + esc(pause.url) + '">Confirm payment</a>'
+        : portal("Update card", "btn-primary");
+    } else if (pause.kind === "billing_details") {
+      text = 'Your billing details are incomplete, so auto top-up couldn&rsquo;t add usage. Update them, then try again.';
+      buttons = portal("Update billing details", "btn-soft") + retry;
+    } else {
+      text = 'Your plan&rsquo;s last payment didn&rsquo;t go through, so auto top-up is paused. Update your card to pay it.';
+      buttons = portal("Update card", "btn-primary");
+    }
+    return '<p class="plan-hero-alert auto-alert" role="status"><span class="plan-hero-alert-mark" aria-hidden="true">!</span><span>' + text + '</span></p>' +
+      '<div class="auto-actions auto-alert">' + buttons + '</div>' + billingErrorHtml("top_up");
+  }
+
+  var TOP_UP_PAUSE_STATUS = {
+    declined: 'Auto top-up is paused because your card was declined.',
+    needs_confirmation: 'Auto top-up is paused until you confirm a payment with your bank.',
+    billing_details: 'Auto top-up is paused because your billing details are incomplete.',
+    past_due: 'Auto top-up is paused because your plan&rsquo;s last payment didn&rsquo;t go through.'
+  };
+
+  function billingTopUpHtml(billing) {
+    var status = billing.autoTopUp;
+    if (!status) return '';
+    if (status.kind === "no_plan") {
+      return billing.trial && billing.funding === "platform"
+        ? topUpSectionHtml('Auto top-up turns on with your plan. During the free trial, your Agents pause when its usage runs out.', '', true)
+        : '';
+    }
+    if (!billing.manage) {
+      var reads = status.on ? (status.limitReached ? 'On. Limit reached this month.' : 'On') : 'Off';
+      return topUpSectionHtml('', '<div class="auto-ro"><p><b>Auto top-up</b><span>' + reads + '</span></p></div>', false);
+    }
+    var topUp = billing.topUp;
+    if (!topUp) return '';
+    if (topUp.ending) {
+      return topUpSectionHtml('Your plan ends ' + esc(billing.pendingChange.on) + ', so auto top-up is off.',
+        topUpRowHtml({ disabled: true, desc: 'Turned off when the plan was cancelled. It turns on again with a new plan.' }), true);
+    }
+    var own = billing.funding === "own_key";
+    var out = !!(billing.balance && billing.balance.exhausted);
+    var edit = state.billingTopUpEdit;
+    var renews = topUp.resets || (billing.meter && billing.meter.resets);
+    var pack = billing.offers.extraUsage.find(function (offer) { return offer.key === topUp.pack.key; });
+    var months = pack ? pack.validMonths : 12;
+    var packTasks = (topUp.packs.find(function (candidate) { return candidate.key === topUp.pack.key; }) || {}).tasks;
+    var general = 'Adds extra usage when your plan&rsquo;s usage runs out, up to a monthly limit. Extra usage keeps ' + months + ' months while you have a plan.';
+    var foot = '<div class="auto-foot"><span>' + (topUp.card ? 'Top-ups are charged to ' + esc(topUp.card) + ', plus tax.' : 'Auto top-up needs a saved card.') + '</span>' +
+      (topUp.pause ? '' : billingButtonHtml("billing-update-card", topUp.card ? "Update card" : "Add card", "", "portal", "btn-ghost btn-sm")) + '</div>';
+    if (!topUp.enabled) {
+      var offStatus = 'When usage runs out, your Agents pause until your plan renews' + (renews ? ' ' + esc(renews) : '') + '.';
+      return topUpSectionHtml(offStatus, topUpRowHtml(edit
+        ? { on: true, desc: general, extra: topUpEditorHtml(billing, topUp, edit) }
+        : { on: false, desc: general, extra: billingErrorHtml("top_up") }), false, foot);
+    }
+    var pausedAtLimit = topUp.limitReached && out;
+    var statusText = topUp.pause ? TOP_UP_PAUSE_STATUS[topUp.pause.kind]
+      : topUp.limitReached && !out ? 'No more top-ups this month. When this extra usage runs out, your Agents pause until ' + (renews ? esc(renews) : 'your plan renews') + '.'
+      : own && packTasks ? 'On your own key your Agents can always chat. Only tasks use your plan, and ' + esc(topUp.pack.price) + ' of extra usage is ' + esc(packTasks) + ' tasks.'
+      : '';
+    var desc = edit ? general
+      : 'When your ' + (own ? 'tasks run' : 'usage runs') + ' out, adds ' + esc(topUp.pack.price) + ' of extra usage so your Agents keep working. Up to ' +
+        esc(topUp.limit.amount) + ' a month. Extra usage keeps ' + months + ' months.';
+    var busy = !!state.billingBusy;
+    var action = edit ? ''
+      : pausedAtLimit ? '<button type="button" class="btn btn-primary btn-sm" data-action="billing-top-up-edit"' + (busy ? ' disabled' : '') + '>Raise limit</button>'
+      : '<button type="button" class="btn btn-ghost btn-sm" data-action="billing-top-up-edit"' + (busy ? ' disabled' : '') + '>Edit</button>';
+    var pill = topUp.pause ? topUpPillHtml('Paused', true) : pausedAtLimit ? topUpPillHtml('Limit reached', true) : topUpPillHtml('On', false);
+    var extra;
+    if (edit) {
+      extra = topUpEditorHtml(billing, topUp, edit);
+    } else {
+      extra = topUp.pause ? '' : '<div class="auto-use">' + billingMeterHtml("Top-ups this month", topUp.percent, null, pausedAtLimit,
+        'Top-ups this month: <b>' + esc(topUp.used) + '</b> of your ' + esc(topUp.limit.amount) + ' limit', topUp.resets ? 'Limit resets ' + esc(topUp.resets) : '') + '</div>';
+      if (pausedAtLimit && topUp.upgrade) {
+        extra += '<div class="plan-confirm auto-alert"><p>Your ' + esc(topUp.plan.price) + ' plan and ' + esc(topUp.used) + ' of top-ups covered ' + esc(topUp.upgrade.covered) +
+          ' of usage this month. The ' + esc(topUp.upgrade.price) + ' plan includes ' + esc(topUp.upgrade.included) + ' a month.</p><div class="plan-confirm-actions">' +
+          '<button type="button" class="btn btn-soft btn-sm" data-action="billing-see-plan" data-key="' + esc(topUp.upgrade.key) + '"' + (busy ? ' disabled' : '') + '>See the ' + esc(topUp.upgrade.price) + ' plan</button></div></div>';
+      }
+      extra += topUp.pause ? topUpPauseHtml(topUp) : billingErrorHtml("top_up");
+    }
+    return topUpSectionHtml(statusText, topUpRowHtml({ on: true, pill: pill, desc: desc, action: action, extra: extra }), false, foot);
   }
 
   // ---- Plan: the two ways to pay, as cards ----
@@ -3379,13 +3855,16 @@
 
   // The next step toward paying this card's way at the selected size:
   //   current   the selected size is the plan the workspace pays this way now
+  //   change    an in-app change of the plan, on the saved card
   //   checkout  Stripe Checkout for the selected plan
   //   add_key   Model providers, for the key the default model needs
   //   switch    switch how the workspace pays, after the Owner confirms
   function planCardStep(billing, card, selected) {
     var current = billing.plan ? billing.plan.key : "";
     if (card === billing.funding) {
-      return selected.key === current ? { kind: "current" } : { kind: "checkout", key: selected.key, price: selected.price, change: !!billing.plan };
+      if (selected.key === current) return { kind: "current" };
+      if (billing.plan && billing.inApp && billing.inApp.planChange) return { kind: "change", key: selected.key, price: selected.price };
+      return { kind: "checkout", key: selected.key, price: selected.price, change: !!billing.plan };
     }
     if (card === "platform") return { kind: "switch", to: "platform" };
     if (selected.key !== current) return { kind: "checkout", key: selected.key, price: selected.price, change: false };
@@ -3416,8 +3895,34 @@
       (busy ? 'Switching&hellip;' : to === "platform" ? 'Switch to models included' : 'Switch to your own key') + '</button></div></div>';
   }
 
+  function planChangeConfirmHtml(preview) {
+    var busy = !!state.billingBusy;
+    var actions = '<div class="plan-confirm-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="billing-plan-change-cancel"' + (busy ? ' disabled' : '') + '>Cancel</button>' +
+      '<button type="button" class="btn btn-primary btn-sm" data-action="billing-plan-change-confirm"' + (busy ? ' disabled' : '') + '>' +
+      (state.billingBusy === "plan_change" ? 'Changing&hellip;' : 'Move to the ' + esc(preview.price) + ' plan') + '</button></div>';
+    if (preview.kind === "downgrade") {
+      return '<div class="plan-confirm" role="group" aria-label="Confirm the plan change"><p><b>Move to the ' + esc(preview.price) + ' plan on ' + esc(preview.at) + '?</b> ' +
+        'You keep this month&rsquo;s usage until then.</p>' + actions + '</div>';
+    }
+    var card = preview.card ? esc(preview.card) : 'your card';
+    var raise = preview.topUpRaise;
+    return '<div class="plan-confirm" role="group" aria-label="Confirm the plan change"><p><b>Move to the ' + esc(preview.price) + ' plan?</b></p>' +
+      '<p>Today you pay ' + esc(preview.today) + ' for the rest of this month, and ' + esc(preview.added) + ' of usage is added right away.</p>' +
+      (preview.from ? '<p>From ' + esc(preview.from) + ', it&rsquo;s ' + esc(preview.price) + ' a month with ' + esc(preview.included) + ' of usage.</p>' : '') +
+      (raise ? '<p>' + (raise.limitRises ? 'Auto top-up&rsquo;s limit becomes ' + esc(raise.limit) + ' a month, the same as your new plan.'
+        : 'Auto top-up adds ' + esc(raise.pack) + ' each time on your new plan.') +
+        ' You allow Chickpea to charge ' + card + ' up to ' + esc(raise.limit) + ' a month, plus tax, for extra usage.</p>' : '') +
+      '<p class="hint">Charged to ' + card + ', plus tax.</p>' + actions + '</div>';
+  }
+
   function planCardActionHtml(billing, card, step) {
     if (step.kind === "current") return '<button type="button" class="btn btn-soft plan-card-action" disabled>Your current plan</button>';
+    if (step.kind === "change") {
+      var confirm = state.billingConfirm;
+      if (confirm && confirm.kind === "plan" && confirm.card === card && confirm.preview.key === step.key) return planChangeConfirmHtml(confirm.preview);
+      return '<button type="button" class="btn btn-primary plan-card-action" data-action="billing-plan-change" data-key="' + esc(step.key) + '" data-at="' + card + '"' +
+        (state.billingBusy ? ' disabled' : '') + '>' + (state.billingBusy === "preview:" + card ? 'Checking&hellip;' : 'Change to the ' + esc(step.price) + ' plan') + '</button>';
+    }
     if (step.kind === "checkout") {
       return billingButtonHtml("billing-choose-plan", (step.change ? "Change to the " : "Choose the ") + esc(step.price) + " plan", step.key, "plan:" + card,
         (card === billing.funding ? "btn-primary" : "btn-soft") + " plan-card-action", ' data-at="' + card + '"');
@@ -3475,6 +3980,14 @@
       '</ul></div>';
   }
 
+  // Auto top-up turns on with a first plan, so its card says so before
+  // Checkout, which says it again.
+  function planCardDisclosureHtml(billing, selected, step) {
+    if (step.kind !== "checkout" || billing.plan || !billing.autoTopUp || billing.autoTopUp.kind !== "no_plan") return '';
+    return '<p class="hint plan-card-disclosure">Includes auto top-up. When the plan&rsquo;s usage runs out, we add ' +
+      (selected.topUpPack ? esc(selected.topUpPack) + ' of extra usage' : 'extra usage') + ', up to ' + esc(selected.price) + ' a month. You can change it any time.</p>';
+  }
+
   function planCardHtml(billing, card) {
     var meta = PLAN_CARDS[card];
     var selected = planCardSelection(billing, card);
@@ -3492,7 +4005,7 @@
       '<p class="plan-card-price"><b>' + esc(selected.price) + '</b> / month</p>' +
       '<select class="plan-card-level" data-action="billing-plan-level" data-card="' + card + '" aria-label="' + meta.levelLabel + '"' + (state.billingBusy ? ' disabled' : '') + '>' + options + '</select>' +
       '<p class="plan-card-note">' + planCardNote(billing, card, selected) + '</p>' +
-      planCardActionHtml(billing, card, step) + billingErrorHtml("plan:" + card) + (step.kind === "switch" ? billingErrorHtml("switch") : '') +
+      planCardActionHtml(billing, card, step) + planCardDisclosureHtml(billing, selected, step) + billingErrorHtml("plan:" + card) + (step.kind === "switch" ? billingErrorHtml("switch") : '') +
       details + '</article>';
   }
 
@@ -3589,9 +4102,9 @@
       if (state.billingError) return head + '<div class="empty"><p class="field-error">' + esc(state.billingError.text) + '</p><button type="button" class="btn btn-ghost" data-action="billing-retry">Retry</button></div>';
       return head + '<div class="empty"><p class="hint">Loading your plan&hellip;</p></div>';
     }
-    var status = billingErrorHtml("load") + billingHeroHtml(billing);
+    var status = billingErrorHtml("load") + billingHeroHtml(billing) + billingTopUpHtml(billing);
     if (!billing.manage) return head + status + '<p class="plan-member-note"><span class="plan-chip-dot" aria-hidden="true"></span>An Owner can change the plan, add usage, or switch how your workspace pays for models.</p>';
-    return head + status + billingPlansHtml(billing) + billingUseHtml(billing) + billingHowHtml(billing);
+    return billingBannerHtml() + head + status + billingPlansHtml(billing) + billingUseHtml(billing) + billingHowHtml(billing);
   }
 
   function isOnboardingSlackConnection() {
@@ -15554,9 +16067,60 @@
     if (action === "open-usage" && USAGE_ADMIN_UI) { openUsage(); }
     if (action === "open-billing" && BILLING_OFFERED) { openBilling(); }
     if (action === "billing-retry") { loadBilling(); }
-    if (action === "billing-add-extra-usage") {
+    if (action === "billing-add-extra-usage" && state.billing && !state.billingBusy) {
       var extraUsageKey = target.getAttribute("data-key") || "";
-      openStripe("/admin/api/billing/checkout", { kind: "extra_usage", key: extraUsageKey }, "extra_usage:" + extraUsageKey, "extra_usage");
+      if (billingExtraUsageOnCard(state.billing)) {
+        state.billingConfirm = { kind: "extra_usage", key: extraUsageKey, chargeKey: billingChargeKey("extra_usage") };
+        state.billingError = null;
+        render();
+        focusAction("billing-extra-usage-confirm");
+      } else {
+        openStripe("/admin/api/billing/checkout", { kind: "extra_usage", key: extraUsageKey }, "extra_usage:" + extraUsageKey, "extra_usage");
+      }
+    }
+    if (action === "billing-extra-usage-cancel" && !state.billingBusy) {
+      state.billingConfirm = null;
+      state.billingError = null;
+      render();
+      focusAction("billing-add-extra-usage");
+    }
+    if (action === "billing-extra-usage-confirm") buyExtraUsage(target.getAttribute("data-key") || "");
+    if (action === "billing-plan-change") previewPlanChange(target.getAttribute("data-key") || "", target.getAttribute("data-at") === "own_key" ? "own_key" : "platform");
+    if (action === "billing-plan-change-cancel" && !state.billingBusy) {
+      state.billingConfirm = null;
+      state.billingError = null;
+      render();
+      focusAction("billing-plan-change");
+    }
+    if (action === "billing-plan-change-confirm" && !state.billingBusy) confirmPlanChange();
+    if (action === "billing-see-plan" && state.billing && !state.billingBusy) seePlan(target.getAttribute("data-key") || "");
+    if (action === "billing-update-card") openStripe("/admin/api/billing/portal", {}, "portal", "portal");
+    if (action === "billing-top-up-toggle" && state.billing && state.billing.topUp && !state.billingBusy) {
+      if (state.billingTopUpEdit && state.billingTopUpEdit.on) {
+        state.billingTopUpEdit = null;
+        render();
+      } else if (state.billing.topUp.enabled) {
+        updateTopUp({ change: "off" }, "top_up_off");
+      } else {
+        editTopUp();
+      }
+    }
+    if (action === "billing-top-up-edit") editTopUp();
+    if (action === "billing-top-up-pack" && state.billingTopUpEdit && !state.billingBusy) {
+      state.billingTopUpEdit.pack = target.getAttribute("data-key") || state.billingTopUpEdit.pack;
+      state.billingTopUpEdit.packChosen = true;
+      render();
+    }
+    if (action === "billing-top-up-cancel" && !state.billingBusy) {
+      state.billingTopUpEdit = null;
+      state.billingError = null;
+      render();
+      focusAction("billing-top-up-edit");
+    }
+    if (action === "billing-top-up-save" && !state.billingBusy) saveTopUp();
+    if (action === "billing-top-up-retry") {
+      state.billingTopUpRetryKey = state.billingTopUpRetryKey || billingChargeKey("top_up_retry");
+      updateTopUp({ change: "retry" }, "top_up_retry", { "idempotency-key": state.billingTopUpRetryKey });
     }
     if (action === "billing-choose-plan") {
       var planAt = target.getAttribute("data-at") || "";
@@ -16688,10 +17252,26 @@
       var levelCard = target.getAttribute("data-card") === "own_key" ? "own_key" : "platform";
       state.billingSelection[levelCard] = target.value || "";
       state.billingFundingConfirm = false;
+      state.billingConfirm = null;
       if (state.billingError && state.billingError.at !== "load") state.billingError = null;
       render();
       var level = document.querySelector('[data-action="billing-plan-level"][data-card="' + levelCard + '"]');
       if (level && level.focus) level.focus();
+    }
+    if (action === "billing-top-up-limit" && state.billingTopUpEdit && state.billing && state.billing.topUp && !state.billingBusy) {
+      var limitEdit = state.billingTopUpEdit;
+      var limitValue = target.value === "plan" ? "plan" : parseInt(target.value, 10);
+      if (limitValue === "plan" || limitValue > 0) {
+        limitEdit.limit = limitValue;
+        // A pack bigger than the new limit could never fire, so the largest one that fits takes its place.
+        var fitting = topUpEditValues(state.billing.topUp, limitEdit);
+        if (fitting.pack.cents > fitting.limitCents) {
+          var fits = state.billing.topUp.packs.filter(function (pack) { return pack.cents <= fitting.limitCents; });
+          if (fits.length) { limitEdit.pack = fits[fits.length - 1].key; limitEdit.packChosen = true; }
+        }
+      }
+      render();
+      focusAction("billing-top-up-limit");
     }
     if (action === "team-role-select" && !state.teamBusy) {
       var roleMembershipId = target.getAttribute("data-membership") || "";
