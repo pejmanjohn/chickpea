@@ -60,5 +60,5 @@ export interface UsageEstimateResult {
   estimateAmountMicros: number | null;
   estimateCurrency: string | null;
   priceVersionId: string | null;
-  priceUnknownReason: 'price_unknown' | 'price_stale' | 'pricing_dimension_unknown' | null;
+  priceUnknownReason: 'price_unknown' | 'pricing_dimension_unknown' | null;
 }

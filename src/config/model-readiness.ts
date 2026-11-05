@@ -28,7 +28,7 @@ export type ModelReadiness = (modelId: string) => Promise<ModelUnavailable | und
 /**
  * Everything one request's readiness answers share, the funding read included.
  * The active catalog must serve the model, and on Chickpea's models it needs a
- * current price, else its provider must be ready.
+ * price, else its provider must be ready.
  */
 export async function resolveModelReadiness(input: {
   settings: SettingsStore;

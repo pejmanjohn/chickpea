@@ -116,7 +116,7 @@ export async function chatModelPickerProviders(input: {
   const funding = input.funding ?? await installationFunding(env);
   if (funding !== 'platform') return providers;
   // Chickpea's models are a lane like the ChatGPT subscription. They need no
-  // key or starred model, and serve only the models with a current price.
+  // key or starred model, and serve only the models with a price.
   const unavailable = await resolveModelReadiness({ settings, env, runtimeProviders, funding });
   return Promise.all(providers.map(async (provider) => {
     const candidates = uniqueStrings([

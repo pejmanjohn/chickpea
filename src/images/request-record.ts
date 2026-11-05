@@ -13,9 +13,8 @@ export interface ImagePrice {
   readonly rate: ImagePriceRate;
 }
 
-export function currentImagePrice(provider: string, model: string, at: number): ImagePrice | null {
-  const price = priceCatalogFor('image_tokens', provider, model, at);
-  return price && at < price.version.reviewDueAt ? price : null;
+export function imagePrice(provider: string, model: string, at: number): ImagePrice | null {
+  return priceCatalogFor('image_tokens', provider, model, at);
 }
 
 export interface ImageRequestEnd {
@@ -63,9 +62,8 @@ type PricedUsage =
   | { readonly unknown: NonNullable<UsageEstimateResult['priceUnknownReason']> };
 
 function imageUsagePrice(end: ImageRequestEnd, billed: ImageCallUsage | 'unknown' | undefined): PricedUsage {
-  const matched = priceCatalogFor('image_tokens', end.provider, end.model, end.finishedAt);
+  const matched = imagePrice(end.provider, end.model, end.finishedAt);
   if (!matched) return { unknown: 'price_unknown' };
-  if (end.finishedAt >= matched.version.reviewDueAt) return { unknown: 'price_stale' };
   if (billed === undefined) return { amount: 0, priceVersionId: matched.version.id };
   const parts = billed !== 'unknown' && imageTokenParts(billed);
   if (!parts) return { unknown: 'pricing_dimension_unknown' };

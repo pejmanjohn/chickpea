@@ -68,7 +68,7 @@ import {
 import { canonicalPriceProviderId, priceCatalogFor } from '../usage/pricing/catalog.ts';
 import type { FeeRun, RunKind } from '../usage/run-fees.ts';
 import type { ImageCallResult } from '../images/openai-images-client.ts';
-import { currentImagePrice, sentImageRequestRecord } from '../images/request-record.ts';
+import { imagePrice, sentImageRequestRecord } from '../images/request-record.ts';
 
 /**
  * Providers whose key comes from the run's installation. `local-stub` is the
@@ -440,7 +440,7 @@ export async function sendImageRequest(
   if (installationId) await requireInstallationAdmitted(installationId);
   const platformGrant = grant.fundingSource === 'platform' ? grant : undefined;
   if (platformGrant) {
-    if (!currentImagePrice(grant.providerId, model, Date.now())) throw unpricedModel();
+    if (!imagePrice(grant.providerId, model, Date.now())) throw unpricedModel();
     await admitPlatformRequest(cells.getStore(), platformGrant, { provider: grant.providerId, model });
   }
   const access = await requireResolver().resolve(grant, env);
@@ -723,7 +723,7 @@ async function platformFundedModel<TModel extends Model<Api>>(
 ): Promise<TModel> {
   const provider = canonicalPriceProviderId(request.route);
   const price = priceCatalogFor('standard_input_output', provider, request.model, Date.now());
-  if (!price || Date.now() >= price.version.reviewDueAt) throw unpricedModel();
+  if (!price) throw unpricedModel();
   await admitPlatformRequest(cell, grant, { provider, model: request.model });
   if (provider !== 'openrouter') return model;
   // A long prompt is charged at the long-context rates, so the cap allows them.
@@ -759,7 +759,7 @@ async function admitPlatformRequest(
 
 function unpricedModel(): ModelAccessError {
   // No model ID in the text: Flue retries an error whose text holds a status code such as 503.
-  return new ModelAccessError('funding_not_offered', 'This model has no current price in Chickpea credits (funding_not_offered).');
+  return new ModelAccessError('funding_not_offered', 'This model has no price in Chickpea credits (funding_not_offered).');
 }
 
 function settleRequest(

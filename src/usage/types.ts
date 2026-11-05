@@ -54,10 +54,11 @@ type EstimateCompleteness = (typeof ESTIMATE_COMPLETENESS_VALUES)[number];
 
 export const PRICE_UNKNOWN_REASONS = [
   'price_unknown',
+  // New code never writes it; rows from before reviewDueAt stopped unpricing can hold it.
   'price_stale',
   'pricing_dimension_unknown',
 ] as const;
-type PriceUnknownReason = (typeof PRICE_UNKNOWN_REASONS)[number];
+export type PriceUnknownReason = (typeof PRICE_UNKNOWN_REASONS)[number];
 
 export const USAGE_CONVERSATION_KINDS = [
   'named_channel',

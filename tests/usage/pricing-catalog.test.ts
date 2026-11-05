@@ -237,7 +237,7 @@ test('the 2026-11-05 catalog prices GPT Image 2.6 Flare and Sunburst, and re-rev
 
 test('the OpenRouter makers catalog prices each model at its maker\'s own endpoint from when it was read', () => {
   const readAt = Date.UTC(2026, 9, 7, 15, 57);
-  const staleAt = Date.UTC(2027, 0, 5, 15, 57);
+  const reviewDueAt = Date.UTC(2027, 0, 5, 15, 57);
   assert.deepEqual(
     PRICE_CATALOGS_2026_10_07_OPENROUTER_MAKERS.map((version) => {
       const rate = tokenRate(version);
@@ -257,14 +257,14 @@ test('the OpenRouter makers catalog prices each model at its maker\'s own endpoi
       ];
     }),
     [
-      ['openrouter-deepseek-v4.1-flash_2026-10-07-maker', 'https://openrouter.ai/api/v1/models/deepseek/deepseek-v4.1-flash/endpoints', 'deepseek/deepseek-v4.1-flash deepseek/deepseek-v4.1-flash-20260910', 150_000, 600_000, 3_000, null, null, null, readAt, readAt, staleAt],
-      ['openrouter-glm-5.3-flash_2026-10-07-maker', 'https://openrouter.ai/api/v1/models/z-ai/glm-5.3-flash/endpoints', 'z-ai/glm-5.3-flash z-ai/glm-5.3-flash-20260826', 150_000, 500_000, 30_000, null, null, null, readAt, readAt, staleAt],
-      ['openrouter-kimi-k3_2026-10-07-maker', 'https://openrouter.ai/api/v1/models/moonshotai/kimi-k3/endpoints', 'moonshotai/kimi-k3 moonshotai/kimi-k3-20260715', 3_000_000, 15_000_000, 300_000, null, null, null, readAt, readAt, staleAt],
+      ['openrouter-deepseek-v4.1-flash_2026-10-07-maker', 'https://openrouter.ai/api/v1/models/deepseek/deepseek-v4.1-flash/endpoints', 'deepseek/deepseek-v4.1-flash deepseek/deepseek-v4.1-flash-20260910', 150_000, 600_000, 3_000, null, null, null, readAt, readAt, reviewDueAt],
+      ['openrouter-glm-5.3-flash_2026-10-07-maker', 'https://openrouter.ai/api/v1/models/z-ai/glm-5.3-flash/endpoints', 'z-ai/glm-5.3-flash z-ai/glm-5.3-flash-20260826', 150_000, 500_000, 30_000, null, null, null, readAt, readAt, reviewDueAt],
+      ['openrouter-kimi-k3_2026-10-07-maker', 'https://openrouter.ai/api/v1/models/moonshotai/kimi-k3/endpoints', 'moonshotai/kimi-k3 moonshotai/kimi-k3-20260715', 3_000_000, 15_000_000, 300_000, null, null, null, readAt, readAt, reviewDueAt],
     ],
   );
   assert.deepEqual(
     ['deepseek/deepseek-v4.1-flash', 'z-ai/glm-5.3-flash', 'moonshotai/kimi-k3'].map((slug) =>
-      [readAt - 1, readAt, staleAt - 1].map((at) => priceCatalogFor('standard_input_output', 'openrouter', slug, at)?.version.id)),
+      [readAt - 1, readAt, reviewDueAt - 1].map((at) => priceCatalogFor('standard_input_output', 'openrouter', slug, at)?.version.id)),
     [
       ['openrouter-deepseek-v4.1-flash_2026-10-07', 'openrouter-deepseek-v4.1-flash_2026-10-07-maker', 'openrouter-deepseek-v4.1-flash_2026-10-07-maker'],
       ['openrouter-glm-5.3-flash_2026-10-07', 'openrouter-glm-5.3-flash_2026-10-07-maker', 'openrouter-glm-5.3-flash_2026-10-07-maker'],

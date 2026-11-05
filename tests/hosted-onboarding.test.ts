@@ -30,7 +30,7 @@ import { SqliteConfigStore, type ConfigStore } from '../src/config/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { IdentityStoreLogic } from '../src/identity/store.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
-import { currentImagePrice } from '../src/images/request-record.ts';
+import { imagePrice } from '../src/images/request-record.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { SLACK_SETTING_KEYS } from '../src/slack/credentials.ts';
 import { syncHostedWorkspaceInstallation } from '../src/slack/hosted-installation.ts';
@@ -42,7 +42,6 @@ import { REQUESTED_SLACK_BOT_SCOPES } from '../src/slack/scopes.ts';
 import { promisify } from '../src/state/async-facade.ts';
 import { DoSqlStateDb } from '../src/state/do-state-db.ts';
 import { buildTagStateStores } from '../src/state/tag-state-stores.ts';
-import { priceCatalogFor } from '../src/usage/pricing/catalog.ts';
 import type { UsageStore } from '../src/usage/types.ts';
 import type { SlackStateStore } from '../src/slack/claim-store.ts';
 import { opaqueId } from '../src/work/admission.ts';
@@ -679,14 +678,14 @@ for (const [kept, modelId] of [
 }
 
 test('setting up on Chickpea\'s models chooses no image model that Chickpea\'s models cannot serve, and still chooses the chat model', async (t) => {
-  const claimedAt = Date.UTC(2026, 10, 5, 12);
-  assert.ok(currentImagePrice('openai', 'gpt-image-2.6-flare', claimedAt), 'the default image model is priced at the claim');
+  const flarePricedFrom = imagePrice('openai', 'gpt-image-2.6-flare', Number.MAX_SAFE_INTEGER)!.version.effectiveFrom;
+  const claimedAt = flarePricedFrom - 12 * 60 * 60 * 1000;
+  assert.equal(imagePrice('openai', 'gpt-image-2.6-flare', claimedAt), null, 'the default image model has no price yet');
   t.mock.timers.enable({ apis: ['Date'], now: claimedAt });
   hostPorts(t);
   const signup = await signUp(t);
   await signup.claim();
   const admin = signup.admin(await signup.ownerPrincipal());
-  t.mock.timers.setTime(priceCatalogFor('image_tokens', 'openai', 'gpt-image-2.6-flare', Number.MAX_SAFE_INTEGER)!.version.reviewDueAt);
   const started = await startOnPlatform(admin);
   assert.equal(started.status, 200, await started.clone().text());
   assert.equal((await started.json() as { stage: string }).stage, 'try');
