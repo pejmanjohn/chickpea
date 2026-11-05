@@ -122,7 +122,10 @@ const INVALID_NAME_ERRORS = new Set([
   'invalid_name', 'invalid_name_maxlength', 'invalid_name_punctuation', 'invalid_name_required', 'invalid_name_specials', 'no_channel',
 ]);
 
-const NOT_CREATED_ERRORS = new Set(['missing_scope', 'name_taken', 'restricted_action', ...INVALID_NAME_ERRORS]);
+const NOT_CREATED_ERRORS = new Set([
+  'missing_scope', 'name_taken', 'restricted_action', ...INVALID_NAME_ERRORS,
+  'not_authed', 'invalid_auth', 'account_inactive', 'token_revoked', 'token_expired', 'no_permission', 'accesslimited', 'invalid_arguments',
+]);
 
 export type InviteRefusal = 'guest' | 'not_found' | 'not_allowed' | 'failed' | 'unconfirmed';
 

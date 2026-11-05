@@ -431,7 +431,7 @@ test('Slack\'s own refusal relayed by a gateway is definite: refused, and the re
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => settings.close());
   const receipt = channelReceipt(settings);
-  for (const code of ['name_taken', 'invalid_name_specials', 'restricted_action', 'missing_scope', 'ratelimited']) {
+  for (const code of ['name_taken', 'invalid_name_specials', 'restricted_action', 'missing_scope', 'ratelimited', 'token_revoked']) {
     const relayed = channels(t, fakeSlack({ createError: new SlackTransportError('conversations.create', code) }), { receipt });
     assert.equal((await relayed.service().create(request({ name: `acme-${code}` }))).status, 'refused', code);
   }
