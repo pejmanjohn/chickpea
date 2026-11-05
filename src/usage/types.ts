@@ -164,9 +164,7 @@ export interface RecordUsageTerminalInput {
   priceUnknownReason: PriceUnknownReason | null;
   /**
    * The run key this execution's charges carry on the billing host: the Flue
-   * submission ID, as `RunRef.runId` names it. Recorded whenever the
-   * submission is known, standalone too; null for an execution that never
-   * reached one, or one recorded before the key was kept.
+   * submission ID, as `RunRef.runId` names it, recorded whenever known.
    */
   billingRunId?: string | null;
 }

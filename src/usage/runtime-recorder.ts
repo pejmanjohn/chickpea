@@ -48,7 +48,7 @@ interface InteractiveUsageRecorderOptions {
   onPersistence?: (event: UsagePersistenceEvent) => void;
   /** A saved Flue settlement is being delivered again, not a new model call. */
   replaySettlementAt?: number;
-  /** The run key the turn's charges carry, read as each terminal is built: the dispatch sets it once accepted. */
+  /** Read as each terminal is built: the dispatch sets it once accepted. */
   billingRunId?: () => string | undefined;
 }
 
@@ -250,7 +250,7 @@ export class InteractiveUsageRecorder {
       operationId: this.admission.operationId,
       executionId: `${this.options.executionId}:coding:${index + 1}`,
       ...(this.runExecutionId ? { runExecutionId: this.runExecutionId } : {}),
-      // A coding worker's requests are charged to the coordinating turn's run.
+      // Charged to the turn's run.
       billingRunId: this.options.billingRunId?.() ?? null,
       status: record.status,
       finishedAt,
@@ -654,7 +654,7 @@ export class RoutineUsageRecorder {
     usage?: RoutineReportedUsage | null;
     returnedModel?: { provider: string; id: string } | null;
     unknownReason?: UsageUnknownReason;
-    /** The attempt's Flue submission, the run key its charges carry. */
+    /** The attempt's Flue submission. */
     billingRunId?: string | undefined;
   }): Promise<void> {
     if (this.terminalInput) return;

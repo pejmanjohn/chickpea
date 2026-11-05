@@ -60,7 +60,6 @@ import {
   normalizeCredentialRetirement,
   normalizeModelCredential,
   normalizeModelRequestRecord,
-  normalizeQueryRange,
   normalizeRecordUsageTerminal,
   normalizeUsageQuery,
 } from './validation.ts';
@@ -320,8 +319,7 @@ export class UsageStoreLogic {
             { operationId: input.operationId, executionId: input.executionId },
           );
         }
-        // The billing key is not part of what was measured: a replay that
-        // knows it fills one recorded without it, and never replaces one.
+        // A replay may fill a missing billing key, never replace one.
         if (input.billingRunId && !measurement.billingRunId) {
           this.db.run(
             'UPDATE usage_measurements SET billing_run_id = ? WHERE execution_id = ?',
@@ -808,42 +806,28 @@ export class UsageStoreLogic {
   }
 
   listActivityAttributions(raw: UsageActivityQuery): UsageActivityAttribution[] {
-    const query = normalizeQueryRange(raw);
-    const model = (table: string) => `CASE WHEN ${table}.returned_provider IS NOT NULL AND ${table}.returned_model IS NOT NULL
-        THEN ${table}.returned_provider || '/' || ${table}.returned_model
-      WHEN ${table}.requested_provider IS NOT NULL AND ${table}.requested_model IS NOT NULL
-        THEN ${table}.requested_provider || '/' || ${table}.requested_model END`;
-    const rows = this.db.all(
-      `SELECT o.operation_id, o.operation_kind, o.started_at, o.profile_id, o.requester_membership_id,
-         COALESCE(
-           (SELECT ${model('m')} FROM usage_measurements m WHERE m.operation_id = o.operation_id
-            ORDER BY m.observed_at DESC, m.execution_id DESC LIMIT 1),
-           CASE WHEN o.requested_provider IS NOT NULL AND o.requested_model IS NOT NULL
-             THEN o.requested_provider || '/' || o.requested_model END
-         ) AS model,
-         (SELECT SUM(m.estimate_amount_micros) FROM usage_measurements m
-          WHERE m.operation_id = o.operation_id AND m.estimate_completeness = 'complete'
-            AND m.estimate_currency = 'USD') AS estimate_micros,
-         (SELECT group_concat(DISTINCT m.billing_run_id) FROM usage_measurements m
-          WHERE m.operation_id = o.operation_id AND m.billing_run_id IS NOT NULL) AS billing_run_ids
-       FROM usage_operations o
-       WHERE o.started_at >= ? AND o.started_at < ?
-         AND o.operation_kind IN ('interactive_turn', 'routine_run')
+    const query = normalizeUsageQuery(raw);
+    // `||` with NULL is NULL: a model names its provider and ID, or falls through.
+    return this.db.all(
+      `SELECT o.operation_id AS operationId, o.operation_kind AS operationKind, o.started_at AS startedAt,
+         o.profile_id AS agentId, o.requester_membership_id AS requesterMembershipId,
+         COALESCE((SELECT COALESCE(l.returned_provider || '/' || l.returned_model, l.requested_provider || '/' || l.requested_model)
+           FROM usage_measurements l WHERE l.operation_id = o.operation_id ORDER BY l.observed_at DESC, l.execution_id DESC LIMIT 1),
+           o.requested_provider || '/' || o.requested_model) AS model,
+         SUM(CASE WHEN m.estimate_currency = 'USD' THEN m.estimate_amount_micros END) AS estimateMicros,
+         group_concat(DISTINCT m.billing_run_id) AS billingRunIds
+       FROM usage_operations o LEFT JOIN usage_measurements m ON m.operation_id = o.operation_id
+       WHERE o.started_at >= ? AND o.started_at < ? AND o.operation_kind IN ('interactive_turn', 'routine_run')
          AND NOT (o.operation_kind = 'routine_run' AND o.conversation_kind = 'direct_message')
-       ORDER BY o.started_at, o.operation_id`,
+       GROUP BY o.operation_id ORDER BY o.started_at, o.operation_id`,
       query.from,
       query.to,
-    );
-    return rows.map((row) => ({
-      operationId: String(row.operation_id),
-      operationKind: row.operation_kind as UsageActivityAttribution['operationKind'],
-      startedAt: Number(row.started_at),
-      agentId: row.profile_id === null ? null : String(row.profile_id),
-      requesterMembershipId: row.requester_membership_id === null ? null : String(row.requester_membership_id),
-      model: row.model === null ? null : String(row.model),
-      estimateMicros: row.estimate_micros === null ? null : Number(row.estimate_micros),
+    ).map((row) => ({
+      ...row as unknown as UsageActivityAttribution,
+      startedAt: Number(row.startedAt),
+      estimateMicros: row.estimateMicros === null ? null : Number(row.estimateMicros),
       // Run IDs match [A-Za-z0-9_-], so group_concat's comma never splits one.
-      billingRunIds: row.billing_run_ids === null ? [] : String(row.billing_run_ids).split(','),
+      billingRunIds: row.billingRunIds === null ? [] : String(row.billingRunIds).split(','),
     }));
   }
 

@@ -12,7 +12,6 @@ import {
   type NormalizedUsageQuery,
   type PutModelCredentialInput,
   type RecordUsageTerminalInput,
-  type UsageActivityQuery,
   type UsageFilters,
   type UsageQuery,
   type UsageTerminalStatus,
@@ -126,7 +125,7 @@ export function normalizeRecordUsageTerminal(
     ...(input.runExecutionId
       ? { runExecutionId: opaqueId(input.runExecutionId, 'Run execution ID') }
       : {}),
-    ...(input.billingRunId ? { billingRunId: billingRunId(input.billingRunId) } : {}),
+    ...(input.billingRunId ? { billingRunId: runId(input.billingRunId) } : {}),
     status: terminalStatus(input.status),
     finishedAt: timestamp(input.finishedAt, 'finished time'),
     observedAt: timestamp(input.observedAt, 'observed time'),
@@ -235,7 +234,11 @@ export function normalizeCredentialRetirement(
 }
 
 export function normalizeUsageQuery(input: UsageQuery): NormalizedUsageQuery {
-  const { from, to } = normalizeQueryRange(input);
+  const from = timestamp(input.from, 'query start');
+  const to = timestamp(input.to, 'query end');
+  if (to <= from || to - from > MAX_QUERY_RANGE_MS) {
+    queryInvalid('Usage query range must be positive and at most 366 days.');
+  }
   const limit = input.limit ?? 50;
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
     queryInvalid('Usage query limit must be between 1 and 100.');
@@ -264,15 +267,6 @@ export function normalizeUsageQuery(input: UsageQuery): NormalizedUsageQuery {
     limit,
     cursor,
   };
-}
-
-export function normalizeQueryRange(input: UsageActivityQuery): UsageActivityQuery {
-  const from = timestamp(input.from, 'query start');
-  const to = timestamp(input.to, 'query end');
-  if (to <= from || to - from > MAX_QUERY_RANGE_MS) {
-    queryInvalid('Usage query range must be positive and at most 366 days.');
-  }
-  return { from, to };
 }
 
 function normalizeFilters(filters: UsageFilters): UsageFilters {
@@ -364,7 +358,7 @@ function opaqueId(value: unknown, label: string, query = false): string {
   return value as string;
 }
 
-function billingRunId(value: unknown): string {
+function runId(value: unknown): string {
   if (typeof value !== 'string' || !RUN_ID.test(value)) invalid('Billing run ID is invalid.');
   return value as string;
 }
