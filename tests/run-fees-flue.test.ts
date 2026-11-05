@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
 
-import { normalizeContext } from '@earendil-works/pi-ai';
+import { normalizeContext, type JsonObject } from '@earendil-works/pi-ai';
 import { init, instrument, useModel, useTool, type FlueExecutionInterceptor } from '@flue/runtime';
 import { start } from '@flue/runtime/node';
 import * as v from 'valibot';
@@ -46,10 +46,18 @@ import { genericSemanticDescriptor } from '../src/activity/semantic.ts';
 import { runFeeInterceptor } from '../src/config/run-fee-interceptor.ts';
 import type { PlatformEnv } from '../src/config/state-backend.ts';
 import { ANTHROPIC_COMPAT_PROVIDER_ID } from '../src/model-catalog/provider-alias.ts';
+import { SlackCanvasService } from '../src/slack/canvases/service.ts';
+import { createSlackCanvasTools } from '../src/slack/canvases/tools.ts';
+import type { SlackCanvasOperation } from '../src/slack/canvases/types.ts';
 import { AgentPromptFailure, agentFailureText, promptSlackThreadAgent } from '../src/slack/flue-dispatch.ts';
 import { GroupDmReceipts } from '../src/slack/group-dm/receipts.ts';
 import { SlackGroupDmService } from '../src/slack/group-dm/service.ts';
 import { createSlackGroupDmTool } from '../src/slack/group-dm/tools.ts';
+import { textCell } from '../src/slack/lists/schema.ts';
+import { SlackListsService } from '../src/slack/lists/service.ts';
+import { createSlackListTools } from '../src/slack/lists/tools.ts';
+import { SlackListError } from '../src/slack/lists/types.ts';
+import { ListWriteLedger } from '../src/slack/lists/writes.ts';
 import { createSlackReadGate } from '../src/slack/read-budget.ts';
 import { SlackReadingService } from '../src/slack/reading/service.ts';
 import { createSlackReadingTools } from '../src/slack/reading/tools.ts';
@@ -59,6 +67,7 @@ import type { RunKind } from '../src/usage/run-fees.ts';
 import { withEnv } from './helpers/env.ts';
 import { NO_RUN_FEES } from './helpers/platform-funding.ts';
 import { answers, callsTools, SCRIPTED_MODEL, scriptedMessage, scriptedProvider } from './helpers/scripted-provider.ts';
+import { LIST_URL, StrictListsFake } from './helpers/slack-lists.ts';
 
 const INSTALLATION = 'inst_fees';
 
@@ -320,6 +329,103 @@ const readsPage = (url: string) => (model: Parameters<typeof answers>[0]) => scr
 const searches = (query: string) => (model: Parameters<typeof answers>[0]) => scriptedMessage(model, [
   { type: 'toolCall', id: 'call_search', name: 'web_search', arguments: { query } },
 ], 'toolUse');
+
+const canvasCalls: SlackCanvasOperation[] = [];
+let canvasAnswers: Partial<Record<SlackCanvasOperation, JsonObject>> = {};
+let canvasConversation: 'channel with a canvas' | 'channel' | 'dm' = 'channel with a canvas';
+const CANVAS_WRITES: readonly SlackCanvasOperation[] = ['conversations.canvases.create', 'canvases.create', 'canvases.edit'];
+let accessRevoked = false;
+
+function assertAccess(): void {
+  if (accessRevoked) throw new SlackListError('actor_unavailable', 'The requester no longer has active Chickpea access.');
+}
+
+function CanvasProbe() {
+  useModel(`${ANTHROPIC_COMPAT_PROVIDER_ID}/${SCRIPTED_MODEL}`);
+  const current = { ...MENTION, channelId: canvasConversation === 'dm' ? 'D0FEES' : MENTION.channelId };
+  for (const tool of createSlackCanvasTools(async () => {
+    assertAccess();
+    return new SlackCanvasService({
+      workspaceId: MENTION.workspaceId,
+      botUserId: 'U_BOT',
+      call: async (method, input) => {
+        canvasCalls.push(method);
+        const answer = canvasAnswers[method];
+        if (answer) return answer;
+        if (method === 'files.info') return { ok: true, file: { id: input.file, user: 'U_BOT', linked_channel_id: MENTION.channelId } };
+        if (method === 'canvases.sections.lookup') return { ok: true, sections: [] };
+        return { ok: true, canvas_id: 'FNEW1' };
+      },
+      authority: {
+        workspaceId: MENTION.workspaceId, managementAgent: false, requesterSlackUserId: 'U_REQUESTER', current,
+        assertActive: async () => {},
+        conversation: async (id) => ({
+          id, teamId: MENTION.workspaceId, im: canvasConversation === 'dm', mpim: false, private: false, member: true, shared: false,
+          ...(canvasConversation === 'channel' ? {} : { canvasId: 'FCHANNEL' }),
+        }),
+        isMember: async () => true,
+        hasActiveGrant: async () => true,
+      },
+      ledger: new ListWriteLedger(new SqliteSettingsStore(':memory:'), MENTION.workspaceId, 'fees-canvas', 'canvas'),
+      hosted: true,
+    });
+  })) useTool(tool);
+  return 'Write the canvas.';
+}
+
+let listsSlack = new StrictListsFake();
+let listsSettings = new SqliteSettingsStore(':memory:');
+let listsAdmitted: string[] = [];
+
+function ListsProbe() {
+  useModel(`${ANTHROPIC_COMPAT_PROVIDER_ID}/${SCRIPTED_MODEL}`);
+  for (const tool of createSlackListTools(async () => {
+    assertAccess();
+    return new SlackListsService({
+      workspaceId: 'TWORK',
+      call: listsSlack.call,
+      ledger: new ListWriteLedger(listsSettings, 'TWORK', 'fees-lists'),
+      admittedListIds: listsAdmitted,
+      hosted: true,
+    });
+  })) useTool(tool);
+  return 'Change the List.';
+}
+
+function freshLists(admitted = true): StrictListsFake {
+  listsSlack = new StrictListsFake();
+  listsSlack.lists.get('FEXISTING')!.items.push({ id: 'RecFEES', list_id: 'FEXISTING', fields: [textCell('ColTITLE', 'Send the invoice')] });
+  listsSettings = new SqliteSettingsStore(':memory:');
+  listsAdmitted = admitted ? ['FEXISTING'] : [];
+  return listsSlack;
+}
+
+const LIST_WRITES = [
+  ['create_slack_list_item', { listUrl: LIST_URL, title: 'Send the invoice' }, 'slackLists.items.create'],
+  ['update_slack_list_item', { listUrl: LIST_URL, itemId: 'RecFEES', set: { completed: true } }, 'slackLists.items.update'],
+  ['create_slack_task_list', { name: 'Launch' }, 'slackLists.create'],
+  ['share_slack_list', { listUrl: LIST_URL, access: 'view', channelId: 'C0SHARE' }, 'slackLists.access.set'],
+] as const;
+
+const LIST_READS = [
+  ['read_slack_list', { listUrl: LIST_URL }],
+  ['read_slack_list_item', { listUrl: LIST_URL, itemId: 'RecFEES' }],
+] as const;
+
+const isListWrite = (method: string) => LIST_WRITES.some(([, , write]) => write === method);
+
+type ListCase = readonly [tool: string, args: JsonObject, setUp: () => unknown, expected: string];
+
+const callsTool = (name: string, args: JsonObject) => (model: Parameters<typeof answers>[0]) => scriptedMessage(model, [
+  { type: 'toolCall', id: `call_${name}`, name, arguments: args },
+], 'toolUse');
+
+const toolResults: Array<{ status?: unknown; code?: unknown }> = [];
+const recordsResults: FlueExecutionInterceptor = async (operation, _context, next) => {
+  const result = await next();
+  if (operation.type === 'tool') toolResults.push(JSON.parse(String((result as { details?: { output?: unknown } }).details?.output)));
+  return result;
+};
 
 /** Stops the turn `slackTurn` is running as a requester's stop does: Flue aborts the instance's work. */
 let stopTurn: () => Promise<void> = async () => {
@@ -645,6 +751,120 @@ test('a web_search that went out posts its task row, even when the service faile
     assert.deepEqual(tiers(posts.slice(before)), ['chat:posted', 'task:posted'], `answering: ${answering}`);
   }
   assert.deepEqual(searched, ['fees api pagination', 'fees api pagination']);
+});
+
+const CREATE_CANVAS = ['create_slack_canvas', { title: 'Brief', markdown: '# Brief' }] as const;
+const APPEND_CANVAS = ['update_slack_canvas', { operation: 'append', markdown: 'More' }] as const;
+const ALREADY_EXISTS = { ok: false, error: 'channel_canvas_already_exists' };
+
+test('a canvas write refused before anything changed in Slack posts no task row', { timeout: 20_000 }, async (t) => {
+  const posts = hostedPort(t);
+  interceptors(t, replyRun(hostedEnv()), recordsResults);
+  t.after(() => { accessRevoked = false; });
+  for (const [[tool, args], where, revoked, slackAnswers, code, writes] of [
+    [CREATE_CANVAS, 'channel with a canvas', true, {}, 'actor_unavailable', []],
+    [CREATE_CANVAS, 'dm', false, {}, 'channel_only', []],
+    [CREATE_CANVAS, 'channel with a canvas', false, { 'canvases.create': { ok: false, error: 'missing_scope' } }, 'missing_scope', ['canvases.create']],
+    [CREATE_CANVAS, 'channel', false, {
+      'conversations.canvases.create': ALREADY_EXISTS,
+      'canvases.create': { ok: false, error: 'free_teams_cannot_create_standalone_canvases' },
+    }, 'free_teams_cannot_create_standalone_canvases', ['conversations.canvases.create', 'canvases.create']],
+    [['update_slack_canvas', { operation: 'replace_section', markdown: 'New', sectionText: 'Missing' }], 'channel with a canvas', false, {}, 'section_not_found', []],
+    [APPEND_CANVAS, 'channel with a canvas', false, { 'canvases.edit': { ok: false, error: 'canvas_editing_locked' } }, 'canvas_editing_locked', ['canvases.edit']],
+  ] as const) {
+    canvasConversation = where;
+    accessRevoked = revoked;
+    canvasAnswers = slackAnswers;
+    canvasCalls.length = 0;
+    toolResults.length = 0;
+    const before = posts.length;
+    scriptedProvider([callsTool(tool, args), answers]);
+    assert.deepEqual(await slackTurn(`fees-canvas-refused-${posts.length}`, CanvasProbe), { text: 'done' });
+    assert.deepEqual(toolResults.map(({ status, code }) => [status, code]), [['not_written', code]], code);
+    assert.deepEqual(canvasCalls.filter((method) => CANVAS_WRITES.includes(method)), writes, `${code}: the writes sent to Slack`);
+    assert.deepEqual(tiers(posts.slice(before)), ['chat:posted'], `${code} posts no task row`);
+  }
+});
+
+test('a canvas write that changed Slack, or may have, posts the task row', { timeout: 20_000 }, async (t) => {
+  const posts = hostedPort(t);
+  interceptors(t, replyRun(hostedEnv()), recordsResults);
+  for (const [[tool, args], where, slackAnswers, status] of [
+    [CREATE_CANVAS, 'channel', {}, 'created'],
+    [CREATE_CANVAS, 'channel', { 'conversations.canvases.create': ALREADY_EXISTS }, 'created'],
+    [CREATE_CANVAS, 'channel with a canvas', {}, 'created'],
+    [APPEND_CANVAS, 'channel with a canvas', { 'canvases.edit': { ok: true } }, 'updated'],
+    [CREATE_CANVAS, 'channel', { 'conversations.canvases.create': ALREADY_EXISTS, 'canvases.create': { ok: false, error: 'internal_error' } }, 'unverified'],
+    [APPEND_CANVAS, 'channel with a canvas', { 'canvases.edit': { ok: false, error: 'fatal_error' } }, 'unverified'],
+  ] as const) {
+    canvasConversation = where;
+    canvasAnswers = slackAnswers;
+    toolResults.length = 0;
+    const before = posts.length;
+    scriptedProvider([callsTool(tool, args), answers]);
+    assert.deepEqual(await slackTurn(`fees-canvas-written-${posts.length}`, CanvasProbe), { text: 'done' });
+    assert.deepEqual(toolResults.map(({ status }) => status), [status], tool);
+    assert.deepEqual(tiers(posts.slice(before)), ['chat:posted', 'task:posted'], `${tool} ${status}`);
+  }
+});
+
+test('a List call refused before anything changed in Slack posts no task row', { timeout: 20_000 }, async (t) => {
+  const posts = hostedPort(t);
+  interceptors(t, replyRun(hostedEnv()), recordsResults);
+  t.after(() => { accessRevoked = false; });
+  const [createItem] = LIST_WRITES;
+  const refusals: Array<readonly [...ListCase, writes: readonly string[]]> = [
+    [createItem[0], createItem[1], () => { freshLists(); accessRevoked = true; }, 'actor_unavailable', []],
+    ...LIST_WRITES.filter(([tool]) => tool !== 'create_slack_task_list')
+      .map(([tool, args]) => [tool, args, () => freshLists(false), 'list_reference_required', []] as const),
+    ...LIST_WRITES.map(([tool, args, write]) => [tool, args, () => {
+      const slack = freshLists();
+      slack.before = async (method) => { if (method === write) slack.failure = 'no_permission'; };
+    }, 'no_permission', [write]] as const),
+    ...LIST_READS.map(([tool, args]) => [tool, args, () => { freshLists().failure = 'missing_scope'; }, 'missing_scope', []] as const),
+  ];
+  for (const [tool, args, setUp, code, writes] of refusals) {
+    accessRevoked = false;
+    setUp();
+    toolResults.length = 0;
+    const before = posts.length;
+    scriptedProvider([callsTool(tool, args), answers]);
+    assert.deepEqual(await slackTurn(`fees-lists-refused-${posts.length}`, ListsProbe), { text: 'done' });
+    assert.deepEqual(toolResults.map(({ status, code }) => [status, code]), [['not_written', code]], `${tool} ${code}`);
+    assert.deepEqual(listsSlack.calls.map(({ method }) => method).filter(isListWrite), writes, `${tool} ${code}: the writes sent to Slack`);
+    assert.deepEqual(tiers(posts.slice(before)), ['chat:posted'], `${tool} ${code} posts no task row`);
+  }
+});
+
+test('a List call that changed Slack, may have, or read a List posts the task row', { timeout: 20_000 }, async (t) => {
+  const posts = hostedPort(t);
+  interceptors(t, replyRun(hostedEnv()), recordsResults);
+  const [createItem, updateItem] = LIST_WRITES;
+  const charged: ListCase[] = [
+    ...LIST_WRITES.map(([tool, args]): ListCase => [tool, args, () => freshLists(), 'confirmed']),
+    ...LIST_WRITES.map(([tool, args, write]): ListCase => [tool, args, () => {
+      freshLists().after = (method, response) => method === write ? { ok: false, error: 'internal_error' } : response;
+    }, 'unverified']),
+    [createItem[0], createItem[1], async () => {
+      freshLists();
+      await new ListWriteLedger(listsSettings, 'TWORK', 'fees-lists').reserve('call_earlier_attempt', createItem[2], { list_id: 'FEXISTING' });
+    }, 'already_attempted'],
+    [updateItem[0], updateItem[1], () => {
+      const slack = freshLists();
+      slack.lists.get('FEXISTING')!.items[0]!.fields = [textCell('ColTITLE', '漢'.repeat(12_000))];
+      slack.ignoreColumn = 'ColDONE';
+    }, 'result_unavailable'],
+    ...LIST_READS.map(([tool, args]): ListCase => [tool, args, () => freshLists(), 'read']),
+  ];
+  for (const [tool, args, setUp, status] of charged) {
+    await setUp();
+    toolResults.length = 0;
+    const before = posts.length;
+    scriptedProvider([callsTool(tool, args), answers]);
+    assert.deepEqual(await slackTurn(`fees-lists-charged-${posts.length}`, ListsProbe), { text: 'done' });
+    assert.deepEqual(toolResults.map(({ status }) => status), [status], tool);
+    assert.deepEqual(tiers(posts.slice(before)), ['chat:posted', 'task:posted'], `${tool} ${status}`);
+  }
 });
 
 test('a hosted reply run posts one chat row, keyed by its submission and Agent, and no task row without a qualifying tool', { timeout: 20_000 }, async (t) => {
