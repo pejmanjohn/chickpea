@@ -58,7 +58,9 @@ creates nothing, and can offer to add to the channel's canvas instead.
 
 An Agent edits only two kinds of canvas: this conversation's canvases, and a
 canvas the Chickpea app owns because it created it. The second kind must also
-pass the reading rules above. A person's own canvas elsewhere is not edited.
+pass the reading rules above. A person's canvas that someone added to this
+channel as a tab is one of this conversation's canvases, so it is edited on
+request. A person's canvas that is not a tab here is not edited.
 
 An edit lands wherever the canvas is, so it must not carry content to an
 organization that cannot read the current conversation. Chickpea refuses an
@@ -138,11 +140,12 @@ not yet observed.
    `properties.tabs` entries with `type` `canvas` and `data.file_id`. It returned
    no `properties.canvas`, even right after `conversations.canvases.create` made
    the canvas.
-2. Observed: `files.info` on a canvas returns `permalink`, `title`, `user` (the
-   bot user for a canvas the bot created) and the conversations it is in
-   (`channels`, `groups`, `ims`). For a canvas the bot created in an unshared
-   channel, `channels` named that channel, `filetype` was `quip`, and there was
-   no `linked_channel_id` and neither external-access field.
+2. Observed with the workspace Owner's token: `files.info` on a canvas returns
+   `permalink`, `title`, `user` (the bot user for a canvas the bot created) and
+   the conversations it is in (`channels`, `groups`, `ims`). For a canvas the bot
+   created in an unshared channel, `channels` named that channel, `filetype` was
+   `quip`, and there was no `linked_channel_id` and neither external-access
+   field. The bot's own `files.info` returned the canvas's permalink.
 3. `canvases.sections.lookup` accepts criteria with `contains_text` alone.
 4. On a paid plan, `canvases.create` with `channel_id` in a channel that has a
    canvas tab succeeds and adds a tab, and a channel member can open the result.
