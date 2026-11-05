@@ -6785,9 +6785,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     [CHICKPEA_AGENT_ID, 'Chickpea'],
     ...(await store(c).listUserAgents()).map((agent) => [agent.id, agent.name] as const),
   ]);
-  const usagePersonNames = async (c: Context) => {
-    // A personal token reads no names, as the Team API refuses it.
-    if (principalByContext.get(c)?.machine) return new Map<string, string>();
+  const usagePersonNames = async (c: Context): Promise<ReadonlyMap<string, string> | null> => {
+    // Who used what is an Owner's to see, as on the Plan page; never a token's.
+    if (!isOwnerSession(principalByContext.get(c))) return null;
     const memberships = await identity(c).listMemberships();
     const users = await Promise.all(memberships.map((membership) => identity(c).getUser(membership.userId)));
     return new Map(memberships.flatMap((membership, index) => {

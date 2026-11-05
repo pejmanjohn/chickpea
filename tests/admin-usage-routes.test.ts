@@ -848,7 +848,7 @@ test('the hosted Usage report joins the host\'s billed usage to the activity tha
     ['agent_report', 'Reporter', '$1.80', 'Maya Chen', 'Claude Sonnet 5.5'],
     [null, 'Other', '<$0.01', null, null],
   ]);
-  assert.deepEqual(report.people.map((person) => person.name), ['Maya Chen', 'Everyone else']);
+  assert.deepEqual(report.people?.map((person) => person.name), ['Maya Chen', 'Everyone else']);
   assert.deepEqual(report.models.map((model) => [model.key, model.name]), [['anthropic/claude-sonnet-5-5', 'Claude Sonnet 5.5'], [null, 'Other']]);
   const start = admin.summary.period!.start.getTime();
   const [current, prior] = admin.reads;
@@ -893,7 +893,7 @@ test('hosted activity rows carry who asked, the model and the billed usage of th
   assert.equal('hosted' in standalone.items[0]!, false);
 });
 
-test('a private run\'s activity row names nobody, and a personal token reads no one\'s name', async (t) => {
+test('a private run\'s activity row names nobody, and only an Owner\'s own session sees who used what', async (t) => {
   const rowsFor = async (admin: Awaited<ReturnType<typeof hostedUsageAdmin>>) => {
     const path = `/admin/api/usage/operations?from=${admin.startedAt - 1}&to=${admin.startedAt + 60_000}`;
     return (await (await admin.get(path)).json() as { items: Array<Record<string, any>> }).items.map((item) => item.hosted);
@@ -901,13 +901,20 @@ test('a private run\'s activity row names nobody, and a personal token reads no 
   const privateRun = await hostedUsageAdmin(t, async () => ({ rows: billedRows(privateRun.yesterday) }), { publicRun: false });
   assert.deepEqual((await rowsFor(privateRun)).map((hosted) => [hosted.requester, hosted.billed?.amount]), [[null, '$1.80']]);
   const report = await (await privateRun.get('/admin/api/usage/report?period=this_billing_period')).json() as UsageReport;
-  assert.deepEqual(report.people.map((person) => person.name), ['Maya Chen', 'Everyone else'], 'the run still counts toward who asked');
+  assert.deepEqual(report.people?.map((person) => person.name), ['Maya Chen', 'Everyone else'], 'the run still counts toward who asked');
 
   const token = await hostedUsageAdmin(t, async () => ({ rows: billedRows(token.yesterday) }), {
     principal: { ...MACHINE_OWNER },
   });
   assert.deepEqual((await rowsFor(token)).map((hosted) => hosted.requester), [null]);
   const tokenReport = await (await token.get('/admin/api/usage/report?period=this_billing_period')).json() as UsageReport;
-  assert.deepEqual(tokenReport.people.map((person) => person.name), ['Everyone else']);
+  assert.equal(tokenReport.people, null);
   assert.deepEqual(tokenReport.agents?.map((agent) => agent.topPerson), [null, null]);
+
+  const adminSession = await hostedUsageAdmin(t, async () => ({ rows: billedRows(adminSession.yesterday) }), {
+    principal: { ...MACHINE_OWNER, role: 'admin', authenticatorKind: 'test_slack_session', machine: false },
+  });
+  assert.deepEqual((await rowsFor(adminSession)).map((hosted) => [hosted.requester, hosted.billed?.amount]), [[null, '$1.80']]);
+  const adminReport = await (await adminSession.get('/admin/api/usage/report?period=this_billing_period')).json() as UsageReport;
+  assert.deepEqual([adminReport.people, adminReport.total.text], [null, '$1.80']);
 });

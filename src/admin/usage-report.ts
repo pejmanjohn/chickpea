@@ -109,14 +109,15 @@ export interface UsageReport {
     prior: number[] | null;
   };
   models: ReportRow[];
-  people: ReportRow[];
+  /** Null unless an Owner's own session asks, as the Plan page's "By person" is an Owner's. */
+  people: ReportRow[] | null;
   /** Null with an Agent selected. */
   agents: ReportAgentRow[] | null;
 }
 
 /** Added to each `GET /admin/api/usage/operations` item where the host installed a billing port. */
 export interface ActivityExtras {
-  /** The person who asked, "Routine" for a routine run, or null. */
+  /** The person who asked, "Routine" for a routine run, or null: always null where `people` is. */
   requester: string | null;
   modelName: string | null;
   /** The host's billed usage for the activity's run keys; null without an answer or a key. */
@@ -131,7 +132,8 @@ export interface ActivityExtras {
 
 export interface UsageReportNames {
   agents: ReadonlyMap<string, string>;
-  people: ReadonlyMap<string, string>;
+  /** Null where the viewer sees no one's usage. */
+  people: ReadonlyMap<string, string> | null;
   model(model: string): string;
 }
 
@@ -225,8 +227,11 @@ export function buildUsageReport(inputs: UsageReportInputs): UsageReport {
   const runs = runIndex(inputs.attributions);
   const startedIn = (window: Window) =>
     inputs.attributions.filter((attribution) => attribution.startedAt >= window.from && attribution.startedAt < window.to);
+  // Usage Core can't attribute, mostly private routines', counts only in a billing period, as the
+  // Plan page counts it; a range of any other bounds could single out when one ran.
+  const billable = (row: BilledUsageRow) => range.period !== null || (row.runId !== null && runs.has(row.runId));
   const charges = (window: Window, rows: readonly BilledUsageRow[] | undefined): Charge[] => measure === 'usage'
-    ? (rows ?? []).map((row) => ({
+    ? (rows ?? []).filter(billable).map((row) => ({
       day: dayNumber(Date.parse(row.day)),
       value: net([row]),
       ...attributed(row.runId === null ? undefined : runs.get(row.runId)),
@@ -253,7 +258,8 @@ export function buildUsageReport(inputs: UsageReportInputs): UsageReport {
     }));
   };
   const agentName = (id: string) => names.agents.get(id);
-  const personName = (key: string) => key === ROUTINES ? 'Routines' : names.people.get(key);
+  const people = names.people;
+  const personName = (key: string) => key === ROUTINES ? 'Routines' : people?.get(key);
   // An Agent with no name now reads as the gathered row, as on the Plan page.
   const agentRow = (id: string | null) => id !== null && names.agents.has(id) ? id : null;
 
@@ -290,7 +296,7 @@ export function buildUsageReport(inputs: UsageReportInputs): UsageReport {
     .map((id) => ({ id, name: names.agents.get(id) ?? OTHER }))
     .sort((left, right) => left.name.localeCompare(right.name));
 
-  const tasks = measure === 'estimate' && billed ? keptTasks(billed.current, runs) : null;
+  const tasks = measure === 'estimate' && billed ? keptTasks(billed.current.filter(billable), runs) : null;
   const thisPeriod = range.period === 'this_billing_period';
   const tasksUsed = tasks ? count(tasks.filter((task) => agentId === null || task === agentId).length)
     : thisPeriod && agentId === null && summary.planUsage
@@ -327,7 +333,7 @@ export function buildUsageReport(inputs: UsageReportInputs): UsageReport {
       prior: priorLine.every((value) => value === 0) ? null : priorLine,
     },
     models: listed(ranked(current, (charge) => charge.model, names.model, LISTED_ROWS, OTHER)).map(reportRow),
-    people: listed(ranked(current, (charge) => charge.person, personName, LISTED_ROWS, 'Everyone else')).map(reportRow),
+    people: people && listed(ranked(current, (charge) => charge.person, personName, LISTED_ROWS, 'Everyone else')).map(reportRow),
     agents: agentId !== null ? null : listed([
       ...agentChoices.map(({ id, name }) => ({ key: id, name, value: byAgent.rows.find((agent) => agent.key === id)?.value ?? 0 }))
         .sort(largestFirst),
@@ -338,7 +344,7 @@ export function buildUsageReport(inputs: UsageReportInputs): UsageReport {
       const own = current.filter((charge) => agentRow(charge.agentId) === agent.key);
       return {
         ...reportRow(agent),
-        topPerson: tally(own, (charge) => charge.person, personName).rows[0]?.name ?? null,
+        topPerson: people && (tally(own, (charge) => charge.person, personName).rows[0]?.name ?? null),
         mainModel: tally(own, (charge) => charge.model, names.model).rows[0]?.name ?? null,
         tasks: tasks && count(tasks.filter((task) => agentRow(task) === agent.key).length),
       };
@@ -471,9 +477,9 @@ export function activityExtras(
     const runIds = new Set(measurements.flatMap((measurement) => measurement.billingRunId ? [measurement.billingRunId] : []));
     const rows = [...runIds].flatMap((runId) => byRun.get(runId) ?? []);
     return {
-      requester: operation.operationKind === 'routine_run' ? 'Routine'
+      requester: names.people === null ? null : operation.operationKind === 'routine_run' ? 'Routine'
         : operation.requesterMembershipId === null || !isPublic(item) ? null
-        : names.people.get(operation.requesterMembershipId) ?? null,
+        : names.people?.get(operation.requesterMembershipId) ?? null,
       modelName: model === null ? null : names.model(model),
       billed: rows.length === 0 ? null : {
         amount: dollars(net(rows)),
@@ -541,7 +547,7 @@ function dollars(micros: number): string {
 interface HostedUsageOptions {
   store: (c: Context) => UsageStore;
   agentNames: (c: Context) => Promise<ReadonlyMap<string, string>>;
-  personNames: (c: Context) => Promise<ReadonlyMap<string, string>>;
+  personNames: (c: Context) => Promise<ReadonlyMap<string, string> | null>;
 }
 
 type BilledUsageRead = NonNullable<PlatformBillingPort['usage']>;

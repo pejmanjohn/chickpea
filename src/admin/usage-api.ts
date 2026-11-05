@@ -32,7 +32,7 @@ interface UsageAdminApiOptions {
   slackPermalink?: (c: Context, message: SlackMessage) => Promise<string | undefined>;
   agentNames: (c: Context) => Promise<ReadonlyMap<string, string>>;
   /** Display names keyed by Chickpea membership ID. */
-  personNames: (c: Context) => Promise<ReadonlyMap<string, string>>;
+  personNames: (c: Context) => Promise<ReadonlyMap<string, string> | null>;
 }
 
 export interface SlackMessage {

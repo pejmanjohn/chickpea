@@ -98,7 +98,7 @@ function assertListsAddUp(shown: UsageReport, unattributed = 0): void {
   const total = shown.total.value;
   assert.equal(sum(shown.chart.series.flatMap((line) => line.values)), total - unattributed, 'the chart');
   assert.equal(sum(shown.models.map((row) => row.amount.value)), total, 'models');
-  assert.equal(sum(shown.people.map((row) => row.amount.value)), total, 'people');
+  if (shown.people) assert.equal(sum(shown.people.map((row) => row.amount.value)), total, 'people');
   if (shown.agents) assert.equal(sum(shown.agents.map((row) => row.amount.value)), total, 'Agents');
 }
 
@@ -190,8 +190,8 @@ test('a gathered row that would hold one item shows that item instead', () => {
     names,
     now: NOW,
   });
-  assert.deepEqual(shownWith(6).people.map((row) => row.name), ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']);
-  assert.deepEqual(shownWith(7).people.map((row) => [row.name, row.amount.value]), [
+  assert.deepEqual(shownWith(6).people?.map((row) => row.name), ['P1', 'P2', 'P3', 'P4', 'P5', 'P6']);
+  assert.deepEqual(shownWith(7).people?.map((row) => [row.name, row.amount.value]), [
     ['P1', 1], ['P2', 1], ['P3', 1], ['P4', 1], ['P5', 1], ['Everyone else', 2],
   ]);
 });
@@ -269,7 +269,7 @@ test('each list\'s amounts read as cents that add up to the total as shown', () 
   const result = report({ billed, attributions: thirds });
   const cents = (text: string) => text === '<$0.01' ? 0 : Math.round(Number(text.replace('$', '')) * 100);
   assert.equal(result.total.text, '$3.01');
-  for (const list of [result.agents ?? [], result.models, result.people]) {
+  for (const list of [result.agents ?? [], result.models, result.people ?? []]) {
     assert.equal(sum(list.map((row) => cents(row.amount.text))), cents(result.total.text), JSON.stringify(rows(list)));
   }
 });
@@ -284,4 +284,24 @@ test('the strip states auto top-up as the Plan page shows an Admin: on or off, n
   assert.equal(strip({ ...topUp, pause: { kind: 'declined', at: PERIOD.start } }), 'on', 'a failed charge is an Owner\'s to see');
   assert.equal(strip({ ...topUp, enabled: false, explicitlyOff: true }), 'off');
   assert.equal(report({ summary: TEAM_PLAN }).plan?.autoTopUp, null, 'a host that offers no auto top-up');
+});
+
+test('a viewer who sees no one\'s usage gets no people, and usage Core can\'t attribute counts only in a billing period', () => {
+  const summary = TEAM_PLAN;
+  const build = (request: UsageReportRange, people: UsageReportNames['people'], billed = BILLED) => buildUsageReport({
+    summary, ...reportRanges(request, summary, NOW), billed, attributions: ACTIVITY, agentId: null,
+    names: { ...NAMES, people }, now: NOW,
+  });
+  const admin = build({ period: 'this_billing_period' }, null);
+  assert.equal(admin.people, null);
+  assert.deepEqual(admin.agents?.map((agent) => agent.topPerson), [null, null, null, null, null, null]);
+  assert.equal(admin.total.text, '$5.85', 'an Admin sees the same total');
+
+  // The private routine's $0.25 on Oct 13 and the row naming no run, $0.15 on Oct 14.
+  const days = (row: BilledUsageRow) => row.day === '2026-10-13' || row.day === '2026-10-14';
+  const narrow = build({ from: Date.UTC(2026, 9, 13), to: Date.UTC(2026, 9, 15) }, NAMES.people, {
+    current: BILLED.current.filter(days), prior: [],
+  });
+  assert.equal(narrow.total.value, usd(0.05), 'only the deleted Agent\'s attributed $0.05');
+  assert.equal(narrow.agents?.find((agent) => agent.key === null)?.amount.text, '$0.05');
 });

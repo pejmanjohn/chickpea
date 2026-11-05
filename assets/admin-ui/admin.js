@@ -2930,7 +2930,7 @@
     var panels = [
       ["Top models", report.models, "model"],
       [report.agent ? "Who uses " + esc(report.agent.name) : "Top people", report.people, "person"]
-    ].filter(function (panel) { return panel[1].length; }).map(function (panel) {
+    ].filter(function (panel) { return panel[1] && panel[1].length; }).map(function (panel) {
       return '<section class="u-panel"><h2 class="section-title">' + panel[0] + '</h2>' + billedUsageListHtml(panel[1], panel[2], mode) + '</section>';
     });
     return panels.length ? '<div class="u-two">' + panels.join("") + '</div>' : '';
@@ -2943,7 +2943,8 @@
 
   function billedUsageAgentsHtml(report, mode) {
     if (!report.agents || !report.agents.length) return '';
-    var columns = mode.agentColumns;
+    // Only an Owner sees who used what, so the report sends no people to anyone else.
+    var columns = report.people ? mode.agentColumns : mode.agentColumns.filter(function (column) { return column !== BILLED_USAGE_PERSON_COLUMN; });
     var cell = function (column, html) { return '<td' + (column.number ? ' class="number"' : '') + '>' + html + '</td>'; };
     var table = '<div class="usage-table-wrap"><table class="usage-table"><thead><tr>' +
       columns.map(function (column) { return '<th' + (column.number ? ' class="number"' : '') + '>' + column.head + '</th>'; }).join("") +
@@ -2985,7 +2986,7 @@
     var hosted = detail.hosted || {};
     var field = function (label, html) { return '<div><span class="field-label">' + label + '</span><span>' + html + '</span></div>'; };
     var requester = operation.operationKind === "routine_run" ? "" : hosted.requester;
-    var fields = [field("Asked by", esc(requester ? requester + " in " + where : where))];
+    var fields = state.usageReport && state.usageReport.people ? [field("Asked by", esc(requester ? requester + " in " + where : where))] : [];
     if (mode === BILLED_USAGE_MODES.usage && hosted.billed) fields.push(field("Usage", billedUsageBreakdownHtml(hosted.billed)));
     fields.push(field("Model", esc(hosted.modelName || "—")));
     var total = usageOperationTokens(detail, "totalTokens");
@@ -3011,6 +3012,7 @@
     });
     var loadMore = state.usageNextCursor ? '<button type="button" class="btn btn-ghost" data-action="usage-billed-more"' + (state.usageLoadingMore ? ' disabled' : '') + '>' + (state.usageLoadingMore ? 'Loading&hellip;' : 'Load more') + '</button>' : '';
     if (!visible.length) return '<div class="empty">' + (error ? error + retry : '<p class="hint">' + mode.empty + '</p>') + loadMore + '</div>';
+    var people = !!(state.usageReport && state.usageReport.people);
     var rows = visible.map(function (detail, index) {
       var operation = detail.operation;
       var hosted = detail.hosted || {};
@@ -3021,23 +3023,24 @@
       return '<tr class="u-row' + (open ? ' is-open' : '') + '" ' + toggle + '><td><button type="button" class="u-row-toggle" id="' + rowId + '" ' + toggle +
         ' aria-expanded="' + open + '"' + (open ? ' aria-controls="' + rowId + '-detail"' : '') + '><b class="usage-work-label">' + esc(where) + '</b></button>' +
         '<div class="hint">' + esc(billedUsageWhen(operation.startedAt)) + '</div></td>' +
-        '<td>' + esc(billedUsageAgentName(operation)) + '</td><td class="u-wide-only">' + esc(hosted.requester || "—") + '</td><td class="u-wide-only">' + esc(hosted.modelName || "—") + '</td>' +
+        '<td>' + esc(billedUsageAgentName(operation)) + '</td>' + (people ? '<td class="u-wide-only">' + esc(hosted.requester || "—") + '</td>' : '') +
+        '<td class="u-wide-only">' + esc(hosted.modelName || "—") + '</td>' +
         '<td class="number">' + mode.activityAmount(detail) + '<span class="u-caret" aria-hidden="true">' + (open ? '&#9662;' : '&#9656;') + '</span></td></tr>' +
         (open ? billedUsageDetailHtml(detail, where, mode, rowId + "-detail") : '');
     }).join("");
-    return '<div class="usage-table-wrap"><table class="usage-table u-acts"><thead><tr><th>Where</th><th>Agent</th><th class="u-wide-only">Person</th><th class="u-wide-only">Model</th><th class="number">' + mode.activityHead + '</th></tr></thead><tbody>' +
+    return '<div class="usage-table-wrap"><table class="usage-table u-acts"><thead><tr><th>Where</th><th>Agent</th>' + (people ? '<th class="u-wide-only">Person</th>' : '') + '<th class="u-wide-only">Model</th><th class="number">' + mode.activityHead + '</th></tr></thead><tbody>' +
       rows + '</tbody></table></div>' + error + loadMore;
   }
 
   function billedUsageEmpty(report) {
-    return !report.total.value && !report.models.length && !report.people.length && !(report.agents || []).length &&
+    return !report.total.value && !report.models.length && !(report.people || []).length && !(report.agents || []).length &&
       !(report.tasks && /[1-9]/.test(report.tasks.used));
   }
 
   // "Other" gathers usage the report can't attribute, so the note explains it
   // only when such a row carries an amount.
   function billedUsageHasOther(report) {
-    return [report.models, report.people, report.agents || []].some(function (rows) {
+    return [report.models, report.people || [], report.agents || []].some(function (rows) {
       return rows.some(function (row) { return row.key === null && row.amount.value > 0; });
     });
   }
