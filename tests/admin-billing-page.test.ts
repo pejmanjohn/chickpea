@@ -139,6 +139,8 @@ async function harness(options: {
   stripeFails?: Error;
   /** Port methods beyond the ones every host has: auto top-up, and purchases on the saved card. */
   port?: Partial<PlatformBillingPort>;
+  /** Rewrites what the billing API answers, as a server from another release would. */
+  billingResponse?: (path: string, body: unknown) => unknown;
 }) {
   let html = '';
   const renders: string[] = [];
@@ -209,9 +211,11 @@ async function harness(options: {
     requests.push({ path, method, body });
     if (path.startsWith('/admin/api/billing')) {
       configurePlatformBilling(billing?.port);
-      return billingApi.request(path, {
+      const served = await billingApi.request(path, {
         method, headers: { 'content-type': 'application/json' }, ...(init?.body ? { body: init.body } : {}),
       }, ENV);
+      if (!options.billingResponse) return served;
+      return response(options.billingResponse(path, JSON.parse(await served.text())), served.status);
     }
     if (path === '/admin/api/agents') return response({ agents: options.agents ?? [] });
     if (path === '/admin/api/assignments') return response({ assignments: [] });
@@ -1386,6 +1390,34 @@ test('turning auto top-up off works at once; turning it on opens its settings wi
   await off.click({ 'data-action': 'billing-top-up-save' });
   assert.deepEqual(updates[1]!.change, { kind: 'on', pack: { rule: 'plan' }, limit: { rule: 'plan' } });
   assert.equal(updates[1]!.consentVersion, '2026-11-04');
+});
+
+test('the page sends the version of the authorization it shows, not one the API hands it, so a page from before the copy changed records no consent to text it never showed', async () => {
+  const calls: unknown[][] = [];
+  const page = await harness({
+    path: '/admin/plan', billingOffered: true, summary: STARTER_TOP_UP,
+    port: { ...topUpHost([]), ...savedCardHost(calls) },
+    billingResponse: (_path, body) => JSON.parse(JSON.stringify(body).replaceAll('"2026-11-04"', '"2099-01-01"')),
+  });
+  await page.click({ 'data-action': 'billing-top-up-edit' });
+  await page.select('billing-top-up-limit', '10000');
+  assertShows(autoCard(page.html()), 'You allow Chickpea to charge Visa ending 4242 up to $100 a month');
+  await page.click({ 'data-action': 'billing-top-up-save' });
+  assert.deepEqual(billingWrites(page.requests).at(-1), ['POST', '/admin/api/billing/auto-top-up',
+    { change: 'on', pack: 'plan', limit: 10000, consentVersion: '2026-11-04' }]);
+
+  page.choose('platform', 'plus');
+  await page.click({ 'data-action': 'billing-plan-change', 'data-key': 'plus', 'data-at': 'platform' });
+  assertShows(card(page.html(), 'platform'), 'You allow Chickpea to charge Visa ending 4242 up to $100 a month');
+  await page.click({ 'data-action': 'billing-plan-change-confirm' });
+  assert.deepEqual(billingWrites(page.requests).at(-1), ['POST', '/admin/api/billing/plan-change', { key: 'plus', consentVersion: '2026-11-04' }]);
+
+  const down = await harness({ path: '/admin/plan', billingOffered: true, summary: STARTER_TOP_UP, port: savedCardHost(calls) });
+  down.choose('platform', 'solo');
+  await down.click({ 'data-action': 'billing-plan-change', 'data-key': 'solo', 'data-at': 'platform' });
+  await down.click({ 'data-action': 'billing-plan-change-confirm' });
+  assert.deepEqual(billingWrites(down.requests).at(-1), ['POST', '/admin/api/billing/plan-change', { key: 'solo' }],
+    'a change that shows no authorization sends no version');
 });
 
 test('paused at the limit, the Owner reads why, Raise limit opens the settings, and the card compares the next plan in usage', async () => {

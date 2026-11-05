@@ -89,7 +89,9 @@ export interface AutoTopUpView {
 
 /**
  * The version of the off-session charge authorization Admin shows an Owner
- * who turns auto top-up on or raises it. Bump it with that copy in admin.js.
+ * who turns auto top-up on or raises it. The page sends the version of the
+ * copy it shows, so bump it with that copy and its copy of this constant in
+ * assets/admin-ui/admin.js.
  */
 export const AUTO_TOP_UP_CONSENT_VERSION = '2026-11-04';
 

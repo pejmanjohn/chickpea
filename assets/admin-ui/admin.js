@@ -2542,6 +2542,14 @@
     });
   }
 
+  // The version of the authorization sentences this page shows, in
+  // topUpEditorHtml and planChangeConfirmHtml. The server refuses a change that
+  // raises what Chickpea may charge unless the page agreed to its own version,
+  // so a page from before the copy changed records no consent to text it never
+  // showed. Bump it with those sentences and with AUTO_TOP_UP_CONSENT_VERSION
+  // in src/config/platform-billing.ts.
+  var AUTO_TOP_UP_CONSENT_VERSION = "2026-11-04";
+
   var PURCHASE_POLL_MS = 2000;
   var PURCHASE_POLLS = 30;
 
@@ -2667,7 +2675,9 @@
     var confirm = state.billingConfirm;
     if (!confirm || confirm.kind !== "plan") return;
     var preview = confirm.preview;
-    purchaseOnCard("/admin/api/billing/plan-change", { key: preview.key, consentVersion: preview.consentVersion }, "plan_change", "plan:" + confirm.card, function () {
+    var body = { key: preview.key };
+    if (preview.kind === "upgrade" && preview.limitRaise) body.consentVersion = AUTO_TOP_UP_CONSENT_VERSION;
+    purchaseOnCard("/admin/api/billing/plan-change", body, "plan_change", "plan:" + confirm.card, function () {
       return preview.kind === "upgrade"
         ? { text: 'You&rsquo;re on the ' + esc(preview.price) + ' plan.' + (preview.added !== "$0" ? ' ' + esc(preview.added) + ' of usage was added for the rest of this month.' : '') }
         : null;
@@ -2723,7 +2733,7 @@
       pack: !edit.packChosen && topUp.pack.rule === "plan" ? "plan" : edit.pack,
       limit: edit.limit
     };
-    if (topUpEditRaises(topUp, edit)) body.consentVersion = topUp.consentVersion;
+    if (topUpEditRaises(topUp, edit)) body.consentVersion = AUTO_TOP_UP_CONSENT_VERSION;
     updateTopUp(body, "top_up");
   }
 
