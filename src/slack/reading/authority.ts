@@ -20,7 +20,7 @@ export interface SlackReadConversationFacts {
   member: boolean;
   /** Any Slack Connect or cross-workspace sharing, pending or not. */
   shared: boolean;
-  canvasId?: string;
+  canvasIds?: readonly [string, ...string[]];
 }
 
 export interface SlackReadCurrentConversation {
@@ -127,8 +127,7 @@ export function slackReadConversationFacts(raw: unknown): SlackReadConversationF
   const teamId = typeof channel.context_team_id === 'string'
     ? channel.context_team_id
     : typeof channel.team_id === 'string' ? channel.team_id : undefined;
-  const canvas = isRecord(channel.properties) && isRecord(channel.properties.canvas) ? channel.properties.canvas : undefined;
-  const canvasId = typeof canvas?.file_id === 'string' && CANVAS_ID.test(canvas.file_id) ? canvas.file_id : undefined;
+  const canvasIds = channelCanvasIds(channel.properties);
   return {
     id: raw.id,
     ...(typeof channel.name === 'string' && channel.name ? { name: channel.name } : {}),
@@ -139,8 +138,17 @@ export function slackReadConversationFacts(raw: unknown): SlackReadConversationF
     member: channel.is_member === true,
     shared: channel.is_shared === true || channel.is_ext_shared === true ||
       channel.is_org_shared === true || channel.is_pending_ext_shared === true || pending,
-    ...(canvasId ? { canvasId } : {}),
+    ...(canvasIds ? { canvasIds } : {}),
   };
+}
+
+function channelCanvasIds(properties: unknown): [string, ...string[]] | undefined {
+  if (!isRecord(properties)) return undefined;
+  const tabs = Array.isArray(properties.tabs) ? properties.tabs : [];
+  const canvases = [properties.canvas, ...tabs.map((tab) => isRecord(tab) && tab.type === 'canvas' ? tab.data : undefined)];
+  const [first, ...rest] = new Set(canvases.flatMap((canvas) =>
+    isRecord(canvas) && typeof canvas.file_id === 'string' && CANVAS_ID.test(canvas.file_id) ? [canvas.file_id] : []));
+  return first ? [first, ...rest] : undefined;
 }
 
 function conversationKind(facts: SlackReadConversationFacts): AuthorizedSlackConversation['kind'] {

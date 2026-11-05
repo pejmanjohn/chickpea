@@ -365,7 +365,7 @@ function CanvasProbe() {
         assertActive: async () => {},
         conversation: async (id) => ({
           id, teamId: MENTION.workspaceId, im: canvasConversation === 'dm', mpim: false, private: false, member: true, shared: false,
-          ...(canvasConversation === 'channel' ? {} : { canvasId: 'FCHANNEL' }),
+          ...(canvasConversation === 'channel' ? {} : { canvasIds: ['FCHANNEL'] }),
         }),
         isMember: async () => true,
         hasActiveGrant: async () => true,

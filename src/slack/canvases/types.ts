@@ -13,5 +13,6 @@ export class SlackCanvasError extends Error {
     readonly code: string,
     message: string,
     readonly detail?: string,
+    readonly canvases?: readonly JsonObject[],
   ) { super(message); this.name = 'SlackCanvasError'; }
 }

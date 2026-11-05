@@ -27,6 +27,7 @@ export function createSlackCanvasesCall(client: Pick<WebClient, 'apiCall'>): Sla
 
 const CANVAS_PAGE_BYTES = MAX_SLACK_READ_RESULT_BYTES - 8 * 1024;
 const MAX_CANVAS_CONVERSATIONS = 8;
+const MAX_LISTED_CANVASES = 8;
 
 export const CANVAS_MISSING_OR_UNREADABLE = 'That canvas is not available to read here. It may not exist, or it is not in a channel that both the requester and this Agent can read.';
 const NOT_FOUND = new Set(['file_not_found', 'file_deleted', 'canvas_not_found', 'canvas_deleted', 'access_denied']);
@@ -104,7 +105,7 @@ export class SlackCanvasService {
       throw new SlackCanvasError('channel_only', 'A canvas can be created only in a channel, not in a direct message or group DM. Nothing was created.');
     }
     const input = { channel_id: facts.id, title, document_content: { type: 'markdown', markdown } };
-    let placement: 'channel_canvas' | 'channel_tab' = facts.canvasId ? 'channel_tab' : 'channel_canvas';
+    let placement: 'channel_canvas' | 'channel_tab' = facts.canvasIds ? 'channel_tab' : 'channel_canvas';
     return this.mutate(toolCallId, 'canvases.create', input, async () => {
       if (placement === 'channel_tab') return this.call('canvases.create', input);
       try {
@@ -185,25 +186,22 @@ export class SlackCanvasService {
     if (input.canvasUrl === undefined) {
       const channelId = input.channel === undefined ? ports.current.channelId : channelTarget(input.channel);
       const conversation = await authorizeSlackRead(ports, channelId);
-      const canvasId = (await ports.conversation(channelId))?.canvasId;
-      if (!canvasId) {
-        throw new SlackCanvasError('no_canvas', conversation.current ? 'This conversation has no canvas.' : 'That channel has no canvas.');
-      }
+      const place = conversation.current ? 'This conversation' : 'That channel';
+      const canvasId = await this.onlyCanvas((await ports.conversation(channelId))?.canvasIds ?? [], place, `${place} has no canvas.`);
       return { canvasId, conversation };
     }
     const canvasId = parseSlackCanvasUrl(input.canvasUrl, this.options.workspaceId);
-    const current = await this.currentCanvas();
-    if (current.canvasId === canvasId) return { canvasId, conversation: current.conversation };
+    const current = await this.currentCanvases();
+    if (current.canvasIds.includes(canvasId)) return { canvasId, conversation: current.conversation };
     return { canvasId, ...await this.reachable(canvasId) };
   }
 
   private async editable(canvasUrl: string | undefined): Promise<{ canvasId: string; link?: string }> {
-    const current = await this.currentCanvas();
-    const canvasId = canvasUrl === undefined ? current.canvasId : parseSlackCanvasUrl(canvasUrl, this.options.workspaceId);
-    if (!canvasId) {
-      throw new SlackCanvasError('no_canvas', 'This conversation has no canvas. Pass the link of a canvas Chickpea created, or create one.');
-    }
-    const own = canvasId === current.canvasId;
+    const current = await this.currentCanvases();
+    const canvasId = canvasUrl === undefined
+      ? await this.onlyCanvas(current.canvasIds, 'This conversation', 'This conversation has no canvas. Pass the link of a canvas Chickpea created, or create one.')
+      : parseSlackCanvasUrl(canvasUrl, this.options.workspaceId);
+    const own = current.canvasIds.includes(canvasId);
     const { file } = own ? { file: await this.file(canvasId) } : await this.reachable(canvasId, SHARED_OUTSIDE);
     if (!own && file.ownerId !== this.options.botUserId) {
       throw new SlackCanvasError('not_editable', 'Only this conversation\'s canvas and canvases Chickpea created can be edited. Nothing was changed.');
@@ -248,11 +246,22 @@ export class SlackCanvasService {
     if (outside) throw new SlackCanvasError('shared_outside', SHARED_OUTSIDE);
   }
 
-  private async currentCanvas(): Promise<{ conversation: AuthorizedSlackConversation; canvasId?: string }> {
+  private async currentCanvases(): Promise<{ conversation: AuthorizedSlackConversation; canvasIds: readonly string[] }> {
     const ports = this.options.authority;
     const conversation = await authorizeSlackRead(ports, ports.current.channelId);
-    const canvasId = (await ports.conversation(ports.current.channelId))?.canvasId;
-    return { conversation, ...(canvasId ? { canvasId } : {}) };
+    return { conversation, canvasIds: (await ports.conversation(ports.current.channelId))?.canvasIds ?? [] };
+  }
+
+  private async onlyCanvas(canvasIds: readonly string[], place: string, none: string): Promise<string> {
+    const [only, ...others] = canvasIds;
+    if (!only) throw new SlackCanvasError('no_canvas', none);
+    if (others.length === 0) return only;
+    const canvases = await Promise.all(canvasIds.slice(0, MAX_LISTED_CANVASES).map(async (id) => {
+      const file = await this.file(id).catch(() => undefined);
+      return { id, ...(file?.title ? { title: file.title } : {}), ...(file?.link ? { link: file.link } : {}) };
+    }));
+    throw new SlackCanvasError('several_canvases',
+      `${place} has ${canvasIds.length} canvases. Ask the requester which one they mean, then pass its link as canvasUrl.`, undefined, canvases);
   }
 
   private async file(canvasId: string): Promise<CanvasFile> {
@@ -387,6 +396,7 @@ export function canvasToolFailure(error: unknown, status: 'not_read' | 'not_writ
     code,
     message: error instanceof SlackCanvasError || error instanceof SlackListError ? error.message : explainError(code, hosted),
     ...(detail ? { detail } : {}),
+    ...(error instanceof SlackCanvasError && error.canvases ? { canvases: error.canvases } : {}),
   };
 }
 
