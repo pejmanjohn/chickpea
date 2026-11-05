@@ -3263,7 +3263,7 @@ button.capability-pill { cursor: pointer; }
 .u-legend { color: var(--text-2); display: flex; flex-wrap: wrap; font-size: .78rem; gap: 6px 16px; margin-top: 6px; }
 .u-legend span { align-items: center; display: inline-flex; gap: 6px; }
 .u-legend i { border-radius: 3px; display: inline-block; height: 10px; width: 10px; }
-.u-legend i.dash { border-radius: 0; border-top: 2px dashed var(--text-2); height: 0; opacity: .7; width: 16px; }
+.u-legend i.dash { background: repeating-linear-gradient(90deg, var(--text-2) 0 4px, transparent 4px 8px); border-radius: 0; height: 2px; opacity: .7; width: 16px; }
 .u-who { align-items: center; display: inline-flex; gap: 8px; }
 .u-who .plan-use-avatar { font-size: .7rem; height: 22px; width: 22px; }
 .u-two { border-top: 1.5px solid rgba(59, 50, 32, .15); display: grid; gap: 28px; grid-template-columns: repeat(2, minmax(0, 1fr)); padding-top: 22px; }

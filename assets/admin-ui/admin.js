@@ -2683,9 +2683,10 @@
     return billedUsageColumn(head, true, function (row) { return esc(row.amount.text); });
   }
 
-  // Billed usage for one activity: what is left after any credit back.
-  function billedUsageLeftOver(billed) {
-    return !(billed.creditedBack && !/[1-9]/.test(billed.amount));
+  // Whether an activity still counts after any credit back. Amounts arrive as
+  // text, and only a zero amount has no digit 1-9 ("<$0.01" has one).
+  function billedUsageRemains(billed) {
+    return !billed.creditedBack || /[1-9]/.test(billed.amount);
   }
 
   // What changes with the report's measure. Activity counts have no amounts,
@@ -2711,7 +2712,7 @@
       activityAmount: function (detail) {
         var billed = detail.hosted && detail.hosted.billed;
         if (!billed) return "—";
-        return billedUsageLeftOver(billed) ? esc(billed.amount) : "Credited back";
+        return billedUsageRemains(billed) ? esc(billed.amount) : "Credited back";
       },
       note: true
     },
@@ -2838,7 +2839,7 @@
   }
 
   // Stacked bars per day for the days so far, the same days last period as a
-  // dashed line across the whole range, and a dotted line at today.
+  // line across the whole range, and a marker at today.
   function billedUsageChartHtml(report, title) {
     var chart = report.chart;
     var days = chart.days;
@@ -2965,7 +2966,7 @@
 
   // The task fee shows only here, inside an opened activity's usage.
   function billedUsageBreakdownHtml(billed) {
-    if (!billedUsageLeftOver(billed)) return 'Credited back because it stopped on an error.';
+    if (!billedUsageRemains(billed)) return 'Credited back because it stopped on an error.';
     var fee = billed.fee && /[1-9]/.test(billed.fee) ? billed.fee : "";
     var parts = esc(billed.model) + " for the model" + (billed.task ? " and " + esc(billed.fee) + " for the task" : fee ? " and " + esc(fee) + " for the reply" : "");
     return '<b>' + esc(billed.amount) + '</b> <small>' + parts + '</small>';
