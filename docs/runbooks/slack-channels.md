@@ -17,7 +17,8 @@ page or search result has been read in the conversation, only private channels
 can be created, so nothing a page says can publish to the whole workspace. The
 Agent proposes the name. Chickpea makes it a valid Slack name: lowercase, with every
 space, period or other punctuation turned into a hyphen, at most 80
-characters. The Agent sets the purpose when the request gives one.
+characters, and the Agent reports the name Slack gave the channel. The Agent
+sets the purpose when the request gives one.
 
 The requester is always invited. The Agent invites only people the requester
 @-mentioned in that request, up to 30. A name without an @-mention, someone who
@@ -131,7 +132,8 @@ created its channel creates and posts nothing; it invites the requester and the
 named people again, so a channel whose invites were lost still reaches them,
 and offers the Add button when that put the requester in.
 A name Slack refused, or a missing permission, leaves the request free to try
-again, up to three attempts. Receipts expire with their turn.
+again, up to three attempts, also when a shared gateway relays Slack's answer.
+Receipts expire with their turn.
 
 A refusal before anything is created does not make the reply a task.
 

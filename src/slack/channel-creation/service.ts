@@ -102,6 +102,9 @@ const MISSING_SCOPE_HOSTED =
 const CREATE_UNCONFIRMED =
   'Slack did not confirm whether the channel was created, and nobody was invited. Do not try again in this request. If the requester asks again, use a different name.';
 
+const ALREADY_ATTEMPTED =
+  'This request is already creating a channel, or Slack did not confirm an earlier attempt. Do not try again in this request.';
+
 const OPENING_NOT_POSTED: Record<'not_posted' | 'unconfirmed', string> = {
   not_posted: 'Slack did not post the opening message.',
   unconfirmed: 'The opening message may have been posted, but Slack did not confirm it. Do not post it again.',
@@ -119,7 +122,9 @@ const INVALID_NAME_ERRORS = new Set([
   'invalid_name', 'invalid_name_maxlength', 'invalid_name_punctuation', 'invalid_name_required', 'invalid_name_specials', 'no_channel',
 ]);
 
-export type InviteRefusal = 'guest' | 'not_found' | 'not_allowed' | 'unconfirmed';
+const NOT_CREATED_ERRORS = new Set(['missing_scope', 'name_taken', 'restricted_action', ...INVALID_NAME_ERRORS]);
+
+export type InviteRefusal = 'guest' | 'not_found' | 'not_allowed' | 'failed' | 'unconfirmed';
 
 const INVITE_REFUSALS: Record<string, InviteRefusal> = {
   user_is_restricted: 'guest',
@@ -197,22 +202,23 @@ export class SlackChannelCreateService {
     const people = [admission.requester, ...admission.others];
     const claim = await this.options.receipt.claim();
     if (!claim.claimed) {
-      if (claim.previous === 'pending') return { status: 'unverified', code: 'already_attempted', message: CREATE_UNCONFIRMED };
+      if (claim.previous === 'pending') return { status: 'unverified', code: 'already_attempted', message: ALREADY_ATTEMPTED };
       if (claim.previous.status === 'not_created') throw new SlackChannelCreateRefusal('too_many_attempts');
       return this.reinviteIntoCreatedChannel(claim.previous, people);
     }
     const failedAttempts = claim.previous?.status === 'not_created' ? claim.previous.attempts : 0;
-    let channelId: string;
+    let channel: { id: string; name: string };
     try {
-      channelId = await this.createInSlack(name, request.visibility);
+      channel = await this.createInSlack(name, request.visibility);
     } catch (error) {
-      if (!slackWriteSurelyFailed(error)) {
+      if (!createSurelyFailed(error)) {
         console.warn(JSON.stringify({ event: 'chickpea.channel_create.unconfirmed', workspaceId: this.options.workspaceId }));
         return { status: 'unverified', code: 'create_unconfirmed', message: CREATE_UNCONFIRMED };
       }
       await this.options.receipt.settle({ status: 'not_created', attempts: failedAttempts + 1 });
       throw error;
     }
+    const channelId = channel.id;
     await this.options.receipt.settle({ status: 'created', channelId, visibility: request.visibility });
 
     const invites = await this.inviteRetryingWithoutRefused(channelId, people);
@@ -223,13 +229,13 @@ export class SlackChannelCreateService {
         console.warn(JSON.stringify({ event: 'chickpea.channel_create.replies_not_routed', workspaceId: this.options.workspaceId, channelId }));
       });
     }
-    const access = await this.options.agentAccess({
+    const access = await this.agentAccess({
       id: channelId,
       requesterInvited: invites.invited.includes(this.options.requesterSlackUserId),
     });
     return {
       status: 'created',
-      channel: { id: channelId, name, visibility: request.visibility, link: channelLink(channelId) },
+      channel: { id: channelId, name: channel.name, visibility: request.visibility, link: channelLink(channelId) },
       invited: invites.invited,
       ...(invites.notInvited.length ? { notInvited: invites.notInvited } : {}),
       ...(purposeSet ? {} : { purpose: 'not_set' }),
@@ -240,13 +246,17 @@ export class SlackChannelCreateService {
     };
   }
 
-  private async createInSlack(name: string, visibility: ChannelVisibility): Promise<string> {
+  private agentAccess(channel: { id: string; requesterInvited: boolean }): Promise<ChannelAgentAccess> {
+    return this.options.agentAccess(channel).catch(() => ({ status: 'add_in_admin' as const }));
+  }
+
+  private async createInSlack(name: string, visibility: ChannelVisibility): Promise<{ id: string; name: string }> {
     const response = await this.options.chickpeaBot.conversations.create({ name, is_private: visibility === 'private' });
-    const id = isRecord(response.channel) ? response.channel.id : undefined;
-    if (typeof id !== 'string' || !/^[CG][A-Z0-9]+$/.test(id)) {
+    const created = isRecord(response.channel) ? response.channel : {};
+    if (typeof created.id !== 'string' || !/^[CG][A-Z0-9]+$/.test(created.id)) {
       throw new SlackTransportError('conversations.create', 'create_unconfirmed');
     }
-    return id;
+    return { id: created.id, name: typeof created.name === 'string' && created.name ? created.name : name };
   }
 
   private async reinviteIntoCreatedChannel(
@@ -257,7 +267,7 @@ export class SlackChannelCreateService {
     const requester = this.options.requesterSlackUserId;
     const requesterJustJoined = invites.invited.includes(requester) && !invites.alreadyIn.has(requester);
     const access = requesterJustJoined
-      ? await this.options.agentAccess({ id: previous.channelId, requesterInvited: true })
+      ? await this.agentAccess({ id: previous.channelId, requesterInvited: true })
       : undefined;
     return {
       status: 'already_created',
@@ -300,9 +310,9 @@ export class SlackChannelCreateService {
     }
     if (!remaining.length) return outcome((id) => alreadyIn.has(id), 'not_allowed');
     const members = await this.members(channelId);
-    return members
-      ? outcome((id) => members.has(id), 'not_allowed')
-      : outcome((id) => alreadyIn.has(id), 'unconfirmed');
+    if (!members) return outcome((id) => alreadyIn.has(id), 'unconfirmed');
+    for (const id of people) if (members.has(id)) alreadyIn.add(id);
+    return outcome((id) => members.has(id), 'failed');
   }
 
   private async members(channelId: string): Promise<ReadonlySet<string> | undefined> {
@@ -363,6 +373,11 @@ function refusalMessage(code: ChannelCreateRefusalCode, visibility: ChannelVisib
     return `This workspace's Slack settings do not let Chickpea create ${visibility} channels. A Slack workspace admin can change who may create them. ${NOTHING_CREATED}`;
   }
   return REFUSALS[code];
+}
+
+function createSurelyFailed(error: unknown): boolean {
+  const code = slackPlatformErrorCode(error);
+  return slackWriteSurelyFailed(error) || isSlackRateLimitError(error) || (code !== undefined && NOT_CREATED_ERRORS.has(code));
 }
 
 function asRefusal(error: unknown): SlackChannelCreateRefusal {
