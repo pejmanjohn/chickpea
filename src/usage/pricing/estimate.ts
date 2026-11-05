@@ -52,12 +52,12 @@ export function estimateUsage(input: UsageEstimateInput): UsageEstimateResult {
   if (
     oneHourWrites > 0 &&
     (!matched ||
-      input.observedAt >= matched.version.staleAfter ||
+      input.observedAt >= matched.version.reviewDueAt ||
       matched.rate.cacheWrite1hMicrosPerUnit === undefined)
   ) return unknown('pricing_dimension_unknown', 'partial');
   if (!provider || !model) return unknown('pricing_dimension_unknown');
   if (!matched) return unknown('price_unknown');
-  if (input.observedAt >= matched.version.staleAfter) return unknown('price_stale');
+  if (input.observedAt >= matched.version.reviewDueAt) return unknown('price_stale');
   let { rate } = matched;
   const cache = cacheUsage(input);
   if (!cache || oneHourWrites > cache.write) return unknown('pricing_dimension_unknown', 'partial');

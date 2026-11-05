@@ -24,6 +24,7 @@ export const RELEASE_PRICE_CATALOGS: UsagePriceVersion[] = [
 ];
 
 export function installReleasePriceCatalogs(db: StateDb): UsagePriceVersion[] {
+  // `stale_after` holds `reviewDueAt`. Migrations only add columns, so it keeps its first name.
   db.exec(
     `CREATE TABLE IF NOT EXISTS usage_price_versions (
       price_version_id TEXT PRIMARY KEY,
@@ -120,7 +121,7 @@ function installVersion(db: StateDb, version: UsagePriceVersion): boolean {
     version.sourceUrl,
     version.effectiveFrom,
     version.reviewedAt,
-    version.staleAfter,
+    version.reviewDueAt,
     version.currency,
     version.contentHash,
   );

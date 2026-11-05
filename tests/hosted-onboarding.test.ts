@@ -686,7 +686,7 @@ test('setting up on Chickpea\'s models chooses no image model that Chickpea\'s m
   const signup = await signUp(t);
   await signup.claim();
   const admin = signup.admin(await signup.ownerPrincipal());
-  t.mock.timers.setTime(priceCatalogFor('image_tokens', 'openai', 'gpt-image-2.6-flare', Number.MAX_SAFE_INTEGER)!.version.staleAfter);
+  t.mock.timers.setTime(priceCatalogFor('image_tokens', 'openai', 'gpt-image-2.6-flare', Number.MAX_SAFE_INTEGER)!.version.reviewDueAt);
   const started = await startOnPlatform(admin);
   assert.equal(started.status, 200, await started.clone().text());
   assert.equal((await started.json() as { stage: string }).stage, 'try');

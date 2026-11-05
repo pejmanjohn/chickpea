@@ -3,7 +3,7 @@ import { version } from './version.ts';
 
 /** When the endpoints were read; later than the 2026-10-07 review, so these prices replace its OpenRouter ones. */
 const REVIEWED_AT = Date.UTC(2026, 9, 7, 15, 57);
-const STALE_AFTER = REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
+const REVIEW_DUE_AT = REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
 
 type MakerRates = Required<Pick<TokenPriceRate, 'inputMicrosPerUnit' | 'outputMicrosPerUnit' | 'cacheReadMicrosPerUnit'>>;
 
@@ -14,7 +14,7 @@ function maker(modelId: string, datedSlug: string, rates: MakerRates): UsagePric
     sourceUrl: `https://openrouter.ai/api/v1/models/${modelId}/endpoints`,
     effectiveFrom: REVIEWED_AT,
     reviewedAt: REVIEWED_AT,
-    staleAfter: STALE_AFTER,
+    reviewDueAt: REVIEW_DUE_AT,
     currency: 'USD',
     rates: [{
       providerId: 'openrouter',

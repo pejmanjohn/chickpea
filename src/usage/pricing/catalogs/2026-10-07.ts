@@ -2,7 +2,7 @@ import type { ImagePriceRate, TokenPriceRate, UsagePriceVersion } from '../types
 import { version } from './version.ts';
 
 const REVIEWED_AT = Date.UTC(2026, 9, 7);
-const STALE_AFTER = REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
+const REVIEW_DUE_AT = REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
 const ANTHROPIC_PRICING_URL = 'https://platform.claude.com/docs/en/about-claude/pricing';
 /** OpenAI bills a prompt of more than 272K input tokens at its long-context rates. */
 const OPENAI_LONG_CONTEXT_FROM = 272_001;
@@ -24,7 +24,7 @@ function tokenVersion(
   sourceUrl: string,
   modelAliases: [string, ...string[]],
   rates: TokenRates,
-  staleAfter = STALE_AFTER,
+  reviewDueAt = REVIEW_DUE_AT,
 ): UsagePriceVersion {
   return version({
     id,
@@ -32,7 +32,7 @@ function tokenVersion(
     sourceUrl,
     effectiveFrom: REVIEWED_AT,
     reviewedAt: REVIEWED_AT,
-    staleAfter,
+    reviewDueAt,
     currency: 'USD',
     rates: [{
       providerId,
@@ -53,7 +53,7 @@ function imageVersion(id: string, modelId: string, rates: ImageRates): UsagePric
     sourceUrl: `https://developers.openai.com/api/docs/models/${modelId}`,
     effectiveFrom: REVIEWED_AT,
     reviewedAt: REVIEWED_AT,
-    staleAfter: STALE_AFTER,
+    reviewDueAt: REVIEW_DUE_AT,
     currency: 'USD',
     rates: [{
       providerId: 'openai',
@@ -70,14 +70,14 @@ function imageVersion(id: string, modelId: string, rates: ImageRates): UsagePric
 const anthropic = (slug: string, aliases: [string, ...string[]], rates: TokenRates) =>
   tokenVersion(`anthropic-${slug}_2026-10-07`, 'anthropic', ANTHROPIC_PRICING_URL, aliases, rates);
 
-const openai = (modelId: string, rates: TokenRates, staleAfter?: number) =>
+const openai = (modelId: string, rates: TokenRates, reviewDueAt?: number) =>
   tokenVersion(
     `openai-${modelId}_2026-10-07`,
     'openai',
     `https://developers.openai.com/api/docs/models/${modelId}`,
     [modelId],
     rates,
-    staleAfter,
+    reviewDueAt,
   );
 
 const openrouter = (modelId: string, datedSlug: string, rates: TokenRates) =>

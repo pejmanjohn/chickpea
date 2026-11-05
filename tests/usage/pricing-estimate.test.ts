@@ -144,7 +144,7 @@ test('Anthropic cache prices apply only from their review date, and outlast the 
   );
   const july = RELEASE_PRICE_CATALOGS.find((version) => version.id === 'anthropic_2026-07-28')!;
   const afterJulyStale = estimateUsage(measurement('anthropic', 'claude-haiku-4-5', 1_000, 200, {
-    observedAt: july.staleAfter,
+    observedAt: july.reviewDueAt,
   }));
   assert.equal(afterJulyStale.estimateAmountMicros, 2_000);
   assert.equal(afterJulyStale.priceVersionId, 'anthropic-haiku-4-5_2026-10-07');
@@ -222,7 +222,7 @@ test('one-hour cache writes stay partial unless the matched price has a one-hour
   const openai = RELEASE_PRICE_CATALOGS.find((version) => version.providerId === 'openai')!;
   assert.deepEqual(
     estimateUsage(measurement('openai', 'gpt-4.1-mini', 10, 5, {
-      observedAt: openai.staleAfter,
+      observedAt: openai.reviewDueAt,
       cacheWriteTokens: 3,
       cacheWrite1hTokens: 3,
       totalTokens: 18,
@@ -282,7 +282,7 @@ test('missing billable dimensions, effective dates, and catalog staleness never 
   const openai = RELEASE_PRICE_CATALOGS.filter((version) => version.providerId === 'openai').at(-1)!;
   assert.equal(
     estimateUsage(measurement('openai', 'gpt-4.1-mini', 10, 5, {
-      observedAt: openai.staleAfter,
+      observedAt: openai.reviewDueAt,
     })).priceUnknownReason,
     'price_stale',
   );

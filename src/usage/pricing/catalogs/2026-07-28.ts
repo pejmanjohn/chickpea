@@ -2,18 +2,18 @@ import type { UsagePriceVersion } from '../types.ts';
 import { version } from './version.ts';
 
 const REVIEWED_AT = Date.UTC(2026, 6, 28);
-const STALE_AFTER = REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
+const REVIEW_DUE_AT = REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
 const CLOUDFLARE_BINDING_REVIEWED_AT = Date.UTC(2026, 6, 30);
-const CLOUDFLARE_BINDING_STALE_AFTER =
+const CLOUDFLARE_BINDING_REVIEW_DUE_AT =
   CLOUDFLARE_BINDING_REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
 const CACHE_PRICING_REVIEWED_AT = Date.UTC(2026, 7, 17);
-const CACHE_PRICING_STALE_AFTER = CACHE_PRICING_REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
+const CACHE_PRICING_REVIEW_DUE_AT = CACHE_PRICING_REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
 const GLM_5_3_REVIEWED_AT = Date.UTC(2026, 7, 27);
-const GLM_5_3_STALE_AFTER = GLM_5_3_REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
+const GLM_5_3_REVIEW_DUE_AT = GLM_5_3_REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
 const GLM_4_7_REVIEWED_AT = Date.UTC(2026, 8, 4);
-const GLM_4_7_STALE_AFTER = GLM_4_7_REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
+const GLM_4_7_REVIEW_DUE_AT = GLM_4_7_REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
 const ANTHROPIC_CACHE_REVIEWED_AT = Date.UTC(2026, 9, 4);
-const ANTHROPIC_CACHE_STALE_AFTER = ANTHROPIC_CACHE_REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
+const ANTHROPIC_CACHE_REVIEW_DUE_AT = ANTHROPIC_CACHE_REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
 
 /**
  * Release-pinned list-price snapshots for only the U0 fixture-proven routes.
@@ -29,7 +29,7 @@ export const PRICE_CATALOGS_2026_07_28: UsagePriceVersion[] = [
     sourceUrl: 'https://platform.claude.com/docs/en/about-claude/pricing',
     effectiveFrom: REVIEWED_AT,
     reviewedAt: REVIEWED_AT,
-    staleAfter: STALE_AFTER,
+    reviewDueAt: REVIEW_DUE_AT,
     currency: 'USD',
     rates: [{
       providerId: 'anthropic',
@@ -48,7 +48,7 @@ export const PRICE_CATALOGS_2026_07_28: UsagePriceVersion[] = [
     sourceUrl: 'https://developers.openai.com/api/docs/models/gpt-4.1-mini',
     effectiveFrom: REVIEWED_AT,
     reviewedAt: REVIEWED_AT,
-    staleAfter: STALE_AFTER,
+    reviewDueAt: REVIEW_DUE_AT,
     currency: 'USD',
     rates: [{
       providerId: 'openai',
@@ -67,7 +67,7 @@ export const PRICE_CATALOGS_2026_07_28: UsagePriceVersion[] = [
     sourceUrl: 'https://openrouter.ai/openai/gpt-4.1-2025-04-14/providers',
     effectiveFrom: REVIEWED_AT,
     reviewedAt: REVIEWED_AT,
-    staleAfter: STALE_AFTER,
+    reviewDueAt: REVIEW_DUE_AT,
     currency: 'USD',
     rates: [{
       providerId: 'openrouter',
@@ -86,7 +86,7 @@ export const PRICE_CATALOGS_2026_07_28: UsagePriceVersion[] = [
     sourceUrl: 'https://developers.cloudflare.com/workers-ai/models/glm-5.2/',
     effectiveFrom: REVIEWED_AT,
     reviewedAt: REVIEWED_AT,
-    staleAfter: STALE_AFTER,
+    reviewDueAt: REVIEW_DUE_AT,
     currency: 'USD',
     rates: [{
       providerId: 'cloudflare-workers-ai',
@@ -105,7 +105,7 @@ export const PRICE_CATALOGS_2026_07_28: UsagePriceVersion[] = [
     sourceUrl: 'https://developers.cloudflare.com/workers-ai/models/glm-5.2/',
     effectiveFrom: REVIEWED_AT,
     reviewedAt: CLOUDFLARE_BINDING_REVIEWED_AT,
-    staleAfter: CLOUDFLARE_BINDING_STALE_AFTER,
+    reviewDueAt: CLOUDFLARE_BINDING_REVIEW_DUE_AT,
     currency: 'USD',
     rates: [{
       providerId: 'cloudflare',
@@ -124,7 +124,7 @@ export const PRICE_CATALOGS_2026_07_28: UsagePriceVersion[] = [
     sourceUrl: 'https://developers.cloudflare.com/workers-ai/models/glm-5.2/',
     effectiveFrom: CACHE_PRICING_REVIEWED_AT,
     reviewedAt: CACHE_PRICING_REVIEWED_AT,
-    staleAfter: CACHE_PRICING_STALE_AFTER,
+    reviewDueAt: CACHE_PRICING_REVIEW_DUE_AT,
     currency: 'USD',
     rates: [{
       providerId: 'cloudflare',
@@ -145,7 +145,7 @@ export const PRICE_CATALOGS_2026_07_28: UsagePriceVersion[] = [
     sourceUrl: 'https://developers.cloudflare.com/workers-ai/models/glm-5.2/',
     effectiveFrom: CACHE_PRICING_REVIEWED_AT,
     reviewedAt: CACHE_PRICING_REVIEWED_AT,
-    staleAfter: CACHE_PRICING_STALE_AFTER,
+    reviewDueAt: CACHE_PRICING_REVIEW_DUE_AT,
     currency: 'USD',
     rates: [{
       providerId: 'cloudflare-workers-ai',
@@ -166,7 +166,7 @@ export const PRICE_CATALOGS_2026_07_28: UsagePriceVersion[] = [
     sourceUrl: 'https://developers.cloudflare.com/workers-ai/models/glm-5.3-flash/',
     effectiveFrom: GLM_5_3_REVIEWED_AT,
     reviewedAt: GLM_5_3_REVIEWED_AT,
-    staleAfter: GLM_5_3_STALE_AFTER,
+    reviewDueAt: GLM_5_3_REVIEW_DUE_AT,
     currency: 'USD',
     rates: [{
       providerId: 'cloudflare',
@@ -186,7 +186,7 @@ export const PRICE_CATALOGS_2026_07_28: UsagePriceVersion[] = [
     sourceUrl: 'https://developers.cloudflare.com/workers-ai/models/glm-5.3-flash/',
     effectiveFrom: GLM_5_3_REVIEWED_AT,
     reviewedAt: GLM_5_3_REVIEWED_AT,
-    staleAfter: GLM_5_3_STALE_AFTER,
+    reviewDueAt: GLM_5_3_REVIEW_DUE_AT,
     currency: 'USD',
     rates: [{
       providerId: 'cloudflare-workers-ai',
@@ -207,7 +207,7 @@ export const PRICE_CATALOGS_2026_07_28: UsagePriceVersion[] = [
     sourceUrl: 'https://developers.cloudflare.com/workers-ai/models/glm-4.7-flash/',
     effectiveFrom: GLM_4_7_REVIEWED_AT,
     reviewedAt: GLM_4_7_REVIEWED_AT,
-    staleAfter: GLM_4_7_STALE_AFTER,
+    reviewDueAt: GLM_4_7_REVIEW_DUE_AT,
     currency: 'USD',
     rates: [{
       providerId: 'cloudflare',
@@ -226,7 +226,7 @@ export const PRICE_CATALOGS_2026_07_28: UsagePriceVersion[] = [
     sourceUrl: 'https://developers.cloudflare.com/workers-ai/models/glm-4.7-flash/',
     effectiveFrom: GLM_4_7_REVIEWED_AT,
     reviewedAt: GLM_4_7_REVIEWED_AT,
-    staleAfter: GLM_4_7_STALE_AFTER,
+    reviewDueAt: GLM_4_7_REVIEW_DUE_AT,
     currency: 'USD',
     rates: [{
       providerId: 'cloudflare-workers-ai',
@@ -248,7 +248,7 @@ export const PRICE_CATALOGS_2026_07_28: UsagePriceVersion[] = [
     sourceUrl: 'https://platform.claude.com/docs/en/about-claude/pricing',
     effectiveFrom: ANTHROPIC_CACHE_REVIEWED_AT,
     reviewedAt: ANTHROPIC_CACHE_REVIEWED_AT,
-    staleAfter: ANTHROPIC_CACHE_STALE_AFTER,
+    reviewDueAt: ANTHROPIC_CACHE_REVIEW_DUE_AT,
     currency: 'USD',
     rates: [{
       providerId: 'anthropic',

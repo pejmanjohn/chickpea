@@ -507,7 +507,7 @@ const NOW = Date.UTC(2026, 9, 7, 12);
 assert.ok(currentImagePrice('openai', 'gpt-image-2.5-flare', NOW), 'the image test model is priced at NOW');
 const FLARE_NEWEST_PRICE = priceCatalogFor('image_tokens', 'openai', 'gpt-image-2.5-flare', Number.MAX_SAFE_INTEGER);
 assert.ok(FLARE_NEWEST_PRICE);
-const AFTER_IMAGE_PRICES_STALE = FLARE_NEWEST_PRICE.version.staleAfter;
+const AFTER_IMAGE_PRICES_STALE = FLARE_NEWEST_PRICE.version.reviewDueAt;
 const NO_DEPLOYMENT_KEYS = {
   CHICKPEA_TENANCY: undefined,
   ANTHROPIC_API_KEY: undefined,

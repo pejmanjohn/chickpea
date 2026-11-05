@@ -723,7 +723,7 @@ async function platformFundedModel<TModel extends Model<Api>>(
 ): Promise<TModel> {
   const provider = canonicalPriceProviderId(request.route);
   const price = priceCatalogFor('standard_input_output', provider, request.model, Date.now());
-  if (!price || Date.now() >= price.version.staleAfter) throw unpricedModel();
+  if (!price || Date.now() >= price.version.reviewDueAt) throw unpricedModel();
   await admitPlatformRequest(cell, grant, { provider, model: request.model });
   if (provider !== 'openrouter') return model;
   // A long prompt is charged at the long-context rates, so the cap allows them.

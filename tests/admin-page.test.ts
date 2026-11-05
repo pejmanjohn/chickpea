@@ -17536,7 +17536,7 @@ test('the stale pricing notice counts only the price version each model uses now
       sourceUrl: catalog.sourceUrl,
       effectiveFrom: catalog.effectiveFrom,
       reviewedAt: catalog.reviewedAt,
-      staleAfter: catalog.staleAfter,
+      staleAfter: catalog.reviewDueAt,
       currency: catalog.currency,
       models: catalog.rates.map((rate) => rate.modelId),
     }));

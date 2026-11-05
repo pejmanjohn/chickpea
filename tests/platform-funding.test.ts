@@ -905,7 +905,7 @@ test('a platform-funded request without a current list price is refused before s
 
   const newest = priceCatalogFor('standard_input_output', 'anthropic', SONNET, Number.MAX_SAFE_INTEGER);
   assert.ok(newest);
-  t.mock.timers.setTime(newest.version.staleAfter);
+  t.mock.timers.setTime(newest.version.reviewDueAt);
   const stale = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, SONNET, 'anthropic-messages', []);
   const refusedStale = await withModelAccess(grant('inst_credits', 'platform'), env, 'reply', () => modelCall(stale.model));
   assert.match(refusedStale.errorMessage ?? '', /no current price in Chickpea credits/, 'a stale price is not current');
@@ -1060,7 +1060,7 @@ assert.ok(priceCatalogFor('standard_input_output', 'anthropic', SONNET, NOW), 't
 /** A later version replaces an earlier one, so the model has no current price once its newest version is stale. */
 const SONNET_NEWEST_PRICE = priceCatalogFor('standard_input_output', 'anthropic', SONNET, Number.MAX_SAFE_INTEGER);
 assert.ok(SONNET_NEWEST_PRICE);
-const AFTER_SONNET_PRICE_STALE = SONNET_NEWEST_PRICE.version.staleAfter;
+const AFTER_SONNET_PRICE_STALE = SONNET_NEWEST_PRICE.version.reviewDueAt;
 const PROVIDER_UNAVAILABLE = {
   status: 'repair_required',
   providerId: 'anthropic',
@@ -1249,7 +1249,7 @@ test('on a credits installation Admin lists the OpenRouter models Chickpea\'s mo
     }
     assert.ok((await marked()).includes('openrouter'));
 
-    t.mock.timers.setTime(Math.max(...RELEASE_PRICE_CATALOGS.map(({ staleAfter }) => staleAfter)));
+    t.mock.timers.setTime(Math.max(...RELEASE_PRICE_CATALOGS.map(({ reviewDueAt }) => reviewDueAt)));
     assert.deepEqual(
       (await listed()).filter(({ configured, suggestions }) => configured || suggestions.length > 0).map(({ id }) => id),
       [],

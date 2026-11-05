@@ -462,7 +462,7 @@ export async function modelProviderUnavailable(
   }
   const now = Date.now();
   const price = route && priceCatalogFor(route.priceBasis, route.providerId, route.model, now);
-  return price && now < price.version.staleAfter ? undefined : 'funding_not_offered';
+  return price && now < price.version.reviewDueAt ? undefined : 'funding_not_offered';
 }
 
 // Only a provider with a first-class key lane can serve an image role today.

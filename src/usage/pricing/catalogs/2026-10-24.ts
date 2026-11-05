@@ -2,7 +2,7 @@ import type { UsagePriceVersion } from '../types.ts';
 import { version } from './version.ts';
 
 const REVIEWED_AT = Date.UTC(2026, 9, 24);
-const STALE_AFTER = REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
+const REVIEW_DUE_AT = REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
 /** OpenAI bills a prompt of more than 272K input tokens at its long-context rates. */
 const OPENAI_LONG_CONTEXT_FROM = 272_001;
 /** Anthropic bills a Claude Haiku 5.5 prompt of more than 100K tokens, cache reads and writes included, at its higher rates. */
@@ -16,7 +16,7 @@ export const PRICE_CATALOGS_2026_10_24: UsagePriceVersion[] = [
     sourceUrl: 'https://developers.openai.com/api/docs/pricing',
     effectiveFrom: REVIEWED_AT,
     reviewedAt: REVIEWED_AT,
-    staleAfter: STALE_AFTER,
+    reviewDueAt: REVIEW_DUE_AT,
     currency: 'USD',
     rates: [{
       providerId: 'openai',
@@ -44,7 +44,7 @@ export const PRICE_CATALOGS_2026_10_24: UsagePriceVersion[] = [
     sourceUrl: 'https://platform.claude.com/docs/en/about-claude/pricing',
     effectiveFrom: REVIEWED_AT,
     reviewedAt: REVIEWED_AT,
-    staleAfter: STALE_AFTER,
+    reviewDueAt: REVIEW_DUE_AT,
     currency: 'USD',
     rates: [{
       providerId: 'anthropic',
@@ -75,7 +75,7 @@ export const PRICE_CATALOGS_2026_10_24: UsagePriceVersion[] = [
     sourceUrl: 'https://platform.claude.com/docs/en/about-claude/pricing',
     effectiveFrom: REVIEWED_AT,
     reviewedAt: REVIEWED_AT,
-    staleAfter: STALE_AFTER,
+    reviewDueAt: REVIEW_DUE_AT,
     currency: 'USD',
     rates: [{
       providerId: 'anthropic',

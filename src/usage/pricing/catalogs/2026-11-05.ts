@@ -2,7 +2,7 @@ import type { UsagePriceVersion } from '../types.ts';
 import { version } from './version.ts';
 
 const REVIEWED_AT = Date.UTC(2026, 10, 5);
-const STALE_AFTER = REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
+const REVIEW_DUE_AT = REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
 
 function imageVersion(id: string, modelId: string): UsagePriceVersion {
   return version({
@@ -11,7 +11,7 @@ function imageVersion(id: string, modelId: string): UsagePriceVersion {
     sourceUrl: `https://developers.openai.com/api/docs/models/${modelId}`,
     effectiveFrom: REVIEWED_AT,
     reviewedAt: REVIEWED_AT,
-    staleAfter: STALE_AFTER,
+    reviewDueAt: REVIEW_DUE_AT,
     currency: 'USD',
     rates: [{
       providerId: 'openai',
