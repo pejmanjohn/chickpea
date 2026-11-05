@@ -749,10 +749,10 @@
     });
   }
 
-  function postJson(path, method, body) {
+  function postJson(path, method, body, headers) {
     return api(path, {
       method: method,
-      headers: { "content-type": "application/json" },
+      headers: Object.assign({ "content-type": "application/json" }, headers || {}),
       body: JSON.stringify(body)
     });
   }
@@ -2598,7 +2598,7 @@
     if (step === "add" && billing.plan && billing.offers.extraUsage.length) {
       var key = topUp ? topUp.pack.key : billing.offers.extraUsage[0].key;
       if (billingExtraUsageOnCard(billing)) {
-        state.billingConfirm = { kind: "extra_usage", key: key };
+        state.billingConfirm = { kind: "extra_usage", key: key, chargeKey: billingChargeKey("extra_usage") };
         render();
         focusAction("billing-extra-usage-confirm");
       } else {
@@ -2640,7 +2640,7 @@
     state.billingError = null;
     render();
     postJson("/admin/api/billing/plan-change/preview", "POST", { key: key }).then(function (preview) {
-      state.billingConfirm = { kind: "plan", card: card, preview: preview };
+      state.billingConfirm = { kind: "plan", card: card, preview: preview, chargeKey: billingChargeKey("plan_change") };
     }).catch(function (error) {
       state.billingError = { at: "plan:" + card, text: billingFailureText(error, "The plan change could not be checked. Try again.") };
     }).then(function () {
@@ -2650,13 +2650,19 @@
     });
   }
 
+  // A charge's key lasts as long as the confirm the Owner opened, so trying
+  // again after a lost answer charges once.
+  function billingChargeKey(action) {
+    return "admin-ui:billing:" + action + ":" + Date.now() + ":" + Math.random().toString(36).slice(2);
+  }
+
   // An in-app purchase answers the fresh page, or a Stripe page to finish it on.
   function purchaseOnCard(path, body, busy, at, done) {
     if (state.billingBusy) return;
     state.billingBusy = busy;
     state.billingError = null;
     render();
-    postJson(path, "POST", body).then(function (response) {
+    postJson(path, "POST", body, { "idempotency-key": state.billingConfirm.chargeKey }).then(function (response) {
       if (response.url) { location.assign(response.url); return; }
       state.billing = response.billing;
       state.billingConfirm = null;
@@ -2676,7 +2682,7 @@
     if (!confirm || confirm.kind !== "plan") return;
     var preview = confirm.preview;
     var body = { key: preview.key };
-    if (preview.kind === "upgrade" && preview.limitRaise) body.consentVersion = AUTO_TOP_UP_CONSENT_VERSION;
+    if (preview.kind === "upgrade" && preview.topUpRaise) body.consentVersion = AUTO_TOP_UP_CONSENT_VERSION;
     purchaseOnCard("/admin/api/billing/plan-change", body, "plan_change", "plan:" + confirm.card, function () {
       return preview.kind === "upgrade"
         ? { text: 'You&rsquo;re on the ' + esc(preview.price) + ' plan.' + (preview.added !== "$0" ? ' ' + esc(preview.added) + ' of usage was added for the rest of this month.' : '') }
@@ -2707,12 +2713,12 @@
     focusAction("billing-top-up-limit");
   }
 
-  function updateTopUp(body, busy) {
+  function updateTopUp(body, busy, headers) {
     if (state.billingBusy) return;
     state.billingBusy = busy;
     state.billingError = null;
     render();
-    postJson("/admin/api/billing/auto-top-up", "POST", body).then(function (view) {
+    postJson("/admin/api/billing/auto-top-up", "POST", body, headers).then(function (view) {
       state.billing = view;
       state.billingTopUpEdit = null;
     }).catch(function (error) {
@@ -2723,16 +2729,14 @@
     });
   }
 
-  // The pack keeps following the plan unless the Owner picked one.
+  // The pack keeps following the plan unless the Owner picked another, and
+  // picking the plan's own pack follows the plan again.
   function saveTopUp() {
     var topUp = state.billing.topUp;
     var edit = state.billingTopUpEdit;
     if (!topUp || !edit) return;
-    var body = {
-      change: "on",
-      pack: !edit.packChosen && topUp.pack.rule === "plan" ? "plan" : edit.pack,
-      limit: edit.limit
-    };
+    var follows = edit.packChosen ? edit.pack === topUp.planPack : topUp.pack.rule === "plan";
+    var body = { change: "on", pack: follows ? "plan" : edit.pack, limit: edit.limit };
     if (topUpEditRaises(topUp, edit)) body.consentVersion = AUTO_TOP_UP_CONSENT_VERSION;
     updateTopUp(body, "top_up");
   }
@@ -3330,11 +3334,13 @@
         'You keep this month&rsquo;s usage until then.</p>' + actions + '</div>';
     }
     var card = preview.card ? esc(preview.card) : 'your card';
+    var raise = preview.topUpRaise;
     return '<div class="plan-confirm" role="group" aria-label="Confirm the plan change"><p><b>Move to the ' + esc(preview.price) + ' plan?</b></p>' +
       '<p>Today you pay ' + esc(preview.today) + ' for the rest of this month, and ' + esc(preview.added) + ' of usage is added right away.</p>' +
       (preview.from ? '<p>From ' + esc(preview.from) + ', it&rsquo;s ' + esc(preview.price) + ' a month with ' + esc(preview.included) + ' of usage.</p>' : '') +
-      (preview.limitRaise ? '<p>Auto top-up&rsquo;s limit becomes ' + esc(preview.limitRaise) + ' a month, the same as your new plan. You allow Chickpea to charge ' + card +
-        ' up to ' + esc(preview.limitRaise) + ' a month, plus tax, for extra usage.</p>' : '') +
+      (raise ? '<p>' + (raise.limitRises ? 'Auto top-up&rsquo;s limit becomes ' + esc(raise.limit) + ' a month, the same as your new plan.'
+        : 'Auto top-up adds ' + esc(raise.pack) + ' each time on your new plan.') +
+        ' You allow Chickpea to charge ' + card + ' up to ' + esc(raise.limit) + ' a month, plus tax, for extra usage.</p>' : '') +
       '<p class="hint">Charged to ' + card + ', plus tax.</p>' + actions + '</div>';
   }
 
@@ -15492,7 +15498,7 @@
     if (action === "billing-add-extra-usage" && state.billing && !state.billingBusy) {
       var extraUsageKey = target.getAttribute("data-key") || "";
       if (billingExtraUsageOnCard(state.billing)) {
-        state.billingConfirm = { kind: "extra_usage", key: extraUsageKey };
+        state.billingConfirm = { kind: "extra_usage", key: extraUsageKey, chargeKey: billingChargeKey("extra_usage") };
         state.billingError = null;
         render();
         focusAction("billing-extra-usage-confirm");
@@ -15540,7 +15546,7 @@
       focusAction("billing-top-up-edit");
     }
     if (action === "billing-top-up-save" && !state.billingBusy) saveTopUp();
-    if (action === "billing-top-up-retry") updateTopUp({ change: "retry" }, "top_up_retry");
+    if (action === "billing-top-up-retry") updateTopUp({ change: "retry" }, "top_up_retry", { "idempotency-key": billingChargeKey("top_up_retry") });
     if (action === "billing-choose-plan") {
       var planAt = target.getAttribute("data-at") || "";
       openStripe("/admin/api/billing/checkout", { kind: "plan", key: target.getAttribute("data-key") || "" }, "plan:" + planAt, "plan:" + planAt);

@@ -205,14 +205,14 @@ async function harness(options: {
     choseChickpeaModels: async () => undefined,
     actor: async () => ({ membershipId: principal.membershipId, slackUserId: 'U_OWNER' }),
   }));
-  const fetch = async (path: string, init?: { method?: string; body?: string }): Promise<FakeResponse> => {
+  const fetch = async (path: string, init?: { method?: string; body?: string; headers?: Record<string, string> }): Promise<FakeResponse> => {
     const method = init?.method ?? 'GET';
     const body = init?.body ? JSON.parse(init.body) : undefined;
     requests.push({ path, method, body });
     if (path.startsWith('/admin/api/billing')) {
       configurePlatformBilling(billing?.port);
       const served = await billingApi.request(path, {
-        method, headers: { 'content-type': 'application/json' }, ...(init?.body ? { body: init.body } : {}),
+        method, headers: { 'content-type': 'application/json', ...init?.headers }, ...(init?.body ? { body: init.body } : {}),
       }, ENV);
       if (!options.billingResponse) return served;
       return response(options.billingResponse(path, JSON.parse(await served.text())), served.status);
@@ -1578,9 +1578,11 @@ test('with a host that changes plans on the saved card, an upgrade is confirmed 
   assertShows(platform, 'Auto top-up’s limit becomes $100 a month, the same as your new plan. You allow Chickpea to charge Visa ending 4242 up to $100 a month, plus tax, for extra usage.');
   assertShows(platform, 'Charged to Visa ending 4242, plus tax. Cancel Move to the $100 plan');
   await page.click({ 'data-action': 'billing-plan-change-confirm' });
+  const changed = calls[1]![1] as { idempotencyKey: string };
   assert.deepEqual(calls, [['preview', 'plus'], ['changePlan', {
-    planKey: 'plus', by: { membershipId: 'membership_owner', slackUserId: 'U_OWNER' }, consentVersion: '2026-11-04',
+    planKey: 'plus', by: { membershipId: 'membership_owner', slackUserId: 'U_OWNER' }, consentVersion: '2026-11-04', idempotencyKey: changed.idempotencyKey,
   }]]);
+  assert.match(changed.idempotencyKey, /^admin-ui:billing:plan_change:/);
   assert.deepEqual(page.assigned, [], 'paid on the saved card, with no Stripe page');
   assert.match(page.html(), /<p class="plan-banner" role="status">/);
   assertShows(page.html(), 'You’re on the $100 plan. $19.35 of usage was added for the rest of this month.');
@@ -1588,13 +1590,26 @@ test('with a host that changes plans on the saved card, an upgrade is confirmed 
 
 test('an upgrade raises no limit an Owner fixed, a downgrade waits for the renewal, and a bank that asks to confirm opens Stripe\'s page', async () => {
   const calls: unknown[][] = [];
-  const fixed: BillingSummary = { ...STARTER_TOP_UP, autoTopUp: { ...TOP_UP_ON, limit: { rule: 'fixed', cents: 20_000 } } };
+  const fixed: BillingSummary = {
+    ...STARTER_TOP_UP, autoTopUp: { ...TOP_UP_ON, pack: { rule: 'fixed', key: 'extra_usage_50' }, limit: { rule: 'fixed', cents: 20_000 } },
+  };
   const page = await harness({ path: '/admin/plan', billingOffered: true, summary: fixed, port: savedCardHost(calls) });
   page.choose('platform', 'plus');
   await page.click({ 'data-action': 'billing-plan-change', 'data-key': 'plus', 'data-at': 'platform' });
-  assertHides(card(page.html(), 'platform'), 'Auto top-up’s limit');
+  assertHides(card(page.html(), 'platform'), 'Auto top-up');
   await page.click({ 'data-action': 'billing-plan-change-confirm' });
   assert.equal((calls.at(-1)![1] as { consentVersion: string | null }).consentVersion, null);
+
+  const packFollows = await harness({
+    path: '/admin/plan', billingOffered: true, port: savedCardHost(calls),
+    summary: { ...STARTER_TOP_UP, autoTopUp: { ...TOP_UP_ON, limit: { rule: 'fixed', cents: 20_000 } } },
+  });
+  packFollows.choose('platform', 'plus');
+  await packFollows.click({ 'data-action': 'billing-plan-change', 'data-key': 'plus', 'data-at': 'platform' });
+  assertShows(card(packFollows.html(), 'platform'),
+    'Auto top-up adds $100 each time on your new plan. You allow Chickpea to charge Visa ending 4242 up to $200 a month, plus tax, for extra usage.');
+  await packFollows.click({ 'data-action': 'billing-plan-change-confirm' });
+  assert.equal((calls.at(-1)![1] as { consentVersion: string | null }).consentVersion, '2026-11-04');
 
   const down = await harness({ path: '/admin/plan', billingOffered: true, summary: STARTER_TOP_UP, port: savedCardHost(calls) });
   down.choose('platform', 'solo');
@@ -1620,7 +1635,11 @@ test('with a host that sells on the saved card, Add usage asks to confirm in the
   assertShows(hero(page.html()), 'Add $50 of usage? It’s charged to Visa ending 4242, plus tax, and keeps 12 months. Cancel Add $50');
   assert.deepEqual(calls, [], 'nothing is bought until the Owner confirms');
   await page.click({ 'data-action': 'billing-extra-usage-confirm', 'data-key': 'extra_usage_50' });
-  assert.deepEqual(calls, [['buyExtraUsage', { key: 'extra_usage_50', by: { membershipId: 'membership_owner', slackUserId: 'U_OWNER' } }]]);
+  const bought = calls[0]![1] as { idempotencyKey: string };
+  assert.deepEqual(calls, [['buyExtraUsage', {
+    key: 'extra_usage_50', by: { membershipId: 'membership_owner', slackUserId: 'U_OWNER' }, idempotencyKey: bought.idempotencyKey,
+  }]]);
+  assert.match(bought.idempotencyKey, /^admin-ui:billing:extra_usage:/);
   assertShows(page.html(), 'Added $50 of usage. Your Agents are working again.');
 
   const checkout = await harness({ path: '/admin/plan', billingOffered: true, summary: STARTER_AT_LIMIT });
@@ -1689,4 +1708,46 @@ test('back from Stripe, the page says the payment is in while the usage is added
   assert.doesNotMatch(unreported.html(), /plan-banner/, 'a host that reports no purchase gets no banner');
   const cancelled = await harness({ path: '/admin/plan', billingOffered: true, summary: pending });
   assert.doesNotMatch(cancelled.html(), /plan-banner/, 'without billing=done, as after a cancelled Checkout, there is no banner');
+});
+
+test('trying a saved-card purchase again after its answer was lost sends the same key, so the host charges once', async () => {
+  const keys: (string | undefined)[] = [];
+  let fail = true;
+  const page = await harness({
+    path: '/admin/plan', billingOffered: true, summary: STARTER_AT_LIMIT,
+    port: {
+      async buyExtraUsage(_installationId, request) {
+        keys.push(request.idempotencyKey);
+        if (fail) { fail = false; throw new Error('the answer was lost'); }
+        return { kind: 'done' };
+      },
+    },
+  });
+  await page.click({ 'data-action': 'billing-add-extra-usage', 'data-key': 'extra_usage_50' });
+  await page.click({ 'data-action': 'billing-extra-usage-confirm', 'data-key': 'extra_usage_50' });
+  assertShows(hero(page.html()), 'Usage could not be added. Try again.');
+  await page.click({ 'data-action': 'billing-extra-usage-confirm', 'data-key': 'extra_usage_50' });
+  assert.equal(keys.length, 2);
+  assert.ok(keys[0]);
+  assert.equal(keys[0], keys[1]);
+  assertShows(page.html(), 'Added $50 of usage.');
+  await page.click({ 'data-action': 'billing-add-extra-usage', 'data-key': 'extra_usage_25' });
+  await page.click({ 'data-action': 'billing-extra-usage-confirm', 'data-key': 'extra_usage_25' });
+  assert.notEqual(keys[2], keys[0], 'a new confirm is a new charge');
+});
+
+test('an Owner who picked a pack follows the plan again by picking the plan\'s own pack', async () => {
+  const updates: AutoTopUpUpdate[] = [];
+  const fixed: BillingSummary = { ...STARTER_TOP_UP, autoTopUp: { ...TOP_UP_ON, pack: { rule: 'fixed', key: 'extra_usage_25' } } };
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: fixed, port: topUpHost(updates) });
+  await page.click({ 'data-action': 'billing-top-up-edit' });
+  await page.click({ 'data-action': 'billing-top-up-pack', 'data-key': 'extra_usage_50' });
+  await page.click({ 'data-action': 'billing-top-up-save' });
+  assert.deepEqual(billingWrites(page.requests).at(-1), ['POST', '/admin/api/billing/auto-top-up',
+    { change: 'on', pack: 'plan', limit: 'plan', consentVersion: '2026-11-04' }]);
+  assert.deepEqual(updates.map((update) => update.change), [{ kind: 'on', pack: { rule: 'plan' }, limit: { rule: 'plan' } }]);
+  await page.click({ 'data-action': 'billing-top-up-edit' });
+  await page.click({ 'data-action': 'billing-top-up-save' });
+  assert.deepEqual(billingWrites(page.requests).at(-1)?.[2], { change: 'on', pack: 'extra_usage_25', limit: 'plan' },
+    'an untouched fixed pack stays fixed');
 });

@@ -21,7 +21,7 @@ import {
 import { isProviderKeyId, type ProviderKeyId } from '../config/provider-keys.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { formatCard, formatPriceCents, formatUsageDollars, usagePercent, type UsageMicros } from '../usage/usage-display.ts';
-import { invalidRequest, noStore, readJson } from './api-support.ts';
+import { invalidRequest, noStore, readIdempotencyKey, readJson } from './api-support.ts';
 import { balance, type BillingBalance } from './billing-balance.ts';
 import { formatTasks } from './billing-tasks.ts';
 
@@ -148,9 +148,10 @@ interface OwnerAutoTopUp {
   plan: { price: string; cents: number };
   /** Each pack an Owner can choose, with the tasks it covers. */
   packs: { key: string; price: string; cents: number; tasks: string | null }[];
+  /** The pack that follows the plan, which the pack "plan" stands for; null when the host doesn't say. */
+  planPack: string | null;
   /** The next plan up, with the usage it includes, and what this month's plan and top-ups covered. Null on the largest plan. */
   upgrade: { key: string; price: string; included: string; covered: string } | null;
-  consentVersion: string;
 }
 
 /** What the Owner's latest purchase did, for the banner when they come back from Stripe. */
@@ -208,8 +209,9 @@ export type BillingView =
 type PlanChangeView =
   | {
     kind: 'upgrade'; key: string; price: string; included: string; today: string; added: string; from: string | null;
-    /** Set while auto top-up's limit is "same as your plan": the limit it rises to. */
-    limitRaise: string | null; card: string | null; consentVersion: string;
+    /** What the upgrade raises in auto top-up that follows the plan, with the monthly limit after it; null for nothing. */
+    topUpRaise: { limit: string; limitRises: boolean; pack: string | null } | null;
+    card: string | null;
   }
   | { kind: 'downgrade'; key: string; price: string; at: string };
 
@@ -275,9 +277,9 @@ export function createBillingAdminApi(options: BillingAdminApiOptions): Hono {
     let raises = false;
     if (body.change === 'on') {
       if (summary.pendingChange?.kind === 'ends') return c.json({ error: 'plan_required' }, 409);
-      // Admin knows the pack "same as your plan" stands for only while it is the rule now.
-      if (body.pack === 'plan' && current.pack.rule !== 'plan') return invalidRequest(c);
-      const pack = extraUsageOffer(summary, body.pack === 'plan' ? current.pack.key : body.pack);
+      const planPackKey = current.pack.rule === 'plan' ? current.pack.key : currentPlanOffer(summary)?.autoTopUpPackKey;
+      const packKey = body.pack === 'plan' ? planPackKey : body.pack;
+      const pack = packKey === undefined ? undefined : extraUsageOffer(summary, packKey);
       const limitCents = body.limit === 'plan' ? summary.plan.priceCents : body.limit;
       if (!pack || pack.priceCents > limitCents) return invalidRequest(c);
       const before = extraUsageOffer(summary, current.pack.key);
@@ -291,8 +293,10 @@ export function createBillingAdminApi(options: BillingAdminApiOptions): Hono {
     } else {
       change = { kind: body.change };
     }
+    const idempotencyKey = readIdempotencyKey(c);
     await port.updateAutoTopUp(installationId, {
       change, by: await options.actor(c), consentVersion: raises ? AUTO_TOP_UP_CONSENT_VERSION : null,
+      ...(idempotencyKey ? { idempotencyKey } : {}),
     });
     return c.json(await view(c, port, installationId));
   }));
@@ -314,10 +318,12 @@ export function createBillingAdminApi(options: BillingAdminApiOptions): Hono {
     const summary = await port.summary(installationId);
     const target = planChangeTarget(summary, parsed.output.key);
     if (!target) return invalidRequest(c);
-    const raises = limitRaise(summary, target) !== null;
+    const raises = topUpRaise(summary, target) !== null;
     if (raises && parsed.output.consentVersion !== AUTO_TOP_UP_CONSENT_VERSION) return c.json({ error: 'consent_outdated' }, 409);
+    const idempotencyKey = readIdempotencyKey(c);
     const result = await port.changePlan(installationId, {
       planKey: target.key, by: await options.actor(c), consentVersion: raises ? AUTO_TOP_UP_CONSENT_VERSION : null,
+      ...(idempotencyKey ? { idempotencyKey } : {}),
     });
     return purchased(c, port, installationId, result);
   }));
@@ -326,7 +332,10 @@ export function createBillingAdminApi(options: BillingAdminApiOptions): Hono {
     if (!port.buyExtraUsage) return c.json({ error: 'not_found' }, 404);
     const parsed = v.safeParse(extraUsageSchema, await readJson(c, MAX_BILLING_BODY_BYTES));
     if (!parsed.success) return invalidRequest(c);
-    const result = await port.buyExtraUsage(installationId, { key: parsed.output.key, by: await options.actor(c) });
+    const idempotencyKey = readIdempotencyKey(c);
+    const result = await port.buyExtraUsage(installationId, {
+      key: parsed.output.key, by: await options.actor(c), ...(idempotencyKey ? { idempotencyKey } : {}),
+    });
     return purchased(c, port, installationId, result);
   }));
 
@@ -355,11 +364,25 @@ function planChangeTarget(summary: BillingSummary, key: string): PlanOffer | und
   return fundingPlans(summary).find((offer) => offer.key === key);
 }
 
-/** The auto top-up limit an upgrade raises while the limit is "same as your plan"; null when it raises none. */
-function limitRaise(summary: BillingSummary, target: PlanOffer): number | null {
+function currentPlanOffer(summary: BillingSummary): PlanOffer | undefined {
+  return summary.plan ? summary.offers.plans.find((offer) => offer.key === summary.plan?.key) : undefined;
+}
+
+/**
+ * What a plan change raises in auto top-up that follows the plan: a "same as
+ * your plan" limit rises to the new price, and a pack that follows the plan to
+ * the new plan's pack. Either raises what Chickpea may charge, so the Owner
+ * agrees again. Null when it raises neither.
+ */
+function topUpRaise(summary: BillingSummary, target: PlanOffer): { limitCents: number; limitRises: boolean; packCents: number | null } | null {
   const topUp = summary.autoTopUp;
-  const raises = topUp?.enabled && topUp.limit.rule === 'plan' && summary.plan && target.priceCents > summary.plan.priceCents;
-  return raises ? target.priceCents : null;
+  if (!topUp?.enabled || !summary.plan) return null;
+  const limitRises = topUp.limit.rule === 'plan' && target.priceCents > summary.plan.priceCents;
+  const before = extraUsageOffer(summary, topUp.pack.key);
+  const after = topUp.pack.rule === 'plan' && target.autoTopUpPackKey !== undefined ? extraUsageOffer(summary, target.autoTopUpPackKey) : undefined;
+  const packCents = after && after.priceCents > (before?.priceCents ?? 0) ? after.priceCents : null;
+  if (!limitRises && packCents === null) return null;
+  return { limitCents: limitRises ? target.priceCents : topUp.limit.cents, limitRises, packCents };
 }
 
 function planChangeView(
@@ -369,7 +392,7 @@ function planChangeView(
 ): PlanChangeView {
   const price = formatPriceCents(target.priceCents);
   if (preview.kind === 'downgrade') return { kind: 'downgrade', key: target.key, price, at: SHORT_DATE.format(preview.at) };
-  const raise = limitRaise(summary, target);
+  const raise = topUpRaise(summary, target);
   return {
     kind: 'upgrade',
     key: target.key,
@@ -378,9 +401,12 @@ function planChangeView(
     today: formatPriceCents(preview.todayCents),
     added: formatUsageDollars(preview.addedMicros, 'down'),
     from: summary.period ? SHORT_DATE.format(summary.period.end) : null,
-    limitRaise: raise === null ? null : formatPriceCents(raise),
+    topUpRaise: raise && {
+      limit: formatPriceCents(raise.limitCents),
+      limitRises: raise.limitRises,
+      pack: raise.packCents === null ? null : formatPriceCents(raise.packCents),
+    },
     card: cardLabel(summary),
-    consentVersion: AUTO_TOP_UP_CONSENT_VERSION,
   };
 }
 
@@ -432,13 +458,13 @@ function ownerAutoTopUp(summary: BillingSummary, planOffer: PlanOffer | undefine
       key: offer.key, price: formatPriceCents(offer.priceCents), cents: offer.priceCents,
       tasks: formatTasks(offer.usageMicros, summary.funding, summary.offers),
     })),
+    planPack: (topUp.pack.rule === 'plan' ? topUp.pack.key : planOffer?.autoTopUpPackKey) ?? null,
     upgrade: next ? {
       key: next.key,
       price: formatPriceCents(next.priceCents),
       included: formatUsageDollars(next.includedMicros),
       covered: formatUsageDollars(((planOffer?.includedMicros ?? 0) + topUp.usedCents * MICROS_PER_CENT) as UsageMicros),
     } : null,
-    consentVersion: AUTO_TOP_UP_CONSENT_VERSION,
   };
 }
 

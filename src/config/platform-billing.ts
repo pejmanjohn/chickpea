@@ -122,6 +122,8 @@ export interface AutoTopUpUpdate {
    * pack nor the limit, so Admin showed none.
    */
   readonly consentVersion: string | null;
+  /** The page's key for a `retry`, so the host can charge it once if the request arrives twice. */
+  readonly idempotencyKey?: string;
 }
 
 /** What a plan change would do, for the in-app confirm. */
@@ -262,14 +264,18 @@ export interface PlatformBillingPort {
   /**
    * Changes the plan on the saved card: an upgrade is charged now, a
    * downgrade waits for the renewal. `consentVersion` is set when the upgrade
-   * raised a "same as your plan" auto top-up limit. Throws `BillingRefusal`
+   * raises auto top-up's limit or pack that follow the plan. Throws `BillingRefusal`
    * (`card_required`, `past_due`).
    */
   changePlan?(installationId: string, request: {
     readonly planKey: string; readonly by: BillingActor; readonly consentVersion: string | null;
+    /** One per confirm the Owner opened, so the host charges a repeated request once. */
+    readonly idempotencyKey?: string;
   }): Promise<SavedCardResult>;
-  /** Extra usage on the saved card; without it, extra usage opens Checkout. */
-  buyExtraUsage?(installationId: string, request: { readonly key: string; readonly by: BillingActor }): Promise<SavedCardResult>;
+  /** Extra usage on the saved card; without it, extra usage opens Checkout. `idempotencyKey` as for `changePlan`. */
+  buyExtraUsage?(installationId: string, request: {
+    readonly key: string; readonly by: BillingActor; readonly idempotencyKey?: string;
+  }): Promise<SavedCardResult>;
 }
 
 let port: PlatformBillingPort | undefined;

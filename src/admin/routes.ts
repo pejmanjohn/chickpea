@@ -6814,7 +6814,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   // The Plan page's API loads with its first request, and stays loaded.
   let billingApi: Promise<Hono> | undefined;
   const billingRoutes = async (c: Context) => {
-    billingApi ??= import('./billing-api.ts').then(({ createBillingAdminApi }) => new Hono().route('/admin/api', createBillingAdminApi(billingOptions)));
+    billingApi ??= import('./billing-api.ts')
+      .then(({ createBillingAdminApi }) => new Hono().route('/admin/api', createBillingAdminApi(billingOptions)))
+      .catch((error: unknown) => {
+        billingApi = undefined;
+        throw error;
+      });
     return (await billingApi).fetch(c.req.raw, c.env);
   };
   const billingOptions: Parameters<typeof import('./billing-api.ts').createBillingAdminApi>[0] = {
