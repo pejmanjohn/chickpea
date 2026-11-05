@@ -45,6 +45,8 @@ const ALLOWED = new Map<string, string>([
     'refuses the lane on a deployment serving many installations.'],
   ['src/model-catalog/profiles.ts', 'Catalog endpoint metadata; requests to it go through the proxy.'],
   ['src/model-catalog/image-profiles.ts', 'Catalog endpoint metadata; image requests to it go through the proxy.'],
+  ['src/usage/pricing/catalogs/review.ts',
+    'Price provenance: builds the source URLs review catalogs cite, an endpoints listing among them; sends nothing.'],
   ['src/slack/attachment-model-context.ts',
     'Compares a model\'s endpoint origin to decide native PDF support; sends nothing.'],
   ['src/agents/openai-prompt-cache.ts',

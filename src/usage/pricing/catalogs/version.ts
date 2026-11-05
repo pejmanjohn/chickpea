@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 import type { UsagePriceRate, UsagePriceVersion } from '../types.ts';
 
-type RateInput = UsagePriceRate extends infer Rate
+export type RateInput = UsagePriceRate extends infer Rate
   ? Rate extends UsagePriceRate ? Omit<Rate, 'priceVersionId'> : never
   : never;
 
