@@ -60,7 +60,6 @@ async function personRefusal(
   }
   if (!isRecord(user) || user.id !== id) return 'not_found';
   const kind = slackUserKind(user, workspaceId);
-  // enterprise_user marks any Enterprise Grid user, another organization's too.
   if (kind === 'external' || user.team_id !== workspaceId) return 'outside_workspace';
   if (kind === 'app') return 'bot';
   if (kind === 'deactivated') return 'deactivated';

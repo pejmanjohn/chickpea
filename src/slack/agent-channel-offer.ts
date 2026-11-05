@@ -160,7 +160,6 @@ export async function addAgentToChannel(
   });
 }
 
-/** The handle an Add click adds an Agent by; undefined when a click cannot add it. */
 export function addableAgentHandle(agent: CustomAgentConfig | undefined): string | undefined {
   return agent?.kind === 'user' ? agentSlackHandle(agent)?.handle : undefined;
 }

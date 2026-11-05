@@ -18,7 +18,6 @@ export const SLACK_CREATE_CHANNEL_INSTRUCTION = [
 
 const text = (max: number) => v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(max));
 
-/** An ordinary tool: Flue reports an interrupted call as unknown and never reruns it. */
 export function createSlackCreateChannelTool(
   create: (request: ChannelRequest) => Promise<Record<string, unknown>>,
 ) {
