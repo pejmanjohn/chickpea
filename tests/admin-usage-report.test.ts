@@ -330,3 +330,16 @@ test('the strip reads off for a plan that is ending, as the Plan page shows an A
   const ending: BillingSummary = { ...TEAM_PLAN, autoTopUp, pendingChange: { kind: 'ends', at: PERIOD.end } };
   assert.equal(report({ summary: ending }).plan?.autoTopUp, 'off');
 });
+
+test('last billing period compares with the one before it only while Core still keeps that one', () => {
+  // Last billing period is Sep 7 to Oct 7; the one before it starts Aug 7.
+  const attributions = [...ACTIVITY, activity('aug', 'agent_a', '2026-08-10T09:00:00Z')];
+  const billed = { current: [billedRow('sub_p1', '2026-09-08', 2)], prior: [billedRow('sub_aug', '2026-08-10', 1)] };
+  const on = (now: number) => buildUsageReport({
+    summary: TEAM_PLAN, ...reportRanges({ period: 'last_billing_period' }, TEAM_PLAN, now),
+    billed, attributions, agentId: null, names: NAMES, now,
+  });
+  assert.equal(on(NOW).change, 100, 'on Oct 20, Aug 7 is 74 days back: $2 against $1');
+  assert.deepEqual([on(NOW + 20 * 86_400_000).change, on(NOW + 20 * 86_400_000).chart.prior], [null, null],
+    'on Nov 9 it is 94 days back, past retention, so its deleted activity never reads as a change');
+});

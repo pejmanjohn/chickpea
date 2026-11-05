@@ -292,7 +292,8 @@ export function buildUsageReport(inputs: UsageReportInputs): UsageReport {
   // Attributable usage on both sides, so a day of private usage last period never moves the change; a finished
   // range compares whole sums, so a 31-day prior month keeps its last day.
   const priorAttributable = previous.filter((charge) => charge.matched);
-  const priorKnown = range.period !== null || prior.from >= retainedFrom(now);
+  // Last billing period's own prior starts up to three months back, past retention too.
+  const priorKnown = prior.from >= retainedFrom(now);
   const finished = elapsed >= dayCount;
   const priorLine = byDay(priorAttributable, dayNumber(prior.from));
   const priorSoFar = finished ? sumOf(priorAttributable) : sum(priorLine.slice(0, elapsed));
@@ -519,7 +520,7 @@ function pair(provider: string | null | undefined, model: string | null | undefi
 export function planStrip(summary: BillingSummary): UsageReport['plan'] {
   const left = planBalance(summary);
   const topUp = summary.autoTopUp;
-  const on = topUp && topUp.enabled && summary.pendingChange?.kind !== 'ends';
+  const on = topUp && summary.plan && topUp.enabled && summary.pendingChange?.kind !== 'ends';
   return left && { left: left.left, autoTopUp: !topUp ? null : on ? 'on' : 'off' };
 }
 
