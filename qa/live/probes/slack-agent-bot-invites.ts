@@ -1,7 +1,3 @@
-/**
- * Raw, attended check that a workspace bot's `conversations.invite` accepts
- * another app's bot user. Never mounted as an Agent tool.
- */
 export const AGENT_BOT_INVITE_PROBE_METHODS = [
   'auth.test', 'conversations.info', 'conversations.members', 'conversations.invite', 'conversations.kick',
 ] as const;
@@ -11,9 +7,7 @@ type JsonObject = Record<string, unknown>;
 
 export interface AgentBotInviteProbeSpec {
   workspaceId: string;
-  /** Exact fixture Channels the workspace bot is in: one public, one private. */
   channelIds: readonly string[];
-  /** The Agent apps' bot users the probe may invite and remove again. */
   botUserIds: readonly string[];
 }
 
@@ -29,11 +23,6 @@ export interface AgentBotInviteProbeReceipt {
   response?: JsonObject;
 }
 
-/**
- * Credentials stay in the invoking QA process. Persist receipts in a private
- * attended run directory. A receipt must be saved before dispatch; after a
- * restart, the operator reconciles it before another invite or removal.
- */
 export class SlackAgentBotInviteProbe {
   readonly #token: string;
   readonly #fetch: typeof fetch;
@@ -91,7 +80,6 @@ export class SlackAgentBotInviteProbe {
         if (!this.#authenticatedWorkspace) receipt.response = { ...auth, probe_identity_verified: false };
       }
     } catch {
-      // Never serialize fetch errors: they can include request credentials.
       receipt = { ...base, phase: 'unknown' };
     }
     await this.#record(receipt);
@@ -99,13 +87,6 @@ export class SlackAgentBotInviteProbe {
   }
 }
 
-/**
- * The whole check for one fixture Channel: the workspace bot is in it, the
- * app's bot is not, the invite, the app's bot now a member, and a second
- * invite (`already_in_channel` expected). Only a bot this run's invite added
- * is removed again, so the run can repeat. It stops at an unknown outcome.
- * Read the answers from the receipts; nothing here judges them.
- */
 export async function inviteSequence(
   probe: SlackAgentBotInviteProbe,
   spec: AgentBotInviteProbeSpec,

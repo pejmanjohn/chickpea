@@ -223,13 +223,6 @@ function leftOut(ids: { agentId: string; appId: string; channelId: string }, rea
   return { placement: 'left_out' };
 }
 
-/**
- * Chickpea's bot invites the app's bot into the Channel it is in, which takes
- * `channels:manage` for a public Channel and `groups:write` for a private
- * one. Slack's error code when it will not, such as `missing_scope` for an
- * installation granted before those; undefined once the bot is in, including
- * Slack's `already_in_channel`.
- */
 async function inviteRefusal(
   credentials: () => Promise<ResolvedSlackInstallationCredentials>,
   channelId: string,
@@ -245,11 +238,6 @@ async function inviteRefusal(
   }
 }
 
-/**
- * The way in without the invite: the app's bot joins a public Channel
- * itself, and only someone in a private Channel can add it there. Why it is
- * still not in, or undefined once it is.
- */
 async function joinRefusal(
   bot: Pick<SlackTransport, 'joinPublicChannel'>,
   channel: { id: string; private: boolean },

@@ -145,8 +145,10 @@ To isolate the Slack fact from Chickpea, the attended probe in
 workspace bot's token. It accepts only that token's workspace, the declared
 fixture Channels, and the declared Agent app bot users, and it removes only a
 bot its own invite added. Save each receipt before its request goes out, and
-keep the token and receipts out of the repository. Drive it from a private
-directory with `node --import tsx`:
+keep the token and receipts out of the repository. The probe remembers
+attempt IDs only while it runs, so after a restart reconcile an unfinished
+receipt before another invite or removal. Drive it from a private directory
+with `node --import tsx`:
 
 ```ts
 import { appendFile } from 'node:fs/promises';

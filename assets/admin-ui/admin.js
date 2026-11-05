@@ -17195,8 +17195,6 @@
     return "#" + channelName + " was added, but the connected Slack app isn't a member of it yet, so it won't hear mentions there. Invite it to #" + channelName + " in Slack — no need to come back here.";
   }
 
-  // An Agent with its own Slack app answers as that app's bot. When Chickpea
-  // could not bring that bot in (left_out), a person adds it in Slack.
   function appBotLeftOutText(agent, channelName) {
     var handle = (agent.slackPresence && agent.slackPresence.normalizedHandle) || handleFromAgentName(agent.name);
     return "To let @" + handle + " answer in #" + channelName + ", add it from the channel's Add people or agents in Slack.";

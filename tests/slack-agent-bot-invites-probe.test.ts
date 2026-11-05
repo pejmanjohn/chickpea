@@ -52,7 +52,6 @@ test('invite probe records dispatch before an invite, never retries an unknown o
   assert.equal(calls, 2);
 });
 
-/** Slack for the sequence: the app bot outside the Channel until a successful invite. */
 function slackFor(answers: { invite: unknown }): { fetch: typeof fetch; methods: string[] } {
   const methods: string[] = [];
   let invited = false;

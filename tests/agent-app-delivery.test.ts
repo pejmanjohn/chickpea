@@ -59,7 +59,6 @@ const AGENT_APP = 'A0AGENT1';
 const AGENT_SECRET = 'agent-app-signing-secret';
 const AGENT_BOT = 'xoxb-agent-bot';
 const AGENT_BOT_USER = 'UAGENTBOT';
-/** Each bot's token and Slack user. */
 const BOTS = [[MAIN_BOT, 'UBOT'], [AGENT_BOT, AGENT_BOT_USER]] as const;
 const HOST: AgentSlackAppsHost = {
   requestUrls: () => ({ events: 'https://cloud.test/e', interactions: 'https://cloud.test/i' }),
@@ -101,7 +100,7 @@ function userAgent(id: string, name: string, handle: string): CustomAgentConfig 
  * `lostHostedBot` writes the hosted bot's bundle under a key this deployment never holds, so it cannot be read.
  * `notMemberOf` names, per bot token, the Channels that bot is not in until it joins one; every bot is in every other Channel.
  * `privateChannels` are private; every other Channel is public. As in Slack, a bot not in a private Channel is answered
- *   `channel_not_found` when it looks the Channel up, and a bot in a Channel can invite the other bot into it.
+ *   `channel_not_found` when it looks the Channel up.
  * `refuse` answers a call, keyed `<method> <token>`, with that Slack error.
  * `rateLimited` answers a call, keyed the same way, with HTTP 429 and a one-second Retry-After.
  * `history` and `replies` are the messages `conversations.history` and `conversations.replies` return.
@@ -1174,7 +1173,6 @@ function botsLeftOut(calls: ReadonlyArray<{ arguments: unknown[] }>): unknown[] 
   return calls.flatMap(({ arguments: [line] }) => (line as { event?: unknown } | undefined)?.event === 'chickpea.agent_app.bot_left_out' ? [line] : []);
 }
 
-/** The operator lines for Slack refusing Chickpea's bot's invite of an app bot. */
 function invitesRefused(calls: ReadonlyArray<{ arguments: unknown[] }>): unknown[] {
   return calls.flatMap(({ arguments: [line] }) => {
     const entry = line as { event?: unknown; step?: unknown } | undefined;
@@ -1234,7 +1232,6 @@ test("Slack's already_in_channel, for a bot added after Chickpea looked, counts 
   privateChannels: ['C3'], notMemberOf: { [AGENT_BOT]: ['C2', 'C3'] }, refuse: { [`conversations.invite ${MAIN_BOT}`]: 'already_in_channel' },
 }));
 
-/** Slack's refusals of `conversations.invite` Chickpea's bot may see, the first an installation granted before the invite permissions. */
 const INVITE_REFUSALS = [
   'missing_scope', 'not_in_channel', 'cant_invite', 'is_archived', 'app_cannot_join_channel', 'no_permission', 'user_not_found',
 ] as const;
