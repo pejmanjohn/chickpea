@@ -22,6 +22,7 @@ import { isProviderKeyId, type ProviderKeyId } from '../config/provider-keys.ts'
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { formatCard, formatPriceCents, formatUsageDollars, usagePercent, type UsageMicros } from '../usage/usage-display.ts';
 import { invalidRequest, noStore, readJson } from './api-support.ts';
+import { balance, type BillingBalance } from './billing-balance.ts';
 import { formatTasks } from './billing-tasks.ts';
 
 export const PLAN_PATH = '/admin/plan';
@@ -112,8 +113,8 @@ interface BillingStatus {
   } | null;
   trial: { remaining: string; granted: string; used: string; percent: number; until: string } | null;
   ownKeyWithoutPlan: { minimumPrice: string; minimumTasks: string | null } | null;
-  /** What the big number counts, in the order usage is spent; null for an own key without a plan. See `balance`. */
-  balance: { left: string; tasksLeft: string | null; exhausted: boolean; stage: 'plan' | 'extra' } | null;
+  /** What the big number counts, in the order usage is spent; null for an own key without a plan. */
+  balance: BillingBalance | null;
   /** Null where the host offers no auto top-up. Everyone sees whether it is on and whether it reached its limit; only an Owner sees more. */
   autoTopUp: { kind: 'no_plan' } | { kind: 'plan'; on: boolean; limitReached: boolean } | null;
   /** The flat usage a task draws, "30¢". */
@@ -546,32 +547,6 @@ function billingStatus(summary: BillingSummary, minimum: PlanOffer): BillingStat
     balance: funding === 'own_key' && summary.plan === null ? null : balance(summary, planOffer),
     autoTopUp: autoTopUpStatus(summary),
     taskFee: formatFee(offers.taskFeeMicros),
-  };
-}
-
-/**
- * What the big number counts, in the order the host spends usage. While the
- * plan's usage, what carried over, or trial usage beside it is left, it
- * counts only those, less what the workspace owes, so it agrees with the
- * plan's meter and renewal date. Once they are used up it counts the extra
- * usage a plan unfreezes. `exhausted` means nothing at all is left. A plan
- * with no meter yet counts its whole usage.
- */
-export function balance(summary: BillingSummary, planOffer: PlanOffer | null | undefined): NonNullable<BillingStatus['balance']> {
-  const { planUsage, rollover, extraUsage, trial } = summary;
-  const plan = !summary.plan ? 0
-    : planUsage ? Math.max(0, planUsage.includedMicros - planUsage.usedMicros)
-    : planOffer?.includedMicros ?? 0;
-  const first = plan + (rollover?.remainingMicros ?? 0) + (trial?.remainingMicros ?? 0) - summary.debtMicros;
-  const extra = extraUsage && !extraUsage.frozen ? extraUsage.remainingMicros : 0;
-  const stage = summary.plan && first <= 0 && first + extra > 0 ? 'extra' : 'plan';
-  const all = Math.max(0, first + extra) as UsageMicros;
-  const left = (stage === 'plan' && summary.plan ? Math.max(0, first) : all) as UsageMicros;
-  return {
-    left: formatUsageDollars(left, 'down'),
-    tasksLeft: formatTasks(left, summary.funding, summary.offers),
-    exhausted: all === 0,
-    stage,
   };
 }
 
