@@ -826,7 +826,7 @@ export class UsageStoreLogic {
       ...row as unknown as UsageActivityAttribution,
       startedAt: Number(row.startedAt),
       estimateMicros: row.estimateMicros === null ? null : Number(row.estimateMicros),
-      // Run IDs match [A-Za-z0-9_-], so group_concat's comma never splits one.
+      // Billing run IDs are opaque IDs, which have no comma for group_concat to split on.
       billingRunIds: row.billingRunIds === null ? [] : String(row.billingRunIds).split(','),
     }));
   }

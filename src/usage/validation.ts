@@ -31,7 +31,6 @@ import {
 } from './model-requests.ts';
 
 const OPAQUE_ID = /^[A-Za-z0-9][A-Za-z0-9:._/@-]{0,255}$/;
-const RUN_ID = /^[A-Za-z0-9_-]{1,200}$/;
 const MAX_QUERY_RANGE_MS = 366 * 24 * 60 * 60 * 1_000;
 const MAX_FILTER_VALUES = 10;
 const MAX_LABEL_BYTES = 160;
@@ -125,7 +124,7 @@ export function normalizeRecordUsageTerminal(
     ...(input.runExecutionId
       ? { runExecutionId: opaqueId(input.runExecutionId, 'Run execution ID') }
       : {}),
-    ...(input.billingRunId ? { billingRunId: runId(input.billingRunId) } : {}),
+    ...(input.billingRunId ? { billingRunId: opaqueId(input.billingRunId, 'Billing run ID') } : {}),
     status: terminalStatus(input.status),
     finishedAt: timestamp(input.finishedAt, 'finished time'),
     observedAt: timestamp(input.observedAt, 'observed time'),
@@ -355,11 +354,6 @@ function terminalStatus(value: UsageTerminalStatus): UsageTerminalStatus {
 
 function opaqueId(value: unknown, label: string, query = false): string {
   if (typeof value !== 'string' || !OPAQUE_ID.test(value)) fail(`${label} is invalid.`, query);
-  return value as string;
-}
-
-function runId(value: unknown): string {
-  if (typeof value !== 'string' || !RUN_ID.test(value)) invalid('Billing run ID is invalid.');
   return value as string;
 }
 
