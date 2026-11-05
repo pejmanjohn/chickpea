@@ -1462,6 +1462,7 @@ async function runTurnAttempt(
       store: options.usageStore ?? options.appStores?.usage ?? getUsageStore(platformEnv),
       ...(options.flueDispatch?.flueSettlement
         ? { replaySettlementAt: options.flueDispatch.flueSettlement.settledAt } : {}),
+      billingRunId: () => options.flueDispatch?.dispatchReceipt?.submissionId,
       ...(options.runId ? { runId: options.runId } : {}),
       ...(platformEnv ? { platformEnv } : {}),
       ...(options.usageWriteBudgetMs === undefined

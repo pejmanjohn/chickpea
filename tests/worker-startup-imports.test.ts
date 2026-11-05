@@ -44,6 +44,7 @@ const LAZY_MODULES: Record<string, string> = {
   'src/slack/canvases/service.ts': 'a canvas tool call (slack/canvases/tools.ts)',
   'src/slack/funding-refusal-reply.ts': 'an out-of-usage reply or an Ask an Owner click (slack/run-turn.ts, channels/slack.ts)',
   'src/routines/pause-notice.ts': "a routine's out-of-usage pause, or the good run after it (routines/execution.ts)",
+  'src/admin/usage-report.ts': "a hosted Usage report or activity page (admin/usage-api.ts)",
   'src/admin/billing-api.ts': "the Plan page's API, on its first request (admin/routes.ts)",
 };
 

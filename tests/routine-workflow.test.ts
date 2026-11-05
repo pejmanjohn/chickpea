@@ -726,6 +726,8 @@ async function scheduledRunSettlement(
     deadlinePassesBeforeReattach?: boolean;
     /** The channel's membership changed while the run worked, so its memory lease no longer holds. */
     accessChanged?: boolean;
+    /** Records the run's usage here. */
+    usage?: UsageStore;
   } = {},
 ) {
   const store = new SqliteRoutineStore(':memory:', () => NOW);
@@ -738,6 +740,7 @@ async function scheduledRunSettlement(
     resetPlatformFundingForTests();
   });
   const events: string[] = [];
+  const feeRuns: string[] = [];
   const creditBacks: Array<{ run: RunRef; reason: CreditBackReason }> = [];
   const statusesAtCreditBack: Array<string | undefined> = [];
   let occurrenceId: string | undefined;
@@ -750,6 +753,7 @@ async function scheduledRunSettlement(
       charge: async () => {},
       postFee: async (post) => {
         events.push(`fee:${post.tier}`);
+        feeRuns.push(post.runId);
         return { kind: input.fee ?? 'posted' };
       },
       creditBack: async (run, reason) => {
@@ -796,6 +800,7 @@ async function scheduledRunSettlement(
         }
       : {}),
     handle: input.handle?.(clock) ?? fakeHandle({ reply: successfulReply() }),
+    ...(input.usage ? { usageRecordingEnabled: true, usageStore: input.usage } : {}),
   };
   const occurrence = { env, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt };
   if (input.deadlinePassesBeforeReattach) {
@@ -803,7 +808,7 @@ async function scheduledRunSettlement(
     clock.at = NOW + 120_000;
   }
   assert.equal(await executeRoutineOccurrence(occurrence, deps), 'completed');
-  return { run: await store.getRun(fixture.run.id), events, creditBacks, statusesAtCreditBack, messages };
+  return { run: await store.getRun(fixture.run.id), events, feeRuns, creditBacks, statusesAtCreditBack, messages };
 }
 
 /** A handle whose read reports what the Agent did, then ends as told. */
@@ -826,6 +831,21 @@ test('a delivered scheduled result posts its task row, then a footer that says n
     assert.deepEqual(delivered.events, ['fee:task', 'slack-post']);
     assert.deepEqual(routineFooter(delivered.messages[0]), ['Chickpea', 'anthropic/claude-sonnet-4-6', 'Scheduled']);
   }
+});
+
+test('a routine attempt\'s usage measurement keeps the run key its task fee and credit-back used', async (t) => {
+  const usage = new SqliteUsageStore(':memory:');
+  t.after(() => usage.close());
+  const delivered = await scheduledRunSettlement(t, 'keyed_delivered', { platformFunded: true, usage });
+  const failed = await scheduledRunSettlement(t, 'keyed_failed', {
+    platformFunded: true, usage, handle: () => fakeHandle({ readError: PROVIDER_FAILED() }),
+  });
+  const measuredKey = async (occurrenceId: string) =>
+    (await usage.getOperation(occurrenceId))?.measurements.map((measurement) => measurement.billingRunId);
+  assert.deepEqual(delivered.feeRuns, ['submission_test']);
+  assert.deepEqual(await measuredKey(delivered.run!.id), delivered.feeRuns);
+  assert.deepEqual(failed.creditBacks.map((credit) => credit.run.runId), ['submission_test']);
+  assert.deepEqual(await measuredKey(failed.run!.id), failed.creditBacks.map((credit) => credit.run.runId));
 });
 
 test('a platform-funded scheduled run that failed as a whole is credited back, and its notice says so', async (t) => {

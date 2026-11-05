@@ -315,7 +315,7 @@ export async function executeRoutineOccurrence(
   }
   if (prepared.run.flueAgentSettlement) {
     try {
-      await recordUsage(prepared, prepared.run.flueAgentSettlement);
+      await recordUsage(prepared, prepared.run.flueAgentSettlement, prepared.receipt?.submissionId);
       if (refused) return await skipWithoutResult(prepared, REFUSED_SKIP, now());
       return await finalizeSettlement(prepared, prepared.run.flueAgentSettlement, now(), prepared.receipt?.submissionId);
     } finally {
@@ -475,7 +475,7 @@ export async function executeRoutineOccurrence(
       });
     }
   }
-  await recordUsage(prepared, settlement);
+  await recordUsage(prepared, settlement, receipt?.submissionId);
   try {
     prepared.run = await input.store.recordAgentSettlement({
       occurrenceId: prepared.run.id,
@@ -1114,6 +1114,7 @@ function routineRunReviewEnding(
 async function recordUsage(
   prepared: PreparedExecution,
   settlement: RoutineAgentSettlementV1,
+  submissionId: string | undefined,
 ): Promise<void> {
   const usage = settlement.outcome === 'completed' ? settlement.result.usage : settlement.usage;
   await prepared.usageRecorder?.recordTerminal({
@@ -1130,6 +1131,7 @@ async function recordUsage(
       : {}),
     ...(usage?.returnedModel ? { returnedModel: usage.returnedModel } : {}),
     ...(usage ? {} : { unknownReason: 'provider_request_unknown' }),
+    billingRunId: submissionId,
   });
 }
 
@@ -1527,6 +1529,7 @@ export async function settleRefusedWithoutPreparation(
       operationId: run.id,
       executionId,
       ...(execution ? { runExecutionId: execution.id } : {}),
+      billingRunId: admission.flueAgentReceipt?.submissionId,
       status: 'failed',
       unknownReason: 'provider_request_unknown',
       at: now(),
