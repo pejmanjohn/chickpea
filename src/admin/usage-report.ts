@@ -17,6 +17,7 @@ import {
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { activeModelCatalogSnapshot } from '../model-catalog/index.ts';
 import { UsageStateError } from '../usage/store-error.ts';
+import { USAGE_RAW_RETENTION_DAYS } from '../usage/retention.ts';
 import type { UsageActivityAttribution, UsageOperationDetail, UsageStore } from '../usage/types.ts';
 import { formatPriceCents, formatUsageDollars, type UsageMicros } from '../usage/usage-display.ts';
 import { balance, type BillingBalance } from './billing-balance.ts';
@@ -205,10 +206,16 @@ export function reportRanges(
   }
   const today = dayNumber(now) * DAY_MS;
   const window = 'period' in request ? { from: today - (FALLBACK_DAYS - 1) * DAY_MS, to: today + DAY_MS } : request;
+  // Outside a billing period only attributable usage counts, and activity older than raw retention is gone.
+  const from = Math.min(Math.max(window.from, retainedFrom(now)), window.to);
   return {
-    range: { from: window.from, to: window.to, period: null },
-    prior: { from: 2 * window.from - window.to, to: window.from },
+    range: { from, to: window.to, period: null },
+    prior: { from: 2 * from - window.to, to: from },
   };
+}
+
+function retainedFrom(now: number): number {
+  return now - USAGE_RAW_RETENTION_DAYS * DAY_MS;
 }
 
 /** The same UTC time `months` calendar months earlier, on that month's last day when it is shorter. */
@@ -258,7 +265,8 @@ export function buildUsageReport(inputs: UsageReportInputs): UsageReport {
     }));
   };
   const agentName = (id: string) => names.agents.get(id);
-  const people = names.people;
+  // A billing period's people, as the Plan page's By person; a narrower range could name who asked for one private run.
+  const people = range.period === null ? null : names.people;
   const personName = (key: string) => key === ROUTINES ? 'Routines' : people?.get(key);
   // An Agent with no name now reads as the gathered row, as on the Plan page.
   const agentRow = (id: string | null) => id !== null && names.agents.has(id) ? id : null;
@@ -281,11 +289,14 @@ export function buildUsageReport(inputs: UsageReportInputs): UsageReport {
   const lines = ranked(attributable, (charge) => agentRow(charge.agentId), agentName, CHARTED_AGENTS, OTHER);
   const charted = new Set(lines.map((line) => line.key));
   const line = (charge: Charge) => charted.has(agentRow(charge.agentId)) ? agentRow(charge.agentId) : null;
-  const priorDays = byDay(previous, dayNumber(prior.from));
-  // A finished range compares whole sums, so a 31-day prior month keeps its last day.
+  // Attributable usage on both sides, so a day of private usage last period never moves the change; a finished
+  // range compares whole sums, so a 31-day prior month keeps its last day.
+  const priorAttributable = previous.filter((charge) => charge.matched);
+  const priorKnown = range.period !== null || prior.from >= retainedFrom(now);
   const finished = elapsed >= dayCount;
-  const priorSoFar = finished ? sumOf(previous) : sum(priorDays.slice(0, elapsed));
-  const priorLine = byDay(previous.filter((charge) => charge.matched), dayNumber(prior.from));
+  const priorLine = byDay(priorAttributable, dayNumber(prior.from));
+  const priorSoFar = finished ? sumOf(priorAttributable) : sum(priorLine.slice(0, elapsed));
+  const currentSoFar = finished ? sumOf(attributable) : sum(byDay(attributable, firstDay).slice(0, elapsed));
 
   const choiceIds = new Set([...startedIn(range), ...workspace].flatMap((item) => {
     const id = agentRow(item.agentId);
@@ -314,8 +325,7 @@ export function buildUsageReport(inputs: UsageReportInputs): UsageReport {
     plan: planStrip(summary),
     total: amount(total),
     perDay: amount(elapsed === 0 ? 0 : measure === 'activity' ? Math.round(total * 10 / elapsed) / 10 : Math.round(total / elapsed)),
-    change: priorSoFar === 0 ? null
-      : Math.round(((finished ? total : sum(byDay(current, firstDay).slice(0, elapsed))) - priorSoFar) * 100 / priorSoFar),
+    change: !priorKnown || priorSoFar === 0 ? null : Math.round((currentSoFar - priorSoFar) * 100 / priorSoFar),
     share: agentId === null ? null : percent(total, sumOf(workspace)),
     pace: measure === 'usage' && thisPeriod && agentId === null && summary.period && onPace !== null
       ? { percent: onPace, by: SHORT_DATE.format(summary.period.end) }
@@ -330,7 +340,7 @@ export function buildUsageReport(inputs: UsageReportInputs): UsageReport {
       days: Array.from({ length: dayCount }, (_, index) => SHORT_DATE.format((firstDay + index) * DAY_MS)),
       elapsed,
       series: lines.map(({ key, name }) => ({ key, name, values: byDay(attributable.filter((charge) => line(charge) === key), firstDay) })),
-      prior: priorLine.every((value) => value === 0) ? null : priorLine,
+      prior: !priorKnown || priorLine.every((value) => value === 0) ? null : priorLine,
     },
     models: listed(ranked(current, (charge) => charge.model, names.model, LISTED_ROWS, OTHER)).map(reportRow),
     people: people && listed(ranked(current, (charge) => charge.person, personName, LISTED_ROWS, 'Everyone else')).map(reportRow),
@@ -509,7 +519,8 @@ function pair(provider: string | null | undefined, model: string | null | undefi
 export function planStrip(summary: BillingSummary): UsageReport['plan'] {
   const left = planBalance(summary);
   const topUp = summary.autoTopUp;
-  return left && { left: left.left, autoTopUp: !topUp ? null : topUp.enabled ? 'on' : 'off' };
+  const on = topUp && topUp.enabled && summary.pendingChange?.kind !== 'ends';
+  return left && { left: left.left, autoTopUp: !topUp ? null : on ? 'on' : 'off' };
 }
 
 /** The Plan page's balance, which it does not show for an own key without a plan. */

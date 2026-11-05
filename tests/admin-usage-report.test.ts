@@ -139,8 +139,8 @@ test('billed usage: every run counts toward its Agent, person and model, and unm
   assert.deepEqual(shown.agentChoices.map((choice) => choice.name), ['Atlas', 'Birch', 'Cedar', 'Dune', 'Elm']);
   assert.deepEqual(shown.range, { from: PERIOD.start.getTime(), to: NOW + 1, since: 'Oct 7', period: 'this_billing_period' });
   assert.deepEqual(shown.perDay, { value: Math.round(usd(5.85) / 14), text: '$0.41' });
-  // Sep 8's $1 is within the same 14 days last period; Sep 25's $0.30 is not.
-  assert.equal(shown.change, 485);
+  // Attributable usage on both sides: $5.45 this period so far against Sep 8's $1; Sep 25's $0.30 is later.
+  assert.equal(shown.change, 445);
   // Sep 25's $0.30 matches no activity, so the dashed line leaves it out.
   assert.deepEqual([shown.chart.prior?.[1], shown.chart.prior?.[18], sum(shown.chart.prior ?? [])], [usd(1), 0, usd(1)]);
   assert.deepEqual(shown.pace, { percent: 80, by: 'Nov 7' });
@@ -304,4 +304,29 @@ test('a viewer who sees no one\'s usage gets no people, and usage Core can\'t at
   });
   assert.equal(narrow.total.value, usd(0.05), 'only the deleted Agent\'s attributed $0.05');
   assert.equal(narrow.agents?.find((agent) => agent.key === null)?.amount.text, '$0.05');
+});
+
+test('outside a billing period nobody is named, and the range starts no earlier than the activity Core keeps', () => {
+  const at = (request: UsageReportRange) => buildUsageReport({
+    summary: TEAM_PLAN, ...reportRanges(request, TEAM_PLAN, NOW), billed: BILLED, attributions: ACTIVITY, agentId: null,
+    names: NAMES, now: NOW,
+  });
+  const rolling = at({ from: NOW - 7 * 86_400_000, to: NOW + 1 });
+  assert.deepEqual([rolling.people, rolling.agents?.[0]?.topPerson], [null, null], 'an Owner sees people by billing period only');
+  assert.ok(at({ period: 'this_billing_period' }).people, 'and does in one');
+
+  const old = at({ from: NOW - 200 * 86_400_000, to: NOW - 100 * 86_400_000 });
+  assert.equal(old.range.from, old.range.to, 'nothing Core still keeps');
+  const ninety = at({ from: NOW - 90 * 86_400_000, to: NOW + 1 });
+  assert.equal(ninety.range.from, NOW - 90 * 86_400_000);
+  assert.deepEqual([ninety.change, ninety.chart.prior], [null, null], 'the 90 days before it are past retention');
+});
+
+test('the strip reads off for a plan that is ending, as the Plan page shows an Admin', () => {
+  const autoTopUp: NonNullable<BillingSummary['autoTopUp']> = {
+    enabled: true, explicitlyOff: false, pack: { rule: 'plan', key: 'extra_usage_50' }, limit: { rule: 'plan', cents: 20_000 },
+    usedCents: 0, resetsAt: PERIOD.end, pause: null, card: null,
+  };
+  const ending: BillingSummary = { ...TEAM_PLAN, autoTopUp, pendingChange: { kind: 'ends', at: PERIOD.end } };
+  assert.equal(report({ summary: ending }).plan?.autoTopUp, 'off');
 });
