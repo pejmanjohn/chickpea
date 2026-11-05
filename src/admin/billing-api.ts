@@ -269,7 +269,7 @@ export function createBillingAdminApi(options: BillingAdminApiOptions): Hono {
   app.post('/billing/checkout', (c) => withOwnerBilling(c, async (port, installationId) => {
     const parsed = v.safeParse(checkoutSchema, await readJson(c, MAX_BILLING_BODY_BYTES));
     if (!parsed.success) return invalidRequest(c);
-    return redirect(c, await port.checkout(installationId, parsed.output, PLAN_PATH));
+    return redirect(c, await port.checkout(installationId, parsed.output, PLAN_PATH, await options.actor(c)));
   }));
 
   app.post('/billing/portal', (c) => withOwnerBilling(c, async (port, installationId) =>
