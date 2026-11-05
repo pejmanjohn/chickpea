@@ -162,6 +162,12 @@ export interface RecordUsageTerminalInput {
   estimateCurrency: string | null;
   priceVersionId: string | null;
   priceUnknownReason: PriceUnknownReason | null;
+  /**
+   * The run key this execution's charges carry on the billing host: the Flue
+   * submission ID, as `RunRef.runId` names it. Absent on standalone, and on
+   * executions recorded before it was kept.
+   */
+  billingRunId?: string | null;
 }
 
 export interface UsageMeasurement extends Omit<RecordUsageTerminalInput, 'status' | 'finishedAt'> {
@@ -260,6 +266,32 @@ export interface UsageSummary {
   groups: UsageRollupGroup[];
 }
 
+/**
+ * One customer activity, an interactive turn or a public routine run, with
+ * what the Usage report attributes to it. Private routine runs and internal
+ * operations are never listed.
+ */
+export interface UsageActivityAttribution {
+  operationId: string;
+  operationKind: 'interactive_turn' | 'routine_run';
+  startedAt: number;
+  agentId: string | null;
+  requesterMembershipId: string | null;
+  /** `provider/model` from its last measurement's returned model, else the requested one. */
+  model: string | null;
+  /** Core's USD list-price estimate over its complete measurements; null when none is priced. */
+  estimateMicros: number | null;
+  /** The billing run keys of its executions (`UsageMeasurement.billingRunId`), deduplicated. */
+  billingRunIds: string[];
+}
+
+export interface UsageActivityQuery {
+  /** Started at or after. */
+  from: number;
+  /** Started before. */
+  to: number;
+}
+
 export interface UsageOperationPage {
   items: UsageOperationDetail[];
   nextCursor: UsageCursor | null;
@@ -320,6 +352,7 @@ export type UsageRpcRequest =
   | { kind: 'get_operation_by_run'; runId: string }
   | { kind: 'list_operations'; query: UsageQuery }
   | { kind: 'summarize'; query: UsageQuery }
+  | { kind: 'list_activity_attributions'; query: UsageActivityQuery }
   | { kind: 'put_credential'; input: PutModelCredentialInput }
   | { kind: 'retire_credential'; credentialRefId: string; version: number; retiredAt: number }
   | { kind: 'list_credentials'; providerId?: string }
@@ -337,6 +370,7 @@ export type UsageRpcResponse =
   | { kind: 'detail'; detail: UsageOperationDetail | null }
   | { kind: 'operation_page'; page: UsageOperationPage }
   | { kind: 'summary'; summary: UsageSummary }
+  | { kind: 'activity_attributions'; attributions: UsageActivityAttribution[] }
   | { kind: 'credential'; credential: ModelCredentialRecord }
   | { kind: 'credentials'; credentials: ModelCredentialRecord[] }
   | { kind: 'retention'; result: UsageRetentionResult }
@@ -356,6 +390,8 @@ export interface UsageStore {
   getOperationByRunId(runId: string): Promise<UsageOperationDetail | undefined>;
   listOperations(query: UsageQuery): Promise<UsageOperationPage>;
   summarize(query: UsageQuery): Promise<UsageSummary>;
+  /** Every customer activity started in the range, oldest first. */
+  listActivityAttributions(query: UsageActivityQuery): Promise<UsageActivityAttribution[]>;
   putCredential(input: PutModelCredentialInput): Promise<ModelCredentialRecord>;
   retireCredential(
     credentialRefId: string,

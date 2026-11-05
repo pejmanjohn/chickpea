@@ -112,6 +112,33 @@ export class BillingRefusal extends Error {
   }
 }
 
+/**
+ * One run's billed usage on one UTC day: the rows the plan's meter sums,
+ * model and fee charges less what creditBack restored. Usage is
+ * `modelMicros + feeMicros - creditedBackMicros`.
+ */
+export interface BilledUsageRow {
+  /**
+   * The run key Core gave the ledger: `RunRef.runId`, `FeePost.runId` and
+   * `ModelRequestRecord.runId`, which is the Flue submission ID, not Core's
+   * Work run ID. Null for rows that name no run.
+   */
+  readonly runId: string | null;
+  /** The UTC day the rows were written, `YYYY-MM-DD`. */
+  readonly day: string;
+  readonly modelMicros: UsageMicros;
+  /** Chat and task fees. */
+  readonly feeMicros: UsageMicros;
+  /** Whether a task fee is among `feeMicros`. */
+  readonly task: boolean;
+  /** What creditBack restored, as a positive amount. */
+  readonly creditedBackMicros: UsageMicros;
+}
+
+export interface BilledUsage {
+  readonly rows: readonly BilledUsageRow[];
+}
+
 export interface PlatformBillingPort {
   summary(installationId: string): Promise<BillingSummary>;
   /**
@@ -131,6 +158,13 @@ export interface PlatformBillingPort {
    * any other throw is an outage.
    */
   chooseFunding(installationId: string, funding: BillingFunding): Promise<void>;
+  /**
+   * Optional. Billed usage written in `[from, to)`, by run and UTC day, so
+   * its sum over the billing period equals the plan meter's. Admin's Usage
+   * page shows amounts only while the host answers; without the method, or
+   * when it throws, the page shows activity counts.
+   */
+  usage?(installationId: string, range: { readonly from: Date; readonly to: Date }): Promise<BilledUsage>;
 }
 
 let port: PlatformBillingPort | undefined;
