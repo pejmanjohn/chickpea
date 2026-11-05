@@ -32,7 +32,9 @@ catalog and rejects every later revision that still carries that entry.
 
 Hosted credits charge only for models that have a reviewed list price in
 `src/usage/pricing/catalogs/`. A model without one runs with the customer's own
-key and is refused on credits. Pi's `cost` metadata never sets a charge.
+key and is refused on credits. Pi's `cost` metadata never sets a charge. A
+price past its review date keeps serving, charged at the model's newest
+effective price; see [price review](price-review.md).
 
 ### Add a model to the hosted catalog
 
@@ -51,7 +53,8 @@ key and is refused on credits. Pi's `cost` metadata never sets a charge.
    the unchangeable `catalog/releases/revision-<N>.json`.
 4. Run `npm run verify:model-catalog`.
 5. To offer the model on credits, add a reviewed price version, with the
-   provider's pricing page as `sourceUrl`.
+   provider's pricing page as `sourceUrl`. Its review date only tells an
+   operator when to check the price again; see [price review](price-review.md).
 
 ## Upgrade Flue and Pi
 

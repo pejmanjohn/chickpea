@@ -11,7 +11,7 @@ Docs: `/admin/`, `/admin/tour/`, `/admin/sign-in-and-roles/`, `/admin/usage/`. R
 - An Agent profile has a header with inline rename and a status chip, the Destinations card, eight tabs with counts and an unsaved-changes dot, Advanced (who can edit), and a sticky save bar. On an Agent you cannot edit, every field is disabled.
 - The overflow menu holds Duplicate Agent, Archive or Restore, and the legacy default selector.
 - Destinations covers Slack: Overview, Connection (Test connection, Reconnect with Slack, Disconnect) and Channels.
-- Usage has period and breakdown selectors, four cards compared with the previous period, spend by breakdown, recent activity, a coverage line and the spending-limits sentence. A model outside the pinned catalog records tokens with no price (`price_unknown`), and a stale catalog entry (`price_stale`) makes Admin say estimates need a pricing update.
+- Usage has period and breakdown selectors, four cards compared with the previous period, spend by breakdown, recent activity, a coverage line and the spending-limits sentence. A model outside the pinned catalog records tokens with no price (`price_unknown`).
 - Settings has Connectors, Model providers, GitHub, Coding sandbox and Browser. Audit logs has no nav button and is reached by its path.
 - Form behaviour: typing keeps focus and caret through background refreshes, native dropdowns stay open through background renders, a deep link loads its tab data even when the page opened hidden, and a conflicting Memory save keeps the draft.
 
