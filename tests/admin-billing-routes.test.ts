@@ -100,11 +100,12 @@ const TEAM_STATUS = {
   pendingChange: null,
   meter: { used: '$128', included: '$240', percent: 53, onPacePercent: 80, resets: 'Nov 7', tasksUsed: null, tasksIncluded: null },
   rollover: { remaining: '$20', until: 'Nov 7' },
-  extraUsage: { remaining: '$40', frozen: false, until: 'Sep 14, 2027' },
+  extraUsage: { remaining: '$40', frozen: false, until: 'Sep 14, 2027', bar: null },
   trial: null,
   ownKeyWithoutPlan: null,
-  // $112 of the plan, $20 carried over, and $40 of extra usage, at 45¢ a typical task.
-  balance: { left: '$172', tasksLeft: 'about 375', exhausted: false },
+  // $112 of the plan and $20 carried over, at 45¢ a typical task; the $40 of extra usage comes after them.
+  balance: { left: '$132', tasksLeft: 'about 275', exhausted: false, stage: 'plan' },
+  autoTopUp: null,
   taskFee: '30¢',
 };
 
@@ -145,12 +146,12 @@ test('an Owner reads the plan\'s usage in dollars and tasks, the offers with the
     },
     offers: {
       plans: [
-        { key: 'solo', name: 'Solo', price: '$25', included: '$30', ownKeyMinimum: false, ownKeyEligible: false, tasks: { platform: 'about 60', ownKey: null } },
-        { key: 'starter', name: 'Starter', price: '$50', included: '$60', ownKeyMinimum: false, ownKeyEligible: false, tasks: { platform: 'about 125', ownKey: null } },
-        { key: 'plus', name: 'Plus', price: '$100', included: '$120', ownKeyMinimum: true, ownKeyEligible: true, tasks: { platform: 'about 250', ownKey: '400' } },
-        { key: 'team', name: 'Team', price: '$200', included: '$240', ownKeyMinimum: false, ownKeyEligible: true, tasks: { platform: 'about 500', ownKey: '800' } },
-        { key: 'growth', name: 'Growth', price: '$300', included: '$360', ownKeyMinimum: false, ownKeyEligible: true, tasks: { platform: 'about 800', ownKey: '1,200' } },
-        { key: 'business', name: 'Business', price: '$500', included: '$600', ownKeyMinimum: false, ownKeyEligible: true, tasks: { platform: 'about 1,300', ownKey: '2,000' } },
+        { key: 'solo', name: 'Solo', price: '$25', included: '$30', ownKeyMinimum: false, ownKeyEligible: false, topUpPack: null, tasks: { platform: 'about 60', ownKey: null } },
+        { key: 'starter', name: 'Starter', price: '$50', included: '$60', ownKeyMinimum: false, ownKeyEligible: false, topUpPack: null, tasks: { platform: 'about 125', ownKey: null } },
+        { key: 'plus', name: 'Plus', price: '$100', included: '$120', ownKeyMinimum: true, ownKeyEligible: true, topUpPack: null, tasks: { platform: 'about 250', ownKey: '400' } },
+        { key: 'team', name: 'Team', price: '$200', included: '$240', ownKeyMinimum: false, ownKeyEligible: true, topUpPack: null, tasks: { platform: 'about 500', ownKey: '800' } },
+        { key: 'growth', name: 'Growth', price: '$300', included: '$360', ownKeyMinimum: false, ownKeyEligible: true, topUpPack: null, tasks: { platform: 'about 800', ownKey: '1,200' } },
+        { key: 'business', name: 'Business', price: '$500', included: '$600', ownKeyMinimum: false, ownKeyEligible: true, topUpPack: null, tasks: { platform: 'about 1,300', ownKey: '2,000' } },
       ],
       extraUsage: [
         { key: 'extra_usage_25', price: '$25', usage: '$25', validMonths: 12 },
@@ -162,6 +163,9 @@ test('an Owner reads the plan\'s usage in dollars and tasks, the offers with the
       rolloverMonths: 1,
     },
     ownKey: { planReady: true, minimumPlan: { key: 'plus', price: '$100' }, key: { ready: false, provider: null } },
+    topUp: null,
+    inApp: { planChange: false, extraUsage: false },
+    purchase: null,
   });
   assert.deepEqual(calls, [['summary', INSTALLATION]]);
 });
@@ -185,33 +189,38 @@ test('the status leaves out what is empty: no zero rollover or extra usage', asy
   });
   assert.equal(drained.rollover, null);
   assert.equal(drained.extraUsage, null);
-  assert.deepEqual(drained.balance, { left: '$112', tasksLeft: 'about 225', exhausted: false });
+  assert.deepEqual(drained.balance, { left: '$112', tasksLeft: 'about 225', exhausted: false, stage: 'plan' });
 });
 
 test('a trial reads what it started with, what is used and left, and the tasks that covers', async (t) => {
   const trial = await status(t, { ...NO_PLAN, trial: TRIAL_GRANT });
   assert.deepEqual(trial.trial, { remaining: '$32.50', granted: '$50', used: '$17.50', percent: 35, until: 'Nov 6' });
-  assert.deepEqual(trial.balance, { left: '$32.50', tasksLeft: 'about 70', exhausted: false });
+  assert.deepEqual(trial.balance, { left: '$32.50', tasksLeft: 'about 70', exhausted: false, stage: 'plan' });
   assert.equal(trial.meter, null, 'no meter without a plan period');
   assert.deepEqual((await status(t, { ...NO_PLAN, trial: { ...TRIAL_GRANT, remainingMicros: usd(50) } })).balance,
-    { left: '$50', tasksLeft: 'about 100', exhausted: false }, 'a whole trial covers about 100 tasks');
+    { left: '$50', tasksLeft: 'about 100', exhausted: false, stage: 'plan' }, 'a whole trial covers about 100 tasks');
   assert.deepEqual((await status(t, { ...NO_PLAN, trial: { ...TRIAL_GRANT, remainingMicros: usd(0) } })).balance,
-    { left: '$0', tasksLeft: '0', exhausted: true });
+    { left: '$0', tasksLeft: '0', exhausted: true, stage: 'plan' });
 });
 
-test('what is left counts the plan\'s remaining usage, what carried over, extra usage a plan unfreezes, and trial usage, less debt', async (t) => {
+test('what is left follows the order usage is spent: the plan\'s usage, what carried over and trial usage first, less debt, then extra usage a plan unfreezes', async (t) => {
   const left = async (summary: BillingSummary) => (await status(t, summary)).balance;
-  assert.deepEqual(await left({ ...TEAM_PLAN, trial: TRIAL_GRANT }), { left: '$204.50', tasksLeft: 'about 450', exhausted: false });
-  assert.deepEqual(await left({ ...TEAM_PLAN, debtMicros: usd(72) }), { left: '$100', tasksLeft: 'about 200', exhausted: false });
+  const plan = (dollars: string, tasks: string) => ({ left: dollars, tasksLeft: tasks, exhausted: false, stage: 'plan' });
+  assert.deepEqual(await left({ ...TEAM_PLAN, trial: TRIAL_GRANT }), plan('$164.50', 'about 350'));
+  assert.deepEqual(await left({ ...TEAM_PLAN, debtMicros: usd(72) }), plan('$60', 'about 125'));
   const usedUp: BillingSummary = { ...TEAM_PLAN, planUsage: { usedMicros: usd(250), includedMicros: usd(240), onPacePercent: null } };
-  assert.deepEqual(await left(usedUp), { left: '$60', tasksLeft: 'about 125', exhausted: false }, 'usage past the plan\'s takes nothing more from what is left');
-  assert.deepEqual(await left({ ...usedUp, debtMicros: usd(75) }), { left: '$0', tasksLeft: '0', exhausted: true }, 'what is owed beyond it leaves nothing');
-  assert.deepEqual(await left({ ...usedUp, rollover: null, extraUsage: null }), { left: '$0', tasksLeft: '0', exhausted: true });
+  assert.deepEqual(await left(usedUp), plan('$20', 'about 40'), 'what carried over is spent before extra usage');
+  assert.deepEqual(await left({ ...usedUp, rollover: null }), { left: '$40', tasksLeft: 'about 80', exhausted: false, stage: 'extra' },
+    'usage past the plan\'s takes nothing more from what is left');
+  assert.deepEqual(await left({ ...usedUp, debtMicros: usd(30) }), { left: '$30', tasksLeft: 'about 60', exhausted: false, stage: 'extra' },
+    'what is owed beyond the plan\'s usage comes out of extra usage');
+  assert.deepEqual(await left({ ...usedUp, debtMicros: usd(75) }), { left: '$0', tasksLeft: '0', exhausted: true, stage: 'plan' }, 'what is owed beyond it leaves nothing');
+  assert.deepEqual(await left({ ...usedUp, rollover: null, extraUsage: null }), { left: '$0', tasksLeft: '0', exhausted: true, stage: 'plan' });
   assert.deepEqual(await left({ ...NO_PLAN, extraUsage: { remainingMicros: usd(40), frozen: true, expiresAt: PERIOD.end } }),
-    { left: '$0', tasksLeft: '0', exhausted: true }, 'frozen extra usage waits for a plan');
-  assert.deepEqual(await left(PLAN_NO_PERIOD), { left: '$280', tasksLeft: 'about 600', exhausted: false }, 'a plan with no meter yet counts its whole usage');
+    { left: '$0', tasksLeft: '0', exhausted: true, stage: 'plan' }, 'frozen extra usage waits for a plan');
+  assert.deepEqual(await left(PLAN_NO_PERIOD), plan('$240', 'about 500'), 'a plan with no meter yet counts its whole usage');
   const ownKey = await status(t, { ...TEAM_PLAN, funding: 'own_key' });
-  assert.deepEqual(ownKey.balance, { left: '$172', tasksLeft: '573', exhausted: false }, 'an own key counts tasks exactly');
+  assert.deepEqual(ownKey.balance, plan('$132', '440'), 'an own key counts tasks exactly');
   assert.deepEqual((ownKey.meter as Record<string, unknown>).tasksUsed, '426');
   assert.deepEqual((ownKey.meter as Record<string, unknown>).tasksIncluded, '800');
   assert.equal((await status(t, OWN_KEY_NO_PLAN)).balance, null, 'an own key with no plan has nothing to spend');
@@ -240,7 +249,7 @@ test('a rate card whose tasks draw nothing still reads, with no task counts', as
     balance: unknown; meter: Record<string, unknown>; plan: Record<string, unknown>;
     offers: { plans: { tasks: { platform: string | null; ownKey: string | null } }[] };
   };
-  assert.deepEqual(view.balance, { left: '$172', tasksLeft: null, exhausted: false });
+  assert.deepEqual(view.balance, { left: '$132', tasksLeft: null, exhausted: false, stage: 'plan' });
   assert.deepEqual([view.meter.tasksUsed, view.meter.tasksIncluded, view.plan.tasks], [null, null, null]);
   assert.deepEqual(view.offers.plans.map((plan) => plan.tasks.ownKey), [null, null, null, null, null, null]);
   assert.equal(view.offers.plans[2]!.tasks.platform, 'about 800', 'with models included a typical task still costs its tokens');

@@ -188,6 +188,7 @@ async function harness(options: {
     personNames: async () => new Map([['membership_maya', 'Maya Chen']]),
     ownKeyFacts: async () => ({ ...ownKey, savedKeys }),
     choseChickpeaModels: async () => undefined,
+    actor: async () => ({ membershipId: principal.membershipId, slackUserId: 'U_OWNER' }),
   }));
   const fetch = async (path: string, init?: { method?: string; body?: string }): Promise<FakeResponse> => {
     const method = init?.method ?? 'GET';
@@ -380,7 +381,7 @@ const OWN_KEY_PLUS: BillingSummary = {
 const STARTER_USED_UP: BillingSummary = { ...STARTER_PLAN, planUsage: { usedMicros: usd(60), includedMicros: usd(60), onPacePercent: null } };
 const OWN_KEY_USED_UP: BillingSummary = { ...OWN_KEY_PLUS, planUsage: { usedMicros: usd(120), includedMicros: usd(120), onPacePercent: null } };
 
-test('an Owner on the Team plan reads what is left, the tasks it covers, the meter, and what carried over, with Add usage beside it', async () => {
+test('an Owner on the Team plan reads what is left of the plan, the tasks it covers, the meter, and a line each for what carried over and extra usage, with Add usage beside it', async () => {
   const page = await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN });
   const html = page.html();
   assert.equal(page.location.pathname, '/admin/plan');
@@ -390,11 +391,12 @@ test('an Owner on the Team plan reads what is left, the tasks it covers, the met
   assert.equal(lede(html), 'Your workspace is on the $200 plan with models included.');
   assert.match(html, /data-action="billing-manage">Manage billing<\/button>/);
   const status = hero(html);
-  assertShows(status, 'This month $172 left About 375 tasks · Renews Nov 7');
+  assertShows(status, 'This month $132 left About 275 tasks · Renews Nov 7');
   assert.match(status, /role="meter" aria-label="Plan usage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="53"><span class="plan-meter-fill" style="width: 53%"><\/span><span class="plan-meter-pace" style="left: 80%"><\/span>/);
   assertShows(status, '$128 of $240 plan usage On pace for 80% by Nov 7');
-  assertShows(status, '+$20 carried over until Nov 7');
-  assertShows(status, '+$40 extra usage until Sep 14, 2027');
+  assertShows(status, 'Includes $20 carried over from last month, which expires Nov 7.');
+  assertShows(status, 'Plus $40 of extra usage for when this runs out. It keeps until Sep 14, 2027.');
+  assert.doesNotMatch(status, /plan-chip|is-extra/, 'no chips and no extra usage bar while the plan has usage left');
   assertShows(status, 'Add usage $25 $50 $100 Keeps 12 months');
   for (const dollars of [25, 50, 100]) {
     assert.match(status, new RegExp(`class="btn btn-soft" data-action="billing-add-extra-usage" data-key="extra_usage_${dollars}" aria-label="Add \\$${dollars} of extra usage">\\$${dollars}</button>`));
@@ -430,13 +432,13 @@ test('a rate card whose tasks draw nothing shows what is left in dollars and siz
 test('used up, the meter turns red, Add usage turns primary, and the alert says what is paused and when it starts again', async () => {
   const cases: Array<[string, BillingSummary, boolean, string]> = [
     ['models included', STARTER_USED_UP, true,
-      'Your Agents are paused. Add usage to keep them working now, or they start again when your plan renews Nov 7.'],
+      'Your Agents are paused. Add usage to keep them working, or they start again when your plan renews Nov 7.'],
     ['an own key', OWN_KEY_USED_UP, true,
       'Tasks are paused, and your Agents can still chat. Add usage to keep tasks going, or they start again when your plan renews Nov 7.'],
     ['a plan that ends', { ...STARTER_USED_UP, pendingChange: TEAM_ENDING.pendingChange }, true,
-      'Your Agents are paused. Add usage to keep them working now.'],
+      'Your Agents are paused. Add usage to keep them working.'],
     ['a Member on models included', STARTER_USED_UP, false,
-      'Your Agents are paused. An Owner can add usage to keep them working now, or they start again when your plan renews Nov 7.'],
+      'Your Agents are paused. An Owner can add usage to keep them working, or they start again when your plan renews Nov 7.'],
     ['a Member on an own key', OWN_KEY_USED_UP, false,
       'Tasks are paused, and your Agents can still chat. An Owner can add usage to keep tasks going, or they start again when your plan renews Nov 7.'],
   ];
@@ -454,12 +456,24 @@ test('used up, the meter turns red, Add usage turns primary, and the alert says 
   assertShows(hero((await harness({ path: '/admin/plan', billingOffered: true, summary: OWN_KEY_USED_UP })).html()), '0 tasks left $0 of usage left');
 });
 
-test('the plan\'s usage used up is not the workspace\'s: what carried over and extra usage keep the Agents working, and debt counts against them', async () => {
-  const planUsedUp: BillingSummary = { ...TEAM_PLAN, planUsage: { usedMicros: usd(240), includedMicros: usd(240), onPacePercent: null } };
+test('the plan\'s usage used up is not the workspace\'s: extra usage keeps the Agents working under its own bar, and debt counts against it', async () => {
+  const planUsedUp: BillingSummary = {
+    ...TEAM_PLAN,
+    planUsage: { usedMicros: usd(240), includedMicros: usd(240), onPacePercent: null },
+    rollover: null,
+    extraUsage: { ...TEAM_PLAN.extraUsage!, remainingMicros: usd(42.1), totalMicros: usd(50) },
+  };
   const working = hero((await harness({ path: '/admin/plan', billingOffered: true, summary: planUsedUp })).html());
-  assertShows(working, '$60 left About 125 tasks');
-  assertShows(working, '$240 of $240 plan usage Used up');
+  assertShows(working, 'Your usage $42.10 left About 90 tasks');
+  assertHides(working, 'This month');
+  assertShows(working, '$240 of $240 plan usage Used up, renews Nov 7');
+  assert.match(working, /class="plan-meter is-extra" role="meter" aria-label="Extra usage"[^>]*aria-valuenow="15"/);
+  assertShows(working, '$7.90 of $50 extra usage $42.10 left, keeps until Sep 14, 2027');
+  assertHides(working, 'Plus $42.10');
   assert.doesNotMatch(working, /is-out|plan-hero-alert|btn-primary/);
+  const noTotal = hero((await harness({ path: '/admin/plan', billingOffered: true, summary: { ...planUsedUp, extraUsage: TEAM_PLAN.extraUsage } })).html());
+  assert.doesNotMatch(noTotal, /is-extra/, 'with no total from the host there is no bar to fill');
+  assertShows(noTotal, '$40 left, keeps until Sep 14, 2027');
   const owing = hero((await harness({ path: '/admin/plan', billingOffered: true, summary: { ...planUsedUp, debtMicros: usd(60) } })).html());
   assertShows(owing, '$0 left');
   assert.match(owing, /plan-hero-alert/, 'what the workspace owes uses up what it has');
@@ -483,7 +497,7 @@ test('a trial shows what is left, the tasks that covers, when it ends, and how m
   assert.match(usedUp, /plan-meter is-out/);
 
   const beside = hero((await harness({ path: '/admin/plan', billingOffered: true, summary: { ...TEAM_PLAN, trial: TRIAL_GRANT } })).html());
-  assertShows(beside, 'This month $204.50 left', );
+  assertShows(beside, 'This month $164.50 left', );
   assertShows(beside, '+$32.50 trial usage until Nov 6');
 });
 
@@ -524,7 +538,7 @@ test('models included with no plan or trial says the Agents are paused, and extr
 test('a plan with no period yet shows its monthly usage and the tasks it covers, with no meter', async () => {
   const status = hero((await harness({ path: '/admin/plan', billingOffered: true, summary: PLAN_NO_PERIOD })).html());
   assertShows(status, 'Each month $240 of usage a month About 500 tasks');
-  assertShows(status, '+$40 extra usage');
+  assertShows(status, 'Plus $40 of extra usage for when this runs out.');
   assert.doesNotMatch(status, /role="meter"|plan-hero-alert/);
   assertHides(status, 'Renews');
   assert.match(status, /billing-add-extra-usage/, 'extra usage stays on sale with a plan');
@@ -537,10 +551,10 @@ test('a plan with no period yet shows its monthly usage and the tasks it covers,
 test('a plan cancelled in Stripe\'s portal says when it ends, and a downgrade names the plan it changes to, in place of when it renews, to everyone', async () => {
   for (const owner of [true, false]) {
     const ending = hero((await harness({ path: '/admin/plan', billingOffered: true, owner, summary: TEAM_ENDING })).html());
-    assertShows(ending, 'About 375 tasks · Ends Nov 7');
+    assertShows(ending, 'About 275 tasks · Ends Nov 7');
     assertHides(ending, 'Renews');
     const downgrading = hero((await harness({ path: '/admin/plan', billingOffered: true, owner, summary: TEAM_DOWNGRADING })).html());
-    assertShows(downgrading, 'About 375 tasks · Changes to the Chickpea $50 plan on Nov 7');
+    assertShows(downgrading, 'About 275 tasks · Changes to the Chickpea $50 plan on Nov 7');
     assertHides(downgrading, 'Renews');
   }
 });
@@ -714,7 +728,7 @@ test('an Owner on the plan with a saved key switches to it from its card only af
   assert.equal(cardTag(html, 'own_key'), 'Current plan');
   assert.equal(cardStep(html, 'own_key'), 'Your current plan (disabled)');
   assert.equal(cardStep(html, 'platform'), 'Switch to models included [soft]');
-  assertShows(hero(html), '573 tasks left');
+  assertShows(hero(html), '440 tasks left');
 });
 
 test('the confirmation names each Agent whose pinned model has no saved key, in the singular for one', async () => {
@@ -879,8 +893,8 @@ test('a Member sees the status and that an Owner changes the plan, with no butto
   const html = page.html();
   assert.equal(page.location.pathname, '/admin/plan', 'a Member may open the page');
   assert.equal(lede(html), 'Your workspace is on the $200 plan with models included.');
-  assertShows(hero(html), 'This month $172 left About 375 tasks · Renews Nov 7');
-  assertShows(hero(html), '+$20 carried over until Nov 7');
+  assertShows(hero(html), 'This month $132 left About 275 tasks · Renews Nov 7');
+  assertShows(hero(html), 'Includes $20 carried over from last month, which expires Nov 7.');
   assert.match(html, /<p class="plan-member-note"><span class="plan-chip-dot" aria-hidden="true"><\/span>An Owner can change the plan, add usage, or switch how your workspace pays for models\.<\/p>/);
   assert.match(html, /data-action="open-billing"[^>]*>Plan<\/button>/);
   assert.doesNotMatch(html, /data-action="billing-|<select|plan-card|plan-use|plan-how/);
@@ -925,7 +939,7 @@ test('every date reads as its UTC day, whatever timezone the server and browser 
   const plan = (await harness({ path: '/admin/plan', billingOffered: true, summary: edges })).html();
   assertShows(plan, 'Renews Nov 7');
   assertShows(plan, 'On pace for 80% by Nov 7');
-  assertShows(plan, '+$20 carried over until Nov 7');
+  assertShows(plan, 'Includes $20 carried over from last month, which expires Nov 7.');
   assertShows(plan, 'Since Oct 7.');
   assertShows(plan, '+$32.50 trial usage until Nov 6');
   const frozen = (await harness({

@@ -25,6 +25,8 @@ export interface PlanOffer {
   readonly includedMicros: UsageMicros;
   /** At or above the lowest plan for an installation's own key. */
   readonly ownKeyEligible: boolean;
+  /** The extra usage offer auto top-up buys on this plan unless an Owner picks another; the plan cards disclose it. */
+  readonly autoTopUpPackKey?: string;
 }
 
 /** Extra usage the host's rate card sells, at face value. */

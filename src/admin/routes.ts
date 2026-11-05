@@ -6844,6 +6844,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         await initializeChickpeaImageDefault(c, installation.workspaceId, principalByContext.get(c)?.membershipId);
       }
     },
+    actor: async (c) => {
+      const membershipId = principalByContext.get(c)?.membershipId ?? '';
+      const [installation, bindings] = await Promise.all([modelDefaultInstallation(store(c)), identity(c).listExternalIdentities()]);
+      const binding = bindings.find((candidate) =>
+        candidate.membershipId === membershipId && (!installation || candidate.slackTeamId === installation.workspaceId));
+      return { membershipId, slackUserId: binding?.slackUserId ?? null };
+    },
   }));
   app.route('/admin/api', createWorkAdminApi({
     store: work,

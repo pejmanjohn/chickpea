@@ -19,6 +19,16 @@ export function formatPriceCents(cents: number): string {
   return cents < 0 ? `-${amount}` : amount;
 }
 
+const CARD_BRANDS: Readonly<Record<string, string>> = {
+  visa: 'Visa', mastercard: 'Mastercard', amex: 'American Express', discover: 'Discover',
+  diners: 'Diners Club', jcb: 'JCB', unionpay: 'UnionPay',
+};
+
+/** "Visa ending 4242" from Stripe's card brand and last four digits. */
+export function formatCard(card: { readonly brand: string; readonly last4: string }): string {
+  return `${CARD_BRANDS[card.brand] ?? 'Card'} ending ${card.last4}`;
+}
+
 export function usagePercent(used: UsageMicros, included: UsageMicros): number {
   return included > 0 ? Math.floor(used * 100 / included) : 0;
 }
