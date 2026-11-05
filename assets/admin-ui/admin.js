@@ -3144,7 +3144,7 @@
     if (purchase.kind === "extra_usage") return 'Added ' + esc(purchase.usage) + ' of usage.';
     var plan = billing.plan;
     if (!plan) return 'Payment received.';
-    if (purchase.first) {
+    if (purchase.newPeriod) {
       return 'You&rsquo;re on the ' + esc(plan.price) + ' plan' + (plan.included ? ', with ' + esc(plan.included) + ' of usage this month' : '') + '.' +
         (billing.topUp && billing.topUp.enabled ? ' Auto top-up is on.' : '');
     }
