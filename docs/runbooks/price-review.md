@@ -11,7 +11,7 @@ date is operator information. Customers never see it.
 
 ## When to run a review
 
-- Cloud's release doctor warns on `pricing / price reviews`, or the operator
+- Cloud's release doctor warns in its `pricing` row, or the operator
   digest names prices due within 30 days.
 - Otherwise, about every 60 days.
 

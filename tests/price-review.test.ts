@@ -319,6 +319,16 @@ test('--accept renews the catalog\'s own numbers, due in 90 days or on the given
   await assert.rejects(review([glm], { accepts: ['openai/gpt-6-sol'] }), PriceReviewUsageError);
 });
 
+test('--accept never renews an old price that two agreeing sources have changed', async () => {
+  const stale = price('anthropic', 'claude-opus-5-5', { ...OPUS_5_5, inputMicrosPerUnit: 3_000_000 });
+  const { result } = await review([stale], { accepts: ['anthropic/claude-opus-5-5'] });
+  const [reviewed] = result.prices;
+  assert.equal(reviewed?.verdict, 'unverified');
+  assert.equal(reviewed?.proposal, undefined);
+  assert.ok(reviewed?.reasons.some((reason) => /sources agree on a new price, so --accept cannot renew the old one/.test(reason)));
+  assert.equal(result.counts.accepted, 0);
+});
+
 test('the report lists counts, then each verdict\'s section and the notes', async () => {
   const { result } = await review([
     price('openai', 'gpt-4.1-mini', { inputMicrosPerUnit: 400_000, outputMicrosPerUnit: 1_600_000 }),

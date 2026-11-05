@@ -19,7 +19,7 @@ Compares every current price in src/usage/pricing/catalogs with its sources and 
   --write    write src/usage/pricing/catalogs/<day>-review.ts for every unchanged, changed or accepted price
   --accept   a price you checked by hand: renew the catalog's numbers, due on the date if given
   --json     also write the structured result to a file
-  --now      review as of this instant instead of now
+  --now      review as of this instant instead of now (not with --write)
 See docs/runbooks/price-review.md.`;
 
 let options;
@@ -43,6 +43,7 @@ if (options.help) {
 
 const at = options.now === undefined ? Date.now() : Date.parse(options.now);
 if (Number.isNaN(at)) usageError(`--now ${options.now} is not a date`);
+if (options.write && options.now !== undefined) usageError('--now is for dry runs; --write takes effect at the current time');
 
 let result;
 try {

@@ -207,6 +207,14 @@ async function reviewPrice(
   const earlyDue = current.reviewDueAt - current.reviewedAt < REVIEW_INTERVAL_DAYS * DAY;
   const proposedFields = new Map(review.fields.map(({ field, catalog: value, proposed }) => [field, proposed ?? value]));
 
+  // A hand check renews the catalog's numbers, so it must not override two sources that agree on new ones.
+  if (accepts.has(key) && changes.length > 0) {
+    review.reasons.push(
+      ...changes.map((change) => `sources agree on a new price, so --accept cannot renew the old one: ${describeChange(change)}`),
+      ...problems.map(({ reason }) => reason ?? ''),
+    );
+    return review;
+  }
   if (accepts.has(key)) {
     const dueAt = accepts.get(key);
     review.verdict = 'accepted';
