@@ -18,8 +18,8 @@ import { invalidateProviderKeyCache, PROVIDER_KEY_SETTING_KEYS } from '../src/co
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import type { PlatformEnv } from '../src/config/state-backend.ts';
 import type { CustomAgentConfig, WorkspaceModelDefault } from '../src/config/types.ts';
-import { currentImagePrice } from '../src/images/request-record.ts';
-import { priceCatalogFor } from '../src/usage/pricing/catalog.ts';
+import { imagePrice } from '../src/images/request-record.ts';
+import { RELEASE_PRICE_CATALOGS } from '../src/usage/pricing/catalog.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { withEnv } from './helpers/env.ts';
@@ -504,10 +504,11 @@ test('the provider credential seam cannot enable subscription images on Cloudfla
 });
 
 const NOW = Date.UTC(2026, 9, 7, 12);
-assert.ok(currentImagePrice('openai', 'gpt-image-2.5-flare', NOW), 'the image test model is priced at NOW');
-const FLARE_NEWEST_PRICE = priceCatalogFor('image_tokens', 'openai', 'gpt-image-2.5-flare', Number.MAX_SAFE_INTEGER);
+assert.ok(imagePrice('openai', 'gpt-image-2.5-flare', NOW), 'the image test model is priced at NOW');
+const FLARE_NEWEST_PRICE = imagePrice('openai', 'gpt-image-2.5-flare', Number.MAX_SAFE_INTEGER);
 assert.ok(FLARE_NEWEST_PRICE);
-const AFTER_IMAGE_PRICES_STALE = FLARE_NEWEST_PRICE.version.staleAfter;
+const AFTER_IMAGE_PRICE_REVIEW_DUE = FLARE_NEWEST_PRICE.version.reviewDueAt + 86_400_000;
+const BEFORE_ANY_IMAGE_PRICE = Math.min(...RELEASE_PRICE_CATALOGS.map(({ effectiveFrom }) => effectiveFrom)) - 1;
 const NO_DEPLOYMENT_KEYS = {
   CHICKPEA_TENANCY: undefined,
   ANTHROPIC_API_KEY: undefined,
@@ -563,11 +564,13 @@ test('Chickpea credits fill the image role of a platform-funded installation tha
       { unset: true, reason: 'funding_not_offered' },
       'credits serve only a provider the deployment offers',
     );
-    t.mock.timers.setTime(AFTER_IMAGE_PRICES_STALE);
+    t.mock.timers.setTime(AFTER_IMAGE_PRICE_REVIEW_DUE);
+    assert.deepEqual(await imageRole(), FLARE_FROM_WORKSPACE, 'a price past its review date still serves');
+    t.mock.timers.setTime(BEFORE_ANY_IMAGE_PRICE);
     assert.deepEqual(
       await imageRole(),
       { unset: true, reason: 'funding_not_offered' },
-      'credits serve only a model with a current price',
+      'credits serve only a model with a price',
     );
   });
 });

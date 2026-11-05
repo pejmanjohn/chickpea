@@ -27,9 +27,10 @@ import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import type { PlatformEnv } from '../src/config/state-backend.ts';
 import type { ImageCallResult, ImageCallUsage } from '../src/images/openai-images-client.ts';
 import { imageModelProfileReady, resolveImageProvider } from '../src/images/provider.ts';
-import { sentImageRequestRecord } from '../src/images/request-record.ts';
+import { imagePrice, sentImageRequestRecord } from '../src/images/request-record.ts';
 import { findImageModel, type ImageModelProfile } from '../src/model-catalog/image-profiles.ts';
 import type { ModelRequestRecord } from '../src/usage/model-requests.ts';
+import { RELEASE_PRICE_CATALOGS } from '../src/usage/pricing/catalog.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { withEnv } from './helpers/env.ts';
@@ -58,7 +59,7 @@ const USAGE_PRICE_MICROS = USAGE.input_tokens_details.text_tokens * FLARE_MICROS
   USAGE.input_tokens_details.image_tokens * FLARE_MICROS_PER_TOKEN.imageInput +
   USAGE.output_tokens * FLARE_MICROS_PER_TOKEN.imageOutput;
 const FLARE_PRICE_VERSION = 'openai-image-gpt-image-2.5-flare_2026-10-07';
-const AFTER_FLARE_PRICE_STALE = Date.UTC(2027, 6, 1);
+const AFTER_EVERY_REVIEW_DUE = Math.max(...RELEASE_PRICE_CATALOGS.map(({ reviewDueAt }) => reviewDueAt)) + 86_400_000;
 
 interface Sent {
   url: string;
@@ -338,7 +339,7 @@ test('an image request of an installation that is not admitted is refused before
   });
 });
 
-test('a platform-funded image request for a model with no current price is refused before admission', async (t) => {
+test('a platform-funded image request for a model with no price is refused before admission, and one past its review date is not', async (t) => {
   useModelAccess(t, 'sk-platform-images');
   const { env, fundingCalls } = creditsInstallation(t);
   await withEnv(NO_DEPLOYMENT_KEYS, async () => {
@@ -353,13 +354,13 @@ test('a platform-funded image request for a model with no current price is refus
       sendImageRequest({ grant, env, model: 'gpt-image-unpriced', defaultBaseUrl: BASE_URL, fetchImpl }, call),
       refusedUnpriced,
     );
-    t.mock.timers.setTime(AFTER_FLARE_PRICE_STALE);
-    await assert.rejects(
-      sendImageRequest({ grant, env, model: 'gpt-image-2.5-flare', defaultBaseUrl: BASE_URL, fetchImpl }, call),
-      refusedUnpriced,
-      'a stale price is no price',
-    );
     assert.deepEqual(fundingCalls.admit, []);
+    t.mock.timers.setTime(AFTER_EVERY_REVIEW_DUE);
+    assert.deepEqual(
+      await sendImageRequest({ grant, env, model: 'gpt-image-2.5-flare', defaultBaseUrl: BASE_URL, fetchImpl }, call),
+      { ok: false, reason: 'unreachable', detail: 'not_called' },
+    );
+    assert.deepEqual(fundingCalls.admit.map(({ model }) => model), ['gpt-image-2.5-flare'], 'a price past its review date is admitted');
     assert.equal(sent.length, 0);
   });
 });
@@ -371,8 +372,8 @@ test('an installation on credits is offered the priced image models without a sa
     assert.equal(await imageModelProfileReady(FLARE, env, settings), true);
     t.mock.timers.setTime(Date.UTC(2027, 0, 20));
     assert.equal(await imageModelProfileReady(FLARE, env, settings), true, 'the 2026-11-05 review prices it past 2027-01-05');
-    t.mock.timers.setTime(AFTER_FLARE_PRICE_STALE);
-    assert.equal(await imageModelProfileReady(FLARE, env, settings), false, 'a stale price is not offered');
+    t.mock.timers.setTime(AFTER_EVERY_REVIEW_DUE);
+    assert.equal(await imageModelProfileReady(FLARE, env, settings), true, 'a price past its review date is still offered');
     configurePlatformFunding(undefined);
     assert.equal(await imageModelProfileReady(FLARE, env, settings), false, 'without credits a missing key hides it');
   });
@@ -403,8 +404,14 @@ test('image usage the image rates cannot price records its tokens with no price'
   }
   assert.equal(sentImageRequestRecord({ ...end, model: 'gpt-image-unpriced', result: completed(USAGE) }).priceUnknownReason,
     'price_unknown');
-  assert.equal(sentImageRequestRecord({ ...end, finishedAt: AFTER_FLARE_PRICE_STALE, result: completed(USAGE) }).priceUnknownReason,
-    'price_stale');
+  const pastReview = sentImageRequestRecord({ ...end, finishedAt: AFTER_EVERY_REVIEW_DUE, result: completed(USAGE) });
+  const newest = imagePrice('openai', 'gpt-image-2.5-flare', AFTER_EVERY_REVIEW_DUE)!;
+  assert.deepEqual(
+    [pastReview.priceVersionId, pastReview.listPriceUsdMicros, pastReview.priceUnknownReason],
+    [newest.version.id, Math.round((40 * newest.rate.textInputMicrosPerUnit + 10 * newest.rate.imageInputMicrosPerUnit +
+      1_000 * newest.rate.imageOutputMicrosPerUnit) / newest.rate.unitScale), null],
+    'a price past its review date prices the record at the newest price',
+  );
   assert.equal(sentImageRequestRecord({ ...end, result: { ok: false, reason: 'timeout', detail: 'aborted' } }).outcome,
     'stopped');
 });

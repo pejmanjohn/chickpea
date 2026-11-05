@@ -35,6 +35,7 @@ import {
   configureModelRequestRecorder,
   createModelAccessInterceptor,
   resetModelAccessForTests,
+  sendImageRequest,
   withModelAccess,
   type ModelAccessGrant,
 } from '../src/config/model-access.ts';
@@ -43,6 +44,7 @@ import {
   revalidateModelCredentialAttribution,
   rotateInstallationModelCredential,
 } from '../src/config/model-credential-refs.ts';
+import { modelProviderUnavailable } from '../src/config/model-policy.ts';
 import { registerPiProvider, registeredPiProvider } from '../src/config/pi-provider-registry.ts';
 import {
   configurePlatformFunding,
@@ -75,8 +77,10 @@ import {
 } from '../src/slack/flue-dispatch.ts';
 import type { FlueDispatchEnvelopeV1, FlueSettlementCheckpointV1 } from '../src/slack/turn-job-types.ts';
 import { fundingRefusalText } from '../src/slack/credits-ask.ts';
+import { imagePrice } from '../src/images/request-record.ts';
 import type { ModelRequestRecord } from '../src/usage/model-requests.ts';
 import { priceCatalogFor, RELEASE_PRICE_CATALOGS } from '../src/usage/pricing/catalog.ts';
+import { estimateUsage } from '../src/usage/pricing/estimate.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
@@ -883,7 +887,7 @@ test('a platform-funded result waits for its charge as before, but not for its r
   assert.deepEqual(await store.getModelRequest(recorded[0]!.requestId), recorded[0]);
 });
 
-test('a platform-funded request without a current list price is refused before send, whatever its provider', async (t) => {
+test('a platform-funded request for a model with no list price is refused before send, whatever its provider', async (t) => {
   const { env } = hostedProxy(t);
   const calls = fakePort();
   const unpricedAnthropic = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, 'claude-unpriced-test', 'anthropic-messages',
@@ -895,21 +899,13 @@ test('a platform-funded request without a current list price is refused before s
     [unpricedOpenRouter.model, 'openrouter'],
   ] as const) {
     const refused = await withModelAccess(grant('inst_credits', 'platform', providerId), env, 'reply', () => modelCall(model));
-    assert.match(refused.errorMessage ?? '', /no current price in Chickpea credits/, providerId);
+    assert.match(refused.errorMessage ?? '', /This model has no price in Chickpea credits \(funding_not_offered\)\./, providerId);
     assert.ok(!refused.errorMessage?.includes(model.id), 'the refusal names no model, whose ID may hold a status code');
   }
   assert.deepEqual([unpricedAnthropic.sentModels.length, unpricedOpenRouter.sentModels.length], [0, 0]);
   assert.equal(calls.admit.length, 0, 'an unpriced model never reaches the ledger');
   const customer = await withModelAccess(grant('inst_credits', 'customer'), env, 'reply', () => modelCall(unpricedAnthropic.model));
   assert.equal(customer.stopReason, 'stop', 'a customer-funded request needs no price');
-
-  const newest = priceCatalogFor('standard_input_output', 'anthropic', SONNET, Number.MAX_SAFE_INTEGER);
-  assert.ok(newest);
-  t.mock.timers.setTime(newest.version.staleAfter);
-  const stale = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, SONNET, 'anthropic-messages', []);
-  const refusedStale = await withModelAccess(grant('inst_credits', 'platform'), env, 'reply', () => modelCall(stale.model));
-  assert.match(refusedStale.errorMessage ?? '', /no current price in Chickpea credits/, 'a stale price is not current');
-  assert.equal(stale.sentModels.length, 0);
 });
 
 test('a platform-funded OpenRouter request names the maker\'s price as the most it may cost', async (t) => {
@@ -1057,10 +1053,10 @@ test('a Slack turn at a daily limit ends with the daily-limit reply, its time, n
 
 const ADMIN_TOKEN = 'platform-funding-admin-token';
 assert.ok(priceCatalogFor('standard_input_output', 'anthropic', SONNET, NOW), 'the Admin test model is priced at NOW');
-/** A later version replaces an earlier one, so the model has no current price once its newest version is stale. */
-const SONNET_NEWEST_PRICE = priceCatalogFor('standard_input_output', 'anthropic', SONNET, Number.MAX_SAFE_INTEGER);
-assert.ok(SONNET_NEWEST_PRICE);
-const AFTER_SONNET_PRICE_STALE = SONNET_NEWEST_PRICE.version.staleAfter;
+/** A day past every price's review date: the latest a price may have gone unreviewed when this release runs. */
+const AFTER_EVERY_REVIEW_DUE = Math.max(...RELEASE_PRICE_CATALOGS.map(({ reviewDueAt }) => reviewDueAt)) + 86_400_000;
+/** When the last price in this release took effect, before any of its review dates. */
+const EVERY_PRICE_IN_EFFECT = Math.max(...RELEASE_PRICE_CATALOGS.map(({ effectiveFrom }) => effectiveFrom));
 const PROVIDER_UNAVAILABLE = {
   status: 'repair_required',
   providerId: 'anthropic',
@@ -1115,8 +1111,8 @@ test('Admin reads a credits installation\'s Workspace default as ready with no s
   await withEnv(NO_DEPLOYMENT_KEYS, async () => {
     fakePort();
     assert.deepEqual(await health(), { status: 'ready', providerId: 'anthropic' });
-    t.mock.timers.setTime(AFTER_SONNET_PRICE_STALE);
-    assert.deepEqual(await health(), NOT_OFFERED, 'credits serve only a model with a current price');
+    t.mock.timers.setTime(AFTER_EVERY_REVIEW_DUE);
+    assert.deepEqual(await health(), { status: 'ready', providerId: 'anthropic' }, 'a price past its review date still serves');
     t.mock.timers.setTime(NOW);
     fakePort({ funding: async () => 'customer' });
     assert.deepEqual(await health(), PROVIDER_UNAVAILABLE, 'a customer-funded installation still needs its own key');
@@ -1167,8 +1163,9 @@ test('Admin reads an Agent model on a credits installation as ready by its price
       'funding_not_offered',
       'credits serve only a provider the deployment offers',
     );
-    t.mock.timers.setTime(AFTER_SONNET_PRICE_STALE);
-    assert.equal(await unavailable(`anthropic/${SONNET}`), 'funding_not_offered', 'credits serve only a current price');
+    t.mock.timers.setTime(AFTER_EVERY_REVIEW_DUE);
+    assert.equal(await unavailable(`anthropic/${SONNET}`), null, 'a price past its review date still serves');
+    assert.equal(await unavailable('anthropic/claude-opus-4-5'), 'funding_not_offered', 'an unpriced model still does not');
     t.mock.timers.setTime(NOW);
     fakePort({ funding: async () => 'customer' });
     assert.equal(await unavailable(`anthropic/${SONNET}`), 'credential_missing', 'a customer-funded installation needs its own key');
@@ -1210,8 +1207,8 @@ test('on a credits installation Admin lists the models Chickpea\'s models serve 
       ['openrouter', true],
     ]);
 
-    t.mock.timers.setTime(AFTER_SONNET_PRICE_STALE);
-    assert.ok(!(await anthropic()).suggestions.includes(`anthropic/${SONNET}`), 'a stale price leaves the list');
+    t.mock.timers.setTime(AFTER_EVERY_REVIEW_DUE);
+    assert.deepEqual((await anthropic()).suggestions, served.suggestions, 'a price past its review date stays on the list');
     t.mock.timers.setTime(NOW);
 
     fakePort({ funding: async () => 'customer' });
@@ -1249,11 +1246,17 @@ test('on a credits installation Admin lists the OpenRouter models Chickpea\'s mo
     }
     assert.ok((await marked()).includes('openrouter'));
 
-    t.mock.timers.setTime(Math.max(...RELEASE_PRICE_CATALOGS.map(({ staleAfter }) => staleAfter)));
+    t.mock.timers.setTime(EVERY_PRICE_IN_EFFECT);
+    const before = { listed: await listed(), marked: await marked() };
+    t.mock.timers.setTime(AFTER_EVERY_REVIEW_DUE);
+    assert.deepEqual(await listed(), before.listed, 'prices past their review date list the same models');
+    assert.deepEqual(await marked(), before.marked, 'and mark the same provider cards');
+
+    t.mock.timers.setTime(Math.min(...RELEASE_PRICE_CATALOGS.map(({ effectiveFrom }) => effectiveFrom)) - 1);
     assert.deepEqual(
       (await listed()).filter(({ configured, suggestions }) => configured || suggestions.length > 0).map(({ id }) => id),
       [],
-      'with no current price Chickpea\'s models list nothing',
+      'with no price in effect Chickpea\'s models list nothing',
     );
     assert.deepEqual(await marked(), [], 'and mark no provider card');
   });
@@ -1293,20 +1296,113 @@ test('a credits installation with no saved key can choose a priced coding model,
     });
 
     fakePort();
-    t.mock.timers.setTime(AFTER_SONNET_PRICE_STALE);
-    const unpriced = await choose(`anthropic/${SONNET}`);
+    const unpriced = await choose('anthropic/claude-opus-4-5');
     assert.equal(unpriced.status, 400);
     assert.deepEqual(await unpriced.json(), {
       error: 'invalid_request',
       message: "Not available on Chickpea's models. Choose another model.",
     });
 
-    t.mock.timers.setTime(NOW);
+    t.mock.timers.setTime(AFTER_EVERY_REVIEW_DUE);
     const chosen = await choose(`anthropic/${SONNET}`);
     assert.equal(chosen.status, 200);
     assert.equal(
       ((await chosen.json()) as { workspaceModelRole: { modelId: string | null } }).workspaceModelRole.modelId,
       `anthropic/${SONNET}`,
     );
+  });
+});
+
+test('outage regression: a day past every price\'s review date, credits still serve and charge each priced model at its newest price', async (t) => {
+  const OPUS = 'claude-opus-5-5';
+  const IMAGE_MODEL = 'gpt-image-2.6-flare';
+  const opus = priceCatalogFor('standard_input_output', 'anthropic', OPUS, AFTER_EVERY_REVIEW_DUE);
+  const image = imagePrice('openai', IMAGE_MODEL, AFTER_EVERY_REVIEW_DUE);
+  assert.ok(opus && image);
+  assert.ok(AFTER_EVERY_REVIEW_DUE > opus.version.reviewDueAt && AFTER_EVERY_REVIEW_DUE > image.version.reviewDueAt);
+
+  await t.test('a reply and an image are sent and charged at the newest price', async (t) => {
+    const { env } = hostedProxy(t);
+    t.mock.timers.setTime(AFTER_EVERY_REVIEW_DUE);
+    const calls = fakePort();
+    const { model, sentModels } = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, OPUS, 'anthropic-messages',
+      [completes({ input: 1_000, output: 200 })]);
+    const replied = await withModelAccess(grant('inst_credits', 'platform'), env, 'reply', () => modelCall(model));
+    assert.equal(replied.stopReason, 'stop', replied.errorMessage ?? '');
+    assert.equal(sentModels.length, 1);
+
+    const usage = { input_tokens: 50, output_tokens: 1_000, total_tokens: 1_050, input_tokens_details: { text_tokens: 40, image_tokens: 10 } };
+    const fetchImpl = (async () => new Response('{}')) as unknown as typeof fetch;
+    const drawn = await sendImageRequest(
+      { grant: grant('inst_credits', 'platform', 'openai'), env, model: IMAGE_MODEL, defaultBaseUrl: 'https://images.openai.invalid/v1', fetchImpl },
+      async (send) => {
+        await send('/images/generations', { headers: {}, body: '{}', signal: new AbortController().signal });
+        return { ok: true, images: [new Uint8Array([1])], appliedModel: `openai/${IMAGE_MODEL}`, appliedSize: 'auto', appliedFormat: 'png', usage };
+      },
+    );
+    assert.equal(drawn.ok, true);
+
+    assert.deepEqual(calls.charge.map(({ model, priceVersionId, listPriceUsdMicros, priceUnknownReason }) =>
+      [model, priceVersionId, listPriceUsdMicros, priceUnknownReason]), [
+      [OPUS, opus.version.id,
+        Math.round((1_000 * opus.rate.inputMicrosPerUnit + 200 * opus.rate.outputMicrosPerUnit) / opus.rate.unitScale), null],
+      [IMAGE_MODEL, image.version.id,
+        Math.round((40 * image.rate.textInputMicrosPerUnit + 10 * image.rate.imageInputMicrosPerUnit +
+          1_000 * image.rate.imageOutputMicrosPerUnit) / image.rate.unitScale), null],
+    ]);
+  });
+
+  await t.test('model policy offers both models and estimates price them', async (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: AFTER_EVERY_REVIEW_DUE });
+    const customerFunded = () => false;
+    assert.equal(await modelProviderUnavailable(
+      { providerId: 'anthropic', model: OPUS, priceBasis: 'standard_input_output' }, customerFunded, 'platform'), undefined);
+    assert.equal(await modelProviderUnavailable(
+      { providerId: 'openai', model: IMAGE_MODEL, priceBasis: 'image_tokens' }, customerFunded, 'platform'), undefined);
+    assert.deepEqual(estimateUsage({
+      observedAt: AFTER_EVERY_REVIEW_DUE, providerRoute: 'anthropic', requestedProvider: 'anthropic', requestedModel: OPUS,
+      returnedProvider: 'anthropic', returnedModel: OPUS,
+      usageCompleteness: 'complete', inputTokens: 1_000, outputTokens: 200,
+    }), {
+      estimateCompleteness: 'complete',
+      estimateAmountMicros: Math.round((1_000 * opus.rate.inputMicrosPerUnit + 200 * opus.rate.outputMicrosPerUnit) / opus.rate.unitScale),
+      estimateCurrency: 'USD',
+      priceVersionId: opus.version.id,
+      priceUnknownReason: null,
+    });
+  });
+
+  await t.test('Admin reads the default model as ready, lists the priced models, and answers usage metadata', async (t) => {
+    const { request } = await creditsAdmin(t);
+    const usageStore = new SqliteUsageStore(':memory:');
+    t.after(() => usageStore.close());
+    const usageAdmin = createAdminRoutes({ usage: usageStore, ...testAdminAuthority(ADMIN_TOKEN) });
+    await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+      fakePort();
+      const read = async <T>(path: string): Promise<T> => {
+        const response = await request(path);
+        assert.equal(response.status, 200, path);
+        return (await response.json()) as T;
+      };
+      type Listed = { id: string; configured: boolean; suggestions: string[] };
+      t.mock.timers.setTime(EVERY_PRICE_IN_EFFECT);
+      const before = (await read<{ providers: Listed[] }>('/admin/api/models')).providers;
+      t.mock.timers.setTime(AFTER_EVERY_REVIEW_DUE);
+      assert.equal(
+        (await read<{ unavailable: string | null }>(`/admin/api/models/readiness?modelId=${encodeURIComponent(`anthropic/${OPUS}`)}`)).unavailable,
+        null,
+      );
+      assert.deepEqual(
+        (await read<{ workspaceDefault: { health: unknown } }>('/admin/api/workspace-model-default')).workspaceDefault.health,
+        { status: 'ready', providerId: 'anthropic' },
+      );
+      const after = (await read<{ providers: Listed[] }>('/admin/api/models')).providers;
+      assert.ok(after.find(({ id }) => id === 'anthropic')!.suggestions.includes(`anthropic/${OPUS}`));
+      assert.deepEqual(after, before, 'the credits model list is the one before the review dates passed');
+
+      const metadata = await usageAdmin.request('/admin/api/usage/metadata', { headers: testAdminHeaders(ADMIN_TOKEN) });
+      assert.equal(metadata.status, 200);
+      assert.equal(((await metadata.json()) as { catalogs: unknown[] }).catalogs.length, RELEASE_PRICE_CATALOGS.length);
+    });
   });
 });

@@ -2383,26 +2383,6 @@
     return Number(value) === 1 ? "activity" : "activities";
   }
 
-  // Providers whose pricing for some model is stale now. Each model is priced
-  // by the latest version already in effect, as the estimator picks it, so a
-  // version a newer one replaced does not count.
-  function usageStalePricingProviders(catalogs, now) {
-    var current = {};
-    catalogs.forEach(function (catalog) {
-      if (catalog.effectiveFrom > now) return;
-      (catalog.models || []).forEach(function (model) {
-        var key = catalog.providerId + "\n" + model;
-        if (!current[key] || catalog.effectiveFrom > current[key].effectiveFrom) current[key] = catalog;
-      });
-    });
-    var providers = [];
-    Object.keys(current).forEach(function (key) {
-      var catalog = current[key];
-      if (now >= catalog.staleAfter && providers.indexOf(catalog.providerId) === -1) providers.push(catalog.providerId);
-    });
-    return providers;
-  }
-
   function usageCoverageHtml(totals) {
     var activityCount = Number(totals.operationCount || 0);
     var pricedCount = Number(totals.pricedOperationCount || 0);
@@ -2515,11 +2495,9 @@
       '<div class="usage-card"><span class="usage-card-label">Tokens</span><span class="usage-card-value">' + usageInt(totals.totalTokens) + '</span><span class="hint">' + usageInt(totals.inputTokens) + ' input · ' + usageInt(usageCachedTokens(totals)) + ' cached input · ' + usageInt(totals.outputTokens) + ' output</span></div>' +
       '<div class="usage-card"><span class="usage-card-label">Average spend</span><span class="usage-card-value">' + esc(perPriced) + '</span><span class="hint">Across ' + usageInt(denominator) + ' priced ' + usageActivityNoun(denominator) + '</span></div></div>';
     var coverage = usageCoverageHtml(totals);
-    var staleProviders = usageStalePricingProviders(state.usageMetadata.catalogs || [], Date.now());
-    var freshness = staleProviders.length ? '<p class="field-error">Spend estimates need a pricing update for ' + staleProviders.length + ' provider' + (staleProviders.length === 1 ? '' : 's') + '.</p>' : '';
     var filter = state.usageOperationFilter ? '<span class="usage-filter-chip">Recent activity: ' + esc(state.usageOperationFilter.label) + ' <button type="button" class="x-btn" data-action="usage-clear-filter" aria-label="Clear activity filter">&times;</button></span>' : '';
     var groupLabel = state.usageGroupBy === "channel" ? "channel" : state.usageGroupBy;
-    return head + summary + coverage + freshness +
+    return head + summary + coverage +
       '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Spend by ' + esc(groupLabel) + '</h2><p class="hint">Compare where token usage and spend are concentrated.</p></div></div>' + usageGroupsHtml(current) + '</section>' +
       '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Recent ' + usageActivityLabelHtml("activity") + '</h2><p class="hint">Hover over total tokens to see the input, cached input, and output split.</p></div>' + filter + '</div>' + usageOperationsHtml() + '</section>';
   }

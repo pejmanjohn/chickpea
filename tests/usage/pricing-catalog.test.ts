@@ -14,7 +14,10 @@ import { PRICE_CATALOGS_2026_10_24 } from '../../src/usage/pricing/catalogs/2026
 import { PRICE_CATALOGS_2026_11_05 } from '../../src/usage/pricing/catalogs/2026-11-05.ts';
 import type { ImagePriceRate, TokenPriceRate, UsagePriceVersion } from '../../src/usage/pricing/types.ts';
 
-const EARLIER_RELEASES = RELEASE_PRICE_CATALOGS.filter((version) =>
+/** The catalog without versions `npm run prices:review -- --write` adds; tests/price-review.test.ts covers those. */
+const HAND_WRITTEN = RELEASE_PRICE_CATALOGS.filter(({ id }) => !/_\d{4}-\d{2}-\d{2}-review$/.test(id));
+
+const EARLIER_RELEASES = HAND_WRITTEN.filter((version) =>
   ![
     ...PRICE_CATALOGS_2026_10_07,
     ...PRICE_CATALOGS_2026_10_07_OPENROUTER_MAKERS,
@@ -61,7 +64,7 @@ test('release catalog contains only fixture-proven priced routes with immutable 
     assert.match(version.contentHash, /^[a-f0-9]{64}$/);
     assert.match(version.sourceUrl, /^https:\/\//);
     assert.equal(version.currency, 'USD');
-    assert.ok(version.staleAfter > version.reviewedAt);
+    assert.ok(version.reviewDueAt > version.reviewedAt);
     assert.equal(version.rates.length, 1);
   }
   for (const version of EARLIER_RELEASES) tokenRate(version);
@@ -112,7 +115,7 @@ test('release catalog contains only fixture-proven priced routes with immutable 
       .filter((version) => ['openai', 'openrouter'].includes(version.providerId))
       .map((version) => [
         version.id,
-        version.staleAfter,
+        version.reviewDueAt,
         tokenRate(version).modelId,
         tokenRate(version).inputMicrosPerUnit,
         tokenRate(version).outputMicrosPerUnit,
@@ -190,7 +193,7 @@ test('the 2026-10-07 catalog copies each page\'s list price, cache rates, and lo
     assert.equal(version.effectiveFrom, reviewedAt, version.id);
     assert.equal(version.reviewedAt, reviewedAt, version.id);
     assert.equal(
-      version.staleAfter,
+      version.reviewDueAt,
       version.id === 'openai-gpt-5.6-sol_2026-10-07' ? Date.UTC(2026, 10, 22) : Date.UTC(2027, 0, 5),
       version.id,
     );
@@ -201,7 +204,7 @@ test('the 2026-10-24 catalog copies GPT-6.1 Sol\'s and Claude Haiku 5.5\'s list 
   const reviewedAt = Date.UTC(2026, 9, 24);
   assert.deepEqual(PRICE_CATALOGS_2026_10_24.map((version) => {
     const rate = tokenRate(version);
-    return [version.id, version.providerId, version.sourceUrl, version.effectiveFrom, version.reviewedAt, version.staleAfter,
+    return [version.id, version.providerId, version.sourceUrl, version.effectiveFrom, version.reviewedAt, version.reviewDueAt,
       rate.modelAliases, rate.inputMicrosPerUnit, rate.outputMicrosPerUnit, rate.cacheReadMicrosPerUnit,
       rate.cacheWriteMicrosPerUnit, rate.cacheWrite1hMicrosPerUnit ?? null, rate.longContext];
   }), [[
@@ -223,7 +226,7 @@ test('the 2026-11-05 catalog prices GPT Image 2.6 Flare and Sunburst, and re-rev
   const openaiModel = (id: string) => `https://developers.openai.com/api/docs/models/${id}`;
   assert.deepEqual(PRICE_CATALOGS_2026_11_05.map((version) => {
     const rate = imageRate(version);
-    return [version.id, version.providerId, version.sourceUrl, version.effectiveFrom, version.reviewedAt, version.staleAfter,
+    return [version.id, version.providerId, version.sourceUrl, version.effectiveFrom, version.reviewedAt, version.reviewDueAt,
       rate.modelAliases, rate.textInputMicrosPerUnit, rate.imageInputMicrosPerUnit, rate.imageOutputMicrosPerUnit];
   }), ([
     ['openai-image-gpt-image-2.6-flare_2026-11-05', 'gpt-image-2.6-flare'],
@@ -237,7 +240,7 @@ test('the 2026-11-05 catalog prices GPT Image 2.6 Flare and Sunburst, and re-rev
 
 test('the OpenRouter makers catalog prices each model at its maker\'s own endpoint from when it was read', () => {
   const readAt = Date.UTC(2026, 9, 7, 15, 57);
-  const staleAt = Date.UTC(2027, 0, 5, 15, 57);
+  const reviewDueAt = Date.UTC(2027, 0, 5, 15, 57);
   assert.deepEqual(
     PRICE_CATALOGS_2026_10_07_OPENROUTER_MAKERS.map((version) => {
       const rate = tokenRate(version);
@@ -253,18 +256,18 @@ test('the OpenRouter makers catalog prices each model at its maker\'s own endpoi
         rate.longContext ?? null,
         version.effectiveFrom,
         version.reviewedAt,
-        version.staleAfter,
+        version.reviewDueAt,
       ];
     }),
     [
-      ['openrouter-deepseek-v4.1-flash_2026-10-07-maker', 'https://openrouter.ai/api/v1/models/deepseek/deepseek-v4.1-flash/endpoints', 'deepseek/deepseek-v4.1-flash deepseek/deepseek-v4.1-flash-20260910', 150_000, 600_000, 3_000, null, null, null, readAt, readAt, staleAt],
-      ['openrouter-glm-5.3-flash_2026-10-07-maker', 'https://openrouter.ai/api/v1/models/z-ai/glm-5.3-flash/endpoints', 'z-ai/glm-5.3-flash z-ai/glm-5.3-flash-20260826', 150_000, 500_000, 30_000, null, null, null, readAt, readAt, staleAt],
-      ['openrouter-kimi-k3_2026-10-07-maker', 'https://openrouter.ai/api/v1/models/moonshotai/kimi-k3/endpoints', 'moonshotai/kimi-k3 moonshotai/kimi-k3-20260715', 3_000_000, 15_000_000, 300_000, null, null, null, readAt, readAt, staleAt],
+      ['openrouter-deepseek-v4.1-flash_2026-10-07-maker', 'https://openrouter.ai/api/v1/models/deepseek/deepseek-v4.1-flash/endpoints', 'deepseek/deepseek-v4.1-flash deepseek/deepseek-v4.1-flash-20260910', 150_000, 600_000, 3_000, null, null, null, readAt, readAt, reviewDueAt],
+      ['openrouter-glm-5.3-flash_2026-10-07-maker', 'https://openrouter.ai/api/v1/models/z-ai/glm-5.3-flash/endpoints', 'z-ai/glm-5.3-flash z-ai/glm-5.3-flash-20260826', 150_000, 500_000, 30_000, null, null, null, readAt, readAt, reviewDueAt],
+      ['openrouter-kimi-k3_2026-10-07-maker', 'https://openrouter.ai/api/v1/models/moonshotai/kimi-k3/endpoints', 'moonshotai/kimi-k3 moonshotai/kimi-k3-20260715', 3_000_000, 15_000_000, 300_000, null, null, null, readAt, readAt, reviewDueAt],
     ],
   );
   assert.deepEqual(
     ['deepseek/deepseek-v4.1-flash', 'z-ai/glm-5.3-flash', 'moonshotai/kimi-k3'].map((slug) =>
-      [readAt - 1, readAt, staleAt - 1].map((at) => priceCatalogFor('standard_input_output', 'openrouter', slug, at)?.version.id)),
+      [readAt - 1, readAt, reviewDueAt - 1].map((at) => priceCatalogFor('standard_input_output', 'openrouter', slug, at, HAND_WRITTEN)?.version.id)),
     [
       ['openrouter-deepseek-v4.1-flash_2026-10-07', 'openrouter-deepseek-v4.1-flash_2026-10-07-maker', 'openrouter-deepseek-v4.1-flash_2026-10-07-maker'],
       ['openrouter-glm-5.3-flash_2026-10-07', 'openrouter-glm-5.3-flash_2026-10-07-maker', 'openrouter-glm-5.3-flash_2026-10-07-maker'],

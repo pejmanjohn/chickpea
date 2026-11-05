@@ -137,7 +137,6 @@ export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
           sourceUrl: catalog.sourceUrl,
           effectiveFrom: catalog.effectiveFrom,
           reviewedAt: catalog.reviewedAt,
-          staleAfter: catalog.staleAfter,
           currency: catalog.currency,
           models: catalog.rates.map((rate) => rate.modelId),
         })),

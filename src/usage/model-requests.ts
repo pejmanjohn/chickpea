@@ -5,7 +5,7 @@ import type { PlatformEnv } from '../config/state-backend.ts';
 import { isRecord } from '../security/content-validation.ts';
 import { canonicalPriceProviderId } from './pricing/catalog.ts';
 import { estimateUsage } from './pricing/estimate.ts';
-import type { UsageEstimateResult } from './pricing/types.ts';
+import type { PriceUnknownReason } from './types.ts';
 import { isStorableRequestText } from './validation.ts';
 
 export type ModelRequestOutcome = 'completed' | 'stopped' | 'error';
@@ -47,7 +47,7 @@ export interface ModelRequestRecord extends ModelRequestAttribution {
   readonly cacheWriteTokens: CacheWriteTokens;
   readonly priceVersionId: string | null;
   readonly listPriceUsdMicros: number | null;
-  readonly priceUnknownReason: UsageEstimateResult['priceUnknownReason'];
+  readonly priceUnknownReason: PriceUnknownReason | null;
   readonly providerCostUsdMicros: number | null;
   readonly providerResponseId: string | null;
   readonly providerServiceTier: string | null;

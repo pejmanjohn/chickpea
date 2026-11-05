@@ -47,17 +47,13 @@ export function estimateUsage(input: UsageEstimateInput): UsageEstimateResult {
     ? priceCatalogFor('standard_input_output', provider, model, input.observedAt)
     : null;
   // Decided before any other outcome: the store keeps no one-hour count, so
-  // this measurement must never read as `price_unknown` or `price_stale`,
-  // which a later release's backfill would price at the 5-minute rate.
-  if (
-    oneHourWrites > 0 &&
-    (!matched ||
-      input.observedAt >= matched.version.staleAfter ||
-      matched.rate.cacheWrite1hMicrosPerUnit === undefined)
-  ) return unknown('pricing_dimension_unknown', 'partial');
+  // this measurement must never read as `price_unknown`, which a later
+  // release's backfill would price at the 5-minute rate.
+  if (oneHourWrites > 0 && (!matched || matched.rate.cacheWrite1hMicrosPerUnit === undefined)) {
+    return unknown('pricing_dimension_unknown', 'partial');
+  }
   if (!provider || !model) return unknown('pricing_dimension_unknown');
   if (!matched) return unknown('price_unknown');
-  if (input.observedAt >= matched.version.staleAfter) return unknown('price_stale');
   let { rate } = matched;
   const cache = cacheUsage(input);
   if (!cache || oneHourWrites > cache.write) return unknown('pricing_dimension_unknown', 'partial');
@@ -126,7 +122,7 @@ export function notPriced(): UsageEstimateResult {
 }
 
 function unknown(
-  reason: 'price_unknown' | 'price_stale' | 'pricing_dimension_unknown',
+  reason: NonNullable<UsageEstimateResult['priceUnknownReason']>,
   completeness: 'unknown' | 'partial' = 'unknown',
 ): UsageEstimateResult {
   return {

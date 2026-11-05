@@ -44,7 +44,12 @@ export interface UsagePriceVersion {
   sourceUrl: string;
   effectiveFrom: number;
   reviewedAt: number;
-  staleAfter: number;
+  /**
+   * When a person should next check this price against its source. Only the
+   * operator warnings read it. A price past this date keeps serving and is
+   * charged as before; age never refuses or unprices a model.
+   */
+  reviewDueAt: number;
   currency: 'USD';
   contentHash: string;
   rates: UsagePriceRate[];
@@ -55,5 +60,5 @@ export interface UsageEstimateResult {
   estimateAmountMicros: number | null;
   estimateCurrency: string | null;
   priceVersionId: string | null;
-  priceUnknownReason: 'price_unknown' | 'price_stale' | 'pricing_dimension_unknown' | null;
+  priceUnknownReason: 'price_unknown' | 'pricing_dimension_unknown' | null;
 }

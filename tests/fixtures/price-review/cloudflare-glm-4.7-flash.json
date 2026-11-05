@@ -1,0 +1,20 @@
+{
+  "name": "@cf/zai-org/glm-4.7-flash",
+  "properties": [
+    {
+      "property_id": "price",
+      "value": [
+        {
+          "unit": "per M input tokens",
+          "price": 0.0605,
+          "currency": "USD"
+        },
+        {
+          "unit": "per M output tokens",
+          "price": 0.4,
+          "currency": "USD"
+        }
+      ]
+    }
+  ]
+}

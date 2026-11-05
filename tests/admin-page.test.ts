@@ -1716,7 +1716,7 @@ function runAdminPageHarness(
           generatedAt: usageNow,
           contract: { usageSource: 'model_response_aggregate', monetarySource: 'chickpea_list_price_estimate', providerBillingIncluded: false, limitsManagedByChickpea: false },
           guidance: [{ providerId: 'openai', displayName: 'OpenAI', authModes: ['API key'], runtimeCoverage: 'metered', priceCoverage: 'release_pinned', scopeGuidance: 'Use a dedicated project key.', accountBoundary: 'Provider totals can include work outside Chickpea.', limitsUrl: 'https://platform.openai.com/docs/guides/production-best-practices/managing-billing-limits', pricingUrl: 'https://developers.openai.com/api/docs/pricing', reviewedAt: usageNow }],
-          catalogs: harnessOptions.usageCatalogs ?? [{ id: 'openai_2026-07-28', providerId: 'openai', sourceUrl: 'https://developers.openai.com/api/docs/models/gpt-4.1-mini', effectiveFrom: usageNow, reviewedAt: usageNow, staleAfter: usageNow + 86400000, currency: 'USD', models: ['gpt-4.1-mini'] }],
+          catalogs: harnessOptions.usageCatalogs ?? [{ id: 'openai_2026-07-28', providerId: 'openai', sourceUrl: 'https://developers.openai.com/api/docs/models/gpt-4.1-mini', effectiveFrom: usageNow, reviewedAt: usageNow, currency: 'USD', models: ['gpt-4.1-mini'] }],
           credentials: [{ credentialRefId: 'cred_openai_environment', version: 1, providerId: 'openai', sourceKind: 'environment', label: 'OpenAI environment key', scopeLabel: null, unknownRotation: true, activeFrom: usageNow - 86400000, retiredAt: null }],
           retention: { rawRetentionDays: 90, aggregateRetentionMonths: 13, lastRunAt: usageNow, rawRetainedFrom: usageNow - 90 * 86400000, aggregateRetainedFrom: usageNow - 395 * 86400000 },
           lifecycleEvents: [{ eventId: 'usage:catalog:test', domain: 'usage', eventType: 'usage.catalog_installed', outcome: 'success', actorClass: 'system', actorId: null, workspaceId: null, channelId: null, storeId: null, subjectId: 'openai_2026-07-28', subjectVersion: 1, createdAt: usageNow, reasonCode: null, beforeHash: null, afterHash: null, metadataJson: '{}', idempotencyKey: 'usage:catalog:test' }],
@@ -17522,53 +17522,23 @@ test('a Usage activity title opens its Slack message only through the Usage API'
   assert.doesNotMatch(unlinked.app.innerHTML, /usage-work-link/);
 });
 
-test('the stale pricing notice counts only the price version each model uses now', async () => {
-  // The July snapshots expire on 2026-10-26.
-  const now = Date.UTC(2026, 9, 27, 12);
-  const day = 86_400_000;
-  // Anthropic's July snapshot is past its date, but the October version prices
-  // its model now, as the estimator does.
-  const anthropic = RELEASE_PRICE_CATALOGS
-    .filter((catalog) => catalog.providerId === 'anthropic')
-    .map((catalog) => ({
-      id: catalog.id,
-      providerId: catalog.providerId,
-      sourceUrl: catalog.sourceUrl,
-      effectiveFrom: catalog.effectiveFrom,
-      reviewedAt: catalog.reviewedAt,
-      staleAfter: catalog.staleAfter,
-      currency: catalog.currency,
-      models: catalog.rates.map((rate) => rate.modelId),
-    }));
-  assert.ok(anthropic.some((catalog) => catalog.staleAfter <= now));
-  const current = runAdminPageHarness({
-    usageAdminUi: true,
-    initialPath: '/admin/usage',
-    now,
-    usageCatalogs: anthropic,
-  });
+test('Admin Usage shows no pricing-update notice, even with every price past its review date', async () => {
+  const now = Math.max(...RELEASE_PRICE_CATALOGS.map(({ reviewDueAt }) => reviewDueAt)) + 86_400_000;
+  // Each catalog also carries the review date as an older Core sent it, as `staleAfter`.
+  const catalogs = RELEASE_PRICE_CATALOGS.map((catalog) => ({
+    id: catalog.id,
+    providerId: catalog.providerId,
+    sourceUrl: catalog.sourceUrl,
+    effectiveFrom: catalog.effectiveFrom,
+    reviewedAt: catalog.reviewedAt,
+    staleAfter: catalog.reviewDueAt,
+    currency: catalog.currency,
+    models: catalog.rates.map((rate) => rate.modelId),
+  }));
+  const harness = runAdminPageHarness({ usageAdminUi: true, initialPath: '/admin/usage', now, usageCatalogs: catalogs });
   await flushAsync();
-  assert.match(current.app.innerHTML, /Estimated spend/);
-  assert.doesNotMatch(current.app.innerHTML, /need a pricing update/);
-
-  const stale = runAdminPageHarness({
-    usageAdminUi: true,
-    initialPath: '/admin/usage',
-    now,
-    usageCatalogs: [
-      ...anthropic,
-      // A newer version replaces this one for model-a only; it still prices
-      // model-b and model-c.
-      { id: 'example_july', providerId: 'example', effectiveFrom: now - 100 * day, staleAfter: now - day, models: ['model-a', 'model-b', 'model-c'] },
-      { id: 'example_october', providerId: 'example', effectiveFrom: now - 10 * day, staleAfter: now + 80 * day, models: ['model-a'] },
-      { id: 'example_other', providerId: 'example', effectiveFrom: now - 100 * day, staleAfter: now - day, models: ['model-d'] },
-      // Not in effect yet, so the stale version still prices the model.
-      { id: 'later_july', providerId: 'later', effectiveFrom: now - 100 * day, staleAfter: now - day, models: ['model-e'] },
-      { id: 'later_november', providerId: 'later', effectiveFrom: now + day, staleAfter: now + 91 * day, models: ['model-e'] },
-    ],
-  });
-  await flushAsync();
-  assert.match(stale.app.innerHTML, /Spend estimates need a pricing update for 2 providers\./);
+  assert.match(harness.app.innerHTML, /Estimated spend/);
+  assert.doesNotMatch(harness.app.innerHTML, /pricing update|field-error/);
 });
 
 test('Usage resolves a redacted private operation to the local Agent name', async () => {

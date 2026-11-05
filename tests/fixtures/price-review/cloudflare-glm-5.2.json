@@ -1,0 +1,25 @@
+{
+  "name": "@cf/zai-org/glm-5.2",
+  "properties": [
+    {
+      "property_id": "price",
+      "value": [
+        {
+          "unit": "per M input tokens",
+          "price": 1.4,
+          "currency": "USD"
+        },
+        {
+          "unit": "per M output tokens",
+          "price": 4.4,
+          "currency": "USD"
+        },
+        {
+          "unit": "per M cached input tokens",
+          "price": 0.26,
+          "currency": "USD"
+        }
+      ]
+    }
+  ]
+}

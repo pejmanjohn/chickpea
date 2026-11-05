@@ -79,7 +79,6 @@ test('every suggested model and every API-key image model has a current price', 
     .filter((profile) => {
       const priced = priceCatalogFor('image_tokens', profile.provider, profile.model, REVIEWED);
       return !priced ||
-        REVIEWED >= priced.version.staleAfter ||
         !(priced.rate.textInputMicrosPerUnit > 0 &&
           priced.rate.imageInputMicrosPerUnit > 0 &&
           priced.rate.imageOutputMicrosPerUnit > 0);

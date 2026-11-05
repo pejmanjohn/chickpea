@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { RELEASE_PRICE_CATALOGS } from '../../src/usage/pricing/catalog.ts';
+import { priceCatalogFor, RELEASE_PRICE_CATALOGS } from '../../src/usage/pricing/catalog.ts';
 import { estimateUsage } from '../../src/usage/pricing/estimate.ts';
 
 const OBSERVED_AT = Date.UTC(2026, 6, 28, 12);
+const AFTER_EVERY_REVIEW_DUE = Math.max(...RELEASE_PRICE_CATALOGS.map(({ reviewDueAt }) => reviewDueAt)) + 86_400_000;
 
 function measurement(
   provider: string,
@@ -143,11 +144,11 @@ test('Anthropic cache prices apply only from their review date, and outlast the 
     },
   );
   const july = RELEASE_PRICE_CATALOGS.find((version) => version.id === 'anthropic_2026-07-28')!;
-  const afterJulyStale = estimateUsage(measurement('anthropic', 'claude-haiku-4-5', 1_000, 200, {
-    observedAt: july.staleAfter,
+  const afterJulyReview = estimateUsage(measurement('anthropic', 'claude-haiku-4-5', 1_000, 200, {
+    observedAt: july.reviewDueAt,
   }));
-  assert.equal(afterJulyStale.estimateAmountMicros, 2_000);
-  assert.equal(afterJulyStale.priceVersionId, 'anthropic-haiku-4-5_2026-10-07');
+  assert.equal(afterJulyReview.estimateAmountMicros, 2_000);
+  assert.equal(afterJulyReview.priceVersionId, 'anthropic-haiku-4-5_2026-10-07');
 });
 
 test('claude-sonnet-5 and claude-sonnet-5-5 are priced from their review date, with cache reads and writes', () => {
@@ -171,7 +172,7 @@ test('claude-sonnet-5 and claude-sonnet-5-5 are priced from their review date, w
   }
 });
 
-test('the re-reviewed OpenAI and OpenRouter prices stay fresh past the July staleness date', () => {
+test('the re-reviewed OpenAI and OpenRouter prices replace the July ones past the July review date', () => {
   const observedAt = Date.UTC(2026, 9, 26);
   for (const [provider, model, version] of [
     ['openai', 'gpt-4.1-mini', 'openai_2026-10-06'],
@@ -209,8 +210,8 @@ test('one-hour cache writes stay partial unless the matched price has a one-hour
     })),
     partial,
   );
-  // Never `price_unknown` or `price_stale`: a later release backfills those
-  // from the stored counts, which do not split out one-hour writes.
+  // Never `price_unknown`: a later release backfills it from the stored
+  // counts, which do not split out one-hour writes.
   assert.deepEqual(
     estimateUsage(measurement('custom', 'local-model', 1, 1, {
       cacheWriteTokens: 5,
@@ -219,15 +220,15 @@ test('one-hour cache writes stay partial unless the matched price has a one-hour
     })),
     partial,
   );
-  const openai = RELEASE_PRICE_CATALOGS.find((version) => version.providerId === 'openai')!;
   assert.deepEqual(
     estimateUsage(measurement('openai', 'gpt-4.1-mini', 10, 5, {
-      observedAt: openai.staleAfter,
+      observedAt: AFTER_EVERY_REVIEW_DUE,
       cacheWriteTokens: 3,
       cacheWrite1hTokens: 3,
       totalTokens: 18,
     })),
     partial,
+    'a price past its review date with no one-hour rate',
   );
 });
 
@@ -263,7 +264,7 @@ test('snapshot aliases price identically while unknown models remain unknown', (
   );
 });
 
-test('missing billable dimensions, effective dates, and catalog staleness never imply precision', () => {
+test('missing billable dimensions and effective dates never imply precision, and a price past its review date still prices', () => {
   assert.deepEqual(
     estimateUsage(measurement('openai', 'gpt-4.1-mini', 10, null, {
       usageCompleteness: 'partial',
@@ -279,12 +280,13 @@ test('missing billable dimensions, effective dates, and catalog staleness never 
     })).priceUnknownReason,
     'price_unknown',
   );
-  const openai = RELEASE_PRICE_CATALOGS.filter((version) => version.providerId === 'openai').at(-1)!;
-  assert.equal(
-    estimateUsage(measurement('openai', 'gpt-4.1-mini', 10, 5, {
-      observedAt: openai.staleAfter,
-    })).priceUnknownReason,
-    'price_stale',
+  assert.deepEqual(
+    estimateUsage(measurement('openai', 'gpt-4.1-mini', 10, 5, { observedAt: AFTER_EVERY_REVIEW_DUE })),
+    {
+      estimateCompleteness: 'complete', estimateAmountMicros: 12, estimateCurrency: 'USD',
+      priceVersionId: priceCatalogFor('standard_input_output', 'openai', 'gpt-4.1-mini', AFTER_EVERY_REVIEW_DUE)!.version.id,
+      priceUnknownReason: null,
+    },
   );
 });
 

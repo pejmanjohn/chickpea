@@ -2,14 +2,14 @@ import type { UsagePriceVersion } from '../types.ts';
 import { version } from './version.ts';
 
 const REVIEWED_AT = Date.UTC(2026, 9, 6);
-const STALE_AFTER = REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
+const REVIEW_DUE_AT = REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
 const ANTHROPIC_PRICING_URL = 'https://platform.claude.com/docs/en/about-claude/pricing';
 
 /**
  * List prices reviewed on 2026-10-06, one version per model. Anthropic cache
  * writes use the 5-minute rate, as in the 2026-10-04 cache version. The
- * OpenAI and OpenRouter prices are unchanged; re-reviewing them restarts
- * their staleness window.
+ * OpenAI and OpenRouter prices are unchanged; re-reviewing them moves
+ * their next review date.
  */
 export const PRICE_CATALOGS_2026_10_06: UsagePriceVersion[] = [
   // Model IDs: https://platform.claude.com/docs/en/about-claude/models/overview
@@ -19,7 +19,7 @@ export const PRICE_CATALOGS_2026_10_06: UsagePriceVersion[] = [
     sourceUrl: ANTHROPIC_PRICING_URL,
     effectiveFrom: REVIEWED_AT,
     reviewedAt: REVIEWED_AT,
-    staleAfter: STALE_AFTER,
+    reviewDueAt: REVIEW_DUE_AT,
     currency: 'USD',
     rates: [{
       providerId: 'anthropic',
@@ -40,7 +40,7 @@ export const PRICE_CATALOGS_2026_10_06: UsagePriceVersion[] = [
     sourceUrl: ANTHROPIC_PRICING_URL,
     effectiveFrom: REVIEWED_AT,
     reviewedAt: REVIEWED_AT,
-    staleAfter: STALE_AFTER,
+    reviewDueAt: REVIEW_DUE_AT,
     currency: 'USD',
     rates: [{
       providerId: 'anthropic',
@@ -61,7 +61,7 @@ export const PRICE_CATALOGS_2026_10_06: UsagePriceVersion[] = [
     sourceUrl: ANTHROPIC_PRICING_URL,
     effectiveFrom: REVIEWED_AT,
     reviewedAt: REVIEWED_AT,
-    staleAfter: STALE_AFTER,
+    reviewDueAt: REVIEW_DUE_AT,
     currency: 'USD',
     rates: [{
       providerId: 'anthropic',
@@ -82,7 +82,7 @@ export const PRICE_CATALOGS_2026_10_06: UsagePriceVersion[] = [
     sourceUrl: 'https://developers.openai.com/api/docs/models/gpt-4.1-mini',
     effectiveFrom: REVIEWED_AT,
     reviewedAt: REVIEWED_AT,
-    staleAfter: STALE_AFTER,
+    reviewDueAt: REVIEW_DUE_AT,
     currency: 'USD',
     rates: [{
       providerId: 'openai',
@@ -101,7 +101,7 @@ export const PRICE_CATALOGS_2026_10_06: UsagePriceVersion[] = [
     sourceUrl: 'https://openrouter.ai/openai/gpt-4.1-2025-04-14/providers',
     effectiveFrom: REVIEWED_AT,
     reviewedAt: REVIEWED_AT,
-    staleAfter: STALE_AFTER,
+    reviewDueAt: REVIEW_DUE_AT,
     currency: 'USD',
     rates: [{
       providerId: 'openrouter',

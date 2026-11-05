@@ -12,6 +12,9 @@ release PR, run the source gates, update a QA lane in place and run the batch
 smoke there, then publish. The release PR's review runs in parallel with the
 source gates.
 
+Chickpea-credits list prices are reviewed on their own schedule, not with a
+release. See [Price review](price-review.md).
+
 ## Roll forward
 
 Chickpea always rolls forward. Nothing rehearses, tests, or gates on a
