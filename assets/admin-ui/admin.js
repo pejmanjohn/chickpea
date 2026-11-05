@@ -152,6 +152,9 @@
     // An in-app purchase waiting for the Owner's OK: extra usage by key, or a
     // plan change with the host's preview.
     billingConfirm: null,
+    // The key of the top-up the Owner asked to try again, kept until the host
+    // answers, so trying once more after a lost answer charges once.
+    billingTopUpRetryKey: null,
     // The banner over the page after a purchase: "wait" while the usage is
     // being added, or what it added.
     billingBanner: null,
@@ -2530,6 +2533,7 @@
     state.billingUseAll = false;
     state.billingTopUpEdit = null;
     state.billingConfirm = null;
+    state.billingTopUpRetryKey = null;
     state.billingBanner = null;
     var step = query ? query.get("step") || "" : "";
     var returned = !!query && query.get("billing") === "done";
@@ -2721,6 +2725,7 @@
     postJson("/admin/api/billing/auto-top-up", "POST", body, headers).then(function (view) {
       state.billing = view;
       state.billingTopUpEdit = null;
+      state.billingTopUpRetryKey = null;
     }).catch(function (error) {
       state.billingError = { at: "top_up", text: billingFailureText(error, "Auto top-up could not be changed. Try again.") };
     }).then(function () {
@@ -15546,7 +15551,10 @@
       focusAction("billing-top-up-edit");
     }
     if (action === "billing-top-up-save" && !state.billingBusy) saveTopUp();
-    if (action === "billing-top-up-retry") updateTopUp({ change: "retry" }, "top_up_retry", { "idempotency-key": billingChargeKey("top_up_retry") });
+    if (action === "billing-top-up-retry") {
+      state.billingTopUpRetryKey = state.billingTopUpRetryKey || billingChargeKey("top_up_retry");
+      updateTopUp({ change: "retry" }, "top_up_retry", { "idempotency-key": state.billingTopUpRetryKey });
+    }
     if (action === "billing-choose-plan") {
       var planAt = target.getAttribute("data-at") || "";
       openStripe("/admin/api/billing/checkout", { kind: "plan", key: target.getAttribute("data-key") || "" }, "plan:" + planAt, "plan:" + planAt);

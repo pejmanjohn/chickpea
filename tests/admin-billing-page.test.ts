@@ -1736,6 +1736,33 @@ test('trying a saved-card purchase again after its answer was lost sends the sam
   assert.notEqual(keys[2], keys[0], 'a new confirm is a new charge');
 });
 
+test('trying a paused top-up again after its answer was lost sends the same key; once the host answers, the next try is a new charge', async () => {
+  const keys: (string | undefined)[] = [];
+  let answers = 0;
+  const declined: BillingSummary = {
+    ...STARTER_AT_LIMIT,
+    autoTopUp: { ...TOP_UP_ON, pause: { kind: 'declined', at: new Date('2026-10-28T20:00:00Z') } },
+  };
+  const page = await harness({
+    path: '/admin/plan', billingOffered: true, summary: declined,
+    port: {
+      async updateAutoTopUp(_installationId, update) {
+        keys.push(update.idempotencyKey);
+        if (answers++ === 0) throw new Error('the answer was lost');
+      },
+    },
+  });
+  await page.click({ 'data-action': 'billing-top-up-retry' });
+  assertShows(autoCard(page.html()), 'Auto top-up could not be changed. Try again.');
+  await page.click({ 'data-action': 'billing-top-up-retry' });
+  assert.equal(keys.length, 2);
+  assert.match(keys[0] ?? '', /^admin-ui:billing:top_up_retry:/);
+  assert.equal(keys[0], keys[1], 'the lost answer may have charged, so the host sees one key');
+  await page.click({ 'data-action': 'billing-top-up-retry' });
+  assert.equal(keys.length, 3);
+  assert.notEqual(keys[2], keys[0], 'after an answer, trying again is a new charge');
+});
+
 test('an Owner who picked a pack follows the plan again by picking the plan\'s own pack', async () => {
   const updates: AutoTopUpUpdate[] = [];
   const fixed: BillingSummary = { ...STARTER_TOP_UP, autoTopUp: { ...TOP_UP_ON, pack: { rule: 'fixed', key: 'extra_usage_25' } } };
