@@ -237,8 +237,8 @@ export class BillingRefusal extends Error {
 }
 
 /**
- * One run's billed usage on one UTC day: the rows the plan's meter sums,
- * model and fee charges less what creditBack restored. Usage is
+ * One run's billed usage on one UTC day, whatever paid for it: model and fee
+ * charges less what creditBack restored. Usage is
  * `modelMicros + feeMicros - creditedBackMicros`.
  */
 export interface BilledUsageRow {
@@ -284,10 +284,14 @@ export interface PlatformBillingPort {
    */
   chooseFunding(installationId: string, funding: BillingFunding): Promise<void>;
   /**
-   * Optional. Billed usage written in `[from, to)`, by run and UTC day, so
-   * its sum over the billing period equals the plan meter's. Admin's Usage
-   * page shows amounts only while the host answers; without the method, or
-   * when it throws, the page shows activity counts.
+   * Optional. Billed usage written in `[from, to)`, by run and UTC day,
+   * whatever paid for it. Over a billing period the rows total
+   * `use.byAgent`, the Plan page's "Usage this period". The plan meter,
+   * `planUsage.usedMicros`, differs when rollover or extra usage paid, a
+   * top-up paid off debt, debt was carried in, or a refund revoked part of
+   * the plan grant. Admin's Usage page shows amounts only while the host
+   * answers; without the method, or when it throws, the page shows activity
+   * counts.
    */
   usage?(installationId: string, range: { readonly from: Date; readonly to: Date }): Promise<BilledUsage>;
   /**
