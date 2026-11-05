@@ -1,11 +1,11 @@
 import { formatTasks, planTaskSaving, taskRates, type TaskFees, type TaskRates } from '../admin/billing-tasks.ts';
 import { deploymentTenancy } from '../config/installation-scope.ts';
-import type { BillingActor, BillingFunding, CardSummary } from '../config/platform-billing.ts';
+import type { BillingActor, BillingFunding, PaymentMethodSummary } from '../config/platform-billing.ts';
 import type { DailyLimitScope } from '../config/platform-funding.ts';
 import { getConfigStore, getIdentityStore, type PlatformEnv } from '../config/state-backend.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type { IdentityStore } from '../identity/types.ts';
-import { formatCard, formatPriceCents, formatUsageDollars, usagePercent, type UsageMicros } from '../usage/usage-display.ts';
+import { formatPaymentMethod, formatPriceCents, formatUsageDollars, usagePercent, type UsageMicros } from '../usage/usage-display.ts';
 import { activeOwnerSlackUserIds, sendOwnerDm } from './credits-ask.ts';
 import {
   resolveSlackInstallationExecutionContext,
@@ -54,7 +54,7 @@ export type OwnerBillingNotice = { readonly planPageUrl: string } & (
     readonly usedCents: number;
     readonly limitCents: number;
     readonly validMonths: number;
-    readonly card?: CardSummary | null;
+    readonly card?: PaymentMethodSummary | null;
     readonly receiptUrl?: string | null;
   }
   | {
@@ -67,7 +67,7 @@ export type OwnerBillingNotice = { readonly planPageUrl: string } & (
     /** Absent or null where the host doesn't say, which compares the plans in usage alone. */
     readonly taskFees?: TaskFees | null;
   }
-  | { readonly kind: 'top_up_declined'; readonly card?: CardSummary | null }
+  | { readonly kind: 'top_up_declined'; readonly card?: PaymentMethodSummary | null }
   | { readonly kind: 'top_up_unconfirmed'; readonly amountCents: number }
   | { readonly kind: 'billing_details' }
   | {
@@ -232,7 +232,7 @@ function noticeCopy(notice: OwnerBillingNotice): MessageCopy {
       const receiptUrl = httpsUrl(notice.receiptUrl);
       return {
         text: `Auto top-up added ${formatPriceCents(notice.packCents)} of extra usage, so your Agents keep working.`,
-        context: `Charged to ${formatCard(notice.card) ?? 'your card'}, plus tax. ` +
+        context: `Charged to ${formatPaymentMethod(notice.card) ?? 'your card'}, plus tax. ` +
           `Extra usage keeps ${notice.validMonths} ${notice.validMonths === 1 ? 'month' : 'months'} while you have a plan. ${limit}`,
         buttons: [
           ...(receiptUrl ? [{ kind: 'view_receipt', url: receiptUrl } as const] : []),
@@ -253,13 +253,15 @@ function noticeCopy(notice: OwnerBillingNotice): MessageCopy {
         primary: true,
       };
     }
-    case 'top_up_declined':
+    case 'top_up_declined': {
+      const link = notice.card?.kind === 'link';
       return {
-        text: `Auto top-up couldn't charge ${formatCard(notice.card) ?? 'your card'}. ` +
-          'The card was declined, so your Agents are paused.',
-        buttons: ['update_card', 'try_again'],
+        text: `Auto top-up couldn't charge ${formatPaymentMethod(notice.card) ?? 'your card'}. ` +
+          `The ${link ? 'payment' : 'card'} was declined, so your Agents are paused.`,
+        buttons: [link ? { kind: 'update_card', label: 'Update payment method' } : 'update_card', 'try_again'],
         primary: true,
       };
+    }
     case 'top_up_unconfirmed':
       return {
         text: `Your bank wants you to confirm a ${formatPriceCents(notice.amountCents)} auto top-up charge. ` +
