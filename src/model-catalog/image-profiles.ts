@@ -18,6 +18,8 @@ export const IMAGE_OUTPUT_CAP = 10;
 
 export const IMAGE_MODEL_IDS = [
   OPENAI_SUBSCRIPTION_IMAGE_MODEL_ID,
+  'openai/gpt-image-2.6-flare',
+  'openai/gpt-image-2.6-sunburst',
   'openai/gpt-image-2.5-flare',
   'openai/gpt-image-2.5-sunburst',
 ] as const;
@@ -55,9 +57,8 @@ function apiKeyImageProfile(
     maxEditInputs: IMAGE_EDIT_INPUT_CAP,
     maxOutputs: IMAGE_OUTPUT_CAP,
     supportsOutputControls: true,
-    // pi-ai's model type requires rates. Image calls are not metered in this
-    // release (metering is deferred); the provider's own usage object is
-    // returned by the client instead of being priced here.
+    // pi-ai's model type requires rates. Image prices live in the usage price
+    // catalog (src/usage/pricing/catalogs), not here.
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   };
   Object.freeze(profile.input);
@@ -96,6 +97,8 @@ function subscriptionImageProfile(): ImageModelProfile {
 // for this small role, and an Owner-facing picker must not show chat models.
 const IMAGE_MODEL_PROFILES: readonly ImageModelProfile[] = Object.freeze([
   subscriptionImageProfile(),
+  apiKeyImageProfile('openai/gpt-image-2.6-flare', 'GPT Image 2.6 Flare'),
+  apiKeyImageProfile('openai/gpt-image-2.6-sunburst', 'GPT Image 2.6 Sunburst'),
   apiKeyImageProfile('openai/gpt-image-2.5-flare', 'GPT Image 2.5 Flare'),
   apiKeyImageProfile('openai/gpt-image-2.5-sunburst', 'GPT Image 2.5 Sunburst'),
 ]);

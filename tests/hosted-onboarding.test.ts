@@ -42,6 +42,7 @@ import { REQUESTED_SLACK_BOT_SCOPES } from '../src/slack/scopes.ts';
 import { promisify } from '../src/state/async-facade.ts';
 import { DoSqlStateDb } from '../src/state/do-state-db.ts';
 import { buildTagStateStores } from '../src/state/tag-state-stores.ts';
+import { priceCatalogFor } from '../src/usage/pricing/catalog.ts';
 import type { UsageStore } from '../src/usage/types.ts';
 import type { SlackStateStore } from '../src/slack/claim-store.ts';
 import { opaqueId } from '../src/work/admission.ts';
@@ -644,7 +645,7 @@ test('where the host sells Chickpea\'s models, onboarding chooses them, Opus 5.5
   assert.equal(body.revision, revision);
   const imageRole = await signup.config.getWorkspaceModelRole(TEAM, 'image');
   assert.ok(imageRole, 'the default image model is chosen');
-  assert.equal(imageRole.modelId, 'openai/gpt-image-2.5-flare');
+  assert.equal(imageRole.modelId, 'openai/gpt-image-2.6-flare');
   assert.equal(imageRole.lastChangedByMembershipId, owner.membershipId);
 
   const anotherOwner = signup.admin(principalFor('owner', { userId: 'user_second_owner', membershipId: 'membership_second_owner' }));
@@ -662,6 +663,7 @@ test('where the host sells Chickpea\'s models, onboarding chooses them, Opus 5.5
 for (const [kept, modelId] of [
   ['an image role set to Not set', undefined],
   ['another image model', 'openai/gpt-image-2.5-sunburst'],
+  ['the image model an earlier release chose', 'openai/gpt-image-2.5-flare'],
 ] as const) {
   test(`setting up on Chickpea's models keeps ${kept}`, async (t) => {
     hostPorts(t);
@@ -677,15 +679,14 @@ for (const [kept, modelId] of [
 }
 
 test('setting up on Chickpea\'s models chooses no image model that Chickpea\'s models cannot serve, and still chooses the chat model', async (t) => {
-  const claimedAt = Date.UTC(2026, 9, 7, 12);
-  const imagePrice = currentImagePrice('openai', 'gpt-image-2.5-flare', claimedAt);
-  assert.ok(imagePrice, 'the default image model is priced at the claim');
+  const claimedAt = Date.UTC(2026, 10, 5, 12);
+  assert.ok(currentImagePrice('openai', 'gpt-image-2.6-flare', claimedAt), 'the default image model is priced at the claim');
   t.mock.timers.enable({ apis: ['Date'], now: claimedAt });
   hostPorts(t);
   const signup = await signUp(t);
   await signup.claim();
   const admin = signup.admin(await signup.ownerPrincipal());
-  t.mock.timers.setTime(imagePrice.version.staleAfter);
+  t.mock.timers.setTime(priceCatalogFor('image_tokens', 'openai', 'gpt-image-2.6-flare', Number.MAX_SAFE_INTEGER)!.version.staleAfter);
   const started = await startOnPlatform(admin);
   assert.equal(started.status, 200, await started.clone().text());
   assert.equal((await started.json() as { stage: string }).stage, 'try');
@@ -736,7 +737,7 @@ test('a Member, an Admin, a finished journey, or a host with no billing port cha
   assert.equal(switched.status, 200, 'the Plan page still switches after onboarding');
   assert.deepEqual(host.chosen, ['platform']);
   const image = await signup.config.getWorkspaceModelRole(TEAM, 'image');
-  assert.equal(image?.modelId, 'openai/gpt-image-2.5-flare', 'the switch chooses the image model onboarding would have');
+  assert.equal(image?.modelId, 'openai/gpt-image-2.6-flare', 'the switch chooses the image model onboarding would have');
 
   configurePlatformBilling(undefined);
   await signup.settings.applySettingsPatch({ delete: [ONBOARDING_JOURNEY_KEY] });

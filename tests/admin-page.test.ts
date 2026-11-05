@@ -443,7 +443,7 @@ function imageCatalogFixture(includeApiKey: boolean, includeSubscription: boolea
       authMethod: 'subscription',
       maxOutputs: 1,
       supportsOutputControls: false,
-      fasterAndCheaper: false,
+      lowerCost: false,
     });
   }
   if (includeApiKey) {
@@ -456,7 +456,7 @@ function imageCatalogFixture(includeApiKey: boolean, includeSubscription: boolea
         authMethod: 'api_key',
         maxOutputs: 10,
         supportsOutputControls: true,
-        fasterAndCheaper: true,
+        lowerCost: true,
       },
       {
         id: SUNBURST_IMAGE_MODEL,
@@ -466,7 +466,7 @@ function imageCatalogFixture(includeApiKey: boolean, includeSubscription: boolea
         authMethod: 'api_key',
         maxOutputs: 10,
         supportsOutputControls: true,
-        fasterAndCheaper: false,
+        lowerCost: true,
       },
     );
   }

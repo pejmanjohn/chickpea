@@ -2,7 +2,7 @@ import { ModelRoleRevisionConflictError } from './errors.ts';
 import type { ConfigStore } from './store.ts';
 import type { ImageModelId } from '../model-catalog/image-profiles.ts';
 
-export const OPENAI_API_IMAGE_DEFAULT_MODEL_ID = 'openai/gpt-image-2.5-flare' as const;
+export const OPENAI_API_IMAGE_DEFAULT_MODEL_ID = 'openai/gpt-image-2.6-flare' as const;
 
 interface WorkspaceImageDefaultInput {
   config: ConfigStore;

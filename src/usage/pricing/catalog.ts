@@ -11,6 +11,7 @@ import { PRICE_CATALOGS_2026_10_06 } from './catalogs/2026-10-06.ts';
 import { PRICE_CATALOGS_2026_10_07 } from './catalogs/2026-10-07.ts';
 import { PRICE_CATALOGS_2026_10_07_OPENROUTER_MAKERS } from './catalogs/2026-10-07-openrouter-makers.ts';
 import { PRICE_CATALOGS_2026_10_24 } from './catalogs/2026-10-24.ts';
+import { PRICE_CATALOGS_2026_11_05 } from './catalogs/2026-11-05.ts';
 import type { UsagePriceRate, UsagePriceVersion } from './types.ts';
 
 export const RELEASE_PRICE_CATALOGS: UsagePriceVersion[] = [
@@ -19,6 +20,7 @@ export const RELEASE_PRICE_CATALOGS: UsagePriceVersion[] = [
   ...PRICE_CATALOGS_2026_10_07,
   ...PRICE_CATALOGS_2026_10_07_OPENROUTER_MAKERS,
   ...PRICE_CATALOGS_2026_10_24,
+  ...PRICE_CATALOGS_2026_11_05,
 ];
 
 export function installReleasePriceCatalogs(db: StateDb): UsagePriceVersion[] {

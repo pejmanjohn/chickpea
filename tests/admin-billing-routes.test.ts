@@ -411,6 +411,7 @@ test('switching to Chickpea\'s models from the Plan page chooses the image model
 
 for (const [kept, image] of [
   ['another image model', { modelId: 'openai/gpt-image-2.5-sunburst' }],
+  ['the image model an earlier release chose', { modelId: 'openai/gpt-image-2.5-flare' }],
   ['an image role set to Not set', {}],
 ] as const) {
   test(`switching to Chickpea's models from the Plan page keeps ${kept}`, async (t) => {

@@ -7286,8 +7286,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   // The image role's picker source, kept separate from the chat model list so a
   // chat model can never reach an image field. Entries are the image catalog
-  // narrowed to profiles whose own credential lane is ready, each flagged when it is
-  // the faster, cheaper choice. `providers` lets Admin tell "no image
+  // narrowed to profiles whose own credential lane is ready, each flagged when it
+  // costs less per image. `providers` lets Admin tell "no image
   // model chosen" apart from "no image provider connected".
   app.get('/admin/api/image-models', async (c) => {
     const models = await availableRoleModels(
@@ -7298,7 +7298,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return c.json({
       models: models.map((model) => ({
         ...model,
-        fasterAndCheaper: FASTER_CHEAPER_IMAGE_MODEL_IDS.has(model.id),
+        lowerCost: LOWER_COST_IMAGE_MODEL_IDS.has(model.id),
       })),
       providers: IMAGE_ROLE_PROVIDER_IDS.map((id) => ({
         id,
@@ -13427,9 +13427,11 @@ async function workspaceModelRoleProjection(input: {
 }
 
 // Model choice is the only cost lever in this release, so the Owner-facing
-// picker says which entry is the faster, cheaper one. Held here rather than on
-// the profile: it is a purchasing note for Admin, not a model capability.
-const FASTER_CHEAPER_IMAGE_MODEL_IDS = new Set<string>(['openai/gpt-image-2.5-flare']);
+// picker says which entries cost less. Held here rather than on the profile:
+// it is a purchasing note for Admin, not a model capability. At the same token
+// rates, the 2.5 models bill fewer output tokens than 2.6 below high quality
+// (measured at 1024x1024: about a quarter at low, a third at medium).
+const LOWER_COST_IMAGE_MODEL_IDS = new Set<string>(['openai/gpt-image-2.5-flare', 'openai/gpt-image-2.5-sunburst']);
 
 function cutoverEnvironmentModel(platformEnv: PlatformEnv | undefined): string | undefined {
   const platformValue = (platformEnv as unknown as Record<string, unknown> | undefined)

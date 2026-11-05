@@ -1,4 +1,4 @@
-/** Shared validation for the two configured GPT Image 2.5 models. */
+/** Shared validation for the GPT Image models that take output controls. */
 export const IMAGE_QUALITIES = ['auto', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 export const IMAGE_BACKGROUNDS = ['auto', 'opaque', 'transparent'] as const;
 export type ImageQuality = typeof IMAGE_QUALITIES[number];

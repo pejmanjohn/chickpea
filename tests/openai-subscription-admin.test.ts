@@ -19,7 +19,6 @@ import type {
 import { commitOpenAiSubscriptionCredentials } from '../src/openai-subscription/credentials.ts';
 import { OpenAiSubscriptionError } from '../src/openai-subscription/errors.ts';
 import { OPENAI_SUBSCRIPTION_IMAGE_MODEL_ID } from '../src/model-catalog/image-profiles.ts';
-import { OPENAI_API_IMAGE_DEFAULT_MODEL_ID } from '../src/config/initial-image-default.ts';
 import { MODEL_CATALOG_SETTING_KEYS } from '../src/model-catalog/store.ts';
 import { FAKE_PROVIDER_KEYS, FakeProvidersBackend } from './helpers/fake-providers.ts';
 import { withEnv } from './helpers/env.ts';
@@ -245,40 +244,43 @@ test('a first OpenAI API key initializes an unset image role without changing ch
   assert.equal(response.status, 200, await response.clone().text());
   assert.equal(
     (await config.getWorkspaceModelRole('T_TEST', 'image'))?.modelId,
-    OPENAI_API_IMAGE_DEFAULT_MODEL_ID,
+    'openai/gpt-image-2.6-flare',
   );
   assert.equal(await settings.getSetting('provider.openai.authMethod'), 'subscription');
 });
 
-test('an explicitly cleared image role remains unset when an OpenAI API key is first added', async (t) => {
-  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
-  const settings = new SqliteSettingsStore(':memory:');
-  t.after(() => { config.close(); settings.close(); invalidateProviderKeyCache(); });
-  await installTestWorkspace(config);
-  await config.putWorkspaceModelRole({ workspaceId: 'T_TEST', role: 'image' }, 0);
-  invalidateProviderKeyCache();
-  const app = new Hono();
-  app.route('/', createAdminRoutes({
-    store: config,
-    settings,
-    ...testAdminAuthority(ADMIN_TOKEN),
-  }));
+for (const [kept, image] of [
+  ['an explicitly cleared image role', {}],
+  ['an image role on GPT Image 2.5 Flare', { modelId: 'openai/gpt-image-2.5-flare' }],
+] as const) {
+  test(`${kept} is kept when an OpenAI API key is first added`, async (t) => {
+    const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+    const settings = new SqliteSettingsStore(':memory:');
+    t.after(() => { config.close(); settings.close(); invalidateProviderKeyCache(); });
+    await installTestWorkspace(config);
+    const chosen = await config.putWorkspaceModelRole({ workspaceId: 'T_TEST', role: 'image', ...image }, 0);
+    invalidateProviderKeyCache();
+    const app = new Hono();
+    app.route('/', createAdminRoutes({
+      store: config,
+      settings,
+      ...testAdminAuthority(ADMIN_TOKEN),
+    }));
 
-  const fake = new FakeProvidersBackend();
-  const response = await withEnv(
-    { OPENAI_API_KEY: undefined, OPENAI_API_URL: 'https://openai.fake/v1' },
-    () => withFetch(fake.asFetch(), async () => app.request('/admin/api/providers/openai/key', {
-      method: 'POST',
-      headers: { ...auth(), 'content-type': 'application/json' },
-      body: JSON.stringify({ apiKey: FAKE_PROVIDER_KEYS.openai }),
-    })),
-  );
+    const fake = new FakeProvidersBackend();
+    const response = await withEnv(
+      { OPENAI_API_KEY: undefined, OPENAI_API_URL: 'https://openai.fake/v1' },
+      () => withFetch(fake.asFetch(), async () => app.request('/admin/api/providers/openai/key', {
+        method: 'POST',
+        headers: { ...auth(), 'content-type': 'application/json' },
+        body: JSON.stringify({ apiKey: FAKE_PROVIDER_KEYS.openai }),
+      })),
+    );
 
-  assert.equal(response.status, 200, await response.clone().text());
-  const clearedRole = await config.getWorkspaceModelRole('T_TEST', 'image');
-  assert.equal(clearedRole?.modelId, undefined);
-  assert.equal(clearedRole?.revision, 1);
-});
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.deepEqual(await config.getWorkspaceModelRole('T_TEST', 'image'), chosen);
+  });
+}
 
 test('a concurrent image choice wins the first-key default without failing key completion', async (t) => {
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });

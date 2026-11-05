@@ -19,6 +19,7 @@ import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import type { PlatformEnv } from '../src/config/state-backend.ts';
 import type { CustomAgentConfig, WorkspaceModelDefault } from '../src/config/types.ts';
 import { currentImagePrice } from '../src/images/request-record.ts';
+import { priceCatalogFor } from '../src/usage/pricing/catalog.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { withEnv } from './helpers/env.ts';
@@ -503,9 +504,10 @@ test('the provider credential seam cannot enable subscription images on Cloudfla
 });
 
 const NOW = Date.UTC(2026, 9, 7, 12);
-const FLARE_PRICE = currentImagePrice('openai', 'gpt-image-2.5-flare', NOW);
-assert.ok(FLARE_PRICE, 'the image test model is priced at NOW');
-const AFTER_IMAGE_PRICES_STALE = FLARE_PRICE.version.staleAfter;
+assert.ok(currentImagePrice('openai', 'gpt-image-2.5-flare', NOW), 'the image test model is priced at NOW');
+const FLARE_NEWEST_PRICE = priceCatalogFor('image_tokens', 'openai', 'gpt-image-2.5-flare', Number.MAX_SAFE_INTEGER);
+assert.ok(FLARE_NEWEST_PRICE);
+const AFTER_IMAGE_PRICES_STALE = FLARE_NEWEST_PRICE.version.staleAfter;
 const NO_DEPLOYMENT_KEYS = {
   CHICKPEA_TENANCY: undefined,
   ANTHROPIC_API_KEY: undefined,

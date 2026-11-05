@@ -16,9 +16,15 @@ import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { withEnv } from './helpers/env.ts';
 
 const ADMIN_TOKEN = 'model-roles-admin-token';
+const FLARE_2_6 = 'openai/gpt-image-2.6-flare';
+const SUNBURST_2_6 = 'openai/gpt-image-2.6-sunburst';
 const FLARE = 'openai/gpt-image-2.5-flare';
 const SUNBURST = 'openai/gpt-image-2.5-sunburst';
 const CHATGPT_IMAGE = 'openai/chatgpt-image';
+
+function apiKeyImageModel(id: string, name: string) {
+  return { id, name, providerId: 'openai', acceptsImageInput: true, authMethod: 'api_key', maxOutputs: 10, supportsOutputControls: true };
+}
 
 function auth(): HeadersInit {
   return testAdminHeaders(ADMIN_TOKEN, { 'content-type': 'application/json' });
@@ -133,17 +139,10 @@ test('the image role rejects a chat model and accepts a catalog model once OpenA
         modelId: FLARE,
         revision: 1,
         availableModels: [
-          { id: FLARE, name: 'GPT Image 2.5 Flare', providerId: 'openai', acceptsImageInput: true,
-            authMethod: 'api_key', maxOutputs: 10, supportsOutputControls: true },
-          {
-            id: SUNBURST,
-            name: 'GPT Image 2.5 Sunburst',
-            providerId: 'openai',
-            acceptsImageInput: true,
-            authMethod: 'api_key',
-            maxOutputs: 10,
-            supportsOutputControls: true,
-          },
+          apiKeyImageModel(FLARE_2_6, 'GPT Image 2.6 Flare'),
+          apiKeyImageModel(SUNBURST_2_6, 'GPT Image 2.6 Sunburst'),
+          apiKeyImageModel(FLARE, 'GPT Image 2.5 Flare'),
+          apiKeyImageModel(SUNBURST, 'GPT Image 2.5 Sunburst'),
         ],
       },
     });
@@ -184,26 +183,10 @@ test('the image model list is empty until its provider has a credential', async 
     assert.equal(connected.status, 200);
     assert.deepEqual(await connected.json(), {
       models: [
-        {
-          id: FLARE,
-          name: 'GPT Image 2.5 Flare',
-          providerId: 'openai',
-          acceptsImageInput: true,
-          fasterAndCheaper: true,
-          authMethod: 'api_key',
-          maxOutputs: 10,
-          supportsOutputControls: true,
-        },
-        {
-          id: SUNBURST,
-          name: 'GPT Image 2.5 Sunburst',
-          providerId: 'openai',
-          acceptsImageInput: true,
-          fasterAndCheaper: false,
-          authMethod: 'api_key',
-          maxOutputs: 10,
-          supportsOutputControls: true,
-        },
+        { ...apiKeyImageModel(FLARE_2_6, 'GPT Image 2.6 Flare'), lowerCost: false },
+        { ...apiKeyImageModel(SUNBURST_2_6, 'GPT Image 2.6 Sunburst'), lowerCost: false },
+        { ...apiKeyImageModel(FLARE, 'GPT Image 2.5 Flare'), lowerCost: true },
+        { ...apiKeyImageModel(SUNBURST, 'GPT Image 2.5 Sunburst'), lowerCost: true },
       ],
       providers: [{ id: 'openai', configured: true }],
     });
@@ -234,7 +217,7 @@ test('the image catalog exposes ChatGPT Image only for a connected Node subscrip
         authMethod: 'subscription',
         maxOutputs: 1,
         supportsOutputControls: false,
-        fasterAndCheaper: false,
+        lowerCost: false,
       }],
       providers: [{ id: 'openai', configured: true }],
     });
@@ -268,7 +251,7 @@ test('Cloudflare never lists or accepts ChatGPT Image even when a subscription r
     const listed = await fixture.app.request('/admin/api/image-models', { headers: auth() });
     assert.equal(listed.status, 200);
     const body = await listed.json() as { models: Array<{ id: string }> };
-    assert.deepEqual(body.models.map((model) => model.id), [FLARE, SUNBURST]);
+    assert.deepEqual(body.models.map((model) => model.id), [FLARE_2_6, SUNBURST_2_6, FLARE, SUNBURST]);
 
     const rejected = await fixture.app.request('/admin/api/workspace-model-roles/image', {
       method: 'PUT',
@@ -444,7 +427,7 @@ test('the image role clears back to unset and can be set again from cleared', as
     assert.equal(clearedBody.workspaceModelRole.modelId, null);
     assert.equal(clearedBody.workspaceModelRole.revision, 2);
     // The picker list still ships with the cleared projection.
-    assert.equal(clearedBody.workspaceModelRole.availableModels.length, 2);
+    assert.equal(clearedBody.workspaceModelRole.availableModels.length, 4);
     assert.equal(
       (await fixture.config.getWorkspaceModelRole('T_TEST', 'image'))?.modelId,
       undefined,

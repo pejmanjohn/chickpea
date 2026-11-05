@@ -13,7 +13,7 @@ import { priceCatalogFor } from '../../src/usage/pricing/catalog.ts';
 import { estimateUsage } from '../../src/usage/pricing/estimate.ts';
 import { UsageStoreLogic } from '../../src/usage/store.ts';
 
-const REVIEWED = Date.UTC(2026, 9, 24, 12);
+const REVIEWED = Date.UTC(2026, 10, 5, 12);
 const SNAPSHOT = 'a'.repeat(64);
 
 function measurement(

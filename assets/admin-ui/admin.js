@@ -6739,7 +6739,7 @@
         .forEach(function (model) {
           var note = model.authMethod === "subscription"
             ? " \u00b7 ChatGPT subscription \u00b7 generation only" + (model.maxOutputs === 1 ? " \u00b7 one per call" : "")
-            : model.fasterAndCheaper ? " \u00b7 faster, cheaper" : "";
+            : model.lowerCost ? " \u00b7 lower cost" : "";
           html += '<button type="button" class="combo-opt ' + (current === model.id ? "active" : "") + '" data-action="pick-image-model" data-model="' + esc(model.id) + '">' + esc(model.id + note) + '</button>';
         });
     });
@@ -12519,7 +12519,8 @@
   // R16: the disclosure and the cost lever live with the picker, in one place,
   // because the model choice is the only cost control in this release.
   function imageModelConsentNoteHtml(modelId) {
-    var faster = imageModelCatalog().filter(function (model) { return model.fasterAndCheaper; })[0];
+    var lowerCostNames = imageModelCatalog().filter(function (model) { return model.lowerCost; })
+      .map(function (model) { return model.name; });
     var selected = imageModelById(modelId);
     var providers = [];
     imageModelCatalog().forEach(function (model) {
@@ -12529,7 +12530,8 @@
       (providers.length ? providers.join(", ") : "the model provider") + ".";
     var detail = selected && selected.authMethod === "subscription"
       ? " " + selected.name + " uses the connected ChatGPT subscription and generates one image per call. It is generation only, and exact output settings are unavailable."
-      : faster ? " " + faster.name + " is the faster, cheaper option." : "";
+      : lowerCostNames.length ? " " + joinNames(lowerCostNames) + (lowerCostNames.length === 1 ? " costs" : " cost") +
+        " less per image than the newer models, except at high quality and above." : "";
     return '<p class="hint">' + esc(sentence + detail) + '</p>';
   }
 

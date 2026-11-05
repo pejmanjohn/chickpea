@@ -17,6 +17,8 @@ test('the image catalog lists API-key models and the generic subscription servic
     models.map((model) => model.id),
     [
       OPENAI_SUBSCRIPTION_IMAGE_MODEL_ID,
+      'openai/gpt-image-2.6-flare',
+      'openai/gpt-image-2.6-sunburst',
       'openai/gpt-image-2.5-flare',
       'openai/gpt-image-2.5-sunburst',
     ],
@@ -71,7 +73,7 @@ test('models are found by catalog id and unknown ids resolve to nothing', () => 
 test('a caller cannot mutate the shared catalog through a listing', () => {
   const models = listImageModels('openai');
   models.pop();
-  assert.equal(listImageModels('openai').length, 3);
+  assert.equal(listImageModels('openai').length, 5);
 
   const profile = listImageModels('openai')[0] as ImageModelProfile;
   assert.throws(() => {
