@@ -236,6 +236,7 @@ test('usage Admin APIs are authenticated, bounded, and expose no content fields'
         .map(({ id, effectiveFrom }) => ({ id, effectiveFrom })),
       RELEASE_PRICE_CATALOGS.map(({ id, effectiveFrom }) => ({ id, effectiveFrom })),
     );
+    assert.doesNotMatch(metadataText, /staleAfter|reviewDueAt/, 'a price\'s review date is for operators only');
     assert.doesNotMatch(metadataText, /apiKey|authorization|billingCredential|clientSecret/i);
 
     const instances = await app.request(
