@@ -56,8 +56,15 @@ already in a public channel. A public channel would otherwise put the Agent's
 words in front of the whole workspace, and adding it there would open it to
 everyone.
 
-An Agent with its own Slack app is refused. The requester must still have
-active Chickpea access, and in a channel the Agent must still be added there.
+An Agent with its own Slack app is refused. Such an Agent posts only as its
+app's bot, never as Chickpea's, and Chickpea brings that bot into a channel
+only when the Agent is added there (see
+[An Agent with its own Slack app](slack-message-identity.md#an-agent-with-its-own-slack-app)),
+which creating a channel never does. The requester can ask Chickpea to create
+the channel and then add the Agent; adding it invites its app's bot.
+
+The requester must still have active Chickpea access, and in a channel the
+Agent must still be added there.
 From a conversation shared with another organization, the tool refuses, so
 nothing from there is carried into a new channel.
 

@@ -84,7 +84,7 @@ const REFUSALS: Record<Exclude<ChannelCreateRefusalCode, 'missing_scope' | 'rest
   too_many: `A new channel can start with at most ${MAX_NAMED_INVITEES} people besides the requester. The requester can invite the rest once it exists. ${NOTHING_CREATED}`,
   person_not_eligible: `Only active members of this workspace can be invited. Guests, apps, bots, deactivated accounts and people from other organizations cannot; the requester can add a guest by hand once the channel exists. ${NOTHING_CREATED}`,
   shared_conversation: `Channels are not created from a conversation shared with another organization, so nothing from here is carried elsewhere. ${NOTHING_CREATED}`,
-  agent_app: `This Agent answers as its own Slack app, which cannot create channels. ${NOTHING_CREATED}`,
+  agent_app: `This Agent answers as its own Slack app, so it cannot create channels. Chickpea can create the channel, and this Agent can then be added to it. ${NOTHING_CREATED}`,
   not_workspace_wide: `Only Agents everyone in this workspace can use create public channels. Ask the requester whether a private channel would do. ${NOTHING_CREATED}`,
   public_after_web_content: `Once a web page or search result has been read in this conversation, only private channels can be created. Ask the requester whether a private channel would do. ${NOTHING_CREATED}`,
   requester_unavailable: `The person asking no longer has active Chickpea access. ${NOTHING_CREATED}`,
