@@ -40,8 +40,8 @@ import {
   platformFundingRefusalError,
   postRunFee,
   requirePlatformFundingAdmitted,
-  type AdmissionStage,
   type FeePost,
+  type PlatformFundedModel,
   type PlatformFundingRefusal,
 } from './platform-funding.ts';
 import type { PlatformEnv } from './state-backend.ts';
@@ -146,8 +146,12 @@ interface ModelAccessCell {
   readonly fees: RunFees | undefined;
   /** Each finished request's usage record write while it is in flight (see runInCell). */
   readonly records: Set<Promise<void>>;
-  /** Whether the host itself admitted a platform-funded request of this attempt, so later ones ask as `continue`. */
-  readonly runAdmission: { started: boolean };
+  /**
+   * Who admitted this attempt's platform-funded requests: once the host
+   * itself has, later ones ask as `continue`; after a cached answer, the
+   * next one asks the host.
+   */
+  readonly runAdmission: { by: 'none' | 'cache' | 'host' };
 }
 
 class RunFees {
@@ -437,9 +441,7 @@ export async function sendImageRequest(
   const platformGrant = grant.fundingSource === 'platform' ? grant : undefined;
   if (platformGrant) {
     if (!currentImagePrice(grant.providerId, model, Date.now())) throw unpricedModel();
-    const cell = cells.getStore();
-    const admitted = await requirePlatformFundingAdmitted(platformGrant, { provider: grant.providerId, model }, admissionStage(cell));
-    if (cell && admitted === 'host') cell.runAdmission.started = true;
+    await admitPlatformRequest(cells.getStore(), platformGrant, { provider: grant.providerId, model });
   }
   const access = await requireResolver().resolve(grant, env);
   const endpoint = (access.baseUrl ?? request.defaultBaseUrl).replace(/\/+$/, '');
@@ -510,7 +512,7 @@ async function resolveCell(
     : undefined;
   return Object.freeze({
     instanceId, hosted, installationId, bound, env, attribution, purpose, compactionTurns: new Set<string>(), fees,
-    records: new Set<Promise<void>>(), runAdmission: { started: false },
+    records: new Set<Promise<void>>(), runAdmission: { by: 'none' as ModelAccessCell['runAdmission']['by'] },
   });
 }
 
@@ -722,9 +724,7 @@ async function platformFundedModel<TModel extends Model<Api>>(
   const provider = canonicalPriceProviderId(request.route);
   const price = priceCatalogFor('standard_input_output', provider, request.model, Date.now());
   if (!price || Date.now() >= price.version.staleAfter) throw unpricedModel();
-  if (await requirePlatformFundingAdmitted(grant, { provider, model: request.model }, admissionStage(cell)) === 'host') {
-    cell.runAdmission.started = true;
-  }
+  await admitPlatformRequest(cell, grant, { provider, model: request.model });
   if (provider !== 'openrouter') return model;
   // A long prompt is charged at the long-context rates, so the cap allows them.
   const perMillionTokens = (standard: number, longContext = 0) =>
@@ -745,8 +745,16 @@ async function platformFundedModel<TModel extends Model<Api>>(
   };
 }
 
-function admissionStage(cell: ModelAccessCell | undefined): AdmissionStage {
-  return cell?.runAdmission.started ? 'continue' : 'start';
+async function admitPlatformRequest(
+  cell: ModelAccessCell | undefined,
+  grant: ModelAccessGrant,
+  model: PlatformFundedModel,
+): Promise<void> {
+  const admission: ModelAccessCell['runAdmission'] = cell?.runAdmission ?? { by: 'none' };
+  const by = await requirePlatformFundingAdmitted(grant, model, admission.by === 'host' ? 'continue' : 'start', {
+    reuse: admission.by !== 'cache',
+  });
+  if (admission.by !== 'host') admission.by = by;
 }
 
 function unpricedModel(): ModelAccessError {

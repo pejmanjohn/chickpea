@@ -21,21 +21,23 @@ import { SqliteIdentityStore } from '../src/identity/store.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
 import { SqliteSlackStateStore } from '../src/slack/claim-store.ts';
 import {
-  askOwnersForCredits,
   CREDITS_ASK_ADMIN_ACTION,
   CREDITS_ASK_ADMIN_BLOCK,
-  CREDITS_ASK_UNREACHABLE_TEXT,
-  creditsAskOwnerDmText,
   DAILY_LIMIT_ASK_ACTION,
-  fundingRefusalReply,
   fundingRefusalText,
   OUT_OF_USAGE_TEXT,
   parseCreditsAskAction,
-  postPrivateNote,
   type CreditsAskAction,
+} from '../src/slack/credits-ask.ts';
+import {
+  askOwnersForCredits,
+  CREDITS_ASK_UNREACHABLE_TEXT,
+  creditsAskOwnerDmText,
+  fundingRefusalReply,
+  postPrivateNote,
   type CreditsAskClient,
   type CreditsAskDeps,
-} from '../src/slack/credits-ask.ts';
+} from '../src/slack/funding-refusal-reply.ts';
 import { AgentPromptFailure } from '../src/slack/flue-dispatch.ts';
 import { parsePrivateChannelSetupAction } from '../src/slack/private-channel-setup.ts';
 import { SlackRunPresentationStoreLogic } from '../src/slack/run-presentations.ts';

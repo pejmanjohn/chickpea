@@ -90,9 +90,7 @@ import type { RunExecutionRecord, RunId } from '../work/types.ts';
 import type { WorkStore } from '../work/types.ts';
 import type { UsageStore } from '../usage/types.ts';
 import {
-  closeRoutinePauseNotice,
   deliverRoutineFailureNotice,
-  deliverRoutinePauseNotice,
   deliverRoutineRecoveryNotice,
   deliverRoutineResult,
   routineDeliveryFailure,
@@ -1023,9 +1021,7 @@ async function finalizeSettlement(
     });
     captureScheduledRun(prepared, failure ? 'failed' : settlement.result.status);
     if (failure) await deliverPauseNoticeBestEffort(prepared);
-    else await closeRoutinePauseNotice(prepared).catch(() => {
-      console.warn('[chickpea] A routine\'s out-of-usage notice could not be edited');
-    });
+    else await closePauseNoticeBestEffort(prepared);
     return 'completed';
   }
   const creditedBack = await creditBackFailedRun(
@@ -1615,7 +1611,7 @@ async function deliverFailureNoticeBestEffort(
       ...(input.workLifecycle ? { workLifecycle: input.workLifecycle } : {}),
     };
     await (run.failureClass === 'spend_limited'
-      ? deliverRoutinePauseNotice(notice, input.access.client)
+      ? (await import('./pause-notice.ts')).deliverRoutinePauseNotice(notice)
       : deliverRoutineFailureNotice({ ...notice, publicError }, input.access.client));
   } catch (error) {
     if (error instanceof RoutineRuntimeError &&
@@ -1634,6 +1630,16 @@ async function deliverFailureNoticeBestEffort(
       })().catch(() => undefined);
     }
     // The failed occurrence remains available through its authorized management surface.
+  }
+}
+
+/** A run that succeeds after an out-of-usage pause edits the pause's notice. */
+async function closePauseNoticeBestEffort(prepared: PreparedExecution): Promise<void> {
+  try {
+    const { closeRoutinePauseNotice } = await import('./pause-notice.ts');
+    await closeRoutinePauseNotice(prepared);
+  } catch {
+    console.warn('[chickpea] A routine\'s out-of-usage notice could not be edited');
   }
 }
 

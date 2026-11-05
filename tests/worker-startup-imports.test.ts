@@ -42,6 +42,8 @@ const LAZY_MODULES: Record<string, string> = {
   'src/management/slack-key-setup.ts': "an Add key setup's issue, its approval-time setups, or a pasted-key check (management/service.ts)",
   'src/slack/key-form.ts': 'an Add key card, click or form (channels/slack.ts, cloudflare.ts, slack/run-turn.ts)',
   'src/slack/canvases/service.ts': 'a canvas tool call (slack/canvases/tools.ts)',
+  'src/slack/funding-refusal-reply.ts': 'an out-of-usage reply or an Ask an Owner click (slack/run-turn.ts, channels/slack.ts)',
+  'src/routines/pause-notice.ts': "a routine's out-of-usage pause, or the good run after it (routines/execution.ts)",
 };
 
 /**

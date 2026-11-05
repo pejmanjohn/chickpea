@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { OUT_OF_USAGE_CAUSE_KINDS, type PlatformFundingRefusal } from '../src/config/platform-funding.ts';
 import * as creditsAsk from '../src/slack/credits-ask.ts';
+import * as refusalReply from '../src/slack/funding-refusal-reply.ts';
 import { dailyLimitNoticeMessage, usageAlertMessage, type UsageAlert } from '../src/slack/usage-alerts.ts';
 import { CREDITS_EXHAUSTED_TEXT, dailyLimitText } from '../src/slack/web-client-presenter.ts';
 import type { UsageMicros } from '../src/usage/usage-display.ts';
@@ -40,7 +41,7 @@ const REFUSALS: PlatformFundingRefusal[] = [
 
 /** Every string a refusal shows: the thread reply, the Owners line, the Owner's private reply and its buttons, and the DM. */
 async function refusalStrings(refusal: PlatformFundingRefusal): Promise<string[]> {
-  const reply = await creditsAsk.fundingRefusalReply({
+  const reply = await refusalReply.fundingRefusalReply({
     env: scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_copy' }),
     identity: {
       resolveSlackIdentity: async () => ({ membership: { role: 'owner', status: 'active' } }) as never,
@@ -59,8 +60,8 @@ async function refusalStrings(refusal: PlatformFundingRefusal): Promise<string[]
     ...labels(reply.components.blocks),
     reply.ownerNote.text,
     ...labels(reply.ownerNote.blocks),
-    creditsAsk.creditsAskOwnerDmText('UMEMBER1', 'CCHANNEL1', refusal),
-    creditsAsk.creditsAskOwnerDmText('UMEMBER1', 'DDIRECT1', refusal),
+    refusalReply.creditsAskOwnerDmText('UMEMBER1', 'CCHANNEL1', refusal),
+    refusalReply.creditsAskOwnerDmText('UMEMBER1', 'DDIRECT1', refusal),
   ];
 }
 
@@ -74,7 +75,7 @@ function alertStrings(alert: UsageAlert): string[] {
 }
 
 test('no customer string about plan usage names an internal of how usage is metered', async () => {
-  const askStrings = Object.entries(creditsAsk)
+  const askStrings = [...Object.entries(creditsAsk), ...Object.entries(refusalReply)]
     .filter(([name, value]) => /_(TEXT|LABEL)$/.test(name) && typeof value === 'string')
     .map(([, value]) => value as string);
   assert.ok(askStrings.length >= 3, 'every exported Ask an Owner text and label is covered');

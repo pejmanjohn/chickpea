@@ -638,7 +638,7 @@ test('an attempt\'s first request starts its run and later ones continue it, and
     admit: async (_grant, _model, stage) => stage === 'continue' || aboveZero ? 'admitted' : 'credits_exhausted',
   });
   const { model, sentModels } = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, SONNET, 'anthropic-messages',
-    Array.from({ length: 5 }, () => completes()));
+    Array.from({ length: 9 }, () => completes()));
   const platform = grant('inst_credits', 'platform');
 
   await withModelAccess(platform, env, 'reply', async () => {
@@ -655,19 +655,32 @@ test('an attempt\'s first request starts its run and later ones continue it, and
   assert.match(next.errorMessage ?? '', /\(credits_exhausted\)/, 'the continue just admitted does not admit a new run');
   assert.deepEqual(calls.stages, ['start', 'continue', 'start']);
 
-  aboveZero = true;
-  now += PLATFORM_ADMISSION_TTL_MS;
-  await withModelAccess(platform, env, 'reply', () => modelCall(model));
-  aboveZero = false;
-  const cached = await withModelAccess(platform, env, 'reply', async () => {
+  const startFresh = async () => {
+    aboveZero = true;
+    now += PLATFORM_ADMISSION_TTL_MS;
+    await withModelAccess(platform, env, 'reply', () => modelCall(model));
+  };
+  await startFresh();
+  const admittedLater = await withModelAccess(platform, env, 'reply', async () => {
     assert.equal((await modelCall(model)).stopReason, 'stop', 'a recent start admission serves a new run\'s first request');
+    await modelCall(model);
+    aboveZero = false;
     now += PLATFORM_ADMISSION_TTL_MS;
     return modelCall(model);
   });
-  assert.match(cached.errorMessage ?? '', /\(credits_exhausted\)/,
+  assert.equal(admittedLater.stopReason, 'stop', 'once the host itself admitted the run, it keeps going past zero');
+  assert.deepEqual(calls.stages.slice(3), ['start', 'start', 'continue'], 'its next request asked the host, at once');
+
+  await startFresh();
+  aboveZero = false;
+  const refusedLater = await withModelAccess(platform, env, 'reply', async () => {
+    assert.equal((await modelCall(model)).stopReason, 'stop');
+    return modelCall(model);
+  });
+  assert.match(refusedLater.errorMessage ?? '', /\(credits_exhausted\)/,
     'a run the host never admitted asks as start, so a cached answer never lets it go on past zero');
-  assert.deepEqual(calls.stages, ['start', 'continue', 'start', 'start', 'start']);
-  assert.equal(sentModels.length, 5);
+  assert.deepEqual(calls.stages.slice(6), ['start', 'start']);
+  assert.equal(sentModels.length, 9);
 });
 
 test('a positive answer serves an installation for at most 30 seconds, and only that installation', async (t) => {

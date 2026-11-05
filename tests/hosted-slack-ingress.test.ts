@@ -45,12 +45,8 @@ import {
   writeHostedSlackBotCredentials,
 } from '../src/slack/installation-credentials.ts';
 import { configurePlatformFunding, resetPlatformFundingForTests } from '../src/config/platform-funding.ts';
-import {
-  CREDITS_ASK_ADMIN_ACTION,
-  CREDITS_ASK_ADMIN_BLOCK,
-  creditsAskOwnerDmText,
-  fundingRefusalReply,
-} from '../src/slack/credits-ask.ts';
+import { CREDITS_ASK_ADMIN_ACTION, CREDITS_ASK_ADMIN_BLOCK } from '../src/slack/credits-ask.ts';
+import { creditsAskOwnerDmText, fundingRefusalReply } from '../src/slack/funding-refusal-reply.ts';
 import { resolveSlackInstallationExecutionContext } from '../src/slack/installation-execution.ts';
 import { stopNodeTurnRelay } from '../src/slack/node-turn-relay.ts';
 import { repairSlackInteractionProgress } from '../src/slack/run-turn.ts';

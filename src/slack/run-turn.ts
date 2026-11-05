@@ -111,7 +111,6 @@ import { activityStatus, initialActivityStatus } from '../activity/status.ts';
 import { abandonTerminalSlackPresentationBestEffort } from './presentation-repair.ts';
 import { defaultSlackStatusRegistry, type SlackStatusRegistry } from './status-registry.ts';
 import { createCodingTaskProgress } from './coding-task-progress.ts';
-import { fundingRefusalReply } from './credits-ask.ts';
 import {
   creditBackFailedRun,
   creditBackReason,
@@ -2379,7 +2378,7 @@ async function runTurnAttempt(
         }
         const refusal = fundingRefusal(err);
         const refusalReply = refusal
-          ? await fundingRefusalReply({
+          ? await (await import('./funding-refusal-reply.ts')).fundingRefusalReply({
               env: platformEnv,
               identity: options.appStores?.identity ?? getIdentityStore(platformEnv),
               workspaceId: turnWorkspaceId,

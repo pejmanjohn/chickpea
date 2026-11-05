@@ -103,7 +103,8 @@ export type PlatformFundingAdmission = 'admitted' | 'pending' | typeof CREDITS_E
  * reuses only a `start` admission; a `continue` reuses either. An attempt
  * asks as `continue` only once the host itself admitted one of its requests,
  * so neither a busy workspace's running work nor a cached answer lets a new
- * run go on past zero.
+ * run go on past zero. An attempt whose first request a cached answer
+ * served asks the host `start` with its next one.
  */
 export type AdmissionStage = 'start' | 'continue';
 
@@ -297,15 +298,19 @@ export async function installationFunding(env: PlatformEnv | undefined): Promise
   }
 }
 
-/** `host` when the host itself admitted the request, `cache` when a recent admission served it. */
+/**
+ * `host` when the host itself admitted the request, `cache` when a recent
+ * admission served it. `reuse: false` always asks the host.
+ */
 export async function requirePlatformFundingAdmitted(
   grant: ModelAccessGrant,
   model: PlatformFundedModel,
   stage: AdmissionStage,
+  { reuse = true }: { reuse?: boolean } = {},
 ): Promise<'host' | 'cache'> {
   const { installationId } = grant;
   const at = admittedAt[stage].get(installationId);
-  if (at !== undefined && clock() - at < PLATFORM_ADMISSION_TTL_MS) return 'cache';
+  if (reuse && at !== undefined && clock() - at < PLATFORM_ADMISSION_TTL_MS) return 'cache';
   const current = port;
   const refusalsBefore = refusals;
   let answer: PlatformFundingAdmission | typeof STILL_PENDING;

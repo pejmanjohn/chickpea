@@ -50,7 +50,7 @@ import type {
   SlackPresentationPlanV3,
   SlackPresentationReceiptCertainty,
 } from './run-presentations.ts';
-import { postPrivateNote, type SlackNote } from './credits-ask.ts';
+import type { SlackNote } from './funding-refusal-reply.ts';
 import { escapeMrkdwn, slackDateTime, utcDateTime } from './ui/text.ts';
 import { slackClientMessageId } from './transport/message-id.ts';
 import { SlackTransportError } from './transport/types.ts';
@@ -1186,6 +1186,7 @@ export class WebClientPresenter {
   async deliverPrivateNote(note: SlackNote): Promise<void> {
     const { channelId, threadTs, userId } = this.target;
     if (!userId) return;
+    const { postPrivateNote } = await import('./funding-refusal-reply.ts');
     await postPrivateNote(this.client.chat, { channelId, threadTs, userId, persona: this.persona() }, note).catch(() => {
       console.warn('[chickpea] A private note to the requester was not delivered');
     });
