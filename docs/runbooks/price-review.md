@@ -39,7 +39,10 @@ date is operator information. Customers never see it.
    Add `@YYYY-MM-DD` to set an earlier due date, for example when a promotional
    price ends on that date.
 5. If a price changed but only one source shows the change, accept it in
-   step 4. Then edit its numbers and `sourceUrl` in the generated file.
+   step 4. Then edit its row in the generated file. A row lists the provider,
+   the model, the source (a URL or a builder such as `openAiModelUrl`), and
+   the rates in micros per 1M tokens. An optional last element sets `aliases`
+   or a `reviewDueAt`. Add a comment above the row that says what you checked.
 6. Run the pricing tests. If you edited a generated version, the hash test
    prints the line to put in `src/usage/pricing/catalogs/released-hashes.json`.
 
