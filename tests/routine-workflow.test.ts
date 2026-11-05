@@ -1030,7 +1030,17 @@ test('a routine out of usage posts one notice for the pause, edits it at its nex
       },
     },
   } as unknown as WebClient;
-  const fixture = await admittedFixture(store, 'pause_notice');
+  const fixture = await admittedFixture(store, 'pause_notice', async (routine) => {
+    for (let index = 0; index < 11; index += 1) {
+      await store.createOccurrence({
+        runId: `rrun_pause_notice_later_${index}`, idempotencyKey: `run:pause_notice:later:${index}`,
+        routineId: routine.id, routineVersion: 1, scheduledFor: NOW + 3_600_000 + index, triggerSource: 'schedule',
+        queuedAt: NOW, deadlineAt: NOW + 7_200_000,
+      });
+      await (store as unknown as Pick<RoutineStoreLogic, 'cancelPendingWork'>)
+        .cancelPendingWork(NOW, { failureClass: null, publicError: null, skipReason: 'operator_restore' });
+    }
+  });
   const env = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_pause_notice' });
   const base = dependencies();
   const occurrence = async (index: number, handle: AgentInstanceHandle) => {
@@ -1053,7 +1063,7 @@ test('a routine out of usage posts one notice for the pause, edits it at its nex
   };
 
   for (const index of [0, 1, 2]) await occurrence(index, fakeHandle({ readError: OUT_OF_USAGE() }));
-  assert.equal(posts.length, 1, 'only the pause\'s first skipped run posts');
+  assert.equal(posts.length, 1, 'only the pause\'s first skipped run posts, though skipped later runs sort before it');
   assert.match(posts[0]!.text ?? '', /^⏸️ Execution fixture is paused\n/);
   assert.match(posts[0]!.text ?? '', /It didn't run at \d{1,2}:\d{2} [AP]M UTC because this workspace is out of usage\./);
   assert.match(posts[0]!.text ?? '', /Until then I'll skip runs without posting again\./);

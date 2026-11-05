@@ -146,7 +146,7 @@ interface ModelAccessCell {
   readonly fees: RunFees | undefined;
   /** Each finished request's usage record write while it is in flight (see runInCell). */
   readonly records: Set<Promise<void>>;
-  /** Whether a platform-funded request of this attempt was admitted, so later ones ask as `continue`. */
+  /** Whether the host itself admitted a platform-funded request of this attempt, so later ones ask as `continue`. */
   readonly runAdmission: { started: boolean };
 }
 
@@ -438,8 +438,8 @@ export async function sendImageRequest(
   if (platformGrant) {
     if (!currentImagePrice(grant.providerId, model, Date.now())) throw unpricedModel();
     const cell = cells.getStore();
-    await requirePlatformFundingAdmitted(platformGrant, { provider: grant.providerId, model }, admissionStage(cell));
-    if (cell) cell.runAdmission.started = true;
+    const admitted = await requirePlatformFundingAdmitted(platformGrant, { provider: grant.providerId, model }, admissionStage(cell));
+    if (cell && admitted === 'host') cell.runAdmission.started = true;
   }
   const access = await requireResolver().resolve(grant, env);
   const endpoint = (access.baseUrl ?? request.defaultBaseUrl).replace(/\/+$/, '');
@@ -722,8 +722,9 @@ async function platformFundedModel<TModel extends Model<Api>>(
   const provider = canonicalPriceProviderId(request.route);
   const price = priceCatalogFor('standard_input_output', provider, request.model, Date.now());
   if (!price || Date.now() >= price.version.staleAfter) throw unpricedModel();
-  await requirePlatformFundingAdmitted(grant, { provider, model: request.model }, admissionStage(cell));
-  cell.runAdmission.started = true;
+  if (await requirePlatformFundingAdmitted(grant, { provider, model: request.model }, admissionStage(cell)) === 'host') {
+    cell.runAdmission.started = true;
+  }
   if (provider !== 'openrouter') return model;
   // A long prompt is charged at the long-context rates, so the cap allows them.
   const perMillionTokens = (standard: number, longContext = 0) =>

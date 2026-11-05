@@ -222,9 +222,9 @@ export async function deliverRoutinePauseNotice(
   client: WebClient = input.access.client ?? createRoutineSlackClient(requiredRoutineBotToken(input.access)),
 ): Promise<RoutineDeliveryReceipt | undefined> {
   const [previous] = await pauseSkips(input.store, input.run, 1);
-  // Inside a pause only its first run posts, so a run before this one that
-  // did not fail to post means the pause has its notice.
-  if (previous && previous.deliveryStatus !== 'failed') return undefined;
+  // Inside a pause only the run whose notice was posted, or may have been,
+  // leaves the runs after it silent (`none`).
+  if (previous && ['delivered', 'unknown', 'none'].includes(previous.deliveryStatus)) return undefined;
   const at = formatRoutineTime(input.run.scheduledFor, input.routine.timezone);
   const why = PAUSE_REASONS[dailyLimitScopeOfText(input.run.publicError) ?? 'usage'];
   const text = [
@@ -248,11 +248,11 @@ const PAUSE_REASONS = {
 /** Edits the pause's notice once `run`, the next run after it, succeeds. Best effort: a later run never retries it. */
 export async function closeRoutinePauseNotice(
   input: { store: RoutineStore; run: RoutineRun; routine: RoutineDefinition; access: RoutineRuntimeAccess },
-  client: WebClient = input.access.client ?? createRoutineSlackClient(requiredRoutineBotToken(input.access)),
 ): Promise<void> {
   const skipped = await pauseSkips(input.store, input.run);
   const notice = skipped.findLast(({ deliveryStatus }) => deliveryStatus === 'delivered');
   if (!notice?.deliveryChannelId || !notice.deliveryMessageTs) return;
+  const client = input.access.client ?? createRoutineSlackClient(requiredRoutineBotToken(input.access));
   const runs = skipped.length === 1 ? '1 run' : `${skipped.length} runs`;
   const text = [
     `▶️ **${escapeSlackControlCharacters(input.routine.name)} is back on**`,
@@ -279,8 +279,11 @@ async function pauseSkips(store: RoutineStore, run: RoutineRun, most = PAUSE_SCA
   for (const limit of [10, PAUSE_SCAN_LIMIT]) {
     const runs = await store.listRuns({ routineId: run.routineId, limit });
     const index = runs.findIndex((other) => other.id === run.id);
-    if (index < 0) return [];
     skipped = [];
+    if (index < 0) {
+      if (runs.length < limit) return [];
+      continue;
+    }
     for (const other of runs.slice(index + 1)) {
       if (other.status === 'failed' && other.failureClass === 'spend_limited') {
         skipped.push(other);

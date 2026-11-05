@@ -1023,7 +1023,7 @@ async function finalizeSettlement(
     });
     captureScheduledRun(prepared, failure ? 'failed' : settlement.result.status);
     if (failure) await deliverPauseNoticeBestEffort(prepared);
-    else await closeRoutinePauseNotice(prepared, prepared.access.client).catch(() => {
+    else await closeRoutinePauseNotice(prepared).catch(() => {
       console.warn('[chickpea] A routine\'s out-of-usage notice could not be edited');
     });
     return 'completed';

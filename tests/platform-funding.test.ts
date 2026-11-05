@@ -638,7 +638,7 @@ test('an attempt\'s first request starts its run and later ones continue it, and
     admit: async (_grant, _model, stage) => stage === 'continue' || aboveZero ? 'admitted' : 'credits_exhausted',
   });
   const { model, sentModels } = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, SONNET, 'anthropic-messages',
-    Array.from({ length: 3 }, () => completes()));
+    Array.from({ length: 5 }, () => completes()));
   const platform = grant('inst_credits', 'platform');
 
   await withModelAccess(platform, env, 'reply', async () => {
@@ -654,7 +654,20 @@ test('an attempt\'s first request starts its run and later ones continue it, and
   const next = await withModelAccess(platform, env, 'reply', () => modelCall(model));
   assert.match(next.errorMessage ?? '', /\(credits_exhausted\)/, 'the continue just admitted does not admit a new run');
   assert.deepEqual(calls.stages, ['start', 'continue', 'start']);
-  assert.equal(sentModels.length, 3);
+
+  aboveZero = true;
+  now += PLATFORM_ADMISSION_TTL_MS;
+  await withModelAccess(platform, env, 'reply', () => modelCall(model));
+  aboveZero = false;
+  const cached = await withModelAccess(platform, env, 'reply', async () => {
+    assert.equal((await modelCall(model)).stopReason, 'stop', 'a recent start admission serves a new run\'s first request');
+    now += PLATFORM_ADMISSION_TTL_MS;
+    return modelCall(model);
+  });
+  assert.match(cached.errorMessage ?? '', /\(credits_exhausted\)/,
+    'a run the host never admitted asks as start, so a cached answer never lets it go on past zero');
+  assert.deepEqual(calls.stages, ['start', 'continue', 'start', 'start', 'start']);
+  assert.equal(sentModels.length, 5);
 });
 
 test('a positive answer serves an installation for at most 30 seconds, and only that installation', async (t) => {

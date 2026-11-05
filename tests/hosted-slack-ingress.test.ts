@@ -44,6 +44,7 @@ import {
   stageSlackCredentialBundle,
   writeHostedSlackBotCredentials,
 } from '../src/slack/installation-credentials.ts';
+import { configurePlatformFunding, resetPlatformFundingForTests } from '../src/config/platform-funding.ts';
 import {
   CREDITS_ASK_ADMIN_ACTION,
   CREDITS_ASK_ADMIN_BLOCK,
@@ -63,6 +64,7 @@ import { formFieldActionId, formFieldBlockId } from '../src/slack/ui/render-form
 import { uiActionId, uiBlockId, uiSurfaceId, type UiSurfaceRecord } from '../src/slack/ui/surface.ts';
 import { withDirectSlackInstall } from './helpers/direct-slack-install.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
+import { NO_RUN_FEES } from './helpers/platform-funding.ts';
 
 /**
  * A host serving many installations verifies each Slack delivery with its one
@@ -691,6 +693,48 @@ test('a hosted Ask an Owner click DMs the Owner through the installation\'s own 
     assert.ok(update.get('blocks')?.includes("once they've added usage"));
     assert.equal(update.get('blocks')?.includes(CREDITS_ASK_ADMIN_ACTION), false);
     assert.deepEqual(tokensUsed(h.calls), [BOT_TOKEN]);
+  });
+});
+
+test('a hosted Owner\'s Ask an Owner click asks the host why now and tells only that Owner the private cause', async (t) => {
+  await withHostedInstallation(t, async (h) => {
+    const asked: Array<{ installationId: string; runId: string }> = [];
+    configurePlatformFunding({
+      ...NO_RUN_FEES,
+      funding: async () => 'platform',
+      admit: async () => 'admitted',
+      charge: async () => {},
+      admitTask: async (run) => {
+        asked.push(run);
+        return { kind: 'credits_exhausted', cause: { kind: 'top_up_declined' } };
+      },
+    });
+    t.after(() => resetPlatformFundingForTests());
+    const components = (await fundingRefusalReply({
+      env: h.env, identity: h.stores.identity, workspaceId: TEAM, userId: 'U2', refusal: { kind: 'credits_exhausted' },
+    }))?.components;
+    assert.ok(components);
+    assert.equal(JSON.stringify(components).includes('card'), false, 'the thread reply names no cause');
+    const replyTs = '1800000002.000300';
+    const response = await h.deliver('interactions', {
+      type: 'block_actions', api_app_id: APP.appId, team: { id: TEAM }, user: { id: 'U1' },
+      trigger_id: 'trigger1', channel: { id: 'C1' },
+      container: { type: 'message', channel_id: 'C1', message_ts: replyTs },
+      message: { ts: replyTs, thread_ts: '1800000002.000100', text: 'Out of usage.', blocks: [{ type: 'rich_text', elements: [] }, ...components.blocks] },
+      actions: [{
+        action_id: CREDITS_ASK_ADMIN_ACTION, block_id: CREDITS_ASK_ADMIN_BLOCK, type: 'button',
+        value: TEAM, action_ts: '1800000003.000300',
+      }],
+    });
+    assert.equal(response.status, 200);
+    await h.settle(() => h.calls.some(({ method }) => method === 'chat.postEphemeral'));
+    const [note] = h.calls.filter(({ method }) => method === 'chat.postEphemeral').map(({ body }) => body);
+    assert.deepEqual([note!.get('channel'), note!.get('user'), note!.get('thread_ts')], ['C1', 'U1', '1800000002.000100']);
+    assert.equal(note!.get('text'), "Auto top-up couldn't charge your card. Update it or add usage, then send this again.");
+    assert.deepEqual(asked.map(({ installationId, runId }) => [installationId, runId.startsWith('ask_owner_')]),
+      [['inst_tenant_a', true]], 'one read-only ask, for a run ID that names no run');
+    assert.deepEqual(h.calls.filter(({ method }) => ['chat.postMessage', 'chat.update', 'conversations.open'].includes(method)), [],
+      'no Owner is messaged and the reply is not redrawn');
   });
 });
 

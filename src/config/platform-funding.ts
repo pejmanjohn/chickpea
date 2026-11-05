@@ -100,8 +100,10 @@ export type PlatformFundingAdmission = 'admitted' | 'pending' | typeof CREDITS_E
  * so a host may let a run it admitted before continue.
  *
  * Core keeps a positive answer for 30 seconds per installation. A `start`
- * reuses only a `start` admission; a `continue` reuses either. So a busy
- * workspace's running work never lets a new run start past zero.
+ * reuses only a `start` admission; a `continue` reuses either. An attempt
+ * asks as `continue` only once the host itself admitted one of its requests,
+ * so neither a busy workspace's running work nor a cached answer lets a new
+ * run go on past zero.
  */
 export type AdmissionStage = 'start' | 'continue';
 
@@ -295,14 +297,15 @@ export async function installationFunding(env: PlatformEnv | undefined): Promise
   }
 }
 
+/** `host` when the host itself admitted the request, `cache` when a recent admission served it. */
 export async function requirePlatformFundingAdmitted(
   grant: ModelAccessGrant,
   model: PlatformFundedModel,
   stage: AdmissionStage,
-): Promise<void> {
+): Promise<'host' | 'cache'> {
   const { installationId } = grant;
   const at = admittedAt[stage].get(installationId);
-  if (at !== undefined && clock() - at < PLATFORM_ADMISSION_TTL_MS) return;
+  if (at !== undefined && clock() - at < PLATFORM_ADMISSION_TTL_MS) return 'cache';
   const current = port;
   const refusalsBefore = refusals;
   let answer: PlatformFundingAdmission | typeof STILL_PENDING;
@@ -320,7 +323,7 @@ export async function requirePlatformFundingAdmitted(
     throw refusal ? platformFundingRefusalError(refusal) : new PlatformFundingUnavailableError();
   }
   // A port replaced, or a refusal answered, while this read was in flight wins over it.
-  if (port !== current || refusals !== refusalsBefore) return;
+  if (port !== current || refusals !== refusalsBefore) return 'host';
   for (const admitted of stage === 'start' ? [admittedAt.start, admittedAt.continue] : [admittedAt.continue]) {
     admitted.delete(installationId);
     admitted.set(installationId, clock());
@@ -329,6 +332,7 @@ export async function requirePlatformFundingAdmitted(
       if (!oldest.done) admitted.delete(oldest.value);
     }
   }
+  return 'host';
 }
 
 /**
