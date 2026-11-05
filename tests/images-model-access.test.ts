@@ -342,6 +342,8 @@ test('an installation on credits is offered the priced image models without a sa
   const { env } = creditsInstallation(t);
   await withEnv(NO_DEPLOYMENT_KEYS, async () => {
     assert.equal(await imageModelProfileReady(FLARE, env, settings), true);
+    t.mock.timers.setTime(Date.UTC(2027, 0, 20));
+    assert.equal(await imageModelProfileReady(FLARE, env, settings), true, 'the 2026-11-05 review prices it past 2027-01-05');
     t.mock.timers.setTime(AFTER_FLARE_PRICE_STALE);
     assert.equal(await imageModelProfileReady(FLARE, env, settings), false, 'a stale price is not offered');
     configurePlatformFunding(undefined);

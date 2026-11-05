@@ -11,16 +11,27 @@ import {
 import { PRICE_CATALOGS_2026_10_07 } from '../../src/usage/pricing/catalogs/2026-10-07.ts';
 import { PRICE_CATALOGS_2026_10_07_OPENROUTER_MAKERS } from '../../src/usage/pricing/catalogs/2026-10-07-openrouter-makers.ts';
 import { PRICE_CATALOGS_2026_10_24 } from '../../src/usage/pricing/catalogs/2026-10-24.ts';
-import type { TokenPriceRate, UsagePriceVersion } from '../../src/usage/pricing/types.ts';
+import { PRICE_CATALOGS_2026_11_05 } from '../../src/usage/pricing/catalogs/2026-11-05.ts';
+import type { ImagePriceRate, TokenPriceRate, UsagePriceVersion } from '../../src/usage/pricing/types.ts';
 
 const EARLIER_RELEASES = RELEASE_PRICE_CATALOGS.filter((version) =>
-  ![...PRICE_CATALOGS_2026_10_07, ...PRICE_CATALOGS_2026_10_07_OPENROUTER_MAKERS, ...PRICE_CATALOGS_2026_10_24]
-    .includes(version));
+  ![
+    ...PRICE_CATALOGS_2026_10_07,
+    ...PRICE_CATALOGS_2026_10_07_OPENROUTER_MAKERS,
+    ...PRICE_CATALOGS_2026_10_24,
+    ...PRICE_CATALOGS_2026_11_05,
+  ].includes(version));
 
 function tokenRate(version: UsagePriceVersion): TokenPriceRate {
   const rate = version.rates[0];
   assert.equal(rate?.basis, 'standard_input_output', version.id);
   return rate as TokenPriceRate;
+}
+
+function imageRate(version: UsagePriceVersion): ImagePriceRate {
+  const rate = version.rates[0];
+  assert.equal(rate?.basis, 'image_tokens', version.id);
+  return rate as ImagePriceRate;
 }
 
 test('release catalog contains only fixture-proven priced routes with immutable provenance', () => {
@@ -205,6 +216,23 @@ test('the 2026-10-24 catalog copies GPT-6.1 Sol\'s and Claude Haiku 5.5\'s list 
     'anthropic-sonnet-5-5_2026-10-24', 'anthropic', 'https://platform.claude.com/docs/en/about-claude/pricing', reviewedAt, reviewedAt,
     Date.UTC(2027, 0, 22), ['claude-sonnet-5-5'], 2_000_000, 10_000_000, 100_000, 2_500_000, 4_000_000, undefined,
   ]]);
+});
+
+test('the 2026-11-05 catalog prices GPT Image 2.6 Flare and Sunburst, and re-reviews the 2.5 models, at the Images endpoint rates', () => {
+  const reviewedAt = Date.UTC(2026, 10, 5);
+  const openaiModel = (id: string) => `https://developers.openai.com/api/docs/models/${id}`;
+  assert.deepEqual(PRICE_CATALOGS_2026_11_05.map((version) => {
+    const rate = imageRate(version);
+    return [version.id, version.providerId, version.sourceUrl, version.effectiveFrom, version.reviewedAt, version.staleAfter,
+      rate.modelAliases, rate.textInputMicrosPerUnit, rate.imageInputMicrosPerUnit, rate.imageOutputMicrosPerUnit];
+  }), ([
+    ['openai-image-gpt-image-2.6-flare_2026-11-05', 'gpt-image-2.6-flare'],
+    ['openai-image-gpt-image-2.6-sunburst_2026-11-05', 'gpt-image-2.6-sunburst'],
+    ['openai-image-gpt-image-2.5-flare_2026-11-05', 'gpt-image-2.5-flare'],
+    ['openai-image-gpt-image-2.5-sunburst_2026-11-05', 'gpt-image-2.5-sunburst'],
+  ] as const).map(([id, model]) => [
+    id, 'openai', openaiModel(model), reviewedAt, reviewedAt, Date.UTC(2027, 1, 3), [model], 5_000_000, 8_000_000, 30_000_000,
+  ]));
 });
 
 test('the OpenRouter makers catalog prices each model at its maker\'s own endpoint from when it was read', () => {

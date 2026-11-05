@@ -42,6 +42,7 @@ import { REQUESTED_SLACK_BOT_SCOPES } from '../src/slack/scopes.ts';
 import { promisify } from '../src/state/async-facade.ts';
 import { DoSqlStateDb } from '../src/state/do-state-db.ts';
 import { buildTagStateStores } from '../src/state/tag-state-stores.ts';
+import { priceCatalogFor } from '../src/usage/pricing/catalog.ts';
 import type { UsageStore } from '../src/usage/types.ts';
 import type { SlackStateStore } from '../src/slack/claim-store.ts';
 import { opaqueId } from '../src/work/admission.ts';
@@ -678,14 +679,13 @@ for (const [kept, modelId] of [
 
 test('setting up on Chickpea\'s models chooses no image model that Chickpea\'s models cannot serve, and still chooses the chat model', async (t) => {
   const claimedAt = Date.UTC(2026, 9, 7, 12);
-  const imagePrice = currentImagePrice('openai', 'gpt-image-2.5-flare', claimedAt);
-  assert.ok(imagePrice, 'the default image model is priced at the claim');
+  assert.ok(currentImagePrice('openai', 'gpt-image-2.5-flare', claimedAt), 'the default image model is priced at the claim');
   t.mock.timers.enable({ apis: ['Date'], now: claimedAt });
   hostPorts(t);
   const signup = await signUp(t);
   await signup.claim();
   const admin = signup.admin(await signup.ownerPrincipal());
-  t.mock.timers.setTime(imagePrice.version.staleAfter);
+  t.mock.timers.setTime(priceCatalogFor('image_tokens', 'openai', 'gpt-image-2.5-flare', Number.MAX_SAFE_INTEGER)!.version.staleAfter);
   const started = await startOnPlatform(admin);
   assert.equal(started.status, 200, await started.clone().text());
   assert.equal((await started.json() as { stage: string }).stage, 'try');
