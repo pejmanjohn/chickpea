@@ -3,6 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { isRecord } from '../../src/security/content-validation.ts';
 import { RELEASE_PRICE_CATALOGS } from '../../src/usage/pricing/catalog.ts';
 import { version } from '../../src/usage/pricing/catalogs/version.ts';
 import { currentPrices, type CurrentPrice } from '../../src/usage/pricing/review-due.ts';
@@ -704,10 +705,6 @@ function cleanCell(cell: string): string {
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
     .replace(/\s+/g, ' ')
     .trim();
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 // ---- report ----
