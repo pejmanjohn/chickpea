@@ -84,15 +84,25 @@ that Channel.
 - Apps created before this change don't receive `member_joined_channel`,
   because Chickpea never updates an existing app's manifest.
 - Admin's Add to channels and the offer's Add button bring the app's bot in
-  as they add the Agent. The bot joins a public Channel itself, with the
-  app's `channels:join`; Chickpea's bot has no scope to invite it, and adding
-  one would ask every installation to approve it. A bot cannot join a private
-  Channel, so there Chickpea only checks that someone has added it. When the
-  bot is not in the Channel, the Agent is still added: Admin's result and the
-  offer's reply tell the person to add it from the channel's Add people or
-  agents, and `chickpea.agent_app.bot_left_out` logs Slack's reason. Apps
-  created before `channels:join` was requested are refused the join
-  (`missing_scope`) and reported the same way.
+  as they add the Agent. When the app's bot is not in the Channel yet,
+  Chickpea's bot invites it (`conversations.invite`), with `channels:manage`
+  in a public Channel and `groups:write` in a private one. Slack's
+  `already_in_channel` counts as in. Any other refusal is logged as
+  `chickpea.agent_app.slack_refused` with `step: "invite"` and Slack's code,
+  and Chickpea falls back to the way in it used before those scopes: the bot
+  joins a public Channel itself, with the app's `channels:join`, and a private
+  Channel is left to a person. An installation granted before those scopes is
+  refused with `missing_scope` and takes this fallback until an Owner updates
+  Chickpea's Slack permissions.
+- When the bot is still not in the Channel, the Agent is still added: Admin's
+  result and the offer's reply tell the person to add it from the channel's
+  Add people or agents, and `chickpea.agent_app.bot_left_out` logs why
+  (`private_channel`, the join's Slack code, or `bot_unavailable` when the
+  app's token cannot be read). Apps created before `channels:join` was
+  requested are refused the join (`missing_scope`) and reported the same way.
+- Adding the Agent to a Channel brings the bot into that Channel only. Its
+  bot is not invited into Channels the Agent was added to before its app went
+  live; a person adds it there from Slack.
 - In a public Channel, the bot that was brought in posts the Agent's welcome
   after it joins, whichever way the Agent was added. The welcome posts once,
   when the grant becomes active: adding the Agent again, a retry, or the bot's
@@ -109,6 +119,55 @@ that Channel.
   when only Chickpea's bot was there, keeps its audience. A Channel neither
   bot is in still fails closed. Admin's DM audience line for an Agent whose
   app is live is read the same way.
+
+### Checking the invite live
+
+No Core QA lane can show the invite: Core never installs the port, and the
+lanes' shared app holds neither `channels:manage` nor `groups:write`. Check it
+on a deployment whose host installs the port and whose workspace app's grant
+includes both. Use one app Agent whose bot is in neither fixture Channel, one
+public and one private Channel that Chickpea's bot is in, and the deployment's
+logs, captured before the action and stopped after it.
+
+1. Add the Agent to each Channel with Admin's Add to channels.
+2. Success: Admin shows no line telling the Owner to add the bot from Slack.
+   Each Channel's members include the Agent's bot. The Agent greets the
+   public Channel as its own bot. The logs carry no `chickpea.agent_app.slack_refused` line with
+   `step: "invite"` and no `chickpea.agent_app.bot_left_out` line.
+3. Refusal: a `chickpea.agent_app.slack_refused` line with `step: "invite"`,
+   the `channelId`, and Slack's `code`. In the public Channel the bot still
+   joins by itself, with no left-out line. In the private Channel Admin tells
+   the Owner to add the bot from Slack, and `chickpea.agent_app.bot_left_out`
+   says `reason: "private_channel"`.
+
+To isolate the Slack fact from Chickpea, the attended probe in
+`qa/live/probes/slack-agent-bot-invites.ts` makes the same call with the
+workspace bot's token. It accepts only that token's workspace, the declared
+fixture Channels, and the declared Agent app bot users, and it removes only a
+bot its own invite added. Save each receipt before its request goes out, and
+keep the token and receipts out of the repository. The probe remembers
+attempt IDs only while it runs, so after a restart reconcile an unfinished
+receipt before another invite or removal. Drive it from a private directory
+with `node --import tsx`:
+
+```ts
+import { appendFile } from 'node:fs/promises';
+import { inviteSequence, SlackAgentBotInviteProbe } from '<core checkout>/qa/live/probes/slack-agent-bot-invites.ts';
+
+const spec = { workspaceId: 'T…', channelIds: ['C…public', 'C…private'], botUserIds: ['U…agentbot'] };
+const probe = new SlackAgentBotInviteProbe({
+  token: process.env.WORKSPACE_BOT_TOKEN!,
+  record: (receipt) => appendFile('receipts.jsonl', `${JSON.stringify(receipt)}\n`),
+});
+for (const channelId of spec.channelIds) {
+  await inviteSequence(probe, spec, { id: `invite-${channelId}`, channelId, botUserId: spec.botUserIds[0]! });
+}
+```
+
+Slack accepts the invite when, in each Channel, the `invite` receipt says
+`ok: true`, `members-after` lists the Agent's bot, and `invite-again` says
+`already_in_channel`. Any other `error` on the `invite` receipt is Slack's
+refusal, which Chickpea answers with the fallback above.
 
 ### How it is turned on
 

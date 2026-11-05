@@ -46,9 +46,7 @@ export const SLACK_USER_GROUP_SCOPES = Object.freeze(['usergroups:read', 'usergr
  * are not changed for them, so a mention of its bot in a group DM reads none
  * of the group's earlier messages. It also leaves out the scopes requested
  * for upcoming features: an Agent app made before them was never granted
- * them, and its consent must keep passing. It keeps `channels:join` so that
- * adding the Agent to a public Channel brings its bot in: Chickpea's bot
- * cannot invite it without a scope every installation would have to approve.
+ * them, and its consent must keep passing.
  */
 const AGENT_APP_LEAVES_OUT = new Set([
   'chat:write.customize', 'users:read.email', 'mpim:history', ...UPCOMING_FEATURE_SCOPES,
