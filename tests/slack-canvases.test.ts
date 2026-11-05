@@ -6,7 +6,7 @@ import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { createGatewaySlackWebClient } from '../src/slack/gateway/web-client.ts';
 import { CANVAS_MISSING_OR_UNREADABLE, createSlackCanvasesCall, SlackCanvasService } from '../src/slack/canvases/service.ts';
 import { createSlackCanvasTools, SLACK_CANVAS_TOOL_NAMES } from '../src/slack/canvases/tools.ts';
-import { SLACK_CANVAS_OPERATIONS, type JsonObject, type SlackCanvasOperation } from '../src/slack/canvases/types.ts';
+import { SLACK_CANVAS_OPERATIONS, SlackCanvasError, type JsonObject, type SlackCanvasOperation } from '../src/slack/canvases/types.ts';
 import { parseSlackCanvasUrl, verifiedCanvasPermalink } from '../src/slack/canvases/urls.ts';
 import { ListWriteLedger } from '../src/slack/lists/writes.ts';
 import {
@@ -292,6 +292,24 @@ test('with several canvas tabs the tools list them, change nothing, and act on t
   assert.equal((await f.service().read({ canvasUrl: link('F0PLANB') })).content, '# Plan B\n');
   assert.equal((await f.service().update('call-1', { canvasUrl: link('F0PLANB'), operation: 'append', markdown: '## Next steps' })).status, 'updated');
   assert.deepEqual(f.slack.calls.filter((call) => call.method === 'canvases.edit').map((call) => call.input.canvas_id), ['F0PLANB']);
+});
+
+test('another channel\'s several canvases are listed, a canvas Slack will not describe by id alone, and at most eight', async (t) => {
+  const tabs = (count: number) => ({ ...channelWithTabs(...Array.from({ length: count }, (_, n) => ({ fileId: n === 0 ? 'F0PLAN' : `F0GONE${n}`, label: `Plan ${n}` })))!, id: 'COTHER' });
+  const severalIn = async (count: number) => {
+    const f = fixture(t, { conversations: { [CURRENT.channelId]: facts({ id: CURRENT.channelId }), COTHER: tabs(count) } });
+    f.slack.canvases.set('F0PLAN', { content: '# Plan\n', owner: BOT, title: 'Plan', channels: ['COTHER'] });
+    const refusal = await f.service().read({ channel: 'COTHER' }).then(() => assert.fail('expected a refusal'), (error: unknown) => error as SlackCanvasError);
+    assert.ok(!f.slack.calls.some((call) => call.method === 'canvases.getContent'));
+    return refusal;
+  };
+  const two = await severalIn(2);
+  assert.equal(two.code, 'several_canvases');
+  assert.equal(two.message, 'That channel has 2 canvases. Ask the requester which one they mean, then pass its link as canvasUrl.');
+  assert.deepEqual(two.canvases, [{ id: 'F0PLAN', title: 'Plan', link: link('F0PLAN') }, { id: 'F0GONE1' }]);
+  const nine = await severalIn(9);
+  assert.match(nine.message, /^That channel has 9 canvases\./);
+  assert.equal(nine.canvases?.length, 8);
 });
 
 test('a canvas posted in this conversation but not one of its tabs keeps the rules for other canvases', async (t) => {
