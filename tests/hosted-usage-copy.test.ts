@@ -57,6 +57,7 @@ const ALERTS: UsageAlert[] = [
 
 const NOTICES: OwnerBillingNotice[] = [
   { kind: 'top_up_added', packCents: 5_000, usedCents: 20_000, limitCents: 20_000, validMonths: 12, receiptUrl: 'https://pay.example/r' },
+  { kind: 'top_up_added', packCents: 5_000, usedCents: 10_000, limitCents: 20_000, validMonths: 12, card: { kind: 'link' } },
   {
     kind: 'top_up_limit', limitCents: 5_000, usedCents: 5_000, resumesAt: base.periodEnd,
     plan: { priceCents: 5_000, includedMicros: 60_000_000 as UsageMicros },
@@ -69,6 +70,7 @@ const NOTICES: OwnerBillingNotice[] = [
     taskFees: { taskFeeMicros: 250_000 as UsageMicros, extraUsageTaskFeeMicros: 300_000 as UsageMicros },
   },
   { kind: 'top_up_declined', card: { brand: 'visa', last4: '4242' } },
+  { kind: 'top_up_declined', card: { kind: 'link' } },
   { kind: 'top_up_unconfirmed', amountCents: 5_000 },
   { kind: 'billing_details' },
   { kind: 'auto_top_up_changed', by: { membershipId: 'm_1', slackUserId: 'UOWNER1' }, change: { kind: 'off' } },

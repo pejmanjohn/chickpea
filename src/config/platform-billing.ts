@@ -50,9 +50,18 @@ export type PendingPlanChange =
 
 /** A saved card. `brand` is Stripe's card brand, such as "visa" or "amex". */
 export interface CardSummary {
+  /** Optional: a summary without `kind` is a card. */
+  readonly kind?: 'card';
   readonly brand: string;
   readonly last4: string;
 }
+
+/** A saved Stripe Link payment method, which has no card digits to show. */
+export interface LinkSummary {
+  readonly kind: 'link';
+}
+
+export type PaymentMethodSummary = CardSummary | LinkSummary;
 
 /**
  * Why auto top-up stopped charging until an Owner acts: a declined card, a
@@ -83,8 +92,8 @@ export interface AutoTopUpView {
   /** When `usedCents` starts over: the renewal. Null without a period. */
   readonly resetsAt: Date | null;
   readonly pause: AutoTopUpPause | null;
-  /** The card top-ups charge; null when the default payment method is not a card. */
-  readonly card: CardSummary | null;
+  /** The payment method top-ups charge, a card or Link; null when the default payment method is neither. */
+  readonly card: PaymentMethodSummary | null;
 }
 
 /**
@@ -223,7 +232,7 @@ export interface BillingRedirect {
 export type BillingRefusalReason =
   | 'plan_required'
   | 'own_key_plan_required'
-  /** Auto top-up, or a purchase on the saved card, needs a card. */
+  /** Auto top-up, or a purchase on the saved card, needs a card or Link. */
   | 'card_required'
   /** The plan's last invoice is unpaid, so the host takes no new charge. */
   | 'past_due';
