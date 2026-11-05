@@ -33,7 +33,7 @@ import {
   type SlackArtifactReceipt,
 } from '../slack/artifact-receipts.ts';
 import type { SlackFileTransport } from '../slack/file-transport.ts';
-import { ARTIFACT_UNDELIVERED_NOTE } from '../slack/web-client-presenter.ts';
+import { ARTIFACT_UNDELIVERED_NOTE, dailyLimitScopeOfText } from '../slack/web-client-presenter.ts';
 
 const ROUTINE_SLACK_TIMEOUT_MS = 10_000;
 const DEFINITIVE_DIRECT_THREAD_ERRORS = new Set([
@@ -197,23 +197,115 @@ export async function deliverRoutineFailureNotice(
         : []),
   ].join('\n');
   return deliverRoutineSlackMessage(
-    {
-      ...input,
-      changeKeyHash: null,
-      approvedOutput: canonicalSlackReplyText(text, 'markdown'),
-    },
-    appendSlackReplyFooter(
-      appendRoutineRunContext(
-        renderSlackMessage(text, 'markdown'),
-        input.routine,
-        input.run,
-        input.access.publicUrl,
-        input.access.config.agentId,
-        direct,
-      ),
-      routineReplyFooter(input.access, input.routine),
-    ),
+    { ...input, changeKeyHash: null, approvedOutput: canonicalSlackReplyText(text, 'markdown') },
+    routineNotice(text, input.routine, input.run, input.access),
     client,
+  );
+}
+
+/**
+ * The one notice for each pause of a routine that is out of usage: the
+ * pause's first skipped run posts it, each later skipped run posts nothing,
+ * and the next run that succeeds edits it (closeRoutinePauseNotice).
+ * Undefined when the pause already has its notice.
+ */
+export async function deliverRoutinePauseNotice(
+  input: {
+    store: RoutineStore;
+    run: RoutineRun;
+    routine: RoutineDefinition;
+    access: RoutineRuntimeAccess;
+    workLifecycle?: ShadowWorkLifecycle;
+    now?: () => number;
+    sleep?: (delayMs: number) => Promise<void>;
+  },
+  client: WebClient = input.access.client ?? createRoutineSlackClient(requiredRoutineBotToken(input.access)),
+): Promise<RoutineDeliveryReceipt | undefined> {
+  const [previous] = await pauseSkips(input.store, input.run, 1);
+  // Inside a pause only its first run posts, so a run before this one that
+  // did not fail to post means the pause has its notice.
+  if (previous && previous.deliveryStatus !== 'failed') return undefined;
+  const at = formatRoutineTime(input.run.scheduledFor, input.routine.timezone);
+  const why = PAUSE_REASONS[dailyLimitScopeOfText(input.run.publicError) ?? 'usage'];
+  const text = [
+    `⏸️ **${escapeSlackControlCharacters(input.routine.name)} is paused**`,
+    '',
+    `It didn't run at ${at} because ${why} Until then I'll skip runs without posting again.`,
+  ].join('\n');
+  return deliverRoutineSlackMessage(
+    { ...input, changeKeyHash: null, approvedOutput: canonicalSlackReplyText(text, 'markdown') },
+    routineNotice(text, input.routine, input.run, input.access),
+    client,
+  );
+}
+
+const PAUSE_REASONS = {
+  usage: 'this workspace is out of usage. It runs again on schedule once usage is added.',
+  workspace: "this workspace reached today's free trial limit. It runs again on schedule after the limit resets.",
+  fleet: 'Chickpea has paused free trial usage for now. It runs again on schedule once trials resume.',
+} as const;
+
+/** Edits the pause's notice once `run`, the next run after it, succeeds. Best effort: a later run never retries it. */
+export async function closeRoutinePauseNotice(
+  input: { store: RoutineStore; run: RoutineRun; routine: RoutineDefinition; access: RoutineRuntimeAccess },
+  client: WebClient = input.access.client ?? createRoutineSlackClient(requiredRoutineBotToken(input.access)),
+): Promise<void> {
+  const skipped = await pauseSkips(input.store, input.run);
+  const notice = skipped.findLast(({ deliveryStatus }) => deliveryStatus === 'delivered');
+  if (!notice?.deliveryChannelId || !notice.deliveryMessageTs) return;
+  const runs = skipped.length === 1 ? '1 run' : `${skipped.length} runs`;
+  const text = [
+    `▶️ **${escapeSlackControlCharacters(input.routine.name)} is back on**`,
+    '',
+    `It skipped ${runs} and ran again ${formatScheduledTime(input.run.scheduledFor, input.routine.timezone)}.`,
+  ].join('\n');
+  const rendered = routineNotice(text, input.routine, input.run, input.access);
+  await client.chat.update({
+    channel: notice.deliveryChannelId,
+    ts: notice.deliveryMessageTs,
+    text: rendered.text,
+    ...(rendered.blocks ? { blocks: rendered.blocks } : {}),
+  } as unknown as Parameters<WebClient['chat']['update']>[0]);
+}
+
+/**
+ * The failed `spend_limited` runs before `run` in its routine's current
+ * pause, newest first, up to `most`. A run that succeeded, or failed for
+ * another reason, ends a pause; one that never ran (skipped, cancelled) does
+ * not. A short page answers the common case, a run with no pause before it.
+ */
+async function pauseSkips(store: RoutineStore, run: RoutineRun, most = PAUSE_SCAN_LIMIT): Promise<RoutineRun[]> {
+  let skipped: RoutineRun[] = [];
+  for (const limit of [10, PAUSE_SCAN_LIMIT]) {
+    const runs = await store.listRuns({ routineId: run.routineId, limit });
+    const index = runs.findIndex((other) => other.id === run.id);
+    if (index < 0) return [];
+    skipped = [];
+    for (const other of runs.slice(index + 1)) {
+      if (other.status === 'failed' && other.failureClass === 'spend_limited') {
+        skipped.push(other);
+        if (skipped.length >= most) return skipped;
+      } else if (other.status === 'succeeded' || other.status === 'no_op' || other.status === 'failed') {
+        return skipped;
+      }
+    }
+    if (runs.length < limit) return skipped;
+  }
+  return skipped;
+}
+
+const PAUSE_SCAN_LIMIT = 500;
+
+function routineNotice(
+  text: string,
+  routine: RoutineDefinition,
+  run: RoutineRun,
+  access: RoutineRuntimeAccess,
+): RenderedSlackMessage {
+  const direct = routine.destination.kind === 'direct_thread';
+  return appendSlackReplyFooter(
+    appendRoutineRunContext(renderSlackMessage(text, 'markdown'), routine, run, access.publicUrl, access.config.agentId, direct),
+    routineReplyFooter(access, routine),
   );
 }
 
@@ -500,6 +592,16 @@ function routineRunContext(
   detail.pathname = `/admin/agents/${encodeURIComponent(agentId)}`;
   detail.search = '?tab=schedules';
   return `Scheduled ${scheduled} · <${detail.toString()}|View schedule>`;
+}
+
+function formatRoutineTime(timestamp: number, timezone: string): string {
+  try {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone, hour: 'numeric', minute: '2-digit', timeZoneName: 'short',
+    }).format(timestamp);
+  } catch {
+    return new Date(timestamp).toISOString();
+  }
 }
 
 function formatScheduledTime(timestamp: number, timezone: string): string {

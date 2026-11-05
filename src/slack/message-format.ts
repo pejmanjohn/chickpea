@@ -64,6 +64,8 @@ export interface RenderedSlackMessage {
 interface SlackAdminUrlParams {
   agentId?: string;
   settingsSection?: AdminSettingsSection;
+  /** The Plan page, opened at one of its steps; a page that does not know the step just opens. */
+  planStep?: string;
   channelId?: string;
 }
 
@@ -1119,6 +1121,9 @@ export function buildSlackAdminUrl(
     url.pathname = `/admin/agents/${encodeURIComponent(params.agentId)}`;
   } else if (params.settingsSection) {
     url.pathname = adminSettingsPath(params.settingsSection);
+  } else if (params.planStep) {
+    url.pathname = '/admin/plan';
+    url.searchParams.set('step', params.planStep);
   }
   if (params.channelId) {
     url.searchParams.set('channel', params.channelId);

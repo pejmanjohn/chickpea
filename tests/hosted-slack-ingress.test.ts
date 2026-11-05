@@ -47,11 +47,8 @@ import {
 import {
   CREDITS_ASK_ADMIN_ACTION,
   CREDITS_ASK_ADMIN_BLOCK,
-  CREDITS_ASK_CONFIRMATION_TEXT,
   creditsAskOwnerDmText,
-  DAILY_LIMIT_ASK_CONFIRMATION_TEXT,
-  dailyLimitAskOwnerDmText,
-  fundingRefusalComponents,
+  fundingRefusalReply,
 } from '../src/slack/credits-ask.ts';
 import { resolveSlackInstallationExecutionContext } from '../src/slack/installation-execution.ts';
 import { stopNodeTurnRelay } from '../src/slack/node-turn-relay.ts';
@@ -667,9 +664,9 @@ test('a valid hosted modal Core answers after the host\'s deadline is admitted o
 
 test('a hosted Ask an Owner click DMs the Owner through the installation\'s own bot', async (t) => {
   await withHostedInstallation(t, async (h) => {
-    const components = await fundingRefusalComponents({
-      env: h.env, identity: h.stores.identity, workspaceId: TEAM, userId: 'U2', refusal: 'credits_exhausted',
-    });
+    const components = (await fundingRefusalReply({
+      env: h.env, identity: h.stores.identity, workspaceId: TEAM, userId: 'U2', refusal: { kind: 'credits_exhausted' },
+    }))?.components;
     assert.ok(components);
     const replyTs = '1800000002.000100';
     const response = await h.deliver('interactions', {
@@ -687,10 +684,11 @@ test('a hosted Ask an Owner click DMs the Owner through the installation\'s own 
     const of = (method: string) => h.calls.filter((call) => call.method === method).map(({ body }) => body);
     assert.deepEqual(of('conversations.open').map((body) => body.get('users')), ['U1']);
     assert.deepEqual(of('chat.postMessage').map((body) => [body.get('channel'), body.get('text')]),
-      [['DHOME', creditsAskOwnerDmText('U2', 'C1')]]);
+      [['DHOME', creditsAskOwnerDmText('U2', 'C1', { kind: 'credits_exhausted' })]]);
     const update = of('chat.update')[0]!;
     assert.equal(update.get('ts'), replyTs);
-    assert.ok(update.get('blocks')?.includes(CREDITS_ASK_CONFIRMATION_TEXT));
+    assert.ok(update.get('blocks')?.includes('I asked'));
+    assert.ok(update.get('blocks')?.includes("once they've added usage"));
     assert.equal(update.get('blocks')?.includes(CREDITS_ASK_ADMIN_ACTION), false);
     assert.deepEqual(tokensUsed(h.calls), [BOT_TOKEN]);
   });
@@ -699,12 +697,12 @@ test('a hosted Ask an Owner click DMs the Owner through the installation\'s own 
 test('a hosted daily-limit Ask an Owner click DMs the Owner when Chickpea resumes', async (t) => {
   await withHostedInstallation(t, async (h) => {
     const resumesAt = Date.UTC(2026, 10, 5);
-    const components = await fundingRefusalComponents({
+    const components = (await fundingRefusalReply({
       env: h.env, identity: h.stores.identity, workspaceId: TEAM, userId: 'U2',
       refusal: { kind: 'daily_limit', scope: 'workspace', resumesAt },
-    });
+    }))?.components;
     assert.ok(components);
-    const button = (components.blocks[0]!.elements as Array<Record<string, unknown>>)[0]!;
+    const button = (components.blocks.find(({ type }) => type === 'actions')!.elements as Array<Record<string, unknown>>)[0]!;
     const replyTs = '1800000002.000200';
     const response = await h.deliver('interactions', {
       type: 'block_actions', api_app_id: APP.appId, team: { id: TEAM }, user: { id: 'U2' },
@@ -720,8 +718,8 @@ test('a hosted daily-limit Ask an Owner click DMs the Owner when Chickpea resume
     await h.settle(() => h.calls.some(({ method }) => method === 'chat.update'));
     const of = (method: string) => h.calls.filter((call) => call.method === method).map(({ body }) => body);
     assert.deepEqual(of('chat.postMessage').map((body) => [body.get('channel'), body.get('text')]),
-      [['DHOME', dailyLimitAskOwnerDmText('U2', 'C1', { scope: 'workspace', resumesAt })]]);
-    assert.ok(of('chat.update')[0]!.get('blocks')?.includes(DAILY_LIMIT_ASK_CONFIRMATION_TEXT));
+      [['DHOME', creditsAskOwnerDmText('U2', 'C1', { kind: 'daily_limit', scope: 'workspace', resumesAt })]]);
+    assert.ok(of('chat.update')[0]!.get('blocks')?.includes("once they've chosen a plan"));
   });
 });
 
