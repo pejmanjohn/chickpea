@@ -151,8 +151,17 @@ export type SavedCardResult =
 /** The Owner's latest purchase, shown when they come back from Stripe; `granted` once its usage is added. */
 export type RecentPurchase =
   | { readonly kind: 'extra_usage'; readonly granted: boolean; readonly usageMicros: UsageMicros }
-  /** `first` for the installation's first plan; `addedMicros` is what an upgrade added for the rest of the period. */
-  | { readonly kind: 'plan'; readonly granted: boolean; readonly first: boolean; readonly addedMicros: UsageMicros };
+  /**
+   * `first` for the installation's first plan. `newPeriod` says whether the
+   * purchase started a billing period, a first plan or a new plan after one
+   * ended, so its usage is the whole period's; false for an upgrade, whose
+   * `addedMicros` covers the rest of the period. Without `newPeriod`, only a
+   * first plan reads as a new period.
+   */
+  | {
+    readonly kind: 'plan'; readonly granted: boolean; readonly first: boolean; readonly addedMicros: UsageMicros;
+    readonly newPeriod?: boolean;
+  };
 
 export interface BillingSummary {
   readonly funding: BillingFunding;

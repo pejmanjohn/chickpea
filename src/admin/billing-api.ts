@@ -171,7 +171,8 @@ interface OwnerAutoTopUp {
 /** What the Owner's latest purchase did, for the banner when they come back from Stripe. */
 type PurchaseView =
   | { kind: 'extra_usage'; granted: boolean; usage: string }
-  | { kind: 'plan'; granted: boolean; first: boolean; added: string };
+  /** `newPeriod` when the purchase started a billing period; otherwise `added` is an upgrade's usage for the rest of it. */
+  | { kind: 'plan'; granted: boolean; newPeriod: boolean; added: string };
 
 /**
  * What paying with the installation's own key needs, whatever the funding is
@@ -494,7 +495,10 @@ function purchaseView(summary: BillingSummary): PurchaseView | null {
   if (!purchase) return null;
   return purchase.kind === 'extra_usage'
     ? { kind: 'extra_usage', granted: purchase.granted, usage: formatUsageDollars(purchase.usageMicros) }
-    : { kind: 'plan', granted: purchase.granted, first: purchase.first, added: formatUsageDollars(purchase.addedMicros, 'down') };
+    : {
+      kind: 'plan', granted: purchase.granted, newPeriod: purchase.newPeriod ?? purchase.first,
+      added: formatUsageDollars(purchase.addedMicros, 'down'),
+    };
 }
 
 function billingView(summary: BillingSummary, owner: OwnerFacts | null): BillingView {

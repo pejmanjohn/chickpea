@@ -1817,6 +1817,20 @@ test('back from Stripe, the page says the payment is in while the usage is added
   assert.doesNotMatch(cancelled.html(), /plan-banner/, 'without billing=done, as after a cancelled Checkout, there is no banner');
 });
 
+test('back from Stripe after a plan that starts a new period, such as a resubscribe, the banner names the month\'s usage, not the rest of the month', async () => {
+  const back = async (lastPurchase: NonNullable<BillingSummary['lastPurchase']>, summary: BillingSummary = STARTER_TOP_UP) =>
+    (await harness({ path: '/admin/plan?billing=done', billingOffered: true, summary: { ...summary, lastPurchase } })).html();
+  const resubscribed = await back({ kind: 'plan', granted: true, first: false, newPeriod: true, addedMicros: usd(60) });
+  assertShows(resubscribed, 'You’re on the $50 plan, with $60 of usage this month. Auto top-up is on.');
+  assertHides(resubscribed, 'rest of this month');
+  const topUpOff = await back({ kind: 'plan', granted: true, first: false, newPeriod: true, addedMicros: usd(60) },
+    { ...STARTER_TOP_UP, autoTopUp: { ...TOP_UP_ON, enabled: false, explicitlyOff: true } });
+  assertShows(topUpOff, 'You’re on the $50 plan, with $60 of usage this month.');
+  assertHides(topUpOff, 'Auto top-up is on');
+  assertShows(await back({ kind: 'plan', granted: true, first: false, newPeriod: false, addedMicros: usd(19.35) }),
+    'You’re on the $50 plan. $19.35 of usage was added for the rest of this month.');
+});
+
 test('trying a saved-card purchase again after its answer was lost sends the same key, so the host charges once', async () => {
   const keys: (string | undefined)[] = [];
   let fail = true;
