@@ -183,10 +183,10 @@ test('the image model list is empty until its provider has a credential', async 
     assert.equal(connected.status, 200);
     assert.deepEqual(await connected.json(), {
       models: [
-        { ...apiKeyImageModel(FLARE_2_6, 'GPT Image 2.6 Flare'), fasterAndCheaper: false },
-        { ...apiKeyImageModel(SUNBURST_2_6, 'GPT Image 2.6 Sunburst'), fasterAndCheaper: false },
-        { ...apiKeyImageModel(FLARE, 'GPT Image 2.5 Flare'), fasterAndCheaper: true },
-        { ...apiKeyImageModel(SUNBURST, 'GPT Image 2.5 Sunburst'), fasterAndCheaper: false },
+        { ...apiKeyImageModel(FLARE_2_6, 'GPT Image 2.6 Flare'), lowerCost: false },
+        { ...apiKeyImageModel(SUNBURST_2_6, 'GPT Image 2.6 Sunburst'), lowerCost: false },
+        { ...apiKeyImageModel(FLARE, 'GPT Image 2.5 Flare'), lowerCost: true },
+        { ...apiKeyImageModel(SUNBURST, 'GPT Image 2.5 Sunburst'), lowerCost: true },
       ],
       providers: [{ id: 'openai', configured: true }],
     });
@@ -217,7 +217,7 @@ test('the image catalog exposes ChatGPT Image only for a connected Node subscrip
         authMethod: 'subscription',
         maxOutputs: 1,
         supportsOutputControls: false,
-        fasterAndCheaper: false,
+        lowerCost: false,
       }],
       providers: [{ id: 'openai', configured: true }],
     });

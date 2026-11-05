@@ -9,6 +9,8 @@ import { renderAdminPageWithInlineAssets as renderAdminPage } from './helpers/ad
 // document-level listeners. This file owns the model role and effort surfaces;
 // the broader page contract lives in tests/admin-page.test.ts.
 
+const FLARE_2_6 = 'openai/gpt-image-2.6-flare';
+const SUNBURST_2_6 = 'openai/gpt-image-2.6-sunburst';
 const FLARE = 'openai/gpt-image-2.5-flare';
 const SUNBURST = 'openai/gpt-image-2.5-sunburst';
 const CHATGPT_IMAGE = 'openai/chatgpt-image';
@@ -33,7 +35,7 @@ interface ImageCatalogFixture {
     name: string;
     providerId: string;
     acceptsImageInput: boolean;
-    fasterAndCheaper: boolean;
+    lowerCost: boolean;
     authMethod: 'api_key' | 'subscription';
     maxOutputs: number;
     supportsOutputControls: boolean;
@@ -101,36 +103,24 @@ function valueTarget(attributes: Record<string, string>, value: string): unknown
   };
 }
 
+function apiKeyImageModel(id: string, name: string, lowerCost: boolean): ImageCatalogFixture['models'][number] {
+  return { id, name, providerId: 'openai', acceptsImageInput: true, lowerCost, authMethod: 'api_key', maxOutputs: 10, supportsOutputControls: true };
+}
+
 function imageCatalog(configured: boolean): ImageCatalogFixture {
   if (!configured) return { models: [], providers: [{ id: 'openai', configured: false }] };
   return {
     models: [
-      {
-        id: FLARE,
-        name: 'GPT Image 2.5 Flare',
-        providerId: 'openai',
-        acceptsImageInput: true,
-        fasterAndCheaper: true,
-        authMethod: 'api_key',
-        maxOutputs: 10,
-        supportsOutputControls: true,
-      },
-      {
-        id: SUNBURST,
-        name: 'GPT Image 2.5 Sunburst',
-        providerId: 'openai',
-        acceptsImageInput: true,
-        fasterAndCheaper: false,
-        authMethod: 'api_key',
-        maxOutputs: 10,
-        supportsOutputControls: true,
-      },
+      apiKeyImageModel(FLARE_2_6, 'GPT Image 2.6 Flare', false),
+      apiKeyImageModel(SUNBURST_2_6, 'GPT Image 2.6 Sunburst', false),
+      apiKeyImageModel(FLARE, 'GPT Image 2.5 Flare', true),
+      apiKeyImageModel(SUNBURST, 'GPT Image 2.5 Sunburst', true),
       {
         id: CHATGPT_IMAGE,
         name: 'ChatGPT Image',
         providerId: 'openai',
         acceptsImageInput: false,
-        fasterAndCheaper: false,
+        lowerCost: false,
         authMethod: 'subscription',
         maxOutputs: 1,
         supportsOutputControls: false,
@@ -564,8 +554,7 @@ test('Settings offers the default image model with the consent and cost note', a
   const note = html.slice(html.indexOf('data-action="workspace-image-model"'));
   assert.match(note, /prompt text/);
   assert.match(note, /images people post/);
-  assert.match(note, /faster, cheaper/);
-  assert.match(note, /GPT Image 2\.5 Flare/);
+  assert.match(note, /GPT Image 2\.5 Flare and GPT Image 2\.5 Sunburst cost less per image than the newer models, except at high quality\./);
   // Nothing changed yet, so Save cannot be pressed.
   assert.match(html, /data-action="workspace-image-model-save" disabled/);
 });
@@ -732,6 +721,10 @@ test('the Agent image picker lists image models only', async () => {
   assert.match(picker, new RegExp(`data-action="pick-image-model" data-model="${SUNBURST.replace('/', '\\/')}"`));
   assert.match(picker, new RegExp(`data-action="pick-image-model" data-model="${CHATGPT_IMAGE.replace('/', '\\/')}"`));
   assert.match(picker, /openai\/chatgpt-image · ChatGPT subscription · generation only/);
+  assert.match(picker, />openai\/gpt-image-2\.5-flare · lower cost</);
+  assert.match(picker, />openai\/gpt-image-2\.5-sunburst · lower cost</);
+  assert.match(picker, />openai\/gpt-image-2\.6-flare</);
+  assert.match(picker, />openai\/gpt-image-2\.6-sunburst</);
   assert.doesNotMatch(picker, new RegExp(`data-action="pick-image-model" data-model="${CHAT_MODEL.replace('/', '\\/')}"`));
 });
 
