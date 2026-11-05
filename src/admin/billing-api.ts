@@ -384,7 +384,7 @@ function planChangeView(
   };
 }
 
-/** The saved card, from the auto top-up view; only digits pass, since the label lands in the page and Slack. */
+/** The saved card, from the auto top-up view; only four digits pass, since the label lands in the page. */
 function cardLabel(summary: BillingSummary): string | null {
   const card = summary.autoTopUp?.card;
   return card && /^\d{4}$/.test(card.last4) ? formatCard(card) : null;
