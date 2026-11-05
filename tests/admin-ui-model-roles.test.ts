@@ -554,7 +554,7 @@ test('Settings offers the default image model with the consent and cost note', a
   const note = html.slice(html.indexOf('data-action="workspace-image-model"'));
   assert.match(note, /prompt text/);
   assert.match(note, /images people post/);
-  assert.match(note, /GPT Image 2\.5 Flare and GPT Image 2\.5 Sunburst cost less per image than the newer models, except at high quality\./);
+  assert.match(note, /GPT Image 2\.5 Flare and GPT Image 2\.5 Sunburst cost less per image than the newer models, except at high quality and above\./);
   // Nothing changed yet, so Save cannot be pressed.
   assert.match(html, /data-action="workspace-image-model-save" disabled/);
 });

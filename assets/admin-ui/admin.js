@@ -12531,7 +12531,7 @@
     var detail = selected && selected.authMethod === "subscription"
       ? " " + selected.name + " uses the connected ChatGPT subscription and generates one image per call. It is generation only, and exact output settings are unavailable."
       : lowerCostNames.length ? " " + joinNames(lowerCostNames) + (lowerCostNames.length === 1 ? " costs" : " cost") +
-        " less per image than the newer models, except at high quality." : "";
+        " less per image than the newer models, except at high quality and above." : "";
     return '<p class="hint">' + esc(sentence + detail) + '</p>';
   }
 
