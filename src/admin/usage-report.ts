@@ -18,7 +18,7 @@ import type { PlatformEnv } from '../config/state-backend.ts';
 import { activeModelCatalogSnapshot } from '../model-catalog/index.ts';
 import { UsageStateError } from '../usage/store-error.ts';
 import type { UsageActivityAttribution, UsageOperationDetail, UsageStore } from '../usage/types.ts';
-import { formatUsageDollars, type UsageMicros } from '../usage/usage-display.ts';
+import { formatPriceCents, formatUsageDollars, type UsageMicros } from '../usage/usage-display.ts';
 import { balance, type BillingBalance } from './billing-balance.ts';
 import { formatTasks } from './billing-tasks.ts';
 
@@ -237,7 +237,15 @@ export function buildUsageReport(inputs: UsageReportInputs): UsageReport {
   const total = sumOf(current);
 
   const amount = (value: number): ReportAmount => ({ value, text: measure === 'activity' ? count(value) : dollars(value) });
-  const row = ({ key, name, value }: Row): ReportRow => ({ key, name, amount: amount(value), share: percent(value, total) });
+  // Each list's amounts read as cents that add up to the total's.
+  const listed = <T extends Row>(rows: readonly T[]): (T & ReportRow)[] => {
+    const cents = measure === 'activity' ? [] : apportionCents(rows.map((row) => row.value), Math.floor(total / MICROS_PER_CENT));
+    return rows.map((row, index) => ({
+      ...row,
+      amount: measure === 'activity' ? amount(row.value) : { value: row.value, text: centsText(row.value, cents[index] ?? 0) },
+      share: percent(row.value, total),
+    }));
+  };
   const agentName = (id: string) => names.agents.get(id);
   const personName = (key: string) => key === ROUTINES ? 'Routines' : names.people.get(key);
   // An Agent with no name now reads as the gathered row, as on the Plan page.
@@ -306,16 +314,16 @@ export function buildUsageReport(inputs: UsageReportInputs): UsageReport {
       series: lines.map(({ key, name }) => ({ key, name, values: byDay(current.filter((charge) => line(charge) === key), firstDay) })),
       prior: priorDays.every((value) => value === 0) ? null : priorDays,
     },
-    models: ranked(current, (charge) => charge.model, names.model, LISTED_ROWS, OTHER).map(row),
-    people: ranked(current, (charge) => charge.person, personName, LISTED_ROWS, 'Everyone else').map(row),
-    agents: agentId !== null ? null : [
+    models: listed(ranked(current, (charge) => charge.model, names.model, LISTED_ROWS, OTHER)).map(reportRow),
+    people: listed(ranked(current, (charge) => charge.person, personName, LISTED_ROWS, 'Everyone else')).map(reportRow),
+    agents: agentId !== null ? null : listed([
       ...agentChoices.map(({ id, name }) => ({ key: id, name, value: byAgent.rows.find((agent) => agent.key === id)?.value ?? 0 }))
         .sort(largestFirst),
       ...(byAgent.unnamed === null ? [] : [{ key: null, name: OTHER, value: byAgent.unnamed }]),
-    ].map((agent) => {
+    ]).map((agent) => {
       const own = current.filter((charge) => agentRow(charge.agentId) === agent.key);
       return {
-        ...row(agent),
+        ...reportRow(agent),
         topPerson: tally(own, (charge) => charge.person, personName).rows[0]?.name ?? null,
         mainModel: tally(own, (charge) => charge.model, names.model).rows[0]?.name ?? null,
         tasks: tasks && count(tasks.filter((task) => agentRow(task) === agent.key).length),
@@ -362,6 +370,31 @@ function ranked(
   const hidden = rows.slice(limit);
   if (unnamed === null && hidden.length <= 1) return rows;
   return [...rows.slice(0, limit), { key: null, name: gatheredName, value: sumOf(hidden) + (unnamed ?? 0) }];
+}
+
+function reportRow({ key, name, amount, share }: ReportRow): ReportRow {
+  return { key, name, amount, share };
+}
+
+/**
+ * Whole cents for each value that sum to `totalCents`: each value's cents
+ * rounded down, then one more cent for the largest remainders.
+ */
+function apportionCents(values: readonly number[], totalCents: number): number[] {
+  const cents = values.map((value) => Math.floor(value / MICROS_PER_CENT));
+  const remainder = (index: number) => values[index]! - cents[index]! * MICROS_PER_CENT;
+  let left = totalCents - sum(cents);
+  for (const index of values.map((_, index) => index).sort((a, b) => remainder(b) - remainder(a))) {
+    if (left <= 0) break;
+    cents[index]! += 1;
+    left -= 1;
+  }
+  return cents;
+}
+
+/** A nonzero amount that gets no whole cent reads "<$0.01". */
+function centsText(micros: number, cents: number): string {
+  return cents === 0 && micros > 0 ? '<$0.01' : formatPriceCents(cents);
 }
 
 function largestFirst(left: Row, right: Row): number {

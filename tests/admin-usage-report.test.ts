@@ -241,3 +241,19 @@ test('ranges: this and last billing period, a month clamped to its end, 30 days 
     [false, null, 'Sep 21', 'Oct 20', 30],
   );
 });
+
+test('each list\'s amounts read as cents that add up to the total as shown', () => {
+  // Three Agents each drew a dollar and a third of a cent: rounded alone, each reads $1 and the list $3 of $3.01.
+  const thirds = ['agent_a', 'agent_b', 'agent_c'].map((agentId, index) =>
+    activity(`third_${index}`, agentId, '2026-10-08T09:00:00Z', { requesterMembershipId: index === 0 ? 'membership_li' : 'membership_maya' }));
+  const billed = {
+    current: thirds.map((_, index) => billedRow(`sub_third_${index}`, '2026-10-08', 1.003_4)),
+    prior: [],
+  };
+  const result = report({ billed, attributions: thirds });
+  const cents = (text: string) => text === '<$0.01' ? 0 : Math.round(Number(text.replace('$', '')) * 100);
+  assert.equal(result.total.text, '$3.01');
+  for (const list of [result.agents ?? [], result.models, result.people]) {
+    assert.equal(sum(list.map((row) => cents(row.amount.text))), cents(result.total.text), JSON.stringify(rows(list)));
+  }
+});
