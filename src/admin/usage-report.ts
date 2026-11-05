@@ -1,11 +1,23 @@
 /**
  * Admin's Usage page where the host installed a billing port. It reports
  * what the Plan page counts: billed usage the host returns, joined to Core's
- * activity by the run key both sides record. Loaded on first use; see
- * tests/worker-startup-imports.test.ts.
+ * activity by the run key both sides record. The Admin API loads this module
+ * on first use, handlers included; see tests/worker-startup-imports.test.ts.
  */
-import type { BilledUsageRow, BillingFunding, BillingSummary } from '../config/platform-billing.ts';
-import type { UsageActivityAttribution, UsageOperationDetail } from '../usage/types.ts';
+import type { Context } from 'hono';
+
+import { requireInstallationScope } from '../config/installation-scope.ts';
+import {
+  platformBilling,
+  type BilledUsageRow,
+  type BillingFunding,
+  type BillingSummary,
+  type PlatformBillingPort,
+} from '../config/platform-billing.ts';
+import type { PlatformEnv } from '../config/state-backend.ts';
+import { activeModelCatalogSnapshot } from '../model-catalog/index.ts';
+import { UsageStateError } from '../usage/store-error.ts';
+import type { UsageActivityAttribution, UsageOperationDetail, UsageStore } from '../usage/types.ts';
 import { formatUsageDollars, type UsageMicros } from '../usage/usage-display.ts';
 import { balance, type BillingBalance } from './billing-balance.ts';
 import { formatTasks } from './billing-tasks.ts';
@@ -467,4 +479,101 @@ function count(value: number): string {
 /** Rounded down as the Plan page's meter reads, and a nonzero amount under a cent as "<$0.01". */
 function dollars(micros: number): string {
   return micros > 0 && micros < MICROS_PER_CENT ? '<$0.01' : formatUsageDollars(micros as UsageMicros, 'down');
+}
+
+/** What the hosted handlers read through the Usage Admin API. */
+interface HostedUsageOptions {
+  store: (c: Context) => UsageStore;
+  agentNames: (c: Context) => Promise<ReadonlyMap<string, string>>;
+  personNames: (c: Context) => Promise<ReadonlyMap<string, string>>;
+}
+
+type BilledUsageRead = NonNullable<PlatformBillingPort['usage']>;
+
+const MAX_QUERY_RANGE_MS = 366 * DAY_MS;
+// A run billed in range may have started a little before it.
+const RUN_LEAD_MS = 2 * DAY_MS;
+const AGENT_ID = /^[A-Za-z0-9][A-Za-z0-9:._/@-]{0,255}$/;
+
+/** `GET /usage/report`; undefined where the host installed no billing port for the installation. */
+export async function hostedUsageReport(c: Context, options: HostedUsageOptions, now = Date.now()): Promise<UsageReport | undefined> {
+  const hosted = hostedBilling(c);
+  if (!hosted) return undefined;
+  const request = reportRequest(c);
+  const agentId = c.req.query('agent') ?? null;
+  if (agentId !== null && !AGENT_ID.test(agentId)) throw invalidQuery();
+  const summary = await hosted.port.summary(hosted.installationId);
+  const { range, prior } = reportRanges(request, summary, now);
+  const [billed, attributions, names] = await Promise.all([
+    billedUsage(hosted.port, async (read) => {
+      const [current, previous] = await Promise.all([billedRows(read, hosted.installationId, range), billedRows(read, hosted.installationId, prior)]);
+      return { current, prior: previous };
+    }),
+    options.store(c).listActivityAttributions({ from: Math.max(prior.from - RUN_LEAD_MS, range.to - MAX_QUERY_RANGE_MS), to: range.to }),
+    reportNames(c, options),
+  ]);
+  return buildUsageReport({ summary, range, prior, billed, attributions, agentId, names, now });
+}
+
+/** Each `GET /usage/operations` item's hosted facts; undefined where the host installed no billing port for the installation. */
+export async function hostedActivity(
+  c: Context,
+  options: HostedUsageOptions,
+  items: readonly UsageOperationDetail[],
+  window: Window,
+): Promise<ActivityExtras[] | undefined> {
+  const hosted = hostedBilling(c);
+  if (!hosted) return undefined;
+  const [rows, names] = await Promise.all([
+    billedUsage(hosted.port, (read) => billedRows(read, hosted.installationId, window)),
+    reportNames(c, options),
+  ]);
+  return activityExtras(items, rows, names);
+}
+
+function hostedBilling(c: Context): { port: PlatformBillingPort; installationId: string } | undefined {
+  const port = platformBilling();
+  const installationId = port && requireInstallationScope(c.env as PlatformEnv | undefined)?.installationId;
+  return port && installationId ? { port, installationId } : undefined;
+}
+
+function reportRequest(c: Context): UsageReportRange {
+  const period = c.req.query('period');
+  if (period === 'this_billing_period' || period === 'last_billing_period') return { period };
+  if (period !== undefined) throw invalidQuery();
+  const time = (name: string) => {
+    const value = c.req.query(name);
+    return value && /^\d{1,15}$/.test(value) ? Number(value) : NaN;
+  };
+  const from = time('from');
+  const to = time('to');
+  // NaN compares false, so a missing or malformed bound is refused here too.
+  if (!(from < to) || to - from > MAX_QUERY_RANGE_MS) throw invalidQuery();
+  return { from, to };
+}
+
+function invalidQuery(): UsageStateError {
+  return new UsageStateError('usage_query_invalid', 'Usage report query is invalid.');
+}
+
+/** Null when the host has no `usage` method or the read fails; a failure logs one line with no amounts or IDs. */
+async function billedUsage<T>(port: PlatformBillingPort, read: (usage: BilledUsageRead) => Promise<T>): Promise<T | null> {
+  if (!port.usage) return null;
+  try {
+    return await read(port.usage.bind(port));
+  } catch {
+    console.warn(JSON.stringify({ component: 'platform_billing', event: 'billed_usage_unavailable' }));
+    return null;
+  }
+}
+
+async function billedRows(read: BilledUsageRead, installationId: string, window: Window): Promise<readonly BilledUsageRow[]> {
+  return (await read(installationId, { from: new Date(window.from), to: new Date(window.to) })).rows;
+}
+
+async function reportNames(c: Context, options: HostedUsageOptions): Promise<UsageReportNames> {
+  const [agents, people] = await Promise.all([options.agentNames(c), options.personNames(c)]);
+  const models = new Map(activeModelCatalogSnapshot(c.env as PlatformEnv | undefined).entries
+    .flatMap((entry) => entry.displayName ? [[entry.id as string, entry.displayName] as const] : []));
+  return { agents, people, model: (model) => models.get(model) ?? model.slice(model.indexOf('/') + 1) };
 }

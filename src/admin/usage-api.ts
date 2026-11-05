@@ -1,5 +1,6 @@
 import { Hono, type Context } from 'hono';
 
+import { platformBilling } from '../config/platform-billing.ts';
 import { UsageStateError } from '../usage/store.ts';
 import { COMPOSIO_CONNECTOR_PRICE_VERSION } from '../usage/connectors/pricing.ts';
 import { USAGE_PROVIDER_GUIDANCE } from '../usage/provider-guidance.ts';
@@ -29,6 +30,9 @@ interface UsageAdminApiOptions {
   routineMessage?: (c: Context, routineRunId: string) => Promise<Omit<SlackMessage, 'workspaceId'> | undefined>;
   /** Slack's own permalink, which carries the workspace domain and the thread. */
   slackPermalink?: (c: Context, message: SlackMessage) => Promise<string | undefined>;
+  agentNames: (c: Context) => Promise<ReadonlyMap<string, string>>;
+  /** Display names keyed by Chickpea membership ID. */
+  personNames: (c: Context) => Promise<ReadonlyMap<string, string>>;
 }
 
 export interface SlackMessage {
@@ -155,18 +159,32 @@ export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
     }
   });
 
+  app.get('/usage/report', async (c) => {
+    try {
+      const report = platformBilling() && await (await import('./usage-report.ts')).hostedUsageReport(c, options);
+      return report ? c.json(report) : c.json({ error: 'not_found' }, 404);
+    } catch (error) {
+      return usageError(c, error);
+    }
+  });
+
   app.get('/usage/operations', async (c) => {
     try {
-      const page = await options.store(c).listOperations(parseCustomerUsageQuery(c, false));
+      const query = parseCustomerUsageQuery(c, false);
+      const page = await options.store(c).listOperations(query);
       const visibility = await usageRunVisibility(options.work?.(c), page.items);
       const channelLabels = await currentChannelLabels(options, c, page.items, visibility);
+      const hosted = platformBilling() && await (await import('./usage-report.ts')).hostedActivity(c, options, page.items, query);
       return c.json({
-        items: await Promise.all(page.items.map(async (detail) => usageDetailProjection(
-          detail,
-          visibility.get(detail.operation.runId ?? '') ?? false,
-          channelLabels,
-          await hasSlackMessage(options, c, detail),
-        ))),
+        items: await Promise.all(page.items.map(async (detail, index) => ({
+          ...usageDetailProjection(
+            detail,
+            visibility.get(detail.operation.runId ?? '') ?? false,
+            channelLabels,
+            await hasSlackMessage(options, c, detail),
+          ),
+          ...(hosted ? { hosted: hosted[index] } : {}),
+        }))),
         nextCursor: page.nextCursor ? encodeCursor(page.nextCursor) : null,
       });
     } catch (error) {

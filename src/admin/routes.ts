@@ -6782,9 +6782,23 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     contentAccess: routineContentAccess,
     ...(options.routineCapability ? { capability: options.routineCapability } : {}),
   }));
+  const usageAgentNames = async (c: Context) => new Map([
+    [CHICKPEA_AGENT_ID, 'Chickpea'],
+    ...(await store(c).listUserAgents()).map((agent) => [agent.id, agent.name] as const),
+  ]);
+  const usagePersonNames = async (c: Context) => {
+    const memberships = await identity(c).listMemberships();
+    const users = await Promise.all(memberships.map((membership) => identity(c).getUser(membership.userId)));
+    return new Map(memberships.flatMap((membership, index) => {
+      const name = users[index]?.displayName;
+      return name ? [[membership.id, name] as const] : [];
+    }));
+  };
   app.route('/admin/api', createUsageAdminApi({
     store: usage,
     work,
+    agentNames: usageAgentNames,
+    personNames: usagePersonNames,
     channelLabels: async (c) => new Map((await store(c).listChannels()).flatMap((channel) =>
       channel.label ? [[channelLabelKey(channel.workspaceId, channel.channelId), channel.label]] : [])),
     routineMessage: async (c, routineRunId) => {
