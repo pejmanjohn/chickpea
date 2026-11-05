@@ -761,6 +761,29 @@ test('the host learns which Owner acted, with their Slack user, for its consent 
   assert.deepEqual((fakeCalls[0]![2] as { by: unknown }).by, { membershipId: 'membership_owner', slackUserId: 'U_OWNER' });
 });
 
+test('a plan or extra usage Checkout tells the host which Owner started it, and a host that reads no Owner still answers', async (t) => {
+  const started: unknown[][] = [];
+  const reading = fakePort(TEAM_PLAN, {
+    async checkout(_installationId, request, _returnPath, by) {
+      started.push([request.kind, by]);
+      return { url: 'https://checkout.stripe.com/c/pay/cs_test_billing' };
+    },
+  });
+  const ignoring = fakePort(TEAM_PLAN);
+  const purchases = [{ kind: 'plan', key: 'business' }, { kind: 'extra_usage', key: 'extra_usage_25' }] as const;
+  for (const port of [reading.port, ignoring.port]) {
+    const request = admin(t, { port, slackUsers: [['membership_maya', 'U_MAYA'], ['membership_owner', 'U_OWNER']] });
+    for (const purchase of purchases) {
+      assert.deepEqual(await (await request('/admin/api/billing/checkout', post(purchase))).json(),
+        { url: 'https://checkout.stripe.com/c/pay/cs_test_billing' });
+    }
+  }
+  const owner = { membershipId: 'membership_owner', slackUserId: 'U_OWNER' };
+  assert.deepEqual(started, [['plan', owner], ['extra_usage', owner]]);
+  assert.deepEqual(ignoring.calls.filter(([name]) => name === 'checkout'),
+    purchases.map((purchase) => ['checkout', INSTALLATION, purchase, '/admin/plan']));
+});
+
 test('an Owner who picked a pack can follow the plan again, and the host reads the plan\'s own pack', async (t) => {
   fakeCalls.length = 0;
   const fixed: BillingSummary = { ...STARTER_TOP_UP, autoTopUp: { ...TOP_UP_ON, pack: { rule: 'fixed', key: 'extra_usage_25' } } };

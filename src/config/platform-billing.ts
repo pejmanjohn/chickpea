@@ -270,9 +270,10 @@ export interface PlatformBillingPort {
    * on the host's own origin, where Stripe sends the Owner back. Throws
    * `BillingRefusal` for extra usage without a plan (`plan_required`) or a
    * plan below the lowest one for an own key (`own_key_plan_required`); any
-   * other throw is an outage.
+   * other throw is an outage. `by` is the Owner who started it, for the
+   * consent record a plan's Checkout writes; Admin always passes it.
    */
-  checkout(installationId: string, request: CheckoutRequest, returnPath: string): Promise<BillingRedirect>;
+  checkout(installationId: string, request: CheckoutRequest, returnPath: string, by?: BillingActor): Promise<BillingRedirect>;
   /** The Stripe customer portal: cards, invoices, and plan changes. */
   portal(installationId: string, returnPath: string): Promise<BillingRedirect>;
   /**
