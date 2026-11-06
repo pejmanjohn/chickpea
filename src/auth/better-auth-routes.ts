@@ -9,6 +9,7 @@ import {
   type PublicOAuthClientApi,
 } from './better-auth.ts';
 import { isClientMetadataDocumentUrl } from './mcp-client-metadata.ts';
+import { recordRedeemedChallenge } from './mcp-oauth-redemption.ts';
 import {
   MCP_OFFLINE_SCOPE,
   MCP_WORKSPACE_SCOPE,
@@ -97,7 +98,18 @@ export function createBetterAuthPublicHandler(input: BetterAuthPublicHandlerInpu
       if (renewable instanceof Response) return renewable;
       request = renewable;
     }
+    let tokenRequest: URLSearchParams | undefined;
+    if (url.pathname === '/api/auth/oauth2/token') {
+      const bounded = await readBoundedRequestBody(request, MAX_AUTH_BODY_BYTES);
+      if (!bounded.ok) return Response.json({ error: 'request_too_large' }, { status: 413 });
+      if (bounded.body) request = requestWithBufferedBody(request, bounded.body);
+      tokenRequest = new URLSearchParams(new TextDecoder().decode(bounded.body ?? new Uint8Array()));
+    }
     const response = await instance.handler(request);
+    if (tokenRequest && response.ok) {
+      // Best effort: a lost marker only means a stale consent tab gets today's flow.
+      await recordRedeemedChallenge(instance, tokenRequest).catch(() => undefined);
+    }
     if (route === 'registration') {
       emitManagementMetric('oauth.dcr', {
         stage: 'registration',
