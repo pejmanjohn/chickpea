@@ -210,7 +210,7 @@ import {
 import type { SlackMessageQuery, SlackTypedMessage } from '../slack/turn-jobs.ts';
 import { approvedNewKeyedApiConnections, CONNECTION_APPROVAL_WINDOW_MS } from './connection-approval.ts';
 import type { IssuedSetup, SetupDelivery } from './slack-key-setup.ts';
-import { setupWakeAgent } from './setup-wake.ts';
+import { isConnectionSetup, setupWakeAgent } from './setup-wake.ts';
 import {
   assertPathInsideConnection,
   assertScopeInsideConnection,
@@ -8816,12 +8816,17 @@ function setupDelivery({ record, delivery }: IssuedSetup): Pick<ManagementItemOu
 }
 
 /**
- * A setup link whose completion wakes this Agent (setupWakeAgent): it says
- * it will carry on by itself, never that the person should come back.
+ * A setup link whose completion wakes this Agent (setupWakeAgent) says it
+ * will carry on by itself, never that the person should come back. Any other
+ * connection link, such as one a coding agent asked for over MCP, says to
+ * wait for the person before testing: until then there is no key to test.
  */
 function setupWakeInstruction(setup: ManagementSetupRecord): { instruction?: string } {
-  return setupWakeAgent(setup)
-    ? { instruction: 'Give the person this link. When they finish it, Chickpea starts your next turn in this thread with a note saying so, and you test the connection with a real read and carry on with their request. Tell them you will continue as soon as they finish; do not ask them to message you or ask again when they are done.' }
+  if (setupWakeAgent(setup)) {
+    return { instruction: 'Give the person this link. When they finish it, Chickpea starts your next turn in this thread with a note saying so, and you test the connection with a real read and carry on with their request. Tell them you will continue as soon as they finish; do not ask them to message you or ask again when they are done.' };
+  }
+  return isConnectionSetup(setup)
+    ? { instruction: 'Give the person this link. Test the connection only after they finish it: get_operation with this setupOperationId reports status completed.' }
     : {};
 }
 

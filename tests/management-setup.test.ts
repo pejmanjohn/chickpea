@@ -2144,6 +2144,30 @@ test('a setup link issued with a read endpoint checks the key there, not at the 
   }
 });
 
+test('a setup link that wakes no Agent says to test the connection only after the person finishes it', async () => {
+  const f = await tasksSetupStores('setup-mcp-test-after');
+  try {
+    const result = await f.service.applyWorkspaceChanges({
+      context: {
+        userId: f.owner.user.id,
+        membershipId: f.owner.membership.id,
+        organizationId: f.owner.membership.organizationId,
+        origin: { kind: 'mcp', clientId: 'codex' },
+      },
+      idempotencyKey: 'setup-mcp-test-after',
+      operations: [{ itemId: 'setup', kind: 'request_setup', target: { kind: 'api_connection', agentId: f.agent.id, connectionId: 'tasks' } }],
+    });
+    requireMutationResult(result);
+    const [outcome] = result.outcomes;
+    assert.equal(outcome?.disposition, 'setup_required', JSON.stringify(result));
+    assert.ok(outcome?.setupUrl);
+    assert.equal(outcome?.instruction,
+      'Give the person this link. Test the connection only after they finish it: get_operation with this setupOperationId reports status completed.');
+  } finally {
+    f.close();
+  }
+});
+
 test('request_setup refuses a check path outside the connection and issues no link', async () => {
   for (const [index, path] of ['/v2/tasks', '/v10', '/v1/../admin'].entries()) {
     const f = await tasksSetupStores(`setup-check-path-outside-${index}`);

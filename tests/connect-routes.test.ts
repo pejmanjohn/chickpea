@@ -210,6 +210,45 @@ test('a client that loads servers per thread gets a new thread, not a restart', 
   assert.doesNotMatch(body, /restart the session|next start/i, 'nothing tells the person to restart');
 });
 
+// Production 2026-11-06: Codex printed its sign-in URL and opened the browser.
+// The agent showed the printed URL too; the second open landed on a dead
+// loopback callback after the first had already signed in.
+test('sign-in uses the tab the client opened and never relays its single-use URL', async () => {
+  const body = await (await connectMd(`${ORIGIN}/connect.md`)).text();
+  const step3 = body.slice(body.indexOf('## 3.'), body.indexOf('## 4.'));
+
+  assert.match(step3, /single-use/);
+  assert.match(step3, /already opened it in the browser/);
+  assert.match(step3, /Do not show the URL to the person unless the command reports that it could not open the browser/);
+  assert.match(step3, /Wait for the command to finish before you report anything/);
+  const leftover = step3.split('\n\n').find((paragraph) => /127\.0\.0\.1/.test(paragraph));
+  assert.ok(leftover, 'a leftover-tab note');
+  assert.equal(leftover.split(/(?<=\.) /).length, 1, 'the leftover-tab note is one sentence');
+
+  const codex = CONNECT_CLIENTS.find((client) => client.id === 'codex')!;
+  assert.match(codex.login, /Browser launch failed/);
+  assert.match(codex.login, /Successfully logged in/);
+});
+
+// Measured 2026-11-06: reopening the same Codex thread after an app restart
+// loads the server and keeps the thread's history.
+test('step 4 offers reopening a restored thread, after the new-thread default', async () => {
+  const body = await (await connectMd(`${ORIGIN}/connect.md`)).text();
+  const step4 = body.slice(body.indexOf('## 4.'), body.indexOf('## 5.'));
+  const paste = step4.indexOf('Call Chickpea\'s inspect_workspace');
+  const reopen = step4.search(/restarting the app and reopening this thread also works/);
+  assert.ok(paste >= 0 && reopen > paste, 'the paste line stays the default; reopening comes after it');
+  assert.match(step4, /keeps the conversation/);
+  assert.match(step4, /\(Codex\)/);
+});
+
+test('step 5 warns that the first Chickpea call may ask for approval', async () => {
+  const body = await (await connectMd(`${ORIGIN}/connect.md`)).text();
+  const step5 = body.slice(body.indexOf('## 5.'), body.indexOf('## 6.'));
+  assert.match(step5, /first Chickpea call may show an approval prompt/);
+  assert.match(step5, /ask the person to approve it/);
+});
+
 const CLAUDE_LINK = 'https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Chickpea&connectorUrl=https%3A%2F%2Fchickpea.example.test%2Fmcp';
 const CLAUDE_ORGANIZATION_LINK = 'https://claude.ai/admin-settings/connectors?modal=add-custom-connector&connectorName=Chickpea&connectorUrl=https%3A%2F%2Fchickpea.example.test%2Fmcp';
 

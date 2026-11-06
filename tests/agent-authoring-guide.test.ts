@@ -498,3 +498,16 @@ test('the deployed MCP verifier stays pinned to the canonical guide version', as
     `const AGENT_AUTHORING_GUIDE_VERSION = '${AGENT_AUTHORING_GUIDE_VERSION}';`,
   ));
 });
+
+// Production 2026-11-06: a coding agent ran test_connection while the key's
+// setup link was still pending, so the test had no key to check.
+test('a new connection is tested only after the person finishes its setup link', () => {
+  assert.match(AGENT_AUTHORING_GUIDE,
+    /Test a new connection only after the person finishes its setup link: `get_operation` with the `setupOperationId` reports `status` `completed`\./);
+  for (const surface of ['slack', 'mcp'] as const) {
+    assert.match(workspaceManagementToolDescription('test_connection', surface),
+      /After request_setup, call it only once get_operation reports the setup completed\./, surface);
+    assert.match(workspaceManagementToolDescription('get_operation', surface),
+      /a setup link's status by its setupOperationId/, surface);
+  }
+});

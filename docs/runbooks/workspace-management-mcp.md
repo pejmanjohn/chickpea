@@ -79,8 +79,11 @@ Add a remote/custom MCP server in the client and use the exact Chickpea deployme
 
 Use one authorization tab and keep the initiating command running until it
 reports a result. `codex mcp add` can start OAuth itself; run `codex mcp login`
-only if sign-in is still needed after `add` finishes. Use the tab the client
-opens. Open its printed URL once only if no tab opened.
+only if sign-in is still needed after `add` finishes. Codex both opens the
+browser and prints the authorization URL, and a coding agent's shell tool shows
+that output to the model. The URL is single-use: `/connect.md` tells the agent
+not to show it to the person unless the command prints "Browser launch failed",
+and to wait for "Successfully logged in" before it reports anything.
 
 The MCP client owns its loopback callback page. Codex 0.154.0 responds to the
 first callback with a completion message and then closes the listener after
