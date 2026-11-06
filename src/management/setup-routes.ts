@@ -3258,7 +3258,7 @@ function unavailablePage(c: Context): Response {
   }), 410);
 }
 
-/** A link whose connection changed since it was issued can never finish; only a new link can. */
+/** A link whose target changed since it was issued can never finish; only a new link can. */
 function staleLinkPage(c: Context, setup: ManagementSetupRecord, status: 410 | 422): Response {
   return c.html(renderSetupPanelPage({
     title: 'Setup link out of date',
