@@ -17568,7 +17568,7 @@ test('Scheduled Work explains legacy names that cannot be safely projected', asy
   assert.match(harness.app.innerHTML, /id="scheduled-summary-title">Name unavailable<\/h2>/);
 });
 
-test('Scheduled run usage includes cached input without double counting or inventing missing usage', async () => {
+test('Scheduled run usage names cache reads and cache writes apart, without double counting or inventing missing usage', async () => {
   const usageCases = [
     { id: 'fully_cached', inputTokens: 0, outputTokens: 48, cacheReadTokens: 3500, cacheWriteTokens: 0 },
     { id: 'historical_ledger', inputTokens: 3, outputTokens: 45, cacheReadTokens: null, cacheWriteTokens: null, usage: { source: 'usage_ledger', available: true, measurements: [{ inputTokens: 3, outputTokens: 45, cacheReadTokens: 4482, cacheWriteTokens: 0, totalTokens: 4530, usageCompleteness: 'complete' }] } },
@@ -17591,13 +17591,14 @@ test('Scheduled run usage includes cached input without double counting or inven
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'scheduled-detail-tab', 'data-tab': 'runs' }) });
   const rows = harness.app.innerHTML.match(/<article class="scheduled-run">[\s\S]*?<\/article>/g) ?? [];
   assert.equal(rows.length, 6);
-  assert.match(rows[0]!, /3548 tokens \(3500 cached input\)/);
+  assert.match(rows[0]!, /3,548 tokens \(3,500 cache reads\)/);
   assert.doesNotMatch(rows[0]!, />48 (?:input|tokens)/);
-  assert.match(rows[1]!, /4530 tokens \(4482 cached input\)/);
-  assert.match(rows[2]!, /2451 tokens \(2300 cached input\)/);
-  assert.match(rows[3]!, /1500 reported tokens/);
+  assert.match(rows[1]!, /4,530 tokens \(4,482 cache reads\)/);
+  assert.match(rows[2]!, /2,451 tokens \(2,000 cache reads, 300 cache writes\)/);
+  assert.match(rows[3]!, /1,500 reported tokens</);
   assert.match(rows[4]!, /Usage unavailable/);
-  assert.match(rows[5]!, /1051 reported tokens \(1000 cached input\)/);
+  assert.match(rows[5]!, /1,051 reported tokens \(1,000 cache reads\)/);
+  assert.doesNotMatch(rows.join(''), /cached input|\b0 cache (?:reads|writes)/);
 });
 
 test('Scheduled Work detail separates overview, routine runs, and routine activity', async () => {
@@ -17645,7 +17646,7 @@ test('Scheduled Work detail separates overview, routine runs, and routine activi
   assert.match(harness.app.innerHTML, /Run history for this routine/);
   assert.match(harness.app.innerHTML, /flue_run_release_1/);
   assert.match(harness.app.innerHTML, /access_hash_123/);
-  assert.match(harness.app.innerHTML, /1500 tokens/);
+  assert.match(harness.app.innerHTML, /1,500 tokens/);
   assert.match(harness.app.innerHTML, /Open message/);
   assert.doesNotMatch(harness.app.innerHTML, /Source Slack request/);
 
@@ -17803,7 +17804,9 @@ test('Usage shows concise spend, expanded token columns, and non-interactive act
   assert.match(html, /data-tooltip="Activity includes each Slack message Chickpea responds to and each scheduled routine run\."/);
   assert.match(html, />Input tokens<\/th><th class="number">Cached input<\/th><th class="number">Output tokens<\/th><th class="number">Total tokens<\/th>/);
   assert.match(html, /<td class="number">1,200<\/td><td class="number">500<\/td><td class="number">300<\/td><td class="number">2,000<\/td>/);
-  assert.match(html, /class="usage-token-total" tabindex="0" data-tooltip="1,000 input · 500 cached input · 250 output"[^>]*>1,750<\/span>/);
+  assert.match(html, /class="usage-token-total" tabindex="0" data-tooltip="1,000 input · 500 cache reads · 0 cache writes · 250 output"[^>]*>1,750<\/span>/);
+  assert.match(html, /<span class="usage-card-label">Tokens<\/span><span class="usage-card-value">2,000<\/span><span class="hint">1,200 input · 400 cache reads · 100 cache writes · 300 output<\/span>/);
+  assert.match(html, /Hover over total tokens to see the input, cache read, cache write, and output split\./);
   assert.match(html, /Direct message/);
   assert.doesNotMatch(html, /Interaction classification|op_classification_fixture/);
   assert.doesNotMatch(html, /data-action="usage-select-operation"|Activity details|data-operation="op_usage_fixture"/);

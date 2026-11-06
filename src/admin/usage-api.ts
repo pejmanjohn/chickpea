@@ -5,6 +5,7 @@ import { UsageStateError } from '../usage/store.ts';
 import { COMPOSIO_CONNECTOR_PRICE_VERSION } from '../usage/connectors/pricing.ts';
 import { USAGE_PROVIDER_GUIDANCE } from '../usage/provider-guidance.ts';
 import { RELEASE_PRICE_CATALOGS } from '../usage/pricing/catalog.ts';
+import { estimateByTokenType } from '../usage/pricing/estimate.ts';
 import type {
   UsageFilters,
   UsageGroupBy,
@@ -351,7 +352,7 @@ function publicUsageDetail(
   return {
     projection: 'public',
     operation: publicUsageOperation(detail, channelLabels, slackMessagePath),
-    measurements: detail.measurements,
+    measurements: usageMeasurements(detail),
   };
 }
 
@@ -362,8 +363,15 @@ function redactedUsageDetail(
   return {
     projection: 'redacted',
     operation: redactedUsageOperation(detail, slackMessagePath),
-    measurements: detail.measurements,
+    measurements: usageMeasurements(detail),
   };
+}
+
+function usageMeasurements(detail: UsageOperationDetail) {
+  return detail.measurements.map((measurement) => ({
+    ...measurement,
+    estimateByTokenType: estimateByTokenType(measurement),
+  }));
 }
 
 function usageOperationBase(
