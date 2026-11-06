@@ -521,7 +521,6 @@ test('a handle edit racing Slack creation converges on one updated user group', 
   }
 });
 
-// An Agent description longer than Slack allows, as a coding agent might write it.
 const LONG_DESCRIPTION = 'Answers questions about the support queue, drafts replies for the team, '
   + 'escalates urgent tickets to the on-call engineer, and keeps a running summary of open incidents '
   + 'so anyone joining the Channel can catch up quickly.';
