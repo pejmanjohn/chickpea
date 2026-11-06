@@ -41,7 +41,7 @@ export interface ConnectClient {
   language: 'bash' | 'json';
   /** How to start sign-in once the server is configured. */
   login: string;
-  /** Whether the client usually needs a restart or reload to see a new server. */
+  /** How the client loads a new server: a new thread, a reload, or nothing. */
   restart: string;
 }
 
@@ -56,7 +56,7 @@ export const CONNECT_CLIENTS: readonly ConnectClient[] = Object.freeze([
     language: 'bash',
     snippet: (url) => `claude mcp add --transport http --scope user ${MCP_SERVER_NAME} ${url}`,
     login: `Run \`/mcp\` inside Claude Code, choose \`${MCP_SERVER_NAME}\`, and follow the browser sign-in.`,
-    restart: 'Servers added from the terminal appear in the next Claude Code session. User scope makes it available outside the installation checkout. Use project scope only when explicitly requested.',
+    restart: 'A server added from the terminal loads in a new Claude Code thread or session, not the one already running. User scope makes it available outside the installation checkout. Use project scope only when explicitly requested.',
   },
   {
     id: 'codex',
@@ -65,7 +65,7 @@ export const CONNECT_CLIENTS: readonly ConnectClient[] = Object.freeze([
     language: 'bash',
     snippet: (url) => `codex mcp add ${MCP_SERVER_NAME} --url ${url}`,
     login: `Use the browser tab Codex opens and wait for the command to finish. Run codex mcp login ${MCP_SERVER_NAME} only if sign-in is still needed afterward.`,
-    restart: 'A running Codex session loads the server on its next start.',
+    restart: 'A new Codex thread loads the server; the thread already running does not.',
   },
   {
     id: 'cursor',
@@ -101,7 +101,7 @@ export const CONNECT_CLIENTS: readonly ConnectClient[] = Object.freeze([
     language: 'bash',
     snippet: (url) => `gemini mcp add --transport http ${MCP_SERVER_NAME} ${url}`,
     login: 'Gemini CLI opens the browser sign-in the first time the server is used.',
-    restart: 'The server is available in the next Gemini CLI session.',
+    restart: 'The server is available in a new Gemini CLI session.',
   },
   {
     id: 'json',
@@ -172,9 +172,9 @@ function fence(language: string, body: string): string {
 
 /**
  * The guide the coding agent reads. Written to the agent in the same voice as
- * the install guides: detect the client, write its config, sign in, restart if
- * the client needs it, prove the connection with one read-only call, then ask
- * about the first teammate.
+ * the install guides: detect the client, write its config, sign in, move to a
+ * new thread if the client needs it, prove the connection with one read-only
+ * call, then ask about the first teammate.
  */
 export function connectMarkdown(origin: string, env?: Record<string, unknown>): string {
   const url = connectMcpUrl(origin);
@@ -254,9 +254,9 @@ export function connectMarkdown(origin: string, env?: Record<string, unknown>): 
     '',
     `If the server answers 404 at \`${MCP_RESOURCE_PATH}\` or your client cannot find its OAuth metadata, Chickpea\'s Slack setup is not finished yet. Send the person to ${admin} to finish it, leave the configuration in place, and stop here.`,
     '',
-    '## 4. Restart if your client needs it',
+    '## 4. Start a new thread if your client needs it',
     '',
-    'Most clients load MCP servers at startup. If the server is not listed after you added it, tell the person the one remaining action (restart the session or reload the window) and wait. Do not restart their session yourself, and do not report the connection as working until step 5 succeeds.',
+    'Most clients load MCP servers when a thread or session starts, so the one you are in may not see Chickpea yet. If the server is not listed after you added it, ask the person to start a new thread and paste `Call Chickpea\'s inspect_workspace and tell me the workspace name and who I am signed in as.` That call is the step 5 proof. If they also asked for their first Agent, have them add `Then help me create my first Chickpea Agent.` They do not need to quit or restart the app. An editor that lists servers in a panel (Cursor, Windsurf) may need the window reloaded instead. Do not start the new thread yourself, and do not report the connection as working until step 5 succeeds.',
     '',
     '## 5. Prove the connection',
     '',

@@ -195,6 +195,21 @@ test('the guide names every supported client and proves the connection before cl
   assert.ok(body.includes(`${ORIGIN}/admin`), 'points at Admin to finish setup');
 });
 
+test('a client that loads servers per thread gets a new thread, not a restart', async () => {
+  const body = await (await connectMd(`${ORIGIN}/connect.md`)).text();
+  const step4 = body.slice(body.indexOf('## 4.'), body.indexOf('## 5.'));
+
+  assert.match(step4, /^## 4\. Start a new thread if your client needs it$/m);
+  assert.match(step4, /ask the person to start a new thread/);
+  assert.ok(step4.includes('Call Chickpea\'s inspect_workspace and tell me the workspace name and who I am signed in as.'),
+    'a line to paste into the new thread');
+  for (const id of ['claude-code', 'codex']) {
+    const client = CONNECT_CLIENTS.find((candidate) => candidate.id === id)!;
+    assert.match(client.restart, /new (Claude Code|Codex) thread/, `${client.title} loads the server in a new thread`);
+  }
+  assert.doesNotMatch(body, /restart the session|next start/i, 'nothing tells the person to restart');
+});
+
 const CLAUDE_LINK = 'https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Chickpea&connectorUrl=https%3A%2F%2Fchickpea.example.test%2Fmcp';
 const CLAUDE_ORGANIZATION_LINK = 'https://claude.ai/admin-settings/connectors?modal=add-custom-connector&connectorName=Chickpea&connectorUrl=https%3A%2F%2Fchickpea.example.test%2Fmcp';
 
