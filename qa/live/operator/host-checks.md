@@ -11,7 +11,8 @@ reservations, process inspection, or test suites.
 
 The reservation has two slots, `~/.chickpea/verification-host/owner.json` and
 `~/.chickpea/verification-host/owner-2.json`, so two groups can run at once.
-Checkouts on older code know only `owner.json` and use only that slot. The
+Checkouts on older code know only `owner.json` and use only that slot, so newer
+code takes `owner-2.json` first and leaves `owner.json` free for them. The
 reservation is for work that competes for this host's ports, processes, build
 output or CPU long enough to time out another task's fixtures:
 
