@@ -107,6 +107,21 @@ export const TOP_UP_ON: NonNullable<BillingSummary['autoTopUp']> = {
   card: { brand: 'visa', last4: '4242' },
 };
 
+/**
+ * The Plus plan on models included, bought with an own-key-only coupon: the
+ * host holds its usage for the workspace's own key, so only the trial is left
+ * to spend, and auto top-up is on.
+ */
+export const PLUS_HELD: BillingSummary = {
+  ...NO_PLAN,
+  plan: { key: 'plus', name: 'Plus', priceCents: 10_000 },
+  period: PERIOD,
+  trial: TRIAL_GRANT,
+  autoTopUp: { ...TOP_UP_ON, pack: { rule: 'plan', key: 'extra_usage_100' }, limit: { rule: 'plan', cents: 10_000 } },
+  offers: TOP_UP_OFFERS,
+  heldForOwnKey: { usageMicros: usd(120) },
+};
+
 /** Oct 26 on the $50 plan: $23.40 of its $60 left, auto top-up on. */
 export const STARTER_TOP_UP: BillingSummary = {
   ...STARTER_PLAN,

@@ -111,6 +111,7 @@ const TEAM_STATUS = {
   extraUsage: { remaining: '$40', frozen: false, until: 'Sep 14, 2027', bar: null },
   trial: null,
   ownKeyWithoutPlan: null,
+  heldForOwnKey: null,
   // $112 of the plan and $20 carried over, at 45¢ a typical task; the $40 of extra usage comes after them.
   balance: { left: '$132', tasksLeft: 'about 275', exhausted: false, stage: 'plan' },
   autoTopUp: null,
@@ -228,11 +229,26 @@ test('what is left follows the order usage is spent: the plan\'s usage, what car
   assert.deepEqual(await left({ ...NO_PLAN, extraUsage: { remainingMicros: usd(40), frozen: true, expiresAt: PERIOD.end } }),
     { left: '$0', tasksLeft: '0', exhausted: true, stage: 'plan' }, 'frozen extra usage waits for a plan');
   assert.deepEqual(await left(PLAN_NO_PERIOD), plan('$240', 'about 500'), 'a plan with no meter yet counts its whole usage');
+  assert.deepEqual(await left({ ...PLAN_NO_PERIOD, trial: TRIAL_GRANT, heldForOwnKey: { usageMicros: usd(240) } }), plan('$32.50', 'about 70'),
+    'usage the host holds for an own key is not on its way');
+  assert.deepEqual(await left({ ...PLAN_NO_PERIOD, heldForOwnKey: { usageMicros: usd(90) } }), plan('$150', 'about 325'),
+    'only the part it does not hold is on its way');
+  assert.deepEqual(await left({ ...TEAM_PLAN, heldForOwnKey: { usageMicros: usd(120) } }), plan('$132', 'about 275'), 'a meter counts what was granted');
+  assert.deepEqual((await status(t, { ...PLAN_NO_PERIOD, funding: 'own_key', heldForOwnKey: { usageMicros: usd(240) } })).balance, plan('$240', '800'),
+    'on its own key nothing waits for a switch');
   const ownKey = await status(t, { ...TEAM_PLAN, funding: 'own_key' });
   assert.deepEqual(ownKey.balance, plan('$132', '440'), 'an own key counts tasks exactly');
   assert.deepEqual((ownKey.meter as Record<string, unknown>).tasksUsed, '426');
   assert.deepEqual((ownKey.meter as Record<string, unknown>).tasksIncluded, '800');
   assert.equal((await status(t, OWN_KEY_NO_PLAN)).balance, null, 'an own key with no plan has nothing to spend');
+});
+
+test('usage the host holds for an own key reads with the tasks it covers there, only while the workspace is on models included', async (t) => {
+  const held: BillingSummary = { ...PLAN_NO_PERIOD, heldForOwnKey: { usageMicros: usd(240) } };
+  assert.deepEqual((await status(t, held)).heldForOwnKey, { usage: '$240', tasks: '800' });
+  assert.equal((await status(t, { ...held, funding: 'own_key' })).heldForOwnKey, null);
+  assert.equal((await status(t, { ...held, heldForOwnKey: { usageMicros: usd(0) } })).heldForOwnKey, null);
+  assert.equal((await status(t, PLAN_NO_PERIOD)).heldForOwnKey, null, 'a host that does not report it holds nothing');
 });
 
 test('task counts are exact on an own key, and with models included are a typical task\'s estimate rounded as the pricing page rounds', () => {
