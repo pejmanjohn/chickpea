@@ -717,6 +717,36 @@ test('without the clicked message (the shared gateway), the redraw reads the ans
   assert.deepEqual(drawn.blocks[0], ANSWER_BLOCK);
 }));
 
+test('a direct click keeps a copy of the answer, so a later click without the message reads nothing', async () => withFixture(async (f) => {
+  const surface = await f.surface({ namespace: 'ui', status: 'open', spec: CARD_SPEC });
+  await f.click(surface.id, { userId: 'U2', ...cardClick(surface.id, 1), actionTs: '3008.000000', message: answerMessage(surface.id) });
+  const sent = f.updates().at(-1)!;
+  assert.deepEqual((await f.read(surface.id))?.answerMessage, { ts: CARD_TS, text: sent.text, blocks: sent.blocks });
+
+  await f.click(surface.id, { ...cardClick(surface.id, 4), actionTs: '3008.100000' });
+  assert.equal(f.jobs.length, 3);
+  assert.equal(f.calls.filter(({ operation }) => operation === 'conversations.replies').length, 0);
+  const drawn = redrawnCards(f.updates().at(-1)!, surface.id);
+  assert.deepEqual(drawn.requests, [[], []]);
+  assert.equal(drawn.status.length, 2);
+  assert.deepEqual(drawn.blocks[0], ANSWER_BLOCK);
+  assert.deepEqual(drawn.blocks.at(-1), FOOTER_BLOCK);
+}));
+
+test('two gateway clicks on different cards read the answer once', async () => withFixture(async (f) => {
+  const surface = await f.surface({ namespace: 'ui', status: 'open', spec: CARD_SPEC });
+  f.thread = [
+    { ts: THREAD_TS, user: 'U1', text: 'Which budgets should change?' },
+    { ...answerMessage(surface.id), bot_id: 'BBOT' },
+  ];
+  await f.click(surface.id, { userId: 'U2', ...cardClick(surface.id, 1), actionTs: '3009.000000' });
+  await f.click(surface.id, { ...cardClick(surface.id, 4), actionTs: '3009.100000' });
+  assert.equal(f.jobs.length, 3);
+  assert.equal(f.calls.filter(({ operation }) => operation === 'conversations.replies').length, 1);
+  assert.equal(f.updates().length, 2);
+  assert.equal(redrawnCards(f.updates().at(-1)!, surface.id).status.length, 2);
+}));
+
 test('a card redraw Slack refuses never undoes the click or its turn', async () => withFixture(async (f) => {
   const surface = await f.surface({ namespace: 'ui', status: 'open', spec: CARD_SPEC });
   f.failUpdates = true;

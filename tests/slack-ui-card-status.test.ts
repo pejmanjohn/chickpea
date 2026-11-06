@@ -6,8 +6,10 @@ import { createSlackReadGate, UNGATED_SLACK_READS } from '../src/slack/read-budg
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { checkSlackBlocks } from '../src/slack/ui/block-kit-limits.ts';
 import { createUpdateCardTool } from '../src/slack/ui/card-outcome-tool.ts';
-import { cardSetMessageBlocks, readCardSetMessage, type CardSetMessage } from '../src/slack/ui/card-set-message.ts';
+import { findCard } from '../src/slack/ui/card-set.ts';
+import { cardSetMessageBlocks, readCardSetMessage, redrawCardSet } from '../src/slack/ui/card-set-message.ts';
 import { createDisplayTools } from '../src/slack/ui/display-tools.ts';
+import type { SlackUiMessage } from '../src/slack/ui/interaction-payload.ts';
 import { deliverInteractiveSurfaces, type UiSurfaceMessenger } from '../src/slack/ui/host-surfaces.ts';
 import { validatePresentCards } from '../src/slack/ui/presentation-tools.ts';
 import { renderCardSet, renderCards } from '../src/slack/ui/render-display.ts';
@@ -181,7 +183,7 @@ const ANSWER_BLOCK = { type: 'rich_text', block_id: 'Ab1', elements: [{ type: 'r
 const CHART_BLOCK = { type: 'data_visualization', block_id: 'Ch1', title: 'Spend', chart: { type: 'pie', segments: [{ label: 'A', value: 1 }] } };
 const FOOTER_BLOCK = { type: 'context', block_id: 'Ft1', elements: [{ type: 'mrkdwn', text: 'support · Claude' }] };
 
-function answerMessage(record: UiSurfaceRecord): CardSetMessage {
+function answerMessage(record: UiSurfaceRecord): SlackUiMessage {
   return {
     ts: ANSWER_TS,
     text: 'Two campaigns need a budget change.',
@@ -341,4 +343,177 @@ test('present_cards names its set, so a typed request can be answered with updat
   assert.match(output, new RegExp(`cards ${displaySurfaceId('job1', 1).slice(0, 8)}`));
   const unscoped = createDisplayTools(() => undefined);
   assert.doesNotMatch(unscoped.cards.run({ data: { cards: [{ title: 'Ada' }] }, toolCallId: 'c1' }).output, /cards [a-f0-9]{8}/);
+});
+
+test('a 50-block answer still redraws its card, without the status line that would not fit', () => {
+  const store = new UiSurfaceStoreLogic(openStateDb(':memory:'), () => NOW);
+  const set = store.put(cardSet());
+  const picked = store.claim(pick(set.id, 1), 'ui').surface!;
+  const fillers = Array.from({ length: 46 }, (_, index) => ({ type: 'divider', block_id: `Dv${index}` }));
+  const message = answerMessage(set);
+  const full = { ...message, blocks: [message.blocks[0]!, ...fillers, ...message.blocks.slice(1, 3), FOOTER_BLOCK] };
+  assert.equal(full.blocks.length, 50);
+  const redrawn = cardSetMessageBlocks(full, picked);
+  assert.ok(redrawn, 'the card is redrawn');
+  assert.equal(redrawn.blocks.length, 50);
+  assert.deepEqual(requestButtons(cardsIn(redrawn.blocks, set.id)[0]!), [], 'the clicked card loses its request buttons');
+  assert.deepEqual(statusLines(redrawn.blocks, set.id), [], 'no status line');
+  assert.deepEqual(redrawn.blocks.at(-1), FOOTER_BLOCK);
+});
+
+test('two cards with the same exact title are named by number, never by title', () => {
+  const spec = validatePresentCards({ cards: [
+    { title: 'Campaign A', actions: [{ label: 'Approve' }] },
+    { title: 'Campaign A', actions: [{ label: 'Approve' }] },
+    { title: 'Campaign B', actions: [{ label: 'Approve' }] },
+  ] });
+  assert.equal(findCard(spec, 'Campaign A'), undefined);
+  assert.equal(findCard(spec, '2'), 1);
+  assert.equal(findCard(spec, 'Campaign B'), 2);
+});
+
+// ── the stored copy of the answer ────────────────────────────────────────
+
+const OUTCOME_SCOPE = { workspaceId: 'T1', channelId: 'C1', threadTs: THREAD, agentId: 'agent_a' };
+
+/** A thread that holds the answer, counting each read. */
+function threadClient(message: SlackUiMessage) {
+  const reads: unknown[] = [];
+  return {
+    reads,
+    conversations: {
+      async replies(input: unknown) {
+        reads.push(input);
+        return { ok: true, messages: [{ ts: THREAD, text: 'Which budgets should change?', user: 'U1' }, { ...message, bot_id: 'B1' }] };
+      },
+    },
+  };
+}
+
+async function storedSurface(state: SqliteSlackStateStore, id: string): Promise<UiSurfaceRecord> {
+  const read = await state.executeUiSurface!({ kind: 'get_surface', id });
+  assert.equal(read.kind, 'surface');
+  return (read as { surface: UiSurfaceRecord }).surface;
+}
+
+test('two outcomes within a minute both redraw: the first read leaves a copy of the answer, the second reads nothing', async () => withOutcomeTool(async ({ state, set, ref, tool }) => {
+  const client = threadClient(answerMessage(set));
+  const gate = createSlackReadGate({ state, workspaceId: 'T1', gated: true });
+  const sent: SlackUiMessage[] = [];
+  const redraw = (surface: UiSurfaceRecord) => redrawCardSet({
+    state, surface,
+    read: () => readCardSetMessage(client, gate, surface),
+    update: async (ts, rendered) => { sent.push({ ts, ...rendered }); },
+  });
+  const first = await tool(SCOPE, redraw).run({ data: { cards: ref, card: '1', tone: 'done', text: 'Done, $30/day verified' } });
+  assert.match(first.output, /^Outcome shown on card 1/);
+  assert.deepEqual((await storedSurface(state, set.id)).answerMessage, sent[0], 'the next redraw starts from what was sent');
+
+  const second = await tool(SCOPE, redraw).run({ data: { cards: ref, card: '2', tone: 'failed', text: 'The budget changed since' } });
+  assert.match(second.output, /^Outcome shown on card 2/);
+  assert.equal(client.reads.length, 1, 'one read for both outcomes');
+  assert.equal((await gate.reserve('conversations.replies')).ok, false, 'the read budget was spent by the first');
+  assert.equal(sent.length, 2);
+  const last = sent[1]!;
+  assert.equal(last.ts, ANSWER_TS);
+  assert.equal(last.text, 'Two campaigns need a budget change.');
+  assert.deepEqual(last.blocks[0], ANSWER_BLOCK);
+  assert.deepEqual(last.blocks.slice(-2), [CHART_BLOCK, FOOTER_BLOCK]);
+  const [a, b] = cardsIn(last.blocks, set.id);
+  assert.deepEqual([requestButtons(a!), requestButtons(b!)], [[], []]);
+  assert.equal(statusLines(last.blocks, set.id).length, 2, 'both outcomes show');
+  assert.deepEqual((await storedSurface(state, set.id)).answerMessage, last);
+}));
+
+test('a direct click keeps the clicked message, so a later update_card reads nothing', async () => withOutcomeTool(async ({ state, set, ref, tool }) => {
+  const claimed = await state.executeUiSurface!({
+    kind: 'claim_surface', id: set.id, namespace: 'ui', resolution: { byUserId: 'U2', at: Date.now(), choice: 1 },
+  });
+  const surface = (claimed as { surface: UiSurfaceRecord }).surface;
+  const sent: SlackUiMessage[] = [];
+  const update = async (ts: string, rendered: { text?: string; blocks: Block[] }) => { sent.push({ ts, ...rendered }); };
+  const noRead = async () => assert.fail('a direct click carries its message');
+  assert.equal(await redrawCardSet({ state, surface, clicked: answerMessage(set), read: noRead, update }), true);
+  assert.deepEqual((await storedSurface(state, set.id)).answerMessage, sent[0]);
+
+  const client = threadClient(answerMessage(set));
+  const redraw = (next: UiSurfaceRecord) => redrawCardSet({
+    state, surface: next, read: () => readCardSetMessage(client, UNGATED_SLACK_READS, next), update,
+  });
+  const result = await tool(SCOPE, redraw).run({ data: { cards: ref, card: 'Campaign A', tone: 'done', text: 'Done' } });
+  assert.match(result.output, /^Outcome shown/);
+  assert.equal(client.reads.length, 0);
+  assert.match(statusLines(sent[1]!.blocks, set.id)[0]!, /^:white_check_mark: \*Campaign A\*: Done \(\*Approve\* by <@U2>\)/);
+}));
+
+test('the copy is bound to the set\'s own message, carries over a click, and is never stored over its cap', () => {
+  const store = new UiSurfaceStoreLogic(openStateDb(':memory:'), () => NOW);
+  const set = store.put(cardSet());
+  const message = answerMessage(set);
+  assert.equal(store.bindMessage(set.id, ANSWER_TS, { ...message, ts: '2.000002' })?.answerMessage, undefined,
+    'another message is not this set\'s answer');
+  assert.equal(store.bindMessage(set.id, ANSWER_TS, { ...message, blocks: [ANSWER_BLOCK, FOOTER_BLOCK] })?.answerMessage, undefined,
+    'a message without the set is not its answer');
+  const big = { ...message, blocks: [{ ...ANSWER_BLOCK, block_id: 'Big', elements: [{ type: 'rich_text_section', elements: [{ type: 'text', text: 'x'.repeat(70_000) }] }] }, ...message.blocks.slice(1)] };
+  assert.equal(store.bindMessage(set.id, ANSWER_TS, big)?.answerMessage, undefined, 'over the cap, the read path stays');
+  assert.deepEqual(store.bindMessage(set.id, ANSWER_TS, message)?.answerMessage, message);
+  const picked = store.claim(pick(set.id, 1), 'ui').surface!;
+  assert.deepEqual(picked.answerMessage, message, 'a claim keeps the copy');
+  const done = store.setCardOutcome({ id: set.id, scope: OUTCOME_SCOPE, card: 0, outcome: { tone: 'done', text: 'Done', at: NOW } })!;
+  assert.deepEqual(done.answerMessage, message, 'an outcome keeps the copy');
+  assert.equal(done.cardSettlements?.[0]?.pick?.byUserId, 'U2');
+});
+
+test('a copy over the cap is not stored, and each redraw reads the answer again', async () => withOutcomeTool(async ({ state, set, ref, tool }) => {
+  const message = answerMessage(set);
+  const big = { ...message, blocks: [{ ...ANSWER_BLOCK, elements: [{ type: 'rich_text_section', elements: [{ type: 'text', text: 'x'.repeat(70_000) }] }] }, ...message.blocks.slice(1)] };
+  const client = threadClient(big);
+  const sent: SlackUiMessage[] = [];
+  const redraw = (surface: UiSurfaceRecord) => redrawCardSet({
+    state, surface,
+    read: () => readCardSetMessage(client, UNGATED_SLACK_READS, surface),
+    update: async (ts, rendered) => { sent.push({ ts, ...rendered }); },
+  });
+  await tool(SCOPE, redraw).run({ data: { cards: ref, card: '1', tone: 'done', text: 'Done' } });
+  await tool(SCOPE, redraw).run({ data: { cards: ref, card: '2', tone: 'done', text: 'Done' } });
+  assert.equal(client.reads.length, 2);
+  assert.equal(sent.length, 2);
+  assert.equal((await storedSurface(state, set.id)).answerMessage, undefined);
+}));
+
+test('a set stored before the copy existed reads its answer once, and an older whole-set answer stays closed', async () => withOutcomeTool(async ({ state, set, tool, ref }) => {
+  // An older build resolved the whole set on its first click, and kept no copy.
+  await state.executeUiSurface!({ kind: 'resolve_surface', id: set.id, resolution: { byUserId: 'U2', at: Date.now(), choice: 1 } });
+  const client = threadClient(answerMessage(set));
+  const sent: SlackUiMessage[] = [];
+  const redraw = (surface: UiSurfaceRecord) => redrawCardSet({
+    state, surface,
+    read: () => readCardSetMessage(client, UNGATED_SLACK_READS, surface),
+    update: async (ts, rendered) => { sent.push({ ts, ...rendered }); },
+  });
+  assert.equal(await redraw(await storedSurface(state, set.id)), true);
+  assert.equal(client.reads.length, 1);
+  const kept = await storedSurface(state, set.id);
+  assert.equal(kept.status, 'resolved');
+  assert.deepEqual(kept.answerMessage, sent[0]);
+  const [, b] = cardsIn(sent[0]!.blocks, set.id);
+  assert.deepEqual(requestButtons(b!), [], 'the older build closed every card');
+  await tool(SCOPE, redraw).run({ data: { cards: ref, card: '1', tone: 'done', text: 'Done' } });
+  assert.equal(client.reads.length, 1, 'the outcome redraws from the copy');
+}));
+
+test('update_card refuses a title two cards share', async () => {
+  const state = new SqliteSlackStateStore(':memory:');
+  const spec = validatePresentCards({ cards: [
+    { title: 'Campaign A', actions: [{ label: 'Approve' }] },
+    { title: 'Campaign A', actions: [{ label: 'Approve' }] },
+  ] });
+  const set = cardSet({ spec: { kind: 'cards', cards: spec }, createdAt: Date.now(), updatedAt: Date.now(), expiresAt: Date.now() + WEEK });
+  await state.executeUiSurface!({ kind: 'put_surface', record: set });
+  const tool = createUpdateCardTool({ store: async () => state, scope: SCOPE, redraw: async () => true });
+  await assert.rejects(tool.run({ data: { cards: set.id.slice(0, 8), card: 'Campaign A', tone: 'done', text: 'Done' } }),
+    /Name it by its exact title or its number, 1 to 2\./);
+  const read = await state.executeUiSurface!({ kind: 'get_surface', id: set.id });
+  assert.equal(read.kind === 'surface' && read.surface?.cardSettlements, undefined, 'no card was settled');
+  state.close();
 });
