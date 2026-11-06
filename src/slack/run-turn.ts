@@ -1584,6 +1584,13 @@ async function runTurnAttempt(
   };
   /** What a hosted run review copies, filled in as the turn learns it. */
   const review: SlackRunReview = {};
+  const finishReview = async (outcome: RunReviewOutcome | undefined): Promise<void> => {
+    if (review.session && outcome && reviewRunId !== undefined) {
+      await review.session.finish(
+        slackRunReviewEnding(turn, reviewRunId, assignment.agent.id, options, platformEnv, review, outcome),
+      );
+    }
+  };
   /**
    * `reviewOutcome` differs from `outcome` only for the two Agent endings
    * that report none to `onDelivered`; the copy is made last, after every
@@ -1615,11 +1622,7 @@ async function runTurnAttempt(
       }
     }
     await removeWorkAcknowledgment();
-    if (review.session && reviewOutcome && reviewRunId !== undefined) {
-      await review.session.finish(
-        slackRunReviewEnding(turn, reviewRunId, assignment.agent.id, options, platformEnv, review, reviewOutcome),
-      );
-    }
+    await finishReview(reviewOutcome);
   };
   onNativeStarted = async (): Promise<void> => {
     if (!workChecklistTs || !interactionProgress.checklist ||
@@ -2485,6 +2488,9 @@ async function runTurnAttempt(
         return;
       }
       await options.onDeferredTerminal?.();
+      // The receipt drain posts the welcome from another worker, which holds
+      // none of this copy; the run ended when it queued the welcome.
+      await finishReview('succeeded');
       return;
     }
     // Nothing is posted, and the turn ends like a reaction-only one.
