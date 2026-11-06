@@ -195,19 +195,73 @@ test('the guide names every supported client and proves the connection before cl
   assert.ok(body.includes(`${ORIGIN}/admin`), 'points at Admin to finish setup');
 });
 
-test('a client that loads servers per thread gets a new thread, not a restart', async () => {
-  const body = await (await connectMd(`${ORIGIN}/connect.md`)).text();
-  const step4 = body.slice(body.indexOf('## 4.'), body.indexOf('## 5.'));
+const PROOF_LINE = 'Call Chickpea\'s inspect_workspace and tell me the workspace name and who I am signed in as.';
+const FIRST_AGENT_ADD_ON = /If they asked for their first Agent and no install guide owns the first teammate, they also add `Then help me create my first Chickpea Agent\.`/;
 
-  assert.match(step4, /^## 4\. Start a new thread if your client needs it$/m);
-  assert.match(step4, /ask the person to start a new thread/);
-  assert.ok(step4.includes('Call Chickpea\'s inspect_workspace and tell me the workspace name and who I am signed in as.'),
-    'a line to paste into the new thread');
-  for (const id of ['claude-code', 'codex']) {
-    const client = CONNECT_CLIENTS.find((candidate) => candidate.id === id)!;
-    assert.match(client.restart, /new (Claude Code|Codex) thread/, `${client.title} loads the server in a new thread`);
+function client(id: string) {
+  return CONNECT_CLIENTS.find((candidate) => candidate.id === id)!;
+}
+
+function guideStep(body: string, step: number): string {
+  return body.slice(body.indexOf(`## ${step}.`), body.indexOf(`## ${step + 1}.`));
+}
+
+test('a client that loads servers per session or thread gets a new one, not a restart', async () => {
+  const body = await (await connectMd(`${ORIGIN}/connect.md`)).text();
+  const step4 = guideStep(body, 4);
+
+  assert.match(step4, /^## 4\. Open a new session or thread if your client needs it$/m);
+  assert.match(step4, /Codex: start a new thread\./);
+  assert.ok(step4.includes(`\`${PROOF_LINE}\``), 'a line to paste into the new session or thread');
+  assert.match(client('claude-code').restart, /new Claude Code session/);
+  assert.doesNotMatch(client('claude-code').restart, /thread/, 'Claude Code has sessions, not threads');
+  assert.match(client('codex').restart, /new Codex thread/);
+  assert.doesNotMatch(body, /restart the session|next start|do not need to quit/i, 'nothing tells the person to restart, or that quitting is never needed');
+});
+
+// The old conversation never sees step 5: the pasted check runs in the new one.
+test('step 4 is a list that reports Tested as pending and stops', async () => {
+  const step4 = guideStep(await (await connectMd(`${ORIGIN}/connect.md`)).text(), 4);
+  const items = step4.split('\n').filter((line) => /^\d\. /.test(line));
+  assert.equal(items.length, 5, step4);
+  assert.match(items[0]!, /Cursor, VS Code, or Windsurf.*go to step 5 in this conversation/);
+  assert.match(items[1]!, /Report the three step 5 lines now, with Tested as pending/);
+  assert.equal(items.at(-1), '5. Stop. Do not open the new session or thread yourself.');
+});
+
+// A new terminal session is the same command run again, and the resume flag
+// keeps the conversation (claude --help, gemini --help).
+test('terminal clients rerun their command, and the resume flag keeps the conversation', async () => {
+  const step4 = guideStep(await (await connectMd(`${ORIGIN}/connect.md`)).text(), 4);
+  assert.match(step4, /Claude Code or Gemini CLI in a terminal: exit, then run `claude` or `gemini` again in the same directory\. `claude --continue` or `gemini --resume latest` resumes this conversation with Chickpea loaded\./);
+  assert.match(client('claude-code').restart, /`claude --continue` in the same directory resumes this conversation/);
+  assert.match(client('gemini-cli').restart, /`gemini --resume latest` in the same directory resumes this conversation/);
+});
+
+// Gemini CLI 0.36 /mcp reload restarts the servers the session loaded at
+// start; it does not read a server `gemini mcp add` wrote afterward.
+test('Gemini CLI\'s /mcp reload is named for what it reloads', () => {
+  assert.match(client('gemini-cli').restart, /`\/mcp reload` reconnects the servers the session already has and does not load a new one\./);
+});
+
+// Claude Code 2.1.311 `claude mcp login` stops without a terminal on stdin,
+// and a running session does not list a server added from the terminal.
+test('Claude Code signs in with claude mcp login in the person\'s terminal, /mcp as the fallback', () => {
+  const login = client('claude-code').login;
+  assert.match(login, /^Run `claude mcp login chickpea` in a terminal\./);
+  assert.match(login, /prints `Authenticated with "chickpea"\.`/);
+  assert.match(login, /It needs an interactive terminal\. From a coding agent's shell tool it stops with "stdin isn't a terminal", so the agent asks the person to run it\./);
+  assert.match(login, /A Claude Code session that lists `chickpea` can sign in from `\/mcp` instead\./);
+});
+
+test('both hand-off paths ask for the first Agent the same way, unless an install guide owns it', async () => {
+  const body = await (await connectMd(`${ORIGIN}/connect.md`)).text();
+  const claudeApp = body.slice(body.indexOf('### Claude app'), body.indexOf('### Every other client'));
+  for (const [name, section] of [['Claude app', claudeApp], ['step 4', guideStep(body, 4)]] as const) {
+    assert.ok(section.includes(`\`${PROOF_LINE}\``), `${name}: the proof line`);
+    assert.match(section, FIRST_AGENT_ADD_ON, `${name}: the first-Agent add-on`);
   }
-  assert.doesNotMatch(body, /restart the session|next start/i, 'nothing tells the person to restart');
+  assert.match(claudeApp, /Report the three step 5 lines now, with Tested as pending.*then stop\./);
 });
 
 // Production 2026-11-06: Codex printed its sign-in URL and opened the browser.
@@ -233,13 +287,10 @@ test('sign-in uses the tab the client opened and never relays its single-use URL
 // Measured 2026-11-06: reopening the same Codex thread after an app restart
 // loads the server and keeps the thread's history.
 test('step 4 offers reopening a restored thread, after the new-thread default', async () => {
-  const body = await (await connectMd(`${ORIGIN}/connect.md`)).text();
-  const step4 = body.slice(body.indexOf('## 4.'), body.indexOf('## 5.'));
-  const paste = step4.indexOf('Call Chickpea\'s inspect_workspace');
-  const reopen = step4.search(/restarting the app and reopening this thread also works/);
-  assert.ok(paste >= 0 && reopen > paste, 'the paste line stays the default; reopening comes after it');
-  assert.match(step4, /keeps the conversation/);
-  assert.match(step4, /\(Codex\)/);
+  const step4 = guideStep(await (await connectMd(`${ORIGIN}/connect.md`)).text(), 4);
+  const newThread = step4.indexOf('Codex: start a new thread.');
+  const reopen = step4.search(/Restarting the app and reopening this thread also works and keeps the conversation\./);
+  assert.ok(newThread >= 0 && reopen > newThread, 'a new thread stays the default; reopening comes after it');
 });
 
 test('step 5 warns that the first Chickpea call may ask for approval', async () => {

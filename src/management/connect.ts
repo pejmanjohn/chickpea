@@ -41,7 +41,7 @@ export interface ConnectClient {
   language: 'bash' | 'json';
   /** How to start sign-in once the server is configured. */
   login: string;
-  /** How the client loads a new server: a new thread, a reload, or nothing. */
+  /** How the client loads a new server: a new session or thread, a reload, or nothing. */
   restart: string;
 }
 
@@ -55,8 +55,8 @@ export const CONNECT_CLIENTS: readonly ConnectClient[] = Object.freeze([
     where: 'terminal',
     language: 'bash',
     snippet: (url) => `claude mcp add --transport http --scope user ${MCP_SERVER_NAME} ${url}`,
-    login: `Run \`/mcp\` inside Claude Code, choose \`${MCP_SERVER_NAME}\`, and follow the browser sign-in.`,
-    restart: 'A server added from the terminal loads in a new Claude Code thread or session, not the one already running. User scope makes it available outside the installation checkout. Use project scope only when explicitly requested.',
+    login: `Run \`claude mcp login ${MCP_SERVER_NAME}\` in a terminal. It opens the browser sign-in and prints \`Authenticated with "${MCP_SERVER_NAME}".\` when it finishes. It needs an interactive terminal. From a coding agent's shell tool it stops with "stdin isn't a terminal", so the agent asks the person to run it. A Claude Code session that lists \`${MCP_SERVER_NAME}\` can sign in from \`/mcp\` instead.`,
+    restart: 'A server added from the terminal loads when a new Claude Code session starts, not in the session already running. In a terminal, exit and run `claude` again. `claude --continue` in the same directory resumes this conversation with Chickpea loaded. User scope makes it available outside the installation checkout. Use project scope only when explicitly requested.',
   },
   {
     id: 'codex',
@@ -101,7 +101,7 @@ export const CONNECT_CLIENTS: readonly ConnectClient[] = Object.freeze([
     language: 'bash',
     snippet: (url) => `gemini mcp add --transport http ${MCP_SERVER_NAME} ${url}`,
     login: 'Gemini CLI opens the browser sign-in the first time the server is used.',
-    restart: 'The server is available in a new Gemini CLI session.',
+    restart: 'A server added from the terminal loads when a new Gemini CLI session starts. In a terminal, exit and run `gemini` again. `gemini --resume latest` in the same directory resumes this conversation. `/mcp reload` reconnects the servers the session already has and does not load a new one.',
   },
   {
     id: 'json',
@@ -166,15 +166,23 @@ export function firstAgentPrompt(origin: string): string {
   return `${connectPrompt(origin)}, then help me create my first Chickpea Agent.`;
 }
 
+/**
+ * What the person pastes where Chickpea is loaded, and what the agent reports
+ * before it stops. Shared by the Claude app path and step 4, because the old
+ * conversation never sees step 5.
+ */
+const HAND_OFF_PASTE = 'paste `Call Chickpea\'s inspect_workspace and tell me the workspace name and who I am signed in as.` That call is the step 5 proof. If they asked for their first Agent and no install guide owns the first teammate, they also add `Then help me create my first Chickpea Agent.`';
+const HAND_OFF_REPORT = 'Report the three step 5 lines now, with Tested as pending';
+
 function fence(language: string, body: string): string {
   return `\`\`\`${language}\n${body}\n\`\`\``;
 }
 
 /**
  * The guide the coding agent reads. Written to the agent in the same voice as
- * the install guides: detect the client, write its config, sign in, move to a
- * new thread if the client needs it, prove the connection with one read-only
- * call, then ask about the first teammate.
+ * the install guides: detect the client, write its config, sign in, hand off
+ * to a new session or thread if the client needs it, prove the connection
+ * with one read-only call, then ask about the first teammate.
  */
 export function connectMarkdown(origin: string, env?: Record<string, unknown>): string {
   const url = connectMcpUrl(origin);
@@ -232,7 +240,8 @@ export function connectMarkdown(origin: string, env?: Record<string, unknown>): 
     `- Give them this link. It opens Claude's Add custom connector dialog with Chickpea filled in: ${claudeConnectorLink(url)}`,
     `- On a Claude Team or Enterprise plan, only an Owner can add connectors. An Owner uses this link instead to add Chickpea for the whole organization: ${claudeConnectorLink(url, 'organization')} A member asks an Owner to do that, then finds Chickpea under Customize → Connectors.`,
     '- Ask them to click Add, then Connect, sign in with Slack, and click Allow.',
-    '- Ask them to start a new conversation, which loads the connector, and paste `Call Chickpea\'s inspect_workspace and tell me the workspace name and who I am signed in as.` That call is the step 5 proof. Steps 3 and 4 do not apply here.',
+    `- Ask them to start a new conversation, which loads the connector, and ${HAND_OFF_PASTE}`,
+    `- ${HAND_OFF_REPORT} until the new conversation runs the check, then stop. Steps 3 and 4 do not apply here.`,
     '',
     '### Every other client',
     '',
@@ -254,9 +263,18 @@ export function connectMarkdown(origin: string, env?: Record<string, unknown>): 
     '',
     `If the server answers 404 at \`${MCP_RESOURCE_PATH}\` or your client cannot find its OAuth metadata, Chickpea\'s Slack setup is not finished yet. Send the person to ${admin} to finish it, leave the configuration in place, and stop here.`,
     '',
-    '## 4. Start a new thread if your client needs it',
+    '## 4. Open a new session or thread if your client needs it',
     '',
-    'Most clients load MCP servers when a thread or session starts, so the one you are in may not see Chickpea yet. If the server is not listed after you added it, ask the person to start a new thread and paste `Call Chickpea\'s inspect_workspace and tell me the workspace name and who I am signed in as.` That call is the step 5 proof. If they also asked for their first Agent, have them add `Then help me create my first Chickpea Agent.` They do not need to quit or restart the app. In a client that restores threads (Codex), restarting the app and reopening this thread also works and keeps the conversation. An editor that lists servers in a panel (Cursor, Windsurf) may need the window reloaded instead. Do not start the new thread yourself, and do not report the connection as working until step 5 succeeds.',
+    'Most clients load MCP servers only when a session or thread starts, so the one you are in may not see Chickpea yet. If you cannot call Chickpea\'s tools after sign-in, do these steps in order:',
+    '',
+    '1. If your client is Cursor, VS Code, or Windsurf, ask the person to do what its Loading line above says, then go to step 5 in this conversation.',
+    `2. ${HAND_OFF_REPORT} until the new session or thread runs the check.`,
+    '3. Tell the person how to load Chickpea:',
+    '   - Claude Code or Gemini CLI in a terminal: exit, then run `claude` or `gemini` again in the same directory. `claude --continue` or `gemini --resume latest` resumes this conversation with Chickpea loaded.',
+    '   - Codex: start a new thread. Restarting the app and reopening this thread also works and keeps the conversation.',
+    '   - Any other client: start a new session or thread.',
+    `4. Ask them to ${HAND_OFF_PASTE}`,
+    '5. Stop. Do not open the new session or thread yourself.',
     '',
     '## 5. Prove the connection',
     '',
