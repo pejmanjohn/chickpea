@@ -277,13 +277,15 @@ export async function reconcileSlackPublicContextMutation(
     rootTs,
   )).find((entry) => entry.messageTs === messageTs);
   if (!existing) return true;
+  // The delivery path records every message an Agent posts or updates, with
+  // the files it shared. Slack's copy only adds rendering, and the notice
+  // that attaches a reply's file, marked edited, may not describe the file,
+  // so a rewrite from it would drop the image the delivery recorded.
+  if (existing.role === 'agent') return true;
   // Slack also sends message_changed for link previews and reply counts.
   // Without an edit, nothing the record holds changed: keep its version.
-  // An Agent's row never matches Slack's rendered copy of its reply, and
-  // the notice that attaches the reply's file may not describe it, so a
-  // rewrite would drop the image the delivery recorded.
-  if (!message?.edited && (existing.role === 'agent' ||
-      (existing.text === text && sameFileNames(existing.files ?? [], files)))) return true;
+  if (!message?.edited && existing.text === text &&
+      sameFileNames(existing.files ?? [], files)) return true;
   await store.putSlackPublicContext({
     workspaceId,
     channelId: event.channel,
