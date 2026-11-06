@@ -1184,6 +1184,40 @@ test('a catalog reconnect link keeps its account\'s owner: the other owner is re
   }
 });
 
+test('a catalog reconnect link still completes after an unrelated Agent edit', async () => {
+  const h = await catalogReconnectHarness({
+    suffix: 'catalog-reconnect-agent-edit',
+    providerId: 'stripe',
+    label: 'Stripe',
+    role: 'admin',
+    policy: {
+      kind: 'mcp',
+      url: 'https://mcp.stripe.com/',
+      transport: 'streamable-http',
+      authMode: 'bearer',
+      headerNames: [],
+      discoveredTools: [{ name: 'original_tool' }],
+      allowedTools: ['original_tool'],
+      presetId: 'stripe',
+    },
+  });
+  try {
+    const link = await h.openLink();
+    const agent = await h.config.getAgent('agent_reconnect');
+    await h.config.updateAgent(agent.id, { description: 'Answers billing questions.' }, agent.revision);
+    const reconnected = await authorize(h.app, link.setupId, link.cookie, {
+      ownerKind: 'team',
+      credential: 'replacement-token',
+    });
+    assert.equal(reconnected.status, 200, await reconnected.clone().text());
+    assert.deepEqual(await reconnected.json(), { completed: true });
+    assert.equal(await resolveConnectionAccountSecret({ secretRefId: h.secretRefId }, undefined, h.settings),
+      'replacement-token');
+  } finally {
+    h.close();
+  }
+});
+
 test('a Meta Ads reconnect link shows the access the account already has, locked', async () => {
   for (const [oauthScope, access] of [
     [META_ADS_OAUTH_MANAGEMENT_SCOPE, 'editing'],
