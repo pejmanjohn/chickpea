@@ -45,6 +45,11 @@ import {
 import { storedCredentialMetadata } from '../src/config/model-credential-refs.ts';
 import { OPENAI_API_IMAGE_DEFAULT_MODEL_ID } from '../src/config/initial-image-default.ts';
 import { GITHUB_SETTING_KEYS } from '../src/config/github-app.ts';
+import {
+  AgentConnectionCredentialConflictError,
+  AgentRevisionConflictError,
+  ConnectionAccountRevisionConflictError,
+} from '../src/config/errors.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
@@ -52,7 +57,7 @@ import { CONNECTOR_PAGE_FONTS, fontFaceCss } from '../src/assets/fonts.ts';
 import { formatManagementSetupReceipt, type SetupWakeRequest } from '../src/management/receipts.ts';
 import { WorkspaceManagementService } from '../src/management/service.ts';
 import { applyWorkspaceChangesValibotSchema, applyWorkspaceChangesZodSchema } from '../src/management/schemas.ts';
-import { createManagementSetupRoutes } from '../src/management/setup-routes.ts';
+import { createManagementSetupRoutes, safeFailureCode } from '../src/management/setup-routes.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
 import {
   ManagementError,
@@ -2623,6 +2628,8 @@ test('an API OAuth setup stores its client on the connection account and marks i
     const authorization = new URL(started.headers.get('location')!);
     assert.equal(authorization.origin, 'https://accounts.google.com');
     assert.equal(authorization.searchParams.get('client_id'), 'client-id.apps.googleusercontent.com');
+    // An Agent edit while the person signs in leaves the link working.
+    await editAgentElsewhere(config, agent.id);
 
     globalThis.fetch = async (input) => {
       const url = String(input instanceof Request ? input.url : input);
@@ -2807,5 +2814,294 @@ test('invalid replacement input is cleared while the prior provider credential s
     management.close();
     settings.close();
     usage.close();
+  }
+});
+
+/** An edit that leaves every connection alone, as `update_agent` fixing a Slack handle does. */
+async function editAgentElsewhere(config: SqliteConfigStore, agentId: string): Promise<void> {
+  const agent = await config.getAgent(agentId);
+  await config.updateAgent(agentId, { description: 'Tracks the team\'s tasks.' }, agent.revision);
+}
+
+test('an MCP key link still saves after an unrelated Agent edit', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => START });
+  const owner = await createSlackOwner(identity, { now: START, suffix: 'mcp-pin-agent-edit' });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const management = new SqliteManagementStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const agent = await config.createAgent({
+      id: 'agent_tracker', name: 'Tracker', creatorMembershipId: owner.membership.id,
+      editPolicy: 'creator_and_admins', instructions: 'Search the tracker.', enabled: true,
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const tracker = await seedConnection({ config, settings }, owner, agent.id, {
+      providerId: 'tracker',
+      label: 'Tracker',
+      policy: {
+        kind: 'mcp',
+        url: 'https://mcp.tracker.example/mcp',
+        transport: 'streamable-http',
+        authMode: 'bearer',
+        headerNames: [],
+        discoveredTools: [{ name: 'search' }],
+        allowedTools: ['search'],
+      },
+    });
+    const service = new WorkspaceManagementService({
+      identity, config, management, setupBaseUrl: 'http://localhost', now: () => START,
+      randomId: () => 'mcp_pin_agent_edit', randomCapability: () => CAPABILITY,
+    });
+    const setupId = await requestConnectionSetup(service, owner, {
+      kind: 'mcp_connection', agentId: agent.id, connectionId: 'tracker',
+    });
+    const app = createManagementSetupRoutes({
+      management, config, settings, identity,
+      now: () => START,
+      authenticatePrincipal: async () => browserPrincipal(owner),
+      deliverReceipt: async () => ({ deliveryRef: 'mcp:receipt' }),
+      discoverMcp: async () => ({ tools: [{ name: 'search' }] }),
+      identifyMcp: async () => undefined,
+    });
+    const cookie = await claimSetup(app, setupId);
+    await editAgentElsewhere(config, agent.id);
+
+    const saved = await postSetupForm(app, setupId, 'complete', cookie, { bearerToken: 'tracker-token' });
+    assert.equal(saved.status, 303, await saved.clone().text());
+    assert.equal(await storedSecret(settings, tracker), 'tracker-token');
+    assert.equal((await currentAccount(config, tracker)).lifecycle, 'ready');
+    assert.equal((await management.getSetup(setupId))?.status, 'completed');
+  } finally {
+    identity.close();
+    config.close();
+    management.close();
+    settings.close();
+  }
+});
+
+test('an API key link still saves after an unrelated Agent edit', async () => {
+  const f = await claimedTasksSetup('api-pin-agent-edit');
+  try {
+    await editAgentElsewhere(f.config, f.agent.id);
+    const saved = await withConnectionNetwork(() => Response.json({ data: [] }), async () =>
+      postSetupForm(f.app, f.setupId, 'complete', f.cookie, { credential: 'sk-after-edit' }));
+    assert.equal(saved.status, 303, await saved.clone().text());
+    assert.equal(await storedSecret(f.settings, f.tasks), 'sk-after-edit');
+    assert.equal((await currentAccount(f.config, f.tasks)).lifecycle, 'ready');
+  } finally {
+    f.close();
+  }
+});
+
+/** Asserts the page says the link is out of date, offers no form, and saved nothing. */
+async function assertStaleLink(
+  f: Awaited<ReturnType<typeof claimedTasksSetup>>,
+  response: Response,
+): Promise<void> {
+  assert.equal(response.status, 422, await response.clone().text());
+  for (const html of [
+    await response.text(),
+    await (await f.app.request(`http://localhost/setup/${f.setupId}`, { headers: { cookie: f.cookie } })).text(),
+  ]) {
+    assert.match(html, /<h1>This setup link is out of date<\/h1>/);
+    assert.match(html, /Ask the Agent or coding agent that sent it for a new link\./);
+    assert.doesNotMatch(html, /try again/i);
+    assert.doesNotMatch(html, /<form/);
+  }
+  assert.equal(await storedSecret(f.settings, f.tasks), undefined);
+  assert.equal((await f.management.getSetup(f.setupId))?.failureCode, 'target_changed');
+}
+
+test('an API key link refuses once the connection it writes has changed, and says to ask for a new one', async () => {
+  const changes: Array<[string, (f: Awaited<ReturnType<typeof claimedTasksSetup>>) => Promise<void>]> = [
+    ['revoked', async (f) => {
+      const current = await currentAccount(f.config, f.tasks);
+      await f.config.putConnectionAccount({ ...current, lifecycle: 'revoked' }, current.revision);
+    }],
+    ['unbound from the Agent', async (f) => {
+      const binding = await f.config.getAgentConnectionBindingForAccount(f.tasks.id);
+      assert.ok(binding);
+      await f.config.putAgentConnectionBinding({ ...binding, enabled: false });
+    }],
+    ['relabeled', async (f) => {
+      const current = await currentAccount(f.config, f.tasks);
+      await f.config.putConnectionAccount({ ...current, label: 'Tasks (old)' }, current.revision);
+    }],
+    ['pointed at another host', async (f) => {
+      const current = await currentAccount(f.config, f.tasks);
+      await f.config.putConnectionAccount({
+        ...current,
+        policy: { ...TASKS_POLICY, allowedHosts: ['api.elsewhere.example'] },
+      }, current.revision);
+    }],
+    ['switched to OAuth', async (f) => {
+      const current = await currentAccount(f.config, f.tasks);
+      await f.config.putConnectionAccount({
+        ...current,
+        policy: { ...TASKS_POLICY, authMode: 'oauth', oauthProvider: 'google', oauthScopes: ['openid'] },
+      }, current.revision);
+    }],
+  ];
+  for (const [name, change] of changes) {
+    const f = await claimedTasksSetup(`api-pin-${name.toLowerCase().replaceAll(' ', '-')}`);
+    try {
+      await change(f);
+      const refused = await withConnectionNetwork(() => Response.json({ data: [] }), async (requests) => {
+        const response = await postSetupForm(f.app, f.setupId, 'complete', f.cookie, { credential: 'sk-stale' });
+        assert.deepEqual(requests, [], `${name}: no check runs`);
+        return response;
+      });
+      await assertStaleLink(f, refused);
+    } finally {
+      f.close();
+    }
+  }
+});
+
+test('an API key link whose connection already changed opens on the out-of-date page, not the key form', async () => {
+  const f = await claimedTasksSetup('api-pin-stale-on-open');
+  try {
+    const current = await currentAccount(f.config, f.tasks);
+    await f.config.putConnectionAccount({ ...current, label: 'Tasks (old)' }, current.revision);
+    const opened = await f.app.request(`http://localhost/setup/${f.setupId}`, { headers: { cookie: f.cookie } });
+    assert.equal(opened.status, 410);
+    const html = await opened.text();
+    assert.match(html, /<h1>This setup link is out of date<\/h1>/);
+    assert.doesNotMatch(html, /<form/);
+  } finally {
+    f.close();
+  }
+});
+
+test('an API key save that races an unrelated write to its connection can be submitted again on the same link', async () => {
+  const f = await claimedTasksSetup('api-pin-save-race');
+  try {
+    let raced = false;
+    const first = await withConnectionNetwork(async () => {
+      if (!raced) {
+        raced = true;
+        const current = await currentAccount(f.config, f.tasks);
+        await f.config.putConnectionAccount({ ...current }, current.revision);
+      }
+      return Response.json({ data: [] });
+    }, async () => postSetupForm(f.app, f.setupId, 'complete', f.cookie, { credential: 'sk-raced' }));
+    assert.equal(first.status, 422, await first.clone().text());
+    const html = await first.text();
+    assert.doesNotMatch(html, /out of date/);
+    assert.match(html, /<form/);
+    assert.equal((await f.management.getSetup(f.setupId))?.failureCode, 'setup_failed');
+
+    const again = await withConnectionNetwork(() => Response.json({ data: [] }), async () =>
+      postSetupForm(f.app, f.setupId, 'complete', f.cookie, { credential: 'sk-raced' }));
+    assert.equal(again.status, 303, await again.clone().text());
+    assert.equal(await storedSecret(f.settings, f.tasks), 'sk-raced');
+    assert.equal((await currentAccount(f.config, f.tasks)).lifecycle, 'ready');
+  } finally {
+    f.close();
+  }
+});
+
+test('an API key link refuses an archived or deleted Agent and a requester who no longer manages the connection', async () => {
+  const cases: Array<[string, (f: Awaited<ReturnType<typeof tasksSetupStores>>, principal: { role: AuthPrincipal['role'] }) => Promise<void>]> = [
+    ['archived', async (f) => {
+      await f.config.archiveAgent(f.agent.id);
+    }],
+    ['deleted', async (f) => {
+      // The store refuses to delete an Agent that still holds a connection.
+      const account = await currentAccount(f.config, f.tasks);
+      await f.config.putConnectionAccount({ ...account, lifecycle: 'revoked' }, account.revision);
+      const agent = await f.config.getAgent(f.agent.id);
+      assert.equal(await f.config.deleteAgent(agent.id, agent.revision), true);
+    }],
+    ['demoted to Member on a team connection', async (_f, principal) => {
+      principal.role = 'member';
+    }],
+  ];
+  for (const [name, change] of cases) {
+    let principal: AuthPrincipal | undefined;
+    const f = await tasksSetupStores(`api-pin-authority-${name.split(' ')[0]}`, {
+      authenticatePrincipal: async () => principal,
+    });
+    try {
+      principal = browserPrincipal(f.owner);
+      const setupId = await requestConnectionSetup(f.service, f.owner, {
+        kind: 'api_connection', agentId: f.agent.id, connectionId: 'tasks',
+      });
+      const cookie = await claimSetup(f.app, setupId);
+      await change(f, principal);
+      const refused = await withConnectionNetwork(() => Response.json({ data: [] }), async (requests) => {
+        const response = await postSetupForm(f.app, setupId, 'complete', cookie, { credential: 'sk-no-authority' });
+        assert.deepEqual(requests, [], `${name}: no check runs`);
+        return response;
+      });
+      assert.equal(refused.status, 403, `${name}: ${await refused.clone().text()}`);
+      assert.deepEqual(await refused.json(), { error: 'setup_unavailable' });
+      assert.equal(await storedSecret(f.settings, f.tasks), undefined, name);
+    } finally {
+      f.close();
+    }
+  }
+});
+
+test('only a change to what the setup writes is target_changed, not any message naming a revision', () => {
+  assert.equal(safeFailureCode(new Error('target_changed')), 'target_changed');
+  assert.equal(safeFailureCode(new AgentConnectionCredentialConflictError('agent_a', 'api', 'tasks')), 'target_changed');
+  assert.equal(safeFailureCode(new AgentRevisionConflictError('agent_a', 3, 4)), 'target_changed');
+  assert.equal(safeFailureCode(new ConnectionAccountRevisionConflictError('connection_a', 3, 4)), 'target_changed');
+  assert.notEqual(safeFailureCode(new Error('Encrypted credential revision is invalid.')), 'target_changed');
+  assert.notEqual(safeFailureCode(new Error('Flue dispatch target does not match its RuntimePlanV2.')), 'target_changed');
+});
+
+test('a repository link still pins its Agent revision, because the grant it writes lives in the Agent', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => START });
+  const owner = await createSlackOwner(identity, { now: START, suffix: 'repository-pin' });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const management = new SqliteManagementStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const agent = await config.createAgent({
+      id: 'agent_repository_pin', name: 'Repository Agent', creatorMembershipId: owner.membership.id,
+      editPolicy: 'creator_and_admins', instructions: 'Work in the repository.', enabled: true,
+      skills: [], mcpServers: [], apiConnections: [],
+      repositories: [{ id: 'repo_app', installationId: null, accountLogin: 'acme', fullName: 'acme/app', enabled: true }],
+    });
+    const service = new WorkspaceManagementService({
+      identity, config, management, setupBaseUrl: 'http://localhost', now: () => START,
+      randomId: () => 'repository_pin', randomCapability: () => CAPABILITY,
+    });
+    const result = await service.applyWorkspaceChanges({
+      context: {
+        userId: owner.user.id,
+        membershipId: owner.membership.id,
+        organizationId: owner.membership.organizationId,
+        origin: { kind: 'mcp', clientId: 'codex' },
+      },
+      idempotencyKey: 'repository-pin',
+      operations: [{
+        itemId: 'repository',
+        kind: 'request_setup',
+        target: { kind: 'repository_access', agentId: agent.id, repositoryId: 'repo_app' },
+      }],
+    });
+    requireMutationResult(result);
+    const setupId = result.outcomes[0]!.setupOperationId!;
+    const app = createManagementSetupRoutes({
+      management, config, settings, identity,
+      now: () => START,
+      authenticatePrincipal: async () => browserPrincipal(owner),
+    });
+    const cookie = await claimSetup(app, setupId);
+    await config.updateAgent(agent.id, { description: 'Works in acme/app.' }, agent.revision);
+
+    const refused = await postSetupForm(app, setupId, 'authorize', cookie, { organization: 'acme' });
+    assert.equal(refused.status, 422, await refused.clone().text());
+    assert.match(await refused.text(), /<h1>This setup link is out of date<\/h1>/);
+    assert.equal((await management.getSetup(setupId))?.failureCode, 'target_changed');
+    assert.equal(await settings.getSetting(`management.${setupId}.github-state`), undefined);
+  } finally {
+    identity.close();
+    config.close();
+    management.close();
+    settings.close();
   }
 });
