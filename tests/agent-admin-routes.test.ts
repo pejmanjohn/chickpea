@@ -10,6 +10,7 @@ import * as v from 'valibot';
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import type { AgentSnapshotStore } from '../src/config/snapshot-store.ts';
 import { SqliteSettingsStore, type SettingsStore } from '../src/config/settings-store.ts';
+import { SqliteMemoryStateStore } from '../src/memory/store.ts';
 import { UnknownAgentError } from '../src/config/errors.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
@@ -679,6 +680,41 @@ async function createAgent(app: Hono, name = 'Support Triage') {
   assert.equal(response.status, 201);
   return (await response.json()) as { agent: Record<string, any> };
 }
+
+test('the Admin memory editor refuses a credential with a message and keeps the saved memory', async () => {
+  const memory = new SqliteMemoryStateStore(':memory:');
+  const fixture = harness(new FakeTransport(), { memory });
+  try {
+    await createAgent(fixture.app);
+    const url = 'http://localhost/admin/api/agents/agent_support/memory';
+    const put = (body: string, expectedRevision: number) => fixture.app.request(url, {
+      method: 'PUT',
+      headers: auth(),
+      body: JSON.stringify({ expectedRevision, body }),
+    });
+    assert.equal((await put('Escalate refunds over $500.', 0)).status, 200);
+
+    const refused = await put(
+      'Deploy with xoxb-' + '123456789012-123456789012-abcdefghijklmnopqrstuvwxyz',
+      1,
+    );
+    assert.equal(refused.status, 400);
+    const error = await refused.json() as { error: string; message?: string };
+    assert.equal(error.error, 'invalid_request');
+    assert.match(error.message ?? '', /credential/);
+
+    const current = await fixture.app.request(url, { headers: auth() });
+    assert.deepEqual((await current.json() as { memory: unknown }).memory, {
+      agentId: 'agent_support',
+      body: 'Escalate refunds over $500.',
+      revision: 1,
+    });
+  } finally {
+    memory.close();
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
 
 test('Admin Agent creation emits only the committed product milestone', async () => {
   const productEvents: unknown[] = [];
