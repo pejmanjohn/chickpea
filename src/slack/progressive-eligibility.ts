@@ -4,7 +4,6 @@ import type { SlackProgressiveEligibilityReason } from './run-presentations.ts';
 interface ProgressiveEligibilityInput {
   runtimePlan?: RuntimePlanV2;
   operationsEnabled: boolean;
-  memorySelected: boolean;
   recoveryRequired: boolean;
   concurrentAttributionProven: boolean;
   /** Another post-read policy can withhold or replace the model draft. */
@@ -24,7 +23,6 @@ export function decideProgressiveEligibility(
     return { allowed: false, reason: 'operations_disabled' };
   }
   if (input.recoveryRequired) return { allowed: false, reason: 'recovery' };
-  if (input.memorySelected) return { allowed: false, reason: 'memory' };
   if (input.replacementCapable) return { allowed: false, reason: 'other' };
   if (!input.concurrentAttributionProven) {
     return { allowed: false, reason: 'concurrent_join' };

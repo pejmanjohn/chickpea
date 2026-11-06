@@ -646,11 +646,12 @@ agent run failed before completion. Before posting it, Core logs one
 structured `console.warn` object with `event: "chickpea.turn.agent_failure"`,
 `reason: "memory_delivery_lease_rejected"`, the `agentId`, and `stage`:
 `before_run` (refused before the model ran) or `after_run` (refused before the
-answer was delivered). The lease holds while the Agent is enabled, the
-installation is not revoked, the bot delivering the reply is the
-installation's or the Agent's own live app's, the Agent's memory is unchanged
-since the turn read it, and, in a Channel, the Agent's grant stands and both
-the person and that bot are members. A turn whose memory could not be
+answer was delivered). When the answer had begun streaming, the notice
+replaces the streamed message, marked `_Corrected_`. The lease holds while
+the Agent is enabled, the installation is not revoked, the bot delivering the
+reply is the installation's or the Agent's own live app's, the Agent's memory
+is unchanged since the turn read it, and, in a Channel, the Agent's grant
+stands and both the person and that bot are members. A turn whose memory could not be
 prepared is quarantined: its lease always fails, so its line says
 `reason: "memory_quarantined"` instead, and the preceding `memory_metric`
 line with event `quarantine` gives the cause. The turn's preceding

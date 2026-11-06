@@ -37,7 +37,7 @@ Docs: `/agents/memory/`. Record areas: `memory`. Legacy contracts: LC-07.
 - Keep raw memory bodies in private evidence only.
 - Implicit capture must store one bounded preference, not incidental prose. Old memory-footer copy showing up in Slack fails the case.
 - Answer plus remember must still answer the question. Use an exact sentence; an ambiguous "include this marker" prompt once failed for model reasons, not product ones.
-- If memory changes between the read and delivery, the answer is dropped and a failure is posted. Do not edit memory while a case turn is running unless the case tests that.
+- If memory changes between the read and delivery, the answer is dropped and a failure is posted. A streamed answer is replaced by that failure, marked `_Corrected_`. Do not edit memory while a case turn is running unless the case tests that.
 - A stale write reads "That Agent memory changed before this action completed. Try again." in Slack, `revision_conflict` over MCP, and keeps the draft with Load latest in Admin.
-- An Agent with saved memory is not eligible for progressive answer streaming, so streaming cases need an Agent with empty memory.
+- An Agent with saved memory streams its answer like any other Agent: the tail's `Slack presentation finalized` record says `offer: "offered"`.
 - Memory is not private: anyone who can address the Agent can print it. Keep markers short and plain so they never look like credentials.
