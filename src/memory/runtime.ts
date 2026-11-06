@@ -52,7 +52,11 @@ interface PreparedMemoryTurn {
   /** The memory could not be prepared: the turn has none, and its lease always fails. */
   quarantined?: true;
   validateLease(): Promise<boolean>;
-  /** Only for a host acknowledgement after independently verifying an applied receipt. */
+  /**
+   * Only after independently verifying this turn's own applied receipt. Holds
+   * when that write sits directly on the injected snapshot and is still the
+   * live revision: memory another writer changed fails it.
+   */
   validateReceiptLease?(revision: number): Promise<boolean>;
   confirmInjection(): Promise<boolean>;
 }
@@ -198,7 +202,8 @@ export async function prepareMemoryTurn(input: {
       visibilityBarrierAt: null,
       ownerBound: true,
       confirmInjection: async () => true,
-      validateReceiptLease: (revision) => validateAgentMemoryLease(input.turn, runtime, memory, revision),
+      validateReceiptLease: async (revision) =>
+        revision === memory.revision + 1 && validateAgentMemoryLease(input.turn, runtime, memory, revision),
       validateLease: async () => {
         const valid = await deferredLeaseMetric(
           () => validateAgentMemoryLease(input.turn, runtime, memory),

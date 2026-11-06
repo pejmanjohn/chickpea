@@ -3579,10 +3579,8 @@ test(`a successful own-turn memory write ${verb} ${scenario.name}`, async () => 
       requesterText: turn.text,
     };
     const performWrite = () => executeSlackMemoryUpdate({
-      signal, memoryEpoch: expectedRevision + 1,
-      data: { expectedRevision: expectedRevision + ('concurrent' in scenario ? 1 : 0), body: scenario.body,
-        summary: 'I updated my memory as asked.' },
-      inspect: async () => ({ ok: true, result: await f.memory.getAgentMemory(agent.id) }),
+      signal,
+      data: { expectedRevision: expectedRevision + ('concurrent' in scenario ? 1 : 0), body: scenario.body },
       apply: async (args) => ({ ok: true, result: await f.service.applyWorkspaceChanges({
         context: await resolveSlackManagementActor(signal, f.identity), ...args,
       }) }),

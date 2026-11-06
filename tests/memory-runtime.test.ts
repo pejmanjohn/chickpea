@@ -345,7 +345,7 @@ test('a stale Slack group mapping from an interrupted create repairs into the Ag
     try {
       await assert.rejects(prepared.validateLease(), (error: unknown) => error === reset);
       await assert.rejects(
-        prepared.validateReceiptLease?.(1) ?? Promise.reject(new Error('missing')),
+        prepared.validateReceiptLease?.(prepared.memoryEpoch) ?? Promise.reject(new Error('missing')),
         (error: unknown) => error === reset,
       );
       config.getAgent = async () => { throw new Error('unknown agent'); };

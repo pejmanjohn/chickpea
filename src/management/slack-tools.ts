@@ -774,8 +774,7 @@ export function useWorkspaceManagementSlackTools(
     input: slackUpdateAgentMemoryInputSchema,
     async run({ data }) {
       const { result, receipt } = await executeSlackMemoryUpdate({
-        signal, data, memoryEpoch: plan.memoryEpoch,
-        inspect: () => invokeLiveSlackTool(signal, resolvePlatformEnv, 'inspect_memory', { agentId: signal.agentId }, turnGuard),
+        signal, data,
         apply: (args) => invokeLiveSlackTool(
           signalAfterPageRead(signal, pageRead()), resolvePlatformEnv, 'apply_workspace_changes', args, turnGuard,
         ),
