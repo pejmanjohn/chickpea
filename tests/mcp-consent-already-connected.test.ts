@@ -75,13 +75,14 @@ async function fixture(t: TestContext) {
     assert.equal(`${new URL(destination).origin}${new URL(destination).pathname}`, CODEX_CALLBACK);
     return new URL(destination).searchParams.get('code') ?? undefined;
   }
-  const exchange = (code: string, verifier: string) => handler(new Request(`${ORIGIN}/api/auth/oauth2/token`, {
+  const token = (form: Record<string, string>) => handler(new Request(`${ORIGIN}/api/auth/oauth2/token`, {
     method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'authorization_code', client_id: CODEX, code, code_verifier: verifier,
-      redirect_uri: CODEX_CALLBACK, resource: RESOURCE,
-    }),
+    body: new URLSearchParams(form),
   }));
+  const exchange = (code: string, verifier: string) => token({
+    grant_type: 'authorization_code', client_id: CODEX, code, code_verifier: verifier,
+    redirect_uri: CODEX_CALLBACK, resource: RESOURCE,
+  });
   /** Codex's whole first sign-in: consent, Allow, and the code exchanged by its loopback listener. */
   async function signIn(verifier: string): Promise<URL> {
     const consent = await consentFor(verifier);
@@ -94,7 +95,7 @@ async function fixture(t: TestContext) {
   const codes = () => (backend.database.prepare(
     "SELECT COUNT(*) AS n FROM verification WHERE identifier NOT LIKE 'chickpea:%'",
   ).get() as { n: number }).n;
-  return { backend, consentFor, showConsent, submitConsent, callbackCode, exchange, signIn, codes };
+  return { backend, consentFor, showConsent, submitConsent, callbackCode, token, exchange, signIn, codes };
 }
 
 const verifier = () => randomBytes(32).toString('base64url');
@@ -171,6 +172,24 @@ test('a failed code exchange records nothing', async (t) => {
 
   assert.deepEqual(f.backend.database.prepare(MARKER_ROWS).all(), []);
   assert.ok((await (await f.showConsent(await f.consentFor(sameVerifier))).text()).includes('<form'));
+});
+
+test('a refresh_token grant carrying a stray code_verifier records nothing', async (t) => {
+  const f = await fixture(t);
+  const first = verifier();
+  const code = await f.callbackCode(await f.submitConsent(await f.consentFor(first)));
+  const exchanged = await f.exchange(code!, first);
+  assert.equal(exchanged.status, 200, await exchanged.clone().text());
+  const { refresh_token: refreshToken } = await exchanged.json() as { refresh_token?: string };
+  assert.ok(refreshToken, 'Codex registers the refresh_token grant, and offline_access is a default scope');
+  const markersAfterExchange = f.backend.database.prepare(MARKER_ROWS).all();
+  assert.equal(markersAfterExchange.length, 1);
+
+  const stray = verifier();
+  const refreshed = await f.token({ grant_type: 'refresh_token', client_id: CODEX, refresh_token: refreshToken, code_verifier: stray });
+  assert.equal(refreshed.status, 200, await refreshed.clone().text());
+  assert.deepEqual(f.backend.database.prepare(MARKER_ROWS).all(), markersAfterExchange, 'the refresh grant records no marker');
+  assert.ok((await (await f.showConsent(await f.consentFor(stray))).text()).includes('<form'), 'consent form');
 });
 
 test('the redeemed marker stores a digest of client and challenge for the authorization lifetime, never the verifier', async (t) => {
