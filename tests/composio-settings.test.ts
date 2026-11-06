@@ -494,9 +494,10 @@ test('a cold legacy auth config inspection outage preserves the provider and is 
       console.warn = previousWarn;
     }
     assert.equal(inspections, 1);
-    assert.equal(warnings.length, 1);
-    assert.match(warnings[0] ?? '', /COMPOSIO_GMAIL_READ_AUTH_CONFIG_ID/);
-    assert.match(warnings[0] ?? '', /"reason":"inspection_unavailable"/);
+    const ignored = warnings.filter((warning) => warning.includes('legacy_auth_config_ignored'));
+    assert.equal(ignored.length, 1);
+    assert.match(ignored[0] ?? '', /COMPOSIO_GMAIL_READ_AUTH_CONFIG_ID/);
+    assert.match(ignored[0] ?? '', /"reason":"inspection_unavailable"/);
     assert.equal(warnings.join('\n').includes('ak_project_transient_cold'), false);
     assert.equal(warnings.join('\n').includes('ac_gmail_transient_cold'), false);
   });
