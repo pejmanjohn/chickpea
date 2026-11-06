@@ -1,4 +1,5 @@
-import { McpServer, createMcpHandler } from '@modelcontextprotocol/server';
+import { McpServer, createMcpHandler, type Transport } from '@modelcontextprotocol/server';
+import type { z } from 'zod';
 
 import type { McpAuthenticatedPrincipal, McpRequestHandler } from '../auth/mcp-oauth-routes.ts';
 import {
@@ -23,6 +24,7 @@ import {
   inspectRoutinesZodSchema,
   exportRecipeZodSchema,
   previewRecipeZodSchema,
+  MANAGEMENT_OPERATION_SCHEMA_URI,
   MCP_MANAGEMENT_OPERATION_KINDS,
   revokeMcpClientZodSchema,
   revokeSetupLinkZodSchema,
@@ -37,6 +39,7 @@ import {
   WORKSPACE_MANAGEMENT_PROMPT_NAMES,
 } from './prompts.ts';
 import { createLiveWorkspaceManagementService } from './live-service.ts';
+import { observeMcpRequests } from './mcp-request-telemetry.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import {
   invokeWorkspaceManagementTool,
@@ -74,11 +77,43 @@ export const WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES = [
   'list_mcp_clients',
   'revoke_mcp_client',
 ] as const satisfies readonly WorkspaceManagementToolName[];
+/** One schema per MCP tool, shared by registration and request telemetry. */
+const MCP_TOOL_INPUT_SCHEMAS = {
+  inspect_workspace: inspectWorkspaceZodSchema,
+  prepare_connector_setup: prepareConnectorSetupZodSchema,
+  prepare_provider_setup: prepareProviderSetupZodSchema,
+  discover_slack_channels: discoverSlackChannelsZodSchema,
+  test_connection: testConnectionZodSchema,
+  save_connection_key: saveConnectionKeyZodSchema,
+  try_connection: tryConnectionZodSchema,
+  inspect_memory: inspectMemoryZodSchema,
+  inspect_routines: inspectRoutinesZodSchema,
+  export_workspace_recipe: exportRecipeZodSchema,
+  preview_workspace_recipe: previewRecipeZodSchema,
+  import_skill: importSkillZodSchema,
+  upload_skills: uploadSkillsZodSchema,
+  manage_agent_skill: manageAgentSkillZodSchema,
+  apply_workspace_changes: applyWorkspaceChangesZodSchema,
+  confirm_workspace_change: confirmWorkspaceChangeZodSchema,
+  undo_workspace_change: undoWorkspaceChangeZodSchema,
+  get_operation: getOperationZodSchema,
+  revoke_setup_link: revokeSetupLinkZodSchema,
+  list_mcp_clients: listMcpClientsZodSchema,
+  revoke_mcp_client: revokeMcpClientZodSchema,
+} as const satisfies Record<(typeof WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES)[number], z.ZodType>;
+
+/** Each transport this server connects reports an `mcp.request` metric per message. */
+class ObservedMcpServer extends McpServer {
+  override connect(transport: Transport): Promise<void> {
+    observeMcpRequests(transport, MCP_TOOL_INPUT_SCHEMAS);
+    return super.connect(transport);
+  }
+}
+
 const READ_ONLY = { readOnlyHint: true } as const;
 /** destructiveHint defaults to true, so a write the person need not confirm says false. */
 const WRITE = { readOnlyHint: false, destructiveHint: false, idempotentHint: true } as const;
-export const WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI =
-  'chickpea://schema/operations/v2' as const;
+export const WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI = MANAGEMENT_OPERATION_SCHEMA_URI;
 export const WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI =
   AGENT_AUTHORING_GUIDE_URI;
 interface WorkspaceManagementMcpServerInput {
@@ -117,7 +152,7 @@ export function createWorkspaceManagementMcpHandler(
 export function createWorkspaceManagementMcpServer(
   input: WorkspaceManagementMcpServerInput,
 ): McpServer {
-  const server = new McpServer(WORKSPACE_MANAGEMENT_SERVER_INFO, {
+  const server = new ObservedMcpServer(WORKSPACE_MANAGEMENT_SERVER_INFO, {
     instructions: workspaceManagementInstructions(input.baseUrl, input.env),
   });
   const adapter = {
@@ -128,7 +163,7 @@ export function createWorkspaceManagementMcpServer(
   server.registerTool('inspect_workspace', {
     title: 'Inspect Chickpea workspace',
     description: workspaceManagementToolDescription('inspect_workspace', 'mcp'),
-    inputSchema: inspectWorkspaceZodSchema,
+    inputSchema: MCP_TOOL_INPUT_SCHEMAS.inspect_workspace,
     annotations: READ_ONLY,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
@@ -139,7 +174,7 @@ export function createWorkspaceManagementMcpServer(
   server.registerTool('prepare_connector_setup', {
     title: 'Prepare Agent connector setup',
     description: workspaceManagementToolDescription('prepare_connector_setup', 'mcp'),
-    inputSchema: prepareConnectorSetupZodSchema,
+    inputSchema: MCP_TOOL_INPUT_SCHEMAS.prepare_connector_setup,
     annotations: READ_ONLY,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
@@ -150,7 +185,7 @@ export function createWorkspaceManagementMcpServer(
   server.registerTool('prepare_provider_setup', {
     title: 'Prepare model provider key setup',
     description: workspaceManagementToolDescription('prepare_provider_setup', 'mcp'),
-    inputSchema: prepareProviderSetupZodSchema,
+    inputSchema: MCP_TOOL_INPUT_SCHEMAS.prepare_provider_setup,
     annotations: { ...WRITE, idempotentHint: false },
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
@@ -161,7 +196,7 @@ export function createWorkspaceManagementMcpServer(
   server.registerTool('discover_slack_channels', {
     title: 'Discover Slack Channels',
     description: workspaceManagementToolDescription('discover_slack_channels', 'mcp'),
-    inputSchema: discoverSlackChannelsZodSchema,
+    inputSchema: MCP_TOOL_INPUT_SCHEMAS.discover_slack_channels,
     annotations: READ_ONLY,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
@@ -172,7 +207,7 @@ export function createWorkspaceManagementMcpServer(
   server.registerTool('test_connection', {
     title: 'Test saved connection',
     description: workspaceManagementToolDescription('test_connection', 'mcp'),
-    inputSchema: testConnectionZodSchema,
+    inputSchema: MCP_TOOL_INPUT_SCHEMAS.test_connection,
     annotations: READ_ONLY,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
@@ -183,7 +218,7 @@ export function createWorkspaceManagementMcpServer(
   server.registerTool('save_connection_key', {
     title: 'Save connection key',
     description: workspaceManagementToolDescription('save_connection_key', 'mcp'),
-    inputSchema: saveConnectionKeyZodSchema,
+    inputSchema: MCP_TOOL_INPUT_SCHEMAS.save_connection_key,
     annotations: WRITE,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
@@ -194,7 +229,7 @@ export function createWorkspaceManagementMcpServer(
   server.registerTool('try_connection', {
     title: 'Try connection settings',
     description: workspaceManagementToolDescription('try_connection', 'mcp'),
-    inputSchema: tryConnectionZodSchema,
+    inputSchema: MCP_TOOL_INPUT_SCHEMAS.try_connection,
     annotations: READ_ONLY,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
@@ -205,7 +240,7 @@ export function createWorkspaceManagementMcpServer(
   server.registerTool('inspect_memory', {
     title: 'Inspect Chickpea memory',
     description: workspaceManagementToolDescription('inspect_memory', 'mcp'),
-    inputSchema: inspectMemoryZodSchema,
+    inputSchema: MCP_TOOL_INPUT_SCHEMAS.inspect_memory,
     annotations: READ_ONLY,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
@@ -216,7 +251,7 @@ export function createWorkspaceManagementMcpServer(
   server.registerTool('inspect_routines', {
     title: 'Inspect Chickpea routines',
     description: workspaceManagementToolDescription('inspect_routines', 'mcp'),
-    inputSchema: inspectRoutinesZodSchema,
+    inputSchema: MCP_TOOL_INPUT_SCHEMAS.inspect_routines,
     annotations: READ_ONLY,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
@@ -227,7 +262,7 @@ export function createWorkspaceManagementMcpServer(
   server.registerTool('export_workspace_recipe', {
     title: 'Export Chickpea workspace recipe',
     description: workspaceManagementToolDescription('export_workspace_recipe', 'mcp'),
-    inputSchema: exportRecipeZodSchema,
+    inputSchema: MCP_TOOL_INPUT_SCHEMAS.export_workspace_recipe,
     annotations: READ_ONLY,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
@@ -238,7 +273,7 @@ export function createWorkspaceManagementMcpServer(
   server.registerTool('preview_workspace_recipe', {
     title: 'Preview Chickpea workspace recipe',
     description: workspaceManagementToolDescription('preview_workspace_recipe', 'mcp'),
-    inputSchema: previewRecipeZodSchema,
+    inputSchema: MCP_TOOL_INPUT_SCHEMAS.preview_workspace_recipe,
     annotations: READ_ONLY,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
@@ -249,7 +284,7 @@ export function createWorkspaceManagementMcpServer(
   server.registerTool('import_skill', {
     title: 'Install GitHub skill',
     description: workspaceManagementToolDescription('import_skill', 'mcp'),
-    inputSchema: importSkillZodSchema,
+    inputSchema: MCP_TOOL_INPUT_SCHEMAS.import_skill,
     annotations: WRITE,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
@@ -260,7 +295,7 @@ export function createWorkspaceManagementMcpServer(
   server.registerTool('upload_skills', {
     title: 'Upload skill files',
     description: workspaceManagementToolDescription('upload_skills', 'mcp'),
-    inputSchema: uploadSkillsZodSchema,
+    inputSchema: MCP_TOOL_INPUT_SCHEMAS.upload_skills,
     annotations: WRITE,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
@@ -271,7 +306,7 @@ export function createWorkspaceManagementMcpServer(
   server.registerTool('manage_agent_skill', {
     title: 'Manage an installed Agent skill',
     description: workspaceManagementToolDescription('manage_agent_skill', 'mcp'),
-    inputSchema: manageAgentSkillZodSchema,
+    inputSchema: MCP_TOOL_INPUT_SCHEMAS.manage_agent_skill,
     annotations: WRITE,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
@@ -282,7 +317,7 @@ export function createWorkspaceManagementMcpServer(
   server.registerTool('apply_workspace_changes', {
     title: 'Apply Chickpea workspace changes',
     description: workspaceManagementToolDescription('apply_workspace_changes', 'mcp'),
-    inputSchema: applyWorkspaceChangesZodSchema,
+    inputSchema: MCP_TOOL_INPUT_SCHEMAS.apply_workspace_changes,
     annotations: WRITE,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
@@ -296,7 +331,7 @@ export function createWorkspaceManagementMcpServer(
   server.registerTool('confirm_workspace_change', {
     title: 'Confirm Chickpea workspace change',
     description: workspaceManagementToolDescription('confirm_workspace_change', 'mcp'),
-    inputSchema: confirmWorkspaceChangeZodSchema,
+    inputSchema: MCP_TOOL_INPUT_SCHEMAS.confirm_workspace_change,
     annotations: { ...WRITE, destructiveHint: true },
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
@@ -307,7 +342,7 @@ export function createWorkspaceManagementMcpServer(
   server.registerTool('undo_workspace_change', {
     title: 'Undo Chickpea workspace change',
     description: workspaceManagementToolDescription('undo_workspace_change', 'mcp'),
-    inputSchema: undoWorkspaceChangeZodSchema,
+    inputSchema: MCP_TOOL_INPUT_SCHEMAS.undo_workspace_change,
     annotations: WRITE,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
@@ -318,7 +353,7 @@ export function createWorkspaceManagementMcpServer(
   server.registerTool('get_operation', {
     title: 'Get Chickpea operation',
     description: workspaceManagementToolDescription('get_operation', 'mcp'),
-    inputSchema: getOperationZodSchema,
+    inputSchema: MCP_TOOL_INPUT_SCHEMAS.get_operation,
     annotations: READ_ONLY,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
@@ -329,7 +364,7 @@ export function createWorkspaceManagementMcpServer(
   server.registerTool('revoke_setup_link', {
     title: 'Revoke Chickpea setup link',
     description: workspaceManagementToolDescription('revoke_setup_link', 'mcp'),
-    inputSchema: revokeSetupLinkZodSchema,
+    inputSchema: MCP_TOOL_INPUT_SCHEMAS.revoke_setup_link,
     annotations: WRITE,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
@@ -340,7 +375,7 @@ export function createWorkspaceManagementMcpServer(
   server.registerTool('list_mcp_clients', {
     title: 'List connected MCP clients',
     description: workspaceManagementToolDescription('list_mcp_clients', 'mcp'),
-    inputSchema: listMcpClientsZodSchema,
+    inputSchema: MCP_TOOL_INPUT_SCHEMAS.list_mcp_clients,
     annotations: READ_ONLY,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
@@ -351,7 +386,7 @@ export function createWorkspaceManagementMcpServer(
   server.registerTool('revoke_mcp_client', {
     title: 'Revoke a connected MCP client',
     description: workspaceManagementToolDescription('revoke_mcp_client', 'mcp'),
-    inputSchema: revokeMcpClientZodSchema,
+    inputSchema: MCP_TOOL_INPUT_SCHEMAS.revoke_mcp_client,
     annotations: WRITE,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,

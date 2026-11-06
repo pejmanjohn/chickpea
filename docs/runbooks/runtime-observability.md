@@ -277,6 +277,9 @@ preserve the content-free tracing configuration in [the runtime](../../src/cloud
 and field allowlists in [management logging](../../src/management/telemetry.ts).
 Do not log raw conversations, instructions, credentials, unrestricted arguments,
 results, or arbitrary error text. This runbook grants no instrumentation authority.
+Each management MCP message emits `mcp.request`, and a tool call refused on its
+input schema emits `tool.validation_failure` with `surface: "mcp"`; see
+[management MCP diagnostics](workspace-management-mcp.md#diagnostics-and-telemetry).
 
 Keep raw logs, account coordinates, activation/access details, incident records,
 and screenshots outside the public repository and package. Redact before sharing.
