@@ -191,10 +191,13 @@ export function useManagedConnectionTools(
 ): ReturnType<typeof createManagedConnectionTools> {
   if (!plan.actorMembershipId || !plan.managedConnections?.length) return [];
   useInstruction(MANAGED_CONNECTION_RESULT_INSTRUCTION);
+  // Loaded before the render: by turn staging, or when the agent object or the Node process starts.
+  const details = requireConnectorDetails(plan.managedConnections.map(({ toolkit }) => toolkit));
+  const selectedResources = managedResourceHandleInstruction(plan.managedConnections, details);
+  if (selectedResources) useInstruction(selectedResources);
   return createManagedConnectionTools({
     connections: plan.managedConnections,
-    // Loaded before the render: by turn staging, or when the agent object or the Node process starts.
-    details: requireConnectorDetails(plan.managedConnections.map(({ toolkit }) => toolkit)),
+    details,
     workspaceId: plan.conversation.workspaceId,
     agentId: plan.agentId,
     actorMembershipId: plan.actorMembershipId,
@@ -205,6 +208,31 @@ export function useManagedConnectionTools(
     ],
     ...(usageCorrelation ? { usageCorrelation } : {}),
   });
+}
+
+// Handles are opaque and appear in no tool description, so the model learns
+// them only from this list. It names no labels: a label can carry the
+// provider ID, which never enters the plan, so the model reads each resource
+// to tell several apart.
+function managedResourceHandleInstruction(
+  connections: readonly ManagedToolConnection[],
+  details: ReadonlyMap<string, Loaded<ConnectorDetail>>,
+): string | undefined {
+  const groups = groupManagedConnections(connections);
+  const selections = connections.flatMap((connection) => {
+    const group = groups.get(`${connection.adapterId.trim().toLowerCase()}:${connection.toolkit.trim().toLowerCase()}`);
+    if (!group || group.connectionIds.size !== 1 || connection.allowedCapabilities.length === 0) return [];
+    const resources = details.get(connection.toolkit.trim().toLowerCase())?.connector.resources ?? [];
+    return resources.flatMap(({ key, label, localArgument }) => {
+      const handles = connection.resourceConstraints?.[key] ?? [];
+      return handles.length > 0
+        ? [{ toolkit: connection.toolkit, resource: label, argument: localArgument, handles }]
+        : [];
+    });
+  });
+  if (selections.length === 0) return undefined;
+  return 'The owner selected these resources for connection tools. Pass one of the listed handles in the named argument. Never invent a handle or pass a provider ID. When several handles are listed and the request does not say which one, read each with the connection\'s read tools to identify it, or ask. ' +
+    JSON.stringify(selections);
 }
 
 function createCapabilityTool(
