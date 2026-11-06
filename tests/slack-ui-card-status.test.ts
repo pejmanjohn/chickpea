@@ -58,9 +58,14 @@ const requestButtons = (card: Block) => ((card.actions ?? []) as Block[])
   .filter((button) => String(button.action_id).startsWith('chickpea.ui.v1.cards.'))
   .map((button) => (button.text as { text: string }).text);
 
+/** The status lines under a set: one context block per entry, blocks .20 to .29, so each sits on its own line. */
 const statusLines = (blocks: readonly Block[], surfaceId: string) => {
-  const status = blocks.find((block) => block.block_id === uiBlockId('ui', surfaceId, 20));
-  return ((status?.elements ?? []) as Array<{ text: string }>).map((element) => element.text);
+  const ids = new Set(Array.from({ length: 10 }, (_, index) => uiBlockId('ui', surfaceId, 20 + index)));
+  return blocks.filter((block) => ids.has(String(block.block_id))).map((block) => {
+    const elements = block.elements as Array<{ text: string }>;
+    assert.equal(elements.length, 1, 'one entry per status line');
+    return elements[0]!.text;
+  });
 };
 
 test('each card claims on its own: two cards both admit, one card admits once, and the set resolves when every request card is settled', () => {
@@ -193,6 +198,12 @@ const ANSWER_BLOCK = { type: 'rich_text', block_id: 'Ab1', elements: [{ type: 'r
 const CHART_BLOCK = { type: 'data_visualization', block_id: 'Ch1', title: 'Spend', chart: { type: 'pie', segments: [{ label: 'A', value: 1 }] } };
 const FOOTER_BLOCK = { type: 'context', block_id: 'Ft1', elements: [{ type: 'mrkdwn', text: 'support · Claude' }] };
 
+function drawn(message: SlackUiMessage, record: UiSurfaceRecord): { blocks: Block[] } {
+  const result = cardSetMessageBlocks(message, record);
+  assert.equal(typeof result, 'object', `redrawn, not skipped (${String(result)})`);
+  return result as { blocks: Block[] };
+}
+
 function answerMessage(record: UiSurfaceRecord): SlackUiMessage {
   return {
     ts: ANSWER_TS,
@@ -206,18 +217,18 @@ test('a redraw replaces only the card set and its status line; the answer, other
   const set = store.put(cardSet());
   const picked = store.claim(pick(set.id, 1), 'ui').surface!;
   const message = answerMessage(set);
-  const redrawn = cardSetMessageBlocks(message, picked)!;
-  assert.equal(redrawn.text, message.text);
+  const redrawn = drawn(message, picked);
+  assert.equal('text' in redrawn, false, 'Slack rebuilds the text from the blocks');
   assert.deepEqual(redrawn.blocks[0], ANSWER_BLOCK);
   assert.deepEqual(redrawn.blocks.slice(-2), [CHART_BLOCK, FOOTER_BLOCK]);
   assert.deepEqual(redrawn.blocks.map((block) => block.type), ['rich_text', 'section', 'carousel', 'context', 'data_visualization', 'context']);
   assert.deepEqual(requestButtons(cardsIn(redrawn.blocks, set.id)[0]!), []);
   // Drawn again over itself, the status line is replaced, never repeated.
   const second = store.claim(pick(set.id, 4, 'U1'), 'ui').surface!;
-  const again = cardSetMessageBlocks({ ...message, blocks: redrawn.blocks }, second)!;
-  assert.equal(again.blocks.length, redrawn.blocks.length);
+  const again = drawn({ ...message, blocks: redrawn.blocks }, second);
+  assert.equal(again.blocks.length, redrawn.blocks.length + 1, 'a second status line, not a second set');
   assert.equal(statusLines(again.blocks, set.id).length, 2);
-  assert.equal(cardSetMessageBlocks({ ...message, blocks: [ANSWER_BLOCK, FOOTER_BLOCK] }, picked), undefined,
+  assert.equal(cardSetMessageBlocks({ ...message, blocks: [ANSWER_BLOCK, FOOTER_BLOCK] }, picked), 'set_not_in_message',
     'a message without this card set is never rewritten');
 });
 
@@ -251,7 +262,7 @@ test('the message is read back by its timestamp, or found by its card block when
   const state = new SqliteSlackStateStore(':memory:');
   const gate = createSlackReadGate({ state, workspaceId: 'T1', gated: true, now: () => NOW });
   assert.deepEqual(await readCardSetMessage(client, gate, set), message);
-  assert.equal(await readCardSetMessage(client, gate, set), undefined, 'the shared read budget is spent');
+  assert.equal(await readCardSetMessage(client, gate, set), 'read_budget', 'the shared read budget is spent');
   assert.equal(calls.length, 3);
   state.close();
 });
@@ -363,8 +374,7 @@ test('a 50-block answer still redraws its card, without the status line that wou
   const message = answerMessage(set);
   const full = { ...message, blocks: [message.blocks[0]!, ...fillers, ...message.blocks.slice(1, 3), FOOTER_BLOCK] };
   assert.equal(full.blocks.length, 50);
-  const redrawn = cardSetMessageBlocks(full, picked);
-  assert.ok(redrawn, 'the card is redrawn');
+  const redrawn = drawn(full, picked);
   assert.equal(redrawn.blocks.length, 50);
   assert.deepEqual(requestButtons(cardsIn(redrawn.blocks, set.id)[0]!), [], 'the clicked card loses its request buttons');
   assert.deepEqual(statusLines(redrawn.blocks, set.id), [], 'no status line');
@@ -426,7 +436,7 @@ test('two outcomes within a minute both redraw: the first read leaves a copy of 
   assert.equal(sent.length, 2);
   const last = sent[1]!;
   assert.equal(last.ts, ANSWER_TS);
-  assert.equal(last.text, 'Two campaigns need a budget change.');
+  assert.equal('text' in last, false);
   assert.deepEqual(last.blocks[0], ANSWER_BLOCK);
   assert.deepEqual(last.blocks.slice(-2), [CHART_BLOCK, FOOTER_BLOCK]);
   const [a, b] = cardsIn(last.blocks, set.id);
@@ -526,4 +536,92 @@ test('update_card refuses a title two cards share', async () => {
   const read = await state.executeUiSurface!({ kind: 'get_surface', id: set.id });
   assert.equal(read.kind === 'surface' && read.surface?.cardSettlements, undefined, 'no card was settled');
   state.close();
+});
+
+// ── long answers and what a redraw logs ──────────────────────────────────
+
+/** Slack's chat.update as measured on Amber: a long `text` is refused with msg_too_long, whatever the blocks. */
+function slackUpdate(sent: Array<{ ts: string; blocks: Block[]; text?: string }>) {
+  return async (ts: string, rendered: { blocks: Block[]; text?: string }) => {
+    if ((rendered.text?.length ?? 0) > 3_500) {
+      throw Object.assign(new Error('An API error occurred: msg_too_long'), {
+        code: 'slack_webapi_platform_error', data: { ok: false, error: 'msg_too_long' },
+      });
+    }
+    sent.push({ ts, ...rendered });
+  };
+}
+
+function longAnswer(record: UiSurfaceRecord): SlackUiMessage {
+  const answer = 'Plan the lunch around a clear budget and confirmed headcount. '.repeat(150);
+  const block = { ...ANSWER_BLOCK, elements: [{ type: 'rich_text_section', elements: [{ type: 'text', text: answer }] }] };
+  const message = answerMessage(record);
+  return { ts: ANSWER_TS, text: `${answer} Campaign A Campaign B support · Claude`, blocks: [block, ...message.blocks.slice(1)] };
+}
+
+test('a long answer redraws: the edit leaves the text out, so Slack takes it and rebuilds the text from the blocks', async () => withOutcomeTool(async ({ state, set }) => {
+  const message = longAnswer(set);
+  assert.ok(message.text!.length > 9_000);
+  const sent: Array<{ ts: string; blocks: Block[]; text?: string }> = [];
+  const surface = { ...set, answerMessage: message };
+  const redrawn = await redrawCardSet({ state, surface, read: async () => assert.fail('the copy is used'), update: slackUpdate(sent) });
+  assert.equal(redrawn, true);
+  assert.equal(sent.length, 1);
+  assert.equal('text' in sent[0]!, false);
+  assert.deepEqual(sent[0]!.blocks[0], message.blocks[0], 'the answer is sent back as Slack holds it');
+  assert.deepEqual(sent[0]!.blocks.at(-1), FOOTER_BLOCK);
+}));
+
+test('a refused redraw logs Slack\'s error code and nothing of the message', async (t) => withOutcomeTool(async ({ state, set }) => {
+  const warn = t.mock.method(console, 'warn', () => {});
+  const refused = Object.assign(new Error('An API error occurred: cant_update_message'), {
+    code: 'slack_webapi_platform_error', data: { ok: false, error: 'cant_update_message' },
+  });
+  const surface = { ...set, answerMessage: answerMessage(set) };
+  const redrawn = await redrawCardSet({ state, surface, read: async () => assert.fail('the copy is used'), update: async () => { throw refused; } });
+  assert.equal(redrawn, false);
+  const calls = warn.mock.calls.map((call) => call.arguments);
+  assert.deepEqual(calls, [['[chickpea] card set redraw failed', { error: 'cant_update_message' }]]);
+}));
+
+test('a redraw that edits nothing says why in one line: no read budget, a failed read, or a message without the set', async (t) => withOutcomeTool(async ({ state, set }) => {
+  const warn = t.mock.method(console, 'warn', () => {});
+  const update = async () => assert.fail('nothing to edit');
+  const reasons = async (read: () => Promise<SlackUiMessage | string>, surface: UiSurfaceRecord = set) => {
+    warn.mock.resetCalls();
+    assert.equal(await redrawCardSet({ state, surface, read: read as never, update }), false);
+    return warn.mock.calls.map((call) => call.arguments);
+  };
+  const gate = createSlackReadGate({ state, workspaceId: 'T1', gated: true });
+  await gate.reserve('conversations.replies');
+  assert.deepEqual(await reasons(() => readCardSetMessage(threadClient(answerMessage(set)), gate, set)),
+    [['[chickpea] card set redraw skipped', { reason: 'read_budget' }]]);
+  const broken = { conversations: { replies: async () => { throw new Error('socket hang up'); } } };
+  assert.deepEqual(await reasons(() => readCardSetMessage(broken, UNGATED_SLACK_READS, set)),
+    [['[chickpea] card set redraw skipped', { reason: 'read_failed' }]]);
+  const elsewhere = { conversations: { replies: async () => ({ ok: true, messages: [{ ts: THREAD, text: 'Hi', user: 'U1', blocks: [] }] }) } };
+  assert.deepEqual(await reasons(() => readCardSetMessage(elsewhere, UNGATED_SLACK_READS, set)),
+    [['[chickpea] card set redraw skipped', { reason: 'not_in_thread' }]]);
+  const withoutSet = { ...set, answerMessage: { ts: ANSWER_TS, blocks: [ANSWER_BLOCK, FOOTER_BLOCK] } };
+  assert.deepEqual(await reasons(async () => assert.fail('the copy is used'), withoutSet),
+    [['[chickpea] card set redraw skipped', { reason: 'set_not_in_message' }]]);
+}));
+
+test('each status entry is its own line, and a status line drawn by an earlier build is replaced', () => {
+  const store = new UiSurfaceStoreLogic(openStateDb(':memory:'), () => NOW);
+  const set = store.put(cardSet());
+  store.claim(pick(set.id, 1), 'ui');
+  const both = store.claim(pick(set.id, 4, 'U1'), 'ui').surface!;
+  const status = renderCardSet(both).blocks.filter((block) => block.type === 'context');
+  assert.deepEqual(status.map((block) => block.block_id), [uiBlockId('ui', set.id, 20), uiBlockId('ui', set.id, 21)]);
+  assert.deepEqual(status.map((block) => (block.elements as unknown[]).length), [1, 1]);
+  assert.equal(checkSlackBlocks(renderCardSet(both).blocks).ok, true);
+
+  const message = answerMessage(set);
+  const earlier = { type: 'context', block_id: uiBlockId('ui', set.id, 20), elements: [{ type: 'mrkdwn', text: 'a' }, { type: 'mrkdwn', text: 'b' }] };
+  const at = message.blocks.findIndex((block) => block.block_id === uiBlockId('ui', set.id, 1));
+  const old = { ...message, blocks: [...message.blocks.slice(0, at + 1), earlier, ...message.blocks.slice(at + 1)] };
+  const redrawn = drawn(old, both);
+  assert.equal(statusLines(redrawn.blocks, set.id).length, 2);
+  assert.equal(redrawn.blocks.filter((block) => block.type === 'context').length, 3, 'two status lines and the footer');
 });
