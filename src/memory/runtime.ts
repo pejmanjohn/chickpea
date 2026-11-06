@@ -135,7 +135,7 @@ export async function handleMemoryCommand(input: {
 }
 
 /** Any `<` that would open or close the fence, so a stored body cannot end its own block. */
-const MEMORY_FENCE_TAG = /<(?=\s*\/?\s*agent_memory\b)/giu;
+const MEMORY_FENCE_TAG = /[<＜](?=[\s\p{Cf}]*\/?[\s\p{Cf}]*agent_memory\b)/giu;
 
 export function agentMemoryPromptBlock(body: string): string | undefined {
   const text = body.trim();
