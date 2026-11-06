@@ -9552,7 +9552,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     } catch (error) {
       if (error instanceof ManagedCapabilityChoiceError) {
         return error.code === 'unavailable'
-          ? c.json({ error: 'connection_not_ready' }, 409)
+          ? c.json({ error: 'connection_not_ready', message: 'This connection is not ready. Reload it to see what it needs.' }, 409)
           : c.json({
               error: 'invalid_tool_selection',
               message: error.code === 'empty'
