@@ -868,16 +868,21 @@ async function persistUsage(
   },
 ): Promise<UsagePersistenceOutcome> {
   const mode = options.mode ?? 'bounded';
+  let written: Promise<unknown> | undefined;
   let outcome: UsagePersistenceOutcome;
   if (mode !== 'durable') {
-    outcome = await withinBudget(write(), budgetMs);
+    written = write();
+    outcome = await withinBudget(written, budgetMs);
   } else if (options.deadlineAt === undefined) {
     outcome = await write().then(() => 'recorded' as const, () => 'failed' as const);
   } else {
     const remainingMs = options.deadlineAt - (options.now ?? Date.now)();
-    outcome = remainingMs <= 0
-      ? 'timed_out'
-      : await withinBudget(write(), remainingMs);
+    if (remainingMs <= 0) {
+      outcome = 'timed_out';
+    } else {
+      written = write();
+      outcome = await withinBudget(written, remainingMs);
+    }
   }
   options.onPersistence?.({
     phase: options.phase,
@@ -886,6 +891,13 @@ async function persistUsage(
   });
   if (outcome !== 'recorded' && mode === 'bounded') {
     console.warn(`[usage] ${options.phase} persistence ${outcome}; model execution will continue`);
+  }
+  if (outcome === 'timed_out') {
+    // The write goes on past its budget; a timeout is benign unless the write then fails.
+    void written?.catch((error: unknown) => {
+      console.warn(`[usage] ${options.phase} persistence failed after timed_out: ${
+        error instanceof Error ? error.name : typeof error}`);
+    });
   }
   return outcome;
 }

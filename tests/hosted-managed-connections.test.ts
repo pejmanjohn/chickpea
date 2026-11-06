@@ -45,7 +45,9 @@ import {
 import { managedPrincipalRef } from '../src/connections/managed-principal.ts';
 import { resolveManagedAuthorizationProviderContext } from '../src/connections/managed-provider-context.ts';
 import {
+  createDefaultManagedConnectionProviderRegistry,
   createManagedConnectionProviderRegistry,
+  resolveDefaultManagedConnectionProviderRegistry,
   type ManagedConnectionProvider,
 } from '../src/connections/managed.ts';
 import {
@@ -335,6 +337,53 @@ test('installations read one platform preparation and never write it or their ow
       b.settings.close();
     }
   });
+});
+
+// Defect caught: the warning read only COMPOSIO_*_AUTH_CONFIG_ID, which a
+// hosted Worker never sets, so it named every lane while each one worked.
+test('the missing auth config warning names only the lanes the platform preparation lacks', async (t) => {
+  const warnings: unknown[] = [];
+  t.mock.method(console, 'warn', (line: unknown) => { warnings.push(line); });
+  const missing = () => warnings.flatMap((line) => {
+    const event = typeof line === 'string' && line.startsWith('{') ? JSON.parse(line) as Record<string, unknown> : {};
+    return event.event === 'chickpea.managed_connection.authorization_config_unavailable' ? [event] : [];
+  });
+  await withPlatform(async ({ platform, project }) => {
+    const prepared = await prepareComposioPlatform({
+      env: HOSTED,
+      settings: platform,
+      createClient: async () => {
+        const client = project.client();
+        const authConfigs = client.authConfigs!;
+        return {
+          ...client,
+          authConfigs: {
+            ...authConfigs,
+            create: async (toolkit, options, requestOptions) => {
+              if (toolkit === 'googleads') throw new Error('synthetic refusal');
+              return authConfigs.create(toolkit, options, requestOptions);
+            },
+          },
+        };
+      },
+    });
+    assert.equal(prepared.status, 'partial');
+
+    createDefaultManagedConnectionProviderRegistry(hostedEnv('inst_a'));
+    assert.deepEqual(missing(), [], 'a hosted environment names no auth config, and that alone is not missing');
+    await resolveDefaultManagedConnectionProviderRegistry(hostedEnv('inst_a'));
+    await resolveDefaultManagedConnectionProviderRegistry(hostedEnv('inst_b'));
+    assert.deepEqual(missing(), [{
+      event: 'chickpea.managed_connection.authorization_config_unavailable',
+      adapterId: 'composio',
+      missingAuthConfigs: ['googleads.read', 'googleads.write'],
+    }]);
+
+    assert.equal((await prepare(platform, project)).status, 'ready');
+    await resolveDefaultManagedConnectionProviderRegistry(hostedEnv('inst_a'));
+    assert.equal(missing().length, 1, 'a full preparation warns of nothing');
+  });
+  assert.ok(!warnings.some((line) => String(line).includes(PLATFORM_KEY)), 'no warning names the key');
 });
 
 test('two installations connect at once against one preparation without creating auth configs', async () => {

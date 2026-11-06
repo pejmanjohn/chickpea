@@ -38,11 +38,10 @@ import { markManagedAccountExpired } from './store.ts';
 import {
   ComposioManagedConnectionProvider,
   type ComposioManagedAuthConfigIds,
-  isComposioAuthConfigId,
 } from './providers/composio.ts';
 
 export const MAX_MANAGED_CONNECTION_RESULT_BYTES = 256 * 1024;
-let warnedInvalidComposioAuthConfigIds = false;
+let warnedMissingComposioAuthConfigs: string | undefined;
 let warnedUnavailableComposioConfiguration = false;
 
 export interface ManagedConnectionExecutionInput {
@@ -287,41 +286,6 @@ export function createDefaultManagedConnectionProviderRegistry(
       write: envValue(env, 'COMPOSIO_YOUTUBE_WRITE_AUTH_CONFIG_ID'),
     },
   };
-  const authConfigEntries: readonly (readonly [string, string | undefined])[] = [
-    ['gmail.read', authConfigIds.gmail?.read],
-    ['gmail.write', authConfigIds.gmail?.write],
-    ['googlecalendar.read', authConfigIds.googlecalendar?.read],
-    ['googlecalendar.write', authConfigIds.googlecalendar?.write],
-    ['googledrive.read', authConfigIds.googledrive?.read],
-    ['googledrive.write', authConfigIds.googledrive?.write],
-    ['googlesheets.read', authConfigIds.googlesheets?.read],
-    ['googlesheets.write', authConfigIds.googlesheets?.write],
-    ['googledocs.read', authConfigIds.googledocs?.read],
-    ['googledocs.write', authConfigIds.googledocs?.write],
-    ['googleslides.read', authConfigIds.googleslides?.read],
-    ['googleslides.write', authConfigIds.googleslides?.write],
-    ['notion.read', authConfigIds.notion?.read],
-    ['notion.write', authConfigIds.notion?.write],
-    ['google_search_console.read', authConfigIds.google_search_console?.read],
-    ['google_analytics.read', authConfigIds.google_analytics?.read],
-    ['hubspot.read', authConfigIds.hubspot?.read],
-    ['hubspot.write', authConfigIds.hubspot?.write],
-    ['gong.read', authConfigIds.gong?.read],
-    ['googleads.read', authConfigIds.googleads?.read],
-    ['googleads.write', authConfigIds.googleads?.write],
-    ['youtube.read', authConfigIds.youtube?.read],
-    ['youtube.write', authConfigIds.youtube?.write],
-  ];
-  const invalidAuthConfigs = authConfigEntries.flatMap(([name, value]) =>
-    isComposioAuthConfigId(value) ? [] : [name]);
-  if (apiKey && invalidAuthConfigs.length > 0 && !warnedInvalidComposioAuthConfigIds) {
-    warnedInvalidComposioAuthConfigIds = true;
-    console.warn(JSON.stringify({
-      event: 'chickpea.managed_connection.authorization_config_unavailable',
-      adapterId: 'composio',
-      missingAuthConfigs: invalidAuthConfigs,
-    }));
-  }
   return createManagedConnectionProviderRegistry(
     apiKey
       ? [new ComposioManagedConnectionProvider({
@@ -388,12 +352,38 @@ export function createResolvedManagedConnectionProviderRegistry(
     authConfigIds: resolved.authConfigIds,
     ...optionalProviderPrerequisites(env),
   });
+  warnOfMissingAuthConfigs(provider);
   return createManagedConnectionProviderRegistry([provider], {
     composio: {
       generation: resolved.generation,
       lineage: composioProviderLineage(resolved),
     },
   });
+}
+
+/**
+ * Once per isolate for each distinct set: the catalog lanes this provider
+ * cannot sign in, judged from the resolved configuration. A hosted Worker
+ * gets its auth configs from platform preparation, never its environment.
+ */
+function warnOfMissingAuthConfigs(provider: ManagedConnectionProvider): void {
+  const missingAuthConfigs = MANAGED_CONNECTOR_CATALOG.list().flatMap(({ toolkit, capabilities }) => {
+    const lanes: ManagedAccessLane[] = capabilities.some(({ accessLane }) => accessLane === 'write')
+      ? ['read', 'write']
+      : ['read'];
+    return lanes
+      .filter((accessLane) => managedProviderAvailability(provider, { toolkit, accessLane })
+        .missingConfiguration.includes('auth_config_missing'))
+      .map((accessLane) => `${toolkit}.${accessLane}`);
+  });
+  const key = missingAuthConfigs.join(',');
+  if (missingAuthConfigs.length === 0 || key === warnedMissingComposioAuthConfigs) return;
+  warnedMissingComposioAuthConfigs = key;
+  console.warn(JSON.stringify({
+    event: 'chickpea.managed_connection.authorization_config_unavailable',
+    adapterId: 'composio',
+    missingAuthConfigs,
+  }));
 }
 
 export async function invokeManagedConnectionCapability(input: {

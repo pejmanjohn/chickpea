@@ -434,6 +434,34 @@ test('slow telemetry cannot hold delivery beyond the budget and one repair recor
   }
 });
 
+test('a usage write that times out and then fails logs that failure once, by error name only', { timeout: 5000 }, async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  let fail!: (error: Error) => void;
+  const late = new Promise<never>((_, reject) => { fail = reject; });
+  const store = { admitOperation: () => late } as unknown as UsageStore;
+  const warnings: unknown[] = [];
+  context.mock.method(console, 'warn', (line: unknown) => { warnings.push(line); });
+  const recorder = new InteractiveUsageRecorder({
+    turn,
+    assignment,
+    requestedModel: assignment.model!,
+    operationId: 'msg_late',
+    executionId: 'exec_late_1',
+    store,
+    writeBudgetMs: 5,
+    now: () => 6_000_000,
+  });
+
+  const admitted = recorder.admit();
+  context.mock.timers.tick(5);
+  await admitted;
+  const timedOut = '[usage] admission persistence timed_out; model execution will continue';
+  assert.deepEqual(warnings, [timedOut]);
+  fail(new TypeError('private store detail'));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(warnings, [timedOut, '[usage] admission persistence failed after timed_out: TypeError']);
+});
+
 test('coding worker usage is recorded once on the turn, under the coding model', async () => {
   const store = new SqliteUsageStore(':memory:');
   const result = success({
