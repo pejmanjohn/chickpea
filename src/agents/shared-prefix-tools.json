@@ -497,7 +497,7 @@
   },
   {
    "name": "test_connection",
-   "description": "Check that one of an editable Agent's saved connections works, with its saved credential. An API connection gets one GET to `path` on its first host, or to its first path prefix when `path` is omitted; `path` must be inside the connection, for example /v1/me. An MCP connection lists its tools. Returns kind: ok, key_rejected (401), not_permitted (403), path_not_found (404), unreachable (network error, timeout or 5xx) or inconclusive, with the HTTP status and a short redacted detail; an MCP ok also lists its tools. Nothing is written and the credential is never returned.",
+   "description": "Check that one of an editable Agent's saved connections works, with its saved credential. An API connection gets one GET to `path` on its first host, or to its first path prefix when `path` is omitted; `path` must be inside the connection, for example /v1/me. An MCP connection lists its tools. Returns kind: ok, key_rejected (401), not_permitted (403), path_not_found (404), unreachable (network error, timeout or 5xx) or inconclusive, with the HTTP status and a short redacted detail; an MCP ok also lists its tools. Nothing is written and the credential is never returned. After request_setup, call it only once get_operation reports the setup completed.",
    "eager_input_streaming": true,
    "input_schema": {
     "type": "object",
@@ -5673,7 +5673,7 @@
    },
    {
     "name": "get_operation",
-    "description": "Read the durable result of one operation or confirmation proposal owned by the requester.",
+    "description": "Read the durable result of one operation or confirmation proposal owned by the requester, or a setup link's status by its setupOperationId.",
     "eager_input_streaming": true,
     "input_schema": {
      "type": "object",
