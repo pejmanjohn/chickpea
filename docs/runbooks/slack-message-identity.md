@@ -366,14 +366,16 @@ Slack holds it:
 
 The copy is kept in the set's `ui_surfaces` row (`resolution_json`), up to
 64 KiB, and lives as long as the row. A larger answer is read back on every
-redraw. If the answer has no room for the status line (50 blocks), the
-card is redrawn without it.
+redraw. If the answer has no room for the status lines (50 blocks), the
+card is redrawn without them.
 
 A redraw that edits nothing logs one line with no message content: `card
 set redraw failed` with Slack's error code when Slack refused the edit, or
 `card set redraw skipped` with a reason (`read_budget`, `read_rate_limited`,
 `read_failed`, `not_in_thread`, `set_not_in_message`, `block_check`,
-`block_limit`) when it sent none. It never undoes the click or the outcome.
+`block_limit`) when it sent none. A `block_check` skip is preceded by one
+line naming the Block Kit check's issue paths, also without content. It
+never undoes the click or the outcome.
 The next redraw draws every card from the stored set again. A redraw that
 succeeds logs nothing.
 

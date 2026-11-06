@@ -12,7 +12,7 @@ import { createDisplayTools } from '../src/slack/ui/display-tools.ts';
 import type { SlackUiMessage } from '../src/slack/ui/interaction-payload.ts';
 import { deliverInteractiveSurfaces, type UiSurfaceMessenger } from '../src/slack/ui/host-surfaces.ts';
 import { validatePresentCards } from '../src/slack/ui/presentation-tools.ts';
-import { renderCardSet, renderCards } from '../src/slack/ui/render-display.ts';
+import { CARD_STATUS_BLOCK, CARD_STATUS_LINES, renderCardSet, renderCards } from '../src/slack/ui/render-display.ts';
 import {
   displaySurfaceId,
   uiBlockId,
@@ -60,7 +60,7 @@ const requestButtons = (card: Block) => ((card.actions ?? []) as Block[])
 
 /** The status lines under a set: one context block per entry, blocks .20 to .29, so each sits on its own line. */
 const statusLines = (blocks: readonly Block[], surfaceId: string) => {
-  const ids = new Set(Array.from({ length: 10 }, (_, index) => uiBlockId('ui', surfaceId, 20 + index)));
+  const ids = new Set(Array.from({ length: CARD_STATUS_LINES }, (_, index) => uiBlockId('ui', surfaceId, CARD_STATUS_BLOCK + index)));
   return blocks.filter((block) => ids.has(String(block.block_id))).map((block) => {
     const elements = block.elements as Array<{ text: string }>;
     assert.equal(elements.length, 1, 'one entry per status line');
@@ -200,8 +200,8 @@ const FOOTER_BLOCK = { type: 'context', block_id: 'Ft1', elements: [{ type: 'mrk
 
 function drawn(message: SlackUiMessage, record: UiSurfaceRecord): { blocks: Block[] } {
   const result = cardSetMessageBlocks(message, record);
-  assert.equal(typeof result, 'object', `redrawn, not skipped (${String(result)})`);
-  return result as { blocks: Block[] };
+  if (typeof result === 'string') assert.fail(`redrawn, not skipped (${result})`);
+  return result;
 }
 
 function answerMessage(record: UiSurfaceRecord): SlackUiMessage {
@@ -587,11 +587,16 @@ test('a refused redraw logs Slack\'s error code and nothing of the message', asy
 test('a redraw that edits nothing says why in one line: no read budget, a failed read, or a message without the set', async (t) => withOutcomeTool(async ({ state, set }) => {
   const warn = t.mock.method(console, 'warn', () => {});
   const update = async () => assert.fail('nothing to edit');
-  const reasons = async (read: () => Promise<SlackUiMessage | string>, surface: UiSurfaceRecord = set) => {
+  const reasons = async (read: Parameters<typeof redrawCardSet>[0]['read'], surface: UiSurfaceRecord = set) => {
     warn.mock.resetCalls();
-    assert.equal(await redrawCardSet({ state, surface, read: read as never, update }), false);
+    assert.equal(await redrawCardSet({ state, surface, read, update }), false);
     return warn.mock.calls.map((call) => call.arguments);
   };
+  const limited = createSlackReadGate({ state, workspaceId: 'T2', gated: true });
+  const refusing = { conversations: { replies: async () => { throw { code: 'slack_webapi_rate_limited_error', retryAfter: 30 }; } } };
+  assert.deepEqual(await reasons(() => readCardSetMessage(refusing, limited, set)),
+    [['[chickpea] card set redraw skipped', { reason: 'read_rate_limited' }]]);
+  assert.equal((await limited.reserve('conversations.replies')).ok, false, 'the rate limit holds the workspace\'s next read');
   const gate = createSlackReadGate({ state, workspaceId: 'T1', gated: true });
   await gate.reserve('conversations.replies');
   assert.deepEqual(await reasons(() => readCardSetMessage(threadClient(answerMessage(set)), gate, set)),
