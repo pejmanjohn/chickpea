@@ -31,6 +31,9 @@ import {
 } from '../src/slack/transport/types.ts';
 
 const NOW = 1_800_000_000_000;
+// Slack refuses a user group description over 140 characters with description_too_long
+// (measured on a QA workspace, 2026-11-06; Slack's method docs give no number).
+const SLACK_USER_GROUP_DESCRIPTION_LIMIT = 140;
 
 test('Agent handles normalize predictably and suggest collision-free alternatives', () => {
   assert.equal(normalizeAgentHandle('  Support & Success!  '), 'support-success');
@@ -513,6 +516,102 @@ test('a handle edit racing Slack creation converges on one updated user group', 
     assert.equal(reconciled.slackPresence?.userGroupId, 'S1');
     assert.equal(transport.groups.length, 1);
     assert.equal(transport.groups[0]?.handle, 'support-pro');
+  } finally {
+    config.close();
+  }
+});
+
+// An Agent description longer than Slack allows, as a coding agent might write it.
+const LONG_DESCRIPTION = 'Answers questions about the support queue, drafts replies for the team, '
+  + 'escalates urgent tickets to the on-call engineer, and keeps a running summary of open incidents '
+  + 'so anyone joining the Channel can catch up quickly.';
+
+function assertFittedUserGroupDescription(sent: string | undefined): void {
+  assert.ok(sent !== undefined);
+  assert.ok([...sent].length <= SLACK_USER_GROUP_DESCRIPTION_LIMIT, `${[...sent].length} characters`);
+  assert.ok(sent.endsWith('…'));
+  const kept = sent.slice(0, -1);
+  assert.ok(LONG_DESCRIPTION.startsWith(kept));
+  assert.match(LONG_DESCRIPTION.slice(kept.length), /^\s/, 'the cut falls between words');
+}
+
+test('a long Agent description is fitted to Slack\'s limit when its user group is created', async () => {
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const transport = new FakeSlackTransport();
+  try {
+    await config.createAgent({ ...agent('agent_support', 'Support', 'support'), description: LONG_DESCRIPTION });
+    const reconciled = await new AgentPresenceReconciler({ config, transport, announce: null, now: () => NOW })
+      .reconcile('agent_support');
+
+    assert.equal(reconciled.slackPresence?.health, 'healthy');
+    assert.equal(reconciled.description, LONG_DESCRIPTION, 'the Agent keeps its description as written');
+    assertFittedUserGroupDescription(transport.groups[0]?.description);
+  } finally {
+    config.close();
+  }
+});
+
+test('a long Agent description is fitted on update, and the fitted copy is not drift on later reconciles', async () => {
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const transport = new FakeSlackTransport();
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    const reconciler = new AgentPresenceReconciler({ config, transport, announce: null, now: () => NOW });
+    const published = await reconciler.reconcile('agent_support');
+    await config.updateAgent(published.id, { description: LONG_DESCRIPTION }, published.revision);
+
+    const updated = await reconciler.reconcile('agent_support');
+    assert.equal(updated.slackPresence?.health, 'healthy');
+    assert.equal(transport.updateCalls, 1);
+    assertFittedUserGroupDescription(transport.groups[0]?.description);
+
+    await reconciler.reconcile('agent_support');
+    assert.equal(transport.updateCalls, 1, 'an unchanged long description sends Slack no update');
+  } finally {
+    config.close();
+  }
+});
+
+test('a description of wide characters is fitted by Slack\'s character count without splitting one', async () => {
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const transport = new FakeSlackTransport();
+  try {
+    const fits = '🌱'.repeat(SLACK_USER_GROUP_DESCRIPTION_LIMIT);
+    await config.createAgent({ ...agent('agent_support', 'Support', 'support'), description: fits });
+    const reconciler = new AgentPresenceReconciler({ config, transport, announce: null, now: () => NOW });
+    const published = await reconciler.reconcile('agent_support');
+    assert.equal(transport.groups[0]?.description, fits, 'a description at the limit is sent whole');
+
+    await config.updateAgent(published.id, { description: `${fits}🌱` }, published.revision);
+    await reconciler.reconcile('agent_support');
+    const sent = transport.groups[0]?.description ?? '';
+    assert.equal(sent, `${'🌱'.repeat(SLACK_USER_GROUP_DESCRIPTION_LIMIT - 1)}…`);
+    assert.ok(sent.isWellFormed());
+  } finally {
+    config.close();
+  }
+});
+
+test('retry adopts the group an interrupted create made with a fitted long description', async () => {
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const transport = new FakeSlackTransport();
+  transport.ambiguousCreate = true;
+  try {
+    await config.createAgent({ ...agent('agent_support', 'Support', 'support'), description: LONG_DESCRIPTION });
+    const reconciler = new AgentPresenceReconciler({ config, transport, announce: null, now: () => NOW });
+    await assert.rejects(
+      () => reconciler.publish({
+        workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_SUPPORT',
+        actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA',
+      }),
+      { code: 'user_group_create_ambiguous' },
+    );
+
+    transport.ambiguousCreate = false;
+    const recovered = await reconciler.reconcile('agent_support');
+    assert.equal(recovered.slackPresence?.userGroupId, 'S1');
+    assert.equal(transport.createCalls, 1);
+    assert.equal(transport.updateCalls, 0);
   } finally {
     config.close();
   }
@@ -1163,6 +1262,7 @@ class FakeSlackTransport implements SlackTransport {
   actorIsMember = true;
   joinCalls = 0;
   createCalls = 0;
+  updateCalls = 0;
   createError: Error | undefined;
   enableError: Error | undefined;
   disableError: Error | undefined;
@@ -1192,6 +1292,7 @@ class FakeSlackTransport implements SlackTransport {
   async listUserGroups() { return this.groups.map((group) => ({ ...group })); }
   async createUserGroup(input: { name: string; handle: string; description?: string }) {
     this.createCalls += 1;
+    this.refuseLongDescription('usergroups.create', input.description);
     if (this.nameTaken(input.name)) throw new SlackTransportError('usergroups.create', 'name_already_exists');
     const group: SlackUserGroup = {
       id: `S${this.groups.length + 1}`,
@@ -1211,6 +1312,8 @@ class FakeSlackTransport implements SlackTransport {
     return { ...group };
   }
   async updateUserGroup(id: string, patch: Partial<SlackUserGroup>) {
+    this.updateCalls += 1;
+    this.refuseLongDescription('usergroups.update', patch.description);
     const group = this.requiredGroup(id);
     if (this.groups.some((other) => other.id !== id && other.handle === patch.handle)) {
       throw new SlackTransportError('usergroups.update', 'handle_already_exists');
@@ -1238,6 +1341,12 @@ class FakeSlackTransport implements SlackTransport {
     if (this.postError) throw this.postError;
     this.posts.push(input);
     return { channelId: input.channelId, ts: `1800000000.${String(this.posts.length).padStart(6, '0')}` };
+  }
+
+  private refuseLongDescription(operation: string, description: string | undefined): void {
+    if (description !== undefined && [...description].length > SLACK_USER_GROUP_DESCRIPTION_LIMIT) {
+      throw new SlackTransportError(operation, 'description_too_long');
+    }
   }
 
   private nameTaken(name: string, exceptId?: string): boolean {
