@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 
+import { Hono } from 'hono';
+
+import { createAdminRoutes } from '../src/admin/routes.ts';
 import type { AuthPrincipal } from '../src/auth/types.ts';
 import { connectionAccountOAuthRef } from '../src/config/api-oauth.ts';
 import {
@@ -68,11 +71,22 @@ async function harness(t: { after: (fn: () => void) => void }, registration: 'ci
   const provider = fakeMcpOAuthProvider(registration);
   const starts: Array<{ input: StartMcpOAuthInput; dependencies: McpOAuthDependencies }> = [];
   const discoveredWith: string[] = [];
+  // The setup router's next read of this key fails once, as a storage outage would.
+  let failingRead: string | undefined;
   const app = createManagementSetupRoutes({
     identity,
     config,
     management,
-    settings,
+    settings: new Proxy(settings, {
+      get(target, property, receiver) {
+        if (property !== 'getSetting') return Reflect.get(target, property, receiver);
+        return async (key: string) => {
+          if (key !== failingRead) return target.getSetting(key);
+          failingRead = undefined;
+          throw new Error('settings store unavailable');
+        };
+      },
+    }),
     authenticatePrincipal: async () => principal,
     startMcpOAuth: (input, dependencies) => {
       starts.push({ input, dependencies });
@@ -156,9 +170,26 @@ async function harness(t: { after: (fn: () => void) => void }, registration: 'ci
   }
 
   return {
-    app, config, management, settings, owner, provider, starts, discoveredWith,
+    app, config, management, settings, identity, owner, provider, starts, discoveredWith,
     catalogSetup, continueToProvider, pendingAccounts,
+    failNextRead: (key: string) => { failingRead = key; },
   };
+}
+
+/** The setup router, then Admin's routes, in src/app.ts order. Admin's /oauth/callback checks no setup cookie. */
+function withAdmin(h: Awaited<ReturnType<typeof harness>>): Hono {
+  const app = new Hono();
+  app.route('/', h.app);
+  app.route('/', createAdminRoutes({
+    store: h.config,
+    settings: h.settings,
+    management: h.management,
+    identity: h.identity,
+    oauthFetch: h.provider.fetchFn,
+    discoverMcp: async () => ({ tools: [{ name: 'search_issues' }] }),
+    identifyMcp: async () => undefined,
+  }));
+  return app;
 }
 
 function pendingKeyFor(accountId: string): string {
@@ -252,7 +283,7 @@ test('an attempt started with the per-setup callback before upgrade still comple
     `${SHARED_CALLBACK}?state=${encodeURIComponent(earlier.state)}&code=provider-code`,
     { headers: { cookie: setup.cookie } },
   );
-  assert.equal(shared.status, 404);
+  assert.equal(shared.status, 403);
   assert.ok(await h.settings.getSetting(pendingKeyFor(pending.id)));
 
   const callback = await h.app.request(
@@ -315,4 +346,52 @@ test('a setup state completes only its own setup, and an Admin state completes n
   assert.equal(own.headers.get('location'), `/setup/${first.setupId}`);
   assert.equal((await h.management.getSetup(first.setupId))?.status, 'completed');
   assert.equal((await h.management.getSetup(second.setupId))?.status, 'authorizing');
+});
+
+test('/oauth/callback refuses an earlier setup attempt registered at its own callback, so Admin never completes it', async (t) => {
+  const h = await harness(t, 'dcr');
+  const app = withAdmin(h);
+  const setup = await h.catalogSetup('linear_registered_elsewhere');
+  await h.continueToProvider(setup);
+  const { input, dependencies } = h.starts[0]!;
+  const { setupOperationId: _setupOperationId, ...earlierInput } = input;
+  const earlier = await startMcpOAuthAuthorization(
+    { ...earlierInput, callbackUrl: `${ORIGIN}/setup/${setup.setupId}/oauth/mcp/callback` },
+    { ...dependencies, fetchFn: h.provider.fetchFn },
+  );
+  const [pending] = await h.pendingAccounts();
+  assert.ok(pending);
+
+  // A browser that never opened the setup link sends the state where it was not registered.
+  const refused = await app.request(
+    `${SHARED_CALLBACK}?state=${encodeURIComponent(earlier.state)}&code=provider-code`,
+  );
+  assert.equal(refused.status, 403);
+  assert.ok(await h.settings.getSetting(pendingKeyFor(pending.id)));
+  assert.deepEqual(h.provider.exchanges, []);
+  assert.deepEqual((await h.pendingAccounts()).map(({ id }) => id), [pending.id]);
+});
+
+test('a setup state whose read fails on /oauth/callback fails closed instead of reaching Admin', async (t) => {
+  const h = await harness(t, 'cimd');
+  const app = withAdmin(h);
+  const setup = await h.catalogSetup('linear_failed_read');
+  const state = (await h.continueToProvider(setup)).searchParams.get('state')!;
+  const [pending] = await h.pendingAccounts();
+  assert.ok(pending);
+  const callback = `${SHARED_CALLBACK}?state=${encodeURIComponent(state)}&code=provider-code`;
+
+  h.failNextRead(pendingKeyFor(pending.id));
+  const failed = await app.request(callback);
+  assert.equal(failed.status, 500);
+  assert.ok(await h.settings.getSetting(pendingKeyFor(pending.id)));
+  assert.deepEqual(h.provider.exchanges, []);
+  assert.deepEqual((await h.pendingAccounts()).map(({ id }) => id), [pending.id]);
+
+  // The attempt survives: without the setup's cookie it is refused, with it it completes.
+  assert.equal((await app.request(callback)).status, 403);
+  const completed = await app.request(callback, { headers: { cookie: setup.cookie } });
+  assert.equal(completed.status, 303, await completed.clone().text());
+  assert.equal(completed.headers.get('location'), `/setup/${setup.setupId}`);
+  assert.equal((await h.management.getSetup(setup.setupId))?.status, 'completed');
 });

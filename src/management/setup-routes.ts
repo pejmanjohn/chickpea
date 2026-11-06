@@ -253,11 +253,17 @@ export function createManagementSetupRoutes(
 
   // Setup links return through the one callback Admin uses. This router is
   // mounted before Admin, so inspect the stored state without consuming it
-  // and handle only management continuations.
+  // and handle only management continuations. Admin's handler checks no
+  // setup cookie, so only an attempt that registered this callback and names
+  // no setup goes on to it.
   app.get('/oauth/callback', async (c, next) => {
-    const setupId = (await setupOAuthContinuation(c, options))?.setupOperationId;
-    if (!setupId || !SETUP_ID_PATTERN.test(setupId)) return next();
+    const continuation = await setupOAuthContinuation(c, options);
+    if (!continuation) return next();
+    const setupId = continuation.setupOperationId;
+    const registeredHere = new URL(continuation.callbackUrl).pathname === '/oauth/callback';
+    if (!setupId && registeredHere) return next();
     setupResponseHeaders(c);
+    if (!setupId || !registeredHere || !SETUP_ID_PATTERN.test(setupId)) return genericDenied(c);
     return completeManagementMcpOAuthCallback(c, setupId, options, now());
   });
 
@@ -1154,8 +1160,11 @@ async function setupOAuthContinuation(
   try {
     // The same clock as the start and completion that write and consume it.
     return await readMcpOAuthSetupContinuation(state, mcpOAuthDependencies(setupDependencies(c, options)));
-  } catch {
-    return undefined;
+  } catch (error) {
+    // Only a state no live attempt holds goes on. A failed read must not
+    // pass a setup's state to Admin's handler, which checks no setup cookie.
+    if (error instanceof McpOAuthError) return undefined;
+    throw error;
   }
 }
 
