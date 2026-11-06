@@ -41,7 +41,7 @@ export interface ConnectClient {
   language: 'bash' | 'json';
   /** How to start sign-in once the server is configured. */
   login: string;
-  /** Whether the client usually needs a restart or reload to see a new server. */
+  /** How the client loads a new server: a new session or thread, a reload, or nothing. */
   restart: string;
 }
 
@@ -55,8 +55,8 @@ export const CONNECT_CLIENTS: readonly ConnectClient[] = Object.freeze([
     where: 'terminal',
     language: 'bash',
     snippet: (url) => `claude mcp add --transport http --scope user ${MCP_SERVER_NAME} ${url}`,
-    login: `Run \`/mcp\` inside Claude Code, choose \`${MCP_SERVER_NAME}\`, and follow the browser sign-in.`,
-    restart: 'Servers added from the terminal appear in the next Claude Code session. User scope makes it available outside the installation checkout. Use project scope only when explicitly requested.',
+    login: `Run \`claude mcp login ${MCP_SERVER_NAME}\` in a terminal and finish the browser sign-in. It prints \`Authenticated with "${MCP_SERVER_NAME}".\` when it is done. A Claude Code session that lists \`${MCP_SERVER_NAME}\` can sign in from \`/mcp\` instead.`,
+    restart: 'A server added from the terminal loads when a new Claude Code session starts, not in the session already running. In a terminal, exit and run `claude` again. `claude --continue` in the same directory resumes this conversation with Chickpea loaded. User scope makes it available outside the installation checkout. Use project scope only when explicitly requested.',
   },
   {
     id: 'codex',
@@ -64,8 +64,8 @@ export const CONNECT_CLIENTS: readonly ConnectClient[] = Object.freeze([
     where: 'terminal',
     language: 'bash',
     snippet: (url) => `codex mcp add ${MCP_SERVER_NAME} --url ${url}`,
-    login: `Use the browser tab Codex opens and wait for the command to finish. Run codex mcp login ${MCP_SERVER_NAME} only if sign-in is still needed afterward.`,
-    restart: 'A running Codex session loads the server on its next start.',
+    login: `Codex opens the browser sign-in itself. Wait for the command to print "Successfully logged in". If it prints "Browser launch failed", the person opens the URL it printed. Run codex mcp login ${MCP_SERVER_NAME} only if sign-in is still needed afterward.`,
+    restart: 'A new Codex thread loads the server; the thread already running does not.',
   },
   {
     id: 'cursor',
@@ -101,7 +101,7 @@ export const CONNECT_CLIENTS: readonly ConnectClient[] = Object.freeze([
     language: 'bash',
     snippet: (url) => `gemini mcp add --transport http ${MCP_SERVER_NAME} ${url}`,
     login: 'Gemini CLI opens the browser sign-in the first time the server is used.',
-    restart: 'The server is available in the next Gemini CLI session.',
+    restart: 'A server added from the terminal loads when a new Gemini CLI session starts. In a terminal, exit and run `gemini` again. `gemini --resume latest` in the same directory resumes this conversation. `/mcp reload` reconnects the servers the session already has and does not load a new one.',
   },
   {
     id: 'json',
@@ -166,15 +166,23 @@ export function firstAgentPrompt(origin: string): string {
   return `${connectPrompt(origin)}, then help me create my first Chickpea Agent.`;
 }
 
+/**
+ * What the person pastes where Chickpea is loaded, and what the agent reports
+ * before it stops. Shared by the Claude app path and step 4, because the old
+ * conversation never sees step 5.
+ */
+const HAND_OFF_PASTE = 'paste `Call Chickpea\'s inspect_workspace and tell me the workspace name and who I am signed in as.` That call is the step 5 proof. If they asked for their first Agent and no install guide owns the first teammate, they also add `Then help me create my first Chickpea Agent.`';
+const HAND_OFF_REPORT = 'Report the three step 5 lines now, with Tested as pending';
+
 function fence(language: string, body: string): string {
   return `\`\`\`${language}\n${body}\n\`\`\``;
 }
 
 /**
  * The guide the coding agent reads. Written to the agent in the same voice as
- * the install guides: detect the client, write its config, sign in, restart if
- * the client needs it, prove the connection with one read-only call, then ask
- * about the first teammate.
+ * the install guides: detect the client, write its config, sign in, hand off
+ * to a new session or thread if the client needs it, prove the connection
+ * with one read-only call, then ask about the first teammate.
  */
 export function connectMarkdown(origin: string, env?: Record<string, unknown>): string {
   const url = connectMcpUrl(origin);
@@ -232,7 +240,8 @@ export function connectMarkdown(origin: string, env?: Record<string, unknown>): 
     `- Give them this link. It opens Claude's Add custom connector dialog with Chickpea filled in: ${claudeConnectorLink(url)}`,
     `- On a Claude Team or Enterprise plan, only an Owner can add connectors. An Owner uses this link instead to add Chickpea for the whole organization: ${claudeConnectorLink(url, 'organization')} A member asks an Owner to do that, then finds Chickpea under Customize → Connectors.`,
     '- Ask them to click Add, then Connect, sign in with Slack, and click Allow.',
-    '- Ask them to start a new conversation, which loads the connector, and paste `Call Chickpea\'s inspect_workspace and tell me the workspace name and who I am signed in as.` That call is the step 5 proof. Steps 3 and 4 do not apply here.',
+    `- Ask them to start a new conversation, which loads the connector, and ${HAND_OFF_PASTE}`,
+    `- ${HAND_OFF_REPORT} until the new conversation runs the check, then stop. Steps 3 and 4 do not apply here.`,
     '',
     '### Every other client',
     '',
@@ -246,21 +255,30 @@ export function connectMarkdown(origin: string, env?: Record<string, unknown>): 
     '',
     '## 3. Sign in',
     '',
-    'Adding the server may already start sign-in. Keep that command running and use the browser tab it opens. Do not open a second copy of the authorization URL or start another login while the first is pending. Open the printed URL once only if no tab opened. If the command already reports successful login, continue to step 4.',
+    'Adding the server may start sign-in. If the command prints an authorization URL, that URL is single-use and the client already opened it in the browser. Do not show the URL to the person unless the command reports that it could not open the browser. Do not open the URL again, and do not start a second login while the first one is pending. Wait for the command to finish before you report anything. If it reports a successful login, continue to step 4.',
     '',
-    'If sign-in is still needed after adding the server, start your client\'s sign-in once. The browser shows Slack sign-in for the workspace where Chickpea is installed, then Chickpea\'s consent screen with one permission: manage this Chickpea workspace. Ask the person to complete Slack sign-in and click Allow in that tab, then wait for the client to report the result.',
+    `If sign-in is still needed after adding the server, start your client's sign-in once. In Claude Code, ask the person to run \`claude mcp login ${MCP_SERVER_NAME}\` themselves: it needs an interactive terminal, and your shell tool has none. The browser shows Slack sign-in for the workspace where Chickpea is installed, then Chickpea\'s consent screen with one permission: manage this Chickpea workspace. Ask the person to complete Slack sign-in and click Allow in that tab, then wait for the client to report the result.`,
     '',
-    'If an old or duplicate tab shows connection refused at localhost or 127.0.0.1 after consent, check the client\'s result first. A successful login can close the client\'s temporary callback listener. Close the leftover tab and continue to the read-only check in step 5 if the client reports success. If login failed or timed out, preserve the first error and retry once with a fresh login URL. Do not reuse the old authorization or callback URL, or remove working credentials to retry.',
+    'If a leftover tab shows connection refused at localhost or 127.0.0.1, go by the client\'s own result and retry once with a fresh login only if that result is a failure.',
     '',
     `If the server answers 404 at \`${MCP_RESOURCE_PATH}\` or your client cannot find its OAuth metadata, Chickpea\'s Slack setup is not finished yet. Send the person to ${admin} to finish it, leave the configuration in place, and stop here.`,
     '',
-    '## 4. Restart if your client needs it',
+    '## 4. Open a new session or thread if your client needs it',
     '',
-    'Most clients load MCP servers at startup. If the server is not listed after you added it, tell the person the one remaining action (restart the session or reload the window) and wait. Do not restart their session yourself, and do not report the connection as working until step 5 succeeds.',
+    'Most clients load MCP servers only when a session or thread starts, so the one you are in may not see Chickpea yet. If you cannot call Chickpea\'s tools after sign-in, do these steps in order:',
+    '',
+    '1. If your client is Cursor, VS Code, or Windsurf, ask the person to do what its Loading line above says, then go to step 5 in this conversation.',
+    `2. ${HAND_OFF_REPORT} until the new session or thread runs the check.`,
+    '3. Tell the person how to load Chickpea:',
+    '   - Claude Code or Gemini CLI in a terminal: exit, then run `claude --continue` or `gemini --resume latest` in the same directory. That resumes this conversation with Chickpea loaded.',
+    '   - Codex: start a new thread. Restarting the app and reopening this thread also works and keeps the conversation.',
+    '   - Any other client: start a new session or thread.',
+    `4. Ask them to ${HAND_OFF_PASTE}`,
+    '5. Stop. Do not open the new session or thread yourself. If an install guide sent you here, go back to it and report the same lines there.',
     '',
     '## 5. Prove the connection',
     '',
-    'Call `inspect_workspace` with no changes. Then report three separate lines:',
+    'Call `inspect_workspace` with no changes. The first Chickpea call may show an approval prompt in your client. If it does, ask the person to approve it. Then report three separate lines:',
     '',
     '1. Configured: which client and where the configuration was written.',
     '2. Signed in: whether the browser sign-in and consent completed.',

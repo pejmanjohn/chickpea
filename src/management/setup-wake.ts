@@ -17,6 +17,11 @@ const WAKING_ACTIONS: ReadonlySet<ManagementSetupRecord['action']> = new Set([
   'managed_connection',
 ]);
 
+/** An API or MCP key or sign-in, or a catalog or managed connector sign-in. */
+export function isConnectionSetup(setup: Pick<ManagementSetupRecord, 'action'>): boolean {
+  return WAKING_ACTIONS.has(setup.action);
+}
+
 /**
  * The Agent a finished setup wakes, or undefined when it posts its notice
  * instead. Only an Agent that asked for its own connection from a Slack
@@ -30,7 +35,7 @@ export function setupWakeAgent(
   completedByUserId: string = setup.actorUserId,
 ): { agentId: string; agentName: string } | undefined {
   const { origin, target } = setup;
-  if (!WAKING_ACTIONS.has(setup.action) || origin.kind !== 'slack') return undefined;
+  if (!isConnectionSetup(setup) || origin.kind !== 'slack') return undefined;
   if (!target.agentId || origin.agentId !== target.agentId) return undefined;
   if (completedByUserId !== setup.actorUserId) return undefined;
   return { agentId: target.agentId, agentName: target.agentName ?? target.targetLabel };

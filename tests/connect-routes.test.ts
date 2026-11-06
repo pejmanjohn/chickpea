@@ -195,6 +195,113 @@ test('the guide names every supported client and proves the connection before cl
   assert.ok(body.includes(`${ORIGIN}/admin`), 'points at Admin to finish setup');
 });
 
+const PROOF_LINE = 'Call Chickpea\'s inspect_workspace and tell me the workspace name and who I am signed in as.';
+const FIRST_AGENT_ADD_ON = /If they asked for their first Agent and no install guide owns the first teammate, they also add `Then help me create my first Chickpea Agent\.`/;
+
+function client(id: string) {
+  return CONNECT_CLIENTS.find((candidate) => candidate.id === id)!;
+}
+
+function guideStep(body: string, step: number): string {
+  return body.slice(body.indexOf(`## ${step}.`), body.indexOf(`## ${step + 1}.`));
+}
+
+test('a client that loads servers per session or thread gets a new one, not a restart', async () => {
+  const body = await (await connectMd(`${ORIGIN}/connect.md`)).text();
+  const step4 = guideStep(body, 4);
+
+  assert.match(step4, /^## 4\. Open a new session or thread if your client needs it$/m);
+  assert.match(step4, /Codex: start a new thread\./);
+  assert.ok(step4.includes(`\`${PROOF_LINE}\``), 'a line to paste into the new session or thread');
+  assert.match(client('claude-code').restart, /new Claude Code session/);
+  assert.doesNotMatch(client('claude-code').restart, /thread/, 'Claude Code has sessions, not threads');
+  assert.match(client('codex').restart, /new Codex thread/);
+  assert.doesNotMatch(body, /restart the session|next start|do not need to quit/i, 'nothing tells the person to restart, or that quitting is never needed');
+});
+
+// The old conversation never sees step 5: the pasted check runs in the new one.
+test('step 4 is a list that reports Tested as pending and stops', async () => {
+  const step4 = guideStep(await (await connectMd(`${ORIGIN}/connect.md`)).text(), 4);
+  const items = step4.split('\n').filter((line) => /^\d\. /.test(line));
+  assert.equal(items.length, 5, step4);
+  assert.match(items[0]!, /Cursor, VS Code, or Windsurf.*go to step 5 in this conversation/);
+  assert.match(items[1]!, /Report the three step 5 lines now, with Tested as pending/);
+  assert.match(items.at(-1)!, /^5\. Stop\. Do not open the new session or thread yourself\. If an install guide sent you here, go back to it/);
+});
+
+// A new terminal session is the same command run again, and the resume flag
+// keeps the conversation (claude --help, gemini --help).
+test('terminal clients rerun their command, and the resume flag keeps the conversation', async () => {
+  const step4 = guideStep(await (await connectMd(`${ORIGIN}/connect.md`)).text(), 4);
+  assert.match(step4, /Claude Code or Gemini CLI in a terminal: exit, then run `claude --continue` or `gemini --resume latest` in the same directory\. That resumes this conversation with Chickpea loaded\./);
+  assert.match(client('claude-code').restart, /`claude --continue` in the same directory resumes this conversation/);
+  assert.match(client('gemini-cli').restart, /`gemini --resume latest` in the same directory resumes this conversation/);
+});
+
+// Gemini CLI 0.36 /mcp reload restarts the servers the session loaded at
+// start; it does not read a server `gemini mcp add` wrote afterward.
+test('Gemini CLI\'s /mcp reload is named for what it reloads', () => {
+  assert.match(client('gemini-cli').restart, /`\/mcp reload` reconnects the servers the session already has and does not load a new one\./);
+});
+
+// Claude Code 2.1.311 `claude mcp login` stops without a terminal on stdin,
+// and a running session does not list a server added from the terminal. Admin
+// shows the login line to people, so the agent-only part lives in step 3.
+test('Claude Code signs in with claude mcp login in the person\'s terminal, /mcp as the fallback', async () => {
+  const login = client('claude-code').login;
+  assert.match(login, /^Run `claude mcp login chickpea` in a terminal and finish the browser sign-in\./);
+  assert.match(login, /prints `Authenticated with "chickpea"\.`/);
+  assert.doesNotMatch(login, /shell tool|stdin/, 'nothing about the agent in the line Admin shows');
+  assert.match(login, /A Claude Code session that lists `chickpea` can sign in from `\/mcp` instead\./);
+  const body = await (await connectMd(`${ORIGIN}/connect.md`)).text();
+  assert.match(guideStep(body, 3), /In Claude Code, ask the person to run `claude mcp login chickpea` themselves: it needs an interactive terminal, and your shell tool has none\./);
+});
+
+test('both hand-off paths ask for the first Agent the same way, unless an install guide owns it', async () => {
+  const body = await (await connectMd(`${ORIGIN}/connect.md`)).text();
+  const claudeApp = body.slice(body.indexOf('### Claude app'), body.indexOf('### Every other client'));
+  for (const [name, section] of [['Claude app', claudeApp], ['step 4', guideStep(body, 4)]] as const) {
+    assert.ok(section.includes(`\`${PROOF_LINE}\``), `${name}: the proof line`);
+    assert.match(section, FIRST_AGENT_ADD_ON, `${name}: the first-Agent add-on`);
+  }
+  assert.match(claudeApp, /Report the three step 5 lines now, with Tested as pending.*then stop\./);
+});
+
+// Production 2026-11-06: Codex printed its sign-in URL and opened the browser.
+// The agent showed the printed URL too; the second open landed on a dead
+// loopback callback after the first had already signed in.
+test('sign-in uses the tab the client opened and never relays its single-use URL', async () => {
+  const body = await (await connectMd(`${ORIGIN}/connect.md`)).text();
+  const step3 = body.slice(body.indexOf('## 3.'), body.indexOf('## 4.'));
+
+  assert.match(step3, /single-use/);
+  assert.match(step3, /already opened it in the browser/);
+  assert.match(step3, /Do not show the URL to the person unless the command reports that it could not open the browser/);
+  assert.match(step3, /Wait for the command to finish before you report anything/);
+  const leftover = step3.split('\n\n').find((paragraph) => /127\.0\.0\.1/.test(paragraph));
+  assert.ok(leftover, 'a leftover-tab note');
+  assert.equal(leftover.split(/(?<=\.) /).length, 1, 'the leftover-tab note is one sentence');
+
+  assert.match(client('codex').login, /Browser launch failed/);
+  assert.match(client('codex').login, /Successfully logged in/);
+});
+
+// Measured 2026-11-06: reopening the same Codex thread after an app restart
+// loads the server and keeps the thread's history.
+test('step 4 offers reopening a restored thread, after the new-thread default', async () => {
+  const step4 = guideStep(await (await connectMd(`${ORIGIN}/connect.md`)).text(), 4);
+  const newThread = step4.indexOf('Codex: start a new thread.');
+  const reopen = step4.search(/Restarting the app and reopening this thread also works and keeps the conversation\./);
+  assert.ok(newThread >= 0 && reopen > newThread, 'a new thread stays the default; reopening comes after it');
+});
+
+test('step 5 warns that the first Chickpea call may ask for approval', async () => {
+  const body = await (await connectMd(`${ORIGIN}/connect.md`)).text();
+  const step5 = body.slice(body.indexOf('## 5.'), body.indexOf('## 6.'));
+  assert.match(step5, /first Chickpea call may show an approval prompt/);
+  assert.match(step5, /ask the person to approve it/);
+});
+
 const CLAUDE_LINK = 'https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Chickpea&connectorUrl=https%3A%2F%2Fchickpea.example.test%2Fmcp';
 const CLAUDE_ORGANIZATION_LINK = 'https://claude.ai/admin-settings/connectors?modal=add-custom-connector&connectorName=Chickpea&connectorUrl=https%3A%2F%2Fchickpea.example.test%2Fmcp';
 
