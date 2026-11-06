@@ -1,18 +1,17 @@
+/**
+ * A card set rides in the Agent's answer message, so redrawing it rewrites
+ * that message with `chat.update`, which replaces every block. The set's own
+ * blocks come from its record; everything else (the answer, other
+ * components, the footer) is put back exactly as Slack holds it: from the
+ * click, else from the set's stored copy, else read from the thread.
+ */
 import { isRecord } from '../../security/content-validation.ts';
+import type { SlackStateStore } from '../claim-store.ts';
 import { isSlackRateLimitError, slackRetryAfterMs, type SlackReadGate } from '../read-budget.ts';
 import { checkSlackBlocks } from './block-kit-limits.ts';
 import type { SlackUiMessage } from './interaction-payload.ts';
 import { CARD_STATUS_BLOCK, renderCardSet } from './render-display.ts';
 import { uiBlockId, type UiSurfaceRecord } from './surface.ts';
-
-/**
- * A card set rides in the Agent's answer message, so redrawing it rewrites
- * that message with `chat.update`, which replaces every block. The set's own
- * blocks come from its record; everything else (the answer, other
- * components, the footer) is put back exactly as Slack holds it, read from
- * the click or from the thread.
- */
-export type CardSetMessage = SlackUiMessage;
 
 type Block = Record<string, unknown>;
 
@@ -30,11 +29,12 @@ export interface SlackRepliesClient {
 
 /**
  * The message with the set's card or carousel block and its status line
- * drawn from the record. Undefined when the message does not carry the set,
- * or the result would not pass the Block Kit checker.
+ * drawn from the record; the status line is left out when the message has no
+ * room for it. Undefined when the message does not carry the set, or the
+ * result would not pass the Block Kit checker.
  */
 export function cardSetMessageBlocks(
-  message: CardSetMessage,
+  message: SlackUiMessage,
   record: UiSurfaceRecord,
 ): { text?: string; blocks: Block[] } | undefined {
   const setId = uiBlockId('ui', record.id, 1);
@@ -49,7 +49,10 @@ export function cardSetMessageBlocks(
     console.error('[chickpea] card set redraw failed the Block Kit check', { issues: check.issues.slice(0, 5) });
     return undefined;
   }
-  const blocks = [...kept.slice(0, at), ...drawn, ...kept.slice(at + 1)];
+  const fits = kept.length - 1 + drawn.length <= MAX_MESSAGE_BLOCKS
+    ? drawn
+    : drawn.filter((block) => block.block_id !== statusId);
+  const blocks = [...kept.slice(0, at), ...fits, ...kept.slice(at + 1)];
   if (blocks.length > MAX_MESSAGE_BLOCKS) return undefined;
   return { ...(message.text !== undefined ? { text: message.text } : {}), blocks };
 }
@@ -67,7 +70,7 @@ export async function readCardSetMessage(
   client: SlackRepliesClient,
   gate: SlackReadGate,
   record: UiSurfaceRecord,
-): Promise<CardSetMessage | undefined> {
+): Promise<SlackUiMessage | undefined> {
   if (!(await gate.reserve('conversations.replies')).ok) return undefined;
   let response: unknown;
   try {
@@ -97,26 +100,44 @@ export async function readCardSetMessage(
 }
 
 /**
- * Redraw a card set inside its answer message. Returns whether Slack took
- * the edit; a failure is logged and never thrown, so it cannot undo the
- * click or the outcome that asked for it.
+ * Redraw a card set inside its answer message, from the clicked message,
+ * else the set's stored copy, else one read. What was sent becomes the copy
+ * (what was read or clicked, when Slack refused the edit), so the next
+ * redraw reads nothing. Returns whether Slack took the edit; a failure is
+ * logged and never thrown, so it cannot undo the click or the outcome that
+ * asked for it.
  */
 export async function redrawCardSet(input: {
+  state: Pick<SlackStateStore, 'executeUiSurface'>;
   surface: UiSurfaceRecord;
-  message: () => Promise<CardSetMessage | undefined>;
+  /** The message a direct click carried, as Slack holds it now. */
+  clicked?: SlackUiMessage;
+  read: () => Promise<SlackUiMessage | undefined>;
   update: (messageTs: string, rendered: { text?: string; blocks: Block[] }) => Promise<void>;
 }): Promise<boolean> {
+  const { surface } = input;
+  const keep = async (message: SlackUiMessage) => {
+    try {
+      await input.state.executeUiSurface?.({ kind: 'bind_surface_message', id: surface.id, messageTs: message.ts, message });
+    } catch {
+      console.warn('[chickpea] card set answer copy not kept');
+    }
+  };
+  let message: SlackUiMessage | undefined;
   try {
-    const message = await input.message();
-    const rendered = message && cardSetMessageBlocks(message, input.surface);
+    message = input.clicked ?? surface.answerMessage ?? await input.read();
+    const rendered = message && cardSetMessageBlocks(message, surface);
     if (!message || !rendered) {
       console.warn('[chickpea] card set redraw skipped: answer message unavailable');
       return false;
     }
     await input.update(message.ts, rendered);
+    await keep({ ts: message.ts, ...rendered });
     return true;
   } catch {
     console.warn('[chickpea] card set redraw failed');
+    // Slack refused the edit; the message as clicked or read still holds.
+    if (message && message !== surface.answerMessage) await keep(message);
     return false;
   }
 }

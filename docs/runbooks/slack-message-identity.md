@@ -352,12 +352,20 @@ The card or carousel block and the status line under it (block
 other block and the message `text` go back as Slack holds them:
 
 - A direct click carries the clicked message, so its redraw reads nothing.
-- A click through the shared gateway carries no message, and `update_card`
-  has no click. Each reads the message back with one `conversations.replies`
-  call within the shared read budget. A card set nobody clicked is found by
-  its block id among the thread's messages after it was stored, which also
-  finds the last part of a split answer. The message found is then bound to
-  the set.
+- Otherwise the redraw uses the set's stored copy of the answer: the message
+  as the last redraw sent it, or as a click or read last found it. A click
+  through the shared gateway carries no message, and `update_card` has no
+  click, so with a copy neither reads.
+- With no copy, the redraw reads the message back with one
+  `conversations.replies` call within the shared read budget. A card set
+  nobody clicked is found by its block id among the thread's messages after
+  it was stored, which also finds the last part of a split answer. The
+  message found is then bound to the set.
+
+The copy is kept in the set's `ui_surfaces` row (`resolution_json`), up to
+64 KiB, and lives as long as the row. A larger answer is read back on every
+redraw. If the answer has no room for the status line (50 blocks), the
+card is redrawn without it.
 
 A refused read or edit logs `card set redraw skipped` or `card set redraw
 failed`. It never undoes the click or the outcome. The next redraw draws

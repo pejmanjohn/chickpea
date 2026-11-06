@@ -2440,6 +2440,7 @@ async function handleSlackUiAction(input: SlackUiContext & { action: SlackUiActi
   if (!surface.messageTs) {
     surface = await uiSurfaceRecord(state, {
       kind: 'bind_surface_message', id: surface.id, messageTs: action.messageTs,
+      ...(action.message ? { message: action.message } : {}),
     }) ?? surface;
   }
   if (surface.spec.kind === 'agent_choice') {
@@ -2516,8 +2517,9 @@ async function handleSlackUiAction(input: SlackUiContext & { action: SlackUiActi
 
 /**
  * A card set redraws inside the answer it rides in: from the clicked message
- * when the click carried it (a direct click), else read back from the thread
- * within the shared read budget (the gateway forwards no message).
+ * when the click carried it (a direct click), else from the set's copy of
+ * it, else read back from the thread within the shared read budget (the
+ * gateway forwards no message).
  */
 async function redrawClickedCardSet(
   context: SlackUiContext & { action: SlackUiAction },
@@ -2526,8 +2528,10 @@ async function redrawClickedCardSet(
   const { action, client, stores, platformEnv } = context;
   const { readCardSetMessage, redrawCardSet } = await import('../slack/ui/card-set-message.ts');
   await redrawCardSet({
+    state: stores.slackState,
     surface,
-    message: async () => action.message ?? readCardSetMessage(client, createSlackReadGate({
+    ...(action.message ? { clicked: action.message } : {}),
+    read: () => readCardSetMessage(client, createSlackReadGate({
       state: stores.slackState,
       workspaceId: surface.workspaceId,
       gated: sharesSlackAppReadBudget({ env: platformEnv, client }),

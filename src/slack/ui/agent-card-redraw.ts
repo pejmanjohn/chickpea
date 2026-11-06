@@ -16,8 +16,8 @@ import type { UiSurfaceRecord } from './surface.ts';
 /**
  * update_card's redraw, from inside the Agent's run. It edits as the bot that
  * posted the answer (the Agent's own app while it is live, else the
- * installation's), reads the answer back within the shared read budget, and
- * binds the message it found so a later redraw reads it by timestamp.
+ * installation's), from the set's copy of the answer, or read back within
+ * the shared read budget when it has none.
  */
 export async function redrawCardSetAsAgent(
   env: PlatformEnv | undefined,
@@ -32,16 +32,14 @@ export async function redrawCardSetAsAgent(
   });
   const bot = await withAgentAppExecution(installation, env, { rejectRateLimitedCalls: true })(surface.workspaceId, agentId);
   const state = getSlackStateStore(env);
-  const gate = createSlackReadGate({ state, workspaceId: surface.workspaceId, gated: bot.sharedAppReads });
   return redrawCardSet({
+    state,
     surface,
-    message: async () => {
-      const message = await readCardSetMessage(bot.client, gate, surface);
-      if (message && !surface.messageTs) {
-        await state.executeUiSurface?.({ kind: 'bind_surface_message', id: surface.id, messageTs: message.ts });
-      }
-      return message;
-    },
+    read: () => readCardSetMessage(
+      bot.client,
+      createSlackReadGate({ state, workspaceId: surface.workspaceId, gated: bot.sharedAppReads }),
+      surface,
+    ),
     update: async (ts, rendered) => {
       await bot.client.chat.update({
         channel: surface.channelId, ts, ...rendered,

@@ -1,11 +1,10 @@
-import type { CardSpec, PresentCardsSpec } from './presentation-tools.ts';
-import type { CardSettlements, UiSurfaceRecord } from './surface.ts';
-
 /**
  * A card set (present_cards) settles card by card: a press on a card's
  * request button, or an outcome the Agent reports, settles that card alone.
  * The set resolves once every card with a request button is settled.
  */
+import type { CardSpec, PresentCardsSpec } from './presentation-tools.ts';
+import type { CardSettlements, UiSurfaceRecord } from './surface.ts';
 
 /** Card button slots: each card owns three (the link, then its actions), so a value names its card and button. */
 export function cardButtonIndex(card: number, button: number): number {
@@ -47,11 +46,12 @@ export function cardSetSettled(spec: PresentCardsSpec, settlements: CardSettleme
   return requests.length > 0 && requests.every((index) => settlements[index] !== undefined);
 }
 
-/** The card a model names: its exact title (any case, when only one matches), else its number from 1. */
+/** The card a model names: its title (exact, else in any case) when only one card has it, else its number from 1. */
 export function findCard(spec: PresentCardsSpec, selector: string): number | undefined {
   const wanted = selector.replace(/\s+/g, ' ').trim();
-  const exact = spec.cards.findIndex((card) => card.title === wanted);
-  if (exact >= 0) return exact;
+  const exact = spec.cards.flatMap((card, index) => (card.title === wanted ? [index] : []));
+  if (exact.length === 1) return exact[0];
+  if (exact.length > 1) return undefined;
   const folded = spec.cards.flatMap((card, index) => (card.title.toLowerCase() === wanted.toLowerCase() ? [index] : []));
   if (folded.length === 1) return folded[0];
   if (!/^\d{1,2}$/.test(wanted)) return undefined;

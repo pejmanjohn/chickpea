@@ -1,4 +1,5 @@
 import { sha256HexNode } from '../../security/digest.ts';
+import type { SlackUiMessage } from './interaction-payload.ts';
 import type { KeyCardSpec } from './key-card.ts';
 import type {
   AskUserSpec,
@@ -171,6 +172,12 @@ export interface UiSurfaceRecord {
   resolution?: UiSurfaceResolution;
   /** A card set's cards, each settled on its own. */
   cardSettlements?: CardSettlements;
+  /**
+   * A card set's copy of the answer message it rides in, as last read or
+   * sent, so a redraw needs no read. Kept with the row, up to
+   * `CARD_ANSWER_MAX_BYTES`.
+   */
+  answerMessage?: SlackUiMessage;
   createdAt: number;
   updatedAt: number;
   expiresAt: number;
@@ -179,6 +186,13 @@ export interface UiSurfaceRecord {
 export const UI_SURFACE_ID_PATTERN = /^[a-f0-9]{32}$/;
 export const UI_SURFACE_TTL_MS = 7 * 24 * 60 * 60_000;
 export const UI_SURFACE_MAX_SPEC_BYTES = 16 * 1024;
+/**
+ * The largest answer copy a card set keeps. `chat.update` refuses an answer
+ * of about 12,000 characters (`msg_too_long`), and an answer carries its
+ * words twice, in `text` and in its blocks: 64 KiB holds that at two bytes a
+ * character with room for the JSON. Larger answers are read back each time.
+ */
+export const CARD_ANSWER_MAX_BYTES = 64 * 1024;
 
 /**
  * Surface ids derive from the owning turn and a slot, so a retried or replayed

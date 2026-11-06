@@ -1,6 +1,9 @@
 import { schemaInstallRequired, type StateDb } from '../../state/state-db.ts';
 import { cardOfSlot, cardRequestButtonAt, cardSetSettled, cardSettlementsOf } from './card-set.ts';
+import type { SlackUiMessage } from './interaction-payload.ts';
 import {
+  CARD_ANSWER_MAX_BYTES,
+  uiBlockId,
   UI_SURFACE_ID_PATTERN,
   UI_SURFACE_MAX_SPEC_BYTES,
   type CardOutcome,
@@ -59,7 +62,8 @@ export interface UiSurfaceClaim {
 export type UiSurfaceRpcRequest =
   | { kind: 'put_surface'; record: UiSurfaceRecord }
   | { kind: 'get_surface'; id: string }
-  | { kind: 'bind_surface_message'; id: string; messageTs: string }
+  /** With `message`, a card set also keeps it as its answer copy (replay-safe: the same copy again). */
+  | { kind: 'bind_surface_message'; id: string; messageTs: string; message?: SlackUiMessage }
   | { kind: 'close_surface'; id: string; status: 'superseded' | 'expired' | 'failed' }
   | { kind: 'resolve_surface'; id: string; resolution: UiSurfaceResolution }
   /** First-wins, outside admission: the surface when this call resolved it, else null. */
@@ -178,8 +182,13 @@ export class UiSurfaceStoreLogic {
     return row ? decode(row) : undefined;
   }
 
-  /** Record where the surface was posted; the first binding wins. */
-  bindMessage(id: string, messageTs: string): UiSurfaceRecord | undefined {
+  /**
+   * Record where the surface was posted; the first binding wins. A card set
+   * given its answer message keeps it as its copy, replacing any earlier one.
+   * Only the blocks around the set are ever drawn from a copy, and those are
+   * the same in every copy, so an older copy stored late redraws the same.
+   */
+  bindMessage(id: string, messageTs: string, message?: SlackUiMessage): UiSurfaceRecord | undefined {
     if (!/^\d{1,16}\.\d{1,16}$/.test(messageTs)) throw new Error('Slack message timestamp is invalid.');
     this.db.run(
       `UPDATE ui_surfaces
@@ -191,7 +200,25 @@ export class UiSurfaceStoreLogic {
       this.now(),
       id,
     );
+    const record = this.get(id);
+    if (!record || !message || !this.isAnswerCopy(record, message)) return record;
+    this.db.run(
+      'UPDATE ui_surfaces SET resolution_json = ?, updated_at = ? WHERE id = ?',
+      cardSetResolutionJson(cardSettlementsOf(record), message),
+      this.now(),
+      id,
+    );
     return this.get(id);
+  }
+
+  /** The bound message of an open, unexpired card set, carrying the set, within the cap. */
+  private isAnswerCopy(record: UiSurfaceRecord, message: SlackUiMessage): boolean {
+    const setId = uiBlockId('ui', record.id, 1);
+    return record.namespace === 'ui' && record.spec.kind === 'cards' &&
+      (record.status === 'open' || record.status === 'resolved') && record.expiresAt > this.now() &&
+      record.messageTs === message.ts &&
+      message.blocks.some((block) => block.block_id === setId) &&
+      new TextEncoder().encode(JSON.stringify(message)).byteLength <= CARD_ANSWER_MAX_BYTES;
   }
 
   /**
@@ -201,8 +228,8 @@ export class UiSurfaceStoreLogic {
    * caller's transaction.
    */
   claim(input: UiSurfaceClaim, namespace: UiNamespace): UiSurfaceClaimOutcome {
-    const cards = namespace === 'ui' ? this.get(input.surfaceId) : undefined;
-    if (cards?.namespace === 'ui' && cards.spec.kind === 'cards') return this.claimCard(cards, input.resolution);
+    const record = namespace === 'ui' ? this.get(input.surfaceId) : undefined;
+    if (record?.namespace === 'ui' && record.spec.kind === 'cards') return this.claimCard(record, input.resolution);
     const now = this.now();
     const changed = this.db.run(
       `UPDATE ui_surfaces
@@ -278,9 +305,9 @@ export class UiSurfaceStoreLogic {
   }
 
   /**
-   * Store a card set's settlements in place of any whole-set answer. The read
-   * before it and this write run in one synchronous call, so no other claim
-   * comes between them.
+   * Store a card set's settlements in place of any whole-set answer, keeping
+   * its answer copy. The read before it and this write run in one
+   * synchronous call, so no other claim comes between them.
    */
   private writeCardSettlements(
     record: UiSurfaceRecord,
@@ -289,7 +316,7 @@ export class UiSurfaceStoreLogic {
   ): UiSurfaceRecord | undefined {
     const changed = this.db.run(
       `UPDATE ui_surfaces SET resolution_json = ?, status = ?, updated_at = ? WHERE id = ? AND status = ?`,
-      JSON.stringify({ cardSettlements: settlements }),
+      cardSetResolutionJson(settlements, record.answerMessage),
       status,
       this.now(),
       record.id,
@@ -430,7 +457,7 @@ export class UiSurfaceStoreLogic {
       case 'get_surface':
         return { kind: 'surface', surface: this.get(request.id) ?? null };
       case 'bind_surface_message':
-        return { kind: 'surface', surface: this.bindMessage(request.id, request.messageTs) ?? null };
+        return { kind: 'surface', surface: this.bindMessage(request.id, request.messageTs, request.message) ?? null };
       case 'close_surface':
         return { kind: 'surface', surface: this.close(request.id, request.status) ?? null };
       case 'resolve_surface':
@@ -536,13 +563,28 @@ function decode(row: UiSurfaceRow): UiSurfaceRecord | undefined {
   }
 }
 
-/** A card set answered card by card keeps its settlements in the resolution column. */
+interface CardSetResolution {
+  cardSettlements: CardSettlements;
+  answerMessage?: SlackUiMessage;
+}
+
+/**
+ * A card set answered card by card keeps its settlements, and its answer
+ * copy, in the resolution column; a set an older build answered whole keeps
+ * that answer there.
+ */
+function cardSetResolutionJson(settlements: CardSettlements, answerMessage: SlackUiMessage | undefined): string {
+  return JSON.stringify({ cardSettlements: settlements, ...(answerMessage ? { answerMessage } : {}) } satisfies CardSetResolution);
+}
+
 function decodeResolution(
   json: string,
   spec: UiSurfaceSpec,
-): Pick<UiSurfaceRecord, 'resolution' | 'cardSettlements'> {
-  const parsed = JSON.parse(json) as UiSurfaceResolution | { cardSettlements: CardSettlements };
-  return spec.kind === 'cards' && 'cardSettlements' in parsed
-    ? { cardSettlements: parsed.cardSettlements }
-    : { resolution: parsed as UiSurfaceResolution };
+): Pick<UiSurfaceRecord, 'resolution' | 'cardSettlements' | 'answerMessage'> {
+  const parsed = JSON.parse(json) as UiSurfaceResolution | CardSetResolution;
+  if (spec.kind !== 'cards' || !('cardSettlements' in parsed)) return { resolution: parsed as UiSurfaceResolution };
+  return {
+    cardSettlements: parsed.cardSettlements,
+    ...(parsed.answerMessage ? { answerMessage: parsed.answerMessage } : {}),
+  };
 }
