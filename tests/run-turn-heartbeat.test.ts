@@ -54,6 +54,7 @@ import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 import { withEnv } from './helpers/env.ts';
 import { activityStatus } from '../src/activity/semantic.ts';
 import { setObservedSlackStatus, SlackStatusRegistry } from '../src/slack/status-registry.ts';
+import { parseDisplayComponents } from '../src/slack/ui/display-tools.ts';
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -3506,11 +3507,11 @@ test('runTurn fails a lease-rejected turn closed instead of returning silently',
   );
 });
 
-// Memory is model context at generation time. A verified own-turn write that
-// only added to the injected snapshot, or wrote it back unchanged, keeps the
-// model's answer (and its table); any change that could forget replaces the
-// draft with the bounded summary; a receipt whose lease no longer holds at
-// delivery fails closed regardless of the write-time flag.
+// A verified own-turn write delivers the model's own answer with its table
+// and display components, whatever the write changed: an addition, a rewrite,
+// a forget, or a replayed call. Memory changed by another writer during the
+// turn still fails the ordinary lease, and a receipt whose lease no longer
+// holds at delivery fails closed.
 const MEMORY_DRAFT = 'The absolute increase is 31. Noted for next time. Secret canary: BLUEBIRD.';
 const MEMORY_DRAFT_TABLE = {
   caption: 'Synthetic figures',
@@ -3518,43 +3519,34 @@ const MEMORY_DRAFT_TABLE = {
   columns: [{ header: 'Week' }, { header: 'Value' }],
   rows: [['W1', 32], ['W2', 37], ['W3', 41], ['W4', 48], ['W5', 52], ['W6', 58], ['W7', 63]],
 };
+const MEMORY_DRAFT_DETAILS = parseDisplayComponents([{ kind: 'details', spec: { title: 'Method', markdown: 'Synthetic method note.' } }]);
 for (const scenario of [
-  { name: 'descriptive save', before: '', body: 'Use human-friendly dates and times.',
-    summary: 'I updated my memory to use human-friendly dates and times going forward.', preserves: true, outcome: 'answer' },
-  { name: 'legacy save', before: '', body: 'A durable fact.', summary: undefined, preserves: true, outcome: 'answer' },
-  { name: 'compound answer with a prior fact', before: 'Secret canary: BLUEBIRD.\nKeep links.',
+  { name: 'an addition', before: '', body: 'Use human-friendly dates and times.', outcome: 'answer' },
+  { name: 'an addition beside a prior fact', before: 'Secret canary: BLUEBIRD.\nKeep links.',
+    body: 'Secret canary: BLUEBIRD.\nKeep links.\nAudit word: saffron.', outcome: 'answer', table: true },
+  { name: 'a fact written back unchanged', before: 'Audit word: saffron.\nKeep links.',
+    body: 'Audit word: saffron.\nKeep links.', outcome: 'answer', table: true },
+  { name: 'a reattached save', before: '', body: 'Use human-friendly dates and times.', reattach: true, outcome: 'answer' },
+  { name: 'a replayed tool call', before: '', body: 'Use human-friendly dates and times.', replay: true, outcome: 'answer' },
+  { name: 'a changed existing line', before: 'Secret canary: BLUEBIRD.\nKeep links.',
+    body: 'Secret canary: GREENBIRD.\nKeep links.', outcome: 'answer', table: true },
+  { name: 'a forgotten fact', before: 'Secret canary: BLUEBIRD.\nKeep links.', body: 'Keep links.', outcome: 'answer' },
+  { name: 'forget all', before: 'Secret canary: BLUEBIRD.', body: '', outcome: 'answer', table: true },
+  // Another writer's forget lands before this turn's write: the ordinary lease decides.
+  { name: 'memory another writer changed during the turn', before: 'Secret canary: BLUEBIRD.',
+    body: 'Use readable dates.', concurrent: true, outcome: 'failure', table: true },
+  { name: 'a write forgotten before delivery', before: 'Secret canary: BLUEBIRD.\nKeep links.',
     body: 'Secret canary: BLUEBIRD.\nKeep links.\nAudit word: saffron.',
-    summary: 'I saved the audit word.', preserves: true, outcome: 'answer', table: true },
-  { name: 'already-saved fact written back unchanged', before: 'Audit word: saffron.\nKeep links.',
-    body: 'Audit word: saffron.\nKeep links.', summary: 'I already have the audit word saved.',
-    preserves: true, outcome: 'answer', table: true },
-  { name: 'reattached save', before: '', body: 'Use human-friendly dates and times.', reattach: true,
-    summary: 'I updated my memory to use human-friendly dates and times going forward.', preserves: true, outcome: 'answer' },
-  { name: 'replayed tool after commit', before: '', body: 'Use human-friendly dates and times.', replay: true,
-    summary: 'I updated my memory to use human-friendly dates and times going forward.',
-    preserves: false, outcome: 'summary', expected: 'I updated my memory.' },
-  { name: 'rewritten fact', before: 'Secret canary: BLUEBIRD.\nKeep links.', body: 'Secret canary: GREENBIRD.\nKeep links.',
-    summary: 'I changed the canary.', preserves: false, outcome: 'summary', expected: 'I updated my memory.' },
-  { name: 'forget one fact', before: 'Secret canary: BLUEBIRD.\nKeep links.', body: 'Keep links.',
-    summary: 'I forgot BLUEBIRD.', preserves: false, outcome: 'summary', expected: 'I updated my memory.' },
-  { name: 'forget all', before: 'Secret canary: BLUEBIRD.', body: '',
-    summary: 'I forgot BLUEBIRD.', preserves: false, outcome: 'summary', expected: 'I cleared my saved memory.' },
-  { name: 'concurrent forget then addition', before: 'Secret canary: BLUEBIRD.', body: 'Use readable dates.', concurrent: true,
-    summary: 'I remember BLUEBIRD and now use readable dates.', preserves: false, outcome: 'summary', expected: 'I updated my memory.' },
-  // A true write-time flag never bypasses the delivery-time receipt lease.
-  { name: 'context-preserving write forgotten before delivery', before: 'Secret canary: BLUEBIRD.\nKeep links.',
-    body: 'Secret canary: BLUEBIRD.\nKeep links.\nAudit word: saffron.', summary: 'I saved the audit word.',
-    preserves: true, outcome: 'failure', table: true, afterWrite: 'forget', finalBody: '' },
-  { name: 'context-preserving write with the Agent disabled before delivery', before: 'Secret canary: BLUEBIRD.\nKeep links.',
-    body: 'Secret canary: BLUEBIRD.\nKeep links.\nAudit word: saffron.', summary: 'I saved the audit word.',
-    preserves: true, outcome: 'failure', table: true, afterWrite: 'disable' },
+    outcome: 'failure', table: true, afterWrite: 'forget', finalBody: '' },
+  { name: 'a write with the Agent disabled before delivery', before: 'Secret canary: BLUEBIRD.\nKeep links.',
+    body: 'Secret canary: BLUEBIRD.\nKeep links.\nAudit word: saffron.',
+    outcome: 'failure', table: true, afterWrite: 'disable' },
 ] as Array<{
-  name: string; before: string; body: string; summary?: string;
-  preserves: boolean; outcome: 'answer' | 'summary' | 'failure'; expected?: string;
+  name: string; before: string; body: string; outcome: 'answer' | 'failure';
   table?: true; reattach?: true; replay?: true; concurrent?: true;
   afterWrite?: 'forget' | 'disable'; finalBody?: string;
 }>) {
-const verb = { answer: 'keeps the answer for', summary: 'withholds the draft for', failure: 'fails closed for' }[scenario.outcome];
+const verb = { answer: 'delivers the answer for', failure: 'fails closed for' }[scenario.outcome];
 test(`a successful own-turn memory write ${verb} ${scenario.name}`, async () => {
   const { executeSlackMemoryUpdate } = await import('../src/management/slack-memory-actions.ts');
   const { resolveSlackManagementActor } = await import('../src/management/slack-tools.ts');
@@ -3588,7 +3580,8 @@ test(`a successful own-turn memory write ${verb} ${scenario.name}`, async () => 
     };
     const performWrite = () => executeSlackMemoryUpdate({
       signal, memoryEpoch: expectedRevision + 1,
-      data: { expectedRevision: expectedRevision + ('concurrent' in scenario ? 1 : 0), body: scenario.body, summary: scenario.summary },
+      data: { expectedRevision: expectedRevision + ('concurrent' in scenario ? 1 : 0), body: scenario.body,
+        summary: 'I updated my memory as asked.' },
       inspect: async () => ({ ok: true, result: await f.memory.getAgentMemory(agent.id) }),
       apply: async (args) => ({ ok: true, result: await f.service.applyWorkspaceChanges({
         context: await resolveSlackManagementActor(signal, f.identity), ...args,
@@ -3608,7 +3601,9 @@ test(`a successful own-turn memory write ${verb} ${scenario.name}`, async () => 
     const client = {
       conversations: { history: async () => ({ ok: true, messages: [] }) },
       chat: {
-        postMessage: async (input: { text: string }) => { posts.push(input.text); return { ok: true, ts: '206.1' }; },
+        postMessage: async (input: { text: string; blocks?: unknown[] }) => {
+          posts.push(input.text, JSON.stringify(input.blocks ?? [])); return { ok: true, ts: '206.1' };
+        },
         startStream: async (input: { markdown_text: string }) => { posts.push(input.markdown_text); return { ok: true, ts: '206.1' }; },
         // A native table travels as a block on the stream stop, not in the text.
         stopStream: async (input: { blocks?: unknown[] }) => { posts.push(JSON.stringify(input.blocks ?? [])); return { ok: true }; },
@@ -3626,7 +3621,6 @@ test(`a successful own-turn memory write ${verb} ${scenario.name}`, async () => 
         }
         const { receipt: memoryUpdate } = reattached ?? await performWrite();
         assert.ok(memoryUpdate);
-        assert.equal(memoryUpdate.preservesContext, scenario.preserves || undefined, 'the write decides whether the draft may deliver');
         if (scenario.afterWrite === 'forget') {
           await f.memory.putAgentMemory({ agentId: agent.id, expectedRevision: memoryUpdate.revision, body: '' });
         } else if (scenario.afterWrite === 'disable') {
@@ -3634,7 +3628,7 @@ test(`a successful own-turn memory write ${verb} ${scenario.name}`, async () => 
           await f.config.updateAgent(agent.id, { enabled: false }, live.revision);
         }
         return { text: MEMORY_DRAFT, memoryUpdate,
-          ...(scenario.table ? { tablePresentations: [MEMORY_DRAFT_TABLE] } : {}),
+          ...(scenario.table ? { tablePresentations: [MEMORY_DRAFT_TABLE], displayComponents: MEMORY_DRAFT_DETAILS } : {}),
           requestedModel: null, returnedModel: null, reportedUsage: null, usageCompleteness: 'not_reported' };
       },
     });
@@ -3643,29 +3637,22 @@ test(`a successful own-turn memory write ${verb} ${scenario.name}`, async () => 
     assert.equal(saved.body, scenario.finalBody ?? scenario.body);
     assert.equal(saved.revision, expectedRevision + 1 + ('concurrent' in scenario || scenario.afterWrite === 'forget' ? 1 : 0),
       'every applied write advances the durable revision, including an unchanged body');
+    assert.ok(posts.every((text) => !text.includes('I updated my memory') && !text.includes('I cleared my saved memory')),
+      `no host confirmation replaces or doubles the answer: ${JSON.stringify(posts)}`);
     if (scenario.outcome === 'failure') {
-      assert.equal(delivered, 'failed', 'a receipt whose lease no longer holds settles as a failed terminal');
+      assert.equal(delivered, 'failed', 'a lease that no longer holds settles as a failed terminal');
       assert.ok(posts.some((text) => text.includes(AGENT_FAILURE_TEXT)), JSON.stringify(posts));
-      assert.ok(posts.every((text) => !text.includes(MEMORY_DRAFT) && !text.includes('absolute increase') &&
-        !text.includes('BLUEBIRD') && !text.includes('"Week"') && !text.includes('saffron') &&
-        (scenario.summary === undefined || !text.includes(scenario.summary))),
-        'no draft, canary, table, or summary leaks past a failed lease');
+      assert.ok(posts.every((text) => !text.includes('absolute increase') && !text.includes('BLUEBIRD') &&
+        !text.includes('"Week"') && !text.includes('Synthetic method note')),
+        'no draft, canary, table, or component leaks past a failed lease');
       return;
     }
-    assert.equal(delivered, 'succeeded', 'acknowledgement uses the common terminal outcome');
+    assert.equal(delivered, 'succeeded');
     assert.ok(posts.every((text) => !text.includes(AGENT_FAILURE_TEXT)), JSON.stringify(posts));
-    if (scenario.outcome === 'answer') {
-      assert.ok(posts.some((text) => text.includes(MEMORY_DRAFT)), JSON.stringify(posts));
-      assert.ok(posts.every((text) => !text.includes('I updated my memory') &&
-        (scenario.summary === undefined || !text.includes(scenario.summary))),
-        'a kept answer is not doubled with the bounded summary');
-      if (scenario.table) {
-        assert.ok(posts.some((text) => text.includes('"Week"') && text.includes('"W7"')), 'the answer keeps its table');
-      }
-    } else {
-      assert.ok(posts.some((text) => text.includes(scenario.expected!)), JSON.stringify(posts));
-      assert.ok(posts.every((text) => !text.includes('BLUEBIRD')), 'forgotten content must never reach Slack');
-      assert.ok(posts.every((text) => !text.includes('absolute increase')), 'the stale draft stays hidden');
+    assert.ok(posts.some((text) => text.includes(MEMORY_DRAFT)), `the model's own answer delivers: ${JSON.stringify(posts)}`);
+    if (scenario.table) {
+      assert.ok(posts.some((text) => text.includes('"Week"') && text.includes('"W7"')), 'the answer keeps its table');
+      assert.ok(posts.some((text) => text.includes('Synthetic method note')), 'the answer keeps its display components');
     }
   } finally { f.close(); }
 });
