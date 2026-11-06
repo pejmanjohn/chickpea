@@ -38,7 +38,7 @@ This is an omission boundary, not redaction after retrieval. It prevents private
 
 ## Target behavior and operations
 
-Cloudflare is the supported scheduling target. The Node target exposes the same conversational tool but fails closed with `routines_unavailable_on_target`; it must not create an action or imply that work was scheduled.
+Cloudflare is the primary scheduling target. The Node target runs its own scheduler while the Chickpea process is up, so schedules fire only while that machine is awake and running. When that scheduler is not running, the Node target fails closed with `routines_unavailable_on_target`; it must not create an action or imply that work was scheduled.
 
 There is no private-DM scheduling feature flag. Cloudflare readiness requires the schedule-action ledger, state-owner RPC, alarm recovery path, one heartbeat Cron Trigger, and management outbox. Operators should treat a successful build or deployment as structural evidence only. Live acceptance still requires a fresh Slack request, visible acknowledgement, due-time delivery in the same thread, DM-level management, and confirmation that shared Admin surfaces omit the private work.
 
