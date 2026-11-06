@@ -90,6 +90,16 @@ test('an expired or closed card set admits no click', () => {
   assert.equal(store.claim(pick(later.id, 1), 'ui').claimed, false);
 });
 
+test('a redraw of a bound, expired card set leaves its retention clock alone', () => {
+  let now = NOW;
+  const store = new UiSurfaceStoreLogic(openStateDb(':memory:'), () => now);
+  const set = store.put(cardSet());
+  const bound = store.bindMessage(set.id, ANSWER_TS, answerMessage(set))!;
+  now = NOW + WEEK + 1;
+  const late = store.bindMessage(set.id, ANSWER_TS, answerMessage(set))!;
+  assert.equal(late.updatedAt, bound.updatedAt, 'a late click must not keep the row and its copy past the purge');
+});
+
 test('a later answer leaves earlier cards open for the approve, confirm, approve-next flow', async () => {
   const state = new SqliteSlackStateStore(':memory:');
   const updates: string[] = [];
