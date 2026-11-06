@@ -4,8 +4,8 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 const HOST_CHECK_DIR = join(homedir(), '.chickpea', 'verification-host');
-/** Slot 1 keeps its original path: older checkouts know only owner.json and contend for it alone. */
-export const HOST_CHECK_SLOTS = Object.freeze([join(HOST_CHECK_DIR, 'owner.json'), join(HOST_CHECK_DIR, 'owner-2.json')]);
+/** Acquisition order. Older checkouts know only owner.json, so taking owner-2.json first leaves them a slot. */
+export const HOST_CHECK_SLOTS = Object.freeze([join(HOST_CHECK_DIR, 'owner-2.json'), join(HOST_CHECK_DIR, 'owner.json')]);
 /** A hold older than this is reported to waiters and the kickoff doctor. */
 export const HOST_CHECKS_HOLD_WARN_MS = 15 * 60 * 1000;
 

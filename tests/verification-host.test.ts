@@ -14,7 +14,7 @@ function isolatedHome(t: TestContext) {
   const home = mkdtempSync(join(tmpdir(), 'chickpea-verify-host-'));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const directory = join(home, '.chickpea', 'verification-host');
-  const files = [join(directory, 'owner.json'), join(directory, 'owner-2.json')] as const;
+  const files = [join(directory, 'owner-2.json'), join(directory, 'owner.json')] as const;
   return { home, file: files[0], files };
 }
 
@@ -53,7 +53,10 @@ test('a command that cannot start releases the host reservation and names the co
 });
 
 test('a child that exits releases the reservation; a child stopped by a signal keeps it', (t) => {
-  const { home, file } = isolatedHome(t);
+  const { home, file, files } = isolatedHome(t);
+  const held = verifyHost(home, process.execPath, '-e', `const { existsSync } = require('node:fs'); process.stdout.write(JSON.stringify(${JSON.stringify(files)}.map(existsSync)))`);
+  assert.deepEqual(JSON.parse(held.stdout), [true, false], 'a command on a free host takes owner-2.json and leaves owner.json to one-slot checkouts');
+
   const exited = verifyHost(home, process.execPath, '-e', 'process.exit(5)');
   assert.equal(exited.status, 5, 'the child exit status passes through');
   assert.equal(existsSync(file), false, 'a failing check still releases the reservation');
