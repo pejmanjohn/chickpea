@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { priceCatalogFor, RELEASE_PRICE_CATALOGS } from '../../src/usage/pricing/catalog.ts';
-import { estimateUsage } from '../../src/usage/pricing/estimate.ts';
+import { estimateByTokenType, estimateUsage } from '../../src/usage/pricing/estimate.ts';
 
 const OBSERVED_AT = Date.UTC(2026, 6, 28, 12);
 const AFTER_EVERY_REVIEW_DUE = Math.max(...RELEASE_PRICE_CATALOGS.map(({ reviewDueAt }) => reviewDueAt)) + 86_400_000;
@@ -296,4 +296,106 @@ test('a stored historical estimate is reproducible from its immutable price vers
   assert.deepEqual(second, first);
   assert.equal(first.estimateAmountMicros, 2_000);
   assert.equal(first.priceVersionId, 'anthropic_2026-07-28');
+});
+
+/** The 9:25 task: Claude Opus 5.5, priced by the 2026-11-05 review. */
+const OPUS_TASK = {
+  observedAt: Date.UTC(2026, 10, 6, 17, 25),
+  inputTokens: 18,
+  outputTokens: 5_731,
+  cacheReadTokens: 1_784_698,
+  cacheWriteTokens: 627_674,
+};
+
+/** A measurement as the store keeps it: its counts, priced by `estimateUsage`, with no one-hour write count. */
+function stored(
+  provider: string,
+  model: string,
+  usage: { observedAt: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number },
+  cacheWrite1hTokens = 0,
+) {
+  const counts = {
+    ...measurement(provider, model, usage.inputTokens, usage.outputTokens),
+    ...usage,
+    totalTokens: usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheWriteTokens,
+  };
+  const estimate = estimateUsage({ ...counts, cacheWrite1hTokens });
+  assert.equal(estimate.estimateCompleteness, 'complete');
+  return { ...counts, ...estimate };
+}
+
+type Split = NonNullable<ReturnType<typeof estimateByTokenType>>;
+
+function partsTotal(split: Split): number {
+  return Object.values(split).reduce((total, part) => total + part.micros, 0);
+}
+
+function microsByType(split: Split | null): Record<keyof Split, number> | null {
+  return split && {
+    input: split.input.micros,
+    output: split.output.micros,
+    cacheRead: split.cacheRead.micros,
+    cacheWrite: split.cacheWrite.micros,
+  };
+}
+
+test('an estimate splits by token type at its price version\'s rates, and cache writes take the rest', () => {
+  const task = stored('anthropic', 'claude-opus-5-5', OPUS_TASK);
+  assert.equal(task.estimateAmountMicros, 3_610_002);
+  // 18 × $4, 5,731 × $20, 1,784,698 × $0.20 and 627,674 × $5 per million tokens.
+  assert.deepEqual(estimateByTokenType(task), {
+    input: { tokens: 18, micros: 72 },
+    output: { tokens: 5_731, micros: 114_620 },
+    cacheRead: { tokens: 1_784_698, micros: 356_940 },
+    cacheWrite: { tokens: 627_674, micros: 3_138_370 },
+  });
+});
+
+test('writes at the one-hour rate land in cache writes, and the parts still sum to the estimate', () => {
+  const someOneHour = stored('anthropic', 'claude-opus-5-5', OPUS_TASK, 200_000);
+  // 427,674 × $5 and 200,000 × $8 per million tokens.
+  assert.equal(someOneHour.estimateAmountMicros, 4_210_002);
+  assert.deepEqual(microsByType(estimateByTokenType(someOneHour)), { input: 72, output: 114_620, cacheRead: 356_940, cacheWrite: 3_738_370 });
+
+  const allOneHour = stored('anthropic', 'claude-opus-5-5', OPUS_TASK, OPUS_TASK.cacheWriteTokens);
+  const allSplit = estimateByTokenType(allOneHour);
+  assert.equal(allSplit?.cacheWrite.micros, 5_021_392, 'every write at $8 per million tokens');
+  assert.equal(partsTotal(allSplit!), allOneHour.estimateAmountMicros);
+});
+
+test('with no cache writes, rounding folds into another part and no part is negative', () => {
+  const unwritten = stored('anthropic', 'claude-opus-5-5', { ...OPUS_TASK, cacheWriteTokens: 0 });
+  assert.deepEqual(microsByType(estimateByTokenType(unwritten)), { input: 72, output: 114_620, cacheRead: 356_940, cacheWrite: 0 });
+
+  // Each part is half a micro and rounds up, but their total of 1.5 rounds to 2.
+  const halves = stored('anthropic', 'claude-haiku-5-5', {
+    observedAt: OPUS_TASK.observedAt, inputTokens: 5, outputTokens: 1, cacheReadTokens: 50, cacheWriteTokens: 0,
+  });
+  assert.equal(halves.estimateAmountMicros, 2);
+  const split = estimateByTokenType(halves);
+  assert.ok(split);
+  assert.equal(split.cacheWrite.micros, 0);
+  assert.equal(partsTotal(split), 2);
+  assert.ok(Object.values(split).every((part) => part.micros >= 0), JSON.stringify(split));
+});
+
+test('cache writes the store holds no count for take the count the estimate derived from the total', () => {
+  const task = stored('anthropic', 'claude-opus-5-5', OPUS_TASK);
+  const split = estimateByTokenType({ ...task, cacheWriteTokens: null });
+  assert.deepEqual(split?.cacheWrite, { tokens: 627_674, micros: 3_138_370 });
+  assert.equal(partsTotal(split!), task.estimateAmountMicros);
+});
+
+test('an estimate the rates cannot account for has no split', () => {
+  const task = stored('anthropic', 'claude-opus-5-5', OPUS_TASK);
+  assert.equal(estimateByTokenType({ ...task, priceVersionId: 'anthropic-claude-opus-5-5_2099-01-01' }), null, 'unknown price version');
+  assert.equal(estimateByTokenType({ ...task, returnedProvider: 'openai', providerRoute: 'openai' }), null, 'another provider\'s price version');
+  assert.equal(estimateByTokenType({ ...task, returnedModel: 'claude-sonnet-5-5' }), null, 'a model the version does not price');
+  assert.equal(estimateByTokenType({ ...task, estimateCompleteness: 'partial' }), null, 'incomplete estimate');
+  assert.equal(estimateByTokenType({ ...task, estimateCurrency: 'EUR' }), null, 'not USD');
+  // Every write at the one-hour rate costs $5.02; at the 5-minute rate, $3.14.
+  assert.equal(estimateByTokenType({ ...task, estimateAmountMicros: task.estimateAmountMicros! + 1_883_100 }), null, 'above the one-hour bound');
+  assert.equal(estimateByTokenType({ ...task, estimateAmountMicros: task.estimateAmountMicros! - 10 }), null, 'below the 5-minute bound');
+  const unwritten = stored('anthropic', 'claude-opus-5-5', { ...OPUS_TASK, cacheWriteTokens: 0 });
+  assert.equal(estimateByTokenType({ ...unwritten, estimateAmountMicros: unwritten.estimateAmountMicros! + 3 }), null, 'past rounding with no writes');
 });
