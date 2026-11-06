@@ -324,6 +324,7 @@ export function renderCatalogConnectionAccessReviewPage(
               <section class="choice-block" aria-labelledby="tool-access-title">
                 <h2 id="tool-access-title">Tools</h2>
                 <p>${metaAds ? 'Selected tools can report on or change Meta ads for the approved accounts. Tools outside Chickpea&rsquo;s reviewed contract remain unavailable.' : 'Investigation tools are suggested first. Editing tools are optional. Selected tools can access every project available to your BugSnag account. Error severity changes are not supported.'}</p>
+                ${availableCount > 0 ? '<div class="tool-bulk-actions"><button class="text-button" type="button" data-tool-bulk="all">Select all</button><button class="text-button" type="button" data-tool-bulk="none">Deselect all</button></div>' : ''}
                 <div class="tool-options">${toolChoices || '<p>No tools were returned.</p>'}</div>
                 ${availableCount === 0 ? `<p class="review-note">${metaAds ? (editingUpgradeNeeded ? 'Reconnect with Reporting and editing access to choose tools that may change ads.' : 'None of the discovered tools can yet be safely limited to an ad account, so access remains off.') : 'Reconnect to refresh the available tools.'}</p>` : ''}
               </section>
@@ -591,7 +592,7 @@ function claimScript(setupId: string): string {
 }
 
 function accessReviewScript(): string {
-  return `(function(){var form=document.getElementById("access-review-form"),button=document.querySelector('button[form="access-review-form"]'),accounts=document.getElementById("ad-account-ids"),tools=form&&form.querySelectorAll('input[type="checkbox"]:not(:disabled)');if(!form||!button||!tools)return;function update(){var selected=false;tools.forEach(function(tool){if(tool.checked)selected=true});button.disabled=!selected||!!(accounts&&!accounts.value.trim())}tools.forEach(function(tool){tool.addEventListener("change",update)});if(accounts)accounts.addEventListener("input",update);form.addEventListener("submit",function(){button.disabled=true;button.textContent="Saving access…"});update()})();`;
+  return `(function(){var form=document.getElementById("access-review-form"),button=document.querySelector('button[form="access-review-form"]'),accounts=document.getElementById("ad-account-ids"),tools=form&&form.querySelectorAll('input[type="checkbox"]:not(:disabled)');if(!form||!button||!tools)return;function update(){var selected=false;tools.forEach(function(tool){if(tool.checked)selected=true});button.disabled=!selected||!!(accounts&&!accounts.value.trim())}tools.forEach(function(tool){tool.addEventListener("change",update)});form.querySelectorAll("[data-tool-bulk]").forEach(function(control){control.addEventListener("click",function(){var on=control.getAttribute("data-tool-bulk")==="all";tools.forEach(function(tool){tool.checked=on});update()})});if(accounts)accounts.addEventListener("input",update);form.addEventListener("submit",function(){button.disabled=true;button.textContent="Saving access…"});update()})();`;
 }
 
 function pollScript(setupId: string): string {
@@ -837,6 +838,8 @@ body {
   text-wrap: pretty;
 }
 .security-copy { margin: 0; padding: 22px 24px 0; }
+.tool-bulk-actions { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0 -8px -12px; }
+.tool-bulk-actions button { font: inherit; font-weight: 850; }
 .tool-options { display: grid; gap: 10px; margin-top: 16px; }
 .tool-option {
   align-items: start;
