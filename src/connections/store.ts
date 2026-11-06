@@ -228,6 +228,15 @@ export class ManagedResourceSelectionError extends Error {
   }
 }
 
+/** Why an Agent's choice of managed capabilities was refused. */
+export class ManagedCapabilityChoiceError extends Error {
+  readonly name = 'ManagedCapabilityChoiceError';
+
+  constructor(readonly code: 'unavailable' | 'empty' | 'not_allowed') {
+    super(`Managed capability choice refused: ${code}`);
+  }
+}
+
 /** The account is revoked, but its OAuth settings remain. Revoking again finishes the cleanup. */
 export class ConnectionOAuthCleanupError extends Error {
   readonly name = 'ConnectionOAuthCleanupError';
@@ -1365,6 +1374,46 @@ export class ConnectionAccountService {
       pages: pages.map(({ id, ...page }) => ({ ...page, chosen: !chosen || chosen.has(id) })),
       complete,
     };
+  }
+
+  /**
+   * Choose what one Agent may do with a ready managed connection: one or more
+   * of the capabilities the account allows and the catalog still offers. The
+   * account's ceiling and the sign-in it shares with other Agents stay as they are.
+   */
+  async setManagedCapabilities(input: {
+    principal: AuthPrincipal;
+    agentId: string;
+    connectionAccountId: string;
+    expectedRevision: number;
+    allowedCapabilities: readonly string[];
+  }): Promise<{ account: ConnectionAccount; binding: AgentConnectionBinding }> {
+    const { account, binding } = await this.requireAgentOwnedAccount(input);
+    const policy = account.policy;
+    const connector = policy.kind === 'managed' ? this.catalog().connector(policy.toolkit) : undefined;
+    if (policy.kind !== 'managed' || account.lifecycle !== 'ready' || !binding.enabled ||
+        !connector || connector.providerId !== account.providerId) {
+      throw new ManagedCapabilityChoiceError('unavailable');
+    }
+    const offered = new Set(connector.capabilities
+      .map(({ id }) => id)
+      .filter((id) => policy.allowedCapabilities.includes(id)));
+    const chosen = [...new Set(input.allowedCapabilities)];
+    if (chosen.length === 0) throw new ManagedCapabilityChoiceError('empty');
+    if (chosen.some((capability) => !offered.has(capability))) {
+      throw new ManagedCapabilityChoiceError('not_allowed');
+    }
+    // As setAgentPages does, the account revision orders this choice against a
+    // reconnect or resource change, and the binding is written only as it was read.
+    const updatedAccount = await this.dependencies.config.putConnectionAccount(account, input.expectedRevision);
+    const updatedBinding = await this.dependencies.config.putAgentConnectionBindingIfUnchanged(binding, {
+      ...binding,
+      allowedCapabilities: chosen,
+    });
+    if (!updatedBinding) {
+      throw new ConnectionAccountRevisionConflictError(account.id, input.expectedRevision, updatedAccount.revision);
+    }
+    return { account: updatedAccount, binding: updatedBinding };
   }
 
   /**

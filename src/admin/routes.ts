@@ -109,6 +109,7 @@ import {
   ConnectionScheduleConflictError,
   ConnectionAccountService,
   ConnectionCredentialEntryUnavailableError,
+  ManagedCapabilityChoiceError,
   ManagedConnectionConflictError,
   ManagedConnectionProviderUnavailableError,
   ManagedResourceSelectionError,
@@ -9524,6 +9525,46 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
       if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
       if (error instanceof ConnectionAccountRevisionConflictError) return c.json({ error: 'revision_conflict', message: 'This connection changed. Reload it before saving tool access.' }, 409);
+      return internalError(c, error);
+    }
+  });
+
+  app.put('/admin/api/agents/:agentId/connections/:connectionAccountId/managed/capabilities', async (c) => {
+    const parsed = v.safeParse(v.object({
+      expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
+      allowedCapabilities: v.pipe(
+        v.array(v.pipe(v.string(), v.minLength(1), v.maxLength(256))),
+        v.maxLength(128),
+      ),
+    }), await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      const agentId = c.req.param('agentId');
+      const { principal, account } = await managedConnectionAccount(c, agentId, c.req.param('connectionAccountId'));
+      const service = connectionAccounts(c);
+      const updated = await service.setManagedCapabilities({
+        principal, agentId, connectionAccountId: account.id, ...parsed.output,
+      });
+      return c.json({
+        account: await service.view(updated.account),
+        binding: toAgentConnectionBindingView(updated.binding),
+      });
+    } catch (error) {
+      if (error instanceof ManagedCapabilityChoiceError) {
+        return error.code === 'unavailable'
+          ? c.json({ error: 'connection_not_ready' }, 409)
+          : c.json({
+              error: 'invalid_tool_selection',
+              message: error.code === 'empty'
+                ? 'Choose at least one tool. To stop this Agent from using the account, disconnect it.'
+                : 'This account does not allow one of the chosen tools. Reload it and try again.',
+            }, 400);
+      }
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      if (error instanceof ConnectionAccountRevisionConflictError || error instanceof ManagedSignInGroupConflictError) {
+        return c.json({ error: 'revision_conflict', message: 'This connection changed. Reload it before saving tool access.' }, 409);
+      }
       return internalError(c, error);
     }
   });

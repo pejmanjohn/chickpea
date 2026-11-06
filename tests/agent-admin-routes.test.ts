@@ -4557,6 +4557,140 @@ test('managed resource routes return local handles and reject stale selections',
   }
 });
 
+test('an Agent chooses which tools of a managed connection it uses, within the account ceiling', async () => {
+  const capability = (id: string, accessLane: 'read' | 'write') => ({
+    id: `tools_fixture.${id}`,
+    connectorToolkit: 'tools_fixture',
+    accessLane,
+    effect: accessLane === 'read' ? 'read' as const : 'reversible_write' as const,
+    toolName: `tools_fixture_${id}`,
+    description: `Fixture ${id}.`,
+    input: v.strictObject({}),
+    maxResultBytes: 16_384,
+    ...(accessLane === 'write' ? { sideEffectLabel: `Changes ${id}` } : {}),
+  });
+  const connector: ManagedConnectorDefinition = {
+    id: 'tools-fixture',
+    toolkit: 'tools_fixture',
+    providerId: 'google',
+    label: 'Tools fixture',
+    description: 'Test-only connector with read and write tools.',
+    securityDescription: 'Only chosen tools are available.',
+    capabilities: [capability('report', 'read'), capability('list', 'read'), capability('edit', 'write')],
+  };
+  const ceiling = ['tools_fixture.report', 'tools_fixture.list'];
+  const ownerFixture = harness(new FakeTransport(), {
+    managedConnectorCatalog: createManagedConnectorCatalog([connector]),
+  });
+  const memberPrincipal: AuthPrincipal = {
+    userId: 'user_member', membershipId: 'membership_member', organizationId: 'org_oss',
+    role: 'member', authenticatorKind: 'test_slack_session', credentialId: 'session_member',
+    correlationId: 'request_member', machine: false,
+  };
+  const memberFixture = harness(new FakeTransport(), {
+    managedConnectorCatalog: createManagedConnectorCatalog([connector]),
+  }, { store: ownerFixture.store, settings: ownerFixture.settings }, memberPrincipal);
+  try {
+    await createAgent(ownerFixture.app);
+    await ownerFixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
+      defaultAgentId: 'agent_support',
+    });
+    const account = await ownerFixture.store.putConnectionAccount({
+      id: 'connection_tools',
+      workspaceId: 'T_TEST',
+      ownerKind: 'team',
+      createdByMembershipId: 'membership_test_owner',
+      providerId: 'google',
+      label: 'Tools fixture',
+      policy: {
+        kind: 'managed', adapterId: 'composio', toolkit: connector.toolkit,
+        principalRef: 'chickpea:organization:T_TEST', accountRef: 'ca_tools',
+        allowedCapabilities: ceiling,
+      },
+      secretRefId: 'secret_tools',
+      lifecycle: 'ready',
+    }, 0);
+    await ownerFixture.store.putAgentConnectionBinding({
+      agentId: 'agent_support',
+      connectionAccountId: account.id,
+      providerId: 'google',
+      allowedCapabilities: ceiling,
+      resourceConstraints: {},
+      enabled: true,
+    });
+    const save = (
+      body: { expectedRevision: number; allowedCapabilities: string[] },
+      app = ownerFixture.app,
+    ) => app.request(
+      `http://localhost/admin/api/agents/agent_support/connections/${account.id}/managed/capabilities`,
+      { method: 'PUT', headers: auth(), body: JSON.stringify(body) },
+    );
+    const stored = async () => ({
+      binding: (await ownerFixture.store.getAgentConnectionBindingForAccount(account.id))!,
+      account: (await ownerFixture.store.listConnectionAccounts('T_TEST')).find(({ id }) => id === account.id)!,
+    });
+
+    const narrowed = await save({ expectedRevision: account.revision, allowedCapabilities: ['tools_fixture.report'] });
+    assert.equal(narrowed.status, 200, await narrowed.clone().text());
+    const narrowedBody = await narrowed.json() as {
+      account: { revision: number; policy: { allowedCapabilities: string[] } };
+      binding: { allowedCapabilities: string[] };
+    };
+    assert.deepEqual(narrowedBody.binding.allowedCapabilities, ['tools_fixture.report']);
+    assert.deepEqual(narrowedBody.account.policy.allowedCapabilities, ceiling);
+    let current = await stored();
+    assert.deepEqual(current.binding.allowedCapabilities, ['tools_fixture.report']);
+    assert.deepEqual(current.account.policy.kind === 'managed' && current.account.policy.allowedCapabilities, ceiling);
+    assert.equal(current.account.revision, narrowedBody.account.revision);
+
+    const stale = await save({ expectedRevision: account.revision, allowedCapabilities: ceiling });
+    assert.equal(stale.status, 409, await stale.clone().text());
+    assert.equal((await stale.json() as { error: string }).error, 'revision_conflict');
+    assert.deepEqual((await stored()).binding.allowedCapabilities, ['tools_fixture.report']);
+
+    for (const allowedCapabilities of [
+      ['tools_fixture.report', 'tools_fixture.edit'],
+      ['tools_fixture.unknown'],
+    ]) {
+      const refused = await save({ expectedRevision: narrowedBody.account.revision, allowedCapabilities });
+      assert.equal(refused.status, 400, await refused.clone().text());
+      assert.equal((await refused.json() as { error: string }).error, 'invalid_tool_selection');
+    }
+    const empty = await save({ expectedRevision: narrowedBody.account.revision, allowedCapabilities: [] });
+    assert.equal(empty.status, 400, await empty.clone().text());
+    assert.deepEqual(await empty.json(), {
+      error: 'invalid_tool_selection',
+      message: 'Choose at least one tool. To stop this Agent from using the account, disconnect it.',
+    });
+
+    const member = await save(
+      { expectedRevision: narrowedBody.account.revision, allowedCapabilities: ceiling },
+      memberFixture.app,
+    );
+    assert.equal(member.status, 403, await member.clone().text());
+    current = await stored();
+    assert.deepEqual(current.binding.allowedCapabilities, ['tools_fixture.report']);
+    assert.equal(current.account.revision, narrowedBody.account.revision);
+
+    const widened = await save({ expectedRevision: narrowedBody.account.revision, allowedCapabilities: ceiling });
+    assert.equal(widened.status, 200, await widened.clone().text());
+    assert.deepEqual((await stored()).binding.allowedCapabilities, ceiling);
+
+    const needsAttention = await ownerFixture.store.putConnectionAccount(
+      { ...(await stored()).account, lifecycle: 'needs_attention' },
+      (await stored()).account.revision,
+    );
+    const notReady = await save({ expectedRevision: needsAttention.revision, allowedCapabilities: ['tools_fixture.list'] });
+    assert.equal(notReady.status, 409, await notReady.clone().text());
+    assert.equal((await notReady.json() as { error: string }).error, 'connection_not_ready');
+    assert.deepEqual((await stored()).binding.allowedCapabilities, ceiling);
+  } finally {
+    ownerFixture.store.close();
+    ownerFixture.settings.close();
+  }
+});
+
 test('an owner reconciles malformed managed authorization state before retrying', async (t) => {
   const errors: string[] = [];
   const cleanedRemoteAccounts: string[] = [];
