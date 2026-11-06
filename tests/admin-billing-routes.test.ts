@@ -234,6 +234,8 @@ test('what is left follows the order usage is spent: the plan\'s usage, what car
   assert.deepEqual(await left({ ...PLAN_NO_PERIOD, heldForOwnKey: { usageMicros: usd(90) } }), plan('$150', 'about 325'),
     'only the part it does not hold is on its way');
   assert.deepEqual(await left({ ...TEAM_PLAN, heldForOwnKey: { usageMicros: usd(120) } }), plan('$132', 'about 275'), 'a meter counts what was granted');
+  assert.deepEqual((await status(t, { ...PLAN_NO_PERIOD, funding: 'own_key', heldForOwnKey: { usageMicros: usd(240) } })).balance, plan('$240', '800'),
+    'on its own key nothing waits for a switch');
   const ownKey = await status(t, { ...TEAM_PLAN, funding: 'own_key' });
   assert.deepEqual(ownKey.balance, plan('$132', '440'), 'an own key counts tasks exactly');
   assert.deepEqual((ownKey.meter as Record<string, unknown>).tasksUsed, '426');

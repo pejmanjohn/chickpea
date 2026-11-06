@@ -53,15 +53,6 @@
   var PLATFORM_MODELS_SOURCE = "Chickpea’s models";
   var PLATFORM_PROVIDER_COPY_HTML = '<div class="provider-card-copy"><p>Chickpea&rsquo;s models are in use. No API key needed.</p><p class="provider-card-muted">Your own API key is optional.</p></div>';
 
-  // On Chickpea's models a saved key is not used until the workspace
-  // switches to its own key, which only an Owner can do.
-  function platformProviderCopyHtml(summary) {
-    if (summary.status !== "stored") return PLATFORM_PROVIDER_COPY_HTML;
-    var next = BILLING_OFFERED && INSTALLATION_OWNER
-      ? '<a class="hint-link" href="/admin/plan?step=own-key">Switch to your own key</a> on the Plan page to use it.'
-      : 'An Owner can switch to your own key on the Plan page.';
-    return '<div class="provider-card-copy"><p>Your key is saved, but Chickpea&rsquo;s models are in use.</p><p class="provider-card-muted">' + next + '</p></div>';
-  }
   var CONNECTOR_PRESETS = CONFIG.connectorPresets;
   var GOOGLE_WORKSPACE_SERVICE_PRESETS = CONFIG.googleWorkspaceServicePresets;
   var MANAGED_CONNECTOR_PRESETS = CONFIG.managedConnectorPresets;
@@ -168,6 +159,7 @@
     // The banner over the page after a purchase: "wait" while the usage is
     // being added, or what it added.
     billingBanner: null,
+    billingReturnOwnKey: false,
     planReturnSwitchFailed: false,
     teamError: "",
     teamBusy: "",
@@ -3134,7 +3126,7 @@
     var billing = state.billing;
     if (billing.funding !== "platform") return;
     if (billing.ownKey.planReady && billing.ownKey.key.ready) {
-      state.billingSelection = Object.assign({}, state.billingSelection, { own_key: billing.plan.key });
+      state.billingSelection.own_key = billing.plan.key;
       state.billingFundingConfirm = true;
       state.billingError = null;
       render();
@@ -3162,8 +3154,9 @@
     var billing = state.billing;
     var purchase = billing && billing.purchase;
     if (!purchase) return;
-    var settled = purchase.granted || (purchase.kind === "plan" && !!billing.heldForOwnKey);
-    state.billingBanner = settled ? { text: purchaseBannerText(billing, purchase), ownKeyStep: purchaseOffersOwnKey(billing, purchase) } : { wait: true };
+    var settled = purchase.granted || (purchase.kind === "plan" && billingHeldWhole(billing));
+    var ownKeyStep = purchase.kind === "plan" && state.billingReturnOwnKey && billing.funding === "platform" && !billing.heldForOwnKey;
+    state.billingBanner = settled ? { text: purchaseBannerText(billing, purchase, ownKeyStep), ownKeyStep: ownKeyStep } : { wait: true };
     render();
     if (settled || attempt >= PURCHASE_POLLS) return;
     setTimeout(function () {
@@ -3171,26 +3164,17 @@
     }, PURCHASE_POLL_MS);
   }
 
-  function purchaseBannerText(billing, purchase) {
+  function purchaseBannerText(billing, purchase, ownKeyStep) {
     if (purchase.kind === "extra_usage") return 'Added ' + esc(purchase.usage) + ' of usage.';
     var plan = billing.plan;
     if (!plan) return 'Payment received.';
-    if (billing.heldForOwnKey) return 'You&rsquo;re on the ' + esc(plan.price) + ' plan. Its usage is held for your own API key.';
-    var next = state.billingReturnOwnKey && billing.funding === "platform"
-      ? ' To pay with your own key, ' + (billing.ownKey.key.ready ? 'switch to your own key.' : 'add your key, then switch.')
-      : '';
+    if (billing.heldForOwnKey) return 'You&rsquo;re on the ' + esc(plan.price) + ' plan. ' + billingHeldSentence(billing, 'its');
+    var next = ownKeyStep ? ' To pay with your own key, ' + (billing.ownKey.key.ready ? 'switch to your own key.' : 'add your key, then switch.') : '';
     if (purchase.newPeriod) {
       return 'You&rsquo;re on the ' + esc(plan.price) + ' plan' + (plan.included ? ', with ' + esc(plan.included) + ' of usage this month' : '') + '.' +
         (billing.topUp && billing.topUp.enabled ? ' Auto top-up is on.' : '') + next;
     }
     return 'You&rsquo;re on the ' + esc(plan.price) + ' plan.' + (purchase.added !== "$0" ? ' ' + esc(purchase.added) + ' of usage was added for the rest of this month.' : '') + next;
-  }
-
-  // Back from the own-key card's Checkout still on models included, the
-  // banner offers the step toward the Owner's own key. Held usage has its
-  // step in the status card instead.
-  function purchaseOffersOwnKey(billing, purchase) {
-    return purchase.kind === "plan" && state.billingReturnOwnKey && billing.funding === "platform" && !billing.heldForOwnKey;
   }
 
   function billingBannerHtml() {
@@ -3422,12 +3406,14 @@
     });
   }
 
-  function openStripe(path, body, busy, at) {
+  // `fromOwnKeyCard`, for a plan's Checkout only: whether the own-key card started it.
+  function openStripe(path, body, busy, at, fromOwnKeyCard) {
     if (state.billingBusy) return;
     state.billingBusy = busy;
     state.billingError = null;
     render();
     postJson(path, "POST", body).then(function (response) {
+      if (fromOwnKeyCard !== undefined) noteOwnKeyCheckout(fromOwnKeyCard);
       location.assign(response.url);
     }).catch(function (error) {
       state.billingBusy = "";
@@ -3659,13 +3645,21 @@
     return '<button type="button" class="btn btn-primary btn-sm" data-action="billing-own-key-switch"' + (state.billingBusy ? ' disabled' : '') + '>Switch to your own key</button>';
   }
 
+  function billingHeldWhole(billing) {
+    return !!billing.heldForOwnKey && billing.plan.included === billing.heldForOwnKey.usage;
+  }
+
+  // How much of the plan's usage is held, as a sentence about `plan`: "its",
+  // or "your $100 plan's".
+  function billingHeldSentence(billing, plan) {
+    return (billingHeldWhole(billing) ? billingSentence(plan) : esc(billing.heldForOwnKey.usage) + ' of ' + plan) + ' usage is held for your own API key.';
+  }
+
   // A plan whose usage the host holds until the workspace switches to its own key.
   function billingHeldHtml(billing) {
     var held = billing.heldForOwnKey;
-    if (!held || !billing.plan) return '';
-    var whole = billing.plan.included === held.usage;
-    var text = (whole ? 'Your ' + esc(billing.plan.price) + ' plan&rsquo;s usage' : esc(held.usage) + ' of your ' + esc(billing.plan.price) + ' plan&rsquo;s usage') +
-      ' is held for your own API key. ' +
+    if (!held) return '';
+    var text = billingHeldSentence(billing, 'your ' + esc(billing.plan.price) + ' plan&rsquo;s') + ' ' +
       (billing.manage ? 'Switch to your own key to use it' + (held.tasks ? ' for ' + esc(held.tasks) + ' tasks' : '') + '.' : 'An Owner can switch to your own key to use it.');
     var next = billingOwnKeyNextHtml(billing);
     return '<div class="plan-held"><p>' + text + '</p>' + (next ? '<div class="plan-hero-actions">' + next + '</div>' : '') + '</div>';
@@ -12980,6 +12974,16 @@
     return '<div class="prov-status"><span class="badge ' + (connected ? "badge-on" : "badge-off") + '"><span class="dot"></span>' + (connected ? "Connected" : "Key needed") + '</span></div>';
   }
 
+  // On Chickpea's models a saved key is not used until the workspace
+  // switches to its own key, which only an Owner can do.
+  function platformProviderCopyHtml(summary) {
+    if (summary.status !== "stored") return PLATFORM_PROVIDER_COPY_HTML;
+    var next = BILLING_OFFERED && INSTALLATION_OWNER
+      ? '<a class="hint-link" href="/admin/plan?step=own-key">Switch to your own key</a> on the Plan page to use it.'
+      : 'An Owner can switch to your own key on the Plan page.';
+    return '<div class="provider-card-copy"><p>Your key is saved, but Chickpea&rsquo;s models are in use.</p><p class="provider-card-muted">' + next + '</p></div>';
+  }
+
   function providerCardCopyHtml(id, summary, meta) {
     if (summary.platformFunded) return platformProviderCopyHtml(summary);
     var connected = summary.status === "stored" || summary.status === "env";
@@ -16406,8 +16410,7 @@
     }
     if (action === "billing-choose-plan") {
       var planAt = target.getAttribute("data-at") || "";
-      noteOwnKeyCheckout(planAt === "own_key");
-      openStripe("/admin/api/billing/checkout", { kind: "plan", key: target.getAttribute("data-key") || "" }, "plan:" + planAt, "plan:" + planAt);
+      openStripe("/admin/api/billing/checkout", { kind: "plan", key: target.getAttribute("data-key") || "" }, "plan:" + planAt, "plan:" + planAt, planAt === "own_key");
     }
     if (action === "billing-manage") openStripe("/admin/api/billing/portal", {}, "portal", "portal");
     if (action === "billing-own-key-switch" && !state.billingBusy) openOwnKeySwitch();

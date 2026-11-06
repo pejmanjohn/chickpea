@@ -23,7 +23,7 @@ export function balance(summary: BillingSummary, planOffer: PlanOffer | null | u
   const { planUsage, rollover, extraUsage, trial } = summary;
   const plan = !summary.plan ? 0
     : planUsage ? Math.max(0, planUsage.includedMicros - planUsage.usedMicros)
-    : Math.max(0, (planOffer?.includedMicros ?? 0) - (summary.heldForOwnKey?.usageMicros ?? 0));
+    : Math.max(0, (planOffer?.includedMicros ?? 0) - (summary.funding === 'platform' ? summary.heldForOwnKey?.usageMicros ?? 0 : 0));
   const first = plan + (rollover?.remainingMicros ?? 0) + (trial?.remainingMicros ?? 0) - summary.debtMicros;
   const extra = extraUsage && !extraUsage.frozen ? extraUsage.remainingMicros : 0;
   const stage = summary.plan && first <= 0 && first + extra > 0 ? 'extra' : 'plan';

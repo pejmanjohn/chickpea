@@ -1903,6 +1903,20 @@ test('back from Stripe with plan usage held for the own key, the banner says so 
   assertShows(back.html(), 'You’re on the $100 plan. Its usage is held for your own API key.');
   assertHides(back.html(), 'Adding your usage');
   assert.ok(!back.timerDelays.includes(2000), 'nothing to wait for, so no poll');
+
+  const partly: BillingSummary = {
+    ...PLUS_HELD, heldForOwnKey: { usageMicros: usd(60) },
+    lastPurchase: { kind: 'plan', granted: false, first: true, newPeriod: true, addedMicros: usd(120) },
+  };
+  const waiting = await harness({ path: '/admin/plan?billing=done', billingOffered: true, manualPolls: true, summary: partly });
+  assertShows(waiting.html(), 'Payment received. Adding your usage…');
+  waiting.setSummary({
+    ...partly, planUsage: { usedMicros: usd(0), includedMicros: usd(60), onPacePercent: null },
+    lastPurchase: { kind: 'plan', granted: true, first: true, newPeriod: true, addedMicros: usd(120) },
+  });
+  await waiting.firePoll();
+  assertShows(waiting.html(), 'You’re on the $100 plan. $60 of its usage is held for your own API key.');
+  assertHides(waiting.html(), 'with $120 of usage');
 });
 
 test('back from the own-key card\'s Checkout still on models included, the banner offers the switch, or the key it needs first', async () => {
@@ -1932,6 +1946,13 @@ test('back from the own-key card\'s Checkout still on models included, the banne
   assert.equal(session.size, 0, 'the mark is read once');
   const again = await harness({ path: '/admin/plan?billing=done', billingOffered: true, summary: bought, session });
   assertHides(again.html(), 'To pay with your own key');
+
+  const failed = new Map<string, string>();
+  const refused = await harness({
+    path: '/admin/plan', billingOffered: true, summary: { ...NO_PLAN, trial: TRIAL_GRANT }, session: failed, stripeFails: new Error('Stripe is down'),
+  });
+  await refused.click({ 'data-action': 'billing-choose-plan', 'data-key': 'plus', 'data-at': 'own_key' });
+  assert.equal(failed.size, 0, 'a Checkout that never opened marked the tab');
 
   const platformCard = new Map<string, string>(session);
   const other = await harness({ path: '/admin/plan', billingOffered: true, summary: { ...NO_PLAN, trial: TRIAL_GRANT }, session: platformCard });

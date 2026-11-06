@@ -205,7 +205,7 @@ export interface BillingSummary {
    * Plan usage this period the host holds for the installation's own key,
    * such as an own-key-only discount's share, and grants when it switches to
    * its own key. Absent where the host does not report it; null when it holds
-   * none.
+   * none, as on the installation's own key, where nothing waits for a switch.
    */
   readonly heldForOwnKey?: { readonly usageMicros: UsageMicros } | null;
   readonly use: {
