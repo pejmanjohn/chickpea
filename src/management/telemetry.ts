@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 import type { FlueObservation } from '@flue/runtime';
 import { MCP_CLIENT_REGISTRATION_DENIALS } from '../auth/mcp-oauth.ts';
 import type { ManagementOperation } from './types.ts';
-import { AGENT_AUTHORING_GUIDE_VERSION } from './agent-authoring/index.ts';
+import { AGENT_AUTHORING_GUIDE_URI, AGENT_AUTHORING_GUIDE_VERSION } from './agent-authoring/index.ts';
+import { MANAGEMENT_OPERATION_SCHEMA_URI } from './schemas.ts';
 
 export type ManagementMetricValue = boolean | number | string;
 
@@ -31,8 +32,10 @@ const MANAGEMENT_METRIC_FIELDS = new Set([
   'connectorNoticeCount',
   'deliveryPersona',
   'durationMs',
+  'errorCode',
   'guideVersion',
   'handoffClass',
+  'method',
   'operation',
   'operationCount',
   'outcome',
@@ -40,6 +43,7 @@ const MANAGEMENT_METRIC_FIELDS = new Set([
   'publicationStatus',
   'proposalOutcome',
   'reason',
+  'resource',
   'setupRequiredCount',
   'stage',
   'staleReason',
@@ -53,6 +57,7 @@ const MANAGEMENT_METRIC_EVENTS = new Set([
   'agent_creation.welcome_delivery',
   'agent_authoring.outcome',
   'live_revision.admission',
+  'mcp.request',
   'oauth.dcr',
   'oauth.discovery',
   'oauth.request',
@@ -88,6 +93,7 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
     'admitted', 'applied', 'completed', 'confirmation_required', 'delivered',
     'chickpea_handoff', 'clarification', 'created', 'denied', 'error', 'failed', 'partial',
     'replayed', 'retry', 'setup_required', 'skipped', 'success',
+    'abandoned', 'input_refused', 'jsonrpc_error', 'received', 'tool_error',
   ]),
   deliveryPersona: new Set(['agent', 'chickpea']),
   publicationStatus: new Set(['complete', 'partial']),
@@ -113,6 +119,20 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
     'undo_workspace_change', 'get_operation', 'revoke_setup_link',
     'list_mcp_clients', 'revoke_mcp_client',
   ]),
+};
+
+/** Tokens with `/` or `:`, which `safeToken` refuses, matched exactly. */
+const EXACT_METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
+  method: new Set([
+    'initialize', 'ping', 'server/discover', 'tools/list', 'tools/call',
+    'resources/list', 'resources/templates/list', 'resources/read',
+    'resources/subscribe', 'resources/unsubscribe', 'prompts/list', 'prompts/get',
+    'completion/complete', 'logging/setLevel', 'subscriptions/listen',
+    'notifications/initialized', 'notifications/cancelled', 'notifications/progress',
+    'notifications/roots/list_changed',
+  ]),
+  // Chickpea's own static guides only: any other URI can carry an identifier.
+  resource: new Set([AGENT_AUTHORING_GUIDE_URI, MANAGEMENT_OPERATION_SCHEMA_URI]),
 };
 
 const REASON_TOKENS = new Set([
@@ -247,6 +267,10 @@ function safeToken(value: string): string {
 }
 
 function safeFieldToken(key: string, value: string): string {
+  const exact = EXACT_METRIC_TOKENS[key];
+  if (exact) return exact.has(value) ? value : 'other';
+  // JSON-RPC error codes are negative, which the number path clamps to zero.
+  if (key === 'errorCode') return /^-?[0-9]{1,6}$/.test(value) ? value : 'other';
   const token = safeToken(value);
   if (token === 'other') return token;
   if (key === 'reason') {
@@ -324,4 +348,52 @@ function diagnosticCorrelation(source: object): Record<string, string> {
     if (typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,128}$/.test(value)) result[key] = value;
   }
   return result;
+}
+
+interface ToolInputIssue {
+  readonly code: string;
+  readonly path: readonly PropertyKey[];
+}
+
+const ZOD_ISSUE_CODES = new Set([
+  'custom', 'invalid_element', 'invalid_format', 'invalid_key', 'invalid_type',
+  'invalid_union', 'invalid_value', 'not_multiple_of', 'too_big', 'too_small',
+  'unrecognized_keys',
+]);
+
+/**
+ * An MCP `tools/call` the SDK refused on its input schema, so the handler and
+ * `tool.call` never ran. Same event as the Flue surface. Each field is a path of
+ * schema property names and array indexes; any other key (a record key, an
+ * unrecognized key) becomes `*`, so no requester-authored text crosses.
+ */
+export function emitMcpToolInputRefusal(
+  tool: string,
+  issues: readonly ToolInputIssue[],
+  propertyNames: ReadonlySet<string>,
+  sink: ManagementTelemetrySink = console,
+): void {
+  const fields = new Set<string>();
+  const validationCodes = new Set<string>();
+  for (const issue of issues) {
+    if (ZOD_ISSUE_CODES.has(issue.code)) validationCodes.add(issue.code);
+    if (issue.path.length === 0) continue;
+    fields.add(issue.path.map((segment) => typeof segment === 'number'
+      ? String(segment)
+      : typeof segment === 'string' && propertyNames.has(segment) ? segment : '*').join('.'));
+  }
+  try {
+    sink.info({
+      component: 'management',
+      event: 'tool.validation_failure',
+      surface: 'mcp',
+      tool: safeFieldToken('tool', tool),
+      errorType: 'schema_validation',
+      code: 'validation_failed',
+      fields: [...fields].sort(),
+      validationCodes: [...validationCodes].sort(),
+    });
+  } catch {
+    // A diagnostic cannot change the tool's outcome.
+  }
 }

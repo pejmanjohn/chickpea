@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 
-import { createMcpHandler } from '@modelcontextprotocol/server';
+import { createMcpHandler, type Transport } from '@modelcontextprotocol/server';
 
 import type { McpAuthenticatedPrincipal } from '../src/auth/mcp-oauth-routes.ts';
 import {
   createWorkspaceManagementMcpServer,
   WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI,
 } from '../src/management/mcp.ts';
+import { observeMcpRequests } from '../src/management/mcp-request-telemetry.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 
 const LEGACY = '2025-11-25';
@@ -234,4 +235,20 @@ test('each message of a JSON-RPC batch gets its own request metric', async (t) =
     ],
   );
   assertNoValues(metrics, principal);
+});
+
+test('a request still pending when the connection closes is abandoned', (t) => {
+  const metrics: Metric[] = [];
+  t.mock.method(console, 'info', (record: Metric) => metrics.push(record));
+  const transport: Transport = { start: async () => {}, close: async () => {}, send: async () => {} };
+  observeMcpRequests(transport, {});
+
+  transport.onmessage?.({ jsonrpc: '2.0', id: 7, method: 'tools/list', params: {} });
+  transport.onclose?.();
+  transport.onclose?.();
+
+  assert.deepEqual(
+    requestMetrics(metrics).map(({ method, outcome }) => ({ method, outcome })),
+    [{ method: 'tools/list', outcome: 'abandoned' }],
+  );
 });
