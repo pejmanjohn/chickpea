@@ -90,14 +90,14 @@ const FILE_REPAIR_TOOLS = new Set([
 ]);
 
 /**
- * Tools after which the host can replace the model's draft at delivery: a
- * memory update whose lease fails at delivery replaces it with the failure
- * notice, an Agent creation swaps in the welcome, and a front-desk hand-off
- * swaps in its line. A streamed answer could then be overwritten, so a later
- * declaration is refused and the reply stays terminal.
+ * Tools after which the host can replace the model's draft at delivery: an
+ * Agent creation swaps in the welcome, and a front-desk hand-off swaps in its
+ * line. A streamed answer could then be overwritten, so a later declaration
+ * is refused and the reply stays terminal. A memory write is not one: a
+ * verified own write delivers the answer as written, and a lease that fails
+ * instead replaces a streamed answer with the failure notice, as for any turn.
  */
 const DRAFT_REPLACING_TOOL_NAMES: ReadonlySet<string> = new Set([
-  'update_agent_memory',
   'apply_workspace_changes',
   'undo_workspace_change',
   FRONT_DESK_TOOL_NAME,

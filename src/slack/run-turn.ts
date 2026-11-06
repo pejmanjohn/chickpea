@@ -2035,7 +2035,6 @@ async function runTurnAttempt(
       const candidate = decideProgressiveEligibility({
         runtimePlan: runtimePlanDecision.runtimePlan,
         operationsEnabled: slackProgressiveStreamingEnabled(platformEnv),
-        memorySelected: (preparedMemory?.selection?.entries.length ?? 0) > 0,
         recoveryRequired: false,
         concurrentAttributionProven: options.progressiveAttributionProven === true,
         replacementCapable: handedBack,

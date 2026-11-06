@@ -28,7 +28,7 @@ Docs: `/slack/conversations/`, `/slack/replies/`, `/slack/handles-and-channels/`
 - The template's `routing` case covers a run-marked DM, a channel root mention and a mention-free follow-up in the same thread. Add handoff, files, streaming and Block Kit as their own cases with `--area delivery --proof slack --max-wait-ms 120000`, plus `--proof admin` when Agent state is read.
 - Put the run marker in every request and use a fresh thread per case. Insert each mention with Slack's mention control and confirm the draft holds the mention token before sending.
 - Handoff: let the first Agent answer, mention a second granted Agent in the thread, then send a plain follow-up and confirm the second Agent answers it.
-- Streaming: use a fresh Agent with no saved memory and ask for a long direct prose answer. Do not write "do not use any tools", which suppresses the declaration.
+- Streaming: use a fresh Agent and ask for a long direct prose answer. Do not write "do not use any tools", which suppresses the declaration.
 - Files: upload a run-owned PNG or PDF in the thread and ask about it; for output, ask for a CSV and a PNG in one reply.
 - Block Kit: ask a question with a few known options, answer by clicking as the requester, and click as a second signed-in actor when one is available.
 - Group DMs: start one in Slack with two test people and the app's bot; membership is fixed, so a new person means a new group DM. Cover a bare `@Chickpea`, a workspace-wide Agent's handle at the root, a second person's mention-free follow-up, a creator-only Agent's refusal, and two handles together. The lane's app needs `message.mpim` and `mpim:history` ([setup](../../../SETUP_AGENT.md#group-dms)); without them only `@Chickpea` arrives.
