@@ -255,6 +255,7 @@
     connectionAccountsSupported: null,
     connectionAccountForm: null,
     managedResourceEditor: null,
+    managedToolEditor: null,
     notionPagePicker: null,
     sharedSignInConfirm: null,
     // Non-null only while the gallery's single Custom connection flow is open.
@@ -4985,6 +4986,7 @@
     if (!sameOwner) {
       state.connectionAccountForm = null;
       state.customMcpToolEditor = null;
+      state.managedToolEditor = null;
       state.connectionKeyEditor = null;
     }
     // A focus/visibility refresh must not replace a valid same-owner snapshot
@@ -5032,6 +5034,11 @@
               editedAccount.account.ownerKind !== priorEditedAccount.account.ownerKind))) {
           state.customMcpToolEditor = null;
         }
+      }
+      if (state.managedToolEditor) {
+        var managedToolEntry = attachedConnectionEntry(state.managedToolEditor.accountId);
+        if (!managedToolEntry || !connectionAccountCanEditManagedTools(managedToolEntry) ||
+            managedToolEntry.account.revision !== state.managedToolEditor.revision) state.managedToolEditor = null;
       }
       restoreManagedAuthorization(agentId);
       finishVisibleResourceLoad(resourceTicket);
@@ -5232,6 +5239,7 @@
 
   function newConnectionAccountForm() {
     state.customMcpToolEditor = null;
+    state.managedToolEditor = null;
     state.connectorGallerySearch = "";
     state.connectionAccountForm = {
       ownerKind: "",
@@ -5262,6 +5270,7 @@
 
   function newConnectionAccountFormFromPreset(presetId, preferredOwnerKind) {
     state.customMcpToolEditor = null;
+    state.managedToolEditor = null;
     var googleService = googleServicePresetById(presetId);
     var managedPreset = managedPresetById(presetId);
     var managedCandidate = managedPreset || googleService;
@@ -8141,6 +8150,7 @@
       error: ""
     };
     state.managedResourceEditor = editor;
+    state.managedToolEditor = null;
     render();
     function loadPage(definition, cursor, collected, seen, seenCursors, pageCount) {
       if (cursor && seenCursors[cursor]) {
@@ -8472,6 +8482,7 @@
     state.notionPagePicker = picker;
     state.sharedSignInConfirm = null;
     state.managedResourceEditor = null;
+    state.managedToolEditor = null;
     render();
     api("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections/" + encodeURIComponent(accountId) +
       "/pages?workspaceId=" + encodeURIComponent(state.agentConnections.workspaceId), { cache: "no-store" }).then(function (body) {
@@ -8551,6 +8562,7 @@
     var entry = attachedConnectionEntry(accountId);
     if (!entry) return;
     state.notionPagePicker = null;
+    state.managedToolEditor = null;
     if (!entry.sharedWithOtherAgents) {
       reconnectManagedConnection(accountId);
       return;
@@ -8605,7 +8617,9 @@
       ? '<button type="button" class="btn btn-soft btn-sm connection-row-action" data-action="custom-mcp-tools-open" data-connection-id="' + esc(account.id) + '">' + ((account.policy.allowedTools || []).length ? 'Edit tools' : 'Choose tools') + '</button>' : '';
     var recoverMcpAction = account.policy && account.policy.kind === "mcp" && !account.policy.presetId && account.policy.authMode !== "oauth" && account.lifecycle !== "revoked"
       ? '<button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-enable-oauth" data-connection-id="' + esc(account.id) + '">Sign in with OAuth</button>' : '';
-    var action = (managedAction || oauthAction || pendingResourceAction || keyAction || customMcpAction || regularAction) + recoverMcpAction;
+    var managedToolsAction = connectionAccountCanEditManagedTools(entry)
+      ? '<button type="button" class="btn btn-soft btn-sm connection-row-action" data-action="managed-tools-open" data-connection-id="' + esc(account.id) + '">Edit tools</button>' : '';
+    var action = (managedAction || oauthAction || pendingResourceAction || keyAction || customMcpAction || managedToolsAction || regularAction) + recoverMcpAction;
     var status = account.lifecycle === "ready"
       ? '<span class="connection-account-state-placeholder" aria-hidden="true"></span>'
       : '<span class="connection-account-state connection-account-state-warn">' + esc({
@@ -8636,7 +8650,7 @@
     menuItems.push('<button type="button" class="danger" data-action="connection-account-disconnect" data-connection-id="' + esc(account.id) + '">Disconnect account&hellip;</button>');
     var menu = '<details class="connection-row-menu"><summary aria-label="More actions for ' + esc(displayName) + '">&#8943;</summary>' +
       '<div class="connection-row-menu-panel">' + menuItems.join("") + '</div></details>';
-    var resourceEditor = managedResourceEditorHtml(account) || notionPagePickerHtml(entry) || sharedSignInConfirmHtml(entry);
+    var resourceEditor = managedResourceEditorHtml(account) || managedToolEditorHtml(entry) || notionPagePickerHtml(entry) || sharedSignInConfirmHtml(entry);
     var keyEditor = awaitsKey ? connectionAccountKeyEditorHtml(account) : "";
     return '<div class="connection-account-row connection-account-row-attached">' +
       connectionAccountLogoHtml(account) +
@@ -8700,6 +8714,113 @@
     return !!(account && account.policy && account.policy.kind === "mcp" &&
       (!account.policy.presetId || account.policy.toolAccessMode === "review") &&
       account.lifecycle === "ready");
+  }
+
+  function toolSelectionControlsHtml(prefix, selectedCount, total, busy) {
+    var disabled = busy ? ' disabled' : '';
+    return '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="' + prefix + '-all"' + disabled + '>Select all</button>' +
+      '<button type="button" class="btn btn-ghost btn-sm" data-action="' + prefix + '-none"' + disabled + '>Deselect all</button>' +
+      '<span class="hint">' + selectedCount + ' of ' + total + ' selected</span></div>';
+  }
+
+  // The capabilities an Agent may choose from: the catalog's, in catalog order,
+  // within what the account allows. Mirrors the server's managed capabilities route.
+  function managedToolChoices(account) {
+    var descriptor = managedConnectorDescriptorByToolkit(account.policy.toolkit);
+    var ceiling = account.policy.allowedCapabilities || [];
+    return (descriptor && descriptor.capabilities || []).filter(function (capability) {
+      return ceiling.indexOf(capability.id) >= 0;
+    });
+  }
+
+  // Team connections are an Owner's or Admin's to change; a personal one is its owner's.
+  function connectionAccountCanEditManagedTools(entry) {
+    var account = entry && entry.account;
+    return !!(account && account.policy && account.policy.kind === "managed" && account.lifecycle === "ready" &&
+      entry.binding && (WORKSPACE_ADMIN_UI || account.ownerKind === "member") &&
+      managedToolChoices(account).length);
+  }
+
+  function openManagedTools(accountId) {
+    var entry = attachedConnectionEntry(accountId);
+    if (!entry || !connectionAccountCanEditManagedTools(entry)) return;
+    var allowed = entry.binding.allowedCapabilities || [];
+    state.connectionAccountForm = null;
+    state.customMcpToolEditor = null;
+    state.managedResourceEditor = null;
+    state.notionPagePicker = null;
+    state.sharedSignInConfirm = null;
+    state.managedToolEditor = {
+      accountId: accountId,
+      revision: entry.account.revision,
+      selected: managedToolChoices(entry.account).map(function (capability) { return capability.id; })
+        .filter(function (id) { return allowed.indexOf(id) >= 0; }),
+      busy: false,
+      error: ""
+    };
+    render();
+  }
+
+  function managedToolEditorHtml(entry) {
+    var editor = state.managedToolEditor;
+    if (!editor || editor.accountId !== entry.account.id) return "";
+    var choices = managedToolChoices(entry.account);
+    var descriptor = managedConnectorDescriptorByToolkit(entry.account.policy.toolkit);
+    var catalogWrites = (descriptor && descriptor.capabilities || []).some(function (capability) { return capability.accessLane === "write"; });
+    var groups = [
+      { label: "Read tools", choices: choices.filter(function (capability) { return capability.accessLane !== "write"; }) },
+      { label: "Write tools", choices: choices.filter(function (capability) { return capability.accessLane === "write"; }) }
+    ].filter(function (group) { return group.choices.length; });
+    var selectedCount = choices.filter(function (capability) { return editor.selected.indexOf(capability.id) >= 0; }).length;
+    var disabled = editor.busy ? ' disabled' : '';
+    var list = groups.map(function (group) {
+      return '<div class="managed-tool-group">' + (groups.length > 1 ? '<span class="field-label">' + group.label + '</span>' : '') +
+        '<div class="conn-tools managed-tool-list">' + group.choices.map(function (capability) {
+          var checked = editor.selected.indexOf(capability.id) >= 0;
+          return '<label class="conn-tool"><span class="import-check' + (checked ? ' on' : '') + '"><input type="checkbox" data-action="managed-tool" data-capability="' + esc(capability.id) + '"' + (checked ? ' checked' : '') + disabled + '></span>' +
+            '<span class="tool-body"><span class="tool-name">' + esc(capability.description || humanizeCapabilityId(capability.id)) + '</span></span></label>';
+        }).join("") + '</div></div>';
+    }).join("");
+    return '<div class="skill-form"><h3>Choose tools</h3><p class="hint">Choose what this Agent can do with this account.</p>' +
+      toolSelectionControlsHtml("managed-tools", selectedCount, choices.length, editor.busy) + list +
+      (catalogWrites && !groups.some(function (group) { return group.label === "Write tools"; })
+        ? '<p class="hint">This account is connected for reading only, so tools that change data are not listed.</p>' : '') +
+      (selectedCount ? '' : '<p class="hint">Choose at least one tool. To stop this Agent from using the account, disconnect it.</p>') +
+      (editor.error ? '<div class="err" role="alert">' + esc(editor.error) + '</div>' : '') +
+      '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="managed-tools-cancel"' + disabled + '>Cancel</button>' +
+      '<button type="button" class="btn btn-primary btn-sm" data-action="managed-tools-save"' + (editor.busy || !selectedCount ? ' disabled' : '') + '>' + (editor.busy ? 'Saving&hellip;' : 'Save tool access') + '</button></div></div>';
+  }
+
+  function saveManagedTools() {
+    var editor = state.managedToolEditor;
+    var agentId = state.agentConnections.agentId;
+    var workspaceId = state.agentConnections.workspaceId;
+    if (!editor || editor.busy || !editor.selected.length) return;
+    editor.busy = true;
+    editor.error = "";
+    invalidateAgentConnections(agentId, workspaceId);
+    render();
+    postJson('/admin/api/agents/' + encodeURIComponent(agentId) + '/connections/' + encodeURIComponent(editor.accountId) + '/managed/capabilities', 'PUT', {
+      expectedRevision: editor.revision, allowedCapabilities: editor.selected
+    }).then(function (body) {
+      if (state.managedToolEditor !== editor || state.agentConnections.agentId !== agentId ||
+          state.agentConnections.workspaceId !== workspaceId) return;
+      var index = (state.agentConnections.attached || []).findIndex(function (entry) { return entry.account.id === editor.accountId; });
+      if (body && body.account && body.binding && index >= 0) {
+        var attached = state.agentConnections.attached.slice();
+        attached[index] = Object.assign({}, attached[index], { account: body.account, binding: body.binding });
+        state.agentConnections.attached = attached;
+      }
+      state.managedToolEditor = null;
+      invalidateAgentConnections(agentId, workspaceId);
+      return loadAgentConnections(agentId);
+    }).catch(function (error) {
+      if (state.managedToolEditor !== editor || state.agentConnections.agentId !== agentId ||
+          state.agentConnections.workspaceId !== workspaceId) return;
+      editor.busy = false;
+      editor.error = error.serverMessage || "Could not save tool access. Try again in a moment.";
+      render();
+    });
   }
 
   function connectionAccountEndpointHtml(form, preset, oauth) {
@@ -8821,7 +8942,7 @@
     var tools = customMcpSelectableTools(selection);
     var selected = selection.selectedTools || [];
     var controls = (review ? '<p class="hint">Choose the tools this Agent can use for the selected ad accounts.</p>' : '') +
-      (tools.length ? '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-all"' + (busy ? ' disabled' : '') + '>Select all</button><button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-none"' + (busy ? ' disabled' : '') + '>Deselect all</button><span class="hint">' + tools.filter(function (tool) { return selected.indexOf(tool.name) >= 0; }).length + ' of ' + tools.length + ' selected</span></div>' : '');
+      (tools.length ? toolSelectionControlsHtml("custom-mcp-tools", tools.filter(function (tool) { return selected.indexOf(tool.name) >= 0; }).length, tools.length, busy) : '');
     var descriptions = {
       ads_get_ad_accounts: "Verify which approved ad accounts are available.",
       ads_get_ad_entities: "View campaigns, ad sets, ads, and their performance.",
@@ -8877,6 +8998,7 @@
     if (!entry || entry.account.policy.kind !== 'mcp') return;
     var ceiling = entry.binding && entry.binding.allowedCapabilities || [];
     state.connectionAccountForm = null;
+    state.managedToolEditor = null;
     var metaAds = entry.account.policy.presetId === 'meta-ads' || entry.account.policy.url === 'https://mcp.facebook.com/ads';
     var bugsnag = entry.account.policy.presetId === 'bugsnag' || entry.account.policy.url === 'https://bugsnag.mcp.smartbear.com/mcp';
     var accountIds = [];
@@ -16321,6 +16443,15 @@
         render();
       }
     }
+    if ((action === "managed-tools-all" || action === "managed-tools-none") && state.managedToolEditor && !state.managedToolEditor.busy) {
+      var managedToolEntry = attachedConnectionEntry(state.managedToolEditor.accountId);
+      state.managedToolEditor.selected = action === "managed-tools-all" && managedToolEntry
+        ? managedToolChoices(managedToolEntry.account).map(function (capability) { return capability.id; }) : [];
+      render();
+    }
+    if (action === "managed-tools-open") openManagedTools(target.getAttribute("data-connection-id"));
+    if (action === "managed-tools-save") saveManagedTools();
+    if (action === "managed-tools-cancel") { state.managedToolEditor = null; render(); }
     if (action === "custom-mcp-tools-open") openCustomMcpTools(target.getAttribute("data-connection-id"));
     if (action === "custom-mcp-tools-save") saveCustomMcpTools();
     if (action === "custom-mcp-tools-cancel") { state.customMcpToolEditor = null; render(); }
@@ -17386,6 +17517,12 @@
     }
     if (action === "meta-ads-app-id") state.metaAdsSettings.clientId = target.value;
     if (action === "meta-ads-account-ids" && state.customMcpToolEditor) state.customMcpToolEditor.accountIds = target.value;
+    if (action === "managed-tool" && state.managedToolEditor && !state.managedToolEditor.busy) {
+      var capabilityId = target.getAttribute("data-capability");
+      state.managedToolEditor.selected = state.managedToolEditor.selected.filter(function (id) { return id !== capabilityId; });
+      if (target.checked) state.managedToolEditor.selected.push(capabilityId);
+      render();
+    }
     if (action === "custom-mcp-tool") {
       var selection = state.connectionAccountForm || state.customMcpToolEditor;
       if (selection && !selection.busy) {

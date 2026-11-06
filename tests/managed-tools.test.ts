@@ -7,6 +7,11 @@ import {
 } from '../src/connections/managed-tools.ts';
 import { createLoadedManagedConnectionTools } from './helpers/managed-tools.ts';
 import { createManagedConnectionProviderRegistry } from '../src/connections/managed.ts';
+import {
+  projectEffectiveConnectionAccounts,
+  projectEffectiveManagedConnections,
+} from '../src/connections/runtime.ts';
+import type { AgentConnectionBinding, ConnectionAccount } from '../src/config/types.ts';
 
 const context = {
   workspaceId: 'T_MANAGED',
@@ -280,6 +285,60 @@ test('a read-only productivity binding never advertises write tools', async () =
     'google_sheets_lookup_row',
   ]);
   assert.equal(tools.some(({ name }) => /create|update|append|upsert|add/.test(name)), false);
+});
+
+test('an Agent binding narrowed below its account ceiling withholds the tools it removed', async () => {
+  const ceiling = [
+    'sheets.spreadsheets.search',
+    'sheets.values.get',
+    'sheets.values.update',
+    'sheets.values.append',
+  ];
+  const account: ConnectionAccount = {
+    id: 'connection_sheets',
+    workspaceId: context.workspaceId,
+    revision: 3,
+    ownerKind: 'team',
+    createdByMembershipId: 'membership_admin',
+    providerId: 'google',
+    label: 'Google Sheets',
+    policy: {
+      kind: 'managed', adapterId: 'composio', toolkit: 'googlesheets',
+      principalRef: 'chickpea:organization:T_MANAGED', accountRef: 'ca_sheets',
+      allowedCapabilities: ceiling,
+    },
+    secretRefId: 'secret_sheets',
+    lifecycle: 'ready',
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const binding: AgentConnectionBinding = {
+    agentId: context.agentId,
+    connectionAccountId: account.id,
+    providerId: 'google',
+    allowedCapabilities: ceiling,
+    resourceConstraints: {},
+    enabled: true,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const toolNames = async (allowedCapabilities: string[]) => (await createLoadedManagedConnectionTools({
+    ...context,
+    connections: projectEffectiveManagedConnections(projectEffectiveConnectionAccounts(
+      [account],
+      [{ ...binding, allowedCapabilities }],
+      context.actorMembershipId,
+    )),
+  })).map(({ name }) => name);
+
+  const everyTool = await toolNames(ceiling);
+  assert.equal(everyTool.length, ceiling.length);
+  const narrowed = await toolNames(['sheets.values.get']);
+  assert.deepEqual(narrowed, ['google_sheets_get_values']);
+  assert.deepEqual(
+    everyTool.filter((name) => !narrowed.includes(name)).sort(),
+    ['google_sheets_append_values', 'google_sheets_search', 'google_sheets_update_values'],
+  );
 });
 
 test('Gong projects a read-only surface and its runtime instruction treats transcripts as untrusted', async () => {
