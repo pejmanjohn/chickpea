@@ -771,11 +771,12 @@ export function createManagementSetupRoutes(
           ? c.html(renderManagedConnectionSetupPage({ ...page, signInNotice }), 409)
           : managedUnavailablePage(c);
       }
-      await markSetupFailure(activeSetup, c, dependencies.management, safeFailureCode(error), now());
+      const code = safeFailureCode(error);
+      await markSetupFailure(activeSetup, c, dependencies.management, code, now());
       if (activeSetup.action === 'managed_connection') {
         const message = managedStartFailureMessage(error);
         if (authorizationJsonRequest(c)) {
-          return c.json({ error: safeFailureCode(error), message }, 422);
+          return c.json({ error: code, message }, 422);
         }
         const page = await managedConnectionPageInput(c, activeSetup, dependencies, options, principal);
         return page
@@ -788,14 +789,14 @@ export function createManagementSetupRoutes(
           ? 'Meta Ads must be configured in Chickpea Admin before you can sign in.'
           : 'Chickpea could not prepare this connection. Check the details and try again.';
         if (authorizationJsonRequest(c)) {
-          return c.json({ error: safeFailureCode(error), message }, 422);
+          return c.json({ error: code, message }, 422);
         }
         const page = await catalogConnectionPageInput(c, activeSetup, dependencies);
         return page
           ? c.html(renderCatalogConnectionSetupPage({ ...page, failureMessage: message }), 422)
           : unavailablePage(c);
       }
-      if (safeFailureCode(error) === 'target_changed') return staleLinkPage(c, activeSetup, 422);
+      if (code === 'target_changed') return staleLinkPage(c, activeSetup, 422);
       return formFailure(c, activeSetup, dependencies);
     }
   });
