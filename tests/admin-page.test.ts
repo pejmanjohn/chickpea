@@ -4306,6 +4306,11 @@ test('an Agents tile reads Archived, then Off, then the Slack attention title, t
   assert.deepEqual(summary('agent_attention_viewer'), { state: 'attention', pill: undefined, attention: 'Slack handle is taken', fixIt: false, quiet: undefined });
   assert.deepEqual(summary('agent_draft'), { state: 'draft', pill: 'Draft', attention: undefined, fixIt: false, quiet: undefined });
   assert.deepEqual(summary('agent_on'), { state: 'on', pill: undefined, attention: undefined, fixIt: false, quiet: 'Not in a channel yet ·' });
+  assert.deepEqual(
+    [...html.matchAll(/class="agent-tile-open" data-action="edit-profile" data-agent="([^"]+)"/g)].map((match) => match[1]),
+    ['agent_off', 'agent_attention', 'agent_attention_viewer', 'agent_draft', 'agent_on', 'agent_archived'],
+    'an archived Agent sits after the Agents still at work, which keep their order',
+  );
 
   harness.listeners.click!({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_attention' }) });
   assert.equal(harness.locationPath(), '/admin/agents/agent_attention');

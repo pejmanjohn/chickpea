@@ -6479,7 +6479,9 @@
         ? firstAgentWelcomeHtml() + readyMadeHtml("Or start from a ready-made Agent")
         : '<div class="empty" role="status"><h1 class="page-title">Loading Chickpea&hellip;</h1><p class="hint">Reading your workspace configuration.</p></div>';
     }
-    var tiles = state.agents.map(agentTileHtml).join("");
+    var archived = function (agent) { return agent.lifecycle === "archived"; };
+    var tiles = state.agents.filter(function (agent) { return !archived(agent); })
+      .concat(state.agents.filter(archived)).map(agentTileHtml).join("");
     return '<div class="main-head"><div style="display:flex; flex-direction:column; gap:6px;">' +
       '<span class="agent-kicker">Workspace teammates</span><h1 class="page-title">Agents</h1>' +
       '<p class="hint" style="max-width:58ch;">Agents hold reusable instructions, models, capabilities, Slack presence, Channel reach, and memory.</p>' +
