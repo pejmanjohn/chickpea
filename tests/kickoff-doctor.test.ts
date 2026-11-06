@@ -66,7 +66,7 @@ test('host problems block the run and say how to fix them', () => {
   assert.ok(!alive.host.some((c: any) => c.text === 'Host reservation is free'), 'free only when no slot is held');
   assert.equal(alive.ok, true);
   const stale = kickoffReport(facts({ hostReservations: [slot('owner.json', 42, 'stopped')] }));
-  assert.equal(stale.ok, false, 'a stale reservation stops the guarded deploy, so the run is not ready');
+  assert.equal(stale.ok, false, 'a stale slot needs a person, so the run is not ready');
   assert.equal(kickoffReport(facts({ hostReservations: [slot('owner.json', 1, 'unknown')] })).host[2].level, 'human');
   const both = kickoffReport(facts({ hostReservations: [slot('owner.json', 42, 'live'), slot('owner-2.json', 43, 'stopped')] }));
   assert.deepEqual(both.host.slice(2, 4).map((c: any) => c.level), ['info', 'human'], 'one check per held slot');
