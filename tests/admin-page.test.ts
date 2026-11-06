@@ -669,6 +669,7 @@ function runAdminPageHarness(
       connectionId: string,
       body: Record<string, unknown>,
     ) => Promise<FakeResponse>;
+    managedCapabilityPutFetch?: (body: Record<string, unknown>) => Promise<FakeResponse>;
     connectionKeyPutFetch?: (
       connectionId: string,
       body: Record<string, unknown>,
@@ -798,6 +799,7 @@ function runAdminPageHarness(
     connectionId: string;
     body: Record<string, unknown>;
   }>;
+  managedCapabilityPuts: Array<{ agentId: string; connectionId: string; body: Record<string, unknown> }>;
   connectionKeyPuts: Array<{ connectionId: string; body: Record<string, unknown> }>;
   managedAuthorizationPosts: Array<{ agentId: string; body: Record<string, unknown> }>;
   composioSetupPosts: Array<Record<string, unknown>>;
@@ -1085,6 +1087,7 @@ function runAdminPageHarness(
     connectionId: string;
     body: Record<string, unknown>;
   }> = [];
+  const managedCapabilityPuts: Array<{ agentId: string; connectionId: string; body: Record<string, unknown> }> = [];
   const connectionKeyPuts: Array<{ connectionId: string; body: Record<string, unknown> }> = [];
   const managedAuthorizationPosts: Array<{ agentId: string; body: Record<string, unknown> }> = [];
   const composioSetupPosts: Array<Record<string, unknown>> = [];
@@ -2002,6 +2005,23 @@ function runAdminPageHarness(
         return harnessOptions.connectionToolsPutFetch(agentId, connectionId, body);
       }
       return Promise.resolve(jsonResponse({ error: 'not_found' }, 404));
+    }
+    const managedCapabilityMatch = path.match(
+      /^\/admin\/api\/agents\/([^/]+)\/connections\/([^/]+)\/managed\/capabilities$/,
+    );
+    if (managedCapabilityMatch && method === 'PUT') {
+      const connectionId = decodeURIComponent(managedCapabilityMatch[2] as string);
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      managedCapabilityPuts.push({
+        agentId: decodeURIComponent(managedCapabilityMatch[1] as string), connectionId, body,
+      });
+      if (harnessOptions.managedCapabilityPutFetch) return harnessOptions.managedCapabilityPutFetch(body);
+      const entry = harnessOptions.connectionAccounts?.attached.find(({ account }) =>
+        (account as Record<string, unknown>).id === connectionId);
+      return Promise.resolve(jsonResponse({
+        account: { ...(entry?.account as Record<string, unknown> | undefined), revision: Number(body.expectedRevision) + 1 },
+        binding: { ...(entry?.binding as Record<string, unknown> | undefined), allowedCapabilities: body.allowedCapabilities },
+      }));
     }
     const connectionKeyMatch = path.match(
       /^\/admin\/api\/agents\/[^/]+\/connections\/([^/]+)\/credential$/,
@@ -3347,6 +3367,7 @@ function runAdminPageHarness(
     mcpTestPosts,
     connectionAccountPosts,
     connectionToolsPuts,
+    managedCapabilityPuts,
     connectionKeyPuts,
     managedAuthorizationPosts,
     composioSetupPosts,
@@ -9258,6 +9279,147 @@ test('managed resource picker removes stale handles and warns when discovery is 
   assert.deepEqual(harness.managedResourcePosts[0]?.body.resourceConstraints, {
     propertyIds: ['property_0'],
   });
+});
+
+const GOOGLE_ADS_TOOLS_DESCRIPTOR = {
+  ...managedCatalogFixture('google-ads', 'googleads', 'Google Ads'),
+  resources: [{ key: 'customerIds', label: 'Google Ads accounts', required: true, multiple: true }],
+  capabilities: [
+    { id: 'ads.campaigns.report', accessLane: 'read', description: 'Report campaign performance.' },
+    { id: 'ads.keywords.report', accessLane: 'read', description: 'Report keyword performance.' },
+    { id: 'ads.campaigns.pause', accessLane: 'write', description: 'Pause a campaign.' },
+    { id: 'ads.budgets.update_amount', accessLane: 'write', description: 'Change a campaign budget.' },
+  ],
+};
+
+function googleAdsToolsConnection(
+  id: string,
+  ceiling: string[],
+  allowed: string[],
+  ownerKind: 'team' | 'member' = 'team',
+): Record<string, unknown> {
+  return {
+    account: {
+      id, revision: 7, workspaceId: 'T_DESIGN', ownerKind, providerId: 'google', label: 'Google Ads',
+      lifecycle: 'ready', credentialConfigured: true,
+      policy: {
+        kind: 'managed', adapterId: 'composio', toolkit: 'googleads', allowedCapabilities: ceiling,
+        resourceConstraints: { customerIds: [{ handle: 'customer_main', label: 'Main account' }] },
+      },
+    },
+    binding: {
+      agentId: 'agent_conn', connectionAccountId: id, providerId: 'google', allowedCapabilities: allowed,
+      resourceConstraints: { customerIds: ['customer_main'] }, enabled: true,
+    },
+  };
+}
+
+test('a ready managed connection lets an Admin choose the Agent\'s tools, grouped by read and write', async () => {
+  const ceiling = ['ads.campaigns.report', 'ads.keywords.report', 'ads.campaigns.pause', 'ads.budgets.update_amount'];
+  const harness = runAdminPageHarness({
+    agentsWorkspaceId: 'T_DESIGN',
+    agents: [connectionsAgent()],
+    initialPath: '/admin/agents/agent_conn',
+    initialSearch: '?tab=connections',
+    connectionAccounts: {
+      attached: [googleAdsToolsConnection('connection_ads', ceiling, ceiling)],
+      managedConnectors: { composio: true, catalog: [GOOGLE_ADS_TOOLS_DESCRIPTOR] },
+    },
+  });
+  await flushAsync();
+  const { click, change } = harness.listeners;
+  assert.ok(click && change);
+  assert.match(harness.app.innerHTML,
+    /data-action="managed-tools-open" data-connection-id="connection_ads">Edit tools<\/button>/);
+  assert.match(harness.app.innerHTML, /Change Google Ads accounts/);
+
+  click({ target: actionTarget({ 'data-action': 'managed-tools-open', 'data-connection-id': 'connection_ads' }) });
+  const editor = () => harness.app.innerHTML.slice(harness.app.innerHTML.indexOf('<h3>Choose tools</h3>'));
+  assert.match(editor(), /Read tools[\s\S]*Report campaign performance\.[\s\S]*Report keyword performance\.[\s\S]*Write tools[\s\S]*Pause a campaign\.[\s\S]*Change a campaign budget\./);
+  assert.match(editor(), /4 of 4 selected/);
+  assert.doesNotMatch(editor(), />[^<]*ads\.campaigns\.report[^<]*</);
+  assert.doesNotMatch(editor(), /connected for reading only/);
+
+  click({ target: actionTarget({ 'data-action': 'managed-tools-none' }) });
+  assert.match(editor(), /0 of 4 selected/);
+  assert.match(editor(), /Choose at least one tool/);
+  assert.match(editor(), /data-action="managed-tools-save" disabled/);
+  click({ target: actionTarget({ 'data-action': 'managed-tools-save' }) });
+  await flushAsync();
+  assert.deepEqual(harness.managedCapabilityPuts, []);
+
+  click({ target: actionTarget({ 'data-action': 'managed-tools-all' }) });
+  change({ target: checkboxTarget({ 'data-action': 'managed-tool', 'data-capability': 'ads.campaigns.pause' }, false) });
+  change({ target: checkboxTarget({ 'data-action': 'managed-tool', 'data-capability': 'ads.budgets.update_amount' }, false) });
+  assert.match(editor(), /2 of 4 selected/);
+  click({ target: actionTarget({ 'data-action': 'managed-tools-save' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.managedCapabilityPuts, [{
+    agentId: 'agent_conn',
+    connectionId: 'connection_ads',
+    body: { expectedRevision: 7, allowedCapabilities: ['ads.campaigns.report', 'ads.keywords.report'] },
+  }]);
+  assert.doesNotMatch(harness.app.innerHTML, /<h3>Choose tools<\/h3>/);
+});
+
+test('a read-only managed sign-in offers only its read tools and shows a refused save inline', async () => {
+  const harness = runAdminPageHarness({
+    agentsWorkspaceId: 'T_DESIGN',
+    agents: [connectionsAgent()],
+    initialPath: '/admin/agents/agent_conn',
+    initialSearch: '?tab=connections',
+    connectionAccounts: {
+      attached: [googleAdsToolsConnection(
+        'connection_ads_read', ['ads.campaigns.report', 'ads.keywords.report'], ['ads.keywords.report'],
+      )],
+      managedConnectors: { composio: true, catalog: [GOOGLE_ADS_TOOLS_DESCRIPTOR] },
+    },
+    managedCapabilityPutFetch: async () => jsonResponse({
+      error: 'revision_conflict', message: 'This connection changed. Reload it before saving tool access.',
+    }, 409),
+  });
+  await flushAsync();
+  const { click, change } = harness.listeners;
+  assert.ok(click && change);
+  click({ target: actionTarget({ 'data-action': 'managed-tools-open', 'data-connection-id': 'connection_ads_read' }) });
+  const editor = () => harness.app.innerHTML.slice(harness.app.innerHTML.indexOf('<h3>Choose tools</h3>'));
+  assert.match(editor(), /1 of 2 selected/);
+  assert.match(editor(), /data-capability="ads.keywords.report" checked/);
+  assert.doesNotMatch(editor(), /data-capability="ads.campaigns.report" checked/);
+  assert.doesNotMatch(editor(), /Pause a campaign|Change a campaign budget|Read tools|Write tools/);
+  assert.match(editor(), /This account is connected for reading only, so tools that change data are not listed\./);
+
+  change({ target: checkboxTarget({ 'data-action': 'managed-tool', 'data-capability': 'ads.campaigns.report' }, true) });
+  click({ target: actionTarget({ 'data-action': 'managed-tools-save' }) });
+  await flushAsync();
+  assert.deepEqual(harness.managedCapabilityPuts[0]?.body, {
+    expectedRevision: 7, allowedCapabilities: ['ads.keywords.report', 'ads.campaigns.report'],
+  });
+  assert.match(editor(), /role="alert">This connection changed\. Reload it before saving tool access\./);
+});
+
+test('a Member edits tools on their own managed connection and not on a team one', async () => {
+  const ceiling = ['ads.campaigns.report', 'ads.keywords.report'];
+  const harness = runAdminPageHarness({
+    workspaceAdminUi: false,
+    agentsWorkspaceId: 'T_DESIGN',
+    agents: [connectionsAgent()],
+    initialPath: '/admin/agents/agent_conn',
+    initialSearch: '?tab=connections',
+    connectionAccounts: {
+      attached: [
+        googleAdsToolsConnection('team_ads', ceiling, ceiling),
+        googleAdsToolsConnection('own_ads', ceiling, ceiling, 'member'),
+      ],
+      managedConnectors: { composio: true, catalog: [GOOGLE_ADS_TOOLS_DESCRIPTOR] },
+    },
+  });
+  await flushAsync();
+  const offered = [...harness.app.innerHTML.matchAll(
+    /data-action="managed-tools-open" data-connection-id="([^"]+)"/g,
+  )].map((match) => match[1]);
+  assert.deepEqual(offered, ['own_ads']);
 });
 
 test('an Agent-owned pending managed account offers reconnect instead of stranding the row', async () => {
