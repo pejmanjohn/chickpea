@@ -514,6 +514,25 @@ test('a row whose connection changed refuses the click, settles as changed, and 
   });
 });
 
+test('a row whose Agent was archived refuses the click, settles as changed, and says so privately', async () => {
+  await withDirectSlackInstall({}, async (install) => {
+    const { stores } = install;
+    const fixture = await keyedAgent(stores, 'api.tasks.archived');
+    await fixture.requestSetup('D1', 'im');
+    const card = await postCard(stores, fixture);
+    await stores.config.archiveAgent(fixture.agent.id);
+
+    await install.deliver('interactions', click(card));
+    await eventually(async () => install.calls.some(({ method }) => method === 'chat.postEphemeral'), 'the refusal is sent');
+    assert.equal(install.calls.some(({ method }) => method === 'views.open'), false);
+    assert.equal(install.calls.find(({ method }) => method === 'chat.postEphemeral')!.body.get('text'),
+      'The connection changed after this was posted. Ask Ops for a new one.');
+    const changed = await surface(stores, card.id);
+    assert.ok(isKeyCard(changed));
+    assert.deepEqual(changed.spec.rows[0]!.state, { is: 'superseded' });
+  });
+});
+
 test('the gateway answers a click and a submission in the receipt from the state store\'s own tables', async () => {
   const db = new DoSqlStateDb(new FakeObjectStorage().asDurableObjectStorage());
   const tag = buildTagStateStores(db, {} as PlatformEnv, { gatewayLeaseOwner: 'key-form-test' });
