@@ -1,7 +1,7 @@
 {
   "sourceVersion": 1,
-  "revision": 4,
-  "generatedAt": "2026-10-24T00:00:00.000Z",
+  "revision": 5,
+  "generatedAt": "2026-11-06T00:00:00.000Z",
   "entries": [
     {
       "canonical": "openai/gpt-6.1-sol",
@@ -15,6 +15,22 @@
       },
       "laneStatus": {
         "subscription": { "state": "contract_owned" }
+      }
+    },
+    {
+      "canonical": "openai/gpt-6.1-terra",
+      "displayName": "GPT-6.1 Terra",
+      "lanes": {
+        "subscription": "openai-codex-responses-standard@1",
+        "apiKey": "openai-platform-responses-terra-tier@1"
+      },
+      "provenance": {
+        "sourceRefs": ["https://developers.openai.com/api/docs/models/gpt-6.1-terra", "https://developers.openai.com/codex/models"],
+        "reviewedAt": "2026-11-06"
+      },
+      "laneStatus": {
+        "subscription": { "state": "contract_owned" },
+        "apiKey": { "state": "backfill" }
       }
     },
     {

@@ -37,6 +37,7 @@ const ANTHROPIC_COMPAT_PROVIDER_ID = 'chickpea-anthropic-api-bundled-v1';
 const ANTHROPIC_COMPAT_API = 'chickpea-anthropic-messages-bundled-v1';
 const REVIEWED_OPENAI_MODELS = new Set([
   'gpt-6.1-sol',
+  'gpt-6.1-terra',
   'gpt-6-astra',
   'gpt-6-sol',
   'gpt-6-luna',

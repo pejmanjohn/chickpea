@@ -14,6 +14,8 @@ import { estimateUsage } from '../../src/usage/pricing/estimate.ts';
 import { UsageStoreLogic } from '../../src/usage/store.ts';
 
 const REVIEWED = Date.UTC(2026, 10, 5, 12);
+/** After the newest price version takes effect. */
+const LATEST = Date.UTC(2026, 10, 6, 12);
 const SNAPSHOT = 'a'.repeat(64);
 
 function measurement(
@@ -64,7 +66,7 @@ test('every suggested model and every API-key image model has a current price', 
   ]) assert.ok(suggestions.includes(credits), `${credits} is suggested`);
   const unpriced = suggestions.filter((specifier) => {
     const [provider, model] = split(specifier);
-    return estimateUsage(measurement(provider, model)).estimateCompleteness !== 'complete';
+    return estimateUsage(measurement(provider, model, { observedAt: LATEST })).estimateCompleteness !== 'complete';
   });
   assert.deepEqual(unpriced, []);
 
@@ -94,12 +96,13 @@ test('catalog models under alias providers and dated slugs price as their canoni
     ['openai', 'gpt-5.6-terra', [OPENAI_PLATFORM_COMPAT_PROVIDER_ID, revisionedAlias('openaiPlatform', 3, SNAPSHOT).providerId]],
     ['openai', 'gpt-6-sol', [OPENAI_PLATFORM_COMPAT_PROVIDER_ID, revisionedAlias('openaiPlatform', 3, SNAPSHOT).providerId]],
     ['openai', 'gpt-6.1-sol', [OPENAI_PLATFORM_COMPAT_PROVIDER_ID, revisionedAlias('openaiPlatform', 4, SNAPSHOT).providerId]],
+    ['openai', 'gpt-6.1-terra', [OPENAI_PLATFORM_COMPAT_PROVIDER_ID, revisionedAlias('openaiPlatform', 5, SNAPSHOT).providerId]],
   ] as const;
   for (const [canonical, model, aliases] of routes) {
-    const expected = estimateUsage(measurement(canonical, model));
+    const expected = estimateUsage(measurement(canonical, model, { observedAt: LATEST }));
     assert.equal(expected.estimateCompleteness, 'complete', model);
     for (const alias of aliases) {
-      assert.deepEqual(estimateUsage(measurement(alias, model)), expected, `${alias}/${model}`);
+      assert.deepEqual(estimateUsage(measurement(alias, model, { observedAt: LATEST })), expected, `${alias}/${model}`);
     }
   }
   assert.deepEqual(

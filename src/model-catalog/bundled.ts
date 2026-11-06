@@ -12,6 +12,7 @@ export const BUNDLED_MODEL_CATALOG: readonly ModelCatalogEntry[] = [
   // The Astra profile omits the reasoning effort when no level is set; GPT-6.1
   // Sol rejects `none`. Usage pricing does not read profile costs.
   openAiEntry('gpt-6.1-sol', 'GPT-6.1 Sol', 'openai-platform-responses-astra-tier@1'),
+  openAiEntry('gpt-6.1-terra', 'GPT-6.1 Terra', 'openai-platform-responses-terra-tier@1'),
   openAiEntry('gpt-6-astra', 'GPT-6 Astra', 'openai-platform-responses-astra-tier@1'),
   openAiEntry('gpt-6-sol', 'GPT-6 Sol', 'openai-platform-responses-sol-tier@1'),
   openAiEntry('gpt-6-luna', 'GPT-6 Luna', 'openai-platform-responses-luna-tier@1'),
@@ -131,7 +132,8 @@ function openAiEntry(
     | 'gpt-6-astra'
     | 'gpt-6-luna'
     | 'gpt-6-sol'
-    | 'gpt-6.1-sol',
+    | 'gpt-6.1-sol'
+    | 'gpt-6.1-terra',
   displayName: string,
   apiProfile:
     | 'openai-platform-responses-astra-tier@1'

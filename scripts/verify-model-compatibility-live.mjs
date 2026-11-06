@@ -26,8 +26,9 @@ if (args.has('--help')) {
   console.log(
     'Usage: npm run verify:model-compatibility:live -- --live ' +
       '--lane <subscription|openai-api-key|anthropic-api-key> --model <id> ' +
-      '[--state-db <path>] [--catalog-file <path>]',
+      '[--reasoning <off|minimal|low|medium|high|xhigh|max>] [--state-db <path>] [--catalog-file <path>]',
   );
+  console.log('--reasoning sends that thinking level the way an Agent turn does; without it the request sets none.');
   console.log('Consumes provider or subscription quota and never prints model output or credentials.');
   process.exit(0);
 }
@@ -40,6 +41,11 @@ assert.ok(
 );
 const modelId = String(args.get('--model') ?? '');
 assert.match(modelId, /^[a-z0-9][a-z0-9._-]{0,127}$/, '--model must be a safe model id');
+const reasoning = args.get('--reasoning');
+assert.ok(
+  reasoning === undefined || ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(reasoning),
+  '--reasoning must be off, minimal, low, medium, high, xhigh, or max',
+);
 
 const provider = lane === 'anthropic-api-key' ? 'anthropic' : 'openai';
 const canonicalModel = `${provider}/${modelId}`;
@@ -72,6 +78,7 @@ if (lane === 'subscription') {
 
 const nativeFetch = globalThis.fetch;
 const destinations = [];
+const sentReasoningEfforts = [];
 globalThis.fetch = async (input, init) => {
   const url = new URL(
     typeof input === 'string'
@@ -83,6 +90,9 @@ globalThis.fetch = async (input, init) => {
   destinations.push(url.hostname);
   if (url.hostname !== expectedHost && !(lane === 'subscription' && url.hostname === 'auth.openai.com')) {
     throw new Error(`Live compatibility gate blocked unexpected host ${url.hostname}.`);
+  }
+  if (url.hostname === expectedHost && typeof init?.body === 'string') {
+    sentReasoningEfforts.push(JSON.parse(init.body).reasoning?.effort ?? null);
   }
   return nativeFetch(input, init);
 };
@@ -120,7 +130,7 @@ try {
   const marker = 'CHICKPEA_MODEL_COMPATIBILITY_OK';
   // An API-key lane sends only inside model access, which reads the key from env.
   const result = await withStatelessModelAccess(route.model, { env: undefined, settings, runId: 'live-model-compatibility', purpose: 'reply' }, () =>
-    piProvider.stream(
+    piProvider.streamSimple(
       model,
       {
         messages: [{
@@ -131,7 +141,9 @@ try {
       },
       {
         ...(lane === 'subscription' ? { apiKey: 'chickpea-boundary-managed' } : {}),
-        maxTokens: 64,
+        ...(reasoning === undefined ? {} : { reasoning }),
+        // Reasoning tokens count against the output limit.
+        maxTokens: reasoning === undefined || reasoning === 'off' ? 64 : 4_096,
       },
     ).result());
   const output = result.content
@@ -154,6 +166,8 @@ try {
     runtimeModel: route.model,
     provider: result.provider,
     destination: expectedHost,
+    reasoning: reasoning ?? null,
+    ...(provider === 'openai' ? { sentReasoningEfforts } : {}),
     outputVerified: true,
   }));
 } finally {
