@@ -9,6 +9,8 @@ import type { WebClient } from '@slack/web-api';
 import { compileRuntimePlanV2, deriveRuntimePlanInstanceId } from '../src/agents/runtime-plan.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
+import { createMemoryWriteChain, executeSlackMemoryUpdate } from '../src/management/slack-memory-actions.ts';
+import { resolveSlackManagementActor } from '../src/management/slack-tools.ts';
 import { SqliteMemoryStateStore } from '../src/memory/store.ts';
 import { parseCurrentRequestEnvelope } from '../src/memory/tool-policy.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
@@ -21,10 +23,13 @@ import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
 
+import { createManagementAdapterFixture, type ManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+
 /**
- * An Agent with memory streams its answer like any other. Memory another
- * writer changes during the turn still fails the delivery lease: the
- * streamed text is replaced by the failure notice.
+ * An Agent with memory streams its answer like any other, including a turn
+ * that writes its own memory. Memory another writer changes during the turn
+ * still fails the delivery lease: the streamed text is replaced by the
+ * failure notice.
  */
 
 const assignment: ResolvedAssignment = {
@@ -64,14 +69,15 @@ after(() => {
   rmSync(stateDirectory, { recursive: true, force: true });
 });
 
-function dmTurn(messageTs: string): NormalizedSlackTurn {
+function dmTurn(messageTs: string, requester?: { userId: string; actorMembershipId: string }): NormalizedSlackTurn {
   return {
     workspaceId: assignment.workspaceId,
     channelId: assignment.channelId,
     channelType: 'im',
     eventId: `Ev_MEMSTREAM_${messageTs}`,
     text: 'When is our stand-up?',
-    userId: 'U_REQUESTER',
+    userId: requester?.userId ?? 'U_REQUESTER',
+    ...(requester ? { actorMembershipId: requester.actorMembershipId } : {}),
     messageTs,
     threadTs: messageTs,
     source: 'dm_message',
@@ -80,8 +86,15 @@ function dmTurn(messageTs: string): NormalizedSlackTurn {
   };
 }
 
-async function harness(turn: NormalizedSlackTurn, memoryBody: string) {
-  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [assignment.agent] });
+/** With a management fixture, the turn can write its own memory and delivery can verify the receipt. */
+async function harness(turn: NormalizedSlackTurn, memoryBody: string, fixture?: ManagementAdapterFixture) {
+  const config = fixture?.config ?? new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [assignment.agent] });
+  const agent = fixture
+    ? await fixture.config.createAgent({
+        ...assignment.agent, creatorMembershipId: fixture.admin.membership.id, editPolicy: 'creator_and_admins',
+      })
+    : assignment.agent;
+  const resolved: ResolvedAssignment = { ...assignment, agent };
   const installation = await config.ensureWorkspaceInstallation({
     workspaceId: assignment.workspaceId,
     transportMode: 'direct',
@@ -90,13 +103,13 @@ async function harness(turn: NormalizedSlackTurn, memoryBody: string) {
     botUserId: 'U_CHICKPEA',
   });
   await config.updateWorkspaceInstallation(assignment.workspaceId, { health: 'healthy' }, installation.revision);
-  const memory = new SqliteMemoryStateStore(':memory:');
+  const memory = fixture?.memory ?? new SqliteMemoryStateStore(':memory:');
   if (memoryBody) {
     await memory.putAgentMemory({ agentId: assignment.agentId, body: memoryBody, expectedRevision: 0 });
   }
   const work = new SqliteWorkStore(':memory:');
   const admitted = await work.admitShadowRun(prepareSlackShadowAdmission({
-    turn, assignment, sourceVisibility: 'private', admittedAt: Date.now(),
+    turn, assignment: resolved, sourceVisibility: 'private', admittedAt: Date.now(),
   }));
   const runId = admitted.run.id;
   const turnJobId = `turn_${runId}`;
@@ -156,7 +169,7 @@ async function harness(turn: NormalizedSlackTurn, memoryBody: string) {
   } as unknown as WebClient;
   const runtimePlan = compileRuntimePlanV2({
     turn,
-    assignment,
+    assignment: resolved,
     instructions: assignment.agent.instructions,
     memoryEpoch: 1,
   });
@@ -178,7 +191,7 @@ async function harness(turn: NormalizedSlackTurn, memoryBody: string) {
   };
   const outcomes: Array<string | undefined> = [];
   const run = (agentPrompt: NonNullable<Parameters<typeof runTurn>[3]>['agentPrompt']) =>
-    runTurn(turn, assignment, undefined, {
+    runTurn(turn, resolved, undefined, {
       client,
       runId,
       turnId: turnJobId,
@@ -187,12 +200,24 @@ async function harness(turn: NormalizedSlackTurn, memoryBody: string) {
       runtimePlanDecision: { runtimePlan, instanceId },
       progressiveAttributionProven: true,
       usageRecordingEnabled: false,
-      appStores: { config, memory, identity: {} } as never,
+      appStores: (fixture
+        ? { config, memory, identity: fixture.identity, management: fixture.management }
+        : { config, memory, identity: {} }) as never,
+      ...(fixture
+        ? { managementApproval: {
+            identity: fixture.identity, config: fixture.config, management: fixture.management, service: fixture.service,
+          } }
+        : {}),
       onDelivered: (outcome) => { outcomes.push(outcome); },
       ...(agentPrompt ? { agentPrompt } : {}),
     });
-  const close = () => { config.close(); memory.close(); work.close(); db.close(); };
-  return { config, memory, store, runId, instanceId, slack, streamTs, outcomes, run, close };
+  const close = () => {
+    if (fixture) fixture.close();
+    else { config.close(); memory.close(); }
+    work.close();
+    db.close();
+  };
+  return { config, memory, store, runId, turnJobId, instanceId, slack, streamTs, outcomes, run, close };
 }
 
 type Harness = Awaited<ReturnType<typeof harness>>;
@@ -286,6 +311,25 @@ for (const [label, memoryBody] of [['with memory', MEMORY], ['without memory', '
   });
 }
 
+/** The lease failed after the answer streamed: the notice replaced the streamed message, nothing else posted. */
+function assertStreamCorrectedToFailure(h: Harness, warnings: unknown[]): void {
+  assert.ok(streamedText(h).startsWith('Your stand-up is at 9:30'), 'the answer had streamed');
+  const update = h.slack.find(({ method }) => method === 'chat.update');
+  assert.ok(update, 'the streamed message is replaced');
+  assert.equal(update.input.ts, h.streamTs, 'on the streamed message itself');
+  const stop = h.slack.find(({ method }) => method === 'chat.stopStream');
+  assert.ok(stop && !('chunks' in stop.input), 'the stream stops without the rest of the answer');
+  assert.ok(h.slack.indexOf(stop) < h.slack.indexOf(update));
+  assert.ok(String(update.input.text).includes(AGENT_FAILURE_TEXT), `the notice replaces it: ${String(update.input.text)}`);
+  assert.doesNotMatch(JSON.stringify(update.input), /stand-up|sprint notes/, 'no part of the answer survives');
+  assert.deepEqual(h.slack.filter(({ method }) => method === 'chat.postMessage'), [], 'no second message');
+  assert.deepEqual(h.outcomes, ['failed']);
+  assert.ok(warnings.some((warning) =>
+    (warning as { reason?: string } | undefined)?.reason === 'memory_delivery_lease_rejected'),
+  'the operator line names the lease');
+  assert.equal(h.store.get(h.runId)?.stream.presentationOutcome, 'corrected');
+}
+
 test('memory another writer forgets mid-turn fails the lease: the failure notice replaces the streamed answer', async () => {
   const turn = dmTurn('1790200003.000100');
   const h = await harness(turn, MEMORY);
@@ -300,21 +344,87 @@ test('memory another writer forgets mid-turn fails the lease: the failure notice
       await h.memory.putAgentMemory({ agentId: assignment.agentId, body: '', expectedRevision: live.revision });
       return answerResult(ANSWER);
     });
-    assert.ok(streamedText(h).startsWith('Your stand-up is at 9:30'), 'the answer had streamed');
-    const update = h.slack.find(({ method }) => method === 'chat.update');
-    assert.ok(update, 'the streamed message is replaced');
-    assert.equal(update.input.ts, h.streamTs, 'on the streamed message itself');
-    const stop = h.slack.find(({ method }) => method === 'chat.stopStream');
-    assert.ok(stop && !('chunks' in stop.input), 'the stream stops without the rest of the answer');
-    assert.ok(h.slack.indexOf(stop) < h.slack.indexOf(update));
-    assert.ok(String(update.input.text).includes(AGENT_FAILURE_TEXT), `the notice replaces it: ${String(update.input.text)}`);
-    assert.doesNotMatch(JSON.stringify(update.input), /stand-up|sprint notes/, 'no part of the answer survives');
-    assert.deepEqual(h.slack.filter(({ method }) => method === 'chat.postMessage'), [], 'no second message');
-    assert.deepEqual(h.outcomes, ['failed']);
-    assert.ok(warnings.some((warning) =>
-      (warning as { reason?: string } | undefined)?.reason === 'memory_delivery_lease_rejected'),
-    'the operator line names the lease');
-    assert.equal(h.store.get(h.runId)?.stream.presentationOutcome, 'corrected');
+    assertStreamCorrectedToFailure(h, warnings);
+  } finally {
+    console.warn = warn;
+    h.close();
+  }
+});
+
+/** The turn's own write, as the `update_agent_memory` tool applies it, with the receipt delivery verifies. */
+async function writeOwnMemory(
+  f: ManagementAdapterFixture,
+  h: Harness,
+  turn: NormalizedSlackTurn,
+  expectedRevision: number,
+  body: string,
+): Promise<NonNullable<AgentDispatchResult['memoryUpdate']>> {
+  const signal = {
+    agentId: assignment.agentId,
+    workspaceId: turn.workspaceId,
+    channelId: turn.channelId,
+    threadTs: turn.threadTs,
+    conversationKind: 'im' as const,
+    slackUserId: turn.userId,
+    eventId: turn.eventId,
+    messageTs: turn.messageTs,
+    turnJobId: h.turnJobId,
+    requesterText: turn.text,
+  };
+  const { receipt } = await executeSlackMemoryUpdate({
+    signal,
+    data: { expectedRevision, body },
+    // The injected revision: the body the harness saved before the turn.
+    chain: createMemoryWriteChain(h.turnJobId, 1, undefined),
+    apply: async (args) => ({ ok: true, result: await f.service.applyWorkspaceChanges({
+      context: await resolveSlackManagementActor(signal, f.identity), ...args,
+    }) }),
+  });
+  assert.ok(receipt, 'the write applied');
+  return receipt;
+}
+
+function ownWriteTurn(f: ManagementAdapterFixture, messageTs: string): NormalizedSlackTurn {
+  return dmTurn(messageTs, { userId: f.admin.binding.slackUserId, actorMembershipId: f.admin.membership.id });
+}
+
+test('a turn that writes its own memory streams its answer and closes the stream as the reply', async () => {
+  const f = await createManagementAdapterFixture('memstream-own-write', {}, { teamId: assignment.workspaceId });
+  const turn = ownWriteTurn(f, '1790200004.000100');
+  const h = await harness(turn, MEMORY, f);
+  try {
+    await h.run(async (input) => {
+      const memoryUpdate = await writeOwnMemory(f, h, turn, 1, `${MEMORY}\nBring the sprint notes.`);
+      await streamAnswer(h, input, ANSWER);
+      return { ...answerResult(ANSWER), memoryUpdate };
+    });
+    assert.ok(streamedText(h).startsWith('Your stand-up is at 9:30'), 'the answer streamed');
+    assert.deepEqual(h.slack.map(({ method }) => method).filter((method) =>
+      method === 'chat.update' || method === 'chat.delete' || method === 'chat.postMessage'), [],
+    'the stream closes as the reply: nothing replaced or posted beside it');
+    assert.deepEqual(h.outcomes, ['succeeded']);
+    assert.equal(h.store.get(h.runId)?.stream.presentationOutcome, 'progressive');
+    const saved = await f.memory.getAgentMemory(assignment.agentId);
+    assert.equal(saved.revision, 2, 'the own write stands');
+  } finally { h.close(); }
+});
+
+test('an own write over memory another writer changed fails the lease: the failure notice replaces the streamed answer', async () => {
+  const f = await createManagementAdapterFixture('memstream-stale-write', {}, { teamId: assignment.workspaceId });
+  const turn = ownWriteTurn(f, '1790200005.000100');
+  const h = await harness(turn, MEMORY, f);
+  const warnings: unknown[] = [];
+  const warn = console.warn;
+  console.warn = (...args: unknown[]) => { warnings.push(args[0]); };
+  try {
+    await h.run(async (input) => {
+      // An Owner forgets everything in Admin before the turn's own write lands.
+      await f.memory.putAgentMemory({ agentId: assignment.agentId, body: '', expectedRevision: 1 });
+      const memoryUpdate = await writeOwnMemory(f, h, turn, 2, 'Use readable dates.');
+      await streamAnswer(h, input, ANSWER);
+      return { ...answerResult(ANSWER), memoryUpdate };
+    });
+    assertStreamCorrectedToFailure(h, warnings);
   } finally {
     console.warn = warn;
     h.close();
