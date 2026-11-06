@@ -1156,7 +1156,14 @@ test('a catalog reconnect link keeps its account\'s owner: the other owner is re
       credential: 'personal-token',
     });
     assert.equal(refused.status, 422, await refused.clone().text());
-    assert.equal((await refused.json()).error, 'target_changed');
+    const answer = await refused.json();
+    assert.equal(answer.error, 'target_changed');
+    assert.match(answer.message, /Ask the Agent or coding agent that sent it for a new link\./);
+    const reopened = await h.app.request(`http://localhost/setup/${refusedLink.setupId}`, {
+      headers: { cookie: refusedLink.cookie },
+    });
+    assert.equal(reopened.status, 410);
+    assert.match(await reopened.text(), /<h1>This setup link is out of date<\/h1>/);
     const accounts = await h.config.listConnectionAccounts(h.workspaceId);
     assert.deepEqual(accounts.map(({ id, lifecycle, ownerKind }) => ({ id, lifecycle, ownerKind })),
       [{ id: h.accountId, lifecycle: 'needs_attention', ownerKind: 'team' }],

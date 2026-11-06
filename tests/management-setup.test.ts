@@ -2958,6 +2958,49 @@ test('an API key link refuses once the connection it writes has changed, and say
   }
 });
 
+test('an API key link whose connection already changed opens on the out-of-date page, not the key form', async () => {
+  const f = await claimedTasksSetup('api-pin-stale-on-open');
+  try {
+    const current = await currentAccount(f.config, f.tasks);
+    await f.config.putConnectionAccount({ ...current, label: 'Tasks (old)' }, current.revision);
+    const opened = await f.app.request(`http://localhost/setup/${f.setupId}`, { headers: { cookie: f.cookie } });
+    assert.equal(opened.status, 410);
+    const html = await opened.text();
+    assert.match(html, /<h1>This setup link is out of date<\/h1>/);
+    assert.doesNotMatch(html, /<form/);
+  } finally {
+    f.close();
+  }
+});
+
+test('an API key save that races an unrelated write to its connection can be submitted again on the same link', async () => {
+  const f = await claimedTasksSetup('api-pin-save-race');
+  try {
+    let raced = false;
+    const first = await withConnectionNetwork(async () => {
+      if (!raced) {
+        raced = true;
+        const current = await currentAccount(f.config, f.tasks);
+        await f.config.putConnectionAccount({ ...current }, current.revision);
+      }
+      return Response.json({ data: [] });
+    }, async () => postSetupForm(f.app, f.setupId, 'complete', f.cookie, { credential: 'sk-raced' }));
+    assert.equal(first.status, 422, await first.clone().text());
+    const html = await first.text();
+    assert.doesNotMatch(html, /out of date/);
+    assert.match(html, /<form/);
+    assert.equal((await f.management.getSetup(f.setupId))?.failureCode, 'setup_failed');
+
+    const again = await withConnectionNetwork(() => Response.json({ data: [] }), async () =>
+      postSetupForm(f.app, f.setupId, 'complete', f.cookie, { credential: 'sk-raced' }));
+    assert.equal(again.status, 303, await again.clone().text());
+    assert.equal(await storedSecret(f.settings, f.tasks), 'sk-raced');
+    assert.equal((await currentAccount(f.config, f.tasks)).lifecycle, 'ready');
+  } finally {
+    f.close();
+  }
+});
+
 test('an API key link refuses an archived or deleted Agent and a requester who no longer manages the connection', async () => {
   const cases: Array<[string, (f: Awaited<ReturnType<typeof tasksSetupStores>>, principal: { role: AuthPrincipal['role'] }) => Promise<void>]> = [
     ['archived', async (f) => {
