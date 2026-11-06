@@ -12,11 +12,15 @@ export const SlackMemoryUpdateSchema = v.object({
 });
 export type SlackMemoryUpdate = v.InferOutput<typeof SlackMemoryUpdateSchema>;
 
-/** Metadata is only a hint: delivery must independently verify the durable receipt. */
+/**
+ * The newest of a turn's receipts, one per applied write. Metadata is only a
+ * hint: delivery must independently verify the durable receipt.
+ */
 export function parseSlackMemoryUpdate(value: unknown): SlackMemoryUpdate | undefined {
-  if (!Array.isArray(value) || value.length !== 1) return undefined;
-  const parsed = v.safeParse(SlackMemoryUpdateSchema, value[0]);
-  return parsed.success ? parsed.output : undefined;
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  const parsed = v.safeParse(v.array(SlackMemoryUpdateSchema), value);
+  if (!parsed.success) return undefined;
+  return parsed.output.reduce((newest, receipt) => (receipt.revision > newest.revision ? receipt : newest));
 }
 
 export function appliedMemoryReceipt(value: unknown, agentId: string): SlackMemoryUpdate | undefined {
