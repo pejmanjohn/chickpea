@@ -2628,6 +2628,8 @@ test('an API OAuth setup stores its client on the connection account and marks i
     const authorization = new URL(started.headers.get('location')!);
     assert.equal(authorization.origin, 'https://accounts.google.com');
     assert.equal(authorization.searchParams.get('client_id'), 'client-id.apps.googleusercontent.com');
+    // An Agent edit while the person signs in leaves the link working.
+    await editAgentElsewhere(config, agent.id);
 
     globalThis.fetch = async (input) => {
       const url = String(input instanceof Request ? input.url : input);
@@ -2941,7 +2943,7 @@ test('an API key link refuses once the connection it writes has changed, and say
     }],
   ];
   for (const [name, change] of changes) {
-    const f = await claimedTasksSetup(`api-pin-${name.replaceAll(' ', '-')}`);
+    const f = await claimedTasksSetup(`api-pin-${name.toLowerCase().replaceAll(' ', '-')}`);
     try {
       await change(f);
       const refused = await withConnectionNetwork(() => Response.json({ data: [] }), async (requests) => {
@@ -2998,10 +3000,65 @@ test('an API key link refuses an archived or deleted Agent and a requester who n
   }
 });
 
-test('only a changed target is target_changed; a write race is revision_conflict', () => {
+test('only a change to what the setup writes is target_changed, not any message naming a revision', () => {
   assert.equal(safeFailureCode(new Error('target_changed')), 'target_changed');
   assert.equal(safeFailureCode(new AgentConnectionCredentialConflictError('agent_a', 'api', 'tasks')), 'target_changed');
-  assert.equal(safeFailureCode(new AgentRevisionConflictError('agent_a', 3, 4)), 'revision_conflict');
-  assert.equal(safeFailureCode(new ConnectionAccountRevisionConflictError('connection_a', 3, 4)), 'revision_conflict');
+  assert.equal(safeFailureCode(new AgentRevisionConflictError('agent_a', 3, 4)), 'target_changed');
+  assert.equal(safeFailureCode(new ConnectionAccountRevisionConflictError('connection_a', 3, 4)), 'target_changed');
   assert.notEqual(safeFailureCode(new Error('Encrypted credential revision is invalid.')), 'target_changed');
+  assert.notEqual(safeFailureCode(new Error('Flue dispatch target does not match its RuntimePlanV2.')), 'target_changed');
+});
+
+test('a repository link still pins its Agent revision, because the grant it writes lives in the Agent', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => START });
+  const owner = await createSlackOwner(identity, { now: START, suffix: 'repository-pin' });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const management = new SqliteManagementStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const agent = await config.createAgent({
+      id: 'agent_repository_pin', name: 'Repository Agent', creatorMembershipId: owner.membership.id,
+      editPolicy: 'creator_and_admins', instructions: 'Work in the repository.', enabled: true,
+      skills: [], mcpServers: [], apiConnections: [],
+      repositories: [{ id: 'repo_app', installationId: null, accountLogin: 'acme', fullName: 'acme/app', enabled: true }],
+    });
+    const service = new WorkspaceManagementService({
+      identity, config, management, setupBaseUrl: 'http://localhost', now: () => START,
+      randomId: () => 'repository_pin', randomCapability: () => CAPABILITY,
+    });
+    const result = await service.applyWorkspaceChanges({
+      context: {
+        userId: owner.user.id,
+        membershipId: owner.membership.id,
+        organizationId: owner.membership.organizationId,
+        origin: { kind: 'mcp', clientId: 'codex' },
+      },
+      idempotencyKey: 'repository-pin',
+      operations: [{
+        itemId: 'repository',
+        kind: 'request_setup',
+        target: { kind: 'repository_access', agentId: agent.id, repositoryId: 'repo_app' },
+      }],
+    });
+    requireMutationResult(result);
+    const setupId = result.outcomes[0]!.setupOperationId!;
+    const app = createManagementSetupRoutes({
+      management, config, settings, identity,
+      now: () => START,
+      authenticatePrincipal: async () => browserPrincipal(owner),
+    });
+    const cookie = await claimSetup(app, setupId);
+    await config.updateAgent(agent.id, { description: 'Works in acme/app.' }, agent.revision);
+
+    const refused = await postSetupForm(app, setupId, 'authorize', cookie, { organization: 'acme' });
+    assert.equal(refused.status, 422, await refused.clone().text());
+    assert.match(await refused.text(), /<h1>This setup link is out of date<\/h1>/);
+    assert.equal((await management.getSetup(setupId))?.failureCode, 'target_changed');
+    assert.equal(await settings.getSetting(`management.${setupId}.github-state`), undefined);
+  } finally {
+    identity.close();
+    config.close();
+    management.close();
+    settings.close();
+  }
 });

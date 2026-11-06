@@ -110,7 +110,7 @@ function emitKeyForm(outcome: 'posted' | 'refused' | 'checked', reason?: KeyForm
 
 export function keyTargetOf(
   setup: ManagementSetupRecord,
-  agent: Pick<CustomAgentConfig, 'revision'> | undefined,
+  agent: Pick<CustomAgentConfig, 'lifecycle'> | undefined,
   accounts: readonly ConnectionAccount[],
   bindings: readonly AgentConnectionBinding[],
 ): KeyTarget | undefined {
