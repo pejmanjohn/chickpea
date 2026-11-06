@@ -54,10 +54,11 @@ interface PreparedMemoryTurn {
   validateLease(): Promise<boolean>;
   /**
    * Only after independently verifying this turn's own applied receipt. Holds
-   * when that write sits directly on the injected snapshot and is still the
-   * live revision: memory another writer changed fails it.
+   * when that write sits on the injected snapshot, directly or through this
+   * turn's own earlier writes, and is still the live revision: memory another
+   * writer changed fails it.
    */
-  validateReceiptLease?(revision: number): Promise<boolean>;
+  validateReceiptLease?(revision: number, chainedFrom?: number): Promise<boolean>;
   confirmInjection(): Promise<boolean>;
 }
 
@@ -202,8 +203,9 @@ export async function prepareMemoryTurn(input: {
       visibilityBarrierAt: null,
       ownerBound: true,
       confirmInjection: async () => true,
-      validateReceiptLease: async (revision) =>
-        revision === memory.revision + 1 && validateAgentMemoryLease(input.turn, runtime, memory, revision),
+      validateReceiptLease: async (revision, chainedFrom) =>
+        (revision === memory.revision + 1 || chainedFrom === memory.revision) &&
+        validateAgentMemoryLease(input.turn, runtime, memory, revision),
       validateLease: async () => {
         const valid = await deferredLeaseMetric(
           () => validateAgentMemoryLease(input.turn, runtime, memory),

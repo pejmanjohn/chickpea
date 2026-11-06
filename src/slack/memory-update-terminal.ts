@@ -7,6 +7,8 @@ export const SLACK_MEMORY_UPDATE_DATA_NAME = 'slackMemoryUpdate';
 export const SlackMemoryUpdateSchema = v.object({
   operationId: v.pipe(v.string(), v.minLength(1), v.maxLength(256)),
   revision: v.pipe(v.number(), v.integer(), v.minValue(1)),
+  /** The injected revision, when every write of this turn up to this one applied on the one before. */
+  chainedFrom: v.optional(v.pipe(v.number(), v.integer(), v.minValue(0))),
 });
 export type SlackMemoryUpdate = v.InferOutput<typeof SlackMemoryUpdateSchema>;
 
@@ -38,12 +40,12 @@ export async function verifyOwnMemoryWrite(input: {
   agentId: string;
   turnJobId: string;
   getOperation(operationId: string): Promise<unknown>;
-  validateReceiptLease(revision: number): Promise<boolean>;
+  validateReceiptLease(revision: number, chainedFrom?: number): Promise<boolean>;
 }): Promise<boolean> {
   const result = await input.getOperation(input.hint.operationId);
   const receipt = appliedMemoryReceipt(result, input.agentId);
   if (!receipt || receipt.revision !== input.hint.revision ||
       (result as { idempotencyKey?: string }).idempotencyKey !==
         opaqueId('memory', `${input.turnJobId}:${receipt.revision - 1}`)) return false;
-  return input.validateReceiptLease(receipt.revision);
+  return input.validateReceiptLease(receipt.revision, input.hint.chainedFrom);
 }

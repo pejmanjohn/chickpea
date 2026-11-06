@@ -3561,7 +3561,7 @@ for (const scenario of [
 }>) {
 const verb = { answer: 'delivers the answer for', failure: 'fails closed for' }[scenario.outcome];
 test(`a successful own-turn memory write ${verb} ${scenario.name}`, async () => {
-  const { executeSlackMemoryUpdate } = await import('../src/management/slack-memory-actions.ts');
+  const { createMemoryWriteChain, executeSlackMemoryUpdate } = await import('../src/management/slack-memory-actions.ts');
   const { resolveSlackManagementActor } = await import('../src/management/slack-tools.ts');
   const f = await createManagementAdapterFixture('memory-delivery');
   try {
@@ -3591,12 +3591,14 @@ test(`a successful own-turn memory write ${verb} ${scenario.name}`, async () => 
       slackUserId: turn.userId, eventId: turn.eventId, messageTs: turn.messageTs, turnJobId,
       requesterText: turn.text,
     };
+    // The tool's chain starts at the revision this turn was injected with.
+    const chain = createMemoryWriteChain(turnJobId, expectedRevision, undefined);
     const performWrite = (
       revision = expectedRevision + ('concurrent' in scenario ? 1 : 0),
       body = scenario.first ?? scenario.body,
     ) => executeSlackMemoryUpdate({
       signal,
-      data: { expectedRevision: revision, body },
+      data: { expectedRevision: revision, body }, chain,
       apply: async (args) => ({ ok: true, result: await f.service.applyWorkspaceChanges({
         context: await resolveSlackManagementActor(signal, f.identity), ...args,
       }) }),

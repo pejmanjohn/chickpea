@@ -7,6 +7,7 @@ import { toJsonSchema } from '@valibot/to-json-schema';
 import { validateToolArguments } from '@earendil-works/pi-ai';
 
 import {
+  createMemoryWriteChain,
   executeSlackMemoryUpdate,
   slackMemoryUpdateArguments,
   slackUpdateAgentMemoryInputSchema,
@@ -120,9 +121,10 @@ test('memory tool delegates scoped, idempotent writes and forget to existing man
 
 test('memory tool handler returns the applied receipt and nothing for a failed write', async () => {
   let applied = 0;
+  const chain = createMemoryWriteChain('t', 0, undefined);
   const { receipt } = await executeSlackMemoryUpdate({
     signal: { agentId: 'a', turnJobId: 't' },
-    data: { expectedRevision: 0, body: 'Use readable dates.' },
+    data: { expectedRevision: 0, body: 'Use readable dates.' }, chain,
     apply: async () => {
       applied += 1;
       return { ok: true, result: { status: 'completed', operationId: 'op', outcomes: [{
@@ -131,13 +133,33 @@ test('memory tool handler returns the applied receipt and nothing for a failed w
     },
   });
   assert.equal(applied, 1);
-  assert.deepEqual(receipt, { operationId: 'op', revision: 1 });
+  assert.deepEqual(receipt, { operationId: 'op', revision: 1, chainedFrom: 0 });
   const rejected = await executeSlackMemoryUpdate({
     signal: { agentId: 'a', turnJobId: 't' },
-    data: { expectedRevision: 0, body: 'Use dates.' },
+    data: { expectedRevision: 0, body: 'Use dates.' }, chain,
     apply: async () => ({ ok: false, error: { code: 'revision_conflict', message: 'Changed' } }),
   });
   assert.equal(rejected.receipt, undefined, 'a failed write never emits a receipt');
+});
+
+test('only writes that each apply on the injected revision or an earlier own write are chained', () => {
+  const receipt = (revision: number) => ({ operationId: `op_${revision}`, revision });
+  const persisted: unknown[] = [];
+  const chain = createMemoryWriteChain('t', 3, undefined, (state) => persisted.push(state));
+  assert.deepEqual(chain.link(3, receipt(4)), { ...receipt(4), chainedFrom: 3 }, 'the first write on the snapshot');
+  assert.deepEqual(chain.link(4, receipt(5)), { ...receipt(5), chainedFrom: 3 }, 'a write on the first');
+  assert.deepEqual(chain.link(3, receipt(4)), { ...receipt(4), chainedFrom: 3 }, 'a replayed call stays in the chain');
+  assert.deepEqual(chain.link(6, receipt(7)), receipt(7), 'a write on another writer\'s revision is not chained');
+  assert.deepEqual(chain.link(7, receipt(8)), receipt(8), 'nor is any write after the break');
+  assert.deepEqual(persisted.at(-1), { turnJobId: 't', from: 3, head: 5 });
+
+  const redriven = createMemoryWriteChain('t', 3, { turnJobId: 't', from: 3, head: 5 });
+  assert.deepEqual(redriven.link(5, receipt(6)), { ...receipt(6), chainedFrom: 3 }, 'a redrive keeps the chain');
+  const otherTurn = createMemoryWriteChain('u', 3, { turnJobId: 't', from: 3, head: 5 });
+  assert.deepEqual(otherTurn.link(5, receipt(6)), receipt(6), 'another turn starts its own chain');
+  const otherSnapshot = createMemoryWriteChain('t', 5, { turnJobId: 't', from: 3, head: 5 });
+  assert.deepEqual(otherSnapshot.link(5, receipt(6)), { ...receipt(6), chainedFrom: 5 }, 'a new snapshot restarts the chain');
+  assert.equal(parseSlackMemoryUpdate([{ ...receipt(6), chainedFrom: 3 }])?.chainedFrom, 3, 'the mark survives a stored settlement');
 });
 
 test('an ask turn proposes a memory write the person did not ask for; a person\'s turn writes it immediately', async () => {

@@ -363,12 +363,17 @@ test('a stale Slack group mapping from an interrupted create repairs into the Ag
     assert.equal(await prepared.validateLease(), false, 'forget must suppress the stale model draft');
     assert.equal(await prepared.validateReceiptLease?.(2), true, 'verified current receipt may acknowledge without disclosing memory');
     assert.equal(await prepared.validateReceiptLease?.(1), false);
+    await getMemoryStateStore().putAgentMemory({ agentId: agent.id, expectedRevision: 2, body: 'Second write.' });
+    assert.equal(await prepared.validateReceiptLease?.(3), false, 'a receipt two writes past the snapshot needs a chain');
+    assert.equal(await prepared.validateReceiptLease?.(3, 2), false, 'a chain must start at the injected revision');
+    assert.equal(await prepared.validateReceiptLease?.(3, 1), true, 'a chain of own writes from the injected revision holds');
+    assert.equal(await prepared.validateReceiptLease?.(2, 1), false, 'a chained receipt must still be live');
     await config.putAgentChannelGrant({
       workspaceId: turn.workspaceId, channelId: turn.channelId, agentId: agent.id,
       status: 'needs_attention', createdByMembershipId: 'membership_owner',
       channelLabel: 'support', channelIsPrivate: false,
     });
-    assert.equal(await prepared.validateReceiptLease?.(2), false, 'receipt never bypasses channel revocation');
+    assert.equal(await prepared.validateReceiptLease?.(3, 1), false, 'receipt never bypasses channel revocation');
 
   } finally {
     closeNodeStateStores();
