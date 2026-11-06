@@ -5,8 +5,17 @@ import type {
   PresentDetailsSpec,
 } from './presentation-tools.ts';
 import { markdownToSlackMrkdwn } from '../message-format.ts';
-import { uiActionId, uiBlockId, uiValue } from './surface.ts';
-import { clampDisplay, escapeMrkdwn, plain } from './text.ts';
+import { cardButtonIndex, cardSettlementsOf } from './card-set.ts';
+import {
+  uiActionId,
+  uiBlockId,
+  uiValue,
+  type CardOutcomeTone,
+  type CardSettlement,
+  type CardSettlements,
+  type UiSurfaceRecord,
+} from './surface.ts';
+import { clampDisplay, escapeMrkdwn, mrkdwn, plain, slackTime } from './text.ts';
 
 /**
  * Host-compiled display components that ride in the answer message after the
@@ -28,22 +37,59 @@ export interface RenderedDisplay {
 
 // ── cards ────────────────────────────────────────────────────────────────
 
-/** Card button slots: each card owns three (the link, then its actions), so a value names its card and button. */
-export function cardButtonIndex(card: number, button: number): number {
-  return card * 3 + button;
+/** The context block under a card set that says who settled which card, and when. */
+export const CARD_STATUS_BLOCK = 20;
+
+/** Each card's settlement, and whether the set's open cards still take requests. */
+export interface CardSetView {
+  settlements: CardSettlements;
+  requestsOpen: boolean;
 }
 
-/** The request button a slot names; the link and url buttons never start a turn. */
-export function cardRequestButtonAt(
-  spec: PresentCardsSpec,
-  slot: number,
-): { card: CardSpec; label: string } | undefined {
-  const card = spec.cards[Math.floor(slot / 3)];
-  const action = card?.actions?.[(slot % 3) - 1];
-  return card && action && !action.url ? { card, label: action.label } : undefined;
+const FRESH_SET: CardSetView = { settlements: {}, requestsOpen: true };
+
+const TONE_EMOJI: Record<CardOutcomeTone, string> = {
+  done: ':white_check_mark:',
+  failed: ':x:',
+  info: ':information_source:',
+};
+
+function pickedLabel(card: CardSpec, slot: number): string {
+  return card.actions?.[(slot % 3) - 1]?.label ?? 'a button';
 }
 
-function cardBlock(card: CardSpec, index: number, surfaceId: string | undefined): Block {
+/**
+ * What a settled card says: plain text on the card itself (card fields are
+ * plain text), and a mrkdwn line under the set naming who and when.
+ */
+function settledText(card: CardSpec, settlement: CardSettlement): { subtext: string; line: string } {
+  const title = `*${escapeMrkdwn(card.title)}*`;
+  if (settlement.pick === undefined) {
+    const { tone, text, at } = settlement.outcome;
+    return { subtext: `${TONE_EMOJI[tone]} ${text}`, line: `${TONE_EMOJI[tone]} ${title}: ${escapeMrkdwn(text)} · ${slackTime(at)}` };
+  }
+  const { pick, outcome } = settlement;
+  const label = pickedLabel(card, pick.slot);
+  if (outcome) {
+    const by = `(*${escapeMrkdwn(label)}* by <@${pick.byUserId}>)`;
+    return {
+      subtext: `${TONE_EMOJI[outcome.tone]} ${outcome.text}`,
+      line: `${TONE_EMOJI[outcome.tone]} ${title}: ${escapeMrkdwn(outcome.text)} ${by} · ${slackTime(outcome.at)}`,
+    };
+  }
+  return {
+    subtext: `:white_check_mark: ${label}`,
+    line: `:white_check_mark: *${escapeMrkdwn(label)}* on ${title}, requested by <@${pick.byUserId}> · ${slackTime(pick.at)}`,
+  };
+}
+
+function cardBlock(
+  card: CardSpec,
+  index: number,
+  surfaceId: string | undefined,
+  settlement: CardSettlement | undefined,
+  requestsOpen: boolean,
+): Block {
   const buttons: Block[] = [];
   if (card.link) {
     buttons.push({ type: 'button', action_id: uiActionId('ui', 'link', cardButtonIndex(index, 0)), text: plain('Open', 75), url: card.link });
@@ -52,37 +98,55 @@ function cardBlock(card: CardSpec, index: number, surfaceId: string | undefined)
     const slot = cardButtonIndex(index, actionIndex + 1);
     if (action.url) {
       buttons.push({ type: 'button', action_id: uiActionId('ui', 'link', slot), text: plain(action.label, 75), url: action.url });
-    } else if (surfaceId) {
+    } else if (surfaceId && requestsOpen && !settlement) {
       buttons.push({ type: 'button', action_id: uiActionId('ui', 'cards', slot), text: plain(action.label, 75), value: uiValue(surfaceId, slot) });
     }
   });
+  const subtext = settlement ? settledText(card, settlement).subtext : card.footnote;
   return {
     type: 'card',
     title: plain(card.title, 150),
     ...(card.subtitle ? { subtitle: plain(card.subtitle, 150) } : {}),
     ...(card.body ? { body: plain(card.body, 200) } : {}),
-    ...(card.footnote ? { subtext: plain(card.footnote, 200) } : {}),
+    ...(subtext ? { subtext: plain(subtext, 200) } : {}),
     ...(card.imageUrl ? { hero_image: { type: 'image', image_url: card.imageUrl, alt_text: clampDisplay(card.title, 2_000) } } : {}),
     ...(buttons.length ? { actions: buttons.slice(0, 3) } : {}),
   };
 }
 
-export function renderCards(spec: PresentCardsSpec, surfaceId?: string): RenderedDisplay {
+export function renderCards(spec: PresentCardsSpec, surfaceId?: string, view: CardSetView = FRESH_SET): RenderedDisplay {
   // A click reports the block id of the card it sits in (Slack's carousel
   // example ids each card), so every card names the surface, not only the
   // carousel: index 1 is the carousel or the lone card, cards follow.
   const blockId = (index: number) => (surfaceId ? { block_id: uiBlockId('ui', surfaceId, index) } : {});
-  const cards = spec.cards.map((card, index) => cardBlock(card, index, surfaceId));
+  const cards = spec.cards.map((card, index) => cardBlock(card, index, surfaceId, view.settlements[index], view.requestsOpen));
   const blocks: Block[] = [];
   if (spec.caption) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*${escapeMrkdwn(spec.caption)}*` } });
   blocks.push(cards.length === 1
     ? { ...cards[0]!, ...blockId(1) }
     : { type: 'carousel', ...blockId(1), elements: cards.map((card, index) => ({ ...card, ...blockId(index + 2) })) });
-  const lines = spec.cards.map((card) => {
+  const lines = spec.cards.flatMap((card, index) => {
+    const settlement = view.settlements[index];
+    return settlement ? [mrkdwn(settledText(card, settlement).line)] : [];
+  });
+  if (surfaceId && lines.length) {
+    blocks.push({ type: 'context', ...blockId(CARD_STATUS_BLOCK), elements: lines });
+  }
+  const fallback = spec.cards.map((card) => {
     const detail = card.subtitle ? ` — ${card.subtitle}` : '';
     return `• ${card.title}${detail}${card.link ? ` (${card.link})` : ''}`;
   });
-  return { blocks, fallbackText: [spec.caption, ...lines].filter(Boolean).join('\n') };
+  return { blocks, fallbackText: [spec.caption, ...fallback].filter(Boolean).join('\n') };
+}
+
+/** A stored card set as it stands: settled cards show what settled them, a closed set takes no requests. */
+export function renderCardSet(record: UiSurfaceRecord): RenderedDisplay {
+  const spec = record.spec;
+  if (spec.kind !== 'cards') throw new Error('Only a card set renders as cards.');
+  return renderCards(spec.cards, record.id, {
+    settlements: cardSettlementsOf(record),
+    requestsOpen: record.status === 'open' || record.status === 'pending_delivery',
+  });
 }
 
 // ── charts ───────────────────────────────────────────────────────────────

@@ -16,7 +16,8 @@ import {
   type PresentChartInput,
   type PresentDetailsInput,
 } from './presentation-tools.ts';
-import { UI_SURFACE_MAX_SPEC_BYTES, type DisplaySurfaceSpec } from './surface.ts';
+import { cardSetRef, displaySurfaceId, UI_SURFACE_MAX_SPEC_BYTES, type DisplaySurfaceSpec } from './surface.ts';
+import { SLACK_UPDATE_CARD_TOOL_NAME } from './card-outcome-tool.ts';
 
 /**
  * present_cards, present_chart and present_details: display components that
@@ -92,9 +93,14 @@ export function parseDisplayComponents(value: unknown): DisplaySurfaceSpec[] {
 
 const DISPLAY_NOUNS = { cards: 'Cards', chart: 'Chart', details: 'Details' } as const;
 
-/** The production result a display tool returns; the eval returns the same text. */
-export function displayToolAcknowledgement(kind: DisplayKind, left: number): string {
-  return `${DISPLAY_NOUNS[kind]} recorded under your answer${left ? `; ${left} more display component allowed` : ''}. Don't repeat its contents in prose.`;
+/**
+ * The production result a display tool returns; the eval returns the same
+ * text. A card set named by its ref can take an outcome later.
+ */
+export function displayToolAcknowledgement(kind: DisplayKind, left: number, cardsRef?: string): string {
+  const named = cardsRef ? ` as cards ${cardsRef}` : '';
+  const later = cardsRef ? ` After you act on one of these cards later, show the outcome on it with ${SLACK_UPDATE_CARD_TOOL_NAME}.` : '';
+  return `${DISPLAY_NOUNS[kind]} recorded under your answer${named}${left ? `; ${left} more display component allowed` : ''}. Don't repeat its contents in prose.${later}`;
 }
 
 /** A display component this reply already recorded, keyed by the tool call that recorded it. */
@@ -110,6 +116,8 @@ export function createDisplayTools(
   options: {
     /** Whether a card button without a url can be clicked here (see interactiveSurfaceScope). */
     requestButtons?: boolean;
+    /** The turn whose reply the components ride in, where its cards can take an outcome. */
+    turnJobId?: string;
     /**
      * Components this reply recorded through earlier tool closures, rebuilt
      * from the durable transcript. Flue renders the agent (and so these tools)
@@ -142,7 +150,11 @@ export function createDisplayTools(
     const component = { toolCallId, kind, spec };
     written.push(component);
     write([...prior, component].map(part));
-    return { output: displayToolAcknowledgement(kind, MAX_DISPLAY_COMPONENTS - prior.length - 1) };
+    // Delivery stores components by call order, so this is the set's surface id.
+    const cardsRef = kind === 'cards' && options.turnJobId
+      ? cardSetRef(displaySurfaceId(options.turnJobId, prior.length))
+      : undefined;
+    return { output: displayToolAcknowledgement(kind, MAX_DISPLAY_COMPONENTS - prior.length - 1, cardsRef) };
   };
   const teaching = <T>(run: () => T): T => {
     try {

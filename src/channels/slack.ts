@@ -325,6 +325,7 @@ import {
   surfaceMessenger,
   uiSurfaceRecord,
 } from '../slack/ui/host-surfaces.ts';
+import { cardOfSlot, cardSettlementsOf } from '../slack/ui/card-set.ts';
 import {
   isKeyFormAction,
   KEY_FORM_CALLBACK_ID,
@@ -2408,12 +2409,14 @@ async function handleSlackUiAction(input: SlackUiContext & { action: SlackUiActi
   if (!control || control.kind === 'link' || control.kind === 'field') return;
   if (!stores.slackState.executeUiSurface) return;
   const state = stores.slackState as UiSurfaceState;
+  // A card set settles card by card: a click is answered for its own card.
+  const card = control.kind === 'cards' && control.valueIndex !== undefined ? cardOfSlot(control.valueIndex) : undefined;
   const refuse = async (refusal: UiRefusal, surface?: UiSurfaceRecord) => {
     emitUiInteraction('refused', refusal);
     await sendUiNotice(client, {
       channelId: action.channelId,
       userId: action.userId,
-      text: uiRefusalText(refusal, surface),
+      text: uiRefusalText(refusal, surface, card),
       ...(surface?.threadTs ? { threadTs: surface.threadTs } : {}),
     });
   };
@@ -2431,16 +2434,19 @@ async function handleSlackUiAction(input: SlackUiContext & { action: SlackUiActi
     return refuse('unavailable');
   }
   const messenger = surfaceMessenger(client, surface.channelId);
-  const redraw = (next: UiSurfaceRecord | undefined) => redrawUiSurface(messenger, next);
+  const redraw = (next: UiSurfaceRecord | undefined) => next?.spec.kind === 'cards'
+    ? redrawClickedCardSet(input, next)
+    : redrawUiSurface(messenger, next);
   if (!surface.messageTs) {
     surface = await uiSurfaceRecord(state, {
       kind: 'bind_surface_message', id: surface.id, messageTs: action.messageTs,
+      ...(action.message ? { message: action.message } : {}),
     }) ?? surface;
   }
   if (surface.spec.kind === 'agent_choice') {
     return handleAgentChoiceClick({ ...input, surface, spec: surface.spec, choice: control.valueIndex, redraw });
   }
-  if (surface.status === 'resolved') {
+  if (surface.status === 'resolved' || (card !== undefined && cardSettlementsOf(surface)[card])) {
     await redraw(surface);
     return refuse('answered', surface);
   }
@@ -2505,7 +2511,37 @@ async function handleSlackUiAction(input: SlackUiContext & { action: SlackUiActi
   } else if (outcome === 'answered' || outcome === 'closed') {
     await redraw(current);
   }
-  return refuse(current.status === 'resolved' ? 'answered' : outcome, current);
+  const answered = current.status === 'resolved' || (card !== undefined && cardSettlementsOf(current)[card]);
+  return refuse(answered ? 'answered' : outcome, current);
+}
+
+/**
+ * A card set redraws inside the answer it rides in: from the clicked message
+ * when the click carried it (a direct click), else from the set's copy of
+ * it, else read back from the thread within the shared read budget (the
+ * gateway forwards no message).
+ */
+async function redrawClickedCardSet(
+  context: SlackUiContext & { action: SlackUiAction },
+  surface: UiSurfaceRecord,
+): Promise<void> {
+  const { action, client, stores, platformEnv } = context;
+  const { readCardSetMessage, redrawCardSet } = await import('../slack/ui/card-set-message.ts');
+  await redrawCardSet({
+    state: stores.slackState,
+    surface,
+    ...(action.message ? { clicked: action.message } : {}),
+    read: () => readCardSetMessage(client, createSlackReadGate({
+      state: stores.slackState,
+      workspaceId: surface.workspaceId,
+      gated: sharesSlackAppReadBudget({ env: platformEnv, client }),
+    }), surface),
+    update: async (ts, rendered) => {
+      await client.chat.update({
+        channel: surface.channelId, ts, ...rendered,
+      } as unknown as Parameters<SlackUiClient['chat']['update']>[0]);
+    },
+  });
 }
 
 /** How long a claimed pick may take to settle before a later click redraws its card as expired. */
@@ -2699,11 +2735,15 @@ async function admitUiAnswer(
     ...(answer.values ? { values: answer.values } : {}),
     outcome: 'unavailable',
   };
+  // Each card of a set is answered once; any other surface once.
+  const eventId = surface.spec.kind === 'cards'
+    ? `EvUI${surface.id}c${cardOfSlot(answer.choice)}`
+    : `EvUI${surface.id}`;
   await processSlackEvent({
     token: '',
     team_id: surface.workspaceId,
     api_app_id: context.appId,
-    event_id: `EvUI${surface.id}`,
+    event_id: eventId,
     event_time: Math.floor(Number(input.messageTs)),
     type: 'event_callback',
     event: {

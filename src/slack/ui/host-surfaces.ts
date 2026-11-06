@@ -12,7 +12,7 @@ import { slackTimestampUnits } from '../thread-context.ts';
 import type { NormalizedSlackTurn } from '../types.ts';
 import { checkSlackBlocks } from './block-kit-limits.ts';
 import { renderUiSurface, type RenderedUiSurface } from './render.ts';
-import { renderCards, renderChart, renderDetails } from './render-display.ts';
+import { renderCardSet, renderChart, renderDetails } from './render-display.ts';
 import type { RenderedSlackComponents } from '../reply-continuations.ts';
 import {
   FRONT_DESK_CHOICE_TTL_MS,
@@ -21,6 +21,7 @@ import {
   agentChoiceSurfaceId,
 } from '../front-desk.ts';
 import {
+  displaySurfaceId,
   isDisplaySurface,
   UI_SURFACE_TTL_MS,
   uiSurfaceId,
@@ -67,7 +68,7 @@ export async function redrawUiSurface(
   messenger: Pick<UiSurfaceMessenger, 'update'>,
   surface: UiSurfaceRecord | undefined,
 ): Promise<void> {
-  // Display components live inside the answer message, which is never redrawn.
+  // Display components live inside the answer message; a card set redraws there (redrawCardSet).
   if (!surface?.messageTs || isDisplaySurface(surface.spec)) return;
   await messenger.update(surface.messageTs, renderUiSurface(surface)).catch(() => {
     console.warn('[chickpea] Slack card redraw failed');
@@ -297,11 +298,12 @@ export async function retireApprovalSurfacesForTypedAnswer(input: {
 }
 
 /**
- * After the Agent's own answer is delivered: close the questions and
+ * After the Agent's own answer is delivered: close the questions, forms and
  * next-step buttons its earlier replies in this thread left open (redrawn as
  * closed; link buttons stay), then post this turn's pending surface as its own
  * message under the answer and bind it. Records exist before the post and are
- * keyed by the turn, so a retried delivery never posts twice.
+ * keyed by the turn, so a retried delivery never posts twice. Earlier cards
+ * stay open: a person approves one, the Agent confirms, they approve the next.
  */
 export async function deliverInteractiveSurfaces(input: {
   turn: Pick<NormalizedSlackTurn, 'workspaceId' | 'channelId' | 'threadTs'>;
@@ -323,8 +325,7 @@ export async function deliverInteractiveSurfaces(input: {
       agentId: input.agentId,
     },
     exceptTurnJobId: input.turnJobId,
-    // Card request buttons close too; the answer they sit in is left as is.
-    kinds: ['question', 'form', 'actions', 'cards'],
+    kinds: ['question', 'form', 'actions'],
   });
   if (superseded.kind === 'surfaces') {
     for (const surface of superseded.surfaces) await redrawUiSurface(input.messenger, surface);
@@ -385,7 +386,7 @@ export async function prepareDisplaySurfaces(input: {
   const ids = new Set<string>();
   if (input.fresh) {
     for (const [index, spec] of input.fresh.entries()) {
-      const id = uiSurfaceId(input.turnJobId, `display:${index}`);
+      const id = displaySurfaceId(input.turnJobId, index);
       ids.add(id);
       await uiSurfaceRecord(state, {
         kind: 'put_surface',
@@ -434,7 +435,7 @@ export function renderDisplayComponents(records: readonly UiSurfaceRecord[]): Re
     const spec = record.spec;
     if (!isDisplaySurface(spec)) continue;
     const rendered = spec.kind === 'cards'
-      ? renderCards(spec.cards, record.id)
+      ? renderCardSet(record)
       : spec.kind === 'chart' ? renderChart(spec.chart) : renderDetails(spec.details);
     const check = checkSlackBlocks(rendered.blocks);
     if (!check.ok) {

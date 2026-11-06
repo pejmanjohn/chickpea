@@ -1,7 +1,13 @@
 import { schemaInstallRequired, type StateDb } from '../../state/state-db.ts';
+import { cardOfSlot, cardRequestButtonAt, cardSetSettled, cardSettlementsOf } from './card-set.ts';
+import type { SlackUiMessage } from './interaction-payload.ts';
 import {
+  CARD_ANSWER_MAX_BYTES,
+  uiBlockId,
   UI_SURFACE_ID_PATTERN,
   UI_SURFACE_MAX_SPEC_BYTES,
+  type CardOutcome,
+  type CardSettlements,
   type UiNamespace,
   type UiSurfaceRecord,
   type UiSurfaceResolution,
@@ -14,6 +20,7 @@ const RETAIN_SETTLED_MS = 30 * 24 * 60 * 60_000;
 const STATUSES = new Set<UiSurfaceStatus>([
   'pending_delivery', 'open', 'resolved', 'superseded', 'expired', 'failed',
 ]);
+const OPEN_STATUSES = new Set<UiSurfaceStatus>(['open', 'pending_delivery']);
 
 interface UiSurfaceRow {
   id: string;
@@ -43,6 +50,9 @@ export interface UiSurfaceScope {
   threadTs?: string;
 }
 
+/** One Agent's conversation: a card set is only ever found or changed from inside it. */
+export type CardSetScope = UiSurfaceScope & { threadTs: string };
+
 /** A claim made inside Slack admission, atomically with the click's TurnJob. */
 export interface UiSurfaceClaim {
   surfaceId: string;
@@ -52,7 +62,8 @@ export interface UiSurfaceClaim {
 export type UiSurfaceRpcRequest =
   | { kind: 'put_surface'; record: UiSurfaceRecord }
   | { kind: 'get_surface'; id: string }
-  | { kind: 'bind_surface_message'; id: string; messageTs: string }
+  /** With `message`, a card set also keeps it as its answer copy (replay-safe: the same copy again). */
+  | { kind: 'bind_surface_message'; id: string; messageTs: string; message?: SlackUiMessage }
   | { kind: 'close_surface'; id: string; status: 'superseded' | 'expired' | 'failed' }
   | { kind: 'resolve_surface'; id: string; resolution: UiSurfaceResolution }
   /** First-wins, outside admission: the surface when this call resolved it, else null. */
@@ -67,7 +78,11 @@ export type UiSurfaceRpcRequest =
   | { kind: 'list_open_surfaces'; scope: UiSurfaceScope; limit?: number }
   | { kind: 'list_turn_surfaces'; turnJobId: string }
   | { kind: 'open_surface'; id: string }
-  | { kind: 'replace_surface_spec'; id: string; expected: UiSurfaceSpec; spec: UiSurfaceSpec; settled?: true };
+  | { kind: 'replace_surface_spec'; id: string; expected: UiSurfaceSpec; spec: UiSurfaceSpec; settled?: true }
+  /** The surface a card set ref ("1a2b3c4d") names in one Agent's conversation. */
+  | { kind: 'find_card_set'; scope: CardSetScope; ref: string }
+  /** Sets (or replaces) one card's outcome: the set when it took it, else null. */
+  | { kind: 'set_card_outcome'; id: string; scope: CardSetScope; card: number; outcome: CardOutcome };
 
 export type UiSurfaceRpcResponse =
   | { kind: 'surface'; surface: UiSurfaceRecord | null }
@@ -167,28 +182,54 @@ export class UiSurfaceStoreLogic {
     return row ? decode(row) : undefined;
   }
 
-  /** Record where the surface was posted; the first binding wins. */
-  bindMessage(id: string, messageTs: string): UiSurfaceRecord | undefined {
+  /**
+   * Record where the surface was posted; the first binding wins. A card set
+   * given its answer message keeps it as its copy, replacing any earlier one.
+   * Only the blocks around the set are ever drawn from a copy, and those are
+   * the same in every copy, so an older copy stored late redraws the same.
+   */
+  bindMessage(id: string, messageTs: string, message?: SlackUiMessage): UiSurfaceRecord | undefined {
     if (!/^\d{1,16}\.\d{1,16}$/.test(messageTs)) throw new Error('Slack message timestamp is invalid.');
     this.db.run(
       `UPDATE ui_surfaces
        SET message_ts = COALESCE(message_ts, ?),
            status = CASE WHEN status = 'pending_delivery' THEN 'open' ELSE status END,
            updated_at = ?
-       WHERE id = ?`,
+       WHERE id = ? AND (message_ts IS NULL OR status = 'pending_delivery')`,
       messageTs,
+      this.now(),
+      id,
+    );
+    const record = this.get(id);
+    if (!record || !message || !this.isAnswerCopy(record, message)) return record;
+    this.db.run(
+      'UPDATE ui_surfaces SET resolution_json = ?, updated_at = ? WHERE id = ?',
+      cardSetResolutionJson(cardSettlementsOf(record), message),
       this.now(),
       id,
     );
     return this.get(id);
   }
 
+  /** The bound message of an open, unexpired card set, carrying the set, within the cap. */
+  private isAnswerCopy(record: UiSurfaceRecord, message: SlackUiMessage): boolean {
+    const setId = uiBlockId('ui', record.id, 1);
+    return record.namespace === 'ui' && record.spec.kind === 'cards' &&
+      (record.status === 'open' || record.status === 'resolved') && record.expiresAt > this.now() &&
+      record.messageTs === message.ts &&
+      message.blocks.some((block) => block.block_id === setId) &&
+      new TextEncoder().encode(JSON.stringify(message)).byteLength <= CARD_ANSWER_MAX_BYTES;
+  }
+
   /**
-   * First-wins resolution. Only an open, unexpired surface can resolve, and
-   * the caller's namespace must match: a `ui` click never resolves a `host`
-   * record. Composes inside the caller's transaction.
+   * First-wins resolution (for a card set, first-wins per card). Only an
+   * open, unexpired surface can resolve, and the caller's namespace must
+   * match: a `ui` click never resolves a `host` record. Composes inside the
+   * caller's transaction.
    */
   claim(input: UiSurfaceClaim, namespace: UiNamespace): UiSurfaceClaimOutcome {
+    const record = namespace === 'ui' ? this.get(input.surfaceId) : undefined;
+    if (record?.namespace === 'ui' && record.spec.kind === 'cards') return this.claimCard(record, input.resolution);
     const now = this.now();
     const changed = this.db.run(
       `UPDATE ui_surfaces
@@ -203,6 +244,85 @@ export class UiSurfaceStoreLogic {
     if (changed) this.forgetOrigins(input.surfaceId);
     const surface = this.get(input.surfaceId);
     return changed && surface ? { claimed: true, surface } : { claimed: false, ...(surface ? { surface } : {}) };
+  }
+
+  /**
+   * A card's request buttons are first-wins for that card alone: the other
+   * cards in the set stay open until each is settled.
+   */
+  private claimCard(record: UiSurfaceRecord, resolution: UiSurfaceResolution): UiSurfaceClaimOutcome {
+    const spec = record.spec;
+    const settlements = cardSettlementsOf(record);
+    const card = cardOfSlot(resolution.choice);
+    if (spec.kind !== 'cards' || !OPEN_STATUSES.has(record.status) || record.expiresAt <= this.now() ||
+        !cardRequestButtonAt(spec.cards, resolution.choice) || settlements[card]) {
+      return { claimed: false, surface: record };
+    }
+    const next: CardSettlements = {
+      ...settlements,
+      [card]: { pick: { slot: resolution.choice, byUserId: resolution.byUserId, at: resolution.at } },
+    };
+    const surface = this.writeCardSettlements(record, next, cardSetSettled(spec.cards, next) ? 'resolved' : 'open');
+    return surface ? { claimed: true, surface } : { claimed: false, surface: record };
+  }
+
+  /** A card set ref names a surface in this Agent's thread; a ref is a lookup key, never a credential. */
+  findCardSet(scope: CardSetScope, ref: string): UiSurfaceRecord | undefined {
+    if (!/^[a-f0-9]{8}$/.test(ref)) return undefined;
+    const row = this.db.get(
+      `SELECT * FROM ui_surfaces
+       WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ? AND agent_id = ? AND namespace = 'ui'
+         AND substr(id, 1, 8) = ?
+       ORDER BY created_at DESC LIMIT 1`,
+      scope.workspaceId,
+      scope.channelId,
+      scope.threadTs,
+      scope.agentId,
+      ref,
+    ) as UiSurfaceRow | undefined;
+    return row ? decode(row) : undefined;
+  }
+
+  /**
+   * The Agent's outcome on one card of a set it posted in this thread. It
+   * settles the card; an outcome set again replaces the earlier one. A set
+   * not posted yet, closed, or expired takes none.
+   */
+  setCardOutcome(input: { id: string; scope: CardSetScope; card: number; outcome: CardOutcome }): UiSurfaceRecord | undefined {
+    const record = this.get(input.id);
+    const spec = record?.spec;
+    if (!record || spec?.kind !== 'cards' || record.namespace !== 'ui' ||
+        record.workspaceId !== input.scope.workspaceId || record.channelId !== input.scope.channelId ||
+        record.threadTs !== input.scope.threadTs || record.agentId !== input.scope.agentId ||
+        (record.status !== 'open' && record.status !== 'resolved') || record.expiresAt <= this.now() ||
+        !Number.isInteger(input.card) || input.card < 0 || input.card >= spec.cards.cards.length) {
+      return undefined;
+    }
+    const settlements = cardSettlementsOf(record);
+    const next: CardSettlements = { ...settlements, [input.card]: { ...settlements[input.card], outcome: input.outcome } };
+    const settled = record.status === 'resolved' || cardSetSettled(spec.cards, next);
+    return this.writeCardSettlements(record, next, settled ? 'resolved' : 'open');
+  }
+
+  /**
+   * Store a card set's settlements in place of any whole-set answer, keeping
+   * its answer copy. The read before it and this write run in one
+   * synchronous call, so no other claim comes between them.
+   */
+  private writeCardSettlements(
+    record: UiSurfaceRecord,
+    settlements: CardSettlements,
+    status: 'open' | 'resolved',
+  ): UiSurfaceRecord | undefined {
+    const changed = this.db.run(
+      `UPDATE ui_surfaces SET resolution_json = ?, status = ?, updated_at = ? WHERE id = ? AND status = ?`,
+      cardSetResolutionJson(settlements, record.answerMessage),
+      status,
+      this.now(),
+      record.id,
+      record.status,
+    ).changes === 1;
+    return changed ? this.get(record.id) : undefined;
   }
 
   /** Mark a surface delivered where its message timestamp is not known (display components). */
@@ -337,7 +457,7 @@ export class UiSurfaceStoreLogic {
       case 'get_surface':
         return { kind: 'surface', surface: this.get(request.id) ?? null };
       case 'bind_surface_message':
-        return { kind: 'surface', surface: this.bindMessage(request.id, request.messageTs) ?? null };
+        return { kind: 'surface', surface: this.bindMessage(request.id, request.messageTs, request.message) ?? null };
       case 'close_surface':
         return { kind: 'surface', surface: this.close(request.id, request.status) ?? null };
       case 'resolve_surface':
@@ -367,6 +487,10 @@ export class UiSurfaceStoreLogic {
           kind: 'surface',
           surface: this.replaceSpec(request.id, request.expected, request.spec, request.settled === true) ?? null,
         };
+      case 'find_card_set':
+        return { kind: 'surface', surface: this.findCardSet(request.scope, request.ref) ?? null };
+      case 'set_card_outcome':
+        return { kind: 'surface', surface: this.setCardOutcome(request) ?? null };
     }
   }
 
@@ -413,6 +537,7 @@ function decode(row: UiSurfaceRow): UiSurfaceRecord | undefined {
   try {
     if (!STATUSES.has(row.status as UiSurfaceStatus)) return undefined;
     if (row.namespace !== 'ui' && row.namespace !== 'host') return undefined;
+    const spec = JSON.parse(row.spec_json) as UiSurfaceSpec;
     const record: UiSurfaceRecord = {
       id: row.id,
       namespace: row.namespace,
@@ -424,12 +549,10 @@ function decode(row: UiSurfaceRow): UiSurfaceRecord | undefined {
       agentId: row.agent_id,
       turnJobId: row.turn_job_id,
       requesterUserId: row.requester_user_id,
-      spec: JSON.parse(row.spec_json) as UiSurfaceSpec,
+      spec,
       status: row.status as UiSurfaceStatus,
       ...(row.message_ts ? { messageTs: row.message_ts } : {}),
-      ...(row.resolution_json
-        ? { resolution: JSON.parse(row.resolution_json) as UiSurfaceResolution }
-        : {}),
+      ...(row.resolution_json ? decodeResolution(row.resolution_json, spec) : {}),
       createdAt: Number(row.created_at),
       updatedAt: Number(row.updated_at),
       expiresAt: Number(row.expires_at),
@@ -438,4 +561,30 @@ function decode(row: UiSurfaceRow): UiSurfaceRecord | undefined {
   } catch {
     return undefined;
   }
+}
+
+interface CardSetResolution {
+  cardSettlements: CardSettlements;
+  answerMessage?: SlackUiMessage;
+}
+
+/**
+ * A card set answered card by card keeps its settlements, and its answer
+ * copy, in the resolution column; a set an older build answered whole keeps
+ * that answer there.
+ */
+function cardSetResolutionJson(settlements: CardSettlements, answerMessage: SlackUiMessage | undefined): string {
+  return JSON.stringify({ cardSettlements: settlements, ...(answerMessage ? { answerMessage } : {}) } satisfies CardSetResolution);
+}
+
+function decodeResolution(
+  json: string,
+  spec: UiSurfaceSpec,
+): Pick<UiSurfaceRecord, 'resolution' | 'cardSettlements' | 'answerMessage'> {
+  const parsed = JSON.parse(json) as UiSurfaceResolution | CardSetResolution;
+  if (spec.kind !== 'cards' || !('cardSettlements' in parsed)) return { resolution: parsed as UiSurfaceResolution };
+  return {
+    cardSettlements: parsed.cardSettlements,
+    ...(parsed.answerMessage ? { answerMessage: parsed.answerMessage } : {}),
+  };
 }

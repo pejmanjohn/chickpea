@@ -44,6 +44,8 @@ const LAZY_MODULES: Record<string, string> = {
   'src/management/slack-key-setup.ts': "an Add key setup's issue, its approval-time setups, or a pasted-key check (management/service.ts)",
   'src/slack/key-form.ts': 'an Add key card, click or form (channels/slack.ts, cloudflare.ts, slack/run-turn.ts)',
   'src/slack/canvases/service.ts': 'a canvas tool call (slack/canvases/tools.ts)',
+  'src/slack/ui/card-set-message.ts': 'a card click redraw or an update_card call (channels/slack.ts, slack/ui/agent-card-redraw.ts)',
+  'src/slack/ui/agent-card-redraw.ts': "update_card's first call (agents/slack-thread.ts)",
   'src/slack/funding-refusal-reply.ts': 'an out-of-usage reply or an Ask an Owner click (slack/run-turn.ts, channels/slack.ts)',
   'src/routines/pause-notice.ts': "a routine's out-of-usage pause, or the good run after it (routines/execution.ts)",
   'src/admin/usage-report.ts': "a hosted Usage report or activity page (admin/usage-api.ts)",
@@ -55,7 +57,7 @@ const LAZY_MODULES: Record<string, string> = {
  * types included. Lower it when a change moves modules behind import();
  * scripts/worker-closure.mjs holds the built artifact to its own ceiling.
  */
-const STARTUP_SOURCE_BUDGET_BYTES = Math.round(10.49 * 2 ** 20);
+const STARTUP_SOURCE_BUDGET_BYTES = Math.round(10.51 * 2 ** 20);
 
 type Edge = { to: string; local: boolean; dynamic: boolean };
 

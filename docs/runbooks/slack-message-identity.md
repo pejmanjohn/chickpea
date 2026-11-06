@@ -342,6 +342,40 @@ stopped and its message replaced with the answer and a `_Corrected_` marker.
 It uses the same bound and split as recovery, with room for the marker, and
 the same fresh-post fallback on a definite content error.
 
+### A card set redraws the answer it rides in
+
+Cards from `present_cards` sit in the Agent's answer message, so a click on a
+card's request button, or an outcome the Agent sets with `update_card`, edits
+that message with `chat.update`. The edit sends no `username` or `icon_url`.
+The card or carousel block and the status line under it (block
+`chickpea.ui.v1.<surface>.20`) are drawn from the stored card set. Every
+other block and the message `text` go back as Slack holds them:
+
+- A direct click carries the clicked message, so its redraw reads nothing.
+- Otherwise the redraw uses the set's stored copy of the answer: the message
+  as the last redraw sent it, or as a click or read last found it. A click
+  through the shared gateway carries no message, and `update_card` has no
+  click, so with a copy neither reads.
+- With no copy, the redraw reads the message back with one
+  `conversations.replies` call within the shared read budget. A card set
+  nobody clicked is found by its block id among the thread's messages after
+  it was stored, which also finds the last part of a split answer. The
+  message found is then bound to the set.
+
+The copy is kept in the set's `ui_surfaces` row (`resolution_json`), up to
+64 KiB, and lives as long as the row. A larger answer is read back on every
+redraw. If the answer has no room for the status line (50 blocks), the
+card is redrawn without it.
+
+A refused read or edit logs `card set redraw skipped` or `card set redraw
+failed`. It never undoes the click or the outcome. The next redraw draws
+every card from the stored set again.
+
+Not yet verified live: that `chat.update` keeps a streamed answer's blocks,
+footer and sender; how Slack draws a card with no buttons; and whether an
+answer part over 4,000 characters of text accepts the edit (see
+`msg_too_long` above).
+
 ### Message size is text plus a cost per header block
 
 Measured on Violet on September 26, 2026 with direct `chat.postMessage`

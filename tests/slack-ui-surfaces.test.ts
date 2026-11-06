@@ -258,6 +258,25 @@ test('direct block_actions parse only host-namespace controls, with bounded stat
   assert.equal(microsecondSlackTs('nope'), undefined);
 });
 
+test('a direct click keeps the clicked message, so a card redraw needs no read; anything odd is left out', () => {
+  const blocks = [{ type: 'rich_text', block_id: 'Ab1', elements: [] }, { type: 'context', elements: [{ type: 'mrkdwn', text: 'footer' }] }];
+  const message = { ts: '1.000002', thread_ts: '1.000001', text: 'Two budgets.', blocks, user: 'UBOT' };
+  assert.deepEqual(parseSlackUiBlockAction(blockActions({ message }))?.message, { ts: '1.000002', text: 'Two budgets.', blocks });
+  const { text: _text, ...withoutText } = message;
+  assert.deepEqual(parseSlackUiBlockAction(blockActions({ message: withoutText }))?.message, { ts: '1.000002', blocks });
+  for (const odd of [
+    { ...message, ts: '1.000003' },
+    { ...message, blocks: 'nope' },
+    { ...message, blocks: [...blocks, 'nope'] },
+    { ...message, blocks: Array.from({ length: 51 }, () => blocks[0]) },
+    { ...message, text: 'x'.repeat(200_000) },
+  ]) {
+    const parsed = parseSlackUiBlockAction(blockActions({ message: odd }));
+    assert.ok(parsed, 'the click itself still parses');
+    assert.equal(parsed.message, undefined);
+  }
+});
+
 test('gateway ui_action frames keep normalized selections and refuse unknown or non-host shapes', () => {
   const id = 'a'.repeat(32);
   const frame = {

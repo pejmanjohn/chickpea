@@ -6,6 +6,7 @@ import { resolveHostSlackManagementApproval } from '../../management/slack-appro
 import type { ManagementStore } from '../../management/store.ts';
 import { conversationThreadTs } from '../thread-key.ts';
 import type { NormalizedSlackTurn } from '../types.ts';
+import { cardSettlementsOf } from './card-set.ts';
 import { approvalChoice } from './render.ts';
 import type { UiSurfaceRecord } from './surface.ts';
 
@@ -96,14 +97,22 @@ export async function authorizeUiResponse(input: {
   return undefined;
 }
 
-/** The private notice for a refused click. Mentions render names, never ping. */
-export function uiRefusalText(refusal: UiRefusal, surface?: UiSurfaceRecord): string {
+/**
+ * The private notice for a refused click. Mentions render names, never ping.
+ * A card set's click is answered for its own card.
+ */
+export function uiRefusalText(refusal: UiRefusal, surface?: UiSurfaceRecord, card?: number): string {
   switch (refusal) {
     case 'wrong_user':
       return surface
         ? `Only <@${surface.requesterUserId}> can answer this. You can reply in the thread.`
         : 'This isn\'t yours to answer. You can reply in the thread.';
     case 'answered': {
+      if (surface?.spec.kind === 'cards' && card !== undefined) {
+        const settled = cardSettlementsOf(surface)[card];
+        if (settled?.pick) return `Already requested by <@${settled.pick.byUserId}>.`;
+        if (settled?.outcome) return 'This card was already handled.';
+      }
       const verb = surface?.spec.kind === 'actions' || surface?.spec.kind === 'cards' ? 'requested' : 'answered';
       return surface?.resolution
         ? `Already ${verb} by <@${surface.resolution.byUserId}>.`

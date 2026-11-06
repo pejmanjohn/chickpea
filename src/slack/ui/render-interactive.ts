@@ -1,8 +1,9 @@
 import { escapeSlackControlCharacters } from '../message-format.ts';
 import type { SlackUiAction } from './interaction-payload.ts';
 import type { AskUserSpec, OfferActionsSpec } from './presentation-tools.ts';
-import { cardRequestButtonAt } from './render-display.ts';
+import { cardOfSlot, cardRequestButtonAt } from './card-set.ts';
 import {
+  cardSetRef,
   parseUiOptionValue,
   uiActionId,
   uiBlockId,
@@ -467,12 +468,16 @@ export function interactiveTurnText(
   return `Answered your question "${question.question}"${forWhom} ${reference}: ${answered}`;
 }
 
-/** A card request button: the stored card title and button label, never payload text. */
+/**
+ * A card request button: the stored card title and button label, never
+ * payload text. The card may sit in any earlier reply; its set ref and number
+ * are what update_card takes.
+ */
 export function cardTurnText(
   record: UiSurfaceRecord,
   spec: Extract<UiSurfaceRecord['spec'], { kind: 'cards' }>,
   answer: InteractiveAnswer,
 ): string {
   const button = cardRequestButtonAt(spec.cards, answer.choice);
-  return `Pressed "${button?.label ?? 'a button'}" on the card "${button?.card.title ?? 'a card'}" under your previous reply (cards ${record.id.slice(0, 8)}).`;
+  return `Pressed "${button?.label ?? 'a button'}" on the card "${button?.card.title ?? 'a card'}" (cards ${cardSetRef(record.id)}, card ${cardOfSlot(answer.choice) + 1}).`;
 }

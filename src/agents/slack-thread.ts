@@ -258,7 +258,8 @@ import {
   SlackDisplayComponentsSchema,
   type SlackDisplayComponentPart,
 } from '../slack/ui/display-tools.ts';
-import { KEY_SETUP_TOOL_DATA_NAME } from '../slack/ui/surface.ts';
+import { KEY_SETUP_TOOL_DATA_NAME, type UiSurfaceRecord } from '../slack/ui/surface.ts';
+import { createUpdateCardTool } from '../slack/ui/card-outcome-tool.ts';
 import { replyDisplayHistory } from '../slack/presentation-tool-policy.ts';
 
 /** Display components the guide describes wherever they mount. */
@@ -1046,10 +1047,10 @@ export function useChickpeaSlackRuntimeCapabilities(
 }
 
 /**
- * ask_user and offer_actions, bound to this request's host coordinates. They
- * mount only where a click can be admitted like a reply (see
- * interactiveSurfaceScope) and never without a trusted Slack signal. The
- * guide names only mounted tools.
+ * ask_user, offer_actions, request_form and update_card, bound to this
+ * request's host coordinates. They mount only where a click can be admitted
+ * like a reply (see interactiveSurfaceScope) and never without a trusted
+ * Slack signal. The guide names only mounted tools.
  */
 function useSlackInteractiveComponents(
   plan: RuntimePlanV2,
@@ -1064,6 +1065,7 @@ function useSlackInteractiveComponents(
     const display = createDisplayTools(writeDisplayComponent, {
       requestButtons: Boolean(scope),
       history: replyDisplayHistory,
+      ...(scope ? { turnJobId: scope.turnJobId } : {}),
     });
     useTool(display.cards);
     useTool(display.chart);
@@ -1084,6 +1086,11 @@ function useSlackInteractiveComponents(
   useTool(createAskUserTool({ store, scope, ...fallback }));
   useTool(createOfferActionsTool({ store, scope }));
   useTool(createRequestFormTool({ store, scope, ...fallback }));
+  if (writeDisplayComponent) {
+    const redraw = async (surface: UiSurfaceRecord) => (await import('../slack/ui/agent-card-redraw.ts'))
+      .redrawCardSetAsAgent(await resolveAgentPlatformEnv(), plan.agentId, surface);
+    useTool(createUpdateCardTool({ store, scope, redraw }));
+  }
 }
 
 /**
