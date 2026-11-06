@@ -3509,9 +3509,9 @@ test('runTurn fails a lease-rejected turn closed instead of returning silently',
 
 // A verified own-turn write delivers the model's own answer with its table
 // and display components, whatever the write changed: an addition, a rewrite,
-// a forget, or a replayed call. Memory changed by another writer during the
-// turn still fails the ordinary lease, and a receipt whose lease no longer
-// holds at delivery fails closed.
+// a forget, a replayed call, or a second write on top of the first. Memory
+// changed by another writer during the turn still fails the ordinary lease,
+// and a receipt whose lease no longer holds at delivery fails closed.
 const MEMORY_DRAFT = 'The absolute increase is 31. Noted for next time. Secret canary: BLUEBIRD.';
 const MEMORY_DRAFT_TABLE = {
   caption: 'Synthetic figures',
@@ -3532,11 +3532,22 @@ for (const scenario of [
     body: 'Secret canary: GREENBIRD.\nKeep links.', outcome: 'answer', table: true },
   { name: 'a forgotten fact', before: 'Secret canary: BLUEBIRD.\nKeep links.', body: 'Keep links.', outcome: 'answer' },
   { name: 'forget all', before: 'Secret canary: BLUEBIRD.', body: '', outcome: 'answer', table: true },
+  { name: 'a second write on top of the first', before: 'Secret canary: BLUEBIRD.\nKeep links.',
+    first: 'Secret canary: BLUEBIRD.\nKeep links.\nAudit word: saffron.',
+    body: 'Keep links.\nAudit word: saffron.', outcome: 'answer', table: true },
   // Another writer's forget lands before this turn's write: the ordinary lease decides.
   { name: 'memory another writer changed during the turn', before: 'Secret canary: BLUEBIRD.',
     body: 'Use readable dates.', concurrent: true, outcome: 'failure', table: true },
   { name: 'a write forgotten before delivery', before: 'Secret canary: BLUEBIRD.\nKeep links.',
     body: 'Secret canary: BLUEBIRD.\nKeep links.\nAudit word: saffron.',
+    outcome: 'failure', table: true, afterWrite: 'forget', finalBody: '' },
+  // Another writer lands between the turn's two writes: the chain is broken.
+  { name: 'memory another writer changed between two writes', before: 'Secret canary: BLUEBIRD.',
+    first: 'Secret canary: BLUEBIRD.\nAudit word: saffron.', between: true,
+    body: 'Use readable dates.', outcome: 'failure', table: true },
+  { name: 'two writes, the last forgotten before delivery', before: 'Secret canary: BLUEBIRD.\nKeep links.',
+    first: 'Secret canary: BLUEBIRD.\nKeep links.\nAudit word: saffron.',
+    body: 'Secret canary: BLUEBIRD.\nKeep links.\nAudit word: saffron.\nUse readable dates.',
     outcome: 'failure', table: true, afterWrite: 'forget', finalBody: '' },
   { name: 'a write with the Agent disabled before delivery', before: 'Secret canary: BLUEBIRD.\nKeep links.',
     body: 'Secret canary: BLUEBIRD.\nKeep links.\nAudit word: saffron.',
@@ -3544,6 +3555,8 @@ for (const scenario of [
 ] as Array<{
   name: string; before: string; body: string; outcome: 'answer' | 'failure';
   table?: true; reattach?: true; replay?: true; concurrent?: true;
+  /** The turn first writes this body, then writes body on top of it. */
+  first?: string; between?: true;
   afterWrite?: 'forget' | 'disable'; finalBody?: string;
 }>) {
 const verb = { answer: 'delivers the answer for', failure: 'fails closed for' }[scenario.outcome];
@@ -3578,9 +3591,12 @@ test(`a successful own-turn memory write ${verb} ${scenario.name}`, async () => 
       slackUserId: turn.userId, eventId: turn.eventId, messageTs: turn.messageTs, turnJobId,
       requesterText: turn.text,
     };
-    const performWrite = () => executeSlackMemoryUpdate({
+    const performWrite = (
+      revision = expectedRevision + ('concurrent' in scenario ? 1 : 0),
+      body = scenario.first ?? scenario.body,
+    ) => executeSlackMemoryUpdate({
       signal,
-      data: { expectedRevision: expectedRevision + ('concurrent' in scenario ? 1 : 0), body: scenario.body },
+      data: { expectedRevision: revision, body },
       apply: async (args) => ({ ok: true, result: await f.service.applyWorkspaceChanges({
         context: await resolveSlackManagementActor(signal, f.identity), ...args,
       }) }),
@@ -3617,8 +3633,15 @@ test(`a successful own-turn memory write ${verb} ${scenario.name}`, async () => 
         if ('concurrent' in scenario) {
           await f.memory.putAgentMemory({ agentId: agent.id, expectedRevision, body: '' });
         }
-        const { receipt: memoryUpdate } = reattached ?? await performWrite();
+        let { receipt: memoryUpdate } = reattached ?? await performWrite();
         assert.ok(memoryUpdate);
+        if (scenario.first !== undefined) {
+          if (scenario.between) {
+            await f.memory.putAgentMemory({ agentId: agent.id, expectedRevision: memoryUpdate.revision, body: '' });
+          }
+          ({ receipt: memoryUpdate } = await performWrite(memoryUpdate.revision + (scenario.between ? 1 : 0), scenario.body));
+          assert.ok(memoryUpdate);
+        }
         if (scenario.afterWrite === 'forget') {
           await f.memory.putAgentMemory({ agentId: agent.id, expectedRevision: memoryUpdate.revision, body: '' });
         } else if (scenario.afterWrite === 'disable') {
@@ -3633,7 +3656,8 @@ test(`a successful own-turn memory write ${verb} ${scenario.name}`, async () => 
     assert.equal(checkpointed, true);
     const saved = await f.memory.getAgentMemory(agent.id);
     assert.equal(saved.body, scenario.finalBody ?? scenario.body);
-    assert.equal(saved.revision, expectedRevision + 1 + ('concurrent' in scenario || scenario.afterWrite === 'forget' ? 1 : 0),
+    assert.equal(saved.revision, expectedRevision + 1 + ('concurrent' in scenario || scenario.afterWrite === 'forget' ? 1 : 0) +
+      (scenario.first === undefined ? 0 : 1) + (scenario.between ? 1 : 0),
       'every applied write advances the durable revision, including an unchanged body');
     assert.ok(posts.every((text) => !text.includes('I updated my memory') && !text.includes('I cleared my saved memory')),
       `no host confirmation replaces or doubles the answer: ${JSON.stringify(posts)}`);
