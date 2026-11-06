@@ -195,7 +195,7 @@ export class UiSurfaceStoreLogic {
        SET message_ts = COALESCE(message_ts, ?),
            status = CASE WHEN status = 'pending_delivery' THEN 'open' ELSE status END,
            updated_at = ?
-       WHERE id = ?`,
+       WHERE id = ? AND (message_ts IS NULL OR status = 'pending_delivery')`,
       messageTs,
       this.now(),
       id,
