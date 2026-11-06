@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test, { type TestContext } from 'node:test';
@@ -12,8 +13,26 @@ import { waitForHostChecks } from '../scripts/lib/verification-host-wait.mjs';
 function isolatedHome(t: TestContext) {
   const home = mkdtempSync(join(tmpdir(), 'chickpea-verify-host-'));
   t.after(() => rmSync(home, { recursive: true, force: true }));
-  return { home, file: join(home, '.chickpea', 'verification-host', 'owner.json') };
+  const directory = join(home, '.chickpea', 'verification-host');
+  const files = [join(directory, 'owner.json'), join(directory, 'owner-2.json')] as const;
+  return { home, file: files[0], files };
 }
+
+function slotFiles(t: TestContext) {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-host-slots-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  return [join(directory, 'owner.json'), join(directory, 'owner-2.json')] as const;
+}
+
+function hold(file: string, cwd: string, pid = process.pid) {
+  mkdirSync(join(file, '..'), { recursive: true });
+  const token = randomUUID();
+  writeFileSync(file, JSON.stringify({ pid, cwd, startedAt: new Date().toISOString(), token }), { flag: 'wx', mode: 0o600 });
+  return token;
+}
+
+const stoppedPid = () => Number(execFileSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' }));
+const read = (file: string) => readFileSync(file, 'utf8');
 
 function verifyHost(home: string, ...args: string[]) {
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: home };
@@ -22,12 +41,12 @@ function verifyHost(home: string, ...args: string[]) {
 }
 
 test('a command that cannot start releases the host reservation and names the command', (t) => {
-  const { home, file } = isolatedHome(t);
+  const { home, files } = isolatedHome(t);
   const notExecutable = join(home, 'not-executable');
   writeFileSync(notExecutable, '#!/bin/sh\n', { mode: 0o600 });
   for (const [command, code] of [['chickpea-no-such-command', 'ENOENT'], [notExecutable, 'EACCES']] as const) {
     const run = verifyHost(home, command);
-    assert.equal(existsSync(file), false, `${code}: no child ran, so no reservation is left behind`);
+    assert.deepEqual(files.map(existsSync), [false, false], `${code}: no child ran, so no reservation is left behind`);
     assert.equal(run.status, 2);
     assert.ok(run.stderr.includes(`Command could not start: ${command} (${code}). It holds no host reservation.`), run.stderr);
   }
@@ -41,62 +60,196 @@ test('a child that exits releases the reservation; a child stopped by a signal k
 
   const killed = verifyHost(home, process.execPath, '-e', "process.kill(process.pid, 'SIGTERM')");
   assert.notEqual(killed.status, 0);
-  assert.ok(killed.stderr.includes('Interrupted command: host reservation retained. Reconcile its processes before removing the exact owner.json.'), killed.stderr);
+  assert.ok(killed.stderr.includes(`Interrupted command: host reservation retained. Reconcile its processes before removing the exact ${file}.`), killed.stderr);
   assert.equal(JSON.parse(readFileSync(file, 'utf8')).pid, killed.pid, 'the interrupted owner keeps the slot for reconciliation');
 });
 
-test('status reports the owner or a free slot and never takes, shares or changes the reservation', (t) => {
-  const { home, file } = isolatedHome(t);
+test('status lists both slots and never takes, shares or changes the reservation', (t) => {
+  const { home, file, files } = isolatedHome(t);
+  const status = () => JSON.parse(verifyHost(home, 'status').stdout);
   const free = verifyHost(home, 'status');
   assert.equal(free.status, 0);
-  assert.deepEqual(JSON.parse(free.stdout), { status: 'free', file });
-  assert.equal(existsSync(file), false, 'status on a free slot does not take it');
+  assert.deepEqual(JSON.parse(free.stdout), { status: 'free', slots: files.map((slot) => ({ file: slot, owner: null, heldMs: null })) });
+  assert.deepEqual(files.map(existsSync), [false, false], 'status on a free host takes no slot');
 
-  const lease = acquireHostChecks({ file, env: {}, cwd: 'holder' });
-  const original = readFileSync(file, 'utf8');
+  const lease = acquireHostChecks({ files, env: {}, cwd: 'holder' });
+  const original = read(file);
   const { startedAt, token } = JSON.parse(original);
   const held = verifyHost(home, 'status');
   assert.equal(held.status, 0);
   const report = JSON.parse(held.stdout);
-  assert.equal(report.status, 'reserved');
-  assert.equal(report.file, file);
-  assert.deepEqual(report.owner, { pid: process.pid, cwd: 'holder', startedAt, liveness: 'live' });
-  assert.ok(report.heldMs >= 0);
+  assert.equal(report.status, 'free', 'a command would still start in the second slot');
+  assert.equal(report.slots[0].file, file);
+  assert.deepEqual(report.slots[0].owner, { pid: process.pid, cwd: 'holder', startedAt, liveness: 'live' });
+  assert.ok(report.slots[0].heldMs >= 0);
+  assert.deepEqual(report.slots[1], { file: files[1], owner: null, heldMs: null });
   assert.ok(!held.stdout.includes(token), 'the token that lets nested commands share the slot stays private');
-  assert.equal(readFileSync(file, 'utf8'), original);
+  assert.equal(read(file), original);
+
+  const other = acquireHostChecks({ files, env: {}, cwd: 'other' });
+  const full = status();
+  assert.equal(full.status, 'reserved');
+  assert.deepEqual(full.slots.map((slot: any) => [slot.file, slot.owner.cwd, slot.owner.liveness]), [[file, 'holder', 'live'], [files[1], 'other', 'live']]);
+  assert.ok(full.slots.every((slot: any) => slot.heldMs >= 0));
 
   const extra = verifyHost(home, 'status', 'extra');
   assert.equal(extra.status, 2);
   assert.match(extra.stderr, /status takes no arguments/);
-  assert.equal(readFileSync(file, 'utf8'), original);
+  assert.equal(read(file), original);
+  other.release();
   lease.release();
 
-  const stoppedPid = Number(execFileSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' }));
-  writeFileSync(file, JSON.stringify({ pid: stoppedPid, cwd: 'old', startedAt, token: 'stopped' }));
-  const stopped = readFileSync(file, 'utf8');
-  assert.deepEqual(JSON.parse(verifyHost(home, 'status').stdout).owner, { pid: stoppedPid, cwd: 'old', startedAt, liveness: 'stopped' });
-  assert.equal(readFileSync(file, 'utf8'), stopped);
+  const stopped = stoppedPid();
+  writeFileSync(file, JSON.stringify({ pid: stopped, cwd: 'old', startedAt, token: 'stopped' }));
+  const stale = read(file);
+  assert.deepEqual(status().slots[0].owner, { pid: stopped, cwd: 'old', startedAt, liveness: 'stopped' });
+  assert.equal(read(file), stale);
   // PID 1 is another user's process, so probing it is EPERM; 0, -1 and non-numbers are not PIDs.
   for (const pid of [...(process.getuid?.() === 0 ? [] : [1]), 0, -1, 'not-a-pid']) {
     writeFileSync(file, JSON.stringify({ pid, cwd: 'unclear', startedAt, token: 'unclear' }));
-    assert.equal(JSON.parse(verifyHost(home, 'status').stdout).owner.liveness, 'unknown', `owner PID ${pid}`);
+    assert.equal(status().slots[0].owner.liveness, 'unknown', `owner PID ${pid}`);
   }
   rmSync(file);
 
   const command = verifyHost(home, '--', 'status');
   assert.ok(command.stderr.includes('Command could not start: status (ENOENT).'), 'after --, status is a command to run');
-  assert.equal(existsSync(file), false);
+  assert.deepEqual(files.map(existsSync), [false, false]);
+});
+
+test('two checkouts hold both slots at once; a third is refused with both holders named', (t) => {
+  const files = slotFiles(t);
+  const first = acquireHostChecks({ files, env: {}, cwd: 'first-checkout' });
+  const second = acquireHostChecks({ files, env: {}, cwd: 'second-checkout' });
+  assert.deepEqual([first.file, second.file], files);
+  assert.notDeepEqual(first.env, second.env);
+  assert.deepEqual(files.map((file) => JSON.parse(read(file)).cwd), ['first-checkout', 'second-checkout']);
+  const held = files.map(read);
+
+  let busy: any;
+  assert.throws(() => acquireHostChecks({ files, env: {}, cwd: 'third-checkout' }), (error) => { busy = error; return true; });
+  assert.equal(busy.code, 'HOST_CHECKS_BUSY');
+  assert.deepEqual(busy.owners.map(({ file, pid, cwd }: any) => ({ file, pid, cwd })),
+    [{ file: files[0], pid: process.pid, cwd: 'first-checkout' }, { file: files[1], pid: process.pid, cwd: 'second-checkout' }]);
+  for (const text of [`${files[0]}; owner PID ${process.pid}, checkout first-checkout.`, `${files[1]}; owner PID ${process.pid}, checkout second-checkout.`]) {
+    assert.ok(busy.message.includes(text), busy.message);
+  }
+  assert.deepEqual(files.map(read), held, 'a refused third checkout changes neither slot');
+
+  first.release();
+  const third = acquireHostChecks({ files, env: {}, cwd: 'third-checkout' });
+  assert.equal(third.file, files[0], 'the released first slot is taken again');
+  assert.equal(JSON.parse(read(files[0])).cwd, 'third-checkout');
+  assert.equal(read(files[1]), held[1]);
+  third.release();
+  second.release();
+});
+
+test('a live owner.json from older one-slot code leaves new code the second slot', (t) => {
+  const files = slotFiles(t);
+  hold(files[0], 'old-checkout');
+  const old = read(files[0]);
+  const lease = acquireHostChecks({ files, env: {}, cwd: 'new-checkout' });
+  assert.equal(lease.file, files[1]);
+  assert.equal(JSON.parse(read(files[1])).cwd, 'new-checkout');
+  assert.equal(read(files[0]), old, 'the older owner keeps owner.json untouched');
+  assert.throws(() => acquireHostChecks({ files, env: {}, cwd: 'third-checkout' }), { code: 'HOST_CHECKS_BUSY' });
+  lease.release();
+  assert.equal(existsSync(files[1]), false);
+  assert.equal(read(files[0]), old, 'release removes only its own slot');
+});
+
+test('a nested command shares the second slot by its token and cannot release it', (t) => {
+  const files = slotFiles(t);
+  hold(files[0], 'first-checkout');
+  const token = hold(files[1], 'second-checkout');
+  const held = files.map(read);
+  const nested = acquireHostChecks({ files, env: { CHICKPEA_CHECK_OWNER: token }, cwd: 'nested' });
+  assert.equal(nested.file, files[1]);
+  assert.deepEqual(nested.env, { CHICKPEA_CHECK_OWNER: token });
+  nested.release();
+  assert.deepEqual(files.map(read), held, 'sharing and its release change neither slot');
+});
+
+test('a free slot beside a stopped one starts at once and reports the stopped slot without touching it', async (t) => {
+  const files = slotFiles(t);
+  const dead = stoppedPid();
+  hold(files[0], 'crashed-checkout', dead);
+  const stale = read(files[0]);
+  const events: any[] = [];
+  const lease = await waitForHostChecks({ files, env: {}, cwd: 'next', onWait: (event: unknown) => events.push(event) });
+  assert.equal(lease.file, files[1]);
+  assert.deepEqual(events.map(({ status, warning, file }) => ({ status, warning, file })),
+    [{ status: 'acquired', warning: 'HOST_CHECKS_SLOT_STOPPED', file: files[0] }]);
+  assert.match(events[0].message, new RegExp(`names PID ${dead}, which is no longer live\\.`));
+  assert.equal(read(files[0]), stale, 'the stopped slot is reported, never removed');
+  lease.release();
+});
+
+test('a slot being written, holding null or holding no token counts as held and is never shared', (t) => {
+  const files = slotFiles(t);
+  mkdirSync(join(files[0], '..'), { recursive: true });
+  writeFileSync(files[0], '');
+  const beside = acquireHostChecks({ files, env: {}, cwd: 'beside-a-write' });
+  assert.equal(beside.file, files[1], 'a slot mid-write is held, not a crash');
+  beside.release();
+
+  writeFileSync(files[1], 'null');
+  assert.throws(() => acquireHostChecks({ files, env: {}, cwd: 'third' }),
+    (error: any) => error.code === 'HOST_CHECKS_BUSY' && error.owners.every((owner: any) => owner.pid === undefined) && error.message.includes('inspect file'));
+
+  writeFileSync(files[0], JSON.stringify({ pid: process.pid, cwd: 'tokenless' }));
+  rmSync(files[1]);
+  const fresh = acquireHostChecks({ files, env: {}, cwd: 'no-token-caller' });
+  assert.equal(fresh.file, files[1], 'a caller without a token never shares a tokenless slot');
+  fresh.release();
+});
+
+test('release refuses a slot whose token changed and leaves it in place', (t) => {
+  const files = slotFiles(t);
+  const lease = acquireHostChecks({ files, env: {}, cwd: 'first' });
+  writeFileSync(lease.file, JSON.stringify({ pid: process.pid, cwd: 'someone-else', token: 'other' }));
+  const replaced = read(lease.file);
+  assert.throws(() => lease.release(), /Host check ownership changed; lock retained\./);
+  assert.equal(read(lease.file), replaced);
+});
+
+test('a waiter reports a stopped slot once, waits for the live one and never touches the stale file', async (t) => {
+  const files = slotFiles(t);
+  const dead = stoppedPid();
+  hold(files[0], 'crashed-checkout', dead);
+  const stale = read(files[0]);
+  hold(files[1], 'live-checkout');
+  const events: any[] = [];
+  const timer = setTimeout(() => rmSync(files[1]), 80);
+  t.after(() => clearTimeout(timer));
+  const next = await waitForHostChecks({ files, env: {}, cwd: 'waiter', waitMs: 2000, pollMs: 10,
+    onWait: (event: unknown) => events.push(event) });
+  assert.equal(next.file, files[1], 'the waiter takes the slot the live owner released');
+  assert.equal(JSON.parse(read(files[1])).cwd, 'waiter');
+  assert.equal(read(files[0]), stale, 'the stopped slot is never removed, stolen or reclaimed');
+  assert.deepEqual(events.map((event) => event.warning ?? event.status), ['waiting', 'HOST_CHECKS_SLOT_STOPPED'],
+    'one status and one stopped-slot report across many polls');
+  assert.deepEqual(events[0].owners.map(({ file, pid, liveness }: any) => ({ file, pid, liveness })),
+    [{ file: files[0], pid: dead, liveness: 'stopped' }, { file: files[1], pid: process.pid, liveness: 'live' }]);
+  assert.equal(events[1].file, files[0]);
+  assert.match(events[1].message, new RegExp(`names PID ${dead}, which is no longer live\\..*Never steal, stop or remove it`));
+  next.release();
+
+  hold(files[1], 'crashed-too', dead);
+  const both = files.map(read);
+  await assert.rejects(waitForHostChecks({ files, env: {}, waitMs: 2000, pollMs: 10 }), { code: 'HOST_CHECKS_OWNER_STOPPED' });
+  assert.deepEqual(files.map(read), both, 'with no live owner the waiter stops and changes neither slot');
 });
 
 test('bounded host wait acquires only after release and reports contention once', async (t) => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-host-wait-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const file = join(directory, 'owner.json');
-  const owner = acquireHostChecks({ file, env: {}, cwd: 'first' });
+  const owner = acquireHostChecks({ files: [file], env: {}, cwd: 'first' });
   const statuses: unknown[] = [];
   const timer = setTimeout(() => owner.release(), 50);
   t.after(() => clearTimeout(timer));
-  const next = await waitForHostChecks({ file, env: {}, cwd: 'second', waitMs: 2000, pollMs: 10,
+  const next = await waitForHostChecks({ files: [file], env: {}, cwd: 'second', waitMs: 2000, pollMs: 10,
     onWait: (status: unknown) => statuses.push(status) });
   assert.equal(statuses.length, 1);
   assert.ok(next.waitedMs >= 40);
@@ -108,21 +261,20 @@ test('timeout, cancellation and stopped owners retain the exact host reservation
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-host-wait-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const file = join(directory, 'owner.json');
-  const owner = acquireHostChecks({ file, env: {}, cwd: 'first' });
+  const owner = acquireHostChecks({ files: [file], env: {}, cwd: 'first' });
   const original = readFileSync(file, 'utf8');
-  await assert.rejects(waitForHostChecks({ file, env: {}, waitMs: 25, pollMs: 10 }), { code: 'HOST_CHECKS_TIMEOUT' });
+  await assert.rejects(waitForHostChecks({ files: [file], env: {}, waitMs: 25, pollMs: 10 }), { code: 'HOST_CHECKS_TIMEOUT' });
   assert.equal(readFileSync(file, 'utf8'), original);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15);
   t.after(() => clearTimeout(timer));
-  await assert.rejects(waitForHostChecks({ file, env: {}, waitMs: 2000, pollMs: 100,
+  await assert.rejects(waitForHostChecks({ files: [file], env: {}, waitMs: 2000, pollMs: 100,
     signal: controller.signal }), { code: 'HOST_CHECKS_CANCELLED' });
   assert.equal(readFileSync(file, 'utf8'), original);
   owner.release();
-  const childPid = Number(execFileSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' }));
-  writeFileSync(file, JSON.stringify({ pid: childPid, token: 'stopped', cwd: 'old' }));
+  writeFileSync(file, JSON.stringify({ pid: stoppedPid(), token: 'stopped', cwd: 'old' }));
   const stopped = readFileSync(file, 'utf8');
-  await assert.rejects(waitForHostChecks({ file, env: {}, waitMs: 2000 }), { code: 'HOST_CHECKS_OWNER_STOPPED' });
+  await assert.rejects(waitForHostChecks({ files: [file], env: {}, waitMs: 2000 }), { code: 'HOST_CHECKS_OWNER_STOPPED' });
   assert.equal(readFileSync(file, 'utf8'), stopped);
 });
 
@@ -130,16 +282,16 @@ test('host slot rejects a second worktree process, permits inherited child and p
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-host-lock-test-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const file = join(directory, 'owner.json');
-  const lease = acquireHostChecks({ file, env: {}, cwd: 'synthetic-first-checkout' });
+  const lease = acquireHostChecks({ files: [file], env: {}, cwd: 'synthetic-first-checkout' });
   const original = readFileSync(file, 'utf8');
   const module = resolve('scripts/lib/verification-host.mjs');
-  const script = `import { acquireHostChecks } from ${JSON.stringify(module)}; const lease = acquireHostChecks({file: ${JSON.stringify(file)}, cwd: 'second-checkout'}); lease.release();`;
+  const script = `import { acquireHostChecks } from ${JSON.stringify(module)}; const lease = acquireHostChecks({files: [${JSON.stringify(file)}], cwd: 'second-checkout'}); lease.release();`;
   assert.throws(() => execFileSync(process.execPath, ['--input-type=module', '-e', script], { env: { PATH: process.env.PATH }, stdio: 'pipe' }), /reserved/);
   assert.equal(readFileSync(file, 'utf8'), original);
   execFileSync(process.execPath, ['--input-type=module', '-e', script], { env: { ...process.env, ...lease.env } });
   assert.equal(readFileSync(file, 'utf8'), original, 'Nested child cannot release parent reservation');
   lease.release();
-  acquireHostChecks({ file, env: {}, cwd: 'second-checkout' }).release();
+  acquireHostChecks({ files: [file], env: {}, cwd: 'second-checkout' }).release();
 });
 
 test('a hold over fifteen minutes warns the waiter once per owner and never takes the slot', async (t) => {
@@ -147,27 +299,27 @@ test('a hold over fifteen minutes warns the waiter once per owner and never take
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const file = join(directory, 'owner.json');
   const started = Date.parse('2026-10-04T00:00:00.000Z');
-  const owner = acquireHostChecks({ file, env: {}, cwd: 'first', now: () => started });
+  const owner = acquireHostChecks({ files: [file], env: {}, cwd: 'first', now: () => started });
   const original = readFileSync(file, 'utf8');
   const minutes = (value: number) => () => started + value * 60_000;
   // Fail-fast callers see the age in the refusal; the owner is untouched.
-  assert.throws(() => acquireHostChecks({ file, env: {}, cwd: 'second', now: minutes(16) }),
-    (error: any) => error.code === 'HOST_CHECKS_BUSY' && error.heldMs === 16 * 60_000
+  assert.throws(() => acquireHostChecks({ files: [file], env: {}, cwd: 'second', now: minutes(16) }),
+    (error: any) => error.code === 'HOST_CHECKS_BUSY'
       && /Held for 16 min, over the 15-minute warning/.test(error.message) && /Never steal/.test(error.message));
-  assert.throws(() => acquireHostChecks({ file, env: {}, cwd: 'second', now: minutes(14) }),
+  assert.throws(() => acquireHostChecks({ files: [file], env: {}, cwd: 'second', now: minutes(14) }),
     (error: any) => error.code === 'HOST_CHECKS_BUSY' && !/warning/.test(error.message));
   assert.equal(readFileSync(file, 'utf8'), original);
 
   const quiet: any[] = [];
-  await assert.rejects(waitForHostChecks({ file, env: {}, waitMs: 60, pollMs: 10, now: minutes(14),
+  await assert.rejects(waitForHostChecks({ files: [file], env: {}, waitMs: 60, pollMs: 10, now: minutes(14),
     onWait: (event: unknown) => quiet.push(event) }), { code: 'HOST_CHECKS_TIMEOUT' });
   assert.deepEqual(quiet.map((event) => event.warning), [undefined], 'a fourteen-minute hold reports contention only');
-  assert.equal(quiet[0].heldMs, 14 * 60_000);
+  assert.equal(quiet[0].owners[0].heldMs, 14 * 60_000);
 
   const events: any[] = [];
   const timer = setTimeout(() => owner.release(), 80);
   t.after(() => clearTimeout(timer));
-  const next = await waitForHostChecks({ file, env: {}, cwd: 'second', waitMs: 2000, pollMs: 10, now: minutes(16),
+  const next = await waitForHostChecks({ files: [file], env: {}, cwd: 'second', waitMs: 2000, pollMs: 10, now: minutes(16),
     onWait: (event: unknown) => events.push(event) });
   assert.deepEqual(events.map((event) => event.warning ?? event.status), ['waiting', 'HOST_CHECKS_HELD_LONG'],
     'one warning across many polls of the same owner');

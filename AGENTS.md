@@ -63,9 +63,9 @@
   live transcripts, and working documents out of the public repository.
 - Follow [CONTRIBUTING.md](CONTRIBUTING.md). Run tests and builds serially in each
   checkout. Use isolated databases for tests; never reset an operator's state.
-- For development and QA, serialize expensive full-suite/build/workerd groups
-  across this host with `verify:regression` or `verify:host`; see
-  [host coordination](qa/live/operator/host-checks.md).
+- For development and QA, run expensive full-suite/build/workerd groups
+  through `verify:regression` or `verify:host`, which allow two at a time on
+  this host; see [host coordination](qa/live/operator/host-checks.md).
   This includes deployment builds during development and QA. Customer installs
   and updates from published releases, with only local installation settings
   changed, follow the [install guide](INSTALL_CHICKPEA_CLOUDFLARE.md) or
