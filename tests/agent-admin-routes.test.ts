@@ -4591,10 +4591,43 @@ test('an Agent chooses which tools of a managed connection it uses, within the a
     managedConnectorCatalog: createManagedConnectorCatalog([connector]),
   }, { store: ownerFixture.store, settings: ownerFixture.settings }, memberPrincipal);
   try {
-    await createAgent(ownerFixture.app);
+    const created = await ownerFixture.app.request('http://localhost/admin/api/agents', {
+      method: 'POST',
+      headers: auth(),
+      body: JSON.stringify({
+        id: 'agent_support', name: 'Support Triage', handle: 'support', description: 'Triages support questions',
+        editPolicy: 'all_workspace_members', instructions: 'Answer support questions.', enabled: true,
+        model: 'local-stub/admin-agent',
+      }),
+    });
+    assert.equal(created.status, 201, await created.clone().text());
     await ownerFixture.store.ensureWorkspaceInstallation({
       workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
       defaultAgentId: 'agent_support',
+    });
+    const personal = await ownerFixture.store.putConnectionAccount({
+      id: 'connection_tools_personal',
+      workspaceId: 'T_TEST',
+      ownerKind: 'member',
+      ownerMembershipId: 'membership_member',
+      createdByMembershipId: 'membership_member',
+      providerId: 'google',
+      label: 'Tools fixture',
+      policy: {
+        kind: 'managed', adapterId: 'composio', toolkit: connector.toolkit,
+        principalRef: 'chickpea:membership:membership_member', accountRef: 'ca_tools_personal',
+        allowedCapabilities: ceiling,
+      },
+      secretRefId: 'secret_tools_personal',
+      lifecycle: 'ready',
+    }, 0);
+    await ownerFixture.store.putAgentConnectionBinding({
+      agentId: 'agent_support',
+      connectionAccountId: personal.id,
+      providerId: 'google',
+      allowedCapabilities: ceiling,
+      resourceConstraints: {},
+      enabled: true,
     });
     const account = await ownerFixture.store.putConnectionAccount({
       id: 'connection_tools',
@@ -4622,8 +4655,9 @@ test('an Agent chooses which tools of a managed connection it uses, within the a
     const save = (
       body: { expectedRevision: number; allowedCapabilities: string[] },
       app = ownerFixture.app,
+      accountId = account.id,
     ) => app.request(
-      `http://localhost/admin/api/agents/agent_support/connections/${account.id}/managed/capabilities`,
+      `http://localhost/admin/api/agents/agent_support/connections/${accountId}/managed/capabilities`,
       { method: 'PUT', headers: auth(), body: JSON.stringify(body) },
     );
     const stored = async () => ({
@@ -4672,6 +4706,16 @@ test('an Agent chooses which tools of a managed connection it uses, within the a
     current = await stored();
     assert.deepEqual(current.binding.allowedCapabilities, ['tools_fixture.report']);
     assert.equal(current.account.revision, narrowedBody.account.revision);
+    const ownPersonal = await save(
+      { expectedRevision: personal.revision, allowedCapabilities: ['tools_fixture.list'] },
+      memberFixture.app,
+      personal.id,
+    );
+    assert.equal(ownPersonal.status, 200, await ownPersonal.clone().text());
+    assert.deepEqual(
+      (await ownerFixture.store.getAgentConnectionBindingForAccount(personal.id))?.allowedCapabilities,
+      ['tools_fixture.list'],
+    );
 
     const widened = await save({ expectedRevision: narrowedBody.account.revision, allowedCapabilities: ceiling });
     assert.equal(widened.status, 200, await widened.clone().text());
