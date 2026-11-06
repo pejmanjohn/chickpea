@@ -5154,6 +5154,7 @@ export class WorkspaceManagementService {
         description,
         kind: 'setup_catalog_entry' as const,
       })),
+      connectorCount: CONNECTION_CATALOG_PRESETS.length,
       ...(currentAgent
         ? {
             currentAgent: {
