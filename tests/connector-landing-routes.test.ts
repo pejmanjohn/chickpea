@@ -1156,7 +1156,14 @@ test('a catalog reconnect link keeps its account\'s owner: the other owner is re
       credential: 'personal-token',
     });
     assert.equal(refused.status, 422, await refused.clone().text());
-    assert.equal((await refused.json()).error, 'target_changed');
+    const answer = await refused.json();
+    assert.equal(answer.error, 'target_changed');
+    assert.match(answer.message, /Ask the Agent or coding agent that sent it for a new link\./);
+    const reopened = await h.app.request(`http://localhost/setup/${refusedLink.setupId}`, {
+      headers: { cookie: refusedLink.cookie },
+    });
+    assert.equal(reopened.status, 410);
+    assert.match(await reopened.text(), /<h1>This setup link is out of date<\/h1>/);
     const accounts = await h.config.listConnectionAccounts(h.workspaceId);
     assert.deepEqual(accounts.map(({ id, lifecycle, ownerKind }) => ({ id, lifecycle, ownerKind })),
       [{ id: h.accountId, lifecycle: 'needs_attention', ownerKind: 'team' }],
@@ -1177,6 +1184,40 @@ test('a catalog reconnect link keeps its account\'s owner: the other owner is re
     const after = await h.config.listConnectionAccounts(h.workspaceId);
     assert.deepEqual(after.map(({ id, lifecycle }) => ({ id, lifecycle })),
       [{ id: h.accountId, lifecycle: 'ready' }], 'the same account is ready again; none was minted');
+    assert.equal(await resolveConnectionAccountSecret({ secretRefId: h.secretRefId }, undefined, h.settings),
+      'replacement-token');
+  } finally {
+    h.close();
+  }
+});
+
+test('a catalog reconnect link still completes after an unrelated Agent edit', async () => {
+  const h = await catalogReconnectHarness({
+    suffix: 'catalog-reconnect-agent-edit',
+    providerId: 'stripe',
+    label: 'Stripe',
+    role: 'admin',
+    policy: {
+      kind: 'mcp',
+      url: 'https://mcp.stripe.com/',
+      transport: 'streamable-http',
+      authMode: 'bearer',
+      headerNames: [],
+      discoveredTools: [{ name: 'original_tool' }],
+      allowedTools: ['original_tool'],
+      presetId: 'stripe',
+    },
+  });
+  try {
+    const link = await h.openLink();
+    const agent = await h.config.getAgent('agent_reconnect');
+    await h.config.updateAgent(agent.id, { description: 'Answers billing questions.' }, agent.revision);
+    const reconnected = await authorize(h.app, link.setupId, link.cookie, {
+      ownerKind: 'team',
+      credential: 'replacement-token',
+    });
+    assert.equal(reconnected.status, 200, await reconnected.clone().text());
+    assert.deepEqual(await reconnected.json(), { completed: true });
     assert.equal(await resolveConnectionAccountSecret({ secretRefId: h.secretRefId }, undefined, h.settings),
       'replacement-token');
   } finally {

@@ -403,23 +403,19 @@ export function findSetupConnection(
     .find(({ account }) => account.id === setup.target.connectionId);
 }
 
-/** Whether the setup's Agent is still the revision the setup froze; an Agent welcome's setup takes any. */
-export function setupAgentCurrent(setup: ManagementSetupRecord, agent: Pick<CustomAgentConfig, 'revision'>): boolean {
-  return setup.setupOperationId.startsWith('setup_welcome_') || agent.revision === setup.target.expectedRevision;
-}
-
 /**
- * The setup's connection while its Agent, label and credential binding are
- * as the setup froze them. The setup page and the Slack key form finish a
- * connection's setup only then.
+ * The setup's connection while its label and credential binding are as the
+ * setup froze them, on an Agent that is not archived. The setup page and the
+ * Slack key form finish a connection's setup only then. Other Agent edits
+ * leave the link working: a stored key survives them too.
  */
 export function setupConnectionTarget(
   setup: ManagementSetupRecord,
-  agent: Pick<CustomAgentConfig, 'revision'>,
+  agent: Pick<CustomAgentConfig, 'lifecycle'>,
   accounts: readonly ConnectionAccount[],
   bindings: readonly AgentConnectionBinding[],
 ): AgentConnectionEntry | undefined {
-  if (!setupAgentCurrent(setup, agent)) return undefined;
+  if (agent.lifecycle === 'archived') return undefined;
   const entry = findSetupConnection(setup, accounts, bindings);
   return entry && entry.account.label === setup.target.targetLabel &&
       connectionSetupBinding(entry) === setup.target.credentialBinding

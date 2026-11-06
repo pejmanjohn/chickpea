@@ -473,14 +473,54 @@ test('names the model chose reach Slack escaped in the form\'s private notice an
   });
 });
 
+test('a form key still saves after an unrelated Agent edit', async () => {
+  await withDirectSlackInstall({}, async ({ stores }) => {
+    const fixture = await keyedAgent(stores, 'api.tasks.example');
+    const { setupOperationId } = await fixture.requestSetup('D1', 'im');
+    const card = await postCard(stores, fixture);
+    const { context } = formContext(stores);
+    const current = await stores.config.getAgent(fixture.agent.id);
+    await stores.config.updateAgent(fixture.agent.id, { description: 'Runs ops.' }, current.revision);
+
+    await withConnectionNetwork(() => Response.json({ tasks: [] }), async () => {
+      await saveKeyFromForm(context, await formSubmission(stores, card, setupOperationId!));
+    });
+    const account = (await stores.config.listConnectionAccounts('T1')).find(({ label }) => label === 'Tasks')!;
+    assert.equal(await stores.settings.getSetting(connectionAccountSecretSettingKey(account.secretRefId)), KEY);
+    assert.equal(account.lifecycle, 'ready');
+    const added = await surface(stores, card.id);
+    assert.ok(isKeyCard(added));
+    assert.deepEqual(added.spec.rows[0]!.state, { is: 'added' });
+  });
+});
+
 test('a row whose connection changed refuses the click, settles as changed, and says so privately', async () => {
   await withDirectSlackInstall({}, async (install) => {
     const { stores } = install;
     const fixture = await keyedAgent(stores, 'api.tasks.invalid');
     await fixture.requestSetup('D1', 'im');
     const card = await postCard(stores, fixture);
-    const current = await stores.config.getAgent(fixture.agent.id);
-    await stores.config.updateAgent(fixture.agent.id, { instructions: 'Run ops carefully.' }, current.revision);
+    const account = (await stores.config.listConnectionAccounts('T1')).find(({ label }) => label === 'Tasks')!;
+    await stores.config.putConnectionAccount({ ...account, label: 'Tasks (old)' }, account.revision);
+
+    await install.deliver('interactions', click(card));
+    await eventually(async () => install.calls.some(({ method }) => method === 'chat.postEphemeral'), 'the refusal is sent');
+    assert.equal(install.calls.some(({ method }) => method === 'views.open'), false);
+    assert.equal(install.calls.find(({ method }) => method === 'chat.postEphemeral')!.body.get('text'),
+      'The connection changed after this was posted. Ask Ops for a new one.');
+    const changed = await surface(stores, card.id);
+    assert.ok(isKeyCard(changed));
+    assert.deepEqual(changed.spec.rows[0]!.state, { is: 'superseded' });
+  });
+});
+
+test('a row whose Agent was archived refuses the click, settles as changed, and says so privately', async () => {
+  await withDirectSlackInstall({}, async (install) => {
+    const { stores } = install;
+    const fixture = await keyedAgent(stores, 'api.tasks.archived');
+    await fixture.requestSetup('D1', 'im');
+    const card = await postCard(stores, fixture);
+    await stores.config.archiveAgent(fixture.agent.id);
 
     await install.deliver('interactions', click(card));
     await eventually(async () => install.calls.some(({ method }) => method === 'chat.postEphemeral'), 'the refusal is sent');

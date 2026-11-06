@@ -21,7 +21,12 @@ import type { AuthPrincipal } from '../auth/types.ts';
 import { actualBodyLimit } from '../security/request-body-limit.ts';
 // Setup origins never come from a forwarded header.
 import { strictRequestOrigin as requestOrigin } from '../http/request-origin.ts';
-import { AgentConnectionCredentialConflictError, ManagedSignInGroupConflictError } from '../config/errors.ts';
+import {
+  AgentConnectionCredentialConflictError,
+  AgentRevisionConflictError,
+  ConnectionAccountRevisionConflictError,
+  ManagedSignInGroupConflictError,
+} from '../config/errors.ts';
 
 import {
   ApiOAuthError,
@@ -165,7 +170,6 @@ import {
   connectionSetupBinding,
   findSetupConnection,
   mcpCredentialField,
-  setupAgentCurrent,
   setupConnectionTarget,
   type AgentConnectionEntry,
 } from './agent-connections.ts';
@@ -346,6 +350,7 @@ export function createManagementSetupRoutes(
       if (!['claimed', 'failed', 'authorizing'].includes(setup.status)) {
         return terminalPage(c, setup, dependencies.management);
       }
+      if (setup.status === 'failed' && setup.failureCode === 'target_changed') return staleLinkPage(c, setup, 410);
       const page = await catalogConnectionPageInput(c, setup, dependencies, principal);
       return page
         ? c.html(page.accessReview
@@ -373,6 +378,10 @@ export function createManagementSetupRoutes(
     }
     if (!['claimed', 'failed', 'authorizing'].includes(setup.status)) {
       return terminalPage(c, setup, dependencies.management);
+    }
+    if (setup.status === 'failed' && setup.failureCode === 'target_changed') return staleLinkPage(c, setup, 410);
+    if (KEY_FORM_ACTIONS.has(setup.action) && await setupTargetChanged(setup, dependencies)) {
+      return staleLinkPage(c, setup, 410);
     }
     return c.html(await renderSetupSummary(setup, { destination: await setupDestination(setup, dependencies) }));
   });
@@ -466,7 +475,9 @@ export function createManagementSetupRoutes(
       return c.redirect(`/setup/${encodeURIComponent(setupId)}${check}`, 303);
     } catch (error) {
       if (error instanceof AuthorizationError) return genericDenied(c);
-      await markSetupFailure(setup, c, dependencies.management, safeFailureCode(error), now());
+      const code = safeFailureCode(error);
+      await markSetupFailure(setup, c, dependencies.management, code, now());
+      if (code === 'target_changed') return staleLinkPage(c, setup, 422);
       return formFailure(
         c, setup, dependencies, error instanceof SetupKeyRejectedError ? error.message : undefined,
       );
@@ -764,16 +775,22 @@ export function createManagementSetupRoutes(
           ? c.html(renderManagedConnectionSetupPage({ ...page, signInNotice }), 409)
           : managedUnavailablePage(c);
       }
-      await markSetupFailure(activeSetup, c, dependencies.management, safeFailureCode(error), now());
+      const code = safeFailureCode(error);
+      await markSetupFailure(activeSetup, c, dependencies.management, code, now());
       if (activeSetup.action === 'managed_connection') {
         const message = managedStartFailureMessage(error);
         if (authorizationJsonRequest(c)) {
-          return c.json({ error: safeFailureCode(error), message }, 422);
+          return c.json({ error: code, message }, 422);
         }
         const page = await managedConnectionPageInput(c, activeSetup, dependencies, options, principal);
         return page
           ? c.html(renderManagedConnectionSetupPage({ ...page, failureMessage: message }), 422)
           : managedUnavailablePage(c);
+      }
+      if (activeSetup.action === 'catalog_connection' && code === 'target_changed') {
+        return authorizationJsonRequest(c)
+          ? c.json({ error: code, message: staleLinkText(activeSetup) }, 422)
+          : staleLinkPage(c, activeSetup, 422);
       }
       if (activeSetup.action === 'catalog_connection') {
         const message = error instanceof McpOAuthError &&
@@ -781,13 +798,14 @@ export function createManagementSetupRoutes(
           ? 'Meta Ads must be configured in Chickpea Admin before you can sign in.'
           : 'Chickpea could not prepare this connection. Check the details and try again.';
         if (authorizationJsonRequest(c)) {
-          return c.json({ error: safeFailureCode(error), message }, 422);
+          return c.json({ error: code, message }, 422);
         }
         const page = await catalogConnectionPageInput(c, activeSetup, dependencies);
         return page
           ? c.html(renderCatalogConnectionSetupPage({ ...page, failureMessage: message }), 422)
           : unavailablePage(c);
       }
+      if (code === 'target_changed') return staleLinkPage(c, activeSetup, 422);
       return formFailure(c, activeSetup, dependencies);
     }
   });
@@ -2873,8 +2891,10 @@ async function assertExactTarget(
       throw new Error('target_changed');
     }
   } else {
+    // A repository grant lives in the Agent config, so this setup still pins the Agent's revision.
     const repository = agent.repositories.find(({ id }) => id === setup.target.repositoryId);
-    if (!repository || repository.fullName !== setup.target.targetLabel) throw new Error('target_changed');
+    if (agent.revision !== setup.target.expectedRevision || !repository ||
+        repository.fullName !== setup.target.targetLabel) throw new Error('target_changed');
   }
 }
 
@@ -2884,11 +2904,11 @@ async function currentSetupAgent(
 ): Promise<CustomAgentConfig> {
   if (!setup.target.agentId) throw new Error('target_changed');
   const agent = await config.getAgent(setup.target.agentId);
-  if (!setupAgentCurrent(setup, agent)) throw new Error('target_changed');
+  if (agent.lifecycle === 'archived') throw new Error('target_changed');
   return agent;
 }
 
-/** The Agent and the connection account a management setup froze, both unchanged since. */
+/** The connection account a management setup froze, unchanged since, on its live Agent. */
 async function currentSetupConnection(
   setup: ManagementSetupRecord,
   dependencies: SetupDependencies,
@@ -2938,11 +2958,43 @@ async function completeSetupCredential(
   credential: string,
   changes: Partial<Pick<ConnectionAccount, 'policy' | 'identity'>>,
 ): Promise<void> {
-  await saveConnectionCredential(dependencies, entry, credential, {
-    changes,
-    surface: setup.origin.kind,
-    retired: () => setupCredentialWasRetired(setup, dependencies),
-  });
+  try {
+    await saveConnectionCredential(dependencies, entry, credential, {
+      changes,
+      surface: setup.origin.kind,
+      retired: () => setupCredentialWasRetired(setup, dependencies),
+    });
+  } catch (error) {
+    // Another write moved the account during the check without changing what
+    // the setup writes, so the same link can save the key on the next try.
+    if (error instanceof ConnectionAccountRevisionConflictError && !await setupTargetChanged(setup, dependencies)) {
+      throw new SetupSaveRaceError();
+    }
+    throw error;
+  }
+}
+
+class SetupSaveRaceError extends Error {
+  constructor() {
+    super('setup_failed');
+  }
+}
+
+/** The setups whose page asks the person to type a secret. */
+const KEY_FORM_ACTIONS: ReadonlySet<ManagementSetupRecord['action']> = new Set([
+  'provider_credential',
+  'api_credential',
+  'mcp_credentials',
+]);
+
+/** Whether what the setup writes changed since the link was made; a failed read counts as unchanged. */
+async function setupTargetChanged(setup: ManagementSetupRecord, dependencies: SetupDependencies): Promise<boolean> {
+  try {
+    await assertExactTarget(setup, dependencies);
+    return false;
+  } catch (error) {
+    return safeFailureCode(error) === 'target_changed';
+  }
 }
 
 /**
@@ -3248,6 +3300,19 @@ function unavailablePage(c: Context): Response {
   }), 410);
 }
 
+/** A link whose target changed since it was issued can never finish; only a new link can. */
+function staleLinkPage(c: Context, setup: ManagementSetupRecord, status: 410 | 422): Response {
+  return c.html(renderSetupPanelPage({
+    title: 'Setup link out of date',
+    surface: 'setup-stale',
+    content: `<h1>This setup link is out of date</h1><p>${escapeHtml(staleLinkText(setup))}</p>`,
+  }), status);
+}
+
+function staleLinkText(setup: ManagementSetupRecord): string {
+  return `${setup.target.targetLabel} changed after this link was made. Ask the Agent or coding agent that sent it for a new link.`;
+}
+
 async function formFailure(
   c: Context,
   setup: ManagementSetupRecord,
@@ -3455,14 +3520,17 @@ function digest(value: string): string {
 
 export function safeFailureCode(error: unknown): string {
   if (error instanceof SetupKeyRejectedError) return 'key_rejected';
+  if (error instanceof SetupSaveRaceError) return 'setup_failed';
   if (error instanceof ManagementError) return error.code;
   if (error instanceof McpOAuthError) return error.code;
-  if (error instanceof AgentConnectionCredentialConflictError) return 'target_changed';
+  // The connection or Agent the setup writes changed under it.
+  if (error instanceof AgentConnectionCredentialConflictError || error instanceof AgentRevisionConflictError ||
+      error instanceof ConnectionAccountRevisionConflictError) return 'target_changed';
   if (error instanceof ManagedConnectionProviderUnavailableError) {
     return 'managed_provider_unavailable';
   }
   const message = error instanceof Error ? error.message : '';
-  if (/target|revision|connection_missing/i.test(message)) return 'target_changed';
+  if (message === 'target_changed') return 'target_changed';
   if (/provider|key|credential|validation|invalid_form/i.test(message)) return 'validation_failed';
   if (/state/i.test(message)) return 'invalid_state';
   return 'setup_failed';
