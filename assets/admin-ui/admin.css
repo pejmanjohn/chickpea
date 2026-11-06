@@ -3334,6 +3334,13 @@ button.capability-pill { cursor: pointer; }
 .u-detail-grid > div { align-content: start; display: grid; gap: 2px; }
 .u-detail-grid b { color: var(--text); }
 .u-detail-grid small { color: var(--text-3); display: block; font-size: .75rem; }
+.u-detail-grid .u-detail-wide { grid-column: 1 / -1; }
+.u-detail .u-cost { border-collapse: collapse; margin-top: 4px; max-width: 420px; width: 100%; }
+.u-detail .u-cost td { border-top: 1px solid var(--line); padding: 5px 0; }
+.u-detail .u-cost tr:first-child td { border-top: 0; }
+.u-cost .u-cost-tokens { color: var(--text-3); }
+.u-cost .u-cost-amount { color: var(--text); font-weight: 700; width: 72px; }
+.u-cost-note { color: var(--text-3); font-size: .75rem; margin: 6px 0 0; max-width: 420px; }
 .u-detail-acts { display: flex; justify-content: flex-end; margin-top: 8px; }
 @media (max-width: 720px) {
   .u-two { grid-template-columns: 1fr; }

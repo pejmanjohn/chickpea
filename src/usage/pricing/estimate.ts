@@ -1,7 +1,7 @@
 import type { PlatformEnv } from '../../config/state-backend.ts';
-import type { RecordUsageTerminalInput } from '../types.ts';
-import { priceCatalogFor } from './catalog.ts';
-import type { UsageEstimateResult } from './types.ts';
+import type { RecordUsageTerminalInput, UsageMeasurement } from '../types.ts';
+import { canonicalPriceProviderId, priceCatalogFor, RELEASE_PRICE_CATALOGS } from './catalog.ts';
+import type { TokenPriceRate, UsageEstimateResult, UsagePriceVersion } from './types.ts';
 
 export function usageEstimatesEnabled(
   platformEnv?: PlatformEnv,
@@ -88,6 +88,100 @@ export function estimateUsage(input: UsageEstimateInput): UsageEstimateResult {
     estimateCurrency: rate.currency,
     priceVersionId: matched.version.id,
     priceUnknownReason: null,
+  };
+}
+
+/** The tokens of one type an estimate priced, and what they cost. */
+export interface TokenTypeCost {
+  tokens: number;
+  micros: number;
+}
+
+/** A complete USD estimate split by token type. The costs are non-negative and sum exactly to the estimate. */
+export interface EstimateByTokenType {
+  input: TokenTypeCost;
+  output: TokenTypeCost;
+  cacheRead: TokenTypeCost;
+  cacheWrite: TokenTypeCost;
+}
+
+// Rounding three parts and the total separately leaves them at most this far apart.
+const ROUNDING_MICROS = 2;
+
+/**
+ * Splits a stored estimate by token type at the rates of the price version
+ * that priced it. Cache writes take what the other parts leave, because the
+ * store keeps no one-hour write count and the amount may price some writes
+ * at the one-hour rate. Null when the rates cannot account for the amount.
+ */
+export function estimateByTokenType(
+  measurement: Pick<
+    UsageMeasurement,
+    | 'estimateCompleteness'
+    | 'estimateCurrency'
+    | 'estimateAmountMicros'
+    | 'priceVersionId'
+    | 'returnedProvider'
+    | 'providerRoute'
+    | 'requestedProvider'
+    | 'returnedModel'
+    | 'requestedModel'
+    | 'inputTokens'
+    | 'outputTokens'
+    | 'cacheReadTokens'
+    | 'cacheWriteTokens'
+    | 'totalTokens'
+  >,
+  catalogs: readonly UsagePriceVersion[] = RELEASE_PRICE_CATALOGS,
+): EstimateByTokenType | null {
+  const { estimateAmountMicros: amount, inputTokens, outputTokens } = measurement;
+  if (
+    measurement.estimateCompleteness !== 'complete' ||
+    measurement.estimateCurrency !== 'USD' ||
+    amount === null ||
+    measurement.priceVersionId === null ||
+    inputTokens === null ||
+    outputTokens === null
+  ) return null;
+  const provider = measurement.returnedProvider ?? measurement.providerRoute ?? measurement.requestedProvider;
+  const model = measurement.returnedModel ?? measurement.requestedModel;
+  if (!provider || !model) return null;
+  const version = catalogs.find((candidate) => candidate.id === measurement.priceVersionId);
+  if (version?.providerId !== canonicalPriceProviderId(provider)) return null;
+  const rate = version.rates.find((candidate): candidate is TokenPriceRate =>
+    candidate.basis === 'standard_input_output' && candidate.modelAliases.includes(model));
+  const cache = cacheUsage(measurement);
+  if (!rate || !cache) return null;
+  if (rate.longContext && inputTokens + cache.read + cache.write >= rate.longContext.fromPromptTokens) return null;
+  if (
+    (cache.read > 0 && rate.cacheReadMicrosPerUnit === undefined) ||
+    (cache.write > 0 && rate.cacheWriteMicrosPerUnit === undefined)
+  ) return null;
+  const cost = (tokens: number, microsPerUnit = 0) => tokens * microsPerUnit / rate.unitScale;
+  const micros = {
+    input: Math.round(cost(inputTokens, rate.inputMicrosPerUnit)),
+    output: Math.round(cost(outputTokens, rate.outputMicrosPerUnit)),
+    cacheRead: Math.round(cost(cache.read, rate.cacheReadMicrosPerUnit)),
+    cacheWrite: 0,
+  };
+  const writes = amount - micros.input - micros.output - micros.cacheRead;
+  const fiveMinute = cost(cache.write, rate.cacheWriteMicrosPerUnit);
+  const oneHour = cost(cache.write, rate.cacheWrite1hMicrosPerUnit ?? rate.cacheWriteMicrosPerUnit);
+  if (writes < fiveMinute - ROUNDING_MICROS || writes > oneHour + ROUNDING_MICROS) return null;
+  if (cache.write > 0 && writes >= 0) {
+    micros.cacheWrite = writes;
+  } else {
+    // What is left is rounding, which the largest part absorbs.
+    const largest = (['output', 'cacheRead', 'input'] as const)
+      .reduce((top, key) => micros[key] > micros[top] ? key : top);
+    micros[largest] += writes;
+    if (micros[largest] < 0) return null;
+  }
+  return {
+    input: { tokens: inputTokens, micros: micros.input },
+    output: { tokens: outputTokens, micros: micros.output },
+    cacheRead: { tokens: cache.read, micros: micros.cacheRead },
+    cacheWrite: { tokens: cache.write, micros: micros.cacheWrite },
   };
 }
 

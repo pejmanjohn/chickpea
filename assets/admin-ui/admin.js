@@ -2331,10 +2331,12 @@
     return (change >= 0 ? "+" : "") + change.toFixed(0) + "% vs prior period" + (formatter ? " · " + formatter(previous) + " prior" : "");
   }
 
+  function usageMeasurementPriced(measurement) {
+    return measurement.estimateCompleteness === "complete" && measurement.estimateCurrency === "USD" && measurement.estimateAmountMicros != null;
+  }
+
   function usageOperationAmount(detail) {
-    var amounts = (detail.measurements || []).filter(function (measurement) {
-      return measurement.estimateCompleteness === "complete" && measurement.estimateCurrency === "USD" && measurement.estimateAmountMicros != null;
-    });
+    var amounts = (detail.measurements || []).filter(usageMeasurementPriced);
     if (!amounts.length) return null;
     return amounts.reduce(function (sum, measurement) { return sum + Number(measurement.estimateAmountMicros); }, 0);
   }
@@ -2342,6 +2344,45 @@
   function usageOperationTokens(detail, field) {
     var values = (detail.measurements || []).map(function (measurement) { return measurement[field]; }).filter(function (value) { return value != null; });
     return values.length ? values.reduce(function (sum, value) { return sum + Number(value); }, 0) : null;
+  }
+
+  // In the order a token split reads. `part` names the type in a
+  // measurement's `estimateByTokenType`.
+  var USAGE_TOKEN_TYPES = [
+    { field: "inputTokens", part: "input", label: "Input" },
+    { field: "cacheReadTokens", part: "cacheRead", label: "Cache reads", cache: true },
+    { field: "cacheWriteTokens", part: "cacheWrite", label: "Cache writes", cache: true },
+    { field: "outputTokens", part: "output", label: "Output" }
+  ];
+
+  function usageOperationCounts(detail) {
+    var counts = {};
+    USAGE_TOKEN_TYPES.forEach(function (type) { counts[type.field] = usageOperationTokens(detail, type.field); });
+    return counts;
+  }
+
+  function usageTokenSplit(counts) {
+    return USAGE_TOKEN_TYPES.map(function (type) { return usageInt(counts[type.field]) + " " + type.label.toLowerCase(); }).join(" · ");
+  }
+
+  // Where an estimate went, costliest first: null unless every measurement
+  // with usage is priced and split, so the rows add up to the task's amount.
+  function usageCostByTokenType(detail) {
+    var measured = (detail.measurements || []).filter(function (measurement) {
+      return measurement.totalTokens != null || usageMeasurementPriced(measurement);
+    });
+    if (!measured.length || !measured.every(function (measurement) {
+      return usageMeasurementPriced(measurement) && measurement.estimateByTokenType;
+    })) return null;
+    var rows = USAGE_TOKEN_TYPES.map(function (type) {
+      var parts = measured.map(function (measurement) { return measurement.estimateByTokenType[type.part]; });
+      return {
+        type: type,
+        tokens: parts.reduce(function (total, part) { return total + part.tokens; }, 0),
+        micros: parts.reduce(function (total, part) { return total + part.micros; }, 0)
+      };
+    }).filter(function (row) { return row.tokens > 0 || row.micros > 0; }).sort(function (left, right) { return right.micros - left.micros; });
+    return rows.length ? rows : null;
   }
 
   function usageOperationProvider(detail) {
@@ -2401,10 +2442,10 @@
     return '<p class="usage-data-note"><strong>Some activity is missing usage data.</strong> Cost estimates include ' + usageInt(pricedCount) + ' of ' + usageInt(activityCount) + ' ' + usageActivityNoun(activityCount) + '; token totals include ' + usageInt(meteredCount) + ' of ' + usageInt(activityCount) + '.</p>';
   }
 
-  function usageTokenTotalHtml(input, cached, output, total) {
+  function usageTokenTotalHtml(counts, total) {
     var totalLabel = usageInt(total);
-    if (input == null && cached == null && output == null) return totalLabel;
-    var split = usageInt(input) + " input · " + usageInt(cached) + " cached input · " + usageInt(output) + " output";
+    if (USAGE_TOKEN_TYPES.every(function (type) { return counts[type.field] == null; })) return totalLabel;
+    var split = usageTokenSplit(counts);
     return '<span class="usage-token-total" tabindex="0" data-tooltip="' + esc(split) + '" aria-label="' + esc(totalLabel + " total tokens; " + split) + '">' + totalLabel + '</span>';
   }
 
@@ -2412,13 +2453,6 @@
     var read = source && source.cacheReadTokens;
     var write = source && source.cacheWriteTokens;
     return read == null && write == null ? null : Number(read || 0) + Number(write || 0);
-  }
-
-  function usageOperationCachedTokens(detail) {
-    return usageCachedTokens({
-      cacheReadTokens: usageOperationTokens(detail, "cacheReadTokens"),
-      cacheWriteTokens: usageOperationTokens(detail, "cacheWriteTokens")
-    });
   }
 
   function usageGroupsHtml(summary) {
@@ -2446,9 +2480,6 @@
     if (!visibleOperations.length) return '<div class="empty"><p class="hint">No customer activity on this page' + (state.usageOperationFilter ? ' for this filter' : '') + '.</p>' + loadMore + '</div>';
     var rows = visibleOperations.map(function (detail) {
       var operation = detail.operation;
-      var input = usageOperationTokens(detail, "inputTokens");
-      var cached = usageOperationCachedTokens(detail);
-      var output = usageOperationTokens(detail, "outputTokens");
       var total = usageOperationTokens(detail, "totalTokens");
       var agentLabel = operation.agentLabel || usageAgentName(operation.agentId) || "Unknown";
       var label = esc(usageWorkLabel(operation));
@@ -2457,7 +2488,7 @@
       }
       return '<tr><td><strong class="usage-work-label">' + label + '</strong><div class="hint">' + esc(new Date(operation.startedAt).toLocaleString()) + '</div></td>' +
         '<td>' + esc(agentLabel) + '</td><td>' + esc(usageOperationProvider(detail)) + '</td><td>' + esc(usageOperationModel(detail)) + '</td>' +
-        '<td>' + usageStatusBadge(operation.status) + '</td><td class="number">' + usageTokenTotalHtml(input, cached, output, total) + '</td><td class="number">' + usageMoney(usageOperationAmount(detail), "USD") + '</td></tr>';
+        '<td>' + usageStatusBadge(operation.status) + '</td><td class="number">' + usageTokenTotalHtml(usageOperationCounts(detail), total) + '</td><td class="number">' + usageMoney(usageOperationAmount(detail), "USD") + '</td></tr>';
     }).join("");
     return '<div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>Channel or routine</th><th>Agent</th><th>Provider</th><th>Model</th><th>Status</th><th class="number">Tokens</th><th class="number">Spend</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
       loadMore;
@@ -2495,14 +2526,14 @@
     var perPriced = denominator > 0 && totals.estimateAmountMicros != null ? usageMoney(Math.round(Number(totals.estimateAmountMicros) / denominator), current.currency || "USD") : "Unknown";
     var summary = '<div class="usage-grid"><div class="usage-card usage-card-primary"><span class="usage-card-label">Estimated spend</span><span class="usage-card-value">' + esc(estimate) + '</span><span class="hint">' + esc(usageDelta(totals.estimateAmountMicros, prior.estimateAmountMicros)) + '</span></div>' +
       '<div class="usage-card"><span class="usage-card-label">' + usageActivityLabelHtml("Activity") + '</span><span class="usage-card-value">' + usageInt(totals.operationCount) + '</span><span class="hint">' + esc(usageDelta(totals.operationCount, prior.operationCount)) + '</span></div>' +
-      '<div class="usage-card"><span class="usage-card-label">Tokens</span><span class="usage-card-value">' + usageInt(totals.totalTokens) + '</span><span class="hint">' + usageInt(totals.inputTokens) + ' input · ' + usageInt(usageCachedTokens(totals)) + ' cached input · ' + usageInt(totals.outputTokens) + ' output</span></div>' +
+      '<div class="usage-card"><span class="usage-card-label">Tokens</span><span class="usage-card-value">' + usageInt(totals.totalTokens) + '</span><span class="hint">' + usageTokenSplit(totals) + '</span></div>' +
       '<div class="usage-card"><span class="usage-card-label">Average spend</span><span class="usage-card-value">' + esc(perPriced) + '</span><span class="hint">Across ' + usageInt(denominator) + ' priced ' + usageActivityNoun(denominator) + '</span></div></div>';
     var coverage = usageCoverageHtml(totals);
     var filter = state.usageOperationFilter ? '<span class="usage-filter-chip">Recent activity: ' + esc(state.usageOperationFilter.label) + ' <button type="button" class="x-btn" data-action="usage-clear-filter" aria-label="Clear activity filter">&times;</button></span>' : '';
     var groupLabel = state.usageGroupBy === "channel" ? "channel" : state.usageGroupBy;
     return head + summary + coverage +
       '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Spend by ' + esc(groupLabel) + '</h2><p class="hint">Compare where token usage and spend are concentrated.</p></div></div>' + usageGroupsHtml(current) + '</section>' +
-      '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Recent ' + usageActivityLabelHtml("activity") + '</h2><p class="hint">Hover over total tokens to see the input, cached input, and output split.</p></div>' + filter + '</div>' + usageOperationsHtml() + '</section>';
+      '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Recent ' + usageActivityLabelHtml("activity") + '</h2><p class="hint">Hover over total tokens to see the input, cache read, cache write, and output split.</p></div>' + filter + '</div>' + usageOperationsHtml() + '</section>';
   }
 
   // ---- Usage where the host bills --------------------------------------------
@@ -2962,6 +2993,17 @@
     return '<b>' + esc(billed.amount) + '</b> <small>' + parts + '</small>';
   }
 
+  function billedUsageCostHtml(total, costs) {
+    var rows = costs.map(function (row, index) {
+      return '<tr><td>' + (index === 0 ? '<b>' + row.type.label + '</b>' : row.type.label) + '</td><td class="number u-cost-tokens">' + usageInt(row.tokens) + '</td>' +
+        '<td class="number u-cost-amount">' + usageMoney(row.micros, "USD") + '</td></tr>';
+    }).join("");
+    var writes = costs.some(function (row) { return row.type.field === "cacheWriteTokens"; });
+    return '<div class="u-detail-wide"><span class="field-label">Tokens</span><span><b>' + usageInt(total) + '</b></span>' +
+      '<table class="u-cost" aria-label="Tokens and estimated cost by type"><tbody>' + rows + '</tbody></table>' +
+      (writes ? '<p class="u-cost-note">Cache writes save new context so later steps can reread it at the much cheaper read price.</p>' : '') + '</div>';
+  }
+
   function billedUsageDetailHtml(detail, where, mode, detailId) {
     var operation = detail.operation;
     var hosted = detail.hosted || {};
@@ -2971,11 +3013,10 @@
     if (mode === BILLED_USAGE_MODES.usage && hosted.billed) fields.push(field("Usage", billedUsageBreakdownHtml(hosted.billed)));
     fields.push(field("Model", esc(hosted.modelName || "—")));
     var total = usageOperationTokens(detail, "totalTokens");
-    if (total != null) {
-      var count = function (name) { var value = usageOperationTokens(detail, name); return usageInt(value == null ? 0 : value); };
-      var cached = usageOperationCachedTokens(detail);
-      fields.push(field("Tokens", '<b>' + usageInt(total) + '</b> <small>' + count("inputTokens") + ' input · ' + usageInt(cached == null ? 0 : cached) + ' cached · ' + count("outputTokens") + ' output</small>'));
-    }
+    // Only an own key's estimate is priced by token type; billed usage is not.
+    var costs = total != null && mode === BILLED_USAGE_MODES.estimate ? usageCostByTokenType(detail) : null;
+    if (costs) fields.push(billedUsageCostHtml(total, costs));
+    else if (total != null) fields.push(field("Tokens", '<b>' + usageInt(total) + '</b> <small>' + usageTokenSplit(usageOperationCounts(detail)) + '</small>'));
     var took = operation.finishedAt != null ? ", took " + billedUsageDuration(operation.finishedAt - operation.startedAt) : "";
     fields.push(field("When", esc(billedUsageWhen(operation.startedAt) + took)));
     var slack = typeof operation.slackMessagePath === "string" && operation.slackMessagePath.indexOf("/admin/api/usage/operations/") === 0
@@ -11131,21 +11172,17 @@
     var body = !runs.length ? '<p class="hint">No occurrences have been admitted yet.</p>' : runs.map(function (run) {
       var ledger = run.usage && run.usage.source === "usage_ledger" && run.usage.available &&
         Array.isArray(run.usage.measurements) && run.usage.measurements.length ? run.usage : null;
-      var counts = ledger ? {
-        inputTokens: usageOperationTokens(ledger, "inputTokens"),
-        outputTokens: usageOperationTokens(ledger, "outputTokens"),
-        cacheReadTokens: usageOperationTokens(ledger, "cacheReadTokens"),
-        cacheWriteTokens: usageOperationTokens(ledger, "cacheWriteTokens")
-      } : run;
-      var cached = usageCachedTokens(counts);
+      var counts = ledger ? usageOperationCounts(ledger) : run;
       var measuredTotal = ledger ? usageOperationTokens(ledger, "totalTokens") : null;
       var complete = ledger ? ledger.measurements.every(function (measurement) {
         return measurement.usageCompleteness === "complete" && measurement.totalTokens != null;
       }) : [counts.inputTokens, counts.outputTokens, counts.cacheReadTokens, counts.cacheWriteTokens].every(function (value) { return value != null; });
-      var tokens = [counts.inputTokens, counts.outputTokens, cached, measuredTotal].some(function (value) { return value != null; })
-        ? String(measuredTotal != null ? measuredTotal : Number(counts.inputTokens || 0) + Number(counts.outputTokens || 0) + Number(cached || 0)) +
+      var cacheParts = USAGE_TOKEN_TYPES.filter(function (type) { return type.cache && counts[type.field] > 0; })
+        .map(function (type) { return usageInt(counts[type.field]) + " " + type.label.toLowerCase(); });
+      var tokens = measuredTotal != null || USAGE_TOKEN_TYPES.some(function (type) { return counts[type.field] != null; })
+        ? usageInt(measuredTotal != null ? measuredTotal : USAGE_TOKEN_TYPES.reduce(function (sum, type) { return sum + Number(counts[type.field] || 0); }, 0)) +
           (complete ? " tokens" : " reported tokens") +
-          (cached > 0 ? " (" + String(cached) + " cached input)" : "")
+          (cacheParts.length ? " (" + cacheParts.join(", ") + ")" : "")
         : "Usage unavailable";
       var delivery = run.suppressedAsNoOp ? "No post (no-op)" : String(run.deliveryStatus || "none").replace(/_/g, " ");
       var receipt = scheduledDeliveryLink(run, routine);

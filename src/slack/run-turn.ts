@@ -1,7 +1,7 @@
 import { planAllowsConnectionFileUpload } from '../connections/file-upload-tool.ts';
 import { conversationThreadImageInventory } from './thread-images.ts';
 import { retainThreadFiles, threadFileManifest } from './thread-files.ts';
-import { verifyMemoryUpdateAcknowledgement } from './memory-update-terminal.ts';
+import { verifyOwnMemoryWrite } from './memory-update-terminal.ts';
 import { WebClient } from '@slack/web-api';
 
 import {
@@ -2551,12 +2551,10 @@ async function runTurnAttempt(
         ? undefined
         : { codingWorkspaceOpened: agentResult.codingWorkspaceOpened },
     );
-    let acknowledgeMemoryUpdate = false;
+    let ownMemoryWrite = false;
     if (agentResult?.memoryUpdate && preparedMemory?.validateReceiptLease) {
-      // A changed memory invalidates the ordinary lease. Only a verified
-      // own-turn receipt permits this host acknowledgement, which either keeps
-      // the model's answer (a write that only added to the injected snapshot)
-      // or replaces it with the bounded summary (anything that could forget).
+      // The turn's own write changes memory, which fails the ordinary lease.
+      // A verified own-turn receipt stands in for it; the answer delivers as is.
       try {
         const dependencies = resolveManagementApprovalDependencies(options.managementApproval, () => {
           const identity = options.appStores?.identity ?? getIdentityStore(platformEnv);
@@ -2602,7 +2600,7 @@ async function runTurnAttempt(
           ...(turn.requesterTimezone ? { requesterTimezone: turn.requesterTimezone } : {}),
         } as const;
         const actor = await resolveSlackManagementActor(signal, dependencies.identity);
-        acknowledgeMemoryUpdate = await verifyMemoryUpdateAcknowledgement({
+        ownMemoryWrite = await verifyOwnMemoryWrite({
           hint: agentResult.memoryUpdate,
           agentId: assignment.agent.id,
           turnJobId,
@@ -2611,24 +2609,15 @@ async function runTurnAttempt(
         });
       } catch {
         // Unavailable receipts or revoked actors retain the ordinary lease check.
-        acknowledgeMemoryUpdate = false;
+        ownMemoryWrite = false;
       }
-    }
-    // Memory was in the model's context at generation time. A write that kept
-    // that snapshot verbatim leaves nothing forgotten for the draft to
-    // disclose, so the answer and its presentation deliver as usual. A forget,
-    // rewrite, replay, or write over an unseen snapshot replaces the draft.
-    if (acknowledgeMemoryUpdate && agentResult?.memoryUpdate?.preservesContext !== true) {
-      text = recoveredText ?? agentResult?.memoryUpdate?.summary ?? 'I updated my memory.';
-      tablePresentation = undefined;
-      artifacts = undefined;
     }
     // Confirmation only prevents reinjecting the same selection into this
     // transcript. A concurrent turn can legitimately advance the epoch before
     // this one finishes; that bookkeeping race must not discard a completed,
     // lease-valid answer.
     await preparedMemory?.confirmInjection();
-    const leaseValid = acknowledgeMemoryUpdate ||
+    const leaseValid = ownMemoryWrite ||
       (await (earlyLeaseCheck ?? preparedMemory?.validateLease()) ?? true);
     if (preparedMemory?.ownerBound && !leaseValid && !recoveredText) {
       logMemoryLeaseFailure('after_run', assignment.agentId, preparedMemory.quarantined === true);
@@ -2651,7 +2640,7 @@ async function runTurnAttempt(
     // the turn ends like a reaction-only one. Anything else still delivers.
     const silentEnding = handedBack && options.replayTerminalResult === undefined &&
       isAgentAskSilentReply(text) && recoveredText === undefined && leaseValid &&
-      !acknowledgeMemoryUpdate && !artifacts?.length && !tablePresentation &&
+      !artifacts?.length && !tablePresentation &&
       !agentResult?.displayComponents?.length && !workChecklistTs;
     if (silentEnding) {
       await endWithoutReply();
@@ -2665,8 +2654,7 @@ async function runTurnAttempt(
       ? artifacts
       : undefined;
     // Components travel only with the model's own lease-valid answer.
-    const ownAnswer = terminalResult === 'answer' && recoveredText === undefined && leaseValid &&
-      !(acknowledgeMemoryUpdate && agentResult?.memoryUpdate?.preservesContext !== true);
+    const ownAnswer = terminalResult === 'answer' && recoveredText === undefined && leaseValid;
     const displaySurfaces = ownAnswer ? await (earlyDisplaySurfaces ?? readDisplaySurfaces()) : [];
     const displayComponents = renderDisplayComponents(displaySurfaces);
     await presenter.deliverFinal(

@@ -20,7 +20,7 @@ import type { IdentityStore } from '../src/identity/types.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { RoutineStore } from '../src/routines/types.ts';
 import { RELEASE_PRICE_CATALOGS } from '../src/usage/pricing/catalog.ts';
-import { usageEstimatesEnabled } from '../src/usage/pricing/estimate.ts';
+import { estimateUsage, usageEstimatesEnabled } from '../src/usage/pricing/estimate.ts';
 import { usageRuntimeRecordingEnabled } from '../src/usage/runtime-recorder.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import type { AdmitUsageOperationInput } from '../src/usage/types.ts';
@@ -369,6 +369,68 @@ test('Usage public and redacted serializers expose canonical Run IDs without ret
     usage.close();
     work.close();
     config.close();
+  }
+});
+
+test('each Usage activity measurement carries its estimate by token type, in public and redacted rows alike', async () => {
+  const usage = new SqliteUsageStore(':memory:');
+  try {
+    const observedAt = Date.UTC(2026, 10, 6, 17, 25);
+    const opus = {
+      observedAt, providerRoute: 'anthropic', requestedProvider: 'anthropic', requestedModel: 'claude-opus-5-5',
+      returnedProvider: 'anthropic', returnedModel: 'claude-opus-5-5', usageCompleteness: 'complete' as const,
+      inputTokens: 18, outputTokens: 5_731, cacheReadTokens: 1_784_698, cacheWriteTokens: 627_674, totalTokens: 2_418_121,
+    };
+    const rows = [
+      ['op_split_public', 'run_split_public', opus],
+      ['op_split_private', 'run_split_private', opus],
+      ['op_split_unpriced', 'run_split_unpriced', { ...opus, requestedProvider: 'custom', providerRoute: 'custom', returnedProvider: 'custom' }],
+    ] as const;
+    for (const [operationId, runId, terminal] of rows) {
+      await usage.admitOperation(slackUsageRow({
+        operationId, runId, startedAt: observedAt - 81_000, requestedProvider: terminal.requestedProvider, requestedModel: 'claude-opus-5-5',
+      }));
+      await usage.recordTerminal({
+        operationId, executionId: `exec_${operationId}`, status: 'completed', finishedAt: observedAt,
+        credentialRefId: null, credentialVersion: null, usageUnknownReason: null,
+        ...terminal, ...estimateUsage(terminal),
+      });
+    }
+    const app = createUsageAdminApi({
+      store: () => usage,
+      work: () => ({
+        getRunVisibilities: async (runIds: RunId[]) => runIds.map((runId) => ({ runId, public: runId === 'run_split_public' })),
+      }) as unknown as WorkStore,
+      agentNames: async () => new Map(),
+      personNames: async () => new Map(),
+    });
+    const split = {
+      input: { tokens: 18, micros: 72 },
+      output: { tokens: 5_731, micros: 114_620 },
+      cacheRead: { tokens: 1_784_698, micros: 356_940 },
+      cacheWrite: { tokens: 627_674, micros: 3_138_370 },
+    };
+
+    const page = await (await app.request(`/usage/operations?from=${observedAt - 3_600_000}&to=${observedAt}`)).json() as {
+      items: Array<{ projection: string; operation: { operationId: string }; measurements: Array<Record<string, unknown>> }>;
+    };
+    assert.deepEqual(
+      Object.fromEntries(page.items.map((item) => [
+        item.operation.operationId,
+        [item.projection, item.measurements.map((measurement) => measurement.estimateByTokenType)],
+      ])),
+      {
+        op_split_public: ['public', [split]],
+        op_split_private: ['redacted', [split]],
+        op_split_unpriced: ['redacted', [null]],
+      },
+    );
+    const detail = await (await app.request('/usage/operations/op_split_private')).json() as {
+      measurements: Array<Record<string, unknown>>;
+    };
+    assert.deepEqual(detail.measurements.map((measurement) => measurement.estimateByTokenType), [split]);
+  } finally {
+    usage.close();
   }
 });
 

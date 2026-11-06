@@ -50,7 +50,7 @@ import {
 const NOW = 1_940_000_000_000;
 const CREDITED_BACK = 'Usage for this reply was credited back to your plan.';
 
-test('memory confirmation survives durable settlement storage with legacy receipts still readable', () => {
+test('a memory receipt survives durable settlement storage with legacy receipts still readable', () => {
   const db = openStateDb(':memory:');
   try {
     const turns = new TurnJobStoreLogic(db, () => NOW);
@@ -69,7 +69,9 @@ test('memory confirmation survives durable settlement storage with legacy receip
       } });
       const restored = turns.getFlueSettlement(id);
       assert.equal(restored?.outcome, 'completed');
-      assert.deepEqual(restored?.outcome === 'completed' ? restored.result.memoryUpdate : undefined, memoryUpdate);
+      // Older receipts also stored summary and preservesContext; reading drops them.
+      assert.deepEqual(restored?.outcome === 'completed' ? restored.result.memoryUpdate : undefined,
+        { operationId: id, revision: 1 });
     }
   } finally { db.close(); }
 });
