@@ -1112,7 +1112,7 @@ async function resolveClientInformation(
     callbackUrl,
   ).href;
   // The server checks redirect_uri against the published document, which
-  // lists only the Admin callback; a setup link's callback must be registered.
+  // lists only /oauth/callback; any other callback must be registered.
   if (
     metadata.client_id_metadata_document_supported === true &&
     new URL(clientMetadataUrl).protocol === 'https:' &&
@@ -1506,13 +1506,14 @@ export function mcpOAuthReturnRefFromState(state: string): McpSecretRef {
 }
 
 /**
- * Read the management continuation bound to an exact live provider state.
- * This never consumes state and exposes no OAuth client, verifier, or token.
+ * Read where an exact live provider state returns: the callback its attempt
+ * registered, and the management setup it resumes, if any. This never
+ * consumes state and exposes no OAuth client, verifier, or token.
  */
 export async function readMcpOAuthSetupContinuation(
   state: string,
   dependencies: Pick<McpOAuthDependencies, 'settings' | 'now'>,
-): Promise<string | undefined> {
+): Promise<{ callbackUrl: string; setupOperationId?: string }> {
   const ref = decodeStateRef(state);
   const [, pendingKey] = mcpOAuthSettingKeys(ref);
   const raw = await dependencies.settings.getSetting(pendingKey);
@@ -1523,7 +1524,10 @@ export async function readMcpOAuthSetupContinuation(
   if (pending.state !== state || pending.expiresAt <= oauthNow(dependencies)) {
     throw new McpOAuthError('invalid_state', 'OAuth state is invalid or expired');
   }
-  return pending.setupOperationId;
+  return {
+    callbackUrl: pending.callbackUrl,
+    ...(pending.setupOperationId ? { setupOperationId: pending.setupOperationId } : {}),
+  };
 }
 
 function decodeStateRef(state: string): McpSecretRef {

@@ -171,6 +171,7 @@ test('a native connector welcome link stays on the dedicated setup surface until
       ref: { agentId: string; connectionId: string };
       serverUrl: string;
       callbackUrl: string;
+      setupOperationId?: string;
       returnAgentId?: string;
       accountRevision?: number;
       oauthAttemptId?: string;
@@ -309,8 +310,8 @@ test('a native connector welcome link stays on the dedicated setup surface until
     assert.equal((await started.json()).authorizationUrl, 'https://linear.example/oauth/authorize');
     assert.equal(starts.length, 1);
     assert.equal(starts[0]!.serverUrl, 'https://mcp.linear.app/mcp');
-    assert.equal(starts[0]!.callbackUrl,
-      `http://localhost/setup/${setupId}/oauth/mcp/callback`);
+    assert.equal(starts[0]!.callbackUrl, 'http://localhost/oauth/callback');
+    assert.equal(starts[0]!.setupOperationId, setupId);
     assert.equal(starts[0]!.returnAgentId, agent.id);
     assert.ok(starts[0]!.accountRevision);
     assert.ok(starts[0]!.oauthAttemptId);

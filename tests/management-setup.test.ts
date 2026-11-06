@@ -33,7 +33,9 @@ import {
   saveConfiguredMcpOAuthClient,
 } from '../src/config/mcp-oauth-clients.ts';
 import {
+  completeMcpOAuthAuthorization,
   mcpOAuthSettingKeys,
+  startMcpOAuthAuthorization,
   type StartMcpOAuthInput,
 } from '../src/config/mcp-oauth.ts';
 import {
@@ -67,6 +69,7 @@ import {
 } from '../src/management/types.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { withConnectionNetwork, type StubbedRequest } from './helpers/connection-network.ts';
+import { FAKE_AUTH_SERVER, fakeMcpOAuthProvider } from './helpers/fake-mcp-oauth-provider.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 import { unstyledClasses } from './helpers/unstyled-classes.ts';
@@ -2416,6 +2419,7 @@ test('an MCP OAuth setup signs in to its connection account and marks it ready',
       kind: 'mcp_connection', agentId: agent.id, connectionId: 'linear',
     });
     const starts: StartMcpOAuthInput[] = [];
+    const provider = fakeMcpOAuthProvider('dcr');
     const app = createManagementSetupRoutes({
       management,
       config,
@@ -2424,23 +2428,14 @@ test('an MCP OAuth setup signs in to its connection account and marks it ready',
       now: () => START,
       authenticatePrincipal: async () => browserPrincipal(owner),
       deliverReceipt: async () => ({ deliveryRef: 'mcp:receipt' }),
-      startMcpOAuth: async (input) => {
+      startMcpOAuth: (input, dependencies) => {
         starts.push(input);
-        return { authorizationUrl: new URL('https://linear.app/oauth/authorize'), state: 'state' };
+        return startMcpOAuthAuthorization(input, { ...dependencies, fetchFn: provider.fetchFn });
       },
-      completeMcpOAuth: async () => {
-        const [start] = starts;
-        assert.ok(start);
-        return {
-          ref: start.ref,
-          ...(start.accountRevision !== undefined ? { accountRevision: start.accountRevision } : {}),
-          ...(start.oauthAttemptId ? { oauthAttemptId: start.oauthAttemptId } : {}),
-          ...(start.authorizationAuthority ? { authorizationAuthority: start.authorizationAuthority } : {}),
-        };
-      },
-      resolveMcpOAuthToken: async () => 'linear-access-token',
+      completeMcpOAuth: (input, dependencies) =>
+        completeMcpOAuthAuthorization(input, { ...dependencies, fetchFn: provider.fetchFn }),
       discoverMcp: async (input) => {
-        assert.equal(input.headers?.Authorization, 'Bearer linear-access-token');
+        assert.equal(input.headers?.Authorization, 'Bearer linear-access');
         return { tools: [{ name: 'list_issues' }] };
       },
       identifyMcp: async () => ({ workspaceName: 'Acme' }),
@@ -2448,25 +2443,33 @@ test('an MCP OAuth setup signs in to its connection account and marks it ready',
     const cookie = await claimSetup(app, setupId);
     const started = await postSetupForm(app, setupId, 'authorize', cookie, {});
     assert.equal(started.status, 303, await started.clone().text());
-    assert.equal(started.headers.get('location'), 'https://linear.app/oauth/authorize');
+    const authorizationUrl = new URL(started.headers.get('location')!);
+    assert.equal(authorizationUrl.origin, FAKE_AUTH_SERVER);
+    assert.equal(authorizationUrl.searchParams.get('redirect_uri'), 'http://localhost/oauth/callback');
+    assert.deepEqual(provider.registeredRedirects, [['http://localhost/oauth/callback']]);
     const pending = await currentAccount(config, linear);
     assert.ok(pending.policy.kind === 'mcp' && pending.policy.oauthAttemptId);
-    assert.deepEqual(starts.map(({ ref, accountRevision, oauthAttemptId, callbackUrl }) => ({
-      ref, accountRevision, oauthAttemptId, callbackUrl,
+    assert.deepEqual(starts.map(({ ref, accountRevision, oauthAttemptId, callbackUrl, setupOperationId }) => ({
+      ref, accountRevision, oauthAttemptId, callbackUrl, setupOperationId,
     })), [{
       ref: connectionAccountOAuthRef(linear.id),
       accountRevision: pending.revision,
       oauthAttemptId: pending.policy.oauthAttemptId,
-      callbackUrl: `http://localhost/setup/${setupId}/oauth/mcp/callback`,
+      callbackUrl: 'http://localhost/oauth/callback',
+      setupOperationId: setupId,
     }]);
 
-    const state = Buffer.from(JSON.stringify({ a: linear.id, c: 'account', n: 'nonce' })).toString('base64url');
+    const state = authorizationUrl.searchParams.get('state')!;
     const callback = await app.request(
-      `http://localhost/setup/${setupId}/oauth/mcp/callback?state=${state}&code=accepted`,
+      `http://localhost/oauth/callback?state=${encodeURIComponent(state)}&code=provider-code`,
       { headers: { cookie } },
     );
     assert.equal(callback.status, 303, await callback.clone().text());
     assert.equal(callback.headers.get('location'), `/setup/${setupId}`);
+    assert.deepEqual(provider.exchanges, [{
+      clientId: 'registered-client',
+      redirectUri: 'http://localhost/oauth/callback',
+    }]);
     const ready = await currentAccount(config, linear);
     assert.equal(ready.lifecycle, 'ready');
     assert.equal(ready.identity?.workspaceName, 'Acme');

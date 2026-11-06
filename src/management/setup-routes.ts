@@ -251,22 +251,11 @@ export function createManagementSetupRoutes(
   const app = new Hono();
   const now = options.now ?? Date.now;
 
-  // Configured public clients use the one callback registered for the
-  // installation. This router is mounted before Admin, so inspect the stored
-  // state without consuming it and handle only management continuations.
+  // Setup links return through the one callback Admin uses. This router is
+  // mounted before Admin, so inspect the stored state without consuming it
+  // and handle only management continuations.
   app.get('/oauth/callback', async (c, next) => {
-    const state = c.req.query('state');
-    if (!state || state.length > 2_048) return next();
-    const dependencies = setupDependencies(c, options);
-    let setupId: string | undefined;
-    try {
-      setupId = await readMcpOAuthSetupContinuation(state, {
-        settings: dependencies.settings,
-        now,
-      });
-    } catch {
-      return next();
-    }
+    const setupId = (await setupOAuthContinuation(c, options))?.setupOperationId;
     if (!setupId || !SETUP_ID_PATTERN.test(setupId)) return next();
     setupResponseHeaders(c);
     return completeManagementMcpOAuthCallback(c, setupId, options, now());
@@ -741,11 +730,12 @@ export function createManagementSetupRoutes(
         const started = await (options.startMcpOAuth ?? startMcpOAuthAuthorization)({
           ref: connectionAccountOAuthRef(pending.id),
           serverUrl: account.policy.url,
-          callbackUrl: `${requestOrigin(c)}/setup/${encodeURIComponent(setupId)}/oauth/mcp/callback`,
+          callbackUrl: `${requestOrigin(c)}/oauth/callback`,
           ...(account.policy.oauthScope ? { scope: account.policy.oauthScope } : {}),
           returnAgentId: agent.id,
           accountRevision: pending.revision,
           oauthAttemptId,
+          setupOperationId: setupId,
           authorizationAuthority: {
             organizationId: principal.organizationId,
             workspaceId: pending.workspaceId,
@@ -1041,11 +1031,18 @@ export function createManagementSetupRoutes(
     }
   });
 
+  // Serves attempts started before setup links returned through
+  // /oauth/callback. A state completes only at the callback its attempt
+  // registered, so a newer setup's state or an Admin state is refused here.
   app.get('/setup/:setupOperationId/oauth/mcp/callback', async (c) => {
     const setupId = setupIdFromContext(c);
-    return setupId
-      ? completeManagementMcpOAuthCallback(c, setupId, options, now())
-      : genericDenied(c);
+    if (!setupId) return genericDenied(c);
+    const continuation = await setupOAuthContinuation(c, options);
+    if (continuation &&
+        new URL(continuation.callbackUrl).pathname !== `/setup/${setupId}/oauth/mcp/callback`) {
+      return genericDenied(c);
+    }
+    return completeManagementMcpOAuthCallback(c, setupId, options, now());
   });
 
   app.get('/setup/:setupOperationId/github/callback', async (c) => {
@@ -1145,6 +1142,21 @@ export function createManagementSetupRoutes(
   });
 
   return app;
+}
+
+/** Where a live provider state returns; undefined when no attempt holds it. */
+async function setupOAuthContinuation(
+  c: Context,
+  options: ManagementSetupRoutesOptions,
+): Promise<{ callbackUrl: string; setupOperationId?: string } | undefined> {
+  const state = c.req.query('state');
+  if (!state || state.length > 2_048) return undefined;
+  try {
+    // The same clock as the start and completion that write and consume it.
+    return await readMcpOAuthSetupContinuation(state, mcpOAuthDependencies(setupDependencies(c, options)));
+  } catch {
+    return undefined;
+  }
 }
 
 async function completeManagementMcpOAuthCallback(
@@ -1879,13 +1891,12 @@ async function beginCatalogConnectionSetup(
   const started = await (options.startMcpOAuth ?? startMcpOAuthAuthorization)({
     ref,
     serverUrl: pending.policy.url,
-    callbackUrl: configuredOAuthCallback ??
-      `${requestOrigin(c)}/setup/${encodeURIComponent(setup.setupOperationId)}/oauth/mcp/callback`,
+    callbackUrl: configuredOAuthCallback ?? `${requestOrigin(c)}/oauth/callback`,
     ...(pending.policy.oauthScope ? { scope: pending.policy.oauthScope } : {}),
     returnAgentId: setup.target.agentId,
     accountRevision: pending.revision,
     oauthAttemptId: pending.policy.oauthAttemptId!,
-    ...(configuredOAuthCallback ? { setupOperationId: setup.setupOperationId } : {}),
+    setupOperationId: setup.setupOperationId,
     authorizationAuthority: {
       organizationId: principal.organizationId,
       workspaceId: setup.origin.workspaceId,
