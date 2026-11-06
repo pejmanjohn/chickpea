@@ -15,6 +15,7 @@ import {
   renderManagedConnectionWaitingPage,
   renderSetupClaimPage,
   renderSetupPanelPage,
+  type ConnectorLandingPageInput,
 } from '../src/management/connector-landing-page.ts';
 import type { ManagementSetupRecord } from '../src/management/types.ts';
 import { unstyledClasses, unusedStyledClasses } from './helpers/unstyled-classes.ts';
@@ -408,6 +409,24 @@ test('a Slack link to change a shared sign-in\'s pages says the change reaches e
   });
   assert.match(expired, /Sprout can use Notion when you ask\. Signing in again applies to every Agent using this sign-in\./);
   assert.doesNotMatch(expired, /Changes there/, 'an expired sign-in shows no page list to change');
+});
+
+test('an access review offers Select all and Deselect all only when a tool can be selected', () => {
+  type Tools = NonNullable<ConnectorLandingPageInput['accessReview']>['tools'];
+  const review = (tools: Tools) => renderCatalogConnectionAccessReviewPage({
+    setup: catalogSetup('meta-ads', 'Meta Ads'), agent: sprout, accessReview: { approvedAccountIds: [], tools },
+  });
+  const unavailable: Tools[number] = {
+    name: 'ads_create_ad_set', available: false, selected: false, effect: 'write', requiresEditingAccess: true,
+  };
+
+  const page = review([{ name: 'ads_get_ad_entities', available: true, selected: false, effect: 'read' }, unavailable]);
+  assert.match(page, /<button class="text-button" type="button" data-tool-bulk="all">Select all<\/button>/);
+  assert.match(page, /<button class="text-button" type="button" data-tool-bulk="none">Deselect all<\/button>/);
+
+  for (const tools of [[unavailable], []]) {
+    assert.doesNotMatch(review(tools), /Select all|Deselect all/);
+  }
 });
 
 test('every connector and setup page styles each class it uses, and every styled class is used', () => {

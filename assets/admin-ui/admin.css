@@ -2745,8 +2745,6 @@ button.capability-pill { cursor: pointer; }
 .conn-tool .tool-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .conn-tool .tool-name { color: var(--text); font-family: var(--mono); font-size: 0.75rem; font-weight: 600; overflow-wrap: anywhere; }
 .conn-tool .tool-desc { color: var(--text-3); font-size: 0.75rem; overflow-wrap: anywhere; }
-.conn-tool-check-placeholder { flex: 0 0 18px; width: 18px; }
-.conn-tool-unavailable { cursor: default; }
 .custom-mcp-tool-list { margin-top: 8px; }
 .custom-mcp-tool-list .tool-name { font-weight: 650; }
 .conn-header-row { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -2939,6 +2937,10 @@ button.capability-pill { cursor: pointer; }
 .managed-setup-steps li > span { padding-top: 2px; }
 .managed-setup-steps strong { color: var(--text); }
 .managed-setup-code { background: var(--well); border: 1px solid var(--line); border-radius: 8px; color: var(--text); display: block; font-family: var(--mono); font-size: .75rem; grid-column: 2; overflow-wrap: anywhere; padding: 7px 10px; }
+.managed-setup-copy { align-items: center; display: flex; gap: 8px; grid-column: 2; }
+.managed-setup-copy .managed-setup-code { flex: 1; min-width: 0; }
+.managed-setup-steps li > .hint { grid-column: 2; margin: 0; }
+.managed-provider-actions .spacer { flex: 1; }
 .managed-list-head { border-top: 1px solid var(--line); color: var(--text-3); display: flex; font-size: .6875rem; font-weight: 700; gap: 12px; justify-content: space-between; letter-spacing: .06em; padding: 10px 16px 8px; text-transform: uppercase; }
 .managed-settings-list { display: grid; }
 .managed-settings-row { align-items: center; display: grid; gap: 12px; grid-template-columns: 34px minmax(0, 1fr) auto; min-height: 54px; padding: 8px 16px; }

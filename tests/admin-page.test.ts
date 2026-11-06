@@ -19350,7 +19350,7 @@ test('BugSnag OAuth review suggests reads, labels writes, and saves without ad-a
   });
 });
 
-test('Meta tool review shows only available reporting and write tools', async () => {
+test('Meta tool review shows only available reporting and write tools, and Select all picks exactly those', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
     connectionAccounts: { attached: [ownedConnection({
@@ -19426,6 +19426,25 @@ test('Meta tool review shows only available reporting and write tools', async ()
     'data-action': 'custom-mcp-tool', 'data-tool': 'ads_get_field_context',
   }, true) });
   assert.match(harness.app.innerHTML, /id="meta-ads-account-ids"[^>]*value="123, 456"/);
+  assert.match(harness.app.innerHTML, /3 of 5 selected/);
+
+  click({ target: actionTarget({ 'data-action': 'custom-mcp-tools-none' }) });
+  assert.match(harness.app.innerHTML, /0 of 5 selected/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="custom-mcp-tool"[^>]*checked/);
+
+  click({ target: actionTarget({ 'data-action': 'custom-mcp-tools-all' }) });
+  assert.match(harness.app.innerHTML, /5 of 5 selected/);
+  assert.doesNotMatch(harness.app.innerHTML, /ads_create_ad_set/);
+  click({ target: actionTarget({ 'data-action': 'custom-mcp-tools-save' }) });
+  await flushAsync();
+  assert.deepEqual(harness.connectionToolsPuts[0]?.body, {
+    expectedRevision: 3,
+    allowedTools: [
+      'ads_get_ad_entities', 'ads_get_field_context', 'ads_get_opportunity_score',
+      'ads_create_campaign', 'ads_create_creative',
+    ],
+    approvedAccountIds: ['123', '456'],
+  });
 });
 
 test('background connection refresh keeps a same-Agent tool editor visible and in place', async () => {
@@ -21741,4 +21760,100 @@ test('coming back after creating the first Agent in Slack or with a coding agent
   assert.equal(firstAgentWelcome(harness.app.innerHTML), undefined);
   assert.match(harness.app.innerHTML, /Release Profile/);
   assert.ok(readyMadeSection(harness.app.innerHTML));
+});
+
+function metaAdsSettingsFetch(body: Record<string, unknown>) {
+  return (path: string, method: string) =>
+    path === '/admin/api/settings/connectors/meta-ads' && method === 'GET'
+      ? Promise.resolve(jsonResponse(body))
+      : undefined;
+}
+
+test('Meta Ads setup card links each Meta step and copies the exact callback', async () => {
+  const callbackUrl = 'https://chickpea.example/oauth/callback';
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/connectors',
+    settingsLoadFetch: metaAdsSettingsFetch({ configured: false, canConfigure: true, clientId: '', callbackUrl }),
+  });
+  await flushAsync();
+
+  const html = harness.app.innerHTML;
+  assert.match(html, /<a class="hint-link" href="https:\/\/developers\.facebook\.com\/apps\/creation\/" target="_blank" rel="noopener noreferrer">Create app in Meta/);
+  assert.match(html, /Create &amp; manage ads with ads MCP server/);
+  assert.match(html, /Facebook Login for Business &rarr; Settings/);
+  assert.match(html, /Valid OAuth Redirect URIs<\/strong> exactly as shown/);
+  assert.match(html, new RegExp(`<code class="managed-setup-code">${callbackUrl.replaceAll('.', '\\.')}</code><button type="button" class="btn btn-soft btn-sm" data-action="meta-ads-copy-callback">Copy</button>`));
+  assert.match(html, /href="https:\/\/developers\.facebook\.com\/documentation\/ads-commerce\/ads-ai-connectors\/ads-mcp-server\/ads-mcp-server-get-started"/);
+  assert.match(html, /Only people with a role on this Meta app can sign in from Chickpea\./);
+  assert.doesNotMatch(html, /Changing or removing it requires connected accounts to sign in again/,
+    'a first-time setup has no connected accounts to warn about');
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'meta-ads-copy-callback' }) });
+  await flushAsync();
+  assert.deepEqual(harness.clipboardWrites, [callbackUrl]);
+  assert.match(harness.app.innerHTML, /data-action="meta-ads-copy-callback">Copied<\/button>/);
+
+  const blocked = runAdminPageHarness({
+    initialPath: '/admin/settings/connectors',
+    clipboard: 'reject',
+    settingsLoadFetch: metaAdsSettingsFetch({ configured: false, canConfigure: true, clientId: '', callbackUrl }),
+  });
+  await flushAsync();
+  blocked.listeners.click?.({ target: actionTarget({ 'data-action': 'meta-ads-copy-callback' }) });
+  await flushAsync();
+  assert.match(blocked.app.innerHTML, /data-action="meta-ads-copy-callback">Copy<\/button><\/div><p class="hint" role="status">Clipboard unavailable\. Select and copy the address above\.<\/p>/,
+    'the clipboard failure sits under the address, not in the App ID error slot');
+  assert.doesNotMatch(blocked.app.innerHTML, /role="alert">Clipboard unavailable/);
+  assert.match(blocked.app.innerHTML, /data-action="meta-ads-copy-callback">Copy<\/button>/);
+
+  const configured = runAdminPageHarness({
+    initialPath: '/admin/settings/connectors',
+    settingsLoadFetch: metaAdsSettingsFetch({ configured: true, canConfigure: true, clientId: '1234567890', callbackUrl }),
+  });
+  await flushAsync();
+  configured.listeners.click?.({ target: actionTarget({ 'data-action': 'meta-ads-edit' }) });
+  assert.match(configured.app.innerHTML, /Changing or removing it requires connected accounts to sign in again/);
+  configured.listeners.click?.({ target: actionTarget({ 'data-action': 'meta-ads-copy-callback' }) });
+  await flushAsync();
+  assert.match(configured.app.innerHTML, /data-action="meta-ads-copy-callback">Copied<\/button>/);
+  configured.listeners.click?.({ target: actionTarget({ 'data-action': 'meta-ads-edit-cancel' }) });
+  configured.listeners.click?.({ target: actionTarget({ 'data-action': 'meta-ads-edit' }) });
+  assert.match(configured.app.innerHTML, /data-action="meta-ads-copy-callback">Copy<\/button>/,
+    'a later edit starts with a fresh Copy button');
+});
+
+test('Meta Ads Agent form sends admins to setup and holds sign-in until the Meta app exists', async () => {
+  async function openMetaAdsForm(settings: Record<string, unknown>) {
+    const harness = runAdminPageHarness({
+      agents: [connectionsAgent()],
+      connectionAccountsFetch: async () => jsonResponse({ attached: [] }),
+      settingsLoadFetch: metaAdsSettingsFetch(settings),
+    });
+    await flushAsync();
+    const click = harness.listeners.click;
+    assert.ok(click);
+    click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+    await flushAsync();
+    click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+    await flushAsync();
+    click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'meta-ads' }) });
+    await flushAsync();
+    chooseConnectionOwner(harness, 'member');
+    return harness;
+  }
+
+  const admin = await openMetaAdsForm({ configured: false, canConfigure: true, clientId: '', callbackUrl: 'https://chickpea.example/oauth/callback' });
+  assert.match(admin.app.innerHTML, /Meta Ads needs a one-time setup before Agents can sign in\. <a class="hint-link" href="\/admin\/settings\/connectors">Set up in Settings &rarr; Connectors<\/a>/);
+  assert.match(admin.app.innerHTML, /data-action="connection-account-create" disabled>/);
+  assert.doesNotMatch(admin.app.innerHTML, /Open setup instructions|An administrator first configures/,
+    'the setup link replaces the preset notes so the form says it once');
+
+  const member = await openMetaAdsForm({ configured: false, canConfigure: false });
+  assert.match(member.app.innerHTML, /Meta Ads needs a one-time setup by a Chickpea owner or admin in Settings &rarr; Connectors\./);
+  assert.doesNotMatch(member.app.innerHTML, /href="\/admin\/settings\/connectors"/);
+  assert.match(member.app.innerHTML, /data-action="connection-account-create" disabled>/);
+
+  const ready = await openMetaAdsForm({ configured: true, canConfigure: false });
+  assert.match(ready.app.innerHTML, /After sign-in, choose the ad accounts and tools this Agent may use\./);
+  assert.match(ready.app.innerHTML, /data-action="connection-account-create">Continue to sign in/);
 });
