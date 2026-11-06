@@ -7,6 +7,7 @@ import vm from 'node:vm';
 import { Hono } from 'hono';
 
 import { createBillingAdminApi } from '../src/admin/billing-api.ts';
+import { createUsageAdminApi } from '../src/admin/usage-api.ts';
 import { setRequestPrincipal } from '../src/auth/service.ts';
 import type { AuthPrincipal } from '../src/auth/types.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
@@ -20,6 +21,9 @@ import {
   type UsageMicros,
 } from '../src/config/platform-billing.ts';
 import type { ProviderKeyId } from '../src/config/provider-keys.ts';
+import { estimateUsage } from '../src/usage/pricing/estimate.ts';
+import { SqliteUsageStore } from '../src/usage/store.ts';
+import type { UsageStore } from '../src/usage/types.ts';
 import { renderAdminPageWithInlineAssets as renderAdminPage } from './helpers/admin-ui.ts';
 import {
   NO_PLAN, OFFERS, OWN_KEY_NO_PLAN, PERIOD, PLAN_NO_PERIOD, PLUS_HELD, STARTER_AT_LIMIT, STARTER_PLAN, STARTER_TOP_UP, STARTER_TOPPED, TEAM_DOWNGRADING,
@@ -145,6 +149,8 @@ async function harness(options: {
   session?: Map<string, string>;
   /** Model providers reports Chickpea's models serving every provider, as on models included. */
   platformFunded?: boolean;
+  /** Usage requests go to the real Usage Admin API over this store. */
+  usage?: UsageStore;
 }) {
   let html = '';
   const renders: string[] = [];
@@ -209,10 +215,23 @@ async function harness(options: {
     choseChickpeaModels: async () => undefined,
     actor: async () => ({ membershipId: principal.membershipId, slackUserId: 'U_OWNER' }),
   }));
+  const usage = options.usage;
+  const usageApi = new Hono();
+  if (usage) {
+    usageApi.route('/admin/api', createUsageAdminApi({
+      store: () => usage,
+      agentNames: async () => new Map([['agent_research', 'Research']]),
+      personNames: async () => new Map([['membership_maya', 'Maya Chen']]),
+    }));
+  }
   const fetch = async (path: string, init?: { method?: string; body?: string; headers?: Record<string, string> }): Promise<FakeResponse> => {
     const method = init?.method ?? 'GET';
     const body = init?.body ? JSON.parse(init.body) : undefined;
     requests.push({ path, method, body });
+    if (usage && path.startsWith('/admin/api/usage/')) {
+      configurePlatformBilling(billing?.port);
+      return usageApi.request(path, { method }, ENV);
+    }
     if (path.startsWith('/admin/api/billing')) {
       configurePlatformBilling(billing?.port);
       const served = await billingApi.request(path, {
@@ -2058,4 +2077,130 @@ test('an Owner who picked a pack follows the plan again by picking the plan\'s o
   await page.click({ 'data-action': 'billing-top-up-save' });
   assert.deepEqual(billingWrites(page.requests).at(-1)?.[2], { change: 'on', pack: 'extra_usage_25', limit: 'plan' },
     'an untouched fixed pack stays fixed');
+});
+
+const HOUR_MS = 3_600_000;
+/** Claude Opus 5.5's tokens for one task, priced by the 2026-11-05 review. */
+const OPUS_TASK = { inputTokens: 18, outputTokens: 5_731, cacheReadTokens: 1_784_698, cacheWriteTokens: 627_674 };
+const OPUS_PRICED_AT = Date.UTC(2026, 10, 6, 17, 25);
+
+/**
+ * A Usage store with one task Research ran for Maya an hour ago, charged to
+ * the run `sub_task`: one measurement per execution, each priced by
+ * `estimateUsage`, with `extraMicros` added to a stored amount. An
+ * `unpriced` execution runs on a provider the catalog doesn't price, and
+ * `writesUnreported` stores no cache write count beside the total.
+ */
+async function usageTask(...executions: Array<{
+  cacheWriteTokens?: number;
+  extraMicros?: number;
+  unpriced?: boolean;
+  writesUnreported?: boolean;
+}>): Promise<SqliteUsageStore> {
+  const usage = new SqliteUsageStore(':memory:');
+  const startedAt = Date.now() - HOUR_MS;
+  await usage.admitOperation({
+    operationId: 'op_task', operationKind: 'interactive_turn', sourceId: 'op_task', runId: 'run_task', startedAt,
+    installationId: 'inst_page', workspaceId: 'TACME', agentId: 'agent_research', agentLabel: 'Research',
+    channelId: 'D_MAYA', channelLabel: null, conversationKind: 'direct_message', requesterMembershipId: 'membership_maya',
+    requestedProvider: 'anthropic', requestedModel: 'claude-opus-5-5', credentialRefId: null, credentialVersion: null,
+  });
+  for (const [index, execution] of executions.entries()) {
+    const counts = { ...OPUS_TASK, ...(execution.cacheWriteTokens === undefined ? {} : { cacheWriteTokens: execution.cacheWriteTokens }) };
+    const provider = execution.unpriced ? 'custom' : 'anthropic';
+    const terminal = {
+      observedAt: OPUS_PRICED_AT, providerRoute: provider, requestedProvider: provider, requestedModel: 'claude-opus-5-5',
+      returnedProvider: provider, returnedModel: 'claude-opus-5-5', usageCompleteness: 'complete' as const, ...counts,
+      ...(execution.writesUnreported ? { cacheWriteTokens: null } : {}),
+      totalTokens: counts.inputTokens + counts.outputTokens + counts.cacheReadTokens + counts.cacheWriteTokens,
+    };
+    const estimate = estimateUsage(terminal);
+    await usage.recordTerminal({
+      operationId: 'op_task', executionId: `exec_task_${index}`, status: 'completed', finishedAt: startedAt + 81_000,
+      credentialRefId: null, credentialVersion: null, usageUnknownReason: null, billingRunId: 'sub_task',
+      ...terminal, ...estimate,
+      estimateAmountMicros: estimate.estimateAmountMicros === null ? null : estimate.estimateAmountMicros + (execution.extraMicros ?? 0),
+    });
+  }
+  return usage;
+}
+
+/** A plan whose billing period holds the task. */
+function periodNow(summary: BillingSummary): BillingSummary {
+  return { ...summary, period: { start: new Date(Date.now() - 3 * 24 * HOUR_MS), end: new Date(Date.now() + 27 * 24 * HOUR_MS) } };
+}
+
+/** The Usage page with the task's activity row opened, and its Tokens field. */
+async function openedTask(summary: BillingSummary, usage: SqliteUsageStore, port?: Partial<PlatformBillingPort>) {
+  const page = await harness({ path: '/admin/usage', billingOffered: true, summary: periodNow(summary), usage, ...(port ? { port } : {}) });
+  await page.click({ 'data-action': 'usage-activity-row', 'data-operation': 'op_task' });
+  usage.close();
+  const tokens = /<span class="field-label">Tokens<\/span>([\s\S]*?)<div><span class="field-label">When/.exec(page.html())?.[1];
+  assert.ok(tokens, 'the opened row shows its tokens');
+  return { page, tokens };
+}
+
+/** Each cost table row's cells, top to bottom. */
+function costRows(tokens: string): string[][] {
+  const table = /<table class="u-cost" aria-label="Tokens and estimated cost by type">([\s\S]*?)<\/table>/.exec(tokens)?.[1] ?? '';
+  return [...table.matchAll(/<tr>([\s\S]*?)<\/tr>/g)].map(([, row]) => [...row!.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map(([, cell]) => cell!));
+}
+
+const COST_NOTE = 'Cache writes save new context so later steps can reread it at the much cheaper read price.';
+
+test('on an own key, an opened task shows where its estimate went by token type, costliest first, and what cache writes are', async () => {
+  const { page, tokens } = await openedTask(OWN_KEY_PLUS, await usageTask({}));
+  assert.match(page.html(), /<th class="number">Estimated spend<\/th>/);
+  assert.match(page.html(), /<td class="number">\$3\.61<span class="u-caret"/);
+  assert.match(tokens, /^<span><b>2,418,121<\/b><\/span><table/);
+  assert.deepEqual(costRows(tokens), [
+    ['<b>Cache writes</b>', '627,674', '$3.14'],
+    ['Cache reads', '1,784,698', '$0.36'],
+    ['Output', '5,731', '$0.11'],
+    ['Input', '18', '<$0.01'],
+  ]);
+  assertShows(tokens, COST_NOTE);
+  assert.doesNotMatch(tokens, /cached/);
+
+  const unwritten = await openedTask(OWN_KEY_PLUS, await usageTask({ cacheWriteTokens: 0 }));
+  assert.deepEqual(costRows(unwritten.tokens).map((row) => row[0]), ['<b>Cache reads</b>', 'Output', 'Input']);
+  assertHides(unwritten.tokens, COST_NOTE);
+});
+
+test('on models included, an opened task splits its tokens by type and prices none of them, since its usage is billed', async () => {
+  const billed = { rows: [{ runId: 'sub_task', day: new Date(Date.now() - HOUR_MS).toISOString().slice(0, 10), modelMicros: usd(1.5), feeMicros: usd(0.3), task: true, creditedBackMicros: usd(0) }] };
+  const { page, tokens } = await openedTask(TEAM_PLAN, await usageTask({}), { usage: async () => billed });
+  assert.match(page.html(), /<th class="number">Usage<\/th>/);
+  assert.equal(text(tokens), '2,418,121 18 input · 1,784,698 cache reads · 627,674 cache writes · 5,731 output');
+  assert.doesNotMatch(tokens, /\$|u-cost/);
+});
+
+test('on an own key, a task with any estimate the rates cannot split shows its token split without amounts', async () => {
+  // At every write's one-hour rate the second execution would cost $1.88 less.
+  const { tokens } = await openedTask(OWN_KEY_PLUS, await usageTask({}, { extraMicros: 1_883_100 }));
+  assert.equal(text(tokens), '4,836,242 36 input · 3,569,396 cache reads · 1,255,348 cache writes · 11,462 output');
+  assert.doesNotMatch(tokens, /\$|u-cost/);
+});
+
+test('on an own key, an opened task with several priced executions adds their costs up to its estimate', async () => {
+  const { page, tokens } = await openedTask(OWN_KEY_PLUS, await usageTask({}, {}));
+  assert.match(page.html(), /<td class="number">\$7\.22<span class="u-caret"/);
+  assert.match(tokens, /^<span><b>4,836,242<\/b><\/span><table/);
+  assert.deepEqual(costRows(tokens), [
+    ['<b>Cache writes</b>', '1,255,348', '$6.28'],
+    ['Cache reads', '3,569,396', '$0.71'],
+    ['Output', '11,462', '$0.23'],
+    ['Input', '36', '<$0.01'],
+  ]);
+});
+
+test('on an own key, cache writes stored without a count show the count their estimate priced', async () => {
+  const { tokens } = await openedTask(OWN_KEY_PLUS, await usageTask({ writesUnreported: true }));
+  assert.deepEqual(costRows(tokens)[0], ['<b>Cache writes</b>', '627,674', '$3.14']);
+});
+
+test('on an own key, a task with an unpriced execution shows its token split without amounts', async () => {
+  const { tokens } = await openedTask(OWN_KEY_PLUS, await usageTask({}, { unpriced: true }));
+  assert.equal(text(tokens), '4,836,242 36 input · 3,569,396 cache reads · 1,255,348 cache writes · 11,462 output');
+  assert.doesNotMatch(tokens, /\$|u-cost/);
 });
