@@ -346,10 +346,12 @@ the same fresh-post fallback on a definite content error.
 
 Cards from `present_cards` sit in the Agent's answer message, so a click on a
 card's request button, or an outcome the Agent sets with `update_card`, edits
-that message with `chat.update`. The edit sends no `username` or `icon_url`.
-The card or carousel block and the status line under it (block
-`chickpea.ui.v1.<surface>.20`) are drawn from the stored card set. Every
-other block and the message `text` go back as Slack holds them:
+that message with `chat.update`. The edit sends no `username` or `icon_url`,
+and no `text`. The card or carousel block and the status lines under it are
+drawn from the stored card set: one context block per settled card (blocks
+`chickpea.ui.v1.<surface>.20` to `.29`), because entries in one context block
+sit side by side and the pane cuts them off. Every other block goes back as
+Slack holds it:
 
 - A direct click carries the clicked message, so its redraw reads nothing.
 - Otherwise the redraw uses the set's stored copy of the answer: the message
@@ -364,17 +366,39 @@ other block and the message `text` go back as Slack holds them:
 
 The copy is kept in the set's `ui_surfaces` row (`resolution_json`), up to
 64 KiB, and lives as long as the row. A larger answer is read back on every
-redraw. If the answer has no room for the status line (50 blocks), the
-card is redrawn without it.
+redraw. If the answer has no room for the status lines (50 blocks), the
+card is redrawn without them.
 
-A refused read or edit logs `card set redraw skipped` or `card set redraw
-failed`. It never undoes the click or the outcome. The next redraw draws
-every card from the stored set again.
+A redraw that edits nothing logs one line with no message content: `card
+set redraw failed` with Slack's error code when Slack refused the edit, or
+`card set redraw skipped` with a reason (`read_budget`, `read_rate_limited`,
+`read_failed`, `not_in_thread`, `set_not_in_message`, `block_check`,
+`block_limit`) when it sent none. A `block_check` skip is preceded by one
+line naming the Block Kit check's issue paths, also without content. It
+never undoes the click or the outcome.
+The next redraw draws every card from the stored set again. A redraw that
+succeeds logs nothing.
 
-Not yet verified live: that `chat.update` keeps a streamed answer's blocks,
-footer and sender; how Slack draws a card with no buttons; and whether an
-answer part over 4,000 characters of text accepts the edit (see
-`msg_too_long` above).
+Leaving out `text` is what lets a long answer redraw. Measured on Amber on
+November 6, 2026, against streamed answers whose `text` (Slack's own, built
+from the blocks) was 9,290 and 6,454 characters:
+
+| Edit | Result |
+| --- | --- |
+| The message's `text` with the redrawn blocks, or with its original blocks unchanged | `msg_too_long` (no `response_metadata` messages) |
+| `text` cut to 4,000, 4,001 or 12,000 characters (9,290 answer) | `msg_too_long` |
+| `text` cut to 1,000 to 3,500 characters (6,454 answer) | Accepted |
+| No `text` | Accepted on both |
+
+The blocks were never the cause; the cap on `text` sits somewhere between
+3,500 and 4,000 characters. Without `text`, Slack rebuilds it from the
+blocks: the readback matched the original through the answer and the card
+bodies, then added the settled card's subtext and the status line the blocks
+now carry. The sender, the answer block, the footer, files and subtype read
+back unchanged.
+
+Not yet verified live: how a card with no buttons and the status lines draw
+on mobile.
 
 ### Message size is text plus a cost per header block
 

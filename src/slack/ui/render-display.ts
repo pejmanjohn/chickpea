@@ -37,8 +37,13 @@ export interface RenderedDisplay {
 
 // ── cards ────────────────────────────────────────────────────────────────
 
-/** The context block under a card set that says who settled which card, and when. */
+/**
+ * The context blocks under a card set that say who settled which card, and
+ * when: one block per settled card, ids .20 to .29, so each entry gets its
+ * own line (elements in one context block sit side by side).
+ */
 export const CARD_STATUS_BLOCK = 20;
+export const CARD_STATUS_LINES = 10;
 
 /** Each card's settlement, and whether the set's open cards still take requests. */
 export interface CardSetView {
@@ -125,12 +130,13 @@ export function renderCards(spec: PresentCardsSpec, surfaceId?: string, view: Ca
   blocks.push(cards.length === 1
     ? { ...cards[0]!, ...blockId(1) }
     : { type: 'carousel', ...blockId(1), elements: cards.map((card, index) => ({ ...card, ...blockId(index + 2) })) });
-  const lines = spec.cards.flatMap((card, index) => {
-    const settlement = view.settlements[index];
-    return settlement ? [mrkdwn(settledText(card, settlement).line)] : [];
-  });
-  if (surfaceId && lines.length) {
-    blocks.push({ type: 'context', ...blockId(CARD_STATUS_BLOCK), elements: lines });
+  if (surfaceId) {
+    spec.cards.flatMap((card, index) => {
+      const settlement = view.settlements[index];
+      return settlement ? [settledText(card, settlement).line] : [];
+    }).forEach((line, index) => {
+      blocks.push({ type: 'context', ...blockId(CARD_STATUS_BLOCK + index), elements: [mrkdwn(line)] });
+    });
   }
   const fallback = spec.cards.map((card) => {
     const detail = card.subtitle ? ` — ${card.subtitle}` : '';
