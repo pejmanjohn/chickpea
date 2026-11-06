@@ -3140,7 +3140,18 @@ async function discoverGoogleAdsClientResources(
         signal,
       });
       providerCalls += 1;
-      if (identityResult.error) throw new Error('Google Ads customer identity discovery failed');
+      if (identityResult.error) {
+        if (!googleAdsCustomerRefused(identityResult.error)) {
+          throw new Error('Google Ads customer identity discovery failed');
+        }
+        console.warn(JSON.stringify({
+          event: 'chickpea.managed_connection.google_ads_customer_refused',
+          adapterId: 'composio',
+          toolkit: 'googleads',
+        }));
+        rootIndex += 1;
+        continue;
+      }
       const identities = googleAdsCustomerResources(identityResult.data);
       const root = identities.find(({ providerRef }) => providerRef === rootId) ?? identities[0];
       if (root && !root.manager) {
@@ -3291,6 +3302,13 @@ async function validateGoogleAdsSelectedCustomers(
       }
     }));
   }
+}
+
+// Google can list a customer as accessible and still refuse to open it, for
+// example one reached only through a manager or a cancelled account. Other
+// authorization errors, such as an unapproved developer token, still fail.
+function googleAdsCustomerRefused(error: string): boolean {
+  return /"authorizationError"\s*:\s*"(?:USER_PERMISSION_DENIED|CUSTOMER_NOT_ENABLED)"/.test(error);
 }
 
 function googleAdsAccessibleCustomerIds(data: Record<string, unknown>): string[] {
