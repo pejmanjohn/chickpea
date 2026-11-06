@@ -40,12 +40,15 @@ const BOUND_REF = {
 };
 const SERVER_URL = 'https://mcp.example.test/mcp';
 const CALLBACK_URL = 'https://chickpea.example.test/oauth/callback';
+const SETUP_CALLBACK_URL =
+  'https://chickpea.example.test/setup/setup_test/oauth/mcp/callback';
 const METADATA_URL =
   'https://chickpea.example.test/.well-known/oauth-client-metadata.json';
 
 interface FakeOAuthServerOptions {
   authorizationEndpoint?: string;
   authorizationServerUrl?: string;
+  callbackUrl?: string;
   clientSecret?: string;
   clientSecretExpiresAt?: number;
   cimd?: boolean;
@@ -156,7 +159,7 @@ function fakeOAuthServer(options: FakeOAuthServerOptions = {}) {
         setTimeout(resolve, options.registrationDelayMs ?? 10),
       );
       const metadata = JSON.parse(rawBody) as OAuthClientMetadata;
-      assert.deepEqual(metadata.redirect_uris, [CALLBACK_URL]);
+      assert.deepEqual(metadata.redirect_uris, [options.callbackUrl ?? CALLBACK_URL]);
       return Response.json({
         ...metadata,
         client_id: 'registered-client',
@@ -190,7 +193,7 @@ function fakeOAuthServer(options: FakeOAuthServerOptions = {}) {
         exchanges += 1;
         await options.onExchange?.();
         assert.equal(body?.get('code'), 'provider-code');
-        assert.equal(body?.get('redirect_uri'), CALLBACK_URL);
+        assert.equal(body?.get('redirect_uri'), options.callbackUrl ?? CALLBACK_URL);
         assert.ok(body?.get('code_verifier'));
         assert.equal(body?.get('resource'), serverUrl);
         if (options.exchangeError) {
@@ -1815,6 +1818,56 @@ test('CIMD is used only when advertised and the client metadata URL is HTTPS', a
 
     assert.equal(oauth.counts.registrations, 0);
     assert.equal(started.authorizationUrl.searchParams.get('client_id'), METADATA_URL);
+    assert.deepEqual(
+      [started.authorizationUrl.searchParams.get('redirect_uri')],
+      createMcpOAuthClientMetadataDocument(METADATA_URL).redirect_uris,
+    );
+  } finally {
+    settings.close();
+  }
+});
+
+test('a CIMD server registers a setup-link callback the metadata document does not list', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer({ cimd: true, callbackUrl: SETUP_CALLBACK_URL });
+  const dependencies = { settings, fetchFn: oauth.fetchFn, randomId: () => 'nonce' };
+  try {
+    const started = await startMcpOAuthAuthorization(
+      { ref: REF, serverUrl: SERVER_URL, callbackUrl: SETUP_CALLBACK_URL },
+      dependencies,
+    );
+
+    assert.equal(oauth.counts.registrations, 1);
+    assert.equal(started.authorizationUrl.searchParams.get('client_id'), 'registered-client');
+    assert.equal(started.authorizationUrl.searchParams.get('redirect_uri'), SETUP_CALLBACK_URL);
+    await completeMcpOAuthAuthorization(
+      { code: 'provider-code', state: started.state },
+      dependencies,
+    );
+    assert.equal(oauth.counts.exchanges, 1);
+  } finally {
+    settings.close();
+  }
+});
+
+test('a setup-link retry on a CIMD server does not reuse the metadata document client', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer({ cimd: true, callbackUrl: SETUP_CALLBACK_URL });
+  const [clientKey] = mcpOAuthSettingKeys(REF);
+  // The record an earlier release wrote when it sent a setup callback through CIMD.
+  await settings.setSetting(clientKey, JSON.stringify({
+    authorizationServerUrl: 'https://auth.example.test',
+    callbackUrl: SETUP_CALLBACK_URL,
+    clientInformation: { client_id: METADATA_URL },
+  }));
+  try {
+    const started = await startMcpOAuthAuthorization(
+      { ref: REF, serverUrl: SERVER_URL, callbackUrl: SETUP_CALLBACK_URL },
+      { settings, fetchFn: oauth.fetchFn, randomId: () => 'nonce' },
+    );
+
+    assert.equal(oauth.counts.registrations, 1);
+    assert.equal(started.authorizationUrl.searchParams.get('client_id'), 'registered-client');
   } finally {
     settings.close();
   }

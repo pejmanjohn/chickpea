@@ -1111,9 +1111,12 @@ async function resolveClientInformation(
     '/.well-known/oauth-client-metadata.json',
     callbackUrl,
   ).href;
+  // The server checks redirect_uri against the published document, which
+  // lists only the Admin callback; a setup link's callback must be registered.
   if (
     metadata.client_id_metadata_document_supported === true &&
-    new URL(clientMetadataUrl).protocol === 'https:'
+    new URL(clientMetadataUrl).protocol === 'https:' &&
+    createMcpOAuthClientMetadataDocument(clientMetadataUrl).redirect_uris.includes(callbackUrl)
   ) {
     const clientInformation = { client_id: clientMetadataUrl };
     const record: StoredClient = {
@@ -1134,6 +1137,9 @@ async function resolveClientInformation(
         stored.authorizationServerUrl === authorizationServerUrl &&
         stored.callbackUrl === callbackUrl &&
         stored.scope === scope &&
+        // A stored CIMD client is no registration; earlier releases also
+        // stored one for setup callbacks.
+        stored.clientInformation.client_id !== clientMetadataUrl &&
         !clientInformationExpired(stored.clientInformation, oauthNow(dependencies))
       ) {
         return stored.clientInformation;
