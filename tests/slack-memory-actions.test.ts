@@ -14,6 +14,8 @@ import {
   SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION,
 } from '../src/management/slack-memory-actions.ts';
 import { invokeSlackWorkspaceManagementTool } from '../src/management/slack-tools.ts';
+import { resultFromAgentReply } from '../src/slack/flue-dispatch.ts';
+import type { AgentReply } from '@flue/runtime';
 import { createDemoStarterAgent } from '../src/config/seed.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
@@ -80,7 +82,7 @@ test('memory tool delegates scoped, idempotent writes and forget to existing man
     assert.deepEqual(parseSlackMemoryUpdate([hint]), hint);
     const legacyHint = { ...hint, summary: 'I updated my memory.', preservesContext: true };
     assert.deepEqual(parseSlackMemoryUpdate([legacyHint]), hint, 'older receipts still read, without their legacy fields');
-    assert.equal(parseSlackMemoryUpdate([hint, hint]), undefined);
+    assert.deepEqual(parseSlackMemoryUpdate([hint, hint]), hint);
     const actor = await resolveSlackManagementActor(signal, f.identity);
     const verify = (turnJobId = signal.turnJobId, live = true, nextHint = hint) =>
       verifyOwnMemoryWrite({
@@ -160,6 +162,17 @@ test('only writes that each apply on the injected revision or an earlier own wri
   const otherSnapshot = createMemoryWriteChain('t', 5, { turnJobId: 't', from: 3, head: 5 });
   assert.deepEqual(otherSnapshot.link(5, receipt(6)), { ...receipt(6), chainedFrom: 5 }, 'a new snapshot restarts the chain');
   assert.equal(parseSlackMemoryUpdate([{ ...receipt(6), chainedFrom: 3 }])?.chainedFrom, 3, 'the mark survives a stored settlement');
+});
+
+test('a reply with several memory receipts hands delivery the newest one', () => {
+  const reply = (receipts: unknown[]): AgentReply => ({ text: 'ok', data: { slackMemoryUpdate: receipts }, submissionId: 's' });
+  const first = { operationId: 'management_first', revision: 4, chainedFrom: 3 };
+  const second = { operationId: 'management_second', revision: 5, chainedFrom: 3 };
+  assert.deepEqual(resultFromAgentReply(reply([first, second]), null).memoryUpdate, second);
+  assert.deepEqual(resultFromAgentReply(reply([second, first]), null).memoryUpdate, second);
+  assert.deepEqual(resultFromAgentReply(reply([first, first]), null).memoryUpdate, first, 'a redriven call repeats its receipt');
+  assert.equal(resultFromAgentReply(reply([first, { revision: 'x' }]), null).memoryUpdate, undefined);
+  assert.equal(resultFromAgentReply(reply([]), null).memoryUpdate, undefined);
 });
 
 test('an ask turn proposes a memory write the person did not ask for; a person\'s turn writes it immediately', async () => {
