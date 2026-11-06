@@ -2268,6 +2268,7 @@ test('activated Agents inherit the Workspace default and a pinned Agent can rese
     assert.deepEqual(created.modelPolicy, {
       source: 'workspace_default',
       effectiveModel: 'local-stub/workspace',
+      effectiveModelName: null,
       effort: null,
       efforts: [],
       standardEffort: null,
@@ -2291,6 +2292,7 @@ test('activated Agents inherit the Workspace default and a pinned Agent can rese
     assert.deepEqual(pinned.modelPolicy, {
       source: 'pinned',
       effectiveModel: 'local-stub/pinned',
+      effectiveModelName: null,
       effort: null,
       efforts: [],
       standardEffort: null,
@@ -2312,12 +2314,37 @@ test('activated Agents inherit the Workspace default and a pinned Agent can rese
     assert.deepEqual(reset.modelPolicy, {
       source: 'workspace_default',
       effectiveModel: 'local-stub/workspace',
+      effectiveModelName: null,
       effort: null,
       efforts: [],
       standardEffort: null,
       live: true,
       workspaceDefaultRevision: 2,
     });
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('the Agents list names each Agent model from the active catalog', async () => {
+  const fixture = harness();
+  try {
+    await fixture.store.createAgent({
+      ...createDemoStarterAgent(), id: 'agent_cataloged', name: 'Cataloged', model: 'anthropic/claude-opus-5-5',
+    });
+    await fixture.store.createAgent({
+      ...createDemoStarterAgent(), id: 'agent_uncataloged', name: 'Uncataloged', model: 'local-stub/uncataloged',
+    });
+
+    const response = await fixture.app.request('http://localhost/admin/api/agents', { headers: auth() });
+    assert.equal(response.status, 200, await response.clone().text());
+    const { agents } = await response.json() as { agents: Array<Record<string, any>> };
+    const policy = (id: string) => agents.find((agent) => agent.id === id)?.modelPolicy;
+    assert.equal(policy('agent_cataloged').effectiveModel, 'anthropic/claude-opus-5-5');
+    assert.equal(policy('agent_cataloged').effectiveModelName, 'Claude Opus 5.5');
+    assert.equal(policy('agent_uncataloged').effectiveModel, 'local-stub/uncataloged');
+    assert.equal(policy('agent_uncataloged').effectiveModelName, null);
   } finally {
     fixture.store.close();
     fixture.settings.close();
