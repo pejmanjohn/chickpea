@@ -12,6 +12,7 @@ import {
   deriveRuntimePlanInstanceId,
   type CompileRuntimePlanV2Input,
 } from '../src/agents/runtime-plan.ts';
+import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 import {
   configureInstallationAdmission,
   resetInstallationAdmissionForTests,
@@ -34,6 +35,7 @@ import { runTurn, type RunTurnOptions } from '../src/slack/run-turn.ts';
 import { SlackStatusRegistry } from '../src/slack/status-registry.ts';
 import type { FlueDispatchEnvelopeV1 } from '../src/slack/turn-job-types.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
+import { createManagementAdapterFixture, ownerSlackDmContext } from './helpers/management-adapter-fixture.ts';
 
 /**
  * A hosted Slack turn whose installation has "Help improve Chickpea" on is
@@ -496,5 +498,122 @@ for (const signedIn of [false, true]) {
       { kind: 'tool', name: 'web_fetch', input: '{}', output: 'ok' },
       { kind: 'text', text: 'Here is the plan.' },
     ]);
+  });
+}
+
+/**
+ * Chickpea's DM turn that creates an Agent. Its reply, the welcome, is left
+ * in the receipt outbox for the drain, another worker, to post.
+ */
+async function agentCreationTurn(t: TestContext, name: string) {
+  await turnState(t);
+  const f = await createManagementAdapterFixture(`review-creation-${name}`);
+  t.after(() => f.close());
+  const chickpea = await f.config.materializeChickpeaAgent();
+  const context = ownerSlackDmContext(f);
+  if (context.origin.kind !== 'slack') assert.fail('expected a Slack origin');
+  const { origin } = context;
+  const installation = await f.config.ensureWorkspaceInstallation({
+    workspaceId: origin.workspaceId, transportMode: 'direct', defaultAgentId: CHICKPEA_AGENT_ID,
+    teamId: origin.workspaceId, botUserId: 'UCHICKPEA',
+  });
+  await f.config.updateWorkspaceInstallation(
+    origin.workspaceId, { runtimeContract: 'chickpea-v1', health: 'healthy' }, installation.revision,
+  );
+  const applied = await f.service.applyWorkspaceChanges({
+    context,
+    idempotencyKey: `review-creation-${name}`,
+    operations: [{
+      itemId: 'create',
+      kind: 'create_agent',
+      agent: {
+        id: 'agent_review_deck', name: 'Deck', requestedHandle: 'review-deck',
+        editPolicy: 'creator_and_admins', instructions: 'Create polished presentations.',
+        enabled: true, skills: [], mcpServers: [], apiConnections: [], repositories: [],
+      },
+    }],
+  });
+  if (!('operationId' in applied)) assert.fail('expected applied creation');
+  const turn = dmTurn({
+    workspaceId: origin.workspaceId, channelId: origin.channelId, text: origin.requestText ?? '',
+    userId: f.owner.binding.slackUserId, actorMembershipId: f.owner.membership.id,
+    messageTs: origin.threadTs, threadTs: origin.threadTs,
+  });
+  const assignment: ResolvedAssignment = {
+    workspaceId: turn.workspaceId, channelId: turn.channelId, agentId: CHICKPEA_AGENT_ID,
+    runtimeContract: 'chickpea-v1', model: 'local-stub/management',
+    modelAttribution: { source: 'pinned', providerId: 'local-stub' }, agent: chickpea,
+  };
+  let deferred = 0;
+  const run = () => reviewedTurn(HOSTED_ENV, {
+    turn,
+    assignment,
+    appStores: { config: f.config, identity: f.identity, management: f.management } as never,
+    agentPrompt: async () => ({
+      ...ANSWER,
+      agentCreationTerminal: {
+        schemaVersion: 1, operationId: applied.operationId, creationItemId: 'create',
+        agentId: 'agent_review_deck', connectorMentions: [], followOnNotices: [],
+      },
+    }),
+    onDeferredTerminal: () => {
+      events.push('deferred');
+      deferred += 1;
+    },
+  });
+  const welcome = async () => {
+    const outbox = await f.management.getOutboxForOperation(applied.operationId);
+    if (!outbox) assert.fail('expected the Agent welcome in the outbox');
+    return outbox;
+  };
+  return { f, turn, run, welcome, deferred: () => deferred };
+}
+
+test('an Agent-creation turn is copied once as succeeded when it hands its welcome to the outbox', async (t) => {
+  const creation = await agentCreationTurn(t, 'deferred');
+  const port = reviewPort();
+  events.length = 0;
+  const { turn, delivered } = await creation.run();
+  assert.equal(creation.deferred(), 1);
+  assert.deepEqual(delivered, [], 'the welcome, not the turn, settles delivery');
+  assert.equal((await creation.welcome()).status, 'pending', 'the drain has not posted the welcome yet');
+  assert.equal(port.records.length, 1);
+  assert.deepEqual(events.slice(-2), ['deferred', 'record'], 'the copy is the turn\'s last step');
+  const [{ installationId, record }] = port.records as [typeof port.records[number]];
+  assert.equal(installationId, INSTALLATION);
+  assert.equal(record.runId, `run_${turn.eventId}`);
+  assert.equal(record.agentId, CHICKPEA_AGENT_ID);
+  assert.equal(record.surface, 'dm');
+  assert.equal(record.outcome, 'succeeded');
+  assert.equal(record.answer, undefined, 'the model\'s text was never shown');
+});
+
+test('an Agent-creation turn with Help improve Chickpea off keeps no copy and still defers its welcome', async (t) => {
+  const creation = await agentCreationTurn(t, 'off');
+  const port = reviewPort(false);
+  await creation.run();
+  assert.equal(creation.deferred(), 1);
+  assert.equal(port.asked(), 1);
+  assert.deepEqual(port.records, []);
+});
+
+for (const settled of ['delivered', 'failed'] as const) {
+  test(`a retried Agent-creation turn whose welcome was ${settled} is copied with that outcome`, async (t) => {
+    const creation = await agentCreationTurn(t, `retry_${settled}`);
+    // The first attempt queued the welcome and ended before a copy was asked for.
+    configureRunReview(undefined);
+    await creation.run();
+    const welcome = await creation.welcome();
+    await creation.f.management.claimDueOutbox(welcome.nextAttemptAt, 1, welcome.nextAttemptAt + 60_000);
+    await creation.f.management.settleOutbox({
+      outboxId: welcome.outboxId, outcome: settled, at: welcome.nextAttemptAt + 1,
+      ...(settled === 'delivered' ? { deliveryRef: `slack:${creation.turn.channelId}:900.2` } : {}),
+    });
+    const port = reviewPort();
+    const { delivered } = await creation.run();
+    assert.equal(creation.deferred(), 1, 'the retry settles itself');
+    assert.deepEqual(delivered, [undefined]);
+    assert.equal(port.records.length, 1);
+    assert.equal(port.records[0]?.record.outcome, settled === 'delivered' ? 'succeeded' : 'failed');
   });
 }
