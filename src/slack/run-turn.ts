@@ -2488,6 +2488,7 @@ async function runTurnAttempt(
         return;
       }
       await options.onDeferredTerminal?.();
+      await removeWorkAcknowledgment();
       // The receipt drain posts the welcome from another worker, which holds
       // none of this copy; the run ended when it queued the welcome.
       await finishReview('succeeded');
