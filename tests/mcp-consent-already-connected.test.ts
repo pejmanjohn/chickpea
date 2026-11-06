@@ -176,10 +176,10 @@ test('a failed code exchange records nothing', async (t) => {
 test('the redeemed marker stores a digest of client and challenge for the authorization lifetime, never the verifier', async (t) => {
   const f = await fixture(t);
   const sameVerifier = verifier();
-  const before = Date.now();
-  await f.signIn(sameVerifier);
+  const consent = await f.signIn(sameVerifier);
+  const exchangedAt = Date.now();
 
-  const rows = f.backend.database.prepare(MARKER_ROWS).all() as { identifier: string; value: string; expiresAt: number }[];
+  const rows = f.backend.database.prepare(MARKER_ROWS).all() as { identifier: string; value: string; expiresAt: string }[];
   assert.equal(rows.length, 1);
   const [row] = rows;
   const challenge = createHash('sha256').update(sameVerifier).digest('base64url');
@@ -187,8 +187,10 @@ test('the redeemed marker stores a digest of client and challenge for the author
   for (const secret of [sameVerifier, challenge]) {
     assert.ok(!JSON.stringify(row).includes(secret), 'neither the verifier nor the challenge is stored');
   }
-  const lifetime = Number(row!.expiresAt) - before;
-  assert.ok(lifetime > 595_000 && lifetime <= 600_000 + (Date.now() - before), `expires with the 600 s authorization: ${lifetime}`);
+  const signedLifetime = Number(consent.searchParams.get('exp')) * 1_000 - Number(consent.searchParams.get('ba_iat'));
+  const markerLifetime = new Date(row!.expiresAt).getTime() - exchangedAt;
+  assert.ok(Math.abs(markerLifetime - signedLifetime) < 2_000,
+    `outlives every consent query signed before the exchange: ${markerLifetime} vs ${signedLifetime}`);
 });
 
 test('an expired marker is ignored', async (t) => {
@@ -196,7 +198,7 @@ test('an expired marker is ignored', async (t) => {
   const sameVerifier = verifier();
   await f.signIn(sameVerifier);
   f.backend.database.prepare("UPDATE verification SET expiresAt = ? WHERE identifier LIKE 'chickpea:mcp-redeemed:%'")
-    .run(Date.now() - 1_000);
+    .run(new Date(Date.now() - 1_000).toISOString());
 
   const again = await f.consentFor(sameVerifier);
   assert.ok((await (await f.showConsent(again)).text()).includes('<form'), 'consent form');
