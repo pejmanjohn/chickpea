@@ -1024,6 +1024,118 @@ test('Google Ads spend lanes omit customers whose currency cannot be verified', 
     /Composio managed resource discovery failed/);
 });
 
+function googleAdsFailure(httpStatus: number, status: string, errorCode: Record<string, string>) {
+  const failure = JSON.stringify([{ error: {
+    code: httpStatus,
+    message: 'The caller does not have permission',
+    status,
+    details: [{
+      '@type': 'type.googleapis.com/google.ads.googleads.v23.errors.GoogleAdsFailure',
+      errors: [{ errorCode, message: 'Synthetic Google Ads failure' }],
+    }],
+  } }], null, 2);
+  return {
+    data: { http_error: `${httpStatus} Client Error`, message: failure },
+    error: failure,
+    successful: false,
+  };
+}
+
+function googleAdsRootsProvider(
+  refusal: ReturnType<typeof googleAdsFailure>,
+  refusedIds = ['2000000000'],
+) {
+  return new ComposioManagedConnectionProvider({
+    apiKey: 'test-key',
+    createClient: async () => ({
+      sessions: { async create() { throw new Error('session execution must not be used'); } },
+      tools: {
+        async execute(tool, input) {
+          if (tool === 'GOOGLEADS_LIST_ACCESSIBLE_CUSTOMERS') {
+            return {
+              data: { resourceNames: ['customers/1000000000', 'customers/2000000000'] },
+              successful: true,
+            };
+          }
+          if (tool === 'GOOGLEADS_SEARCH_STREAM_GAQL' &&
+              refusedIds.includes(String(input.arguments.customer_id))) {
+            return refusal;
+          }
+          if (tool === 'GOOGLEADS_SEARCH_STREAM_GAQL') {
+            return { data: { results: [{ customer: {
+              id: String(input.arguments.customer_id), descriptiveName: 'Open Client',
+              manager: false, currencyCode: 'USD', status: 'ENABLED',
+            } }] }, successful: true };
+          }
+          throw new Error(`unexpected tool ${tool}`);
+        },
+      },
+    }),
+  });
+}
+
+test('Google Ads discovery skips an accessible customer that Google refuses to open', async (t) => {
+  const warnings: unknown[] = [];
+  t.mock.method(console, 'warn', (line: unknown) => { warnings.push(line); });
+  const policy: ConnectionAccountManagedPolicy = {
+    ...POLICY,
+    toolkit: 'googleads',
+    accountRef: 'ca_ads_with_refused_root',
+    allowedCapabilities: ['ads.campaigns.report', 'ads.budgets.update_amount'],
+  };
+  const provider = googleAdsRootsProvider(
+    googleAdsFailure(403, 'PERMISSION_DENIED', { authorizationError: 'USER_PERMISSION_DENIED' }),
+  );
+
+  const discovered = await provider.discoverResources({ policy, resourceKey: 'customerIds' });
+
+  assert.deepEqual(discovered, { resources: [{
+    providerRef: '1000000000',
+    label: 'Open Client · 1000000000 · USD · ENABLED',
+    currencyCode: 'USD',
+  }] });
+  assert.deepEqual(warnings.map((line) => JSON.parse(String(line))), [{
+    event: 'chickpea.managed_connection.google_ads_customer_refused',
+    adapterId: 'composio',
+    toolkit: 'googleads',
+  }]);
+});
+
+test('Google Ads discovery still fails when a customer lookup fails for another reason', async () => {
+  const policy: ConnectionAccountManagedPolicy = {
+    ...POLICY,
+    toolkit: 'googleads',
+    accountRef: 'ca_ads_with_failed_root',
+    allowedCapabilities: ['ads.campaigns.report'],
+  };
+  for (const failure of [
+    googleAdsFailure(429, 'RESOURCE_EXHAUSTED', { quotaError: 'RESOURCE_EXHAUSTED' }),
+    googleAdsFailure(403, 'PERMISSION_DENIED', { authorizationError: 'DEVELOPER_TOKEN_NOT_APPROVED' }),
+  ]) {
+    await assert.rejects(
+      googleAdsRootsProvider(failure).discoverResources({ policy, resourceKey: 'customerIds' }),
+      /Composio managed resource discovery failed/,
+    );
+  }
+});
+
+test('Google Ads discovery fails when Google refuses every accessible customer', async (t) => {
+  t.mock.method(console, 'warn', () => {});
+  const policy: ConnectionAccountManagedPolicy = {
+    ...POLICY,
+    toolkit: 'googleads',
+    accountRef: 'ca_ads_with_every_root_refused',
+    allowedCapabilities: ['ads.campaigns.report'],
+  };
+  const provider = googleAdsRootsProvider(
+    googleAdsFailure(403, 'PERMISSION_DENIED', { authorizationError: 'CUSTOMER_NOT_ENABLED' }),
+    ['1000000000', '2000000000'],
+  );
+
+  await assert.rejects(provider.discoverResources({ policy, resourceKey: 'customerIds' }),
+    /Composio managed resource discovery failed/);
+});
+
 test('Google Ads reports and typed mutations pin one selected customer without raw GAQL or bulk input', async () => {
   const calls: Array<Record<string, unknown>> = [];
   const policy: ConnectionAccountManagedPolicy = {
