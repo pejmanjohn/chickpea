@@ -288,6 +288,22 @@ test('forgetting an Agent\'s memory over MCP can be undone', () =>
     assert.ok(!other.ok && other.error.code === 'undo_unavailable', 'another person cannot use it');
   }));
 
+test('a memory body the store refuses over MCP says why, not that the memory changed', () =>
+  withFixture('memory-refused', async (f) => {
+    const agent = await createAgent(f, 'agent_memory');
+    const refused = await apply(f, mcp(f.owner), 'bell', [{
+      itemId: 'bell',
+      kind: 'update_agent_memory',
+      agentId: agent.id,
+      expectedRevision: 0,
+      body: 'Ring \u0007 twice.',
+    }]);
+    assert.deepEqual(refused.outcomes.map(({ disposition }) => disposition), ['failed'], JSON.stringify(refused.outcomes));
+    assert.match(JSON.stringify(refused.outcomes), /control characters/);
+    assert.doesNotMatch(JSON.stringify(refused.outcomes), /revision_conflict|memory changed/);
+    assert.equal((await f.memory.getAgentMemory(agent.id)).revision, 0);
+  }));
+
 test('inspection names the Slack team, the caller, and the team list only for people Admin shows the Team page', () =>
   withFixture('snapshot-caller', async (f) => {
     const member = (await f.identity.provisionSlackMember({
