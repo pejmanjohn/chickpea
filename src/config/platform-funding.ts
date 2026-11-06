@@ -367,7 +367,8 @@ export async function chargePlatformRequest(
 export const FEE_UNANSWERED = { kind: 'unanswered' } as const;
 
 export async function postRunFee(post: FeePost): Promise<FeeOutcome | typeof FEE_UNANSWERED> {
-  const outcome = await askWithinBudget((current) => current.postFee(post), { event: 'fee_post_failed', tier: post.tier });
+  const outcome = await askWithinBudget((current) => current.postFee(post),
+    { event: 'fee_post_failed', tier: post.tier }, 'fee_post_settled_late');
   if (outcome?.kind !== 'refused') return outcome ?? FEE_UNANSWERED;
   const cause = outOfUsageCause(outcome.cause);
   return cause ? { kind: 'refused', cause } : { kind: 'refused' };
@@ -383,7 +384,7 @@ export async function admitRunTask({ installationId, runId }: RunRef): Promise<'
   let pending = false;
   const answer = await pastPending(async () => {
     const next = await askWithinBudget((current) => current.admitTask({ installationId, runId }),
-      { event: 'task_admission_failed' });
+      { event: 'task_admission_failed' }, 'task_admission_settled_late');
     pending ||= next === 'pending';
     return pending && (next === undefined || next === 'pending') ? 'pending' : next;
   });
@@ -410,7 +411,8 @@ export async function currentFundingRefusal(env: PlatformEnv | undefined): Promi
 }
 
 export function creditBackRun(run: RunRef, reason: CreditBackReason): Promise<CreditBackOutcome | undefined> {
-  return askWithinBudget((current) => current.creditBack(run, reason), { event: 'credit_back_failed', reason });
+  return askWithinBudget((current) => current.creditBack(run, reason),
+    { event: 'credit_back_failed', reason }, 'credit_back_settled_late');
 }
 
 const UNANSWERED_IN_TIME = Symbol('unanswered in time');
@@ -432,27 +434,51 @@ async function pastPending<T>(ask: () => Promise<T>): Promise<Exclude<T, 'pendin
   return answer as Exclude<T, 'pending'>;
 }
 
+/**
+ * A call the budget gives up on is not cancelled: `lateEvent` logs how it
+ * settles, so a timeout whose answer lands later reads apart from a lost one.
+ */
 async function askWithinBudget<T>(
   ask: (current: PlatformFundingPort) => Promise<T>,
   failure: { readonly event: string } & Readonly<Record<string, string>>,
+  lateEvent: string,
 ): Promise<T | undefined> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const budget = new Promise<typeof UNANSWERED_IN_TIME>((resolve) => {
     timer = setTimeout(() => resolve(UNANSWERED_IN_TIME), PORT_CALL_BUDGET_MS);
   });
+  const startedAt = clock();
   let error: string;
   try {
     if (!port) throw new Error('No platform funding port is configured.');
-    const answer = await Promise.race([ask(port), budget]);
+    const asked = ask(port);
+    const answer = await Promise.race([asked, budget]);
     if (answer !== UNANSWERED_IN_TIME) return answer;
     error = 'timeout';
+    const late = { component: 'platform_funding', ...failure, event: lateEvent };
+    void asked.then(
+      (settled) => console.info(JSON.stringify({ ...late, outcome: answerKind(settled), elapsedMs: clock() - startedAt })),
+      (caught: unknown) => console.warn(JSON.stringify({
+        ...late, outcome: 'failed', error: errorName(caught), elapsedMs: clock() - startedAt,
+      })),
+    );
   } catch (caught) {
-    error = caught instanceof Error ? caught.name : typeof caught;
+    error = errorName(caught);
   } finally {
     clearTimeout(timer);
   }
   console.warn(JSON.stringify({ component: 'platform_funding', ...failure, error }));
   return undefined;
+}
+
+/** An answer's kind, never its contents: a host's malformed answer logs as such. */
+function answerKind(answer: unknown): string {
+  const kind = typeof answer === 'string' ? answer : (answer as { kind?: unknown } | null | undefined)?.kind;
+  return typeof kind === 'string' && /^[a-z_]{1,32}$/.test(kind) ? kind : 'malformed';
+}
+
+function errorName(caught: unknown): string {
+  return caught instanceof Error ? caught.name : typeof caught;
 }
 
 function forgetAdmission(installationId: string): void {

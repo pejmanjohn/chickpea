@@ -83,41 +83,19 @@ const MANAGED_POLICY: ConnectionAccountManagedPolicy = {
   ],
 };
 
-test('a partially configured Composio provider warns once without disclosing secret values', (t) => {
+// The environment is not where a hosted Worker's auth configs live; the
+// resolved configuration warns instead (hosted-managed-connections.test.ts).
+test('an environment-only Composio provider reports a missing auth config and does not warn', (t) => {
   const warnings: string[] = [];
   t.mock.method(console, 'warn', (message: string) => { warnings.push(message); });
-  const env = { COMPOSIO_API_KEY: 'test-key' };
-
-  assert.ok(createDefaultManagedConnectionProviderRegistry(env).get('composio'));
-  const provider = createDefaultManagedConnectionProviderRegistry(env).get('composio');
+  const provider = createDefaultManagedConnectionProviderRegistry({ COMPOSIO_API_KEY: 'test-key' }).get('composio');
   assert.ok(provider);
   assert.ok(provider.availability);
   assert.deepEqual(provider.availability({ toolkit: 'gmail', accessLane: 'read' }), {
     status: 'missing_configuration',
     missingConfiguration: ['auth_config_missing'],
   });
-  assert.equal(warnings.length, 1);
-  const parsed = warnings.map((warning) => JSON.parse(warning) as Record<string, unknown>);
-  assert.deepEqual(parsed.find(({ event }) =>
-    event === 'chickpea.managed_connection.authorization_config_unavailable'), {
-    event: 'chickpea.managed_connection.authorization_config_unavailable',
-    adapterId: 'composio',
-    missingAuthConfigs: [
-      'gmail.read', 'gmail.write',
-      'googlecalendar.read', 'googlecalendar.write',
-      'googledrive.read', 'googledrive.write',
-      'googlesheets.read', 'googlesheets.write',
-      'googledocs.read', 'googledocs.write',
-      'googleslides.read', 'googleslides.write',
-      'notion.read', 'notion.write',
-      'google_search_console.read', 'google_analytics.read',
-      'hubspot.read', 'hubspot.write',
-      'gong.read',
-      'googleads.read', 'googleads.write',
-      'youtube.read', 'youtube.write',
-    ],
-  });
-  assert.equal(warnings.some((warning) => warning.includes('test-key')), false);
+  assert.deepEqual(warnings, []);
 });
 
 test('a fully configured Composio provider is ready to authorize', () => {

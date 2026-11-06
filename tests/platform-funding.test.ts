@@ -55,8 +55,10 @@ import {
   isCreditsExhausted,
   PLATFORM_ADMISSION_TTL_MS,
   outOfUsageOf,
+  postRunFee,
   resetPlatformFundingForTests,
   type AdmissionStage,
+  type FeeOutcome,
   type PlatformFundedModel,
   type PlatformFundingAdmission,
   type PlatformFundingPort,
@@ -807,6 +809,51 @@ test('a charge names what its request was for: an attempt\'s request a reply, a 
     { purpose: 'reply', runId: 'sub_credits', agentId: 'agent_credits' },
     { purpose: 'intent', runId: 'slack-interaction-intent', agentId: null },
   ]);
+});
+
+// Defect caught: a fee post the budget gave up on logged only `timeout`, and
+// nothing told a post the host wrote late from one that was lost.
+test('a fee post that outlasts its budget logs how it later settles, naming no installation or run', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let now = NOW;
+  resetPlatformFundingForTests({ now: () => now });
+  t.after(() => resetPlatformFundingForTests());
+  const pending: Array<{ resolve: (outcome: FeeOutcome) => void; reject: (error: Error) => void }> = [];
+  configurePlatformFunding({
+    ...NO_RUN_FEES,
+    funding: async () => 'platform',
+    admit: async () => 'admitted',
+    charge: async () => undefined,
+    postFee: () => new Promise((resolve, reject) => { pending.push({ resolve, reject }); }),
+  });
+  const warnings: string[] = [];
+  const infos: string[] = [];
+  t.mock.method(console, 'warn', (line: string) => { warnings.push(line); });
+  t.mock.method(console, 'info', (line: string) => { infos.push(line); });
+  const post = { installationId: 'inst_private', runId: 'run_private', agentId: 'agent_private', tier: 'chat' } as const;
+
+  for (const settle of [
+    (late: (typeof pending)[number]) => late.resolve({ kind: 'posted' }),
+    (late: (typeof pending)[number]) => late.reject(new TypeError('private ledger detail')),
+  ]) {
+    const posted = postRunFee(post);
+    now += 2_000;
+    t.mock.timers.tick(2_000);
+    assert.deepEqual(await posted, { kind: 'unanswered' });
+    now += 350;
+    settle(pending.shift()!);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+
+  const timedOut = { component: 'platform_funding', event: 'fee_post_failed', tier: 'chat', error: 'timeout' };
+  const late = { component: 'platform_funding', event: 'fee_post_settled_late', tier: 'chat' };
+  assert.deepEqual(infos.map((line) => JSON.parse(line)), [{ ...late, outcome: 'posted', elapsedMs: 2_350 }]);
+  assert.deepEqual(warnings.map((line) => JSON.parse(line)), [
+    timedOut,
+    timedOut,
+    { ...late, outcome: 'failed', error: 'TypeError', elapsedMs: 2_350 },
+  ]);
+  assert.doesNotMatch([...infos, ...warnings].join('\n'), /private/);
 });
 
 test('a failed charge is tried once more under the same request ID, and a charge that succeeds then logs nothing', async (t) => {

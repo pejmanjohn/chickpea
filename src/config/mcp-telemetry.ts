@@ -1,6 +1,6 @@
 import type { McpConnectionConfig } from './types.ts';
 
-type McpHttpOutcome = 'ok' | 'http_error' | 'network_error';
+type McpHttpOutcome = 'ok' | 'stream_unavailable' | 'http_error' | 'network_error';
 type McpAuthMode = McpConnectionConfig['authMode'];
 
 interface McpHttpTelemetryEvent {
@@ -52,7 +52,7 @@ export function withMcpHttpTelemetry(
         authMode: context.authMode,
         ...request,
         status: response.status,
-        outcome: response.ok ? 'ok' : 'http_error',
+        outcome: httpOutcome(request.httpMethod, response),
         durationMs: elapsed(startedAt, now()),
         responseBytes: contentLength(response.headers),
       });
@@ -114,6 +114,15 @@ function rpcFacts(body: string): Pick<McpHttpTelemetryEvent, 'rpcMethod' | 'tool
   } catch {
     return { rpcMethod: null, toolName: null };
   }
+}
+
+/**
+ * A 405 to the optional GET means the server offers no server-initiated
+ * stream, which the MCP spec allows and the client expects.
+ */
+function httpOutcome(httpMethod: string, response: Response): McpHttpOutcome {
+  if (response.ok) return 'ok';
+  return httpMethod === 'GET' && response.status === 405 ? 'stream_unavailable' : 'http_error';
 }
 
 function contentLength(headers: Headers | undefined): number | null {
