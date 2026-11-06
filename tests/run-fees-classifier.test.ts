@@ -342,7 +342,7 @@ test('connector, browser, web reading and coding workspace tools make a reply a 
 test('replying, presenting and generating images never make a reply a task', () => {
   const reply = [
     'present_table', 'stream_answer', 'ask_user', 'offer_actions', 'present_cards', 'present_chart', 'present_details',
-    'request_form', 'generate_image', 'recover_image', 'request_chickpea_handoff', 'submit_routine_result',
+    'request_form', 'update_card', 'generate_image', 'recover_image', 'request_chickpea_handoff', 'submit_routine_result',
     'submit_routine_intent',
   ];
   for (const name of reply) assert.equal(interactive(name), false, name);

@@ -20,6 +20,18 @@ export interface SlackUiAction {
   state: SlackUiState;
   actionTs: string;
   triggerId: string;
+  /**
+   * The message clicked, as Slack holds it. Only a direct click carries it
+   * (the gateway forwards no message), so a card set redrawn from it needs
+   * no read.
+   */
+  message?: SlackUiMessage;
+}
+
+export interface SlackUiMessage {
+  ts: string;
+  text?: string;
+  blocks: Array<Record<string, unknown>>;
 }
 
 /**
@@ -54,6 +66,8 @@ const MAX_ACTION_TYPE = 64;
 const MAX_VALUE = 2_000;
 const MAX_SELECTED = 100;
 const MAX_STATE_BYTES = 32 * 1024;
+const MAX_MESSAGE_BLOCKS = 50;
+const MAX_MESSAGE_BYTES = 128 * 1024;
 
 export function isHostUiActionId(value: unknown): value is string {
   return typeof value === 'string' && value.length <= MAX_ACTION_ID &&
@@ -173,6 +187,22 @@ export function parseNormalizedUiState(
   return state;
 }
 
+/** The clicked message, when it is the click's own and within Slack's message limits. */
+function clickedMessage(value: unknown, messageTs: string): SlackUiMessage | undefined {
+  const message = record(value);
+  const blocks = message?.blocks;
+  if (!message || message.ts !== messageTs || !Array.isArray(blocks) || blocks.length > MAX_MESSAGE_BLOCKS ||
+      !blocks.every((block) => record(block)) || (message.text !== undefined && typeof message.text !== 'string')) {
+    return undefined;
+  }
+  if (new TextEncoder().encode(JSON.stringify([message.text, blocks])).byteLength > MAX_MESSAGE_BYTES) return undefined;
+  return {
+    ts: messageTs,
+    ...(typeof message.text === 'string' ? { text: message.text } : {}),
+    blocks: blocks as Array<Record<string, unknown>>,
+  };
+}
+
 /**
  * Parse a verified direct `block_actions` payload. Parsing grants no
  * authority; it only returns clicks on host-namespace controls.
@@ -216,6 +246,7 @@ export function parseSlackUiBlockAction(payload: unknown): SlackUiAction | undef
   const threadTs = typeof message?.thread_ts === 'string' && ACTION_TS.test(message.thread_ts)
     ? message.thread_ts
     : null;
+  const clicked = containerType === 'message' ? clickedMessage(message, messageTs as string) : undefined;
   return {
     workspaceId: team.id,
     userId: user.id,
@@ -233,6 +264,7 @@ export function parseSlackUiBlockAction(payload: unknown): SlackUiAction | undef
     state,
     actionTs,
     triggerId,
+    ...(clicked ? { message: clicked } : {}),
   };
 }
 

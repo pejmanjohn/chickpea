@@ -83,7 +83,8 @@ export interface ActionsSurfaceSpec {
 /**
  * Display components ride in the answer message itself. They are stored so a
  * retried delivery can still render them, and so card request buttons resolve
- * like any click; the answer message is never redrawn for them.
+ * like any click. Only a card set redraws the answer message, when one of its
+ * cards settles.
  */
 export type DisplaySurfaceSpec =
   | { kind: 'cards'; cards: PresentCardsSpec }
@@ -125,6 +126,31 @@ export interface UiSurfaceResolution {
   takenBy?: number;
 }
 
+/** A press on a card's request button; the slot names the card and the button. */
+export interface CardPick {
+  slot: number;
+  byUserId: string;
+  at: number;
+}
+
+export const CARD_OUTCOME_TONES = ['done', 'failed', 'info'] as const;
+export type CardOutcomeTone = (typeof CARD_OUTCOME_TONES)[number];
+
+/** What the Agent reported on a card (update_card); a later one replaces it. */
+export interface CardOutcome {
+  tone: CardOutcomeTone;
+  text: string;
+  at: number;
+}
+
+/** A settled card has a pick, an outcome, or both; its request buttons are gone. */
+export type CardSettlement =
+  | { pick: CardPick; outcome?: CardOutcome }
+  | { pick?: undefined; outcome: CardOutcome };
+
+/** A card set's settled cards by card index; a card without an entry is still open. */
+export type CardSettlements = Partial<Record<number, CardSettlement>>;
+
 export interface UiSurfaceRecord {
   id: string;
   namespace: UiNamespace;
@@ -141,7 +167,10 @@ export interface UiSurfaceRecord {
   spec: UiSurfaceSpec;
   status: UiSurfaceStatus;
   messageTs?: string;
+  /** A card set settled whole by an older build carries this, not `cardSettlements`. */
   resolution?: UiSurfaceResolution;
+  /** A card set's cards, each settled on its own. */
+  cardSettlements?: CardSettlements;
   createdAt: number;
   updatedAt: number;
   expiresAt: number;
@@ -158,6 +187,16 @@ export const UI_SURFACE_MAX_SPEC_BYTES = 16 * 1024;
  */
 export function uiSurfaceId(turnJobId: string, slot: string): string {
   return sha256HexNode(`chickpea.ui-surface.v1\n${turnJobId}\n${slot}`).slice(0, 32);
+}
+
+/** A reply's display components, one slot each in call order. */
+export function displaySurfaceId(turnJobId: string, index: number): string {
+  return uiSurfaceId(turnJobId, `display:${index}`);
+}
+
+/** How a card set is named to the model: "cards 1a2b3c4d". */
+export function cardSetRef(surfaceId: string): string {
+  return surfaceId.slice(0, 8);
 }
 
 export function uiActionId(namespace: UiNamespace, kind: string, index: number): string {

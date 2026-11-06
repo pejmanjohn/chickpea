@@ -26,6 +26,7 @@ import {
   SLACK_PRESENT_DETAILS_TOOL_NAME,
   SLACK_REQUEST_FORM_TOOL_NAME,
 } from '../slack/ui/presentation-tools.ts';
+import { SLACK_UPDATE_CARD_TOOL_NAME } from '../slack/ui/card-outcome-tool.ts';
 
 export type RunKind = 'interactive' | 'scheduled';
 
@@ -93,6 +94,7 @@ const NON_QUALIFYING_TOOLS: readonly string[] = [
   SLACK_PRESENT_CHART_TOOL_NAME,
   SLACK_PRESENT_DETAILS_TOOL_NAME,
   SLACK_REQUEST_FORM_TOOL_NAME,
+  SLACK_UPDATE_CARD_TOOL_NAME,
   'submit_routine_result',
   'submit_routine_intent',
   // The sandbox these work in holds only the current message's files and the

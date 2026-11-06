@@ -74,7 +74,7 @@ const SHAPE_VARIANTS: Record<WarmedSharedPrefixShape, Pick<SlackRequestVariant, 
   interactive_image: { progressiveStreamingOffered: false, imageModel: IMAGE_MODEL },
   interactive_streaming_image: { progressiveStreamingOffered: true, imageModel: IMAGE_MODEL },
 };
-const INTERACTIVE_TOOLS = ['ask_user', 'offer_actions', 'request_form'];
+const INTERACTIVE_TOOLS = ['ask_user', 'offer_actions', 'request_form', 'update_card'];
 const IMAGE_TOOLS = ['generate_image', 'recover_image'];
 /** pi-ai declares its deferred-loading placeholder after every mounted tool on these models. */
 const PI_TRAILER_TOOLS = ['__pi_deferred_placeholder__'];

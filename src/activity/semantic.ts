@@ -442,7 +442,7 @@ export function unknownSemanticDescriptor(): SemanticActivityDescriptor {
 
 /** Slack presentation components are part of drafting the answer. */
 const SLACK_COMPONENT_TOOLS: ReadonlySet<string> = new Set([
-  'ask_user', 'offer_actions', 'present_cards', 'present_chart', 'present_details', 'request_form',
+  'ask_user', 'offer_actions', 'present_cards', 'present_chart', 'present_details', 'request_form', 'update_card',
 ]);
 
 export function semanticDescriptorForCoreTool(toolName: string): SemanticActivityDescriptor {

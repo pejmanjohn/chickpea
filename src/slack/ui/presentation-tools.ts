@@ -308,6 +308,11 @@ function label(value: string, field: string, max: number, options: { multiline?:
     .replace(/\[credential redacted\](?: redacted\])+/g, '[credential redacted]');
 }
 
+/** An outcome update_card shows on a card: one plain line. */
+export function validateCardOutcomeText(value: string): string {
+  return label(value, 'text', 150);
+}
+
 function optionalLabel(
   value: string | undefined,
   field: string,

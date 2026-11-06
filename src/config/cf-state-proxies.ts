@@ -380,6 +380,8 @@ const REPLAY_SAFE_EXECUTE_KINDS = new Set([
   // A claim is not: a replay would tell the claimer it lost.
   'put_surface', 'bind_surface_message', 'close_surface', 'resolve_surface', 'supersede_surfaces',
   'open_surface', 'settle_surface',
+  // Sets one card's outcome, with its time, to the same value again.
+  'set_card_outcome',
 ]);
 
 /**

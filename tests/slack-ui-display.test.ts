@@ -18,7 +18,8 @@ import {
   validatePresentChart,
   validatePresentDetails,
 } from '../src/slack/ui/presentation-tools.ts';
-import { cardRequestButtonAt, renderCards, renderChart, renderDetails } from '../src/slack/ui/render-display.ts';
+import { cardRequestButtonAt } from '../src/slack/ui/card-set.ts';
+import { renderCards, renderChart, renderDetails } from '../src/slack/ui/render-display.ts';
 import { parseUiControl, uiActionId, uiBlockId, uiValue, type DisplaySurfaceSpec } from '../src/slack/ui/surface.ts';
 
 const SURFACE = 'a'.repeat(32);

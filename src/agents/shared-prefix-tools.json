@@ -1940,6 +1940,42 @@
       "fields"
      ]
     }
+   },
+   {
+    "name": "update_card",
+    "description": "Show the outcome on one card you posted with present_cards in this conversation, such as \"Done, $30/day verified\" or \"Failed: the budget changed since\". Use it after you act on a card button someone pressed, or on a typed request that one of your cards covers (\"approve 2\"). Name the set by its ref (\"cards 1a2b3c4d\", from the button press message or the present_cards result) and the card by its exact title or its number from 1. tone is done, failed or info. The card loses its request buttons and shows the outcome; nothing else in the message changes.",
+    "eager_input_streaming": true,
+    "input_schema": {
+     "type": "object",
+     "properties": {
+      "cards": {
+       "type": "string",
+       "maxLength": 40
+      },
+      "card": {
+       "type": "string",
+       "maxLength": 150
+      },
+      "tone": {
+       "enum": [
+        "done",
+        "failed",
+        "info"
+       ],
+       "type": "string"
+      },
+      "text": {
+       "type": "string",
+       "maxLength": 150
+      }
+     },
+     "required": [
+      "cards",
+      "card",
+      "tone",
+      "text"
+     ]
+    }
    }
   ],
   "streaming": [
