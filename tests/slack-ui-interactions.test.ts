@@ -13,7 +13,8 @@ import type { GatewayUiActionDelivery, GatewayViewSubmissionDelivery } from '../
 import type { TurnJob } from '../src/slack/turn-job-types.ts';
 import { checkSlackBlocks } from '../src/slack/ui/block-kit-limits.ts';
 import type { SlackUiStateValue } from '../src/slack/ui/interaction-payload.ts';
-import { validateRequestForm } from '../src/slack/ui/presentation-tools.ts';
+import { validatePresentCards, validateRequestForm } from '../src/slack/ui/presentation-tools.ts';
+import { renderCards } from '../src/slack/ui/render-display.ts';
 import { formFieldActionId, formFieldBlockId } from '../src/slack/ui/render-form.ts';
 import { QUESTION_OTHER_CHOICE } from '../src/slack/ui/render-interactive.ts';
 import {
@@ -46,6 +47,10 @@ interface Fixture {
   read(id: string): Promise<UiSurfaceRecord | undefined>;
   ephemerals(): string[];
   updates(): Array<Record<string, unknown>>;
+  /** What conversations.replies returns for the Agent's thread. */
+  thread: Array<Record<string, unknown>>;
+  /** When set, Slack refuses every chat.update. */
+  failUpdates: boolean;
   heldAction(scope?: { channelId: string; threadTs: string; agentId: string }): Promise<string>;
   message(envelope: Parameters<typeof processGatewaySlackEnvelope>[0]): Promise<void>;
 }
@@ -93,6 +98,8 @@ async function withFixture(body: (f: Fixture) => Promise<void>): Promise<void> {
         if (operation === 'conversations.info') return { channel };
         if (operation === 'conversations.members') return { members: ['U1', 'U2', 'UGUEST', 'UBOT'] };
         if (operation === 'users.conversations') return { channels: [channel] };
+        if (operation === 'conversations.replies') return { ok: true, messages: fixture.thread };
+        if (operation === 'chat.update' && fixture.failUpdates) throw new Error('cant_update_message');
         if (operation.startsWith('chat.')) return { ok: true, ts: '3000.000900', channel: 'C1' };
         throw new Error(`Unexpected gateway operation: ${operation}`);
       },
@@ -179,6 +186,8 @@ async function withFixture(body: (f: Fixture) => Promise<void>): Promise<void> {
       ephemerals: () => calls.filter(({ operation }) => operation === 'chat.postEphemeral')
         .map(({ input }) => String(input.text)),
       updates: () => calls.filter(({ operation }) => operation === 'chat.update').map(({ input }) => input),
+      thread: [],
+      failUpdates: false,
     };
     await body(fixture);
   } finally {
@@ -600,33 +609,123 @@ test('a click on a guest Agent\'s workspace-change card reaches that Agent and a
   assert.equal((await f.read(surface.id))?.status, 'resolved');
 }));
 
-test('a card request button starts a turn and never redraws the answer message it rides in', async () => withFixture(async (f) => {
-  const surface = await f.surface({
-    namespace: 'ui',
-    status: 'open',
-    spec: { kind: 'cards', cards: { cards: [
-      { title: 'Acme Corp', actions: [{ label: 'Draft outreach' }] },
-      { title: 'Globex', actions: [{ label: 'Open', url: 'https://example.com/globex' }] },
-    ] } },
-  });
-  // The link button on the second card is ignored server-side.
-  await f.click(surface.id, { actionId: uiActionId('ui', 'link', 4), blockId: uiBlockId('ui', surface.id, 1), value: null });
+const CARD_SPEC = {
+  kind: 'cards' as const,
+  cards: validatePresentCards({ cards: [
+    { title: 'Campaign A', subtitle: 'Raise to $30/day', actions: [{ label: 'Approve' }, { label: 'Skip' }] },
+    { title: 'Campaign B', subtitle: 'Raise to $45/day', actions: [{ label: 'Approve' }, { label: 'Skip' }] },
+  ] }),
+};
+const ANSWER_BLOCK = { type: 'rich_text', block_id: 'Ab1', elements: [{ type: 'rich_text_section', elements: [{ type: 'text', text: 'Two budgets to change.' }] }] };
+const FOOTER_BLOCK = { type: 'context', block_id: 'Ft1', elements: [{ type: 'mrkdwn', text: 'support · model' }] };
+
+/** The Agent's answer as Slack holds it: its text, the cards, and the footer. */
+function answerMessage(surfaceId: string, blocks = renderCards(CARD_SPEC.cards, surfaceId).blocks) {
+  return { ts: CARD_TS, text: 'Two budgets to change.', blocks: [ANSWER_BLOCK, ...blocks, FOOTER_BLOCK] };
+}
+
+const cardClick = (surfaceId: string, slot: number) => ({
+  actionId: uiActionId('ui', 'cards', slot), blockId: uiBlockId('ui', surfaceId, 2 + Math.floor(slot / 3)),
+  value: uiValue(surfaceId, slot),
+});
+
+function redrawnCards(update: Record<string, unknown>, surfaceId: string) {
+  const blocks = update.blocks as Array<Record<string, unknown>>;
+  const carousel = blocks.find((block) => block.block_id === uiBlockId('ui', surfaceId, 1))!;
+  const status = blocks.find((block) => block.block_id === uiBlockId('ui', surfaceId, 20));
+  return {
+    blocks,
+    requests: (carousel.elements as Array<{ actions?: Array<{ action_id: string }> }>).map((card) =>
+      (card.actions ?? []).map((button) => button.action_id).filter((id) => id.startsWith('chickpea.ui.v1.cards.'))),
+    status: ((status?.elements ?? []) as Array<{ text: string }>).map((element) => element.text),
+  };
+}
+
+test('each card in a set claims on its own and redraws in the answer with who picked it', async () => withFixture(async (f) => {
+  const surface = await f.surface({ namespace: 'ui', status: 'open', spec: CARD_SPEC });
+  const ref = surface.id.slice(0, 8);
+  // A link button sends block_actions too and is ignored server-side.
+  await f.click(surface.id, { actionId: uiActionId('ui', 'link', 0), blockId: uiBlockId('ui', surface.id, 1), value: null });
   assert.equal(f.jobs.length, 1);
-  await f.click(surface.id, {
-    userId: 'U2', actionId: uiActionId('ui', 'cards', 1), blockId: uiBlockId('ui', surface.id, 1),
-    value: uiValue(surface.id, 1), actionTs: '3004.000000',
-  });
+
+  const message = answerMessage(surface.id);
+  await f.click(surface.id, { userId: 'U2', ...cardClick(surface.id, 1), actionTs: '3004.000000', message });
   assert.equal(f.jobs.length, 2);
-  assert.match(f.jobs.at(-1)!.turn.text, /^Pressed "Draft outreach" on the card "Acme Corp"/);
+  assert.equal(f.jobs.at(-1)!.turn.text, `Pressed "Approve" on the card "Campaign A" (cards ${ref}, card 1).`);
   assert.equal(f.jobs.at(-1)!.turn.userId, 'U2');
-  assert.deepEqual(f.updates(), [], 'the answer message is never rewritten');
+  const first = f.updates().at(-1)!;
+  assert.equal(first.channel, 'C1');
+  assert.equal(first.ts, CARD_TS);
+  assert.equal(first.text, message.text, 'the answer text stays');
+  const drawn = redrawnCards(first, surface.id);
+  assert.deepEqual(drawn.blocks[0], ANSWER_BLOCK, 'the answer stays');
+  assert.deepEqual(drawn.blocks.at(-1), FOOTER_BLOCK, 'the footer stays');
+  assert.deepEqual(drawn.requests, [[], [uiActionId('ui', 'cards', 4), uiActionId('ui', 'cards', 5)]],
+    'the clicked card loses its request buttons; the other card keeps them');
+  assert.equal(drawn.status.length, 1);
+  assert.match(drawn.status[0]!, /^:white_check_mark: \*Approve\* on \*Campaign A\*, requested by <@U2> · <!date\^/);
+  assert.equal(f.calls.filter(({ operation }) => operation === 'conversations.replies').length, 0,
+    'the clicked message came with the click');
+  assert.deepEqual(checkSlackBlocks(drawn.blocks.slice(1, -1)).issues, []);
+
+  // Another card in the same set still admits, after the first one was answered.
   await f.click(surface.id, {
-    actionId: uiActionId('ui', 'cards', 1), blockId: uiBlockId('ui', surface.id, 1),
-    value: uiValue(surface.id, 1), actionTs: '3004.100000',
+    ...cardClick(surface.id, 4), actionTs: '3004.200000',
+    message: { ...message, blocks: drawn.blocks },
   });
+  assert.equal(f.jobs.length, 3);
+  assert.equal(f.jobs.at(-1)!.turn.text, `Pressed "Approve" on the card "Campaign B" (cards ${ref}, card 2).`);
+  const second = redrawnCards(f.updates().at(-1)!, surface.id);
+  assert.deepEqual(second.requests, [[], []]);
+  assert.equal(second.status.length, 2);
+  assert.equal(second.blocks.length, drawn.blocks.length, 'the status line is replaced, not repeated');
+  assert.equal((await f.read(surface.id))?.status, 'resolved', 'every request card is settled');
+
+  // The same card again is refused privately.
+  await f.click(surface.id, { ...cardClick(surface.id, 2), actionTs: '3004.300000', message });
+  assert.equal(f.jobs.length, 3);
+  assert.match(f.ephemerals().at(-1)!, /^Already requested by <@U2>\.$/);
+}));
+
+test('the same card clicked twice before either click settles admits once', async () => withFixture(async (f) => {
+  const surface = await f.surface({ namespace: 'ui', status: 'open', spec: CARD_SPEC });
+  const message = answerMessage(surface.id);
+  await Promise.all([
+    f.click(surface.id, { userId: 'U2', ...cardClick(surface.id, 1), actionTs: '3005.000000', message }),
+    f.click(surface.id, { ...cardClick(surface.id, 2), actionTs: '3005.100000', message }),
+  ]);
   assert.equal(f.jobs.length, 2);
-  assert.match(f.ephemerals().at(-1)!, /Already requested by <@U2>/);
-  assert.deepEqual(f.updates(), []);
+  assert.equal(f.ephemerals().length, 1);
+  assert.match(f.ephemerals()[0]!, /^Already requested by <@U[12]>\.$/);
+  assert.equal((await f.read(surface.id))?.status, 'open', 'Campaign B is still open');
+}));
+
+test('without the clicked message (the shared gateway), the redraw reads the answer back from Slack', async () => withFixture(async (f) => {
+  const surface = await f.surface({ namespace: 'ui', status: 'open', spec: CARD_SPEC });
+  f.thread = [
+    { ts: THREAD_TS, user: 'U1', text: 'Which budgets should change?' },
+    { ...answerMessage(surface.id), bot_id: 'BBOT' },
+  ];
+  await f.click(surface.id, { userId: 'U2', ...cardClick(surface.id, 1), actionTs: '3006.000000' });
+  assert.equal(f.jobs.length, 2);
+  const reads = f.calls.filter(({ operation }) => operation === 'conversations.replies');
+  assert.equal(reads.length, 1);
+  assert.equal(reads[0]!.input.channel, 'C1');
+  assert.equal(reads[0]!.input.ts, THREAD_TS);
+  const drawn = redrawnCards(f.updates().at(-1)!, surface.id);
+  assert.deepEqual(drawn.requests, [[], [uiActionId('ui', 'cards', 4), uiActionId('ui', 'cards', 5)]]);
+  assert.deepEqual(drawn.blocks[0], ANSWER_BLOCK);
+}));
+
+test('a card redraw Slack refuses never undoes the click or its turn', async () => withFixture(async (f) => {
+  const surface = await f.surface({ namespace: 'ui', status: 'open', spec: CARD_SPEC });
+  f.failUpdates = true;
+  assert.equal(await f.click(surface.id, {
+    userId: 'U2', ...cardClick(surface.id, 1), actionTs: '3007.000000', message: answerMessage(surface.id),
+  }), 'accepted');
+  assert.equal(f.jobs.length, 2, 'the turn was admitted');
+  assert.deepEqual((await f.read(surface.id))?.cardSettlements?.[0]?.pick?.byUserId, 'U2');
+  assert.deepEqual(f.ephemerals(), []);
 }));
 
 // ── request_form and "Something else…" ───────────────────────────────────
