@@ -171,6 +171,7 @@ test('an Agent pins its effort with its model and follows the default\'s otherwi
     assert.deepEqual(pinned.modelPolicy, {
       source: 'pinned',
       effectiveModel: OPUS,
+      effectiveModelName: 'Claude Opus 5.5',
       effort: 'max',
       efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
       standardEffort: 'medium',

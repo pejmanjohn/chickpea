@@ -4074,11 +4074,11 @@ test('admin page renders channel labels, profile secondary text, and singular ch
   assert.doesNotMatch(harness.app.innerHTML, /Direct messages|\+ DMs|DM default/);
   assert.match(harness.app.innerHTML, /<h1 class="page-title mono-title">#eng-releases<\/h1>/);
   // Agents is now a main-panel destination (the modal was retired): opening it
-  // swaps the main panel to the overview, and each card carries its usage meta.
+  // swaps the main panel to the overview, and each tile names its Channels.
   click({ target: actionTarget({ 'data-action': 'open-profiles' }) });
   assert.match(harness.app.innerHTML, /<h1 class="page-title">Agents<\/h1>/);
-  assert.match(harness.app.innerHTML, /<span class="pcard-name">Release Profile<\/span>/);
-  assert.match(harness.app.innerHTML, /used in 1 channel/);
+  assert.match(harness.app.innerHTML, /aria-label="Open Agent Release Profile">Release Profile<\/button>/);
+  assert.match(harness.app.innerHTML, /<li class="agent-tile-chip"><svg[^>]*>[\s\S]*?<\/svg><span>eng-releases<\/span><\/li>/);
 
   // Drilling into an Agent opens the full-page editor whose Slack destination
   // links directly to the Channel detail.
@@ -4153,7 +4153,7 @@ test('the profile editor presents reversible archive semantics for an assigned A
   assert.equal(harness.focusedAction(), 'archive-profile');
 });
 
-test('the Agent page badge says Disabled for a disabled Agent, as its Agents card does', async () => {
+test('the Agent page badge says Disabled for a disabled Agent, whose Agents tile reads Off', async () => {
   const harness = runAdminPageHarness({
     agents: [{ ...releaseAgent, enabled: false, lifecycle: 'active' }, { ...opsAgent, lifecycle: 'archived' }],
   });
@@ -4161,7 +4161,7 @@ test('the Agent page badge says Disabled for a disabled Agent, as its Agents car
   const click = harness.listeners.click;
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'open-profiles' }) });
-  assert.match(harness.app.innerHTML, /Release Profile[\s\S]*badge-off"><span class="dot"><\/span>Disabled/);
+  assert.equal(agentTile(harness.app.innerHTML, 'agent_release').pill, 'Off');
 
   const chip = () => /class="agent-status-chip (\w+)"><span aria-hidden="true"><\/span>(\w+)</.exec(harness.app.innerHTML)?.slice(1);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
@@ -4169,6 +4169,156 @@ test('the Agent page badge says Disabled for a disabled Agent, as its Agents car
   click({ target: actionTarget({ 'data-action': 'profiles-back' }) });
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_ops' }) });
   assert.deepEqual(chip(), ['disabled', 'Archived'], 'an archived Agent still reads Archived');
+});
+
+/** The Agents overview tile whose open button names `agentId`, read from the rendered page. */
+function agentTile(html: string, agentId: string) {
+  const grid = html.split('<ul class="agent-tiles">')[1]?.split('</ul></section>')[0] ?? '';
+  const tile = grid.split('<li class="agent-tile" data-state="').slice(1)
+    .find((candidate) => candidate.includes(`class="agent-tile-open" data-action="edit-profile" data-agent="${agentId}"`));
+  assert.ok(tile, `the overview has a tile for ${agentId}`);
+  const text = (pattern: RegExp) => pattern.exec(tile)?.[1];
+  return {
+    state: tile.slice(0, tile.indexOf('"')),
+    avatarSrc: text(/<img src="([^"]*)"/),
+    robotAvatar: /class="agent-roster-icon variant-\d"/.test(tile),
+    openLabel: text(/class="agent-tile-open"[^>]*aria-label="([^"]*)"/),
+    name: text(/class="agent-tile-open"[^>]*>([^<]*)<\/button>/),
+    handle: text(/class="agent-tile-handle">([^<]*)</),
+    model: text(/class="agent-tile-model">([^<]*)</),
+    description: text(/class="agent-tile-desc">([^<]*)</),
+    pill: text(/class="agent-tile-pill"><span class="agent-tile-pill-dot"><\/span>([^<]*)</),
+    chips: [...tile.matchAll(/<li class="agent-tile-chip">[\s\S]*?<\/svg><span>([^<]*)<\/span><\/li>/g)].map((match) => match[1]),
+    more: text(/class="agent-tile-more">([^<]*)</),
+    quiet: text(/class="agent-tile-quiet">([^<]*)</),
+    addToChannel: tile.includes(`data-action="attach-new-channel" data-agent="${agentId}">Add to a channel</button>`),
+    attention: text(/class="agent-tile-foot is-attention"><span>([^<]*)</),
+    fixIt: tile.includes(`data-action="edit-profile" data-agent="${agentId}">Fix it <span aria-hidden="true">→</span></button>`),
+  };
+}
+
+test('an Agents tile shows the avatar, handle, catalog model name, description and first two Channels', async () => {
+  const channel = (channelId: string, channelName: string) =>
+    ({ workspaceId: 'T_DESIGN', channelId, channelName, status: 'active' });
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents',
+    agents: [{
+      ...releaseAgent,
+      slackPresence: { normalizedHandle: 'releases', avatar: { url: '/agent-avatars/release.png' } },
+      modelPolicy: { source: 'pinned', effectiveModel: 'anthropic/claude-opus-5-5', effectiveModelName: 'Claude Opus 5.5' },
+      whereItWorks: { channels: [channel('C_LAUNCH', 'launch'), channel('C_QA', '#qa'), channel('C_SHIP', 'ship-room')] },
+    }, {
+      ...opsAgent,
+      description: '  ',
+      modelPolicy: { source: 'pinned', effectiveModel: 'openrouter/acme/ops-large', effectiveModelName: null },
+      whereItWorks: { channels: [channel('C_OPS', 'ops')] },
+    }],
+  });
+  await flushAsync();
+  const html = harness.app.innerHTML;
+
+  assert.match(html, /<h2 id="your-agents-title">Your Agents<\/h2><p>2 in this workspace<\/p>/);
+  assert.doesNotMatch(html, /Everything Chickpea can be in this workspace/);
+  assert.deepEqual(agentTile(html, 'agent_release'), {
+    state: 'on',
+    avatarSrc: '/agent-avatars/release.png',
+    robotAvatar: false,
+    openLabel: 'Open Agent Release Profile',
+    name: 'Release Profile',
+    handle: '@releases',
+    model: 'Claude Opus 5.5',
+    description: 'Release readiness profile',
+    pill: undefined,
+    chips: ['launch', 'qa'],
+    more: '+1',
+    quiet: undefined,
+    addToChannel: false,
+    attention: undefined,
+    fixIt: false,
+  });
+  const ops = agentTile(html, 'agent_ops');
+  assert.equal(ops.model, 'ops-large', 'an id the catalog does not name shows its last segment');
+  assert.equal(ops.avatarSrc, undefined);
+  assert.equal(ops.robotAvatar, true);
+  assert.equal(ops.handle, '@ops-profile');
+  assert.equal(ops.description, undefined, 'a blank description leaves no paragraph');
+  assert.deepEqual(ops.chips, ['ops']);
+  assert.equal(ops.more, undefined);
+  const grid = html.split('<ul class="agent-tiles">')[1]!.split('</ul></section>')[0]!;
+  assert.doesNotMatch(grid, /Workspace default|Pinned|badge-src|direct message|\bDMs?\b/);
+  assert.match(
+    grid,
+    /<li class="agent-tile" data-state="on" data-action="edit-profile" data-agent="agent_ops">/,
+    'a click anywhere on the tile opens the Agent, not only on its name',
+  );
+
+  harness.listeners.click!({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_ops' }) });
+  assert.equal(harness.locationPath(), '/admin/agents/agent_ops');
+});
+
+test('an Agents tile with no Channel offers Add to a channel only to an Admin who can edit the Agent', async () => {
+  const unplaced = (agent: Record<string, unknown>, fields: Record<string, unknown> = {}) =>
+    ({ ...agent, whereItWorks: { channels: [] }, ...fields });
+  const agents = [unplaced(releaseAgent), unplaced(opsAgent, { canEdit: false })];
+  const admin = runAdminPageHarness({ initialPath: '/admin/agents', agents });
+  await flushAsync();
+
+  const editable = agentTile(admin.app.innerHTML, 'agent_release');
+  assert.equal(editable.quiet, 'Not in a channel yet ·');
+  assert.equal(editable.addToChannel, true);
+  assert.deepEqual(editable.chips, []);
+  const readOnly = agentTile(admin.app.innerHTML, 'agent_ops');
+  assert.equal(readOnly.quiet, 'Not in a channel yet');
+  assert.equal(readOnly.addToChannel, false);
+  assert.equal(readOnly.openLabel, 'View Agent Ops Profile');
+
+  admin.listeners.click!({ target: actionTarget({ 'data-action': 'attach-new-channel', 'data-agent': 'agent_release' }) });
+  await flushAsync();
+  assert.match(admin.app.innerHTML, /Publish Release Profile/);
+
+  const member = runAdminPageHarness({ initialPath: '/admin/agents', agents, workspaceAdminUi: false });
+  await flushAsync();
+  const memberTile = agentTile(member.app.innerHTML, 'agent_release');
+  assert.equal(memberTile.quiet, 'Not in a channel yet');
+  assert.equal(memberTile.addToChannel, false);
+});
+
+test('an Agents tile reads Archived, then Off, then the Slack attention title, then Draft, then on', async () => {
+  const recovery = { title: 'Slack handle is taken', explanation: 'Pick another handle.' };
+  const agent = (id: string, fields: Record<string, unknown>) =>
+    ({ ...releaseAgent, id, name: `Tile ${id}`, whereItWorks: { channels: [] }, ...fields });
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents',
+    agents: [
+      agent('agent_archived', { lifecycle: 'archived', enabled: false, slackPresenceRecovery: recovery }),
+      agent('agent_off', { lifecycle: 'draft', enabled: false, slackPresenceRecovery: recovery }),
+      agent('agent_attention', { lifecycle: 'draft', slackPresenceRecovery: recovery }),
+      agent('agent_attention_viewer', { slackPresenceRecovery: recovery, canEdit: false }),
+      agent('agent_draft', { lifecycle: 'draft' }),
+      agent('agent_on', { lifecycle: 'active' }),
+    ],
+  });
+  await flushAsync();
+  const html = harness.app.innerHTML;
+  const summary = (id: string) => {
+    const { state, pill, attention, fixIt, quiet } = agentTile(html, id);
+    return { state, pill, attention, fixIt, quiet };
+  };
+
+  assert.deepEqual(summary('agent_archived'), { state: 'archived', pill: 'Archived', attention: undefined, fixIt: false, quiet: undefined });
+  assert.deepEqual(summary('agent_off'), { state: 'off', pill: 'Off', attention: undefined, fixIt: false, quiet: undefined });
+  assert.deepEqual(summary('agent_attention'), { state: 'attention', pill: undefined, attention: 'Slack handle is taken', fixIt: true, quiet: undefined });
+  assert.deepEqual(summary('agent_attention_viewer'), { state: 'attention', pill: undefined, attention: 'Slack handle is taken', fixIt: false, quiet: undefined });
+  assert.deepEqual(summary('agent_draft'), { state: 'draft', pill: 'Draft', attention: undefined, fixIt: false, quiet: undefined });
+  assert.deepEqual(summary('agent_on'), { state: 'on', pill: undefined, attention: undefined, fixIt: false, quiet: 'Not in a channel yet ·' });
+  assert.deepEqual(
+    [...html.matchAll(/class="agent-tile-open" data-action="edit-profile" data-agent="([^"]+)"/g)].map((match) => match[1]),
+    ['agent_off', 'agent_attention', 'agent_attention_viewer', 'agent_draft', 'agent_on', 'agent_archived'],
+    'an archived Agent sits after the Agents still at work, which keep their order',
+  );
+
+  harness.listeners.click!({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_attention' }) });
+  assert.equal(harness.locationPath(), '/admin/agents/agent_attention');
 });
 
 test('Agent deletion explains how to replace a workspace Default Agent', async () => {

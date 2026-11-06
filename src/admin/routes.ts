@@ -2770,16 +2770,21 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       management: { queueOwedAgentWelcome: (input) => management(c).queueOwedAgentWelcome(input) },
     });
   };
-  // Agents in one listing mostly share a model; resolve each model once.
-  const modelEffortsForRequest = (c: Context) => {
+  // Agents in one listing mostly share a model; resolve each model's efforts once.
+  const agentModelsForRequest = (c: Context): AgentProjectionModels => {
+    const env = c.env as PlatformEnv | undefined;
     const resolved = new Map<string, Promise<ModelEffort[]>>();
-    return (model: string): Promise<ModelEffort[]> => {
-      let efforts = resolved.get(model);
-      if (!efforts) {
-        efforts = resolveModelEfforts(model, { settings: settings(c), env: c.env as PlatformEnv | undefined });
-        resolved.set(model, efforts);
-      }
-      return efforts;
+    return {
+      efforts: (model) => {
+        let efforts = resolved.get(model);
+        if (!efforts) {
+          efforts = resolveModelEfforts(model, { settings: settings(c), env });
+          resolved.set(model, efforts);
+        }
+        return efforts;
+      },
+      displayName: (model) =>
+        activeModelCatalogSnapshot(env).entries.find((entry) => entry.id === model)?.displayName ?? null,
     };
   };
   const agentAdminProjectionForRequest = async (
@@ -2795,7 +2800,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ? await memberVisibleAgentChannels(c, agentGrants)
         : new Map<string, SlackChannel>()
       : undefined;
-    return agentAdminProjection(agent, store(c), snapshots(c), agentAvatarOrigin(c), modelEffortsForRequest(c), undefined, {
+    return agentAdminProjection(agent, store(c), snapshots(c), agentAvatarOrigin(c), agentModelsForRequest(c), undefined, {
       canEdit: principal ? canEditAgent(principal, agent) : true,
       ...extraAccess,
       ...(visibleMemberChannels ? { visibleMemberChannels } : {}),
@@ -7184,13 +7189,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         [workspaceId, await configStore.getWorkspaceModelRole(workspaceId, 'image')] as const),
     ));
     const avatarOrigin = agentAvatarOrigin(c);
-    const modelEfforts = modelEffortsForRequest(c);
+    const models = agentModelsForRequest(c);
     return c.json({
       // The connected workspace, when unambiguous. Admin loads Agent
       // connections against it without first waiting for Slack status.
       workspaceId: installations.length === 1 ? installations[0]!.workspaceId : null,
       agents: await Promise.all(agents.map((agent, index) =>
-        agentAdminProjection(agent, configStore, snapshots(c), avatarOrigin, modelEfforts, {
+        agentAdminProjection(agent, configStore, snapshots(c), avatarOrigin, models, {
           references: {
             agentId: agent.id,
             channelGrants: [...new Map(
@@ -13404,10 +13409,17 @@ interface ModelEffortProjection {
   standardEffort: ModelEffort | null;
 }
 
+/** One request's model lookups, shared by every Agent it projects. */
+interface AgentProjectionModels {
+  efforts(model: string): Promise<ModelEffort[]>;
+  /** The active catalog's name for the model, or null for an id it does not list. */
+  displayName(model: string): string | null;
+}
+
 async function modelEffortProjection(
   model: string | null,
   effort: ModelEffort | undefined,
-  modelEfforts: (model: string) => Promise<ModelEffort[]>,
+  modelEfforts: AgentProjectionModels['efforts'],
 ): Promise<ModelEffortProjection> {
   const efforts = model ? await modelEfforts(model) : [];
   return { effort: effort ?? null, efforts, standardEffort: standardModelEffort(efforts) ?? null };
@@ -13905,7 +13917,7 @@ async function agentAdminProjection(
   configStore: ConfigStore,
   snapshotStore: AgentSnapshotStore,
   avatarOrigin: { publicOrigin: string; installationId: string | undefined },
-  modelEfforts: (model: string) => Promise<ModelEffort[]>,
+  models: AgentProjectionModels,
   preloaded?: {
     references: AgentReferenceSummary;
     grants: AgentChannelGrant[];
@@ -14044,10 +14056,11 @@ async function agentAdminProjection(
     modelPolicy: {
       source: agent.model ? 'pinned' : 'workspace_default',
       effectiveModel,
+      effectiveModelName: effectiveModel ? models.displayName(effectiveModel) : null,
       ...await modelEffortProjection(
         effectiveModel,
         agent.model ? agent.modelEffort : workspaceDefault?.effort,
-        modelEfforts,
+        models.efforts,
       ),
       live: installation?.runtimeContract === 'chickpea-v1',
       ...(workspaceDefault ? { workspaceDefaultRevision: workspaceDefault.revision } : {}),
