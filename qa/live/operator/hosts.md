@@ -182,8 +182,8 @@ and the Slack web client:
   command rather than handing the command back.
 - Run the guarded lane deploy as one plain command,
   `CHICKPEA_DEPLOY_TARGET=<alias> npm run verify:host -- --wait-ms 300000 npm run deploy`
-  (`deploy:sandbox` on a sandbox-profile lane). It serializes the build with
-  the host's other expensive checks and matches the operator allow rules.
+  (`deploy:sandbox` on a sandbox-profile lane). It takes one of the host's two
+  check slots for the build and matches the operator allow rules.
   Before building it refuses stale dependencies and a core deploy over a lane
   that serves the sandbox profile, naming the command to run instead; after
   reconciling it writes the serving version's telemetry receipt. To

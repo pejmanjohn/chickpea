@@ -9,7 +9,12 @@ import {
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import type { IdentityStore, OrganizationRole } from '../identity/types.ts';
-import { BETTER_AUTH_BASE_PATH, createBetterAuth, type PublicOAuthClientApi } from './better-auth.ts';
+import {
+  BETTER_AUTH_BASE_PATH,
+  createBetterAuth,
+  createBetterAuthSessionReader,
+  type PublicOAuthClientApi,
+} from './better-auth.ts';
 import { BetterAuthDirectory } from './better-auth-principal.ts';
 import { createBetterAuthPublicHandler } from './better-auth-routes.ts';
 import {
@@ -23,6 +28,7 @@ import {
 } from './mcp-oauth.ts';
 import { clientMetadataHost } from './mcp-client-metadata.ts';
 import { BetterAuthMcpOAuthContinuationStore } from './mcp-oauth-continuation.ts';
+import { challengeRedeemed } from './mcp-oauth-redemption.ts';
 import { hostedLoginFence, type HostedLoginFence } from './hosted-login.ts';
 import { validateBrowserMutationProvenance } from './request-provenance.ts';
 import { createWorkspaceManagementMcpHandler } from '../management/mcp.ts';
@@ -263,6 +269,7 @@ async function showMcpConsent(c: Context, environment: BetterAuthEnvironment): P
   }
   const clientId = query.get('client_id') ?? '';
   const clientName = await lookupMcpClientName(environment, clientId, c.req.raw.headers);
+  if (await alreadyRedeemed(environment, query)) return alreadyConnectedResponse(clientName);
   const clientHost = clientMetadataHost(clientId);
   const scope = query.get('scope') ?? MCP_WORKSPACE_SCOPE;
   return new Response(renderMcpConsentPage({ clientName, clientHost, scope, oauthQuery: query.toString() }), {
@@ -290,6 +297,10 @@ async function submitMcpConsent(c: Context, environment: BetterAuthEnvironment):
   const query = new URLSearchParams(oauthQuery);
   if (!await verifySignedOAuthQuery(query, environment.secret)) {
     return invalidBrowserRequest();
+  }
+  if (await alreadyRedeemed(environment, query)) {
+    const clientName = await lookupMcpClientName(environment, query.get('client_id') ?? '', c.req.raw.headers);
+    return alreadyConnectedResponse(clientName);
   }
   const accept = form.decision === 'allow';
   const handler = createBetterAuthPublicHandler(environment);
@@ -574,6 +585,34 @@ export function renderMcpConsentPage(input: {
         <button type="submit" name="decision" value="allow">Allow</button>
         <button type="submit" name="decision" value="deny">Deny</button>
       </form>`);
+}
+
+/**
+ * Whether the client already exchanged a code for this authorization: a tab
+ * left open on it would send a second code to a callback no longer listening.
+ * Any failure answers no, so consent goes on as before.
+ */
+async function alreadyRedeemed(environment: BetterAuthEnvironment, query: URLSearchParams): Promise<boolean> {
+  try {
+    return await challengeRedeemed(await createBetterAuthSessionReader(environment), query);
+  } catch {
+    return false;
+  }
+}
+
+export function renderMcpAlreadyConnectedPage(clientName: string | undefined): string {
+  const name = displayMcpClientName(clientName);
+  const app = name ? escapeHtml(name) : 'This app';
+  const back = name ? escapeHtml(name) : 'it';
+  return brandPage('Already connected', `      <h1>Already connected</h1>
+      <p>${app} is already connected to Chickpea. You can close this tab and go back to ${back}.</p>`);
+}
+
+function alreadyConnectedResponse(clientName: string | undefined): Response {
+  return new Response(renderMcpAlreadyConnectedPage(clientName), {
+    status: 200,
+    headers: browserHeaders('text/html; charset=utf-8'),
+  });
 }
 
 function browserHeaders(contentType: string): Headers {

@@ -28,7 +28,7 @@ function facts(overrides: object = {}) {
   return {
     generatedAt: '2026-10-01T00:00:00.000Z', worktree: '/work/tree',
     node: { version: 'v24.22.1', baseline: '24.22.1', supported: true },
-    dependencies: { drift: [] }, hostReservation: null,
+    dependencies: { drift: [] }, hostReservations: [],
     source: { status: 'current', approvedTip: 'a'.repeat(40) }, localSchema: SCHEMA,
     lanes: [lane()], ...overrides,
   };
@@ -51,20 +51,27 @@ test('host problems block the run and say how to fix them', () => {
     node: { version: 'v26.7.0', baseline: '24.22.1', supported: false },
     dependencies: { drift: [{ name: 'fast-uri', installed: '3.1.7', locked: '3.1.8' }] },
     source: { status: 'behind', code: 'QA_SOURCE_BEHIND_MAIN' },
-    hostReservation: { pid: 42, cwd: '/other', startedAt: 'then', liveness: 'stopped' },
+    hostReservations: [{ file: '/host/owner.json', pid: 42, cwd: '/other', startedAt: 'then', liveness: 'stopped' }],
   }));
   assert.equal(report.ok, false);
   const levels = report.host.map((c: any) => c.level);
   assert.deepEqual(levels, ['block', 'block', 'human', 'block']);
   assert.match(report.host[1].fix, /npm ci --strict-allow-scripts/);
   assert.match(report.host[3].fix, /env -- restamp/);
-  assert.match(report.needs[0], /PID 42 .*no longer running; verify:host refuses it/);
-  const alive = kickoffReport(facts({ hostReservation: { pid: 42, cwd: '/other', startedAt: 'then', liveness: 'live' } }));
+  assert.match(report.needs[0], /owner\.json names PID 42 .*no longer running; verify:host skips that slot and refuses when no other is free/);
+  const slot = (file: string, pid: number, liveness: string) => ({ file: `/host/${file}`, pid, cwd: '/other', startedAt: 'then', liveness });
+  const alive = kickoffReport(facts({ hostReservations: [slot('owner.json', 42, 'live')] }));
   assert.equal(alive.host[2].level, 'info', 'a running reservation only means a deploy waits');
+  assert.match(alive.host[2].text, /reserved in owner\.json by PID 42/);
+  assert.ok(!alive.host.some((c: any) => c.text === 'Host reservation is free'), 'free only when no slot is held');
   assert.equal(alive.ok, true);
-  const stale = kickoffReport(facts({ hostReservation: { pid: 42, cwd: '/other', startedAt: 'then', liveness: 'stopped' } }));
-  assert.equal(stale.ok, false, 'a stale reservation stops the guarded deploy, so the run is not ready');
-  assert.equal(kickoffReport(facts({ hostReservation: { pid: 1, cwd: '/x', startedAt: 'then', liveness: 'unknown' } })).host[2].level, 'human');
+  const stale = kickoffReport(facts({ hostReservations: [slot('owner.json', 42, 'stopped')] }));
+  assert.equal(stale.ok, false, 'a stale slot needs a person, so the run is not ready');
+  assert.equal(kickoffReport(facts({ hostReservations: [slot('owner.json', 1, 'unknown')] })).host[2].level, 'human');
+  const both = kickoffReport(facts({ hostReservations: [slot('owner.json', 42, 'live'), slot('owner-2.json', 43, 'stopped')] }));
+  assert.deepEqual(both.host.slice(2, 4).map((c: any) => c.level), ['info', 'human'], 'one check per held slot');
+  assert.match(both.needs[0], /owner-2\.json names PID 43 .*no longer running/);
+  assert.match(both.host[3].fix, /before removing the stale owner-2\.json/);
   const unreadable = kickoffReport(facts({ lanes: [], lanesError: 'TARGET_NOT_REGISTERED' }));
   assert.equal(unreadable.ok, false);
   assert.match(unreadable.host.at(-1).text, /Could not read the lane registry or capabilities: TARGET_NOT_REGISTERED/);
@@ -120,11 +127,11 @@ test('lane problems are sorted into blockers and things only a person can do', (
 
 test('a long host hold and a silent lane holder warn, block nothing new, and are never taken', () => {
   const at = (minutesBefore: number) => new Date(Date.parse('2026-10-01T00:00:00.000Z') - minutesBefore * 60_000).toISOString();
-  const held = (minutes: number) => kickoffReport(facts({ hostReservation: { pid: 42, cwd: '/other', startedAt: at(minutes), liveness: 'live' } }));
+  const held = (minutes: number) => kickoffReport(facts({ hostReservations: [{ file: '/host/owner-2.json', pid: 42, cwd: '/other', startedAt: at(minutes), liveness: 'live' }] }));
   assert.equal(held(14).host[2].level, 'info', 'under fifteen minutes a hold is ordinary');
   const long = held(16);
   assert.equal(long.host[2].level, 'warn');
-  assert.match(long.host[2].text, /for 16 min .*over the 15-minute warning/);
+  assert.match(long.host[2].text, /reserved in owner-2\.json by PID 42 .*for 16 min .*over the 15-minute warning/);
   assert.match(long.host[2].fix, /Never steal, stop or remove the reservation/);
   assert.equal(long.ok, true, 'a long hold only warns; a guarded deploy still waits for it');
   assert.deepEqual(long.needs, []);
@@ -206,7 +213,7 @@ test('facts come from injectable readers, and a claim is ours only for this chec
   const gathered = await gatherKickoffFacts({
     root, lanes: ['amber', 'cobalt'],
     readers: {
-      nodeVersion: 'v24.22.1', lockfileDrift: () => [], hostReservation: null, secretEntries: new Map(),
+      nodeVersion: 'v24.22.1', lockfileDrift: () => [], hostReservations: [], secretEntries: new Map(),
       source: { status: 'current', approvedTip: 'b'.repeat(40) }, localSchema: SCHEMA,
       capabilities: [
         { target: 'amber', health: 'ready', profile: 'core', liveVersion: 'v1', servingVersion: 'v1', schemaGeneration: SCHEMA, errors: [], secrets: { OPENAI_API_KEY: true, BROWSERBASE_API_KEY: false }, defaultChatModel: 'm', modelRoles: 'm / image unset / coding unset', versionMatchesRegistry: true, missingActorAliases: [] },
@@ -233,14 +240,14 @@ test('facts come from injectable readers, and a claim is ours only for this chec
   assert.ok(report.lanes[1].checks.some((c: any) => c.level === 'block' && /WRANGLER_UNAVAILABLE/.test(c.text)));
   // A browser probe that throws becomes a fact, and a registry that cannot be read ends gathering, not the report.
   const thrown = await gatherKickoffFacts({ root, lanes: ['amber'], readers: {
-    nodeVersion: 'v24.22.1', lockfileDrift: () => [], hostReservation: null, secretEntries: new Map(), source: { status: 'current', approvedTip: 'b'.repeat(40) }, localSchema: SCHEMA,
+    nodeVersion: 'v24.22.1', lockfileDrift: () => [], hostReservations: [], secretEntries: new Map(), source: { status: 'current', approvedTip: 'b'.repeat(40) }, localSchema: SCHEMA,
     capabilities: [{ target: 'amber', health: 'ready', profile: 'core', liveVersion: 'v1', servingVersion: 'v1', schemaGeneration: SCHEMA, errors: [], missingActorAliases: [] }],
     registry: { targets: { amber: { evidenceRoot: evidence } } },
     browser: async () => { throw new Error('no daemon root'); },
   } });
   assert.deepEqual(thrown.lanes[0].browser, { state: 'error', error: 'no daemon root' });
   const broken = await gatherKickoffFacts({ root, lanes: ['amber'], readers: {
-    nodeVersion: 'v24.22.1', lockfileDrift: () => [], hostReservation: null, secretEntries: new Map(), source: { status: 'current', approvedTip: 'b'.repeat(40) }, localSchema: SCHEMA,
+    nodeVersion: 'v24.22.1', lockfileDrift: () => [], hostReservations: [], secretEntries: new Map(), source: { status: 'current', approvedTip: 'b'.repeat(40) }, localSchema: SCHEMA,
     get capabilities() { throw Object.assign(new Error('missing'), { code: 'TARGET_NOT_REGISTERED' }); },
   } });
   assert.equal(broken.lanesError, 'TARGET_NOT_REGISTERED');

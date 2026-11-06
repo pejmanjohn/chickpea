@@ -342,6 +342,8 @@ export const managementOperationZodSchema = z.discriminatedUnion('kind', [
   }),
 ]);
 
+export const MANAGEMENT_OPERATION_SCHEMA_URI = 'chickpea://schema/operations/v2' as const;
+
 /**
  * The MCP door's operations. Changing a DM routine's Agent needs Chickpea in
  * that DM, so only Slack has reassign_routine_agent; take_over_routine is the

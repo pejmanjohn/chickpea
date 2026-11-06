@@ -69,3 +69,22 @@ test('MCP HTTP telemetry records network failures and rethrows the original erro
   }]);
   assert.doesNotMatch(JSON.stringify(events), /private upstream detail/);
 });
+
+// The MCP spec lets a server answer the client's optional GET stream with
+// 405; the SDK carries on, so only a 405 elsewhere is an HTTP error.
+test('MCP HTTP telemetry records a 405 to the optional GET stream as stream_unavailable', async () => {
+  const events: Array<{ httpMethod: string; status: number | null; outcome: string }> = [];
+  const fetchFn = withMcpHttpTelemetry(
+    async () => new Response(null, { status: 405 }),
+    { connectionId: 'custom', authMode: 'none' },
+    { now: () => 0, emit: ({ httpMethod, status, outcome }) => events.push({ httpMethod, status, outcome }) },
+  );
+
+  await fetchFn('https://example.com/mcp', { method: 'GET', headers: { accept: 'text/event-stream' } });
+  await fetchFn('https://example.com/mcp', { method: 'POST', body: '{}' });
+
+  assert.deepEqual(events, [
+    { httpMethod: 'GET', status: 405, outcome: 'stream_unavailable' },
+    { httpMethod: 'POST', status: 405, outcome: 'http_error' },
+  ]);
+});

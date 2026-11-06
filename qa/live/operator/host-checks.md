@@ -9,9 +9,11 @@ reservations, process inspection, or test suites.
 
 ## What takes the reservation
 
-The reservation, `~/.chickpea/verification-host/owner.json`, is for work that
-competes for this host's ports, processes, build output or CPU long enough to
-time out another task's fixtures:
+The reservation has two slots, `~/.chickpea/verification-host/owner.json` and
+`~/.chickpea/verification-host/owner-2.json`, so two groups can run at once.
+Checkouts on older code know only `owner.json` and use only that slot. The
+reservation is for work that competes for this host's ports, processes, build
+output or CPU long enough to time out another task's fixtures:
 
 - builds, including the build inside a guarded deploy;
 - workerd smokes and boot checks;
@@ -41,27 +43,35 @@ npm run verify:regression -- --area verification --wait-ms 300000
 npm run verify:host -- status
 ```
 
-`status` prints the owner's PID, checkout, start time and whether that PID is
-live, or that the reservation is free. It never reserves. To run a command
-that is itself named `status`, put `--` before it.
+`status` prints each slot's file and its owner's PID, checkout, start time and
+whether that PID is live, or a null owner for a free slot. It reports `free`
+while either slot is free, because a command would start now. It never
+reserves. To run a command that is itself named `status`, put `--` before it.
 
 For a deliberate multi-command group, pass a shell explicitly and set isolated
 database variables as in CONTRIBUTING. Nested commands inherit the owner's
-reservation. A competing process exits before running checks and reports the
-owner PID, checkout and exact file. Continue source review, typechecking, plain
-unit tests and mutation passes. Retry the reservation after the owner finishes;
-do not kill, suspend or change that task's processes.
+reservation. When both slots are held, a competing process exits before running
+checks and reports each owner's PID, checkout and exact file. Continue source
+review, typechecking, plain unit tests and mutation passes. Retry the
+reservation after an owner finishes; do not kill, suspend or change that task's
+processes.
 
 The wrapper does not discover older unwrapped tests. Before the first group in
 a session, inspect known active test/build processes and coordinate with their
 owner. All operators must use the same wrapper for expensive standalone groups.
-This is one local reservation, not a fair queue or a general scheduler. The
-default remains fail-fast. `--wait-ms` adds bounded caller-side polling, at most
-two hours; `verify:host` also accepts `--poll-ms` (10..30000). Only a live owner's
-ordinary contention retries. Status prints when the owner changes, not every
-poll. On normal release the pending command acquires and continues automatically.
-Exit 3 is timeout and 130 is cancellation; neither runs the pending command nor
-changes the owner. Invalid, stopped, or inaccessible owners require reconciliation.
+This is one local two-slot reservation, not a fair queue or a general
+scheduler. The default remains fail-fast. `--wait-ms` adds bounded caller-side
+polling, at most two hours; `verify:host` also accepts `--poll-ms` (10..30000).
+A waiter retries while at least one owner is live. It reports a stopped or
+uninspectable slot once and keeps waiting; it never removes or reclaims that
+slot. A run that starts in the other slot reports the stale one as well.
+A nested command shares its parent's slot only when both run the same code: a
+command from an older checkout under a parent in `owner-2.json` sees only
+`owner.json`. Status prints when the owners change, not every poll. On normal release
+the pending command acquires and continues automatically. Exit 3 is timeout and
+130 is cancellation; neither runs the pending command nor changes the owners.
+When no owner is live the waiter stops, because invalid, stopped, or
+inaccessible owners require reconciliation.
 The regression runner also refuses source changes made during its wait.
 
 ## Long holds
@@ -83,10 +93,12 @@ a pass.
 
 A command that cannot start, such as a misspelled name, never ran a child, so
 `verify:host` releases the reservation at once and exits 2.
-After interruption, the reservation stays in place. Inspect its PID, descendants,
-checkout and partial logs. Only after proving that its entire group has stopped
-may its owner remove that exact file. A dead parent alone is insufficient. Do not
-copy locks between hosts. Reconcile any open offline attempt using records.md.
+After interruption, the reservation stays in place, and `verify:host` names the
+slot file it holds. Inspect its PID, descendants, checkout and partial logs.
+Only after proving that its entire group has stopped may its owner remove that
+exact stale slot file, `owner.json` or `owner-2.json`, never the other slot. A
+dead parent alone is insufficient. Do not copy locks between hosts. Reconcile
+any open offline attempt using records.md.
 Normal completion releases the reservation even when a check fails; its failed
 receipt stays intact. Time spent waiting belongs to the existing run's wall time;
 executed checks keep their existing per-command durations and logs.

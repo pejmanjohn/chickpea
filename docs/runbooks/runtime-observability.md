@@ -277,6 +277,9 @@ preserve the content-free tracing configuration in [the runtime](../../src/cloud
 and field allowlists in [management logging](../../src/management/telemetry.ts).
 Do not log raw conversations, instructions, credentials, unrestricted arguments,
 results, or arbitrary error text. This runbook grants no instrumentation authority.
+Each management MCP message emits `mcp.request`, and a tool call refused on its
+input schema emits `tool.validation_failure` with `surface: "mcp"`; see
+[management MCP diagnostics](workspace-management-mcp.md#diagnostics-and-telemetry).
 
 Keep raw logs, account coordinates, activation/access details, incident records,
 and screenshots outside the public repository and package. Redact before sharing.
@@ -646,11 +649,12 @@ agent run failed before completion. Before posting it, Core logs one
 structured `console.warn` object with `event: "chickpea.turn.agent_failure"`,
 `reason: "memory_delivery_lease_rejected"`, the `agentId`, and `stage`:
 `before_run` (refused before the model ran) or `after_run` (refused before the
-answer was delivered). The lease holds while the Agent is enabled, the
-installation is not revoked, the bot delivering the reply is the
-installation's or the Agent's own live app's, the Agent's memory is unchanged
-since the turn read it, and, in a Channel, the Agent's grant stands and both
-the person and that bot are members. A turn whose memory could not be
+answer was delivered). When the answer had begun streaming, the notice
+replaces the streamed message, marked `_Corrected_`. The lease holds while
+the Agent is enabled, the installation is not revoked, the bot delivering the
+reply is the installation's or the Agent's own live app's, the Agent's memory
+is unchanged since the turn read it, and, in a Channel, the Agent's grant
+stands and both the person and that bot are members. A turn whose memory could not be
 prepared is quarantined: its lease always fails, so its line says
 `reason: "memory_quarantined"` instead, and the preceding `memory_metric`
 line with event `quarantine` gives the cause. The turn's preceding
@@ -676,7 +680,7 @@ token, client id, URL, tool argument, result, or provider error text.
 
 | `event` | Emitted | Fields |
 | --- | --- | --- |
-| `chickpea.mcp.http` | Once per HTTP request an Agent turn sends to an MCP server | `connectionId`, `authMode`, `rpcMethod`, `toolName` (tool calls only), `httpMethod`, `status`, `outcome` (`ok`, `http_error`, `network_error`), `durationMs`, `requestBytes`, `responseBytes` |
+| `chickpea.mcp.http` | Once per HTTP request an Agent turn sends to an MCP server | `connectionId`, `authMode`, `rpcMethod`, `toolName` (tool calls only), `httpMethod`, `status`, `outcome` (`ok`, `stream_unavailable` for a 405 to the optional `GET` stream, `http_error`, `network_error`), `durationMs`, `requestBytes`, `responseBytes` |
 | `chickpea.oauth.refresh` | Once per OAuth credential renewal outcome (MCP and Google API connections) | `lane` (`mcp`, `api`), `connectionId`, `trigger` (`turn`, `admin`, `keepalive`, `unauthorized`), `outcome`, `reason`, `tokenDeleted`, `tokenAgeMs`, `durationMs` |
 | `chickpea.oauth.keepalive` | Once per credential keep-alive sweep, every ten minutes from scheduled maintenance | `credentials` (ready OAuth connections checked), `due`, `renewed`, `unavailable`, `rejected`, `skipped` (another caller was renewing, or the connection changed meanwhile), `failed` (an unexpected error, also logged as a `[chickpea] OAuth keep-alive could not renew a credential` warning with its error code), `deferred` (left for the next sweep; the oldest credentials go first), `durationMs` |
 

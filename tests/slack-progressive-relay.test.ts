@@ -767,7 +767,6 @@ test('progressive eligibility closes replacement paths and holds effect-capable 
     decideProgressiveEligibility({
       runtimePlan: basePlan,
       operationsEnabled: true,
-      memorySelected: false,
       recoveryRequired: false,
       concurrentAttributionProven: true,
       replacementCapable: false,
@@ -778,7 +777,6 @@ test('progressive eligibility closes replacement paths and holds effect-capable 
   assert.deepEqual(decide({ operationsEnabled: false }), {
     allowed: false, reason: 'operations_disabled',
   });
-  assert.deepEqual(decide({ memorySelected: true }), { allowed: false, reason: 'memory' });
   assert.deepEqual(decide({ recoveryRequired: true }), {
     allowed: false, reason: 'recovery',
   });
@@ -790,7 +788,6 @@ test('progressive eligibility closes replacement paths and holds effect-capable 
   });
   assert.deepEqual(decideProgressiveEligibility({
     operationsEnabled: true,
-    memorySelected: false,
     recoveryRequired: false,
     concurrentAttributionProven: true,
     replacementCapable: false,
@@ -844,9 +841,6 @@ test('progressive eligibility closes replacement paths and holds effect-capable 
     });
     assert.deepEqual(decide({ runtimePlan, recoveryRequired: true }), {
       allowed: false, reason: 'recovery',
-    });
-    assert.deepEqual(decide({ runtimePlan, memorySelected: true }), {
-      allowed: false, reason: 'memory',
     });
     assert.deepEqual(decide({ runtimePlan, replacementCapable: true }), {
       allowed: false, reason: 'other',

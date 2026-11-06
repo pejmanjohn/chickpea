@@ -81,8 +81,8 @@ its checks, and release mode always executes its full checkpoint.
 
 Run builds and tests **serially**: tests inspect generated artifacts, so a
 concurrent build can make them read a partially written artifact.
-Full suites, builds, and workerd groups also share one host reservation for
-development and QA across checkouts, including deployment builds. Customer
+Full suites, builds, and workerd groups also share the host's two reservation
+slots for development and QA across checkouts, including deployment builds. Customer
 installs and updates from published releases, with only local installation
 settings changed, follow the [install guide](INSTALL_CHICKPEA_CLOUDFLARE.md) or
 [update guide](UPDATE_CHICKPEA_CLOUDFLARE.md)

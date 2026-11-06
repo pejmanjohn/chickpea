@@ -14,7 +14,7 @@ import path from 'node:path';
 import { CLAIM_SILENT_WARN_MS, claimHeartbeatAt, claimSilentMs } from './environment-claim-heartbeat.mjs';
 import { laneCredentialsDirectory } from './lane-secrets.mjs';
 import { QA_LANES } from './qa-lanes.mjs';
-import { HOST_CHECKS_HOLD_WARN_MS, hostChecksHeldMs, readHostChecksOwner } from './verification-host.mjs';
+import { HOST_CHECKS_HOLD_WARN_MS, hostChecksHeldMs, readHostChecksOwners } from './verification-host.mjs';
 
 export const KICKOFF_SCHEMA = 'chickpea-kickoff-doctor/v1';
 
@@ -45,14 +45,16 @@ export function kickoffReport(facts) {
     host.push(check('block', `node_modules differs from package-lock.json for ${facts.dependencies.drift.length} package(s): ${sample}`, 'npm ci --strict-allow-scripts'));
   } else host.push(check('ok', 'node_modules matches package-lock.json'));
 
-  const owner = facts.hostReservation;
-  const heldMs = owner ? hostChecksHeldMs(owner, Date.parse(facts.generatedAt)) : null;
-  if (!owner) host.push(check('ok', 'Host reservation is free'));
-  // A long hold warns and never blocks: the owner may be a legitimately long build.
-  else if (owner.liveness === 'live' && heldMs !== null && heldMs >= HOST_CHECKS_HOLD_WARN_MS) host.push(check('warn', `Host checks have been reserved by PID ${owner.pid} in ${owner.cwd} for ${minutes(heldMs)} min (since ${owner.startedAt}), over the ${minutes(HOST_CHECKS_HOLD_WARN_MS)}-minute warning; a guarded deploy waits for it with --wait-ms`, 'Ask its owner whether a check is hung. Never steal, stop or remove the reservation (host-checks.md).'));
-  else if (owner.liveness === 'live') host.push(check('info', `Host checks are reserved by PID ${owner.pid} in ${owner.cwd} since ${owner.startedAt}; a guarded deploy waits for it with --wait-ms`));
-  else if (owner.liveness === 'unknown') host.push(check('human', `Host reservation names PID ${owner.pid} in ${owner.cwd}, which this user cannot inspect; verify:host refuses it`, 'Ask the maintainer who owns that process.'));
-  else host.push(check('human', `Host reservation names PID ${owner.pid} in ${owner.cwd}, which is no longer running; verify:host refuses it`, 'Ask the maintainer before removing the stale reservation; never remove another task\'s lock on your own.'));
+  if (!facts.hostReservations.length) host.push(check('ok', 'Host reservation is free'));
+  for (const owner of facts.hostReservations) {
+    const slot = path.basename(owner.file);
+    const heldMs = hostChecksHeldMs(owner, Date.parse(facts.generatedAt));
+    // A long hold warns and never blocks: the owner may be a legitimately long build.
+    if (owner.liveness === 'live' && heldMs !== null && heldMs >= HOST_CHECKS_HOLD_WARN_MS) host.push(check('warn', `Host checks have been reserved in ${slot} by PID ${owner.pid} in ${owner.cwd} for ${minutes(heldMs)} min (since ${owner.startedAt}), over the ${minutes(HOST_CHECKS_HOLD_WARN_MS)}-minute warning; a guarded deploy waits for a free slot with --wait-ms`, 'Ask its owner whether a check is hung. Never steal, stop or remove the reservation (host-checks.md).'));
+    else if (owner.liveness === 'live') host.push(check('info', `Host checks are reserved in ${slot} by PID ${owner.pid} in ${owner.cwd} since ${owner.startedAt}; a guarded deploy waits for a free slot with --wait-ms`));
+    else if (owner.liveness === 'unknown') host.push(check('human', `Host reservation ${slot} names PID ${owner.pid} in ${owner.cwd}, which this user cannot inspect; verify:host skips that slot and refuses when no other is free`, 'Ask the maintainer who owns that process.'));
+    else host.push(check('human', `Host reservation ${slot} names PID ${owner.pid} in ${owner.cwd}, which is no longer running; verify:host skips that slot and refuses when no other is free`, `Ask the maintainer before removing the stale ${slot}; never remove another task's lock on your own.`));
+  }
 
   const { source } = facts;
   if (source.status === 'current') host.push(check('ok', `Source contains remote main ${source.approvedTip.slice(0, 8)}`));
@@ -65,7 +67,7 @@ export function kickoffReport(facts) {
     ...host.filter((c) => c.level === 'human').map((c) => c.text),
     ...lanes.flatMap((lane) => lane.checks.filter((c) => c.level === 'human').map((c) => `${lane.target}: ${c.text}`)),
   ];
-  // A person-only host problem (a stale reservation) stops a guarded deploy as surely as a blocker.
+  // A person-only host problem (a stale slot) needs a person as surely as a blocker.
   const hostBlocked = host.some((c) => c.level === 'block' || c.level === 'human');
   const ready = lanes.filter((lane) => lane.ready).map((lane) => lane.target);
   return {
@@ -163,7 +165,7 @@ export async function gatherKickoffFacts({
   root, lanes = QA_LANES, env = process.env, providerContext, browser = true, startBrowsers = true, now = Date.now,
   readers = {},
 } = {}) {
-  // `in`, not `??`: a test may inject null (no reservation) without reading the host.
+  // `in`, not `??`: a test may inject a null fact without reading the host.
   const load = async (name, fallback) => (name in readers ? readers[name] : fallback());
   const nodeVersion = await import('./node-version.mjs');
   const facts = {
@@ -178,8 +180,8 @@ export async function gatherKickoffFacts({
     facts.dependencies = { drift };
   } catch (error) { facts.dependencies = { drift: [], error: error.message }; }
 
-  facts.hostReservation = await load('hostReservation', async () => {
-    try { return readHostChecksOwner(); } catch { return null; }
+  facts.hostReservations = await load('hostReservations', async () => {
+    try { return readHostChecksOwners(); } catch { return []; }
   });
 
   facts.source = await load('source', async () => {

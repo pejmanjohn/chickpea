@@ -328,6 +328,19 @@ Run `npm run verify:management-mcp` against a disposable deployment for read-onl
 
 Content-free log envelopes use the `[chickpea:management]` prefix. Events cover OAuth discovery/DCR/token/request outcomes, tool calls, operation kind and disposition, Agent-authoring guide version, posture, artifact class, proposal outcome, stale reason, handoff class, setup lifecycle, receipt delivery, live-versus-snapshot admission, and recipe preview counts. Dimensions are fixed machine tokens and counts; unknown values become `other`. Actor IDs, Slack coordinates, object IDs, names, prompts, instructions, memory bodies, recipes, repository names, URLs, account labels, credentials, setup capabilities, and error text are not accepted.
 
+Each JSON-RPC message `/mcp` handles emits one `mcp.request` event, one per member of a batch:
+
+| Field | Value |
+| --- | --- |
+| `method` | The JSON-RPC method, such as `initialize`, `tools/list`, `tools/call`, `resources/read`, `prompts/get`, or `notifications/initialized` |
+| `tool` | For `tools/call`, the tool name; a name the server does not register is `other` |
+| `resource` | For `resources/read`, `chickpea://guide/agent-authoring/v1` or `chickpea://schema/operations/v2`; any other URI is `other` |
+| `outcome` | `success`; `tool_error` (an `isError` result from the handler); `input_refused` (the SDK refused the arguments on the tool's input schema, so the handler never ran); `jsonrpc_error`; `received` (a notification); or `abandoned` (no response was sent before the connection closed: the client disconnected, cancelled the request, or the SDK dropped it) |
+| `errorCode` | For `jsonrpc_error`, the JSON-RPC code, such as `-32602` |
+| `durationMs` | From the message's arrival to its response; absent for a notification |
+
+An `input_refused` call has no `tool.call` event. It emits `tool.validation_failure` with `surface: "mcp"`, the same event the Flue surface emits, carrying `tool`, `fields`, and `validationCodes` (zod issue codes). Each field is a path of schema property names and array indexes, such as `operations.0.expectedRevision`; any other key becomes `*`. To tell a refused call from a read, query `mcp.request` by `method` and `outcome`, then `tool.validation_failure` for the failing field. Requests the OAuth check refuses before the server runs appear only as `oauth.request`.
+
 For support:
 
 1. Confirm `/.well-known/oauth-protected-resource/mcp` names the exact `/mcp` resource and `/api/auth` authorization server.

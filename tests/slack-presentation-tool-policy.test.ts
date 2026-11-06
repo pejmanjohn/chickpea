@@ -435,7 +435,6 @@ test('final-answer mode refuses a declaration while another tool is running', as
 });
 
 for (const toolName of [
-  'update_agent_memory',
   'apply_workspace_changes',
   'undo_workspace_change',
   'hand_off_to_agent',
@@ -472,6 +471,38 @@ for (const toolName of [
     }
   });
 }
+
+test('a declaration after update_agent_memory is accepted, live and on resume', async () => {
+  for (const mode of ['early', 'final_answer'] as const) {
+    await withSubmission(async () => {
+      observeTurn([{ role: 'user', content: currentPrompt(true, mode) }]);
+      await executeTool('update_agent_memory', 'call_memory', async () => 'updated');
+      assert.equal(
+        await executeTool(SLACK_STREAM_ANSWER_TOOL_NAME, 'call_stream', async () => 'noted'),
+        'noted',
+        mode,
+      );
+    });
+    await withSubmission(async () => {
+      observeTurn([
+        { role: 'user', content: currentPrompt(true, mode) },
+        {
+          role: 'assistant',
+          content: [{ type: 'toolCall', id: 'call_memory', name: 'update_agent_memory', arguments: {} }],
+        },
+        {
+          role: 'toolResult', toolCallId: 'call_memory', toolName: 'update_agent_memory',
+          content: [{ type: 'text', text: 'updated' }], isError: false,
+        },
+      ]);
+      assert.equal(
+        await executeTool(SLACK_STREAM_ANSWER_TOOL_NAME, 'call_stream', async () => 'noted'),
+        'noted',
+        mode,
+      );
+    });
+  }
+});
 
 test('a held browser step that staged its screenshot keeps the reply terminal', async () => {
   for (const staged of [true, false]) {

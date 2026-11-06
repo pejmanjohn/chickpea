@@ -67,6 +67,8 @@ export type SlackProgressiveEligibilityReason =
   // model makes once its last tool has settled.
   | 'final_answer_release'
   | 'operations_disabled'
+  // Retired: memory's delivery lease still fails closed after a stream, which
+  // the failure notice then replaces. Kept so previously frozen rows still parse.
   | 'memory'
   // Retired: a Cloudflare sandbox always carries repository grants, so
   // `effect_capable` decides first. Kept so previously frozen rows still parse.

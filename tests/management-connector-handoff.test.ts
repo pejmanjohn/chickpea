@@ -742,6 +742,7 @@ test('activated user Agents fully self-manage while cross-Agent authority stays 
       currentAgent: { id: string; name: string; effectiveConnections: unknown[] };
       agents: Array<{ id: string }>;
       connectors: Array<{ id: string; kind: string }>;
+      connectorCount: number;
     } }).result;
     assert.equal(rootSnapshot.currentAgentId, CHICKPEA_AGENT_ID);
     assert.deepEqual(rootSnapshot.currentAgent, {
@@ -754,6 +755,9 @@ test('activated user Agents fully self-manage while cross-Agent authority stays 
       rootSnapshot.connectors.find(({ id }) => id === 'linear')?.kind,
       'setup_catalog_entry',
     );
+    // The model quotes this number instead of counting the list.
+    assert.equal(rootSnapshot.connectorCount, rootSnapshot.connectors.length);
+    assert.ok(rootSnapshot.connectorCount > 0);
 
     const selfEdit = await invokeSlackWorkspaceManagementTool({
       signal: signal(support.id),

@@ -1,16 +1,22 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
-import { HOST_CHECK_LOCK, hostChecksHeldMs, readHostChecksOwner } from './lib/verification-host.mjs';
+import { HOST_CHECK_SLOTS, hostChecksHeldMs, readHostChecksOwners } from './lib/verification-host.mjs';
 import { waitForHostChecks } from './lib/verification-host-wait.mjs';
 
 const args = process.argv.slice(2);
 if (!args.length || args[0] === '--help') {
-  console.log('Usage: npm run verify:host -- [--wait-ms MS] [--poll-ms MS] [--] COMMAND [ARG ...]\n       npm run verify:host -- status\nReserve one host slot for a serial build, workerd, boot, test-database or full-suite group. Typecheck, plain unit tests and mutation passes that start no server, port or test database run without it. Bounded waiting is opt-in; a hold over 15 minutes is reported to waiters once, never taken. No shell expansion, stealing or process killing. Timeout exits 3; cancellation exits 130. A command that cannot start releases the slot and exits 2; an interrupted command keeps it for reconciliation.\nstatus prints the owner (PID, checkout, start, whether the PID is live) or that the slot is free, as JSON, and never reserves. It wins over a command named status; to run one, put -- first: npm run verify:host -- -- status.');
+  console.log('Usage: npm run verify:host -- [--wait-ms MS] [--poll-ms MS] [--] COMMAND [ARG ...]\n       npm run verify:host -- status\nReserve one of the host\'s two slots for a serial build, workerd, boot, test-database or full-suite group. Typecheck, plain unit tests and mutation passes that start no server, port or test database run without it. Bounded waiting is opt-in; a hold over 15 minutes is reported to waiters once, never taken. No shell expansion, stealing or process killing. Timeout exits 3; cancellation exits 130. A command that cannot start releases its slot and exits 2; an interrupted command keeps it for reconciliation.\nstatus prints each slot\'s owner (PID, checkout, start, whether the PID is live), or null for a free slot, as JSON, and never reserves; it reports free while any slot is free. It wins over a command named status; to run one, put -- first: npm run verify:host -- -- status.');
 } else if (args[0] === 'status') {
   try {
     if (args.length > 1) throw new Error('status takes no arguments. Use --help.');
-    const owner = readHostChecksOwner();
-    console.log(JSON.stringify(owner ? { status: 'reserved', file: HOST_CHECK_LOCK, owner, heldMs: hostChecksHeldMs(owner) } : { status: 'free', file: HOST_CHECK_LOCK }));
+    const owners = readHostChecksOwners();
+    const slots = HOST_CHECK_SLOTS.map((file) => {
+      const held = owners.find((owner) => owner.file === file);
+      if (!held) return { file, owner: null, heldMs: null };
+      const { pid, cwd, startedAt, liveness } = held;
+      return { file, owner: { pid, cwd, startedAt, liveness }, heldMs: hostChecksHeldMs(held) };
+    });
+    console.log(JSON.stringify({ status: owners.length < slots.length ? 'free' : 'reserved', slots }));
   } catch (error) {
     console.error(error.message);
     process.exitCode = 2;
@@ -40,7 +46,7 @@ if (!args.length || args[0] === '--help') {
       throw new Error(`Command could not start: ${args[0]} (${result.error.code}). It holds no host reservation.`);
     }
     if (!result.signal && !result.error) lease.release();
-    else console.error('Interrupted command: host reservation retained. Reconcile its processes before removing the exact owner.json.');
+    else console.error(`Interrupted command: host reservation retained. Reconcile its processes before removing the exact ${lease.file}.`);
     process.exitCode = result.status ?? 1;
   } catch (error) {
     console.error(error.message);

@@ -968,6 +968,8 @@ export interface ManagementWorkspaceSnapshot {
     /** Classifies this row as a setup catalog entry rather than current Agent access. */
     kind: 'setup_catalog_entry';
   }>;
+  /** How many entries `connectors` holds, so the model reports a number instead of counting. */
+  connectorCount: number;
   /** Ready connections eligible for the trusted Agent route that requested inspection. */
   currentAgent?: {
     id: string;

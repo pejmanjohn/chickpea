@@ -632,12 +632,18 @@ const cardClick = (surfaceId: string, slot: number) => ({
 function redrawnCards(update: Record<string, unknown>, surfaceId: string) {
   const blocks = update.blocks as Array<Record<string, unknown>>;
   const carousel = blocks.find((block) => block.block_id === uiBlockId('ui', surfaceId, 1))!;
-  const status = blocks.find((block) => block.block_id === uiBlockId('ui', surfaceId, 20));
+  // One context block per status entry, ids .20 to .29, so each entry is its own line.
+  const statusIds = new Set(Array.from({ length: 10 }, (_, line) => uiBlockId('ui', surfaceId, 20 + line)));
+  const status = blocks.filter((block) => statusIds.has(String(block.block_id)));
   return {
     blocks,
     requests: (carousel.elements as Array<{ actions?: Array<{ action_id: string }> }>).map((card) =>
       (card.actions ?? []).map((button) => button.action_id).filter((id) => id.startsWith('chickpea.ui.v1.cards.'))),
-    status: ((status?.elements ?? []) as Array<{ text: string }>).map((element) => element.text),
+    status: status.map((block) => {
+      const elements = block.elements as Array<{ text: string }>;
+      assert.equal(elements.length, 1, 'one entry per status line');
+      return elements[0]!.text;
+    }),
   };
 }
 
@@ -656,7 +662,7 @@ test('each card in a set claims on its own and redraws in the answer with who pi
   const first = f.updates().at(-1)!;
   assert.equal(first.channel, 'C1');
   assert.equal(first.ts, CARD_TS);
-  assert.equal(first.text, message.text, 'the answer text stays');
+  assert.equal('text' in first, false, 'Slack rebuilds the text from the blocks; a long text would be refused');
   const drawn = redrawnCards(first, surface.id);
   assert.deepEqual(drawn.blocks[0], ANSWER_BLOCK, 'the answer stays');
   assert.deepEqual(drawn.blocks.at(-1), FOOTER_BLOCK, 'the footer stays');
@@ -678,7 +684,7 @@ test('each card in a set claims on its own and redraws in the answer with who pi
   const second = redrawnCards(f.updates().at(-1)!, surface.id);
   assert.deepEqual(second.requests, [[], []]);
   assert.equal(second.status.length, 2);
-  assert.equal(second.blocks.length, drawn.blocks.length, 'the status line is replaced, not repeated');
+  assert.equal(second.blocks.length, drawn.blocks.length + 1, 'a second status line; the first is replaced, not repeated');
   assert.equal((await f.read(surface.id))?.status, 'resolved', 'every request card is settled');
 
   // The same card again is refused privately.
@@ -721,7 +727,7 @@ test('a direct click keeps a copy of the answer, so a later click without the me
   const surface = await f.surface({ namespace: 'ui', status: 'open', spec: CARD_SPEC });
   await f.click(surface.id, { userId: 'U2', ...cardClick(surface.id, 1), actionTs: '3008.000000', message: answerMessage(surface.id) });
   const sent = f.updates().at(-1)!;
-  assert.deepEqual((await f.read(surface.id))?.answerMessage, { ts: CARD_TS, text: sent.text, blocks: sent.blocks });
+  assert.deepEqual((await f.read(surface.id))?.answerMessage, { ts: CARD_TS, blocks: sent.blocks });
 
   await f.click(surface.id, { ...cardClick(surface.id, 4), actionTs: '3008.100000' });
   assert.equal(f.jobs.length, 3);
