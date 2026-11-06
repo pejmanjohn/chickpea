@@ -226,14 +226,14 @@ test('step 4 is a list that reports Tested as pending and stops', async () => {
   assert.equal(items.length, 5, step4);
   assert.match(items[0]!, /Cursor, VS Code, or Windsurf.*go to step 5 in this conversation/);
   assert.match(items[1]!, /Report the three step 5 lines now, with Tested as pending/);
-  assert.equal(items.at(-1), '5. Stop. Do not open the new session or thread yourself.');
+  assert.match(items.at(-1)!, /^5\. Stop\. Do not open the new session or thread yourself\. If an install guide sent you here, go back to it/);
 });
 
 // A new terminal session is the same command run again, and the resume flag
 // keeps the conversation (claude --help, gemini --help).
 test('terminal clients rerun their command, and the resume flag keeps the conversation', async () => {
   const step4 = guideStep(await (await connectMd(`${ORIGIN}/connect.md`)).text(), 4);
-  assert.match(step4, /Claude Code or Gemini CLI in a terminal: exit, then run `claude` or `gemini` again in the same directory\. `claude --continue` or `gemini --resume latest` resumes this conversation with Chickpea loaded\./);
+  assert.match(step4, /Claude Code or Gemini CLI in a terminal: exit, then run `claude --continue` or `gemini --resume latest` in the same directory\. That resumes this conversation with Chickpea loaded\./);
   assert.match(client('claude-code').restart, /`claude --continue` in the same directory resumes this conversation/);
   assert.match(client('gemini-cli').restart, /`gemini --resume latest` in the same directory resumes this conversation/);
 });
@@ -245,13 +245,16 @@ test('Gemini CLI\'s /mcp reload is named for what it reloads', () => {
 });
 
 // Claude Code 2.1.311 `claude mcp login` stops without a terminal on stdin,
-// and a running session does not list a server added from the terminal.
-test('Claude Code signs in with claude mcp login in the person\'s terminal, /mcp as the fallback', () => {
+// and a running session does not list a server added from the terminal. Admin
+// shows the login line to people, so the agent-only part lives in step 3.
+test('Claude Code signs in with claude mcp login in the person\'s terminal, /mcp as the fallback', async () => {
   const login = client('claude-code').login;
-  assert.match(login, /^Run `claude mcp login chickpea` in a terminal\./);
+  assert.match(login, /^Run `claude mcp login chickpea` in a terminal and finish the browser sign-in\./);
   assert.match(login, /prints `Authenticated with "chickpea"\.`/);
-  assert.match(login, /It needs an interactive terminal\. From a coding agent's shell tool it stops with "stdin isn't a terminal", so the agent asks the person to run it\./);
+  assert.doesNotMatch(login, /shell tool|stdin/, 'nothing about the agent in the line Admin shows');
   assert.match(login, /A Claude Code session that lists `chickpea` can sign in from `\/mcp` instead\./);
+  const body = await (await connectMd(`${ORIGIN}/connect.md`)).text();
+  assert.match(guideStep(body, 3), /In Claude Code, ask the person to run `claude mcp login chickpea` themselves: it needs an interactive terminal, and your shell tool has none\./);
 });
 
 test('both hand-off paths ask for the first Agent the same way, unless an install guide owns it', async () => {
@@ -279,9 +282,8 @@ test('sign-in uses the tab the client opened and never relays its single-use URL
   assert.ok(leftover, 'a leftover-tab note');
   assert.equal(leftover.split(/(?<=\.) /).length, 1, 'the leftover-tab note is one sentence');
 
-  const codex = CONNECT_CLIENTS.find((client) => client.id === 'codex')!;
-  assert.match(codex.login, /Browser launch failed/);
-  assert.match(codex.login, /Successfully logged in/);
+  assert.match(client('codex').login, /Browser launch failed/);
+  assert.match(client('codex').login, /Successfully logged in/);
 });
 
 // Measured 2026-11-06: reopening the same Codex thread after an app restart
