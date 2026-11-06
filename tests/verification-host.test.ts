@@ -170,6 +170,49 @@ test('a nested command shares the second slot by its token and cannot release it
   assert.deepEqual(files.map(read), held, 'sharing and its release change neither slot');
 });
 
+test('a free slot beside a stopped one starts at once and reports the stopped slot without touching it', async (t) => {
+  const files = slotFiles(t);
+  const dead = stoppedPid();
+  hold(files[0], 'crashed-checkout', dead);
+  const stale = read(files[0]);
+  const events: any[] = [];
+  const lease = await waitForHostChecks({ files, env: {}, cwd: 'next', onWait: (event: unknown) => events.push(event) });
+  assert.equal(lease.file, files[1]);
+  assert.deepEqual(events.map(({ status, warning, file }) => ({ status, warning, file })),
+    [{ status: 'acquired', warning: 'HOST_CHECKS_SLOT_STOPPED', file: files[0] }]);
+  assert.match(events[0].message, new RegExp(`names PID ${dead}, which is no longer live\\.`));
+  assert.equal(read(files[0]), stale, 'the stopped slot is reported, never removed');
+  lease.release();
+});
+
+test('a slot being written, holding null or holding no token counts as held and is never shared', (t) => {
+  const files = slotFiles(t);
+  mkdirSync(join(files[0], '..'), { recursive: true });
+  writeFileSync(files[0], '');
+  const beside = acquireHostChecks({ files, env: {}, cwd: 'beside-a-write' });
+  assert.equal(beside.file, files[1], 'a slot mid-write is held, not a crash');
+  beside.release();
+
+  writeFileSync(files[1], 'null');
+  assert.throws(() => acquireHostChecks({ files, env: {}, cwd: 'third' }),
+    (error: any) => error.code === 'HOST_CHECKS_BUSY' && error.owners.every((owner: any) => owner.pid === undefined) && error.message.includes('inspect file'));
+
+  writeFileSync(files[0], JSON.stringify({ pid: process.pid, cwd: 'tokenless' }));
+  rmSync(files[1]);
+  const fresh = acquireHostChecks({ files, env: {}, cwd: 'no-token-caller' });
+  assert.equal(fresh.file, files[1], 'a caller without a token never shares a tokenless slot');
+  fresh.release();
+});
+
+test('release refuses a slot whose token changed and leaves it in place', (t) => {
+  const files = slotFiles(t);
+  const lease = acquireHostChecks({ files, env: {}, cwd: 'first' });
+  writeFileSync(lease.file, JSON.stringify({ pid: process.pid, cwd: 'someone-else', token: 'other' }));
+  const replaced = read(lease.file);
+  assert.throws(() => lease.release(), /Host check ownership changed; lock retained\./);
+  assert.equal(read(lease.file), replaced);
+});
+
 test('a waiter reports a stopped slot once, waits for the live one and never touches the stale file', async (t) => {
   const files = slotFiles(t);
   const dead = stoppedPid();

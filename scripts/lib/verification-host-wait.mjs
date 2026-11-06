@@ -7,7 +7,7 @@ function error(code, message) { return Object.assign(new Error(`${code}: ${messa
 function slotWarning(owner, now) {
   if (owner.liveness === 'live') return ['HOST_CHECKS_HELD_LONG', hostChecksHoldWarning(owner, now)];
   const state = owner.liveness === 'stopped' ? 'is no longer live' : 'cannot be inspected';
-  return [`HOST_CHECKS_SLOT_${owner.liveness.toUpperCase()}`, `${owner.file} names PID ${owner.pid}, which ${state}. Waiting for a live owner; a person reconciles this slot's descendants and exact file per host-checks.md. Never steal, stop or remove it.`];
+  return [`HOST_CHECKS_SLOT_${owner.liveness.toUpperCase()}`, `${owner.file} names PID ${owner.pid}, which ${state}. A person reconciles this slot's descendants and exact file per host-checks.md. Never steal, stop or remove it.`];
 }
 
 /**
@@ -29,14 +29,20 @@ export async function waitForHostChecks({ waitMs = 0, pollMs = 1000, signal, onW
     if (previous && performance.now() - started >= waitMs) throw error('HOST_CHECKS_TIMEOUT', 'Wait deadline reached. The current owner and pending work are unchanged.');
     try {
       const lease = acquireHostChecks({ ...options, now });
-      return { ...lease, waitedMs: Math.round(performance.now() - started) };
+      const waitedMs = Math.round(performance.now() - started);
+      for (const owner of lease.stale) {
+        const [warning, message] = slotWarning({ ...owner, liveness: hostChecksLiveness(owner.pid) }, now());
+        if (!warned.has(`${warning} ${JSON.stringify(owner)}`)) onWait?.({ status: 'acquired', warning, file: owner.file, waitedMs, message });
+      }
+      return { ...lease, waitedMs };
     } catch (cause) {
       if (cause.code !== 'HOST_CHECKS_BUSY' || waitMs === 0) throw cause;
       const owners = cause.owners.map((owner) => ({ ...owner, liveness: hostChecksLiveness(owner.pid), heldMs: hostChecksHeldMs(owner, now()) }));
       if (!owners.some((owner) => owner.liveness === 'live')) {
-        if (owners.some((owner) => owner.liveness === 'stopped')) throw error('HOST_CHECKS_OWNER_STOPPED', 'Owner is no longer live. Reconcile its descendants and exact reservation per host-checks.md; never steal the slot.');
-        if (owners.some(({ pid }) => Number.isSafeInteger(pid) && pid > 0)) throw error('HOST_CHECKS_OWNER_UNKNOWN', 'Cannot establish owner liveness; inspect the reservation.');
-        throw error('HOST_CHECKS_OWNER_UNKNOWN', 'Inspect the existing reservation; its owner is not valid.');
+        const slots = owners.map((owner) => owner.file).join(', ');
+        if (owners.some((owner) => owner.liveness === 'stopped')) throw error('HOST_CHECKS_OWNER_STOPPED', `Owner is no longer live in ${slots}. Reconcile its descendants and exact reservation per host-checks.md; never steal the slot.`);
+        if (owners.some(({ pid }) => Number.isSafeInteger(pid) && pid > 0)) throw error('HOST_CHECKS_OWNER_UNKNOWN', `Cannot establish owner liveness in ${slots}; inspect the reservation.`);
+        throw error('HOST_CHECKS_OWNER_UNKNOWN', `Inspect the existing reservation in ${slots}; its owner is not valid.`);
       }
       const identity = JSON.stringify(cause.owners);
       const waitedMs = Math.round(performance.now() - started);

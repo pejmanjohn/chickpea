@@ -29,7 +29,12 @@ export function hostChecksLiveness(pid) {
 }
 
 function readSlot(file) {
-  try { return JSON.parse(readFileSync(file, 'utf8')); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  try { return JSON.parse(readFileSync(file, 'utf8')) ?? {}; } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    // Another process may be between its exclusive create and its write; the slot is held by an owner not yet readable.
+    if (error instanceof SyntaxError) return {};
+    throw error;
+  }
 }
 
 export function readHostChecksOwners({ files = HOST_CHECK_SLOTS } = {}) {
@@ -55,23 +60,24 @@ export class HostChecksBusyError extends Error {
 export function acquireHostChecks({ files = HOST_CHECK_SLOTS, env = process.env, cwd = process.cwd(), now = Date.now } = {}) {
   for (const file of files) mkdirSync(join(file, '..'), { recursive: true, mode: 0o700 });
   const priors = files.map(readSlot);
-  const shared = priors.findIndex((prior) => prior && env.CHICKPEA_CHECK_OWNER === prior.token);
+  const shared = priors.findIndex((prior) => prior?.token && env.CHICKPEA_CHECK_OWNER === prior.token);
   if (shared >= 0) {
     process.kill(priors[shared].pid, 0); // Nested commands may share only a living owner's slot.
-    return { file: files[shared], env: { CHICKPEA_CHECK_OWNER: priors[shared].token }, release() {} };
+    return { file: files[shared], stale: [], env: { CHICKPEA_CHECK_OWNER: priors[shared].token }, release() {} };
   }
   const token = randomUUID();
   const record = JSON.stringify({ pid: process.pid, cwd, startedAt: new Date(now()).toISOString(), token });
-  for (const file of files) {
+  const owner = (prior, index) => ({ file: files[index], pid: prior.pid, cwd: prior.cwd, startedAt: prior.startedAt });
+  for (const [taken, file] of files.entries()) {
     try { writeFileSync(file, record, { flag: 'wx', mode: 0o600 }); }
     catch (error) { if (error.code === 'EEXIST') continue; throw error; }
-    return { file, env: { CHICKPEA_CHECK_OWNER: token }, release() {
+    const stale = priors.flatMap((prior, index) => (index !== taken && prior && hostChecksLiveness(prior.pid) !== 'live' ? [owner(prior, index)] : []));
+    return { file, stale, env: { CHICKPEA_CHECK_OWNER: token }, release() {
       if (JSON.parse(readFileSync(file, 'utf8')).token !== token) throw new Error('Host check ownership changed; lock retained.');
       unlinkSync(file);
     } };
   }
-  throw new HostChecksBusyError(files.map((file, index) => {
-    const { pid, cwd: checkout, startedAt } = priors[index] ?? JSON.parse(readFileSync(file, 'utf8'));
-    return { file, pid, cwd: checkout, startedAt };
-  }), now());
+  const holders = files.map((file, index) => priors[index] ?? readSlot(file));
+  if (holders.includes(null)) return acquireHostChecks({ files, env, cwd, now });
+  throw new HostChecksBusyError(holders.map(owner), now());
 }

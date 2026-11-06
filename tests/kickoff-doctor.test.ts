@@ -58,7 +58,7 @@ test('host problems block the run and say how to fix them', () => {
   assert.deepEqual(levels, ['block', 'block', 'human', 'block']);
   assert.match(report.host[1].fix, /npm ci --strict-allow-scripts/);
   assert.match(report.host[3].fix, /env -- restamp/);
-  assert.match(report.needs[0], /owner\.json names PID 42 .*no longer running; verify:host refuses it/);
+  assert.match(report.needs[0], /owner\.json names PID 42 .*no longer running; verify:host skips that slot and refuses when no other is free/);
   const slot = (file: string, pid: number, liveness: string) => ({ file: `/host/${file}`, pid, cwd: '/other', startedAt: 'then', liveness });
   const alive = kickoffReport(facts({ hostReservations: [slot('owner.json', 42, 'live')] }));
   assert.equal(alive.host[2].level, 'info', 'a running reservation only means a deploy waits');

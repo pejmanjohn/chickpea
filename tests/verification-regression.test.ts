@@ -192,12 +192,12 @@ test('an interrupted run keeps a reservation it took and reports one only when i
   const warnings: string[] = [];
   const warn = (message: string) => warnings.push(message);
   let released = 0;
-  const lease = { release: () => { released += 1; } };
+  const lease = { file: '/host/owner-2.json', release: () => { released += 1; } };
   settleHostLease(lease, false, warn);
   assert.deepEqual([released, warnings.length], [1, 0], 'a finished run releases');
   settleHostLease(lease, true, warn);
   assert.equal(released, 1, 'an interrupted run keeps its reservation for inspection');
-  assert.match(warnings.join('\n'), /^Interrupted check: host reservation retained\./);
+  assert.match(warnings.join('\n'), /^Interrupted check: host reservation \/host\/owner-2\.json retained\./);
   warnings.length = 0;
   settleHostLease(undefined, true, warn);
   settleHostLease(undefined, false, warn);

@@ -167,7 +167,7 @@ export async function runWithHostReservation(steps, run, acquire) {
  */
 export function settleHostLease(lease, interrupted, warn = console.error) {
   if (!interrupted) lease?.release();
-  else if (lease) warn('Interrupted check: host reservation retained. Inspect the owner and child processes before releasing it.');
+  else if (lease) warn(`Interrupted check: host reservation ${lease.file} retained. Inspect the owner and child processes before releasing it.`);
 }
 
 /** Runs one step to completion; piped output is collected into `output`. */

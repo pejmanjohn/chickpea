@@ -64,7 +64,10 @@ scheduler. The default remains fail-fast. `--wait-ms` adds bounded caller-side
 polling, at most two hours; `verify:host` also accepts `--poll-ms` (10..30000).
 A waiter retries while at least one owner is live. It reports a stopped or
 uninspectable slot once and keeps waiting; it never removes or reclaims that
-slot. Status prints when the owners change, not every poll. On normal release
+slot. A run that starts in the other slot reports the stale one as well.
+A nested command shares its parent's slot only when both run the same code: a
+command from an older checkout under a parent in `owner-2.json` sees only
+`owner.json`. Status prints when the owners change, not every poll. On normal release
 the pending command acquires and continues automatically. Exit 3 is timeout and
 130 is cancellation; neither runs the pending command nor changes the owners.
 When no owner is live the waiter stops, because invalid, stopped, or

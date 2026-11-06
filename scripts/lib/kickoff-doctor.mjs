@@ -52,8 +52,8 @@ export function kickoffReport(facts) {
     // A long hold warns and never blocks: the owner may be a legitimately long build.
     if (owner.liveness === 'live' && heldMs !== null && heldMs >= HOST_CHECKS_HOLD_WARN_MS) host.push(check('warn', `Host checks have been reserved in ${slot} by PID ${owner.pid} in ${owner.cwd} for ${minutes(heldMs)} min (since ${owner.startedAt}), over the ${minutes(HOST_CHECKS_HOLD_WARN_MS)}-minute warning; a guarded deploy waits for a free slot with --wait-ms`, 'Ask its owner whether a check is hung. Never steal, stop or remove the reservation (host-checks.md).'));
     else if (owner.liveness === 'live') host.push(check('info', `Host checks are reserved in ${slot} by PID ${owner.pid} in ${owner.cwd} since ${owner.startedAt}; a guarded deploy waits for a free slot with --wait-ms`));
-    else if (owner.liveness === 'unknown') host.push(check('human', `Host reservation ${slot} names PID ${owner.pid} in ${owner.cwd}, which this user cannot inspect; verify:host refuses it`, 'Ask the maintainer who owns that process.'));
-    else host.push(check('human', `Host reservation ${slot} names PID ${owner.pid} in ${owner.cwd}, which is no longer running; verify:host refuses it`, `Ask the maintainer before removing the stale ${slot}; never remove another task's lock on your own.`));
+    else if (owner.liveness === 'unknown') host.push(check('human', `Host reservation ${slot} names PID ${owner.pid} in ${owner.cwd}, which this user cannot inspect; verify:host skips that slot and refuses when no other is free`, 'Ask the maintainer who owns that process.'));
+    else host.push(check('human', `Host reservation ${slot} names PID ${owner.pid} in ${owner.cwd}, which is no longer running; verify:host skips that slot and refuses when no other is free`, `Ask the maintainer before removing the stale ${slot}; never remove another task's lock on your own.`));
   }
 
   const { source } = facts;
