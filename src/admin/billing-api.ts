@@ -113,6 +113,8 @@ interface BillingStatus {
   } | null;
   trial: { remaining: string; granted: string; used: string; percent: number; until: string } | null;
   ownKeyWithoutPlan: { minimumPrice: string; minimumTasks: string | null } | null;
+  /** The plan's usage the host holds until the workspace switches to its own key, with the tasks it covers there; null on its own key. */
+  heldForOwnKey: { usage: string; tasks: string | null } | null;
   /** What the big number counts, in the order usage is spent; null for an own key without a plan. */
   balance: BillingBalance | null;
   /** Null where the host offers no auto top-up. Everyone sees whether it is on and whether it reached its limit; only an Owner sees more. */
@@ -553,6 +555,7 @@ function billingStatus(summary: BillingSummary, minimum: PlanOffer): BillingStat
   const pending = summary.plan && summary.pendingChange;
   const ownKeyTasks = (micros: UsageMicros) => funding === 'own_key' ? formatTasks(micros, 'own_key', offers) : null;
   const trialUsed = Math.max(0, (trial?.grantedMicros ?? 0) - (trial?.remainingMicros ?? 0)) as UsageMicros;
+  const held = summary.heldForOwnKey?.usageMicros ?? (0 as UsageMicros);
   return {
     funding,
     plan: summary.plan && {
@@ -594,6 +597,9 @@ function billingStatus(summary: BillingSummary, minimum: PlanOffer): BillingStat
     },
     ownKeyWithoutPlan: funding === 'own_key' && summary.plan === null
       ? { minimumPrice: formatPriceCents(minimum.priceCents), minimumTasks: formatTasks(minimum.includedMicros, 'own_key', offers) }
+      : null,
+    heldForOwnKey: funding === 'platform' && summary.plan && held > 0
+      ? { usage: formatUsageDollars(held), tasks: formatTasks(held, 'own_key', offers) }
       : null,
     balance: funding === 'own_key' && summary.plan === null ? null : balance(summary, planOffer),
     autoTopUp: autoTopUpStatus(summary),

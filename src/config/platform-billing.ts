@@ -201,6 +201,13 @@ export interface BillingSummary {
   readonly autoTopUp?: AutoTopUpView | null;
   /** Absent where the host does not report it; Admin then shows no return banner. */
   readonly lastPurchase?: RecentPurchase | null;
+  /**
+   * Plan usage this period the host holds for the installation's own key,
+   * such as an own-key-only discount's share, and grants when it switches to
+   * its own key. Absent where the host does not report it; null when it holds
+   * none.
+   */
+  readonly heldForOwnKey?: { readonly usageMicros: UsageMicros } | null;
   readonly use: {
     /** Each row's `id` is an Agent ID. */
     readonly byAgent: readonly UsageRow[];
