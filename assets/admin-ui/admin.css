@@ -1150,8 +1150,8 @@ details[open].advanced summary::before {
   box-shadow: 0 1px 0 rgba(73, 57, 27, .08);
   display: flex;
   flex-direction: column;
+  cursor: pointer;
   min-width: 0;
-  position: relative;
   transition: transform .14s, box-shadow .14s, border-color .14s;
 }
 .agent-tile:only-child { grid-column: 1 / -1; }
@@ -1168,10 +1168,9 @@ details[open].advanced summary::before {
 .agent-tile-id { display: flex; flex-direction: column; min-width: 0; padding-top: 4px; }
 .agent-tile-name { font-size: 1.05rem; font-weight: 700; line-height: 1.2; margin: 0; min-width: 0; }
 .agent-tile-open { background: none; border: 0; color: var(--admin-visual-ink); cursor: pointer; font: inherit; max-width: 100%; overflow: hidden; padding: 0; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
-/* The name's button covers the whole tile, so a click anywhere opens the Agent. */
-.agent-tile-open::after { border-radius: 18px; content: ""; inset: -1px; position: absolute; }
+/* The tile itself carries the open action; the name button is its keyboard stop, so the ring draws around the tile. */
 .agent-tile-open:focus-visible { outline: none; }
-.agent-tile-open:focus-visible::after { outline: 2px solid var(--ember-press); outline-offset: 2px; }
+.agent-tile:has(.agent-tile-open:focus-visible) { outline: 2px solid var(--ember-press); outline-offset: 2px; }
 .agent-tile-handle { color: var(--admin-visual-muted); font-size: .86rem; font-weight: 500; margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-tile-model { color: var(--admin-visual-faint); font-size: .78rem; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-tile-desc { -webkit-box-orient: vertical; -webkit-line-clamp: 2; color: var(--text-2); display: -webkit-box; font-size: .88rem; line-height: 1.45; margin: 12px 0 0; min-height: 2.9em; overflow: hidden; overflow-wrap: anywhere; }
@@ -1181,7 +1180,7 @@ details[open].advanced summary::before {
 .agent-tile-foot.is-attention { background: #fbf1da; border-radius: 0 0 17px 17px; border-top-color: #f1dcaa; color: var(--ember-deep); font-weight: 600; }
 .agent-tile-spacer { flex: 1; }
 .agent-tile-quiet { color: var(--admin-visual-muted); }
-.agent-tile-link { background: none; border: 0; color: var(--ember-deep); cursor: pointer; font: inherit; font-weight: 700; padding: 0; position: relative; white-space: nowrap; z-index: 1; }
+.agent-tile-link { background: none; border: 0; color: var(--ember-deep); cursor: pointer; font: inherit; font-weight: 700; padding: 0; white-space: nowrap; }
 .agent-tile-link:hover { color: var(--ember-press); }
 .agent-tile-link:focus-visible { border-radius: 4px; outline: 2px solid var(--ember-press); outline-offset: 2px; }
 /* The chips stay on one row; a long Channel name truncates before "+N" wraps. */

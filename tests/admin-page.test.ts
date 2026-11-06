@@ -4246,6 +4246,11 @@ test('an Agents tile shows the avatar, handle, catalog model name, description a
   assert.equal(ops.more, undefined);
   const grid = html.split('<ul class="agent-tiles">')[1]!.split('</ul></section>')[0]!;
   assert.doesNotMatch(grid, /Workspace default|Pinned|badge-src|direct message|\bDMs?\b/);
+  assert.match(
+    grid,
+    /<li class="agent-tile" data-state="on" data-action="edit-profile" data-agent="agent_ops">/,
+    'a click anywhere on the tile opens the Agent, not only on its name',
+  );
 
   harness.listeners.click!({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_ops' }) });
   assert.equal(harness.locationPath(), '/admin/agents/agent_ops');

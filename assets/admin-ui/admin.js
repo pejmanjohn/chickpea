@@ -6536,7 +6536,7 @@
     var handle = (agent.slackPresence && agent.slackPresence.normalizedHandle) || handleFromAgentName(agent.name);
     var model = agentTileModelName(agent);
     var description = String(agent.description || "").trim();
-    return '<li class="agent-tile" data-state="' + tile.kind + '"><div class="agent-tile-body"><div class="agent-tile-top">' +
+    return '<li class="agent-tile" data-state="' + tile.kind + '" data-action="edit-profile" data-agent="' + esc(agent.id) + '"><div class="agent-tile-body"><div class="agent-tile-top">' +
       '<span class="agent-tile-face">' + agentRosterAvatarHtml(agent) + '<span class="agent-tile-status" aria-hidden="true"></span></span>' +
       '<div class="agent-tile-id"><h3 class="agent-tile-name"><button type="button" class="agent-tile-open" data-action="edit-profile" data-agent="' + esc(agent.id) + '"' +
       ' aria-label="' + (agent.canEdit === false ? "View" : "Open") + ' Agent ' + esc(agent.name) + '">' + esc(agent.name) + '</button></h3>' +
