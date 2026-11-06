@@ -9334,6 +9334,12 @@ test('a ready managed connection lets an Admin choose the Agent\'s tools, groupe
   assert.match(harness.app.innerHTML, /Change Google Ads accounts/);
 
   click({ target: actionTarget({ 'data-action': 'managed-tools-open', 'data-connection-id': 'connection_ads' }) });
+  click({ target: actionTarget({ 'data-action': 'connection-account-resource-open', 'data-connection-id': 'connection_ads' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /data-action="connection-account-resource-save"/);
+  assert.doesNotMatch(harness.app.innerHTML, /<h3>Choose tools<\/h3>/);
+  click({ target: actionTarget({ 'data-action': 'managed-tools-open', 'data-connection-id': 'connection_ads' }) });
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="connection-account-resource-save"/);
   const editor = () => harness.app.innerHTML.slice(harness.app.innerHTML.indexOf('<h3>Choose tools</h3>'));
   assert.match(editor(), /Read tools[\s\S]*Report campaign performance\.[\s\S]*Report keyword performance\.[\s\S]*Write tools[\s\S]*Pause a campaign\.[\s\S]*Change a campaign budget\./);
   assert.match(editor(), /4 of 4 selected/);

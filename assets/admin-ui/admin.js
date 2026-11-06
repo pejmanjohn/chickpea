@@ -5037,7 +5037,8 @@
       }
       if (state.managedToolEditor) {
         var managedToolEntry = attachedConnectionEntry(state.managedToolEditor.accountId);
-        if (!managedToolEntry || !connectionAccountCanEditManagedTools(managedToolEntry)) state.managedToolEditor = null;
+        if (!managedToolEntry || !connectionAccountCanEditManagedTools(managedToolEntry) ||
+            managedToolEntry.account.revision !== state.managedToolEditor.revision) state.managedToolEditor = null;
       }
       restoreManagedAuthorization(agentId);
       finishVisibleResourceLoad(resourceTicket);
@@ -8481,6 +8482,7 @@
     state.notionPagePicker = picker;
     state.sharedSignInConfirm = null;
     state.managedResourceEditor = null;
+    state.managedToolEditor = null;
     render();
     api("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections/" + encodeURIComponent(accountId) +
       "/pages?workspaceId=" + encodeURIComponent(state.agentConnections.workspaceId), { cache: "no-store" }).then(function (body) {
@@ -8560,6 +8562,7 @@
     var entry = attachedConnectionEntry(accountId);
     if (!entry) return;
     state.notionPagePicker = null;
+    state.managedToolEditor = null;
     if (!entry.sharedWithOtherAgents) {
       reconnectManagedConnection(accountId);
       return;
@@ -8720,10 +8723,6 @@
       '<span class="hint">' + selectedCount + ' of ' + total + ' selected</span></div>';
   }
 
-  function attachedConnectionEntry(accountId) {
-    return (state.agentConnections.attached || []).find(function (entry) { return entry.account.id === accountId; });
-  }
-
   // The capabilities an Agent may choose from: the catalog's, in catalog order,
   // within what the account allows. Mirrors the server's managed capabilities route.
   function managedToolChoices(account) {
@@ -8749,6 +8748,8 @@
     state.connectionAccountForm = null;
     state.customMcpToolEditor = null;
     state.managedResourceEditor = null;
+    state.notionPagePicker = null;
+    state.sharedSignInConfirm = null;
     state.managedToolEditor = {
       accountId: accountId,
       revision: entry.account.revision,
