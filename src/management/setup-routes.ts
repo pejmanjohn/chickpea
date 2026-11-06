@@ -350,6 +350,7 @@ export function createManagementSetupRoutes(
       if (!['claimed', 'failed', 'authorizing'].includes(setup.status)) {
         return terminalPage(c, setup, dependencies.management);
       }
+      if (setup.status === 'failed' && setup.failureCode === 'target_changed') return staleLinkPage(c, setup, 410);
       const page = await catalogConnectionPageInput(c, setup, dependencies, principal);
       return page
         ? c.html(page.accessReview
@@ -379,6 +380,9 @@ export function createManagementSetupRoutes(
       return terminalPage(c, setup, dependencies.management);
     }
     if (setup.status === 'failed' && setup.failureCode === 'target_changed') return staleLinkPage(c, setup, 410);
+    if (KEY_FORM_ACTIONS.has(setup.action) && await setupTargetChanged(setup, dependencies)) {
+      return staleLinkPage(c, setup, 410);
+    }
     return c.html(await renderSetupSummary(setup, { destination: await setupDestination(setup, dependencies) }));
   });
 
@@ -782,6 +786,11 @@ export function createManagementSetupRoutes(
         return page
           ? c.html(renderManagedConnectionSetupPage({ ...page, failureMessage: message }), 422)
           : managedUnavailablePage(c);
+      }
+      if (activeSetup.action === 'catalog_connection' && code === 'target_changed') {
+        return authorizationJsonRequest(c)
+          ? c.json({ error: code, message: staleLinkText(activeSetup) }, 422)
+          : staleLinkPage(c, activeSetup, 422);
       }
       if (activeSetup.action === 'catalog_connection') {
         const message = error instanceof McpOAuthError &&
@@ -2949,11 +2958,43 @@ async function completeSetupCredential(
   credential: string,
   changes: Partial<Pick<ConnectionAccount, 'policy' | 'identity'>>,
 ): Promise<void> {
-  await saveConnectionCredential(dependencies, entry, credential, {
-    changes,
-    surface: setup.origin.kind,
-    retired: () => setupCredentialWasRetired(setup, dependencies),
-  });
+  try {
+    await saveConnectionCredential(dependencies, entry, credential, {
+      changes,
+      surface: setup.origin.kind,
+      retired: () => setupCredentialWasRetired(setup, dependencies),
+    });
+  } catch (error) {
+    // Another write moved the account during the check without changing what
+    // the setup writes, so the same link can save the key on the next try.
+    if (error instanceof ConnectionAccountRevisionConflictError && !await setupTargetChanged(setup, dependencies)) {
+      throw new SetupSaveRaceError();
+    }
+    throw error;
+  }
+}
+
+class SetupSaveRaceError extends Error {
+  constructor() {
+    super('setup_failed');
+  }
+}
+
+/** The setups whose page asks the person to type a secret. */
+const KEY_FORM_ACTIONS: ReadonlySet<ManagementSetupRecord['action']> = new Set([
+  'provider_credential',
+  'api_credential',
+  'mcp_credentials',
+]);
+
+/** Whether what the setup writes changed since the link was made; a failed read counts as unchanged. */
+async function setupTargetChanged(setup: ManagementSetupRecord, dependencies: SetupDependencies): Promise<boolean> {
+  try {
+    await assertExactTarget(setup, dependencies);
+    return false;
+  } catch (error) {
+    return safeFailureCode(error) === 'target_changed';
+  }
 }
 
 /**
@@ -3264,8 +3305,12 @@ function staleLinkPage(c: Context, setup: ManagementSetupRecord, status: 410 | 4
   return c.html(renderSetupPanelPage({
     title: 'Setup link out of date',
     surface: 'setup-stale',
-    content: `<h1>This setup link is out of date</h1><p>${escapeHtml(setup.target.targetLabel)} changed after this link was made. Ask the Agent or coding agent that sent it for a new link.</p>`,
+    content: `<h1>This setup link is out of date</h1><p>${escapeHtml(staleLinkText(setup))}</p>`,
   }), status);
+}
+
+function staleLinkText(setup: ManagementSetupRecord): string {
+  return `${setup.target.targetLabel} changed after this link was made. Ask the Agent or coding agent that sent it for a new link.`;
 }
 
 async function formFailure(
@@ -3475,6 +3520,7 @@ function digest(value: string): string {
 
 export function safeFailureCode(error: unknown): string {
   if (error instanceof SetupKeyRejectedError) return 'key_rejected';
+  if (error instanceof SetupSaveRaceError) return 'setup_failed';
   if (error instanceof ManagementError) return error.code;
   if (error instanceof McpOAuthError) return error.code;
   // The connection or Agent the setup writes changed under it.
