@@ -755,7 +755,7 @@ test('the system Agent has no image model override field', async () => {
   assert.match(html, /id="p-model"/);
 });
 
-test('an Agent image override is saved and reads back as Pinned on its card', async () => {
+test('an Agent image override is saved and reads back as Pinned on its Model tab, not its tile', async () => {
   const harness = runHarness({ initialPath: '/admin/agents/agent_release?tab=model' });
   await flushAsync();
 
@@ -777,9 +777,16 @@ test('an Agent image override is saved and reads back as Pinned on its card', as
 
   click({ target: actionTarget({ 'data-action': 'open-profiles' }) });
   await flushAsync();
-  const card = harness.app.innerHTML;
-  assert.match(card, /Image <span class="badge-src">Pinned<\/span>/);
-  assert.match(card, new RegExp(SUNBURST.replace('/', '\\/')));
+  const tiles = harness.app.innerHTML.split('<ul class="agent-tiles">')[1]!.split('</ul></section>')[0]!;
+  assert.match(tiles, /data-agent="agent_release"/);
+  assert.doesNotMatch(tiles, /gpt-image|Image/, 'a tile names the chat model only');
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'model' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, new RegExp(
+    `<label class="field-label" for="p-image-model">Image model</label><div class="workspace-default-meta"><span class="badge-src">Pinned</span><span class="mono hint">${SUNBURST.replace('/', '\\/')}</span>`,
+  ));
 });
 
 /**
@@ -965,10 +972,6 @@ test('choosing an Agent effort marks it dirty and saves modelEffort with the mod
   assert.equal(harness.agentPatchBodies.length, 1);
   assert.equal(harness.agentPatchBodies[0]?.body.model, OPUS);
   assert.equal(harness.agentPatchBodies[0]?.body.modelEffort, 'xhigh');
-
-  click({ target: actionTarget({ 'data-action': 'open-profiles' }) });
-  await flushAsync();
-  assert.match(harness.app.innerHTML, new RegExp(`<span class="mono">${OPUS.replace('/', '\\/')}</span> &middot; Extra high &middot; used in`));
 });
 
 test('an Agent keeps its effort on a model that accepts it and drops it on one that does not', async () => {
@@ -1106,18 +1109,15 @@ test('an effort the server refuses shows its message with the other save errors'
   assert.match(harness.app.innerHTML, /<div class="field-error" role="alert" aria-live="polite">anthropic\/claude-opus-5-5 does not support max effort\./);
 });
 
-test('the Agents list names an effort after the model only when one applies', async () => {
+test('an Agents tile names its model without the effort or the image model', async () => {
   const harness = runHarness({
     initialPath: '/admin/agents',
-    agents: [
-      pinnedAgent(OPUS, 'xhigh', { id: 'agent_pinned', name: 'Pinned Effort' }),
-      pinnedAgent(HAIKU, null, { id: 'agent_standard', name: 'Standard Effort' }),
-    ],
+    agents: [pinnedAgent(OPUS, 'xhigh', { id: 'agent_pinned', name: 'Pinned Effort' })],
   });
   await flushAsync();
-  const html = harness.app.innerHTML;
-  assert.match(html, new RegExp(`<span class="mono">${OPUS.replace('/', '\\/')}</span> &middot; Extra high &middot; Image`));
-  assert.match(html, new RegExp(`<span class="mono">${HAIKU.replace('/', '\\/')}</span> &middot; Image`));
+  const tiles = harness.app.innerHTML.split('<ul class="agent-tiles">')[1]!.split('</ul></section>')[0]!;
+  assert.match(tiles, /<span class="agent-tile-model">claude-opus-5-5<\/span>/);
+  assert.doesNotMatch(tiles, /Extra high|gpt-image|Image/);
 });
 
 test('the Default model card saves an effort change on its own', async () => {

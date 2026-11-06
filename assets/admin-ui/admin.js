@@ -6479,38 +6479,69 @@
         ? firstAgentWelcomeHtml() + readyMadeHtml("Or start from a ready-made Agent")
         : '<div class="empty" role="status"><h1 class="page-title">Loading Chickpea&hellip;</h1><p class="hint">Reading your workspace configuration.</p></div>';
     }
-    var cards = state.agents.map(profileCardHtml).join("");
+    var tiles = state.agents.map(agentTileHtml).join("");
     return '<div class="main-head"><div style="display:flex; flex-direction:column; gap:6px;">' +
       '<span class="agent-kicker">Workspace teammates</span><h1 class="page-title">Agents</h1>' +
       '<p class="hint" style="max-width:58ch;">Agents hold reusable instructions, models, capabilities, Slack presence, Channel reach, and memory.</p>' +
       '</div><button type="button" class="btn btn-primary" style="flex-shrink:0;" data-action="new-profile">New Agent</button></div>' +
-      '<section class="section"><div class="section-head"><div><h2 class="section-title">Your Agents</h2><p class="hint">Everything Chickpea can be in this workspace.</p></div></div>' +
-      (cards || '<div class="empty"><p class="field-label">No Agents yet</p><p class="hint">Create one, then add it to a Channel.</p></div>') +
+      '<section class="section agent-tiles-section" aria-labelledby="your-agents-title"><div class="agent-tiles-head"><h2 id="your-agents-title">Your Agents</h2>' +
+      (tiles ? '<p>' + state.agents.length + ' in this workspace</p></div><ul class="agent-tiles">' + tiles + '</ul>'
+        : '</div><div class="empty"><p class="field-label">No Agents yet</p><p class="hint">Create one, then add it to a Channel.</p></div>') +
       '</section>' + (WORKSPACE_ADMIN_UI ? readyMadeHtml("Start from a ready-made Agent") : "");
   }
 
-  function profileCardHtml(agent) {
-    var concrete = channelGrantsForAgent(agent.id);
-    var stateBadge = agent.enabled
-      ? '<span class="badge badge-on"><span class="dot"></span>Enabled</span>'
-      : '<span class="badge badge-off"><span class="dot"></span>Disabled</span>';
+  // First match wins, so an archived or turned-off Agent never asks for attention.
+  function agentTileState(agent) {
+    if (agent.lifecycle === "archived") return { kind: "archived" };
+    if (agent.enabled === false) return { kind: "off" };
+    if (agent.slackPresenceRecovery) return { kind: "attention", title: agent.slackPresenceRecovery.title };
+    if (agent.lifecycle === "draft") return { kind: "draft" };
+    return { kind: "on" };
+  }
+
+  var AGENT_TILE_PILLS = { archived: "Archived", off: "Off", draft: "Draft" };
+
+  function agentTileModelName(agent) {
     var policy = agent.modelPolicy || {};
-    var source = agent.model ? "Pinned" : "Workspace default";
-    var effort = effortLabel(policy.effort);
-    var modelPart = '<span class="badge-src">' + source + '</span> <span class="mono">' + esc(policy.effectiveModel || agent.model || "Not selected") + '</span>' + (effort ? " &middot; " + esc(effort) : "");
-    var usage = "used in " + channelCountLabel(concrete.length);
+    if (policy.effectiveModelName) return policy.effectiveModelName;
+    var id = policy.effectiveModel || "";
+    return id.slice(id.lastIndexOf("/") + 1);
+  }
+
+  function agentTileFootHtml(agent, tile) {
+    if (tile.kind === "attention") {
+      return '<div class="agent-tile-foot is-attention"><span>' + esc(tile.title) + '</span><span class="agent-tile-spacer"></span>' +
+        (agent.canEdit === false ? "" : '<button type="button" class="agent-tile-link" data-action="edit-profile" data-agent="' + esc(agent.id) + '">Fix it <span aria-hidden="true">→</span></button>') + '</div>';
+    }
+    if (tile.kind !== "on") {
+      return '<div class="agent-tile-foot"><span class="agent-tile-pill"><span class="agent-tile-pill-dot"></span>' + AGENT_TILE_PILLS[tile.kind] + '</span></div>';
+    }
+    var channels = channelGrantsForAgent(agent.id);
+    if (!channels.length) {
+      var addable = WORKSPACE_ADMIN_UI && agent.canEdit !== false;
+      return '<div class="agent-tile-foot"><span class="agent-tile-quiet">Not in a channel yet' + (addable ? ' ·' : '') + '</span>' +
+        (addable ? '<button type="button" class="agent-tile-link" data-action="attach-new-channel" data-agent="' + esc(agent.id) + '">Add to a channel</button>' : '') + '</div>';
+    }
+    var chips = channels.slice(0, 2).map(function (grant) {
+      return '<li class="agent-tile-chip">' + icon("hash") + '<span>' + esc(normalizeChannelLabel(channelLabel(grant))) + '</span></li>';
+    }).join("");
+    var more = channels.length > 2 ? '<li class="agent-tile-more">+' + (channels.length - 2) + '</li>' : "";
+    return '<div class="agent-tile-foot"><ul class="agent-tile-chips" aria-label="Channels">' + chips + more + '</ul></div>';
+  }
+
+  function agentTileHtml(agent) {
+    var tile = agentTileState(agent);
     var handle = (agent.slackPresence && agent.slackPresence.normalizedHandle) || handleFromAgentName(agent.name);
-    // The image role reads back beside the chat role, but only once one is
-    // resolved — an unset role is not a state worth a badge on every card.
-    var imagePolicy = agent.imageModelPolicy || {};
-    var imagePart = imagePolicy.effectiveModel
-      ? " &middot; Image <span class=\"badge-src\">" + (agent.imageModel ? "Pinned" : "Workspace default") +
-        "</span> <span class=\"mono\">" + esc(imagePolicy.effectiveModel) + "</span>"
-      : "";
-    var meta = modelPart + imagePart + " &middot; " + usage + " &middot; @" + esc(handle);
-    return '<div class="pcard"><div class="pcard-head"><span class="pcard-name">' + esc(agent.name) + '</span>' + stateBadge + '</div>' +
-      '<div class="pcard-foot"><span class="hint">' + meta + '</span><span class="spacer"></span>' +
-      '<button type="button" class="btn btn-soft btn-sm" data-action="edit-profile" data-agent="' + esc(agent.id) + '">' + (agent.canEdit === false ? "View" : "Edit") + '</button></div></div>';
+    var model = agentTileModelName(agent);
+    var description = String(agent.description || "").trim();
+    return '<li class="agent-tile" data-state="' + tile.kind + '"><div class="agent-tile-body"><div class="agent-tile-top">' +
+      '<span class="agent-tile-face">' + agentRosterAvatarHtml(agent) + '<span class="agent-tile-status" aria-hidden="true"></span></span>' +
+      '<div class="agent-tile-id"><h3 class="agent-tile-name"><button type="button" class="agent-tile-open" data-action="edit-profile" data-agent="' + esc(agent.id) + '"' +
+      ' aria-label="' + (agent.canEdit === false ? "View" : "Open") + ' Agent ' + esc(agent.name) + '">' + esc(agent.name) + '</button></h3>' +
+      '<span class="agent-tile-handle">@' + esc(handle) + '</span>' +
+      (model ? '<span class="agent-tile-model">' + esc(model) + '</span>' : '') + '</div></div>' +
+      (description ? '<p class="agent-tile-desc">' + esc(description) + '</p>' : '') + '</div>' +
+      agentTileFootHtml(agent, tile) + '</li>';
   }
 
   // ---- Shared form pieces (create + edit) ----------------------------------

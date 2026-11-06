@@ -4074,11 +4074,11 @@ test('admin page renders channel labels, profile secondary text, and singular ch
   assert.doesNotMatch(harness.app.innerHTML, /Direct messages|\+ DMs|DM default/);
   assert.match(harness.app.innerHTML, /<h1 class="page-title mono-title">#eng-releases<\/h1>/);
   // Agents is now a main-panel destination (the modal was retired): opening it
-  // swaps the main panel to the overview, and each card carries its usage meta.
+  // swaps the main panel to the overview, and each tile names its Channels.
   click({ target: actionTarget({ 'data-action': 'open-profiles' }) });
   assert.match(harness.app.innerHTML, /<h1 class="page-title">Agents<\/h1>/);
-  assert.match(harness.app.innerHTML, /<span class="pcard-name">Release Profile<\/span>/);
-  assert.match(harness.app.innerHTML, /used in 1 channel/);
+  assert.match(harness.app.innerHTML, /aria-label="Open Agent Release Profile">Release Profile<\/button>/);
+  assert.match(harness.app.innerHTML, /<li class="agent-tile-chip"><svg[^>]*>[\s\S]*?<\/svg><span>eng-releases<\/span><\/li>/);
 
   // Drilling into an Agent opens the full-page editor whose Slack destination
   // links directly to the Channel detail.
@@ -4153,7 +4153,7 @@ test('the profile editor presents reversible archive semantics for an assigned A
   assert.equal(harness.focusedAction(), 'archive-profile');
 });
 
-test('the Agent page badge says Disabled for a disabled Agent, as its Agents card does', async () => {
+test('the Agent page badge says Disabled for a disabled Agent, whose Agents tile reads Off', async () => {
   const harness = runAdminPageHarness({
     agents: [{ ...releaseAgent, enabled: false, lifecycle: 'active' }, { ...opsAgent, lifecycle: 'archived' }],
   });
@@ -4161,7 +4161,7 @@ test('the Agent page badge says Disabled for a disabled Agent, as its Agents car
   const click = harness.listeners.click;
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'open-profiles' }) });
-  assert.match(harness.app.innerHTML, /Release Profile[\s\S]*badge-off"><span class="dot"><\/span>Disabled/);
+  assert.equal(agentTile(harness.app.innerHTML, 'agent_release').pill, 'Off');
 
   const chip = () => /class="agent-status-chip (\w+)"><span aria-hidden="true"><\/span>(\w+)</.exec(harness.app.innerHTML)?.slice(1);
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
@@ -4170,6 +4170,32 @@ test('the Agent page badge says Disabled for a disabled Agent, as its Agents car
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_ops' }) });
   assert.deepEqual(chip(), ['disabled', 'Archived'], 'an archived Agent still reads Archived');
 });
+
+/** The Agents overview tile whose open button names `agentId`, read from the rendered page. */
+function agentTile(html: string, agentId: string) {
+  const grid = html.split('<ul class="agent-tiles">')[1]?.split('</ul></section>')[0] ?? '';
+  const tile = grid.split('<li class="agent-tile" data-state="').slice(1)
+    .find((candidate) => candidate.includes(`class="agent-tile-open" data-action="edit-profile" data-agent="${agentId}"`));
+  assert.ok(tile, `the overview has a tile for ${agentId}`);
+  const text = (pattern: RegExp) => pattern.exec(tile)?.[1];
+  return {
+    state: tile.slice(0, tile.indexOf('"')),
+    avatarSrc: text(/<img src="([^"]*)"/),
+    robotAvatar: /class="agent-roster-icon variant-\d"/.test(tile),
+    openLabel: text(/class="agent-tile-open"[^>]*aria-label="([^"]*)"/),
+    name: text(/class="agent-tile-open"[^>]*>([^<]*)<\/button>/),
+    handle: text(/class="agent-tile-handle">([^<]*)</),
+    model: text(/class="agent-tile-model">([^<]*)</),
+    description: text(/class="agent-tile-desc">([^<]*)</),
+    pill: text(/class="agent-tile-pill"><span class="agent-tile-pill-dot"><\/span>([^<]*)</),
+    chips: [...tile.matchAll(/<li class="agent-tile-chip">[\s\S]*?<\/svg><span>([^<]*)<\/span><\/li>/g)].map((match) => match[1]),
+    more: text(/class="agent-tile-more">([^<]*)</),
+    quiet: text(/class="agent-tile-quiet">([^<]*)</),
+    addToChannel: tile.includes(`data-action="attach-new-channel" data-agent="${agentId}">Add to a channel</button>`),
+    attention: text(/class="agent-tile-foot is-attention"><span>([^<]*)</),
+    fixIt: tile.includes(`data-action="edit-profile" data-agent="${agentId}">Fix it <span aria-hidden="true">→</span></button>`),
+  };
+}
 
 test('Agent deletion explains how to replace a workspace Default Agent', async () => {
   const dmAgent = {

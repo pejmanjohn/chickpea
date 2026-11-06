@@ -1137,21 +1137,68 @@ details[open].advanced summary::before {
 .nav-active:hover:not(:disabled) { background: #4a4028; color: #f6edda; }
 .badge-role { background: var(--ember-tint); color: var(--ember-press); }
 
-/* ---- profiles overview cards ---- */
-.pcard {
-  background: var(--well);
+/* ---- Agents overview tiles ---- */
+.agent-tiles-section { font-family: var(--admin-visual-font); }
+.agent-tiles-head { align-items: baseline; display: flex; flex-wrap: wrap; gap: 4px 16px; justify-content: space-between; }
+.agent-tiles-head h2 { color: var(--admin-visual-ink); font-size: 1.25rem; font-weight: 700; margin: 0; }
+.agent-tiles-head p { color: var(--admin-visual-muted); font-size: .92rem; margin: 0; }
+.agent-tiles { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); list-style: none; margin: 0; padding: 0; }
+.agent-tile {
+  background: #fff;
+  border: 1px solid var(--admin-visual-line);
   border-radius: 18px;
-  box-shadow: none;
+  box-shadow: 0 1px 0 rgba(73, 57, 27, .08);
   display: flex;
   flex-direction: column;
-  gap: 9px;
-  padding: 16px 18px;
+  min-width: 0;
+  position: relative;
+  transition: transform .14s, box-shadow .14s, border-color .14s;
 }
-.pcard + .pcard { margin-top: 12px; }
-.pcard .pcard-head { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
-.pcard .pcard-name { color: var(--text); font-family: var(--display); font-size: 0.9375rem; font-weight: 700; }
-.pcard .pcard-foot { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; }
-.pcard .pcard-foot .spacer { flex: 1; }
+.agent-tile:only-child { grid-column: 1 / -1; }
+.agent-tile:hover { border-color: #e2cf9f; box-shadow: 0 1px 0 rgba(73, 57, 27, .08), 0 12px 28px -14px rgba(89, 65, 24, .35); transform: translateY(-2px); }
+.agent-tile-body { flex: 1; padding: 18px 18px 14px; }
+.agent-tile-top { display: flex; gap: 14px; }
+.agent-tile-face { flex: none; position: relative; }
+.agent-tile-face .agent-roster-icon { border-radius: var(--admin-visual-radius-md); height: 64px; width: 64px; }
+.agent-tile-face .agent-roster-icon .ic { height: 28px; width: 28px; }
+.agent-tile-status { background: #c9bda5; border: 3px solid #fff; border-radius: 50%; bottom: -3px; height: 16px; position: absolute; right: -3px; width: 16px; }
+.agent-tile[data-state="on"] .agent-tile-status { background: #6fa25b; }
+.agent-tile[data-state="attention"] .agent-tile-status { background: var(--admin-visual-status-attention); }
+.agent-tile[data-state="off"] .agent-roster-icon, .agent-tile[data-state="archived"] .agent-roster-icon { opacity: .5; }
+.agent-tile-id { display: flex; flex-direction: column; min-width: 0; padding-top: 4px; }
+.agent-tile-name { font-size: 1.05rem; font-weight: 700; line-height: 1.2; margin: 0; min-width: 0; }
+.agent-tile-open { background: none; border: 0; color: var(--admin-visual-ink); cursor: pointer; font: inherit; max-width: 100%; overflow: hidden; padding: 0; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+/* The name's button covers the whole tile, so a click anywhere opens the Agent. */
+.agent-tile-open::after { border-radius: 18px; content: ""; inset: -1px; position: absolute; }
+.agent-tile-open:focus-visible { outline: none; }
+.agent-tile-open:focus-visible::after { outline: 2px solid var(--ember-press); outline-offset: 2px; }
+.agent-tile-handle { color: var(--admin-visual-muted); font-size: .86rem; font-weight: 500; margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-tile-model { color: var(--admin-visual-faint); font-size: .78rem; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-tile-desc { -webkit-box-orient: vertical; -webkit-line-clamp: 2; color: var(--text-2); display: -webkit-box; font-size: .88rem; line-height: 1.45; margin: 12px 0 0; min-height: 2.9em; overflow: hidden; overflow-wrap: anywhere; }
+.agent-tile[data-state="off"] .agent-tile-open, .agent-tile[data-state="archived"] .agent-tile-open,
+.agent-tile[data-state="off"] .agent-tile-desc, .agent-tile[data-state="archived"] .agent-tile-desc { color: #a3957a; }
+.agent-tile-foot { align-items: center; border-top: 1px solid var(--admin-visual-line); display: flex; flex-wrap: wrap; font-size: .8rem; gap: 6px; padding: 11px 18px 13px; }
+.agent-tile-foot.is-attention { background: #fbf1da; border-radius: 0 0 17px 17px; border-top-color: #f1dcaa; color: var(--ember-deep); font-weight: 600; }
+.agent-tile-spacer { flex: 1; }
+.agent-tile-quiet { color: var(--admin-visual-muted); }
+.agent-tile-link { background: none; border: 0; color: var(--ember-deep); cursor: pointer; font: inherit; font-weight: 700; padding: 0; position: relative; white-space: nowrap; z-index: 1; }
+.agent-tile-link:hover { color: var(--ember-press); }
+.agent-tile-link:focus-visible { border-radius: 4px; outline: 2px solid var(--ember-press); outline-offset: 2px; }
+/* The chips stay on one row; a long Channel name truncates before "+N" wraps. */
+.agent-tile-chips { align-items: center; display: flex; gap: 6px; list-style: none; margin: 0; min-width: 0; padding: 0; }
+.agent-tile-chip { align-items: center; background: var(--semantic-channel-bg); border-radius: 999px; color: var(--semantic-channel-fg); display: inline-flex; font-size: .78rem; font-weight: 600; gap: 4px; line-height: 1; min-width: 0; padding: 5px 9px; white-space: nowrap; }
+.agent-tile-chip span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.agent-tile-chip .ic { height: 12px; width: 12px; }
+.agent-tile-more { color: var(--admin-visual-muted); flex: none; font-size: .78rem; font-weight: 600; }
+.agent-tile-pill { align-items: center; background: var(--semantic-neutral-bg); border-radius: 999px; color: var(--semantic-neutral-fg); display: inline-flex; font-size: .74rem; font-weight: 700; gap: 5px; padding: 3px 9px; white-space: nowrap; }
+.agent-tile-pill-dot { background: var(--admin-visual-faint); border-radius: 50%; height: 6px; width: 6px; }
+@media (max-width: 600px) {
+  .agent-tiles { grid-template-columns: minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-tile { transition: none; }
+  .agent-tile:hover { transform: none; }
+}
 
 .tool-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 
