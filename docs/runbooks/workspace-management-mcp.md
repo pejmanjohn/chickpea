@@ -332,7 +332,7 @@ Each JSON-RPC message `/mcp` handles emits one `mcp.request` event, one per memb
 | `method` | The JSON-RPC method, such as `initialize`, `tools/list`, `tools/call`, `resources/read`, `prompts/get`, or `notifications/initialized` |
 | `tool` | For `tools/call`, the tool name; a name the server does not register is `other` |
 | `resource` | For `resources/read`, `chickpea://guide/agent-authoring/v1` or `chickpea://schema/operations/v2`; any other URI is `other` |
-| `outcome` | `success`; `tool_error` (an `isError` result from the handler); `input_refused` (the SDK refused the arguments on the tool's input schema, so the handler never ran); `jsonrpc_error`; `received` (a notification); or `abandoned` (the connection closed before a response) |
+| `outcome` | `success`; `tool_error` (an `isError` result from the handler); `input_refused` (the SDK refused the arguments on the tool's input schema, so the handler never ran); `jsonrpc_error`; `received` (a notification); or `abandoned` (no response was sent before the connection closed: the client disconnected, cancelled the request, or the SDK dropped it) |
 | `errorCode` | For `jsonrpc_error`, the JSON-RPC code, such as `-32602` |
 | `durationMs` | From the message's arrival to its response; absent for a notification |
 
