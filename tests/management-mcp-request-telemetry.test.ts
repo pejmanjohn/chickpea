@@ -138,6 +138,31 @@ for (const protocol of [LEGACY, MODERN]) {
   });
 }
 
+test('a refused record key is written as *, never as the key itself', async (t) => {
+  const { fetch, metrics, principal } = await harness(t, 'record-key');
+
+  await post(fetch, LEGACY, 'tools/call', {
+    name: 'apply_workspace_changes',
+    arguments: {
+      idempotencyKey: 'idem_record_key',
+      operations: [{
+        kind: 'update_agent',
+        agentId: 'agent_x',
+        expectedRevision: 1,
+        itemId: 'item_x',
+        patch: { mcpServers: [{ toolPolicies: { [SECRET_KEY]: { effect: SECRET_VALUE } } }] },
+      }],
+    },
+  });
+
+  const [refusal] = events(metrics, 'tool.validation_failure');
+  assert.ok(Array.isArray(refusal?.fields), JSON.stringify(refusal));
+  assert.ok(refusal.fields.includes('operations.0.patch.mcpServers.0.toolPolicies.*.effect'));
+  assert.equal(refusal.fields.some((field: string) => field.includes(SECRET_KEY)), false);
+  assert.equal(requestMetrics(metrics)[0]?.outcome, 'input_refused');
+  assertNoValues(metrics, principal);
+});
+
 test('a tools/call whose handler fails is a tool error, not a refusal', async (t) => {
   const { fetch, metrics, principal } = await harness(t, 'tool-error');
 

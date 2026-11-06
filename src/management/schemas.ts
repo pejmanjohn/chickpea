@@ -342,12 +342,13 @@ export const managementOperationZodSchema = z.discriminatedUnion('kind', [
   }),
 ]);
 
+export const MANAGEMENT_OPERATION_SCHEMA_URI = 'chickpea://schema/operations/v2' as const;
+
 /**
  * The MCP door's operations. Changing a DM routine's Agent needs Chickpea in
  * that DM, so only Slack has reassign_routine_agent; take_over_routine is the
  * Admin Runs as repair, which Slack does not offer.
  */
-export const MANAGEMENT_OPERATION_SCHEMA_URI = 'chickpea://schema/operations/v2' as const;
 export const MCP_MANAGEMENT_OPERATION_KINDS = managementOperationZodSchema.options
   .map((option) => option.shape.kind.value);
 
