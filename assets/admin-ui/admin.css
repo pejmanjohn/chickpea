@@ -2745,8 +2745,6 @@ button.capability-pill { cursor: pointer; }
 .conn-tool .tool-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .conn-tool .tool-name { color: var(--text); font-family: var(--mono); font-size: 0.75rem; font-weight: 600; overflow-wrap: anywhere; }
 .conn-tool .tool-desc { color: var(--text-3); font-size: 0.75rem; overflow-wrap: anywhere; }
-.conn-tool-check-placeholder { flex: 0 0 18px; width: 18px; }
-.conn-tool-unavailable { cursor: default; }
 .custom-mcp-tool-list { margin-top: 8px; }
 .custom-mcp-tool-list .tool-name { font-weight: 650; }
 .conn-header-row { display: flex; flex-wrap: wrap; gap: 8px; }

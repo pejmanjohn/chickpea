@@ -8786,11 +8786,21 @@
       '<div class="skill-form-actions"><button class="btn btn-ghost btn-sm" data-action="connection-account-cancel">Cancel</button><button class="btn btn-primary btn-sm" data-action="connection-account-create"' + (busy || !form.ownerKind ? ' disabled' : '') + '>' + (busy ? 'Saving&hellip;' : 'Save connection') + '</button></div></div></fieldset>';
   }
 
-  function customMcpToolChoices(tools, selected) {
-    var busy = !!((state.connectionAccountForm || state.customMcpToolEditor || {}).busy);
-    var review = state.customMcpToolEditor && state.customMcpToolEditor.metaAds;
-    var bugsnag = state.customMcpToolEditor && state.customMcpToolEditor.bugsnag;
-    var controls = review ? '<p class="hint">Choose the tools this Agent can use for the selected ad accounts.</p>' : '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-all"' + (busy ? ' disabled' : '') + '>Select all</button><button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-none"' + (busy ? ' disabled' : '') + '>Deselect all</button><span class="hint">' + tools.filter(function (tool) { return selected.indexOf(tool.name) >= 0; }).length + ' of ' + tools.length + ' selected</span></div>';
+  // The tools a picker shows as checkboxes. Rendering, the count, and Select all
+  // share this list, so Select all never picks a Meta Ads tool the user cannot see.
+  function customMcpSelectableTools(selection) {
+    var tools = selection.reviewedTools || selection.tools || [];
+    return selection.metaAds ? tools.filter(function (tool) { return tool.available !== false; }) : tools;
+  }
+
+  function customMcpToolChoices(selection) {
+    var busy = !!selection.busy;
+    var review = !!selection.metaAds;
+    var bugsnag = !!selection.bugsnag;
+    var tools = customMcpSelectableTools(selection);
+    var selected = selection.selectedTools || [];
+    var controls = (review ? '<p class="hint">Choose the tools this Agent can use for the selected ad accounts.</p>' : '') +
+      (tools.length ? '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-all"' + (busy ? ' disabled' : '') + '>Select all</button><button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-none"' + (busy ? ' disabled' : '') + '>Deselect all</button><span class="hint">' + tools.filter(function (tool) { return selected.indexOf(tool.name) >= 0; }).length + ' of ' + tools.length + ' selected</span></div>' : '');
     var descriptions = {
       ads_get_ad_accounts: "Verify which approved ad accounts are available.",
       ads_get_ad_entities: "View campaigns, ad sets, ads, and their performance.",
@@ -8814,10 +8824,8 @@
       ads_delete_custom_audience: "Delete a custom audience."
     };
     var choices = tools.map(function (tool) {
-      var supported = !review || tool.available !== false;
       var checked = selected.indexOf(tool.name) >= 0;
       var description = review ? descriptions[tool.name] : tool.description;
-      if (!supported) return '<div class="conn-tool conn-tool-unavailable"><span class="conn-tool-check-placeholder" aria-hidden="true"></span><span class="tool-body"><span class="tool-name">' + esc(tool.title || tool.name) + '</span><span class="tool-desc">' + (tool.requiresEditingAccess ? 'Reconnect with Reporting and editing access to select this tool.' : 'Not yet supported with ad account restrictions.') + '</span></span></div>';
       return '<label class="conn-tool"><span class="import-check' + (checked ? ' on' : '') + '"><input type="checkbox" data-action="custom-mcp-tool" data-tool="' + esc(tool.name) + '"' + (checked ? ' checked' : '') + (busy ? ' disabled' : '') + '></span><span class="tool-body"><span class="tool-name">' + esc(tool.title || tool.name) + (review ? (tool.effect === 'read' ? ' · Reporting' : ' · May change ads') : bugsnag ? (bugsnagReadTool(tool) ? ' · Read only' : ' · May change data') : '') + '</span>' + (description ? '<span class="tool-desc">' + esc(description) + '</span>' : '') + '</span></label>';
     }).join("");
     return controls + (choices ? '<div class="conn-tools custom-mcp-tool-list">' + choices + '</div>' : '<p class="hint">This server returned no tools.</p>');
@@ -8828,7 +8836,7 @@
     var error = form.error ? '<div class="err" role="alert">' + esc(form.error) + '</div>' : '';
     if (form.reviewedTools) {
       return '<div class="skill-form"><h3>Choose tools</h3><p class="hint">Select the tools this Agent may use.</p>' +
-        customMcpToolChoices(form.reviewedTools, form.selectedTools || []) + error +
+        customMcpToolChoices(form) + error +
         '<div class="skill-form-actions"><button class="btn btn-ghost btn-sm" data-action="custom-mcp-back"' + (busy ? ' disabled' : '') + '>Back</button><button class="btn btn-primary btn-sm" data-action="connection-account-create"' + (busy ? ' disabled' : '') + '>' + (busy ? 'Saving&hellip;' : 'Save connection') + '</button></div></div>';
     }
     return '<div class="skill-form"><h3>Custom connection</h3>' + customConnectionTypeHtml(form) +
@@ -8868,8 +8876,7 @@
   function customMcpToolEditorHtml(entry) {
     var editor = state.customMcpToolEditor;
     if (!editor || editor.accountId !== entry.account.id) return '';
-    var tools = editor.metaAds ? editor.tools.filter(function (tool) { return tool.available !== false; }) : editor.tools;
-    return '<div class="skill-form"><h3>Choose access</h3>' + (editor.metaAds ? '<div class="field"><label class="field-label" for="meta-ads-account-ids">Ad account IDs</label><input id="meta-ads-account-ids" class="input mono" data-action="meta-ads-account-ids" value="' + esc(editor.accountIds) + '"><p class="hint">Copy the ad account IDs from Ads Manager, separated by commas. Tools are restricted to these accounts.</p></div>' : '') + (editor.bugsnag ? '<p class="hint">Investigation tools are suggested first; editing tools are optional. Selected tools can access every project available to your BugSnag account. Error severity changes are not supported.</p>' : '') + customMcpToolChoices(tools, editor.selectedTools) +
+    return '<div class="skill-form"><h3>Choose access</h3>' + (editor.metaAds ? '<div class="field"><label class="field-label" for="meta-ads-account-ids">Ad account IDs</label><input id="meta-ads-account-ids" class="input mono" data-action="meta-ads-account-ids" value="' + esc(editor.accountIds) + '"><p class="hint">Copy the ad account IDs from Ads Manager, separated by commas. Tools are restricted to these accounts.</p></div>' : '') + (editor.bugsnag ? '<p class="hint">Investigation tools are suggested first; editing tools are optional. Selected tools can access every project available to your BugSnag account. Error severity changes are not supported.</p>' : '') + customMcpToolChoices(editor) +
       (editor.error ? '<div class="err" role="alert">' + esc(editor.error) + '</div>' : '') +
       '<div class="skill-form-actions"><button class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-cancel"' + (editor.busy ? ' disabled' : '') + '>Cancel</button><button class="btn btn-primary btn-sm" data-action="custom-mcp-tools-save"' + (editor.busy ? ' disabled' : '') + '>Save tool access</button></div></div>';
   }
@@ -16270,7 +16277,7 @@
       var toolSelection = state.connectionAccountForm || state.customMcpToolEditor;
       if (toolSelection && !toolSelection.busy) {
         toolSelection.selectedTools = action === "custom-mcp-tools-all"
-          ? (toolSelection.reviewedTools || toolSelection.tools || []).map(function (tool) { return tool.name; }) : [];
+          ? customMcpSelectableTools(toolSelection).map(function (tool) { return tool.name; }) : [];
         render();
       }
     }

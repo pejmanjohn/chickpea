@@ -19350,7 +19350,7 @@ test('BugSnag OAuth review suggests reads, labels writes, and saves without ad-a
   });
 });
 
-test('Meta tool review shows only available reporting and write tools', async () => {
+test('Meta tool review shows only available reporting and write tools, and Select all picks exactly those', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
     connectionAccounts: { attached: [ownedConnection({
@@ -19426,6 +19426,25 @@ test('Meta tool review shows only available reporting and write tools', async ()
     'data-action': 'custom-mcp-tool', 'data-tool': 'ads_get_field_context',
   }, true) });
   assert.match(harness.app.innerHTML, /id="meta-ads-account-ids"[^>]*value="123, 456"/);
+  assert.match(harness.app.innerHTML, /3 of 5 selected/);
+
+  click({ target: actionTarget({ 'data-action': 'custom-mcp-tools-none' }) });
+  assert.match(harness.app.innerHTML, /0 of 5 selected/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="custom-mcp-tool"[^>]*checked/);
+
+  click({ target: actionTarget({ 'data-action': 'custom-mcp-tools-all' }) });
+  assert.match(harness.app.innerHTML, /5 of 5 selected/);
+  assert.doesNotMatch(harness.app.innerHTML, /ads_create_ad_set/);
+  click({ target: actionTarget({ 'data-action': 'custom-mcp-tools-save' }) });
+  await flushAsync();
+  assert.deepEqual(harness.connectionToolsPuts[0]?.body, {
+    expectedRevision: 3,
+    allowedTools: [
+      'ads_get_ad_entities', 'ads_get_field_context', 'ads_get_opportunity_score',
+      'ads_create_campaign', 'ads_create_creative',
+    ],
+    approvedAccountIds: ['123', '456'],
+  });
 });
 
 test('background connection refresh keeps a same-Agent tool editor visible and in place', async () => {
