@@ -1,27 +1,26 @@
 import { opaqueId } from '../work/admission.ts';
 import * as v from 'valibot';
-import { memoryUpdateSummarySchema } from '../memory/acknowledgement.ts';
 
 export const SLACK_MEMORY_UPDATE_DATA_NAME = 'slackMemoryUpdate';
-export const SlackMemoryUpdateSchema = v.strictObject({
+// Not strict: older receipts also carry summary and preservesContext, and
+// stored settlements still hold them. Reading drops both.
+export const SlackMemoryUpdateSchema = v.object({
   operationId: v.pipe(v.string(), v.minLength(1), v.maxLength(256)),
   revision: v.pipe(v.number(), v.integer(), v.minValue(1)),
-  summary: v.optional(memoryUpdateSummarySchema),
-  /**
-   * Host-established at the write: the new body kept the injected memory
-   * snapshot verbatim, so the model draft grounded in that snapshot discloses
-   * nothing forgotten. Absent for forgets, rewrites, replays, and writes over
-   * a snapshot the model was not shown.
-   */
-  preservesContext: v.optional(v.literal(true)),
+  /** The injected revision, when every write of this turn up to this one applied on the one before. */
+  chainedFrom: v.optional(v.pipe(v.number(), v.integer(), v.minValue(0))),
 });
 export type SlackMemoryUpdate = v.InferOutput<typeof SlackMemoryUpdateSchema>;
 
-/** Metadata is only a hint: delivery must independently verify the durable receipt. */
+/**
+ * The newest of a turn's receipts, one per applied write. Metadata is only a
+ * hint: delivery must independently verify the durable receipt.
+ */
 export function parseSlackMemoryUpdate(value: unknown): SlackMemoryUpdate | undefined {
-  if (!Array.isArray(value) || value.length !== 1) return undefined;
-  const parsed = v.safeParse(SlackMemoryUpdateSchema, value[0]);
-  return parsed.success ? parsed.output : undefined;
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  const parsed = v.safeParse(v.array(SlackMemoryUpdateSchema), value);
+  if (!parsed.success) return undefined;
+  return parsed.output.reduce((newest, receipt) => (receipt.revision > newest.revision ? receipt : newest));
 }
 
 export function appliedMemoryReceipt(value: unknown, agentId: string): SlackMemoryUpdate | undefined {
@@ -36,18 +35,21 @@ export function appliedMemoryReceipt(value: unknown, agentId: string): SlackMemo
   return parseSlackMemoryUpdate([{ operationId: result.operationId, revision: changed.revision }]);
 }
 
-/** Verify the operation belongs to this turn, then recheck live memory and visibility. */
-export async function verifyMemoryUpdateAcknowledgement(input: {
+/**
+ * Verify the operation is this turn's own write, then recheck live memory and
+ * visibility. Only such a write may advance memory past the ordinary lease.
+ */
+export async function verifyOwnMemoryWrite(input: {
   hint: SlackMemoryUpdate;
   agentId: string;
   turnJobId: string;
   getOperation(operationId: string): Promise<unknown>;
-  validateReceiptLease(revision: number): Promise<boolean>;
+  validateReceiptLease(revision: number, chainedFrom?: number): Promise<boolean>;
 }): Promise<boolean> {
   const result = await input.getOperation(input.hint.operationId);
   const receipt = appliedMemoryReceipt(result, input.agentId);
   if (!receipt || receipt.revision !== input.hint.revision ||
       (result as { idempotencyKey?: string }).idempotencyKey !==
         opaqueId('memory', `${input.turnJobId}:${receipt.revision - 1}`)) return false;
-  return input.validateReceiptLease(receipt.revision);
+  return input.validateReceiptLease(receipt.revision, input.hint.chainedFrom);
 }

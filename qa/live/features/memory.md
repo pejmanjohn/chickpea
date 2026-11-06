@@ -7,7 +7,7 @@ Docs: `/agents/memory/`. Record areas: `memory`. Legacy contracts: LC-07.
 - One body of text and one revision per Agent, read on every turn in its DMs, App Home, every granted channel and every scheduled run. Another Agent, including base `@Chickpea`, never reads it.
 - Slack commands after mentioning the Agent: `!memory`, `!memory help`, `!memory show memory`, `!remember <name> - <description>`, `!memory update memory - <description>`, and `!forget memory`, which points to the Admin Memory tab.
 - Plain requests: the Agent's memory tool saves wording after "Remember:" verbatim, forgets named facts, and can capture a durable preference stated in ordinary conversation.
-- A message that both asks a question and asks to remember gets the answer plus a first-person save confirmation. Forgetting or rewriting replaces the reply with the save summary, and forgetting gets a content-free confirmation.
+- A message that both asks a question and asks to remember gets the answer plus a first-person save confirmation. Every own write, including a rewrite or a forget, delivers the Agent's own reply with its tables and display components; the host never replaces it with a fixed confirmation.
 - The Admin Memory tab is one editor with Discard and Save memory, for editors of that Agent. Saving an empty body is the delete, with no undo.
 - Every write names its expected revision, and a stale write is refused rather than merged. A repeated Slack event returns the existing revision.
 - Memory is advisory: it cannot grant authority or authorize a connector write. Credential-shaped text is refused with `memory_credential_rejected`.

@@ -1,4 +1,4 @@
-import { appliedMemoryReceipt, parseSlackMemoryUpdate, verifyMemoryUpdateAcknowledgement } from '../src/slack/memory-update-terminal.ts';
+import { appliedMemoryReceipt, parseSlackMemoryUpdate, verifyOwnMemoryWrite } from '../src/slack/memory-update-terminal.ts';
 import { resolveSlackManagementActor } from '../src/management/slack-tools.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -7,35 +7,30 @@ import { toJsonSchema } from '@valibot/to-json-schema';
 import { validateToolArguments } from '@earendil-works/pi-ai';
 
 import {
+  createMemoryWriteChain,
   executeSlackMemoryUpdate,
   slackMemoryUpdateArguments,
   slackUpdateAgentMemoryInputSchema,
   SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION,
 } from '../src/management/slack-memory-actions.ts';
 import { invokeSlackWorkspaceManagementTool } from '../src/management/slack-tools.ts';
+import { resultFromAgentReply } from '../src/slack/flue-dispatch.ts';
+import type { AgentReply } from '@flue/runtime';
 import { createDemoStarterAgent } from '../src/config/seed.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 import { slackTurnSignal } from './helpers/slack-turn-signal.ts';
 
-test('memory tool has a portable optional summary and rejects model-selected authority', () => {
+test('memory tool input is portable and rejects model-selected authority', () => {
   const input = { expectedRevision: 0, body: 'The warehouse opens at nine.' };
   const parameters = toJsonSchema(slackUpdateAgentMemoryInputSchema, { errorMode: 'ignore' });
-  assert.deepEqual(Object.keys(parameters.properties!), ['expectedRevision', 'body', 'summary']);
+  assert.deepEqual(Object.keys(parameters.properties!), ['expectedRevision', 'body']);
   assert.deepEqual(validateToolArguments({ name: 'update_agent_memory', description: '', parameters }, {
     type: 'toolCall', id: 'memory', name: 'update_agent_memory', arguments: input,
   }), input);
   assert.throws(() => v.parse(slackUpdateAgentMemoryInputSchema, { ...input, agentId: 'other' }));
   assert.throws(() => v.parse(slackUpdateAgentMemoryInputSchema, { ...input, expectedRevision: -1 }));
   assert.throws(() => v.parse(slackUpdateAgentMemoryInputSchema, { ...input, expectedRevision: 1.5 }));
-  const summary = 'I updated my memory to use readable dates.';
-  assert.equal(v.parse(slackUpdateAgentMemoryInputSchema, { ...input, summary }).summary, summary);
-  assert.deepEqual(slackMemoryUpdateArguments({ agentId: 'a', turnJobId: 't' }, { ...input, summary }),
-    slackMemoryUpdateArguments({ agentId: 'a', turnJobId: 't' }, input), 'presentation never changes the mutation or idempotency key');
-  for (const summary of ['', ' ', 'x'.repeat(301), 'first\nsecond']) {
-    assert.doesNotThrow(() => v.parse(slackUpdateAgentMemoryInputSchema, { ...input, summary }));
-    assert.equal(parseSlackMemoryUpdate([{ operationId: 'op', revision: 1, summary }]), undefined);
-  }
 });
 
 test('memory tool contract carries exact actionable references and their qualifiers', () => {
@@ -52,7 +47,10 @@ test('memory tool contract carries exact actionable references and their qualifi
   assert.match(SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION, /do not paraphrase, compress, generalize, or change its exceptions/i);
   assert.match(SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION, /text following "Remember:" and a quoted note/i);
   assert.match(SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION, /only permitted change.+include the exact URL with the label/i);
-  assert.match(SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION, /summary may paraphrase.+applies only to summary.+body remains verbatim/i);
+  assert.match(SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION, /host always delivers your final reply/i);
+  assert.match(SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION, /confirmation may paraphrase.+body remains verbatim/i);
+  assert.match(SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION, /never quote or restate anything being forgotten/i);
+  assert.doesNotMatch(SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION, /summary|withhold/i);
   assert.match(SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION, /ordinary conversational facts.+may still be restated concisely/i);
   assert.match(SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION, /exclude directions about the act of remembering or this turn only/i);
 });
@@ -82,20 +80,19 @@ test('memory tool delegates scoped, idempotent writes and forget to existing man
     const hint = appliedMemoryReceipt(saved.result, agent.id)!;
     assert.ok(hint);
     assert.deepEqual(parseSlackMemoryUpdate([hint]), hint);
-    const describedHint = { ...hint, summary: 'I updated my memory to remember the opening time.' };
-    assert.deepEqual(parseSlackMemoryUpdate([describedHint]), describedHint);
-    assert.equal(parseSlackMemoryUpdate([{ ...hint, body: 'untrusted' }]), undefined);
-    assert.equal(parseSlackMemoryUpdate([hint, hint]), undefined);
+    const legacyHint = { ...hint, summary: 'I updated my memory.', preservesContext: true };
+    assert.deepEqual(parseSlackMemoryUpdate([legacyHint]), hint, 'older receipts still read, without their legacy fields');
+    assert.deepEqual(parseSlackMemoryUpdate([hint, hint]), hint);
     const actor = await resolveSlackManagementActor(signal, f.identity);
     const verify = (turnJobId = signal.turnJobId, live = true, nextHint = hint) =>
-      verifyMemoryUpdateAcknowledgement({
+      verifyOwnMemoryWrite({
         hint: nextHint, agentId: agent.id, turnJobId,
         getOperation: (id) => f.service.getOperation(actor, id),
         validateReceiptLease: async (revision) => live && revision === (await f.memory.getAgentMemory(agent.id)).revision,
       });
-    assert.equal(await verify(), true, 'durable own-turn receipt authorizes a host acknowledgement');
+    assert.equal(await verify(), true, 'a durable own-turn receipt verifies');
     assert.equal(await verify('other-turn'), false, 'another turn cannot reuse a receipt');
-    assert.equal(await verify('other-turn', true, describedHint), false, 'summary cannot bypass receipt verification');
+    assert.equal(await verify('other-turn', true, legacyHint), false, 'legacy fields cannot bypass receipt verification');
     assert.equal(await verify(signal.turnJobId, false), false, 'revoked visibility fails closed');
     assert.equal(await verify(signal.turnJobId, true, { ...hint, revision: 99 }), false);
 
@@ -120,86 +117,62 @@ test('memory tool delegates scoped, idempotent writes and forget to existing man
     }));
     assert.equal(forget.ok, true);
     assert.equal((await f.memory.getAgentMemory(agent.id)).body, '');
-    assert.equal(await verify(), false, 'a later forget invalidates an earlier acknowledgement');
+    assert.equal(await verify(), false, 'a later forget invalidates an earlier receipt');
   } finally { f.close(); }
 });
 
-test('memory tool handler emits only safe applied confirmations and never lets presentation block the save', async () => {
-  for (const summary of [undefined, '  I updated my memory to use readable dates.  ', '', 'x'.repeat(301), 'first\nsecond']) {
-    let applied = 0;
-    const { receipt } = await executeSlackMemoryUpdate({
-      signal: { agentId: 'a', turnJobId: 't' },
-      memoryEpoch: 1,
-      data: { expectedRevision: 0, body: 'Use readable dates.', summary },
-      inspect: async () => ({ ok: true, result: { agentId: 'a', revision: 0, body: '' } }),
-      apply: async () => {
-        applied += 1;
-        return { ok: true, result: { status: 'completed', operationId: 'op', outcomes: [{
-          operationKind: 'update_agent_memory', disposition: 'applied', changed: [{ kind: 'memory', id: 'a', revision: 1 }],
-        }] } };
-      },
-    });
-    assert.equal(applied, 1);
-    assert.equal(receipt?.summary, summary?.startsWith('  I') ? summary.trim() : 'I updated my memory.');
-    assert.equal(receipt?.preservesContext, true, 'an addition over the shown snapshot keeps the model answer');
-    assert.deepEqual(parseSlackMemoryUpdate([receipt]), receipt);
-  }
+test('memory tool handler returns the applied receipt and nothing for a failed write', async () => {
+  let applied = 0;
+  const chain = createMemoryWriteChain('t', 0, undefined);
+  const { receipt } = await executeSlackMemoryUpdate({
+    signal: { agentId: 'a', turnJobId: 't' },
+    data: { expectedRevision: 0, body: 'Use readable dates.' }, chain,
+    apply: async () => {
+      applied += 1;
+      return { ok: true, result: { status: 'completed', operationId: 'op', outcomes: [{
+        operationKind: 'update_agent_memory', disposition: 'applied', changed: [{ kind: 'memory', id: 'a', revision: 1 }],
+      }] } };
+    },
+  });
+  assert.equal(applied, 1);
+  assert.deepEqual(receipt, { operationId: 'op', revision: 1, chainedFrom: 0 });
   const rejected = await executeSlackMemoryUpdate({
     signal: { agentId: 'a', turnJobId: 't' },
-    memoryEpoch: 1,
-    data: { expectedRevision: 0, body: 'Use dates.', summary: 'I saved dates.' },
-    inspect: async () => { throw new Error('unavailable'); },
+    data: { expectedRevision: 0, body: 'Use dates.' }, chain,
     apply: async () => ({ ok: false, error: { code: 'revision_conflict', message: 'Changed' } }),
   });
-  assert.equal(rejected.receipt, undefined, 'a failed write never emits a success confirmation');
+  assert.equal(rejected.receipt, undefined, 'a failed write never emits a receipt');
 });
 
-test('memory receipts only claim preserved context for a verbatim addition to the shown snapshot', async () => {
-  const applied = (revision: number) => async () => ({ ok: true as const, result: {
-    status: 'completed', operationId: 'op', outcomes: [{
-      operationKind: 'update_agent_memory', disposition: 'applied', changed: [{ kind: 'memory', id: 'a', revision }],
-    }],
-  } });
-  const shown = { agentId: 'a', revision: 3, body: 'Secret canary: BLUEBIRD.\nKeep links.' };
-  const run = (input: {
-    body: string; memoryEpoch?: number; expectedRevision?: number; summary?: string;
-    inspect?: () => Promise<{ ok: true; result: unknown }>;
-  }) => executeSlackMemoryUpdate({
-    signal: { agentId: 'a', turnJobId: 't' },
-    memoryEpoch: input.memoryEpoch ?? 4,
-    data: { expectedRevision: input.expectedRevision ?? 3, body: input.body, summary: input.summary },
-    inspect: input.inspect ?? (async () => ({ ok: true, result: shown })),
-    apply: applied((input.expectedRevision ?? 3) + 1),
-  });
+test('only writes that each apply on the injected revision or an earlier own write are chained', () => {
+  const receipt = (revision: number) => ({ operationId: `op_${revision}`, revision });
+  const persisted: unknown[] = [];
+  const chain = createMemoryWriteChain('t', 3, undefined, (state) => persisted.push(state));
+  assert.deepEqual(chain.link(3, receipt(4)), { ...receipt(4), chainedFrom: 3 }, 'the first write on the snapshot');
+  assert.deepEqual(chain.link(4, receipt(5)), { ...receipt(5), chainedFrom: 3 }, 'a write on the first');
+  assert.deepEqual(chain.link(3, receipt(4)), { ...receipt(4), chainedFrom: 3 }, 'a replayed call stays in the chain');
+  assert.deepEqual(chain.link(6, receipt(7)), receipt(7), 'a write on another writer\'s revision is not chained');
+  assert.deepEqual(chain.link(7, receipt(8)), receipt(8), 'nor is any write after the break');
+  assert.deepEqual(persisted.at(-1), { turnJobId: 't', from: 3, head: 5 });
 
-  const addition = await run({ body: `${shown.body}\nAudit word: saffron.`, summary: 'I saved the audit word.' });
-  assert.deepEqual(addition.receipt, { operationId: 'op', revision: 4, summary: 'I saved the audit word.', preservesContext: true });
-  const additionWithoutSummary = await run({ body: `Audit word: saffron.\n${shown.body}` });
-  assert.deepEqual(additionWithoutSummary.receipt, { operationId: 'op', revision: 4, summary: 'I updated my memory.', preservesContext: true },
-    'a missing summary still lets the model answer deliver');
-  const unchanged = await run({ body: shown.body, summary: 'I already had that saved.' });
-  assert.deepEqual(unchanged.receipt, { operationId: 'op', revision: 4, summary: 'I updated my memory.', preservesContext: true },
-    'writing the shown body back unchanged keeps the model answer without echoing a change');
+  const redriven = createMemoryWriteChain('t', 3, { turnJobId: 't', from: 3, head: 5 });
+  assert.deepEqual(redriven.link(5, receipt(6)), { ...receipt(6), chainedFrom: 3 }, 'a redrive keeps the chain');
+  const otherTurn = createMemoryWriteChain('u', 3, { turnJobId: 't', from: 3, head: 5 });
+  assert.deepEqual(otherTurn.link(5, receipt(6)), receipt(6), 'another turn starts its own chain');
+  const otherSnapshot = createMemoryWriteChain('t', 5, { turnJobId: 't', from: 3, head: 5 });
+  assert.deepEqual(otherSnapshot.link(5, receipt(6)), { ...receipt(6), chainedFrom: 5 }, 'a new snapshot restarts the chain');
+  assert.equal(parseSlackMemoryUpdate([{ ...receipt(6), chainedFrom: 3 }])?.chainedFrom, 3, 'the mark survives a stored settlement');
+});
 
-  for (const [name, input] of Object.entries({
-    'forget one fact': { body: 'Keep links.', summary: 'I forgot BLUEBIRD.' },
-    'rewrite': { body: 'Secret canary: GREENBIRD.\nKeep links.', summary: 'I changed the canary.' },
-    'forget all': { body: '', summary: 'I forgot everything.' },
-    'write over an unseen revision': { body: `${shown.body}\nAudit word: saffron.`, memoryEpoch: 2, summary: 'I saved the audit word.' },
-    'inspection disagrees with the shown revision': { body: `${shown.body}\nAudit word: saffron.`, summary: 'I saved the audit word.',
-      inspect: async () => ({ ok: true as const, result: { ...shown, revision: 2 } }) },
-  })) {
-    const { receipt } = await run(input);
-    assert.ok(receipt, name);
-    assert.equal(receipt.preservesContext, undefined, `${name} must not release the model draft`);
-    assert.equal(receipt.summary, input.body ? 'I updated my memory.' : 'I cleared my saved memory.', name);
-  }
-
-  const receipt = { operationId: 'op', revision: 4 };
-  assert.deepEqual(parseSlackMemoryUpdate([{ ...receipt, preservesContext: true }]), { ...receipt, preservesContext: true });
-  for (const preservesContext of [false, 'true', 1, null]) {
-    assert.equal(parseSlackMemoryUpdate([{ ...receipt, preservesContext }]), undefined, 'only an explicit true claim is accepted');
-  }
+test('a reply with several memory receipts hands delivery the newest one', () => {
+  const reply = (receipts: unknown[]): AgentReply => ({ text: 'ok', data: { slackMemoryUpdate: receipts }, submissionId: 's' });
+  const first = { operationId: 'management_first', revision: 4, chainedFrom: 3 };
+  const second = { operationId: 'management_second', revision: 5, chainedFrom: 3 };
+  assert.deepEqual(resultFromAgentReply(reply([first, second]), null).memoryUpdate, second);
+  assert.deepEqual(resultFromAgentReply(reply([second, first]), null).memoryUpdate, second);
+  assert.deepEqual(resultFromAgentReply(reply([first, first]), null).memoryUpdate, first, 'a redriven call repeats its receipt');
+  assert.equal(resultFromAgentReply(reply([first, { revision: 'x' }]), null).memoryUpdate, undefined);
+  assert.equal(resultFromAgentReply(reply([]), null).memoryUpdate, undefined);
 });
 
 test('an ask turn proposes a memory write the person did not ask for; a person\'s turn writes it immediately', async () => {
