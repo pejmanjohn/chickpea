@@ -9,6 +9,7 @@ import {
   type MemoryStateStore,
   type PutAgentMemoryInput,
 } from './types.ts';
+import { assertStorableMemoryText } from './validation.ts';
 
 const MAX_AGENT_MEMORY_BYTES = 64 * 1_024;
 const MAX_MUTATION_RECEIPTS_PER_AGENT = 1_024;
@@ -86,6 +87,7 @@ export class MemoryStoreLogic {
       if (new TextEncoder().encode(input.body).byteLength > MAX_AGENT_MEMORY_BYTES) {
         throw new MemoryStateError('memory_entry_too_large', 'Agent memory is too large.');
       }
+      assertStorableMemoryText(input.body);
       if (current.revision === 0) {
         this.db.run(
           'INSERT INTO agent_memories (agent_id, body, revision) VALUES (?, ?, 1)',

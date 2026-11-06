@@ -109,9 +109,10 @@ import {
 } from '../browser/agent-website-logins.ts';
 import { listWebsiteLogins, type WebsiteLogin, type WebsiteLoginDependencies } from '../browser/logins.ts';
 import type { IdentityStore, Membership, Organization } from '../identity/types.ts';
-import type {
-  AgentMemory,
-  MemoryStateStore,
+import {
+  MemoryStateError,
+  type AgentMemory,
+  type MemoryStateStore,
 } from '../memory/types.ts';
 import { RoutineService } from '../routines/service.ts';
 import {
@@ -5807,6 +5808,9 @@ export class WorkspaceManagementService {
       return memoryMutation(memory, inverse);
     } catch (error) {
       if (error instanceof ManagementError) throw error;
+      if (error instanceof MemoryStateError && error.code !== 'memory_version_conflict') {
+        throw new ManagementError('invalid_request', error.message);
+      }
       throw new ManagementError('revision_conflict', 'The Agent memory changed.');
     }
   }

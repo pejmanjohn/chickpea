@@ -40,20 +40,24 @@ export function validateMemoryContent(input: unknown): ValidMemoryContent {
   }
   assertByteLength('Description', description, MAX_DESCRIPTION_BYTES);
   assertByteLength('Body', body, MAX_BODY_BYTES);
-  if (hasDisallowedControlCharacter(description) || hasDisallowedControlCharacter(body)) {
+  assertStorableMemoryText(`${description}\n${body}`);
+  return { description, body, type: parsed.output.type };
+}
+
+/** The store runs this on every write, so Admin, Slack, and MCP share one rule set. */
+export function assertStorableMemoryText(text: string): void {
+  if (hasDisallowedControlCharacter(text)) {
     throw new MemoryStateError(
       'memory_invalid_control_character',
       'Memory content cannot contain control characters.',
     );
   }
-  const combined = `${description}\n${body}`;
-  if (hasCredentialLikeContent(combined)) {
+  if (hasCredentialLikeContent(text)) {
     throw new MemoryStateError(
       'memory_credential_rejected',
       'Memory cannot contain credential-like content.',
     );
   }
-  return { description, body, type: parsed.output.type };
 }
 
 /** Preserve both parts of the Slack/tool contract without duplicating one-line memories. */

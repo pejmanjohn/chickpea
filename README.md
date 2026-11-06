@@ -63,7 +63,7 @@ Chickpea is for those teams. Each Agent keeps its own connected accounts and its
 |---|---|---|
 | **Addressable Agents** | Each Agent gets a real Slack handle (a zero-member user group like `@support`), a distinct generated avatar, and its own name on every reply. | |
 | **Agent memory** | One memory per Agent, shared across its DMs and every granted channel, editable and deletable in Admin. | [Details](#memory) |
-| **Connection accounts** | Team accounts and personal accounts, each owned by one Agent. 35 connector presets, plus native API and MCP for anything custom. | [Details](#connections-and-authority) |
+| **Connection accounts** | Team accounts and personal accounts, each owned by one Agent. 105 connector presets, plus native API and MCP for anything custom. | [Details](#connections-and-authority) |
 | **Model choice** | Anthropic, OpenAI, OpenRouter, or Cloudflare Workers AI, pinned per Agent. | [Details](#models-and-providers) |
 | **Skills** | Import from a GitHub repo or a `skills.sh` link, in Admin or by handing the link to an Agent in Slack. You see which skills were found before anything is installed. | |
 | **Repositories** | Grant GitHub repositories to an Agent through the Chickpea GitHub App (Settings → GitHub). Access uses short-lived installation tokens scoped to the granted repositories. | |
@@ -397,7 +397,7 @@ One memory per Agent, no partitions. The same body informs its DMs and every gra
 
 One consequence of that: **something learned in a private conversation can influence a later channel answer.** If you need isolation, use a separate Agent. Memory is not it.
 
-Memory is advisory, never policy. Live instructions, current permissions, and verified grant state win. Secrets, tokens, sensitive personal data, and untrusted quoted instructions are rejected on the way in.
+Memory is advisory, never policy. Live instructions, current permissions, and verified grant state win. Memory refuses credentials such as API keys and tokens, whether it is written from Admin, Slack, or MCP. The model reads it as context that cannot grant authority, and memory text cannot break out of that frame.
 
 ---
 

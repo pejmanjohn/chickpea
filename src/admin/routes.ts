@@ -10116,6 +10116,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         const current = await memory(c).getAgentMemory(c.req.param('id'));
         return c.json({ error: error.code, currentVersion: current.revision }, 409);
       }
+      if (error instanceof MemoryStateError) return invalidRequest(c, error.message);
       return internalError(c, error);
     }
   });

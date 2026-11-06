@@ -42,7 +42,7 @@ The installer then completes Sign in with Slack. Chickpea compares the exact Ope
 
 ## Normal sign-in
 
-`/auth/slack/sign-in` starts a confidential Slack OIDC flow using `openid profile`, a browser-bound hashed state, a nonce, and the exact installed workspace. The callback exchanges the code with `client_secret_post`, validates issuer, audience, nonce, token type, team, and user, then creates the Better Auth provider account/session only after Chickpea admission succeeds.
+`/auth/slack/sign-in` starts a confidential Slack OIDC flow using `openid profile email`, a browser-bound hashed state, a nonce, and the exact installed workspace. The callback exchanges the code with `client_secret_post`, validates issuer, audience, nonce, token type, team, and user, then creates the Better Auth provider account/session only after Chickpea admission succeeds.
 
 A valid Slack identity is not sufficient by itself. Each Admin request re-resolves the canonical `(team_id, user_id)` binding and requires an active Chickpea membership. Full members of the installed Slack workspace are provisioned the first time they interact with an Agent; they can then use Slack OIDC to sign in. Suspended, removed, mismatched-workspace, not-yet-provisioned, guest, and Slack Connect identities receive a uniform denial and no session authority.
 
