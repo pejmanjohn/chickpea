@@ -1,6 +1,10 @@
 import type { SlackUserGroup } from '../transport/types.ts';
 
 const SLACK_AGENT_HANDLE_MAX_LENGTH = 80;
+// Slack's method docs name description_too_long but give no number. A QA
+// workspace accepted 140 characters and refused 141 on create and update,
+// counting characters, not bytes (2026-11-06).
+const SLACK_USER_GROUP_DESCRIPTION_MAX_LENGTH = 140;
 
 /** Slack-compatible user-group handle derived from editable user input. */
 export function normalizeAgentHandle(value: string): string {
@@ -53,4 +57,20 @@ export function agentUserGroupName(
     const candidate = `${base} ${suffix}`;
     if (!taken.has(key(candidate))) return candidate;
   }
+}
+
+/**
+ * The description Slack shows for an Agent's user group. The Agent keeps its
+ * own description; the group's copy ends at a word with an ellipsis when the
+ * full text is longer than Slack allows.
+ */
+export function agentUserGroupDescription(agent: { name: string; description?: string }): string {
+  const description = agent.description ?? `${agent.name} Agent`;
+  const characters = [...description];
+  if (characters.length <= SLACK_USER_GROUP_DESCRIPTION_MAX_LENGTH) return description;
+  const kept = characters.slice(0, SLACK_USER_GROUP_DESCRIPTION_MAX_LENGTH - 1).join('');
+  const endsAtWord = /\s/.test(characters[SLACK_USER_GROUP_DESCRIPTION_MAX_LENGTH - 1]!);
+  const lastSpace = kept.search(/\s\S*$/);
+  const cut = endsAtWord || lastSpace <= 0 ? kept : kept.slice(0, lastSpace);
+  return `${cut.replace(/[\s.,;:]+$/, '')}…`;
 }

@@ -17,7 +17,12 @@ import {
   AgentPresenceError,
   classifyAgentPresenceError,
 } from './errors.ts';
-import { agentUserGroupName, alternativeAgentHandles, normalizeAgentHandle } from './handles.ts';
+import {
+  agentUserGroupDescription,
+  agentUserGroupName,
+  alternativeAgentHandles,
+  normalizeAgentHandle,
+} from './handles.ts';
 
 /** What the reconciler asks of an Agent's own Slack app; absent on a host without Agent apps. */
 export interface AgentAppPresenceHooks {
@@ -465,7 +470,7 @@ export class AgentPresenceReconciler {
       const pendingCreate = {
         name: agentUserGroupName(agent.name, groups),
         handle: normalizedHandle,
-        description: agent.description ?? `${agent.name} Agent`,
+        description: agentUserGroupDescription(agent),
         startedAt: this.now(),
       };
       agent = await config.updateAgent(
@@ -731,7 +736,7 @@ export class AgentPresenceReconciler {
     normalizedHandle: string,
     name: string,
   ): Promise<SlackUserGroup> {
-    const desiredDescription = agent.description ?? `${agent.name} Agent`;
+    const desiredDescription = agentUserGroupDescription(agent);
     if (
       group.name === name &&
       group.handle === normalizedHandle &&
