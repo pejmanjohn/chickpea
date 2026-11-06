@@ -12230,7 +12230,8 @@
       return '<div class="provider-panel">' + providerPanelHeadHtml(mark, 'Meta Ads', meta, badge) + (status ? '<div class="provider-panel-body">' + status + '</div>' : '') + '<div class="provider-panel-foot">' + foot + '</div></div>';
     }
     var callback = current.callbackUrl
-      ? '<div class="managed-setup-copy"><code class="managed-setup-code">' + esc(current.callbackUrl) + '</code><button type="button" class="btn btn-soft btn-sm" data-action="meta-ads-copy-callback">' + (current.callbackCopied ? 'Copied' : 'Copy') + '</button></div>'
+      ? '<div class="managed-setup-copy"><code class="managed-setup-code">' + esc(current.callbackUrl) + '</code><button type="button" class="btn btn-soft btn-sm" data-action="meta-ads-copy-callback">' + (current.callbackCopy === 'copied' ? 'Copied' : 'Copy') + '</button></div>' +
+        (current.callbackCopy === 'failed' ? '<p class="hint" role="status">Clipboard unavailable. Select and copy the address above.</p>' : '')
       : '<code class="managed-setup-code">Complete installation setup first.</code>';
     var body = '<ol class="managed-setup-steps">' +
       '<li><span><strong>Create a Meta app.</strong> Under <strong>Ads and monetization</strong>, choose the <strong>Create &amp; manage ads with ads MCP server</strong> use case. <a class="hint-link" href="' + META_APP_CREATION_URL + '" target="_blank" rel="noopener noreferrer">Create app in Meta&nbsp;&nearr;</a></span></li>' +
@@ -12251,16 +12252,16 @@
     current.loading = true;
     return api('/admin/api/settings/connectors/meta-ads', { cache: 'no-store' }).then(function (body) {
       if (!settingsLoadIsCurrent(generation)) return;
-      Object.assign(current, body, { loading: false, error: '' });
+      Object.assign(current, body, { loading: false, error: '', callbackCopy: '' });
       render();
     }).catch(function () { current.loading = false; current.error = 'Could not load Meta Ads settings. Reopen Settings to retry.'; render(); });
   }
 
   function copyMetaAdsCallback() {
     var current = state.metaAdsSettings;
-    function failed() { current.error = "Clipboard unavailable. Select and copy the address above."; render(); }
+    function failed() { current.callbackCopy = "failed"; render(); }
     if (!navigator.clipboard || !navigator.clipboard.writeText) { failed(); return; }
-    try { Promise.resolve(navigator.clipboard.writeText(current.callbackUrl)).then(function () { current.callbackCopied = true; current.error = ""; render(); }).catch(failed); }
+    try { Promise.resolve(navigator.clipboard.writeText(current.callbackUrl)).then(function () { current.callbackCopy = "copied"; render(); }).catch(failed); }
     catch (_) { failed(); }
   }
 
@@ -16519,7 +16520,7 @@
     if (action === "connection-inventory-retry") { loadConnectionInventory(state.settingsLoadGeneration); }
     if (action === "meta-ads-save") saveMetaAdsSettings(false);
     if (action === "meta-ads-remove") saveMetaAdsSettings(true);
-    if (action === "meta-ads-edit") { state.metaAdsSettings.editing = true; state.metaAdsSettings.error = ""; state.metaAdsSettings.notice = ""; render(); }
+    if (action === "meta-ads-edit") { state.metaAdsSettings.editing = true; state.metaAdsSettings.error = ""; state.metaAdsSettings.notice = ""; state.metaAdsSettings.callbackCopy = ""; render(); }
     if (action === "meta-ads-edit-cancel") { state.metaAdsSettings.editing = false; state.metaAdsSettings.error = ""; render(); }
     if (action === "meta-ads-copy-callback") copyMetaAdsCallback();
     if (action === "connector-settings-retry-load") { loadConnectorSettings(state.settingsLoadGeneration); }

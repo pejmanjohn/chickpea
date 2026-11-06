@@ -21801,7 +21801,9 @@ test('Meta Ads setup card links each Meta step and copies the exact callback', a
   await flushAsync();
   blocked.listeners.click?.({ target: actionTarget({ 'data-action': 'meta-ads-copy-callback' }) });
   await flushAsync();
-  assert.match(blocked.app.innerHTML, /role="alert">Clipboard unavailable\. Select and copy the address above\./);
+  assert.match(blocked.app.innerHTML, /data-action="meta-ads-copy-callback">Copy<\/button><\/div><p class="hint" role="status">Clipboard unavailable\. Select and copy the address above\.<\/p>/,
+    'the clipboard failure sits under the address, not in the App ID error slot');
+  assert.doesNotMatch(blocked.app.innerHTML, /role="alert">Clipboard unavailable/);
   assert.match(blocked.app.innerHTML, /data-action="meta-ads-copy-callback">Copy<\/button>/);
 
   const configured = runAdminPageHarness({
@@ -21811,6 +21813,13 @@ test('Meta Ads setup card links each Meta step and copies the exact callback', a
   await flushAsync();
   configured.listeners.click?.({ target: actionTarget({ 'data-action': 'meta-ads-edit' }) });
   assert.match(configured.app.innerHTML, /Changing or removing it requires connected accounts to sign in again/);
+  configured.listeners.click?.({ target: actionTarget({ 'data-action': 'meta-ads-copy-callback' }) });
+  await flushAsync();
+  assert.match(configured.app.innerHTML, /data-action="meta-ads-copy-callback">Copied<\/button>/);
+  configured.listeners.click?.({ target: actionTarget({ 'data-action': 'meta-ads-edit-cancel' }) });
+  configured.listeners.click?.({ target: actionTarget({ 'data-action': 'meta-ads-edit' }) });
+  assert.match(configured.app.innerHTML, /data-action="meta-ads-copy-callback">Copy<\/button>/,
+    'a later edit starts with a fresh Copy button');
 });
 
 test('Meta Ads Agent form sends admins to setup and holds sign-in until the Meta app exists', async () => {
