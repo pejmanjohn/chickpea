@@ -213,11 +213,15 @@ test('a file keeps its handle when the shared app switches from a Slack read on 
   } finally { store.close(); }
 });
 
-const UNDESCRIBED_FILE_NOTICES: ReadonlyArray<readonly [string, { files?: unknown[] }]> = [
+const UNDESCRIBED_FILE_NOTICES: ReadonlyArray<readonly [string, { files?: unknown[]; edited?: unknown }]> = [
   ['file objects that carry only an id', {
     files: [{ id: 'F0PEAR00001', mode: 'file_access', file_access: 'check_file_info', created: 1201, user: 'UBOT' }],
   }],
   ['no file list', {}],
+  ['an edit mark, as Slack sends once it attaches the file, and file objects that carry only an id', {
+    edited: { user: 'UBOT', ts: '1201.400000' },
+    files: [{ id: 'F0PEAR00001', mode: 'file_access', file_access: 'check_file_info', created: 1201, user: 'UBOT' }],
+  }],
 ];
 
 for (const [shape, notice] of UNDESCRIBED_FILE_NOTICES) {
