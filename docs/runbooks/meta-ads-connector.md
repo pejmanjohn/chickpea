@@ -7,17 +7,22 @@ connector.
 
 ## Configure the installation
 
-1. Follow [Meta's Ads MCP setup guide](https://developers.facebook.com/documentation/ads-commerce/ads-ai-connectors/ads-mcp-server/ads-mcp-server-get-started)
-   to configure a developer app with the **Create & manage ads with ads MCP
-   server** use case and Facebook Login for Business. Chickpea requests
-   `ads_mcp_management` and `ads_read` for reporting. Choosing **Reporting and
-   editing** instead requests `ads_mcp_management` and `ads_management`. The
-   app must support the selected permissions for the signing-in user.
-2. In Chickpea, open **Settings → Connectors → Meta Ads**. Copy the displayed
-   callback URL into the app's valid OAuth redirect URIs. Both Admin and
-   Slack-assisted setup use that exact callback.
-3. Save the public **Meta App ID** in Chickpea. No app secret is required by
-   this connector. Only a Chickpea owner or admin can change this setting.
+1. [Create a Meta app](https://developers.facebook.com/apps/creation/). Under
+   **Ads and monetization**, choose the **Create & manage ads with ads MCP
+   server** use case. The use case adds Facebook Login for Business. A
+   business portfolio is needed only when the app reaches ad accounts your
+   business does not own or manage. [Meta's Ads MCP setup guide](https://developers.facebook.com/documentation/ads-commerce/ads-ai-connectors/ads-mcp-server/ads-mcp-server-get-started)
+   has the full flow. Chickpea requests `ads_mcp_management` and `ads_read`
+   for reporting. Choosing **Reporting and editing** instead requests
+   `ads_mcp_management` and `ads_management`.
+2. In Chickpea, open **Settings → Connectors → Meta Ads** and copy the
+   callback URL. In the Meta app, open **Facebook Login for Business →
+   Settings** and paste it into **Valid OAuth Redirect URIs** under **Client
+   OAuth settings**. It must match exactly. Both Admin and Slack-assisted setup
+   use that callback.
+3. Copy the App ID from the top of the app dashboard and save it in Chickpea.
+   No app secret is required by this connector. Only a Chickpea owner or admin
+   can change this setting.
 4. Open an Agent's **Connections** tab, add **Meta Ads**, choose Personal or
    Team ownership, choose reporting or reporting and editing access, and sign
    in to Meta.
@@ -28,6 +33,10 @@ connector.
    are also unchecked until explicitly selected. Some tools, including
    Instagram boosting, can require additional Meta permissions and remain
    unavailable when the signed-in token does not have them.
+
+A new Meta app starts in Development mode, and only people with a role on the
+app (Admin, Developer, or Tester) can grant its permissions. Add each person
+who will sign in from Chickpea to the app first.
 
 The tool catalog is gated by the schemas returned by the latest Meta discovery.
 Chickpea shows only tools whose current schemas pass its safety checks. The

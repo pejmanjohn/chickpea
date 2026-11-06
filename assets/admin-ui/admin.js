@@ -5369,12 +5369,28 @@
         oauthClientId: "",
         oauthClientSecret: "",
         metaAdsAccess: preset.id === "meta-ads" ? "reporting" : "",
+        metaAdsSetup: null,
         busy: false,
         error: ""
       };
+      if (preset.id === "meta-ads") loadMetaAdsSetupStatus(state.connectionAccountForm);
     }
     state.connectorGallerySearch = "";
     render();
+  }
+
+  // An unreadable status leaves the form as it was; sign-in still reports a
+  // missing Meta app itself.
+  function loadMetaAdsSetupStatus(form) {
+    api("/admin/api/settings/connectors/meta-ads", { cache: "no-store" }).then(function (body) {
+      if (state.connectionAccountForm !== form) return;
+      form.metaAdsSetup = { configured: !!body.configured, canConfigure: !!body.canConfigure };
+      render();
+    }).catch(function () {});
+  }
+
+  function metaAdsSetupMissing(form) {
+    return !!(form.metaAdsSetup && !form.metaAdsSetup.configured);
   }
 
   function connectionAccountCapabilities(form) {
@@ -8712,7 +8728,12 @@
     if (oauth) {
       return '<div class="form-grid"><div class="field"><label class="field-label">Google OAuth client ID</label><input class="input mono" value="' + esc(form.oauthClientId || "") + '" autocomplete="off" data-action="connection-account-oauth-client-id"></div><div class="field"><label class="field-label">Google OAuth client secret</label><input class="input mono" type="password" value="' + esc(form.oauthClientSecret || "") + '" autocomplete="off" data-action="connection-account-oauth-client-secret"></div></div><p class="hint">Use the OAuth client for this Chickpea deployment. The client secret is write-only.</p>';
     }
-    if (mcpOauth && preset && preset.id === "meta-ads") return '<p class="hint">An administrator must first configure the Meta App ID in Settings → Connectors. After sign-in, choose the ad accounts and tools this Agent may use.</p>';
+    if (mcpOauth && preset && preset.id === "meta-ads") {
+      if (!metaAdsSetupMissing(form)) return '<p class="hint">After sign-in, choose the ad accounts and tools this Agent may use.</p>';
+      return '<p class="hint">' + (form.metaAdsSetup.canConfigure
+        ? 'Meta Ads needs a one-time setup before Agents can sign in. <a class="hint-link" href="/admin/settings/connectors">Set up in Settings &rarr; Connectors</a>'
+        : 'Meta Ads needs a one-time setup by a Chickpea owner or admin in Settings &rarr; Connectors.') + '</p>';
+    }
     if (mcpOauth) {
       return '<p class="hint">You will sign in with ' + esc(preset ? preset.name : "the provider") + ' after adding this connection.</p>';
     }
@@ -8974,7 +8995,7 @@
       (preset && preset.notes ? '<p class="hint">' + esc(preset.notes) + '</p>' : '') +
       oauthMigrationHtml +
       (form.error ? '<div class="err" role="alert">' + esc(form.error) + '</div>' : '') +
-      '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="connection-account-cancel"' + (busy ? " disabled" : "") + '>Cancel</button><button type="button" class="btn btn-primary btn-sm" data-action="connection-account-create"' + (busy || !ownerSelected ? " disabled" : "") + '>' + (busy ? "Connecting&hellip;" : ((oauth || mcpOauth) ? "Continue to sign in" : "Connect and add")) + '</button></div></div>';
+      '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="connection-account-cancel"' + (busy ? " disabled" : "") + '>Cancel</button><button type="button" class="btn btn-primary btn-sm" data-action="connection-account-create"' + (busy || !ownerSelected || metaAdsSetupMissing(form) ? " disabled" : "") + '>' + (busy ? "Connecting&hellip;" : ((oauth || mcpOauth) ? "Continue to sign in" : "Connect and add")) + '</button></div></div>';
   }
 
   function connectionsPanelHtml(draft) {
@@ -12182,11 +12203,14 @@
     return '<span class="badge ' + cls + '">' + esc(label) + '</span>';
   }
 
+  var META_APP_CREATION_URL = "https://developers.facebook.com/apps/creation/";
+  var META_ADS_SETUP_GUIDE_URL = "https://developers.facebook.com/documentation/ads-commerce/ads-ai-connectors/ads-mcp-server/ads-mcp-server-get-started";
+
   function metaAdsSettingsHtml() {
     var current = state.metaAdsSettings;
     var preset = presetById("meta-ads");
     var mark = preset ? connectorLogoHtml(preset) : '<span class="provider-mark" aria-hidden="true">M</span>';
-    var description = 'Connect directly to Meta using your own developer app. Each Agent signs in and receives only the ad accounts and tools you select.';
+    var description = 'Set up once with your own Meta app, then add Meta Ads from any Agent.';
     function panel(meta, badge, body) {
       return '<div class="provider-panel">' + providerPanelHeadHtml(mark, 'Meta Ads', meta, badge) + (body ? '<div class="provider-panel-body">' + body + '</div>' : '') + '</div>';
     }
@@ -12205,12 +12229,19 @@
       var status = (current.error ? '<p class="field-error" role="alert">' + esc(current.error) + '</p>' : '') + (current.notice ? '<p class="hint" role="status">' + esc(current.notice) + '</p>' : '');
       return '<div class="provider-panel">' + providerPanelHeadHtml(mark, 'Meta Ads', meta, badge) + (status ? '<div class="provider-panel-body">' + status + '</div>' : '') + '<div class="provider-panel-foot">' + foot + '</div></div>';
     }
-    var body = '<ol class="managed-setup-steps"><li><span>In Meta for Developers, enable the Ads MCP use case and Facebook Login for Business.</span></li>' +
-      '<li><span>Register this exact OAuth callback:</span><code class="managed-setup-code">' + esc(current.callbackUrl || 'Complete installation setup first.') + '</code></li>' +
-      '<li><span>Paste the App ID below. It is public; no app secret is stored.</span></li></ol>' +
-      '<div class="field"><label class="field-label" for="meta-ads-app-id">Meta App ID</label><input id="meta-ads-app-id" name="meta-ads-app-id" class="input mono" autocomplete="off" inputmode="numeric" data-action="meta-ads-app-id" value="' + esc(current.clientId) + '"' + (current.busy ? ' disabled' : '') + '><p class="hint">Changing or removing it requires connected accounts to sign in again.</p></div>' +
+    var callback = current.callbackUrl
+      ? '<div class="managed-setup-copy"><code class="managed-setup-code">' + esc(current.callbackUrl) + '</code><button type="button" class="btn btn-soft btn-sm" data-action="meta-ads-copy-callback">' + (current.callbackCopied ? 'Copied' : 'Copy') + '</button></div>'
+      : '<code class="managed-setup-code">Complete installation setup first.</code>';
+    var body = '<ol class="managed-setup-steps">' +
+      '<li><span><strong>Create a Meta app.</strong> Under <strong>Ads and monetization</strong>, choose the <strong>Create &amp; manage ads with ads MCP server</strong> use case. <a class="hint-link" href="' + META_APP_CREATION_URL + '" target="_blank" rel="noopener noreferrer">Create app in Meta&nbsp;&nearr;</a></span></li>' +
+      '<li><span><strong>Add Chickpea&rsquo;s sign-in address.</strong> In your app, open <strong>Facebook Login for Business &rarr; Settings</strong>. Under <strong>Client OAuth settings</strong>, paste this into <strong>Valid OAuth Redirect URIs</strong> exactly as shown, then save.</span>' + callback + '</li>' +
+      '<li><span><strong>Paste the App ID.</strong> Copy it from the top of your app&rsquo;s dashboard. It&rsquo;s public, so Chickpea never asks for the app secret.</span></li></ol>' +
+      '<div class="field"><label class="field-label" for="meta-ads-app-id">Meta App ID</label><input id="meta-ads-app-id" name="meta-ads-app-id" class="input mono" autocomplete="off" inputmode="numeric" placeholder="1234567890123456" data-action="meta-ads-app-id" value="' + esc(current.clientId) + '"' + (current.busy ? ' disabled' : '') + '>' +
+      (current.configured ? '<p class="hint">Changing or removing it requires connected accounts to sign in again.</p>' : '') + '</div>' +
+      '<p class="hint">Only people with a role on this Meta app can sign in from Chickpea. Add teammates to the app in Meta first.</p>' +
       (current.error ? '<p class="field-error" role="alert">' + esc(current.error) + '</p>' : '') + (current.notice ? '<p class="hint" role="status">' + esc(current.notice) + '</p>' : '') +
-      '<div class="managed-provider-actions">' + (current.configured ? '<button type="button" class="btn btn-ghost btn-sm" data-action="meta-ads-edit-cancel"' + (current.busy ? ' disabled' : '') + '>Cancel</button>' : '') +
+      '<div class="managed-provider-actions"><a class="hint-link" href="' + META_ADS_SETUP_GUIDE_URL + '" target="_blank" rel="noopener noreferrer">Meta&rsquo;s setup guide&nbsp;&nearr;</a><span class="spacer"></span>' +
+      (current.configured ? '<button type="button" class="btn btn-ghost btn-sm" data-action="meta-ads-edit-cancel"' + (current.busy ? ' disabled' : '') + '>Cancel</button>' : '') +
       '<button type="button" class="btn btn-soft btn-sm" data-action="meta-ads-save"' + (current.busy || !current.callbackUrl ? ' disabled' : '') + '>Save App ID</button></div>';
     return panel(meta, badge, body);
   }
@@ -12223,6 +12254,14 @@
       Object.assign(current, body, { loading: false, error: '' });
       render();
     }).catch(function () { current.loading = false; current.error = 'Could not load Meta Ads settings. Reopen Settings to retry.'; render(); });
+  }
+
+  function copyMetaAdsCallback() {
+    var current = state.metaAdsSettings;
+    function failed() { current.error = "Clipboard unavailable. Select and copy the address above."; render(); }
+    if (!navigator.clipboard || !navigator.clipboard.writeText) { failed(); return; }
+    try { Promise.resolve(navigator.clipboard.writeText(current.callbackUrl)).then(function () { current.callbackCopied = true; current.error = ""; render(); }).catch(failed); }
+    catch (_) { failed(); }
   }
 
   function saveMetaAdsSettings(remove) {
@@ -16482,6 +16521,7 @@
     if (action === "meta-ads-remove") saveMetaAdsSettings(true);
     if (action === "meta-ads-edit") { state.metaAdsSettings.editing = true; state.metaAdsSettings.error = ""; state.metaAdsSettings.notice = ""; render(); }
     if (action === "meta-ads-edit-cancel") { state.metaAdsSettings.editing = false; state.metaAdsSettings.error = ""; render(); }
+    if (action === "meta-ads-copy-callback") copyMetaAdsCallback();
     if (action === "connector-settings-retry-load") { loadConnectorSettings(state.settingsLoadGeneration); }
     if (action === "connector-settings-edit-key") {
       state.connectorSettings.editing = true;

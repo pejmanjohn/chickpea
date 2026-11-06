@@ -276,8 +276,6 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
       writeScope: META_ADS_OAUTH_MANAGEMENT_SCOPE,
     },
     toolAccessMode: 'review',
-    tokenDocsUrl: 'https://developers.facebook.com/documentation/ads-commerce/ads-ai-connectors/ads-mcp-server/ads-mcp-server-get-started',
-    notes: 'An administrator first configures a Meta developer app for this installation. After signing in, choose the ad accounts and tools this Agent may use.',
   },
   {
     id: 'atlassian',
