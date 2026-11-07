@@ -108,6 +108,7 @@ const RETIRED_AUTH_CLASSES = ['AuthGuard'];
 // the events ack must return before the turn and the DO alarm relay delivers it.
 const SLOW_CHANNEL = 'C0SMOKESLOW';
 const SLOW_MENTION_TS = '1782771000.000100';
+const GEMINI_MENTION_TS = '1782771200.000100';
 // Local workerd does not cancel waitUntil at ~30s (checked 2026-09-24: a 40s
 // waitUntil completed under `wrangler dev`), so a hold past 30s proves nothing
 // here. The hold only has to exceed the 10s fast-ack bound so an inline turn
@@ -398,6 +399,8 @@ export function writeDevVars(fakeUrl) {
       `ANTHROPIC_API_URL=${fakeUrl}`,
       `OPENAI_API_URL=${fakeUrl}/openai/v1`,
       `OPENROUTER_API_URL=${fakeUrl}/openrouter`,
+      `GEMINI_API_URL=${fakeUrl}/gemini/v1beta`,
+      `GEMINI_BASE_URL=${fakeUrl}/gemini/v1beta`,
       ...cloudflareSmokeTelemetryDevVars(),
       '',
     ].join('\n'),
@@ -1065,6 +1068,14 @@ function aiMentionEvent() {
   };
 }
 
+function geminiMentionEvent() {
+  const payload = mentionEvent('Ev_SMOKE_GEMINI_1');
+  return {
+    ...payload,
+    event: { ...payload.event, text: `${defaultAgentMention} gemini: please draft a short reply`, ts: GEMINI_MENTION_TS, event_ts: GEMINI_MENTION_TS },
+  };
+}
+
 function slowMentionEvent(eventId = 'Ev_SMOKE_SLOW_1') {
   return {
     token: 'verification-token-not-a-secret',
@@ -1406,6 +1417,11 @@ async function main() {
         providerSummaries.openai?.modelCount === expectedOpenAi.modelCount,
       `providers GET combines two fake OpenAI models with ${expectedOpenAi.catalogCount} bundled catalog models`,
       `${JSON.stringify(providerSummaries.openai)} expected=${expectedOpenAi.modelCount}`,
+    );
+    check(
+      providerSummaries.google?.status === 'stored' && providerSummaries.google?.modelCount === 3,
+      'providers GET lists the three reviewed Gemini models after the key check',
+      JSON.stringify(providerSummaries.google),
     );
     check(
       providerSummaries.openai?.subscriptionAvailable === true && providerSummaries.openai?.subscriptionProtocol === 'chatgpt-plan',
@@ -2107,6 +2123,31 @@ async function main() {
         );
       }
     }
+
+    // Pi's Google adapter and its SDK's web build answer a turn inside workerd.
+    const agentBeforeGemini = await adminFetch(baseUrl, '/admin/api/agents/agent_default');
+    const geminiPin = await adminFetch(baseUrl, '/admin/api/agents/agent_default', {
+      method: 'PATCH',
+      body: JSON.stringify({ expectedRevision: agentBeforeGemini.body?.agent?.revision, model: 'google/gemini-3.8-flash' }),
+    });
+    check(geminiPin.status === 200, 'admin PATCH pinned the agent to a Gemini model', `HTTP ${geminiPin.status}`);
+    const finalsBeforeGemini = backend.finals().length;
+    const geminiWireStart = backend.wireLog.length;
+    const geminiAdmission = await postSignedEvent(eventsUrl, geminiMentionEvent());
+    check(
+      geminiAdmission.status === 200 || geminiAdmission.status === 202,
+      'Gemini mention admitted',
+      `HTTP ${geminiAdmission.status}`,
+    );
+    const geminiFinals = await waitForFinalCount(backend, finalsBeforeGemini + 1, 90_000);
+    const geminiStreams = backend.wireLog.slice(geminiWireStart)
+      .filter((entry) => entry.method === 'streamGenerateContent').map((entry) => entry.url.split('?')[0]);
+    check(
+      geminiStreams.includes('/gemini/v1beta/models/gemini-3.8-flash:streamGenerateContent') &&
+        Boolean(geminiFinals.at(-1)?.text.includes(STUB_REPLY_MARKER)),
+      'a Gemini turn streams from GEMINI_BASE_URL with the saved key and delivers its reply',
+      `${geminiStreams.join(',') || 'no Gemini request'}; ${geminiFinals.at(-1)?.text ?? 'no final'}`,
+    );
 
     await exerciseSlackRecovery(baseUrl, backend, eventsUrl);
 

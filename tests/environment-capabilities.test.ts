@@ -136,7 +136,7 @@ test('fills each lane row from registry fields, Worker bindings, secret names, a
     assert.equal(amber.liveVersion, AMBER_VERSION);
     assert.equal(amber.versionMatchesRegistry, true);
     assert.deepEqual(amber.secrets, {
-      OPENAI_API_KEY: true, ANTHROPIC_API_KEY: false, OPENROUTER_API_KEY: false,
+      OPENAI_API_KEY: true, ANTHROPIC_API_KEY: false, OPENROUTER_API_KEY: false, GEMINI_API_KEY: false,
       BROWSERBASE_API_KEY: true, COMPOSIO_API_KEY: false, EXA_API_KEY: false, CHICKPEA_ENV_SEED_TOKEN: true,
     });
     assert.equal(amber.seedTokenFile, true);

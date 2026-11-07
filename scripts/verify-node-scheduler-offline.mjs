@@ -174,7 +174,7 @@ function writeRuntimeEnvironment(port, suffix) {
 function scrubbedChildEnvironment() {
   const env = { ...process.env };
   const scrubbedPrefixes = [
-    'ANTHROPIC_', 'CHICKPEA_', 'CLOUDFLARE_', 'COMPOSIO_', 'GITHUB_',
+    'ANTHROPIC_', 'CHICKPEA_', 'CLOUDFLARE_', 'COMPOSIO_', 'GEMINI_', 'GITHUB_',
     'LOCAL_STUB_', 'OPENAI_', 'OPENROUTER_', 'SLACK_',
   ];
   for (const key of Object.keys(env)) {
