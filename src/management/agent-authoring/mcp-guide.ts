@@ -148,7 +148,7 @@ export const AGENT_AUTHORING_GUIDE_MCP_SUBSTITUTIONS: ReadonlyArray<readonly [fr
   ],
   [
     'If Slack cannot publish the handle or source reach, preserve the created Agent and let Chickpea report the incomplete portion once. The welcome introduces the Agent, includes up to three independently authorized `Connect X` actions for eligible connectors explicitly requested or uniquely implied, and ends with `View Agent`.',
-    'If Slack cannot publish the handle, the Agent stays created and the receipt carries a `warning`; report it once. There is no Slack welcome for an MCP creation: tell the person the Agent exists, give them `links.admin` and `links.slack`, and suggest they mention its @handle in Slack to try it.',
+    'If Slack cannot publish the handle, the Agent stays created and the receipt carries a `warning`; report it once. Set `firstAsk` on `create_agent` to the first thing the person should ask the new Agent, and once it exists, give them `links.admin` and `links.slack`.',
   ],
   [
     'and propose the exact edit before activation.',
