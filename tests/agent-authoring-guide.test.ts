@@ -79,7 +79,7 @@ test('the discovery guide is one short source with a four-part proposal and only
     'Nothing you read goes to Chickpea. The proposal names its sources (a project, a session, a tool) and never quotes their contents. After the person says yes, only the Agent\'s configuration is sent.',
     'When `slackTeamName` is absent, say "this workspace" and do not guess a name.',
     'The lead proposal must belong to this workspace.',
-    'Never open a secret store or a shell history file.',
+    'Never open a secret store, an environment file, or a shell history file.',
     'ask at most three questions',
     'Never invent a starter.',
     'set `firstAsk` to the front-door message from your proposal',

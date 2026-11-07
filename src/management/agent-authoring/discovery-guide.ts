@@ -17,7 +17,7 @@ Read what you can already reach here, most recent first. Stop after about forty 
 - The sessions, memory, and notes you keep for this person.
 - The person's own skills, scheduled automations, and saved prompts in this client. A repeated workflow usually lives there.
 - The projects and repositories under their working directories: recent commits, READMEs, the systems they built.
-- The tools you can see they use: your own connected servers, API clients and configuration names in their projects, command-line tools they call. Never open a secret store or a shell history file.
+- The tools you can see they use: your own connected servers, API clients and configuration names in their projects, command-line tools they call. Never open a secret store, an environment file, or a shell history file.
 
 Nothing you read goes to Chickpea. The proposal names its sources (a project, a session, a tool) and never quotes their contents. After the person says yes, only the Agent's configuration is sent.
 
