@@ -77,6 +77,7 @@ Cloud charges the new prices after it pins the merged Core commit.
 | `openai`, text | OpenRouter models API; OpenAI's model page |
 | `openai`, image | OpenAI's model page |
 | `openrouter` | OpenRouter endpoints API, at the maker's own endpoint; Anthropic's or OpenAI's page for their models |
+| `google` | OpenRouter models API. Check Google's pricing page by hand. |
 | `cloudflare`, `cloudflare-workers-ai` | The model's JSON file in `cloudflare/cloudflare-docs` |
 
 The tool compares only the fields that the catalog holds. It gives each price
@@ -93,8 +94,14 @@ one verdict:
 
 A price with only one source can be renewed but never changed by the tool.
 This applies to Cloudflare models, OpenAI image models, OpenAI long-context
-rates, and OpenRouter open models. Cloudflare publishes no cache-write price,
-so the tool reports the input rate for cache writes, as the catalog does.
+rates, OpenRouter open models, and Gemini models. Cloudflare publishes no
+cache-write price, so the tool reports the input rate for cache writes, as the
+catalog does.
+
+A catalog version can take effect after its review. The Gemini catalog of
+2026-11-06 ships Gemini 4 Argon's 2026-12-01 price and Gemini 3.8 Flash's
+2027-01-01 price, so credits charge each new price on its date with no
+review.
 
 ## OpenRouter price cap
 

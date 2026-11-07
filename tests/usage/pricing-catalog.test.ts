@@ -12,6 +12,7 @@ import { PRICE_CATALOGS_2026_10_07 } from '../../src/usage/pricing/catalogs/2026
 import { PRICE_CATALOGS_2026_10_07_OPENROUTER_MAKERS } from '../../src/usage/pricing/catalogs/2026-10-07-openrouter-makers.ts';
 import { PRICE_CATALOGS_2026_10_24 } from '../../src/usage/pricing/catalogs/2026-10-24.ts';
 import { PRICE_CATALOGS_2026_11_05 } from '../../src/usage/pricing/catalogs/2026-11-05.ts';
+import { PRICE_CATALOGS_2026_11_06_GEMINI } from '../../src/usage/pricing/catalogs/2026-11-06-gemini.ts';
 import type { ImagePriceRate, TokenPriceRate, UsagePriceVersion } from '../../src/usage/pricing/types.ts';
 
 /** The catalog without versions `npm run prices:review -- --write` adds; tests/price-review.test.ts covers those. */
@@ -23,6 +24,7 @@ const EARLIER_RELEASES = HAND_WRITTEN.filter((version) =>
     ...PRICE_CATALOGS_2026_10_07_OPENROUTER_MAKERS,
     ...PRICE_CATALOGS_2026_10_24,
     ...PRICE_CATALOGS_2026_11_05,
+    ...PRICE_CATALOGS_2026_11_06_GEMINI,
   ].includes(version));
 
 function tokenRate(version: UsagePriceVersion): TokenPriceRate {
@@ -236,6 +238,40 @@ test('the 2026-11-05 catalog prices GPT Image 2.6 Flare and Sunburst, and re-rev
   ] as const).map(([id, model]) => [
     id, 'openai', openaiModel(model), reviewedAt, reviewedAt, Date.UTC(2027, 1, 3), [model], 5_000_000, 8_000_000, 30_000_000,
   ]));
+});
+
+test('the Gemini catalog charges each introductory price until its end date, then the later price, with no review between', () => {
+  const page = 'https://aistudio.google.com/docs/pricing';
+  const reviewedAt = Date.UTC(2026, 10, 6);
+  const december = Date.UTC(2026, 11, 1);
+  const january = Date.UTC(2027, 0, 1);
+  const days90 = 90 * 24 * 60 * 60 * 1_000;
+  assert.deepEqual(PRICE_CATALOGS_2026_11_06_GEMINI.map((version) => {
+    const rate = tokenRate(version);
+    return [version.id, version.providerId, version.sourceUrl, version.effectiveFrom, version.reviewedAt, version.reviewDueAt,
+      rate.modelAliases, rate.inputMicrosPerUnit, rate.outputMicrosPerUnit, rate.cacheReadMicrosPerUnit,
+      rate.cacheWriteMicrosPerUnit ?? null, rate.longContext ?? null];
+  }), [
+    ['google-gemini-4-argon_2026-11-06', 'google', page, reviewedAt, reviewedAt, december,
+      ['gemini-4-argon'], 2_000_000, 10_000_000, 100_000, null, null],
+    ['google-gemini-4-argon_2026-12-01', 'google', page, december, reviewedAt, december + days90,
+      ['gemini-4-argon'], 4_000_000, 20_000_000, 200_000, null, null],
+    ['google-gemini-3.8-flash_2026-11-06', 'google', page, reviewedAt, reviewedAt, january,
+      ['gemini-3.8-flash'], 750_000, 3_750_000, 75_000, null, null],
+    ['google-gemini-3.8-flash_2027-01-01', 'google', page, january, reviewedAt, january + days90,
+      ['gemini-3.8-flash'], 1_500_000, 7_500_000, 150_000, null, null],
+    ['google-gemini-3.5-flash-lite_2026-11-06', 'google', page, reviewedAt, reviewedAt, reviewedAt + days90,
+      ['gemini-3.5-flash-lite'], 300_000, 2_500_000, 30_000, null, null],
+  ]);
+  const charged = (model: string, at: number) =>
+    priceCatalogFor('standard_input_output', 'google', model, at)?.version.id;
+  assert.equal(charged('gemini-4-argon', reviewedAt - 1), undefined, 'no Gemini price before the review');
+  assert.equal(charged('gemini-4-argon', december - 1), 'google-gemini-4-argon_2026-11-06');
+  assert.equal(charged('gemini-4-argon', december), 'google-gemini-4-argon_2026-12-01');
+  assert.equal(charged('gemini-3.8-flash', january - 1), 'google-gemini-3.8-flash_2026-11-06');
+  assert.equal(charged('gemini-3.8-flash', january), 'google-gemini-3.8-flash_2027-01-01');
+  assert.equal(charged('gemini-3.5-flash-lite', Date.UTC(2099, 0, 1)), 'google-gemini-3.5-flash-lite_2026-11-06');
+  assert.equal(charged('gemini-2.5-flash', january), undefined, 'only the reviewed models have a price');
 });
 
 test('the OpenRouter makers catalog prices each model at its maker\'s own endpoint from when it was read', () => {
