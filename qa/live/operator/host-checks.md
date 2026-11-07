@@ -80,9 +80,10 @@ The regression runner also refuses source changes made during its wait.
 A reservation held for more than 15 minutes is reported, never taken. The
 busy refusal and the first wait status name the hold's age, and a waiter gets
 one `HOST_CHECKS_HELD_LONG` warning per owner; the kickoff doctor shows it as a
-warning. A full regression executes in about four minutes, so a longer hold is
-usually a long build group, a hung test, or a stopped owner. Ask the owner, or
-the maintainer once, and keep waiting or working on unreserved checks
+warning. A `--mode regression` run executes in about four minutes, so a
+longer hold is usually a long build group, a hung test, or a stopped owner.
+Ask the owner, or the maintainer once, and keep waiting or working on
+unreserved checks
 meanwhile. The warning never authorizes removing, stopping or reclaiming the
 reservation; a stopped owner still needs the reconciliation below.
 

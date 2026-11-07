@@ -154,6 +154,11 @@ which here means Chickpea Cloud running a pinned Core commit.
   update of a lane that holds existing data. Installer or deploy changes get a
   rehearsal with the real artifact. Provider or dependency upgrades get a diff
   of captured request bodies.
+- A full regression is the full suite,
+  `npm run verify:host -- --wait-ms 3600000 npm test`. Run it on a local merge
+  of the final head with current `origin/main`, because two PRs can each pass
+  alone and fail together. A `verify:regression` plan with `fullTests: false`
+  runs a subset and is not this gate; the tool says so.
 - Review means a fresh, independent first pass (on Claude, a Fable subagent;
   on Codex, an equivalent adversarial review). Start it when the PR opens, in
   parallel with gates and probes. The reviewer may apply small, local fixes
