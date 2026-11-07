@@ -118,13 +118,8 @@ interface SlackScheduleCommandDependencies {
   routines: RoutineStore;
   config: ConfigStore;
   identity: IdentityStore;
-  /**
-   * The installation's platform env, which a Node deployment does not have. A
-   * run now judges the routine's model by this installation's stored catalog,
-   * as its scheduled runs do.
-   */
+  /** The installation's env and settings; a run now judges its model by their stored catalog. */
   env: PlatformEnv | undefined;
-  /** The installation's settings; without them, the ones `env` names. */
   settings?: SettingsStore;
   schedulingAvailable: boolean | (() => boolean | Promise<boolean>);
   now?: () => number;

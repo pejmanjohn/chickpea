@@ -122,8 +122,8 @@ test('a management run now passes a Workspace default only the stored hosted cat
       ['run_now'], 'the run was queued');
   }));
 
-// Defect caught: the same refusal from an exact `!routines run` in the Channel,
-// which resolves authority itself before it queues the run.
+// Guard: the exact `!routines run` resolves authority itself, with the turn's
+// env, before it queues the run. It passed before the fix; this keeps it so.
 test('a Slack `!routines run` passes a Workspace default only the stored hosted catalog lists', () =>
   withHostedOnlyDefaultRoutine('run-now-slack', async (f, routine, env) => {
     const reply = await handleRoutineSlackRequest({
