@@ -15,6 +15,7 @@ import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter';
 import { modelAccessProviderId } from './model-access.ts';
 import { registerPiProvider, registeredPiProvider } from './pi-provider-registry.ts';
+import type { ProviderKeyId } from './provider-key-ids.ts';
 
 import { decorateAttachmentProviderStreams } from '../slack/attachment-model-context.ts';
 import { withWorkersAiOverflowPolicy } from './workers-ai-overflow.ts';
@@ -25,15 +26,13 @@ import {
   withReviewedWorkersAiOutputCaps,
 } from './workers-ai-models.ts';
 
-type PiBuiltinProviderId = 'anthropic' | 'openai' | 'openrouter';
-
 interface PiProviderCredential {
   apiKey?: string;
   baseUrl?: string;
 }
 
 const BUILTIN_PROVIDER_PARTS: Record<
-  PiBuiltinProviderId,
+  ProviderKeyId,
   { provider: () => Provider; api: () => ProviderStreams }
 > = {
   anthropic: { provider: anthropicProvider, api: anthropicMessagesApi },
@@ -43,7 +42,7 @@ const BUILTIN_PROVIDER_PARTS: Record<
 
 // Live-catalog models (OpenRouter) added after startup. Public metadata only,
 // shared by every installation like the static catalog itself.
-const builtinModelOverlays = new Map<PiBuiltinProviderId, Map<string, Model<Api>>>();
+const builtinModelOverlays = new Map<ProviderKeyId, Map<string, Model<Api>>>();
 
 /**
  * Register one generated catalog provider as a credential-free app provider.
@@ -51,7 +50,7 @@ const builtinModelOverlays = new Map<PiBuiltinProviderId, Map<string, Model<Api>
  * (model-access.ts), so registering again, or in another order, changes no
  * credential.
  */
-export function registerBuiltinPiProvider(id: PiBuiltinProviderId): void {
+export function registerBuiltinPiProvider(id: ProviderKeyId): void {
   const parts = BUILTIN_PROVIDER_PARTS[id];
   const catalog = parts.provider();
   registerPiProvider(
@@ -66,7 +65,7 @@ export function registerBuiltinPiProvider(id: PiBuiltinProviderId): void {
 }
 
 /** Add a model's metadata to a built-in provider; it carries no credential. */
-export function addBuiltinProviderModelOverlay(id: PiBuiltinProviderId, model: Model<Api>): void {
+export function addBuiltinProviderModelOverlay(id: ProviderKeyId, model: Model<Api>): void {
   const overlays = builtinModelOverlays.get(id) ?? new Map<string, Model<Api>>();
   const current = overlays.get(model.id);
   if (current && JSON.stringify(current) === JSON.stringify(model)) return;
@@ -76,7 +75,7 @@ export function addBuiltinProviderModelOverlay(id: PiBuiltinProviderId, model: M
 }
 
 export function builtinProviderModelOverlay(
-  id: PiBuiltinProviderId,
+  id: ProviderKeyId,
   modelId: string,
 ): Model<Api> | undefined {
   return builtinModelOverlays.get(id)?.get(modelId);

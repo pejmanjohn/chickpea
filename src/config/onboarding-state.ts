@@ -1,15 +1,11 @@
 import { isRecord } from '../security/content-validation.ts';
 import type { SettingsPatch, SettingsStore } from './settings-store.ts';
 import { modelBelongsToProvider as providerOwnsModel } from './provider-impact.ts';
+import { PROVIDER_KEY_IDS } from './provider-key-ids.ts';
 
 export const ONBOARDING_JOURNEY_KEY = 'onboarding.journey.v2';
 
-export const ONBOARDING_PROVIDER_IDS = [
-  'cloudflare',
-  'anthropic',
-  'openai',
-  'openrouter',
-] as const;
+export const ONBOARDING_PROVIDER_IDS = ['cloudflare', ...PROVIDER_KEY_IDS] as const;
 
 export type OnboardingProviderId = (typeof ONBOARDING_PROVIDER_IDS)[number];
 

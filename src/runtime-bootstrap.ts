@@ -13,7 +13,7 @@ import {
   modelRequestRecorderConfigured,
 } from './config/model-access.ts';
 import { getUsageStore } from './config/state-backend.ts';
-import { PROVIDER_KEY_IDS } from './config/provider-keys.ts';
+import { PROVIDER_KEY_IDS } from './config/provider-key-ids.ts';
 import { recordRegisteredProvider } from './config/providers.ts';
 import { openAiSubscriptionAvailable } from './openai-subscription/availability.ts';
 import { WORKERS_AI_CONTEXT_WINDOW_FLOOR, WORKERS_AI_REASONING_MAX_TOKENS } from './config/workers-ai-models.ts';

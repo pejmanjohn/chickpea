@@ -18,7 +18,8 @@ import {
 } from './model-readiness.ts';
 import { resolveOpenAiAuthMethod } from './openai-auth.ts';
 import { installationFunding } from './platform-funding.ts';
-import { describeProviderKeySources, isProviderKeyId } from './provider-keys.ts';
+import { isProviderKeyId } from './provider-key-ids.ts';
+import { describeProviderKeySources } from './provider-keys.ts';
 import { getProviderFavorites, getWorkersAiEnabled } from './provider-models.ts';
 import type { RuntimeModelProvider } from './providers.ts';
 import type { SettingsStore } from './settings-store.ts';
@@ -69,48 +70,49 @@ export async function chatModelPickerProviders(input: {
     runtimeProviders
       .filter((provider) => provider.id !== 'cloudflare' || workersAiEnabled)
       .map(async (provider): Promise<ChatModelPickerProvider> => {
-        if (provider.id === 'openai') {
-          const subscriptionActive = activeAuthMethod === 'subscription';
-          return {
-            ...provider,
-            configured: subscriptionActive
-              ? subscription !== undefined && openAiSubscriptionIsReady(subscription)
-              : provider.configured,
-            source: subscriptionActive ? 'ChatGPT subscription' : provider.source,
-            suggestions: subscriptionActive
-              ? subscriptionModels.map((model) => model.canonical)
-              : uniqueStrings([
-                  ...openAiApiModels.map((model) => model.canonical),
-                  ...provider.suggestions,
-                ]),
-            authMethods: {
-              activeMethod: activeAuthMethod,
-              apiKeyConfigured: provider.configured,
-              ...(subscription ? { subscription } : {}),
-              subscriptionAvailable,
-            },
-          };
-        }
-        if (provider.id === 'openrouter') {
-          const favorites = await getProviderFavorites('openrouter', settings);
-          return { ...provider, suggestions: favorites.map((model) => `openrouter/${model}`) };
-        }
         // The binding-backed CF provider surfaces as `cloudflare`; its favorites
         // live under the `workers-ai` key and pin as `cloudflare/<model>`.
         if (provider.id === 'cloudflare') {
           const favorites = await getProviderFavorites('workers-ai', settings);
           return { ...provider, suggestions: favorites.map((model) => `cloudflare/${model}`) };
         }
-        if (provider.id === 'anthropic') {
-          return {
-            ...provider,
-            suggestions: uniqueStrings([
-              ...anthropicApiModels.map((model) => model.canonical),
-              ...provider.suggestions,
-            ]),
-          };
+        if (!isProviderKeyId(provider.id)) return provider;
+        switch (provider.id) {
+          case 'openai': {
+            const subscriptionActive = activeAuthMethod === 'subscription';
+            return {
+              ...provider,
+              configured: subscriptionActive
+                ? subscription !== undefined && openAiSubscriptionIsReady(subscription)
+                : provider.configured,
+              source: subscriptionActive ? 'ChatGPT subscription' : provider.source,
+              suggestions: subscriptionActive
+                ? subscriptionModels.map((model) => model.canonical)
+                : uniqueStrings([
+                    ...openAiApiModels.map((model) => model.canonical),
+                    ...provider.suggestions,
+                  ]),
+              authMethods: {
+                activeMethod: activeAuthMethod,
+                apiKeyConfigured: provider.configured,
+                ...(subscription ? { subscription } : {}),
+                subscriptionAvailable,
+              },
+            };
+          }
+          case 'openrouter': {
+            const favorites = await getProviderFavorites('openrouter', settings);
+            return { ...provider, suggestions: favorites.map((model) => `openrouter/${model}`) };
+          }
+          case 'anthropic':
+            return {
+              ...provider,
+              suggestions: uniqueStrings([
+                ...anthropicApiModels.map((model) => model.canonical),
+                ...provider.suggestions,
+              ]),
+            };
         }
-        return provider;
       }),
   );
   const funding = input.funding ?? await installationFunding(env);

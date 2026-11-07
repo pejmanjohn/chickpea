@@ -12,7 +12,8 @@ import type {
   WorkspaceModelRole,
   WorkspaceRuntimeContract,
 } from './types.ts';
-import { describeProviderKeySources, isProviderKeyId, type ProviderKeyId } from './provider-keys.ts';
+import { isProviderKeyId, type ProviderKeyId } from './provider-key-ids.ts';
+import { describeProviderKeySources } from './provider-keys.ts';
 import type { SettingsStore } from './settings-store.ts';
 import type { PlatformEnv } from './state-backend.ts';
 import { loadModelCatalog, resolveActiveCatalogRoute } from '../model-catalog/index.ts';

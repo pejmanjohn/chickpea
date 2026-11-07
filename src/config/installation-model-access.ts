@@ -34,12 +34,11 @@ import {
   resolveModelCredentialAttribution,
 } from './model-credential-refs.ts';
 import { credentialFundingSource } from './platform-funding.ts';
+import { isProviderKeyId, type ProviderKeyId } from './provider-key-ids.ts';
 import {
   PROVIDER_KEY_ENV_VARS,
   deploymentModelKeyNames,
-  isProviderKeyId,
   providerBaseUrl,
-  type ProviderKeyId,
 } from './provider-keys.ts';
 import type { SettingsStore } from './settings-store.ts';
 import { getSettingsStore, type PlatformEnv } from './state-backend.ts';
