@@ -583,10 +583,13 @@ test('every Agent receives shared Slack teammate defaults before voice overrides
     transportMode: 'direct',
     defaultAgentId: 'agent_custom',
   });
+  const settings = new SqliteSettingsStore(':memory:');
   const config = await resolveEffectiveSlackConfig('T_TEST', 'C_TEST', {
     agents: store,
     grants: store,
+    settings,
   });
+  settings.close();
   assert.match(config.instructions, /Lead with the outcome/);
   assert.match(config.instructions, /Write final answers in standard Markdown: \*\*bold\*\*, _italic_, ~~strikethrough~~, and \[label\]\(url\)/);
   assert.match(config.instructions, /When correcting a prior answer, briefly acknowledge the mistake and state the corrected result/);

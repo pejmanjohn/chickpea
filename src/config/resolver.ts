@@ -1,5 +1,6 @@
 import { DisabledAgentError, NoAssignmentError } from './errors.ts';
 import { resolveModelPolicyForAssignment } from './model-policy.ts';
+import type { SettingsStore } from './settings-store.ts';
 import type { PlatformEnv } from './state-backend.ts';
 import {
   type AgentChannelGrant,
@@ -56,6 +57,8 @@ export interface ConfigStores {
   agents: AgentReader;
   grants: GrantReader;
   channels?: ChannelReader;
+  /** The installation's settings, whose stored catalog judges the model. */
+  settings: SettingsStore;
 }
 
 interface ChannelReader {
@@ -106,7 +109,7 @@ export async function resolveAssignment(
     getWorkspaceInstallation: (id) => stores.grants.getWorkspaceInstallation(id),
     getWorkspaceModelDefault: (id) =>
       stores.grants.getWorkspaceModelDefault?.(id) ?? Promise.resolve(undefined),
-  }, options.env, installation, options.platformEnv);
+  }, stores.settings, options.env, installation, options.platformEnv);
 }
 
 function channelReaderFromGrants(grants: GrantReader): ChannelReader | undefined {

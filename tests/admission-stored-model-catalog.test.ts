@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
+import { resolveModelPolicyForAssignment } from '../src/config/model-policy.ts';
+import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { resetModelCatalogActivationForTests } from '../src/model-catalog/catalog.ts';
 import { loadModelCatalog } from '../src/model-catalog/refresh.ts';
 import { acceptModelCatalogCandidate } from '../src/model-catalog/store.ts';
+import { withEnv } from './helpers/env.ts';
 import { message, withLane } from './helpers/gateway-admission-lane.ts';
 
 /**
@@ -12,6 +16,7 @@ import { message, withLane } from './helpers/gateway-admission-lane.ts';
  * revision this isolate activated on an earlier turn.
  */
 
+const KEPT_MODEL = 'openai/gpt-hosted-kept';
 const ADDED_MODEL = 'openai/gpt-hosted-added';
 
 function catalogBytes(revision: number, canonicals: string[]): Uint8Array {
@@ -37,12 +42,12 @@ test('a DM admits the Workspace default that the stored catalog revision added a
   await withLane(async (lane) => {
     const settings = lane.stores.settings;
     await acceptModelCatalogCandidate(settings, {
-      bytes: catalogBytes(7, ['openai/gpt-hosted-kept']), checkedAt: 1, nextRefreshAt: 2,
+      bytes: catalogBytes(7, [KEPT_MODEL]), checkedAt: 1, nextRefreshAt: 2,
     });
     assert.deepEqual(await loadModelCatalog(settings), { status: 'activated', revision: 7 },
       'an earlier turn in this isolate activated revision 7');
     await acceptModelCatalogCandidate(settings, {
-      bytes: catalogBytes(8, ['openai/gpt-hosted-kept', ADDED_MODEL]), checkedAt: 3, nextRefreshAt: 4,
+      bytes: catalogBytes(8, [KEPT_MODEL, ADDED_MODEL]), checkedAt: 3, nextRefreshAt: 4,
     });
     lane.config.putWorkspaceModelDefault({
       workspaceId: 'T1', modelId: ADDED_MODEL, provenance: 'admin_selected',
@@ -63,5 +68,39 @@ test('a DM admits the Workspace default that the stored catalog revision added a
     assert.equal(job.assignment.model, ADDED_MODEL, 'admission froze the Workspace default');
     assert.equal(job.assignment.modelAttribution?.source, 'workspace_default');
     assert.equal(job.assignment.modelAttribution?.catalogRevision, '8', 'judged by the stored revision');
+  });
+});
+
+// Defect caught: on a deployment serving many installations, as Cloud is, the
+// load reads no installation's catalog or another one's, so a warm isolate
+// still judges the default by the revision it activated before.
+test('an installation of a deployment serving many is judged by the catalog it stored', async (t) => {
+  resetModelCatalogActivationForTests();
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => { settings.close(); resetModelCatalogActivationForTests(); });
+  await withEnv({ CHICKPEA_TENANCY: undefined }, async () => {
+    const env = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_warm' });
+    await acceptModelCatalogCandidate(settings, { bytes: catalogBytes(7, [KEPT_MODEL]), checkedAt: 1, nextRefreshAt: 2 });
+    assert.equal((await loadModelCatalog(settings, env)).revision, 7);
+    await acceptModelCatalogCandidate(settings, {
+      bytes: catalogBytes(8, [KEPT_MODEL, ADDED_MODEL]), checkedAt: 3, nextRefreshAt: 4,
+    });
+
+    const assignment = await resolveModelPolicyForAssignment({
+      workspaceId: 'T1', channelId: 'D1', agentId: 'agent_follows_default',
+      agent: {
+        id: 'agent_follows_default', kind: 'user', revision: 1, name: 'Follows', instructions: 'Help.',
+        enabled: true, skills: [], mcpServers: [], apiConnections: [], repositories: [],
+      },
+    }, {
+      getWorkspaceInstallation: async () => ({ runtimeContract: 'chickpea-v1' }) as never,
+      getWorkspaceModelDefault: async () => ({
+        workspaceId: 'T1', modelId: ADDED_MODEL, revision: 2, provenance: 'admin_selected',
+        lastChangedByMembershipId: 'membership_owner', createdAt: 1, updatedAt: 2,
+      }),
+    }, settings, process.env, undefined, env);
+
+    assert.equal(assignment.model, ADDED_MODEL);
+    assert.equal(assignment.modelAttribution.catalogRevision, '8');
   });
 });

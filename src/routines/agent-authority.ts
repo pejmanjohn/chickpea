@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 
-import { getConfigStore, getIdentityStore, type PlatformEnv } from '../config/state-backend.ts';
+import type { SettingsStore } from '../config/settings-store.ts';
+import { getConfigStore, getIdentityStore, getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
 import { resolveModelPolicyForAssignment } from '../config/model-policy.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type {
@@ -356,10 +357,11 @@ export async function reassignDirectRoutineAgent(input: {
 export async function resolveRoutineAgentAuthority(
   routine: RoutineDefinition,
   env: PlatformEnv | undefined,
-  dependencies: { config?: ConfigStore; identity?: IdentityStore } = {},
+  dependencies: { config?: ConfigStore; identity?: IdentityStore; settings?: SettingsStore } = {},
 ): Promise<ResolvedRoutineAuthority> {
   const config = dependencies.config ?? getConfigStore(env);
   const identity = dependencies.identity ?? getIdentityStore(env);
+  const settings = dependencies.settings ?? (env ? getSettingsStore(env) : undefined);
   const reference = await config.getAgentScheduleReference(routine.id);
   if (!reference || reference.state !== 'active' ||
       (routine.authorityBindingVersion !== undefined &&
@@ -422,7 +424,7 @@ export async function resolveRoutineAgentAuthority(
     channelId: reference.channelId,
     agentId: agent.id,
     agent,
-  }, config, process.env, undefined, env);
+  }, config, settings, process.env, undefined, env);
   return { reference, agent, agentGrants, assignment, actorSlackUserId,
     effectiveConnections: effectiveConnections.filter(({ account }) => reference.requiredConnectionAccountIds.includes(account.id)) };
 

@@ -11349,6 +11349,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           await resolveEffectiveSlackConfig(key.workspaceId, key.channelId, {
             agents: configStore,
             grants: configStore,
+            settings: settings(c),
           }, process.env, c.req.query('agentId'), c.env as PlatformEnv | undefined),
         ),
       });
