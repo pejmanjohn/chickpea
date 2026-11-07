@@ -10,7 +10,7 @@ import { lockfileDrift } from '../scripts/lib/installed-dependencies.mjs';
 // @ts-expect-error Executable helpers are JavaScript, shared with the CLI.
 import { createRegressionPlan } from '../scripts/lib/regression-plan.mjs';
 // @ts-expect-error Executable helpers are JavaScript, shared with the CLI.
-import { changedFiles, isHygieneStep, main, needsHostReservation, parseRegressionArgs, regressionEnvironment, runRegressionSteps, runWithHostReservation, settleHostLease, splitAtHostReservation, stepOutcome } from '../scripts/verify-regression.mjs';
+import { changedFiles, isHygieneStep, main, needsHostReservation, parseRegressionArgs, printRunSummary, regressionEnvironment, runRegressionSteps, runWithHostReservation, settleHostLease, splitAtHostReservation, stepOutcome } from '../scripts/verify-regression.mjs';
 
 const testFiles = readdirSync(new URL('.', import.meta.url), { recursive: true })
   .map(String).filter((file) => file.endsWith('.test.ts')).map((file) => `tests/${file.replaceAll('\\', '/')}`);
@@ -309,6 +309,58 @@ test('a changed plan names the commit it diffed against and every file it classi
   try { assert.equal(await main(['--plan', '--area', 'verification']), 0); } finally { console.log = log; }
   const plan = JSON.parse(printed.join('\n'));
   assert.deepEqual([plan.base, plan.files, plan.areas], [null, [], ['verification']], 'explicit areas diff nothing');
+});
+
+const MERGE_GATE = 'npm run verify:host -- --wait-ms 3600000 npm test';
+async function captured(argv: string[]) {
+  const stdout: string[] = [], stderr: string[] = [];
+  const { log, error } = console;
+  console.log = (...values: unknown[]) => { stdout.push(values.join(' ')); };
+  console.error = (...values: unknown[]) => { stderr.push(values.join(' ')); };
+  try { return { status: await main(argv), stdout: stdout.join('\n'), stderr: stderr.join('\n') }; } finally { Object.assign(console, { log, error }); }
+}
+const assertNotGate = (stderr: string) => {
+  assert.match(stderr, /NOT the merge gate/);
+  assert.ok(stderr.includes(`origin/main: ${MERGE_GATE}`), 'names the gate and where to run it');
+};
+
+test('a run whose plan skips part of the suite says at the start that it is not the merge gate and names the gate', async (t) => {
+  const missing = join(mkdtempSync(join(tmpdir(), 'chickpea-merge-gate-')), 'absent-run.json');
+  t.after(() => rmSync(join(missing, '..'), { recursive: true, force: true }));
+  // An unreadable record stops the run before any check executes, after the start of the run has printed.
+  const subset = await captured(['--area', 'memory', '--record', missing]);
+  assert.equal(subset.status, 2);
+  assertNotGate(subset.stderr);
+  const release = await captured(['--mode', 'release', '--record', missing]);
+  assert.equal(release.status, 2);
+  assert.doesNotMatch(`${release.stdout}\n${release.stderr}`, /merge gate/i, 'a full-suite plan prints no warning');
+});
+
+test('the end summary of a subset run repeats the warning; a full-suite run\'s summary carries none', () => {
+  const summary = (plan: object) => {
+    const out: string[] = [], warnings: string[] = [];
+    printRunSummary(plan, { passed: true, retries: [], results: [] }, { log: (value: string) => out.push(value), warn: (value: string) => warnings.push(value) });
+    return { json: JSON.parse(out.join('\n')), warnings: warnings.join('\n') };
+  };
+  const subset = summary(createRegressionPlan({ areas: ['memory'], testFiles }));
+  assertNotGate(subset.warnings);
+  assert.deepEqual(Object.keys(subset.json), ['result', 'retries', 'results', 'coverage', 'fullTests']);
+  assert.equal(subset.json.fullTests, false);
+  for (const plan of [createRegressionPlan({ files: ['src/new-runtime.ts'], testFiles }), createRegressionPlan({ mode: 'release', testFiles })]) {
+    const full = summary(plan);
+    assert.equal(full.warnings, '');
+    assert.equal(full.json.fullTests, true);
+  }
+});
+
+test('--plan stdout stays one JSON document with the same fields; the warning goes to stderr only', async () => {
+  const planned = await captured(['--plan', '--area', 'memory']);
+  assert.equal(planned.status, 0);
+  const plan = JSON.parse(planned.stdout);
+  assert.deepEqual(Object.keys(plan), ['mode', 'areas', 'fullTests', 'unclassified', 'broadChanges', 'steps', 'coverage', 'base', 'files']);
+  assert.equal(plan.fullTests, false);
+  assert.doesNotMatch(planned.stdout, /merge gate/i);
+  assertNotGate(planned.stderr);
 });
 
 test('stale node_modules are reported against package-lock.json before any check runs', () => {
