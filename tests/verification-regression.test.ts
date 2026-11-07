@@ -319,7 +319,10 @@ async function captured(argv: string[]) {
   console.error = (...values: unknown[]) => { stderr.push(values.join(' ')); };
   try { return { status: await main(argv), stdout: stdout.join('\n'), stderr: stderr.join('\n') }; } finally { Object.assign(console, { log, error }); }
 }
-const notGate = new RegExp(`NOT the merge gate[^\\n]*origin/main[^\\n]*${MERGE_GATE.replaceAll(/[.*+?^${}()|[\]\\-]/g, '\\$&')}`);
+const assertNotGate = (stderr: string) => {
+  assert.match(stderr, /NOT the merge gate/);
+  assert.ok(stderr.includes(`origin/main: ${MERGE_GATE}`), 'names the gate and where to run it');
+};
 
 test('a run whose plan skips part of the suite says at the start that it is not the merge gate and names the gate', async (t) => {
   const missing = join(mkdtempSync(join(tmpdir(), 'chickpea-merge-gate-')), 'absent-run.json');
@@ -327,7 +330,7 @@ test('a run whose plan skips part of the suite says at the start that it is not 
   // An unreadable record stops the run before any check executes, after the start of the run has printed.
   const subset = await captured(['--area', 'memory', '--record', missing]);
   assert.equal(subset.status, 2);
-  assert.match(subset.stderr, notGate);
+  assertNotGate(subset.stderr);
   const release = await captured(['--mode', 'release', '--record', missing]);
   assert.equal(release.status, 2);
   assert.doesNotMatch(`${release.stdout}\n${release.stderr}`, /merge gate/i, 'a full-suite plan prints no warning');
@@ -340,13 +343,13 @@ test('the end summary of a subset run repeats the warning; a full-suite run\'s s
     return { json: JSON.parse(out.join('\n')), warnings: warnings.join('\n') };
   };
   const subset = summary(createRegressionPlan({ areas: ['memory'], testFiles }));
-  assert.match(subset.warnings, notGate);
-  assert.deepEqual(Object.keys(subset.json), ['result', 'retries', 'results', 'coverage', 'fullSuite']);
-  assert.equal(subset.json.fullSuite, false);
+  assertNotGate(subset.warnings);
+  assert.deepEqual(Object.keys(subset.json), ['result', 'retries', 'results', 'coverage', 'fullTests']);
+  assert.equal(subset.json.fullTests, false);
   for (const plan of [createRegressionPlan({ files: ['src/new-runtime.ts'], testFiles }), createRegressionPlan({ mode: 'release', testFiles })]) {
     const full = summary(plan);
     assert.equal(full.warnings, '');
-    assert.equal(full.json.fullSuite, true);
+    assert.equal(full.json.fullTests, true);
   }
 });
 
@@ -357,7 +360,7 @@ test('--plan stdout stays one JSON document with the same fields; the warning go
   assert.deepEqual(Object.keys(plan), ['mode', 'areas', 'fullTests', 'unclassified', 'broadChanges', 'steps', 'coverage', 'base', 'files']);
   assert.equal(plan.fullTests, false);
   assert.doesNotMatch(planned.stdout, /merge gate/i);
-  assert.match(planned.stderr, notGate);
+  assertNotGate(planned.stderr);
 });
 
 test('stale node_modules are reported against package-lock.json before any check runs', () => {

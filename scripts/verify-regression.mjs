@@ -178,11 +178,11 @@ export const MERGE_GATE_COMMAND = 'npm run verify:host -- --wait-ms 3600000 npm 
  * export). Otherwise the plan runs only part of it and is not the merge gate.
  */
 export const mergeGateWarning = (plan) => (plan.fullTests ? null
-  : `This run is NOT the merge gate: its plan runs only part of the test suite. Before merging a T1 to T3 change, run the full suite on a local merge of the final head with current origin/main: ${MERGE_GATE_COMMAND}`);
+  : `This plan is NOT the merge gate: it runs only part of the test suite. Before merging any change above T0, run the full suite on a local merge of the final head with current origin/main: ${MERGE_GATE_COMMAND}`);
 
 /** The end summary on stdout, then the merge-gate warning, if any, on stderr. */
 export function printRunSummary(plan, { passed, retries, results }, { log = console.log, warn = console.error } = {}) {
-  log(JSON.stringify({ result: passed ? 'pass' : 'fail', retries, results, coverage: plan.coverage, fullSuite: plan.fullTests }, null, 2));
+  log(JSON.stringify({ result: passed ? 'pass' : 'fail', retries, results, coverage: plan.coverage, fullTests: plan.fullTests }, null, 2));
   const warning = mergeGateWarning(plan);
   if (warning) warn(warning);
 }
@@ -216,14 +216,10 @@ export async function main(argv) {
     // A plan names the commit it diffed against and every file it classified,
     // so a caller can confirm it planned the intended range. Chickpea Cloud
     // parses --plan stdout as one JSON document, so the warning goes to stderr.
+    console.log(JSON.stringify(options.planOnly ? { ...plan, base: revision ?? null, files: [...files].sort() } : plan, null, 2));
     const warning = mergeGateWarning(plan);
-    if (options.planOnly) {
-      console.log(JSON.stringify({ ...plan, base: revision ?? null, files: [...files].sort() }, null, 2));
-      if (warning) console.error(warning);
-      return 0;
-    }
-    console.log(JSON.stringify(plan, null, 2));
     if (warning) console.error(warning);
+    if (options.planOnly) return 0;
     assertNodeVersion(process.version, { baseline: options.mode === 'release' });
     if (options.mode === 'release' && git(['status', '--porcelain']).length > 0) {
       throw new Error('Release checks require clean committed source; verify:oss-export archives HEAD. Use changed or regression for working changes.');
