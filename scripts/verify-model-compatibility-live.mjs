@@ -21,14 +21,15 @@ import { activateModelCatalog } from '../src/model-catalog/catalog.ts';
 import { parseModelCatalogBytes } from '../src/model-catalog/schema.ts';
 import { clearOpenAiSubscriptionTransport } from '../src/openai-subscription/transport.ts';
 
+const REASONING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 const args = parseArgs(process.argv.slice(2));
 if (args.has('--help')) {
   console.log(
     'Usage: npm run verify:model-compatibility:live -- --live ' +
       '--lane <subscription|openai-api-key|anthropic-api-key> --model <id> ' +
-      '[--reasoning <off|minimal|low|medium|high|xhigh|max>] [--state-db <path>] [--catalog-file <path>]',
+      `[--reasoning <${REASONING_LEVELS.join('|')}>] [--state-db <path>] [--catalog-file <path>]`,
   );
-  console.log('--reasoning sends that thinking level the way an Agent turn does; without it the request sets none.');
+  console.log('--reasoning sends that thinking level the way an Agent turn does. Without it the request carries no level, and the model profile decides whether that sends the effort none or omits it.');
   console.log('Consumes provider or subscription quota and never prints model output or credentials.');
   process.exit(0);
 }
@@ -43,8 +44,8 @@ const modelId = String(args.get('--model') ?? '');
 assert.match(modelId, /^[a-z0-9][a-z0-9._-]{0,127}$/, '--model must be a safe model id');
 const reasoning = args.get('--reasoning');
 assert.ok(
-  reasoning === undefined || ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(reasoning),
-  '--reasoning must be off, minimal, low, medium, high, xhigh, or max',
+  reasoning === undefined || REASONING_LEVELS.includes(reasoning),
+  `--reasoning must be one of ${REASONING_LEVELS.join(', ')}`,
 );
 
 const provider = lane === 'anthropic-api-key' ? 'anthropic' : 'openai';

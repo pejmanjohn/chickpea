@@ -51,7 +51,10 @@ effective price; see [price review](price-review.md).
    omits it. When Pi has no entry for the model, ask the API: run
    `npm run verify:model-compatibility:live -- --live --lane openai-api-key --model <id>`
    once as is and once with `--reasoning medium`. Its `sentReasoningEfforts`
-   shows the effort each request sent.
+   shows the effort each request sent. The OpenAI API-key profiles also carry
+   the request flags of Pi's own GPT-6 entries, such as explicit prompt cache
+   breakpoints and tool search. Check that the model page lists
+   `prompt_caching` and `tool_search` before you put a new model on one.
 3. Run `npm run catalog:build -- --write`. It writes `catalog/current.json` and
    the unchangeable `catalog/releases/revision-<N>.json`.
 4. Run `npm run verify:model-catalog`.

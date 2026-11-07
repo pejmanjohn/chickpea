@@ -25,7 +25,7 @@
         "apiKey": "openai-platform-responses-terra-tier@1"
       },
       "provenance": {
-        "sourceRefs": ["https://developers.openai.com/api/docs/models/gpt-6.1-terra", "https://developers.openai.com/codex/models"],
+        "sourceRefs": ["https://developers.openai.com/api/docs/models/gpt-6.1-terra", "https://developers.openai.com/codex/pricing"],
         "reviewedAt": "2026-11-06"
       },
       "laneStatus": {

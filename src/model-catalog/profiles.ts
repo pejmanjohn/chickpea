@@ -33,6 +33,17 @@ function openAiApiModel(
       high: 'high',
       xhigh: 'xhigh',
     },
+    // Pi 1.1's own GPT-5.6 and GPT-6 entries carry these flags. Without them
+    // a model Pi does not know yet, such as GPT-6.1 Terra, would lose explicit
+    // prompt cache breakpoints, tool search and strict tools.
+    compat: {
+      supportsStrictMode: true,
+      supportsOpenAIGrammarTools: true,
+      supportsAdditionalTools: true,
+      supportsToolSearch: true,
+      supportsMidConvoSystemMessages: true,
+      supportsExplicitPromptCacheMode: true,
+    },
   };
 }
 

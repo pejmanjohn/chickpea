@@ -249,12 +249,16 @@ test('an unrecognized reply-purpose Slack turn warns with model, reason and requ
   assert.ok(!JSON.stringify(warn.mock.calls.map((call) => call.arguments)).includes('secret'));
 });
 
-test('every bundled API-key OpenAI model routes to pi-ai\'s own model, which takes explicit breakpoints', () => {
+test('every bundled API-key OpenAI model takes explicit breakpoints, and a compiled profile carries pi-ai\'s own flags', () => {
   const ids = BUNDLED_MODEL_CATALOG.filter((entry) => entry.lanes.openai_api_key).map((entry) => entry.id);
   assert.ok(ids.includes('openai/gpt-5.6-terra'), 'the bundled catalog offers API-key OpenAI models');
+  const piFlags = builtin('gpt-6.1-sol').compat;
   for (const id of ids) {
     const route = resolveActiveCatalogRoute(id, 'openai_api_key');
-    assert.equal(route?.source, 'pi_native', `${id} routes to pi-ai's model, not a compiled profile without the flag`);
+    assert.ok(route, `${id} has an API-key route`);
     assert.ok(explicitBreakpointsOffered(route.model as Model<Api>), `${id} carries pi-ai's explicit prompt cache flag`);
+    if (route.source === 'catalog') {
+      assert.deepEqual(route.model.compat, piFlags, `${id} requests the way pi-ai's own GPT-6 models do`);
+    }
   }
 });
