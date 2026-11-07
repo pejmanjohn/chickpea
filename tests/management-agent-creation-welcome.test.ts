@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 
 import {
   CONNECTION_CATALOG_PRESETS,
@@ -15,10 +15,20 @@ import {
   managementApprovalScopeKey,
 } from '../src/management/contracts.ts';
 import { resolveSlackManagementActor } from '../src/management/slack-tools.ts';
-import type { ManagementActorContext } from '../src/management/types.ts';
+import type {
+  ManagementActorContext,
+  ManagementAgentCreatedWelcome,
+  ManagementOperation,
+  ManagementReceiptOutboxRecord,
+} from '../src/management/types.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
-import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+import {
+  createManagementAdapterFixture,
+  ownerMcpContext,
+  ownerSlackDmContext,
+  type ManagementAdapterFixture,
+} from './helpers/management-adapter-fixture.ts';
 import { withPersonApproval } from './helpers/slack-person-approval.ts';
 import { slackTurnSignal } from './helpers/slack-turn-signal.ts';
 
@@ -1127,6 +1137,199 @@ test('an ask\'s words never anchor a connector in a creation reply: its creation
     assert.deepEqual(asked.outcomes.map(({ disposition }) => disposition), ['confirmation_required'],
       'no welcome is owed: nothing is created until the person approves');
     await assert.rejects(f.config.getAgent(askedAgentId));
+  } finally {
+    f.close();
+  }
+});
+
+const FIRST_ASK = 'Who did I add to the CRM this week?';
+
+function mcpCreation(itemId: string, agentId: string, firstAsk?: string): ManagementOperation {
+  return {
+    itemId,
+    kind: 'create_agent',
+    ...(firstAsk ? { firstAsk } : {}),
+    agent: {
+      id: agentId,
+      name: 'CRM Desk',
+      description: 'Answers questions about the contacts in your CRM.',
+      requestedHandle: agentId.replaceAll('_', '-'),
+      editPolicy: 'creator_and_admins',
+      instructions: 'Answer from the CRM.',
+      enabled: true,
+      skills: [],
+      mcpServers: [],
+      apiConnections: [],
+      repositories: [],
+    },
+  };
+}
+
+/** Creations whose Slack handle publishes, as a live installation's do. */
+async function createPublishingFixture(suffix: string): Promise<ManagementAdapterFixture> {
+  let groups = 0;
+  const f: ManagementAdapterFixture = await createManagementAdapterFixture(suffix, {
+    publishAgentPresence: async ({ agentId }) => {
+      const current = await f.config.getAgent(agentId);
+      return {
+        agent: await f.config.updateAgent(agentId, {
+          slackPresence: {
+            ...current.slackPresence!,
+            kind: 'user_group',
+            desiredState: 'active',
+            health: 'healthy',
+            userGroupId: `S_HELLO_${++groups}`,
+          },
+        }, current.revision),
+      };
+    },
+  });
+  return f;
+}
+
+function claimMetrics(t: TestContext): Array<Record<string, unknown>> {
+  const metrics: Array<Record<string, unknown>> = [];
+  t.mock.method(console, 'info', (payload: Record<string, unknown>) => {
+    if (payload?.event === 'agent_creation.welcome_claim') metrics.push(payload);
+  });
+  return metrics;
+}
+
+function welcomeIn(record: ManagementReceiptOutboxRecord | undefined): ManagementAgentCreatedWelcome {
+  assert.ok(record && 'kind' in record.receipt && record.receipt.kind === 'agent_created_welcome');
+  return record.receipt;
+}
+
+test('an Agent created over MCP queues one welcome in its creator\'s direct message, ending with the first ask', async (t) => {
+  const metrics = claimMetrics(t);
+  const f = await createPublishingFixture('mcp-hello');
+  try {
+    const context = ownerMcpContext(f);
+    const applied = await f.service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'mcp-hello',
+      operations: [mcpCreation('create', 'agent_crm_desk', FIRST_ASK)],
+    });
+    if (!('operationId' in applied)) assert.fail('expected applied creation');
+    assert.equal(applied.outcomes[0]?.disposition, 'applied');
+
+    const outbox = await f.management.getOutboxForOperation(applied.operationId);
+    assert.equal(outbox?.outboxId, `agent_welcome_${applied.operationId}`);
+    assert.equal(outbox?.status, 'pending');
+    assert.deepEqual(outbox?.destination, {
+      kind: 'initiator_dm',
+      organizationId: context.organizationId,
+      userId: context.userId,
+    });
+    const receipt = welcomeIn(outbox);
+    assert.equal(receipt.creationOperationId, applied.operationId);
+    assert.equal(receipt.agentId, 'agent_crm_desk');
+    assert.equal(receipt.agentHandle, 'agent-crm-desk');
+    assert.equal(receipt.requesterMembershipId, context.membershipId);
+    assert.equal(receipt.surface, 'direct');
+    assert.equal(receipt.persona.name, 'CRM Desk');
+    assert.match(receipt.persona.avatarUrl ?? '', /^http:\/\/localhost\/assets\/agents\/agent_crm_desk\/avatar\//);
+    assert.deepEqual(receipt.publication, { status: 'complete', incomplete: [] });
+    assert.equal(receipt.firstAsk, FIRST_ASK);
+    assert.equal(receipt.viewAgentUrl, 'http://localhost/admin/agents/agent_crm_desk');
+    assert.equal(receipt.turnJobId, undefined, 'no Slack turn waits on this welcome');
+    assert.equal(receipt.presentationRunId, undefined);
+    assert.equal(receipt.connectorActions, undefined, 'connections are the coding agent\'s follow-on work');
+    assert.ok(formatManagementSetupReceipt(receipt).endsWith(`Try asking me: “${FIRST_ASK}”`));
+
+    assert.doesNotMatch(
+      JSON.stringify(await f.config.getAgent('agent_crm_desk')),
+      /firstAsk|Who did I add/,
+      'the first ask is never saved on the Agent',
+    );
+    assert.deepEqual(metrics.map(({ surface, outcome }) => ({ surface, outcome })), [
+      { surface: 'mcp', outcome: 'created' },
+    ]);
+  } finally {
+    f.close();
+  }
+});
+
+test('a replayed MCP creation finds its welcome and queues no second one', async (t) => {
+  const metrics = claimMetrics(t);
+  const f = await createPublishingFixture('mcp-hello-replay');
+  try {
+    const call = {
+      context: ownerMcpContext(f),
+      idempotencyKey: 'mcp-hello-replay',
+      operations: [mcpCreation('create', 'agent_crm_replay', FIRST_ASK)],
+    };
+    const first = await f.service.applyWorkspaceChanges(call);
+    const replay = await f.service.applyWorkspaceChanges(call);
+    if (!('operationId' in first) || !('operationId' in replay)) assert.fail('expected applied creations');
+    assert.equal(replay.operationId, first.operationId);
+    const queued = await f.management.claimDueOutbox(1_900_000_000_000, 25, 1_900_000_030_000);
+    assert.deepEqual(queued.map(({ outboxId }) => outboxId), [`agent_welcome_${first.operationId}`]);
+    assert.deepEqual(metrics.map(({ surface, outcome }) => ({ surface, outcome })), [
+      { surface: 'mcp', outcome: 'created' },
+      { surface: 'mcp', outcome: 'replayed' },
+    ]);
+  } finally {
+    f.close();
+  }
+});
+
+test('a Slack creation keeps its one welcome in the creation thread and gets no direct message', async (t) => {
+  const metrics = claimMetrics(t);
+  const f = await createPublishingFixture('slack-no-dm-hello');
+  try {
+    const context = ownerSlackDmContext(f);
+    const applied = await f.service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'slack-no-dm-hello',
+      operations: [mcpCreation('create', 'agent_crm_slack')],
+    });
+    if (!('operationId' in applied)) assert.fail('expected applied creation');
+    assert.equal(
+      await f.management.getOutboxForOperation(applied.operationId),
+      undefined,
+      'the Slack turn claims its welcome itself',
+    );
+    const claimed = await f.service.finalizeSlackAgentCreationWelcome({
+      context,
+      operationId: applied.operationId,
+      creationItemId: 'create',
+      agentId: 'agent_crm_slack',
+      connectorMentions: [],
+      followOnNotices: [],
+      turnJobId: 'turn_slack_no_dm_hello',
+    });
+    assert.equal(claimed.outbox.destination.kind, 'thread');
+    const queued = await f.management.claimDueOutbox(1_900_000_000_000, 25, 1_900_000_030_000);
+    assert.deepEqual(queued.map(({ outboxId, destination }) => [outboxId, destination.kind]), [
+      [`agent_welcome_${applied.operationId}`, 'thread'],
+    ]);
+    assert.deepEqual(metrics.map(({ surface }) => surface), ['slack']);
+  } finally {
+    f.close();
+  }
+});
+
+test('an MCP call that creates two Agents queues one welcome for each', async () => {
+  const f = await createPublishingFixture('mcp-hello-two');
+  try {
+    const applied = await f.service.applyWorkspaceChanges({
+      context: ownerMcpContext(f),
+      idempotencyKey: 'mcp-hello-two',
+      operations: [
+        mcpCreation('create_crm', 'agent_crm_one', FIRST_ASK),
+        mcpCreation('create_pipeline', 'agent_crm_two'),
+      ],
+    });
+    if (!('operationId' in applied)) assert.fail('expected applied creations');
+    const queued = await f.management.claimDueOutbox(1_900_000_000_000, 25, 1_900_000_030_000);
+    assert.deepEqual(
+      queued.map((record) => [record.outboxId, welcomeIn(record).agentId, welcomeIn(record).firstAsk]).toSorted(),
+      [
+        [`agent_welcome_${applied.operationId}:create_crm`, 'agent_crm_one', FIRST_ASK],
+        [`agent_welcome_${applied.operationId}:create_pipeline`, 'agent_crm_two', undefined],
+      ],
+    );
   } finally {
     f.close();
   }

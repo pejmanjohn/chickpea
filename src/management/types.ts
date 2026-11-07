@@ -138,6 +138,8 @@ export type ManagementOperation =
       clientRef?: string;
       /** Set only after the requester chooses a separate Agent despite a visible identity match. */
       duplicateResolution?: 'create_distinct';
+      /** MCP only: what the Agent's direct-message welcome invites the requester to send. Never saved on the Agent. */
+      firstAsk?: string;
       agent: ManagementAgentCreateInput;
     })
   | (ManagementOperationBase & {
@@ -597,6 +599,8 @@ export interface ManagementAgentCreatedWelcome {
   /**
    * Internal correlation: the deferred turn's Run id. Its Slack presentation
    * and its Work Run settle once this post is acknowledged or abandoned.
+   * Absent, like turnJobId, on a welcome for a creation outside Slack: no
+   * Slack turn waits on it.
    */
   presentationRunId?: string;
   /** Durable Slack turn held open until this deferred receipt settles. */
@@ -641,6 +645,7 @@ export interface ManagementAgentCreatedWelcome {
   deliveryPersona?: 'agent' | 'chickpea';
   fallbackOutboxId?: string;
   viewAgentUrl?: string;
+  firstAsk?: string;
   /** Compatibility fields for proposal-created welcomes. */
   setupUrl?: string;
   suggestedConnector?: string;
