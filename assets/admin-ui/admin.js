@@ -414,7 +414,7 @@
     // Dynamic model lists per provider id, loaded lazily. openrouter/workers-ai
     // feed the Settings favorites managers; anthropic/openai feed the profile
     // Model picker's FULL dynamic group (F5). null = not yet loaded.
-    providerModels: { anthropic: null, openai: null, openrouter: null, "workers-ai": null },
+    providerModels: { anthropic: null, openai: null, openrouter: null, google: null, "workers-ai": null },
     // Profile Model picker (F6): a real click-to-open combobox. Closed = the
     // input + chevron; open = the grouped dynamic options popover. The filter
     // mirrors the input value so typing narrows the list. providerModelsError
@@ -3971,7 +3971,7 @@
     },
     own_key: {
       name: "Your own API key",
-      pitch: "Bring your Anthropic, OpenAI, or OpenRouter key.",
+      pitch: "Bring your Anthropic, OpenAI, Google Gemini, or OpenRouter key.",
       levelLabel: "Plan size with your own API key"
     }
   };
@@ -4284,6 +4284,7 @@
   var ONBOARDING_PROVIDERS = [
     { id: "openai", name: "OpenAI", keyLabel: "OpenAI API key", sublabel: "Needs API key", description: "Use OpenAI models with a Platform API key." },
     { id: "anthropic", name: "Anthropic", keyLabel: "Anthropic API key", sublabel: "Needs API key", description: "Use Claude models with an Anthropic API key." },
+    { id: "google", name: "Google Gemini", keyLabel: "Gemini API key", sublabel: "Needs API key", description: "Use Gemini models with a Gemini API key." },
     { id: "openrouter", name: "OpenRouter", keyLabel: "OpenRouter API key", sublabel: "Needs API key", description: "Use models available through OpenRouter." },
     { id: "cloudflare", name: "Cloudflare Workers AI", tabName: "Workers AI", keyLabel: "", sublabel: "No key needed", description: "Included with this deployment, no API key. Good for a first try; replies are simpler than the key-based providers." }
   ];
@@ -4299,6 +4300,7 @@
     openai: { model: "openai/gpt-5.6-terra", label: "GPT-5.6 Terra", note: "Our pick: fast, inexpensive, and dependable in Slack." },
     openrouter: { model: "openrouter/openai/gpt-5.6-terra", label: "GPT-5.6 Terra", note: "Our pick: fast, inexpensive, and dependable in Slack." },
     anthropic: { model: "anthropic/claude-sonnet-5-5", label: "Claude Sonnet 5.5", note: "A strong default. Opus 5 costs more; Haiku 4.5 costs less." },
+    google: { model: "google/gemini-3.8-flash", label: "Gemini 3.8 Flash", note: "A fast default. Gemini 4 Argon costs more; Gemini 3.5 Flash-Lite costs less." },
     cloudflare: { model: "cloudflare/@cf/zai-org/glm-4.7-flash", label: "GLM 4.7 Flash", caveat: true, note: "Free with no API key and fine for a first try. For everyday use, connect OpenAI and pick GPT-5.6 Terra." }
   };
 
@@ -4384,7 +4386,7 @@
       ? '<p class="onboarding-provider-ready">' + esc(selected.name) + ' is ready to use.</p>'
       : selected.id === "cloudflare"
         ? '<p class="field-error" role="alert">Cloudflare Workers AI is not available for this deployment.</p>'
-        : '<label class="field" for="onboarding-provider-key"><span class="field-label">' + esc(selected.keyLabel) + '</span><input class="input" id="onboarding-provider-key" type="password" autocomplete="off" spellcheck="false" data-action="onboarding-provider-key" data-provider="' + esc(selected.id) + '" value="' + esc(state.onboardingProviderKey) + '" placeholder="Paste your key"></label><p class="onboarding-provider-secret-note">Stored encrypted and never shown again.</p>');
+        : '<label class="field" for="onboarding-provider-key"><span class="field-label">' + esc(selected.keyLabel) + '</span><input class="input" id="onboarding-provider-key" type="password" autocomplete="off" spellcheck="false" data-action="onboarding-provider-key" data-provider="' + esc(selected.id) + '" value="' + esc(state.onboardingProviderKey) + '" placeholder="' + (selected.id === "google" ? "AIza..." : "Paste your key") + '"></label>' + (selected.id === "google" ? '<p class="hint">' + esc(GEMINI_KEY_HINT) + '</p>' : '') + '<p class="onboarding-provider-secret-note">Stored encrypted and never shown again.</p>');
   }
 
   function onboardingModelOptions() {
@@ -11674,6 +11676,7 @@
     if (id === "anthropic") return { name: "Anthropic", sub: "Claude models", frag: "anthropic/*", suffix: "", env: "ANTHROPIC_API_KEY" };
     if (id === "openai") return { name: "OpenAI", sub: "GPT models", frag: "openai/*", suffix: "", env: "OPENAI_API_KEY" };
     if (id === "openrouter") return { name: "OpenRouter", sub: "Any model", frag: "openrouter/*", suffix: "", env: "OPENROUTER_API_KEY" };
+    if (id === "google") return { name: "Google Gemini", sub: "Gemini models", frag: "google/*", suffix: "", env: "GEMINI_API_KEY" };
     if (id === "workers-ai") return { name: "Cloudflare Workers AI", sub: "Cloudflare-hosted models", frag: "cloudflare/*", suffix: "", env: "" };
     return { name: id, sub: "Custom provider", frag: id + "/*", suffix: "", env: "" };
   }
@@ -13284,12 +13287,14 @@
   }
 
   function validateEndpointPath(id) {
-    return id === "openrouter" ? "GET /auth/key" : "GET /v1/models";
+    return id === "openrouter" ? "GET /auth/key" : id === "google" ? "GET /v1beta/models" : "GET /v1/models";
   }
+
+  var GEMINI_KEY_HINT = "Use a key from a Google Cloud project with billing turned on. Google may use prompts sent with free-tier keys to improve its products. We also recommend turning off request logging for the project in Google AI Studio.";
 
   function pasteBodyHtml(id, ui, meta) {
     var busy = ui.busy;
-    var placeholder = id === "anthropic" ? "sk-ant-..." : id === "openrouter" ? "sk-or-..." : "sk-...";
+    var placeholder = id === "anthropic" ? "sk-ant-..." : id === "openrouter" ? "sk-or-..." : id === "google" ? "AIza..." : "sk-...";
     var val = ui.key || "";
     var input = '<input class="input mono" type="password" autocomplete="off" placeholder="' + esc(placeholder) + '" value="' + esc(val) + '" aria-label="' + esc(meta.name) + ' API key" data-action="prov-key-input" data-provider="' + esc(id) + '"' +
       (busy ? ' disabled' : (ui.error ? ' style="outline:2px solid var(--danger); outline-offset:-1px;"' : '')) + '>';
@@ -13316,12 +13321,18 @@
     if (id === "openrouter") {
       return 'Validating calls OpenRouter\'s <span class="mono" style="color:var(--text-2);">GET /auth/key</span> once to prove the key, then loads its model list in the same step. ' + stored;
     }
+    if (id === "google") {
+      return esc(GEMINI_KEY_HINT) + ' Validating calls Google\'s <span class="mono" style="color:var(--text-2);">GET /v1beta/models</span> once to prove the key. ' + stored;
+    }
     return 'Validating calls ' + esc(meta.name) + '\'s <span class="mono" style="color:var(--text-2);">GET /v1/models</span> once &mdash; it proves the key and loads the chat-model list in the same step. ' + stored;
   }
 
   function validateBusyHint(id, meta) {
     if (id === "openrouter") {
       return 'Calling <span class="mono" style="color:var(--text-2);">GET /auth/key</span> to prove the key and load OpenRouter\'s model list&hellip; nothing is stored until it returns 200.';
+    }
+    if (id === "google") {
+      return 'Calling <span class="mono" style="color:var(--text-2);">GET /v1beta/models</span> to prove the key&hellip; nothing is stored until it returns 200.';
     }
     return 'Calling <span class="mono" style="color:var(--text-2);">GET /v1/models</span> to prove the key and load ' + esc(meta.name) + '\'s chat-model list&hellip; nothing is stored until it returns 200.';
   }
