@@ -3,8 +3,9 @@ import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 
 import { createConnectRoutes } from '../src/management/connect-routes.ts';
+import { DISCOVERY_GUIDE_URI as DISCOVERY_RESOURCE_URI } from '../src/management/agent-authoring/index.ts';
 import {
-  AGENT_AUTHORING_GUIDE_URI,
+  DISCOVERY_GUIDE_URI,
   ADMIN_CODING_AGENTS_PATH,
   ADMIN_SETTINGS_PATH,
   CONNECT_CLIENTS,
@@ -187,12 +188,26 @@ test('the guide names every supported client and proves the connection before cl
   assert.ok(body.includes(`"url": "${ORIGIN}/mcp"`), 'generic JSON block carries this deployment URL');
 
   assert.ok(body.includes('inspect_workspace'), 'read-only proof call');
-  assert.ok(body.includes(AGENT_AUTHORING_GUIDE_URI), 'agent authoring resource');
-  assert.ok(body.includes('chickpea://guide/agent-authoring/v1'), 'agent authoring resource URI');
+  assert.equal(DISCOVERY_GUIDE_URI, DISCOVERY_RESOURCE_URI, 'the guide names the URI the MCP server serves');
+  assert.ok(body.includes(`\`${DISCOVERY_GUIDE_URI}\``), 'discovery resource URI');
   // Before Slack setup finishes, /mcp is a 404; the guide must say so instead of
   // letting the agent report a broken connection as a failure it caused.
   assert.ok(/404 at `\/mcp`/.test(body), '404-before-setup guidance');
   assert.ok(body.includes(`${ORIGIN}/admin`), 'points at Admin to finish setup');
+});
+
+test('step 6 researches before it proposes, and a new Agent says hello in Slack', async () => {
+  const body = await (await connectMd(`${ORIGIN}/connect.md`)).text();
+  const step6 = body.slice(body.indexOf('## 6.'), body.indexOf('## Good to know'));
+  assert.match(step6, /^## 6\. Find the first teammate$/m);
+  assert.ok(step6.includes(`Read the resource \`${DISCOVERY_GUIDE_URI}\` and follow it: research the person's recent work on this machine before you propose an Agent.`));
+  assert.match(step6, /`\/mcp__chickpea__new-agent` does the same/);
+  assert.match(step6, /In Codex, ask for the desired Chickpea change in plain language; MCP prompts do not appear in its `\$` skills picker\./);
+  assert.doesNotMatch(step6, /What should your first teammate do/, 'no opening question ahead of the research');
+
+  const goodToKnow = body.slice(body.indexOf('## Good to know'));
+  assert.match(goodToKnow, /After you create an Agent, the new Agent messages the person in Slack, and `links\.slack` opens that conversation\./);
+  assert.doesNotMatch(goodToKnow, /mention it in Slack by its handle/);
 });
 
 const PROOF_LINE = 'Call Chickpea\'s inspect_workspace and tell me the workspace name and who I am signed in as.';

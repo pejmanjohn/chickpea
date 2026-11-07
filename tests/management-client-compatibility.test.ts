@@ -21,7 +21,9 @@ import {
 import {
   AGENT_AUTHORING_GUIDE_DIGEST,
   AGENT_AUTHORING_GUIDE_VERSION,
+  DISCOVERY_GUIDE_URI,
 } from '../src/management/agent-authoring/index.ts';
+import { DISCOVERY_GUIDE } from '../src/management/agent-authoring/discovery-guide.ts';
 import {
   AGENT_AUTHORING_GUIDE_MCP,
   AGENT_AUTHORING_GUIDE_MCP_DIGEST,
@@ -364,6 +366,13 @@ test('supported coding clients share public PKCE registration and stateless MCP 
         files: { 'skill-creation.md': AGENT_SKILL_CREATION_GUIDE_MCP },
       });
       assert.doesNotMatch(guide.guide.slice(guide.guide.indexOf('# Chickpea Agent authoring')), /presentation\.slack/);
+      assert.ok((resources.result as { resources: Array<{ uri: string }> }).resources.some(
+        ({ uri }) => uri === DISCOVERY_GUIDE_URI,
+      ), `${client.name} must list the discovery guide`);
+      const discovery = await mcpCall(handler.fetch, client.protocol, 'resources/read', { uri: DISCOVERY_GUIDE_URI });
+      assert.deepEqual((discovery.result as { contents: unknown[] }).contents, [
+        { uri: DISCOVERY_GUIDE_URI, mimeType: 'text/markdown', text: DISCOVERY_GUIDE },
+      ], `${client.name} must read the discovery guide`);
       const listedDescriptions = listedTools.map(({ name, description }) => `${name}: ${description ?? ''}`);
       for (const line of listedDescriptions) {
         if (line.startsWith('discover_slack_channels:')) continue;
@@ -418,6 +427,10 @@ test('server instructions stay under the client cap and link the deployment Admi
       'presentation.markdown',
       'links.admin',
     ]) assert.ok(text.includes(required), `instructions must mention ${required}`);
+    assert.ok(
+      text.includes(`3. Asked what to build, or to create an Agent with no job named, read ${DISCOVERY_GUIDE_URI} and research the person's recent work before you propose.`),
+      'a plain-language ask for an Agent starts with the discovery guide',
+    );
     assert.ok(!text.includes('/admin/settings/outbound'), 'Outbound access is retired');
   }
 
@@ -428,7 +441,7 @@ test('server instructions stay under the client cap and link the deployment Admi
   assert.equal(workspaceManagementAdminOrigin('http://localhost:8787/'), 'http://localhost:8787');
 
   const withOrigin = workspaceManagementInstructions(`${longOrigin}/setup/x?y=1#z`);
-  assert.ok(withOrigin.includes(`Admin: ${longOrigin}/admin`));
+  assert.ok(withOrigin.includes(`under ${longOrigin}/admin: `));
   assert.ok(!withOrigin.includes('/setup/x'), 'instructions must not leak a setup path');
   const withoutOrigin = workspaceManagementInstructions(undefined);
   assert.ok(!withoutOrigin.includes('https://'), 'no origin must not invent a link');
