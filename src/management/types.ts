@@ -644,7 +644,6 @@ export interface ManagementAgentCreatedWelcome {
   deliveryPersona?: 'agent' | 'chickpea';
   fallbackOutboxId?: string;
   viewAgentUrl?: string;
-  /** The message the welcome invites the requester to send, from the creation's firstAsk. */
   firstAsk?: string;
   /** Compatibility fields for proposal-created welcomes. */
   setupUrl?: string;

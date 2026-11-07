@@ -885,8 +885,8 @@ function formatAgentCreatedWelcome(receipt: ManagementAgentCreatedWelcome, group
   return lines.join('\n\n');
 }
 
-function firstAskInvitation(firstAsk: string, speaker: 'me' | 'it'): string {
-  return `Try asking ${speaker}: “${boundedSlackText(firstAsk, 200)}”`;
+function firstAskInvitation(firstAsk: string, agent: 'me' | 'it'): string {
+  return `Try asking ${agent}: “${boundedSlackText(firstAsk, 200)}”`;
 }
 
 function formatAgentWelcomeFallback(receipt: ManagementAgentCreatedWelcome, groupDm: boolean): string {

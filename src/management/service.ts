@@ -1935,7 +1935,6 @@ export class WorkspaceManagementService {
     return claimed;
   }
 
-  /** The part of a creation's welcome every door shares: the Agent, how Slack published it, and where to view it. */
   private agentCreatedWelcome(input: {
     actor: LiveManagementActor;
     operationId: string;

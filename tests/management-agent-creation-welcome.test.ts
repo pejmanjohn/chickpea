@@ -27,6 +27,7 @@ import {
   createManagementAdapterFixture,
   ownerMcpContext,
   ownerSlackDmContext,
+  type ManagementAdapterFixture,
 } from './helpers/management-adapter-fixture.ts';
 import { withPersonApproval } from './helpers/slack-person-approval.ts';
 import { slackTurnSignal } from './helpers/slack-turn-signal.ts';
@@ -1165,15 +1166,13 @@ function mcpCreation(itemId: string, agentId: string, firstAsk?: string): Manage
 }
 
 /** Creations whose Slack handle publishes, as a live installation's do. */
-function createPublishingFixture(suffix: string) {
+async function createPublishingFixture(suffix: string): Promise<ManagementAdapterFixture> {
   let groups = 0;
-  const holder: { f?: Awaited<ReturnType<typeof createManagementAdapterFixture>> } = {};
-  return createManagementAdapterFixture(suffix, {
+  const f: ManagementAdapterFixture = await createManagementAdapterFixture(suffix, {
     publishAgentPresence: async ({ agentId }) => {
-      const config = holder.f!.config;
-      const current = await config.getAgent(agentId);
+      const current = await f.config.getAgent(agentId);
       return {
-        agent: await config.updateAgent(agentId, {
+        agent: await f.config.updateAgent(agentId, {
           slackPresence: {
             ...current.slackPresence!,
             kind: 'user_group',
@@ -1184,7 +1183,8 @@ function createPublishingFixture(suffix: string) {
         }, current.revision),
       };
     },
-  }).then((f) => (holder.f = f));
+  });
+  return f;
 }
 
 function claimMetrics(t: TestContext): Array<Record<string, unknown>> {
