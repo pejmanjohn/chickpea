@@ -265,5 +265,7 @@ test('a Google auth key (AQ.) in text counts as a credential and is redacted', (
   assert.equal(hasCredentialLikeContent(`GEMINI_API_KEY=${key}`), true);
   assert.equal(redactCredentialLikeContent(`use ${key} now (${key}).`), 'use [credential redacted] now ([credential redacted]).');
   assert.equal(hasCredentialLikeContent(`AQ.Ab${'x'.repeat(30)}`), false, 'too short to be a key');
+  assert.equal(redactCredentialLikeContent(`AQ.Zz${'9'.repeat(48)}`), '[credential redacted]', 'any auth key after AQ., not only Ab');
+  assert.equal(redactCredentialLikeContent(`GEMINI_API_KEY=legacy-gemini-value`), '[credential redacted]');
   assert.equal(hasCredentialLikeContent('Water quality (AQ.Ab) readings'), false);
 });

@@ -34,9 +34,10 @@ const CREDENTIAL_SIGNATURES: readonly (
     markers: ['sk-proj-'],
   },
   // Google API keys, Gemini's among them: standard keys, then the auth keys
-  // AI Studio has issued since 2026-05-28.
+  // AI Studio has issued since 2026-05-28. Google documents neither the auth
+  // keys' length nor their alphabet; the ones seen are `AQ.Ab` and 48 more.
   { source: String.raw`\bAIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z_-])`, flags: '', markers: ['AIza'] },
-  { source: String.raw`\bAQ\.Ab[0-9A-Za-z_-]{40,}`, flags: '', markers: ['AQ.Ab'] },
+  { source: String.raw`\bAQ\.[0-9A-Za-z_-]{42,}`, flags: '', markers: ['AQ.'] },
   {
     source: String.raw`\b(?:gh[pousr]|github_pat)_[a-z0-9_]{20,}\b`,
     flags: 'i',
@@ -51,7 +52,7 @@ const CREDENTIAL_SIGNATURES: readonly (
     markers: ['pat-'],
   },
   {
-    source: String.raw`\b(?:CHICKPEA_(?:AUTH_SECRET|RECOVERY_TOKEN|CREDENTIAL_KEY_[A-Z0-9_]+)|TAG_ADMIN_TOKEN|ADMIN_TOKEN|SLACK_(?:BOT|APP)_TOKEN|ANTHROPIC_API_KEY|OPENAI_API_KEY|COMPOSIO_(?:API_KEY|WEBHOOK_SECRET)|GITHUB_TOKEN|BROWSERBASE_API_KEY|EXA_API_KEY)[ \t]*=[ \t]*[^\s]{8,}`,
+    source: String.raw`\b(?:CHICKPEA_(?:AUTH_SECRET|RECOVERY_TOKEN|CREDENTIAL_KEY_[A-Z0-9_]+)|TAG_ADMIN_TOKEN|ADMIN_TOKEN|SLACK_(?:BOT|APP)_TOKEN|ANTHROPIC_API_KEY|OPENAI_API_KEY|GEMINI_API_KEY|COMPOSIO_(?:API_KEY|WEBHOOK_SECRET)|GITHUB_TOKEN|BROWSERBASE_API_KEY|EXA_API_KEY)[ \t]*=[ \t]*[^\s]{8,}`,
     flags: 'i',
     markers: [
       'CHICKPEA_AUTH_SECRET',
@@ -63,6 +64,7 @@ const CREDENTIAL_SIGNATURES: readonly (
       'SLACK_APP_TOKEN',
       'ANTHROPIC_API_KEY',
       'OPENAI_API_KEY',
+      'GEMINI_API_KEY',
       'COMPOSIO_API_KEY',
       'COMPOSIO_WEBHOOK_SECRET',
       'GITHUB_TOKEN',
