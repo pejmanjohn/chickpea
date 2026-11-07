@@ -475,8 +475,35 @@ export function renderSetupPanelPage(input: { title: string; surface: string; co
   });
 }
 
-function pageShell(input: { title: string; surface: string; content: string }): string {
-  return `<!doctype html><html lang="en" data-connector-surface="${escapeHtml(input.surface)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Chickpea · ${escapeHtml(input.title)}</title>${CHICKPEA_FAVICON_HTML}<style>${PAGE_CSS}</style></head><body>${input.content}</body></html>`;
+/**
+ * Leaves a setup form's POST for the provider's sign-in page. Chrome applies
+ * the page's form-action policy to a redirect that answers a form POST, so
+ * the POST finishes here and a refresh, which form-action does not cover,
+ * goes on to the provider.
+ */
+export function renderSetupDeparturePage(input: { connector: string; authorizationUrl: string }): string {
+  const connector = escapeHtml(input.connector);
+  return pageShell({
+    title: `Continue to ${input.connector}`,
+    surface: 'setup-departure',
+    refreshUrl: input.authorizationUrl,
+    content: `
+      <main class="flow-shell panel-shell">
+        ${brandHeader()}
+        <section class="flow-content setup-panel">
+          <h1>Continue to ${connector}</h1>
+          <p>Opening the secure sign-in page to finish connecting ${connector}.</p>
+          <p><a href="${escapeHtml(input.authorizationUrl)}">Open ${connector}</a></p>
+        </section>
+      </main>`,
+  });
+}
+
+function pageShell(input: { title: string; surface: string; content: string; refreshUrl?: string }): string {
+  const refresh = input.refreshUrl
+    ? `<meta http-equiv="refresh" content="0;url=${escapeHtml(input.refreshUrl)}">`
+    : '';
+  return `<!doctype html><html lang="en" data-connector-surface="${escapeHtml(input.surface)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer">${refresh}<title>Chickpea · ${escapeHtml(input.title)}</title>${CHICKPEA_FAVICON_HTML}<style>${PAGE_CSS}</style></head><body>${input.content}</body></html>`;
 }
 
 function brandHeader(): string {

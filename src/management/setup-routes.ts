@@ -202,6 +202,7 @@ import {
   renderManagedConnectionUnavailablePage,
   renderManagedConnectionWaitingPage,
   renderSetupClaimPage,
+  renderSetupDeparturePage,
   renderSetupPanelPage,
 } from './connector-landing-page.ts';
 
@@ -703,7 +704,7 @@ export function createManagementSetupRoutes(
           scopes: activeSetup.scopes,
           accountRevision: account.revision,
         }, apiOAuthDependencies(dependencies));
-        return c.redirect(started.authorizationUrl.href, 303);
+        return providerDeparture(c, activeSetup, started.authorizationUrl);
       }
       if (activeSetup.action === 'mcp_oauth') {
         const { agent, account } = await currentSetupConnection(activeSetup, dependencies);
@@ -750,7 +751,7 @@ export function createManagementSetupRoutes(
             ownerKind: pending.ownerKind,
           },
         }, mcpOAuthDependencies(dependencies, true));
-        return c.redirect(started.authorizationUrl.href, 303);
+        return providerDeparture(c, activeSetup, started.authorizationUrl);
       }
       if (activeSetup.action === 'repository_access') {
         return beginRepositorySetup(c, activeSetup, fields, principal, dependencies);
@@ -3243,7 +3244,7 @@ async function renderSetupSummary(
   setup: ManagementSetupRecord,
   input: { failure?: string | undefined; destination?: ApiConnectionScope | undefined } = {},
 ): Promise<string> {
-  const failure = input.failure ?? (setup.status === 'failed' ? SETUP_FAILED_TEXT : undefined);
+  const failure = input.failure ?? (setup.status === 'failed' ? setupFailedText(setup) : undefined);
   const action = setup.action === 'api_oauth' || setup.action === 'mcp_oauth' ||
       setup.action === 'repository_access'
     ? 'authorize'
@@ -3320,6 +3321,13 @@ function unavailablePage(c: Context): Response {
   }), 410);
 }
 
+function providerDeparture(c: Context, setup: ManagementSetupRecord, authorizationUrl: URL): Response {
+  return c.html(renderSetupDeparturePage({
+    connector: setup.target.targetLabel,
+    authorizationUrl: authorizationUrl.href,
+  }));
+}
+
 /** A link whose target changed since it was issued can never finish; only a new link can. */
 function staleLinkPage(c: Context, setup: ManagementSetupRecord, status: 410 | 422): Response {
   return c.html(renderSetupPanelPage({
@@ -3337,7 +3345,7 @@ async function formFailure(
   c: Context,
   setup: ManagementSetupRecord,
   dependencies: SetupDependencies,
-  failure = SETUP_FAILED_TEXT,
+  failure = setupFailedText(setup),
 ): Promise<Response> {
   return c.html(await renderSetupSummary(setup, {
     failure,
@@ -3345,7 +3353,11 @@ async function formFailure(
   }), 422);
 }
 
-const SETUP_FAILED_TEXT = 'Setup did not complete. Secret fields were cleared; follow the steps and try again.';
+function setupFailedText(setup: ManagementSetupRecord): string {
+  return (setup.target.formFields ?? []).some(secretField)
+    ? 'Setup did not complete. Secret fields were cleared; follow the steps and try again.'
+    : 'Setup did not complete. Try again.';
+}
 
 type KeySavedCheck = Exclude<ApiConnectionCheck['kind'], 'ok' | 'key_rejected'>;
 
@@ -3420,8 +3432,12 @@ function setupField(field: string): string {
             : field === 'botToken' ? 'Slack bot token'
               : field === 'signingSecret' ? 'Slack signing secret'
             : field.slice('header:'.length);
-  const type = field === 'clientId' ? 'text' : 'password';
+  const type = secretField(field) ? 'password' : 'text';
   return `<label>${escapeHtml(label)}<input type="${type}" name="${escapeHtml(name)}" required autocomplete="off"></label>`;
+}
+
+function secretField(field: string): boolean {
+  return field !== 'clientId';
 }
 
 function setupResponseHeaders(c: Context): void {
