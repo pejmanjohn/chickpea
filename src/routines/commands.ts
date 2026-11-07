@@ -354,6 +354,7 @@ async function executeRoutineCommand(
       routines: store,
       config,
       identity: resolveIdentity(),
+      env,
       schedulingAvailable: capability.available,
       now,
     });
@@ -376,6 +377,7 @@ async function executeRoutineCommand(
       routines: store,
       config,
       identity: resolveIdentity(),
+      env,
       schedulingAvailable: capability.available,
       now,
       resolveAuthority: async () => authority,

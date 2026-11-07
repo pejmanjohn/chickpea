@@ -50,6 +50,7 @@ test(`partial schedule edit preserves canonical timing: ${edit}`, async () => {
       routines,
       config,
       identity,
+      env: undefined,
       schedulingAvailable: true,
       now: () => now,
       createRunId: () => 'run_schedule_command',

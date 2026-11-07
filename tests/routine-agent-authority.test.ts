@@ -153,7 +153,7 @@ test('the Durable Object stores delete an Agent\'s live routines with the Agent'
     actorUserId: owner.user.id, actorMembershipId: owner.membership.id,
     name: 'Digest', description: '', taskText: 'Summarize the Channel.',
     schedule: { kind: 'cron', expression: '0 9 * * *' }, timezone: 'UTC',
-    outputPolicy: 'post', requiredConnectionAccountIds: [] }, { config, routines, identity, schedulingAvailable: true });
+    outputPolicy: 'post', requiredConnectionAccountIds: [] }, { config, routines, identity, env: undefined, schedulingAvailable: true });
   const { revision, credentialIncarnation } = await config.archiveAgent(agent.id, {
     expectedRevision: (await config.getAgent(agent.id)).revision,
   });
@@ -838,7 +838,7 @@ for (const legacy of [false, true]) {
       const account = await putConnection(config, 'connection_fence', 'team', owner.membership.id);
       await config.putAgentConnectionBinding({ agentId: agent.id, connectionAccountId: account.id,
         providerId: account.providerId, enabled: true, allowedCapabilities: [] });
-      const dependencies = { config, routines, identity, schedulingAvailable: true };
+      const dependencies = { config, routines, identity, env: undefined, schedulingAvailable: true };
       const save = { kind: 'save' as const, actionKey: 'rsaction_fence_create', itemId: 'save',
         workspaceId: WORKSPACE, channelId: CHANNEL, agentId: agent.id,
         actorUserId: owner.user.id, actorMembershipId: owner.membership.id,

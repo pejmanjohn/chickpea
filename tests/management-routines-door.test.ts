@@ -409,7 +409,7 @@ async function routineOfDeletedAgent(f: Fixture) {
   await grant(f, departed.id, 'C_LOBBY');
   await grant(f, helper.id, 'C_LOBBY');
   const dependencies = {
-    config: f.config, routines: f.routines, identity: f.identity, schedulingAvailable: true, now: () => NOW,
+    config: f.config, routines: f.routines, identity: f.identity, env: undefined, schedulingAvailable: true, now: () => NOW,
   };
   const save = {
     kind: 'save' as const, actionKey: 'rsaction_departed_create', itemId: 'save',

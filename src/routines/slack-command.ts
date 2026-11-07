@@ -1,3 +1,5 @@
+import type { SettingsStore } from '../config/settings-store.ts';
+import type { PlatformEnv } from '../config/state-backend.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import type { IdentityStore } from '../identity/types.ts';
@@ -116,6 +118,9 @@ interface SlackScheduleCommandDependencies {
   routines: RoutineStore;
   config: ConfigStore;
   identity: IdentityStore;
+  /** The installation's env and settings; a run now judges its model by their stored catalog. */
+  env: PlatformEnv | undefined;
+  settings?: SettingsStore;
   schedulingAvailable: boolean | (() => boolean | Promise<boolean>);
   now?: () => number;
   createRunId?: () => string;
@@ -170,12 +175,13 @@ export async function executeSlackScheduleCommand(
           'A one-time job runs only at its scheduled time. Create another one-time job for a different time.',
         );
       }
-      const resolveAuthority = dependencies.resolveAuthority ?? ((candidate) =>
-        resolveRoutineAgentAuthority(candidate, undefined, {
+      const resolveAuthority = dependencies.resolveAuthority ?? ((candidate, env) =>
+        resolveRoutineAgentAuthority(candidate, env, {
           config: dependencies.config,
           identity: dependencies.identity,
+          ...(dependencies.settings ? { settings: dependencies.settings } : {}),
         }));
-      await resolveAuthority(routine, undefined);
+      await resolveAuthority(routine, dependencies.env);
       const at = now();
       const run = await dependencies.routines.createOccurrence({
         runId: (dependencies.createRunId ?? createRoutineRunId)(),
@@ -275,7 +281,7 @@ export async function executeSlackScheduleCommand(
       },
       assignment,
       actorMembershipId: command.actorMembershipId,
-      env: undefined,
+      env: dependencies.env,
       bindingVersion: intendedVersion,
     }, { config: dependencies.config, identity: dependencies.identity });
     const routine = await service.save({
@@ -318,7 +324,7 @@ export async function executeSlackScheduleCommand(
         ...(command.requiredConnectionAccountIds !== undefined
           ? { requiredConnectionAccountIds: command.requiredConnectionAccountIds }
           : {}),
-        env: undefined,
+        env: dependencies.env,
       });
       if (!existing && routine.destination.kind === 'direct_thread') {
         const digest = routineDestinationBindingDigest(

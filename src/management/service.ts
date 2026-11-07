@@ -35,6 +35,8 @@ import {
   WorkspaceModelDefaultRevisionConflictError,
 } from '../config/errors.ts';
 import type { ConfigAgentPatch, ConfigStore } from '../config/store.ts';
+import type { SettingsStore } from '../config/settings-store.ts';
+import type { PlatformEnv } from '../config/state-backend.ts';
 import type { ModelReadiness } from '../config/model-readiness.ts';
 import { modelDefaultInstallation } from '../config/model-choices.ts';
 import type { ModelEffortChoice } from '../config/model-effort-capability.ts';
@@ -433,6 +435,13 @@ export interface WorkspaceManagementServiceInput {
     | 'putAgentMemory'
   >;
   routines?: RoutineStore;
+  /**
+   * The installation's platform env, which a Node deployment does not have,
+   * and its settings. A routine's run now judges its model by their stored
+   * catalog.
+   */
+  env?: PlatformEnv;
+  settings?: SettingsStore;
   work?: Pick<WorkStore, 'getWork' | 'getBinding'>;
   routineSchedulingAvailable?: boolean | (() => boolean | Promise<boolean>);
   setupBaseUrl?: string | (() => string | undefined | Promise<string | undefined>);
@@ -5836,6 +5845,8 @@ export class WorkspaceManagementService {
         routines: this.stores.routines!,
         config: this.stores.config as ConfigStore,
         identity: this.stores.identity as IdentityStore,
+        env: this.stores.env,
+        ...(this.stores.settings ? { settings: this.stores.settings } : {}),
         schedulingAvailable: () => this.isRoutineSchedulingAvailable(),
         now: this.now,
       });
