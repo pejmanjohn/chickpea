@@ -170,6 +170,23 @@ export function settleHostLease(lease, interrupted, warn = console.error) {
   else if (lease) warn(`Interrupted check: host reservation ${lease.file} retained. Inspect the owner and child processes before releasing it.`);
 }
 
+/** AGENTS.md's merge gate: the full suite, on a local merge of the final head with current origin/main. */
+export const MERGE_GATE_COMMAND = 'npm run verify:host -- --wait-ms 3600000 npm test';
+
+/**
+ * Null when the plan runs the full suite (`fullTests`, including release mode's
+ * export). Otherwise the plan runs only part of it and is not the merge gate.
+ */
+export const mergeGateWarning = (plan) => (plan.fullTests ? null
+  : `This run is NOT the merge gate: its plan runs only part of the test suite. Before merging, run the full suite on a local merge of the final head with current origin/main: ${MERGE_GATE_COMMAND}`);
+
+/** The end summary on stdout, then the merge-gate warning, if any, on stderr. */
+export function printRunSummary(plan, { passed, retries, results }, { log = console.log, warn = console.error } = {}) {
+  log(JSON.stringify({ result: passed ? 'pass' : 'fail', retries, results, coverage: plan.coverage, fullSuite: plan.fullTests }, null, 2));
+  const warning = mergeGateWarning(plan);
+  if (warning) warn(warning);
+}
+
 /** Runs one step to completion; piped output is collected into `output`. */
 function spawnStep(command, args, options, timeoutMs) {
   return new Promise((done) => {
@@ -186,7 +203,7 @@ export async function main(argv) {
   let lease, interrupted = false;
   try {
     if (argv.includes('--help')) {
-      console.log(`Usage: npm run verify:regression -- [--mode changed|regression|release] [--area NAME] [--base REF] [--plan] [--record PRIVATE_RUN] [--timeout-ms MS] [--wait-ms MS]\nAreas: ${Object.keys(REGRESSION_AREAS).join(', ')}\n--area may repeat and selects explicit scope; otherwise changed mode includes branch and uncommitted changes.\nEvery plan starts with verify:hygiene, then typecheck when the plan has a separate one; both run before the host reservation is taken. The remaining steps run cheapest first under it.\n--record saves private logs, durations, failures, test files rerun alone and final release receipts.`);
+      console.log(`Usage: npm run verify:regression -- [--mode changed|regression|release] [--area NAME] [--base REF] [--plan] [--record PRIVATE_RUN] [--timeout-ms MS] [--wait-ms MS]\nAreas: ${Object.keys(REGRESSION_AREAS).join(', ')}\n--area may repeat and selects explicit scope; otherwise changed mode includes branch and uncommitted changes.\nEvery plan starts with verify:hygiene, then typecheck when the plan has a separate one; both run before the host reservation is taken. The remaining steps run cheapest first under it.\nA plan with fullTests false runs only part of the test suite and is not the merge gate; the gate is ${MERGE_GATE_COMMAND} on a local merge of the final head with current origin/main.\n--record saves private logs, durations, failures, test files rerun alone and final release receipts.`);
       return 0;
     }
     const options = parseRegressionArgs(argv);
@@ -197,12 +214,16 @@ export async function main(argv) {
       .map((file) => `tests/${file.replaceAll('\\', '/')}`);
     const plan = createRegressionPlan({ ...options, files, testFiles });
     // A plan names the commit it diffed against and every file it classified,
-    // so a caller can confirm it planned the intended range.
+    // so a caller can confirm it planned the intended range. Chickpea Cloud
+    // parses --plan stdout as one JSON document, so the warning goes to stderr.
+    const warning = mergeGateWarning(plan);
     if (options.planOnly) {
       console.log(JSON.stringify({ ...plan, base: revision ?? null, files: [...files].sort() }, null, 2));
+      if (warning) console.error(warning);
       return 0;
     }
     console.log(JSON.stringify(plan, null, 2));
+    if (warning) console.error(warning);
     assertNodeVersion(process.version, { baseline: options.mode === 'release' });
     if (options.mode === 'release' && git(['status', '--porcelain']).length > 0) {
       throw new Error('Release checks require clean committed source; verify:oss-export archives HEAD. Use changed or regression for working changes.');
@@ -310,7 +331,7 @@ export async function main(argv) {
         record({ type: 'checkpoint', result: 'pass', source: input, node: process.version, planId: receiptPlan.id, fingerprint, evidence });
       }
     }
-    console.log(JSON.stringify({ result: passed ? 'pass' : 'fail', retries, results, coverage: plan.coverage }, null, 2));
+    printRunSummary(plan, { passed, retries, results });
     return passed ? 0 : 1;
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
