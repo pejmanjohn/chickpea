@@ -315,6 +315,10 @@ export async function completeAgentWelcomeDelivery(
   work?: AgentWelcomeWorkPort,
 ): Promise<void> {
   if (!isAgentCreatedWelcome(record.receipt)) return;
+  if (record.destination.kind === 'initiator_dm') {
+    await completeDirectAgentWelcome(record.receipt, delivery, config);
+    return;
+  }
   if (record.destination.kind !== 'thread' || !delivery.threadTs) {
     throw new Error('The Agent welcome must target its creation thread.');
   }
@@ -368,6 +372,45 @@ export async function completeAgentWelcomeDelivery(
     }));
     throw presentationError;
   }
+}
+
+/**
+ * A welcome for a creation over MCP posts at the root of the creator's direct
+ * message with Chickpea, and no Slack turn waits on it. When it posted as the
+ * Agent, the Agent owns that message's thread, as it owns its creation thread
+ * after a Slack welcome, so a reply there reaches it.
+ */
+async function completeDirectAgentWelcome(
+  receipt: ManagementAgentCreatedWelcome,
+  delivery: Parameters<typeof completeAgentWelcomeDelivery>[1],
+  config: Parameters<typeof completeAgentWelcomeDelivery>[2],
+): Promise<void> {
+  emitManagementMetric('agent_creation.welcome_delivery', {
+    surface: 'mcp',
+    outcome: 'delivered',
+    deliveryPersona: delivery.persona,
+    publicationStatus: receipt.publication?.status ?? 'partial',
+  });
+  if (delivery.persona !== 'agent') return;
+  await config.putSlackPublicContext({
+    workspaceId: delivery.workspaceId,
+    channelId: delivery.channelId,
+    rootTs: delivery.messageTs,
+    messageTs: delivery.messageTs,
+    role: 'agent',
+    agentId: receipt.agentId,
+    text: delivery.text,
+  });
+  await handoffCreatedAgentThread({
+    workspaceId: delivery.workspaceId,
+    channelId: delivery.channelId,
+    threadTs: delivery.messageTs,
+    welcomeMessageTs: delivery.messageTs,
+    agentId: receipt.agentId,
+    requesterMembershipId: receipt.requesterMembershipId,
+    surface: 'direct',
+    config,
+  });
 }
 
 export async function completeSettledAgentWelcomeHandoff(
@@ -827,9 +870,7 @@ function formatAgentCreatedWelcome(receipt: ManagementAgentCreatedWelcome, group
   }
   if (receipt.viewAgentUrl) {
     lines.push(renderSlackActionLink(receipt.viewAgentUrl, VIEW_AGENT_LINK_LABEL));
-    return lines.join('\n\n');
-  }
-  if (receipt.suggestedConnector) {
+  } else if (receipt.suggestedConnector) {
     lines.push(
       `A sensible next step is to connect *${escapeSlackText(receipt.suggestedConnector)}* so I can work with live account data.`,
     );
@@ -837,10 +878,15 @@ function formatAgentCreatedWelcome(receipt: ManagementAgentCreatedWelcome, group
   } else if (receipt.setupUrl) {
     lines.push('You can configure my connections and capabilities from my Agent page.');
     lines.push(renderSlackActionLink(receipt.setupUrl, VIEW_AGENT_LINK_LABEL));
-  } else if (!groupDm) {
+  } else if (!groupDm && !receipt.firstAsk) {
     lines.push('Tell me what you’d like to work on first.');
   }
+  if (receipt.firstAsk) lines.push(firstAskInvitation(receipt.firstAsk, 'me'));
   return lines.join('\n\n');
+}
+
+function firstAskInvitation(firstAsk: string, speaker: 'me' | 'it'): string {
+  return `Try asking ${speaker}: “${boundedSlackText(firstAsk, 200)}”`;
 }
 
 function formatAgentWelcomeFallback(receipt: ManagementAgentCreatedWelcome, groupDm: boolean): string {
@@ -873,6 +919,7 @@ function formatAgentWelcomeFallback(receipt: ManagementAgentCreatedWelcome, grou
     ),
     ...(receipt.followOnNotices ?? []).map(({ text }) => text),
     ...(viewAgentUrl ? [renderSlackActionLink(viewAgentUrl, VIEW_AGENT_LINK_LABEL)] : []),
+    ...(receipt.firstAsk ? [firstAskInvitation(receipt.firstAsk, 'it')] : []),
   ];
   return lines.join('\n\n');
 }

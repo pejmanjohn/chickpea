@@ -1827,18 +1827,11 @@ export class WorkspaceManagementService {
     if (deferredHandoffProposal?.targetRevisions[`agent:${agent.id}`] === undefined) {
       agent = await this.publishGeneratedAvatarForSlackOrigin(actor, agent);
     }
-    const incomplete: Array<'slack_presence' | 'source_channel'> = [];
-    if (creation.warning || agent.slackPresence?.health !== 'healthy' ||
-        !agent.slackPresence.userGroupId) {
-      incomplete.push('slack_presence');
-    }
-    if (actor.origin.conversationKind === 'channel') {
-      const sourceGrant = request.result.outcomes.find((outcome) =>
+    const sourceChannelMissing = actor.origin.conversationKind === 'channel' &&
+      !request.result.outcomes.some((outcome) =>
         outcome.operationKind === 'grant_agent_channel' &&
         outcome.disposition === 'applied'
       );
-      if (!sourceGrant) incomplete.push('source_channel');
-    }
 
     const baseUrl = await this.resolveSetupBaseUrl().catch(() => undefined);
     const { connections } = await this.agentWithConnections(actor, agent);
@@ -1882,13 +1875,6 @@ export class WorkspaceManagementService {
         });
       }
     }
-    const handle = agent.slackPresence?.normalizedHandle ?? agent.slackPresence?.requestedHandle;
-    const avatarUrl = baseUrl
-      ? agentAvatarUrlForPresentation(agent, baseUrl, this.stores.avatarInstallationId)
-      : undefined;
-    const viewAgentUrl = creation.handoffUrl ?? (baseUrl
-      ? new URL(`/admin/agents/${encodeURIComponent(agent.id)}`, baseUrl).href
-      : undefined);
     const at = this.now();
     const deferredHandoffProposalId = deferredHandoffProposal?.status === 'pending' &&
         deferredHandoffProposal.organizationId === actor.organizationId &&
@@ -1902,30 +1888,21 @@ export class WorkspaceManagementService {
       ? deferredHandoffProposal.proposalId
       : undefined;
     const receipt: ManagementAgentCreatedWelcome = {
-      kind: 'agent_created_welcome',
-      creationOperationId: input.operationId,
+      ...this.agentCreatedWelcome({
+        actor,
+        operationId: input.operationId,
+        agent,
+        creation,
+        baseUrl,
+        surface: actor.origin.conversationKind === 'channel' ? 'channel' : 'direct',
+        sourceChannelMissing,
+      }),
       ...(input.presentationRunId ? { presentationRunId: input.presentationRunId } : {}),
       turnJobId: input.turnJobId,
-      agentId: agent.id,
-      agentName: agent.name,
-      ...(handle ? { agentHandle: handle } : {}),
-      ...(creation.handleChange ? { takenHandle: creation.handleChange.requested } : {}),
-      ...(agent.description ? { agentDescription: agent.description } : {}),
-      requesterMembershipId: actor.membershipId,
-      surface: actor.origin.conversationKind === 'channel' ? 'channel' : 'direct',
-      persona: {
-        name: agent.name,
-        ...(avatarUrl ? { avatarUrl } : {}),
-      },
-      publication: {
-        status: incomplete.length === 0 ? 'complete' : 'partial',
-        incomplete,
-      },
       connectorActions,
       connectorNotices,
       followOnNotices: input.followOnNotices,
       ...(deferredHandoffProposalId ? { deferredHandoffProposalId } : {}),
-      ...(viewAgentUrl ? { viewAgentUrl } : {}),
     };
     const outbox: ManagementReceiptOutboxRecord = {
       outboxId: `agent_welcome_${input.operationId}`,
@@ -1956,6 +1933,127 @@ export class WorkspaceManagementService {
       publicationStatus: receipt.publication?.status ?? 'partial',
     });
     return claimed;
+  }
+
+  /** The part of a creation's welcome every door shares: the Agent, how Slack published it, and where to view it. */
+  private agentCreatedWelcome(input: {
+    actor: LiveManagementActor;
+    operationId: string;
+    agent: CustomAgentConfig;
+    creation: ManagementItemOutcome;
+    baseUrl: string | undefined;
+    surface: ManagementAgentCreatedWelcome['surface'];
+    sourceChannelMissing?: boolean;
+    firstAsk?: string | undefined;
+  }): ManagementAgentCreatedWelcome {
+    const { agent, creation, baseUrl } = input;
+    const incomplete: Array<'slack_presence' | 'source_channel'> = [];
+    if (creation.warning || agent.slackPresence?.health !== 'healthy' ||
+        !agent.slackPresence.userGroupId) {
+      incomplete.push('slack_presence');
+    }
+    if (input.sourceChannelMissing) incomplete.push('source_channel');
+    const handle = agent.slackPresence?.normalizedHandle ?? agent.slackPresence?.requestedHandle;
+    const avatarUrl = baseUrl
+      ? agentAvatarUrlForPresentation(agent, baseUrl, this.stores.avatarInstallationId)
+      : undefined;
+    const viewAgentUrl = creation.handoffUrl ?? (baseUrl
+      ? new URL(`/admin/agents/${encodeURIComponent(agent.id)}`, baseUrl).href
+      : undefined);
+    return {
+      kind: 'agent_created_welcome',
+      creationOperationId: input.operationId,
+      agentId: agent.id,
+      agentName: agent.name,
+      ...(handle ? { agentHandle: handle } : {}),
+      ...(creation.handleChange ? { takenHandle: creation.handleChange.requested } : {}),
+      ...(agent.description ? { agentDescription: agent.description } : {}),
+      requesterMembershipId: input.actor.membershipId,
+      surface: input.surface,
+      persona: {
+        name: agent.name,
+        ...(avatarUrl ? { avatarUrl } : {}),
+      },
+      publication: {
+        status: incomplete.length === 0 ? 'complete' : 'partial',
+        incomplete,
+      },
+      ...(viewAgentUrl ? { viewAgentUrl } : {}),
+      ...(input.firstAsk ? { firstAsk: input.firstAsk } : {}),
+    };
+  }
+
+  /**
+   * An Agent created over MCP has no Slack thread to introduce itself in, so
+   * it says hello in its creator's direct message with Chickpea. Each
+   * creation claims one welcome, and a replayed call finds the same rows.
+   */
+  private async claimMcpAgentWelcomes(
+    actor: LiveManagementActor,
+    request: Pick<ManagementRequestRecord, 'operationId' | 'operations'>,
+    result: Pick<ManagementApplyResult, 'outcomes'>,
+  ): Promise<void> {
+    if (actor.origin.kind !== 'mcp') return;
+    const creations = result.outcomes.flatMap((outcome) => {
+      const agentId = outcome.operationKind === 'create_agent' && outcome.disposition === 'applied'
+        ? outcome.changed?.find(({ kind }) => kind === 'agent')?.id
+        : undefined;
+      return agentId ? [{ outcome, agentId }] : [];
+    });
+    if (creations.length === 0) return;
+    const baseUrl = await this.optionalSetupBaseUrl();
+    for (const { outcome, agentId } of creations) {
+      // One creation keys its welcome on the call, as a Slack creation does.
+      const claimId = creations.length === 1
+        ? request.operationId
+        : `${request.operationId}:${outcome.itemId}`;
+      try {
+        if (await this.stores.management.getOutboxForOperation(claimId)) {
+          emitManagementMetric('agent_creation.welcome_claim', { surface: 'mcp', outcome: 'replayed' });
+          continue;
+        }
+        const operation = request.operations.find(({ itemId }) => itemId === outcome.itemId);
+        const receipt = this.agentCreatedWelcome({
+          actor,
+          operationId: request.operationId,
+          agent: await this.stores.config.getAgent(agentId),
+          creation: outcome,
+          baseUrl,
+          surface: 'direct',
+          firstAsk: operation?.kind === 'create_agent' ? operation.firstAsk : undefined,
+        });
+        const at = this.now();
+        const claimed = await this.stores.management.claimAgentCreationWelcome({
+          operationId: claimId,
+          setups: [],
+          outbox: {
+            outboxId: `agent_welcome_${claimId}`,
+            operationId: claimId,
+            destination: {
+              kind: 'initiator_dm',
+              organizationId: actor.organizationId,
+              userId: actor.userId,
+            },
+            receipt,
+            status: 'pending',
+            attempts: 0,
+            nextAttemptAt: at,
+            createdAt: at,
+            updatedAt: at,
+          },
+        });
+        emitManagementMetric('agent_creation.welcome_claim', {
+          surface: 'mcp',
+          outcome: claimed.created ? 'created' : 'replayed',
+          publicationStatus: receipt.publication?.status ?? 'partial',
+        });
+      } catch (error) {
+        // The Agent is created; a lost welcome is never worth failing that.
+        console.warn('[chickpea:management] Agent welcome claim failed', JSON.stringify({
+          error: error instanceof Error ? error.name : 'unknown',
+        }));
+      }
+    }
   }
 
   /**
@@ -2770,6 +2868,7 @@ export class WorkspaceManagementService {
       at,
     });
     if (reservation.request.status === 'completed' && reservation.request.result) {
+      await this.claimMcpAgentWelcomes(actor, reservation.request, reservation.request.result);
       if (input.acknowledgementOwner !== 'caller') {
         await queueAppliedPrivateDmRoutineAcknowledgement(
           this.stores.management,
@@ -2961,6 +3060,7 @@ export class WorkspaceManagementService {
     const result = input.receiptMetadata
       ? { ...baseResult, receiptMetadata: input.receiptMetadata }
       : baseResult;
+    await this.claimMcpAgentWelcomes(actor, request, result);
     if (progress.outcomes.some(({ disposition }) => disposition === 'confirmation_required')) {
       return emitOperationOutcomes(actor.origin.kind, await this.withChangeSetPreview(actor, result));
     }
