@@ -5354,15 +5354,15 @@ export class WorkspaceManagementService {
   }
 
   /**
-   * The installation stores one workspace name beside its Slack credential,
-   * so the name counts only when that credential's team is this one.
+   * The name Admin shows for this workspace. A gateway install keeps no
+   * connected credential, so only a credential for another team rules it out.
    */
   private async slackTeamName(slackTeamId: string | undefined): Promise<string | undefined> {
     const { env, settings, identity } = this.stores;
     if (!slackTeamId || !settings) return undefined;
     try {
       const stored = await readStoredSlackTeamInfo(env, settings, { state: identity as IdentityStore });
-      return stored.teamId === slackTeamId ? stored.teamName : undefined;
+      return stored.teamId && stored.teamId !== slackTeamId ? undefined : stored.teamName;
     } catch {
       console.warn('[chickpea:management] Slack workspace name could not be read');
       return undefined;
