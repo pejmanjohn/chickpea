@@ -160,6 +160,7 @@ import { MAX_SLACK_ATTACHMENTS } from '../slack/attachment-file-ids.ts';
 import { nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
 import { stripResolvedSlackCommandAddress, type SlackCommandAddress } from '../slack/command-address.ts';
 import { escapeSlackControlCharacters } from '../slack/message-format.ts';
+import { readStoredSlackTeamInfo } from '../slack/credentials.ts';
 import { base64ToBytes } from '../security/base64url.ts';
 import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
@@ -5131,7 +5132,7 @@ export class WorkspaceManagementService {
         refs.push({ kind: 'workspace_model', id: role, revision: workspaceModels[role]?.revision ?? 0 });
       }
     }
-    const [team, groupDms, routineSchedulingAvailable, imagePins] = await Promise.all([
+    const [team, groupDms, routineSchedulingAvailable, imagePins, slackTeamName] = await Promise.all([
       permissionForRole(actor.role).has('team.view') && !userAgentScoped
         ? this.teamSnapshot(actor.organizationId)
         : undefined,
@@ -5141,6 +5142,7 @@ export class WorkspaceManagementService {
         const imageModel = (await this.stores.config.getAgentModelRole(id, 'image'))?.modelId;
         return [id, imageModel ? { imageModel } : {}] as const;
       })).then((entries) => new Map<string, { imageModel?: string }>(entries)),
+      this.slackTeamName(organization?.slackTeamId ?? undefined),
     ]);
     const selfAgent = userAgentScoped ? agents[0] : undefined;
     const usableAgents = actor.role === 'member' && !userAgentScoped && organization?.slackTeamId
@@ -5149,6 +5151,7 @@ export class WorkspaceManagementService {
     return {
       organizationId: actor.organizationId,
       ...(organization?.slackTeamId ? { slackTeamId: organization.slackTeamId } : {}),
+      ...(slackTeamName ? { slackTeamName } : {}),
       caller: {
         membershipId: actor.membershipId,
         role: actor.role,
@@ -5348,6 +5351,22 @@ export class WorkspaceManagementService {
       throw new ManagementError('invalid_request', 'Model choices cannot be checked on this installation.');
     }
     return models;
+  }
+
+  /**
+   * The installation stores one workspace name beside its Slack credential,
+   * so the name counts only when that credential's team is this one.
+   */
+  private async slackTeamName(slackTeamId: string | undefined): Promise<string | undefined> {
+    const { env, settings, identity } = this.stores;
+    if (!slackTeamId || !settings) return undefined;
+    try {
+      const stored = await readStoredSlackTeamInfo(env, settings, { state: identity as IdentityStore });
+      return stored.teamId === slackTeamId ? stored.teamName : undefined;
+    } catch {
+      console.warn('[chickpea:management] Slack workspace name could not be read');
+      return undefined;
+    }
   }
 
   private async teamSnapshot(

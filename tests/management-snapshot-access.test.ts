@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
+import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import type { WorkspaceManagementServiceInput } from '../src/management/service.ts';
 import {
@@ -15,6 +16,13 @@ import type {
   ManagementOperation,
   ManagementWorkspaceSnapshot,
 } from '../src/management/types.ts';
+import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
+import { SLACK_SETTING_KEYS } from '../src/slack/credentials.ts';
+import { slackInstallationCredentialId } from '../src/slack/hosted-slack-app.ts';
+import {
+  promoteSlackCredentialBundle,
+  stageSlackCredentialBundle,
+} from '../src/slack/installation-credentials.ts';
 import type { SlackChannel } from '../src/slack/transport/types.ts';
 import {
   createManagementAdapterFixture,
@@ -336,6 +344,75 @@ test('inspection names the Slack team, the caller, and the team list only for pe
     assert.deepEqual(asMember.caller, { membershipId: member.membership.id, role: 'member', displayName: 'Mina Member' });
     assert.equal(asMember.slackTeamId, f.owner.binding.slackTeamId);
     assert.equal(asMember.team, undefined, 'Admin hides the Team page from Members');
+  }));
+
+async function connectSlack(f: ManagementAdapterFixture, teamId: string): Promise<void> {
+  const credentials = { state: f.identity, keyring: generateCredentialKeyring() };
+  const identityId = slackInstallationCredentialId(undefined);
+  const staged = await stageSlackCredentialBundle(credentials, {
+    identityId,
+    identityClass: 'workspace_installation',
+    purpose: 'connected_credentials',
+    expectedActiveRevision: null,
+    appId: 'A_SNAPSHOT',
+    teamId,
+    secrets: { signingSecret: 'snapshot-secret', botToken: 'xoxb-snapshot' },
+  });
+  await promoteSlackCredentialBundle(credentials, {
+    identityId,
+    candidateRevision: staged.revision,
+    expectedActiveRevision: null,
+  });
+}
+
+async function withSlackSettings(
+  suffix: string,
+  run: (f: ManagementAdapterFixture, settings: SqliteSettingsStore) => Promise<void>,
+): Promise<void> {
+  const settings = new SqliteSettingsStore(':memory:', () => 1_800_000_000_000);
+  try {
+    await withFixture(suffix, (f) => run(f, settings), { settings });
+  } finally {
+    settings.close();
+  }
+}
+
+test('inspection names the Slack workspace by its stored name, for every caller', () =>
+  withSlackSettings('snapshot-team-name', async (f, settings) => {
+    await connectSlack(f, f.owner.binding.slackTeamId);
+    await settings.setSetting(SLACK_SETTING_KEYS.teamName, 'Acme Robotics');
+    const member = (await f.identity.provisionSlackMember({
+      slackTeamId: f.owner.binding.slackTeamId,
+      slackUserId: 'U_TEAM_NAME_MEMBER',
+      displayName: 'Mina Member',
+    })).resolution!;
+
+    const owner = await inspect(f, mcp(f.owner));
+    assert.equal(owner.slackTeamId, f.owner.binding.slackTeamId);
+    assert.equal(owner.slackTeamName, 'Acme Robotics');
+
+    const asMember = await inspect(f, mcp(member));
+    assert.equal(asMember.slackTeamName, 'Acme Robotics');
+    assert.equal(asMember.team, undefined, 'the name does not bring the team list with it');
+  }));
+
+test('inspection omits the workspace name an install has not stored yet', () =>
+  withSlackSettings('snapshot-team-unnamed', async (f) => {
+    await connectSlack(f, f.owner.binding.slackTeamId);
+
+    const snapshot = await inspect(f, mcp(f.owner));
+    assert.equal(snapshot.slackTeamId, f.owner.binding.slackTeamId);
+    assert.equal('slackTeamName' in snapshot, false);
+  }));
+
+test('inspection omits a stored workspace name that belongs to another Slack team', () =>
+  withSlackSettings('snapshot-team-other', async (f, settings) => {
+    await connectSlack(f, 'T_SOMEONE_ELSE');
+    await settings.setSetting(SLACK_SETTING_KEYS.teamName, 'Someone Else Inc');
+
+    const snapshot = await inspect(f, mcp(f.owner));
+    assert.equal(snapshot.slackTeamId, f.owner.binding.slackTeamId);
+    assert.equal('slackTeamName' in snapshot, false, 'another team\'s name never names this workspace');
   }));
 
 test('inspection shows which Agents answer in group DMs and which have their own Slack app', () =>
