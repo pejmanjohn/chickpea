@@ -27,7 +27,7 @@ export const ADMIN_SETTINGS_PATH = '/admin/settings';
 /** Settings → MCP (page heading "Coding agents"): every client's snippet plus the one-click installs. */
 export const ADMIN_CODING_AGENTS_PATH = '/admin/settings/agents-clients';
 export const MCP_SERVER_NAME = 'chickpea';
-export const AGENT_AUTHORING_GUIDE_URI = 'chickpea://guide/agent-authoring/v1';
+export const DISCOVERY_GUIDE_URI = 'chickpea://guide/discovery/v1';
 
 export interface ConnectClient {
   id: string;
@@ -182,7 +182,7 @@ function fence(language: string, body: string): string {
  * The guide the coding agent reads. Written to the agent in the same voice as
  * the install guides: detect the client, write its config, sign in, hand off
  * to a new session or thread if the client needs it, prove the connection
- * with one read-only call, then ask about the first teammate.
+ * with one read-only call, then find the first teammate.
  */
 export function connectMarkdown(origin: string, env?: Record<string, unknown>): string {
   const url = connectMcpUrl(origin);
@@ -286,16 +286,16 @@ export function connectMarkdown(origin: string, env?: Record<string, unknown>): 
     '',
     'A saved configuration is not a tested connection. If a step remains blocked after following the guidance above, say which one, keep the first error, and stop.',
     '',
-    '## 6. Offer the first teammate',
+    '## 6. Find the first teammate',
     '',
-    `Read the resource \`${AGENT_AUTHORING_GUIDE_URI}\`. If your client shows Chickpea\'s prompts as slash commands, suggest \`/mcp__${MCP_SERVER_NAME}__new-agent\`, which includes curated starter suggestions. Otherwise ask: "What should your first teammate do for your team?" The guide does not contain the starter catalog; do not invent catalog entries. Nothing is created until the person chooses a job.`,
+    `Read the resource \`${DISCOVERY_GUIDE_URI}\` and follow it: research the person's recent work on this machine before you propose an Agent. \`/mcp__${MCP_SERVER_NAME}__new-agent\` does the same in clients that show Chickpea's prompts as slash commands. Nothing is created until the person says yes to a proposal.`,
     '',
     'No separate local skills are required. In Codex, ask for the desired Chickpea change in plain language; MCP prompts do not appear in its `$` skills picker.',
     '',
     '## Good to know',
     '',
     `- ${adminManaged} managed in Admin at ${settings}. Send the person there with the link rather than asking for the values.`,
-    '- After creating or changing an Agent, tell the person to mention it in Slack by its handle to try it.',
+    '- After you create an Agent, it messages the person in Slack, and `links.slack` opens that conversation.',
     '- The person can disconnect at any time from their client; a removed Chickpea member loses MCP access immediately.',
     '',
   ].join('\n');

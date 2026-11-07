@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { AGENT_AUTHORING_GUIDE_URI } from '../src/management/agent-authoring/index.ts';
+import { AGENT_AUTHORING_GUIDE_URI, DISCOVERY_GUIDE_URI } from '../src/management/agent-authoring/index.ts';
 import { FIRST_TEAMMATE_STARTERS } from '../src/management/first-teammate.ts';
 import {
   WORKSPACE_MANAGEMENT_PROMPT_NAMES,
@@ -66,33 +66,38 @@ test('the prompt catalog is the six documented slash commands with the documente
   assert.deepEqual(WORKSPACE_MANAGEMENT_PROMPTS.status.arguments, []);
 });
 
-test('new-agent asks the opening question and offers only curated starters', () => {
+test('new-agent without a purpose researches first and offers curated starters only as the last resort', () => {
   const asked = render('new-agent', {});
+  const research = asked.indexOf(`3. Read the resource ${DISCOVERY_GUIDE_URI} and follow it: research the person's recent work on this machine, then propose one lead and up to two alternates.`);
+  assert.ok(research > 0, 'step 3 sends the agent to the discovery guide');
   assert.ok(
-    asked.includes('What should this teammate do for your team?'),
-    'new-agent must open with the product\'s own question',
+    asked.includes('Offer starters from this catalog only when the guide\'s thin-history questions also yield nothing, never one you invent.'),
+    'the catalog is the fallback and stays closed',
   );
+  assert.ok(!asked.includes('What should this teammate do for your team?'), 'no opening question ahead of the research');
   for (const starter of FIRST_TEAMMATE_STARTERS) {
-    assert.ok(asked.includes(`@${starter.handle}`), `new-agent must offer @${starter.handle}`);
+    assert.ok(asked.indexOf(`@${starter.handle}`) > research, `@${starter.handle} is listed after the research step`);
     assert.ok(asked.includes(starter.pitch), `new-agent must show the pitch for @${starter.handle}`);
   }
-  assert.ok(asked.includes('never one you invent'), 'the catalog must be closed');
+});
 
+test('new-agent with a purpose skips research and keeps the opening question answered', () => {
   const answered = render('new-agent', { purpose: 'answer billing questions' });
   assert.ok(
-    answered.includes('already answered'),
-    'a supplied purpose must not be asked for again',
+    answered.includes('3. The person already answered “What should this teammate do for your team?” with “answer billing questions”. Do not ask it again.'),
+    'a supplied purpose must not be asked for again, and is quoted as data',
   );
-  assert.ok(answered.includes('Do not ask it again.'));
-  assert.ok(answered.includes('“answer billing questions”'), 'the purpose is quoted as data');
+  assert.ok(!answered.includes(DISCOVERY_GUIDE_URI), 'a named job needs no discovery');
   for (const starter of FIRST_TEAMMATE_STARTERS) {
     assert.ok(
       !answered.includes(`@${starter.handle}`),
       `an answered new-agent must not re-list @${starter.handle}`,
     );
   }
+});
 
-  for (const text of [asked, answered]) {
+test('new-agent inspects, reads the authoring guide, creates, and hands off either way', () => {
+  for (const text of [render('new-agent', {}), render('new-agent', { purpose: 'answer billing questions' })]) {
     for (const required of [
       'inspect_workspace',
       AGENT_AUTHORING_GUIDE_URI,

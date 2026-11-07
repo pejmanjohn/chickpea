@@ -16,7 +16,7 @@ import { z } from 'zod';
 
 import type { McpServer } from '@modelcontextprotocol/server';
 
-import { AGENT_AUTHORING_GUIDE_URI } from './agent-authoring/index.ts';
+import { AGENT_AUTHORING_GUIDE_URI, DISCOVERY_GUIDE_URI } from './agent-authoring/index.ts';
 import { adminSettingsSectionShown } from './admin-links.ts';
 import { FIRST_TEAMMATE_STARTERS } from './first-teammate.ts';
 import { workspaceManagementAdminOrigin } from './instructions.ts';
@@ -58,7 +58,7 @@ export const WORKSPACE_MANAGEMENT_PROMPTS: Readonly<
 > = {
   'new-agent': {
     title: 'Create a new Agent',
-    description: 'Design and create a new Chickpea Agent for the team, starting from what it should do or from a curated starter.',
+    description: 'Design and create a new Chickpea Agent for the team, starting from what it should do or from a proposal based on the person\'s recent work.',
     arguments: [
       argument('purpose', 'What the new Agent should do for the team, in the person\'s words.', false),
     ],
@@ -136,7 +136,7 @@ function newAgentPrompt(args: { purpose?: string | undefined }, baseUrl?: string
     `2. Read the resource ${AGENT_AUTHORING_GUIDE_URI} before you draft.`,
     purpose
       ? `3. The person already answered ${quoted(NEW_AGENT_OPENING_QUESTION)} with ${quoted(purpose)}. Do not ask it again.`
-      : `3. Ask: ${NEW_AGENT_OPENING_QUESTION} Offer starters from this catalog, never one you invent. If they tell you what their team does, offer the three that fit best; otherwise show all five. None of them exist yet, and each works today with nothing to connect:\n${starterCatalog()}\nThey can reply with a number or describe the job they have in mind.`,
+      : `3. Read the resource ${DISCOVERY_GUIDE_URI} and follow it: research the person's recent work on this machine, then propose one lead and up to two alternates. Offer starters from this catalog only when the guide's thin-history questions also yield nothing, never one you invent. If they tell you what their team does, offer the three that fit best; otherwise show all five. None of them exist yet, and each works today with nothing to connect:\n${starterCatalog()}\nThey can reply with a number or describe the job they have in mind.`,
     '4. Ask at most three more questions, only where the answer changes the role, procedure, or reach. Prefer inferring low-risk defaults and saying so.',
     '5. Draft the Agent in the conversation: name, handle, one-line description, and complete instructions. A chosen starter uses its catalog name, handle, and instructions unchanged.',
     '6. When the person agrees to the draft, call apply_workspace_changes with exactly one create_agent operation and nothing else: no connectors, repositories, Channels, or schedules unless they asked. Do not ask for a second confirmation.',

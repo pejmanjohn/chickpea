@@ -30,7 +30,8 @@ import {
   revokeSetupLinkZodSchema,
   undoWorkspaceChangeZodSchema,
 } from './schemas.ts';
-import { AGENT_AUTHORING_GUIDE_URI } from './agent-authoring/index.ts';
+import { AGENT_AUTHORING_GUIDE_URI, DISCOVERY_GUIDE_URI } from './agent-authoring/index.ts';
+import { DISCOVERY_GUIDE } from './agent-authoring/discovery-guide.ts';
 import { codingAgentAuthoringGuideResource } from './agent-authoring/mcp-guide.ts';
 import { WorkspaceManagementService } from './service.ts';
 import { workspaceManagementInstructions } from './instructions.ts';
@@ -445,6 +446,14 @@ export function createWorkspaceManagementMcpServer(
       }],
     }),
   );
+
+  server.registerResource('discovery-guide', DISCOVERY_GUIDE_URI, {
+    title: 'Find the first Chickpea Agent',
+    description: 'Read before you propose an Agent whose job the person has not named: how to research their recent work on this machine and propose one specific Agent.',
+    mimeType: 'text/markdown',
+  }, async (uri) => ({
+    contents: [{ uri: uri.href, mimeType: 'text/markdown', text: DISCOVERY_GUIDE }],
+  }));
 
   registerWorkspaceManagementPrompts(server, input.baseUrl, input.env);
 

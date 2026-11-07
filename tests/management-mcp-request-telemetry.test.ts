@@ -9,6 +9,7 @@ import {
   WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI,
 } from '../src/management/mcp.ts';
 import { observeMcpRequests } from '../src/management/mcp-request-telemetry.ts';
+import { DISCOVERY_GUIDE_URI } from '../src/management/agent-authoring/index.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 
 const LEGACY = '2025-11-25';
@@ -197,13 +198,16 @@ test('resources/read names a static Chickpea guide and nothing else', async (t) 
   const { fetch, metrics, principal } = await harness(t, 'resources');
 
   await post(fetch, LEGACY, 'resources/read', { uri: WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI });
+  await post(fetch, LEGACY, 'resources/read', { uri: DISCOVERY_GUIDE_URI });
   await post(fetch, LEGACY, 'resources/read', { uri: `chickpea://agent/${SECRET_KEY}` });
 
-  const [guide, unknown, ...extra] = requestMetrics(metrics);
+  const [guide, discovery, unknown, ...extra] = requestMetrics(metrics);
   assert.deepEqual(extra, []);
   assert.equal(guide?.method, 'resources/read');
   assert.equal(guide?.resource, WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI);
   assert.equal(guide?.outcome, 'success');
+  assert.equal(discovery?.resource, DISCOVERY_GUIDE_URI);
+  assert.equal(discovery?.outcome, 'success');
   assert.equal(unknown?.method, 'resources/read');
   assert.equal(unknown?.resource, 'other');
   assert.equal(unknown?.outcome, 'jsonrpc_error');

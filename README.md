@@ -545,6 +545,15 @@ Then try:
 
 > Create a Chickpea Agent named Support that helps our team answer billing questions.
 
+Not sure what your first Agent should do? Ask:
+
+> What should I build with Chickpea?
+
+Your coding agent looks at your recent projects and sessions on this machine
+and proposes one Agent built on work you already do, naming what it looked at.
+Nothing it reads is sent to Chickpea. When you say yes, it creates the Agent,
+which then sends you a message in Slack.
+
 In Claude Code, `/mcp__chickpea__new-agent` opens the same guided flow from the
 slash menu; `/mcp__chickpea__status`, `/mcp__chickpea__edit-agent`, `/mcp__chickpea__connect`,
 `/mcp__chickpea__schedule`, and `/mcp__chickpea__import-skill` cover the rest.

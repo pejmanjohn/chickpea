@@ -5,6 +5,7 @@ import { defineSkill, useSkill } from '@flue/runtime';
 export const AGENT_AUTHORING_SKILL_NAME = 'agent-authoring' as const;
 export const AGENT_AUTHORING_GUIDE_VERSION = '1.0.49' as const;
 export const AGENT_AUTHORING_GUIDE_URI = 'chickpea://guide/agent-authoring/v1' as const;
+export const DISCOVERY_GUIDE_URI = 'chickpea://guide/discovery/v1' as const;
 export const AGENT_AUTHORING_REASONS = [
   'agent_creation',
   'agent_edit',
