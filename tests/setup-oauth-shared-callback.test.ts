@@ -231,6 +231,7 @@ async function endedPage(response: Response, next: string, absent: string[]): Pr
   assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
   assert.equal(response.headers.get('x-frame-options'), 'DENY');
   assert.match(response.headers.get('content-security-policy') ?? '', /frame-ancestors 'none'/);
+  assert.deepEqual(response.headers.getSetCookie(), []);
   const html = await response.text();
   assert.match(html, /This sign-in has ended/);
   assert.deepEqual([...html.matchAll(/<a href="([^"]*)"/g)].map(([, href]) => href), [next]);
@@ -462,6 +463,11 @@ test('a setup sign-in that expired at the provider shows its browser a page back
   const back = await app.request(`${ORIGIN}/setup/${setup.setupId}`, { headers: { ...BROWSER, cookie: setup.cookie } });
   assert.equal(back.status, 200);
   assert.match(await back.text(), /Continue to Linear/);
+  // Past the setup's own lifetime too, the return only reads: it does not mark the setup expired.
+  t.mock.timers.setTime(Date.now() + 60 * 60_000);
+  const late = await app.request(returnTo(state), { headers: { ...BROWSER, cookie: setup.cookie } });
+  assert.equal(late.status, 400);
+  assert.equal((await h.management.getSetup(setup.setupId))?.status, 'authorizing');
 
   // A browser without the setup's cookie is not told the setup exists.
   await endedPage(await app.request(returnTo(state), { headers: BROWSER }), '/admin', [...absent, setup.setupId]);
