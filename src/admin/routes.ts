@@ -104,7 +104,12 @@ import {
   environmentSeedResponse,
   seedFingerprintSettingKey,
 } from './environment-seed.ts';
-import { prepareSeededCatalogConnection, replaceCatalogConnection } from '../management/setup-routes.ts';
+import {
+  oauthReturnEndedPage,
+  oauthReturnWantsPage,
+  prepareSeededCatalogConnection,
+  replaceCatalogConnection,
+} from '../management/setup-routes.ts';
 import {
   ConnectionScheduleConflictError,
   ConnectionAccountService,
@@ -4482,7 +4487,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       (!code && !providerError) ||
       (code && providerError)
     ) {
-      return invalidRequest(c);
+      return unusableOAuthReturn(c);
     }
     let ref: { agentId: string; connectionId: string; credentialRef?: string };
     let returnAgentId: string | undefined;
@@ -4501,7 +4506,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       ));
     } catch (error) {
       if (error instanceof McpOAuthError && error.code === 'invalid_state') {
-        return invalidRequest(c);
+        return unusableOAuthReturn(c);
       }
       console.error(
         '[chickpea] MCP OAuth callback failed:',
@@ -4584,7 +4589,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       (!code && !providerError) ||
       (code && providerError)
     ) {
-      return invalidRequest(c);
+      return unusableOAuthReturn(c);
     }
     let ref: ApiOAuthRef | undefined;
     let returnAgentId: string | undefined;
@@ -4679,7 +4684,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return c.redirect(apiOAuthAdminRedirect('connected', completed.ref, returnAgentId), 303);
     } catch (error) {
       if (error instanceof ApiOAuthError && error.code === 'invalid_state') {
-        return invalidRequest(c);
+        return unusableOAuthReturn(c);
       }
       console.error(
         '[chickpea] API OAuth callback failed:',
@@ -13604,6 +13609,11 @@ function githubApiConnectionValidationMessage(
   return issues.some((issue) => issue.message === GITHUB_API_CONNECTION_ERROR)
     ? GITHUB_API_CONNECTION_ERROR
     : undefined;
+}
+
+/** An OAuth return no attempt can finish: a browser gets the ended page, other clients the JSON error. */
+function unusableOAuthReturn(c: Context): Response {
+  return oauthReturnWantsPage(c) ? oauthReturnEndedPage(c) : invalidRequest(c);
 }
 
 function invalidRequest(

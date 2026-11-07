@@ -1530,6 +1530,21 @@ export async function readMcpOAuthSetupContinuation(
   };
 }
 
+/**
+ * The setup named by the stored attempt for a state's connection, even when
+ * that attempt expired or a newer state replaced it. Consumes nothing, and
+ * says nothing about who sent the state: anyone can write one for a
+ * connection.
+ */
+export async function readMcpOAuthAttemptSetupId(
+  state: string,
+  dependencies: Pick<McpOAuthDependencies, 'settings'>,
+): Promise<string | undefined> {
+  const [, pendingKey] = mcpOAuthSettingKeys(decodeStateRef(state));
+  const raw = await dependencies.settings.getSetting(pendingKey);
+  return raw ? parsePendingAuthorization(raw).setupOperationId : undefined;
+}
+
 function decodeStateRef(state: string): McpSecretRef {
   if (!state || state.length > 2_048 || !/^[A-Za-z0-9_-]+$/.test(state)) {
     throw new McpOAuthError('invalid_state', 'OAuth state is malformed');

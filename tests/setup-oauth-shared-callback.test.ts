@@ -27,6 +27,9 @@ const ORIGIN = 'https://chickpea.example.test';
 const SHARED_CALLBACK = `${ORIGIN}/oauth/callback`;
 const METADATA_URL = `${ORIGIN}/.well-known/oauth-client-metadata.json`;
 const CAPABILITY = 'c'.repeat(43);
+/** What a browser sends when the provider redirects it back. */
+const BROWSER = { accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' };
+const AFTER_ATTEMPT_EXPIRY = 11 * 60_000;
 
 async function harness(t: { after: (fn: () => void) => void }, registration: 'cimd' | 'dcr') {
   const now = Date.now();
@@ -196,6 +199,48 @@ function pendingKeyFor(accountId: string): string {
   return mcpOAuthSettingKeys(connectionAccountOAuthRef(accountId))[1];
 }
 
+/** Admin's own attempt for the setup's pending account, as Admin's connect starts one: no setup continuation. */
+async function adminAttempt(h: Awaited<ReturnType<typeof harness>>) {
+  const { input, dependencies } = h.starts.at(-1)!;
+  const { setupOperationId: _setupOperationId, ...adminInput } = input;
+  return startMcpOAuthAuthorization(
+    { ...adminInput, callbackUrl: SHARED_CALLBACK },
+    { ...dependencies, fetchFn: h.provider.fetchFn },
+  );
+}
+
+/** A well-formed state for a real connection that no attempt minted, as anyone can write one. */
+function forgedState(accountId: string): string {
+  return Buffer.from(JSON.stringify({ a: accountId, c: 'account', n: 'forged' })).toString('base64url');
+}
+
+function returnTo(state: string, query = 'code=provider-code'): string {
+  return `${SHARED_CALLBACK}?state=${encodeURIComponent(state)}&${query}`;
+}
+
+/** Ids the ended page must never show, whatever the request carried. */
+function internalIds(h: Awaited<ReturnType<typeof harness>>): string[] {
+  return [h.owner.user.id, h.owner.membership.id, h.owner.membership.organizationId, 'agent_project_guide'];
+}
+
+/** The ended sign-in page: one way onward, and nothing from the request or the stores. */
+async function endedPage(response: Response, next: string, absent: string[]): Promise<string> {
+  assert.equal(response.status, 400);
+  assert.match(response.headers.get('content-type') ?? '', /^text\/html/);
+  assert.match(response.headers.get('cache-control') ?? '', /no-store/);
+  assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
+  assert.equal(response.headers.get('x-frame-options'), 'DENY');
+  assert.match(response.headers.get('content-security-policy') ?? '', /frame-ancestors 'none'/);
+  const html = await response.text();
+  assert.match(html, /This sign-in has ended/);
+  assert.deepEqual([...html.matchAll(/<a href="([^"]*)"/g)].map(([, href]) => href), [next]);
+  const rest = html.replaceAll(`href="${next}"`, '');
+  for (const value of [...absent, 'invalid_state', 'invalid_request', 'Linear']) {
+    assert.equal(rest.includes(value), false, `the page shows ${value}`);
+  }
+  return html;
+}
+
 for (const registration of ['cimd', 'dcr'] as const) {
   test(`a ${registration === 'cimd' ? 'CIMD-only' : 'registration-only'} server finishes a catalog setup link through /oauth/callback`, async (t) => {
     const h = await harness(t, registration);
@@ -214,9 +259,9 @@ for (const registration of ['cimd', 'dcr'] as const) {
     }
 
     const state = authorizationUrl.searchParams.get('state')!;
-    const callback = await h.app.request(
+    const callback = await withAdmin(h).request(
       `${SHARED_CALLBACK}?state=${encodeURIComponent(state)}&code=provider-code`,
-      { headers: { cookie: setup.cookie } },
+      { headers: { ...BROWSER, cookie: setup.cookie } },
     );
     assert.equal(callback.status, 303, await callback.clone().text());
     assert.equal(callback.headers.get('location'), `/setup/${setup.setupId}`);
@@ -244,7 +289,7 @@ test('a provider access_denied on /oauth/callback returns to the setup page to t
 
   const callback = await h.app.request(
     `${SHARED_CALLBACK}?state=${encodeURIComponent(authorizationUrl.searchParams.get('state')!)}&error=access_denied`,
-    { headers: { cookie: setup.cookie } },
+    { headers: { ...BROWSER, cookie: setup.cookie } },
   );
   assert.equal(callback.status, 303, await callback.clone().text());
   assert.equal(callback.headers.get('location'), `/setup/${setup.setupId}?status=cancelled`);
@@ -363,10 +408,14 @@ test('/oauth/callback refuses an earlier setup attempt registered at its own cal
   assert.ok(pending);
 
   // A browser that never opened the setup link sends the state where it was not registered.
-  const refused = await app.request(
-    `${SHARED_CALLBACK}?state=${encodeURIComponent(earlier.state)}&code=provider-code`,
-  );
-  assert.equal(refused.status, 403);
+  for (const headers of [{}, BROWSER]) {
+    const refused = await app.request(
+      `${SHARED_CALLBACK}?state=${encodeURIComponent(earlier.state)}&code=provider-code`,
+      { headers },
+    );
+    assert.equal(refused.status, 403);
+    assert.deepEqual(await refused.json(), { error: 'setup_unavailable' });
+  }
   assert.ok(await h.settings.getSetting(pendingKeyFor(pending.id)));
   assert.deepEqual(h.provider.exchanges, []);
   assert.deepEqual((await h.pendingAccounts()).map(({ id }) => id), [pending.id]);
@@ -382,16 +431,148 @@ test('a setup state whose read fails on /oauth/callback fails closed instead of 
   const callback = `${SHARED_CALLBACK}?state=${encodeURIComponent(state)}&code=provider-code`;
 
   h.failNextRead(pendingKeyFor(pending.id));
-  const failed = await app.request(callback);
+  const failed = await app.request(callback, { headers: BROWSER });
   assert.equal(failed.status, 500);
   assert.ok(await h.settings.getSetting(pendingKeyFor(pending.id)));
   assert.deepEqual(h.provider.exchanges, []);
   assert.deepEqual((await h.pendingAccounts()).map(({ id }) => id), [pending.id]);
 
   // The attempt survives: without the setup's cookie it is refused, with it it completes.
-  assert.equal((await app.request(callback)).status, 403);
-  const completed = await app.request(callback, { headers: { cookie: setup.cookie } });
+  assert.equal((await app.request(callback, { headers: BROWSER })).status, 403);
+  const completed = await app.request(callback, { headers: { ...BROWSER, cookie: setup.cookie } });
   assert.equal(completed.status, 303, await completed.clone().text());
   assert.equal(completed.headers.get('location'), `/setup/${setup.setupId}`);
   assert.equal((await h.management.getSetup(setup.setupId))?.status, 'completed');
+});
+
+test('a setup sign-in that expired at the provider shows its browser a page back to the setup, and others none', async (t) => {
+  const h = await harness(t, 'cimd');
+  const app = withAdmin(h);
+  const setup = await h.catalogSetup('linear_expired');
+  const state = (await h.continueToProvider(setup)).searchParams.get('state')!;
+  const [pending] = await h.pendingAccounts();
+  assert.ok(pending);
+  const absent = [...internalIds(h), state, 'provider-code', pending.id];
+  // The person stayed on the provider's consent screen past the attempt's lifetime.
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() + AFTER_ATTEMPT_EXPIRY });
+
+  const own = await app.request(returnTo(state), { headers: { ...BROWSER, cookie: setup.cookie } });
+  await endedPage(own, `/setup/${setup.setupId}`, absent);
+  assert.equal((await h.management.getSetup(setup.setupId))?.status, 'authorizing');
+  const back = await app.request(`${ORIGIN}/setup/${setup.setupId}`, { headers: { ...BROWSER, cookie: setup.cookie } });
+  assert.equal(back.status, 200);
+  assert.match(await back.text(), /Continue to Linear/);
+
+  // A browser without the setup's cookie is not told the setup exists.
+  await endedPage(await app.request(returnTo(state), { headers: BROWSER }), '/admin', [...absent, setup.setupId]);
+  const json = await app.request(returnTo(state), { headers: { cookie: setup.cookie } });
+  assert.equal(json.status, 400);
+  assert.deepEqual(await json.json(), { error: 'invalid_request' });
+  assert.deepEqual(h.provider.exchanges, []);
+});
+
+test('returning again to a setup sign-in that already finished shows a page that names no setup', async (t) => {
+  const h = await harness(t, 'cimd');
+  const app = withAdmin(h);
+  const setup = await h.catalogSetup('linear_used');
+  const state = (await h.continueToProvider(setup)).searchParams.get('state')!;
+  const [pending] = await h.pendingAccounts();
+  assert.ok(pending);
+
+  const finished = await app.request(returnTo(state), { headers: { ...BROWSER, cookie: setup.cookie } });
+  assert.equal(finished.status, 303, await finished.clone().text());
+  assert.equal(finished.headers.get('location'), `/setup/${setup.setupId}`);
+  // The back button, or a second tab, sends the same return again.
+  const again = await app.request(returnTo(state), { headers: { ...BROWSER, cookie: setup.cookie } });
+  await endedPage(again, '/admin', [...internalIds(h), state, 'provider-code', pending.id, setup.setupId]);
+  assert.equal(h.provider.exchanges.length, 1);
+  assert.equal((await h.management.getSetup(setup.setupId))?.status, 'completed');
+});
+
+test('a forged state for a live setup attempt shows the page a malformed one does and leaves the attempt to finish', async (t) => {
+  const h = await harness(t, 'cimd');
+  const app = withAdmin(h);
+  const setup = await h.catalogSetup('linear_forged');
+  const state = (await h.continueToProvider(setup)).searchParams.get('state')!;
+  const [pending] = await h.pendingAccounts();
+  assert.ok(pending);
+  const forged = forgedState(pending.id);
+
+  const malformed = await endedPage(
+    await app.request(returnTo('not-a-state'), { headers: BROWSER }),
+    '/admin',
+    [...internalIds(h), 'not-a-state', 'provider-code'],
+  );
+  // Storage names the live attempt's setup, but this browser does not hold it.
+  const unknown = await endedPage(
+    await app.request(returnTo(forged), { headers: BROWSER }),
+    '/admin',
+    [...internalIds(h), forged, 'provider-code', pending.id, setup.setupId],
+  );
+  assert.equal(unknown, malformed);
+  // Nor does a browser that sends a cookie under the setup's name with a guessed value.
+  const guessed = `${setup.cookie.split('=')[0]}=${'g'.repeat(43)}`;
+  assert.equal(await (await app.request(returnTo(forged), { headers: { ...BROWSER, cookie: guessed } })).text(), malformed);
+  // In the browser that holds that setup, a forged state can only lead back to it.
+  await endedPage(
+    await app.request(returnTo(forged), { headers: { ...BROWSER, cookie: setup.cookie } }),
+    `/setup/${setup.setupId}`,
+    [...internalIds(h), forged, 'provider-code', pending.id],
+  );
+
+  assert.ok(await h.settings.getSetting(pendingKeyFor(pending.id)));
+  assert.deepEqual(h.provider.exchanges, []);
+  const completed = await app.request(returnTo(state), { headers: { ...BROWSER, cookie: setup.cookie } });
+  assert.equal(completed.status, 303, await completed.clone().text());
+  assert.equal(completed.headers.get('location'), `/setup/${setup.setupId}`);
+  assert.equal((await h.management.getSetup(setup.setupId))?.status, 'completed');
+});
+
+test('an Admin sign-in that expired, used or unknown shows a page back to Admin, even in a setup\'s browser', async (t) => {
+  const h = await harness(t, 'cimd');
+  const app = withAdmin(h);
+  const setup = await h.catalogSetup('linear_admin');
+  await h.continueToProvider(setup);
+  const [pending] = await h.pendingAccounts();
+  assert.ok(pending);
+  const absent = (state: string) => [...internalIds(h), state, 'provider-code', pending.id, setup.setupId];
+  const browsers = [BROWSER, { ...BROWSER, cookie: setup.cookie }];
+
+  const expired = await adminAttempt(h);
+  // The stored attempt is now Admin's, which names no setup.
+  const forged = forgedState(pending.id);
+  for (const headers of browsers) {
+    await endedPage(await app.request(returnTo(forged), { headers }), '/admin', absent(forged));
+  }
+
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() + AFTER_ATTEMPT_EXPIRY });
+  const declined = 'error=access_denied&error_description=The+person+declined+on+Example+Provider';
+  for (const headers of browsers) {
+    await endedPage(
+      await app.request(returnTo(expired.state, declined), { headers }),
+      '/admin',
+      [...absent(expired.state), 'access_denied', 'Example Provider'],
+    );
+  }
+  await endedPage(await app.request(returnTo(expired.state), { headers: BROWSER }), '/admin', absent(expired.state));
+  const json = await app.request(returnTo(expired.state));
+  assert.equal(json.status, 400);
+  assert.deepEqual(await json.json(), { error: 'invalid_request' });
+
+  const used = await adminAttempt(h);
+  assert.equal((await app.request(returnTo(used.state), { headers: BROWSER })).status, 303);
+  for (const headers of browsers) {
+    await endedPage(await app.request(returnTo(used.state), { headers }), '/admin', absent(used.state));
+  }
+  assert.equal(h.provider.exchanges.length, 1);
+});
+
+test('Admin\'s REST OAuth return answers an unusable state with the same page, and JSON clients as before', async (t) => {
+  const h = await harness(t, 'cimd');
+  const app = withAdmin(h);
+  const unusable = `${ORIGIN}/oauth/api/callback?state=not-a-state&code=provider-code`;
+  await endedPage(await app.request(unusable, { headers: BROWSER }), '/admin', ['not-a-state', 'provider-code']);
+  const json = await app.request(unusable);
+  assert.equal(json.status, 400);
+  assert.deepEqual(await json.json(), { error: 'invalid_request' });
 });

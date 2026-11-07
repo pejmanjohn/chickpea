@@ -56,6 +56,7 @@ import {
   invalidateMcpOAuthAuthorization,
   McpOAuthError,
   mcpOAuthReturnRefFromState,
+  readMcpOAuthAttemptSetupId,
   readMcpOAuthSetupContinuation,
   resolveMcpOAuthAccessToken,
   startMcpOAuthAuthorization,
@@ -259,7 +260,10 @@ export function createManagementSetupRoutes(
   // no setup goes on to it.
   app.get('/oauth/callback', async (c, next) => {
     const continuation = await setupOAuthContinuation(c, options);
-    if (!continuation) return next();
+    if (!continuation) {
+      const setupId = await endedSetupThisBrowserHolds(c, options);
+      return setupId ? oauthReturnEndedPage(c, setupId) : next();
+    }
     const setupId = continuation.setupOperationId;
     const registeredHere = new URL(continuation.callbackUrl).pathname === '/oauth/callback';
     if (!setupId && registeredHere) return next();
@@ -1167,6 +1171,55 @@ async function setupOAuthContinuation(
     if (error instanceof McpOAuthError) return undefined;
     throw error;
   }
+}
+
+/**
+ * The setup a browser's unusable state was started for, when the browser
+ * sends that setup's own session cookie. Only then does the ended page link
+ * back to it: the state is anyone's to write, so without the cookie the page
+ * must not show whether a setup exists. Reads only.
+ */
+async function endedSetupThisBrowserHolds(
+  c: Context,
+  options: ManagementSetupRoutesOptions,
+): Promise<string | undefined> {
+  const state = c.req.query('state');
+  if (!oauthReturnWantsPage(c) || !state || state.length > 2_048) return undefined;
+  const dependencies = setupDependencies(c, options);
+  let setupId: string | undefined;
+  try {
+    setupId = await readMcpOAuthAttemptSetupId(state, dependencies);
+  } catch (error) {
+    if (error instanceof McpOAuthError) return undefined;
+    throw error;
+  }
+  if (!setupId || !SETUP_ID_PATTERN.test(setupId)) return undefined;
+  const session = setupSession(c, setupId);
+  if (!session) return undefined;
+  const setup = await dependencies.management.getSetup(setupId);
+  return setup && sessionMatches(setup, session) ? setupId : undefined;
+}
+
+/** A browser navigating to an OAuth return gets a page; other clients keep the JSON error. */
+export function oauthReturnWantsPage(c: Context): boolean {
+  return (c.req.header('accept') ?? '').toLowerCase().includes('text/html');
+}
+
+/**
+ * For an OAuth return whose state can no longer finish: it expired, was
+ * already used, or no attempt holds it. Names nothing from the request; links
+ * to a setup only when the caller proved this browser holds it.
+ */
+export function oauthReturnEndedPage(c: Context, setupId?: string): Response {
+  setupResponseHeaders(c);
+  const next = setupId
+    ? `<p><a href="/setup/${encodeURIComponent(setupId)}">Go back to the setup page</a> to sign in again.</p>`
+    : '<p>Go back to Slack or <a href="/admin">Chickpea Admin</a> to check the connection or start it again.</p>';
+  return c.html(renderSetupPanelPage({
+    title: 'Sign-in ended',
+    surface: 'oauth-return-ended',
+    content: `<h1>This sign-in has ended</h1><p>It expired, or it was already used, maybe in another tab.</p>${next}`,
+  }), 400);
 }
 
 async function completeManagementMcpOAuthCallback(
