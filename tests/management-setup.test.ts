@@ -194,6 +194,25 @@ function postSetupForm(app: Hono, setupId: string, action: string, cookie: strin
   });
 }
 
+/**
+ * The provider sign-in a setup form's POST departs to. Chrome applies the
+ * setup page's form-action to a redirect that answers the POST, so the POST
+ * gets a page under the same policy that refreshes on to the provider.
+ */
+async function providerDeparture(response: Response): Promise<URL> {
+  const html = await response.text();
+  assert.equal(response.status, 200, html);
+  assert.equal(response.headers.get('location'), null);
+  const formAction = response.headers.get('content-security-policy')?.split(';')
+    .map((directive) => directive.trim())
+    .find((directive) => directive.startsWith('form-action '));
+  assert.equal(formAction, "form-action 'self' https://github.com");
+  const refresh = /<meta http-equiv="refresh" content="0;url=([^"]+)">/.exec(html)?.[1];
+  assert.ok(refresh, html);
+  assert.ok(html.includes(`<a href="${refresh}">`), html);
+  return new URL(refresh.replaceAll('&amp;', '&'));
+}
+
 test('the initiating member claims one authenticated browser and completes an exact connector setup', async () => {
   let now = START;
   let sequence = 0;
@@ -2465,9 +2484,9 @@ test('an MCP OAuth setup signs in to its connection account and marks it ready',
       identifyMcp: async () => ({ workspaceName: 'Acme' }),
     });
     const cookie = await claimSetup(app, setupId);
-    const started = await postSetupForm(app, setupId, 'authorize', cookie, {});
-    assert.equal(started.status, 303, await started.clone().text());
-    const authorizationUrl = new URL(started.headers.get('location')!);
+    const authorizationUrl = await providerDeparture(
+      await postSetupForm(app, setupId, 'authorize', cookie, {}),
+    );
     assert.equal(authorizationUrl.origin, FAKE_AUTH_SERVER);
     assert.equal(authorizationUrl.searchParams.get('redirect_uri'), 'http://localhost/oauth/callback');
     assert.deepEqual(provider.registeredRedirects, [['http://localhost/oauth/callback']]);
@@ -2500,6 +2519,61 @@ test('an MCP OAuth setup signs in to its connection account and marks it ready',
     assert.ok(ready.policy.kind === 'mcp');
     assert.deepEqual(ready.policy.allowedTools, ['list_issues']);
     assert.equal((await management.getSetup(setupId))?.status, 'completed');
+  } finally {
+    identity.close();
+    config.close();
+    management.close();
+    settings.close();
+  }
+});
+
+test('an MCP OAuth sign-in cancelled at the provider offers Continue again without mentioning secret fields', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => START });
+  const owner = await createSlackOwner(identity, { now: START, suffix: 'mcp-oauth-cancelled' });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const management = new SqliteManagementStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await config.ensureWorkspaceInstallation({ workspaceId: owner.user.slackTeamId, transportMode: 'direct' });
+    const agent = await config.createAgent({
+      id: 'agent_linear', name: 'Linear helper', creatorMembershipId: owner.membership.id,
+      editPolicy: 'creator_and_admins', instructions: 'Triage issues.', enabled: true,
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await seedConnection({ config, settings }, owner, agent.id, {
+      providerId: 'linear', label: 'Linear', policy: LINEAR_POLICY,
+    });
+    const service = new WorkspaceManagementService({
+      identity, config, management, setupBaseUrl: 'http://localhost', now: () => START,
+      randomId: () => 'mcp_oauth_cancelled', randomCapability: () => CAPABILITY,
+    });
+    const setupId = await requestConnectionSetup(service, owner, {
+      kind: 'mcp_connection', agentId: agent.id, connectionId: 'linear',
+    });
+    const provider = fakeMcpOAuthProvider('dcr');
+    const app = createManagementSetupRoutes({
+      management, config, settings, identity, now: () => START,
+      authenticatePrincipal: async () => browserPrincipal(owner),
+      startMcpOAuth: (input, dependencies) =>
+        startMcpOAuthAuthorization(input, { ...dependencies, fetchFn: provider.fetchFn }),
+    });
+    const cookie = await claimSetup(app, setupId);
+    const authorizationUrl = await providerDeparture(
+      await postSetupForm(app, setupId, 'authorize', cookie, {}),
+    );
+
+    const callback = await app.request(
+      `http://localhost/oauth/callback?state=${encodeURIComponent(authorizationUrl.searchParams.get('state')!)}&error=access_denied`,
+      { headers: { cookie } },
+    );
+    assert.equal(callback.status, 303, await callback.clone().text());
+    assert.equal(callback.headers.get('location'), `/setup/${setupId}?status=cancelled`);
+    const page = await app.request(`http://localhost/setup/${setupId}?status=cancelled`, { headers: { cookie } });
+    assert.equal(page.status, 200);
+    const html = await page.text();
+    assert.match(html, /<p class="error">Setup did not complete\. Try again\.<\/p>/);
+    assert.doesNotMatch(html, /Secret fields/);
+    assert.match(html, new RegExp(`<form method="post" action="/setup/${setupId}/authorize"`));
   } finally {
     identity.close();
     config.close();
@@ -2569,7 +2643,7 @@ test('an MCP OAuth setup link completes for an account stored with a bare-origin
     });
     const cookie = await claimSetup(app, setupId);
     const started = await postSetupForm(app, setupId, 'authorize', cookie, {});
-    assert.equal(started.headers.get('location'), 'https://auth.logs.example/authorize', await started.clone().text());
+    assert.equal((await providerDeparture(started)).href, 'https://auth.logs.example/authorize');
 
     const state = Buffer.from(JSON.stringify({ a: logs.id, c: 'account', n: 'nonce' })).toString('base64url');
     const callback = await app.request(
@@ -2647,12 +2721,17 @@ test('an API OAuth setup stores its client on the connection account and marks i
       deliverReceipt: async () => ({ deliveryRef: 'mcp:receipt' }),
     });
     const cookie = await claimSetup(app, setupId);
-    const started = await postSetupForm(app, setupId, 'authorize', cookie, {
+    const incomplete = await postSetupForm(app, setupId, 'authorize', cookie, {
+      clientId: 'client-id.apps.googleusercontent.com',
+      clientSecret: '',
+    });
+    assert.equal(incomplete.status, 422);
+    assert.match(await incomplete.text(), /Setup did not complete\. Secret fields were cleared; follow the steps and try again\./);
+
+    const authorization = await providerDeparture(await postSetupForm(app, setupId, 'authorize', cookie, {
       clientId: 'client-id.apps.googleusercontent.com',
       clientSecret: 'client-secret',
-    });
-    assert.equal(started.status, 303, await started.clone().text());
-    const authorization = new URL(started.headers.get('location')!);
+    }));
     assert.equal(authorization.origin, 'https://accounts.google.com');
     assert.equal(authorization.searchParams.get('client_id'), 'client-id.apps.googleusercontent.com');
     // An Agent edit while the person signs in leaves the link working.
