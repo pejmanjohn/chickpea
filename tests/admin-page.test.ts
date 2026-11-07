@@ -15033,14 +15033,14 @@ test('onboarding skips channel publication, validates a provider, requires a mod
   // deliberate choice rather than the default.
   assert.match(
     harness.app.innerHTML,
-    /data-provider="openai"[\s\S]*data-provider="anthropic"[\s\S]*data-provider="openrouter"[\s\S]*data-provider="cloudflare"/,
+    /data-provider="openai"[\s\S]*data-provider="anthropic"[\s\S]*data-provider="google"[\s\S]*data-provider="openrouter"[\s\S]*data-provider="cloudflare"/,
   );
   assert.match(harness.app.innerHTML, /<span>Workers AI<\/span><span class="onboarding-provider-tab-status">Ready, no key<\/span>/);
   assert.match(harness.app.innerHTML, /<span>OpenAI<\/span><span class="onboarding-provider-tab-sub">Needs API key or subscription<\/span>/);
   assert.doesNotMatch(harness.app.innerHTML, /aria-pressed="true"|Use Cloudflare Workers AI instead/);
   assert.match(harness.app.innerHTML, /Choose the provider you want Chickpea to use\. Each option shows the setup it needs\./);
   assert.match(harness.app.innerHTML, /data-action="onboarding-provider-continue" disabled>Validate and Continue<\/button>/);
-  assert.equal((harness.app.innerHTML.match(/class="onboarding-provider-logo"/g) ?? []).length, 4);
+  assert.equal((harness.app.innerHTML.match(/class="onboarding-provider-logo"/g) ?? []).length, 5);
 
   harness.listeners.click?.({
     target: actionTarget({ 'data-action': 'onboarding-provider-select', 'data-provider': 'anthropic' }),
@@ -15974,6 +15974,24 @@ test('an own-key workspace with no key keeps its Key needed provider cards', asy
   }
   assert.match(harness.app.innerHTML, /<p class="provider-card-muted">Platform billing requires an API key here\.<\/p>/);
   assert.match(harness.app.innerHTML, /Add your OpenRouter key\. Chickpea validates it with/);
+});
+
+test('the Google Gemini card asks for a Gemini key from a billed project and validates it against GET /v1beta/models', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/providers',
+    providers: [...HOSTED_PROVIDERS_WITHOUT_KEYS, { id: 'google', status: 'missing', modelCount: null }],
+    selfHosted: false,
+    browserSetupOffered: false, websiteLoginsOffered: false,
+  });
+  await flushAsync();
+  const card = () => harness.app.innerHTML.match(/<article class="prov-row provider-card[^"]*" data-provider-card="google">[\s\S]*?<\/article>/)?.[0] ?? '';
+  assert.match(card(), /<span class="prov-name">Google Gemini<\/span><span class="prov-sub">Gemini models &middot; <span class="mono-frag">google\/\*<\/span>/);
+  assert.match(card(), /<p>Add a Google Gemini API key to use Gemini models in every model picker\.<\/p>/);
+  assert.match(card(), /Validated once against <span class="mono">GET \/v1beta\/models<\/span>/);
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'prov-add-key', 'data-provider': 'google' }) });
+  assert.match(card(), /placeholder="AQ\.Ab\.\.\." value="" aria-label="Google Gemini API key"/);
+  assert.match(card(), /<p class="hint">Use a key from a Google Cloud project with billing turned on\. Google may use prompts sent with free-tier keys to improve its products\. We also recommend turning off request logging for the project in Google AI Studio\. Validating calls Google's <span class="mono" style="color:var\(--text-2\);">GET \/v1beta\/models<\/span> once to prove the key\. Stored like your Slack credentials\.<\/p>/);
 });
 
 test('the left rail keeps one coherent section switcher and section-specific navigation', async () => {
@@ -21715,9 +21733,16 @@ test('hosted onboarding opens at Choose provider with Slack done, offering API k
   assert.match(html, /<li class="complete"><span class="onboarding-step-label">Add to Slack<\/span><span class="onboarding-step-note">Done<\/span><\/li>/);
   assert.match(html, /<p class="onboarding-eyebrow">Step 2 of 5<\/p><h1 class="onboarding-title">Choose your model provider<\/h1>/);
   assert.deepEqual([...html.matchAll(/data-action="onboarding-provider-select" data-provider="([^"]+)"/g)].map((match) => match[1]),
-    ['openai', 'anthropic', 'openrouter']);
+    ['openai', 'anthropic', 'google', 'openrouter']);
   assert.match(html, /<span>OpenAI<\/span><span class="onboarding-provider-tab-sub">Needs API key<\/span>/);
+  assert.match(html, /<span>Google Gemini<\/span><span class="onboarding-provider-tab-sub">Needs API key<\/span>/);
   assert.doesNotMatch(html, /Workers AI|subscription/);
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'onboarding-provider-select', 'data-provider': 'google' }) });
+  const google = harness.app.innerHTML;
+  assert.match(google, /<span class="field-label">Gemini API key<\/span>/);
+  assert.match(google, /placeholder="AQ\.Ab\.\.\."/);
+  assert.match(google, /<p class="hint">Use a key from a Google Cloud project with billing turned on\. Google may use prompts sent with free-tier keys to improve its products\. We also recommend turning off request logging for the project in Google AI Studio\.<\/p>/);
 
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'onboarding-provider-select', 'data-provider': 'openai' }) });
   const openai = harness.app.innerHTML;

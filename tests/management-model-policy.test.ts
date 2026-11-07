@@ -44,7 +44,7 @@ import {
   ownerSlackDmContext,
   type ManagementAdapterFixture,
 } from './helpers/management-adapter-fixture.ts';
-import { NO_RUN_FEES } from './helpers/platform-funding.ts';
+import { EVERY_PROVIDER_FUNDED, NO_RUN_FEES } from './helpers/platform-funding.ts';
 import { withPersonApproval } from './helpers/slack-person-approval.ts';
 import { slackTurnSignal } from './helpers/slack-turn-signal.ts';
 
@@ -369,6 +369,7 @@ test('on Chickpea\'s models a provider with no key of the Workspace\'s own is av
     ) as PlatformEnv;
     const { f, service } = await workspace(t, hosted);
     configurePlatformFunding({
+      ...EVERY_PROVIDER_FUNDED,
       funding: async () => 'platform',
       admit: async () => 'admitted',
       charge: async () => undefined,

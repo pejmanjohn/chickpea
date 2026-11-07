@@ -6,13 +6,17 @@ import {
   type ProviderStreams,
 } from '@earendil-works/pi-ai';
 import { anthropicMessagesApi } from '@earendil-works/pi-ai/api/anthropic-messages.lazy';
+import { googleGenerativeAIApi } from '@earendil-works/pi-ai/api/google-generative-ai.lazy';
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
 import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.lazy';
 import { anthropicProvider } from '@earendil-works/pi-ai/providers/anthropic';
 import { cloudflareWorkersAIProvider } from '@earendil-works/pi-ai/providers/cloudflare-workers-ai';
 import { cloudflareStreams } from '@earendil-works/pi-ai/providers/cloudflare-stream';
+import { googleProvider } from '@earendil-works/pi-ai/providers/google';
 import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter';
+import { GEMINI_MODELS } from './gemini-models.ts';
+import { decorateGeminiPayloadStreams } from './gemini-payload.ts';
 import { modelAccessProviderId } from './model-access.ts';
 import { registerPiProvider, registeredPiProvider } from './pi-provider-registry.ts';
 import type { ProviderKeyId } from './provider-key-ids.ts';
@@ -31,13 +35,20 @@ interface PiProviderCredential {
   baseUrl?: string;
 }
 
+const piModels = (catalog: Provider): readonly Model<Api>[] => catalog.getModels();
+
 const BUILTIN_PROVIDER_PARTS: Record<
   ProviderKeyId,
-  { provider: () => Provider; api: () => ProviderStreams }
+  { provider: () => Provider; models: (catalog: Provider) => readonly Model<Api>[]; api: () => ProviderStreams }
 > = {
-  anthropic: { provider: anthropicProvider, api: anthropicMessagesApi },
-  openai: { provider: openaiProvider, api: openAIResponsesApi },
-  openrouter: { provider: openrouterProvider, api: openAICompletionsApi },
+  anthropic: { provider: anthropicProvider, models: piModels, api: anthropicMessagesApi },
+  openai: { provider: openaiProvider, models: piModels, api: openAIResponsesApi },
+  openrouter: { provider: openrouterProvider, models: piModels, api: openAICompletionsApi },
+  google: {
+    provider: googleProvider,
+    models: () => Object.values(GEMINI_MODELS),
+    api: () => decorateGeminiPayloadStreams(googleGenerativeAIApi()),
+  },
 };
 
 // Live-catalog models (OpenRouter) added after startup. Public metadata only,
@@ -58,7 +69,7 @@ export function registerBuiltinPiProvider(id: ProviderKeyId): void {
       id,
       name: catalog.name,
       auth: modelAccessAuth(catalog.name),
-      models: mergeProviderModels(catalog.getModels(), [...(builtinModelOverlays.get(id)?.values() ?? [])]),
+      models: mergeProviderModels(parts.models(catalog), [...(builtinModelOverlays.get(id)?.values() ?? [])]),
       api: decorateAttachmentProviderStreams(parts.api()),
     }),
   );

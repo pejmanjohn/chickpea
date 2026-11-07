@@ -1,3 +1,4 @@
+import { GEMINI_MODELS } from './gemini-models.ts';
 import { isCloudflareTarget } from './runtime-target.ts';
 
 // Deployment lanes usable in this install (Workers AI REST, the local stub,
@@ -66,6 +67,11 @@ const BUILTIN_ENV_PROVIDERS: readonly ProviderCatalogEntry[] = [
       'openrouter/z-ai/glm-5.3-flash',
       'openrouter/moonshotai/kimi-k3',
     ],
+  },
+  {
+    id: 'google',
+    envVars: ['GEMINI_API_KEY'],
+    suggestions: Object.keys(GEMINI_MODELS).map((id) => `google/${id}`),
   },
   {
     id: 'cloudflare-workers-ai',

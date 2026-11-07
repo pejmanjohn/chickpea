@@ -11,7 +11,7 @@ import {
 } from './installation-model-access.ts';
 import { deploymentServesManyInstallations } from './installation-scope.ts';
 import { providerPrefix } from './model-access.ts';
-import { installationFunding } from './platform-funding.ts';
+import { installationFunding, platformFundsProvider } from './platform-funding.ts';
 import { isProviderKeyId, type ProviderKeyId } from './provider-key-ids.ts';
 import { resolveProviderApiKey } from './provider-keys.ts';
 import type { SettingsStore } from './settings-store.ts';
@@ -428,7 +428,14 @@ async function requireProviderKey(
   dependencies: RuntimeModelDependencies,
 ): Promise<void> {
   // Chickpea's own key serves a platform-funded installation's requests.
-  if (await installationFunding(dependencies.env) === 'platform') return;
+  if (await installationFunding(dependencies.env) === 'platform') {
+    if (platformFundsProvider(providerId)) return;
+    throw new RuntimeModelReadinessError(
+      'unsupported',
+      providerId,
+      `Model provider ${providerId} is not offered on Chickpea's models (funding_not_offered).`,
+    );
+  }
   if (dependencies.requireProviderKey) {
     await dependencies.requireProviderKey(providerId, dependencies.env, dependencies.settings);
     return;

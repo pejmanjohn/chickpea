@@ -101,7 +101,8 @@
    `<LANE>__NAME` (for example `COBALT__OPENAI_API_KEY`) overrides it for one
    lane. Every guarded deploy to a claimed lane uploads the provider keys the
    product reads from its environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
-   `OPENROUTER_API_KEY`, `BROWSERBASE_API_KEY`) in its atomic secrets file.
+   `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `BROWSERBASE_API_KEY`) in its
+   atomic secrets file.
    Empty values are skipped. `COMPOSIO_API_KEY` is lane-only: each lane is
    registered with its own Composio project and auth configs, so only
    `<LANE>__COMPOSIO_API_KEY` is uploaded (use that lane's current project key
@@ -301,7 +302,7 @@ section, and keep lane-specific values out of this repository.
 | Column | Source |
 | --- | --- |
 | Deploy profile (`core`, `sandbox`, or `mixed` during a split deployment) and live version | Wrangler: the serving version's `SANDBOX` binding. A core deploy over a sandbox Worker is refused, so use `npm run deploy:sandbox` there. A live version that differs from the registry is shown next to it. |
-| Provider keys by name (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `BROWSERBASE_API_KEY`, `COMPOSIO_API_KEY`) and `CHICKPEA_ENV_SEED_TOKEN` | Wrangler `secret list`, names only. The seed token column also shows whether the operator holds the lane's seed token file (existence only). |
+| Provider keys by name (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `BROWSERBASE_API_KEY`, `COMPOSIO_API_KEY`) and `CHICKPEA_ENV_SEED_TOKEN` | Wrangler `secret list`, names only. The seed token column also shows whether the operator holds the lane's seed token file (existence only). |
 | Default chat model and image role | Generated from the lane's QA-only models route, read with the lane seed token. Shows unknown until the lane serves that route; then read Admin Settings › Model providers or the model footer of a one-word Agent reply. |
 | Missing actor aliases, Slack workspace label, transport, schema generation, setup-flow marker, claim | The environment registry, as in `env status`. A candidate needs a lane whose Schema matches its own generation, or an `env schema-advance` first. `missing_actor` limits Member-view checks. A `gateway` lane reads Slack exactly through its own readback app, which the kickoff doctor checks (see [hosts.md](hosts.md#slack-evidence-on-gateway-lanes)). |
 | GitHub App and granted repositories, sandbox runtime on or off | Not generated. Admin Settings › Coding sandbox and GitHub. |

@@ -14,6 +14,7 @@ import { PRICE_CATALOGS_2026_10_24 } from './catalogs/2026-10-24.ts';
 import { PRICE_CATALOGS_2026_11_05 } from './catalogs/2026-11-05.ts';
 import { PRICE_CATALOGS_2026_11_05_REVIEW } from './catalogs/2026-11-05-review.ts';
 import { PRICE_CATALOGS_2026_11_06 } from './catalogs/2026-11-06.ts';
+import { PRICE_CATALOGS_2026_11_06_GEMINI } from './catalogs/2026-11-06-gemini.ts';
 import type { UsagePriceRate, UsagePriceVersion } from './types.ts';
 
 export const RELEASE_PRICE_CATALOGS: UsagePriceVersion[] = [
@@ -25,6 +26,7 @@ export const RELEASE_PRICE_CATALOGS: UsagePriceVersion[] = [
   ...PRICE_CATALOGS_2026_11_05,
   ...PRICE_CATALOGS_2026_11_05_REVIEW,
   ...PRICE_CATALOGS_2026_11_06,
+  ...PRICE_CATALOGS_2026_11_06_GEMINI,
 ];
 
 export function installReleasePriceCatalogs(db: StateDb): UsagePriceVersion[] {

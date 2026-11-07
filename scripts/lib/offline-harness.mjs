@@ -245,6 +245,8 @@ export function spawnServer({ serverEntry, port, fakeUrl, netGuardLog, env = {} 
   delete ambientEnv.CLOUDFLARE_API_TOKEN;
   delete ambientEnv.CLOUDFLARE_ACCOUNT_ID;
   delete ambientEnv.CLOUDFLARE_WORKERS_AI_BASE_URL;
+  delete ambientEnv.GEMINI_API_KEY;
+  delete ambientEnv.GEMINI_BASE_URL;
   delete ambientEnv.OPENAI_API_KEY;
   delete ambientEnv.OPENAI_BASE_URL;
   delete ambientEnv.OPENROUTER_API_KEY;

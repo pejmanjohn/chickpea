@@ -28,7 +28,7 @@ import { SlackTransportError } from '../src/slack/transport/types.ts';
 import { AGENT_FAILURE_TEXT, DURABLE_RECOVERY_FAILURE_TEXT } from '../src/slack/web-client-presenter.ts';
 import type { SlackPresentationOwner } from '../src/slack/run-presentations.ts';
 import type { UsageMicros } from '../src/usage/usage-display.ts';
-import { NO_RUN_FEES } from './helpers/platform-funding.ts';
+import { EVERY_PROVIDER_FUNDED, NO_RUN_FEES } from './helpers/platform-funding.ts';
 
 type RunTurnScript = (options: RunTurnOptions) => Promise<void>;
 
@@ -792,6 +792,7 @@ async function givenUpHostedTurn(
 function hostedCreditBacks(t: TestContext, answer: CreditBackOutcome) {
   const creditBacks: Array<{ run: RunRef; reason: CreditBackReason }> = [];
   configurePlatformFunding({
+    ...EVERY_PROVIDER_FUNDED,
     funding: async () => 'customer',
     admit: async () => 'admitted',
     charge: async () => undefined,

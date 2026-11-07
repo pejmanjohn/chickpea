@@ -45,7 +45,7 @@ import { openStateDb } from '../src/state/node-state-db.ts';
 import type { UsageMicros } from '../src/usage/usage-display.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
-import { NO_RUN_FEES } from './helpers/platform-funding.ts';
+import { EVERY_PROVIDER_FUNDED, NO_RUN_FEES } from './helpers/platform-funding.ts';
 
 /**
  * A hosted Slack turn that failed on Chickpea's side is credited back once
@@ -133,6 +133,7 @@ function fundingPort(answers: {
 } = {}) {
   const creditBacks: Array<{ run: RunRef; reason: CreditBackReason }> = [];
   configurePlatformFunding({
+    ...EVERY_PROVIDER_FUNDED,
     funding: async () => 'customer',
     admit: async () => 'admitted',
     charge: async () => undefined,

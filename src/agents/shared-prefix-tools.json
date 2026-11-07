@@ -2990,7 +2990,8 @@
             "enum": [
              "anthropic",
              "openai",
-             "openrouter"
+             "openrouter",
+             "google"
             ],
             "type": "string"
            }
@@ -4922,7 +4923,8 @@
             "enum": [
              "anthropic",
              "openai",
-             "openrouter"
+             "openrouter",
+             "google"
             ],
             "type": "string"
            }
@@ -5605,7 +5607,8 @@
                 "enum": [
                  "anthropic",
                  "openai",
-                 "openrouter"
+                 "openrouter",
+                 "google"
                 ],
                 "type": "string"
                }

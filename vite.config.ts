@@ -33,7 +33,7 @@ assertNodeVersion();
 
 export function chickpeaWorkerViteConfig(command: 'build' | 'serve', host?: ChickpeaWorkerHost): UserConfig {
   const fluePlugins = flue({
-    providers: ['anthropic', 'openai', 'openrouter', 'cloudflare'],
+    providers: ['anthropic', 'openai', 'openrouter', 'google', 'cloudflare'],
     tracing: false,
     ...(host ? { app: host.app, cloudflare: host.cloudflare } : {}),
   });

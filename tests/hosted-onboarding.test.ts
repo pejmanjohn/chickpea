@@ -52,7 +52,7 @@ import { withDirectSlackInstall } from './helpers/direct-slack-install.ts';
 import { withEnv } from './helpers/env.ts';
 import { FAKE_PROVIDER_KEYS, FakeProvidersBackend } from './helpers/fake-providers.ts';
 import { FakeObjectStorage, hostedInstallation } from './helpers/installation-objects.ts';
-import { NO_RUN_FEES } from './helpers/platform-funding.ts';
+import { EVERY_PROVIDER_FUNDED, NO_RUN_FEES } from './helpers/platform-funding.ts';
 import { onboardingRunFixture } from './helpers/onboarding-runs.ts';
 
 /**
@@ -559,7 +559,7 @@ test('hosted onboarding never offers Workers AI, even with an AI binding', async
   await signup.claim();
   const admin = signup.admin(await signup.ownerPrincipal());
   const models = await json<{ providers: Array<{ id: string }> }>(admin('/admin/api/models'));
-  assert.deepEqual(models.providers.map(({ id }) => id).sort(), ['anthropic', 'openai', 'openrouter']);
+  assert.deepEqual(models.providers.map(({ id }) => id).sort(), ['anthropic', 'google', 'openai', 'openrouter']);
   const { revision } = await json<{ revision: string }>(admin('/admin/api/onboarding'));
   const refused = await admin('/admin/api/onboarding/provider', {
     method: 'POST', body: JSON.stringify({ expectedRevision: revision, providerId: 'cloudflare' }),
@@ -569,9 +569,10 @@ test('hosted onboarding never offers Workers AI, even with an AI binding', async
   assert.equal((await signup.journey())!.revision, revision);
 });
 
-test('an installation on Chickpea\'s models chooses a provider with no key; one on its own key still needs one', async (t) => {
+test('an installation on Chickpea\'s models chooses a funded provider with no key; one on its own key still needs one', async (t) => {
   let funding: 'platform' | 'customer' = 'customer';
   configurePlatformFunding({
+    fundedProviders: new Set(['anthropic', 'openai', 'openrouter']),
     funding: async () => funding,
     admit: async () => 'admitted',
     charge: async () => undefined,
@@ -581,14 +582,17 @@ test('an installation on Chickpea\'s models chooses a provider with no key; one 
   const signup = await signUp(t);
   await signup.claim();
   const admin = signup.admin(await signup.ownerPrincipal());
-  const choose = async () => admin('/admin/api/onboarding/provider', {
+  const choose = async (providerId = 'anthropic') => admin('/admin/api/onboarding/provider', {
     method: 'POST',
-    body: JSON.stringify({ expectedRevision: (await signup.journey())!.revision, providerId: 'anthropic' }),
+    body: JSON.stringify({ expectedRevision: (await signup.journey())!.revision, providerId }),
   });
   const refused = await choose();
   assert.equal(refused.status, 409);
   assert.deepEqual(await refused.json(), { error: 'onboarding_provider_not_configured' });
   funding = 'platform';
+  const unfunded = await choose('google');
+  assert.equal(unfunded.status, 409, 'Chickpea\'s models do not cover a provider the host does not fund');
+  assert.deepEqual(await unfunded.json(), { error: 'onboarding_provider_not_configured' });
   const chosen = await json(choose());
   assert.equal(chosen.stage, 'choose_model');
   assert.equal(chosen.providerId, 'anthropic');
@@ -608,6 +612,7 @@ function hostPorts(t: TestContext) {
     },
   });
   configurePlatformFunding({
+    ...EVERY_PROVIDER_FUNDED,
     funding: async () => host.funding === 'platform' ? 'platform' : 'customer',
     admit: async () => 'admitted',
     charge: async () => undefined,

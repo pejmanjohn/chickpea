@@ -39,7 +39,7 @@ import { prepareSubmitRun, type SubmitRunInput } from '../src/work/submit-run.ts
 import { WorkStoreLogic } from '../src/work/store.ts';
 import type { WorkStore } from '../src/work/types.ts';
 import type { UsageMicros } from '../src/usage/usage-display.ts';
-import { NO_RUN_FEES } from './helpers/platform-funding.ts';
+import { EVERY_PROVIDER_FUNDED, NO_RUN_FEES } from './helpers/platform-funding.ts';
 import { captureSlackIdentityOperationalEvents } from './helpers/slack-identity-observability.ts';
 import {
   ARTIFACT_UNDELIVERED_NOTE,
@@ -1843,6 +1843,7 @@ function presentationPort(
 function hostedCanary(t: TestContext) {
   const creditBacks: Array<{ run: RunRef; reason: CreditBackReason }> = [];
   configurePlatformFunding({
+    ...EVERY_PROVIDER_FUNDED,
     funding: async () => 'customer', admit: async () => 'admitted', charge: async () => undefined,
     ...NO_RUN_FEES,
     creditBack: async (run, reason) => {

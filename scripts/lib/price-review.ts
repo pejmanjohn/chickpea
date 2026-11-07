@@ -7,6 +7,7 @@ import { isRecord } from '../../src/security/content-validation.ts';
 import { RELEASE_PRICE_CATALOGS } from '../../src/usage/pricing/catalog.ts';
 import {
   ANTHROPIC_PRICING_URL,
+  GOOGLE_PRICING_URL,
   IMAGE_FIELDS,
   TOKEN_FIELDS,
   cloudflareModelUrl,
@@ -400,6 +401,8 @@ function sourcesFor({ providerId, modelId, rate }: CurrentPrice): Read[] {
     return reads;
   }
   if (providerId === 'cloudflare' || providerId === 'cloudflare-workers-ai') return [cloudflareModel(modelId)];
+  // Google's page is checked by hand, so the tool can renew a Gemini price but never change it.
+  if (providerId === 'google') return [openRouterModel(`google/${modelId}`, 1)];
   return [];
 }
 
@@ -861,7 +864,7 @@ function registerCatalog(source: string, exportName: string, modulePath: string)
 }
 
 /** Each source a row can name, so most rows name a builder instead of spelling the URL. */
-const ROW_SOURCES = { ANTHROPIC_PRICING_URL, cloudflareModelUrl, openAiModelUrl, openRouterEndpointsUrl };
+const ROW_SOURCES = { ANTHROPIC_PRICING_URL, GOOGLE_PRICING_URL, cloudflareModelUrl, openAiModelUrl, openRouterEndpointsUrl };
 
 export function reviewRow(proposed: ProposedVersion, reviewDueAt: number): ReviewRow {
   const { rate } = proposed;

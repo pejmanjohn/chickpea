@@ -25,7 +25,7 @@ test('Node and Cloudflare Vite compositions select distinct truthful targets', a
   const nodeFlue = node.plugins.find((plugin) => plugin.name === 'flue');
   const nodeApi = nodeFlue?.api as FluePluginApi | undefined;
   assert.equal(nodeApi?.resolved?.target, 'node');
-  assert.deepEqual(nodeApi?.resolved?.config.providers, ['anthropic', 'openai', 'openrouter']);
+  assert.deepEqual(nodeApi?.resolved?.config.providers, ['anthropic', 'openai', 'openrouter', 'google']);
   assert.equal(nodeApi?.resolved?.config.tracing, false);
   assert.equal(node.build.outDir, 'dist');
   assert.equal(nodeApi?.resolved?.project.db, path.join(PROJECT_ROOT, 'src', 'db.node.ts'));
@@ -46,6 +46,7 @@ test('Node and Cloudflare Vite compositions select distinct truthful targets', a
     'anthropic',
     'openai',
     'openrouter',
+    'google',
     'cloudflare',
   ]);
   assert.equal(cloudflareApi?.resolved?.config.tracing, false);

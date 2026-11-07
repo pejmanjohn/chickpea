@@ -35,7 +35,7 @@ const { configureModelAccessResolver, withModelAccess } = await import('../../sr
 const { configurePlatformFunding } = await import('../../src/config/platform-funding.ts');
 const { configureInstallationAdmission } = await import('../../src/config/installation-admission.ts');
 const { scopeInstallationEnv } = await import('../../src/config/installation-scope.ts');
-const { NO_RUN_FEES } = await import('./platform-funding.ts');
+const { EVERY_PROVIDER_FUNDED, NO_RUN_FEES } = await import('./platform-funding.ts');
 const { serializeThreadImageRecords } = await import('../../src/slack/thread-images.ts');
 const { noteAgentAuthoringActivation } = await import('../../src/management/workspace-change-tools.ts');
 
@@ -191,6 +191,7 @@ configureModelAccessResolver({
   }),
 });
 configurePlatformFunding({
+  ...EVERY_PROVIDER_FUNDED,
   ...NO_RUN_FEES,
   funding: async () => current!.funding ?? 'platform',
   admit: async () => 'admitted',

@@ -10,6 +10,7 @@
  *   - anthropic:              ANTHROPIC_API_KEY
  *   - openai:                 OPENAI_API_KEY
  *   - openrouter:             OPENROUTER_API_KEY
+ *   - google:                 GEMINI_API_KEY
  *   - cloudflare-workers-ai:  CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID
  * A provider without credentials is reported as SKIPPED; the script fails if
  * NO provider could run live, or if any attempted run fails.
@@ -73,6 +74,14 @@ const PROVIDERS = [
     hasCreds: () => Boolean(process.env.OPENROUTER_API_KEY),
     missing: 'OPENROUTER_API_KEY absent',
     env: () => ({ OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY }),
+  },
+  {
+    id: 'google',
+    model: 'google/gemini-3.8-flash',
+    liveHost: 'generativelanguage.googleapis.com',
+    hasCreds: () => Boolean(process.env.GEMINI_API_KEY),
+    missing: 'GEMINI_API_KEY absent',
+    env: () => ({ GEMINI_API_KEY: process.env.GEMINI_API_KEY }),
   },
   {
     id: 'cloudflare-workers-ai',

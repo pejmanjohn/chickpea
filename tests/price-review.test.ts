@@ -230,6 +230,21 @@ test('a source that fails gives no value, so a field nobody confirms is unverifi
   assert.match(reasons(reviewed), /textInput: no source lists it; tried OpenAI model page: HTTP 500/);
 });
 
+test('a Gemini price is read from OpenRouter\'s google/ model, so the tool can renew it but never change it', async () => {
+  const listGemini = (prompt: string) => (text: string) => {
+    const models = JSON.parse(text);
+    models.data.push({ id: 'google/gemini-3.8-flash', pricing: { prompt, completion: '0.00000375', input_cache_read: '0.000000075' } });
+    return JSON.stringify(models);
+  };
+  const flash = price('google', 'gemini-3.8-flash', { inputMicrosPerUnit: 750_000, outputMicrosPerUnit: 3_750_000, cacheReadMicrosPerUnit: 75_000 });
+  const same = await reviewOne(flash, { edits: { [OPENROUTER_MODELS_URL]: listGemini('0.00000075') } });
+  assert.equal(same.verdict, 'unchanged');
+  assert.deepEqual(same.sources.map(({ source }) => source), ['OpenRouter google/gemini-3.8-flash']);
+  const raised = await reviewOne(flash, { edits: { [OPENROUTER_MODELS_URL]: listGemini('0.0000015') } });
+  assert.equal(raised.verdict, 'unverified');
+  assert.match(reasons(raised), /input: only OpenRouter google\/gemini-3\.8-flash \$1\.5\/MTok/);
+});
+
 test('OpenRouter models are checked at the maker\'s endpoint, and a missing maker is unverified', async () => {
   const { result } = await review([
     price('openrouter', 'z-ai/glm-5.3-flash', GLM_5_3_FLASH),

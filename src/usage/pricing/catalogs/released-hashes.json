@@ -74,5 +74,10 @@
   "openrouter-z-ai-glm-5.3-flash_2026-11-05-review": "2ab41bbb6f248e4b0a46f54e71910da4de9a65293adcc9c3a274d183cfb24eec",
   "cloudflare-zai-org-glm-4.7-flash_2026-11-05-review": "49da9059d5b4bde2a7498735e20c593b24927238b3fb932c18c577e7e20df64e",
   "cloudflare-workers-ai-zai-org-glm-4.7-flash_2026-11-05-review": "4bb4187dc1fa84d898b32576feefc0a506dd633db37523f10466a448fe32add5",
-  "openai-gpt-6.1-terra_2026-11-06-review": "069611be2926e62fb8bbed3a6770e7ec88cd7b828000740db7fbc4538ee40424"
+  "openai-gpt-6.1-terra_2026-11-06-review": "069611be2926e62fb8bbed3a6770e7ec88cd7b828000740db7fbc4538ee40424",
+  "google-gemini-4-argon_2026-11-06": "ebc7c0f46ec9f08b91d3cc8ddda40290712cbabfd1d8457cd47392ec443fd91f",
+  "google-gemini-4-argon_2026-12-01": "756722d3f4ebabf7d523886ee6f6f8cfb850f24a30418efd0be7c26a994f88c8",
+  "google-gemini-3.8-flash_2026-11-06": "10ba87cb6fbbaef60c5240d42f4d5348079ea95f12621cd623caff0391bb65e2",
+  "google-gemini-3.8-flash_2027-01-01": "e70f4ccf652d187214a1fe21d9cd8d3a57007df06a189f21e4a0f473ce71bdeb",
+  "google-gemini-3.5-flash-lite_2026-11-06": "cd56dd5bd49c1fa9f4597f8b0ee5ea006ed95fa4c9d0a9f72174a947358253ab"
 }

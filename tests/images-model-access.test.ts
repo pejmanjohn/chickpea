@@ -34,7 +34,7 @@ import { RELEASE_PRICE_CATALOGS } from '../src/usage/pricing/catalog.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { withEnv } from './helpers/env.ts';
-import { NO_RUN_FEES } from './helpers/platform-funding.ts';
+import { EVERY_PROVIDER_FUNDED, NO_RUN_FEES } from './helpers/platform-funding.ts';
 
 const NOW = Date.UTC(2026, 9, 7, 12);
 const BASE_URL = 'https://images.openai.invalid/v1';
@@ -116,6 +116,7 @@ function creditsInstallation(
   const fundingCalls = { admit: [] as PlatformFundedModel[], charge: [] as ModelRequestRecord[] };
   configureInstallationAdmission(async () => admission);
   configurePlatformFunding({
+    ...EVERY_PROVIDER_FUNDED,
     funding: async () => 'platform',
     admit: async (_grant, model) => {
       fundingCalls.admit.push(model);

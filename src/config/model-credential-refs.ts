@@ -7,7 +7,7 @@ import {
 } from './installation-scope.ts';
 import { providerPrefix } from './model-access.ts';
 import { modelCredentialSettingKeys } from './model-credential-settings.ts';
-import { installationFunding, platformCredentialRefId } from './platform-funding.ts';
+import { installationFunding, platformCredentialRefId, platformFundsProvider } from './platform-funding.ts';
 import {
   isProviderKeyId,
   PROVIDER_DISPLAY_NAMES,
@@ -42,12 +42,14 @@ const ENV_KEY_NAMES: Record<ProviderKeyId, string> = {
   anthropic: 'ANTHROPIC_API_KEY',
   openai: 'OPENAI_API_KEY',
   openrouter: 'OPENROUTER_API_KEY',
+  google: 'GEMINI_API_KEY',
 };
 
 const ENV_PREFIXES: Record<ProviderKeyId, string> = {
   anthropic: 'ANTHROPIC',
   openai: 'OPENAI',
   openrouter: 'OPENROUTER',
+  google: 'GEMINI',
 };
 
 interface StoredCredentialMetadata {
@@ -165,7 +167,9 @@ export async function resolveModelCredentialAttribution(
       });
     }
     if (hosted) {
-      if (await installationFunding(platformEnv) === 'platform') return registerCredential(platformRegistration(id));
+      if (await installationFunding(platformEnv) === 'platform') {
+        return platformFundsProvider(id) ? registerCredential(platformRegistration(id)) : null;
+      }
       // Only a key saved encrypted and readable with the deployment keyring counts; nothing is decrypted.
       const record = await hostedModelCredentialStore(settings).readModelCredential(id);
       const current = savedHostedCredential(record, hasEnvelope(record) ? deploymentModelKeyring(platformEnv) : undefined);
@@ -803,6 +807,7 @@ function environmentScope(id: ProviderKeyId, env: NodeJS.ProcessEnv): string | n
     case 'anthropic':
       return trimmedNonEmpty(env.ANTHROPIC_WORKSPACE_ID) ?? null;
     case 'openrouter':
+    case 'google':
       return null;
   }
 }

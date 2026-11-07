@@ -50,6 +50,7 @@ test('provider matrix covers every current Chickpea inference route', () => {
     matrix.routes.map((route) => route.id).sort(),
     [
       'anthropic-api-key',
+      'google-api-key',
       'local-custom-compatible',
       'openai-api-key',
       'openrouter-api-key',

@@ -41,6 +41,7 @@ const ANTHROPIC_MARKER = 'ANTHROPIC_STUB_REPLY::haiku-4-5::exec-priorities-ack';
 const OPENAI_MARKER = 'OPENAI_STUB_REPLY::gpt-4.1-mini::exec-priorities-ack';
 const OPENROUTER_MARKER = 'OPENROUTER_STUB_REPLY::gpt-4.1::exec-priorities-ack';
 const WORKERS_AI_MARKER = 'WORKERS_AI_STUB_REPLY::glm-5.2::exec-priorities-ack';
+const GEMINI_MARKER = 'GEMINI_STUB_REPLY::gemini-4-argon::exec-priorities-ack';
 
 const results = [];
 function record(name, passed, detail) {
@@ -94,12 +95,13 @@ async function runProvider({ serverEntry, fake, backend, netGuardLog, model, rep
   return {
     finalText,
     wireMethods: providerCalls.map((call) => call.method),
+    providerCalls,
     serverOutput: spawned.getOutput(),
   };
 }
 
 const netGuardLog = join(mkdtempSync(join(tmpdir(), 'flue-prov-guard-')), 'external-hosts.log');
-const { FakeSlackBackend } = await loadFake();
+const { FakeSlackBackend, FAKE_PROVIDER_KEYS } = await loadFake();
 const backend = new FakeSlackBackend({
   slack: {
     // The runtime revalidates the selected Slack identity's workspace and
@@ -199,6 +201,42 @@ try {
     'openrouter (STUB): request used the openai-completions wire protocol',
     openrouter.wireMethods.includes('chat/completions'),
     `wireMethods=${openrouter.wireMethods.join(',')}`,
+  );
+
+  // --- google (STUB: local fake endpoint) — Gemini streamGenerateContent over SSE. ---
+  const google = await runProvider({
+    serverEntry,
+    fake,
+    backend,
+    netGuardLog,
+    model: 'google/gemini-4-argon',
+    replyText: GEMINI_MARKER,
+    env: {
+      GEMINI_BASE_URL: `${fake.url}/gemini/v1beta`,
+      GEMINI_API_KEY: FAKE_PROVIDER_KEYS.google,
+    },
+  });
+  const geminiCalls = google.providerCalls.filter((call) => call.method === 'streamGenerateContent');
+  const geminiThinking = geminiCalls.map((call) => call.body?.generationConfig?.thinkingConfig ?? {});
+  record(
+    'google (STUB): final on the wire carries the Gemini stub reply',
+    google.finalText.includes(GEMINI_MARKER),
+    `wire=${google.wireMethods.join(',')} markerInFinal=${google.finalText.includes(GEMINI_MARKER)}`,
+  );
+  record(
+    'google (STUB): request streamed models/gemini-4-argon:streamGenerateContent?alt=sse with the key in its header',
+    geminiCalls.length > 0 && geminiCalls.every((call) => {
+      const url = new URL(call.url, fake.url);
+      return url.pathname === '/gemini/v1beta/models/gemini-4-argon:streamGenerateContent' &&
+        url.searchParams.get('alt') === 'sse' && !call.url.includes(FAKE_PROVIDER_KEYS.google);
+    }),
+    `urls=${geminiCalls.map((call) => call.url).join(',')}`,
+  );
+  record(
+    'google (STUB): Gemini 4 Argon requests carry a thinking level and no token budget',
+    geminiThinking.length > 0 &&
+      geminiThinking.every((thinking) => typeof thinking.thinkingLevel === 'string' && thinking.thinkingBudget === undefined),
+    `thinkingConfig=${JSON.stringify(geminiThinking)}`,
   );
 
   // --- cloudflare-workers-ai (STUB: local fake endpoint) — openai-completions. ---

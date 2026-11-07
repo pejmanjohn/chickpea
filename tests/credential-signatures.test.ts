@@ -18,6 +18,8 @@ const SYNTHETIC_SLACK_APP_TOKEN = ['x', 'app'].join('') + '-' +
 const SYNTHETIC_GITHUB_INSTALLATION_TOKEN = ['gh', 's_'].join('') +
   'abcdefghijklmnopqrstuvwxyz012';
 const SYNTHETIC_HUBSPOT_KEY = ['pat', 'eu1', '00000000-0000-4000-8000-00000000abcd'].join('-');
+const SYNTHETIC_GOOGLE_KEY = ['AI', 'za', 'Sy0_-'.repeat(7)].join('');
+const SYNTHETIC_GOOGLE_AUTH_KEY = ['AQ', 'Ab' + '8RN6x_q-Z0'.repeat(4) + 'k3'.repeat(4)].join('.');
 
 // One sample per credential signature, in table order.
 const SAMPLES: readonly { input: string; redacted: string }[] = [
@@ -38,6 +40,8 @@ const SAMPLES: readonly { input: string; redacted: string }[] = [
     input: 'key sk-proj-abcdefghijklmnopqrstuvwx here',
     redacted: 'key [credential redacted] here',
   },
+  { input: `key ${SYNTHETIC_GOOGLE_KEY} here`, redacted: 'key [credential redacted] here' },
+  { input: `key ${SYNTHETIC_GOOGLE_AUTH_KEY} here`, redacted: 'key [credential redacted] here' },
   {
     input: `token ${SYNTHETIC_GITHUB_INSTALLATION_TOKEN} here`,
     redacted: 'token [credential redacted] here',
@@ -74,6 +78,8 @@ test('credential markers stay the exact projection the streaming path relies on'
     'xapp-',
     'sk-ant-',
     'sk-proj-',
+    'AIza',
+    'AQ.',
     'ghp_',
     'gho_',
     'ghu_',
@@ -94,6 +100,7 @@ test('credential markers stay the exact projection the streaming path relies on'
     'SLACK_APP_TOKEN',
     'ANTHROPIC_API_KEY',
     'OPENAI_API_KEY',
+    'GEMINI_API_KEY',
     'COMPOSIO_API_KEY',
     'COMPOSIO_WEBHOOK_SECRET',
     'GITHUB_TOKEN',
@@ -395,6 +402,8 @@ test('streaming withholds a partial credential marker tail until it resolves', (
     streamableSlackMarkdownPrefix(`token ${SYNTHETIC_GITHUB_INSTALLATION_TOKEN} rest`),
     'token',
   );
+  assert.equal(streamableSlackMarkdownPrefix(`key ${SYNTHETIC_GOOGLE_AUTH_KEY} rest`), 'key');
+  assert.equal(streamableSlackMarkdownPrefix('key AQ.A'), 'key');
   // The last word waits for the space that ends it: `sk` can become `sk-proj-…`.
   assert.equal(streamableSlackMarkdownPrefix('nothing secret here'), 'nothing secret');
   assert.equal(streamableSlackMarkdownPrefix('nothing secret here\n'), 'nothing secret here');
