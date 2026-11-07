@@ -4386,7 +4386,7 @@
       ? '<p class="onboarding-provider-ready">' + esc(selected.name) + ' is ready to use.</p>'
       : selected.id === "cloudflare"
         ? '<p class="field-error" role="alert">Cloudflare Workers AI is not available for this deployment.</p>'
-        : '<label class="field" for="onboarding-provider-key"><span class="field-label">' + esc(selected.keyLabel) + '</span><input class="input" id="onboarding-provider-key" type="password" autocomplete="off" spellcheck="false" data-action="onboarding-provider-key" data-provider="' + esc(selected.id) + '" value="' + esc(state.onboardingProviderKey) + '" placeholder="' + (selected.id === "google" ? "AIza..." : "Paste your key") + '"></label>' + (selected.id === "google" ? '<p class="hint">' + esc(GEMINI_KEY_HINT) + '</p>' : '') + '<p class="onboarding-provider-secret-note">Stored encrypted and never shown again.</p>');
+        : '<label class="field" for="onboarding-provider-key"><span class="field-label">' + esc(selected.keyLabel) + '</span><input class="input" id="onboarding-provider-key" type="password" autocomplete="off" spellcheck="false" data-action="onboarding-provider-key" data-provider="' + esc(selected.id) + '" value="' + esc(state.onboardingProviderKey) + '" placeholder="' + (selected.id === "google" ? "AQ.Ab..." : "Paste your key") + '"></label>' + (selected.id === "google" ? '<p class="hint">' + esc(GEMINI_KEY_HINT) + '</p>' : '') + '<p class="onboarding-provider-secret-note">Stored encrypted and never shown again.</p>');
   }
 
   function onboardingModelOptions() {
@@ -13294,7 +13294,7 @@
 
   function pasteBodyHtml(id, ui, meta) {
     var busy = ui.busy;
-    var placeholder = id === "anthropic" ? "sk-ant-..." : id === "openrouter" ? "sk-or-..." : id === "google" ? "AIza..." : "sk-...";
+    var placeholder = id === "anthropic" ? "sk-ant-..." : id === "openrouter" ? "sk-or-..." : id === "google" ? "AQ.Ab..." : "sk-...";
     var val = ui.key || "";
     var input = '<input class="input mono" type="password" autocomplete="off" placeholder="' + esc(placeholder) + '" value="' + esc(val) + '" aria-label="' + esc(meta.name) + ' API key" data-action="prov-key-input" data-provider="' + esc(id) + '"' +
       (busy ? ' disabled' : (ui.error ? ' style="outline:2px solid var(--danger); outline-offset:-1px;"' : '')) + '>';

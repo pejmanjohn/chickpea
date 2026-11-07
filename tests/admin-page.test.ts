@@ -15990,7 +15990,7 @@ test('the Google Gemini card asks for a Gemini key from a billed project and val
   assert.match(card(), /Validated once against <span class="mono">GET \/v1beta\/models<\/span>/);
 
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'prov-add-key', 'data-provider': 'google' }) });
-  assert.match(card(), /placeholder="AIza\.\.\." value="" aria-label="Google Gemini API key"/);
+  assert.match(card(), /placeholder="AQ\.Ab\.\.\." value="" aria-label="Google Gemini API key"/);
   assert.match(card(), /<p class="hint">Use a key from a Google Cloud project with billing turned on\. Google may use prompts sent with free-tier keys to improve its products\. We also recommend turning off request logging for the project in Google AI Studio\. Validating calls Google's <span class="mono" style="color:var\(--text-2\);">GET \/v1beta\/models<\/span> once to prove the key\. Stored like your Slack credentials\.<\/p>/);
 });
 
@@ -21741,7 +21741,7 @@ test('hosted onboarding opens at Choose provider with Slack done, offering API k
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'onboarding-provider-select', 'data-provider': 'google' }) });
   const google = harness.app.innerHTML;
   assert.match(google, /<span class="field-label">Gemini API key<\/span>/);
-  assert.match(google, /placeholder="AIza\.\.\."/);
+  assert.match(google, /placeholder="AQ\.Ab\.\.\."/);
   assert.match(google, /<p class="hint">Use a key from a Google Cloud project with billing turned on\. Google may use prompts sent with free-tier keys to improve its products\. We also recommend turning off request logging for the project in Google AI Studio\.<\/p>/);
 
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'onboarding-provider-select', 'data-provider': 'openai' }) });

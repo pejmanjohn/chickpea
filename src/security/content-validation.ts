@@ -33,8 +33,10 @@ const CREDENTIAL_SIGNATURES: readonly (
     flags: 'i',
     markers: ['sk-proj-'],
   },
-  // Google API keys, Gemini's among them.
+  // Google API keys, Gemini's among them: standard keys, then the auth keys
+  // AI Studio has issued since 2026-05-28.
   { source: String.raw`\bAIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z_-])`, flags: '', markers: ['AIza'] },
+  { source: String.raw`\bAQ\.Ab[0-9A-Za-z_-]{40,}`, flags: '', markers: ['AQ.Ab'] },
   {
     source: String.raw`\b(?:gh[pousr]|github_pat)_[a-z0-9_]{20,}\b`,
     flags: 'i',

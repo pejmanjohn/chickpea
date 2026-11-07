@@ -108,16 +108,21 @@ test('the Gemini models Pi already routes reach Google exactly as Pi builds them
         return requests[0]!.body;
       });
       const { body } = await sentThinking(modelId, effort);
-      assert.deepEqual(body, plain, `${modelId} at ${effort ?? 'no effort'}`);
+      const { store, ...rest } = body;
+      assert.equal(store, false, 'the request-log opt-out is the only addition');
+      assert.deepEqual(rest, plain, `${modelId} at ${effort ?? 'no effort'}`);
       assert.equal(wireThinking({ body } as CapturedRequest)?.thinkingBudget, undefined);
     }
   }
 });
 
-test('the request-log opt-out ships off and adds store: false only when turned on', async () => {
-  assert.equal(GEMINI_STORE_OPT_OUT, false);
-  const { body } = await sentThinking('gemini-3.8-flash', 'medium');
-  assert.equal(JSON.stringify(body).includes('"store"'), false, 'no store field reaches Google');
+test('the request-log opt-out ships on and reaches Google as a top-level store: false', async () => {
+  assert.equal(GEMINI_STORE_OPT_OUT, true);
+  for (const modelId of REVIEWED as (keyof typeof GEMINI_MODELS)[]) {
+    const { body } = await sentThinking(modelId, 'medium');
+    assert.equal(body.store, false, modelId);
+    assert.equal(JSON.stringify(body).match(/"store"/g)?.length, 1, `${modelId} sends store once, at the top level`);
+  }
 
   const payload = { model: 'gemini-3.8-flash', contents: [], config: { thinkingConfig: { thinkingLevel: 'MEDIUM' } } };
   const on = withGeminiPayloadPolicy(payload, GEMINI_MODELS['gemini-3.8-flash'], 'medium', { storeOptOut: true });
@@ -223,7 +228,7 @@ test('Gemini key validation sends the key in a header, never the URL, and lists 
 });
 
 test('a turn on the registered Google provider carries the key in x-goog-api-key and its base URL path', async () => {
-  const key = `AIza${'Q'.repeat(35)}`;
+  const key = `AQ.Ab${'Q'.repeat(48)}`;
   await withEnv({ GEMINI_API_KEY: key, GEMINI_BASE_URL: BASE_URL }, async () => {
     invalidateProviderKeyCache();
     configureModelAccessResolver(installationModelAccessResolver);
@@ -251,4 +256,14 @@ test('a Google API key in text counts as a credential and is redacted', () => {
   assert.equal(hasCredentialLikeContent(`key: ${key}`), true);
   assert.equal(redactCredentialLikeContent(`use ${key} now (${key})`), 'use [credential redacted] now ([credential redacted])');
   assert.equal(hasCredentialLikeContent(`AIza${'x'.repeat(34)}`), false, 'too short to be a key');
+});
+
+test('a Google auth key (AQ.) in text counts as a credential and is redacted', () => {
+  // The shape AI Studio issues since 2026-05-28: `AQ.` then 50 characters, here 53 in all.
+  const key = `AQ.Ab${'8RN6x_q-Z0'.repeat(4)}${'k3'.repeat(4)}`;
+  assert.equal(key.length, 53);
+  assert.equal(hasCredentialLikeContent(`GEMINI_API_KEY=${key}`), true);
+  assert.equal(redactCredentialLikeContent(`use ${key} now (${key}).`), 'use [credential redacted] now ([credential redacted]).');
+  assert.equal(hasCredentialLikeContent(`AQ.Ab${'x'.repeat(30)}`), false, 'too short to be a key');
+  assert.equal(hasCredentialLikeContent('Water quality (AQ.Ab) readings'), false);
 });

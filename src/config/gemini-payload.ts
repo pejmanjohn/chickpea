@@ -9,11 +9,11 @@ import {
 import { isRecord } from '../security/content-validation.ts';
 
 /**
- * Asks Google not to keep the request in the project's request logs. Off
- * until a live request shows generateContent accepts a top-level `store`:
- * Google rejects every request that carries a field it does not know.
+ * Asks Google not to keep the request in the project's request logs, which
+ * new projects turn on by default. Google documents the top-level `store`
+ * field, and generateContent accepted `store: false` live on 2026-11-07.
  */
-export const GEMINI_STORE_OPT_OUT = false;
+export const GEMINI_STORE_OPT_OUT = true;
 
 export function decorateGeminiPayloadStreams(streams: ProviderStreams): ProviderStreams {
   return {
