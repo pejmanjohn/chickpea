@@ -178,7 +178,7 @@ export const MERGE_GATE_COMMAND = 'npm run verify:host -- --wait-ms 3600000 npm 
  * export). Otherwise the plan runs only part of it and is not the merge gate.
  */
 export const mergeGateWarning = (plan) => (plan.fullTests ? null
-  : `This run is NOT the merge gate: its plan runs only part of the test suite. Before merging, run the full suite on a local merge of the final head with current origin/main: ${MERGE_GATE_COMMAND}`);
+  : `This run is NOT the merge gate: its plan runs only part of the test suite. Before merging a T1 to T3 change, run the full suite on a local merge of the final head with current origin/main: ${MERGE_GATE_COMMAND}`);
 
 /** The end summary on stdout, then the merge-gate warning, if any, on stderr. */
 export function printRunSummary(plan, { passed, retries, results }, { log = console.log, warn = console.error } = {}) {
