@@ -286,9 +286,9 @@ test('credential-bound OAuth state round-trips through continuation and callback
       callbackUrl: CALLBACK_URL,
       setupOperationId: 'setup_bound',
     }, dependencies);
-    assert.equal(
+    assert.deepEqual(
       await readMcpOAuthSetupContinuation(started.state, dependencies),
-      'setup_bound',
+      { callbackUrl: CALLBACK_URL, setupOperationId: 'setup_bound' },
     );
     const completed = await completeMcpOAuthAuthorization(
       { code: 'provider-code', state: started.state },
@@ -423,8 +423,9 @@ test('Meta defaults existing scope-less starts to read-only MCP access with its 
       readMcpOAuthSetupContinuation(first.state, dependencies),
       (error: unknown) => error instanceof McpOAuthError && error.code === 'invalid_state',
     );
-    assert.equal(await readMcpOAuthSetupContinuation(current.state, dependencies), 'setup_current');
-    assert.equal(await readMcpOAuthSetupContinuation(current.state, dependencies), 'setup_current');
+    const continuation = { callbackUrl: CALLBACK_URL, setupOperationId: 'setup_current' };
+    assert.deepEqual(await readMcpOAuthSetupContinuation(current.state, dependencies), continuation);
+    assert.deepEqual(await readMcpOAuthSetupContinuation(current.state, dependencies), continuation);
 
     const pending = JSON.parse(
       (await settings.getSetting(mcpOAuthSettingKeys(REF)[1]))!,
