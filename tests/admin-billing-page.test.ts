@@ -20,7 +20,7 @@ import {
   type SavedCardResult,
   type UsageMicros,
 } from '../src/config/platform-billing.ts';
-import type { ProviderKeyId } from '../src/config/provider-keys.ts';
+import type { ProviderKeyId } from '../src/config/provider-key-ids.ts';
 import { estimateUsage } from '../src/usage/pricing/estimate.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import type { UsageStore } from '../src/usage/types.ts';

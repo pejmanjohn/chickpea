@@ -1,7 +1,7 @@
 import { installationCacheKey } from './installation-scope.ts';
 import { ModelCredentialUnavailableError } from './model-credential-refs.ts';
-import type { ProviderKeyId } from './provider-keys.ts';
-import { isProviderKeyId, resolveProviderApiKey } from './provider-keys.ts';
+import { isProviderKeyId, type ProviderKeyId } from './provider-key-ids.ts';
+import { resolveProviderApiKey } from './provider-keys.ts';
 import { MODEL_EFFORTS, type ModelEffort } from './model-effort.ts';
 import type { SettingsStore } from './settings-store.ts';
 import type { PlatformEnv } from './state-backend.ts';

@@ -12,11 +12,8 @@ import {
 import { deploymentServesManyInstallations } from './installation-scope.ts';
 import { providerPrefix } from './model-access.ts';
 import { installationFunding } from './platform-funding.ts';
-import {
-  isProviderKeyId,
-  resolveProviderApiKey,
-  type ProviderKeyId,
-} from './provider-keys.ts';
+import { isProviderKeyId, type ProviderKeyId } from './provider-key-ids.ts';
+import { resolveProviderApiKey } from './provider-keys.ts';
 import type { SettingsStore } from './settings-store.ts';
 import type { PlatformEnv } from './state-backend.ts';
 import {

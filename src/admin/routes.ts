@@ -412,12 +412,11 @@ import {
   resolveOpenAiAuthMethod,
   saveOpenAiAuthMethod,
 } from '../config/openai-auth.ts';
+import { isProviderKeyId, PROVIDER_KEY_IDS } from '../config/provider-key-ids.ts';
 import {
   deleteProviderApiKey,
   describeProviderKeySources,
-  isProviderKeyId,
   listInstallationModelProviders,
-  PROVIDER_KEY_IDS,
   saveProviderApiKey,
   type ProviderKeySource,
 } from '../config/provider-keys.ts';

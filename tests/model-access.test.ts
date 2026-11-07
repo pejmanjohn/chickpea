@@ -55,12 +55,12 @@ import {
   rotateInstallationModelCredential,
   type ModelCredentialAction,
 } from '../src/config/model-credential-refs.ts';
+import type { ProviderKeyId } from '../src/config/provider-key-ids.ts';
 import {
   describeProviderKeySources,
   invalidateProviderKeyCache,
   listInstallationModelProviders,
   resolveProviderApiKey,
-  type ProviderKeyId,
 } from '../src/config/provider-keys.ts';
 import {
   cachedProviderModelCount,

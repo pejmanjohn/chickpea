@@ -8,7 +8,7 @@ import {
 import { providerPrefix } from './model-access.ts';
 import { modelCredentialSettingKeys } from './model-credential-settings.ts';
 import { installationFunding, platformCredentialRefId } from './platform-funding.ts';
-import type { ProviderKeyId } from './provider-keys.ts';
+import type { ProviderKeyId } from './provider-key-ids.ts';
 import {
   isModelCredentialStore,
   sameEnvelope,

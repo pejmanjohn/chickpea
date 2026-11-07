@@ -23,7 +23,7 @@ import {
   rewrapHostedModelCredentials,
 } from './model-credential-refs.ts';
 import { modelCredentialSettingKeys } from './model-credential-settings.ts';
-import { PROVIDER_KEY_IDS, type ProviderKeyId } from './provider-keys.ts';
+import { PROVIDER_KEY_IDS, type ProviderKeyId } from './provider-key-ids.ts';
 import { isEncryptedCredentialCensusStore, type SettingsStore } from './settings-store.ts';
 import { getIdentityStore, getSettingsStore, getUsageStore, type PlatformEnv } from './state-backend.ts';
 import type { IdentityStore } from '../identity/types.ts';

@@ -46,13 +46,13 @@ import {
   type ModelCredentialAction,
 } from '../src/config/model-credential-refs.ts';
 import { registerPiProvider, registeredPiProvider } from '../src/config/pi-provider-registry.ts';
+import type { ProviderKeyId } from '../src/config/provider-key-ids.ts';
 import {
   deleteProviderApiKey,
   describeProviderKeySources,
   invalidateProviderKeyCache,
   resolveProviderApiKey,
   saveProviderApiKey,
-  type ProviderKeyId,
 } from '../src/config/provider-keys.ts';
 import { SqliteSettingsStore, type PublishModelCredentialInput } from '../src/config/settings-store.ts';
 import type { PlatformEnv } from '../src/config/state-backend.ts';

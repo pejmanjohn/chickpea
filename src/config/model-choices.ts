@@ -18,7 +18,8 @@ import {
 } from './model-readiness.ts';
 import { resolveOpenAiAuthMethod } from './openai-auth.ts';
 import { installationFunding } from './platform-funding.ts';
-import { describeProviderKeySources, isProviderKeyId } from './provider-keys.ts';
+import { isProviderKeyId } from './provider-key-ids.ts';
+import { describeProviderKeySources } from './provider-keys.ts';
 import { getProviderFavorites, getWorkersAiEnabled } from './provider-models.ts';
 import type { RuntimeModelProvider } from './providers.ts';
 import type { SettingsStore } from './settings-store.ts';

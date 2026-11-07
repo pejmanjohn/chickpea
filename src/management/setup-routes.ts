@@ -96,10 +96,10 @@ import {
   OPENAI_API_IMAGE_DEFAULT_MODEL_ID,
 } from '../config/initial-image-default.ts';
 import { validateProviderApiKey } from '../config/provider-models.ts';
+import type { ProviderKeyId } from '../config/provider-key-ids.ts';
 import {
   describeProviderKeySources,
   saveProviderApiKey,
-  type ProviderKeyId,
 } from '../config/provider-keys.ts';
 import { installationModelCredentialVersion } from '../config/model-credential-refs.ts';
 import {
