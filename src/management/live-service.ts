@@ -157,6 +157,8 @@ export function createLiveWorkspaceManagementService(
     management,
     memory: getMemoryStateStore(env),
     routines: getRoutineStore(env),
+    ...(env ? { env } : {}),
+    settings,
     work: getWorkStore(env),
     routineSchedulingAvailable: isCloudflareTarget()
       ? true
