@@ -16,6 +16,7 @@ update.
 | Hosted catalog (`catalog/current.json`) | No | Subscription models, and API-key models that the installed Pi does not know. Each entry maps to a compiled request profile. |
 | Live provider lists (`/v1/models`) | No | The picker only. A listed model runs only if one of the sources above can route it. |
 | Workers AI binding | No | Flue gives an unknown `@cf/...` ID zero metadata (no cost, no context window). Chickpea curates Workers AI models instead. |
+| Reviewed Gemini table (`src/config/gemini-models.ts`) | Yes | The only Google Gemini models Chickpea registers. Gemini stays out of the hosted catalog, which accepts only `anthropic/` and `openai/` entries. |
 
 Pi's `refresh()` only changes providers that load their model list at run time
 (in Pi 1.1, only Radius). It does not add Anthropic or OpenAI models.
@@ -29,6 +30,22 @@ An installation rejects the whole hosted document, not only one entry, when
 any entry names a profile that the installation does not compile
 (`src/model-catalog/schema.ts`). The installation keeps its last accepted
 catalog and rejects every later revision that still carries that entry.
+
+### Add a Gemini model
+
+Gemini models never go in the hosted catalog: a `google/` entry makes every
+released installation reject the whole document.
+
+1. Add the model to `GEMINI_MODELS` in `src/config/gemini-models.ts`, copied
+   from Pi's `GOOGLE_MODELS` when Pi ships it.
+2. Check that Pi's `usesGoogleThinkingLevel` matches the id. If it does not,
+   Pi sends a token budget instead of a thinking level, and
+   `src/config/gemini-payload.ts` rewrites it. Gemini 4 Argon needs this on
+   Pi 1.1. When Pi ships Argon, delete its row and the rewrite;
+   `tests/gemini-provider.test.ts` fails as a reminder.
+3. Add its price to a new catalog file, as for any model.
+4. Update the unsupported-model text in `src/config/model-readiness.ts` and
+   the Admin onboarding note if the model changes the recommended choices.
 
 Hosted credits charge only for models that have a reviewed list price in
 `src/usage/pricing/catalogs/`. A model without one runs with the customer's own

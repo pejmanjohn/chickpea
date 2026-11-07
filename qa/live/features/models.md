@@ -4,10 +4,11 @@ Docs: `/agents/models-and-providers/`. Record areas: `providers`. Legacy contrac
 
 ## What it covers
 
-- Four providers: Anthropic, OpenAI (Platform API keys only), OpenRouter, and Cloudflare Workers AI, which is keyless through the Worker's binding and absent on Node. Models are written `<provider>/<model>`.
+- Five providers: Anthropic, OpenAI (Platform API keys only), Google Gemini, OpenRouter, and Cloudflare Workers AI, which is keyless through the Worker's binding and absent on Node. Models are written `<provider>/<model>`.
+- Google Gemini (`google/`) offers only `gemini-4-argon`, `gemini-3.8-flash` and `gemini-3.5-flash-lite`; any other `google/` id is refused by name. Its key comes from `GEMINI_API_KEY` or Settings, and validation calls `GET /v1beta/models` with the key in a header. On Chickpea's models, Gemini appears only when the host funds Google.
 - An environment key wins and shows as Environment managed, with no Change or Remove. Otherwise a key saved in Settings → Model providers is validated with the provider first and reaches Agents within 5 seconds.
 - A turn runs on the Agent's pin, else the workspace Default model. `@Chickpea` is never pinned. A pin change applies to new threads; a default change applies to the next admitted message.
-- The picker shows live Anthropic and OpenAI lists plus catalog entries, and only starred OpenRouter and Workers AI models. The Workers AI toggle hides `cloudflare/*` models without touching saved pins.
+- The picker shows live Anthropic and OpenAI lists plus catalog entries, the three Gemini models, and only starred OpenRouter and Workers AI models. The Workers AI toggle hides `cloudflare/*` models without touching saved pins.
 - The model catalog is hosted (refreshed about every 6 hours) or bundled, shown as the Compatibility rules line with Refresh. A failed refresh keeps the last good list.
 - Image role: Default image model, overridable on an Agent's Model tab. Agents with it filled get the image tool; Flare and Sunburst use the OpenAI key and can edit images posted in the thread. Clearing it removes the tool on the next request.
 - Coding role: Default coding model, for the Cloudflare coding sandbox only. Unset means coding workspaces use each Agent's own model.
@@ -37,6 +38,7 @@ Docs: `/agents/models-and-providers/`. Record areas: `providers`. Legacy contrac
 - The image path once failed only under workerd, through a fetch option Node accepts. Node-only tests never prove the deployed image path.
 - Workers AI `gpt-oss` models can emit raw Harmony framing as content. Any `<|channel|>` marker or analysis text that reaches Slack fails the case as `product`.
 - OpenRouter tiers can require provider-account settings and answer 403 or 404 until they are set. That is the provider account, not Chickpea.
+- Gemini 4 Argon runs on a Chickpea-added model row: Pi 1.1 does not know it. Its requests must carry `thinkingConfig.thinkingLevel` and no `thinkingBudget`.
 - A hosted catalog that names a profile the install does not compile is rejected whole. `npm run verify:model-catalog:served` checks what is hosted; after any Refresh, confirm every pin and the default are unchanged.
 - Image generation and inspection costs are not yet in Usage, so a Usage readback cannot prove an image call.
 - On an Agent's Model tab, a lane-browser click on a typeahead option can time out. A DOM click on the listbox option (pointerdown, mousedown, then click) selects it. Save changes shows no notice, so confirm a pin from the reloaded Agents list.
