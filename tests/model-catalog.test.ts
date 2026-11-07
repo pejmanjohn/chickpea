@@ -16,7 +16,7 @@ import { getBuiltinModel } from '../src/model-catalog/pi-builtin-models.ts';
 import { compiledModelProfile, isCompiledModelProfileId } from '../src/model-catalog/profiles.ts';
 
 test('the bundled catalog describes only canonical ids, lane profiles, and shrink-only limits', () => {
-  assert.equal(BUNDLED_MODEL_CATALOG.length, 16);
+  assert.equal(BUNDLED_MODEL_CATALOG.length, 17);
   assert.deepEqual(
     BUNDLED_MODEL_CATALOG.filter((entry) => entry.id.startsWith('openai/gpt-5.6-'))
       .map((entry) => entry.id),

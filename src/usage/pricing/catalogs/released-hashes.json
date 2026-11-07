@@ -73,5 +73,6 @@
   "openrouter-openai-gpt-5.6-terra_2026-11-05-review": "554224a2d384ff45727329d2ecf3fb5e58dfff0b50b51f231b881490f417800e",
   "openrouter-z-ai-glm-5.3-flash_2026-11-05-review": "2ab41bbb6f248e4b0a46f54e71910da4de9a65293adcc9c3a274d183cfb24eec",
   "cloudflare-zai-org-glm-4.7-flash_2026-11-05-review": "49da9059d5b4bde2a7498735e20c593b24927238b3fb932c18c577e7e20df64e",
-  "cloudflare-workers-ai-zai-org-glm-4.7-flash_2026-11-05-review": "4bb4187dc1fa84d898b32576feefc0a506dd633db37523f10466a448fe32add5"
+  "cloudflare-workers-ai-zai-org-glm-4.7-flash_2026-11-05-review": "4bb4187dc1fa84d898b32576feefc0a506dd633db37523f10466a448fe32add5",
+  "openai-gpt-6.1-terra_2026-11-06-review": "069611be2926e62fb8bbed3a6770e7ec88cd7b828000740db7fbc4538ee40424"
 }

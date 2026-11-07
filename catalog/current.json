@@ -1,13 +1,21 @@
 {
   "schemaVersion": 1,
-  "revision": 4,
-  "generatedAt": "2026-10-24T00:00:00.000Z",
+  "revision": 5,
+  "generatedAt": "2026-11-06T00:00:00.000Z",
   "entries": [
     {
       "canonical": "openai/gpt-6.1-sol",
       "displayName": "GPT-6.1 Sol",
       "lanes": {
         "subscription": "openai-codex-responses-standard@1"
+      }
+    },
+    {
+      "canonical": "openai/gpt-6.1-terra",
+      "displayName": "GPT-6.1 Terra",
+      "lanes": {
+        "subscription": "openai-codex-responses-standard@1",
+        "apiKey": "openai-platform-responses-terra-tier@1"
       }
     },
     {

@@ -21,13 +21,15 @@ import { activateModelCatalog } from '../src/model-catalog/catalog.ts';
 import { parseModelCatalogBytes } from '../src/model-catalog/schema.ts';
 import { clearOpenAiSubscriptionTransport } from '../src/openai-subscription/transport.ts';
 
+const REASONING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 const args = parseArgs(process.argv.slice(2));
 if (args.has('--help')) {
   console.log(
     'Usage: npm run verify:model-compatibility:live -- --live ' +
       '--lane <subscription|openai-api-key|anthropic-api-key> --model <id> ' +
-      '[--state-db <path>] [--catalog-file <path>]',
+      `[--reasoning <${REASONING_LEVELS.join('|')}>] [--state-db <path>] [--catalog-file <path>]`,
   );
+  console.log('--reasoning sends that thinking level the way an Agent turn does. Without it the request carries no level, and the model profile decides whether that sends the effort none or omits it.');
   console.log('Consumes provider or subscription quota and never prints model output or credentials.');
   process.exit(0);
 }
@@ -40,6 +42,11 @@ assert.ok(
 );
 const modelId = String(args.get('--model') ?? '');
 assert.match(modelId, /^[a-z0-9][a-z0-9._-]{0,127}$/, '--model must be a safe model id');
+const reasoning = args.get('--reasoning');
+assert.ok(
+  reasoning === undefined || REASONING_LEVELS.includes(reasoning),
+  `--reasoning must be one of ${REASONING_LEVELS.join(', ')}`,
+);
 
 const provider = lane === 'anthropic-api-key' ? 'anthropic' : 'openai';
 const canonicalModel = `${provider}/${modelId}`;
@@ -72,6 +79,7 @@ if (lane === 'subscription') {
 
 const nativeFetch = globalThis.fetch;
 const destinations = [];
+const sentReasoningEfforts = [];
 globalThis.fetch = async (input, init) => {
   const url = new URL(
     typeof input === 'string'
@@ -83,6 +91,9 @@ globalThis.fetch = async (input, init) => {
   destinations.push(url.hostname);
   if (url.hostname !== expectedHost && !(lane === 'subscription' && url.hostname === 'auth.openai.com')) {
     throw new Error(`Live compatibility gate blocked unexpected host ${url.hostname}.`);
+  }
+  if (url.hostname === expectedHost && typeof init?.body === 'string') {
+    sentReasoningEfforts.push(JSON.parse(init.body).reasoning?.effort ?? null);
   }
   return nativeFetch(input, init);
 };
@@ -120,7 +131,7 @@ try {
   const marker = 'CHICKPEA_MODEL_COMPATIBILITY_OK';
   // An API-key lane sends only inside model access, which reads the key from env.
   const result = await withStatelessModelAccess(route.model, { env: undefined, settings, runId: 'live-model-compatibility', purpose: 'reply' }, () =>
-    piProvider.stream(
+    piProvider.streamSimple(
       model,
       {
         messages: [{
@@ -131,7 +142,9 @@ try {
       },
       {
         ...(lane === 'subscription' ? { apiKey: 'chickpea-boundary-managed' } : {}),
-        maxTokens: 64,
+        ...(reasoning === undefined ? {} : { reasoning }),
+        // Reasoning tokens count against the output limit.
+        maxTokens: reasoning === undefined || reasoning === 'off' ? 64 : 4_096,
       },
     ).result());
   const output = result.content
@@ -154,6 +167,8 @@ try {
     runtimeModel: route.model,
     provider: result.provider,
     destination: expectedHost,
+    reasoning: reasoning ?? null,
+    ...(provider === 'openai' ? { sentReasoningEfforts } : {}),
     outputVerified: true,
   }));
 } finally {

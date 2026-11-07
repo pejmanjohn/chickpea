@@ -756,6 +756,11 @@ test('provider models proxy caches OpenAI chat models and refresh bypasses the c
                 context_length: 272_000,
               },
               {
+                id: 'gpt-6.1-terra',
+                display_name: 'GPT-6.1 Terra',
+                context_length: 272_000,
+              },
+              {
                 id: 'gpt-6-astra',
                 display_name: 'GPT-6 Astra',
                 context_length: 272_000,
@@ -806,6 +811,11 @@ test('provider models proxy caches OpenAI chat models and refresh bypasses the c
                 context_length: 272_000,
               },
               {
+                id: 'gpt-6.1-terra',
+                display_name: 'GPT-6.1 Terra',
+                context_length: 272_000,
+              },
+              {
                 id: 'gpt-6-astra',
                 display_name: 'GPT-6 Astra',
                 context_length: 272_000,
@@ -851,6 +861,11 @@ test('provider models proxy caches OpenAI chat models and refresh bypasses the c
               {
                 id: 'gpt-6.1-sol',
                 display_name: 'GPT-6.1 Sol',
+                context_length: 272_000,
+              },
+              {
+                id: 'gpt-6.1-terra',
+                display_name: 'GPT-6.1 Terra',
                 context_length: 272_000,
               },
               {
