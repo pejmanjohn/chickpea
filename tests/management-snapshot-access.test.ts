@@ -415,6 +415,14 @@ test('inspection omits a stored workspace name that belongs to another Slack tea
     assert.equal('slackTeamName' in snapshot, false, 'another team\'s name never names this workspace');
   }));
 
+test('inspection omits a stored workspace name when no Slack credential is connected', () =>
+  withSlackSettings('snapshot-team-unconnected', async (f, settings) => {
+    await settings.setSetting(SLACK_SETTING_KEYS.teamName, 'Acme Robotics');
+
+    const snapshot = await inspect(f, mcp(f.owner));
+    assert.equal('slackTeamName' in snapshot, false, 'a name with no connected credential names no workspace');
+  }));
+
 test('inspection shows which Agents answer in group DMs and which have their own Slack app', () =>
   withFixture('snapshot-reach', async (f) => {
     const everyone = await createAgent(f, 'agent_everyone');
