@@ -2,6 +2,7 @@ import type { ConfigAgentPatch } from '../config/store.ts';
 import type { WorkspaceModelChoiceRefusal } from '../config/model-choices.ts';
 import type { ModelEffortRejection } from '../config/model-effort-capability.ts';
 import type { ModelEffort } from '../config/model-effort.ts';
+import type { ProviderKeyId } from '../config/provider-key-ids.ts';
 import type {
   AgentEditPolicy,
   AgentChannelGrantStatus,
@@ -203,7 +204,7 @@ export type ManagementOperation =
     })
   | (ManagementOperationBase & {
       kind: 'remove_provider_credential';
-      providerId: 'anthropic' | 'openai' | 'openrouter';
+      providerId: ProviderKeyId;
     })
   | (ManagementOperationBase & {
       kind: 'set_workspace_model';
@@ -336,7 +337,7 @@ type ManagementSetupRequestTarget =
     }
   | {
       kind: 'provider_credential';
-      providerId: 'anthropic' | 'openai' | 'openrouter';
+      providerId: ProviderKeyId;
     }
   ;
 
@@ -1119,7 +1120,7 @@ export interface ManagementMcpClientRevocation {
 
 export type ManagementModelSource = 'pinned' | 'workspace_default';
 
-export type ManagementModelProviderId = 'anthropic' | 'openai' | 'openrouter' | 'workers-ai';
+export type ManagementModelProviderId = ProviderKeyId | 'workers-ai';
 
 /** How a provider's models run: the Workspace's key, its ChatGPT plan, Workers AI, or Chickpea's models. */
 export type ManagementModelAccess = 'api_key' | 'chatgpt_plan' | 'workers_ai' | 'platform';
@@ -1164,10 +1165,8 @@ export interface PrepareConnectorSetupResult {
   instruction?: string;
 }
 
-export type ManagedProviderKeyId = 'anthropic' | 'openai' | 'openrouter';
-
 export interface PrepareProviderSetupInput {
-  providerId: ManagedProviderKeyId;
+  providerId: ProviderKeyId;
   /** Required when a key is already stored; the handoff page then replaces it. */
   replaceExisting?: boolean | undefined;
 }
@@ -1178,7 +1177,7 @@ export interface PrepareProviderSetupInput {
  * argument or result.
  */
 export interface PrepareProviderSetupResult {
-  provider: { id: ManagedProviderKeyId; name: string };
+  provider: { id: ProviderKeyId; name: string };
   /** True when the page replaces a stored key instead of adding a first one. */
   replacement: boolean;
   handoffUrl: string;

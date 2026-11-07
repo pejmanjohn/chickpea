@@ -6,6 +6,7 @@ import { AGENT_ID_PATTERN } from '../config/agent-id.ts';
 import { CONNECTION_GUIDE_MAX_LENGTH } from '../config/agent-write-rules.ts';
 import { MAX_MCP_OAUTH_SCOPE_LENGTH, MAX_MCP_TOOLS } from '../config/mcp-limits.ts';
 import { MODEL_EFFORTS } from '../config/model-effort.ts';
+import { PROVIDER_KEY_IDS } from '../config/provider-key-ids.ts';
 import { MODEL_ROLES } from '../config/types.ts';
 import { MAX_UPLOAD_FILES } from '../config/skill-upload.ts';
 import {
@@ -182,7 +183,7 @@ const zSetupTarget = z.discriminatedUnion('kind', [
   }),
   z.strictObject({
     kind: z.literal('provider_credential'),
-    providerId: z.enum(['anthropic', 'openai', 'openrouter']),
+    providerId: z.enum(PROVIDER_KEY_IDS),
   }),
 ]);
 
@@ -261,7 +262,7 @@ export const managementOperationZodSchema = z.discriminatedUnion('kind', [
   z.strictObject({
     ...zOperationBase,
     kind: z.literal('remove_provider_credential'),
-    providerId: z.enum(['anthropic', 'openai', 'openrouter']),
+    providerId: z.enum(PROVIDER_KEY_IDS),
   }),
   z.strictObject({
     ...zOperationBase,
@@ -405,7 +406,7 @@ export const prepareConnectorSetupZodSchema = z.strictObject({
   ownerKind: z.enum(['team', 'member']),
 });
 export const prepareProviderSetupZodSchema = z.strictObject({
-  providerId: z.enum(['anthropic', 'openai', 'openrouter']),
+  providerId: z.enum(PROVIDER_KEY_IDS),
   replaceExisting: z.boolean().optional(),
 });
 export const discoverSlackChannelsZodSchema = z.strictObject({});
@@ -597,7 +598,7 @@ const vSetupTarget = v.variant('kind', [
   }),
   v.strictObject({
     kind: v.literal('provider_credential'),
-    providerId: v.picklist(['anthropic', 'openai', 'openrouter']),
+    providerId: v.picklist(PROVIDER_KEY_IDS),
   }),
 ]);
 
@@ -682,7 +683,7 @@ const vProposableOperations = [
   v.strictObject({
     ...vOperationBase,
     kind: v.literal('remove_provider_credential'),
-    providerId: v.picklist(['anthropic', 'openai', 'openrouter']),
+    providerId: v.picklist(PROVIDER_KEY_IDS),
   }),
   v.strictObject({
     ...vOperationBase,

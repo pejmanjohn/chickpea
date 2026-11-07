@@ -44,6 +44,7 @@ import {
   type PlatformFundedModel,
   type PlatformFundingRefusal,
 } from './platform-funding.ts';
+import { PROVIDER_KEY_IDS } from './provider-key-ids.ts';
 import type { PlatformEnv } from './state-backend.ts';
 import type { PromptCacheScope } from '../agents/openai-prompt-cache.ts';
 import type { SharedPrefixDecision, SharedPrefixId } from '../agents/shared-prefix.ts';
@@ -75,7 +76,7 @@ import { imagePrice, sentImageRequestRecord } from '../images/request-record.ts'
  * offline verifiers' standalone lane; a deployment serving many installations
  * never resolves it.
  */
-export const MODEL_ACCESS_PROVIDER_IDS = ['anthropic', 'openai', 'openrouter', 'local-stub'] as const;
+export const MODEL_ACCESS_PROVIDER_IDS = [...PROVIDER_KEY_IDS, 'local-stub'] as const;
 export type ModelAccessProviderId = (typeof MODEL_ACCESS_PROVIDER_IDS)[number];
 
 /** Frozen and non-secret: what a run may use, never the key itself. */
@@ -247,17 +248,12 @@ function requireResolver(): ModelAccessResolver {
 
 /** The installation-supplied provider a registered provider id routes for, if any. */
 export function modelAccessProviderId(providerId: string): ModelAccessProviderId | undefined {
+  if (isModelAccessProviderId(providerId)) return providerId;
   switch (providerId) {
-    case 'anthropic':
     case ANTHROPIC_COMPAT_PROVIDER_ID:
       return 'anthropic';
-    case 'openai':
     case OPENAI_PLATFORM_COMPAT_PROVIDER_ID:
       return 'openai';
-    case 'openrouter':
-      return 'openrouter';
-    case 'local-stub':
-      return 'local-stub';
   }
   if (isRevisionedAlias('anthropic', providerId)) return 'anthropic';
   if (isRevisionedAlias('openaiPlatform', providerId)) return 'openai';

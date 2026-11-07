@@ -11,7 +11,7 @@ import { resolveModelEfforts } from '../config/model-effort-capability.ts';
 import { resolveModelReadiness } from '../config/model-readiness.ts';
 import { resolveOpenAiAuthMethod } from '../config/openai-auth.ts';
 import { deploymentServesManyInstallations } from '../config/installation-scope.ts';
-import { PROVIDER_KEY_IDS } from '../config/provider-key-ids.ts';
+import { isProviderKeyId, PROVIDER_KEY_IDS } from '../config/provider-key-ids.ts';
 import { listInstallationModelProviders } from '../config/provider-keys.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
@@ -93,9 +93,7 @@ export function createManagementModelSources(input: {
 
 function managementProviderId(pickerId: string): ManagementModelProviderId | undefined {
   if (pickerId === 'cloudflare' || pickerId === 'cloudflare-workers-ai') return 'workers-ai';
-  return pickerId === 'anthropic' || pickerId === 'openai' || pickerId === 'openrouter'
-    ? pickerId
-    : undefined;
+  return isProviderKeyId(pickerId) ? pickerId : undefined;
 }
 
 function providerAccess(

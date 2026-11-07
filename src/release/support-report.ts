@@ -1,6 +1,7 @@
+import { PROVIDER_KEY_IDS } from '../config/provider-key-ids.ts';
 import type { ApplicationIdentity } from './identity.ts';
 
-export const SUPPORT_PROVIDERS = ['anthropic', 'openai', 'openrouter', 'workers-ai'] as const;
+export const SUPPORT_PROVIDERS = [...PROVIDER_KEY_IDS, 'workers-ai'] as const;
 export type SupportProviderStatus = 'configured' | 'missing' | 'unknown';
 export interface InstallationDetails {
   identity: ApplicationIdentity;

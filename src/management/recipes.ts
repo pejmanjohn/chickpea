@@ -5,6 +5,7 @@ import { CONNECTION_GUIDE_MAX_LENGTH } from '../config/agent-write-rules.ts';
 import { GITHUB_OWNER_PATTERN } from '../config/github-app.ts';
 import { MODEL_EFFORTS } from '../config/model-effort.ts';
 import { PLATFORM_NOT_OFFERED_TEXT, type ModelReadiness } from '../config/model-readiness.ts';
+import { isProviderKeyId } from '../config/provider-key-ids.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type { CustomAgentConfig, RepositoryGrant, SkillConfig } from '../config/types.ts';
 import {
@@ -326,14 +327,14 @@ function appendProviderSetupOperation(
   availability: { setupRequired: string[] },
 ): void {
   const provider = recipe.model?.split('/', 1)[0];
-  if (!provider || !['anthropic', 'openai', 'openrouter'].includes(provider) ||
+  if (!provider || !isProviderKeyId(provider) ||
       !availability.setupRequired.includes(`${provider} model provider`)) return;
   operations.push({
     itemId: `setup_${recipe.symbol}_provider_${provider}`,
     kind: 'request_setup',
     target: {
       kind: 'provider_credential',
-      providerId: provider as 'anthropic' | 'openai' | 'openrouter',
+      providerId: provider,
     },
   });
 }
@@ -392,8 +393,7 @@ async function compileRecipeAgent(
   }
   const provider = recipe.model?.split('/', 1)[0];
   const answer = recipe.model ? await readiness(recipe.model) : undefined;
-  if (answer?.unavailable === 'credential_missing' && provider &&
-      ['anthropic', 'openai', 'openrouter'].includes(provider)) {
+  if (answer?.unavailable === 'credential_missing' && provider && isProviderKeyId(provider)) {
     setupRequired.push(`${provider} model provider`);
   } else if (answer?.unavailable === 'funding_not_offered') {
     unavailable.push(PLATFORM_NOT_OFFERED_TEXT);

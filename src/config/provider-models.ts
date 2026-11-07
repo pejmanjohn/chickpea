@@ -79,11 +79,17 @@ const OPENAI_CHAT_MODEL_PREFIXES = ['gpt-', 'o1', 'o3', 'o4', 'o5', 'chatgpt-', 
 // An Anthropic or OpenAI list is what one installation's key can see, so it
 // is cached per installation; OpenRouter's public catalog and the Workers AI
 // list are the same for every installation.
+const MODEL_LIST_PER_INSTALLATION: Record<AdminProviderId, boolean> = {
+  anthropic: true,
+  openai: true,
+  openrouter: false,
+  'workers-ai': false,
+};
 const modelCache = new Map<string, { expiresAt: number; models: ProviderModel[] }>();
 const cachedModelCounts = new Map<string, number>();
 
 function modelCacheKey(id: AdminProviderId, env: PlatformEnv | undefined): string {
-  return id === 'anthropic' || id === 'openai' ? `${installationCacheKey(env)}|${id}` : `|${id}`;
+  return MODEL_LIST_PER_INSTALLATION[id] ? `${installationCacheKey(env)}|${id}` : `|${id}`;
 }
 
 export function isAdminProviderId(id: string): id is AdminProviderId {
@@ -224,9 +230,12 @@ async function fetchProviderModels(
   if (!apiKey) {
     throw new ProviderModelsUnavailableError(id, 'provider_key_missing', 409);
   }
-  return id === 'anthropic'
-    ? fetchAnthropicModels(apiKey, false, timeoutMs, env)
-    : fetchOpenAiModels(apiKey, false, timeoutMs, env);
+  switch (id) {
+    case 'anthropic':
+      return fetchAnthropicModels(apiKey, false, timeoutMs, env);
+    case 'openai':
+      return fetchOpenAiModels(apiKey, false, timeoutMs, env);
+  }
 }
 
 async function fetchAnthropicModels(

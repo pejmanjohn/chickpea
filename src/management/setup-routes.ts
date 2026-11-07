@@ -96,7 +96,7 @@ import {
   OPENAI_API_IMAGE_DEFAULT_MODEL_ID,
 } from '../config/initial-image-default.ts';
 import { validateProviderApiKey } from '../config/provider-models.ts';
-import type { ProviderKeyId } from '../config/provider-key-ids.ts';
+import { PROVIDER_DISPLAY_NAMES, type ProviderKeyId } from '../config/provider-key-ids.ts';
 import {
   describeProviderKeySources,
   saveProviderApiKey,
@@ -2583,7 +2583,7 @@ export async function completeFormAction(
         };
       });
     }
-    return { connector: providerDisplayName(providerId) };
+    return { connector: PROVIDER_DISPLAY_NAMES[providerId] };
   }
   if (setup.action === 'api_credential') {
     const entry = await currentSetupConnection(setup, dependencies);
@@ -3587,12 +3587,6 @@ function requiredField(fields: Record<string, string>, name: string, max: number
     throw new Error('invalid_form');
   }
   return value;
-}
-
-function providerDisplayName(id: ProviderKeyId): string {
-  if (id === 'openai') return 'OpenAI';
-  if (id === 'openrouter') return 'OpenRouter';
-  return 'Anthropic';
 }
 
 function githubSetupStateKey(setupId: string): string {
