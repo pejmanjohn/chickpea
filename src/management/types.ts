@@ -953,6 +953,12 @@ export interface ManagementWorkspaceSnapshot {
   organizationId: string;
   /** The Slack workspace's team ID, which `inspect_routines` takes as `workspaceId`. */
   slackTeamId?: string;
+  /**
+   * The Slack workspace's stored name, as Admin shows it. Absent until Admin
+   * asks Slack for it, during onboarding or on the Slack connection card, and
+   * when the installation's connected Slack credential belongs to another team.
+   */
+  slackTeamName?: string;
   /** The signed-in person asking. */
   caller: {
     membershipId: string;
