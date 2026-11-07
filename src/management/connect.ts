@@ -295,7 +295,7 @@ export function connectMarkdown(origin: string, env?: Record<string, unknown>): 
     '## Good to know',
     '',
     `- ${adminManaged} managed in Admin at ${settings}. Send the person there with the link rather than asking for the values.`,
-    '- After you create an Agent, the new Agent messages the person in Slack, and `links.slack` opens that conversation.',
+    '- After you create an Agent, it messages the person in Slack, and `links.slack` opens that conversation.',
     '- The person can disconnect at any time from their client; a removed Chickpea member loses MCP access immediately.',
     '',
   ].join('\n');

@@ -206,7 +206,7 @@ test('step 6 researches before it proposes, and a new Agent says hello in Slack'
   assert.doesNotMatch(step6, /What should your first teammate do/, 'no opening question ahead of the research');
 
   const goodToKnow = body.slice(body.indexOf('## Good to know'));
-  assert.match(goodToKnow, /After you create an Agent, the new Agent messages the person in Slack, and `links\.slack` opens that conversation\./);
+  assert.match(goodToKnow, /After you create an Agent, it messages the person in Slack, and `links\.slack` opens that conversation\./);
   assert.doesNotMatch(goodToKnow, /mention it in Slack by its handle/);
 });
 

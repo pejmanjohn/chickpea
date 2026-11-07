@@ -1,9 +1,3 @@
-/**
- * The discovery guide a coding agent reads at `DISCOVERY_GUIDE_URI` before it
- * proposes an Agent the person has not named. `discovery.md` is the source;
- * tests keep this copy identical. Only the MCP server imports it, so the text
- * stays off Worker startup.
- */
 export const DISCOVERY_GUIDE = `# Find the first Agent
 
 Use this guide when the person asks what to build with Chickpea, asks for an Agent without naming its job, or has just connected this client. Research before you propose. Nothing in this guide creates or changes anything.
