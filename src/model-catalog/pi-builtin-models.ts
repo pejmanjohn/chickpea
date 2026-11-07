@@ -5,6 +5,7 @@ import { OPENAI_MODELS } from '@earendil-works/pi-ai/providers/openai.models';
 import { OPENAI_CODEX_MODELS } from '@earendil-works/pi-ai/providers/openai-codex.models';
 import { OPENROUTER_MODELS } from '@earendil-works/pi-ai/providers/openrouter.models';
 
+import { GEMINI_MODELS } from '../config/gemini-models.ts';
 import type { ProviderKeyId } from '../config/provider-key-ids.ts';
 
 // Only the generated model tables for providers Chickpea can register. The
@@ -18,6 +19,7 @@ const BUILTIN_MODELS: Record<string, Record<string, unknown>> = {
   openai: OPENAI_MODELS,
   'openai-codex': OPENAI_CODEX_MODELS,
   openrouter: OPENROUTER_MODELS,
+  google: GEMINI_MODELS,
 } satisfies Record<ProviderKeyId | 'cloudflare-workers-ai' | 'openai-codex', Record<string, unknown>>;
 
 export function getBuiltinModel(provider: string, modelId: string): Model<string> | undefined {

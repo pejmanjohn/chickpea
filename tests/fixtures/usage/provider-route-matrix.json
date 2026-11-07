@@ -83,6 +83,32 @@
       "expectedUsage": { "inputTokens": 17, "outputTokens": 9, "totalTokens": 26 }
     },
     {
+      "id": "google-api-key",
+      "provider": "google",
+      "authMode": "api_key",
+      "classification": "metered",
+      "priceability": "priceable",
+      "confidence": "high",
+      "reason": "The hermetic built-app provider harness exercises the Gemini API route and receives non-zero aggregate usage plus returned model through the exact Flue result boundary; Pi counts thinking tokens as output.",
+      "requestedModel": "google/gemini-3.8-flash",
+      "envelope": {
+        "result": {
+          "text": "gemini fixture reply",
+          "model": { "provider": "google", "id": "gemini-3.8-flash" },
+          "usage": {
+            "input": 23,
+            "output": 13,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 36,
+            "cost": { "input": 0.00001725, "output": 0.00004875, "cacheRead": 0, "cacheWrite": 0, "total": 0.000066 }
+          }
+        },
+        "submissionId": "sub_google_fixture"
+      },
+      "expectedUsage": { "inputTokens": 23, "outputTokens": 13, "totalTokens": 36 }
+    },
+    {
       "id": "workers-ai-rest-api-token",
       "provider": "cloudflare-workers-ai",
       "authMode": "api_token",

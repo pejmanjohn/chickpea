@@ -2,6 +2,7 @@ import { planDependencies, planStatus } from '../chatgpt-plan/connection.ts';
 import { loadModelCatalog, resolveActiveCatalogRoute } from '../model-catalog/index.ts';
 import { getOpenAiSubscriptionAuthorizationStatus } from '../openai-subscription/device-auth.ts';
 import type { ModelRequestFundingSource } from '../usage/model-requests.ts';
+import { isGeminiModelId } from './gemini-models.ts';
 import { deploymentServesManyInstallations } from './installation-scope.ts';
 import {
   modelProviderUnavailable,
@@ -103,8 +104,14 @@ export async function activeCatalogCompatibilityError(
       !resolveActiveCatalogRoute(model, 'anthropic_api_key', env)) {
     return 'The active Anthropic API-key catalog does not support this model.';
   }
+  if (model.startsWith('google/') && !isGeminiModelId(model.slice('google/'.length))) {
+    return GEMINI_UNSUPPORTED_TEXT;
+  }
   return undefined;
 }
+
+const GEMINI_UNSUPPORTED_TEXT =
+  'Chickpea does not offer this Gemini model. Choose Gemini 4 Argon, Gemini 3.8 Flash, or Gemini 3.5 Flash-Lite.';
 
 export async function chatSubscriptionStatus(store: SettingsStore, env?: PlatformEnv) {
   return isCloudflareTarget() ? planStatus(planDependencies(env, store)) : getOpenAiSubscriptionAuthorizationStatus(store);

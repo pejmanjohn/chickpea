@@ -1252,7 +1252,8 @@ test('on a credits installation Admin lists the models Chickpea\'s models serve 
       ['anthropic', true],
       ['openai', true],
       ['openrouter', true],
-    ]);
+      ['google', undefined],
+    ], 'Gemini had no price yet on this day');
 
     t.mock.timers.setTime(AFTER_EVERY_REVIEW_DUE);
     assert.deepEqual((await anthropic()).suggestions, served.suggestions, 'a price past its review date stays on the list');

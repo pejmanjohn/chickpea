@@ -19,18 +19,21 @@ export const PROVIDER_KEY_SETTING_KEYS = {
   anthropic: 'provider.anthropic.apiKey',
   openai: 'provider.openai.apiKey',
   openrouter: 'provider.openrouter.apiKey',
+  google: 'provider.google.apiKey',
 } as const satisfies Record<ProviderKeyId, string>;
 
 export const PROVIDER_KEY_ENV_VARS = {
   anthropic: 'ANTHROPIC_API_KEY',
   openai: 'OPENAI_API_KEY',
   openrouter: 'OPENROUTER_API_KEY',
+  google: 'GEMINI_API_KEY',
 } as const satisfies Record<ProviderKeyId, string>;
 
 export const PROVIDER_BASE_URL_ENV_VARS = {
   anthropic: 'ANTHROPIC_BASE_URL',
   openai: 'OPENAI_BASE_URL',
   openrouter: 'OPENROUTER_BASE_URL',
+  google: 'GEMINI_BASE_URL',
 } as const satisfies Record<ProviderKeyId, string>;
 
 export type ProviderKeySource = 'env' | 'stored' | 'missing';

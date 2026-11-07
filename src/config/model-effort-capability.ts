@@ -65,6 +65,10 @@ async function keyProviderEfforts(
         : catalogEfforts(canonicalModel, 'openai_subscription', dependencies, 'xhigh');
     case 'openrouter':
       return openRouterModelEfforts(canonicalModel, dependencies.env, dependencies.settings);
+    case 'google': {
+      const model = getBuiltinModel('google', canonicalModel.slice('google/'.length));
+      return model ? modelEffortsFor(model) : [];
+    }
   }
 }
 

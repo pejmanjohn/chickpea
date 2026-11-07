@@ -56,6 +56,18 @@ export const USAGE_PROVIDER_GUIDANCE: readonly UsageProviderGuidance[] = [
     reviewedAt: REVIEWED_AT,
   },
   {
+    providerId: 'google',
+    displayName: 'Google Gemini',
+    authModes: ['API key'],
+    runtimeCoverage: 'metered',
+    priceCoverage: 'release_pinned',
+    scopeGuidance: 'Use a dedicated Google Cloud project with billing turned on for the Chickpea installation, and turn off its request logging in Google AI Studio.',
+    accountBoundary: 'Project spend and rate limits include activity outside Chickpea that uses the same project.',
+    limitsUrl: 'https://aistudio.google.com/docs/rate-limits',
+    pricingUrl: 'https://aistudio.google.com/docs/pricing',
+    reviewedAt: Date.UTC(2026, 10, 6),
+  },
+  {
     providerId: 'cloudflare-workers-ai',
     displayName: 'Cloudflare Workers AI (REST)',
     authModes: ['API token'],

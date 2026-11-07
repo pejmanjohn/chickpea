@@ -208,7 +208,7 @@ test('on a deployment serving many, the state store lists the workspace Agents f
     const listed = await inspect(fromOwner('500.1', 'List the names of the Agents.'));
     assert.deepEqual(listed.agents.map(({ name }) => name).sort(), ['First Desk', 'Second Desk']);
     // The listing reads the installation's saved key, not a deployment's.
-    assert.deepEqual(providerSources(listed), { anthropic: 'missing', openai: 'stored', openrouter: 'missing' });
+    assert.deepEqual(providerSources(listed), { anthropic: 'missing', openai: 'stored', openrouter: 'missing', google: 'missing' });
 
     // A turn the state store runs itself attributes the same saved key.
     const attribution = await resolveModelCredentialAttribution(

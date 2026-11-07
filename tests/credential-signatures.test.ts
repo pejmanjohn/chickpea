@@ -74,6 +74,7 @@ test('credential markers stay the exact projection the streaming path relies on'
     'xapp-',
     'sk-ant-',
     'sk-proj-',
+    'AIza',
     'ghp_',
     'gho_',
     'ghu_',

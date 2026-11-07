@@ -4895,7 +4895,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       identity: applicationIdentity,
       deployment: isCloudflareTarget() ? 'cloudflare' : 'node',
       setup: 'unknown',
-      providers: { anthropic: 'unknown', openai: 'unknown', openrouter: 'unknown', 'workers-ai': 'unknown' },
+      providers: { anthropic: 'unknown', openai: 'unknown', openrouter: 'unknown', google: 'unknown', 'workers-ai': 'unknown' },
       errors: [],
     };
     try {
@@ -7968,8 +7968,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       const platformEnv = c.env as PlatformEnv | undefined;
       const settingsStore = settings(c);
-      const catalogLane = id === 'workers-ai' ? undefined : PROVIDER_CATALOG_LANES[id];
-      const funding = catalogLane ? await installationFunding(platformEnv) : undefined;
+      const { catalogLane, creditsListServedModels } = id === 'workers-ai'
+        ? { catalogLane: undefined, creditsListServedModels: false }
+        : PROVIDER_MODEL_LISTS[id];
+      const funding = creditsListServedModels ? await installationFunding(platformEnv) : undefined;
       if (funding === 'platform') {
         const served = (await chatPickerProviders(c, funding)).find((provider) => provider.id === id)?.suggestions ?? [];
         return c.json({ provider: id, models: served.map((model) => ({ id: model.slice(id.length + 1) })), cached: true });
@@ -10787,6 +10789,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           ...(runtime?.suggestions ?? []),
         ]);
       }
+      case 'google':
+        return runtime?.suggestions ?? [];
     }
   };
 
@@ -13716,11 +13720,20 @@ interface ProviderSummary {
   modelCount: number | null;
 }
 
-/** The active catalog lane that governs a key-backed provider's model list, when one does. */
-const PROVIDER_CATALOG_LANES: Record<ProviderKeyId, 'anthropic_api_key' | 'openai_api_key' | undefined> = {
-  anthropic: 'anthropic_api_key',
-  openai: 'openai_api_key',
-  openrouter: undefined,
+/**
+ * How Admin lists a key-backed provider's models: the active catalog lane
+ * that filters the list, when one does, and whether a credits installation
+ * sees only the models Chickpea's models serve instead.
+ */
+const PROVIDER_MODEL_LISTS: Record<
+  ProviderKeyId,
+  { catalogLane?: 'anthropic_api_key' | 'openai_api_key'; creditsListServedModels: boolean }
+> = {
+  anthropic: { catalogLane: 'anthropic_api_key', creditsListServedModels: true },
+  openai: { catalogLane: 'openai_api_key', creditsListServedModels: true },
+  // Its favorites editor searches the whole public list.
+  openrouter: { creditsListServedModels: false },
+  google: { creditsListServedModels: true },
 };
 
 function providerSummary(

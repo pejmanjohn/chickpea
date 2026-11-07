@@ -559,7 +559,7 @@ test('hosted onboarding never offers Workers AI, even with an AI binding', async
   await signup.claim();
   const admin = signup.admin(await signup.ownerPrincipal());
   const models = await json<{ providers: Array<{ id: string }> }>(admin('/admin/api/models'));
-  assert.deepEqual(models.providers.map(({ id }) => id).sort(), ['anthropic', 'openai', 'openrouter']);
+  assert.deepEqual(models.providers.map(({ id }) => id).sort(), ['anthropic', 'google', 'openai', 'openrouter']);
   const { revision } = await json<{ revision: string }>(admin('/admin/api/onboarding'));
   const refused = await admin('/admin/api/onboarding/provider', {
     method: 'POST', body: JSON.stringify({ expectedRevision: revision, providerId: 'cloudflare' }),

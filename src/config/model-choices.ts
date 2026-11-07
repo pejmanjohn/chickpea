@@ -112,6 +112,8 @@ export async function chatModelPickerProviders(input: {
                 ...provider.suggestions,
               ]),
             };
+          case 'google':
+            return provider;
         }
       }),
   );

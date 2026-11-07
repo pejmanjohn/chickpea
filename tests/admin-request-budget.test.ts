@@ -127,7 +127,7 @@ test('an Admin GET reads auth control once and the principal in one identity cal
     // The most store calls each route may make, its handler's included.
     // Environment status answers 404 here, as it does on every hosted page load.
     for (const [path, status, budget] of [
-      ['/admin/api/providers', 200, 10],
+      ['/admin/api/providers', 200, 11],
       ['/admin/api/slack-connection', 200, 6],
       ['/admin/api/environment/status', 404, 4],
     ] as const) {
@@ -345,7 +345,7 @@ test('a hosted Admin GET reads the session once, in one statement, and the login
   // Every store call each route makes, routing's and its handler's included: the
   // same as standalone Admin's, since routing's principal read is the only one.
   for (const [path, status, storeCalls] of [
-    ['/admin/api/providers', 200, 8],
+    ['/admin/api/providers', 200, 9],
     ['/admin/api/slack-connection', 200, 6],
     ['/admin/api/environment/status', 404, 4],
   ] as const) {

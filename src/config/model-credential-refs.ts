@@ -42,12 +42,14 @@ const ENV_KEY_NAMES: Record<ProviderKeyId, string> = {
   anthropic: 'ANTHROPIC_API_KEY',
   openai: 'OPENAI_API_KEY',
   openrouter: 'OPENROUTER_API_KEY',
+  google: 'GEMINI_API_KEY',
 };
 
 const ENV_PREFIXES: Record<ProviderKeyId, string> = {
   anthropic: 'ANTHROPIC',
   openai: 'OPENAI',
   openrouter: 'OPENROUTER',
+  google: 'GEMINI',
 };
 
 interface StoredCredentialMetadata {
@@ -803,6 +805,7 @@ function environmentScope(id: ProviderKeyId, env: NodeJS.ProcessEnv): string | n
     case 'anthropic':
       return trimmedNonEmpty(env.ANTHROPIC_WORKSPACE_ID) ?? null;
     case 'openrouter':
+    case 'google':
       return null;
   }
 }
