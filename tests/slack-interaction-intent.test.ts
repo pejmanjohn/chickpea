@@ -566,7 +566,7 @@ test('the stateless classifier has no tools and treats Slack context as data', (
   assert.match(SLACK_INTERACTION_CLASSIFIER_INSTRUCTIONS, /possible memory intent.*reply or work/i);
 });
 
-test('every Agent receives shared Slack teammate defaults before voice overrides and guardrail', async () => {
+test('every Agent receives shared Slack teammate defaults before voice overrides and guardrail', async (t) => {
   const store = new SqliteConfigStore(':memory:', agentRoutineDeletion, {
     agents: [{
       id: 'agent_custom', name: 'Custom', instructions: 'Use a playful voice.', enabled: true,
@@ -584,12 +584,12 @@ test('every Agent receives shared Slack teammate defaults before voice overrides
     defaultAgentId: 'agent_custom',
   });
   const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => settings.close());
   const config = await resolveEffectiveSlackConfig('T_TEST', 'C_TEST', {
     agents: store,
     grants: store,
     settings,
   });
-  settings.close();
   assert.match(config.instructions, /Lead with the outcome/);
   assert.match(config.instructions, /Write final answers in standard Markdown: \*\*bold\*\*, _italic_, ~~strikethrough~~, and \[label\]\(url\)/);
   assert.match(config.instructions, /When correcting a prior answer, briefly acknowledge the mistake and state the corrected result/);

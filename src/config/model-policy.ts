@@ -83,10 +83,10 @@ export async function resolveModelPolicyForAssignment(
   if (!installation) {
     throw new ModelResolutionError('Workspace model policy is unavailable. Repair Slack setup.');
   }
-  const activated = installation.runtimeContract === 'chickpea-v1';
+  const chickpeaContract = installation.runtimeContract === 'chickpea-v1';
   const [workspaceDefault] = await Promise.all([
-    activated ? reader.getWorkspaceModelDefault(assignment.workspaceId) : undefined,
-    activated && settings ? loadModelCatalog(settings, platformEnv) : undefined,
+    chickpeaContract ? reader.getWorkspaceModelDefault(assignment.workspaceId) : undefined,
+    chickpeaContract && settings ? loadModelCatalog(settings, platformEnv) : undefined,
   ]);
   const resolved = resolveAgentModelPolicy({
     agent: assignment.agent,
