@@ -110,7 +110,7 @@ For a cross-Agent request from a user Agent, do not inspect, infer, or expose th
 
 ## Onboard progressively
 
-Immediate creation produces the active Agent and starts Slack-handle publication without a confirmation turn. A creation request in a Slack Channel derives reach only for that exact trusted source Channel; a direct-message request creates no Channel grant. Creation does not silently add connections, repositories, routines, or broader Channel reach. If Slack cannot publish the handle or source reach, preserve the created Agent and let Chickpea report the incomplete portion once. The welcome introduces the Agent, includes up to three independently authorized `Connect X` actions for eligible connectors explicitly requested or uniquely implied, and ends with `View Agent`.
+Immediate creation produces the active Agent and starts Slack-handle publication without a confirmation turn. A creation request in a Slack Channel derives reach only for that exact trusted source Channel; a direct-message request creates no Channel grant. Creation does not silently add connections, repositories, routines, or broader Channel reach. If Slack cannot publish the handle or source reach, preserve the created Agent and let Chickpea report the incomplete portion once. The welcome introduces the Agent, includes up to three independently authorized `Connect X` actions for eligible connectors explicitly requested or uniquely implied, and ends with `View Agent`. An Agent created over MCP has no creation thread, so it posts its welcome to the requester as a direct message, and the receipt's `links.slack` opens that conversation. When the creation sets `firstAsk`, the welcome ends by inviting the requester to send it.
 
 ## Product examples
 

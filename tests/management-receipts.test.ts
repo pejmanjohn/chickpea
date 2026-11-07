@@ -409,6 +409,56 @@ test('immediate Agent welcome renders connector actions in order and View Agent 
   assert.ok(text.endsWith('<https://example.test/admin/agents/agent_deck|View Agent>'));
 });
 
+const MCP_HELLO: ManagementAgentCreatedWelcome = {
+  kind: 'agent_created_welcome',
+  creationOperationId: 'management_crm',
+  agentId: 'agent_crm',
+  agentName: 'CRM Desk',
+  agentHandle: 'crm-desk',
+  agentDescription: 'Answers questions about the contacts in your CRM.',
+  requesterMembershipId: 'membership_crm',
+  surface: 'direct',
+  persona: { name: 'CRM Desk' },
+  publication: { status: 'complete', incomplete: [] },
+  viewAgentUrl: 'https://example.test/admin/agents/agent_crm',
+};
+
+test('an Agent welcome with a first ask ends by inviting the person to send it', () => {
+  const ask = 'Who did I add this week? <@U123> & co';
+  const text = formatManagementSetupReceipt({ ...MCP_HELLO, firstAsk: ask });
+  assert.match(text, /^Hi — I’m \*CRM Desk\* \(@crm-desk\)\. Answers questions about the contacts in your CRM\./);
+  assert.ok(
+    text.endsWith('<https://example.test/admin/agents/agent_crm|View Agent>\n\nTry asking me: “Who did I add this week? &lt;@U123&gt; &amp; co”'),
+    text,
+  );
+
+  const fallback = formatManagementSetupReceipt({
+    ...MCP_HELLO,
+    publication: { status: 'partial', incomplete: ['slack_presence'] },
+    firstAsk: ask,
+  });
+  assert.match(fallback, /^I created \*CRM Desk\*, but Slack wouldn’t create its handle/);
+  assert.ok(fallback.endsWith('\n\nTry asking it: “Who did I add this week? &lt;@U123&gt; &amp; co”'), fallback);
+
+  const { viewAgentUrl: _viewAgentUrl, ...withoutView } = MCP_HELLO;
+  const bare = formatManagementSetupReceipt({ ...withoutView, firstAsk: ask });
+  assert.doesNotMatch(bare, /Tell me what you’d like to work on first/, 'the first ask replaces the generic prompt');
+  assert.ok(bare.endsWith('Try asking me: “Who did I add this week? &lt;@U123&gt; &amp; co”'), bare);
+});
+
+test('an Agent welcome without a first ask has no invitation line', () => {
+  const text = formatManagementSetupReceipt(MCP_HELLO);
+  assert.ok(text.endsWith('<https://example.test/admin/agents/agent_crm|View Agent>'), text);
+  assert.doesNotMatch(text, /Try asking/);
+  const fallback = formatManagementSetupReceipt({
+    ...MCP_HELLO,
+    publication: { status: 'partial', incomplete: ['slack_presence'] },
+  });
+  assert.doesNotMatch(fallback, /Try asking/);
+  const { viewAgentUrl: _viewAgentUrl, ...withoutView } = MCP_HELLO;
+  assert.ok(formatManagementSetupReceipt(withoutView).endsWith('Tell me what you’d like to work on first.'));
+});
+
 test('Agent welcome shows a follow-on preview once, exactly as Slack rendered it', () => {
   const coordinator = createSlackAgentCreationTurnCoordinator(
     'turn_welcome_preview',

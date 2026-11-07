@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import type { WebClient } from '@slack/web-api';
 
 import { SqliteConfigStore } from '../src/config/store.ts';
+import type { IdentityStore } from '../src/identity/types.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import {
@@ -51,6 +52,22 @@ const COLLIDED_HANDLE_WELCOME: ManagementReceiptOutboxRecord = {
   nextAttemptAt: NOW,
   createdAt: NOW,
   updatedAt: NOW,
+};
+
+const CREATOR = {
+  organizationId: 'org_pej', userId: 'user_pej', slackTeamId: WORKSPACE, slackUserId: 'U_PEJ',
+};
+
+const MCP_CREATION_WELCOME: ManagementReceiptOutboxRecord = {
+  ...COLLIDED_HANDLE_WELCOME,
+  outboxId: 'agent_welcome_op_mcp',
+  operationId: 'op_mcp',
+  destination: { kind: 'initiator_dm', organizationId: CREATOR.organizationId, userId: CREATOR.userId },
+  receipt: (({ turnJobId: _turnJobId, ...receipt }) => ({
+    ...receipt,
+    creationOperationId: 'op_mcp',
+    firstAsk: 'Which tickets are waiting on me?',
+  }))(COLLIDED_HANDLE_WELCOME.receipt as ManagementAgentCreatedWelcome),
 };
 
 function agentWhoseHandleCollided(): CustomAgentConfig {
@@ -147,13 +164,23 @@ function fixture() {
         return { ok: true, ts: `1800000000.${String(posts.length + 1).padStart(6, '0')}` };
       },
     },
+    conversations: {
+      async open(input: { users: string }) {
+        assert.equal(input.users, CREATOR.slackUserId);
+        return { ok: true, channel: { id: 'D_PEJ' } };
+      },
+    },
   } as unknown as WebClient;
   const drain = () => drainManagementReceiptOutbox({
     management,
     now: () => NOW + 20,
     onDeliveredSettled: (record) => completeSettledAgentWelcomeHandoff(record, config, management),
     deliver: (record) => deliverManagementReceiptToSlack(record, {
-      identity: { async listExternalIdentities() { return []; } },
+      identity: {
+        async listExternalIdentities() {
+          return [CREATOR] as unknown as Awaited<ReturnType<IdentityStore['listExternalIdentities']>>;
+        },
+      },
       resolveInstallation: async (workspaceId) => ({
         workspaceId, transportMode: 'direct', sharedAppReads: false, botUserId: 'U_BOT', client,
       }),
@@ -273,6 +300,65 @@ test('a handle that goes live before Chickpea posts its fallback leaves one welc
       (await f.config.getAgentThreadRoute(WORKSPACE, 'D_PEJ', CREATION_THREAD.threadTs))?.agentId,
       'agent_help',
       'the creation thread is handed to the Agent',
+    );
+    assert.deepEqual(await f.drain(), { delivered: 0, retried: 0, failed: 0 });
+  } finally {
+    f.close();
+  }
+});
+
+test('an MCP creation\'s direct-message welcome is posted again by its Agent once the handle is live', async () => {
+  const f = fixture();
+  try {
+    await f.config.ensureWorkspaceInstallation({
+      workspaceId: WORKSPACE, transportMode: 'direct', teamId: WORKSPACE, appId: 'A1', botUserId: 'U_BOT',
+    });
+    await f.config.createAgent(agentWhoseHandleCollided());
+    await f.management.putOutbox(MCP_CREATION_WELCOME);
+
+    assert.deepEqual(await f.drain(), { delivered: 1, retried: 0, failed: 0 });
+    const fallback = f.posts[0]!;
+    assert.equal(fallback.channel, 'D_PEJ', 'the welcome opens the creator\'s DM with Chickpea');
+    assert.equal(fallback.thread_ts, undefined, 'it starts a new message, not a reply');
+    assert.equal(fallback.username, undefined, 'the fallback posts as Chickpea');
+    assert.match(String(fallback.text), /^I created \*Support\*, but Slack wouldn’t create its handle, @support/);
+    assert.ok(String(fallback.text).endsWith('Try asking it: “Which tickets are waiting on me?”'), String(fallback.text));
+    assert.equal(
+      await f.config.getAgentThreadRoute(WORKSPACE, 'D_PEJ', welcomeTs(1)),
+      undefined,
+      'Chickpea\'s fallback keeps its thread',
+    );
+
+    const stuck = await f.config.getAgent('agent_help');
+    await f.config.updateAgent(
+      'agent_help',
+      { slackPresence: { ...stuck.slackPresence!, requestedHandle: 'help' } },
+      stuck.revision,
+    );
+    await f.reconciler.retry('agent_help');
+    const owed = await f.management.getOutboxForOperation('agent_welcome_op_mcp_published');
+    assert.deepEqual(owed?.destination, MCP_CREATION_WELCOME.destination);
+    assert.equal(welcomeOf(owed).firstAsk, 'Which tickets are waiting on me?');
+
+    assert.deepEqual(await f.drain(), { delivered: 1, retried: 0, failed: 0 });
+    assert.equal(f.posts.length, 2);
+    const hello = f.posts[1]!;
+    assert.equal(hello.channel, 'D_PEJ');
+    assert.equal(hello.thread_ts, undefined);
+    assert.equal(hello.username, 'Support');
+    assert.equal(hello.icon_url, 'https://avatars.example/help.png');
+    assert.match(String(hello.text), /^Hi — I’m \*Support\* \(@help\)\. Answers support questions\./);
+    assert.ok(String(hello.text).endsWith('Try asking me: “Which tickets are waiting on me?”'), String(hello.text));
+    const helloTs = welcomeTs(2);
+    assert.equal(
+      (await f.config.getAgentThreadRoute(WORKSPACE, 'D_PEJ', helloTs))?.agentId,
+      'agent_help',
+      'a reply in the hello\'s thread goes to the Agent',
+    );
+    const context = await f.config.listSlackPublicContext(WORKSPACE, 'D_PEJ', helloTs);
+    assert.deepEqual(
+      context.map(({ role, agentId, messageTs }) => ({ role, agentId, messageTs })),
+      [{ role: 'agent', agentId: 'agent_help', messageTs: helloTs }],
     );
     assert.deepEqual(await f.drain(), { delivered: 0, retried: 0, failed: 0 });
   } finally {
