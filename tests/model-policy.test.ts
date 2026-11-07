@@ -725,6 +725,7 @@ test('the effective effort follows the model source: the pin, the Workspace defa
       getWorkspaceInstallation: async () => ({ runtimeContract: 'chickpea-v1' }) as never,
       getWorkspaceModelDefault: async () => workspaceDefault,
     },
+    undefined,
   );
   assert.equal(assignment.effort, undefined, 'a re-resolved assignment drops a stale effort');
 });

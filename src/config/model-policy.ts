@@ -15,7 +15,7 @@ import type {
 import { describeProviderKeySources, isProviderKeyId, type ProviderKeyId } from './provider-keys.ts';
 import type { SettingsStore } from './settings-store.ts';
 import type { PlatformEnv } from './state-backend.ts';
-import { resolveActiveCatalogRoute } from '../model-catalog/index.ts';
+import { loadModelCatalog, resolveActiveCatalogRoute } from '../model-catalog/index.ts';
 import { findImageModel } from '../model-catalog/image-profiles.ts';
 import { imageModelProfileReady } from '../images/provider.ts';
 import type {
@@ -65,9 +65,15 @@ interface WorkspaceModelPolicyReader {
   getWorkspaceModelDefault(workspaceId: string): Promise<WorkspaceModelDefault | undefined>;
 }
 
+/**
+ * The installation's stored catalog judges the model, as it does for Admin
+ * readiness and the runtime. This isolate may still hold an older revision it
+ * activated earlier. `settings` is undefined only when no installation is known.
+ */
 export async function resolveModelPolicyForAssignment(
   assignment: ResolvedAssignment,
   reader: WorkspaceModelPolicyReader,
+  settings: SettingsStore | undefined,
   env: NodeJS.ProcessEnv = process.env,
   knownInstallation?: WorkspaceInstallation,
   platformEnv?: PlatformEnv,
@@ -77,9 +83,11 @@ export async function resolveModelPolicyForAssignment(
   if (!installation) {
     throw new ModelResolutionError('Workspace model policy is unavailable. Repair Slack setup.');
   }
-  const workspaceDefault = installation.runtimeContract === 'chickpea-v1'
-    ? await reader.getWorkspaceModelDefault(assignment.workspaceId)
-    : undefined;
+  const chickpeaContract = installation.runtimeContract === 'chickpea-v1';
+  const [workspaceDefault] = await Promise.all([
+    chickpeaContract ? reader.getWorkspaceModelDefault(assignment.workspaceId) : undefined,
+    chickpeaContract && settings ? loadModelCatalog(settings, platformEnv) : undefined,
+  ]);
   const resolved = resolveAgentModelPolicy({
     agent: assignment.agent,
     runtimeContract: installation.runtimeContract,

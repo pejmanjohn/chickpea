@@ -3622,7 +3622,7 @@ async function processSlackEvent(
       const existingSnapshot = stores.snapshots.get(snapshotKey);
       void existingSnapshot.catch(() => undefined);
       const policyAssignment = await resolveModelPolicyForAssignment(
-        routedAssignment, store, process.env, installation, platformEnv,
+        routedAssignment, store, stores.settings, process.env, installation, platformEnv,
       );
       await introduction;
       const admittedCredential = {
@@ -4111,11 +4111,13 @@ async function processSlackEvent(
           ? await resolveEffectiveSlackConfig(turn.workspaceId, turn.channelId, {
               agents: stores.config,
               grants: stores.config,
+              settings: stores.settings,
             }, process.env, assignment.agentId, platformEnv)
           : await getOrCreateSnapshot(stores.snapshots, threadKey, () =>
               resolveEffectiveSlackConfig(turn.workspaceId, turn.channelId, {
                 agents: stores.config,
                 grants: stores.config,
+                settings: stores.settings,
               }, process.env, assignment.agentId, platformEnv)), platformEnv, stores);
       }
     } finally {
