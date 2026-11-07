@@ -70,7 +70,7 @@ import { channelLabelKey, createUsageAdminApi } from './usage-api.ts';
 import { createRunReviewAdminApi } from './run-review-api.ts';
 import { platformBilling } from '../config/platform-billing.ts';
 import { runReview } from '../review/port.ts';
-import { installationFunding } from '../config/platform-funding.ts';
+import { installationFunding, platformFundsProvider } from '../config/platform-funding.ts';
 import {
   activeCatalogModels,
   availableRoleModels,
@@ -10737,7 +10737,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!isProviderKeyId(providerId)) return false;
     const env = c.env as PlatformEnv | undefined;
     // On Chickpea's models, Chickpea's own key pays for the request.
-    if (await installationFunding(env) === 'platform') return true;
+    if (await installationFunding(env) === 'platform') return platformFundsProvider(providerId);
     if (providerId === 'openai') {
       const settingsStore = settings(c);
       const method = await resolveOpenAiAuthMethod(settingsStore);

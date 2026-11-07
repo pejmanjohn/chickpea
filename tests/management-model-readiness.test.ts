@@ -16,7 +16,7 @@ import type { ManagementActorContext } from '../src/management/types.ts';
 import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { withEnv } from './helpers/env.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
-import { NO_RUN_FEES } from './helpers/platform-funding.ts';
+import { EVERY_PROVIDER_FUNDED, NO_RUN_FEES } from './helpers/platform-funding.ts';
 
 const NOW = Date.UTC(2026, 9, 7, 12);
 const DEEPSEEK = 'openrouter/deepseek/deepseek-v4.1-flash';
@@ -35,6 +35,7 @@ const NO_DEPLOYMENT_KEYS = {
 function fundedBy(funding: Awaited<ReturnType<PlatformFundingPort['funding']>>) {
   const asked: string[] = [];
   configurePlatformFunding({
+    ...EVERY_PROVIDER_FUNDED,
     funding: async (installationId) => {
       asked.push(installationId);
       return funding;

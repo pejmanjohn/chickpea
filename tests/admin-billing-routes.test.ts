@@ -22,7 +22,7 @@ import type { IdentityStore } from '../src/identity/types.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
-import { NO_RUN_FEES } from './helpers/platform-funding.ts';
+import { EVERY_PROVIDER_FUNDED, NO_RUN_FEES } from './helpers/platform-funding.ts';
 import {
   NO_PLAN, OFFERS, OWN_KEY_NO_PLAN, PERIOD, PLAN_NO_PERIOD, STARTER_AT_LIMIT, STARTER_PLAN, STARTER_TOP_UP, TEAM_DOWNGRADING, TEAM_ENDING, TEAM_PLAN,
   TOP_UP_ON, TRIAL_GRANT, TWO_FEE_OFFERS, usd,
@@ -405,6 +405,7 @@ async function switchingHost(
     chooseFunding: async (_installationId, next) => { summary = { ...summary, funding: next }; },
   });
   configurePlatformFunding({
+    ...EVERY_PROVIDER_FUNDED,
     funding: async () => summary.funding === 'platform' ? 'platform' : 'customer',
     admit: async () => 'admitted',
     charge: async () => undefined,

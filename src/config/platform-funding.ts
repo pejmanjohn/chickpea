@@ -15,6 +15,7 @@
 import { errorChainIncludes } from './error-chain.ts';
 import { requireInstallationScope } from './installation-scope.ts';
 import type { ModelAccessGrant } from './model-access.ts';
+import type { ProviderKeyId } from './provider-key-ids.ts';
 import type { PlatformEnv } from './state-backend.ts';
 import type { SharedPrefixId } from '../agents/shared-prefix.ts';
 import type { ModelRequestFundingSource, ModelRequestRecord } from '../usage/model-requests.ts';
@@ -149,6 +150,11 @@ export type CreditBackOutcome =
   | { readonly kind: 'nothing' };
 
 export interface PlatformFundingPort {
+  /**
+   * The providers whose models Chickpea's models serve: those the host holds
+   * a platform key for. Core offers no other provider's models on credits.
+   */
+  readonly fundedProviders: ReadonlySet<ProviderKeyId>;
   /** Whether the installation's model requests are paid from its credits. */
   funding(installationId: string): Promise<ModelRequestFundingSource>;
   /**
@@ -268,6 +274,10 @@ export function configurePlatformFunding(next: PlatformFundingPort | undefined):
 
 export function platformFundingConfigured(): boolean {
   return port !== undefined;
+}
+
+export function platformFundsProvider(providerId: ProviderKeyId): boolean {
+  return port?.fundedProviders.has(providerId) ?? false;
 }
 
 /** The credential a platform-funded run freezes for a provider: never a key the installation saved. */

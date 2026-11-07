@@ -23,7 +23,7 @@ import { RELEASE_PRICE_CATALOGS } from '../src/usage/pricing/catalog.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { withEnv } from './helpers/env.ts';
-import { NO_RUN_FEES } from './helpers/platform-funding.ts';
+import { EVERY_PROVIDER_FUNDED, NO_RUN_FEES } from './helpers/platform-funding.ts';
 import { OPENAI_SUBSCRIPTION_IMAGE_MODEL_ID } from '../src/model-catalog/image-profiles.ts';
 
 function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
@@ -536,6 +536,7 @@ function hostedInstallation(t: TestContext, funding: () => Promise<'platform' | 
     invalidateProviderKeyCache();
   });
   configurePlatformFunding({
+    ...EVERY_PROVIDER_FUNDED,
     funding,
     admit: async () => 'admitted',
     charge: async () => {},

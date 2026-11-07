@@ -17,7 +17,7 @@ import {
   resolveModelReadiness,
 } from './model-readiness.ts';
 import { resolveOpenAiAuthMethod } from './openai-auth.ts';
-import { installationFunding } from './platform-funding.ts';
+import { installationFunding, platformFundsProvider } from './platform-funding.ts';
 import { isProviderKeyId } from './provider-key-ids.ts';
 import { describeProviderKeySources } from './provider-keys.ts';
 import { getProviderFavorites, getWorkersAiEnabled } from './provider-models.ts';
@@ -122,7 +122,8 @@ export async function chatModelPickerProviders(input: {
   // Chickpea's models are a lane like the ChatGPT subscription. They need no
   // key or starred model, and serve only the models with a price.
   const unavailable = await resolveModelReadiness({ settings, env, runtimeProviders, funding });
-  return Promise.all(providers.map(async (provider) => {
+  const funded = providers.filter(({ id }) => !isProviderKeyId(id) || platformFundsProvider(id));
+  return Promise.all(funded.map(async (provider) => {
     const candidates = uniqueStrings([
       ...provider.suggestions,
       ...(runtimeProviders.find(({ id }) => id === provider.id)?.suggestions ?? []),

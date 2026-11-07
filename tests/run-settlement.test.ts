@@ -14,7 +14,7 @@ import {
   type RecoveryFailure,
   type SlackFailureKind,
 } from '../src/usage/run-settlement.ts';
-import { NO_RUN_FEES } from './helpers/platform-funding.ts';
+import { EVERY_PROVIDER_FUNDED, NO_RUN_FEES } from './helpers/platform-funding.ts';
 
 /**
  * The credit-back policy in one place: each way a Slack turn or a scheduled
@@ -82,6 +82,7 @@ test('only a dispatched run on a hosted installation with a host port is the led
   const hosted = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_gate' });
   assert.equal(hostedRun(hosted, 'sub_gate'), undefined, 'no port');
   configurePlatformFunding({
+    ...EVERY_PROVIDER_FUNDED,
     funding: async () => 'customer', admit: async () => 'admitted', charge: async () => undefined, ...NO_RUN_FEES,
   });
   t.after(() => resetPlatformFundingForTests());

@@ -87,7 +87,7 @@ import { SqliteUsageStore } from '../src/usage/store.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { withEnv } from './helpers/env.ts';
-import { NO_RUN_FEES } from './helpers/platform-funding.ts';
+import { EVERY_PROVIDER_FUNDED, NO_RUN_FEES } from './helpers/platform-funding.ts';
 
 const NOW = Date.UTC(2026, 9, 7, 12);
 const RESUMES_AT = Date.UTC(2026, 9, 8);
@@ -101,6 +101,7 @@ const NO_DEPLOYMENT_KEYS = {
   ANTHROPIC_API_KEY: undefined,
   OPENAI_API_KEY: undefined,
   OPENROUTER_API_KEY: undefined,
+  GEMINI_API_KEY: undefined,
   ANTHROPIC_BASE_URL: undefined,
   LOCAL_STUB_URL: undefined,
 };
@@ -117,6 +118,7 @@ function fakePort(overrides: Partial<PlatformFundingPort> = {}) {
     charge: [] as ModelRequestRecord[],
   };
   configurePlatformFunding({
+    fundedProviders: overrides.fundedProviders ?? EVERY_PROVIDER_FUNDED.fundedProviders,
     funding: async (installationId) => {
       calls.funding.push(installationId);
       return overrides.funding ? overrides.funding(installationId) : 'platform';
@@ -820,6 +822,7 @@ test('a fee post that outlasts its budget logs how it later settles, naming no i
   t.after(() => resetPlatformFundingForTests());
   const pending: Array<{ resolve: (outcome: FeeOutcome) => void; reject: (error: Error) => void }> = [];
   configurePlatformFunding({
+    ...EVERY_PROVIDER_FUNDED,
     ...NO_RUN_FEES,
     funding: async () => 'platform',
     admit: async () => 'admitted',
@@ -1268,6 +1271,71 @@ test('on a credits installation Admin lists the models Chickpea\'s models serve 
   });
 });
 
+test('a credits installation offers Gemini only when the host funds Google', async (t) => {
+  const { request, config, installation } = await creditsAdmin(t);
+  const settings = new SqliteSettingsStore(':memory:');
+  const usageStore = new SqliteUsageStore(':memory:');
+  t.after(() => {
+    settings.close();
+    usageStore.close();
+  });
+  const read = async <T>(path: string): Promise<T> => {
+    const response = await request(path);
+    assert.equal(response.status, 200, path);
+    return (await response.json()) as T;
+  };
+  const gemini = async () => (await read<{ providers: Array<{ id: string; configured: boolean; suggestions: string[] }> }>(
+    '/admin/api/models')).providers.find(({ id }) => id === 'google');
+  const unavailable = async (modelId: string) =>
+    (await read<{ unavailable: string | null }>(`/admin/api/models/readiness?modelId=${encodeURIComponent(modelId)}`)).unavailable;
+  const platformCredential = () =>
+    resolveModelCredentialAttribution('google/gemini-3.8-flash', hostedEnv('inst_credits'), settings, usageStore);
+  const GEMINI = ['google/gemini-4-argon', 'google/gemini-3.8-flash', 'google/gemini-3.5-flash-lite'];
+
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    t.mock.timers.setTime(Date.UTC(2026, 10, 7, 12));
+    const withoutGoogle = new Set(EVERY_PROVIDER_FUNDED.fundedProviders);
+    withoutGoogle.delete('google');
+    fakePort({ fundedProviders: withoutGoogle });
+    assert.equal(await gemini(), undefined, 'the picker lists no Gemini group');
+    assert.deepEqual((await read<{ models: unknown[] }>('/admin/api/providers/google/models')).models, []);
+    assert.ok((await read<{ providers: Array<{ id: string; platformFunded?: boolean }> }>('/admin/api/providers')).providers
+      .every((card) => card.id !== 'google' || !card.platformFunded), 'the Google card is not marked as Chickpea\'s');
+    for (const model of GEMINI) assert.equal(await unavailable(model), 'funding_not_offered', model);
+    assert.equal(await platformCredential(), null, 'no platform:google credential registers');
+    await assert.rejects(
+      resolveRuntimeModel('agent', 'google/gemini-3.8-flash', { settings, env: hostedEnv('inst_credits') }),
+      (error: unknown) => error instanceof RuntimeModelReadinessError && error.status === 'unsupported' &&
+        /funding_not_offered/.test(error.message),
+    );
+    await config.putWorkspaceModelDefault({
+      workspaceId: installation.workspaceId,
+      modelId: 'google/gemini-3.8-flash',
+      provenance: 'admin_selected',
+      lastChangedByMembershipId: 'membership_test_owner',
+    }, 2);
+    assert.deepEqual(
+      ((await read<{ workspaceDefault: { health: unknown } }>('/admin/api/workspace-model-default')).workspaceDefault.health),
+      { ...NOT_OFFERED, providerId: 'google' },
+      'a Gemini Workspace default is refused with the existing not-offered answer',
+    );
+
+    fakePort();
+    assert.deepEqual((await gemini())?.suggestions, GEMINI, 'with Google funded, every priced Gemini model is listed');
+    assert.equal((await gemini())?.configured, true);
+    for (const model of GEMINI) assert.equal(await unavailable(model), null, model);
+    assert.deepEqual(
+      (await read<{ models: Array<{ id: string }> }>('/admin/api/providers/google/models')).models.map(({ id }) => `google/${id}`),
+      GEMINI,
+    );
+    assert.equal((await platformCredential())?.credentialRefId, 'platform:google');
+    assert.deepEqual(
+      ((await read<{ workspaceDefault: { health: unknown } }>('/admin/api/workspace-model-default')).workspaceDefault.health),
+      { status: 'ready', providerId: 'google' },
+    );
+  });
+});
+
 test('on a credits installation Admin lists the OpenRouter models Chickpea\'s models price, with no key or starred model', async (t) => {
   const { request } = await creditsAdmin(t);
   const read = async <T>(path: string): Promise<T> => {
@@ -1402,6 +1470,8 @@ test('outage regression: a day past every price\'s review date, credits still se
 
   await t.test('model policy offers both models and estimates price them', async (t) => {
     t.mock.timers.enable({ apis: ['Date'], now: AFTER_EVERY_REVIEW_DUE });
+    fakePort();
+    t.after(() => resetPlatformFundingForTests());
     const customerFunded = () => false;
     assert.equal(await modelProviderUnavailable(
       { providerId: 'anthropic', model: OPUS, priceBasis: 'standard_input_output' }, customerFunded, 'platform'), undefined);

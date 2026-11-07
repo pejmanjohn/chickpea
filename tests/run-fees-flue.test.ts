@@ -73,7 +73,7 @@ import type { FlueDispatchEnvelopeV1 } from '../src/slack/turn-job-types.ts';
 import { fundingRefusalText } from '../src/slack/credits-ask.ts';
 import type { RunKind } from '../src/usage/run-fees.ts';
 import { withEnv } from './helpers/env.ts';
-import { NO_RUN_FEES } from './helpers/platform-funding.ts';
+import { EVERY_PROVIDER_FUNDED, NO_RUN_FEES } from './helpers/platform-funding.ts';
 import { answers, callsTools, SCRIPTED_MODEL, scriptedMessage, scriptedProvider } from './helpers/scripted-provider.ts';
 import { LIST_URL, StrictListsFake } from './helpers/slack-lists.ts';
 
@@ -119,6 +119,7 @@ function hostedPort(
   timeline.length = 0;
   if (options.port !== false) {
     configurePlatformFunding({
+      ...EVERY_PROVIDER_FUNDED,
       ...NO_RUN_FEES,
       funding: async () => 'customer',
       admit: async () => 'admitted',
@@ -1008,6 +1009,7 @@ test('a task admission the host answers pending is not taken as admitted when th
   const posts = hostedPort(t, { admission: 'pending' });
   resetPlatformFundingForTests({ now: () => now, sleep: async (ms) => { now += ms; } });
   configurePlatformFunding({
+    ...EVERY_PROVIDER_FUNDED,
     ...NO_RUN_FEES,
     funding: async () => 'customer',
     admit: async () => 'admitted',

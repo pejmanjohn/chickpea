@@ -28,7 +28,7 @@ import { configurePlatformFunding, resetPlatformFundingForTests } from '../src/c
 import type { PlatformEnv } from '../src/config/state-backend.ts';
 import { getBuiltinModel } from '../src/model-catalog/pi-builtin-models.ts';
 import { withEnv } from './helpers/env.ts';
-import { NO_RUN_FEES } from './helpers/platform-funding.ts';
+import { EVERY_PROVIDER_FUNDED, NO_RUN_FEES } from './helpers/platform-funding.ts';
 
 const NOW = Date.UTC(2026, 9, 7, 12);
 const LUNA_DEFAULT = readFileSync(new URL('./fixtures/usage/provider-modes/openai-gpt-5.6-luna-default.sse', import.meta.url), 'utf8');
@@ -72,6 +72,7 @@ function proxied(t: TestContext) {
   configureInstallationAdmission(async () => 'admitted');
   const charged: Array<SharedPrefixId | null> = [];
   configurePlatformFunding({
+    ...EVERY_PROVIDER_FUNDED,
     funding: async () => 'platform',
     admit: async () => 'admitted',
     charge: async (_record, sharedPrefix) => {

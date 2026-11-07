@@ -60,7 +60,7 @@ import { formFieldActionId, formFieldBlockId } from '../src/slack/ui/render-form
 import { uiActionId, uiBlockId, uiSurfaceId, type UiSurfaceRecord } from '../src/slack/ui/surface.ts';
 import { withDirectSlackInstall } from './helpers/direct-slack-install.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
-import { NO_RUN_FEES } from './helpers/platform-funding.ts';
+import { EVERY_PROVIDER_FUNDED, NO_RUN_FEES } from './helpers/platform-funding.ts';
 
 /**
  * A host serving many installations verifies each Slack delivery with its one
@@ -696,6 +696,7 @@ test('a hosted Owner\'s Ask an Owner click asks the host why now and tells only 
   await withHostedInstallation(t, async (h) => {
     const asked: Array<{ installationId: string; runId: string }> = [];
     configurePlatformFunding({
+      ...EVERY_PROVIDER_FUNDED,
       ...NO_RUN_FEES,
       funding: async () => 'platform',
       admit: async () => 'admitted',
