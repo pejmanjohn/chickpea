@@ -5,6 +5,7 @@ import { providerPrefix } from './model-access.ts';
 import { modelEffortsFor, type ModelEffort } from './model-effort.ts';
 import { resolveOpenAiAuthMethod } from './openai-auth.ts';
 import { openRouterModelEfforts } from './openrouter-runtime-model.ts';
+import { isProviderKeyId, type ProviderKeyId } from './provider-key-ids.ts';
 import type { SettingsStore } from './settings-store.ts';
 import type { PlatformEnv } from './state-backend.ts';
 import type { OpenAiAuthMethod } from './types.ts';
@@ -32,17 +33,8 @@ export async function resolveModelEfforts(
   if (thinkingLevelForModel(canonicalModel) === 'off') return [];
   const provider = providerPrefix(canonicalModel);
   const modelId = canonicalModel.slice(provider.length + 1);
+  if (isProviderKeyId(provider)) return keyProviderEfforts(provider, canonicalModel, dependencies);
   switch (provider) {
-    case 'anthropic':
-      return catalogEfforts(canonicalModel, 'anthropic_api_key', dependencies);
-    // The Node subscription provider drops `max`; no live turn has proven the
-    // Cloudflare plan accepts it.
-    case 'openai':
-      return (dependencies.openAiAuthMethod ?? await resolveOpenAiAuthMethod(dependencies.settings)) === 'api_key'
-        ? catalogEfforts(canonicalModel, 'openai_api_key', dependencies)
-        : catalogEfforts(canonicalModel, 'openai_subscription', dependencies, 'xhigh');
-    case 'openrouter':
-      return openRouterModelEfforts(canonicalModel, dependencies.env, dependencies.settings);
     case 'cloudflare': {
       // Flue's binding provider sends xhigh and max as high.
       const model = getBuiltinModel('cloudflare-workers-ai', modelId);
@@ -54,6 +46,29 @@ export async function resolveModelEfforts(
     }
     default:
       return [];
+  }
+}
+
+async function keyProviderEfforts(
+  provider: ProviderKeyId,
+  canonicalModel: string,
+  dependencies: ModelEffortDependencies,
+): Promise<ModelEffort[]> {
+  switch (provider) {
+    case 'anthropic':
+      return catalogEfforts(canonicalModel, 'anthropic_api_key', dependencies);
+    // The Node subscription provider drops `max`; no live turn has proven the
+    // Cloudflare plan accepts it.
+    case 'openai':
+      return (dependencies.openAiAuthMethod ?? await resolveOpenAiAuthMethod(dependencies.settings)) === 'api_key'
+        ? catalogEfforts(canonicalModel, 'openai_api_key', dependencies)
+        : catalogEfforts(canonicalModel, 'openai_subscription', dependencies, 'xhigh');
+    case 'openrouter':
+      return openRouterModelEfforts(canonicalModel, dependencies.env, dependencies.settings);
+    case 'google': {
+      const model = getBuiltinModel('google', canonicalModel.slice('google/'.length));
+      return model ? modelEffortsFor(model) : [];
+    }
   }
 }
 

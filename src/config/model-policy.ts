@@ -12,7 +12,8 @@ import type {
   WorkspaceModelRole,
   WorkspaceRuntimeContract,
 } from './types.ts';
-import { describeProviderKeySources, isProviderKeyId, type ProviderKeyId } from './provider-keys.ts';
+import { isProviderKeyId, type ProviderKeyId } from './provider-key-ids.ts';
+import { describeProviderKeySources } from './provider-keys.ts';
 import type { SettingsStore } from './settings-store.ts';
 import type { PlatformEnv } from './state-backend.ts';
 import { loadModelCatalog, resolveActiveCatalogRoute } from '../model-catalog/index.ts';
@@ -24,7 +25,7 @@ import type {
 } from '../agents/runtime-plan.ts';
 import type { FrozenRuntimeModelRoute } from './runtime-model.ts';
 import { providerPrefix } from './model-access.ts';
-import { installationFunding } from './platform-funding.ts';
+import { installationFunding, platformFundsProvider } from './platform-funding.ts';
 import { priceCatalogFor } from '../usage/pricing/catalog.ts';
 import type { UsagePriceRate } from '../usage/pricing/types.ts';
 import type { ModelRequestFundingSource } from '../usage/model-requests.ts';
@@ -468,8 +469,8 @@ export async function modelProviderUnavailable(
   if (await funding !== 'platform') {
     return (await customerFunded()) ? undefined : 'credential_missing';
   }
-  const price = route && priceCatalogFor(route.priceBasis, route.providerId, route.model, Date.now());
-  return price ? undefined : 'funding_not_offered';
+  if (!route || !platformFundsProvider(route.providerId)) return 'funding_not_offered';
+  return priceCatalogFor(route.priceBasis, route.providerId, route.model, Date.now()) ? undefined : 'funding_not_offered';
 }
 
 // Only a provider with a first-class key lane can serve an image role today.

@@ -34,6 +34,7 @@
 #   npx wrangler secret put ANTHROPIC_API_KEY
 #   npx wrangler secret put OPENAI_API_KEY
 #   npx wrangler secret put OPENROUTER_API_KEY
+#   npx wrangler secret put GEMINI_API_KEY
 # Optional: give Agents web search with an Exa API key:
 #   npx wrangler secret put EXA_API_KEY
 # For normal OSS setup, leave Composio out of this file and use

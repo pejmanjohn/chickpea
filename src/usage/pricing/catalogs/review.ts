@@ -2,6 +2,7 @@ import type { UsagePriceRate, UsagePriceVersion } from '../types.ts';
 import { type RateInput, version } from './version.ts';
 
 export const ANTHROPIC_PRICING_URL = 'https://platform.claude.com/docs/en/about-claude/pricing.md';
+export const GOOGLE_PRICING_URL = 'https://aistudio.google.com/docs/pricing';
 export const openRouterEndpointsUrl = (modelId: string) => `https://openrouter.ai/api/v1/models/${modelId}/endpoints`;
 export const openAiModelUrl = (modelId: string) => `https://developers.openai.com/api/docs/models/${modelId}.md`;
 export const cloudflareModelUrl = (modelId: string) =>

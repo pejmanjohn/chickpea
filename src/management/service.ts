@@ -39,6 +39,12 @@ import type { SettingsStore } from '../config/settings-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { ModelReadiness } from '../config/model-readiness.ts';
 import { modelDefaultInstallation } from '../config/model-choices.ts';
+import {
+  isProviderKeyId,
+  PROVIDER_DISPLAY_NAMES,
+  PROVIDER_KEY_IDS,
+  type ProviderKeyId,
+} from '../config/provider-key-ids.ts';
 import type { ModelEffortChoice } from '../config/model-effort-capability.ts';
 import { agentModelEffortAfterPatch, type ModelEffort } from '../config/model-effort.ts';
 import {
@@ -327,7 +333,6 @@ const MANAGEMENT_CHANGE_SET_APPLY_LEASE_MS = 30_000;
 /** try_connection's limit outside Slack, per member. */
 export const MEMBER_CONNECTION_TRIES = { tries: 30, windowMs: 10 * 60_000 } as const;
 const SETUP_TTL_MS = 24 * 60 * 60_000;
-const MANAGED_PROVIDER_IDS = ['anthropic', 'openai', 'openrouter'] as const;
 const NO_MODEL_CATALOG: ManagementWorkspaceSnapshot['modelCatalog'] = { chat: [], image: [] };
 const THREAD_TTL_DAYS = THREAD_TTL_MS / 86_400_000;
 const META_ADS_CATALOG_SETUP_MESSAGE =
@@ -368,13 +373,12 @@ function oneLookupPerChannel(facts: PrivateAgentPlacementFacts): PrivateAgentPla
   };
 }
 
-type ManagedProviderId = typeof MANAGED_PROVIDER_IDS[number];
 type ManagedProviderSource = 'env' | 'stored' | 'missing';
 
 // A member learns nothing about saved keys, and a runtime without the readiness
 // seam has none to read, so every key-lane pin reads as unconfigured.
 const keyLaneUnconfigured: ModelReadiness = async (modelId) =>
-  MANAGED_PROVIDER_IDS.some((id) => modelId.startsWith(`${id}/`))
+  PROVIDER_KEY_IDS.some((id) => modelId.startsWith(`${id}/`))
     ? { unavailable: 'credential_missing' }
     : undefined;
 
@@ -449,7 +453,7 @@ export interface WorkspaceManagementServiceInput {
   /** The installation Agent avatar URLs name (agentAvatarInstallation). */
   avatarInstallationId?: string;
   providerCredentialSource?: (
-    providerId: ManagedProviderId,
+    providerId: ProviderKeyId,
   ) => Promise<ManagedProviderSource>;
   modelReadiness?: () => Promise<ModelReadiness>;
   /** The Admin's effort check; alternate runtimes without one accept any level. */
@@ -458,10 +462,10 @@ export interface WorkspaceManagementServiceInput {
     effort: ModelEffort,
   ) => Promise<ModelEffortChoice>;
   providerCredentialRevision?: (
-    providerId: ManagedProviderId,
+    providerId: ProviderKeyId,
   ) => Promise<number>;
   removeProviderCredential?: (
-    providerId: ManagedProviderId,
+    providerId: ProviderKeyId,
   ) => Promise<ManagedProviderSource>;
   prepareAgentUpdate?: (
     agent: CustomAgentConfig,
@@ -1649,10 +1653,10 @@ export class WorkspaceManagementService {
   ): Promise<PrepareProviderSetupResult> {
     const actor = await this.requireLiveActor(context, { cleanupRetention: false });
     const providerId = input.providerId;
-    if (!MANAGED_PROVIDER_IDS.includes(providerId)) {
+    if (!PROVIDER_KEY_IDS.includes(providerId)) {
       throw new ManagementError(
         'invalid_request',
-        `Unknown model provider. Choose one of: ${MANAGED_PROVIDER_IDS.join(', ')}.`,
+        `Unknown model provider. Choose one of: ${PROVIDER_KEY_IDS.join(', ')}.`,
       );
     }
     this.assertActingAgentScope(actor, {
@@ -1661,7 +1665,7 @@ export class WorkspaceManagementService {
       target: { kind: 'provider', id: providerId },
     });
     const links = adminSettingsLinks(await this.optionalSetupBaseUrl(), 'providers');
-    const name = providerLabel(providerId);
+    const name = PROVIDER_DISPLAY_NAMES[providerId];
     if (actor.role !== 'owner' && actor.role !== 'admin') {
       throw new ManagementError(
         'forbidden',
@@ -4207,7 +4211,7 @@ export class WorkspaceManagementService {
           kind: request.kind,
           provider: request.providerId,
           targetId: `provider:${request.providerId}`,
-          targetLabel: `Workspace ${providerLabel(request.providerId)} model provider`,
+          targetLabel: `Workspace ${PROVIDER_DISPLAY_NAMES[request.providerId]} model provider`,
           expectedRevision: await this.providerRevision(request.providerId),
           replacement: source === 'stored',
           formFields: ['apiKey'],
@@ -5051,7 +5055,7 @@ export class WorkspaceManagementService {
       this.stores.identity.getOrganization(),
       this.stores.identity.getUser(actor.userId),
       showsSettings
-        ? Promise.all(MANAGED_PROVIDER_IDS.map(async (id) => [
+        ? Promise.all(PROVIDER_KEY_IDS.map(async (id) => [
             id,
             await this.stores.providerCredentialSource?.(id) ?? 'missing',
           ] as const)).then((sources) => new Map<ManagementModelProviderId, ManagedProviderSource>(sources))
@@ -5067,7 +5071,7 @@ export class WorkspaceManagementService {
     ]);
     // Admin's Providers page rows; without model sources, the key providers with no known access.
     const providerRows: Array<{ id: ManagementModelProviderId; access?: ManagementModelAccess }> =
-      models?.providers ?? MANAGED_PROVIDER_IDS.map((id) => ({ id }));
+      models?.providers ?? PROVIDER_KEY_IDS.map((id) => ({ id }));
     const providerImpacts = await resolveProviderRuntimeImpacts(
       this.stores.config,
       keySources ? providerRows.map(({ id }) => id) : [],
@@ -6551,7 +6555,7 @@ export class WorkspaceManagementService {
           .map((agent) => [agent.id, agent.name]));
         return {
           kind: operation.kind,
-          provider: providerLabel(operation.providerId),
+          provider: PROVIDER_DISPLAY_NAMES[operation.providerId],
           affectedAgents: [...answering.values()],
           workspaceDefaultAffected: impact.workspaceDefaultAffected,
           affectedWorkspaceRoles: impact.affectedWorkspaceRoles,
@@ -7425,10 +7429,10 @@ export class WorkspaceManagementService {
     }
     if (key.startsWith('provider:')) {
       const providerId = key.slice('provider:'.length);
-      if (!['anthropic', 'openai', 'openrouter'].includes(providerId)) {
+      if (!isProviderKeyId(providerId)) {
         throw new ManagementError('invalid_request', 'Unknown provider revision target.');
       }
-      return this.providerRevision(providerId as ManagedProviderId);
+      return this.providerRevision(providerId);
     }
     if (key.startsWith('memory:')) {
       return (await this.stores.memory?.getAgentMemory(key.slice('memory:'.length)))?.revision ?? 0;
@@ -7468,7 +7472,7 @@ export class WorkspaceManagementService {
     return Number.parseInt(createHash('sha256').update(canonicalJson(bound)).digest('hex').slice(0, 12), 16);
   }
 
-  private async providerRevision(providerId: ManagedProviderId): Promise<number> {
+  private async providerRevision(providerId: ProviderKeyId): Promise<number> {
     if (this.stores.providerCredentialRevision) {
       return this.stores.providerCredentialRevision(providerId);
     }
@@ -8885,12 +8889,6 @@ function capabilityDigest(capability: string): string {
 function agentLabel(agent: Pick<CustomAgentConfig, 'name' | 'slackPresence'>): ManagementAgentLabel {
   const handle = agent.slackPresence?.normalizedHandle || agent.slackPresence?.requestedHandle;
   return handle ? { name: agent.name, handle } : { name: agent.name };
-}
-
-function providerLabel(providerId: 'anthropic' | 'openai' | 'openrouter'): string {
-  if (providerId === 'openai') return 'OpenAI';
-  if (providerId === 'openrouter') return 'OpenRouter';
-  return 'Anthropic';
 }
 
 function providerRevision(source: ManagedProviderSource): number {

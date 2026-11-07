@@ -2,6 +2,7 @@ export const FAKE_PROVIDER_KEYS = {
   anthropic: 'anthropic-valid-key',
   openai: 'openai-valid-key',
   openrouter: 'openrouter-valid-key',
+  google: 'gemini-valid-key',
 } as const;
 
 interface FakeProviderCall {
@@ -38,6 +39,10 @@ export class FakeProvidersBackend {
         if (url.host === 'openai.fake') {
           return this.openAiModelsResponse(headers);
         }
+      }
+
+      if (url.host === 'gemini.fake' && url.pathname === '/v1beta/models') {
+        return this.geminiModels(headers);
       }
 
       if (url.pathname === '/models' || url.pathname === '/api/v1/models') {
@@ -107,6 +112,21 @@ export class FakeProvidersBackend {
       data: [
         { id: 'claude-sonnet-4-6', display_name: 'Claude Sonnet 4.6' },
         { id: 'claude-haiku-4-5', display_name: 'Claude Haiku 4.5' },
+      ],
+    });
+  }
+
+  private geminiModels(headers: Record<string, string>): Response {
+    if (headers['x-goog-api-key'] !== FAKE_PROVIDER_KEYS.google) {
+      return json(
+        { error: { code: 400, message: 'API key not valid. Please pass a valid API key.', status: 'INVALID_ARGUMENT' } },
+        400,
+      );
+    }
+    return json({
+      models: [
+        { name: 'models/gemini-2.5-flash', displayName: 'Gemini 2.5 Flash' },
+        { name: 'models/gemini-3.8-flash', displayName: 'Gemini 3.8 Flash' },
       ],
     });
   }

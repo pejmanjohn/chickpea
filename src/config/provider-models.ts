@@ -1,7 +1,8 @@
+import { GEMINI_MODELS } from './gemini-models.ts';
 import { installationCacheKey } from './installation-scope.ts';
 import { ModelCredentialUnavailableError } from './model-credential-refs.ts';
-import type { ProviderKeyId } from './provider-keys.ts';
-import { isProviderKeyId, resolveProviderApiKey } from './provider-keys.ts';
+import { isProviderKeyId, type ProviderKeyId } from './provider-key-ids.ts';
+import { resolveProviderApiKey } from './provider-keys.ts';
 import { MODEL_EFFORTS, type ModelEffort } from './model-effort.ts';
 import type { SettingsStore } from './settings-store.ts';
 import type { PlatformEnv } from './state-backend.ts';
@@ -76,14 +77,21 @@ const MODEL_CACHE_TTL_MS = 60 * 60 * 1000;
 const DEFAULT_PROVIDER_FETCH_TIMEOUT_MS = 8_000;
 const OPENAI_CHAT_MODEL_PREFIXES = ['gpt-', 'o1', 'o3', 'o4', 'o5', 'chatgpt-', 'codex-'];
 
-// An Anthropic or OpenAI list is what one installation's key can see, so it
-// is cached per installation; OpenRouter's public catalog and the Workers AI
-// list are the same for every installation.
+// A list a key unlocks is cached per installation, so one installation's key
+// never lists models for another; OpenRouter's public catalog and the
+// Workers AI list are the same for every installation.
+const MODEL_LIST_PER_INSTALLATION: Record<AdminProviderId, boolean> = {
+  anthropic: true,
+  openai: true,
+  openrouter: false,
+  google: true,
+  'workers-ai': false,
+};
 const modelCache = new Map<string, { expiresAt: number; models: ProviderModel[] }>();
 const cachedModelCounts = new Map<string, number>();
 
 function modelCacheKey(id: AdminProviderId, env: PlatformEnv | undefined): string {
-  return id === 'anthropic' || id === 'openai' ? `${installationCacheKey(env)}|${id}` : `|${id}`;
+  return MODEL_LIST_PER_INSTALLATION[id] ? `${installationCacheKey(env)}|${id}` : `|${id}`;
 }
 
 export function isAdminProviderId(id: string): id is AdminProviderId {
@@ -107,6 +115,9 @@ export async function validateProviderApiKey(
     case 'openrouter':
       await validateOpenRouterKey(apiKey, options.timeoutMs);
       return fetchOpenRouterModels(options.timeoutMs);
+    case 'google':
+      await checkGeminiKey(apiKey, true, options.timeoutMs);
+      return reviewedGeminiModels();
   }
 }
 
@@ -224,9 +235,15 @@ async function fetchProviderModels(
   if (!apiKey) {
     throw new ProviderModelsUnavailableError(id, 'provider_key_missing', 409);
   }
-  return id === 'anthropic'
-    ? fetchAnthropicModels(apiKey, false, timeoutMs, env)
-    : fetchOpenAiModels(apiKey, false, timeoutMs, env);
+  switch (id) {
+    case 'anthropic':
+      return fetchAnthropicModels(apiKey, false, timeoutMs, env);
+    case 'openai':
+      return fetchOpenAiModels(apiKey, false, timeoutMs, env);
+    case 'google':
+      await checkGeminiKey(apiKey, false, timeoutMs);
+      return reviewedGeminiModels();
+  }
 }
 
 async function fetchAnthropicModels(
@@ -300,6 +317,28 @@ function includeCatalogModels(
     }
   }
   return [...byId.values()];
+}
+
+async function checkGeminiKey(apiKey: string, validating: boolean, timeoutMs?: number): Promise<void> {
+  const { response, body } = await fetchProviderJson(
+    'google',
+    `${geminiApiBase()}/models`,
+    { headers: { 'x-goog-api-key': apiKey } },
+    timeoutMs,
+  );
+  if (!response.ok) {
+    throw validating
+      ? new ProviderKeyRejectedError('google', response.status, providerErrorDetail(body, response))
+      : new ProviderModelsUnavailableError('google', 'provider_models_failed', 502);
+  }
+}
+
+function reviewedGeminiModels(): ProviderModel[] {
+  return Object.values(GEMINI_MODELS).map((model) => ({
+    id: model.id,
+    display_name: model.name,
+    context_length: model.contextWindow,
+  }));
 }
 
 async function validateOpenRouterKey(apiKey: string, timeoutMs?: number): Promise<void> {
@@ -473,6 +512,10 @@ function openAiApiBase(): string {
 
 function openRouterApiBase(): string {
   return trimTrailingSlashes(process.env.OPENROUTER_API_URL || 'https://openrouter.ai/api/v1');
+}
+
+function geminiApiBase(): string {
+  return trimTrailingSlashes(process.env.GEMINI_API_URL || 'https://generativelanguage.googleapis.com/v1beta');
 }
 
 function cloudflareApiBase(): string {

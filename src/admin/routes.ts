@@ -70,7 +70,7 @@ import { channelLabelKey, createUsageAdminApi } from './usage-api.ts';
 import { createRunReviewAdminApi } from './run-review-api.ts';
 import { platformBilling } from '../config/platform-billing.ts';
 import { runReview } from '../review/port.ts';
-import { installationFunding } from '../config/platform-funding.ts';
+import { installationFunding, platformFundsProvider } from '../config/platform-funding.ts';
 import {
   activeCatalogModels,
   availableRoleModels,
@@ -412,12 +412,11 @@ import {
   resolveOpenAiAuthMethod,
   saveOpenAiAuthMethod,
 } from '../config/openai-auth.ts';
+import { isProviderKeyId, PROVIDER_KEY_IDS, type ProviderKeyId } from '../config/provider-key-ids.ts';
 import {
   deleteProviderApiKey,
   describeProviderKeySources,
-  isProviderKeyId,
   listInstallationModelProviders,
-  PROVIDER_KEY_IDS,
   saveProviderApiKey,
   type ProviderKeySource,
 } from '../config/provider-keys.ts';
@@ -4896,7 +4895,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       identity: applicationIdentity,
       deployment: isCloudflareTarget() ? 'cloudflare' : 'node',
       setup: 'unknown',
-      providers: { anthropic: 'unknown', openai: 'unknown', openrouter: 'unknown', 'workers-ai': 'unknown' },
+      providers: { anthropic: 'unknown', openai: 'unknown', openrouter: 'unknown', google: 'unknown', 'workers-ai': 'unknown' },
       errors: [],
     };
     try {
@@ -7969,7 +7968,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       const platformEnv = c.env as PlatformEnv | undefined;
       const settingsStore = settings(c);
-      const funding = id === 'anthropic' || id === 'openai' ? await installationFunding(platformEnv) : undefined;
+      const { catalogLane, creditsListServedModels } = id === 'workers-ai'
+        ? { catalogLane: undefined, creditsListServedModels: false }
+        : PROVIDER_MODEL_LISTS[id];
+      const funding = creditsListServedModels ? await installationFunding(platformEnv) : undefined;
       if (funding === 'platform') {
         const served = (await chatPickerProviders(c, funding)).find((provider) => provider.id === id)?.suggestions ?? [];
         return c.json({ provider: id, models: served.map((model) => ({ id: model.slice(id.length + 1) })), cached: true });
@@ -7989,7 +7991,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           source: snapshot.source,
         });
       }
-      if (id === 'openai' || id === 'anthropic') {
+      if (catalogLane) {
         await refreshCatalog(c, c.req.query('refresh') === '1');
       }
       const result = await listProviderModels(id, {
@@ -7997,10 +7999,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         refresh: c.req.query('refresh') === '1',
         ...(platformEnv !== undefined ? { env: platformEnv } : {}),
       });
-      const models = id === 'openai' || id === 'anthropic'
+      const models = catalogLane
         ? result.models.filter((model) => resolveActiveCatalogRoute(
             `${id}/${model.id}`,
-            id === 'openai' ? 'openai_api_key' : 'anthropic_api_key',
+            catalogLane,
             platformEnv,
           ) !== undefined)
         : result.models;
@@ -10735,7 +10737,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!isProviderKeyId(providerId)) return false;
     const env = c.env as PlatformEnv | undefined;
     // On Chickpea's models, Chickpea's own key pays for the request.
-    if (await installationFunding(env) === 'platform') return true;
+    if (await installationFunding(env) === 'platform') return platformFundsProvider(providerId);
     if (providerId === 'openai') {
       const settingsStore = settings(c);
       const method = await resolveOpenAiAuthMethod(settingsStore);
@@ -10753,38 +10755,43 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   ): Promise<string[]> => {
     await loadModelCatalog(settings(c), c.env as PlatformEnv | undefined);
     const runtime = (await modelProviders(c)).find((provider) => provider.id === providerId);
-    if (providerId === 'anthropic') {
+    if (providerId === 'cloudflare') {
+      const favorites = await getProviderFavorites('workers-ai', settings(c));
       return uniqueStrings([
-        ...activeCatalogModels('anthropic_api_key', c.env as PlatformEnv | undefined).map((model) => model.canonical),
+        ...favorites.map((model) => `cloudflare/${model}`),
         ...(runtime?.suggestions ?? []),
       ]);
     }
-    if (providerId === 'openai') {
-      const method = await resolveOpenAiAuthMethod(settings(c));
-      if (method === 'subscription') {
-        if (deploymentServesManyInstallations(c.env as PlatformEnv | undefined)) return [];
-        if (isCloudflareTarget()) return (await planStatus(planDependencies(c.env as PlatformEnv | undefined, settings(c)))).models.map(model => `openai/${model.id}`);
-        return openAiSubscriptionAvailable()
-          ? activeCatalogModels('openai_subscription', c.env as PlatformEnv | undefined).map((model) => model.canonical)
-          : [];
+    switch (providerId) {
+      case 'anthropic':
+        return uniqueStrings([
+          ...activeCatalogModels('anthropic_api_key', c.env as PlatformEnv | undefined).map((model) => model.canonical),
+          ...(runtime?.suggestions ?? []),
+        ]);
+      case 'openai': {
+        const method = await resolveOpenAiAuthMethod(settings(c));
+        if (method === 'subscription') {
+          if (deploymentServesManyInstallations(c.env as PlatformEnv | undefined)) return [];
+          if (isCloudflareTarget()) return (await planStatus(planDependencies(c.env as PlatformEnv | undefined, settings(c)))).models.map(model => `openai/${model.id}`);
+          return openAiSubscriptionAvailable()
+            ? activeCatalogModels('openai_subscription', c.env as PlatformEnv | undefined).map((model) => model.canonical)
+            : [];
+        }
+        return uniqueStrings([
+          ...activeCatalogModels('openai_api_key', c.env as PlatformEnv | undefined).map((model) => model.canonical),
+          ...(runtime?.suggestions ?? []),
+        ]);
       }
-      return uniqueStrings([
-        ...activeCatalogModels('openai_api_key', c.env as PlatformEnv | undefined).map((model) => model.canonical),
-        ...(runtime?.suggestions ?? []),
-      ]);
+      case 'openrouter': {
+        const favorites = await getProviderFavorites('openrouter', settings(c));
+        return uniqueStrings([
+          ...favorites.map((model) => `openrouter/${model}`),
+          ...(runtime?.suggestions ?? []),
+        ]);
+      }
+      case 'google':
+        return runtime?.suggestions ?? [];
     }
-    if (providerId === 'openrouter') {
-      const favorites = await getProviderFavorites('openrouter', settings(c));
-      return uniqueStrings([
-        ...favorites.map((model) => `openrouter/${model}`),
-        ...(runtime?.suggestions ?? []),
-      ]);
-    }
-    const favorites = await getProviderFavorites('workers-ai', settings(c));
-    return uniqueStrings([
-      ...favorites.map((model) => `cloudflare/${model}`),
-      ...(runtime?.suggestions ?? []),
-    ]);
   };
 
   // Serving many installations, onboarding offers Connect GitHub (optional)
@@ -13712,6 +13719,22 @@ interface ProviderSummary {
   status: ProviderKeySource;
   modelCount: number | null;
 }
+
+/**
+ * How Admin lists a key-backed provider's models: the active catalog lane
+ * that filters the list, when one does, and whether a credits installation
+ * sees only the models Chickpea's models serve instead.
+ */
+const PROVIDER_MODEL_LISTS: Record<
+  ProviderKeyId,
+  { catalogLane?: 'anthropic_api_key' | 'openai_api_key'; creditsListServedModels: boolean }
+> = {
+  anthropic: { catalogLane: 'anthropic_api_key', creditsListServedModels: true },
+  openai: { catalogLane: 'openai_api_key', creditsListServedModels: true },
+  // Its favorites editor searches the whole public list.
+  openrouter: { creditsListServedModels: false },
+  google: { creditsListServedModels: true },
+};
 
 function providerSummary(
   id: AdminProviderId,

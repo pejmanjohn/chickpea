@@ -1,4 +1,5 @@
 import { deploymentServesManyInstallations, installationCacheKey } from './installation-scope.ts';
+import { PROVIDER_KEY_IDS, type ProviderKeyId } from './provider-key-ids.ts';
 import {
   readHostedModelCredential,
   savedHostedModelProviders,
@@ -18,23 +19,23 @@ export const PROVIDER_KEY_SETTING_KEYS = {
   anthropic: 'provider.anthropic.apiKey',
   openai: 'provider.openai.apiKey',
   openrouter: 'provider.openrouter.apiKey',
-} as const;
+  google: 'provider.google.apiKey',
+} as const satisfies Record<ProviderKeyId, string>;
 
 export const PROVIDER_KEY_ENV_VARS = {
   anthropic: 'ANTHROPIC_API_KEY',
   openai: 'OPENAI_API_KEY',
   openrouter: 'OPENROUTER_API_KEY',
-} as const;
+  google: 'GEMINI_API_KEY',
+} as const satisfies Record<ProviderKeyId, string>;
 
 export const PROVIDER_BASE_URL_ENV_VARS = {
   anthropic: 'ANTHROPIC_BASE_URL',
   openai: 'OPENAI_BASE_URL',
   openrouter: 'OPENROUTER_BASE_URL',
-} as const;
+  google: 'GEMINI_BASE_URL',
+} as const satisfies Record<ProviderKeyId, string>;
 
-export const PROVIDER_KEY_IDS = ['anthropic', 'openai', 'openrouter'] as const;
-
-export type ProviderKeyId = (typeof PROVIDER_KEY_IDS)[number];
 export type ProviderKeySource = 'env' | 'stored' | 'missing';
 
 export interface ResolvedProviderApiKey {
@@ -55,10 +56,6 @@ type StoredProviderKeys = Partial<Record<ProviderKeyId, string>>;
 // serving many decrypts its key per call and nothing here ever holds it.
 const storedCache = new Map<string, { expiresAt: number; values: StoredProviderKeys }>();
 const STORED_CACHE_MAX_INSTALLATIONS = 64;
-
-export function isProviderKeyId(id: string): id is ProviderKeyId {
-  return (PROVIDER_KEY_IDS as readonly string[]).includes(id);
-}
 
 /**
  * An installation's key for a provider. Standalone keeps its order: the

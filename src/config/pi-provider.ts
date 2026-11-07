@@ -6,15 +6,20 @@ import {
   type ProviderStreams,
 } from '@earendil-works/pi-ai';
 import { anthropicMessagesApi } from '@earendil-works/pi-ai/api/anthropic-messages.lazy';
+import { googleGenerativeAIApi } from '@earendil-works/pi-ai/api/google-generative-ai.lazy';
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
 import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.lazy';
 import { anthropicProvider } from '@earendil-works/pi-ai/providers/anthropic';
 import { cloudflareWorkersAIProvider } from '@earendil-works/pi-ai/providers/cloudflare-workers-ai';
 import { cloudflareStreams } from '@earendil-works/pi-ai/providers/cloudflare-stream';
+import { googleProvider } from '@earendil-works/pi-ai/providers/google';
 import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter';
+import { GEMINI_MODELS } from './gemini-models.ts';
+import { decorateGeminiPayloadStreams } from './gemini-payload.ts';
 import { modelAccessProviderId } from './model-access.ts';
 import { registerPiProvider, registeredPiProvider } from './pi-provider-registry.ts';
+import type { ProviderKeyId } from './provider-key-ids.ts';
 
 import { decorateAttachmentProviderStreams } from '../slack/attachment-model-context.ts';
 import { withWorkersAiOverflowPolicy } from './workers-ai-overflow.ts';
@@ -25,25 +30,30 @@ import {
   withReviewedWorkersAiOutputCaps,
 } from './workers-ai-models.ts';
 
-type PiBuiltinProviderId = 'anthropic' | 'openai' | 'openrouter';
-
 interface PiProviderCredential {
   apiKey?: string;
   baseUrl?: string;
 }
 
+const piModels = (catalog: Provider): readonly Model<Api>[] => catalog.getModels();
+
 const BUILTIN_PROVIDER_PARTS: Record<
-  PiBuiltinProviderId,
-  { provider: () => Provider; api: () => ProviderStreams }
+  ProviderKeyId,
+  { provider: () => Provider; models: (catalog: Provider) => readonly Model<Api>[]; api: () => ProviderStreams }
 > = {
-  anthropic: { provider: anthropicProvider, api: anthropicMessagesApi },
-  openai: { provider: openaiProvider, api: openAIResponsesApi },
-  openrouter: { provider: openrouterProvider, api: openAICompletionsApi },
+  anthropic: { provider: anthropicProvider, models: piModels, api: anthropicMessagesApi },
+  openai: { provider: openaiProvider, models: piModels, api: openAIResponsesApi },
+  openrouter: { provider: openrouterProvider, models: piModels, api: openAICompletionsApi },
+  google: {
+    provider: googleProvider,
+    models: () => Object.values(GEMINI_MODELS),
+    api: () => decorateGeminiPayloadStreams(googleGenerativeAIApi()),
+  },
 };
 
 // Live-catalog models (OpenRouter) added after startup. Public metadata only,
 // shared by every installation like the static catalog itself.
-const builtinModelOverlays = new Map<PiBuiltinProviderId, Map<string, Model<Api>>>();
+const builtinModelOverlays = new Map<ProviderKeyId, Map<string, Model<Api>>>();
 
 /**
  * Register one generated catalog provider as a credential-free app provider.
@@ -51,7 +61,7 @@ const builtinModelOverlays = new Map<PiBuiltinProviderId, Map<string, Model<Api>
  * (model-access.ts), so registering again, or in another order, changes no
  * credential.
  */
-export function registerBuiltinPiProvider(id: PiBuiltinProviderId): void {
+export function registerBuiltinPiProvider(id: ProviderKeyId): void {
   const parts = BUILTIN_PROVIDER_PARTS[id];
   const catalog = parts.provider();
   registerPiProvider(
@@ -59,14 +69,14 @@ export function registerBuiltinPiProvider(id: PiBuiltinProviderId): void {
       id,
       name: catalog.name,
       auth: modelAccessAuth(catalog.name),
-      models: mergeProviderModels(catalog.getModels(), [...(builtinModelOverlays.get(id)?.values() ?? [])]),
+      models: mergeProviderModels(parts.models(catalog), [...(builtinModelOverlays.get(id)?.values() ?? [])]),
       api: decorateAttachmentProviderStreams(parts.api()),
     }),
   );
 }
 
 /** Add a model's metadata to a built-in provider; it carries no credential. */
-export function addBuiltinProviderModelOverlay(id: PiBuiltinProviderId, model: Model<Api>): void {
+export function addBuiltinProviderModelOverlay(id: ProviderKeyId, model: Model<Api>): void {
   const overlays = builtinModelOverlays.get(id) ?? new Map<string, Model<Api>>();
   const current = overlays.get(model.id);
   if (current && JSON.stringify(current) === JSON.stringify(model)) return;
@@ -76,7 +86,7 @@ export function addBuiltinProviderModelOverlay(id: PiBuiltinProviderId, model: M
 }
 
 export function builtinProviderModelOverlay(
-  id: PiBuiltinProviderId,
+  id: ProviderKeyId,
   modelId: string,
 ): Model<Api> | undefined {
   return builtinModelOverlays.get(id)?.get(modelId);

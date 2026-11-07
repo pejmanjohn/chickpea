@@ -24,7 +24,7 @@ import type { PlatformEnv } from '../../src/config/state-backend.ts';
 import { registerModelCompatibilityApis } from '../../src/model-compat/provider.ts';
 import type { ModelRequestRecord } from '../../src/usage/model-requests.ts';
 import { priceCatalogFor } from '../../src/usage/pricing/catalog.ts';
-import { NO_RUN_FEES } from '../helpers/platform-funding.ts';
+import { EVERY_PROVIDER_FUNDED, NO_RUN_FEES } from '../helpers/platform-funding.ts';
 
 const NOW = Date.UTC(2026, 9, 7, 12);
 const API_KEY = 'sk-provider-modes-test-key';
@@ -95,6 +95,7 @@ function proxied(t: TestContext) {
   });
   const charged: ModelRequestRecord[] = [];
   configurePlatformFunding({
+    ...EVERY_PROVIDER_FUNDED,
     funding: async () => 'platform',
     admit: async () => 'admitted',
     charge: async (record) => {

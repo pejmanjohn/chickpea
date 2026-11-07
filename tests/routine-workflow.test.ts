@@ -74,7 +74,7 @@ import { SqliteWorkStore } from '../src/work/store.ts';
 import type { RunExecutionId, RunId, WorkStore } from '../src/work/types.ts';
 import type { ProductTelemetryEventInput } from '../src/telemetry/events.ts';
 import { withEnv } from './helpers/env.ts';
-import { NO_RUN_FEES } from './helpers/platform-funding.ts';
+import { EVERY_PROVIDER_FUNDED, NO_RUN_FEES } from './helpers/platform-funding.ts';
 import { SCRIPTED_MODEL, scriptedMessage, scriptedProvider } from './helpers/scripted-provider.ts';
 import {
   configureModelAccessResolver,
@@ -498,7 +498,7 @@ test('routine settlement persists measured cached tokens in the occurrence row',
 test('a scheduled run refused for credits is recorded as failed with the credits reason, once', async (t) => {
   const store = new SqliteRoutineStore(':memory:', () => NOW);
   resetPlatformFundingForTests();
-  configurePlatformFunding({ ...NO_RUN_FEES, funding: async () => 'platform', admit: async () => 'admitted', charge: async () => {} });
+  configurePlatformFunding({ ...EVERY_PROVIDER_FUNDED, ...NO_RUN_FEES, funding: async () => 'platform', admit: async () => 'admitted', charge: async () => {} });
   t.after(() => resetPlatformFundingForTests());
   try {
     const fixture = await admittedFixture(store, 'credits_exhausted');
@@ -538,6 +538,7 @@ async function scheduledRunWithFees(
   if (input.port !== false) {
     const outcome = input.outcome;
     configurePlatformFunding({
+      ...EVERY_PROVIDER_FUNDED,
       ...NO_RUN_FEES,
       funding: async () => 'customer',
       admit: async () => 'admitted',
@@ -631,6 +632,7 @@ test('a scheduled run\'s chat row and task row carry the one run ID its requests
   configureModelAccessResolver({ resolve: async () => ({ apiKey: 'sk-routine-fee-test-key' }) });
   const posts: FeePost[] = [];
   configurePlatformFunding({
+    ...EVERY_PROVIDER_FUNDED,
     ...NO_RUN_FEES,
     funding: async () => 'customer',
     admit: async () => 'admitted',
@@ -747,6 +749,7 @@ async function scheduledRunSettlement(
   const messages: Array<{ text: string; blocks: Array<Record<string, unknown>> }> = [];
   if (input.port !== false) {
     configurePlatformFunding({
+      ...EVERY_PROVIDER_FUNDED,
       ...NO_RUN_FEES,
       funding: async () => 'customer',
       admit: async () => 'admitted',
@@ -1025,7 +1028,7 @@ test('a routine out of usage posts one notice for the pause, edits it at its nex
   resetInstallationAdmissionForTests();
   resetPlatformFundingForTests();
   configureInstallationAdmission(async () => 'admitted');
-  configurePlatformFunding({ ...NO_RUN_FEES, funding: async () => 'customer', admit: async () => 'admitted', charge: async () => {} });
+  configurePlatformFunding({ ...EVERY_PROVIDER_FUNDED, ...NO_RUN_FEES, funding: async () => 'customer', admit: async () => 'admitted', charge: async () => {} });
   t.after(() => {
     store.close();
     resetInstallationAdmissionForTests();
@@ -1135,6 +1138,7 @@ test('a private schedule whose thread can no longer take its result is not credi
   configureInstallationAdmission(async () => 'admitted');
   const creditBacks: CreditBackReason[] = [];
   configurePlatformFunding({
+    ...EVERY_PROVIDER_FUNDED,
     ...NO_RUN_FEES,
     funding: async () => 'customer',
     admit: async () => 'admitted',

@@ -7,8 +7,13 @@ import {
 } from './installation-scope.ts';
 import { providerPrefix } from './model-access.ts';
 import { modelCredentialSettingKeys } from './model-credential-settings.ts';
-import { installationFunding, platformCredentialRefId } from './platform-funding.ts';
-import type { ProviderKeyId } from './provider-keys.ts';
+import { installationFunding, platformCredentialRefId, platformFundsProvider } from './platform-funding.ts';
+import {
+  isProviderKeyId,
+  PROVIDER_DISPLAY_NAMES,
+  PROVIDER_KEY_IDS,
+  type ProviderKeyId,
+} from './provider-key-ids.ts';
 import {
   isModelCredentialStore,
   sameEnvelope,
@@ -37,15 +42,15 @@ const ENV_KEY_NAMES: Record<ProviderKeyId, string> = {
   anthropic: 'ANTHROPIC_API_KEY',
   openai: 'OPENAI_API_KEY',
   openrouter: 'OPENROUTER_API_KEY',
+  google: 'GEMINI_API_KEY',
 };
 
 const ENV_PREFIXES: Record<ProviderKeyId, string> = {
   anthropic: 'ANTHROPIC',
   openai: 'OPENAI',
   openrouter: 'OPENROUTER',
+  google: 'GEMINI',
 };
-
-const BUILTIN_PROVIDERS = new Set<ProviderKeyId>(['anthropic', 'openai', 'openrouter']);
 
 interface StoredCredentialMetadata {
   credentialRefId: string;
@@ -143,8 +148,8 @@ export async function resolveModelCredentialAttribution(
   // keys; deployment credentials are never attributed to it.
   const hosted = deploymentServesManyInstallations(platformEnv);
 
-  if (BUILTIN_PROVIDERS.has(providerId as ProviderKeyId)) {
-    const id = providerId as ProviderKeyId;
+  if (isProviderKeyId(providerId)) {
+    const id = providerId;
     if (!hosted && trimmedNonEmpty(processEnv[ENV_KEY_NAMES[id]])) {
       const prefix = ENV_PREFIXES[id];
       return registerCredential({
@@ -162,7 +167,9 @@ export async function resolveModelCredentialAttribution(
       });
     }
     if (hosted) {
-      if (await installationFunding(platformEnv) === 'platform') return registerCredential(platformRegistration(id));
+      if (await installationFunding(platformEnv) === 'platform') {
+        return platformFundsProvider(id) ? registerCredential(platformRegistration(id)) : null;
+      }
       // Only a key saved encrypted and readable with the deployment keyring counts; nothing is decrypted.
       const record = await hostedModelCredentialStore(settings).readModelCredential(id);
       const current = savedHostedCredential(record, hasEnvelope(record) ? deploymentModelKeyring(platformEnv) : undefined);
@@ -178,7 +185,7 @@ export async function resolveModelCredentialAttribution(
       version: metadata.version,
       providerId: id,
       sourceKind: 'stored',
-      label: `Stored ${providerDisplayName(id)} credential`,
+      label: `Stored ${PROVIDER_DISPLAY_NAMES[id]} credential`,
       scopeLabel: null,
       unknownRotation: false,
       activeFrom: metadata.activeFrom,
@@ -391,7 +398,7 @@ export async function rewrapHostedModelCredentials(
   const rewrapped: ProviderKeyId[] = [];
   const alreadyCurrent: ProviderKeyId[] = [];
   const remaining: ProviderKeyId[] = [];
-  for (const id of BUILTIN_PROVIDERS) {
+  for (const id of PROVIDER_KEY_IDS) {
     const current = await store.readModelCredential(id);
     const envelope = current?.active ? current.envelope : undefined;
     if (!current || !envelope || envelope.keyId === input.keyring.currentKeyId) continue;
@@ -451,7 +458,7 @@ export async function migratePlaintextModelCredentials(
   const store = hostedModelCredentialStore(input.settings);
   const migrated: ProviderKeyId[] = [];
   const removed: ProviderKeyId[] = [];
-  for (const id of BUILTIN_PROVIDERS) {
+  for (const id of PROVIDER_KEY_IDS) {
     const keys = modelCredentialSettingKeys(id);
     const plaintext = await input.settings.getSetting(keys.apiKey);
     if (plaintext === undefined) continue;
@@ -786,7 +793,7 @@ function storedRegistration(
     version: credential.version,
     providerId: id,
     sourceKind: 'stored',
-    label: `Stored ${providerDisplayName(id)} credential`,
+    label: `Stored ${PROVIDER_DISPLAY_NAMES[id]} credential`,
     scopeLabel: null,
     unknownRotation: false,
     activeFrom: credential.activeFrom,
@@ -794,13 +801,15 @@ function storedRegistration(
 }
 
 function environmentScope(id: ProviderKeyId, env: NodeJS.ProcessEnv): string | null {
-  if (id === 'openai') return trimmedNonEmpty(env.OPENAI_PROJECT_ID) ?? null;
-  if (id === 'anthropic') return trimmedNonEmpty(env.ANTHROPIC_WORKSPACE_ID) ?? null;
-  return null;
-}
-
-function providerDisplayName(id: ProviderKeyId): string {
-  return id === 'openai' ? 'OpenAI' : id === 'openrouter' ? 'OpenRouter' : 'Anthropic';
+  switch (id) {
+    case 'openai':
+      return trimmedNonEmpty(env.OPENAI_PROJECT_ID) ?? null;
+    case 'anthropic':
+      return trimmedNonEmpty(env.ANTHROPIC_WORKSPACE_ID) ?? null;
+    case 'openrouter':
+    case 'google':
+      return null;
+  }
 }
 
 function hasWorkersAiBinding(env: PlatformEnv | undefined): boolean {

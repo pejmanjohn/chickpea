@@ -64,7 +64,7 @@ Chickpea is for those teams. Each Agent keeps its own connected accounts and its
 | **Addressable Agents** | Each Agent gets a real Slack handle (a zero-member user group like `@support`), a distinct generated avatar, and its own name on every reply. | |
 | **Agent memory** | One memory per Agent, shared across its DMs and every granted channel, editable and deletable in Admin. | [Details](#memory) |
 | **Connection accounts** | Team accounts and personal accounts, each owned by one Agent. 105 connector presets, plus native API and MCP for anything custom. | [Details](#connections-and-authority) |
-| **Model choice** | Anthropic, OpenAI, OpenRouter, or Cloudflare Workers AI, pinned per Agent. | [Details](#models-and-providers) |
+| **Model choice** | Anthropic, OpenAI, Google Gemini, OpenRouter, or Cloudflare Workers AI, pinned per Agent. | [Details](#models-and-providers) |
 | **Skills** | Import from a GitHub repo or a `skills.sh` link, in Admin or by handing the link to an Agent in Slack. You see which skills were found before anything is installed. | |
 | **Repositories** | Grant GitHub repositories to an Agent through the Chickpea GitHub App (Settings → GitHub). Access uses short-lived installation tokens scoped to the granted repositories. | |
 | **Coding sandbox** | Optional Cloudflare container tier for Agents that need to clone a repo, install packages, and run tests. | [Details](#coding-sandbox) |
@@ -146,7 +146,7 @@ On Enterprise Grid it's the equivalent setting under **Organization settings →
 | **Chickpea** | Routes mentions to Agents, enforces channel grants and confirmation policy, resolves credentials at the moment of each call, renders replies as the Agent, and runs Admin and the management MCP. |
 | **[Flue](https://flueframework.com)** | The agent runtime: durable sessions that survive crashes and restarts, persistent state, subagents, tools, skills, and MCP. Same code on Cloudflare Workers or Node. |
 | **Pi** | The open agent harness Flue runs on, also behind OpenClaw. |
-| **Model provider** | Anthropic, OpenAI, OpenRouter, or Cloudflare Workers AI, pinned per Agent. |
+| **Model provider** | Anthropic, OpenAI, Google Gemini, OpenRouter, or Cloudflare Workers AI, pinned per Agent. |
 | **State** | Durable Objects and D1 on Cloudflare. SQLite files on Node. |
 
 Chickpea has no agent loop of its own. That is Flue ([`@flue/runtime`](https://www.npmjs.com/package/@flue/runtime)), the Apache-licensed open agent framework from the [Astro](https://astro.build) team, now part of Cloudflare. Everything above the Flue row in the table is Chickpea's: the Slack product, the authority model, and the admin panel.
@@ -411,7 +411,9 @@ Every run rechecks the whole chain: is the Agent alive, does it still have the c
 
 ## Models and Providers
 
-Bring your own: Anthropic, OpenAI, OpenRouter, or Cloudflare Workers AI. Cloudflare deploys can use the keyless binding provider and skip the API token entirely. Keys go in environment variables or in Settings, whichever you prefer.
+Bring your own: Anthropic, OpenAI, Google Gemini, OpenRouter, or Cloudflare Workers AI. Cloudflare deploys can use the keyless binding provider and skip the API token entirely. Keys go in environment variables or in Settings, whichever you prefer.
+
+Google Gemini offers Gemini 4 Argon, Gemini 3.8 Flash and Gemini 3.5 Flash-Lite. Use a key from a Google Cloud project with billing turned on: Google may use prompts sent with free-tier keys to improve its products. Turn off request logging for the project in Google AI Studio.
 
 Node installations can also connect a ChatGPT subscription in **Settings → Model providers → OpenAI** for chat. This uses the subscription's shared usage limits. The option is unavailable on Cloudflare. Switching between a subscription and an API key is explicit; Chickpea does not fall back to API billing when the subscription is unavailable.
 
@@ -657,7 +659,7 @@ Chickpea is offline-safe by default. Left unset, most variables take a local pat
 | `SLACK_SIGNING_SECRET` | customer-owned Slack lane | Verifies direct Events API requests. Setup can store it instead. |
 | `SLACK_BOT_TOKEN` | customer-owned Slack lane | Direct Slack Web API credential. Setup can store it instead. |
 | `CHICKPEA_GATEWAY_URL` | optional | Shared-app gateway origin. Defaults to the Chickpea-operated service; override only for a compatible private gateway. |
-| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY` | optional | Enable the matching provider. Can be stored in Settings instead. |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` / `OPENROUTER_API_KEY` | optional | Enable the matching provider. Can be stored in Settings instead. |
 | `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` | optional | Enable REST Workers AI. Cloudflare deploys can use the keyless binding provider instead. |
 | `COMPOSIO_API_KEY` | optional | Deployment-managed alternative to adding the project key in **Settings → Connectors**. Never enters a runtime plan or model context. |
 | `EXA_API_KEY` | optional | Gives Agents web search through Exa. Without it, Agents still read web pages but cannot search. Never enters a runtime plan or model context. |

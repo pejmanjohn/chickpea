@@ -28,7 +28,7 @@ import {
 } from '../../src/usage/model-requests.ts';
 import { priceCatalogFor } from '../../src/usage/pricing/catalog.ts';
 import { SqliteUsageStore } from '../../src/usage/store.ts';
-import { NO_RUN_FEES } from '../helpers/platform-funding.ts';
+import { EVERY_PROVIDER_FUNDED, NO_RUN_FEES } from '../helpers/platform-funding.ts';
 
 // One OpenRouter credit is one US dollar: https://openrouter.ai/docs/faq ("OpenRouter
 // uses a credit system where the base currency is US dollars").
@@ -150,6 +150,7 @@ test('a platform-funded OpenRouter request is charged with the cost OpenRouter r
   configureInstallationAdmission(async () => 'admitted');
   const charged: ModelRequestRecord[] = [];
   configurePlatformFunding({
+    ...EVERY_PROVIDER_FUNDED,
     funding: async () => 'platform',
     admit: async () => 'admitted',
     charge: async (record) => { charged.push(record); },

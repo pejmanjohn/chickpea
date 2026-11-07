@@ -28,6 +28,7 @@ export const FAKE_PROVIDER_KEYS = {
   anthropic: 'anthropic-valid-key',
   openai: 'openai-valid-key',
   openrouter: 'openrouter-valid-key',
+  google: 'gemini-valid-key',
 } as const;
 
 export interface WireEntry {
@@ -661,6 +662,8 @@ export class FakeSlackBackend {
     // Anthropic-messages surface. The official Anthropic SDK
     // posts to `<base>/v1/messages` and pi-ai parses the SSE event stream.
     const isAnthropicMessages = !isSlack && pathname.endsWith('/v1/messages');
+    // Gemini surface: `@google/genai` posts to `<base>/models/<id>:streamGenerateContent?alt=sse`.
+    const isGeminiStream = !isSlack && pathname.endsWith(':streamGenerateContent');
     let method: string;
     if (isSlack) {
       method = pathname.slice(apiIndex + '/api/'.length);
@@ -670,6 +673,8 @@ export class FakeSlackBackend {
       method = 'responses';
     } else if (isAnthropicMessages) {
       method = 'messages';
+    } else if (isGeminiStream) {
+      method = 'streamGenerateContent';
     } else if (pathname === '/ai/run/clef') {
       method = 'ai/run';
     } else if (this.isProviderModelsPath(pathname)) {
@@ -698,6 +703,9 @@ export class FakeSlackBackend {
       }
       if (isAnthropicMessages) {
         return this.anthropicMessagesResponse();
+      }
+      if (isGeminiStream) {
+        return this.geminiStreamResponse(headers);
       }
       return this.providerResponse();
     }
@@ -733,6 +741,9 @@ export class FakeSlackBackend {
     if (pathname === '/openrouter/models') {
       return this.openRouterModelsResponse();
     }
+    if (pathname === '/gemini/v1beta/models') {
+      return this.geminiModelsResponse(headers);
+    }
     if (pathname.endsWith('/ai/models/search')) {
       return {
         status: 200,
@@ -752,6 +763,7 @@ export class FakeSlackBackend {
       pathname === '/v1/models' ||
       pathname === '/openai/v1/models' ||
       pathname === '/openrouter/models' ||
+      pathname === '/gemini/v1beta/models' ||
       pathname.endsWith('/ai/models/search')
     );
   }
@@ -809,6 +821,30 @@ export class FakeSlackBackend {
         ],
       },
     };
+  }
+
+  private geminiModelsResponse(headers: Record<string, string>): RouteResult {
+    if (headers['x-goog-api-key'] !== FAKE_PROVIDER_KEYS.google) {
+      return {
+        status: 400,
+        body: { error: { code: 400, message: 'API key not valid. Please pass a valid API key.', status: 'INVALID_ARGUMENT' } },
+      };
+    }
+    return {
+      status: 200,
+      body: { models: [{ name: 'models/gemini-3.8-flash', displayName: 'Gemini 3.8 Flash' }] },
+    };
+  }
+
+  private geminiStreamResponse(headers: Record<string, string>): RouteResult {
+    if (headers['x-goog-api-key'] !== FAKE_PROVIDER_KEYS.google) {
+      return { status: 400, body: { error: { code: 400, message: 'API key not valid.', status: 'INVALID_ARGUMENT' } } };
+    }
+    const chunk = {
+      candidates: [{ content: { role: 'model', parts: [{ text: this.replyText }] }, finishReason: 'STOP' }],
+      usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+    };
+    return { status: 200, contentType: 'text/event-stream', rawBody: `data: ${JSON.stringify(chunk)}\n\n` };
   }
 
   private openRouterAuthResponse(headers: Record<string, string>): RouteResult {

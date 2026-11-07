@@ -55,12 +55,12 @@ import {
   rotateInstallationModelCredential,
   type ModelCredentialAction,
 } from '../src/config/model-credential-refs.ts';
+import type { ProviderKeyId } from '../src/config/provider-key-ids.ts';
 import {
   describeProviderKeySources,
   invalidateProviderKeyCache,
   listInstallationModelProviders,
   resolveProviderApiKey,
-  type ProviderKeyId,
 } from '../src/config/provider-keys.ts';
 import {
   cachedProviderModelCount,
@@ -426,14 +426,17 @@ test('each installation lists only its own configured providers and model counts
     assert.deepEqual(await configured(envA), ['anthropic']);
     assert.deepEqual(await configured(envB), ['anthropic', 'openai']);
     assert.deepEqual((await listInstallationModelProviders(envA, settingsOf(envA))).map((provider) => provider.id).sort(),
-      ['anthropic', 'openai', 'openrouter']);
+      ['anthropic', 'google', 'openai', 'openrouter']);
 
     invalidateProviderModelCache();
     t.after(() => invalidateProviderModelCache());
     primeProviderModelCache('anthropic', [{ id: 'claude-tenant-a' }], envA);
+    primeProviderModelCache('google', [{ id: 'gemini-3.8-flash' }], envA);
     primeProviderModelCache('openrouter', [{ id: 'public/one' }, { id: 'public/two' }], envA);
     assert.equal(cachedProviderModelCount('anthropic', envA), 1);
     assert.equal(cachedProviderModelCount('anthropic', envB), undefined, 'a keyed list stays with its installation');
+    assert.equal(cachedProviderModelCount('google', envA), 1);
+    assert.equal(cachedProviderModelCount('google', envB), undefined, 'a Gemini list stays with its installation');
     assert.equal(cachedProviderModelCount('openrouter', envB), 2, 'the public OpenRouter catalog is shared');
   });
 });

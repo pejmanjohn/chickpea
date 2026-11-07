@@ -224,8 +224,9 @@ current manifest lets people stop a run with Slack's **Stop** button. An app
 created earlier works without it; to add the button, follow
 [Slack's Stop button](SETUP_AGENT.md#slacks-stop-button).
 
-The setup page supports Anthropic, OpenAI, OpenRouter, and REST-based Cloudflare
-Workers AI. A Node installation cannot use a Worker-only binding.
+The setup page supports Anthropic, OpenAI, Google Gemini, OpenRouter, and
+REST-based Cloudflare Workers AI. A Node installation cannot use a Worker-only
+binding.
 
 For OpenAI chat, connect a ChatGPT subscription in **Settings → Model providers
 → OpenAI** and follow the device sign-in instructions. OpenAI may require

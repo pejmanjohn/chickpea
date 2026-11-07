@@ -87,6 +87,7 @@ test('hosted Admin saves, lists and deletes only this installation\'s own encryp
           { id: 'anthropic', status: 'stored', modelCount: 7 },
           { id: 'openai', status: 'missing', modelCount: null, activeAuthMethod: 'api_key', subscriptionAvailable: false },
           { id: 'openrouter', status: 'missing', modelCount: null },
+          { id: 'google', status: 'missing', modelCount: null },
         ],
       });
 
@@ -176,7 +177,7 @@ test('hosted Admin offers no Workers AI, ChatGPT plan or OpenAI subscription lan
       const models = (await (await request('/admin/api/models')).json()) as {
         providers: Array<{ id: string; authMethods?: { subscriptionAvailable: boolean; subscription?: unknown } }>;
       };
-      assert.deepEqual(models.providers.map((provider) => provider.id).sort(), ['anthropic', 'openai', 'openrouter']);
+      assert.deepEqual(models.providers.map((provider) => provider.id).sort(), ['anthropic', 'google', 'openai', 'openrouter']);
       const openai = models.providers.find((provider) => provider.id === 'openai');
       assert.equal(openai?.authMethods?.subscriptionAvailable, false);
       assert.equal(openai?.authMethods?.subscription, undefined);

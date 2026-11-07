@@ -26,6 +26,7 @@ import {
   registerModelCompatibilityApis,
 } from '../src/model-compat/provider.ts';
 import { registeredPiProvider } from '../src/config/pi-provider-registry.ts';
+import type { ProviderKeyId } from '../src/config/provider-key-ids.ts';
 
 function assistant(provider: string, model: string): AssistantMessage {
   return {
@@ -147,7 +148,7 @@ test('runtime routing is native-first, lane-isolated, and explicit for unsupport
   const applied: string[] = [];
   const dependencies = {
     settings,
-    requireProviderKey: async (id: 'anthropic' | 'openai' | 'openrouter') => {
+    requireProviderKey: async (id: ProviderKeyId) => {
       applied.push(id);
     },
   };

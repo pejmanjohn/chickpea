@@ -20,7 +20,7 @@ import {
   type SavedCardResult,
   type UsageMicros,
 } from '../src/config/platform-billing.ts';
-import type { ProviderKeyId } from '../src/config/provider-keys.ts';
+import type { ProviderKeyId } from '../src/config/provider-key-ids.ts';
 import { estimateUsage } from '../src/usage/pricing/estimate.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import type { UsageStore } from '../src/usage/types.ts';
@@ -677,7 +677,7 @@ test('the cards offer every plan with models included and the own-key plans with
     selected: 'team',
   });
   assertShows(card(html, 'platform'), 'Models included Claude, GPT, and open models through our provider accounts. One bill. $200 / month');
-  assertShows(card(html, 'own_key'), 'Your own API key Bring your Anthropic, OpenAI, or OpenRouter key. $200 / month');
+  assertShows(card(html, 'own_key'), 'Your own API key Bring your Anthropic, OpenAI, Google Gemini, or OpenRouter key. $200 / month');
   assertShows(html, 'Prices in US dollars. Tax added where required. Pricing questions');
   assert.match(html, /<a href="https:\/\/chickpea\.co\/pricing#questions" target="_blank" rel="noopener">Pricing questions<\/a>/);
 
