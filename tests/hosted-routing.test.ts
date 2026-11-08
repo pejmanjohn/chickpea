@@ -11,6 +11,7 @@ import {
   withBetterAuthAccessRevoker,
   withBetterAuthBackend,
 } from '../src/auth/better-auth-environment.ts';
+import { eraseInstallationBetterAuthOrganization } from '../src/auth/better-auth-backend.ts';
 import { openPostgresBetterAuthBackend } from '../src/auth/better-auth-postgres.ts';
 import { applyPostgresBetterAuthMigrations } from '../src/auth/better-auth-postgres-migrations.ts';
 import { BetterAuthDirectory } from '../src/auth/better-auth-principal.ts';
@@ -27,7 +28,10 @@ import { activateInstallerOwner } from '../src/auth/installer-owner.ts';
 import { signInSlackMember } from '../src/auth/member-sign-in.ts';
 import { applyGatewaySlackUserChange } from '../src/auth/slack-membership-events.ts';
 import { createMcpOAuthRuntimeRoutes } from '../src/auth/mcp-oauth-routes.ts';
-import { CLAUDE_DOCUMENTS, CODEX_DOCUMENT, PUBLIC_CLIENT_DOCUMENTS, metadataDocumentServer } from './helpers/client-metadata-documents.ts';
+import {
+  CHATGPT_DOCUMENT, CLAUDE_DOCUMENTS, CODEX_DOCUMENT, JWT_BEARER, PUBLIC_CLIENT_DOCUMENTS,
+  assertionSigner, metadataDocumentServer, type AssertionSigner, type ServedDocument,
+} from './helpers/client-metadata-documents.ts';
 import {
   resolveInstallationEnv,
   type InstallationKey,
@@ -266,6 +270,8 @@ async function hostedDeployment(t: TestContext) {
     install, shared, mcpGrant, authorizationCode, token, refresh, serve, mcpRequest, adminRequest,
   };
 }
+
+type HostedDeployment = NonNullable<Awaited<ReturnType<typeof hostedDeployment>>>;
 
 test('a session and an MCP token reach only their own installation; nothing the client sends redirects them', { timeout: 120_000 }, async (t) => {
   const hosted = await hostedDeployment(t);
@@ -1160,4 +1166,211 @@ test('VS Code, Zed and Goose each sign in to a hosted installation by their meta
       assert.deepEqual(new Set(documents.requests), new Set([url]));
     });
   }
+});
+
+const CHATGPT = CHATGPT_DOCUMENT.url;
+const ISSUER = `${ORIGIN}/api/auth`;
+const TOKEN_ENDPOINT = `${ISSUER}/oauth2/token`;
+
+/** ChatGPT's metadata document and key set, as chatgpt.com serves them; entries can be changed per request. */
+function chatgptHost(hosted: HostedDeployment, signer: AssertionSigner) {
+  const served: Record<string, ServedDocument> = {
+    [CHATGPT]: CHATGPT_DOCUMENT.body,
+    [CHATGPT_DOCUMENT.keysUrl]: JSON.stringify(signer.keySet),
+  };
+  const documents = metadataDocumentServer(served);
+  hosted.routing.environment.fetchClientMetadataResource = documents.fetch;
+  return { served, documents };
+}
+
+/**
+ * ChatGPT connecting as the person `cookie` signs in: authorize, the consent
+ * page, Allow through the browser route, and the code from the return page.
+ */
+async function chatgptCode(hosted: HostedDeployment, cookie: string) {
+  const verifier = randomBytes(32).toString('base64url');
+  const authorize = await hosted.shared(new Request(`${ORIGIN}/api/auth/oauth2/authorize?${new URLSearchParams({
+    response_type: 'code', client_id: CHATGPT, redirect_uri: CHATGPT_DOCUMENT.callback, scope: 'chickpea:workspace',
+    state: 'chatgpt-state', resource: RESOURCE,
+    code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256',
+  })}`, { headers: { cookie } }));
+  assert.equal(authorize.status, 302, await authorize.clone().text());
+  const consent = new URL(authorize.headers.get('location')!, ORIGIN);
+  assert.equal(consent.pathname, '/auth/mcp/consent');
+  assert.equal(consent.searchParams.get('scope'), RENEWABLE_SCOPE);
+  const page = await (await hosted.shared(new Request(consent, { headers: { cookie } }))).text();
+  const allowed = await hosted.shared(new Request(`${ORIGIN}/auth/mcp/consent`, {
+    method: 'POST',
+    headers: { cookie, origin: ORIGIN, 'sec-fetch-site': 'same-origin', 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ oauth_query: consent.search.slice(1), decision: 'allow' }),
+  }));
+  assert.equal(allowed.status, 200, await allowed.clone().text());
+  const returned = await allowed.text();
+  const callback = new URL(/url=([^"]+)"/.exec(returned)![1]!.replaceAll('&amp;', '&'));
+  assert.equal(`${callback.origin}${callback.pathname}`, CHATGPT_DOCUMENT.callback);
+  return { page, returned, code: callback.searchParams.get('code')!, verifier };
+}
+
+/** ChatGPT's token request: the grant's fields, its client ID and resource, and `assertion` when given. */
+function chatgptToken(hosted: HostedDeployment, fields: Record<string, string>, assertion?: string) {
+  return hosted.token({
+    ...fields, client_id: CHATGPT, resource: RESOURCE,
+    ...(assertion === undefined ? {} : { client_assertion_type: JWT_BEARER, client_assertion: assertion }),
+  });
+}
+
+async function chatgptGrant(hosted: HostedDeployment, cookie: string, signer: AssertionSigner) {
+  const { code, verifier } = await chatgptCode(hosted, cookie);
+  const exchanged = await chatgptToken(hosted, {
+    grant_type: 'authorization_code', code, code_verifier: verifier, redirect_uri: CHATGPT_DOCUMENT.callback,
+  }, await signer.assertion({ aud: TOKEN_ENDPOINT }));
+  assert.equal(exchanged.status, 200, await exchanged.clone().text());
+  return await exchanged.json() as { access_token: string; refresh_token: string };
+}
+
+async function invalidClient(response: Response, status: number, description: string, message: string) {
+  assert.equal(response.status, status, message);
+  assert.deepEqual(await response.json(), { error: 'invalid_client', error_description: description }, message);
+}
+
+test('ChatGPT signs in to a hosted installation by its document, proving each token request with a signed assertion', { timeout: 120_000 }, async (t) => {
+  const hosted = await hostedDeployment(t);
+  if (!hosted) return;
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  const signer = assertionSigner();
+  const { served, documents } = chatgptHost(hosted, signer);
+  const acme = await hosted.install('TACME', 'org_acme', 'UOWNERA');
+
+  const { page, returned, code, verifier } = await chatgptCode(hosted, acme.ownerCookie);
+  assert.ok(page.includes('<h1>Allow ChatGPT to manage your workspace?</h1>'));
+  assert.ok(page.includes('<dt>App</dt><dd>ChatGPT</dd><dt>Domain</dt><dd>chatgpt.com</dd>'));
+  assert.ok(returned.includes('<h1>Back to ChatGPT</h1>'));
+
+  const redeem = (assertion?: string) => chatgptToken(hosted, {
+    grant_type: 'authorization_code', code, code_verifier: verifier, redirect_uri: CHATGPT_DOCUMENT.callback,
+  }, assertion);
+  const now = () => Math.floor(Date.now() / 1_000);
+  const impostor = assertionSigner();
+  const refusals: Array<[string, () => Promise<string | undefined>, number, string]> = [
+    ['no assertion', async () => undefined, 400, 'client registered for private_key_jwt cannot use none'],
+    ['alg none', () => signer.assertion({ aud: TOKEN_ENDPOINT, alg: 'none' }), 400, 'unsupported assertion signing algorithm: none'],
+    ['HS256', () => signer.assertion({ aud: TOKEN_ENDPOINT, alg: 'HS256' }), 400, 'unsupported assertion signing algorithm: HS256'],
+    ['another key', () => impostor.assertion({ aud: TOKEN_ENDPOINT }), 401, 'client assertion signature verification failed'],
+    ['aud the origin', () => signer.assertion({ aud: ORIGIN }), 401, 'client assertion signature verification failed'],
+    ['aud the revocation endpoint', () => signer.assertion({ aud: `${ISSUER}/oauth2/revoke` }), 401, 'client assertion signature verification failed'],
+    ['iss not the client', () => signer.assertion({ aud: TOKEN_ENDPOINT, iss: 'https://apps.example.org/oauth/client.json' }), 401,
+      'client assertion signature verification failed'],
+    ['sub not the client', () => signer.assertion({ aud: TOKEN_ENDPOINT, sub: 'https://apps.example.org/oauth/client.json' }), 400,
+      'client_id in body does not match assertion sub/iss'],
+    ['expired', () => signer.assertion({ aud: TOKEN_ENDPOINT, exp: now() - 1 }), 401, 'client assertion signature verification failed'],
+    ['no exp', () => signer.assertion({ aud: TOKEN_ENDPOINT, exp: undefined }), 400, 'client assertion must include exp claim'],
+    ['exp past 300 seconds', () => signer.assertion({ aud: TOKEN_ENDPOINT, exp: now() + 301 }), 400,
+      'client assertion exp is too far in the future (max 300s)'],
+    ['iat past 300 seconds', () => signer.assertion({ aud: TOKEN_ENDPOINT, iat: now() - 301 }), 400,
+      'client assertion iat is too far in the past (max 300s)'],
+  ];
+  for (const [label, assertion, status, description] of refusals) {
+    await invalidClient(await redeem(await assertion()), status, description, label);
+  }
+  const exchanged = await redeem(await signer.assertion({ aud: TOKEN_ENDPOINT, exp: now() + 300, jti: 'first' }));
+  assert.equal(exchanged.status, 200, `no refusal spent the code: ${await exchanged.clone().text()}`);
+  let tokens = await exchanged.json() as { access_token: string; refresh_token: string };
+  const { routed, response } = await hosted.serve(hosted.mcpRequest(tokens.access_token));
+  assert.equal(routed.kind === 'installation' && installationScopeOf(routed.env)?.installationId, acme.installationId);
+  assert.equal(response?.status, 200, await response?.clone().text() ?? 'no response');
+  assert.equal((await response!.json() as { clientId: string }).clientId, CHATGPT);
+
+  const renew = async (assertion?: string) => {
+    const renewed = await chatgptToken(hosted, { grant_type: 'refresh_token', refresh_token: tokens.refresh_token }, assertion);
+    if (renewed.ok) tokens = await renewed.clone().json() as typeof tokens;
+    return renewed;
+  };
+  await invalidClient(await renew(), 400, 'client registered for private_key_jwt cannot use none', 'renewal needs an assertion');
+  await invalidClient(await renew(await signer.assertion({ aud: ISSUER, jti: 'first' })), 400,
+    'client assertion jti has already been used', 'a replayed jti');
+  assert.equal((await renew(await signer.assertion({ aud: ISSUER }))).status, 200, 'the issuer is an accepted aud');
+
+  const rotated = assertionSigner(CHATGPT, 'cimd-rotated');
+  served[CHATGPT_DOCUMENT.keysUrl] = JSON.stringify({ keys: [...signer.keySet.keys, ...rotated.keySet.keys] });
+  t.mock.timers.tick(31_000);
+  assert.equal((await renew(await rotated.assertion({ aud: TOKEN_ENDPOINT }))).status, 200, 'a rotated key is fetched');
+  served[CHATGPT_DOCUMENT.keysUrl] = JSON.stringify(rotated.keySet);
+  t.mock.timers.tick(6 * 60_000);
+  await invalidClient(await renew(await signer.assertion({ aud: TOKEN_ENDPOINT })), 401,
+    'client assertion signature verification failed', 'a retired key no longer verifies');
+  assert.equal((await renew(await rotated.assertion({ aud: TOKEN_ENDPOINT }))).status, 200);
+
+  const clients = await hosted.backend.pool.query(
+    'SELECT "clientId", "userId", "clientSecret", "tokenEndpointAuthMethod", "jwksUri" FROM "oauthClient"',
+  );
+  assert.deepEqual(clients.rows, [{
+    clientId: CHATGPT, userId: null, clientSecret: null, tokenEndpointAuthMethod: 'private_key_jwt', jwksUri: CHATGPT_DOCUMENT.keysUrl,
+  }]);
+  const records = await hosted.backend.pool.query('SELECT "expiresAt" FROM "oauthClientAssertion"');
+  assert.equal(records.rows.length, 1, 'each accepted assertion wrote a record on PostgreSQL\'s uuid key; the expired ones are pruned');
+  assert.ok(records.rows[0].expiresAt > new Date());
+  assert.equal(documents.requests.filter((url) => url === CHATGPT_DOCUMENT.keysUrl).length, 3,
+    'the key set is fetched for the first exchange, the rotated key and the lapsed copy');
+});
+
+test('one person\'s ChatGPT revocation leaves another workspace\'s ChatGPT grant renewing', { timeout: 120_000 }, async (t) => {
+  const hosted = await hostedDeployment(t);
+  if (!hosted) return;
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  const signer = assertionSigner();
+  const { served } = chatgptHost(hosted, signer);
+  const acme = await hosted.install('TACME', 'org_acme', 'UOWNERA');
+  const beta = await hosted.install('TBETA', 'org_beta', 'UOWNERB');
+  const alice = await chatgptGrant(hosted, acme.ownerCookie, signer);
+  let bob = await chatgptGrant(hosted, beta.ownerCookie, signer);
+  const clientRows = async () => (await hosted.backend.pool.query(
+    'SELECT id, "userId", name FROM "oauthClient" WHERE "clientId" = $1', [CHATGPT],
+  )).rows as Array<{ id: string; userId: string | null; name: string }>;
+  const [shared] = await clientRows();
+  assert.deepEqual(await clientRows(), [{ id: shared!.id, userId: null, name: 'ChatGPT' }], 'one ownerless row serves both');
+
+  const refresh = (grant: { refresh_token: string }, aud = TOKEN_ENDPOINT) => signer.assertion({ aud }).then((assertion) =>
+    chatgptToken(hosted, { grant_type: 'refresh_token', refresh_token: grant.refresh_token }, assertion));
+  const bobRenews = async (message: string) => {
+    const renewed = await refresh(bob);
+    assert.equal(renewed.status, 200, `${message}: ${await renewed.clone().text()}`);
+    bob = await renewed.json() as typeof bob;
+    const { routed, response } = await hosted.serve(hosted.mcpRequest(bob.access_token));
+    assert.equal(routed.kind === 'installation' && installationScopeOf(routed.env)?.installationId, beta.installationId, message);
+    assert.equal(response?.status, 200, message);
+  };
+  const aliceRoute = await routeHostedRequest(hosted.mcpRequest(alice.access_token), hosted.routing);
+  assert.equal(aliceRoute.kind, 'installation');
+  if (aliceRoute.kind !== 'installation') return;
+
+  assert.deepEqual(await hosted.backend.revokeOAuthClientForUser(aliceRoute.login.betterAuthUserId, CHATGPT),
+    { consents: 1, accessTokens: 0, refreshTokens: 1 });
+  const refused = await refresh(alice);
+  assert.equal(refused.status, 400);
+  assert.equal((await refused.json() as { error: string }).error, 'invalid_grant', 'Alice\'s grant ends, assertion or not');
+  await bobRenews('Bob\'s grant renews after Alice revokes');
+
+  const revoke = (aud: string) => signer.assertion({ aud }).then((assertion) => hosted.shared(new Request(`${ORIGIN}/api/auth/oauth2/revoke`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      token: bob.refresh_token, token_type_hint: 'refresh_token', client_id: CHATGPT,
+      client_assertion_type: JWT_BEARER, client_assertion: assertion,
+    }),
+  })));
+  const misaddressed = await revoke(TOKEN_ENDPOINT);
+  assert.equal(misaddressed.status, 401, 'revocation refuses an assertion made for the token endpoint');
+  assert.equal((await misaddressed.json() as { error: string }).error, 'invalid_client');
+  await bobRenews('a refused revocation leaves the grant');
+
+  served[CHATGPT] = { body: CHATGPT_DOCUMENT.body.replace('"client_name":"ChatGPT"', '"client_name":"ChatGPT (renamed)"'),
+    headers: { 'cache-control': 'no-store' } };
+  t.mock.timers.tick(6 * 60_000);
+  await bobRenews('a refreshed document updates the row');
+  assert.deepEqual(await clientRows(), [{ id: shared!.id, userId: null, name: 'ChatGPT (renamed)' }], 'the same row, updated in place');
+
+  const erased = await eraseInstallationBetterAuthOrganization(hosted.backend, { organizationId: 'org_acme' });
+  assert.equal(erased.oauthClients, 0);
+  assert.deepEqual(await clientRows(), [{ id: shared!.id, userId: null, name: 'ChatGPT (renamed)' }], 'erasing A leaves the row');
+  await bobRenews('and Bob\'s grant');
 });
