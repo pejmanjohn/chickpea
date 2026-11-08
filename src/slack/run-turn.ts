@@ -3128,7 +3128,6 @@ export async function freezeRuntimePlanForTurn(input: {
   const candidate = compileAgentRunPlan(parts, {
     ...(installation ? { installation } : {}),
     turn: input.turn,
-    assignment: input.assignment,
     // The constant guidance opens the agent's system prompt in code
     // (shared-prefix.ts); the plan carries only what names this Agent.
     instructions: slackTenantInstructions(input.assignment),

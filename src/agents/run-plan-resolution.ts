@@ -42,7 +42,7 @@ import {
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { resolveSandboxSettings } from '../config/sandbox-settings.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
-import { getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
+import type { PlatformEnv } from '../config/state-backend.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type { ModelCredentialAttribution, ResolvedAssignment } from '../config/types.ts';
 import { resolveConnectionAccountContext } from '../connections/runtime.ts';
@@ -61,7 +61,7 @@ import { webSearchConfigured } from '../web/exa.ts';
 
 export interface AgentRunPlanRequest {
   /** The Agent as assigned to the place, with its effort and model credential. */
-  assignment: Pick<ResolvedAssignment, 'agentId' | 'agent' | 'effort' | 'modelCredential'>;
+  assignment: ResolvedAssignment;
   /** The canonical model the run uses. */
   model: string;
   workspaceId: string;
@@ -81,6 +81,8 @@ export interface AgentRunPlanRequest {
 }
 
 export interface AgentRunPlanParts {
+  /** The plan compiles with the assignment its parts were resolved for. */
+  assignment: ResolvedAssignment;
   runtimeModel: string;
   runtimeModelRoute?: FrozenRuntimeModelRoute;
   /** Mounts `generate_image`; an unresolved role is unfilled. */
@@ -103,7 +105,7 @@ export interface AgentRunPlanParts {
 
 /** What a conversation adds; `request` is what a request selected from the connections. */
 export type AgentRunConversation =
-  Pick<CompileRuntimePlanV2Input, 'turn' | 'assignment' | 'installation' | 'instructions' | 'memoryEpoch' |
+  Pick<CompileRuntimePlanV2Input, 'turn' | 'installation' | 'instructions' | 'memoryEpoch' |
     'frontDesk' | 'artifactThreadTs'> & { request?: ConnectionRequestResolution };
 
 export async function resolveAgentRunPlan(input: AgentRunPlanRequest): Promise<AgentRunPlanParts> {
@@ -111,7 +113,7 @@ export async function resolveAgentRunPlan(input: AgentRunPlanRequest): Promise<A
   const resolveModel = input.resolveModel ?? resolveRuntimeModel;
   const connections = input.connections;
   // Independent reads, in one round to the state store.
-  const [workspaceDecision, connectionContext, model, imageRole, browserCapability, websiteLogins] =
+  const [workspaceDecision, connectionContext, resolved, imageRole, browserCapability, websiteLogins] =
     await Promise.all([
       input.decideCodingWorkspace?.() ?? resolveCodingWorkspaceDecision(assignment, env, settings),
       connections && 'actorMembershipId' in connections
@@ -122,7 +124,7 @@ export async function resolveAgentRunPlan(input: AgentRunPlanRequest): Promise<A
             actorMembershipId: connections.actorMembershipId,
           })
         : undefined,
-      input.resolvedModel ?? resolveModel(assignment.agentId, input.model, { settings, ...(env ? { env } : {}) }),
+      input.resolvedModel ? undefined : resolveModel(assignment.agentId, input.model, { settings, ...(env ? { env } : {}) }),
       resolveAgentModelRoleFromStore({
         role: 'image',
         workspaceId: input.workspaceId,
@@ -138,7 +140,7 @@ export async function resolveAgentRunPlan(input: AgentRunPlanRequest): Promise<A
       websiteLoginsForTurn(settings, assignment.agent.websiteLogins),
     ]);
   // The route is frozen once every read is in, from the active catalog as it then stands.
-  const runtimeModel = 'runtimeModel' in model ? model : withFrozenRoute(input.model, model, env);
+  const runtimeModel = input.resolvedModel ?? withFrozenRoute(input.model, resolved!, env);
   const codingModel = workspaceDecision.capability === 'available'
     ? await freezeCodingModelForTurn({
         workspaceId: input.workspaceId,
@@ -156,6 +158,7 @@ export async function resolveAgentRunPlan(input: AgentRunPlanRequest): Promise<A
       })
     : undefined;
   return {
+    assignment,
     ...runtimeModel,
     imageCapability: imageCapabilityForResolution(imageRole),
     ...(codingModel ? { codingWorkspace: { codingModel } } : {}),
@@ -184,6 +187,7 @@ export function compileAgentRunPlan(parts: AgentRunPlanParts, conversation: Agen
   const { request, ...rest } = conversation;
   return compileRuntimePlanV2({
     ...rest,
+    assignment: parts.assignment,
     runtimeModel: parts.runtimeModel,
     ...(parts.runtimeModelRoute ? { runtimeModelRoute: parts.runtimeModelRoute } : {}),
     imageCapability: parts.imageCapability,
@@ -211,7 +215,7 @@ export function compileAgentRunPlan(parts: AgentRunPlanParts, conversation: Agen
 export async function resolveCodingWorkspaceDecision(
   assignment: Pick<ResolvedAssignment, 'agent'>,
   env: PlatformEnv | undefined,
-  store?: SettingsStore,
+  store: SettingsStore,
 ): Promise<CodingWorkspaceCapabilityDecision> {
   if (!isCloudflareTarget()) return { capability: 'unavailable', unavailableFallback: false };
   const repositories = assignment.agent.repositories ?? [];
@@ -220,10 +224,9 @@ export async function resolveCodingWorkspaceDecision(
   }
 
   try {
-    const settingsStore = store ?? getSettingsStore(env);
     const [settings, connection] = await Promise.all([
-      resolveSandboxSettings(settingsStore, env),
-      getGithubConnection(settingsStore, env),
+      resolveSandboxSettings(store, env),
+      getGithubConnection(store, env),
     ]);
     return resolveCodingWorkspaceCapability({
       target: 'cloudflare',

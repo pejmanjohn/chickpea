@@ -551,9 +551,8 @@ async function prepareExecution(
   let envelope = input.run.flueAgentEnvelope;
   let sandboxUnavailableFallback = false;
   if (!envelope) {
-    const assignment = routineAssignment(input.routine, access, modelCredential);
     const parts = await resolveAgentRunPlan({
-      assignment,
+      assignment: routineAssignment(input.routine, access, modelCredential),
       model: access.config.model,
       workspaceId: input.routine.workspaceId,
       connections: { admitted: access.effectiveConnections ?? [] },
@@ -587,7 +586,6 @@ async function prepareExecution(
       access,
       prompt,
       attemptId,
-      assignment,
       parts,
     });
     sandboxUnavailableFallback = parts.sandboxUnavailableFallback;
@@ -712,13 +710,11 @@ function createEnvelope(input: {
   access: RoutineRuntimeAccess;
   prompt: PreparedRoutinePrompt;
   attemptId: string;
-  assignment: ResolvedAssignment;
   parts: AgentRunPlanParts;
 }): RoutineAgentDispatchEnvelopeV2 {
   const runtimePlan = compileAgentRunPlan(input.parts, {
     ...(input.installation ? { installation: input.installation } : {}),
     turn: input.prompt.turn,
-    assignment: input.assignment,
     instructions: [
       input.access.config.instructions,
       externalActionAuthorityInstructions(input.access.config.agent.instructions),

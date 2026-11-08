@@ -110,7 +110,7 @@ test('a routine freezes only the connections its schedule admitted, and its codi
 /** The parts for a fixture's Agent, place and actor, resolved with no Slack event. */
 async function partsWithoutEvent(lane: RunPlanLane, fixture: SlackFixture) {
   const assignment = await lane.assignment(fixture.agentId, fixture.place);
-  const parts = await resolveAgentRunPlan({
+  return resolveAgentRunPlan({
     assignment,
     model: assignment.model!,
     workspaceId: WORKSPACE,
@@ -119,19 +119,17 @@ async function partsWithoutEvent(lane: RunPlanLane, fixture: SlackFixture) {
     settings: lane.stores.settings,
     roles: lane.stores.config,
   });
-  return { assignment, parts };
 }
 
 for (const fixture of SLACK_FIXTURES.filter(({ agentId }) => agentId !== dmUnready!.agentId)) {
   test(`${fixture.name}: the parts resolved with no Slack event, joined with the message's own, are the turn's plan`,
     async () => {
       await withRunPlanLane(async (lane) => {
-        const { assignment, parts } = await partsWithoutEvent(lane, fixture);
+        const parts = await partsWithoutEvent(lane, fixture);
         const turn = lane.turn(fixture);
         const composed = compileAgentRunPlan(parts, {
           turn,
-          assignment,
-          instructions: slackTenantInstructions(assignment),
+          instructions: slackTenantInstructions(parts.assignment),
           memoryEpoch: 3,
           request: selectConnectionsForRequest({ connections: parts.connections, requestText: turn.text }),
         });
@@ -167,10 +165,7 @@ for (const fixture of [routineTeam!, routineCoding!]) {
       assert.ok('plan' in frozen, JSON.stringify(frozen));
       const parts = await routinePartsWithoutEvent(lane, fixture);
       // Any conversation will do: none of these fields depend on one.
-      const { assignment } = await partsWithoutEvent(lane, channelAlice!);
-      const composed = compileAgentRunPlan(parts, {
-        turn: lane.turn(channelAlice!), assignment, instructions: 'Any.', memoryEpoch: 1,
-      });
+      const composed = compileAgentRunPlan(parts, { turn: lane.turn(channelAlice!), instructions: 'Any.', memoryEpoch: 1 });
       assert.deepEqual(partsView(composed), partsView(frozen.plan));
     });
   });
@@ -194,3 +189,4 @@ async function routinePartsWithoutEvent(lane: RunPlanLane, fixture: RoutineFixtu
       : {}),
   });
 }
+
