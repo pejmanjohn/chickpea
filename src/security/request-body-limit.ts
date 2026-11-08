@@ -5,7 +5,7 @@ export type BoundedRequestBodyResult =
   | { ok: false; reason: 'invalid_content_length' | 'body_too_large' };
 
 export async function readBoundedRequestBody(
-  request: Request,
+  request: Pick<Request, 'headers' | 'body'>,
   maxSize: number,
 ): Promise<BoundedRequestBodyResult> {
   if (!Number.isSafeInteger(maxSize) || maxSize < 0) {
@@ -57,7 +57,7 @@ export async function readBoundedRequestBody(
   return { ok: true, body };
 }
 
-async function cancelRequestBody(request: Request): Promise<void> {
+async function cancelRequestBody(request: Pick<Request, 'body'>): Promise<void> {
   await request.body?.cancel().catch(() => undefined);
 }
 

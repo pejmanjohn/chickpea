@@ -10,6 +10,7 @@ import type {
   BetterAuthOrganizationErasure,
   BetterAuthOrganizationRecord,
   BetterAuthUserRecord,
+  ClientAssertionPrune,
   PendingMcpOAuthClientPrune,
 } from './better-auth-backend.ts';
 import {
@@ -262,6 +263,16 @@ export class PostgresBetterAuthBackend implements BetterAuthDatabaseBackend {
       [prune.expiredBefore.toISOString(), prune.evictableBefore.toISOString(), prune.keep],
     );
     return row?.count ?? 0;
+  }
+
+  async pruneExpiredClientAssertions(prune: ClientAssertionPrune): Promise<number> {
+    const result = await this.pool.query(
+      `DELETE FROM "oauthClientAssertion" WHERE "id" IN (
+         SELECT "id" FROM "oauthClientAssertion" WHERE "expiresAt" < $1::timestamptz LIMIT $2
+       )`,
+      [prune.expiredBefore.toISOString(), prune.limit],
+    );
+    return result.rowCount ?? 0;
   }
 
   async putMcpOAuthContinuation(record: BetterAuthMcpOAuthContinuationRecord): Promise<void> {

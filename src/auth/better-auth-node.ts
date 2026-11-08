@@ -13,6 +13,7 @@ import type {
   BetterAuthOrganizationErasure,
   BetterAuthOrganizationRecord,
   BetterAuthUserRecord,
+  ClientAssertionPrune,
   PendingMcpOAuthClientPrune,
 } from './better-auth-backend.ts';
 import {
@@ -22,6 +23,7 @@ import {
   mapBetterAuthUser,
   mcpOAuthClientsFromGrants,
   parseBetterAuthDate,
+  SQLITE_EXPIRED_CLIENT_ASSERTION_PRUNE,
   SQLITE_MCP_OAUTH_CLIENT_GRANTS,
   SQLITE_ORGANIZATION_ERASURE,
   SQLITE_PENDING_MCP_CLIENT_PRUNE,
@@ -176,6 +178,11 @@ export class NodeBetterAuthBackend implements BetterAuthDatabaseBackend {
       .run(prune.expiredBefore.toISOString(), prune.evictableBefore.toISOString(), prune.keep);
     const row = this.database.prepare(SQLITE_PENDING_MCP_CLIENT_PRUNE.count).get() as { count?: number } | undefined;
     return Number(row?.count ?? 0);
+  }
+
+  async pruneExpiredClientAssertions(prune: ClientAssertionPrune): Promise<number> {
+    return Number(this.database.prepare(SQLITE_EXPIRED_CLIENT_ASSERTION_PRUNE)
+      .run(prune.expiredBefore.toISOString(), prune.limit).changes);
   }
 
   async putMcpOAuthContinuation(record: BetterAuthMcpOAuthContinuationRecord): Promise<void> {

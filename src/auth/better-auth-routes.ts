@@ -21,6 +21,13 @@ import { emitManagementMetric } from '../management/telemetry.ts';
 import { readBoundedRequestBody, requestWithBufferedBody } from '../security/request-body-limit.ts';
 
 const MAX_AUTH_BODY_BYTES = 32 * 1024;
+/** Each assertion Better Auth accepts writes one record, so a prune this size keeps up with any rate of them. */
+const CLIENT_ASSERTION_PRUNE_LIMIT = 500;
+/** At most one prune per backend in this span, whatever the request rate. */
+const CLIENT_ASSERTION_PRUNE_INTERVAL_MS = 10_000;
+/** How long a token response waits on a prune; a slower one finishes, or not, after the response. */
+const CLIENT_ASSERTION_PRUNE_WAIT_MS = 250;
+const lastClientAssertionPrune = new WeakMap<object, number>();
 type PublicRoute = 'read' | 'browser-mutation' | 'protocol-mutation' | 'registration';
 
 const PUBLIC_ROUTES = new Map<string, PublicRoute>([
@@ -106,10 +113,14 @@ export function createBetterAuthPublicHandler(input: BetterAuthPublicHandlerInpu
       tokenRequest = new URLSearchParams(new TextDecoder().decode(bounded.body ?? new Uint8Array()));
     }
     const response = await instance.handler(request);
-    if (tokenRequest && response.ok) {
-      // Best effort: a lost marker only means a stale consent tab gets today's flow.
-      await recordRedeemedChallenge(instance, tokenRequest).catch(() => undefined);
-    }
+    // Best effort: a lost marker only means a stale consent tab gets today's
+    // flow, and a missed prune leaves expired records for the next one. Better
+    // Auth records an assertion before it checks the grant, so a refused token
+    // request prunes too.
+    await Promise.all([
+      tokenRequest && response.ok ? recordRedeemedChallenge(instance, tokenRequest).catch(() => undefined) : undefined,
+      tokenRequest?.has('client_assertion') ? pruneClientAssertions(input.backend) : undefined,
+    ]);
     if (route === 'registration') {
       emitManagementMetric('oauth.dcr', {
         stage: 'registration',
@@ -130,7 +141,9 @@ export function createBetterAuthPublicHandler(input: BetterAuthPublicHandlerInpu
       });
     }
     if (url.pathname.endsWith('/oauth2/revoke')) return await revocationResponse(response);
-    return AUTHORIZATION_SERVER_METADATA_PATHS.has(url.pathname) ? await advertisePublicClientsOnly(response) : response;
+    return AUTHORIZATION_SERVER_METADATA_PATHS.has(url.pathname)
+      ? await advertiseTokenAuthMethods(response, { documents: input.clientMetadataDocuments === true })
+      : response;
   };
 }
 
@@ -235,18 +248,21 @@ async function validateRegistrationRequest(request: Request): Promise<Request | 
 /**
  * Better Auth lists every confidential method it can verify and has no option
  * to narrow the list, and claude.ai registers with client_secret_post whenever
- * it is listed. Registration here accepts public clients only, so the signing
- * algorithms, which serve JWT client authentication alone, go as well. The
- * headers carry over without the length of the longer upstream body.
+ * it is listed. Registration here accepts public clients only, so without
+ * `documents` the list is `none` and the signing algorithms, which serve JWT
+ * client authentication alone, go as well. With `documents` (hosted shared
+ * auth) a client may also sign in by a metadata document that names
+ * private_key_jwt, so that method and the algorithms stay; registration still
+ * accepts `none` only. The headers carry over without the upstream length.
  */
-export async function advertisePublicClientsOnly(response: Response): Promise<Response> {
+export async function advertiseTokenAuthMethods(response: Response, { documents }: { documents: boolean }): Promise<Response> {
   if (!response.ok) return response;
   const metadata = await response.json() as Record<string, unknown>;
-  delete metadata.token_endpoint_auth_signing_alg_values_supported;
+  if (!documents) delete metadata.token_endpoint_auth_signing_alg_values_supported;
   const headers = new Headers(response.headers);
   headers.delete('content-length');
   return Response.json(
-    { ...metadata, token_endpoint_auth_methods_supported: ['none'] },
+    { ...metadata, token_endpoint_auth_methods_supported: documents ? ['none', 'private_key_jwt'] : ['none'] },
     { status: response.status, headers },
   );
 }
@@ -261,6 +277,18 @@ function validatePublicMutation(request: Request, canonicalOrigin: string): Resp
     ? 403
     : result.code === 'content_type_denied' ? 415 : 413;
   return Response.json({ error: result.code }, { status });
+}
+
+async function pruneClientAssertions(backend: BetterAuthPublicHandlerInput['backend']): Promise<void> {
+  const now = Date.now();
+  const last = lastClientAssertionPrune.get(backend);
+  if (last !== undefined && now >= last && now - last < CLIENT_ASSERTION_PRUNE_INTERVAL_MS) return;
+  lastClientAssertionPrune.set(backend, now);
+  const pruned = backend.pruneExpiredClientAssertions({ expiredBefore: new Date(now), limit: CLIENT_ASSERTION_PRUNE_LIMIT })
+    .catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([pruned, new Promise<void>((resolve) => { timer = setTimeout(resolve, CLIENT_ASSERTION_PRUNE_WAIT_MS); })]);
+  clearTimeout(timer);
 }
 
 function notFound(): Response {

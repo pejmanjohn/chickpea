@@ -90,14 +90,14 @@ test('PostgreSQL migrations apply once and leave nothing for Better Auth to add'
   if (!config) return;
   const pool = new pg.Pool(config);
   defer(() => pool.end());
-  assert.deepEqual(await applyPostgresBetterAuthMigrations(pool), ['0001_better_auth.sql']);
+  const names = ['0001_better_auth.sql', '0002_client_assertion_expiry.sql'];
+  assert.deepEqual(await applyPostgresBetterAuthMigrations(pool), names);
   assert.deepEqual(await applyPostgresBetterAuthMigrations(pool), []);
-  const ledger = await pool.query('SELECT name, digest FROM chickpea_better_auth_migrations');
-  assert.deepEqual(ledger.rows, [{
-    name: '0001_better_auth.sql',
-    digest: createHash('sha256')
-      .update(readFileSync(path.join(MIGRATIONS, '0001_better_auth.sql'))).digest('hex'),
-  }]);
+  const ledger = await pool.query('SELECT name, digest FROM chickpea_better_auth_migrations ORDER BY name');
+  assert.deepEqual(ledger.rows, names.map((name) => ({
+    name,
+    digest: createHash('sha256').update(readFileSync(path.join(MIGRATIONS, name))).digest('hex'),
+  })));
 
   // Better Auth's own planner, over Chickpea's production options, finds the
   // migrated schema complete: the committed history matches 1.7.1's schema.
@@ -164,8 +164,8 @@ test('concurrent PostgreSQL migration runs apply the schema once', async (t) => 
   const pools = [new pg.Pool(config), new pg.Pool(config)];
   defer(() => Promise.all(pools.map((pool) => pool.end())));
   const results = await Promise.all(pools.map((pool) => applyPostgresBetterAuthMigrations(pool)));
-  assert.deepEqual(results.map((names) => names.length).sort(), [0, 1]);
-  assert.equal((await pools[0]!.query('SELECT count(*)::int AS n FROM chickpea_better_auth_migrations')).rows[0]?.n, 1);
+  assert.deepEqual(results.map((names) => names.length).sort(), [0, 2]);
+  assert.equal((await pools[0]!.query('SELECT count(*)::int AS n FROM chickpea_better_auth_migrations')).rows[0]?.n, 2);
 });
 
 test('the PostgreSQL backend sets no session state and returns every connection', async (t) => {
