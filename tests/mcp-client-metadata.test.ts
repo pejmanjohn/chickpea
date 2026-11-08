@@ -71,7 +71,7 @@ const PUBLIC_CLIENT_LISTS_NO_KEYS = {
 };
 const KEYS_ON_OWN_ORIGIN = {
   error: 'invalid_client',
-  error_description: 'metadata document jwks_uri must be on the client ID\'s origin; inline jwks is not accepted',
+  error_description: 'metadata document jwks_uri must be an https URL on the client ID\'s origin; inline jwks is not accepted',
 };
 /** Better Auth's own refusal, which comes first for keys on an origin it does not trust. */
 const UNTRUSTED_KEYS = {
@@ -583,6 +583,9 @@ test('a metadata document client is public, or names private_key_jwt with keys o
     ['keys Chickpea serves', { ...keyed, jwks_uri: `${ORIGIN}/api/auth/jwks` }, KEYS_ON_OWN_ORIGIN],
     ['keys on another origin', { ...keyed, jwks_uri: 'https://keys.example.net/jwks' }, UNTRUSTED_KEYS],
     ['keys on a subdomain', { ...keyed, jwks_uri: 'https://keys.apps.example.org/jwks' }, UNTRUSTED_KEYS],
+    // A blob: URL's origin is its inner URL's; Better Auth's scheme check refuses it first, and Chickpea's backs it.
+    ['keys at a blob: URL', { ...keyed, jwks_uri: `blob:${ownKeys}` },
+      { error: 'invalid_client_metadata', error_description: 'jwks_uri must use HTTPS' }],
     ['a public client with inline keys', { token_endpoint_auth_method: 'none', jwks: keys }, PUBLIC_CLIENT_LISTS_NO_KEYS],
     ['a public client with a jwks_uri', { token_endpoint_auth_method: 'none', jwks_uri: ownKeys }, PUBLIC_CLIENT_LISTS_NO_KEYS],
   ];
@@ -609,6 +612,7 @@ test('a metadata document client is public, or names private_key_jwt with keys o
 });
 
 test('ChatGPT signs in by its published document with private_key_jwt: one ownerless row, an assertion at every token request', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
   const signer = assertionSigner();
   const host = metadataDocumentServer({ [CHATGPT]: CHATGPT_DOCUMENT.body, [CHATGPT_KEYS]: JSON.stringify(signer.keySet) });
   const f = await fixture(t, { fetchClientMetadataResource: host.fetch });
@@ -649,6 +653,7 @@ test('ChatGPT signs in by its published document with private_key_jwt: one owner
     .map(({ id }) => id);
   f.backend.database.prepare('INSERT INTO oauthClientAssertion (id, expiresAt) VALUES (?, ?)').run('expired', '2026-01-01T00:00:00.000Z');
   assert.equal(assertionRecords().length, 2);
+  t.mock.timers.tick(11_000); // a backend prunes at most once per 10 seconds
   const renewed = await f.token({
     grant_type: 'refresh_token', client_id: CHATGPT, refresh_token: tokens.refresh_token,
     client_assertion_type: JWT_BEARER, client_assertion: await signer.assertion({ aud: ISSUER }),
@@ -804,6 +809,7 @@ test('a key set is kept for the isolate: one fetch across requests, one more per
     { body: JSON.stringify(rotated.keySet), headers: { 'content-type': 'text/html' } },
     JSON.stringify({ ...rotated.keySet, padding: 'x'.repeat(64 * 1024) }),
     JSON.stringify({ keys: 'none' }),
+    JSON.stringify({ keys: [] }),
   ];
   for (const failure of failures) {
     served[CHATGPT_KEYS] = failure;

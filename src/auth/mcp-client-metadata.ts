@@ -54,14 +54,15 @@ interface TransportState {
 }
 
 const MAX_REMEMBERED_CLIENTS = 1_000;
-const MAX_REMEMBERED_KEY_SETS = 500;
+/** With MAX_KEY_SET_BYTES, at most 1 MiB of key sets per isolate. */
+const MAX_REMEMBERED_KEY_SETS = 64;
 /** How long a key set serves without a fetch: ChatGPT publishes its own with max-age=300. */
 const KEY_SET_FRESH_MS = 5 * 60_000;
 /** How long a key set serves while its URL cannot be fetched. */
 const KEY_SET_STALE_MS = 10 * 60_000;
 /** How soon after a fetch an assertion naming an unknown key fetches the set again. */
 const KEY_SET_REFETCH_COOLDOWN_MS = 30_000;
-const MAX_KEY_SET_BYTES = 64 * 1024;
+const MAX_KEY_SET_BYTES = 16 * 1024;
 const JSON_MEDIA_TYPE = /^application\/(?:[-\w.]+\+)?json\s*(?:;|$)/i;
 /** How long after its document last answered a stored client stands in for a document it cannot reach. */
 const STORED_CLIENT_STAND_IN_MS = 24 * 60 * 60_000;
@@ -287,8 +288,9 @@ function registrationRefusal(client: Client): APIError | undefined {
       }
       break;
     case 'private_key_jwt':
-      if (client.jwks || !client.jwksUri || URL.parse(client.jwksUri)?.origin !== new URL(client.clientId).origin) {
-        return refuse('metadata document jwks_uri must be on the client ID\'s origin; inline jwks is not accepted');
+      const keysUrl = client.jwksUri ? URL.parse(client.jwksUri) : null;
+      if (client.jwks || keysUrl?.protocol !== 'https:' || keysUrl.origin !== new URL(client.clientId).origin) {
+        return refuse('metadata document jwks_uri must be an https URL on the client ID\'s origin; inline jwks is not accepted');
       }
       break;
     default:
@@ -342,7 +344,12 @@ function keySetFetch(transport: ClientMetadataFetch, keySets: Map<string, Fetche
     const fetched = await fetchKeySet(transport, url, init);
     if (fetched) {
       keySets.delete(url);
-      if (keySets.size >= MAX_REMEMBERED_KEY_SETS) keySets.delete(keySets.keys().next().value!);
+      // Insertion order is fetch order, so the oldest copies lead; one past
+      // the stale window never serves again.
+      for (const [kept, { fetchedAt }] of keySets) {
+        if (keySets.size < MAX_REMEMBERED_KEY_SETS && fetched.fetchedAt - fetchedAt < KEY_SET_STALE_MS) break;
+        keySets.delete(kept);
+      }
       keySets.set(url, fetched);
       return keySetResponse(fetched);
     }
@@ -351,7 +358,7 @@ function keySetFetch(transport: ClientMetadataFetch, keySets: Map<string, Fetche
   };
 }
 
-/** A key set worth keeping: a 200 in a JSON media type, at most 64 KiB, holding a `keys` array. */
+/** A key set worth keeping: a 200 in a JSON media type, at most 16 KiB, holding a non-empty `keys` array. */
 async function fetchKeySet(
   transport: ClientMetadataFetch,
   url: string,
@@ -368,7 +375,8 @@ async function fetchKeySet(
     if (!read.ok) return undefined;
     const body = new TextDecoder().decode(read.body ?? new Uint8Array());
     const parsed: unknown = JSON.parse(body);
-    if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as { keys?: unknown }).keys)) return undefined;
+    const keys = parsed && typeof parsed === 'object' ? (parsed as { keys?: unknown }).keys : undefined;
+    if (!Array.isArray(keys) || keys.length === 0) return undefined;
     return { body, contentType, fetchedAt: Date.now() };
   } catch {
     return undefined;

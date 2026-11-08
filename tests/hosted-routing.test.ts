@@ -1298,6 +1298,8 @@ test('ChatGPT signs in to a hosted installation by its document, proving each to
   t.mock.timers.tick(6 * 60_000);
   await invalidClient(await renew(await signer.assertion({ aud: TOKEN_ENDPOINT })), 401,
     'client assertion signature verification failed', 'a retired key no longer verifies');
+  assert.equal((await hosted.backend.pool.query('SELECT 1 FROM "oauthClientAssertion"')).rows.length, 0,
+    'a refused token request prunes the expired records too');
   assert.equal((await renew(await rotated.assertion({ aud: TOKEN_ENDPOINT }))).status, 200);
 
   const clients = await hosted.backend.pool.query(

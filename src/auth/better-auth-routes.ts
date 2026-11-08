@@ -21,8 +21,13 @@ import { emitManagementMetric } from '../management/telemetry.ts';
 import { readBoundedRequestBody, requestWithBufferedBody } from '../security/request-body-limit.ts';
 
 const MAX_AUTH_BODY_BYTES = 32 * 1024;
-/** Each accepted assertion writes one record, so a prune this size keeps up with any rate of them. */
+/** Each assertion Better Auth accepts writes one record, so a prune this size keeps up with any rate of them. */
 const CLIENT_ASSERTION_PRUNE_LIMIT = 500;
+/** At most one prune per backend in this span, whatever the request rate. */
+const CLIENT_ASSERTION_PRUNE_INTERVAL_MS = 10_000;
+/** How long a token response waits on a prune; a slower one finishes, or not, after the response. */
+const CLIENT_ASSERTION_PRUNE_WAIT_MS = 250;
+const lastClientAssertionPrune = new WeakMap<object, number>();
 type PublicRoute = 'read' | 'browser-mutation' | 'protocol-mutation' | 'registration';
 
 const PUBLIC_ROUTES = new Map<string, PublicRoute>([
@@ -108,17 +113,14 @@ export function createBetterAuthPublicHandler(input: BetterAuthPublicHandlerInpu
       tokenRequest = new URLSearchParams(new TextDecoder().decode(bounded.body ?? new Uint8Array()));
     }
     const response = await instance.handler(request);
-    if (tokenRequest && response.ok) {
-      // Best effort: a lost marker only means a stale consent tab gets today's
-      // flow, and a missed prune leaves expired records for the next one.
-      await Promise.all([
-        recordRedeemedChallenge(instance, tokenRequest).catch(() => undefined),
-        tokenRequest.has('client_assertion')
-          ? input.backend.pruneExpiredClientAssertions({ expiredBefore: new Date(), limit: CLIENT_ASSERTION_PRUNE_LIMIT })
-            .catch(() => undefined)
-          : undefined,
-      ]);
-    }
+    // Best effort: a lost marker only means a stale consent tab gets today's
+    // flow, and a missed prune leaves expired records for the next one. Better
+    // Auth records an assertion before it checks the grant, so a refused token
+    // request prunes too.
+    await Promise.all([
+      tokenRequest && response.ok ? recordRedeemedChallenge(instance, tokenRequest).catch(() => undefined) : undefined,
+      tokenRequest?.has('client_assertion') ? pruneClientAssertions(input.backend) : undefined,
+    ]);
     if (route === 'registration') {
       emitManagementMetric('oauth.dcr', {
         stage: 'registration',
@@ -275,6 +277,18 @@ function validatePublicMutation(request: Request, canonicalOrigin: string): Resp
     ? 403
     : result.code === 'content_type_denied' ? 415 : 413;
   return Response.json({ error: result.code }, { status });
+}
+
+async function pruneClientAssertions(backend: BetterAuthPublicHandlerInput['backend']): Promise<void> {
+  const now = Date.now();
+  const last = lastClientAssertionPrune.get(backend);
+  if (last !== undefined && now >= last && now - last < CLIENT_ASSERTION_PRUNE_INTERVAL_MS) return;
+  lastClientAssertionPrune.set(backend, now);
+  const pruned = backend.pruneExpiredClientAssertions({ expiredBefore: new Date(now), limit: CLIENT_ASSERTION_PRUNE_LIMIT })
+    .catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([pruned, new Promise<void>((resolve) => { timer = setTimeout(resolve, CLIENT_ASSERTION_PRUNE_WAIT_MS); })]);
+  clearTimeout(timer);
 }
 
 function notFound(): Response {
