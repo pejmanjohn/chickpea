@@ -7,6 +7,7 @@ import type {
   AgentEditPolicy,
   AgentChannelGrantStatus,
   AgentCreateInput,
+  AgentPresenceHealth,
   ChannelConfig,
   ConnectionAccountOwnerKind,
   ModelRole,
@@ -1224,6 +1225,17 @@ export interface ManagementMemorySnapshot {
   revision: number;
 }
 
+/** What the creation card shows while a new Agent joins Slack; read-only. */
+export interface ManagementAgentCreationProgress {
+  agent: ManagementAgentLabel;
+  /** Absent for an Agent with no Slack handle. */
+  presence?: { health: AgentPresenceHealth; errorCode?: string };
+  /** The status of each of the Agent's Channel grants. */
+  channelGrants: AgentChannelGrantStatus[];
+  /** The caller's newest welcome for this Agent in their DM with Chickpea; absent when none is kept. */
+  welcome?: { status: ManagementReceiptOutboxStatus };
+}
+
 export interface ManagementRoutineInspectionInput {
   workspaceId: string;
   channelId?: string | undefined;
@@ -1854,6 +1866,7 @@ export type ManagementRpcRequest =
   | { kind: 'queue_owed_agent_welcome'; input: OwedAgentWelcomeInput }
   | { kind: 'get_outbox_for_operation'; operationId: string }
   | { kind: 'list_agent_creation_welcomes'; workspaceId: string; agentId: string; requesterMembershipId: string }
+  | { kind: 'list_direct_agent_creation_welcomes'; userId: string; agentId: string; requesterMembershipId: string }
   | {
       kind: 'get_deferred_agent_creation_welcome';
       workspaceId: string;

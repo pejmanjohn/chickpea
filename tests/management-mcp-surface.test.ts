@@ -17,14 +17,14 @@ import {
 } from '../src/management/agent-authoring/mcp-guide.ts';
 import { adminSettingsLinks } from '../src/management/admin-links.ts';
 import { workspaceManagementInstructions } from '../src/management/instructions.ts';
-import { WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES } from '../src/management/mcp.ts';
+import { WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES } from '../src/management/mcp.ts';
 import { workspaceManagementToolDescription } from '../src/management/tool-adapter.ts';
 
 /** Wording a coding agent must never be told; it has no Slack thread, DM, or Slack preview. */
 const SLACK_ONLY_WORDING = /presentation\.slack|\bDMs?\b|Slack turn|Slack Lists|Slack conversation|requester message|current command on Slack|progress UI/;
 
 test('MCP tool descriptions carry no Slack-conversation instructions while Slack text is untouched', () => {
-  for (const name of WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES) {
+  for (const name of WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES) {
     const slack = workspaceManagementToolDescription(name);
     const mcp = workspaceManagementToolDescription(name, 'mcp');
     assert.equal(slack, workspaceManagementToolDescription(name, 'slack'), `${name}: Slack is the default surface`);
@@ -42,7 +42,7 @@ test('MCP tool descriptions carry no Slack-conversation instructions while Slack
   assert.match(workspaceManagementToolDescription('prepare_connector_setup'), /agentId may be omitted/);
 
   // The MCP door acts with Admin authority and asks only before a destructive change.
-  for (const name of WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES) {
+  for (const name of WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES) {
     assert.doesNotMatch(workspaceManagementToolDescription(name, 'mcp'), /propose_/, `${name} (mcp)`);
   }
   const apply = workspaceManagementToolDescription('apply_workspace_changes', 'mcp');

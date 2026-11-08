@@ -496,6 +496,20 @@ export class ManagementStoreLogic {
         ) as unknown as ManagementOutboxRow[];
         return { kind: 'outbox_batch', outbox: rows.map(outboxFromRow) };
       }
+      case 'list_direct_agent_creation_welcomes': {
+        // An Agent created outside Slack says hello in its creator's DM with Chickpea.
+        const rows = this.db.all(
+          `SELECT * FROM management_receipt_outbox
+           WHERE json_extract(receipt_json, '$.kind') = 'agent_created_welcome'
+             AND json_extract(receipt_json, '$.agentId') = ?
+             AND json_extract(receipt_json, '$.requesterMembershipId') = ?
+             AND json_extract(destination_json, '$.kind') = 'initiator_dm'
+             AND json_extract(destination_json, '$.userId') = ?
+           ORDER BY created_at DESC, outbox_id DESC LIMIT 1`,
+          request.agentId, request.requesterMembershipId, request.userId,
+        ) as unknown as ManagementOutboxRow[];
+        return { kind: 'outbox_batch', outbox: rows.map(outboxFromRow) };
+      }
       case 'get_deferred_agent_creation_welcome': {
         const row = this.db.get(
           `SELECT * FROM management_receipt_outbox

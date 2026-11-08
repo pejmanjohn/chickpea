@@ -1,0 +1,218 @@
+import { createHash } from 'node:crypto';
+
+import { MCP_WORKSPACE_SCOPE } from '../../auth/mcp-oauth.ts';
+import { AgentPresenceError } from '../../slack/agent-presence/errors.ts';
+import { ManagementError } from '../types.ts';
+
+/**
+ * The conventions every 5.0 management tool follows (U2 design note §2.1 and
+ * §5): three explicit hints, OAuth `securitySchemes`, an `outputSchema`, one
+ * error shape, and opaque handles in place of internal IDs and revisions.
+ */
+
+/** Every tool needs the signed-in person's workspace grant; none runs unauthenticated. */
+export const MCP_TOOL_SECURITY_SCHEMES = Object.freeze([
+  Object.freeze({ type: 'oauth2', scopes: Object.freeze([MCP_WORKSPACE_SCOPE]) }),
+]);
+
+/** Reads only Chickpea's own state. */
+export const READ_HINTS = Object.freeze({
+  readOnlyHint: true,
+  destructiveHint: false,
+  openWorldHint: false,
+});
+
+export type McpToolVisibility = 'model' | 'app';
+
+/**
+ * Descriptor `_meta`: the `securitySchemes` mirror OpenAI documents for clients
+ * that read only `_meta`, and `ui.visibility` for a tool only a card calls.
+ */
+export function toolMeta(input: { visibility?: readonly McpToolVisibility[]; profile?: true } = {}) {
+  return {
+    securitySchemes: MCP_TOOL_SECURITY_SCHEMES,
+    ...(input.visibility ? { ui: { visibility: [...input.visibility] } } : {}),
+    ...(input.profile ? { 'openai/profile': true } : {}),
+  };
+}
+
+/**
+ * The opaque token a 5.0 write takes in place of a revision number. Equal
+ * state gives an equal token; nothing is decoded from it, and knowing a
+ * revision grants nothing, so no secret goes in.
+ */
+export function versionToken(kind: string, id: string, revision: number, organizationId: string): string {
+  return createHash('sha256')
+    .update(`${kind}:${id}:${revision}:${organizationId}`)
+    .digest('hex')
+    .slice(0, 16);
+}
+
+/**
+ * The profile ID ChatGPT keys a connected account on. Frozen: OpenAI stores
+ * it and it must never change or be reused, so changing this derivation is a
+ * T3 change.
+ */
+export function accountProfileId(organizationId: string, membershipId: string): string {
+  return createHash('sha256')
+    .update(`chickpea-profile:v1:${organizationId}:${membershipId}`)
+    .digest('hex')
+    .slice(0, 32);
+}
+
+export const MCP_ERROR_CODES = [
+  'not_allowed',
+  'not_found',
+  'invalid_input',
+  'changed_since_read',
+  'confirmation_expired',
+  'in_progress',
+  'key_reused',
+  'still_in_use',
+  'setup_link_unusable',
+  'model_unavailable',
+  'slack_unavailable',
+  'schedule_unavailable',
+  'nothing_to_undo',
+  'usage_limit',
+  'temporarily_unavailable',
+  'tool_removed',
+] as const;
+
+export type McpErrorCode = typeof MCP_ERROR_CODES[number];
+
+export type McpErrorFix =
+  | { label: string; url: string }
+  | { label: string; tool: string; arguments: Record<string, unknown> };
+
+/** A type alias, so it fits `structuredContent`'s index signature. */
+export type McpToolError = {
+  code: McpErrorCode;
+  /** Plain, for the person; never a key or an internal ID. */
+  message: string;
+  retryable: boolean;
+  /** For the model: what to do next. */
+  nextStep?: string;
+  fix?: McpErrorFix;
+};
+
+/** A refusal a 5.0 tool raises itself, already in the 5.0 shape. */
+export class McpToolFailure extends Error {
+  readonly name = 'McpToolFailure';
+
+  constructor(readonly error: McpToolError) {
+    super(error.message);
+  }
+}
+
+export function fail(
+  code: McpErrorCode,
+  message: string,
+  options: { nextStep?: string; fix?: McpErrorFix } = {},
+): never {
+  throw new McpToolFailure({
+    code,
+    message,
+    retryable: RETRYABLE.has(code),
+    ...(options.nextStep ? { nextStep: options.nextStep } : {}),
+    ...(options.fix ? { fix: options.fix } : {}),
+  });
+}
+
+const RETRYABLE: ReadonlySet<McpErrorCode> = new Set([
+  'changed_since_read', 'confirmation_expired', 'in_progress', 'slack_unavailable', 'temporarily_unavailable',
+]);
+
+/** Today's service codes (`ManagementError`, `AgentPresenceError`) in the 5.0 vocabulary. */
+const SERVICE_CODES: Readonly<Record<string, McpErrorCode>> = {
+  forbidden: 'not_allowed',
+  owner_required: 'not_allowed',
+  operational_access_required: 'not_allowed',
+  proposal_binding_mismatch: 'not_allowed',
+  operation_not_found: 'not_found',
+  proposal_not_found: 'not_found',
+  setup_not_found: 'not_found',
+  mcp_client_not_found: 'not_found',
+  invalid_request: 'invalid_input',
+  invalid_state: 'invalid_input',
+  incomplete_search: 'invalid_input',
+  base_agent_capabilities_require_setup: 'invalid_input',
+  key_rejected: 'invalid_input',
+  key_unconfirmed: 'invalid_input',
+  revision_conflict: 'changed_since_read',
+  proposal_stale: 'changed_since_read',
+  operation_in_progress: 'in_progress',
+  idempotency_conflict: 'key_reused',
+  still_referenced: 'still_in_use',
+  setup_unavailable: 'setup_link_unusable',
+  setup_expired: 'setup_link_unusable',
+  setup_session_mismatch: 'setup_link_unusable',
+  model_provider_unavailable: 'model_unavailable',
+  effort_not_supported: 'model_unavailable',
+  effort_requires_model: 'model_unavailable',
+  slack_unavailable: 'slack_unavailable',
+  routines_unavailable_on_target: 'schedule_unavailable',
+  schedule_authority_missing: 'schedule_unavailable',
+  undo_unavailable: 'nothing_to_undo',
+};
+
+const UNEXPECTED: McpToolError = {
+  code: 'temporarily_unavailable',
+  message: 'Chickpea could not finish that request.',
+  retryable: true,
+  nextStep: 'Try the same call again in a moment.',
+};
+
+/** Any failure as the 5.0 error; an unexpected one never carries its own text. */
+export function mcpToolError(error: unknown): McpToolError {
+  if (error instanceof McpToolFailure) return error.error;
+  if (error instanceof AgentPresenceError) {
+    return {
+      code: 'slack_unavailable',
+      message: error.message,
+      retryable: error.options.retryable ?? true,
+    };
+  }
+  if (error instanceof ManagementError) {
+    const code = SERVICE_CODES[error.code] ?? 'invalid_input';
+    return {
+      code,
+      message: error.message,
+      retryable: RETRYABLE.has(code),
+      ...(error.links?.admin ? { fix: { label: 'Open Chickpea Admin', url: error.links.admin } } : {}),
+    };
+  }
+  return UNEXPECTED;
+}
+
+/**
+ * The text clients show: the message, the next step, then the fix's label and
+ * link. A client that passes only `content` to its model still gets them.
+ */
+export function mcpErrorText(error: McpToolError): string {
+  return [
+    error.message,
+    error.nextStep,
+    error.fix && 'url' in error.fix ? `${error.fix.label}: ${error.fix.url}` : undefined,
+  ].filter((line): line is string => line !== undefined).join('\n');
+}
+
+export function mcpErrorResult(error: McpToolError) {
+  return {
+    content: [{ type: 'text' as const, text: mcpErrorText(error) }],
+    structuredContent: { error },
+    isError: true as const,
+  };
+}
+
+/**
+ * A success: `structuredContent` matches the tool's `outputSchema`, and the
+ * text block carries the same JSON for a client that passes only `content` to
+ * its model, so no handle a follow-up call needs is lost there.
+ */
+export function mcpSuccessResult<T extends Record<string, unknown>>(structured: T) {
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify(structured) }],
+    structuredContent: structured,
+  };
+}

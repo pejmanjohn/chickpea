@@ -11,6 +11,7 @@ import {
   WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI,
   WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI,
   WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES,
+  WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES,
   WORKSPACE_MANAGEMENT_SERVER_INFO,
 } from '../src/management/mcp.ts';
 import {
@@ -66,6 +67,8 @@ const PROMPT_INVOCATIONS: {
 
 const READ = { readOnlyHint: true };
 const WRITE = { readOnlyHint: false, destructiveHint: false, idempotentHint: true };
+/** A 5.0 read states all three hints. */
+const READ_5 = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
 
 /** Only confirm_workspace_change can carry out a change the person must approve first. */
 const MCP_TOOL_ANNOTATIONS = {
@@ -90,6 +93,22 @@ const MCP_TOOL_ANNOTATIONS = {
   revoke_setup_link: WRITE,
   list_mcp_clients: READ,
   revoke_mcp_client: WRITE,
+  get_account: READ_5,
+  get_workspace: READ_5,
+  list_agents: READ_5,
+  get_agent: READ_5,
+  list_services: READ_5,
+  list_models: READ_5,
+  list_members: READ_5,
+  list_slack_channels: READ_5,
+  get_agent_memory: READ_5,
+  list_schedules: READ_5,
+  get_setup_status: READ_5,
+  export_agents: READ_5,
+  list_connected_apps: READ_5,
+  propose_agent: READ_5,
+  propose_agent_change: READ_5,
+  get_creation_status: READ_5,
 };
 
 const CLIENTS = [
@@ -164,7 +183,10 @@ test('supported coding clients share public PKCE registration and stateless MCP 
           name: string;
           description?: string;
           inputSchema?: { required?: string[] };
+          outputSchema?: unknown;
           annotations?: { readOnlyHint?: boolean; idempotentHint?: boolean };
+          securitySchemes?: unknown;
+          _meta?: unknown;
         }>;
       }).tools;
       assert.deepEqual(
@@ -182,6 +204,14 @@ test('supported coding clients share public PKCE registration and stateless MCP 
         MCP_TOOL_ANNOTATIONS,
         `${client.name} must disclose which tools write and which can destroy`,
       );
+      for (const listedTool of listedTools.filter(({ name }) =>
+        (WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES as readonly string[]).includes(name))) {
+        assert.deepEqual(
+          [listedTool.outputSchema, listedTool.securitySchemes, listedTool._meta],
+          [undefined, undefined, undefined],
+          `${client.name} ${listedTool.name}: a 4.x descriptor is unchanged in 4.3`,
+        );
+      }
       const immediateSkillImport = listedTools.find(({ name }) => name === 'import_skill');
       for (const field of ['agentId', 'source', 'idempotencyKey', 'guideVersion']) {
         assert.ok(
@@ -451,7 +481,7 @@ test('server instructions stay under the client cap and link the deployment Admi
 test('workspace management MCP publishes the version 4 server contract', () => {
   assert.deepEqual(WORKSPACE_MANAGEMENT_SERVER_INFO, {
     name: 'chickpea-workspace',
-    version: '4.2.0',
+    version: '4.3.0',
   });
   assert.match(WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI, /\/v2$/);
 });

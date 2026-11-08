@@ -1,0 +1,480 @@
+import assert from 'node:assert/strict';
+import { test, type TestContext } from 'node:test';
+
+import { createMcpHandler } from '@modelcontextprotocol/server';
+
+import type { McpAuthenticatedPrincipal } from '../src/auth/mcp-oauth-routes.ts';
+import {
+  createWorkspaceManagementMcpServer,
+  WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES,
+  WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES,
+} from '../src/management/mcp.ts';
+import {
+  accountProfileId,
+  MCP_ERROR_CODES,
+  versionToken,
+} from '../src/management/mcp-v5/conventions.ts';
+import { createAgentInputSchema, updateAgentInputSchema } from '../src/management/mcp-v5/schemas.ts';
+import { FIVE_ZERO_TOOL_NAMES } from '../src/management/mcp-v5/tools.ts';
+import { emitManagementMetric } from '../src/management/telemetry.ts';
+import type { ManagementReceiptOutboxRecord } from '../src/management/types.ts';
+import {
+  applyThroughAdapter,
+  createFixtureAgent,
+  createManagementAdapterFixture,
+  ownerMcpContext,
+  type ManagementAdapterFixture,
+} from './helpers/management-adapter-fixture.ts';
+
+const LEGACY = '2025-11-25';
+const MODERN = '2026-07-28';
+const SCHEMES = [{ type: 'oauth2', scopes: ['chickpea:workspace'] }];
+const READ_5 = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
+/** The fixture's clock; an older delivered receipt is past retention and swept. */
+const NOW = 1_800_000_000_000;
+
+type ToolResult = {
+  content: Array<{ type: string; text: string }>;
+  structuredContent?: Record<string, unknown> & { error?: Record<string, unknown> };
+  isError?: boolean;
+};
+
+async function harness(t: TestContext, suffix: string, as: 'owner' | 'member' = 'owner') {
+  const f = await createManagementAdapterFixture(suffix);
+  t.after(() => f.close());
+  if (as === 'member') {
+    await f.identity.updateMembershipAuthority({
+      membershipId: f.admin.membership.id,
+      role: 'member',
+      actorMembershipId: f.owner.membership.id,
+      correlationId: `${suffix}-demotion`,
+      authenticationSurface: 'better_auth',
+      reasonCode: 'mcp_v5_test',
+    });
+  }
+  const person = as === 'owner' ? f.owner : f.admin;
+  const principal: McpAuthenticatedPrincipal = {
+    betterAuthUserId: person.binding.betterAuthUserId ?? 'ba_owner',
+    userId: person.user.id,
+    membershipId: person.membership.id,
+    organizationId: person.membership.organizationId,
+    role: as,
+    clientId: `client_${suffix}`,
+  };
+  const handler = createMcpHandler(
+    () => createWorkspaceManagementMcpServer({ principal, service: f.service, baseUrl: 'https://chickpea.example.test' }),
+    { legacy: 'stateless' },
+  );
+  const rpc = (method: string, params: Record<string, unknown>, protocol = LEGACY) =>
+    mcpCall(handler.fetch, protocol, method, params);
+  const call = async (name: string, args: Record<string, unknown> = {}) =>
+    (await rpc('tools/call', { name, arguments: args })).result as ToolResult;
+  return { f, principal, rpc, call };
+}
+
+async function mcpCall(
+  fetch: (request: Request) => Promise<Response>,
+  protocol: string,
+  method: string,
+  params: Record<string, unknown>,
+): Promise<{ result?: unknown; error?: unknown }> {
+  const name = typeof params.name === 'string' ? params.name : undefined;
+  const response = await fetch(new Request('http://localhost/mcp', {
+    method: 'POST',
+    headers: {
+      accept: 'application/json, text/event-stream',
+      'content-type': 'application/json',
+      'mcp-protocol-version': protocol,
+      ...(protocol === MODERN ? { 'mcp-method': method, ...(name ? { 'mcp-name': name } : {}) } : {}),
+    },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method,
+      params: protocol === MODERN
+        ? {
+            ...params,
+            _meta: {
+              'io.modelcontextprotocol/protocolVersion': protocol,
+              'io.modelcontextprotocol/clientCapabilities': {},
+            },
+          }
+        : params,
+    }),
+  }));
+  const body = await response.text();
+  assert.equal(response.status, 200, body);
+  const json = body.trimStart().startsWith('{')
+    ? body
+    : body.split('\n').find((line) => line.startsWith('data: '))!.slice('data: '.length);
+  return JSON.parse(json);
+}
+
+function structured(result: ToolResult): Record<string, unknown> {
+  assert.notEqual(result.isError, true, JSON.stringify(result));
+  assert.ok(result.structuredContent, JSON.stringify(result));
+  assert.deepEqual(JSON.parse(result.content[0]!.text), result.structuredContent, 'the text block carries the same JSON');
+  return result.structuredContent;
+}
+
+function errorOf(result: ToolResult): Record<string, unknown> {
+  assert.equal(result.isError, true, JSON.stringify(result));
+  const error = result.structuredContent?.error;
+  assert.ok(error, `a 5.0 error carries structuredContent.error: ${JSON.stringify(result)}`);
+  assert.equal(typeof error.message, 'string');
+  assert.equal(typeof error.retryable, 'boolean');
+  assert.ok(result.content[0]!.text.startsWith(error.message as string));
+  return error;
+}
+
+async function grantChannel(f: ManagementAdapterFixture, agentId: string, status: 'active' | 'pending' = 'active') {
+  await f.config.putChannel({ workspaceId: f.owner.binding.slackTeamId, channelId: 'C_SUPPORT', label: 'support', lifecycle: 'active' });
+  await f.config.putAgentChannelGrant({
+    workspaceId: f.owner.binding.slackTeamId,
+    channelId: 'C_SUPPORT',
+    agentId,
+    status,
+    createdByMembershipId: f.owner.membership.id,
+  });
+}
+
+for (const protocol of [LEGACY, MODERN]) {
+  test(`every 5.0 tool states its hints, securitySchemes and outputSchema, after the 4.x tools (${protocol})`, async (t) => {
+    const { rpc } = await harness(t, `descriptors-${protocol.slice(0, 4)}`);
+    const { tools } = (await rpc('tools/list', {}, protocol)).result as {
+      tools: Array<Record<string, unknown> & { name: string; description: string }>;
+    };
+    assert.deepEqual(tools.map(({ name }) => name), [...WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES, ...FIVE_ZERO_TOOL_NAMES]);
+    assert.deepEqual(tools.map(({ name }) => name), WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES);
+    for (const tool of tools.filter(({ name }) => (FIVE_ZERO_TOOL_NAMES as readonly string[]).includes(name))) {
+      assert.deepEqual(tool.annotations, READ_5, tool.name);
+      assert.deepEqual(tool.securitySchemes, SCHEMES, `${tool.name}: descriptor securitySchemes`);
+      const meta = tool._meta as Record<string, unknown>;
+      assert.deepEqual(meta.securitySchemes, SCHEMES, `${tool.name}: the _meta mirror`);
+      assert.equal((tool.outputSchema as { type?: string } | undefined)?.type, 'object', tool.name);
+      assert.deepEqual(meta.ui, tool.name === 'get_creation_status' ? { visibility: ['app'] } : undefined, tool.name);
+      assert.equal(meta['openai/profile'], tool.name === 'get_account' ? true : undefined, tool.name);
+      const words = tool.description.split(/\s+/).length;
+      assert.ok(words <= 70, `${tool.name}: ${words} words; keep a description near 60`);
+    }
+    const profile = tools.find(({ name }) => name === 'get_account')!.outputSchema as Record<string, unknown>;
+    assert.deepEqual(Object.keys(profile.properties as object).sort(), ['email', 'id', 'name', 'nickname']);
+    assert.deepEqual(profile.required, ['id']);
+    assert.equal(profile.additionalProperties, false);
+  });
+}
+
+test('the profile id is frozen: one derivation, pinned, never reused across memberships', () => {
+  assert.equal(accountProfileId('org_fixed', 'mem_fixed'), 'e28ebb3edf4d8f7b74a5d2a3d6283c0a');
+  assert.notEqual(accountProfileId('org_fixed', 'mem_other'), accountProfileId('org_fixed', 'mem_fixed'));
+  assert.equal(versionToken('agent', 'agent_a', 3, 'org_fixed'), versionToken('agent', 'agent_a', 3, 'org_fixed'));
+  assert.notEqual(versionToken('agent', 'agent_a', 4, 'org_fixed'), versionToken('agent', 'agent_a', 3, 'org_fixed'));
+  assert.match(versionToken('agent', 'agent_a', 3, 'org_fixed'), /^[a-f0-9]{16}$/);
+});
+
+test('get_account and get_workspace name the person, their workspace and role, and no internal ID', async (t) => {
+  const { f, principal, call } = await harness(t, 'account');
+  const account = structured(await call('get_account'));
+  assert.equal(account.id, accountProfileId(principal.organizationId, principal.membershipId));
+  assert.match(account.nickname as string, /\(Owner\)$/);
+  assert.deepEqual(Object.keys(account).filter((key) => !['id', 'name', 'nickname', 'email'].includes(key)), []);
+
+  await createFixtureAgent(f, 'agent_research');
+  const workspace = structured(await call('get_workspace'));
+  assert.deepEqual(workspace.you, { name: 'Owner', role: 'owner' });
+  assert.equal(workspace.agentCount, 1);
+  assert.equal(workspace.adminUrl, 'https://chickpea.example.test/admin');
+  const adminOnly = (workspace.adminOnly as Array<{ what: string }>).map(({ what }) => what);
+  assert.ok(adminOnly.includes('Model providers') && adminOnly.includes('Agent pictures'), adminOnly.join(', '));
+  assertNoInternalIds(JSON.stringify({ account, workspace }), f);
+});
+
+function assertNoInternalIds(serialized: string, f: ManagementAdapterFixture): void {
+  for (const forbidden of [
+    f.owner.membership.organizationId, f.owner.membership.id, f.owner.user.id,
+    f.admin.membership.id, f.admin.user.id, '"revision"', 'configurationGeneration', 'creatorMembershipId',
+    'organizationId', 'membershipId', 'effectiveRevision',
+  ]) assert.equal(serialized.includes(forbidden), false, `${forbidden} leaked: ${serialized.slice(0, 400)}`);
+}
+
+test('list_agents, get_agent and the other reads carry handles and versions, never revisions', async (t) => {
+  const { f, call } = await harness(t, 'reads');
+  await createFixtureAgent(f, 'agent_research', { description: 'Finds sources.' });
+  await grantChannel(f, 'agent_research');
+  const agents = structured(await call('list_agents'));
+  const [row, ...others] = agents.agents as Array<Record<string, unknown> & { links: { admin: string } }>;
+  assert.deepEqual(others, []);
+  const { links, ...fields } = row!;
+  assert.deepEqual(fields, {
+    agentId: 'agent_research',
+    name: 'Research',
+    handle: 'research',
+    description: 'Finds sources.',
+    status: 'on',
+    canEdit: true,
+    needsAttention: [],
+  });
+  assert.equal(links.admin, 'https://chickpea.example.test/admin/agents/agent_research');
+  assert.equal(agents.canCreate, true);
+  assert.deepEqual(structured(await call('list_agents', { include: 'mine' })).agents, agents.agents);
+
+  const agent = structured(await call('get_agent', { agentId: 'agent_research' }));
+  assert.match(agent.version as string, /^[a-f0-9]{16}$/);
+  assert.equal(agent.instructions, 'Find and cite sources.');
+  assert.deepEqual(agent.channels, [{ channelId: 'C_SUPPORT', name: 'support' }]);
+  assert.deepEqual(agent.slack, { presence: 'not_in_slack', ownApp: false, groupDms: 'unknown' });
+
+  const memory = structured(await call('get_agent_memory', { agentId: 'agent_research' }));
+  assert.equal(memory.body, '');
+  assert.match(memory.version as string, /^[a-f0-9]{16}$/);
+
+  const reads = await Promise.all([
+    call('list_services', { search: 'gmail' }),
+    call('list_models'),
+    call('list_members'),
+    call('list_slack_channels'),
+    call('list_schedules'),
+  ]);
+  const [services, models, members, channels, schedules] = reads.map(structured);
+  assert.ok((services!.services as Array<{ service: string }>).some(({ service }) => service === 'gmail'));
+  assert.equal(services!.count, (services!.services as unknown[]).length);
+  assert.ok(Array.isArray(models!.models));
+  assert.ok((members!.members as Array<{ role: string }>).some(({ role }) => role === 'owner'));
+  assert.deepEqual(channels!.channels, [{
+    channelId: 'C_SUPPORT',
+    name: 'support',
+    settings: { label: 'support', on: true },
+    agents: [{ agentId: 'agent_research', name: 'Research', status: 'on' }],
+  }]);
+  assert.equal(channels!.complete, false, 'no Slack directory in this fixture');
+  assert.deepEqual(schedules!.schedules, []);
+  assertNoInternalIds(JSON.stringify({ agents, agent, memory, reads }), f);
+
+  const before = agent.version;
+  await applyThroughAdapter(f, ownerMcpContext(f), 'rename-research', [{
+    itemId: 'rename',
+    kind: 'update_agent',
+    agentId: 'agent_research',
+    expectedRevision: (await f.config.getAgent('agent_research')).revision,
+    patch: { description: 'Finds and cites sources.' },
+  }]);
+  const after = structured(await call('get_agent', { agentId: 'agent_research' }));
+  assert.notEqual(after.version, before, 'a change gives a new version');
+});
+
+test('propose_agent saves nothing and returns create_agent arguments it accepts, with what to settle', async (t) => {
+  const { f, call } = await harness(t, 'propose');
+  await createFixtureAgent(f, 'agent_desk', {
+    name: 'Desk',
+    slackPresence: {
+      requestedHandle: 'support',
+      normalizedHandle: 'support',
+      desiredState: 'active',
+      health: 'healthy',
+      avatar: { kind: 'generated', revision: 1, seed: 'desk' },
+    },
+  });
+  await grantChannel(f, 'agent_desk');
+  const agentsBefore = await f.config.listUserAgents();
+  const result = structured(await call('propose_agent', {
+    name: 'Support Desk',
+    handle: '@Support',
+    job: 'Answers billing questions from the support Channel.',
+    instructions: 'Answer billing questions with links to the invoice.',
+    sampleAsk: 'Why was I charged twice?',
+    promisedAnswer: 'You were charged once; the second line is a refund.',
+    services: ['Gmail', 'Nonexistent Service'],
+    channels: ['#support', 'C_UNKNOWN'],
+    model: 'nobody/not-a-model',
+  })) as {
+    proposal: Record<string, unknown>;
+    create: { tool: string; arguments: Record<string, unknown> };
+    issues: string[];
+  };
+  assert.deepEqual(await f.config.listUserAgents(), agentsBefore, 'nothing is created');
+  assert.equal(result.create.tool, 'create_agent');
+  assert.equal(createAgentInputSchema.safeParse(result.create.arguments).success, true);
+  const { idempotencyKey, ...args } = result.create.arguments;
+  assert.equal(typeof idempotencyKey, 'string');
+  assert.deepEqual(args, {
+    name: 'Support Desk',
+    handle: 'support',
+    description: 'Answers billing questions from the support Channel.',
+    instructions: 'Answer billing questions with links to the invoice.',
+    firstAsk: 'Why was I charged twice?',
+    channels: ['C_SUPPORT'],
+  });
+  assert.equal(result.proposal.handleAvailable, false);
+  assert.deepEqual(result.proposal.needs, [{ service: 'gmail', name: 'Gmail', connected: false }]);
+  assert.deepEqual(result.proposal.answersIn, [{ channelId: 'C_SUPPORT', name: 'support' }]);
+  for (const expected of [/@support already belongs to Desk/, /Nonexistent Service/, /C_UNKNOWN/, /nobody\/not-a-model/]) {
+    assert.ok(result.issues.some((issue) => expected.test(issue)), `${expected}: ${result.issues.join(' | ')}`);
+  }
+});
+
+test('propose_agent_change previews an edit, says when saving confirms, and refuses a stale version', async (t) => {
+  const { f, call } = await harness(t, 'change');
+  await createFixtureAgent(f, 'agent_research');
+  await grantChannel(f, 'agent_research');
+  const { version } = structured(await call('get_agent', { agentId: 'agent_research' })) as { version: string };
+  const before = await f.config.getAgent('agent_research');
+
+  const off = structured(await call('propose_agent_change', {
+    agentId: 'agent_research',
+    version,
+    change: { on: false, instructions: '# Rules\nFind and cite two sources.' },
+  })) as {
+    changes: Array<{ field: string; before?: unknown; after?: unknown; quotes: unknown[] }>;
+    save: { tool: string; arguments: Record<string, unknown> };
+    needsConfirmation: boolean;
+  };
+  assert.deepEqual(await f.config.getAgent('agent_research'), before, 'nothing is saved');
+  assert.equal(off.needsConfirmation, true, 'turning off an Agent that answers in a Channel confirms');
+  assert.deepEqual(off.changes.find(({ field }) => field === 'on'), { field: 'on', before: true, after: false, quotes: [] });
+  assert.ok((off.changes.find(({ field }) => field === 'instructions')?.quotes.length ?? 0) > 0);
+  assert.equal(off.save.tool, 'update_agent');
+  assert.equal(updateAgentInputSchema.safeParse(off.save.arguments).success, true);
+  assert.equal(off.save.arguments.version, version);
+
+  const rename = structured(await call('propose_agent_change', {
+    agentId: 'agent_research', version, change: { name: 'Researcher' },
+  }));
+  assert.equal(rename.needsConfirmation, false);
+  assert.deepEqual(rename.changes, [{ field: 'name', before: 'Research', after: 'Researcher', quotes: [] }]);
+
+  const stale = errorOf(await call('propose_agent_change', {
+    agentId: 'agent_research', version: '0000000000000000', change: { name: 'Researcher' },
+  }));
+  assert.equal(stale.code, 'changed_since_read');
+  assert.equal(stale.retryable, true);
+  assert.match(stale.nextStep as string, /get_agent/);
+});
+
+test('5.0 errors share one shape, including the SDK\'s input refusals; 4.x errors are unchanged', async (t) => {
+  const { call } = await harness(t, 'errors');
+  const missing = errorOf(await call('get_agent', { agentId: 'agent_missing' }));
+  assert.equal(missing.code, 'not_found');
+  assert.equal(missing.retryable, false);
+
+  const refused = errorOf(await call('get_agent', { agentId: 'Not An Id!' }));
+  assert.equal(refused.code, 'invalid_input');
+  assert.match(refused.nextStep as string, /agentId/);
+
+  assert.equal(errorOf(await call('get_agent_memory', { agentId: 'agent_missing' })).code, 'not_found');
+
+  const unknownSetup = errorOf(await call('get_setup_status', { setupToken: 'setup_missing' }));
+  assert.equal(unknownSetup.code, 'not_found');
+
+  const legacyRefusal = await call('get_operation', { operationId: '' });
+  assert.equal(legacyRefusal.isError, true);
+  assert.equal(legacyRefusal.structuredContent, undefined, 'a 4.x refusal keeps its plain text');
+  assert.match(legacyRefusal.content[0]!.text, /^Input validation error: /);
+});
+
+test('list_members is for Owners and Admins; a member gets not_allowed', async (t) => {
+  const { call } = await harness(t, 'member', 'member');
+  const refused = errorOf(await call('list_members'));
+  assert.equal(refused.code, 'not_allowed');
+  const models = structured(await call('list_models'));
+  assert.equal(models.providers, undefined, 'a member sees no provider keys');
+  assert.equal(models.workspaceDefaults, undefined);
+});
+
+// Defect caught: a 5.0 read finding an Agent among the ones a member may use, not the ones they may edit.
+test('a member reads only the Agents they may edit: another person\'s Agent is not found', async (t) => {
+  const { f, call } = await harness(t, 'member-agents', 'member');
+  // In Slack and open to DMs, so the member may use it; only the Owner may edit it.
+  await createFixtureAgent(f, 'agent_owner_only', {
+    slackPresence: {
+      requestedHandle: 'owner-desk',
+      normalizedHandle: 'owner-desk',
+      desiredState: 'active',
+      health: 'healthy',
+      avatar: { kind: 'generated', revision: 1, seed: 'owner' },
+    },
+  });
+  await grantChannel(f, 'agent_owner_only');
+  assert.deepEqual(structured(await call('list_agents')).agents, []);
+  for (const [tool, args] of [
+    ['get_agent', { agentId: 'agent_owner_only' }],
+    ['get_agent_memory', { agentId: 'agent_owner_only' }],
+    ['get_creation_status', { agentId: 'agent_owner_only' }],
+    ['propose_agent_change', { agentId: 'agent_owner_only', version: '0123456789abcdef', change: { description: 'Mine now.' } }],
+  ] as const) {
+    assert.equal(errorOf(await call(tool, args)).code, 'not_found', tool);
+  }
+});
+
+test('propose_agent refuses a blank name as the caller\'s input, not a server fault', async (t) => {
+  const { call } = await harness(t, 'blank-name');
+  const refused = errorOf(await call('propose_agent', {
+    name: '   ',
+    handle: 'desk',
+    job: 'Answers billing questions.',
+    instructions: 'Answer billing questions.',
+    sampleAsk: 'Why was I charged twice?',
+  }));
+  assert.equal(refused.code, 'invalid_input');
+  assert.equal(refused.retryable, false);
+});
+
+test('get_creation_status follows the Agent into Slack and its hello in the creator\'s DM', async (t) => {
+  const { f, principal, call } = await harness(t, 'creation');
+  await createFixtureAgent(f, 'agent_new', {
+    slackPresence: {
+      requestedHandle: 'new-desk',
+      normalizedHandle: 'new-desk',
+      desiredState: 'active',
+      health: 'pending',
+      avatar: { kind: 'generated', revision: 1, seed: 'new' },
+    },
+  });
+  const status = async () => structured(await call('get_creation_status', { agentId: 'agent_new' }));
+  assert.deepEqual(await status(), {
+    stage: 'joining',
+    agent: { name: 'Research', handle: 'new-desk' },
+    channels: 'none',
+    slackUrl: `slack://open?team=${f.owner.binding.slackTeamId}`,
+  });
+
+  const welcome: ManagementReceiptOutboxRecord = {
+    outboxId: 'agent_welcome_op_new',
+    operationId: 'op_new',
+    destination: { kind: 'initiator_dm', organizationId: principal.organizationId, userId: principal.userId },
+    receipt: {
+      kind: 'agent_created_welcome',
+      creationOperationId: 'op_new',
+      agentId: 'agent_new',
+      agentName: 'Research',
+      requesterMembershipId: principal.membershipId,
+      surface: 'direct',
+      persona: { name: 'Research' },
+    },
+    status: 'pending',
+    attempts: 0,
+    nextAttemptAt: NOW,
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  await f.management.putOutbox(welcome);
+  const created = await f.config.getAgent('agent_new');
+  await f.config.updateAgent('agent_new', { slackPresence: { ...created.slackPresence!, health: 'healthy' } });
+  await grantChannel(f, 'agent_new', 'pending');
+  assert.equal((await status()).stage, 'joining', 'the hello is not sent yet');
+  assert.equal((await status()).channels, 'joining');
+
+  await f.management.claimDueOutbox(NOW, 1, NOW + 60_000);
+  await f.management.settleOutbox({ outboxId: welcome.outboxId, outcome: 'delivered', at: NOW + 1, deliveryRef: 'D1:1.1' });
+  assert.equal((await status()).stage, 'said_hello');
+
+  const other = errorOf(await call('get_creation_status', { agentId: 'agent_missing' }));
+  assert.equal(other.code, 'not_found', 'an Agent the caller cannot manage reads as missing, as in get_agent');
+});
+
+test('5.0 tool names and error codes pass the closed telemetry vocabularies', () => {
+  const records: Array<Record<string, unknown>> = [];
+  const sink = { info: (record: Record<string, unknown>) => records.push(record) };
+  for (const tool of FIVE_ZERO_TOOL_NAMES) emitManagementMetric('tool.call', { tool }, sink);
+  for (const reason of MCP_ERROR_CODES) emitManagementMetric('tool.call', { reason }, sink);
+  assert.deepEqual(records.map((record) => record.tool ?? record.reason), [...FIVE_ZERO_TOOL_NAMES, ...MCP_ERROR_CODES]);
+});

@@ -31,6 +31,7 @@ const MANAGEMENT_METRIC_FIELDS = new Set([
   'agentCount',
   'artifactClass',
   'channelCount',
+  'client',
   'conflictCount',
   'connectorActionCount',
   'connectorNoticeCount',
@@ -91,6 +92,11 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
     'identity', 'instructions', 'skill', 'memory', 'connection', 'repository',
     'schedule', 'model', 'slack_presence', 'reach', 'edit_authority', 'mixed', 'other',
   ]),
+  // The MCP client, by clientInfo.name; see management/mcp-request-telemetry.ts.
+  client: new Set([
+    'openai-mcp', 'openai-mcp-codex', 'codex-mcp-client', 'claude-code', 'claude-ai',
+    'gemini-cli-mcp-client', 'chickpea-cli', 'other', 'unknown',
+  ]),
   guideVersion: new Set([AGENT_AUTHORING_GUIDE_VERSION]),
   handoffClass: new Set(['cross_agent', 'workspace_authority', 'none']),
   outcome: new Set([
@@ -122,6 +128,11 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
     'propose_workspace_changes', 'apply_workspace_changes', 'confirm_workspace_change',
     'undo_workspace_change', 'get_operation', 'revoke_setup_link',
     'list_mcp_clients', 'revoke_mcp_client',
+    // 5.0 tools (management/mcp-v5/tools.ts).
+    'get_account', 'get_workspace', 'list_agents', 'get_agent', 'list_services', 'list_models',
+    'list_members', 'list_slack_channels', 'get_agent_memory', 'list_schedules', 'get_setup_status',
+    'export_agents', 'list_connected_apps', 'propose_agent', 'propose_agent_change',
+    'get_creation_status',
   ]),
 };
 
@@ -158,6 +169,10 @@ const REASON_TOKENS = new Set([
   'handle_collision', 'name_collision', 'invalid_handle', 'channel_membership_required',
   'private_channel_invite_required', 'rate_limited', 'user_group_create_ambiguous',
   'slack_unavailable', 'slack_operation_failed',
+  // 5.0 error codes (management/mcp-v5/conventions.ts) not already above.
+  'not_allowed', 'not_found', 'invalid_input', 'changed_since_read', 'confirmation_expired',
+  'in_progress', 'key_reused', 'still_in_use', 'setup_link_unusable', 'model_unavailable',
+  'schedule_unavailable', 'nothing_to_undo', 'usage_limit', 'temporarily_unavailable', 'tool_removed',
   ...MCP_CLIENT_REGISTRATION_DENIALS,
 ]);
 
