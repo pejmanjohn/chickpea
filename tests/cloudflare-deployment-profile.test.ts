@@ -95,7 +95,7 @@ test('Violet can adopt exact existing physical names while other lanes keep thei
   const tuple = applyCloudflareDeploymentProfile(config, {
     CHICKPEA_DEPLOY_TARGET: 'violet', CHICKPEA_DEPLOY_WORKER_NAME: 'existing-install',
     CHICKPEA_DEPLOY_AUTH_DB_NAME: 'existing-install-auth', CHICKPEA_DEPLOY_AUTH_DB_ID: 'violet-d1',
-    CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v11',
+    CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0003_client_assertion_expiry;do:v11',
   });
   assert.equal(tuple.workerName, 'existing-install');
   assert.equal(tuple.authDatabaseName, 'existing-install-auth');
@@ -173,9 +173,9 @@ test('amber, cobalt, and violet resolve distinct Worker, D1, and stamped schema 
       authDatabaseBinding: 'AUTH_DB',
       authDatabaseName: `chickpea-auth-db-${target}-live`,
       authDatabaseId: undefined,
-      d1SchemaGeneration: '0002_mcp_oauth',
+      d1SchemaGeneration: '0003_client_assertion_expiry',
       durableObjectSchemaGeneration: 'v11',
-      schemaGeneration: 'd1:0002_mcp_oauth;do:v11',
+      schemaGeneration: 'd1:0003_client_assertion_expiry;do:v11',
       stateMode: 'disposable',
     });
     assert.equal(config.name, tuple.workerName);
@@ -189,9 +189,9 @@ test('amber, cobalt, and violet resolve distinct Worker, D1, and stamped schema 
     assert.deepEqual(config.vars, {
       CHICKPEA_DEPLOY_TARGET: target,
       CHICKPEA_TELEMETRY_ENVIRONMENT: 'test',
-      CHICKPEA_AUTH_DB_SCHEMA_GENERATION: '0002_mcp_oauth',
+      CHICKPEA_AUTH_DB_SCHEMA_GENERATION: '0003_client_assertion_expiry',
       CHICKPEA_DURABLE_OBJECT_SCHEMA_GENERATION: 'v11',
-      CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v11',
+      CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0003_client_assertion_expiry;do:v11',
       CHICKPEA_DEPLOY_STATE_MODE: 'disposable',
     });
   }
@@ -227,7 +227,7 @@ test('QA targets force test telemetry for disposable and permanent artifacts', a
       ...(targetCase.authDatabaseId
         ? {
             CHICKPEA_DEPLOY_AUTH_DB_ID: targetCase.authDatabaseId,
-            CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v11',
+            CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0003_client_assertion_expiry;do:v11',
           }
         : {}),
     };
@@ -263,7 +263,7 @@ test('standalone profiles refuse the parked Enterprise deployment names', async 
   assert.throws(() => applyCloudflareDeploymentProfile(config, {
     CHICKPEA_DEPLOY_TARGET: 'amber',
     CHICKPEA_DEPLOY_AUTH_DB_ID: 'legacy-database-id',
-    CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v11',
+    CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0003_client_assertion_expiry;do:v11',
   }, {
     registeredTargetIdentities: [{
       target: 'amber', workerName: 'chickpea-amber',
@@ -280,7 +280,7 @@ test('an immutable D1 ID is accepted only for the selected target name and AUTH_
   const tuple = applyCloudflareDeploymentProfile(config, {
     CHICKPEA_DEPLOY_TARGET: 'amber',
     CHICKPEA_DEPLOY_AUTH_DB_ID: 'amber-database-id',
-    CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v11',
+    CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0003_client_assertion_expiry;do:v11',
   }, {
     registeredTargetIdentities: [{
       target: 'amber',
@@ -305,7 +305,7 @@ test('an immutable D1 ID is accepted only for the selected target name and AUTH_
       () => applyCloudflareDeploymentProfile(invalid, {
         CHICKPEA_DEPLOY_TARGET: 'amber',
         CHICKPEA_DEPLOY_AUTH_DB_ID: 'amber-database-id',
-        CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v11',
+        CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0003_client_assertion_expiry;do:v11',
       }, {
         registeredTargetIdentities: [{
           target: 'amber',
@@ -326,7 +326,7 @@ test('a D1 ID registered to another active target fails before the config is mut
     () => applyCloudflareDeploymentProfile(config, {
       CHICKPEA_DEPLOY_TARGET: 'amber',
       CHICKPEA_DEPLOY_AUTH_DB_ID: 'shared-database-id',
-      CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v11',
+      CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0003_client_assertion_expiry;do:v11',
     }, {
       registeredTargetIdentities: [{
         target: 'cobalt',
@@ -369,7 +369,7 @@ test('migration-bearing target state is disposable or explicitly advanced to the
         CHICKPEA_DEPLOY_AUTH_DB_ID: 'cobalt-database-id',
         ...(generation ? { CHICKPEA_DEPLOY_SCHEMA_GENERATION: generation } : {}),
       }),
-      /permanent target cobalt.*schema generation.*d1:0002_mcp_oauth;do:v11/i,
+      /permanent target cobalt.*schema generation.*d1:0003_client_assertion_expiry;do:v11/i,
     );
   }
 });

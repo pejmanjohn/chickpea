@@ -21,6 +21,8 @@ import { emitManagementMetric } from '../management/telemetry.ts';
 import { readBoundedRequestBody, requestWithBufferedBody } from '../security/request-body-limit.ts';
 
 const MAX_AUTH_BODY_BYTES = 32 * 1024;
+/** Each accepted assertion writes one record, so a prune this size keeps up with any rate of them. */
+const CLIENT_ASSERTION_PRUNE_LIMIT = 500;
 type PublicRoute = 'read' | 'browser-mutation' | 'protocol-mutation' | 'registration';
 
 const PUBLIC_ROUTES = new Map<string, PublicRoute>([
@@ -107,8 +109,15 @@ export function createBetterAuthPublicHandler(input: BetterAuthPublicHandlerInpu
     }
     const response = await instance.handler(request);
     if (tokenRequest && response.ok) {
-      // Best effort: a lost marker only means a stale consent tab gets today's flow.
-      await recordRedeemedChallenge(instance, tokenRequest).catch(() => undefined);
+      // Best effort: a lost marker only means a stale consent tab gets today's
+      // flow, and a missed prune leaves expired records for the next one.
+      await Promise.all([
+        recordRedeemedChallenge(instance, tokenRequest).catch(() => undefined),
+        tokenRequest.has('client_assertion')
+          ? input.backend.pruneExpiredClientAssertions({ expiredBefore: new Date(), limit: CLIENT_ASSERTION_PRUNE_LIMIT })
+            .catch(() => undefined)
+          : undefined,
+      ]);
     }
     if (route === 'registration') {
       emitManagementMetric('oauth.dcr', {

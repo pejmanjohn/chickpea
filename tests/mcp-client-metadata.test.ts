@@ -642,11 +642,18 @@ test('ChatGPT signs in by its published document with private_key_jwt: one owner
   assert.deepEqual(await unsigned.json(), {
     error: 'invalid_client', error_description: 'client registered for private_key_jwt cannot use none',
   }, 'renewal needs an assertion too');
+  const assertionRecords = () => (f.backend.database.prepare('SELECT id FROM oauthClientAssertion').all() as Array<{ id: string }>)
+    .map(({ id }) => id);
+  f.backend.database.prepare('INSERT INTO oauthClientAssertion (id, expiresAt) VALUES (?, ?)').run('expired', '2026-01-01T00:00:00.000Z');
+  assert.equal(assertionRecords().length, 2);
   const renewed = await f.token({
     grant_type: 'refresh_token', client_id: CHATGPT, refresh_token: tokens.refresh_token,
     client_assertion_type: JWT_BEARER, client_assertion: await signer.assertion({ aud: ISSUER }),
   });
   assert.equal(renewed.status, 200, await renewed.clone().text());
+  const records = assertionRecords();
+  assert.equal(records.length, 2, 'one record per accepted assertion');
+  assert.ok(!records.includes('expired'), 'a successful token request prunes expired records');
 
   assert.deepEqual(f.clients(), [{
     clientId: CHATGPT, clientDiscoveryId: 'cimd', userId: null, clientSecret: null,

@@ -138,6 +138,15 @@ DELETE FROM oauthClient WHERE clientId IN (
   count: `WITH ${SQLITE_PENDING_MCP_CLIENTS} SELECT count(*) AS count FROM pending`,
 } as const;
 
+/**
+ * Up to ?2 client assertion records that expired before ?1. SQLite holds
+ * Better Auth dates as ISO text, which orders as the dates do; a record in any
+ * other form is never taken for expired.
+ */
+export const SQLITE_EXPIRED_CLIENT_ASSERTION_PRUNE = `DELETE FROM oauthClientAssertion WHERE id IN (
+  SELECT id FROM oauthClientAssertion WHERE expiresAt < ?1 AND typeof(expiresAt) = 'text' LIMIT ?2
+)`;
+
 /** One person's consents and tokens, a row each, with the client they belong to; bind the user ID as ?1. */
 export const SQLITE_MCP_OAUTH_CLIENT_GRANTS = `SELECT g.clientId AS clientId, c.name AS name, g.kind AS kind, g.createdAt AS createdAt
 FROM (
@@ -258,6 +267,11 @@ export interface PendingMcpOAuthClientPrune {
   keep: number;
 }
 
+export interface ClientAssertionPrune {
+  expiredBefore: Date;
+  limit: number;
+}
+
 /** A per-source limit on new MCP clients: a response refusing the request, or undefined. */
 export type McpRegistrationThrottle = (request: Request) => Promise<Response | undefined>;
 
@@ -354,6 +368,13 @@ export interface BetterAuthDatabaseBackend {
    * refusal applies once a caller sees the count at the cap.
    */
   prunePendingMcpOAuthClients(prune: PendingMcpOAuthClientPrune): Promise<number>;
+  /**
+   * Deletes up to `limit` client assertion records that expired before
+   * `expiredBefore`, and answers how many went. Better Auth writes one for
+   * each private_key_jwt assertion it accepts, so a replay finds it, and never
+   * deletes them; an assertion past its expiry is refused without one.
+   */
+  pruneExpiredClientAssertions(prune: ClientAssertionPrune): Promise<number>;
   putMcpOAuthContinuation(record: BetterAuthMcpOAuthContinuationRecord): Promise<void>;
   consumeMcpOAuthContinuation(idHash: string, now: number): Promise<string | null>;
 }

@@ -141,7 +141,7 @@ export function betterAuthBackendContract(contract: BetterAuthBackendContract): 
   });
 
   it('a client known by its metadata document is pending until someone consents, whatever its authentication', async (f) => {
-    await f.storeLegacyClientRow({
+    await f.storeRow('oauthClient', {
       clientId: 'https://evil.example/client', clientDiscoveryId: 'cimd', tokenEndpointAuthMethod: 'private_key_jwt',
       jwksUri: 'https://evil.example/jwks', redirectUris: [REDIRECT], createdAt: new Date(), updatedAt: new Date(),
     });
@@ -153,6 +153,52 @@ export function betterAuthBackendContract(contract: BetterAuthBackendContract): 
     assert.equal(await f.count('oauthClient'), 1);
     assert.equal(await prune(later, later), 0, 'and expires');
     assert.equal(await f.count('oauthClient'), 0);
+  });
+
+  it('a client assertion record is written once, and expired ones are pruned a bounded number at a time', async (f) => {
+    const now = Date.now();
+    const assertion = (offsetMs: number) => {
+      const id = randomUUID();
+      return { id, store: () => f.storeRow('oauthClientAssertion', { id, expiresAt: new Date(now + offsetMs) }) };
+    };
+    const live = assertion(60_000);
+    await live.store();
+    await assert.rejects(live.store(), 'a replayed assertion finds its record');
+    for (const offset of [-1_000, -60_000, -300_000]) await assertion(offset).store();
+    const prune = (limit: number) => f.backend.pruneExpiredClientAssertions({ expiredBefore: new Date(now), limit });
+    assert.equal(await prune(2), 2);
+    assert.equal(await f.count('oauthClientAssertion'), 2);
+    assert.equal(await prune(2), 1);
+    assert.equal(await prune(2), 0, 'an unexpired record stays');
+    assert.equal(await f.count('oauthClientAssertion'), 1);
+    await assert.rejects(live.store(), 'and still refuses its replay');
+  });
+
+  it('a client known by its metadata document has no owner, so one person\'s revocation or erasure leaves it and others\' grants', async (f) => {
+    const a = await f.reconcile('TAAAA', 'U0001', 'chickpea-org_a');
+    const b = await f.reconcile('TBBBB', 'U0001', 'chickpea-org_b');
+    const clientId = 'https://chatgpt.com/oauth/client.json';
+    await f.storeRow('oauthClient', {
+      clientId, clientDiscoveryId: 'cimd', tokenEndpointAuthMethod: 'private_key_jwt', jwksUri: 'https://chatgpt.com/oauth/jwks.json',
+      redirectUris: ['https://chatgpt.com/connector_platform_oauth_redirect'], createdAt: new Date(), updatedAt: new Date(),
+    });
+    const now = new Date();
+    for (const { userId } of [a, b]) {
+      await f.storeRow('oauthConsent', { clientId, userId, scopes: [RENEWABLE_SCOPE], createdAt: now, updatedAt: now });
+      await f.storeRow('oauthRefreshToken', {
+        token: randomUUID(), clientId, userId, scopes: [RENEWABLE_SCOPE], createdAt: now,
+        expiresAt: new Date(now.getTime() + 60_000),
+      });
+    }
+    const grants = async () => Object.fromEntries(await Promise.all(['oauthClient', 'oauthConsent', 'oauthRefreshToken']
+      .map(async (table) => [table, await f.count(table)])));
+    assert.deepEqual(await f.backend.revokeOAuthClientForUser(a.userId, clientId), { consents: 1, accessTokens: 0, refreshTokens: 1 });
+    assert.deepEqual(await grants(), { oauthClient: 1, oauthConsent: 1, oauthRefreshToken: 1 });
+    assert.deepEqual((await f.backend.listOAuthClientsForUser(b.userId)).map((client) => client.clientId), [clientId]);
+    const erased = await eraseInstallationBetterAuthOrganization(f.backend, { organizationId: 'org_a' });
+    assert.equal(erased.oauthClients, 0, 'the shared row belongs to no one erased');
+    assert.deepEqual(await grants(), { oauthClient: 1, oauthConsent: 1, oauthRefreshToken: 1 });
+    assert.deepEqual((await f.backend.listOAuthClientsForUser(b.userId)).map((client) => client.clientId), [clientId]);
   });
 
   it('an OAuth continuation is consumed once and an expired one is refused', async (f) => {
@@ -353,7 +399,8 @@ interface Fixture extends BetterAuthBackendSubject {
   /** A dynamically registered MCP client's renewable grant, through consent. */
   grant(cookie: string, options: { resource: boolean }): Promise<Grant>;
   refresh(grant: Grant): Promise<Response>;
-  storeLegacyClientRow(data: Record<string, unknown>): Promise<void>;
+  /** A row written through Better Auth's adapter, as Better Auth writes it; `data.id` is kept. */
+  storeRow(model: string, data: Record<string, unknown>): Promise<void>;
 }
 
 async function openFixture(t: TestContext, contract: BetterAuthBackendContract): Promise<Fixture | undefined> {
@@ -423,8 +470,8 @@ async function openFixture(t: TestContext, contract: BetterAuthBackendContract):
       grant_type: 'refresh_token', client_id: grant.clientId,
       refresh_token: grant.refreshToken, ...(grant.resource ? { resource: grant.resource } : {}),
     }),
-    async storeLegacyClientRow(data) {
-      await (await auth.$context).adapter.create({ model: 'oauthClient', data });
+    async storeRow(model, data) {
+      await (await auth.$context).adapter.create({ model, data, forceAllowId: true });
     },
   };
 }
