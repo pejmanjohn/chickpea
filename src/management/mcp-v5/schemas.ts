@@ -53,7 +53,7 @@ export const listConnectedAppsInput = z.strictObject({});
 export const getCreationStatusInput = z.strictObject({ agentId: zAgentId });
 
 export const proposeAgentInput = z.strictObject({
-  name: zText(240).describe('What people call the Agent, such as Support Desk.'),
+  name: zText(240).refine((value) => value.trim().length > 0, 'Name the Agent.').describe('What people call the Agent, such as Support Desk.'),
   handle: zText(80).describe('The Slack handle people mention, without @.'),
   job: zText(500).describe('The Agent\'s job in one sentence. It becomes the Agent\'s description.'),
   instructions: z.string().max(100_000).describe('The Agent\'s full instructions.'),

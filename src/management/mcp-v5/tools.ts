@@ -173,6 +173,14 @@ export const FIVE_ZERO_TOOL_INPUT_SCHEMAS: Readonly<Record<string, z.ZodType>> =
   FIVE_ZERO_TOOL_NAMES.map((name) => [name, FIVE_ZERO_TOOLS[name].input]),
 );
 
+/** A tool's result that its output schema refuses; only the field paths are logged, never values. */
+class OutputRejected extends Error {
+  override name = 'OutputRejected';
+  constructor(readonly paths: string[]) {
+    super('5.0 tool output rejected');
+  }
+}
+
 export function registerFiveZeroTools(server: McpServer, deps: FiveZeroDeps): void {
   for (const name of FIVE_ZERO_TOOL_NAMES) register(server, deps, name, FIVE_ZERO_TOOLS[name]);
 }
@@ -191,15 +199,19 @@ function register(server: McpServer, deps: FiveZeroDeps, name: FiveZeroToolName,
   }, async (args) => {
     const startedAt = Date.now();
     try {
-      const structured = await definition.run(deps, args);
+      // Checked here, not only by the SDK after the handler returns, so an
+      // output the contract does not allow is an error in the metric and the log.
+      const parsed = definition.output.safeParse(await definition.run(deps, args));
+      if (!parsed.success) throw new OutputRejected(parsed.error.issues.map((issue) => issue.path.join('.')));
       emitManagementMetric('tool.call', { surface: 'mcp', tool: name, outcome: 'success', durationMs: Date.now() - startedAt });
-      return mcpSuccessResult(structured);
+      return mcpSuccessResult(parsed.data);
     } catch (error) {
       const failure = mcpToolError(error);
       if (failure.code === 'temporarily_unavailable') {
         console.warn('[chickpea:management] unexpected 5.0 tool failure', JSON.stringify({
           tool: name,
           errorName: error instanceof Error ? error.name : typeof error,
+          ...(error instanceof OutputRejected ? { outputPaths: error.paths } : {}),
         }));
       }
       emitManagementMetric('tool.call', {

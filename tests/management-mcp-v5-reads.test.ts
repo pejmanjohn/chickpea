@@ -380,6 +380,44 @@ test('list_members is for Owners and Admins; a member gets not_allowed', async (
   assert.equal(models.workspaceDefaults, undefined);
 });
 
+// Defect caught: a 5.0 read finding an Agent among the ones a member may use, not the ones they may edit.
+test('a member reads only the Agents they may edit: another person\'s Agent is not found', async (t) => {
+  const { f, call } = await harness(t, 'member-agents', 'member');
+  // In Slack and open to DMs, so the member may use it; only the Owner may edit it.
+  await createFixtureAgent(f, 'agent_owner_only', {
+    slackPresence: {
+      requestedHandle: 'owner-desk',
+      normalizedHandle: 'owner-desk',
+      desiredState: 'active',
+      health: 'healthy',
+      avatar: { kind: 'generated', revision: 1, seed: 'owner' },
+    },
+  });
+  await grantChannel(f, 'agent_owner_only');
+  assert.deepEqual(structured(await call('list_agents')).agents, []);
+  for (const [tool, args] of [
+    ['get_agent', { agentId: 'agent_owner_only' }],
+    ['get_agent_memory', { agentId: 'agent_owner_only' }],
+    ['get_creation_status', { agentId: 'agent_owner_only' }],
+    ['propose_agent_change', { agentId: 'agent_owner_only', version: '0123456789abcdef', change: { description: 'Mine now.' } }],
+  ] as const) {
+    assert.equal(errorOf(await call(tool, args)).code, 'not_found', tool);
+  }
+});
+
+test('propose_agent refuses a blank name as the caller\'s input, not a server fault', async (t) => {
+  const { call } = await harness(t, 'blank-name');
+  const refused = errorOf(await call('propose_agent', {
+    name: '   ',
+    handle: 'desk',
+    job: 'Answers billing questions.',
+    instructions: 'Answer billing questions.',
+    sampleAsk: 'Why was I charged twice?',
+  }));
+  assert.equal(refused.code, 'invalid_input');
+  assert.equal(refused.retryable, false);
+});
+
 test('get_creation_status follows the Agent into Slack and its hello in the creator\'s DM', async (t) => {
   const { f, principal, call } = await harness(t, 'creation');
   await createFixtureAgent(f, 'agent_new', {
