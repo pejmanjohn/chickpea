@@ -42,7 +42,7 @@
       },
       {
         "path": "src/auth/better-auth-routes.ts",
-        "sha256": "3434c678eb32ed079ae8f85d103dd120761d07a341ab7b14a151d52615ccde56"
+        "sha256": "d120c769f1f46ea49eea23479fe5cea12a87e80648fa33abdfa16dff84513cb2"
       },
       {
         "path": "scripts/generate-better-auth-bootstrap.ts",
