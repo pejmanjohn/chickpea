@@ -592,7 +592,10 @@ test('discovery, JWKS and the MCP sign-in continuation are served before any ins
   const authorizationServer = await (await shared('/.well-known/oauth-authorization-server/api/auth')).json() as Record<string, unknown>;
   assert.equal(authorizationServer.issuer, `${ORIGIN}/api/auth`);
   assert.equal(authorizationServer.token_endpoint, `${ORIGIN}/api/auth/oauth2/token`);
-  assert.deepEqual(authorizationServer.token_endpoint_auth_methods_supported, ['none']);
+  assert.deepEqual(authorizationServer.token_endpoint_auth_methods_supported, ['none', 'private_key_jwt'],
+    'a metadata document may name private_key_jwt; registration still takes none only');
+  assert.deepEqual(authorizationServer.token_endpoint_auth_signing_alg_values_supported,
+    ['RS256', 'RS384', 'RS512', 'PS256', 'PS384', 'PS512', 'ES256', 'ES384', 'ES512', 'EdDSA']);
   const resource = await (await shared('/.well-known/oauth-protected-resource/mcp')).json() as Record<string, unknown>;
   assert.equal(resource.resource, RESOURCE);
   const jwks = await (await shared('/api/auth/jwks')).json() as { keys: unknown[] };

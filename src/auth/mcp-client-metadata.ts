@@ -2,6 +2,7 @@ import { createCimdClientDiscovery, validateClientIdUrl, type CimdOptions } from
 import { APIError, getSessionFromCtx, isAPIError } from 'better-auth/api';
 
 import { createMcpGuardedFetch, validateMcpUrl } from '../config/mcp-url.ts';
+import { readBoundedRequestBody } from '../security/request-body-limit.ts';
 import type { McpRegistrationThrottle } from './better-auth-backend.ts';
 import { isLoopbackHost, validRedirectUri } from './mcp-oauth.ts';
 
@@ -31,19 +32,37 @@ export function isClientMetadataDocumentUrl(clientId: string, ownOrigin: string)
 // URL parsing writes every IPv4 form as dotted decimal and brackets IPv6.
 const IP_ADDRESS_HOST = /^(?:\[.*\]|[\d.]+)$/;
 
+/** A client's published key set as last fetched: the body Better Auth parses, and when. */
+interface FetchedKeySet {
+  body: string;
+  contentType: string;
+  fetchedAt: number;
+}
+
 /**
  * One transport's discovery, the stored clients whose last fetch could not
  * reach their document, and those whose last fetch failed any other way,
  * most often a document refusing them. Nothing stands in for those until a
- * fetch succeeds again. Both are this isolate's memory only.
+ * fetch succeeds again. `keySets` holds key sets by their exact `jwks_uri`.
+ * All are this isolate's memory only.
  */
 interface TransportState {
   discovery: ClientDiscovery;
   unreachable: Set<string>;
   refused: Set<string>;
+  keySets: Map<string, FetchedKeySet>;
 }
 
 const MAX_REMEMBERED_CLIENTS = 1_000;
+const MAX_REMEMBERED_KEY_SETS = 500;
+/** How long a key set serves without a fetch: ChatGPT publishes its own with max-age=300. */
+const KEY_SET_FRESH_MS = 5 * 60_000;
+/** How long a key set serves while its URL cannot be fetched. */
+const KEY_SET_STALE_MS = 10 * 60_000;
+/** How soon after a fetch an assertion naming an unknown key fetches the set again. */
+const KEY_SET_REFETCH_COOLDOWN_MS = 30_000;
+const MAX_KEY_SET_BYTES = 64 * 1024;
+const JSON_MEDIA_TYPE = /^application\/(?:[-\w.]+\+)?json\s*(?:;|$)/i;
 /** How long after its document last answered a stored client stands in for a document it cannot reach. */
 const STORED_CLIENT_STAND_IN_MS = 24 * 60 * 60_000;
 /** How long after its document last answered a stored client stands in while the fetch budget is spent. */
@@ -66,9 +85,10 @@ interface NewClientGate {
  * connection guard: public HTTPS hosts only, every DNS answer checked and
  * pinned on Node, no redirect followed. The plugin adds a 5-second timeout,
  * a 5 KB JSON-only body and the MCP profile's required fields. A document
- * client must be public, redirect as a registered one must, and redirect only
- * to its own host or loopback; a refused new one is not kept. A native app
- * signs in only on loopback.
+ * client is public or signs its token requests with a key published on its
+ * own client ID's origin, redirects as a registered one must, and redirects
+ * only to its own host or loopback; a refused new one is not kept. A native
+ * app signs in only on loopback.
  *
  * Better Auth is built per request, so the discovery, which caches documents
  * and budgets fetches per origin, is kept per transport for the isolate.
@@ -95,9 +115,10 @@ export function clientMetadataDiscovery(
 ): ClientDiscovery {
   const transport = fetchClientMetadataResource ??
     (guardedFetch ??= createMcpGuardedFetch({ followRedirects: false }));
-  const { discovery, unreachable, refused } = transports.get(transport) ?? createState(transport);
+  const { discovery, unreachable, refused, keySets } = transports.get(transport) ?? createState(transport);
   return {
     ...discovery,
+    fetchClientMetadataResource: keySetFetch(transport, keySets),
     matches: (clientId) => isClientMetadataDocumentUrl(clientId, ownOrigin),
     async resolve(ctx, clientId, existing) {
       // Better Auth asks `matches` first; asking again keeps the throttle, the
@@ -249,15 +270,29 @@ async function assertPendingAdmitted(gate: NewClientGate): Promise<void> {
 }
 
 /**
- * Dynamic registration's rules (validatePublicMcpClientRegistration) that a
- * document client must meet too, and redirects that stay on the client ID's
- * host or loopback, so the consent page's Domain row also names where the
- * code goes.
+ * A document client is public, or proves itself with private_key_jwt against
+ * keys published on its client ID's exact origin. Better Auth would also take
+ * keys on a trusted origin, and Chickpea trusts its own, so a document could
+ * otherwise name keys served by Chickpea. Then dynamic registration's redirect
+ * rules (validatePublicMcpClientRegistration), and redirects that stay on the
+ * client ID's host or loopback, so the consent page's Domain row also names
+ * where the code goes.
  */
 function registrationRefusal(client: Client): APIError | undefined {
   const refuse = (description: string) => new APIError('BAD_REQUEST', { error: 'invalid_client', error_description: description });
-  if (client.tokenEndpointAuthMethod !== 'none' || client.jwks || client.jwksUri) {
-    return refuse('metadata document must describe a public client: token_endpoint_auth_method "none", no jwks or jwks_uri');
+  switch (client.tokenEndpointAuthMethod) {
+    case 'none':
+      if (client.jwks || client.jwksUri) {
+        return refuse('metadata document must list no jwks or jwks_uri for token_endpoint_auth_method "none"');
+      }
+      break;
+    case 'private_key_jwt':
+      if (client.jwks || !client.jwksUri || URL.parse(client.jwksUri)?.origin !== new URL(client.clientId).origin) {
+        return refuse('metadata document jwks_uri must be on the client ID\'s origin; inline jwks is not accepted');
+      }
+      break;
+    default:
+      return refuse('metadata document token_endpoint_auth_method must be "none" or "private_key_jwt"');
   }
   const redirectUris = client.redirectUris ?? [];
   if (!redirectUris.every(validRedirectUri)) {
@@ -278,9 +313,70 @@ function createState(transport: ClientMetadataFetch): TransportState {
     discovery: createCimdClientDiscovery({ fetchClientMetadataResource: transport, metadataProfile: 'mcp-2026-07-28' }),
     unreachable: new Set<string>(),
     refused: new Set<string>(),
+    keySets: new Map<string, FetchedKeySet>(),
   };
   transports.set(transport, state);
   return state;
+}
+
+/**
+ * Better Auth's key-set fetch for one Better Auth instance, which on the
+ * hosted path serves one request. Better Auth keeps key sets per instance, so
+ * alone it would fetch a client's keys at every token request; this keeps
+ * them for the isolate. The first fetch of a URL takes a copy under five
+ * minutes old. A later fetch of it in the same instance is Better Auth asking
+ * again for a key the copy lacks: it reaches the network once the copy is 30
+ * seconds old, so assertions naming unknown keys cannot make Chickpea fetch at
+ * every request. A failed fetch takes a copy under ten minutes old. Documents
+ * never come through here: the plugin fetches them over its own transport.
+ */
+function keySetFetch(transport: ClientMetadataFetch, keySets: Map<string, FetchedKeySet>): ClientMetadataFetch {
+  const asked = new Set<string>();
+  return async (input, init) => {
+    const url = input instanceof Request ? input.url : String(input);
+    const copy = keySets.get(url);
+    const age = copy ? Date.now() - copy.fetchedAt : Infinity;
+    const again = asked.has(url);
+    asked.add(url);
+    if (copy && age < (again ? KEY_SET_REFETCH_COOLDOWN_MS : KEY_SET_FRESH_MS)) return keySetResponse(copy);
+    const fetched = await fetchKeySet(transport, url, init);
+    if (fetched) {
+      keySets.delete(url);
+      if (keySets.size >= MAX_REMEMBERED_KEY_SETS) keySets.delete(keySets.keys().next().value!);
+      keySets.set(url, fetched);
+      return keySetResponse(fetched);
+    }
+    if (copy && age < KEY_SET_STALE_MS) return keySetResponse(copy);
+    throw new Error('Client key set fetch failed');
+  };
+}
+
+/** A key set worth keeping: a 200 in a JSON media type, at most 64 KiB, holding a `keys` array. */
+async function fetchKeySet(
+  transport: ClientMetadataFetch,
+  url: string,
+  init: RequestInit | undefined,
+): Promise<FetchedKeySet | undefined> {
+  try {
+    const response = await transport(url, init);
+    const contentType = response.headers.get('content-type') ?? '';
+    if (response.status !== 200 || !JSON_MEDIA_TYPE.test(contentType)) {
+      await response.body?.cancel();
+      return undefined;
+    }
+    const read = await readBoundedRequestBody(response, MAX_KEY_SET_BYTES);
+    if (!read.ok) return undefined;
+    const body = new TextDecoder().decode(read.body ?? new Uint8Array());
+    const parsed: unknown = JSON.parse(body);
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as { keys?: unknown }).keys)) return undefined;
+    return { body, contentType, fetchedAt: Date.now() };
+  } catch {
+    return undefined;
+  }
+}
+
+function keySetResponse({ body, contentType }: FetchedKeySet): Response {
+  return new Response(body, { status: 200, headers: { 'content-type': contentType } });
 }
 
 function remember(clients: Set<string>, clientId: string): void {

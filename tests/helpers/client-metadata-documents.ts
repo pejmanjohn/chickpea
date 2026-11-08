@@ -1,4 +1,7 @@
+import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+
+import { SignJWT } from 'jose';
 
 import type { ClientMetadataFetch } from '../../src/auth/mcp-client-metadata.ts';
 
@@ -14,8 +17,55 @@ export const CLAUDE_DOCUMENTS = {
 /** Codex's published Client ID Metadata Document, byte for byte as chatgpt.com serves it. */
 export const CODEX_DOCUMENT = { url: 'https://chatgpt.com/oauth/codex/client.json', body: fixture('codex.json') } as const;
 
-/** ChatGPT's own document, which authenticates by private_key_jwt. */
-export const CHATGPT_DOCUMENT = { url: 'https://chatgpt.com/oauth/client.json', body: fixture('chatgpt.json') } as const;
+/** ChatGPT's own document, which authenticates by private_key_jwt against `keysUrl`. */
+export const CHATGPT_DOCUMENT = {
+  url: 'https://chatgpt.com/oauth/client.json',
+  body: fixture('chatgpt.json'),
+  callback: 'https://chatgpt.com/connector_platform_oauth_redirect',
+  keysUrl: 'https://chatgpt.com/oauth/jwks.json',
+} as const;
+
+export const JWT_BEARER = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer';
+
+const base64url = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+
+/** Claims and header of one client assertion; omitted claims are ChatGPT's own, valid for a minute. */
+export interface AssertionShape {
+  aud: string;
+  iss?: string;
+  sub?: string;
+  exp?: number | undefined;
+  iat?: number;
+  jti?: string;
+  alg?: 'RS256' | 'HS256' | 'none';
+  kid?: string;
+}
+
+/**
+ * A key pair a client signs its assertions with, as ChatGPT does: RS256 under
+ * a key ID, issuer and subject its client ID, a fresh `jti` each time.
+ * `keySet` is what its `jwks_uri` serves.
+ */
+export function assertionSigner(clientId: string = CHATGPT_DOCUMENT.url, kid = 'cimd-20260428030119') {
+  const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const keySet = { keys: [{ ...publicKey.export({ format: 'jwk' }), alg: 'RS256', use: 'sig', kid }] };
+  async function assertion(shape: AssertionShape): Promise<string> {
+    const now = Math.floor(Date.now() / 1_000);
+    const claims = {
+      iss: shape.iss ?? clientId, sub: shape.sub ?? clientId, aud: shape.aud,
+      ...('exp' in shape ? (shape.exp === undefined ? {} : { exp: shape.exp }) : { exp: now + 60 }),
+      iat: shape.iat ?? now, jti: shape.jti ?? randomUUID(),
+    };
+    const alg = shape.alg ?? 'RS256';
+    if (alg === 'none') return `${base64url({ alg: 'none', typ: 'JWT' })}.${base64url(claims)}.`;
+    // The algorithm-confusion forgery: an HMAC keyed with the published key set.
+    if (alg === 'HS256') return new SignJWT(claims).setProtectedHeader({ alg, kid: shape.kid ?? kid }).sign(new TextEncoder().encode(JSON.stringify(keySet)));
+    return new SignJWT(claims).setProtectedHeader({ alg, kid: shape.kid ?? kid }).sign(privateKey);
+  }
+  return { clientId, kid, keySet, assertion };
+}
+
+export type AssertionSigner = ReturnType<typeof assertionSigner>;
 
 const JSON_UTF8 = 'application/json; charset=utf-8';
 

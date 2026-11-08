@@ -17,7 +17,7 @@ import {
   InMemoryMcpOAuthContinuationStore,
 } from '../src/auth/mcp-oauth-continuation.ts';
 import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
-import { advertisePublicClientsOnly, createBetterAuthPublicHandler } from '../src/auth/better-auth-routes.ts';
+import { advertiseTokenAuthMethods, createBetterAuthPublicHandler } from '../src/auth/better-auth-routes.ts';
 import {
   createMcpConsentRedirectResponse,
   createMcpAuthenticatedRequestHandler,
@@ -183,7 +183,7 @@ test('the public metadata rewrite drops body-derived headers and JWT-only fields
     revocation_endpoint_auth_methods_supported: ['client_secret_basic'],
   }, { headers: { 'cache-control': 'public, max-age=15', 'content-length': '999' } });
 
-  const rewritten = await advertisePublicClientsOnly(upstream);
+  const rewritten = await advertiseTokenAuthMethods(upstream.clone(), { documents: false });
   const body = await rewritten.text();
   assert.equal(rewritten.status, 200);
   assert.equal(rewritten.headers.get('cache-control'), 'public, max-age=15');
@@ -194,8 +194,17 @@ test('the public metadata rewrite drops body-derived headers and JWT-only fields
     revocation_endpoint_auth_methods_supported: ['client_secret_basic'],
   });
 
+  const hosted = await advertiseTokenAuthMethods(upstream, { documents: true });
+  assert.equal(hosted.headers.get('content-length'), null);
+  assert.deepEqual(await hosted.json(), {
+    issuer: 'https://chickpea.example/api/auth',
+    token_endpoint_auth_methods_supported: ['none', 'private_key_jwt'],
+    token_endpoint_auth_signing_alg_values_supported: ['RS256', 'ES256'],
+    revocation_endpoint_auth_methods_supported: ['client_secret_basic'],
+  }, 'a metadata document may name private_key_jwt; no secret method is listed');
+
   const failed = Response.json({ error: 'server_error' }, { status: 500 });
-  assert.equal(await advertisePublicClientsOnly(failed), failed);
+  assert.equal(await advertiseTokenAuthMethods(failed, { documents: true }), failed);
 });
 
 test('public MCP registration accepts only bounded public PKCE clients', () => {

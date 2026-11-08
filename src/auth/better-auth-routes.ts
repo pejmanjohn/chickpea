@@ -130,7 +130,9 @@ export function createBetterAuthPublicHandler(input: BetterAuthPublicHandlerInpu
       });
     }
     if (url.pathname.endsWith('/oauth2/revoke')) return await revocationResponse(response);
-    return AUTHORIZATION_SERVER_METADATA_PATHS.has(url.pathname) ? await advertisePublicClientsOnly(response) : response;
+    return AUTHORIZATION_SERVER_METADATA_PATHS.has(url.pathname)
+      ? await advertiseTokenAuthMethods(response, { documents: input.clientMetadataDocuments === true })
+      : response;
   };
 }
 
@@ -235,18 +237,21 @@ async function validateRegistrationRequest(request: Request): Promise<Request | 
 /**
  * Better Auth lists every confidential method it can verify and has no option
  * to narrow the list, and claude.ai registers with client_secret_post whenever
- * it is listed. Registration here accepts public clients only, so the signing
- * algorithms, which serve JWT client authentication alone, go as well. The
- * headers carry over without the length of the longer upstream body.
+ * it is listed. Registration here accepts public clients only, so without
+ * `documents` the list is `none` and the signing algorithms, which serve JWT
+ * client authentication alone, go as well. With `documents` (hosted shared
+ * auth) a client may also sign in by a metadata document that names
+ * private_key_jwt, so that method and the algorithms stay; registration still
+ * accepts `none` only. The headers carry over without the upstream length.
  */
-export async function advertisePublicClientsOnly(response: Response): Promise<Response> {
+export async function advertiseTokenAuthMethods(response: Response, { documents }: { documents: boolean }): Promise<Response> {
   if (!response.ok) return response;
   const metadata = await response.json() as Record<string, unknown>;
-  delete metadata.token_endpoint_auth_signing_alg_values_supported;
+  if (!documents) delete metadata.token_endpoint_auth_signing_alg_values_supported;
   const headers = new Headers(response.headers);
   headers.delete('content-length');
   return Response.json(
-    { ...metadata, token_endpoint_auth_methods_supported: ['none'] },
+    { ...metadata, token_endpoint_auth_methods_supported: documents ? ['none', 'private_key_jwt'] : ['none'] },
     { status: response.status, headers },
   );
 }
