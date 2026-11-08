@@ -17,7 +17,7 @@ import {
   InMemoryMcpOAuthContinuationStore,
 } from '../src/auth/mcp-oauth-continuation.ts';
 import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
-import { advertisePublicClientsOnly, createBetterAuthPublicHandler } from '../src/auth/better-auth-routes.ts';
+import { advertiseTokenAuthMethods, createBetterAuthPublicHandler } from '../src/auth/better-auth-routes.ts';
 import {
   createMcpConsentRedirectResponse,
   createMcpAuthenticatedRequestHandler,
@@ -183,7 +183,7 @@ test('the public metadata rewrite drops body-derived headers and JWT-only fields
     revocation_endpoint_auth_methods_supported: ['client_secret_basic'],
   }, { headers: { 'cache-control': 'public, max-age=15', 'content-length': '999' } });
 
-  const rewritten = await advertisePublicClientsOnly(upstream);
+  const rewritten = await advertiseTokenAuthMethods(upstream.clone(), { documents: false });
   const body = await rewritten.text();
   assert.equal(rewritten.status, 200);
   assert.equal(rewritten.headers.get('cache-control'), 'public, max-age=15');
@@ -194,8 +194,17 @@ test('the public metadata rewrite drops body-derived headers and JWT-only fields
     revocation_endpoint_auth_methods_supported: ['client_secret_basic'],
   });
 
+  const hosted = await advertiseTokenAuthMethods(upstream, { documents: true });
+  assert.equal(hosted.headers.get('content-length'), null);
+  assert.deepEqual(await hosted.json(), {
+    issuer: 'https://chickpea.example/api/auth',
+    token_endpoint_auth_methods_supported: ['none', 'private_key_jwt'],
+    token_endpoint_auth_signing_alg_values_supported: ['RS256', 'ES256'],
+    revocation_endpoint_auth_methods_supported: ['client_secret_basic'],
+  }, 'a metadata document may name private_key_jwt; no secret method is listed');
+
   const failed = Response.json({ error: 'server_error' }, { status: 500 });
-  assert.equal(await advertisePublicClientsOnly(failed), failed);
+  assert.equal(await advertiseTokenAuthMethods(failed, { documents: true }), failed);
 });
 
 test('public MCP registration accepts only bounded public PKCE clients', () => {
@@ -341,6 +350,37 @@ test('MCP consent shows the app-provided name, labelled as self-asserted', () =>
   const html = renderMcpConsentPage({ clientName: 'Claude Code', scope: MCP_WORKSPACE_SCOPE, oauthQuery: 'sig=test' });
   assert.ok(html.includes('<dt>App</dt><dd>Claude Code <span class="note">(name provided by the app)</span></dd>'));
   assert.ok(!html.includes('<dt>Client</dt>'));
+});
+
+test('MCP consent and its return page name ChatGPT only for ChatGPT\'s own client ID', async () => {
+  const chatgpt = renderMcpConsentPage({
+    clientId: 'https://chatgpt.com/oauth/client.json', clientName: 'ChatGPT', clientHost: 'chatgpt.com',
+    scope: MCP_WORKSPACE_SCOPE, oauthQuery: 'sig=test',
+  });
+  assert.ok(chatgpt.includes('<h1>Allow ChatGPT to manage your workspace?</h1>'));
+  assert.ok(chatgpt.includes('<p>ChatGPT will act as you in this Chickpea workspace. It can do only what you can do.</p>'));
+  assert.ok(chatgpt.includes('<dt>App</dt><dd>ChatGPT</dd><dt>Domain</dt><dd>chatgpt.com</dd>'));
+  const callback = 'https://chatgpt.com/connector_platform_oauth_redirect?code=code_123&state=state_123';
+  const back = await createMcpConsentRedirectResponse(callback, 'https://chatgpt.com/oauth/client.json').text();
+  assert.ok(back.includes('<title>Back to ChatGPT</title>'));
+  assert.ok(back.includes('<h1>Back to ChatGPT</h1>\n      <p>You\'re being sent back to ChatGPT.</p>'));
+
+  for (const [clientId, clientName, clientHost] of [
+    ['https://apps.example.org/oauth/client.json', 'ChatGPT', 'apps.example.org'],
+    ['https://chatgpt.com/oauth/0123456789abcdef/client.json', 'ChatGPT', 'chatgpt.com'],
+    ['https://chatgpt.com/oauth/codex/client.json', 'Codex', 'chatgpt.com'],
+    ['dynamically-registered', 'ChatGPT', undefined],
+  ] as const) {
+    const html = renderMcpConsentPage({ clientId, clientName, clientHost, scope: MCP_WORKSPACE_SCOPE, oauthQuery: 'sig=test' });
+    assert.ok(html.includes('<h1>Allow workspace management?</h1>'), clientId);
+    assert.ok(html.includes(
+      '<p>An app is asking to manage this Chickpea workspace as you. It signs in as you and can only do what you can do.</p>',
+    ), clientId);
+    assert.ok(html.includes(`<dt>App</dt><dd>${clientName} <span class="note">(name provided by the app)</span></dd>`), clientId);
+    const generic = await createMcpConsentRedirectResponse(callback, clientId).text();
+    assert.ok(generic.includes('<title>Back to your app</title>'), clientId);
+    assert.ok(generic.includes('<h1>Back to your app</h1>\n      <p>You\'re being sent back to the app that asked for access.</p>'), clientId);
+  }
 });
 
 test('MCP consent falls back to a generic label when the app gave no name', () => {

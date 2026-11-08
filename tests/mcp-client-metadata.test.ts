@@ -11,7 +11,8 @@ import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
 import type { ClientMetadataFetch } from '../src/auth/mcp-client-metadata.ts';
 import { mountMcpOAuthBrowserRoutes, renderMcpConsentPage } from '../src/auth/mcp-oauth-routes.ts';
 import {
-  CHATGPT_DOCUMENT, CLAUDE_DOCUMENTS, CODEX_DOCUMENT, CURSOR_DOCUMENT, PUBLIC_CLIENT_DOCUMENTS, metadataDocumentServer, type ServedDocument,
+  CHATGPT_DOCUMENT, CLAUDE_DOCUMENTS, CODEX_DOCUMENT, CURSOR_DOCUMENT, JWT_BEARER, PUBLIC_CLIENT_DOCUMENTS,
+  assertionSigner, metadataDocumentServer, type ServedDocument,
 } from './helpers/client-metadata-documents.ts';
 
 const ORIGIN = 'https://chickpea.example.test';
@@ -64,10 +65,25 @@ const NATIVE_APPS_LOOPBACK_ONLY = {
   error_description: 'a native app signs in only through an HTTP redirect_uri on a loopback host (127.0.0.1, localhost or [::1], any port), not a web page that relays the code',
 };
 
-const PUBLIC_CLIENTS_ONLY = {
+const PUBLIC_CLIENT_LISTS_NO_KEYS = {
   error: 'invalid_client',
-  error_description: 'metadata document must describe a public client: token_endpoint_auth_method "none", no jwks or jwks_uri',
+  error_description: 'metadata document must list no jwks or jwks_uri for token_endpoint_auth_method "none"',
 };
+const KEYS_ON_OWN_ORIGIN = {
+  error: 'invalid_client',
+  error_description: 'metadata document jwks_uri must be an https URL on the client ID\'s origin; inline jwks is not accepted',
+};
+/** Better Auth's own refusal, which comes first for keys on an origin it does not trust. */
+const UNTRUSTED_KEYS = {
+  error: 'invalid_client_metadata',
+  error_description: 'jwks_uri must belong to a trusted origin or the Client ID Metadata Document origin',
+};
+
+const CHATGPT = CHATGPT_DOCUMENT.url;
+const CHATGPT_CALLBACK = CHATGPT_DOCUMENT.callback;
+const CHATGPT_KEYS = CHATGPT_DOCUMENT.keysUrl;
+const ISSUER = `${ORIGIN}/api/auth`;
+const TOKEN_ENDPOINT = `${ISSUER}/oauth2/token`;
 
 const signingKeys = () => {
   const jwk = generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' });
@@ -88,6 +104,8 @@ async function fixture(t: TestContext, options: {
   fetchClientMetadataResource?: ClientMetadataFetch;
   mcpRegistrationPolicy?: BetterAuthPublicHandlerInput['mcpRegistrationPolicy'];
   throttleRegistration?: BetterAuthPublicHandlerInput['throttleRegistration'];
+  /** Build Better Auth for each request, as hosted shared auth does. */
+  perRequest?: boolean;
 } = {}) {
   const backend = new NodeBetterAuthBackend(':memory:');
   t.after(() => backend.close());
@@ -98,11 +116,15 @@ async function fixture(t: TestContext, options: {
     ...(options.fetchClientMetadataResource ? { fetchClientMetadataResource: options.fetchClientMetadataResource } : {}),
   };
   const auth = await createBetterAuth({ ...environment, privateSeam: { async resolveAdmissionOperation() { return admission; } } });
-  const handler = createBetterAuthPublicHandler({
+  const handlerInput = {
     ...environment,
     ...(options.mcpRegistrationPolicy ? { mcpRegistrationPolicy: options.mcpRegistrationPolicy } : {}),
     ...(options.throttleRegistration ? { throttleRegistration: options.throttleRegistration } : {}),
-  });
+  };
+  const shared = createBetterAuthPublicHandler(handlerInput);
+  const handler = options.perRequest
+    ? (request: Request) => createBetterAuthPublicHandler(handlerInput)(request)
+    : shared;
   const browser = new Hono();
   mountMcpOAuthBrowserRoutes(browser, async () => environment);
   const person = await auth.chickpea.reconcileSlackIdentity({
@@ -172,7 +194,7 @@ async function fixture(t: TestContext, options: {
     'SELECT clientId, clientDiscoveryId, userId, clientSecret, tokenEndpointAuthMethod, name FROM oauthClient ORDER BY createdAt, clientId',
   ).all() as Record<string, unknown>[]).map((row) => ({ ...row }));
   return {
-    backend, handler, browser, cookie, secret: environment.secret, userId: person.userId,
+    backend, handler, browser, cookie, secret: environment.secret, userId: person.userId, verifier,
     signInMember, authorize, approve, token, exchange, refresh, clients,
   };
 }
@@ -190,15 +212,26 @@ async function claudeRefreshToken(f: Awaited<ReturnType<typeof fixture>>): Promi
   return (await exchanged.json() as { refresh_token: string }).refresh_token;
 }
 
-test('the authorization server advertises client ID metadata documents to public clients', async (t) => {
+test('hosted shared auth advertises metadata documents, signed in public or by private_key_jwt', async (t) => {
   const f = await fixture(t);
   for (const path of ['/.well-known/oauth-authorization-server/api/auth', '/api/auth/.well-known/oauth-authorization-server']) {
     const response = await f.handler(new Request(`${ORIGIN}${path}`));
     assert.equal(response.status, 200, path);
     const metadata = await response.json() as Record<string, unknown>;
     assert.equal(metadata.client_id_metadata_document_supported, true, path);
-    assert.ok((metadata.token_endpoint_auth_methods_supported as string[]).includes('none'), path);
+    assert.deepEqual(metadata.token_endpoint_auth_methods_supported, ['none', 'private_key_jwt'], path);
+    assert.deepEqual(metadata.token_endpoint_auth_signing_alg_values_supported,
+      ['RS256', 'RS384', 'RS512', 'PS256', 'PS384', 'PS512', 'ES256', 'ES384', 'ES512', 'EdDSA'], path);
   }
+  const registered = await f.handler(new Request(`${ORIGIN}/api/auth/oauth2/register`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      application_type: 'web', client_name: 'Keyed', grant_types: ['authorization_code'], response_types: ['code'],
+      redirect_uris: ['https://apps.example.org/callback'], token_endpoint_auth_method: 'private_key_jwt',
+      jwks_uri: 'https://apps.example.org/jwks',
+    }),
+  }));
+  assert.equal(registered.status, 400, 'dynamic registration still takes public clients only');
 });
 
 test('without hosted shared auth no metadata document signs a client in: each document URL is an unknown client, never fetched', async (t) => {
@@ -535,55 +568,107 @@ test('a metadata document is refused unless it names its own URL, lists the redi
   assert.deepEqual(f.clients().map((client) => client.clientId), [CLAUDE], 'no refused document stores a client');
 });
 
-test('a metadata document must describe a public client, as dynamic registration requires', async (t) => {
+test('a metadata document client is public, or names private_key_jwt with keys on its own client ID\'s origin', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
   const keys = signingKeys();
-  const jwksUri = 'https://claude.ai/oauth/jwks';
-  const served: Record<string, ServedDocument> = { [jwksUri]: JSON.stringify(keys) };
+  const ownKeys = 'https://apps.example.org/oauth/jwks';
+  const served: Record<string, ServedDocument> = { [ownKeys]: JSON.stringify(keys) };
   const host = metadataDocumentServer(served);
   const f = await fixture(t, { fetchClientMetadataResource: host.fetch });
-  for (const fields of [
-    { token_endpoint_auth_method: 'private_key_jwt', jwks: keys },
-    { token_endpoint_auth_method: 'private_key_jwt', jwks_uri: jwksUri },
-    { jwks: keys },
-  ]) {
-    served[CLAUDE] = lookalike(CLAUDE, fields);
+  const keyed = { token_endpoint_auth_method: 'private_key_jwt' };
+  const refusals: Array<[string, Record<string, unknown>, Record<string, string>]> = [
+    ['inline keys', { ...keyed, jwks: keys }, KEYS_ON_OWN_ORIGIN],
+    ['inline keys beside its own jwks_uri', { ...keyed, jwks: keys, jwks_uri: ownKeys },
+      { error: 'invalid_client_metadata', error_description: 'jwks and jwks_uri are mutually exclusive' }],
+    ['keys Chickpea serves', { ...keyed, jwks_uri: `${ORIGIN}/api/auth/jwks` }, KEYS_ON_OWN_ORIGIN],
+    ['keys on another origin', { ...keyed, jwks_uri: 'https://keys.example.net/jwks' }, UNTRUSTED_KEYS],
+    ['keys on a subdomain', { ...keyed, jwks_uri: 'https://keys.apps.example.org/jwks' }, UNTRUSTED_KEYS],
+    // A blob: URL's origin is its inner URL's; Better Auth's scheme check refuses it first, and Chickpea's backs it.
+    ['keys at a blob: URL', { ...keyed, jwks_uri: `blob:${ownKeys}` },
+      { error: 'invalid_client_metadata', error_description: 'jwks_uri must use HTTPS' }],
+    ['a public client with inline keys', { token_endpoint_auth_method: 'none', jwks: keys }, PUBLIC_CLIENT_LISTS_NO_KEYS],
+    ['a public client with a jwks_uri', { token_endpoint_auth_method: 'none', jwks_uri: ownKeys }, PUBLIC_CLIENT_LISTS_NO_KEYS],
+  ];
+  for (const [label, fields, refusal] of refusals) {
+    served[STRANGER] = documentAt(STRANGER, fields);
     // Better Auth keeps a document it fetched for its max-age, even one Chickpea refused.
     t.mock.timers.tick(6 * 60_000);
     for (const signedIn of [false, true]) {
-      const response = await f.authorize(CLAUDE, CLAUDE_CALLBACK, { signedIn });
-      assert.equal(response.status, 400, `${JSON.stringify(fields)} signed ${signedIn ? 'in' : 'out'}`);
-      assert.deepEqual(await response.json(), PUBLIC_CLIENTS_ONLY);
+      t.mock.timers.tick(1_000);
+      const response = await f.authorize(STRANGER, STRANGER_CALLBACK, { signedIn });
+      assert.equal(response.status, 400, `${label} signed ${signedIn ? 'in' : 'out'}`);
+      assert.deepEqual(await response.json(), refusal, label);
     }
   }
-  assert.deepEqual(host.requests, [CLAUDE, CLAUDE, CLAUDE], 'each document is fetched');
   assert.deepEqual(f.clients(), [], 'a refused document leaves no client behind');
+  assert.ok(!host.requests.includes(ownKeys), 'no key is fetched for a client Chickpea refuses');
+
+  served[STRANGER] = documentAt(STRANGER, { ...keyed, jwks_uri: ownKeys });
+  t.mock.timers.tick(6 * 60_000);
+  const consent = new URL((await f.authorize(STRANGER, STRANGER_CALLBACK)).headers.get('location')!, ORIGIN);
+  assert.equal(consent.pathname, '/auth/mcp/consent', 'keys on its own origin are accepted');
+  assert.deepEqual(f.clients().map(({ clientId, userId, tokenEndpointAuthMethod }) => ({ clientId, userId, tokenEndpointAuthMethod })),
+    [{ clientId: STRANGER, userId: null, tokenEndpointAuthMethod: 'private_key_jwt' }]);
 });
 
-test('ChatGPT\'s published document, and any confidential stranger, is refused and leaves no client behind', async (t) => {
-  const keys = signingKeys();
-  const chatgptKeys = 'https://chatgpt.com/oauth/jwks.json';
-  const confidential = 'https://apps.example.org/oauth/confidential.json';
-  const host = metadataDocumentServer({
-    [CHATGPT_DOCUMENT.url]: CHATGPT_DOCUMENT.body,
-    [chatgptKeys]: JSON.stringify(keys),
-    [confidential]: JSON.stringify({
-      ...JSON.parse(strangerDocument), client_id: confidential, token_endpoint_auth_method: 'private_key_jwt', jwks: keys,
-    }),
-  });
+test('ChatGPT signs in by its published document with private_key_jwt: one ownerless row, an assertion at every token request', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
+  const signer = assertionSigner();
+  const host = metadataDocumentServer({ [CHATGPT]: CHATGPT_DOCUMENT.body, [CHATGPT_KEYS]: JSON.stringify(signer.keySet) });
   const f = await fixture(t, { fetchClientMetadataResource: host.fetch });
-  for (const [clientId, redirect] of [
-    [CHATGPT_DOCUMENT.url, 'https://chatgpt.com/connector_platform_oauth_redirect'],
-    [confidential, STRANGER_CALLBACK],
-  ] as const) {
-    for (const signedIn of [false, true]) {
-      const response = await f.authorize(clientId, redirect, { signedIn });
-      assert.equal(response.status, 400, `${clientId} signed ${signedIn ? 'in' : 'out'}`);
-      assert.deepEqual(await response.json(), PUBLIC_CLIENTS_ONLY, clientId);
-    }
+  const authorization = await f.authorize(CHATGPT, CHATGPT_CALLBACK);
+  assert.equal(authorization.status, 302, await authorization.clone().text());
+  const consent = new URL(authorization.headers.get('location')!, ORIGIN);
+  assert.equal(consent.pathname, '/auth/mcp/consent');
+  assert.equal(consent.searchParams.get('scope'), RENEWABLE_SCOPE);
+  const page = await (await f.browser.request(`${ORIGIN}${consent.pathname}${consent.search}`, { headers: { cookie: f.cookie } })).text();
+  assert.ok(page.includes('<h1>Allow ChatGPT to manage your workspace?</h1>'));
+  assert.ok(page.includes('<dt>App</dt><dd>ChatGPT</dd><dt>Domain</dt><dd>chatgpt.com</dd>'));
+  const code = (await f.approve(consent.toString())).searchParams.get('code')!;
+  const redeem = (fields: Record<string, string>) => f.token({
+    grant_type: 'authorization_code', client_id: CHATGPT, code, code_verifier: f.verifier, redirect_uri: CHATGPT_CALLBACK, ...fields,
+  });
+
+  for (const [downgrade, fields] of [['none', {}], ['client_secret_post', { client_secret: 'guessed' }]] as const) {
+    const refused = await redeem(fields);
+    assert.equal(refused.status, 400, downgrade);
+    assert.deepEqual(await refused.json(), {
+      error: 'invalid_client', error_description: `client registered for private_key_jwt cannot use ${downgrade}`,
+    }, downgrade);
   }
-  assert.ok(!host.requests.includes(chatgptKeys), 'no key is fetched for a client Chickpea refuses');
-  assert.deepEqual(f.clients(), [], 'a refused document leaves no client behind');
+  const exchanged = await redeem({ client_assertion_type: JWT_BEARER, client_assertion: await signer.assertion({ aud: TOKEN_ENDPOINT }) });
+  assert.equal(exchanged.status, 200, `a refused downgrade spends nothing: ${await exchanged.clone().text()}`);
+  const tokens = await exchanged.json() as { access_token: string; refresh_token: string; scope: string };
+  assert.equal(tokens.scope, RENEWABLE_SCOPE);
+  const jwks = await (await f.handler(new Request(`${ORIGIN}/api/auth/jwks`))).json() as JSONWebKeySet;
+  const { payload } = await jwtVerify(tokens.access_token, createLocalJWKSet(jwks), { issuer: ISSUER, audience: RESOURCE });
+  assert.equal(payload.azp, CHATGPT);
+
+  const unsigned = await f.refresh(CHATGPT, tokens.refresh_token);
+  assert.equal(unsigned.status, 400);
+  assert.deepEqual(await unsigned.json(), {
+    error: 'invalid_client', error_description: 'client registered for private_key_jwt cannot use none',
+  }, 'renewal needs an assertion too');
+  const assertionRecords = () => (f.backend.database.prepare('SELECT id FROM oauthClientAssertion').all() as Array<{ id: string }>)
+    .map(({ id }) => id);
+  f.backend.database.prepare('INSERT INTO oauthClientAssertion (id, expiresAt) VALUES (?, ?)').run('expired', '2026-01-01T00:00:00.000Z');
+  assert.equal(assertionRecords().length, 2);
+  t.mock.timers.tick(11_000); // a backend prunes at most once per 10 seconds
+  const renewed = await f.token({
+    grant_type: 'refresh_token', client_id: CHATGPT, refresh_token: tokens.refresh_token,
+    client_assertion_type: JWT_BEARER, client_assertion: await signer.assertion({ aud: ISSUER }),
+  });
+  assert.equal(renewed.status, 200, await renewed.clone().text());
+  const records = assertionRecords();
+  assert.equal(records.length, 2, 'one record per accepted assertion');
+  assert.ok(!records.includes('expired'), 'a successful token request prunes expired records');
+
+  assert.deepEqual(f.clients(), [{
+    clientId: CHATGPT, clientDiscoveryId: 'cimd', userId: null, clientSecret: null,
+    tokenEndpointAuthMethod: 'private_key_jwt', name: 'ChatGPT',
+  }], 'one shared, ownerless row for every ChatGPT user');
+  assert.deepEqual({ ...f.backend.database.prepare('SELECT jwksUri, jwks FROM oauthClient').get() }, { jwksUri: CHATGPT_KEYS, jwks: null });
+  assert.deepEqual(host.requests, [CHATGPT, CHATGPT_KEYS], 'the document and the key set are each fetched once');
 });
 
 test('a metadata document may list only the redirects dynamic registration accepts', async (t) => {
@@ -640,41 +725,104 @@ test('a metadata document may redirect only to its own host, a subdomain of it, 
   }
 });
 
-test('a stored client whose document turns to key authentication is refused before any key is fetched, even standing in', async (t) => {
+test('a stored public client whose document turns to private_key_jwt is updated in place, and its public renewal stops', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
   const jwksUri = 'https://claude.ai/oauth/jwks';
   const served: Record<string, ServedDocument> = { [CLAUDE]: CLAUDE_DOCUMENTS.claude.body, [jwksUri]: JSON.stringify(signingKeys()) };
   const host = metadataDocumentServer(served);
   const f = await fixture(t, { fetchClientMetadataResource: host.fetch });
-  const authorization = await f.authorize(CLAUDE, CLAUDE_CALLBACK);
-  const callback = await f.approve(authorization.headers.get('location')!);
-  const exchanged = await f.exchange(CLAUDE, CLAUDE_CALLBACK, callback.searchParams.get('code')!);
-  const { refresh_token: refreshToken } = await exchanged.json() as { refresh_token: string };
-  const assertKey = (jti: string) => f.token({
-    grant_type: 'authorization_code', code: 'unused', code_verifier: 'v'.repeat(43), redirect_uri: CLAUDE_CALLBACK,
-    client_assertion_type: 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer',
-    client_assertion: forgedClientAssertion(CLAUDE, jti),
-  });
+  const refreshToken = await claudeRefreshToken(f);
+  const row = () => ({ ...f.backend.database.prepare('SELECT id, tokenEndpointAuthMethod, jwksUri FROM oauthClient').get() });
+  const before = row();
+  const unsigned = async (message: string) => {
+    const refused = await f.refresh(CLAUDE, refreshToken);
+    assert.equal(refused.status, 400, message);
+    assert.deepEqual(await refused.json(), {
+      error: 'invalid_client', error_description: 'client registered for private_key_jwt cannot use none',
+    }, message);
+  };
 
   served[CLAUDE] = lookalike(CLAUDE, { client_uri: 'https://claude.ai', token_endpoint_auth_method: 'private_key_jwt', jwks_uri: jwksUri });
   t.mock.timers.tick(6 * 60_000);
-  const renewed = await f.refresh(CLAUDE, refreshToken);
-  assert.equal(renewed.status, 400);
-  assert.deepEqual(await renewed.json(), PUBLIC_CLIENTS_ONLY);
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const asserted = await assertKey(`attempt-${attempt}`);
-    assert.equal(asserted.status, 400);
-    assert.deepEqual(await asserted.json(), PUBLIC_CLIENTS_ONLY);
-  }
+  await unsigned('the public refresh token no longer renews');
+  assert.deepEqual(row(), { id: before.id, tokenEndpointAuthMethod: 'private_key_jwt', jwksUri }, 'the same row, updated');
+  const forged = await f.token({
+    grant_type: 'refresh_token', client_id: CLAUDE, refresh_token: refreshToken,
+    client_assertion_type: JWT_BEARER, client_assertion: forgedClientAssertion(CLAUDE, 'forged'),
+  });
+  assert.equal(forged.status, 401);
+  assert.equal((await forged.json() as { error: string }).error, 'invalid_client');
 
   served[CLAUDE] = { body: 'Service Unavailable', status: 503, headers: { 'content-type': 'text/plain' } };
   t.mock.timers.tick(6 * 60_000);
-  const fetched = host.requests.length;
-  const standingIn = await assertKey('standing-in');
-  assert.deepEqual(host.requests.slice(fetched), [CLAUDE], 'the document did not answer, so the stored key-method row stands in');
-  assert.equal(standingIn.status, 400);
-  assert.deepEqual(await standingIn.json(), PUBLIC_CLIENTS_ONLY);
-  assert.ok(!host.requests.includes(jwksUri), 'no key is fetched for a client Chickpea refuses');
+  await unsigned('the stored key-method row stands in for an unreachable document');
+});
+
+test('a key set is kept for the isolate: one fetch across requests, one more per 30 seconds for an unknown key, ten minutes on failure', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
+  const signer = assertionSigner();
+  const served: Record<string, ServedDocument> = { [CHATGPT]: CHATGPT_DOCUMENT.body, [CHATGPT_KEYS]: JSON.stringify(signer.keySet) };
+  const host = metadataDocumentServer(served);
+  const f = await fixture(t, { fetchClientMetadataResource: host.fetch, perRequest: true });
+  const keyFetches = () => host.requests.filter((url) => url === CHATGPT_KEYS).length;
+  const authorization = await f.authorize(CHATGPT, CHATGPT_CALLBACK);
+  const code = (await f.approve(authorization.headers.get('location')!)).searchParams.get('code')!;
+  const exchanged = await f.token({
+    grant_type: 'authorization_code', client_id: CHATGPT, code, code_verifier: f.verifier, redirect_uri: CHATGPT_CALLBACK,
+    client_assertion_type: JWT_BEARER, client_assertion: await signer.assertion({ aud: TOKEN_ENDPOINT }),
+  });
+  assert.equal(exchanged.status, 200, await exchanged.clone().text());
+  let refreshToken = (await exchanged.json() as { refresh_token: string }).refresh_token;
+  const renew = async (assertion: string) => {
+    const response = await f.token({
+      grant_type: 'refresh_token', client_id: CHATGPT, refresh_token: refreshToken,
+      client_assertion_type: JWT_BEARER, client_assertion: assertion,
+    });
+    if (response.ok) refreshToken = (await response.clone().json() as { refresh_token: string }).refresh_token;
+    return response;
+  };
+  assert.equal(keyFetches(), 1);
+  assert.equal((await renew(await signer.assertion({ aud: TOKEN_ENDPOINT }))).status, 200);
+  assert.equal(keyFetches(), 1, 'a second token request, on a Better Auth of its own, takes the isolate\'s copy');
+
+  const impostor = assertionSigner();
+  for (let attempt = 0; attempt < 10; attempt++) {
+    for (const kid of [signer.kid, 'unknown']) {
+      const forged = await renew(await impostor.assertion({ aud: TOKEN_ENDPOINT, kid }));
+      assert.equal(forged.status, 401, kid);
+    }
+  }
+  assert.equal(keyFetches(), 1, 'twenty forged assertions, under ChatGPT\'s key ID or an unknown one, fetch nothing');
+
+  const rotated = assertionSigner(CHATGPT, 'cimd-rotated');
+  served[CHATGPT_KEYS] = JSON.stringify({ keys: [...signer.keySet.keys, ...rotated.keySet.keys] });
+  assert.equal((await renew(await rotated.assertion({ aud: TOKEN_ENDPOINT }))).status, 401, 'within 30 seconds of the fetch');
+  assert.equal(keyFetches(), 1);
+  t.mock.timers.tick(31_000);
+  assert.equal((await renew(await rotated.assertion({ aud: TOKEN_ENDPOINT }))).status, 200, 'a rotated key is fetched after 30 seconds');
+  assert.equal(keyFetches(), 2);
+
+  t.mock.timers.tick(6 * 60_000);
+  const failures: ServedDocument[] = [
+    { body: 'Service Unavailable', status: 503, headers: { 'content-type': 'text/plain' } },
+    () => { throw new TypeError('fetch failed'); },
+    { body: JSON.stringify(rotated.keySet), headers: { 'content-type': 'text/html' } },
+    JSON.stringify({ ...rotated.keySet, padding: 'x'.repeat(64 * 1024) }),
+    JSON.stringify({ keys: 'none' }),
+    JSON.stringify({ keys: [] }),
+  ];
+  for (const failure of failures) {
+    served[CHATGPT_KEYS] = failure;
+    const fetched = keyFetches();
+    assert.equal((await renew(await rotated.assertion({ aud: TOKEN_ENDPOINT }))).status, 200, 'a failed fetch takes the six-minute-old copy');
+    assert.equal(keyFetches(), fetched + 1);
+  }
+  t.mock.timers.tick(4 * 60_000);
+  const lapsed = await renew(await rotated.assertion({ aud: TOKEN_ENDPOINT }));
+  assert.equal(lapsed.status, 400, 'at ten minutes the copy no longer stands in');
+  assert.deepEqual(await lapsed.json(), { error: 'invalid_client', error_description: 'failed to fetch client JWKS' });
+  served[CHATGPT_KEYS] = JSON.stringify(rotated.keySet);
+  assert.equal((await renew(await rotated.assertion({ aud: TOKEN_ENDPOINT }))).status, 200);
 });
 
 test('a stored client keeps renewing while its document cannot be reached; a document that answers still replaces or refuses it', async (t) => {

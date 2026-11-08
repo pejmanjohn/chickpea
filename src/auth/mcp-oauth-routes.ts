@@ -272,7 +272,7 @@ async function showMcpConsent(c: Context, environment: BetterAuthEnvironment): P
   if (await alreadyRedeemed(environment, query)) return alreadyConnectedResponse(clientName);
   const clientHost = clientMetadataHost(clientId);
   const scope = query.get('scope') ?? MCP_WORKSPACE_SCOPE;
-  return new Response(renderMcpConsentPage({ clientName, clientHost, scope, oauthQuery: query.toString() }), {
+  return new Response(renderMcpConsentPage({ clientId, clientName, clientHost, scope, oauthQuery: query.toString() }), {
     status: 200,
     headers: browserHeaders('text/html; charset=utf-8'),
   });
@@ -318,7 +318,7 @@ async function submitMcpConsent(c: Context, environment: BetterAuthEnvironment):
     | { redirect?: unknown; url?: unknown }
     | undefined;
   if (response?.redirect === true && typeof response.url === 'string') {
-    return createMcpConsentRedirectResponse(response.url);
+    return createMcpConsentRedirectResponse(response.url, query.get('client_id') ?? undefined);
   }
   return result;
 }
@@ -527,6 +527,13 @@ ${body}
 const MCP_CLIENT_NAME_DISPLAY_LIMIT = 60;
 
 /**
+ * Apps Chickpea names itself, by exact client ID. Any other app's name is its
+ * own claim, so a stranger's document that calls itself ChatGPT gets the
+ * generic text, as does ChatGPT's per-callback client ID.
+ */
+const KNOWN_MCP_APPS: ReadonlyMap<string, string> = new Map([['https://chatgpt.com/oauth/client.json', 'ChatGPT']]);
+
+/**
  * Reads the self-asserted `client_name` from the client's registration. The
  * signed OAuth query already names a registered client; any lookup failure
  * falls back to the generic label rather than blocking consent.
@@ -561,24 +568,29 @@ export function displayMcpClientName(name: string | undefined): string | undefin
 }
 
 export function renderMcpConsentPage(input: {
+  clientId?: string | undefined;
   clientName?: string | undefined;
   /** The host of the client's metadata document URL: the one identity the app cannot choose. */
   clientHost?: string | undefined;
   scope: string;
   oauthQuery: string;
 }): string {
+  const known = KNOWN_MCP_APPS.get(input.clientId ?? '');
   const name = displayMcpClientName(input.clientName);
-  const app = name
+  const app = known ?? (name
     ? `${escapeHtml(name)} <span class="note">(name provided by the app)</span>`
-    : 'An unnamed app';
+    : 'An unnamed app');
   const domain = input.clientHost ? `<dt>Domain</dt><dd>${escapeHtml(input.clientHost)}</dd>` : '';
   const permission = input.scope.split(/\s+/).filter(Boolean).map((scope) => {
     if (scope === MCP_WORKSPACE_SCOPE) return 'Manage this Chickpea workspace';
     if (scope === MCP_OFFLINE_SCOPE) return 'stay signed in';
     return scope;
   }).join(' and ');
-  return brandPage('Authorize Chickpea', `      <h1>Allow workspace management?</h1>
-      <p>A coding agent is asking to manage this Chickpea workspace as you. It signs in as you and can only do what you can do.</p>
+  const [heading, line] = known
+    ? [`Allow ${known} to manage your workspace?`, `${known} will act as you in this Chickpea workspace. It can do only what you can do.`]
+    : ['Allow workspace management?', 'An app is asking to manage this Chickpea workspace as you. It signs in as you and can only do what you can do.'];
+  return brandPage('Authorize Chickpea', `      <h1>${heading}</h1>
+      <p>${line}</p>
       <dl><dt>App</dt><dd>${app}</dd>${domain}<dt>Permission</dt><dd>${escapeHtml(permission)}</dd></dl>
       <form method="post" action="/auth/mcp/consent">
         <input type="hidden" name="oauth_query" value="${escapeHtml(input.oauthQuery)}">
@@ -626,14 +638,18 @@ function browserHeaders(contentType: string): Headers {
   });
 }
 
-export function createMcpConsentRedirectResponse(location: string): Response {
+export function createMcpConsentRedirectResponse(location: string, clientId?: string): Response {
   if (!validClientRedirect(location)) return invalidBrowserRequest();
   const destination = escapeHtml(location);
+  const known = KNOWN_MCP_APPS.get(clientId ?? '');
+  const [heading, line] = known
+    ? [`Back to ${known}`, `You're being sent back to ${known}.`]
+    : ['Back to your app', 'You\'re being sent back to the app that asked for access.'];
   // Chrome applies the submitting page's form-action policy to HTTP redirects.
   // Finish the same-origin POST before navigating to the OAuth client's callback.
   // A scriptless document also supports loopback clients without relaxing CSP.
-  return new Response(brandPage('Return to your coding agent', `      <h1>Return to your coding agent</h1>
-      <p>You are being returned to the app that requested access.</p>
+  return new Response(brandPage(heading, `      <h1>${heading}</h1>
+      <p>${line}</p>
       <p><a href="${destination}">Continue</a> if you are not redirected automatically.</p>`).replace('<title>', `<meta http-equiv="refresh" content="0;url=${destination}"><title>`), {
     status: 200,
     headers: browserHeaders('text/html; charset=utf-8'),
