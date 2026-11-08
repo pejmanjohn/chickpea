@@ -617,6 +617,9 @@ test('ChatGPT signs in by its published document with private_key_jwt: one owner
   const consent = new URL(authorization.headers.get('location')!, ORIGIN);
   assert.equal(consent.pathname, '/auth/mcp/consent');
   assert.equal(consent.searchParams.get('scope'), RENEWABLE_SCOPE);
+  const page = await (await f.browser.request(`${ORIGIN}${consent.pathname}${consent.search}`, { headers: { cookie: f.cookie } })).text();
+  assert.ok(page.includes('<h1>Allow ChatGPT to manage your workspace?</h1>'));
+  assert.ok(page.includes('<dt>App</dt><dd>ChatGPT</dd><dt>Domain</dt><dd>chatgpt.com</dd>'));
   const code = (await f.approve(consent.toString())).searchParams.get('code')!;
   const redeem = (fields: Record<string, string>) => f.token({
     grant_type: 'authorization_code', client_id: CHATGPT, code, code_verifier: f.verifier, redirect_uri: CHATGPT_CALLBACK, ...fields,

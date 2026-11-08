@@ -352,6 +352,37 @@ test('MCP consent shows the app-provided name, labelled as self-asserted', () =>
   assert.ok(!html.includes('<dt>Client</dt>'));
 });
 
+test('MCP consent and its return page name ChatGPT only for ChatGPT\'s own client ID', async () => {
+  const chatgpt = renderMcpConsentPage({
+    clientId: 'https://chatgpt.com/oauth/client.json', clientName: 'ChatGPT', clientHost: 'chatgpt.com',
+    scope: MCP_WORKSPACE_SCOPE, oauthQuery: 'sig=test',
+  });
+  assert.ok(chatgpt.includes('<h1>Allow ChatGPT to manage your workspace?</h1>'));
+  assert.ok(chatgpt.includes('<p>ChatGPT will act as you in this Chickpea workspace. It can do only what you can do.</p>'));
+  assert.ok(chatgpt.includes('<dt>App</dt><dd>ChatGPT</dd><dt>Domain</dt><dd>chatgpt.com</dd>'));
+  const callback = 'https://chatgpt.com/connector_platform_oauth_redirect?code=code_123&state=state_123';
+  const back = await createMcpConsentRedirectResponse(callback, 'https://chatgpt.com/oauth/client.json').text();
+  assert.ok(back.includes('<title>Back to ChatGPT</title>'));
+  assert.ok(back.includes('<h1>Back to ChatGPT</h1>\n      <p>You\'re being sent back to ChatGPT.</p>'));
+
+  for (const [clientId, clientName, clientHost] of [
+    ['https://apps.example.org/oauth/client.json', 'ChatGPT', 'apps.example.org'],
+    ['https://chatgpt.com/oauth/0123456789abcdef/client.json', 'ChatGPT', 'chatgpt.com'],
+    ['https://chatgpt.com/oauth/codex/client.json', 'Codex', 'chatgpt.com'],
+    ['dynamically-registered', 'ChatGPT', undefined],
+  ] as const) {
+    const html = renderMcpConsentPage({ clientId, clientName, clientHost, scope: MCP_WORKSPACE_SCOPE, oauthQuery: 'sig=test' });
+    assert.ok(html.includes('<h1>Allow workspace management?</h1>'), clientId);
+    assert.ok(html.includes(
+      '<p>An app is asking to manage this Chickpea workspace as you. It signs in as you and can only do what you can do.</p>',
+    ), clientId);
+    assert.ok(html.includes(`<dt>App</dt><dd>${clientName} <span class="note">(name provided by the app)</span></dd>`), clientId);
+    const generic = await createMcpConsentRedirectResponse(callback, clientId).text();
+    assert.ok(generic.includes('<title>Back to your app</title>'), clientId);
+    assert.ok(generic.includes('<h1>Back to your app</h1>\n      <p>You\'re being sent back to the app that asked for access.</p>'), clientId);
+  }
+});
+
 test('MCP consent falls back to a generic label when the app gave no name', () => {
   for (const clientName of [undefined, '', '   ', '\u202e\u200b']) {
     const html = renderMcpConsentPage({ clientName, scope: MCP_WORKSPACE_SCOPE, oauthQuery: 'sig=test' });
