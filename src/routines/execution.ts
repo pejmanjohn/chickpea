@@ -14,18 +14,16 @@ import {
   type RoutineExecutionInitialData,
 } from '../agents/routine-execution-data.ts';
 import {
-  compileRuntimePlanV2,
-  type RuntimePlanBrowserCapabilityV1,
-  type RuntimePlanWebsiteLoginV1,
-  type RuntimePlanCodingModelV1,
-  type RuntimePlanImageCapabilityV3,
-} from '../agents/runtime-plan.ts';
+  compileAgentRunPlan,
+  resolveAgentRunPlan,
+  resolveCodingWorkspaceDecision,
+  type AgentRunPlanParts,
+} from '../agents/run-plan-resolution.ts';
 import {
   canonicalRuntimeModel,
   freezeRuntimeModelRoute,
   resolveRuntimeModel,
   safeRuntimeModelRouteEvidence,
-  type FrozenRuntimeModelRoute,
   type ProviderAuthRoute,
 } from '../config/runtime-model.ts';
 import {
@@ -44,16 +42,12 @@ import {
   planFunding,
   withCreditedBack,
 } from '../usage/run-settlement.ts';
-import {
-  imageCapabilityForResolution,
-  resolveAgentModelRoleFromStore,
-  type ModelRoleReader,
-} from '../config/model-policy.ts';
+import type { ModelRoleReader } from '../config/model-policy.ts';
 import type { EffectiveSlackConfig } from '../config/effective-config.ts';
+import type { ResolvedAssignment } from '../config/types.ts';
 import { loadModelCatalog } from '../model-catalog/index.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
-import { browserCapabilityForTurn, runGrantsWebsiteLogins, websiteLoginsForTurn } from '../browser/capability.ts';
-import { webSearchConfigured } from '../web/exa.ts';
+import { runGrantsWebsiteLogins } from '../browser/capability.ts';
 import {
   getConfigStore,
   getSettingsStore,
@@ -63,10 +57,6 @@ import {
 } from '../config/state-backend.ts';
 import { OpenAiSubscriptionError } from '../openai-subscription/errors.ts';
 import { sandboxBindingInstalled } from '../sandbox/select.ts';
-import {
-  freezeCodingModelForTurn,
-  resolveCodingWorkspaceDecision,
-} from '../slack/run-turn.ts';
 import {
   CHICKPEA_RESPONSE_METADATA_KEY,
   type ChickpeaResponseMetadata,
@@ -561,61 +551,33 @@ async function prepareExecution(
   let envelope = input.run.flueAgentEnvelope;
   let sandboxUnavailableFallback = false;
   if (!envelope) {
-    const workspaceDecision = dependencies.codingWorkspaceConfigured
-      ? await (async () => {
-          const configured = await dependencies.codingWorkspaceConfigured!(
+    const parts = await resolveAgentRunPlan({
+      assignment: routineAssignment(input.routine, access, modelCredential),
+      model: access.config.model,
+      workspaceId: input.routine.workspaceId,
+      connections: { admitted: access.effectiveConnections ?? [] },
+      resolvedModel: { runtimeModel: runtimeModel.model, ...(runtimeModelRoute ? { runtimeModelRoute } : {}) },
+      env: input.env,
+      settings: settingsStore,
+      // Same store authority as a Slack turn: a routine's Agent keeps whatever
+      // image role its workspace or per-Agent override resolves to.
+      roles: dependencies.modelRoleReader ?? getConfigStore(input.env),
+      resolveModel,
+      decideCodingWorkspace: dependencies.codingWorkspaceConfigured
+        ? async () => {
+            const configured = await dependencies.codingWorkspaceConfigured!(access.config, input.env);
+            const installed = (dependencies.sandboxInstalled ?? sandboxBindingInstalled)(input.env);
+            return {
+              capability: configured && installed ? 'available' as const : 'unavailable' as const,
+              unavailableFallback: configured && !installed,
+            };
+          }
+        : () => (dependencies.resolveWorkspaceDecision ?? resolveCodingWorkspaceDecision)(
             access.config,
             input.env,
-          );
-          const installed = (dependencies.sandboxInstalled ?? sandboxBindingInstalled)(input.env);
-          return {
-            capability: configured && installed ? 'available' as const : 'unavailable' as const,
-            unavailableFallback: configured && !installed,
-          };
-        })()
-      : await (dependencies.resolveWorkspaceDecision ?? resolveCodingWorkspaceDecision)(
-          access.config,
-          input.env,
-          settingsStore,
-        );
-    const reader = dependencies.modelRoleReader ?? getConfigStore(input.env);
-    // Same store authority as a Slack turn: a routine's Agent keeps whatever
-    // image role its workspace or per-Agent override resolves to.
-    const [imageRole, browserCapability, websiteLogins] = await Promise.all([
-      resolveAgentModelRoleFromStore({
-        role: 'image',
-        workspaceId: input.routine.workspaceId,
-        agent: { id: access.config.agent.id, kind: access.config.agent.kind },
-        reader: {
-          getWorkspaceModelRole: (workspaceId, role) =>
-            reader.getWorkspaceModelRole(workspaceId, role),
-          getAgentModelRole: (agentId, role) => reader.getAgentModelRole(agentId, role),
-        },
-        ...(input.env ? { env: input.env } : {}),
-        settings: settingsStore,
-      }),
-      browserCapabilityForTurn(settingsStore, input.env),
-      websiteLoginsForTurn(settingsStore, access.config.agent.websiteLogins),
-    ]);
-    const imageCapability = imageCapabilityForResolution(imageRole);
-    const codingWorkspace = workspaceDecision.capability === 'available';
-    const codingModel = codingWorkspace
-      ? await freezeCodingModelForTurn({
-          workspaceId: input.routine.workspaceId,
-          agent: access.config.agent,
-          reader,
-          agentRoute: {
-            model: access.config.model,
-            runtimeModel: runtimeModel.model,
-            ...(runtimeModelRoute ? { runtimeModelRoute } : {}),
-            ...(access.config.effort ? { effort: access.config.effort } : {}),
-          },
-          settings: settingsStore,
-          ...(input.env ? { env: input.env } : {}),
-          resolveModel,
-          agentCredential: modelCredential,
-        })
-      : undefined;
+            settingsStore,
+          ),
+    });
     const installation = installationOwnershipOf(input.env);
     envelope = createEnvelope({
       ...(installation ? { installation } : {}),
@@ -624,16 +586,9 @@ async function prepareExecution(
       access,
       prompt,
       attemptId,
-      canonicalModel: access.config.model,
-      runtimeModel: runtimeModel.model,
-      ...(runtimeModelRoute ? { runtimeModelRoute } : {}),
-      imageCapability,
-      ...(codingWorkspace ? { codingWorkspace, ...(codingModel ? { codingModel } : {}) } : {}),
-      ...(browserCapability ? { browserCapability, websiteLogins } : {}),
-      webSearch: webSearchConfigured(input.env),
-      modelCredential,
+      parts,
     });
-    sandboxUnavailableFallback = workspaceDecision.unavailableFallback;
+    sandboxUnavailableFallback = parts.sandboxUnavailableFallback;
   }
   // Validate the admitted envelope before starting. The workspace tools open
   // the coding workspace themselves, and the Agent releases it when its run
@@ -729,6 +684,25 @@ async function prepareExecution(
   };
 }
 
+/** The routine's Agent as assigned to its destination, with this attempt's model credential. */
+function routineAssignment(
+  routine: RoutineDefinition,
+  access: RoutineRuntimeAccess,
+  modelCredential: EffectiveSlackConfig['modelCredential'] | null,
+): ResolvedAssignment {
+  return {
+    workspaceId: routine.workspaceId,
+    channelId: routine.channelId,
+    agentId: access.config.agentId,
+    agent: access.config.agent,
+    model: access.config.model,
+    ...(access.config.effort ? { effort: access.config.effort } : {}),
+    modelAttribution: access.config.modelAttribution,
+    ...(access.config.ownerIncarnation ? { ownerIncarnation: access.config.ownerIncarnation } : {}),
+    ...(modelCredential ? { modelCredential } : {}),
+  };
+}
+
 function createEnvelope(input: {
   installation?: InstallationOwnership;
   routine: RoutineDefinition;
@@ -736,42 +710,11 @@ function createEnvelope(input: {
   access: RoutineRuntimeAccess;
   prompt: PreparedRoutinePrompt;
   attemptId: string;
-  canonicalModel: string;
-  runtimeModel: string;
-  runtimeModelRoute?: FrozenRuntimeModelRoute;
-  imageCapability?: RuntimePlanImageCapabilityV3;
-  codingWorkspace?: boolean;
-  codingModel?: RuntimePlanCodingModelV1;
-  browserCapability?: RuntimePlanBrowserCapabilityV1;
-  websiteLogins?: readonly RuntimePlanWebsiteLoginV1[];
-  webSearch?: boolean;
-  modelCredential: EffectiveSlackConfig['modelCredential'] | null;
+  parts: AgentRunPlanParts;
 }): RoutineAgentDispatchEnvelopeV2 {
-  const runtimePlan = compileRuntimePlanV2({
+  const runtimePlan = compileAgentRunPlan(input.parts, {
     ...(input.installation ? { installation: input.installation } : {}),
     turn: input.prompt.turn,
-    assignment: {
-      workspaceId: input.routine.workspaceId,
-      channelId: input.routine.channelId,
-      agentId: input.access.config.agentId,
-      agent: input.access.config.agent,
-      model: input.canonicalModel,
-      ...(input.access.config.effort ? { effort: input.access.config.effort } : {}),
-      modelAttribution: input.access.config.modelAttribution,
-      ...(input.access.config.ownerIncarnation
-        ? { ownerIncarnation: input.access.config.ownerIncarnation }
-        : {}),
-      ...(input.modelCredential ? { modelCredential: input.modelCredential } : {}),
-    },
-    runtimeModel: input.runtimeModel,
-    ...(input.runtimeModelRoute ? { runtimeModelRoute: input.runtimeModelRoute } : {}),
-    ...(input.imageCapability ? { imageCapability: input.imageCapability } : {}),
-    ...(input.codingWorkspace
-      ? { codingWorkspace: true, ...(input.codingModel ? { codingModel: input.codingModel } : {}) }
-      : {}),
-    ...(input.browserCapability ? { browserCapability: input.browserCapability } : {}),
-    ...(input.websiteLogins ? { websiteLogins: input.websiteLogins } : {}),
-    ...(input.webSearch ? { webSearch: true } : {}),
     instructions: [
       input.access.config.instructions,
       externalActionAuthorityInstructions(input.access.config.agent.instructions),
@@ -781,9 +724,6 @@ function createEnvelope(input: {
     // Artifacts follow the saved destination only. The prompt turn's
     // thread is the synthetic due-time stamp when no thread was saved.
     artifactThreadTs: input.routine.destination.threadTs ?? null,
-    ...(input.access.effectiveConnections
-      ? { effectiveConnections: input.access.effectiveConnections }
-      : {}),
   });
   const initialData: RoutineExecutionInitialData = {
     runtimePlan,

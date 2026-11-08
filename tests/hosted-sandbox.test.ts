@@ -54,7 +54,7 @@ import {
 } from '../src/sandbox/sandbox-object.ts';
 import { guestSandboxKey } from '../src/sandbox/thread-key.ts';
 import { WorkspaceSession, workspaceIdFor, type WorkspaceSandboxStub } from '../src/sandbox/workspace-session.ts';
-import { freezeCodingModelForTurn } from '../src/slack/run-turn.ts';
+import { freezeCodingModelForTurn } from '../src/agents/run-plan-resolution.ts';
 import { eraseInstallationObject } from '../src/state/installation-objects.ts';
 import { InstallationObjectInventoryLogic } from '../src/state/object-inventory.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';

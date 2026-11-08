@@ -61,7 +61,7 @@ import { githubSandboxOutbound, SANDBOX_BLOCKED_STATUS, type SandboxEgressStub }
 import type { SandboxEgressContext } from '../src/sandbox/cloudflare-policy.ts';
 import { NEUTRAL_GIT_IDENTITY, resolveWorkspaceGitIdentity } from '../src/sandbox/git-identity.ts';
 import { GITHUB_WRITES_KEY } from '../src/sandbox/github-write-rate.ts';
-import { resolveCodingWorkspaceDecision } from '../src/slack/run-turn.ts';
+import { resolveCodingWorkspaceDecision } from '../src/agents/run-plan-resolution.ts';
 import { buildTurnEnvelope } from '../src/slack/turn-envelope-builder.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { configureHostedSandboxPolicy, resetHostedSandboxPolicyForTests } from '../src/config/hosted-sandbox-policy.ts';
