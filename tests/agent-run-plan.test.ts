@@ -1,16 +1,29 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { compileAgentRunPlan, resolveAgentRunPlan } from '../src/agents/run-plan-resolution.ts';
+import {
+  compileAgentRunPlan,
+  resolveAgentRunPlan,
+  type AgentRunPlanRequest,
+} from '../src/agents/run-plan-resolution.ts';
 import type { RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { slackTenantInstructions } from '../src/agents/shared-prefix-layout.ts';
+import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
+import {
+  registerFrozenOpenRouterRuntimeModelRoute,
+  type FrozenOpenRouterLiveModelRoute,
+} from '../src/config/openrouter-runtime-model.ts';
+import { resetBuiltinProviderModelOverlaysForTests } from '../src/config/pi-provider.ts';
 import { RuntimeModelReadinessError } from '../src/config/runtime-model.ts';
+import type { PlatformEnv } from '../src/config/state-backend.ts';
+import type { ModelCredentialAttribution, ResolvedAssignment } from '../src/config/types.ts';
 import { resolveEffectiveConnectionAccounts, selectConnectionsForRequest } from '../src/connections/runtime.ts';
 import {
   ALICE,
   ALICE_ACCOUNT,
   BOB,
   freezeRoutineFixturePlan,
+  READY_AGENT,
   freezeSlackFixturePlan,
   ROUTINE_FIXTURES,
   SLACK_FIXTURES,
@@ -190,3 +203,80 @@ async function routinePartsWithoutEvent(lane: RunPlanLane, fixture: RoutineFixtu
   });
 }
 
+/** The Ops Agent in the Channel, resolved with no event; `assignment` overrides fields of its assignment. */
+async function channelParts(
+  lane: RunPlanLane,
+  request: Partial<Omit<AgentRunPlanRequest, 'assignment'>> & { assignment?: Partial<ResolvedAssignment> } = {},
+) {
+  const { assignment: overrides, ...rest } = request;
+  const assignment = { ...await lane.assignment(READY_AGENT, { kind: 'channel' }), ...overrides };
+  return resolveAgentRunPlan({
+    assignment, model: assignment.model!, workspaceId: WORKSPACE, env: undefined,
+    settings: lane.stores.settings, roles: lane.stores.config, ...rest,
+  });
+}
+
+const CODING_AVAILABLE = async () => ({ capability: 'available' as const, unavailableFallback: false });
+
+/** A model OpenRouter lists live but Pi's static catalog does not know. */
+const OVERLAY_MODEL = 'openrouter/acme/fresh-live-model';
+const OVERLAY_ROUTE: FrozenOpenRouterLiveModelRoute = {
+  source: 'openrouter_live_catalog', displayName: 'Acme Fresh Live Model', contextWindow: 196_608, maxTokens: 32_768,
+  reasoning: false, input: ['text', 'image'], cost: { input: 2, output: 6, cacheRead: 0, cacheWrite: 0 },
+};
+
+test('a model outside the static catalog freezes its live-catalog route into the plan, with no key', async () => {
+  await withRunPlanLane(async (lane) => {
+    // Resolving the model projects this overlay from OpenRouter's live list; the stub resolver does not.
+    registerFrozenOpenRouterRuntimeModelRoute(OVERLAY_MODEL, OVERLAY_MODEL, OVERLAY_ROUTE);
+    try {
+      const parts = await channelParts(lane, {
+        assignment: { model: OVERLAY_MODEL },
+        resolveModel: async () => ({ model: OVERLAY_MODEL }),
+      });
+      assert.deepEqual(parts.runtimeModelRoute, OVERLAY_ROUTE);
+      const plan = compileAgentRunPlan(parts, { turn: lane.turn(channelAlice!), instructions: 'Any.', memoryEpoch: 1 });
+      assert.equal(plan.model, OVERLAY_MODEL);
+      assert.deepEqual(plan.runtimeModelRoute, OVERLAY_ROUTE);
+    } finally {
+      resetBuiltinProviderModelOverlaysForTests();
+    }
+  });
+});
+
+test('an available coding workspace runs its coding model at the Agent\'s effort', async () => {
+  await withRunPlanLane(async (lane) => {
+    const parts = await channelParts(lane, { assignment: { effort: 'high' }, decideCodingWorkspace: CODING_AVAILABLE });
+    assert.equal(parts.codingWorkspace?.codingModel.effort, 'high');
+  });
+});
+
+test('a coding workspace configured where the deployment has no sandbox mounts none and says so', async () => {
+  await withRunPlanLane(async (lane) => {
+    const parts = await channelParts(lane, {
+      decideCodingWorkspace: async () => ({ capability: 'unavailable', unavailableFallback: true }),
+    });
+    assert.equal(parts.codingWorkspace, undefined);
+    assert.equal(parts.sandboxUnavailableFallback, true);
+  });
+});
+
+const AGENT_CREDENTIAL: ModelCredentialAttribution = {
+  credentialRefId: 'cred_local_stub_stored', version: 2, providerId: 'local-stub',
+  sourceKind: 'stored', label: 'Local stub key', scopeLabel: null, unknownRotation: false,
+};
+
+test('an installation of a deployment serving many runs its coding worker on the Agent\'s frozen credential',
+  async () => {
+    await withRunPlanLane(async (lane) => {
+      const parts = await channelParts(lane, {
+        assignment: { modelCredential: AGENT_CREDENTIAL },
+        env: scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' } as unknown as PlatformEnv,
+          { installationId: `inst_${'0123456789abcdef'.repeat(2)}` }),
+        resolveModel: async (_agentId, model) => ({ model }),
+        decideCodingWorkspace: CODING_AVAILABLE,
+      });
+      assert.deepEqual(parts.codingWorkspace?.codingModel.modelCredential,
+        { credentialRefId: 'cred_local_stub_stored', version: 2, providerId: 'local-stub' });
+    });
+  });
