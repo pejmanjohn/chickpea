@@ -281,3 +281,67 @@ test('a request still pending when the connection closes is abandoned', (t) => {
     [{ method: 'tools/list', outcome: 'abandoned' }],
   );
 });
+
+async function postAs(
+  fetch: (request: Request) => Promise<Response>,
+  input: { protocol: string; method: string; params: Record<string, unknown>; userAgent?: string; clientName?: string },
+): Promise<void> {
+  const response = await fetch(new Request('http://localhost/mcp', {
+    method: 'POST',
+    headers: {
+      ...headers(input.protocol, input.method, typeof input.params.name === 'string' ? input.params.name : undefined),
+      ...(input.userAgent ? { 'user-agent': input.userAgent } : {}),
+    },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: `req-${input.method}`,
+      method: input.method,
+      params: input.protocol === MODERN ? {
+        ...input.params,
+        _meta: {
+          'io.modelcontextprotocol/protocolVersion': input.protocol,
+          'io.modelcontextprotocol/clientCapabilities': {},
+          ...(input.clientName ? { 'io.modelcontextprotocol/clientInfo': { name: input.clientName, version: '1.0.0' } } : {}),
+        },
+      } : input.params,
+    }),
+  }));
+  await response.text();
+}
+
+test('every request metric names its client by clientInfo.name, as a closed token', async (t) => {
+  const { fetch, metrics, principal } = await harness(t, 'client-label');
+  const initialize = (name: string) => ({
+    protocolVersion: LEGACY,
+    capabilities: {},
+    clientInfo: { name, version: '1.0.0' },
+  });
+
+  // initialize carries clientInfo; on the stateless legacy door later messages
+  // carry only the User-Agent, which repeats it for these clients.
+  await postAs(fetch, { protocol: LEGACY, method: 'initialize', params: initialize('openai-mcp'), userAgent: 'python-httpx/0.27' });
+  await postAs(fetch, { protocol: LEGACY, method: 'tools/list', params: {}, userAgent: 'openai-mcp/1.0.0' });
+  await postAs(fetch, { protocol: LEGACY, method: 'tools/list', params: {}, userAgent: 'openai-mcp/1.0.0 (Codex)' });
+  await postAs(fetch, { protocol: LEGACY, method: 'tools/list', params: {}, userAgent: 'codex-mcp-client/0.160.1' });
+  await postAs(fetch, { protocol: LEGACY, method: 'initialize', params: initialize('claude-code') });
+  await postAs(fetch, { protocol: LEGACY, method: 'tools/list', params: {}, userAgent: 'claude-code/2.1.0 (external, cli)' });
+  await postAs(fetch, { protocol: LEGACY, method: 'initialize', params: initialize(SECRET_VALUE) });
+  await postAs(fetch, { protocol: LEGACY, method: 'tools/list', params: {}, userAgent: `${SECRET_KEY}/1.0` });
+  await postAs(fetch, { protocol: LEGACY, method: 'tools/list', params: {} });
+  // The 2026-07-28 era carries clientInfo on every request.
+  await postAs(fetch, { protocol: MODERN, method: 'tools/list', params: {}, clientName: 'chickpea-cli', userAgent: 'node' });
+
+  assert.deepEqual(requestMetrics(metrics).map(({ method, client }) => ({ method, client })), [
+    { method: 'initialize', client: 'openai-mcp' },
+    { method: 'tools/list', client: 'openai-mcp' },
+    { method: 'tools/list', client: 'openai-mcp-codex' },
+    { method: 'tools/list', client: 'codex-mcp-client' },
+    { method: 'initialize', client: 'claude-code' },
+    { method: 'tools/list', client: 'claude-code' },
+    { method: 'initialize', client: 'other' },
+    { method: 'tools/list', client: 'other' },
+    { method: 'tools/list', client: 'unknown' },
+    { method: 'tools/list', client: 'chickpea-cli' },
+  ]);
+  assertNoValues(metrics, principal);
+});

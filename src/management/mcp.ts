@@ -41,6 +41,12 @@ import {
 } from './prompts.ts';
 import { createLiveWorkspaceManagementService } from './live-service.ts';
 import { observeMcpRequests } from './mcp-request-telemetry.ts';
+import {
+  FIVE_ZERO_TOOL_INPUT_SCHEMAS,
+  FIVE_ZERO_TOOL_NAMES,
+  registerFiveZeroTools,
+} from './mcp-v5/tools.ts';
+import { shapeFiveZeroResults } from './mcp-v5/transport.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import {
   invokeWorkspaceManagementTool,
@@ -52,10 +58,13 @@ import type { ManagementActorContext, ManagementOperation } from './types.ts';
 
 export const WORKSPACE_MANAGEMENT_SERVER_INFO = {
   name: 'chickpea-workspace',
-  version: '4.2.0',
+  version: '4.3.0',
 } as const;
-/** The coding-agent door has no propose tools: it acts with the person's Admin authority. */
-export const WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES = [
+/**
+ * The 4.x tools, backed by the shared tool adapter. The coding-agent door has
+ * no propose_workspace_changes: it acts with the person's Admin authority.
+ */
+export const WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES = [
   'inspect_workspace',
   'prepare_connector_setup',
   'prepare_provider_setup',
@@ -78,7 +87,13 @@ export const WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES = [
   'list_mcp_clients',
   'revoke_mcp_client',
 ] as const satisfies readonly WorkspaceManagementToolName[];
-/** One schema per MCP tool, shared by registration and request telemetry. */
+/** Every tool `tools/list` shows, in order: the 4.x tools, then the 5.0 tools 4.3 adds. */
+export const WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES: readonly string[] = [
+  ...WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES,
+  ...FIVE_ZERO_TOOL_NAMES,
+];
+const FIVE_ZERO_TOOL_NAME_SET: ReadonlySet<string> = new Set(FIVE_ZERO_TOOL_NAMES);
+/** One schema per 4.x MCP tool, shared by registration and request telemetry. */
 const MCP_TOOL_INPUT_SCHEMAS = {
   inspect_workspace: inspectWorkspaceZodSchema,
   prepare_connector_setup: prepareConnectorSetupZodSchema,
@@ -101,12 +116,16 @@ const MCP_TOOL_INPUT_SCHEMAS = {
   revoke_setup_link: revokeSetupLinkZodSchema,
   list_mcp_clients: listMcpClientsZodSchema,
   revoke_mcp_client: revokeMcpClientZodSchema,
-} as const satisfies Record<(typeof WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES)[number], z.ZodType>;
+} as const satisfies Record<(typeof WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES)[number], z.ZodType>;
 
-/** Each transport this server connects reports an `mcp.request` metric per message. */
+/**
+ * Each transport this server connects reports an `mcp.request` metric per
+ * message, and gives 5.0 results the shape the SDK cannot express.
+ */
 class ObservedMcpServer extends McpServer {
   override connect(transport: Transport): Promise<void> {
-    observeMcpRequests(transport, MCP_TOOL_INPUT_SCHEMAS);
+    observeMcpRequests(transport, { ...MCP_TOOL_INPUT_SCHEMAS, ...FIVE_ZERO_TOOL_INPUT_SCHEMAS });
+    shapeFiveZeroResults(transport, FIVE_ZERO_TOOL_NAME_SET);
     return super.connect(transport);
   }
 }
@@ -394,6 +413,13 @@ export function createWorkspaceManagementMcpServer(
     'revoke_mcp_client',
     args,
   )));
+
+  registerFiveZeroTools(server, {
+    service: input.service,
+    context: adapter.resolveContext,
+    ...(input.baseUrl ? { baseUrl: input.baseUrl } : {}),
+    ...(input.env ? { env: input.env } : {}),
+  });
 
   server.registerResource('workspace', 'chickpea://workspace', {
     title: 'Current Chickpea workspace',

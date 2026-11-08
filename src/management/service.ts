@@ -284,6 +284,7 @@ import {
   type UploadSkillsInput,
   type UploadSkillsResult,
   type ManagementMemorySnapshot,
+  type ManagementAgentCreationProgress,
   type ManagementModelAccess,
   type ManagementModelProviderId,
   type ManagementModelSources,
@@ -668,7 +669,7 @@ export class WorkspaceManagementService {
    * Opens the Chickpea app in Slack for the requester's workspace. Presentation
    * only: an unknown team or installation simply omits the link.
    */
-  private async slackAppLink(context: ManagementActorContext): Promise<string | undefined> {
+  async slackAppLink(context: ManagementActorContext): Promise<string | undefined> {
     const teamId = context.origin.kind === 'slack'
       ? context.origin.workspaceId
       : (await this.stores.identity.getUser(context.userId))?.slackTeamId;
@@ -4034,6 +4035,63 @@ export class WorkspaceManagementService {
       throw new ManagementError('operation_not_found', 'The management operation was not found.');
     }
     return this.setupPublicStatus(setup);
+  }
+
+  /**
+   * What a creation card polls while a new Agent joins Slack: light reads
+   * only, never the workspace snapshot. The caller must be able to edit it.
+   */
+  async agentCreationProgress(
+    context: ApplyWorkspaceChangesInput['context'],
+    agentId: string,
+  ): Promise<ManagementAgentCreationProgress> {
+    const actor = await this.requireLiveActor(context);
+    const agent = await this.requireEditableAgent(actor, agentId);
+    const [grants, welcomes] = await Promise.all([
+      this.stores.config.listAgentChannelGrants(),
+      this.stores.management.execute({
+        kind: 'list_direct_agent_creation_welcomes',
+        userId: actor.userId,
+        agentId,
+        requesterMembershipId: actor.membershipId,
+      }),
+    ]);
+    const welcome = welcomes.kind === 'outbox_batch' ? welcomes.outbox[0] : undefined;
+    const handle = agent.slackPresence?.normalizedHandle;
+    return {
+      agent: { name: agent.name, ...(handle ? { handle } : {}) },
+      ...(agent.slackPresence
+        ? {
+            presence: {
+              health: agent.slackPresence.health,
+              ...(agent.slackPresence.errorCode ? { errorCode: agent.slackPresence.errorCode } : {}),
+            },
+          }
+        : {}),
+      channelGrants: grants.filter((grant) => grant.agentId === agentId).map(({ status }) => status),
+      ...(welcome ? { welcome: { status: welcome.status } } : {}),
+    };
+  }
+
+  /**
+   * Whether an Agent edit would wait for the person's confirmation on this
+   * door, decided by the same policy the change would meet. Applies nothing.
+   */
+  async agentPatchNeedsConfirmation(
+    context: ApplyWorkspaceChangesInput['context'],
+    agentId: string,
+    patch: ManagementAgentPatch,
+  ): Promise<boolean> {
+    const actor = await this.requireLiveActor(context);
+    const currentAgent = await this.requireEditableAgent(actor, agentId);
+    const decision = classifyManagementOperation({
+      actor,
+      operation: { itemId: 'preview', kind: 'update_agent', agentId, expectedRevision: currentAgent.revision, patch },
+      currentAgent,
+      agentReferences: await this.stores.config.getAgentReferences(agentId),
+    });
+    if (!decision.allowed) throw new ManagementError('forbidden', 'The Agent is not available to this member.');
+    return decision.posture === 'confirmation';
   }
 
   async revokeSetupLink(

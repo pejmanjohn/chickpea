@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 const REQUEST_TIMEOUT_MS = 15_000;
 const AGENT_AUTHORING_GUIDE_URI = 'chickpea://guide/agent-authoring/v1';
 const AGENT_AUTHORING_GUIDE_VERSION = '1.0.49';
-const MANAGEMENT_MCP_SERVER_VERSION = '4.2.0';
+const MANAGEMENT_MCP_SERVER_VERSION = '4.3.0';
 const MANAGEMENT_MCP_TOOL_NAMES = [
   'inspect_workspace',
   'prepare_connector_setup',
@@ -27,6 +27,22 @@ const MANAGEMENT_MCP_TOOL_NAMES = [
   'revoke_setup_link',
   'list_mcp_clients',
   'revoke_mcp_client',
+  'get_account',
+  'get_workspace',
+  'list_agents',
+  'get_agent',
+  'list_services',
+  'list_models',
+  'list_members',
+  'list_slack_channels',
+  'get_agent_memory',
+  'list_schedules',
+  'get_setup_status',
+  'export_agents',
+  'list_connected_apps',
+  'propose_agent',
+  'propose_agent_change',
+  'get_creation_status',
 ];
 
 function fetchWithDeadline(input, init = {}) {

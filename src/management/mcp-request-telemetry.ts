@@ -4,6 +4,7 @@ import {
   isJSONRPCRequest,
   isJSONRPCResultResponse,
   type JSONRPCMessage,
+  type MessageExtraInfo,
   type RequestId,
   type Transport,
 } from '@modelcontextprotocol/server';
@@ -24,6 +25,54 @@ interface PendingRequest {
 }
 
 /**
+ * The clients the `client` label names, by `clientInfo.name`. Any other name
+ * is `other`, so no client-chosen text reaches a metric.
+ */
+const MCP_CLIENT_TOKENS: Readonly<Record<string, string>> = {
+  'openai-mcp': 'openai-mcp',
+  'openai-mcp (Codex)': 'openai-mcp-codex',
+  'codex-mcp-client': 'codex-mcp-client',
+  'claude-code': 'claude-code',
+  'claude-ai': 'claude-ai',
+  'gemini-cli-mcp-client': 'gemini-cli-mcp-client',
+  'chickpea-cli': 'chickpea-cli',
+};
+
+const CLIENT_INFO_META_KEY = 'io.modelcontextprotocol/clientInfo';
+
+/**
+ * Which client sent a message, as a closed token. `clientInfo.name` comes from
+ * `initialize`, or from each request's `_meta` in the 2026-07-28 era. On the
+ * stateless legacy door only `initialize` carries it, so any other message
+ * falls back to the User-Agent, whose product and comment repeat the name for
+ * the clients measured: `openai-mcp/1.0.0`, `openai-mcp/1.0.0 (Codex)` and
+ * `codex-mcp-client/0.160.1`.
+ */
+function mcpClientToken(message: JSONRPCMessage, extra: MessageExtraInfo | undefined): string {
+  const params = ('params' in message ? message.params : undefined) as Record<string, unknown> | undefined;
+  const fromInit = isJSONRPCRequest(message) && message.method === 'initialize'
+    ? (params?.clientInfo as { name?: unknown } | undefined)?.name
+    : undefined;
+  const fromMeta = ((params?._meta as Record<string, unknown> | undefined)?.[CLIENT_INFO_META_KEY] as
+    { name?: unknown } | undefined)?.name;
+  const named = typeof fromInit === 'string' ? fromInit : typeof fromMeta === 'string' ? fromMeta : undefined;
+  const names = named !== undefined ? [named] : userAgentClientNames(extra?.request?.headers.get('user-agent'));
+  if (names.length === 0) return 'unknown';
+  const known = names.find((name) => Object.hasOwn(MCP_CLIENT_TOKENS, name));
+  return known === undefined ? 'other' : MCP_CLIENT_TOKENS[known]!;
+}
+
+/**
+ * `name/version (comment)` as `name (comment)`, the way those clients spell
+ * clientInfo.name, then the bare product name.
+ */
+function userAgentClientNames(userAgent: string | null | undefined): string[] {
+  const match = userAgent?.match(/^([^\s/]+)\/\S+(?: \(([^)]*)\))?/);
+  if (!match?.[1]) return [];
+  return match[2] ? [`${match[1]} (${match[2]})`, match[1]] : [match[1]];
+}
+
+/**
  * Emit one `mcp.request` metric for each JSON-RPC message this transport
  * carries: a notification when it arrives, a request when its response is
  * sent. Call before the server connects, so the SDK chains `onmessage` ahead of
@@ -35,7 +84,7 @@ export function observeMcpRequests(transport: Transport, inputSchemas: McpToolIn
   const onmessage = transport.onmessage;
   transport.onmessage = (message, extra) => {
     try {
-      receive(message);
+      receive(message, extra);
     } catch {
       // Observability never changes MCP behavior.
     }
@@ -57,14 +106,15 @@ export function observeMcpRequests(transport: Transport, inputSchemas: McpToolIn
     onclose?.();
   };
 
-  function receive(message: JSONRPCMessage): void {
+  function receive(message: JSONRPCMessage, extra: MessageExtraInfo | undefined): void {
+    const client = mcpClientToken(message, extra);
     if (isJSONRPCNotification(message)) {
-      emitManagementMetric('mcp.request', { method: message.method, outcome: 'received' });
+      emitManagementMetric('mcp.request', { method: message.method, client, outcome: 'received' });
       return;
     }
     if (!isJSONRPCRequest(message)) return;
     const params = (message.params ?? {}) as Record<string, unknown>;
-    const fields: Record<string, ManagementMetricValue> = { method: message.method };
+    const fields: Record<string, ManagementMetricValue> = { method: message.method, client };
     let toolCall: PendingRequest['toolCall'];
     if (message.method === 'tools/call' && typeof params.name === 'string') {
       fields.tool = params.name;
