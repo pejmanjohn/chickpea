@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { compileAgentRunPlan, resolveAgentRunPlan } from '../src/agents/run-plan-resolution.ts';
+import type { RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import { slackTenantInstructions } from '../src/agents/shared-prefix-layout.ts';
 import { RuntimeModelReadinessError } from '../src/config/runtime-model.ts';
+import { resolveEffectiveConnectionAccounts, selectConnectionsForRequest } from '../src/connections/runtime.ts';
 import {
   ALICE,
   ALICE_ACCOUNT,
@@ -11,7 +15,11 @@ import {
   ROUTINE_FIXTURES,
   SLACK_FIXTURES,
   TEAM_ACCOUNT,
+  WORKSPACE,
   withRunPlanLane,
+  type RoutineFixture,
+  type RunPlanLane,
+  type SlackFixture,
 } from './helpers/run-plan-lane.ts';
 
 const [dmAlice, channelAlice, channelBob, channelNoMember, dmUnready] = SLACK_FIXTURES;
@@ -98,3 +106,91 @@ test('a routine freezes only the connections its schedule admitted, and its codi
       { failure: 'tool_failed: The routine could not complete safely.' });
   });
 });
+
+/** The parts for a fixture's Agent, place and actor, resolved with no Slack event. */
+async function partsWithoutEvent(lane: RunPlanLane, fixture: SlackFixture) {
+  const assignment = await lane.assignment(fixture.agentId, fixture.place);
+  const parts = await resolveAgentRunPlan({
+    assignment,
+    model: assignment.model!,
+    workspaceId: WORKSPACE,
+    ...(fixture.actor ? { connections: { actorMembershipId: fixture.actor, config: lane.stores.config } } : {}),
+    env: lane.platformEnv(fixture),
+    settings: lane.stores.settings,
+    roles: lane.stores.config,
+  });
+  return { assignment, parts };
+}
+
+for (const fixture of SLACK_FIXTURES.filter(({ agentId }) => agentId !== dmUnready!.agentId)) {
+  test(`${fixture.name}: the parts resolved with no Slack event, joined with the message's own, are the turn's plan`,
+    async () => {
+      await withRunPlanLane(async (lane) => {
+        const { assignment, parts } = await partsWithoutEvent(lane, fixture);
+        const turn = lane.turn(fixture);
+        const composed = compileAgentRunPlan(parts, {
+          turn,
+          assignment,
+          instructions: slackTenantInstructions(assignment),
+          memoryEpoch: 3,
+          request: selectConnectionsForRequest({ connections: parts.connections, requestText: turn.text }),
+        });
+        assert.deepEqual(composed, await freezeSlackFixturePlan(lane, fixture));
+      });
+    });
+}
+
+test('with no Slack event, a model whose provider has no key fails as the turn does', async () => {
+  await withRunPlanLane(async (lane) => {
+    await assert.rejects(partsWithoutEvent(lane, dmUnready!), RuntimeModelReadinessError);
+  });
+});
+
+/** What the parts decide in a plan: the model route, the capabilities, and the connections with their tools. */
+function partsView(plan: RuntimePlanV2) {
+  const {
+    runtimeModel, runtimeModelRoute, imageCapability, codingWorkspace, browserCapability, websiteLogins, webSearch,
+    connectionAccountIds, usesPersonalAccess, connectionAuthorizations, teamReconnects, apiConnections, mcpConnections,
+    managedConnections,
+  } = plan;
+  return {
+    runtimeModel, runtimeModelRoute, imageCapability, codingWorkspace, browserCapability, websiteLogins, webSearch,
+    connectionAccountIds, usesPersonalAccess, connectionAuthorizations, teamReconnects, apiConnections, mcpConnections,
+    managedConnections,
+  };
+}
+
+for (const fixture of [routineTeam!, routineCoding!]) {
+  test(`${fixture.name}: the parts resolved with no routine decide what the routine froze`, async () => {
+    await withRunPlanLane(async (lane) => {
+      const frozen = await freezeRoutineFixturePlan(lane, fixture);
+      assert.ok('plan' in frozen, JSON.stringify(frozen));
+      const parts = await routinePartsWithoutEvent(lane, fixture);
+      // Any conversation will do: none of these fields depend on one.
+      const { assignment } = await partsWithoutEvent(lane, channelAlice!);
+      const composed = compileAgentRunPlan(parts, {
+        turn: lane.turn(channelAlice!), assignment, instructions: 'Any.', memoryEpoch: 1,
+      });
+      assert.deepEqual(partsView(composed), partsView(frozen.plan));
+    });
+  });
+}
+
+async function routinePartsWithoutEvent(lane: RunPlanLane, fixture: RoutineFixture) {
+  const assignment = await lane.assignment(fixture.agentId, { kind: 'channel' });
+  const effective = await resolveEffectiveConnectionAccounts({
+    config: lane.stores.config, workspaceId: WORKSPACE, agentId: fixture.agentId, actorMembershipId: fixture.actor,
+  });
+  return resolveAgentRunPlan({
+    assignment,
+    model: assignment.model!,
+    workspaceId: WORKSPACE,
+    connections: { admitted: effective.filter(({ account }) => fixture.admittedAccountIds.includes(account.id)) },
+    env: {} as never,
+    settings: lane.stores.settings,
+    roles: lane.stores.config,
+    ...(fixture.codingWorkspace
+      ? { decideCodingWorkspace: async () => ({ capability: 'available' as const, unavailableFallback: false }) }
+      : {}),
+  });
+}

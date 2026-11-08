@@ -5,28 +5,16 @@ import { verifyOwnMemoryWrite } from './memory-update-terminal.ts';
 import { WebClient } from '@slack/web-api';
 
 import {
-  compileRuntimePlanV2,
   deriveRuntimePlanInstanceId,
-  frozenModelCredential,
   runtimePlanUsesPersonalAccess,
-  type RuntimePlanCodingModelV1,
   type RuntimePlanV2,
 } from '../agents/runtime-plan.ts';
+import { compileAgentRunPlan, resolveAgentRunPlan } from '../agents/run-plan-resolution.ts';
 import { agentTeammateHandles } from '../config/effective-config.ts';
 import { slackTenantInstructions } from '../agents/shared-prefix-layout.ts';
 import { CHICKPEA_AGENT_NAME } from '../config/agent-id.ts';
-import {
-  codingOnAgentModel,
-  imageCapabilityForResolution,
-  resolveAgentModel,
-  resolveAgentModelRoleFromStore,
-  resolveCodingModelForPlan,
-  type CodingModelAgentRoute,
-  type ModelRoleReader,
-} from '../config/model-policy.ts';
-import { getGithubConnection } from '../config/github-app.ts';
+import { resolveAgentModel } from '../config/model-policy.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
-import { resolveSandboxSettings } from '../config/sandbox-settings.ts';
 import {
   getConfigStore,
   getIdentityStore,
@@ -51,11 +39,9 @@ import {
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { installationRefusesWork } from '../config/installation-admission.ts';
 import {
-  deploymentServesManyInstallations,
   InstallationContextError,
   installationOwnershipOf,
 } from '../config/installation-scope.ts';
-import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
 import type { PlatformFundingRefusal } from '../config/platform-funding.ts';
 import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
 import { wakeSlackAgentObject } from '../agents/turn-input.ts';
@@ -69,17 +55,14 @@ import {
   renderFrontDeskBlock,
   type SlackFrontDeskHandoffRequest,
 } from './front-desk.ts';
-import { browserCapabilityForTurn, runGrantsWebsiteLogins, websiteLoginsForTurn } from '../browser/capability.ts';
-import { webSearchConfigured } from '../web/exa.ts';
+import { runGrantsWebsiteLogins } from '../browser/capability.ts';
 import type {
   SlackInteractionProgress,
   SlackInteractionProgressPatch,
 } from '../config/state-rpc.ts';
-import type { ModelCredentialAttribution, ResolvedAssignment } from '../config/types.ts';
+import type { ResolvedAssignment } from '../config/types.ts';
 import {
-  freezeRuntimeModelRoute,
   resolveProviderAuthRoute,
-  resolveRuntimeModel,
   RuntimeModelReadinessError,
   safeRuntimeModelRouteEvidence,
 } from '../config/runtime-model.ts';
@@ -186,11 +169,6 @@ import {
 import { slackProgressiveStreamingEnabled } from './progressive-ops-flag.ts';
 import { slackSemanticActivityStatusEnabled } from './semantic-status-flag.ts';
 import {
-  resolveCodingWorkspaceCapability,
-  sandboxBindingInstalled,
-  type CodingWorkspaceCapabilityDecision,
-} from '../sandbox/select.ts';
-import {
   assembleSlackPrompt,
   renderSlackSelfMention,
 } from './web-client-context.ts';
@@ -231,10 +209,7 @@ import {
   type SlackPresentationStatePort,
 } from './agent-view-presentation.ts';
 import { createSlackWebClient } from './web-client.ts';
-import {
-  resolveConnectionAccountContext,
-  selectConnectionsForRequest,
-} from '../connections/runtime.ts';
+import { selectConnectionsForRequest } from '../connections/runtime.ts';
 import { createLiveWorkspaceManagementService } from '../management/live-service.ts';
 import {
   executeHostSlackManagementApproval,
@@ -3044,40 +3019,6 @@ function agentFailureBeforeModelInvocation(error: unknown): boolean {
 }
 
 /**
- * Whether this turn's Agent may use a coding workspace. It never changes the
- * Agent's own environment; it only decides whether the workspace tools mount.
- */
-export async function resolveCodingWorkspaceDecision(
-  assignment: ResolvedAssignment,
-  env: PlatformEnv | undefined,
-  store?: SettingsStore,
-): Promise<CodingWorkspaceCapabilityDecision> {
-  if (!isCloudflareTarget()) return { capability: 'unavailable', unavailableFallback: false };
-  const repositories = assignment.agent.repositories ?? [];
-  if (repositories.length === 0) {
-    return { capability: 'unavailable', unavailableFallback: false };
-  }
-
-  try {
-    const settingsStore = store ?? getSettingsStore(env);
-    const [settings, connection] = await Promise.all([
-      resolveSandboxSettings(settingsStore, env),
-      getGithubConnection(settingsStore, env),
-    ]);
-    return resolveCodingWorkspaceCapability({
-      target: 'cloudflare',
-      installed: sandboxBindingInstalled(env),
-      enabled: settings.enabled,
-      appConnected: connection.mode === 'app',
-      repositoryGrants: repositories,
-    });
-  } catch {
-    // Without its policy the workspace is simply not offered this turn.
-    return { capability: 'unavailable', unavailableFallback: false };
-  }
-}
-
-/**
  * On Cloudflare the Agent runs in its own Durable Object, where every settings
  * read is an RPC back into the state object. Freeze what its tools read so
  * they do not call back per tool: local reads in the state object, RPCs like
@@ -3152,72 +3093,30 @@ export async function freezeRuntimePlanForTurn(input: {
     );
   }
   const configStore = input.configStore ?? getConfigStore(input.platformEnv);
-  const actorConnectionContext = input.turn.actorMembershipId
-    ? {
-        config: configStore,
-        workspaceId: input.turn.workspaceId,
-        agentId: input.assignment.agentId,
-        actorMembershipId: input.turn.actorMembershipId,
-      }
-    : undefined;
   const canonicalModel = resolvedAssignmentModel(input.assignment);
   if (!canonicalModel) {
     throw new Error('Runtime plan compilation requires a frozen model.');
   }
-  const settingsStore = input.settingsStore ?? getSettingsStore(input.platformEnv);
-  // Independent reads, in one round to the state store: the workspace
-  // policy, the actor's connections, the thread's previous plan, the runtime
-  // model, the image role, the browser capability, and the granted website
-  // logins.
-  const [
-    workspaceDecision, connectionContext, previous, runtimeModel, imageRole, browserCapability, websiteLogins,
-  ] = await Promise.all([
-    resolveCodingWorkspaceDecision(
-      input.assignment,
-      input.platformEnv,
-      input.settingsStore,
-    ),
-    actorConnectionContext
-      ? resolveConnectionAccountContext(actorConnectionContext)
-      : undefined,
+  // Everything no message decides, beside the thread's previous plan.
+  const [parts, previous] = await Promise.all([
+    resolveAgentRunPlan({
+      assignment: input.assignment,
+      model: canonicalModel,
+      workspaceId: input.turn.workspaceId,
+      ...(input.turn.actorMembershipId
+        ? { connections: { actorMembershipId: input.turn.actorMembershipId, config: configStore } }
+        : {}),
+      env: input.platformEnv,
+      settings: input.settingsStore ?? getSettingsStore(input.platformEnv),
+      roles: configStore,
+    }),
     input.turn.actorMembershipId
       ? input.getBoundRuntimePlan?.(
           opaqueId('agent', slackAgentContinuityKey(input.turn, input.assignment)), turnRequestTs(input.turn),
           input.turn.actorMembershipId, input.assignment.agentId,
         )
       : undefined,
-    resolveRuntimeModel(
-      input.assignment.agentId,
-      canonicalModel,
-      {
-        settings: settingsStore,
-        ...(input.platformEnv ? { env: input.platformEnv } : {}),
-      },
-    ),
-    resolveAgentModelRoleFromStore({
-      role: 'image',
-      workspaceId: input.turn.workspaceId,
-      agent: { id: input.assignment.agent.id, kind: input.assignment.agent.kind },
-      reader: {
-        getWorkspaceModelRole: (workspaceId, role) =>
-          configStore.getWorkspaceModelRole(workspaceId, role),
-        getAgentModelRole: (agentId, role) => configStore.getAgentModelRole(agentId, role),
-      },
-      ...(input.platformEnv ? { env: input.platformEnv } : {}),
-      settings: settingsStore,
-    }),
-    // A connected hosted browser mounts the browser tools. The key stays in
-    // settings and is read again at call time; only the capability is frozen.
-    browserCapabilityForTurn(settingsStore, input.platformEnv),
-    // Login metadata only; passwords are decrypted at call time.
-    websiteLoginsForTurn(settingsStore, input.assignment.agent.websiteLogins),
   ]);
-  // The constant guidance opens the agent's system prompt in code
-  // (shared-prefix.ts); the plan carries only what names this Agent.
-  const instructions = slackTenantInstructions(input.assignment);
-  const allEffectiveConnections = connectionContext?.effective ?? [];
-  const connectionAuthorizations = connectionContext?.authorizations;
-  const teamReconnects = connectionContext?.teamReconnects;
   const sameActorThread = previous && input.turn.actorMembershipId &&
     previous.actorMembershipId === input.turn.actorMembershipId &&
     previous.agentId === input.assignment.agentId &&
@@ -3225,56 +3124,20 @@ export async function freezeRuntimePlanForTurn(input: {
     previous.conversation.workspaceId === input.turn.workspaceId &&
     previous.conversation.channelId === input.turn.channelId &&
     previous.conversation.threadTs === input.turn.threadTs;
-  const connectionResolution = selectConnectionsForRequest({
-    connections: allEffectiveConnections,
-    requestText: input.requestText ?? input.turn.text,
-    ...(sameActorThread && previous.connectionSelections ? { previousSelections: previous.connectionSelections } : {}),
-  });
-  // The image role is the store's alone. Freezing its bounded capability here
-  // is what mounts `generate_image` on the Agent; an unresolved or
-  // uncredentialed role freezes an unfilled capability instead.
-  const imageCapability = imageCapabilityForResolution(imageRole);
-  const runtimeModelRoute = freezeRuntimeModelRoute(
-    canonicalModel,
-    runtimeModel.providerAuthRoute,
-    input.platformEnv,
-  );
-  const codingWorkspace = workspaceDecision.capability === 'available';
   const frontDesk = compileFrontDeskPlan(input.turn, input.assignment);
-  const codingModel = codingWorkspace
-    ? await freezeCodingModelForTurn({
-        workspaceId: input.turn.workspaceId,
-        agent: input.assignment.agent,
-        reader: configStore,
-        agentRoute: {
-          model: canonicalModel,
-          runtimeModel: runtimeModel.model,
-          ...(runtimeModelRoute ? { runtimeModelRoute } : {}),
-          ...(input.assignment.effort ? { effort: input.assignment.effort } : {}),
-        },
-        settings: settingsStore,
-        ...(input.platformEnv ? { env: input.platformEnv } : {}),
-        agentCredential: input.assignment.modelCredential ?? null,
-      })
-    : undefined;
-  const candidate = compileRuntimePlanV2({
+  const candidate = compileAgentRunPlan(parts, {
     ...(installation ? { installation } : {}),
     turn: input.turn,
     assignment: input.assignment,
-    runtimeModel: runtimeModel.model,
-    ...(runtimeModelRoute ? { runtimeModelRoute } : {}),
-    imageCapability,
-    ...(codingWorkspace ? { codingWorkspace, ...(codingModel ? { codingModel } : {}) } : {}),
-    ...(browserCapability ? { browserCapability, websiteLogins } : {}),
-    // Only that the key exists is frozen; web_search reads the key at call time.
-    webSearch: webSearchConfigured(input.platformEnv),
-    instructions,
+    // The constant guidance opens the agent's system prompt in code
+    // (shared-prefix.ts); the plan carries only what names this Agent.
+    instructions: slackTenantInstructions(input.assignment),
     memoryEpoch: await input.memoryEpoch,
-    effectiveConnections: connectionResolution.selected,
-    ...(connectionAuthorizations ? { connectionAuthorizations } : {}),
-    connectionChoices: connectionResolution.ambiguous,
-    connectionSelections: connectionResolution.selections,
-    ...(teamReconnects ? { teamReconnects } : {}),
+    request: selectConnectionsForRequest({
+      connections: parts.connections,
+      requestText: input.requestText ?? input.turn.text,
+      ...(sameActorThread && previous.connectionSelections ? { previousSelections: previous.connectionSelections } : {}),
+    }),
     ...(frontDesk ? { frontDesk } : {}),
   });
   const decision = input.persist
@@ -3289,86 +3152,7 @@ export async function freezeRuntimePlanForTurn(input: {
   ) {
     throw new Error('Frozen RuntimePlanV2 belongs to another Slack conversation.');
   }
-  return { decision, unavailableFallback: workspaceDecision.unavailableFallback };
-}
-
-/**
- * Freeze the coding model for a turn that has a coding workspace. Shared by
- * Slack turns and routines so both coordinators resolve the role the same way.
- */
-export async function freezeCodingModelForTurn(input: {
-  workspaceId: string;
-  agent: { id: string; kind: ResolvedAssignment['agent']['kind'] };
-  reader: ModelRoleReader;
-  agentRoute: CodingModelAgentRoute;
-  settings: SettingsStore;
-  env?: PlatformEnv;
-  resolveModel?: typeof resolveRuntimeModel;
-  /** The credential frozen for the Agent's own model with this turn. */
-  agentCredential?: Pick<ModelCredentialAttribution, 'credentialRefId' | 'version' | 'providerId'> | null;
-  resolveCredential?: typeof resolveModelCredentialAttribution;
-}): Promise<RuntimePlanCodingModelV1> {
-  const coding = await resolveCodingModelRoute(input);
-  return deploymentServesManyInstallations(input.env) ? withHostedCodingCredential(coding, input) : coding;
-}
-
-/**
- * An installation of a deployment serving many runs its coding worker on a
- * frozen credential, as its Agent runs on one: the coding model's own, else
- * the Agent's model and the Agent's credential, as a role whose provider
- * has no key falls back today.
- */
-async function withHostedCodingCredential(
-  coding: RuntimePlanCodingModelV1,
-  input: Parameters<typeof freezeCodingModelForTurn>[0],
-): Promise<RuntimePlanCodingModelV1> {
-  const agentCredential = input.agentCredential ? frozenModelCredential(input.agentCredential) : undefined;
-  if (coding.model === input.agentRoute.model) {
-    return agentCredential ? { ...coding, modelCredential: agentCredential } : coding;
-  }
-  // No key falls back; a store that cannot be read fails the turn, as the
-  // Agent's own credential read does.
-  const credential = await (input.resolveCredential ?? resolveModelCredentialAttribution)(
-    coding.model,
-    input.env,
-    input.settings,
-    undefined,
-    { registerUsage: false },
-  );
-  if (credential) return { ...coding, modelCredential: frozenModelCredential(credential) };
-  return {
-    ...codingOnAgentModel(input.agentRoute, true),
-    ...(agentCredential ? { modelCredential: agentCredential } : {}),
-  };
-}
-
-async function resolveCodingModelRoute(input: Parameters<typeof freezeCodingModelForTurn>[0]) {
-  return resolveCodingModelForPlan({
-    workspaceId: input.workspaceId,
-    agent: { id: input.agent.id, kind: input.agent.kind },
-    reader: {
-      getWorkspaceModelRole: (workspaceId, role) =>
-        input.reader.getWorkspaceModelRole(workspaceId, role),
-      getAgentModelRole: (agentId, role) => input.reader.getAgentModelRole(agentId, role),
-    },
-    agentRoute: input.agentRoute,
-    resolveRoute: async (canonicalModel) => {
-      const resolved = await (input.resolveModel ?? resolveRuntimeModel)(
-        input.agent.id,
-        canonicalModel,
-        { settings: input.settings, ...(input.env ? { env: input.env } : {}) },
-      );
-      const runtimeModelRoute = freezeRuntimeModelRoute(
-        canonicalModel,
-        resolved.providerAuthRoute,
-        input.env,
-      );
-      return {
-        runtimeModel: resolved.model,
-        ...(runtimeModelRoute ? { runtimeModelRoute } : {}),
-      };
-    },
-  });
+  return { decision, unavailableFallback: parts.sandboxUnavailableFallback };
 }
 
 const MEMORY_CHANGED_RETRY_TEXT =
