@@ -4037,6 +4037,12 @@ export class WorkspaceManagementService {
     return this.setupPublicStatus(setup);
   }
 
+  /** For explain_agent and check_agent; hands out the stores only after the edit-authority check. */
+  async agentReader(context: ManagementActorContext, agentId: string) {
+    const actor = await this.requireLiveActor(context);
+    return { actor, agent: await this.requireEditableAgent(actor, agentId), stores: this.stores };
+  }
+
   /**
    * What a creation card polls while a new Agent joins Slack: light reads
    * only, never the workspace snapshot. The caller must be able to edit it.

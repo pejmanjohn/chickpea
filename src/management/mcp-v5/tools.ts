@@ -10,6 +10,8 @@ import {
   toolMeta,
   type McpToolVisibility,
 } from './conventions.ts';
+import { checkAgent } from './check.ts';
+import { explainAgent } from './explain.ts';
 import { proposeAgent, proposeAgentChange } from './proposals.ts';
 import * as reads from './reads.ts';
 import type { FiveZeroDeps } from './reads.ts';
@@ -26,6 +28,8 @@ interface FiveZeroTool {
   output: z.ZodType<Structured>;
   visibility?: readonly McpToolVisibility[];
   profile?: true;
+  /** Sends requests outside Chickpea, to hosts the workspace configured. */
+  openWorld?: true;
   run(deps: FiveZeroDeps, args: Structured): Promise<Structured>;
 }
 
@@ -37,6 +41,7 @@ function tool<I extends z.ZodType<Structured>, O extends z.ZodType<Structured>>(
   output: O;
   visibility?: readonly McpToolVisibility[];
   profile?: true;
+  openWorld?: true;
   run: (deps: FiveZeroDeps, args: z.output<I>) => Promise<z.output<O>>;
 }): FiveZeroTool {
   return definition;
@@ -161,6 +166,21 @@ export const FIVE_ZERO_TOOLS = {
     visibility: ['app'],
     run: (deps, args) => reads.getCreationStatus(deps, args),
   }),
+  explain_agent: tool({
+    title: 'Explain an Agent',
+    description: 'One Agent as it would run for a person in a place, by default their direct messages with it: each part of its prompt, its tools by connection and why any are missing, its model and whether it can run now, and the tokens it starts with and their three biggest sources. Reads only; changes nothing.',
+    input: schemas.explainAgentInput,
+    output: schemas.explainAgentOutput,
+    run: (deps, args) => explainAgent(deps, args),
+  }),
+  check_agent: tool({
+    title: 'Check an Agent',
+    description: 'Checks every part of one Agent: connections, model, Slack, Channels, schedules, repositories, website logins, and whether a message from a person in a place reaches it. Each check has a status and, when failing, a fix: a tool with its arguments, or a link. Tests custom connections with one request each; changes nothing.',
+    input: schemas.checkAgentInput,
+    output: schemas.checkAgentOutput,
+    openWorld: true,
+    run: (deps, args) => checkAgent(deps, args),
+  }),
 } as const satisfies Record<string, FiveZeroTool>;
 
 export type FiveZeroToolName = keyof typeof FIVE_ZERO_TOOLS;
@@ -191,7 +211,7 @@ function register(server: McpServer, deps: FiveZeroDeps, name: FiveZeroToolName,
     description: definition.description,
     inputSchema: definition.input,
     outputSchema: definition.output,
-    annotations: READ_HINTS,
+    annotations: definition.openWorld ? { ...READ_HINTS, openWorldHint: true } : READ_HINTS,
     _meta: toolMeta({
       ...(definition.visibility ? { visibility: definition.visibility } : {}),
       ...(definition.profile ? { profile: definition.profile } : {}),

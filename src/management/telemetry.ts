@@ -132,7 +132,7 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
     'get_account', 'get_workspace', 'list_agents', 'get_agent', 'list_services', 'list_models',
     'list_members', 'list_slack_channels', 'get_agent_memory', 'list_schedules', 'get_setup_status',
     'export_agents', 'list_connected_apps', 'propose_agent', 'propose_agent_change',
-    'get_creation_status',
+    'get_creation_status', 'explain_agent', 'check_agent',
   ]),
 };
 

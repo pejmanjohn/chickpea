@@ -25,9 +25,14 @@ import { createSlackOwner } from './slack-owner.ts';
 /** The tools every open MCP server offers in this fixture unless a test supplies its own discovery. */
 export const FIXTURE_MCP_TOOLS = ['search', 'read_page', 'delete_page', 'export_all', 'list_errors', 'delete_project'];
 
+/** Service inputs to change; a function gets the fixture's own stores to build them from. */
+type FixtureOverrides =
+  | Partial<WorkspaceManagementServiceInput>
+  | ((stores: { config: SqliteConfigStore; settings: SqliteSettingsStore }) => Partial<WorkspaceManagementServiceInput>);
+
 export async function createManagementAdapterFixture(
   suffix: string,
-  overrides: Partial<WorkspaceManagementServiceInput> = {},
+  overrides: FixtureOverrides = {},
   options: { teamId?: string } = {},
 ) {
   let sequence = 0;
@@ -76,7 +81,7 @@ export async function createManagementAdapterFixture(
     randomCapability: () => 'c'.repeat(43),
     now: () => now,
     randomId: () => `${suffix}_${++sequence}`,
-    ...overrides,
+    ...(typeof overrides === 'function' ? overrides({ config, settings }) : overrides),
   });
   return {
     identity,

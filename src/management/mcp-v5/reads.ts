@@ -169,7 +169,7 @@ type ConnectionRow = Out<typeof schemas.getAgentOutput>['connections'][number];
  * Agent's lanes, under the ID its tools take; a catalog sign-in comes from the
  * Agent's accounts. An account a lane already shows is not listed twice.
  */
-function connectionRows(agent: SnapshotAgent): ConnectionRow[] {
+export function connectionRows(agent: SnapshotAgent): ConnectionRow[] {
   const status = new Map(agent.connectionStatus.map((entry) => [`${entry.kind}:${entry.id}`, entry.lifecycleStatus]));
   const laneStatus = (kind: 'mcp' | 'api', id: string, enabled: boolean): ConnectionRow['status'] => {
     if (!enabled) return 'off';
