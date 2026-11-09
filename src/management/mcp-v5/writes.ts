@@ -3,6 +3,7 @@ import type { z } from 'zod';
 import { AGENT_AUTHORING_GUIDE_VERSION } from '../agent-authoring/index.ts';
 import {
   ManagementError,
+  type ApplyWorkspaceChangesResult,
   type ManageAgentSkillAction,
   type ManagementActorContext,
   type ManagementApplyResult,
@@ -77,13 +78,18 @@ function slackTeamId(snapshot: ManagementWorkspaceSnapshot): string {
   return snapshot.slackTeamId;
 }
 
-function agentIdFrom(name: string, taken: ReadonlySet<string>): string {
+/** The name's first free ID, passing over `skip` free-looking ones that Agents hidden from the caller hold. */
+function agentIdFrom(name: string, taken: ReadonlySet<string>, skip: number): string {
   const slug = name.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60);
   const base = `agent_${slug || 'new'}`;
-  let id = base;
-  for (let n = 2; taken.has(id); n += 1) id = `${base}_${n}`;
-  return id;
+  for (let n = 1; ; n += 1) {
+    const id = n === 1 ? base : `${base}_${n}`;
+    if (!taken.has(id) && skip-- === 0) return id;
+  }
 }
+
+/** A derived agentId is tried this many times before the collision is the answer. */
+const DERIVED_ID_TRIES = 3;
 
 async function creationChannels(
   deps: FiveZeroDeps,
@@ -116,16 +122,21 @@ export async function createAgent(
   input: In<typeof schemas.createAgentInputSchema>,
 ): Promise<ChangeResult> {
   const context = await deps.context();
-  const created = await applyChange(deps, context, {
+  const create = (attempt: number) => applyChange(deps, context, {
     tool: 'create_agent',
-    args: input,
+    args: attempt === 0 ? input : { ...input, idempotencyKey: `${input.idempotencyKey}#${attempt + 1}` },
     operations: async () => {
       const snapshot = await deps.service.inspectWorkspace(context);
       if (input.channels?.length) await creationChannels(deps, context, snapshot, input.channels);
+      // The snapshot leaves out Agents the caller cannot see, so a derived ID can still be taken.
       const taken = new Set([...snapshot.agents, ...snapshot.usableAgents ?? []].map(({ id }) => id));
-      return [createOperation(input, input.agentId ?? agentIdFrom(input.name, taken))];
+      return [createOperation(input, input.agentId ?? agentIdFrom(input.name, taken, attempt))];
     },
   });
+  let created = await create(0);
+  for (let attempt = 1; attempt < DERIVED_ID_TRIES && !input.agentId && idTaken(created); attempt += 1) {
+    created = await create(attempt);
+  }
   const agentId = created.status === 'completed'
     ? created.outcomes[0]?.changed?.find(({ kind }) => kind === 'agent')?.id
     : undefined;
@@ -160,6 +171,10 @@ export async function createAgent(
     summary: `${result.summary} It joins ${added} Channel${added === 1 ? '' : 's'}; get_creation_status follows its arrival.`,
     ...(notAdded.length ? { warnings: [...result.warnings ?? [], ...notAdded] } : {}),
   };
+}
+
+function idTaken(result: ApplyWorkspaceChangesResult): boolean {
+  return 'outcomes' in result && result.outcomes[0]?.code === 'already_exists';
 }
 
 function createOperation(input: In<typeof schemas.createAgentInputSchema>, id: string): Operation<'create_agent'> {

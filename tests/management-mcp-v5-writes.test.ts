@@ -481,6 +481,18 @@ test('a member changes only the Agents they may edit, and never a workspace sett
     agentId: before.id, version: memory.version, body: 'Owner notes.', idempotencyKey: 'owner-memory',
   }), 'not_found');
 
+  // The Owner's agent_owner_only is hidden from the member, so a name that derives its ID takes the next one.
+  const derived = { name: 'Owner Only', instructions: 'Track my notes.', idempotencyKey: 'member-derived' };
+  const hiddenTaken = structured(await member('create_agent', derived));
+  assert.equal(hiddenTaken.agent.agentId, 'agent_owner_only_2');
+  assert.deepEqual(structured(await member('create_agent', derived)), hiddenTaken, 'a retry replays the same Agent');
+  assert.equal((await f.config.getAgent('agent_owner_only')).name, before.name);
+  // An agentId the caller chose is theirs to change.
+  errorOf(await member('create_agent', {
+    name: 'Private Notes', instructions: 'Keep notes.', agentId: 'agent_owner_only', idempotencyKey: 'member-explicit',
+  }), 'invalid_input');
+  assert.equal((await f.config.listUserAgents()).some(({ name }) => name === 'Private Notes'), false);
+
   const mine = structured(await member('create_agent', { name: 'Notes', instructions: 'Take notes.', idempotencyKey: 'member-create' }));
   const edited = structured(await member('update_agent', {
     agentId: mine.agent.agentId, version: mine.version, description: 'Takes notes.', idempotencyKey: 'member-edit',
