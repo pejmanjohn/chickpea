@@ -2,6 +2,8 @@ import { z } from 'zod';
 
 import { AGENT_ID_PATTERN } from '../../config/agent-id.ts';
 import { MODEL_EFFORTS } from '../../config/model-effort.ts';
+import { PROVIDER_KEY_IDS } from '../../config/provider-key-ids.ts';
+import { MAX_UPLOAD_FILES } from '../../config/skill-upload.ts';
 
 /**
  * Inputs and outputs of the 5.0 management tools. Every output is strict, so
@@ -85,17 +87,19 @@ export const proposeAgentChangeInput = z.strictObject({
   change: zAgentChange.refine((change) => Object.keys(change).length > 0, 'Name at least one field to change.'),
 });
 
+const zIdempotencyKey = zText(256).describe('Any unique string. Reuse it only to retry this exact call.');
+
 /**
- * `create_agent`'s input. U3b registers the tool; it is defined here so the
- * Create button `propose_agent` returns sends arguments it really accepts.
+ * `create_agent`'s input. The Create button `propose_agent` returns sends
+ * these arguments unchanged.
  */
 export const createAgentInputSchema = z.strictObject({
-  agentId: zAgentId.optional(),
-  name: zText(240),
-  handle: zText(80).optional(),
-  description: z.string().max(500).optional(),
+  agentId: zAgentId.optional().describe('Omit to derive one from the name.'),
+  name: zText(240).refine((value) => value.trim().length > 0, 'Name the Agent.'),
+  handle: zText(80).optional().describe('The Slack handle people mention, without @.'),
+  description: z.string().max(500).optional().describe('The Agent\'s job in one sentence.'),
   instructions: z.string().max(100_000),
-  model: zModel.optional(),
+  model: zModel.optional().describe('A chat model from list_models. Omit to use the workspace default.'),
   effort: zEffort.optional(),
   whoCanEdit: zWhoCanEdit.optional(),
   skills: z.array(z.strictObject({
@@ -103,18 +107,125 @@ export const createAgentInputSchema = z.strictObject({
     description: z.string().max(2_000),
     instructions: z.string().max(100_000),
   })).max(100).optional(),
-  firstAsk: zText(200).optional(),
-  channels: z.array(zText(128)).max(20).optional(),
-  createEvenIfSimilar: z.boolean().optional(),
-  idempotencyKey: zText(256),
+  firstAsk: zText(200).optional().describe('What the person should ask it first; its hello in Slack ends by inviting it.'),
+  channels: z.array(zText(128)).max(20).optional().describe('Slack Channels it answers in, by channelId or #name.'),
+  createEvenIfSimilar: z.boolean().optional()
+    .describe('true only after the person chose a new Agent over a similar one this tool returned.'),
+  idempotencyKey: zIdempotencyKey,
 });
 
-/** `update_agent`'s input, which U3b registers; `propose_agent_change` returns it. */
+/** `update_agent`'s input; `propose_agent_change` returns it. */
 export const updateAgentInputSchema = z.strictObject({
   agentId: zAgentId,
-  version: zVersion,
+  version: zVersion.describe('The version get_agent returned.'),
   ...zAgentChange.shape,
-  idempotencyKey: zText(256),
+  idempotencyKey: zIdempotencyKey,
+});
+
+const zAgentVersion = zVersion.describe('The version get_agent returned.');
+const zChannelId = zText(128).describe('A Slack channelId from list_slack_channels.');
+const zScheduleId = zText(128).describe('A scheduleId from list_schedules.');
+const zScheduleVersion = zVersion.describe('The version list_schedules returned for it.');
+const zConnectionIds = z.array(zText(128)).max(100)
+  .describe('connectionIds from get_agent the task uses, or [] for none. Required for a new schedule or a changed task.');
+
+export const updateAgentMemoryInput = z.strictObject({
+  agentId: zAgentId,
+  version: zVersion.describe('The version get_agent_memory returned.'),
+  body: z.string().max(65_536).describe('The whole new memory text; it replaces the old one.'),
+  idempotencyKey: zIdempotencyKey,
+});
+export const archiveAgentInput = z.strictObject({
+  agentId: zAgentId,
+  version: zAgentVersion,
+  newDefaultAgentId: zAgentId.optional().describe('When archiving the workspace default Agent, the Agent that becomes the default.'),
+  idempotencyKey: zIdempotencyKey,
+});
+export const restoreAgentInput = z.strictObject({ agentId: zAgentId, version: zAgentVersion, idempotencyKey: zIdempotencyKey });
+export const addAgentToChannelInput = z.strictObject({ agentId: zAgentId, channelId: zChannelId, idempotencyKey: zIdempotencyKey });
+export const saveChannelSettingsInput = z.strictObject({
+  channelId: zChannelId,
+  label: z.string().max(240).optional().describe('Chickpea\'s name for the Channel. Omit to keep the current one.'),
+  on: z.boolean().describe('false turns Chickpea off in the Channel; true turns it on.'),
+  idempotencyKey: zIdempotencyKey,
+});
+export const importSkillFromGithubInput = z.strictObject({
+  agentId: zAgentId,
+  source: zText(2_000).describe('The public GitHub URL or owner/repo the person gave, unchanged.'),
+  skillName: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(64).optional()
+    .describe('A skill the person named alongside a repository or folder.'),
+  replaceExisting: z.boolean().optional().describe('true only when the person wants a same-name skill replaced.'),
+  idempotencyKey: zIdempotencyKey,
+});
+export const uploadSkillFilesInput = z.strictObject({
+  agentId: zAgentId,
+  // One flat item, not a union: MCP clients handle a bare anyOf poorly.
+  files: z.array(z.strictObject({
+    name: zText(255).describe('The file name, such as SKILL.md or skills.zip; its extension decides how it is read.'),
+    text: z.string().min(1).optional().describe('A markdown file\'s exact text. Send text or base64, not both.'),
+    base64: z.string().min(4).optional().describe('A .zip or .skill archive\'s bytes, base64-encoded.'),
+  }).refine((file) => (file.text === undefined) !== (file.base64 === undefined), 'Send text or base64, not both.'))
+    .min(1).max(MAX_UPLOAD_FILES),
+  replaceExisting: z.boolean().optional().describe('true only when the person wants same-name skills replaced.'),
+  idempotencyKey: zIdempotencyKey,
+});
+export const setAgentSkillInput = z.strictObject({
+  agentId: zAgentId,
+  skill: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(64).describe('A skill name from get_agent.'),
+  action: z.enum(['turn_on', 'turn_off', 'remove']),
+  idempotencyKey: zIdempotencyKey,
+});
+export const saveScheduleInput = z.strictObject({
+  agentId: zAgentId,
+  channelId: zChannelId.optional().describe('Where it posts: a Channel the Agent answers in. Required for a new schedule.'),
+  scheduleId: zScheduleId.optional().describe('Omit to create a schedule; set to change one.'),
+  version: zScheduleVersion.optional().describe('Required with scheduleId: the version list_schedules returned.'),
+  name: zText(200),
+  description: z.string().max(2_000).optional(),
+  task: zText(20_000).describe('What the Agent does on each run, as you would ask it in Slack.'),
+  // One flat object, not a union: MCP clients handle a bare anyOf poorly.
+  when: z.strictObject({
+    cron: zText(200).optional().describe('A five-field cron expression, for a repeating schedule.'),
+    once: zText(64).optional().describe('A local date and time, such as 2026-12-01T09:00, to run once.'),
+    inMinutes: z.number().int().min(1).max(532_800).optional().describe('Run once, this many minutes from now.'),
+    keep: z.literal(true).optional().describe('Keep the current timing; only with scheduleId.'),
+  }).refine((when) => Object.keys(when).length === 1, 'Set exactly one of cron, once, inMinutes or keep.'),
+  timezone: zText(100).describe('An IANA time zone, such as America/New_York.'),
+  post: z.enum(['always', 'when_changed']).describe('when_changed posts only when the result differs from the last run.'),
+  requiredConnections: zConnectionIds.optional(),
+  idempotencyKey: zIdempotencyKey,
+});
+export const pauseScheduleInput = z.strictObject({
+  scheduleId: zScheduleId,
+  version: zScheduleVersion,
+  turnOff: z.boolean().optional().describe('true turns it off instead of pausing it.'),
+  idempotencyKey: zIdempotencyKey,
+});
+export const resumeScheduleInput = z.strictObject({ scheduleId: zScheduleId, version: zScheduleVersion, idempotencyKey: zIdempotencyKey });
+export const runScheduleNowInput = z.strictObject({ scheduleId: zScheduleId, idempotencyKey: zIdempotencyKey });
+export const takeOverScheduleInput = z.strictObject({
+  scheduleId: zScheduleId,
+  version: zScheduleVersion,
+  requiredConnections: zConnectionIds.optional(),
+  idempotencyKey: zIdempotencyKey,
+});
+export const setWorkspaceModelInput = z.strictObject({
+  role: z.enum(['chat', 'image', 'coding']),
+  model: zModel.nullable().describe('A model from list_models; null clears the image or coding model.'),
+  effort: zEffort.optional().describe('Chat and coding only. Omit for the model\'s standard effort.'),
+  version: zVersion.describe('The version list_models returned for this role.'),
+  idempotencyKey: zIdempotencyKey,
+});
+export const connectModelProviderInput = z.strictObject({
+  provider: z.enum(PROVIDER_KEY_IDS),
+  replaceExisting: z.boolean().optional().describe('true when a key is stored and the person wants the link to replace it.'),
+});
+export const confirmChangeInput = z.strictObject({
+  confirmToken: zText(128).describe('The confirmToken a needs_confirmation result returned.'),
+});
+export const undoChangeInput = z.strictObject({
+  undoToken: zText(128).describe('The undoToken a change returned.'),
+  idempotencyKey: zIdempotencyKey,
 });
 
 // Outputs.
@@ -347,6 +458,57 @@ export const proposeAgentChangeOutput = z.strictObject({
   })),
   save: z.strictObject({ tool: z.literal('update_agent'), arguments: updateAgentInputSchema }),
   needsConfirmation: z.boolean(),
+});
+
+/**
+ * What every 5.0 write returns. Only handles a later call takes appear:
+ * agentId, confirmToken, undoToken and setupToken, never a revision.
+ */
+const changeResultShape = {
+  status: z.enum(['done', 'unchanged', 'needs_confirmation', 'needs_setup', 'needs_choice', 'similar_agent_exists'])
+    .describe('needs_confirmation: nothing changed yet; show confirmation.preview and call confirm_change only after the person agrees.'),
+  summary: z.string().describe('One plain sentence to tell the person.'),
+  nextStep: z.string().optional().describe('For you: what to do next.'),
+  agent: z.strictObject({
+    agentId: z.string(),
+    name: z.string(),
+    handle: z.string().optional(),
+    links: zLinks.optional(),
+  }).optional(),
+  version: zVersion.optional().describe('The new version of what changed, for your next change to it.'),
+  confirmation: z.strictObject({
+    confirmToken: z.string(),
+    preview: z.string().describe('Markdown to show the person before they agree.'),
+    expiresAt: z.string().describe('After this time confirm_change refuses the token; call the tool again.'),
+  }).optional(),
+  setup: z.strictObject({
+    url: z.string().describe('The Chickpea page to give the person; they finish there.'),
+    setupToken: z.string().optional().describe('For get_setup_status.'),
+    what: z.string(),
+    expiresAt: z.string().optional(),
+  }).optional(),
+  undoToken: z.string().optional().describe('Present when undo_change can reverse this change.'),
+  warnings: z.array(z.string()).optional(),
+  matches: z.array(z.strictObject({ agentId: z.string(), name: z.string(), handle: z.string().optional() })).optional()
+    .describe('similar_agent_exists: the Agents that already look like this one.'),
+};
+
+export const changeResultOutput = z.strictObject(changeResultShape);
+
+export const importSkillFromGithubOutput = z.strictObject({
+  ...changeResultShape,
+  skill: z.strictObject({ name: z.string(), description: z.string(), sourceUrl: z.string() }).optional(),
+  choose: z.array(z.strictObject({ name: z.string(), description: z.string(), sourceUrl: z.string() })).optional()
+    .describe('needs_choice: the skills the source holds; call again with the chosen sourceUrl as source.'),
+});
+
+export const uploadSkillFilesOutput = z.strictObject({
+  ...changeResultShape,
+  added: z.array(z.string()),
+  replaced: z.array(z.string()),
+  unchanged: z.array(z.string()),
+  conflicts: z.array(z.string()).describe('Same name, different content: left as they are unless replaceExisting is true.'),
+  leftOut: z.array(z.strictObject({ file: z.string(), why: z.string() })),
 });
 
 export const getCreationStatusOutput = z.strictObject({

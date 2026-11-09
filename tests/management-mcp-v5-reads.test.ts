@@ -147,8 +147,16 @@ for (const protocol of [LEGACY, MODERN]) {
     assert.deepEqual(tools.map(({ name }) => name), [...WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES, ...FIVE_ZERO_TOOL_NAMES]);
     assert.deepEqual(tools.map(({ name }) => name), WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES);
     for (const tool of tools.filter(({ name }) => (FIVE_ZERO_TOOL_NAMES as readonly string[]).includes(name))) {
-      // check_agent's connection checks send one request each to hosts the workspace configured.
-      assert.deepEqual(tool.annotations, tool.name === 'check_agent' ? { ...READ_5, openWorldHint: true } : READ_5, tool.name);
+      const annotations = tool.annotations as Record<string, unknown>;
+      if (annotations.readOnlyHint === false) {
+        // A write's hints are pinned tool by tool in management-client-compatibility.
+        for (const hint of ['destructiveHint', 'idempotentHint', 'openWorldHint']) {
+          assert.equal(typeof annotations[hint], 'boolean', `${tool.name}: ${hint}`);
+        }
+      } else {
+        // check_agent's connection checks send one request each to hosts the workspace configured.
+        assert.deepEqual(annotations, tool.name === 'check_agent' ? { ...READ_5, openWorldHint: true } : READ_5, tool.name);
+      }
       assert.deepEqual(tool.securitySchemes, SCHEMES, `${tool.name}: descriptor securitySchemes`);
       const meta = tool._meta as Record<string, unknown>;
       assert.deepEqual(meta.securitySchemes, SCHEMES, `${tool.name}: the _meta mirror`);

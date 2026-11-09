@@ -8,6 +8,7 @@ import {
   mcpToolError,
   READ_HINTS,
   toolMeta,
+  writeHints,
   type McpToolVisibility,
 } from './conventions.ts';
 import { checkAgent } from './check.ts';
@@ -16,6 +17,7 @@ import { proposeAgent, proposeAgentChange } from './proposals.ts';
 import * as reads from './reads.ts';
 import type { FiveZeroDeps } from './reads.ts';
 import * as schemas from './schemas.ts';
+import * as writes from './writes.ts';
 
 type Structured = Record<string, unknown>;
 
@@ -30,6 +32,8 @@ interface FiveZeroTool {
   profile?: true;
   /** Sends requests outside Chickpea, to hosts the workspace configured. */
   openWorld?: true;
+  /** A write's hints; a tool without them reads only. */
+  write?: ReturnType<typeof writeHints>;
   run(deps: FiveZeroDeps, args: Structured): Promise<Structured>;
 }
 
@@ -42,14 +46,15 @@ function tool<I extends z.ZodType<Structured>, O extends z.ZodType<Structured>>(
   visibility?: readonly McpToolVisibility[];
   profile?: true;
   openWorld?: true;
+  write?: ReturnType<typeof writeHints>;
   run: (deps: FiveZeroDeps, args: z.output<I>) => Promise<z.output<O>>;
 }): FiveZeroTool {
   return definition;
 }
 
 /**
- * The 5.0 tools U3a-1 adds beside the 4.x surface: reads, read-only previews
- * and one card-only read. Every one reads only Chickpea's own state.
+ * The 5.0 tools beside the 4.x surface: reads, read-only previews, a
+ * card-only read, and single-purpose writes.
  */
 export const FIVE_ZERO_TOOLS = {
   get_account: tool({
@@ -181,6 +186,158 @@ export const FIVE_ZERO_TOOLS = {
     openWorld: true,
     run: (deps, args) => checkAgent(deps, args),
   }),
+  create_agent: tool({
+    title: 'Create an Agent',
+    description: 'Create a new Agent, an AI teammate in Slack, and add it to the Channels named. It adds a teammate everyone in the Slack workspace can mention and sends one welcome message to you; it removes nothing. Applies at once. A near-duplicate returns similar_agent_exists instead. Connect services afterwards with their setup links.',
+    input: schemas.createAgentInputSchema,
+    output: schemas.changeResultOutput,
+    write: writeHints({ destructive: false }),
+    run: (deps, args) => writes.createAgent(deps, args),
+  }),
+  update_agent: tool({
+    title: 'Update an Agent',
+    description: 'Change one Agent\'s name, description, handle, instructions, on or off, chat model, effort, image model or who can edit it. Send the version get_agent returned. It overwrites those fields and applies at once, except turning off an Agent that answers in Channels, which returns needs_confirmation. propose_agent_change previews it.',
+    input: schemas.updateAgentInputSchema,
+    output: schemas.changeResultOutput,
+    write: writeHints({ destructive: true }),
+    run: (deps, args) => writes.updateAgent(deps, args),
+  }),
+  update_agent_memory: tool({
+    title: 'Update Agent memory',
+    description: 'Replace the one memory text an Agent keeps across conversations with a new whole text. Send the version get_agent_memory returned. It overwrites the old memory and applies at once; undo_change can bring the old text back.',
+    input: schemas.updateAgentMemoryInput,
+    output: schemas.changeResultOutput,
+    write: writeHints({ destructive: true }),
+    run: (deps, args) => writes.updateAgentMemory(deps, args),
+  }),
+  archive_agent: tool({
+    title: 'Archive an Agent',
+    description: 'Archive an Agent: it stops answering in Slack, leaves its Channels, and its schedules pause. Its settings are kept, and restore_agent brings it back. Send the version get_agent returned. Applies at once. Deleting is a separate step.',
+    input: schemas.archiveAgentInput,
+    output: schemas.changeResultOutput,
+    write: writeHints({ destructive: true }),
+    run: (deps, args) => writes.archiveAgent(deps, args),
+  }),
+  restore_agent: tool({
+    title: 'Restore an Agent',
+    description: 'Bring an archived Agent back: it answers in Slack again and returns to the Channels it had. Send the version get_agent returned. Applies at once and removes nothing.',
+    input: schemas.restoreAgentInput,
+    output: schemas.changeResultOutput,
+    write: writeHints({ destructive: false }),
+    run: (deps, args) => writes.restoreAgent(deps, args),
+  }),
+  add_agent_to_channel: tool({
+    title: 'Add an Agent to a Slack Channel',
+    description: 'Let an Agent answer in one Slack Channel, which it joins. Everyone in that Channel can then mention it. Applies at once and removes nothing.',
+    input: schemas.addAgentToChannelInput,
+    output: schemas.changeResultOutput,
+    write: writeHints({ destructive: false }),
+    run: (deps, args) => writes.addAgentToChannel(deps, args),
+  }),
+  save_channel_settings: tool({
+    title: 'Save Channel settings',
+    description: 'Set Chickpea\'s label for one Slack Channel and whether Chickpea is on there. Turning it off stops every Agent answering in that Channel until it is turned on again. Overwrites the Channel\'s settings and applies at once.',
+    input: schemas.saveChannelSettingsInput,
+    output: schemas.changeResultOutput,
+    write: writeHints({ destructive: true }),
+    run: (deps, args) => writes.saveChannelSettings(deps, args),
+  }),
+  import_skill_from_github: tool({
+    title: 'Install a skill from GitHub',
+    description: 'Install one public GitHub skill (a SKILL.md and its folder) on an Agent, from the URL or owner/repo the person gave. Only instructions install, never scripts. A source with several skills returns needs_choice; a different skill with the same name is replaced only with replaceExisting. Applies at once, with undo.',
+    input: schemas.importSkillFromGithubInput,
+    output: schemas.importSkillFromGithubOutput,
+    write: writeHints({ destructive: true, openWorld: true }),
+    run: (deps, args) => writes.importSkillFromGithub(deps, args),
+  }),
+  upload_skill_files: tool({
+    title: 'Upload skill files',
+    description: 'Install skills on an Agent from files: SKILL.md or other markdown files with a name and description, as text, or .zip and .skill archives as base64. Only instructions install. Same-name skills with different content are listed in conflicts unless replaceExisting is true. Applies at once, with undo. For many files, npx chickpea-cli@latest skills upload.',
+    input: schemas.uploadSkillFilesInput,
+    output: schemas.uploadSkillFilesOutput,
+    write: writeHints({ destructive: true }),
+    run: (deps, args) => writes.uploadSkillFiles(deps, args),
+  }),
+  set_agent_skill: tool({
+    title: 'Turn an Agent skill on, off or remove it',
+    description: 'Turn one of an Agent\'s skills on or off, or remove it. Every other skill stays as it is. Applies at once, and undo_change can reverse it.',
+    input: schemas.setAgentSkillInput,
+    output: schemas.changeResultOutput,
+    write: writeHints({ destructive: true }),
+    run: (deps, args) => writes.setAgentSkill(deps, args),
+  }),
+  save_schedule: tool({
+    title: 'Save a schedule',
+    description: 'Create a schedule (routine) that makes an Agent post in a Slack Channel on its own, or change one: its task, timing, time zone and whether it posts every time. The Agent posts on that schedule from then on. Changing one overwrites it; send its version from list_schedules. Applies at once.',
+    input: schemas.saveScheduleInput,
+    output: schemas.changeResultOutput,
+    write: writeHints({ destructive: true }),
+    run: (deps, args) => writes.saveSchedule(deps, args),
+  }),
+  pause_schedule: tool({
+    title: 'Pause a schedule',
+    description: 'Pause a schedule, or with turnOff turn it off, so its upcoming runs do not happen. resume_schedule starts it again. Send the version list_schedules returned. Applies at once.',
+    input: schemas.pauseScheduleInput,
+    output: schemas.changeResultOutput,
+    write: writeHints({ destructive: true }),
+    run: (deps, args) => writes.pauseSchedule(deps, args),
+  }),
+  resume_schedule: tool({
+    title: 'Resume a schedule',
+    description: 'Start a paused or turned-off schedule again: the Agent posts on it from its next run. Send the version list_schedules returned. Applies at once and removes nothing.',
+    input: schemas.resumeScheduleInput,
+    output: schemas.changeResultOutput,
+    write: writeHints({ destructive: false }),
+    run: (deps, args) => writes.resumeSchedule(deps, args),
+  }),
+  run_schedule_now: tool({
+    title: 'Run a schedule now',
+    description: 'Run a schedule once now, outside its timing. The Agent does the task, which can use its connections and the web, and posts the result where the schedule posts; a post cannot be taken back. list_agent_runs shows how it went.',
+    input: schemas.runScheduleNowInput,
+    output: schemas.changeResultOutput,
+    write: writeHints({ destructive: true, openWorld: true }),
+    run: (deps, args) => writes.runScheduleNow(deps, args),
+  }),
+  take_over_schedule: tool({
+    title: 'Take over a schedule',
+    description: 'Make a schedule run as you, with your access, in place of the person it runs as now. Send the version list_schedules returned. It overwrites who the schedule runs as and applies at once.',
+    input: schemas.takeOverScheduleInput,
+    output: schemas.changeResultOutput,
+    write: writeHints({ destructive: true }),
+    run: (deps, args) => writes.takeOverSchedule(deps, args),
+  }),
+  set_workspace_model: tool({
+    title: 'Set a workspace model',
+    description: 'Set the workspace default chat, image or coding model, which every Agent without its own model uses. Owners and Admins only. Send the role\'s version from list_models. It overwrites the default and applies at once.',
+    input: schemas.setWorkspaceModelInput,
+    output: schemas.changeResultOutput,
+    write: writeHints({ destructive: true }),
+    run: (deps, args) => writes.setWorkspaceModel(deps, args),
+  }),
+  connect_model_provider: tool({
+    title: 'Connect a model provider',
+    description: 'Get a Chickpea setup link where the person adds the workspace\'s key for one model provider. Owners and Admins only. Never ask for the key itself. With replaceExisting the link replaces a stored key. The link works for 24 hours, for this person only. Each call makes a new link.',
+    input: schemas.connectModelProviderInput,
+    output: schemas.changeResultOutput,
+    write: writeHints({ destructive: true, idempotent: false }),
+    run: (deps, args) => writes.connectModelProvider(deps, args),
+  }),
+  confirm_change: tool({
+    title: 'Confirm a change',
+    description: 'The "Are you sure?" step. Apply exactly the change a needs_confirmation result previewed, by its confirmToken, only after the person has read the preview and agreed. A token works for 30 minutes and only for the person it was made for. A retry after it applied returns the same result.',
+    input: schemas.confirmChangeInput,
+    output: schemas.changeResultOutput,
+    write: writeHints({ destructive: true }),
+    run: (deps, args) => writes.confirmChange(deps, args),
+  }),
+  undo_change: tool({
+    title: 'Undo a change',
+    description: 'Reverse one change by the undoToken it returned, while what it changed is still as the change left it. It overwrites the current state with the earlier one. When the reverse is destructive, such as removing a connection, it returns needs_confirmation first.',
+    input: schemas.undoChangeInput,
+    output: schemas.changeResultOutput,
+    write: writeHints({ destructive: true }),
+    run: (deps, args) => writes.undoChange(deps, args),
+  }),
 } as const satisfies Record<string, FiveZeroTool>;
 
 export type FiveZeroToolName = keyof typeof FIVE_ZERO_TOOLS;
@@ -211,7 +368,7 @@ function register(server: McpServer, deps: FiveZeroDeps, name: FiveZeroToolName,
     description: definition.description,
     inputSchema: definition.input,
     outputSchema: definition.output,
-    annotations: definition.openWorld ? { ...READ_HINTS, openWorldHint: true } : READ_HINTS,
+    annotations: definition.write ?? (definition.openWorld ? { ...READ_HINTS, openWorldHint: true } : READ_HINTS),
     _meta: toolMeta({
       ...(definition.visibility ? { visibility: definition.visibility } : {}),
       ...(definition.profile ? { profile: definition.profile } : {}),
