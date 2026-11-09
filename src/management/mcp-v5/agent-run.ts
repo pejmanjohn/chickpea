@@ -29,7 +29,10 @@ import { requireAgent, type FiveZeroDeps } from './reads.ts';
 /**
  * One Agent, one place and one person, read the way a Slack turn admits them
  * (U4's resolveAgentRunPlan), for explain_agent and check_agent. Reads only:
- * the model route is never bound and no credential use is registered.
+ * the model route is never bound and no credential use is registered. The
+ * first credential read on a standalone deployment may materialize the
+ * provider's credential metadata, as any turn does
+ * (ensureStoredCredentialMetadata: once per provider, idempotent).
  */
 
 type SnapshotAgent = ManagementWorkspaceSnapshot['agents'][number];
@@ -43,7 +46,7 @@ export interface AgentRunInput {
 
 export type AgentRunPlace =
   | { kind: 'dm' }
-  | { kind: 'channel'; channelId: string; name?: string; isPrivate?: boolean };
+  | { kind: 'channel'; channelId: string; name?: string };
 
 export interface AgentRunPerson {
   membershipId: string;
@@ -63,7 +66,10 @@ export interface AgentRunReading {
   /** The Slack team the Agent answers in. */
   workspaceId: string;
   installation: WorkspaceInstallation | undefined;
-  /** Every Agent's grants in this workspace. */
+  /**
+   * Every Agent's grants in this workspace, including ones in Channels a
+   * member may not see: name a grant's Channel only when seesChannel allows.
+   */
   grants: readonly AgentChannelGrant[];
   person: AgentRunPerson;
   place: AgentRunPlace;
@@ -97,8 +103,17 @@ export async function readAgentRun(deps: FiveZeroDeps, input: AgentRunInput): Pr
     installation,
     grants,
     person,
-    place: placeFor(snapshot, grants, input),
+    place: placeFor(snapshot, input),
   };
+}
+
+/**
+ * Whether the caller may see a Channel: an Owner or Admin sees every one, a
+ * member only those the snapshot shows them, as Admin's Agent page does. An
+ * unseen Channel reads as one the Agent is not in.
+ */
+export function seesChannel(reading: Pick<AgentRunReading, 'actor' | 'snapshot'>, channelId: string): boolean {
+  return reading.actor.role !== 'member' || reading.snapshot.channels.some((channel) => channel.channelId === channelId);
 }
 
 async function managedAgent(service: WorkspaceManagementService, context: ManagementActorContext, agentId: string) {
@@ -151,23 +166,12 @@ async function personFor(
   };
 }
 
-function placeFor(
-  snapshot: ManagementWorkspaceSnapshot,
-  grants: readonly AgentChannelGrant[],
-  input: AgentRunInput,
-): AgentRunPlace {
+/** A Channel's name comes from the snapshot only, which holds back the private ones Admin hides from a member. */
+function placeFor(snapshot: ManagementWorkspaceSnapshot, input: AgentRunInput): AgentRunPlace {
   if (!input.place || input.place === 'dm') return { kind: 'dm' };
   const channelId = input.place;
-  const channel = snapshot.channels.find((candidate) => candidate.channelId === channelId);
-  const grant = grants.find((candidate) => candidate.channelId === channelId && candidate.agentId === input.agentId);
-  const name = channel?.label ?? grant?.channelLabel;
-  const isPrivate = grant?.channelIsPrivate;
-  return {
-    kind: 'channel',
-    channelId,
-    ...(name ? { name } : {}),
-    ...(isPrivate !== undefined ? { isPrivate } : {}),
-  };
+  const name = snapshot.channels.find((candidate) => candidate.channelId === channelId)?.label;
+  return { kind: 'channel', channelId, ...(name ? { name } : {}) };
 }
 
 export interface AgentRunModel {

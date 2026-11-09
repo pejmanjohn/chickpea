@@ -393,7 +393,7 @@ export const explainAgentOutput = z.strictObject({
   tools: z.array(z.strictObject({
     group: z.string(),
     connectionId: z.string().optional(),
-    tools: z.array(z.string()),
+    tools: z.array(z.string()).describe('Tool names; * is every tool of another person\'s own account, which Chickpea does not name.'),
     tokens: zTokens.describe('Counted once: connection_request, which every API connection uses, is in the Chickpea group.'),
     missing: z.array(z.strictObject({
       tool: z.string().describe('A tool name, or * for every tool of the group.'),

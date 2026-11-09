@@ -8,7 +8,7 @@ import { isProviderKeyId } from '../../config/provider-key-ids.ts';
 import type { ConnectionCheckOutcome } from '../../connections/connection-check.ts';
 import { ADMIN_PATH, adminOrigin, adminSettingsLinks, adminTeamLinks } from '../admin-links.ts';
 import { ManagementError, type ManagementConnectionSnapshot } from '../types.ts';
-import { readAgentRun, readingView, resolveAgentModel, type AgentRunReading } from './agent-run.ts';
+import { readAgentRun, readingView, resolveAgentModel, seesChannel, type AgentRunReading } from './agent-run.ts';
 import type { McpErrorFix } from './conventions.ts';
 import { connectionRows, presenceProblem, type FiveZeroDeps } from './reads.ts';
 import type * as schemas from './schemas.ts';
@@ -111,7 +111,8 @@ async function connectionChecks(deps: FiveZeroDeps, reading: AgentRunReading): P
     try {
       outcome = await deps.service.testConnection(reading.context, { agentId: reading.agent.id, connectionId: row.connectionId });
     } catch (error) {
-      if (error instanceof ManagementError) return { ...base, status: 'ok', detail: 'Connected. Chickpea cannot test this kind of connection.' };
+      // Testing unavailable here, an ambiguous connectionId, or a connection that is gone: nothing was checked.
+      if (error instanceof ManagementError) return { ...base, status: 'unknown', detail: error.message };
       throw error;
     }
     if (outcome.kind === 'ok') {
@@ -167,14 +168,13 @@ async function slackChecks(deps: FiveZeroDeps, reading: AgentRunReading): Promis
 }
 
 async function channelChecks(deps: FiveZeroDeps, reading: AgentRunReading): Promise<Check[]> {
-  const grants = reading.grants.filter(({ agentId }) => agentId === reading.agent.id);
+  const grants = reading.grants.filter(({ agentId, channelId }) => agentId === reading.agent.id && seesChannel(reading, channelId));
   if (grants.length === 0) {
     return [{ part: 'channel', name: 'Channels', status: 'ok', detail: 'Not added to any Channel; it answers only in DMs.' }];
   }
   return grants.map((grant): Check => {
     const channel = reading.snapshot.channels.find(({ channelId }) => channelId === grant.channelId);
-    const label = channel?.label ?? grant.channelLabel;
-    const base = { part: 'channel' as const, name: label ? `#${label}` : grant.channelId, channelId: grant.channelId };
+    const base = { part: 'channel' as const, name: channel?.label ? `#${channel.label}` : grant.channelId, channelId: grant.channelId };
     if (channel?.lifecycle === 'archived') {
       return withFix({ ...base, status: 'failing', detail: 'This Channel is turned off in Chickpea.' },
         agentAdminFix(deps, reading, 'Open the Agent in Admin'));
@@ -321,7 +321,7 @@ function channelAdmission(reading: AgentRunReading, name: string, channelId: str
   const check = (status: Check['status'], detail: string): Check => ({ part: 'admission', name, status, detail, channelId });
   const channel = reading.snapshot.channels.find((candidate) => candidate.channelId === channelId);
   if (channel?.lifecycle === 'archived') return check('failing', 'This Channel is turned off in Chickpea.');
-  const inChannel = reading.grants.filter((grant) => grant.channelId === channelId);
+  const inChannel = seesChannel(reading, channelId) ? reading.grants.filter((grant) => grant.channelId === channelId) : [];
   const grant = inChannel.find(({ agentId }) => agentId === agent.id);
   if (!grant) return check('failing', `${agent.name} is not added to this Channel.`);
   if (grant.status === 'pending') return check('warning', `${agent.name} is still joining this Channel.`);

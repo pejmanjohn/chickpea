@@ -2,12 +2,13 @@ import { estimateTextTokens } from '@earendil-works/pi-ai/utils/estimate';
 import type { z } from 'zod';
 
 import type { RuntimePlanV2 } from '../../agents/runtime-plan.ts';
-import { sharedSystemBlock, slackTenantInstructions } from '../../agents/shared-prefix-layout.ts';
+import { sharedSystemBlock, slackAgentKind, slackTenantInstructions } from '../../agents/shared-prefix-layout.ts';
 import rendered from '../../agents/shared-prefix-tools.json' with { type: 'json' };
 import { runtimePlanSkills } from '../../agents/slack-thread.ts';
 import { BROWSER_TOOL_NAMES } from '../../browser/tools.ts';
 import { connectionGuideSkillName } from '../../config/connector-skills.ts';
-import type { AgentConnectionBinding, ConnectionAccount } from '../../config/types.ts';
+import { getConnectorPreset } from '../../config/presets.ts';
+import type { AgentConnectionBinding, ConnectionAccount, ConnectionAccountPolicy } from '../../config/types.ts';
 import { MANAGED_CONNECTOR_CATALOG } from '../../connections/catalog/index.ts';
 import { ATTACH_FILE_TO_CONNECTION_TOOL_NAME, planAllowsConnectionFileUpload } from '../../connections/file-upload-tool.ts';
 import {
@@ -19,7 +20,7 @@ import type { EffectiveConnectionAccount } from '../../connections/types.ts';
 import { agentMemoryPromptBlock } from '../../memory/runtime.ts';
 import { ADVISORY_MEMORY_FINAL_CHECK } from '../../slack/web-client-context.ts';
 import { AGENT_AUTHORING_PACKAGE } from '../agent-authoring/index.ts';
-import { readAgentRun, readingView, resolveAgentRun, type AgentRunReading } from './agent-run.ts';
+import { readAgentRun, readingView, resolveAgentRun, seesChannel, type AgentRunReading } from './agent-run.ts';
 import { fail } from './conventions.ts';
 import type { FiveZeroDeps } from './reads.ts';
 import type * as schemas from './schemas.ts';
@@ -32,7 +33,8 @@ type Missing = ToolGroup['missing'][number];
 /** The estimate Flue's compaction uses (pi-ai, about 3.5 characters a token); src has none of its own. */
 const TOKEN_ESTIMATE = 'Estimated the way Flue\'s compaction counts (pi-ai: characters ÷ 3.5). ' +
   'Chickpea\'s and catalog services\' tools are counted from their full definitions; MCP and API connection ' +
-  'tools from their names and descriptions only; browser tools are not counted.';
+  'tools from their names and descriptions only; browser tools are not counted, nor are each message\'s own ' +
+  'Slack context and the activity and reply tools Chickpea adds for that message.';
 
 const tokens = estimateTextTokens;
 const toolTokens = (tool: unknown) => tokens(JSON.stringify(tool));
@@ -46,17 +48,18 @@ export async function explainAgent(
 ): Promise<Output> {
   const reading = await readAgentRun(deps, input);
   const { place } = reading;
-  if (place.kind === 'channel' && !reading.grants.some(({ channelId, agentId }) =>
-    channelId === place.channelId && agentId === reading.agent.id)) {
+  if (place.kind === 'channel' && !(seesChannel(reading, place.channelId) && reading.grants.some(({ channelId, agentId }) =>
+    channelId === place.channelId && agentId === reading.agent.id))) {
     fail('invalid_input', `${reading.agent.name} is not added to that Channel.`, {
       nextStep: 'Use a channelId from get_agent\'s channels, or place "dm".',
     });
   }
   const run = await resolveAgentRun(reading);
+  const kind = slackAgentKind(reading.agent.id);
   const prompt: PromptPart[] = [{
     part: 'chickpea',
-    title: 'Chickpea\'s base prompt, the same for every Agent',
-    tokens: tokens(sharedSystemBlock('user')),
+    title: kind === 'system' ? 'Chickpea\'s base prompt for its own Agent' : 'Chickpea\'s base prompt, the same for every Agent',
+    tokens: tokens(sharedSystemBlock(kind)),
   }];
   if (run.assignment) {
     prompt.push({
@@ -212,8 +215,10 @@ function chickpeaTools(plan: RuntimePlanV2, sandboxFallback: boolean, reading: A
 
 /**
  * One group per connection the person's run could use: what mounts from it,
- * and why anything expected does not. Another member's own accounts never
- * mount for this person and are not listed.
+ * and why anything expected does not. A personal account is shown only to
+ * its owner, as in Admin: looking as another person, theirs appears by
+ * service name and connected or not, with no label, connectionId or tools.
+ * Another member's own accounts never mount for this person and are not listed.
  */
 async function connectionTools(
   plan: RuntimePlanV2,
@@ -227,22 +232,39 @@ async function connectionTools(
   ]);
   const mounted = new Map(effective.map((connection) => [connection.account.id, connection]));
   const handle = connectionHandles(reading);
+  const own = (providerId: string, policy?: ConnectionAccountPolicy) =>
+    `${person.you ? 'Your' : 'Their'} own ${serviceName(providerId, policy)}`;
   const groups: ToolGroup[] = [];
   for (const binding of bindings) {
     const account = accounts.find(({ id, providerId }) => id === binding.connectionAccountId && providerId === binding.providerId);
     if (!account || account.lifecycle === 'revoked') continue;
     if (account.ownerKind === 'member' && account.ownerMembershipId !== person.membershipId) continue;
     const connection = mounted.get(account.id);
+    if (account.ownerKind === 'member' && !person.you) {
+      // Connected: its tools mount, unnamed (`*`), and the budget counts them.
+      groups.push({
+        group: own(account.providerId, account.policy),
+        tools: connection ? ['*'] : [],
+        tokens: connection ? (await mountedGroup(plan, connection, account.id)).tokens : 0,
+        missing: connection ? [] : allMissing([], {
+          why: 'not_connected',
+          detail: `${person.name ? `${person.name}'s` : 'Their'} own account is not connected.`,
+        }),
+      });
+      continue;
+    }
     groups.push(connection
       ? await mountedGroup(plan, connection, handle(account))
       : unmountedGroup(account, binding, handle(account)));
   }
-  // A service each member connects for themselves, which this person has not.
+  // A service each member connects for themselves, which this person has not;
+  // one they have is listed above. Its template is someone else's account.
   for (const authorization of plan.connectionAuthorizations ?? []) {
+    if (authorization.accounts.length > 0) continue;
     const template = accounts.find(({ id }) => id === authorization.templateAccountId);
     const binding = bindings.find(({ connectionAccountId }) => connectionAccountId === authorization.templateAccountId);
     groups.push({
-      group: template?.label ?? authorization.providerId,
+      group: own(authorization.providerId, template?.policy),
       tools: [],
       tokens: 0,
       missing: allMissing(template && binding ? expectedTools(template, binding) : [], {
@@ -254,6 +276,12 @@ async function connectionTools(
     });
   }
   return groups;
+}
+
+/** A service by its catalog or preset name, else its provider ID; never an account's own label. */
+function serviceName(providerId: string, policy?: ConnectionAccountPolicy): string {
+  return (policy?.kind === 'managed' ? MANAGED_CONNECTOR_CATALOG.connector(policy.toolkit)?.label : undefined) ??
+    getConnectorPreset(providerId)?.name ?? providerId;
 }
 
 /** The connectionId get_agent and check_agent show for an account: its lane's, else its own. */

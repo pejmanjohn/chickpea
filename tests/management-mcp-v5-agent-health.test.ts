@@ -8,6 +8,7 @@ import { createWebsiteLogin, touchWebsiteLoginUsed } from '../src/browser/logins
 import type { ConnectionCheckOutcome } from '../src/connections/connection-check.ts';
 import { createWorkspaceManagementMcpServer } from '../src/management/mcp.ts';
 import type { WorkspaceManagementServiceInput } from '../src/management/service.ts';
+import type { ManagementActorContext } from '../src/management/types.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import {
   applyThroughAdapter,
@@ -34,18 +35,37 @@ interface HarnessOptions {
   checks?: Record<string, ConnectionCheckOutcome>;
   /** Models whose provider has no key. */
   unready?: readonly string[];
+  /** A deployment that cannot test connections. */
+  untestable?: true;
+  /** What Slack says about each Channel; the member is in none of the private ones. */
+  slackChannels?: Record<string, { name: string; private: boolean }>;
 }
 
 async function harness(t: TestContext, suffix: string, options: HarnessOptions = {}) {
   const tested: string[] = [];
+  const channels = options.slackChannels;
   const f = await createManagementAdapterFixture(suffix, ({ settings }): Partial<WorkspaceManagementServiceInput> => ({
     settings,
     modelReadiness: async () => async (model) =>
       options.unready?.includes(model) ? { unavailable: 'credential_missing' } : undefined,
-    testConnection: async ({ connectionId }) => {
-      tested.push(connectionId);
-      return options.checks?.[connectionId] ?? { kind: 'ok', url: 'https://acme.zendesk.com/api/v2/users/me', status: 200 };
-    },
+    ...(options.untestable ? {} : {
+      testConnection: async ({ connectionId }) => {
+        tested.push(connectionId);
+        return options.checks?.[connectionId] ?? { kind: 'ok', url: 'https://acme.zendesk.com/api/v2/users/me', status: 200 };
+      },
+    }),
+    ...(channels ? {
+      slackFacts: async () => ({
+        async lookupChannel(channelId: string) {
+          const channel = channels[channelId];
+          if (!channel) throw new Error(`channel_not_found:${channelId}`);
+          return { id: channelId, ...channel, member: true, archived: false };
+        },
+        async listMemberChannels() {
+          return new Set<string>();
+        },
+      }),
+    } : {}),
   }));
   t.after(() => f.close());
   const teamId = f.owner.binding.slackTeamId;
@@ -91,7 +111,13 @@ async function harness(t: TestContext, suffix: string, options: HarnessOptions =
       : body.split('\n').find((line) => line.startsWith('data: '))!.slice('data: '.length);
     return (JSON.parse(json) as { result: ToolResult }).result;
   };
-  return { f, teamId, call, tested };
+  const context: ManagementActorContext = {
+    userId: person.user.id,
+    membershipId: person.membership.id,
+    organizationId: person.membership.organizationId,
+    origin: { kind: 'mcp', clientId: principal.clientId },
+  };
+  return { f, teamId, call, tested, context };
 }
 
 function structured(result: ToolResult): Record<string, unknown> {
@@ -299,7 +325,7 @@ test('explain_agent in a Channel names it, and refuses a Channel the Agent is no
   assert.match(refused.message as string, /not added to that Channel/);
 });
 
-test('explain_agent as another member shows their own accounts, never anyone else\'s', async (t) => {
+test('explain_agent as another member names their own accounts by service only, connected or not, as Admin hides them', async (t) => {
   const { f, teamId, call } = await harness(t, 'explain-person');
   await seedOps(f, teamId);
   const drive = await f.config.putConnectionAccount({
@@ -315,16 +341,52 @@ test('explain_agent as another member shows their own accounts, never anyone els
     agentId: 'agent_ops', connectionAccountId: drive.id, providerId: drive.providerId,
     allowedCapabilities: ['drive.files.search'], enabled: true,
   });
+  // A personal API key the Owner saved, which every other member connects for themselves.
+  const crm = await f.config.putConnectionAccount({
+    id: 'connection_owner_crm', workspaceId: teamId, ownerKind: 'member', ownerMembershipId: f.owner.membership.id,
+    createdByMembershipId: f.owner.membership.id, providerId: 'acme-crm', label: 'Owner\'s CRM key',
+    policy: {
+      kind: 'api', allowedHosts: ['api.acme-crm.example'], pathPrefixes: ['/v1/'], headerName: 'Authorization',
+      allowedMethods: ['GET'], authMode: 'credential',
+    },
+    secretRefId: 'secret_connection_crm', lifecycle: 'ready',
+  } as never, 0);
+  await f.config.putAgentConnectionBinding({
+    agentId: 'agent_ops', connectionAccountId: crm.id, providerId: crm.providerId, allowedCapabilities: [], enabled: true,
+  });
+
   const asAdmin = await explain(call, { agentId: 'agent_ops', asPerson: ADMIN_SLACK_USER });
   assert.deepEqual(asAdmin.person, { name: 'Admin', you: false });
-  const driveGroup = group(asAdmin, 'Admin\'s Drive');
+  const driveGroup = group(asAdmin, 'Their own Google Drive');
   assert.ok(driveGroup, JSON.stringify(asAdmin.tools.map(({ group: name }) => name)));
-  assert.equal(driveGroup.tools.length, 1);
-  assert.ok(driveGroup.tokens > driveGroup.tools[0]!.length, 'a catalog tool counts its whole definition');
-  assert.ok(driveGroup.missing.every(({ why }) => why === 'not_chosen') && driveGroup.missing.length > 0);
+  assert.deepEqual({ ...driveGroup, tokens: 0 }, { group: 'Their own Google Drive', tools: ['*'], tokens: 0, missing: [] },
+    'connected, with no label, connectionId or tool list');
+  assert.ok(driveGroup.tokens > 0, 'the budget still counts the tools their run gets');
+  assert.deepEqual(group(asAdmin, 'Their own acme-crm'), {
+    group: 'Their own acme-crm', tools: [], tokens: 0,
+    missing: [{ tool: 'connection_request', why: 'not_connected', detail: 'Admin has not connected their own account yet.' }],
+  });
+  const serialized = JSON.stringify(asAdmin);
+  for (const hidden of ['Admin\'s Drive', 'connection_admin_drive', 'drive.files.search', 'Owner\'s CRM key', 'connection_owner_crm']) {
+    assert.equal(serialized.includes(hidden), false, `${hidden} leaked`);
+  }
+  const checkedAsAdmin = JSON.stringify(await check(call, { agentId: 'agent_ops', asPerson: ADMIN_SLACK_USER }));
+  for (const hidden of ['Admin\'s Drive', 'connection_admin_drive']) {
+    assert.equal(checkedAsAdmin.includes(hidden), false, `check_agent: ${hidden} leaked`);
+  }
+
+  await f.config.putConnectionAccount({ ...drive, lifecycle: 'needs_attention' } as never, drive.revision);
+  assert.deepEqual(group(await explain(call, { agentId: 'agent_ops', asPerson: ADMIN_SLACK_USER }), 'Their own Google Drive'), {
+    group: 'Their own Google Drive', tools: [], tokens: 0,
+    missing: [{ tool: '*', why: 'not_connected', detail: 'Admin\'s own account is not connected.' }],
+  });
 
   const asOwner = await explain(call, { agentId: 'agent_ops' });
-  assert.equal(group(asOwner, 'Admin\'s Drive'), undefined, 'another member\'s own account never mounts for this person');
+  assert.equal(asOwner.tools.some(({ group: name }) => name.includes('Google Drive')), false,
+    'another member\'s own account never mounts for this person');
+  assert.deepEqual(asOwner.tools.filter(({ group: name }) => name.includes('CRM') || name.includes('acme-crm'))
+    .map(({ group: name, connectionId }) => [name, connectionId]), [['Owner\'s CRM key', 'acme-crm']],
+  'the Owner sees their own key once, by its label');
 
   const unknown = errorOf(await call('explain_agent', { agentId: 'agent_ops', asPerson: 'U00NOBODY' }));
   assert.equal(unknown.code, 'not_found');
@@ -395,6 +457,17 @@ test('check_agent tests custom connections once each, reads catalog ones from st
     checks.connection_zendesk = outcome;
     const row = part(await check(call, { agentId: 'agent_ops' }), 'connection').find(({ name }) => name === 'Zendesk')!;
     assert.deepEqual([row.status, row.detail, row.fix?.tool], [status, detail, fixed ? 'apply_workspace_changes' : undefined], outcome.kind);
+  }
+});
+
+test('check_agent reports a custom connection it could not test as unknown, never as connected', async (t) => {
+  const { f, teamId, call, tested } = await harness(t, 'untestable', { untestable: true });
+  await seedOps(f, teamId);
+  const rows = part(await check(call, { agentId: 'agent_ops' }), 'connection');
+  assert.deepEqual(tested, []);
+  for (const name of ['Zendesk', 'Docs MCP']) {
+    const row = rows.find((entry) => entry.name === name)!;
+    assert.deepEqual([row.status, row.detail, row.fix], ['unknown', 'Connection testing is unavailable.', undefined], name);
   }
 });
 
@@ -559,4 +632,46 @@ test('a member checks and explains only the Agents they may edit, and only as th
   assert.ok(checked.checks.length > 0);
   const refused = errorOf(await call('check_agent', { agentId: 'agent_mine', asPerson: f.owner.binding.slackUserId }));
   assert.equal(refused.code, 'not_allowed');
+});
+
+test('the service hands a member the stores only for an Agent they may edit', async (t) => {
+  const { f, teamId, context } = await harness(t, 'reader', { as: 'member' });
+  await seedOps(f, teamId);
+  await createFixtureAgent(f, 'agent_mine', { name: 'Mine', creatorMembershipId: f.admin.membership.id });
+  await assert.rejects(f.service.agentReader(context, 'agent_ops'), (error: { code?: string }) => error.code === 'forbidden');
+  assert.equal((await f.service.agentReader(context, 'agent_mine')).agent.id, 'agent_mine');
+});
+
+test('a member never learns a private Channel Admin hides from them, even one their Agent is in', async (t) => {
+  const { f, teamId, call } = await harness(t, 'member-private', {
+    as: 'member',
+    slackChannels: { C_SECRET: { name: 'exec-secret', private: true }, C_OPEN: { name: 'open', private: false } },
+  });
+  await createFixtureAgent(f, 'agent_mine', { name: 'Mine', creatorMembershipId: f.admin.membership.id });
+  for (const [channelId, label, isPrivate] of [['C_SECRET', 'exec-secret', true], ['C_OPEN', 'open', false]] as const) {
+    await f.config.putChannel({ workspaceId: teamId, channelId, label, lifecycle: 'active' });
+    await f.config.putAgentChannelGrant({
+      workspaceId: teamId, channelId, agentId: 'agent_mine', status: 'active',
+      createdByMembershipId: f.owner.membership.id, channelLabel: label, channelIsPrivate: isPrivate,
+    });
+  }
+  const agent = structured(await call('get_agent', { agentId: 'agent_mine' })) as { channels: Array<{ channelId: string }> };
+  assert.deepEqual(agent.channels.map(({ channelId }) => channelId), ['C_OPEN'], 'get_agent hides it');
+
+  const checked = await check(call, { agentId: 'agent_mine' });
+  assert.deepEqual(part(checked, 'channel').map(({ name, channelId }) => [name, channelId]), [['#open', 'C_OPEN']]);
+  assert.equal(JSON.stringify(checked).includes('exec-secret'), false);
+
+  const admission = async (place: string) => part(await check(call, { agentId: 'agent_mine', place }), 'admission')[0]!;
+  const [secret, nowhere] = [await admission('C_SECRET'), await admission('C_NOWHERE')];
+  assert.deepEqual([secret.status, secret.name, secret.detail], ['failing', 'you, in C_SECRET', 'Mine is not added to this Channel.']);
+  assert.equal(nowhere.detail, secret.detail, 'as a Channel that does not exist');
+
+  const explainIn = async (place: string) => errorOf(await call('explain_agent', { agentId: 'agent_mine', place }));
+  const [refused, missing] = [await explainIn('C_SECRET'), await explainIn('C_NOWHERE')];
+  assert.deepEqual(refused, missing, 'explain refuses it as a Channel that does not exist');
+  assert.equal(refused.code, 'invalid_input');
+  assert.equal(JSON.stringify(refused).includes('exec-secret'), false);
+  assert.deepEqual((await explain(call, { agentId: 'agent_mine', place: 'C_OPEN' })).place,
+    { kind: 'channel', channelId: 'C_OPEN', name: 'open' });
 });
