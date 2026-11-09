@@ -109,6 +109,8 @@ const MCP_TOOL_ANNOTATIONS = {
   propose_agent: READ_5,
   propose_agent_change: READ_5,
   get_creation_status: READ_5,
+  explain_agent: READ_5,
+  check_agent: { ...READ_5, openWorldHint: true },
 };
 
 const CLIENTS = [

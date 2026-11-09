@@ -357,3 +357,83 @@ export const getCreationStatusOutput = z.strictObject({
   problem: z.string().optional(),
 });
 
+
+// explain_agent and check_agent.
+
+const zPlace = zText(128).optional()
+  .describe('dm (the default) is the person\'s direct messages with the Agent; a channelId from get_agent is one of its Channels.');
+const zAsPerson = zText(128).optional()
+  .describe('A slackUserId from list_members: as that person. Owners and Admins only; omit for yourself.');
+
+export const explainAgentInput = z.strictObject({ agentId: zAgentId, place: zPlace, asPerson: zAsPerson });
+export const checkAgentInput = z.strictObject({ agentId: zAgentId, place: zPlace, asPerson: zAsPerson });
+
+const zTokens = z.number().int().nonnegative();
+const zAgentName = z.strictObject({ name: z.string(), handle: z.string().optional() });
+const zWhere = z.strictObject({
+  kind: z.enum(['dm', 'channel']),
+  channelId: z.string().optional(),
+  name: z.string().optional(),
+});
+const zPerson = z.strictObject({ name: z.string().optional(), you: z.boolean() });
+
+export const explainAgentOutput = z.strictObject({
+  agent: zAgentName,
+  place: zWhere,
+  person: zPerson,
+  prompt: z.array(z.strictObject({
+    part: z.enum(['chickpea', 'instructions', 'skill', 'memory', 'connection_guide']),
+    title: z.string(),
+    /** What this part adds before anyone speaks. */
+    tokens: zTokens,
+    text: z.string().optional(),
+    /** A skill's or guide's full text, which loads only when the Agent uses it. */
+    whenUsed: z.strictObject({ tokens: zTokens }).optional(),
+  })),
+  tools: z.array(z.strictObject({
+    group: z.string(),
+    connectionId: z.string().optional(),
+    tools: z.array(z.string()),
+    tokens: zTokens.describe('Counted once: connection_request, which every API connection uses, is in the Chickpea group.'),
+    missing: z.array(z.strictObject({
+      tool: z.string().describe('A tool name, or * for every tool of the group.'),
+      why: z.enum(['not_chosen', 'not_discovered', 'needs_attention', 'not_connected', 'not_set_up']),
+      detail: z.string().optional(),
+    })),
+  })),
+  model: z.strictObject({
+    model: z.string().nullable(),
+    source: z.enum(['pinned', 'workspace_default']),
+    effort: z.string().nullable(),
+    canRun: z.boolean(),
+    why: z.string().optional(),
+  }),
+  contextBudget: z.strictObject({
+    tokens: zTokens.describe('Tokens before anyone speaks: the prompt plus every tool definition.'),
+    top: z.array(z.strictObject({ what: z.string(), tokens: zTokens })).max(3),
+    estimate: z.string().describe('How the tokens were counted.'),
+  }),
+});
+
+const zFix = z.union([
+  z.strictObject({ label: z.string(), url: z.string() }),
+  z.strictObject({ label: z.string(), tool: z.string(), arguments: z.record(z.string(), z.unknown()) }),
+]);
+
+export const checkAgentOutput = z.strictObject({
+  agent: zAgentName,
+  place: zWhere,
+  person: zPerson,
+  healthy: z.boolean().describe('false when any check is failing.'),
+  checks: z.array(z.strictObject({
+    part: z.enum(['connection', 'model', 'slack', 'channel', 'schedule', 'repository', 'website_login', 'admission']),
+    name: z.string(),
+    status: z.enum(['ok', 'warning', 'failing', 'unknown']),
+    detail: z.string(),
+    fix: zFix.optional(),
+    connectionId: z.string().optional(),
+    channelId: z.string().optional(),
+    scheduleId: z.string().optional(),
+    loginId: z.string().optional(),
+  })),
+});

@@ -147,7 +147,8 @@ for (const protocol of [LEGACY, MODERN]) {
     assert.deepEqual(tools.map(({ name }) => name), [...WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES, ...FIVE_ZERO_TOOL_NAMES]);
     assert.deepEqual(tools.map(({ name }) => name), WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES);
     for (const tool of tools.filter(({ name }) => (FIVE_ZERO_TOOL_NAMES as readonly string[]).includes(name))) {
-      assert.deepEqual(tool.annotations, READ_5, tool.name);
+      // check_agent's connection checks send one request each to hosts the workspace configured.
+      assert.deepEqual(tool.annotations, tool.name === 'check_agent' ? { ...READ_5, openWorldHint: true } : READ_5, tool.name);
       assert.deepEqual(tool.securitySchemes, SCHEMES, `${tool.name}: descriptor securitySchemes`);
       const meta = tool._meta as Record<string, unknown>;
       assert.deepEqual(meta.securitySchemes, SCHEMES, `${tool.name}: the _meta mirror`);
