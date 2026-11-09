@@ -188,10 +188,11 @@ export const FIVE_ZERO_TOOLS = {
   }),
   create_agent: tool({
     title: 'Create an Agent',
-    description: 'Create a new Agent, an AI teammate in Slack, and add it to the Channels named. It adds a teammate everyone in the Slack workspace can mention and sends one welcome message to you; it removes nothing. Applies at once. A near-duplicate returns similar_agent_exists instead. Connect services afterwards with their setup links.',
+    description: 'Create a new Agent, an AI teammate in Slack, and add it to the Channels named. It adds a teammate everyone in the Slack workspace can mention, sends one welcome message to you, and posts a welcome in each public Channel it joins, which cannot be taken back. Applies at once. A near-duplicate returns similar_agent_exists instead. Connect services afterwards with their setup links.',
     input: schemas.createAgentInputSchema,
     output: schemas.changeResultOutput,
-    write: writeHints({ destructive: false }),
+    // Hints are per tool, so the Channel welcome a call may post makes every call destructive.
+    write: writeHints({ destructive: true }),
     run: (deps, args) => writes.createAgent(deps, args),
   }),
   update_agent: tool({
@@ -228,10 +229,10 @@ export const FIVE_ZERO_TOOLS = {
   }),
   add_agent_to_channel: tool({
     title: 'Add an Agent to a Slack Channel',
-    description: 'Let an Agent answer in one Slack Channel, which it joins. Everyone in that Channel can then mention it. Applies at once and removes nothing.',
+    description: 'Let an Agent answer in one Slack Channel, which it joins. In a public Channel it posts a welcome everyone there sees, which cannot be taken back. Everyone in that Channel can then mention it. Applies at once.',
     input: schemas.addAgentToChannelInput,
     output: schemas.changeResultOutput,
-    write: writeHints({ destructive: false }),
+    write: writeHints({ destructive: true }),
     run: (deps, args) => writes.addAgentToChannel(deps, args),
   }),
   save_channel_settings: tool({

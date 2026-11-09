@@ -72,7 +72,7 @@ const READ_5 = { readOnlyHint: true, destructiveHint: false, openWorldHint: fals
 
 /** A 5.0 write states all four hints; a retry with its idempotencyKey replays. */
 const ADDS_5 = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false };
-const OVERWRITES_5 = { ...ADDS_5, destructiveHint: true };
+const DESTRUCTIVE_5 = { ...ADDS_5, destructiveHint: true };
 
 /** Only confirm_workspace_change and confirm_change carry out a change the person must approve first. */
 const MCP_TOOL_ANNOTATIONS = {
@@ -115,26 +115,27 @@ const MCP_TOOL_ANNOTATIONS = {
   get_creation_status: READ_5,
   explain_agent: READ_5,
   check_agent: { ...READ_5, openWorldHint: true },
-  // 5.0 writes: OpenAI's rule, so an overwrite, removal or irreversible send is destructive.
-  create_agent: ADDS_5,
-  update_agent: OVERWRITES_5,
-  update_agent_memory: OVERWRITES_5,
-  archive_agent: OVERWRITES_5,
+  // 5.0 writes: OpenAI's rule, so an overwrite, removal or irreversible send is destructive,
+  // such as the welcome create_agent and add_agent_to_channel post in a public Channel.
+  create_agent: DESTRUCTIVE_5,
+  update_agent: DESTRUCTIVE_5,
+  update_agent_memory: DESTRUCTIVE_5,
+  archive_agent: DESTRUCTIVE_5,
   restore_agent: ADDS_5,
-  add_agent_to_channel: ADDS_5,
-  save_channel_settings: OVERWRITES_5,
-  import_skill_from_github: { ...OVERWRITES_5, openWorldHint: true },
-  upload_skill_files: OVERWRITES_5,
-  set_agent_skill: OVERWRITES_5,
-  save_schedule: OVERWRITES_5,
-  pause_schedule: OVERWRITES_5,
+  add_agent_to_channel: DESTRUCTIVE_5,
+  save_channel_settings: DESTRUCTIVE_5,
+  import_skill_from_github: { ...DESTRUCTIVE_5, openWorldHint: true },
+  upload_skill_files: DESTRUCTIVE_5,
+  set_agent_skill: DESTRUCTIVE_5,
+  save_schedule: DESTRUCTIVE_5,
+  pause_schedule: DESTRUCTIVE_5,
   resume_schedule: ADDS_5,
-  run_schedule_now: { ...OVERWRITES_5, openWorldHint: true },
-  take_over_schedule: OVERWRITES_5,
-  set_workspace_model: OVERWRITES_5,
-  connect_model_provider: { ...OVERWRITES_5, idempotentHint: false },
-  confirm_change: OVERWRITES_5,
-  undo_change: OVERWRITES_5,
+  run_schedule_now: { ...DESTRUCTIVE_5, openWorldHint: true },
+  take_over_schedule: DESTRUCTIVE_5,
+  set_workspace_model: DESTRUCTIVE_5,
+  connect_model_provider: { ...DESTRUCTIVE_5, idempotentHint: false },
+  confirm_change: DESTRUCTIVE_5,
+  undo_change: DESTRUCTIVE_5,
 };
 
 const CLIENTS = [
