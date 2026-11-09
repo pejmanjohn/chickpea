@@ -886,6 +886,8 @@ export interface ManagementApplyResult {
   links?: ManagementResultLinks;
   /** The preview of the change set a confirmation is waiting on; response-only. */
   presentation?: ManagementPresentation;
+  /** A 5.0 call's expiring confirmation; response-only. */
+  confirmation?: { expiresAt: number; preview: ManagementChangeSetPreview };
   /** Setup the approved change set's call held until the approval; response-only. */
   deferredSetup?: ManagementDeferredSetup[];
   /** Workspace mutation receipt token; it is not comparable to an actor-scoped inspection token. */
@@ -1292,6 +1294,8 @@ export interface ApplyWorkspaceChangesInput {
   acknowledgementOwner?: 'service' | 'caller';
   /** Internal typed receipt data stored with the durable result. */
   receiptMetadata?: ManagementApplyResult['receiptMetadata'];
+  /** Set by 5.0 tools only; without it a confirmation never expires. */
+  confirmationLifetimeMs?: number;
 }
 
 export interface ProposeWorkspaceChangesInput {
@@ -1460,6 +1464,9 @@ export interface UndoWorkspaceChangeInput {
   context: ManagementActorContext;
   operationId: string;
   idempotencyKey: string;
+  /** Lets a retried 5.0 undo find its result. */
+  undoOperationId?: string;
+  confirmationLifetimeMs?: number;
 }
 
 export interface ManagementRequestRecord {
@@ -1584,6 +1591,8 @@ export interface ManagementChangeSetProposalRecord {
    * as an approval only while that turn is the Agent's latest in the scope.
    */
   proposedMessageTs?: string;
+  /** A pending set past this can't be confirmed; absent (stored 0) never expires. */
+  expiresAt?: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -1614,6 +1623,7 @@ export class ManagementError extends Error {
       | 'proposal_not_found'
       | 'proposal_binding_mismatch'
       | 'proposal_stale'
+      | 'proposal_expired'
       | 'base_agent_capabilities_require_setup'
       | 'model_provider_unavailable'
       | ModelEffortRejection
@@ -1685,6 +1695,8 @@ export interface PutManagementChangeSetProposalInput {
   targetRevisions: Record<string, number>;
   requestOperationId?: string;
   proposedMessageTs?: string;
+  /** A set found again keeps its own. */
+  expiresAt?: number;
   at: number;
 }
 

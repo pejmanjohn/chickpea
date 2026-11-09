@@ -775,7 +775,7 @@ export class ManagementStoreLogic {
         origin_key, approval_scope_key, idempotency_key, guide_version, authoring_reason,
         operations_json, digest, preview_json, target_revisions_json,
         status, result_json, request_operation_id, proposed_message_ts, expires_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, 0, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?, ?, ?)`,
       input.proposalId,
       input.organizationId,
       input.actorUserId,
@@ -791,6 +791,7 @@ export class ManagementStoreLogic {
       JSON.stringify(input.targetRevisions),
       input.requestOperationId ?? null,
       input.proposedMessageTs ?? null,
+      input.expiresAt ?? 0,
       input.at,
       input.at,
     );
@@ -2150,6 +2151,7 @@ function changeSetProposalFromRow(
       : {}),
     ...(row.request_operation_id ? { requestOperationId: row.request_operation_id } : {}),
     ...(row.proposed_message_ts ? { proposedMessageTs: row.proposed_message_ts } : {}),
+    ...(Number(row.expires_at) > 0 ? { expiresAt: Number(row.expires_at) } : {}),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };

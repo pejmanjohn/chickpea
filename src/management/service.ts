@@ -2981,7 +2981,7 @@ export class WorkspaceManagementService {
             instruction: SLACK_SETUP_APPROVAL_UNAVAILABLE,
           });
         } else if (policy.posture === 'confirmation' || heldOnAsk) {
-          const frozen = await this.freezeConfirmation(actor, request, index, progress);
+          const frozen = await this.freezeConfirmation(actor, request, index, progress, input.confirmationLifetimeMs);
           if (frozen) {
             progress = appendOutcome(progress, index, {
               itemId: operation.itemId,
@@ -3102,6 +3102,7 @@ export class WorkspaceManagementService {
     request: ManagementRequestRecord,
     index: number,
     progress: ManagementRequestProgress,
+    lifetimeMs?: number,
   ): Promise<{
     changeSet: ManagementChangeSetProposalRecord;
     refused: Array<{ index: number; outcome: ManagementItemOutcome }>;
@@ -3137,6 +3138,7 @@ export class WorkspaceManagementService {
       guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
       authoringReason: 'agent_edit',
       requestOperationId: request.operationId,
+      ...(lifetimeMs === undefined ? {} : { expiresAt: this.now() + lifetimeMs }),
     });
     const changeSet = await freeze(held.map(({ operation }) => operation)).catch((error: unknown) => {
       if (held.length > 1 && error instanceof ManagementError && error.code === 'revision_conflict') {
@@ -3303,6 +3305,8 @@ export class WorkspaceManagementService {
       ? await this.stores.management.getChangeSetProposal(proposalId)
       : undefined;
     if (changeSet?.status !== 'pending') return result;
+    // An expired confirmation shows nothing to confirm.
+    if (changeSet.expiresAt !== undefined && this.now() >= changeSet.expiresAt) return result;
     const messageTs = actor.origin.kind === 'slack' ? actor.origin.messageTs : undefined;
     const shown = messageTs && changeSet.proposedMessageTs !== messageTs
       ? await this.stores.management.putChangeSetProposal({
@@ -3324,7 +3328,13 @@ export class WorkspaceManagementService {
           at: this.now(),
         })
       : changeSet;
-    return { ...result, presentation: publicChangeSetProposal(shown).presentation };
+    return {
+      ...result,
+      presentation: publicChangeSetProposal(shown).presentation,
+      ...(shown.expiresAt === undefined ? {} : {
+        confirmation: { expiresAt: shown.expiresAt, preview: publicChangeSetPreview(shown.preview) },
+      }),
+    };
   }
 
   /** `skillSourceUrl` is the Source a skill import's preview leads with. */
@@ -3391,7 +3401,7 @@ export class WorkspaceManagementService {
     actor: LiveManagementActor,
     operations: ManagementOperation[],
     meta: Pick<ProposeWorkspaceChangesInput, 'idempotencyKey' | 'guideVersion' | 'authoringReason'> &
-      { requestOperationId?: string; skillSourceUrl?: string },
+      { requestOperationId?: string; skillSourceUrl?: string; expiresAt?: number },
     checkOperation?: (operation: ManagementOperation) => Promise<void>,
   ): Promise<ManagementChangeSetProposalRecord> {
     const proposalId = `changeset_${this.randomId()}`;
@@ -3476,6 +3486,7 @@ export class WorkspaceManagementService {
       targetRevisions,
       ...(meta.requestOperationId ? { requestOperationId: meta.requestOperationId } : {}),
       ...(actor.origin.kind === 'slack' ? { proposedMessageTs: actor.origin.messageTs } : {}),
+      ...(meta.expiresAt === undefined ? {} : { expiresAt: meta.expiresAt }),
       at,
     });
     emitAgentAuthoringOutcome(actor, operations, { proposalOutcome: 'created' });
@@ -3522,6 +3533,10 @@ export class WorkspaceManagementService {
     this.assertProposalBinding(actor, existing);
     if (existing.status === 'completed' && existing.result) {
       return emitOperationOutcomes(actor.origin.kind, existing.result);
+    }
+    // Only a pending set expires; a completed one replays above.
+    if (existing.status === 'pending' && existing.expiresAt !== undefined && this.now() >= existing.expiresAt) {
+      throw new ManagementError('proposal_expired', 'This confirmation expired, so nothing changed.');
     }
     if (managementOperationDigest(existing.operations) !== existing.digest) {
       await this.stores.management.markChangeSetProposalStale(existing.proposalId, this.now());
@@ -3969,6 +3984,8 @@ export class WorkspaceManagementService {
       context: input.context,
       idempotencyKey: input.idempotencyKey,
       operations: [inverse],
+      ...(input.undoOperationId ? { operationId: input.undoOperationId } : {}),
+      ...(input.confirmationLifetimeMs === undefined ? {} : { confirmationLifetimeMs: input.confirmationLifetimeMs }),
       ...(requesterExplicitlyRequestsUndo(requestAddressedHere(actor))
         ? {
             approvalBasis: 'explicit_requester_command' as const,
@@ -7739,6 +7756,9 @@ function authoringProposalFailure(
   }
   if (error.code === 'proposal_stale') {
     return { proposalOutcome: 'stale', staleReason: 'unknown' };
+  }
+  if (error.code === 'proposal_expired') {
+    return { proposalOutcome: 'stale', staleReason: 'expired' };
   }
   if (error.code === 'forbidden') {
     return { proposalOutcome: 'denied', staleReason: 'permission_changed' };
