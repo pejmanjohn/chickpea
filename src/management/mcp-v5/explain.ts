@@ -73,7 +73,7 @@ export async function explainAgent(
   if (memory) prompt.push(memory);
   const tools: ToolGroup[] = [];
   if (run.plan) {
-    prompt.push(...skillParts(run.plan));
+    prompt.push(...skillParts(run.plan, hiddenGuides(run.parts?.connections ?? [], reading)));
     tools.push(...chickpeaTools(run.plan, Boolean(run.parts?.sandboxUnavailableFallback), reading));
     tools.push(...await connectionTools(run.plan, run.parts?.connections ?? [], reading));
   }
@@ -118,7 +118,7 @@ async function memoryPart(reading: AgentRunReading): Promise<PromptPart | undefi
  * the Agent uses it. Chickpea adds built-in skills, and each connection guide
  * is a skill.
  */
-function skillParts(plan: RuntimePlanV2): PromptPart[] {
+function skillParts(plan: RuntimePlanV2, hidden: ReadonlyMap<string, string>): PromptPart[] {
   const own = new Set(plan.skills.map(({ name }) => name));
   const guides = new Map([...plan.apiConnections, ...plan.mcpConnections].flatMap(({ id, displayName, guide }) =>
     guide ? [[connectionGuideSkillName(id), displayName ?? id] as const] : []));
@@ -128,6 +128,15 @@ function skillParts(plan: RuntimePlanV2): PromptPart[] {
   ] as ReadonlyArray<{ name: string; description?: string; instructions?: string }>;
   return skills.map((skill) => {
     const line = `- **${skill.name}**${skill.description ? ` — ${skill.description}` : ''}`;
+    const unnamed = own.has(skill.name) ? undefined : hidden.get(skill.name);
+    if (unnamed) {
+      return {
+        part: 'connection_guide',
+        title: `${unnamed}'s guide`,
+        tokens: tokens(line),
+        whenUsed: { tokens: tokens(skill.instructions ?? '') },
+      } satisfies PromptPart;
+    }
     const guide = own.has(skill.name) ? undefined : guides.get(skill.name);
     return {
       part: guide ? 'connection_guide' : 'skill',
@@ -137,6 +146,17 @@ function skillParts(plan: RuntimePlanV2): PromptPart[] {
       whenUsed: { tokens: tokens(skill.instructions ?? '') },
     } satisfies PromptPart;
   });
+}
+
+/**
+ * Guides of another person's own accounts, by skill name, to the service name
+ * they appear under: their label and connection ID stay with their owner.
+ */
+function hiddenGuides(effective: readonly EffectiveConnectionAccount[], reading: AgentRunReading): Map<string, string> {
+  if (reading.person.you) return new Map();
+  return new Map(effective.flatMap(({ account }) => account.ownerKind === 'member'
+    ? [[connectionGuideSkillName(account.id), `Their own ${serviceName(account.providerId, account.policy)}`] as const]
+    : []));
 }
 
 /** Chickpea's own tools, by family, as the rendered definitions every Slack turn sends. */

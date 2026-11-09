@@ -392,6 +392,35 @@ test('explain_agent as another member names their own accounts by service only, 
   assert.equal(unknown.code, 'not_found');
 });
 
+// Defect caught: another member's own connection named by its label and ID through its guide.
+test('explain_agent as another member shows their own connection\'s guide by service only, with its cost and no text', async (t) => {
+  const { f, teamId, call } = await harness(t, 'explain-person-guide');
+  await seedOps(f, teamId);
+  const crm = await f.config.putConnectionAccount({
+    id: 'connection_admin_crm', workspaceId: teamId, ownerKind: 'member', ownerMembershipId: f.admin.membership.id,
+    createdByMembershipId: f.admin.membership.id, providerId: 'acme-crm', label: 'Admin CRM secret label',
+    policy: {
+      kind: 'api', allowedHosts: ['api.acme-crm.example'], pathPrefixes: ['/v1/'], headerName: 'Authorization',
+      allowedMethods: ['GET'], authMode: 'credential', guide: 'List deals with GET /v1/deals before answering.',
+    },
+    secretRefId: 'secret_connection_admin_crm', lifecycle: 'ready',
+  } as never, 0);
+  await f.config.putAgentConnectionBinding({
+    agentId: 'agent_ops', connectionAccountId: crm.id, providerId: crm.providerId, allowedCapabilities: [], enabled: true,
+  });
+
+  const asAdmin = await explain(call, { agentId: 'agent_ops', asPerson: ADMIN_SLACK_USER });
+  const serialized = JSON.stringify(asAdmin);
+  for (const hidden of ['Admin CRM secret label', 'connection_admin_crm', 'connection-admin-crm', 'admin-crm']) {
+    assert.equal(serialized.includes(hidden), false, `${hidden} leaked`);
+  }
+  const guide = asAdmin.prompt.find(({ part }) => part === 'connection_guide');
+  assert.ok(guide, JSON.stringify(asAdmin.prompt.map(({ title }) => title)));
+  assert.equal(guide.title, 'Their own acme-crm\'s guide');
+  assert.equal(guide.text, undefined, 'no text: it names the connection');
+  assert.ok(guide.tokens > 0, 'the budget still counts the guide');
+});
+
 test('a model whose provider has no key cannot run: explain says why and check offers the provider setup', async (t) => {
   const { f, teamId, call } = await harness(t, 'model', { unready: ['anthropic/claude-sonnet-4-6'] });
   await seedOps(f, teamId, { model: 'anthropic/claude-sonnet-4-6' });
