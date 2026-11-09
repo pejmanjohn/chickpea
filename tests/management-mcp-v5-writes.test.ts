@@ -243,6 +243,8 @@ test('turning off an Agent that answers in Channels waits for confirm_change, wh
   // Replays: confirming again after the lifetime, and retrying the first call.
   clock.now += THIRTY_MINUTES;
   assert.deepEqual(structured(await call('confirm_change', { confirmToken })), confirmed);
+  errorOf(await as('admin')('confirm_change', { confirmToken }), 'not_found');
+  errorOf(await as('owner', 'client_other_app')('confirm_change', { confirmToken }), 'not_found');
   assert.equal(structured(await call('update_agent', args)).status, 'done');
   assertNoInternalIds(JSON.stringify({ pending, confirmed }), f);
 });
@@ -418,6 +420,10 @@ test('a member changes only the Agents they may edit, and never a workspace sett
     agentId: before.id, version: memory.version, body: 'Owner notes.', idempotencyKey: 'owner-memory',
   }));
   errorOf(await member('undo_change', { undoToken: saved.undoToken, idempotencyKey: 'member-undo' }), 'nothing_to_undo');
+  // The same call with the same key is another person's, so nothing replays.
+  errorOf(await member('update_agent_memory', {
+    agentId: before.id, version: memory.version, body: 'Owner notes.', idempotencyKey: 'owner-memory',
+  }), 'not_found');
 
   const mine = structured(await member('create_agent', { name: 'Notes', instructions: 'Take notes.', idempotencyKey: 'member-create' }));
   const edited = structured(await member('update_agent', {
