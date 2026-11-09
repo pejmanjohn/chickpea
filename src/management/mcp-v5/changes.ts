@@ -272,6 +272,7 @@ function withWarnings(outcomes: readonly ManagementItemOutcome[]): { warnings?: 
   return warnings.length ? { warnings } : {};
 }
 
+/** The Agent writes that send no summary of their own; every other write names its result. */
 const DONE_SUMMARIES: Partial<Record<ManagementOperation['kind'], (name: string) => string>> = {
   create_agent: (name) => `Created ${name}.`,
   update_agent: (name) => `Saved ${name}.`,
@@ -279,20 +280,7 @@ const DONE_SUMMARIES: Partial<Record<ManagementOperation['kind'], (name: string)
   update_agent_memory: (name) => `Saved ${name}'s memory.`,
   archive_agent: (name) => `Archived ${name}; it no longer answers anywhere.`,
   restore_agent: (name) => `Restored ${name}.`,
-  delete_agent: () => 'Deleted the Agent.',
   grant_agent_channel: (name) => `${name} now answers in the Channel.`,
-  revoke_agent_channel: (name) => `${name} no longer answers in the Channel.`,
-  put_channel: () => 'Saved Chickpea\'s settings for the Channel.',
-  disconnect_connection: (name) => `Removed the connection from ${name}.`,
-  remove_website_login: (name) => `Removed the website login from ${name}.`,
-  save_routine: () => 'Saved the schedule.',
-  control_routine: () => 'Saved whether the schedule runs.',
-  run_routine: () => 'Started a run of the schedule.',
-  delete_routine: () => 'Deleted the schedule.',
-  take_over_routine: () => 'The schedule now runs as you.',
-  set_workspace_model: () => 'Saved the workspace model.',
-  update_member: () => 'Saved the member\'s role and access.',
-  remove_provider_credential: () => 'Removed the model provider key.',
 };
 
 function doneSummary(kind: ManagementOperation['kind'] | undefined, agentName = 'the Agent'): string {

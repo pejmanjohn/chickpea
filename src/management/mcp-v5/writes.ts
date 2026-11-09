@@ -713,10 +713,12 @@ export async function confirmChange(
 ): Promise<ChangeResult> {
   const context = await deps.context();
   try {
+    // A confirmed undo reads like any other confirmed change: the preview said what it does.
     return await changeResult(
       deps,
       context,
       await deps.service.confirmWorkspaceChange({ context, proposalId: input.confirmToken }),
+      { summary: 'Made the change you confirmed.' },
     );
   } catch (error) {
     if (!(error instanceof ManagementError)) throw error;
