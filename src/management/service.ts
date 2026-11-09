@@ -3952,6 +3952,8 @@ export class WorkspaceManagementService {
       operationId,
       organizationId: actor.organizationId,
       actorUserId: actor.userId,
+      actorMembershipId: actor.membershipId,
+      ...(actor.origin.kind === 'mcp' ? { appKey: managementOriginKey(actor.origin) } : {}),
       inverse: mutation.inverse,
       resultingRevisions: mutation.resultingRevisions,
       ...(mutation.agentConfigurationDigest ? { agentConfigurationDigest: mutation.agentConfigurationDigest } : {}),
@@ -3975,28 +3977,48 @@ export class WorkspaceManagementService {
   async undoWorkspaceChange(input: UndoWorkspaceChangeInput): Promise<ManagementApplyResult> {
     const actor = await this.requireLiveActor(input.context);
     const undo = await this.findUndo(input.operationId);
-    if (!undo || undo.status !== 'available' || undo.organizationId !== actor.organizationId ||
-        undo.actorUserId !== actor.userId) {
+    // Bound to the person and their membership, and an MCP app's change to that app over MCP, like a
+    // confirmation. Slack and a trusted connector still undo the person's changes from another door.
+    const bound = undo && undo.organizationId === actor.organizationId && undo.actorUserId === actor.userId &&
+      (undo.actorMembershipId ?? actor.membershipId) === actor.membershipId &&
+      (undo.appKey === undefined || actor.origin.kind !== 'mcp' || undo.appKey === managementOriginKey(actor.origin));
+    // A used undo answers only a retry of the request that used it, which replays.
+    const retried = bound && undo.status === 'consumed' ? await this.undoRequest(actor, undo, input.idempotencyKey) : undefined;
+    if (!bound || (undo.status !== 'available' && !retried)) {
       throw new ManagementError('undo_unavailable', 'No undo action is available.');
     }
-    const inverse = await this.currentUndoInverse(undo);
+    const operations = retried?.operations ?? [await this.currentUndoInverse(undo)];
     const result = requireManagementApplyResult(await this.applyWorkspaceChanges({
       context: input.context,
       idempotencyKey: input.idempotencyKey,
-      operations: [inverse],
+      operations,
       ...(input.undoOperationId ? { operationId: input.undoOperationId } : {}),
       ...(input.confirmationLifetimeMs === undefined ? {} : { confirmationLifetimeMs: input.confirmationLifetimeMs }),
       ...(requesterExplicitlyRequestsUndo(requestAddressedHere(actor))
         ? {
             approvalBasis: 'explicit_requester_command' as const,
-            trustedReversibleOperationIds: [inverse.itemId],
+            trustedReversibleOperationIds: operations.map(({ itemId }) => itemId),
           }
         : {}),
     }));
-    if (result.status === 'completed') {
-      await this.stores.management.consumeUndo(undo.operationId, this.now());
+    // Over MCP the confirmation is the one way to finish an undo, so proposing the reverse uses it up.
+    // In Slack a newer undo replaces a pending one, as any newer proposal does.
+    const used = result.status === 'completed' ||
+      (result.status === 'confirmation_required' && actor.origin.kind === 'mcp');
+    if (!retried && used) {
+      await this.stores.management.consumeUndo(undo.operationId, this.now(), result.operationId);
     }
     return result.links ? result : await this.withAgentLinks(input.context, result);
+  }
+
+  private async undoRequest(
+    actor: LiveManagementActor,
+    undo: ManagementUndoRecord,
+    idempotencyKey: string,
+  ): Promise<ManagementRequestRecord | undefined> {
+    const request = undo.consumedBy ? await this.stores.management.getRequest(undo.consumedBy) : undefined;
+    return request?.actorMembershipId === actor.membershipId && request.originKey === managementActorOriginKey(actor) &&
+      request.idempotencyKey === managementStorageIdempotencyKey(actor, idempotencyKey) ? request : undefined;
   }
 
   private async currentUndoInverse(undo: ManagementUndoRecord): Promise<ManagementOperation> {

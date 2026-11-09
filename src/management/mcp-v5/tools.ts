@@ -333,7 +333,7 @@ export const FIVE_ZERO_TOOLS = {
   }),
   undo_change: tool({
     title: 'Undo a change',
-    description: 'Reverse one change by the undoToken it returned, while what it changed is still as the change left it. It overwrites the current state with the earlier one. When the reverse is destructive, such as removing a connection, it returns needs_confirmation first.',
+    description: 'Reverse one change by the undoToken it returned, while what it changed is still as the change left it. It overwrites the current state with the earlier one. When the reverse is destructive, such as removing a connection, it returns needs_confirmation first. Each undoToken works once, even when the reverse waits for confirmation, and only for the person and app whose change returned it.',
     input: schemas.undoChangeInput,
     output: schemas.changeResultOutput,
     write: writeHints({ destructive: true }),

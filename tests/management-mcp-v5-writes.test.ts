@@ -315,7 +315,7 @@ test('a 4.x confirmation still never expires', async (t) => {
 });
 
 test('undo_change reverses a change once, replays its retry, and confirms a destructive reverse first', async (t) => {
-  const { f, call, teamId } = await harness(t, 'undo');
+  const { f, as, call, teamId } = await harness(t, 'undo');
   await createFixtureAgent(f, 'agent_research');
   const memory = structured(await call('get_agent_memory', { agentId: 'agent_research' }));
   const saved = structured(await call('update_agent_memory', {
@@ -323,6 +323,15 @@ test('undo_change reverses a change once, replays its retry, and confirms a dest
   }));
   assert.equal(saved.status, 'done');
   assert.equal(saved.version, structured(await call('get_agent_memory', { agentId: 'agent_research' })).version);
+  // The token is bound to the app the change came from, like a confirmToken.
+  errorOf(await as('owner', 'client_other_app')('undo_change', {
+    undoToken: saved.undoToken, idempotencyKey: 'undo-elsewhere',
+  }), 'nothing_to_undo');
+  assert.equal(structured(await call('get_agent_memory', { agentId: 'agent_research' })).body, 'Cite two sources.');
+  // And to the membership it was made under, as a confirmToken is.
+  const stored = await f.management.getUndo(saved.undoToken);
+  await f.management.putUndo({ ...stored!, operationId: 'mcp5_another_membership', actorMembershipId: 'membership_elsewhere' });
+  errorOf(await call('undo_change', { undoToken: 'mcp5_another_membership', idempotencyKey: 'undo-membership' }), 'nothing_to_undo');
   const undone = structured(await call('undo_change', { undoToken: saved.undoToken, idempotencyKey: 'undo-memory' }));
   assert.deepEqual([undone.status, undone.summary], ['done', 'Undid the change.']);
   assert.equal(structured(await call('get_agent_memory', { agentId: 'agent_research' })).body, '');
@@ -344,9 +353,20 @@ test('undo_change reverses a change once, replays its retry, and confirms a dest
   const reverse = structured(await call('undo_change', { undoToken: on.undoToken, idempotencyKey: 'undo-on' }));
   assert.equal(reverse.status, 'needs_confirmation');
   assert.equal((await f.config.getAgent('agent_paused')).enabled, true);
-  assert.equal(structured(await call('confirm_change', { confirmToken: reverse.confirmation.confirmToken })).status, 'done');
+  // Asking for the confirmation used the token: its retry replays, and another undo is refused.
+  assert.deepEqual(structured(await call('undo_change', { undoToken: on.undoToken, idempotencyKey: 'undo-on' })), reverse);
+  errorOf(await call('undo_change', { undoToken: on.undoToken, idempotencyKey: 'undo-on-again' }), 'nothing_to_undo');
+  const legacy = JSON.parse((await call('undo_workspace_change', { operationId: on.undoToken, idempotencyKey: 'undo-on-4x' })).content[0]!.text);
+  assert.deepEqual([legacy.ok, legacy.error.code], [false, 'undo_unavailable']);
+  const reversed = structured(await call('confirm_change', { confirmToken: reverse.confirmation.confirmToken }));
+  assert.deepEqual([reversed.status, reversed.summary], ['done', 'Made the change you confirmed.']);
   assert.equal((await f.config.getAgent('agent_paused')).enabled, false);
-  assertNoInternalIds(JSON.stringify({ saved, undone, on, reverse }), f);
+  // Turned on again, the Agent is as the token's change left it, and the token stays used.
+  assert.equal(structured(await call('update_agent', {
+    agentId: 'agent_paused', version: reversed.version, on: true, idempotencyKey: 'on-again',
+  })).status, 'done');
+  errorOf(await call('undo_change', { undoToken: on.undoToken, idempotencyKey: 'undo-on-later' }), 'nothing_to_undo');
+  assertNoInternalIds(JSON.stringify({ saved, undone, on, reverse, reversed }), f);
 });
 
 test('the immediate writes apply in the call, as policy.ts says for this door', async (t) => {

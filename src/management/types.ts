@@ -1601,10 +1601,16 @@ export interface ManagementUndoRecord {
   operationId: string;
   organizationId: string;
   actorUserId: string;
+  /** Set since 4.4; an older record is bound to its person only. */
+  actorMembershipId?: string;
+  /** The MCP app that made the change, which alone undoes it over MCP. */
+  appKey?: string;
   inverse: ManagementOperation;
   resultingRevisions: Record<string, number>;
   agentConfigurationDigest?: string;
   status: 'available' | 'consumed';
+  /** The request that used it, applied or held for confirmation; only its retry replays. */
+  consumedBy?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -1850,7 +1856,7 @@ export type ManagementRpcRequest =
   | { kind: 'mark_change_set_proposal_stale'; proposalId: string; at: number }
   | { kind: 'put_undo'; record: ManagementUndoRecord }
   | { kind: 'get_undo'; operationId: string }
-  | { kind: 'consume_undo'; operationId: string; at: number }
+  | { kind: 'consume_undo'; operationId: string; at: number; consumedBy?: string }
   | { kind: 'put_setup'; input: PutManagementSetupInput }
   | { kind: 'claim_agent_creation_welcome'; input: ClaimAgentCreationWelcomeInput }
   | { kind: 'get_setup'; setupOperationId: string; at?: number }

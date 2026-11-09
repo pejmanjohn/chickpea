@@ -870,6 +870,48 @@ test('management retention deletes undo records after 30 days, used or not', asy
   }
 });
 
+test('an undo record keeps its membership, app and the request that used it; an older one reads without them', () => {
+  const db = openStateDb(':memory:');
+  try {
+    db.exec(`CREATE TABLE management_undo (
+      operation_id TEXT PRIMARY KEY,
+      organization_id TEXT NOT NULL,
+      actor_user_id TEXT NOT NULL,
+      inverse_json TEXT NOT NULL,
+      resulting_revisions_json TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('available', 'consumed')),
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`);
+    const inverse = {
+      itemId: 'restore', kind: 'update_agent_memory', agentId: 'agent_test', expectedRevision: 2, body: 'The note.',
+    } as const;
+    db.run(
+      `INSERT INTO management_undo VALUES (?, ?, ?, ?, '{}', 'available', ?, ?)`,
+      'undo_legacy', 'org_1', 'user_1', JSON.stringify(inverse), NOW, NOW,
+    );
+    const store = new ManagementStoreLogic(db);
+    assert.deepEqual(store.getUndo('undo_legacy'), {
+      operationId: 'undo_legacy', organizationId: 'org_1', actorUserId: 'user_1',
+      inverse, resultingRevisions: {}, status: 'available', createdAt: NOW, updatedAt: NOW,
+    });
+
+    store.putUndo({
+      operationId: 'undo_bound', organizationId: 'org_1', actorUserId: 'user_1',
+      actorMembershipId: 'member_1', appKey: 'mcp:client_1',
+      inverse, resultingRevisions: {}, status: 'available', createdAt: NOW, updatedAt: NOW,
+    });
+    assert.deepEqual(store.consumeUndo('undo_bound', NOW + 1, 'mcp5_undo_request'), {
+      operationId: 'undo_bound', organizationId: 'org_1', actorUserId: 'user_1',
+      actorMembershipId: 'member_1', appKey: 'mcp:client_1',
+      inverse, resultingRevisions: {}, status: 'consumed', consumedBy: 'mcp5_undo_request', createdAt: NOW, updatedAt: NOW + 1,
+    });
+    assert.throws(() => store.consumeUndo('undo_bound', NOW + 2, 'another_request'), { code: 'undo_unavailable' });
+  } finally {
+    db.close();
+  }
+});
+
 test('terminal management writes append one allowlisted, secret-free audit receipt', () => {
   const db = openStateDb(':memory:');
   try {
