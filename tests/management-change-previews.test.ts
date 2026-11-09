@@ -599,10 +599,10 @@ test('a proposed API connection edit shows an added host with Slack control text
       'Name changes from *Billing* to *&lt;!channel&gt; Billing*.',
     ));
     assert.equal(shown.markdown, markdownPreview(
-      'Update **<!channel> Billing** on **Research** (@research).',
+      'Update **\\<!channel\\> Billing** on **Research** (@research).',
       'Adds hosts: `payments.example.test`.',
       'Adds methods: `DELETE`.',
-      'Name changes from **Billing** to **<!channel> Billing**.',
+      'Name changes from **Billing** to **\\<!channel\\> Billing**.',
     ));
 
     const refused = await invokeWorkspaceManagementTool({

@@ -532,7 +532,7 @@ test('Markdown Agent creation previews carry the same facts in a portable dialec
     '> @paid-marketing',
     '',
     '**Description**',
-    '> Helps with Google Ads budgets & ad copy <fast>.',
+    '> Helps with Google Ads budgets & ad copy \\<fast\\>.',
     '',
     '**Instructions**',
     '> Review spend, flag budget risks, and improve ad copy.',
@@ -720,11 +720,11 @@ test('Channel, routine, memory and setup changes read as statements without inte
 
   assert.equal(markdown, [
     '**Proposed changes**',
-    'Add **Research** (@research) to **#launch**.',
+    'Add **Research** (@research) to **\\#launch**.',
     '',
     'Remove **Research** (@research) from a Channel. It stops answering there.',
     '',
-    '**#launch — Status**',
+    '**\\#launch — Status**',
     '**Before**',
     '> Active',
     '**After**',
@@ -814,8 +814,9 @@ test('Slack bold shows names as stored and neutralizes Slack control sequences i
   assert.match(slack, /^\*Research — Skill: release_notes\*\n\*Add\*$/m);
   assert.doesNotMatch(slack, /<!channel>/);
   const markdown = formatMarkdownChangeSetProposal(preview);
-  assert.match(markdown, /^Add \*\*R&D <!channel>\*\* \(@rd_ops\) to \*\*#eng_oncall\*\*\.$/m);
-  assert.match(markdown, /^\*\*Research — Skill: release_notes\*\*\n\*\*Add\*\*$/m);
+  // Markdown escapes what would be syntax, so it renders as stored.
+  assert.match(markdown, /^Add \*\*R&D \\<!channel\\>\*\* \(@rd\\_ops\) to \*\*\\#eng\\_oncall\*\*\.$/m);
+  assert.match(markdown, /^\*\*Research — Skill: release\\_notes\*\*\n\*\*Add\*\*$/m);
 });
 
 test('a member change with neither role nor status falls back to its heading', () => {

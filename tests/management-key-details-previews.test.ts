@@ -53,9 +53,10 @@ function skillEdit(before: Partial<typeof BASE_SKILL>, after: Partial<typeof BAS
 const KEY_DETAILS =
   /^((?:[•-] .*\n)*\n?)(?:(?:And (\d+) more changes?|(Only spacing or line breaks change))\. )?Approval applies the full (\w+)\.$/gm;
 
-/** What a person reads: Slack shows `&amp;`, `&lt;` and `&gt;` as the characters. */
+/** What a person reads: Slack's `&amp;`, `&lt;` and `&gt;`, and Markdown's backslash escapes, as the characters. */
 function visible(text: string): string {
-  return text.replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&');
+  return text.replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&')
+    .replace(/\\([\\`*_[\]<>#|~])/g, '$1');
 }
 
 interface KeyDetails {
@@ -100,7 +101,7 @@ function assertAccounted(text: string, noun: string, before: string, after: stri
 function assertSameFacts(preview: ManagementChangeSetPreview): void {
   const body = (text: string) => text.split('\n').slice(1, -1).join('\n');
   const slack = visible(body(formatSlackChangeSetProposal(preview)).replace(/^• /gm, '- '));
-  const markdown = body(formatMarkdownChangeSetProposal(preview)).replaceAll('**', '*');
+  const markdown = visible(body(formatMarkdownChangeSetProposal(preview)).replaceAll('**', '*'));
   assert.equal(markdown, slack);
 }
 

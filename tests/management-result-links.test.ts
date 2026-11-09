@@ -181,7 +181,7 @@ test('reviewed proposals carry Slack and Markdown copy of the same change', asyn
     assert.match(proposal.presentation.slack, /triage &amp; billing &lt;escalations&gt;/);
 
     assert.match(proposal.presentation.markdown, /^\*\*Proposed changes\*\*/);
-    assert.match(proposal.presentation.markdown, /triage & billing <escalations>\./);
+    assert.match(proposal.presentation.markdown, /triage & billing \\<escalations\\>\./);
     assert.doesNotMatch(proposal.presentation.markdown, /&amp;|&lt;|&gt;/);
     assert.doesNotMatch(proposal.presentation.markdown, /Reply `approve`/);
     assert.match(

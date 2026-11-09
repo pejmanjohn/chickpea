@@ -12,7 +12,7 @@ const MARKDOWN_APPROVAL_INSTRUCTION =
   'Show these changes to the person. When they approve, call confirm_workspace_change with the ' +
   'proposalId; if they want something different, inspect again and send a new change.';
 
-/** Portable Markdown: double-asterisk bold, list bullets, and no Slack mrkdwn escaping. */
+/** Portable Markdown: double-asterisk bold, list bullets, and stored text escaped as CommonMark. */
 export const MARKDOWN_PRESENTATION_DIALECT: ChangeSetPresentationDialect = {
   header: '**Proposed changes**',
   approvalInstruction: MARKDOWN_APPROVAL_INSTRUCTION,
@@ -21,7 +21,8 @@ export const MARKDOWN_PRESENTATION_DIALECT: ChangeSetPresentationDialect = {
   textLimit: MARKDOWN_PRESENTATION_TEXT_LIMIT,
   bold: (text) => `**${text}**`,
   bullet: '-',
-  escape: (text) => text,
+  // Stored text reads as written: it cannot open a link, image, emphasis, code span, heading, table or HTML.
+  escape: (text) => text.replace(/[\\`*_[\]<>#|~]/g, '\\$&'),
   code: markdownCodeSpan,
 };
 

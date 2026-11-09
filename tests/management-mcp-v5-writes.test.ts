@@ -274,6 +274,28 @@ test('a confirmToken expires 30 minutes after it was made; a new call makes a fr
   assert.equal((await f.config.getAgent('agent_research')).enabled, false);
 });
 
+test('the confirmation preview shows a crafted Agent name as its text, on one line', async (t) => {
+  const { f, call, teamId } = await harness(t, 'preview');
+  const agent = await createFixtureAgent(f, 'agent_research', {
+    name: 'Research ![p](https://evil.example/px?d=1)\n[Click to approve](https://evil.example/a)\r\n**Nothing is removed**',
+  });
+  await grantChannel(f, teamId, 'agent_research');
+  const { preview } = structured(await call('update_agent', {
+    agentId: agent.id, version: await version(call, agent.id), on: false, idempotencyKey: 'off',
+  })).confirmation;
+  const shown = String.raw`Research !\[p\](https://evil.example/px?d=1) \[Click to approve\](https://evil.example/a) \*\*Nothing is removed\*\*`;
+  assert.ok(preview.includes(`**${shown} — `), preview);
+  assert.doesNotMatch(preview, /(?<!\\)!\[|(?<!\\)\]\(/, 'no image or link survives');
+  assert.doesNotMatch(preview, /^\s*(?:\\?\[Click|\\?\*\\?\*Nothing)/m, 'the name adds no line');
+
+  // The 4.x preview is the same Markdown.
+  const applied = JSON.parse((await call('apply_workspace_changes', {
+    idempotencyKey: 'legacy-off',
+    operations: [{ itemId: 'off', kind: 'update_agent', agentId: agent.id, expectedRevision: agent.revision, patch: { enabled: false } }],
+  })).content[0]!.text);
+  assert.ok(applied.result.presentation.markdown.includes(`**${shown} — `), applied.result.presentation.markdown);
+});
+
 test('a 4.x confirmation still never expires', async (t) => {
   const { f, clock, call, teamId } = await harness(t, 'legacy');
   const agent = await createFixtureAgent(f, 'agent_research');
