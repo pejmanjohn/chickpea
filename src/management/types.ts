@@ -1591,7 +1591,7 @@ export interface ManagementChangeSetProposalRecord {
    * as an approval only while that turn is the Agent's latest in the scope.
    */
   proposedMessageTs?: string;
-  /** A pending set past this can't be confirmed; absent (stored 0) never expires. */
+  /** A pending set past this can't be confirmed; absent (NULL) never expires. */
   expiresAt?: number;
   createdAt: number;
   updatedAt: number;

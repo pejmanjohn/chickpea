@@ -375,6 +375,7 @@ test('proposal schema migration drops single-write proposals, reactivates change
     assert.ok(columns.has('guide_version'));
     assert.ok(columns.has('authoring_reason'));
     assert.ok(columns.has('approval_scope_key'));
+    assert.ok(columns.has('confirmation_expires_at'));
     assert.deepEqual(
       db.all("SELECT name FROM sqlite_master WHERE name LIKE 'management_proposals%'"),
       [],

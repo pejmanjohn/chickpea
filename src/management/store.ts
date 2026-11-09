@@ -111,6 +111,7 @@ interface ManagementChangeSetProposalRow {
   request_operation_id: string | null;
   proposed_message_ts: string | null;
   expires_at: number;
+  confirmation_expires_at: number | null;
   created_at: number;
   updated_at: number;
 }
@@ -774,8 +775,9 @@ export class ManagementStoreLogic {
         proposal_id, organization_id, actor_user_id, actor_membership_id,
         origin_key, approval_scope_key, idempotency_key, guide_version, authoring_reason,
         operations_json, digest, preview_json, target_revisions_json,
-        status, result_json, request_operation_id, proposed_message_ts, expires_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?, ?, ?)`,
+        status, result_json, request_operation_id, proposed_message_ts, expires_at,
+        confirmation_expires_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, 0, ?, ?, ?)`,
       input.proposalId,
       input.organizationId,
       input.actorUserId,
@@ -791,7 +793,7 @@ export class ManagementStoreLogic {
       JSON.stringify(input.targetRevisions),
       input.requestOperationId ?? null,
       input.proposedMessageTs ?? null,
-      input.expiresAt ?? 0,
+      input.expiresAt ?? null,
       input.at,
       input.at,
     );
@@ -2000,6 +2002,8 @@ export class ManagementStoreLogic {
       ['approval_scope_key', "TEXT NOT NULL DEFAULT ''"],
       ['request_operation_id', 'TEXT'],
       ['proposed_message_ts', 'TEXT'],
+      // Legacy expires_at values predate the retired expiry, so a 5.0 lifetime has its own column.
+      ['confirmation_expires_at', 'INTEGER'],
     ];
     for (const [name, definition] of additions) {
       addColumnIfMissing(this.db, 'management_change_set_proposals', name, definition);
@@ -2151,7 +2155,7 @@ function changeSetProposalFromRow(
       : {}),
     ...(row.request_operation_id ? { requestOperationId: row.request_operation_id } : {}),
     ...(row.proposed_message_ts ? { proposedMessageTs: row.proposed_message_ts } : {}),
-    ...(Number(row.expires_at) > 0 ? { expiresAt: Number(row.expires_at) } : {}),
+    ...(row.confirmation_expires_at ? { expiresAt: Number(row.confirmation_expires_at) } : {}),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };
