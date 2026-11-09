@@ -175,7 +175,7 @@ test('create_agent takes propose_agent\'s arguments unchanged, joins its Channel
 });
 
 test('update_agent checks the version, replays a retry, refuses a reused key, and saves a field and image model pair', async (t) => {
-  const { f, call } = await harness(t, 'update');
+  const { f, as, call } = await harness(t, 'update');
   await createFixtureAgent(f, 'agent_research');
   const read = await version(call, 'agent_research');
 
@@ -191,6 +191,17 @@ test('update_agent checks the version, replays a retry, refuses a reused key, an
   assert.deepEqual(structured(await call('update_agent', {
     agentId: 'agent_research', version: read, description: 'Finds and cites sources.', idempotencyKey: 'describe',
   })), saved);
+  // The same person's identical call from another app is that app's own call, so nothing replays.
+  const afterSave = await f.config.getAgent('agent_research');
+  errorOf(await as('owner', 'client_other_app')('update_agent', {
+    agentId: 'agent_research', version: read, description: 'Finds and cites sources.', idempotencyKey: 'describe',
+  }), 'changed_since_read');
+  assert.deepEqual(await f.config.getAgent('agent_research'), afterSave);
+  // The stored result is bound to its app too: its own app reads it by ID, another app finds nothing.
+  const readBack = (from: Call) => from('get_operation', { operationId: saved.undoToken })
+    .then(({ content }) => JSON.parse(content[0]!.text) as { ok: boolean; error?: { code: string } });
+  assert.equal((await readBack(call)).ok, true);
+  assert.equal((await readBack(as('owner', 'client_other_app'))).error?.code, 'operation_not_found');
   errorOf(await call('update_agent', {
     agentId: 'agent_research', version: saved.version, description: 'Other words.', idempotencyKey: 'describe',
   }), 'key_reused');
@@ -250,13 +261,16 @@ test('turning off an Agent that answers in Channels waits for confirm_change, wh
 });
 
 test('a confirmToken expires 30 minutes after it was made; a new call makes a fresh one', async (t) => {
-  const { f, clock, call, teamId } = await harness(t, 'expiry');
+  const { f, clock, as, call, teamId } = await harness(t, 'expiry');
   await createFixtureAgent(f, 'agent_research');
   await grantChannel(f, teamId, 'agent_research');
   const args = { agentId: 'agent_research', version: await version(call, 'agent_research'), on: false, idempotencyKey: 'off' };
   const { confirmToken } = structured(await call('update_agent', args)).confirmation;
 
   clock.now += THIRTY_MINUTES;
+  // The binding is checked before the expiry, so an expired token tells no one else it exists.
+  errorOf(await as('admin')('confirm_change', { confirmToken }), 'not_found');
+  errorOf(await as('owner', 'client_other_app')('confirm_change', { confirmToken }), 'not_found');
   const expired = errorOf(await call('confirm_change', { confirmToken }), 'confirmation_expired');
   assert.equal(expired.retryable, true);
   assert.match(expired.nextStep as string, /new idempotencyKey/);
