@@ -1,5 +1,33 @@
 import { isMetaAdsMcpConnection, metaAdsToolEffect } from './meta-ads-policy.ts';
-import type { McpConnectionConfig } from './types.ts';
+import type { McpConnectionConfig, McpToolPolicy } from './types.ts';
+
+/**
+ * The stored tool policies a change to a connection's allowed tools keeps:
+ * whole for tools allowed both before it and after it. Any other tool loses
+ * its mark, so an old read mark, which nobody can see while its tool is not
+ * allowed, never comes back with it (withoutMarks).
+ */
+export function keptToolPolicies(
+  before: { allowedTools: readonly string[]; toolPolicies?: Record<string, McpToolPolicy> },
+  allowedTools: readonly string[],
+): Record<string, McpToolPolicy> {
+  return withoutMarks(before.toolPolicies, (tool) => !before.allowedTools.includes(tool) || !allowedTools.includes(tool));
+}
+
+/**
+ * The tool policies with the named tools' marks dropped. An argument limit
+ * is a restriction on every Slack turn, not a mark, so it stays with its
+ * tool, which is stored as a write: a test run never calls it.
+ */
+export function withoutMarks(
+  toolPolicies: Record<string, McpToolPolicy> | undefined,
+  unmark: (tool: string) => boolean,
+): Record<string, McpToolPolicy> {
+  return Object.fromEntries(Object.entries(toolPolicies ?? {}).flatMap(([tool, policy]) => {
+    if (!unmark(tool)) return [[tool, policy]];
+    return policy.argumentConstraints ? [[tool, { effect: 'write', argumentConstraints: policy.argumentConstraints }]] : [];
+  }));
+}
 
 /** Owner declarations take precedence over the last discovered server hint. */
 export function mcpToolEffect(connection: Pick<McpConnectionConfig, 'toolPolicies' | 'discoveredTools'>, name: string): boolean | undefined {

@@ -205,7 +205,7 @@ test('a submission that lands after its run\'s instance was erased unerases the 
   assert.deepEqual(testRuns(installation).bindModelAccess(byRequest.instanceId, 'sub_request'), {}, 'a repeat reopens nothing');
 });
 
-test('admission sums the day\'s list price through the model requests\' finish-time index', () => {
+test('admission sums the day\'s list price through an index on the model requests, never a scan', () => {
   const installation = hostedInstallation('inst_test_store_price_plan');
   const { db } = installation;
   const asked: Array<{ sql: string; params: unknown[] }> = [];
@@ -218,7 +218,7 @@ test('admission sums the day\'s list price through the model requests\' finish-t
   assert.equal(asked.length, 1, 'one price sum per admission');
   const plan = installation.db.all(`EXPLAIN QUERY PLAN ${asked[0]!.sql}`, ...asked[0]!.params as never[])
     .map((row) => String(row.detail));
-  assert.ok(plan.some((step) => /SEARCH r USING INDEX usage_model_requests_finished_idx/.test(step)), plan.join('\n'));
+  assert.ok(plan.some((step) => /SEARCH r USING INDEX usage_model_requests_(run|finished)_idx/.test(step)), plan.join('\n'));
   assert.ok(!plan.some((step) => /^SCAN r\b/.test(step)), plan.join('\n'));
 });
 

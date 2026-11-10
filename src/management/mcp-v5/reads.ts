@@ -234,6 +234,7 @@ export function connectionRows(agent: AgentConnectionView): ConnectionRow[] {
         custom: {
           url: mcp.url,
           allowedTools: [...mcp.allowedTools],
+          ...toolMarks(mcp),
           ...(mcp.guide ? { guide: mcp.guide } : {}),
         },
       }),
@@ -252,6 +253,13 @@ export function connectionRows(agent: AgentConnectionView): ConnectionRow[] {
           : account.lifecycle === 'pending' ? 'waiting_for_setup' : 'ready',
     }));
   return [...lanes, ...signIns];
+}
+
+/** The allowed tools an Admin marked as reads or writes; a tool with no mark is in neither. */
+function toolMarks(mcp: AgentConnectionView['mcpServers'][number]): { readTools?: string[]; writeTools?: string[] } {
+  const marked = (effect: 'read' | 'write') => mcp.allowedTools.filter((tool) => mcp.toolPolicies?.[tool]?.effect === effect);
+  const [readTools, writeTools] = [marked('read'), marked('write')];
+  return { ...(readTools.length ? { readTools } : {}), ...(writeTools.length ? { writeTools } : {}) };
 }
 
 type Connector = NonNullable<ReturnType<typeof resolveConnectorCatalogPreset>>;
@@ -325,7 +333,7 @@ export function requireAgent(snapshot: ManagementWorkspaceSnapshot, agentId: str
   return agent;
 }
 
-function agentNotFound(): never {
+export function agentNotFound(): never {
   fail('not_found', 'No Agent you can manage has that agentId.', { nextStep: 'Call list_agents for the current agentIds.' });
 }
 

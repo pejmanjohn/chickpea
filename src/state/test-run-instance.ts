@@ -10,6 +10,7 @@ import { CHICKPEA_TEST_TURN_AGENT_NAME } from '../agents/names.ts';
 import { parseRuntimePlanV2, type RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import { testRunReadServices, type TestRunToolCall } from '../agents/test-run-plan.ts';
 import { TEST_TURN_ATTEMPT_ENDED_MESSAGE } from '../agents/test-turn-limits.ts';
+import { installationRefusesWork } from '../config/installation-admission.ts';
 import {
   InstallationContextError,
   requireInstallationScope,
@@ -81,6 +82,8 @@ export function cloudflareTestRunInstancePort(
     },
     erase: (instanceId) => eraseTestTurnInstance(env, scope, instanceId),
     async creditBack(submissionId, reason) {
+      // As a direct message's failure: while the installation is suspended or ended, nothing is credited back.
+      if (await installationRefusesWork(env)) return;
       await creditBackFailedRun(hostedRun(env, submissionId), reason);
     },
   };

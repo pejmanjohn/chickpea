@@ -503,6 +503,19 @@ test('a suspended installation\'s failed turn credits nothing back and posts not
   assert.deepEqual(port.creditBacks, []);
 });
 
+test('an operator\'s cancellation of a suspended installation\'s turn credits nothing back and posts nothing', async (t) => {
+  await turnState(t);
+  configureInstallationAdmission(async () => 'refused');
+  const port = fundingPort();
+  // cancel_pending's abort: Flue settles the turn aborted, with no person's stop to end it.
+  const calls = await settledTurn(t, HOSTED_ENV, 'operator_cancelled', {
+    kind: 'failure', recorded: 'agent', outcome: 'aborted', thrown: new AgentRunAborted(),
+  }, { platformFunded: true });
+  assert.equal(calls.prompted, true, 'the run was dispatched before the cancellation aborted it');
+  assert.deepEqual([...calls], []);
+  assert.deepEqual(port.creditBacks, []);
+});
+
 test('a run the host already credited back says so; one with nothing to credit says nothing and still delivers', async (t) => {
   await turnState(t);
   const duplicate = fundingPort({ creditBack: async () => ({ kind: 'duplicate', usageMicros: 120_000 as UsageMicros }) });

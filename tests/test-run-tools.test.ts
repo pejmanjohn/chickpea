@@ -5,8 +5,16 @@ import { createMcpHandler } from '@modelcontextprotocol/server';
 
 import { parseTestTurnInitialData } from '../src/agents/test-turn.ts';
 import type { McpAuthenticatedPrincipal } from '../src/auth/mcp-oauth-routes.ts';
+import { BUGSNAG_MCP_SERVER_URL } from '../src/config/bugsnag-policy.ts';
 import { createWorkspaceManagementMcpServer } from '../src/management/mcp.ts';
-import { getTestRun, TEST_RUN_NOTE, TEST_RUN_WAIT_MS, testRunMessage, tryAgentOnce } from '../src/management/mcp-v5/test-runs.ts';
+import {
+  getTestRun,
+  TEST_RUN_NOTE,
+  TEST_RUN_WAIT_MS,
+  testRunMessage,
+  TRY_AGENT_ONCE_RETURNS_BY_MS,
+  tryAgentOnce,
+} from '../src/management/mcp-v5/test-runs.ts';
 import { FIVE_ZERO_TOOLS } from '../src/management/mcp-v5/tools.ts';
 import type { WorkspaceManagementServiceInput } from '../src/management/service.ts';
 import { TEST_RUN_DAILY_RUNS, TEST_RUN_VISIBLE_MS } from '../src/management/test-runs.ts';
@@ -210,6 +218,11 @@ test('try_agent_once refuses before a run starts, each with its own words and fi
   let error = await refusal('agent_unasked');
   assert.deepEqual([error.code, error.message], ['not_found', 'Ops has no saved first question to test.']);
 
+  // Chickpea's own Agent is no Agent the caller manages, as the workspace snapshot never lists it.
+  await f.config.materializeChickpeaAgent();
+  error = await refusal('agent_chickpea');
+  assert.deepEqual([error.code, error.message], ['not_found', 'No Agent you can manage has that agentId.']);
+
   await seedAgent(f, { id: 'agent_off', enabled: false });
   error = await refusal('agent_off');
   assert.deepEqual([error.code, error.message], ['not_allowed', 'You can\'t message Ops in Slack yet, so it can\'t be tested as you.']);
@@ -239,9 +252,115 @@ test('try_agent_once refuses before a run starts, each with its own words and fi
     },
   });
   error = await refusal('agent_docs');
-  assert.deepEqual([error.code, error.message],
-    ['not_testable', 'None of Docs MCP\'s tools are marked as reads, so a test run can\'t use it. Ask Ops in Slack instead.']);
+  assert.deepEqual([error.code, error.message], ['not_testable',
+    'None of Docs MCP\'s tools are marked as reads, so a test run can\'t use it. Mark the tools that only read as reads, then try again.']);
+  assert.deepEqual(error.fix, {
+    label: 'Mark Docs MCP\'s read tools', tool: 'update_connection', arguments: { agentId: 'agent_docs', connectionId: 'docs' },
+  }, 'the fix is a 5.0 call that names the connection, never Admin, whose tool editor cannot mark a read');
+  assert.match(String(error.nextStep), /update_connection with those in changes\.readTools/);
+  assert.match(String(error.nextStep), /only when the person confirms it only reads; never from its name alone/);
   assert.deepEqual(instances.dispatched, [], 'nothing was dispatched');
+});
+
+const docsMcp = (extra: Record<string, unknown> = {}) => ({
+  kind: 'mcp', url: 'https://mcp.docs.example/mcp', transport: 'streamable-http', authMode: 'bearer', headerNames: [],
+  allowedTools: ['search', 'delete_page'],
+  discoveredTools: [{ name: 'search', annotations: { readOnlyHint: true } }, { name: 'delete_page' }],
+  ...extra,
+});
+
+test('not_testable\'s fix leads somewhere: update_connection marks the read, and the run goes ahead with that tool alone', async (t) => {
+  const { f, teamId, call, instances } = await harness(t, 'mark_reads');
+  await seedAgent(f);
+  await connect(f, teamId, 'agent_tested', { id: 'connection_docs', providerId: 'docs', label: 'Docs MCP', policy: docsMcp() });
+  const refused = errorOf(await call('try_agent_once', { agentId: 'agent_tested', idempotencyKey: 'key_before' }));
+  assert.equal(refused.code, 'not_testable');
+  const fix = refused.fix as { tool: string; arguments: Record<string, unknown> };
+  const { version } = structured(await call('get_agent', { agentId: 'agent_tested' })) as { version: string };
+  const marked = structured(await call(fix.tool, {
+    ...fix.arguments, version, changes: { readTools: ['search'], writeTools: ['delete_page'] }, idempotencyKey: 'mark',
+  }));
+  assert.equal(marked.status, 'done');
+  instances.settleEvery = { kind: 'answered', reply: 'Found it.', read: ['Docs MCP'] };
+  const run = structured(await call('try_agent_once', { agentId: 'agent_tested', idempotencyKey: 'key_after' }));
+  assert.equal(run.status, 'answered');
+  const plan = parseTestTurnInitialData(instances.dispatched[0]!.initialData).runtimePlan;
+  assert.deepEqual(plan.mcpConnections.map(({ allowedTools }) => allowedTools), [['search']], 'only the marked read is mounted');
+
+  // A ready connection that allows no tools has none to mark, and get_agent names none to allow: Admin chooses them.
+  await seedAgent(f, { id: 'agent_no_tools' });
+  await connect(f, teamId, 'agent_no_tools', {
+    id: 'connection_no_tools', providerId: 'empty_docs', label: 'Empty Docs', policy: docsMcp({ allowedTools: [] }),
+  });
+  const empty = errorOf(await call('try_agent_once', { agentId: 'agent_no_tools', idempotencyKey: 'key_no_tools' }));
+  assert.deepEqual([empty.code, empty.message, empty.fix], ['not_testable',
+    'Empty Docs allows no tools yet, so a test run can\'t use it. Choose its tools on the Agent\'s page in Admin, then mark the ones that only read.',
+    { label: 'Choose its tools in Admin', url: `${BASE_URL}/admin/agents/agent_no_tools` }]);
+  assert.equal(instances.dispatched.length, 1, 'nothing more was dispatched');
+});
+
+test('only someone who may change a connection is offered its fix, as in Admin; a catalog MCP service gets none', async (t) => {
+  const { f, teamId, callAs, instances } = await harness(t, 'mark_authority', { asMember: true });
+  // The member created both Agents, so they may change them and DM them.
+  const mine = { creatorMembershipId: f.admin.membership.id };
+  await seedAgent(f, { id: 'agent_team', ...mine });
+  await connect(f, teamId, 'agent_team', { id: 'connection_team_docs', providerId: 'docs', label: 'Docs MCP', policy: docsMcp() });
+  const member = callAs(f.admin);
+  let error = errorOf(await member('try_agent_once', { agentId: 'agent_team', idempotencyKey: 'key_team' }));
+  assert.deepEqual([error.code, error.message, error.fix], ['not_testable',
+    'None of Docs MCP\'s tools are marked as reads, so a test run can\'t use it. An Owner or Admin can mark the tools that only read as reads.',
+    undefined]);
+  const { version } = structured(await member('get_agent', { agentId: 'agent_team' })) as { version: string };
+  error = errorOf(await member('update_connection', {
+    agentId: 'agent_team', connectionId: 'docs', version, changes: { readTools: ['search'] }, idempotencyKey: 'member-marks-team',
+  }));
+  assert.equal(error.code, 'not_allowed', 'a member cannot mark a team connection\'s reads, as Admin refuses them');
+
+  // Their own personal connection is theirs to mark.
+  await seedAgent(f, { id: 'agent_personal', ...mine });
+  await connect(f, teamId, 'agent_personal', {
+    id: 'connection_own_docs', providerId: 'own_docs', label: 'My Docs', policy: docsMcp(),
+    ownerKind: 'member', ownerMembershipId: f.admin.membership.id,
+  });
+  error = errorOf(await member('try_agent_once', { agentId: 'agent_personal', idempotencyKey: 'key_personal' }));
+  assert.equal((error.fix as { tool?: string } | undefined)?.tool, 'update_connection');
+  const own = structured(await member('get_agent', { agentId: 'agent_personal' })) as { version: string };
+  assert.equal(structured(await member('update_connection', {
+    agentId: 'agent_personal', connectionId: 'own_docs', version: own.version, changes: { readTools: ['search'] }, idempotencyKey: 'mine',
+  })).status, 'done');
+
+  // A reviewed connector added by URL is chosen in Admin, and update_connection refuses it, so no fix points there.
+  await seedAgent(f, { id: 'agent_bugsnag', ...mine });
+  await connect(f, teamId, 'agent_bugsnag', {
+    id: 'connection_own_bugsnag', providerId: 'bugsnag', label: 'Bugsnag',
+    ownerKind: 'member', ownerMembershipId: f.admin.membership.id,
+    policy: docsMcp({
+      url: BUGSNAG_MCP_SERVER_URL, toolAccessMode: 'review', allowedTools: ['bugsnag_update_error'],
+      discoveredTools: [{ name: 'bugsnag_update_error' }],
+    }),
+  });
+  error = errorOf(await member('try_agent_once', { agentId: 'agent_bugsnag', idempotencyKey: 'key_bugsnag' }));
+  assert.equal(error.message, 'None of Bugsnag\'s tools are marked as reads, so a test run can\'t use it. Ask Ops in Slack instead.');
+  assert.notEqual((error.fix as { tool?: string } | undefined)?.tool, 'update_connection');
+  const bugsnag = structured(await member('get_agent', { agentId: 'agent_bugsnag' })) as { version: string };
+  error = errorOf(await member('update_connection', {
+    agentId: 'agent_bugsnag', connectionId: 'bugsnag', version: bugsnag.version,
+    changes: { readTools: ['bugsnag_update_error'] }, idempotencyKey: 'mark-bugsnag',
+  }));
+  assert.equal(error.code, 'invalid_input', 'update_connection refuses a reviewed connector, as the fix would have led to');
+  const stored = (await f.config.listConnectionAccounts(teamId)).find(({ id }) => id === 'connection_own_bugsnag');
+  assert.equal(stored?.policy.kind === 'mcp' ? stored.policy.toolPolicies : null, undefined, 'and writes nothing');
+
+  // Neither Admin nor update_connection marks a catalog MCP service's tools, so no fix points anywhere.
+  await seedAgent(f, { id: 'agent_linear', ...mine });
+  await connect(f, teamId, 'agent_linear', {
+    id: 'connection_linear', providerId: 'linear', label: 'Linear',
+    policy: docsMcp({ url: 'https://mcp.linear.app/mcp', presetId: 'linear', authMode: 'oauth', allowedTools: ['list_issues'], discoveredTools: [{ name: 'list_issues' }] }),
+  });
+  error = errorOf(await member('try_agent_once', { agentId: 'agent_linear', idempotencyKey: 'key_linear' }));
+  assert.deepEqual([error.message, error.fix], [
+    'None of Linear\'s tools are marked as reads, so a test run can\'t use it. Ask Ops in Slack instead.', undefined]);
+  assert.deepEqual(instances.dispatched, []);
 });
 
 test('a personal connection the caller has signed in to is no reason to refuse', async (t) => {
@@ -333,16 +452,62 @@ test('a member who can use an Agent but not change it is told so; one who cannot
   assert.deepEqual([error.code, error.message], ['not_allowed', 'Only someone who can change Ops can test it.']);
 });
 
-test('try_agent_once waits 20 seconds, then returns running; get_test_run waits again and returns the answer', async (t) => {
+test('try_agent_once returns running 15 seconds after the call starts, a slow admission included; get_test_run waits 20', async (t) => {
   const { f, deps, instances, clock } = await harness(t, 'waits');
   await seedAgent(f);
   const timing = { now: () => clock.now(), sleep: async (ms: number) => clock.advance(ms) };
+  // Admission takes 6 seconds, as it did on a busy workspace.
+  const testRunStore = f.service.testRunStore.bind(f.service);
+  f.service.testRunStore = async (context) => {
+    clock.advance(6_000);
+    return testRunStore(context);
+  };
+  const calledAt = clock.now();
   const running = await tryAgentOnce(deps(f.owner), { agentId: 'agent_tested', idempotencyKey: 'key_wait' }, timing);
   assert.equal(running.status, 'running');
-  assert.ok(clock.now() >= Date.now() - 1_000 + TEST_RUN_WAIT_MS - 1_000, 'it waited about 20 seconds');
+  const returnedAfter = clock.now() - calledAt;
+  assert.equal(TRY_AGENT_ONCE_RETURNS_BY_MS, 15_000);
+  assert.ok(returnedAfter <= 15_000 && returnedAfter > 13_000, `it returned ${returnedAfter} ms after the call started`);
+  // A retry of the same key waits for the run only until 15 seconds after it was called, too.
+  const retriedAt = clock.now();
+  const replayed = await tryAgentOnce(deps(f.owner), { agentId: 'agent_tested', idempotencyKey: 'key_wait' }, timing);
+  assert.deepEqual([replayed.status, replayed.runToken], ['running', running.runToken]);
+  const replayedAfter = clock.now() - retriedAt;
+  assert.ok(replayedAfter <= 15_000 && replayedAfter > 13_000, `the retry returned ${replayedAfter} ms after it was called`);
+  f.service.testRunStore = testRunStore;
+  const polledAt = clock.now();
+  const still = await getTestRun(deps(f.owner), { runToken: running.runToken }, timing);
+  assert.equal(still.status, 'running');
+  assert.ok(clock.now() - polledAt > TEST_RUN_WAIT_MS - 2_000, 'get_test_run waited about 20 seconds');
   instances.settleEvery = { kind: 'answered', reply: 'Here it is.', read: ['Zendesk'] };
   const answered = await getTestRun(deps(f.owner), { runToken: running.runToken }, timing);
   assert.deepEqual([answered.status, answered.reply, answered.read], ['answered', 'Here it is.', ['Zendesk']]);
+});
+
+test('admission reads the tested Agent alone: never the workspace snapshot, nor any other Agent', async (t) => {
+  const { f, deps, instances, clock } = await harness(t, 'scoped');
+  await seedAgent(f);
+  for (let index = 0; index < 25; index += 1) await seedAgentWithId(f, `agent_other_${index}`);
+  instances.settleEvery = { kind: 'answered', reply: 'Done.', read: [] };
+  let snapshots = 0;
+  const inspect = f.service.inspectWorkspace.bind(f.service);
+  f.service.inspectWorkspace = async (context) => {
+    snapshots += 1;
+    return inspect(context);
+  };
+  const perAgent: string[] = [];
+  for (const method of ['listAgentConnectionBindings', 'getAgentModelRole'] as const) {
+    const original = f.config[method].bind(f.config) as (...args: unknown[]) => unknown;
+    (f.config as unknown as Record<string, unknown>)[method] = (agentId: string, ...rest: unknown[]) => {
+      perAgent.push(`${method}:${agentId}`);
+      return original(agentId, ...rest);
+    };
+  }
+  const timing = { now: () => clock.now(), sleep: async (ms: number) => clock.advance(ms) };
+  const run = await tryAgentOnce(deps(f.owner), { agentId: 'agent_tested', idempotencyKey: 'key_scoped' }, timing);
+  assert.equal(run.status, 'answered');
+  assert.equal(snapshots, 0);
+  assert.deepEqual(perAgent.filter((call) => !call.endsWith(':agent_tested')), [], 'no other Agent was read');
 });
 
 test('get_test_run reads only the caller\'s own run, and not after an hour', async (t) => {

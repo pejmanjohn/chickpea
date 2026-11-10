@@ -575,6 +575,113 @@ test('update_connection changes a custom connection, links its key again when it
   assert.match(catalog.nextStep, /reconnect_service/);
 });
 
+test('update_connection marks a custom MCP connection\'s tools as reads or writes; others keep their marks and limits', async (t) => {
+  const { f, call } = await harness(t, 'mark-tools');
+  await installAgent(f);
+  structured(await call('connect_service', {
+    agentId: 'agent_research',
+    custom: { kind: 'mcp', name: 'Docs', url: 'https://mcp.docs.example/mcp', auth: 'none', allowedTools: ['search', 'read_page', 'delete_page'] },
+    version: await version(call, 'agent_research'),
+    idempotencyKey: 'docs',
+  }));
+  // An argument limit someone set through the Admin API stays when the tool is marked.
+  const [account] = (await f.config.listConnectionAccounts(f.owner.binding.slackTeamId!)).filter(({ providerId }) => providerId === 'docs');
+  await f.config.putConnectionAccount({
+    ...account!,
+    policy: { ...account!.policy, toolPolicies: { read_page: { effect: 'write', argumentConstraints: { space: ['eng'] } } } } as never,
+  }, account!.revision);
+
+  const marked = structured(await call('update_connection', {
+    agentId: 'agent_research', connectionId: 'docs', version: await version(call, 'agent_research'),
+    changes: { readTools: ['search', 'read_page'], writeTools: ['delete_page'] }, idempotencyKey: 'mark',
+  }));
+  assert.deepEqual([marked.status, marked.setup], ['done', undefined], 'marks apply at once and keep the connection\'s key');
+  assert.deepEqual((await lanes(call, 'agent_research')).mcpServers[0]?.toolPolicies, {
+    search: { effect: 'read' },
+    read_page: { effect: 'read', argumentConstraints: { space: ['eng'] } },
+    delete_page: { effect: 'write' },
+  });
+  const row = async () => (structured(await call('get_agent', { agentId: 'agent_research' })).connections as Array<Record<string, any>>)
+    .find(({ connectionId }) => connectionId === 'docs')!.custom;
+  assert.deepEqual([(await row()).readTools, (await row()).writeTools], [['search', 'read_page'], ['delete_page']]);
+
+  // A tool not named keeps its mark.
+  structured(await call('update_connection', {
+    agentId: 'agent_research', connectionId: 'docs', version: await version(call, 'agent_research'),
+    changes: { writeTools: ['read_page'] }, idempotencyKey: 'remark',
+  }));
+  assert.deepEqual([(await row()).readTools, (await row()).writeTools], [['search'], ['read_page', 'delete_page']]);
+
+  const before = await version(call, 'agent_research');
+  const refused = async (changes: Record<string, unknown>, key: string) => errorOf(await call('update_connection', {
+    agentId: 'agent_research', connectionId: 'docs', version: before, changes, idempotencyKey: key,
+  }), 'invalid_input');
+  assert.match((await refused({ readTools: ['export_all'] }, 'unallowed')).message, /^Docs does not allow export_all, so it cannot be marked\.$/);
+  assert.match((await refused({ readTools: ['search'], writeTools: ['search'] }, 'both')).message, /as a read or as a write, not both/);
+  // An empty list marks nothing, so it is refused rather than saved as a new version.
+  const marksBefore = (await lanes(call, 'agent_research')).mcpServers[0]?.toolPolicies;
+  for (const [changes, key] of [[{ readTools: [] }, 'empty-read'], [{ readTools: [], writeTools: [] }, 'empty-both'],
+    [{ name: 'Docs wiki', writeTools: [] }, 'empty-with-name']] as const) {
+    const empty = await refused(changes, key);
+    assert.deepEqual([empty.message, empty.nextStep], ['An empty readTools or writeTools marks nothing, so nothing changed.',
+      'Name at least one of its allowedTools from get_agent in readTools or writeTools, or leave both out.']);
+  }
+  assert.deepEqual((await lanes(call, 'agent_research')).mcpServers[0]?.toolPolicies, marksBefore);
+  assert.equal(await version(call, 'agent_research'), before, 'a refused mark writes nothing');
+
+  structured(await call('connect_service', {
+    agentId: 'agent_research', custom: { kind: 'api', name: 'Statusboard API', hosts: ['api.statusboard.example'] },
+    version: await version(call, 'agent_research'), idempotencyKey: 'api',
+  }));
+  const api = errorOf(await call('update_connection', {
+    agentId: 'agent_research', connectionId: 'statusboard_api', version: await version(call, 'agent_research'),
+    changes: { readTools: ['search'] }, idempotencyKey: 'api-marks',
+  }), 'invalid_input');
+  assert.equal(api.message, 'A custom API connection has no readTools to change.');
+});
+
+test('a mark goes with its tool\'s allowance: a tool update_connection allows again starts unmarked', async (t) => {
+  const { f, call } = await harness(t, 'mark-allowance');
+  await installAgent(f);
+  structured(await call('connect_service', {
+    agentId: 'agent_research',
+    custom: { kind: 'mcp', name: 'Docs', url: 'https://mcp.docs.example/mcp', auth: 'none', allowedTools: ['search', 'read_page', 'delete_page'] },
+    version: await version(call, 'agent_research'),
+    idempotencyKey: 'docs',
+  }));
+  const change = async (changes: Record<string, unknown>, key: string) => assert.equal(structured(await call('update_connection', {
+    agentId: 'agent_research', connectionId: 'docs', version: await version(call, 'agent_research'), changes, idempotencyKey: key,
+  })).status, 'done');
+  const marks = async () => (await lanes(call, 'agent_research')).mcpServers[0]?.toolPolicies;
+  await change({ readTools: ['search', 'delete_page'] }, 'mark');
+  await change({ allowedTools: ['search', 'read_page'] }, 'narrow');
+  assert.deepEqual(await marks(), { search: { effect: 'read' } }, 'a dis-allowed tool loses its mark');
+  await change({ allowedTools: ['search', 'read_page', 'delete_page'] }, 'widen');
+  const docs = (structured(await call('get_agent', { agentId: 'agent_research' })).connections as Array<Record<string, any>>)
+    .find(({ connectionId }) => connectionId === 'docs')!.custom;
+  assert.deepEqual([docs.readTools, docs.writeTools], [['search'], undefined], 'nobody marked delete_page when it was allowed again');
+
+  // An argument limit is a restriction, not a mark: it stays with its tool through a narrow and a widen.
+  const [limited] = (await f.config.listConnectionAccounts(f.owner.binding.slackTeamId!)).filter(({ providerId }) => providerId === 'docs');
+  const sandboxed = { effect: 'write', argumentConstraints: { space: ['sandbox'] } };
+  await f.config.putConnectionAccount({
+    ...limited!, policy: { ...limited!.policy, toolPolicies: { search: { effect: 'read' }, delete_page: sandboxed } } as never,
+  }, limited!.revision);
+  await change({ allowedTools: ['search', 'read_page'] }, 'narrow-limited');
+  assert.deepEqual(await marks(), { search: { effect: 'read' }, delete_page: sandboxed }, 'a dis-allowed tool keeps its limit');
+  await change({ allowedTools: ['search', 'read_page', 'delete_page'] }, 'widen-limited');
+  assert.deepEqual(await marks(), { search: { effect: 'read' }, delete_page: sandboxed }, 'and comes back with it');
+
+  // A mark left from before this rule, on a tool that is not allowed, does not come back with it either.
+  const [account] = (await f.config.listConnectionAccounts(f.owner.binding.slackTeamId!)).filter(({ providerId }) => providerId === 'docs');
+  await f.config.putConnectionAccount({
+    ...account!,
+    policy: { ...account!.policy, allowedTools: ['search'], toolPolicies: { search: { effect: 'read' }, read_page: { effect: 'read' } } } as never,
+  }, account!.revision);
+  await change({ allowedTools: ['search', 'read_page'] }, 'stale');
+  assert.deepEqual(await marks(), { search: { effect: 'read' } });
+});
+
 test('a custom API whose stored prefix predates the rule still renames and gains a neighbor; a changed prefix meets the rule', async (t) => {
   const { f, teamId, call } = await harness(t, 'kept-prefix');
   await installAgent(f);

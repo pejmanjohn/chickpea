@@ -397,20 +397,21 @@ test('every refusal reads plainly on the card, with its own next step and no cod
   assert.deepEqual(failed.card.labels(), ['Open in Slack (primary)']);
   assert.equal(told(failed.card), 'The person ran the Agent "Invoice Chaser" (@invoices) once from the card, but it did not finish answering.');
 
-  // A connection none of whose tools is declared a read: Admin's page opens only on its press.
+  // A connection that allows no tools yet: only Admin can choose them, and its page opens only on its press.
   const untestable = await readyCard(t, 'first-answer-untestable');
   await connect(untestable, 'agent_invoice_chaser', {
     id: 'connection_docs', providerId: 'docs', label: 'Docs MCP',
     policy: {
       kind: 'mcp', url: 'https://mcp.docs.example/mcp', transport: 'streamable-http', authMode: 'bearer', headerNames: [],
-      allowedTools: ['search'], discoveredTools: [{ name: 'search', annotations: { readOnlyHint: true } }],
+      allowedTools: [], discoveredTools: [{ name: 'search', annotations: { readOnlyHint: true } }],
     },
   });
   await untestable.card.press('try_once');
   assert.deepEqual(shown(untestable.card), [{
-    kind: 'text', text: 'None of Docs MCP\'s tools are marked as reads, so a test run can\'t use it. Ask Invoice Chaser in Slack instead.',
+    kind: 'text',
+    text: 'Docs MCP allows no tools yet, so a test run can\'t use it. Choose its tools on the Agent\'s page in Admin, then mark the ones that only read.',
   }]);
-  assert.deepEqual(untestable.card.labels(), ['Open the Agent in Admin (primary)', 'Open in Slack (secondary)']);
+  assert.deepEqual(untestable.card.labels(), ['Choose its tools in Admin (primary)', 'Open in Slack (secondary)']);
   plainly(untestable.card.shown, ['connection_docs']);
   const opened = untestable.card.effects.filter(({ type }) => type === 'open').length;
   await untestable.card.dispatch({ type: 'reread', now: untestable.clock.now });
@@ -418,7 +419,7 @@ test('every refusal reads plainly on the card, with its own next step and no cod
   await untestable.card.press('try_fix');
   assert.deepEqual(untestable.card.effects.at(-1), { type: 'open', url: 'https://chickpea.example.test/admin/agents/agent_invoice_chaser' });
   assert.deepEqual(untestable.card.shown.blocks.at(-1), { kind: 'note', text: 'Finish on the Chickpea page that opened, then try again.' });
-  assert.deepEqual(untestable.card.labels(), ['Try again (primary)', 'Open the Agent in Admin (secondary)']);
+  assert.deepEqual(untestable.card.labels(), ['Try again (primary)', 'Choose its tools in Admin (secondary)']);
   assert.deepEqual(untestable.runs.starts, []);
 
   // A fix the card does not run itself goes to the chat, where the model proposes it: then Try again.

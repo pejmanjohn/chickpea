@@ -944,6 +944,49 @@ test('discovery narrows a non-empty approved tool list, and an empty one counts 
     'outside review mode, the first discovery grants every tool the server offers');
 });
 
+test('a 4.x write that dis-allows a tool drops its mark, so the tool comes back unmarked', () => {
+  const marks = { search: { effect: 'read' as const }, delete_page: { effect: 'read' as const } };
+  const [stored] = mcpConnectionsAfterWrite([], [{ ...wikiServer, allowedTools: ['search', 'delete_page'], toolPolicies: marks }]);
+  // The caller sends back every mark it read, the dis-allowed tool's included.
+  const [narrowed] = mcpConnectionsAfterWrite([stored!], [{ ...wikiServer, allowedTools: ['search'], toolPolicies: marks }]);
+  assert.deepEqual(narrowed!.toolPolicies, { search: { effect: 'read' } });
+  const [widened] = mcpConnectionsAfterWrite([narrowed!], [{
+    ...wikiServer, allowedTools: ['search', 'delete_page'], toolPolicies: narrowed!.toolPolicies!,
+  }]);
+  assert.deepEqual(widened!.toolPolicies, { search: { effect: 'read' } });
+  const [kept] = mcpConnectionsAfterWrite([stored!], [{ ...wikiServer, allowedTools: ['search', 'delete_page'], toolPolicies: marks }]);
+  assert.deepEqual(kept!.toolPolicies, marks, 'a write that dis-allows nothing keeps every mark it sends');
+  const limit = { argumentConstraints: { space: ['eng'] } };
+  assert.deepEqual(mcpConnectionsAfterWrite([stored!], [{
+    ...wikiServer, allowedTools: ['search'], toolPolicies: { ...marks, delete_page: { effect: 'read', ...limit } },
+  }])[0]!.toolPolicies, { search: { effect: 'read' }, delete_page: { effect: 'write', ...limit } }, 'a dis-allowed tool keeps its limit, as a write');
+});
+
+test('a 4.x read shows only allowed tools\' marks, so a write that sends back what it read cannot revive an old one', () =>
+  withFixture('round-trip-stale-mark', async (f) => {
+    const stored = await seedAgent(f, 'agent_ops');
+    // A read mark on a tool that is not allowed, as rediscovery, or a write from before the rule, leaves one.
+    await connect(f, stored.id, {
+      ...tracker, policy: { ...tracker.policy, toolPolicies: { search: { effect: 'read' }, file_issue: { effect: 'read' } } },
+    });
+    const before = await inspect(f, stored.id);
+    assert.deepEqual(before.mcpServers[0]!.toolPolicies, { search: { effect: 'read' } }, 'the 4.x read hides the old mark');
+    const result = await mcpApply(f, {
+      idempotencyKey: 'allow-again',
+      operations: [{
+        itemId: 'allow',
+        kind: 'update_agent',
+        agentId: before.id,
+        expectedRevision: before.revision,
+        patch: { mcpServers: before.mcpServers.map((connection) => ({ ...connection, allowedTools: ['search', 'file_issue'] })) },
+      }],
+    });
+    assert.deepEqual(result.outcomes.map(({ disposition }) => disposition), ['applied'], JSON.stringify(result.outcomes));
+    const account = await accountOf(f, stored.id, 'tracker');
+    assert.deepEqual(account.policy.kind === 'mcp' ? [account.policy.allowedTools, account.policy.toolPolicies] : null,
+      [['search', 'file_issue'], { search: { effect: 'read' } }], 'file_issue is allowed again, unmarked');
+  }));
+
 test('expectedRevision 0 never reaches an Agent the call has not created', () =>
   withFixture('revision-zero-hardening', async (f) => {
     const create = (id: string): ManagementOperation => ({
