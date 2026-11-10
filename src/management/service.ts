@@ -156,7 +156,7 @@ import {
 } from '../routines/content-access.ts';
 import type { WorkStore } from '../work/types.ts';
 import { alternativeAgentHandles, normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
-import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
+import { AgentPresenceError, agentOffError } from '../slack/agent-presence/errors.ts';
 import {
   listPrivatelyUsableAgents,
   logUnavailableFacts,
@@ -6478,6 +6478,8 @@ export class WorkspaceManagementService {
         if (!beforeChannel && !this.stores.publishAgentChannel) {
           throw new ManagementError('revision_conflict', 'The Channel does not exist.');
         }
+        // Refused before a proposal or any Slack work; the Slack publisher refuses again at the add.
+        if (agent && !agent.enabled) throw agentOffError(agent);
         const current = grants.find((grant) => grant.agentId === operation.agentId);
         requireExpectedRevision(operation.expectedRevision, current?.revision ?? 0);
         const intendedAfter = {

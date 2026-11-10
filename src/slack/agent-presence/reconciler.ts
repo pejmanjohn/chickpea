@@ -15,6 +15,7 @@ import { agentSlackHandle } from '../agent-asks.ts';
 import type { AgentPresenceAnnouncements } from './announcements.ts';
 import {
   AgentPresenceError,
+  agentOffError,
   classifyAgentPresenceError,
 } from './errors.ts';
 import {
@@ -302,6 +303,7 @@ export class AgentPresenceReconciler {
     if (agent.lifecycle === 'archived') {
       throw new AgentPresenceError('slack_operation_failed', 'Archived Agents cannot be published.');
     }
+    if (!agent.enabled) throw agentOffError(agent);
     let channel;
     try {
       channel = await transport.lookupChannel(input.channelId);
@@ -390,6 +392,8 @@ export class AgentPresenceReconciler {
       await this.recordFailure(await config.getAgent(agent.id), classified);
       throw classified;
     }
+    // Turned off while Slack caught up: the Channel add waits, pending, until it is on again.
+    if (!published.enabled) throw agentOffError(published);
     const grant = await config.putAgentChannelGrant(
       { ...pendingGrant, status: 'active' },
       pendingGrant.revision,
@@ -408,7 +412,10 @@ export class AgentPresenceReconciler {
     return { agent: published, grant, ...(appBot ? { appBot: appBot.placement } : {}) };
   }
 
-  /** Reconcile one Agent's desired Slack alias; safe to invoke after ambiguity. */
+  /**
+   * Reconcile one Agent's desired Slack alias; safe to invoke after ambiguity.
+   * It leaves the Agent on or off as it is.
+   */
   async reconcile(agentId: string): Promise<CustomAgentConfig> {
     const before = await this.dependencies.config.getAgent(agentId);
     const wasLive = handleIsLive(before);
@@ -551,7 +558,6 @@ export class AgentPresenceReconciler {
       current.id,
       {
         lifecycle: 'active',
-        enabled: true,
         slackPresence: {
           ...withoutPendingCreate(withoutPresenceErrors(userGroupPresence(current))),
           requestedHandle: presence.requestedHandle || normalizedHandle,

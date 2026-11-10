@@ -15,7 +15,8 @@ type AgentPresenceErrorCode =
   | 'user_group_create_ambiguous'
   | 'slack_reconnect_required'
   | 'slack_unavailable'
-  | 'slack_operation_failed';
+  | 'slack_operation_failed'
+  | 'agent_off';
 
 export class AgentPresenceError extends Error {
   constructor(
@@ -34,6 +35,15 @@ export class AgentPresenceError extends Error {
   get retryable(): boolean { return this.options.retryable ?? false; }
   get suggestions(): string[] { return this.options.suggestions ?? []; }
   get slackCode(): string | undefined { return this.options.slackCode; }
+}
+
+/** Adding an Agent to a Channel never turns it on; that stays the person's own step. */
+export function agentOffMessage(agent: Pick<CustomAgentConfig, 'name'>): string {
+  return `${agent.name} is off. Turn it on first, then add it to the Channel.`;
+}
+
+export function agentOffError(agent: Pick<CustomAgentConfig, 'name'>): AgentPresenceError {
+  return new AgentPresenceError('agent_off', agentOffMessage(agent));
 }
 
 const PAID_PLAN_ERRORS = new Set([

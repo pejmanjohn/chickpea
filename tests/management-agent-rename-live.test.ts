@@ -2,11 +2,15 @@ import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 import { inspect } from 'node:util';
 
+import { createMcpHandler } from '@modelcontextprotocol/server';
+
+import type { McpAuthenticatedPrincipal } from '../src/auth/mcp-oauth-routes.ts';
 import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 import { AGENT_AUTHORING_GUIDE_VERSION } from '../src/management/agent-authoring/index.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { createLiveWorkspaceManagementService } from '../src/management/live-service.ts';
+import { createWorkspaceManagementMcpServer } from '../src/management/mcp.ts';
 import {
   invokeSlackWorkspaceManagementTool,
   type SlackManagementSignal,
@@ -147,7 +151,7 @@ async function renameFixture(t: TestContext) {
       health: agent.slackPresence?.health,
     };
   };
-  return { f, slack, tool, approve, renameArgs, update, desk, service };
+  return { f, slack, tool, approve, renameArgs, update, desk, service, teamId };
 }
 
 const DESK = {
@@ -373,5 +377,128 @@ test('a rename whose Slack update never starts is put back too', async (t) => {
     );
     assert.deepEqual(await desk(), DESK);
     assert.equal(slack.groups.find(({ id }) => id === 'S0DESK')?.handle, 'desk');
+  });
+});
+
+/** Desk answering in a Channel, turned off on a confirmation card over MCP, as the live check had it. */
+async function offDeskFixture(t: TestContext) {
+  const fixture = await renameFixture(t);
+  const { f, service, teamId, desk } = fixture;
+  await f.config.putChannel({ workspaceId: teamId, channelId: 'C_SUPPORT', label: 'support', lifecycle: 'active' });
+  await f.config.putAgentChannelGrant({
+    workspaceId: teamId, channelId: 'C_SUPPORT', agentId: 'agent_desk', status: 'active',
+    createdByMembershipId: f.admin.membership.id, channelLabel: 'support',
+  });
+  const principal: McpAuthenticatedPrincipal = {
+    betterAuthUserId: f.admin.binding.betterAuthUserId ?? 'ba_admin',
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    role: 'admin',
+    clientId: 'client_cards',
+  };
+  const handler = createMcpHandler(
+    () => createWorkspaceManagementMcpServer({ principal, service, baseUrl: 'https://chickpea.example.test' }),
+    { legacy: 'stateless' },
+  );
+  const mcp = async (name: string, args: Record<string, unknown>): Promise<Record<string, any>> => {
+    const response = await handler.fetch(new Request('http://localhost/mcp', {
+      method: 'POST',
+      headers: {
+        accept: 'application/json, text/event-stream',
+        'content-type': 'application/json',
+        'mcp-protocol-version': '2025-11-25',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+    }));
+    const body = await response.text();
+    const json = body.trimStart().startsWith('{')
+      ? body
+      : body.split('\n').find((line) => line.startsWith('data: '))!.slice('data: '.length);
+    const { result } = JSON.parse(json) as { result: { isError?: boolean; structuredContent?: Record<string, any>; content: [{ text: string }] } };
+    assert.notEqual(result.isError, true, result.content[0].text);
+    return result.structuredContent ?? JSON.parse(result.content[0].text);
+  };
+  const version = async () => (await mcp('get_agent', { agentId: 'agent_desk' })).version as string;
+  const off = await mcp('update_agent', { agentId: 'agent_desk', version: await version(), on: false, idempotencyKey: 'off' });
+  assert.equal(off.status, 'needs_confirmation');
+  assert.equal((await mcp('confirm_change', { confirmToken: off.confirmation.confirmToken })).status, 'done');
+  assert.deepEqual(await desk(), { ...DESK, enabled: false });
+  return { ...fixture, mcp, version };
+}
+
+test('saving a description proposal from the MCP card leaves an off Agent off and updates its Slack group', async (t) => {
+  await withEnv({ CHICKPEA_TENANCY: undefined, SLACK_STATE_DB_PATH: ':memory:' }, async () => {
+    const { slack, mcp, version, desk } = await offDeskFixture(t);
+    const proposal = await mcp('propose_agent_change', {
+      agentId: 'agent_desk', version: await version(), change: { description: 'Answers front desk questions.' },
+    });
+    assert.deepEqual(Object.keys(proposal.save.arguments).sort(), ['agentId', 'description', 'idempotencyKey', 'version']);
+
+    assert.equal((await mcp('update_agent', proposal.save.arguments)).status, 'done');
+    assert.equal((await mcp('get_agent', { agentId: 'agent_desk' })).status, 'off');
+    assert.deepEqual(await desk(), { ...DESK, enabled: false });
+    assert.equal(slack.groups.find(({ id }) => id === 'S0DESK')?.description, 'Answers front desk questions.');
+  });
+});
+
+test('a 4.x rename leaves an off Agent off and renames its Slack group', async (t) => {
+  await withEnv({ CHICKPEA_TENANCY: undefined, SLACK_STATE_DB_PATH: ':memory:' }, async () => {
+    const { mcp, renameArgs, desk, slack } = await offDeskFixture(t);
+    const applied = await mcp('apply_workspace_changes', await renameArgs({ name: 'Front Desk' }));
+    assert.deepEqual([applied.ok, applied.result.outcomes[0].disposition], [true, 'applied']);
+    assert.deepEqual(await desk(), { ...DESK, name: 'Front Desk', enabled: false });
+    assert.equal(slack.groups.find(({ id }) => id === 'S0DESK')?.name, 'Front Desk');
+  });
+});
+
+test('a description edit from Slack leaves an off Agent off and updates its Slack group', async (t) => {
+  await withEnv({ CHICKPEA_TENANCY: undefined, SLACK_STATE_DB_PATH: ':memory:' }, async () => {
+    const { update, desk, slack } = await offDeskFixture(t);
+    assert.equal((await update('describe Desk as the front desk', { description: 'The front desk.' })).disposition, 'applied');
+    assert.deepEqual(await desk(), { ...DESK, enabled: false });
+    assert.equal(slack.groups.find(({ id }) => id === 'S0DESK')?.description, 'The front desk.');
+  });
+});
+
+const DESK_IS_OFF = 'Desk is off. Turn it on first, then add it to the Channel.';
+
+/** Desk into #sales; no Slack call answers Channel reads here, so a refusal must come before any. */
+function addDeskToSales(teamId: string, idempotencyKey: string) {
+  return {
+    idempotencyKey,
+    operations: [{
+      itemId: 'add', kind: 'grant_agent_channel' as const, workspaceId: teamId,
+      channelId: 'C_SALES', agentId: 'agent_desk', expectedRevision: 0,
+    }],
+  };
+}
+
+test('a 4.x Channel add for an off Agent is refused with what to do, and the Agent stays off', async (t) => {
+  await withEnv({ CHICKPEA_TENANCY: undefined, SLACK_STATE_DB_PATH: ':memory:' }, async () => {
+    const { f, mcp, desk, teamId } = await offDeskFixture(t);
+    const applied = await mcp('apply_workspace_changes', addDeskToSales(teamId, 'add-off-4x'));
+    const [outcome] = applied.result.outcomes;
+    assert.deepEqual(
+      [outcome.disposition, outcome.code, outcome.instruction],
+      ['failed', 'agent_off', DESK_IS_OFF],
+    );
+    assert.deepEqual(await desk(), { ...DESK, enabled: false });
+    assert.deepEqual(await f.config.listAgentChannelGrants(teamId, 'C_SALES'), []);
+  });
+});
+
+test('a Slack request to add an off Agent to a Channel is refused before any approval, and the Agent stays off', async (t) => {
+  await withEnv({ CHICKPEA_TENANCY: undefined, SLACK_STATE_DB_PATH: ':memory:' }, async () => {
+    const { f, tool, desk, teamId } = await offDeskFixture(t);
+    const applied = await tool('add Desk to #sales', 'apply_workspace_changes', addDeskToSales(teamId, 'add-off-slack'));
+    if (!applied.ok) assert.fail(inspect(applied, { depth: 8 }));
+    const [outcome] = (applied.result as ManagementApplyResult).outcomes;
+    assert.deepEqual(
+      [outcome?.disposition, outcome?.code, outcome?.instruction, outcome?.proposalId],
+      ['failed', 'agent_off', DESK_IS_OFF, undefined],
+    );
+    assert.deepEqual(await desk(), { ...DESK, enabled: false });
+    assert.deepEqual(await f.config.listAgentChannelGrants(teamId, 'C_SALES'), []);
   });
 });

@@ -7133,6 +7133,131 @@ test('Published Agent edits update the existing Slack handle instead of creating
   }
 });
 
+test('an Admin edit to an off Agent\'s name and description updates its Slack handle and leaves it off', async () => {
+  const fixture = harness();
+  try {
+    await createAgent(fixture.app);
+    const published = await fixture.app.request('http://localhost/admin/api/agents/agent_support/channels', {
+      method: 'POST', headers: auth(),
+      body: JSON.stringify({ workspaceId: 'T_TEST', channelId: 'C_SUPPORT' }),
+    });
+    const patch = async (body: Record<string, unknown>) => {
+      const response = await fixture.app.request('http://localhost/admin/api/agents/agent_support', {
+        method: 'PATCH', headers: auth(),
+        body: JSON.stringify({ expectedRevision: (await fixture.store.getAgent('agent_support')).revision, ...body }),
+      });
+      assert.equal(response.status, 200, await response.clone().text());
+      return (await response.json() as { agent: Record<string, any> }).agent;
+    };
+    assert.equal((await published.json() as Record<string, any>).agent.enabled, true);
+    assert.equal((await patch({ enabled: false })).enabled, false);
+
+    const edited = await patch({ name: 'Customer Care', description: 'Handles customer questions' });
+    assert.equal(edited.enabled, false);
+    assert.equal(edited.slackPresence.health, 'healthy');
+    assert.equal((await fixture.store.getAgent('agent_support')).enabled, false);
+    assert.deepEqual(
+      fixture.transport.groups.map(({ name, description }) => ({ name, description })),
+      [{ name: 'Customer Care', description: 'Handles customer questions' }],
+    );
+    const retried = await fixture.app.request('http://localhost/admin/api/agents/agent_support/slack/retry', {
+      method: 'POST', headers: auth(), body: JSON.stringify({ workspaceId: 'T_TEST' }),
+    });
+    assert.equal(retried.status, 200, await retried.clone().text());
+    assert.equal((await fixture.store.getAgent('agent_support')).enabled, false);
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+const SUPPORT_IS_OFF = 'Support Triage is off. Turn it on first, then add it to the Channel.';
+
+async function setSupportEnabled(fixture: ReturnType<typeof harness>, enabled: boolean) {
+  const response = await fixture.app.request('http://localhost/admin/api/agents/agent_support', {
+    method: 'PATCH', headers: auth(),
+    body: JSON.stringify({ expectedRevision: (await fixture.store.getAgent('agent_support')).revision, enabled }),
+  });
+  assert.equal(response.status, 200, await response.clone().text());
+}
+
+function addSupportToChannel(fixture: ReturnType<typeof harness>, channelId: string) {
+  return fixture.app.request('http://localhost/admin/api/agents/agent_support/channels', {
+    method: 'POST', headers: auth(), body: JSON.stringify({ workspaceId: 'T_TEST', channelId }),
+  });
+}
+
+test('Admin refuses to add an off Agent to a Channel, and adds it once it is turned on', async () => {
+  const fixture = harness();
+  try {
+    await createAgent(fixture.app);
+    await setSupportEnabled(fixture, false);
+
+    const refused = await addSupportToChannel(fixture, 'C_SUPPORT');
+    assert.equal(refused.status, 409);
+    const body = await refused.json() as Record<string, any>;
+    assert.deepEqual([body.error, body.message, body.agent.enabled], ['agent_off', SUPPORT_IS_OFF, false]);
+    assert.equal((await fixture.store.getAgent('agent_support')).enabled, false);
+    assert.deepEqual(await fixture.store.listAgentChannelGrants(), []);
+    assert.deepEqual([fixture.transport.groups.length, fixture.transport.channel.member], [0, false]);
+
+    await setSupportEnabled(fixture, true);
+    const added = await addSupportToChannel(fixture, 'C_SUPPORT');
+    assert.equal(added.status, 201, await added.clone().text());
+    assert.deepEqual((await fixture.store.listAgentChannelGrants()).map(({ status }) => status), ['active']);
+    assert.equal((await fixture.store.getAgent('agent_support')).enabled, true);
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('an off Agent\'s pending Channel add stays pending: an Admin edit leaves it, and Retry is refused until it is on', async () => {
+  const fixture = harness();
+  try {
+    await createAgent(fixture.app);
+    assert.equal((await addSupportToChannel(fixture, 'C_SUPPORT')).status, 201);
+    fixture.transport.channel = { id: 'C_PRIVATE', name: 'private', private: true, member: false, archived: false };
+    const stopped = await addSupportToChannel(fixture, 'C_PRIVATE');
+    assert.equal((await stopped.json() as Record<string, any>).error, 'private_channel_invite_required');
+    await setSupportEnabled(fixture, false);
+    fixture.transport.channel = { ...fixture.transport.channel, member: true };
+    const grantStatus = async () => (await fixture.store.listAgentChannelGrants('T_TEST', 'C_PRIVATE'))[0]?.status;
+    assert.equal(await grantStatus(), 'pending');
+
+    const edited = await fixture.app.request('http://localhost/admin/api/agents/agent_support', {
+      method: 'PATCH', headers: auth(),
+      body: JSON.stringify({
+        expectedRevision: (await fixture.store.getAgent('agent_support')).revision,
+        description: 'Handles customer questions',
+      }),
+    });
+    assert.equal(edited.status, 200, await edited.clone().text());
+    const editedBody = await edited.json() as Record<string, any>;
+    assert.deepEqual([editedBody.agent.enabled, editedBody.presenceRecovery], [false, null]);
+    assert.equal(fixture.transport.groups[0]?.description, 'Handles customer questions');
+    assert.equal(await grantStatus(), 'pending');
+
+    const retry = () => fixture.app.request('http://localhost/admin/api/agents/agent_support/slack/retry', {
+      method: 'POST', headers: auth(), body: JSON.stringify({ workspaceId: 'T_TEST' }),
+    });
+    const refused = await retry();
+    assert.equal(refused.status, 409);
+    assert.deepEqual(
+      [(await refused.json() as Record<string, any>).message, (await fixture.store.getAgent('agent_support')).enabled],
+      [SUPPORT_IS_OFF, false],
+    );
+    assert.equal(await grantStatus(), 'pending');
+
+    await setSupportEnabled(fixture, true);
+    assert.equal((await retry()).status, 200);
+    assert.equal(await grantStatus(), 'active');
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
 test('Slack policy failures preserve the Agent and return exact recovery steps', async () => {
   const transport = new FakeTransport();
   transport.createError = new SlackTransportError('usergroups.create', 'permission_denied');

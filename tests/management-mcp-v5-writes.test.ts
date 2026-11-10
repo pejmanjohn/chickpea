@@ -398,6 +398,38 @@ test('undo_change reverses a change once, replays its retry, and confirms a dest
   assertNoInternalIds(JSON.stringify({ saved, undone, on, reverse, reversed }), f);
 });
 
+test('add_agent_to_channel refuses an off Agent and says to turn it on first; turned on, it adds, and undo leaves it on', async (t) => {
+  const { f, call, teamId } = await harness(t, 'off-channel');
+  const off = await createFixtureAgent(f, 'agent_research', { enabled: false });
+  await f.config.putChannel({ workspaceId: teamId, channelId: 'C_SUPPORT', label: 'support', lifecycle: 'active' });
+  const grants = async () => (await f.config.listAgentChannelGrants(teamId, 'C_SUPPORT')).map(({ status }) => status);
+
+  const refused = errorOf(await call('add_agent_to_channel', {
+    agentId: 'agent_research', channelId: 'C_SUPPORT', idempotencyKey: 'add-off',
+  }), 'invalid_input');
+  assert.deepEqual(refused, {
+    code: 'invalid_input',
+    message: 'Research is off. Turn it on first, then add it to the Channel.',
+    retryable: false,
+    nextStep: 'Ask the person whether to turn it on. If they agree, call update_agent with on: true, then call add_agent_to_channel again with a new idempotencyKey.',
+  });
+  assert.deepEqual(await f.config.getAgent('agent_research'), off, 'the refusal changed nothing');
+  assert.deepEqual(await grants(), []);
+
+  assert.equal(structured(await call('update_agent', {
+    agentId: 'agent_research', version: await version(call, 'agent_research'), on: true, idempotencyKey: 'on',
+  })).status, 'done');
+  const added = structured(await call('add_agent_to_channel', {
+    agentId: 'agent_research', channelId: 'C_SUPPORT', idempotencyKey: 'add-on',
+  }));
+  assert.deepEqual([added.status, added.agent.status, await grants()], ['done', 'on', ['active']]);
+
+  // Adding never turns an Agent on, so undoing an add has no on or off to put back.
+  assert.equal(structured(await call('undo_change', { undoToken: added.undoToken, idempotencyKey: 'undo-add' })).status, 'done');
+  assert.deepEqual(await grants(), []);
+  assert.equal((await f.config.getAgent('agent_research')).enabled, true);
+});
+
 test('the immediate writes apply in the call, as policy.ts says for this door', async (t) => {
   const { f, call, teamId } = await harness(t, 'immediate');
   await createFixtureAgent(f, 'agent_research', {

@@ -148,6 +148,18 @@ test('private invitation offers only an ephemeral card; Add publishes one select
   assert.ok(f.messages().every(({ operation, input }) => operation === 'chat.postEphemeral' && input.user === 'U1'));
 }));
 
+test('Add for an Agent turned off after the card was sent tells the inviter to turn it on first', async () => isolated(async (f) => {
+  await f.join();
+  const setupId = f.setupId();
+  const listed = await f.stores.config.getAgent('agent_ops');
+  await f.stores.config.updateAgent(listed.id, { enabled: false }, listed.revision);
+  await f.add(f.action(setupId));
+  assert.equal(String(f.messages().at(-1)!.input.text), 'Ops is off. Turn it on first, then add it to the Channel.');
+  assert.deepEqual(await f.stores.config.listAgentChannelGrants('T1', 'C1'), []);
+  assert.equal((await f.stores.config.getAgent('agent_ops')).enabled, false);
+  assert.equal(f.groups.length, 0);
+}));
+
 test('expired cards explain expiry and revoked inviters receive no setup feedback', async () => {
   await isolated(async (f) => {
     await f.join();
