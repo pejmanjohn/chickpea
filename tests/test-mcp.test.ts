@@ -15,6 +15,8 @@ test('test:mcp selects the program\'s test files by name and leaves the workerd 
   for (const file of [
     'tests/management-mcp-v5-writes.test.ts', 'tests/mcp-agent-card-model.test.ts', 'tests/test-run-tools.test.ts',
     'tests/test-turn-mounts.test.ts', 'tests/management-policy.test.ts', 'tests/mcp-tool-policy.test.ts',
+    'tests/management-provider-handoff.test.ts', 'tests/management-receipts.test.ts', 'tests/workspace-change-tools.test.ts',
+    'tests/model-access.test.ts', 'tests/run-fees-flue.test.ts', 'tests/admin-usage-report.test.ts',
     'tests/worker-startup-imports.test.ts',
   ]) assert.ok(files.includes(file), file);
   assert.deepEqual(files.filter((file) => file.endsWith('-workerd.test.ts')), []);
