@@ -300,7 +300,7 @@ export class TestRunLifecycle {
 
   /** True once the instance answered an abort sent after the run's current submission was known. */
   private async abortOnce(row: TestRunRow): Promise<boolean> {
-    if (this.aborted.has(row.testRunId) && this.aborted.get(row.testRunId) === row.submissionId) return true;
+    if (this.aborted.get(row.testRunId) === row.submissionId) return true;
     try {
       await bounded((await this.deps.port()).abort(row.instanceId));
       this.aborted.set(row.testRunId, row.submissionId);
@@ -328,10 +328,9 @@ export class TestRunLifecycle {
     mode: TestRunStepMode,
   ): Promise<void> {
     if (settled.kind === 'answered') {
-      const result = { reply: settled.reply, read: settled.read };
       await this.write(row, {
         status: 'answered',
-        result,
+        result: { reply: settled.reply, read: settled.read },
         terminal: this.terminal(row, { status: 'answered', ...(settled.metadata ? { metadata: settled.metadata } : {}) }, now),
       }, null);
       return;
