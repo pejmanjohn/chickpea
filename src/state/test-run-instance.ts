@@ -143,7 +143,8 @@ export function testRunSettlement(
     return { kind: 'failed', failure: 'deadline', creditBack: 'timeout' };
   }
   // The model kept calling tools past the run's limit: its own doing, so nothing is credited back.
-  if (errorMessages(settled.error).some((message) => message.includes(TEST_TURN_ATTEMPT_ENDED_MESSAGE))) {
+  if ((settled.error as { meta?: { reason?: unknown } } | undefined)?.meta?.reason === TEST_TURN_ATTEMPT_ENDED_MESSAGE
+    || errorMessages(settled.error).some((message) => message.includes(TEST_TURN_ATTEMPT_ENDED_MESSAGE))) {
     return { kind: 'failed', failure: 'failed', creditBack: null };
   }
   const failure = classifyFlueRunFailure(new AgentRunError({

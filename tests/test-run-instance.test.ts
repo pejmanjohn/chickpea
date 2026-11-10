@@ -44,5 +44,8 @@ test('an attempt the 25-call limit ended is a failure that is not credited back;
   }), { kind: 'failed', failure: 'failed', creditBack: null });
   assert.deepEqual(ended({ message: 'The attempt failed.', cause: { message: TEST_TURN_ATTEMPT_ENDED_MESSAGE } }),
     { kind: 'failed', failure: 'failed', creditBack: null });
+  // Flue's reason is matched exactly, even if its message prefix changes.
+  assert.deepEqual(ended({ name: 'FlueError', message: 'Operation failed.', meta: { reason: TEST_TURN_ATTEMPT_ENDED_MESSAGE } }),
+    { kind: 'failed', failure: 'failed', creditBack: null });
   assert.deepEqual(ended({ message: 'The agent threw.' }), { kind: 'failed', failure: 'failed', creditBack: 'chickpea' });
 });

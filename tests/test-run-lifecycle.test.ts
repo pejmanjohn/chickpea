@@ -8,6 +8,7 @@ import {
   TEST_RUN_DEADLINE_MS,
   TEST_RUN_DISPATCH_GRACE_MS,
   TEST_RUN_FORCED_ERASE_MS,
+  TEST_RUN_INSTANCE_CALL_MS,
 } from '../src/state/test-run-lifecycle.ts';
 import { hostedDeployment, hostedInstallation, type HostedInstallation } from './helpers/installation-objects.ts';
 import {
@@ -261,6 +262,28 @@ test('a receipt that lands after the forced erase unerases the run and arms the 
   assert.equal(context.installation.storage.alarm, context.clock.now(), 'the alarm comes back for it');
   assert.deepEqual(context.instances.on(instanceId), ['abort', 'erase', 'dispatch', 'abort', 'erase']);
   assert.deepEqual([row().submissionId, row().erasedAt], ['sub_1', context.clock.now()]);
+});
+
+test('a receipt that lands after its bound and after a cancellation deleted the alarm arms it again, and the run is aborted and erased', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const context = setup('inst_lifecycle_late_receipt');
+  const release = context.instances.holdDispatches();
+  context.instances.settleOnAbort = { kind: 'failed', failure: 'deadline', creditBack: 'timeout' };
+  const request = startRequest(context.installation, { at: NOON });
+  const starting = context.lifecycle.start(request);
+  await context.instances.sent();
+  t.mock.timers.tick(TEST_RUN_INSTANCE_CALL_MS);
+  assert.equal((await starting).kind, 'admitted', 'the call returns at its bound with the dispatch still out');
+  const row = () => context.installation.stores.testRuns.get(request.run.testRunId)!;
+  const instanceId = row().instanceId;
+  assert.deepEqual(await context.lifecycle.pass('cancel'), { erased: 0, unerased: 1 });
+  await context.installation.storage.deleteAlarm();
+
+  release();
+  for (let turn = 0; turn < 20 && context.installation.storage.alarm === null; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.notEqual(context.installation.storage.alarm, null, 'the landed receipt arms the alarm again');
+  assert.deepEqual(await context.lifecycle.pass(), { erased: 1, unerased: 0 });
+  assert.deepEqual(context.instances.on(instanceId), ['dispatch', 'settlement', 'abort', 'settlement', 'erase']);
 });
 
 test('no step addresses an erased run\'s instance', async () => {

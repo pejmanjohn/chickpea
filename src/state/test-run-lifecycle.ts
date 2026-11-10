@@ -175,6 +175,10 @@ export class TestRunLifecycle {
         }
       } finally {
         this.dispatching.delete(row.testRunId);
+        // A cancellation may have deleted the alarm while this call was out; a
+        // run it left unerased needs the alarm back to be aborted and erased.
+        const due = this.nextDueAt();
+        if (due !== undefined) await this.deps.armAlarm(due).catch(() => undefined);
       }
     })();
   }
