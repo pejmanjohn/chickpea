@@ -319,6 +319,25 @@ test('connect_service adds a custom API or MCP connection, then links its key; a
   assertNoInternalIds(JSON.stringify({ added, open, keyed }), f);
 });
 
+// Defect caught: a custom "Linear" still waiting for its key was signed in as the catalog Linear, losing its hosts.
+test('a custom connection waiting for its key is not taken for an unfinished catalog sign-in of the same name', async (t) => {
+  const { f, call } = await harness(t, 'connect-custom-catalog-name');
+  await installAgent(f);
+  const custom = { kind: 'api', name: 'Linear', hosts: ['api.mycorp.example'], pathPrefixes: ['/v1'] };
+  structured(await call('connect_service', {
+    agentId: 'agent_research', custom, version: await version(call, 'agent_research'), idempotencyKey: 'custom-linear',
+  }));
+  const catalog = structured(await call('connect_service', {
+    agentId: 'agent_research', service: 'Linear', owner: 'team', idempotencyKey: 'catalog-linear',
+  }));
+  assert.equal(catalog.status, 'needs_setup');
+  const setup = await f.management.getSetup(catalog.setup.setupToken);
+  assert.equal(setup?.action, 'catalog_connection');
+  assert.notEqual((setup?.target as { replacement?: boolean } | undefined)?.replacement, true, 'a new connection, not a replacement');
+  const [entry] = (await lanes(call, 'agent_research')).apiConnections;
+  assert.deepEqual(entry?.allowedHosts, ['api.mycorp.example'], 'the custom connection is unchanged');
+});
+
 test('two custom connections whose names share a slug get their own IDs, and a refusal names the right one', async (t) => {
   const { f, call } = await harness(t, 'connect-slugs');
   await installAgent(f);

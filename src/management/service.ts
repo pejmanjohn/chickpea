@@ -2130,10 +2130,12 @@ export class WorkspaceManagementService {
           toolkit: connector.managedToolkit,
         })
       // A sign-in left unfinished is finished in place, as a managed one is, not added again beside it.
+      // Only a catalog connection counts as unfinished: a custom one waiting for its key may share the ID.
       : accounts.find(({ id, lifecycle, ownerKind: owner, ownerMembershipId, providerId, policy }) =>
-          bound.has(id) && (lifecycle === 'needs_attention' || lifecycle === 'pending') && owner === ownerKind &&
-          (owner === 'team' || ownerMembershipId === actor.membershipId) &&
-          policy.kind !== 'managed' && (providerId === connector.id || policy.presetId === connector.id));
+          bound.has(id) && owner === ownerKind &&
+          (owner === 'team' || ownerMembershipId === actor.membershipId) && policy.kind !== 'managed' &&
+          (lifecycle === 'needs_attention' && (providerId === connector.id || policy.presetId === connector.id) ||
+            lifecycle === 'pending' && policy.presetId === connector.id));
     if (account && !canManageOwnedResource(managementActorPrincipal(actor), account)) {
       throw new ManagementError('forbidden', TEAM_CONNECTION_ADMIN_ONLY);
     }
