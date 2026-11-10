@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 
 import type { z } from 'zod';
 
@@ -62,15 +61,6 @@ function settingsFix(deps: FiveZeroDeps, reading: AgentRunReading, section: 'pro
 
 function withFix(check: Omit<Check, 'fix'>, fix: McpErrorFix | undefined): Check {
   return fix ? { ...check, fix } : check;
-}
-
-/** A GitHub access link for one repository, which no 5.0 tool issues on its own yet. */
-function requestSetupFix(label: string, target: Record<string, string>): McpErrorFix {
-  return {
-    label,
-    tool: 'apply_workspace_changes',
-    arguments: { idempotencyKey: randomUUID(), operations: [{ itemId: 'setup', kind: 'request_setup', target }] },
-  };
 }
 
 /** A connection's reconnect link, through the 5.0 tool that hands it out. */
@@ -244,7 +234,10 @@ async function repositoryChecks(deps: FiveZeroDeps, reading: AgentRunReading): P
     const name = grant.allRepos ? `${grant.accountLogin}/*` : grant.fullName;
     if (grant.installationId === null) {
       return withFix({ part: 'repository', name, status: 'failing', detail: `Chickpea's GitHub App is not installed for ${grant.accountLogin}.` },
-        requestSetupFix('Send a GitHub access link', { kind: 'repository_access', agentId: reading.agent.id, repositoryId: grant.id }));
+        // No 5.0 tool hands out a GitHub access link on its own, and the
+        // 4.x one is hidden from clients that draw cards; the Agent's page
+        // in Admin gives that access to Owners and Members alike.
+        agentAdminFix(deps, reading, 'Give GitHub access in Admin'));
     }
     if (active && !active.has(grant.installationId)) {
       return withFix({ part: 'repository', name, status: 'failing', detail: `GitHub access for ${grant.accountLogin} is suspended or was removed.` },
