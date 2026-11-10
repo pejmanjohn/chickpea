@@ -138,7 +138,6 @@ async function fixture(options: {
   let setupSequence = 0;
   const phases: string[] = [];
   for (const candidate of options.agents ?? [agent('agent_draft', 'Draft Agent', {
-    enabled: false,
     lifecycle: 'draft',
   })]) await config.createAgent(candidate);
   await config.ensureWorkspaceInstallation({
@@ -201,10 +200,11 @@ const beginInput = {
   inviterSlackUserId: INVITER,
 };
 
-test('setup lists editable draft Agents without mutating and Add publishes exactly once', async () => {
+test('setup lists editable draft Agents that are on without mutating and Add publishes exactly once', async () => {
   const f = await fixture({
     agents: [
-      agent('agent_draft', 'Draft Agent', { enabled: false, lifecycle: 'draft' }),
+      agent('agent_draft', 'Draft Agent', { lifecycle: 'draft' }),
+      agent('agent_off_draft', 'Off Draft Agent', { enabled: false, lifecycle: 'draft' }),
       agent('agent_disabled', 'Disabled Agent', { enabled: false, lifecycle: 'active' }),
       agent('agent_archived', 'Archived Agent', { lifecycle: 'archived' }),
       agent('agent_other', 'Other Agent', { creatorMembershipId: 'membership_other' }),
@@ -246,6 +246,28 @@ test('setup lists editable draft Agents without mutating and Add publishes exact
     assert.equal((await f.management.getPrivateChannelSetupIntent(begun.setupId))?.status,
       'completed');
     assert.equal(f.transport.createCalls, 1);
+  } finally {
+    f.close();
+  }
+});
+
+test('Add refuses an Agent turned off after the card listed it, before claiming the card or any Slack work', async () => {
+  const f = await fixture({ agents: [agent('agent_desk', 'Desk')] });
+  try {
+    const begun = await f.service.begin(beginInput);
+    assert.deepEqual(begun.agents.map(({ agentId }) => agentId), ['agent_desk']);
+    const listed = await f.config.getAgent('agent_desk');
+    await f.config.updateAgent(listed.id, { enabled: false }, listed.revision);
+
+    await assert.rejects(
+      f.service.add({ ...beginInput, setupId: begun.setupId, agentId: 'agent_desk' }),
+      (error: unknown) => error instanceof PrivateChannelSetupError && error.code === 'agent_off' &&
+        error.message === 'Desk is off. Turn it on first, then add it to the Channel.',
+    );
+    assert.equal((await f.config.getAgent('agent_desk')).enabled, false);
+    assert.deepEqual(await f.config.listAgentChannelGrants(WORKSPACE, CHANNEL), []);
+    assert.deepEqual(f.phases, []);
+    assert.equal((await f.management.getPrivateChannelSetupIntent(begun.setupId))?.status, 'open');
   } finally {
     f.close();
   }

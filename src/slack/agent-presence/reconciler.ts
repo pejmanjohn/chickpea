@@ -15,6 +15,7 @@ import { agentSlackHandle } from '../agent-asks.ts';
 import type { AgentPresenceAnnouncements } from './announcements.ts';
 import {
   AgentPresenceError,
+  agentOffError,
   classifyAgentPresenceError,
 } from './errors.ts';
 import {
@@ -302,6 +303,7 @@ export class AgentPresenceReconciler {
     if (agent.lifecycle === 'archived') {
       throw new AgentPresenceError('slack_operation_failed', 'Archived Agents cannot be published.');
     }
+    if (!agent.enabled) throw agentOffError(agent);
     let channel;
     try {
       channel = await transport.lookupChannel(input.channelId);
@@ -384,13 +386,14 @@ export class AgentPresenceReconciler {
 
     let published: CustomAgentConfig;
     try {
-      // The grant goes active, which the store allows only for an Agent that is on.
-      published = await this.reconcile(agent.id, { turnOn: true });
+      published = await this.reconcile(agent.id);
     } catch (error) {
       const classified = classifyAgentPresenceError(error);
       await this.recordFailure(await config.getAgent(agent.id), classified);
       throw classified;
     }
+    // Turned off while Slack caught up: the Channel add waits, pending, until it is on again.
+    if (!published.enabled) throw agentOffError(published);
     const grant = await config.putAgentChannelGrant(
       { ...pendingGrant, status: 'active' },
       pendingGrant.revision,
@@ -411,19 +414,19 @@ export class AgentPresenceReconciler {
 
   /**
    * Reconcile one Agent's desired Slack alias; safe to invoke after ambiguity.
-   * It leaves the Agent on or off as it is unless `turnOn` asks.
+   * It leaves the Agent on or off as it is.
    */
-  async reconcile(agentId: string, { turnOn = false } = {}): Promise<CustomAgentConfig> {
+  async reconcile(agentId: string): Promise<CustomAgentConfig> {
     const before = await this.dependencies.config.getAgent(agentId);
     const wasLive = handleIsLive(before);
-    const reconciled = await this.reconcileOnce(agentId, 0, turnOn);
+    const reconciled = await this.reconcileOnce(agentId, 0);
     if (!wasLive && handleIsLive(reconciled)) {
       await this.announceBestEffort('handleWentLive', reconciled.id, (announce) => announce.handleWentLive(reconciled));
     }
     return reconciled;
   }
 
-  private async reconcileOnce(agentId: string, attempt: number, turnOn: boolean): Promise<CustomAgentConfig> {
+  private async reconcileOnce(agentId: string, attempt: number): Promise<CustomAgentConfig> {
     const { config, transport } = this.dependencies;
     let agent = await config.getAgent(agentId);
     if (agent.lifecycle === 'archived') {
@@ -549,13 +552,12 @@ export class AgentPresenceReconciler {
           { retryable: true },
         );
       }
-      return this.reconcileOnce(current.id, attempt + 1, turnOn);
+      return this.reconcileOnce(current.id, attempt + 1);
     }
     return config.updateAgent(
       current.id,
       {
         lifecycle: 'active',
-        ...(turnOn ? { enabled: true } : {}),
         slackPresence: {
           ...withoutPendingCreate(withoutPresenceErrors(userGroupPresence(current))),
           requestedHandle: presence.requestedHandle || normalizedHandle,

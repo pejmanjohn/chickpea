@@ -2503,7 +2503,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       (grant) => grant.agentId === agent.id && grant.workspaceId === workspaceId &&
         grant.status !== 'active',
     );
-    if (pendingGrants.length === 0) return reconciler.retry(agent.id);
+    // An edit never finishes a Channel add for an off Agent; Retry asks, and is refused until it is on.
+    if (pendingGrants.length === 0 || (options.edited && !agent.enabled)) return reconciler.retry(agent.id);
     // An edit reaches Slack's user group first: a pending Channel add's own
     // publish needs the editor in that Channel, and must not hold the edit back.
     let updated = options.edited ? await reconciler.retry(agent.id) : agent;

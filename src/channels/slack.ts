@@ -3191,7 +3191,7 @@ async function completePrivateChannelSetupAction(
   } catch (error) {
     if (error instanceof PrivateChannelSetupError) {
       if (error.code === 'forbidden') return;
-      text = error.code === 'unverifiable'
+      text = error.code === 'agent_off' ? error.message : error.code === 'unverifiable'
         ? 'I couldn’t check this Agent right now. Click Add again in a moment.'
         : privateChannelSetupUnavailableText(
         error.code === 'expired' ? 'expired' : error.code === 'stale' ? 'stale' : 'used',

@@ -13,6 +13,7 @@ import {
   type PrivateChannelSetupInstallationSnapshot,
   type PrivateChannelSetupIntent,
 } from '../management/types.ts';
+import { agentOffMessage } from './agent-presence/errors.ts';
 import type { SlackChannel } from './transport/types.ts';
 
 const SETUP_TTL_MS = 30 * 60_000;
@@ -62,7 +63,7 @@ export class PrivateChannelSetupError extends Error {
   readonly name = 'PrivateChannelSetupError';
 
   constructor(
-    readonly code: 'forbidden' | 'unavailable' | 'unverifiable' | 'expired' | 'stale',
+    readonly code: 'forbidden' | 'unavailable' | 'unverifiable' | 'expired' | 'stale' | 'agent_off',
     message = 'This private Channel setup is no longer available. Invite Chickpea again to start over.',
   ) {
     super(message);
@@ -193,6 +194,9 @@ export class PrivateChannelSetupService {
     const installed = requireInstallation(installation, input.workspaceId);
     assertInstallationSnapshot(intent.installation, installed);
     requirePublicationAuthority(principal, actor, selectedAgent);
+    if (!selectedAgent.enabled) {
+      throw new PrivateChannelSetupError('agent_off', agentOffMessage(selectedAgent));
+    }
 
     if (intent.status === 'open') await this.assertInitialSnapshots(intent, input.agentId);
     let claim;
@@ -398,7 +402,7 @@ function eligibleAgent(
   agent: CustomAgentConfig,
   grant: AgentChannelGrant | undefined,
 ): boolean {
-  return agent.kind === 'user' && (agent.enabled || agent.lifecycle === 'draft') &&
+  return agent.kind === 'user' && agent.enabled &&
     agent.lifecycle !== 'archived' &&
     canEditAgent(principal, agent) && grant?.status !== 'active';
 }
