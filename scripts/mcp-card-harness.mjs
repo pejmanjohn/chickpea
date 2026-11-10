@@ -27,6 +27,7 @@ import { CARD_URIS } from '../src/management/mcp-v5/cards.ts';
 import { readAgentAvatarAsset } from '../src/slack/agent-presence/avatar-assets.ts';
 import { SLACK_SETTING_KEYS } from '../src/slack/credentials.ts';
 import { createFixtureAgent, createManagementAdapterFixture } from '../tests/helpers/management-adapter-fixture.ts';
+import { StubTestRuns } from '../tests/helpers/stub-test-runs.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** This deployment's origin, which serves every Agent's picture; Chrome's requests to it are answered from the fixture. */
@@ -56,14 +57,29 @@ const FRAME_STYLE = `
   #frame { border: 1px solid var(--line); border-radius: 20px; overflow: hidden; }
   iframe { display: block; width: 100%; height: 120px; border: 0; }`;
 
+/** A first answer, as an Agent writes one: Markdown, which the card reads as plain text. */
+const ANSWERED = {
+  status: 'answered',
+  failure: null,
+  result: {
+    reply: '**Two renewals** are due this month:\n- Northwind: renews on the 18th, $9,800 a year\n- [Lumen Labs](https://dashboard.stripe.com/subscriptions/x): renews on the 27th, $7,400 a year\n\nNeither has a reminder yet.',
+    read: ['Stripe', 'HubSpot'],
+  },
+};
+const RUNNING = { status: 'running', failure: null, result: null };
+
 /** One fixture workspace with Core's MCP server; each run of the scenes gets its own. */
 async function world() {
   const clock = { now: Date.now() };
+  // The state store's test runs, which only a deployment of many installations serves.
+  const runs = new StubTestRuns(ANSWERED);
   const f = await createManagementAdapterFixture(`harness_${Math.random().toString(36).slice(2, 8)}`,
     ({ settings }) => ({
       settings,
       now: () => clock.now,
       setupBaseUrl: ORIGIN,
+      testRuns: runs,
+      slackMemberTimezone: async () => 'America/Los_Angeles',
       modelReadiness: async () => async () => undefined,
       // A custom connection's one request: the docs server refuses its key, the status board answers.
       testConnection: async ({ connectionId }) => connectionId === 'connection_docs'
@@ -77,6 +93,10 @@ async function world() {
     const result = await getOperation(context, id);
     return finished.has(id) && result && 'setupOperationId' in result ? { ...result, status: finished.get(id) } : result;
   };
+  // A deployment that serves no test runs: Node, or one installation alone.
+  let serving = true;
+  const testRunStore = f.service.testRunStore.bind(f.service);
+  f.service.testRunStore = async (context) => serving ? testRunStore(context) : undefined;
   await f.settings.setSetting(SLACK_SETTING_KEYS.teamName, 'Acme');
   const teamId = f.owner.binding.slackTeamId;
   const principal = {
@@ -228,7 +248,70 @@ async function world() {
       return call('check_agent', { agentId: 'agent_support' });
     },
     healthy: () => call('check_agent', { agentId: 'agent_clean' }),
+    // Scene 4: an Agent with nothing to connect, so its ready card offers its first answer.
+    firstProposal: () => call('propose_agent', {
+      name: 'Renewals Desk',
+      handle: 'renewals',
+      job: 'Tracks the contracts that renew in the next 60 days.',
+      instructions: '# Job\nTrack contract renewals.',
+      sampleAsk: 'which renewals are due this month?',
+      promisedAnswer: 'I list each contract that renews this month, with the customer, the date and the amount, each linked in Stripe.',
+    }),
+    connectRenewals: () => link({ agentId: 'agent_renewals_desk', service: 'Gmail', owner: 'team' }),
+    // Agents the model created itself, each with a first question: their cards hold no promise.
+    readyQuiet: () => arrived.agent_quiet_desk,
+    readySetup: () => arrived.agent_linear_helper,
+    readyDocs: () => arrived.agent_docs_helper,
   });
+  /** What Slack does after create_agent: each Agent joins with a model that runs, and its hello is delivered. */
+  async function arrive(...agentIds) {
+    for (const agentId of agentIds) {
+      const agent = await f.config.getAgent(agentId);
+      await f.config.updateAgent(agentId, { model: 'local-stub/desk', slackPresence: { ...agent.slackPresence, health: 'healthy' } });
+    }
+    const claimed = await f.management.claimDueOutbox(clock.now, 50, clock.now + 60_000);
+    // As sayHello does: the hello the Agent posted in its own name, delivered.
+    const hellos = claimed.filter(({ receipt }) => receipt.kind === 'agent_created_welcome' && agentIds.includes(receipt.agentId)).map((queued) => ({
+      ...queued,
+      outboxId: `${queued.outboxId}_published`,
+      receipt: { ...queued.receipt, publication: { status: 'complete', incomplete: [] } },
+      status: 'pending',
+      createdAt: clock.now + 1,
+      updatedAt: clock.now + 1,
+      nextAttemptAt: clock.now,
+    }));
+    for (const hello of hellos) await f.management.putOutbox(hello);
+    await f.management.claimDueOutbox(clock.now, 50, clock.now + 60_000);
+    for (const hello of hellos) {
+      await f.management.settleOutbox({ outboxId: hello.outboxId, outcome: 'delivered', at: clock.now, deliveryRef: `D1:${hello.outboxId}` });
+    }
+  }
+  const arrived = {};
+  for (const [name, handle, firstAsk] of [
+    ['Quiet Desk', 'quiet', 'what changed in the queue today?'],
+    ['Linear Helper', 'linear-helper', 'which issues are blocked?'],
+    ['Docs Helper', 'docs-helper', 'where is the refund policy?'],
+  ]) {
+    const result = await call('create_agent', { name, handle, instructions: 'Answer briefly.', firstAsk, idempotencyKey: `create-${handle}` });
+    arrived[result.structuredContent.agent.agentId] = result;
+  }
+  await arrive(...Object.keys(arrived));
+  // Linear is someone else's own account, which the caller has yet to sign in to; the docs server declares no read.
+  for (const [agentId, account] of [
+    ['agent_linear_helper', {
+      id: 'connection_linear_admin', providerId: 'linear', label: 'Linear', ownerKind: 'member', ownerMembershipId: f.admin.membership.id,
+      createdByMembershipId: f.admin.membership.id, lifecycle: 'ready',
+      policy: { kind: 'api', allowedHosts: ['api.linear.app'], pathPrefixes: ['/'], headerName: 'Authorization', allowedMethods: ['GET'], authMode: 'credential' },
+    }],
+    ['agent_docs_helper', {
+      id: 'connection_docs_helper', providerId: 'docs', label: 'Help center', ownerKind: 'team', createdByMembershipId: f.owner.membership.id,
+      lifecycle: 'ready',
+      policy: { kind: 'mcp', url: 'https://mcp.help.example/mcp', transport: 'streamable-http', authMode: 'bearer', headerNames: [], allowedTools: ['search'], discoveredTools: [{ name: 'search' }] },
+    }],
+  ]) {
+    await f.config.putConnectionAccount({ workspaceId: teamId, secretRefId: `secret_${account.id}`, ...account });
+    await f.config.putAgentConnectionBinding({ agentId, connectionAccountId: account.id, providerId: account.providerId, allowedCapabilities: [], enabled: true });
+  }
   await createFixtureAgent(f, 'agent_clean', {
     name: 'Billing Helper',
     model: 'local-stub/billing',
@@ -289,6 +372,7 @@ async function world() {
   }
   return {
     f, rpc, call, scenes, sayHello, picture, joinChannels: () => channels('active'), close: () => f.close(),
+    runs, arrive, serve: (on) => { serving = on; },
     /** The person finishes on the setup page of the last link. */
     finishSetup: () => finished.set(lastSetup.setupToken, 'completed'),
     lastSetup: () => lastSetup,
@@ -299,7 +383,10 @@ async function world() {
 const OPENAI_META = 'harness/openaiMeta';
 
 /** The card each scene's tool draws. */
-const SCENE_CARDS = { connect: 'connect-card', reconnect: 'connect-card', cancelled: 'connect-card', custom: 'connect-card', health: 'health-card', healthy: 'health-card' };
+const SCENE_CARDS = {
+  connect: 'connect-card', reconnect: 'connect-card', cancelled: 'connect-card', custom: 'connect-card', connectRenewals: 'connect-card',
+  health: 'health-card', healthy: 'health-card',
+};
 
 /** Two origins, like ChatGPT's page and its card sandbox. */
 async function serve(current) {
@@ -776,6 +863,123 @@ try {
     await browser.waitFor(`document.querySelector('.cp-hdr .cp-avatar svg')`, 'the art, when the picture would not load');
     assert.equal(await picture(), 'art', 'a picture that fails to load falls back to the art');
     await shot('7-healthy-fallback');
+
+    // Scene 4: "See its first answer". A run starts only on the press, and every call for that press sends one key.
+    const { runs } = current;
+    const tried = async () => {
+      const [calls, sent] = await Promise.all([browser.host('window.harness.calls'), browser.host('window.harness.args')]);
+      return calls.flatMap((name, index) => name === 'try_agent_once' ? [sent[index].idempotencyKey] : []);
+    };
+    const shows = (pattern, what, timeoutMs) =>
+      browser.waitFor(`${pattern}.test(document.querySelector(".cp-card")?.textContent ?? "")`, what, timeoutMs);
+    /** Three minutes pass on the card's clock, as they would while it waits. */
+    const later = (ms) => browser.inCard(`(() => { const now = Date.now.bind(Date); Date.now = () => now() + ${ms}; })()`);
+    await open('firstProposal');
+    await browser.waitForTitle(/^Renewals Desk$/);
+    await browser.click('create');
+    await browser.waitFor('[...document.querySelectorAll(".cp-steps li")].some((li) => li.textContent.endsWith("Created in Chickpea (done)"))', 'the creation steps');
+    await current.arrive('agent_renewals_desk');
+    await browser.waitForTitle(/said hello to you in Slack$/, 10_000);
+    assert.deepEqual(await buttons(), ['Open in Slack', 'See its first answer'], 'nothing to connect: its first answer');
+    await new Promise((done) => setTimeout(done, 1_200));
+    await browser.inCard('window.dispatchEvent(new Event("focus"))');
+    await new Promise((done) => setTimeout(done, 2_500));
+    assert.deepEqual([await tried(), runs.starts.length], [[], 0], 'no run before the press');
+    await shot('4-ready');
+    runs.outcome = RUNNING;
+    await browser.host('window.harness.holding = ["get_test_run"]');
+    await browser.click('try_once');
+    await shows('/Asking Renewals Desk its first question/', 'the run starting');
+    await shot('4-asking');
+    await shows('/Renewals Desk is answering/', 'the run going', 30_000);
+    await shot('4-running');
+    await later(181_000);
+    await browser.host('window.harness.holding = []; window.harness.answerHeld("fail")');
+    await shows('/taking longer than it should/', 'the card giving up');
+    assert.deepEqual(await buttons(), ['Open in Slack']);
+    await told(/^The person ran the Agent "Renewals Desk" \(@renewals\) once from the card, but its answer did not come back in time\.$/, 'Gave up');
+    await plain('Gave up');
+    await shot('4-gave-up');
+    // Back in view, it reads the run once more, and the answer has come.
+    runs.outcome = ANSWERED;
+    await new Promise((done) => setTimeout(done, 1_100));
+    await browser.inCard('window.dispatchEvent(new Event("focus"))');
+    await browser.waitFor('document.querySelectorAll(".cp-pane").length === 2', 'what was promised beside what it answered');
+    await told(/^The person ran the Agent "Renewals Desk" \(@renewals\) once from the card, and it answered its first question there\.$/, 'Answered');
+    assert.deepEqual(await buttons(), ['Open in Slack', 'Change something']);
+    assert.equal(new Set(await tried()).size, 1, 'one key for the press');
+    assert.equal(runs.starts.length, 1, 'one run for the press');
+    assert.equal(await browser.inCard('document.querySelectorAll(".cp-pane-text")[1].innerText.split("\\n").length'), 5,
+      'the answer keeps its line breaks');
+    assert.doesNotMatch(await browser.inCard('document.querySelector(".cp-panes").innerHTML'), /<(?!\/?(section|h3|div)\b)/, 'the answer is text, never markup');
+    await shot('4-answered');
+    await browser.click('change_something');
+    for (let tries = 0; tries < 50 && (await browser.host('window.harness.messages.length')) === 0; tries += 1) {
+      await new Promise((done) => setTimeout(done, 100));
+    }
+    assert.equal((await browser.host('window.harness.messages')).at(-1)?.content?.[0]?.text, 'Change Renewals Desk: ');
+
+    // The connect card holds no proposal: the answer alone.
+    await open('connectRenewals');
+    await browser.waitForTitle(/^Connect Gmail to Renewals Desk$/);
+    await browser.click('connect');
+    await browser.waitForRow(/^Waiting for Gmail/);
+    current.finishSetup();
+    await browser.waitForRow(/^Gmail is connected/, 10_000);
+    assert.equal(await browser.inCard('document.querySelector(".cp-row button")?.textContent'), 'See its first answer');
+    await shot('3-connected-first-answer');
+    await browser.click('try_once');
+    await browser.waitFor('document.querySelectorAll(".cp-pane").length === 1', 'the answer alone');
+    assert.equal(await browser.inCard('document.querySelector(".cp-pane-label").textContent'), 'What it answered');
+    await shot('4-answered-reply-only');
+
+    /** An Agent's ready card, then its first answer refused or failed. */
+    const refused = async (scene, name, pattern, labels) => {
+      await open(scene);
+      await browser.waitForTitle(/said hello to you in Slack$/, 10_000);
+      await browser.click('try_once');
+      await shows(pattern, name);
+      assert.deepEqual(await buttons(), labels, `${name}: what it offers next`);
+      await plain(name);
+      await shot(`4-refused-${name}`);
+    };
+    current.serve(false);
+    await refused('readyQuiet', 'unavailable', /Test runs aren't available on this workspace yet\./, ['Open in Slack']);
+    current.serve(true);
+    runs.refuse = { kind: 'daily_limit', resumesAt: Date.now() + 5 * 3_600_000 - 60_000 };
+    await refused('readyQuiet', 'limit', /reached today's limit\. They start again in about 5 hours\./, ['Open in Slack']);
+    runs.refuse = undefined;
+    runs.outcome = { status: 'failed', failure: 'deadline', result: null };
+    await refused('readyQuiet', 'deadline', /took too long and was stopped\. Ask Quiet Desk in Slack instead\./, ['Open in Slack']);
+    runs.outcome = { status: 'failed', failure: 'out_of_usage', result: null };
+    await refused('readyQuiet', 'out-of-usage', /out of usage, so the test run couldn't finish\./, ['Open in Slack']);
+    runs.outcome = ANSWERED;
+    await refused('readySetup', 'setup', /Finish setting up Linear first, then try again\./, ['Finish its setup in Admin', 'Open in Slack']);
+    await refused('readyDocs', 'untestable', /None of Help center's tools are marked as reads/, ['Open the Agent in Admin', 'Open in Slack']);
+    await browser.click('try_fix');
+    assert.deepEqual(await browser.linksOpened(1), [`${ORIGIN}/admin/agents/agent_docs_helper`], 'its fix opens on the press');
+    await shows('/Finish on the Chickpea page that opened, then try again\./', 'Try again after the fix');
+    assert.deepEqual(await buttons(), ['Try again', 'Open the Agent in Admin']);
+    await shot('4-refused-untestable-fixing');
+
+    // Another run holds the workspace: the card asks again every 5 s, and after a minute offers Try again.
+    runs.refuse = { kind: 'in_progress' };
+    await open('readyQuiet');
+    await browser.waitForTitle(/said hello to you in Slack$/, 10_000);
+    await browser.click('try_once');
+    await shows('/Waiting for another test run in this workspace to finish/', 'the wait');
+    await shot('4-waiting');
+    await later(61_000);
+    await shows('/Another test run is going in this workspace\. Try again in a minute\./', 'Try again', 10_000);
+    assert.deepEqual(await buttons(), ['Try again']);
+    await plain('Busy');
+    await shot('4-refused-busy');
+    runs.refuse = undefined;
+    await browser.click('try_once');
+    await browser.waitFor('document.querySelectorAll(".cp-pane").length === 1', 'the answer after Try again');
+    const keys = await tried();
+    assert.ok(keys.length >= 3, 'asked again while it waited');
+    assert.equal(new Set(keys).size, 1, 'every call for the press, Try again included, sends one key');
     current.close();
   }
 } finally {
