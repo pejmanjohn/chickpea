@@ -1333,7 +1333,7 @@ const TEST_RUN_CHANNEL = /^test_[a-z2-7]{26}$/;
 const TEST_RUN_FORBIDDEN: ReadonlyArray<readonly [string, (plan: RuntimePlanV2) => unknown]> = [
   ['a Slack conversation', ({ conversation }) => !TEST_RUN_CHANNEL.test(conversation.channelId) || conversation.guest],
   ['a file destination thread', ({ artifactDestination }) => artifactDestination.threadTs],
-  ['no caller', ({ actorMembershipId }) => !actorMembershipId],
+  ['an unknown caller', ({ actorMembershipId }) => !actorMembershipId],
   ['a front desk', ({ frontDesk }) => frontDesk],
   ['handoff context', ({ handoffContext }) => handoffContext],
   ['a coding workspace', ({ codingWorkspace }) => codingWorkspace],
@@ -1344,8 +1344,9 @@ const TEST_RUN_FORBIDDEN: ReadonlyArray<readonly [string, (plan: RuntimePlanV2) 
   ['connection selections', ({ connectionSelections }) => connectionSelections],
   ['connection authorizations', ({ connectionAuthorizations }) => connectionAuthorizations?.length],
   ['connection choices', ({ connectionChoices }) => connectionChoices?.length],
-  ['an MCP tool not declared a read', ({ mcpConnections }) => mcpConnections.some(({ allowedTools, readOnlyTools, writeTools }) =>
-    writeTools?.length || allowedTools.some((tool) => !readOnlyTools?.includes(tool)))],
+  // Parsing sees only what is listed; the test run compile and every call check that an Admin declared it.
+  ['an MCP tool not listed as a read', ({ mcpConnections }) => mcpConnections.some(({ allowedTools, readOnlyTools }) =>
+    allowedTools.some((tool) => !readOnlyTools?.includes(tool)))],
   ['a connector capability that writes', ({ managedConnections }) => managedConnections?.some(({ allowedCapabilities }) =>
     allowedCapabilities.some((id) => MANAGED_CONNECTOR_CATALOG.capability(id)?.effect !== 'read'))],
 ];

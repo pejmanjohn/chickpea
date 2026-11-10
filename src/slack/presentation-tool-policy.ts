@@ -7,7 +7,7 @@ import type {
   LlmMessage,
 } from '@flue/runtime';
 
-import { MANAGED_SUBMISSION_AGENT_NAMES } from '../agents/names.ts';
+import { CHICKPEA_TEST_TURN_AGENT_NAME, MANAGED_SUBMISSION_AGENT_NAMES } from '../agents/names.ts';
 import {
   ARTIFACT_DELIVERY_TOOL_NAMES,
   currentRequestOffersProgressiveStreaming,
@@ -262,7 +262,9 @@ export function observePresentationToolPolicy(
   if (
     observation.type !== 'turn_request' ||
     observation.purpose !== 'agent' ||
-    !MANAGED_SUBMISSION_AGENT_NAMES.some((name) => name === context.agentName)
+    !MANAGED_SUBMISSION_AGENT_NAMES.some((name) => name === context.agentName) ||
+    // A test run presents nothing, and its ask carries no host envelope.
+    context.agentName === CHICKPEA_TEST_TURN_AGENT_NAME
   ) return;
   const active = submissionPolicy.getStore();
   if (!active) return;

@@ -9,7 +9,7 @@ import type {
   LlmMessage,
 } from '@flue/runtime';
 
-import { CHICKPEA_SLACK_AGENT_NAME } from '../src/agents/names.ts';
+import { CHICKPEA_SLACK_AGENT_NAME, CHICKPEA_TEST_TURN_AGENT_NAME } from '../src/agents/names.ts';
 import { serializeCurrentRequestEnvelope } from '../src/memory/tool-policy.ts';
 import {
   bindFileDeliveryCheck,
@@ -71,6 +71,18 @@ function withSubmission<T>(run: () => Promise<T>): Promise<T> {
   };
   return presentationToolPolicyInterceptor(operation, EXECUTION_CONTEXT, run);
 }
+
+test("a test run's ask offers no progressive delivery, even when it carries an envelope", async () => {
+  const context = { ...EXECUTION_CONTEXT, agentName: CHICKPEA_TEST_TURN_AGENT_NAME };
+  await presentationToolPolicyInterceptor({ type: 'agent', operationId: 'submission_test_run', operationKind: 'prompt' }, context, async () => {
+    observePresentationToolPolicy({
+      type: 'turn_request', purpose: 'agent', request: { input: { messages: [{ role: 'user', content: currentPrompt(true) }] } },
+    } as unknown as FlueObservation, { agentName: CHICKPEA_TEST_TURN_AGENT_NAME } as unknown as FlueEventContext);
+    await assert.rejects(presentationToolPolicyInterceptor(
+      { type: 'tool', toolName: SLACK_STREAM_ANSWER_TOOL_NAME, toolCallId: 'call_stream' }, context, async () => 'noted',
+    ), SlackPresentationToolUnavailableError);
+  });
+});
 
 test('a successful declaration arms answer-only authority before later tools execute', async () => {
   await withSubmission(async () => {

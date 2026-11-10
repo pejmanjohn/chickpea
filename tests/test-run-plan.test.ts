@@ -188,7 +188,7 @@ test('V5 parsing refuses a test run plan that could write, post or reach Slack',
       ['a Slack channel', (p) => { p.conversation = { ...plan.conversation, channelId: 'D0TESTRUN' }; p.artifactDestination = { kind: 'slack_conversation', channelId: 'D0TESTRUN' }; }, /a Slack conversation/],
       ['a guest thread', (p) => { p.conversation = { ...plan.conversation, guest: true }; }, /a Slack conversation/],
       ['a file thread', (p) => { p.artifactDestination = { ...plan.artifactDestination, threadTs: '1793440000.000100' }; }, /a file destination thread/],
-      ['no caller', (p) => { delete p.actorMembershipId; }, /no caller/],
+      ['an unknown caller', (p) => { delete p.actorMembershipId; }, /an unknown caller/],
       ['a front desk', (p) => { p.frontDesk = { agents: [{ id: 'agent_x', name: 'X' }] }; }, /a front desk/],
       ['handoff context', (p) => { p.handoffContext = [{ messageTs: '1793430000.000100', role: 'human', text: 'Hi.' }]; }, /handoff context/],
       ['a coding workspace', (p) => { p.codingWorkspace = { available: true }; }, /a coding workspace/],
@@ -208,12 +208,12 @@ test('V5 parsing refuses a test run plan that could write, post or reach Slack',
         p.mcpConnections = plan.mcpConnections.map((connection) => ({
           ...connection, allowedTools: [MCP_TOOLS.read, MCP_TOOLS.write], writeTools: [MCP_TOOLS.write],
         }));
-      }, /an MCP tool not declared a read/],
-      ['an undeclared MCP tool', (p) => {
+      }, /an MCP tool not listed as a read/],
+      ['an unlisted MCP tool', (p) => {
         p.mcpConnections = plan.mcpConnections.map((connection) => ({
           ...connection, allowedTools: [MCP_TOOLS.read, MCP_TOOLS.undeclared],
         }));
-      }, /an MCP tool not declared a read/],
+      }, /an MCP tool not listed as a read/],
       ['a writing capability', (p) => {
         p.managedConnections = plan.managedConnections!.map((connection) => ({
           ...connection, allowedCapabilities: [MANAGED_READ, MANAGED_WRITE],

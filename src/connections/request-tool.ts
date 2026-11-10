@@ -2,6 +2,7 @@ import { defineTool, type JsonValue } from '@flue/runtime';
 import * as v from 'valibot';
 
 import { matchesEgressPrefix, type ConnectionScopedFetch } from '../config/egress.ts';
+import { overridesMethod } from '../config/method-override.ts';
 import { assertConnectionWriteAllowed } from '../memory/tool-policy.ts';
 import type { ConnectionAccess, ConnectionDeclaration } from './access.ts';
 import {
@@ -27,8 +28,6 @@ const MAX_HEADERS = 20;
 const METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'] as const;
 type Method = (typeof METHODS)[number];
 const READ_METHODS = new Set<Method>(['GET', 'HEAD']);
-/** Ways some services let a GET act as another method. */
-const METHOD_OVERRIDE_HEADERS = new Set(['x-http-method-override', 'x-http-method', 'x-method-override']);
 
 /** Credential-bearing or transport-owned headers a request may never set. */
 const BLOCKED_HEADERS = new Set([
@@ -152,10 +151,8 @@ export function createConnectionRequestTool(options: ConnectionRequestToolOption
         });
         return connectionRefusal(reason, message, extra);
       };
-      const readsOnly = () => refuse('write_not_allowed', 'This run can only read through connections: send GET or HEAD.');
-      if (options.readsOnly && (!READ_METHODS.has(method) ||
-          Object.keys(data.headers ?? {}).some((name) => METHOD_OVERRIDE_HEADERS.has(name.toLowerCase())))) {
-        return readsOnly();
+      if (options.readsOnly && !READ_METHODS.has(method)) {
+        return refuse('write_not_allowed', 'This run can only read through connections: send GET or HEAD.');
       }
 
       try {
@@ -175,7 +172,12 @@ export function createConnectionRequestTool(options: ConnectionRequestToolOption
       if (target.href.length > MAX_URL_CHARS * 2) {
         return refuse('url_not_allowed', 'The URL with its query is too long.');
       }
-      if (options.readsOnly && [...target.searchParams.keys()].some((key) => key.toLowerCase() === '_method')) return readsOnly();
+      // Some services let a GET act as another method, which would skip the
+      // connection's method check and the write gate below.
+      if (READ_METHODS.has(method) && overridesMethod(target, Object.keys(data.headers ?? {}))) {
+        return refuse('write_not_allowed', 'A GET or HEAD cannot carry a method override header or a _method parameter. ' +
+          'The same request will be refused again, so remove the override before retrying.');
+      }
 
       const access = await options.resolveAccess();
       const selected = selectConnection(access.connections, data.connection, target.href);

@@ -1,3 +1,9 @@
+/**
+ * What a test run mounts, and the checks that keep it reading. These render
+ * on the Node target with a scrubbed environment, so a mount gated on the
+ * Cloudflare target or an environment flag, rather than a plan key, does not
+ * show here; the lane and staging checks cover Cloudflare-target mounts.
+ */
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 
@@ -9,14 +15,19 @@ import {
   type Context,
   type Tool,
 } from '@earendil-works/pi-ai';
-import { init, instrument, useDelivery, useModel, useTool, type AgentProps } from '@flue/runtime';
+import { init, instrument, useDelivery, useModel, useTool, type AgentProps, type McpConnectionDefinition } from '@flue/runtime';
 import { start } from '@flue/runtime/node';
 
-import { CHICKPEA_TEST_TURN_AGENT_NAME } from '../src/agents/names.ts';
+import { CHICKPEA_SLACK_AGENT_NAME, CHICKPEA_TEST_TURN_AGENT_NAME } from '../src/agents/names.ts';
+import { parseRoutineExecutionInitialData } from '../src/agents/routine-execution-data.ts';
 import { compileAgentRunPlan, type AgentRunPlanParts } from '../src/agents/run-plan-resolution.ts';
 import type { RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { PART_SEPARATOR, slackSystemBase, slackSystemBaseParts } from '../src/agents/shared-prefix-layout.ts';
-import { useChickpeaSlackRuntimeCapabilities } from '../src/agents/slack-thread.ts';
+import {
+  ChickpeaSlack,
+  resolveRuntimePlanConnectionAccess,
+  useChickpeaSlackRuntimeCapabilities,
+} from '../src/agents/slack-thread.ts';
 import { compileTestRunPlan } from '../src/agents/test-run-plan.ts';
 import {
   ChickpeaTestTurn,
@@ -24,9 +35,13 @@ import {
   testTurnFraming,
   testTurnSystemBase,
 } from '../src/agents/test-turn.ts';
+import { saveConnectionAccountSecret } from '../src/config/connector-secrets.ts';
+import { resolveRuntimePlanMcpConnections } from '../src/config/profile-mcp.ts';
+import { getConfigStore } from '../src/config/state-backend.ts';
 import { preloadAllConnectorDetails } from '../src/connections/catalog/index.ts';
 import { useManagedConnectionTools } from '../src/connections/managed-tools.ts';
 import { createConnectionRequestTool } from '../src/connections/request-tool.ts';
+import { connectionFetchFailureReason } from '../src/connections/response.ts';
 import type { ConnectionAccess } from '../src/connections/access.ts';
 import { parseSlackManagementSignal } from '../src/management/slack-tools.ts';
 import {
@@ -38,10 +53,13 @@ import {
 import { slackPresentationIntentCapability } from '../src/slack/presentation-intent.ts';
 import { installStubMcpServer, type StubMcpServer } from './helpers/stub-mcp-server.ts';
 import {
+  API_ACCOUNT,
   MANAGED_READ,
   MANAGED_WRITE,
+  MCP_ACCOUNT,
   MCP_TOOLS,
   MCP_URL,
+  MODEL,
   WORKSPACE,
   withTestRunLane,
   type TestRunLane,
@@ -219,6 +237,9 @@ test('a test run opens with the Slack base minus what it cannot do, and ends wit
       'the framing is the last instruction');
     assert.ok(system.indexOf(plan.instructions) < system.indexOf('Orders ship on Fridays.'));
     assert.ok(system.indexOf('Orders ship on Fridays.') < system.indexOf('This is a test run'));
+    // `task` always mounts, and Flue always writes this section; an empty roster leaves `task` nothing to run.
+    assert.match(system.slice(system.indexOf('## Available Agents')),
+      /^## Available Agents\n\nNone\. No subagents are currently declared/, 'no subagent roster');
   });
 });
 
@@ -277,49 +298,173 @@ test('through the real write gate, a test run refuses a POST even when its ask c
   }
 });
 
-test('the GET-only check is the layer that holds: the envelope alone would admit the write', async () => {
-  const dispose = withWriteGate();
+/** connection_request over one Orders connection, as `agentName`, counting what each call reached. */
+function ordersRequests(allowedMethods: string[]) {
   const resolved: string[] = [];
+  const fetched: string[] = [];
   const access: ConnectionAccess = {
     connections: [{
       id: 'connection_orders', displayName: 'Orders API', allowedHosts: ['api.orders.example'], pathPrefixes: ['/v1/'],
-      allowedMethods: ['GET', 'POST'], urlPrefixes: ['https://api.orders.example/v1/'], headerName: 'authorization',
+      allowedMethods, urlPrefixes: ['https://api.orders.example/v1/'], headerName: 'authorization',
     }],
-    fetchFor: async (id) => { resolved.push(id); return undefined; },
+    fetchFor: async (id) => { fetched.push(id); return undefined; },
     fetchAll: async () => undefined,
   };
-  const gated = (readsOnly: boolean) => function GateProbe() {
-    useModel('faux/test-run');
-    useTool(createConnectionRequestTool({ agentId: 'agent_test_run', resolveAccess: async () => access, readsOnly, log: () => {} }));
-    return 'Use the connection.';
+  const call = async (agentName: string, readsOnly: boolean, message: string, reply: Reply) => {
+    function GateProbe() {
+      useModel('faux/test-run');
+      useTool(createConnectionRequestTool({
+        agentId: 'agent_test_run', resolveAccess: async () => { resolved.push(agentName); return access; }, readsOnly, log: () => {},
+      }));
+      return 'Use the connection.';
+    }
+    return lastToolResult((await run(GateProbe, agentName, { message }, [reply, () => fauxAssistantMessage('Done.')]))[1]!);
   };
-  const call = async (readsOnly: boolean, message: string, reply: Reply) =>
-    lastToolResult((await run(gated(readsOnly), CHICKPEA_TEST_TURN_AGENT_NAME, { message }, [reply, () => fauxAssistantMessage('Done.')]))[1]!);
+  return { call, resolved, fetched };
+}
+
+const requests = (input: Record<string, unknown>) => () => fauxAssistantMessage([fauxToolCall('connection_request', {
+  url: 'https://api.orders.example/v1/orders/42', ...input,
+})], { stopReason: 'toolUse' });
+
+test("a test run's ask admits no write through the gate, even with readsOnly off and an envelope", async () => {
+  const dispose = withWriteGate();
+  const { call, fetched } = ordersRequests(['GET', 'POST']);
   try {
-    assert.match(await call(false, `${ASK}\n${ENVELOPE}`, postsOrder), /no_connection/, 'the envelope admits the write');
-    assert.match(await call(false, ASK, postsOrder), /write_not_allowed/, 'without one the gate holds for this agent name');
-    assert.deepEqual(resolved.splice(0), ['connection_orders']);
-    assert.match(await call(true, `${ASK}\n${ENVELOPE}`, postsOrder), /write_not_allowed/);
-    assert.deepEqual(resolved, [], 'a refused write never reaches the connection');
-    assert.match(await call(true, ASK, getsOrder), /no_connection/, 'a GET goes on to the connection');
-    assert.deepEqual(resolved, ['connection_orders']);
-    // Some services let a GET act as another method.
+    assert.match(await call(CHICKPEA_SLACK_AGENT_NAME, false, `${ASK}\n${ENVELOPE}`, postsOrder), /no_connection/,
+      "a Slack turn's envelope admits the write");
+    assert.deepEqual(fetched.splice(0), ['connection_orders']);
+    assert.match(await call(CHICKPEA_TEST_TURN_AGENT_NAME, false, `${ASK}\n${ENVELOPE}`, postsOrder),
+      /write_not_allowed.*Changing data through a connection is unavailable/, 'the same envelope admits nothing on a test run');
+    assert.match(await call(CHICKPEA_TEST_TURN_AGENT_NAME, false, ASK, postsOrder), /write_not_allowed/);
+    assert.match(await call(CHICKPEA_TEST_TURN_AGENT_NAME, true, `${ASK}\n${ENVELOPE}`, postsOrder), /send GET or HEAD/);
+    assert.deepEqual(fetched, [], 'a refused write never reaches the connection');
+  } finally {
+    dispose();
+  }
+});
+
+test('a GET or HEAD that overrides its method never resolves a connection, on a Slack turn or a test run', async () => {
+  const dispose = withWriteGate();
+  // A GET-only connection: an override would skip both its method check and the write gate.
+  const { call, resolved, fetched } = ordersRequests(['GET']);
+  try {
+    assert.match(await call(CHICKPEA_SLACK_AGENT_NAME, false, `${ASK}\n${ENVELOPE}`, getsOrder), /no_connection/, 'a plain GET goes on');
+    assert.match(await call(CHICKPEA_TEST_TURN_AGENT_NAME, true, ASK, getsOrder), /no_connection/);
+    assert.deepEqual(fetched.splice(0), ['connection_orders', 'connection_orders']);
+    resolved.splice(0);
     const overrides = [
       { headers: { 'X-HTTP-Method-Override': 'DELETE' } },
       { headers: { 'x-http-method': 'PUT' } },
       { headers: { 'X-Method-Override': 'PATCH' } },
       { query: { _method: 'DELETE' } },
+      { url: 'https://api.orders.example/v1/orders/42?_METHOD=delete' },
+      { method: 'HEAD', headers: { 'X-HTTP-METHOD-OVERRIDE': 'DELETE' } },
     ];
-    for (const override of [...overrides, { url: 'https://api.orders.example/v1/orders/42?_METHOD=delete' }]) {
-      const getsAs = () => fauxAssistantMessage([fauxToolCall('connection_request', {
-        method: 'GET', url: 'https://api.orders.example/v1/orders/42', ...override,
-      })], { stopReason: 'toolUse' });
-      assert.match(await call(true, ASK, getsAs), /write_not_allowed/, JSON.stringify(override));
+    const callers = [[CHICKPEA_SLACK_AGENT_NAME, false], [CHICKPEA_TEST_TURN_AGENT_NAME, true]] as const;
+    for (const [agentName, readsOnly] of callers) {
+      for (const override of overrides) {
+        const result = await call(agentName, readsOnly, `${ASK}\n${ENVELOPE}`, requests({ method: 'GET', ...override }));
+        assert.match(result, /write_not_allowed/, `${agentName} ${JSON.stringify(override)}`);
+        assert.match(result, /The same request will be refused again/);
+      }
     }
-    assert.deepEqual(resolved, ['connection_orders'], 'no override reached the connection');
+    assert.deepEqual(resolved, [], 'no override resolved a connection');
   } finally {
     dispose();
   }
+});
+
+test("a test run's connection scopes allow only reads, so a POST is refused with readsOnly forced off", async () => {
+  await withTestRunLane(async (lane) => {
+    await saveConnectionAccountSecret(`secret_${API_ACCOUNT}`, 'sk-orders');
+    const testRun = await testPlan(lane);
+    const slack = compileAgentRunPlan(await renderableParts(lane), { turn: lane.turn, instructions: 'Answer.', memoryEpoch: 1 });
+    const access = (plan: RuntimePlanV2) => resolveRuntimePlanConnectionAccess(plan, { timeoutMs: 1_000 });
+    const methods = async (plan: RuntimePlanV2) => (await access(plan)).connections.map(({ id, allowedMethods }) => [id, allowedMethods]);
+    assert.deepEqual(await methods(slack), [[API_ACCOUNT, ['GET', 'POST']]]);
+    assert.deepEqual(await methods(testRun), [[API_ACCOUNT, ['GET']]]);
+    assert.deepEqual(testRun.apiConnections.map(({ allowedMethods }) => allowedMethods), [['GET', 'POST']],
+      'the plan keeps the declaration live authority is compared with');
+    const scoped = await (await access(testRun)).fetchFor(API_ACCOUNT);
+    await assert.rejects(scoped!.fetch('https://api.orders.example/v1/orders/42/refund', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode('{}'), followRedirects: false,
+    }), (error) => connectionFetchFailureReason(error) === 'method_not_allowed', 'the scope itself refuses the write');
+
+    const dispose = withWriteGate();
+    try {
+      function ReadsOnlyOff() {
+        useModel('faux/test-run');
+        useTool(createConnectionRequestTool({ agentId: testRun.agentId, resolveAccess: () => access(testRun), log: () => {} }));
+        return 'Use the connection.';
+      }
+      const seen = await run(ReadsOnlyOff, CHICKPEA_TEST_TURN_AGENT_NAME, { message: `${ASK}\n${ENVELOPE}` },
+        [postsOrder, () => fauxAssistantMessage('Done.')]);
+      assert.match(lastToolResult(seen[1]!), /method_not_allowed/);
+    } finally {
+      dispose();
+    }
+  });
+});
+
+/** An Admin's new tool declarations for the lane's MCP server. */
+async function redeclare(toolPolicies: Record<string, { effect: 'read' | 'write' }>): Promise<void> {
+  const config = getConfigStore();
+  const account = (await config.listConnectionAccounts(WORKSPACE)).find(({ id }) => id === MCP_ACCOUNT)!;
+  await config.putConnectionAccount({ ...account, policy: { ...account.policy, toolPolicies } } as never, account.revision);
+}
+
+test('a test run stops calling an MCP tool once an Admin no longer declares it a read', async () => {
+  await withTestRunLane(async (lane) => {
+    const plan = await testPlan(lane);
+    const connect = (readsOnly: boolean) => resolveRuntimePlanMcpConnections(plan.agentId, plan.mcpConnections, undefined,
+      { workspaceId: WORKSPACE, actorMembershipId: lane.actorMembershipId }, { readsOnly })[0]!;
+    const testRun = connect(true);
+    const slack = connect(false);
+    const lookUp = async (definition: McpConnectionDefinition) => (await definition.fetch!(MCP_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: MCP_TOOLS.read, arguments: {} } }),
+    })).status;
+    const calls = mcp.calls.length;
+    assert.equal(await lookUp(testRun), 200);
+    await redeclare({ [MCP_TOOLS.read]: { effect: 'write' } });
+    await assert.rejects(lookUp(testRun), /policy changed/, 'redeclared a write');
+    assert.equal(await lookUp(slack), 200, 'without readsOnly the redeclaration alone does not stop the call');
+    await redeclare({});
+    await assert.rejects(lookUp(testRun), /policy changed/, "a server's hint alone is not a declaration");
+    await redeclare({ [MCP_TOOLS.read]: { effect: 'read' } });
+    assert.equal(await lookUp(testRun), 200, 'declared a read again');
+    assert.deepEqual(mcp.calls.slice(calls), [MCP_TOOLS.read, MCP_TOOLS.read, MCP_TOOLS.read]);
+  });
+});
+
+test("a test run's render checks its MCP calls against the live declaration", async () => {
+  await withTestRunLane(async (lane) => {
+    const plan = await testPlan(lane);
+    const looksUp = () => fauxAssistantMessage([fauxToolCall(MCP_TOOL(MCP_TOOLS.read), {})], { stopReason: 'toolUse' });
+    const reachedServer = async () => {
+      const calls = mcp.calls.length;
+      await runTestTurn(plan, ASK, [looksUp, () => fauxAssistantMessage('Done.')]);
+      return mcp.calls.slice(calls);
+    };
+    assert.deepEqual(await reachedServer(), [MCP_TOOLS.read]);
+    // The plan froze lookup_order as a read; an Admin then declares it a write.
+    await redeclare({ [MCP_TOOLS.read]: { effect: 'write' }, [MCP_TOOLS.write]: { effect: 'write' } });
+    assert.deepEqual(await reachedServer(), []);
+  });
+});
+
+test('the Slack and routine agents refuse a test run plan', async () => {
+  await withTestRunLane(async (lane) => {
+    const testRun = await testPlan(lane);
+    const slack = compileAgentRunPlan(await renderableParts(lane), { turn: lane.turn, instructions: 'Answer.', memoryEpoch: 1 });
+    const custom = ChickpeaSlack.initialData as unknown as { '~standard': { validate(value: unknown): { issues?: unknown } } };
+    assert.equal(custom['~standard'].validate(slack).issues, undefined);
+    assert.notEqual(custom['~standard'].validate(testRun).issues, undefined);
+    assert.doesNotThrow(() => parseRoutineExecutionInitialData({ runtimePlan: slack, requestedModel: MODEL }));
+    assert.throws(() => parseRoutineExecutionInitialData({ runtimePlan: testRun, requestedModel: MODEL }), /test run plan/);
+  });
 });
 
 test('a test run plan mounts no connector capability that writes, even one its plan object lists', async () => {

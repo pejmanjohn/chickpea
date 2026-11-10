@@ -18,8 +18,11 @@ import {
   formatSlackAttachmentSignal,
   slackAttachmentTurnContext,
 } from '../src/slack/attachment-context.ts';
-import { CHICKPEA_SLACK_AGENT_NAME } from '../src/agents/names.ts';
+import { CHICKPEA_SLACK_AGENT_NAME, CHICKPEA_TEST_TURN_AGENT_NAME } from '../src/agents/names.ts';
 import { GENERATE_IMAGE_TOOL_NAME } from '../src/sandbox/image-tool.ts';
+
+/** The agents whose asks carry the host's envelope; a model writes a test run's. */
+const HOST_ENVELOPE_AGENT_NAMES = MANAGED_SUBMISSION_AGENT_NAMES.filter((name) => name !== CHICKPEA_TEST_TURN_AGENT_NAME);
 
 async function submission<T>(agentName: string, request: string, run: (context: FlueExecutionContext) => Promise<T>) {
   const context = { agentName, submissionId: 'capability-permissions' };
@@ -121,7 +124,11 @@ test('reply attachment availability does not depend on request vocabulary', asyn
       'Make those changes and show me the result.',
       'Sí, hazlo con esos colores.',
     ]) await submission(agentName, request, async () => {
-      assert.doesNotThrow(assertArtifactDeliveryAllowed, request);
+      if (agentName === CHICKPEA_TEST_TURN_AGENT_NAME) {
+        assert.throws(assertArtifactDeliveryAllowed, { name: 'CurrentRequestSideEffectDeniedError' }, request);
+      } else {
+        assert.doesNotThrow(assertArtifactDeliveryAllowed, request);
+      }
     });
   }
 });
@@ -142,7 +149,7 @@ test('MCP outbound allowlist applies without argument constraints and rejects ba
 
 test('both reply attachment tools use host context rather than word matching', async () => {
   const delivered = async () => 'delivered';
-  for (const agentName of MANAGED_SUBMISSION_AGENT_NAMES) {
+  for (const agentName of HOST_ENVELOPE_AGENT_NAMES) {
     for (const request of [
       "Can you generate a bar chart image that shows today's bookings broken down by exam",
       'Can you generate a bar chart image that shows today’s bookings broken down by exam',

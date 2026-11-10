@@ -6,7 +6,7 @@
 import { compileRuntimePlan, RUNTIME_PLAN_SCHEMA_VERSION, type RuntimePlanV2 } from './runtime-plan.ts';
 import type { AgentRunPlanParts } from './run-plan-resolution.ts';
 import type { InstallationOwnership } from '../config/installation-scope.ts';
-import { isMetaAdsMcpConnection, metaAdsToolEffect } from '../config/meta-ads-policy.ts';
+import { mcpToolDeclaredRead } from '../config/mcp-tool-policy.ts';
 import { MANAGED_CONNECTOR_CATALOG } from '../connections/catalog/index.ts';
 import type { EffectiveConnectionAccount } from '../connections/types.ts';
 import { opaqueId } from '../work/admission.ts';
@@ -52,16 +52,14 @@ export function compileTestRunPlan(parts: AgentRunPlanParts, test: TestRunConver
 
 /**
  * A connection as a test run may use it, or none when it has nothing that
- * reads. An MCP tool counts only when an Admin declared it a read: a server's
- * own hint does not. A Meta Ads tool must also be a reviewed read. An API
- * connection keeps its methods; `connection_request` sends only GET and HEAD
- * on a test run.
+ * reads. An MCP tool counts only when an Admin declared it a read; the run
+ * checks that again at every call. An API connection keeps its methods; on a
+ * test run its egress scopes and `connection_request` allow only GET and HEAD.
  */
 function readsOnly(connection: EffectiveConnectionAccount): EffectiveConnectionAccount[] {
   const { policy } = connection;
   if (policy.kind === 'mcp') {
-    const allowedTools = policy.allowedTools.filter((tool) => policy.toolPolicies?.[tool]?.effect === 'read' &&
-      (!isMetaAdsMcpConnection(policy) || metaAdsToolEffect(tool) === 'read'));
+    const allowedTools = policy.allowedTools.filter((tool) => mcpToolDeclaredRead(policy, tool));
     return allowedTools.length > 0 ? [{ ...connection, policy: { ...policy, allowedTools } }] : [];
   }
   if (policy.kind === 'managed') {

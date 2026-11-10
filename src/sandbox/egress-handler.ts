@@ -3,6 +3,7 @@ import {
   isValidRepositoryFullName,
   isValidRepositoryGrantShape,
 } from '../config/github-app.ts';
+import { overridesMethod } from '../config/method-override.ts';
 import { SANDBOX_PACKAGE_REGISTRY_HOSTS } from '../config/sandbox-settings.ts';
 import type { RepositoryGrant } from '../config/types.ts';
 
@@ -64,8 +65,6 @@ interface SandboxEgressInput {
   allowedHosts: readonly string[];
 }
 
-/** Headers some servers honour in place of the request method. */
-const METHOD_OVERRIDE_HEADERS = ['x-http-method-override', 'x-http-method', 'x-method-override'];
 /** Git's fetch protocol, exactly as Git sends it: the only GitHub POST that surely reads. */
 const GIT_UPLOAD_PACK_PATH = /^\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/git-upload-pack$/;
 const PULL_REQUEST_CREATE_PATH = /^\/repos\/[^/]+\/[^/]+\/pulls$/;
@@ -228,8 +227,7 @@ export function decideSandboxEgress(input: SandboxEgressInput): SandboxEgressDec
  * case. `method` is upper case.
  */
 export function githubRequestEffect(url: URL, method: string, headers: Headers | undefined): GithubRequestEffect {
-  const overridden = METHOD_OVERRIDE_HEADERS.some((name) => headers?.has(name) === true) ||
-    [...url.searchParams.keys()].some((key) => key.toLowerCase() === '_method');
+  const overridden = overridesMethod(url, headers?.keys() ?? []);
   if (!overridden) {
     if (method === 'GET') return 'read';
     if (

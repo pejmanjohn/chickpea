@@ -313,6 +313,50 @@ test('RuntimePlanV2 blocks a write when Graph reports the wrong owner', async ()
   }
 });
 
+test('a test run refuses a Meta Ads tool that is not a reviewed read, even one declared a read', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-meta-write-runtime-test-run-'));
+  const agentId = 'agent_runtime_plan_test_run';
+  const server = metaWriteServer({
+    toolPolicies: { [WRITE_TOOL]: { effect: 'read', argumentConstraints: { ad_account_id: ['act_123'] } } },
+  });
+  try {
+    await withEnv({
+      SLACK_STATE_DB_PATH: join(directory, 'state.db'),
+      CHICKPEA_AUTH_DB_PATH: join(directory, 'auth.db'),
+    }, async () => {
+      const created = await getConfigStore().createAgent({
+        id: agentId,
+        name: 'Runtime Meta test run',
+        instructions: 'Exercise synthetic Meta write policy.',
+        enabled: true,
+        model: 'local-stub/meta-write',
+        skills: [],
+        mcpServers: [server],
+        apiConnections: [],
+        repositories: [],
+      });
+      assert.equal(created.mcpServers[0]!.toolPolicies?.[WRITE_TOOL]?.effect, 'read', 'the Admin declared it a read');
+      const call = async (readsOnly: boolean) => {
+        const provider = orderedProvider();
+        const [definition] = resolveRuntimePlanMcpConnections(
+          agentId,
+          [runtimeDeclaration(created.mcpServers[0]!)],
+          undefined,
+          undefined,
+          { readsOnly, createGuardedFetch: provider.createGuardedFetch },
+        );
+        await definition!.fetch!(toolCall()).catch((error: unknown) => provider.events.push(String(error)));
+        return provider.events;
+      };
+      assert.deepEqual(await call(false), ['ownership GET', 'MCP POST']);
+      assert.deepEqual(await call(true), ['Error: MCP connection policy changed; a new agent instance is required.']);
+    });
+  } finally {
+    closeNodeStateStores();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('RuntimePlanV2 revocation during ownership preflight blocks MCP dispatch', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-meta-write-runtime-revoked-'));
   const agentId = 'agent_runtime_plan_revoked';

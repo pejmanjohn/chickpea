@@ -3,6 +3,7 @@
  * link is a bearer URL to a live browser, so it reaches only that person: an
  * ephemeral message in a channel, or an ordinary message in their own DM.
  */
+import type { RuntimePlanSurface } from '../agents/runtime-plan.ts';
 import { escapeSlackControlCharacters, renderSlackActionLink } from '../slack/message-format.ts';
 
 export interface SlackRequester {
@@ -19,7 +20,7 @@ export interface SlackRequesterClient {
 
 export interface SlackRequesterNotifierInput {
   requester: SlackRequester;
-  surface: import('../agents/runtime-plan.ts').RuntimePlanSurface;
+  surface: RuntimePlanSurface;
   /** The trusted reply thread, when the conversation has one. */
   threadTs?: string;
   client: () => Promise<SlackRequesterClient>;

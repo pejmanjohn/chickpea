@@ -31,10 +31,12 @@ export function parseRoutineExecutionInitialData(value: unknown): RoutineExecuti
     })),
   }), value);
   if (!parsed.success) throw new Error('Routine execution creation data is invalid.');
+  // Queued envelopes from before artifact threads were frozen carry a
+  // synthetic due-time conversation stamp; never let it become a thread.
+  const runtimePlan = parseRuntimePlanV2(parsed.output.runtimePlan, { legacyArtifactThread: 'none' });
+  if (runtimePlan.conversation.surface === 'test') throw new Error('A routine cannot run a test run plan.');
   return {
-    // Queued envelopes from before artifact threads were frozen carry a
-    // synthetic due-time conversation stamp; never let it become a thread.
-    runtimePlan: parseRuntimePlanV2(parsed.output.runtimePlan, { legacyArtifactThread: 'none' }),
+    runtimePlan,
     requestedModel: parsed.output.requestedModel,
     ...(parsed.output.connectorUsageCorrelation
       ? {

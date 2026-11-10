@@ -41,7 +41,6 @@ export function ChickpeaTestTurn({ id }: AgentProps) {
   useRuntimePlanAgent(plan, id, {
     responseMetadataModel: plan.model,
     artifactToolsDisabled: true,
-    releaseCodingWorkspace: true,
     instructionsInSystemBase: true,
     // A model wrote the ask, so none of its URLs counts as typed by a person.
     web: { turn: useWebTurn(id), request: { typed: [], tokens: requestTokens(useDelivery().body) } },
