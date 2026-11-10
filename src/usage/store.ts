@@ -531,30 +531,48 @@ export class UsageStoreLogic {
   /**
    * A failed or interrupted run reports no usage, so its terminal cannot be
    * priced from tokens, though each of its model requests was priced at list
-   * as it ended and charged under the run's billing key. Its measurement's
-   * estimate is their sum once every one is priced: what Usage shows for a
-   * cancelled direct message or test run. Repeated as each later request
-   * lands, it only ever sums what is recorded. A deployment that prices
-   * nothing (`not_priced`) stays unpriced; on a measurement with no usage,
-   * a complete estimate can only be this sum.
+   * as it ended and charged under the run's billing key. When that is the
+   * run's only measurement, its estimate is their sum once every one is
+   * priced: what Usage shows for a cancelled direct message or test run.
+   * Repeated as each later request or measurement lands, it only ever sums
+   * what is recorded, and returns to the terminal's unknown once the sum no
+   * longer holds: a request with no price, or a second measurement under the
+   * run, as a coding worker's is under its turn's, whose own estimate already
+   * counts those requests. A deployment that prices nothing (`not_priced`)
+   * stays unpriced; on a measurement with no usage, a complete estimate can
+   * only be this sum.
    */
   private priceUnreportedRun(billingRunId: string): void {
-    const unreported = `billing_run_id = ? AND usage_completeness = 'not_reported'
-      AND operation_status IN ('failed', 'interrupted') AND estimate_completeness IN ('unknown', 'complete')`;
-    if (!this.db.get(`SELECT 1 FROM usage_measurements WHERE ${unreported} LIMIT 1`, billingRunId)) return;
-    const requests = this.db.get(
+    const unreported = `usage_completeness = 'not_reported' AND operation_status IN ('failed', 'interrupted')
+      AND estimate_completeness IN ('unknown', 'complete')`;
+    const run = this.db.get(
+      `SELECT COUNT(*) AS measurements, COUNT(CASE WHEN ${unreported} THEN 1 END) AS unreported
+       FROM usage_measurements WHERE billing_run_id = ?`,
+      billingRunId,
+    );
+    if (!Number(run?.unreported)) return;
+    const requests = Number(run!.measurements) === 1 ? this.db.get(
       `SELECT COUNT(*) AS requests, COUNT(list_price_usd_micros) AS priced, SUM(list_price_usd_micros) AS micros,
          CASE WHEN COUNT(DISTINCT price_version_id) = 1 THEN MAX(price_version_id) END AS version
        FROM usage_model_requests WHERE run_id = ?`,
       billingRunId,
-    );
+    ) : undefined;
     const count = Number(requests?.requests ?? 0);
-    if (count === 0 || Number(requests?.priced) !== count) return;
+    if (count === 0 || Number(requests!.priced) !== count) {
+      this.db.run(
+        `UPDATE usage_measurements
+         SET estimate_completeness = 'unknown', estimate_amount_micros = NULL, estimate_currency = NULL,
+             price_version_id = NULL, price_unknown_reason = 'pricing_dimension_unknown'
+         WHERE billing_run_id = ? AND ${unreported} AND estimate_completeness = 'complete'`,
+        billingRunId,
+      );
+      return;
+    }
     this.db.run(
       `UPDATE usage_measurements
        SET estimate_completeness = 'complete', estimate_amount_micros = ?, estimate_currency = 'USD',
            price_version_id = ?, price_unknown_reason = NULL
-       WHERE ${unreported}`,
+       WHERE billing_run_id = ? AND ${unreported}`,
       Number(requests!.micros),
       typeof requests!.version === 'string' ? requests!.version : null,
       billingRunId,
@@ -1589,10 +1607,7 @@ export class UsageStoreLogic {
     );
     // After billing_run_id exists: pricing an unreported run's measurement from its requests.
     this.db.exec('CREATE INDEX IF NOT EXISTS usage_model_requests_run_idx ON usage_model_requests (run_id)');
-    this.db.exec(
-      `CREATE INDEX IF NOT EXISTS usage_measurements_unreported_run_idx ON usage_measurements (billing_run_id)
-       WHERE usage_completeness = 'not_reported'`,
-    );
+    this.db.exec('CREATE INDEX IF NOT EXISTS usage_measurements_billing_run_idx ON usage_measurements (billing_run_id)');
     // The pointers into the Work ledger (usage_operations.run_id,
     // usage_measurements.run_execution_id) and their partial indexes are
     // installed by whichever store gets here first — see installLedgerLinks.

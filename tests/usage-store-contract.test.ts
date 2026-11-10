@@ -488,13 +488,13 @@ test('a usage store created before billing run keys gains the column in place an
     before.admitOperation(operation('op_before_keys'));
     before.recordTerminal(terminal('op_before_keys'));
     // A store from before billing run keys has neither the column nor the index on it.
-    db.exec('DROP INDEX usage_measurements_unreported_run_idx');
+    db.exec('DROP INDEX usage_measurements_billing_run_idx');
     db.exec('ALTER TABLE usage_measurements DROP COLUMN billing_run_id');
 
     const upgraded = new UsageStoreLogic(db);
     const column = db.all('PRAGMA table_info(usage_measurements)').find((row) => row.name === 'billing_run_id');
     assert.deepEqual([column?.type, column?.notnull, column?.dflt_value], ['TEXT', 0, null], 'added nullable, with no default');
-    assert.ok(db.get("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'usage_measurements_unreported_run_idx'"),
+    assert.ok(db.get("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'usage_measurements_billing_run_idx'"),
       'the index on it follows the column');
     assert.equal(upgraded.getOperation('op_before_keys')?.measurements[0]?.billingRunId, null);
     const replayed = upgraded.recordTerminal(terminal('op_before_keys', { billingRunId: 'sub_ik_after_upgrade' }));
