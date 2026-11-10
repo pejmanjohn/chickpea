@@ -28,7 +28,7 @@ const CARD_TEXT: Record<CardName, { title: string; description: string; widgetDe
   'connect-card': {
     title: 'Chickpea connect card',
     description: 'The card ChatGPT draws for a setup link that connects a service to an Agent or signs one in again.',
-    widgetDescription: 'Shows the service from the last result with a Connect button that opens Chickpea\'s setup page, then shows when the service is connected. The person signs in on that page, so do not repeat the link or ask for a key.',
+    widgetDescription: 'Shows the service from the last result with a Connect button that opens Chickpea\'s setup page, then shows when the service is connected. The person signs in on that page, so do not ask for a key, and repeat the link only when the result\'s setup has no setupToken, which the card cannot open.',
   },
   'health-card': {
     title: 'Chickpea health card',

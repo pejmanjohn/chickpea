@@ -524,10 +524,16 @@ try {
     await browser.waitForTitle(/^This confirmation expired$/);
     await shot('6-expired');
 
-    const reads = async (what) => {
+    const reads = async (what, { links = 0 } = {}) => {
       const calls = await browser.host('window.harness.calls');
       assert.deepEqual(calls.filter((name) => !['get_setup_status', 'get_agent'].includes(name)), [], `${what}: the card only read`);
-      assert.deepEqual(await browser.host('window.harness.links'), [], `${what}: no link opened before a click`);
+      assert.equal((await browser.host('window.harness.links')).length, links, `${what}: no link opened before a click`);
+      assert.deepEqual(await browser.host('window.harness.messages'), [], `${what}: no message sent before a click`);
+    };
+    /** The ruling: no status code, no service's own words and no ID on a card; the tool's result keeps them. */
+    const plain = async (what) => {
+      const text = await browser.inCard('document.querySelector(".cp-card")?.textContent ?? ""');
+      assert.doesNotMatch(text, /HTTP|\b[1-5]\d\d\b|Unauthorized|timed out|connection_/, `${what}: ${text}`);
     };
     await open('connect');
     await browser.waitForTitle(/^Connect Gmail to Support Desk$/);
@@ -554,7 +560,21 @@ try {
     await shot('3-cancelled');
     await open('custom');
     await browser.waitFor('/Chickpea checked it/.test(document.querySelector(".cp-rows")?.textContent ?? "")', 'the custom connection\'s check');
+    await plain('The custom connection\'s check');
     await shot('3-checked');
+    if (theme === 'light' && width === 728) {
+      // A theme change on a card that is polling restyles it and does nothing else.
+      await open('connect');
+      await browser.waitForTitle(/^Connect Gmail to Support Desk$/);
+      await browser.click('connect');
+      await browser.waitForRow(/^Waiting for Gmail/);
+      await browser.linksOpened(1);
+      await browser.host('window.harness.flipTheme("dark")');
+      await browser.waitFor('getComputedStyle(document.body).backgroundColor === "rgb(24, 24, 24)"', 'the waiting card after a theme-only flip');
+      await new Promise((done) => setTimeout(done, 2_500));
+      await browser.waitForRow(/^Waiting for Gmail/);
+      await reads('A theme change while waiting', { links: 1 });
+    }
 
     await open('health');
     await browser.waitForTitle(/^\d things need attention$/);
@@ -564,6 +584,7 @@ try {
     await shot('7-health');
     await browser.click('show');
     await browser.waitForRow(/^@support /);
+    await plain('The health card, every row shown');
     await shot('7-health-open');
     await browser.click(undefined, { label: 'Reconnect Notion' });
     await browser.waitFor('/Finish on the Chickpea page that opened/.test(document.querySelector(".cp-rows")?.textContent ?? "")', 'the fix\'s page opened');

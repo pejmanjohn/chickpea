@@ -25,6 +25,7 @@ import {
   type Row,
   type ToolResult,
 } from '../card-model.ts';
+import { plainWords } from '../check-words.ts';
 
 /**
  * The connect card: a setup link from connect_service or reconnect_service.
@@ -40,6 +41,7 @@ type Setup = NonNullable<ChangeResult['setup']>;
 type SetupStatus = z.infer<typeof schemas.getSetupStatusOutput>;
 type Connection = NonNullable<SetupStatus['connection']>;
 type Check = z.infer<typeof schemas.checkAgentOutput>['checks'][number];
+type Refused = Extract<Event, { type: 'refused' }>['effect'];
 
 type Flow = 'connect' | 'reconnect';
 type AgentLabel = { agentId: string; name: string; handle?: string | undefined; slackUrl?: string | undefined };
@@ -57,19 +59,32 @@ interface Link {
 
 export type View =
   | { kind: 'waiting' }
-  | { kind: 'notice'; title: string; body?: string | undefined }
+  | { kind: 'notice'; title: string }
   /** Connect opens the page. */
   | ({ kind: 'start' } & Link)
-  /** The page opened; the card polls until it is done. */
-  | ({ kind: 'finishing'; startedAt: number; slow?: true; failures?: number } & Link)
+  /**
+   * The page opened; the card polls until it is done, for two minutes from
+   * Connect, then reads only when it comes back into view or on I'm done.
+   */
+  | ({
+      kind: 'finishing';
+      startedAt: number;
+      slow?: true;
+      failures?: number;
+      /** Chickpea saw the page open, so a refusal that comes late is not about this page. */
+      opened?: true;
+    } & Link)
   | {
       kind: 'connected';
       flow: Flow;
       agent?: AgentLabel | undefined;
       service: string;
       connectionId?: string;
-      /** A custom connection gets one request from check_agent; a catalog one has nothing that proves a read. */
-      check?: 'checking' | Pick<Check, 'status' | 'detail'>;
+      /**
+       * A custom connection gets one request from check_agent; a catalog one
+       * has nothing that proves a read. The words are the check's plain ones.
+       */
+      check?: 'checking' | { status: Check['status']; words: string };
     }
   | ({ kind: 'ended'; why: 'expired' | 'cancelled' | 'failed' } & Link)
   /** A link that is not Chickpea's page for one connection: the card does not open it. */
@@ -94,19 +109,17 @@ function transition(state: State, event: Event): Next<View> {
     case 'unreachable':
       if (outdated(state, event.call)) return stay(state);
       // Every call this card makes reads: a failure leaves the buttons as they are, and a poll tries again later.
-      if (state.view.kind === 'finishing') return keepPolling({ ...state.view, failures: (state.view.failures ?? 0) + 1 }, event.now);
+      if (state.view.kind === 'finishing') return keepPolling(state, { ...state.view, failures: (state.view.failures ?? 0) + 1 }, event.now);
       if (state.view.kind === 'connected' && state.view.check === 'checking') return show(unchecked(state.view));
       return stay(state);
     case 'refused':
-      // The page did not open: offer it again.
-      if (state.view.kind === 'finishing') return stay({ view: { ...linkOf(state.view), kind: 'start' }, busy: false, error: GENERIC });
-      return stay({ ...state, error: GENERIC });
+      return refused(state, event.effect);
     case 'no_result':
       return state.view.kind === 'waiting' ? show<View>(NOTHING) : stay(state);
     case 'tick':
       return state.view.kind === 'finishing' && !state.view.slow ? stay(state, [readSetup(state.view)]) : stay(state);
     case 'reread':
-      return reread(state, event.now);
+      return reread(state);
   }
 }
 
@@ -136,7 +149,7 @@ function press(state: State, action: Action, now: number): Next<View> {
         ? show({ ...linkOf(view), kind: 'finishing', startedAt: now }, [{ type: 'open', url: view.setup.url }, timer(POLL_INTERVAL_MS)])
         : stay(state);
     case 'done':
-      return view.kind === 'finishing' ? reread(state, now) : stay(state);
+      return view.kind === 'finishing' ? reread(state) : stay(state);
     case 'open_slack':
       return view.kind === 'connected' && view.agent?.slackUrl ? stay(state, [{ type: 'open', url: view.agent.slackUrl }]) : stay(state);
     case 'new_link':
@@ -151,22 +164,25 @@ function reply(state: State, tool: string, result: ToolResult, now: number): Nex
     const status = failure ? undefined : result.structuredContent;
     if (view.kind !== 'start' && view.kind !== 'finishing' && view.kind !== 'ended') return stay(state);
     if (!isSetupStatus(status)) {
-      return view.kind === 'finishing' ? keepPolling({ ...view, failures: (view.failures ?? 0) + 1 }, now) : stay(state);
+      return view.kind === 'finishing' ? keepPolling(state, { ...view, failures: (view.failures ?? 0) + 1 }, now) : stay(state);
     }
     return setupStatus(state, view, status, now);
   }
   if (tool === 'check_agent' && view.kind === 'connected' && view.check === 'checking') {
     const checks = failure ? [] : (result.structuredContent as { checks?: unknown } | undefined)?.checks;
     const check = Array.isArray(checks)
-      ? (checks as Check[]).find((item) => item.part === 'connection' && item.connectionId === view.connectionId)
+      ? (checks as unknown[]).find((item): item is Check => isRecord(item) && item.part === 'connection' &&
+        item.connectionId === view.connectionId && typeof item.status === 'string' && STATUSES.has(item.status))
       : undefined;
-    return show(check && typeof check.detail === 'string' ? { ...view, check: { status: check.status, detail: check.detail } } : unchecked(view));
+    return show(check ? { ...view, check: { status: check.status, words: plainWords(check) } } : unchecked(view));
   }
   return stay(state);
 }
 
 type Open = Extract<View, { kind: 'start' | 'finishing' | 'ended' }>;
 type Connected = Extract<View, { kind: 'connected' }>;
+
+const STATUSES: ReadonlySet<string> = new Set<Check['status']>(['ok', 'warning', 'failing', 'unknown']);
 
 function unchecked({ check: _check, ...view }: Connected): Connected {
   return view;
@@ -182,9 +198,13 @@ function setupStatus(state: State, view: Open, status: SetupStatus, now: number)
   if (status.status === 'failed' || status.status === 'cancelled' || status.status === 'expired') {
     return view.kind === 'ended' && view.why === status.status && view.before === before ? stay(state) : show({ ...link, kind: 'ended', why: status.status });
   }
-  if (view.kind === 'finishing') return keepPolling({ ...view, ...link, failures: 0 }, now);
+  const opened = status.status !== 'waiting' || (view.kind === 'finishing' && view.opened) ? { opened: true as const } : {};
+  if (view.kind === 'finishing') {
+    const { failures: _failures, ...answered } = view;
+    return keepPolling(state, { ...answered, ...link, ...opened }, now);
+  }
   // Opened from the link in the chat: follow it as if Connect had opened it.
-  if (view.kind === 'start' && status.status !== 'waiting') return keepPolling({ ...link, kind: 'finishing', startedAt: now }, now);
+  if (view.kind === 'start' && status.status !== 'waiting') return keepPolling(state, { ...link, ...opened, kind: 'finishing', startedAt: now }, now);
   return view.before === before ? stay(state) : show({ ...view, ...link });
 }
 
@@ -203,25 +223,57 @@ function connected(view: Open, connection: Connection | undefined): Next<View> {
 
 type Finishing = Extract<View, { kind: 'finishing' }>;
 
-function keepPolling(view: Finishing, now: number): Next<View> {
-  if (now - view.startedAt >= POLL_CEILING_MS) return show({ ...view, slow: true });
-  return show(view, [timer(pollDelay(view.failures))]);
+/**
+ * Polls again until two minutes after Connect; coming back into view never
+ * moves that, so a link costs at most about 60 polls. A poll that changes
+ * nothing keeps the view, so the card does not save it again.
+ */
+function keepPolling(state: State, polled: Finishing, now: number): Next<View> {
+  const view: Finishing = now - polled.startedAt >= POLL_CEILING_MS ? { ...polled, slow: true } : polled;
+  const effects = view.slow ? [] : [timer(pollDelay(view.failures))];
+  return state.view.kind === 'finishing' && !state.error && sameFields(state.view, view) ? stay(state, effects) : show(view, effects);
 }
 
-/** When the card mounts with a kept state, or comes back into view: the link may have moved on elsewhere. */
-function reread(state: State, now: number): Next<View> {
+function sameFields(a: Finishing, b: Finishing): boolean {
+  const left: Record<string, unknown> = { ...a };
+  const right: Record<string, unknown> = { ...b };
+  return Object.keys({ ...left, ...right }).every((key) => left[key] === right[key]);
+}
+
+/**
+ * When the card mounts with a kept state, comes back into view, or the
+ * person presses I'm done: the link may have moved on elsewhere. One read;
+ * the polls it answers stop where they would have.
+ */
+function reread(state: State): Next<View> {
   const { view } = state;
   switch (view.kind) {
-    case 'finishing': {
-      const { slow: _slow, failures: _failures, ...polling } = view;
-      return show({ ...polling, startedAt: now }, [readSetup(view)]);
-    }
+    case 'finishing':
     case 'start':
     case 'ended':
       return stay(state, [readSetup(view)]);
+    case 'connected':
+      // A chat reopened before the check answered: its answer went to the card that closed.
+      return view.check === 'checking' ? show(unchecked(view)) : stay(state);
     default:
       return stay(state);
   }
+}
+
+/**
+ * The host did not open a link or take a message. Only the one this view
+ * offers counts: a host that never answers refuses a minute later, by when
+ * the person may be signing in on the page that did open.
+ */
+function refused(state: State, effect: Refused): Next<View> {
+  const { view } = state;
+  if (view.kind === 'finishing' && effect.type === 'open' && effect.url === view.setup.url) {
+    return view.opened ? stay(state) : stay({ view: { ...linkOf(view), kind: 'start' }, busy: false, error: GENERIC });
+  }
+  const offered = view.kind === 'connected'
+    ? effect.type === 'open' && effect.url === view.agent?.slackUrl
+    : view.kind === 'ended' && effect.type === 'message';
+  return offered ? stay({ ...state, error: GENERIC }) : stay(state);
 }
 
 function readSetup(view: Link): Effect {
@@ -271,24 +323,35 @@ function presentView(state: State): Presentation<Action> {
     case 'waiting':
       return { ...base, avatar: 'none', title: 'Loading…', blocks: [], buttons: [] };
     case 'notice':
-      return { ...base, avatar: 'none', title: view.title, blocks: view.body ? [{ kind: 'text', text: view.body }] : [], buttons: [] };
-    case 'connected':
+      return { ...base, avatar: 'none', title: view.title, blocks: [], buttons: [] };
+    case 'connected': {
+      const row = connectedRow(view);
       return {
         ...base,
         ...header(view.flow, view.service, view.agent),
-        blocks: [{ kind: 'rows', rows: [connectedRow(view)] }],
+        announce: spoken(row),
+        blocks: [{ kind: 'rows', rows: [row] }],
         ...!view.agent?.slackUrl && view.agent?.handle ? { foot: `Try it: mention @${view.agent.handle} in Slack.` } : {},
         buttons: [],
       };
-    default:
+    }
+    default: {
+      const row = linkRow(view);
       return {
         ...base,
         ...header(view.flow, view.setup.what, view.agent),
+        // The title stays the same in every state; the row says what changed.
+        ...view.kind === 'finishing' || view.kind === 'ended' ? { announce: spoken(row) } : {},
         subtitle: [{ text: SIGN_IN_LINE }],
-        blocks: [{ kind: 'rows', rows: [linkRow(view)] }],
+        blocks: [{ kind: 'rows', rows: [row] }],
         buttons: [],
       };
+    }
   }
+}
+
+function spoken(row: Row<Action>): string {
+  return row.detail ? `${row.title}. ${row.detail}` : row.title;
 }
 
 function header(flow: Flow, what: string, agent: AgentLabel | undefined): Pick<Presentation<Action>, 'avatar' | 'title'> {
@@ -346,7 +409,7 @@ function connectedRow(view: Extract<View, { kind: 'connected' }>): Row<Action> {
     icon: 'done',
     title: `${view.service} is connected`,
     ...check === 'checking' ? { detail: 'Chickpea is checking it…' }
-      : check ? { detail: `Chickpea checked it. ${check.detail}`, ...check.status === 'ok' || check.status === 'unknown' ? {} : { tone: 'warn' as const } }
+      : check ? { detail: `Chickpea checked it. ${check.words}`, ...check.status === 'ok' || check.status === 'unknown' ? {} : { tone: 'warn' as const } }
         : {},
     ...connectedNextStep(view),
   };

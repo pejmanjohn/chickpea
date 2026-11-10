@@ -475,6 +475,6 @@ test('a result that is not the shape it claims, or a host that sends none, shows
   assert.equal(cancelled.shown.title, 'Saved Invoice Chaser', 'a card that has its result keeps it');
 
   // A link or a message the host would not take says so.
-  await cancelled.dispatch({ type: 'refused', now: clock.now });
+  await cancelled.dispatch({ type: 'refused', effect: { type: 'open', url: 'https://slack.com/app_redirect' }, now: clock.now });
   assert.equal(cancelled.shown.error, 'That did not work. Try again.');
 });

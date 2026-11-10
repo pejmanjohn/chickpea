@@ -20,7 +20,8 @@ type Check = Output['checks'][number];
  * Every part of one Agent, checked the way Admin would, with a fix the
  * caller can act on for each failing part. No model call. The only requests
  * that leave Chickpea are today's test_connection checks of the Agent's own
- * custom API and MCP connections.
+ * custom API and MCP connections. Each row's `plain` is what a card shows:
+ * its detail without a status code, the service's own words or an ID.
  */
 export async function checkAgent(
   deps: FiveZeroDeps,
@@ -37,7 +38,8 @@ export async function checkAgent(
     websiteLoginChecks(deps, reading),
     admissionChecks(deps, reading),
   ]);
-  const checks = groups.flat();
+  // A row whose detail is already Chickpea's own words shows it as it is.
+  const checks = groups.flat().map((check) => check.plain === undefined ? { ...check, plain: check.detail } : check);
   return {
     ...readingView(reading),
     healthy: !checks.some(({ status }) => status === 'failing'),
@@ -109,17 +111,13 @@ async function connectionChecks(deps: FiveZeroDeps, reading: AgentRunReading): P
       outcome = await deps.service.testConnection(reading.context, { agentId: reading.agent.id, connectionId: row.connectionId });
     } catch (error) {
       // Testing unavailable here, an ambiguous connectionId, or a connection that is gone: nothing was checked.
-      if (error instanceof ManagementError) return { ...base, status: 'unknown', detail: error.message };
+      if (error instanceof ManagementError) return { ...base, status: 'unknown', detail: error.message, plain: CHECK_DETAIL.inconclusive[1] };
       throw error;
     }
     if (outcome.kind === 'ok') {
-      return {
-        ...base,
-        status: 'ok',
-        detail: 'tools' in outcome
-          ? `Answered and listed ${outcome.tools.length} tools.`
-          : `Answered with HTTP ${outcome.status}.`,
-      };
+      return 'tools' in outcome
+        ? { ...base, status: 'ok', detail: `Answered and listed ${outcome.tools.length} tools.` }
+        : { ...base, status: 'ok', detail: `Answered with HTTP ${outcome.status}.`, plain: 'It answered.' };
     }
     const [status, summary] = CHECK_DETAIL[outcome.kind];
     const detail = [summary, 'status' in outcome && outcome.status ? `HTTP ${outcome.status}.` : '', outcome.detail]
@@ -127,7 +125,7 @@ async function connectionChecks(deps: FiveZeroDeps, reading: AgentRunReading): P
     const fix = (outcome.kind === 'key_rejected' || outcome.kind === 'not_permitted') && mayReplaceKey
       ? reconnectFix(reading, 'Send a link to save a new key', row.connectionId)
       : undefined;
-    return withFix({ ...base, status, detail }, fix);
+    return withFix({ ...base, status, detail, plain: summary }, fix);
   }));
 }
 
@@ -194,20 +192,27 @@ async function scheduleChecks(deps: FiveZeroDeps, reading: AgentRunReading): Pro
     }
     if (routine.state === 'paused' || routine.state === 'disabled') {
       const why = routine.pausedReason ?? routine.disabledReason;
-      return withFix({ ...base, status: 'warning', detail: `${routine.state === 'paused' ? 'Paused' : 'Turned off'}.${why ? ` ${why}` : ''}` }, fix);
+      const state = routine.state === 'paused' ? 'Paused.' : 'Turned off.';
+      return withFix({ ...base, status: 'warning', detail: `${state}${why ? ` ${why}` : ''}`, plain: state }, fix);
     }
     if (routine.state === 'completed') return { ...base, status: 'ok', detail: 'Finished its one run.' };
     const runs = await stores.routines!.listRuns({ routineId: routine.id, limit: RECENT_RUNS });
     const failed = runs.filter(({ status }) => status === 'failed');
     const lastError = failed[0]?.publicError;
     if (runs[0]?.status === 'failed') {
-      return withFix({ ...base, status: 'failing', detail: `Its last run failed${lastError ? `: ${lastError}` : '.'} ${next}` }, fix);
+      return withFix({
+        ...base,
+        status: 'failing',
+        detail: `Its last run failed${lastError ? `: ${lastError}` : '.'} ${next}`,
+        plain: `Its last run failed. ${next}`,
+      }, fix);
     }
     if (failed.length > 0) {
       return withFix({
         ...base,
         status: 'warning',
         detail: `${failed.length} of its last ${runs.length} runs failed${lastError ? `: ${lastError}` : '.'} ${next}`,
+        plain: `${failed.length} of its last ${runs.length} runs failed. ${next}`,
       }, fix);
     }
     return { ...base, status: 'ok', detail: next };

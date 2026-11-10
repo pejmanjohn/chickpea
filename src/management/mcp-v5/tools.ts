@@ -137,7 +137,7 @@ export const FIVE_ZERO_TOOLS = {
   }),
   get_setup_status: tool({
     title: 'Get setup status',
-    description: 'Where one setup link stands, by the setupToken it came with: waiting, opened, signing in, done, failed, cancelled or expired, what it sets up, and when it expires. Only the person\'s own links. Reads only; changes nothing.',
+    description: 'Where one setup link stands, by the setupToken it came with: waiting, opened, signing in, done, failed, cancelled or expired, what it sets up, when it expires, and the Agent\'s connection it sets up, as it is now. Only the person\'s own links. Reads only; changes nothing.',
     input: schemas.getSetupStatusInput,
     output: schemas.getSetupStatusOutput,
     run: (deps, args) => reads.getSetupStatus(deps, args),

@@ -44,8 +44,11 @@ export type CardEvent<A extends string> =
   | { type: 'reply'; call: Call; result: ToolResult; now: number }
   /** The host refused a call or gave up waiting. A write may still have run. */
   | { type: 'unreachable'; call: Call; now: number }
-  /** The host did not open a link or take a message. */
-  | { type: 'refused'; now: number }
+  /**
+   * The host did not open a link or take a message. A host that never
+   * answers says so a minute later, so the card checks it is the one it offers.
+   */
+  | { type: 'refused'; effect: Extract<Effect, { type: 'open' | 'message' }>; now: number }
   /** No result is coming: the host cancelled the tool call or never connected. */
   | { type: 'no_result'; now: number }
   | { type: 'tick'; now: number }
@@ -168,6 +171,8 @@ export interface Button<A extends string = string> {
 export interface Presentation<A extends string = string> {
   avatar: 'agent' | 'alert' | 'none';
   title: string;
+  /** What a screen reader hears when it changes; the title when absent. */
+  announce?: string;
   /** A check mark before the title. */
   done?: true;
   subtitle?: Inline[];

@@ -14,6 +14,7 @@ import {
   MCP_ERROR_CODES,
   versionToken,
 } from '../src/management/mcp-v5/conventions.ts';
+import { agentConnectionsOf } from '../src/management/mcp-v5/reads.ts';
 import { createAgentInputSchema, updateAgentInputSchema } from '../src/management/mcp-v5/schemas.ts';
 import { CARD_URIS } from '../src/management/mcp-v5/cards.ts';
 import { FIVE_ZERO_TOOL_NAMES } from '../src/management/mcp-v5/tools.ts';
@@ -428,6 +429,49 @@ test('a member reads only the Agents they may edit: another person\'s Agent is n
   ] as const) {
     assert.equal(errorOf(await call(tool, args)).code, 'not_found', tool);
   }
+});
+
+// A setup link's poll reads one Agent's connections alone, so it must see what the snapshot shows, and no more.
+test('one Agent\'s connections read alone match the workspace snapshot, and only for an Agent the caller may edit', async (t) => {
+  const { f } = await harness(t, 'agent-connections', 'member');
+  const teamId = f.owner.user.slackTeamId!;
+  const member = {
+    userId: f.admin.user.id, membershipId: f.admin.membership.id, organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'agent-connections' },
+  } as const;
+  await createFixtureAgent(f, 'agent_shared', { editPolicy: 'all_workspace_members' });
+  await createFixtureAgent(f, 'agent_owner_only');
+  // On each Agent: the team's account, the member's own that needs signing in again, and the Owner's own.
+  for (const agentId of ['agent_shared', 'agent_owner_only']) {
+    for (const [kind, owner, lifecycle] of [
+      ['team', undefined, 'ready'],
+      ['mine', f.admin.membership.id, 'needs_attention'],
+      ['theirs', f.owner.membership.id, 'ready'],
+    ] as const) {
+      const id = `connection_${kind}_${agentId}`;
+      await f.config.putConnectionAccount({
+        id, workspaceId: teamId, ownerKind: owner ? 'member' : 'team', ...owner ? { ownerMembershipId: owner } : {},
+        createdByMembershipId: owner ?? f.owner.membership.id, providerId: id, label: id, lifecycle, secretRefId: `secret_${id}`,
+        policy: { kind: 'api', allowedHosts: [`${kind}.example`], pathPrefixes: [], headerName: 'Authorization', allowedMethods: ['GET'], authMode: 'credential' },
+      } as never, 0);
+      await f.config.putAgentConnectionBinding({ agentId, connectionAccountId: id, providerId: id, allowedCapabilities: [], enabled: true });
+    }
+  }
+  const snapshot = (await f.service.inspectWorkspace(member)).agents.find(({ id }) => id === 'agent_shared')!;
+  const deps = { service: f.service, context: async () => member };
+  const alone = await agentConnectionsOf(deps, member, 'agent_shared');
+  assert.deepEqual(alone, {
+    mcpServers: snapshot.mcpServers,
+    apiConnections: snapshot.apiConnections,
+    connectionStatus: snapshot.connectionStatus,
+    connections: snapshot.connections,
+  });
+  assert.deepEqual(alone?.connections?.map(({ id, reconnect }) => [id, Boolean(reconnect)]), [
+    ['connection_mine_agent_shared', true], ['connection_team_agent_shared', false],
+  ]);
+  assert.equal(JSON.stringify(alone).includes('connection_theirs'), false, 'the Owner\'s own account stays theirs');
+  assert.equal(await agentConnectionsOf(deps, member, 'agent_owner_only'), undefined, 'not an Agent the member may edit');
+  assert.equal(await agentConnectionsOf(deps, member, 'agent_missing'), undefined);
 });
 
 test('propose_agent refuses a blank name as the caller\'s input, not a server fault', async (t) => {

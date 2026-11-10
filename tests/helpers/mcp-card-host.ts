@@ -78,6 +78,16 @@ export interface CardModelUnderTest<V extends { kind: string }, A extends string
   reads: ReadonlySet<string>;
 }
 
+/**
+ * The ruling on what a card shows: no status code, no service's own words,
+ * no connection ID. The tool's own result keeps them for the model.
+ */
+export function assertPlain(shown: Presentation, connectionIds: readonly string[]): void {
+  const drawn = JSON.stringify(shown);
+  assert.doesNotMatch(drawn, /HTTP \d{3}|\b[1-5]\d\d\b|Unauthorized|timed out/, drawn);
+  for (const id of connectionIds) assert.equal(drawn.includes(id), false, `${id} drawn: ${drawn}`);
+}
+
 /** The setup link in a result, which a press that made it may then open. */
 function setupUrlOf(result: ToolResult): unknown {
   const content = result.structuredContent as { setup?: { url?: unknown } } | undefined;
@@ -88,24 +98,28 @@ function setupUrlOf(result: ToolResult): unknown {
  * A card's one rule: an event that is not a press (a mount, a re-read, a
  * timer, a reply, a failure) makes only reads and timers. It never writes,
  * sends a message or opens a link, with one exception: the reply to a call a
- * press made may open the setup link that reply carries, because that press
- * asked for the link to open.
+ * press made carries on that press. It may open the setup link it carries,
+ * because that press asked for the link to open, or, when the card will not
+ * open that link, ask the chat for the fix instead.
  */
 function onlyReads(event: CardEvent<string>, effects: readonly Effect[], reads: ReadonlySet<string>, pressed: WeakSet<Call>): void {
   if (event.type === 'press') return;
   for (const effect of effects) {
     if (effect.type === 'timer' || (effect.type === 'call' && reads.has(effect.call.tool))) continue;
-    if (effect.type === 'open' && event.type === 'reply' && pressed.has(event.call) && effect.url === setupUrlOf(event.result)) continue;
+    if (event.type === 'reply' && pressed.has(event.call) &&
+      ((effect.type === 'open' && effect.url === setupUrlOf(event.result)) || effect.type === 'message')) continue;
     assert.fail(`${event.type} made ${effect.type === 'call' ? `the write ${effect.call.tool}` : `a ${effect.type}`}`);
   }
 }
 
+type Refused = Extract<CardEvent<string>, { type: 'refused' }>['effect'];
+
 /**
  * A host for a card's model: it runs calls on the server, records every
  * effect, and checks every presentation. After every step it also tries a
- * re-read, a tick, a refusal and a lost result on a copy, as if the card came
- * back into view or its timer fired just then, and follows their reads one
- * reply or failure deep.
+ * re-read, a tick, a refusal of the last link or message and a lost result on
+ * a copy, as if the card came back into view, its timer fired or the host
+ * answered just then, and follows their reads one reply or failure deep.
  */
 export function cardHost<V extends { kind: string }, A extends string>(
   model: CardModelUnderTest<V, A>,
@@ -144,9 +158,11 @@ export function cardHost<V extends { kind: string }, A extends string>(
       state = next.state;
       const shown = model.present(state);
       assert.ok(buttonCount(shown) <= 2, `at most two buttons: ${JSON.stringify(shown)}`);
+      const refused = effects.findLast((effect): effect is Refused => effect.type === 'open' || effect.type === 'message') ??
+        { type: 'open', url: 'https://refused.example/' };
       for (const idle of [
         { type: 'reread', now: clock.now }, { type: 'tick', now: clock.now },
-        { type: 'refused', now: clock.now }, { type: 'no_result', now: clock.now },
+        { type: 'refused', effect: refused, now: clock.now }, { type: 'no_result', now: clock.now },
       ] as const) await follow(state, idle, true);
       for (const effect of next.effects) {
         effects.push(effect);

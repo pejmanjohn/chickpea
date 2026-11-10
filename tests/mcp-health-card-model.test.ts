@@ -2,10 +2,11 @@ import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 
 import type { ConnectionCheckOutcome } from '../src/connections/connection-check.ts';
+import { ManagementError } from '../src/management/types.ts';
 import { buttonCount, type ToolResult } from '../src/mcp-cards/card-model.ts';
 import { INITIAL, present, step, type Action } from '../src/mcp-cards/health-card/model.ts';
 import { createFixtureAgent, type ManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
-import { BASE_URL, cardHost, cardServer } from './helpers/mcp-card-host.ts';
+import { assertPlain, BASE_URL, cardHost, cardServer } from './helpers/mcp-card-host.ts';
 
 /**
  * The health card's state machine against Core's real MCP server. By itself
@@ -14,13 +15,15 @@ import { BASE_URL, cardHost, cardServer } from './helpers/mcp-card-host.ts';
  */
 const HEALTH_CARD = { initial: INITIAL, step, present, reads: new Set(['get_agent']) };
 
-async function harness(t: TestContext, suffix: string, checks: Record<string, ConnectionCheckOutcome> = {}) {
+async function harness(t: TestContext, suffix: string, checks: Record<string, ConnectionCheckOutcome | Error> = {}) {
   const tested: string[] = [];
   const server = await cardServer(t, suffix, {
     modelReadiness: async () => async () => undefined,
     testConnection: async ({ connectionId }) => {
       tested.push(connectionId);
-      return checks[connectionId] ?? { kind: 'ok', url: 'https://acme.zendesk.com/api/v2/users/me', status: 200 };
+      const outcome = checks[connectionId];
+      if (outcome instanceof Error) throw outcome;
+      return outcome ?? { kind: 'ok', url: 'https://acme.zendesk.com/api/v2/users/me', status: 200 };
     },
   });
   await server.f.config.ensureWorkspaceInstallation({
@@ -107,10 +110,18 @@ test('what needs attention comes first, each with its fix as a link; the healthy
   assert.deepEqual(shown.subtitle, [{ text: '@ops · checked its connections, model, Slack, Channels and who can reach it' }]);
   assert.deepEqual(rows(shown), [
     'failed · Linear · It needs to be reconnected. · [Reconnect Linear]',
-    'failed · Zendesk · Chickpea could not reach the service. timed out',
-    'failed · Docs MCP · The service rejected its saved key. HTTP 401. Unauthorized · [Send a link to save a new key]',
+    'failed · Zendesk · Chickpea could not reach the service.',
+    'failed · Docs MCP · The service rejected its saved key. · [Send a link to save a new key]',
     'done · 4 other parts look healthy · [Show]',
   ]);
+  const docs = (result.structuredContent!.checks as Array<{ name: string; detail: string; connectionId: string }>).find(({ name }) => name === 'Docs MCP')!;
+  assert.equal(docs.detail, 'The service rejected its saved key. HTTP 401. Unauthorized', 'the model still gets the whole detail');
+  // The check's own connection IDs and the stored accounts' IDs.
+  const ids = [
+    ...(result.structuredContent!.checks as Array<{ connectionId?: string }>).flatMap(({ connectionId }) => connectionId ?? []),
+    'connection_docs', 'connection_zendesk', 'connection_linear',
+  ];
+  assertPlain(shown, ids);
   assert.deepEqual(health.labels(), ['Check again (secondary)']);
   assert.equal(buttonCount(shown), 1, 'every fix is a text link');
 
@@ -124,6 +135,7 @@ test('what needs attention comes first, each with its fix as a link; the healthy
   ]);
   assert.match(rows(health.shown)[7]!, /^done · You, in a DM · It is in a public Channel/);
   assert.equal(rows(health.shown).length, 8);
+  assertPlain(health.shown, ids);
   await health.press('hide');
   assert.equal(rows(health.shown).length, 4);
   await health.dispatch({ type: 'reread', now: clock.now });
@@ -149,6 +161,8 @@ test('a setup-link fix calls its tool only when pressed, and opens the Chickpea 
   assert.equal(page.origin, BASE_URL);
   assert.match(page.pathname, /^\/setup\/setup_/, 'Chickpea\'s page for this one connection');
   assert.deepEqual(rows(health.shown)[0], 'now · Linear · Finish on the Chickpea page that opened, then come back. · [Reconnect Linear]');
+  assert.equal(health.shown.title, '3 things need attention', 'the title stays the same');
+  assert.equal(health.shown.announce, '3 things need attention. Linear: Finish on the Chickpea page that opened, then come back.');
 
   // Pressed again after the host gave up: the same call, and one link opens.
   health.hold = ({ tool }) => tool === 'reconnect_service';
@@ -166,6 +180,22 @@ test('a setup-link fix calls its tool only when pressed, and opens the Chickpea 
   assert.equal(health.effects.filter((effect) => effect.type === 'open').length, 1, 'the first press\'s late answer opens nothing');
   await health.answer();
   assert.equal(health.effects.filter((effect) => effect.type === 'open').length, 2, 'the retry\'s answer opens its link');
+});
+
+// Mutation proof: a late reply never moves a newer view.
+test('a fix that answers after Chickpea could not be reached opens nothing, with no retry in between', async (t) => {
+  const { f, teamId, call, card, clock } = await harness(t, 'health-late', BROKEN);
+  await seedOps(f, teamId);
+  const health = card();
+  await health.result(await call('check_agent', { agentId: 'agent_ops' }));
+  health.hold = ({ tool }) => tool === 'reconnect_service';
+  await health.press(fixOf(health.shown, 'Linear'));
+  const [late] = health.held;
+  await health.answer('unreachable');
+  assert.equal(health.shown.error, 'Chickpea could not be reached. Try again.');
+  await health.dispatch({ type: 'reply', call: late!.call, result: late!.result, now: clock.now });
+  assert.deepEqual(health.effects.filter(({ type }) => type === 'open'), [], 'the answer came after the card gave the button back');
+  assert.deepEqual(rows(health.shown)[0], 'failed · Linear · It needs to be reconnected. · [Reconnect Linear]');
 });
 
 test('a fix that would change the Agent goes to the chat, and a link fix opens only when pressed', async (t) => {
@@ -198,6 +228,33 @@ test('a fix that would change the Agent goes to the chat, and a link fix opens o
   await admin.press(fixOf(admin.shown, 'Linear'));
   assert.deepEqual(admin.effects.at(-1), { type: 'open', url: `${BASE_URL}/admin/agents/agent_ops` });
   assert.deepEqual(admin.calls().filter(({ tool }) => tool !== 'get_agent'), []);
+
+  // Mutation proof: a fix link opens only when it is a web link.
+  for (const url of ['javascript:alert(1)', `${BASE_URL.replace('https:', 'http:')}/admin/agents/agent_ops`]) {
+    const unsafe = card();
+    await unsafe.result(withFix({ label: 'Open it', url }));
+    await unsafe.press(fixOf(unsafe.shown, 'Linear'));
+    assert.deepEqual(unsafe.effects.filter(({ type }) => type !== 'call'), [], url);
+  }
+});
+
+// Mutation proof: the card opens a fix's link only when it is Chickpea's page for that one connection.
+test('a fix whose answer is not Chickpea\'s page for one connection asks the chat instead of opening it', async (t) => {
+  const { f, teamId, call, clock } = await harness(t, 'health-admin-link');
+  await seedOps(f, teamId);
+  const result = await call('check_agent', { agentId: 'agent_ops' });
+  for (const url of [`${BASE_URL}/admin/agents/agent_ops`, 'https://elsewhere.example/x']) {
+    const server = async (name: string, args: Record<string, unknown> = {}): Promise<ToolResult> => name === 'reconnect_service'
+      ? { structuredContent: { status: 'needs_setup', summary: 'Open the link to reconnect Linear.', setup: { url, what: 'Linear' } } }
+      : call(name, args);
+    const health = cardHost(HEALTH_CARD, server, clock);
+    await health.result(result);
+    await health.press(fixOf(health.shown, 'Linear'));
+    assert.equal(health.calls('reconnect_service').length, 1);
+    assert.deepEqual(health.effects.filter(({ type }) => type === 'open'), [], url);
+    assert.deepEqual(health.effects.at(-1), { type: 'message', sent: 'Fix Linear for Ops: Reconnect Linear.' }, url);
+    assert.deepEqual([health.shown.busy, health.shown.error], [false, undefined]);
+  }
 });
 
 test('coming back into view reads the Agent: a connection that became ready reads healthy, a failed test does not', async (t) => {
@@ -214,9 +271,10 @@ test('coming back into view reads the Agent: a connection that became ready read
   await health.dispatch({ type: 'reread', now: clock.now });
   assert.equal(health.shown.title, '2 things need attention');
   assert.deepEqual(rows(health.shown).slice(0, 2), [
-    'failed · Zendesk · Chickpea could not reach the service. timed out',
-    'failed · Docs MCP · The service rejected its saved key. HTTP 401. Unauthorized · [Send a link to save a new key]',
+    'failed · Zendesk · Chickpea could not reach the service.',
+    'failed · Docs MCP · The service rejected its saved key. · [Send a link to save a new key]',
   ], 'Docs MCP was stored as ready all along: its failed test stands until checked again');
+  assert.equal(health.shown.announce, '2 things need attention. Linear: Connected.');
   await health.press('show');
   assert.ok(rows(health.shown).includes('done · Linear · Connected.'));
   assert.deepEqual(health.calls().filter(({ tool }) => tool === 'check_agent'), [], 'no request left Chickpea');
@@ -271,13 +329,56 @@ test('Check again runs the check only when pressed, and gives the button back if
   assert.equal(health.shown.title, '3 things need attention');
 });
 
+test('a connection the check could not test reads as unknown, in plain words', async (t) => {
+  const { f, teamId, call, card } = await harness(t, 'health-ambiguous', {
+    connection_docs: new ManagementError('invalid_request', 'More than one connection uses docs. Name the one to test by its id from inspect_workspace.'),
+  });
+  await seedOps(f, teamId);
+  const result = await call('check_agent', { agentId: 'agent_ops' });
+  const docs = (result.structuredContent!.checks as Array<{ name: string; detail: string; connectionId: string }>).find(({ name }) => name === 'Docs MCP')!;
+  assert.match(docs.detail, /More than one connection uses/, 'the model gets the reason');
+  const health = card();
+  await health.result(result);
+  assert.ok(rows(health.shown).includes('unknown · Docs MCP · The check could not tell whether it works.'));
+  assertPlain(health.shown, [docs.connectionId, 'connection_docs']);
+  assert.doesNotMatch(JSON.stringify(health.shown), /inspect_workspace/);
+  // Zendesk answered: its healthy row, once shown, says so without the status.
+  await health.press('show');
+  assert.ok(rows(health.shown).includes('done · Zendesk · It answered.'), rows(health.shown).join('\n'));
+  assertPlain(health.shown, [docs.connectionId, 'connection_docs', 'connection_zendesk']);
+});
+
+test('a row without plain words gets a sentence for its part and status, never its detail', async () => {
+  const nothing = async (): Promise<ToolResult> => ({ isError: true });
+  const health = cardHost(HEALTH_CARD, nothing, { now: 0 });
+  await health.result({ structuredContent: {
+    agent: { agentId: 'agent_ops', name: 'Ops' }, person: { you: true }, place: { kind: 'dm' },
+    checks: [
+      { part: 'connection', name: 'Docs MCP', status: 'failing', detail: 'The service rejected its saved key. HTTP 401. Unauthorized' },
+      { part: 'schedule', name: 'Morning digest', status: 'warning', detail: 'Paused. consecutive_failures', plain: 7 },
+    ],
+  } });
+  assert.deepEqual(rows(health.shown), [
+    'failed · Docs MCP · It is not working.',
+    'warning · Morning digest · Some of its runs need a look.',
+  ]);
+});
+
 test('an error or a result of the wrong shape shows nothing to press', async (t) => {
   const { call, card, clock } = await harness(t, 'health-errors');
   const missing = card();
   await missing.result(await call('check_agent', { agentId: 'agent_missing' }));
   assert.deepEqual([missing.shown.title, missing.labels()], ['No Agent you can manage has that agentId.', []]);
   const nothing = async (): Promise<ToolResult> => ({ isError: true });
-  for (const check of [{ part: 'connection', name: 'Linear', detail: 'It needs to be reconnected.' }, { part: 'billing', name: 'x', detail: 'y', status: 'ok' }]) {
+  const linear = { part: 'connection', name: 'Linear', detail: 'It needs to be reconnected.', status: 'failing' };
+  for (const check of [
+    { part: 'connection', name: 'Linear', detail: 'It needs to be reconnected.' },
+    { part: 'billing', name: 'x', detail: 'y', status: 'ok' },
+    { ...linear, status: 'toString' },
+    { ...linear, fix: { label: 'Reconnect Linear', tool: 'connect_service' } },
+    { ...linear, fix: 'Reconnect Linear' },
+    { ...linear, fix: { tool: 'reconnect_service', arguments: {} } },
+  ]) {
     const malformed = cardHost(HEALTH_CARD, nothing, clock);
     await malformed.result({ structuredContent: { agent: { name: 'Ops' }, person: { you: true }, place: { kind: 'dm' }, checks: [check] } });
     assert.deepEqual([malformed.shown.title, malformed.labels()], ['Nothing to show here.', []], 'a row of no known status is never healthy');

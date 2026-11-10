@@ -715,6 +715,8 @@ export const checkAgentOutput = z.strictObject({
     name: z.string(),
     status: z.enum(['ok', 'warning', 'failing', 'unknown']),
     detail: z.string(),
+    plain: z.string().optional()
+      .describe('The detail as a card shows it: Chickpea\'s own words, without status codes, the service\'s own error text or IDs.'),
     fix: zFix.optional(),
     connectionId: z.string().optional(),
     channelId: z.string().optional(),

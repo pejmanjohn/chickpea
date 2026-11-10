@@ -211,7 +211,7 @@ type Explained = {
 type Checked = {
   healthy: boolean;
   checks: Array<{
-    part: string; name: string; status: string; detail: string;
+    part: string; name: string; status: string; detail: string; plain?: string;
     fix?: { label: string; url?: string; tool?: string; arguments?: Record<string, unknown> };
     connectionId?: string; channelId?: string; scheduleId?: string; loginId?: string;
   }>;
@@ -430,6 +430,7 @@ test('a model whose provider has no key cannot run: explain says why and check o
   const [model] = part(await check(call, { agentId: 'agent_ops' }), 'model');
   assert.deepEqual(model, {
     part: 'model', name: 'anthropic/claude-sonnet-4-6', status: 'failing', detail: 'Its provider, anthropic, is not set up.',
+    plain: 'Its provider, anthropic, is not set up.',
     fix: { label: 'Set up anthropic', tool: 'connect_model_provider', arguments: { provider: 'anthropic' } },
   });
 });
@@ -465,10 +466,13 @@ test('check_agent tests custom connections once each, reads catalog ones from st
   const checked = await check(call, { agentId: 'agent_ops' });
   assert.deepEqual([...tested].sort(), ['connection_docs', 'connection_zendesk'], 'only custom connections get a request; no catalog call');
   const byName = new Map(part(checked, 'connection').map((entry) => [entry.name, entry]));
-  assert.deepEqual(byName.get('Notion'), { part: 'connection', name: 'Notion', status: 'ok', detail: 'Connected.', connectionId: 'connection_notion' });
+  assert.deepEqual(byName.get('Notion'), {
+    part: 'connection', name: 'Notion', status: 'ok', detail: 'Connected.', plain: 'Connected.', connectionId: 'connection_notion',
+  });
   const docs = byName.get('Docs MCP')!;
   assert.equal(docs.status, 'failing');
   assert.equal(docs.detail, 'The service rejected its saved key. HTTP 401. Unauthorized');
+  assert.equal(docs.plain, 'The service rejected its saved key.', 'a card shows it without the status or the service\'s words');
   assert.deepEqual(docs.fix, {
     label: 'Send a link to save a new key',
     tool: 'reconnect_service',
@@ -487,19 +491,20 @@ test('check_agent tests custom connections once each, reads catalog ones from st
   assert.equal(checked.healthy, false);
   assertNoInternalIds(JSON.stringify(checked), f);
 
-  const outcomes: Array<[ConnectionCheckOutcome, string, string, boolean]> = [
-    [{ kind: 'ok', url: 'https://acme.zendesk.com/api/', status: 200 }, 'ok', 'Answered with HTTP 200.', false],
+  const outcomes: Array<[ConnectionCheckOutcome, string, string, string, boolean]> = [
+    [{ kind: 'ok', url: 'https://acme.zendesk.com/api/', status: 200 }, 'ok', 'Answered with HTTP 200.', 'It answered.', false],
     [{ kind: 'path_not_found', url: 'https://acme.zendesk.com/api/', status: 404, detail: 'Not Found' }, 'warning',
-      'The service answered, but the path Chickpea checks was not found. HTTP 404. Not Found', false],
+      'The service answered, but the path Chickpea checks was not found. HTTP 404. Not Found',
+      'The service answered, but the path Chickpea checks was not found.', false],
     [{ kind: 'inconclusive', url: 'https://acme.zendesk.com/api/', detail: 'Redirected to a sign-in page.' }, 'unknown',
-      'The check could not tell whether it works. Redirected to a sign-in page.', false],
+      'The check could not tell whether it works. Redirected to a sign-in page.', 'The check could not tell whether it works.', false],
     [{ kind: 'not_permitted', url: 'https://acme.zendesk.com/api/', status: 403, detail: 'Forbidden' }, 'failing',
-      'The saved key works but lacks permission. HTTP 403. Forbidden', true],
+      'The saved key works but lacks permission. HTTP 403. Forbidden', 'The saved key works but lacks permission.', true],
   ];
-  for (const [outcome, status, detail, fixed] of outcomes) {
+  for (const [outcome, status, detail, plain, fixed] of outcomes) {
     checks.connection_zendesk = outcome;
     const row = part(await check(call, { agentId: 'agent_ops' }), 'connection').find(({ name }) => name === 'Zendesk')!;
-    assert.deepEqual([row.status, row.detail, row.fix?.tool], [status, detail, fixed ? 'reconnect_service' : undefined], outcome.kind);
+    assert.deepEqual([row.status, row.detail, row.plain, row.fix?.tool], [status, detail, plain, fixed ? 'reconnect_service' : undefined], outcome.kind);
   }
 });
 
@@ -510,7 +515,8 @@ test('check_agent reports a custom connection it could not test as unknown, neve
   assert.deepEqual(tested, []);
   for (const name of ['Zendesk', 'Docs MCP']) {
     const row = rows.find((entry) => entry.name === name)!;
-    assert.deepEqual([row.status, row.detail, row.fix], ['unknown', 'Connection testing is unavailable.', undefined], name);
+    assert.deepEqual([row.status, row.detail, row.plain, row.fix],
+      ['unknown', 'Connection testing is unavailable.', 'The check could not tell whether it works.', undefined], name);
   }
 });
 
@@ -528,6 +534,7 @@ test('check_agent reports Slack presence and each Channel grant', async (t) => {
   const checked = await check(call, { agentId: 'agent_ops' });
   assert.deepEqual(part(checked, 'slack'), [{
     part: 'slack', name: '@ops', status: 'failing', detail: 'Another Slack group already uses this handle.',
+    plain: 'Another Slack group already uses this handle.',
     fix: { label: 'Retry in Admin', url: `${BASE_URL}/admin/agents/agent_ops` },
   }]);
   assert.deepEqual(new Map(part(checked, 'channel').map(({ name, status }) => [name, status])), new Map([
@@ -545,7 +552,10 @@ test('check_agent reports a schedule\'s next run and the failures in its stored 
     schedule: { kind: 'cron', expression: '0 9 * * 1-5' }, timezone: 'UTC', outputPolicy: 'post',
   } as never]);
   const [routine] = await f.routines.listRoutines(teamId, 'C_SUPPORT');
-  const settle = async (id: string, at: number, to: 'failed' | 'succeeded', publicError?: string) => {
+  const settle = async (
+    id: string, at: number, to: 'failed' | 'succeeded', publicError?: string,
+    failureClass: 'credential_unavailable' | 'channel_destination_unavailable' = 'credential_unavailable',
+  ) => {
     const run = await f.routines.createOccurrence({
       runId: id, idempotencyKey: `run:${id}`, routineId: routine!.id, routineVersion: routine!.version,
       scheduledFor: at, triggerSource: 'schedule', queuedAt: at, deadlineAt: at + 60_000,
@@ -554,7 +564,7 @@ test('check_agent reports a schedule\'s next run and the failures in its stored 
     if (to === 'succeeded') await f.routines.transitionRun({ occurrenceId: run.id, from: ['admitting'], to: 'running', at: at + 1 });
     await f.routines.transitionRun({
       occurrenceId: run.id, from: ['admitting', 'running'], to, at: at + 2,
-      ...(to === 'failed' ? { failureClass: 'credential_unavailable' as const, publicError: publicError ?? null } : {}),
+      ...(to === 'failed' ? { failureClass, publicError: publicError ?? null } : {}),
     });
   };
   await settle('rrun_old', NOW - 3 * 86_400_000, 'failed', 'Zendesk rejected the key.');
@@ -563,13 +573,20 @@ test('check_agent reports a schedule\'s next run and the failures in its stored 
   assert.equal(recovered.length, 1);
   assert.equal(recovered[0]!.status, 'warning', 'an earlier failure after which a run succeeded');
   assert.match(recovered[0]!.detail, /^1 of its last 2 runs failed: Zendesk rejected the key\. Next run /);
+  assert.match(recovered[0]!.plain!, /^1 of its last 2 runs failed\. Next run /, 'a card leaves out the run\'s error');
   assert.equal(recovered[0]!.scheduleId, routine!.id);
 
   await settle('rrun_new', NOW - 86_400_000, 'failed', 'Zendesk rejected the key.');
   const [failing] = part(await check(call, { agentId: 'agent_ops' }), 'schedule');
   assert.equal(failing!.status, 'failing');
   assert.match(failing!.detail, /^Its last run failed: Zendesk rejected the key\. Next run /);
+  assert.match(failing!.plain!, /^Its last run failed\. Next run /);
   assert.equal(failing!.fix?.url, `${BASE_URL}/admin/agents/agent_ops`);
+
+  // A paused schedule's stored reason is a lifecycle code: the model gets it, a card does not.
+  await settle('rrun_gone', NOW - 3_600_000, 'failed', 'The Channel is gone.', 'channel_destination_unavailable');
+  const [paused] = part(await check(call, { agentId: 'agent_ops' }), 'schedule');
+  assert.deepEqual([paused!.status, paused!.detail, paused!.plain], ['warning', 'Paused. channel_destination_unavailable', 'Paused.']);
 });
 
 test('check_agent reports GitHub access for each repository, and website logins with when each was last used', async (t) => {

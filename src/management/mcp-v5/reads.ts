@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 
+import { CHICKPEA_AGENT_ID } from '../../config/agent-id.ts';
 import { resolveConnectorCatalogPreset } from '../../config/presets.ts';
 import type { PlatformEnv } from '../../config/state-backend.ts';
 import {
@@ -10,8 +11,16 @@ import {
   adminSettingsLinks,
   adminTeamUrl,
 } from '../admin-links.ts';
+import { agentConnections, managementApiConnection, managementConnectionStatus, managementMcpConnection } from '../agent-connections.ts';
 import { agentWelcomeQuote } from '../receipts.ts';
-import type { WorkspaceManagementService } from '../service.ts';
+import {
+  connectionWorkspaceIds,
+  managementActorPrincipal,
+  projectAgentConnectionAccounts,
+  visibleConnectionAccountsOf,
+  withoutRevisions,
+  type WorkspaceManagementService,
+} from '../service.ts';
 import {
   ManagementError,
   type ManagementActorContext,
@@ -34,6 +43,8 @@ export interface FiveZeroDeps {
 
 type Out<T extends z.ZodType> = z.infer<T>;
 type SnapshotAgent = ManagementWorkspaceSnapshot['agents'][number];
+/** One Agent's connections, as the snapshot lists them. */
+type AgentConnectionView = Pick<SnapshotAgent, 'mcpServers' | 'apiConnections' | 'connectionStatus' | 'connections'>;
 type AgentRow = Out<typeof schemas.listAgentsOutput>['agents'][number];
 
 const ROLE_LABEL = { owner: 'Owner', admin: 'Admin', member: 'Member' } as const;
@@ -171,7 +182,7 @@ type ConnectionRow = Out<typeof schemas.getAgentOutput>['connections'][number];
  * Agent's lanes, under the ID its tools take; a catalog sign-in comes from the
  * Agent's accounts. An account a lane already shows is not listed twice.
  */
-export function connectionRows(agent: SnapshotAgent): ConnectionRow[] {
+export function connectionRows(agent: AgentConnectionView): ConnectionRow[] {
   const status = new Map(agent.connectionStatus.map((entry) => [`${entry.kind}:${entry.id}`, entry.lifecycleStatus]));
   const laneStatus = (kind: 'mcp' | 'api', id: string, enabled: boolean): ConnectionRow['status'] => {
     if (!enabled) return 'off';
@@ -234,7 +245,7 @@ export function connectionRows(agent: SnapshotAgent): ConnectionRow[] {
 type Connector = NonNullable<ReturnType<typeof resolveConnectorCatalogPreset>>;
 
 /** The Agent's connection of this catalog service in this owner's lane, which a new link would replace. */
-export function catalogConnection(agent: SnapshotAgent, connector: Connector, ownerKind: 'team' | 'member') {
+export function catalogConnection(agent: AgentConnectionView, connector: Connector, ownerKind: 'team' | 'member') {
   const toolkit = 'managedToolkit' in connector ? connector.managedToolkit : undefined;
   const lanePreset = new Map([...agent.apiConnections, ...agent.mcpServers].map(({ id, presetId }) => [id, presetId]));
   return connectionRows(agent).find((row) => row.kind === 'service' && row.owner === ownerKind &&
@@ -600,7 +611,8 @@ const CONNECTION_TARGETS: ReadonlySet<ManagementSetupPublicStatus['target']['kin
  * The Agent's connection a setup link sets up, as it is now: the one it
  * names, or for a new catalog connection the one connect_service would refuse
  * to make twice. A link can stay waiting after the connection was made
- * another way; this says whether the connection is ready all the same.
+ * another way; this says whether the connection is ready all the same. A
+ * card asks every 2 s, so this reads only the Agent's connections.
  */
 async function setupConnection(
   deps: FiveZeroDeps,
@@ -608,8 +620,7 @@ async function setupConnection(
   target: ManagementSetupPublicStatus['target'],
 ): Promise<Out<typeof schemas.getSetupStatusOutput>['connection']> {
   if (!target.agentId || !CONNECTION_TARGETS.has(target.kind)) return undefined;
-  const snapshot = await deps.service.inspectWorkspace(context);
-  const agent = snapshot.agents.find(({ id }) => id === target.agentId);
+  const agent = await agentConnectionsOf(deps, context, target.agentId);
   if (!agent) return undefined;
   const rows = connectionRows(agent);
   let row: ConnectionRow | undefined;
@@ -622,6 +633,41 @@ async function setupConnection(
     row = connector && target.ownerKind ? catalogConnection(agent, connector, target.ownerKind) : undefined;
   }
   return row && { connectionId: row.connectionId, name: row.name, kind: row.kind, status: row.status };
+}
+
+/**
+ * One Agent's connections as inspect_workspace lists them, read alone: a card
+ * polls get_setup_status every 2 s, so never the workspace snapshot or Slack.
+ * undefined when the snapshot would not list the Agent for this caller.
+ */
+export async function agentConnectionsOf(
+  deps: FiveZeroDeps,
+  context: ManagementActorContext,
+  agentId: string,
+): Promise<AgentConnectionView | undefined> {
+  const reader = await deps.service.agentReader(context, agentId).catch((error: unknown) => {
+    if (error instanceof ManagementError) return undefined;
+    throw error;
+  });
+  // An Agent acting for itself sees only itself, as in the snapshot.
+  const acting = reader?.actor.actingAgentId;
+  if (!reader || (acting && acting !== CHICKPEA_AGENT_ID && acting !== agentId)) return undefined;
+  const { actor, stores } = reader;
+  const workspaceIds = connectionWorkspaceIds(actor, await stores.identity.getOrganization());
+  const [accounts, bindings] = await Promise.all([
+    Promise.all(workspaceIds.map((id) => stores.config.listConnectionAccounts(id))).then((groups) => groups.flat()),
+    stores.config.listAgentConnectionBindings(agentId),
+  ]);
+  const lanes = agentConnections(accounts, bindings, actor.membershipId);
+  const projected = projectAgentConnectionAccounts(
+    managementActorPrincipal(actor), agentId, accounts, visibleConnectionAccountsOf(accounts, actor.membershipId), bindings,
+  );
+  return {
+    mcpServers: lanes.mcpServers.map(managementMcpConnection),
+    apiConnections: lanes.apiConnections.map(managementApiConnection),
+    connectionStatus: managementConnectionStatus(lanes),
+    ...(projected.length > 0 ? { connections: projected.map(withoutRevisions) } : {}),
+  };
 }
 
 export async function exportAgents(

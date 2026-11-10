@@ -22,6 +22,7 @@ import {
   type Row,
   type ToolResult,
 } from '../card-model.ts';
+import { plainWords } from '../check-words.ts';
 
 /**
  * The health card: one Agent's check_agent result. Each part that needs
@@ -39,7 +40,7 @@ type ConnectionStatus = z.infer<typeof schemas.getAgentOutput>['connections'][nu
 
 export type View =
   | { kind: 'waiting' }
-  | { kind: 'notice'; title: string; body?: string | undefined }
+  | { kind: 'notice'; title: string }
   | {
       kind: 'health';
       checked: Checked;
@@ -49,7 +50,7 @@ export type View =
       before?: Record<string, ConnectionStatus>;
       /** Connections that became ready since then. */
       fixed?: string[];
-      /** Rows whose setup link the person opened from the card. */
+      /** Rows whose setup link the person opened from the card, the latest last. */
       opened?: number[];
       /** The row whose fix is running. */
       fixing?: number;
@@ -85,7 +86,8 @@ function transition(state: State, event: Event): Next<View> {
       return outdated(state, event.call) ? stay(state) : reply(state, event.call.tool, event.result);
     case 'unreachable':
       if (outdated(state, event.call)) return stay(state);
-      // A failed read leaves the buttons alone; a pressed call gives them back with the reason.
+      // A failed read leaves the buttons alone; a pressed call gives them back with the reason,
+      // and its answer, should it still come, opens nothing: no fix is running any more.
       if (event.call.tool === 'get_agent' || state.view.kind !== 'health') return stay(state);
       return stay({ view: settled(state.view), busy: false, error: UNREACHABLE });
     case 'refused':
@@ -127,9 +129,15 @@ function press(state: State, view: Health, action: Action): Next<View> {
         return url ? stay(state, [{ type: 'open', url }]) : stay(state);
       }
       if (clickable(fix)) return { state: { view: { ...view, fixing: index }, busy: true }, effects: [call(fix.tool, fix.arguments)] };
-      return stay(state, [{ type: 'message', sent: `Fix ${check.name} for ${view.checked.agent.name}: ${fix.label}.` }]);
+      return stay(state, [askChat(view, index)]);
     }
   }
+}
+
+/** A fix the card does not run itself: the model proposes it in the chat first. */
+function askChat(view: Health, index: number): Effect {
+  const check = view.checked.checks[index]!;
+  return { type: 'message', sent: `Fix ${check.name} for ${view.checked.agent.name}: ${check.fix!.label}.` };
 }
 
 function checkAgain(checked: Checked): Effect {
@@ -153,13 +161,16 @@ function reply(state: State, tool: string, result: ToolResult): Next<View> {
     if (failure || !isChecked(content)) return stay({ view, busy: false, error: failure ?? GENERIC });
     return show({ kind: 'health', checked: content, ...view.open ? { open: true as const } : {} });
   }
-  // The fix's setup link: the press that asked for it opens it.
-  const url = failure ? undefined : httpsUrl(isRecord(content) && isRecord(content.setup) ? content.setup.url : undefined);
+  // The fix's setup link: the press that asked for it opens it, when it is Chickpea's page for that one connection.
+  const setup = !failure && isRecord(content) && isRecord(content.setup) ? content.setup : undefined;
+  const url = httpsUrl(setup?.url);
   if (!url || view.fixing === undefined) {
     const summary = isRecord(content) && typeof content.summary === 'string' ? content.summary : undefined;
     return stay({ view: settled(view), busy: false, error: failure ?? summary ?? GENERIC });
   }
-  return show({ ...settled(view), opened: [...new Set([...view.opened ?? [], view.fixing])] }, [{ type: 'open', url }]);
+  if (typeof setup?.setupToken !== 'string') return show(settled(view), [askChat(view, view.fixing)]);
+  const opened = [...(view.opened ?? []).filter((index) => index !== view.fixing), view.fixing];
+  return show({ ...settled(view), opened }, [{ type: 'open', url }]);
 }
 
 /** The Agent's connections now: one that became ready since the card first looked reads as healthy. */
@@ -185,7 +196,14 @@ function isChecked(value: unknown): value is Checked {
   return isRecord(value) && isRecord(value.agent) && typeof value.agent.name === 'string' &&
     isRecord(value.person) && isRecord(value.place) && Array.isArray(value.checks) &&
     value.checks.every((check) => isRecord(check) && typeof check.name === 'string' && typeof check.detail === 'string' &&
-      typeof check.part === 'string' && check.part in PART_WORDS && typeof check.status === 'string' && check.status in ORDER);
+      typeof check.part === 'string' && Object.hasOwn(PART_WORDS, check.part) &&
+      typeof check.status === 'string' && Object.hasOwn(ORDER, check.status) && isFix(check.fix));
+}
+
+/** Absent, a link, or a tool with its arguments: a press reads no other shape. */
+function isFix(fix: unknown): boolean {
+  return fix === undefined || (isRecord(fix) && typeof fix.label === 'string' &&
+    (typeof fix.url === 'string' || (typeof fix.tool === 'string' && isRecord(fix.arguments))));
 }
 
 // What the card shows.
@@ -212,7 +230,7 @@ function presentView(state: State): Presentation<Action> {
     case 'waiting':
       return { ...base, avatar: 'none', title: 'Loading…', blocks: [], buttons: [] };
     case 'notice':
-      return { ...base, avatar: 'none', title: view.title, blocks: view.body ? [{ kind: 'text', text: view.body }] : [], buttons: [] };
+      return { ...base, avatar: 'none', title: view.title, blocks: [], buttons: [] };
     case 'health':
       return { ...base, ...presentHealth(view) };
   }
@@ -220,7 +238,7 @@ function presentView(state: State): Presentation<Action> {
 
 function presentHealth(view: Health): Omit<Presentation<Action>, 'busy' | 'error'> {
   const { checked } = view;
-  const parts = checked.checks.map((check, index) => ({ check, index, status: statusOf(view, check) }));
+  const parts = checked.checks.map((check, index): Part => ({ check, index, status: statusOf(view, check) }));
   const problems = parts.filter(({ status }) => status === 'failing' || status === 'warning');
   const unknown = parts.filter(({ status }) => status === 'unknown');
   const healthy = parts.filter(({ status }) => status === 'ok');
@@ -229,7 +247,7 @@ function presentHealth(view: Health): Omit<Presentation<Action>, 'busy' | 'error
   const words = [...new Set(checked.checks.map(({ part }) => PART_WORDS[part]))];
   const others = flagged.length > 0;
   const rows: Array<Row<Action>> = [
-    ...flagged.map(({ check, index, status }) => problemRow(view, check, index, status)),
+    ...flagged.map((part) => partRow(view, part)),
     ...healthy.length ? [{
       icon: 'done' as const,
       title: `${healthy.length} ${others ? 'other ' : ''}${healthy.length === 1 ? 'part looks' : 'parts look'} healthy`,
@@ -237,17 +255,18 @@ function presentHealth(view: Health): Omit<Presentation<Action>, 'busy' | 'error
         ? { label: 'Hide', action: 'hide' as const, style: 'toggle' as const }
         : { label: 'Show', action: 'show' as const, style: 'toggle' as const },
     }] : [],
-    ...view.open ? healthy.map(({ check }): Row<Action> => ({
-      icon: 'done',
-      title: titleOf(check),
-      detail: view.fixed?.includes(check.connectionId ?? '') ? 'Connected.' : check.detail,
-    })) : [],
+    ...view.open ? healthy.map((part) => partRow(view, part)) : [],
   ];
+  const title = problems.length > 0
+    ? `${problems.length} ${problems.length === 1 ? 'thing needs' : 'things need'} attention`
+    : unknown.length > 0 ? 'No problems found' : 'Everything looks healthy';
+  const opened = view.opened?.at(-1);
+  const lastOpened = opened === undefined ? undefined : parts[opened];
   return {
     avatar: parts.some(({ status }) => status === 'failing') ? 'alert' : 'agent',
-    title: problems.length > 0
-      ? `${problems.length} ${problems.length === 1 ? 'thing needs' : 'things need'} attention`
-      : unknown.length > 0 ? 'No problems found' : 'Everything looks healthy',
+    title,
+    // The title may stay the same after a fix; the row it changed is what a screen reader needs.
+    ...lastOpened ? { announce: `${title}. ${titleOf(lastOpened.check)}: ${partRow(view, lastOpened).detail}` } : {},
     subtitle: [{ text: `${mention} · checked its ${joinWords(words)}` }],
     blocks: rows.length ? [{ kind: 'rows', rows }] : [],
     buttons: checked.person.you ? [{ label: 'Check again', action: 'check_again', tone: 'secondary' }] : [],
@@ -258,12 +277,17 @@ function statusOf(view: Health, check: Check): Check['status'] {
   return check.connectionId !== undefined && view.fixed?.includes(check.connectionId) ? 'ok' : check.status;
 }
 
-function problemRow(view: Health, check: Check, index: number, status: Check['status']): Row<Action> {
+type Part = { check: Check; index: number; status: Check['status'] };
+
+function partRow(view: Health, { check, index, status }: Part): Row<Action> & { detail: string } {
+  if (status === 'ok') {
+    return { icon: 'done', title: titleOf(check), detail: view.fixed?.includes(check.connectionId ?? '') ? 'Connected.' : plainWords(check) };
+  }
   const opened = view.opened?.includes(index);
   return {
     icon: opened ? 'now' : status === 'failing' ? 'failed' : status === 'warning' ? 'warning' : 'unknown',
     title: titleOf(check),
-    detail: opened ? 'Finish on the Chickpea page that opened, then come back.' : check.detail,
+    detail: opened ? 'Finish on the Chickpea page that opened, then come back.' : plainWords(check),
     ...check.fix ? { control: { label: check.fix.label, action: `fix:${index}` as const, style: 'link' as const } } : {},
   };
 }

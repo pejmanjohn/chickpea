@@ -6,7 +6,7 @@ import { INITIAL, present, step } from '../src/mcp-cards/connect-card/model.ts';
 import type { WorkspaceManagementServiceInput } from '../src/management/service.ts';
 import type { ManagementSetupPublicStatus } from '../src/management/types.ts';
 import { createFixtureAgent, type ManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
-import { BASE_URL, cardHost, cardServer, type ServerCall } from './helpers/mcp-card-host.ts';
+import { assertPlain, BASE_URL, cardHost, cardServer, type ServerCall } from './helpers/mcp-card-host.ts';
 
 /**
  * The connect card's state machine against Core's real MCP server. It may
@@ -221,11 +221,14 @@ test('an expired, cancelled or failed link says so and asks the chat for a new o
   }
 });
 
-test('polls every 2 s, waits longer after each failed poll, and stops at the ceiling until I\'m done', async (t) => {
+test('polls every 2 s, waits longer after each failed poll, and stops for good two minutes after Connect', async (t) => {
   const { call, card, clock } = await harness(t, 'connect-poll');
   const connect = card();
   await connect.result(await call('connect_service', { agentId: 'agent_research', service: 'Gmail', owner: 'me', idempotencyKey: 'gmail' }));
   await connect.press('connect');
+  const seq = connect.state.seq;
+  for (let poll = 0; poll < 3; poll += 1) await connect.dispatch({ type: 'tick', now: clock.now });
+  assert.equal(connect.state.seq, seq, 'a poll that changes nothing keeps the view, so the card saves nothing');
   const waits: number[] = [];
   for (let failed = 0; failed < 4; failed += 1) {
     await connect.dispatch({ type: 'unreachable', call: { tool: 'get_setup_status', args: {}, seq: connect.state.seq }, now: clock.now });
@@ -236,13 +239,23 @@ test('polls every 2 s, waits longer after each failed poll, and stops at the cei
   await connect.dispatch({ type: 'tick', now: clock.now });
   assert.deepEqual(connect.effects.at(-1), { type: 'timer', inMs: POLL_INTERVAL_MS }, 'a poll that answers starts over at 2 s');
 
-  clock.now += POLL_CEILING_MS;
+  // Coming back into view, again and again, reads at once but never starts the two minutes over.
+  for (let back = 0; back < 5; back += 1) {
+    clock.now += POLL_CEILING_MS / 4;
+    await connect.dispatch({ type: 'reread', now: clock.now });
+  }
   const timers = connect.effects.filter(({ type }) => type === 'timer').length;
   await connect.dispatch({ type: 'tick', now: clock.now });
   assert.equal(connect.effects.filter(({ type }) => type === 'timer').length, timers, 'past the ceiling it stops asking');
   assert.deepEqual(rows(connect.shown), ['Waiting for Gmail · Finish on the Chickpea page that opened, then press I\'m done. · [I\'m done]']);
+  assert.equal(connect.shown.announce, 'Waiting for Gmail. Finish on the Chickpea page that opened, then press I\'m done.');
+
+  const reads = connect.calls('get_setup_status').length;
   await connect.press('done');
-  assert.deepEqual(connect.effects.at(-1), { type: 'timer', inMs: POLL_INTERVAL_MS }, 'I\'m done starts the polls again');
+  await connect.dispatch({ type: 'reread', now: clock.now });
+  await connect.dispatch({ type: 'tick', now: clock.now });
+  assert.equal(connect.calls('get_setup_status').length, reads + 2, 'I\'m done and coming back each read once');
+  assert.equal(connect.effects.filter(({ type }) => type === 'timer').length, timers, 'and the polls stay stopped');
 });
 
 test('a custom connection, once ready, is checked with one request, and the card says what that check found', async (t) => {
@@ -270,7 +283,8 @@ test('a custom connection, once ready, is checked with one request, and the card
   await f.config.putConnectionAccount({ ...account!, lifecycle: 'ready' } as never, account!.revision);
   await connect.dispatch({ type: 'tick', now: clock.now });
   assert.equal(connect.state.view.kind, 'connected');
-  assert.deepEqual(rows(connect.shown), ['Statusboard API is connected · Chickpea checked it. Answered with HTTP 200. · [Open in Slack]']);
+  assert.deepEqual(rows(connect.shown), ['Statusboard API is connected · Chickpea checked it. It answered. · [Open in Slack]']);
+  assert.equal(connect.shown.announce, 'Statusboard API is connected. Chickpea checked it. It answered.');
   assert.equal(connect.calls('check_agent').length, 1);
   await connect.dispatch({ type: 'reread', now: clock.now });
   await connect.dispatch({ type: 'tick', now: clock.now });
@@ -284,10 +298,15 @@ test('a custom connection, once ready, is checked with one request, and the card
   assert.deepEqual(row?.kind === 'rows' && row.rows[0], {
     icon: 'done',
     title: 'Statusboard API is connected',
-    detail: 'Chickpea checked it. The service rejected its saved key. HTTP 401. Unauthorized',
+    detail: 'Chickpea checked it. The service rejected its saved key.',
     tone: 'warn',
     control: { label: 'Open in Slack', action: 'open_slack', style: 'secondary' },
   });
+  const checked = await call('check_agent', { agentId: 'agent_research' });
+  assert.match(JSON.stringify(checked.structuredContent), /HTTP 401\. Unauthorized/, 'the model still gets the whole detail');
+  const connectionId = rejected.state.view.kind === 'connected' ? rejected.state.view.connectionId : undefined;
+  assert.ok(connectionId);
+  assertPlain(rejected.shown, [...tested, connectionId]);
 });
 
 // Mutation proof: a late reply never moves a newer view.
@@ -320,16 +339,68 @@ test('a link that is not Chickpea\'s page for one connection is never opened fro
   assert.deepEqual(rows(connect.shown), ['Sentry · Chickpea can\'t connect it from this card. Use the link in the chat.']);
   await connect.press('connect');
   assert.deepEqual(connect.effects, []);
+
+  // Mutation proof: a token alone does not make a link the card opens; it must be https.
+  const gmail = await call('connect_service', { agentId: 'agent_research', service: 'Gmail', owner: 'me', idempotencyKey: 'gmail' });
+  for (const url of [gmail.structuredContent!.setup.url.replace('https:', 'http:'), 'javascript:alert(1)']) {
+    const plain = card();
+    await plain.result({ ...gmail, structuredContent: { ...gmail.structuredContent, setup: { ...gmail.structuredContent!.setup, url } } });
+    assert.equal(plain.state.view.kind, 'elsewhere', url);
+    await plain.press('connect');
+    assert.deepEqual(plain.effects.filter(({ type }) => type === 'open'), [], url);
+  }
 });
 
 test('a page the host would not open offers Connect again, with the reason', async (t) => {
   const { call, card, clock } = await harness(t, 'connect-refused');
   const connect = card();
-  await connect.result(await call('connect_service', { agentId: 'agent_research', service: 'Gmail', owner: 'me', idempotencyKey: 'gmail' }));
+  const result = await call('connect_service', { agentId: 'agent_research', service: 'Gmail', owner: 'me', idempotencyKey: 'gmail' });
+  const page = { type: 'open', url: result.structuredContent!.setup.url } as const;
+  await connect.result(result);
   await connect.press('connect');
-  await connect.dispatch({ type: 'refused', now: clock.now });
+  await connect.dispatch({ type: 'refused', effect: { type: 'open', url: 'https://slack.com/app_redirect' }, now: clock.now });
+  assert.deepEqual([connect.state.view.kind, connect.shown.error], ['finishing', undefined], 'a refusal of another link says nothing about this page');
+  await connect.dispatch({ type: 'refused', effect: page, now: clock.now });
   assert.deepEqual([connect.state.view.kind, connect.shown.error], ['start', 'That did not work. Try again.']);
   assert.deepEqual(rows(connect.shown), ['Gmail · Your own account · [Connect]']);
+});
+
+test('a host that refuses the page a minute late, once Chickpea saw it open, leaves the card following it', async (t) => {
+  const { call, card, clock, finish } = await harness(t, 'connect-late-refusal');
+  const result = await call('connect_service', { agentId: 'agent_research', service: 'Gmail', owner: 'me', idempotencyKey: 'gmail' });
+  const { setup } = result.structuredContent!;
+  const page = { type: 'open', url: setup.url } as const;
+  const connect = card();
+  await connect.result(result);
+  await connect.press('connect');
+  finish(setup.setupToken, 'claimed');
+  await connect.dispatch({ type: 'tick', now: clock.now });
+  clock.now += 60_000;
+  await connect.dispatch({ type: 'refused', effect: page, now: clock.now });
+  assert.deepEqual([connect.state.view.kind, connect.shown.error], ['finishing', undefined], 'the person is signing in on that page');
+
+  finish(setup.setupToken, 'completed');
+  await connect.press('done');
+  assert.equal(connect.state.view.kind, 'connected');
+  await connect.dispatch({ type: 'refused', effect: page, now: clock.now });
+  assert.equal(connect.shown.error, undefined, 'nor does it put an error on the connected card');
+  const slack = connect.state.view.kind === 'connected' ? connect.state.view.agent?.slackUrl : undefined;
+  await connect.dispatch({ type: 'refused', effect: { type: 'open', url: slack! }, now: clock.now });
+  assert.equal(connect.shown.error, 'That did not work. Try again.', 'Open in Slack that did not open says so');
+});
+
+test('a chat reopened before the check answered shows the service connected, unchecked, and checks nothing by itself', async (t) => {
+  const { call, card, clock } = await harness(t, 'connect-reopened');
+  const connect = card();
+  await connect.result(await call('connect_service', { agentId: 'agent_research', service: 'Gmail', owner: 'me', idempotencyKey: 'gmail' }));
+  const kept = {
+    view: { kind: 'connected' as const, flow: 'connect' as const, service: 'Statusboard API', connectionId: 'statusboard', check: 'checking' as const },
+    busy: false,
+    seq: 7,
+  };
+  const next = step(kept, { type: 'reread', now: clock.now });
+  assert.deepEqual(next.effects, [], 'no call');
+  assert.deepEqual(rows(present(next.state)), ['Statusboard API is connected']);
 });
 
 test('an error or a result of the wrong shape shows nothing to press', async (t) => {

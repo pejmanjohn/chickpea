@@ -53,10 +53,10 @@ export function runCard<V extends { kind: string }, A extends string>(name: stri
         timer = setTimeout(() => dispatch({ type: 'tick', now: Date.now() }), effect.inMs);
         return;
       case 'message':
-        bridge.sendMessage(effect).catch(() => dispatch({ type: 'refused', now: Date.now() }));
+        bridge.sendMessage(effect).catch(() => dispatch({ type: 'refused', effect, now: Date.now() }));
         return;
       case 'open':
-        bridge.openLink(effect.url).catch(() => dispatch({ type: 'refused', now: Date.now() }));
+        bridge.openLink(effect.url).catch(() => dispatch({ type: 'refused', effect, now: Date.now() }));
         return;
     }
   }

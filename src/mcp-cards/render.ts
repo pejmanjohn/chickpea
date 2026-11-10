@@ -170,7 +170,8 @@ export function mountCard(root: HTMLElement, onAction: (action: string) => void)
       if (key === drawn) return;
       drawn = key;
       const focused = card.contains(document.activeElement);
-      if (status.textContent !== presentation.title) status.textContent = presentation.title;
+      const announce = presentation.announce ?? presentation.title;
+      if (status.textContent !== announce) status.textContent = announce;
 
       const header = element('header', 'cp-hdr');
       const avatarKind = presentation.avatar === 'none' ? 'agent' : presentation.avatar;
