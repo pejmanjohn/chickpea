@@ -399,11 +399,20 @@ test('a managed reconnect link needs the connector available, as a new connectio
     await bindAccount(f, agent.id, hubspotAccount('needs_attention'));
     const context = slackContext(f.owner, agent.id);
 
-    const refused = await callRaw(f, context, 'prepare_connector_setup', { connector: 'HubSpot', ownerKind: 'team' });
-    assert.equal(refused.ok, false, JSON.stringify(refused));
-    assert.equal(refused.ok === false ? refused.error.code : undefined, 'setup_unavailable');
-    assert.equal(refused.ok === false ? refused.error.message : undefined,
-      'HubSpot sign-in is not configured for this Chickpea deployment yet.');
+    // An app over MCP has no Agent in a thread to explain it, so the error names the next step and its page.
+    for (const caller of [context, mcpContext(f.owner)]) {
+      const refused = await callRaw(f, caller, 'prepare_connector_setup', {
+        agentId: agent.id,
+        connector: 'HubSpot',
+        ownerKind: 'team',
+      });
+      assert.equal(refused.ok, false, JSON.stringify(refused));
+      assert.deepEqual(refused.ok === false ? refused.error : undefined, {
+        code: 'setup_unavailable',
+        message: 'HubSpot sign-in is not configured for this Chickpea deployment yet. A workspace Owner or Admin can set it up in Connectors in Admin Settings.',
+        links: { admin: 'http://localhost/admin/settings/connectors' },
+      }, caller.origin.kind);
+    }
 
     available = true;
     const issued = await call(f, context, 'prepare_connector_setup', {

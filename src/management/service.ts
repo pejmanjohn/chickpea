@@ -1744,7 +1744,7 @@ export class WorkspaceManagementService {
     // Slack and MCP callers alike get the one-connection setup page. A
     // connector that page cannot serve gets Admin's page instead.
     if ('managedToolkit' in connector) {
-      const scopes = await this.managedConnectionCeiling(connector);
+      const scopes = await this.managedConnectionCeiling(connector, baseUrl);
       const issued = await this.issueSetupRecord(actor, {
         action: 'managed_connection',
         target: {
@@ -2079,6 +2079,7 @@ export class WorkspaceManagementService {
    */
   private async managedConnectionCeiling(
     connector: Extract<ConnectorCatalogPreset, { managedToolkit: string }>,
+    baseUrl: string,
   ): Promise<string[]> {
     const scopes = MANAGED_CONNECTOR_CATALOG.capabilities(connector.managedToolkit, 'write')
       .map(({ id }) => id);
@@ -2095,7 +2096,9 @@ export class WorkspaceManagementService {
         }))) {
       throw new ManagementError(
         'setup_unavailable',
-        `${connector.name} sign-in is not configured for this Chickpea deployment yet.`,
+        `${connector.name} sign-in is not configured for this Chickpea deployment yet. A workspace Owner or Admin can set it up in Connectors in Admin Settings.`,
+        undefined,
+        adminSettingsLinks(baseUrl, 'connectors'),
       );
     }
     return scopes;
@@ -2166,7 +2169,7 @@ export class WorkspaceManagementService {
             presetId: connector.id,
           },
           // As a new connection does, refuse before issuing when the connector is unavailable.
-          scopes: await this.managedConnectionCeiling(connector),
+          scopes: await this.managedConnectionCeiling(connector, baseUrl),
         })
       : await this.issueSetupRecord(actor, {
           action: 'catalog_connection',
