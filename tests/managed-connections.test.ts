@@ -2935,7 +2935,7 @@ test('a schedule conflict stops a removal before the remote grant: a person\'s r
   }
 });
 
-test('with no Composio provider, a person\'s removal changes nothing and a revoke that names no failure mode stays closed', async () => {
+test('with no Composio provider, only a person\'s removal changes nothing; a system revoke and an Agent deletion stay closed', async () => {
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const service = new ConnectionAccountService({
@@ -2944,45 +2944,54 @@ test('with no Composio provider, a person\'s removal changes nothing and a revok
     managedProviders: async () => createManagedConnectionProviderRegistry([]),
   });
   try {
-    await config.createAgent({
-      id: 'agent_no_provider', name: 'Mail', instructions: 'Help with mail.', enabled: true,
-      creatorMembershipId: 'membership_alice', editPolicy: 'creator_and_admins',
-      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    await config.ensureWorkspaceInstallation({ workspaceId: 'T_MANAGED', transportMode: 'direct' });
+    const cases = {
+      'a person\'s removal': (agentId: string, connectionAccountId: string) =>
+        service.disconnectForAgent({ principal: principal(), agentId, connectionAccountId }),
+      'a revoke that names no failure mode': (_agentId: string, connectionAccountId: string) =>
+        service.revoke({ principal: principal(), connectionAccountId }),
+      'an Agent deletion': async (agentId: string) => {
+        const agent = await config.getAgent(agentId);
+        return service.prepareAgentDeletion({
+          principal: principal(), agentId, expectedRevision: agent.revision,
+          expectedCredentialIncarnation: agent.credentialIncarnation!,
+        });
+      },
+    };
+    const after: Record<string, { lifecycle: string | undefined; schedule: string | undefined }> = {};
+    for (const [index, [name, remove]] of Object.entries(cases).entries()) {
+      const agent = await config.createAgent({
+        id: `agent_no_provider_${index}`, name: `Mail ${index}`, instructions: 'Help with mail.', enabled: true,
+        creatorMembershipId: 'membership_alice', editPolicy: 'creator_and_admins',
+        skills: [], mcpServers: [], apiConnections: [], repositories: [],
+      });
+      const account = await config.putConnectionAccount({
+        id: `connection_no_provider_${index}`, workspaceId: 'T_MANAGED', ownerKind: 'member',
+        ownerMembershipId: 'membership_alice', createdByMembershipId: 'membership_alice',
+        providerId: 'google', label: 'Work Gmail', policy: { ...MANAGED_POLICY, accountRef: `ca_no_provider_${index}` },
+        secretRefId: `secret_no_provider_${index}`, lifecycle: 'ready',
+      });
+      await config.putAgentConnectionBinding({
+        agentId: agent.id, connectionAccountId: account.id, providerId: 'google',
+        allowedCapabilities: ['gmail.messages.search'], enabled: true,
+      });
+      await config.putAgentScheduleReference({
+        scheduleId: `schedule_no_provider_${index}`, agentId: agent.id, workspaceId: 'T_MANAGED',
+        channelId: 'C_MAIL', createdByMembershipId: 'membership_alice',
+        runsAsMembershipId: 'membership_alice', authorityReceiptId: `authority_no_provider_${index}`,
+        requiredConnectionAccountIds: [account.id], state: 'active',
+      });
+      await assert.rejects(remove(agent.id, account.id), ManagedConnectionProviderUnavailableError, name);
+      after[name] = {
+        lifecycle: (await config.listConnectionAccounts('T_MANAGED')).find(({ id }) => id === account.id)?.lifecycle,
+        schedule: (await config.listAgentScheduleReferences(agent.id))[0]?.state,
+      };
+    }
+    assert.deepEqual(after, {
+      'a person\'s removal': { lifecycle: 'ready', schedule: 'active' },
+      'a revoke that names no failure mode': { lifecycle: 'needs_attention', schedule: 'needs_attention' },
+      'an Agent deletion': { lifecycle: 'needs_attention', schedule: 'needs_attention' },
     });
-    await config.ensureWorkspaceInstallation({
-      workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_no_provider',
-    });
-    const account = await config.putConnectionAccount({
-      id: 'connection_no_provider', workspaceId: 'T_MANAGED', ownerKind: 'member',
-      ownerMembershipId: 'membership_alice', createdByMembershipId: 'membership_alice',
-      providerId: 'google', label: 'Work Gmail', policy: MANAGED_POLICY,
-      secretRefId: 'secret_no_provider', lifecycle: 'ready',
-    });
-    await config.putAgentConnectionBinding({
-      agentId: 'agent_no_provider', connectionAccountId: account.id, providerId: 'google',
-      allowedCapabilities: ['gmail.messages.search'], enabled: true,
-    });
-    await config.putAgentScheduleReference({
-      scheduleId: 'schedule_no_provider', agentId: 'agent_no_provider', workspaceId: 'T_MANAGED',
-      channelId: 'C_MAIL', createdByMembershipId: 'membership_alice',
-      runsAsMembershipId: 'membership_alice', authorityReceiptId: 'authority_no_provider',
-      requiredConnectionAccountIds: [account.id], state: 'active',
-    });
-    const state = async () => ({
-      lifecycle: (await config.listConnectionAccounts('T_MANAGED')).find(({ id }) => id === account.id)?.lifecycle,
-      schedule: (await config.listAgentScheduleReferences('agent_no_provider'))[0]?.state,
-    });
-
-    await assert.rejects(
-      service.disconnectForAgent({ principal: principal(), agentId: 'agent_no_provider', connectionAccountId: account.id }),
-      ManagedConnectionProviderUnavailableError,
-    );
-    assert.deepEqual(await state(), { lifecycle: 'ready', schedule: 'active' });
-    await assert.rejects(
-      service.revoke({ principal: principal(), connectionAccountId: account.id }),
-      ManagedConnectionProviderUnavailableError,
-    );
-    assert.deepEqual(await state(), { lifecycle: 'needs_attention', schedule: 'needs_attention' });
   } finally {
     config.close();
     settings.close();
