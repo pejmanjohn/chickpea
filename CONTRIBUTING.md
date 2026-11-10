@@ -112,6 +112,16 @@ DO_NOT_TRACK=1 npm run verify:cf-smoke
 DO_NOT_TRACK=1 npm run verify:cf-smoke:alarm
 ```
 
+On each PR that touches the management MCP program, run
+`npm run test:mcp` as the fast check. In about 15 seconds it runs the
+program's tests: the 5.0 tools, the cards' models and renders, test runs, the
+confirmations and tool policies behind them, and the Worker startup budget. It
+needs no host reservation. It does not replace the full suite, which a merge
+still needs. A test file joins by its name (`tests/mcp-*`,
+`tests/management-mcp-*`, `tests/test-run-*`, `tests/test-turn-*`), or by
+adding its path to `scripts/test-mcp.mjs`. `npm run test:mcp -- --list` shows
+the selection. A pattern that matches no file stops the run.
+
 The root test suite runs through `scripts/run-tests.mjs` under 8-way
 concurrency, known-slow files first, with `tsc --noEmit` alongside; a type
 error stops the pass. The CLI package's tests and `verify:regression`'s focused
@@ -194,11 +204,32 @@ platform-wide limit is 64 MiB uncompressed across all plans.
 
 Every Durable Object activation that starts an isolate loads the Worker's
 static closure (the chunks its entry imports without `import()`) before its
-constructor runs. `npm run verify:regression` fails when that closure exceeds
-the ceiling in `scripts/worker-closure.mjs`, and
-`tests/worker-startup-imports.test.ts` keeps the modules it lists off Worker
-startup. Load code the reply path does not need with `import()` where it is
-used, and lower the ceiling when a change shrinks the closure.
+constructor runs. Two budgets hold it: the source bytes of the repository
+modules Worker startup loads (`tests/worker-startup-imports.test.ts`, in
+`npm test`), and the built closure (`scripts/worker-closure.mjs`, in
+`npm run verify:regression` after its build). Each applies two rules:
+
+- **Growth.** A change may add 16 KiB over its merge base. The closure check
+  builds the base in a temporary export to measure it. A failure lists the
+  modules that grew. When the growth is deliberate, add a commit trailer such
+  as `Worker-Startup-Growth: 40 KiB, the connect route loads with every Agent`
+  to the change; it raises that change's allowance to the size it names.
+- **Ceiling.** A fixed total backstops the growth rule. It carries about
+  64 KiB of headroom, so parallel PRs do not collide on it. When a merge train
+  fills it, set it once to the measured size plus 64 KiB. Lower it when a
+  change shrinks startup.
+
+With no CI to name a PR's base, both checks ask Git:
+`git merge-base HEAD origin/main`, using `origin/main` as of the last
+`git fetch origin main`. A branch is one change, measured from that base to
+the working tree. On a local merge onto `origin/main`, where HEAD's
+first-parent history since the base is only merges, each merge is its own
+change, so a train of PRs that each fit still passes. For a PR stacked on
+another branch, set `CHICKPEA_BUDGET_BASE` to that branch. A checkout with no
+Git history or no `origin/main` checks the ceilings alone and says so.
+`tests/worker-startup-imports.test.ts` also keeps the modules it lists off
+Worker startup. Load code the reply path does not need with `import()` where
+it is used.
 
 Contributions are provided under the repository's [Apache-2.0 license](LICENSE).
 Be respectful in issues and reviews; criticize the work, not the person.

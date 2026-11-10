@@ -2,14 +2,24 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { readFile, readdir } from 'node:fs/promises';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { createPublicAssetRoutes } from '../src/assets/routes.ts';
 import { PUBLIC_ASSET_PATHS } from '../src/assets/public-assets.ts';
 import { readPublicAsset } from '../src/assets/read.node.ts';
 import { onboardingAssetBytes } from '../src/admin/onboarding-assets.ts';
 import { CONNECTOR_LOGOS } from '../src/config/connector-logos.ts';
+// @ts-expect-error Build tooling JavaScript helper.
+import { staleBuildReason } from '../scripts/lib/built-worker-config.mjs';
 
-test('Cloudflare build publishes only the runtime images and the Admin application assets', { skip: !existsSync('dist-cf/client') }, async () => {
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
+// A build left by a lane deploy or an earlier commit lists that commit's
+// assets; checking it against this source fails for no fault of the change.
+const unchecked: string | undefined = existsSync(`${ROOT}/dist-cf/client`)
+  ? staleBuildReason(ROOT)
+  : 'dist-cf has no Cloudflare build; npm run build makes one.';
+
+test('Cloudflare build publishes only the runtime images and the Admin application assets', { skip: unchecked ?? false }, async () => {
   const files = (await readdir('dist-cf/client', { recursive: true, withFileTypes: true }))
     .filter((entry) => entry.isFile() && entry.name !== '.assetsignore')
     .map((entry) => `${entry.parentPath}/${entry.name}`.replace(/^dist-cf\/client\//, ''));

@@ -21,7 +21,19 @@ test('the static closure follows static imports from the Worker entry and skips 
     '_leaf.js': { file: 'assets/leaf.js', imports: ['_shared.js'] },
     'src/lazy.ts': { file: 'assets/lazy.js', isDynamicEntry: true, imports: ['_leaf.js'] },
   }));
-  const { chunks, bytes } = measureStaticClosure(root);
+  const { chunks, bytes, modules } = measureStaticClosure(root);
   assert.equal(bytes, 147);
   assert.deepEqual(chunks.map(({ file }: { file: string }) => file), ['index.js', 'assets/shared.js', 'assets/leaf.js']);
+  assert.equal(modules, undefined, 'no module report, so no per-module sizes');
+
+  // The report names each module's chunk; only the closure's chunks count.
+  writeFileSync(path.join(root, 'bundle-modules.json'), JSON.stringify([
+    { id: 'src/app.ts', renderedLength: 90, chunk: 'index.js' },
+    { id: 'node_modules/pkg/index.js', renderedLength: 30, chunk: 'assets/shared.js' },
+    { id: 'src/lazy.ts', renderedLength: 800, chunk: 'assets/lazy.js' },
+  ]));
+  assert.deepEqual([...measureStaticClosure(root).modules], [['src/app.ts', 90], ['node_modules/pkg/index.js', 30]]);
+  // A report written before modules named their chunk cannot say which load at startup.
+  writeFileSync(path.join(root, 'bundle-modules.json'), JSON.stringify([{ id: 'src/app.ts', renderedLength: 90 }]));
+  assert.equal(measureStaticClosure(root).modules, undefined);
 });
