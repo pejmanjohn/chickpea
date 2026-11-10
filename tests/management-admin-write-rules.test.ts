@@ -656,6 +656,47 @@ test('Admin-made connections round-trip through management: a reviewed connector
       'tools change only through Admin\'s review');
   }));
 
+test('a 4.x write that leaves out a reviewed connector\'s toolPolicies keeps them; one that changes its tools is refused', () =>
+  withFixture('write-rules-reviewed-omitted', async (f) => {
+    const agent = await seedAgent(f);
+    const toolPolicies = { list_errors: { effect: 'read' as const, argumentConstraints: { project: ['web'] } } };
+    await f.config.createAgentOwnedConnection({
+      account: {
+        id: 'connection_bugsnag', workspaceId: TEAM, ownerKind: 'team', createdByMembershipId: f.owner.membership.id,
+        providerId: 'bugsnag', label: 'Bugsnag', secretRefId: 'secret_bugsnag', lifecycle: 'ready',
+        policy: {
+          kind: 'mcp', url: BUGSNAG_MCP_SERVER_URL, transport: 'streamable-http', authMode: 'oauth', headerNames: [],
+          oauthScope: 'api', toolAccessMode: 'review', discoveredTools: [{ name: 'list_errors' }, { name: 'delete_project' }],
+          allowedTools: ['list_errors'], toolPolicies,
+        },
+      },
+      binding: { agentId: agent.id, connectionAccountId: 'connection_bugsnag', providerId: 'bugsnag', allowedCapabilities: [], enabled: true },
+    });
+    const bugsnag = async () => (await accountFor(f, agent.id, 'bugsnag')).policy;
+    const stored = await bugsnag();
+    const edit = async (idempotencyKey: string, change: (connection: ManagementMcpConnection) => ManagementMcpConnection) => {
+      const current = await inspectAgent(f, agent.id);
+      return apply(f, idempotencyKey, [{
+        itemId: 'edit', kind: 'update_agent', agentId: agent.id, expectedRevision: current.revision,
+        patch: { instructions: `Help the team (${idempotencyKey}).`, mcpServers: current.mcpServers.map(change) },
+      }]);
+    };
+    const omitted = ({ toolPolicies: _, ...connection }: ManagementMcpConnection): ManagementMcpConnection => connection;
+
+    const kept = await edit('omit', omitted);
+    assert.deepEqual(kept.outcomes.map(({ disposition }) => disposition), ['applied'], JSON.stringify(kept.outcomes));
+    assert.equal((await f.config.getAgent(agent.id)).instructions, 'Help the team (omit).');
+    assert.deepEqual(await bugsnag(), stored, 'the reviewed policy is as stored');
+    for (const [key, change] of [
+      ['omit-widen', (connection) => ({ ...omitted(connection), allowedTools: ['list_errors', 'delete_project'] })],
+      ['clear', (connection) => ({ ...connection, toolPolicies: {} })],
+    ] as const satisfies ReadonlyArray<readonly [string, (connection: ManagementMcpConnection) => ManagementMcpConnection]>) {
+      const refused = await edit(key, change);
+      assert.equal(refused.outcomes[0]?.disposition, 'failed', JSON.stringify(refused.outcomes));
+      assert.deepEqual(await bugsnag(), stored, `${key}: tools change only through Admin's review`);
+    }
+  }));
+
 const OAUTH_TOKENS = '{"refreshToken":"rt-secret"}';
 
 /** An Agent with one MCP and one API account that signed in with OAuth, each holding stored tokens. */

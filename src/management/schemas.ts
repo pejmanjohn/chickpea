@@ -62,8 +62,6 @@ const zSkill = z.strictObject({
   suggestedSkillId: zSkillName.optional(),
   importSource: zSkillImportSource.optional(),
 });
-/** The 4.x MCP door's only: on vMcpConnection it would change the shared prefix of Slack's management turns. */
-const toolPoliciesDescription = 'Each tool\'s read or write mark and argument limits. Omit to keep them as stored.';
 const zMcpToolPolicies = z.record(zText(120), z.strictObject({
   effect: z.enum(['read', 'write']),
   argumentConstraints: z.record(zText(120), z.array(zText(120)).min(1).max(50)).optional(),
@@ -77,7 +75,7 @@ export const zMcpConnection = z.strictObject({
   authMode: z.enum(['none', 'bearer', 'oauth']),
   headerNames: z.array(zText(120)).max(32),
   enabled: z.boolean(),
-  toolPolicies: zMcpToolPolicies.optional().describe(toolPoliciesDescription),
+  toolPolicies: zMcpToolPolicies.optional().describe('Each tool\'s read or write mark and argument limits. Omit to keep them as stored.'),
   allowedTools: z.array(zText(120)).max(MAX_MCP_TOOLS),
   oauthScope: zOptionalText(MAX_MCP_OAUTH_SCOPE_LENGTH).optional(),
   presetId: zId.optional(),

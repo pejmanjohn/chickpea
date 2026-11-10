@@ -4880,13 +4880,16 @@ export class WorkspaceManagementService {
     const edit = agentPatchWithConnectionIds(connections, patch);
     const prefixProblem = edit.apiConnections && headerValuePrefixProblem(edit.apiConnections, connections.apiConnections);
     if (prefixProblem) throw new AgentWriteRuleError(prefixProblem);
-    // Admin changes a reviewed connector's tools only through its review; a rename is harmless.
+    // Admin changes a reviewed connector's tools only through its review; a rename, or leaving out toolPolicies, is harmless.
     const reviewedPolicy = (connection: ManagementMcpConnection) =>
       canonicalJson({ ...managementMcpConnection(connection), displayName: '' });
     for (const connection of edit.mcpServers ?? []) {
       const stored = connections.mcpServers.find(({ id }) => id === connection.id);
       if ((isMcpToolReviewRequired(connection) || (stored && isMcpToolReviewRequired(stored))) &&
-          (!stored || reviewedPolicy(connection) !== reviewedPolicy(stored))) {
+          (!stored || reviewedPolicy({
+            ...connection,
+            ...(connection.toolPolicies || !stored.toolPolicies ? {} : { toolPolicies: stored.toolPolicies }),
+          }) !== reviewedPolicy(stored))) {
         throw reviewedConnectorError(stored ?? connection);
       }
     }
