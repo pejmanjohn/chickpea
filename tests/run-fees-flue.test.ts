@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
@@ -45,6 +45,12 @@ import type { WebSearchProvider } from '../src/web/search.ts';
 import { createWebTurn, WEB_READS_PER_TURN, WEB_SEARCHES_PER_TURN, type WebTurnState } from '../src/web/turn.ts';
 import { genericSemanticDescriptor } from '../src/activity/semantic.ts';
 import { runFeeInterceptor } from '../src/config/run-fee-interceptor.ts';
+import { CHICKPEA_TEST_TURN_AGENT_NAME } from '../src/agents/names.ts';
+import {
+  TEST_TURN_TOOL_CALL_LIMIT,
+  TEST_TURN_TOOL_LIMIT_MESSAGE,
+  testTurnToolCallInterceptor,
+} from '../src/agents/test-turn-limits.ts';
 import type { PlatformEnv } from '../src/config/state-backend.ts';
 import { ANTHROPIC_COMPAT_PROVIDER_ID } from '../src/model-catalog/provider-alias.ts';
 import { SlackCanvasService } from '../src/slack/canvases/service.ts';
@@ -1243,3 +1249,98 @@ for (const [name, env, port] of [
     assert.equal(warn.mock.callCount(), 0, 'nothing tried to post');
   });
 }
+
+/** The test run's limit where app.ts registers it, outside the run fees, or (to show why) inside them. */
+function testTurnInterceptors(t: TestContext, limit: 'outside' | 'inside', refusals: string[]) {
+  const modelAccess = createModelAccessInterceptor({
+    lookup: async (context) => replyRun(hostedEnv())(context.submissionId),
+    installationGrants: async () => [],
+  });
+  const recordsRefusals: FlueExecutionInterceptor = (operation, context, next) =>
+    testTurnToolCallInterceptor(operation, context, next).catch((error: unknown) => {
+      if (error instanceof Error && error.message === TEST_TURN_TOOL_LIMIT_MESSAGE) refusals.push(error.message);
+      throw error;
+    });
+  const order = limit === 'outside' ? [recordsRefusals, runFeeInterceptor] : [runFeeInterceptor, recordsRefusals];
+  for (const interceptor of [modelAccess, ...order]) {
+    t.after(instrument({ key: Symbol('test-turn-fees'), interceptor, observe() {}, dispose() {} }));
+  }
+}
+
+/** FeeProbe's tools, as their own agent function: Flue binds a function to one name. */
+function TestTurnFeeProbe() {
+  return FeeProbe();
+}
+
+/** One test run's reply: the agent is registered under the test run's name, which the limit keys on. */
+async function testTurnReply(id: string): Promise<string> {
+  const runtime = await start({
+    agents: [{ agent: TestTurnFeeProbe, name: CHICKPEA_TEST_TURN_AGENT_NAME }],
+    providers: [registeredPiProvider(ANTHROPIC_COMPAT_PROVIDER_ID)!],
+  });
+  try {
+    const agent = init(TestTurnFeeProbe, { id });
+    return (await agent.read(await agent.dispatch('Hello'))).text;
+  } finally {
+    await runtime.stop();
+  }
+}
+
+const freeReads = (count: number) => callsTools(...Array.from({ length: count }, () => 'read_slack_thread'));
+
+test('a test run\'s 26th tool call is refused to the model before it runs, and posts no task fee', { timeout: 20_000 }, async (t) => {
+  const posts = hostedPort(t);
+  const refusals: string[] = [];
+  testTurnInterceptors(t, 'outside', refusals);
+  // 25 calls that are no task, then the run's first task call as its 26th.
+  const { sent } = scriptedProvider([freeReads(TEST_TURN_TOOL_CALL_LIMIT), callsTools('read_slack_channel'), answers]);
+  ran.length = 0;
+
+  assert.equal(await testTurnReply('test-turn-limit'), 'done', 'the model read the refusal and answered');
+  assert.equal(sent.length, 3);
+  assert.deepEqual(ran, Array.from({ length: TEST_TURN_TOOL_CALL_LIMIT }, () => 'read_slack_thread'));
+  assert.deepEqual(refusals, [TEST_TURN_TOOL_LIMIT_MESSAGE]);
+  assert.deepEqual(admissions, [], 'the refused call never asked to become a task');
+  assert.deepEqual(tiers(posts), ['chat:posted']);
+});
+
+test('calls a test run makes in parallel cannot pass its limit together', { timeout: 20_000 }, async (t) => {
+  hostedPort(t);
+  const refusals: string[] = [];
+  testTurnInterceptors(t, 'outside', refusals);
+  scriptedProvider([freeReads(TEST_TURN_TOOL_CALL_LIMIT + 2), answers]);
+  ran.length = 0;
+
+  assert.equal(await testTurnReply('test-turn-parallel'), 'done');
+  assert.equal(ran.length, TEST_TURN_TOOL_CALL_LIMIT);
+  assert.equal(refusals.length, 2);
+});
+
+test('only a test run is limited: the same calls from another agent all run', { timeout: 20_000 }, async (t) => {
+  hostedPort(t);
+  const refusals: string[] = [];
+  testTurnInterceptors(t, 'outside', refusals);
+  scriptedProvider([freeReads(TEST_TURN_TOOL_CALL_LIMIT + 1), answers]);
+  ran.length = 0;
+
+  assert.deepEqual(await slackTurn('test-turn-other-agent'), { text: 'done' });
+  assert.equal(ran.length, TEST_TURN_TOOL_CALL_LIMIT + 1);
+  assert.deepEqual(refusals, []);
+});
+
+test('registered inside the run fees, the same refusal would post a task fee, so app.ts registers it outside them', { timeout: 20_000 }, async (t) => {
+  const posts = hostedPort(t);
+  const refusals: string[] = [];
+  testTurnInterceptors(t, 'inside', refusals);
+  scriptedProvider([freeReads(TEST_TURN_TOOL_CALL_LIMIT), callsTools('read_slack_channel'), answers]);
+  ran.length = 0;
+
+  assert.equal(await testTurnReply('test-turn-limit-inside'), 'done');
+  assert.deepEqual(refusals, [TEST_TURN_TOOL_LIMIT_MESSAGE]);
+  assert.deepEqual(tiers(posts), ['chat:posted', 'task:posted'], 'a fee for a call that never ran');
+
+  const app = readFileSync(new URL('../src/app.ts', import.meta.url), 'utf8');
+  const at = (key: string) => app.indexOf(`Symbol.for('${key}')`);
+  assert.ok(at('chickpea.test-turn-tool-calls') > 0 && at('chickpea.test-turn-tool-calls') < at('chickpea.run-fees'),
+    'app.ts registers the test run limit before, and so outside, the run fees');
+});

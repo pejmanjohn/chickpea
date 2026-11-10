@@ -52,6 +52,7 @@ import { startNodeGatewaySession } from './slack/gateway/node-runtime.ts';
 import { workModelInvocationInterceptor } from './work/model-invocation.ts';
 import { modelAccessInterceptor } from './agents/model-access-lookup.ts';
 import { runFeeInterceptor } from './config/run-fee-interceptor.ts';
+import { testTurnToolCallInterceptor } from './agents/test-turn-limits.ts';
 import { observeModelAccess } from './config/model-access.ts';
 import { workspaceRegistryInterceptor } from './sandbox/workspace-registry.ts';
 import {
@@ -179,6 +180,14 @@ instrument({
   key: Symbol.for('chickpea.model-access'),
   interceptor: modelAccessInterceptor,
   observe: observeModelAccess,
+  dispose() {},
+});
+
+// Outside the run fees, so a test run's call refused past its limit posts no fee.
+instrument({
+  key: Symbol.for('chickpea.test-turn-tool-calls'),
+  interceptor: testTurnToolCallInterceptor,
+  observe() {},
   dispose() {},
 });
 

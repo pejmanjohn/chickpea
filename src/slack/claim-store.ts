@@ -377,6 +377,8 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
     instanceId: string,
     submissionId?: string,
   ): Promise<FlueObservationTarget | undefined>;
+  /** A live test run's plan, binding the run to its first submission; none for another. */
+  bindTestRunModelAccess?(instanceId: string, submissionId: string): Promise<{ runtimePlan: unknown } | undefined>;
   recordTurnAttempt?(id: string, attempts: number): Promise<void>;
   recordInteractionIntent?(id: string, intent: SlackInteractionIntent): Promise<void>;
   recordSlackInteractionProgress?(
