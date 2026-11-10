@@ -189,6 +189,7 @@
     "test:cli": "npm test --workspace packages/cli",
     "chatgpt-helper:build": "node scripts/build-chatgpt-helper.mjs",
     "mcp-cards:build": "node scripts/build-mcp-cards.mjs",
+    "mcp-cards:harness": "node --import tsx scripts/mcp-card-harness.mjs",
     "build:cli": "npm run build --workspace packages/cli",
     "verify:live:record": "node scripts/verification-record.mjs",
     "verify:smoke": "node scripts/verify-smoke.mjs",
