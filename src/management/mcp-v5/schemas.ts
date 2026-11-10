@@ -281,7 +281,13 @@ export const updateConnectionInput = z.strictObject({
   agentId: zAgentId,
   connectionId: zConnectionId.describe('A custom_api or custom_mcp connectionId from get_agent.'),
   version: zAgentVersion,
-  changes: z.strictObject(zCustomFields).refine((changes) => Object.keys(changes).length > 0, 'Name at least one field to change.'),
+  changes: z.strictObject({
+    ...zCustomFields,
+    readTools: z.array(zText(120)).max(MAX_MCP_TOOLS).optional()
+      .describe('MCP: allowed tools to mark as reads, ones that only look things up and change or send nothing. A test run calls only these. Ask the person when a tool\'s name does not say.'),
+    writeTools: z.array(zText(120)).max(MAX_MCP_TOOLS).optional()
+      .describe('MCP: allowed tools to mark as writes. A tool named in neither keeps its mark.'),
+  }).refine((changes) => Object.keys(changes).length > 0, 'Name at least one field to change.'),
   checkPath: zCheckPath.optional(),
   idempotencyKey: zIdempotencyKey,
 });
@@ -403,6 +409,8 @@ export const getAgentOutput = z.strictObject({
       headerName: z.string().optional(),
       url: z.string().optional(),
       allowedTools: z.array(z.string()).optional(),
+      readTools: z.array(z.string()).optional().describe('MCP: allowed tools marked as reads. A test run calls only these.'),
+      writeTools: z.array(z.string()).optional().describe('MCP: allowed tools marked as writes. A tool in neither is unmarked.'),
       guide: z.string().optional(),
     }).optional(),
   })),

@@ -346,15 +346,48 @@ function cannotReconnect(deps: FiveZeroDeps, agentId: string, name: string): nev
 
 const API_CHANGES = { name: 'displayName', hosts: 'allowedHosts', pathPrefixes: 'pathPrefixes', methods: 'allowedMethods', headerName: 'headerName', headerValuePrefix: 'headerValuePrefix', guide: 'guide' } as const;
 const MCP_CHANGES = { name: 'displayName', url: 'url', allowedTools: 'allowedTools', guide: 'guide' } as const;
+/** An MCP connection's marks, which markedTools applies after the fields above. */
+const MCP_MARKS: readonly string[] = ['readTools', 'writeTools'] satisfies Array<keyof CustomChanges>;
 
 /** The changed entry, or a refusal naming a field the connection's kind does not have. */
-function changedEntry<T extends object>(entry: T, changes: CustomChanges, fields: Readonly<Record<string, string>>, kind: string): T {
-  const wrong = Object.keys(changes).filter((field) => !(field in fields));
+function changedEntry<T extends object>(
+  entry: T,
+  changes: CustomChanges,
+  fields: Readonly<Record<string, string>>,
+  kind: string,
+  others: readonly string[] = [],
+): T {
+  const wrong = Object.keys(changes).filter((field) => !(field in fields) && !others.includes(field));
   if (wrong.length) fail('invalid_input', `A custom ${kind} connection has no ${wrong.join(' or ')} to change.`);
   return {
     ...entry,
-    ...Object.fromEntries(Object.entries(changes).map(([field, value]) => [fields[field]!, value])),
+    ...Object.fromEntries(Object.entries(changes).flatMap(([field, value]) => field in fields ? [[fields[field]!, value]] : [])),
   };
+}
+
+/**
+ * The MCP connection with the named tools marked as reads or writes, the
+ * tool policy Admin's API and 4.x declare; a tool not named keeps its mark,
+ * and its argument limits stay. Only an allowed tool can be marked. A test
+ * run calls only the tools marked as reads.
+ */
+function markedTools(entry: SnapshotAgent['mcpServers'][number], { readTools = [], writeTools = [] }: CustomChanges) {
+  const both = readTools.filter((tool) => writeTools.includes(tool));
+  if (both.length) fail('invalid_input', `Mark ${both.join(', ')} as a read or as a write, not both.`);
+  const unknown = [...readTools, ...writeTools].filter((tool) => !entry.allowedTools.includes(tool));
+  if (unknown.length) {
+    fail('invalid_input', `${entry.displayName} does not allow ${unknown.join(', ')}, so it cannot be marked.`, {
+      nextStep: entry.allowedTools.length > 0
+        ? `Mark only its allowedTools from get_agent: ${entry.allowedTools.join(', ')}.`
+        : 'It allows no tools yet; once its setup finishes, get_agent lists them.',
+    });
+  }
+  if (readTools.length + writeTools.length === 0) return entry;
+  const toolPolicies = { ...entry.toolPolicies };
+  for (const [tools, effect] of [[readTools, 'read'], [writeTools, 'write']] as const) {
+    for (const tool of tools) toolPolicies[tool] = { ...toolPolicies[tool], effect };
+  }
+  return { ...entry, toolPolicies };
 }
 
 /**
@@ -382,7 +415,11 @@ export async function updateConnection(
       }
       const patch = api
         ? { apiConnections: agent.apiConnections.map((entry) => entry === api ? changedEntry(entry, input.changes, API_CHANGES, 'API') : entry) }
-        : { mcpServers: agent.mcpServers.map((entry) => entry === mcp ? changedEntry(entry, input.changes, MCP_CHANGES, 'MCP') : entry) };
+        : {
+            mcpServers: agent.mcpServers.map((entry) => entry === mcp
+              ? markedTools(changedEntry(entry, input.changes, MCP_CHANGES, 'MCP', MCP_MARKS), input.changes)
+              : entry),
+          };
       return [{ itemId: 'update_connection', kind: 'update_agent', agentId: agent.id, expectedRevision: agent.revision, patch }];
     },
   });

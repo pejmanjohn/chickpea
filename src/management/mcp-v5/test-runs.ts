@@ -10,19 +10,22 @@ import type { z } from 'zod';
 
 import { resolveAgentRunPlan } from '../../agents/run-plan-resolution.ts';
 import { compileTestRunPlan, untestableConnections } from '../../agents/test-run-plan.ts';
+import { canManageOwnedResource } from '../../auth/permissions.ts';
 import type { TestTurnInitialData } from '../../agents/test-turn.ts';
 import { slackTenantInstructions } from '../../agents/shared-prefix-layout.ts';
 import { installationOwnershipOf } from '../../config/installation-scope.ts';
+import { isMcpToolReviewRequired } from '../../config/mcp-access.ts';
 import { resolveModelCredentialAttribution } from '../../config/model-credential-refs.ts';
+import type { EffectiveConnectionAccount } from '../../connections/types.ts';
 import { agentMemoryPromptBlock } from '../../memory/runtime.ts';
 import { escapeSlackControlCharacters } from '../../slack/message-format.ts';
 import { TestRunUsageRecorder } from '../../usage/test-run-usage.ts';
 import type { TestRunStore, TestRunView } from '../test-run-types.ts';
 import { ManagementError } from '../types.ts';
-import { readAgentRun, resolveAgentModel, type AgentRunReading } from './agent-run.ts';
+import { readAgentInCallerDm, resolveAgentModel, type AgentAdmissionReading } from './agent-run.ts';
 import { admissionChecks, agentAdminFix, modelChecks } from './check.ts';
 import { fail, fiveZeroCode, McpToolFailure, type McpErrorFix } from './conventions.ts';
-import type { FiveZeroDeps } from './reads.ts';
+import { agentConnectionsOf, type FiveZeroDeps } from './reads.ts';
 import type * as schemas from './schemas.ts';
 
 type Output = z.infer<typeof schemas.testRunOutput>;
@@ -30,8 +33,14 @@ type Output = z.infer<typeof schemas.testRunOutput>;
 /** What every result says of the run, whatever its status. */
 export const TEST_RUN_NOTE = 'A test run: it runs once, read-only. It makes only read requests and sends nothing to Slack.';
 
-/** A tool call waits this long for the run to settle, then returns `running`. */
+/** get_test_run waits this long for the run to settle, then returns `running`. */
 export const TEST_RUN_WAIT_MS = 20_000;
+/**
+ * try_agent_once returns `running` this long after the call starts, its
+ * admission included, so the whole call stays well inside a client's
+ * tool-call timeout. The card then polls get_test_run.
+ */
+export const TRY_AGENT_ONCE_RETURNS_BY_MS = 15_000;
 const TEST_RUN_POLL_MS = 1_000;
 
 export interface TestRunTiming {
@@ -49,16 +58,18 @@ export async function tryAgentOnce(
   input: z.infer<typeof schemas.tryAgentOnceInput>,
   timing: TestRunTiming = REAL_TIME,
 ): Promise<Output> {
-  const store = await testRunStore(deps);
-  const reading = await readTestedAgent(deps, input.agentId);
+  const until = timing.now() + TRY_AGENT_ONCE_RETURNS_BY_MS;
+  const [store, reading] = await Promise.all([testRunStore(deps), readTestedAgent(deps, input.agentId)]);
   const { agent, actor } = reading;
   const caller = { organizationId: actor.organizationId, actorMembershipId: actor.membershipId };
-  const ask = await reading.stores.config.getAgentFirstAsk?.(agent.id) ?? null;
   // A retry gets the run it started, whatever has changed since.
-  const replayed = await store.replay({ ...caller, idempotencyKey: input.idempotencyKey });
+  const [ask, replayed] = await Promise.all([
+    reading.stores.config.getAgentFirstAsk?.(agent.id) ?? null,
+    store.replay({ ...caller, idempotencyKey: input.idempotencyKey }),
+  ]);
   if (replayed) {
     if (replayed.agentId !== agent.id) keyReused();
-    return result(await settle(store, { ...caller, runToken: replayed.runToken }, replayed, timing), ask ?? '', agent.name, timing);
+    return result(await settle(store, { ...caller, runToken: replayed.runToken }, replayed, timing, until), ask ?? '', agent.name, timing);
   }
   if (!ask) {
     fail('not_found', `${agent.name} has no saved first question to test.`, {
@@ -70,11 +81,12 @@ export async function tryAgentOnce(
     fail('not_allowed', `You can't message ${agent.name} in Slack yet, so it can't be tested as you.`,
       admission.fix ? { fix: admission.fix } : {});
   }
-  const [model] = await modelChecks(deps, reading);
+  const resolved = await resolveAgentModel(reading);
+  const [model] = await modelChecks(deps, reading, resolved);
   if (model?.status === 'failing') {
     fail('model_unavailable', `${agent.name} can't run right now. ${model.detail}`, model.fix ? { fix: model.fix } : {});
   }
-  const run = await resolveTestRun(deps, reading, ask, input.idempotencyKey);
+  const run = await resolveTestRun(deps, reading, resolved, ask, input.idempotencyKey);
   const started = await store.start(run.request);
   switch (started.kind) {
     case 'in_progress':
@@ -87,7 +99,7 @@ export async function tryAgentOnce(
       return expired();
     default:
       return result(
-        await settle(store, { ...caller, runToken: started.run.runToken }, started.run, timing),
+        await settle(store, { ...caller, runToken: started.run.runToken }, started.run, timing, until),
         ask,
         agent.name,
         timing,
@@ -110,7 +122,7 @@ export async function getTestRun(
     throw error;
   });
   const ask = await stores.config.getAgentFirstAsk?.(agent.id) ?? '';
-  return result(await settle(store, query, first, timing), ask, agent.name, timing);
+  return result(await settle(store, query, first, timing, timing.now() + TEST_RUN_WAIT_MS), ask, agent.name, timing);
 }
 
 /** Node and a standalone Cloudflare deployment serve none: the run's instance is erased with the host erase. */
@@ -121,10 +133,10 @@ async function testRunStore(deps: FiveZeroDeps): Promise<TestRunStore> {
     });
 }
 
-/** The Agent, read as check_agent reads it, for the caller in a direct message. */
-async function readTestedAgent(deps: FiveZeroDeps, agentId: string): Promise<AgentRunReading> {
+/** The Agent for the caller in a direct message, as check_agent judges it, read without the workspace snapshot. */
+async function readTestedAgent(deps: FiveZeroDeps, agentId: string): Promise<AgentAdmissionReading> {
   try {
-    return await readAgentRun(deps, { agentId });
+    return await readAgentInCallerDm(deps, agentId);
   } catch (error) {
     if (!(error instanceof McpToolFailure && error.error.code === 'not_found')) throw error;
     // One they may use but not change is named; any other reads as missing.
@@ -141,9 +153,14 @@ async function readTestedAgent(deps: FiveZeroDeps, agentId: string): Promise<Age
  * the real route. Refuses a connection the caller has yet to set up, and one
  * the narrowed plan cannot read through.
  */
-async function resolveTestRun(deps: FiveZeroDeps, reading: AgentRunReading, ask: string, idempotencyKey: string) {
+async function resolveTestRun(
+  deps: FiveZeroDeps,
+  reading: AgentAdmissionReading,
+  { assignment }: Awaited<ReturnType<typeof resolveAgentModel>>,
+  ask: string,
+  idempotencyKey: string,
+) {
   const { stores, agent, workspaceId, actor } = reading;
-  const { assignment } = await resolveAgentModel(reading);
   if (!assignment || !stores.settings) {
     fail('model_unavailable', `${agent.name} can't run right now. This deployment cannot resolve its model.`);
   }
@@ -167,19 +184,18 @@ async function resolveTestRun(deps: FiveZeroDeps, reading: AgentRunReading, ask:
       .find(({ id }) => id === pending.templateAccountId);
     const service = template?.label ?? pending.providerId;
     // As check_agent gives it: reconnect_service's link for a connection the Agent lists, else Admin.
-    const fix: McpErrorFix | undefined = reading.snapshotAgent.connections?.some(({ id }) => id === pending.templateAccountId)
+    const listed = (await agentConnectionsOf(deps, reading.context, agent.id))?.connections;
+    const fix: McpErrorFix | undefined = listed?.some(({ id }) => id === pending.templateAccountId)
       ? { label: `Finish setting up ${service}`, tool: 'reconnect_service', arguments: { agentId: agent.id, connectionId: pending.templateAccountId } }
       : agentAdminFix(deps, reading, 'Finish its setup in Admin');
     fail('needs_setup', `Finish setting up ${service} first, then try again.`, fix ? { fix } : {});
   }
   const [untestable] = untestableConnections(parts.connections);
-  if (untestable) {
-    const fix = agentAdminFix(deps, reading, 'Open the Agent in Admin');
-    fail('not_testable',
-      `None of ${untestable.account.label}'s tools are marked as reads, so a test run can't use it. Ask ${agent.name} in Slack instead.`,
-      fix ? { fix } : {});
-  }
-  const memory = await stores.memory?.getAgentMemory(agent.id);
+  if (untestable) await notTestable(deps, reading, untestable);
+  const [memory, timezone] = await Promise.all([
+    stores.memory?.getAgentMemory(agent.id),
+    reading.person.slackUserId ? stores.slackMemberTimezone?.(reading.person.slackUserId) : undefined,
+  ]);
   const memoryBlock = memory ? agentMemoryPromptBlock(memory.body) : undefined;
   const testRunId = `testrun_${token(20)}`;
   const coordinateToken = token(20).slice(0, 26);
@@ -194,9 +210,6 @@ async function resolveTestRun(deps: FiveZeroDeps, reading: AgentRunReading, ask:
     memoryEpoch: Math.max(1, (memory?.revision ?? 0) + 1),
   });
   const askedAt = Date.now();
-  const timezone = reading.person.slackUserId
-    ? await stores.slackMemberTimezone?.(reading.person.slackUserId)
-    : undefined;
   const initialData: TestTurnInitialData = {
     runtimePlan: plan,
     ...(memoryBlock ? { memoryBlock } : {}),
@@ -233,19 +246,51 @@ async function resolveTestRun(deps: FiveZeroDeps, reading: AgentRunReading, ask:
   };
 }
 
+/**
+ * A connection a test run cannot read through, with what fixes it. A custom
+ * MCP connection's tools are marked as reads with update_connection, by
+ * whoever may change that connection, as in Admin. A managed service's read
+ * tools, or a reviewed connector's, are chosen on the Agent's page in Admin.
+ * Nothing marks a catalog MCP service's tools, so it gets no fix.
+ */
+async function notTestable(
+  deps: FiveZeroDeps,
+  reading: AgentAdmissionReading,
+  { account, policy }: EffectiveConnectionAccount,
+): Promise<never> {
+  const { agent } = reading;
+  const cannot = `None of ${account.label}'s tools are marked as reads, so a test run can't use it.`;
+  if (policy.kind === 'mcp' && !policy.presetId) {
+    if (!canManageOwnedResource(reading.actor, account)) {
+      fail('not_testable', `${cannot} An Owner or Admin can mark the tools that only read as reads.`);
+    }
+    // The connectionId get_agent shows for it: its provider ID, or its own when two share one.
+    const lanes = (await agentConnectionsOf(deps, reading.context, agent.id))?.mcpServers.map(({ id }) => id) ?? [];
+    const connectionId = lanes.find((id) => id === account.id) ?? lanes.find((id) => id === account.providerId) ?? account.id;
+    fail('not_testable', `${cannot} Mark the tools that only read as reads, then try again.`, {
+      nextStep: 'Ask the person which of its tools only look things up, then call update_connection with those in changes.readTools and the version get_agent returns.',
+      fix: { label: `Mark ${account.label}'s read tools`, tool: 'update_connection', arguments: { agentId: agent.id, connectionId } },
+    });
+  }
+  const fix = policy.kind === 'managed' || isMcpToolReviewRequired(policy)
+    ? agentAdminFix(deps, reading, 'Open the Agent in Admin')
+    : undefined;
+  return fail('not_testable', `${cannot} Ask ${agent.name} in Slack instead.`, fix ? { fix } : {});
+}
+
 /** The first ask as a Slack person's text reaches the model: plain, with Slack's control characters escaped. */
 export function testRunMessage(ask: string): string {
   return escapeSlackControlCharacters(ask);
 }
 
-/** Polls the state store, which runs the settle step on each read, for up to 20 seconds. */
+/** Polls the state store, which runs the settle step on each read, until `until`. */
 async function settle(
   store: TestRunStore,
   query: { organizationId: string; actorMembershipId: string; runToken: string },
   first: TestRunView,
   timing: TestRunTiming,
+  until: number,
 ): Promise<TestRunView> {
-  const until = timing.now() + TEST_RUN_WAIT_MS;
   let view = first;
   while ((view.status === 'admitted' || view.status === 'running') && timing.now() + TEST_RUN_POLL_MS <= until) {
     await timing.sleep(TEST_RUN_POLL_MS);

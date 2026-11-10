@@ -5,15 +5,17 @@ import {
 } from '../../agents/run-plan-resolution.ts';
 import type { RuntimePlanV2 } from '../../agents/runtime-plan.ts';
 import { slackTenantInstructions } from '../../agents/shared-prefix-layout.ts';
+import { CHICKPEA_AGENT_ID } from '../../config/agent-id.ts';
 import { ModelResolutionError } from '../../config/errors.ts';
 import { resolveModelCredentialAttribution } from '../../config/model-credential-refs.ts';
 import { resolveModelPolicyForAssignment } from '../../config/model-policy.ts';
 import type { ModelUnavailable } from '../../config/model-readiness.ts';
-import type {
-  AgentChannelGrant,
-  CustomAgentConfig,
-  ResolvedAssignment,
-  WorkspaceInstallation,
+import {
+  agentAppIsLive,
+  type AgentChannelGrant,
+  type CustomAgentConfig,
+  type ResolvedAssignment,
+  type WorkspaceInstallation,
 } from '../../config/types.ts';
 import type { MembershipStatus } from '../../identity/types.ts';
 import type { WorkspaceManagementService, WorkspaceManagementServiceInput } from '../service.ts';
@@ -24,7 +26,7 @@ import {
   type ManagementWorkspaceSnapshot,
 } from '../types.ts';
 import { fail } from './conventions.ts';
-import { requireAgent, type FiveZeroDeps } from './reads.ts';
+import { agentNotFound, requireAgent, type FiveZeroDeps } from './reads.ts';
 
 /**
  * One Agent, one place and one person, read the way a Slack turn admits them
@@ -56,12 +58,18 @@ export interface AgentRunPerson {
   status: MembershipStatus;
 }
 
-export interface AgentRunReading {
+/** What admission and the model check read: one Agent, one person, one place. */
+export interface AgentAdmissionReading {
   context: ManagementActorContext;
   actor: LiveManagementActor;
   agent: CustomAgentConfig;
-  snapshot: ManagementWorkspaceSnapshot;
-  snapshotAgent: SnapshotAgent;
+  /** The Agent as the snapshot projects it, as far as these checks read it. */
+  snapshotAgent: Pick<SnapshotAgent, 'ownSlackApp'> & {
+    effectiveModels: Pick<SnapshotAgent['effectiveModels'], 'model' | 'modelSource' | 'effort'>;
+    slackPresence?: Pick<NonNullable<SnapshotAgent['slackPresence']>, 'normalizedHandle'>;
+  };
+  /** The Channels the caller may see; only a Channel place reads them. */
+  snapshot: Pick<ManagementWorkspaceSnapshot, 'channels'>;
   stores: AgentRunStores;
   /** The Slack team the Agent answers in. */
   workspaceId: string;
@@ -75,18 +83,18 @@ export interface AgentRunReading {
   place: AgentRunPlace;
 }
 
+export interface AgentRunReading extends AgentAdmissionReading {
+  snapshot: ManagementWorkspaceSnapshot;
+  snapshotAgent: SnapshotAgent;
+}
+
 /** The caller's authority over the Agent, then whose run in which place. */
 export async function readAgentRun(deps: FiveZeroDeps, input: AgentRunInput): Promise<AgentRunReading> {
   const context = await deps.context();
   const { actor, agent, stores } = await managedAgent(deps.service, context, input.agentId);
   const snapshot = await deps.service.inspectWorkspace(context);
   const snapshotAgent = requireAgent(snapshot, input.agentId);
-  const workspaceId = snapshot.slackTeamId;
-  if (!workspaceId) {
-    fail('invalid_input', 'Chickpea is not connected to a Slack workspace yet.', {
-      nextStep: 'Tell the person to finish connecting Slack in Admin.',
-    });
-  }
+  const workspaceId = snapshot.slackTeamId ?? notConnected();
   const [installation, grants, person] = await Promise.all([
     stores.config.getWorkspaceInstallation(workspaceId),
     stores.config.listAgentChannelGrants(workspaceId),
@@ -108,11 +116,70 @@ export async function readAgentRun(deps: FiveZeroDeps, input: AgentRunInput): Pr
 }
 
 /**
+ * The Agent for the caller in a direct message, read alone. try_agent_once
+ * admits a run on it, so it never takes the workspace snapshot, whose reads
+ * grow with every Agent and member. It refuses the Agents the snapshot would
+ * not list: one the caller cannot edit, Chickpea's own, and any other than
+ * the one an Agent acting for itself may see.
+ */
+export async function readAgentInCallerDm(deps: FiveZeroDeps, agentId: string): Promise<AgentAdmissionReading> {
+  const context = await deps.context();
+  const { actor, agent, stores } = await managedAgent(deps.service, context, agentId);
+  const acting = actor.actingAgentId;
+  if (agent.kind !== 'user' || (acting && acting !== CHICKPEA_AGENT_ID && acting !== agentId)) agentNotFound();
+  const [organization, user] = await Promise.all([
+    stores.identity.getOrganization(),
+    stores.identity.getUser(actor.userId),
+  ]);
+  const workspaceId = organization?.slackTeamId ?? notConnected();
+  const [installation, grants] = await Promise.all([
+    stores.config.getWorkspaceInstallation(workspaceId),
+    stores.config.listAgentChannelGrants(workspaceId),
+  ]);
+  const name = user?.displayName?.trim() || undefined;
+  return {
+    context,
+    actor,
+    agent,
+    // As the snapshot projects them; Admin's Workspace chat model fills in at resolution.
+    snapshotAgent: {
+      effectiveModels: {
+        model: agent.model ?? null,
+        modelSource: agent.model ? 'pinned' : 'workspace_default',
+        effort: (agent.model ? agent.modelEffort : undefined) ?? null,
+      },
+      ...(agent.slackPresence ? { slackPresence: { normalizedHandle: agent.slackPresence.normalizedHandle } } : {}),
+      ...(agentAppIsLive(agent.slackPresence) ? { ownSlackApp: { handle: agent.slackPresence.normalizedHandle } } : {}),
+    },
+    // A direct message reads no Channel.
+    snapshot: { channels: [] },
+    stores,
+    workspaceId,
+    installation,
+    grants,
+    person: {
+      membershipId: actor.membershipId,
+      ...(user?.slackUserId ? { slackUserId: user.slackUserId } : {}),
+      ...(name ? { name } : {}),
+      you: true,
+      status: 'active',
+    },
+    place: { kind: 'dm' },
+  };
+}
+
+function notConnected(): never {
+  return fail('invalid_input', 'Chickpea is not connected to a Slack workspace yet.', {
+    nextStep: 'Tell the person to finish connecting Slack in Admin.',
+  });
+}
+
+/**
  * Whether the caller may see a Channel: an Owner or Admin sees every one, a
  * member only those the snapshot shows them, as Admin's Agent page does. An
  * unseen Channel reads as one the Agent is not in.
  */
-export function seesChannel(reading: Pick<AgentRunReading, 'actor' | 'snapshot'>, channelId: string): boolean {
+export function seesChannel(reading: Pick<AgentAdmissionReading, 'actor' | 'snapshot'>, channelId: string): boolean {
   return reading.actor.role !== 'member' || reading.snapshot.channels.some((channel) => channel.channelId === channelId);
 }
 
@@ -197,7 +264,7 @@ export interface AgentRun {
  * workspace's model policy, then Admin's readiness rule for whether it can
  * run now. Never binds a route or registers a credential use.
  */
-export async function resolveAgentModel(reading: AgentRunReading): Promise<Omit<AgentRun, 'parts' | 'plan'>> {
+export async function resolveAgentModel(reading: AgentAdmissionReading): Promise<Omit<AgentRun, 'parts' | 'plan'>> {
   const { stores, agent, snapshotAgent, workspaceId, installation } = reading;
   const pinned = snapshotAgent.effectiveModels;
   const model: AgentRunModel = {

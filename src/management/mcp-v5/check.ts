@@ -7,7 +7,14 @@ import { isProviderKeyId } from '../../config/provider-key-ids.ts';
 import type { ConnectionCheckOutcome } from '../../connections/connection-check.ts';
 import { ADMIN_PATH, adminOrigin, adminSettingsLinks, adminTeamLinks } from '../admin-links.ts';
 import { ManagementError } from '../types.ts';
-import { readAgentRun, readingView, resolveAgentModel, seesChannel, type AgentRunReading } from './agent-run.ts';
+import {
+  readAgentRun,
+  readingView,
+  resolveAgentModel,
+  seesChannel,
+  type AgentAdmissionReading,
+  type AgentRunReading,
+} from './agent-run.ts';
 import type { McpErrorFix } from './conventions.ts';
 import { agentAvatar, connectionRows, presenceProblem, type FiveZeroDeps } from './reads.ts';
 import type * as schemas from './schemas.ts';
@@ -48,12 +55,12 @@ export async function checkAgent(
   };
 }
 
-export function agentAdminFix(deps: FiveZeroDeps, reading: AgentRunReading, label: string): McpErrorFix | undefined {
+export function agentAdminFix(deps: FiveZeroDeps, reading: Pick<AgentAdmissionReading, 'agent'>, label: string): McpErrorFix | undefined {
   const origin = adminOrigin(deps.baseUrl);
   return origin ? { label, url: `${origin}${ADMIN_PATH}/agents/${encodeURIComponent(reading.agent.id)}` } : undefined;
 }
 
-function settingsFix(deps: FiveZeroDeps, reading: AgentRunReading, section: 'providers' | 'github' | 'browser', label: string) {
+function settingsFix(deps: FiveZeroDeps, reading: AgentAdmissionReading, section: 'providers' | 'github' | 'browser', label: string) {
   if (reading.actor.role === 'member') return undefined;
   const url = adminSettingsLinks(deps.baseUrl, section, reading.stores.env)?.admin;
   return url ? { label, url } : undefined;
@@ -121,8 +128,13 @@ async function connectionChecks(deps: FiveZeroDeps, reading: AgentRunReading): P
   }));
 }
 
-export async function modelChecks(deps: FiveZeroDeps, reading: AgentRunReading): Promise<Check[]> {
-  const { model } = await resolveAgentModel(reading);
+/** `resolved` is the model resolveAgentModel already read for this reading, if any. */
+export async function modelChecks(
+  deps: FiveZeroDeps,
+  reading: AgentAdmissionReading,
+  resolved?: Awaited<ReturnType<typeof resolveAgentModel>>,
+): Promise<Check[]> {
+  const { model } = resolved ?? await resolveAgentModel(reading);
   const name = model.model ?? 'The workspace chat model';
   if (model.canRun) return [{ part: 'model', name, status: 'ok', detail: `It runs on ${name}.` }];
   const provider = model.model?.split('/')[0];
@@ -271,7 +283,7 @@ async function websiteLoginChecks(deps: FiveZeroDeps, reading: AgentRunReading):
  * the Channel grant, and who may use it in a DM. Whether the person is in a
  * private Channel is Slack's to say when the message arrives.
  */
-export function admissionChecks(deps: FiveZeroDeps, reading: AgentRunReading): Check[] {
+export function admissionChecks(deps: FiveZeroDeps, reading: AgentAdmissionReading): Check[] {
   const { agent, person, place } = reading;
   const who = person.you ? 'you' : person.name ?? 'this person';
   const name = place.kind === 'dm' ? `${who}, in a DM` : `${who}, in ${place.name ? `#${place.name}` : place.channelId}`;
@@ -288,7 +300,7 @@ export function admissionChecks(deps: FiveZeroDeps, reading: AgentRunReading): C
   return checks.map((check) => check.status === 'failing' && fix ? { ...check, fix } : check);
 }
 
-function dmAdmission(reading: AgentRunReading, name: string): Check[] {
+function dmAdmission(reading: AgentAdmissionReading, name: string): Check[] {
   const { agent, person, installation, snapshotAgent } = reading;
   const active = reading.grants.filter(({ agentId, status }) => agentId === agent.id && status === 'active');
   const check = (status: Check['status'], detail: string): Check => ({ part: 'admission', name, status, detail });
@@ -311,7 +323,7 @@ function dmAdmission(reading: AgentRunReading, name: string): Check[] {
   return [{ ...audience, detail: `${audience.detail} ${route}` }];
 }
 
-function channelAdmission(reading: AgentRunReading, name: string, channelId: string): Check {
+function channelAdmission(reading: AgentAdmissionReading, name: string, channelId: string): Check {
   const { agent, snapshotAgent } = reading;
   const check = (status: Check['status'], detail: string): Check => ({ part: 'admission', name, status, detail, channelId });
   const channel = reading.snapshot.channels.find((candidate) => candidate.channelId === channelId);
