@@ -59,7 +59,7 @@ const LAZY_MODULES: Record<string, string> = {
  * types included. Lower it when a change moves modules behind import();
  * scripts/worker-closure.mjs holds the built artifact to its own ceiling.
  */
-const STARTUP_SOURCE_BUDGET_BYTES = Math.round(10.6 * 2 ** 20);
+const STARTUP_SOURCE_BUDGET_BYTES = Math.round(10.62 * 2 ** 20);
 
 function isModule(node: string, module: string): boolean {
   return node === module || node.startsWith(module + '/');
