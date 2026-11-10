@@ -165,7 +165,7 @@ const REASON_TOKENS = new Set([
   'management_outcome_unknown',
   'missing_token', 'operation_in_progress', 'operation_not_found', 'other',
   'operational_access_required', 'owner_required', 'proposal_binding_mismatch',
-  'proposal_not_found', 'proposal_stale', 'proposal_expired', 'revision_conflict', 'setup_expired',
+  'proposal_not_found', 'proposal_stale', 'proposal_expired', 'removal_incomplete', 'revision_conflict', 'setup_expired',
   'base_agent_capabilities_require_setup',
   'setup_failed', 'setup_not_found', 'setup_session_mismatch', 'setup_unavailable',
   'target_changed', 'undo_unavailable', 'validation_failed', 'mcp_client_not_found',

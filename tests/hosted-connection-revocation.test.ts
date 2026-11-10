@@ -187,6 +187,17 @@ test('a managed account whose provider fails stays fail-closed, is reported by a
   assert.equal((await a.state()).accounts.connection_managed, 'revoked');
 });
 
+test('a ready managed account whose provider is not registered still loses access at once', async (t) => {
+  t.mock.method(console, 'warn', () => undefined);
+  const a = await installation(t, 'inst_revoke_unregistered');
+  const revocation = await revokeInstallationConnections(a.env, {
+    config: a.config, settings: a.settings, providers: createManagedConnectionProviderRegistry([]),
+  });
+  assert.deepEqual(revocation.accounts.filter(({ outcome }) => outcome === 'failed').map(({ code }) => code),
+    ['provider_not_registered']);
+  assert.equal((await a.state()).accounts.connection_managed, 'needs_attention');
+});
+
 test('an account revoked but still holding OAuth settings is reported by its own code and finished on the next call', async (t) => {
   t.mock.method(console, 'warn', () => undefined);
   const a = await installation(t, 'inst_revoke_oauth');

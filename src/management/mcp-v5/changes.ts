@@ -210,7 +210,10 @@ function failedOutcome(outcome: ManagementItemOutcome): never {
   const message = code === 'changed_since_read'
     ? 'It changed since you read it, so nothing changed.'
     : outcome.instruction ?? 'That change did not apply.';
-  const nextStep = NEXT_STEPS[code];
+  // A removal Composio could not finish is cut off already; resending replays it, so a retry needs a new key.
+  const nextStep = outcome.code === 'removal_incomplete'
+    ? 'Call remove_connection again with a new idempotencyKey, then confirm_change. Resending this call replays this result.'
+    : NEXT_STEPS[code];
   fail(code, message, {
     ...(nextStep ? { nextStep } : {}),
     ...(outcome.links?.admin ? { fix: { label: 'Open Chickpea Admin', url: outcome.links.admin } } : {}),

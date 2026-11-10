@@ -25,7 +25,7 @@ import type { SettingsStore } from '../config/settings-store.ts';
 import { installationModelCredentialVersion } from '../config/model-credential-refs.ts';
 import { resolveModelReadiness } from '../config/model-readiness.ts';
 import { modelEffortChoiceError } from '../config/model-effort-capability.ts';
-import { managedProviderAvailability } from '../connections/managed.ts';
+import { managedProviderAvailability, type ManagedConnectionProviderRegistry } from '../connections/managed.ts';
 import { resolveManagedAuthorizationProviderContext } from '../connections/managed-provider-context.ts';
 import { ConnectionAccountService } from '../connections/store.ts';
 import { platformRepositoryGrants } from '../config/agent-write-rules.ts';
@@ -82,6 +82,8 @@ interface LiveWorkspaceManagementServiceOptions {
   settings?: SettingsStore;
   usage?: UsageStore;
   slackCredentials?: SlackCredentialDependencies;
+  /** Managed connection providers; by default resolved as Admin's are, when a connection needs one. */
+  managedProviders?: ManagedConnectionProviderRegistry;
   overrides?: Partial<WorkspaceManagementServiceInput>;
 }
 
@@ -130,6 +132,11 @@ export function createLiveWorkspaceManagementService(
     return user;
   };
   const management = getManagementStore(env);
+  const managedProviders = async () => (await resolveManagedAuthorizationProviderContext({
+    settings,
+    ...(env ? { platformEnv: env } : {}),
+    ...(options.managedProviders ? { providers: options.managedProviders } : {}),
+  })).providers;
   const presenceReconciler = async (workspaceId: string) => {
     const transport = await slackTransport(workspaceId);
     const agentApps = agentAppPresenceHooks(env);
@@ -151,6 +158,7 @@ export function createLiveWorkspaceManagementService(
     connectionAccounts: new ConnectionAccountService({
       config: config as ConfigStore,
       settings,
+      managedProviders,
       productTelemetry,
     }),
     repositoryGrants: (grants, stored) => platformRepositoryGrants(settings, env, grants, stored),
@@ -278,11 +286,7 @@ export function createLiveWorkspaceManagementService(
     },
     typedSlackMessage: async (query) => getSlackStateStore(env).typedSlackMessage?.(query),
     managedConnectorAvailable: async ({ toolkit, accessLane }) => {
-      const context = await resolveManagedAuthorizationProviderContext({
-        settings,
-        ...(env ? { platformEnv: env } : {}),
-      });
-      const provider = context.providers.get('composio');
+      const provider = (await managedProviders()).get('composio');
       return Boolean(provider?.authorize) &&
         managedProviderAvailability(provider, { toolkit, accessLane }).status === 'ready';
     },
@@ -423,14 +427,10 @@ export function createLiveWorkspaceManagementService(
           ? new ManagementError('forbidden', error.message)
           : error;
       });
-      const providerContext = await resolveManagedAuthorizationProviderContext({
-        settings,
-        ...(env ? { platformEnv: env } : {}),
-      });
       await new ConnectionAccountService({
         config: config as ConfigStore,
         settings,
-        managedProviders: providerContext.providers,
+        managedProviders: await managedProviders(),
       }).prepareAgentDeletion({
         principal,
         agentId,
