@@ -13,7 +13,7 @@ import { StubTestRuns } from './helpers/stub-test-runs.ts';
  * Core's real MCP server: try_agent_once and get_test_run run their real
  * checks, over a stub of the state store's test runs. Only a press starts a
  * run; every event that is not a press makes only reads, and a timer may send
- * a press's own call again, which replays it.
+ * try_agent_once again while the card still carries the press, which replays it.
  */
 
 const AGENT_CARD: CardModelUnderTest<agentCard.View, agentCard.Action> = {
@@ -21,6 +21,7 @@ const AGENT_CARD: CardModelUnderTest<agentCard.View, agentCard.Action> = {
   initial: agentCard.INITIAL,
   reads: new Set(['get_creation_status', 'get_agent', 'get_test_run']),
   followsPress: ({ view }) => (view.kind === 'creating' && view.byPress === true) || view.kind === 'first_answer',
+  replays: new Set(['try_agent_once']),
 };
 
 const CONNECT_CARD: CardModelUnderTest<connectCard.View, connectCard.Action> = {
@@ -28,6 +29,7 @@ const CONNECT_CARD: CardModelUnderTest<connectCard.View, connectCard.Action> = {
   initial: connectCard.INITIAL,
   reads: new Set(['get_setup_status', 'check_agent', 'get_test_run']),
   followsPress: ({ view }) => view.kind === 'finishing' || view.kind === 'first_answer',
+  replays: new Set(['try_agent_once']),
 };
 
 const ASK = 'who is overdue this week?';

@@ -101,6 +101,12 @@ export interface CardModelUnderTest<V extends { kind: string }, A extends string
    * how it ended. Absent, only a press and its own call's answer may.
    */
   followsPress?: (state: CardState<V>) => boolean;
+  /**
+   * Writes a timer may send again while the card still carries the press
+   * that made them, with exactly its arguments, so a retry replays that
+   * press. Absent, a timer sends no write.
+   */
+  replays?: ReadonlySet<string>;
 }
 
 /**
@@ -126,15 +132,16 @@ function setupUrlOf(result: ToolResult): unknown {
  * exceptions. The reply to a call a press made carries on that press. It may
  * tell the model what the press did, open the setup link it carries,
  * because that press asked for the link to open, or, when the card will not
- * open that link, ask the chat for the fix instead. And a timer may send a
- * press's call again, with exactly its arguments, so a retry replays it. A
- * state that follows up a press may also tell the model how it ended.
+ * open that link, ask the chat for the fix instead. And while the card is
+ * still busy with a press, a timer may send that press's call again, with
+ * exactly its arguments, for a write the card `replays`. A state that follows
+ * up a press may also tell the model how it ended.
  */
 function onlyReads<V extends { kind: string }>(
   from: CardState<V>,
   event: CardEvent<string>,
   effects: readonly Effect[],
-  model: Pick<CardModelUnderTest<V, string>, 'reads' | 'followsPress'>,
+  model: Pick<CardModelUnderTest<V, string>, 'reads' | 'followsPress' | 'replays'>,
   pressed: WeakSet<Call>,
   pressedCalls: ReadonlySet<string>,
 ): void {
@@ -142,7 +149,8 @@ function onlyReads<V extends { kind: string }>(
   const pressReply = event.type === 'reply' && pressed.has(event.call);
   for (const effect of effects) {
     if (effect.type === 'timer' || (effect.type === 'call' && model.reads.has(effect.call.tool))) continue;
-    if (effect.type === 'call' && event.type === 'tick' && pressedCalls.has(callKey(effect.call))) continue;
+    if (effect.type === 'call' && event.type === 'tick' && from.busy && model.replays?.has(effect.call.tool) === true &&
+      pressedCalls.has(callKey(effect.call))) continue;
     if (effect.type === 'context' && (pressReply || model.followsPress?.(from) === true)) continue;
     if (event.type === 'reply' && pressReply &&
       ((effect.type === 'open' && effect.url === setupUrlOf(event.result)) || effect.type === 'message')) continue;
