@@ -400,10 +400,12 @@ test('a member cannot connect or reconnect a team connection, or change an Agent
   assert.equal(structured(await member('get_agent', { agentId: 'agent_shared' })).connections
     .find(({ connectionId }: { connectionId: string }) => connectionId === 'statusboard_api')?.owner, 'team');
   errorOf(await member('reconnect_service', { agentId: 'agent_shared', connectionId: 'statusboard_api' }), 'not_allowed');
+  const before = await version(member, 'agent_shared');
   errorOf(await member('update_connection', {
-    agentId: 'agent_shared', connectionId: 'statusboard_api', version: await version(member, 'agent_shared'),
+    agentId: 'agent_shared', connectionId: 'statusboard_api', version: before,
     changes: { hosts: ['api.elsewhere.example'] }, idempotencyKey: 'member-change',
   }), 'not_allowed');
+  assert.equal(await version(member, 'agent_shared'), before, 'refused before anything was written');
   assert.deepEqual((await lanes(owner, 'agent_shared')).apiConnections.map(({ allowedHosts }) => allowedHosts), [['api.statusboard.example']]);
 });
 
