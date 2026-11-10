@@ -332,6 +332,7 @@ for (const withPendingTurn of [false, true]) {
         newestEnqueuedAt: () => undefined,
       },
       gatewayInbox: { hasPending: () => false, nextPendingDueAt: () => undefined },
+      testRuns: { hasUnerased: () => false, nextDueAt: () => undefined },
     };
     await drainingProbe.alarm();
     assert.equal(alarm(), NOW + BATCH_MS);
@@ -608,6 +609,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
       endTurn: (id: string, turnJobs: { markDelivered(id: string): unknown }) => turnJobs.markDelivered(id),
     },
     gatewayInbox: { hasPending: () => false, nextPendingDueAt: () => undefined },
+    testRuns: { hasUnerased: () => false, nextDueAt: () => undefined },
     presentations: { get: (runId: string) => ({ runId, projectionVersion: 3 }) },
     config: {
       getWorkspaceInstallation: (workspaceId: string) => ({
@@ -1202,6 +1204,7 @@ function restartFixture(state: {
   alarmTurn?: boolean | 'throws';
   inbox?: boolean | 'throws';
   handoffs?: boolean;
+  testRun?: boolean;
   versionChanged?: boolean;
 }) {
   const probe = new RestartProbe();
@@ -1216,6 +1219,7 @@ function restartFixture(state: {
       hasHandoffs: read(state.handoffs),
     },
     gatewayInbox: { hasOrphanedLease: read(state.inbox) },
+    testRuns: { hasUnerased: read(state.testRun) },
   };
   let alarm = state.alarm;
   probe.ctx = { storage: {
@@ -1229,6 +1233,7 @@ for (const [label, state] of [
   ['an alarm turn whose dispatch was in flight', { alarmTurn: true }],
   ['a gateway delivery leased by the previous instance', { inbox: true }],
   ['an unconfirmed runner hand-off on a new Worker version', { handoffs: true, versionChanged: true }],
+  ['a test run whose instance is not erased yet', { testRun: true }],
   ['one signal even when another cannot be read', { alarmTurn: 'throws', inbox: true }],
 ] as const) {
   test(`a fresh state store with no alarm arms it now for ${label}`, async (context) => {

@@ -40,8 +40,8 @@ const CARD_TOOLS: Record<string, CardName> = {
   check_agent: 'health-card',
 };
 
-/** The card-only reads: hidden from the model, called by a card. */
-const CARD_ONLY = ['get_creation_status'];
+/** The card-only tools: hidden from the model, called by a card. */
+const CARD_ONLY = ['get_creation_status', 'try_agent_once', 'get_test_run'];
 
 type ToolResult = {
   content: Array<{ type: string; text: string }>;

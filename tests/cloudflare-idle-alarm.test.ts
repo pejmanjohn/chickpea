@@ -96,6 +96,7 @@ interface Probe {
   stopAborts: StopAbortFence;
   carriedAlarmTurns: Map<string, string>;
   lastHumanTurnAt?: number;
+  testRuns?: () => Promise<{ pass(): Promise<unknown> }>;
   alarmAdmissionWake?: () => void;
   dispatchWake?: () => void;
   createAlarmIdentityResolver(): unknown;
@@ -179,6 +180,8 @@ function idleStore(costs: PartCosts, options: {
   lastHumanTurnAt?: number;
   newestEnqueuedAt?: number | undefined;
   nextOutboxDueAt?: number;
+  /** A test run whose instance is not erased yet: the alarm looks again every 10 seconds. */
+  testRunUnerased?: boolean;
   duringDrain?: (armAt: (at: number) => void) => void;
 } = {}) {
   const store = newProbe(costs, options.duringDrain);
@@ -211,6 +214,10 @@ function idleStore(costs: PartCosts, options: {
       },
     },
     gatewayInbox: { hasPending: () => false, nextPendingDueAt: () => undefined },
+    testRuns: {
+      hasUnerased: () => options.testRunUnerased === true,
+      nextDueAt: (now: number) => options.testRunUnerased ? now + 10_000 : undefined,
+    },
   };
   return { ...store, reads: () => reads, sweeps: () => sweeps, cleanupChecks: () => cleanupChecks };
 }
@@ -425,4 +432,17 @@ test("a store that starts cold counts only a person's turn rows: an Agent's ask 
   } finally {
     db.close();
   }
+});
+
+test('an idle alarm runs the test-run pass while a run is not erased, and looks again in 10 seconds', async () => {
+  const store = idleStore(QUIET, { testRunUnerased: true });
+  let passes = 0;
+  store.probe.testRuns = async () => ({ pass: async () => { passes += 1; } });
+  await store.fire();
+  assert.equal(passes, 1);
+  assert.deepEqual(store.writes, [NOW + 10_000]);
+  const quiet = idleStore(QUIET);
+  quiet.probe.testRuns = async () => { throw new Error('no test run, so no lifecycle is loaded'); };
+  await quiet.fire();
+  assert.deepEqual(quiet.writes, []);
 });
