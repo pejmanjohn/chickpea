@@ -476,10 +476,7 @@ test('a member cannot turn Chickpea back on in a Channel an Owner turned off, an
     refused.message,
     'Chickpea is off in this Channel, and only a workspace Owner or Admin can turn it back on or change it. Ask one of them to do it.',
   );
-  assert.deepEqual(refused.fix, {
-    label: 'Open Chickpea Admin',
-    url: `http://localhost/admin/channels/${teamId}/C_SUPPORT`,
-  });
+  assert.equal(refused.fix, undefined, 'Admin has no on/off control for a Channel, so no link');
   assert.equal((await f.config.getChannel(teamId, 'C_SUPPORT'))?.lifecycle, 'archived');
 
   assert.equal(structured(await member('save_channel_settings', {
