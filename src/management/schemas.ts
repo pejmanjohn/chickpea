@@ -62,6 +62,7 @@ const zSkill = z.strictObject({
   suggestedSkillId: zSkillName.optional(),
   importSource: zSkillImportSource.optional(),
 });
+const toolPoliciesDescription = 'Each tool\'s read or write mark and argument limits. Omit to keep them as stored.';
 const zMcpToolPolicies = z.record(zText(120), z.strictObject({
   effect: z.enum(['read', 'write']),
   argumentConstraints: z.record(zText(120), z.array(zText(120)).min(1).max(50)).optional(),
@@ -75,7 +76,7 @@ export const zMcpConnection = z.strictObject({
   authMode: z.enum(['none', 'bearer', 'oauth']),
   headerNames: z.array(zText(120)).max(32),
   enabled: z.boolean(),
-  toolPolicies: zMcpToolPolicies.optional(),
+  toolPolicies: zMcpToolPolicies.optional().describe(toolPoliciesDescription),
   allowedTools: z.array(zText(120)).max(MAX_MCP_TOOLS),
   oauthScope: zOptionalText(MAX_MCP_OAUTH_SCOPE_LENGTH).optional(),
   presetId: zId.optional(),
@@ -487,10 +488,10 @@ export const vMcpConnection = v.strictObject({
   authMode: v.picklist(['none', 'bearer', 'oauth']),
   headerNames: va(vt(120), 32),
   enabled: v.boolean(),
-  toolPolicies: v.optional(v.record(vt(120), v.strictObject({
+  toolPolicies: v.pipe(v.optional(v.record(vt(120), v.strictObject({
     effect: v.picklist(['read', 'write']),
     argumentConstraints: v.optional(v.record(vt(120), va(vt(120), 50))),
-  }))),
+  }))), v.description(toolPoliciesDescription)),
   allowedTools: va(vt(120), MAX_MCP_TOOLS),
   oauthScope: v.optional(vot(MAX_MCP_OAUTH_SCOPE_LENGTH)),
   presetId: v.optional(vid),

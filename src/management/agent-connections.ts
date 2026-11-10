@@ -113,10 +113,11 @@ function withTrimmedGuide<T extends { guide?: string }>(picked: T): T {
 
 /**
  * The stored MCP connections after a management write. Each takes only the
- * client fields from the write. Matched by id, the stored connection supplies
- * review mode and its header policy, and, while the credential policy is
- * unchanged, its secret namespace and observed state. A connection that is new
- * or whose credential policy changed starts unconfigured.
+ * client fields from the write, except that a write which leaves out
+ * toolPolicies leaves them unchanged. Matched by id, the stored connection
+ * supplies review mode and its header policy, and, while the credential policy
+ * is unchanged, its secret namespace and observed state. A connection that is
+ * new or whose credential policy changed starts unconfigured.
  */
 export function mcpConnectionsAfterWrite(
   stored: readonly McpConnectionConfig[],
@@ -126,11 +127,11 @@ export function mcpConnectionsAfterWrite(
   return written.map((input) => {
     const policy = managementMcpConnection(input);
     const previous = storedById.get(policy.id);
-    // A tool the write dis-allows loses its mark and keeps its limit, as on Admin's tool editor and update_connection.
-    const disallowed = previous?.allowedTools.filter((tool) => !policy.allowedTools.includes(tool)) ?? [];
-    if (policy.toolPolicies && disallowed.length > 0) {
-      policy.toolPolicies = withoutMarks(policy.toolPolicies, (tool) => disallowed.includes(tool));
-    }
+    // A mark goes with its tool's allowance and a limit stays with its tool, as on Admin's tool editor and update_connection.
+    const toolPolicies = policy.toolPolicies
+      ? withoutMarks(policy.toolPolicies, (tool) => !policy.allowedTools.includes(tool))
+      : previous?.toolPolicies && keptToolPolicies(previous, policy.allowedTools);
+    if (toolPolicies) policy.toolPolicies = toolPolicies;
     const kept: Omit<McpConnectionConfig, 'lifecycleStatus' | 'statusText' | 'discoveredTools'> = {
       ...policy,
       ...(previous && headerPolicyStillApplies(previous, policy)

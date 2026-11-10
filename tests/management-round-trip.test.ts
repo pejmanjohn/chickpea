@@ -23,6 +23,7 @@ import { ConnectionAccountService } from '../src/connections/store.ts';
 import {
   API_CLIENT_FIELDS,
   MCP_CLIENT_FIELDS,
+  managementMcpConnection,
   mcpConnectionsAfterWrite,
   type ManagementApiConnection,
   type ManagementMcpConnection,
@@ -985,6 +986,62 @@ test('a 4.x read shows only allowed tools\' marks, so a write that sends back wh
     const account = await accountOf(f, stored.id, 'tracker');
     assert.deepEqual(account.policy.kind === 'mcp' ? [account.policy.allowedTools, account.policy.toolPolicies] : null,
       [['search', 'file_issue'], { search: { effect: 'read' } }], 'file_issue is allowed again, unmarked');
+  }));
+
+/** A 4.x update_agent that rewrites the Agent's MCP connections as read, then the tracker account's tools and policies. */
+async function rewriteTracker(f: Fixture, agentId: string, key: string, change: (connection: ManagementMcpConnection) => ManagementMcpConnection) {
+  const before = await inspect(f, agentId);
+  const result = await mcpApply(f, {
+    idempotencyKey: key,
+    operations: [{
+      itemId: key, kind: 'update_agent', agentId, expectedRevision: before.revision,
+      patch: { mcpServers: before.mcpServers.map((connection) => change(managementMcpConnection(connection))) },
+    }],
+  });
+  assert.deepEqual(result.outcomes.map(({ disposition }) => disposition), ['applied'], JSON.stringify(result.outcomes));
+  const { policy } = await accountOf(f, agentId, 'tracker');
+  return policy.kind === 'mcp' ? [policy.allowedTools, policy.toolPolicies] : null;
+}
+
+test('a 4.x write that leaves out toolPolicies leaves them as they are; one that sends them sets them', () =>
+  withFixture('round-trip-omitted-policies', async (f) => {
+    const stored = await seedAgent(f, 'agent_ops');
+    const search = { effect: 'read' as const, argumentConstraints: { project: ['support'] } };
+    await connect(f, stored.id, {
+      ...tracker,
+      policy: {
+        ...tracker.policy, allowedTools: ['search', 'file_issue'],
+        toolPolicies: { search, file_issue: { effect: 'read', argumentConstraints: { project: ['sandbox'] } } },
+      },
+    });
+    const omitted = ({ toolPolicies: _, ...connection }: ManagementMcpConnection): ManagementMcpConnection => connection;
+    assert.deepEqual(await rewriteTracker(f, stored.id, 'rename', (c) => ({ ...omitted(c), displayName: 'Issues' })), [
+      ['search', 'file_issue'],
+      { search, file_issue: { effect: 'read', argumentConstraints: { project: ['sandbox'] } } },
+    ], 'a change to something else keeps every mark and limit');
+    assert.deepEqual(await rewriteTracker(f, stored.id, 'narrow', (c) => ({ ...omitted(c), allowedTools: ['search'] })), [
+      ['search'],
+      { search, file_issue: { effect: 'write', argumentConstraints: { project: ['sandbox'] } } },
+    ], 'a narrowing keeps each limit with its tool, and the dis-allowed tool loses its mark, as on the other doors');
+    assert.deepEqual(await rewriteTracker(f, stored.id, 'widen', (c) => ({ ...omitted(c), allowedTools: ['search', 'file_issue'] })), [
+      ['search', 'file_issue'],
+      { search, file_issue: { effect: 'write', argumentConstraints: { project: ['sandbox'] } } },
+    ], 'allowed again, it keeps its limit and comes back unmarked');
+    assert.deepEqual(await rewriteTracker(f, stored.id, 'clear', (c) => ({ ...c, toolPolicies: {} })), [['search', 'file_issue'], {}],
+      'sent explicitly, they replace the stored ones, as before');
+  }));
+
+test('a 4.x write stores a mark only for a tool it allows; one it does not keeps only its limit', () =>
+  withFixture('round-trip-hidden-mark', async (f) => {
+    const stored = await seedAgent(f, 'agent_ops');
+    await connect(f, stored.id, tracker);
+    const limit = { argumentConstraints: { project: ['sandbox'] } };
+    assert.deepEqual(await rewriteTracker(f, stored.id, 'hidden', (c) => ({
+      ...c, toolPolicies: { search: { effect: 'read' }, file_issue: { effect: 'read' } },
+    })), [['search'], { search: { effect: 'read' } }], 'no read mark for file_issue, which no read would show');
+    assert.deepEqual(await rewriteTracker(f, stored.id, 'hidden-limit', (c) => ({
+      ...c, toolPolicies: { search: { effect: 'read' }, file_issue: { effect: 'read', ...limit } },
+    })), [['search'], { search: { effect: 'read' }, file_issue: { effect: 'write', ...limit } }]);
   }));
 
 test('expectedRevision 0 never reaches an Agent the call has not created', () =>
