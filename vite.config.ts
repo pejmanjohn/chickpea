@@ -6,6 +6,7 @@ import path from 'node:path';
 import { defineConfig, type UserConfig } from 'vite';
 import { fileURLToPath } from 'node:url';
 import { buildIdentityDefines, readBuildIdentity } from './scripts/lib/build-identity.mjs';
+import { bundleModuleReport } from './scripts/lib/bundle-module-report.mjs';
 
 import { applyCloudflareDeploymentProfile } from './scripts/cloudflare-deployment-profile.mjs';
 import { localWorkerViteSettings } from './scripts/lib/local-worker-lane.mjs';
@@ -82,25 +83,7 @@ export function chickpeaWorkerViteConfig(command: 'build' | 'serve', host?: Chic
           }
         },
       },
-      {
-        name: 'chickpea-bundle-module-report',
-        generateBundle(_options, bundle) {
-          if (this.environment.name === 'client') return;
-          // Build-only provenance for size analysis and contract tests. This is
-          // not imported by the Worker or copied into the public assets directory.
-          const modules = Object.values(bundle).flatMap((output) => output.type === 'chunk'
-            ? Object.entries(output.modules).map(([id, module]) => ({
-              id: path.relative(projectRoot, id),
-              renderedLength: module.renderedLength,
-            }))
-            : []);
-          this.emitFile({
-            type: 'asset',
-            fileName: 'bundle-modules.json',
-            source: JSON.stringify(modules),
-          });
-        },
-      },
+      bundleModuleReport(),
       cloudflare({
         ...(local ? {
           persistState: { path: local.statePath },

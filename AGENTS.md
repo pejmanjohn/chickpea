@@ -141,9 +141,9 @@ which here means Chickpea Cloud running a pinned Core commit.
 | --- | --- | --- | --- |
 | T0 docs and workflow | runbooks, README, `qa/` prose, package file lists | `verify:hygiene`, plus review only for prose with product, process, or legal weight | nothing |
 | T0x executable guides | install, update, and uninstall guides an agent follows | review, plus one live dry run on a throwaway target in parallel | nothing |
-| T1 host-only | refactors, tests, scripts, CLI tooling, logic fully covered by unit tests | typecheck, related tests, review, the automatic security review, one full regression on the final tree | Cloud's staging attestation, standard promotion, and canary |
+| T1 host-only | refactors, tests, scripts, CLI tooling, logic fully covered by unit tests | the per-PR checks below, review, the automatic security review, and the train's full regression | Cloud's staging attestation, standard promotion, and canary |
 | T2 live-surface behavior | routing, tools, Admin behavior, models and providers, connections, Slack features | T1, plus a probe only when the change rests on an outside fact no test reaches | a passed batch smoke on the Core commit Cloud pins |
-| T3 storage, contract, boundary, dependency | migrations, `release.json` digests, storage generation, secrets, auth boundaries, Flue or Pi upgrades, installer, deploy scripts, sandbox image | a short design note first, review plus a security-focused delta review, a full regression, and the live check below | a passed batch smoke and Cloud's full promotion |
+| T3 storage, contract, boundary, dependency | migrations, `release.json` digests, storage generation, secrets, auth boundaries, Flue or Pi upgrades, installer, deploy scripts, sandbox image | a short design note first, review plus a security-focused delta review, the train's full regression, and the live check below | a passed batch smoke and Cloud's full promotion |
 | T4 product shape, privacy, money | new data handling, billing, policy, pricing | research and an adversarial design review before code, then T2 or T3 as the code warrants, plus one staging end-to-end proof for money flows | as T2 or T3 |
 
 - A probe checks a named assumption such as a Slack field, a provider
@@ -154,11 +154,34 @@ which here means Chickpea Cloud running a pinned Core commit.
   update of a lane that holds existing data. Installer or deploy changes get a
   rehearsal with the real artifact. Provider or dependency upgrades get a diff
   of captured request bodies.
-- A full regression is the full suite,
-  `npm run verify:host -- --wait-ms 3600000 npm test`. Run it on a local merge
-  of the final head with current `origin/main`, because two PRs can each pass
-  alone and fail together. A `verify:regression` plan with `fullTests: false`
-  runs a subset and is not this gate; the tool says so.
+- Each PR runs `npm run test:mcp` when it touches the management MCP program,
+  and the tests related to anything else it changes, plus `npm run typecheck`,
+  `npm run verify:hygiene`, and the budgets:
+  `npm run verify:host -- --wait-ms 600000 npm run verify:budgets`. T3 live
+  checks stay per PR.
+- PRs merge in trains. A train is the merge batch the batch smoke runs on: one
+  or more PRs, and a PR that ships alone, such as a hotfix, is a train of one.
+  The coordinator of the batch builds it in its own worktree: `git fetch
+  origin`, then each PR merged with `--no-ff` onto current `origin/main`, in
+  order. The train's merged tree is the final tree for its one full regression,
+  batch smoke, and staging pin. When the regression passes, merge the train's
+  PRs on GitHub in the same order with `gh pr merge --merge --match-head-commit`,
+  then confirm `origin/main`'s tree equals the tested tree
+  (`git rev-parse origin/main^{tree}`). If `origin/main` moved first, or the
+  trees differ, rebuild the train and repeat the regression.
+- When a train's regression fails, find the first merge that fails: rerun the
+  failing test files at each merge, or
+  `git bisect start --first-parent HEAD origin/main`. Fix that PR on its
+  branch or drop it, rebuild the train from that merge on, and repeat the
+  regression. A failure that needs two PRs together is fixed in the later one.
+- A full regression is
+  `npm run verify:host -- --wait-ms 3600000 npm run verify:train`: a build,
+  both startup budgets for each merge, then the full suite. Run it on the
+  train's merged tree, because two PRs can each pass alone and fail together.
+  A commit added to the train afterwards repeats it, unless it changes only
+  comments or docs. Cloud pins a train's tip, never a merge inside it.
+  A `verify:regression` plan with `fullTests: false` runs a subset and is not
+  this gate; the tool says so.
 - Review means a fresh, independent first pass (on Claude, a Fable subagent;
   on Codex, an equivalent adversarial review). Start it when the PR opens, in
   parallel with gates and probes. The reviewer may apply small, local fixes

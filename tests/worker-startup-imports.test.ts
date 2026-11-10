@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
-import { statSync } from 'node:fs';
+import { rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { reachable, workerEntries } from './helpers/import-graph.ts';
+import { importGraph, reachable, workerEntries } from './helpers/import-graph.ts';
+// @ts-expect-error Build tooling JavaScript helper.
+import { compareSizes, exportCommit, formatGrowth, growthFailure, growthLine, growthPlan, short } from '../scripts/lib/budget-growth.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -61,14 +63,43 @@ const LAZY_MODULES: Record<string, string> = {
 
 /**
  * Source bytes of the repository modules Worker startup loads, comments and
- * types included. Lower it when a change moves modules behind import();
- * scripts/worker-closure.mjs holds the built artifact to its own ceiling.
+ * types included. A change may add 16 KiB over its merge base
+ * (scripts/lib/budget-growth.mjs); this ceiling backstops the total. Once per
+ * merge train it may be set to the measured size plus 64 KiB, and it comes
+ * down when a change moves modules behind import(). scripts/worker-closure.mjs
+ * holds the built artifact to the same two rules.
  */
-const STARTUP_SOURCE_BUDGET_BYTES = Math.round(10.64 * 2 ** 20);
+const STARTUP_SOURCE_CEILING_BYTES = Math.round(10.7 * 2 ** 20);
 
 function isModule(node: string, module: string): boolean {
   return node === module || node.startsWith(module + '/');
 }
+
+/** Each repository module Worker startup loads under `root`, with its size in bytes. */
+function startupSources(root: string): Map<string, number> {
+  const graph = importGraph(root);
+  return new Map([...graph.reachable(graph.workerEntries(), false).keys()]
+    .filter((node) => node.startsWith('src/'))
+    .map((file) => [file, statSync(join(root, file)).size]));
+}
+
+const current = startupSources(ROOT);
+const measured = new Map<string, Map<string, number>>();
+/** Startup sources at `commit`, or in the working tree when it is undefined. */
+function startupSourcesAt(commit: string | undefined): Map<string, number> {
+  if (commit === undefined) return current;
+  if (!measured.has(commit)) {
+    const directory = exportCommit(ROOT, commit, ['src', 'package.json']);
+    try {
+      measured.set(commit, startupSources(directory));
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+  return measured.get(commit)!;
+}
+
+const plan = growthPlan(ROOT);
 
 test('the lazily loaded modules stay out of what the Worker loads at startup', () => {
   const entries = workerEntries();
@@ -86,11 +117,23 @@ test('the lazily loaded modules stay out of what the Worker loads at startup', (
   }
 });
 
-test('the repository modules Worker startup loads stay within their budget', () => {
-  const startup = [...reachable(workerEntries(), false).keys()].filter((node) => node.startsWith('src/'));
-  const bytes = startup.reduce((sum, file) => sum + statSync(join(ROOT, file)).size, 0);
-  assert.ok(bytes <= STARTUP_SOURCE_BUDGET_BYTES,
-    `Worker startup loads ${startup.length} repository modules, ${bytes} bytes, over the ` +
-    `${STARTUP_SOURCE_BUDGET_BYTES}-byte budget. Load new code with import() where it is used, ` +
-    'or raise STARTUP_SOURCE_BUDGET_BYTES deliberately.');
+test('the repository modules Worker startup loads stay under their ceiling', () => {
+  const bytes = [...current.values()].reduce((sum, size) => sum + size, 0);
+  if (bytes <= STARTUP_SOURCE_CEILING_BYTES) return;
+  const grew = plan.base === undefined ? '' : `Modules that grew since the merge base:\n${
+    formatGrowth(compareSizes(startupSourcesAt(plan.base), current).rows)}\n`;
+  assert.fail(`Worker startup loads ${current.size} repository modules, ${bytes} bytes, over the ` +
+    `${STARTUP_SOURCE_CEILING_BYTES}-byte ceiling.\n${grew}Load new code with import() where it is used. ` +
+    'Once per merge train, STARTUP_SOURCE_CEILING_BYTES may be set to the measured size plus 64 KiB.');
+});
+
+test('a change adds at most its allowance to Worker startup over its merge base', { skip: plan.skip ?? false }, (t) => {
+  if (plan.error) assert.fail(plan.error);
+  t.diagnostic(`The merge base with ${plan.ref} is ${short(plan.base)}.`);
+  for (const change of plan.changes) {
+    const { growth, rows } = compareSizes(startupSourcesAt(change.from), startupSourcesAt(change.to));
+    t.diagnostic(growthLine(change, growth));
+    assert.ok(growth <= change.allowance,
+      growthFailure({ what: "Worker startup's repository source", change, ref: plan.ref, growth, rows }));
+  }
 });

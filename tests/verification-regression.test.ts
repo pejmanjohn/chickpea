@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -311,7 +311,7 @@ test('a changed plan names the commit it diffed against and every file it classi
   assert.deepEqual([plan.base, plan.files, plan.areas], [null, [], ['verification']], 'explicit areas diff nothing');
 });
 
-const MERGE_GATE = 'npm run verify:host -- --wait-ms 3600000 npm test';
+const MERGE_GATE = 'npm run verify:host -- --wait-ms 3600000 npm run verify:train';
 async function captured(argv: string[]) {
   const stdout: string[] = [], stderr: string[] = [];
   const { log, error } = console;
@@ -323,6 +323,13 @@ const assertNotGate = (stderr: string) => {
   assert.match(stderr, /NOT the merge gate/);
   assert.ok(stderr.includes(`origin/main: ${MERGE_GATE}`), 'names the gate and where to run it');
 };
+
+test('the merge gate builds and checks both budgets before the full suite', () => {
+  // npm test alone builds nothing, so the closure budget and the tests that read a build would not check the train.
+  const { scripts } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { scripts: Record<string, string> };
+  assert.equal(scripts['verify:train'], 'npm run verify:budgets && npm test');
+  assert.match(scripts['verify:budgets'] ?? '', /^npm run build && npm run verify:worker-closure && .*tests\/worker-startup-imports\.test\.ts$/);
+});
 
 test('a run whose plan skips part of the suite says at the start that it is not the merge gate and names the gate', async (t) => {
   const missing = join(mkdtempSync(join(tmpdir(), 'chickpea-merge-gate-')), 'absent-run.json');

@@ -170,15 +170,19 @@ export function settleHostLease(lease, interrupted, warn = console.error) {
   else if (lease) warn(`Interrupted check: host reservation ${lease.file} retained. Inspect the owner and child processes before releasing it.`);
 }
 
-/** AGENTS.md's merge gate: the full suite, on a local merge of the final head with current origin/main. */
-export const MERGE_GATE_COMMAND = 'npm run verify:host -- --wait-ms 3600000 npm test';
+/**
+ * AGENTS.md's merge gate: a train's full regression on its merged tree. It
+ * builds first, so the budgets measure each merge and the tests that read a
+ * build check this one.
+ */
+export const MERGE_GATE_COMMAND = 'npm run verify:host -- --wait-ms 3600000 npm run verify:train';
 
 /**
  * Null when the plan runs the full suite (`fullTests`, including release mode's
  * export). Otherwise the plan runs only part of it and is not the merge gate.
  */
 export const mergeGateWarning = (plan) => (plan.fullTests ? null
-  : `This plan is NOT the merge gate: it runs only part of the test suite. Before merging any change above T0, run the full suite on a local merge of the final head with current origin/main: ${MERGE_GATE_COMMAND}`);
+  : `This plan is NOT the merge gate: it runs only part of the test suite. Before a train of changes above T0 merges, run its full regression on the train's merged tree, each PR merged with --no-ff onto current origin/main: ${MERGE_GATE_COMMAND}`);
 
 /** The end summary on stdout, then the merge-gate warning, if any, on stderr. */
 export function printRunSummary(plan, { passed, retries, results }, { log = console.log, warn = console.error } = {}) {
@@ -203,7 +207,7 @@ export async function main(argv) {
   let lease, interrupted = false;
   try {
     if (argv.includes('--help')) {
-      console.log(`Usage: npm run verify:regression -- [--mode changed|regression|release] [--area NAME] [--base REF] [--plan] [--record PRIVATE_RUN] [--timeout-ms MS] [--wait-ms MS]\nAreas: ${Object.keys(REGRESSION_AREAS).join(', ')}\n--area may repeat and selects explicit scope; otherwise changed mode includes branch and uncommitted changes.\nEvery plan starts with verify:hygiene, then typecheck when the plan has a separate one; both run before the host reservation is taken. The remaining steps run cheapest first under it.\nA plan with fullTests false runs only part of the test suite and is not the merge gate; the gate is ${MERGE_GATE_COMMAND} on a local merge of the final head with current origin/main.\n--record saves private logs, durations, failures, test files rerun alone and final release receipts.`);
+      console.log(`Usage: npm run verify:regression -- [--mode changed|regression|release] [--area NAME] [--base REF] [--plan] [--record PRIVATE_RUN] [--timeout-ms MS] [--wait-ms MS]\nAreas: ${Object.keys(REGRESSION_AREAS).join(', ')}\n--area may repeat and selects explicit scope; otherwise changed mode includes branch and uncommitted changes.\nEvery plan starts with verify:hygiene, then typecheck when the plan has a separate one; both run before the host reservation is taken. The remaining steps run cheapest first under it.\nA plan with fullTests false runs only part of the test suite and is not the merge gate; the gate is ${MERGE_GATE_COMMAND} on a train's merged tree, each PR merged with --no-ff onto current origin/main.\n--record saves private logs, durations, failures, test files rerun alone and final release receipts.`);
       return 0;
     }
     const options = parseRegressionArgs(argv);

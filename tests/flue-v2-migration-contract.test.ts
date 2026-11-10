@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -9,6 +8,8 @@ import { experimental_readRawConfig } from 'wrangler';
 
 // @ts-expect-error The executable deployment helper intentionally has no declaration file.
 import { classifyCloudflareDeploymentProfile } from '../scripts/cloudflare-deployment-profile.mjs';
+// @ts-expect-error Build tooling JavaScript helper.
+import { builtWorkerConfigPath, staleBuildReason } from '../scripts/lib/built-worker-config.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const BETA_CLASSES = [
@@ -82,8 +83,7 @@ function sorted(values: readonly string[]): string[] {
   return [...values].sort();
 }
 
-async function builtJavaScript(): Promise<string> {
-  const artifactRoot = path.join(ROOT, 'dist-cf', 'chickpea');
+async function builtJavaScript(artifactRoot: string): Promise<string> {
   const entries = await readdir(artifactRoot, { recursive: true, withFileTypes: true });
   const files = entries
     .filter((entry) => entry.isFile() && entry.name.endsWith('.js'))
@@ -181,9 +181,10 @@ test('authored Cloudflare reset preserves app state, replaces beta Flue classes,
 
 test(
   'generated Cloudflare artifact contains fresh Flue 2 bindings, no workflows, and enabled traces',
-  { skip: !existsSync(path.join(ROOT, 'dist-cf', 'chickpea', 'wrangler.json')) },
+  // A build left by a lane deploy or an earlier commit is not this source's.
+  { skip: staleBuildReason(ROOT) ?? false },
   async () => {
-    const configPath = path.join(ROOT, 'dist-cf', 'chickpea', 'wrangler.json');
+    const configPath: string = builtWorkerConfigPath(ROOT);
     const config = JSON.parse(await readFile(configPath, 'utf8')) as {
       main?: string;
       compatibility_date?: string;
@@ -235,7 +236,7 @@ test(
     }
     assert.doesNotMatch(mainBundle, /x-flue-internal-token|\/agents\/slack-thread|\/workflows\//);
 
-    const bundle = await builtJavaScript();
+    const bundle = await builtJavaScript(path.dirname(configPath));
     // Minification renames locals and strips source-region comments. Inspect
     // retained module provenance and public contracts instead of those spellings.
     const modules = JSON.parse(await readFile(
