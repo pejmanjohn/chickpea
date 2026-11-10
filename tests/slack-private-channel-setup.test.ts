@@ -39,6 +39,31 @@ test('private setup Add uses exactly the selected state and private message coor
   assert.equal(parsePrivateChannelSetupAction(actionPayload(null))?.agentId, null);
 });
 
+const RESPONSE_URL = 'https://hooks.slack.com/actions/T_TEST/1789270000123/AbC_def-123';
+
+test('Add keeps a response_url only when it is Slack\'s own action endpoint; any other is dropped, not refused', () => {
+  const kept = { ...actionPayload(), response_url: RESPONSE_URL };
+  assert.equal(parsePrivateChannelSetupAction(kept)?.responseUrl, RESPONSE_URL);
+  const gov = 'https://hooks.slack-gov.com/actions/T_TEST/1789270000123/AbC';
+  assert.equal(parsePrivateChannelSetupAction({ ...actionPayload(), response_url: gov })?.responseUrl, gov);
+  for (const responseUrl of [
+    'https://hooks.example.com/actions/T_TEST/1789270000123/AbC',
+    'https://hooks.slack.com.example.com/actions/T_TEST/1789270000123/AbC',
+    'http://hooks.slack.com/actions/T_TEST/1789270000123/AbC',
+    `${RESPONSE_URL}?next=https://example.com`,
+    `${RESPONSE_URL}#fragment`,
+    'https://user:secret@hooks.slack.com/actions/T_TEST/1789270000123/AbC',
+    'https://hooks.slack.com/services/T_TEST/1789270000123/AbC',
+    'https://hooks.slack.com/actions/T_TEST/1789270000123',
+    `${RESPONSE_URL}/extra`,
+    42,
+  ]) {
+    const parsed = parsePrivateChannelSetupAction({ ...actionPayload(), response_url: responseUrl });
+    assert.equal(parsed?.agentId, 'agent_ops', String(responseUrl));
+    assert.equal(parsed && 'responseUrl' in parsed, false, String(responseUrl));
+  }
+});
+
 test('select-only, conflicting channel, public container and ambiguous Add cannot attach', () => {
   const selected = actionPayload();
   selected.actions[0].action_id = PRIVATE_CHANNEL_SETUP_AGENT_ACTION;

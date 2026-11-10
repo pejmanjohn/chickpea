@@ -1,3 +1,5 @@
+import { slackActionResponseUrl } from './action-response-url.ts';
+
 /** Versioned alongside the private gateway's narrowly normalized Add action. */
 export const PRIVATE_CHANNEL_SETUP_ADD_ACTION = 'chickpea.private_channel_setup.v1.add';
 export const PRIVATE_CHANNEL_SETUP_AGENT_ACTION = 'chickpea.private_channel_setup.v1.agent';
@@ -11,10 +13,25 @@ export interface PrivateChannelSetupAction {
   /** A valid unselected control produces private guidance, never a mutation. */
   agentId: string | null;
   deliveryId: string;
+  /** Where the clicked card can be replaced. The gateway never forwards one. */
+  responseUrl?: string;
 }
 
 /** Parsing grants no authority. Call only after Slack signature verification. */
 export function parsePrivateChannelSetupAction(payload: unknown): PrivateChannelSetupAction | undefined {
+  const click = parseSetupCardClick(payload, PRIVATE_CHANNEL_SETUP_ADD_ACTION);
+  if (!click) return undefined;
+  const values = record(record(click.root.state)?.values);
+  const control = record(record(values?.[PRIVATE_CHANNEL_SETUP_CHOICE_BLOCK])?.[PRIVATE_CHANNEL_SETUP_AGENT_ACTION]);
+  if (control?.type !== 'static_select') return undefined;
+  const selected = control.selected_option;
+  const agentId = selected === null ? null : record(selected)?.value;
+  if (agentId !== null && !safeId(agentId)) return undefined;
+  return { ...click.action, agentId };
+}
+
+/** One button click on an inviter's own ephemeral setup card. */
+function parseSetupCardClick(payload: unknown, actionId: string) {
   const root = record(payload);
   if (root?.type !== 'block_actions') return undefined;
   const team = record(root.team);
@@ -24,26 +41,23 @@ export function parsePrivateChannelSetupAction(payload: unknown): PrivateChannel
   if (!safeId(team?.id) || !safeId(user?.id) || !safeId(channel?.id) ||
       container?.type !== 'message' || container.is_ephemeral !== true ||
       container.channel_id !== channel.id || !Array.isArray(root.actions)) return undefined;
-  const actions = root.actions.map(record).filter((action) =>
-    action?.action_id === PRIVATE_CHANNEL_SETUP_ADD_ACTION);
+  const actions = root.actions.map(record).filter((action) => action?.action_id === actionId);
   if (actions.length !== 1 || root.actions.length !== 1) return undefined;
   const action = actions[0]!;
   if (!safeId(action.value)) return undefined;
   const actionTs = action.action_ts;
   if (typeof actionTs !== 'string' || !/^\d{1,16}\.\d{1,16}$/.test(actionTs)) return undefined;
-  const values = record(record(root.state)?.values);
-  const control = record(record(values?.[PRIVATE_CHANNEL_SETUP_CHOICE_BLOCK])?.[PRIVATE_CHANNEL_SETUP_AGENT_ACTION]);
-  if (control?.type !== 'static_select') return undefined;
-  const selected = control.selected_option;
-  const agentId = selected === null ? null : record(selected)?.value;
-  if (agentId !== null && !safeId(agentId)) return undefined;
+  const responseUrl = slackActionResponseUrl(root.response_url);
   return {
-    workspaceId: team.id,
-    userId: user.id,
-    channelId: channel.id,
-    setupId: action.value,
-    agentId,
-    deliveryId: `setup:${team.id}:${user.id}:${channel.id}:${action.value}:${actionTs}`,
+    root,
+    action: {
+      workspaceId: team.id,
+      userId: user.id,
+      channelId: channel.id,
+      setupId: action.value,
+      deliveryId: `setup:${team.id}:${user.id}:${channel.id}:${action.value}:${actionTs}`,
+      ...(responseUrl ? { responseUrl } : {}),
+    },
   };
 }
 
