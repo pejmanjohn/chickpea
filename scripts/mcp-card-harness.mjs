@@ -62,7 +62,7 @@ const ANSWERED = {
   status: 'answered',
   failure: null,
   result: {
-    reply: '**Two renewals** are due this month:\n- Northwind: renews on the 18th, $9,800 a year\n- [Lumen Labs](https://dashboard.stripe.com/subscriptions/x): renews on the 27th, $7,400 a year\n\nNeither has a reminder yet.',
+    reply: '**Two renewals** are due this month:\n- Northwind: renews on the 18th, $9,800 a year *(Stripe)*\n- [Lumen Labs](https://dashboard.stripe.com/subscriptions/x): renews on the 27th, $7,400 a year *(Stripe)*\n\nNeither has a reminder yet.',
     read: ['Stripe', 'HubSpot'],
   },
 };
@@ -912,6 +912,7 @@ try {
     assert.equal(await browser.inCard('document.querySelectorAll(".cp-pane-text")[1].innerText.split("\\n").length'), 5,
       'the answer keeps its line breaks');
     assert.doesNotMatch(await browser.inCard('document.querySelector(".cp-panes").innerHTML'), /<(?!\/?(section|h3|div)\b)/, 'the answer is text, never markup');
+    assert.doesNotMatch(await browser.inCard('document.querySelectorAll(".cp-pane-text")[1].innerText'), /[*_[\]]/, 'no Markdown marks in the answer');
     await shot('4-answered');
     await browser.click('change_something');
     for (let tries = 0; tries < 50 && (await browser.host('window.harness.messages.length')) === 0; tries += 1) {
@@ -944,7 +945,7 @@ try {
       await shot(`4-refused-${name}`);
     };
     current.serve(false);
-    await refused('readyQuiet', 'unavailable', /Test runs aren't available on this workspace yet\./, ['Open in Slack']);
+    await refused('readyQuiet', 'unavailable', /Test runs aren't available on this workspace yet\./, ['Try again', 'Open in Slack']);
     current.serve(true);
     runs.refuse = { kind: 'daily_limit', resumesAt: Date.now() + 5 * 3_600_000 - 60_000 };
     await refused('readyQuiet', 'limit', /reached today's limit\. They start again in about 5 hours\./, ['Open in Slack']);
@@ -971,7 +972,7 @@ try {
     await shot('4-waiting');
     await later(61_000);
     await shows('/Another test run is going in this workspace\. Try again in a minute\./', 'Try again', 10_000);
-    assert.deepEqual(await buttons(), ['Try again']);
+    assert.deepEqual(await buttons(), ['Try again', 'Open in Slack']);
     await plain('Busy');
     await shot('4-refused-busy');
     runs.refuse = undefined;
