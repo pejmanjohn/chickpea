@@ -328,7 +328,7 @@ import {
   type UndoWorkspaceChangeInput,
   isRoutineOperation,
 } from './types.ts';
-import { adminSettingsLinks, adminTeamLinks } from './admin-links.ts';
+import { ADMIN_PATH, adminSettingsLinks, adminTeamLinks } from './admin-links.ts';
 
 const MANAGEMENT_CHANGE_SET_APPLY_LEASE_MS = 30_000;
 /** try_connection's limit outside Slack, per member. */
@@ -1726,7 +1726,18 @@ export class WorkspaceManagementService {
       );
     }
     const baseUrl = await this.resolveSetupBaseUrl();
-    const reconnecting = await this.connectionToReconnect(actor, agent, connector, input.ownerKind);
+    // Connections live in the Slack workspace. Without one, every link would
+    // fail only once the person opened it, so refuse before issuing any.
+    const workspaceIds = connectionWorkspaceIds(actor, await this.stores.identity.getOrganization());
+    if (workspaceIds.length === 0) {
+      throw new ManagementError(
+        'setup_unavailable',
+        'Connect Slack before adding Agent connections. An Owner can connect it in Chickpea Admin.',
+        undefined,
+        { admin: new URL(ADMIN_PATH, baseUrl).href },
+      );
+    }
+    const reconnecting = await this.connectionToReconnect(actor, agent, connector, input.ownerKind, workspaceIds);
     if (reconnecting) {
       return this.prepareConnectorReconnect(actor, agent, connector, reconnecting, baseUrl);
     }
@@ -2095,8 +2106,8 @@ export class WorkspaceManagementService {
     agent: CustomAgentConfig,
     connector: ConnectorCatalogPreset,
     ownerKind: ConnectionAccountOwnerKind,
+    workspaceIds: string[],
   ): Promise<ConnectionAccount | undefined> {
-    const workspaceIds = connectionWorkspaceIds(actor, await this.stores.identity.getOrganization());
     const [accounts, bindings] = await Promise.all([
       Promise.all(workspaceIds.map((workspaceId) =>
         this.stores.config.listConnectionAccounts(workspaceId))).then((groups) => groups.flat()),

@@ -18,7 +18,11 @@ import type { SetupWakeRequest } from '../src/management/receipts.ts';
 import { WorkspaceManagementService } from '../src/management/service.ts';
 import { createManagementSetupRoutes } from '../src/management/setup-routes.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
-import type { ManagementActorContext, ManagementReceiptOutboxRecord } from '../src/management/types.ts';
+import {
+  ManagementError,
+  type ManagementActorContext,
+  type ManagementReceiptOutboxRecord,
+} from '../src/management/types.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { fakeMcpOAuthProvider } from './helpers/fake-mcp-oauth-provider.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
@@ -467,4 +471,29 @@ test('the success page names the app only in Chickpea\'s own words', async (t) =
   const claudeAi = await finishedManagedLink(h, 'https://claude.ai/oauth/mcp-oauth-client-metadata');
   assert.match((await h.page(claudeAi)).html, /You can close this tab and go back to Claude\./);
   assert.equal(h.clientLookups(), lookups, 'claude.ai\'s client ID names it; no registration is read');
+});
+
+test('an MCP caller whose organization has no Slack workspace is refused before any link', async (t) => {
+  const h = await harness(t, 'mcp-no-workspace');
+  const organization = (await h.identity.getOrganization())!;
+  h.identity.getOrganization = async () => ({ ...organization, slackTeamId: null });
+  let issued = 0;
+  const putSetup = h.management.putSetup.bind(h.management);
+  h.management.putSetup = (input) => {
+    issued += 1;
+    return putSetup(input);
+  };
+  for (const connector of ['HubSpot', 'Linear', 'Sentry']) {
+    await assert.rejects(
+      h.service.prepareConnectorSetup(h.mcp(h.owner), { agentId: h.agent.id, connector, ownerKind: 'member' }),
+      (error: ManagementError) => {
+        assert.equal(error.code, 'setup_unavailable', connector);
+        assert.equal(error.message,
+          'Connect Slack before adding Agent connections. An Owner can connect it in Chickpea Admin.');
+        assert.deepEqual(error.links, { admin: `${ORIGIN}/admin` });
+        return true;
+      },
+    );
+  }
+  assert.equal(issued, 0, 'no link was issued to fail once opened');
 });
