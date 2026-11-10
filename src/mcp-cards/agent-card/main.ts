@@ -1,0 +1,92 @@
+import { applyHostContext, HostBridge, type CallToolResult } from '../bridge.ts';
+import { INITIAL, present, step, type Effect, type Event, type State, type View } from './model.ts';
+import { mountCard } from './render.ts';
+
+/**
+ * The Agent card in a host's iframe: host messages and presses become model
+ * events, and the model's effects run here. What the card has done is kept in
+ * ChatGPT's widget state, so a card that mounts again (a reopened chat)
+ * resumes where it was instead of offering its first buttons again.
+ */
+
+declare const CARD_VERSION: number;
+
+const REREAD_GAP_MS = 1_000;
+
+const bridge = new HostBridge({ name: 'chickpea-agent-card', version: String(CARD_VERSION) });
+const kept = keptView();
+let state: State = kept ? { view: kept.view, busy: false, seq: kept.seq } : INITIAL;
+let timer: ReturnType<typeof setTimeout> | undefined;
+let lastReread = 0;
+
+const card = mountCard(document.getElementById('card')!, (action) =>
+  dispatch({ type: 'press', action, key: crypto.randomUUID(), now: Date.now() }));
+
+function dispatch(event: Event): void {
+  const next = step(state, event);
+  const moved = next.state.view !== state.view;
+  state = next.state;
+  if (moved) keep(state);
+  card.render(present(state));
+  for (const effect of next.effects) run(effect);
+}
+
+function run(effect: Effect): void {
+  switch (effect.type) {
+    case 'call':
+      bridge.callTool(effect.call.tool, effect.call.args).then(
+        (result: CallToolResult) => dispatch({ type: 'reply', call: effect.call, result, now: Date.now() }),
+        () => dispatch({ type: 'unreachable', call: effect.call, now: Date.now() }),
+      );
+      return;
+    case 'timer':
+      clearTimeout(timer);
+      timer = setTimeout(() => dispatch({ type: 'tick', now: Date.now() }), effect.inMs);
+      return;
+    case 'message':
+      bridge.sendMessage(effect).catch(() => undefined);
+      return;
+    case 'open':
+      bridge.openLink(effect.url).catch(() => undefined);
+      return;
+  }
+}
+
+function keptView(): { view: View; seq: number } | undefined {
+  const saved = window.openai?.widgetState as { card?: { version?: unknown; view?: View; seq?: number } } | undefined;
+  const view = saved?.card?.view;
+  return saved?.card?.version === CARD_VERSION && view && typeof view.kind === 'string'
+    ? { view, seq: saved.card.seq ?? 0 }
+    : undefined;
+}
+
+function keep({ view, seq }: State): void {
+  if (view.kind === 'waiting') return;
+  void Promise.resolve(window.openai?.setWidgetState?.({ card: { version: CARD_VERSION, view, seq } })).catch(() => undefined);
+}
+
+function reread(): void {
+  const now = Date.now();
+  if (now - lastReread < REREAD_GAP_MS || state.view.kind === 'waiting') return;
+  lastReread = now;
+  dispatch({ type: 'reread', now });
+}
+
+bridge.on('ui/notifications/tool-result', (result) => {
+  // A card that kept its state has moved past this result already.
+  if (kept || state.view.kind !== 'waiting') return;
+  dispatch({ type: 'result', result: result as CallToolResult, now: Date.now() });
+  // A result can be old: a reopened chat mounts the card with the one it had then.
+  reread();
+});
+bridge.on('ui/notifications/host-context-changed', () => applyHostContext(bridge.hostContext));
+window.addEventListener('focus', reread);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') reread();
+});
+
+card.render(present(state));
+void bridge.connect().then(() => {
+  applyHostContext(bridge.hostContext);
+  if (kept) reread();
+});

@@ -1,0 +1,325 @@
+/*
+ * The Agent card in ChatGPT's own look: its type, colors and black primary
+ * buttons, from the host's style variables. Chickpea shows only in the avatar
+ * and the quote accent. Without host variables the colors fall back to the
+ * mockup's palette, and without a host theme to light.
+ */
+
+:root:not([data-theme]) {
+  color-scheme: light;
+}
+
+:root {
+  --cp-bg: var(--color-background-primary, light-dark(#ffffff, #181818));
+  --cp-fg: var(--color-text-primary, light-dark(#0d0d0d, #ededed));
+  /* Secondary text stays at AA contrast; the host's tertiary text does not. */
+  --cp-muted: var(--color-text-secondary, light-dark(#5d5d5d, #cdcdcd));
+  --cp-line: var(--color-border-primary, light-dark(#e5e5e5, rgb(255 255 255 / 20%)));
+  --cp-soft: light-dark(#f7f7f7, rgb(255 255 255 / 6%));
+  --cp-ok: light-dark(#1a7f37, #40c977);
+  --cp-warn: light-dark(#a15c00, #f0a050);
+  --cp-danger: #c62828;
+  --cp-danger-hover: #a31f1f;
+  --cp-accent: #e8901a;
+  --cp-size: var(--font-text-md-size, 14px);
+}
+
+html,
+body {
+  background: var(--cp-bg);
+  color: var(--cp-fg);
+}
+
+body {
+  font-size: var(--cp-size);
+  line-height: 1.45;
+}
+
+.cp-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 16px;
+  overflow-wrap: anywhere;
+}
+
+.cp-hdr {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.cp-avatar {
+  flex: none;
+  display: block;
+}
+
+.cp-avatar svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.cp-avatar-lg {
+  width: 44px;
+  height: 44px;
+}
+
+.cp-avatar-sm {
+  width: 26px;
+  height: 26px;
+}
+
+.cp-heading {
+  min-width: 0;
+}
+
+.cp-title {
+  margin: 0;
+  font-size: calc(var(--cp-size) * 1.143);
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.cp-sub {
+  margin: 2px 0 0;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.93);
+}
+
+.cp-ok {
+  color: var(--cp-ok);
+}
+
+.cp-warn {
+  color: var(--cp-warn);
+}
+
+.cp-text {
+  margin: 12px 0 0;
+  white-space: pre-line;
+}
+
+.cp-sect {
+  margin: 14px 0 6px;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.79);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.cp-sect + .cp-text {
+  margin-top: 0;
+}
+
+.cp-quote {
+  margin: 6px 0;
+  padding: 2px 0 2px 10px;
+  border-left: 3px solid var(--cp-accent);
+  white-space: pre-line;
+}
+
+.cp-note {
+  margin: 6px 0 0;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.93);
+}
+
+.cp-note.cp-warn {
+  color: var(--cp-warn);
+}
+
+.cp-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 1px solid var(--cp-line);
+  border-radius: 12px;
+  background: var(--cp-soft);
+}
+
+.cp-msg {
+  display: grid;
+  grid-template-columns: 26px 1fr;
+  gap: 8px;
+  font-size: calc(var(--cp-size) * 0.964);
+}
+
+.cp-who {
+  font-weight: 600;
+  font-size: calc(var(--cp-size) * 0.93);
+}
+
+.cp-who-note {
+  margin-left: 4px;
+  color: var(--cp-muted);
+  font-weight: 400;
+}
+
+.cp-init {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border-radius: 7px;
+  background: #4a6cc4;
+  color: #ffffff;
+  font-size: calc(var(--cp-size) * 0.86);
+  font-weight: 600;
+}
+
+.cp-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 12px;
+  margin: 12px 0 0;
+  font-size: calc(var(--cp-size) * 0.964);
+}
+
+.cp-facts dt {
+  color: var(--cp-muted);
+}
+
+.cp-facts dd {
+  margin: 0;
+}
+
+.cp-chip {
+  display: inline-flex;
+  padding: 0 9px;
+  border: 1px solid var(--cp-line);
+  border-radius: 999px;
+  background: var(--cp-soft);
+  font-size: calc(var(--cp-size) * 0.9);
+}
+
+.cp-faint {
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.86);
+}
+
+.cp-foot {
+  margin: 14px 0 0;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.93);
+}
+
+.cp-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: calc(var(--cp-size) * 0.964);
+}
+
+.cp-steps li {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.cp-ic {
+  display: inline-grid;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  box-sizing: border-box;
+  place-items: center;
+  border-radius: 50%;
+  font-size: 11px;
+}
+
+.cp-ic-done {
+  background: color-mix(in srgb, var(--cp-ok) 14%, transparent);
+  color: var(--cp-ok);
+}
+
+.cp-ic-now {
+  border: 2px solid var(--cp-accent);
+  border-right-color: transparent;
+  animation: cp-spin 0.9s linear infinite;
+}
+
+.cp-ic-todo {
+  border: 1.5px solid var(--cp-line);
+}
+
+.cp-ic-failed {
+  background: color-mix(in srgb, var(--cp-danger) 14%, transparent);
+  color: var(--cp-danger);
+  font-weight: 700;
+}
+
+@keyframes cp-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cp-ic-now {
+    animation: none;
+  }
+}
+
+.cp-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 14px;
+}
+
+.cp-card .btn {
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  font-size: calc(var(--cp-size) * 0.964);
+  font-weight: 600;
+}
+
+.cp-btn-primary {
+  border-color: transparent;
+  color: var(--color-text-inverse, light-dark(#ffffff, #0d0d0d));
+  background: var(--cp-fg);
+}
+
+.cp-btn-primary:not(:disabled):hover {
+  background: color-mix(in srgb, var(--cp-fg) 82%, var(--cp-bg));
+}
+
+.cp-btn-danger {
+  border-color: transparent;
+  color: #ffffff;
+  background: var(--cp-danger);
+}
+
+.cp-btn-danger:not(:disabled):hover {
+  background: var(--cp-danger-hover);
+}
+
+.cp-btn-secondary {
+  border-color: var(--cp-line);
+  color: var(--cp-fg);
+  background: var(--cp-bg);
+}
+
+.cp-card .btn:focus-visible {
+  outline: 2px solid var(--color-ring-primary, light-dark(#0169cc, #ffffff));
+  outline-offset: 2px;
+}
+
+.cp-acts[hidden],
+.cp-error[hidden] {
+  display: none;
+}
+
+.cp-error {
+  margin: 10px 0 0;
+  color: light-dark(#b42318, #ff8a80);
+  font-size: calc(var(--cp-size) * 0.93);
+}

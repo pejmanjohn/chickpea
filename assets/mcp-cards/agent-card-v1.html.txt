@@ -1,0 +1,674 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Chickpea Agent card</title>
+<style>/*
+ * Framework-free MCP App styles.
+ */
+
+@layer base {
+  :root {
+    color-scheme: light dark;
+    --background: var(
+      --color-background-primary,
+      light-dark(rgb(255 255 255), rgb(24 24 24))
+    );
+    --foreground: var(
+      --color-text-primary,
+      light-dark(rgb(26 28 31), rgb(255 255 255))
+    );
+    --card: color-mix(in oklab, var(--foreground) 5%, var(--background));
+    --card-foreground: var(--color-text-primary, var(--foreground));
+    --primary: var(
+      --color-text-info,
+      light-dark(rgb(51 156 255), rgb(131 195 255))
+    );
+    --primary-foreground: var(
+      --color-text-inverse,
+      light-dark(rgb(255 255 255), rgb(13 13 13))
+    );
+    --secondary: var(
+      --color-background-secondary,
+      light-dark(rgb(255 255 255 / 96%), rgb(54 54 54 / 96%))
+    );
+    --secondary-foreground: var(--color-text-primary, var(--foreground));
+    --muted: color-mix(in srgb, var(--foreground) 10%, transparent);
+    --muted-foreground: var(
+      --color-text-secondary,
+      light-dark(rgb(26 28 31 / 49.4%), rgb(255 255 255 / 49.8%))
+    );
+    --accent: var(
+      --color-background-info,
+      light-dark(rgb(229 242 255), rgb(13 39 63))
+    );
+    --accent-foreground: var(--color-text-info, var(--primary));
+    --destructive: var(
+      --color-text-warning,
+      light-dark(rgb(226 85 7), rgb(255 133 73))
+    );
+    --border: var(
+      --color-border-secondary,
+      light-dark(rgb(26 28 31 / 8%), rgb(255 255 255 / 8.2%))
+    );
+    --input: var(
+      --color-border-primary,
+      light-dark(rgb(26 28 31 / 11.8%), rgb(255 255 255 / 12%))
+    );
+    --ring: var(--color-ring-primary, var(--primary));
+    --font-size-base: var(--font-text-md-size, 14px);
+    --radius: var(--border-radius-lg, 12.5px);
+  }
+
+  :root[data-theme="light"] {
+    color-scheme: light;
+  }
+
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+  }
+
+  body {
+    margin: 0;
+    color: var(--foreground);
+    background: var(--background);
+    font-size: max(11px, var(--font-size-base));
+    font-weight: var(--font-weight-normal, 430);
+    line-height: 1.5;
+  }
+
+  /* MCP sandboxes can force their own font on body, so restore the host font below it. */
+  body,
+  body > * {
+    font-family: var(
+      --font-sans,
+      -apple-system,
+      system-ui,
+      "Segoe UI",
+      sans-serif
+    );
+  }
+
+  h1,
+  h2,
+  h3,
+  p {
+    margin-block: 0;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-weight: var(--font-weight-medium, 500);
+    line-height: 1.25;
+  }
+
+  h1 {
+    font-size: calc(var(--font-size-base) * 1.7142857143);
+  }
+
+  h2 {
+    font-size: calc(var(--font-size-base) * 1.4285714286);
+  }
+
+  h3 {
+    font-size: calc(var(--font-size-base) * 1.2857142857);
+  }
+}
+
+@layer components {
+  .cursor-interaction {
+    cursor: var(--cursor-interaction, pointer);
+  }
+
+  .card {
+    min-width: 0;
+    padding: 12px;
+    overflow-wrap: break-word;
+    border-radius: calc(var(--radius) * 1.6);
+    corner-shape: superellipse(1.5);
+    color: var(--card-foreground);
+    background: var(--card);
+  }
+
+  .btn,
+  .form-check-input,
+  .form-control,
+  .form-select {
+    box-sizing: border-box;
+    font: inherit;
+  }
+
+  .btn {
+    appearance: button;
+    display: inline-flex;
+    inline-size: fit-content;
+    max-inline-size: 100%;
+    min-height: 28px;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    margin: 0;
+    padding: 0 8px;
+    border: 1px solid var(--input);
+    border-radius: var(--radius);
+    corner-shape: superellipse(1.5);
+    color: var(--secondary-foreground);
+    background: var(--secondary);
+    cursor: var(--cursor-interaction, pointer);
+    text-align: center;
+    text-decoration: none;
+    white-space: nowrap;
+    user-select: none;
+  }
+
+  .btn:not(:disabled):hover {
+    background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+  }
+
+  .btn-primary {
+    border-color: transparent;
+    color: var(--primary-foreground);
+    background: var(--foreground);
+    background-clip: padding-box;
+  }
+
+  .btn-primary:not(:disabled):hover {
+    background: color-mix(in srgb, var(--foreground) 80%, transparent);
+    background-clip: padding-box;
+  }
+
+  .btn-ghost {
+    border-color: transparent;
+    color: var(--muted-foreground);
+    background: transparent;
+  }
+
+  .btn-ghost:not(:disabled):hover {
+    color: var(--foreground);
+    background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+  }
+
+  .btn:not(.btn-primary):is([aria-pressed="true"], [aria-selected="true"]) {
+    border-color: var(--primary);
+    color: var(--primary-foreground);
+    background: var(--primary);
+  }
+
+  .btn:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  .btn:disabled,
+  .form-check-input:disabled,
+  .form-control:disabled,
+  .form-select:disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
+  }
+
+  .form-label {
+    display: block;
+    margin-bottom: 6px;
+    color: var(--foreground);
+  }
+
+  .form-control,
+  .form-select {
+    display: block;
+    width: 100%;
+    min-height: 28px;
+    padding: 0 8px;
+    outline: none;
+    border: 1px solid var(--input);
+    border-radius: var(--radius);
+    corner-shape: superellipse(1.5);
+    color: var(--foreground);
+    background: var(--secondary);
+  }
+
+  .form-control::placeholder {
+    color: var(--muted-foreground);
+  }
+
+  .form-select {
+    appearance: none;
+    padding-right: 32px;
+    background-image:
+      linear-gradient(45deg, transparent 50%, var(--muted-foreground) 50%),
+      linear-gradient(135deg, var(--muted-foreground) 50%, transparent 50%);
+    background-position:
+      calc(100% - 14px) 50%,
+      calc(100% - 10px) 50%;
+    background-repeat: no-repeat;
+    background-size: 4px 4px;
+    cursor: var(--cursor-interaction, pointer);
+  }
+
+  .form-select:not(:disabled):hover {
+    background-color: color-mix(
+      in srgb,
+      var(--foreground) 6%,
+      var(--secondary)
+    );
+  }
+
+  textarea.form-control {
+    min-height: 72px;
+    padding: 8px 10px;
+    resize: vertical;
+  }
+
+  .form-control:focus-visible,
+  .form-select:focus-visible {
+    border-color: var(--ring);
+    box-shadow: inset 0 0 0 1px var(--ring);
+  }
+
+  .form-check {
+    display: flex;
+    min-height: 20px;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .form-check-input {
+    appearance: none;
+    display: grid;
+    width: 16px;
+    height: 16px;
+    flex: 0 0 auto;
+    place-items: center;
+    margin: 0;
+    border: 1px solid var(--input);
+    border-radius: 5px;
+    corner-shape: superellipse(1.5);
+    color: var(--primary-foreground);
+    background: var(--secondary);
+    cursor: var(--cursor-interaction, pointer);
+  }
+
+  .form-check-input:checked {
+    border-color: var(--primary);
+    background: var(--primary);
+  }
+
+  .form-check-input:checked::after {
+    width: 7px;
+    height: 4px;
+    border-bottom: 2px solid currentColor;
+    border-left: 2px solid currentColor;
+    content: "";
+    transform: translateY(-1px) rotate(-45deg);
+  }
+
+  .form-check-input:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  .form-check-label {
+    color: var(--foreground);
+  }
+
+  svg.lucide {
+    display: block;
+    width: 16px;
+    height: 16px;
+    flex: none;
+    stroke-width: 1.6;
+  }
+
+  .text-small {
+    font-size: max(11px, calc(var(--font-size-base) - 2px));
+  }
+
+  .text-muted {
+    color: var(--muted-foreground);
+  }
+
+  .text-destructive {
+    color: var(--destructive);
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+}
+
+/*
+ * The Agent card in ChatGPT's own look: its type, colors and black primary
+ * buttons, from the host's style variables. Chickpea shows only in the avatar
+ * and the quote accent. Without host variables the colors fall back to the
+ * mockup's palette, and without a host theme to light.
+ */
+
+:root:not([data-theme]) {
+  color-scheme: light;
+}
+
+:root {
+  --cp-bg: var(--color-background-primary, light-dark(#ffffff, #181818));
+  --cp-fg: var(--color-text-primary, light-dark(#0d0d0d, #ededed));
+  /* Secondary text stays at AA contrast; the host's tertiary text does not. */
+  --cp-muted: var(--color-text-secondary, light-dark(#5d5d5d, #cdcdcd));
+  --cp-line: var(--color-border-primary, light-dark(#e5e5e5, rgb(255 255 255 / 20%)));
+  --cp-soft: light-dark(#f7f7f7, rgb(255 255 255 / 6%));
+  --cp-ok: light-dark(#1a7f37, #40c977);
+  --cp-warn: light-dark(#a15c00, #f0a050);
+  --cp-danger: #c62828;
+  --cp-danger-hover: #a31f1f;
+  --cp-accent: #e8901a;
+  --cp-size: var(--font-text-md-size, 14px);
+}
+
+html,
+body {
+  background: var(--cp-bg);
+  color: var(--cp-fg);
+}
+
+body {
+  font-size: var(--cp-size);
+  line-height: 1.45;
+}
+
+.cp-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 16px;
+  overflow-wrap: anywhere;
+}
+
+.cp-hdr {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.cp-avatar {
+  flex: none;
+  display: block;
+}
+
+.cp-avatar svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.cp-avatar-lg {
+  width: 44px;
+  height: 44px;
+}
+
+.cp-avatar-sm {
+  width: 26px;
+  height: 26px;
+}
+
+.cp-heading {
+  min-width: 0;
+}
+
+.cp-title {
+  margin: 0;
+  font-size: calc(var(--cp-size) * 1.143);
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.cp-sub {
+  margin: 2px 0 0;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.93);
+}
+
+.cp-ok {
+  color: var(--cp-ok);
+}
+
+.cp-warn {
+  color: var(--cp-warn);
+}
+
+.cp-text {
+  margin: 12px 0 0;
+  white-space: pre-line;
+}
+
+.cp-sect {
+  margin: 14px 0 6px;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.79);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.cp-sect + .cp-text {
+  margin-top: 0;
+}
+
+.cp-quote {
+  margin: 6px 0;
+  padding: 2px 0 2px 10px;
+  border-left: 3px solid var(--cp-accent);
+  white-space: pre-line;
+}
+
+.cp-note {
+  margin: 6px 0 0;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.93);
+}
+
+.cp-note.cp-warn {
+  color: var(--cp-warn);
+}
+
+.cp-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 1px solid var(--cp-line);
+  border-radius: 12px;
+  background: var(--cp-soft);
+}
+
+.cp-msg {
+  display: grid;
+  grid-template-columns: 26px 1fr;
+  gap: 8px;
+  font-size: calc(var(--cp-size) * 0.964);
+}
+
+.cp-who {
+  font-weight: 600;
+  font-size: calc(var(--cp-size) * 0.93);
+}
+
+.cp-who-note {
+  margin-left: 4px;
+  color: var(--cp-muted);
+  font-weight: 400;
+}
+
+.cp-init {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border-radius: 7px;
+  background: #4a6cc4;
+  color: #ffffff;
+  font-size: calc(var(--cp-size) * 0.86);
+  font-weight: 600;
+}
+
+.cp-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 12px;
+  margin: 12px 0 0;
+  font-size: calc(var(--cp-size) * 0.964);
+}
+
+.cp-facts dt {
+  color: var(--cp-muted);
+}
+
+.cp-facts dd {
+  margin: 0;
+}
+
+.cp-chip {
+  display: inline-flex;
+  padding: 0 9px;
+  border: 1px solid var(--cp-line);
+  border-radius: 999px;
+  background: var(--cp-soft);
+  font-size: calc(var(--cp-size) * 0.9);
+}
+
+.cp-faint {
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.86);
+}
+
+.cp-foot {
+  margin: 14px 0 0;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.93);
+}
+
+.cp-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: calc(var(--cp-size) * 0.964);
+}
+
+.cp-steps li {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.cp-ic {
+  display: inline-grid;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  box-sizing: border-box;
+  place-items: center;
+  border-radius: 50%;
+  font-size: 11px;
+}
+
+.cp-ic-done {
+  background: color-mix(in srgb, var(--cp-ok) 14%, transparent);
+  color: var(--cp-ok);
+}
+
+.cp-ic-now {
+  border: 2px solid var(--cp-accent);
+  border-right-color: transparent;
+  animation: cp-spin 0.9s linear infinite;
+}
+
+.cp-ic-todo {
+  border: 1.5px solid var(--cp-line);
+}
+
+.cp-ic-failed {
+  background: color-mix(in srgb, var(--cp-danger) 14%, transparent);
+  color: var(--cp-danger);
+  font-weight: 700;
+}
+
+@keyframes cp-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cp-ic-now {
+    animation: none;
+  }
+}
+
+.cp-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 14px;
+}
+
+.cp-card .btn {
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  font-size: calc(var(--cp-size) * 0.964);
+  font-weight: 600;
+}
+
+.cp-btn-primary {
+  border-color: transparent;
+  color: var(--color-text-inverse, light-dark(#ffffff, #0d0d0d));
+  background: var(--cp-fg);
+}
+
+.cp-btn-primary:not(:disabled):hover {
+  background: color-mix(in srgb, var(--cp-fg) 82%, var(--cp-bg));
+}
+
+.cp-btn-danger {
+  border-color: transparent;
+  color: #ffffff;
+  background: var(--cp-danger);
+}
+
+.cp-btn-danger:not(:disabled):hover {
+  background: var(--cp-danger-hover);
+}
+
+.cp-btn-secondary {
+  border-color: var(--cp-line);
+  color: var(--cp-fg);
+  background: var(--cp-bg);
+}
+
+.cp-card .btn:focus-visible {
+  outline: 2px solid var(--color-ring-primary, light-dark(#0169cc, #ffffff));
+  outline-offset: 2px;
+}
+
+.cp-acts[hidden],
+.cp-error[hidden] {
+  display: none;
+}
+
+.cp-error {
+  margin: 10px 0 0;
+  color: light-dark(#b42318, #ff8a80);
+  font-size: calc(var(--cp-size) * 0.93);
+}
+</style></head>
+<body><div id="card"></div><script>"use strict";(()=>{var Q="2026-01-26";var T=class{constructor(n){this.appInfo=n;window.addEventListener("message",t=>{t.source===window.parent&&this.#o(t.data)}),this.on("ui/notifications/host-context-changed",t=>{this.hostContext={...this.hostContext,...t}})}appInfo;#a=1;#e=new Map;#t=new Map;hostContext;hostCapabilities;on(n,t){this.#t.set(n,[...this.#t.get(n)??[],t])}async connect(){let n=await this.#n("ui/initialize",{appInfo:this.appInfo,appCapabilities:{availableDisplayModes:["inline"]},protocolVersion:Q});this.hostContext=n?.hostContext,this.hostCapabilities=n?.hostCapabilities,this.#r("ui/notifications/initialized",{}),new ResizeObserver(()=>this.#r("ui/notifications/size-changed",{height:Math.ceil(document.body.getBoundingClientRect().height)})).observe(document.body)}async callTool(n,t){return await this.#n("tools/call",{name:n,arguments:t})}async sendMessage(n){let t=this.hostCapabilities?.experimental?.["openai/message"]?.draft!==void 0,r=n.draft!==void 0&&t?n.draft:n.sent;await this.#n("ui/message",{role:"user",content:[{type:"text",text:r}],...r===n.draft?{_meta:{"openai/message":{target:"active",send:!1}}}:{}})}async openLink(n){if(window.openai?.openExternal){await window.openai.openExternal({href:n,redirectUrl:!1});return}await this.#n("ui/open-link",{url:n})}#r(n,t){window.parent.postMessage({jsonrpc:"2.0",method:n,params:t},"*")}#n(n,t){let r=this.#a++;return new Promise((a,s)=>{let c=setTimeout(()=>{this.#e.delete(r),s(new Error(`${n} timed out`))},6e4);this.#e.set(r,{resolve:l=>{clearTimeout(c),a(l)},reject:l=>{clearTimeout(c),s(l)}}),window.parent.postMessage({jsonrpc:"2.0",id:r,method:n,params:t},"*")})}#o(n){if(!(!n||n.jsonrpc!=="2.0")){if(n.method===void 0){let t=typeof n.id=="number"?this.#e.get(n.id):void 0;if(!t)return;this.#e.delete(n.id),n.error?t.reject(n.error):t.resolve(n.result);return}for(let t of this.#t.get(n.method)??[])t(n.params);n.id!==void 0&&window.parent.postMessage({jsonrpc:"2.0",id:n.id,result:{}},"*")}}};function X(e){document.documentElement.setAttribute("data-theme",e),document.documentElement.style.colorScheme=e}function Z(e){for(let[n,t]of Object.entries(e))t!==void 0&&document.documentElement.style.setProperty(n,t)}function M(e){e?.theme&&X(e.theme),e?.styles?.variables&&Z(e.styles.variables)}function O(e,n){let t=e.quotedWhole?"":` (${te(e.words)})`;if(e.kind==="section")return`${e.action==="adds"?`Adds a new section, ${n(e.heading)}${e.quote?`: ${n(e.quote)}`:""}`:`Removes the section ${n(e.heading)}`}${t}`;let r=ee[e.action],a=ne(e.place,n);return`${a?`${a}, ${r}`:`${r[0].toUpperCase()}${r.slice(1)}`}: ${n(e.quote)}${t}`}var ee={adds:"adds",removes:"removes",changes:"changes wording to"};function ne(e,n){switch(e.kind){case"heading":return`Under ${n(e.heading)}`;case"start":return"At the start";case"end":return"At the end";case"none":return}}function te(e){return e<10?`${e} ${e===1?"word":"words"}`:`about ${(e<1e3?Math.round(e/10)*10:Math.round(e/100)*100).toLocaleString("en-US")} words`}var re=new Set(["get_creation_status","get_agent"]),ae=2e3,oe=2*6e4,q={view:{kind:"waiting"},busy:!1,seq:0},o=(e,n=[])=>({state:e,effects:n}),u=(e,n=[])=>({state:{view:e,busy:!1},effects:n}),m=(e,n)=>({type:"call",call:{tool:e,args:n}});function D(e,n){let t=ie(e,n),r=t.state.view===e.view?e.seq:e.seq+1;return{state:{...t.state,seq:r},effects:t.effects.map(a=>a.type==="call"?{...a,call:{...a.call,seq:r}}:a)}}function ie(e,n){switch(n.type){case"result":return se(n.result,n.now);case"press":return e.busy?o(e):ce(e,n.action,n.key,n.now);case"reply":return re.has(n.call.tool)&&n.call.seq!==e.seq?o(e):de(e,n.call,n.result,n.now);case"unreachable":return o({...e,busy:!1,error:"Chickpea could not be reached. Try again."});case"tick":return e.busy?o(e):ue(e,n.now);case"reread":return e.busy?o(e):H(e,n.now)}}function se(e,n){let t=j(e);if(t)return u({kind:"notice",title:t});let r=e.structuredContent;return ge(r)?u({kind:"proposal",proposal:r}):fe(r)?u({kind:"change",preview:r}):C(r)?e._meta?.["chickpea/tool"]==="create_agent"&&r.status==="done"&&r.agent?V(r,{answersIn:[],needs:[]},n):x(r,n):u({kind:"notice",title:"Nothing to show here."})}function x(e,n,t={}){switch(e.status){case"needs_confirmation":return e.confirmation?E(e.confirmation,n)?u(_):u({kind:"confirm",confirmation:e.confirmation,...e.agent?{agent:e.agent}:{}},[B(e.confirmation,n)]):u({kind:"notice",title:e.summary});case"done":return u({kind:"done",summary:e.summary,...e.agent?{agent:e.agent,slackUrl:b(e.agent.links?.slack)}:{},undoToken:e.undoToken,version:e.version,...t.saved?{saved:!0}:{}});default:return u({kind:"notice",title:e.summary})}}function V(e,n,t){let r=e.agent;return u({kind:"creating",agentId:r.agentId,agent:{name:r.name,handle:r.handle},workspaceName:n.workspaceName,answersIn:n.answersIn,needs:n.needs,adminUrl:b(r.links?.admin),startedAt:t},[m("get_creation_status",{agentId:r.agentId})])}function ce(e,n,t,r){let{view:a}=e,s=c=>o({view:a,busy:!0},[c]);switch(n){case"create":return a.kind==="proposal"?s(m("create_agent",a.proposal.create.arguments)):o(e);case"create_anyway":return a.kind==="similar"?s(m("create_agent",{...a.create,createEvenIfSimilar:!0,idempotencyKey:t})):o(e);case"change_something":{let c=a.kind==="proposal"?a.proposal.proposal.name:a.kind==="similar"?a.name:void 0;return c?o(e,[{type:"message",draft:`Change ${c}: `,sent:`I want to change something about ${c} before you create it.`}]):o(e)}case"save":return a.kind==="change"&&!a.stale?s(m("update_agent",a.preview.save.arguments)):o(e);case"cancel":return a.kind==="change"?u({kind:"notice",title:"Not saved",body:"Nothing changed."}):o(e);case"confirm":return a.kind!=="confirm"?o(e):E(a.confirmation,r)?u(_):s(m("confirm_change",{confirmToken:a.confirmation.confirmToken}));case"keep":return a.kind==="confirm"?u({kind:"notice",title:"Kept as it is",body:"Nothing changed."}):o(e);case"undo":return a.kind==="done"&&a.undoToken?s(m("undo_change",{undoToken:a.undoToken,idempotencyKey:t})):o(e);case"open_slack":{let c=pe(a);return c?o(e,[{type:"open",url:c}]):o(e)}case"open_admin":return(a.kind==="ready"||a.kind==="creating")&&a.adminUrl?o(e,[{type:"open",url:a.adminUrl}]):o(e);case"next_step":{let c=a.kind==="ready"?a.needs[0]:void 0;return c&&a.kind==="ready"?o(e,[{type:"message",sent:`Connect ${c.name} to ${a.agent.name}.`}]):o(e)}case"check_again":return H(e,r)}}function de(e,n,t,r){let{view:a}=e,s=j(t),c=me(t),l=t.structuredContent;switch(n.tool){case"create_agent":{if(s||!C(l))return o({view:a,busy:!1,error:s??v});let g=a.kind==="proposal"?a.proposal.proposal:void 0;if(l.status==="done"&&l.agent)return V(l,{answersIn:(g?.answersIn??[]).map(({name:d,channelId:h})=>d?`#${d.replace(/^#/,"")}`:h),needs:g?.needs??[],workspaceName:g?.workspaceName},r);if(l.status==="similar_agent_exists"){let d=a.kind==="proposal"?a.proposal.create.arguments:a.kind==="similar"?a.create:void 0;if(d)return u({kind:"similar",summary:l.summary,create:d,name:d.name})}return x(l,r)}case"get_creation_status":return le(e,s?void 0:l,r);case"update_agent":return s||!C(l)?a.kind==="change"&&c==="changed_since_read"?o({view:{...a,stale:!0},busy:!1,error:s}):o({view:a,busy:!1,error:s??v}):x(l,r,{saved:!0});case"confirm_change":return c==="confirmation_expired"?u(_):s||!C(l)?c==="temporarily_unavailable"||!s?o({view:a,busy:!1,error:s??v}):u({kind:"notice",title:"Nothing changed",body:s}):x(l,r);case"undo_change":return s||!C(l)?o({view:(c==="nothing_to_undo"||c==="changed_since_read")&&a.kind==="done"?{...a,undoToken:void 0}:a,busy:!1,error:s??v}):x(l,r);case"get_agent":{let g=s?void 0:l?.version;return typeof g!="string"?o(e):a.kind==="change"&&g!==a.preview.save.arguments.version?o({...e,view:{...a,stale:!0}}):a.kind==="done"&&a.undoToken&&g!==a.version?o({...e,view:{...a,undoToken:void 0}}):o(e)}default:return o({...e,busy:!1})}}function le(e,n,t){let{view:r}=e;return r.kind!=="creating"&&r.kind!=="ready"?o(e):!n||typeof n.stage!="string"?r.kind==="creating"?U(r,t):o(e):n.stage!=="joining"&&n.channels!=="joining"?u({kind:"ready",agentId:r.agentId,agent:r.agent,answersIn:r.answersIn,needs:r.needs,adminUrl:r.adminUrl,status:n}):U({...r,kind:"creating",status:n,startedAt:r.kind==="creating"?r.startedAt:t},t)}function U(e,n){return n-e.startedAt>=oe?u({...e,slow:!0}):u(e,[{type:"timer",inMs:ae}])}function ue(e,n){let{view:t}=e;return t.kind==="creating"&&!t.slow?o(e,[m("get_creation_status",{agentId:t.agentId})]):t.kind==="confirm"&&E(t.confirmation,n)?u(_):o(e)}function H(e,n){let{view:t}=e;switch(t.kind){case"creating":{let{slow:r,...a}=t;return o({...e,view:{...a,startedAt:n}},[m("get_creation_status",{agentId:t.agentId})])}case"ready":return o(e,[m("get_creation_status",{agentId:t.agentId})]);case"change":return o(e,[m("get_agent",{agentId:t.preview.save.arguments.agentId})]);case"done":return t.undoToken&&t.agent?o(e,[m("get_agent",{agentId:t.agent.agentId})]):o(e);case"confirm":return E(t.confirmation,n)?u(_):o(e,[B(t.confirmation,n)]);default:return o(e)}}var v="That did not work. Try again.",_={kind:"notice",title:"This confirmation expired",body:"Nothing changed. Ask again for a fresh one."};function B(e,n){return{type:"timer",inMs:Math.max(0,Date.parse(e.expiresAt)-n)}}function E(e,n){let t=Date.parse(e.expiresAt);return Number.isFinite(t)&&n>=t}function pe(e){if(e.kind==="ready")return b(e.status.slackUrl);if(e.kind==="creating")return b(e.status?.slackUrl);if(e.kind==="done")return e.slackUrl}function b(e){return typeof e=="string"&&URL.parse(e)?.protocol==="https:"?e:void 0}function p(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function ge(e){return p(e)&&p(e.proposal)&&p(e.create)&&p(e.create.arguments)}function fe(e){return p(e)&&Array.isArray(e.changes)&&p(e.save)&&p(e.save.arguments)}function C(e){return p(e)&&typeof e.status=="string"&&typeof e.summary=="string"}function j(e){if(!e.isError)return;let n=p(e.structuredContent)?e.structuredContent.error:void 0;return p(n)&&typeof n.message=="string"?n.message:v}function me(e){let n=p(e.structuredContent)?e.structuredContent.error:void 0;return e.isError&&p(n)&&typeof n.code=="string"?n.code:void 0}var he={name:"Name",description:"Description",handle:"Slack handle",instructions:"Instructions",on:"On or off",model:"Model",effort:"Effort",imageModel:"Image model",whoCanEdit:"Who can edit"},ke={creator_and_admins:"Its creator and workspace admins",all_workspace_members:"Anyone in the workspace"};function P(e){let n={busy:e.busy,error:e.error},{view:t}=e;switch(t.kind){case"waiting":return{...n,avatar:"none",title:"Loading\u2026",blocks:[],buttons:[]};case"proposal":return{...n,...ye(t.proposal)};case"similar":return{...n,avatar:"agent",title:"An Agent like this already exists",blocks:[{kind:"text",text:t.summary}],buttons:[{label:"Create it anyway",action:"create_anyway",tone:"primary"},{label:"Change something",action:"change_something",tone:"secondary"}]};case"creating":return{...n,...be(t)};case"ready":return{...n,...we(t)};case"change":return{...n,...ve(t.preview,t.stale===!0)};case"done":return{...n,avatar:"agent",title:t.summary.replace(/\.$/,""),done:!0,...t.saved&&t.agent?.handle?{subtitle:[{text:`Try it: mention @${t.agent.handle} in Slack.`}]}:{},blocks:[],buttons:[...t.undoToken?[{label:"Undo",action:"undo",tone:"secondary"}]:[],...t.slackUrl?[{label:"Open in Slack",action:"open_slack",tone:"secondary"}]:[]]};case"confirm":return{...n,avatar:"alert",title:t.confirmation.ask.question,blocks:[{kind:"text",text:t.confirmation.ask.consequence}],buttons:[{label:t.confirmation.ask.confirm,action:"confirm",tone:"danger"},{label:t.confirmation.ask.keep,action:"keep",tone:"secondary"}]};case"notice":return{...n,avatar:"none",title:t.title,blocks:t.body?[{kind:"text",text:t.body}]:[],buttons:[]}}}function ye({proposal:e,issues:n}){let t=["Your DMs",...e.answersIn.map(({name:r,channelId:a})=>r?`#${r.replace(/^#/,"")}`:a)];return{avatar:"agent",title:e.name,subtitle:[{text:`@${e.handle} \xB7 `},e.handleAvailable?{text:"handle is free",tone:"ok"}:{text:"handle is taken",tone:"warn"}],blocks:[{kind:"text",text:e.job},{kind:"section",label:"Example in Slack"},{kind:"exchange",ask:e.sampleExchange.ask,answer:e.sampleExchange.answer,agent:e.name},{kind:"facts",rows:[{label:"Answers in",value:t.join(" \xB7 ")},...e.needs.length?[{label:"Needs",value:"",chips:e.needs.map(({name:r})=>r),note:"you sign in after it's created"}]:[]]},...n.map(r=>({kind:"note",text:r,tone:"warn"}))],foot:e.workspaceName?`Everyone in ${e.workspaceName}'s Slack can message it.`:"Everyone in your Slack workspace can message it.",buttons:[{label:"Create in Slack",action:"create",tone:"primary"},{label:"Change something",action:"change_something",tone:"secondary"}]}}function be(e){let t=e.status?.channels??"none";return{avatar:"agent",title:e.agent.name,subtitle:[{text:e.workspaceName?`Setting up in ${e.workspaceName}'s Slack\u2026`:"Setting up in Slack\u2026"}],blocks:[{kind:"steps",steps:[{label:"Created in Chickpea",state:"done"},{label:e.agent.handle?`Joining Slack as @${e.agent.handle}`:"Joining Slack",state:"now"},{label:"Saying hello to you",state:"todo"},...t==="none"?[]:[{label:e.answersIn.length?`Joining ${e.answersIn.join(", ")}`:"Joining its Channels",state:t==="joined"?"done":"todo"}]]},...e.slow?[{kind:"note",text:"This is taking longer than usual. It keeps going, and the card checks again when you come back."}]:[]],buttons:e.slow?[{label:"Check again",action:"check_again",tone:"secondary"}]:[]}}function we(e){let{status:n,agent:t}=e,r=t.handle?`@${t.handle}`:t.name;if(n.stage==="needs_attention")return{avatar:"alert",title:`${t.name} needs attention in Slack`,blocks:[{kind:"text",text:n.problem??"Slack has not finished setting it up."}],buttons:[...e.adminUrl?[{label:"Open in Admin",action:"open_admin",tone:"primary"}]:[],...b(n.slackUrl)?[{label:"Open in Slack",action:"open_slack",tone:"secondary"}]:[]]};let a=e.answersIn.length?`your DMs and ${Se(e.answersIn)}`:"your DMs";return{avatar:"agent",title:n.stage==="said_hello"?`${r} said hello to you in Slack`:`${t.name} is ready in Slack`,subtitle:[{text:`${t.name} is ready \xB7 answers in ${a}`}],blocks:[...n.hello?[{kind:"quote",text:n.hello}]:[],...n.channels==="needs_attention"?[{kind:"note",text:"It could not join one of its Channels yet.",tone:"warn"}]:[]],buttons:[...b(n.slackUrl)?[{label:"Open in Slack",action:"open_slack",tone:"primary"}]:[],...xe(e)]}}function xe(e){let n=e.needs[0];return n?[{label:`Connect ${n.name}`,action:"next_step",tone:"secondary"}]:[]}function ve(e,n){let t=e.changes.length;return{avatar:"agent",title:`Change ${e.agent.name}`,subtitle:[{text:`${t} ${t===1?"change":"changes"} \xB7 nothing is saved until you press Save`}],blocks:[...e.changes.flatMap(r=>[{kind:"section",label:he[r.field]},...Ce(r)]),...n?[{kind:"note",text:"It changed since this preview. Ask again for a fresh one.",tone:"warn"}]:[]],buttons:[...n?[]:[{label:"Save",action:"save",tone:"primary"}],{label:"Cancel",action:"cancel",tone:"secondary"}]}}function Ce(e){if(e.field==="instructions")return e.quotes.length?e.quotes.map(t=>({kind:"quote",text:O(t,r=>`\u201C${r}\u201D`)})):[{kind:"text",text:"Only spacing or line breaks change."}];if(e.field==="on")return[{kind:"text",text:e.after?"Turns it back on.":"Turns it off."}];let n=t=>t==null||t===""?_e[e.field]??"Not set":e.field==="handle"?`@${t}`:e.field==="whoCanEdit"?ke[String(t)]??String(t):String(t);return[{kind:"text",text:n(e.after)},...e.before===void 0?[]:[{kind:"note",text:`Was: ${n(e.before)}`}]]}var _e={model:"The workspace default",imageModel:"The workspace default",effort:"The model's standard effort"};function Se(e){return e.length<=2?e.join(" and "):`${e.slice(0,-1).join(", ")} and ${e.at(-1)}`}var z=(e,n,t)=>`<svg viewBox="0 0 44 44" aria-hidden="true" focusable="false"><rect width="44" height="44" rx="12" fill="${e}"/><path d="M22 6c-9 0-14 8-14 18v14h28V24C36 14 31 6 22 6z" fill="${n}"/><path d="M22 12c-6 0-9.5 6-9.5 13.5S16 38 22 38s9.5-5 9.5-12.5S28 12 22 12z" fill="${t}"/><circle cx="18.5" cy="26" r="1.3" fill="#3a2a1e"/><circle cx="25.5" cy="26" r="1.3" fill="#3a2a1e"/><path d="M20.5 30.2q1.5 1.2 3 0" stroke="#3a2a1e" stroke-width="1.1" fill="none" stroke-linecap="round"/></svg>`,Te={agent:z("#3a2a1e","#E8901A","#f3d9b1"),alert:z("#2a1f2e","#c2453a","#f1d3b8")},Ee={done:"done",now:"in progress",todo:"to do",failed:"failed"};function i(e,n,t){let r=document.createElement(e);return n&&(r.className=n),t!==void 0&&(r.textContent=t),r}function W(e,n="lg"){let t=i("span",`cp-avatar cp-avatar-${n}`);return t.innerHTML=Te[e],t}function Ie(e){let n=i("p","cp-sub");for(let t of e)n.append(t.tone?i("span",`cp-${t.tone}`,t.text):t.text);return n}function Ae(e,n){switch(e.kind){case"text":return i("p","cp-text",e.text);case"quote":return i("blockquote","cp-quote",e.text);case"section":return i("h3","cp-sect",e.label);case"note":return i("p",`cp-note${e.tone?` cp-${e.tone}`:""}`,e.text);case"exchange":{let t=i("div","cp-thread"),r=i("div","cp-msg"),a=i("div","cp-who","You");a.append(i("span","cp-who-note","example"));let s=i("div");s.append(a,i("div",void 0,e.ask)),r.append(i("span","cp-init","Y"),s);let c=i("div","cp-msg"),l=i("div");return l.append(i("div","cp-who",e.agent),i("div",void 0,e.answer)),c.append(W(n,"sm"),l),t.append(r,c),t}case"facts":{let t=i("dl","cp-facts");for(let r of e.rows){let a=i("dd",void 0,r.value);for(let s of r.chips??[])a.append(i("span","cp-chip",s)," ");r.note&&a.append(i("span","cp-faint",r.note)),t.append(i("dt",void 0,r.label),a)}return t}case"steps":{let t=i("ul","cp-steps");for(let{label:r,state:a}of e.steps){let s=i("li"),c=i("span",`cp-ic cp-ic-${a}`,a==="done"?"\u2713":a==="failed"?"!":"");c.setAttribute("aria-hidden","true"),s.append(c,r,i("span","sr-only",` (${Ee[a]})`)),t.append(s)}return t}}}function K(e,n){let t=i("p","sr-only");t.setAttribute("aria-live","polite");let r=i("main","cp-card"),a=i("div","cp-content"),s=i("div","cp-acts"),c=i("p","cp-error");c.setAttribute("role","alert"),r.append(a,s,c),e.replaceChildren(t,r),s.addEventListener("click",d=>{let h=d.target?.closest("button[data-action]");h instanceof HTMLButtonElement&&!h.disabled&&n(h.dataset.action)});let l="",g="";return{render(d){let h=JSON.stringify(d);if(h===l)return;l=h,t.textContent!==d.title&&(t.textContent=d.title);let A=i("header","cp-hdr"),Y=d.avatar==="none"?"agent":d.avatar;d.avatar!=="none"&&A.append(W(d.avatar));let R=i("div","cp-heading"),N=i("h2","cp-title");if(d.done){let f=i("span","cp-ok","\u2713 ");f.setAttribute("aria-hidden","true"),N.append(f)}N.append(d.title),R.append(N),d.subtitle&&R.append(Ie(d.subtitle)),A.append(R),a.replaceChildren(A,...d.blocks.map(f=>Ae(f,Y)),...d.foot?[i("p","cp-foot",d.foot)]:[]);let L=JSON.stringify(d.buttons);L!==g&&(g=L,s.replaceChildren(...d.buttons.map(f=>{let $=i("button",`btn cursor-interaction cp-btn-${f.tone}`,f.label);return $.type="button",$.dataset.action=f.action,$}))),s.hidden=d.buttons.length===0;for(let f of s.querySelectorAll("button"))f.disabled=d.busy,f.toggleAttribute("aria-busy",d.busy);c.textContent=d.error??"",c.hidden=!d.error}}}var Re=1e3,y=new T({name:"chickpea-agent-card",version:String(1)}),S=$e(),k=S?{view:S.view,busy:!1,seq:S.seq}:q,G,J=0,F=K(document.getElementById("card"),e=>w({type:"press",action:e,key:crypto.randomUUID(),now:Date.now()}));function w(e){let n=D(k,e),t=n.state.view!==k.view;k=n.state,t&&Me(k),F.render(P(k));for(let r of n.effects)Ne(r)}function Ne(e){switch(e.type){case"call":y.callTool(e.call.tool,e.call.args).then(n=>w({type:"reply",call:e.call,result:n,now:Date.now()}),()=>w({type:"unreachable",call:e.call,now:Date.now()}));return;case"timer":clearTimeout(G),G=setTimeout(()=>w({type:"tick",now:Date.now()}),e.inMs);return;case"message":y.sendMessage(e).catch(()=>{});return;case"open":y.openLink(e.url).catch(()=>{});return}}function $e(){let e=window.openai?.widgetState,n=e?.card?.view;return e?.card?.version===1&&n&&typeof n.kind=="string"?{view:n,seq:e.card.seq??0}:void 0}function Me({view:e,seq:n}){e.kind!=="waiting"&&Promise.resolve(window.openai?.setWidgetState?.({card:{version:1,view:e,seq:n}})).catch(()=>{})}function I(){let e=Date.now();e-J<Re||k.view.kind==="waiting"||(J=e,w({type:"reread",now:e}))}y.on("ui/notifications/tool-result",e=>{S||k.view.kind!=="waiting"||(w({type:"result",result:e,now:Date.now()}),I())});y.on("ui/notifications/host-context-changed",()=>M(y.hostContext));window.addEventListener("focus",I);document.addEventListener("visibilitychange",()=>{document.visibilityState==="visible"&&I()});F.render(P(k));y.connect().then(()=>{M(y.hostContext),S&&I()});})();
+</script></body>
+</html>

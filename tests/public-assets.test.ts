@@ -30,6 +30,8 @@ test('every public asset is served byte-identically without authentication', asy
         : path.endsWith('.css') ? 'text/css; charset=utf-8'
         : path.endsWith('.webp') ? 'image/webp'
         : path.endsWith('.woff2') ? 'font/woff2'
+        // The Agent card's HTML, kept inert: never a page on Chickpea's origin.
+        : path.endsWith('.txt') ? 'text/plain; charset=utf-8'
         : 'image/png',
     );
     assert.equal(response.headers.get('cache-control'), 'public, max-age=3600');
