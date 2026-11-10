@@ -532,6 +532,24 @@ test('a value prefix stored before the rule is kept on the next save at both doo
     assert.ok((await f.config.getAgent(agent.id)).revision > seeded.revision);
     assert.deepEqual((await f.config.getAgent(agent.id)).apiConnections.map(({ id, headerValuePrefix }) => [id, headerValuePrefix]),
       [['row_api', STORED_PREFIX]]);
+
+    // Admin's new Agent and new connection account store nothing yet, so their prefixes are new.
+    const post = (path: string, body: unknown) => app.request(`http://localhost/admin/api/${path}`, {
+      method: 'POST', headers: testAdminHeaders(TOKEN, { 'content-type': 'application/json' }), body: JSON.stringify(body),
+    });
+    const newAgent = (headerValuePrefix: string) => post('agents', {
+      id: `agent_new_${headerValuePrefix.length}`, name: `New ${headerValuePrefix.length}`, instructions: 'Help the team.', enabled: true,
+      apiConnections: [{ ...billing, headerValuePrefix }],
+    });
+    const newAccount = (headerValuePrefix: string) => post(`agents/${agent.id}/connections`, {
+      workspaceId: TEAM, ownerKind: 'team', providerId: `keyed${headerValuePrefix.length}`, label: 'Keyed',
+      api: { ...billing, id: `keyed${headerValuePrefix.length}`, allowedHosts: [`keyed${headerValuePrefix.length}.example.test`], headerValuePrefix },
+    });
+    for (const [door, write] of [['a new Agent', newAgent], ['a new connection account', newAccount]] as const) {
+      assert.equal((await write(STORED_PREFIX)).status, 400, `${door} meets the rule`);
+      const allowed = await write('Bearer ');
+      assert.ok(allowed.status < 300, `${door} with "Bearer ": ${allowed.status} ${await allowed.text()}`);
+    }
   }));
 
 test('management will not delete an Agent a recent Slack thread still uses', () =>

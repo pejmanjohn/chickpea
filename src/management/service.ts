@@ -9681,7 +9681,7 @@ interface KeyedApiConnection {
  * meets. basic_username always sends `Authorization: Basic `.
  */
 function draftScope(draft: ConnectionDraft): ConnectionTrialRequest['scope'] {
-  const scope = {
+  const problem = apiConnectionsWriteProblem([{
     id: 'draft',
     allowedHosts: draft.allowedHosts,
     pathPrefixes: draft.pathPrefixes,
@@ -9689,8 +9689,7 @@ function draftScope(draft: ConnectionDraft): ConnectionTrialRequest['scope'] {
     headerValuePrefix: draft.headerValuePrefix,
     allowedMethods: ['GET'],
     enabled: true,
-  };
-  const problem = apiConnectionsWriteProblem([scope]) ?? headerValuePrefixProblem([scope]);
+  }]);
   if (problem) {
     throw new ManagementError('invalid_request', `Nothing was sent: ${problem.replace(/^Connection draft /, 'the draft ').replace(/\.$/, '')}.`);
   }

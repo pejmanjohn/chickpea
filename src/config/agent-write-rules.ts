@@ -106,11 +106,17 @@ export function mcpConnectionsWriteProblem(connections: readonly McpConnectionRu
   return uniqueIds(connections.map(({ id }) => id)) ? undefined : 'connection ids must be unique';
 }
 
-/**
- * Every rule for an API connection but its value prefix, which
- * headerValuePrefixProblem checks against what is stored.
- */
+/** Every rule for API connections, each value prefix checked as new. */
 export function apiConnectionsWriteProblem(connections: readonly ApiConnectionRuleInput[]): string | undefined {
+  return apiConnectionsShapeProblem(connections) ?? headerValuePrefixProblem(connections);
+}
+
+/**
+ * Every rule for API connections but the value prefix's. Only an Agent edit,
+ * which resends the Agent's stored connections, uses it, and checks prefixes
+ * with headerValuePrefixProblem once it has read them.
+ */
+export function apiConnectionsShapeProblem(connections: readonly ApiConnectionRuleInput[]): string | undefined {
   for (const connection of connections) {
     if (connection.allowedHosts.length === 0) return 'allowed hosts must not be empty';
     if (connection.allowedHosts.some(isGithubAppManagedHost)) return GITHUB_API_CONNECTION_ERROR;
