@@ -125,6 +125,11 @@ export function mcpConnectionsAfterWrite(
   return written.map((input) => {
     const policy = managementMcpConnection(input);
     const previous = storedById.get(policy.id);
+    // A tool the write dis-allows loses its mark, as on Admin's tool editor and update_connection.
+    const disallowed = previous?.allowedTools.filter((tool) => !policy.allowedTools.includes(tool)) ?? [];
+    if (policy.toolPolicies && disallowed.length > 0) {
+      policy.toolPolicies = Object.fromEntries(Object.entries(policy.toolPolicies).filter(([tool]) => !disallowed.includes(tool)));
+    }
     const kept: Omit<McpConnectionConfig, 'lifecycleStatus' | 'statusText' | 'discoveredTools'> = {
       ...policy,
       ...(previous && headerPolicyStillApplies(previous, policy)

@@ -944,6 +944,20 @@ test('discovery narrows a non-empty approved tool list, and an empty one counts 
     'outside review mode, the first discovery grants every tool the server offers');
 });
 
+test('a 4.x write that dis-allows a tool drops its mark, so the tool comes back unmarked', () => {
+  const marks = { search: { effect: 'read' as const }, delete_page: { effect: 'read' as const } };
+  const [stored] = mcpConnectionsAfterWrite([], [{ ...wikiServer, allowedTools: ['search', 'delete_page'], toolPolicies: marks }]);
+  // The caller sends back every mark it read, the dis-allowed tool's included.
+  const [narrowed] = mcpConnectionsAfterWrite([stored!], [{ ...wikiServer, allowedTools: ['search'], toolPolicies: marks }]);
+  assert.deepEqual(narrowed!.toolPolicies, { search: { effect: 'read' } });
+  const [widened] = mcpConnectionsAfterWrite([narrowed!], [{
+    ...wikiServer, allowedTools: ['search', 'delete_page'], toolPolicies: narrowed!.toolPolicies!,
+  }]);
+  assert.deepEqual(widened!.toolPolicies, { search: { effect: 'read' } });
+  const [kept] = mcpConnectionsAfterWrite([stored!], [{ ...wikiServer, allowedTools: ['search', 'delete_page'], toolPolicies: marks }]);
+  assert.deepEqual(kept!.toolPolicies, marks, 'a write that dis-allows nothing keeps every mark it sends');
+});
+
 test('expectedRevision 0 never reaches an Agent the call has not created', () =>
   withFixture('revision-zero-hardening', async (f) => {
     const create = (id: string): ManagementOperation => ({

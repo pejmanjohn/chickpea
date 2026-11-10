@@ -631,6 +631,37 @@ test('update_connection marks a custom MCP connection\'s tools as reads or write
   assert.equal(api.message, 'A custom API connection has no readTools to change.');
 });
 
+test('a mark goes with its tool\'s allowance: a tool update_connection allows again starts unmarked', async (t) => {
+  const { f, call } = await harness(t, 'mark-allowance');
+  await installAgent(f);
+  structured(await call('connect_service', {
+    agentId: 'agent_research',
+    custom: { kind: 'mcp', name: 'Docs', url: 'https://mcp.docs.example/mcp', auth: 'none', allowedTools: ['search', 'read_page', 'delete_page'] },
+    version: await version(call, 'agent_research'),
+    idempotencyKey: 'docs',
+  }));
+  const change = async (changes: Record<string, unknown>, key: string) => assert.equal(structured(await call('update_connection', {
+    agentId: 'agent_research', connectionId: 'docs', version: await version(call, 'agent_research'), changes, idempotencyKey: key,
+  })).status, 'done');
+  const marks = async () => (await lanes(call, 'agent_research')).mcpServers[0]?.toolPolicies;
+  await change({ readTools: ['search', 'delete_page'] }, 'mark');
+  await change({ allowedTools: ['search', 'read_page'] }, 'narrow');
+  assert.deepEqual(await marks(), { search: { effect: 'read' } }, 'a dis-allowed tool loses its mark');
+  await change({ allowedTools: ['search', 'read_page', 'delete_page'] }, 'widen');
+  const docs = (structured(await call('get_agent', { agentId: 'agent_research' })).connections as Array<Record<string, any>>)
+    .find(({ connectionId }) => connectionId === 'docs')!.custom;
+  assert.deepEqual([docs.readTools, docs.writeTools], [['search'], undefined], 'nobody marked delete_page when it was allowed again');
+
+  // A mark left from before this rule, on a tool that is not allowed, does not come back with it either.
+  const [account] = (await f.config.listConnectionAccounts(f.owner.binding.slackTeamId!)).filter(({ providerId }) => providerId === 'docs');
+  await f.config.putConnectionAccount({
+    ...account!,
+    policy: { ...account!.policy, allowedTools: ['search'], toolPolicies: { search: { effect: 'read' }, read_page: { effect: 'read' } } } as never,
+  }, account!.revision);
+  await change({ allowedTools: ['search', 'read_page'] }, 'stale');
+  assert.deepEqual(await marks(), { search: { effect: 'read' } });
+});
+
 test('a custom API whose stored prefix predates the rule still renames and gains a neighbor; a changed prefix meets the rule', async (t) => {
   const { f, teamId, call } = await harness(t, 'kept-prefix');
   await installAgent(f);

@@ -1,5 +1,19 @@
 import { isMetaAdsMcpConnection, metaAdsToolEffect } from './meta-ads-policy.ts';
-import type { McpConnectionConfig } from './types.ts';
+import type { McpConnectionConfig, McpToolPolicy } from './types.ts';
+
+/**
+ * The stored marks a change to a connection's allowed tools keeps: those of
+ * tools allowed both before it and after it. A tool allowed again starts
+ * unmarked, however it was dis-allowed, so an old read mark, which nobody
+ * can see while its tool is not allowed, never comes back with it.
+ */
+export function keptToolPolicies(
+  before: { allowedTools: readonly string[]; toolPolicies?: Record<string, McpToolPolicy> },
+  allowedTools: readonly string[],
+): Record<string, McpToolPolicy> {
+  return Object.fromEntries(Object.entries(before.toolPolicies ?? {})
+    .filter(([tool]) => before.allowedTools.includes(tool) && allowedTools.includes(tool)));
+}
 
 /** Owner declarations take precedence over the last discovered server hint. */
 export function mcpToolEffect(connection: Pick<McpConnectionConfig, 'toolPolicies' | 'discoveredTools'>, name: string): boolean | undefined {

@@ -7794,6 +7794,24 @@ test(`custom MCP ${recoverFromToken ? 'token recovery' : 'OAuth creation'} requi
     const policyAccount = (await fixture.store.listConnectionAccounts('T_TEST')).find((entry) => entry.id === accountId);
     assert.deepEqual(policyAccount?.policy.kind === 'mcp' ? policyAccount.policy.toolPolicies : undefined,
       { search_issues: { effect: 'read', argumentConstraints: { team: ['support'] } } });
+    // The editor sends only the allowed tools: one it dis-allows loses its mark, and one it allows again starts unmarked.
+    const marksAfterSaving = async (allowedTools: string[]) => {
+      const current = (await fixture.store.listConnectionAccounts('T_TEST')).find((entry) => entry.id === accountId)!;
+      const response = await saveTools(allowedTools, current.revision);
+      assert.equal(response.status, 200, await response.clone().text());
+      const after = (await fixture.store.listConnectionAccounts('T_TEST')).find((entry) => entry.id === accountId);
+      return after?.policy.kind === 'mcp' ? after.policy.toolPolicies : undefined;
+    };
+    assert.deepEqual(await marksAfterSaving(['create_issue']), {});
+    assert.deepEqual(await marksAfterSaving(['search_issues', 'create_issue']), {});
+    const unmarked = (await fixture.store.listConnectionAccounts('T_TEST')).find((entry) => entry.id === accountId)!;
+    assert.equal(unmarked.policy.kind, 'mcp');
+    // A mark from before, on a tool that is not allowed, does not come back with it; a kept tool keeps its own.
+    await fixture.store.putConnectionAccount({
+      ...unmarked,
+      policy: { ...unmarked.policy, allowedTools: ['create_issue'], toolPolicies: { search_issues: { effect: 'read' }, create_issue: { effect: 'write' } } } as never,
+    }, unmarked.revision);
+    assert.deepEqual(await marksAfterSaving(['search_issues', 'create_issue']), { create_issue: { effect: 'write' } });
 
 
     const oauthKeys = mcpOAuthSettingKeys(connectionAccountOAuthRef(accountId));

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import type { z } from 'zod';
 
+import { keptToolPolicies } from '../../config/mcp-tool-policy.ts';
 import { CONNECTION_CATALOG_PRESETS, resolveConnectorCatalogPreset } from '../../config/presets.ts';
 import { ADMIN_PATH, adminOrigin } from '../admin-links.ts';
 import type {
@@ -368,10 +369,15 @@ function changedEntry<T extends object>(
 /**
  * The MCP connection with the named tools marked as reads or writes, the
  * tool policy Admin's API and 4.x declare; a tool not named keeps its mark,
- * and its argument limits stay. Only an allowed tool can be marked. A test
- * run calls only the tools marked as reads.
+ * and its argument limits stay, while it stays allowed. A tool this change
+ * allows again starts unmarked (keptToolPolicies). Only an allowed tool can
+ * be marked. A test run calls only the tools marked as reads.
  */
-function markedTools(entry: SnapshotAgent['mcpServers'][number], { readTools = [], writeTools = [] }: CustomChanges) {
+function markedTools(
+  stored: SnapshotAgent['mcpServers'][number],
+  entry: SnapshotAgent['mcpServers'][number],
+  { readTools = [], writeTools = [] }: CustomChanges,
+) {
   const both = readTools.filter((tool) => writeTools.includes(tool));
   if (both.length) fail('invalid_input', `Mark ${both.join(', ')} as a read or as a write, not both.`);
   const unknown = [...readTools, ...writeTools].filter((tool) => !entry.allowedTools.includes(tool));
@@ -382,12 +388,12 @@ function markedTools(entry: SnapshotAgent['mcpServers'][number], { readTools = [
         : 'It allows no tools yet; once its setup finishes, get_agent lists them.',
     });
   }
-  if (readTools.length + writeTools.length === 0) return entry;
-  const toolPolicies = { ...entry.toolPolicies };
+  const toolPolicies = keptToolPolicies(stored, entry.allowedTools);
   for (const [tools, effect] of [[readTools, 'read'], [writeTools, 'write']] as const) {
     for (const tool of tools) toolPolicies[tool] = { ...toolPolicies[tool], effect };
   }
-  return { ...entry, toolPolicies };
+  const { toolPolicies: _stored, ...unmarked } = entry;
+  return Object.keys(toolPolicies).length > 0 ? { ...unmarked, toolPolicies } : unmarked;
 }
 
 /**
@@ -417,7 +423,7 @@ export async function updateConnection(
         ? { apiConnections: agent.apiConnections.map((entry) => entry === api ? changedEntry(entry, input.changes, API_CHANGES, 'API') : entry) }
         : {
             mcpServers: agent.mcpServers.map((entry) => entry === mcp
-              ? markedTools(changedEntry(entry, input.changes, MCP_CHANGES, 'MCP', MCP_MARKS), input.changes)
+              ? markedTools(entry, changedEntry(entry, input.changes, MCP_CHANGES, 'MCP', MCP_MARKS), input.changes)
               : entry),
           };
       return [{ itemId: 'update_connection', kind: 'update_agent', agentId: agent.id, expectedRevision: agent.revision, patch }];

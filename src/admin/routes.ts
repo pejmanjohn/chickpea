@@ -371,6 +371,7 @@ import {
   type StartMcpOAuthInput,
 } from '../config/mcp-oauth.ts';
 import { allowedToolsAfterMcpDiscovery, isMcpToolReviewRequired } from '../config/mcp-access.ts';
+import { keptToolPolicies } from '../config/mcp-tool-policy.ts';
 import { BUGSNAG_MCP_SERVER_URL, BugsnagAccessPolicyError, compileBugsnagToolAccess, isBugsnagMcpConnection } from '../config/bugsnag-policy.ts';
 import { compileMetaAdsToolAccess, isMetaAdsMcpConnection, metaAdsToolEffect, metaAdsToolSchemaSupported, MetaAdsAccessPolicyError } from '../config/meta-ads-policy.ts';
 import { META_ADS_MCP_SERVER_URL, META_ADS_OAUTH_MANAGEMENT_SCOPE, configuredMcpOAuthCallbackUrl, configuredMcpOAuthClientDescriptor, getConfiguredMcpOAuthClient, saveConfiguredMcpOAuthClient, removeConfiguredMcpOAuthClient, resolveConfiguredMcpOAuthScope, ConfiguredMcpOAuthClientError } from '../config/mcp-oauth-clients.ts';
@@ -9550,10 +9551,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         : isBugsnagMcpConnection(account.policy)
           ? compileBugsnagToolAccess({ discoveredTools: account.policy.discoveredTools, requestedTools: allowedTools })
           : undefined;
+      // The editor sends only the allowed tools; a tool it allows again starts unmarked.
+      const toolPolicies = compiled?.toolPolicies ?? parsed.output.toolPolicies ??
+        (account.policy.toolPolicies && keptToolPolicies(account.policy, allowedTools));
       const updated = await store(c).putConnectionAccount({
-        ...account, policy: { ...account.policy, allowedTools,
-          ...(compiled ? { toolPolicies: compiled.toolPolicies } : parsed.output.toolPolicies ? { toolPolicies: parsed.output.toolPolicies } : {}),
-        },
+        ...account, policy: { ...account.policy, allowedTools, ...(toolPolicies ? { toolPolicies } : {}) },
       }, parsed.output.expectedRevision);
       return c.json({ account: toConnectionAccountView(updated) });
     } catch (error) {
