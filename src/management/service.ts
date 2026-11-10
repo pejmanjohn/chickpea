@@ -5254,45 +5254,11 @@ export class WorkspaceManagementService {
       this.stores.websiteLogins ? listWebsiteLogins(this.stores.websiteLogins.store) : Promise.resolve([]),
     ]);
     const principal = managementActorPrincipal(actor);
-    const visibleConnectionAccounts = new Map(allConnectionAccounts
-      .filter((account): account is ConnectionAccount & {
-        lifecycle: Exclude<ConnectionAccount['lifecycle'], 'revoked'>;
-      } => account.lifecycle !== 'revoked' && (
-        account.ownerKind === 'team' || account.ownerMembershipId === actor.membershipId
-      ))
-      .map((account) => [account.id, account]));
-    const connectionsByAgent = new Map(agentBindingEntries.map(([agentId, bindings]) => {
-      const recoverable = projectRecoverableConnectionAccounts(
-        allConnectionAccounts,
-        bindings,
-        actor.membershipId,
-      );
-      const projectedBindingIds = new Set(recoverable.map(({ binding }) =>
-        binding.connectionAccountId));
-      const projected = new Map(recoverable.flatMap(({ account, binding, policy }) =>
-        account.lifecycle === 'revoked' ? [] : [[
-          account.id,
-          managementConnectionProjection(account, binding, policy),
-        ] as const]));
-      for (const binding of bindings) {
-        if (projectedBindingIds.has(binding.connectionAccountId)) continue;
-        const account = visibleConnectionAccounts.get(binding.connectionAccountId);
-        if (!account || account.providerId !== binding.providerId ||
-            binding.enabled && account.lifecycle !== 'pending') continue;
-        projected.set(account.id, managementConnectionProjection(
-          account,
-          binding,
-          applyConnectionCapabilityCeiling(account.policy, binding),
-        ));
-      }
-      for (const [accountId, connection] of projected) {
-        const account = visibleConnectionAccounts.get(accountId);
-        const reconnect = account && connectionReconnect(principal, agentId, account);
-        if (reconnect) projected.set(accountId, { ...connection, reconnect });
-      }
-      return [agentId, [...projected.values()].sort((left, right) =>
-        left.id.localeCompare(right.id))] as const;
-    }));
+    const visibleConnectionAccounts = visibleConnectionAccountsOf(allConnectionAccounts, actor.membershipId);
+    const connectionsByAgent = new Map(agentBindingEntries.map(([agentId, bindings]) => [
+      agentId,
+      projectAgentConnectionAccounts(principal, agentId, allConnectionAccounts, visibleConnectionAccounts, bindings),
+    ] as const));
     const bindingsByAgent = new Map(agentBindingEntries);
     const connectionViews = new Map(agents.map(({ id }) => [
       id,
@@ -5487,12 +5453,7 @@ export class WorkspaceManagementService {
         apiConnections: connectionsOf(id).apiConnections.map(managementApiConnection),
         connectionStatus: managementConnectionStatus(connectionsOf(id)),
         ...((connectionsByAgent.get(id)?.length ?? 0) > 0
-          ? { connections: connectionsByAgent.get(id)!.map(({
-              accountRevision: _accountRevision,
-              bindingAccountId: _bindingAccountId,
-              bindingRevision: _bindingRevision,
-              ...connection
-            }) => connection) }
+          ? { connections: connectionsByAgent.get(id)!.map(withoutRevisions) }
           : {}),
         repositories,
         ...(grants?.length
@@ -7744,7 +7705,7 @@ function appendOutcome(
 }
 
 /** The Slack workspace whose connection accounts the actor manages. */
-function connectionWorkspaceIds(
+export function connectionWorkspaceIds(
   actor: LiveManagementActor,
   organization: Organization | undefined,
 ): string[] {
@@ -8308,6 +8269,63 @@ async function optionalAgent(
     if (error instanceof UnknownAgentError) return undefined;
     throw error;
   }
+}
+
+type VisibleConnectionAccount = ConnectionAccount & { lifecycle: Exclude<ConnectionAccount['lifecycle'], 'revoked'> };
+
+/** The connection accounts a person sees: the team's and their own, never a revoked one. */
+export function visibleConnectionAccountsOf(
+  accounts: readonly ConnectionAccount[],
+  membershipId: string,
+): Map<string, VisibleConnectionAccount> {
+  return new Map(accounts
+    .filter((account): account is VisibleConnectionAccount => account.lifecycle !== 'revoked' && (
+      account.ownerKind === 'team' || account.ownerMembershipId === membershipId
+    ))
+    .map((account) => [account.id, account]));
+}
+
+/** One Agent's connection accounts as the snapshot shows them to this person. */
+export function projectAgentConnectionAccounts(
+  principal: AuthPrincipal,
+  agentId: string,
+  accounts: ConnectionAccount[],
+  visible: ReadonlyMap<string, VisibleConnectionAccount>,
+  bindings: AgentConnectionBinding[],
+) {
+  const recoverable = projectRecoverableConnectionAccounts(accounts, bindings, principal.membershipId);
+  const projectedBindingIds = new Set(recoverable.map(({ binding }) => binding.connectionAccountId));
+  const projected = new Map(recoverable.flatMap(({ account, binding, policy }) =>
+    account.lifecycle === 'revoked' ? [] : [[
+      account.id,
+      managementConnectionProjection(account, binding, policy),
+    ] as const]));
+  for (const binding of bindings) {
+    if (projectedBindingIds.has(binding.connectionAccountId)) continue;
+    const account = visible.get(binding.connectionAccountId);
+    if (!account || account.providerId !== binding.providerId ||
+        binding.enabled && account.lifecycle !== 'pending') continue;
+    projected.set(account.id, managementConnectionProjection(
+      account,
+      binding,
+      applyConnectionCapabilityCeiling(account.policy, binding),
+    ));
+  }
+  for (const [accountId, connection] of projected) {
+    const account = visible.get(accountId);
+    const reconnect = account && connectionReconnect(principal, agentId, account);
+    if (reconnect) projected.set(accountId, { ...connection, reconnect });
+  }
+  return [...projected.values()].sort((left, right) => left.id.localeCompare(right.id));
+}
+
+export function withoutRevisions<T extends { accountRevision: number; bindingAccountId: string; bindingRevision: number }>({
+  accountRevision: _accountRevision,
+  bindingAccountId: _bindingAccountId,
+  bindingRevision: _bindingRevision,
+  ...connection
+}: T): Omit<T, 'accountRevision' | 'bindingAccountId' | 'bindingRevision'> {
+  return connection;
 }
 
 /** How a person reconnects a connection that needs attention in place, when they may manage it. */

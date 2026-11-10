@@ -488,6 +488,12 @@ export const getSetupStatusOutput = z.strictObject({
   what: z.string(),
   expires: zWhen.optional(),
   agent: z.strictObject({ agentId: z.string(), name: z.string().optional() }).optional(),
+  connection: z.strictObject({
+    connectionId: z.string(),
+    name: z.string(),
+    kind: z.enum(['service', 'custom_api', 'custom_mcp']),
+    status: z.enum(['ready', 'waiting_for_setup', 'needs_attention', 'off']),
+  }).optional().describe('The Agent\'s connection this link sets up, as it is now. ready means it works, even when it was set up another way and the link is still waiting.'),
 });
 
 /** The recipe v2 document, unchanged from `export_workspace_recipe`. */
@@ -559,6 +565,8 @@ const zSetup = z.strictObject({
   setupToken: z.string().optional().describe('For get_setup_status.'),
   what: z.string(),
   expiresAt: z.string().optional(),
+  owner: z.enum(['team', 'member']).optional()
+    .describe('A connection\'s account: team is one sign-in for everyone who uses the Agent; member is the person\'s own.'),
 });
 
 /**
@@ -646,7 +654,7 @@ export const explainAgentInput = z.strictObject({ agentId: zAgentId, place: zPla
 export const checkAgentInput = z.strictObject({ agentId: zAgentId, place: zPlace, asPerson: zAsPerson });
 
 const zTokens = z.number().int().nonnegative();
-const zAgentName = z.strictObject({ name: z.string(), handle: z.string().optional() });
+const zAgentName = z.strictObject({ agentId: z.string(), name: z.string(), handle: z.string().optional() });
 const zWhere = z.strictObject({
   kind: z.enum(['dm', 'channel']),
   channelId: z.string().optional(),
@@ -707,6 +715,8 @@ export const checkAgentOutput = z.strictObject({
     name: z.string(),
     status: z.enum(['ok', 'warning', 'failing', 'unknown']),
     detail: z.string(),
+    plain: z.string().optional()
+      .describe('The detail as a card shows it: Chickpea\'s own words, without status codes, the service\'s own error text or IDs.'),
     fix: zFix.optional(),
     connectionId: z.string().optional(),
     channelId: z.string().optional(),

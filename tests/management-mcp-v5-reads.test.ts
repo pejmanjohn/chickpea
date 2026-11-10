@@ -14,8 +14,9 @@ import {
   MCP_ERROR_CODES,
   versionToken,
 } from '../src/management/mcp-v5/conventions.ts';
+import { agentConnectionsOf } from '../src/management/mcp-v5/reads.ts';
 import { createAgentInputSchema, updateAgentInputSchema } from '../src/management/mcp-v5/schemas.ts';
-import { AGENT_CARD_URI } from '../src/management/mcp-v5/cards.ts';
+import { CARD_URIS } from '../src/management/mcp-v5/cards.ts';
 import { FIVE_ZERO_TOOL_NAMES } from '../src/management/mcp-v5/tools.ts';
 import { emitManagementMetric } from '../src/management/telemetry.ts';
 import type { ManagementReceiptOutboxRecord } from '../src/management/types.ts';
@@ -24,17 +25,23 @@ import {
   createFixtureAgent,
   createManagementAdapterFixture,
   ownerMcpContext,
+  ownerSlackDmContext,
   type ManagementAdapterFixture,
 } from './helpers/management-adapter-fixture.ts';
 
 const LEGACY = '2025-11-25';
 const MODERN = '2026-07-28';
 const SCHEMES = [{ type: 'oauth2', scopes: ['chickpea:workspace'] }];
-/** The tools whose result the Agent card draws (tests/mcp-agent-card.test.ts covers why). */
-const AGENT_CARD_TOOLS: readonly string[] = [
-  'propose_agent', 'propose_agent_change', 'create_agent', 'update_agent', 'undo_change',
-  'delete_agent', 'remove_connection', 'remove_website_login', 'delete_schedule', 'remove_model_provider_key', 'update_member',
-];
+/** The tools whose result a card draws (tests/mcp-agent-card.test.ts covers why). */
+const CARD_TOOLS: Readonly<Record<string, string>> = {
+  ...Object.fromEntries([
+    'propose_agent', 'propose_agent_change', 'create_agent', 'update_agent', 'undo_change',
+    'delete_agent', 'remove_connection', 'remove_website_login', 'delete_schedule', 'remove_model_provider_key', 'update_member',
+  ].map((tool) => [tool, CARD_URIS['agent-card']])),
+  connect_service: CARD_URIS['connect-card'],
+  reconnect_service: CARD_URIS['connect-card'],
+  check_agent: CARD_URIS['health-card'],
+};
 const READ_5 = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
 /** The fixture's clock; an older delivered receipt is past retention and swept. */
 const NOW = 1_800_000_000_000;
@@ -170,7 +177,7 @@ for (const protocol of [LEGACY, MODERN]) {
       assert.deepEqual(
         meta.ui,
         tool.name === 'get_creation_status' ? { visibility: ['app'] }
-          : AGENT_CARD_TOOLS.includes(tool.name) ? { resourceUri: AGENT_CARD_URI } : undefined,
+          : CARD_TOOLS[tool.name] ? { resourceUri: CARD_TOOLS[tool.name] } : undefined,
         tool.name,
       );
       assert.equal(meta['openai/profile'], tool.name === 'get_account' ? true : undefined, tool.name);
@@ -423,6 +430,57 @@ test('a member reads only the Agents they may edit: another person\'s Agent is n
   ] as const) {
     assert.equal(errorOf(await call(tool, args)).code, 'not_found', tool);
   }
+});
+
+// A setup link's poll reads one Agent's connections alone, so it must see what the snapshot shows, and no more.
+test('one Agent\'s connections read alone match the workspace snapshot, and only for an Agent the caller may edit', async (t) => {
+  const { f } = await harness(t, 'agent-connections', 'member');
+  const teamId = f.owner.user.slackTeamId!;
+  const member = {
+    userId: f.admin.user.id, membershipId: f.admin.membership.id, organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'agent-connections' },
+  } as const;
+  await createFixtureAgent(f, 'agent_shared', { editPolicy: 'all_workspace_members' });
+  await createFixtureAgent(f, 'agent_owner_only');
+  // On each Agent: the team's account, the member's own that needs signing in again, and the Owner's own.
+  for (const agentId of ['agent_shared', 'agent_owner_only']) {
+    for (const [kind, owner, lifecycle] of [
+      ['team', undefined, 'ready'],
+      ['mine', f.admin.membership.id, 'needs_attention'],
+      ['theirs', f.owner.membership.id, 'ready'],
+    ] as const) {
+      const id = `connection_${kind}_${agentId}`;
+      await f.config.putConnectionAccount({
+        id, workspaceId: teamId, ownerKind: owner ? 'member' : 'team', ...owner ? { ownerMembershipId: owner } : {},
+        createdByMembershipId: owner ?? f.owner.membership.id, providerId: id, label: id, lifecycle, secretRefId: `secret_${id}`,
+        policy: { kind: 'api', allowedHosts: [`${kind}.example`], pathPrefixes: [], headerName: 'Authorization', allowedMethods: ['GET'], authMode: 'credential' },
+      } as never, 0);
+      await f.config.putAgentConnectionBinding({ agentId, connectionAccountId: id, providerId: id, allowedCapabilities: [], enabled: true });
+    }
+  }
+  const snapshot = (await f.service.inspectWorkspace(member)).agents.find(({ id }) => id === 'agent_shared')!;
+  const deps = { service: f.service, context: async () => member };
+  const alone = await agentConnectionsOf(deps, member, 'agent_shared');
+  assert.deepEqual(alone, {
+    mcpServers: snapshot.mcpServers,
+    apiConnections: snapshot.apiConnections,
+    connectionStatus: snapshot.connectionStatus,
+    connections: snapshot.connections,
+  });
+  assert.deepEqual(alone?.connections?.map(({ id, reconnect }) => [id, Boolean(reconnect)]), [
+    ['connection_mine_agent_shared', true], ['connection_team_agent_shared', false],
+  ]);
+  assert.equal(JSON.stringify(alone).includes('connection_theirs'), false, 'the Owner\'s own account stays theirs');
+  assert.equal(await agentConnectionsOf(deps, member, 'agent_owner_only'), undefined, 'not an Agent the member may edit');
+  assert.equal(await agentConnectionsOf(deps, member, 'agent_missing'), undefined);
+
+  // An Agent acting for the Owner in Slack reads its own connections only, as its snapshot lists only itself.
+  await f.config.ensureWorkspaceInstallation({ workspaceId: teamId, transportMode: 'direct', botUserId: 'UBOT', runtimeContract: 'chickpea-v1' });
+  const dm = ownerSlackDmContext(f);
+  const acting = { ...dm, actingAgentId: 'agent_shared', origin: { ...dm.origin, agentId: 'agent_shared' } };
+  const asAgent = { service: f.service, context: async () => acting };
+  assert.ok(await agentConnectionsOf(asAgent, acting, 'agent_shared'));
+  assert.equal(await agentConnectionsOf(asAgent, acting, 'agent_owner_only'), undefined, 'another Agent, though the Owner may edit it');
 });
 
 test('propose_agent refuses a blank name as the caller\'s input, not a server fault', async (t) => {

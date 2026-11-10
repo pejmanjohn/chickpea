@@ -7,31 +7,38 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 
 /**
- * Builds the ChatGPT Agent card: one self-contained HTML document, its script
+ * Builds the ChatGPT cards: each one self-contained HTML document, its script
  * and styles inline, because an MCP App's CSP blocks external files. Hosts
- * cache a card by its URI, so `publishAgentCard` gives every change a new
- * version in published.json instead of editing a published one.
+ * cache a card by its URI, so `publishCard` gives every change a new version
+ * in published.json instead of editing a published one.
  */
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const CARD = join(ROOT, 'src', 'mcp-cards', 'agent-card');
-export const PUBLISHED_PATH = join(CARD, 'published.json');
+const CARDS = join(ROOT, 'src', 'mcp-cards');
+export const PUBLISHED_PATH = join(CARDS, 'published.json');
+
+/** Each card's page title. */
+export const CARD_TITLES = {
+  'agent-card': 'Chickpea Agent card',
+  'connect-card': 'Chickpea connect card',
+  'health-card': 'Chickpea health card',
+};
 
 export function readPublished() {
   return JSON.parse(readFileSync(PUBLISHED_PATH, 'utf8'));
 }
 
-export function assetPath(version) {
-  return `mcp-cards/agent-card-v${version}.html.txt`;
+export function assetPath(card, version) {
+  return `mcp-cards/${card}-v${version}.html.txt`;
 }
 
 export function sha256(text) {
   return createHash('sha256').update(text).digest('hex');
 }
 
-export async function buildAgentCard(version) {
+export async function buildCard(card, version) {
   const script = await build({
-    entryPoints: [join(CARD, 'main.ts')],
+    entryPoints: [join(CARDS, card, 'main.ts')],
     bundle: true,
     write: false,
     minify: true,
@@ -43,13 +50,13 @@ export async function buildAgentCard(version) {
     logLevel: 'silent',
   });
   const hostStyles = readFileSync(createRequire(import.meta.url).resolve('@openai/mcp-extensions/app/styles.css'), 'utf8');
-  const cardStyles = readFileSync(join(CARD, 'card.css'), 'utf8');
+  const cardStyles = readFileSync(join(CARDS, 'card.css'), 'utf8');
   const js = script.outputFiles[0].text.replaceAll('</script', '<\\/script');
   return [
     '<!doctype html>',
     '<html lang="en">',
     '<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">',
-    '<title>Chickpea Agent card</title>',
+    `<title>${CARD_TITLES[card]}</title>`,
     `<style>${hostStyles}\n${cardStyles}</style></head>`,
     `<body><div id="card"></div><script>${js}</script></body>`,
     '</html>',
@@ -58,24 +65,27 @@ export async function buildAgentCard(version) {
 }
 
 /**
- * The card for the newest published version, or, when the source changed
- * since, the next version with its hash appended to published.json.
+ * The card's newest published version, or, when its source changed since,
+ * the next version with its hash appended to the card's list in published.json.
  */
-export async function publishAgentCard({ published = readPublished(), build = buildAgentCard } = {}) {
-  const latest = published.at(-1);
-  const current = await build(latest.version);
-  if (latest.sha256 === sha256(current)) return { version: latest.version, html: current, published };
-  const version = latest.version + 1;
-  const html = await build(version);
-  return { version, html, published: [...published, { version, sha256: sha256(html) }] };
+export async function publishCard(card, { published = readPublished(), build = buildCard } = {}) {
+  const versions = published[card] ?? [];
+  const latest = versions.at(-1);
+  if (latest) {
+    const current = await build(card, latest.version);
+    if (latest.sha256 === sha256(current)) return { card, version: latest.version, html: current, published };
+  }
+  const version = (latest?.version ?? 0) + 1;
+  const html = await build(card, version);
+  return { card, version, html, published: { ...published, [card]: [...versions, { version, sha256: sha256(html) }] } };
 }
 
 /**
  * Writes a card and the list of versions. Every older file stays as it was:
  * a chat drawn with an older card asks for that one again.
  */
-export function saveAgentCard({ version, html, published }, { assets = join(ROOT, 'assets'), publishedPath = PUBLISHED_PATH } = {}) {
-  const target = join(assets, assetPath(version));
+export function saveCard({ card, version, html, published }, { assets = join(ROOT, 'assets'), publishedPath = PUBLISHED_PATH } = {}) {
+  const target = join(assets, assetPath(card, version));
   mkdirSync(dirname(target), { recursive: true });
   writeFileSync(target, html);
   writeFileSync(publishedPath, `${JSON.stringify(published, null, 2)}\n`);

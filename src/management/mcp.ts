@@ -47,7 +47,7 @@ import {
   registerFiveZeroTools,
   type FiveZeroToolName,
 } from './mcp-v5/tools.ts';
-import { registerAgentCard } from './mcp-v5/cards.ts';
+import { registerCards } from './mcp-v5/cards.ts';
 import { shapeFiveZeroResults } from './mcp-v5/transport.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import {
@@ -471,7 +471,7 @@ export function createWorkspaceManagementMcpServer(
     ...(input.baseUrl ? { baseUrl: input.baseUrl } : {}),
     ...(input.env ? { env: input.env } : {}),
   });
-  registerAgentCard(server, input.baseUrl);
+  registerCards(server, input.baseUrl);
 
   server.registerResource('workspace', 'chickpea://workspace', {
     title: 'Current Chickpea workspace',

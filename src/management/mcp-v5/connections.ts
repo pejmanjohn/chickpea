@@ -19,7 +19,7 @@ import {
   type ChangeResult,
 } from './changes.ts';
 import { fail } from './conventions.ts';
-import { agentVersion, connectionRows, forManagedAgent, requireAgent, type FiveZeroDeps } from './reads.ts';
+import { agentVersion, catalogConnection, connectionRows, forManagedAgent, requireAgent, type FiveZeroDeps } from './reads.ts';
 import type * as schemas from './schemas.ts';
 import { editableAgent } from './writes.ts';
 
@@ -51,18 +51,6 @@ async function readAgent(deps: FiveZeroDeps, context: ManagementActorContext, ag
   return { snapshot, agent };
 }
 
-type Connector = NonNullable<ReturnType<typeof resolveConnectorCatalogPreset>>;
-
-/** The Agent's connection of this catalog service in this owner's lane, which a new link would replace. */
-function catalogConnection(agent: SnapshotAgent, connector: Connector, ownerKind: 'team' | 'member') {
-  const toolkit = 'managedToolkit' in connector ? connector.managedToolkit : undefined;
-  const lanePreset = new Map([...agent.apiConnections, ...agent.mcpServers].map(({ id, presetId }) => [id, presetId]));
-  return connectionRows(agent).find((row) => row.kind === 'service' && row.owner === ownerKind &&
-    (lanePreset.get(row.connectionId) === connector.id ||
-      agent.connections?.some(({ id, providerId }) => id === row.connectionId && toolkit !== undefined &&
-        (providerId === toolkit || providerId === connector.id))));
-}
-
 function needsSetup(
   agent: ChangeResult['agent'],
   setup: Setup,
@@ -76,6 +64,7 @@ function linkFrom(result: PrepareConnectorSetupResult): Setup {
     url: result.handoffUrl,
     ...(result.setupOperationId ? { setupToken: result.setupOperationId } : {}),
     what: result.connector.name,
+    owner: result.ownerKind,
   };
 }
 
@@ -285,7 +274,10 @@ async function withSetup(
   const row = connectionRows(agent).find(isConnection);
   if (row?.status !== 'waiting_for_setup') return saved;
   const mcp = agent.mcpServers.find(({ id }) => id === row.connectionId);
-  const setup = await issueSetup(deps, context, connectionTarget(agentId, mcp ? 'mcp' : 'api', row.connectionId, checkPath), row.name);
+  const setup = {
+    ...await issueSetup(deps, context, connectionTarget(agentId, mcp ? 'mcp' : 'api', row.connectionId, checkPath), row.name),
+    ...(row.owner ? { owner: row.owner } : {}),
+  };
   const finish = mcp?.authMode === 'oauth' ? 'sign it in' : 'add its key';
   return { ...saved, status: 'needs_setup', summary: `${saved.summary} Open the link to ${finish}.`, nextStep: setupNextStep([setup]), setup };
 }
@@ -306,7 +298,10 @@ export async function reconnectService(
     : agent.mcpServers.some(({ id }) => id === row.connectionId) ? 'mcp' : undefined;
   const laneLink = async () => needsSetup(
     summary,
-    await issueSetup(deps, context, connectionTarget(agent.id, lane!, row.connectionId, input.checkPath), row.name),
+    {
+      ...await issueSetup(deps, context, connectionTarget(agent.id, lane!, row.connectionId, input.checkPath), row.name),
+      ...(row.owner ? { owner: row.owner } : {}),
+    },
     `Open the link to reconnect ${row.name}.`,
   );
   const lanePreset = laneEntry?.presetId ? resolveConnectorCatalogPreset(laneEntry.presetId) : undefined;

@@ -1,5 +1,9 @@
-import { assetPath, publishAgentCard, saveAgentCard } from './lib/mcp-cards.mjs';
+import { CARD_TITLES, assetPath, publishCard, readPublished, saveCard } from './lib/mcp-cards.mjs';
 
-const card = await publishAgentCard();
-saveAgentCard(card);
-console.log(`Agent card v${card.version}: assets/${assetPath(card.version)} (${card.html.length} bytes)`);
+let published = readPublished();
+for (const card of Object.keys(CARD_TITLES)) {
+  const built = await publishCard(card, { published });
+  saveCard(built);
+  published = built.published;
+  console.log(`${card} v${built.version}: assets/${assetPath(card, built.version)} (${built.html.length} bytes)`);
+}

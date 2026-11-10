@@ -10,28 +10,38 @@ import { createMcpHandler } from '@modelcontextprotocol/server';
 import type { McpAuthenticatedPrincipal } from '../src/auth/mcp-oauth-routes.ts';
 import { isPublicAssetPath } from '../src/assets/public-assets.ts';
 import { createWorkspaceManagementMcpServer } from '../src/management/mcp.ts';
-import { AGENT_CARD_URI, MCP_APP_MIME_TYPE } from '../src/management/mcp-v5/cards.ts';
+import { CARD_URIS, MCP_APP_MIME_TYPE } from '../src/management/mcp-v5/cards.ts';
 import { FIVE_ZERO_TOOLS } from '../src/management/mcp-v5/tools.ts';
 import { agentWelcomeQuote, formatManagementSetupReceipt } from '../src/management/receipts.ts';
 import type { ManagementAgentCreatedWelcome } from '../src/management/types.ts';
-import { AGENT_CARD_VERSION, AGENT_CARD_VERSIONS, agentCardAssetPath } from '../src/mcp-cards/agent-card/published.ts';
+import { CARD_NAMES, cardAssetPath, cardVersions, type CardName } from '../src/mcp-cards/published.ts';
 import { PROTOCOL_VERSION } from '../src/mcp-cards/bridge.ts';
 import { SLACK_SETTING_KEYS } from '../src/slack/credentials.ts';
 // @ts-expect-error Build tooling JavaScript helper.
-import { assetPath, buildAgentCard, publishAgentCard, readPublished, saveAgentCard, sha256 } from '../scripts/lib/mcp-cards.mjs';
+import { assetPath, buildCard, CARD_TITLES, publishCard, readPublished, saveCard, sha256 } from '../scripts/lib/mcp-cards.mjs';
 import { createFixtureAgent, createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 
 const BASE_URL = 'https://chickpea.example.test';
 
 /**
- * The tools whose result the Agent card draws: the proposal, the creation,
- * the change and its save, and every tool that can return
- * needs_confirmation, whose card is the "Are you sure?".
+ * The tools whose result a card draws. The Agent card: the proposal, the
+ * creation, the change and its save, and every tool that can return
+ * needs_confirmation, whose card is the "Are you sure?". The connect card:
+ * the two tools that hand out a connection's setup link. The health card:
+ * check_agent.
  */
-const CARD_TOOLS = [
-  'propose_agent', 'propose_agent_change', 'create_agent', 'update_agent', 'undo_change',
-  'delete_agent', 'remove_connection', 'remove_website_login', 'delete_schedule', 'remove_model_provider_key', 'update_member',
-];
+const CARD_TOOLS: Record<string, CardName> = {
+  ...Object.fromEntries([
+    'propose_agent', 'propose_agent_change', 'create_agent', 'update_agent', 'undo_change',
+    'delete_agent', 'remove_connection', 'remove_website_login', 'delete_schedule', 'remove_model_provider_key', 'update_member',
+  ].map((tool) => [tool, 'agent-card' as const])),
+  connect_service: 'connect-card',
+  reconnect_service: 'connect-card',
+  check_agent: 'health-card',
+};
+
+/** The card-only reads: hidden from the model, called by a card. */
+const CARD_ONLY = ['get_creation_status'];
 
 type ToolResult = {
   content: Array<{ type: string; text: string }>;
@@ -82,20 +92,23 @@ async function version(call: (name: string, args?: Record<string, unknown>) => P
   return (await call('get_agent', { agentId })).structuredContent!.version as string;
 }
 
-test('the card tools link the Agent card; a card-only tool and every other tool do not', async (t) => {
+test('each card tool links its card; a card-only tool and every other tool do not', async (t) => {
   const { rpc } = await harness(t, 'card-meta');
   const { tools } = await rpc('tools/list') as { tools: Array<{ name: string; _meta?: Record<string, any> }> };
   for (const tool of tools) {
-    const card = CARD_TOOLS.includes(tool.name);
-    assert.equal(tool._meta?.ui?.resourceUri, card ? AGENT_CARD_URI : undefined, `${tool.name}: ui.resourceUri`);
-    assert.equal(tool._meta?.['openai/outputTemplate'], card ? AGENT_CARD_URI : undefined, `${tool.name}: openai/outputTemplate`);
+    const card = CARD_TOOLS[tool.name];
+    const uri = card ? CARD_URIS[card] : undefined;
+    assert.equal(tool._meta?.ui?.resourceUri, uri, `${tool.name}: ui.resourceUri`);
+    assert.equal(tool._meta?.['openai/outputTemplate'], uri, `${tool.name}: openai/outputTemplate`);
+    assert.deepEqual(tool._meta?.ui?.visibility, CARD_ONLY.includes(tool.name) ? ['app'] : undefined, `${tool.name}: visibility`);
   }
-  const status = tools.find(({ name }) => name === 'get_creation_status')!;
-  assert.deepEqual(status._meta?.ui, { visibility: ['app'] }, 'the poll is for the card only');
-  assert.equal(AGENT_CARD_URI, `ui://chickpea/agent-card-v${AGENT_CARD_VERSION}`);
+  assert.deepEqual(Object.keys(CARD_TOOLS).filter((name) => !tools.some((tool) => tool.name === name)), [], 'every card tool is listed');
+  for (const card of CARD_NAMES) {
+    assert.equal(CARD_URIS[card], `ui://chickpea/${card}-v${cardVersions(card).at(-1)}`, `${card} tools name its newest version`);
+  }
 });
 
-test('a tool that can ask "Are you sure?" draws the card, which is its confirmation', () => {
+test('a tool that can ask "Are you sure?" draws the Agent card, which is its confirmation', () => {
   const confirming = Object.entries(FIVE_ZERO_TOOLS)
     .filter(([, tool]) => /\breturns needs_confirmation\b/.test(tool.description))
     .map(([name]) => name);
@@ -104,85 +117,98 @@ test('a tool that can ask "Are you sure?" draws the card, which is its confirmat
     'undo_change', 'update_agent', 'update_member',
   ]);
   for (const name of confirming) {
-    assert.ok(CARD_TOOLS.includes(name), `${name} can return needs_confirmation, so it needs card: true`);
+    assert.equal(CARD_TOOLS[name], 'agent-card', `${name} can return needs_confirmation, so it needs card: 'agent-card'`);
   }
 });
 
-test('the card resource is an MCP App that reaches nothing and links only to Chickpea and Slack', async (t) => {
+test('each card resource is an MCP App that reaches nothing and links only to Chickpea and Slack', async (t) => {
   const { rpc } = await harness(t, 'card-resource');
   const { resources } = await rpc('resources/list') as { resources: Array<Record<string, any>> };
-  const listed = resources.find(({ uri }) => uri === AGENT_CARD_URI);
-  assert.ok(listed, 'resources/list names the card');
-  assert.equal(listed.mimeType, 'text/html;profile=mcp-app');
   assert.equal(MCP_APP_MIME_TYPE, 'text/html;profile=mcp-app');
+  const descriptions = new Set<string>();
+  for (const name of CARD_NAMES) {
+    const uri = CARD_URIS[name];
+    const listed = resources.find((resource) => resource.uri === uri);
+    assert.ok(listed, `resources/list names ${uri}`);
+    assert.equal(listed.mimeType, 'text/html;profile=mcp-app');
 
-  const { contents } = await rpc('resources/read', { uri: AGENT_CARD_URI }) as { contents: Array<Record<string, any>> };
-  assert.equal(contents.length, 1);
-  const [card] = contents;
-  assert.equal(card!.mimeType, 'text/html;profile=mcp-app');
-  assert.equal(card!.text, readFileSync(`assets/${agentCardAssetPath(AGENT_CARD_VERSION)}`, 'utf8'), 'the page is the built asset');
-  assert.match(card!.text, /^<!doctype html>/);
-  for (const meta of [card!._meta, listed._meta]) {
-    assert.deepEqual(meta.ui.csp, { connectDomains: [], resourceDomains: [] }, 'polling goes through the host');
-    assert.equal(meta.ui.prefersBorder, true);
-    assert.deepEqual(meta['openai/widgetCSP'], {
-      connect_domains: [],
-      resource_domains: [],
-      redirect_domains: [BASE_URL, 'https://slack.com'],
-    });
+    const { contents } = await rpc('resources/read', { uri }) as { contents: Array<Record<string, any>> };
+    assert.equal(contents.length, 1);
+    const [card] = contents;
+    assert.equal(card!.mimeType, 'text/html;profile=mcp-app');
+    assert.equal(card!.text, readFileSync(`assets/${cardAssetPath(name, cardVersions(name).at(-1)!)}`, 'utf8'), 'the page is the built asset');
+    assert.match(card!.text, new RegExp(`^<!doctype html>[\\s\\S]*<title>${CARD_TITLES[name]}</title>`));
+    for (const meta of [card!._meta, listed._meta]) {
+      assert.deepEqual(meta.ui.csp, { connectDomains: [], resourceDomains: [] }, 'polling goes through the host');
+      assert.equal(meta.ui.prefersBorder, true);
+      assert.deepEqual(meta['openai/widgetCSP'], {
+        connect_domains: [],
+        resource_domains: [],
+        redirect_domains: [BASE_URL, 'https://slack.com'],
+      });
+    }
+    descriptions.add(listed._meta['openai/widgetDescription']);
+    assert.doesNotMatch(card!.text, /<(?:link|script)[^>]+(?:href|src)=/i, 'everything is inline');
   }
-  assert.doesNotMatch(card!.text, /<(?:link|script)[^>]+(?:href|src)=/i, 'everything is inline');
+  assert.equal(descriptions.size, CARD_NAMES.length, 'each card tells the model what it shows');
 });
 
 test('every published card is public as inert text and served as published; its URI changes whenever its bytes do', async (t) => {
   const { rpc } = await harness(t, 'card-versions');
-  const published = readPublished() as Array<{ version: number; sha256: string }>;
-  assert.deepEqual(published.map(({ version: v }) => v), published.map((_, index) => index + 1), 'versions count up from 1');
-  assert.deepEqual(AGENT_CARD_VERSIONS, published.map(({ version: v }) => v));
-  assert.equal(new Set(published.map(({ sha256: hash }) => hash)).size, published.length, 'no two versions share bytes');
-  for (const { version: v, sha256: hash } of published) {
-    const path = agentCardAssetPath(v);
-    assert.equal(path, assetPath(v));
-    assert.match(path, /\.txt$/, 'never an .html page on Chickpea\'s own origin');
-    assert.ok(isPublicAssetPath(path), `v${v}: readPublicAsset may read it`);
-    const stored = readFileSync(`assets/${path}`);
-    assert.equal(sha256(stored), hash, `v${v} changed after it was published. A published card never changes; the build publishes the next version.`);
-    const { contents } = await rpc('resources/read', { uri: `ui://chickpea/agent-card-v${v}` }) as { contents: Array<{ text: string }> };
-    assert.equal(contents[0]!.text, stored.toString('utf8'), `v${v} is served`);
+  const published = readPublished() as Record<string, Array<{ version: number; sha256: string }>>;
+  assert.deepEqual(Object.keys(published), CARD_NAMES);
+  assert.deepEqual(Object.keys(CARD_TITLES), CARD_NAMES, 'the build makes every card');
+  for (const card of CARD_NAMES) {
+    const versions = published[card]!;
+    assert.deepEqual(versions.map(({ version: v }) => v), versions.map((_, index) => index + 1), `${card}: versions count up from 1`);
+    assert.deepEqual(cardVersions(card), versions.map(({ version: v }) => v));
+    assert.equal(new Set(versions.map(({ sha256: hash }) => hash)).size, versions.length, `${card}: no two versions share bytes`);
+    for (const { version: v, sha256: hash } of versions) {
+      const path = cardAssetPath(card, v);
+      assert.equal(path, assetPath(card, v));
+      assert.match(path, /\.txt$/, 'never an .html page on Chickpea\'s own origin');
+      assert.ok(isPublicAssetPath(path), `${card} v${v}: readPublicAsset may read it`);
+      const stored = readFileSync(`assets/${path}`);
+      assert.equal(sha256(stored), hash, `${card} v${v} changed after it was published. A published card never changes; the build publishes the next version.`);
+      const { contents } = await rpc('resources/read', { uri: `ui://chickpea/${card}-v${v}` }) as { contents: Array<{ text: string }> };
+      assert.equal(contents[0]!.text, stored.toString('utf8'), `${card} v${v} is served`);
+    }
+    const latest = versions.at(-1)!;
+    assert.equal(sha256(await buildCard(card, latest.version)), latest.sha256,
+      `The ${card} changed since it was published. Run npm run mcp-cards:build: it publishes the next version.`);
   }
-
-  const latest = published.at(-1)!;
-  assert.equal(latest.version, AGENT_CARD_VERSION);
-  assert.equal(sha256(await buildAgentCard(latest.version)), latest.sha256,
-    'The Agent card changed since it was published. Run npm run mcp-cards:build: it publishes the next version.');
 });
 
 test('after the next version is published, a chat drawn with an older card still gets it', async (t) => {
-  const release = mkdtempSync(join(tmpdir(), 'agent-card-release-'));
+  const release = mkdtempSync(join(tmpdir(), 'card-release-'));
   t.after(() => rmSync(release, { recursive: true, force: true }));
   cpSync('assets/mcp-cards', join(release, 'assets', 'mcp-cards'), { recursive: true });
-  const before = readPublished() as Array<{ version: number; sha256: string }>;
+  const before = readPublished() as Record<CardName, Array<{ version: number; sha256: string }>>;
 
-  // The build after the page changed, saved into the scratch release instead of this checkout.
-  const next = await publishAgentCard({ build: async (v: number) => `${await buildAgentCard(v)}<!-- changed -->\n` });
-  assert.equal(next.version, AGENT_CARD_VERSION + 1);
-  saveAgentCard(next, { assets: join(release, 'assets'), publishedPath: join(release, 'published.json') });
-  for (const { version: v } of before) {
-    assert.deepEqual(readFileSync(join(release, 'assets', assetPath(v))), readFileSync(`assets/${assetPath(v)}`), `v${v} stays as it was`);
+  // The build after the connect card's page changed, saved into the scratch release instead of this checkout.
+  const next = await publishCard('connect-card', { build: async (card: string, v: number) => `${await buildCard(card, v)}<!-- changed -->\n` });
+  const newest = cardVersions('connect-card').at(-1)!;
+  assert.equal(next.version, newest + 1);
+  saveCard(next, { assets: join(release, 'assets'), publishedPath: join(release, 'published.json') });
+  for (const card of CARD_NAMES) {
+    for (const { version: v } of before[card]) {
+      assert.deepEqual(readFileSync(join(release, 'assets', assetPath(card, v))), readFileSync(`assets/${assetPath(card, v)}`), `${card} v${v} stays as it was`);
+    }
   }
 
-  const output = execFileSync(process.execPath, ['--import', import.meta.resolve('tsx'), resolve('tests/helpers/agent-card-release.ts')], {
+  const output = execFileSync(process.execPath, ['--import', import.meta.resolve('tsx'), resolve('tests/helpers/card-release.ts')], {
     cwd: release,
     env: { ...process.env, PUBLISHED_JSON: join(release, 'published.json') },
     encoding: 'utf8',
   });
-  const { toolsName, allowlisted, served } = JSON.parse(output) as { toolsName: string; allowlisted: number[]; served: Record<string, string> };
-  assert.equal(toolsName, `ui://chickpea/agent-card-v${next.version}`, 'card tools name the newest');
-  assert.deepEqual(allowlisted, [...AGENT_CARD_VERSIONS, next.version]);
-  assert.deepEqual(served, Object.fromEntries([
-    ...before.map(({ version: v }) => [`ui://chickpea/agent-card-v${v}`, readFileSync(`assets/${assetPath(v)}`, 'utf8')]),
-    [`ui://chickpea/agent-card-v${next.version}`, next.html],
-  ]), 'every version serves its own bytes');
+  const { toolsName, allowlisted, served } = JSON.parse(output) as { toolsName: Record<string, string>; allowlisted: string[]; served: Record<string, string> };
+  assert.deepEqual(toolsName, { ...CARD_URIS, 'connect-card': `ui://chickpea/connect-card-v${next.version}` }, 'tools name the newest of each card');
+  const all = CARD_NAMES.flatMap((card) => [
+    ...before[card].map(({ version: v }) => ({ card, v, text: readFileSync(`assets/${assetPath(card, v)}`, 'utf8') })),
+    ...card === 'connect-card' ? [{ card, v: next.version, text: next.html }] : [],
+  ]);
+  assert.deepEqual(allowlisted, all.map(({ card, v }) => assetPath(card, v)));
+  assert.deepEqual(served, Object.fromEntries(all.map(({ card, v, text }) => [`ui://chickpea/${card}-v${v}`, text])), 'every version serves its own bytes');
 });
 
 test('a card tool\'s result names its tool for the card and keeps its whole result in the text', async (t) => {
