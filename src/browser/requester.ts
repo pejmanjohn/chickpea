@@ -19,7 +19,7 @@ export interface SlackRequesterClient {
 
 export interface SlackRequesterNotifierInput {
   requester: SlackRequester;
-  surface: 'channel_thread' | 'direct_message';
+  surface: import('../agents/runtime-plan.ts').RuntimePlanSurface;
   /** The trusted reply thread, when the conversation has one. */
   threadTs?: string;
   client: () => Promise<SlackRequesterClient>;

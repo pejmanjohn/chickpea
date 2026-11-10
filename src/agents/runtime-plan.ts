@@ -77,10 +77,13 @@ import {
   semanticDescriptorForManagedCapability,
 } from '../connections/catalog/index.ts';
 
-export const RUNTIME_PLAN_SCHEMA_VERSION = 4 as const;
+export const RUNTIME_PLAN_SCHEMA_VERSION = 5 as const;
+/** Slack turns and routines still write V4, so the release before V5 reads every plan they freeze. */
+export const CONVERSATION_PLAN_SCHEMA_VERSION = 4 as const;
 export const DEFAULT_CONTINUITY_POLICY = 'slack-runtime-v3' as const;
 
-export type RuntimePlanSurface = 'channel_thread' | 'direct_message';
+/** `test`: a V5 test run, asked from outside Slack, which can mount only reads. */
+export type RuntimePlanSurface = 'channel_thread' | 'direct_message' | 'test';
 /**
  * The Agent's own environment. Only `bash` exists: the Agent lives in the
  * virtual sandbox and reaches a coding workspace through the workspace tools.
@@ -205,8 +208,8 @@ export interface RuntimePlanModelCredentialV3 {
 }
 
 export interface RuntimePlanV2 {
-  /** V2 and V3 remain readable for already-admitted TurnJobs; new plans are V4. */
-  schemaVersion: 2 | 3 | typeof RUNTIME_PLAN_SCHEMA_VERSION;
+  /** V2 and V3 remain readable for already-admitted TurnJobs; Slack and routine plans are V4, test runs V5. */
+  schemaVersion: 2 | 3 | typeof CONVERSATION_PLAN_SCHEMA_VERSION | typeof RUNTIME_PLAN_SCHEMA_VERSION;
   continuityPolicy: string;
   /** Durable profile identity used only by trusted live resource resolvers. */
   agentId: string;
@@ -470,11 +473,36 @@ const BUILT_IN_SKILL_LABELS: Readonly<Record<string, string>> = {
  * trusted request-time resolvers own the current credential material.
  */
 export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimePlanV2 {
-  const threadTs = conversationThreadTs(input.turn, input.assignment.runtimeContract);
-  const continuityKey = slackTurnContinuityKey(input.turn, input.assignment);
-  const artifactThreadTs = input.artifactThreadTs === undefined
-    ? input.turn.threadTs
-    : input.artifactThreadTs ?? undefined;
+  const { turn, artifactThreadTs, ...rest } = input;
+  const artifactThread = artifactThreadTs === undefined ? turn.threadTs : artifactThreadTs ?? undefined;
+  return compileRuntimePlan(rest, {
+    schemaVersion: CONVERSATION_PLAN_SCHEMA_VERSION,
+    actorMembershipId: turn.actorMembershipId,
+    conversation: {
+      workspaceId: turn.workspaceId,
+      channelId: turn.channelId,
+      threadTs: conversationThreadTs(turn, input.assignment.runtimeContract),
+      surface: surfaceForTurn(turn),
+      continuityKey: slackTurnContinuityKey(turn, input.assignment),
+      ...(input.assignment.threadGuest ? { guest: true as const } : {}),
+    },
+    ...(artifactThread ? { artifactThreadTs: artifactThread } : {}),
+  });
+}
+
+/** What the conversation, not the Agent, puts in a plan. */
+export interface RuntimePlanConversationInput {
+  schemaVersion: typeof CONVERSATION_PLAN_SCHEMA_VERSION | typeof RUNTIME_PLAN_SCHEMA_VERSION;
+  actorMembershipId: string | undefined;
+  conversation: RuntimePlanConversationV2;
+  artifactThreadTs?: string;
+}
+
+/** A plan from the Agent's parts and the conversation its caller derived. */
+export function compileRuntimePlan(
+  input: Omit<CompileRuntimePlanV2Input, 'turn' | 'artifactThreadTs'>,
+  { schemaVersion, actorMembershipId, conversation, artifactThreadTs }: RuntimePlanConversationInput,
+): RuntimePlanV2 {
   const effectiveConnections = input.effectiveConnections ?? [];
   const mcpConnections = projectEffectiveMcpConnections(effectiveConnections);
   const apiConnections = projectEffectiveApiConnections(effectiveConnections);
@@ -495,13 +523,11 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
       .sort(compareBy('id'))
     : [];
   const planWithoutRevision: Omit<RuntimePlanV2, 'harnessRevision'> = {
-    schemaVersion: RUNTIME_PLAN_SCHEMA_VERSION,
+    schemaVersion,
     continuityPolicy: input.continuityPolicy ?? DEFAULT_CONTINUITY_POLICY,
     agentId: input.assignment.agent.id,
     ...(input.installation ? { installation: parseInstallationOwnership(input.installation) } : {}),
-    ...(input.turn.actorMembershipId
-      ? { actorMembershipId: input.turn.actorMembershipId }
-      : {}),
+    ...(actorMembershipId ? { actorMembershipId } : {}),
     connectionAccountIds: effectiveConnections?.map(({ account }) => account.id) ?? [],
     usesPersonalAccess: effectiveConnections.some(({ scope }) => scope === 'personal'),
     ...(input.connectionSelections
@@ -525,14 +551,7 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
     ...(input.assignment.handoffContext?.length
       ? { handoffContext: input.assignment.handoffContext.map((message) => ({ ...message })) }
       : {}),
-    conversation: {
-      workspaceId: input.turn.workspaceId,
-      channelId: input.turn.channelId,
-      threadTs,
-      surface: surfaceForTurn(input.turn),
-      continuityKey,
-      ...(input.assignment.threadGuest ? { guest: true as const } : {}),
-    },
+    conversation,
     runtimeModel: input.runtimeModel ?? requireFrozenModel(input.assignment),
     ...(input.runtimeModelRoute ? { runtimeModelRoute: input.runtimeModelRoute } : {}),
     model: requireFrozenModel(input.assignment),
@@ -579,7 +598,7 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
     sandbox: { mode: 'bash' },
     artifactDestination: {
       kind: 'slack_conversation',
-      channelId: input.turn.channelId,
+      channelId: conversation.channelId,
       ...(artifactThreadTs ? { threadTs: artifactThreadTs } : {}),
     },
   };
@@ -1017,8 +1036,8 @@ export function parseRuntimePlanV2(
     'modelCredential',
   ]);
   if (record.schemaVersion !== 2 && record.schemaVersion !== 3 &&
-      record.schemaVersion !== RUNTIME_PLAN_SCHEMA_VERSION) {
-    throw new Error('Runtime plan schemaVersion must be 2, 3 or 4.');
+      record.schemaVersion !== CONVERSATION_PLAN_SCHEMA_VERSION && record.schemaVersion !== RUNTIME_PLAN_SCHEMA_VERSION) {
+    throw new Error('Runtime plan schemaVersion must be 2, 3, 4 or 5.');
   }
   const schemaVersion = record.schemaVersion;
   const continuityPolicy = boundedString(record.continuityPolicy, 'continuityPolicy', 1, 80);
@@ -1037,10 +1056,10 @@ export function parseRuntimePlanV2(
       (value) => boundedString(value, 'connectionAccountId', 1, 160),
       128,
     );
-  if (schemaVersion !== RUNTIME_PLAN_SCHEMA_VERSION && record.usesPersonalAccess !== undefined) {
+  if (schemaVersion < CONVERSATION_PLAN_SCHEMA_VERSION && record.usesPersonalAccess !== undefined) {
     throw new Error('Runtime plan usesPersonalAccess requires V4.');
   }
-  const usesPersonalAccess = schemaVersion === RUNTIME_PLAN_SCHEMA_VERSION
+  const usesPersonalAccess = schemaVersion >= CONVERSATION_PLAN_SCHEMA_VERSION
     ? booleanField(record.usesPersonalAccess, 'usesPersonalAccess')
     : undefined;
   const connectionAuthorizations = record.connectionAuthorizations === undefined
@@ -1102,8 +1121,12 @@ export function parseRuntimePlanV2(
   const persistedSurface = oneOf(
     conversationRecord.surface,
     'conversation.surface',
-    ['channel_thread', 'direct_message', 'app_home'] as const,
+    ['channel_thread', 'direct_message', 'app_home', 'test'] as const,
   );
+  const test = persistedSurface === 'test';
+  if (test !== (schemaVersion === RUNTIME_PLAN_SCHEMA_VERSION)) {
+    throw new Error('Runtime plan V5 is a test run, and only V5 is.');
+  }
   // Pre-Agent-View plans may survive in pending TurnJobs. Accept that durable
   // read shape, but normalize it so new plans and every downstream consumer
   // only observe the current direct-message surface.
@@ -1113,7 +1136,7 @@ export function parseRuntimePlanV2(
   const conversation: RuntimePlanConversationV2 = {
     workspaceId: slackIdentity(conversationRecord.workspaceId, 'conversation.workspaceId'),
     channelId: slackIdentity(conversationRecord.channelId, 'conversation.channelId'),
-    threadTs: conversationThread(conversationRecord.threadTs),
+    threadTs: conversationThread(conversationRecord.threadTs, test),
     surface,
     continuityKey: opaqueAgentId(conversationRecord.continuityKey, 'conversation.continuityKey'),
     ...(conversationRecord.guest === true ? { guest: true as const } : {}),
@@ -1252,6 +1275,7 @@ export function parseRuntimePlanV2(
     artifactDestination,
     harnessRevision,
   };
+  if (test) assertTestRunPlan(parsed);
   // The revision hashes the plan as it was admitted. Besides the plan as
   // read, accept the shape from before connection fields were frozen and,
   // for a V2/V3 plan read with the plain coding-workspace capability, the
@@ -1300,6 +1324,36 @@ function compileConnectionAuthorizations(
           lifecycle: account.lifecycle,
         }]),
   })).sort(compareBy('providerId'));
+}
+
+/** A test run's conversation: Slack IDs are upper case, so `test_` names no real one. */
+const TEST_RUN_CHANNEL = /^test_[a-z2-7]{26}$/;
+
+/** What a V5 plan may not carry, so it can mount nothing that writes, posts or reaches Slack. */
+const TEST_RUN_FORBIDDEN: ReadonlyArray<readonly [string, (plan: RuntimePlanV2) => unknown]> = [
+  ['a Slack conversation', ({ conversation }) => !TEST_RUN_CHANNEL.test(conversation.channelId) || conversation.guest],
+  ['a file destination thread', ({ artifactDestination }) => artifactDestination.threadTs],
+  ['no caller', ({ actorMembershipId }) => !actorMembershipId],
+  ['a front desk', ({ frontDesk }) => frontDesk],
+  ['handoff context', ({ handoffContext }) => handoffContext],
+  ['a coding workspace', ({ codingWorkspace }) => codingWorkspace],
+  // Website logins need a browser, so they are refused with it.
+  ['a browser', ({ browserCapability }) => browserCapability],
+  ['an image model', ({ imageCapability }) => imageCapability?.filled],
+  ['repositories', ({ repositories }) => repositories.length],
+  ['connection selections', ({ connectionSelections }) => connectionSelections],
+  ['connection authorizations', ({ connectionAuthorizations }) => connectionAuthorizations?.length],
+  ['connection choices', ({ connectionChoices }) => connectionChoices?.length],
+  ['an MCP tool not declared a read', ({ mcpConnections }) => mcpConnections.some(({ allowedTools, readOnlyTools, writeTools }) =>
+    writeTools?.length || allowedTools.some((tool) => !readOnlyTools?.includes(tool)))],
+  ['a connector capability that writes', ({ managedConnections }) => managedConnections?.some(({ allowedCapabilities }) =>
+    allowedCapabilities.some((id) => MANAGED_CONNECTOR_CATALOG.capability(id)?.effect !== 'read'))],
+];
+
+function assertTestRunPlan(plan: RuntimePlanV2): void {
+  for (const [what, carries] of TEST_RUN_FORBIDDEN) {
+    if (carries(plan)) throw new Error(`Runtime plan V5 cannot carry ${what}.`);
+  }
 }
 
 const TEAM_RECONNECT_LIMIT = 64;
@@ -2339,9 +2393,9 @@ function slackIdentity(value: unknown, label: string): string {
   return parsed;
 }
 
-function conversationThread(value: unknown): string {
+function conversationThread(value: unknown, test: boolean): string {
   const parsed = boundedString(value, 'conversation.threadTs', 2, 80);
-  if (parsed !== 'dm' && !SLACK_TIMESTAMP.test(parsed)) {
+  if (test ? parsed !== 'test' : parsed !== 'dm' && !SLACK_TIMESTAMP.test(parsed)) {
     throw new Error('Runtime plan conversation.threadTs is invalid.');
   }
   return parsed;
