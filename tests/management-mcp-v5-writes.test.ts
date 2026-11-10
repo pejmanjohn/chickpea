@@ -30,10 +30,18 @@ type Person = 'owner' | 'admin';
 async function harness(
   t: TestContext,
   suffix: string,
-  options: { member?: boolean; overrides?: Partial<WorkspaceManagementServiceInput> } = {},
+  options: {
+    member?: boolean;
+    overrides?: Partial<WorkspaceManagementServiceInput>;
+    slackFacts?: WorkspaceManagementServiceInput['slackFacts'];
+  } = {},
 ) {
   const clock = { now: NOW };
-  const f = await createManagementAdapterFixture(suffix, { now: () => clock.now, ...options.overrides });
+  const f = await createManagementAdapterFixture(suffix, {
+    now: () => clock.now,
+    ...(options.slackFacts ? { slackFacts: options.slackFacts } : {}),
+    ...options.overrides,
+  });
   t.after(() => f.close());
   if (options.member) {
     await f.identity.updateMembershipAuthority({
@@ -442,6 +450,58 @@ test('the immediate writes apply in the call, as policy.ts says for this door', 
   assert.match(provider.setup.url, /^http:\/\/localhost\//);
   assert.equal(structured(await call('get_setup_status', { setupToken: provider.setup.setupToken })).status, 'waiting');
   assertNoInternalIds(JSON.stringify({ results, provider }), f);
+});
+
+test('a member cannot turn Chickpea back on in a Channel an Owner turned off, and still renames one that is on', async (t) => {
+  // A member sees a Channel when an Agent they can see is in it and Slack shows it to them.
+  const { f, as, teamId } = await harness(t, 'channel-on', {
+    member: true,
+    slackFacts: async () => ({
+      async lookupChannel(channelId: string) {
+        return { id: channelId, name: channelId.slice(2).toLowerCase(), private: false, member: true, archived: false };
+      },
+      async listMemberChannels() {
+        return new Set<string>();
+      },
+    }),
+  });
+  await createFixtureAgent(f, 'agent_shared', { editPolicy: 'all_workspace_members' });
+  await grantChannel(f, teamId, 'agent_shared', 'C_SUPPORT');
+  await grantChannel(f, teamId, 'agent_shared', 'C_HELP');
+  const owner = as('owner');
+  const member = as('admin');
+  assert.equal(structured(await owner('save_channel_settings', {
+    channelId: 'C_SUPPORT', on: false, idempotencyKey: 'owner-off',
+  })).status, 'done');
+
+  const refused = errorOf(await member('save_channel_settings', {
+    channelId: 'C_SUPPORT', on: true, idempotencyKey: 'member-on',
+  }), 'not_allowed');
+  assert.equal(
+    refused.message,
+    'Chickpea is off in this Channel, and only a workspace Owner or Admin can turn it back on or change it. Ask one of them to do it.',
+  );
+  assert.equal(refused.fix, undefined, 'Admin has no on/off control for a Channel, so no link');
+  assert.equal((await f.config.getChannel(teamId, 'C_SUPPORT'))?.lifecycle, 'archived');
+
+  assert.equal(structured(await member('save_channel_settings', {
+    channelId: 'C_HELP', label: 'helpdesk', on: true, idempotencyKey: 'member-rename',
+  })).status, 'done');
+  assert.equal((await f.config.getChannel(teamId, 'C_HELP'))?.label, 'helpdesk');
+
+  assert.equal(structured(await owner('save_channel_settings', {
+    channelId: 'C_SUPPORT', on: true, idempotencyKey: 'owner-on',
+  })).status, 'done');
+  assert.equal((await f.config.getChannel(teamId, 'C_SUPPORT'))?.lifecycle, 'active');
+});
+
+test('an Admin turns Chickpea back on in a Channel that is off', async (t) => {
+  const { f, as, teamId } = await harness(t, 'channel-on-admin');
+  await f.config.putChannel({ workspaceId: teamId, channelId: 'C_SUPPORT', label: 'support', lifecycle: 'archived' });
+  assert.equal(structured(await as('admin')('save_channel_settings', {
+    channelId: 'C_SUPPORT', on: true, idempotencyKey: 'admin-on',
+  })).status, 'done');
+  assert.equal((await f.config.getChannel(teamId, 'C_SUPPORT'))?.lifecycle, 'active');
 });
 
 test('a member changes only the Agents they may edit, and never a workspace setting', async (t) => {

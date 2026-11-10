@@ -1,10 +1,21 @@
-import type { AgentReferenceSummary, CustomAgentConfig } from '../config/types.ts';
+import type { AgentReferenceSummary, ChannelLifecycle, CustomAgentConfig } from '../config/types.ts';
 import type { MembershipStatus, OrganizationRole } from '../identity/types.ts';
 import type { LiveManagementActor, ManagementOperation, ManagementOrigin } from './types.ts';
 
 /** Suspending or removing a membership ends the person's access. */
 export function removesMemberAccess(status: MembershipStatus | undefined): boolean {
   return status === 'suspended' || status === 'removed';
+}
+
+/**
+ * Turning Chickpea off in a Channel takes an Owner or Admin, and so does any
+ * change while it is off, turning it back on included.
+ */
+export function channelChangeNeedsAdmin(
+  lifecycle: ChannelLifecycle,
+  currentLifecycle: ChannelLifecycle | undefined,
+): boolean {
+  return lifecycle === 'archived' || currentLifecycle === 'archived';
 }
 
 interface ManagementPolicyFacts {

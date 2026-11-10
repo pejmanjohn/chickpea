@@ -206,7 +206,7 @@ import {
   managementStorageIdempotencyKey,
   validateManagementOperations,
 } from './contracts.ts';
-import { classifyManagementOperation, removesMemberAccess } from './policy.ts';
+import { channelChangeNeedsAdmin, classifyManagementOperation, removesMemberAccess } from './policy.ts';
 import type { PreviewWorkspaceRecipeInput, WorkspaceRecipe, WorkspaceRecipePreview } from './recipes.ts';
 import { matchesEgressPrefix } from '../config/egress.ts';
 import {
@@ -329,7 +329,7 @@ import {
   type UndoWorkspaceChangeInput,
   isRoutineOperation,
 } from './types.ts';
-import { adminSettingsLinks, adminTeamLinks } from './admin-links.ts';
+import { ADMIN_PATH, adminSettingsLinks, adminTeamLinks } from './admin-links.ts';
 
 const MANAGEMENT_CHANGE_SET_APPLY_LEASE_MS = 30_000;
 /** try_connection's limit outside Slack, per member. */
@@ -1728,12 +1728,25 @@ export class WorkspaceManagementService {
       );
     }
     const baseUrl = await this.resolveSetupBaseUrl();
-    const reconnecting = await this.connectionToReconnect(actor, agent, connector, input.ownerKind);
+    // Connections live in the Slack workspace. Without one, every link would
+    // fail only once the person opened it, so refuse before issuing any.
+    const workspaceIds = connectionWorkspaceIds(actor, await this.stores.identity.getOrganization());
+    if (workspaceIds.length === 0) {
+      throw new ManagementError(
+        'setup_unavailable',
+        'Connect Slack before adding Agent connections. An Owner can connect it in Chickpea Admin.',
+        undefined,
+        { admin: new URL(ADMIN_PATH, baseUrl).href },
+      );
+    }
+    const reconnecting = await this.connectionToReconnect(actor, agent, connector, input.ownerKind, workspaceIds);
     if (reconnecting) {
       return this.prepareConnectorReconnect(actor, agent, connector, reconnecting, baseUrl);
     }
-    if (actor.origin.kind === 'slack' && 'managedToolkit' in connector) {
-      const scopes = await this.managedConnectionCeiling(connector);
+    // Slack and MCP callers alike get the one-connection setup page. A
+    // connector that page cannot serve gets Admin's page instead.
+    if ('managedToolkit' in connector) {
+      const scopes = await this.managedConnectionCeiling(connector, baseUrl);
       const issued = await this.issueSetupRecord(actor, {
         action: 'managed_connection',
         target: {
@@ -1760,8 +1773,7 @@ export class WorkspaceManagementService {
         ...setupWakeInstruction(issued.record),
       };
     }
-    if (actor.origin.kind === 'slack' && !('managedToolkit' in connector) &&
-        (await this.agentCreationConnectorEligible(connector, baseUrl))) {
+    if (await this.agentCreationConnectorEligible(connector, baseUrl)) {
       const issued = await this.issueSetupRecord(actor, {
         action: 'catalog_connection',
         target: this.catalogConnectionSetupTarget(agent, connector, input.ownerKind),
@@ -2069,6 +2081,7 @@ export class WorkspaceManagementService {
    */
   private async managedConnectionCeiling(
     connector: Extract<ConnectorCatalogPreset, { managedToolkit: string }>,
+    baseUrl: string,
   ): Promise<string[]> {
     const scopes = MANAGED_CONNECTOR_CATALOG.capabilities(connector.managedToolkit, 'write')
       .map(({ id }) => id);
@@ -2085,7 +2098,9 @@ export class WorkspaceManagementService {
         }))) {
       throw new ManagementError(
         'setup_unavailable',
-        `${connector.name} sign-in is not configured for this Chickpea deployment yet.`,
+        `${connector.name} sign-in is not configured for this Chickpea deployment yet. A workspace Owner or Admin can set it up in Connectors in Admin Settings.`,
+        undefined,
+        adminSettingsLinks(baseUrl, 'connectors'),
       );
     }
     return scopes;
@@ -2096,8 +2111,8 @@ export class WorkspaceManagementService {
     agent: CustomAgentConfig,
     connector: ConnectorCatalogPreset,
     ownerKind: ConnectionAccountOwnerKind,
+    workspaceIds: string[],
   ): Promise<ConnectionAccount | undefined> {
-    const workspaceIds = connectionWorkspaceIds(actor, await this.stores.identity.getOrganization());
     const [accounts, bindings] = await Promise.all([
       Promise.all(workspaceIds.map((workspaceId) =>
         this.stores.config.listConnectionAccounts(workspaceId))).then((groups) => groups.flat()),
@@ -2133,8 +2148,8 @@ export class WorkspaceManagementService {
       ownerKind: account.ownerKind,
       reconnect: { connectionId: account.id, label: account.label },
     };
-    const linked = actor.origin.kind === 'slack' && ('managedToolkit' in connector ||
-      await this.agentCreationConnectorEligible(connector, baseUrl));
+    const linked = 'managedToolkit' in connector ||
+      await this.agentCreationConnectorEligible(connector, baseUrl);
     if (!linked) {
       return { ...result, handoffUrl: new URL(`/admin/agents/${encodeURIComponent(agent.id)}`, baseUrl).href };
     }
@@ -2156,7 +2171,7 @@ export class WorkspaceManagementService {
             presetId: connector.id,
           },
           // As a new connection does, refuse before issuing when the connector is unavailable.
-          scopes: await this.managedConnectionCeiling(connector),
+          scopes: await this.managedConnectionCeiling(connector, baseUrl),
         })
       : await this.issueSetupRecord(actor, {
           action: 'catalog_connection',
@@ -2971,7 +2986,7 @@ export class WorkspaceManagementService {
             itemId: operation.itemId,
             operationKind: operation.kind,
             disposition: 'failed',
-            ...unappliedReason(policy.reason),
+            ...policyRefusal(operation, policy.reason),
           });
         } else if (actor.origin.kind === 'slack' && operation.kind === 'request_setup' &&
             policy.posture === 'confirmation') {
@@ -3176,7 +3191,7 @@ export class WorkspaceManagementService {
       }));
       return policy.allowed
         ? undefined
-        : { ...item, disposition: 'failed', ...unappliedReason(policy.reason) };
+        : { ...item, disposition: 'failed', ...policyRefusal(operation, policy.reason) };
     } catch (error) {
       if (!isExpectedMutationError(error)) throw error;
       return { ...item, disposition: 'failed', ...mutationFailure(error) };
@@ -3908,7 +3923,13 @@ export class WorkspaceManagementService {
       return;
     }
     if (operation.kind === 'remove_provider_credential' || operation.kind === 'set_workspace_model' ||
-        (operation.kind === 'put_channel' && operation.channel.lifecycle === 'archived')) {
+        (operation.kind === 'put_channel' && channelChangeNeedsAdmin(
+          operation.channel.lifecycle,
+          (await this.stores.config.getChannel(
+            operation.channel.workspaceId,
+            operation.channel.channelId,
+          ))?.lifecycle,
+        ))) {
       if (actor.role === 'member') {
         throw new ManagementError('forbidden', 'Current workspace authority no longer permits this confirmation.');
       }
@@ -6028,7 +6049,9 @@ export class WorkspaceManagementService {
       return {
         actor,
         operation,
-        ...(operation.channel.lifecycle === 'archived' ? { adminRequired: true } : {}),
+        ...(channelChangeNeedsAdmin(operation.channel.lifecycle, currentChannelLifecycle)
+          ? { adminRequired: true }
+          : {}),
         ...(currentChannelLifecycle ? { currentChannelLifecycle } : {}),
       };
     }
@@ -6774,6 +6797,24 @@ export class WorkspaceManagementService {
         return mutationForAgentEdit(agent, prepared.inverse as AgentEditInverse | undefined);
       }
       case 'put_channel': {
+        if (actor.role === 'member') {
+          // Decide the rule on the revision the write replaces, so an Admin's
+          // turn-off landing after the policy read cannot be undone by a member.
+          const current = await this.stores.config.getChannel(
+            operation.channel.workspaceId,
+            operation.channel.channelId,
+          );
+          requireExpectedRevision(operation.expectedRevision, current?.revision ?? 0);
+          if (channelChangeNeedsAdmin(operation.channel.lifecycle, current?.lifecycle)) {
+            // The Channel changed after the policy read it; read again, as any conflict.
+            throw new ChannelRevisionConflictError(
+              operation.channel.workspaceId,
+              operation.channel.channelId,
+              operation.expectedRevision,
+              current?.revision ?? 0,
+            );
+          }
+        }
         if (operation.channel.lifecycle === 'active') {
           await this.stores.assertAgentChannelMembership?.({
             actor,
@@ -10163,4 +10204,21 @@ const UNAPPLIED_INSTRUCTIONS: Readonly<Record<string, string>> = {
 function unappliedReason(code: string): UnappliedReason {
   const instruction = UNAPPLIED_INSTRUCTIONS[code];
   return instruction ? { code, instruction } : { code };
+}
+
+/** Why the policy refused an item; for a Channel, who can turn Chickpea on or off there. */
+function policyRefusal(
+  operation: ManagementOperation,
+  reason: 'owner_required' | 'operational_access_required',
+): UnappliedReason {
+  if (operation.kind !== 'put_channel' || reason !== 'operational_access_required') {
+    return unappliedReason(reason);
+  }
+  // Only a Channel that is off refuses a member a change that leaves it on.
+  return {
+    code: reason,
+    instruction: operation.channel.lifecycle === 'active'
+      ? 'Chickpea is off in this Channel, and only a workspace Owner or Admin can turn it back on or change it. Ask one of them to do it.'
+      : 'Only a workspace Owner or Admin can turn Chickpea off in a Channel or change one where it is off. Ask one of them to do it.',
+  };
 }

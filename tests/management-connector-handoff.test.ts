@@ -427,7 +427,8 @@ test('direct managed connector handoff fails before issuing a dead link when its
     assert.equal(result.ok, false);
     assert.deepEqual((result as { ok: false; error: { code: string; message: string } }).error, {
       code: 'setup_unavailable',
-      message: 'HubSpot sign-in is not configured for this Chickpea deployment yet.',
+      message: 'HubSpot sign-in is not configured for this Chickpea deployment yet. A workspace Owner or Admin can set it up in Connectors in Admin Settings.',
+      links: { admin: 'http://localhost/admin/settings/connectors' },
     });
   } finally {
     f.close();

@@ -79,7 +79,7 @@ const DESTRUCTIVE_5 = { ...ADDS_5, destructiveHint: true };
 /** Only confirm_workspace_change and confirm_change carry out a change the person must approve first. */
 const MCP_TOOL_ANNOTATIONS = {
   inspect_workspace: READ,
-  prepare_connector_setup: READ,
+  prepare_connector_setup: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   prepare_provider_setup: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   discover_slack_channels: READ,
   test_connection: READ,
@@ -300,12 +300,12 @@ test('supported coding clients share public PKCE registration and stateless MCP 
       });
       const connectorResult = JSON.parse((connectorHandoff.result as {
         content: Array<{ text: string }>;
-      }).content[0]!.text) as { ok: boolean; result: { handoffUrl: string } };
+      }).content[0]!.text) as { ok: boolean; result: { handoffUrl: string; setupOperationId: string } };
       assert.equal(connectorResult.ok, true, client.name);
       assert.equal(
         new URL(connectorResult.result.handoffUrl).pathname,
-        '/admin/agents/agent_mcp_connector/connections/new/gmail/member',
-        client.name,
+        `/setup/${connectorResult.result.setupOperationId}`,
+        `${client.name} gets the one-connection setup page, not Admin`,
       );
 
       const missingAgent = await mcpCall(handler.fetch, client.protocol, 'tools/call', {

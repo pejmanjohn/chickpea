@@ -222,8 +222,23 @@ test('prepare_connector_setup reconnects a needs_attention connection in place o
       ownerKind: 'team',
     }) as PrepareConnectorSetupResult;
     assert.deepEqual(viaMcp.reconnect, { connectionId: linear.id, label: 'Linear' });
-    assert.equal(viaMcp.handoffUrl, `http://localhost/admin/agents/${agent.id}`,
-      'MCP sends the person to the Agent page, whose Reconnect keeps the account');
+    assert.equal(new URL(viaMcp.handoffUrl).pathname, `/setup/${viaMcp.setupOperationId}`,
+      'MCP gets the same one-connection setup page as Slack');
+    const mcpSetup = await f.management.getSetup(viaMcp.setupOperationId!);
+    assert.equal(mcpSetup?.action, 'catalog_connection');
+    assert.equal(mcpSetup?.target.connectionId, linear.id, 'the MCP link reconnects the existing account too');
+    assert.equal(mcpSetup?.target.replacement, true);
+    assert.deepEqual(mcpSetup?.origin, { kind: 'mcp', clientId: 'connection-lifecycle-test' });
+
+    const managedViaMcp = await call(f, mcpContext(f.owner), 'prepare_connector_setup', {
+      agentId: agent.id,
+      connector: 'HubSpot',
+      ownerKind: 'team',
+    }) as PrepareConnectorSetupResult;
+    const managedMcpSetup = await f.management.getSetup(managedViaMcp.setupOperationId!);
+    assert.equal(managedMcpSetup?.action, 'managed_connection');
+    assert.equal(managedMcpSetup?.target.connectionId, hubspot.id);
+    assert.equal(managedMcpSetup?.target.replacement, true);
 
     const accounts = await f.config.listConnectionAccounts(TEAM);
     assert.equal(accounts.length, 2, 'no account was minted');
@@ -274,7 +289,10 @@ test('prepare_connector_setup reconnects a ready managed connection so the perso
       ownerKind: 'team',
     }) as PrepareConnectorSetupResult;
     assert.deepEqual(viaMcp.reconnect, { connectionId: notion.id, label: 'Notion · Team' });
-    assert.equal(viaMcp.handoffUrl, `http://localhost/admin/agents/${agent.id}`);
+    const mcpSetup = await f.management.getSetup(viaMcp.setupOperationId!);
+    assert.equal(mcpSetup?.action, 'managed_connection');
+    assert.equal(mcpSetup?.target.connectionId, notion.id, 'over MCP too, the link signs in again on the same connection');
+    assert.equal(mcpSetup?.target.replacement, true);
 
     const native = await call(f, slackContext(f.owner, agent.id), 'prepare_connector_setup', {
       connector: 'Linear',
@@ -381,11 +399,20 @@ test('a managed reconnect link needs the connector available, as a new connectio
     await bindAccount(f, agent.id, hubspotAccount('needs_attention'));
     const context = slackContext(f.owner, agent.id);
 
-    const refused = await callRaw(f, context, 'prepare_connector_setup', { connector: 'HubSpot', ownerKind: 'team' });
-    assert.equal(refused.ok, false, JSON.stringify(refused));
-    assert.equal(refused.ok === false ? refused.error.code : undefined, 'setup_unavailable');
-    assert.equal(refused.ok === false ? refused.error.message : undefined,
-      'HubSpot sign-in is not configured for this Chickpea deployment yet.');
+    // An app over MCP has no Agent in a thread to explain it, so the error names the next step and its page.
+    for (const caller of [context, mcpContext(f.owner)]) {
+      const refused = await callRaw(f, caller, 'prepare_connector_setup', {
+        agentId: agent.id,
+        connector: 'HubSpot',
+        ownerKind: 'team',
+      });
+      assert.equal(refused.ok, false, JSON.stringify(refused));
+      assert.deepEqual(refused.ok === false ? refused.error : undefined, {
+        code: 'setup_unavailable',
+        message: 'HubSpot sign-in is not configured for this Chickpea deployment yet. A workspace Owner or Admin can set it up in Connectors in Admin Settings.',
+        links: { admin: 'http://localhost/admin/settings/connectors' },
+      }, caller.origin.kind);
+    }
 
     available = true;
     const issued = await call(f, context, 'prepare_connector_setup', {

@@ -223,7 +223,10 @@ function internalIds(h: Awaited<ReturnType<typeof harness>>): string[] {
   return [h.owner.user.id, h.owner.membership.id, h.owner.membership.organizationId, 'agent_project_guide'];
 }
 
-/** The ended sign-in page: one way onward, and nothing from the request or the stores. */
+/**
+ * The ended sign-in page: one way onward, and nothing from the request or the
+ * stores. An app's link reaches it too, so it never sends the person to Slack.
+ */
 async function endedPage(response: Response, next: string, absent: string[]): Promise<string> {
   assert.equal(response.status, 400);
   assert.match(response.headers.get('content-type') ?? '', /^text\/html/);
@@ -236,7 +239,7 @@ async function endedPage(response: Response, next: string, absent: string[]): Pr
   assert.match(html, /This sign-in has ended/);
   assert.deepEqual([...html.matchAll(/<a href="([^"]*)"/g)].map(([, href]) => href), [next]);
   const rest = html.replaceAll(`href="${next}"`, '');
-  for (const value of [...absent, 'invalid_state', 'invalid_request', 'Linear']) {
+  for (const value of [...absent, 'invalid_state', 'invalid_request', 'Linear', 'Slack']) {
     assert.equal(rest.includes(value), false, `the page shows ${value}`);
   }
   return html;

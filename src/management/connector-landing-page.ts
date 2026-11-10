@@ -31,6 +31,8 @@ export interface ConnectorLandingPageInput {
   sharedSignIn?: boolean;
   /** The finished setup woke its Agent, which is continuing in Slack. */
   continuing?: boolean;
+  /** A link an app asked for over MCP: the success page sends the person back to it, by name when known. */
+  returnTo?: { app?: string };
   /** Sign-ins the person may use for this Agent without signing in again, per owner kind. */
   reusable?: Record<'member' | 'team', ReusableSetupSignIn[]>;
   accessReview?: {
@@ -194,7 +196,7 @@ export function renderCatalogConnectionSetupPage(input: ConnectorLandingPageInpu
   const preset = setup.target.presetId
     ? resolveConnectorCatalogPreset(setup.target.presetId)
     : undefined;
-  if (!preset || 'managedToolkit' in preset) return renderManagedConnectionUnavailablePage();
+  if (!preset || 'managedToolkit' in preset) return renderManagedConnectionUnavailablePage(setup.origin.kind);
   const connector = preset.name;
   const mcpAuth = 'url' in preset ? preset.auth : undefined;
   const credential = mcpAuth?.kind === 'bearer' || mcpAuth?.kind === 'header'
@@ -268,7 +270,7 @@ export function renderCatalogConnectionAccessReviewPage(
   input: ConnectorLandingPageInput,
 ): string {
   const { setup, agent, accessReview } = input;
-  if (!accessReview) return renderManagedConnectionUnavailablePage();
+  if (!accessReview) return renderManagedConnectionUnavailablePage(setup.origin.kind);
   const connector = setup.target.targetLabel;
   const metaAds = setup.target.presetId === 'meta-ads';
   const metaAdsDescriptions: Record<string, string> = {
@@ -404,21 +406,29 @@ export function renderManagedConnectionSuccessPage(input: ConnectorLandingPageIn
           <div class="success-copy">
             <div class="success-line"><span class="success-check" aria-hidden="true">&#10003;</span><h1 id="flow-title">${escapeHtml(connector)} is now connected to ${escapeHtml(input.agent.name)}</h1></div>
             <p class="lead success-summary">Your ${scope} connection is ready.${input.continuing ? ` ${escapeHtml(input.agent.name)} is continuing in Slack.` : ''}</p>
-            <p class="small-copy">You can close this tab now.</p>
+            <p class="small-copy">${input.returnTo
+              ? `You can close this tab and go back to ${escapeHtml(input.returnTo.app ?? 'your app')}.`
+              : 'You can close this tab now.'}</p>
           </div>
         </section>
       </main>`,
   });
 }
 
-export function renderManagedConnectionUnavailablePage(): string {
+/** For a link that cannot be used. It says to ask for a new one where the link came from. */
+export function renderManagedConnectionUnavailablePage(
+  from: ManagementSetupRecord['origin']['kind'],
+): string {
+  const next = from === 'mcp'
+    ? 'Ask the app that gave you this link for a new one.'
+    : 'Ask the Agent in Slack for a new connection link.';
   return pageShell({
     title: 'Connection link unavailable',
     surface: 'connector-unavailable',
     content: `
       <main class="flow-shell unavailable-shell" aria-labelledby="flow-title">
         ${brandHeader()}
-        <section class="flow-content centered"><h1 id="flow-title">This link is no longer valid</h1><p class="lead">Ask the Agent in Slack for a new connection link.</p></section>
+        <section class="flow-content centered"><h1 id="flow-title">This link is no longer valid</h1><p class="lead">${next}</p></section>
       </main>`,
   });
 }
