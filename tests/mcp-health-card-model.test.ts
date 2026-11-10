@@ -348,6 +348,30 @@ test('a connection the check could not test reads as unknown, in plain words', a
   assertPlain(health.shown, [docs.connectionId, 'connection_docs', 'connection_zendesk']);
 });
 
+test('a Channel Chickpea has no name for reads as "a private Channel", never its Slack ID', async (t) => {
+  const { f, teamId, call, card } = await harness(t, 'health-unnamed-channel');
+  await createFixtureAgent(f, 'agent_quiet', { name: 'Quiet', model: 'local-stub/quiet' });
+  // A grant with no Channel record and no label: the result names the Channel by its ID.
+  await f.config.putAgentChannelGrant({
+    workspaceId: teamId, channelId: 'C0UNNAMED01', agentId: 'agent_quiet', status: 'active',
+    createdByMembershipId: f.owner.membership.id, channelIsPrivate: true,
+  });
+  const result = await call('check_agent', { agentId: 'agent_quiet', place: 'C0UNNAMED01' });
+  const checks = result.structuredContent!.checks as Array<{ part: string; name: string; channelId?: string }>;
+  assert.deepEqual(
+    checks.filter(({ channelId }) => channelId).map(({ part, name }) => [part, name]),
+    [['channel', 'C0UNNAMED01'], ['admission', 'you, in C0UNNAMED01']],
+    'the model keeps the ID',
+  );
+  const health = card();
+  await health.result(result);
+  await health.press('show');
+  const titles = rows(health.shown).map((row) => row.split(' · ')[1]);
+  assert.ok(titles.includes('A private Channel'), titles.join('\n'));
+  assert.ok(titles.includes('You, in a private Channel'), titles.join('\n'));
+  assert.doesNotMatch(JSON.stringify(health.shown), /C0UNNAMED01/);
+});
+
 test('a row without plain words gets a sentence for its part and status, never its detail', async () => {
   const nothing = async (): Promise<ToolResult> => ({ isError: true });
   const health = cardHost(HEALTH_CARD, nothing, { now: 0 });

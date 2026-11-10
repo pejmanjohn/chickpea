@@ -292,9 +292,18 @@ function partRow(view: Health, { check, index, status }: Part): Row<Action> & { 
   };
 }
 
-/** Who a message comes from reads as a sentence: "You, in a DM". */
+/**
+ * Who a message comes from reads as a sentence: "You, in a DM". A Channel
+ * Chickpea has no name for is named by its Slack ID in the result; the card
+ * says "a private Channel", as the Agent card does, never the ID.
+ */
 function titleOf(check: Check): string {
-  return check.part === 'admission' ? `${check.name.charAt(0).toUpperCase()}${check.name.slice(1)}` : check.name;
+  const { channelId } = check;
+  if (check.part === 'channel' && channelId && check.name === channelId) return 'A private Channel';
+  const name = check.part === 'admission' && channelId && check.name.endsWith(`, in ${channelId}`)
+    ? `${check.name.slice(0, -channelId.length)}a private Channel`
+    : check.name;
+  return check.part === 'admission' ? `${name.charAt(0).toUpperCase()}${name.slice(1)}` : name;
 }
 
 function joinWords(words: readonly string[]): string {
