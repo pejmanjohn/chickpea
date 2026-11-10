@@ -12,7 +12,7 @@ import {
 } from '../../src/usage/runtime-recorder.ts';
 import type { ModelRequestRecord } from '../../src/usage/model-requests.ts';
 import { TestRunUsageRecorder } from '../../src/usage/test-run-usage.ts';
-import type { UsageStore } from '../../src/usage/types.ts';
+import type { RecordUsageTerminalInput, UsageStore } from '../../src/usage/types.ts';
 
 const turn: NormalizedSlackTurn = {
   workspaceId: 'T_USAGE',
@@ -760,6 +760,60 @@ test("a measurement that shares its run never takes the run's requests, so Activ
     }
     assert.deepEqual((await store.getOperation('msg_twice'))!.measurements.map((row) => row.estimateCompleteness), ['unknown', 'unknown']);
     assert.equal(await activity('msg_twice'), null);
+  } finally {
+    store.close();
+  }
+});
+
+test('a replay that fills a missing billing key prices the run as its measurements then stand', async () => {
+  const store = new SqliteUsageStore(':memory:');
+  try {
+    const at = Date.UTC(2026, 6, 28, 13);
+    const pricedTurn = { ...turn, messageTs: `${at / 1_000}.0001`, threadTs: `${at / 1_000}.0001` };
+    // Terminals first written with no key, as a store from before the keys or a turn with no receipt yet writes them.
+    const written: RecordUsageTerminalInput[] = [];
+    const recordTerminal = store.recordTerminal.bind(store);
+    store.recordTerminal = (input) => {
+      written.push(input);
+      return recordTerminal(input);
+    };
+    const recorder = (id: string) => new InteractiveUsageRecorder({
+      turn: pricedTurn, assignment, requestedModel: assignment.model!, operationId: `msg_${id}`, executionId: `exec_${id}`,
+      store, now: () => at, billingRunId: () => undefined, processEnv: { USAGE_ESTIMATES: '1' },
+    });
+    const replayWithKey = (executionId: string, billingRunId: string) =>
+      recordTerminal({ ...written.find((input) => input.executionId === executionId)!, billingRunId });
+    const estimateOf = async (operationId: string, executionId: string) => {
+      const row = (await store.getOperation(operationId))!.measurements.find((measurement) => measurement.executionId === executionId)!;
+      return [row.billingRunId, row.estimateCompleteness, row.estimateAmountMicros];
+    };
+
+    // A stopped direct message is its run's only measurement: once the replay names its run, its requests price it.
+    const stopped = recorder('stopped');
+    await stopped.admit();
+    await store.recordModelRequest(modelRequest('stopped_1', 'sub_stopped', 8_400));
+    await stopped.recordStopped();
+    assert.deepEqual(await estimateOf('msg_stopped', 'exec_stopped'), [null, 'unknown', null]);
+    await replayWithKey('exec_stopped', 'sub_stopped');
+    assert.deepEqual(await estimateOf('msg_stopped', 'exec_stopped'), ['sub_stopped', 'complete', 8_400]);
+
+    // A completed turn and its failed coding worker, whose keys are filled worker first with a request between.
+    const coded = recorder('coded');
+    await coded.admit();
+    await coded.recordSuccess(success({
+      reportedUsage: { inputTokens: 13, outputTokens: 7, totalTokens: 20 },
+      codingWorkerUsage: [{ schemaVersion: 1, toolCallId: 'call-1', model: 'anthropic/claude-opus-5-5', status: 'failed', settledAt: at - 1_000 }],
+    }));
+    assert.deepEqual(written.slice(-2).map(({ executionId }) => executionId), ['exec_coded:coding:1', 'exec_coded']);
+    const own = (await estimateOf('msg_coded', 'exec_coded'))[2] as number;
+    await replayWithKey('exec_coded:coding:1', 'sub_coded');
+    await store.recordModelRequest(modelRequest('coded_1', 'sub_coded', 50_000));
+    assert.deepEqual(await estimateOf('msg_coded', 'exec_coded:coding:1'), ['sub_coded', 'complete', 50_000], 'alone under the run for now');
+    await replayWithKey('exec_coded', 'sub_coded');
+    assert.deepEqual(await estimateOf('msg_coded', 'exec_coded:coding:1'), ['sub_coded', 'unknown', null], "the turn's key undoes the sum");
+    const activity = (await store.listActivityAttributions({ from: at - 86_400_000, to: at + 86_400_000 }))
+      .find((row) => row.operationId === 'msg_coded')?.estimateMicros;
+    assert.equal(activity, own, "Activity counts the turn's spend once");
   } finally {
     store.close();
   }
