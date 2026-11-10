@@ -2,7 +2,13 @@ import { randomUUID } from 'node:crypto';
 import type { z } from 'zod';
 
 import { matchingConnectorCatalogPresets } from '../../config/presets.ts';
+import {
+  DEFAULT_AGENT_AVATAR_FILES,
+  DEFAULT_AGENT_AVATAR_NAMES,
+  nextDefaultAgentAvatarFile,
+} from '../../slack/agent-presence/default-avatar-pool.ts';
 import { normalizeAgentHandle } from '../../slack/agent-presence/handles.ts';
+import { adminOrigin } from '../admin-links.ts';
 import { summarizeTextChange } from '../text-changes.ts';
 import type {
   ManagementActorContext,
@@ -10,7 +16,7 @@ import type {
   ManagementWorkspaceSnapshot,
 } from '../types.ts';
 import { fail } from './conventions.ts';
-import { agentVersion, readWorkspace, requireAgent, slackDirectory, type FiveZeroDeps } from './reads.ts';
+import { agentAvatar, agentVersion, readWorkspace, requireAgent, slackDirectory, type FiveZeroDeps } from './reads.ts';
 import {
   createAgentInputSchema,
   updateAgentInputSchema,
@@ -69,6 +75,10 @@ export async function proposeAgent(
   const modelOk = input.model === undefined || snapshot.modelCatalog.chat.some(({ id }) => id === input.model);
   if (!modelOk) issues.push(`${input.model} is not a chat model this workspace can use, so the Agent uses the workspace default. list_models lists the others.`);
 
+  const idempotencyKey = randomUUID();
+  // Chosen as creation would choose it, and sent with Create, so Slack shows the picture this proposal does.
+  const avatar = nextDefaultAgentAvatarFile(await deps.service.agentAvatarSeeds(context), idempotencyKey);
+  const origin = adminOrigin(deps.baseUrl);
   const create = createAgentInputSchema.parse({
     name: input.name.trim(),
     handle,
@@ -77,7 +87,8 @@ export async function proposeAgent(
     ...(input.model && modelOk ? { model: input.model } : {}),
     firstAsk: input.sampleAsk,
     ...(answersIn.length ? { channels: answersIn.map(({ channelId }) => channelId) } : {}),
-    idempotencyKey: randomUUID(),
+    avatar: DEFAULT_AGENT_AVATAR_NAMES[DEFAULT_AGENT_AVATAR_FILES.indexOf(avatar)],
+    idempotencyKey,
   });
   return {
     proposal: {
@@ -90,6 +101,7 @@ export async function proposeAgent(
       answersIn,
       ...(create.model ? { model: create.model } : {}),
       ...(snapshot.slackTeamName ? { workspaceName: snapshot.slackTeamName } : {}),
+      ...(origin ? { avatarUrl: `${origin}/chickpea-avatars/agent-defaults/${avatar}` } : {}),
     },
     create: { tool: 'create_agent', arguments: create },
     issues,
@@ -169,7 +181,7 @@ export async function proposeAgentChange(
     idempotencyKey: randomUUID(),
   });
   return {
-    agent: { name: agent.name, ...(handle ? { handle } : {}) },
+    agent: { name: agent.name, ...(handle ? { handle } : {}), ...agentAvatar(deps, agent) },
     changes,
     save: { tool: 'update_agent', arguments: save },
     needsConfirmation: await deps.service.agentPatchNeedsConfirmation(context, agent.id, agentPatch(change)),

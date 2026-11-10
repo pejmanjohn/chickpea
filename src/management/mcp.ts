@@ -1,4 +1,4 @@
-import { McpServer, createMcpHandler, type Transport } from '@modelcontextprotocol/server';
+import { McpServer, createMcpHandler, type RegisteredTool, type Transport } from '@modelcontextprotocol/server';
 import type { z } from 'zod';
 
 import type { McpAuthenticatedPrincipal, McpRequestHandler } from '../auth/mcp-oauth-routes.ts';
@@ -47,6 +47,7 @@ import {
   registerFiveZeroTools,
   type FiveZeroToolName,
 } from './mcp-v5/tools.ts';
+import { declaresCards, withCardSessions } from './mcp-v5/card-host.ts';
 import { registerCards } from './mcp-v5/cards.ts';
 import { shapeFiveZeroResults } from './mcp-v5/transport.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
@@ -173,7 +174,23 @@ const MCP_TOOL_INPUT_SCHEMAS = {
  * message, and gives 5.0 results the shape the SDK cannot express.
  */
 class ObservedMcpServer extends McpServer {
+  /** Registered 4.x tools, which a client that draws cards never gets. */
+  readonly v4Tools: RegisteredTool[] = [];
+
+  constructor(private readonly cardSession: boolean) {
+    super(WORKSPACE_MANAGEMENT_SERVER_INFO, { instructions: WORKSPACE_MANAGEMENT_INSTRUCTIONS });
+  }
+
+  /** The client draws cards: it said so at `initialize`, or this 2026-07-28 request says so. */
+  cardHost(): boolean {
+    return this.cardSession || declaresCards(this.server.getClientCapabilities());
+  }
+
   override connect(transport: Transport): Promise<void> {
+    // A 4.x change hands the model a token that confirms without the
+    // person's press, and 5.0 covers every 4.x tool, so a card host gets
+    // only 5.0. Its capabilities are known here, after the tools register.
+    if (this.cardHost()) for (const tool of this.v4Tools.splice(0)) tool.remove();
     observeMcpRequests(transport, { ...MCP_TOOL_INPUT_SCHEMAS, ...FIVE_ZERO_TOOL_INPUT_SCHEMAS });
     shapeFiveZeroResults(transport, FIVE_ZERO_TOOL_NAME_SET);
     return super.connect(transport);
@@ -193,6 +210,8 @@ interface WorkspaceManagementMcpServerInput {
   baseUrl?: string;
   /** This deployment's env: instructions and prompts name only the Settings sections its Admin shows. */
   env?: PlatformEnv;
+  /** The client declared cards at `initialize` (mcp-v5/card-host.ts). */
+  cardSession?: boolean;
 }
 
 export function createWorkspaceManagementMcpHandler(
@@ -207,30 +226,34 @@ export function createWorkspaceManagementMcpHandler(
       ...(productTelemetry ? { productTelemetry } : {}),
     },
   });
-  const handler = createMcpHandler(
-    () => createWorkspaceManagementMcpServer({
-      principal,
-      service,
-      ...(setupBaseUrl ? { baseUrl: setupBaseUrl } : {}),
-      ...(env ? { env } : {}),
-    }),
+  return workspaceManagementMcpFetch({
+    principal,
+    service,
+    ...(setupBaseUrl ? { baseUrl: setupBaseUrl } : {}),
+    ...(env ? { env } : {}),
+  });
+}
+
+/** One request to the server, which learns from its session whether the client draws cards. */
+export function workspaceManagementMcpFetch(
+  input: Omit<WorkspaceManagementMcpServerInput, 'cardSession'>,
+): McpRequestHandler {
+  return (request) => withCardSessions(request, (served, cardSession) => createMcpHandler(
+    () => createWorkspaceManagementMcpServer({ ...input, cardSession }),
     { legacy: 'stateless' },
-  );
-  return handler.fetch;
+  ).fetch(served));
 }
 
 export function createWorkspaceManagementMcpServer(
   input: WorkspaceManagementMcpServerInput,
 ): McpServer {
-  const server = new ObservedMcpServer(WORKSPACE_MANAGEMENT_SERVER_INFO, {
-    instructions: WORKSPACE_MANAGEMENT_INSTRUCTIONS,
-  });
+  const server = new ObservedMcpServer(input.cardSession === true);
   const adapter = {
     service: input.service,
     resolveContext: async () => mcpActorContext(input.principal),
   };
 
-  server.registerTool('inspect_workspace', {
+  server.v4Tools.push(server.registerTool('inspect_workspace', {
     title: 'Inspect Chickpea workspace',
     description: deprecatedToolDescription('inspect_workspace'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.inspect_workspace,
@@ -239,9 +262,9 @@ export function createWorkspaceManagementMcpServer(
     adapter,
     'inspect_workspace',
     args,
-  )));
+  ))));
 
-  server.registerTool('prepare_connector_setup', {
+  server.v4Tools.push(server.registerTool('prepare_connector_setup', {
     title: 'Prepare Agent connector setup',
     description: deprecatedToolDescription('prepare_connector_setup'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.prepare_connector_setup,
@@ -251,9 +274,9 @@ export function createWorkspaceManagementMcpServer(
     adapter,
     'prepare_connector_setup',
     args,
-  )));
+  ))));
 
-  server.registerTool('prepare_provider_setup', {
+  server.v4Tools.push(server.registerTool('prepare_provider_setup', {
     title: 'Prepare model provider key setup',
     description: deprecatedToolDescription('prepare_provider_setup'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.prepare_provider_setup,
@@ -262,9 +285,9 @@ export function createWorkspaceManagementMcpServer(
     adapter,
     'prepare_provider_setup',
     args,
-  )));
+  ))));
 
-  server.registerTool('discover_slack_channels', {
+  server.v4Tools.push(server.registerTool('discover_slack_channels', {
     title: 'Discover Slack Channels',
     description: deprecatedToolDescription('discover_slack_channels'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.discover_slack_channels,
@@ -273,9 +296,9 @@ export function createWorkspaceManagementMcpServer(
     adapter,
     'discover_slack_channels',
     args,
-  )));
+  ))));
 
-  server.registerTool('test_connection', {
+  server.v4Tools.push(server.registerTool('test_connection', {
     title: 'Test saved connection',
     description: deprecatedToolDescription('test_connection'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.test_connection,
@@ -284,9 +307,9 @@ export function createWorkspaceManagementMcpServer(
     adapter,
     'test_connection',
     args,
-  )));
+  ))));
 
-  server.registerTool('save_connection_key', {
+  server.v4Tools.push(server.registerTool('save_connection_key', {
     title: 'Save connection key',
     description: deprecatedToolDescription('save_connection_key'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.save_connection_key,
@@ -295,9 +318,9 @@ export function createWorkspaceManagementMcpServer(
     adapter,
     'save_connection_key',
     args,
-  )));
+  ))));
 
-  server.registerTool('try_connection', {
+  server.v4Tools.push(server.registerTool('try_connection', {
     title: 'Try connection settings',
     description: deprecatedToolDescription('try_connection'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.try_connection,
@@ -306,9 +329,9 @@ export function createWorkspaceManagementMcpServer(
     adapter,
     'try_connection',
     args,
-  )));
+  ))));
 
-  server.registerTool('inspect_memory', {
+  server.v4Tools.push(server.registerTool('inspect_memory', {
     title: 'Inspect Chickpea memory',
     description: deprecatedToolDescription('inspect_memory'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.inspect_memory,
@@ -317,9 +340,9 @@ export function createWorkspaceManagementMcpServer(
     adapter,
     'inspect_memory',
     args,
-  )));
+  ))));
 
-  server.registerTool('inspect_routines', {
+  server.v4Tools.push(server.registerTool('inspect_routines', {
     title: 'Inspect Chickpea routines',
     description: deprecatedToolDescription('inspect_routines'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.inspect_routines,
@@ -328,9 +351,9 @@ export function createWorkspaceManagementMcpServer(
     adapter,
     'inspect_routines',
     args,
-  )));
+  ))));
 
-  server.registerTool('export_workspace_recipe', {
+  server.v4Tools.push(server.registerTool('export_workspace_recipe', {
     title: 'Export Chickpea workspace recipe',
     description: deprecatedToolDescription('export_workspace_recipe'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.export_workspace_recipe,
@@ -339,9 +362,9 @@ export function createWorkspaceManagementMcpServer(
     adapter,
     'export_workspace_recipe',
     args,
-  )));
+  ))));
 
-  server.registerTool('preview_workspace_recipe', {
+  server.v4Tools.push(server.registerTool('preview_workspace_recipe', {
     title: 'Preview Chickpea workspace recipe',
     description: deprecatedToolDescription('preview_workspace_recipe'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.preview_workspace_recipe,
@@ -350,9 +373,9 @@ export function createWorkspaceManagementMcpServer(
     adapter,
     'preview_workspace_recipe',
     args,
-  )));
+  ))));
 
-  server.registerTool('import_skill', {
+  server.v4Tools.push(server.registerTool('import_skill', {
     title: 'Install GitHub skill',
     description: deprecatedToolDescription('import_skill'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.import_skill,
@@ -361,9 +384,9 @@ export function createWorkspaceManagementMcpServer(
     adapter,
     'import_skill',
     args,
-  )));
+  ))));
 
-  server.registerTool('upload_skills', {
+  server.v4Tools.push(server.registerTool('upload_skills', {
     title: 'Upload skill files',
     description: deprecatedToolDescription('upload_skills'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.upload_skills,
@@ -372,9 +395,9 @@ export function createWorkspaceManagementMcpServer(
     adapter,
     'upload_skills',
     args,
-  )));
+  ))));
 
-  server.registerTool('manage_agent_skill', {
+  server.v4Tools.push(server.registerTool('manage_agent_skill', {
     title: 'Manage an installed Agent skill',
     description: deprecatedToolDescription('manage_agent_skill'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.manage_agent_skill,
@@ -383,9 +406,9 @@ export function createWorkspaceManagementMcpServer(
     adapter,
     'manage_agent_skill',
     args,
-  )));
+  ))));
 
-  server.registerTool('apply_workspace_changes', {
+  server.v4Tools.push(server.registerTool('apply_workspace_changes', {
     title: 'Apply Chickpea workspace changes',
     description: deprecatedToolDescription('apply_workspace_changes'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.apply_workspace_changes,
@@ -397,9 +420,9 @@ export function createWorkspaceManagementMcpServer(
       idempotencyKey: args.idempotencyKey,
       operations: args.operations as ManagementOperation[],
     },
-  )));
+  ))));
 
-  server.registerTool('confirm_workspace_change', {
+  server.v4Tools.push(server.registerTool('confirm_workspace_change', {
     title: 'Confirm Chickpea workspace change',
     description: deprecatedToolDescription('confirm_workspace_change'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.confirm_workspace_change,
@@ -408,9 +431,9 @@ export function createWorkspaceManagementMcpServer(
     adapter,
     'confirm_workspace_change',
     args,
-  )));
+  ))));
 
-  server.registerTool('undo_workspace_change', {
+  server.v4Tools.push(server.registerTool('undo_workspace_change', {
     title: 'Undo Chickpea workspace change',
     description: deprecatedToolDescription('undo_workspace_change'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.undo_workspace_change,
@@ -419,9 +442,9 @@ export function createWorkspaceManagementMcpServer(
     adapter,
     'undo_workspace_change',
     args,
-  )));
+  ))));
 
-  server.registerTool('get_operation', {
+  server.v4Tools.push(server.registerTool('get_operation', {
     title: 'Get Chickpea operation',
     description: deprecatedToolDescription('get_operation'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.get_operation,
@@ -430,9 +453,9 @@ export function createWorkspaceManagementMcpServer(
     adapter,
     'get_operation',
     args,
-  )));
+  ))));
 
-  server.registerTool('revoke_setup_link', {
+  server.v4Tools.push(server.registerTool('revoke_setup_link', {
     title: 'Revoke Chickpea setup link',
     description: deprecatedToolDescription('revoke_setup_link'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.revoke_setup_link,
@@ -441,9 +464,9 @@ export function createWorkspaceManagementMcpServer(
     adapter,
     'revoke_setup_link',
     args,
-  )));
+  ))));
 
-  server.registerTool('list_mcp_clients', {
+  server.v4Tools.push(server.registerTool('list_mcp_clients', {
     title: 'List connected MCP clients',
     description: deprecatedToolDescription('list_mcp_clients'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.list_mcp_clients,
@@ -452,9 +475,9 @@ export function createWorkspaceManagementMcpServer(
     adapter,
     'list_mcp_clients',
     args,
-  )));
+  ))));
 
-  server.registerTool('revoke_mcp_client', {
+  server.v4Tools.push(server.registerTool('revoke_mcp_client', {
     title: 'Revoke a connected MCP client',
     description: deprecatedToolDescription('revoke_mcp_client'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.revoke_mcp_client,
@@ -463,14 +486,14 @@ export function createWorkspaceManagementMcpServer(
     adapter,
     'revoke_mcp_client',
     args,
-  )));
+  ))));
 
   registerFiveZeroTools(server, {
     service: input.service,
     context: adapter.resolveContext,
     ...(input.baseUrl ? { baseUrl: input.baseUrl } : {}),
     ...(input.env ? { env: input.env } : {}),
-  });
+  }, () => server.cardHost());
   registerCards(server, input.baseUrl);
 
   server.registerResource('workspace', 'chickpea://workspace', {

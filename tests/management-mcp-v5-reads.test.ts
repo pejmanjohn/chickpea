@@ -19,6 +19,7 @@ import { createAgentInputSchema, updateAgentInputSchema } from '../src/managemen
 import { CARD_URIS } from '../src/management/mcp-v5/cards.ts';
 import { FIVE_ZERO_TOOL_NAMES } from '../src/management/mcp-v5/tools.ts';
 import { emitManagementMetric } from '../src/management/telemetry.ts';
+import { DEFAULT_AGENT_AVATAR_FILES, DEFAULT_AGENT_AVATAR_NAMES } from '../src/slack/agent-presence/default-avatar-pool.ts';
 import type { ManagementReceiptOutboxRecord } from '../src/management/types.ts';
 import {
   applyThroughAdapter,
@@ -176,7 +177,7 @@ for (const protocol of [LEGACY, MODERN]) {
       assert.equal((tool.outputSchema as { type?: string } | undefined)?.type, 'object', tool.name);
       assert.deepEqual(
         meta.ui,
-        tool.name === 'get_creation_status' ? { visibility: ['app'] }
+        tool.name === 'get_creation_status' || tool.name === 'decline_change' ? { visibility: ['app'] }
           : CARD_TOOLS[tool.name] ? { resourceUri: CARD_TOOLS[tool.name] } : undefined,
         tool.name,
       );
@@ -321,8 +322,12 @@ test('propose_agent saves nothing and returns create_agent arguments it accepts,
   assert.deepEqual(await f.config.listUserAgents(), agentsBefore, 'nothing is created');
   assert.equal(result.create.tool, 'create_agent');
   assert.equal(createAgentInputSchema.safeParse(result.create.arguments).success, true);
-  const { idempotencyKey, ...args } = result.create.arguments;
+  const { idempotencyKey, avatar, ...args } = result.create.arguments;
   assert.equal(typeof idempotencyKey, 'string');
+  const picture = DEFAULT_AGENT_AVATAR_FILES[DEFAULT_AGENT_AVATAR_NAMES.indexOf(avatar as string)];
+  assert.ok(picture, `create.arguments.avatar names a default picture: ${String(avatar)}`);
+  assert.equal(result.proposal.avatarUrl, `https://chickpea.example.test/chickpea-avatars/agent-defaults/${picture}`,
+    'the proposal shows the picture Create sends');
   assert.deepEqual(args, {
     name: 'Support Desk',
     handle: 'support',
@@ -460,7 +465,8 @@ test('one Agent\'s connections read alone match the workspace snapshot, and only
   }
   const snapshot = (await f.service.inspectWorkspace(member)).agents.find(({ id }) => id === 'agent_shared')!;
   const deps = { service: f.service, context: async () => member };
-  const alone = await agentConnectionsOf(deps, member, 'agent_shared');
+  const { config, ...alone } = (await agentConnectionsOf(deps, member, 'agent_shared'))!;
+  assert.equal(config.id, 'agent_shared', 'the Agent it read, for its picture');
   assert.deepEqual(alone, {
     mcpServers: snapshot.mcpServers,
     apiConnections: snapshot.apiConnections,
@@ -510,7 +516,7 @@ test('get_creation_status follows the Agent into Slack and its hello in the crea
   const status = async () => structured(await call('get_creation_status', { agentId: 'agent_new' }));
   assert.deepEqual(await status(), {
     stage: 'joining',
-    agent: { name: 'Research', handle: 'new-desk' },
+    agent: { name: 'Research', handle: 'new-desk', status: 'on', avatarUrl: 'https://chickpea.example.test/assets/agents/agent_new/avatar/1' },
     channels: 'none',
     slackUrl: `slack://open?team=${f.owner.binding.slackTeamId}`,
   });

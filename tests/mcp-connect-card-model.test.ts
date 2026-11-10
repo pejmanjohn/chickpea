@@ -2,18 +2,25 @@ import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 
 import { POLL_BACKOFF_MAX_MS, POLL_CEILING_MS, POLL_INTERVAL_MS, type ToolResult } from '../src/mcp-cards/card-model.ts';
-import { INITIAL, present, step } from '../src/mcp-cards/connect-card/model.ts';
+import { INITIAL, present, step, type Action, type View } from '../src/mcp-cards/connect-card/model.ts';
 import type { WorkspaceManagementServiceInput } from '../src/management/service.ts';
 import type { ManagementSetupPublicStatus } from '../src/management/types.ts';
 import { createFixtureAgent, type ManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
-import { assertPlain, BASE_URL, cardHost, cardServer, type ServerCall } from './helpers/mcp-card-host.ts';
+import { assertPlain, BASE_URL, cardHost, cardServer, type CardModelUnderTest, type ServerCall } from './helpers/mcp-card-host.ts';
 
 /**
  * The connect card's state machine against Core's real MCP server. It may
  * read a setup link's status by itself, and check a custom connection once
  * it is connected; every other call, and opening any link, needs a press.
  */
-const CONNECT_CARD = { initial: INITIAL, step, present, reads: new Set(['get_setup_status', 'check_agent']) };
+const CONNECT_CARD: CardModelUnderTest<View, Action> = {
+  initial: INITIAL,
+  step,
+  present,
+  reads: new Set(['get_setup_status', 'check_agent']),
+  // Its link was opened by a press, on this card or before it mounted again: its polls may tell the model how it ended.
+  followsPress: ({ view }) => view.kind === 'finishing',
+};
 
 async function harness(t: TestContext, suffix: string, overrides: Partial<WorkspaceManagementServiceInput> = {}) {
   const server = await cardServer(t, suffix, overrides);
@@ -85,6 +92,7 @@ test('Connect opens Chickpea\'s page for this one connection only when pressed, 
   await connect.result(result);
   assert.equal(connect.effects.length, 0, 'showing the link opens nothing');
   assert.equal(connect.shown.title, 'Connect Gmail to Research');
+  assert.equal(connect.shown.avatarUrl, `${BASE_URL}/assets/agents/agent_research/avatar/1`, 'the Agent\'s own picture');
   assert.deepEqual(connect.shown.subtitle, [{ text: 'You sign in on Chickpea\'s page, never in this chat.' }]);
   assert.deepEqual(rows(connect.shown), ['Gmail · Your own account · [Connect]']);
 
@@ -110,6 +118,9 @@ test('Connect opens Chickpea\'s page for this one connection only when pressed, 
   await connect.dispatch({ type: 'tick', now: clock.now });
   assert.equal(connect.state.view.kind, 'connected');
   assert.deepEqual(rows(connect.shown), ['Gmail is connected · [Open in Slack]'], 'a catalog service: connected, and nothing more');
+  assert.deepEqual(connect.effects.filter(({ type }) => type === 'context'), [
+    { type: 'context', text: 'Gmail is connected to the Agent "Research" now.' },
+  ], 'the model learns what the person finished');
   assert.deepEqual(connect.calls('check_agent'), [], 'nothing checks a catalog service');
 
   await connect.press('open_slack');
@@ -423,4 +434,23 @@ test('an error or a result of the wrong shape shows nothing to press', async (t)
   const cancelled = cardHost(CONNECT_CARD, nothing, clock);
   await cancelled.dispatch({ type: 'no_result', now: clock.now });
   assert.equal(cancelled.shown.title, 'Nothing to show here.');
+});
+
+test('connected, with no Slack link to open, it says where to try the Agent: a mention in its Channels', async (t) => {
+  const { f, call, card, clock, teamId, finish } = await harness(t, 'connect-try');
+  await f.config.putChannel({ workspaceId: teamId, channelId: 'C_SUPPORT', label: 'support', lifecycle: 'active' });
+  await f.config.putAgentChannelGrant({
+    workspaceId: teamId, channelId: 'C_SUPPORT', agentId: 'agent_research', status: 'active',
+    createdByMembershipId: f.owner.membership.id, channelLabel: 'support',
+  });
+  const result = await call('connect_service', { agentId: 'agent_research', service: 'Gmail', owner: 'me', idempotencyKey: 'gmail-try' });
+  const { links: _links, ...agent } = result.structuredContent!.agent;
+  assert.deepEqual(agent.channels, [{ channelId: 'C_SUPPORT', name: 'support' }]);
+  const connect = card();
+  await connect.result({ ...result, structuredContent: { ...result.structuredContent, agent } });
+  await connect.press('connect');
+  finish(result.structuredContent!.setup.setupToken, 'completed');
+  await connect.dispatch({ type: 'tick', now: clock.now });
+  assert.equal(connect.state.view.kind, 'connected');
+  assert.equal(connect.shown.foot, 'Try it: mention @research in #support.');
 });

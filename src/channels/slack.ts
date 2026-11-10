@@ -2499,7 +2499,7 @@ async function handleSlackUiAction(input: SlackUiContext & { action: SlackUiActi
     // what the card now shows as cancelled. Only the claimed click gets here.
     if (spec.kind === 'approval' && spec.approval === 'workspace_change' &&
         approvalChoice(answer.choice) === 'decline') {
-      await stores.management.markChangeSetProposalStale(spec.proposalId, Date.now()).catch(() => {
+      await stores.management.markChangeSetProposalStale(spec.proposalId, Date.now(), { from: 'pending' }).catch(() => {
         console.warn('[chickpea] cancelled proposal could not be retired');
       });
     }

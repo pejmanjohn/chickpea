@@ -2,6 +2,7 @@ import type { z } from 'zod';
 
 import type * as schemas from '../../management/mcp-v5/schemas.ts';
 import {
+  agentNamed,
   call,
   errorOf,
   GENERIC,
@@ -16,7 +17,9 @@ import {
   sequenced,
   show,
   stay,
+  tell,
   toolOf,
+  tryIt,
   type CardEvent,
   type CardState,
   type Effect,
@@ -25,6 +28,7 @@ import {
   type Row,
   type ToolResult,
 } from '../card-model.ts';
+import { channelNames } from '../../management/channel-names.ts';
 import { plainWords } from '../check-words.ts';
 
 /**
@@ -44,7 +48,15 @@ type Check = z.infer<typeof schemas.checkAgentOutput>['checks'][number];
 type Refused = Extract<Event, { type: 'refused' }>['effect'];
 
 type Flow = 'connect' | 'reconnect';
-type AgentLabel = { agentId: string; name: string; handle?: string | undefined; slackUrl?: string | undefined };
+type AgentLabel = {
+  agentId: string;
+  name: string;
+  handle?: string | undefined;
+  slackUrl?: string | undefined;
+  avatarUrl?: string | undefined;
+  /** Its Channels' names, where a mention reaches it. */
+  channels?: string[];
+};
 
 interface Link {
   flow: Flow;
@@ -134,6 +146,8 @@ function fromResult(result: ToolResult): Next<View> {
     name: content.agent.name,
     handle: content.agent.handle,
     slackUrl: httpsUrl(content.agent.links?.slack),
+    avatarUrl: httpsUrl(content.agent.avatarUrl),
+    channels: channelNames(content.agent.channels ?? []),
   };
   const { setup } = content;
   if (content.status !== 'needs_setup' || !isSetup(setup)) return show({ kind: 'notice', title: content.summary.replace(/\.$/, '') });
@@ -193,10 +207,20 @@ function setupStatus(state: State, view: Open, status: SetupStatus, now: number)
   const before = view.flow === 'reconnect' ? view.before ?? connection?.status ?? 'none' : undefined;
   // The Agent has it ready: done, even when this link still waits because it was set up another way.
   const readyNow = connection?.status === 'ready' && (view.flow === 'connect' || before !== 'ready');
-  if (status.status === 'done' || readyNow) return connected(view, connection);
+  const what = view.setup.what;
+  const agent = view.agent ? ` ${view.flow === 'reconnect' ? 'for' : 'to'} ${agentNamed(view.agent.name)}` : '';
+  if (status.status === 'done' || readyNow) {
+    const done = connected(view, connection);
+    // Ready may come another way than this card's link, so the sentence says only what is true now.
+    return view.kind === 'finishing'
+      ? tell(done, view.flow === 'reconnect' ? `${what} is signed in again${agent}.` : `${what} is connected${agent} now.`)
+      : done;
+  }
   const link = { ...linkOf(view), ...before ? { before } : {} };
   if (status.status === 'failed' || status.status === 'cancelled' || status.status === 'expired') {
-    return view.kind === 'ended' && view.why === status.status && view.before === before ? stay(state) : show({ ...link, kind: 'ended', why: status.status });
+    if (view.kind === 'ended' && view.why === status.status && view.before === before) return stay(state);
+    const ended = show<View>({ ...link, kind: 'ended', why: status.status });
+    return view.kind === 'finishing' ? tell(ended, `${what} did not connect${agent}: the link ${ENDED_WORDS[status.status]}. Nothing changed.`) : ended;
   }
   const opened = status.status !== 'waiting' || (view.kind === 'finishing' && view.opened) ? { opened: true as const } : {};
   if (view.kind === 'finishing') {
@@ -207,6 +231,8 @@ function setupStatus(state: State, view: Open, status: SetupStatus, now: number)
   if (view.kind === 'start' && status.status !== 'waiting') return keepPolling(state, { ...link, ...opened, kind: 'finishing', startedAt: now }, now);
   return view.before === before ? stay(state) : show({ ...view, ...link });
 }
+
+const ENDED_WORDS = { failed: 'failed', cancelled: 'was cancelled', expired: 'expired' } as const;
 
 function connected(view: Open, connection: Connection | undefined): Next<View> {
   const custom = connection && connection.kind !== 'service' && view.agent;
@@ -331,7 +357,7 @@ function presentView(state: State): Presentation<Action> {
         ...header(view.flow, view.service, view.agent),
         announce: spoken(row),
         blocks: [{ kind: 'rows', rows: [row] }],
-        ...!view.agent?.slackUrl && view.agent?.handle ? { foot: `Try it: mention @${view.agent.handle} in Slack.` } : {},
+        ...!view.agent?.slackUrl && view.agent?.handle ? { foot: tryIt(view.agent.handle, view.agent.channels ?? []) } : {},
         buttons: [],
       };
     }
@@ -354,9 +380,10 @@ function spoken(row: Row<Action>): string {
   return row.detail ? `${row.title}. ${row.detail}` : row.title;
 }
 
-function header(flow: Flow, what: string, agent: AgentLabel | undefined): Pick<Presentation<Action>, 'avatar' | 'title'> {
+function header(flow: Flow, what: string, agent: AgentLabel | undefined): Pick<Presentation<Action>, 'avatar' | 'avatarUrl' | 'title'> {
   return {
     avatar: 'agent',
+    avatarUrl: agent?.avatarUrl,
     title: flow === 'reconnect' ? `Sign ${what} in again` : agent ? `Connect ${what} to ${agent.name}` : `Connect ${what}`,
   };
 }

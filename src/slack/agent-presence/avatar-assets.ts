@@ -65,14 +65,36 @@ export function agentAvatarInstallationField(env: PlatformEnv | undefined): { av
   return avatarInstallationId ? { avatarInstallationId } : {};
 }
 
+type AvatarAgent = Pick<CustomAgentConfig, 'id' | 'slackPresence'>;
+
 export function agentAvatarUrlForPresentation(
-  agent: CustomAgentConfig,
+  agent: AvatarAgent,
   publicOrigin: string | undefined,
   installationId?: string,
 ): string | undefined {
   const stored = agent.slackPresence?.avatar.url;
   if (stored) return namedAvatarUrl(stored, agent.id, publicOrigin, installationId);
   if (!publicOrigin || !agent.slackPresence) return undefined;
+  return agentAvatarUrl(publicOrigin, agent.id, agent.slackPresence.avatar.revision, installationId);
+}
+
+/**
+ * The avatar a page on this origin shows, so its CSP names only Chickpea.
+ * Gateway-published avatars are cross-origin; the immutable Chickpea avatar
+ * route serves the same stored revision.
+ */
+export function sameOriginAgentAvatarUrl(
+  agent: AvatarAgent,
+  publicOrigin: string,
+  installationId: string | undefined,
+): string | undefined {
+  const presentationUrl = agentAvatarUrlForPresentation(agent, publicOrigin, installationId);
+  if (!presentationUrl || !agent.slackPresence) return presentationUrl;
+  try {
+    if (new URL(presentationUrl).origin === new URL(publicOrigin).origin) return presentationUrl;
+  } catch {
+    return undefined;
+  }
   return agentAvatarUrl(publicOrigin, agent.id, agent.slackPresence.avatar.revision, installationId);
 }
 
