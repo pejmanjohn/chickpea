@@ -166,6 +166,13 @@ test('a Member still renames a Channel where Chickpea is on and records a new on
   await demoteToMember(f);
   const member = secondPersonMcp(f);
 
+  assertRefusedToMember(
+    await putChannel(f, member, teamId, 'member-off', { lifecycle: 'archived' }),
+    teamId,
+    OFF_REFUSED,
+  );
+  assert.equal(await lifecycle(f, teamId), 'active', 'a Member cannot turn Chickpea off');
+
   const renamed = await putChannel(f, member, teamId, 'member-rename', { lifecycle: 'active', label: 'help' });
   assert.equal(renamed.outcomes[0]?.disposition, 'applied', JSON.stringify(renamed));
   assert.equal((await f.config.getChannel(teamId, CHANNEL))?.label, 'help');
