@@ -447,10 +447,17 @@ export interface ConfigStore {
   listAgents(): Promise<CustomAgentConfig[]>;
   listUserAgents(): Promise<CustomAgentConfig[]>;
   getAgent(agentId: string): Promise<CustomAgentConfig>;
+  /**
+   * What the person was to ask the Agent first, as its creation carried it.
+   * Kept apart from the Agent's config: no edit, revision, recipe or archive
+   * touches it. Null for an Agent created without one or before it was kept.
+   */
+  getAgentFirstAsk(agentId: string): Promise<string | null>;
   materializeChickpeaAgent(): Promise<CustomAgentConfig>;
   createAgent(
     agent: AgentCreateInput,
     creationFence?: AgentCreationFence,
+    firstAsk?: string,
   ): Promise<CustomAgentConfig>;
   updateAgent(agentId: string, patch: ConfigAgentPatch, expectedRevision?: number): Promise<CustomAgentConfig>;
   markOAuthReauthorizationRequired(target: OAuthReauthorizationTarget): Promise<boolean>;
@@ -681,6 +688,8 @@ export class ConfigStoreLogic {
           'website_logins_json',
           "TEXT NOT NULL DEFAULT '[]'",
         );
+        // Additive and nullable: an Agent created before it reads null.
+        addColumnIfMissing(this.db, 'config_agents', 'first_ask', 'TEXT');
       }
     }
     // Column presence, read from the schema cache rather than by scanning
@@ -2479,6 +2488,12 @@ export class ConfigStoreLogic {
     return rowToAgent(row as unknown as AgentRow);
   }
 
+  getAgentFirstAsk(agentId: string): string | null {
+    const row = this.db.get('SELECT first_ask FROM config_agents WHERE id = ?', agentId);
+    if (!row) throw new UnknownAgentError(agentId);
+    return typeof row.first_ask === 'string' ? storedFirstAsk(row.first_ask) ?? null : null;
+  }
+
   materializeChickpeaAgent(): CustomAgentConfig {
     const existing = this.db.get('SELECT * FROM config_agents WHERE id = ?', CHICKPEA_AGENT_ID);
     if (existing) {
@@ -2494,18 +2509,24 @@ export class ConfigStoreLogic {
     return this.getAgent(CHICKPEA_AGENT_ID);
   }
 
-  createAgent(agent: AgentCreateInput, creationFence?: AgentCreationFence): CustomAgentConfig {
+  createAgent(
+    agent: AgentCreateInput,
+    creationFence?: AgentCreationFence,
+    firstAsk?: string,
+  ): CustomAgentConfig {
     validateUserAgent(agent);
     if (creationFence &&
         !validAgentCredentialIncarnation(creationFence.credentialIncarnation)) {
       throw new Error('Agent creation credential incarnation is invalid');
     }
+    const ask = storedFirstAsk(firstAsk);
     let inserted;
     try {
       inserted = this.db.transaction(() => this.insertAgent(agent, {
         ...(creationFence
           ? { credentialIncarnation: creationFence.credentialIncarnation }
           : {}),
+        ...(ask ? { firstAsk: ask } : {}),
       }));
     } catch (err) {
       if (isConstraintViolation(err)) {
@@ -3341,7 +3362,7 @@ export class ConfigStoreLogic {
 
   private insertAgent(
     agent: AgentCreateInput,
-    options: { allowSystem?: boolean; credentialIncarnation?: string } = {},
+    options: { allowSystem?: boolean; credentialIncarnation?: string; firstAsk?: string } = {},
   ): { changes: number } {
     const kind = agent.kind ?? 'user';
     if (kind === 'system' && !options.allowSystem) {
@@ -3368,8 +3389,8 @@ export class ConfigStoreLogic {
         creator_membership_id, edit_policy, configuration_generation,
         slack_presence_json, archived_at, model, model_effort,
         skills_json, mcp_servers_json, api_connections_json, repositories_json,
-        website_logins_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        website_logins_json, first_ask
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       agent.id,
       kind,
       1,
@@ -3393,6 +3414,7 @@ export class ConfigStoreLogic {
       JSON.stringify(apiConnections),
       JSON.stringify(agent.repositories ?? []),
       JSON.stringify(agent.websiteLogins ?? []),
+      options.firstAsk ?? null,
     );
   }
 
@@ -4741,4 +4763,18 @@ function channelFromSeedGrant(grant: AgentChannelGrantInput): ChannelConfig {
 function countRows(db: StateDb, table: string): number {
   const row = db.get(`SELECT COUNT(*) AS count FROM ${table}`) as { count: number } | undefined;
   return row?.count ?? 0;
+}
+
+const AGENT_FIRST_ASK_MAX = 200; // code points, as the MCP schemas count
+/**
+ * A creation's first ask as stored and read: control and direction-override
+ * characters become spaces, so what a card shows is what a test turn sends,
+ * and blank text is no ask. It is later sent to the Agent's model as data.
+ */
+function storedFirstAsk(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const text = value.replace(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/g, ' ').trim();
+  if (!text) return undefined;
+  if ([...text].length > AGENT_FIRST_ASK_MAX) throw new Error('An Agent\'s first ask is at most 200 characters.');
+  return text;
 }

@@ -71,7 +71,8 @@ const credentialRef = (sequence: number) => `connection_${sequence.toString(16).
 
 const NO_CONNECTIONS = { skills: [], mcpServers: [], apiConnections: [], repositories: [] };
 
-const AGENTS: ReadonlyArray<readonly [AgentCreateInput, string]> = [
+/** Each Agent, its credential incarnation, and the first ask its creation carried, if any. */
+const AGENTS: ReadonlyArray<readonly [AgentCreateInput, string, firstAsk?: string]> = [
   [{
     id: RESEARCHER,
     name: 'Scenario Researcher',
@@ -265,7 +266,7 @@ const AGENTS: ReadonlyArray<readonly [AgentCreateInput, string]> = [
       released: { userGroupId: 'S0SCENARIOCON', desiredState: 'active', health: 'healthy' },
     },
     ...NO_CONNECTIONS,
-  }, incarnation(2)],
+  }, incarnation(2), 'Where do I pick up a visitor badge?'],
   [{
     id: SCOUT,
     name: 'Scenario Scout',
@@ -1006,7 +1007,7 @@ export function writeConfigStorageScenario(kit: ConfigStorageKit, db: StateDb): 
   const { config, settings } = stores;
   writeGateway(stores);
   writeModelPolicy(config);
-  for (const [agent, credentialIncarnation] of AGENTS) config.createAgent(agent, { credentialIncarnation });
+  for (const [agent, credentialIncarnation, firstAsk] of AGENTS) config.createAgent(agent, { credentialIncarnation }, firstAsk);
   writeChannels(config);
   writeThreads(config);
   writeConnections(config);
@@ -1032,6 +1033,8 @@ export async function readConfigStorageScenario(kit: ConfigStorageKit, db: State
   const agentIds = agents.map(({ id }) => id);
   return {
     agents,
+    // v0.1.37 kept no first ask, so its fixture reads null for every Agent.
+    agentFirstAsks: agentIds.map((id) => 'getAgentFirstAsk' in config ? config.getAgentFirstAsk(id) : null),
     agentReferences: agentIds.map((id) => config.getAgentReferences(id)),
     channels: config.listChannels(),
     channelGrants: config.listAgentChannelGrants(),

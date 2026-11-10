@@ -139,7 +139,7 @@ export type ManagementOperation =
       clientRef?: string;
       /** Set only after the requester chooses a separate Agent despite a visible identity match. */
       duplicateResolution?: 'create_distinct';
-      /** MCP only: what the Agent's direct-message welcome invites the requester to send. Never saved on the Agent. */
+      /** MCP only: what the Agent's direct-message welcome invites the requester to send. Kept beside the Agent, outside its config (getAgentFirstAsk). */
       firstAsk?: string;
       agent: ManagementAgentCreateInput;
     })
