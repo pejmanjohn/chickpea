@@ -532,7 +532,7 @@ test('Markdown Agent creation previews carry the same facts in a portable dialec
     '> @paid-marketing',
     '',
     '**Description**',
-    '> Helps with Google Ads budgets & ad copy \\<fast\\>.',
+    '> Helps with Google Ads budgets \\& ad copy \\<fast\\>.',
     '',
     '**Instructions**',
     '> Review spend, flag budget risks, and improve ad copy.',
@@ -610,12 +610,29 @@ test('Markdown skill import proposals show the source and only the changed skill
     missingSetup: [],
   }, 'https://github.com/cursor/plugins/tree/main/pstack/skills/unslop');
 
-  assert.match(markdown, /^\*\*Proposed changes\*\*\n\*\*Source\*\*\n> https:\/\/github\.com/);
+  assert.match(markdown, /^\*\*Proposed changes\*\*\n\*\*Source\*\*\n> <https:\/\/github\.com\/cursor\/plugins\/tree\/main\/pstack\/skills\/unslop>\n/);
   assert.match(markdown, /\*\*Sprout — Skill: unslop\*\*\n\*\*Add\*\*/);
-  assert.match(markdown, /\*\*Description\*\*\n> Remove AI writing tells from prose & drafts\./);
+  assert.match(markdown, /\*\*Description\*\*\n> Remove AI writing tells from prose \\& drafts\./);
   assert.match(markdown, /\*\*Instructions\*\*\n> Rewrite the draft plainly/);
   assert.doesNotMatch(markdown, /existing-skill|Keep this skill|&amp;/);
   assert.ok(markdown.endsWith(MARKDOWN_APPROVAL_INSTRUCTION));
+});
+
+// Defect caught: escaping a URL's `_` or `#` broke the Source link (…/release%5C_notes, a 404).
+test('a Markdown skill import Source opens the exact URL, and intraword underscores stay plain', () => {
+  const url = 'https://github.com/acme/skills/blob/main/release_notes/SKILL.md#usage';
+  const markdown = formatMarkdownSkillImportProposal({
+    summary: '1 reviewed workspace change',
+    changes: [{
+      itemId: 'update', operationKind: 'update_agent', target: 'agent:agent_rd',
+      before: { name: 'rd_ops', skills: [] },
+      after: { name: 'rd_ops', skills: [{ name: 'release_notes', description: 'Notes for _every_ release & R&ZeroWidthSpace;D.', instructions: 'Write them.', enabled: true }] },
+    }],
+    missingSetup: [],
+  }, url);
+  assert.ok(markdown.includes(`**Source**\n> <${url}>\n`), markdown);
+  assert.match(markdown, /rd_ops — Skill: release_notes/);
+  assert.match(markdown, /Notes for \\_every\\_ release \\& R\\&ZeroWidthSpace;D\./);
 });
 
 test('connection changes name each connection and the Agent', () => {
@@ -815,8 +832,8 @@ test('Slack bold shows names as stored and neutralizes Slack control sequences i
   assert.doesNotMatch(slack, /<!channel>/);
   const markdown = formatMarkdownChangeSetProposal(preview);
   // Markdown escapes what would be syntax, so it renders as stored.
-  assert.match(markdown, /^Add \*\*R&D \\<!channel\\>\*\* \(@rd\\_ops\) to \*\*\\#eng\\_oncall\*\*\.$/m);
-  assert.match(markdown, /^\*\*Research — Skill: release\\_notes\*\*\n\*\*Add\*\*$/m);
+  assert.match(markdown, /^Add \*\*R\\&D \\<!channel\\>\*\* \(@rd_ops\) to \*\*\\#eng_oncall\*\*\.$/m);
+  assert.match(markdown, /^\*\*Research — Skill: release_notes\*\*\n\*\*Add\*\*$/m);
 });
 
 test('a member change with neither role nor status falls back to its heading', () => {

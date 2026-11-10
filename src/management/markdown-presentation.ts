@@ -21,9 +21,15 @@ export const MARKDOWN_PRESENTATION_DIALECT: ChangeSetPresentationDialect = {
   textLimit: MARKDOWN_PRESENTATION_TEXT_LIMIT,
   bold: (text) => `**${text}**`,
   bullet: '-',
-  // Stored text reads as written: it cannot open a link, image, emphasis, code span, heading, table or HTML.
-  escape: (text) => text.replace(/[\\`*_[\]<>#|~]/g, '\\$&'),
+  // Stored text reads as written: it cannot open a link, image, emphasis, code span, heading, table, HTML
+  // or entity. An `_` between two letters or digits can't open emphasis, so it stays, as in URL paths.
+  escape: (text) => text.replace(/[\\`*_[\]<>#|~&]/g, (character, at: number, all: string) =>
+    character === '_' && /[A-Za-z0-9]/.test(all[at - 1] ?? '') && /[A-Za-z0-9]/.test(all[at + 1] ?? '')
+      ? character
+      : `\\${character}`),
   code: markdownCodeSpan,
+  // An autolink: CommonMark applies no backslash escapes inside it, and URL parsing encodes `<`, `>` and spaces.
+  link: (url) => `<${new URL(url).href}>`,
 };
 
 /** A CommonMark code span whose fence outlasts every backtick run in the value. */

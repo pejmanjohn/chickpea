@@ -56,7 +56,7 @@ const KEY_DETAILS =
 /** What a person reads: Slack's `&amp;`, `&lt;` and `&gt;`, and Markdown's backslash escapes, as the characters. */
 function visible(text: string): string {
   return text.replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&')
-    .replace(/\\([\\`*_[\]<>#|~])/g, '$1');
+    .replace(/\\([\\`*_[\]<>#|~&])/g, '$1');
 }
 
 interface KeyDetails {
