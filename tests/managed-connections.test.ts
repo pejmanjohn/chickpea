@@ -33,6 +33,8 @@ import {
   ConnectionScheduleConflictError,
   ConnectionAccountService,
   ManagedConnectionConflictError,
+  ManagedConnectionProviderUnavailableError,
+  ManagedConnectionRemoteRevokeError,
   markManagedAccountExpired,
   markManagedProviderAccountsUnavailable,
   reconcileManagedProviderAccounts,
@@ -2536,7 +2538,7 @@ test('managed provider validation failure leaves no persisted account', async ()
   }
 });
 
-test('a failed managed revocation leaves the account and its schedules as they were, and a retry finishes it', async () => {
+test('a removal Composio fails stays fail closed, even when a person asked for it, and a retry finishes it', async () => {
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let executionCalls = 0;
@@ -2582,32 +2584,39 @@ test('a failed managed revocation leaves the account and its schedules as they w
       requiredConnectionAccountIds: [account.id], state: 'active',
     });
 
+    // Composio may have deleted the account before failing, so the Agent loses it now.
     await assert.rejects(
-      service.revoke({ principal: principal(), connectionAccountId: account.id }),
-      /remote account deletion failed/,
+      service.disconnectForAgent({ principal: principal(), agentId: 'agent_mail', connectionAccountId: account.id }),
+      (error: unknown) => error instanceof ManagedConnectionRemoteRevokeError &&
+        error.cause instanceof Error && error.cause.message === 'remote account deletion failed',
     );
     assert.equal(
       (await config.listConnectionAccounts('T_MANAGED')).find(({ id }) => id === account.id)?.lifecycle,
-      'ready',
+      'needs_attention',
     );
     const [schedule] = await config.listAgentScheduleReferences('agent_mail');
-    assert.equal(schedule?.state, 'active');
-    assert.equal(schedule?.connectionPauseAccountIds, undefined);
-    await invokeManagedConnectionCapability({
-      config,
-      identity: activeIdentity(),
-      providers,
-      workspaceId: 'T_MANAGED',
-      agentId: 'agent_mail',
-      actorMembershipId: 'membership_alice',
-      connectionAccountId: account.id,
-      capability: 'gmail.messages.search',
-      arguments: { query: 'is:unread' },
-    });
-    assert.equal(executionCalls, 1, 'the Agent keeps the connection it had');
+    assert.equal(schedule?.state, 'needs_attention');
+    assert.deepEqual(schedule?.connectionPauseAccountIds, [account.id]);
+    await assert.rejects(
+      invokeManagedConnectionCapability({
+        config,
+        identity: activeIdentity(),
+        providers,
+        workspaceId: 'T_MANAGED',
+        agentId: 'agent_mail',
+        actorMembershipId: 'membership_alice',
+        connectionAccountId: account.id,
+        capability: 'gmail.messages.search',
+        arguments: { query: 'is:unread' },
+      }),
+      /not available to this actor/,
+    );
+    assert.equal(executionCalls, 0);
 
     revokeFails = false;
-    const retried = await service.revoke({ principal: principal(), connectionAccountId: account.id });
+    const retried = await service.disconnectForAgent({
+      principal: principal(), agentId: 'agent_mail', connectionAccountId: account.id,
+    });
     assert.equal(retried.lifecycle, 'revoked');
     assert.deepEqual(revoked, [MANAGED_POLICY.accountRef]);
     assert.equal((await config.listAgentScheduleReferences('agent_mail'))[0]?.state, 'needs_attention');
@@ -2657,7 +2666,8 @@ test('Agent deletion keeps ownership records when provider cleanup fails', async
         principal: principal(), agentId: agent.id, expectedRevision: agent.revision,
         expectedCredentialIncarnation: agent.credentialIncarnation!,
       }),
-      /provider cleanup failed/,
+      (error: unknown) => error instanceof ManagedConnectionRemoteRevokeError &&
+        error.cause instanceof Error && error.cause.message === 'provider cleanup failed',
     );
     assert.equal((await config.getAgent(agent.id)).id, agent.id);
     assert.equal(
@@ -2855,7 +2865,7 @@ test('Agent deletion revokes its accounts before removing bindings and the Agent
   }
 });
 
-test('managed revocation reports a retryable conflict before touching the remote grant, and leaves the account as it was', async () => {
+test('a schedule conflict stops a removal before the remote grant: a person\'s removal is undone, a system revoke stays closed', async () => {
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let revokeCalls = 0;
@@ -2900,20 +2910,79 @@ test('managed revocation reports a retryable conflict before touching the remote
       return putSchedule(input, expectedRevision);
     };
 
+    const lifecycle = async () =>
+      (await config.listConnectionAccounts('T_MANAGED')).find(({ id }) => id === account.id)?.lifecycle;
+    await assert.rejects(
+      service.disconnectForAgent({
+        principal: principal(), agentId: 'agent_revoke_conflict', connectionAccountId: account.id,
+      }),
+      ConnectionScheduleConflictError,
+    );
+    assert.equal(await lifecycle(), 'ready');
     await assert.rejects(
       service.revoke({ principal: principal(), connectionAccountId: account.id }),
       ConnectionScheduleConflictError,
     );
+    assert.equal(await lifecycle(), 'needs_attention', 'a revoke that names no failure mode stays closed');
     assert.equal(revokeCalls, 0, 'the provider grant must remain untouched until schedules pause');
-    assert.equal(
-      (await config.listConnectionAccounts('T_MANAGED')).find(({ id }) => id === account.id)
-        ?.lifecycle,
-      'ready',
-    );
     assert.equal(
       (await config.listAgentScheduleReferences('agent_revoke_conflict'))[0]?.state,
       'active',
     );
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
+test('with no Composio provider, a person\'s removal changes nothing and a revoke that names no failure mode stays closed', async () => {
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  const service = new ConnectionAccountService({
+    config,
+    settings,
+    managedProviders: async () => createManagedConnectionProviderRegistry([]),
+  });
+  try {
+    await config.createAgent({
+      id: 'agent_no_provider', name: 'Mail', instructions: 'Help with mail.', enabled: true,
+      creatorMembershipId: 'membership_alice', editPolicy: 'creator_and_admins',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_no_provider',
+    });
+    const account = await config.putConnectionAccount({
+      id: 'connection_no_provider', workspaceId: 'T_MANAGED', ownerKind: 'member',
+      ownerMembershipId: 'membership_alice', createdByMembershipId: 'membership_alice',
+      providerId: 'google', label: 'Work Gmail', policy: MANAGED_POLICY,
+      secretRefId: 'secret_no_provider', lifecycle: 'ready',
+    });
+    await config.putAgentConnectionBinding({
+      agentId: 'agent_no_provider', connectionAccountId: account.id, providerId: 'google',
+      allowedCapabilities: ['gmail.messages.search'], enabled: true,
+    });
+    await config.putAgentScheduleReference({
+      scheduleId: 'schedule_no_provider', agentId: 'agent_no_provider', workspaceId: 'T_MANAGED',
+      channelId: 'C_MAIL', createdByMembershipId: 'membership_alice',
+      runsAsMembershipId: 'membership_alice', authorityReceiptId: 'authority_no_provider',
+      requiredConnectionAccountIds: [account.id], state: 'active',
+    });
+    const state = async () => ({
+      lifecycle: (await config.listConnectionAccounts('T_MANAGED')).find(({ id }) => id === account.id)?.lifecycle,
+      schedule: (await config.listAgentScheduleReferences('agent_no_provider'))[0]?.state,
+    });
+
+    await assert.rejects(
+      service.disconnectForAgent({ principal: principal(), agentId: 'agent_no_provider', connectionAccountId: account.id }),
+      ManagedConnectionProviderUnavailableError,
+    );
+    assert.deepEqual(await state(), { lifecycle: 'ready', schedule: 'active' });
+    await assert.rejects(
+      service.revoke({ principal: principal(), connectionAccountId: account.id }),
+      ManagedConnectionProviderUnavailableError,
+    );
+    assert.deepEqual(await state(), { lifecycle: 'needs_attention', schedule: 'needs_attention' });
   } finally {
     config.close();
     settings.close();

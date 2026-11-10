@@ -110,6 +110,7 @@ import {
 import {
   ConnectionScheduleConflictError,
   ManagedConnectionProviderUnavailableError,
+  ManagedConnectionRemoteRevokeError,
   nativeCredentialRequired,
   type ConnectionAccountService,
 } from '../connections/store.ts';
@@ -5038,6 +5039,12 @@ export class WorkspaceManagementService {
         throw new ManagementError(
           'invalid_request',
           `Restore the ${error.adapterId} provider credentials before disconnecting this managed account so its remote account can also be removed.`,
+        );
+      }
+      if (error instanceof ManagedConnectionRemoteRevokeError) {
+        throw new ManagementError(
+          'removal_incomplete',
+          `${agent.name} no longer uses ${account.label}, but Chickpea could not remove its sign-in yet. Remove the connection again to finish.`,
         );
       }
       throw error;

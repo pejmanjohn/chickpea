@@ -2,10 +2,16 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 
+import { createMcpHandler } from '@modelcontextprotocol/server';
+
+import type { McpAuthenticatedPrincipal } from '../src/auth/mcp-oauth-routes.ts';
 import { createWebsiteLogin, listWebsiteLogins } from '../src/browser/logins.ts';
+import { configureComposioPlatformSettings } from '../src/config/composio-settings.ts';
+import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { signInGroupPolicy } from '../src/config/sign-in-group.ts';
+import type { PlatformEnv } from '../src/config/state-backend.ts';
 import type { ConnectionAccount, ConnectionAccountManagedPolicy, CustomAgentConfig } from '../src/config/types.ts';
 import {
   createManagedConnectionProviderRegistry,
@@ -13,6 +19,8 @@ import {
 } from '../src/connections/managed.ts';
 import type { IdentityResolution } from '../src/identity/types.ts';
 import { createLiveWorkspaceManagementService } from '../src/management/live-service.ts';
+import { createWorkspaceManagementMcpServer } from '../src/management/mcp.ts';
+import { executeHostSlackManagementApproval } from '../src/management/slack-approval.ts';
 import {
   invokeWorkspaceManagementTool,
   type WorkspaceManagementToolArguments,
@@ -560,8 +568,9 @@ function composioProvider() {
 }
 
 /** The service MCP and Slack get in production, on this fixture's stores. */
-function liveService(f: Fixture, managedProviders?: ManagedConnectionProviderRegistry) {
-  return createLiveWorkspaceManagementService(undefined, {
+function liveService(f: Fixture, options: { env?: PlatformEnv; managedProviders?: ManagedConnectionProviderRegistry } = {}) {
+  const { env, managedProviders } = options;
+  return createLiveWorkspaceManagementService(env, {
     identity: f.identity,
     settings: f.settings,
     ...(managedProviders ? { managedProviders } : {}),
@@ -627,7 +636,7 @@ test('removing a managed connection that is its sign-in\'s only user deletes the
   withFixture('remove-managed-last', async (f) => {
     const agent = await seedAgent(f);
     const composio = composioProvider();
-    const service = liveService(f, composio.registry);
+    const service = liveService(f, { managedProviders: composio.registry });
     const hubspot = await bindAccount(f, agent.id, hubspotAccount('ready'));
     const notion = await bindAccount(f, agent.id, notionAccount('connection_notion_team', 'account_notion'));
 
@@ -664,7 +673,7 @@ test('removing one Agent from a shared managed sign-in keeps the remote account 
       repositories: [],
     });
     const composio = composioProvider();
-    const service = liveService(f, composio.registry);
+    const service = liveService(f, { managedProviders: composio.registry });
     const opsNotion = await bindAccount(f, ops.id, notionAccount('connection_notion_ops', 'account_notion_shared'));
     const policy = opsNotion.policy as ConnectionAccountManagedPolicy;
     await f.config.applySignInGroup({
@@ -708,48 +717,220 @@ test('removing one Agent from a shared managed sign-in keeps the remote account 
     assert.deepEqual(composio.deleted, ['account_notion_shared'], 'its last Agent deletes it');
   }));
 
-test('a managed removal that fails leaves the connection and its schedules as they were, on both doors', () =>
-  withFixture('remove-managed-fails', async (f) => {
-    const agent = await seedAgent(f);
-    const composio = composioProvider();
-    composio.state.failure = new Error('Composio is unavailable');
-    const hubspot = await bindAccount(f, agent.id, hubspotAccount('ready'));
-    await f.config.putAgentScheduleReference({
-      scheduleId: 'schedule_hubspot',
-      agentId: agent.id,
+/** Composio as the real provider reaches it: every request, and how Composio answers a deletion. */
+function composioApi(t: TestContext) {
+  const requests: Array<{ method: string; url: string; key: string | null }> = [];
+  const state: { answer: 'deleted' | 'refused' | 'timeout' | 'unreadable' } = { answer: 'deleted' };
+  t.mock.method(globalThis, 'fetch', async (input: string | URL | Request, init?: RequestInit) => {
+    requests.push({ method: init?.method ?? 'GET', url: String(input), key: new Headers(init?.headers).get('x-api-key') });
+    if (state.answer === 'refused') return Response.json({ error: { message: 'unavailable' } }, { status: 503 });
+    if (state.answer === 'timeout') throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+    if (state.answer === 'unreadable') return new Response('<html>ok</html>', { status: 200 });
+    return Response.json({ success: true });
+  });
+  return { requests, state };
+}
+
+const deletion = (accountRef: string) =>
+  `https://backend.composio.dev/api/v3.1/connected_accounts/${accountRef}?revoke_on_delete=false`;
+
+/** A self-hosted deployment's own Composio key. */
+const SELF_HOSTED_ENV: PlatformEnv = { COMPOSIO_API_KEY: 'ak_self_hosted_key' };
+
+/** A Cloud installation: the platform's key, with the platform's preparation store. */
+function cloudEnv(t: TestContext): PlatformEnv {
+  configureComposioPlatformSettings(() => ({ getSetting: async () => undefined, applySettingsPatch: async () => false }));
+  t.after(() => configureComposioPlatformSettings(undefined));
+  return scopeInstallationEnv({
+    CHICKPEA_TENANCY: 'installation',
+    COMPOSIO_API_KEY: 'ak_cloud_platform_key',
+    CHICKPEA_COMPOSIO_ENVIRONMENT: 'staging',
+  }, { installationId: 'inst_lifecycle' });
+}
+
+type Door = 'MCP 4.x' | 'MCP 5.0' | 'Slack';
+type Removal = { done: true } | { done: false; message: string; code?: string };
+
+/** The removal each door makes, read back the way its person or client sees it. */
+async function removeOver(
+  door: Door,
+  f: Fixture,
+  service: ReturnType<typeof liveService>,
+  agent: CustomAgentConfig,
+  connectionId: string,
+): Promise<Removal> {
+  if (door === 'MCP 4.x') {
+    const removed = await removeConnection(service, mcpContext(f.owner), agent.id, connectionId);
+    assert.equal(removed.ok, true, JSON.stringify(removed));
+    const result = (removed as { result: ManagementApplyResult }).result;
+    if (result.status === 'completed') return { done: true };
+    return { done: false, message: result.outcomes[0]!.instruction!, code: result.outcomes[0]!.code! };
+  }
+  if (door === 'MCP 5.0') {
+    const principal: McpAuthenticatedPrincipal = {
+      betterAuthUserId: f.owner.binding.betterAuthUserId ?? 'ba_owner',
+      userId: f.owner.user.id,
+      membershipId: f.owner.membership.id,
+      organizationId: f.owner.membership.organizationId,
+      role: 'owner',
+      clientId: 'connection-lifecycle-test',
+    };
+    const handler = createMcpHandler(
+      () => createWorkspaceManagementMcpServer({ principal, service, baseUrl: 'https://chickpea.example.test' }),
+      { legacy: 'stateless' },
+    );
+    const callTool = async (name: string, args: Record<string, unknown>) => {
+      const response = await handler.fetch(new Request('http://localhost/mcp', {
+        method: 'POST',
+        headers: {
+          accept: 'application/json, text/event-stream',
+          'content-type': 'application/json',
+          'mcp-protocol-version': '2025-11-25',
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+      }));
+      const body = await response.text();
+      const json = body.trimStart().startsWith('{')
+        ? body
+        : body.split('\n').find((line) => line.startsWith('data: '))!.slice('data: '.length);
+      return (JSON.parse(json) as { result: { structuredContent: Record<string, any>; isError?: boolean } }).result;
+    };
+    const proposed = await callTool('remove_connection', {
+      agentId: agent.id, connectionId, idempotencyKey: `remove-${connectionId}-${++removals}`,
+    });
+    assert.equal(proposed.structuredContent.status, 'needs_confirmation', JSON.stringify(proposed));
+    const confirmed = await callTool('confirm_change', { confirmToken: proposed.structuredContent.confirmation.confirmToken });
+    if (!confirmed.isError) return { done: true };
+    const { error } = confirmed.structuredContent;
+    return { done: false, message: error.message, code: error.code };
+  }
+  // On Slack the person's Approve click applies the change, and the host's receipt is all they see.
+  const proposed = await invokeWorkspaceManagementTool({
+    service,
+    resolveContext: async () => slackContext(f.owner, agent.id),
+  }, 'apply_workspace_changes', {
+    idempotencyKey: `remove-${connectionId}-${++removals}`,
+    operations: [{ itemId: 'remove', kind: 'disconnect_connection', agentId: agent.id, connectionId }],
+  });
+  const proposalId = (proposed as { result: ManagementApplyResult }).result.outcomes[0]!.proposalId!;
+  const receipt = await executeHostSlackManagementApproval({
+    turn: {
       workspaceId: TEAM,
       channelId: 'C_OPS',
-      createdByMembershipId: f.owner.membership.id,
-      runsAsMembershipId: f.owner.membership.id,
-      authorityReceiptId: 'authority_hubspot',
-      requiredConnectionAccountIds: [hubspot.id],
-      state: 'active',
-    });
-    const unchanged = async (label: string) => {
-      assert.equal(await lifecycleOf(f, hubspot.id), 'ready', label);
-      const [schedule] = await f.config.listAgentScheduleReferences(agent.id);
-      assert.equal(schedule?.state, 'active', label);
-      assert.equal(schedule?.connectionPauseAccountIds, undefined, label);
-      assert.equal((await f.config.getAgentConnectionBindingForAccount(hubspot.id))?.agentId, agent.id, label);
-    };
+      threadTs: '100.1',
+      eventId: `Ev_APPROVE_${removals}`,
+      messageTs: `100.${removals + 1}`,
+      text: 'Approved.',
+      userId: f.owner.binding.slackUserId,
+      source: 'app_mention',
+      contextMode: 'thread',
+      uiResponse: { surfaceId: 'surface_approval', namespace: 'host', kind: 'approval', choice: 0 },
+    },
+    assignment: { workspaceId: TEAM, channelId: 'C_OPS', agentId: agent.id, runtimeContract: 'chickpea-v1', agent },
+    turnJobId: `turn_APPROVE_${removals}`,
+    proposalId,
+    dependencies: { identity: f.identity, config: f.config, management: f.management, service },
+  });
+  assert.equal(receipt.kind, 'message', JSON.stringify(receipt));
+  const { text } = receipt as { text: string };
+  return text === 'Applied the approved changes.' ? { done: true } : { done: false, message: text };
+}
 
-    // The provider refuses the deletion, then Composio is not set up at all.
-    for (const managedProviders of [composio.registry, undefined]) {
-      const service = liveService(f, managedProviders);
-      for (const context of [mcpContext(f.owner), slackContext(f.owner, agent.id)]) {
-        const label = `${managedProviders ? 'provider failure' : 'no provider'} on ${context.origin.kind}`;
-        const failed = await removeConnection(service, context, agent.id, hubspot.id);
-        assert.equal(failed.ok, true, `${label}: ${JSON.stringify(failed)}`);
-        const result = (failed as { result: ManagementApplyResult }).result;
-        assert.equal(result.status, 'failed', label);
-        assert.equal(result.outcomes[0]?.code, managedProviders ? 'operation_failed' : 'invalid_request', label);
-        if (!managedProviders) {
-          assert.match(result.outcomes[0]?.instruction ?? '', /^Restore the composio provider credentials/, label);
-        }
-        await unchanged(label);
+const DOORS: readonly Door[] = ['MCP 4.x', 'MCP 5.0', 'Slack'];
+
+async function scheduleOn(f: Fixture, agentId: string, connectionId: string) {
+  await f.config.putAgentScheduleReference({
+    scheduleId: `schedule_${connectionId}`,
+    agentId,
+    workspaceId: TEAM,
+    channelId: 'C_OPS',
+    createdByMembershipId: f.owner.membership.id,
+    runsAsMembershipId: f.owner.membership.id,
+    authorityReceiptId: `authority_${connectionId}`,
+    requiredConnectionAccountIds: [connectionId],
+    state: 'active',
+  });
+}
+
+async function scheduleOf(f: Fixture, agentId: string, connectionId: string) {
+  return (await f.config.listAgentScheduleReferences(agentId)).find(({ scheduleId }) => scheduleId === `schedule_${connectionId}`);
+}
+
+test('removing a managed connection reaches Composio with the deployment\'s own key, self-hosted and on Cloud', (t) =>
+  withFixture('remove-managed-default-provider', async (f) => {
+    const agent = await seedAgent(f);
+    const composio = composioApi(t);
+    for (const [shape, env, key] of [
+      ['self_hosted', SELF_HOSTED_ENV, 'ak_self_hosted_key'],
+      ['cloud', cloudEnv(t), 'ak_cloud_platform_key'],
+    ] as const) {
+      const account = await bindAccount(f, agent.id, notionAccount(`connection_${shape}`, `account_${shape}`));
+      composio.requests.length = 0;
+      const removed = await removeOver('MCP 4.x', f, liveService(f, { env }), agent, account.id);
+      assert.deepEqual(removed, { done: true }, shape);
+      assert.equal(await lifecycleOf(f, account.id), 'revoked', shape);
+      assert.deepEqual(composio.requests, [{ method: 'DELETE', url: deletion(`account_${shape}`), key }], shape);
+    }
+  }));
+
+test('a removal Composio fails cuts the Agent off at once and says so plainly, on every door, and a retry finishes it', (t) =>
+  withFixture('remove-managed-remote-fails', async (f) => {
+    const agent = await seedAgent(f);
+    const composio = composioApi(t);
+    const service = liveService(f, { env: SELF_HOSTED_ENV });
+    const plain = 'Ops no longer uses Notion · Team, but Chickpea could not remove its sign-in yet. Remove the connection again to finish.';
+    const failed: string[] = [];
+    for (const door of DOORS) {
+      for (const answer of ['refused', 'timeout', 'unreadable'] as const) {
+        const label = `${answer} on ${door}`;
+        const accountRef = `account_${failed.length}`;
+        const account = await bindAccount(f, agent.id, notionAccount(`connection_${failed.length}`, accountRef));
+        await scheduleOn(f, agent.id, account.id);
+        composio.state.answer = answer;
+        composio.requests.length = 0;
+        assert.deepEqual(await removeOver(door, f, service, agent, account.id), {
+          done: false,
+          message: plain,
+          ...(door === 'Slack' ? {} : { code: door === 'MCP 4.x' ? 'removal_incomplete' : 'temporarily_unavailable' }),
+        }, label);
+        assert.deepEqual(composio.requests.map(({ method, url }) => [method, url]), [['DELETE', deletion(accountRef)]], label);
+        assert.equal(await lifecycleOf(f, account.id), 'needs_attention', label);
+        const schedule = await scheduleOf(f, agent.id, account.id);
+        assert.equal(schedule?.state, 'needs_attention', label);
+        assert.deepEqual(schedule?.connectionPauseAccountIds, [account.id], label);
+        failed.push(account.id);
       }
     }
-    assert.deepEqual(composio.deleted, []);
+
+    composio.state.answer = 'deleted';
+    for (const [index, door] of DOORS.entries()) {
+      assert.deepEqual(await removeOver(door, f, service, agent, failed[index]!), { done: true }, `retry on ${door}`);
+      assert.equal(await lifecycleOf(f, failed[index]!), 'revoked', `retry on ${door}`);
+    }
+  }));
+
+test('a managed removal that fails before Composio is asked leaves the connection and its schedules as they were, on every door', () =>
+  withFixture('remove-managed-no-provider', async (f) => {
+    const agent = await seedAgent(f);
+    const hubspot = await bindAccount(f, agent.id, hubspotAccount('ready'));
+    await scheduleOn(f, agent.id, hubspot.id);
+    // No Composio key anywhere: the default resolver finds no provider.
+    const service = liveService(f);
+    for (const door of DOORS) {
+      const removed = await removeOver(door, f, service, agent, hubspot.id);
+      assert.deepEqual(removed, door === 'Slack'
+        ? { done: false, message: 'I couldn’t apply the approved changes (invalid_request). Nothing was changed.' }
+        : {
+            done: false,
+            message: 'Restore the composio provider credentials before disconnecting this managed account so its remote account can also be removed.',
+            code: door === 'MCP 4.x' ? 'invalid_request' : 'invalid_input',
+          }, door);
+      assert.equal(await lifecycleOf(f, hubspot.id), 'ready', door);
+      const schedule = await scheduleOf(f, agent.id, hubspot.id);
+      assert.equal(schedule?.state, 'active', door);
+      assert.equal(schedule?.connectionPauseAccountIds, undefined, door);
+      assert.equal((await f.config.getAgentConnectionBindingForAccount(hubspot.id))?.agentId, agent.id, door);
+    }
   }));
 
 test('tool selection applies directly and only names tools the server offers', () =>

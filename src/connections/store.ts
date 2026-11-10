@@ -222,6 +222,26 @@ export class ManagedConnectionProviderUnavailableError extends Error {
   }
 }
 
+/**
+ * The provider was asked to delete the remote account and did not confirm it.
+ * It may have deleted it anyway, so the account stays closed until a retry.
+ */
+export class ManagedConnectionRemoteRevokeError extends Error {
+  readonly name = 'ManagedConnectionRemoteRevokeError';
+
+  constructor(readonly adapterId: string, cause: unknown) {
+    super(`Managed connection provider ${adapterId} did not delete the remote account`, { cause });
+  }
+}
+
+/**
+ * What a failed revoke leaves when it fails before Chickpea asks the provider
+ * to delete the remote account. 'restore' puts the account and its schedules
+ * back; 'stay_closed' leaves the account needs_attention. Once the provider
+ * was asked, the account stays closed either way.
+ */
+export type RevokeFailureMode = 'restore' | 'stay_closed';
+
 export class ManagedResourceSelectionError extends Error {
   readonly name = 'ManagedResourceSelectionError';
 
@@ -1033,13 +1053,19 @@ export class ConnectionAccountService {
     }
   }
 
+  /**
+   * Only a person's own removal passes `onFailure: 'restore'`. Cleanups the
+   * system makes keep the default, so an account it chose to discard never
+   * comes back.
+   */
   async revoke(input: {
     principal: AuthPrincipal;
     connectionAccountId: string;
+    onFailure?: RevokeFailureMode;
   }): Promise<ConnectionAccount> {
     const account = await this.findAccount(input.connectionAccountId);
     this.requireManage(input.principal, account);
-    return this.revokeOwnedAccount(account, 'restore');
+    return this.revokeOwnedAccount(account, input.onFailure ?? 'stay_closed');
   }
 
   /**
@@ -1053,14 +1079,9 @@ export class ConnectionAccountService {
     return this.revokeOwnedAccount(await this.findAccount(connectionAccountId), 'stay_closed');
   }
 
-  /**
-   * `onFailure` decides what a failure before the remote account is gone
-   * leaves: 'restore' puts the account and its schedules back as they were,
-   * for a person's removal; 'stay_closed' leaves the account needs_attention.
-   */
   private async revokeOwnedAccount(
     account: ConnectionAccount,
-    onFailure: 'restore' | 'stay_closed',
+    onFailure: RevokeFailureMode,
   ): Promise<ConnectionAccount> {
     if (account.lifecycle === 'revoked') {
       try {
@@ -1085,6 +1106,7 @@ export class ConnectionAccountService {
       account.revision,
     );
     let revoked: ConnectionAccount | undefined;
+    let remote: { provider: ManagedConnectionProvider; policy: ConnectionAccountManagedPolicy } | undefined;
     try {
       await pauseDependentSchedules(this.dependencies.config, account.id, scheduleIndex).catch(() => {
         throw new ConnectionScheduleConflictError(
@@ -1106,12 +1128,20 @@ export class ConnectionAccountService {
           if (!provider) {
             throw new ManagedConnectionProviderUnavailableError(account.policy.adapterId);
           }
-          await provider.revoke({ policy: account.policy });
+          remote = { provider, policy: account.policy };
         }
       }
     } catch (error) {
       if (onFailure === 'restore') await this.restoreUnrevokedAccount(account, needsAttention, scheduleIndex);
       throw error;
+    }
+    // A refusal, a timeout or an unreadable reply may follow a deletion that
+    // happened, so from here on a failure leaves the account closed.
+    if (remote) {
+      const { provider, policy } = remote;
+      await provider.revoke({ policy }).catch((cause: unknown) => {
+        throw new ManagedConnectionRemoteRevokeError(policy.adapterId, cause);
+      });
     }
     await tombstoneConnectionAccountSecret(
       account.secretRefId,
@@ -1137,18 +1167,20 @@ export class ConnectionAccountService {
     return revoked;
   }
 
-  /** Undo a removal that failed while the remote account still exists. A newer write to the account wins. */
+  /**
+   * Undo a removal that failed before the provider was asked to delete the
+   * remote account. A newer write to the account wins.
+   */
   private async restoreUnrevokedAccount(
     account: ConnectionAccount,
     needsAttention: ConnectionAccount,
     scheduleIndex: ConnectionScheduleIndex,
   ): Promise<void> {
     try {
-      const restored = await this.dependencies.config.putConnectionAccount(
+      await this.dependencies.config.putConnectionAccount(
         { ...needsAttention, lifecycle: account.lifecycle },
         needsAttention.revision,
       );
-      cacheConnectionAccount(scheduleIndex, restored);
       await resumeDependentSchedules(this.dependencies.config, account.id, scheduleIndex);
     } catch {
       console.warn(JSON.stringify({
@@ -1180,6 +1212,7 @@ export class ConnectionAccountService {
     return this.revoke({
       principal: input.principal,
       connectionAccountId: input.connectionAccountId,
+      onFailure: 'restore',
     });
   }
 

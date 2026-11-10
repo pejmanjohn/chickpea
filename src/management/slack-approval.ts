@@ -402,7 +402,10 @@ async function formatHostSlackManagementReceipt(input: {
   const applied = result.outcomes.filter(({ disposition }) => disposition === 'applied');
   const attention = result.outcomes.filter(({ disposition }) => disposition !== 'applied');
   const warnings = result.outcomes.flatMap(({ warning }) => warning ? [warning] : []);
-  const codes = attention.flatMap(({ code }) => code ? [code] : []);
+  // A removal that cut a connection off but kept its sign-in changed something, so it says what in its own words.
+  const incomplete = attention.flatMap(({ code, instruction }) =>
+    code === 'removal_incomplete' && instruction ? [escapeSlackControlCharacters(instruction)] : []);
+  const codes = attention.flatMap(({ code }) => code && code !== 'removal_incomplete' ? [code] : []);
   const deferredSetup = result.deferredSetup ?? [];
   const message = (text: string, details: readonly string[] = []): HostSlackManagementApprovalResult => {
     const lines = [
@@ -417,6 +420,9 @@ async function formatHostSlackManagementReceipt(input: {
     return { kind: 'message', text: lines.length > 0 ? `${text}\n\n${lines.join('\n')}` : text };
   };
   if (applied.length === 0) {
+    if (incomplete.length > 0) {
+      return message(incomplete.join('\n'), codes.map((code) => `Issue: ${escapeSlackControlCharacters(code)}`));
+    }
     const detail = codes.length > 0
       ? ` (${[...new Set(codes)].map(escapeSlackControlCharacters).join(', ')})`
       : '';
@@ -499,6 +505,7 @@ async function formatHostSlackManagementReceipt(input: {
       attention.length === 1 ? 'item needs' : 'items need'
     } attention.`;
   return message(receipt, [
+    ...incomplete,
     ...codes.map((code) => `Issue: ${escapeSlackControlCharacters(code)}`),
     ...warnings.map(escapeSlackControlCharacters),
     ...(await input.pastedKey(askedConnections(deferredSetup)).catch(() => false) ? [TEST_PASTED_KEY] : []),

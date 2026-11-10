@@ -30,6 +30,7 @@ import {
   ConnectionOAuthCleanupError,
   ConnectionScheduleConflictError,
   ManagedConnectionProviderUnavailableError,
+  ManagedConnectionRemoteRevokeError,
 } from './store.ts';
 
 export interface ConnectionRevocationOutcome {
@@ -143,7 +144,9 @@ export async function revokeInstallationConnections(
     try {
       await service.revokeWithSystemAuthority(account.id);
       outcomes.push({ ...described, outcome: account.lifecycle === 'revoked' ? 'already_revoked' : 'revoked' });
-    } catch (error) {
+    } catch (thrown) {
+      // A remote failure is wrapped by the store; the provider's own error says why.
+      const error = thrown instanceof ManagedConnectionRemoteRevokeError ? thrown.cause : thrown;
       const code = revocationFailureCode(error);
       const name = error instanceof Error ? error.name : 'Error';
       outcomes.push({ ...described, outcome: 'failed', error: name, code });
