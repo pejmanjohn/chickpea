@@ -7133,6 +7133,39 @@ test('Published Agent edits update the existing Slack handle instead of creating
   }
 });
 
+test('an Admin edit to an off Agent\'s name and description updates its Slack handle and leaves it off', async () => {
+  const fixture = harness();
+  try {
+    await createAgent(fixture.app);
+    const published = await fixture.app.request('http://localhost/admin/api/agents/agent_support/channels', {
+      method: 'POST', headers: auth(),
+      body: JSON.stringify({ workspaceId: 'T_TEST', channelId: 'C_SUPPORT' }),
+    });
+    const patch = async (body: Record<string, unknown>) => {
+      const response = await fixture.app.request('http://localhost/admin/api/agents/agent_support', {
+        method: 'PATCH', headers: auth(),
+        body: JSON.stringify({ expectedRevision: (await fixture.store.getAgent('agent_support')).revision, ...body }),
+      });
+      assert.equal(response.status, 200, await response.clone().text());
+      return (await response.json() as { agent: Record<string, any> }).agent;
+    };
+    assert.equal((await published.json() as Record<string, any>).agent.enabled, true);
+    assert.equal((await patch({ enabled: false })).enabled, false);
+
+    const edited = await patch({ name: 'Customer Care', description: 'Handles customer questions' });
+    assert.equal(edited.enabled, false);
+    assert.equal(edited.slackPresence.health, 'healthy');
+    assert.equal((await fixture.store.getAgent('agent_support')).enabled, false);
+    assert.deepEqual(
+      fixture.transport.groups.map(({ name, description }) => ({ name, description })),
+      [{ name: 'Customer Care', description: 'Handles customer questions' }],
+    );
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
 test('Slack policy failures preserve the Agent and return exact recovery steps', async () => {
   const transport = new FakeTransport();
   transport.createError = new SlackTransportError('usergroups.create', 'permission_denied');
