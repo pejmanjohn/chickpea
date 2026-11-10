@@ -2491,7 +2491,7 @@ export class ConfigStoreLogic {
   getAgentFirstAsk(agentId: string): string | null {
     const row = this.db.get('SELECT first_ask FROM config_agents WHERE id = ?', agentId);
     if (!row) throw new UnknownAgentError(agentId);
-    return typeof row.first_ask === 'string' ? row.first_ask : null;
+    return typeof row.first_ask === 'string' ? storedFirstAsk(row.first_ask) ?? null : null;
   }
 
   materializeChickpeaAgent(): CustomAgentConfig {
@@ -2519,13 +2519,14 @@ export class ConfigStoreLogic {
         !validAgentCredentialIncarnation(creationFence.credentialIncarnation)) {
       throw new Error('Agent creation credential incarnation is invalid');
     }
+    const ask = storedFirstAsk(firstAsk);
     let inserted;
     try {
       inserted = this.db.transaction(() => this.insertAgent(agent, {
         ...(creationFence
           ? { credentialIncarnation: creationFence.credentialIncarnation }
           : {}),
-        ...(firstAsk ? { firstAsk } : {}),
+        ...(ask ? { firstAsk: ask } : {}),
       }));
     } catch (err) {
       if (isConstraintViolation(err)) {
@@ -4762,4 +4763,18 @@ function channelFromSeedGrant(grant: AgentChannelGrantInput): ChannelConfig {
 function countRows(db: StateDb, table: string): number {
   const row = db.get(`SELECT COUNT(*) AS count FROM ${table}`) as { count: number } | undefined;
   return row?.count ?? 0;
+}
+
+const AGENT_FIRST_ASK_MAX = 200; // code points, as the MCP schemas count
+/**
+ * A creation's first ask as stored and read: control and direction-override
+ * characters become spaces, so what a card shows is what a test turn sends,
+ * and blank text is no ask. It is later sent to the Agent's model as data.
+ */
+function storedFirstAsk(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const text = value.replace(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/g, ' ').trim();
+  if (!text) return undefined;
+  if ([...text].length > AGENT_FIRST_ASK_MAX) throw new Error('An Agent\'s first ask is at most 200 characters.');
+  return text;
 }

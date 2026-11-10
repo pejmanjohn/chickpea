@@ -6796,7 +6796,8 @@ export class WorkspaceManagementService {
         const created = await this.stores.config.createAgent(
           createInput,
           { credentialIncarnation },
-          operation.firstAsk,
+          // Only a coding agent or ChatGPT names a first ask; a Slack creation's DM is the ask.
+          actor.origin.kind === 'slack' ? undefined : operation.firstAsk,
         );
         await this.captureAgentCreated(actor, created.id);
         const published = await this.publishCreatedAgent(actor, created, {

@@ -8,6 +8,8 @@ import { CfConfigStore } from '../src/config/cf-state-proxies.ts';
 import { UnknownAgentError } from '../src/config/errors.ts';
 import type { StateRpcResult, TagStateRpc } from '../src/config/state-rpc.ts';
 import { ConfigStoreLogic } from '../src/config/store.ts';
+import { slackApplyWorkspaceChangesValibotSchema } from '../src/management/schemas.ts';
+import * as v from 'valibot';
 import type { AgentCreateInput } from '../src/config/types.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
@@ -48,6 +50,26 @@ test('an Agent keeps the first ask its creation carried through edits, archive a
   assert.equal(config.getAgentFirstAsk('agent_asked'), ASK);
   assert.equal(config.getAgentFirstAsk('agent_unasked'), null, 'a creation without an ask stores none');
   assert.throws(() => config.getAgentFirstAsk('agent_missing'), UnknownAgentError);
+});
+
+// Defect caught: a first ask stored with direction overrides or controls, or past its 200-character bound.
+test('a first ask is stored bounded and plain: controls become spaces, blank is none, past 200 is refused', () => {
+  const config = configStore();
+  config.createAgent(agent('agent_plain'), undefined, 'a\u0000b');
+  assert.equal(config.getAgentFirstAsk('agent_plain'), 'a b');
+  config.createAgent(agent('agent_blank'), undefined, ' \u202E ');
+  assert.equal(config.getAgentFirstAsk('agent_blank'), null);
+  assert.throws(() => config.createAgent(agent('agent_long'), undefined, 'x'.repeat(201)), /at most 200 characters/);
+});
+
+// Defect caught: a Slack creation carrying a first ask; only a coding agent or ChatGPT names one.
+test('Slack\'s apply_workspace_changes refuses a create_agent that names a first ask', () => {
+  const create = (extra: Record<string, unknown>) => ({
+    idempotencyKey: 'slack-first-ask',
+    operations: [{ itemId: 'create', kind: 'create_agent', agent: agent('agent_from_slack'), ...extra }],
+  });
+  assert.equal(v.safeParse(slackApplyWorkspaceChangesValibotSchema, create({})).success, true);
+  assert.equal(v.safeParse(slackApplyWorkspaceChangesValibotSchema, create({ firstAsk: ASK })).success, false);
 });
 
 /**
