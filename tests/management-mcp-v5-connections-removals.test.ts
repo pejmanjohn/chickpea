@@ -563,6 +563,19 @@ test('update_member is an Owner\'s: suspending confirms first, an Admin to Membe
   errorOf(await as('admin')('update_member', { slackUserId: admin.slackUserId, role: 'member', idempotencyKey: 'self' }), 'not_allowed');
   errorOf(await owner('update_member', { slackUserId: 'U_NOBODY', status: 'suspended', idempotencyKey: 'nobody' }), 'not_found');
 
+  // An Owner change and a removal confirm first, as Admin asks.
+  const promote = structured(await owner('update_member', { slackUserId: admin.slackUserId, role: 'owner', idempotencyKey: 'promote' }));
+  assert.equal(promote.status, 'needs_confirmation');
+  assert.match(promote.confirmation.preview, /Make \*\*Admin\*\* an Owner\./);
+  const remove = structured(await owner('update_member', { slackUserId: admin.slackUserId, status: 'removed', idempotencyKey: 'remove' }));
+  assert.equal(remove.status, 'needs_confirmation');
+  assert.match(remove.confirmation.preview, /Remove \*\*Admin\*\* from Chickpea\./);
+  assert.deepEqual(
+    await f.identity.getMembership(f.admin.membership.id).then((membership) => [membership?.role, membership?.status]),
+    ['admin', 'active'],
+    'nothing changed yet',
+  );
+
   const demoted = structured(await owner('update_member', { slackUserId: admin.slackUserId, role: 'member', idempotencyKey: 'demote' }));
   assert.equal(demoted.status, 'done');
   assert.equal((await f.identity.getMembership(f.admin.membership.id))?.role, 'member');
@@ -575,6 +588,80 @@ test('update_member is an Owner\'s: suspending confirms first, an Admin to Membe
   assert.equal(confirmed.status, 'done');
   assert.equal((await f.identity.getMembership(f.admin.membership.id))?.status, 'suspended');
   assertNoInternalIds(JSON.stringify({ suspend, demoted, confirmed }), f);
+});
+
+test('the only active Owner cannot demote, suspend or remove themselves, and nothing is revoked first', async (t) => {
+  const revoked: string[] = [];
+  const overrides: Overrides = {
+    withBetterAuthAccessRevoker: async (use) => use({
+      revokeOAuthGrantsForUser: async (userId: string) => {
+        revoked.push(`grants:${userId}`);
+        return { revokedGrants: 0 } as never;
+      },
+      deleteSessionsForUser: async (userId: string) => {
+        revoked.push(`sessions:${userId}`);
+        return 0;
+      },
+    }),
+  };
+  const { f, as } = await harness(t, 'last-owner', { overrides });
+  const owner = as('owner');
+  const members = structured(await owner('list_members')).members as Array<{ slackUserId: string; role: string }>;
+  const self = members.find(({ role }) => role === 'owner')!.slackUserId;
+  const admin = members.find(({ role }) => role === 'admin')!.slackUserId;
+  const ownerState = async () => f.identity.getMembership(f.owner.membership.id).then((membership) => [membership?.role, membership?.status]);
+  /** The other person's role, set in the identity store as another door would. */
+  let changes = 0;
+  const setOtherRole = (role: 'owner' | 'admin') => f.identity.updateMembershipAuthority({
+    membershipId: f.admin.membership.id, role, actorMembershipId: f.owner.membership.id,
+    correlationId: `last-owner-${++changes}`, authenticationSurface: 'better_auth', reasonCode: 'mcp_v5_test',
+  });
+  const LAST_OWNER = 'At least one active Owner is required. Make someone else an Owner first.';
+
+  for (const change of [{ role: 'admin' }, { role: 'member' }, { status: 'suspended' }, { status: 'removed' }]) {
+    const refused = errorOf(await owner('update_member', { slackUserId: self, ...change, idempotencyKey: JSON.stringify(change) }), 'invalid_input');
+    assert.deepEqual([refused.message, refused.retryable], [LAST_OWNER, false], JSON.stringify(change));
+  }
+  assert.deepEqual(await ownerState(), ['owner', 'active']);
+  assert.deepEqual(revoked, [], 'no session or app connection ended');
+
+  // With a second Owner the same change is an ordinary confirmation.
+  const promote = structured(await owner('update_member', { slackUserId: admin, role: 'owner', idempotencyKey: 'promote' }));
+  structured(await owner('confirm_change', { confirmToken: promote.confirmation.confirmToken }));
+  const step = structured(await owner('update_member', { slackUserId: self, role: 'admin', idempotencyKey: 'step-down' }));
+  assert.equal(step.status, 'needs_confirmation');
+
+  // The other Owner steps down before the confirmation: confirming is refused, and nothing is revoked.
+  await setOtherRole('admin');
+  revoked.length = 0;
+  const late = errorOf(await owner('confirm_change', { confirmToken: step.confirmation.confirmToken }), 'invalid_input');
+  assert.equal(late.retryable, false);
+  assert.deepEqual([await ownerState(), revoked], [['owner', 'active'], []]);
+
+  // A race: the checks read Owners from before the other one stepped down.
+  await setOtherRole('owner');
+  const twoOwners = await f.identity.listMemberships();
+  const listMemberships = f.identity.listMemberships.bind(f.identity);
+  let staleReads = 0;
+  f.identity.listMemberships = (() => staleReads-- > 0 ? twoOwners : listMemberships()) as typeof f.identity.listMemberships;
+
+  // Only the check before the confirmation is stale: the change checks again and revokes nothing.
+  const raced = structured(await owner('update_member', { slackUserId: self, status: 'suspended', idempotencyKey: 'race' }));
+  await setOtherRole('admin');
+  staleReads = 1;
+  revoked.length = 0;
+  errorOf(await owner('confirm_change', { confirmToken: raced.confirmation.confirmToken }), 'invalid_input');
+  assert.equal(staleReads, -1, 'the stale read went to the check before the confirmation');
+  assert.deepEqual([await ownerState(), revoked], [['owner', 'active'], []]);
+
+  // Both checks are stale: the identity store's own refusal reads the same, and is not retryable.
+  await setOtherRole('owner');
+  const last = structured(await owner('update_member', { slackUserId: self, status: 'suspended', idempotencyKey: 'race-2' }));
+  await setOtherRole('admin');
+  staleReads = 2;
+  const refusedByStore = errorOf(await owner('confirm_change', { confirmToken: last.confirmation.confirmToken }), 'invalid_input');
+  assert.deepEqual([refusedByStore.message, refusedByStore.retryable], [LAST_OWNER, false]);
+  assert.deepEqual(await ownerState(), ['owner', 'active']);
 });
 
 test('cancel_setup_link cancels a person\'s own link, or swaps it for a fresh one', async (t) => {
