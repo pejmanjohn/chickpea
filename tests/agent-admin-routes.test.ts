@@ -7805,6 +7805,23 @@ test(`custom MCP ${recoverFromToken ? 'token recovery' : 'OAuth creation'} requi
     };
     const limitAsWrite = { search_issues: { effect: 'write', argumentConstraints: { team: ['support'] } } };
     assert.deepEqual(await marksAfterSaving(['create_issue']), limitAsWrite);
+    // A reconnect keeps the limit too: from its start, so one the person abandons does, and through its callback.
+    // Only the mark goes, here an old read mark from before the rule on the tool that is not allowed.
+    const disallowed = (await fixture.store.listConnectionAccounts('T_TEST')).find((entry) => entry.id === accountId)!;
+    await fixture.store.putConnectionAccount({
+      ...disallowed,
+      policy: { ...disallowed.policy, toolPolicies: { search_issues: { effect: 'read', argumentConstraints: { team: ['support'] } } } } as never,
+    }, disallowed.revision);
+    const reconnect = await fixture.app.request(
+      `http://localhost/admin/api/agents/agent_support/connections/${accountId}/oauth/mcp/start`,
+      { method: 'POST', headers: auth(), body: '{}' },
+    );
+    assert.equal(reconnect.status, 200, await reconnect.clone().text());
+    const pending = (await fixture.store.listConnectionAccounts('T_TEST')).find((entry) => entry.id === accountId);
+    assert.deepEqual(pending?.policy.kind === 'mcp' ? [pending.policy.allowedTools, pending.policy.toolPolicies] : null,
+      [['create_issue'], limitAsWrite]);
+    const reconnected = await fixture.app.request('http://localhost/oauth/callback?state=opaque&code=accepted');
+    assert.equal(reconnected.status, 303, await reconnected.clone().text());
     assert.deepEqual(await marksAfterSaving(['search_issues', 'create_issue']), limitAsWrite);
     const unmarked = (await fixture.store.listConnectionAccounts('T_TEST')).find((entry) => entry.id === accountId)!;
     assert.equal(unmarked.policy.kind, 'mcp');

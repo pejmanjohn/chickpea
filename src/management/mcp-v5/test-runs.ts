@@ -128,7 +128,7 @@ export async function getTestRun(
 /** Node and a standalone Cloudflare deployment serve none: the run's instance is erased with the host erase. */
 async function testRunStore(deps: FiveZeroDeps): Promise<TestRunStore> {
   return await deps.service.testRunStore(await deps.context()) ??
-    fail('temporarily_unavailable', 'Test runs aren\'t available on this workspace yet.', {
+    fail('test_run_unavailable', 'Test runs aren\'t available on this workspace yet.', {
       nextStep: 'Tell the person to ask the Agent in Slack instead.',
     });
 }
@@ -143,7 +143,9 @@ async function readTestedAgent(deps: FiveZeroDeps, agentId: string): Promise<Age
     const snapshot = await deps.service.inspectWorkspace(await deps.context());
     const usable = snapshot.usableAgents?.find(({ id }) => id === agentId);
     if (usable) fail('not_allowed', `Only someone who can change ${usable.name} can test it.`);
-    throw error;
+    return fail('not_found', 'That Agent is gone, or you can\'t change it.', {
+      ...(error.error.nextStep ? { nextStep: error.error.nextStep } : {}),
+    });
   }
 }
 
@@ -283,7 +285,8 @@ async function notTestable(
   const fix = policy.kind === 'managed' || isMcpToolReviewRequired(policy)
     ? agentAdminFix(deps, reading, 'Open the Agent in Admin')
     : undefined;
-  return fail('not_testable', `${cannot} Ask ${agent.name} in Slack instead.`, fix ? { fix } : {});
+  // With a fix, the card says what to do after it; asking in Slack is for when there is none.
+  return fix ? fail('not_testable', cannot, { fix }) : fail('not_testable', `${cannot} Ask ${agent.name} in Slack instead.`);
 }
 
 /** The first ask as a Slack person's text reaches the model: plain, with Slack's control characters escaped. */

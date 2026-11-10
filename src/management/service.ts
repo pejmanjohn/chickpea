@@ -4880,13 +4880,16 @@ export class WorkspaceManagementService {
     const edit = agentPatchWithConnectionIds(connections, patch);
     const prefixProblem = edit.apiConnections && headerValuePrefixProblem(edit.apiConnections, connections.apiConnections);
     if (prefixProblem) throw new AgentWriteRuleError(prefixProblem);
-    // Admin changes a reviewed connector's tools only through its review; a rename is harmless.
+    // Admin changes a reviewed connector's tools only through its review; a rename, or leaving out toolPolicies, is harmless.
     const reviewedPolicy = (connection: ManagementMcpConnection) =>
       canonicalJson({ ...managementMcpConnection(connection), displayName: '' });
     for (const connection of edit.mcpServers ?? []) {
       const stored = connections.mcpServers.find(({ id }) => id === connection.id);
       if ((isMcpToolReviewRequired(connection) || (stored && isMcpToolReviewRequired(stored))) &&
-          (!stored || reviewedPolicy(connection) !== reviewedPolicy(stored))) {
+          (!stored || reviewedPolicy({
+            ...connection,
+            ...(connection.toolPolicies || !stored.toolPolicies ? {} : { toolPolicies: stored.toolPolicies }),
+          }) !== reviewedPolicy(stored))) {
         throw reviewedConnectorError(stored ?? connection);
       }
     }
@@ -8068,6 +8071,20 @@ function projectManagementAgentPatch(
   };
 }
 
+/**
+ * The Agent's MCP connections as an undo writes them back. A write that leaves
+ * out toolPolicies keeps the stored ones, so a connection the change gave marks
+ * or limits, and that had none, sends an empty set to clear them.
+ */
+function inverseMcpServers(
+  before: CustomAgentConfig,
+  written: NonNullable<ManagementAgentPatch['mcpServers']>,
+): CustomAgentConfig['mcpServers'] {
+  const after = new Map(mcpConnectionsAfterWrite(before.mcpServers, written).map((connection) => [connection.id, connection]));
+  return before.mcpServers.map((connection) =>
+    connection.toolPolicies || !after.get(connection.id)?.toolPolicies ? connection : { ...connection, toolPolicies: {} });
+}
+
 function agentPatchInverse(before: CustomAgentConfig, patch: ManagementAgentPatch): ManagementAgentPatch {
   const effortChanged = patch.modelEffort !== undefined ||
     agentModelEffortAfterPatch(before, patch) !== before.modelEffort;
@@ -8088,7 +8105,7 @@ function agentPatchInverse(before: CustomAgentConfig, patch: ManagementAgentPatc
     ...(patch.model !== undefined ? { model: before.model ?? null } : {}),
     ...(effortChanged ? { modelEffort: before.modelEffort ?? null } : {}),
     ...(patch.skills ? { skills: before.skills } : {}),
-    ...(patch.mcpServers ? { mcpServers: before.mcpServers } : {}),
+    ...(patch.mcpServers ? { mcpServers: inverseMcpServers(before, patch.mcpServers) } : {}),
     ...(patch.apiConnections ? { apiConnections: before.apiConnections } : {}),
     ...(patch.repositories ? { repositories: before.repositories } : {}),
   };

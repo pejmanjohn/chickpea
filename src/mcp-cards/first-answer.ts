@@ -283,6 +283,7 @@ function ran(view: FirstAnswer, outcome: string): string {
 /** Refusals whose words are written for the person; any other reads as a run that did not start. */
 const REFUSALS: ReadonlySet<string> = new Set([
   'needs_setup', 'not_testable', 'model_unavailable', 'not_allowed', 'usage_limit', 'not_found', 'temporarily_unavailable',
+  'test_run_unavailable',
 ]);
 
 function refusal(view: FirstAnswer, code: string, result: ToolResult): Next<FirstAnswer> {

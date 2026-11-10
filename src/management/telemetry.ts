@@ -180,7 +180,7 @@ const REASON_TOKENS = new Set([
   'not_allowed', 'not_found', 'invalid_input', 'changed_since_read', 'confirmation_expired',
   'in_progress', 'key_reused', 'still_in_use', 'setup_link_unusable', 'model_unavailable',
   'schedule_unavailable', 'nothing_to_undo', 'usage_limit', 'temporarily_unavailable', 'tool_removed',
-  'needs_setup', 'not_testable',
+  'needs_setup', 'not_testable', 'test_run_unavailable',
   ...MCP_CLIENT_REGISTRATION_DENIALS,
 ]);
 

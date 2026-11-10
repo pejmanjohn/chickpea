@@ -374,12 +374,25 @@ test('every refusal reads plainly on the card, with its own next step and no cod
   assert.deepEqual(plain.labels(), ['Open in Slack (primary)', 'See its first answer (secondary)'], 'offered whether or not this workspace runs them');
   await plain.press('try_once');
   assert.deepEqual(shown(plain), [{ kind: 'text', text: 'Test runs aren\'t available on this workspace yet.' }]);
-  assert.deepEqual(plain.labels(), ['Try again (primary)', 'Open in Slack (secondary)'], 'the server says it may pass later');
-  const [unservedTry] = plain.calls('try_agent_once');
-  await plain.press('try_once');
-  assert.deepEqual(plain.calls('try_agent_once').at(-1)!.args, unservedTry!.args, 'a refusal stored no run, so the same key is a new try');
+  assert.deepEqual(plain.labels(), ['Open in Slack (primary)'], 'a retry would read the same');
   assert.equal(told(plain), NOT_STARTED);
   plainly(plain.shown, ['agent_invoice_chaser']);
+
+  // A refusal the server says may pass later.
+  const passing = await readyCard(t, 'first-answer-retryable');
+  passing.card.hold = (made) => made.tool === 'try_agent_once';
+  await passing.card.press('try_once');
+  passing.card.held[0]!.result = {
+    isError: true,
+    structuredContent: { error: { code: 'temporarily_unavailable', retryable: true, message: 'Chickpea could not finish that request.' } },
+  };
+  await passing.card.answer();
+  assert.deepEqual(shown(passing.card), [{ kind: 'text', text: 'Chickpea could not finish that request.' }]);
+  assert.deepEqual(passing.card.labels(), ['Try again (primary)', 'Open in Slack (secondary)'], 'the server says it may pass later');
+  const [retried] = passing.card.calls('try_agent_once');
+  passing.card.hold = () => false;
+  await passing.card.press('try_once');
+  assert.deepEqual(passing.card.calls('try_agent_once').at(-1)!.args, retried!.args, 'a refusal stored no run, so the same key is a new try');
 
   // Today's limit.
   const limited = await readyCard(t, 'first-answer-limit');
@@ -558,7 +571,7 @@ test('a fix that is a link is offered and opened only when it is a web link', as
       structuredContent: {
         error: {
           code: 'not_testable', retryable: false,
-          message: 'None of Docs MCP\'s tools are marked as reads, so a test run can\'t use it. Ask Invoice Chaser in Slack instead.',
+          message: 'None of Docs MCP\'s tools are marked as reads, so a test run can\'t use it.',
           fix: { label: 'Open the Agent in Admin', url },
         },
       },
@@ -587,7 +600,7 @@ test('a link or message the host refused counts only when this view offered it, 
     structuredContent: {
       error: {
         code: 'not_testable', retryable: false,
-        message: 'None of Docs MCP\'s tools are marked as reads, so a test run can\'t use it. Ask Invoice Chaser in Slack instead.',
+        message: 'None of Docs MCP\'s tools are marked as reads, so a test run can\'t use it.',
         fix: { label: 'Open the Agent in Admin', url: admin },
       },
     },
@@ -601,7 +614,7 @@ test('a link or message the host refused counts only when this view offered it, 
   await card.dispatch({ type: 'refused', effect: { type: 'open', url: admin }, now: clock.now });
   assert.equal(card.state.error, 'That did not work. Try again.');
   assert.deepEqual(card.shown.blocks, [{
-    kind: 'text', text: 'None of Docs MCP\'s tools are marked as reads, so a test run can\'t use it. Ask Invoice Chaser in Slack instead.',
+    kind: 'text', text: 'None of Docs MCP\'s tools are marked as reads, so a test run can\'t use it.',
   }], 'no page opened');
   assert.deepEqual(card.labels(), ['Open the Agent in Admin (primary)', 'Open in Slack (secondary)']);
 

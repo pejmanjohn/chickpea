@@ -200,12 +200,13 @@ async function connect(
   });
 }
 
-test('Node and a standalone deployment have no test runs', async (t) => {
+test('Node and a standalone deployment have no test runs, which no retry changes', async (t) => {
   const { f, call } = await harness(t, 'unserved', { unserved: true });
   await seedAgent(f);
   for (const [tool, args] of [['try_agent_once', { agentId: 'agent_tested', idempotencyKey: 'k' }], ['get_test_run', { runToken: 'tr_x' }]] as const) {
     const error = errorOf(await call(tool, args));
-    assert.deepEqual([error.code, error.message], ['temporarily_unavailable', 'Test runs aren\'t available on this workspace yet.']);
+    assert.deepEqual([error.code, error.message, error.retryable],
+      ['test_run_unavailable', 'Test runs aren\'t available on this workspace yet.', false]);
   }
 });
 
@@ -221,7 +222,14 @@ test('try_agent_once refuses before a run starts, each with its own words and fi
   // Chickpea's own Agent is no Agent the caller manages, as the workspace snapshot never lists it.
   await f.config.materializeChickpeaAgent();
   error = await refusal('agent_chickpea');
-  assert.deepEqual([error.code, error.message], ['not_found', 'No Agent you can manage has that agentId.']);
+  assert.deepEqual([error.code, error.message], ['not_found', 'That Agent is gone, or you can\'t change it.']);
+
+  // A card's Agent deleted since it was drawn: the person's words, not the model's.
+  await seedAgentWithId(f, 'agent_deleted');
+  assert.equal(await f.config.deleteAgent('agent_deleted'), true);
+  error = await refusal('agent_deleted');
+  assert.deepEqual([error.code, error.message, error.nextStep],
+    ['not_found', 'That Agent is gone, or you can\'t change it.', 'Call list_agents for the current agentIds.'], 'the model\'s next step is kept');
 
   await seedAgent(f, { id: 'agent_off', enabled: false });
   error = await refusal('agent_off');
@@ -340,8 +348,9 @@ test('only someone who may change a connection is offered its fix, as in Admin; 
     }),
   });
   error = errorOf(await member('try_agent_once', { agentId: 'agent_bugsnag', idempotencyKey: 'key_bugsnag' }));
-  assert.equal(error.message, 'None of Bugsnag\'s tools are marked as reads, so a test run can\'t use it. Ask Ops in Slack instead.');
-  assert.notEqual((error.fix as { tool?: string } | undefined)?.tool, 'update_connection');
+  // Its fix says what to do; the card says to try again after it, so no "ask in Slack" sits above that.
+  assert.deepEqual([error.message, error.fix], ['None of Bugsnag\'s tools are marked as reads, so a test run can\'t use it.',
+    { label: 'Open the Agent in Admin', url: 'https://chickpea.example.test/admin/agents/agent_bugsnag' }]);
   const bugsnag = structured(await member('get_agent', { agentId: 'agent_bugsnag' })) as { version: string };
   error = errorOf(await member('update_connection', {
     agentId: 'agent_bugsnag', connectionId: 'bugsnag', version: bugsnag.version,
@@ -441,7 +450,7 @@ test('a member who can use an Agent but not change it is told so; one who cannot
   const tryAsMember = async (agentId: string) =>
     errorOf(await callAs(f.admin)('try_agent_once', { agentId, idempotencyKey: `key_${agentId}` }));
   let error = await tryAsMember('agent_tested');
-  assert.deepEqual([error.code, error.message], ['not_found', 'No Agent you can manage has that agentId.'],
+  assert.deepEqual([error.code, error.message], ['not_found', 'That Agent is gone, or you can\'t change it.'],
     'in no Channel, only its creator may use it');
   await f.config.putChannel({ workspaceId: teamId, channelId: 'C_SUPPORT', label: 'support', lifecycle: 'active' });
   await f.config.putAgentChannelGrant({
