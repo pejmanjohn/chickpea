@@ -945,7 +945,7 @@ try {
       await shot(`4-refused-${name}`);
     };
     current.serve(false);
-    await refused('readyQuiet', 'unavailable', /Test runs aren't available on this workspace yet\./, ['Try again', 'Open in Slack']);
+    await refused('readyQuiet', 'unavailable', /Test runs aren't available on this workspace yet\./, ['Open in Slack']);
     current.serve(true);
     runs.refuse = { kind: 'daily_limit', resumesAt: Date.now() + 5 * 3_600_000 - 60_000 };
     await refused('readyQuiet', 'limit', /reached today's limit\. They start again in about 5 hours\./, ['Open in Slack']);

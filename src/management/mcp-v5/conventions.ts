@@ -107,6 +107,8 @@ export const MCP_ERROR_CODES = [
   'needs_setup',
   /** A test run: a connection with no tool declared a read. */
   'not_testable',
+  /** A test run: this deployment serves none. */
+  'test_run_unavailable',
 ] as const;
 
 export type McpErrorCode = typeof MCP_ERROR_CODES[number];
