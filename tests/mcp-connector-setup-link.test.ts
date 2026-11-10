@@ -497,3 +497,93 @@ test('an MCP caller whose organization has no Slack workspace is refused before 
   }
   assert.equal(issued, 0, 'no link was issued to fail once opened');
 });
+
+/** A colleague the owner made an Owner or Admin: they can edit the Agent and more, but did not ask for the link. */
+async function colleagueWithRole(h: Harness, role: 'owner' | 'admin'): Promise<Person> {
+  const { resolution } = await h.identity.provisionSlackMember({
+    slackTeamId: h.owner.user.slackTeamId,
+    slackUserId: `U_${role.toUpperCase()}_COLLEAGUE`,
+    displayName: `${role} colleague`,
+  });
+  const { membership } = await h.identity.updateMembershipAuthority({
+    membershipId: resolution.membership.id,
+    role,
+    actorMembershipId: h.owner.membership.id,
+    authenticationSurface: 'better_auth',
+    correlationId: `make_${role}_colleague`,
+    reasonCode: `make_${role}_colleague`,
+  });
+  assert.equal(membership.role, role);
+  return { user: resolution.user, membership };
+}
+
+for (const role of ['owner', 'admin'] as const) {
+  test(`an ${role === 'owner' ? 'Owner' : 'Admin'} who did not ask for an MCP link is refused at every step`, async (t) => {
+    const h = await harness(t, `mcp-${role}-colleague`);
+    const other = await colleagueWithRole(h, role);
+    const prepare = (connector: string) => h.service.prepareConnectorSetup(h.mcp(h.owner), {
+      agentId: h.agent.id,
+      connector,
+      ownerKind: 'team',
+    });
+
+    const managed = await prepare('HubSpot');
+    const managedId = managed.setupOperationId!;
+    h.as(other);
+    assert.equal((await h.exchange(managed.handoffUrl)).status, 403, 'managed exchange');
+    assert.equal((await h.page(managedId)).status, 410, 'managed page');
+    h.as(h.owner);
+    const managedCookie = cookieOf(await h.exchange(managed.handoffUrl));
+    h.as(other);
+    assert.equal((await h.page(managedId, managedCookie)).status, 410, 'managed page with the person\'s cookie');
+    assert.equal((await h.post(managedId, 'authorize', managedCookie, { ownerKind: 'team', access: 'read' })).status, 403,
+      'managed authorize with the person\'s cookie');
+    assert.equal((await h.post(managedId, 'managed/poll', managedCookie)).status, 403, 'managed poll');
+    assert.deepEqual(h.managedAuthorizations, [], 'HubSpot sign-in never started');
+
+    const catalog = await prepare('Linear');
+    const catalogId = catalog.setupOperationId!;
+    assert.equal((await h.exchange(catalog.handoffUrl)).status, 403, 'catalog exchange');
+    assert.equal((await h.page(catalogId)).status, 410, 'catalog page');
+    h.as(h.owner);
+    const catalogCookie = cookieOf(await h.exchange(catalog.handoffUrl));
+    const started = await h.post(catalogId, 'authorize', catalogCookie, { ownerKind: 'team' });
+    assert.equal(started.status, 200, await started.clone().text());
+    const state = new URL((await started.json() as { authorizationUrl: string }).authorizationUrl).searchParams.get('state')!;
+    const callback = () => h.app.request(
+      `${ORIGIN}/oauth/callback?state=${encodeURIComponent(state)}&code=provider-code`,
+      { headers: { ...BROWSER, cookie: catalogCookie } },
+    );
+    h.as(other);
+    assert.equal((await h.page(catalogId, catalogCookie)).status, 410, 'catalog page with the person\'s cookie');
+    assert.equal((await h.post(catalogId, 'authorize', catalogCookie, { ownerKind: 'team' })).status, 403,
+      'catalog authorize with the person\'s cookie');
+    assert.equal((await callback()).status, 403, 'the OAuth return with the person\'s cookie and a live state');
+    assert.deepEqual(
+      (await h.config.listConnectionAccounts(h.owner.user.slackTeamId))
+        .map(({ lifecycle, createdByMembershipId }) => ({ lifecycle, createdByMembershipId })),
+      [{ lifecycle: 'pending', createdByMembershipId: h.owner.membership.id }],
+      'the person\'s own sign-in is still pending; nothing finished for the colleague',
+    );
+
+    h.as(h.owner);
+    assert.equal((await callback()).status, 303, 'the refused return used nothing up');
+    assert.equal((await h.management.getSetup(catalogId))?.completedByUserId, h.owner.user.id);
+  });
+}
+
+test('a setup outside the installation\'s organization resolves no workspace', async (t) => {
+  const h = await harness(t, 'mcp-other-organization');
+  const prepared = await h.service.prepareConnectorSetup(h.mcp(h.owner), {
+    agentId: h.agent.id,
+    connector: 'HubSpot',
+    ownerKind: 'member',
+  });
+  const setupId = prepared.setupOperationId!;
+  const cookie = cookieOf(await h.exchange(prepared.handoffUrl));
+  const organization = (await h.identity.getOrganization())!;
+  h.identity.getOrganization = async () => ({ ...organization, id: 'organization_elsewhere' });
+  const refused = await h.post(setupId, 'authorize', cookie, { ownerKind: 'member', access: 'read' });
+  assert.notEqual(refused.status, 200, await refused.clone().text());
+  assert.deepEqual(h.managedAuthorizations, [], 'sign-in never started in another organization\'s workspace');
+});
