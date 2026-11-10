@@ -470,6 +470,26 @@ test('every refusal reads plainly on the card, with its own next step and no cod
   assert.deepEqual(reconnect.card.calls('try_agent_once').at(-1)!.args, tries[0]!.args, 'Try again sends the same key');
 });
 
+test('a model that cannot run is refused in the card\'s own words, never with an Agent ID or a setting\'s name', async (t) => {
+  const tagModel = process.env.SLACK_TAG_MODEL;
+  delete process.env.SLACK_TAG_MODEL;
+  t.after(() => { if (tagModel !== undefined) process.env.SLACK_TAG_MODEL = tagModel; });
+  const { f, card, teamId, runs } = await readyCard(t, 'first-answer-no-model');
+  // An install from before the Workspace default, with no model pinned: Chickpea's own reason names the Agent's ID and a setting.
+  await f.config.updateWorkspaceInstallation(teamId, { runtimeContract: 'legacy' });
+  await f.config.updateAgent('agent_invoice_chaser', { model: null });
+  card.hold = (made) => made.tool === 'try_agent_once';
+  await card.press('try_once');
+  const { error } = card.held[0]!.result.structuredContent as { error: { code: string } };
+  assert.equal(error.code, 'model_unavailable');
+  await card.answer();
+  assert.deepEqual(card.shown.blocks, [{ kind: 'text', text: 'Invoice Chaser can\'t run right now. No model is ready for it. Choose one in Admin.' }]);
+  const drawn = JSON.stringify({ ...card.shown, avatarUrl: undefined });
+  assert.doesNotMatch(drawn, /agent_invoice_chaser|SLACK_TAG_MODEL|\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b|\/admin/, drawn);
+  plainly(card.shown, ['agent_invoice_chaser']);
+  assert.deepEqual(runs.starts, []);
+});
+
 test('while another test run holds the workspace, the card asks again every 5 seconds for a minute, then offers Try again with the same key', async (t) => {
   const { card, runs, clock } = await readyCard(t, 'first-answer-held');
   runs.refuse = { kind: 'in_progress' };
