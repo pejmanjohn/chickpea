@@ -257,6 +257,12 @@ async function world() {
   }
   Object.assign(scenes, {
     connect: () => link({ service: 'Gmail', owner: 'team' }),
+    // A link whose page lets the person choose Personal or Team: the server names no owner.
+    connectChoose: async () => {
+      const result = await link({ service: 'Notion', owner: 'me' });
+      const { owner: _owner, ...setup } = result.structuredContent.setup;
+      return { ...result, structuredContent: { ...result.structuredContent, setup } };
+    },
     reconnect: async () => {
       await seedHealth();
       return call('reconnect_service', { agentId: 'agent_support', connectionId: 'connection_notion' });
@@ -404,6 +410,8 @@ async function world() {
     runs, arrive, serve: (on) => { serving = on; },
     /** The person finishes on the setup page of the last link. */
     finishSetup: () => finished.set(lastSetup.setupToken, 'completed'),
+    /** The person cancels on the setup page of the last link. */
+    cancelSetup: () => finished.set(lastSetup.setupToken, 'revoked'),
     lastSetup: () => lastSetup,
   };
 }
@@ -414,6 +422,7 @@ const OPENAI_META = 'harness/openaiMeta';
 /** The card each scene's tool draws. */
 const SCENE_CARDS = {
   connect: 'connect-card', reconnect: 'connect-card', cancelled: 'connect-card', custom: 'connect-card', connectRenewals: 'connect-card',
+  connectChoose: 'connect-card',
   health: 'health-card', healthy: 'health-card',
 };
 
@@ -427,9 +436,18 @@ async function serve(current) {
     // The page ChatGPT gets: resources/read on the card's URI.
     const query = new URL(request.url, 'http://card').searchParams;
     const [card] = (await current().rpc('resources/read', { uri: query.get('uri') })).contents;
-    // ChatGPT's own globals, set before the card runs, as its sandbox sets them.
-    const meta = query.get('openaiMeta');
-    const globals = meta ? `<script>window.openai = { toolResponseMetadata: ${meta} };</script>` : '';
+    // ChatGPT's own globals, set before the card runs, as its sandbox sets them. The widget state
+    // of a reopened chat comes after the result, with openai:set_globals: the harder case for the card.
+    const json = (name) => query.get(name) === null ? undefined : JSON.stringify(JSON.parse(query.get(name))).replaceAll('<', '\\u003c');
+    const [meta, widgetState, chatgpt] = [json('openaiMeta'), json('widgetState'), query.get('chatgpt') === '1'];
+    const later = widgetState ? `addEventListener('load', () => setTimeout(() => {
+      window.openai.widgetState = ${widgetState};
+      dispatchEvent(new CustomEvent('openai:set_globals', { detail: { globals: { widgetState: window.openai.widgetState } } }));
+    }, 300));` : '';
+    const globals = meta || chatgpt ? `<script>window.openai = {
+      ${meta ? `toolResponseMetadata: ${meta},` : ''}
+      ${chatgpt ? 'setWidgetState: (state) => window.parent.postMessage({ harnessWidgetState: state }, "*"),' : ''}
+    };${later}</script>` : '';
     response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
     response.end(card.text.replace('<head>', `<head>${globals}`));
   });
@@ -663,7 +681,8 @@ try {
       const deadline = Date.now() + 5_000;
       for (;;) {
         const contexts = await browser.host('window.harness.contexts');
-        if (pattern.test(contexts.at(-1) ?? '')) return;
+        // Each update carries everything the card told before; the newest sentence is last.
+        if (pattern.test(contexts.at(-1)?.split('\n').at(-1) ?? '')) return;
         if (Date.now() > deadline) assert.fail(`${what}: the model was told ${JSON.stringify(contexts)}`);
         await new Promise((done) => setTimeout(done, 100));
       }
@@ -738,6 +757,19 @@ try {
     await told(/^The person created the Agent "Invoice Chaser" \(@invoices\) from the card\. It is ready in Slack and said hello to them there\.$/, 'Ready');
     await showsPicture('The ready card');
     await shot('2-ready');
+    assert.match((await browser.host('window.harness.contexts')).at(-1), /^The person created .* It is joining Slack now\.\nThe person created .* said hello to them there\.$/,
+      'the ready sentence carries the one before it');
+    const before = (await browser.host('window.harness.calls')).length;
+    await browser.host('window.harness.reload()');
+    if (host === 'chatgpt') {
+      await browser.waitForTitle(/^✓ Created Invoice Chaser$/);
+      assert.deepEqual(await buttons(), [], 'a reopened card offers no second Create');
+    } else {
+      // claude.ai keeps no widget state: the proposal again, whose Create replays the same Agent.
+      await browser.waitForTitle(/^Invoice Chaser$/);
+    }
+    assert.deepEqual((await browser.host('window.harness.calls')).slice(before), [], 'reopening made no call');
+    await shot('2-reopened');
 
     await open('proposalLong');
     await browser.waitForTitle(/^Churn Watch$/);
@@ -772,6 +804,11 @@ try {
     assert.deepEqual(await buttons(), ['Open in Slack'], 'no second Undo, which would redo the change');
     await told(/^The person undid the change to the Agent "Invoice Chaser" from the card\.$/, 'Undone');
     await shot('5-undone');
+    await browser.host('window.harness.reload()');
+    await browser.waitForTitle(host === 'chatgpt' ? /^✓ Undid the change$/ : /^Change Invoice Chaser$/);
+    await browser.waitFor('/It changed since this preview|Undid the change/.test(document.querySelector(".cp-card")?.textContent ?? "")', 'no Save for what changed since');
+    assert.deepEqual(await buttons(), host === 'chatgpt' ? [] : ['Cancel'], 'no Save, and no Undo');
+    await shot('5-undone-reopened');
     await open('turnedOff');
     await browser.waitForTitle(/^✓ Turned off People Helper$/);
     assert.equal(await subtitle(), 'It won\'t answer in Slack until it\'s turned back on.');
@@ -786,21 +823,40 @@ try {
     await browser.waitForTitle(/^Turn off @support\?$/);
     await new Promise((done) => setTimeout(done, 3_000));
     await browser.inCard('window.dispatchEvent(new Event("focus"))');
-    assert.deepEqual(await browser.host('window.harness.calls'), [], 'the card made no call before the click');
+    const nonReads = async () => (await browser.host('window.harness.calls')).filter((name) => name !== 'get_agent');
+    assert.deepEqual(await nonReads(), [], 'the card only read before the click');
     assert.equal((await current.f.config.getAgent('agent_support')).enabled, true);
     await showsPicture('The confirmation');
     await shot('6-confirm');
     await browser.click('keep');
     await browser.waitForTitle(/^Kept as it is$/);
-    assert.deepEqual(await browser.host('window.harness.calls'), ['decline_change'], 'Keep retires the confirmation, and nothing else');
+    assert.deepEqual(await nonReads(), ['decline_change'], 'Keep retires the confirmation, and nothing else');
     await told(/^On the card, the person pressed "Keep it on", so nothing changed\./, 'Kept');
     assert.equal((await current.f.config.getAgent('agent_support')).enabled, true);
     await shot('6-kept');
+    // The chat reopens with the confirmation's first result: ChatGPT's widget state says it was kept.
+    await browser.host('window.harness.reload()');
+    if (host === 'chatgpt') {
+      await browser.waitForTitle(/^Kept as it is$/);
+      assert.deepEqual(await buttons(), [], 'no Turn off or Keep it on for a retired confirmation');
+      await shot('6-kept-reopened');
+    } else {
+      // claude.ai keeps nothing, and no read says the token is retired: a press gets Chickpea's own sentence.
+      await browser.waitForTitle(/^Turn off @support\?$/);
+      await browser.waitFor('document.querySelectorAll(".cp-acts button").length === 2', 'the buttons, once the read answers');
+      await shot('6-kept-reopened');
+      await browser.click('confirm');
+      await browser.waitForTitle(/^Nothing changed$/);
+      assert.match(await browser.inCard('document.querySelector(".cp-card").textContent'), /That confirmation no longer applies\./);
+      assert.deepEqual(await buttons(), []);
+      await shot('6-retired-refused');
+    }
+    assert.equal((await current.f.config.getAgent('agent_support')).enabled, true, 'nothing reopened turned it off');
     await open('confirm');
     await browser.waitForTitle(/^Turn off @support\?$/);
     await browser.click('confirm');
     await browser.waitForTitle(/^✓ Made the change you confirmed$/);
-    assert.deepEqual(await browser.host('window.harness.calls'), ['confirm_change'], 'one click, one confirmation');
+    assert.deepEqual(await nonReads(), ['confirm_change'], 'one click, one confirmation');
     assert.equal((await current.f.config.getAgent('agent_support')).enabled, false);
     assert.equal(await subtitle(), 'It won\'t answer in Slack until it\'s turned back on.');
     await shot('6-confirmed');
@@ -818,7 +874,32 @@ try {
     assert.deepEqual(await buttons(), ['Turn off', 'Keep it on'], 'the token from window.openai.toolResponseMetadata');
     await browser.click('keep');
     await browser.waitForTitle(/^Kept as it is$/);
-    assert.deepEqual(await browser.host('window.harness.calls'), ['decline_change']);
+    assert.deepEqual(await nonReads(), ['decline_change']);
+
+    if (host === 'chatgpt') {
+      // ChatGPT answers a refused call with a JSON-RPC error. With its copy of the result in the
+      // error's data the card shows Chickpea's sentence; with only words it can only say it failed.
+      for (const errors of ['data', ...theme === 'light' && width === 728 ? ['bare'] : []]) {
+        await open('confirm');
+        await browser.waitForTitle(/^Turn off @support\?$/);
+        await browser.waitFor('document.querySelectorAll(".cp-acts button").length === 2', 'the buttons, once the read answers');
+        const token = await browser.host('window.harness.scene.result._meta["chickpea/held"].confirmToken');
+        await current.call('decline_change', { confirmToken: token });
+        await browser.host(`window.harness.errors = ${JSON.stringify(errors)}`);
+        await browser.click('confirm');
+        if (errors === 'data') {
+          await browser.waitForTitle(/^Nothing changed$/);
+          assert.match(await browser.inCard('document.querySelector(".cp-card").textContent'), /That confirmation no longer applies\./);
+          assert.deepEqual(await buttons(), []);
+          await told(/^The person confirmed on the card, but nothing changed\. Chickpea said: "That confirmation no longer applies\./, 'Retired');
+          await shot('6-retired-refused');
+        } else {
+          await browser.waitFor('!document.querySelector(".cp-error").hidden', 'the failure');
+          await shot('6-retired-refused-no-data');
+        }
+        assert.equal((await current.f.config.getAgent('agent_support')).enabled, true);
+      }
+    }
 
     await open('expired');
     await browser.waitForTitle(/^This confirmation expired$/);
@@ -874,7 +955,7 @@ try {
     await shot('3-waiting');
     current.finishSetup();
     await browser.waitForRow(/^Gmail is connected/, 10_000);
-    await told(/^Gmail is connected to the Agent "Support Desk" now\.$/, 'Connected');
+    await told(/^"Gmail" is connected to the Agent "Support Desk" now\.$/, 'Connected');
     await shot('3-connected');
 
     await open('reconnect');
@@ -884,6 +965,20 @@ try {
     await browser.waitForRow(/^This link was cancelled/);
     await reads('A cancelled link');
     await shot('3-cancelled');
+    await open('connect');
+    await browser.waitForTitle(/^Connect Gmail to Support Desk$/);
+    await browser.click('connect');
+    await browser.waitForRow(/^Waiting for Gmail/);
+    current.cancelSetup();
+    await browser.waitForRow(/^This link was cancelled/, 10_000);
+    await told(/^"Gmail" did not connect to the Agent "Support Desk": the link was cancelled\. Nothing changed\.$/, 'Cancelled');
+    assert.equal(await browser.inCard('document.querySelector(".cp-row button")?.textContent'), 'Get a new link');
+    await shot('3-cancelled-while-waiting');
+    await open('connectChoose');
+    await browser.waitForTitle(/^Connect Notion to Support Desk$/);
+    assert.doesNotMatch(await browser.inCard('document.querySelector(".cp-rows").textContent'), /Your own account|For everyone/,
+      'the person chooses on the page, so the card names no owner');
+    await shot('3-connect-owner-open');
     await open('custom');
     await browser.waitFor('/Chickpea checked it/.test(document.querySelector(".cp-rows")?.textContent ?? "")', 'the custom connection\'s check');
     await plain('The custom connection\'s check');
@@ -919,7 +1014,7 @@ try {
     const links = await browser.linksOpened(1);
     assert.equal(links.length, 1);
     assert.match(new URL(links[0]).pathname, /^\/setup\/setup_/);
-    await told(/^The person opened Chickpea's page to Reconnect Notion for the Agent "Support Desk" from the card\./, 'Fixing');
+    await told(/^The person pressed "Reconnect Notion" for the Agent "Support Desk" on the card, which opened Chickpea's page\./, 'Fixing');
     await shot('7-fixing');
     await open('healthy');
     await browser.waitForTitle(/^Everything looks healthy$/);
@@ -959,14 +1054,18 @@ try {
     await later(181_000);
     await browser.host('window.harness.holding = []; window.harness.answerHeld("fail")');
     await shows('/taking longer than it should/', 'the card giving up');
-    assert.deepEqual(await buttons(), ['Open in Slack']);
+    assert.deepEqual(await buttons(), ['Check again', 'Open in Slack']);
     await told(/^The person ran the Agent "Renewals Desk" \(@renewals\) once from the card, but its answer did not come back in time\.$/, 'Gave up');
+    assert.match((await browser.host('window.harness.contexts')).at(-1), /^The person created the Agent "Renewals Desk".*\n/s,
+      'the model still hears that the Agent was created');
     await plain('Gave up');
     await shot('4-gave-up');
-    // Back in view, it reads the run once more, and the answer has come.
+    await browser.click('check_again');
+    await shows('/It\'s still answering\./', 'Check again, still running', 30_000);
+    await shot('4-still-answering');
+    // Check again once more, and the answer has come.
     runs.outcome = ANSWERED;
-    await new Promise((done) => setTimeout(done, 1_100));
-    await browser.inCard('window.dispatchEvent(new Event("focus"))');
+    await browser.click('check_again');
     await browser.waitFor('document.querySelectorAll(".cp-pane").length === 2', 'what was promised beside what it answered');
     await told(/^The person ran the Agent "Renewals Desk" \(@renewals\) once from the card, and it answered its first question there\.$/, 'Answered');
     assert.deepEqual(await buttons(), ['Open in Slack', 'Change something']);
@@ -1012,6 +1111,16 @@ try {
     current.serve(true);
     runs.refuse = { kind: 'daily_limit', resumesAt: Date.now() + 5 * 3_600_000 - 60_000 };
     await refused('readyQuiet', 'limit', /reached today's limit\. They start again in about 5 hours\./, ['Open in Slack']);
+    if (host === 'chatgpt') {
+      // As ChatGPT delivers a refused call: a JSON-RPC error carrying its copy of the result.
+      await open('readyQuiet');
+      await browser.waitForTitle(/said hello to you in Slack$/, 10_000);
+      await browser.host('window.harness.errors = "data"');
+      await browser.click('try_once');
+      await shows(/reached today's limit\. They start again in about 5 hours\./, 'the limit, through a JSON-RPC error');
+      assert.equal((await tried()).length, 1, 'no retry of a refusal');
+      await shot('4-refused-limit-host-error');
+    }
     runs.refuse = undefined;
     runs.outcome = { status: 'failed', failure: 'deadline', result: null };
     await refused('readyQuiet', 'deadline', /took too long and was stopped\. Ask Quiet Desk in Slack instead\./, ['Open in Slack']);
