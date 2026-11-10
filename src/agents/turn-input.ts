@@ -131,6 +131,7 @@ export function parseSlackTurnInput(value: unknown): SlackTurnInput {
     throw new Error('Slack turn input instanceId is invalid.');
   }
   const runtimePlan = parseRuntimePlanV2(record.runtimePlan);
+  if (runtimePlan.conversation.surface === 'test') throw new Error('A Slack turn cannot run a test run plan.');
   if (!runtimePlanInstanceIdMatches(runtimePlan, record.instanceId)) {
     throw new Error('Slack turn input plan belongs to another instance.');
   }

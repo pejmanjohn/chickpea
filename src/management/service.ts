@@ -35,6 +35,7 @@ import {
   WorkspaceModelDefaultRevisionConflictError,
 } from '../config/errors.ts';
 import type { ConfigAgentPatch, ConfigStore } from '../config/store.ts';
+import type { TestRunStore } from './test-run-types.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { ModelReadiness } from '../config/model-readiness.ts';
@@ -440,7 +441,7 @@ export interface WorkspaceManagementServiceInput {
     | 'putAgentScheduleReference'
     | 'listConnectionAccounts'
     | 'listAgentConnectionBindings'
-  > & Partial<Pick<ConfigStore, 'deleteAgentWithMemory'>>;
+  > & Partial<Pick<ConfigStore, 'deleteAgentWithMemory' | 'getAgentFirstAsk'>>;
   management: ManagementStore;
   memory?: Pick<
     MemoryStateStore,
@@ -518,6 +519,10 @@ export interface WorkspaceManagementServiceInput {
   takeConnectionTry?: (membershipId: string) => Promise<number | undefined>;
   /** What a person typed in one Slack message, from the host's own turn record. */
   typedSlackMessage?: (query: SlackMessageQuery) => Promise<SlackTypedMessage | undefined>;
+  /** A Slack member's timezone, as ingress reads it; undefined when Slack gives none. */
+  slackMemberTimezone?: (slackUserId: string) => Promise<string | undefined>;
+  /** The installation's test runs; only a deployment serving many installations has them. */
+  testRuns?: TestRunStore;
   /** Lists an open MCP server's tools before a write saves it, as Admin's Test connection does. */
   discoverMcpServer?: (server: OpenMcpServer) => Promise<McpConnectionTestResult>;
   /** The website-login realm Admin reads and deletes from. */
@@ -4105,6 +4110,12 @@ export class WorkspaceManagementService {
       throw new ManagementError('operation_not_found', 'The management operation was not found.');
     }
     return this.setupPublicStatus(setup);
+  }
+
+  /** A live caller's test runs, where this deployment serves them (management/mcp-v5/test-runs.ts). */
+  async testRunStore(context: ManagementActorContext): Promise<TestRunStore | undefined> {
+    await this.requireLiveActor(context);
+    return this.stores.testRuns;
   }
 
   /** For explain_agent and check_agent; hands out the stores only after the edit-authority check. */

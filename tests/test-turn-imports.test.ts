@@ -7,7 +7,12 @@ import { fileURLToPath } from 'node:url';
 import { reachable } from './helpers/import-graph.ts';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
-const TEST_RUN_MODULES = ['src/agents/test-turn.ts', 'src/agents/test-run-plan.ts', 'src/agents/test-turn-limits.ts'];
+const TEST_RUN_MODULES = [
+  'src/agents/test-turn.ts', 'src/agents/test-run-plan.ts', 'src/agents/test-turn-limits.ts',
+  // The state store's side and the tools that start and read a run.
+  'src/state/test-run-lifecycle.ts', 'src/state/test-run-instance.ts', 'src/management/test-runs.ts',
+  'src/management/mcp-v5/test-runs.ts',
+];
 
 test('a test run reaches no Slack ingress, delivery or TurnJob, and no routine run, even through import()', () => {
   const reached = reachable(TEST_RUN_MODULES, true);

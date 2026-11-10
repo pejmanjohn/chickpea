@@ -102,6 +102,10 @@ export const MCP_ERROR_CODES = [
   'usage_limit',
   'temporarily_unavailable',
   'tool_removed',
+  /** A test run: a connection the caller has yet to finish setting up. */
+  'needs_setup',
+  /** A test run: a connection with no tool declared a read. */
+  'not_testable',
 ] as const;
 
 export type McpErrorCode = typeof MCP_ERROR_CODES[number];

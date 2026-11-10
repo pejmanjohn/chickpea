@@ -43,6 +43,8 @@ const MANAGEMENT_MCP_TOOL_NAMES = [
   'propose_agent',
   'propose_agent_change',
   'get_creation_status',
+  'try_agent_once',
+  'get_test_run',
   'explain_agent',
   'check_agent',
   'create_agent',

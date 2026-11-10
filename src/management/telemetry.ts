@@ -132,7 +132,7 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
     'get_account', 'get_workspace', 'list_agents', 'get_agent', 'list_services', 'list_models',
     'list_members', 'list_slack_channels', 'get_agent_memory', 'list_schedules', 'get_setup_status',
     'export_agents', 'list_connected_apps', 'propose_agent', 'propose_agent_change',
-    'get_creation_status', 'explain_agent', 'check_agent',
+    'get_creation_status', 'try_agent_once', 'get_test_run', 'explain_agent', 'check_agent',
     'create_agent', 'update_agent', 'update_agent_memory', 'archive_agent', 'restore_agent',
     'add_agent_to_channel', 'save_channel_settings', 'import_skill_from_github', 'upload_skill_files', 'set_agent_skill',
     'save_schedule', 'pause_schedule', 'resume_schedule', 'run_schedule_now', 'take_over_schedule',
@@ -180,6 +180,7 @@ const REASON_TOKENS = new Set([
   'not_allowed', 'not_found', 'invalid_input', 'changed_since_read', 'confirmation_expired',
   'in_progress', 'key_reused', 'still_in_use', 'setup_link_unusable', 'model_unavailable',
   'schedule_unavailable', 'nothing_to_undo', 'usage_limit', 'temporarily_unavailable', 'tool_removed',
+  'needs_setup', 'not_testable',
   ...MCP_CLIENT_REGISTRATION_DENIALS,
 ]);
 

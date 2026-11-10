@@ -642,6 +642,24 @@ export const getCreationStatusOutput = z.strictObject({
   hello: z.string().optional().describe('The hello it posted to the person in Slack, as plain text.'),
 });
 
+// try_agent_once and get_test_run: card-only.
+
+export const tryAgentOnceInput = z.strictObject({ agentId: zAgentId, idempotencyKey: zIdempotencyKey });
+
+export const getTestRunInput = z.strictObject({
+  runToken: zText(64).describe('The runToken try_agent_once returned.'),
+});
+
+export const testRunOutput = z.strictObject({
+  status: z.enum(['running', 'answered', 'failed']),
+  runToken: z.string(),
+  ask: z.string().describe('The first question the run answers, as saved when the Agent was created.'),
+  reply: z.string().optional().describe('The Agent\'s answer, in Markdown.'),
+  read: z.array(z.string()).optional().describe('The services the run read, by name.'),
+  problem: z.string().optional(),
+  note: z.string(),
+});
+
 
 // explain_agent and check_agent.
 
