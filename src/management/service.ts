@@ -205,7 +205,7 @@ import {
   managementStorageIdempotencyKey,
   validateManagementOperations,
 } from './contracts.ts';
-import { classifyManagementOperation, removesMemberAccess } from './policy.ts';
+import { channelChangeNeedsAdmin, classifyManagementOperation, removesMemberAccess } from './policy.ts';
 import type { PreviewWorkspaceRecipeInput, WorkspaceRecipe, WorkspaceRecipePreview } from './recipes.ts';
 import { matchesEgressPrefix } from '../config/egress.ts';
 import {
@@ -327,7 +327,7 @@ import {
   type UndoWorkspaceChangeInput,
   isRoutineOperation,
 } from './types.ts';
-import { adminSettingsLinks, adminTeamLinks } from './admin-links.ts';
+import { adminChannelLinks, adminSettingsLinks, adminTeamLinks } from './admin-links.ts';
 
 const MANAGEMENT_CHANGE_SET_APPLY_LEASE_MS = 30_000;
 /** try_connection's limit outside Slack, per member. */
@@ -749,10 +749,10 @@ export class WorkspaceManagementService {
   }
 
   /**
-   * Settings deep link for an outcome that names something only Admin can
+   * Admin deep link for an outcome that names something only Admin can
    * change: a model provider key (setup link issued, replacement awaiting
-   * confirmation, removal, or a member denied), a Workspace model, and member
-   * authority. The
+   * confirmation, removal, or a member denied), a Workspace model, member
+   * authority, and a Channel a member may not turn on or off. The
    * operation supplies the target when the caller has it; a setup-link
    * outcome falls back to its own setup record so confirm and replay paths
    * agree with apply.
@@ -768,8 +768,13 @@ export class WorkspaceManagementService {
           outcome.operationKind === 'set_workspace_model') {
         return adminSettingsLinks(await baseUrl(), 'providers');
       }
-      if (outcome.operationKind !== 'request_setup') return undefined;
       const operation = operations?.find(({ itemId }) => itemId === outcome.itemId);
+      if (operation?.kind === 'put_channel') {
+        return outcome.code === 'operational_access_required'
+          ? adminChannelLinks(await baseUrl(), operation.channel.workspaceId, operation.channel.channelId)
+          : undefined;
+      }
+      if (outcome.operationKind !== 'request_setup') return undefined;
       if (operation?.kind === 'request_setup') {
         return operation.target.kind === 'provider_credential'
           ? adminSettingsLinks(await baseUrl(), 'providers')
@@ -2968,7 +2973,7 @@ export class WorkspaceManagementService {
             itemId: operation.itemId,
             operationKind: operation.kind,
             disposition: 'failed',
-            ...unappliedReason(policy.reason),
+            ...policyRefusal(operation, policy.reason),
           });
         } else if (actor.origin.kind === 'slack' && operation.kind === 'request_setup' &&
             policy.posture === 'confirmation') {
@@ -3171,7 +3176,7 @@ export class WorkspaceManagementService {
       }));
       return policy.allowed
         ? undefined
-        : { ...item, disposition: 'failed', ...unappliedReason(policy.reason) };
+        : { ...item, disposition: 'failed', ...policyRefusal(operation, policy.reason) };
     } catch (error) {
       if (!isExpectedMutationError(error)) throw error;
       return { ...item, disposition: 'failed', ...mutationFailure(error) };
@@ -3890,7 +3895,13 @@ export class WorkspaceManagementService {
       return;
     }
     if (operation.kind === 'remove_provider_credential' || operation.kind === 'set_workspace_model' ||
-        (operation.kind === 'put_channel' && operation.channel.lifecycle === 'archived')) {
+        (operation.kind === 'put_channel' && channelChangeNeedsAdmin(
+          operation.channel.lifecycle,
+          (await this.stores.config.getChannel(
+            operation.channel.workspaceId,
+            operation.channel.channelId,
+          ))?.lifecycle,
+        ))) {
       if (actor.role === 'member') {
         throw new ManagementError('forbidden', 'Current workspace authority no longer permits this confirmation.');
       }
@@ -5905,7 +5916,9 @@ export class WorkspaceManagementService {
       return {
         actor,
         operation,
-        ...(operation.channel.lifecycle === 'archived' ? { adminRequired: true } : {}),
+        ...(channelChangeNeedsAdmin(operation.channel.lifecycle, currentChannelLifecycle)
+          ? { adminRequired: true }
+          : {}),
         ...(currentChannelLifecycle ? { currentChannelLifecycle } : {}),
       };
     }
@@ -10029,4 +10042,21 @@ const UNAPPLIED_INSTRUCTIONS: Readonly<Record<string, string>> = {
 function unappliedReason(code: string): UnappliedReason {
   const instruction = UNAPPLIED_INSTRUCTIONS[code];
   return instruction ? { code, instruction } : { code };
+}
+
+/** Why the policy refused an item; for a Channel, who can turn Chickpea on or off there. */
+function policyRefusal(
+  operation: ManagementOperation,
+  reason: 'owner_required' | 'operational_access_required',
+): UnappliedReason {
+  if (operation.kind !== 'put_channel' || reason !== 'operational_access_required') {
+    return unappliedReason(reason);
+  }
+  // Only a Channel that is off refuses a member a change that leaves it on.
+  return {
+    code: reason,
+    instruction: operation.channel.lifecycle === 'active'
+      ? 'Chickpea is off in this Channel, and only a workspace Owner or Admin can turn it back on or change it. Ask one of them to do it.'
+      : 'Only a workspace Owner or Admin can turn Chickpea off in a Channel or change one where it is off. Ask one of them to do it.',
+  };
 }
