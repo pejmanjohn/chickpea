@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -61,12 +61,23 @@ export async function buildAgentCard(version) {
  * The card for the newest published version, or, when the source changed
  * since, the next version with its hash appended to published.json.
  */
-export async function publishAgentCard() {
-  const published = readPublished();
+export async function publishAgentCard({ published = readPublished(), build = buildAgentCard } = {}) {
   const latest = published.at(-1);
-  const current = await buildAgentCard(latest.version);
+  const current = await build(latest.version);
   if (latest.sha256 === sha256(current)) return { version: latest.version, html: current, published };
   const version = latest.version + 1;
-  const html = await buildAgentCard(version);
+  const html = await build(version);
   return { version, html, published: [...published, { version, sha256: sha256(html) }] };
+}
+
+/**
+ * Writes a card and the list of versions. Every older file stays as it was:
+ * a chat drawn with an older card asks for that one again.
+ */
+export function saveAgentCard({ version, html, published }, { assets = join(ROOT, 'assets'), publishedPath = PUBLISHED_PATH } = {}) {
+  const target = join(assets, assetPath(version));
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(target, html);
+  writeFileSync(publishedPath, `${JSON.stringify(published, null, 2)}\n`);
+  return target;
 }

@@ -1,7 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/server';
 import { readPublicAsset } from '#chickpea-assets';
 
-import { AGENT_CARD_ASSET_PATH, AGENT_CARD_VERSION } from '../../mcp-cards/agent-card/published.ts';
+import { AGENT_CARD_VERSION, AGENT_CARD_VERSIONS, agentCardAssetPath } from '../../mcp-cards/agent-card/published.ts';
 
 /**
  * The Agent card: one MCP App (`ui://` HTML resource) that ChatGPT and other
@@ -9,7 +9,9 @@ import { AGENT_CARD_ASSET_PATH, AGENT_CARD_VERSION } from '../../mcp-cards/agent
  * an Agent. The page is built by `npm run mcp-cards:build` and ships as a
  * Worker static asset, so the server needs no MCP Apps dependency.
  */
-export const AGENT_CARD_URI = `ui://chickpea/agent-card-v${AGENT_CARD_VERSION}`;
+const agentCardUri = (version: number) => `ui://chickpea/agent-card-v${version}`;
+/** The newest card: every card tool names it. */
+export const AGENT_CARD_URI = agentCardUri(AGENT_CARD_VERSION);
 export const MCP_APP_MIME_TYPE = 'text/html;profile=mcp-app';
 
 /** Hosts may link out only to Slack and to Chickpea's own pages. */
@@ -33,19 +35,26 @@ export function agentCardResourceMeta(baseUrl: string | undefined) {
   };
 }
 
+/**
+ * Every published version stays readable, because a chat drawn with an older
+ * card asks for its URI again when it reopens. That card calls today's
+ * tools, so a card tool's output only ever gains fields.
+ */
 export function registerAgentCard(server: McpServer, baseUrl: string | undefined): void {
   const meta = agentCardResourceMeta(baseUrl);
-  server.registerResource('agent-card', AGENT_CARD_URI, {
-    title: 'Chickpea Agent card',
-    description: 'The card ChatGPT draws for an Agent proposal, creation, change or confirmation.',
-    mimeType: MCP_APP_MIME_TYPE,
-    _meta: meta,
-  }, async (uri) => ({
-    contents: [{
-      uri: uri.href,
+  for (const version of AGENT_CARD_VERSIONS) {
+    server.registerResource(`agent-card-v${version}`, agentCardUri(version), {
+      title: 'Chickpea Agent card',
+      description: 'The card ChatGPT draws for an Agent proposal, creation, change or confirmation.',
       mimeType: MCP_APP_MIME_TYPE,
-      text: new TextDecoder().decode(await readPublicAsset(AGENT_CARD_ASSET_PATH)),
       _meta: meta,
-    }],
-  }));
+    }, async (uri) => ({
+      contents: [{
+        uri: uri.href,
+        mimeType: MCP_APP_MIME_TYPE,
+        text: new TextDecoder().decode(await readPublicAsset(agentCardAssetPath(version))),
+        _meta: meta,
+      }],
+    }));
+  }
 }

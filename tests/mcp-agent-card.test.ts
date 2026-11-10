@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { test, type TestContext } from 'node:test';
 
 import { createMcpHandler } from '@modelcontextprotocol/server';
@@ -11,11 +14,11 @@ import { AGENT_CARD_URI, MCP_APP_MIME_TYPE } from '../src/management/mcp-v5/card
 import { FIVE_ZERO_TOOLS } from '../src/management/mcp-v5/tools.ts';
 import { agentWelcomeQuote, formatManagementSetupReceipt } from '../src/management/receipts.ts';
 import type { ManagementAgentCreatedWelcome } from '../src/management/types.ts';
-import { AGENT_CARD_ASSET_PATH, AGENT_CARD_VERSION } from '../src/mcp-cards/agent-card/published.ts';
+import { AGENT_CARD_VERSION, AGENT_CARD_VERSIONS, agentCardAssetPath } from '../src/mcp-cards/agent-card/published.ts';
 import { PROTOCOL_VERSION } from '../src/mcp-cards/bridge.ts';
 import { SLACK_SETTING_KEYS } from '../src/slack/credentials.ts';
 // @ts-expect-error Build tooling JavaScript helper.
-import { assetPath, buildAgentCard, readPublished, sha256 } from '../scripts/lib/mcp-cards.mjs';
+import { assetPath, buildAgentCard, publishAgentCard, readPublished, saveAgentCard, sha256 } from '../scripts/lib/mcp-cards.mjs';
 import { createFixtureAgent, createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 
 const BASE_URL = 'https://chickpea.example.test';
@@ -117,7 +120,7 @@ test('the card resource is an MCP App that reaches nothing and links only to Chi
   assert.equal(contents.length, 1);
   const [card] = contents;
   assert.equal(card!.mimeType, 'text/html;profile=mcp-app');
-  assert.equal(card!.text, readFileSync(`assets/${AGENT_CARD_ASSET_PATH}`, 'utf8'), 'the page is the built asset');
+  assert.equal(card!.text, readFileSync(`assets/${agentCardAssetPath(AGENT_CARD_VERSION)}`, 'utf8'), 'the page is the built asset');
   assert.match(card!.text, /^<!doctype html>/);
   for (const meta of [card!._meta, listed._meta]) {
     assert.deepEqual(meta.ui.csp, { connectDomains: [], resourceDomains: [] }, 'polling goes through the host');
@@ -131,21 +134,55 @@ test('the card resource is an MCP App that reaches nothing and links only to Chi
   assert.doesNotMatch(card!.text, /<(?:link|script)[^>]+(?:href|src)=/i, 'everything is inline');
 });
 
-test('the built card is public as inert text, and its URI changes whenever its bytes do', async () => {
-  assert.ok(isPublicAssetPath(AGENT_CARD_ASSET_PATH), 'readPublicAsset may read it');
-  assert.match(AGENT_CARD_ASSET_PATH, /\.txt$/, 'never an .html page on Chickpea\'s own origin');
-
+test('every published card is public as inert text and served as published; its URI changes whenever its bytes do', async (t) => {
+  const { rpc } = await harness(t, 'card-versions');
   const published = readPublished() as Array<{ version: number; sha256: string }>;
   assert.deepEqual(published.map(({ version: v }) => v), published.map((_, index) => index + 1), 'versions count up from 1');
+  assert.deepEqual(AGENT_CARD_VERSIONS, published.map(({ version: v }) => v));
   assert.equal(new Set(published.map(({ sha256: hash }) => hash)).size, published.length, 'no two versions share bytes');
+  for (const { version: v, sha256: hash } of published) {
+    const path = agentCardAssetPath(v);
+    assert.equal(path, assetPath(v));
+    assert.match(path, /\.txt$/, 'never an .html page on Chickpea\'s own origin');
+    assert.ok(isPublicAssetPath(path), `v${v}: readPublicAsset may read it`);
+    const stored = readFileSync(`assets/${path}`);
+    assert.equal(sha256(stored), hash, `v${v} changed after it was published. A published card never changes; the build publishes the next version.`);
+    const { contents } = await rpc('resources/read', { uri: `ui://chickpea/agent-card-v${v}` }) as { contents: Array<{ text: string }> };
+    assert.equal(contents[0]!.text, stored.toString('utf8'), `v${v} is served`);
+  }
+
   const latest = published.at(-1)!;
   assert.equal(latest.version, AGENT_CARD_VERSION);
-  assert.equal(assetPath(latest.version), AGENT_CARD_ASSET_PATH);
-
-  const built = await buildAgentCard(latest.version);
-  assert.equal(sha256(built), latest.sha256,
+  assert.equal(sha256(await buildAgentCard(latest.version)), latest.sha256,
     'The Agent card changed since it was published. Run npm run mcp-cards:build: it publishes the next version.');
-  assert.equal(readFileSync(`assets/${AGENT_CARD_ASSET_PATH}`, 'utf8'), built, 'the committed card is the build');
+});
+
+test('after the next version is published, a chat drawn with an older card still gets it', async (t) => {
+  const release = mkdtempSync(join(tmpdir(), 'agent-card-release-'));
+  t.after(() => rmSync(release, { recursive: true, force: true }));
+  cpSync('assets/mcp-cards', join(release, 'assets', 'mcp-cards'), { recursive: true });
+  const before = readPublished() as Array<{ version: number; sha256: string }>;
+
+  // The build after the page changed, saved into the scratch release instead of this checkout.
+  const next = await publishAgentCard({ build: async (v: number) => `${await buildAgentCard(v)}<!-- changed -->\n` });
+  assert.equal(next.version, AGENT_CARD_VERSION + 1);
+  saveAgentCard(next, { assets: join(release, 'assets'), publishedPath: join(release, 'published.json') });
+  for (const { version: v } of before) {
+    assert.deepEqual(readFileSync(join(release, 'assets', assetPath(v))), readFileSync(`assets/${assetPath(v)}`), `v${v} stays as it was`);
+  }
+
+  const output = execFileSync(process.execPath, ['--import', import.meta.resolve('tsx'), resolve('tests/helpers/agent-card-release.ts')], {
+    cwd: release,
+    env: { ...process.env, PUBLISHED_JSON: join(release, 'published.json') },
+    encoding: 'utf8',
+  });
+  const { toolsName, allowlisted, served } = JSON.parse(output) as { toolsName: string; allowlisted: number[]; served: Record<string, string> };
+  assert.equal(toolsName, `ui://chickpea/agent-card-v${next.version}`, 'card tools name the newest');
+  assert.deepEqual(allowlisted, [...AGENT_CARD_VERSIONS, next.version]);
+  assert.deepEqual(served, Object.fromEntries([
+    ...before.map(({ version: v }) => [`ui://chickpea/agent-card-v${v}`, readFileSync(`assets/${assetPath(v)}`, 'utf8')]),
+    [`ui://chickpea/agent-card-v${next.version}`, next.html],
+  ]), 'every version serves its own bytes');
 });
 
 test('a card tool\'s result names its tool for the card and keeps its whole result in the text', async (t) => {

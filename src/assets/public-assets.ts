@@ -1,5 +1,5 @@
 import { DEFAULT_AGENT_AVATAR_FILES } from '../slack/agent-presence/default-avatar-pool.generated.ts';
-import { AGENT_CARD_ASSET_PATH } from '../mcp-cards/agent-card/published.ts';
+import { AGENT_CARD_VERSIONS, agentCardAssetPath } from '../mcp-cards/agent-card/published.ts';
 import { FONT_ASSET_PATHS } from './fonts.ts';
 
 export const ONBOARDING_ASSET_FILES = [
@@ -21,8 +21,8 @@ export const ADMIN_UI_ASSET_PATHS = [ADMIN_UI_SCRIPT_PATH, ADMIN_UI_STYLESHEET_P
 export const PUBLIC_ASSET_PATHS = [
   ...ADMIN_UI_ASSET_PATHS,
   'chickpea-chatgpt-connect.mjs',
-  // The ChatGPT Agent card, read by the MCP server (management/mcp-v5/cards.ts).
-  AGENT_CARD_ASSET_PATH,
+  // Every published Agent card, read by the MCP server (management/mcp-v5/cards.ts).
+  ...AGENT_CARD_VERSIONS.map(agentCardAssetPath),
   'chickpea-mark-128.png', 'chickpea-favicon-32.png', 'chickpea-wordmark-512.png',
   'bot-avatar.png',
   ...DEFAULT_AGENT_AVATAR_FILES.map((file) => `chickpea-avatars/agent-defaults/${file}`),
