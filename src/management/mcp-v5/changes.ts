@@ -16,7 +16,7 @@ import {
 import { channelNames } from '../channel-names.ts';
 import { confirmationAsk, turnsAgentOff } from './confirmation-ask.ts';
 import { fail, fiveZeroCode, versionToken, type McpErrorCode } from './conventions.ts';
-import { agentLinks, type FiveZeroDeps } from './reads.ts';
+import { agentAvatar, agentLinks, agentStatus, type FiveZeroDeps } from './reads.ts';
 import type * as schemas from './schemas.ts';
 
 export type ChangeResult = z.infer<typeof schemas.changeResultOutput>;
@@ -135,7 +135,7 @@ export async function changeResult(
   deps: FiveZeroDeps,
   context: ManagementActorContext,
   result: ApplyWorkspaceChangesResult,
-  options: { agentId?: string; summary?: string } = {},
+  options: { agentId?: string; summary?: string | ((agentName: string) => string) } = {},
 ): Promise<ChangeResult> {
   if (result.status === 'clarification_required') {
     const { matches } = result.clarification;
@@ -157,7 +157,8 @@ export async function changeResult(
   const version = versioned ? changedVersion(context, applied, versioned) : undefined;
   return {
     status: 'done',
-    summary: options.summary ?? doneSummary(applied.at(-1)?.operationKind, agent?.name),
+    summary: typeof options.summary === 'function' ? options.summary(agent?.name ?? 'the Agent')
+      : options.summary ?? doneSummary(applied.at(-1)?.operationKind, agent?.name),
     ...(agent ? { agent } : {}),
     ...(version ? { version } : {}),
     ...(applied.length === 1 && applied[0]!.undoAvailable ? { undoToken: result.operationId } : {}),
@@ -190,6 +191,8 @@ async function confirmationResult(
       confirmToken: pending.proposalId,
       preview: formatChangeSetProposal(preview, CONFIRMATION_DIALECT),
       expiresAt: new Date(result.confirmation.expiresAt).toISOString(),
+      // Admin has a button for every change that waits here but deleting an Agent.
+      inAdmin: !preview.changes.some(({ operationKind }) => operationKind === 'delete_agent'),
       ask: confirmationAsk(preview, {
         ...agent ? { agent } : {},
         channels: turnsAgentOff(preview) ? await agentChannels(deps, context, about) : [],
@@ -221,6 +224,14 @@ const CONFIRMATION_DIALECT = {
 
 export const EXPIRED_NEXT_STEP = 'Call the tool that proposed the change again, with a new idempotencyKey, for a fresh preview and confirmToken.';
 
+/**
+ * A retired confirmation: the person kept it as it was, a newer change
+ * replaced it, or what it changes moved on. Nothing stored says which, so
+ * one sentence true of every cause.
+ */
+export const STALE_CONFIRMATION = 'That confirmation no longer applies. Ask again to make the change.';
+export const STALE_NEXT_STEP = 'Nothing changed. Propose it again, with a new idempotencyKey, only if the person asks for it again.';
+
 const NEXT_STEPS: Partial<Record<McpErrorCode, string>> = {
   changed_since_read: 'Read it again and send the change with the version it returns now, under a new idempotencyKey.',
   key_reused: 'Use a new idempotencyKey: this one already belongs to a different call.',
@@ -230,13 +241,15 @@ const NEXT_STEPS: Partial<Record<McpErrorCode, string>> = {
 /** The change did not apply: its outcome as the 5.0 error. */
 function failedOutcome(outcome: ManagementItemOutcome): never {
   const code = fiveZeroCode(outcome.code ?? 'operation_failed');
-  const message = code === 'changed_since_read'
-    ? 'It changed since you read it, so nothing changed.'
-    : outcome.instruction ?? 'That change did not apply.';
+  // A call sent again after its confirmation was retired.
+  const retired = outcome.code === 'proposal_stale';
+  const message = retired ? STALE_CONFIRMATION
+    : code === 'changed_since_read' ? 'It changed since you read it, so nothing changed.'
+      : outcome.instruction ?? 'That change did not apply.';
   // A removal Composio could not finish is cut off already; resending replays it, so a retry needs a new key.
   const nextStep = outcome.code === 'removal_incomplete'
     ? 'Call remove_connection again with a new idempotencyKey, then confirm_change. Resending this call replays this result.'
-    : NEXT_STEPS[code];
+    : retired ? STALE_NEXT_STEP : NEXT_STEPS[code];
   fail(code, message, {
     ...(nextStep ? { nextStep } : {}),
     ...(outcome.links?.admin ? { fix: { label: 'Open Chickpea Admin', url: outcome.links.admin } } : {}),
@@ -275,11 +288,22 @@ export async function agentSummary(
 ): Promise<{ agent?: ChangeResult['agent']; version?: string }> {
   if (!agentId) return {};
   try {
-    const { agent } = await deps.service.agentReader(context, agentId);
+    const { agent, stores } = await deps.service.agentReader(context, agentId);
     const handle = agent.slackPresence?.normalizedHandle || undefined;
-    const links = agentLinks(deps.baseUrl, agent.id, await deps.service.slackAppLink(context));
+    const [slack, grants] = await Promise.all([deps.service.slackAppLink(context), stores.config.listAgentChannelGrants()]);
+    const links = agentLinks(deps.baseUrl, agent.id, slack);
+    const channels = grants.filter((grant) => grant.agentId === agent.id && grant.status === 'active')
+      .map(({ channelId, channelLabel }) => ({ channelId, ...(channelLabel ? { name: channelLabel } : {}) }));
     return {
-      agent: { agentId: agent.id, name: agent.name, ...(handle ? { handle } : {}), ...(links ? { links } : {}) },
+      agent: {
+        agentId: agent.id,
+        name: agent.name,
+        ...(handle ? { handle } : {}),
+        status: agentStatus(agent),
+        ...(channels.length ? { channels } : {}),
+        ...agentAvatar(deps, agent),
+        ...(links ? { links } : {}),
+      },
       version: versionToken('agent', agent.id, agent.revision, context.organizationId),
     };
   } catch (error) {

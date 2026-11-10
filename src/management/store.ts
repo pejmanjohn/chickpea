@@ -43,6 +43,7 @@ import {
   type RevokeManagementSetupInput,
   type ReserveManagementRequestInput,
   type SettlePrivateChannelSetupIntentInput,
+  type StaleChangeSetProposalOptions,
   type StoredManagementOrigin,
   isRoutineOperation,
 } from './types.ts';
@@ -249,9 +250,14 @@ export interface ManagementStore {
     at: number,
     expectedUpdatedAt?: number,
   ): Promise<ManagementChangeSetProposalRecord>;
+  /**
+   * Retires a set so it never applies. `from: 'pending'` leaves a set that is
+   * already applying or completed as it is; read the returned status.
+   */
   markChangeSetProposalStale(
     proposalId: string,
     at: number,
+    options?: StaleChangeSetProposalOptions,
   ): Promise<ManagementChangeSetProposalRecord>;
   putUndo(record: ManagementUndoRecord): Promise<ManagementUndoRecord>;
   getUndo(operationId: string): Promise<ManagementUndoRecord | undefined>;
@@ -412,7 +418,11 @@ export class ManagementStoreLogic {
       case 'mark_change_set_proposal_stale':
         return {
           kind: 'change_set_proposal',
-          proposal: this.markChangeSetProposalStale(request.proposalId, request.at),
+          proposal: this.markChangeSetProposalStale(
+            request.proposalId,
+            request.at,
+            request.from ? { from: request.from } : undefined,
+          ),
         };
       case 'put_undo':
         return { kind: 'undo', undo: this.putUndo(request.record) };
@@ -996,11 +1006,12 @@ export class ManagementStoreLogic {
   markChangeSetProposalStale(
     proposalId: string,
     at: number,
+    options?: StaleChangeSetProposalOptions,
   ): ManagementChangeSetProposalRecord {
     this.requireChangeSetProposal(proposalId);
     this.db.run(
       `UPDATE management_change_set_proposals SET status = 'stale', updated_at = ?
-       WHERE proposal_id = ? AND status IN ('pending', 'applying')`,
+       WHERE proposal_id = ? AND status IN (${options?.from === 'pending' ? `'pending'` : `'pending', 'applying'`})`,
       at,
       proposalId,
     );

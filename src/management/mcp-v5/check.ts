@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 
 import type { z } from 'zod';
 
@@ -10,7 +9,7 @@ import { ADMIN_PATH, adminOrigin, adminSettingsLinks, adminTeamLinks } from '../
 import { ManagementError } from '../types.ts';
 import { readAgentRun, readingView, resolveAgentModel, seesChannel, type AgentRunReading } from './agent-run.ts';
 import type { McpErrorFix } from './conventions.ts';
-import { connectionRows, presenceProblem, type FiveZeroDeps } from './reads.ts';
+import { agentAvatar, connectionRows, presenceProblem, type FiveZeroDeps } from './reads.ts';
 import type * as schemas from './schemas.ts';
 
 type Output = z.infer<typeof schemas.checkAgentOutput>;
@@ -40,8 +39,10 @@ export async function checkAgent(
   ]);
   // A row whose detail is already Chickpea's own words shows it as it is.
   const checks = groups.flat().map((check) => check.plain === undefined ? { ...check, plain: check.detail } : check);
+  const view = readingView(reading);
   return {
-    ...readingView(reading),
+    ...view,
+    agent: { ...view.agent, ...agentAvatar(deps, reading.agent) },
     healthy: !checks.some(({ status }) => status === 'failing'),
     checks,
   };
@@ -60,15 +61,6 @@ function settingsFix(deps: FiveZeroDeps, reading: AgentRunReading, section: 'pro
 
 function withFix(check: Omit<Check, 'fix'>, fix: McpErrorFix | undefined): Check {
   return fix ? { ...check, fix } : check;
-}
-
-/** A GitHub access link for one repository, which no 5.0 tool issues on its own yet. */
-function requestSetupFix(label: string, target: Record<string, string>): McpErrorFix {
-  return {
-    label,
-    tool: 'apply_workspace_changes',
-    arguments: { idempotencyKey: randomUUID(), operations: [{ itemId: 'setup', kind: 'request_setup', target }] },
-  };
 }
 
 /** A connection's reconnect link, through the 5.0 tool that hands it out. */
@@ -242,7 +234,10 @@ async function repositoryChecks(deps: FiveZeroDeps, reading: AgentRunReading): P
     const name = grant.allRepos ? `${grant.accountLogin}/*` : grant.fullName;
     if (grant.installationId === null) {
       return withFix({ part: 'repository', name, status: 'failing', detail: `Chickpea's GitHub App is not installed for ${grant.accountLogin}.` },
-        requestSetupFix('Send a GitHub access link', { kind: 'repository_access', agentId: reading.agent.id, repositoryId: grant.id }));
+        // No 5.0 tool hands out a GitHub access link on its own, and the
+        // 4.x one is hidden from clients that draw cards; the Agent's page
+        // in Admin gives that access to Owners and Members alike.
+        agentAdminFix(deps, reading, 'Give GitHub access in Admin'));
     }
     if (active && !active.has(grant.installationId)) {
       return withFix({ part: 'repository', name, status: 'failing', detail: `GitHub access for ${grant.accountLogin} is suspended or was removed.` },

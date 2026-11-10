@@ -41,7 +41,7 @@ const CARD_TOOLS: Record<string, CardName> = {
 };
 
 /** The card-only tools: hidden from the model, called by a card. */
-const CARD_ONLY = ['get_creation_status', 'try_agent_once', 'get_test_run'];
+const CARD_ONLY = ['get_creation_status', 'decline_change', 'try_agent_once', 'get_test_run'];
 
 type ToolResult = {
   content: Array<{ type: string; text: string }>;
@@ -121,7 +121,7 @@ test('a tool that can ask "Are you sure?" draws the Agent card, which is its con
   }
 });
 
-test('each card resource is an MCP App that reaches nothing and links only to Chickpea and Slack', async (t) => {
+test('each card resource is an MCP App that loads only Chickpea\'s own pictures and links only to Chickpea and Slack', async (t) => {
   const { rpc } = await harness(t, 'card-resource');
   const { resources } = await rpc('resources/list') as { resources: Array<Record<string, any>> };
   assert.equal(MCP_APP_MIME_TYPE, 'text/html;profile=mcp-app');
@@ -139,11 +139,11 @@ test('each card resource is an MCP App that reaches nothing and links only to Ch
     assert.equal(card!.text, readFileSync(`assets/${cardAssetPath(name, cardVersions(name).at(-1)!)}`, 'utf8'), 'the page is the built asset');
     assert.match(card!.text, new RegExp(`^<!doctype html>[\\s\\S]*<title>${CARD_TITLES[name]}</title>`));
     for (const meta of [card!._meta, listed._meta]) {
-      assert.deepEqual(meta.ui.csp, { connectDomains: [], resourceDomains: [] }, 'polling goes through the host');
+      assert.deepEqual(meta.ui.csp, { connectDomains: [], resourceDomains: [BASE_URL] }, 'polling goes through the host; pictures come from Chickpea alone');
       assert.equal(meta.ui.prefersBorder, true);
       assert.deepEqual(meta['openai/widgetCSP'], {
         connect_domains: [],
-        resource_domains: [],
+        resource_domains: [BASE_URL],
         redirect_domains: [BASE_URL, 'https://slack.com'],
       });
     }

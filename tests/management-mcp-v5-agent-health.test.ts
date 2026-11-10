@@ -634,12 +634,8 @@ test('check_agent reports GitHub access for each repository, and website logins 
   const repositories = part(connected, 'repository');
   assert.deepEqual(repositories.map(({ name, status }) => [name, status]), [['acme/api', 'failing'], ['acme/web', 'ok']]);
   assert.deepEqual(repositories[0]!.fix, {
-    label: 'Send a GitHub access link',
-    tool: 'apply_workspace_changes',
-    arguments: {
-      idempotencyKey: (repositories[0]!.fix!.arguments as { idempotencyKey: string }).idempotencyKey,
-      operations: [{ itemId: 'setup', kind: 'request_setup', target: { kind: 'repository_access', agentId: 'agent_ops', repositoryId: 'repo_api' } }],
-    },
+    label: 'Give GitHub access in Admin',
+    url: `${new URL(BASE_URL).origin}/admin/agents/agent_ops`,
   });
   assert.ok(!JSON.stringify(connected).includes('not-a-real-key'), 'the GitHub App key never leaves');
 });

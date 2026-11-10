@@ -35,7 +35,12 @@ export type Effect =
   | { type: 'timer'; inMs: number }
   /** Put `draft` in the composer when the host can; otherwise send `sent`. */
   | { type: 'message'; draft?: string; sent: string }
-  | { type: 'open'; url: string };
+  | { type: 'open'; url: string }
+  /**
+   * What the card did, for the host's model on its next turn, in place of
+   * what this card told it before. A press's outcome, never what it shows.
+   */
+  | { type: 'context'; text: string };
 
 export type CardEvent<A extends string> =
   | { type: 'result'; result: ToolResult; now: number }
@@ -77,6 +82,9 @@ export type Next<V extends { kind: string }> = {
 export const stay = <V extends { kind: string }>(state: Next<V>['state'], effects: Effect[] = []): Next<V> => ({ state, effects });
 export const show = <V extends { kind: string }>(view: V, effects: Effect[] = []): Next<V> => ({ state: { view, busy: false }, effects });
 export const call = (tool: string, args: Record<string, unknown>): Effect => ({ type: 'call', call: { tool, args } });
+/** The same step, and the host's model learns what the person did. */
+export const tell = <V extends { kind: string }>(next: Next<V>, text: string): Next<V> =>
+  ({ ...next, effects: [{ type: 'context', text }, ...next.effects] });
 
 /**
  * A card's `step`: a new view counts up `seq`, and each call it makes is
@@ -86,7 +94,7 @@ export function sequenced<V extends { kind: string }, A extends string>(
   transition: (state: CardState<V>, event: CardEvent<A>) => Next<V>,
 ): (state: CardState<V>, event: CardEvent<A>) => Step<V> {
   return (state, event) => {
-    const next = transition(state, event);
+    const next = transition(state, event.type === 'result' || event.type === 'reply' ? { ...event, result: withHeld(event.result) } : event);
     const seq = next.state.view === state.view ? state.seq : state.seq + 1;
     return {
       state: { ...next.state, seq },
@@ -105,6 +113,26 @@ export function outdated(state: { seq: number }, made: Call): boolean {
   return made.seq !== state.seq;
 }
 
+/**
+ * A result with the tokens a card host gave the card in `_meta` back where
+ * the shapes name them, so a card reads every result the same way.
+ */
+function withHeld(result: ToolResult): ToolResult {
+  const held = result._meta?.['chickpea/held'];
+  const content = result.structuredContent;
+  if (!isRecord(held) || !isRecord(content)) return result;
+  const confirmToken = typeof held.confirmToken === 'string' ? held.confirmToken : undefined;
+  const undoToken = typeof held.undoToken === 'string' ? held.undoToken : undefined;
+  return {
+    ...result,
+    structuredContent: {
+      ...content,
+      ...undoToken ? { undoToken } : {},
+      ...confirmToken && isRecord(content.confirmation) ? { confirmation: { ...content.confirmation, confirmToken } } : {},
+    },
+  };
+}
+
 export const GENERIC = 'That did not work. Try again.';
 export const UNREACHABLE = 'Chickpea could not be reached. Try again.';
 export const NOTHING = { kind: 'notice', title: 'Nothing to show here.' } as const;
@@ -112,6 +140,28 @@ export const NOTHING = { kind: 'notice', title: 'Nothing to show here.' } as con
 /** Only a web link opens: a result is untrusted, and hosts open nothing else. */
 export function httpsUrl(url: unknown): string | undefined {
   return typeof url === 'string' && URL.parse(url)?.protocol === 'https:' ? url : undefined;
+}
+
+/** The longest Agent name a sentence for the host's model quotes whole. */
+const NAMED_MAX = 60;
+
+/**
+ * An Agent in a sentence for the host's model: quoted and short, so a name
+ * a member chose reads as a name and never as the host's own words.
+ */
+export function agentNamed(name: string, handle?: string): string {
+  const short = name.length > NAMED_MAX ? `${name.slice(0, NAMED_MAX - 1)}…` : name;
+  return `the Agent ${JSON.stringify(short)}${handle ? ` (@${handle})` : ''}`;
+}
+
+/**
+ * Where to try an Agent: a mention reaches it only in its Channels, and a
+ * direct message always does.
+ */
+export function tryIt(handle: string, channels: readonly string[]): string {
+  if (channels.length === 0) return `Try it: message @${handle} in Slack.`;
+  const where = channels.length <= 2 ? channels.join(' or ') : `${channels.slice(0, -1).join(', ')} or ${channels.at(-1)}`;
+  return `Try it: mention @${handle} in ${where}.`;
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -170,6 +220,8 @@ export interface Button<A extends string = string> {
 
 export interface Presentation<A extends string = string> {
   avatar: 'agent' | 'alert' | 'none';
+  /** The Agent's picture, drawn in place of the art when it loads. */
+  avatarUrl?: string | undefined;
   title: string;
   /** What a screen reader hears when it changes; the title when absent. */
   announce?: string;

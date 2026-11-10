@@ -107,7 +107,12 @@ import type {
 import { IdentityStateError } from '../identity/errors.ts';
 import { timedStateRpc } from '../observability/runtime-latency.ts';
 import { isSandboxDisconnect } from '../sandbox/reconnect.ts';
-import { ManagementError, type ManagementRpcRequest, type ManagementRpcResponse } from '../management/types.ts';
+import {
+  ManagementError,
+  type ManagementRpcRequest,
+  type ManagementRpcResponse,
+  type StaleChangeSetProposalOptions,
+} from '../management/types.ts';
 import type { ManagementStore } from '../management/store.ts';
 import type {
   AdvanceAuthOperationInput,
@@ -1266,8 +1271,13 @@ export class CfManagementStore implements ManagementStore {
     return response.proposal;
   }
 
-  async markChangeSetProposalStale(proposalId: string, at: number) {
-    const response = await this.execute({ kind: 'mark_change_set_proposal_stale', proposalId, at });
+  async markChangeSetProposalStale(proposalId: string, at: number, options?: StaleChangeSetProposalOptions) {
+    const response = await this.execute({
+      kind: 'mark_change_set_proposal_stale',
+      proposalId,
+      at,
+      ...options?.from ? { from: options.from } : {},
+    });
     if (response.kind !== 'change_set_proposal' || !response.proposal) {
       throw unexpectedManagementResponse();
     }

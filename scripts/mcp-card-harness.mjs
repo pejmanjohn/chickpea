@@ -2,9 +2,10 @@
 /**
  * Renders the ChatGPT cards the way ChatGPT hosts them, against Core's real
  * MCP server on a fixture workspace, and drives them in Chrome: every state in
- * light and dark, 728 and 390 px wide. Saves one screenshot per state and
- * checks that a destructive confirmation, a setup link and a fix each wait
- * for the click.
+ * light and dark, 728 and 390 px wide, in ChatGPT and in a host like
+ * claude.ai. Saves one screenshot per state and checks that a destructive
+ * confirmation, a setup link and a fix each wait for the click, and that
+ * the card tells the host's model what each press did.
  *
  *   npm run mcp-cards:harness -- --out <dir> [--chrome <path>]
  *
@@ -20,14 +21,16 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
 import { build } from 'esbuild';
-import { createMcpHandler } from '@modelcontextprotocol/server';
 
-import { createWorkspaceManagementMcpServer } from '../src/management/mcp.ts';
+import { workspaceManagementMcpFetch } from '../src/management/mcp.ts';
 import { CARD_URIS } from '../src/management/mcp-v5/cards.ts';
+import { readAgentAvatarAsset } from '../src/slack/agent-presence/avatar-assets.ts';
 import { SLACK_SETTING_KEYS } from '../src/slack/credentials.ts';
 import { createFixtureAgent, createManagementAdapterFixture } from '../tests/helpers/management-adapter-fixture.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+/** This deployment's origin, which serves every Agent's picture; Chrome's requests to it are answered from the fixture. */
+const ORIGIN = 'https://app.chickpea.example';
 const { values: args } = parseArgs({
   options: {
     out: { type: 'string', default: join(tmpdir(), 'chickpea-card-screens') },
@@ -60,7 +63,7 @@ async function world() {
     ({ settings }) => ({
       settings,
       now: () => clock.now,
-      setupBaseUrl: 'https://app.chickpea.example',
+      setupBaseUrl: ORIGIN,
       modelReadiness: async () => async () => undefined,
       // A custom connection's one request: the docs server refuses its key, the status board answers.
       testConnection: async ({ connectionId }) => connectionId === 'connection_docs'
@@ -84,17 +87,24 @@ async function world() {
     role: 'owner',
     clientId: 'client_harness',
   };
-  const handler = createMcpHandler(
-    () => createWorkspaceManagementMcpServer({ principal, service: f.service, baseUrl: 'https://app.chickpea.example' }),
-    { legacy: 'stateless' },
-  );
-  const rpc = async (method, params) => {
-    const response = await handler.fetch(new Request('http://localhost/mcp', {
+  // ChatGPT's own door: it declares cards at initialize, so its model never sees a card's tokens.
+  const fetchMcp = workspaceManagementMcpFetch({ principal, service: f.service, baseUrl: ORIGIN });
+  const headers = { accept: 'application/json, text/event-stream', 'content-type': 'application/json', 'mcp-protocol-version': '2025-11-25' };
+  const post = (body, session) => {
+    const text = JSON.stringify({ jsonrpc: '2.0', id: 1, ...body });
+    return fetchMcp(new Request('http://localhost/mcp', {
       method: 'POST',
-      headers: { accept: 'application/json, text/event-stream', 'content-type': 'application/json', 'mcp-protocol-version': '2025-11-25' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+      headers: { ...headers, 'content-length': String(Buffer.byteLength(text)), ...session ? { 'mcp-session-id': session } : {} },
+      body: text,
     }));
-    const body = await response.text();
+  };
+  const session = (await post({
+    method: 'initialize',
+    params: { protocolVersion: '2025-11-25', capabilities: { extensions: { 'io.modelcontextprotocol/ui': { mimeTypes: ['text/html;profile=mcp-app'] } } }, clientInfo: { name: 'openai-mcp', version: '1.0.0' } },
+  })).headers.get('mcp-session-id');
+  assert.ok(session, 'a client that draws cards gets a session');
+  const rpc = async (method, params) => {
+    const body = await (await post({ method, params }, session)).text();
     return JSON.parse(body.trimStart().startsWith('{') ? body : body.split('\n').find((line) => line.startsWith('data: ')).slice(6)).result;
   };
   const call = (name, args = {}) => rpc('tools/call', { name, arguments: args });
@@ -122,7 +132,7 @@ async function world() {
       job: 'Chases invoices more than 30 days overdue and posts a summary in #finance every Monday.',
       instructions: '# Job\nChase invoices more than 30 days overdue.\n\n## Tone\nBe brief and polite.',
       sampleAsk: 'who\'s overdue this week?',
-      promisedAnswer: 'I list every invoice past 30 days with the customer, amount and days overdue, each linked in Stripe, and flag anyone I\'ve already reminded twice.',
+      promisedAnswer: 'Overdue this week —\n• Acme Co: $4,200, 41 days, reminded twice\n• Birch Ltd: $860, 33 days\nEach is linked in Stripe.',
       services: ['Stripe'],
       channels: ['#finance'],
     }),
@@ -137,7 +147,25 @@ async function world() {
         },
       });
     },
-    confirm: async () => call('update_agent', { agentId: 'agent_support', version: await version('agent_support'), on: false, idempotencyKey: `off-${clock.now}` }),
+    confirm: async () => {
+      await f.config.updateAgent('agent_support', { enabled: true });
+      return call('update_agent', { agentId: 'agent_support', version: await version('agent_support'), on: false, idempotencyKey: `off-${clock.now}-${Math.random()}` });
+    },
+    // A host that left the result's _meta behind: the card has no token.
+    confirmBare: async () => {
+      const { _meta: _held, ...bare } = await scenes.confirm();
+      return bare;
+    },
+    // ChatGPT keeps the _meta for the card in window.openai.toolResponseMetadata instead.
+    confirmMetaElsewhere: async () => {
+      const { _meta, ...bare } = await scenes.confirm();
+      return { ...bare, [OPENAI_META]: _meta };
+    },
+    turnedOff: async () => call('update_agent', { agentId: 'agent_dm', version: await version('agent_dm'), on: false, idempotencyKey: `dm-off-${Math.random()}` }),
+    savedDm: async () => {
+      await f.config.updateAgent('agent_dm', { enabled: true });
+      return call('update_agent', { agentId: 'agent_dm', version: await version('agent_dm'), description: `Answers HR questions in DMs (${Math.random()}).`, idempotencyKey: `dm-save-${Math.random()}` });
+    },
     expired: async () => {
       const at = clock.now;
       clock.now = Date.now() - 31 * 60_000;
@@ -207,6 +235,27 @@ async function world() {
     slackPresence: { requestedHandle: 'billing', normalizedHandle: 'billing', desiredState: 'active', health: 'healthy', avatar: { kind: 'generated', revision: 1, seed: 'billing' } },
   });
   await f.config.putAgentChannelGrant({ workspaceId: teamId, channelId: 'C_FINANCE', agentId: 'agent_clean', status: 'active', createdByMembershipId: f.owner.membership.id, channelIsPrivate: false });
+  // An Agent that answers only in DMs, wearing one of the default pictures.
+  await createFixtureAgent(f, 'agent_dm', {
+    name: 'People Helper',
+    slackPresence: { requestedHandle: 'people', normalizedHandle: 'people', desiredState: 'active', health: 'healthy', avatar: { kind: 'generated', revision: 1, seed: 'chickpea-avatar-v1:06:people' } },
+  });
+
+  /**
+   * What this deployment's origin serves Chrome: the default pictures, and
+   * each Agent's avatar as the avatar route reads it. Billing Helper's fails,
+   * so its card shows the art instead.
+   */
+  async function picture(url) {
+    const { pathname } = new URL(url);
+    if (pathname.startsWith('/chickpea-avatars/agent-defaults/')) return readFileSync(join(HERE, '..', 'assets', pathname.slice(1)));
+    const match = /^\/assets\/agents\/([^/]+)\/avatar\/(\d+)$/.exec(pathname);
+    if (!match || match[1] === 'agent_clean') return undefined;
+    const agent = await f.config.getAgent(decodeURIComponent(match[1])).catch(() => undefined);
+    if (!agent) return undefined;
+    const asset = await readAgentAvatarAsset({ settings: f.settings, agentId: agent.id, revision: Number(match[2]), avatar: agent.slackPresence?.avatar });
+    return asset && Buffer.from(asset.bytes);
+  }
 
   /** Its Channels, joining or joined. */
   async function channels(status) {
@@ -239,12 +288,15 @@ async function world() {
     await f.management.settleOutbox({ outboxId: welcome.outboxId, outcome: 'delivered', at: clock.now, deliveryRef: 'D1:1.1' });
   }
   return {
-    f, rpc, call, scenes, sayHello, joinChannels: () => channels('active'), close: () => f.close(),
+    f, rpc, call, scenes, sayHello, picture, joinChannels: () => channels('active'), close: () => f.close(),
     /** The person finishes on the setup page of the last link. */
     finishSetup: () => finished.set(lastSetup.setupToken, 'completed'),
     lastSetup: () => lastSetup,
   };
 }
+
+/** Where a scene's result carries the _meta its host gives the card as window.openai.toolResponseMetadata. */
+const OPENAI_META = 'harness/openaiMeta';
 
 /** The card each scene's tool draws. */
 const SCENE_CARDS = { connect: 'connect-card', reconnect: 'connect-card', cancelled: 'connect-card', custom: 'connect-card', health: 'health-card', healthy: 'health-card' };
@@ -257,10 +309,13 @@ async function serve(current) {
   });
   const cardServer = await listen(async (request, response) => {
     // The page ChatGPT gets: resources/read on the card's URI.
-    const uri = new URL(request.url, 'http://card').searchParams.get('uri');
-    const [card] = (await current().rpc('resources/read', { uri })).contents;
+    const query = new URL(request.url, 'http://card').searchParams;
+    const [card] = (await current().rpc('resources/read', { uri: query.get('uri') })).contents;
+    // ChatGPT's own globals, set before the card runs, as its sandbox sets them.
+    const meta = query.get('openaiMeta');
+    const globals = meta ? `<script>window.openai = { toolResponseMetadata: ${meta} };</script>` : '';
     response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-    response.end(card.text);
+    response.end(card.text.replace('<head>', `<head>${globals}`));
   });
   const hostServer = await listen(async (request, response) => {
     const url = new URL(request.url, 'http://host');
@@ -270,7 +325,8 @@ async function serve(current) {
     };
     if (url.pathname === '/scene') {
       const name = url.searchParams.get('name');
-      return json({ result: await current().scenes[name](), uri: CARD_URIS[SCENE_CARDS[name] ?? 'agent-card'] });
+      const { [OPENAI_META]: openaiMeta, ...result } = await current().scenes[name]();
+      return json({ result, uri: CARD_URIS[SCENE_CARDS[name] ?? 'agent-card'], ...openaiMeta ? { openaiMeta } : {} });
     }
     if (url.pathname === '/call') {
       let body = '';
@@ -288,8 +344,11 @@ async function serve(current) {
   return { host: origin(hostServer), card: origin(cardServer), close: () => { hostServer.close(); cardServer.close(); } };
 }
 
-/** Chrome with a throwaway profile, driven over the DevTools protocol. */
-async function chrome() {
+/**
+ * Chrome with a throwaway profile, driven over the DevTools protocol.
+ * Requests to this deployment's origin are answered by `picture`.
+ */
+async function chrome(picture) {
   const profile = mkdtempSync(join(tmpdir(), 'chickpea-card-chrome-'));
   const child = spawn(args.chrome, [
     '--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
@@ -318,6 +377,12 @@ async function chrome() {
       if (context.auxData?.isDefault) contexts.set(context.auxData.frameId, context.id);
     }
     if (message.method === 'Runtime.executionContextsCleared') contexts.clear();
+    if (message.method === 'Fetch.requestPaused') {
+      const { requestId, request } = message.params;
+      void Promise.resolve(picture(request.url)).catch(() => undefined).then((body) => send('Fetch.fulfillRequest', body
+        ? { requestId, responseCode: 200, responseHeaders: [{ name: 'content-type', value: 'image/png' }], body: body.toString('base64') }
+        : { requestId, responseCode: 404, responseHeaders: [], body: '' }));
+    }
     const pending = waiting.get(message.id);
     if (!pending) return;
     waiting.delete(message.id);
@@ -331,6 +396,7 @@ async function chrome() {
   });
   await send('Page.enable');
   await send('Runtime.enable');
+  await send('Fetch.enable', { patterns: [{ urlPattern: `${ORIGIN}/*` }] });
   await send('Page.bringToFront');
   const evaluate = async (expression, contextId) => {
     const { result, exceptionDetails } = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true, ...contextId ? { contextId } : {} });
@@ -447,18 +513,24 @@ async function chrome() {
 
 let current;
 const servers = await serve(() => current);
-const browser = await chrome();
+const browser = await chrome((url) => current?.picture(url));
 const shots = [];
 const contrast = [];
 const runs = [
-  ...['light', 'dark'].flatMap((theme) => [728, 390].map((width) => ({ theme, width }))),
-  { theme: 'none', width: 728 },
+  ...['chatgpt', 'claude'].flatMap((host) => ['light', 'dark'].flatMap((theme) => [728, 390].map((width) => ({ host, theme, width })))),
+  { host: 'chatgpt', theme: 'none', width: 728 },
 ];
+/** The card's header shows the Agent's own picture, loaded, or the art when it would not load. */
+const picture = () => browser.inCard(`(() => {
+  const holder = document.querySelector('.cp-hdr .cp-avatar');
+  const image = holder?.querySelector('img');
+  return image ? (image.complete && image.naturalWidth > 0 ? 'picture' : 'loading') : holder?.querySelector('svg') ? 'art' : 'none';
+})()`);
 try {
-  for (const { theme, width } of runs) {
+  for (const { host, theme, width } of runs) {
     current = await world();
-    const label = `${theme === 'none' ? 'no-host-theme' : theme}-${width}`;
-    const open = (scene) => browser.open(`${servers.host}/?scene=${scene}&theme=${theme}&width=${width}&card=${encodeURIComponent(servers.card)}`, { width, theme });
+    const label = `${host === 'claude' ? 'claude-' : ''}${theme === 'none' ? 'no-host-theme' : theme}-${width}`;
+    const open = (scene) => browser.open(`${servers.host}/?scene=${scene}&host=${host}&theme=${theme}&width=${width}&card=${encodeURIComponent(servers.card)}`, { width, theme });
     const shot = async (name) => {
       const file = join(OUT, `${name}-${label}.png`);
       await browser.screenshot(file);
@@ -467,13 +539,33 @@ try {
       contrast.push({ shot: `${name}-${label}`, ...worst });
       assert.ok(worst.ratio >= worst.needed, `${name}-${label}: "${worst.text}" has contrast ${worst.ratio}, under ${worst.needed}`);
     };
+    const showsPicture = async (what) => {
+      await browser.waitFor(`document.querySelector('.cp-hdr .cp-avatar img')?.complete`, `${what}: its picture`);
+      assert.equal(await picture(), 'picture', `${what}: the Agent's own picture`);
+    };
+    const told = async (pattern, what) => {
+      const deadline = Date.now() + 5_000;
+      for (;;) {
+        const contexts = await browser.host('window.harness.contexts');
+        if (pattern.test(contexts.at(-1) ?? '')) return;
+        if (Date.now() > deadline) assert.fail(`${what}: the model was told ${JSON.stringify(contexts)}`);
+        await new Promise((done) => setTimeout(done, 100));
+      }
+    };
+    const subtitle = () => browser.inCard('document.querySelector(".cp-sub")?.textContent ?? ""');
+    const buttons = () => browser.inCard('[...document.querySelectorAll(".cp-acts button")].map((node) => node.textContent)');
 
     await open('proposal');
     await browser.waitForTitle(/^Invoice Chaser$/);
+    await showsPicture('The proposal');
+    assert.equal(await browser.inCard('document.querySelectorAll(".cp-said")[1].innerText.split("\\n").length'), 4,
+      'the example reply keeps its line breaks');
     await shot('1-proposal');
-    assert.equal(await browser.inCard('document.documentElement.style.getPropertyValue("--cursor-interaction")'), 'pointer',
-      'the host\'s cursor for things to press');
-    if (theme === 'light' && width === 728) {
+    if (host === 'chatgpt' && theme !== 'none') {
+      assert.equal(await browser.inCard('document.documentElement.style.getPropertyValue("--cursor-interaction")'), 'pointer',
+        'the host\'s cursor for things to press');
+    }
+    if (host === 'chatgpt' && theme === 'light' && width === 728) {
       // A theme flip without new style variables drops the old theme's colors for the card's own.
       await browser.host('window.harness.flipTheme("dark")');
       await browser.waitFor('getComputedStyle(document.body).backgroundColor === "rgb(24, 24, 24)"', 'the dark fallback after a theme-only flip');
@@ -489,8 +581,22 @@ try {
       current.close();
       continue;
     }
+    await browser.click('change_something');
+    for (let tries = 0; tries < 50 && (await browser.host('window.harness.messages.length')) === 0; tries += 1) {
+      await new Promise((done) => setTimeout(done, 100));
+    }
+    const [asked] = await browser.host('window.harness.messages');
+    assert.equal(asked?.content?.[0]?.text, 'Change Invoice Chaser: ', `${host}: Change something puts the same words in the composer`);
+    await browser.host('window.harness.holdCreate = true');
     await browser.click('create');
-    await browser.waitFor('document.querySelector(".cp-steps")', 'the creation steps');
+    await browser.waitFor('[...document.querySelectorAll(".cp-steps li")].some((li) => li.textContent.endsWith("Creating it in Chickpea (in progress)"))',
+      'the steps at once, while create_agent runs');
+    assert.deepEqual(await buttons(), [], 'nothing to press while it is made');
+    await shot('2-starting');
+    await browser.host('window.harness.release()');
+    await browser.waitFor('[...document.querySelectorAll(".cp-steps li")].some((li) => li.textContent.endsWith("Created in Chickpea (done)"))', 'the creation steps');
+    await told(/^The person created the Agent "Invoice Chaser" \(@invoices\) from the card\. It is joining Slack now\.$/, 'Created');
+    await showsPicture('The creating card');
     await shot('2-creating');
     await current.sayHello();
     await browser.waitFor(`["Joining Slack as @invoices (done)", "Saying hello to you (done)", "Joining #finance (in progress)"]
@@ -498,14 +604,33 @@ try {
     await shot('2-hello-joining');
     await current.joinChannels();
     await browser.waitForTitle(/said hello to you in Slack$/);
+    await told(/^The person created the Agent "Invoice Chaser" \(@invoices\) from the card\. It is ready in Slack and said hello to them there\.$/, 'Ready');
+    await showsPicture('The ready card');
     await shot('2-ready');
 
     await open('change');
     await browser.waitForTitle(/^Change Invoice Chaser$/);
+    await showsPicture('The change');
     await shot('5-change');
     await browser.click('save');
     await browser.waitForTitle(/^✓ Saved Invoice Chaser$/);
+    assert.equal(await subtitle(), 'Try it: mention @invoices in #finance.', 'a mention reaches it in its Channel');
+    await told(/^The person saved the change to the Agent "Invoice Chaser" from the card\. Saved Invoice Chaser\.$/, 'Saved');
     await shot('5-saved');
+    await browser.click('undo');
+    await browser.waitForTitle(/^✓ Undid the change$/);
+    assert.deepEqual(await buttons(), ['Open in Slack'], 'no second Undo, which would redo the change');
+    await told(/^The person undid the change to the Agent "Invoice Chaser" from the card\.$/, 'Undone');
+    await shot('5-undone');
+    await open('turnedOff');
+    await browser.waitForTitle(/^✓ Turned off People Helper$/);
+    assert.equal(await subtitle(), 'It won\'t answer in Slack until it\'s turned back on.');
+    await showsPicture('A saved change');
+    await shot('5-turned-off');
+    await open('savedDm');
+    await browser.waitForTitle(/^✓ Saved People Helper$/);
+    assert.equal(await subtitle(), 'Try it: message @people in Slack.', 'a save the model made, for an Agent that answers in DMs');
+    await shot('5-saved-dm');
 
     await open('confirm');
     await browser.waitForTitle(/^Turn off @support\?$/);
@@ -513,16 +638,65 @@ try {
     await browser.inCard('window.dispatchEvent(new Event("focus"))');
     assert.deepEqual(await browser.host('window.harness.calls'), [], 'the card made no call before the click');
     assert.equal((await current.f.config.getAgent('agent_support')).enabled, true);
+    await showsPicture('The confirmation');
     await shot('6-confirm');
+    await browser.click('keep');
+    await browser.waitForTitle(/^Kept as it is$/);
+    assert.deepEqual(await browser.host('window.harness.calls'), ['decline_change'], 'Keep retires the confirmation, and nothing else');
+    await told(/^On the card, the person pressed "Keep it on", so nothing changed\./, 'Kept');
+    assert.equal((await current.f.config.getAgent('agent_support')).enabled, true);
+    await shot('6-kept');
+    await open('confirm');
+    await browser.waitForTitle(/^Turn off @support\?$/);
     await browser.click('confirm');
     await browser.waitForTitle(/^✓ Made the change you confirmed$/);
     assert.deepEqual(await browser.host('window.harness.calls'), ['confirm_change'], 'one click, one confirmation');
     assert.equal((await current.f.config.getAgent('agent_support')).enabled, false);
+    assert.equal(await subtitle(), 'It won\'t answer in Slack until it\'s turned back on.');
     await shot('6-confirmed');
+
+    await open('confirmBare');
+    await browser.waitForTitle(/^Turn off @support\?$/);
+    assert.deepEqual(await buttons(), ['Open in Admin'], 'no token on the card: no button that cannot work');
+    await browser.waitFor('/Confirm this in Admin\./.test(document.querySelector(".cp-card")?.textContent ?? "")', 'where else to confirm');
+    await shot('6-confirm-no-token');
+    await browser.click('open_admin');
+    assert.deepEqual(await browser.linksOpened(1), [`${ORIGIN}/admin/agents/agent_support`]);
+    assert.deepEqual(await browser.host('window.harness.calls'), [], 'nothing confirmed or kept');
+    await open('confirmMetaElsewhere');
+    await browser.waitForTitle(/^Turn off @support\?$/);
+    assert.deepEqual(await buttons(), ['Turn off', 'Keep it on'], 'the token from window.openai.toolResponseMetadata');
+    await browser.click('keep');
+    await browser.waitForTitle(/^Kept as it is$/);
+    assert.deepEqual(await browser.host('window.harness.calls'), ['decline_change']);
 
     await open('expired');
     await browser.waitForTitle(/^This confirmation expired$/);
     await shot('6-expired');
+
+    // Someone archives the Agent while its change card is open.
+    await open('change');
+    await browser.waitForTitle(/^Change Invoice Chaser$/);
+    const invoices = (await current.call('get_agent', { agentId: 'agent_invoice_chaser' })).structuredContent;
+    await current.call('archive_agent', { agentId: invoices.agentId, version: invoices.version, idempotencyKey: `archive-${label}` });
+    await new Promise((done) => setTimeout(done, 1_100));
+    await browser.inCard('window.dispatchEvent(new Event("focus"))');
+    await browser.waitForTitle(/^Invoice Chaser is archived$/);
+    assert.deepEqual(await buttons(), [], 'no Save for an archived Agent');
+    await shot('8-archived');
+    // A saved card whose Agent is deleted since: to this person it is gone, as to one who can no longer manage it.
+    await open('savedDm');
+    await browser.waitForTitle(/^✓ Saved People Helper$/);
+    const people = (await current.call('get_agent', { agentId: 'agent_dm' })).structuredContent;
+    const archivedPeople = await current.call('archive_agent', { agentId: 'agent_dm', version: people.version, idempotencyKey: `archive-dm-${label}` });
+    const deleting = await current.call('delete_agent', { agentId: 'agent_dm', version: archivedPeople.structuredContent.version, idempotencyKey: `delete-dm-${label}` });
+    const deleted = await current.call('confirm_change', { confirmToken: deleting._meta['chickpea/held'].confirmToken });
+    assert.equal(deleted.structuredContent.status, 'done', JSON.stringify(deleted));
+    await new Promise((done) => setTimeout(done, 1_100));
+    await browser.inCard('window.dispatchEvent(new Event("focus"))');
+    await browser.waitForTitle(/^People Helper is no longer available$/);
+    assert.deepEqual(await buttons(), [], 'nothing to press for it');
+    await shot('8-unavailable');
 
     const reads = async (what, { links = 0 } = {}) => {
       const calls = await browser.host('window.harness.calls');
@@ -540,6 +714,7 @@ try {
     await browser.inCard('window.dispatchEvent(new Event("focus"))');
     await new Promise((done) => setTimeout(done, 2_500));
     await reads('Connect');
+    await showsPicture('The connect card');
     await shot('3-connect');
     await browser.click('connect');
     await browser.waitForRow(/^Waiting for Gmail/);
@@ -549,6 +724,7 @@ try {
     await shot('3-waiting');
     current.finishSetup();
     await browser.waitForRow(/^Gmail is connected/, 10_000);
+    await told(/^Gmail is connected to the Agent "Support Desk" now\.$/, 'Connected');
     await shot('3-connected');
 
     await open('reconnect');
@@ -562,7 +738,7 @@ try {
     await browser.waitFor('/Chickpea checked it/.test(document.querySelector(".cp-rows")?.textContent ?? "")', 'the custom connection\'s check');
     await plain('The custom connection\'s check');
     await shot('3-checked');
-    if (theme === 'light' && width === 728) {
+    if (host === 'chatgpt' && theme === 'light' && width === 728) {
       // A theme change on a card that is polling restyles it and does nothing else.
       await open('connect');
       await browser.waitForTitle(/^Connect Gmail to Support Desk$/);
@@ -581,6 +757,7 @@ try {
     await new Promise((done) => setTimeout(done, 1_000));
     await browser.inCard('window.dispatchEvent(new Event("focus"))');
     await reads('The health card');
+    await showsPicture('The health card');
     await shot('7-health');
     await browser.click('show');
     await browser.waitForRow(/^@support /);
@@ -592,10 +769,13 @@ try {
     const links = await browser.linksOpened(1);
     assert.equal(links.length, 1);
     assert.match(new URL(links[0]).pathname, /^\/setup\/setup_/);
+    await told(/^The person opened Chickpea's page to Reconnect Notion for the Agent "Support Desk" from the card\./, 'Fixing');
     await shot('7-fixing');
     await open('healthy');
     await browser.waitForTitle(/^Everything looks healthy$/);
-    await shot('7-healthy');
+    await browser.waitFor(`document.querySelector('.cp-hdr .cp-avatar svg')`, 'the art, when the picture would not load');
+    assert.equal(await picture(), 'art', 'a picture that fails to load falls back to the art');
+    await shot('7-healthy-fallback');
     current.close();
   }
 } finally {
@@ -603,4 +783,5 @@ try {
   servers.close();
 }
 writeFileSync(join(OUT, 'contrast.json'), `${JSON.stringify(contrast, null, 2)}\n`);
-console.log(`${shots.length} screenshots in ${OUT}; lowest text contrast ${Math.min(...contrast.map(({ ratio }) => ratio))}:1`);
+const lowest = (needed) => Math.min(...contrast.filter((entry) => entry.needed === needed).map(({ ratio }) => ratio));
+console.log(`${shots.length} screenshots in ${OUT}; lowest contrast ${lowest(4.5)}:1 for text, ${lowest(3)}:1 for graphics`);

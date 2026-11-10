@@ -16,28 +16,45 @@ export function isDefaultAgentAvatarSeed(seed: string): boolean {
   return encodedAvatarIndex(seed) !== undefined;
 }
 
+export type DefaultAgentAvatarFile = (typeof DEFAULT_AGENT_AVATAR_FILES)[number];
+
+/** Each default's name, such as `sage` for 01-sage.png, in the pool's order. */
+export const DEFAULT_AGENT_AVATAR_NAMES = DEFAULT_AGENT_AVATAR_FILES.map((file) =>
+  file.replace(/^\d+-|\.png$/g, '')) as [string, ...string[]];
+
+export function defaultAgentAvatarFileNamed(name: string): DefaultAgentAvatarFile | undefined {
+  const index = DEFAULT_AGENT_AVATAR_NAMES.indexOf(name);
+  return index < 0 ? undefined : DEFAULT_AGENT_AVATAR_FILES[index];
+}
+
 /**
  * Pick randomly among the least-used defaults. A workspace sees all twelve
  * before any one image appears a second time, while concurrent creates remain
  * safe because the durable seed fully records the selected image.
  */
-export function nextDefaultAgentAvatarSeed(
+export function nextDefaultAgentAvatarFile(
   existingSeeds: readonly string[],
   nonce: string,
-): string {
+): DefaultAgentAvatarFile {
   const useCounts = Array.from({ length: DEFAULT_AGENT_AVATAR_FILES.length }, () => 0);
   for (const seed of existingSeeds) {
     if (seed) useCounts[defaultAgentAvatarIndex(seed)]! += 1;
   }
   const leastUsed = Math.min(...useCounts);
   const candidates = useCounts.flatMap((count, index) => count === leastUsed ? [index] : []);
-  const selected = candidates[stableHash(nonce) % candidates.length]!;
-  return defaultAgentAvatarSeedFor(DEFAULT_AGENT_AVATAR_FILES[selected]!, nonce);
+  return DEFAULT_AGENT_AVATAR_FILES[candidates[stableHash(nonce) % candidates.length]!]!;
+}
+
+export function nextDefaultAgentAvatarSeed(
+  existingSeeds: readonly string[],
+  nonce: string,
+): string {
+  return defaultAgentAvatarSeedFor(nextDefaultAgentAvatarFile(existingSeeds, nonce), nonce);
 }
 
 /** The seed for one named default, as a ready-made Agent keeps its own. */
 export function defaultAgentAvatarSeedFor(
-  file: (typeof DEFAULT_AGENT_AVATAR_FILES)[number],
+  file: DefaultAgentAvatarFile,
   nonce: string,
 ): string {
   const index = DEFAULT_AGENT_AVATAR_FILES.indexOf(file);
