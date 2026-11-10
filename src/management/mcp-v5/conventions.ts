@@ -40,12 +40,23 @@ export type McpToolVisibility = 'model' | 'app';
 
 /**
  * Descriptor `_meta`: the `securitySchemes` mirror OpenAI documents for clients
- * that read only `_meta`, and `ui.visibility` for a tool only a card calls.
+ * that read only `_meta`, `ui.visibility` for a tool only a card calls, and
+ * `ui.resourceUri` for a tool whose result a card draws. ChatGPT also reads
+ * the older `openai/outputTemplate` name for that link.
  */
-export function toolMeta(input: { visibility?: readonly McpToolVisibility[]; profile?: true } = {}) {
+export function toolMeta(input: {
+  visibility?: readonly McpToolVisibility[];
+  profile?: true;
+  card?: string;
+} = {}) {
+  const ui = {
+    ...(input.card ? { resourceUri: input.card } : {}),
+    ...(input.visibility ? { visibility: [...input.visibility] } : {}),
+  };
   return {
     securitySchemes: MCP_TOOL_SECURITY_SCHEMES,
-    ...(input.visibility ? { ui: { visibility: [...input.visibility] } } : {}),
+    ...(Object.keys(ui).length ? { ui } : {}),
+    ...(input.card ? { 'openai/outputTemplate': input.card } : {}),
     ...(input.profile ? { 'openai/profile': true } : {}),
   };
 }
@@ -237,11 +248,14 @@ export function mcpErrorResult(error: McpToolError) {
 /**
  * A success: `structuredContent` matches the tool's `outputSchema`, and the
  * text block carries the same JSON for a client that passes only `content` to
- * its model, so no handle a follow-up call needs is lost there.
+ * its model, so no handle a follow-up call needs is lost there. A result a
+ * card draws names its tool in `_meta`, which only the card reads: hosts do
+ * not say which tool a result came from.
  */
-export function mcpSuccessResult<T extends Record<string, unknown>>(structured: T) {
+export function mcpSuccessResult<T extends Record<string, unknown>>(structured: T, card?: { tool: string }) {
   return {
     content: [{ type: 'text' as const, text: JSON.stringify(structured) }],
     structuredContent: structured,
+    ...(card ? { _meta: { 'chickpea/tool': card.tool } } : {}),
   };
 }

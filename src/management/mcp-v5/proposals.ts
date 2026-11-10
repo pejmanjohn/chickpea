@@ -89,6 +89,7 @@ export async function proposeAgent(
       needs,
       answersIn,
       ...(create.model ? { model: create.model } : {}),
+      ...(snapshot.slackTeamName ? { workspaceName: snapshot.slackTeamName } : {}),
     },
     create: { tool: 'create_agent', arguments: create },
     issues,

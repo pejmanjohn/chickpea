@@ -15,6 +15,7 @@ import {
   versionToken,
 } from '../src/management/mcp-v5/conventions.ts';
 import { createAgentInputSchema, updateAgentInputSchema } from '../src/management/mcp-v5/schemas.ts';
+import { AGENT_CARD_URI } from '../src/management/mcp-v5/cards.ts';
 import { FIVE_ZERO_TOOL_NAMES } from '../src/management/mcp-v5/tools.ts';
 import { emitManagementMetric } from '../src/management/telemetry.ts';
 import type { ManagementReceiptOutboxRecord } from '../src/management/types.ts';
@@ -29,6 +30,11 @@ import {
 const LEGACY = '2025-11-25';
 const MODERN = '2026-07-28';
 const SCHEMES = [{ type: 'oauth2', scopes: ['chickpea:workspace'] }];
+/** The tools whose result the Agent card draws (tests/mcp-agent-card.test.ts covers why). */
+const AGENT_CARD_TOOLS: readonly string[] = [
+  'propose_agent', 'propose_agent_change', 'create_agent', 'update_agent', 'undo_change',
+  'delete_agent', 'remove_connection', 'remove_website_login', 'delete_schedule', 'remove_model_provider_key', 'update_member',
+];
 const READ_5 = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
 /** The fixture's clock; an older delivered receipt is past retention and swept. */
 const NOW = 1_800_000_000_000;
@@ -161,7 +167,12 @@ for (const protocol of [LEGACY, MODERN]) {
       const meta = tool._meta as Record<string, unknown>;
       assert.deepEqual(meta.securitySchemes, SCHEMES, `${tool.name}: the _meta mirror`);
       assert.equal((tool.outputSchema as { type?: string } | undefined)?.type, 'object', tool.name);
-      assert.deepEqual(meta.ui, tool.name === 'get_creation_status' ? { visibility: ['app'] } : undefined, tool.name);
+      assert.deepEqual(
+        meta.ui,
+        tool.name === 'get_creation_status' ? { visibility: ['app'] }
+          : AGENT_CARD_TOOLS.includes(tool.name) ? { resourceUri: AGENT_CARD_URI } : undefined,
+        tool.name,
+      );
       assert.equal(meta['openai/profile'], tool.name === 'get_account' ? true : undefined, tool.name);
       const words = tool.description.split(/\s+/).length;
       assert.ok(words <= 70, `${tool.name}: ${words} words; keep a description near 60`);
@@ -475,6 +486,7 @@ test('get_creation_status follows the Agent into Slack and its hello in the crea
   await f.management.claimDueOutbox(NOW, 1, NOW + 60_000);
   await f.management.settleOutbox({ outboxId: welcome.outboxId, outcome: 'delivered', at: NOW + 1, deliveryRef: 'D1:1.1' });
   assert.equal((await status()).stage, 'said_hello');
+  assert.equal((await status()).hello, 'Hi — I’m Research.', 'the card quotes the hello it posted');
 
   const other = errorOf(await call('get_creation_status', { agentId: 'agent_missing' }));
   assert.equal(other.code, 'not_found', 'an Agent the caller cannot manage reads as missing, as in get_agent');

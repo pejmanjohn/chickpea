@@ -1235,7 +1235,7 @@ export interface ManagementAgentCreationProgress {
   /** The status of each of the Agent's Channel grants. */
   channelGrants: AgentChannelGrantStatus[];
   /** The caller's newest welcome for this Agent in their DM with Chickpea; absent when none is kept. */
-  welcome?: { status: ManagementReceiptOutboxStatus };
+  welcome?: { status: ManagementReceiptOutboxStatus; receipt: ManagementReceipt };
 }
 
 export interface ManagementRoutineInspectionInput {

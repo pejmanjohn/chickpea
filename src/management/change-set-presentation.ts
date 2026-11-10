@@ -5,7 +5,8 @@ import type {
   RepositoryGrant,
 } from '../config/types.ts';
 import type { MembershipStatus } from '../identity/types.ts';
-import { summarizeTextChange, type TextChange, type TextChangePlace } from './text-changes.ts';
+import { describeTextChange } from './text-change-wording.ts';
+import { summarizeTextChange } from './text-changes.ts';
 import type {
   ManagementAgentLabel,
   ManagementChangeSetPreview,
@@ -1153,7 +1154,7 @@ function formatKeyDetails(
     const rest = changes.length - listed;
     return [
       ...changes.slice(0, listed)
-        .map((change) => `${dialect.bullet} ${describeTextChange(change, { ...dialect, escape })}`),
+        .map((change) => `${dialect.bullet} ${describeTextChange(change, (text) => `“${plainText(text, { ...dialect, escape })}”`)}`),
       '',
       `${rest === 0 ? '' : `And ${rest} more ${rest === 1 ? 'change' : 'changes'}. `}${applies}`,
     ].join('\n');
@@ -1165,43 +1166,6 @@ function formatKeyDetails(
     block(listed + 1, shown).length <= KEY_DETAILS_CHARACTER_BUDGET
   ) listed += 1;
   return block(listed, dialect.escape);
-}
-
-const TEXT_CHANGE_VERBS = { adds: 'adds', removes: 'removes', changes: 'changes wording to' } as const;
-
-function describeTextChange(change: TextChange, dialect: ChangeSetPresentationDialect): string {
-  const quoted = (text: string) => `“${plainText(text, dialect)}”`;
-  const size = change.quotedWhole ? '' : ` (${formatWordCount(change.words)})`;
-  if (change.kind === 'section') {
-    const sentence = change.action === 'adds'
-      ? `Adds a new section, ${quoted(change.heading)}${change.quote ? `: ${quoted(change.quote)}` : ''}`
-      : `Removes the section ${quoted(change.heading)}`;
-    return `${sentence}${size}`;
-  }
-  const verb = TEXT_CHANGE_VERBS[change.action];
-  const place = placeLead(change.place, quoted);
-  const lead = place ? `${place}, ${verb}` : `${verb[0]!.toUpperCase()}${verb.slice(1)}`;
-  return `${lead}: ${quoted(change.quote)}${size}`;
-}
-
-function placeLead(place: TextChangePlace, quoted: (text: string) => string): string | undefined {
-  switch (place.kind) {
-    case 'heading':
-      return `Under ${quoted(place.heading)}`;
-    case 'start':
-      return 'At the start';
-    case 'end':
-      return 'At the end';
-    case 'none':
-      return undefined;
-  }
-}
-
-/** Exact below ten; otherwise about, to the nearest ten below 1,000 and the nearest hundred from there. */
-function formatWordCount(words: number): string {
-  if (words < 10) return `${words} ${words === 1 ? 'word' : 'words'}`;
-  const rounded = words < 1_000 ? Math.round(words / 10) * 10 : Math.round(words / 100) * 100;
-  return `about ${rounded.toLocaleString('en-US')} words`;
 }
 
 /**

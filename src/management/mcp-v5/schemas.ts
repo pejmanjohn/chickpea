@@ -513,6 +513,7 @@ export const proposeAgentOutput = z.strictObject({
     needs: z.array(z.strictObject({ service: z.string(), name: z.string(), connected: z.literal(false) })),
     answersIn: z.array(z.strictObject({ channelId: z.string(), name: z.string().optional() })),
     model: z.string().optional(),
+    workspaceName: z.string().optional().describe('The Slack workspace whose people can message it once it exists.'),
   }),
   create: z.strictObject({ tool: z.literal('create_agent'), arguments: createAgentInputSchema }),
   issues: z.array(z.string()),
@@ -580,6 +581,12 @@ const changeResultShape = {
     confirmToken: z.string(),
     preview: z.string().describe('Markdown to show the person before they agree.'),
     expiresAt: z.string().describe('After this time confirm_change refuses the token; call the tool again.'),
+    ask: z.strictObject({
+      question: z.string(),
+      consequence: z.string().describe('What happens, in plain words.'),
+      confirm: z.string().describe('The words of the button that confirms.'),
+      keep: z.string().describe('The words of the way out, which changes nothing.'),
+    }).describe('The question to put to the person, as a card asks it.'),
   }).optional(),
   setup: zSetup.optional(),
   undoToken: z.string().optional().describe('Present when undo_change can reverse this change.'),
@@ -624,6 +631,7 @@ export const getCreationStatusOutput = z.strictObject({
   channels: z.enum(['none', 'joining', 'joined', 'needs_attention']),
   slackUrl: z.string().optional(),
   problem: z.string().optional(),
+  hello: z.string().optional().describe('The hello it posted to the person in Slack, as plain text.'),
 });
 
 

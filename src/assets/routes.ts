@@ -20,6 +20,7 @@ export function createPublicAssetRoutes(): Hono {
 function publicAssetContentType(path: string): string {
   if ((path.endsWith('.js') || path.endsWith('.mjs'))) return 'text/javascript; charset=utf-8';
   if (path.endsWith('.css')) return 'text/css; charset=utf-8';
+  if (path.endsWith('.txt')) return 'text/plain; charset=utf-8';
   if (path.endsWith('.webp')) return 'image/webp';
   if (path.endsWith('.woff2')) return 'font/woff2';
   return 'image/png';
