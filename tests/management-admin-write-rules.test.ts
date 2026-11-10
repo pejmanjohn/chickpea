@@ -453,6 +453,87 @@ test('management refuses every Agent write Admin refuses', () =>
     assert.equal((await f.config.getAgent(agent.id)).revision, agent.revision, 'nothing was written');
   }));
 
+/** Key-like and over 32 characters: what an Agent saved before the prefix rule may store. */
+const STORED_PREFIX = 'Bearer sk_live_abcdefghijklmnop0123 ';
+const CHANGED_PREFIX = 'Bearer sk_live_zyxwvutsrqponmlk9876 ';
+
+test('a value prefix stored before the rule is kept on the next save at both doors; a new or changed one meets it', () =>
+  withFixture('write-rules-kept-prefix', async (f) => {
+    const agent = await seedAgent(f);
+    await f.config.putWorkspaceModelDefault({
+      workspaceId: TEAM,
+      modelId: 'local-stub/workspace',
+      provenance: 'admin_selected',
+      lastChangedByMembershipId: f.owner.membership.id,
+    }, (await f.config.getWorkspaceModelDefault(TEAM))?.revision);
+    await f.config.createAgentOwnedConnection({
+      account: {
+        id: 'connection_legacy', workspaceId: TEAM, ownerKind: 'team', createdByMembershipId: f.owner.membership.id,
+        providerId: 'legacy', label: 'Legacy', secretRefId: 'secret_legacy', lifecycle: 'ready',
+        policy: {
+          kind: 'api', allowedHosts: ['legacy.example.test'], pathPrefixes: ['/v1'], headerName: 'Authorization',
+          headerValuePrefix: STORED_PREFIX, allowedMethods: ['GET'], authMode: 'credential',
+        },
+      },
+      binding: { agentId: agent.id, connectionAccountId: 'connection_legacy', providerId: 'legacy', allowedCapabilities: [], enabled: true },
+    });
+    const edit = async (
+      idempotencyKey: string,
+      change: (connection: ManagementApiConnection) => ManagementApiConnection,
+      added: ManagementApiConnection[] = [],
+    ) => {
+      const current = await inspectAgent(f, agent.id);
+      return apply(f, idempotencyKey, [{
+        itemId: 'edit', kind: 'update_agent', agentId: agent.id, expectedRevision: current.revision,
+        patch: { apiConnections: [...current.apiConnections.map(change), ...added] },
+      }]);
+    };
+    const prefixOf = async () => {
+      const { policy } = await accountFor(f, agent.id, 'legacy');
+      return policy.kind === 'api' ? policy.headerValuePrefix : undefined;
+    };
+
+    // Management: a rename and a new connection beside it save, and the stored prefix stays.
+    const renamed = await edit('rename', (connection) => ({ ...connection, displayName: 'Old API' }), [billing]);
+    assert.deepEqual(renamed.outcomes.map(({ disposition }) => disposition), ['applied'], JSON.stringify(renamed));
+    assert.equal((await accountFor(f, agent.id, 'legacy')).label, 'Old API');
+    assert.equal(await prefixOf(), STORED_PREFIX);
+    const changed = await edit('change', (connection) =>
+      connection.id === 'legacy' ? { ...connection, headerValuePrefix: CHANGED_PREFIX } : connection);
+    assert.equal(changed.outcomes[0]?.disposition, 'failed', JSON.stringify(changed));
+    assert.match(changed.outcomes[0]?.warning ?? '', /Connection legacy value prefix is the text before the key/);
+    assert.equal(await prefixOf(), STORED_PREFIX, 'a changed prefix meets the rule');
+
+    // Admin: the Agent row's own connection, saved with that prefix before the rule.
+    const legacyRow = { ...billing, id: 'row_api', displayName: 'Row API', allowedHosts: ['row.example.test'], headerValuePrefix: STORED_PREFIX };
+    const seeded = await f.config.updateAgent(agent.id, { apiConnections: [legacyRow] }, (await f.config.getAgent(agent.id)).revision);
+    const app = adminApp(f);
+    const save = async (apiConnections: unknown[]) => {
+      const current = await f.config.getAgent(agent.id);
+      return app.request(`http://localhost/admin/api/agents/${agent.id}`, {
+        method: 'PATCH',
+        headers: testAdminHeaders(TOKEN, { 'content-type': 'application/json' }),
+        body: JSON.stringify({
+          expectedRevision: current.revision,
+          credentialConfigurationBinding: agentCredentialConfigurationBinding(current.credentialIncarnation),
+          instructions: `Help the team, revision ${current.revision}.`,
+          apiConnections,
+        }),
+      });
+    };
+    const kept = await save([legacyRow]);
+    assert.equal(kept.status, 200, await kept.clone().text());
+    assert.equal((await f.config.getAgent(agent.id)).apiConnections[0]?.headerValuePrefix, STORED_PREFIX);
+    const refused = await save([{ ...legacyRow, headerValuePrefix: CHANGED_PREFIX }]);
+    assert.equal(refused.status, 400, await refused.clone().text());
+    assert.match((await refused.json() as { message?: string }).message ?? '', /Connection row_api value prefix is the text before the key/);
+    const added = await save([legacyRow, { ...billing, headerValuePrefix: STORED_PREFIX }]);
+    assert.equal(added.status, 400, 'the same prefix on a new connection meets the rule');
+    assert.ok((await f.config.getAgent(agent.id)).revision > seeded.revision);
+    assert.deepEqual((await f.config.getAgent(agent.id)).apiConnections.map(({ id, headerValuePrefix }) => [id, headerValuePrefix]),
+      [['row_api', STORED_PREFIX]]);
+  }));
+
 test('management will not delete an Agent a recent Slack thread still uses', () =>
   withFixture('write-rules-delete', async (f) => {
     const agent = await seedAgent(f);

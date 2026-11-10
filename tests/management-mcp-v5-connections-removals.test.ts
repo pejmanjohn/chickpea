@@ -464,6 +464,39 @@ test('update_connection changes a custom connection, links its key again when it
   assert.match(catalog.nextStep, /reconnect_service/);
 });
 
+test('a custom API whose stored prefix predates the rule still renames and gains a neighbor; a changed prefix meets the rule', async (t) => {
+  const { f, teamId, call } = await harness(t, 'kept-prefix');
+  await installAgent(f);
+  const stored = 'Bearer sk_live_abcdefghijklmnop0123 ';
+  await f.config.createAgentOwnedConnection({
+    account: {
+      id: 'connection_legacy', workspaceId: teamId, ownerKind: 'team', createdByMembershipId: f.owner.membership.id,
+      providerId: 'legacy', label: 'Legacy', secretRefId: 'secret_legacy', lifecycle: 'ready',
+      policy: {
+        kind: 'api', allowedHosts: ['legacy.example.test'], pathPrefixes: [], headerName: 'Authorization',
+        headerValuePrefix: stored, allowedMethods: ['GET'], authMode: 'credential',
+      },
+    },
+    binding: { agentId: 'agent_research', connectionAccountId: 'connection_legacy', providerId: 'legacy', allowedCapabilities: [], enabled: true },
+  });
+  const renamed = structured(await call('update_connection', {
+    agentId: 'agent_research', connectionId: 'legacy', version: await version(call, 'agent_research'),
+    changes: { name: 'Old API' }, idempotencyKey: 'rename',
+  }));
+  assert.equal(renamed.status, 'done');
+  structured(await call('connect_service', {
+    agentId: 'agent_research', custom: { kind: 'api', name: 'Statusboard API', hosts: ['api.statusboard.example'] },
+    version: await version(call, 'agent_research'), idempotencyKey: 'neighbor',
+  }));
+  const keyed = errorOf(await call('update_connection', {
+    agentId: 'agent_research', connectionId: 'legacy', version: await version(call, 'agent_research'),
+    changes: { headerValuePrefix: 'Token 3f9a8b7c6d5e4f3a2b1c0d ' }, idempotencyKey: 'change',
+  }), 'invalid_input');
+  assert.match(keyed.message, /value prefix is the text before the key/);
+  const legacy = (await lanes(call, 'agent_research')).apiConnections.find(({ id }) => id === 'legacy');
+  assert.deepEqual([legacy?.displayName, legacy?.headerValuePrefix], ['Old API', stored]);
+});
+
 test('remove_connection confirms first, as policy.ts says, then confirm_change disconnects it', async (t) => {
   const { f, call } = await harness(t, 'remove-connection');
   await installAgent(f);

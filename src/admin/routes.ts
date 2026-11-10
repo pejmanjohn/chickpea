@@ -255,6 +255,7 @@ import { isValidApiOAuthConnectionPolicy } from '../config/api-oauth-policy.ts';
 import { finishAgentSecretCleanup, stageAgentSecretCleanup } from '../config/agent-secret-cleanup.ts';
 import {
   apiConnectionsWriteProblem,
+  headerValuePrefixProblem,
   CONNECTION_GUIDE_MAX_LENGTH,
   CONNECTION_ID_PATTERN,
   GITHUB_API_CONNECTION_ERROR,
@@ -1294,6 +1295,15 @@ const apiConnectionsSchema = v.pipe(
   ),
 );
 
+/** Connections nothing stores yet, so every value prefix is new. An Agent PATCH checks its prefixes against the stored Agent. */
+const newApiConnectionsSchema = v.pipe(
+  apiConnectionsSchema,
+  v.check(
+    (connections) => headerValuePrefixProblem(connections) === undefined,
+    (issue) => headerValuePrefixProblem(issue.input) ?? 'API connections are invalid',
+  ),
+);
+
 const connectionAccountCreateSchema = v.pipe(
   v.object({
     workspaceId: v.pipe(v.string(), v.trim(), v.regex(/^[A-Z0-9_]{2,32}$/)),
@@ -1302,7 +1312,13 @@ const connectionAccountCreateSchema = v.pipe(
     label: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(160)),
     purpose: v.optional(v.pipe(v.string(), v.trim(), v.maxLength(500))),
     credential: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(32_768))),
-    api: v.optional(apiConnectionSchema),
+    api: v.optional(v.pipe(
+      apiConnectionSchema,
+      v.check(
+        (connection) => headerValuePrefixProblem([connection]) === undefined,
+        (issue) => headerValuePrefixProblem([issue.input]) ?? 'API connection is invalid',
+      ),
+    )),
     mcp: v.optional(mcpServerSchema),
     allowedCapabilities: v.optional(v.pipe(
       v.array(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(256))),
@@ -1409,7 +1425,7 @@ const agentSchema = v.object({
   imageModel: v.optional(modelSpecifier),
   skills: v.optional(skillsSchema, []),
   mcpServers: v.optional(mcpServersSchema, []),
-  apiConnections: v.optional(apiConnectionsSchema, []),
+  apiConnections: v.optional(newApiConnectionsSchema, []),
   repositories: v.optional(repositoriesSchema, []),
   websiteLogins: v.optional(websiteLoginsSchema, []),
   // A ready-made Agent keeps the default avatar its row shows.
@@ -10154,6 +10170,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           current.revision,
         );
       }
+      const prefixProblem = parsed.output.apiConnections &&
+        headerValuePrefixProblem(parsed.output.apiConnections, current.apiConnections);
+      if (prefixProblem) return invalidRequest(c, prefixProblem);
       const changesConnectionPolicy = parsed.output.mcpServers !== undefined ||
         parsed.output.apiConnections !== undefined ||
         parsed.output.credentialResets !== undefined;

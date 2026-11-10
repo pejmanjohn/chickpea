@@ -106,6 +106,10 @@ export function mcpConnectionsWriteProblem(connections: readonly McpConnectionRu
   return uniqueIds(connections.map(({ id }) => id)) ? undefined : 'connection ids must be unique';
 }
 
+/**
+ * Every rule for an API connection but its value prefix, which
+ * headerValuePrefixProblem checks against what is stored.
+ */
 export function apiConnectionsWriteProblem(connections: readonly ApiConnectionRuleInput[]): string | undefined {
   for (const connection of connections) {
     if (connection.allowedHosts.length === 0) return 'allowed hosts must not be empty';
@@ -118,9 +122,6 @@ export function apiConnectionsWriteProblem(connections: readonly ApiConnectionRu
     }
     if (!HEADER_NAME_PATTERN.test(connection.headerName)) {
       return `Connection ${connection.id} has a header name that is not allowed.`;
-    }
-    if (connection.headerValuePrefix !== undefined && !isHeaderValuePrefix(connection.headerValuePrefix)) {
-      return `Connection ${connection.id} value prefix is the text before the key, such as "Bearer ", at most ${HEADER_VALUE_PREFIX_MAX_LENGTH} characters. Keys go in the connection's setup.`;
     }
     if (connection.allowedMethods.length === 0 ||
         !connection.allowedMethods.every((method) => API_METHODS.has(method))) {
@@ -136,6 +137,25 @@ export function apiConnectionsWriteProblem(connections: readonly ApiConnectionRu
   }
   if (!uniqueIds(connections.map(({ id }) => id))) return 'connection ids must be unique';
   return hasOverlappingConnections(connections) ? OVERLAPPING_CONNECTIONS_ERROR : undefined;
+}
+
+type PrefixRuleInput = Pick<ApiConnectionRuleInput, 'id' | 'headerValuePrefix'>;
+
+/**
+ * A new or changed value prefix must be a short scheme, never a key. A prefix
+ * a connection already stores is kept as it is, so an Agent saved before this
+ * rule keeps saving until someone changes that prefix.
+ */
+export function headerValuePrefixProblem(
+  connections: readonly PrefixRuleInput[],
+  stored: readonly PrefixRuleInput[] = [],
+): string | undefined {
+  for (const { id, headerValuePrefix } of connections) {
+    if (headerValuePrefix === undefined || isHeaderValuePrefix(headerValuePrefix)) continue;
+    if (stored.some((kept) => kept.id === id && kept.headerValuePrefix === headerValuePrefix)) continue;
+    return `Connection ${id} value prefix is the text before the key, such as "Bearer ", at most ${HEADER_VALUE_PREFIX_MAX_LENGTH} characters. Keys go in the connection's setup.`;
+  }
+  return undefined;
 }
 
 /** The guide becomes instructions the owning Agent reads, so it holds plain text and never a key. */

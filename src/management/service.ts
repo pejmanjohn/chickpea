@@ -53,7 +53,11 @@ import {
 } from '../config/provider-impact.ts';
 import { isMetaAdsMcpConnection } from '../config/meta-ads-policy.ts';
 import { allowedToolsAfterMcpDiscovery, isMcpToolReviewRequired } from '../config/mcp-access.ts';
-import { apiConnectionsWriteProblem, REVIEWED_CONNECTOR_SETUP_MESSAGE } from '../config/agent-write-rules.ts';
+import {
+  apiConnectionsWriteProblem,
+  headerValuePrefixProblem,
+  REVIEWED_CONNECTOR_SETUP_MESSAGE,
+} from '../config/agent-write-rules.ts';
 import {
   type AgentChannelGrant,
   type AgentReferenceSummary,
@@ -4798,6 +4802,8 @@ export class WorkspaceManagementService {
       await this.stores.config.getAgent(agentId),
     );
     const edit = agentPatchWithConnectionIds(connections, patch);
+    const prefixProblem = edit.apiConnections && headerValuePrefixProblem(edit.apiConnections, connections.apiConnections);
+    if (prefixProblem) throw new AgentWriteRuleError(prefixProblem);
     // Admin changes a reviewed connector's tools only through its review; a rename is harmless.
     const reviewedPolicy = (connection: ManagementMcpConnection) =>
       canonicalJson({ ...managementMcpConnection(connection), displayName: '' });
@@ -9674,7 +9680,7 @@ interface KeyedApiConnection {
  * meets. basic_username always sends `Authorization: Basic `.
  */
 function draftScope(draft: ConnectionDraft): ConnectionTrialRequest['scope'] {
-  const problem = apiConnectionsWriteProblem([{
+  const scope = {
     id: 'draft',
     allowedHosts: draft.allowedHosts,
     pathPrefixes: draft.pathPrefixes,
@@ -9682,7 +9688,8 @@ function draftScope(draft: ConnectionDraft): ConnectionTrialRequest['scope'] {
     headerValuePrefix: draft.headerValuePrefix,
     allowedMethods: ['GET'],
     enabled: true,
-  }]);
+  };
+  const problem = apiConnectionsWriteProblem([scope]) ?? headerValuePrefixProblem([scope]);
   if (problem) {
     throw new ManagementError('invalid_request', `Nothing was sent: ${problem.replace(/^Connection draft /, 'the draft ').replace(/\.$/, '')}.`);
   }
