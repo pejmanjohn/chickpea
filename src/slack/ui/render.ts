@@ -57,6 +57,12 @@ function approvalOutcome(spec: HostApprovalSpec, record: UiSurfaceRecord): { tex
   if (approvalChoice(resolution.choice) === 'approve') {
     return { text: `Approved by ${by}.`, line: `:white_check_mark: Approved by ${by}${via} · ${when}` };
   }
+  if (resolution.refused) {
+    return {
+      text: `Already approved. The Cancel from ${by} came too late.`,
+      line: `:white_check_mark: Already approved · Cancel from ${by} came too late · ${when}`,
+    };
+  }
   const verb = spec.approval === 'browser_step' ? 'Stopped' : 'Cancelled';
   return { text: `${verb} by ${by}.`, line: `:heavy_multiplication_x: ${verb} by ${by}${via} · ${when}` };
 }

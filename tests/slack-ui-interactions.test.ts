@@ -565,16 +565,17 @@ test('Cancel on a workspace-change card retires the proposal, so a later typed a
   assert.equal((await f.stores.management.getChangeSetProposal('proposal_cancel'))?.status, 'stale');
 }));
 
-test('Cancel on a card whose change an approval is already applying leaves it to finish', async () => withFixture(async (f) => {
+/** A workspace-change card whose set an approval claimed and is applying. */
+async function claimedChangeCard(f: Parameters<Parameters<typeof withFixture>[0]>[0], proposalId: string) {
   const owner = await f.stores.identity.resolveSlackIdentity('T1', 'U1');
   assert.ok(owner);
   const scope = `slack:T1:C1:${THREAD_TS}:agent:agent_support`;
   const binding = {
-    proposalId: 'proposal_applying', organizationId: owner.membership.organizationId,
+    proposalId, organizationId: owner.membership.organizationId,
     actorUserId: owner.user.id, actorMembershipId: owner.membership.id, originKey: scope, approvalScopeKey: scope,
   };
   await f.stores.management.putChangeSetProposal({
-    ...binding, idempotencyKey: 'proposal_applying',
+    ...binding, idempotencyKey: proposalId,
     guideVersion: 'test', authoringReason: 'agent_edit', digest: 'd'.repeat(64),
     operations: [{ itemId: 'update', kind: 'update_agent', agentId: 'agent_support', expectedRevision: 1,
       patch: { description: 'Frozen description' } }],
@@ -582,12 +583,41 @@ test('Cancel on a card whose change an approval is already applying leaves it to
     targetRevisions: { 'agent:agent_support': 1 }, at: Date.now(),
   });
   await f.stores.management.claimChangeSetProposal({ ...binding, at: Date.now() });
-  const surface = await f.surface({
-    spec: { kind: 'approval', approval: 'workspace_change', proposalId: 'proposal_applying' },
-  });
+  return await f.surface({ spec: { kind: 'approval', approval: 'workspace_change', proposalId } });
+}
+
+test('Cancel on a card whose change an approval is already applying leaves it to finish, and the card says so', async () => withFixture(async (f) => {
+  const surface = await claimedChangeCard(f, 'proposal_applying');
   await f.click(surface.id, { actionId: uiActionId('host', 'approval', 1), value: uiValue(surface.id, 1) });
   assert.equal((await f.stores.management.getChangeSetProposal('proposal_applying'))?.status, 'applying',
     'never cut off mid-apply');
+  const redrawn = JSON.stringify(f.updates().at(-1)!);
+  assert.doesNotMatch(redrawn, /Cancelled/, 'the card never says cancelled for a change that goes ahead');
+  assert.match(redrawn, /Already approved · Cancel from <@U1> came too late/);
+  // A later click redraws it the same way.
+  const redraws = f.updates().length;
+  await f.click(surface.id, { actionId: uiActionId('host', 'approval', 1), value: uiValue(surface.id, 1), actionTs: '3004.000000' });
+  assert.equal(f.updates().length, redraws + 1);
+  assert.equal(JSON.stringify(f.updates().at(-1)!), redrawn);
+}));
+
+test('a Cancel whose approval finishes before Cancel can retire it says it was approved', async () => withFixture(async (f) => {
+  const surface = await claimedChangeCard(f, 'proposal_done');
+  const retire = f.stores.management.markChangeSetProposalStale.bind(f.stores.management);
+  // The approval saves its result between the Cancel's admission and its write.
+  f.stores.management.markChangeSetProposalStale = async (proposalId, at, options) => {
+    await f.stores.management.completeChangeSetProposal(proposalId, {
+      operationId: proposalId, idempotencyKey: proposalId, status: 'completed', effectiveRevision: 'revision',
+      activation: 'next_turn', outcomes: [{ itemId: 'update', operationKind: 'update_agent', disposition: 'applied',
+        changed: [{ kind: 'agent', id: 'agent_support', revision: 2 }] }],
+    }, Date.now());
+    return await retire(proposalId, at, options);
+  };
+  await f.click(surface.id, { actionId: uiActionId('host', 'approval', 1), value: uiValue(surface.id, 1) });
+  assert.equal((await f.stores.management.getChangeSetProposal('proposal_done'))?.status, 'completed');
+  const redrawn = JSON.stringify(f.updates().at(-1)!);
+  assert.doesNotMatch(redrawn, /Cancelled/);
+  assert.match(redrawn, /Already approved · Cancel from <@U1> came too late/);
 }));
 
 test('a click on a guest Agent\'s workspace-change card reaches that Agent and approves its proposal', async () => withFixture(async (f) => {

@@ -14,7 +14,7 @@
  */
 import { z } from 'zod';
 
-import type { McpServer } from '@modelcontextprotocol/server';
+import type { McpServer, RegisteredPrompt } from '@modelcontextprotocol/server';
 
 import { AGENT_AUTHORING_GUIDE_URI, DISCOVERY_GUIDE_URI } from './agent-authoring/index.ts';
 import { adminSettingsSectionShown } from './admin-links.ts';
@@ -292,10 +292,10 @@ export function registerWorkspaceManagementPrompts(
   server: McpServer,
   baseUrl?: string,
   env?: Record<string, unknown>,
-): void {
-  for (const name of WORKSPACE_MANAGEMENT_PROMPT_NAMES) {
+): RegisteredPrompt[] {
+  return WORKSPACE_MANAGEMENT_PROMPT_NAMES.map((name) => {
     const definition = WORKSPACE_MANAGEMENT_PROMPTS[name];
-    server.registerPrompt(name, {
+    return server.registerPrompt(name, {
       title: definition.title,
       description: definition.description,
       argsSchema: argsSchema(name),
@@ -305,7 +305,7 @@ export function registerWorkspaceManagementPrompts(
       baseUrl,
       env,
     )));
-  }
+  });
 }
 
 /** Every argument name must be one token: Claude Code splits prompt arguments on whitespace. */

@@ -19,6 +19,7 @@ import {
   sequenced,
   show,
   stay,
+  summaryLine,
   tell,
   toolOf,
   tryIt,
@@ -348,7 +349,7 @@ function reply(state: State, made: Call, result: ToolResult, now: number): Next<
         const create = offer.kind === 'proposal' ? offer.proposal.create.arguments : offer.create;
         return tell(
           show({ kind: 'similar', summary: content.summary, create, name: create.name, avatarUrl: offerAvatar(offer) }),
-          `The person pressed Create in Slack on the card, but nothing was created: ${content.summary}`,
+          `The person pressed Create in Slack on the card, but nothing was created: ${summaryLine(content.summary)}`,
         );
       }
       return changeView(content, now);
@@ -364,9 +365,12 @@ function reply(state: State, made: Call, result: ToolResult, now: number): Next<
       }
       const name = view.kind === 'change' ? view.preview.agent.name : content.agent?.name;
       const agent = name === undefined ? 'the Agent' : agentNamed(name);
+      // The summary names the Agent again, whole and unquoted, so it is left out when this sentence names it.
       return tell(changeView(content, now, { saved: true }), content.status === 'needs_confirmation'
         ? `The person pressed Save on the card for ${agent}. Nothing has changed yet: it waits for their confirmation on the card.`
-        : `The person saved the change to ${agent} from the card. ${content.summary}`);
+        : name === undefined
+          ? `The person saved the change from the card. ${summaryLine(content.summary)}`
+          : `The person saved the change to ${agent} from the card.`);
     }
     case 'confirm_change':
       if (code === 'confirmation_expired') return show(EXPIRED);
@@ -375,7 +379,7 @@ function reply(state: State, made: Call, result: ToolResult, now: number): Next<
           ? stay({ view, busy: false, error: failure ?? GENERIC })
           : tell(show({ kind: 'notice', title: 'Nothing changed', body: failure }), `The person confirmed on the card, but nothing changed: ${failure}`);
       }
-      return tell(changeView(content, now), `The person confirmed on the card. ${content.summary}`);
+      return tell(changeView(content, now), `The person confirmed on the card. ${summaryLine(content.summary)}`);
     case 'decline_change': {
       // Kept only on an answer that proves the token dead: Chickpea retired it, or holds no
       // confirmation of this person's under it. Any other failure may leave it live.
@@ -383,7 +387,7 @@ function reply(state: State, made: Call, result: ToolResult, now: number): Next<
       if (!retired) return stay({ view, busy: false, error: failure ?? GENERIC });
       const keep = view.kind === 'confirm' ? view.confirmation.ask.keep : 'Keep it';
       if (!failure && isChangeResult(content) && content.status === 'done') {
-        return tell(changeView(content, now), `On the card, the person pressed "${keep}", but the change was already made. ${content.summary}`);
+        return tell(changeView(content, now), `On the card, the person pressed "${keep}", but the change was already made. ${summaryLine(content.summary)}`);
       }
       return tell(show(KEPT), `On the card, the person pressed "${keep}", so nothing changed. Make this change only if they ask for it again.`);
     }

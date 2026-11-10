@@ -2492,16 +2492,21 @@ async function handleSlackUiAction(input: SlackUiContext & { action: SlackUiActi
   const messageTs = microsecondSlackTs(action.actionTs);
   if (!messageTs) return refuse('unavailable', surface);
   const outcome = await admitUiAnswer(input, { surface, answer, userId: action.userId, messageTs });
-  const current = await uiSurfaceRecord(state, { kind: 'get_surface', id: surface.id }) ?? surface;
+  let current = await uiSurfaceRecord(state, { kind: 'get_surface', id: surface.id }) ?? surface;
   if (outcome === 'admitted') {
     emitUiInteraction('resolved');
     // Cancel retires the proposal, so a later typed "approve" cannot apply
     // what the card now shows as cancelled. Only the claimed click gets here.
+    // One an approval claimed first goes ahead, and the card says so.
     if (spec.kind === 'approval' && spec.approval === 'workspace_change' &&
         approvalChoice(answer.choice) === 'decline') {
-      await stores.management.markChangeSetProposalStale(spec.proposalId, Date.now(), { from: 'pending' }).catch(() => {
-        console.warn('[chickpea] cancelled proposal could not be retired');
-      });
+      const retired = await stores.management.markChangeSetProposalStale(spec.proposalId, Date.now(), { from: 'pending' })
+        .catch(() => void console.warn('[chickpea] cancelled proposal could not be retired'));
+      if (retired && retired.status !== 'stale' && current.resolution) {
+        current = await uiSurfaceRecord(state, {
+          kind: 'settle_surface', id: current.id, resolution: { ...current.resolution, refused: true },
+        }) ?? current;
+      }
     }
     await redraw(current);
     return;

@@ -615,7 +615,7 @@ try {
     await browser.click('save');
     await browser.waitForTitle(/^✓ Saved Invoice Chaser$/);
     assert.equal(await subtitle(), 'Try it: mention @invoices in #finance.', 'a mention reaches it in its Channel');
-    await told(/^The person saved the change to the Agent "Invoice Chaser" from the card\. Saved Invoice Chaser\.$/, 'Saved');
+    await told(/^The person saved the change to the Agent "Invoice Chaser" from the card\.$/, 'Saved');
     await shot('5-saved');
     await browser.click('undo');
     await browser.waitForTitle(/^✓ Undid the change$/);

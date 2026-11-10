@@ -117,7 +117,7 @@ export interface UiSurfaceResolution {
   values?: string[];
   /** The answer arrived as typed text rather than a click. */
   typed?: true;
-  /** The chosen Agent could not take the message; the card says so. */
+  /** It could not take effect, as the card says: the picked Agent could not take it, or Cancel came after an approval. */
   refused?: true;
   /**
    * The option now answering the message, set once the pick's takeover

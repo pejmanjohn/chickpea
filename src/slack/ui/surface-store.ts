@@ -419,7 +419,8 @@ export class UiSurfaceStoreLogic {
 
   /**
    * Record how a resolved surface's answer ended, when that is known only
-   * after the claim: a front-desk pick, once its takeover was admitted or not.
+   * after the claim: a front-desk pick, once its takeover was admitted or
+   * not, or a Cancel that came after an approval.
    */
   settle(id: string, resolution: UiSurfaceResolution): UiSurfaceRecord | undefined {
     this.db.run(

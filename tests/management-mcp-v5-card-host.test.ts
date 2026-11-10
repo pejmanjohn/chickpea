@@ -1,8 +1,28 @@
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 
+import { createMcpHandler, McpServer } from '@modelcontextprotocol/server';
+
 import type { McpAuthenticatedPrincipal } from '../src/auth/mcp-oauth-routes.ts';
-import { V4_TOOL_REPLACEMENTS, workspaceManagementMcpFetch } from '../src/management/mcp.ts';
+import { DISCOVERY_GUIDE_URI } from '../src/management/agent-authoring/index.ts';
+import { DISCOVERY_GUIDE, DISCOVERY_GUIDE_FIVE_ZERO } from '../src/management/agent-authoring/discovery-guide.ts';
+import { codingAgentAuthoringGuideResource } from '../src/management/agent-authoring/mcp-guide.ts';
+import {
+  V4_TOOL_REPLACEMENTS,
+  WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI,
+  WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI,
+  workspaceManagementMcpFetch,
+} from '../src/management/mcp.ts';
+import {
+  WORKSPACE_MANAGEMENT_PROMPT_NAMES,
+  WORKSPACE_MANAGEMENT_PROMPTS,
+  workspaceManagementPromptText,
+  type WorkspaceManagementPromptName,
+} from '../src/management/prompts.ts';
+import { writeHints } from '../src/management/mcp-v5/conventions.ts';
+import type { FiveZeroDeps } from '../src/management/mcp-v5/reads.ts';
+import { changeResultOutput, getWorkspaceInput } from '../src/management/mcp-v5/schemas.ts';
+import { registerFiveZeroTool, type FiveZeroTool, type FiveZeroToolName } from '../src/management/mcp-v5/tools.ts';
 import { createFixtureAgent, createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 import { jsonRequest } from './helpers/mcp-card-host.ts';
 
@@ -86,7 +106,7 @@ async function harness(t: TestContext, suffix: string) {
     {
       'mcp-protocol-version': MODERN,
       'mcp-method': method,
-      ...typeof params.name === 'string' ? { 'mcp-name': params.name } : {},
+      ...typeof params.name === 'string' ? { 'mcp-name': params.name } : typeof params.uri === 'string' ? { 'mcp-name': params.uri } : {},
     },
   );
 
@@ -298,6 +318,102 @@ test('a confirm that lands between Keep\'s read and its write wins: Keep never s
   assert.equal((await f.management.getChangeSetProposal(second))?.status, 'applying', 'never cut off mid-apply');
 });
 
+type ChangeSet = NonNullable<Awaited<ReturnType<Awaited<ReturnType<typeof harness>>['f']['management']['getChangeSetProposal']>>>;
+
+/**
+ * Two confirms of one token: B reads the set while it waits, and `between`
+ * runs right after that read, where confirm A claims and applies it. The
+ * store's own methods read the set synchronously, so every other read stays
+ * synchronous.
+ */
+function afterConfirmRead(
+  f: Awaited<ReturnType<typeof harness>>['f'],
+  between: (proposalId: string) => Promise<unknown>,
+  shown: (proposal: ChangeSet) => ChangeSet = (proposal) => proposal,
+) {
+  type Read = (this: object, proposalId: string) => ChangeSet | undefined;
+  const store = f.management as unknown as { getChangeSetProposal: (this: object, proposalId: string) => unknown };
+  const read = (Object.getPrototypeOf(f.management) as { getChangeSetProposal: Read }).getChangeSetProposal;
+  let armed = true;
+  store.getChangeSetProposal = function (proposalId) {
+    const proposal = read.call(this, proposalId);
+    if (!armed || proposal?.status !== 'pending') return proposal;
+    armed = false;
+    return between(proposalId).then(() => shown(proposal));
+  };
+}
+
+test('a confirm whose recheck fails because another confirm applied it first never retires that one', async (t) => {
+  const { f, connect } = await harness(t, 'card-confirm-race');
+  const { call } = await connect({});
+  const ask = async (key: string) => (await call('update_agent', {
+    agentId: 'agent_support', version: await version(call, 'agent_support'), on: false, idempotencyKey: key,
+  })).structuredContent!.confirmation.confirmToken as string;
+
+  // A claimed the set and turned the Agent off, and has not saved its result yet.
+  const first = await ask('off');
+  afterConfirmRead(f, async (proposalId) => {
+    await claim(f, proposalId);
+    await f.config.updateAgent('agent_support', { enabled: false });
+  });
+  const busy = await call('confirm_change', { confirmToken: first });
+  assert.equal(busy.structuredContent!.error.code, 'in_progress', JSON.stringify(busy.structuredContent));
+  assert.equal((await f.management.getChangeSetProposal(first))?.status, 'applying', 'A keeps its claim, so its result is saved');
+
+  // A finished first: B returns A's result instead of saying it changed.
+  await f.config.updateAgent('agent_support', { enabled: true });
+  const second = await ask('off-again');
+  let applied: ToolResult | undefined;
+  afterConfirmRead(f, async () => {
+    applied = await call('confirm_change', { confirmToken: second });
+  });
+  const replayed = await call('confirm_change', { confirmToken: second });
+  assert.equal(applied?.structuredContent!.status, 'done');
+  assert.equal(replayed.structuredContent!.status, 'done', JSON.stringify(replayed.structuredContent));
+  assert.equal((await f.management.getChangeSetProposal(second))?.status, 'completed', 'its result is kept');
+  assert.equal((await f.config.getAgent('agent_support')).enabled, false);
+});
+
+test('a confirm that finds the digest changed never retires a set another confirm claimed since its read', async (t) => {
+  const { f, connect } = await harness(t, 'card-confirm-digest');
+  const { call } = await connect({});
+  const off = await call('update_agent', { agentId: 'agent_support', version: await version(call, 'agent_support'), on: false, idempotencyKey: 'off' });
+  const { confirmToken } = off.structuredContent!.confirmation;
+  afterConfirmRead(f, (proposalId) => claim(f, proposalId), (proposal) => ({ ...proposal, digest: 'f'.repeat(64) }));
+  const busy = await call('confirm_change', { confirmToken });
+  assert.equal(busy.structuredContent!.error.code, 'in_progress', JSON.stringify(busy.structuredContent));
+  assert.equal((await f.management.getChangeSetProposal(confirmToken))?.status, 'applying', 'never cut off mid-apply');
+
+  // A set that still waits is retired as before.
+  const again = await call('update_agent', { agentId: 'agent_support', version: await version(call, 'agent_support'), on: false, idempotencyKey: 'off-again' });
+  const token = again.structuredContent!.confirmation.confirmToken as string;
+  afterConfirmRead(f, async () => undefined, (proposal) => ({ ...proposal, digest: 'f'.repeat(64) }));
+  const refused = await call('confirm_change', { confirmToken: token });
+  assert.equal(refused.structuredContent!.error.message, 'That confirmation no longer applies. Ask again to make the change.');
+  assert.equal((await f.management.getChangeSetProposal(token))?.status, 'stale');
+});
+
+test('a set whose applier is gone and whose digest no longer matches is retired, not left applying for good', async (t) => {
+  const { f, connect } = await harness(t, 'card-confirm-stuck');
+  const { call } = await connect({});
+  const off = await call('update_agent', { agentId: 'agent_support', version: await version(call, 'agent_support'), on: false, idempotencyKey: 'off' });
+  const { confirmToken } = off.structuredContent!.confirmation;
+  const { organizationId, actorUserId, actorMembershipId, originKey, approvalScopeKey } = (await f.management.getChangeSetProposal(confirmToken))!;
+  // Claimed by a confirm that crashed long ago: its lease has run out.
+  await f.management.claimChangeSetProposal({
+    proposalId: confirmToken, organizationId, actorUserId, actorMembershipId, originKey, approvalScopeKey, at: Date.now() - 60_000,
+  });
+  type Read = (this: object, proposalId: string) => ChangeSet | undefined;
+  const read = (Object.getPrototypeOf(f.management) as { getChangeSetProposal: Read }).getChangeSetProposal;
+  (f.management as unknown as { getChangeSetProposal: Read }).getChangeSetProposal = function (proposalId) {
+    const proposal = read.call(this, proposalId);
+    return proposal && { ...proposal, digest: 'f'.repeat(64) };
+  };
+  const refused = await call('confirm_change', { confirmToken });
+  assert.equal(refused.structuredContent!.error.message, 'That confirmation no longer applies. Ask again to make the change.');
+  assert.equal(read.call(f.management, confirmToken)?.status, 'stale');
+});
+
 const V4_TOOLS = Object.keys(V4_TOOL_REPLACEMENTS);
 const V4_OFF = {
   idempotencyKey: 'v4-off',
@@ -334,6 +450,122 @@ test('a client that draws cards gets no 4.x tool: none is listed, and a call to 
   const applied = (await plain.request('tools/call', { name: 'apply_workspace_changes', arguments: V4_OFF })).message;
   assert.equal(refusedCall(applied), false, JSON.stringify(applied));
   assert.match(JSON.stringify(applied.result.structuredContent), /"proposalId":"changeset_/, 'its model gets the confirmation, as before');
+});
+
+/** A later tool no card draws, which returns `result`. */
+async function undrawnTool(cardHost: boolean, result: Record<string, unknown>): Promise<ToolResult> {
+  const stub: FiveZeroTool = {
+    title: 'Stub',
+    description: 'A later write no card draws.',
+    input: getWorkspaceInput,
+    output: changeResultOutput,
+    write: writeHints({ destructive: false }),
+    run: async () => result,
+  };
+  const handler = createMcpHandler(() => {
+    const server = new McpServer({ name: 'stub', version: '0' });
+    registerFiveZeroTool(server, { baseUrl: BASE_URL } as FiveZeroDeps, 'stub_write' as FiveZeroToolName, stub, () => cardHost);
+    return server;
+  }, { legacy: 'stateless' });
+  const response = await handler.fetch(jsonRequest(
+    { accept: 'application/json, text/event-stream', 'content-type': 'application/json', 'mcp-protocol-version': LEGACY },
+    { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'stub_write', arguments: {} } },
+  ));
+  const text = await response.text();
+  const json = text.trimStart().startsWith('{') ? text : text.split('\n').find((line) => line.startsWith('data: '))!.slice(6);
+  return (JSON.parse(json) as { result: ToolResult }).result;
+}
+
+test('any tool\'s confirmation keeps its token from a card host\'s model, even one no card draws', async () => {
+  const confirmation = {
+    status: 'needs_confirmation',
+    summary: 'This change waits for the person\'s confirmation. Nothing has changed yet.',
+    confirmation: {
+      confirmToken: 'changeset_stub', preview: 'Turns it off.', expiresAt: '2026-11-10T00:30:00.000Z', inAdmin: true,
+      ask: { question: 'Turn it off?', consequence: 'It stops answering.', confirm: 'Turn off', keep: 'Keep it on' },
+    },
+  };
+  const held = await undrawnTool(true, confirmation);
+  assert.equal(held.isError, undefined, JSON.stringify(held));
+  assert.equal(held.structuredContent!.confirmation.confirmToken, undefined);
+  assert.ok(!modelView(held).includes('changeset_stub'), 'the model never sees it');
+  assert.deepEqual(held._meta?.['chickpea/held'], { confirmToken: 'changeset_stub' }, 'only _meta carries it');
+
+  // Without cards, the model keeps it, as before.
+  const plain = await undrawnTool(false, confirmation);
+  assert.equal(plain.structuredContent!.confirmation.confirmToken, 'changeset_stub');
+  assert.equal(plain._meta, undefined);
+
+  // An undrawn change's undo token still reaches the model.
+  const done = await undrawnTool(true, { status: 'done', summary: 'Saved.', undoToken: 'undo_stub' });
+  assert.equal(done.structuredContent!.undoToken, 'undo_stub');
+  assert.equal(done._meta, undefined);
+});
+
+/** The 4.x tools a text names, each as a whole word: `import_skill` is not `import_skill_from_github`. */
+const v4Named = (text: string) => V4_TOOLS.filter((name) => new RegExp(`\\b${name}\\b`).test(text));
+const PROMPT_ARGUMENTS: Record<string, string> = {
+  purpose: 'chase overdue invoices', handle: 'support', change: 'answer in French', service: 'gmail',
+  what: 'post a Monday summary', url: 'octo/skills',
+};
+const promptArguments = (name: WorkspaceManagementPromptName) =>
+  Object.fromEntries(WORKSPACE_MANAGEMENT_PROMPTS[name].arguments.map(({ name: arg }) => [arg, PROMPT_ARGUMENTS[arg]!]));
+const promptText = (message: { result?: any }) =>
+  (message.result.messages as Array<{ content: { text: string } }>).map(({ content }) => content.text).join('\n');
+const resourceText = (message: { result?: any }) =>
+  (message.result.contents as Array<{ text?: string }>).map(({ text }) => text ?? '').join('\n');
+const V4_GUIDES = [WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI, WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI];
+
+test('a client that draws cards gets no prompt or guide that tells its model to call a 4.x tool', async (t) => {
+  const { connect, modernRequest } = await harness(t, 'card-v4-briefs');
+  type Request = (method: string, params?: Record<string, unknown>) => Promise<{ message: { result?: any; error?: unknown } }>;
+  const legs: Array<[string, Request]> = [
+    ['2025 session', (await connect(CARDS)).request],
+    ['2026-07-28', (method, params = {}) => modernRequest(CARDS, method, params)],
+  ];
+  for (const [leg, request] of legs) {
+    const listed = (await request('prompts/list')).message.result.prompts as Array<{ name: string }>;
+    for (const { name } of listed) {
+      assert.deepEqual(v4Named(promptText((await request('prompts/get', { name, arguments: promptArguments(name as WorkspaceManagementPromptName) })).message)), [], `${leg}: ${name}`);
+    }
+    for (const name of WORKSPACE_MANAGEMENT_PROMPT_NAMES) {
+      const got = (await request('prompts/get', { name, arguments: promptArguments(name) })).message;
+      assert.ok(refusedCall(got) || v4Named(promptText(got)).length === 0, `${leg}: prompts/get ${name} names no 4.x tool`);
+    }
+
+    const resources = (await request('resources/list')).message.result.resources as Array<{ uri: string }>;
+    const uris = resources.map(({ uri }) => uri);
+    assert.deepEqual(V4_GUIDES.filter((uri) => uris.includes(uri)), [], `${leg}: no 4.x guide is listed`);
+    assert.deepEqual(v4Named(JSON.stringify(resources)), [], leg);
+    for (const { uri } of resources) {
+      assert.deepEqual(v4Named(resourceText((await request('resources/read', { uri })).message)), [], `${leg}: ${uri}`);
+    }
+    assert.equal(resourceText((await request('resources/read', { uri: DISCOVERY_GUIDE_URI })).message), DISCOVERY_GUIDE_FIVE_ZERO,
+      `${leg}: the discovery guide stays, in 5.0 terms`);
+  }
+});
+
+test('a client without cards keeps every prompt and guide as before', async (t) => {
+  const { connect, modernRequest } = await harness(t, 'card-none-briefs');
+  type Request = (method: string, params?: Record<string, unknown>) => Promise<{ message: { result?: any } }>;
+  const legs: Array<[string, Request]> = [
+    ['2025', (await connect({})).request],
+    ['2026-07-28', (method, params = {}) => modernRequest({}, method, params)],
+  ];
+  for (const [leg, request] of legs) {
+    const listed = ((await request('prompts/list')).message.result.prompts as Array<{ name: string }>).map(({ name }) => name);
+    assert.deepEqual(listed, [...WORKSPACE_MANAGEMENT_PROMPT_NAMES], leg);
+    for (const name of WORKSPACE_MANAGEMENT_PROMPT_NAMES) {
+      const args = promptArguments(name);
+      assert.equal(promptText((await request('prompts/get', { name, arguments: args })).message),
+        workspaceManagementPromptText(name, args, BASE_URL), `${leg}: ${name}`);
+    }
+    const uris = ((await request('resources/list')).message.result.resources as Array<{ uri: string }>).map(({ uri }) => uri);
+    assert.deepEqual(V4_GUIDES.filter((uri) => !uris.includes(uri)), [], leg);
+    assert.equal(resourceText((await request('resources/read', { uri: DISCOVERY_GUIDE_URI })).message), DISCOVERY_GUIDE, leg);
+    assert.equal(resourceText((await request('resources/read', { uri: WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI })).message),
+      JSON.stringify(codingAgentAuthoringGuideResource()), leg);
+  }
 });
 
 test('only a session Chickpea named draws cards: any other session ID keeps the token where the model reads it', async (t) => {
