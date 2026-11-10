@@ -205,7 +205,7 @@ import {
   managementStorageIdempotencyKey,
   validateManagementOperations,
 } from './contracts.ts';
-import { classifyManagementOperation, removesMemberAccess } from './policy.ts';
+import { channelChangeNeedsAdmin, classifyManagementOperation, removesMemberAccess } from './policy.ts';
 import type { PreviewWorkspaceRecipeInput, WorkspaceRecipe, WorkspaceRecipePreview } from './recipes.ts';
 import { matchesEgressPrefix } from '../config/egress.ts';
 import {
@@ -2984,7 +2984,7 @@ export class WorkspaceManagementService {
             itemId: operation.itemId,
             operationKind: operation.kind,
             disposition: 'failed',
-            ...unappliedReason(policy.reason),
+            ...policyRefusal(operation, policy.reason),
           });
         } else if (actor.origin.kind === 'slack' && operation.kind === 'request_setup' &&
             policy.posture === 'confirmation') {
@@ -3189,7 +3189,7 @@ export class WorkspaceManagementService {
       }));
       return policy.allowed
         ? undefined
-        : { ...item, disposition: 'failed', ...unappliedReason(policy.reason) };
+        : { ...item, disposition: 'failed', ...policyRefusal(operation, policy.reason) };
     } catch (error) {
       if (!isExpectedMutationError(error)) throw error;
       return { ...item, disposition: 'failed', ...mutationFailure(error) };
@@ -3921,7 +3921,13 @@ export class WorkspaceManagementService {
       return;
     }
     if (operation.kind === 'remove_provider_credential' || operation.kind === 'set_workspace_model' ||
-        (operation.kind === 'put_channel' && operation.channel.lifecycle === 'archived')) {
+        (operation.kind === 'put_channel' && channelChangeNeedsAdmin(
+          operation.channel.lifecycle,
+          (await this.stores.config.getChannel(
+            operation.channel.workspaceId,
+            operation.channel.channelId,
+          ))?.lifecycle,
+        ))) {
       if (actor.role === 'member') {
         throw new ManagementError('forbidden', 'Current workspace authority no longer permits this confirmation.');
       }
@@ -6023,7 +6029,9 @@ export class WorkspaceManagementService {
       return {
         actor,
         operation,
-        ...(operation.channel.lifecycle === 'archived' ? { adminRequired: true } : {}),
+        ...(channelChangeNeedsAdmin(operation.channel.lifecycle, currentChannelLifecycle)
+          ? { adminRequired: true }
+          : {}),
         ...(currentChannelLifecycle ? { currentChannelLifecycle } : {}),
       };
     }
@@ -6769,6 +6777,24 @@ export class WorkspaceManagementService {
         return mutationForAgentEdit(agent, prepared.inverse as AgentEditInverse | undefined);
       }
       case 'put_channel': {
+        if (actor.role === 'member') {
+          // Decide the rule on the revision the write replaces, so an Admin's
+          // turn-off landing after the policy read cannot be undone by a member.
+          const current = await this.stores.config.getChannel(
+            operation.channel.workspaceId,
+            operation.channel.channelId,
+          );
+          requireExpectedRevision(operation.expectedRevision, current?.revision ?? 0);
+          if (channelChangeNeedsAdmin(operation.channel.lifecycle, current?.lifecycle)) {
+            // The Channel changed after the policy read it; read again, as any conflict.
+            throw new ChannelRevisionConflictError(
+              operation.channel.workspaceId,
+              operation.channel.channelId,
+              operation.expectedRevision,
+              current?.revision ?? 0,
+            );
+          }
+        }
         if (operation.channel.lifecycle === 'active') {
           await this.stores.assertAgentChannelMembership?.({
             actor,
@@ -10150,4 +10176,21 @@ const UNAPPLIED_INSTRUCTIONS: Readonly<Record<string, string>> = {
 function unappliedReason(code: string): UnappliedReason {
   const instruction = UNAPPLIED_INSTRUCTIONS[code];
   return instruction ? { code, instruction } : { code };
+}
+
+/** Why the policy refused an item; for a Channel, who can turn Chickpea on or off there. */
+function policyRefusal(
+  operation: ManagementOperation,
+  reason: 'owner_required' | 'operational_access_required',
+): UnappliedReason {
+  if (operation.kind !== 'put_channel' || reason !== 'operational_access_required') {
+    return unappliedReason(reason);
+  }
+  // Only a Channel that is off refuses a member a change that leaves it on.
+  return {
+    code: reason,
+    instruction: operation.channel.lifecycle === 'active'
+      ? 'Chickpea is off in this Channel, and only a workspace Owner or Admin can turn it back on or change it. Ask one of them to do it.'
+      : 'Only a workspace Owner or Admin can turn Chickpea off in a Channel or change one where it is off. Ask one of them to do it.',
+  };
 }
