@@ -1242,6 +1242,8 @@ export interface ManagementAgentCreationProgress {
   channelGrants: AgentChannelGrantStatus[];
   /** The caller's newest welcome for this Agent in their DM with Chickpea; absent when none is kept. */
   welcome?: { status: ManagementReceiptOutboxStatus; receipt: ManagementReceipt };
+  /** It has the first question saved when it was created, which a test run asks. */
+  hasFirstAsk: boolean;
 }
 
 export interface ManagementRoutineInspectionInput {

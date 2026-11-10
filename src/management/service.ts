@@ -4192,7 +4192,7 @@ export class WorkspaceManagementService {
   ): Promise<ManagementAgentCreationProgress> {
     const actor = await this.requireLiveActor(context);
     const agent = await this.requireEditableAgent(actor, agentId);
-    const [grants, welcomes] = await Promise.all([
+    const [grants, welcomes, firstAsk] = await Promise.all([
       this.stores.config.listAgentChannelGrants(),
       this.stores.management.execute({
         kind: 'list_direct_agent_creation_welcomes',
@@ -4200,6 +4200,7 @@ export class WorkspaceManagementService {
         agentId,
         requesterMembershipId: actor.membershipId,
       }),
+      this.stores.config.getAgentFirstAsk?.(agentId),
     ]);
     const welcome = welcomes.kind === 'outbox_batch' ? welcomes.outbox[0] : undefined;
     const handle = agent.slackPresence?.normalizedHandle;
@@ -4216,6 +4217,7 @@ export class WorkspaceManagementService {
         : {}),
       channelGrants: grants.filter((grant) => grant.agentId === agentId).map(({ status }) => status),
       ...(welcome ? { welcome: { status: welcome.status, receipt: welcome.receipt } } : {}),
+      hasFirstAsk: Boolean(firstAsk),
     };
   }
 
