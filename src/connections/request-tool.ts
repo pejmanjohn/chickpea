@@ -64,6 +64,8 @@ export interface ConnectionRequestToolOptions {
   /** This turn's live connections; resolved per call. */
   resolveAccess(): Promise<ConnectionAccess>;
   agentId: string;
+  /** A test run's: only GET and HEAD, whatever the connection allows. */
+  readsOnly?: boolean;
   /** Operator log line; defaults to console.info. Never receives credentials or bodies. */
   log?: (event: ConnectionRequestLogEvent) => void;
 }
@@ -148,6 +150,9 @@ export function createConnectionRequestTool(options: ConnectionRequestToolOption
         });
         return connectionRefusal(reason, message, extra);
       };
+      if (options.readsOnly && !READ_METHODS.has(method)) {
+        return refuse('write_not_allowed', 'This run can only read through connections: send GET or HEAD.');
+      }
 
       try {
         target = new URL(data.url);

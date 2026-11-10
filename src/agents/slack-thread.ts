@@ -2397,6 +2397,7 @@ export function createRuntimePlanConnectionRequestTool(plan: RuntimePlanV2) {
   return createConnectionRequestTool({
     agentId: plan.agentId,
     resolveAccess: () => resolveRuntimePlanConnectionAccess(plan, { timeoutMs: CONNECTION_REQUEST_TIMEOUT_MS }),
+    ...(plan.conversation.surface === 'test' ? { readsOnly: true } : {}),
   });
 }
 

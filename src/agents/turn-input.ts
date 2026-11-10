@@ -38,7 +38,7 @@ import { parseTurnEnvelope, type TurnEnvelopeV1 } from './turn-envelope.ts';
 export const SLACK_TURN_INPUT_SCHEMA_VERSION = 1 as const;
 
 /** Agent memory bodies are capped at 64 KiB; this leaves room for framing. */
-const MAX_MEMORY_BLOCK_BYTES = 80 * 1024;
+export const MAX_MEMORY_BLOCK_BYTES = 80 * 1024;
 /** Stays under Durable Object SQLite's 2 MB row limit. */
 const MAX_TURN_INPUT_BYTES = 1_500_000;
 /** Staged inputs kept per instance (one thread): enough for retries and recovery. */
