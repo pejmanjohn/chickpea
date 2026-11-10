@@ -198,6 +198,7 @@ import {
   type ConnectorLandingPageInput,
   renderManagedConnectionDeparturePage,
   renderCatalogConnectionAccessReviewPage,
+  renderCatalogConnectionCancelledPage,
   renderCatalogConnectionSetupPage,
   renderManagedConnectionSetupPage,
   renderManagedConnectionSuccessPage,
@@ -356,6 +357,13 @@ export function createManagementSetupRoutes(
         return terminalPage(c, setup, dependencies.management);
       }
       if (setup.status === 'failed' && setup.failureCode === 'target_changed') return staleLinkPage(c, setup, 410);
+      // Cancel on an app's link leaves the setup as it was and sends the person back to the app.
+      if (setup.origin.kind === 'mcp' && c.req.query('cancelled') === '1') {
+        const page = await catalogConnectionPageInput(c, setup, dependencies);
+        return page
+          ? c.html(renderCatalogConnectionCancelledPage({ ...page, ...await setupReturnApp(setup, dependencies, options) }))
+          : unavailablePage(c);
+      }
       const page = await catalogConnectionPageInput(c, setup, dependencies, principal);
       return page
         ? c.html(page.accessReview

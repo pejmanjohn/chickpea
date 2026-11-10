@@ -254,7 +254,9 @@ import {
 import { isValidApiOAuthConnectionPolicy } from '../config/api-oauth-policy.ts';
 import { finishAgentSecretCleanup, stageAgentSecretCleanup } from '../config/agent-secret-cleanup.ts';
 import {
+  apiConnectionsShapeProblem,
   apiConnectionsWriteProblem,
+  headerValuePrefixProblem,
   CONNECTION_GUIDE_MAX_LENGTH,
   CONNECTION_ID_PATTERN,
   GITHUB_API_CONNECTION_ERROR,
@@ -1242,43 +1244,45 @@ const connectorHost = v.pipe(
   v.check(isAllowedConnectorHost, 'Host not allowed'),
 );
 
+const apiConnectionFieldsSchema = v.object({
+  id: v.pipe(v.string(), v.regex(CONNECTION_ID_PATTERN)),
+  displayName: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(80)),
+  allowedHosts: v.pipe(
+    v.array(connectorHost),
+    v.maxLength(20),
+    v.check(
+      (hosts) => hosts.every((host) => !isGithubAppManagedHost(host)),
+      GITHUB_API_CONNECTION_ERROR,
+    ),
+  ),
+  pathPrefixes: v.pipe(
+    // Path-only: a `?query` or `#fragment` is silently dropped by both
+    // matchesEgressPrefix and just-bash, which would broaden credential
+    // injection and permitted methods to the whole path. Reject them here, as
+    // the host validation above already rejects smuggled URL components.
+    v.array(v.pipe(v.string(), v.trim(), v.regex(/^\/[^\s?#]*$/), v.maxLength(512))),
+    v.maxLength(20),
+  ),
+  headerName: v.pipe(v.string(), v.trim(), v.regex(/^[A-Za-z0-9-]{1,128}$/)),
+  headerValuePrefix: v.optional(v.pipe(v.string(), v.maxLength(64))),
+  allowedMethods: v.pipe(
+    v.array(v.picklist(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'])),
+    v.minLength(1),
+  ),
+  enabled: v.boolean(),
+  authMode: v.optional(v.picklist(['credential', 'oauth'])),
+  oauthProvider: v.optional(v.literal('google')),
+  oauthScopes: v.optional(
+    v.pipe(v.array(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(256))), v.maxLength(12)),
+  ),
+  oauthAppType: v.optional(v.picklist(['workspace-internal', 'external'])),
+  identity: v.optional(mcpIdentitySchema),
+  presetId: v.optional(v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9-]{0,63}$/), v.maxLength(64))),
+  guide: connectionGuideSchema,
+});
+
 const apiConnectionSchema = v.pipe(
-  v.object({
-    id: v.pipe(v.string(), v.regex(CONNECTION_ID_PATTERN)),
-    displayName: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(80)),
-    allowedHosts: v.pipe(
-      v.array(connectorHost),
-      v.maxLength(20),
-      v.check(
-        (hosts) => hosts.every((host) => !isGithubAppManagedHost(host)),
-        GITHUB_API_CONNECTION_ERROR,
-      ),
-    ),
-    pathPrefixes: v.pipe(
-      // Path-only: a `?query` or `#fragment` is silently dropped by both
-      // matchesEgressPrefix and just-bash, which would broaden credential
-      // injection and permitted methods to the whole path. Reject them here, as
-      // the host validation above already rejects smuggled URL components.
-      v.array(v.pipe(v.string(), v.trim(), v.regex(/^\/[^\s?#]*$/), v.maxLength(512))),
-      v.maxLength(20),
-    ),
-    headerName: v.pipe(v.string(), v.trim(), v.regex(/^[A-Za-z0-9-]{1,128}$/)),
-    headerValuePrefix: v.optional(v.pipe(v.string(), v.maxLength(64))),
-    allowedMethods: v.pipe(
-      v.array(v.picklist(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'])),
-      v.minLength(1),
-    ),
-    enabled: v.boolean(),
-    authMode: v.optional(v.picklist(['credential', 'oauth'])),
-    oauthProvider: v.optional(v.literal('google')),
-    oauthScopes: v.optional(
-      v.pipe(v.array(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(256))), v.maxLength(12)),
-    ),
-    oauthAppType: v.optional(v.picklist(['workspace-internal', 'external'])),
-    identity: v.optional(mcpIdentitySchema),
-    presetId: v.optional(v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9-]{0,63}$/), v.maxLength(64))),
-    guide: connectionGuideSchema,
-  }),
+  apiConnectionFieldsSchema,
   v.check(
     (connection) => apiConnectionsWriteProblem([connection]) === undefined,
     (issue) => apiConnectionsWriteProblem([issue.input]) ?? 'API connection is invalid',
@@ -1291,6 +1295,25 @@ const apiConnectionsSchema = v.pipe(
   v.check(
     (connections) => apiConnectionsWriteProblem(connections) === undefined,
     (issue) => apiConnectionsWriteProblem(issue.input) ?? 'API connections are invalid',
+  ),
+);
+
+/**
+ * An Agent PATCH resends the Agent's stored connections, so its handler checks
+ * their value prefixes against the stored Agent; everything else is checked here.
+ */
+const storedApiConnectionsSchema = v.pipe(
+  v.array(v.pipe(
+    apiConnectionFieldsSchema,
+    v.check(
+      (connection) => apiConnectionsShapeProblem([connection]) === undefined,
+      (issue) => apiConnectionsShapeProblem([issue.input]) ?? 'API connection is invalid',
+    ),
+  )),
+  v.maxLength(50),
+  v.check(
+    (connections) => apiConnectionsShapeProblem(connections) === undefined,
+    (issue) => apiConnectionsShapeProblem(issue.input) ?? 'API connections are invalid',
   ),
 );
 
@@ -1430,7 +1453,7 @@ const agentPatchSchema = v.object({
   imageModel: v.optional(v.nullable(modelSpecifier)),
   skills: v.optional(skillsSchema),
   mcpServers: v.optional(mcpServersSchema),
-  apiConnections: v.optional(apiConnectionsSchema),
+  apiConnections: v.optional(storedApiConnectionsSchema),
   repositories: v.optional(repositoriesSchema),
   credentialResets: v.optional(v.strictObject({
     mcp: v.optional(v.array(v.pipe(v.string(), v.regex(MCP_CONNECTION_ID_PATTERN)))),
@@ -10154,6 +10177,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           current.revision,
         );
       }
+      const prefixProblem = parsed.output.apiConnections &&
+        headerValuePrefixProblem(parsed.output.apiConnections, current.apiConnections);
+      if (prefixProblem) return invalidRequest(c, prefixProblem);
       const changesConnectionPolicy = parsed.output.mcpServers !== undefined ||
         parsed.output.apiConnections !== undefined ||
         parsed.output.credentialResets !== undefined;

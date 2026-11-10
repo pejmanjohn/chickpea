@@ -24,6 +24,17 @@ export const SKILL_NAME_MAX_LENGTH = 64;
 export const SKILL_DESCRIPTION_MAX_LENGTH = 1024;
 export const CONNECTION_GUIDE_MAX_LENGTH = 8_000;
 const HEADER_NAME_PATTERN = /^[A-Za-z0-9-]{1,128}$/;
+/**
+ * A value prefix is stored as plain config and exported in recipes, so it is
+ * a short scheme such as "Bearer ", never a key: a long run of token
+ * characters is refused.
+ */
+export const HEADER_VALUE_PREFIX_MAX_LENGTH = 32;
+const TOKEN_LIKE_RUN = /[A-Za-z0-9_+/=.-]{16,}/;
+
+function isHeaderValuePrefix(prefix: string): boolean {
+  return prefix.length <= HEADER_VALUE_PREFIX_MAX_LENGTH && !TOKEN_LIKE_RUN.test(prefix);
+}
 /** Path-only: a query or fragment would widen credential injection to the whole path. */
 const PATH_PREFIX_PATTERN = /^\/[^\s?#]*$/;
 const API_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
@@ -95,7 +106,17 @@ export function mcpConnectionsWriteProblem(connections: readonly McpConnectionRu
   return uniqueIds(connections.map(({ id }) => id)) ? undefined : 'connection ids must be unique';
 }
 
+/** Every rule for API connections, each value prefix checked as new. */
 export function apiConnectionsWriteProblem(connections: readonly ApiConnectionRuleInput[]): string | undefined {
+  return apiConnectionsShapeProblem(connections) ?? headerValuePrefixProblem(connections);
+}
+
+/**
+ * Every rule for API connections but the value prefix's. Only an Agent edit,
+ * which resends the Agent's stored connections, uses it, and checks prefixes
+ * with headerValuePrefixProblem once it has read them.
+ */
+export function apiConnectionsShapeProblem(connections: readonly ApiConnectionRuleInput[]): string | undefined {
   for (const connection of connections) {
     if (connection.allowedHosts.length === 0) return 'allowed hosts must not be empty';
     if (connection.allowedHosts.some(isGithubAppManagedHost)) return GITHUB_API_CONNECTION_ERROR;
@@ -122,6 +143,25 @@ export function apiConnectionsWriteProblem(connections: readonly ApiConnectionRu
   }
   if (!uniqueIds(connections.map(({ id }) => id))) return 'connection ids must be unique';
   return hasOverlappingConnections(connections) ? OVERLAPPING_CONNECTIONS_ERROR : undefined;
+}
+
+type PrefixRuleInput = Pick<ApiConnectionRuleInput, 'id' | 'headerValuePrefix'>;
+
+/**
+ * A new or changed value prefix must be a short scheme, never a key. A prefix
+ * a connection already stores is kept as it is, so an Agent saved before this
+ * rule keeps saving until someone changes that prefix.
+ */
+export function headerValuePrefixProblem(
+  connections: readonly PrefixRuleInput[],
+  stored: readonly PrefixRuleInput[] = [],
+): string | undefined {
+  for (const { id, headerValuePrefix } of connections) {
+    if (headerValuePrefix === undefined || isHeaderValuePrefix(headerValuePrefix)) continue;
+    if (stored.some((kept) => kept.id === id && kept.headerValuePrefix === headerValuePrefix)) continue;
+    return `Connection ${id} value prefix is the text before the key, such as "Bearer ", at most ${HEADER_VALUE_PREFIX_MAX_LENGTH} characters. Keys go in the connection's setup.`;
+  }
+  return undefined;
 }
 
 /** The guide becomes instructions the owning Agent reads, so it holds plain text and never a key. */

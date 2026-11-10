@@ -34,7 +34,7 @@ import { AGENT_AUTHORING_GUIDE_URI, DISCOVERY_GUIDE_URI } from './agent-authorin
 import { DISCOVERY_GUIDE } from './agent-authoring/discovery-guide.ts';
 import { codingAgentAuthoringGuideResource } from './agent-authoring/mcp-guide.ts';
 import { WorkspaceManagementService } from './service.ts';
-import { workspaceManagementInstructions } from './instructions.ts';
+import { WORKSPACE_MANAGEMENT_INSTRUCTIONS } from './instructions.ts';
 import {
   registerWorkspaceManagementPrompts,
   WORKSPACE_MANAGEMENT_PROMPT_NAMES,
@@ -45,12 +45,12 @@ import {
   FIVE_ZERO_TOOL_INPUT_SCHEMAS,
   FIVE_ZERO_TOOL_NAMES,
   registerFiveZeroTools,
+  type FiveZeroToolName,
 } from './mcp-v5/tools.ts';
 import { shapeFiveZeroResults } from './mcp-v5/transport.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import {
   invokeWorkspaceManagementTool,
-  workspaceManagementToolDescription,
   type WorkspaceManagementToolName,
   type WorkspaceManagementToolResult,
 } from './tool-adapter.ts';
@@ -58,7 +58,7 @@ import type { ManagementActorContext, ManagementOperation } from './types.ts';
 
 export const WORKSPACE_MANAGEMENT_SERVER_INFO = {
   name: 'chickpea-workspace',
-  version: '4.4.0',
+  version: '4.5.0',
 } as const;
 /**
  * The 4.x tools, backed by the shared tool adapter. The coding-agent door has
@@ -87,7 +87,56 @@ export const WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES = [
   'list_mcp_clients',
   'revoke_mcp_client',
 ] as const satisfies readonly WorkspaceManagementToolName[];
-/** Every tool `tools/list` shows, in order: the 4.x tools, then the 5.0 tools 4.3 and 4.4 add. */
+type V4ToolName = typeof WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES[number];
+
+/**
+ * The day 4.5 deprecated the 4.x tools. They keep working unchanged until
+ * 5.0.0 removes them, at least 14 days after 4.5 reaches production.
+ */
+export const V4_TOOLS_DEPRECATED_ON = '2026-11-09';
+
+/** The 5.0 tools that replace each 4.x tool, which its one-line description names. */
+export const V4_TOOL_REPLACEMENTS = {
+  inspect_workspace: ['get_workspace', 'list_agents', 'get_agent', 'list_services', 'list_models', 'list_members', 'list_slack_channels'],
+  prepare_connector_setup: ['connect_service', 'reconnect_service'],
+  prepare_provider_setup: ['connect_model_provider'],
+  discover_slack_channels: ['list_slack_channels'],
+  test_connection: ['check_agent'],
+  // No 5.0 tool takes a key: the setup page asks for it and checks it.
+  save_connection_key: ['connect_service', 'reconnect_service'],
+  try_connection: ['connect_service'],
+  inspect_memory: ['get_agent_memory'],
+  inspect_routines: ['list_schedules'],
+  export_workspace_recipe: ['export_agents'],
+  preview_workspace_recipe: ['create_agent', 'update_agent'],
+  import_skill: ['import_skill_from_github'],
+  upload_skills: ['upload_skill_files'],
+  manage_agent_skill: ['set_agent_skill'],
+  apply_workspace_changes: ['create_agent', 'update_agent'],
+  confirm_workspace_change: ['confirm_change'],
+  undo_workspace_change: ['undo_change'],
+  get_operation: ['get_setup_status'],
+  revoke_setup_link: ['cancel_setup_link'],
+  list_mcp_clients: ['list_connected_apps'],
+  revoke_mcp_client: ['disconnect_app'],
+} as const satisfies Record<V4ToolName, readonly FiveZeroToolName[]>;
+
+/** Where a bare list of tools would mislead, the words that say how they replace it. */
+const V4_REPLACEMENT_WORDS: Partial<Record<V4ToolName, string>> = {
+  apply_workspace_changes: 'one tool per change, such as create_agent or update_agent',
+  get_operation: 'get_setup_status for a setup link, or send a change again with its idempotencyKey for its result',
+  try_connection: 'connect_service, whose setup page checks the key',
+};
+
+/** A 4.x tool's whole description in 4.5: the date and its replacement, in one line. */
+export function deprecatedToolDescription(name: V4ToolName): string {
+  const tools: readonly string[] = V4_TOOL_REPLACEMENTS[name];
+  const replacement = V4_REPLACEMENT_WORDS[name] ??
+    (tools.length === 1 ? tools[0]! : `${tools.slice(0, -1).join(', ')} or ${tools.at(-1)!}`);
+  return `Deprecated ${V4_TOOLS_DEPRECATED_ON}: use ${replacement}.`;
+}
+
+/** Every tool `tools/list` shows, in order: the 4.x tools, then the 5.0 tools 4.3 to 4.5 add. */
 export const WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES: readonly string[] = [
   ...WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES,
   ...FIVE_ZERO_TOOL_NAMES,
@@ -173,7 +222,7 @@ export function createWorkspaceManagementMcpServer(
   input: WorkspaceManagementMcpServerInput,
 ): McpServer {
   const server = new ObservedMcpServer(WORKSPACE_MANAGEMENT_SERVER_INFO, {
-    instructions: workspaceManagementInstructions(input.baseUrl, input.env),
+    instructions: WORKSPACE_MANAGEMENT_INSTRUCTIONS,
   });
   const adapter = {
     service: input.service,
@@ -182,7 +231,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('inspect_workspace', {
     title: 'Inspect Chickpea workspace',
-    description: workspaceManagementToolDescription('inspect_workspace', 'mcp'),
+    description: deprecatedToolDescription('inspect_workspace'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.inspect_workspace,
     annotations: READ_ONLY,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -193,7 +242,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('prepare_connector_setup', {
     title: 'Prepare Agent connector setup',
-    description: workspaceManagementToolDescription('prepare_connector_setup', 'mcp'),
+    description: deprecatedToolDescription('prepare_connector_setup'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.prepare_connector_setup,
     // Each call issues a new setup link, as prepare_provider_setup does.
     annotations: { ...WRITE, idempotentHint: false },
@@ -205,7 +254,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('prepare_provider_setup', {
     title: 'Prepare model provider key setup',
-    description: workspaceManagementToolDescription('prepare_provider_setup', 'mcp'),
+    description: deprecatedToolDescription('prepare_provider_setup'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.prepare_provider_setup,
     annotations: { ...WRITE, idempotentHint: false },
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -216,7 +265,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('discover_slack_channels', {
     title: 'Discover Slack Channels',
-    description: workspaceManagementToolDescription('discover_slack_channels', 'mcp'),
+    description: deprecatedToolDescription('discover_slack_channels'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.discover_slack_channels,
     annotations: READ_ONLY,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -227,7 +276,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('test_connection', {
     title: 'Test saved connection',
-    description: workspaceManagementToolDescription('test_connection', 'mcp'),
+    description: deprecatedToolDescription('test_connection'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.test_connection,
     annotations: READ_ONLY,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -238,7 +287,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('save_connection_key', {
     title: 'Save connection key',
-    description: workspaceManagementToolDescription('save_connection_key', 'mcp'),
+    description: deprecatedToolDescription('save_connection_key'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.save_connection_key,
     annotations: WRITE,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -249,7 +298,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('try_connection', {
     title: 'Try connection settings',
-    description: workspaceManagementToolDescription('try_connection', 'mcp'),
+    description: deprecatedToolDescription('try_connection'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.try_connection,
     annotations: READ_ONLY,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -260,7 +309,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('inspect_memory', {
     title: 'Inspect Chickpea memory',
-    description: workspaceManagementToolDescription('inspect_memory', 'mcp'),
+    description: deprecatedToolDescription('inspect_memory'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.inspect_memory,
     annotations: READ_ONLY,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -271,7 +320,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('inspect_routines', {
     title: 'Inspect Chickpea routines',
-    description: workspaceManagementToolDescription('inspect_routines', 'mcp'),
+    description: deprecatedToolDescription('inspect_routines'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.inspect_routines,
     annotations: READ_ONLY,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -282,7 +331,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('export_workspace_recipe', {
     title: 'Export Chickpea workspace recipe',
-    description: workspaceManagementToolDescription('export_workspace_recipe', 'mcp'),
+    description: deprecatedToolDescription('export_workspace_recipe'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.export_workspace_recipe,
     annotations: READ_ONLY,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -293,7 +342,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('preview_workspace_recipe', {
     title: 'Preview Chickpea workspace recipe',
-    description: workspaceManagementToolDescription('preview_workspace_recipe', 'mcp'),
+    description: deprecatedToolDescription('preview_workspace_recipe'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.preview_workspace_recipe,
     annotations: READ_ONLY,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -304,7 +353,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('import_skill', {
     title: 'Install GitHub skill',
-    description: workspaceManagementToolDescription('import_skill', 'mcp'),
+    description: deprecatedToolDescription('import_skill'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.import_skill,
     annotations: WRITE,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -315,7 +364,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('upload_skills', {
     title: 'Upload skill files',
-    description: workspaceManagementToolDescription('upload_skills', 'mcp'),
+    description: deprecatedToolDescription('upload_skills'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.upload_skills,
     annotations: WRITE,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -326,7 +375,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('manage_agent_skill', {
     title: 'Manage an installed Agent skill',
-    description: workspaceManagementToolDescription('manage_agent_skill', 'mcp'),
+    description: deprecatedToolDescription('manage_agent_skill'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.manage_agent_skill,
     annotations: WRITE,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -337,7 +386,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('apply_workspace_changes', {
     title: 'Apply Chickpea workspace changes',
-    description: workspaceManagementToolDescription('apply_workspace_changes', 'mcp'),
+    description: deprecatedToolDescription('apply_workspace_changes'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.apply_workspace_changes,
     annotations: WRITE,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -351,7 +400,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('confirm_workspace_change', {
     title: 'Confirm Chickpea workspace change',
-    description: workspaceManagementToolDescription('confirm_workspace_change', 'mcp'),
+    description: deprecatedToolDescription('confirm_workspace_change'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.confirm_workspace_change,
     annotations: { ...WRITE, destructiveHint: true },
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -362,7 +411,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('undo_workspace_change', {
     title: 'Undo Chickpea workspace change',
-    description: workspaceManagementToolDescription('undo_workspace_change', 'mcp'),
+    description: deprecatedToolDescription('undo_workspace_change'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.undo_workspace_change,
     annotations: WRITE,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -373,7 +422,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('get_operation', {
     title: 'Get Chickpea operation',
-    description: workspaceManagementToolDescription('get_operation', 'mcp'),
+    description: deprecatedToolDescription('get_operation'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.get_operation,
     annotations: READ_ONLY,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -384,7 +433,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('revoke_setup_link', {
     title: 'Revoke Chickpea setup link',
-    description: workspaceManagementToolDescription('revoke_setup_link', 'mcp'),
+    description: deprecatedToolDescription('revoke_setup_link'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.revoke_setup_link,
     annotations: WRITE,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -395,7 +444,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('list_mcp_clients', {
     title: 'List connected MCP clients',
-    description: workspaceManagementToolDescription('list_mcp_clients', 'mcp'),
+    description: deprecatedToolDescription('list_mcp_clients'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.list_mcp_clients,
     annotations: READ_ONLY,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -406,7 +455,7 @@ export function createWorkspaceManagementMcpServer(
 
   server.registerTool('revoke_mcp_client', {
     title: 'Revoke a connected MCP client',
-    description: workspaceManagementToolDescription('revoke_mcp_client', 'mcp'),
+    description: deprecatedToolDescription('revoke_mcp_client'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.revoke_mcp_client,
     annotations: WRITE,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
@@ -451,6 +500,8 @@ export function createWorkspaceManagementMcpServer(
         tools: WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES,
         prompts: WORKSPACE_MANAGEMENT_PROMPT_NAMES,
         operationKinds: MCP_MANAGEMENT_OPERATION_KINDS,
+        deprecated: Object.fromEntries(WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES.map((name) =>
+          [name, { since: V4_TOOLS_DEPRECATED_ON, replacedBy: V4_TOOL_REPLACEMENTS[name] }])),
         activation: 'next_turn',
         confirmation: 'Only a destructive change returns confirmation_required, with presentation.markdown and a proposalId. Pass the proposalId to confirm_workspace_change after the person agrees.',
       }),

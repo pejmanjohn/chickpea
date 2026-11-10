@@ -53,7 +53,11 @@ import {
 } from '../config/provider-impact.ts';
 import { isMetaAdsMcpConnection } from '../config/meta-ads-policy.ts';
 import { allowedToolsAfterMcpDiscovery, isMcpToolReviewRequired } from '../config/mcp-access.ts';
-import { apiConnectionsWriteProblem, REVIEWED_CONNECTOR_SETUP_MESSAGE } from '../config/agent-write-rules.ts';
+import {
+  apiConnectionsWriteProblem,
+  headerValuePrefixProblem,
+  REVIEWED_CONNECTOR_SETUP_MESSAGE,
+} from '../config/agent-write-rules.ts';
 import {
   type AgentChannelGrant,
   type AgentReferenceSummary,
@@ -116,6 +120,7 @@ import {
   WebsiteLoginGrantNotFoundError,
 } from '../browser/agent-website-logins.ts';
 import { listWebsiteLogins, type WebsiteLogin, type WebsiteLoginDependencies } from '../browser/logins.ts';
+import { IdentityStateError } from '../identity/errors.ts';
 import type { IdentityStore, Membership, Organization } from '../identity/types.ts';
 import {
   MemoryStateError,
@@ -336,6 +341,7 @@ export const MEMBER_CONNECTION_TRIES = { tries: 30, windowMs: 10 * 60_000 } as c
 const SETUP_TTL_MS = 24 * 60 * 60_000;
 const NO_MODEL_CATALOG: ManagementWorkspaceSnapshot['modelCatalog'] = { chat: [], image: [] };
 const THREAD_TTL_DAYS = THREAD_TTL_MS / 86_400_000;
+const LAST_OWNER_REQUIRED = 'At least one active Owner is required. Make someone else an Owner first.';
 const META_ADS_CATALOG_SETUP_MESSAGE =
   'Add Meta Ads from the Agent’s Connections tab so you can select ad accounts and tools.';
 const TEAM_CONNECTION_ADMIN_ONLY = 'Only a Chickpea Admin can change or remove a team connection.';
@@ -2123,10 +2129,13 @@ export class WorkspaceManagementService {
           membershipId: actor.membershipId,
           toolkit: connector.managedToolkit,
         })
+      // A sign-in left unfinished is finished in place, as a managed one is, not added again beside it.
+      // Only a catalog connection counts as unfinished: a custom one waiting for its key may share the ID.
       : accounts.find(({ id, lifecycle, ownerKind: owner, ownerMembershipId, providerId, policy }) =>
-          bound.has(id) && lifecycle === 'needs_attention' && owner === ownerKind &&
-          (owner === 'team' || ownerMembershipId === actor.membershipId) &&
-          policy.kind !== 'managed' && (providerId === connector.id || policy.presetId === connector.id));
+          bound.has(id) && owner === ownerKind &&
+          (owner === 'team' || ownerMembershipId === actor.membershipId) && policy.kind !== 'managed' &&
+          (lifecycle === 'needs_attention' && (providerId === connector.id || policy.presetId === connector.id) ||
+            lifecycle === 'pending' && policy.presetId === connector.id));
     if (account && !canManageOwnedResource(managementActorPrincipal(actor), account)) {
       throw new ManagementError('forbidden', TEAM_CONNECTION_ADMIN_ONLY);
     }
@@ -4741,6 +4750,22 @@ export class WorkspaceManagementService {
     return agent;
   }
 
+  /**
+   * The identity store keeps one active Owner, but a member change ends the
+   * person's sessions before the store refuses. So the sole Owner's own
+   * demotion, suspension or removal is refused before any preview or revoke.
+   */
+  private async assertKeepsAnActiveOwner(
+    operation: Extract<ManagementOperation, { kind: 'update_member' }>,
+    current: Membership | undefined,
+  ): Promise<void> {
+    if (current?.role !== 'owner' || current.status !== 'active') return;
+    if ((operation.role ?? 'owner') === 'owner' && (operation.status ?? 'active') === 'active') return;
+    const owners = (await this.stores.identity.listMemberships()).filter(({ organizationId, role, status }) =>
+      organizationId === current.organizationId && role === 'owner' && status === 'active');
+    if (owners.length <= 1) throw new ManagementError('invalid_request', LAST_OWNER_REQUIRED);
+  }
+
   /** Admin's delete preconditions: the Agent has left Slack and no recent thread still uses it. */
   private async assertAgentDeletable(agent: CustomAgentConfig): Promise<void> {
     assertAgentLeftSlack(agent, await this.stores.config.getAgentReferences(agent.id));
@@ -4780,6 +4805,8 @@ export class WorkspaceManagementService {
       await this.stores.config.getAgent(agentId),
     );
     const edit = agentPatchWithConnectionIds(connections, patch);
+    const prefixProblem = edit.apiConnections && headerValuePrefixProblem(edit.apiConnections, connections.apiConnections);
+    if (prefixProblem) throw new AgentWriteRuleError(prefixProblem);
     // Admin changes a reviewed connector's tools only through its review; a rename is harmless.
     const reviewedPolicy = (connection: ManagementMcpConnection) =>
       canonicalJson({ ...managementMcpConnection(connection), displayName: '' });
@@ -5905,6 +5932,8 @@ export class WorkspaceManagementService {
   ) {
     if (operation.kind === 'update_member') {
       const current = await this.stores.identity.getMembership(operation.membershipId);
+      // Authority first, so only an Owner learns who the last Owner is.
+      if (actor.role === 'owner') await this.assertKeepsAnActiveOwner(operation, current);
       return {
         actor,
         operation,
@@ -7312,9 +7341,17 @@ export class WorkspaceManagementService {
         }
         return result;
       };
-      const result = this.stores.withBetterAuthAccessRevoker
-        ? await this.stores.withBetterAuthAccessRevoker(change)
-        : await change(undefined);
+      // Checked again here, because access ends before the store refuses.
+      await this.assertKeepsAnActiveOwner(operation, before);
+      const result = await (this.stores.withBetterAuthAccessRevoker
+        ? this.stores.withBetterAuthAccessRevoker(change)
+        : change(undefined)
+      ).catch((error: unknown) => {
+        if (error instanceof IdentityStateError && error.code === 'last_owner_required') {
+          throw new ManagementError('invalid_request', LAST_OWNER_REQUIRED);
+        }
+        throw error;
+      });
       return mutationForChanged([{
         kind: 'membership',
         id: result.membership.id,

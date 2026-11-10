@@ -177,8 +177,6 @@ test('workspace proposal guidance stays inside the typed configuration schema', 
   assert.match(apply, /typed Chickpea workspace configuration changes/i);
   assert.match(apply, /does not execute actions in Slack Lists or connected services/i);
   assert.match(apply, /confirmation-required configuration operations/i);
-  assert.equal(confirm, workspaceManagementToolDescription('confirm_workspace_change', 'mcp'),
-    'only MCP offers confirm_workspace_change');
   assert.match(confirm, /"Are you sure\?" step/);
   assert.match(confirm, /does not confirm actions in Slack or connected services/i);
   assert.match(proposal, /the person's approval applies it/);
@@ -550,10 +548,8 @@ test('the deployed MCP verifier stays pinned to the canonical guide version', as
 test('a new connection is tested only after the person finishes its setup link', () => {
   assert.match(AGENT_AUTHORING_GUIDE,
     /Test a new connection only after the person finishes its setup link: `get_operation` with the `setupOperationId` reports `status` `completed`\./);
-  for (const surface of ['slack', 'mcp'] as const) {
-    assert.match(workspaceManagementToolDescription('test_connection', surface),
-      /After request_setup, call it only once get_operation reports the setup completed\./, surface);
-    assert.match(workspaceManagementToolDescription('get_operation', surface),
-      /a setup link's status by its setupOperationId/, surface);
-  }
+  assert.match(workspaceManagementToolDescription('test_connection'),
+    /After request_setup, call it only once get_operation reports the setup completed\./);
+  assert.match(workspaceManagementToolDescription('get_operation'),
+    /a setup link's status by its setupOperationId/);
 });
