@@ -25,6 +25,7 @@ import {
   createFixtureAgent,
   createManagementAdapterFixture,
   ownerMcpContext,
+  ownerSlackDmContext,
   type ManagementAdapterFixture,
 } from './helpers/management-adapter-fixture.ts';
 
@@ -472,6 +473,14 @@ test('one Agent\'s connections read alone match the workspace snapshot, and only
   assert.equal(JSON.stringify(alone).includes('connection_theirs'), false, 'the Owner\'s own account stays theirs');
   assert.equal(await agentConnectionsOf(deps, member, 'agent_owner_only'), undefined, 'not an Agent the member may edit');
   assert.equal(await agentConnectionsOf(deps, member, 'agent_missing'), undefined);
+
+  // An Agent acting for the Owner in Slack reads its own connections only, as its snapshot lists only itself.
+  await f.config.ensureWorkspaceInstallation({ workspaceId: teamId, transportMode: 'direct', botUserId: 'UBOT', runtimeContract: 'chickpea-v1' });
+  const dm = ownerSlackDmContext(f);
+  const acting = { ...dm, actingAgentId: 'agent_shared', origin: { ...dm.origin, agentId: 'agent_shared' } };
+  const asAgent = { service: f.service, context: async () => acting };
+  assert.ok(await agentConnectionsOf(asAgent, acting, 'agent_shared'));
+  assert.equal(await agentConnectionsOf(asAgent, acting, 'agent_owner_only'), undefined, 'another Agent, though the Owner may edit it');
 });
 
 test('propose_agent refuses a blank name as the caller\'s input, not a server fault', async (t) => {

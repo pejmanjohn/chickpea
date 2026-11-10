@@ -222,13 +222,21 @@ test('an expired, cancelled or failed link says so and asks the chat for a new o
 });
 
 test('polls every 2 s, waits longer after each failed poll, and stops for good two minutes after Connect', async (t) => {
-  const { call, card, clock } = await harness(t, 'connect-poll');
+  const { f, call, card, clock } = await harness(t, 'connect-poll');
   const connect = card();
   await connect.result(await call('connect_service', { agentId: 'agent_research', service: 'Gmail', owner: 'me', idempotencyKey: 'gmail' }));
   await connect.press('connect');
+  let snapshots = 0;
+  const inspect = f.service.inspectWorkspace.bind(f.service);
+  f.service.inspectWorkspace = async (context) => {
+    snapshots += 1;
+    return inspect(context);
+  };
   const seq = connect.state.seq;
   for (let poll = 0; poll < 3; poll += 1) await connect.dispatch({ type: 'tick', now: clock.now });
   assert.equal(connect.state.seq, seq, 'a poll that changes nothing keeps the view, so the card saves nothing');
+  assert.ok(connect.calls('get_setup_status').length >= 3);
+  assert.equal(snapshots, 0, 'a poll reads the Agent\'s connections, never the whole workspace');
   const waits: number[] = [];
   for (let failed = 0; failed < 4; failed += 1) {
     await connect.dispatch({ type: 'unreachable', call: { tool: 'get_setup_status', args: {}, seq: connect.state.seq }, now: clock.now });
