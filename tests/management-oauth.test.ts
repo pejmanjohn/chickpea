@@ -23,8 +23,8 @@ import {
   createMcpAuthenticatedRequestHandler,
   verifySignedOAuthQuery,
   renderMcpConsentPage,
-  displayMcpClientName,
 } from '../src/auth/mcp-oauth-routes.ts';
+import { displayMcpClientName } from '../src/auth/mcp-client-name.ts';
 import { validateBrowserMutationProvenance } from '../src/auth/request-provenance.ts';
 import { REAL_MCP_CLIENT_REGISTRATIONS } from './helpers/mcp-client-registrations.ts';
 

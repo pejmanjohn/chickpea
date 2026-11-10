@@ -27,6 +27,7 @@ import {
   mcpResourceForOrigin,
 } from './mcp-oauth.ts';
 import { clientMetadataHost } from './mcp-client-metadata.ts';
+import { displayMcpClientName, knownMcpAppName } from './mcp-client-name.ts';
 import { BetterAuthMcpOAuthContinuationStore } from './mcp-oauth-continuation.ts';
 import { challengeRedeemed } from './mcp-oauth-redemption.ts';
 import { hostedLoginFence, type HostedLoginFence } from './hosted-login.ts';
@@ -524,15 +525,6 @@ ${body}
 </html>`;
 }
 
-const MCP_CLIENT_NAME_DISPLAY_LIMIT = 60;
-
-/**
- * Apps Chickpea names itself, by exact client ID. Any other app's name is its
- * own claim, so a stranger's document that calls itself ChatGPT gets the
- * generic text, as does ChatGPT's per-callback client ID.
- */
-const KNOWN_MCP_APPS: ReadonlyMap<string, string> = new Map([['https://chatgpt.com/oauth/client.json', 'ChatGPT']]);
-
 /**
  * Reads the self-asserted `client_name` from the client's registration. The
  * signed OAuth query already names a registered client; any lookup failure
@@ -553,20 +545,6 @@ export async function lookupMcpClientName(
   }
 }
 
-/** Untrusted, app-chosen text: strip controls and bidi overrides, collapse, bound. */
-export function displayMcpClientName(name: string | undefined): string | undefined {
-  if (typeof name !== 'string') return undefined;
-  const cleaned = name
-    .replace(/\p{Cc}/gu, ' ')
-    .replace(/\p{Cf}/gu, '')
-    .replace(/\s+/gu, ' ')
-    .trim();
-  if (!cleaned) return undefined;
-  const chars = [...cleaned];
-  if (chars.length <= MCP_CLIENT_NAME_DISPLAY_LIMIT) return cleaned;
-  return `${chars.slice(0, MCP_CLIENT_NAME_DISPLAY_LIMIT - 1).join('').trimEnd()}…`;
-}
-
 export function renderMcpConsentPage(input: {
   clientId?: string | undefined;
   clientName?: string | undefined;
@@ -575,7 +553,7 @@ export function renderMcpConsentPage(input: {
   scope: string;
   oauthQuery: string;
 }): string {
-  const known = KNOWN_MCP_APPS.get(input.clientId ?? '');
+  const known = knownMcpAppName(input.clientId);
   const name = displayMcpClientName(input.clientName);
   const app = known ?? (name
     ? `${escapeHtml(name)} <span class="note">(name provided by the app)</span>`
@@ -641,7 +619,7 @@ function browserHeaders(contentType: string): Headers {
 export function createMcpConsentRedirectResponse(location: string, clientId?: string): Response {
   if (!validClientRedirect(location)) return invalidBrowserRequest();
   const destination = escapeHtml(location);
-  const known = KNOWN_MCP_APPS.get(clientId ?? '');
+  const known = knownMcpAppName(clientId);
   const [heading, line] = known
     ? [`Back to ${known}`, `You're being sent back to ${known}.`]
     : ['Back to your app', 'You\'re being sent back to the app that asked for access.'];
