@@ -381,7 +381,8 @@ function reread(state: State): Next<FirstAnswer> {
       return { state: { view: { ...view, stage: running }, busy: true }, effects: [poll(stage.runToken)] };
     }
     case 'slow':
-      return stage.runToken ? { state: { view, busy: true }, effects: [poll(stage.runToken)] } : stay(state);
+      // A read that leaves Check again pressable: the press that focused the card is the one it reads for.
+      return stage.runToken ? stay(state, [poll(stage.runToken)]) : stay(state);
     default:
       return stay(state);
   }

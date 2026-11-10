@@ -231,10 +231,13 @@ test('Check again on the slow view reads the run once, and shows its answer once
   await card.press('try_once');
   clock.now += GIVE_UP_MS;
   await card.answer();
-  card.hold = () => false;
   const polls = card.calls('get_test_run').length;
+  // A press focuses the card first, which reads the run: Check again stays pressable meanwhile.
+  await card.dispatch({ type: 'reread', now: clock.now });
+  assert.deepEqual([card.calls('get_test_run').length, card.labels()], [polls + 1, ['Check again (primary)', 'Open in Slack (secondary)']]);
+  card.hold = () => false;
   await card.press('check_again');
-  assert.equal(card.calls('get_test_run').length, polls + 1, 'one read for the press');
+  assert.equal(card.calls('get_test_run').length, polls + 2, 'one read for the press');
   assert.deepEqual([card.shown.blocks, card.labels()], [
     [{ kind: 'text', text: 'It\'s still answering. Check again in a moment, or ask Invoice Chaser in Slack.' }],
     ['Check again (primary)', 'Open in Slack (secondary)'],
