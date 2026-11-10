@@ -11,9 +11,8 @@ export const TEST_TURN_TOOL_LIMIT_MESSAGE = 'Test runs allow 25 tool calls. Answ
 const attempt = new AsyncLocalStorage<{ calls: number }>();
 
 /**
- * Refuses a test run's tool calls past the 25th; the model reads the refusal
- * as the call's error. It counts before `next()`, so parallel calls cannot
- * pass together. The count is the attempt's, and a test run has one.
+ * Refuses a test run's tool calls past the 25th, as the call's error. It
+ * counts before `next()`, so parallel calls cannot pass together.
  */
 export const testTurnToolCallInterceptor: FlueExecutionInterceptor = async (operation, context, next) => {
   if (context.agentName !== CHICKPEA_TEST_TURN_AGENT_NAME) return next();

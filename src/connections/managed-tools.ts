@@ -37,7 +37,7 @@ type ManagedToolConnection = ManagedConnectionDeclaration | RuntimePlanManagedCo
 type PlatformEnvResolver = () => Promise<PlatformEnv | undefined>;
 
 interface ManagedToolContext {
-  /** A test run's: a capability that is not a read never mounts. */
+  /** A test run's: only read capabilities mount. */
   readsOnly?: boolean;
   workspaceId: string;
   agentId: string;

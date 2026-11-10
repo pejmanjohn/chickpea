@@ -253,7 +253,6 @@ async function slackTurnPlan(
   return staged?.instanceId === instanceId ? staged.runtimePlan : undefined;
 }
 
-/** A live test run's plan, which names this instance. */
 async function testRunPlan(
   instanceId: string,
   submissionId: string,

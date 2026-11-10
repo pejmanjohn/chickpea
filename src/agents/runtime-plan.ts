@@ -208,7 +208,7 @@ export interface RuntimePlanModelCredentialV3 {
 }
 
 export interface RuntimePlanV2 {
-  /** V2 and V3 remain readable for already-admitted TurnJobs; Slack and routine plans are V4, test runs V5. */
+  /** V2 and V3 remain readable for already-admitted TurnJobs; new plans are V4, or V5 for a test run. */
   schemaVersion: 2 | 3 | typeof CONVERSATION_PLAN_SCHEMA_VERSION | typeof RUNTIME_PLAN_SCHEMA_VERSION;
   continuityPolicy: string;
   /** Durable profile identity used only by trusted live resource resolvers. */

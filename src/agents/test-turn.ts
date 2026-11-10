@@ -34,10 +34,7 @@ export function parseTestTurnInitialData(value: unknown): TestTurnInitialData {
   return { ...data, runtimePlan };
 }
 
-/**
- * One read-only run of an Agent on its first ask, as the caller, posting
- * nowhere: a routine run's composition without file tools, on a V5 plan.
- */
+/** One read-only run of an Agent on its first ask, as the caller, posting nowhere. */
 export function ChickpeaTestTurn({ id }: AgentProps) {
   const { runtimePlan: plan, memoryBlock, requester } = parseTestTurnInitialData(useInitialData());
   useInstruction(plan.instructions);
@@ -46,7 +43,7 @@ export function ChickpeaTestTurn({ id }: AgentProps) {
     artifactToolsDisabled: true,
     releaseCodingWorkspace: true,
     instructionsInSystemBase: true,
-    // A model wrote the ask, as a routine's saved task, so none of its URLs counts as typed by a person.
+    // A model wrote the ask, so none of its URLs counts as typed by a person.
     web: { turn: useWebTurn(id), request: { typed: [], tokens: requestTokens(useDelivery().body) } },
   });
   if (memoryBlock) useInstruction(`${memoryBlock}\n\n${ADVISORY_MEMORY_FINAL_CHECK}`);
