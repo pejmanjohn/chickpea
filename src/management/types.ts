@@ -1646,7 +1646,8 @@ export class ManagementError extends Error {
       | 'slack_unavailable'
       | 'mcp_client_not_found'
       | 'key_rejected'
-      | 'key_unconfirmed',
+      | 'key_unconfirmed'
+      | 'removal_incomplete',
     message: string,
     readonly changed?: ManagementObjectRef[],
     /** Admin deep link when the failure names something only Admin can change; response-only. */

@@ -2,12 +2,25 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 
+import { createMcpHandler } from '@modelcontextprotocol/server';
+
+import type { McpAuthenticatedPrincipal } from '../src/auth/mcp-oauth-routes.ts';
 import { createWebsiteLogin, listWebsiteLogins } from '../src/browser/logins.ts';
-import type { ConnectionAccount, CustomAgentConfig } from '../src/config/types.ts';
+import { configureComposioPlatformSettings } from '../src/config/composio-settings.ts';
+import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
+import { signInGroupPolicy } from '../src/config/sign-in-group.ts';
+import type { PlatformEnv } from '../src/config/state-backend.ts';
+import type { ConnectionAccount, ConnectionAccountManagedPolicy, CustomAgentConfig } from '../src/config/types.ts';
+import {
+  createManagedConnectionProviderRegistry,
+  type ManagedConnectionProviderRegistry,
+} from '../src/connections/managed.ts';
 import type { IdentityResolution } from '../src/identity/types.ts';
 import { createLiveWorkspaceManagementService } from '../src/management/live-service.ts';
+import { createWorkspaceManagementMcpServer } from '../src/management/mcp.ts';
+import { executeHostSlackManagementApproval } from '../src/management/slack-approval.ts';
 import {
   invokeWorkspaceManagementTool,
   type WorkspaceManagementToolArguments,
@@ -536,6 +549,406 @@ test('disconnecting needs the right to edit the Agent, as the Agent page\'s Disc
       }
     }
     assert.deepEqual((await f.config.listConnectionAccounts(TEAM)).map(({ lifecycle }) => lifecycle), ['ready', 'ready']);
+  }));
+
+/** A Composio provider that records each remote account it deletes, or fails every deletion while `failure` is set. */
+function composioProvider() {
+  const deleted: string[] = [];
+  const state: { failure?: Error } = {};
+  const registry = createManagedConnectionProviderRegistry([{
+    id: 'composio',
+    async validate() {},
+    async execute() { return { data: {} }; },
+    async revoke({ policy }) {
+      if (state.failure) throw state.failure;
+      deleted.push(policy.accountRef);
+    },
+  }]);
+  return { deleted, state, registry };
+}
+
+/** The service MCP and Slack get in production, on this fixture's stores. */
+function liveService(f: Fixture, options: { env?: PlatformEnv; managedProviders?: ManagedConnectionProviderRegistry } = {}) {
+  const { env, managedProviders } = options;
+  return createLiveWorkspaceManagementService(env, {
+    identity: f.identity,
+    settings: f.settings,
+    ...(managedProviders ? { managedProviders } : {}),
+    overrides: {
+      config: f.config,
+      management: f.management,
+      memory: f.memory,
+      routines: f.routines,
+      setupBaseUrl: 'http://localhost',
+    },
+  });
+}
+
+let removals = 0;
+
+/** Propose a removal and confirm it as its door does: the MCP caller confirms, and on Slack the person approves. */
+async function removeConnection(
+  service: ReturnType<typeof liveService>,
+  context: ManagementActorContext,
+  agentId: string,
+  connectionId: string,
+) {
+  const tool = (as: ManagementActorContext) =>
+    (name: WorkspaceManagementToolName, args: unknown) =>
+      invokeWorkspaceManagementTool({ service, resolveContext: async () => as }, name, args as never);
+  const proposed = await tool(context)('apply_workspace_changes', {
+    idempotencyKey: `remove-${connectionId}-${++removals}`,
+    operations: [{ itemId: 'remove', kind: 'disconnect_connection', agentId, connectionId }],
+  });
+  assert.equal(proposed.ok, true, JSON.stringify(proposed));
+  const pending = (proposed as { result: ManagementApplyResult }).result;
+  assert.equal(pending.status, 'confirmation_required', JSON.stringify(pending.outcomes));
+  const proposalId = pending.outcomes[0]!.proposalId!;
+  const approver = context.origin.kind === 'slack'
+    ? { ...context, origin: { ...context.origin, approvedProposalId: proposalId } }
+    : context;
+  return tool(approver)('confirm_workspace_change', { proposalId });
+}
+
+function notionAccount(id: string, accountRef: string) {
+  return {
+    id,
+    ownerKind: 'team' as const,
+    providerId: 'notion',
+    label: 'Notion · Team',
+    lifecycle: 'ready' as const,
+    policy: {
+      kind: 'managed' as const,
+      adapterId: 'composio',
+      toolkit: 'notion',
+      principalRef: 'chickpea:organization:test',
+      accountRef,
+      allowedCapabilities: ['notion.content.search'],
+    },
+  };
+}
+
+async function lifecycleOf(f: Fixture, connectionId: string) {
+  return (await f.config.listConnectionAccounts(TEAM)).find(({ id }) => id === connectionId)?.lifecycle;
+}
+
+test('removing a managed connection that is its sign-in\'s only user deletes the remote account, over MCP and over Slack', () =>
+  withFixture('remove-managed-last', async (f) => {
+    const agent = await seedAgent(f);
+    const composio = composioProvider();
+    const service = liveService(f, { managedProviders: composio.registry });
+    const hubspot = await bindAccount(f, agent.id, hubspotAccount('ready'));
+    const notion = await bindAccount(f, agent.id, notionAccount('connection_notion_team', 'account_notion'));
+
+    for (const [context, account] of [
+      [mcpContext(f.owner), hubspot],
+      [slackContext(f.owner, agent.id), notion],
+    ] as const) {
+      const removed = await removeConnection(service, context, agent.id, account.id);
+      assert.equal(removed.ok, true, JSON.stringify(removed));
+      const result = (removed as { result: ManagementApplyResult }).result;
+      assert.equal(result.status, 'completed', `${context.origin.kind}: ${JSON.stringify(result.outcomes)}`);
+      assert.equal(await lifecycleOf(f, account.id), 'revoked', context.origin.kind);
+    }
+    assert.deepEqual(composio.deleted, ['account_hubspot', 'account_notion']);
+    const { agent: after } = await inspectAgent(f, mcpContext(f.owner), agent.id);
+    assert.deepEqual(after.connections ?? [], []);
+  }));
+
+test('removing one Agent from a shared managed sign-in keeps the remote account until its last Agent is removed', () =>
+  withFixture('remove-managed-shared', async (f) => {
+    const ops = await seedAgent(f);
+    const desk = await f.config.createAgent({
+      id: 'agent_desk',
+      name: 'Desk',
+      instructions: 'Help the desk.',
+      enabled: true,
+      lifecycle: 'active',
+      creatorMembershipId: f.owner.membership.id,
+      editPolicy: 'all_workspace_members',
+      configurationGeneration: 1,
+      skills: [],
+      mcpServers: [],
+      apiConnections: [],
+      repositories: [],
+    });
+    const composio = composioProvider();
+    const service = liveService(f, { managedProviders: composio.registry });
+    const opsNotion = await bindAccount(f, ops.id, notionAccount('connection_notion_ops', 'account_notion_shared'));
+    const policy = opsNotion.policy as ConnectionAccountManagedPolicy;
+    await f.config.applySignInGroup({
+      adapterId: 'composio',
+      accountRef: policy.accountRef,
+      members: [{ connectionAccountId: opsNotion.id, expectedRevision: opsNotion.revision }],
+      shared: signInGroupPolicy(policy),
+      join: {
+        account: {
+          id: 'connection_notion_desk',
+          workspaceId: TEAM,
+          ownerKind: 'team',
+          createdByMembershipId: f.owner.membership.id,
+          providerId: 'notion',
+          label: 'Notion · Team',
+          policy,
+          secretRefId: 'secret_connection_notion_desk',
+          lifecycle: 'ready',
+        },
+        binding: {
+          agentId: desk.id,
+          connectionAccountId: 'connection_notion_desk',
+          providerId: 'notion',
+          allowedCapabilities: [],
+          enabled: true,
+        },
+      },
+    });
+
+    const first = await removeConnection(service, mcpContext(f.owner), ops.id, opsNotion.id);
+    assert.equal(first.ok, true, JSON.stringify(first));
+    assert.equal((first as { result: ManagementApplyResult }).result.status, 'completed');
+    assert.equal(await lifecycleOf(f, opsNotion.id), 'revoked');
+    assert.equal(await lifecycleOf(f, 'connection_notion_desk'), 'ready', 'the other Agent keeps the sign-in');
+    assert.deepEqual(composio.deleted, [], 'the shared remote account is kept');
+
+    const last = await removeConnection(service, slackContext(f.owner, desk.id), desk.id, 'connection_notion_desk');
+    assert.equal(last.ok, true, JSON.stringify(last));
+    assert.equal((last as { result: ManagementApplyResult }).result.status, 'completed');
+    assert.equal(await lifecycleOf(f, 'connection_notion_desk'), 'revoked');
+    assert.deepEqual(composio.deleted, ['account_notion_shared'], 'its last Agent deletes it');
+  }));
+
+/** Composio as the real provider reaches it: every request, and how Composio answers a deletion. */
+function composioApi(t: TestContext) {
+  const requests: Array<{ method: string; url: string; key: string | null }> = [];
+  const state: { answer: 'deleted' | 'refused' | 'timeout' | 'unreadable' } = { answer: 'deleted' };
+  t.mock.method(globalThis, 'fetch', async (input: string | URL | Request, init?: RequestInit) => {
+    requests.push({ method: init?.method ?? 'GET', url: String(input), key: new Headers(init?.headers).get('x-api-key') });
+    if (state.answer === 'refused') return Response.json({ error: { message: 'unavailable' } }, { status: 503 });
+    if (state.answer === 'timeout') throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+    if (state.answer === 'unreadable') return new Response('<html>ok</html>', { status: 200 });
+    return Response.json({ success: true });
+  });
+  return { requests, state };
+}
+
+const deletion = (accountRef: string) =>
+  `https://backend.composio.dev/api/v3.1/connected_accounts/${accountRef}?revoke_on_delete=false`;
+
+/** A self-hosted deployment's own Composio key. */
+const SELF_HOSTED_ENV: PlatformEnv = { COMPOSIO_API_KEY: 'ak_self_hosted_key' };
+
+/** A Cloud installation: the platform's key, with the platform's preparation store. */
+function cloudEnv(t: TestContext): PlatformEnv {
+  configureComposioPlatformSettings(() => ({ getSetting: async () => undefined, applySettingsPatch: async () => false }));
+  t.after(() => configureComposioPlatformSettings(undefined));
+  return scopeInstallationEnv({
+    CHICKPEA_TENANCY: 'installation',
+    COMPOSIO_API_KEY: 'ak_cloud_platform_key',
+    CHICKPEA_COMPOSIO_ENVIRONMENT: 'staging',
+  }, { installationId: 'inst_lifecycle' });
+}
+
+type Door = 'MCP 4.x' | 'MCP 5.0' | 'Slack';
+type Removal = { done: true } | { done: false; message: string; code?: string; nextStep?: string };
+
+/** The removal each door makes, read back the way its person or client sees it. */
+async function removeOver(
+  door: Door,
+  f: Fixture,
+  service: ReturnType<typeof liveService>,
+  agent: CustomAgentConfig,
+  connectionId: string,
+): Promise<Removal> {
+  if (door === 'MCP 4.x') {
+    const removed = await removeConnection(service, mcpContext(f.owner), agent.id, connectionId);
+    assert.equal(removed.ok, true, JSON.stringify(removed));
+    const result = (removed as { result: ManagementApplyResult }).result;
+    if (result.status === 'completed') return { done: true };
+    return { done: false, message: result.outcomes[0]!.instruction!, code: result.outcomes[0]!.code! };
+  }
+  if (door === 'MCP 5.0') {
+    const principal: McpAuthenticatedPrincipal = {
+      betterAuthUserId: f.owner.binding.betterAuthUserId ?? 'ba_owner',
+      userId: f.owner.user.id,
+      membershipId: f.owner.membership.id,
+      organizationId: f.owner.membership.organizationId,
+      role: 'owner',
+      clientId: 'connection-lifecycle-test',
+    };
+    const handler = createMcpHandler(
+      () => createWorkspaceManagementMcpServer({ principal, service, baseUrl: 'https://chickpea.example.test' }),
+      { legacy: 'stateless' },
+    );
+    const callTool = async (name: string, args: Record<string, unknown>) => {
+      const response = await handler.fetch(new Request('http://localhost/mcp', {
+        method: 'POST',
+        headers: {
+          accept: 'application/json, text/event-stream',
+          'content-type': 'application/json',
+          'mcp-protocol-version': '2025-11-25',
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+      }));
+      const body = await response.text();
+      const json = body.trimStart().startsWith('{')
+        ? body
+        : body.split('\n').find((line) => line.startsWith('data: '))!.slice('data: '.length);
+      return (JSON.parse(json) as { result: { structuredContent: Record<string, any>; isError?: boolean } }).result;
+    };
+    const proposed = await callTool('remove_connection', {
+      agentId: agent.id, connectionId, idempotencyKey: `remove-${connectionId}-${++removals}`,
+    });
+    assert.equal(proposed.structuredContent.status, 'needs_confirmation', JSON.stringify(proposed));
+    const confirmed = await callTool('confirm_change', { confirmToken: proposed.structuredContent.confirmation.confirmToken });
+    if (!confirmed.isError) return { done: true };
+    const { error } = confirmed.structuredContent;
+    return { done: false, message: error.message, code: error.code, ...(error.nextStep ? { nextStep: error.nextStep } : {}) };
+  }
+  // On Slack the person's Approve click applies the change, and the host's receipt is all they see.
+  const proposed = await invokeWorkspaceManagementTool({
+    service,
+    resolveContext: async () => slackContext(f.owner, agent.id),
+  }, 'apply_workspace_changes', {
+    idempotencyKey: `remove-${connectionId}-${++removals}`,
+    operations: [{ itemId: 'remove', kind: 'disconnect_connection', agentId: agent.id, connectionId }],
+  });
+  const proposalId = (proposed as { result: ManagementApplyResult }).result.outcomes[0]!.proposalId!;
+  const receipt = await executeHostSlackManagementApproval({
+    turn: {
+      workspaceId: TEAM,
+      channelId: 'C_OPS',
+      threadTs: '100.1',
+      eventId: `Ev_APPROVE_${removals}`,
+      messageTs: `100.${removals + 1}`,
+      text: 'Approved.',
+      userId: f.owner.binding.slackUserId,
+      source: 'app_mention',
+      contextMode: 'thread',
+      uiResponse: { surfaceId: 'surface_approval', namespace: 'host', kind: 'approval', choice: 0 },
+    },
+    assignment: { workspaceId: TEAM, channelId: 'C_OPS', agentId: agent.id, runtimeContract: 'chickpea-v1', agent },
+    turnJobId: `turn_APPROVE_${removals}`,
+    proposalId,
+    dependencies: { identity: f.identity, config: f.config, management: f.management, service },
+  });
+  assert.equal(receipt.kind, 'message', JSON.stringify(receipt));
+  const { text } = receipt as { text: string };
+  return text === 'Applied the approved changes.' ? { done: true } : { done: false, message: text };
+}
+
+const DOORS: readonly Door[] = ['MCP 4.x', 'MCP 5.0', 'Slack'];
+
+async function scheduleOn(f: Fixture, agentId: string, connectionId: string) {
+  await f.config.putAgentScheduleReference({
+    scheduleId: `schedule_${connectionId}`,
+    agentId,
+    workspaceId: TEAM,
+    channelId: 'C_OPS',
+    createdByMembershipId: f.owner.membership.id,
+    runsAsMembershipId: f.owner.membership.id,
+    authorityReceiptId: `authority_${connectionId}`,
+    requiredConnectionAccountIds: [connectionId],
+    state: 'active',
+  });
+}
+
+async function scheduleOf(f: Fixture, agentId: string, connectionId: string) {
+  return (await f.config.listAgentScheduleReferences(agentId)).find(({ scheduleId }) => scheduleId === `schedule_${connectionId}`);
+}
+
+test('removing a managed connection reaches Composio with the deployment\'s own key, self-hosted and on Cloud', (t) =>
+  withFixture('remove-managed-default-provider', async (f) => {
+    const agent = await seedAgent(f);
+    const composio = composioApi(t);
+    for (const [shape, env, key] of [
+      ['self_hosted', SELF_HOSTED_ENV, 'ak_self_hosted_key'],
+      ['cloud', cloudEnv(t), 'ak_cloud_platform_key'],
+    ] as const) {
+      const account = await bindAccount(f, agent.id, notionAccount(`connection_${shape}`, `account_${shape}`));
+      composio.requests.length = 0;
+      const removed = await removeOver('MCP 4.x', f, liveService(f, { env }), agent, account.id);
+      assert.deepEqual(removed, { done: true }, shape);
+      assert.equal(await lifecycleOf(f, account.id), 'revoked', shape);
+      assert.deepEqual(composio.requests, [{ method: 'DELETE', url: deletion(`account_${shape}`), key }], shape);
+    }
+  }));
+
+const RETRY_WITH_NEW_KEY = 'Call remove_connection again with a new idempotencyKey, then confirm_change. Resending this call replays this result.';
+
+// Defect caught: the Slack receipt for a removal Composio fails would carry a label's mentions and links unescaped.
+test('the Slack line for a removal Composio fails escapes the connection label', (t) =>
+  withFixture('remove-managed-escape', async (f) => {
+    const agent = await seedAgent(f);
+    const composio = composioApi(t);
+    const service = liveService(f, { env: SELF_HOSTED_ENV });
+    const account = await bindAccount(f, agent.id, { ...notionAccount('connection_escape', 'account_escape'), label: 'Notion <!channel> · Team' });
+    composio.state.answer = 'refused';
+    const removed = await removeOver('Slack', f, service, agent, account.id);
+    assert.equal(removed.done, false);
+    const message = (removed as { message: string }).message;
+    assert.match(message, /&lt;!channel&gt;/);
+    assert.doesNotMatch(message, /<!channel>/);
+  }));
+
+test('a removal Composio fails cuts the Agent off at once and says so plainly, on every door, and a retry finishes it', (t) =>
+  withFixture('remove-managed-remote-fails', async (f) => {
+    const agent = await seedAgent(f);
+    const composio = composioApi(t);
+    const service = liveService(f, { env: SELF_HOSTED_ENV });
+    const plain = 'Ops no longer uses Notion · Team, but Chickpea could not remove its sign-in yet. Remove the connection again to finish.';
+    const failed: string[] = [];
+    for (const door of DOORS) {
+      for (const answer of ['refused', 'timeout', 'unreadable'] as const) {
+        const label = `${answer} on ${door}`;
+        const accountRef = `account_${failed.length}`;
+        const account = await bindAccount(f, agent.id, notionAccount(`connection_${failed.length}`, accountRef));
+        await scheduleOn(f, agent.id, account.id);
+        composio.state.answer = answer;
+        composio.requests.length = 0;
+        assert.deepEqual(await removeOver(door, f, service, agent, account.id), {
+          done: false,
+          message: plain,
+          ...(door === 'Slack' ? {} : { code: door === 'MCP 4.x' ? 'removal_incomplete' : 'temporarily_unavailable' }),
+          ...(door === 'MCP 5.0' ? { nextStep: RETRY_WITH_NEW_KEY } : {}),
+        }, label);
+        assert.deepEqual(composio.requests.map(({ method, url }) => [method, url]), [['DELETE', deletion(accountRef)]], label);
+        assert.equal(await lifecycleOf(f, account.id), 'needs_attention', label);
+        const schedule = await scheduleOf(f, agent.id, account.id);
+        assert.equal(schedule?.state, 'needs_attention', label);
+        assert.deepEqual(schedule?.connectionPauseAccountIds, [account.id], label);
+        failed.push(account.id);
+      }
+    }
+
+    composio.state.answer = 'deleted';
+    for (const [index, door] of DOORS.entries()) {
+      assert.deepEqual(await removeOver(door, f, service, agent, failed[index]!), { done: true }, `retry on ${door}`);
+      assert.equal(await lifecycleOf(f, failed[index]!), 'revoked', `retry on ${door}`);
+    }
+  }));
+
+test('a managed removal that fails before Composio is asked leaves the connection and its schedules as they were, on every door', () =>
+  withFixture('remove-managed-no-provider', async (f) => {
+    const agent = await seedAgent(f);
+    const hubspot = await bindAccount(f, agent.id, hubspotAccount('ready'));
+    await scheduleOn(f, agent.id, hubspot.id);
+    // No Composio key anywhere: the default resolver finds no provider.
+    const service = liveService(f);
+    for (const door of DOORS) {
+      const removed = await removeOver(door, f, service, agent, hubspot.id);
+      assert.deepEqual(removed, door === 'Slack'
+        ? { done: false, message: 'I couldn’t apply the approved changes (invalid_request). Nothing was changed.' }
+        : {
+            done: false,
+            message: 'Restore the composio provider credentials before disconnecting this managed account so its remote account can also be removed.',
+            code: door === 'MCP 4.x' ? 'invalid_request' : 'invalid_input',
+          }, door);
+      assert.equal(await lifecycleOf(f, hubspot.id), 'ready', door);
+      const schedule = await scheduleOf(f, agent.id, hubspot.id);
+      assert.equal(schedule?.state, 'active', door);
+      assert.equal(schedule?.connectionPauseAccountIds, undefined, door);
+      assert.equal((await f.config.getAgentConnectionBindingForAccount(hubspot.id))?.agentId, agent.id, door);
+    }
   }));
 
 test('tool selection applies directly and only names tools the server offers', () =>

@@ -272,6 +272,95 @@ test('a lost final setup commit revokes the imported account', async () => {
   }
 });
 
+test('a lost final setup commit whose cleanup fails leaves the imported account closed, as a cleanup the person did not ask for', async () => {
+  for (const failure of ['Composio refuses the deletion', 'Composio is gone before the cleanup'] as const) {
+    const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+    const settings = new SqliteSettingsStore(':memory:');
+    let committed = false;
+    const provider: ManagedConnectionProvider = {
+      id: 'composio',
+      async authorize() {
+        return {
+          authorizationUrl: new URL('https://backend.composio.dev/link/lost-commit-cleanup'),
+          authorizationRef: 'authorization_lost_commit_cleanup',
+        };
+      },
+      async pollAuthorization() {
+        return { status: 'active', accountRef: 'authorization_lost_commit_cleanup', toolkit: 'hubspot' };
+      },
+      async validate() {},
+      async execute() { return { data: {} }; },
+      async revoke() { throw new Error('Composio connected account cleanup failed with HTTP 503'); },
+    };
+    const providers = createManagedConnectionProviderRegistry([provider]);
+    if (failure === 'Composio is gone before the cleanup') {
+      const get = providers.get.bind(providers);
+      providers.get = (adapterId) => committed ? undefined : get(adapterId);
+    }
+    try {
+      const agent = await config.createAgent({
+        id: 'agent_lost_commit_cleanup',
+        name: 'Lost Commit',
+        creatorMembershipId: 'membership_lost_commit_cleanup',
+        editPolicy: 'creator_and_admins',
+        lifecycle: 'active',
+        configurationGeneration: 1,
+        instructions: 'Test final setup commit cleanup.',
+        enabled: true,
+        skills: [],
+        mcpServers: [],
+        apiConnections: [],
+        repositories: [],
+      });
+      const principal: AuthPrincipal = {
+        userId: 'user_lost_commit_cleanup',
+        membershipId: 'membership_lost_commit_cleanup',
+        organizationId: 'organization_lost_commit_cleanup',
+        role: 'owner',
+        authenticatorKind: 'better_auth',
+        credentialId: 'credential_lost_commit_cleanup',
+        correlationId: 'correlation_lost_commit_cleanup',
+        machine: false,
+      };
+      await config.ensureWorkspaceInstallation({
+        workspaceId: 'workspace_lost_commit_cleanup',
+        transportMode: 'direct',
+        defaultAgentId: agent.id,
+      });
+      const dependencies = {
+        config,
+        settings,
+        catalog: MANAGED_CONNECTOR_CATALOG,
+        providerContext: { providers, generation: 1, lineage: 'e'.repeat(24) },
+      };
+      const flow = {
+        principal,
+        agent,
+        workspaceId: 'workspace_lost_commit_cleanup',
+        attemptScopeId: 'setup_lost_commit_cleanup',
+      };
+      const started = await startManagedAuthorizationFlow(dependencies, {
+        ...flow, ownerKind: 'member', toolkit: 'hubspot', access: 'read',
+      });
+
+      await assert.rejects(pollManagedAuthorizationFlow(dependencies, {
+        ...flow,
+        browserSecret: started.browserSecret,
+        commit: async () => {
+          committed = true;
+          return false;
+        },
+      }));
+      assert.equal(committed, true, failure);
+      const [account] = await config.listConnectionAccounts('workspace_lost_commit_cleanup');
+      assert.equal(account?.lifecycle, 'needs_attention', failure);
+    } finally {
+      config.close();
+      settings.close();
+    }
+  }
+});
+
 test('a demoted Team creator gets cleanup-only reconnect polling and cancellation', async () => {
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');

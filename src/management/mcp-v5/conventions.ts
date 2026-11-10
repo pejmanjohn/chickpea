@@ -180,6 +180,7 @@ const SERVICE_CODES: Readonly<Record<string, McpErrorCode>> = {
   schedule_authority_missing: 'schedule_unavailable',
   undo_unavailable: 'nothing_to_undo',
   proposal_expired: 'confirmation_expired',
+  removal_incomplete: 'temporarily_unavailable',
   // The codes a change's own outcome carries when it did not apply.
   not_found: 'not_found',
   already_exists: 'invalid_input',

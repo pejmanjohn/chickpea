@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import { keepEventLoopAlive } from './helpers/keep-event-loop-alive.ts';
 
 import { Hono } from 'hono';
@@ -77,7 +77,7 @@ import {
   resolveComposioConfiguration,
   saveStoredComposioProjectKey,
 } from '../src/config/composio-settings.ts';
-import type { ComposioClientLike } from '../src/connections/providers/composio.ts';
+import { ComposioManagedConnectionProvider, type ComposioClientLike } from '../src/connections/providers/composio.ts';
 import { ConnectionAccountService } from '../src/connections/store.ts';
 import {
   createManagedConnectionProviderRegistry,
@@ -4059,8 +4059,119 @@ test('managed Google setup reports an unconfigured provider without reserving an
     assert.equal(
       (await fixture.store.listConnectionAccounts('T_TEST'))
         .find(({ id }) => id === account.id)?.lifecycle,
-      'needs_attention',
+      'ready',
+      'a failed disconnect leaves the connection as it was',
     );
+    await fixture.store.putAgentConnectionBinding({
+      agentId: 'agent_support', connectionAccountId: account.id, providerId: 'google',
+      allowedCapabilities: ['gmail.messages.search'], enabled: true,
+    });
+    const disconnect = await fixture.app.request(
+      `http://localhost/admin/api/agents/agent_support/connections/${account.id}`,
+      { method: 'DELETE', headers: auth() },
+    );
+    assert.equal(disconnect.status, 503, await disconnect.clone().text());
+    assert.deepEqual(await disconnect.json(), {
+      error: 'managed_provider_unavailable',
+      message: 'Restore the composio provider credentials before disconnecting this managed account so its remote account can also be removed.',
+    });
+    assert.equal(
+      (await fixture.store.listConnectionAccounts('T_TEST'))
+        .find(({ id }) => id === account.id)?.lifecycle,
+      'ready',
+      'the Agent page\'s Disconnect leaves it as it was too',
+    );
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('Admin\'s Disconnect keeps a connection Composio failed to delete cut off and says how to finish, on both routes', async (t: TestContext) => {
+  let answer: 'deleted' | 'refused' | 'timeout' | 'unreadable' = 'deleted';
+  const deletions: string[] = [];
+  t.mock.method(globalThis, 'fetch', async (input: string | URL | Request, init?: RequestInit) => {
+    deletions.push(`${init?.method} ${String(input)}`);
+    if (answer === 'refused') return Response.json({ error: { message: 'unavailable' } }, { status: 503 });
+    if (answer === 'timeout') throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+    if (answer === 'unreadable') return new Response('<html>ok</html>', { status: 200 });
+    return Response.json({ success: true });
+  });
+  const fixture = harness(undefined, {
+    managedConnectionProviders: createManagedConnectionProviderRegistry([
+      new ComposioManagedConnectionProvider({ apiKey: 'ak_admin_test_key' }),
+    ]),
+  });
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct', defaultAgentId: 'agent_support',
+    });
+    let n = 0;
+    const gmail = async () => {
+      const account = await fixture.store.putConnectionAccount({
+        id: `connection_gmail_${++n}`,
+        workspaceId: 'T_TEST',
+        ownerKind: 'member',
+        ownerMembershipId: 'membership_test_owner',
+        createdByMembershipId: 'membership_test_owner',
+        providerId: 'google',
+        label: 'Gmail · Personal',
+        policy: {
+          kind: 'managed', adapterId: 'composio', toolkit: 'gmail',
+          principalRef: 'chickpea:membership:membership_test_owner',
+          accountRef: `ca_admin_${n}`,
+          allowedCapabilities: ['gmail.profile.read', 'gmail.messages.search'],
+        },
+        secretRefId: `secret_gmail_${n}`,
+        lifecycle: 'ready',
+      }, 0);
+      await fixture.store.putAgentConnectionBinding({
+        agentId: 'agent_support', connectionAccountId: account.id, providerId: 'google',
+        allowedCapabilities: ['gmail.messages.search'], enabled: true,
+      });
+      return account;
+    };
+    const disconnect = {
+      'Connectors Disconnect': (id: string) => fixture.app.request(
+        `http://localhost/admin/api/connections/${id}/revoke`,
+        { method: 'POST', headers: auth(), body: '{}' },
+      ),
+      'Agent page Disconnect': (id: string) => fixture.app.request(
+        `http://localhost/admin/api/agents/agent_support/connections/${id}`,
+        { method: 'DELETE', headers: auth() },
+      ),
+    };
+    const lifecycle = async (id: string) =>
+      (await fixture.store.listConnectionAccounts('T_TEST')).find((account) => account.id === id)?.lifecycle;
+
+    const failed: Array<[keyof typeof disconnect, string]> = [];
+    for (const route of Object.keys(disconnect) as Array<keyof typeof disconnect>) {
+      for (const failure of ['refused', 'timeout', 'unreadable'] as const) {
+        const label = `${failure} on ${route}`;
+        const account = await gmail();
+        answer = failure;
+        deletions.length = 0;
+        const response = await disconnect[route](account.id);
+        assert.equal(response.status, 502, `${label}: ${await response.clone().text()}`);
+        assert.deepEqual(await response.json(), {
+          error: 'removal_incomplete',
+          message: 'Chickpea stopped using this connection, but could not remove its sign-in yet. Disconnect it again to finish.',
+        }, label);
+        assert.deepEqual(deletions, [
+          `DELETE https://backend.composio.dev/api/v3.1/connected_accounts/ca_admin_${n}?revoke_on_delete=false`,
+        ], label);
+        assert.equal(await lifecycle(account.id), 'needs_attention', label);
+        failed.push([route, account.id]);
+      }
+    }
+
+    answer = 'deleted';
+    for (const [route, id] of failed) {
+      const retried = await disconnect[route](id);
+      assert.equal(retried.status, 200, `retry on ${route}: ${await retried.clone().text()}`);
+      assert.equal(await lifecycle(id), 'revoked', `retry on ${route}`);
+    }
   } finally {
     fixture.store.close();
     fixture.settings.close();

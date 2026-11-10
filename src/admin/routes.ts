@@ -117,6 +117,7 @@ import {
   ManagedCapabilityChoiceError,
   ManagedConnectionConflictError,
   ManagedConnectionProviderUnavailableError,
+  ManagedConnectionRemoteRevokeError,
   ManagedResourceSelectionError,
   type PageSummary,
   markCancelledMcpOAuthAccount,
@@ -9628,6 +9629,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     } catch (error) {
       if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
       if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      const managed = managedDisconnectFailure(c, error);
+      if (managed) return managed;
       if (error instanceof ConnectionScheduleConflictError) return c.json({
         error: 'connection_schedule_changed',
         message: error.message,
@@ -9830,14 +9833,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const account = await service.revoke({
         principal,
         connectionAccountId: c.req.param('connectionAccountId'),
+        onFailure: 'restore',
       });
       return c.json({ account: toConnectionAccountView(account) });
     } catch (error) {
       if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
-      if (error instanceof ManagedConnectionProviderUnavailableError) return c.json({
-        error: 'managed_provider_unavailable',
-        message: `Restore the ${error.adapterId} provider credentials before disconnecting this managed account so its remote account can also be removed.`,
-      }, 503);
+      const managed = managedDisconnectFailure(c, error);
+      if (managed) return managed;
       if (error instanceof ConnectionScheduleConflictError) return c.json({
         error: 'connection_schedule_changed',
         message: error.message,
@@ -13825,6 +13827,22 @@ async function providerRemovalImpact(
 
 // Never echo internal error text (raw SQLite messages) to API clients; log it
 // server-side and return a stable retriable status instead.
+/** A person's Disconnect that failed at the managed provider: what happened, and how to finish it. */
+function managedDisconnectFailure(
+  c: { json(body: { error: string; message: string }, status: 502 | 503): Response },
+  error: unknown,
+): Response | undefined {
+  if (error instanceof ManagedConnectionProviderUnavailableError) return c.json({
+    error: 'managed_provider_unavailable',
+    message: `Restore the ${error.adapterId} provider credentials before disconnecting this managed account so its remote account can also be removed.`,
+  }, 503);
+  if (error instanceof ManagedConnectionRemoteRevokeError) return c.json({
+    error: 'removal_incomplete',
+    message: 'Chickpea stopped using this connection, but could not remove its sign-in yet. Disconnect it again to finish.',
+  }, 502);
+  return undefined;
+}
+
 function internalError(
   c: { json(body: { error: string; message?: string }, status: 500 | 503): Response },
   err: unknown,
