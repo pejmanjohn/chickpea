@@ -10,6 +10,8 @@ import {
 } from '../src/config/provider-keys.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { storedCredentialMetadata } from '../src/config/model-credential-refs.ts';
+import { deprecatedToolDescription } from '../src/management/mcp.ts';
+import { FIVE_ZERO_TOOLS } from '../src/management/mcp-v5/tools.ts';
 import { prepareProviderSetupZodSchema } from '../src/management/schemas.ts';
 import { createManagementSetupRoutes } from '../src/management/setup-routes.ts';
 import {
@@ -447,15 +449,15 @@ test('provider and member outcomes from apply_workspace_changes carry Settings l
 });
 
 test('the MCP description tells a coding agent how to hand off a provider key without touching it', async () => {
-  const mcp = workspaceManagementToolDescription('prepare_provider_setup', 'mcp');
-  for (const required of [
-    'Owner or Admin', 'replaceExisting', 'links.admin', '24 hours', 'only this same person',
-    'Never ask for, accept, or relay the key',
-  ]) assert.ok(mcp.includes(required), `MCP description must mention ${required}`);
+  // 4.5 deprecates prepare_provider_setup; its 5.0 replacement carries the guidance.
+  assert.equal(deprecatedToolDescription('prepare_provider_setup'), 'Deprecated 2026-11-09: use connect_model_provider.');
+  const mcp = FIVE_ZERO_TOOLS.connect_model_provider.description;
+  for (const required of ['Owners and Admins only', 'replaceExisting', '24 hours', 'for this person only', 'Never ask for the key']) {
+    assert.ok(mcp.includes(required), `MCP description must mention ${required}`);
+  }
   assert.doesNotMatch(mcp, /presentation\.slack|\bDM\b|anyone holding it/);
   const slack = workspaceManagementToolDescription('prepare_provider_setup');
   assert.match(slack, /Owner or Admin only/);
-  assert.notEqual(slack, mcp);
 
   // The tool takes no key field and is an MCP-door tool only; Chickpea in
   // Slack keeps the typed request_setup path and its replacement proposal.
