@@ -158,7 +158,7 @@ export class TestRunStoreLogic {
   /**
    * Every model request's list price under today's test runs' submissions.
    * Failed and stopped requests are priced too; an unpriced one counts as zero.
-   * The finish-time bound keeps the scan on the requests' time index.
+   * The requests' run-ID index, or else the finish-time bound, keeps it off a scan.
    */
   private listPriceToday(organizationId: string, dayStart: number): number {
     return Number(this.db.get(

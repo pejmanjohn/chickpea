@@ -10,6 +10,8 @@ import {
   InteractiveUsageRecorder,
   type UsagePersistenceEvent,
 } from '../../src/usage/runtime-recorder.ts';
+import type { ModelRequestRecord } from '../../src/usage/model-requests.ts';
+import { TestRunUsageRecorder } from '../../src/usage/test-run-usage.ts';
 import type { UsageStore } from '../../src/usage/types.ts';
 
 const turn: NormalizedSlackTurn = {
@@ -595,6 +597,92 @@ test('a stopped run is recorded interrupted with no reported usage, never failed
     assert.equal(detail?.operation.status, 'interrupted');
     assert.equal(detail?.measurements[0]?.usageUnknownReason, 'stream_interrupted');
     assert.equal(detail?.measurements[0]?.totalTokens, null);
+  } finally {
+    store.close();
+  }
+});
+
+/** One model request a run made, priced at list as it ended unless `listPriceUsdMicros` is null. */
+function modelRequest(requestId: string, runId: string, listPriceUsdMicros: number | null): ModelRequestRecord {
+  return {
+    requestId, purpose: 'reply', installationId: 'installation-1', runId, attemptId: `attempt_${requestId}`,
+    agentId: 'agent_usage', provider: 'anthropic', model: 'claude-sonnet-5-5', fundingSource: 'customer', outcome: 'completed',
+    inputTokens: 1_000, outputTokens: { total: 500, reasoning: null }, cacheReadTokens: 0, cacheWriteTokens: { total: 0, oneHour: null },
+    priceVersionId: listPriceUsdMicros === null ? null : 'anthropic-sonnet-5-5_2026-10-06',
+    listPriceUsdMicros,
+    priceUnknownReason: listPriceUsdMicros === null ? 'price_unknown' : null,
+    providerCostUsdMicros: null, providerResponseId: null, providerServiceTier: null, providerInferenceGeo: null,
+    finishedAt: 4_000_000,
+  };
+}
+
+test('a stopped or failed run reports no usage, so Usage prices it from the requests it made, a late one included', async () => {
+  const store = new SqliteUsageStore(':memory:');
+  try {
+    const recorder = (id: string, runId: string) => new InteractiveUsageRecorder({
+      turn, assignment, requestedModel: assignment.model!, operationId: `msg_${id}`, executionId: `exec_${id}`,
+      store, now: () => 4_000_000, billingRunId: () => runId,
+    });
+    const estimate = async (operationId: string) => {
+      const [measurement] = (await store.getOperation(operationId))!.measurements;
+      return [measurement!.estimateCompleteness, measurement!.estimateAmountMicros, measurement!.estimateCurrency];
+    };
+
+    // A direct message an operator's cancel_pending stopped: one request before its terminal, one that ended after.
+    const stopped = recorder('stopped', 'sub_stopped');
+    await stopped.admit();
+    await store.recordModelRequest(modelRequest('r1', 'sub_stopped', 8_400));
+    await stopped.recordStopped();
+    assert.deepEqual(await estimate('msg_stopped'), ['complete', 8_400, 'USD']);
+    await store.recordModelRequest(modelRequest('r2', 'sub_stopped', 1_600));
+    assert.deepEqual(await estimate('msg_stopped'), ['complete', 10_000, 'USD']);
+    await store.recordModelRequest(modelRequest('r2', 'sub_stopped', 1_600));
+    assert.deepEqual(await estimate('msg_stopped'), ['complete', 10_000, 'USD'], 'a repeated request counts once');
+
+    // A request with no price leaves the sum unknown rather than short.
+    const failed = recorder('failed', 'sub_failed');
+    await failed.admit();
+    await store.recordModelRequest(modelRequest('r3', 'sub_failed', 2_000));
+    await store.recordModelRequest(modelRequest('r4', 'sub_failed', null));
+    await failed.recordFailure();
+    assert.deepEqual(await estimate('msg_failed'), ['unknown', null, null]);
+
+    // A reply that reported its usage keeps the estimate its tokens give.
+    const answered = recorder('answered', 'sub_answered');
+    await answered.admit();
+    await answered.recordSuccess(success());
+    const own = await estimate('msg_answered');
+    await store.recordModelRequest(modelRequest('r5', 'sub_answered', 99_999));
+    assert.deepEqual(await estimate('msg_answered'), own);
+
+    // A test run cancelled while its tool call was out, as Activity lists it.
+    const testRun = await store.admitOperation(TestRunUsageRecorder.admission({
+      testRunId: 'testrun_cancelled', startedAt: 4_000_000, workspaceId: 'T_USAGE', agentId: 'agent_usage', agentLabel: 'Usage profile',
+      requesterMembershipId: 'membership_usage', requestedModel: 'anthropic/claude-sonnet-5-5', credentialRefId: null, credentialVersion: null,
+    }));
+    await store.recordModelRequest(modelRequest('r6', 'sub_test', 28_426));
+    await store.recordTerminal(new TestRunUsageRecorder(testRun).interrupted(4_000_500, 'sub_test'));
+    assert.deepEqual(await estimate(testRun.operationId), ['complete', 28_426, 'USD']);
+    const activity = await store.listActivityAttributions({ from: 0, to: 5_000_000 });
+    assert.deepEqual(activity.filter(({ operationKind }) => operationKind === 'test_turn').map(({ estimateMicros }) => estimateMicros), [28_426]);
+  } finally {
+    store.close();
+  }
+});
+
+test('with estimates turned off, a stopped run stays unpriced however its requests were priced', async () => {
+  const store = new SqliteUsageStore(':memory:');
+  try {
+    const stopped = new InteractiveUsageRecorder({
+      turn, assignment, requestedModel: assignment.model!, operationId: 'msg_off', executionId: 'exec_off',
+      store, now: () => 4_000_000, billingRunId: () => 'sub_off', processEnv: { USAGE_ESTIMATES: '0' },
+    });
+    await stopped.admit();
+    await store.recordModelRequest(modelRequest('r1', 'sub_off', 8_400));
+    await stopped.recordStopped();
+    await store.recordModelRequest(modelRequest('r2', 'sub_off', 1_600));
+    const [measurement] = (await store.getOperation('msg_off'))!.measurements;
+    assert.deepEqual([measurement!.estimateCompleteness, measurement!.estimateAmountMicros], ['not_priced', null]);
   } finally {
     store.close();
   }

@@ -338,6 +338,7 @@ export class UsageStoreLogic {
             input.billingRunId,
             input.executionId,
           );
+          this.priceUnreportedRun(input.billingRunId);
         }
         return requiredDetail(this.getOperation(input.operationId));
       }
@@ -382,6 +383,7 @@ export class UsageStoreLogic {
         recordedAt,
         input.operationId,
       );
+      if (input.billingRunId) this.priceUnreportedRun(input.billingRunId);
       return requiredDetail(this.getOperation(input.operationId));
     });
   }
@@ -486,7 +488,16 @@ export class UsageStoreLogic {
 
   recordModelRequest(raw: ModelRequestRecord): StoredModelRequestRecord {
     const record = normalizeModelRequestRecord(raw);
-    this.db.run(
+    return this.db.transaction(() => {
+      const inserted = this.insertModelRequest(record);
+      // A request that ends after its run's terminal, as an aborted one can, still counts.
+      if (inserted) this.priceUnreportedRun(record.runId);
+      return this.getModelRequest(record.requestId)!;
+    });
+  }
+
+  private insertModelRequest(record: ReturnType<typeof normalizeModelRequestRecord>): boolean {
+    return this.db.run(
       `INSERT INTO usage_model_requests (${MODEL_REQUEST_COLUMNS})
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(request_id) DO NOTHING`,
@@ -514,8 +525,40 @@ export class UsageStoreLogic {
       record.providerServiceTier,
       record.providerInferenceGeo,
       record.finishedAt,
+    ).changes > 0;
+  }
+
+  /**
+   * A failed or interrupted run reports no usage, so its terminal cannot be
+   * priced from tokens, though each of its model requests was priced at list
+   * as it ended and charged under the run's billing key. Its measurement's
+   * estimate is their sum once every one is priced: what Usage shows for a
+   * cancelled direct message or test run. Repeated as each later request
+   * lands, it only ever sums what is recorded. A deployment that prices
+   * nothing (`not_priced`) stays unpriced; on a measurement with no usage,
+   * a complete estimate can only be this sum.
+   */
+  private priceUnreportedRun(billingRunId: string): void {
+    const unreported = `billing_run_id = ? AND usage_completeness = 'not_reported'
+      AND operation_status IN ('failed', 'interrupted') AND estimate_completeness IN ('unknown', 'complete')`;
+    if (!this.db.get(`SELECT 1 FROM usage_measurements WHERE ${unreported} LIMIT 1`, billingRunId)) return;
+    const requests = this.db.get(
+      `SELECT COUNT(*) AS requests, COUNT(list_price_usd_micros) AS priced, SUM(list_price_usd_micros) AS micros,
+         CASE WHEN COUNT(DISTINCT price_version_id) = 1 THEN MAX(price_version_id) END AS version
+       FROM usage_model_requests WHERE run_id = ?`,
+      billingRunId,
     );
-    return this.getModelRequest(record.requestId)!;
+    const count = Number(requests?.requests ?? 0);
+    if (count === 0 || Number(requests?.priced) !== count) return;
+    this.db.run(
+      `UPDATE usage_measurements
+       SET estimate_completeness = 'complete', estimate_amount_micros = ?, estimate_currency = 'USD',
+           price_version_id = ?, price_unknown_reason = NULL
+       WHERE ${unreported}`,
+      Number(requests!.micros),
+      typeof requests!.version === 'string' ? requests!.version : null,
+      billingRunId,
+    );
   }
 
   getModelRequest(requestId: string): StoredModelRequestRecord | undefined {
@@ -1543,6 +1586,12 @@ export class UsageStoreLogic {
       'usage_connector_daily_rollups',
       'result_bytes_total',
       'INTEGER NOT NULL DEFAULT 0',
+    );
+    // After billing_run_id exists: pricing an unreported run's measurement from its requests.
+    this.db.exec('CREATE INDEX IF NOT EXISTS usage_model_requests_run_idx ON usage_model_requests (run_id)');
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS usage_measurements_unreported_run_idx ON usage_measurements (billing_run_id)
+       WHERE usage_completeness = 'not_reported'`,
     );
     // The pointers into the Work ledger (usage_operations.run_id,
     // usage_measurements.run_execution_id) and their partial indexes are
