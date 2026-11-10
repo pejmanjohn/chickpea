@@ -317,6 +317,37 @@ test('publishing activates a private Chickpea-created draft before enabling its 
   }
 });
 
+test('reconciling or retrying an Agent a person turned off updates Slack and leaves it off; adding it to a Channel turns it on', async () => {
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const transport = new FakeSlackTransport();
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    const reconciler = new AgentPresenceReconciler({ config, transport, announce: null, now: () => NOW });
+    const published = await reconciler.reconcile('agent_support');
+    assert.equal(published.enabled, true);
+    const off = await config.updateAgent(published.id, { enabled: false }, published.revision);
+    await config.updateAgent(off.id, { description: 'Triages support questions' }, off.revision);
+
+    const reconciled = await reconciler.reconcile('agent_support');
+    assert.deepEqual(
+      [reconciled.enabled, reconciled.lifecycle, reconciled.slackPresence?.health],
+      [false, 'active', 'healthy'],
+    );
+    assert.equal(transport.groups[0]?.description, 'Triages support questions');
+    assert.equal((await reconciler.retry('agent_support')).enabled, false);
+    const { agent: joined, grant } = await reconciler.publish({
+      workspaceId: 'TACME',
+      agentId: 'agent_support',
+      channelId: 'C_SUPPORT',
+      actorMembershipId: 'membership_ada',
+      actorSlackUserId: 'UADA',
+    });
+    assert.deepEqual([joined.enabled, grant.status], [true, 'active']);
+  } finally {
+    config.close();
+  }
+});
+
 test('publication fails closed when the actor is not a member or Chickpea needs a private invite', async () => {
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   try {

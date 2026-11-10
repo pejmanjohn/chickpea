@@ -384,7 +384,8 @@ export class AgentPresenceReconciler {
 
     let published: CustomAgentConfig;
     try {
-      published = await this.reconcile(agent.id);
+      // The grant goes active, which the store allows only for an Agent that is on.
+      published = await this.reconcile(agent.id, { turnOn: true });
     } catch (error) {
       const classified = classifyAgentPresenceError(error);
       await this.recordFailure(await config.getAgent(agent.id), classified);
@@ -408,18 +409,21 @@ export class AgentPresenceReconciler {
     return { agent: published, grant, ...(appBot ? { appBot: appBot.placement } : {}) };
   }
 
-  /** Reconcile one Agent's desired Slack alias; safe to invoke after ambiguity. */
-  async reconcile(agentId: string): Promise<CustomAgentConfig> {
+  /**
+   * Reconcile one Agent's desired Slack alias; safe to invoke after ambiguity.
+   * It leaves the Agent on or off as it is unless `turnOn` asks.
+   */
+  async reconcile(agentId: string, { turnOn = false } = {}): Promise<CustomAgentConfig> {
     const before = await this.dependencies.config.getAgent(agentId);
     const wasLive = handleIsLive(before);
-    const reconciled = await this.reconcileOnce(agentId, 0);
+    const reconciled = await this.reconcileOnce(agentId, 0, turnOn);
     if (!wasLive && handleIsLive(reconciled)) {
       await this.announceBestEffort('handleWentLive', reconciled.id, (announce) => announce.handleWentLive(reconciled));
     }
     return reconciled;
   }
 
-  private async reconcileOnce(agentId: string, attempt: number): Promise<CustomAgentConfig> {
+  private async reconcileOnce(agentId: string, attempt: number, turnOn: boolean): Promise<CustomAgentConfig> {
     const { config, transport } = this.dependencies;
     let agent = await config.getAgent(agentId);
     if (agent.lifecycle === 'archived') {
@@ -545,13 +549,13 @@ export class AgentPresenceReconciler {
           { retryable: true },
         );
       }
-      return this.reconcileOnce(current.id, attempt + 1);
+      return this.reconcileOnce(current.id, attempt + 1, turnOn);
     }
     return config.updateAgent(
       current.id,
       {
         lifecycle: 'active',
-        enabled: true,
+        ...(turnOn ? { enabled: true } : {}),
         slackPresence: {
           ...withoutPendingCreate(withoutPresenceErrors(userGroupPresence(current))),
           requestedHandle: presence.requestedHandle || normalizedHandle,
