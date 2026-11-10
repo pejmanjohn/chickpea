@@ -346,6 +346,8 @@ test('draft mode refuses a key or host the requester did not type, a click, a ke
         assert.match(refusal(await tryDraft(TYPED, { path })).message, /^Nothing was sent: path contains the key/, path);
       }
       assert.match(refusal(await tryDraft(TYPED, { draft: { ...DRAFT, headerName: 'Bad Header' } })).message, /header name that is not allowed/);
+      assert.match(refusal(await tryDraft(TYPED, { draft: { ...DRAFT, headerValuePrefix: 'Bearer sk_live_abcdefghijklmnop0123 ' } })).message,
+        /^Nothing was sent: the draft value prefix is the text before the key/, 'a draft\'s prefix is new, so it meets the rule');
       assert.match(refusal(await f.slack('try_connection', { draft: DRAFT, path: INCIDENTS }, TYPED)).message,
         /Pass a draft with the key to try it/);
       const chickpea = await f.config.materializeChickpeaAgent();

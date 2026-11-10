@@ -8,6 +8,8 @@ import type { McpAuthenticatedPrincipal } from '../src/auth/mcp-oauth-routes.ts'
 import { validatePublicMcpClientRegistration } from '../src/auth/mcp-oauth.ts';
 import {
   createWorkspaceManagementMcpServer,
+  V4_TOOL_REPLACEMENTS,
+  V4_TOOLS_DEPRECATED_ON,
   WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI,
   WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI,
   WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES,
@@ -15,9 +17,9 @@ import {
   WORKSPACE_MANAGEMENT_SERVER_INFO,
 } from '../src/management/mcp.ts';
 import {
-  WORKSPACE_MANAGEMENT_INSTRUCTIONS_MAX_BYTES,
+  WORKSPACE_MANAGEMENT_INSTRUCTIONS,
+  WORKSPACE_MANAGEMENT_INSTRUCTIONS_MAX_CHARACTERS,
   workspaceManagementAdminOrigin,
-  workspaceManagementInstructions,
 } from '../src/management/instructions.ts';
 import {
   AGENT_AUTHORING_GUIDE_DIGEST,
@@ -136,6 +138,21 @@ const MCP_TOOL_ANNOTATIONS = {
   connect_model_provider: { ...DESTRUCTIVE_5, idempotentHint: false },
   confirm_change: DESTRUCTIVE_5,
   undo_change: DESTRUCTIVE_5,
+  // 4.5: a link that adds a connection is additive, but adding an open MCP server asks it for
+  // its tools, and each call makes a new link. Everything else replaces, removes or revokes.
+  connect_service: { ...ADDS_5, openWorldHint: true, idempotentHint: false },
+  reconnect_service: { ...DESTRUCTIVE_5, idempotentHint: false },
+  update_connection: { ...DESTRUCTIVE_5, openWorldHint: true },
+  remove_connection: DESTRUCTIVE_5,
+  set_agent_repositories: DESTRUCTIVE_5,
+  delete_agent: DESTRUCTIVE_5,
+  remove_website_login: DESTRUCTIVE_5,
+  remove_agent_from_channel: DESTRUCTIVE_5,
+  delete_schedule: DESTRUCTIVE_5,
+  remove_model_provider_key: DESTRUCTIVE_5,
+  update_member: DESTRUCTIVE_5,
+  cancel_setup_link: DESTRUCTIVE_5,
+  disconnect_app: DESTRUCTIVE_5,
 };
 
 const CLIENTS = [
@@ -192,16 +209,7 @@ test('supported coding clients share public PKCE registration and stateless MCP 
           instructions?: string;
         };
         assert.equal(initializeResult.serverInfo.version, WORKSPACE_MANAGEMENT_SERVER_INFO.version, client.name);
-        assert.equal(typeof initializeResult.instructions, 'string', `${client.name} must receive instructions`);
-        assert.ok(
-          Buffer.byteLength(initializeResult.instructions!, 'utf8') <= WORKSPACE_MANAGEMENT_INSTRUCTIONS_MAX_BYTES,
-          `${client.name} instructions must fit the client cap`,
-        );
-        assert.ok(
-          initializeResult.instructions!.includes(`${new URL(DEPLOYMENT_BASE_URL).origin}/admin`),
-          `${client.name} instructions must link the real Admin origin`,
-        );
-        assert.equal(initializeResult.instructions, workspaceManagementInstructions(DEPLOYMENT_BASE_URL));
+        assert.equal(initializeResult.instructions, WORKSPACE_MANAGEMENT_INSTRUCTIONS, `${client.name} gets the 5.0 instructions`);
       }
 
       const listed = await mcpCall(handler.fetch, client.protocol, 'tools/list', {});
@@ -236,8 +244,13 @@ test('supported coding clients share public PKCE registration and stateless MCP 
         assert.deepEqual(
           [listedTool.outputSchema, listedTool.securitySchemes, listedTool._meta],
           [undefined, undefined, undefined],
-          `${client.name} ${listedTool.name}: a 4.x descriptor is unchanged in 4.4`,
+          `${client.name} ${listedTool.name}: a 4.x descriptor keeps its 4.x shape`,
         );
+        const replacedBy: readonly string[] = V4_TOOL_REPLACEMENTS[listedTool.name as keyof typeof V4_TOOL_REPLACEMENTS];
+        assert.match(listedTool.description ?? '', new RegExp(`^Deprecated ${V4_TOOLS_DEPRECATED_ON}: use [^\\n]+\\.$`), listedTool.name);
+        assert.ok(replacedBy.length > 0 && replacedBy.every((name) =>
+          listedTools.some((tool) => tool.name === name) && listedTool.description!.includes(name)),
+        `${client.name} ${listedTool.name} names listed 5.0 replacements`);
       }
       const immediateSkillImport = listedTools.find(({ name }) => name === 'import_skill');
       for (const field of ['agentId', 'source', 'idempotencyKey', 'guideVersion']) {
@@ -322,8 +335,11 @@ test('supported coding clients share public PKCE registration and stateless MCP 
         tools: string[];
         operationKinds: string[];
         prompts: string[];
+        deprecated: Record<string, { since: string; replacedBy: string[] }>;
       };
       assert.equal(contract.schemaVersion, 2);
+      assert.deepEqual(Object.keys(contract.deprecated), [...WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES], client.name);
+      assert.deepEqual(contract.deprecated.revoke_mcp_client, { since: V4_TOOLS_DEPRECATED_ON, replacedBy: ['disconnect_app'] });
       assert.deepEqual(contract.tools, WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES, client.name);
       assert.deepEqual(contract.operationKinds, MCP_MANAGEMENT_OPERATION_KINDS);
       assert.deepEqual(contract.prompts, WORKSPACE_MANAGEMENT_PROMPT_NAMES, client.name);
@@ -462,53 +478,29 @@ test('supported coding clients share public PKCE registration and stateless MCP 
   }
 });
 
-test('server instructions stay under the client cap and link the deployment Admin', () => {
-  const longOrigin = `https://${'chickpea-'.repeat(12)}workspace.example-account.workers.dev`;
-  for (const baseUrl of [undefined, 'https://chickpea.example.test', `${longOrigin}/setup/x?y=1#z`]) {
-    const text = workspaceManagementInstructions(baseUrl);
-    assert.ok(
-      Buffer.byteLength(text, 'utf8') <= WORKSPACE_MANAGEMENT_INSTRUCTIONS_MAX_BYTES,
-      `instructions for ${baseUrl ?? 'no origin'} exceed the cap`,
-    );
-    for (const required of [
-      'inspect_workspace',
-      WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI,
-      'apply_workspace_changes',
-      'create_agent',
-      'confirm_workspace_change',
-      'prepare_connector_setup',
-      '/admin/settings/providers',
-      '/admin/settings/github',
-      '/admin/settings/sandbox',
-      'mention it in Slack',
-      'presentation.markdown',
-      'links.admin',
-    ]) assert.ok(text.includes(required), `instructions must mention ${required}`);
-    assert.ok(
-      text.includes(`3. Asked what to build, or to create an Agent with no job named, read ${DISCOVERY_GUIDE_URI} and research the person's recent work before you propose.`),
-      'a plain-language ask for an Agent starts with the discovery guide',
-    );
-    assert.ok(!text.includes('/admin/settings/outbound'), 'Outbound access is retired');
+test('server instructions are the 5.0 text: short, linkless, and naming only 5.0 tools', () => {
+  const text = WORKSPACE_MANAGEMENT_INSTRUCTIONS;
+  assert.ok(text.length <= WORKSPACE_MANAGEMENT_INSTRUCTIONS_MAX_CHARACTERS, `${text.length} characters`);
+  for (const required of ['Agents', 'Slack', 'get_agent', 'propose_agent, then create_agent once the person agrees', 'connect_service', 'needs_confirmation', 'confirm_change', 'links']) {
+    assert.ok(text.includes(required), `instructions must mention ${required}`);
   }
+  assert.ok(!/https?:|\/admin|chickpea:\/\//.test(text), 'no link, Admin path or resource URI');
+  for (const name of WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES) {
+    assert.ok(!new RegExp(`\\b${name}\\b`).test(text), `instructions must not name the deprecated ${name}`);
+  }
+  assert.doesNotMatch(text, SLACK_ONLY_WORDING);
 
   assert.equal(workspaceManagementAdminOrigin(undefined), undefined);
   assert.equal(workspaceManagementAdminOrigin('not a url'), undefined);
   assert.equal(workspaceManagementAdminOrigin('ftp://chickpea.example.test'), undefined);
   assert.equal(workspaceManagementAdminOrigin('https://chickpea.example.test/setup/abc?x=1#y'), 'https://chickpea.example.test');
   assert.equal(workspaceManagementAdminOrigin('http://localhost:8787/'), 'http://localhost:8787');
-
-  const withOrigin = workspaceManagementInstructions(`${longOrigin}/setup/x?y=1#z`);
-  assert.ok(withOrigin.includes(`under ${longOrigin}/admin: `));
-  assert.ok(!withOrigin.includes('/setup/x'), 'instructions must not leak a setup path');
-  const withoutOrigin = workspaceManagementInstructions(undefined);
-  assert.ok(!withoutOrigin.includes('https://'), 'no origin must not invent a link');
-  assert.ok(withoutOrigin.includes('/admin'));
 });
 
 test('workspace management MCP publishes the version 4 server contract', () => {
   assert.deepEqual(WORKSPACE_MANAGEMENT_SERVER_INFO, {
     name: 'chickpea-workspace',
-    version: '4.4.0',
+    version: '4.5.0',
   });
   assert.match(WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI, /\/v2$/);
 });

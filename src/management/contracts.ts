@@ -10,6 +10,7 @@ import {
   REPOSITORY_GRANT_SHAPE_MESSAGE,
 } from '../config/github-app.ts';
 import {
+  apiConnectionsShapeProblem,
   apiConnectionsWriteProblem,
   mcpConnectionsWriteProblem,
   skillsWriteProblem,
@@ -102,7 +103,7 @@ export function validateManagementOperations(
     const agentFields = operation.kind === 'create_agent'
       ? operation.agent
       : operation.kind === 'update_agent' ? operation.patch : undefined;
-    const problem = agentFields && agentWriteProblem(agentFields);
+    const problem = agentFields && agentWriteProblem(agentFields, operation.kind === 'update_agent');
     if (problem) throw new AgentWriteRuleError(problem);
     if (operation.kind === 'create_agent' && !isAgentId(operation.agent.id)) {
       throw invalid('Agent IDs must start with a lowercase letter or digit and contain only lowercase letters, digits, underscores, or hyphens.');
@@ -150,13 +151,17 @@ export function validateManagementOperations(
  * Refuses repository grants the runtime would silently drop (for example
  * `allRepos: true` with a repository fullName), so the proposer re-proposes the
  * correct shape instead of saving a grant that removes all repository access.
+ * Grant IDs are unique, as Admin requires: a setup link names its grant by ID.
  */
 export function assertValidRepositoryGrants(
-  repositories: readonly Pick<RepositoryGrant, 'installationId' | 'accountLogin' | 'fullName' | 'allRepos'>[] | undefined,
+  repositories: readonly Pick<RepositoryGrant, 'id' | 'installationId' | 'accountLogin' | 'fullName' | 'allRepos'>[] | undefined,
 ): void {
   if (repositories?.some((grant) =>
     !isValidRepositoryGrantShape(grant, { requireInstallation: true }))) {
     throw invalid(REPOSITORY_GRANT_SHAPE_MESSAGE);
+  }
+  if (repositories && new Set(repositories.map(({ id }) => id)).size !== repositories.length) {
+    throw invalid('Each repository grant needs its own id.');
   }
 }
 
@@ -293,11 +298,13 @@ function agentWriteProblem(fields: {
   skills?: Parameters<typeof skillsWriteProblem>[0] | undefined;
   mcpServers?: ManagementMcpConnection[] | undefined;
   apiConnections?: ManagementApiConnection[] | undefined;
-}): string | undefined {
+}, edit: boolean): string | undefined {
+  // An edit resends the Agent's stored connections; the service checks their value prefixes once it reads them.
+  const apiProblem = edit ? apiConnectionsShapeProblem : apiConnectionsWriteProblem;
   return (fields.skills && skillsWriteProblem(fields.skills)) ??
     (fields.mcpServers && (mcpConnectionsWriteProblem(fields.mcpServers) ??
       fields.mcpServers.map(connectionAccountShapeProblem).find(Boolean))) ??
-    (fields.apiConnections && (apiConnectionsWriteProblem(fields.apiConnections) ??
+    (fields.apiConnections && (apiProblem(fields.apiConnections) ??
       fields.apiConnections.map(connectionAccountShapeProblem).find(Boolean)));
 }
 

@@ -30,12 +30,17 @@ type Person = 'owner' | 'admin';
 async function harness(
   t: TestContext,
   suffix: string,
-  options: { member?: boolean; slackFacts?: WorkspaceManagementServiceInput['slackFacts'] } = {},
+  options: {
+    member?: boolean;
+    overrides?: Partial<WorkspaceManagementServiceInput>;
+    slackFacts?: WorkspaceManagementServiceInput['slackFacts'];
+  } = {},
 ) {
   const clock = { now: NOW };
   const f = await createManagementAdapterFixture(suffix, {
     now: () => clock.now,
     ...(options.slackFacts ? { slackFacts: options.slackFacts } : {}),
+    ...options.overrides,
   });
   t.after(() => f.close());
   if (options.member) {
@@ -558,4 +563,44 @@ test('a member changes only the Agents they may edit, and never a workspace sett
     agentId: mine.agent.agentId, version: mine.version, description: 'Takes notes.', idempotencyKey: 'member-edit',
   }));
   assert.equal(edited.status, 'done');
+});
+
+test('create_agent returns the version its Channel grants leave, and a confirm after a change says so with a next step', async (t) => {
+  let published = 0;
+  let fixture!: ManagementAdapterFixture;
+  const overrides: Partial<WorkspaceManagementServiceInput> = {
+    // As the live reconciler does, joining a Channel moves the Agent's Slack presence on.
+    publishAgentChannel: async ({ actor, workspaceId, channelId, agentId }) => {
+      published += 1;
+      const grant = await fixture.config.putAgentChannelGrant({
+        workspaceId, channelId, agentId, status: 'active', createdByMembershipId: actor.membershipId, channelLabel: 'support',
+      });
+      const agent = await fixture.config.updateAgent(agentId, { description: 'Joined.' });
+      return { grant, agent };
+    },
+  };
+  const { f, teamId, call } = await harness(t, 'create-version', { overrides });
+  fixture = f;
+  await f.config.putChannel({ workspaceId: teamId, channelId: 'C_SUPPORT', label: 'support', lifecycle: 'active' });
+  const created = structured(await call('create_agent', {
+    name: 'Support Desk', instructions: 'Answer support questions.', channels: ['C_SUPPORT'], idempotencyKey: 'create',
+  }));
+  assert.equal(published, 1);
+  assert.equal(created.version, await version(call, created.agent.agentId), 'the version is current after the grants');
+  structured(await call('update_agent', {
+    agentId: created.agent.agentId, version: created.version, name: 'Support', idempotencyKey: 'rename',
+  }));
+
+  const off = structured(await call('update_agent', {
+    agentId: created.agent.agentId, version: await version(call, created.agent.agentId), on: false, idempotencyKey: 'off',
+  }));
+  assert.equal(off.status, 'needs_confirmation');
+  structured(await call('update_agent', {
+    agentId: created.agent.agentId, version: await version(call, created.agent.agentId), description: 'Changed meanwhile.', idempotencyKey: 'meanwhile',
+  }));
+  const stale = errorOf(await call('confirm_change', { confirmToken: off.confirmation.confirmToken }), 'changed_since_read');
+  assert.equal(stale.message, 'It changed since the preview, so nothing changed.');
+  assert.match(String(stale.nextStep), /fresh preview and confirmToken/);
+  assert.equal(stale.retryable, true);
+  assert.equal((await f.config.getAgent(created.agent.agentId)).enabled, true);
 });

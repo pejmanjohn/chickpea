@@ -293,6 +293,9 @@ test('a native connector welcome link stays on the dedicated setup surface until
     );
     assert.match(setupHtml, /button\.disabled=!selectedOwner\(\)/);
     assert.match(setupHtml, /Choose Personal or Team to continue\./);
+    assert.match(setupHtml, new RegExp(`<a class="text-button" href="/admin/agents/${agent.id}">Cancel</a>`));
+    const cancelledParam = await (await app.request(`http://localhost/setup/${setupId}?cancelled=1`, { headers: { cookie } })).text();
+    assert.match(cancelledParam, /Connect Linear to Project Guide/, 'only an app\'s link has the go-back page');
     assert.equal((await config.listConnectionAccounts(owner.user.slackTeamId)).length, 0);
     assert.equal((await config.listAgentConnectionBindings(agent.id)).length, 0);
 

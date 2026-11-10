@@ -7,6 +7,7 @@ import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import {
   renderCatalogConnectionAccessReviewPage,
+  renderCatalogConnectionCancelledPage,
   renderCatalogConnectionSetupPage,
   renderManagedConnectionDeparturePage,
   renderManagedConnectionSetupPage,
@@ -411,6 +412,30 @@ test('a Slack link to change a shared sign-in\'s pages says the change reaches e
   assert.doesNotMatch(expired, /Changes there/, 'an expired sign-in shows no page list to change');
 });
 
+test('Cancel on a catalog page sends an app\'s link back to the app, and a Slack link to the Agent in Admin', () => {
+  const pages: Array<[string, (setup: ManagementSetupRecord) => string]> = [
+    ['setup', (record) => renderCatalogConnectionSetupPage({ setup: record, agent: sprout })],
+    ['access review', (record) => renderCatalogConnectionAccessReviewPage({
+      setup: record, agent: sprout, accessReview: { approvedAccountIds: [], tools: [] },
+    })],
+  ];
+  const fromSlack = catalogSetup('linear', 'Linear');
+  const fromApp: ManagementSetupRecord = { ...fromSlack, origin: { kind: 'mcp', clientId: 'https://chatgpt.com/oauth/client.json' } };
+  for (const [name, render] of pages) {
+    assert.match(render(fromSlack), /<a class="text-button" href="\/admin\/agents\/agent_sprout">Cancel<\/a>/, `${name}: Slack keeps its Cancel`);
+    const app = render(fromApp);
+    assert.match(app, /<a class="text-button" href="\/setup\/setup_catalog_linear\?cancelled=1">Cancel<\/a>/, name);
+    assert.doesNotMatch(app, /href="\/admin/, `${name}: an app's link never opens Admin`);
+  }
+
+  const cancelled = renderCatalogConnectionCancelledPage({ setup: fromApp, agent: sprout, returnTo: { app: 'ChatGPT' } });
+  assert.match(cancelled, /<title>Chickpea · Linear not connected<\/title>/);
+  assert.match(cancelled, /<h1 id="flow-title">Linear was not connected to Sprout<\/h1>/);
+  assert.match(cancelled, /You can close this tab and go back to ChatGPT\./);
+  assert.match(renderCatalogConnectionCancelledPage({ setup: fromApp, agent: sprout, returnTo: {} }), /go back to your app\./);
+  assert.doesNotMatch(cancelled, /\/admin|Slack/);
+});
+
 test('an access review offers Select all and Deselect all only when a tool can be selected', () => {
   type Tools = NonNullable<ConnectorLandingPageInput['accessReview']>['tools'];
   const review = (tools: Tools) => renderCatalogConnectionAccessReviewPage({
@@ -449,6 +474,7 @@ test('every connector and setup page styles each class it uses, and every styled
       agent: sprout,
       accessReview: { approvedAccountIds: [], tools: [] },
     })],
+    ['catalog cancelled', renderCatalogConnectionCancelledPage({ setup: catalogSetup('linear', 'Linear'), agent: sprout, returnTo: {} })],
     ['managed setup, read', renderManagedConnectionSetupPage({ setup, agent: sprout })],
     ['managed setup with a sign-in to reuse', renderManagedConnectionSetupPage({
       setup: notionSetup, agent: sprout, reusable: { member: [MY_NOTION], team: [] },

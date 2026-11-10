@@ -256,7 +256,7 @@ export function renderCatalogConnectionSetupPage(input: ConnectorLandingPageInpu
               <p class="flow-alert" id="flow-alert" role="alert"${failureMessage ? '' : ' hidden'}>${escapeHtml(failureMessage)}</p>
             </form>
             <div class="flow-actions">
-              <a class="text-button" href="/admin/agents/${encodeURIComponent(agent.id)}">Cancel</a>
+              ${catalogCancel(setup, agent)}
               <button class="primary-button" type="submit" form="connector-form" name="intent" value="authorize" disabled>Continue to ${escapeHtml(connector)}</button>
             </div>
           </section>
@@ -334,7 +334,7 @@ export function renderCatalogConnectionAccessReviewPage(
               <p class="flow-alert" id="flow-alert" role="alert"${failureMessage ? '' : ' hidden'}>${escapeHtml(failureMessage)}</p>
             </form>
             <div class="flow-actions">
-              <a class="text-button" href="/admin/agents/${encodeURIComponent(agent.id)}">Cancel</a>
+              ${catalogCancel(setup, agent)}
               <button class="primary-button" type="submit" form="access-review-form" disabled>Save access</button>
             </div>
           </section>
@@ -413,6 +413,36 @@ export function renderManagedConnectionSuccessPage(input: ConnectorLandingPageIn
         </section>
       </main>`,
   });
+}
+
+/** Where Cancel on an app's catalog link ends: nothing was connected, and the person goes back to the app. */
+export function renderCatalogConnectionCancelledPage(input: ConnectorLandingPageInput): string {
+  const connector = input.setup.target.targetLabel;
+  return pageShell({
+    title: `${connector} not connected`,
+    surface: 'connector-cancelled',
+    content: `
+      <main class="flow-shell success-shell" aria-labelledby="flow-title">
+        ${brandHeader()}
+        <section class="flow-content centered">
+          ${connectionPair(input)}
+          <h1 id="flow-title">${escapeHtml(connector)} was not connected to ${escapeHtml(input.agent.name)}</h1>
+          <p class="small-copy">You can close this tab and go back to ${escapeHtml(input.returnTo?.app ?? 'your app')}.</p>
+        </section>
+      </main>`,
+  });
+}
+
+/**
+ * Cancel leaves a catalog page and changes nothing. A link an app asked for
+ * ends on a page that sends the person back to the app; a Slack link opens the
+ * Agent in Admin, as it always has.
+ */
+function catalogCancel(setup: ManagementSetupRecord, agent: CustomAgentConfig): string {
+  const href = setup.origin.kind === 'mcp'
+    ? `/setup/${encodeURIComponent(setup.setupOperationId)}?cancelled=1`
+    : `/admin/agents/${encodeURIComponent(agent.id)}`;
+  return `<a class="text-button" href="${href}">Cancel</a>`;
 }
 
 /** For a link that cannot be used. It says to ask for a new one where the link came from. */

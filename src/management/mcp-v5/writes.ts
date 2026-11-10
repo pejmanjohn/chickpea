@@ -38,7 +38,7 @@ type Operation<K extends ManagementOperation['kind']> = Extract<ManagementOperat
  */
 
 /** The Agent the caller may edit, checked against the version they read. */
-async function editableAgent(
+export async function editableAgent(
   deps: FiveZeroDeps,
   context: ManagementActorContext,
   agentId: string,
@@ -69,7 +69,7 @@ async function agentChange(
 }
 
 /** The Slack workspace's team ID, which every Channel and schedule operation names. */
-function slackTeamId(snapshot: ManagementWorkspaceSnapshot): string {
+export function slackTeamId(snapshot: ManagementWorkspaceSnapshot): string {
   if (!snapshot.slackTeamId) {
     fail('invalid_input', 'Chickpea is not connected to a Slack workspace yet.', {
       nextStep: 'Tell the person to finish connecting Slack in Chickpea Admin.',
@@ -106,7 +106,7 @@ async function creationChannels(
   return found.map(({ channelId }) => channelId);
 }
 
-function grantRevision(snapshot: ManagementWorkspaceSnapshot, channelId: string, agentId: string): number {
+export function grantRevision(snapshot: ManagementWorkspaceSnapshot, channelId: string, agentId: string): number {
   return snapshot.channels.find((channel) => channel.channelId === channelId)
     ?.grants.find((grant) => grant.agentId === agentId)?.revision ?? 0;
 }
@@ -160,6 +160,8 @@ export async function createAgent(
     },
   }).catch((error: unknown) => mcpToolError(error));
   const result = await changeResult(deps, context, created, { agentId });
+  // Joining a Channel moves the Agent's Slack presence on, so its version is read after the grants.
+  const { version } = await agentSummary(deps, context, agentId);
   const outcomes = 'outcomes' in granted ? granted.outcomes : [];
   const added = outcomes.filter(({ disposition }) => disposition === 'applied').length;
   const notAdded = 'code' in granted
@@ -168,6 +170,7 @@ export async function createAgent(
       .map((outcome) => `It could not be added to one of its Channels: ${outcome.instruction ?? 'the grant did not apply.'}`);
   return {
     ...result,
+    ...(version ? { version } : {}),
     summary: `${result.summary} It joins ${added} Channel${added === 1 ? '' : 's'}; get_creation_status follows its arrival.`,
     ...(notAdded.length ? { warnings: [...result.warnings ?? [], ...notAdded] } : {}),
   };
@@ -502,7 +505,7 @@ export async function setAgentSkill(
 type Schedule = ManagementRoutineSnapshot['routines'][number];
 
 /** One schedule the caller can see, checked against the version they read. */
-async function readSchedule(
+export async function readSchedule(
   deps: FiveZeroDeps,
   context: ManagementActorContext,
   scheduleId: string,
@@ -749,6 +752,12 @@ export async function confirmChange(
     if (error.code === 'proposal_stale') {
       fail('changed_since_read', 'This confirmation is out of date, so nothing changed.', {
         nextStep: 'A newer change replaced it, or what it changes changed since. Read it again and call the tool again.',
+      });
+    }
+    // What the preview showed changed after it was made, so the person saw something else.
+    if (error.code === 'revision_conflict') {
+      fail('changed_since_read', 'It changed since the preview, so nothing changed.', {
+        nextStep: 'Read it again, then call the tool that proposed the change again with a new idempotencyKey for a fresh preview and confirmToken.',
       });
     }
     throw error;
