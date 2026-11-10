@@ -9,7 +9,7 @@ import {
 export const PRIVATE_CHANNEL_SETUP_ADD_ACTION = 'chickpea.private_channel_setup.v1.add';
 export const PRIVATE_CHANNEL_SETUP_AGENT_ACTION = 'chickpea.private_channel_setup.v1.agent';
 export const PRIVATE_CHANNEL_SETUP_CHOICE_BLOCK = 'chickpea.private_channel_setup.v1.choice';
-/** Direct transport only: the gateway does not forward it. */
+/** Direct transport only. The gateway does not forward it. */
 export const PRIVATE_CHANNEL_SETUP_AGAIN_ACTION = 'chickpea.private_channel_setup.v1.again';
 
 export interface PrivateChannelSetupAction {
@@ -156,10 +156,11 @@ export function privateChannelSetupCard(input: {
 }
 
 /**
- * What one setup click does to the inviter's card: replace it once it is
- * finished, answer beside it while it is still usable, or say nothing.
- * `fallback` is what goes out as a new ephemeral message when the card cannot
- * be replaced: the text alone, or the whole card when it is one to click.
+ * What one setup click does to the inviter's card. A finished card is
+ * replaced, a usable one gets a notice beside it, and some clicks get nothing.
+ * When the card cannot be replaced, `fallback` says what goes out as a new
+ * ephemeral message instead. A card meant to be clicked goes out whole, and
+ * anything else as its text alone.
  */
 export type SetupCardReply =
   | { kind: 'replace'; message: SetupCardMessage; fallback: 'text' | 'card' }
@@ -177,7 +178,7 @@ export type PrivateChannelSetupOutcome =
 
 export interface SetupReplyContext {
   adminUrl?: string;
-  /** Set only when the card can be replaced: the setup its again button binds to. */
+  /** The setup an again button binds to, set only when the card can be replaced. */
   againSetupId?: string;
 }
 
@@ -197,7 +198,7 @@ export function privateChannelSetupReply(
     case 'unavailable':
       return unavailableReply(outcome.reason, context);
     case 'recovery_required':
-      return textReply(privateChannelSetupRecoveryText(context.adminUrl));
+      return replaceWithText(privateChannelSetupRecoveryText(context.adminUrl));
     case 'begun':
       return {
         kind: 'replace',
@@ -210,7 +211,7 @@ export function privateChannelSetupReply(
         fallback: 'card',
       };
     case 'missing':
-      return textReply(privateChannelSetupUnavailableText('expired', context.adminUrl));
+      return replaceWithText(privateChannelSetupUnavailableText('expired', context.adminUrl));
     case 'failed':
       return failedReply(outcome.error, context);
   }
@@ -257,7 +258,7 @@ function unavailableReply(
   reason: 'expired' | 'stale' | 'used' | 'removed',
   context: SetupReplyContext,
 ): SetupCardReply {
-  return textReply(
+  return replaceWithText(
     privateChannelSetupUnavailableText(reason, context.adminUrl),
     context.againSetupId
       ? againButton(context.againSetupId, 'Choose an Agent', 'Choose an Agent to add to this private channel')
@@ -266,7 +267,7 @@ function unavailableReply(
 }
 
 /** The text carries its own Open Chickpea link, so it renders as mrkdwn. */
-function textReply(text: string, button?: Record<string, unknown>): SetupCardReply {
+function replaceWithText(text: string, button?: Record<string, unknown>): SetupCardReply {
   return {
     kind: 'replace',
     message: {

@@ -22,9 +22,9 @@ import { createSlackOwner } from './slack-owner.ts';
 export interface DirectSlackCall {
   method: string;
   body: URLSearchParams;
-  /** The full request URL: a Web API method, or a click's response_url. */
+  /** The full request URL, of a Web API method or of a click's response_url. */
   url: string;
-  /** The body as sent: a form for the Web API, JSON for a response_url. */
+  /** The body as sent, a form for the Web API and JSON for a response_url. */
   raw: string;
 }
 
@@ -37,7 +37,7 @@ export interface DirectSlackCall {
 export interface DirectSlackInstall {
   stores: AppStores;
   ownerMembershipId: string;
-  /** Every Slack Web API call, in order. */
+  /** Every call to Slack, Web API or response_url, in order. */
   calls: DirectSlackCall[];
   deliver(
     kind: 'events' | 'interactions',
@@ -53,8 +53,8 @@ export async function withDirectSlackInstall(
     signingSecret?: string;
     botToken?: string;
     /**
-     * Slack's answer to one call: JSON, or a whole Response; `{ ok: true }`
-     * when undefined. Throwing fails the request as a network error would.
+     * Slack's answer to one call, as JSON or a whole Response. Undefined
+     * answers `{ ok: true }`. Throwing fails the request as a network error would.
      */
     answer?: (method: string, body: URLSearchParams, url: string) => Record<string, unknown> | Response | undefined;
   },

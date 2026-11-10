@@ -3203,7 +3203,7 @@ async function completePrivateChannelSetupAction(
 }
 
 /**
- * "Add another Agent" (or "Choose an Agent") on a finished card: a fresh setup
+ * "Add another Agent" or "Choose an Agent" on a finished card. A fresh setup
  * for the same inviter and Channel replaces it. `begin` repeats every
  * authority check, so the old intent's status does not matter.
  */
@@ -3212,8 +3212,8 @@ async function completePrivateChannelSetupAgain(
   execution: PrivateChannelSetupExecution,
 ): Promise<void> {
   const intent = await execution.stores.management.getPrivateChannelSetupIntent(action.setupId);
-  // A pruned intent can still be answered: a response_url reaches only the
-  // clicker's own ephemeral message.
+  // A pruned intent is still answered, because a response_url reaches only
+  // the clicker's own ephemeral message.
   if (intent && !setupIntentBelongsTo(intent, action)) return;
   if (!await execution.stores.slackState.claim(`private-setup-again:${action.deliveryId}`)) return;
   await answerPrivateChannelSetupClick(action, execution, async () => {
