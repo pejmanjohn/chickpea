@@ -22,6 +22,10 @@ import { createSlackOwner } from './slack-owner.ts';
 export interface DirectSlackCall {
   method: string;
   body: URLSearchParams;
+  /** The full request URL: a Web API method, or a click's response_url. */
+  url: string;
+  /** The body as sent: a form for the Web API, JSON for a response_url. */
+  raw: string;
 }
 
 /**
@@ -48,8 +52,11 @@ export async function withDirectSlackInstall(
     origin?: string;
     signingSecret?: string;
     botToken?: string;
-    /** Slack's JSON answer to one Web API call; `{ ok: true }` when undefined. */
-    answer?: (method: string, body: URLSearchParams) => Record<string, unknown> | undefined;
+    /**
+     * Slack's answer to one call: JSON, or a whole Response; `{ ok: true }`
+     * when undefined. Throwing fails the request as a network error would.
+     */
+    answer?: (method: string, body: URLSearchParams, url: string) => Record<string, unknown> | Response | undefined;
   },
   run: (install: DirectSlackInstall) => Promise<void>,
 ): Promise<void> {
@@ -111,9 +118,12 @@ export async function withDirectSlackInstall(
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = input instanceof Request ? input : new Request(String(input), init);
       const method = new URL(request.url).pathname.split('/').at(-1)!;
-      const body = new URLSearchParams(await request.clone().text().catch(() => ''));
-      calls.push({ method, body });
-      return Response.json(options.answer?.(method, body) ?? { ok: true }, {
+      const raw = await request.clone().text().catch(() => '');
+      const body = new URLSearchParams(raw);
+      calls.push({ method, body, url: request.url, raw });
+      const answer = options.answer?.(method, body, request.url);
+      if (answer instanceof Response) return answer;
+      return Response.json(answer ?? { ok: true }, {
         headers: { 'x-oauth-scopes': 'chat:write,users:read' },
       });
     }) as typeof fetch;
