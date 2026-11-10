@@ -16,6 +16,12 @@ import {
 } from './errors.ts';
 import type { UiSurfaceRpcRequest } from '../slack/ui/surface-store.ts';
 import type {
+  TestRunQuery,
+  TestRunReplayQuery,
+  TestRunStartRequest,
+  TestRunStore,
+} from '../management/test-run-types.ts';
+import type {
   EncryptedCredentialCensusStore,
   EncryptedCredentialListingStore,
   ModelCredentialStore,
@@ -363,6 +369,8 @@ const REPLAY_SAFE_STATE_METHODS = new Set([
   'slackTurnAdmitEdit', // a replay finds the committed edit row and reports it already admitted
   'slackTurnDirectThreads', 'slackTurnReadThrough', 'slackRunFacts', // reads (a DM lookup keys old rows idempotently)
   'slackPresentationTransition', // compare-and-swap on the projection version
+  // A keyed admission returns the stored run on a repeat; a read runs at most one idempotent settle step.
+  'testRunStart', 'testRunReplay', 'testRunObserve',
   // Version-fenced; a replay finds exactly what the committed call wrote and succeeds.
   'modelCredentialPublish', 'modelCredentialRewrap',
 ]);
@@ -2151,6 +2159,14 @@ export class CfSlackStateStore implements SlackStateStore {
     );
   }
 
+  /** Not replayed on a disconnect: the first call may already have bound the submission. */
+  async bindTestRunModelAccess(instanceId: string, submissionId: string) {
+    return orUndefined(await rpcVia(this.stub,
+      'testRunModelAccessBind',
+      (stub) => stub.testRunModelAccessBind(instanceId, submissionId),
+    ));
+  }
+
   async markTurnRecoveryRequired(id: string, reason: string): Promise<void> {
     await rpcVia(this.stub,'slackTurnRecoveryRequired', (stub) => stub.slackTurnRecoveryRequired(id, reason));
   }
@@ -3328,4 +3344,21 @@ function withScheduleReferenceDestination(
     destinationKind: reference.destinationKind ?? 'channel',
     destinationBindingDigest: reference.destinationBindingDigest ?? null,
   };
+}
+
+/** The state store's test runs, through its RPC (management/test-runs.ts). */
+export class CfTestRunStore implements TestRunStore {
+  constructor(private readonly stub: TagStateStubSource) {}
+
+  start(request: TestRunStartRequest) {
+    return rpcVia(this.stub, 'testRunStart', (stub) => stub.testRunStart(request));
+  }
+
+  async replay(query: TestRunReplayQuery) {
+    return orUndefined(await rpcVia(this.stub, 'testRunReplay', (stub) => stub.testRunReplay(query)));
+  }
+
+  async observe(query: TestRunQuery) {
+    return orUndefined(await rpcVia(this.stub, 'testRunObserve', (stub) => stub.testRunObserve(query)));
+  }
 }

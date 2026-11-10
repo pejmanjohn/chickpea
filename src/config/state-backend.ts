@@ -9,6 +9,7 @@ import {
   CfSlackStateStore,
   CfUsageStore,
   CfWorkStore,
+  CfTestRunStore,
   FreshTagStateStubs,
 } from './cf-state-proxies.ts';
 import { isCloudflareTarget } from './runtime-target.ts';
@@ -40,6 +41,8 @@ import type {
   SlackCredentialResolutionDependencies,
 } from '../slack/installation-credentials.ts';
 import { SqliteManagementStore, type ManagementStore } from '../management/store.ts';
+import type { TestRunStore } from '../management/test-run-types.ts';
+import { deploymentServesManyInstallations } from './installation-scope.ts';
 import type { SqliteGatewayInboxStore } from '../slack/gateway/node-inbox-store.ts';
 
 export { isCloudflareTarget } from './runtime-target.ts';
@@ -268,6 +271,16 @@ export function getManagementStore(env?: PlatformEnv): ManagementStore {
     (path) => new SqliteManagementStore(path),
   );
   return cachedManagementStore.store;
+}
+
+/**
+ * The installation's test runs, which only a deployment serving many
+ * installations serves: the run's instance is erased with the host erase.
+ */
+export function getTestRunStore(env?: PlatformEnv): TestRunStore | undefined {
+  return isCloudflareTarget() && deploymentServesManyInstallations(env)
+    ? new CfTestRunStore(freshTagStateStubs(env))
+    : undefined;
 }
 
 export function getNodeGatewayInboxStore(): SqliteGatewayInboxStore {

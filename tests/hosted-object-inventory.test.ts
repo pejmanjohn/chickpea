@@ -556,6 +556,13 @@ const ADDRESSING_SITES: Record<string, { covered: string; sites: readonly string
     covered: 'coding_worker, recorded before its task record and dispatch (Flue init)',
     sites: ['return init(CodingWorker, { id: instanceId });'],
   },
+  'state/test-run-instance.ts': {
+    covered: "a test run's instance, never listed: its run row records the name at admission, before anything addresses it, and only the state store addresses and erases it (Flue init, host erase)",
+    sites: [
+      'return init(await agent(), { id: instanceId });',
+      'const stub = namespace.get(namespace.idFromName(instanceId)) as { chickpeaHostErase(request: ObjectHostRequest): Promise<ObjectEraseResult>;',
+    ],
+  },
 };
 
 const ADDRESSING = /\.(?:getByName|idFromName|idFromString|newUniqueId)\(|\b(?:getAgentByName|getServerByName|getSandbox)\(|(?<![.\w])init\(/g;
@@ -619,6 +626,10 @@ const FLUE_INSTANCE_NAMING_SITES: Record<string, { covered: string; sites: reado
   'agents/model-access-lookup.ts': {
     covered: "compares a test run's recorded plan with the attempt's own instance; names nothing",
     sites: ['testRunPlan: deriveRuntimePlanInstanceId(plan)'],
+  },
+  'state/test-run-lifecycle.ts': {
+    covered: 'recorded in the run row in the admission transaction, before the dispatch addresses it',
+    sites: ['start: deriveRuntimePlanInstanceId(plan)'],
   },
   'agents/turn-input.ts': {
     covered: 'compares a staged plan with the instance it was staged for; names nothing',

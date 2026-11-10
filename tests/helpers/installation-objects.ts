@@ -23,6 +23,7 @@ import { objectHostFunctions, type HostObjectRestoreContext } from '../../src/st
 import type { AgentStopTarget } from '../../src/state/pending-work.ts';
 import { stateStoreHostFunctions } from '../../src/state/state-store-host.ts';
 import { buildTagStateStores, type TagStateStores } from '../../src/state/tag-state-stores.ts';
+import type { TestRunLifecycle } from '../../src/state/test-run-lifecycle.ts';
 
 /**
  * A Durable Object's storage over Node SQLite, as the object classes and the
@@ -328,6 +329,8 @@ export function hostedDeployment(installationIds: readonly string[], options: {
   persistenceTelemetrySink?: RoutinePersistenceTelemetrySink;
   /** The deployment's `BACKUP_BUCKET`, shared by every installation. */
   bucket?: object;
+  /** Each installation's test runs, which its state store's cancellation settles and erases. */
+  testRuns?: (installation: HostedInstallation) => Pick<TestRunLifecycle, 'pass'>;
 } = {}) {
   const objects = new Map<string, DeploymentObject>();
   const installations = new Map<string, HostedInstallation>();
@@ -357,6 +360,7 @@ export function hostedDeployment(installationIds: readonly string[], options: {
             onErased: () => { stores = undefined; },
             ...(options.stopAgents ? { stopAgents: options.stopAgents } : {}),
             ...(options.persistenceTelemetrySink ? { persistenceTelemetrySink: options.persistenceTelemetrySink } : {}),
+            ...(options.testRuns ? { testRuns: async () => options.testRuns!(installation) } : {}),
           }) as unknown as DeploymentObject['host'];
         },
       };

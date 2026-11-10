@@ -815,14 +815,14 @@ export function usageRuntimeRecordingEnabled(
   return value === undefined || value === '1' || value === 'true';
 }
 
-function splitModelSpecifier(value: string | null): { provider: string | null; model: string | null } {
+export function splitModelSpecifier(value: string | null): { provider: string | null; model: string | null } {
   if (!value) return { provider: null, model: null };
   const slash = value.indexOf('/');
   if (slash <= 0 || slash === value.length - 1) return { provider: value, model: value };
   return { provider: value.slice(0, slash), model: value.slice(slash + 1) };
 }
 
-function modelPolicyUsage(attribution: AgentModelAttribution | undefined): Pick<
+export function modelPolicyUsage(attribution: AgentModelAttribution | undefined): Pick<
   AdmitUsageOperationInput,
   'modelSource' | 'workspaceDefaultRevision' | 'catalogRevision'
 > {
@@ -920,7 +920,7 @@ function normalizeInteractionUsage(
   return values.every((value) => value === 0) ? null : usage;
 }
 
-function estimateForRuntime(
+export function estimateForRuntime(
   terminal: Parameters<typeof estimateUsage>[0],
   platformEnv: PlatformEnv | undefined,
   processEnv: NodeJS.ProcessEnv | undefined,

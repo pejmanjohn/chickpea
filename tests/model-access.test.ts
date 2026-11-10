@@ -13,7 +13,7 @@ import {
 import type { FlueExecutionContext } from '@flue/runtime';
 
 import { lookupAttemptModelAccess } from '../src/agents/model-access-lookup.ts';
-import { compileRuntimePlanV2, deriveRuntimePlanInstanceId, type RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import { compileRuntimePlanV2, deriveRuntimePlanInstanceId, parseRuntimePlanV2, type RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { compileTestRunPlan } from '../src/agents/test-run-plan.ts';
 import { createSlackTurnInput, rememberInProcessTurnInput } from '../src/agents/turn-input.ts';
 import {
@@ -79,6 +79,9 @@ import { createWorkModelInvocationInterceptor } from '../src/work/model-invocati
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { withEnv } from './helpers/env.ts';
+import { hostedInstallation } from './helpers/installation-objects.ts';
+import { startRequest } from './helpers/test-runs.ts';
+import { TestRunUsageRecorder } from '../src/usage/test-run-usage.ts';
 
 const HOSTED = { CHICKPEA_TENANCY: 'installation' } as const;
 const KEY_A1 = 'sk-ant-tenant-a-version-one';
@@ -892,6 +895,43 @@ test('a test run binds model access only through its live run row, and never get
       assert.equal('grant' in hostedAttempt && hostedAttempt.grant.installationId, 'inst_a');
       await assert.rejects(lookupAttemptModelAccess(testRun('sub_hosted', deriveRuntimePlanInstanceId(hosted)), async () => envB),
         /another installation/);
+    } finally {
+      delete store.bindTestRunModelAccess;
+    }
+  });
+});
+
+test('a test run reaches its own case through the state store\'s binding: the first submission only, and only while the run is live', async () => {
+  await withEnv({ ...NO_DEPLOYMENT_KEYS, SLACK_STATE_DB_PATH: ':memory:' }, async () => {
+    const installation = hostedInstallation('inst_a', {});
+    const request = startRequest(installation, { at: Date.now() });
+    const instanceId = deriveRuntimePlanInstanceId(parseRuntimePlanV2(request.initialData.runtimePlan));
+    installation.stores.testRuns.admit({
+      ...request.run, instanceId, planJson: JSON.stringify(request.initialData.runtimePlan),
+    }, Date.now());
+    const store = getSlackStateStore();
+    store.bindTestRunModelAccess = async (instance, submission) =>
+      installation.stores.testRuns.bindModelAccess(instance, submission);
+    const attempt = (submissionId: string, agentName = 'chickpea-test-turn-v1'): FlueExecutionContext =>
+      ({ instanceId, submissionId, agentName });
+    const scopeMissing = (error: unknown) => error instanceof ModelAccessError && error.code === 'scope_missing';
+    try {
+      const granted = await lookupAttemptModelAccess(attempt('sub_first'), async () => installation.env);
+      assert.ok('grant' in granted && granted.grant, 'the test agent\'s case, never the default branch\'s bare access');
+      assert.deepEqual([granted.runId, granted.runKind], ['sub_first', 'interactive']);
+      assert.equal(installation.stores.testRuns.get(request.run.testRunId)?.submissionId, 'sub_first');
+      await assert.rejects(lookupAttemptModelAccess(attempt('sub_second'), async () => installation.env), scopeMissing,
+        'another submission of the same instance');
+      // Another agent naming the instance gets nothing of the run.
+      assert.deepEqual(await lookupAttemptModelAccess(attempt('sub_first', 'chickpea-unknown-v1'), async () => installation.env),
+        { env: installation.env });
+      installation.stores.testRuns.settle(request.run.testRunId, {
+        status: 'failed', failure: 'deadline',
+        terminal: new TestRunUsageRecorder(installation.stores.usage.getOperation(request.run.usage.operationId)!.operation)
+          .interrupted(Date.now(), 'sub_first'),
+      }, Date.now());
+      await assert.rejects(lookupAttemptModelAccess(attempt('sub_first'), async () => installation.env), scopeMissing,
+        'model access ends with the run');
     } finally {
       delete store.bindTestRunModelAccess;
     }
