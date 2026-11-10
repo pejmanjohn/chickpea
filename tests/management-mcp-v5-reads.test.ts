@@ -389,10 +389,14 @@ test('5.0 errors share one shape, including the SDK\'s input refusals; 4.x error
   const missing = errorOf(await call('get_agent', { agentId: 'agent_missing' }));
   assert.equal(missing.code, 'not_found');
   assert.equal(missing.retryable, false);
+  // A card shows an error's message, so it names no tool and no field; the next step, for the model, does.
+  assert.equal(missing.message, 'That Agent is gone, or you can\'t manage it.');
+  assert.match(missing.nextStep as string, /list_agents/);
 
   const refused = errorOf(await call('get_agent', { agentId: 'Not An Id!' }));
   assert.equal(refused.code, 'invalid_input');
-  assert.match(refused.nextStep as string, /agentId/);
+  assert.equal(refused.message, 'Chickpea did not accept that request.');
+  assert.match(refused.nextStep as string, /^Fix the arguments and call get_agent again\. .*agentId/);
 
   assert.equal(errorOf(await call('get_agent_memory', { agentId: 'agent_missing' })).code, 'not_found');
 
