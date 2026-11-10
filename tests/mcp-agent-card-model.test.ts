@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 
-import { INITIAL, present, step } from '../src/mcp-cards/agent-card/model.ts';
+import { INITIAL, present, step, type Action, type View } from '../src/mcp-cards/agent-card/model.ts';
 import { POLL_BACKOFF_MAX_MS, POLL_CEILING_MS, POLL_INTERVAL_MS, type Effect, type ToolResult } from '../src/mcp-cards/card-model.ts';
 import { createFixtureAgent } from './helpers/management-adapter-fixture.ts';
-import { cardHost, cardServer, NOW, type ServerCall } from './helpers/mcp-card-host.ts';
+import { BASE_URL, cardHost, cardServer, NOW, type CardModelUnderTest, type ServerCall } from './helpers/mcp-card-host.ts';
 
 /**
  * The Agent card's state machine against Core's real MCP server: every call
@@ -12,7 +12,14 @@ import { cardHost, cardServer, NOW, type ServerCall } from './helpers/mcp-card-h
  * event, as a host would carry it. It may read creation status and the Agent
  * by itself; every other call needs a press.
  */
-const AGENT_CARD = { initial: INITIAL, step, present, reads: new Set(['get_creation_status', 'get_agent']) };
+const AGENT_CARD: CardModelUnderTest<View, Action> = {
+  initial: INITIAL,
+  step,
+  present,
+  reads: new Set(['get_creation_status', 'get_agent']),
+  // A creation the person pressed Create for: its polls may tell the model it is ready.
+  followsPress: ({ view }) => view.kind === 'creating' && view.byPress === true,
+};
 
 function card(call: ServerCall, clock: { now: number }) {
   return cardHost(AGENT_CARD, call, clock);
@@ -523,7 +530,7 @@ test('Create in Slack shows its steps at once, and tells the model when the Agen
   assert.equal(agentCard.state.view.kind, 'creating');
   assert.equal(agentCard.shown.blocks[0]!.kind === 'steps' && agentCard.shown.blocks[0]!.steps[0]!.label, 'Created in Chickpea');
   assert.match(agentCard.shown.avatarUrl ?? '', /\/assets\/agents\/agent_invoice_chaser\/avatar\/1$/, 'its own picture, once it exists');
-  assert.deepEqual(contexts(agentCard), ['The person created Invoice Chaser (@invoices) from the card. It is joining Slack now.']);
+  assert.deepEqual(contexts(agentCard), ['The person created the Agent "Invoice Chaser" (@invoices) from the card. It is joining Slack now.']);
 
   const agentId = (agentCard.state.view as { agentId: string }).agentId;
   await agentCard.dispatch({
@@ -533,7 +540,7 @@ test('Create in Slack shows its steps at once, and tells the model when the Agen
     now: clock.now,
   });
   assert.equal(agentCard.shown.title, '@invoices said hello to you in Slack');
-  assert.equal(contexts(agentCard).at(-1), 'The person created Invoice Chaser (@invoices) from the card. It is ready in Slack and said hello to them there.');
+  assert.equal(contexts(agentCard).at(-1), 'The person created the Agent "Invoice Chaser" (@invoices) from the card. It is ready in Slack and said hello to them there.');
 
   // An Agent the model created itself is not news from the card, even once it is ready.
   const fromModel = card(call, clock);
@@ -577,6 +584,7 @@ test('a session that draws cards confirms, keeps and undoes with tokens only the
   assert.equal((await f.config.getAgent('agent_support')).enabled, false);
   assert.equal(agentCard.shown.title, 'Made the change you confirmed');
   assert.deepEqual(agentCard.shown.subtitle, [{ text: 'It won\'t answer in Slack until it\'s turned back on.' }]);
+  assert.ok(agentCard.labels().includes('Undo (secondary)'), 'Undo works from the undo token the card holds');
   assert.equal(contexts(agentCard).at(-1), 'The person confirmed on the card. Made the change you confirmed.');
 
   const saved = card(call, clock);
@@ -588,7 +596,7 @@ test('a session that draws cards confirms, keeps and undoes with tokens only the
   assert.equal(saved.calls('undo_change').length, 1);
   assert.equal(typeof saved.calls('undo_change')[0]!.args.undoToken, 'string');
   assert.equal(saved.shown.title, 'Undid the change');
-  assert.equal(contexts(saved).at(-1), 'The person undid the change to Research from the card.');
+  assert.equal(contexts(saved).at(-1), 'The person undid the change to the Agent "Research" from the card.');
 });
 
 test('a card whose Agent was archived or deleted since says so, and offers nothing to press', async (t) => {
@@ -629,11 +637,11 @@ test('a card whose Agent was archived or deleted since says so, and offers nothi
     await call('confirm_change', { confirmToken: deleting.structuredContent!.confirmation.confirmToken });
   }
   await ready.dispatch({ type: 'reread', now: clock.now });
-  assert.deepEqual([ready.shown.title, ready.labels()], ['Invoice Chaser was deleted', []], 'no Open in Slack for an Agent that is gone');
+  assert.deepEqual([ready.shown.title, ready.labels()], ['Invoice Chaser is no longer available', []], 'no Open in Slack for an Agent that is gone');
   const stale = card(call, clock);
   await stale.result(preview);
   await stale.dispatch({ type: 'reread', now: clock.now });
-  assert.deepEqual([stale.shown.title, stale.labels()], ['Research was deleted', []], 'no Save for one');
+  assert.deepEqual([stale.shown.title, stale.labels()], ['Research is no longer available', []], 'no Save for one');
 });
 
 test('a save says what it did and where to try the Agent: a DM, or a mention in its Channels', async (t) => {
@@ -671,5 +679,90 @@ test('Cancel tells the model nothing was saved', async (t) => {
   await agentCard.result(await call('propose_agent_change', { agentId: 'agent_research', version: read.version, change: { description: 'x' } }));
   await agentCard.press('cancel');
   assert.deepEqual([agentCard.shown.title, contexts(agentCard), agentCard.calls()],
-    ['Not saved', ['The person cancelled this change to Research on the card. Nothing was saved.'], []]);
+    ['Not saved', ['The person cancelled this change to the Agent "Research" on the card. Nothing was saved.'], []]);
+});
+
+/** A card session's workspace with an Agent that answers in #support, so turning it off asks first. */
+async function heldServer(t: TestContext, suffix: string) {
+  const server = await cardServer(t, suffix, {}, { cards: true });
+  const { f, teamId, call } = server;
+  await createFixtureAgent(f, 'agent_support', { slackPresence: { ...PRESENCE } });
+  await f.config.putChannel({ workspaceId: teamId, channelId: 'C_SUPPORT', label: 'support', lifecycle: 'active' });
+  await f.config.putAgentChannelGrant({
+    workspaceId: teamId, channelId: 'C_SUPPORT', agentId: 'agent_support', status: 'active',
+    createdByMembershipId: f.owner.membership.id, channelLabel: 'support',
+  });
+  const version = async () => (await call('get_agent', { agentId: 'agent_support' })).structuredContent!.version as string;
+  return { ...server, version };
+}
+
+/** The server, except that `tool` answers `answer`. */
+function answering(call: ServerCall, tool: string, answer: ToolResult): ServerCall {
+  return async (name, args) => name === tool ? answer : await call(name, args);
+}
+
+test('Keep says Kept only when Chickpea retired the token: any other failure keeps both buttons and tells the model nothing', async (t) => {
+  const { call, clock, version } = await heldServer(t, 'card-keep-failures');
+  const off = await call('update_agent', { agentId: 'agent_support', version: await version(), on: false, idempotencyKey: 'off' });
+  for (const answer of [
+    // The host's own error, with no Chickpea code.
+    { isError: true, content: [{ type: 'text', text: 'Tool decline_change not found' }] },
+    { isError: true, structuredContent: { error: { code: 'something_new', message: 'Something new happened.' } } },
+    { isError: true, structuredContent: { error: { code: 'invalid_input', message: 'decline_change did not accept these arguments.' } } },
+    { isError: true, structuredContent: { error: { code: 'in_progress', message: 'That change is being made now.' } } },
+  ] as ToolResult[]) {
+    const kept = card(answering(call, 'decline_change', answer), clock);
+    await kept.result(off);
+    await kept.press('keep');
+    assert.equal(kept.calls('decline_change').length, 1);
+    assert.deepEqual([kept.shown.title, kept.labels()], ['Turn off @research?', ['Turn off (danger)', 'Keep it on (secondary)']], JSON.stringify(answer));
+    assert.deepEqual(contexts(kept), [], 'the model hears nothing of a Keep that may not have happened');
+  }
+  // No confirmation of this person's under the token: it can never apply for them.
+  const unknown = card(answering(call, 'decline_change', {
+    isError: true, structuredContent: { error: { code: 'not_found', message: 'No confirmation of yours has that confirmToken.' } },
+  }), clock);
+  await unknown.result(off);
+  await unknown.press('keep');
+  assert.deepEqual([unknown.shown.title, unknown.labels()], ['Kept as it is', []]);
+});
+
+test('Keep pressed past the card\'s own clock still asks Chickpea, which alone says the token is dead', async (t) => {
+  const { f, call, clock, version } = await heldServer(t, 'card-keep-clock');
+  const off = await call('update_agent', { agentId: 'agent_support', version: await version(), on: false, idempotencyKey: 'off' });
+  const kept = card(call, clock);
+  await kept.result(off);
+  clock.now = Date.parse(off.structuredContent!.confirmation.expiresAt);
+  await kept.press('keep');
+  assert.equal(kept.calls('decline_change').length, 1);
+  assert.equal(kept.shown.title, 'Kept as it is');
+  assert.equal((await f.config.getAgent('agent_support')).enabled, true);
+});
+
+test('a confirmation whose token never reached the card asks nothing, and says where else the change can be made', async (t) => {
+  const { call, clock, version } = await heldServer(t, 'card-tokenless');
+  // A host that left the result's _meta behind, where the card's token travels.
+  const bare = ({ _meta: _held, ...result }: ToolResult) => result;
+  const off = await call('update_agent', { agentId: 'agent_support', version: await version(), on: false, idempotencyKey: 'off' });
+  const tokenless = card(call, clock);
+  await tokenless.result(bare(off));
+  assert.equal(tokenless.shown.title, 'Turn off @research?');
+  assert.deepEqual(tokenless.shown.blocks.at(-1), { kind: 'note', text: 'Confirm this in Admin.' });
+  assert.deepEqual(tokenless.labels(), ['Open in Admin (secondary)'], 'no button that cannot work');
+  await tokenless.press('confirm');
+  await tokenless.press('keep');
+  assert.deepEqual(tokenless.calls(), []);
+  await tokenless.press('open_admin');
+  assert.deepEqual(tokenless.effects.at(-1), { type: 'open', url: `${BASE_URL}/admin/agents/agent_support` });
+
+  // Admin cannot delete an Agent, so the card never sends the person there for one.
+  const archived = await call('archive_agent', { agentId: 'agent_support', version: await version(), idempotencyKey: 'archive' });
+  const deleting = await call('delete_agent', { agentId: 'agent_support', version: archived.structuredContent!.version, idempotencyKey: 'delete' });
+  const deleteCard = card(call, clock);
+  await deleteCard.result(bare(deleting));
+  assert.deepEqual(deleteCard.shown.blocks.at(-1), { kind: 'note', text: 'Ask again in a new chat to confirm it.' });
+  assert.deepEqual(deleteCard.labels(), []);
+  await deleteCard.press('open_admin');
+  assert.deepEqual(deleteCard.calls(), []);
+  assert.equal(deleteCard.effects.some(({ type }) => type === 'open'), false);
 });

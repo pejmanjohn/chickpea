@@ -565,6 +565,31 @@ test('Cancel on a workspace-change card retires the proposal, so a later typed a
   assert.equal((await f.stores.management.getChangeSetProposal('proposal_cancel'))?.status, 'stale');
 }));
 
+test('Cancel on a card whose change an approval is already applying leaves it to finish', async () => withFixture(async (f) => {
+  const owner = await f.stores.identity.resolveSlackIdentity('T1', 'U1');
+  assert.ok(owner);
+  const scope = `slack:T1:C1:${THREAD_TS}:agent:agent_support`;
+  const binding = {
+    proposalId: 'proposal_applying', organizationId: owner.membership.organizationId,
+    actorUserId: owner.user.id, actorMembershipId: owner.membership.id, originKey: scope, approvalScopeKey: scope,
+  };
+  await f.stores.management.putChangeSetProposal({
+    ...binding, idempotencyKey: 'proposal_applying',
+    guideVersion: 'test', authoringReason: 'agent_edit', digest: 'd'.repeat(64),
+    operations: [{ itemId: 'update', kind: 'update_agent', agentId: 'agent_support', expectedRevision: 1,
+      patch: { description: 'Frozen description' } }],
+    preview: { summary: 'Preview', changes: [], missingSetup: [] },
+    targetRevisions: { 'agent:agent_support': 1 }, at: Date.now(),
+  });
+  await f.stores.management.claimChangeSetProposal({ ...binding, at: Date.now() });
+  const surface = await f.surface({
+    spec: { kind: 'approval', approval: 'workspace_change', proposalId: 'proposal_applying' },
+  });
+  await f.click(surface.id, { actionId: uiActionId('host', 'approval', 1), value: uiValue(surface.id, 1) });
+  assert.equal((await f.stores.management.getChangeSetProposal('proposal_applying'))?.status, 'applying',
+    'never cut off mid-apply');
+}));
+
 test('a click on a guest Agent\'s workspace-change card reaches that Agent and approves its proposal', async () => withFixture(async (f) => {
   const owner = await f.stores.identity.resolveSlackIdentity('T1', 'U1');
   assert.ok(owner);

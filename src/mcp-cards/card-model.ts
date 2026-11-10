@@ -142,6 +142,18 @@ export function httpsUrl(url: unknown): string | undefined {
   return typeof url === 'string' && URL.parse(url)?.protocol === 'https:' ? url : undefined;
 }
 
+/** The longest Agent name a sentence for the host's model quotes whole. */
+const NAMED_MAX = 60;
+
+/**
+ * An Agent in a sentence for the host's model: quoted and short, so a name
+ * a member chose reads as a name and never as the host's own words.
+ */
+export function agentNamed(name: string, handle?: string): string {
+  const short = name.length > NAMED_MAX ? `${name.slice(0, NAMED_MAX - 1)}…` : name;
+  return `the Agent ${JSON.stringify(short)}${handle ? ` (@${handle})` : ''}`;
+}
+
 /**
  * Where to try an Agent: a mention reaches it only in its Channels, and a
  * direct message always does.

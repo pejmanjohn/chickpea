@@ -90,11 +90,14 @@ async function world() {
   // ChatGPT's own door: it declares cards at initialize, so its model never sees a card's tokens.
   const fetchMcp = workspaceManagementMcpFetch({ principal, service: f.service, baseUrl: ORIGIN });
   const headers = { accept: 'application/json, text/event-stream', 'content-type': 'application/json', 'mcp-protocol-version': '2025-11-25' };
-  const post = (body, session) => fetchMcp(new Request('http://localhost/mcp', {
-    method: 'POST',
-    headers: { ...headers, ...session ? { 'mcp-session-id': session } : {} },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, ...body }),
-  }));
+  const post = (body, session) => {
+    const text = JSON.stringify({ jsonrpc: '2.0', id: 1, ...body });
+    return fetchMcp(new Request('http://localhost/mcp', {
+      method: 'POST',
+      headers: { ...headers, 'content-length': String(Buffer.byteLength(text)), ...session ? { 'mcp-session-id': session } : {} },
+      body: text,
+    }));
+  };
   const session = (await post({
     method: 'initialize',
     params: { protocolVersion: '2025-11-25', capabilities: { extensions: { 'io.modelcontextprotocol/ui': { mimeTypes: ['text/html;profile=mcp-app'] } } }, clientInfo: { name: 'openai-mcp', version: '1.0.0' } },
@@ -144,7 +147,20 @@ async function world() {
         },
       });
     },
-    confirm: async () => call('update_agent', { agentId: 'agent_support', version: await version('agent_support'), on: false, idempotencyKey: `off-${clock.now}-${Math.random()}` }),
+    confirm: async () => {
+      await f.config.updateAgent('agent_support', { enabled: true });
+      return call('update_agent', { agentId: 'agent_support', version: await version('agent_support'), on: false, idempotencyKey: `off-${clock.now}-${Math.random()}` });
+    },
+    // A host that left the result's _meta behind: the card has no token.
+    confirmBare: async () => {
+      const { _meta: _held, ...bare } = await scenes.confirm();
+      return bare;
+    },
+    // ChatGPT keeps the _meta for the card in window.openai.toolResponseMetadata instead.
+    confirmMetaElsewhere: async () => {
+      const { _meta, ...bare } = await scenes.confirm();
+      return { ...bare, [OPENAI_META]: _meta };
+    },
     turnedOff: async () => call('update_agent', { agentId: 'agent_dm', version: await version('agent_dm'), on: false, idempotencyKey: `dm-off-${Math.random()}` }),
     savedDm: async () => {
       await f.config.updateAgent('agent_dm', { enabled: true });
@@ -279,6 +295,9 @@ async function world() {
   };
 }
 
+/** Where a scene's result carries the _meta its host gives the card as window.openai.toolResponseMetadata. */
+const OPENAI_META = 'harness/openaiMeta';
+
 /** The card each scene's tool draws. */
 const SCENE_CARDS = { connect: 'connect-card', reconnect: 'connect-card', cancelled: 'connect-card', custom: 'connect-card', health: 'health-card', healthy: 'health-card' };
 
@@ -290,10 +309,13 @@ async function serve(current) {
   });
   const cardServer = await listen(async (request, response) => {
     // The page ChatGPT gets: resources/read on the card's URI.
-    const uri = new URL(request.url, 'http://card').searchParams.get('uri');
-    const [card] = (await current().rpc('resources/read', { uri })).contents;
+    const query = new URL(request.url, 'http://card').searchParams;
+    const [card] = (await current().rpc('resources/read', { uri: query.get('uri') })).contents;
+    // ChatGPT's own globals, set before the card runs, as its sandbox sets them.
+    const meta = query.get('openaiMeta');
+    const globals = meta ? `<script>window.openai = { toolResponseMetadata: ${meta} };</script>` : '';
     response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-    response.end(card.text);
+    response.end(card.text.replace('<head>', `<head>${globals}`));
   });
   const hostServer = await listen(async (request, response) => {
     const url = new URL(request.url, 'http://host');
@@ -303,7 +325,8 @@ async function serve(current) {
     };
     if (url.pathname === '/scene') {
       const name = url.searchParams.get('name');
-      return json({ result: await current().scenes[name](), uri: CARD_URIS[SCENE_CARDS[name] ?? 'agent-card'] });
+      const { [OPENAI_META]: openaiMeta, ...result } = await current().scenes[name]();
+      return json({ result, uri: CARD_URIS[SCENE_CARDS[name] ?? 'agent-card'], ...openaiMeta ? { openaiMeta } : {} });
     }
     if (url.pathname === '/call') {
       let body = '';
@@ -572,7 +595,7 @@ try {
     await shot('2-starting');
     await browser.host('window.harness.release()');
     await browser.waitFor('[...document.querySelectorAll(".cp-steps li")].some((li) => li.textContent.endsWith("Created in Chickpea (done)"))', 'the creation steps');
-    await told(/^The person created Invoice Chaser \(@invoices\) from the card\. It is joining Slack now\.$/, 'Created');
+    await told(/^The person created the Agent "Invoice Chaser" \(@invoices\) from the card\. It is joining Slack now\.$/, 'Created');
     await showsPicture('The creating card');
     await shot('2-creating');
     await current.sayHello();
@@ -581,7 +604,7 @@ try {
     await shot('2-hello-joining');
     await current.joinChannels();
     await browser.waitForTitle(/said hello to you in Slack$/);
-    await told(/^The person created Invoice Chaser \(@invoices\) from the card\. It is ready in Slack and said hello to them there\.$/, 'Ready');
+    await told(/^The person created the Agent "Invoice Chaser" \(@invoices\) from the card\. It is ready in Slack and said hello to them there\.$/, 'Ready');
     await showsPicture('The ready card');
     await shot('2-ready');
 
@@ -592,12 +615,12 @@ try {
     await browser.click('save');
     await browser.waitForTitle(/^✓ Saved Invoice Chaser$/);
     assert.equal(await subtitle(), 'Try it: mention @invoices in #finance.', 'a mention reaches it in its Channel');
-    await told(/^The person saved the change to Invoice Chaser from the card\. Saved Invoice Chaser\.$/, 'Saved');
+    await told(/^The person saved the change to the Agent "Invoice Chaser" from the card\. Saved Invoice Chaser\.$/, 'Saved');
     await shot('5-saved');
     await browser.click('undo');
     await browser.waitForTitle(/^✓ Undid the change$/);
     assert.deepEqual(await buttons(), ['Open in Slack'], 'no second Undo, which would redo the change');
-    await told(/^The person undid the change to Invoice Chaser from the card\.$/, 'Undone');
+    await told(/^The person undid the change to the Agent "Invoice Chaser" from the card\.$/, 'Undone');
     await shot('5-undone');
     await open('turnedOff');
     await browser.waitForTitle(/^✓ Turned off People Helper$/);
@@ -632,6 +655,21 @@ try {
     assert.equal(await subtitle(), 'It won\'t answer in Slack until it\'s turned back on.');
     await shot('6-confirmed');
 
+    await open('confirmBare');
+    await browser.waitForTitle(/^Turn off @support\?$/);
+    assert.deepEqual(await buttons(), ['Open in Admin'], 'no token on the card: no button that cannot work');
+    await browser.waitFor('/Confirm this in Admin\./.test(document.querySelector(".cp-card")?.textContent ?? "")', 'where else to confirm');
+    await shot('6-confirm-no-token');
+    await browser.click('open_admin');
+    assert.deepEqual(await browser.linksOpened(1), [`${ORIGIN}/admin/agents/agent_support`]);
+    assert.deepEqual(await browser.host('window.harness.calls'), [], 'nothing confirmed or kept');
+    await open('confirmMetaElsewhere');
+    await browser.waitForTitle(/^Turn off @support\?$/);
+    assert.deepEqual(await buttons(), ['Turn off', 'Keep it on'], 'the token from window.openai.toolResponseMetadata');
+    await browser.click('keep');
+    await browser.waitForTitle(/^Kept as it is$/);
+    assert.deepEqual(await browser.host('window.harness.calls'), ['decline_change']);
+
     await open('expired');
     await browser.waitForTitle(/^This confirmation expired$/);
     await shot('6-expired');
@@ -646,6 +684,19 @@ try {
     await browser.waitForTitle(/^Invoice Chaser is archived$/);
     assert.deepEqual(await buttons(), [], 'no Save for an archived Agent');
     await shot('8-archived');
+    // A saved card whose Agent is deleted since: to this person it is gone, as to one who can no longer manage it.
+    await open('savedDm');
+    await browser.waitForTitle(/^✓ Saved People Helper$/);
+    const people = (await current.call('get_agent', { agentId: 'agent_dm' })).structuredContent;
+    const archivedPeople = await current.call('archive_agent', { agentId: 'agent_dm', version: people.version, idempotencyKey: `archive-dm-${label}` });
+    const deleting = await current.call('delete_agent', { agentId: 'agent_dm', version: archivedPeople.structuredContent.version, idempotencyKey: `delete-dm-${label}` });
+    const deleted = await current.call('confirm_change', { confirmToken: deleting._meta['chickpea/held'].confirmToken });
+    assert.equal(deleted.structuredContent.status, 'done', JSON.stringify(deleted));
+    await new Promise((done) => setTimeout(done, 1_100));
+    await browser.inCard('window.dispatchEvent(new Event("focus"))');
+    await browser.waitForTitle(/^People Helper is no longer available$/);
+    assert.deepEqual(await buttons(), [], 'nothing to press for it');
+    await shot('8-unavailable');
 
     const reads = async (what, { links = 0 } = {}) => {
       const calls = await browser.host('window.harness.calls');
@@ -673,7 +724,7 @@ try {
     await shot('3-waiting');
     current.finishSetup();
     await browser.waitForRow(/^Gmail is connected/, 10_000);
-    await told(/^Gmail is connected to Support Desk now\. The person signed in on Chickpea's page\.$/, 'Connected');
+    await told(/^Gmail is connected to the Agent "Support Desk" now\.$/, 'Connected');
     await shot('3-connected');
 
     await open('reconnect');
@@ -718,7 +769,7 @@ try {
     const links = await browser.linksOpened(1);
     assert.equal(links.length, 1);
     assert.match(new URL(links[0]).pathname, /^\/setup\/setup_/);
-    await told(/^The person opened Chickpea's page to Reconnect Notion for Support Desk from the card\./, 'Fixing');
+    await told(/^The person opened Chickpea's page to Reconnect Notion for the Agent "Support Desk" from the card\./, 'Fixing');
     await shot('7-fixing');
     await open('healthy');
     await browser.waitForTitle(/^Everything looks healthy$/);
@@ -732,4 +783,5 @@ try {
   servers.close();
 }
 writeFileSync(join(OUT, 'contrast.json'), `${JSON.stringify(contrast, null, 2)}\n`);
-console.log(`${shots.length} screenshots in ${OUT}; lowest text contrast ${Math.min(...contrast.map(({ ratio }) => ratio))}:1`);
+const lowest = (needed) => Math.min(...contrast.filter((entry) => entry.needed === needed).map(({ ratio }) => ratio));
+console.log(`${shots.length} screenshots in ${OUT}; lowest contrast ${lowest(4.5)}:1 for text, ${lowest(3)}:1 for graphics`);

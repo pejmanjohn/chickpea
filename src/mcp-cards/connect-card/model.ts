@@ -2,6 +2,7 @@ import type { z } from 'zod';
 
 import type * as schemas from '../../management/mcp-v5/schemas.ts';
 import {
+  agentNamed,
   call,
   errorOf,
   GENERIC,
@@ -207,11 +208,12 @@ function setupStatus(state: State, view: Open, status: SetupStatus, now: number)
   // The Agent has it ready: done, even when this link still waits because it was set up another way.
   const readyNow = connection?.status === 'ready' && (view.flow === 'connect' || before !== 'ready');
   const what = view.setup.what;
-  const agent = view.agent ? ` ${view.flow === 'reconnect' ? 'for' : 'to'} ${view.agent.name}` : '';
+  const agent = view.agent ? ` ${view.flow === 'reconnect' ? 'for' : 'to'} ${agentNamed(view.agent.name)}` : '';
   if (status.status === 'done' || readyNow) {
     const done = connected(view, connection);
+    // Ready may come another way than this card's link, so the sentence says only what is true now.
     return view.kind === 'finishing'
-      ? tell(done, view.flow === 'reconnect' ? `${what} is signed in again${agent}.` : `${what} is connected${agent} now. The person signed in on Chickpea's page.`)
+      ? tell(done, view.flow === 'reconnect' ? `${what} is signed in again${agent}.` : `${what} is connected${agent} now.`)
       : done;
   }
   const link = { ...linkOf(view), ...before ? { before } : {} };

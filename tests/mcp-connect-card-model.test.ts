@@ -2,18 +2,25 @@ import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 
 import { POLL_BACKOFF_MAX_MS, POLL_CEILING_MS, POLL_INTERVAL_MS, type ToolResult } from '../src/mcp-cards/card-model.ts';
-import { INITIAL, present, step } from '../src/mcp-cards/connect-card/model.ts';
+import { INITIAL, present, step, type Action, type View } from '../src/mcp-cards/connect-card/model.ts';
 import type { WorkspaceManagementServiceInput } from '../src/management/service.ts';
 import type { ManagementSetupPublicStatus } from '../src/management/types.ts';
 import { createFixtureAgent, type ManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
-import { assertPlain, BASE_URL, cardHost, cardServer, type ServerCall } from './helpers/mcp-card-host.ts';
+import { assertPlain, BASE_URL, cardHost, cardServer, type CardModelUnderTest, type ServerCall } from './helpers/mcp-card-host.ts';
 
 /**
  * The connect card's state machine against Core's real MCP server. It may
  * read a setup link's status by itself, and check a custom connection once
  * it is connected; every other call, and opening any link, needs a press.
  */
-const CONNECT_CARD = { initial: INITIAL, step, present, reads: new Set(['get_setup_status', 'check_agent']) };
+const CONNECT_CARD: CardModelUnderTest<View, Action> = {
+  initial: INITIAL,
+  step,
+  present,
+  reads: new Set(['get_setup_status', 'check_agent']),
+  // Its link was opened by a press, on this card or before it mounted again: its polls may tell the model how it ended.
+  followsPress: ({ view }) => view.kind === 'finishing',
+};
 
 async function harness(t: TestContext, suffix: string, overrides: Partial<WorkspaceManagementServiceInput> = {}) {
   const server = await cardServer(t, suffix, overrides);
@@ -112,7 +119,7 @@ test('Connect opens Chickpea\'s page for this one connection only when pressed, 
   assert.equal(connect.state.view.kind, 'connected');
   assert.deepEqual(rows(connect.shown), ['Gmail is connected · [Open in Slack]'], 'a catalog service: connected, and nothing more');
   assert.deepEqual(connect.effects.filter(({ type }) => type === 'context'), [
-    { type: 'context', text: 'Gmail is connected to Research now. The person signed in on Chickpea\'s page.' },
+    { type: 'context', text: 'Gmail is connected to the Agent "Research" now.' },
   ], 'the model learns what the person finished');
   assert.deepEqual(connect.calls('check_agent'), [], 'nothing checks a catalog service');
 

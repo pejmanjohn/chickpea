@@ -1235,7 +1235,7 @@ export interface ManagementMemorySnapshot {
 export interface ManagementAgentCreationProgress {
   agent: ManagementAgentLabel;
   /** What its avatar URL and status are made from. */
-  avatar: Pick<CustomAgentConfig, 'id' | 'slackPresence' | 'lifecycle' | 'enabled'>;
+  config: Pick<CustomAgentConfig, 'id' | 'slackPresence' | 'lifecycle' | 'enabled'>;
   /** Absent for an Agent with no Slack handle. */
   presence?: { health: AgentPresenceHealth; errorCode?: string };
   /** The status of each of the Agent's Channel grants. */
@@ -1778,6 +1778,11 @@ export interface RevokeManagementSetupInput {
   at: number;
 }
 
+/** `from: 'pending'` retires only a set that still waits; one applying or completed stays as it is. */
+export interface StaleChangeSetProposalOptions {
+  from?: 'pending';
+}
+
 export interface ClaimManagementProposalInput {
   proposalId: string;
   organizationId: string;
@@ -1860,7 +1865,7 @@ export type ManagementRpcRequest =
       expectedUpdatedAt?: number;
       at: number;
     }
-  | { kind: 'mark_change_set_proposal_stale'; proposalId: string; at: number }
+  | ({ kind: 'mark_change_set_proposal_stale'; proposalId: string; at: number } & StaleChangeSetProposalOptions)
   | { kind: 'put_undo'; record: ManagementUndoRecord }
   | { kind: 'get_undo'; operationId: string }
   | { kind: 'consume_undo'; operationId: string; at: number; consumedBy?: string }

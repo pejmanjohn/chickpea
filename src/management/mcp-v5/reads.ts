@@ -139,7 +139,7 @@ function agentHandle(agent: SnapshotAgent): string | undefined {
   return agent.slackPresence?.normalizedHandle || undefined;
 }
 
-function agentStatus(agent: SnapshotAgent): AgentRow['status'] {
+export function agentStatus(agent: { lifecycle?: CustomAgentConfig['lifecycle'] | undefined; enabled: boolean }): AgentRow['status'] {
   if (agent.lifecycle === 'archived') return 'archived';
   return agent.enabled ? 'on' : 'off';
 }
@@ -312,7 +312,7 @@ export async function getAgent(
       repository: grant.allRepos ? `${grant.accountLogin}/*` : grant.fullName,
     })),
     channels: snapshot.channels
-      .filter(({ grants }) => grants.some((grant) => grant.agentId === agent.id))
+      .filter(({ grants }) => grants.some((grant) => grant.agentId === agent.id && grant.status === 'active'))
       .map(({ channelId, label }) => ({ channelId, ...(label ? { name: label } : {}) })),
     ...(links ? { links } : {}),
   };
@@ -647,7 +647,7 @@ async function setupConnection(
   }
   return {
     ...row ? { connection: { connectionId: row.connectionId, name: row.name, kind: row.kind, status: row.status } } : {},
-    ...agentAvatar(deps, agent.avatar),
+    ...agentAvatar(deps, agent.config),
   };
 }
 
@@ -660,7 +660,7 @@ export async function agentConnectionsOf(
   deps: FiveZeroDeps,
   context: ManagementActorContext,
   agentId: string,
-): Promise<(AgentConnectionView & { avatar: CustomAgentConfig }) | undefined> {
+): Promise<(AgentConnectionView & { config: CustomAgentConfig }) | undefined> {
   const reader = await deps.service.agentReader(context, agentId).catch((error: unknown) => {
     if (error instanceof ManagementError) return undefined;
     throw error;
@@ -683,7 +683,7 @@ export async function agentConnectionsOf(
     apiConnections: lanes.apiConnections.map(managementApiConnection),
     connectionStatus: managementConnectionStatus(lanes),
     ...(projected.length > 0 ? { connections: projected.map(withoutRevisions) } : {}),
-    avatar: reader.agent,
+    config: reader.agent,
   };
 }
 
@@ -730,8 +730,8 @@ export async function getCreationStatus(
     stage,
     agent: {
       ...progress.agent,
-      status: progress.avatar.lifecycle === 'archived' ? 'archived' : progress.avatar.enabled ? 'on' : 'off',
-      ...agentAvatar(deps, progress.avatar),
+      status: agentStatus(progress.config),
+      ...agentAvatar(deps, progress.config),
     },
     channels: grants.length === 0 ? 'none'
       : grants.includes('needs_attention') ? 'needs_attention'

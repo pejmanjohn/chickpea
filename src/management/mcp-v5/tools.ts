@@ -3,7 +3,7 @@ import type { z } from 'zod';
 
 import { emitManagementMetric } from '../telemetry.ts';
 import type { CardName } from '../../mcp-cards/published.ts';
-import { declaresCards, holdTokens } from './card-host.ts';
+import { holdTokens } from './card-host.ts';
 import { CARD_URIS } from './cards.ts';
 import {
   mcpErrorResult,
@@ -37,6 +37,8 @@ interface FiveZeroTool {
   profile?: true;
   /** The card that draws its result. */
   card?: CardName;
+  /** No card draws it, but on a card host only a card's press calls it, so the card holds its result's tokens. */
+  holdsTokens?: true;
   /** Sends requests outside Chickpea, to hosts the workspace configured. */
   openWorld?: true;
   /** A write's hints; a tool without them reads only. */
@@ -53,6 +55,7 @@ function tool<I extends z.ZodType<Structured>, O extends z.ZodType<Structured>>(
   visibility?: readonly McpToolVisibility[];
   profile?: true;
   card?: CardName;
+  holdsTokens?: true;
   openWorld?: true;
   write?: ReturnType<typeof writeHints>;
   run: (deps: FiveZeroDeps, args: z.output<I>) => Promise<z.output<O>>;
@@ -456,6 +459,8 @@ export const FIVE_ZERO_TOOLS = {
     input: schemas.confirmChangeInput,
     output: schemas.changeResultOutput,
     write: writeHints({ destructive: true }),
+    // Its undo token is the confirm token's own string.
+    holdsTokens: true,
     run: (deps, args) => writes.confirmChange(deps, args),
   }),
   decline_change: tool({
@@ -497,11 +502,10 @@ class OutputRejected extends Error {
 }
 
 /**
- * `cardSession`: the client declared cards at `initialize` (card-host.ts). A
- * 2026-07-28 request declares them itself.
+ * `cardHost`: whether the client draws cards, which it declared at
+ * `initialize` (card-host.ts) or a 2026-07-28 request declares itself.
  */
-export function registerFiveZeroTools(server: McpServer, deps: FiveZeroDeps, cardSession = false): void {
-  const cardHost = () => cardSession || declaresCards(server.server.getClientCapabilities());
+export function registerFiveZeroTools(server: McpServer, deps: FiveZeroDeps, cardHost: () => boolean = () => false): void {
   for (const name of FIVE_ZERO_TOOL_NAMES) register(server, deps, name, FIVE_ZERO_TOOLS[name], cardHost);
 }
 
@@ -512,8 +516,9 @@ function register(
   definition: FiveZeroTool,
   cardHost: () => boolean,
 ): void {
-  // A result only a card sees, or one a card draws: on a card host, the card holds its tokens.
-  const drawn = definition.card !== undefined || definition.visibility?.includes('model') === false;
+  // A result only a card sees, one a card draws, or one only a card's press asks for: on a card host, the card holds its tokens.
+  const drawn = definition.card !== undefined || definition.visibility?.includes('model') === false ||
+    definition.holdsTokens === true;
   server.registerTool(name, {
     title: definition.title,
     description: definition.description,
@@ -535,7 +540,7 @@ function register(
       emitManagementMetric('tool.call', { surface: 'mcp', tool: name, outcome: 'success', durationMs: Date.now() - startedAt });
       if (!drawn) return mcpSuccessResult(parsed.data);
       const { structured, held } = cardHost() ? holdTokens(parsed.data, deps.baseUrl) : { structured: parsed.data };
-      return mcpSuccessResult(structured, { tool: name, held: held as Record<string, string> | undefined });
+      return mcpSuccessResult(structured, { tool: name, held });
     } catch (error) {
       const failure = mcpToolError(error);
       if (failure.code === 'temporarily_unavailable') {

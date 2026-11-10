@@ -16,7 +16,7 @@ import {
 import { channelNames } from '../channel-names.ts';
 import { confirmationAsk, turnsAgentOff } from './confirmation-ask.ts';
 import { fail, fiveZeroCode, versionToken, type McpErrorCode } from './conventions.ts';
-import { agentAvatar, agentLinks, type FiveZeroDeps } from './reads.ts';
+import { agentAvatar, agentLinks, agentStatus, type FiveZeroDeps } from './reads.ts';
 import type * as schemas from './schemas.ts';
 
 export type ChangeResult = z.infer<typeof schemas.changeResultOutput>;
@@ -191,6 +191,8 @@ async function confirmationResult(
       confirmToken: pending.proposalId,
       preview: formatChangeSetProposal(preview, CONFIRMATION_DIALECT),
       expiresAt: new Date(result.confirmation.expiresAt).toISOString(),
+      // Admin has a button for every change that waits here but deleting an Agent.
+      inAdmin: !preview.changes.some(({ operationKind }) => operationKind === 'delete_agent'),
       ask: confirmationAsk(preview, {
         ...agent ? { agent } : {},
         channels: turnsAgentOff(preview) ? await agentChannels(deps, context, about) : [],
@@ -222,6 +224,14 @@ const CONFIRMATION_DIALECT = {
 
 export const EXPIRED_NEXT_STEP = 'Call the tool that proposed the change again, with a new idempotencyKey, for a fresh preview and confirmToken.';
 
+/**
+ * A retired confirmation: the person kept it as it was, a newer change
+ * replaced it, or what it changes moved on. Nothing stored says which, so
+ * one sentence true of every cause.
+ */
+export const STALE_CONFIRMATION = 'That confirmation no longer applies. Ask again to make the change.';
+export const STALE_NEXT_STEP = 'Nothing changed. Propose it again, with a new idempotencyKey, only if the person asks for it again.';
+
 const NEXT_STEPS: Partial<Record<McpErrorCode, string>> = {
   changed_since_read: 'Read it again and send the change with the version it returns now, under a new idempotencyKey.',
   key_reused: 'Use a new idempotencyKey: this one already belongs to a different call.',
@@ -231,13 +241,15 @@ const NEXT_STEPS: Partial<Record<McpErrorCode, string>> = {
 /** The change did not apply: its outcome as the 5.0 error. */
 function failedOutcome(outcome: ManagementItemOutcome): never {
   const code = fiveZeroCode(outcome.code ?? 'operation_failed');
-  const message = code === 'changed_since_read'
-    ? 'It changed since you read it, so nothing changed.'
-    : outcome.instruction ?? 'That change did not apply.';
+  // A call sent again after its confirmation was retired.
+  const retired = outcome.code === 'proposal_stale';
+  const message = retired ? STALE_CONFIRMATION
+    : code === 'changed_since_read' ? 'It changed since you read it, so nothing changed.'
+      : outcome.instruction ?? 'That change did not apply.';
   // A removal Composio could not finish is cut off already; resending replays it, so a retry needs a new key.
   const nextStep = outcome.code === 'removal_incomplete'
     ? 'Call remove_connection again with a new idempotencyKey, then confirm_change. Resending this call replays this result.'
-    : NEXT_STEPS[code];
+    : retired ? STALE_NEXT_STEP : NEXT_STEPS[code];
   fail(code, message, {
     ...(nextStep ? { nextStep } : {}),
     ...(outcome.links?.admin ? { fix: { label: 'Open Chickpea Admin', url: outcome.links.admin } } : {}),
@@ -280,14 +292,14 @@ export async function agentSummary(
     const handle = agent.slackPresence?.normalizedHandle || undefined;
     const [slack, grants] = await Promise.all([deps.service.slackAppLink(context), stores.config.listAgentChannelGrants()]);
     const links = agentLinks(deps.baseUrl, agent.id, slack);
-    const channels = grants.filter((grant) => grant.agentId === agent.id)
+    const channels = grants.filter((grant) => grant.agentId === agent.id && grant.status === 'active')
       .map(({ channelId, channelLabel }) => ({ channelId, ...(channelLabel ? { name: channelLabel } : {}) }));
     return {
       agent: {
         agentId: agent.id,
         name: agent.name,
         ...(handle ? { handle } : {}),
-        status: agent.lifecycle === 'archived' ? 'archived' : agent.enabled ? 'on' : 'off',
+        status: agentStatus(agent),
         ...(channels.length ? { channels } : {}),
         ...agentAvatar(deps, agent),
         ...(links ? { links } : {}),

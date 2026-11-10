@@ -44,6 +44,8 @@ interface Rpc {
 /** ChatGPT's own bridge, where it has one; every use is feature-detected. */
 interface OpenAiGlobals {
   openExternal?: (options: { href: string; redirectUrl?: false }) => Promise<void> | void;
+  /** The `_meta` of the tool result this card draws, which ChatGPT keeps from its model. */
+  toolResponseMetadata?: unknown;
   widgetState?: unknown;
   setWidgetState?: (state: unknown) => Promise<void> | void;
 }

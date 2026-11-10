@@ -54,31 +54,36 @@ export async function cardServer(
   const fetch = workspaceManagementMcpFetch({ principal, service: f.service, baseUrl: BASE_URL });
   const headers = { accept: 'application/json, text/event-stream', 'content-type': 'application/json', 'mcp-protocol-version': '2025-11-25' };
   const session = options.cards
-    ? (await fetch(new Request('http://localhost/mcp', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          jsonrpc: '2.0', id: 0, method: 'initialize',
-          params: {
-            protocolVersion: '2025-11-25',
-            capabilities: { extensions: { 'io.modelcontextprotocol/ui': { mimeTypes: ['text/html;profile=mcp-app'] } } },
-            clientInfo: { name: 'openai-mcp', version: '1.0.0' },
-          },
-        }),
+    ? (await fetch(jsonRequest(headers, {
+        jsonrpc: '2.0', id: 0, method: 'initialize',
+        params: {
+          protocolVersion: '2025-11-25',
+          capabilities: { extensions: { 'io.modelcontextprotocol/ui': { mimeTypes: ['text/html;profile=mcp-app'] } } },
+          clientInfo: { name: 'openai-mcp', version: '1.0.0' },
+        },
       }))).headers.get('mcp-session-id')
     : null;
   assert.equal(Boolean(session), Boolean(options.cards), 'a client that draws cards gets a session');
   const call: ServerCall = async (name, args = {}) => {
-    const response = await fetch(new Request('http://localhost/mcp', {
-      method: 'POST',
-      headers: { ...headers, ...session ? { 'mcp-session-id': session } : {} },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
-    }));
+    const response = await fetch(jsonRequest(
+      { ...headers, ...session ? { 'mcp-session-id': session } : {} },
+      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } },
+    ));
     const body = await response.text();
     const json = body.trimStart().startsWith('{') ? body : body.split('\n').find((line) => line.startsWith('data: '))!.slice(6);
     return (JSON.parse(json) as { result: ToolResult }).result;
   };
   return { f, clock, call, teamId: f.owner.binding.slackTeamId };
+}
+
+/** A JSON-RPC POST as an HTTP client sends one, its length included. */
+export function jsonRequest(headers: Record<string, string>, message: Record<string, unknown>): Request {
+  const body = JSON.stringify(message);
+  return new Request('http://localhost/mcp', {
+    method: 'POST',
+    headers: { ...headers, 'content-length': String(new TextEncoder().encode(body).byteLength) },
+    body,
+  });
 }
 
 export interface CardModelUnderTest<V extends { kind: string }, A extends string> {
@@ -90,6 +95,12 @@ export interface CardModelUnderTest<V extends { kind: string }, A extends string
    * list so a model edit cannot widen it. Every other call needs a press.
    */
   reads: ReadonlySet<string>;
+  /**
+   * A state that follows up what a press started, such as a creation the
+   * person pressed Create for: its reads' answers may tell the host's model
+   * how it ended. Absent, only a press and its own call's answer may.
+   */
+  followsPress?: (state: CardState<V>) => boolean;
 }
 
 /**
@@ -110,18 +121,27 @@ function setupUrlOf(result: ToolResult): unknown {
 
 /**
  * A card's one rule: an event that is not a press (a mount, a re-read, a
- * timer, a reply, a failure) makes only reads and timers, and may tell the
- * host's model what happened. It never writes, sends a message or opens a
- * link, with one exception: the reply to a call a press made carries on that
- * press. It may open the setup link it carries, because that press asked for
- * the link to open, or, when the card will not open that link, ask the chat
- * for the fix instead.
+ * timer, a reply, a failure) makes only reads and timers. It never writes,
+ * sends a message, opens a link or tells the host's model anything, with one
+ * exception: the reply to a call a press made carries on that press. It may
+ * tell the model what the press did, open the setup link it carries,
+ * because that press asked for the link to open, or, when the card will not
+ * open that link, ask the chat for the fix instead. A state that follows up
+ * a press may also tell the model how it ended.
  */
-function onlyReads(event: CardEvent<string>, effects: readonly Effect[], reads: ReadonlySet<string>, pressed: WeakSet<Call>): void {
+function onlyReads<V extends { kind: string }>(
+  from: CardState<V>,
+  event: CardEvent<string>,
+  effects: readonly Effect[],
+  model: Pick<CardModelUnderTest<V, string>, 'reads' | 'followsPress'>,
+  pressed: WeakSet<Call>,
+): void {
   if (event.type === 'press') return;
+  const pressReply = event.type === 'reply' && pressed.has(event.call);
   for (const effect of effects) {
-    if (effect.type === 'timer' || effect.type === 'context' || (effect.type === 'call' && reads.has(effect.call.tool))) continue;
-    if (event.type === 'reply' && pressed.has(event.call) &&
+    if (effect.type === 'timer' || (effect.type === 'call' && model.reads.has(effect.call.tool))) continue;
+    if (effect.type === 'context' && (pressReply || model.followsPress?.(from) === true)) continue;
+    if (event.type === 'reply' && pressReply &&
       ((effect.type === 'open' && effect.url === setupUrlOf(event.result)) || effect.type === 'message')) continue;
     assert.fail(`${event.type} made ${effect.type === 'call' ? `the write ${effect.call.tool}` : `a ${effect.type}`}`);
   }
@@ -148,7 +168,7 @@ export function cardHost<V extends { kind: string }, A extends string>(
 
   async function follow(from: CardState<V>, event: CardEvent<A>, deep: boolean): Promise<void> {
     const next = model.step(from, event);
-    onlyReads(event, next.effects, model.reads, pressed);
+    onlyReads(from, event, next.effects, model, pressed);
     if (!deep) return;
     for (const effect of next.effects) {
       if (effect.type !== 'call') continue;
@@ -168,7 +188,7 @@ export function cardHost<V extends { kind: string }, A extends string>(
     held,
     async dispatch(event: CardEvent<A>): Promise<void> {
       const next = model.step(state, event);
-      onlyReads(event, next.effects, model.reads, pressed);
+      onlyReads(state, event, next.effects, model, pressed);
       if (event.type === 'press') for (const effect of next.effects) if (effect.type === 'call') pressed.add(effect.call);
       state = next.state;
       const shown = model.present(state);

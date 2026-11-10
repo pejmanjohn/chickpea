@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { MCP_WORKSPACE_SCOPE } from '../../auth/mcp-oauth.ts';
 import { AgentPresenceError } from '../../slack/agent-presence/errors.ts';
 import { ManagementError } from '../types.ts';
+import type { HeldTokens } from './card-host.ts';
 
 /**
  * The conventions every 5.0 management tool follows (U2 design note §2.1 and
@@ -254,7 +255,7 @@ export function mcpErrorResult(error: McpToolError) {
  */
 export function mcpSuccessResult<T extends Record<string, unknown>>(
   structured: T,
-  card?: { tool: string; held?: Record<string, string> | undefined },
+  card?: { tool: string; held?: HeldTokens | undefined },
 ) {
   return {
     content: [{ type: 'text' as const, text: JSON.stringify(structured) }],

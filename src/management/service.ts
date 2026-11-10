@@ -3559,6 +3559,10 @@ export class WorkspaceManagementService {
     if (existing.status === 'completed' && existing.result) {
       return emitOperationOutcomes(actor.origin.kind, existing.result);
     }
+    // Retired: kept as it was, or replaced. Whatever changed since, it never applies.
+    if (existing.status === 'stale') {
+      throw new ManagementError('proposal_stale', 'The confirmation is no longer available.');
+    }
     // Only a pending set expires; a completed one replays above.
     if (existing.status === 'pending' && existing.expiresAt !== undefined && this.now() >= existing.expiresAt) {
       throw new ManagementError('proposal_expired', 'This confirmation expired, so nothing changed.');
@@ -4108,6 +4112,11 @@ export class WorkspaceManagementService {
   }
 
   /** For explain_agent and check_agent; hands out the stores only after the edit-authority check. */
+  async agentReader(context: ManagementActorContext, agentId: string) {
+    const actor = await this.requireLiveActor(context);
+    return { actor, agent: await this.requireEditableAgent(actor, agentId), stores: this.stores };
+  }
+
   private async generatedAvatarSeeds(): Promise<string[]> {
     return (await this.stores.config.listUserAgents()).flatMap((agent) => {
       const avatar = agent.slackPresence?.avatar;
@@ -4115,7 +4124,7 @@ export class WorkspaceManagementService {
     });
   }
 
-  /** The default avatar a creation now would pick, before the nonce breaks ties. */
+  /** The seeds of the default avatars in use, as creation counts them. */
   async agentAvatarSeeds(context: ManagementActorContext): Promise<string[]> {
     await this.requireLiveActor(context);
     return await this.generatedAvatarSeeds();
@@ -4123,25 +4132,24 @@ export class WorkspaceManagementService {
 
   /**
    * The person's "keep it as it is": a pending confirmation is retired, as a
-   * Slack decline retires one, so its token never applies. A set already
-   * applied returns its result; a retired one returns nothing again.
+   * Slack decline retires one, so its token never applies. Only a set that
+   * still waits is retired, in one store write, so a confirmation that
+   * claimed it first is never cut off mid-apply: one applying refuses, and
+   * one applied returns its result. A retired one returns nothing again.
    */
   async declineWorkspaceChange(input: ConfirmWorkspaceChangeInput): Promise<ManagementApplyResult | undefined> {
     const actor = await this.requireLiveActor(input.context);
     const proposal = await this.stores.management.getChangeSetProposal(input.proposalId);
     if (!proposal) throw new ManagementError('proposal_not_found', 'The confirmation was not found.');
     this.assertProposalBinding(actor, proposal);
-    if (proposal.status === 'completed' && proposal.result) return proposal.result;
-    if (proposal.status === 'applying') {
+    const settled = proposal.status === 'pending'
+      ? await this.stores.management.markChangeSetProposalStale(proposal.proposalId, this.now(), { from: 'pending' })
+      : proposal;
+    if (settled.status === 'completed' && settled.result) return settled.result;
+    if (settled.status === 'applying') {
       throw new ManagementError('operation_in_progress', 'The confirmation is already applying.');
     }
-    if (proposal.status === 'pending') await this.stores.management.markChangeSetProposalStale(proposal.proposalId, this.now());
     return undefined;
-  }
-
-  async agentReader(context: ManagementActorContext, agentId: string) {
-    const actor = await this.requireLiveActor(context);
-    return { actor, agent: await this.requireEditableAgent(actor, agentId), stores: this.stores };
   }
 
   /**
@@ -4167,7 +4175,7 @@ export class WorkspaceManagementService {
     const handle = agent.slackPresence?.normalizedHandle;
     return {
       agent: { name: agent.name, ...(handle ? { handle } : {}) },
-      avatar: agent,
+      config: agent,
       ...(agent.slackPresence
         ? {
             presence: {

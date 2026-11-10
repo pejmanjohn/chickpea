@@ -2,6 +2,7 @@ import type { z } from 'zod';
 
 import type * as schemas from '../../management/mcp-v5/schemas.ts';
 import {
+  agentNamed,
   call,
   errorOf,
   GENERIC,
@@ -163,7 +164,7 @@ function reply(state: State, tool: string, result: ToolResult): Next<View> {
     const problems = content.checks.filter(({ status }) => status === 'failing' || status === 'warning').length;
     return tell(
       show({ kind: 'health', checked: content, ...view.open ? { open: true as const } : {} }),
-      `The person checked ${content.agent.name} again from the card: ${problems === 0 ? 'no problems found' : `${problems} ${problems === 1 ? 'thing needs' : 'things need'} attention`}.`,
+      `The person checked ${agentNamed(content.agent.name)} again from the card: ${problems === 0 ? 'no problems found' : `${problems} ${problems === 1 ? 'thing needs' : 'things need'} attention`}.`,
     );
   }
   // The fix's setup link: the press that asked for it opens it, when it is Chickpea's page for that one connection.
@@ -178,7 +179,7 @@ function reply(state: State, tool: string, result: ToolResult): Next<View> {
   const fix = view.checked.checks[view.fixing]?.fix;
   return tell(
     show({ ...settled(view), opened }, [{ type: 'open', url }]),
-    `The person opened Chickpea's page to ${fix?.label ?? 'fix it'} for ${view.checked.agent.name} from the card. It changes when they finish there.`,
+    `The person opened Chickpea's page to ${fix?.label ?? 'fix it'} for ${agentNamed(view.checked.agent.name)} from the card. It changes when they finish there.`,
   );
 }
 

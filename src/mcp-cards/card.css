@@ -84,6 +84,12 @@ body {
   border-radius: 7px;
 }
 
+/* On an alert card, an Agent's picture keeps the alert art's red. */
+.cp-avatar-alert img {
+  outline: 2px solid var(--cp-danger);
+  outline-offset: 1px;
+}
+
 .cp-heading {
   min-width: 0;
 }

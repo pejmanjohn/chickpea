@@ -75,7 +75,7 @@ export function runCard<V extends { kind: string }, A extends string>(name: stri
   bridge.on('ui/notifications/tool-result', (result) => {
     // A card that kept its state has moved past this result already.
     if (kept || state.view.kind !== 'waiting') return;
-    dispatch({ type: 'result', result: result as CallToolResult, now: Date.now() });
+    dispatch({ type: 'result', result: withResponseMeta(result as CallToolResult), now: Date.now() });
     // A result can be old: a reopened chat mounts the card with the one it had then.
     reread();
   });
@@ -91,6 +91,17 @@ export function runCard<V extends { kind: string }, A extends string>(name: stri
     applyHostContext(bridge.hostContext);
     if (kept) reread();
   }, () => dispatch({ type: 'no_result', now: Date.now() }));
+}
+
+/**
+ * The result's `_meta`, where the card's tokens and tool name travel. A host
+ * that leaves it off the notification may still hold it for the card:
+ * ChatGPT's canonical place is `window.openai.toolResponseMetadata`.
+ */
+function withResponseMeta(result: CallToolResult): CallToolResult {
+  const meta = window.openai?.toolResponseMetadata;
+  if (result._meta || typeof meta !== 'object' || meta === null || Array.isArray(meta)) return result;
+  return { ...result, _meta: meta as Record<string, unknown> };
 }
 
 function keptView<V extends { kind: string }>(): { view: V; seq: number } | undefined {

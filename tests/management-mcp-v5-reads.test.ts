@@ -465,8 +465,8 @@ test('one Agent\'s connections read alone match the workspace snapshot, and only
   }
   const snapshot = (await f.service.inspectWorkspace(member)).agents.find(({ id }) => id === 'agent_shared')!;
   const deps = { service: f.service, context: async () => member };
-  const { avatar, ...alone } = (await agentConnectionsOf(deps, member, 'agent_shared'))!;
-  assert.equal(avatar.id, 'agent_shared', 'the Agent it read, for its picture');
+  const { config, ...alone } = (await agentConnectionsOf(deps, member, 'agent_shared'))!;
+  assert.equal(config.id, 'agent_shared', 'the Agent it read, for its picture');
   assert.deepEqual(alone, {
     mcpServers: snapshot.mcpServers,
     apiConnections: snapshot.apiConnections,

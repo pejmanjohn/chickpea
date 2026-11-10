@@ -50,6 +50,8 @@ function avatar(kind: 'agent' | 'alert', size: 'lg' | 'sm', url: string | undefi
     art();
     return holder;
   }
+  // The picture hides the alert art, so a ring keeps its warning.
+  if (kind === 'alert') holder.classList.add('cp-avatar-alert');
   // Decorative: the name beside it says whose it is.
   const image = element('img');
   image.alt = '';

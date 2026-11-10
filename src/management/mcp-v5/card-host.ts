@@ -47,6 +47,9 @@ export async function withCardSessions(
 
 async function initializeDeclaresCards(request: Request): Promise<boolean> {
   if (request.method !== 'POST') return false;
+  // Only a body that says how small it is gets read twice; an upload never does.
+  const length = Number(request.headers.get('content-length') ?? Number.NaN);
+  if (!(length <= MAX_INITIALIZE_BYTES)) return false;
   const text = await request.clone().text().catch(() => '');
   if (text.length > MAX_INITIALIZE_BYTES || !text.includes('"initialize"')) return false;
   try {
@@ -66,7 +69,7 @@ export interface HeldTokens {
 /**
  * A change result as a card host's model sees it: no token it could use
  * without the person's press, and words that send the person to the card,
- * or to Admin should the host fail to draw it.
+ * or, should the host fail to draw it, to Admin or to a new chat.
  */
 export function holdTokens(
   result: Record<string, unknown>,
@@ -80,9 +83,8 @@ export function holdTokens(
   const structured: Partial<ChangeResult> = rest;
   if (confirmToken !== undefined) {
     const { confirmToken: _confirm, ...confirmation } = change.confirmation!;
-    const admin = change.agent?.links?.admin ?? workspaceAdmin(baseUrl);
     structured.confirmation = confirmation;
-    structured.summary = `Nothing has changed yet. Confirm on the card above${admin ? `, or in Admin: ${admin}` : ''}.`;
+    structured.summary = `Nothing has changed yet. ${elsewhere(confirmation.inAdmin, change.agent?.links?.admin ?? workspaceAdmin(baseUrl))}`;
     structured.nextStep = 'The person confirms on the card, which holds the confirmToken. Wait for them.';
   }
   if (undoToken !== undefined) {
@@ -92,6 +94,12 @@ export function holdTokens(
     structured,
     held: { ...confirmToken !== undefined ? { confirmToken } : {}, ...undoToken !== undefined ? { undoToken } : {} },
   };
+}
+
+/** Where else the person can make the change, should the card not show: only a way that exists. */
+function elsewhere(inAdmin: boolean, admin: string | undefined): string {
+  if (!inAdmin) return 'Confirm on the card above. If the card doesn\'t show, ask again in a new chat.';
+  return `Confirm on the card above, or in Admin${admin ? `: ${admin}` : ''}.`;
 }
 
 function workspaceAdmin(baseUrl: string | undefined): string | undefined {

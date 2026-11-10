@@ -403,6 +403,26 @@ test('"no, leave it" retires the waiting change, so a later "approve" finds noth
   }
 });
 
+test('a "no" the judge reads while an approval starts applying the change leaves it to finish', async () => {
+  const { f, turn, proposeArchive, model, typed, pendingStatus } = await setup('typed-decline-race');
+  try {
+    const proposalId = await proposeArchive();
+    // The approval that came first claims the set while the judge reads the "no".
+    const { judge } = model(async () => {
+      const { organizationId, actorUserId, actorMembershipId, originKey, approvalScopeKey } =
+        (await f.management.getChangeSetProposal(proposalId))!;
+      await f.management.claimChangeSetProposal({
+        proposalId, organizationId, actorUserId, actorMembershipId, originKey, approvalScopeKey, at: Date.now(),
+      });
+      return '{"approval":"decline"}';
+    });
+    assert.equal(await typed(turn('no, leave it'), judge), undefined, 'no decline is reported');
+    assert.equal(await pendingStatus(proposalId), 'applying', 'the claimed set is not cut off mid-apply');
+  } finally {
+    f.close();
+  }
+});
+
 test('"yes, but rename it first", a failed call and a timed-out call leave the change waiting', async () => {
   const { f, turn, proposeArchive, model, typed, deskAgent, pendingStatus } = await setup('typed-other');
   try {

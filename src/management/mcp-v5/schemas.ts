@@ -408,7 +408,8 @@ export const getAgentOutput = z.strictObject({
   })),
   websiteLogins: z.array(z.strictObject({ loginId: z.string(), site: z.string() })),
   repositories: z.array(z.strictObject({ repository: z.string() })),
-  channels: z.array(z.strictObject({ channelId: z.string(), name: z.string().optional() })),
+  channels: z.array(z.strictObject({ channelId: z.string(), name: z.string().optional() }))
+    .describe('The Slack Channels it answers in, besides direct messages.'),
   links: zLinks.optional(),
 });
 
@@ -600,6 +601,7 @@ const changeResultShape = {
     confirmToken: z.string().optional().describe('Absent when the card above holds it: the person confirms there.'),
     preview: z.string().describe('Markdown to show the person before they agree.'),
     expiresAt: z.string().describe('After this time confirm_change refuses the token; call the tool again.'),
+    inAdmin: z.boolean().describe('Whether the person could make this change in Admin instead. Admin cannot delete an Agent.'),
     ask: z.strictObject({
       question: z.string(),
       consequence: z.string().describe('What happens, in plain words.'),

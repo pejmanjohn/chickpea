@@ -22,6 +22,8 @@ import {
   EXPIRED_NEXT_STEP,
   priorResult,
   requireVersion,
+  STALE_CONFIRMATION,
+  STALE_NEXT_STEP,
   type ChangeResult,
 } from './changes.ts';
 import { fail, mcpToolError, versionToken } from './conventions.ts';
@@ -760,12 +762,7 @@ export async function confirmChange(
     if (error.code === 'proposal_expired') {
       fail('confirmation_expired', 'This confirmation expired, so nothing changed.', { nextStep: EXPIRED_NEXT_STEP });
     }
-    // The person kept it as it was, or a newer change replaced it.
-    if (error.code === 'proposal_stale') {
-      fail('changed_since_read', 'That change was cancelled. Ask again to make it.', {
-        nextStep: 'Nothing changed. Propose it again only if the person asks for it again.',
-      });
-    }
+    if (error.code === 'proposal_stale') fail('changed_since_read', STALE_CONFIRMATION, { nextStep: STALE_NEXT_STEP });
     // What the preview showed changed after it was made, so the person saw something else.
     if (error.code === 'revision_conflict') {
       fail('changed_since_read', 'It changed since the preview, so nothing changed.', {

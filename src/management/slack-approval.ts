@@ -166,8 +166,9 @@ export async function resolveTypedSlackManagementApproval(input: {
   const approval = await input.judge({ text: turn.text, change: approvalChangeSummary(proposal) });
   if (approval === 'approve') return { kind: 'approve', proposalId: proposal.proposalId };
   if (approval !== 'decline' || proposal.status !== 'pending') return undefined;
-  await input.management.markChangeSetProposalStale(proposal.proposalId, Date.now());
-  return { kind: 'decline', proposalId: proposal.proposalId };
+  // Only a set that still waits is retired: one a confirmation claimed while the judge read is left to finish.
+  const retired = await input.management.markChangeSetProposalStale(proposal.proposalId, Date.now(), { from: 'pending' });
+  return retired.status === 'stale' ? { kind: 'decline', proposalId: proposal.proposalId } : undefined;
 }
 
 async function answersProposal(

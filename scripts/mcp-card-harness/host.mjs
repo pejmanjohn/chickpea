@@ -21,7 +21,8 @@ document.getElementById('frame').style.width = `${width}px`;
 const scene = await (await fetch(`/scene?name=${encodeURIComponent(params.get('scene'))}`)).json();
 const iframe = document.createElement('iframe');
 iframe.title = 'Chickpea card';
-iframe.src = `${params.get('card')}/card.html?uri=${encodeURIComponent(scene.uri)}`;
+iframe.src = `${params.get('card')}/card.html?uri=${encodeURIComponent(scene.uri)}` +
+  (scene.openaiMeta ? `&openaiMeta=${encodeURIComponent(JSON.stringify(scene.openaiMeta))}` : '');
 document.getElementById('frame').append(iframe);
 await new Promise((resolve) => { iframe.onload = resolve; });
 
