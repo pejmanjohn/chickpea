@@ -122,6 +122,15 @@ function block(item: Block, avatarKind: 'agent' | 'alert', avatarUrl: string | u
       list.append(...item.rows.map(row));
       return list;
     }
+    case 'panes': {
+      const pair = element('div', 'cp-panes');
+      for (const { label, text } of item.panes) {
+        const pane = element('section', 'cp-pane');
+        pane.append(element('h3', 'cp-pane-label', label), element('div', 'cp-pane-text', text));
+        pair.append(pane);
+      }
+      return pair;
+    }
   }
 }
 

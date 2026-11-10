@@ -12,7 +12,14 @@ const theme = params.get('theme');
 const width = Number(params.get('width'));
 const chatgpt = params.get('host') !== 'claude';
 const styles = chatgpt ? window.HARNESS_STYLES[theme] : undefined;
-const record = { calls: [], messages: [], links: [], sizes: [], contexts: [], holdCreate: false, release: undefined };
+const record = {
+  calls: [], args: [], messages: [], links: [], sizes: [], contexts: [], holdCreate: false, release: undefined,
+  /** Tools whose calls wait for `answerHeld`, which sends them on or fails them as a host that gave up would. */
+  holding: [], held: [],
+  answerHeld(how = 'send') {
+    for (const settle of record.held.splice(0)) settle(how);
+  },
+};
 window.harness = record;
 
 document.documentElement.dataset.theme = theme ?? 'none';
@@ -21,10 +28,7 @@ document.getElementById('frame').style.width = `${width}px`;
 const scene = await (await fetch(`/scene?name=${encodeURIComponent(params.get('scene'))}`)).json();
 const iframe = document.createElement('iframe');
 iframe.title = 'Chickpea card';
-iframe.src = `${params.get('card')}/card.html?uri=${encodeURIComponent(scene.uri)}` +
-  (scene.openaiMeta ? `&openaiMeta=${encodeURIComponent(JSON.stringify(scene.openaiMeta))}` : '');
 document.getElementById('frame').append(iframe);
-await new Promise((resolve) => { iframe.onload = resolve; });
 
 const bridge = new AppBridge(
   null,
@@ -47,8 +51,13 @@ const bridge = new AppBridge(
 );
 bridge.oncalltool = async (request) => {
   record.calls.push(request.name);
+  record.args.push(request.arguments);
   // Lets the harness see the card while create_agent runs, as ChatGPT's 12 s did.
   if (request.name === 'create_agent' && record.holdCreate) await new Promise((resolve) => { record.release = resolve; });
+  if (record.holding.includes(request.name)) {
+    const how = await new Promise((resolve) => { record.held.push(resolve); });
+    if (how === 'fail') throw new Error('The host gave up on the call.');
+  }
   const response = await fetch('/call', { method: 'POST', body: JSON.stringify(request) });
   return await response.json();
 };
@@ -73,4 +82,7 @@ bridge.oninitialized = () => {
 };
 /** A theme change that carries no style variables, which ChatGPT may send. */
 record.flipTheme = (next) => bridge.sendHostContextChange({ theme: next });
+// Listening before the card loads, so its ui/initialize, sent as its script runs, is never missed.
 await bridge.connect(new PostMessageTransport(iframe.contentWindow, iframe.contentWindow));
+iframe.src = `${params.get('card')}/card.html?uri=${encodeURIComponent(scene.uri)}` +
+  (scene.openaiMeta ? `&openaiMeta=${encodeURIComponent(JSON.stringify(scene.openaiMeta))}` : '');

@@ -34,6 +34,7 @@ import {
   type ToolResult,
   UNREACHABLE,
 } from '../card-model.ts';
+import { presentFirstAnswer, stepFirstAnswer, tryOnce, type FirstAnswer, type Tested } from '../first-answer.ts';
 
 /**
  * The Agent card as a state machine. Every host message, button press and
@@ -51,10 +52,19 @@ type CreateArguments = Proposal['create']['arguments'];
 type AgentStatus = NonNullable<NonNullable<ChangeResult['agent']>['status']>;
 type AgentLabel = { name: string; handle?: string | undefined };
 type Need = { name: string };
+/** The question and answer this card's own proposal promised. */
+type Promised = NonNullable<Tested['promised']>;
 
 type Offer =
   | { kind: 'proposal'; proposal: Proposal }
-  | { kind: 'similar'; summary: string; create: CreateArguments; name: string; avatarUrl?: string | undefined };
+  | {
+      kind: 'similar';
+      summary: string;
+      create: CreateArguments;
+      name: string;
+      avatarUrl?: string | undefined;
+      promised?: Promised | undefined;
+    };
 
 export type View =
   | { kind: 'waiting' }
@@ -77,6 +87,7 @@ export type View =
       failures?: number;
       /** The person created it from this card, so its arrival is theirs to hear about. */
       byPress?: true;
+      promised?: Promised | undefined;
     }
   | {
       kind: 'ready';
@@ -87,7 +98,10 @@ export type View =
       needs: Need[];
       adminUrl?: string | undefined;
       status: CreationStatus;
+      promised?: Promised | undefined;
     }
+  /** "See its first answer", pressed on the ready card. */
+  | FirstAnswer
   | { kind: 'change'; preview: ChangePreview; stale?: true }
   | {
       kind: 'done';
@@ -127,6 +141,7 @@ export type State = CardState<View>;
 export type Action =
   | 'create' | 'create_anyway' | 'change_something'
   | 'open_slack' | 'open_admin' | 'next_step' | 'check_again'
+  | 'try_once' | 'try_fix'
   | 'save' | 'cancel'
   | 'confirm' | 'keep'
   | 'undo';
@@ -141,6 +156,8 @@ export const INITIAL: State = { view: { kind: 'waiting' }, busy: false, seq: 0 }
 export const step = sequenced(transition);
 
 function transition(state: State, event: Event): Next<View> {
+  const { view } = state;
+  if (view.kind === 'first_answer' && event.type !== 'result') return stepFirstAnswer({ ...state, view }, event);
   switch (event.type) {
     case 'result':
       return fromResult(event.result, event.now);
@@ -228,7 +245,14 @@ function changeView(result: ChangeResult, now: number, options: { saved?: boolea
 
 function creating(
   result: ChangeResult,
-  from: { answersIn: string[]; needs: Need[]; workspaceName?: string | undefined; avatarUrl?: string | undefined; byPress?: true },
+  from: {
+    answersIn: string[];
+    needs: Need[];
+    workspaceName?: string | undefined;
+    avatarUrl?: string | undefined;
+    byPress?: true;
+    promised?: Promised | undefined;
+  },
   now: number,
 ): Next<View> {
   const agent = result.agent!;
@@ -243,6 +267,7 @@ function creating(
     adminUrl: httpsUrl(agent.links?.admin),
     startedAt: now,
     ...from.byPress ? { byPress: true as const } : {},
+    ...from.promised ? { promised: from.promised } : {},
   }, [call('get_creation_status', { agentId: agent.agentId })]);
 }
 
@@ -300,7 +325,23 @@ function press(state: State, action: Action, now: number): Next<View> {
     }
     case 'check_again':
       return reread(state, now);
+    case 'try_once':
+      return view.kind === 'ready' && offersFirstAnswer(view) ? tryOnce(tested(view), now) : stay(state);
+    case 'try_fix':
+      return stay(state);
   }
+}
+
+/** The ready Agent as the first answer tests it, with the promise only this card's proposal made. */
+function tested(view: Extract<View, { kind: 'ready' }>): Tested {
+  return {
+    agentId: view.agentId,
+    name: view.agent.name,
+    handle: view.agent.handle,
+    avatarUrl: view.avatarUrl,
+    slackUrl: httpsUrl(view.status.slackUrl),
+    promised: view.promised,
+  };
 }
 
 /**
@@ -343,12 +384,14 @@ function reply(state: State, made: Call, result: ToolResult, now: number): Next<
           workspaceName: from?.workspaceName,
           avatarUrl: offerAvatar(offer),
           byPress: true,
+          promised: promiseOf(offer),
         }, now), `The person created ${agentNamed(name, handle)} from the card. It is joining Slack now.`);
       }
       if (content.status === 'similar_agent_exists' && offer) {
         const create = offer.kind === 'proposal' ? offer.proposal.create.arguments : offer.create;
+        const promised = promiseOf(offer);
         return tell(
-          show({ kind: 'similar', summary: content.summary, create, name: create.name, avatarUrl: offerAvatar(offer) }),
+          show({ kind: 'similar', summary: content.summary, create, name: create.name, avatarUrl: offerAvatar(offer), ...promised ? { promised } : {} }),
           `The person pressed Create in Slack on the card, but nothing was created: ${summaryLine(content.summary)}`,
         );
       }
@@ -454,6 +497,7 @@ function creationStatus(state: State, status: CreationStatus | undefined, now: n
     needs: view.needs,
     adminUrl: view.adminUrl,
     status,
+    ...view.promised ? { promised: view.promised } : {},
   });
   if (view.kind !== 'creating' || !view.byPress) return ready;
   const who = agentNamed(view.agent.name, view.agent.handle);
@@ -531,6 +575,15 @@ function slackUrlOf(view: View): string | undefined {
 function offerAvatar(offer: Offer | undefined): string | undefined {
   if (offer?.kind === 'proposal') return httpsUrl(offer.proposal.proposal.avatarUrl);
   return offer?.avatarUrl;
+}
+
+/** What the proposal on this card promised it would answer. */
+function promiseOf(offer: Offer | undefined): Promised | undefined {
+  if (offer?.kind === 'proposal') {
+    const { ask, answer } = offer.proposal.proposal.sampleExchange;
+    return { ask, answer };
+  }
+  return offer?.promised;
 }
 
 /** Admin can make this change, and the card has the Agent's page there to open. */
@@ -625,6 +678,8 @@ function presentView(state: State): Presentation<Action> {
         blocks: view.body ? [{ kind: 'text', text: view.body }] : [],
         buttons: [],
       };
+    case 'first_answer':
+      return { ...base, ...presentFirstAnswer(view) };
   }
 }
 
@@ -790,12 +845,17 @@ function presentReady(view: Extract<View, { kind: 'ready' }>): Omit<Presentation
 
 /**
  * The ready card's second button: the next thing the Agent needs. Once
- * nothing is missing it becomes "See its first answer", when that test turn
- * exists (U6a).
+ * nothing is missing, "See its first answer", for an Agent with a first
+ * question saved to ask it.
  */
 function readyNextStep(view: Extract<View, { kind: 'ready' }>): Array<Button<Action>> {
   const need = view.needs[0];
-  return need ? [{ label: `Connect ${need.name}`, action: 'next_step', tone: 'secondary' }] : [];
+  if (need) return [{ label: `Connect ${need.name}`, action: 'next_step', tone: 'secondary' }];
+  return offersFirstAnswer(view) ? [{ label: 'See its first answer', action: 'try_once', tone: 'secondary' }] : [];
+}
+
+function offersFirstAnswer(view: Extract<View, { kind: 'ready' }>): boolean {
+  return view.needs.length === 0 && view.status.stage !== 'needs_attention' && view.status.agent?.hasFirstAsk === true;
 }
 
 /**

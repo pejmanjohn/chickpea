@@ -465,3 +465,33 @@ body {
   outline: 2px solid var(--color-ring-primary, light-dark(#0169cc, #ffffff));
   outline-offset: 2px;
 }
+
+/* Two answers side by side where there is room, one above the other on a phone. */
+.cp-panes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 10px;
+  margin: 10px 0 0;
+}
+
+.cp-pane {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--cp-line);
+  border-radius: 12px;
+  font-size: calc(var(--cp-size) * 0.964);
+}
+
+.cp-pane-label {
+  margin: 0 0 4px;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.79);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.cp-pane-text {
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}

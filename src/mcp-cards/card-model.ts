@@ -203,6 +203,25 @@ export function errorCode(result: ToolResult): string | undefined {
   return result.isError && isRecord(error) && typeof error.code === 'string' ? error.code : undefined;
 }
 
+/** A way to fix something: a link, or a tool with its arguments. */
+export type Fix = { label: string; url: string } | { label: string; tool: string; arguments: Record<string, unknown> };
+
+/** Absent, a link, or a tool with its arguments: a press reads no other shape. */
+export function isFix(fix: unknown): fix is Fix | undefined {
+  return fix === undefined || (isRecord(fix) && typeof fix.label === 'string' &&
+    (typeof fix.url === 'string' || (typeof fix.tool === 'string' && isRecord(fix.arguments))));
+}
+
+/**
+ * Tools whose only effect is a setup link, so the press that calls one may
+ * also open it: the person fixes on Chickpea's page. A fix with any other
+ * tool goes to the chat, where the model proposes it first.
+ */
+export function opensSetupLink(fix: Extract<Fix, { tool: string }>): boolean {
+  return fix.tool === 'reconnect_service' || fix.tool === 'connect_model_provider' ||
+    (fix.tool === 'connect_service' && !('custom' in fix.arguments));
+}
+
 /** The tool a result came from: hosts do not say, so card tools name it in `_meta`. */
 export function toolOf(result: ToolResult): string | undefined {
   const tool = result._meta?.['chickpea/tool'];
@@ -234,7 +253,9 @@ export type Block<A extends string = string> =
   | { kind: 'exchange'; ask: string; answer: string; agent: string }
   | { kind: 'facts'; rows: Array<{ label: string; value: string; chips?: string[]; note?: string }> }
   | { kind: 'steps'; steps: Array<{ label: string; state: 'done' | 'now' | 'todo' | 'failed' }> }
-  | { kind: 'rows'; rows: Array<Row<A>> };
+  | { kind: 'rows'; rows: Array<Row<A>> }
+  /** Side by side where there is room: each pane's label, then its text as written. */
+  | { kind: 'panes'; panes: Array<{ label: string; text: string }> };
 
 export interface Button<A extends string = string> {
   label: string;

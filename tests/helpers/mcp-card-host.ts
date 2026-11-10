@@ -101,6 +101,12 @@ export interface CardModelUnderTest<V extends { kind: string }, A extends string
    * how it ended. Absent, only a press and its own call's answer may.
    */
   followsPress?: (state: CardState<V>) => boolean;
+  /**
+   * Writes a timer may send again while the card still carries the press
+   * that made them, with exactly its arguments, so a retry replays that
+   * press. Absent, a timer sends no write.
+   */
+  replays?: ReadonlySet<string>;
 }
 
 /**
@@ -122,29 +128,39 @@ function setupUrlOf(result: ToolResult): unknown {
 /**
  * A card's one rule: an event that is not a press (a mount, a re-read, a
  * timer, a reply, a failure) makes only reads and timers. It never writes,
- * sends a message, opens a link or tells the host's model anything, with one
- * exception: the reply to a call a press made carries on that press. It may
+ * sends a message, opens a link or tells the host's model anything, with two
+ * exceptions. The reply to a call a press made carries on that press. It may
  * tell the model what the press did, open the setup link it carries,
  * because that press asked for the link to open, or, when the card will not
- * open that link, ask the chat for the fix instead. A state that follows up
- * a press may also tell the model how it ended.
+ * open that link, ask the chat for the fix instead. And while the card is
+ * still busy with a press, a timer may send that press's call again, with
+ * exactly its arguments, for a write the card `replays`. A state that follows
+ * up a press may also tell the model how it ended.
  */
 function onlyReads<V extends { kind: string }>(
   from: CardState<V>,
   event: CardEvent<string>,
   effects: readonly Effect[],
-  model: Pick<CardModelUnderTest<V, string>, 'reads' | 'followsPress'>,
+  model: Pick<CardModelUnderTest<V, string>, 'reads' | 'followsPress' | 'replays'>,
   pressed: WeakSet<Call>,
+  pressedCalls: ReadonlySet<string>,
 ): void {
   if (event.type === 'press') return;
   const pressReply = event.type === 'reply' && pressed.has(event.call);
   for (const effect of effects) {
     if (effect.type === 'timer' || (effect.type === 'call' && model.reads.has(effect.call.tool))) continue;
+    if (effect.type === 'call' && event.type === 'tick' && from.busy && model.replays?.has(effect.call.tool) === true &&
+      pressedCalls.has(callKey(effect.call))) continue;
     if (effect.type === 'context' && (pressReply || model.followsPress?.(from) === true)) continue;
     if (event.type === 'reply' && pressReply &&
       ((effect.type === 'open' && effect.url === setupUrlOf(event.result)) || effect.type === 'message')) continue;
     assert.fail(`${event.type} made ${effect.type === 'call' ? `the write ${effect.call.tool}` : `a ${effect.type}`}`);
   }
+}
+
+/** A call by what it sends: its tool and arguments. */
+function callKey(made: Call): string {
+  return JSON.stringify([made.tool, made.args]);
 }
 
 type Refused = Extract<CardEvent<string>, { type: 'refused' }>['effect'];
@@ -165,10 +181,11 @@ export function cardHost<V extends { kind: string }, A extends string>(
   const effects: Effect[] = [];
   const held: Array<{ call: Call; result: ToolResult }> = [];
   const pressed = new WeakSet<Call>();
+  const pressedCalls = new Set<string>();
 
   async function follow(from: CardState<V>, event: CardEvent<A>, deep: boolean): Promise<void> {
     const next = model.step(from, event);
-    onlyReads(from, event, next.effects, model, pressed);
+    onlyReads(from, event, next.effects, model, pressed, pressedCalls);
     if (!deep) return;
     for (const effect of next.effects) {
       if (effect.type !== 'call') continue;
@@ -188,8 +205,16 @@ export function cardHost<V extends { kind: string }, A extends string>(
     held,
     async dispatch(event: CardEvent<A>): Promise<void> {
       const next = model.step(state, event);
-      onlyReads(state, event, next.effects, model, pressed);
-      if (event.type === 'press') for (const effect of next.effects) if (effect.type === 'call') pressed.add(effect.call);
+      onlyReads(state, event, next.effects, model, pressed, pressedCalls);
+      if (event.type === 'press') {
+        const made = next.effects.flatMap((effect) => effect.type === 'call' ? [effect.call] : []);
+        // Only the latest press that called is one the card can still carry; a press that calls nothing keeps it.
+        if (made.length > 0) pressedCalls.clear();
+        for (const call of made) {
+          pressed.add(call);
+          pressedCalls.add(callKey(call));
+        }
+      }
       state = next.state;
       const shown = model.present(state);
       assert.ok(buttonCount(shown) <= 2, `at most two buttons: ${JSON.stringify(shown)}`);
