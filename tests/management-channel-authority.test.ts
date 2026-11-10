@@ -74,14 +74,14 @@ async function turnOffAsOwner(f: ManagementAdapterFixture, teamId: string, key: 
   assert.equal(await lifecycle(f, teamId), 'archived');
 }
 
-function assertRefusedToMember(result: ManagementApplyResult, teamId: string): void {
+const BACK_ON_REFUSED = 'Chickpea is off in this Channel, and only a workspace Owner or Admin can turn it back on or change it. Ask one of them to do it.';
+const OFF_REFUSED = 'Only a workspace Owner or Admin can turn Chickpea off in a Channel or change one where it is off. Ask one of them to do it.';
+
+function assertRefusedToMember(result: ManagementApplyResult, teamId: string, instruction = BACK_ON_REFUSED): void {
   const [outcome] = result.outcomes;
   assert.equal(outcome?.disposition, 'failed', JSON.stringify(result));
   assert.equal(outcome?.code, 'operational_access_required');
-  assert.equal(
-    outcome?.instruction,
-    'Chickpea is off in this Channel, and only a workspace Owner or Admin can turn it back on or change it. Ask one of them to do it.',
-  );
+  assert.equal(outcome?.instruction, instruction);
   assert.equal(outcome?.links?.admin, `http://localhost/admin/channels/${teamId}/${CHANNEL}`);
 }
 
@@ -97,6 +97,7 @@ test('a Member cannot turn Chickpea back on in a Channel an Owner or Admin turne
   assertRefusedToMember(
     await putChannel(f, member, teamId, 'member-relabel-off', { lifecycle: 'archived', label: 'renamed' }),
     teamId,
+    OFF_REFUSED,
   );
   assert.equal((await f.config.getChannel(teamId, CHANNEL))?.label, 'support', 'a Channel that is off keeps its settings');
 

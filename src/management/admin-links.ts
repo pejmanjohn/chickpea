@@ -6,8 +6,9 @@ import type { ManagementResultLinks } from './types.ts';
  * Admin-only. Admin routes are path-based (`applyRoute` in
  * `assets/admin-ui/admin.js`): `/admin/settings/<section>` opens one Settings
  * section, `/admin/team` opens the member list, `/admin/agents/<id>` opens an
- * Agent. Links are presentation-only, computed from the deployment's public
- * base URL, and never carry a secret or an internal identifier.
+ * Agent, `/admin/channels/<workspace>/<channel>` opens a Slack Channel. Links
+ * are presentation-only, computed from the deployment's public base URL, and
+ * never carry a secret or an internal identifier.
  */
 
 export const ADMIN_PATH = '/admin';
@@ -99,4 +100,16 @@ export function adminSettingsLinks(
 
 export function adminTeamLinks(baseUrl: string | undefined): ManagementResultLinks | undefined {
   return adminOrigin(baseUrl) ? { admin: adminTeamUrl(baseUrl) } : undefined;
+}
+
+/** `links.admin` for one Slack Channel's page, which shows whether Chickpea is on there. */
+export function adminChannelLinks(
+  baseUrl: string | undefined,
+  workspaceId: string,
+  channelId: string,
+): ManagementResultLinks | undefined {
+  const origin = adminOrigin(baseUrl);
+  return origin
+    ? { admin: `${origin}${ADMIN_PATH}/channels/${encodeURIComponent(workspaceId)}/${encodeURIComponent(channelId)}` }
+    : undefined;
 }
