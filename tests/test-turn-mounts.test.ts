@@ -303,6 +303,20 @@ test('the GET-only check is the layer that holds: the envelope alone would admit
     assert.deepEqual(resolved, [], 'a refused write never reaches the connection');
     assert.match(await call(true, ASK, getsOrder), /no_connection/, 'a GET goes on to the connection');
     assert.deepEqual(resolved, ['connection_orders']);
+    // Some services let a GET act as another method.
+    const overrides = [
+      { headers: { 'X-HTTP-Method-Override': 'DELETE' } },
+      { headers: { 'x-http-method': 'PUT' } },
+      { headers: { 'X-Method-Override': 'PATCH' } },
+      { query: { _method: 'DELETE' } },
+    ];
+    for (const override of [...overrides, { url: 'https://api.orders.example/v1/orders/42?_METHOD=delete' }]) {
+      const getsAs = () => fauxAssistantMessage([fauxToolCall('connection_request', {
+        method: 'GET', url: 'https://api.orders.example/v1/orders/42', ...override,
+      })], { stopReason: 'toolUse' });
+      assert.match(await call(true, ASK, getsAs), /write_not_allowed/, JSON.stringify(override));
+    }
+    assert.deepEqual(resolved, ['connection_orders'], 'no override reached the connection');
   } finally {
     dispose();
   }
