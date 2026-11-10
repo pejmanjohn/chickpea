@@ -23,12 +23,15 @@ export const CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME = 'chickpea-routine-execution
  * tool authority of its own, so it is deliberately not a managed submission.
  */
 export const CHICKPEA_CODING_WORKER_AGENT_NAME = 'chickpea-coding-worker-v1';
+/** One read-only test run of an Agent, asked from outside Slack (agents/test-turn.ts). */
+export const CHICKPEA_TEST_TURN_AGENT_NAME = 'chickpea-test-turn-v1';
 
-/** Agents that run a Slack submission on a human's behalf and carry tool authority. */
+/** Agents that run a submission on a human's behalf and carry tool authority. */
 export const MANAGED_SUBMISSION_AGENT_NAMES = [
   CHICKPEA_SLACK_AGENT_NAME,
   CHICKPEA_ROUTINE_INTENT_AGENT_NAME,
   CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME,
+  CHICKPEA_TEST_TURN_AGENT_NAME,
 ] as const;
 
 /**

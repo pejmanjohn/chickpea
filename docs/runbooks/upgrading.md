@@ -212,6 +212,16 @@ to runners still finish on their runners. Prefer the variable to a code
 rollback: code from before the runner execution path does not know which turns
 runners own.
 
+Durable Object migration `v12` adds one class, `FlueChickpeaTestTurnV1Agent`
+(binding `FLUE_CHICKPEA_TEST_TURN_V1_AGENT`, which the Flue build generates),
+and changes no existing class or stored state. It holds one test run of an
+Agent; nothing dispatches to it until the release that adds test runs. As with
+`v11`, once `v12` is applied no rollback returns to a pre-`v12` version, this
+updater refuses the transition, and `npm run deploy` applies it. A permanent
+deployment target advances its schema generation to `do:v12`. Chickpea Cloud
+applies its own `cloud-v1` right after `v11`, so a hosted build applies `v12`
+after `cloud-v1`.
+
 ### Thread record rollback
 
 The Slack reading release adds nullable columns to the thread record: who

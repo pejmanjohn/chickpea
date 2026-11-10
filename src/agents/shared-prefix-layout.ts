@@ -57,32 +57,43 @@ export function slackAgentKind(agentId: string): AgentKind {
   return agentId === CHICKPEA_AGENT_ID ? 'system' : 'user';
 }
 
+/** What each part of a Slack turn's system base covers, so a test run can leave parts out. */
+export type SlackSystemPart = 'interaction' | 'honesty' | 'sandboxMemory' | 'freshSandbox' | 'actionLink' |
+  'selfContained' | 'fileCompletion' | 'agentAuthoring' | 'management' | 'memberTools' | 'presentTable';
+
+interface SlackSystemShape {
+  kind: AgentKind;
+  managementMounted: boolean;
+  memberToolsMounted: boolean;
+}
+
+export function slackSystemBaseParts(input: SlackSystemShape): ReadonlyArray<readonly [SlackSystemPart, string]> {
+  const each = (part: SlackSystemPart, texts: readonly string[]) => texts.map((text) => [part, text] as const);
+  return [
+    ['interaction', [SLACK_INTERACTION_DEFAULTS, SLACK_RUNTIME_GUARDRAIL, EXTERNAL_ACTION_AUTHORITY_PREAMBLE].join('\n')],
+    ['honesty', RUNTIME_PLAN_INSTRUCTIONS.honesty],
+    ['sandboxMemory', RUNTIME_PLAN_INSTRUCTIONS.sandboxMemory],
+    ['freshSandbox', RUNTIME_PLAN_INSTRUCTIONS.freshSandbox],
+    ['actionLink', SLACK_ACTION_LINK_INSTRUCTION],
+    ['selfContained', RUNTIME_PLAN_INSTRUCTIONS.selfContained],
+    ['fileCompletion', FILE_COMPLETION_INSTRUCTION],
+    ['agentAuthoring', AGENT_AUTHORING_ROUTER_INSTRUCTION],
+    // A user Agent's routing sentence names its own ID, so it goes in the tenant block.
+    ...each('management', !input.managementMounted ? [] : input.kind === 'system'
+      ? [slackManagementInstruction(CHICKPEA_AGENT_ID), firstTeammateInstruction()]
+      : [SLACK_MANAGEMENT_GUIDANCE, USER_AGENT_CREATION_HANDOFF_INSTRUCTION]),
+    ...each('memberTools', input.memberToolsMounted ? [SLACK_LISTS_INSTRUCTION, SLACK_READING_INSTRUCTION, SLACK_GROUP_DM_INSTRUCTION, SLACK_CANVASES_INSTRUCTION, SLACK_CREATE_CHANNEL_INSTRUCTION] : []),
+    ['presentTable', SLACK_PRESENT_TABLE_INSTRUCTION],
+  ];
+}
+
 /**
  * The instruction a Slack turn's agent returns, which opens its system
  * prompt. With the management tools and the requester's Lists and reading
  * tools mounted it is exactly `sharedSystemBlock(kind)`.
  */
-export function slackSystemBase(input: {
-  kind: AgentKind;
-  managementMounted: boolean;
-  memberToolsMounted: boolean;
-}): string {
-  return [
-    [SLACK_INTERACTION_DEFAULTS, SLACK_RUNTIME_GUARDRAIL, EXTERNAL_ACTION_AUTHORITY_PREAMBLE].join('\n'),
-    RUNTIME_PLAN_INSTRUCTIONS.honesty,
-    RUNTIME_PLAN_INSTRUCTIONS.sandboxMemory,
-    RUNTIME_PLAN_INSTRUCTIONS.freshSandbox,
-    SLACK_ACTION_LINK_INSTRUCTION,
-    RUNTIME_PLAN_INSTRUCTIONS.selfContained,
-    FILE_COMPLETION_INSTRUCTION,
-    AGENT_AUTHORING_ROUTER_INSTRUCTION,
-    // A user Agent's routing sentence names its own ID, so it goes in the tenant block.
-    ...(!input.managementMounted ? [] : input.kind === 'system'
-      ? [slackManagementInstruction(CHICKPEA_AGENT_ID), firstTeammateInstruction()]
-      : [SLACK_MANAGEMENT_GUIDANCE, USER_AGENT_CREATION_HANDOFF_INSTRUCTION]),
-    ...(input.memberToolsMounted ? [SLACK_LISTS_INSTRUCTION, SLACK_READING_INSTRUCTION, SLACK_GROUP_DM_INSTRUCTION, SLACK_CANVASES_INSTRUCTION, SLACK_CREATE_CHANNEL_INSTRUCTION] : []),
-    SLACK_PRESENT_TABLE_INSTRUCTION,
-  ].join(PART_SEPARATOR);
+export function slackSystemBase(input: SlackSystemShape): string {
+  return slackSystemBaseParts(input).map(([, text]) => text).join(PART_SEPARATOR);
 }
 
 const sharedBlocks = new Map<AgentKind, string>();

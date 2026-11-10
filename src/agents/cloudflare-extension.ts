@@ -133,17 +133,17 @@ export const installationAgentExtension = {
 };
 
 /**
- * The `cloudflare` export of a routine run. Its render reads its plan from
- * creation data, which no staging precedes, so the object loads every
- * connector's detail when it starts. A failure leaves the render to fail its
- * run, as a failed start would.
+ * The `cloudflare` export of a routine run or a test run. Its render reads its
+ * plan from creation data, which no staging precedes, so the object loads
+ * every connector's detail when it starts. A failure leaves the render to
+ * fail its run, as a failed start would.
  */
-export const routineExecutionCloudflareExtension = {
+export const creationPlanAgentExtension = {
   base: (Base: AgentObjectClass): AgentObjectClass => {
     const Installation = installationAgentObject(Base) as new (...args: never[]) => {
       onStart?(props?: unknown): unknown;
     };
-    return class ChickpeaRoutineExecutionObject extends Installation {
+    return class CreationPlanAgentObject extends Installation {
       async onStart(props?: unknown): Promise<unknown> {
         await preloadAllConnectorDetails().catch(() => undefined);
         return super.onStart?.(props);

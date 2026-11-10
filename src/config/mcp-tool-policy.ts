@@ -1,3 +1,4 @@
+import { isMetaAdsMcpConnection, metaAdsToolEffect } from './meta-ads-policy.ts';
 import type { McpConnectionConfig } from './types.ts';
 
 /** Owner declarations take precedence over the last discovered server hint. */
@@ -5,6 +6,18 @@ export function mcpToolEffect(connection: Pick<McpConnectionConfig, 'toolPolicie
   const declared = connection.toolPolicies?.[name];
   if (declared) return declared.effect === 'read';
   return connection.discoveredTools.find((tool) => tool.name === name)?.readOnlyHint;
+}
+
+/**
+ * A tool a test run may call: an Admin declared it a read, since a server's
+ * own hint is not a declaration, and a Meta Ads tool is also a reviewed read.
+ */
+export function mcpToolDeclaredRead(
+  connection: Pick<McpConnectionConfig, 'toolPolicies' | 'presetId' | 'url'>,
+  name: string,
+): boolean {
+  return connection.toolPolicies?.[name]?.effect === 'read' &&
+    (!isMetaAdsMcpConnection(connection) || metaAdsToolEffect(name) === 'read');
 }
 
 /** Enforced at outbound MCP invocation, before sending the tool request. */

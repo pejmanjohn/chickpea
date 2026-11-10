@@ -37,6 +37,8 @@ type ManagedToolConnection = ManagedConnectionDeclaration | RuntimePlanManagedCo
 type PlatformEnvResolver = () => Promise<PlatformEnv | undefined>;
 
 interface ManagedToolContext {
+  /** A test run's: only read capabilities mount. */
+  readsOnly?: boolean;
   workspaceId: string;
   agentId: string;
   actorMembershipId: string;
@@ -83,6 +85,7 @@ interface ManagedToolInput {
   ) => Promise<ManagedConnectionProviderRegistry>;
   stores?: ManagedToolStores;
   usageCorrelation?: ManagedToolUsageCorrelation;
+  readsOnly?: boolean;
 }
 
 export const MANAGED_CONNECTION_RESULT_INSTRUCTION =
@@ -102,6 +105,7 @@ export function createManagedConnectionTools(input: {
   let environmentPromise: Promise<PlatformEnv | undefined> | undefined;
   let runtimePromise: Promise<ManagedToolRuntime> | undefined;
   const context: ManagedToolContext = {
+    ...(input.readsOnly ? { readsOnly: true } : {}),
     workspaceId: input.workspaceId,
     agentId: input.agentId,
     actorMembershipId: input.actorMembershipId,
@@ -207,6 +211,7 @@ export function useManagedConnectionTools(
       ...reservedToolNames,
     ],
     ...(usageCorrelation ? { usageCorrelation } : {}),
+    ...(plan.conversation.surface === 'test' ? { readsOnly: true } : {}),
   });
 }
 
@@ -243,6 +248,7 @@ function createCapabilityTool(
 ): ToolDefinition | undefined {
   const definition = managedCapabilityDefinition(detail, capability);
   if (!definition || definition.connectorToolkit !== connection.toolkit) return undefined;
+  if (context.readsOnly && definition.effect !== 'read') return undefined;
   if (definition.artifact) {
     const artifact = definition.artifact;
     return defineTool({

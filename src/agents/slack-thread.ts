@@ -853,7 +853,7 @@ export function ChickpeaSlack({ id }: AgentProps) {
   const delivery = useDelivery();
   const { runtimePlan: plan, memoryBlock, turnEnvelope } = useSlackTurnRenderInput(
     id,
-    parseRuntimePlanV2(initialData),
+    parseSlackRuntimePlan(initialData),
     delivery,
   );
   const currentRequest = parseCurrentRequestEnvelope(delivery.body);
@@ -1503,6 +1503,7 @@ export function useRuntimePlanAgent(
       publishActivityStatus(id, connectingActivityStatus(connection.displayName));
     },
     plan.actorMembershipId ? { workspaceId: plan.conversation.workspaceId, actorMembershipId: plan.actorMembershipId } : undefined,
+    { readsOnly: plan.conversation.surface === 'test' },
   )) {
     useMcpConnection(connection);
   }
@@ -1643,12 +1644,19 @@ export const cloudflare = slackThreadCloudflareExtension;
 ChickpeaSlack.durability = CHICKPEA_SUBMISSION_DURABILITY;
 ChickpeaSlack.initialData = v.custom<RuntimePlanV2>((value) => {
   try {
-    parseRuntimePlanV2(value);
+    parseSlackRuntimePlan(value);
     return true;
   } catch {
     return false;
   }
 }, 'RuntimePlanV2 is invalid.');
+
+/** A Slack turn's plan; a test run's plan runs only on ChickpeaTestTurn. */
+function parseSlackRuntimePlan(value: unknown): RuntimePlanV2 {
+  const plan = parseRuntimePlanV2(value);
+  if (plan.conversation.surface === 'test') throw new Error('A Slack turn cannot run a test run plan.');
+  return plan;
+}
 
 /**
  * The coding-workspace tools mount when the plan has the coding-workspace
@@ -2370,16 +2378,23 @@ function createRuntimePlanBrowserProvider(): BrowserTurnSession['provider'] {
  * frozen declarations, narrowed by live authority, each behind its own
  * per-connector egress scopes. Resolved per call, so a connection disabled or
  * narrowed mid-turn is gone or narrowed on the next call. GitHub hosts stay
- * with the repository integration.
+ * with the repository integration. A test run's scopes allow only GET and
+ * HEAD, so they refuse a write whatever the tool or the ask says; its plan
+ * keeps the connection's methods, which live authority must stay within.
  */
 export async function resolveRuntimePlanConnectionAccess(
   plan: RuntimePlanV2,
   options: { timeoutMs: number; filter?: (connector: ResolvedApiConnection) => boolean },
 ): Promise<ConnectionAccess> {
   const env = await resolveAgentPlatformEnv();
+  const readsOnly = plan.conversation.surface === 'test';
   const resolved = (await resolveRuntimePlanApiConnections(plan, env)).map(({ policy, connectors }) => ({
     policy,
-    connectors: mergeRepositoryAndApiConnectors([], connectors),
+    connectors: mergeRepositoryAndApiConnectors([], connectors).flatMap((connector) => {
+      if (!readsOnly) return [connector];
+      const allowedMethods = connector.allowedMethods.filter((method) => /^(?:GET|HEAD)$/i.test(method));
+      return allowedMethods.length > 0 ? [{ ...connector, allowedMethods }] : [];
+    }),
   }));
   return buildConnectionAccess(resolved, { cloudflare: isCloudflareTarget(), ...options });
 }
@@ -2397,6 +2412,7 @@ export function createRuntimePlanConnectionRequestTool(plan: RuntimePlanV2) {
   return createConnectionRequestTool({
     agentId: plan.agentId,
     resolveAccess: () => resolveRuntimePlanConnectionAccess(plan, { timeoutMs: CONNECTION_REQUEST_TIMEOUT_MS }),
+    ...(plan.conversation.surface === 'test' ? { readsOnly: true } : {}),
   });
 }
 

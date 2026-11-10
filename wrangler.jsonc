@@ -152,6 +152,15 @@
 			"new_sqlite_classes": [
 				"SlackThreadRunner"
 			]
+		},
+		{
+			// Test runs (src/agents/test-turn.ts): one instance per run, erased
+			// when it settles. Chickpea Cloud splices its own cloud-v1 after
+			// v11, so a hosted build applies this after cloud-v1.
+			"tag": "v12",
+			"new_sqlite_classes": [
+				"FlueChickpeaTestTurnV1Agent"
+			]
 		}
 	]
 }

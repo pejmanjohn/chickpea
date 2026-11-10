@@ -7,7 +7,7 @@ import type {
   LlmMessage,
 } from '@flue/runtime';
 
-import { MANAGED_SUBMISSION_AGENT_NAMES } from '../agents/names.ts';
+import { CHICKPEA_TEST_TURN_AGENT_NAME, MANAGED_SUBMISSION_AGENT_NAMES } from '../agents/names.ts';
 import {
   ROUTINE_SCHEDULE_SIGNAL_IDENTITY_ATTRIBUTES,
   ROUTINE_SCHEDULE_SIGNAL_TYPE,
@@ -448,7 +448,10 @@ export function observeMemoryToolPolicy(
   }
   const state = submissionPolicy.getStore();
   if (!state) return;
-  const policy = envelopeFromMessages(observation.request.input.messages, state.conversation);
+  // A model wrote a test run's ask, so no envelope in it is the host's.
+  const policy = context.agentName === CHICKPEA_TEST_TURN_AGENT_NAME
+    ? undefined
+    : envelopeFromMessages(observation.request.input.messages, state.conversation);
   if (policy) state.policy = policy;
   else delete state.policy;
 }

@@ -616,6 +616,10 @@ const FLUE_INSTANCE_NAMING_SITES: Record<string, { covered: string; sites: reado
     covered: 'recorded in the inventory on the next line, before the wake addresses it',
     sites: ['admissionAgentInstance: deriveSlackTurnInstanceId(job.turn, job.assignment, facts.installation)'],
   },
+  'agents/model-access-lookup.ts': {
+    covered: "compares a test run's recorded plan with the attempt's own instance; names nothing",
+    sites: ['testRunPlan: deriveRuntimePlanInstanceId(plan)'],
+  },
   'agents/turn-input.ts': {
     covered: 'compares a staged plan with the instance it was staged for; names nothing',
     sites: ['resolveSlackTurnRenderInput: deriveRuntimePlanInstanceId(input.initialData)'],
