@@ -48,6 +48,7 @@ import type { ConnectionAccountView } from './types.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import { sameMcpServerUrl } from '../config/mcp-url.ts';
 import type {
+  ManagedConnectionProvider,
   ManagedConnectionProviderRegistry,
   ManagedConnectionValidationResult,
   ManagedPageListing,
@@ -90,7 +91,8 @@ import { managedPrincipalRef } from './managed-principal.ts';
 export interface ConnectionAccountServiceDependencies {
   config: ConfigStore;
   settings: SettingsStore;
-  managedProviders?: ManagedConnectionProviderRegistry;
+  /** The providers, or how to resolve them when an account first needs one. */
+  managedProviders?: ManagedConnectionProviderRegistry | (() => Promise<ManagedConnectionProviderRegistry>);
   managedCatalog?: ManagedConnectorCatalog;
   randomId?: () => string;
   productTelemetry?: ProductTelemetryCapture;
@@ -673,7 +675,7 @@ export class ConnectionAccountService {
       !resource.required || (accountConstraints[resource.key]?.length ?? 0) > 0
     );
     if (accountSelectionComplete) {
-      const provider = this.dependencies.managedProviders?.get(policy.adapterId);
+      const provider = await this.managedProvider(policy.adapterId);
       if (!provider) throw new ManagedResourceSelectionError(
         'unavailable',
         'Managed connection provider is unavailable',
@@ -814,7 +816,7 @@ export class ConnectionAccountService {
     });
     if (refusal) throw refusal;
     const policy = source.policy;
-    const provider = this.dependencies.managedProviders?.get(policy.adapterId);
+    const provider = await this.managedProvider(policy.adapterId);
     if (!provider) throw new ManagedConnectionProviderUnavailableError(policy.adapterId);
     await provider.validate({ policy, ...(input.signal ? { signal: input.signal } : {}) });
     const chosen = requested && await this.chosenPages(policy, requested, input.signal);
@@ -930,7 +932,7 @@ export class ConnectionAccountService {
     logSignInRecorded(created);
     if (input.pages) await this.prunePageChoices(folded, input.pages);
     try {
-      const provider = this.dependencies.managedProviders?.get(previous.adapterId);
+      const provider = await this.managedProvider(previous.adapterId);
       if (!provider) throw new ManagedConnectionProviderUnavailableError(previous.adapterId);
       await provider.revoke({ policy: previous });
     } catch {
@@ -1037,20 +1039,29 @@ export class ConnectionAccountService {
   }): Promise<ConnectionAccount> {
     const account = await this.findAccount(input.connectionAccountId);
     this.requireManage(input.principal, account);
-    return this.revokeOwnedAccount(account);
+    return this.revokeOwnedAccount(account, 'restore');
   }
 
   /**
    * Revoke one account on the deployment's own authority, exactly as its
    * owner's revoke does, for a host's operator revoking an installation's
    * access (connections/hosted-revocation.ts). No principal is checked:
-   * callers decide authority before calling.
+   * callers decide authority before calling. A failure leaves the account
+   * needs_attention, so access ends even while the provider is down.
    */
   async revokeWithSystemAuthority(connectionAccountId: string): Promise<ConnectionAccount> {
-    return this.revokeOwnedAccount(await this.findAccount(connectionAccountId));
+    return this.revokeOwnedAccount(await this.findAccount(connectionAccountId), 'stay_closed');
   }
 
-  private async revokeOwnedAccount(account: ConnectionAccount): Promise<ConnectionAccount> {
+  /**
+   * `onFailure` decides what a failure before the remote account is gone
+   * leaves: 'restore' puts the account and its schedules back as they were,
+   * for a person's removal; 'stay_closed' leaves the account needs_attention.
+   */
+  private async revokeOwnedAccount(
+    account: ConnectionAccount,
+    onFailure: 'restore' | 'stay_closed',
+  ): Promise<ConnectionAccount> {
     if (account.lifecycle === 'revoked') {
       try {
         await markRevokedConnectionDependencies(
@@ -1073,31 +1084,34 @@ export class ConnectionAccountService {
       { ...account, lifecycle: 'needs_attention' },
       account.revision,
     );
-    try {
-      await pauseDependentSchedules(this.dependencies.config, account.id, scheduleIndex);
-    } catch {
-      throw new ConnectionScheduleConflictError(
-        'Dependent schedules changed before the connection could be disconnected. Try again.',
-      );
-    }
     let revoked: ConnectionAccount | undefined;
-    if (account.policy.kind === 'managed') {
-      // Another Agent's account still uses this sign-in: revoke only this one
-      // and keep the remote account. Exactly one of two concurrent
-      // disconnects sees the last reference.
-      const release = await this.dependencies.config.releaseSignInReference({
-        connectionAccountId: account.id,
-        expectedRevision: needsAttention.revision,
+    try {
+      await pauseDependentSchedules(this.dependencies.config, account.id, scheduleIndex).catch(() => {
+        throw new ConnectionScheduleConflictError(
+          'Dependent schedules changed before the connection could be disconnected. Try again.',
+        );
       });
-      if (release.kind === 'released') {
-        revoked = release.account;
-      } else {
-        const provider = this.dependencies.managedProviders?.get(account.policy.adapterId);
-        if (!provider) {
-          throw new ManagedConnectionProviderUnavailableError(account.policy.adapterId);
+      if (account.policy.kind === 'managed') {
+        // Another Agent's account still uses this sign-in: revoke only this one
+        // and keep the remote account. Exactly one of two concurrent
+        // disconnects sees the last reference.
+        const release = await this.dependencies.config.releaseSignInReference({
+          connectionAccountId: account.id,
+          expectedRevision: needsAttention.revision,
+        });
+        if (release.kind === 'released') {
+          revoked = release.account;
+        } else {
+          const provider = await this.managedProvider(account.policy.adapterId);
+          if (!provider) {
+            throw new ManagedConnectionProviderUnavailableError(account.policy.adapterId);
+          }
+          await provider.revoke({ policy: account.policy });
         }
-        await provider.revoke({ policy: account.policy });
       }
+    } catch (error) {
+      if (onFailure === 'restore') await this.restoreUnrevokedAccount(account, needsAttention, scheduleIndex);
+      throw error;
     }
     await tombstoneConnectionAccountSecret(
       account.secretRefId,
@@ -1121,6 +1135,32 @@ export class ConnectionAccountService {
     }
     await this.deleteOAuthSettings(revoked);
     return revoked;
+  }
+
+  /** Undo a removal that failed while the remote account still exists. A newer write to the account wins. */
+  private async restoreUnrevokedAccount(
+    account: ConnectionAccount,
+    needsAttention: ConnectionAccount,
+    scheduleIndex: ConnectionScheduleIndex,
+  ): Promise<void> {
+    try {
+      const restored = await this.dependencies.config.putConnectionAccount(
+        { ...needsAttention, lifecycle: account.lifecycle },
+        needsAttention.revision,
+      );
+      cacheConnectionAccount(scheduleIndex, restored);
+      await resumeDependentSchedules(this.dependencies.config, account.id, scheduleIndex);
+    } catch {
+      console.warn(JSON.stringify({
+        event: 'chickpea.connection.revoke_restore_failed',
+        connectionAccountId: account.id,
+      }));
+    }
+  }
+
+  private async managedProvider(adapterId: string): Promise<ManagedConnectionProvider | undefined> {
+    const providers = this.dependencies.managedProviders;
+    return (typeof providers === 'function' ? await providers() : providers)?.get(adapterId);
   }
 
   private async deleteOAuthSettings(account: ConnectionAccount): Promise<void> {
@@ -1180,9 +1220,10 @@ export class ConnectionAccountService {
       }
       ownedAccounts.push(account);
     }
+    // Accounts revoked before a failure stay revoked, so the failed one stays closed too.
     const revoked: ConnectionAccount[] = [];
     for (const account of ownedAccounts) {
-      revoked.push(await this.revokeOwnedAccount(account));
+      revoked.push(await this.revokeOwnedAccount(account, 'stay_closed'));
     }
     return revoked;
   }
@@ -1261,7 +1302,7 @@ export class ConnectionAccountService {
     const group = await this.signInGroup(account);
     for (const member of group) this.requireManage(input.principal, member);
     await this.requireUniqueManagedAccount(input.adapterId, input.accountRef, group.map(({ id }) => id));
-    const provider = this.dependencies.managedProviders?.get(input.adapterId);
+    const provider = await this.managedProvider(input.adapterId);
     if (!provider) {
       throw new Error(`Managed connection provider ${input.adapterId} is unavailable`);
     }
@@ -1503,7 +1544,7 @@ export class ConnectionAccountService {
     policy: ConnectionAccountManagedPolicy,
     signal?: AbortSignal,
   ): Promise<NotionPageListing> {
-    const provider = this.dependencies.managedProviders?.get(policy.adapterId);
+    const provider = await this.managedProvider(policy.adapterId);
     if (!provider?.listPages) {
       throw new ManagedResourceSelectionError('unavailable', 'Managed page listing is unavailable');
     }
@@ -1648,7 +1689,7 @@ export class ConnectionAccountService {
         throw new ManagedConnectionConflictError('The sign-in does not cover the access this connection needs');
       }
       await this.requireUniqueManagedAccount(policy.adapterId, policy.accountRef);
-      const provider = this.dependencies.managedProviders?.get(policy.adapterId);
+      const provider = await this.managedProvider(policy.adapterId);
       if (!provider) throw new ManagedConnectionProviderUnavailableError(policy.adapterId);
       const validation = await provider.validate({ policy });
       pages = connector.pageScope && validation?.pages ? parsePageListing(validation.pages) : undefined;
@@ -1762,7 +1803,7 @@ export class ConnectionAccountService {
     resources: Array<{ providerRef: string; label: string; currencyCode?: string }>;
     nextCursor?: string;
   }> {
-    const provider = this.dependencies.managedProviders?.get(input.policy.adapterId);
+    const provider = await this.managedProvider(input.policy.adapterId);
     if (!provider?.discoverResources) {
       throw new ManagedResourceSelectionError(
         'unavailable',

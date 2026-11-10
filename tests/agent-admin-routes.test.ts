@@ -4059,7 +4059,8 @@ test('managed Google setup reports an unconfigured provider without reserving an
     assert.equal(
       (await fixture.store.listConnectionAccounts('T_TEST'))
         .find(({ id }) => id === account.id)?.lifecycle,
-      'needs_attention',
+      'ready',
+      'a failed disconnect leaves the connection as it was',
     );
   } finally {
     fixture.store.close();
