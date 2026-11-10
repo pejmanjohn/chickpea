@@ -65,15 +65,15 @@ export async function proposeAgent(
     } else if (matches.length > 1) {
       issues.push(`"${asked}" matches several services (${matches.map(({ name }) => name).join(', ')}). Name one.`);
     } else {
-      issues.push(`"${asked}" is not a service Chickpea connects yet. list_services lists the ones it does.`);
+      issues.push(`"${asked}" is not a service Chickpea connects yet.`);
     }
   }
 
   const { found: answersIn, missing } = await resolveChannels(deps, context, snapshot, input.channels ?? []);
-  for (const asked of missing) issues.push(`No Slack Channel you are in is called ${asked}. list_slack_channels lists them.`);
+  for (const asked of missing) issues.push(`No Slack Channel you are in is called ${asked}.`);
 
   const modelOk = input.model === undefined || snapshot.modelCatalog.chat.some(({ id }) => id === input.model);
-  if (!modelOk) issues.push(`${input.model} is not a chat model this workspace can use, so the Agent uses the workspace default. list_models lists the others.`);
+  if (!modelOk) issues.push('That model isn\'t one this workspace can use, so the Agent uses the workspace default.');
 
   const idempotencyKey = randomUUID();
   // Chosen as creation would choose it, and sent with Create, so Slack shows the picture this proposal does.

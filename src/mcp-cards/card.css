@@ -159,6 +159,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 9px;
+  margin: 12px 0 0;
   padding: 10px 12px;
   border: 1px solid var(--cp-line);
   border-radius: 12px;
@@ -172,21 +173,24 @@ body {
   font-size: calc(var(--cp-size) * 0.964);
 }
 
-/* A host may pass an example's line breaks as they are; they show as written. */
+/*
+ * A host may pass an example's line breaks as they are; they show as written.
+ * A long one shows its start and an ellipsis: the tool's result holds it whole.
+ */
 .cp-said {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
   white-space: pre-line;
   overflow-wrap: anywhere;
 }
 
-.cp-who {
-  font-weight: 600;
-  font-size: calc(var(--cp-size) * 0.93);
+.cp-clamp-2 {
+  -webkit-line-clamp: 2;
 }
 
-.cp-who-note {
-  margin-left: 4px;
-  color: var(--cp-muted);
-  font-weight: 400;
+.cp-clamp-5 {
+  -webkit-line-clamp: 5;
 }
 
 .cp-init {
@@ -201,20 +205,15 @@ body {
   font-weight: 600;
 }
 
-.cp-facts {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 6px 12px;
-  margin: 12px 0 0;
+.cp-line {
+  margin: 10px 0 0;
+  color: var(--cp-muted);
   font-size: calc(var(--cp-size) * 0.964);
 }
 
-.cp-facts dt {
-  color: var(--cp-muted);
-}
-
-.cp-facts dd {
-  margin: 0;
+.cp-line b {
+  color: var(--cp-fg);
+  font-weight: 500;
 }
 
 .cp-chip {
@@ -223,12 +222,8 @@ body {
   border: 1px solid var(--cp-line);
   border-radius: 999px;
   background: var(--cp-soft);
+  color: var(--cp-fg);
   font-size: calc(var(--cp-size) * 0.9);
-}
-
-.cp-faint {
-  color: var(--cp-muted);
-  font-size: calc(var(--cp-size) * 0.86);
 }
 
 .cp-foot {

@@ -339,9 +339,11 @@ test('propose_agent saves nothing and returns create_agent arguments it accepts,
   assert.equal(result.proposal.handleAvailable, false);
   assert.deepEqual(result.proposal.needs, [{ service: 'gmail', name: 'Gmail', connected: false }]);
   assert.deepEqual(result.proposal.answersIn, [{ channelId: 'C_SUPPORT', name: 'support' }]);
-  for (const expected of [/@support already belongs to Desk/, /Nonexistent Service/, /C_UNKNOWN/, /nobody\/not-a-model/]) {
+  for (const expected of [/@support already belongs to Desk/, /Nonexistent Service/, /C_UNKNOWN/, /That model isn't one this workspace can use/]) {
     assert.ok(result.issues.some((issue) => expected.test(issue)), `${expected}: ${result.issues.join(' | ')}`);
   }
+  // The card draws these issues: they name no tool and no model ID.
+  assert.ok(result.issues.every((issue) => !/list_[a-z_]+|not-a-model/.test(issue)), result.issues.join(' | '));
 });
 
 test('propose_agent_change previews an edit, says when saving confirms, and refuses a stale version', async (t) => {
