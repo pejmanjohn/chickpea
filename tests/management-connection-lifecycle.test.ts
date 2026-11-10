@@ -749,7 +749,7 @@ function cloudEnv(t: TestContext): PlatformEnv {
 }
 
 type Door = 'MCP 4.x' | 'MCP 5.0' | 'Slack';
-type Removal = { done: true } | { done: false; message: string; code?: string };
+type Removal = { done: true } | { done: false; message: string; code?: string; nextStep?: string };
 
 /** The removal each door makes, read back the way its person or client sees it. */
 async function removeOver(
@@ -802,7 +802,7 @@ async function removeOver(
     const confirmed = await callTool('confirm_change', { confirmToken: proposed.structuredContent.confirmation.confirmToken });
     if (!confirmed.isError) return { done: true };
     const { error } = confirmed.structuredContent;
-    return { done: false, message: error.message, code: error.code };
+    return { done: false, message: error.message, code: error.code, ...(error.nextStep ? { nextStep: error.nextStep } : {}) };
   }
   // On Slack the person's Approve click applies the change, and the host's receipt is all they see.
   const proposed = await invokeWorkspaceManagementTool({
@@ -873,6 +873,23 @@ test('removing a managed connection reaches Composio with the deployment\'s own 
     }
   }));
 
+const RETRY_WITH_NEW_KEY = 'Call remove_connection again with a new idempotencyKey, then confirm_change. Resending this call replays this result.';
+
+// Defect caught: the Slack receipt for a removal Composio fails would carry a label's mentions and links unescaped.
+test('the Slack line for a removal Composio fails escapes the connection label', (t) =>
+  withFixture('remove-managed-escape', async (f) => {
+    const agent = await seedAgent(f);
+    const composio = composioApi(t);
+    const service = liveService(f, { env: SELF_HOSTED_ENV });
+    const account = await bindAccount(f, agent.id, { ...notionAccount('connection_escape', 'account_escape'), label: 'Notion <!channel> · Team' });
+    composio.state.answer = 'refused';
+    const removed = await removeOver('Slack', f, service, agent, account.id);
+    assert.equal(removed.done, false);
+    const message = (removed as { message: string }).message;
+    assert.match(message, /&lt;!channel&gt;/);
+    assert.doesNotMatch(message, /<!channel>/);
+  }));
+
 test('a removal Composio fails cuts the Agent off at once and says so plainly, on every door, and a retry finishes it', (t) =>
   withFixture('remove-managed-remote-fails', async (f) => {
     const agent = await seedAgent(f);
@@ -892,6 +909,7 @@ test('a removal Composio fails cuts the Agent off at once and says so plainly, o
           done: false,
           message: plain,
           ...(door === 'Slack' ? {} : { code: door === 'MCP 4.x' ? 'removal_incomplete' : 'temporarily_unavailable' }),
+          ...(door === 'MCP 5.0' ? { nextStep: RETRY_WITH_NEW_KEY } : {}),
         }, label);
         assert.deepEqual(composio.requests.map(({ method, url }) => [method, url]), [['DELETE', deletion(accountRef)]], label);
         assert.equal(await lifecycleOf(f, account.id), 'needs_attention', label);
