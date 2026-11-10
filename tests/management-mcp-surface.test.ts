@@ -30,11 +30,11 @@ const SLACK_ONLY_WORDING = /presentation\.slack|\bDMs?\b|Slack turn|Slack Lists|
 test('4.x MCP descriptions are one deprecation line while Slack text is untouched', () => {
   for (const name of WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES) {
     const mcp = deprecatedToolDescription(name);
-    assert.match(mcp, /^Deprecated 2026-11-09: use [a-z_, ]+(?: or [a-z_]+)?\.$|^Deprecated 2026-11-09: use one tool per change, such as create_agent or update_agent\.$/, name);
+    assert.match(mcp, /^Deprecated 2026-11-09: use [a-z_, ]+(?: or [a-z_]+)?\.$|^Deprecated 2026-11-09: use (?:one tool per change, such as create_agent or update_agent|get_setup_status for a setup link, or send a change again with its idempotencyKey for its result|connect_service, whose setup page checks the key)\.$/, name);
     assert.ok(V4_TOOL_REPLACEMENTS[name].every((replacement) => mcp.includes(replacement)), name);
     assert.doesNotMatch(mcp, SLACK_ONLY_WORDING, name);
   }
-  assert.equal(deprecatedToolDescription('inspect_workspace'), 'Deprecated 2026-11-09: use get_workspace, list_agents or get_agent.');
+  assert.equal(deprecatedToolDescription('inspect_workspace'), 'Deprecated 2026-11-09: use get_workspace, list_agents, get_agent, list_services, list_models, list_members or list_slack_channels.');
   assert.equal(deprecatedToolDescription('revoke_mcp_client'), 'Deprecated 2026-11-09: use disconnect_app.');
 
   // The Slack door still tells Chickpea to show presentation.slack and derive the DM from the origin.

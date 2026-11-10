@@ -97,7 +97,7 @@ export const V4_TOOLS_DEPRECATED_ON = '2026-11-09';
 
 /** The 5.0 tools that replace each 4.x tool, which its one-line description names. */
 export const V4_TOOL_REPLACEMENTS = {
-  inspect_workspace: ['get_workspace', 'list_agents', 'get_agent'],
+  inspect_workspace: ['get_workspace', 'list_agents', 'get_agent', 'list_services', 'list_models', 'list_members', 'list_slack_channels'],
   prepare_connector_setup: ['connect_service', 'reconnect_service'],
   prepare_provider_setup: ['connect_model_provider'],
   discover_slack_channels: ['list_slack_channels'],
@@ -121,12 +121,18 @@ export const V4_TOOL_REPLACEMENTS = {
   revoke_mcp_client: ['disconnect_app'],
 } as const satisfies Record<V4ToolName, readonly FiveZeroToolName[]>;
 
+/** Where a bare list of tools would mislead, the words that say how they replace it. */
+const V4_REPLACEMENT_WORDS: Partial<Record<V4ToolName, string>> = {
+  apply_workspace_changes: 'one tool per change, such as create_agent or update_agent',
+  get_operation: 'get_setup_status for a setup link, or send a change again with its idempotencyKey for its result',
+  try_connection: 'connect_service, whose setup page checks the key',
+};
+
 /** A 4.x tool's whole description in 4.5: the date and its replacement, in one line. */
 export function deprecatedToolDescription(name: V4ToolName): string {
   const tools: readonly string[] = V4_TOOL_REPLACEMENTS[name];
-  const replacement = name === 'apply_workspace_changes'
-    ? 'one tool per change, such as create_agent or update_agent'
-    : tools.length === 1 ? tools[0]! : `${tools.slice(0, -1).join(', ')} or ${tools.at(-1)!}`;
+  const replacement = V4_REPLACEMENT_WORDS[name] ??
+    (tools.length === 1 ? tools[0]! : `${tools.slice(0, -1).join(', ')} or ${tools.at(-1)!}`);
   return `Deprecated ${V4_TOOLS_DEPRECATED_ON}: use ${replacement}.`;
 }
 
