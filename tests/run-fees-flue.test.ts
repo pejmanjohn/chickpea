@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
 
 import { normalizeContext, type JsonObject } from '@earendil-works/pi-ai';
-import { init, instrument, useModel, useTool, type FlueExecutionInterceptor } from '@flue/runtime';
+import { AgentRunError, init, instrument, useModel, useTool, type FlueExecutionInterceptor } from '@flue/runtime';
 import { start } from '@flue/runtime/node';
 import * as v from 'valibot';
 
@@ -1302,6 +1302,22 @@ test('a test run\'s 26th tool call is refused to the model before it runs, and p
   assert.deepEqual(refusals, [TEST_TURN_TOOL_LIMIT_MESSAGE]);
   assert.deepEqual(admissions, [], 'the refused call never asked to become a task');
   assert.deepEqual(tiers(posts), ['chat:posted']);
+});
+
+test('a test run that calls a tool again after its refusal gets one more model request, then the attempt ends', { timeout: 20_000 }, async (t) => {
+  hostedPort(t);
+  const refusals: string[] = [];
+  testTurnInterceptors(t, 'outside', refusals);
+  // Refused at its 26th call, it calls again instead of answering: no request follows that one.
+  const { sent } = scriptedProvider([
+    freeReads(TEST_TURN_TOOL_CALL_LIMIT), callsTools('read_slack_channel'), callsTools('read_slack_thread'), answers,
+  ]);
+  ran.length = 0;
+
+  await assert.rejects(testTurnReply('test-turn-ended'), (error: unknown) => error instanceof AgentRunError);
+  assert.equal(sent.length, 3, 'the request after the second refusal is never sent');
+  assert.deepEqual(refusals, [TEST_TURN_TOOL_LIMIT_MESSAGE, TEST_TURN_TOOL_LIMIT_MESSAGE]);
+  assert.equal(ran.length, TEST_TURN_TOOL_CALL_LIMIT);
 });
 
 test('calls a test run makes in parallel cannot pass its limit together', { timeout: 20_000 }, async (t) => {
