@@ -3551,6 +3551,20 @@ export class WorkspaceManagementService {
     throw new ManagementError('proposal_not_found', 'The confirmation was not found.');
   }
 
+  /** Retires a set read while it waited; one a confirmation claimed since answers from its row, not `error`. */
+  private async retireReadChangeSet(
+    actor: LiveManagementActor,
+    proposalId: string,
+    error: unknown,
+  ): Promise<ManagementApplyResult> {
+    const settled = await this.stores.management.markChangeSetProposalStale(proposalId, this.now(), { from: 'pending' });
+    if (settled.status === 'completed' && settled.result) return emitOperationOutcomes(actor.origin.kind, settled.result);
+    if (settled.status === 'applying') {
+      throw new ManagementError('operation_in_progress', 'The confirmation is already applying.');
+    }
+    throw error;
+  }
+
   private async confirmChangeSetProposal(
     actor: LiveManagementActor,
     existing: ManagementChangeSetProposalRecord,
@@ -3568,8 +3582,8 @@ export class WorkspaceManagementService {
       throw new ManagementError('proposal_expired', 'This confirmation expired, so nothing changed.');
     }
     if (managementOperationDigest(existing.operations) !== existing.digest) {
-      await this.stores.management.markChangeSetProposalStale(existing.proposalId, this.now());
-      throw new ManagementError('proposal_stale', 'The reviewed change set no longer matches its digest.');
+      const error = new ManagementError('proposal_stale', 'The reviewed change set no longer matches its digest.');
+      return await this.retireReadChangeSet(actor, existing.proposalId, error);
     }
     let proposal = existing;
     let recovered = false;
@@ -3624,7 +3638,7 @@ export class WorkspaceManagementService {
         await this.assertRevisionMap(proposal.targetRevisions);
       } catch (error) {
         if (invalidatesChangeSetProposal(error)) {
-          await this.stores.management.markChangeSetProposalStale(proposal.proposalId, this.now());
+          return await this.retireReadChangeSet(actor, proposal.proposalId, error);
         }
         throw error;
       }

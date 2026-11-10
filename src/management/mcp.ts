@@ -1,4 +1,4 @@
-import { McpServer, createMcpHandler, type RegisteredTool, type Transport } from '@modelcontextprotocol/server';
+import { McpServer, createMcpHandler, type Transport } from '@modelcontextprotocol/server';
 import type { z } from 'zod';
 
 import type { McpAuthenticatedPrincipal, McpRequestHandler } from '../auth/mcp-oauth-routes.ts';
@@ -31,7 +31,7 @@ import {
   undoWorkspaceChangeZodSchema,
 } from './schemas.ts';
 import { AGENT_AUTHORING_GUIDE_URI, DISCOVERY_GUIDE_URI } from './agent-authoring/index.ts';
-import { DISCOVERY_GUIDE } from './agent-authoring/discovery-guide.ts';
+import { DISCOVERY_GUIDE, DISCOVERY_GUIDE_FIVE_ZERO } from './agent-authoring/discovery-guide.ts';
 import { codingAgentAuthoringGuideResource } from './agent-authoring/mcp-guide.ts';
 import { WorkspaceManagementService } from './service.ts';
 import { WORKSPACE_MANAGEMENT_INSTRUCTIONS } from './instructions.ts';
@@ -174,8 +174,11 @@ const MCP_TOOL_INPUT_SCHEMAS = {
  * message, and gives 5.0 results the shape the SDK cannot express.
  */
 class ObservedMcpServer extends McpServer {
-  /** Registered 4.x tools, which a client that draws cards never gets. */
-  readonly v4Tools: RegisteredTool[] = [];
+  /**
+   * The 4.x tools, and the prompts and guides that script them, which a
+   * client that draws cards never gets.
+   */
+  readonly v4Only: Array<{ remove(): void }> = [];
 
   constructor(private readonly cardSession: boolean) {
     super(WORKSPACE_MANAGEMENT_SERVER_INFO, { instructions: WORKSPACE_MANAGEMENT_INSTRUCTIONS });
@@ -189,8 +192,9 @@ class ObservedMcpServer extends McpServer {
   override connect(transport: Transport): Promise<void> {
     // A 4.x change hands the model a token that confirms without the
     // person's press, and 5.0 covers every 4.x tool, so a card host gets
-    // only 5.0. Its capabilities are known here, after the tools register.
-    if (this.cardHost()) for (const tool of this.v4Tools.splice(0)) tool.remove();
+    // only 5.0, and no prompt or guide that tells its model to call a 4.x
+    // tool. Its capabilities are known here, after everything registers.
+    if (this.cardHost()) for (const registered of this.v4Only.splice(0)) registered.remove();
     observeMcpRequests(transport, { ...MCP_TOOL_INPUT_SCHEMAS, ...FIVE_ZERO_TOOL_INPUT_SCHEMAS });
     shapeFiveZeroResults(transport, FIVE_ZERO_TOOL_NAME_SET);
     return super.connect(transport);
@@ -253,7 +257,7 @@ export function createWorkspaceManagementMcpServer(
     resolveContext: async () => mcpActorContext(input.principal),
   };
 
-  server.v4Tools.push(server.registerTool('inspect_workspace', {
+  server.v4Only.push(server.registerTool('inspect_workspace', {
     title: 'Inspect Chickpea workspace',
     description: deprecatedToolDescription('inspect_workspace'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.inspect_workspace,
@@ -264,7 +268,7 @@ export function createWorkspaceManagementMcpServer(
     args,
   ))));
 
-  server.v4Tools.push(server.registerTool('prepare_connector_setup', {
+  server.v4Only.push(server.registerTool('prepare_connector_setup', {
     title: 'Prepare Agent connector setup',
     description: deprecatedToolDescription('prepare_connector_setup'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.prepare_connector_setup,
@@ -276,7 +280,7 @@ export function createWorkspaceManagementMcpServer(
     args,
   ))));
 
-  server.v4Tools.push(server.registerTool('prepare_provider_setup', {
+  server.v4Only.push(server.registerTool('prepare_provider_setup', {
     title: 'Prepare model provider key setup',
     description: deprecatedToolDescription('prepare_provider_setup'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.prepare_provider_setup,
@@ -287,7 +291,7 @@ export function createWorkspaceManagementMcpServer(
     args,
   ))));
 
-  server.v4Tools.push(server.registerTool('discover_slack_channels', {
+  server.v4Only.push(server.registerTool('discover_slack_channels', {
     title: 'Discover Slack Channels',
     description: deprecatedToolDescription('discover_slack_channels'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.discover_slack_channels,
@@ -298,7 +302,7 @@ export function createWorkspaceManagementMcpServer(
     args,
   ))));
 
-  server.v4Tools.push(server.registerTool('test_connection', {
+  server.v4Only.push(server.registerTool('test_connection', {
     title: 'Test saved connection',
     description: deprecatedToolDescription('test_connection'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.test_connection,
@@ -309,7 +313,7 @@ export function createWorkspaceManagementMcpServer(
     args,
   ))));
 
-  server.v4Tools.push(server.registerTool('save_connection_key', {
+  server.v4Only.push(server.registerTool('save_connection_key', {
     title: 'Save connection key',
     description: deprecatedToolDescription('save_connection_key'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.save_connection_key,
@@ -320,7 +324,7 @@ export function createWorkspaceManagementMcpServer(
     args,
   ))));
 
-  server.v4Tools.push(server.registerTool('try_connection', {
+  server.v4Only.push(server.registerTool('try_connection', {
     title: 'Try connection settings',
     description: deprecatedToolDescription('try_connection'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.try_connection,
@@ -331,7 +335,7 @@ export function createWorkspaceManagementMcpServer(
     args,
   ))));
 
-  server.v4Tools.push(server.registerTool('inspect_memory', {
+  server.v4Only.push(server.registerTool('inspect_memory', {
     title: 'Inspect Chickpea memory',
     description: deprecatedToolDescription('inspect_memory'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.inspect_memory,
@@ -342,7 +346,7 @@ export function createWorkspaceManagementMcpServer(
     args,
   ))));
 
-  server.v4Tools.push(server.registerTool('inspect_routines', {
+  server.v4Only.push(server.registerTool('inspect_routines', {
     title: 'Inspect Chickpea routines',
     description: deprecatedToolDescription('inspect_routines'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.inspect_routines,
@@ -353,7 +357,7 @@ export function createWorkspaceManagementMcpServer(
     args,
   ))));
 
-  server.v4Tools.push(server.registerTool('export_workspace_recipe', {
+  server.v4Only.push(server.registerTool('export_workspace_recipe', {
     title: 'Export Chickpea workspace recipe',
     description: deprecatedToolDescription('export_workspace_recipe'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.export_workspace_recipe,
@@ -364,7 +368,7 @@ export function createWorkspaceManagementMcpServer(
     args,
   ))));
 
-  server.v4Tools.push(server.registerTool('preview_workspace_recipe', {
+  server.v4Only.push(server.registerTool('preview_workspace_recipe', {
     title: 'Preview Chickpea workspace recipe',
     description: deprecatedToolDescription('preview_workspace_recipe'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.preview_workspace_recipe,
@@ -375,7 +379,7 @@ export function createWorkspaceManagementMcpServer(
     args,
   ))));
 
-  server.v4Tools.push(server.registerTool('import_skill', {
+  server.v4Only.push(server.registerTool('import_skill', {
     title: 'Install GitHub skill',
     description: deprecatedToolDescription('import_skill'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.import_skill,
@@ -386,7 +390,7 @@ export function createWorkspaceManagementMcpServer(
     args,
   ))));
 
-  server.v4Tools.push(server.registerTool('upload_skills', {
+  server.v4Only.push(server.registerTool('upload_skills', {
     title: 'Upload skill files',
     description: deprecatedToolDescription('upload_skills'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.upload_skills,
@@ -397,7 +401,7 @@ export function createWorkspaceManagementMcpServer(
     args,
   ))));
 
-  server.v4Tools.push(server.registerTool('manage_agent_skill', {
+  server.v4Only.push(server.registerTool('manage_agent_skill', {
     title: 'Manage an installed Agent skill',
     description: deprecatedToolDescription('manage_agent_skill'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.manage_agent_skill,
@@ -408,7 +412,7 @@ export function createWorkspaceManagementMcpServer(
     args,
   ))));
 
-  server.v4Tools.push(server.registerTool('apply_workspace_changes', {
+  server.v4Only.push(server.registerTool('apply_workspace_changes', {
     title: 'Apply Chickpea workspace changes',
     description: deprecatedToolDescription('apply_workspace_changes'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.apply_workspace_changes,
@@ -422,7 +426,7 @@ export function createWorkspaceManagementMcpServer(
     },
   ))));
 
-  server.v4Tools.push(server.registerTool('confirm_workspace_change', {
+  server.v4Only.push(server.registerTool('confirm_workspace_change', {
     title: 'Confirm Chickpea workspace change',
     description: deprecatedToolDescription('confirm_workspace_change'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.confirm_workspace_change,
@@ -433,7 +437,7 @@ export function createWorkspaceManagementMcpServer(
     args,
   ))));
 
-  server.v4Tools.push(server.registerTool('undo_workspace_change', {
+  server.v4Only.push(server.registerTool('undo_workspace_change', {
     title: 'Undo Chickpea workspace change',
     description: deprecatedToolDescription('undo_workspace_change'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.undo_workspace_change,
@@ -444,7 +448,7 @@ export function createWorkspaceManagementMcpServer(
     args,
   ))));
 
-  server.v4Tools.push(server.registerTool('get_operation', {
+  server.v4Only.push(server.registerTool('get_operation', {
     title: 'Get Chickpea operation',
     description: deprecatedToolDescription('get_operation'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.get_operation,
@@ -455,7 +459,7 @@ export function createWorkspaceManagementMcpServer(
     args,
   ))));
 
-  server.v4Tools.push(server.registerTool('revoke_setup_link', {
+  server.v4Only.push(server.registerTool('revoke_setup_link', {
     title: 'Revoke Chickpea setup link',
     description: deprecatedToolDescription('revoke_setup_link'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.revoke_setup_link,
@@ -466,7 +470,7 @@ export function createWorkspaceManagementMcpServer(
     args,
   ))));
 
-  server.v4Tools.push(server.registerTool('list_mcp_clients', {
+  server.v4Only.push(server.registerTool('list_mcp_clients', {
     title: 'List connected MCP clients',
     description: deprecatedToolDescription('list_mcp_clients'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.list_mcp_clients,
@@ -477,7 +481,7 @@ export function createWorkspaceManagementMcpServer(
     args,
   ))));
 
-  server.v4Tools.push(server.registerTool('revoke_mcp_client', {
+  server.v4Only.push(server.registerTool('revoke_mcp_client', {
     title: 'Revoke a connected MCP client',
     description: deprecatedToolDescription('revoke_mcp_client'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.revoke_mcp_client,
@@ -512,7 +516,7 @@ export function createWorkspaceManagementMcpServer(
     }],
   }));
 
-  server.registerResource('operation-schema', WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI, {
+  server.v4Only.push(server.registerResource('operation-schema', WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI, {
     title: 'Chickpea management operation inventory',
     description: 'Stable operation and tool names supported by this management contract.',
     mimeType: 'application/json',
@@ -531,9 +535,10 @@ export function createWorkspaceManagementMcpServer(
         confirmation: 'Only a destructive change returns confirmation_required, with presentation.markdown and a proposalId. Pass the proposalId to confirm_workspace_change after the person agrees.',
       }),
     }],
-  }));
+  })));
 
-  server.registerResource(
+  // Written for the 4.x tools throughout, and pinned by its digest.
+  server.v4Only.push(server.registerResource(
     'agent-authoring-guide',
     WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI,
     {
@@ -548,17 +553,17 @@ export function createWorkspaceManagementMcpServer(
         text: JSON.stringify(codingAgentAuthoringGuideResource()),
       }],
     }),
-  );
+  ));
 
   server.registerResource('discovery-guide', DISCOVERY_GUIDE_URI, {
     title: 'Find the first Chickpea Agent',
     description: 'Read before you propose an Agent whose job the person has not named: how to research their recent work on this machine and propose one specific Agent.',
     mimeType: 'text/markdown',
   }, async (uri) => ({
-    contents: [{ uri: uri.href, mimeType: 'text/markdown', text: DISCOVERY_GUIDE }],
+    contents: [{ uri: uri.href, mimeType: 'text/markdown', text: server.cardHost() ? DISCOVERY_GUIDE_FIVE_ZERO : DISCOVERY_GUIDE }],
   }));
 
-  registerWorkspaceManagementPrompts(server, input.baseUrl, input.env);
+  server.v4Only.push(...registerWorkspaceManagementPrompts(server, input.baseUrl, input.env));
 
   return server;
 }

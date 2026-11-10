@@ -1,3 +1,5 @@
+import { applySubstitutions } from './mcp-guide.ts';
+
 export const DISCOVERY_GUIDE = `# Find the first Agent
 
 Use this guide when the person asks what to build with Chickpea, asks for an Agent without naming its job, or has just connected this client. Research before you propose. Nothing in this guide creates or changes anything.
@@ -47,3 +49,26 @@ If you find no candidate with concrete evidence, ask at most three questions: wh
 ## After the yes
 
 Follow \`chickpea://guide/agent-authoring/v1\`. Create the Agent with one \`create_agent\` operation through \`apply_workspace_changes\`, and set \`firstAsk\` to the front-door message from your proposal. Add the connections you said you would and get each key in place the way that guide says. The new Agent then sends the person a direct message in Slack that ends with that first ask. Hand over the receipt's \`links.slack\`, which opens that conversation, and \`links.admin\`.`;
+
+/**
+ * The guide for a client that draws cards, which has 5.0 tools only: no
+ * 4.x tool, no prompt and no Agent-authoring guide.
+ */
+export const DISCOVERY_GUIDE_FIVE_ZERO = applySubstitutions(DISCOVERY_GUIDE, 'discovery', [
+  [
+    'Call `inspect_workspace` once before you research. It names the workspace (`slackTeamName`), the person and their role, the Agents that already exist, and the catalog of services Chickpea can connect by sign-in. When `slackTeamName` is absent,',
+    'Call `get_workspace` and `list_agents` once before you research. `get_workspace` names the workspace (`name`) and the person\'s role, and `list_agents` the Agents that already exist. `list_services` is the catalog of services Chickpea can connect by sign-in. When `name` is absent,',
+  ],
+  [
+    'check it with one read through `test_connection` once the key is in place.',
+    'check it with `check_agent` once the key is in place.',
+  ],
+  [
+    'offer the curated starters the `new-agent` prompt lists; without that prompt, ask what the first Agent should do.',
+    'ask what the first Agent should do.',
+  ],
+  [
+    'Follow `chickpea://guide/agent-authoring/v1`. Create the Agent with one `create_agent` operation through `apply_workspace_changes`, and set `firstAsk` to the front-door message from your proposal. Add the connections you said you would and get each key in place the way that guide says. The new Agent then sends the person a direct message in Slack that ends with that first ask. Hand over the receipt\'s `links.slack`, which opens that conversation, and `links.admin`.',
+    'Call `propose_agent` for the Agent the person chose, with `sampleAsk` set to the front-door message from your proposal, `promisedAnswer` to its example answer, and `services` to the services it needs. It saves nothing: the person creates the Agent from its card, or you call `create_agent` with its `create.arguments` once they agree. The new Agent then sends the person a direct message in Slack that ends with that first ask. Add each connection you said you would with `connect_service`, and give the person its link: they sign in or enter the key on that page, never in the chat. Hand over the result\'s `agent.links.slack`, which opens that conversation, and `agent.links.admin`.',
+  ],
+]);

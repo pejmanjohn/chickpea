@@ -27,7 +27,7 @@ import * as writes from './writes.ts';
 type Structured = Record<string, unknown>;
 
 /** One 5.0 tool, type-erased for the registry; `tool()` checks each one. */
-interface FiveZeroTool {
+export interface FiveZeroTool {
   title: string;
   /** About 60 words: what it does and its one side effect, never a procedure. */
   description: string;
@@ -506,10 +506,11 @@ class OutputRejected extends Error {
  * `initialize` (card-host.ts) or a 2026-07-28 request declares itself.
  */
 export function registerFiveZeroTools(server: McpServer, deps: FiveZeroDeps, cardHost: () => boolean = () => false): void {
-  for (const name of FIVE_ZERO_TOOL_NAMES) register(server, deps, name, FIVE_ZERO_TOOLS[name], cardHost);
+  for (const name of FIVE_ZERO_TOOL_NAMES) registerFiveZeroTool(server, deps, name, FIVE_ZERO_TOOLS[name], cardHost);
 }
 
-function register(
+/** One tool. On a card host, a result a card draws, or any confirmation, keeps its tokens for the card. */
+export function registerFiveZeroTool(
   server: McpServer,
   deps: FiveZeroDeps,
   name: FiveZeroToolName,
@@ -538,7 +539,9 @@ function register(
       const parsed = definition.output.safeParse(await definition.run(deps, args));
       if (!parsed.success) throw new OutputRejected(parsed.error.issues.map((issue) => issue.path.join('.')));
       emitManagementMetric('tool.call', { surface: 'mcp', tool: name, outcome: 'success', durationMs: Date.now() - startedAt });
-      if (!drawn) return mcpSuccessResult(parsed.data);
+      // Whatever the tool, a card host's model never gets a confirm token.
+      const confirms = (parsed.data as { status?: unknown }).status === 'needs_confirmation';
+      if (!drawn && !(confirms && cardHost())) return mcpSuccessResult(parsed.data);
       const { structured, held } = cardHost() ? holdTokens(parsed.data, deps.baseUrl) : { structured: parsed.data };
       return mcpSuccessResult(structured, { tool: name, held });
     } catch (error) {
