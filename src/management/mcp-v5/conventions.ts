@@ -255,9 +255,6 @@ export function mcpSuccessResult<T extends Record<string, unknown>>(structured: 
   return {
     content: [{ type: 'text' as const, text: JSON.stringify(structured) }],
     structuredContent: structured,
-    ...(card ? { _meta: { [CARD_TOOL_META_KEY]: card.tool } } : {}),
+    ...(card ? { _meta: { 'chickpea/tool': card.tool } } : {}),
   };
 }
-
-/** The result `_meta` key naming the tool a card's result came from. */
-export const CARD_TOOL_META_KEY = 'chickpea/tool';

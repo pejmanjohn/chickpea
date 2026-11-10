@@ -142,6 +142,11 @@ test('Create in Slack sends the proposal\'s create_agent arguments unchanged, th
   await agentCard.press('create');
   assert.equal(agentCard.calls('create_agent').length, 1);
 
+  // When the model calls create_agent itself, the card it gets follows the arrival too.
+  const fromModel = card(call, clock);
+  await fromModel.result(await call('create_agent', create!.args));
+  assert.deepEqual([fromModel.state.view.kind, fromModel.calls().map(({ tool }) => tool)], ['creating', ['get_creation_status']]);
+
   await agentCard.dispatch({ type: 'tick', now: clock.now });
   assert.equal(agentCard.calls('get_creation_status').length, 2);
   const timers = () => agentCard.effects.filter(({ type }) => type === 'timer').length;
