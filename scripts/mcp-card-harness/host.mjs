@@ -28,10 +28,7 @@ document.getElementById('frame').style.width = `${width}px`;
 const scene = await (await fetch(`/scene?name=${encodeURIComponent(params.get('scene'))}`)).json();
 const iframe = document.createElement('iframe');
 iframe.title = 'Chickpea card';
-iframe.src = `${params.get('card')}/card.html?uri=${encodeURIComponent(scene.uri)}` +
-  (scene.openaiMeta ? `&openaiMeta=${encodeURIComponent(JSON.stringify(scene.openaiMeta))}` : '');
 document.getElementById('frame').append(iframe);
-await new Promise((resolve) => { iframe.onload = resolve; });
 
 const bridge = new AppBridge(
   null,
@@ -85,4 +82,7 @@ bridge.oninitialized = () => {
 };
 /** A theme change that carries no style variables, which ChatGPT may send. */
 record.flipTheme = (next) => bridge.sendHostContextChange({ theme: next });
+// Listening before the card loads, so its ui/initialize, sent as its script runs, is never missed.
 await bridge.connect(new PostMessageTransport(iframe.contentWindow, iframe.contentWindow));
+iframe.src = `${params.get('card')}/card.html?uri=${encodeURIComponent(scene.uri)}` +
+  (scene.openaiMeta ? `&openaiMeta=${encodeURIComponent(JSON.stringify(scene.openaiMeta))}` : '');
