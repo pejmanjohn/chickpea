@@ -424,3 +424,47 @@ test('an MCP reconnect signs the same managed account in again, and an unknown a
   assert.match(success.html, /HubSpot is now connected to Project Guide/);
   assert.match(success.html, /You can close this tab and go back to your app\./);
 });
+
+type Harness = Awaited<ReturnType<typeof harness>>;
+
+/** The person asks for a HubSpot link over MCP from one app and finishes it. */
+async function finishedManagedLink(h: Harness, clientId: string): Promise<string> {
+  const prepared = await h.service.prepareConnectorSetup(h.mcp(h.owner, clientId), {
+    agentId: h.agent.id,
+    connector: 'HubSpot',
+    ownerKind: 'member',
+  });
+  const setupId = prepared.setupOperationId!;
+  const cookie = cookieOf(await h.exchange(prepared.handoffUrl));
+  const started = await h.post(setupId, 'authorize', cookie, { ownerKind: 'member', access: 'read' });
+  assert.equal(started.status, 200, await started.clone().text());
+  assert.equal((await h.post(setupId, 'managed/poll', cookie)).status, 200);
+  return setupId;
+}
+
+test('the success page names the app only in Chickpea\'s own words', async (t) => {
+  const h = await harness(t, 'mcp-return-names');
+  const setupId = await finishedManagedLink(h, CLAUDE_CODE_CLIENT);
+  for (const [registered, app] of [
+    ['Claude Code (chickpea)', 'Claude Code'],
+    ['Gemini CLI MCP Client', 'Gemini CLI'],
+    ['Visual Studio Code', 'VS Code'],
+    ['goose', 'Goose'],
+    ['Claude Code (then sign in again at chickpea-login.example)', 'Claude Code'],
+    ['ChatGРT', 'your app'],
+    ['Claude Code. Your session expired: sign in again at chickpea-login.example', 'your app'],
+    ['ChatGPT', 'your app'],
+  ] as const) {
+    h.clients.set(h.owner.binding.betterAuthUserId!, [
+      { clientId: CLAUDE_CODE_CLIENT, name: registered, connectedAt: new Date(), lastTokenAt: null },
+    ]);
+    const { html } = await h.page(setupId);
+    assert.match(html, new RegExp(`You can close this tab and go back to ${app}\\.`), registered);
+    assert.doesNotMatch(html, /chickpea-login|ChatG/, `the page never repeats "${registered}"`);
+  }
+
+  const lookups = h.clientLookups();
+  const claudeAi = await finishedManagedLink(h, 'https://claude.ai/oauth/mcp-oauth-client-metadata');
+  assert.match((await h.page(claudeAi)).html, /You can close this tab and go back to Claude\./);
+  assert.equal(h.clientLookups(), lookups, 'claude.ai\'s client ID names it; no registration is read');
+});
