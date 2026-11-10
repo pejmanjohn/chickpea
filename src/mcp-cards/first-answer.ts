@@ -33,7 +33,8 @@ import {
  * for that press, after the host gave up on one or while another run held
  * the workspace, carries the same key, so it gets the run the first call
  * started. get_test_run then follows the run until it answers, fails, or
- * three minutes pass.
+ * three minutes pass. A key past the hour Chickpea keeps a run for starts
+ * nothing, so a press after that sends a new one.
  *
  * `busy` holds while this page has a call out or a retry due. A card that
  * mounts again has neither: its re-read follows a run it knows of with
@@ -53,6 +54,8 @@ export interface Tested {
   promised?: { ask: string; answer: string } | undefined;
 }
 
+type Acted = { kind: 'page'; url: string } | { kind: 'chat' };
+
 type Stage =
   /** try_agent_once is out, or with `retry`, due again on the next tick. */
   | { kind: 'asking'; failures?: number; heldSince?: number; retry?: true }
@@ -61,10 +64,10 @@ type Stage =
   | { kind: 'answered'; ask: string; reply: string; read: string[] }
   /**
    * It did not start or did not finish: Chickpea's own sentence, and what the
-   * person can do next. Once they act on its fix, on Chickpea's page or in
-   * the chat, it offers Try again.
+   * person can do next. Once they act on its fix, on the Chickpea page it
+   * opened or in the chat, it offers Try again.
    */
-  | { kind: 'stopped'; problem: string; then: 'fix' | 'again' | 'slack'; fix?: Fix; fixing?: true; acted?: 'page' | 'chat' }
+  | { kind: 'stopped'; problem: string; then: 'fix' | 'again' | 'slack'; fix?: Fix; fixing?: true; acted?: Acted }
   /** Three minutes and no answer. */
   | { kind: 'slow'; runToken?: string }
   /** The card mounted again while its first call was out: that answer went to the card that closed. */
@@ -75,7 +78,9 @@ export interface FirstAnswer {
   tested: Tested;
   /** Every try_agent_once this view sends carries it. */
   key: string;
-  /** The press; the card gives up three minutes after it. */
+  /** When the key was made: past KEY_FOR_MS it starts nothing. */
+  keyedAt: number;
+  /** The press, or when a run held up by another began; the card gives up three minutes after it. */
   startedAt: number;
   stage: Stage;
 }
@@ -85,10 +90,12 @@ type State = CardState<FirstAnswer>;
 export const GIVE_UP_MS = 3 * 60_000;
 export const HELD_RETRY_MS = 5_000;
 export const HELD_FOR_MS = 60_000;
+/** Chickpea keeps a test run, and replays its key, for an hour. */
+export const KEY_FOR_MS = 60 * 60_000;
 
 /** The press on "See its first answer". */
 export function tryOnce(tested: Tested, now: number): Next<FirstAnswer> {
-  return ask({ kind: 'first_answer', tested, key: `try:${tested.agentId}:${now}`, startedAt: now, stage: { kind: 'asking' } });
+  return ask({ kind: 'first_answer', tested, key: `try:${tested.agentId}:${now}`, keyedAt: now, startedAt: now, stage: { kind: 'asking' } });
 }
 
 function ask(view: FirstAnswer): Next<FirstAnswer> {
@@ -111,8 +118,7 @@ export function stepFirstAnswer<A extends string>(state: State, event: CardEvent
     case 'unreachable':
       return outdated(state, event.call) ? stay(state) : unreachable(state, event.call.tool, event.now);
     case 'refused':
-      // Nothing to press while it runs: a refusal then is of a link the card offered before.
-      return state.view.stage.kind === 'asking' || state.view.stage.kind === 'running' ? stay(state) : stay({ ...state, error: GENERIC });
+      return refusedEffect(state, event.effect);
     case 'tick':
       return tick(state, event.now);
     case 'reread':
@@ -129,15 +135,16 @@ function press(state: State, action: string, now: number): Next<FirstAnswer> {
     case 'try_once': {
       const again = stage.kind === 'lost' ||
         (stage.kind === 'stopped' && (stage.then === 'again' || (stage.then === 'fix' && stage.acted !== undefined)));
-      // The same key: a run the first press started is the one this press gets.
-      return again ? ask({ ...view, startedAt: now, stage: { kind: 'asking' } }) : stay(state);
+      if (!again) return stay(state);
+      // The same key while it lasts: a run the first press started is the one this press gets.
+      return now - view.keyedAt < KEY_FOR_MS ? ask({ ...view, startedAt: now, stage: { kind: 'asking' } }) : tryOnce(tested, now);
     }
     case 'try_fix': {
       const fix = stage.kind === 'stopped' ? stage.fix : undefined;
       if (stage.kind !== 'stopped' || !fix) return stay(state);
-      if ('url' in fix) return show({ ...view, stage: { ...stage, acted: 'page' } }, [{ type: 'open', url: fix.url }]);
+      if ('url' in fix) return show({ ...view, stage: { ...stage, acted: { kind: 'page', url: fix.url } } }, [{ type: 'open', url: fix.url }]);
       if (opensSetupLink(fix)) return { state: { view: { ...view, stage: { ...stage, fixing: true } }, busy: true }, effects: [call(fix.tool, fix.arguments)] };
-      return show({ ...view, stage: { ...stage, acted: 'chat' } }, [askChat(view, fix)]);
+      return show({ ...view, stage: { ...stage, acted: { kind: 'chat' } } }, [askChat(view, fix)]);
     }
     case 'open_slack':
       return tested.slackUrl ? stay(state, [{ type: 'open', url: tested.slackUrl }]) : stay(state);
@@ -153,6 +160,24 @@ function press(state: State, action: string, now: number): Next<FirstAnswer> {
 /** A fix the card does not run itself: the model proposes it in the chat first. */
 function askChat(view: FirstAnswer, fix: Fix): Effect {
   return { type: 'message', sent: `${fix.label} for ${view.tested.name}.` };
+}
+
+/**
+ * The host did not open a link or take a message. Only one this view offers
+ * counts. A fix it did not take was not acted on, so the fix is offered again.
+ */
+function refusedEffect(state: State, effect: Extract<CardEvent<string>, { type: 'refused' }>['effect']): Next<FirstAnswer> {
+  const { view } = state;
+  const { stage, tested } = view;
+  if (stage.kind === 'stopped' && stage.acted &&
+    (stage.acted.kind === 'page' ? effect.type === 'open' && effect.url === stage.acted.url : effect.type === 'message')) {
+    const { acted: _acted, ...rest } = stage;
+    return stay({ view: { ...view, stage: rest }, busy: false, error: GENERIC });
+  }
+  const offered = effect.type === 'open'
+    ? effect.url === tested.slackUrl && (stage.kind === 'answered' || stage.kind === 'stopped' || stage.kind === 'slow')
+    : stage.kind === 'answered';
+  return offered ? stay({ ...state, error: GENERIC }) : stay(state);
 }
 
 function reply(state: State, tool: string, result: ToolResult, now: number): Next<FirstAnswer> {
@@ -175,7 +200,9 @@ function fromAsk(view: FirstAnswer, stage: Extract<Stage, { kind: 'asking' }>, r
   }
   if (code !== undefined) return refusal(view, code, result);
   const run = testRun(result.structuredContent);
-  return run ? settled(view, run, now) : refused(view, didNotStart(view), 'slack');
+  if (!run) return refused(view, didNotStart(view), 'slack');
+  // A run another one held up began only now: its three minutes start here.
+  return settled(stage.heldSince === undefined ? view : { ...view, startedAt: now }, run, now);
 }
 
 /** Another run holds the workspace: the same call again in 5 s, for a minute. */
@@ -259,8 +286,15 @@ const REFUSALS: ReadonlySet<string> = new Set([
 function refusal(view: FirstAnswer, code: string, result: ToolResult): Next<FirstAnswer> {
   if (!REFUSALS.has(code)) return refused(view, didNotStart(view), 'slack');
   const error = isRecord(result.structuredContent) ? result.structuredContent.error : undefined;
-  const fix = isRecord(error) && isFix(error.fix) ? error.fix : undefined;
-  return refused(view, errorOf(result) ?? GENERIC, fix ? 'fix' : 'slack', fix);
+  const fix = isRecord(error) ? fixOf(error.fix) : undefined;
+  const then = fix ? 'fix' : isRecord(error) && error.retryable === true ? 'again' : 'slack';
+  return refused(view, errorOf(result) ?? GENERIC, then, fix);
+}
+
+/** A fix the card can offer: a tool, or a link only when it is a web link, as every card opens. */
+function fixOf(fix: unknown): Fix | undefined {
+  if (!isFix(fix) || fix === undefined) return undefined;
+  return 'url' in fix && httpsUrl(fix.url) === undefined ? undefined : fix;
 }
 
 function refused(view: FirstAnswer, problem: string, then: 'fix' | 'again' | 'slack', fix?: Fix): Next<FirstAnswer> {
@@ -281,9 +315,9 @@ function fixed(view: FirstAnswer, stage: Extract<Stage, { kind: 'stopped' }>, re
     const summary = isRecord(content) && typeof content.summary === 'string' ? content.summary : undefined;
     return stay({ view: { ...view, stage: rest }, busy: false, error: failure ?? summary ?? GENERIC });
   }
-  if (typeof setup?.setupToken !== 'string') return show({ ...view, stage: { ...rest, acted: 'chat' } }, [askChat(view, stage.fix)]);
+  if (typeof setup?.setupToken !== 'string') return show({ ...view, stage: { ...rest, acted: { kind: 'chat' } } }, [askChat(view, stage.fix)]);
   return tell(
-    show({ ...view, stage: { ...rest, acted: 'page' } }, [{ type: 'open', url }]),
+    show({ ...view, stage: { ...rest, acted: { kind: 'page', url } } }, [{ type: 'open', url }]),
     `The person opened Chickpea's page to ${summaryLine(stage.fix.label)} for ${agentNamed(view.tested.name, view.tested.handle)} from the card. They can try it again once they finish there.`,
   );
 }
@@ -413,7 +447,7 @@ export function presentFirstAnswer(view: FirstAnswer): Omit<Presentation<FirstAn
         announce: `${title}. ${stage.problem}`,
         blocks: [
           { kind: 'text', text: stage.problem },
-          ...stage.acted ? [{ kind: 'note' as const, text: ACTED[stage.acted] }] : [],
+          ...stage.acted ? [{ kind: 'note' as const, text: ACTED[stage.acted.kind] }] : [],
         ],
         buttons: stoppedButtons(stage, slack),
       };
@@ -439,14 +473,14 @@ const ACTED = {
   chat: 'Finish it in the chat, then try again.',
 } as const;
 
-/** Its fix first, then Try again once the person acted on it; with no fix, Slack. */
+/** Its fix first, then Try again once the person acted on it; with no fix, Try again when it may pass, else Slack. */
 function stoppedButtons(stage: Extract<Stage, { kind: 'stopped' }>, slack: Array<Button<FirstAnswerAction>>): Array<Button<FirstAnswerAction>> {
   const again: Button<FirstAnswerAction> = { label: 'Try again', action: 'try_once', tone: 'primary' };
   const fix = (tone: Button['tone']): Array<Button<FirstAnswerAction>> => stage.fix ? [{ label: stage.fix.label, action: 'try_fix', tone }] : [];
   const secondary = slack.map((button): Button<FirstAnswerAction> => ({ ...button, tone: 'secondary' }));
   switch (stage.then) {
     case 'again':
-      return [again];
+      return [again, ...secondary];
     case 'fix':
       return stage.acted ? [again, ...fix('secondary')] : [...fix('primary'), ...secondary];
     case 'slack':
@@ -465,15 +499,30 @@ function promisedFor(tested: Tested, ask: string): string | undefined {
   return promised && same(promised.ask) === same(ask) ? promised.answer : undefined;
 }
 
-/** Markdown as a person reads it: no emphasis or heading marks, a link as its words, a list item as a bullet. */
+/**
+ * Markdown as a person reads it: no emphasis, heading, quote or rule marks, a
+ * link as its words, a list item as a bullet, a table row as its cells. Code
+ * stays as written, without its fences or backticks.
+ */
 export function plainText(markdown: string): string {
+  const code: string[] = [];
+  const hold = (text: string) => `\u0000${code.push(text) - 1}\u0000`;
   return markdown
+    .replace(/\u0000/g, '')
+    .replace(/^[ \t]*```[^\n]*\n([\s\S]*?)^[ \t]*```[ \t]*$\n?/gm, (_, block: string) => hold(block))
     .replace(/^[ \t]*```.*$\n?/gm, '')
+    .replace(/`([^`\n]+)`/g, (_, span: string) => hold(span))
     .replace(/!?\[([^\]\n]*)\]\([^)\n]*\)/g, '$1')
-    .replace(/(\*\*|__)(?=\S)([^\n]*?\S)\1/g, '$2')
-    .replace(/`([^`\n]+)`/g, '$1')
+    .replace(/^[ \t]*\|?(?:[ \t]*:?-+:?[ \t]*\|)+(?:[ \t]*:?-+:?[ \t]*)?$\n?/gm, '')
+    .replace(/^[ \t]*\|(.*)\|[ \t]*$/gm, (_, cells: string) => cells.split('|').map((cell) => cell.trim()).join(' · '))
+    .replace(/^[ \t]*([-*_])(?:[ \t]*\1){2,}[ \t]*$\n?/gm, '')
+    .replace(/^[ \t]*(?:>[ \t]?)+/gm, '')
     .replace(/^#{1,6}[ \t]+/gm, '')
-    .replace(/^([ \t]*)[-*+][ \t]+/gm, '$1• ');
+    .replace(/^([ \t]*)[-*+][ \t]+/gm, '$1• ')
+    .replace(/(\*\*|__|~~)(?=\S)([^\n]*?\S)\1/g, '$2')
+    .replace(/(^|[^\w*])\*(?=[^\s*])([^*\n]*?[^\s*])\*(?![\w*])/gm, '$1$2')
+    .replace(/(^|[^\w_])_(?=[^\s_])([^_\n]*?[^\s_])_(?![\w_])/gm, '$1$2')
+    .replace(/\u0000(\d+)\u0000/g, (_, index: string) => code[Number(index)] ?? '');
 }
 
 function joinNames(names: readonly string[]): string {

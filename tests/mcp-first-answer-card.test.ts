@@ -4,7 +4,8 @@ import { test, type TestContext } from 'node:test';
 import * as agentCard from '../src/mcp-cards/agent-card/model.ts';
 import type { Call, Presentation, ToolResult } from '../src/mcp-cards/card-model.ts';
 import * as connectCard from '../src/mcp-cards/connect-card/model.ts';
-import { GIVE_UP_MS, HELD_FOR_MS, HELD_RETRY_MS, plainText } from '../src/mcp-cards/first-answer.ts';
+import { GIVE_UP_MS, HELD_FOR_MS, HELD_RETRY_MS, KEY_FOR_MS, plainText } from '../src/mcp-cards/first-answer.ts';
+import { TEST_RUN_VISIBLE_MS } from '../src/management/test-runs.ts';
 import { assertPlain, cardHost, cardServer, type CardModelUnderTest } from './helpers/mcp-card-host.ts';
 import { StubTestRuns } from './helpers/stub-test-runs.ts';
 
@@ -44,6 +45,7 @@ async function world(t: TestContext, suffix: string, options: { unserved?: true 
     ...options.unserved ? {} : { testRuns: runs },
   }, { cards: true });
   const { f, teamId } = server;
+  runs.now = () => server.clock.now;
   await f.config.ensureWorkspaceInstallation({ workspaceId: teamId, transportMode: 'direct', botUserId: 'UBOT', runtimeContract: 'chickpea-v1' });
   return { ...server, runs };
 }
@@ -319,6 +321,26 @@ test('a card that mounts again mid-run reads the run it knows, and waits for a p
   assert.equal(runs.starts.length, 1);
 });
 
+test('a card reopened after the hour Chickpea keeps a run starts a new one on the press, never an expired one', async (t) => {
+  assert.equal(KEY_FOR_MS, TEST_RUN_VISIBLE_MS, 'the card\'s hour is the store\'s');
+  const { card, runs, call, clock } = await readyCard(t, 'first-answer-lost-hour');
+  card.hold = () => true;
+  await card.press('try_once');
+  const [first] = card.calls('try_agent_once');
+
+  clock.now += KEY_FOR_MS;
+  const lost = cardHost({ ...AGENT_CARD, initial: { ...card.state, busy: false } }, call, clock);
+  await lost.dispatch({ type: 'reread', now: clock.now });
+  assert.deepEqual(lost.labels(), ['See its first answer (primary)']);
+  await lost.press('try_once');
+  const [again] = lost.calls('try_agent_once');
+  assert.notEqual(again!.args.idempotencyKey, first!.args.idempotencyKey, 'the old key would start nothing');
+  assert.equal(runs.starts.length, 2);
+  assert.equal(lost.state.view.kind === 'first_answer' && lost.state.view.stage.kind, 'answered', JSON.stringify(lost.shown.blocks));
+  for (const idle of ['reread', 'tick'] as const) await lost.dispatch({ type: idle, now: clock.now });
+  assert.equal(runs.starts.length, 2, 'and only on the press');
+});
+
 const api = (host: string) => ({
   kind: 'api' as const, allowedHosts: [host], pathPrefixes: ['/api/'], headerName: 'Authorization',
   allowedMethods: ['GET' as const], authMode: 'credential' as const,
@@ -352,7 +374,10 @@ test('every refusal reads plainly on the card, with its own next step and no cod
   assert.deepEqual(plain.labels(), ['Open in Slack (primary)', 'See its first answer (secondary)'], 'offered whether or not this workspace runs them');
   await plain.press('try_once');
   assert.deepEqual(shown(plain), [{ kind: 'text', text: 'Test runs aren\'t available on this workspace yet.' }]);
-  assert.deepEqual(plain.labels(), ['Open in Slack (primary)']);
+  assert.deepEqual(plain.labels(), ['Try again (primary)', 'Open in Slack (secondary)'], 'the server says it may pass later');
+  const [unservedTry] = plain.calls('try_agent_once');
+  await plain.press('try_once');
+  assert.deepEqual(plain.calls('try_agent_once').at(-1)!.args, unservedTry!.args, 'a refusal stored no run, so the same key is a new try');
   assert.equal(told(plain), NOT_STARTED);
   plainly(plain.shown, ['agent_invoice_chaser']);
 
@@ -361,7 +386,7 @@ test('every refusal reads plainly on the card, with its own next step and no cod
   limited.runs.refuse = { kind: 'daily_limit', resumesAt: Date.now() + 3 * 3_600_000 - 60_000 };
   await limited.card.press('try_once');
   assert.deepEqual(shown(limited.card), [{ kind: 'text', text: 'Test runs for this workspace have reached today\'s limit. They start again in about 3 hours.' }]);
-  assert.deepEqual(limited.card.labels(), ['Open in Slack (primary)']);
+  assert.deepEqual(limited.card.labels(), ['Open in Slack (primary)'], 'not one that passes on a retry');
   assert.deepEqual(limited.runs.starts, []);
 
   // A run that failed.
@@ -468,6 +493,37 @@ test('every refusal reads plainly on the card, with its own next step and no cod
   const tries = reconnect.card.calls('try_agent_once');
   await reconnect.card.press('try_once');
   assert.deepEqual(reconnect.card.calls('try_agent_once').at(-1)!.args, tries[0]!.args, 'Try again sends the same key');
+
+  // A link that comes back without its setupToken is not Chickpea's page for one connection: the chat finishes it.
+  const tokenless = await readyCard(t, 'first-answer-tokenless');
+  await connect(tokenless, 'agent_invoice_chaser', {
+    id: 'connection_notion', providerId: 'notion', label: 'Notion', lifecycle: 'needs_attention',
+    policy: { kind: 'managed', adapterId: 'composio', toolkit: 'notion', principalRef: 'chickpea:team', accountRef: 'account_notion', allowedCapabilities: ['notion.read'] },
+  });
+  tokenless.card.hold = (made) => made.tool === 'try_agent_once' || made.tool === 'reconnect_service';
+  await tokenless.card.press('try_once');
+  tokenless.card.held[0]!.result = {
+    isError: true,
+    structuredContent: {
+      error: {
+        code: 'needs_setup', message: 'Finish setting up Notion first, then try again.', retryable: false,
+        fix: { label: 'Finish setting up Notion', tool: 'reconnect_service', arguments: { agentId: 'agent_invoice_chaser', connectionId: 'connection_notion' } },
+      },
+    },
+  };
+  await tokenless.card.answer();
+  await tokenless.card.press('try_fix');
+  const linked = tokenless.card.held[0]!;
+  const content = linked.result.structuredContent as { setup: Record<string, unknown> };
+  assert.equal(typeof content.setup.setupToken, 'string', 'the server sends one');
+  const { setupToken: _token, ...link } = content.setup;
+  linked.result = { ...linked.result, structuredContent: { ...content, setup: link } };
+  const opens = tokenless.card.effects.filter(({ type }) => type === 'open').length;
+  await tokenless.card.answer();
+  assert.equal(tokenless.card.effects.filter(({ type }) => type === 'open').length, opens, 'nothing opens');
+  assert.deepEqual(tokenless.card.effects.at(-1), { type: 'message', sent: 'Finish setting up Notion for Invoice Chaser.' });
+  assert.deepEqual(tokenless.card.shown.blocks.at(-1), { kind: 'note', text: 'Finish it in the chat, then try again.' });
+  assert.deepEqual(tokenless.card.labels(), ['Try again (primary)', 'Finish setting up Notion (secondary)']);
 });
 
 test('a model that cannot run is refused in the card\'s own words, never with an Agent ID or a setting\'s name', async (t) => {
@@ -490,6 +546,74 @@ test('a model that cannot run is refused in the card\'s own words, never with an
   assert.deepEqual(runs.starts, []);
 });
 
+test('a fix that is a link is offered and opened only when it is a web link', async (t) => {
+  const links = [['http', 'http://plain.example/x'], ['script', 'javascript:alert(1)'], ['text', 'not a url'], ['https', 'https://chickpea.example.test/admin/agents/agent_invoice_chaser']] as const;
+  for (const [name, url] of links) {
+    const { card } = await readyCard(t, `first-answer-link-${name}`);
+    card.hold = (made) => made.tool === 'try_agent_once';
+    await card.press('try_once');
+    card.held[0]!.result = {
+      isError: true,
+      structuredContent: {
+        error: {
+          code: 'not_testable', retryable: false,
+          message: 'None of Docs MCP\'s tools are marked as reads, so a test run can\'t use it. Ask Invoice Chaser in Slack instead.',
+          fix: { label: 'Open the Agent in Admin', url },
+        },
+      },
+    };
+    await card.answer();
+    await card.press('try_fix');
+    const opened = card.effects.filter((effect) => effect.type === 'open').map((effect) => (effect as { url: string }).url);
+    if (name === 'https') {
+      assert.deepEqual(opened, [url]);
+      assert.deepEqual(card.labels(), ['Try again (primary)', 'Open the Agent in Admin (secondary)']);
+    } else {
+      assert.deepEqual(opened, [], `${url} opens nothing`);
+      assert.deepEqual(card.labels(), ['Open in Slack (primary)'], `${url} is not offered`);
+      assert.equal(JSON.stringify(card.shown).includes('page that opened'), false);
+    }
+  }
+});
+
+test('a link or message the host refused counts only when this view offered it, and a fix it refused is offered again', async (t) => {
+  const { card, clock } = await readyCard(t, 'first-answer-refused');
+  card.hold = (made) => made.tool === 'try_agent_once';
+  await card.press('try_once');
+  const admin = 'https://chickpea.example.test/admin/agents/agent_invoice_chaser';
+  card.held[0]!.result = {
+    isError: true,
+    structuredContent: {
+      error: {
+        code: 'not_testable', retryable: false,
+        message: 'None of Docs MCP\'s tools are marked as reads, so a test run can\'t use it. Ask Invoice Chaser in Slack instead.',
+        fix: { label: 'Open the Agent in Admin', url: admin },
+      },
+    },
+  };
+  await card.answer();
+  await card.press('try_fix');
+  const acted = card.state;
+  await card.dispatch({ type: 'refused', effect: { type: 'open', url: 'https://elsewhere.example/' }, now: clock.now });
+  await card.dispatch({ type: 'refused', effect: { type: 'message', sent: 'Something else.' }, now: clock.now });
+  assert.deepEqual(card.state, acted, 'not a link or message this view offers');
+  await card.dispatch({ type: 'refused', effect: { type: 'open', url: admin }, now: clock.now });
+  assert.equal(card.state.error, 'That did not work. Try again.');
+  assert.deepEqual(card.shown.blocks, [{
+    kind: 'text', text: 'None of Docs MCP\'s tools are marked as reads, so a test run can\'t use it. Ask Invoice Chaser in Slack instead.',
+  }], 'no page opened');
+  assert.deepEqual(card.labels(), ['Open the Agent in Admin (primary)', 'Open in Slack (secondary)']);
+
+  // On the answer: Open in Slack and Change something are this view's.
+  const answered = await readyCard(t, 'first-answer-refused-answer');
+  await answered.card.press('try_once');
+  await answered.card.press('open_slack');
+  const slack = answered.card.effects.at(-1)!;
+  assert.equal(slack.type, 'open');
+  await answered.card.dispatch({ type: 'refused', effect: slack as { type: 'open'; url: string }, now: answered.clock.now });
+  assert.equal(answered.card.state.error, 'That did not work. Try again.');
+});
+
 test('while another test run holds the workspace, the card asks again every 5 seconds for a minute, then offers Try again with the same key', async (t) => {
   const { card, runs, clock } = await readyCard(t, 'first-answer-held');
   runs.refuse = { kind: 'in_progress' };
@@ -504,7 +628,7 @@ test('while another test run holds the workspace, the card asks again every 5 se
   clock.now += HELD_RETRY_MS;
   await card.dispatch({ type: 'tick', now: clock.now });
   assert.deepEqual(card.shown.blocks, [{ kind: 'text', text: 'Another test run is going in this workspace. Try again in a minute.' }]);
-  assert.deepEqual(card.labels(), ['Try again (primary)']);
+  assert.deepEqual(card.labels(), ['Try again (primary)', 'Open in Slack (secondary)']);
   const tries = card.calls('try_agent_once');
   assert.equal(tries.length, HELD_FOR_MS / HELD_RETRY_MS + 1, 'every 5 s for a minute');
   assert.deepEqual(new Set(keys(tries)), new Set([first!.args.idempotencyKey]));
@@ -516,6 +640,26 @@ test('while another test run holds the workspace, the card asks again every 5 se
   assert.deepEqual(card.calls('try_agent_once').at(-1)!.args, first!.args);
   assert.equal(card.state.view.kind === 'first_answer' && card.state.view.stage.kind, 'answered');
   assert.equal(runs.starts.length, 1);
+});
+
+test('a run another one held up gets its own three minutes from when it began', async (t) => {
+  const { card, runs, clock } = await readyCard(t, 'first-answer-held-clock');
+  fastTime(t);
+  runs.refuse = { kind: 'in_progress' };
+  await card.press('try_once');
+  clock.now += HELD_FOR_MS - HELD_RETRY_MS;
+  runs.refuse = undefined;
+  runs.outcome = { status: 'running', failure: null, result: null };
+  card.hold = (made) => made.tool === 'get_test_run';
+  await card.dispatch({ type: 'tick', now: clock.now });
+  assert.equal(runs.starts.length, 1, 'it began now');
+  const stage = () => card.state.view.kind === 'first_answer' && card.state.view.stage.kind;
+  clock.now += GIVE_UP_MS - 1_000;
+  await card.answer();
+  assert.equal(stage(), 'running', 'still inside its own three minutes');
+  clock.now += 1_000;
+  await card.answer();
+  assert.equal(stage(), 'slow');
 });
 
 test('the promised pane shows only the promise this card holds, for the question it promised', async (t) => {
@@ -620,9 +764,31 @@ test('on a card host the test-run results reach the card whole, with no token he
   assert.equal(runs.starts.length, 1);
 });
 
-test('an answer\'s Markdown reads as plain text, and text that only looks like Markdown is left alone', () => {
+test('an answer\'s Markdown reads as plain text, and code and marks that are not Markdown stay as written', () => {
   assert.equal(plainText('## Overdue\n**Acme** owes `$4,200`. See [the invoice](https://x.example/1).\n* one\n  - two\n```\ncode\n```'),
     'Overdue\nAcme owes $4,200. See the invoice.\n• one\n  • two\ncode\n');
-  assert.equal(plainText('2 * 3 * 4 = 24, snake_case_name and __init__ stay'), '2 * 3 * 4 = 24, snake_case_name and init stay');
+  assert.equal(plainText('2 * 3 * 4 = 24, 5*3, snake_case_name and file_name_v2 stay'), '2 * 3 * 4 = 24, 5*3, snake_case_name and file_name_v2 stay');
+  assert.equal(plainText('__init__ is bold, `__init__` and `*args*` are code'), 'init is bold, __init__ and *args* are code');
+  assert.equal(plainText('```py\n# keep\ndef f(*args): return a_b_c\n```\n**Run `npm test`** first'),
+    '# keep\ndef f(*args): return a_b_c\nRun npm test first');
   assert.equal(plainText('![chart](https://x.example/c.png)'), 'chart', 'an image is its words, never a picture');
+
+  // Single-mark emphasis, as a real reply ends a line with its source.
+  assert.equal(plainText('*italic* and _also_ and ***both***'), 'italic and also and both');
+  assert.equal(plainText([
+    '- **Ledger:** INV-204 — two overdue, one due today. *(Ledger service)*',
+    '- **Owner:** unavailable; the connected Ledger tool does not expose ownership.',
+    '- **Payments:** stage **retry**, collected **40%**. *(Payments API)*',
+  ].join('\n')), [
+    '• Ledger: INV-204 — two overdue, one due today. (Ledger service)',
+    '• Owner: unavailable; the connected Ledger tool does not expose ownership.',
+    '• Payments: stage retry, collected 40%. (Payments API)',
+  ].join('\n'));
+  assert.equal(plainText('* one *two*'), '• one two');
+
+  // A table reads row by row; quotes, strikethrough and rules lose their marks.
+  assert.equal(plainText('| Customer | Amount |\n|---|---:|\n| **Northwind** | $1,240 |\n| Lumen | $860 |'),
+    'Customer · Amount\nNorthwind · $1,240\nLumen · $860');
+  assert.equal(plainText('> Two are _late_.\n\n---\n~~Three~~ Two in all.'), 'Two are late.\n\nThree Two in all.');
+  assert.equal(plainText('a | b and - - - stay'), 'a | b and - - - stay');
 });
