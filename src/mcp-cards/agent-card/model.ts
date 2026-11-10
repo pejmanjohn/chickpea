@@ -535,7 +535,7 @@ export function present(state: State): Presentation {
     case 'confirm':
       return {
         ...base,
-        avatar: 'alert',
+        avatar: view.agent ? 'alert' : 'none',
         title: view.confirmation.ask.question,
         blocks: [{ kind: 'text', text: view.confirmation.ask.consequence }],
         buttons: [

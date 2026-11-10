@@ -31,7 +31,10 @@ const LEGACY = '2025-11-25';
 const MODERN = '2026-07-28';
 const SCHEMES = [{ type: 'oauth2', scopes: ['chickpea:workspace'] }];
 /** The tools whose result the Agent card draws (tests/mcp-agent-card.test.ts covers why). */
-const AGENT_CARD_TOOLS: readonly string[] = ['propose_agent', 'propose_agent_change', 'create_agent', 'update_agent', 'undo_change'];
+const AGENT_CARD_TOOLS: readonly string[] = [
+  'propose_agent', 'propose_agent_change', 'create_agent', 'update_agent', 'undo_change',
+  'delete_agent', 'remove_connection', 'remove_website_login', 'delete_schedule', 'remove_model_provider_key', 'update_member',
+];
 const READ_5 = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
 /** The fixture's clock; an older delivered receipt is past retention and swept. */
 const NOW = 1_800_000_000_000;

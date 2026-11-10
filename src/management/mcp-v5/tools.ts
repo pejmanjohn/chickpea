@@ -243,6 +243,7 @@ export const FIVE_ZERO_TOOLS = {
     input: schemas.deleteAgentInput,
     output: schemas.changeResultOutput,
     write: writeHints({ destructive: true }),
+    card: true,
     run: (deps, args) => removals.deleteAgent(deps, args),
   }),
   add_agent_to_channel: tool({
@@ -325,6 +326,7 @@ export const FIVE_ZERO_TOOLS = {
     input: schemas.removeConnectionInput,
     output: schemas.changeResultOutput,
     write: writeHints({ destructive: true }),
+    card: true,
     run: (deps, args) => connections.removeConnection(deps, args),
   }),
   remove_website_login: tool({
@@ -333,6 +335,7 @@ export const FIVE_ZERO_TOOLS = {
     input: schemas.removeWebsiteLoginInput,
     output: schemas.changeResultOutput,
     write: writeHints({ destructive: true }),
+    card: true,
     run: (deps, args) => removals.removeWebsiteLogin(deps, args),
   }),
   set_agent_repositories: tool({
@@ -389,6 +392,7 @@ export const FIVE_ZERO_TOOLS = {
     input: schemas.deleteScheduleInput,
     output: schemas.changeResultOutput,
     write: writeHints({ destructive: true }),
+    card: true,
     run: (deps, args) => removals.deleteSchedule(deps, args),
   }),
   set_workspace_model: tool({
@@ -413,6 +417,7 @@ export const FIVE_ZERO_TOOLS = {
     input: schemas.removeModelProviderKeyInput,
     output: schemas.changeResultOutput,
     write: writeHints({ destructive: true }),
+    card: true,
     run: (deps, args) => removals.removeModelProviderKey(deps, args),
   }),
   update_member: tool({
@@ -421,6 +426,7 @@ export const FIVE_ZERO_TOOLS = {
     input: schemas.updateMemberInput,
     output: schemas.changeResultOutput,
     write: writeHints({ destructive: true }),
+    card: true,
     run: (deps, args) => removals.updateMember(deps, args),
   }),
   cancel_setup_link: tool({

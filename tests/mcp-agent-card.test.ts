@@ -25,7 +25,10 @@ const BASE_URL = 'https://chickpea.example.test';
  * the change and its save, and every tool that can return
  * needs_confirmation, whose card is the "Are you sure?".
  */
-const CARD_TOOLS = ['propose_agent', 'propose_agent_change', 'create_agent', 'update_agent', 'undo_change'];
+const CARD_TOOLS = [
+  'propose_agent', 'propose_agent_change', 'create_agent', 'update_agent', 'undo_change',
+  'delete_agent', 'remove_connection', 'remove_website_login', 'delete_schedule', 'remove_model_provider_key', 'update_member',
+];
 
 type ToolResult = {
   content: Array<{ type: string; text: string }>;
@@ -93,7 +96,10 @@ test('a tool that can ask "Are you sure?" draws the card, which is its confirmat
   const confirming = Object.entries(FIVE_ZERO_TOOLS)
     .filter(([, tool]) => /\breturns needs_confirmation\b/.test(tool.description))
     .map(([name]) => name);
-  assert.deepEqual(confirming.sort(), ['undo_change', 'update_agent']);
+  assert.deepEqual(confirming.sort(), [
+    'delete_agent', 'delete_schedule', 'remove_connection', 'remove_model_provider_key', 'remove_website_login',
+    'undo_change', 'update_agent', 'update_member',
+  ]);
   for (const name of confirming) {
     assert.ok(CARD_TOOLS.includes(name), `${name} can return needs_confirmation, so it needs card: true`);
   }
@@ -221,4 +227,14 @@ test('the card speaks the MCP Apps version of the ext-apps release it is pinned 
   // ext-apps' declarations re-export without file extensions, which NodeNext cannot follow.
   const extApps = await import('@modelcontextprotocol/ext-apps') as unknown as { LATEST_PROTOCOL_VERSION: string };
   assert.equal(PROTOCOL_VERSION, extApps.LATEST_PROTOCOL_VERSION);
+});
+
+test('a removal asks in the words of its preview, with buttons that say what they do', async (t) => {
+  const { call } = await harness(t, 'card-member');
+  const [admin] = (await call('list_members')).structuredContent!.members.filter(({ role }: { role: string }) => role === 'admin');
+  const suspend = await call('update_member', { slackUserId: admin.slackUserId, status: 'suspended', idempotencyKey: 'suspend' });
+  assert.equal(suspend._meta?.['chickpea/tool'], 'update_member');
+  const { ask } = suspend.structuredContent!.confirmation;
+  assert.deepEqual([ask.question, ask.confirm, ask.keep], [`Suspend ${admin.name}?`, 'Suspend', 'Keep their access']);
+  assert.equal(ask.consequence, `Suspend ${admin.name}’s Chickpea access. They can’t use Agents or sign in until an Owner restores it.`);
 });
