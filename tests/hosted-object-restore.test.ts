@@ -1299,6 +1299,7 @@ const DIGEST_CONTRACT_SOURCE: Readonly<Record<string, readonly string[]>> = {
   'src/state/state-store-host.ts': ['quiesce', 'quiesceStateStoreForRestore'],
   'src/slack/turn-jobs.ts': ['PENDING_ROW', 'hasInterruptedAlarmDispatch', 'hasHandoffs'],
   'src/slack/gateway/inbox.ts': ['hasInFlight'],
+  'src/management/test-runs.ts': ['hasUnerased'],
   'src/slack/thread-runner.ts': ['quiesce'],
   'src/slack/thread-runner-jobs.ts': ['hasRunning', 'hasOwedStops', 'quiesceThreadRunnerForRestore'],
   'src/sandbox/sandbox-host.ts': ['quiesce', 'quiesceSandboxForRestore', 'containerSchedules'],
@@ -1337,7 +1338,7 @@ test('the digest and quiesce source matches the fingerprint recorded for the dig
   });
   assert.equal(
     createHash('sha256').update(JSON.stringify(declarations)).digest('hex'),
-    'f3f84f3586ff8655eff2fd631f97ab11f59afeb0c3a32e4cccfa380934f7ed0c',
+    '4b5cdb8cbfa4a3ec219c270a85b5a3dab8f283d69217a08aa9254d896d4af9a8',
     'The digest or a restore quiesce path changed. If the change affects the digest\'s time or what it reads, '
       + 'bump OBJECT_DIGEST_CONTRACT; either way, record the new fingerprint here. If it now calls a declaration '
       + 'not listed in DIGEST_CONTRACT_SOURCE, list it.',
@@ -1579,15 +1580,17 @@ for (const [signal, stores] of [
   ['an alarm turn whose dispatch was in flight', { alarmTurn: true }],
   ['a gateway delivery in flight', { inbox: true }],
   ['a runner hand-off not yet confirmed', { handoffs: true }],
+  ['a test run not yet erased', { testRun: true }],
 ] as const) {
   test(`a state store owing ${signal} is busy for a restore`, () => {
-    const state = { alarmTurn: false, inbox: false, handoffs: false, ...stores };
+    const state = { alarmTurn: false, inbox: false, handoffs: false, testRun: false, ...stores };
     const owing = {
       turnJobs: { hasInterruptedAlarmDispatch: () => state.alarmTurn, hasHandoffs: () => state.handoffs },
       gatewayInbox: { hasInFlight: () => state.inbox },
+      testRuns: { hasUnerased: () => state.testRun },
     };
     assert.throws(() => quiesceStateStoreForRestore(owing), { name: 'ObjectRestoreError', code: 'restore_object_busy' });
-    Object.assign(state, { alarmTurn: false, inbox: false, handoffs: false });
+    Object.assign(state, { alarmTurn: false, inbox: false, handoffs: false, testRun: false });
     quiesceStateStoreForRestore(owing);
   });
 }

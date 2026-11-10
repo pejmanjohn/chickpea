@@ -1161,7 +1161,7 @@ function readableMarkdownText(markdown: string): string {
 }
 
 /** Escaped fallback text never formats a `<!date^…|fallback>`, so it shows the fallback, outside code. */
-function withSlackDateFallbacks(markdown: string): string {
+export function withSlackDateFallbacks(markdown: string): string {
   return markdown
     .split(SLACK_CODE_SEGMENT)
     .map((segment, index) => index % 2 === 1 ? segment : segment.replace(/<!date\^[^|<>\n]*\|([^<>\n]*)>/g, '$1'))

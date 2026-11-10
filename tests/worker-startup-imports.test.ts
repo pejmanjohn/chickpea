@@ -52,6 +52,11 @@ const LAZY_MODULES: Record<string, string> = {
   'src/routines/pause-notice.ts': "a routine's out-of-usage pause, or the good run after it (routines/execution.ts)",
   'src/admin/usage-report.ts': "a hosted Usage report or activity page (admin/usage-api.ts)",
   'src/admin/billing-api.ts': "the Plan page's API, on its first request (admin/routes.ts)",
+  'src/state/test-run-lifecycle.ts': "a state store's first test run, test-run alarm pass or cancellation pass (cloudflare.ts)",
+  'src/state/test-run-instance.ts': "a test run's first dispatch or step (cloudflare.ts)",
+  'src/usage/test-run-usage.ts': 'the test-run lifecycle or tools (state/test-run-lifecycle.ts, management/mcp-v5/test-runs.ts)',
+  'src/agents/test-run-plan.ts': 'the test-run instance port or tools (state/test-run-instance.ts, management/mcp-v5/test-runs.ts)',
+  'src/management/mcp-v5/test-runs.ts': "try_agent_once's or get_test_run's first call (management/mcp-v5/tools.ts)",
 };
 
 /**
@@ -59,7 +64,7 @@ const LAZY_MODULES: Record<string, string> = {
  * types included. Lower it when a change moves modules behind import();
  * scripts/worker-closure.mjs holds the built artifact to its own ceiling.
  */
-const STARTUP_SOURCE_BUDGET_BYTES = Math.round(10.6 * 2 ** 20);
+const STARTUP_SOURCE_BUDGET_BYTES = Math.round(10.63 * 2 ** 20);
 
 function isModule(node: string, module: string): boolean {
   return node === module || node.startsWith(module + '/');

@@ -829,7 +829,7 @@ export class UsageStoreLogic {
          SUM(CASE WHEN m.estimate_currency = 'USD' THEN m.estimate_amount_micros END) AS estimateMicros,
          group_concat(DISTINCT m.billing_run_id) AS billingRunIds
        FROM usage_operations o LEFT JOIN usage_measurements m ON m.operation_id = o.operation_id
-       WHERE o.started_at >= ? AND o.started_at < ? AND o.operation_kind IN ('interactive_turn', 'routine_run')
+       WHERE o.started_at >= ? AND o.started_at < ? AND o.operation_kind IN ('interactive_turn', 'routine_run', 'test_turn')
          AND NOT (o.operation_kind = 'routine_run' AND o.conversation_kind = 'direct_message')
        GROUP BY o.operation_id ORDER BY o.started_at, o.operation_id`,
       query.from,

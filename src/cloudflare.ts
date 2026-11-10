@@ -284,6 +284,8 @@ import type {
 } from './state/object-host.ts';
 import type { InstallationWorkspaceObject } from './state/object-inventory.ts';
 import { stateStoreHostFunctions, type StateStoreHostRpc } from './state/state-store-host.ts';
+import type { TestRunLifecycle } from './state/test-run-lifecycle.ts';
+import type { TestRunQuery, TestRunReplayQuery, TestRunStartRequest, TestRunStartResult, TestRunView } from './management/test-run-types.ts';
 import { StateSchemaMarker, stateSchemaFingerprint } from './state/schema-lifecycle.ts';
 import { cloudflareWorkerVersionId } from './config/cloudflare-version.ts';
 import { applicationIdentity, viteServeLane } from './release/identity.ts';
@@ -885,6 +887,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
   private readonly instanceId = crypto.randomUUID();
   /** This instance installed the schema: it is the first on this Worker version. */
   private versionChanged = false;
+  /** The only caller of this installation's test run instances, loaded at the first test run. */
+  private testRunLifecycle: Promise<TestRunLifecycle> | undefined;
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, objectInstallationEnv(ctx, env));
@@ -897,8 +901,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
   /**
    * On a fresh instance, when nothing else will wake it soon: arm the alarm
    * now if an alarm turn's Flue dispatch was in flight, a gateway delivery is
-   * leased by the previous instance, or (first instance on a new Worker
-   * version) a hand-off to a thread runner is unconfirmed. Each signal is
+   * leased by the previous instance, a test run's instance is not erased, or
+   * (first instance on a new Worker version) a hand-off to a thread runner
+   * is unconfirmed. Each signal is
    * read on its own, so one failing read never hides the others. An alarm
    * already set is kept: it is either due or a deliberate backoff (a rate
    * limit's retry-after), which a restart must not skip. Never throws:
@@ -917,7 +922,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     const alarmTurn = read(() => stores.turnJobs.hasInterruptedAlarmDispatch());
     const inbox = read(() => stores.gatewayInbox.hasOrphanedLease());
     const handoffs = this.versionChanged && read(() => stores.turnJobs.hasHandoffs());
-    if (!alarmTurn && !inbox && !handoffs) return;
+    const testRun = read(() => stores.testRuns.hasUnerased());
+    if (!alarmTurn && !inbox && !handoffs && !testRun) return;
     try {
       const armed = (await this.ctx.storage.getAlarm()) === null;
       if (armed) await this.ctx.storage.setAlarm(Date.now());
@@ -928,6 +934,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
         alarmTurn,
         inbox,
         handoffs,
+        testRun,
         armed,
       });
     } catch {
@@ -1200,6 +1207,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
         this.carriedAlarmTurns.clear();
         this.stopAborts = new StopAbortFence();
       },
+      testRuns: () => this.testRuns(),
     });
   }
 
@@ -1854,6 +1862,59 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     return this.call((stores) =>
       stores.turnJobs.matchFlueObservation(instanceId, submissionId) ?? null,
     );
+  }
+
+  /** The model-access lookup's binding of a test run's attempt to its live row. */
+  async testRunModelAccessBind(
+    instanceId: string,
+    submissionId: string,
+  ): Promise<StateRpcResult<{ runtimePlan: unknown } | null>> {
+    const bound = this.call((stores) => stores.testRuns.bindModelAccess(instanceId, submissionId));
+    if (!bound.ok) return bound;
+    // A submission that landed after its run's erase unerased the run: the alarm erases it again.
+    if (bound.value?.reopened) await this.armAlarmNoLaterThan(Date.now());
+    return { ok: true, value: bound.value && 'runtimePlan' in bound.value ? { runtimePlan: bound.value.runtimePlan } : null };
+  }
+
+  async testRunStart(request: TestRunStartRequest): Promise<StateRpcResult<TestRunStartResult>> {
+    return this.callTestRuns(async () => (await this.testRuns()).start(request));
+  }
+
+  async testRunReplay(query: TestRunReplayQuery): Promise<StateRpcResult<TestRunView | null>> {
+    return this.callTestRuns(async () => await (await this.testRuns()).replay(query) ?? null);
+  }
+
+  async testRunObserve(query: TestRunQuery): Promise<StateRpcResult<TestRunView | null>> {
+    return this.callTestRuns(async () => await (await this.testRuns()).observe(query) ?? null);
+  }
+
+  /** One lifecycle per object: it holds which runs' steps are going and which it aborted. */
+  private testRuns(): Promise<TestRunLifecycle> {
+    this.testRunLifecycle ??= import('./state/test-run-lifecycle.ts').then(({ TestRunLifecycle }) => new TestRunLifecycle({
+      stores: () => {
+        this.stores ??= this.tryInit();
+        if (!this.stores) throw new Error(`state store unavailable: init failed (${this.initError ?? 'unknown'})`);
+        return this.stores;
+      },
+      port: async () => {
+        const { cloudflareTestRunInstancePort } = await import('./state/test-run-instance.ts');
+        return cloudflareTestRunInstancePort(this.env as PlatformEnv);
+      },
+      armAlarm: (at) => this.armAlarmNoLaterThan(at),
+      platformEnv: this.env as PlatformEnv,
+    }));
+    return this.testRunLifecycle;
+  }
+
+  private async callTestRuns<T>(work: () => Promise<T>): Promise<StateRpcResult<T>> {
+    try {
+      return { ok: true, value: await work() };
+    } catch (error) {
+      console.error('[chickpea] test run state RPC failed', JSON.stringify({
+        errorName: error instanceof Error ? error.name : typeof error,
+      }));
+      return { ok: false, error: { code: 'internal', message: 'The test run could not be reached.' } };
+    }
   }
 
   async slackTurnRecoveryRequired(
@@ -2639,6 +2700,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
      */
     const whileDispatching = <T>(work: () => Promise<T>): Promise<T> =>
       runnerMode ? this.dispatchingWhile(work, admitAndDispatch) : work();
+    // Test runs settle and erase beside everything else; a step waits on its instance, never on a turn.
+    const testRunPass = stores.testRuns.hasUnerased()
+      ? this.testRuns().then((lifecycle) => lifecycle.pass()).catch((error: unknown) => {
+        console.warn('[chickpea] test run pass failed', error instanceof Error ? error.name : typeof error);
+      })
+      : undefined;
     const gatewayNeedsRetry = await admitAndDispatch();
     // Stops owed to runners, after the hand-offs above gave new rows theirs.
     await this.deliverStopNotices();
@@ -2706,6 +2773,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
         : undefined;
       const outboxRetry = stores.management.nextOutboxDueAt();
       const keepWarmAt = this.keepWarmTickAt();
+      // An instance that does not answer costs a step its bounds; turns keep being handed over meanwhile.
+      if (testRunPass) await whileDispatching(() => testRunPass);
       const nextWake = earliestDefined(
         turnRetry,
         presentationRepairs.nextRetryAt,
@@ -2713,6 +2782,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
         outboxRetry,
         stores.gatewayInbox.nextPendingDueAt(),
         keepWarmAt,
+        stores.testRuns.nextDueAt(Date.now()),
       );
       metrics.needsRetry = turnRetry !== undefined;
       metrics.rearmed = nextWake !== undefined;
@@ -2876,6 +2946,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       ? Date.now() + ALARM_YIELD_REARM_MS
       : needsRetry ? Date.now() + identityRetryDelayMs : undefined;
     const outboxRetry = stores.management.nextOutboxDueAt();
+    if (testRunPass) await whileDispatching(() => testRunPass);
     const nextWake = earliestDefined(
       turnRetry,
       presentationRepairs.nextRetryAt,
@@ -2883,6 +2954,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       outboxRetry,
       stores.gatewayInbox.nextPendingDueAt(),
       this.keepWarmTickAt(),
+      stores.testRuns.nextDueAt(Date.now()),
     );
     metrics.needsRetry = needsRetry;
     metrics.rearmed = nextWake !== undefined;

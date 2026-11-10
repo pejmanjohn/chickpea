@@ -48,7 +48,7 @@ export async function checkAgent(
   };
 }
 
-function agentAdminFix(deps: FiveZeroDeps, reading: AgentRunReading, label: string): McpErrorFix | undefined {
+export function agentAdminFix(deps: FiveZeroDeps, reading: AgentRunReading, label: string): McpErrorFix | undefined {
   const origin = adminOrigin(deps.baseUrl);
   return origin ? { label, url: `${origin}${ADMIN_PATH}/agents/${encodeURIComponent(reading.agent.id)}` } : undefined;
 }
@@ -121,7 +121,7 @@ async function connectionChecks(deps: FiveZeroDeps, reading: AgentRunReading): P
   }));
 }
 
-async function modelChecks(deps: FiveZeroDeps, reading: AgentRunReading): Promise<Check[]> {
+export async function modelChecks(deps: FiveZeroDeps, reading: AgentRunReading): Promise<Check[]> {
   const { model } = await resolveAgentModel(reading);
   const name = model.model ?? 'The workspace chat model';
   if (model.canRun) return [{ part: 'model', name, status: 'ok', detail: `It runs on ${name}.` }];
@@ -271,7 +271,7 @@ async function websiteLoginChecks(deps: FiveZeroDeps, reading: AgentRunReading):
  * the Channel grant, and who may use it in a DM. Whether the person is in a
  * private Channel is Slack's to say when the message arrives.
  */
-function admissionChecks(deps: FiveZeroDeps, reading: AgentRunReading): Check[] {
+export function admissionChecks(deps: FiveZeroDeps, reading: AgentRunReading): Check[] {
   const { agent, person, place } = reading;
   const who = person.you ? 'you' : person.name ?? 'this person';
   const name = place.kind === 'dm' ? `${who}, in a DM` : `${who}, in ${place.name ? `#${place.name}` : place.channelId}`;

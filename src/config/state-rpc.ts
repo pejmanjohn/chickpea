@@ -1,4 +1,11 @@
 import type {
+  TestRunQuery,
+  TestRunReplayQuery,
+  TestRunStartRequest,
+  TestRunStartResult,
+  TestRunView,
+} from '../management/test-run-types.ts';
+import type {
   EncryptedCredentialCensusRow,
   EncryptedCredentialRevision,
   ModelCredentialRecord,
@@ -615,6 +622,15 @@ export interface TagStateRpc {
     instanceId: string,
     submissionId?: string,
   ): Promise<StateRpcResult<FlueObservationTarget | null>>;
+  /** A live test run's plan for its instance, binding its first submission (TestRunStoreLogic.bindModelAccess). */
+  testRunModelAccessBind(
+    instanceId: string,
+    submissionId: string,
+  ): Promise<StateRpcResult<{ runtimePlan: unknown } | null>>;
+  /** Admission and dispatch of one test run, in the state store (state/test-run-lifecycle.ts). */
+  testRunStart(request: TestRunStartRequest): Promise<StateRpcResult<TestRunStartResult>>;
+  testRunReplay(query: TestRunReplayQuery): Promise<StateRpcResult<TestRunView | null>>;
+  testRunObserve(query: TestRunQuery): Promise<StateRpcResult<TestRunView | null>>;
   slackTurnRecoveryRequired(id: string, reason: string): Promise<StateRpcResult<null>>;
   slackTurnRecoveryList(limit: number): Promise<StateRpcResult<SlackTurnRecoveryItem[]>>;
   slackInstallationRecoveryRetry(workspaceId: string): Promise<StateRpcResult<number>>;
