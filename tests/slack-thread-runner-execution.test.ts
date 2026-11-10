@@ -1334,7 +1334,7 @@ test('a write that is not idempotent is never replayed after a disconnect; a rea
   }
   for (const [method, op] of [
     ['workExecute', 'get_execution'], ['memoryExecute', 'put_agent_memory'],
-    ['identityExecute', 'find_invitation'], ['configGetAgent', undefined],
+    ['identityExecute', 'find_invitation'], ['configGetAgent', undefined], ['configGetAgentFirstAsk', undefined],
     ['threadActiveWorkSet', undefined], ['slackFlueSettlementRecord', undefined],
     ['slackTurnFold', undefined], ['uiSurfaceExecute', 'settle_surface'],
   ] as const) {

@@ -333,10 +333,12 @@ export interface TagStateRpc {
   configListAgents(): Promise<StateRpcResult<CustomAgentConfig[]>>;
   configListUserAgents(): Promise<StateRpcResult<CustomAgentConfig[]>>;
   configGetAgent(agentId: string): Promise<StateRpcResult<CustomAgentConfig>>;
+  configGetAgentFirstAsk(agentId: string): Promise<StateRpcResult<string | null>>;
   configMaterializeChickpeaAgent(): Promise<StateRpcResult<CustomAgentConfig>>;
   configCreateAgent(
     agent: AgentCreateInput,
     creationFence?: AgentCreationFence,
+    firstAsk?: string,
   ): Promise<StateRpcResult<CustomAgentConfig>>;
   configUpdateAgent(
     agentId: string,

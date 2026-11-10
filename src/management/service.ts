@@ -6793,9 +6793,12 @@ export class WorkspaceManagementService {
         if (!credentialIncarnation) {
           throw new Error('Prepared Agent creation is missing its credential incarnation');
         }
-        const created = await this.stores.config.createAgent(createInput, {
-          credentialIncarnation,
-        });
+        const created = await this.stores.config.createAgent(
+          createInput,
+          { credentialIncarnation },
+          // Only a coding agent or ChatGPT names a first ask; a Slack creation's DM is the ask.
+          actor.origin.kind === 'slack' ? undefined : operation.firstAsk,
+        );
         await this.captureAgentCreated(actor, created.id);
         const published = await this.publishCreatedAgent(actor, created, {
           requestId: mutationId,

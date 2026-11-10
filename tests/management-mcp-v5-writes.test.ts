@@ -164,6 +164,7 @@ test('create_agent takes propose_agent\'s arguments unchanged, joins its Channel
     requesterMembershipId: f.owner.membership.id,
   }) as { outbox: Array<{ receipt: { firstAsk?: string } }> };
   assert.equal(welcomes.outbox[0]?.receipt.firstAsk, 'How do I reset my password?');
+  assert.equal(await f.config.getAgentFirstAsk(agentId), 'How do I reset my password?', 'the creation stores its ask');
   assert.equal(structured(await call('get_creation_status', { agentId })).channels, 'joined');
 
   // A retry replays: the same result, and no second Agent or welcome.
@@ -179,6 +180,7 @@ test('create_agent takes propose_agent\'s arguments unchanged, joins its Channel
     name: 'Support Desk', handle: 'support-desk-two', instructions: 'Second desk.', createEvenIfSimilar: true, idempotencyKey: 'distinct',
   }));
   assert.equal(distinct.agent.agentId, 'agent_support_desk_2', 'a derived agentId skips one in use');
+  assert.equal(await f.config.getAgentFirstAsk(distinct.agent.agentId), null, 'a creation without an ask stores none');
 
   errorOf(await call('create_agent', {
     name: 'Nowhere', instructions: 'x', channels: ['#no-such-channel'], idempotencyKey: 'nowhere',
