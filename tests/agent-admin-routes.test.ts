@@ -7806,6 +7806,12 @@ test(`custom MCP ${recoverFromToken ? 'token recovery' : 'OAuth creation'} requi
     const limitAsWrite = { search_issues: { effect: 'write', argumentConstraints: { team: ['support'] } } };
     assert.deepEqual(await marksAfterSaving(['create_issue']), limitAsWrite);
     // A reconnect keeps the limit too: from its start, so one the person abandons does, and through its callback.
+    // Only the mark goes, here an old read mark from before the rule on the tool that is not allowed.
+    const disallowed = (await fixture.store.listConnectionAccounts('T_TEST')).find((entry) => entry.id === accountId)!;
+    await fixture.store.putConnectionAccount({
+      ...disallowed,
+      policy: { ...disallowed.policy, toolPolicies: { search_issues: { effect: 'read', argumentConstraints: { team: ['support'] } } } } as never,
+    }, disallowed.revision);
     const reconnect = await fixture.app.request(
       `http://localhost/admin/api/agents/agent_support/connections/${accountId}/oauth/mcp/start`,
       { method: 'POST', headers: auth(), body: '{}' },
