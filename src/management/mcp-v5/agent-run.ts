@@ -305,7 +305,7 @@ export function readingView(reading: AgentRunReading) {
   const { agent, place, person } = reading;
   const handle = reading.snapshotAgent.slackPresence?.normalizedHandle;
   return {
-    agent: { name: agent.name, ...(handle ? { handle } : {}) },
+    agent: { agentId: agent.id, name: agent.name, ...(handle ? { handle } : {}) },
     place: place.kind === 'dm'
       ? { kind: 'dm' as const }
       : { kind: 'channel' as const, channelId: place.channelId, ...(place.name ? { name: place.name } : {}) },

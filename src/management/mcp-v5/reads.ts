@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 
+import { resolveConnectorCatalogPreset } from '../../config/presets.ts';
 import type { PlatformEnv } from '../../config/state-backend.ts';
 import {
   ADMIN_PATH,
@@ -228,6 +229,18 @@ export function connectionRows(agent: SnapshotAgent): ConnectionRow[] {
           : account.lifecycle === 'pending' ? 'waiting_for_setup' : 'ready',
     }));
   return [...lanes, ...signIns];
+}
+
+type Connector = NonNullable<ReturnType<typeof resolveConnectorCatalogPreset>>;
+
+/** The Agent's connection of this catalog service in this owner's lane, which a new link would replace. */
+export function catalogConnection(agent: SnapshotAgent, connector: Connector, ownerKind: 'team' | 'member') {
+  const toolkit = 'managedToolkit' in connector ? connector.managedToolkit : undefined;
+  const lanePreset = new Map([...agent.apiConnections, ...agent.mcpServers].map(({ id, presetId }) => [id, presetId]));
+  return connectionRows(agent).find((row) => row.kind === 'service' && row.owner === ownerKind &&
+    (lanePreset.get(row.connectionId) === connector.id ||
+      agent.connections?.some(({ id, providerId }) => id === row.connectionId && toolkit !== undefined &&
+        (providerId === toolkit || providerId === connector.id))));
 }
 
 export async function getAgent(
@@ -567,6 +580,7 @@ export async function getSetupStatus(
     });
   }
   const { target } = result;
+  const connection = await setupConnection(deps, context, target);
   return {
     status: SETUP_STATUS[result.status],
     what: target.targetLabel,
@@ -574,7 +588,40 @@ export async function getSetupStatus(
     ...(target.agentId
       ? { agent: { agentId: target.agentId, ...(target.agentName ? { name: target.agentName } : {}) } }
       : {}),
+    ...(connection ? { connection } : {}),
   };
+}
+
+const CONNECTION_TARGETS: ReadonlySet<ManagementSetupPublicStatus['target']['kind']> = new Set([
+  'api_connection', 'mcp_connection', 'catalog_connection', 'managed_connection',
+]);
+
+/**
+ * The Agent's connection a setup link sets up, as it is now: the one it
+ * names, or for a new catalog connection the one connect_service would refuse
+ * to make twice. A link can stay waiting after the connection was made
+ * another way; this says whether the connection is ready all the same.
+ */
+async function setupConnection(
+  deps: FiveZeroDeps,
+  context: ManagementActorContext,
+  target: ManagementSetupPublicStatus['target'],
+): Promise<Out<typeof schemas.getSetupStatusOutput>['connection']> {
+  if (!target.agentId || !CONNECTION_TARGETS.has(target.kind)) return undefined;
+  const snapshot = await deps.service.inspectWorkspace(context);
+  const agent = snapshot.agents.find(({ id }) => id === target.agentId);
+  if (!agent) return undefined;
+  const rows = connectionRows(agent);
+  let row: ConnectionRow | undefined;
+  if (target.connectionId) {
+    // A catalog sign-in shows under its service's name when the Agent has only one of that service.
+    const account = agent.connections?.find(({ id }) => id === target.connectionId);
+    row = rows.find(({ connectionId }) => connectionId === target.connectionId || connectionId === account?.providerId);
+  } else {
+    const connector = target.presetId ? resolveConnectorCatalogPreset(target.presetId) : undefined;
+    row = connector && target.ownerKind ? catalogConnection(agent, connector, target.ownerKind) : undefined;
+  }
+  return row && { connectionId: row.connectionId, name: row.name, kind: row.kind, status: row.status };
 }
 
 export async function exportAgents(
