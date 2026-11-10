@@ -207,10 +207,12 @@ export function cardHost<V extends { kind: string }, A extends string>(
       const next = model.step(state, event);
       onlyReads(state, event, next.effects, model, pressed, pressedCalls);
       if (event.type === 'press') {
-        for (const effect of next.effects) {
-          if (effect.type !== 'call') continue;
-          pressed.add(effect.call);
-          pressedCalls.add(callKey(effect.call));
+        const made = next.effects.flatMap((effect) => effect.type === 'call' ? [effect.call] : []);
+        // Only the latest press that called is one the card can still carry; a press that calls nothing keeps it.
+        if (made.length > 0) pressedCalls.clear();
+        for (const call of made) {
+          pressed.add(call);
+          pressedCalls.add(callKey(call));
         }
       }
       state = next.state;

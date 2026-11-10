@@ -136,8 +136,10 @@ function press(state: State, action: string, now: number): Next<FirstAnswer> {
       const again = stage.kind === 'lost' ||
         (stage.kind === 'stopped' && (stage.then === 'again' || (stage.then === 'fix' && stage.acted !== undefined)));
       if (!again) return stay(state);
-      // The same key while it lasts: a run the first press started is the one this press gets.
-      return now - view.keyedAt < KEY_FOR_MS ? ask({ ...view, startedAt: now, stage: { kind: 'asking' } }) : tryOnce(tested, now);
+      // The same key while it and its retries last: a run the first press started is the one this press gets.
+      return now - view.keyedAt < KEY_FOR_MS - GIVE_UP_MS - 60_000
+        ? ask({ ...view, startedAt: now, stage: { kind: 'asking' } })
+        : tryOnce(tested, now);
     }
     case 'try_fix': {
       const fix = stage.kind === 'stopped' ? stage.fix : undefined;
