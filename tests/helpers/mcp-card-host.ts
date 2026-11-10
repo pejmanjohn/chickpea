@@ -1,0 +1,169 @@
+import assert from 'node:assert/strict';
+import type { TestContext } from 'node:test';
+
+import { createMcpHandler } from '@modelcontextprotocol/server';
+
+import type { McpAuthenticatedPrincipal } from '../../src/auth/mcp-oauth-routes.ts';
+import { createWorkspaceManagementMcpServer } from '../../src/management/mcp.ts';
+import type { WorkspaceManagementServiceInput } from '../../src/management/service.ts';
+import {
+  buttonCount,
+  type Call,
+  type CardEvent,
+  type CardState,
+  type Effect,
+  type Presentation,
+  type Step,
+  type ToolResult,
+} from '../../src/mcp-cards/card-model.ts';
+import { SLACK_SETTING_KEYS } from '../../src/slack/credentials.ts';
+import { createManagementAdapterFixture } from './management-adapter-fixture.ts';
+
+export const NOW = 1_800_000_000_000;
+export const BASE_URL = 'https://chickpea.example.test';
+
+export type ServerCall = (name: string, args?: Record<string, unknown>) => Promise<ToolResult & { structuredContent?: any }>;
+
+/**
+ * A fixture workspace with Core's real MCP server, and a clock the server
+ * reads. Setup links are on this deployment's https origin, as in production.
+ */
+export async function cardServer(
+  t: TestContext,
+  suffix: string,
+  overrides: Partial<WorkspaceManagementServiceInput> = {},
+) {
+  const clock = { now: NOW };
+  const f = await createManagementAdapterFixture(suffix, ({ settings }) => ({
+    settings,
+    now: () => clock.now,
+    setupBaseUrl: BASE_URL,
+    ...overrides,
+  }));
+  t.after(() => f.close());
+  await f.settings.setSetting(SLACK_SETTING_KEYS.teamName, 'Acme');
+  const principal: McpAuthenticatedPrincipal = {
+    betterAuthUserId: f.owner.binding.betterAuthUserId ?? 'ba_owner',
+    userId: f.owner.user.id,
+    membershipId: f.owner.membership.id,
+    organizationId: f.owner.membership.organizationId,
+    role: 'owner',
+    clientId: `client_${suffix}`,
+  };
+  const handler = createMcpHandler(
+    () => createWorkspaceManagementMcpServer({ principal, service: f.service, baseUrl: BASE_URL }),
+    { legacy: 'stateless' },
+  );
+  const call: ServerCall = async (name, args = {}) => {
+    const response = await handler.fetch(new Request('http://localhost/mcp', {
+      method: 'POST',
+      headers: { accept: 'application/json, text/event-stream', 'content-type': 'application/json', 'mcp-protocol-version': '2025-11-25' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+    }));
+    const body = await response.text();
+    const json = body.trimStart().startsWith('{') ? body : body.split('\n').find((line) => line.startsWith('data: '))!.slice(6);
+    return (JSON.parse(json) as { result: ToolResult }).result;
+  };
+  return { f, clock, call, teamId: f.owner.binding.slackTeamId };
+}
+
+export interface CardModelUnderTest<V extends { kind: string }, A extends string> {
+  initial: CardState<V>;
+  step(state: CardState<V>, event: CardEvent<A>): Step<V>;
+  present(state: CardState<V>): Presentation<A>;
+  /**
+   * The calls the card may make by itself, kept apart from the model's own
+   * list so a model edit cannot widen it. Every other call needs a press.
+   */
+  reads: ReadonlySet<string>;
+}
+
+/** The setup link in a result, which a press that made it may then open. */
+function setupUrlOf(result: ToolResult): unknown {
+  const content = result.structuredContent as { setup?: { url?: unknown } } | undefined;
+  return content?.setup?.url;
+}
+
+/**
+ * A card's one rule: an event that is not a press (a mount, a re-read, a
+ * timer, a reply, a failure) makes only reads and timers. It never writes,
+ * sends a message or opens a link, with one exception: the reply to a call a
+ * press made may open the setup link that reply carries, because that press
+ * asked for the link to open.
+ */
+function onlyReads(event: CardEvent<string>, effects: readonly Effect[], reads: ReadonlySet<string>, pressed: WeakSet<Call>): void {
+  if (event.type === 'press') return;
+  for (const effect of effects) {
+    if (effect.type === 'timer' || (effect.type === 'call' && reads.has(effect.call.tool))) continue;
+    if (effect.type === 'open' && event.type === 'reply' && pressed.has(event.call) && effect.url === setupUrlOf(event.result)) continue;
+    assert.fail(`${event.type} made ${effect.type === 'call' ? `the write ${effect.call.tool}` : `a ${effect.type}`}`);
+  }
+}
+
+/**
+ * A host for a card's model: it runs calls on the server, records every
+ * effect, and checks every presentation. After every step it also tries a
+ * re-read, a tick, a refusal and a lost result on a copy, as if the card came
+ * back into view or its timer fired just then, and follows their reads one
+ * reply or failure deep.
+ */
+export function cardHost<V extends { kind: string }, A extends string>(
+  model: CardModelUnderTest<V, A>,
+  server: (name: string, args?: Record<string, unknown>) => Promise<ToolResult>,
+  clock: { now: number },
+) {
+  let state = model.initial;
+  const effects: Effect[] = [];
+  const held: Array<{ call: Call; result: ToolResult }> = [];
+  const pressed = new WeakSet<Call>();
+
+  async function follow(from: CardState<V>, event: CardEvent<A>, deep: boolean): Promise<void> {
+    const next = model.step(from, event);
+    onlyReads(event, next.effects, model.reads, pressed);
+    if (!deep) return;
+    for (const effect of next.effects) {
+      if (effect.type !== 'call') continue;
+      await follow(next.state, { type: 'unreachable', call: effect.call, now: clock.now }, false);
+      await follow(next.state, { type: 'reply', call: effect.call, result: await server(effect.call.tool, effect.call.args), now: clock.now }, false);
+    }
+  }
+
+  const self = {
+    get state() { return state; },
+    get shown(): Presentation<A> { return model.present(state); },
+    effects,
+    /** Calls made, by tool name. */
+    calls: (tool?: string) => effects.flatMap((effect) => effect.type === 'call' && (!tool || effect.call.tool === tool) ? [effect.call] : []),
+    /** A call `hold` matches runs on the server, and its answer waits in `held` for `answer`. */
+    hold: (_call: Call): boolean => false,
+    held,
+    async dispatch(event: CardEvent<A>): Promise<void> {
+      const next = model.step(state, event);
+      onlyReads(event, next.effects, model.reads, pressed);
+      if (event.type === 'press') for (const effect of next.effects) if (effect.type === 'call') pressed.add(effect.call);
+      state = next.state;
+      const shown = model.present(state);
+      assert.ok(buttonCount(shown) <= 2, `at most two buttons: ${JSON.stringify(shown)}`);
+      for (const idle of [
+        { type: 'reread', now: clock.now }, { type: 'tick', now: clock.now },
+        { type: 'refused', now: clock.now }, { type: 'no_result', now: clock.now },
+      ] as const) await follow(state, idle, true);
+      for (const effect of next.effects) {
+        effects.push(effect);
+        if (effect.type !== 'call') continue;
+        const result = await server(effect.call.tool, effect.call.args);
+        if (self.hold(effect.call)) held.push({ call: effect.call, result });
+        else await self.dispatch({ type: 'reply', call: effect.call, result, now: clock.now });
+      }
+    },
+    /** The oldest held call's answer arrives: its reply, or the host giving up on it. */
+    async answer(how: 'reply' | 'unreachable' = 'reply'): Promise<void> {
+      const { call, result } = held.shift()!;
+      await self.dispatch(how === 'reply' ? { type: 'reply', call, result, now: clock.now } : { type: 'unreachable', call, now: clock.now });
+    },
+    result: (result: ToolResult) => self.dispatch({ type: 'result', result, now: clock.now }),
+    press: (action: A) => self.dispatch({ type: 'press', action, now: clock.now }),
+    labels: () => model.present(state).buttons.map(({ label, tone }) => `${label} (${tone})`),
+  };
+  return self;
+}

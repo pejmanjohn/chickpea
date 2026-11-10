@@ -15,7 +15,7 @@ import {
   versionToken,
 } from '../src/management/mcp-v5/conventions.ts';
 import { createAgentInputSchema, updateAgentInputSchema } from '../src/management/mcp-v5/schemas.ts';
-import { AGENT_CARD_URI } from '../src/management/mcp-v5/cards.ts';
+import { CARD_URIS } from '../src/management/mcp-v5/cards.ts';
 import { FIVE_ZERO_TOOL_NAMES } from '../src/management/mcp-v5/tools.ts';
 import { emitManagementMetric } from '../src/management/telemetry.ts';
 import type { ManagementReceiptOutboxRecord } from '../src/management/types.ts';
@@ -30,11 +30,16 @@ import {
 const LEGACY = '2025-11-25';
 const MODERN = '2026-07-28';
 const SCHEMES = [{ type: 'oauth2', scopes: ['chickpea:workspace'] }];
-/** The tools whose result the Agent card draws (tests/mcp-agent-card.test.ts covers why). */
-const AGENT_CARD_TOOLS: readonly string[] = [
-  'propose_agent', 'propose_agent_change', 'create_agent', 'update_agent', 'undo_change',
-  'delete_agent', 'remove_connection', 'remove_website_login', 'delete_schedule', 'remove_model_provider_key', 'update_member',
-];
+/** The tools whose result a card draws (tests/mcp-agent-card.test.ts covers why). */
+const CARD_TOOLS: Readonly<Record<string, string>> = {
+  ...Object.fromEntries([
+    'propose_agent', 'propose_agent_change', 'create_agent', 'update_agent', 'undo_change',
+    'delete_agent', 'remove_connection', 'remove_website_login', 'delete_schedule', 'remove_model_provider_key', 'update_member',
+  ].map((tool) => [tool, CARD_URIS['agent-card']])),
+  connect_service: CARD_URIS['connect-card'],
+  reconnect_service: CARD_URIS['connect-card'],
+  check_agent: CARD_URIS['health-card'],
+};
 const READ_5 = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
 /** The fixture's clock; an older delivered receipt is past retention and swept. */
 const NOW = 1_800_000_000_000;
@@ -170,7 +175,7 @@ for (const protocol of [LEGACY, MODERN]) {
       assert.deepEqual(
         meta.ui,
         tool.name === 'get_creation_status' ? { visibility: ['app'] }
-          : AGENT_CARD_TOOLS.includes(tool.name) ? { resourceUri: AGENT_CARD_URI } : undefined,
+          : CARD_TOOLS[tool.name] ? { resourceUri: CARD_TOOLS[tool.name] } : undefined,
         tool.name,
       );
       assert.equal(meta['openai/profile'], tool.name === 'get_account' ? true : undefined, tool.name);

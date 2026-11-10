@@ -1,0 +1,28 @@
+{
+  "agent-card": [
+    {
+      "version": 1,
+      "sha256": "4b02bae6de7649730b0f32ce94960e777512ea36fafc014a37bc8c4875d8194e"
+    },
+    {
+      "version": 2,
+      "sha256": "f9178bb20a7bba003a0f2a596ad614a97205e66fc9b252c36cceeef7c80d104d"
+    },
+    {
+      "version": 3,
+      "sha256": "d69de3a601d7794e608bd22e2f47e6fe52ddcd1de89bc9ee874c5c1324fec3f4"
+    }
+  ],
+  "connect-card": [
+    {
+      "version": 1,
+      "sha256": "795db16ed1aea387f1cb3109b323ff588a731a7d00ea6cdf1ff6ccf96bb6a3a5"
+    }
+  ],
+  "health-card": [
+    {
+      "version": 1,
+      "sha256": "2671d2dc223c9984a94c324e35e19549b326c2beda992e14e78df6c1c8455e39"
+    }
+  ]
+}

@@ -2,7 +2,8 @@ import type { McpServer } from '@modelcontextprotocol/server';
 import type { z } from 'zod';
 
 import { emitManagementMetric } from '../telemetry.ts';
-import { AGENT_CARD_URI } from './cards.ts';
+import type { CardName } from '../../mcp-cards/published.ts';
+import { CARD_URIS } from './cards.ts';
 import {
   mcpErrorResult,
   mcpSuccessResult,
@@ -33,8 +34,8 @@ interface FiveZeroTool {
   output: z.ZodType<Structured>;
   visibility?: readonly McpToolVisibility[];
   profile?: true;
-  /** The Agent card draws its result. */
-  card?: true;
+  /** The card that draws its result. */
+  card?: CardName;
   /** Sends requests outside Chickpea, to hosts the workspace configured. */
   openWorld?: true;
   /** A write's hints; a tool without them reads only. */
@@ -50,7 +51,7 @@ function tool<I extends z.ZodType<Structured>, O extends z.ZodType<Structured>>(
   output: O;
   visibility?: readonly McpToolVisibility[];
   profile?: true;
-  card?: true;
+  card?: CardName;
   openWorld?: true;
   write?: ReturnType<typeof writeHints>;
   run: (deps: FiveZeroDeps, args: z.output<I>) => Promise<z.output<O>>;
@@ -160,7 +161,7 @@ export const FIVE_ZERO_TOOLS = {
     description: 'Preview a new Agent before anything exists: its name, @handle and whether the handle is free, its job, a sample Slack exchange, the services to connect after it is created, and the Channels it would answer in. Saves nothing. create holds the exact create_agent arguments; issues lists what to settle first.',
     input: schemas.proposeAgentInput,
     output: schemas.proposeAgentOutput,
-    card: true,
+    card: 'agent-card',
     run: (deps, args) => proposeAgent(deps, args),
   }),
   propose_agent_change: tool({
@@ -168,7 +169,7 @@ export const FIVE_ZERO_TOOLS = {
     description: 'Preview an edit to one Agent\'s name, description, handle, instructions, on or off, models or who can edit it: each field before and after, short quotes of an instructions edit, and whether saving needs the person\'s confirmation. Send the version get_agent returned. Saves nothing. Connections and schedules change through their own tools.',
     input: schemas.proposeAgentChangeInput,
     output: schemas.proposeAgentChangeOutput,
-    card: true,
+    card: 'agent-card',
     run: (deps, args) => proposeAgentChange(deps, args),
   }),
   get_creation_status: tool({
@@ -192,6 +193,7 @@ export const FIVE_ZERO_TOOLS = {
     input: schemas.checkAgentInput,
     output: schemas.checkAgentOutput,
     openWorld: true,
+    card: 'health-card',
     run: (deps, args) => checkAgent(deps, args),
   }),
   create_agent: tool({
@@ -201,7 +203,7 @@ export const FIVE_ZERO_TOOLS = {
     output: schemas.changeResultOutput,
     // Hints are per tool, so the Channel welcome a call may post makes every call destructive.
     write: writeHints({ destructive: true }),
-    card: true,
+    card: 'agent-card',
     run: (deps, args) => writes.createAgent(deps, args),
   }),
   update_agent: tool({
@@ -210,7 +212,7 @@ export const FIVE_ZERO_TOOLS = {
     input: schemas.updateAgentInputSchema,
     output: schemas.changeResultOutput,
     write: writeHints({ destructive: true }),
-    card: true,
+    card: 'agent-card',
     run: (deps, args) => writes.updateAgent(deps, args),
   }),
   update_agent_memory: tool({
@@ -243,7 +245,7 @@ export const FIVE_ZERO_TOOLS = {
     input: schemas.deleteAgentInput,
     output: schemas.changeResultOutput,
     write: writeHints({ destructive: true }),
-    card: true,
+    card: 'agent-card',
     run: (deps, args) => removals.deleteAgent(deps, args),
   }),
   add_agent_to_channel: tool({
@@ -301,6 +303,7 @@ export const FIVE_ZERO_TOOLS = {
     output: schemas.changeResultOutput,
     // Adding an open MCP server asks that server for its tools.
     write: writeHints({ destructive: false, openWorld: true, idempotent: false }),
+    card: 'connect-card',
     run: (deps, args) => connections.connectService(deps, args),
   }),
   reconnect_service: tool({
@@ -309,6 +312,7 @@ export const FIVE_ZERO_TOOLS = {
     input: schemas.reconnectServiceInput,
     output: schemas.changeResultOutput,
     write: writeHints({ destructive: true, idempotent: false }),
+    card: 'connect-card',
     run: (deps, args) => connections.reconnectService(deps, args),
   }),
   update_connection: tool({
@@ -326,7 +330,7 @@ export const FIVE_ZERO_TOOLS = {
     input: schemas.removeConnectionInput,
     output: schemas.changeResultOutput,
     write: writeHints({ destructive: true }),
-    card: true,
+    card: 'agent-card',
     run: (deps, args) => connections.removeConnection(deps, args),
   }),
   remove_website_login: tool({
@@ -335,7 +339,7 @@ export const FIVE_ZERO_TOOLS = {
     input: schemas.removeWebsiteLoginInput,
     output: schemas.changeResultOutput,
     write: writeHints({ destructive: true }),
-    card: true,
+    card: 'agent-card',
     run: (deps, args) => removals.removeWebsiteLogin(deps, args),
   }),
   set_agent_repositories: tool({
@@ -392,7 +396,7 @@ export const FIVE_ZERO_TOOLS = {
     input: schemas.deleteScheduleInput,
     output: schemas.changeResultOutput,
     write: writeHints({ destructive: true }),
-    card: true,
+    card: 'agent-card',
     run: (deps, args) => removals.deleteSchedule(deps, args),
   }),
   set_workspace_model: tool({
@@ -417,7 +421,7 @@ export const FIVE_ZERO_TOOLS = {
     input: schemas.removeModelProviderKeyInput,
     output: schemas.changeResultOutput,
     write: writeHints({ destructive: true }),
-    card: true,
+    card: 'agent-card',
     run: (deps, args) => removals.removeModelProviderKey(deps, args),
   }),
   update_member: tool({
@@ -426,7 +430,7 @@ export const FIVE_ZERO_TOOLS = {
     input: schemas.updateMemberInput,
     output: schemas.changeResultOutput,
     write: writeHints({ destructive: true }),
-    card: true,
+    card: 'agent-card',
     run: (deps, args) => removals.updateMember(deps, args),
   }),
   cancel_setup_link: tool({
@@ -459,7 +463,7 @@ export const FIVE_ZERO_TOOLS = {
     input: schemas.undoChangeInput,
     output: schemas.changeResultOutput,
     write: writeHints({ destructive: true }),
-    card: true,
+    card: 'agent-card',
     run: (deps, args) => writes.undoChange(deps, args),
   }),
 } as const satisfies Record<string, FiveZeroTool>;
@@ -496,7 +500,7 @@ function register(server: McpServer, deps: FiveZeroDeps, name: FiveZeroToolName,
     _meta: toolMeta({
       ...(definition.visibility ? { visibility: definition.visibility } : {}),
       ...(definition.profile ? { profile: definition.profile } : {}),
-      ...(definition.card ? { card: AGENT_CARD_URI } : {}),
+      ...(definition.card ? { card: CARD_URIS[definition.card] } : {}),
     }),
   }, async (args) => {
     const startedAt = Date.now();

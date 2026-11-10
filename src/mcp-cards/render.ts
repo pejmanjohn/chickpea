@@ -1,4 +1,4 @@
-import type { Action, Block, Inline, Presentation } from './model.ts';
+import type { Block, Inline, Presentation, Row } from './card-model.ts';
 
 /**
  * Draws a presentation. Every value from a tool result goes in as text, never
@@ -18,6 +18,13 @@ const AVATARS = {
 } as const;
 
 const STEP_WORDS = { done: 'done', now: 'in progress', todo: 'to do', failed: 'failed' } as const;
+const ROW_MARKS: Record<Exclude<Row['icon'], 'tile'>, { glyph: string; words: string }> = {
+  done: { glyph: '✓', words: 'done' },
+  now: { glyph: '', words: 'in progress' },
+  failed: { glyph: '!', words: 'needs attention' },
+  warning: { glyph: '!', words: 'warning' },
+  unknown: { glyph: '?', words: 'unknown' },
+};
 
 function element<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -88,7 +95,44 @@ function block(item: Block, avatarKind: 'agent' | 'alert'): HTMLElement {
       }
       return list;
     }
+    case 'rows': {
+      const list = element('ul', 'cp-rows');
+      list.append(...item.rows.map(row));
+      return list;
+    }
   }
+}
+
+function row(item: Row): HTMLElement {
+  const line = element('li', 'cp-row');
+  if (item.icon === 'tile') {
+    const tile = element('span', 'cp-tile', item.tile ?? '');
+    tile.setAttribute('aria-hidden', 'true');
+    line.append(tile);
+  } else {
+    const mark = ROW_MARKS[item.icon];
+    const icon = element('span', `cp-ic cp-ic-${item.icon}`, mark.glyph);
+    icon.setAttribute('aria-hidden', 'true');
+    line.append(icon);
+  }
+  const body = element('div', 'cp-row-body');
+  const title = element('div', 'cp-row-title', item.title);
+  if (item.icon !== 'tile') title.append(element('span', 'sr-only', ` (${ROW_MARKS[item.icon].words})`));
+  body.append(title);
+  if (item.detail) body.append(element('div', `cp-row-detail${item.tone ? ` cp-${item.tone}` : ''}`, item.detail));
+  line.append(body);
+  if (item.control) {
+    const { label, action, style } = item.control;
+    line.append(control(label, action, style === 'link' ? 'cp-link cp-link-go' : style === 'toggle' ? 'cp-link' : `btn btn-sm cp-btn-${style}`));
+  }
+  return line;
+}
+
+function control(label: string, action: string, className: string): HTMLButtonElement {
+  const node = element('button', `${className} cursor-interaction`, label);
+  node.type = 'button';
+  node.dataset.action = action;
+  return node;
 }
 
 export interface CardRoot {
@@ -96,13 +140,13 @@ export interface CardRoot {
 }
 
 /**
- * Buttons stay the same nodes while the buttons stay the same: a press that
- * also focuses the card's frame re-reads it, and a button replaced between
- * mousedown and mouseup never gets its click. When a redraw takes away the
- * node that had focus, focus moves to the title, so a keyboard or screen
- * reader stays on the card.
+ * Buttons, and every part of the card that holds one, stay the same nodes
+ * while they stay the same: a press that also focuses the card's frame
+ * re-reads it, and a button replaced between mousedown and mouseup never
+ * gets its click. When a redraw takes away the node that had focus, focus
+ * moves to the title, so a keyboard or screen reader stays on the card.
  */
-export function mountCard(root: HTMLElement, onAction: (action: Action) => void): CardRoot {
+export function mountCard(root: HTMLElement, onAction: (action: string) => void): CardRoot {
   const status = element('p', 'sr-only');
   status.setAttribute('aria-live', 'polite');
   const card = element('main', 'cp-card');
@@ -112,12 +156,13 @@ export function mountCard(root: HTMLElement, onAction: (action: Action) => void)
   error.setAttribute('role', 'alert');
   card.append(content, actions, error);
   root.replaceChildren(status, card);
-  actions.addEventListener('click', (event) => {
+  card.addEventListener('click', (event) => {
     const button = (event.target as Element | null)?.closest('button[data-action]');
-    if (button instanceof HTMLButtonElement && !button.disabled) onAction(button.dataset.action as Action);
+    if (button instanceof HTMLButtonElement && !button.disabled) onAction(button.dataset.action!);
   });
   let drawn = '';
   let drawnButtons = '';
+  let drawnBlocks = new Map<string, HTMLElement>();
 
   return {
     render(presentation) {
@@ -142,24 +187,27 @@ export function mountCard(root: HTMLElement, onAction: (action: Action) => void)
       heading.append(title);
       if (presentation.subtitle) heading.append(inline(presentation.subtitle));
       header.append(heading);
+      const blocks = new Map<string, HTMLElement>();
+      const drawnNow = presentation.blocks.map((item) => {
+        const key = JSON.stringify([item, avatarKind]);
+        const node = (!blocks.has(key) && drawnBlocks.get(key)) || block(item, avatarKind);
+        if (!blocks.has(key)) blocks.set(key, node);
+        return node;
+      });
+      drawnBlocks = blocks;
       content.replaceChildren(
         header,
-        ...presentation.blocks.map((item) => block(item, avatarKind)),
+        ...drawnNow,
         ...presentation.foot ? [element('p', 'cp-foot', presentation.foot)] : [],
       );
 
       const buttons = JSON.stringify(presentation.buttons);
       if (buttons !== drawnButtons) {
         drawnButtons = buttons;
-        actions.replaceChildren(...presentation.buttons.map((button) => {
-          const node = element('button', `btn cursor-interaction cp-btn-${button.tone}`, button.label);
-          node.type = 'button';
-          node.dataset.action = button.action;
-          return node;
-        }));
+        actions.replaceChildren(...presentation.buttons.map((button) => control(button.label, button.action, `btn cp-btn-${button.tone}`)));
       }
       actions.hidden = presentation.buttons.length === 0;
-      for (const node of actions.querySelectorAll('button')) {
+      for (const node of card.querySelectorAll('button')) {
         node.disabled = presentation.busy;
         node.toggleAttribute('aria-busy', presentation.busy);
       }

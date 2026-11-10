@@ -3,12 +3,37 @@ import type { z } from 'zod';
 import { channelNames } from '../../management/channel-names.ts';
 import type * as schemas from '../../management/mcp-v5/schemas.ts';
 import { describeTextChange } from '../../management/text-change-wording.ts';
+import {
+  call,
+  errorCode,
+  errorOf,
+  GENERIC,
+  httpsUrl,
+  isRecord,
+  NOTHING,
+  outdated,
+  pollDelay,
+  POLL_CEILING_MS,
+  presentSafely,
+  sequenced,
+  show,
+  stay,
+  type Block,
+  type Button,
+  type Call,
+  type CardEvent,
+  type CardState,
+  type Effect,
+  type Next,
+  type Presentation,
+  type ToolResult,
+  UNREACHABLE,
+} from '../card-model.ts';
 
 /**
  * The Agent card as a state machine. Every host message, button press and
  * tool reply is an event; `step` returns the next state and the effects to
- * run. `present` decides everything the card shows. Pure, so Node tests drive
- * it with real tool results.
+ * run. `present` decides everything the card shows.
  */
 
 type Proposal = z.infer<typeof schemas.proposeAgentOutput>;
@@ -19,13 +44,6 @@ type Confirmation = NonNullable<ChangeResult['confirmation']>;
 type CreateArguments = Proposal['create']['arguments'];
 type AgentLabel = { name: string; handle?: string | undefined };
 type Need = { name: string };
-
-/** A tool result as a host delivers it. Untrusted: only its shape is checked. */
-export interface ToolResult {
-  structuredContent?: unknown;
-  isError?: boolean;
-  _meta?: Record<string, unknown>;
-}
 
 export type View =
   | { kind: 'waiting' }
@@ -68,14 +86,7 @@ export type View =
   | { kind: 'confirm'; confirmation: Confirmation; agent?: AgentLabel }
   | { kind: 'notice'; title: string; body?: string | undefined };
 
-export interface State {
-  view: View;
-  /** A tool call the card made is in flight; every button waits. */
-  busy: boolean;
-  error?: string | undefined;
-  /** Counts views, so a read's reply is used only by the view that asked. */
-  seq: number;
-}
+export type State = CardState<View>;
 
 export type Action =
   | 'create' | 'create_anyway' | 'change_something'
@@ -84,67 +95,16 @@ export type Action =
   | 'confirm' | 'keep'
   | 'undo';
 
-export interface Call {
-  tool: string;
-  args: Record<string, unknown>;
-  /** The view that made the call; `step` sets it. */
-  seq?: number;
-}
-
 /** Calls that only read. A reply that comes after the card moved on is stale and dropped. */
 const READS: ReadonlySet<string> = new Set(['get_creation_status', 'get_agent']);
 
-export type Effect =
-  | { type: 'call'; call: Call }
-  /** Fire one `tick` after this long, replacing any earlier timer. */
-  | { type: 'timer'; inMs: number }
-  /** Put `draft` in the composer when the host can; otherwise send `sent`. */
-  | { type: 'message'; draft?: string; sent: string }
-  | { type: 'open'; url: string };
-
-export type Event =
-  | { type: 'result'; result: ToolResult; now: number }
-  | { type: 'press'; action: Action; now: number }
-  /** A reply to a call the card made, even one that comes after `unreachable`. */
-  | { type: 'reply'; call: Call; result: ToolResult; now: number }
-  /** The host refused a call or gave up waiting. A write may still have run. */
-  | { type: 'unreachable'; call: Call; now: number }
-  /** The host did not open a link or take a message. */
-  | { type: 'refused'; now: number }
-  /** No result is coming: the host cancelled the tool call or never connected. */
-  | { type: 'no_result'; now: number }
-  | { type: 'tick'; now: number }
-  /** The card mounted with a state it kept, or came back into view. */
-  | { type: 'reread'; now: number };
-
-export const POLL_INTERVAL_MS = 2_000;
-/** A failed poll doubles the wait before the next, up to this. */
-export const POLL_BACKOFF_MAX_MS = 16_000;
-export const POLL_CEILING_MS = 2 * 60_000;
+export type Event = CardEvent<Action>;
 
 export const INITIAL: State = { view: { kind: 'waiting' }, busy: false, seq: 0 };
 
-interface Step {
-  state: State;
-  effects: Effect[];
-}
+export const step = sequenced(transition);
 
-type Next = { state: Omit<State, 'seq'> & { seq?: number }; effects: Effect[] };
-
-const stay = (state: Next['state'], effects: Effect[] = []): Next => ({ state, effects });
-const show = (view: View, effects: Effect[] = []): Next => ({ state: { view, busy: false }, effects });
-const call = (tool: string, args: Record<string, unknown>): Effect => ({ type: 'call', call: { tool, args } });
-
-export function step(state: State, event: Event): Step {
-  const next = transition(state, event);
-  const seq = next.state.view === state.view ? state.seq : state.seq + 1;
-  return {
-    state: { ...next.state, seq },
-    effects: next.effects.map((effect) => effect.type === 'call' ? { ...effect, call: { ...effect.call, seq } } : effect),
-  };
-}
-
-function transition(state: State, event: Event): Next {
+function transition(state: State, event: Event): Next<View> {
   switch (event.type) {
     case 'result':
       return fromResult(event.result, event.now);
@@ -154,7 +114,7 @@ function transition(state: State, event: Event): Next {
       return outdated(state, event.call) ? stay(state) : reply(state, event.call, event.result, event.now);
     case 'unreachable':
       if (outdated(state, event.call)) return stay(state);
-      if (!READS.has(event.call.tool)) return stay({ ...state, busy: false, error: 'Chickpea could not be reached. Try again.' });
+      if (!READS.has(event.call.tool)) return stay({ ...state, busy: false, error: UNREACHABLE });
       // A failed read is not a failed write: it leaves `busy` alone, and a poll tries again later.
       if (state.view.kind !== 'creating') return stay(state);
       return keepPolling({ ...state.view, failures: (state.view.failures ?? 0) + 1 }, event.now);
@@ -169,18 +129,9 @@ function transition(state: State, event: Event): Next {
   }
 }
 
-/**
- * A reply the card no longer waits for: a read an earlier view made, or a
- * write's second answer after its first moved the card on.
- */
-// The view stands still while a write is in flight, so a call belongs to the view only when seq matches.
-function outdated(state: State, made: Call): boolean {
-  return made.seq !== state.seq;
-}
-
 // What a tool result becomes.
 
-function fromResult(result: ToolResult, now: number): Next {
+function fromResult(result: ToolResult, now: number): Next<View> {
   const failure = errorOf(result);
   if (failure) return show({ kind: 'notice', title: failure });
   const content = result.structuredContent;
@@ -195,7 +146,7 @@ function fromResult(result: ToolResult, now: number): Next {
   return show(NOTHING);
 }
 
-function changeView(result: ChangeResult, now: number, options: { saved?: boolean } = {}): Next {
+function changeView(result: ChangeResult, now: number, options: { saved?: boolean } = {}): Next<View> {
   switch (result.status) {
     case 'needs_confirmation':
       if (!result.confirmation) return show({ kind: 'notice', title: result.summary });
@@ -222,7 +173,7 @@ function creating(
   result: ChangeResult,
   from: { answersIn: string[]; needs: Need[]; workspaceName?: string | undefined },
   now: number,
-): Next {
+): Next<View> {
   const agent = result.agent!;
   return show({
     kind: 'creating',
@@ -239,9 +190,9 @@ function creating(
 // Button presses. Only a press ever sends a write, and pressing the same
 // button on the same card again sends the same call, so a retry replays.
 
-function press(state: State, action: Action, now: number): Next {
+function press(state: State, action: Action, now: number): Next<View> {
   const { view } = state;
-  const busy = (effect: Effect): Next => stay({ view, busy: true }, [effect]);
+  const busy = (effect: Effect): Next<View> => stay({ view, busy: true }, [effect]);
   switch (action) {
     case 'create':
       return view.kind === 'proposal' ? busy(call('create_agent', view.proposal.create.arguments)) : stay(state);
@@ -292,7 +243,7 @@ function press(state: State, action: Action, now: number): Next {
 
 // Replies to the card's own tool calls.
 
-function reply(state: State, made: Call, result: ToolResult, now: number): Next {
+function reply(state: State, made: Call, result: ToolResult, now: number): Next<View> {
   const { view } = state;
   const failure = errorOf(result);
   const code = errorCode(result);
@@ -356,7 +307,7 @@ function reply(state: State, made: Call, result: ToolResult, now: number): Next 
 
 type Creating = Extract<View, { kind: 'creating' }>;
 
-function creationStatus(state: State, status: CreationStatus | undefined, now: number): Next {
+function creationStatus(state: State, status: CreationStatus | undefined, now: number): Next<View> {
   const { view } = state;
   if (view.kind !== 'creating' && view.kind !== 'ready') return stay(state);
   if (!status || typeof status.stage !== 'string') {
@@ -378,13 +329,12 @@ function creationStatus(state: State, status: CreationStatus | undefined, now: n
   });
 }
 
-function keepPolling(view: Creating, now: number): Next {
+function keepPolling(view: Creating, now: number): Next<View> {
   if (now - view.startedAt >= POLL_CEILING_MS) return show({ ...view, slow: true });
-  const wait = Math.min(POLL_INTERVAL_MS * 2 ** (view.failures ?? 0), POLL_BACKOFF_MAX_MS);
-  return show(view, [{ type: 'timer', inMs: wait }]);
+  return show(view, [{ type: 'timer', inMs: pollDelay(view.failures) }]);
 }
 
-function tick(state: State, now: number): Next {
+function tick(state: State, now: number): Next<View> {
   const { view } = state;
   if (view.kind === 'creating' && !view.slow) return stay(state, [call('get_creation_status', { agentId: view.agentId })]);
   if (view.kind === 'confirm' && expired(view.confirmation, now)) return show(EXPIRED);
@@ -395,7 +345,7 @@ function tick(state: State, now: number): Next {
  * On mount with a kept state, and whenever the card comes back into view:
  * what the card shows may have changed elsewhere since.
  */
-function reread(state: State, now: number): Next {
+function reread(state: State, now: number): Next<View> {
   const { view } = state;
   switch (view.kind) {
     case 'creating': {
@@ -416,10 +366,6 @@ function reread(state: State, now: number): Next {
       return stay(state);
   }
 }
-
-const GENERIC = 'That did not work. Try again.';
-
-const NOTHING: View = { kind: 'notice', title: 'Nothing to show here.' };
 
 const EXPIRED: View = {
   kind: 'notice',
@@ -444,16 +390,7 @@ function slackUrlOf(view: View): string | undefined {
   return undefined;
 }
 
-/** Only a web link opens: a result is untrusted, and hosts open nothing else. */
-function httpsUrl(url: string | undefined): string | undefined {
-  return typeof url === 'string' && URL.parse(url)?.protocol === 'https:' ? url : undefined;
-}
-
 // The shapes a result may take. Fields the card shows are only ever drawn as text.
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 function isProposal(value: unknown): value is Proposal {
   return isRecord(value) && isRecord(value.proposal) && isRecord(value.create) && isRecord(value.create.arguments);
@@ -467,51 +404,7 @@ function isChangeResult(value: unknown): value is ChangeResult {
   return isRecord(value) && typeof value.status === 'string' && typeof value.summary === 'string';
 }
 
-function errorOf(result: ToolResult): string | undefined {
-  if (!result.isError) return undefined;
-  const error = isRecord(result.structuredContent) ? result.structuredContent.error : undefined;
-  return isRecord(error) && typeof error.message === 'string' ? error.message : GENERIC;
-}
-
-function errorCode(result: ToolResult): string | undefined {
-  const error = isRecord(result.structuredContent) ? result.structuredContent.error : undefined;
-  return result.isError && isRecord(error) && typeof error.code === 'string' ? error.code : undefined;
-}
-
 // What the card shows.
-
-export type Tone = 'ok' | 'warn';
-export interface Inline { text: string; tone?: Tone }
-
-export type Block =
-  | { kind: 'text'; text: string }
-  | { kind: 'quote'; text: string }
-  | { kind: 'section'; label: string }
-  | { kind: 'note'; text: string; tone?: Tone }
-  | { kind: 'exchange'; ask: string; answer: string; agent: string }
-  | { kind: 'facts'; rows: Array<{ label: string; value: string; chips?: string[]; note?: string }> }
-  | { kind: 'steps'; steps: Array<{ label: string; state: 'done' | 'now' | 'todo' | 'failed' }> };
-
-export interface Button {
-  label: string;
-  action: Action;
-  tone: 'primary' | 'danger' | 'secondary';
-}
-
-export interface Presentation {
-  avatar: 'agent' | 'alert' | 'none';
-  title: string;
-  /** A check mark before the title. */
-  done?: true;
-  subtitle?: Inline[];
-  blocks: Block[];
-  /** The line right above the buttons. */
-  foot?: string;
-  /** At most two, the primary first. */
-  buttons: Button[];
-  busy: boolean;
-  error?: string | undefined;
-}
 
 const FIELD_LABELS: Record<ChangePreview['changes'][number]['field'], string> = {
   name: 'Name',
@@ -530,16 +423,9 @@ const WHO_CAN_EDIT: Record<string, string> = {
   all_workspace_members: 'Anyone in the workspace',
 };
 
-/** A result that is not the shape it claims draws as nothing to show, with no buttons. */
-export function present(state: State): Presentation {
-  try {
-    return presentView(state);
-  } catch {
-    return { busy: state.busy, error: state.error, avatar: 'none', title: 'Nothing to show here.', blocks: [], buttons: [] };
-  }
-}
+export const present = presentSafely(presentView);
 
-function presentView(state: State): Presentation {
+function presentView(state: State): Presentation<Action> {
   const base = { busy: state.busy, error: state.error };
   const { view } = state;
   switch (view.kind) {
@@ -601,7 +487,7 @@ function presentView(state: State): Presentation {
   }
 }
 
-function presentProposal({ proposal, issues }: Proposal): Omit<Presentation, 'busy' | 'error'> {
+function presentProposal({ proposal, issues }: Proposal): Omit<Presentation<Action>, 'busy' | 'error'> {
   const answersIn = ['Your DMs', ...channelNames(proposal.answersIn)];
   return {
     avatar: 'agent',
@@ -623,7 +509,7 @@ function presentProposal({ proposal, issues }: Proposal): Omit<Presentation, 'bu
             : [],
         ],
       },
-      ...issues.map((text): Block => ({ kind: 'note', text, tone: 'warn' })),
+      ...issues.map((text): Block<Action> => ({ kind: 'note', text, tone: 'warn' })),
     ],
     foot: proposal.workspaceName
       ? `Everyone in ${proposal.workspaceName}'s Slack can message it.`
@@ -639,7 +525,7 @@ function presentProposal({ proposal, issues }: Proposal): Omit<Presentation, 'bu
  * The steps follow get_creation_status: Slack first, then the hello, while
  * the Channels join beside them. A Channel waits its turn behind Slack.
  */
-function presentCreating(view: Creating): Omit<Presentation, 'busy' | 'error'> {
+function presentCreating(view: Creating): Omit<Presentation<Action>, 'busy' | 'error'> {
   const stage = view.status?.stage ?? 'joining';
   const channels = view.status?.channels ?? 'none';
   const inSlack = stage !== 'joining';
@@ -671,7 +557,7 @@ function presentCreating(view: Creating): Omit<Presentation, 'busy' | 'error'> {
   };
 }
 
-function presentReady(view: Extract<View, { kind: 'ready' }>): Omit<Presentation, 'busy' | 'error'> {
+function presentReady(view: Extract<View, { kind: 'ready' }>): Omit<Presentation<Action>, 'busy' | 'error'> {
   const { status, agent } = view;
   const mention = agent.handle ? `@${agent.handle}` : agent.name;
   if (status.stage === 'needs_attention') {
@@ -708,19 +594,19 @@ function presentReady(view: Extract<View, { kind: 'ready' }>): Omit<Presentation
  * nothing is missing it becomes "See its first answer", when that test turn
  * exists (U6a).
  */
-function readyNextStep(view: Extract<View, { kind: 'ready' }>): Button[] {
+function readyNextStep(view: Extract<View, { kind: 'ready' }>): Array<Button<Action>> {
   const need = view.needs[0];
   return need ? [{ label: `Connect ${need.name}`, action: 'next_step', tone: 'secondary' }] : [];
 }
 
-function presentChange(preview: ChangePreview, stale: boolean): Omit<Presentation, 'busy' | 'error'> {
+function presentChange(preview: ChangePreview, stale: boolean): Omit<Presentation<Action>, 'busy' | 'error'> {
   const count = preview.changes.length;
   return {
     avatar: 'agent',
     title: `Change ${preview.agent.name}`,
     subtitle: [{ text: `${count} ${count === 1 ? 'change' : 'changes'} · nothing is saved until you press Save` }],
     blocks: [
-      ...preview.changes.flatMap((change): Block[] => [{ kind: 'section', label: FIELD_LABELS[change.field] }, ...changeBlocks(change)]),
+      ...preview.changes.flatMap((change): Array<Block<Action>> => [{ kind: 'section', label: FIELD_LABELS[change.field] }, ...changeBlocks(change)]),
       ...stale ? [{ kind: 'note' as const, text: 'It changed since this preview. Ask again for a fresh one.', tone: 'warn' as const }] : [],
     ],
     buttons: [
@@ -730,7 +616,7 @@ function presentChange(preview: ChangePreview, stale: boolean): Omit<Presentatio
   };
 }
 
-function changeBlocks(change: ChangePreview['changes'][number]): Block[] {
+function changeBlocks(change: ChangePreview['changes'][number]): Array<Block<Action>> {
   if (change.field === 'instructions') {
     return change.quotes.length
       ? change.quotes.map((quote) => ({ kind: 'quote', text: describeTextChange(quote, (text) => `“${text}”`) }))

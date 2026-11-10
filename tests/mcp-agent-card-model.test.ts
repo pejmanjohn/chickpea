@@ -1,143 +1,26 @@
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 
-import { createMcpHandler } from '@modelcontextprotocol/server';
-
-import type { McpAuthenticatedPrincipal } from '../src/auth/mcp-oauth-routes.ts';
-import { createWorkspaceManagementMcpServer } from '../src/management/mcp.ts';
-import {
-  INITIAL,
-  POLL_BACKOFF_MAX_MS,
-  POLL_CEILING_MS,
-  POLL_INTERVAL_MS,
-  present,
-  step,
-  type Action,
-  type Call,
-  type Effect,
-  type Event,
-  type Presentation,
-  type State,
-  type ToolResult,
-} from '../src/mcp-cards/agent-card/model.ts';
-import { SLACK_SETTING_KEYS } from '../src/slack/credentials.ts';
-import { createFixtureAgent, createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
-
-const NOW = 1_800_000_000_000;
+import { INITIAL, present, step } from '../src/mcp-cards/agent-card/model.ts';
+import { POLL_BACKOFF_MAX_MS, POLL_CEILING_MS, POLL_INTERVAL_MS, type ToolResult } from '../src/mcp-cards/card-model.ts';
+import { createFixtureAgent } from './helpers/management-adapter-fixture.ts';
+import { cardHost, cardServer, NOW, type ServerCall } from './helpers/mcp-card-host.ts';
 
 /**
- * The card's state machine against Core's real MCP server: every call the
- * card makes goes to the server, and its reply comes back as the next event,
- * as a host would carry it.
+ * The Agent card's state machine against Core's real MCP server: every call
+ * the card makes goes to the server, and its reply comes back as the next
+ * event, as a host would carry it. It may read creation status and the Agent
+ * by itself; every other call needs a press.
  */
+const AGENT_CARD = { initial: INITIAL, step, present, reads: new Set(['get_creation_status', 'get_agent']) };
+
+function card(call: ServerCall, clock: { now: number }) {
+  return cardHost(AGENT_CARD, call, clock);
+}
+
 async function harness(t: TestContext, suffix: string) {
-  const clock = { now: NOW };
-  const f = await createManagementAdapterFixture(suffix, ({ settings }) => ({ settings, now: () => clock.now }));
-  t.after(() => f.close());
-  await f.settings.setSetting(SLACK_SETTING_KEYS.teamName, 'Acme');
-  const principal: McpAuthenticatedPrincipal = {
-    betterAuthUserId: f.owner.binding.betterAuthUserId ?? 'ba_owner',
-    userId: f.owner.user.id,
-    membershipId: f.owner.membership.id,
-    organizationId: f.owner.membership.organizationId,
-    role: 'owner',
-    clientId: `client_${suffix}`,
-  };
-  const handler = createMcpHandler(
-    () => createWorkspaceManagementMcpServer({ principal, service: f.service, baseUrl: 'https://chickpea.example.test' }),
-    { legacy: 'stateless' },
-  );
-  const call = async (name: string, args: Record<string, unknown> = {}): Promise<ToolResult & { structuredContent?: any }> => {
-    const response = await handler.fetch(new Request('http://localhost/mcp', {
-      method: 'POST',
-      headers: { accept: 'application/json, text/event-stream', 'content-type': 'application/json', 'mcp-protocol-version': '2025-11-25' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
-    }));
-    const body = await response.text();
-    const json = body.trimStart().startsWith('{') ? body : body.split('\n').find((line) => line.startsWith('data: '))!.slice(6);
-    return (JSON.parse(json) as { result: ToolResult }).result;
-  };
-  return { f, clock, call, card: card(call, clock), teamId: f.owner.binding.slackTeamId };
-}
-
-/**
- * The calls that only read, kept apart from the model's own list. The card
- * may make these by itself; every other call is a write and needs a press.
- */
-const READS = new Set(['get_creation_status', 'get_agent']);
-
-/**
- * The card's one rule: an event that is not a press (a mount, a re-read, a
- * timer, a reply, a failure) makes only reads and timers. It never writes,
- * sends a message or opens a link.
- */
-function onlyReads(event: Event, effects: readonly Effect[]): void {
-  if (event.type === 'press') return;
-  for (const effect of effects) {
-    const read = effect.type === 'timer' || (effect.type === 'call' && READS.has(effect.call.tool));
-    assert.ok(read, `${event.type} made ${effect.type === 'call' ? `the write ${effect.call.tool}` : `a ${effect.type}`}`);
-  }
-}
-
-/**
- * A host for the model: it runs calls on the server, records every effect,
- * and checks every presentation. After every step it also tries a re-read
- * and a tick on a copy, as if the card came back into view or its timer
- * fired just then, and follows their reads one reply or failure deep.
- */
-function card(server: (name: string, args?: Record<string, unknown>) => Promise<ToolResult>, clock: { now: number }) {
-  let state: State = INITIAL;
-  const effects: Effect[] = [];
-  const held: Array<{ call: Call; result: ToolResult }> = [];
-
-  async function follow(from: State, event: Event, deep: boolean): Promise<void> {
-    const next = step(from, event);
-    onlyReads(event, next.effects);
-    if (!deep) return;
-    for (const effect of next.effects) {
-      if (effect.type !== 'call') continue;
-      await follow(next.state, { type: 'unreachable', call: effect.call, now: clock.now }, false);
-      await follow(next.state, { type: 'reply', call: effect.call, result: await server(effect.call.tool, effect.call.args), now: clock.now }, false);
-    }
-  }
-
-  const self = {
-    get state() { return state; },
-    get shown(): Presentation { return present(state); },
-    effects,
-    /** Calls made, by tool name. */
-    calls: (tool?: string) => effects.flatMap((effect) => effect.type === 'call' && (!tool || effect.call.tool === tool) ? [effect.call] : []),
-    /** A call `hold` matches runs on the server, and its answer waits in `held` for `answer`. */
-    hold: (_call: Call): boolean => false,
-    held,
-    async dispatch(event: Event): Promise<void> {
-      const next = step(state, event);
-      onlyReads(event, next.effects);
-      state = next.state;
-      const shown = present(state);
-      assert.ok(shown.buttons.length <= 2, `at most two buttons: ${JSON.stringify(shown.buttons)}`);
-      for (const idle of [
-        { type: 'reread', now: clock.now }, { type: 'tick', now: clock.now },
-        { type: 'refused', now: clock.now }, { type: 'no_result', now: clock.now },
-      ] as const) await follow(state, idle, true);
-      for (const effect of next.effects) {
-        effects.push(effect);
-        if (effect.type !== 'call') continue;
-        const result = await server(effect.call.tool, effect.call.args);
-        if (self.hold(effect.call)) held.push({ call: effect.call, result });
-        else await self.dispatch({ type: 'reply', call: effect.call, result, now: clock.now });
-      }
-    },
-    /** The oldest held call's answer arrives: its reply, or the host giving up on it. */
-    async answer(how: 'reply' | 'unreachable' = 'reply'): Promise<void> {
-      const { call, result } = held.shift()!;
-      await self.dispatch(how === 'reply' ? { type: 'reply', call, result, now: clock.now } : { type: 'unreachable', call, now: clock.now });
-    },
-    result: (result: ToolResult) => self.dispatch({ type: 'result', result, now: clock.now }),
-    press: (action: Action) => self.dispatch({ type: 'press', action, now: clock.now }),
-    labels: () => present(state).buttons.map(({ label, tone }) => `${label} (${tone})`),
-  };
-  return self;
+  const server = await cardServer(t, suffix);
+  return { ...server, card: card(server.call, server.clock) };
 }
 
 const UNREACHABLE = 'Chickpea could not be reached. Try again.';

@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 /**
- * Renders the ChatGPT Agent card the way ChatGPT hosts it, against Core's real
- * MCP server on a fixture workspace, and drives it in Chrome: every state in
+ * Renders the ChatGPT cards the way ChatGPT hosts them, against Core's real
+ * MCP server on a fixture workspace, and drives them in Chrome: every state in
  * light and dark, 728 and 390 px wide. Saves one screenshot per state and
- * checks that a destructive confirmation waits for the click.
+ * checks that a destructive confirmation, a setup link and a fix each wait
+ * for the click.
  *
  *   npm run mcp-cards:harness -- --out <dir> [--chrome <path>]
  *
@@ -22,7 +23,7 @@ import { build } from 'esbuild';
 import { createMcpHandler } from '@modelcontextprotocol/server';
 
 import { createWorkspaceManagementMcpServer } from '../src/management/mcp.ts';
-import { AGENT_CARD_URI } from '../src/management/mcp-v5/cards.ts';
+import { CARD_URIS } from '../src/management/mcp-v5/cards.ts';
 import { SLACK_SETTING_KEYS } from '../src/slack/credentials.ts';
 import { createFixtureAgent, createManagementAdapterFixture } from '../tests/helpers/management-adapter-fixture.ts';
 
@@ -56,7 +57,23 @@ const FRAME_STYLE = `
 async function world() {
   const clock = { now: Date.now() };
   const f = await createManagementAdapterFixture(`harness_${Math.random().toString(36).slice(2, 8)}`,
-    ({ settings }) => ({ settings, now: () => clock.now }));
+    ({ settings }) => ({
+      settings,
+      now: () => clock.now,
+      setupBaseUrl: 'https://app.chickpea.example',
+      modelReadiness: async () => async () => undefined,
+      // A custom connection's one request: the docs server refuses its key, the status board answers.
+      testConnection: async ({ connectionId }) => connectionId === 'connection_docs'
+        ? { kind: 'key_rejected', status: 401, detail: 'Unauthorized' }
+        : { kind: 'ok', url: 'https://api.statusboard.example/v1/me', status: 200 },
+    }));
+  // What the setup page reports when the person finishes there.
+  const finished = new Map();
+  const getOperation = f.service.getOperation.bind(f.service);
+  f.service.getOperation = async (context, id) => {
+    const result = await getOperation(context, id);
+    return finished.has(id) && result && 'setupOperationId' in result ? { ...result, status: finished.get(id) } : result;
+  };
   await f.settings.setSetting(SLACK_SETTING_KEYS.teamName, 'Acme');
   const teamId = f.owner.binding.slackTeamId;
   const principal = {
@@ -132,6 +149,65 @@ async function world() {
       }
     },
   };
+  // The connect card: a link for one service, one to sign one in again, one cancelled, and a custom API.
+  let lastSetup;
+  const link = async (args) => {
+    const result = await call('connect_service', { agentId: 'agent_support', ...args, idempotencyKey: `${args.service ?? 'custom'}-${Math.random()}` });
+    lastSetup = result.structuredContent.setup;
+    return result;
+  };
+  const account = async (id, fields) => {
+    const stored = await f.config.putConnectionAccount({
+      id, workspaceId: teamId, ownerKind: 'team', createdByMembershipId: f.owner.membership.id, secretRefId: `secret_${id}`, ...fields,
+    });
+    await f.config.putAgentConnectionBinding({ agentId: 'agent_support', connectionAccountId: id, providerId: fields.providerId, allowedCapabilities: [], enabled: true });
+    return stored;
+  };
+  const api = (host) => ({ kind: 'api', allowedHosts: [host], pathPrefixes: ['/v1'], headerName: 'Authorization', allowedMethods: ['GET'], authMode: 'credential' });
+  let seeded = false;
+  /** The health card's Agent: Notion needs signing in again, and a docs server refuses its key. */
+  async function seedHealth() {
+    if (seeded) return;
+    seeded = true;
+    await account('connection_notion', {
+      providerId: 'notion', label: 'Notion', lifecycle: 'needs_attention',
+      policy: { kind: 'managed', adapterId: 'composio', toolkit: 'notion', principalRef: 'chickpea:team', accountRef: 'account_notion', allowedCapabilities: ['notion.read'] },
+    });
+    await account('connection_docs', {
+      providerId: 'docs', label: 'Help center', lifecycle: 'ready',
+      policy: { kind: 'mcp', url: 'https://mcp.help.example/mcp', transport: 'streamable-http', authMode: 'bearer', headerNames: [], allowedTools: ['search'], discoveredTools: [{ name: 'search' }] },
+    });
+  }
+  Object.assign(scenes, {
+    connect: () => link({ service: 'Gmail', owner: 'team' }),
+    reconnect: async () => {
+      await seedHealth();
+      return call('reconnect_service', { agentId: 'agent_support', connectionId: 'connection_notion' });
+    },
+    cancelled: async () => {
+      const result = await link({ service: 'Gmail', owner: 'me' });
+      await call('cancel_setup_link', { setupToken: lastSetup.setupToken });
+      return result;
+    },
+    custom: async () => {
+      const result = await link({ custom: { kind: 'api', name: 'Status board', hosts: ['api.statusboard.example'], pathPrefixes: ['/v1'] }, checkPath: '/v1/me', version: await version('agent_support') });
+      const added = (await f.config.listConnectionAccounts(teamId)).find(({ label }) => label === 'Status board');
+      await f.config.putConnectionAccount({ ...added, lifecycle: 'ready' }, added.revision);
+      return result;
+    },
+    health: async () => {
+      await seedHealth();
+      return call('check_agent', { agentId: 'agent_support' });
+    },
+    healthy: () => call('check_agent', { agentId: 'agent_clean' }),
+  });
+  await createFixtureAgent(f, 'agent_clean', {
+    name: 'Billing Helper',
+    model: 'local-stub/billing',
+    slackPresence: { requestedHandle: 'billing', normalizedHandle: 'billing', desiredState: 'active', health: 'healthy', avatar: { kind: 'generated', revision: 1, seed: 'billing' } },
+  });
+  await f.config.putAgentChannelGrant({ workspaceId: teamId, channelId: 'C_FINANCE', agentId: 'agent_clean', status: 'active', createdByMembershipId: f.owner.membership.id, channelIsPrivate: false });
+
   /** Its Channels, joining or joined. */
   async function channels(status) {
     const agent = await created();
@@ -162,8 +238,16 @@ async function world() {
     await f.management.claimDueOutbox(clock.now, 25, clock.now + 60_000);
     await f.management.settleOutbox({ outboxId: welcome.outboxId, outcome: 'delivered', at: clock.now, deliveryRef: 'D1:1.1' });
   }
-  return { f, rpc, call, scenes, sayHello, joinChannels: () => channels('active'), close: () => f.close() };
+  return {
+    f, rpc, call, scenes, sayHello, joinChannels: () => channels('active'), close: () => f.close(),
+    /** The person finishes on the setup page of the last link. */
+    finishSetup: () => finished.set(lastSetup.setupToken, 'completed'),
+    lastSetup: () => lastSetup,
+  };
 }
+
+/** The card each scene's tool draws. */
+const SCENE_CARDS = { connect: 'connect-card', reconnect: 'connect-card', cancelled: 'connect-card', custom: 'connect-card', health: 'health-card', healthy: 'health-card' };
 
 /** Two origins, like ChatGPT's page and its card sandbox. */
 async function serve(current) {
@@ -171,9 +255,10 @@ async function serve(current) {
     const server = createServer(handle);
     server.listen(0, '127.0.0.1', () => done(server));
   });
-  const cardServer = await listen(async (_request, response) => {
+  const cardServer = await listen(async (request, response) => {
     // The page ChatGPT gets: resources/read on the card's URI.
-    const [card] = (await current().rpc('resources/read', { uri: AGENT_CARD_URI })).contents;
+    const uri = new URL(request.url, 'http://card').searchParams.get('uri');
+    const [card] = (await current().rpc('resources/read', { uri })).contents;
     response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
     response.end(card.text);
   });
@@ -183,7 +268,10 @@ async function serve(current) {
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify(value));
     };
-    if (url.pathname === '/scene') return json({ result: await current().scenes[url.searchParams.get('name')]() });
+    if (url.pathname === '/scene') {
+      const name = url.searchParams.get('name');
+      return json({ result: await current().scenes[name](), uri: CARD_URIS[SCENE_CARDS[name] ?? 'agent-card'] });
+    }
     if (url.pathname === '/call') {
       let body = '';
       for await (const chunk of request) body += chunk;
@@ -278,9 +366,24 @@ async function chrome() {
     waitForTitle(pattern, timeoutMs) {
       return this.waitFor(`${pattern}.test(document.querySelector(".cp-title")?.textContent ?? "")`, pattern, timeoutMs);
     },
-    /** A real mouse click on the card's button. */
-    async click(action) {
-      const box = await inCard(`(() => { const r = document.querySelector('button[data-action="${action}"]').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    /** Waits until the host has seen `count` links opened. */
+    async linksOpened(count, timeoutMs = 5_000) {
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        const links = await evaluate('window.harness.links');
+        if (links.length >= count || Date.now() > deadline) return links;
+        await new Promise((done) => setTimeout(done, 100));
+      }
+    },
+    waitForRow(pattern, timeoutMs) {
+      return this.waitFor(`[...document.querySelectorAll(".cp-row-title")].some((node) => ${pattern}.test(node.textContent))`, pattern, timeoutMs);
+    },
+    /** A real mouse click on the card's button, by its action or, with `label`, by its words. */
+    async click(action, { label } = {}) {
+      const find = label
+        ? `[...document.querySelectorAll('button[data-action]')].find((node) => node.textContent === ${JSON.stringify(label)})`
+        : `document.querySelector('button[data-action="${action}"]')`;
+      const box = await inCard(`(() => { const r = ${find}.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
       const frame = await evaluate('(() => { const r = document.querySelector("iframe").getBoundingClientRect(); return { x: r.x, y: r.y }; })()');
       await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: frame.x + box.x, y: frame.y + box.y });
       for (const type of ['mousePressed', 'mouseReleased']) {
@@ -420,6 +523,58 @@ try {
     await open('expired');
     await browser.waitForTitle(/^This confirmation expired$/);
     await shot('6-expired');
+
+    const reads = async (what) => {
+      const calls = await browser.host('window.harness.calls');
+      assert.deepEqual(calls.filter((name) => !['get_setup_status', 'get_agent'].includes(name)), [], `${what}: the card only read`);
+      assert.deepEqual(await browser.host('window.harness.links'), [], `${what}: no link opened before a click`);
+    };
+    await open('connect');
+    await browser.waitForTitle(/^Connect Gmail to Support Desk$/);
+    await browser.inCard('window.dispatchEvent(new Event("focus"))');
+    await new Promise((done) => setTimeout(done, 2_500));
+    await reads('Connect');
+    await shot('3-connect');
+    await browser.click('connect');
+    await browser.waitForRow(/^Waiting for Gmail/);
+    const page = new URL(current.lastSetup().url);
+    assert.deepEqual(await browser.linksOpened(1), [page.href], 'one click, one link');
+    assert.equal(page.pathname, `/setup/${current.lastSetup().setupToken}`, 'Chickpea\'s page for this connection, never Admin');
+    await shot('3-waiting');
+    current.finishSetup();
+    await browser.waitForRow(/^Gmail is connected/, 10_000);
+    await shot('3-connected');
+
+    await open('reconnect');
+    await browser.waitForTitle(/^Sign Notion in again$/);
+    await shot('3-reconnect');
+    await open('cancelled');
+    await browser.waitForRow(/^This link was cancelled/);
+    await reads('A cancelled link');
+    await shot('3-cancelled');
+    await open('custom');
+    await browser.waitFor('/Chickpea checked it/.test(document.querySelector(".cp-rows")?.textContent ?? "")', 'the custom connection\'s check');
+    await shot('3-checked');
+
+    await open('health');
+    await browser.waitForTitle(/^\d things need attention$/);
+    await new Promise((done) => setTimeout(done, 1_000));
+    await browser.inCard('window.dispatchEvent(new Event("focus"))');
+    await reads('The health card');
+    await shot('7-health');
+    await browser.click('show');
+    await browser.waitForRow(/^@support /);
+    await shot('7-health-open');
+    await browser.click(undefined, { label: 'Reconnect Notion' });
+    await browser.waitFor('/Finish on the Chickpea page that opened/.test(document.querySelector(".cp-rows")?.textContent ?? "")', 'the fix\'s page opened');
+    assert.deepEqual((await browser.host('window.harness.calls')).filter((name) => name === 'reconnect_service'), ['reconnect_service'], 'one click, one link');
+    const links = await browser.linksOpened(1);
+    assert.equal(links.length, 1);
+    assert.match(new URL(links[0]).pathname, /^\/setup\/setup_/);
+    await shot('7-fixing');
+    await open('healthy');
+    await browser.waitForTitle(/^Everything looks healthy$/);
+    await shot('7-healthy');
     current.close();
   }
 } finally {
