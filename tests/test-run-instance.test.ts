@@ -2,8 +2,27 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { TEST_TURN_ATTEMPT_ENDED_MESSAGE } from '../src/agents/test-turn-limits.ts';
+import {
+  configureInstallationAdmission,
+  resetInstallationAdmissionForTests,
+} from '../src/config/installation-admission.ts';
+import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
+import {
+  configurePlatformFunding,
+  resetPlatformFundingForTests,
+  type CreditBackReason,
+  type RunRef,
+} from '../src/config/platform-funding.ts';
+import type { PlatformEnv } from '../src/config/state-backend.ts';
 import type { AgentConversationSnapshot } from '../src/slack/bounded-agent-observation.ts';
-import { testRunSettlement, withoutImages, type SettledAgentSubmission } from '../src/state/test-run-instance.ts';
+import {
+  cloudflareTestRunInstancePort,
+  testRunSettlement,
+  withoutImages,
+  type SettledAgentSubmission,
+} from '../src/state/test-run-instance.ts';
+import type { UsageMicros } from '../src/usage/usage-display.ts';
+import { EVERY_PROVIDER_FUNDED, NO_RUN_FEES } from './helpers/platform-funding.ts';
 
 function answered(text: string): SettledAgentSubmission {
   const history = { messages: [] } as unknown as AgentConversationSnapshot;
@@ -48,4 +67,33 @@ test('an attempt the 25-call limit ended is a failure that is not credited back;
   assert.deepEqual(ended({ name: 'FlueError', message: 'Operation failed.', meta: { reason: TEST_TURN_ATTEMPT_ENDED_MESSAGE } }),
     { kind: 'failed', failure: 'failed', creditBack: null });
   assert.deepEqual(ended({ message: 'The agent threw.' }), { kind: 'failed', failure: 'failed', creditBack: 'chickpea' });
+});
+
+test('a test run is credited back as a direct message is: never while its installation is suspended or ended', async (t) => {
+  const credits: Array<{ run: RunRef; reason: CreditBackReason }> = [];
+  configurePlatformFunding({
+    ...EVERY_PROVIDER_FUNDED,
+    funding: async () => 'platform',
+    admit: async () => 'admitted',
+    charge: async () => undefined,
+    ...NO_RUN_FEES,
+    creditBack: async (run, reason) => {
+      credits.push({ run, reason });
+      return { kind: 'credited', usageMicros: 1 as UsageMicros };
+    },
+  });
+  t.after(() => {
+    resetInstallationAdmissionForTests();
+    resetPlatformFundingForTests();
+  });
+  const port = cloudflareTestRunInstancePort(
+    scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' } as PlatformEnv, { installationId: 'inst_credit' }),
+  );
+  // cancel_pending runs on a suspended installation, and erasure on an ended one.
+  configureInstallationAdmission(async () => 'refused');
+  await port.creditBack('sub_suspended', 'chickpea');
+  assert.deepEqual(credits, []);
+  configureInstallationAdmission(async () => 'admitted');
+  await port.creditBack('sub_admitted', 'chickpea');
+  assert.deepEqual(credits, [{ run: { installationId: 'inst_credit', runId: 'sub_admitted' }, reason: 'chickpea' }]);
 });
