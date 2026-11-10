@@ -252,10 +252,12 @@ import { PrivateChannelSetupError, PrivateChannelSetupService } from '../slack/p
 import {
   parsePrivateChannelSetupAction,
   privateChannelSetupCard,
-  privateChannelSetupRecoveryText,
-  privateChannelSetupUnavailableText,
+  privateChannelSetupReply,
   type PrivateChannelSetupAction,
+  type PrivateChannelSetupOutcome,
 } from '../slack/private-channel-setup.ts';
+import { replaceSlackActionMessage } from '../slack/action-response-url.ts';
+import type { PrivateChannelSetupIntent } from '../management/types.ts';
 import { parseCreditsAskAction, type CreditsAskAction } from '../slack/credits-ask.ts';
 import {
   addAgentToChannel,
@@ -3156,60 +3158,73 @@ async function completePrivateChannelSetupAction(
 ): Promise<void> {
   // Never send even private feedback to somebody other than this card's inviter.
   const intent = await execution.stores.management.getPrivateChannelSetupIntent(action.setupId);
-  if (!intent || intent.inviterSlackUserId !== action.userId ||
-      intent.workspaceId !== action.workspaceId || intent.channelId !== action.channelId) return;
+  if (!intent || !setupIntentBelongsTo(intent, action)) return;
   if (!await execution.stores.slackState.claim(`private-setup:${action.deliveryId}`)) return;
-  let text: string;
-  try {
+  await answerPrivateChannelSetupClick(action, execution, async () => {
     // An already-completed card can report current truth with its bound choice,
     // even if Slack has since cleared the selector. It cannot publish again.
     const agentId = action.agentId ?? (intent.status === 'completed' ? intent.selectedAgentId : undefined);
-    if (!agentId) {
-      const actor = await resolveAgentRoutingActor({
-        workspaceId: action.workspaceId, userId: action.userId, channelId: action.channelId,
-        botUserId: execution.botUserId, transport: execution.transport, stores: execution.stores,
-      });
-      const channel = await execution.transport.lookupChannel(action.channelId);
-      if (!actor.principal || !actor.routing.fullMember || !actor.routing.channelMember ||
-          actor.principal.userId !== intent.actorUserId ||
-          actor.principal.membershipId !== intent.actorMembershipId ||
-          actor.principal.organizationId !== intent.organizationId ||
-          channel.id !== action.channelId || !channel.private || !channel.member || channel.archived) return;
-      text = intent.status === 'open' && intent.expiresAt > Date.now()
-        ? 'Choose an Agent in the setup card, then click Add.'
-        : privateChannelSetupUnavailableText(
-          intent.status === 'open' ? 'expired' : 'used', await privateChannelSetupAdminUrl(execution),
-        );
-    } else {
-      const result = await privateChannelSetupService(execution).add({
+    if (agentId) {
+      return privateChannelSetupService(execution).add({
         workspaceId: action.workspaceId, channelId: action.channelId,
         inviterSlackUserId: action.userId, setupId: action.setupId, agentId,
       });
-      text = result.kind === 'completed'
-        ? `@${result.handle} is ready in this private channel. Mention @${result.handle} to start a conversation.`
-        : result.kind === 'in_progress'
-          ? 'This Agent is being added. Click Add again in a moment to check.'
-          : result.kind === 'no_longer_added'
-            ? privateChannelSetupUnavailableText('removed', await privateChannelSetupAdminUrl(execution))
-            : privateChannelSetupRecoveryText(await privateChannelSetupAdminUrl(execution));
     }
+    const actor = await resolveAgentRoutingActor({
+      workspaceId: action.workspaceId, userId: action.userId, channelId: action.channelId,
+      botUserId: execution.botUserId, transport: execution.transport, stores: execution.stores,
+    });
+    const channel = await execution.transport.lookupChannel(action.channelId);
+    if (!actor.principal || !actor.routing.fullMember || !actor.routing.channelMember ||
+        actor.principal.userId !== intent.actorUserId ||
+        actor.principal.membershipId !== intent.actorMembershipId ||
+        actor.principal.organizationId !== intent.organizationId ||
+        channel.id !== action.channelId || !channel.private || !channel.member || channel.archived) {
+      throw new PrivateChannelSetupError('forbidden');
+    }
+    return intent.status === 'open' && intent.expiresAt > Date.now()
+      ? { kind: 'choose' }
+      : { kind: 'unavailable', reason: intent.status === 'open' ? 'expired' : 'used' };
+  });
+}
+
+function setupIntentBelongsTo(
+  intent: PrivateChannelSetupIntent,
+  click: { workspaceId: string; userId: string; channelId: string },
+): boolean {
+  return intent.inviterSlackUserId === click.userId &&
+    intent.workspaceId === click.workspaceId && intent.channelId === click.channelId;
+}
+
+/** Settle one setup click into its reply and deliver it to the clicker alone. */
+async function answerPrivateChannelSetupClick(
+  click: { channelId: string; userId: string; responseUrl?: string },
+  execution: PrivateChannelSetupExecution,
+  settle: () => Promise<PrivateChannelSetupOutcome>,
+): Promise<void> {
+  let outcome: PrivateChannelSetupOutcome;
+  try {
+    outcome = await settle();
   } catch (error) {
-    if (error instanceof PrivateChannelSetupError) {
-      if (error.code === 'forbidden') return;
-      text = error.code === 'agent_off' ? error.message : error.code === 'unverifiable'
-        ? 'I couldn’t check this Agent right now. Click Add again in a moment.'
-        : privateChannelSetupUnavailableText(
-        error.code === 'expired' ? 'expired' : error.code === 'stale' ? 'stale' : 'used',
-        await privateChannelSetupAdminUrl(execution),
-      );
-    } else {
+    if (!(error instanceof PrivateChannelSetupError)) {
       console.warn('[chickpea] private Channel setup could not finish:', sanitizeError(error));
-      text = privateChannelSetupRecoveryText(await privateChannelSetupAdminUrl(execution));
     }
+    outcome = { kind: 'failed', error };
   }
-  // Ephemeral messages cannot be updated with chat.update. Results are another
-  // private message; failed delivery never falls back to a public post.
-  await execution.client.chat.postEphemeral({ channel: action.channelId, user: action.userId, text });
+  const adminUrl = await privateChannelSetupAdminUrl(execution);
+  const reply = privateChannelSetupReply(outcome, adminUrl ? { adminUrl } : {});
+  if (reply.kind === 'silent') return;
+  if (reply.kind === 'replace' && click.responseUrl &&
+      await replaceSlackActionMessage(click.responseUrl, reply.message)) return;
+  // chat.update cannot edit an ephemeral message, so without a response_url the
+  // reply is another private message. It never falls back to a public post.
+  await execution.client.chat.postEphemeral({
+    channel: click.channelId,
+    user: click.userId,
+    ...(reply.kind === 'notice'
+      ? { text: reply.text }
+      : reply.fallback === 'card' ? reply.message : { text: reply.message.text }),
+  });
 }
 
 /**
