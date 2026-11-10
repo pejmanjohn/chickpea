@@ -17,8 +17,9 @@ type Block = { type: string; text?: { type: string; text: string }; elements?: A
 /** Slack as one private channel C1 sees it, with how the next response_url POST answers. */
 interface SlackScene {
   members: string[];
-  replace: 'ok' | 'refused' | 'unreachable';
+  replace: 'ok' | 'refused' | 'unreachable' | 'redirect';
   channelLookupFails: boolean;
+  archived: boolean;
 }
 
 /**
@@ -29,18 +30,19 @@ async function withPrivateSetup(
   agents: ReadonlyArray<{ id: string; name: string; handle: string }>,
   run: (setup: DirectSlackInstall & { scene: SlackScene; setupId: string }) => Promise<void>,
 ): Promise<void> {
-  const scene: SlackScene = { members: ['U1', 'UBOT'], replace: 'ok', channelLookupFails: false };
+  const scene: SlackScene = { members: ['U1', 'UBOT'], replace: 'ok', channelLookupFails: false, archived: false };
   const groups: Array<Record<string, unknown>> = [];
   await withDirectSlackInstall({
     answer: (method, body, url) => {
       if (url.startsWith('https://hooks.slack.com/')) {
         if (scene.replace === 'unreachable') throw new TypeError('fetch failed');
+        if (scene.replace === 'redirect') return new Response(null, { status: 302, headers: { location: 'https://example.com/' } });
         return scene.replace === 'ok' ? { ok: true } : { ok: false, error: 'expired_url' };
       }
       if (method === 'users.info') return { ok: true, user: slackUser(body.get('user') ?? '') };
       if (method === 'conversations.info') {
         if (scene.channelLookupFails) return { ok: false, error: 'fatal_error' };
-        return { ok: true, channel: { id: body.get('channel'), name: 'private-lab', is_private: true, is_member: true, is_archived: false } };
+        return { ok: true, channel: { id: body.get('channel'), name: 'private-lab', is_private: true, is_member: true, is_archived: scene.archived } };
       }
       if (method === 'conversations.members') return { ok: true, members: scene.members };
       if (method === 'usergroups.list') return { ok: true, usergroups: groups };
@@ -276,6 +278,20 @@ test('Add another Agent on a card whose setup is gone says it expired, with no b
   });
 });
 
+test('Add another Agent in a Channel that was archived says it expired, with no button to loop on', async () => {
+  await withPrivateSetup([OPS, LEGAL], async ({ calls, deliver, scene, setupId }) => {
+    const add = addClick(setupId, OPS.id);
+    await deliver('interactions', add.payload);
+    await replacedAt(calls, add.responseUrl);
+    scene.archived = true;
+    const again = againClick(setupId);
+    await deliver('interactions', again.payload);
+    const replaced = await replacedAt(calls, again.responseUrl);
+    assert.match(replaced.text, /^This setup card has expired\./);
+    assert.deepEqual(buttons(replaced.blocks), []);
+  });
+});
+
 test('Add with nothing chosen answers beside the card and leaves it in place', async () => {
   await withPrivateSetup([OPS], async ({ calls, deliver, setupId }) => {
     const click = addClick(setupId, null);
@@ -289,7 +305,7 @@ test('Add with nothing chosen answers beside the card and leaves it in place', a
 });
 
 test('a confirmation Slack will not take falls back to a text-only ephemeral line', async () => {
-  for (const failure of ['refused', 'unreachable'] as const) {
+  for (const failure of ['refused', 'unreachable', 'redirect'] as const) {
     await withPrivateSetup([OPS], async ({ calls, deliver, scene, setupId }) => {
       scene.replace = failure;
       const click = addClick(setupId, OPS.id);

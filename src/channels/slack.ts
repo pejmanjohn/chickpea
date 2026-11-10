@@ -3218,10 +3218,16 @@ async function completePrivateChannelSetupAgain(
   if (!await execution.stores.slackState.claim(`private-setup-again:${action.deliveryId}`)) return;
   await answerPrivateChannelSetupClick(action, execution, async () => {
     if (!intent) return { kind: 'missing' };
-    const setup = await privateChannelSetupService(execution).begin({
-      workspaceId: action.workspaceId, channelId: action.channelId, inviterSlackUserId: action.userId,
-    });
-    return { kind: 'begun', ...setup };
+    try {
+      const setup = await privateChannelSetupService(execution).begin({
+        workspaceId: action.workspaceId, channelId: action.channelId, inviterSlackUserId: action.userId,
+      });
+      return { kind: 'begun', ...setup };
+    } catch (error) {
+      // The Channel or install is gone, so another click could only fail the same way.
+      if (error instanceof PrivateChannelSetupError && error.code === 'unavailable') return { kind: 'missing' };
+      throw error;
+    }
   });
 }
 
@@ -3248,7 +3254,7 @@ async function answerPrivateChannelSetupClick(
     }
     outcome = { kind: 'failed', error };
   }
-  const adminUrl = await privateChannelSetupAdminUrl(execution);
+  const adminUrl = await privateChannelSetupAdminUrl(execution).catch(() => undefined);
   const reply = privateChannelSetupReply(outcome, {
     ...(adminUrl ? { adminUrl } : {}),
     ...(click.responseUrl ? { againSetupId: click.setupId } : {}),
@@ -3258,13 +3264,10 @@ async function answerPrivateChannelSetupClick(
       await replaceSlackActionMessage(click.responseUrl, reply.message)) return;
   // chat.update cannot edit an ephemeral message, so without a response_url the
   // reply is another private message. It never falls back to a public post.
-  await execution.client.chat.postEphemeral({
-    channel: click.channelId,
-    user: click.userId,
-    ...(reply.kind === 'notice'
-      ? { text: reply.text }
-      : reply.fallback === 'card' ? reply.message : { text: reply.message.text }),
-  });
+  const body = reply.kind === 'notice' ? { text: reply.text }
+    : reply.fallback === 'card' ? reply.message
+    : { text: reply.message.text };
+  await execution.client.chat.postEphemeral({ channel: click.channelId, user: click.userId, ...body });
 }
 
 /**
