@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import {
   PRIVATE_CHANNEL_SETUP_ADD_ACTION,
+  PRIVATE_CHANNEL_SETUP_AGAIN_ACTION,
   PRIVATE_CHANNEL_SETUP_AGENT_ACTION,
   PRIVATE_CHANNEL_SETUP_CHOICE_BLOCK,
 } from '../src/slack/private-channel-setup.ts';
@@ -90,8 +91,12 @@ function slackUser(id: string) {
 
 let clicks = 0;
 
-/** A signed click on the inviter's ephemeral card, with a fresh response_url unless told otherwise. */
-function addClick(setupId: string, agentId: string | null, options: { responseUrl?: string | null } = {}) {
+/** A signed click on someone's ephemeral card in C1, with a fresh response_url unless told otherwise. */
+function cardClick(
+  actionId: string,
+  setupId: string,
+  options: { user?: string; responseUrl?: string | null; state?: Record<string, unknown> } = {},
+) {
   clicks += 1;
   const responseUrl = options.responseUrl === undefined
     ? `https://hooks.slack.com/actions/T1/18000000${clicks}/click${clicks}`
@@ -99,21 +104,48 @@ function addClick(setupId: string, agentId: string | null, options: { responseUr
   return {
     responseUrl,
     payload: {
-      type: 'block_actions', api_app_id: 'A1', team: { id: 'T1' }, user: { id: 'U1' }, channel: { id: 'C1' },
+      type: 'block_actions', api_app_id: 'A1', team: { id: 'T1' }, user: { id: options.user ?? 'U1' }, channel: { id: 'C1' },
       container: { type: 'message', channel_id: 'C1', message_ts: '1800000000.000100', is_ephemeral: true },
       ...(responseUrl ? { response_url: responseUrl } : {}),
-      actions: [{ type: 'button', action_id: PRIVATE_CHANNEL_SETUP_ADD_ACTION, value: setupId,
+      actions: [{ type: 'button', action_id: actionId, value: setupId,
         action_ts: `1800000001.00${String(clicks).padStart(4, '0')}` }],
-      state: { values: { [PRIVATE_CHANNEL_SETUP_CHOICE_BLOCK]: { [PRIVATE_CHANNEL_SETUP_AGENT_ACTION]: {
-        type: 'static_select', selected_option: agentId === null ? null : { value: agentId },
-      } } } },
+      ...(options.state ? { state: options.state } : {}),
     },
   };
 }
 
-function replacements(calls: DirectSlackCall[], responseUrl?: string | null) {
-  return calls.filter(({ url }) => url === responseUrl)
-    .map(({ raw }) => JSON.parse(raw) as { replace_original?: boolean; text: string; blocks: Block[] });
+function addClick(setupId: string, agentId: string | null, options: { responseUrl?: string | null } = {}) {
+  return cardClick(PRIVATE_CHANNEL_SETUP_ADD_ACTION, setupId, {
+    ...options,
+    state: { values: { [PRIVATE_CHANNEL_SETUP_CHOICE_BLOCK]: { [PRIVATE_CHANNEL_SETUP_AGENT_ACTION]: {
+      type: 'static_select', selected_option: agentId === null ? null : { value: agentId },
+    } } } },
+  });
+}
+
+function againClick(setupId: string, options: { user?: string } = {}) {
+  return cardClick(PRIVATE_CHANNEL_SETUP_AGAIN_ACTION, setupId, options);
+}
+
+type Replacement = { replace_original?: boolean; text: string; blocks: Block[] };
+
+function replacements(calls: DirectSlackCall[], responseUrl?: string | null): Replacement[] {
+  return calls.filter(({ url }) => url === responseUrl).map(({ raw }) => JSON.parse(raw) as Replacement);
+}
+
+async function replacedAt(calls: DirectSlackCall[], responseUrl: string | null): Promise<Replacement> {
+  const found = await eventually(() => replacements(calls, responseUrl)[0]);
+  assert.ok(found, 'the clicked card is replaced');
+  return found;
+}
+
+function againButtonOf(blocks: Block[]) {
+  return buttons(blocks).find(({ action_id }) => action_id === PRIVATE_CHANNEL_SETUP_AGAIN_ACTION);
+}
+
+function choicesOf(blocks: Block[]): string[] {
+  const select = blocks.flatMap(({ elements }) => elements ?? []).find(({ type }) => type === 'static_select');
+  return (select?.options ?? []).map(({ value }: { value: string }) => value);
 }
 
 function ephemerals(calls: DirectSlackCall[]) {
@@ -147,25 +179,100 @@ async function quiet(calls: DirectSlackCall[]): Promise<void> {
 }
 
 const OPS = { id: 'agent_ops', name: 'Ops', handle: 'ops' };
+const LEGAL = { id: 'agent_legal', name: 'Legal', handle: 'legal' };
 
-test('Add replaces the card in place with the confirmation, through the click\'s own response_url', async () => {
+test('Add replaces the card in place with the confirmation and an Add another Agent button', async () => {
   await withPrivateSetup([OPS], async ({ calls, deliver, stores, setupId }) => {
     const click = addClick(setupId, OPS.id);
     assert.equal((await deliver('interactions', click.payload)).status, 200);
-    const [replaced] = await eventually(() => {
-      const found = replacements(calls, click.responseUrl);
-      return found.length ? found : undefined;
-    }) ?? [];
-    assert.ok(replaced, 'the card is replaced');
+    const replaced = await replacedAt(calls, click.responseUrl);
     assert.equal(replaced.replace_original, true);
     assert.equal(replaced.text, CONFIRMATION);
     assert.equal(replaced.blocks[0]?.text?.text, CONFIRMATION);
-    assert.deepEqual(buttons(replaced.blocks).map(({ url }) => url), [`${ORIGIN}/admin/agents`]);
-    const post = calls.find(({ url }) => url === click.responseUrl)!;
-    assert.equal(new URL(post.url).origin, 'https://hooks.slack.com');
+    assert.deepEqual(buttons(replaced.blocks).map(({ text, action_id, value, url }) => ({ label: text.text, action_id, value, url })), [
+      { label: 'Add another Agent', action_id: PRIVATE_CHANNEL_SETUP_AGAIN_ACTION, value: setupId, url: undefined },
+      { label: 'Open Chickpea', action_id: undefined, value: undefined, url: `${ORIGIN}/admin/agents` },
+    ]);
+    assert.equal(againButtonOf(replaced.blocks)?.accessibility_label, 'Choose another Agent to add to this private channel');
     await quiet(calls);
     assert.equal(ephemerals(calls).length, 1, 'only the original card was posted; the result replaced it');
     assert.equal((await stores.config.listAgentChannelGrants('T1', 'C1'))[0]?.status, 'active');
+  });
+});
+
+test('Add another Agent replaces the confirmation with a fresh card that leaves out the Agent just added', async () => {
+  await withPrivateSetup([OPS, LEGAL], async ({ calls, deliver, stores, setupId }) => {
+    const add = addClick(setupId, OPS.id);
+    await deliver('interactions', add.payload);
+    const again = againClick(againButtonOf((await replacedAt(calls, add.responseUrl)).blocks)?.value);
+    await deliver('interactions', again.payload);
+    const fresh = await replacedAt(calls, again.responseUrl);
+    assert.equal(fresh.replace_original, true);
+    assert.equal(fresh.text, 'Choose an Agent to add to this private channel. Only you can see this setup.');
+    assert.deepEqual(choicesOf(fresh.blocks), [LEGAL.id]);
+    const freshSetupId = buttons(fresh.blocks).find(({ action_id }) => action_id === PRIVATE_CHANNEL_SETUP_ADD_ACTION)?.value;
+    assert.ok(freshSetupId && freshSetupId !== setupId, 'the fresh card is its own setup');
+
+    const second = addClick(freshSetupId, LEGAL.id);
+    await deliver('interactions', second.payload);
+    assert.equal((await replacedAt(calls, second.responseUrl)).text,
+      'Added @legal to this private channel. Mention @legal to start a conversation.');
+    assert.deepEqual((await stores.config.listAgentChannelGrants('T1', 'C1')).map(({ agentId, status }) => [agentId, status]).sort(),
+      [[LEGAL.id, 'active'], [OPS.id, 'active']]);
+    await quiet(calls);
+    assert.equal(ephemerals(calls).length, 1, 'every step replaced the one card');
+  });
+});
+
+test('Add another Agent with nothing left to add shows the card that points to Chickpea', async () => {
+  await withPrivateSetup([OPS], async ({ calls, deliver, setupId }) => {
+    const add = addClick(setupId, OPS.id);
+    await deliver('interactions', add.payload);
+    await replacedAt(calls, add.responseUrl);
+    const again = againClick(setupId);
+    await deliver('interactions', again.payload);
+    const fresh = await replacedAt(calls, again.responseUrl);
+    assert.equal(fresh.text, 'Open Chickpea to create or manage Agents for this private channel.');
+    assert.deepEqual(choicesOf(fresh.blocks), []);
+    assert.deepEqual(buttons(fresh.blocks).map(({ text, url }) => [text.text, url]), [['Open Chickpea', `${ORIGIN}/admin/agents`]]);
+    assert.match(JSON.stringify(fresh.blocks), /You can also add Agents from Chickpea whenever you need to\./);
+  });
+});
+
+test('a fresh card Slack will not put in place goes out whole as a new ephemeral card', async () => {
+  await withPrivateSetup([OPS, LEGAL], async ({ calls, deliver, scene, setupId }) => {
+    const add = addClick(setupId, OPS.id);
+    await deliver('interactions', add.payload);
+    await replacedAt(calls, add.responseUrl);
+    scene.replace = 'unreachable';
+    const again = againClick(setupId);
+    await deliver('interactions', again.payload);
+    const fallback = await eventually(() => ephemerals(calls)[1]);
+    assert.equal(replacements(calls, again.responseUrl).length, 1, 'the replace was tried once');
+    assert.equal(fallback?.body.get('user'), 'U1');
+    assert.equal(fallback?.body.get('text'), 'Choose an Agent to add to this private channel. Only you can see this setup.');
+    assert.deepEqual(choicesOf(blocksOf(fallback!)), [LEGAL.id], 'the fallback is a card that still works');
+  });
+});
+
+test('Add another Agent from anyone but the card\'s inviter gets nothing', async () => {
+  await withPrivateSetup([OPS], async ({ calls, deliver, scene, setupId }) => {
+    scene.members = ['U1', 'U2', 'UBOT'];
+    const again = againClick(setupId, { user: 'U2' });
+    await deliver('interactions', again.payload);
+    await quiet(calls);
+    assert.deepEqual(replacements(calls, again.responseUrl), []);
+    assert.equal(ephemerals(calls).length, 1, 'only the original card');
+  });
+});
+
+test('Add another Agent on a card whose setup is gone says it expired, with no button to loop on', async () => {
+  await withPrivateSetup([OPS], async ({ calls, deliver }) => {
+    const again = againClick('setup_pruned');
+    await deliver('interactions', again.payload);
+    const replaced = await replacedAt(calls, again.responseUrl);
+    assert.match(replaced.text, /^This setup card has expired\./);
+    assert.deepEqual(buttons(replaced.blocks), []);
   });
 });
 
@@ -207,24 +314,29 @@ test('a click without a usable response_url gets today\'s ephemeral line', async
   });
 });
 
-test('an expired card is replaced with the expired text', async () => {
+test('an expired card is replaced with the expired text and a Choose an Agent button that starts over', async () => {
   await withPrivateSetup([OPS], async ({ calls, deliver, setupId }) => {
     const click = addClick(setupId, OPS.id);
     const originalNow = Date.now;
     const later = Date.now() + 31 * 60_000;
     Date.now = () => later;
+    let replaced: Replacement;
     try {
       await deliver('interactions', click.payload);
-      const [replaced] = await eventually(() => {
-        const found = replacements(calls, click.responseUrl);
-        return found.length ? found : undefined;
-      }) ?? [];
-      assert.match(replaced?.text ?? '', /^This setup card has expired\. Open Chickpea to add an Agent to this channel\./);
-      assert.equal(replaced?.blocks[0]?.text?.type, 'mrkdwn');
-      assert.match(replaced?.blocks[0]?.text?.text ?? '', /<https:\/\/chickpea\.example\/admin\/agents\|Open Chickpea>/);
+      replaced = await replacedAt(calls, click.responseUrl);
     } finally {
       Date.now = originalNow;
     }
+    assert.match(replaced.text, /^This setup card has expired\. Open Chickpea to add an Agent to this channel\./);
+    assert.equal(replaced.blocks[0]?.text?.type, 'mrkdwn');
+    assert.match(replaced.blocks[0]?.text?.text ?? '', /<https:\/\/chickpea\.example\/admin\/agents\|Open Chickpea>/);
+    const choose = againButtonOf(replaced.blocks);
+    assert.equal(choose?.text.text, 'Choose an Agent');
+    assert.equal(choose?.accessibility_label, 'Choose an Agent to add to this private channel');
+
+    const again = againClick(choose?.value);
+    await deliver('interactions', again.payload);
+    assert.deepEqual(choicesOf((await replacedAt(calls, again.responseUrl)).blocks), [OPS.id]);
   });
 });
 
@@ -242,10 +354,6 @@ test('an unexpected failure before the claim answers beside the card, which stil
     scene.channelLookupFails = false;
     const retry = addClick(setupId, OPS.id);
     await deliver('interactions', retry.payload);
-    const [replaced] = await eventually(() => {
-      const found = replacements(calls, retry.responseUrl);
-      return found.length ? found : undefined;
-    }) ?? [];
-    assert.equal(replaced?.text, CONFIRMATION, 'the same card adds the Agent on the next click');
+    assert.equal((await replacedAt(calls, retry.responseUrl)).text, CONFIRMATION, 'the same card adds the Agent on the next click');
   });
 });

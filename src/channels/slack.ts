@@ -251,9 +251,11 @@ import { requireAgentChannelPublication } from '../auth/permissions.ts';
 import { PrivateChannelSetupError, PrivateChannelSetupService } from '../slack/private-channel-setup-service.ts';
 import {
   parsePrivateChannelSetupAction,
+  parsePrivateChannelSetupAgainAction,
   privateChannelSetupCard,
   privateChannelSetupReply,
   type PrivateChannelSetupAction,
+  type PrivateChannelSetupAgainAction,
   type PrivateChannelSetupOutcome,
 } from '../slack/private-channel-setup.ts';
 import { replaceSlackActionMessage } from '../slack/action-response-url.ts';
@@ -1047,7 +1049,18 @@ function handleDirectSlackInteractions(): NonNullable<SlackChannelOptions['inter
     const setupAction = parsePrivateChannelSetupAction(payload);
     if (setupAction) {
       detach(c, processDirectPrivateChannelSetup(
-        setupAction, payload.api_app_id, c.env as PlatformEnv | undefined,
+        setupAction.workspaceId, payload.api_app_id, c.env as PlatformEnv | undefined,
+        (execution) => completePrivateChannelSetupAction(setupAction, execution),
+      ).catch((error) => {
+        console.error('[chickpea] private Channel setup action failed:', sanitizeError(error));
+      }));
+      return;
+    }
+    const setupAgain = parsePrivateChannelSetupAgainAction(payload);
+    if (setupAgain) {
+      detach(c, processDirectPrivateChannelSetup(
+        setupAgain.workspaceId, payload.api_app_id, c.env as PlatformEnv | undefined,
+        (execution) => completePrivateChannelSetupAgain(setupAgain, execution),
       ).catch((error) => {
         console.error('[chickpea] private Channel setup action failed:', sanitizeError(error));
       }));
@@ -3058,12 +3071,13 @@ export async function processGatewayViewSubmission(
 }
 
 async function processDirectPrivateChannelSetup(
-  action: PrivateChannelSetupAction,
+  workspaceId: string,
   apiAppId: string | undefined,
-  platformEnv?: PlatformEnv,
+  platformEnv: PlatformEnv | undefined,
+  complete: (execution: PrivateChannelSetupExecution) => Promise<void>,
 ): Promise<void> {
   const stores = resolveStores(platformEnv);
-  const installation = await stores.config.getWorkspaceInstallation(action.workspaceId);
+  const installation = await stores.config.getWorkspaceInstallation(workspaceId);
   if (!installation || installation.transportMode !== 'direct' ||
       installation.health === 'revoked' || !installation.appId ||
       installation.appId !== apiAppId) return;
@@ -3074,7 +3088,7 @@ async function processDirectPrivateChannelSetup(
     installation.botUserId, credentials, platformEnv,
   );
   if (!credentials.botToken || !botUserId) return;
-  await completePrivateChannelSetupAction(action, {
+  await complete({
     stores,
     transport: createDirectSlackTransport(credentials.botToken, ownerUserGroupToken(credentials, stores.settings)),
     client: createSlackWebClient(credentials.botToken),
@@ -3188,6 +3202,29 @@ async function completePrivateChannelSetupAction(
   });
 }
 
+/**
+ * "Add another Agent" (or "Choose an Agent") on a finished card: a fresh setup
+ * for the same inviter and Channel replaces it. `begin` repeats every
+ * authority check, so the old intent's status does not matter.
+ */
+async function completePrivateChannelSetupAgain(
+  action: PrivateChannelSetupAgainAction,
+  execution: PrivateChannelSetupExecution,
+): Promise<void> {
+  const intent = await execution.stores.management.getPrivateChannelSetupIntent(action.setupId);
+  // A pruned intent can still be answered: a response_url reaches only the
+  // clicker's own ephemeral message.
+  if (intent && !setupIntentBelongsTo(intent, action)) return;
+  if (!await execution.stores.slackState.claim(`private-setup-again:${action.deliveryId}`)) return;
+  await answerPrivateChannelSetupClick(action, execution, async () => {
+    if (!intent) return { kind: 'missing' };
+    const setup = await privateChannelSetupService(execution).begin({
+      workspaceId: action.workspaceId, channelId: action.channelId, inviterSlackUserId: action.userId,
+    });
+    return { kind: 'begun', ...setup };
+  });
+}
+
 function setupIntentBelongsTo(
   intent: PrivateChannelSetupIntent,
   click: { workspaceId: string; userId: string; channelId: string },
@@ -3198,7 +3235,7 @@ function setupIntentBelongsTo(
 
 /** Settle one setup click into its reply and deliver it to the clicker alone. */
 async function answerPrivateChannelSetupClick(
-  click: { channelId: string; userId: string; responseUrl?: string },
+  click: { channelId: string; userId: string; setupId: string; responseUrl?: string },
   execution: PrivateChannelSetupExecution,
   settle: () => Promise<PrivateChannelSetupOutcome>,
 ): Promise<void> {
@@ -3212,7 +3249,10 @@ async function answerPrivateChannelSetupClick(
     outcome = { kind: 'failed', error };
   }
   const adminUrl = await privateChannelSetupAdminUrl(execution);
-  const reply = privateChannelSetupReply(outcome, adminUrl ? { adminUrl } : {});
+  const reply = privateChannelSetupReply(outcome, {
+    ...(adminUrl ? { adminUrl } : {}),
+    ...(click.responseUrl ? { againSetupId: click.setupId } : {}),
+  });
   if (reply.kind === 'silent') return;
   if (reply.kind === 'replace' && click.responseUrl &&
       await replaceSlackActionMessage(click.responseUrl, reply.message)) return;

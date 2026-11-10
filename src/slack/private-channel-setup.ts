@@ -2,12 +2,15 @@ import { slackActionResponseUrl } from './action-response-url.ts';
 import {
   PrivateChannelSetupError,
   type AddPrivateChannelAgentResult,
+  type PrivateChannelSetupChoice,
 } from './private-channel-setup-service.ts';
 
 /** Versioned alongside the private gateway's narrowly normalized Add action. */
 export const PRIVATE_CHANNEL_SETUP_ADD_ACTION = 'chickpea.private_channel_setup.v1.add';
 export const PRIVATE_CHANNEL_SETUP_AGENT_ACTION = 'chickpea.private_channel_setup.v1.agent';
 export const PRIVATE_CHANNEL_SETUP_CHOICE_BLOCK = 'chickpea.private_channel_setup.v1.choice';
+/** Direct transport only: the gateway does not forward it. */
+export const PRIVATE_CHANNEL_SETUP_AGAIN_ACTION = 'chickpea.private_channel_setup.v1.again';
 
 export interface PrivateChannelSetupAction {
   workspaceId: string;
@@ -32,6 +35,24 @@ export function parsePrivateChannelSetupAction(payload: unknown): PrivateChannel
   const agentId = selected === null ? null : record(selected)?.value;
   if (agentId !== null && !safeId(agentId)) return undefined;
   return { ...click.action, agentId };
+}
+
+/** "Add another Agent" or "Choose an Agent" on a finished setup card. */
+export interface PrivateChannelSetupAgainAction {
+  workspaceId: string;
+  userId: string;
+  channelId: string;
+  /** The finished card's setup, which binds the click to its inviter. */
+  setupId: string;
+  deliveryId: string;
+  responseUrl: string;
+}
+
+/** Parsing grants no authority. A click without a response_url could not replace its card, so it is none. */
+export function parsePrivateChannelSetupAgainAction(payload: unknown): PrivateChannelSetupAgainAction | undefined {
+  const click = parseSetupCardClick(payload, PRIVATE_CHANNEL_SETUP_AGAIN_ACTION);
+  const responseUrl = click?.action.responseUrl;
+  return click && responseUrl ? { ...click.action, responseUrl } : undefined;
 }
 
 /** One button click on an inviter's own ephemeral setup card. */
@@ -149,11 +170,20 @@ export type PrivateChannelSetupOutcome =
   | AddPrivateChannelAgentResult
   | { kind: 'choose' }
   | { kind: 'unavailable'; reason: 'expired' | 'used' }
+  | { kind: 'begun'; setupId: string; agents: readonly PrivateChannelSetupChoice[]; choicesTruncated: boolean }
+  /** The finished card's setup is gone, so another click has nothing to bind to. */
+  | { kind: 'missing' }
   | { kind: 'failed'; error: unknown };
+
+export interface SetupReplyContext {
+  adminUrl?: string;
+  /** Set only when the card can be replaced: the setup its again button binds to. */
+  againSetupId?: string;
+}
 
 export function privateChannelSetupReply(
   outcome: PrivateChannelSetupOutcome,
-  context: { adminUrl?: string },
+  context: SetupReplyContext,
 ): SetupCardReply {
   switch (outcome.kind) {
     case 'completed':
@@ -168,12 +198,25 @@ export function privateChannelSetupReply(
       return unavailableReply(outcome.reason, context);
     case 'recovery_required':
       return textReply(privateChannelSetupRecoveryText(context.adminUrl));
+    case 'begun':
+      return {
+        kind: 'replace',
+        message: privateChannelSetupCard({
+          setupId: outcome.setupId,
+          agents: outcome.agents.map(({ agentId, name, handle }) => ({ id: agentId, name, handle })),
+          truncated: outcome.choicesTruncated,
+          ...(context.adminUrl ? { adminUrl: context.adminUrl } : {}),
+        }),
+        fallback: 'card',
+      };
+    case 'missing':
+      return textReply(privateChannelSetupUnavailableText('expired', context.adminUrl));
     case 'failed':
       return failedReply(outcome.error, context);
   }
 }
 
-function failedReply(error: unknown, context: { adminUrl?: string }): SetupCardReply {
+function failedReply(error: unknown, context: SetupReplyContext): SetupCardReply {
   // An unexpected error leaves the card as it was, so another click can retry.
   if (!(error instanceof PrivateChannelSetupError)) {
     return { kind: 'notice', text: privateChannelSetupRecoveryText(context.adminUrl) };
@@ -193,31 +236,57 @@ function failedReply(error: unknown, context: { adminUrl?: string }): SetupCardR
   }
 }
 
-function setupConfirmation(handle: string, context: { adminUrl?: string }): SetupCardMessage {
+function setupConfirmation(handle: string, context: SetupReplyContext): SetupCardMessage {
   const text = `Added @${handle} to this private channel. Mention @${handle} to start a conversation.`;
   const adminUrl = safeAdminUrl(context.adminUrl);
+  const actions = [
+    ...(context.againSetupId ? [againButton(context.againSetupId, 'Add another Agent',
+      'Choose another Agent to add to this private channel')] : []),
+    ...(adminUrl ? [openChickpeaButton(adminUrl)] : []),
+  ];
   return {
     text,
     blocks: [
       { type: 'section', text: { type: 'plain_text', text, emoji: false } },
-      ...(adminUrl ? [{ type: 'actions', elements: [openChickpeaButton(adminUrl)] }] : []),
+      ...(actions.length ? [{ type: 'actions', elements: actions }] : []),
     ],
   };
 }
 
 function unavailableReply(
   reason: 'expired' | 'stale' | 'used' | 'removed',
-  context: { adminUrl?: string },
+  context: SetupReplyContext,
 ): SetupCardReply {
-  return textReply(privateChannelSetupUnavailableText(reason, context.adminUrl));
+  return textReply(
+    privateChannelSetupUnavailableText(reason, context.adminUrl),
+    context.againSetupId
+      ? againButton(context.againSetupId, 'Choose an Agent', 'Choose an Agent to add to this private channel')
+      : undefined,
+  );
 }
 
 /** The text carries its own Open Chickpea link, so it renders as mrkdwn. */
-function textReply(text: string): SetupCardReply {
+function textReply(text: string, button?: Record<string, unknown>): SetupCardReply {
   return {
     kind: 'replace',
-    message: { text, blocks: [{ type: 'section', text: { type: 'mrkdwn', text } }] },
+    message: {
+      text,
+      blocks: [
+        { type: 'section', text: { type: 'mrkdwn', text } },
+        ...(button ? [{ type: 'actions', elements: [button] }] : []),
+      ],
+    },
     fallback: 'text',
+  };
+}
+
+function againButton(setupId: string, text: string, accessibilityLabel: string): Record<string, unknown> {
+  return {
+    type: 'button',
+    action_id: PRIVATE_CHANNEL_SETUP_AGAIN_ACTION,
+    value: setupId,
+    text: { type: 'plain_text', text, emoji: false },
+    accessibility_label: accessibilityLabel,
   };
 }
 
