@@ -129,7 +129,7 @@ function agentStatus(agent: SnapshotAgent): AgentRow['status'] {
   return agent.enabled ? 'on' : 'off';
 }
 
-function agentLinks(baseUrl: string | undefined, agentId: string, slack: string | undefined) {
+export function agentLinks(baseUrl: string | undefined, agentId: string, slack: string | undefined) {
   const origin = adminOrigin(baseUrl);
   if (!origin) return undefined;
   return { admin: `${origin}${ADMIN_PATH}/agents/${encodeURIComponent(agentId)}`, ...(slack ? { slack } : {}) };
@@ -295,7 +295,7 @@ function agentNotFound(): never {
  * The service refuses an Agent the caller cannot edit without saying whether
  * it exists; the 5.0 tools call that not_found, as `get_agent` does.
  */
-async function forManagedAgent<T>(read: Promise<T>): Promise<T> {
+export async function forManagedAgent<T>(read: Promise<T>): Promise<T> {
   try {
     return await read;
   } catch (error) {

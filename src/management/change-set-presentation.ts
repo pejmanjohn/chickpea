@@ -28,6 +28,8 @@ export interface ChangeSetPresentationDialect {
   escape: (text: string) => string;
   /** A technical value (URL, host, tool, scope) shown inert: no mention, link or formatting. */
   code: (text: string) => string;
+  /** A URL the person should be able to open as written; without it, the URL is quoted like stored text. */
+  link?: (url: string) => string;
 }
 
 type PreviewChange = ManagementChangeSetPreview['changes'][number];
@@ -212,7 +214,10 @@ function proposalParts(
   const connectionTables = preview.publicDocRead ? CONNECTION_FIELDS_AFTER_PAGE_READ : CONNECTION_FIELDS;
   const source = skillSourceUrl === undefined
     ? []
-    : [{ text: [dialect.bold('Source'), quoteValue(skillSourceUrl, dialect)].join('\n'), pinned: true }];
+    : [{
+      text: [dialect.bold('Source'), dialect.link ? `> ${dialect.link(skillSourceUrl)}` : quoteValue(skillSourceUrl, dialect)].join('\n'),
+      pinned: true,
+    }];
   return [...source, ...preview.changes.flatMap((change): PreviewPart[] => {
     if (creation?.originGrant === change) return [];
     if (change.operationKind === 'create_agent') {

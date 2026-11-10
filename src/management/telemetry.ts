@@ -116,7 +116,7 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
     'registration', 'resource', 'scope', 'validation',
   ]),
   staleReason: new Set([
-    'binding', 'digest_mismatch', 'permission_changed', 'target_revision', 'unknown',
+    'binding', 'digest_mismatch', 'expired', 'permission_changed', 'target_revision', 'unknown',
   ]),
   surface: new Set(['admin', 'mcp', 'service', 'setup', 'slack', 'unknown']),
   tool: new Set([
@@ -133,6 +133,10 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
     'list_members', 'list_slack_channels', 'get_agent_memory', 'list_schedules', 'get_setup_status',
     'export_agents', 'list_connected_apps', 'propose_agent', 'propose_agent_change',
     'get_creation_status', 'explain_agent', 'check_agent',
+    'create_agent', 'update_agent', 'update_agent_memory', 'archive_agent', 'restore_agent',
+    'add_agent_to_channel', 'save_channel_settings', 'import_skill_from_github', 'upload_skill_files', 'set_agent_skill',
+    'save_schedule', 'pause_schedule', 'resume_schedule', 'run_schedule_now', 'take_over_schedule',
+    'set_workspace_model', 'connect_model_provider', 'confirm_change', 'undo_change',
   ]),
 };
 
@@ -158,7 +162,7 @@ const REASON_TOKENS = new Set([
   'management_outcome_unknown',
   'missing_token', 'operation_in_progress', 'operation_not_found', 'other',
   'operational_access_required', 'owner_required', 'proposal_binding_mismatch',
-  'proposal_not_found', 'proposal_stale', 'revision_conflict', 'setup_expired',
+  'proposal_not_found', 'proposal_stale', 'proposal_expired', 'revision_conflict', 'setup_expired',
   'base_agent_capabilities_require_setup',
   'setup_failed', 'setup_not_found', 'setup_session_mismatch', 'setup_unavailable',
   'target_changed', 'undo_unavailable', 'validation_failed', 'mcp_client_not_found',

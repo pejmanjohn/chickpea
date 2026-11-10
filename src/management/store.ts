@@ -111,6 +111,7 @@ interface ManagementChangeSetProposalRow {
   request_operation_id: string | null;
   proposed_message_ts: string | null;
   expires_at: number;
+  confirmation_expires_at: number | null;
   created_at: number;
   updated_at: number;
 }
@@ -123,6 +124,9 @@ interface ManagementUndoRow {
   resulting_revisions_json: string;
   agent_configuration_digest: string | null;
   status: ManagementUndoRecord['status'];
+  actor_membership_id: string | null;
+  app_key: string | null;
+  consumed_by: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -250,7 +254,7 @@ export interface ManagementStore {
   ): Promise<ManagementChangeSetProposalRecord>;
   putUndo(record: ManagementUndoRecord): Promise<ManagementUndoRecord>;
   getUndo(operationId: string): Promise<ManagementUndoRecord | undefined>;
-  consumeUndo(operationId: string, at: number): Promise<ManagementUndoRecord>;
+  consumeUndo(operationId: string, at: number, consumedBy?: string): Promise<ManagementUndoRecord>;
   putSetup(input: PutManagementSetupInput): Promise<ManagementSetupRecord>;
   claimAgentCreationWelcome(
     input: ClaimAgentCreationWelcomeInput,
@@ -414,7 +418,7 @@ export class ManagementStoreLogic {
       case 'get_undo':
         return { kind: 'undo', undo: this.getUndo(request.operationId) ?? null };
       case 'consume_undo':
-        return { kind: 'undo', undo: this.consumeUndo(request.operationId, request.at) };
+        return { kind: 'undo', undo: this.consumeUndo(request.operationId, request.at, request.consumedBy) };
       case 'put_setup':
         return { kind: 'setup', setup: this.putSetup(request.input) };
       case 'claim_agent_creation_welcome':
@@ -774,8 +778,9 @@ export class ManagementStoreLogic {
         proposal_id, organization_id, actor_user_id, actor_membership_id,
         origin_key, approval_scope_key, idempotency_key, guide_version, authoring_reason,
         operations_json, digest, preview_json, target_revisions_json,
-        status, result_json, request_operation_id, proposed_message_ts, expires_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, 0, ?, ?)`,
+        status, result_json, request_operation_id, proposed_message_ts, expires_at,
+        confirmation_expires_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, 0, ?, ?, ?)`,
       input.proposalId,
       input.organizationId,
       input.actorUserId,
@@ -791,6 +796,7 @@ export class ManagementStoreLogic {
       JSON.stringify(input.targetRevisions),
       input.requestOperationId ?? null,
       input.proposedMessageTs ?? null,
+      input.expiresAt ?? null,
       input.at,
       input.at,
     );
@@ -1006,8 +1012,9 @@ export class ManagementStoreLogic {
     this.db.run(
       `INSERT INTO management_undo (
         operation_id, organization_id, actor_user_id, inverse_json,
-        resulting_revisions_json, agent_configuration_digest, status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        resulting_revisions_json, agent_configuration_digest, status,
+        actor_membership_id, app_key, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       record.operationId,
       record.organizationId,
       record.actorUserId,
@@ -1015,6 +1022,8 @@ export class ManagementStoreLogic {
       JSON.stringify(record.resultingRevisions),
       record.agentConfigurationDigest ?? null,
       record.status,
+      record.actorMembershipId ?? null,
+      record.appKey ?? null,
       record.createdAt,
       record.updatedAt,
     );
@@ -1029,14 +1038,15 @@ export class ManagementStoreLogic {
     return row ? undoFromRow(row) : undefined;
   }
 
-  consumeUndo(operationId: string, at: number): ManagementUndoRecord {
+  consumeUndo(operationId: string, at: number, consumedBy?: string): ManagementUndoRecord {
     const undo = this.requireUndo(operationId);
     if (undo.status !== 'available') {
       throw new ManagementError('undo_unavailable', 'The undo action is no longer available.');
     }
     this.db.run(
-      `UPDATE management_undo SET status = 'consumed', updated_at = ?
+      `UPDATE management_undo SET status = 'consumed', consumed_by = ?, updated_at = ?
        WHERE operation_id = ? AND status = 'available'`,
+      consumedBy ?? null,
       at,
       operationId,
     );
@@ -1855,7 +1865,9 @@ export class ManagementStoreLogic {
         updated_at INTEGER NOT NULL
       )`,
     );
-    addColumnIfMissing(this.db, 'management_undo', 'agent_configuration_digest', 'TEXT');
+    for (const name of ['agent_configuration_digest', 'actor_membership_id', 'app_key', 'consumed_by']) {
+      addColumnIfMissing(this.db, 'management_undo', name, 'TEXT');
+    }
     this.db.exec(
       `CREATE INDEX IF NOT EXISTS management_undo_retention_idx
        ON management_undo (status, updated_at)`,
@@ -1999,6 +2011,8 @@ export class ManagementStoreLogic {
       ['approval_scope_key', "TEXT NOT NULL DEFAULT ''"],
       ['request_operation_id', 'TEXT'],
       ['proposed_message_ts', 'TEXT'],
+      // Legacy expires_at values predate the retired expiry, so a 5.0 lifetime has its own column.
+      ['confirmation_expires_at', 'INTEGER'],
     ];
     for (const [name, definition] of additions) {
       addColumnIfMissing(this.db, 'management_change_set_proposals', name, definition);
@@ -2150,6 +2164,7 @@ function changeSetProposalFromRow(
       : {}),
     ...(row.request_operation_id ? { requestOperationId: row.request_operation_id } : {}),
     ...(row.proposed_message_ts ? { proposedMessageTs: row.proposed_message_ts } : {}),
+    ...(row.confirmation_expires_at ? { expiresAt: Number(row.confirmation_expires_at) } : {}),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };
@@ -2212,7 +2227,10 @@ function undoFromRow(row: ManagementUndoRow): ManagementUndoRecord {
     inverse: JSON.parse(row.inverse_json) as ManagementUndoRecord['inverse'],
     resultingRevisions: JSON.parse(row.resulting_revisions_json) as Record<string, number>,
     ...(row.agent_configuration_digest ? { agentConfigurationDigest: row.agent_configuration_digest } : {}),
+    ...(row.actor_membership_id ? { actorMembershipId: row.actor_membership_id } : {}),
+    ...(row.app_key ? { appKey: row.app_key } : {}),
     status: row.status,
+    ...(row.consumed_by ? { consumedBy: row.consumed_by } : {}),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };

@@ -70,7 +70,11 @@ const WRITE = { readOnlyHint: false, destructiveHint: false, idempotentHint: tru
 /** A 5.0 read states all three hints. */
 const READ_5 = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
 
-/** Only confirm_workspace_change can carry out a change the person must approve first. */
+/** A 5.0 write states all four hints; a retry with its idempotencyKey replays. */
+const ADDS_5 = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+const DESTRUCTIVE_5 = { ...ADDS_5, destructiveHint: true };
+
+/** Only confirm_workspace_change and confirm_change carry out a change the person must approve first. */
 const MCP_TOOL_ANNOTATIONS = {
   inspect_workspace: READ,
   prepare_connector_setup: READ,
@@ -111,6 +115,27 @@ const MCP_TOOL_ANNOTATIONS = {
   get_creation_status: READ_5,
   explain_agent: READ_5,
   check_agent: { ...READ_5, openWorldHint: true },
+  // 5.0 writes: OpenAI's rule, so an overwrite, removal or irreversible send is destructive,
+  // such as the welcome create_agent and add_agent_to_channel post in a public Channel.
+  create_agent: DESTRUCTIVE_5,
+  update_agent: DESTRUCTIVE_5,
+  update_agent_memory: DESTRUCTIVE_5,
+  archive_agent: DESTRUCTIVE_5,
+  restore_agent: ADDS_5,
+  add_agent_to_channel: DESTRUCTIVE_5,
+  save_channel_settings: DESTRUCTIVE_5,
+  import_skill_from_github: { ...DESTRUCTIVE_5, openWorldHint: true },
+  upload_skill_files: DESTRUCTIVE_5,
+  set_agent_skill: DESTRUCTIVE_5,
+  save_schedule: DESTRUCTIVE_5,
+  pause_schedule: DESTRUCTIVE_5,
+  resume_schedule: ADDS_5,
+  run_schedule_now: { ...DESTRUCTIVE_5, openWorldHint: true },
+  take_over_schedule: DESTRUCTIVE_5,
+  set_workspace_model: DESTRUCTIVE_5,
+  connect_model_provider: { ...DESTRUCTIVE_5, idempotentHint: false },
+  confirm_change: DESTRUCTIVE_5,
+  undo_change: DESTRUCTIVE_5,
 };
 
 const CLIENTS = [
@@ -211,7 +236,7 @@ test('supported coding clients share public PKCE registration and stateless MCP 
         assert.deepEqual(
           [listedTool.outputSchema, listedTool.securitySchemes, listedTool._meta],
           [undefined, undefined, undefined],
-          `${client.name} ${listedTool.name}: a 4.x descriptor is unchanged in 4.3`,
+          `${client.name} ${listedTool.name}: a 4.x descriptor is unchanged in 4.4`,
         );
       }
       const immediateSkillImport = listedTools.find(({ name }) => name === 'import_skill');
@@ -483,7 +508,7 @@ test('server instructions stay under the client cap and link the deployment Admi
 test('workspace management MCP publishes the version 4 server contract', () => {
   assert.deepEqual(WORKSPACE_MANAGEMENT_SERVER_INFO, {
     name: 'chickpea-workspace',
-    version: '4.3.0',
+    version: '4.4.0',
   });
   assert.match(WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI, /\/v2$/);
 });

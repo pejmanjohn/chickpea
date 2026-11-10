@@ -1,0 +1,501 @@
+import assert from 'node:assert/strict';
+import { test, type TestContext } from 'node:test';
+
+import { createMcpHandler } from '@modelcontextprotocol/server';
+
+import type { McpAuthenticatedPrincipal } from '../src/auth/mcp-oauth-routes.ts';
+import { createWorkspaceManagementMcpServer } from '../src/management/mcp.ts';
+import {
+  createFixtureAgent,
+  createManagementAdapterFixture,
+  type ManagementAdapterFixture,
+} from './helpers/management-adapter-fixture.ts';
+
+const NOW = 1_800_000_000_000;
+const THIRTY_MINUTES = 30 * 60_000;
+
+type ToolResult = {
+  content: Array<{ type: string; text: string }>;
+  structuredContent?: Record<string, unknown> & { error?: Record<string, unknown> };
+  isError?: boolean;
+};
+type Call = (name: string, args?: Record<string, unknown>) => Promise<ToolResult>;
+type Person = 'owner' | 'admin';
+
+/**
+ * One workspace on a clock the test moves. `as` names the person each call
+ * acts as and the client they connected; `member` demotes the second person.
+ */
+async function harness(t: TestContext, suffix: string, options: { member?: boolean } = {}) {
+  const clock = { now: NOW };
+  const f = await createManagementAdapterFixture(suffix, { now: () => clock.now });
+  t.after(() => f.close());
+  if (options.member) {
+    await f.identity.updateMembershipAuthority({
+      membershipId: f.admin.membership.id,
+      role: 'member',
+      actorMembershipId: f.owner.membership.id,
+      correlationId: `${suffix}-demotion`,
+      authenticationSurface: 'better_auth',
+      reasonCode: 'mcp_v5_test',
+    });
+  }
+  const as = (who: Person, clientId = `client_${suffix}`): Call => {
+    const person = who === 'owner' ? f.owner : f.admin;
+    const principal: McpAuthenticatedPrincipal = {
+      betterAuthUserId: person.binding.betterAuthUserId ?? `ba_${who}`,
+      userId: person.user.id,
+      membershipId: person.membership.id,
+      organizationId: person.membership.organizationId,
+      role: who === 'owner' ? 'owner' : options.member ? 'member' : 'admin',
+      clientId,
+    };
+    const handler = createMcpHandler(
+      () => createWorkspaceManagementMcpServer({ principal, service: f.service, baseUrl: 'https://chickpea.example.test' }),
+      { legacy: 'stateless' },
+    );
+    return async (name, args = {}) => {
+      const response = await handler.fetch(new Request('http://localhost/mcp', {
+        method: 'POST',
+        headers: {
+          accept: 'application/json, text/event-stream',
+          'content-type': 'application/json',
+          'mcp-protocol-version': '2025-11-25',
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+      }));
+      const body = await response.text();
+      assert.equal(response.status, 200, body);
+      const json = body.trimStart().startsWith('{')
+        ? body
+        : body.split('\n').find((line) => line.startsWith('data: '))!.slice('data: '.length);
+      return (JSON.parse(json) as { result: ToolResult }).result;
+    };
+  };
+  return { f, clock, as, call: as('owner'), teamId: f.owner.binding.slackTeamId };
+}
+
+function structured(result: ToolResult): Record<string, any> {
+  assert.notEqual(result.isError, true, JSON.stringify(result));
+  assert.ok(result.structuredContent, JSON.stringify(result));
+  assert.deepEqual(JSON.parse(result.content[0]!.text), result.structuredContent, 'the text block carries the same JSON');
+  return result.structuredContent;
+}
+
+function errorOf(result: ToolResult, code: string): Record<string, unknown> {
+  assert.equal(result.isError, true, JSON.stringify(result));
+  const error = result.structuredContent?.error;
+  assert.ok(error, `a 5.0 error carries structuredContent.error: ${JSON.stringify(result)}`);
+  assert.equal(error.code, code, JSON.stringify(error));
+  assert.ok(result.content[0]!.text.startsWith(error.message as string));
+  return error;
+}
+
+function assertNoInternalIds(serialized: string, f: ManagementAdapterFixture): void {
+  for (const forbidden of [
+    f.owner.membership.organizationId, f.owner.membership.id, f.owner.user.id,
+    f.admin.membership.id, f.admin.user.id, '"revision"', 'configurationGeneration', 'creatorMembershipId',
+    'organizationId', 'membershipId', 'effectiveRevision', 'proposalId', 'operationId',
+    'confirm_workspace_change', 'apply_workspace_changes',
+  ]) assert.equal(serialized.includes(forbidden), false, `${forbidden} leaked: ${serialized.slice(Math.max(0, serialized.indexOf(forbidden) - 300), serialized.indexOf(forbidden) + 100)}`);
+}
+
+async function grantChannel(f: ManagementAdapterFixture, teamId: string, agentId: string, channelId = 'C_SUPPORT') {
+  await f.config.putChannel({ workspaceId: teamId, channelId, label: channelId.slice(2).toLowerCase(), lifecycle: 'active' });
+  await f.config.putAgentChannelGrant({
+    workspaceId: teamId,
+    channelId,
+    agentId,
+    status: 'active',
+    createdByMembershipId: f.owner.membership.id,
+    channelLabel: channelId.slice(2).toLowerCase(),
+  });
+}
+
+async function version(call: Call, agentId: string): Promise<string> {
+  return structured(await call('get_agent', { agentId })).version;
+}
+
+test('create_agent takes propose_agent\'s arguments unchanged, joins its Channels, says hello, and replays', async (t) => {
+  const { f, call, teamId } = await harness(t, 'create');
+  await f.config.putChannel({ workspaceId: teamId, channelId: 'C_SUPPORT', label: 'support', lifecycle: 'active' });
+  const proposed = structured(await call('propose_agent', {
+    name: 'Support Desk',
+    handle: 'support-desk',
+    job: 'Answers support questions from the help center.',
+    instructions: 'Answer from the help center and link the article.',
+    sampleAsk: 'How do I reset my password?',
+    promisedAnswer: 'Open Settings, then Security.',
+    channels: ['#support'],
+  }));
+  const args = proposed.create.arguments;
+
+  const created = structured(await call('create_agent', args));
+  assert.equal(created.status, 'done');
+  assert.match(created.summary, /^Created Support Desk\. It joins 1 Channel;/);
+  const { agentId } = created.agent;
+  assert.equal(agentId, 'agent_support_desk');
+  assert.equal(created.agent.links.admin, 'https://chickpea.example.test/admin/agents/agent_support_desk');
+  assert.equal(created.undoToken, undefined, 'a creation has no undo');
+  assert.equal(created.version, await version(call, agentId));
+  const stored = await f.config.getAgent(agentId);
+  assert.deepEqual([stored.name, stored.description, stored.enabled], ['Support Desk', 'Answers support questions from the help center.', true]);
+  const grants = await f.config.listAgentChannelGrants(teamId, 'C_SUPPORT');
+  assert.deepEqual(grants.map(({ agentId: granted, status }) => [granted, status]), [[agentId, 'active']]);
+
+  // The hello in Slack (DB-2) ends with the first ask the proposal showed.
+  const welcomes = await f.management.execute({
+    kind: 'list_direct_agent_creation_welcomes',
+    userId: f.owner.user.id,
+    agentId,
+    requesterMembershipId: f.owner.membership.id,
+  }) as { outbox: Array<{ receipt: { firstAsk?: string } }> };
+  assert.equal(welcomes.outbox[0]?.receipt.firstAsk, 'How do I reset my password?');
+  assert.equal(structured(await call('get_creation_status', { agentId })).channels, 'joined');
+
+  // A retry replays: the same result, and no second Agent or welcome.
+  assert.deepEqual(structured(await call('create_agent', args)), created);
+  assert.equal((await f.config.listUserAgents()).length, 1);
+  errorOf(await call('create_agent', { ...args, name: 'Billing Desk', handle: 'billing-desk', channels: undefined }), 'key_reused');
+
+  // A near-duplicate asks first; a distinct one needs its own handle.
+  const similar = structured(await call('create_agent', { ...args, channels: undefined, idempotencyKey: 'again' }));
+  assert.equal(similar.status, 'similar_agent_exists');
+  assert.deepEqual(similar.matches, [{ agentId, name: 'Support Desk', handle: 'support-desk' }]);
+  const distinct = structured(await call('create_agent', {
+    name: 'Support Desk', handle: 'support-desk-two', instructions: 'Second desk.', createEvenIfSimilar: true, idempotencyKey: 'distinct',
+  }));
+  assert.equal(distinct.agent.agentId, 'agent_support_desk_2', 'a derived agentId skips one in use');
+
+  errorOf(await call('create_agent', {
+    name: 'Nowhere', instructions: 'x', channels: ['#no-such-channel'], idempotencyKey: 'nowhere',
+  }), 'invalid_input');
+  assert.equal((await f.config.listUserAgents()).some(({ name }) => name === 'Nowhere'), false, 'an unknown Channel creates nothing');
+  assertNoInternalIds(JSON.stringify({ created, similar, distinct }), f);
+});
+
+test('update_agent checks the version, replays a retry, refuses a reused key, and saves a field and image model pair', async (t) => {
+  const { f, as, call } = await harness(t, 'update');
+  await createFixtureAgent(f, 'agent_research');
+  const read = await version(call, 'agent_research');
+
+  const saved = structured(await call('update_agent', {
+    agentId: 'agent_research', version: read, description: 'Finds and cites sources.', idempotencyKey: 'describe',
+  }));
+  assert.deepEqual([saved.status, saved.summary, saved.agent.agentId], ['done', 'Saved Research.', 'agent_research']);
+  assert.notEqual(saved.version, read);
+  assert.equal(saved.version, await version(call, 'agent_research'), 'the version a next change sends');
+  assert.match(saved.undoToken, /^mcp5_/);
+
+  // The retry's version is stale now, but the stored result answers first.
+  assert.deepEqual(structured(await call('update_agent', {
+    agentId: 'agent_research', version: read, description: 'Finds and cites sources.', idempotencyKey: 'describe',
+  })), saved);
+  // The same person's identical call from another app is that app's own call, so nothing replays.
+  const afterSave = await f.config.getAgent('agent_research');
+  errorOf(await as('owner', 'client_other_app')('update_agent', {
+    agentId: 'agent_research', version: read, description: 'Finds and cites sources.', idempotencyKey: 'describe',
+  }), 'changed_since_read');
+  assert.deepEqual(await f.config.getAgent('agent_research'), afterSave);
+  // The stored result is bound to its app too: its own app reads it by ID, another app finds nothing.
+  const readBack = (from: Call) => from('get_operation', { operationId: saved.undoToken })
+    .then(({ content }) => JSON.parse(content[0]!.text) as { ok: boolean; error?: { code: string } });
+  assert.equal((await readBack(call)).ok, true);
+  assert.equal((await readBack(as('owner', 'client_other_app'))).error?.code, 'operation_not_found');
+  errorOf(await call('update_agent', {
+    agentId: 'agent_research', version: saved.version, description: 'Other words.', idempotencyKey: 'describe',
+  }), 'key_reused');
+  const stale = errorOf(await call('update_agent', {
+    agentId: 'agent_research', version: read, description: 'Other words.', idempotencyKey: 'stale',
+  }), 'changed_since_read');
+  assert.equal(stale.retryable, true);
+  assert.equal((await f.config.getAgent('agent_research')).description, 'Finds and cites sources.');
+  errorOf(await call('update_agent', { agentId: 'agent_research', version: saved.version, idempotencyKey: 'empty' }), 'invalid_input');
+  errorOf(await call('update_agent', {
+    agentId: 'agent_research', version: saved.version, on: false, imageModel: null, idempotencyKey: 'off-and-image',
+  }), 'invalid_input');
+
+  const pair = structured(await call('update_agent', {
+    agentId: 'agent_research', version: saved.version, name: 'Researcher', imageModel: null, idempotencyKey: 'pair',
+  }));
+  assert.deepEqual([pair.status, pair.agent.name, pair.undoToken], ['done', 'Researcher', undefined]);
+  assert.equal(pair.version, await version(call, 'agent_research'));
+  assertNoInternalIds(JSON.stringify({ saved, pair }), f);
+});
+
+test('turning off an Agent that answers in Channels waits for confirm_change, which only its person can use', async (t) => {
+  const { f, clock, as, call, teamId } = await harness(t, 'confirm');
+  await createFixtureAgent(f, 'agent_research');
+  await grantChannel(f, teamId, 'agent_research');
+  const args = { agentId: 'agent_research', version: await version(call, 'agent_research'), on: false, idempotencyKey: 'off' };
+
+  const pending = structured(await call('update_agent', args));
+  assert.equal(pending.status, 'needs_confirmation');
+  const { confirmToken, preview, expiresAt } = pending.confirmation;
+  assert.equal(expiresAt, new Date(NOW + THIRTY_MINUTES).toISOString());
+  assert.ok(preview.length > 0);
+  assert.equal(pending.undoToken, undefined);
+  assert.equal((await f.config.getAgent('agent_research')).enabled, true, 'nothing applies before the confirmation');
+  assert.deepEqual(structured(await call('update_agent', args)), pending, 'a retry returns the same confirmation');
+
+  // Another person, or the same person in another app, cannot use the token.
+  errorOf(await as('admin')('confirm_change', { confirmToken }), 'not_found');
+  errorOf(await as('owner', 'client_other_app')('confirm_change', { confirmToken }), 'not_found');
+  errorOf(await call('confirm_change', { confirmToken: 'changeset_unknown' }), 'not_found');
+  assert.equal((await f.config.getAgent('agent_research')).enabled, true);
+
+  clock.now += THIRTY_MINUTES - 1;
+  const confirmed = structured(await call('confirm_change', { confirmToken }));
+  assert.deepEqual([confirmed.status, confirmed.agent.agentId], ['done', 'agent_research']);
+  assert.equal((await f.config.getAgent('agent_research')).enabled, false);
+  assert.ok(confirmed.undoToken, 'a confirmed change can be undone');
+  assert.equal(confirmed.version, await version(call, 'agent_research'));
+
+  // Replays: confirming again after the lifetime, and retrying the first call.
+  clock.now += THIRTY_MINUTES;
+  assert.deepEqual(structured(await call('confirm_change', { confirmToken })), confirmed);
+  errorOf(await as('admin')('confirm_change', { confirmToken }), 'not_found');
+  errorOf(await as('owner', 'client_other_app')('confirm_change', { confirmToken }), 'not_found');
+  assert.equal(structured(await call('update_agent', args)).status, 'done');
+  assertNoInternalIds(JSON.stringify({ pending, confirmed }), f);
+});
+
+test('a confirmToken expires 30 minutes after it was made; a new call makes a fresh one', async (t) => {
+  const { f, clock, as, call, teamId } = await harness(t, 'expiry');
+  await createFixtureAgent(f, 'agent_research');
+  await grantChannel(f, teamId, 'agent_research');
+  const args = { agentId: 'agent_research', version: await version(call, 'agent_research'), on: false, idempotencyKey: 'off' };
+  const { confirmToken } = structured(await call('update_agent', args)).confirmation;
+
+  clock.now += THIRTY_MINUTES;
+  // The binding is checked before the expiry, so an expired token tells no one else it exists.
+  errorOf(await as('admin')('confirm_change', { confirmToken }), 'not_found');
+  errorOf(await as('owner', 'client_other_app')('confirm_change', { confirmToken }), 'not_found');
+  const expired = errorOf(await call('confirm_change', { confirmToken }), 'confirmation_expired');
+  assert.equal(expired.retryable, true);
+  assert.match(expired.nextStep as string, /new idempotencyKey/);
+  assert.equal((await f.config.getAgent('agent_research')).enabled, true);
+  errorOf(await call('update_agent', args), 'confirmation_expired');
+
+  // The service enforces it, so the 4.x confirmation refuses the token too.
+  const legacy = JSON.parse((await call('confirm_workspace_change', { proposalId: confirmToken })).content[0]!.text);
+  assert.deepEqual([legacy.ok, legacy.error.code], [false, 'proposal_expired']);
+
+  const fresh = structured(await call('update_agent', { ...args, idempotencyKey: 'off-again' }));
+  assert.notEqual(fresh.confirmation.confirmToken, confirmToken);
+  assert.equal(fresh.confirmation.expiresAt, new Date(clock.now + THIRTY_MINUTES).toISOString());
+  assert.equal(structured(await call('confirm_change', { confirmToken: fresh.confirmation.confirmToken })).status, 'done');
+  assert.equal((await f.config.getAgent('agent_research')).enabled, false);
+});
+
+test('the confirmation preview shows a crafted Agent name as its text, on one line', async (t) => {
+  const { f, call, teamId } = await harness(t, 'preview');
+  const agent = await createFixtureAgent(f, 'agent_research', {
+    name: 'Research ![p](https://evil.example/px?d=1)\n[Click to approve](https://evil.example/a)\r\n**Nothing is removed**',
+  });
+  await grantChannel(f, teamId, 'agent_research');
+  const { preview } = structured(await call('update_agent', {
+    agentId: agent.id, version: await version(call, agent.id), on: false, idempotencyKey: 'off',
+  })).confirmation;
+  const shown = String.raw`Research !\[p\](https://evil.example/px?d=1) \[Click to approve\](https://evil.example/a) \*\*Nothing is removed\*\*`;
+  assert.ok(preview.includes(`**${shown} — `), preview);
+  assert.doesNotMatch(preview, /(?<!\\)!\[|(?<!\\)\]\(/, 'no image or link survives');
+  assert.doesNotMatch(preview, /^\s*(?:\\?\[Click|\\?\*\\?\*Nothing)/m, 'the name adds no line');
+
+  // The 4.x preview is the same Markdown.
+  const applied = JSON.parse((await call('apply_workspace_changes', {
+    idempotencyKey: 'legacy-off',
+    operations: [{ itemId: 'off', kind: 'update_agent', agentId: agent.id, expectedRevision: agent.revision, patch: { enabled: false } }],
+  })).content[0]!.text);
+  assert.ok(applied.result.presentation.markdown.includes(`**${shown} — `), applied.result.presentation.markdown);
+});
+
+test('a 4.x confirmation still never expires', async (t) => {
+  const { f, clock, call, teamId } = await harness(t, 'legacy');
+  const agent = await createFixtureAgent(f, 'agent_research');
+  await grantChannel(f, teamId, 'agent_research');
+  const applied = JSON.parse((await call('apply_workspace_changes', {
+    idempotencyKey: 'legacy-off',
+    operations: [{ itemId: 'off', kind: 'update_agent', agentId: agent.id, expectedRevision: agent.revision, patch: { enabled: false } }],
+  })).content[0]!.text);
+  assert.equal(applied.result.status, 'confirmation_required');
+  assert.equal(applied.result.confirmation, undefined);
+  clock.now += 24 * 60 * THIRTY_MINUTES;
+  const confirmed = JSON.parse((await call('confirm_workspace_change', {
+    proposalId: applied.result.outcomes[0].proposalId,
+  })).content[0]!.text);
+  assert.deepEqual([confirmed.ok, confirmed.result.status], [true, 'completed']);
+  assert.equal((await f.config.getAgent('agent_research')).enabled, false);
+});
+
+test('undo_change reverses a change once, replays its retry, and confirms a destructive reverse first', async (t) => {
+  const { f, as, call, teamId } = await harness(t, 'undo');
+  await createFixtureAgent(f, 'agent_research');
+  const memory = structured(await call('get_agent_memory', { agentId: 'agent_research' }));
+  const saved = structured(await call('update_agent_memory', {
+    agentId: 'agent_research', version: memory.version, body: 'Cite two sources.', idempotencyKey: 'memory',
+  }));
+  assert.equal(saved.status, 'done');
+  assert.equal(saved.version, structured(await call('get_agent_memory', { agentId: 'agent_research' })).version);
+  // The token is bound to the app the change came from, like a confirmToken.
+  errorOf(await as('owner', 'client_other_app')('undo_change', {
+    undoToken: saved.undoToken, idempotencyKey: 'undo-elsewhere',
+  }), 'nothing_to_undo');
+  assert.equal(structured(await call('get_agent_memory', { agentId: 'agent_research' })).body, 'Cite two sources.');
+  // And to the membership it was made under, as a confirmToken is.
+  const stored = await f.management.getUndo(saved.undoToken);
+  await f.management.putUndo({ ...stored!, operationId: 'mcp5_another_membership', actorMembershipId: 'membership_elsewhere' });
+  errorOf(await call('undo_change', { undoToken: 'mcp5_another_membership', idempotencyKey: 'undo-membership' }), 'nothing_to_undo');
+  const undone = structured(await call('undo_change', { undoToken: saved.undoToken, idempotencyKey: 'undo-memory' }));
+  assert.deepEqual([undone.status, undone.summary], ['done', 'Undid the change.']);
+  assert.equal(structured(await call('get_agent_memory', { agentId: 'agent_research' })).body, '');
+  assert.deepEqual(structured(await call('undo_change', { undoToken: saved.undoToken, idempotencyKey: 'undo-memory' })), undone);
+  errorOf(await call('undo_change', { undoToken: saved.undoToken, idempotencyKey: 'undo-twice' }), 'nothing_to_undo');
+  errorOf(await call('undo_change', { undoToken: 'mcp5_unknown', idempotencyKey: 'undo-unknown' }), 'nothing_to_undo');
+
+  // Undoing "turn on" turns off an Agent that answers in a Channel, which Admin asks about.
+  await createFixtureAgent(f, 'agent_paused');
+  await grantChannel(f, teamId, 'agent_paused');
+  const off = structured(await call('update_agent', {
+    agentId: 'agent_paused', version: await version(call, 'agent_paused'), on: false, idempotencyKey: 'off',
+  }));
+  assert.equal(structured(await call('confirm_change', { confirmToken: off.confirmation.confirmToken })).status, 'done');
+  const on = structured(await call('update_agent', {
+    agentId: 'agent_paused', version: await version(call, 'agent_paused'), on: true, idempotencyKey: 'on',
+  }));
+  assert.equal(on.status, 'done');
+  const reverse = structured(await call('undo_change', { undoToken: on.undoToken, idempotencyKey: 'undo-on' }));
+  assert.equal(reverse.status, 'needs_confirmation');
+  assert.equal((await f.config.getAgent('agent_paused')).enabled, true);
+  // Asking for the confirmation used the token: its retry replays, and another undo is refused.
+  assert.deepEqual(structured(await call('undo_change', { undoToken: on.undoToken, idempotencyKey: 'undo-on' })), reverse);
+  errorOf(await call('undo_change', { undoToken: on.undoToken, idempotencyKey: 'undo-on-again' }), 'nothing_to_undo');
+  const legacy = JSON.parse((await call('undo_workspace_change', { operationId: on.undoToken, idempotencyKey: 'undo-on-4x' })).content[0]!.text);
+  assert.deepEqual([legacy.ok, legacy.error.code], [false, 'undo_unavailable']);
+  const reversed = structured(await call('confirm_change', { confirmToken: reverse.confirmation.confirmToken }));
+  assert.deepEqual([reversed.status, reversed.summary], ['done', 'Made the change you confirmed.']);
+  assert.equal((await f.config.getAgent('agent_paused')).enabled, false);
+  // Turned on again, the Agent is as the token's change left it, and the token stays used.
+  assert.equal(structured(await call('update_agent', {
+    agentId: 'agent_paused', version: reversed.version, on: true, idempotencyKey: 'on-again',
+  })).status, 'done');
+  errorOf(await call('undo_change', { undoToken: on.undoToken, idempotencyKey: 'undo-on-later' }), 'nothing_to_undo');
+  assertNoInternalIds(JSON.stringify({ saved, undone, on, reverse, reversed }), f);
+});
+
+test('the immediate writes apply in the call, as policy.ts says for this door', async (t) => {
+  const { f, call, teamId } = await harness(t, 'immediate');
+  await createFixtureAgent(f, 'agent_research', {
+    skills: [{ name: 'cite', description: 'Cite sources.', instructions: 'Cite two.', enabled: true }],
+  });
+  await grantChannel(f, teamId, 'agent_research', 'C_ROUTINE');
+  await f.config.putChannel({ workspaceId: teamId, channelId: 'C_SUPPORT', label: 'support', lifecycle: 'active' });
+
+  const results: Record<string, Record<string, any>> = {};
+  const run = async (name: string, args: Record<string, unknown>) => {
+    const result = structured(await call(name, { idempotencyKey: name, ...args }));
+    assert.notEqual(result.status, 'needs_confirmation', `${name} applies at once over MCP`);
+    results[name] = result;
+    return result;
+  };
+  await run('add_agent_to_channel', { agentId: 'agent_research', channelId: 'C_SUPPORT' });
+  assert.ok((await f.config.listAgentChannelGrants(teamId, 'C_SUPPORT')).some(({ agentId }) => agentId === 'agent_research'));
+  await run('save_channel_settings', { channelId: 'C_SUPPORT', label: 'help', on: true });
+  assert.equal((await f.config.getChannel(teamId, 'C_SUPPORT'))?.label, 'help');
+  await run('set_agent_skill', { agentId: 'agent_research', skill: 'cite', action: 'turn_off' });
+  assert.equal((await f.config.getAgent('agent_research')).skills[0]?.enabled, false);
+  assert.equal(structured(await call('set_agent_skill', {
+    agentId: 'agent_research', skill: 'cite', action: 'turn_off', idempotencyKey: 'again',
+  })).status, 'unchanged');
+  const uploaded = await run('upload_skill_files', {
+    agentId: 'agent_research',
+    files: [{ name: 'SKILL.md', text: '---\nname: summarize\ndescription: Summarize a thread.\n---\nSummarize in three bullets.\n' }],
+  });
+  assert.deepEqual([uploaded.status, uploaded.added], ['done', ['summarize']]);
+
+  const schedule = await run('save_schedule', {
+    agentId: 'agent_research', channelId: 'C_ROUTINE', name: 'Morning digest', task: 'Summarize new papers.',
+    when: { cron: '0 9 * * 1-5' }, timezone: 'UTC', post: 'always', requiredConnections: [],
+  });
+  const [listed] = structured(await call('list_schedules', { agentId: 'agent_research' })).schedules;
+  assert.equal(schedule.version, listed.version);
+  const paused = await run('pause_schedule', { scheduleId: listed.scheduleId, version: listed.version });
+  const resumed = await run('resume_schedule', { scheduleId: listed.scheduleId, version: paused.version });
+  // A run needs a served model, which this fixture has none of; the lookup still applies.
+  errorOf(await call('run_schedule_now', { scheduleId: 'routine_unknown', idempotencyKey: 'run-unknown' }), 'not_found');
+  await run('take_over_schedule', { scheduleId: listed.scheduleId, version: resumed.version });
+  errorOf(await call('pause_schedule', { scheduleId: listed.scheduleId, version: listed.version, idempotencyKey: 'stale' }), 'changed_since_read');
+
+  const archived = await run('archive_agent', { agentId: 'agent_research', version: await version(call, 'agent_research') });
+  assert.equal((await f.config.getAgent('agent_research')).lifecycle, 'archived');
+  await run('restore_agent', { agentId: 'agent_research', version: archived.version });
+  assert.equal((await f.config.getAgent('agent_research')).lifecycle, 'active');
+
+  // No idempotencyKey: each call makes a new link, as its idempotentHint false says.
+  const provider = structured(await call('connect_model_provider', { provider: 'openai' }));
+  assert.equal(provider.status, 'needs_setup');
+  assert.match(provider.setup.url, /^http:\/\/localhost\//);
+  assert.equal(structured(await call('get_setup_status', { setupToken: provider.setup.setupToken })).status, 'waiting');
+  assertNoInternalIds(JSON.stringify({ results, provider }), f);
+});
+
+test('a member changes only the Agents they may edit, and never a workspace setting', async (t) => {
+  const { f, as, teamId } = await harness(t, 'member', { member: true });
+  await createFixtureAgent(f, 'agent_owner_only', {
+    skills: [{ name: 'cite', description: 'Cite sources.', instructions: 'Cite two.', enabled: true }],
+  });
+  await grantChannel(f, teamId, 'agent_owner_only');
+  const before = await f.config.getAgent('agent_owner_only');
+  const member = as('admin');
+  const someVersion = '0123456789abcdef';
+  const refused = {
+    update_agent: { agentId: before.id, version: someVersion, name: 'Mine now' },
+    update_agent_memory: { agentId: before.id, version: someVersion, body: 'Mine.' },
+    archive_agent: { agentId: before.id, version: someVersion },
+    restore_agent: { agentId: before.id, version: someVersion },
+    add_agent_to_channel: { agentId: before.id, channelId: 'C_SUPPORT' },
+    set_agent_skill: { agentId: before.id, skill: 'cite', action: 'remove' },
+    upload_skill_files: { agentId: before.id, files: [{ name: 'SKILL.md', text: '---\nname: x\ndescription: y\n---\nz\n' }] },
+    import_skill_from_github: { agentId: before.id, source: 'owner/repo' },
+  };
+  for (const [name, args] of Object.entries(refused)) {
+    errorOf(await member(name, { ...args, idempotencyKey: `member-${name}` }), 'not_found');
+  }
+  errorOf(await member('set_workspace_model', {
+    role: 'chat', model: 'anthropic/claude-sonnet-4-5', version: someVersion, idempotencyKey: 'member-model',
+  }), 'not_allowed');
+  errorOf(await member('connect_model_provider', { provider: 'openai' }), 'not_allowed');
+  errorOf(await member('save_channel_settings', { channelId: 'C_SUPPORT', on: false, idempotencyKey: 'member-off' }), 'not_allowed');
+  assert.deepEqual(await f.config.getAgent('agent_owner_only'), before);
+  assert.equal((await f.config.getChannel(teamId, 'C_SUPPORT'))?.lifecycle, 'active');
+
+  // The Owner's undo is theirs alone.
+  const ownerCall = as('owner');
+  const memory = structured(await ownerCall('get_agent_memory', { agentId: before.id }));
+  const saved = structured(await ownerCall('update_agent_memory', {
+    agentId: before.id, version: memory.version, body: 'Owner notes.', idempotencyKey: 'owner-memory',
+  }));
+  errorOf(await member('undo_change', { undoToken: saved.undoToken, idempotencyKey: 'member-undo' }), 'nothing_to_undo');
+  // The same call with the same key is another person's, so nothing replays.
+  errorOf(await member('update_agent_memory', {
+    agentId: before.id, version: memory.version, body: 'Owner notes.', idempotencyKey: 'owner-memory',
+  }), 'not_found');
+
+  // The Owner's agent_owner_only is hidden from the member, so a name that derives its ID takes the next one.
+  const derived = { name: 'Owner Only', instructions: 'Track my notes.', idempotencyKey: 'member-derived' };
+  const hiddenTaken = structured(await member('create_agent', derived));
+  assert.equal(hiddenTaken.agent.agentId, 'agent_owner_only_2');
+  assert.deepEqual(structured(await member('create_agent', derived)), hiddenTaken, 'a retry replays the same Agent');
+  assert.equal((await f.config.getAgent('agent_owner_only')).name, before.name);
+  // An agentId the caller chose is theirs to change.
+  errorOf(await member('create_agent', {
+    name: 'Private Notes', instructions: 'Keep notes.', agentId: 'agent_owner_only', idempotencyKey: 'member-explicit',
+  }), 'invalid_input');
+  assert.equal((await f.config.listUserAgents()).some(({ name }) => name === 'Private Notes'), false);
+
+  const mine = structured(await member('create_agent', { name: 'Notes', instructions: 'Take notes.', idempotencyKey: 'member-create' }));
+  const edited = structured(await member('update_agent', {
+    agentId: mine.agent.agentId, version: mine.version, description: 'Takes notes.', idempotencyKey: 'member-edit',
+  }));
+  assert.equal(edited.status, 'done');
+});

@@ -22,6 +22,20 @@ export const READ_HINTS = Object.freeze({
   openWorldHint: false,
 });
 
+/**
+ * A write's hints under OpenAI's rules: an overwrite, removal, revocation or
+ * irreversible send is destructive, whether or not undo can reverse it. A
+ * retry with the same idempotencyKey replays, so a keyed write is idempotent.
+ */
+export function writeHints(input: { destructive: boolean; openWorld?: boolean; idempotent?: boolean }) {
+  return Object.freeze({
+    readOnlyHint: false,
+    destructiveHint: input.destructive,
+    idempotentHint: input.idempotent ?? true,
+    openWorldHint: input.openWorld ?? false,
+  });
+}
+
 export type McpToolVisibility = 'model' | 'app';
 
 /**
@@ -154,7 +168,21 @@ const SERVICE_CODES: Readonly<Record<string, McpErrorCode>> = {
   routines_unavailable_on_target: 'schedule_unavailable',
   schedule_authority_missing: 'schedule_unavailable',
   undo_unavailable: 'nothing_to_undo',
+  proposal_expired: 'confirmation_expired',
+  // The codes a change's own outcome carries when it did not apply.
+  not_found: 'not_found',
+  already_exists: 'invalid_input',
+  operation_failed: 'temporarily_unavailable',
 };
+
+/** A service or outcome code in the 5.0 vocabulary. */
+export function fiveZeroCode(code: string): McpErrorCode {
+  return SERVICE_CODES[code] ?? 'invalid_input';
+}
+
+export function isRetryable(code: McpErrorCode): boolean {
+  return RETRYABLE.has(code);
+}
 
 const UNEXPECTED: McpToolError = {
   code: 'temporarily_unavailable',
@@ -174,7 +202,7 @@ export function mcpToolError(error: unknown): McpToolError {
     };
   }
   if (error instanceof ManagementError) {
-    const code = SERVICE_CODES[error.code] ?? 'invalid_input';
+    const code = fiveZeroCode(error.code);
     return {
       code,
       message: error.message,

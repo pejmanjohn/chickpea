@@ -1276,8 +1276,8 @@ export class CfManagementStore implements ManagementStore {
     return orUndefined(response.undo);
   }
 
-  async consumeUndo(operationId: string, at: number) {
-    const response = await this.execute({ kind: 'consume_undo', operationId, at });
+  async consumeUndo(operationId: string, at: number, consumedBy?: string) {
+    const response = await this.execute({ kind: 'consume_undo', operationId, at, ...(consumedBy ? { consumedBy } : {}) });
     if (response.kind !== 'undo' || !response.undo) throw unexpectedManagementResponse();
     return response.undo;
   }

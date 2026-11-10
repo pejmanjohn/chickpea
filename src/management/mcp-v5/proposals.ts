@@ -4,7 +4,11 @@ import type { z } from 'zod';
 import { matchingConnectorCatalogPresets } from '../../config/presets.ts';
 import { normalizeAgentHandle } from '../../slack/agent-presence/handles.ts';
 import { summarizeTextChange } from '../text-changes.ts';
-import type { ManagementAgentPatch } from '../types.ts';
+import type {
+  ManagementActorContext,
+  ManagementAgentPatch,
+  ManagementWorkspaceSnapshot,
+} from '../types.ts';
 import { fail } from './conventions.ts';
 import { agentVersion, readWorkspace, requireAgent, slackDirectory, type FiveZeroDeps } from './reads.ts';
 import {
@@ -59,24 +63,8 @@ export async function proposeAgent(
     }
   }
 
-  const answersIn: Out<typeof proposeAgentOutput>['proposal']['answersIn'] = [];
-  if (input.channels?.length) {
-    const directory = await slackDirectory(deps, context);
-    const known = [
-      ...(directory?.channels ?? []).map(({ id, name }) => ({ channelId: id, name })),
-      ...snapshot.channels.map(({ channelId, label }) => ({ channelId, name: label })),
-    ];
-    for (const asked of input.channels) {
-      const wanted = asked.trim().replace(/^#/, '');
-      const match = known.find(({ channelId }) => channelId === wanted) ??
-        known.find(({ name }) => name?.replace(/^#/, '').toLowerCase() === wanted.toLowerCase());
-      if (!match) {
-        issues.push(`No Slack Channel you are in is called ${asked}. list_slack_channels lists them.`);
-      } else if (!answersIn.some(({ channelId }) => channelId === match.channelId)) {
-        answersIn.push({ channelId: match.channelId, ...(match.name ? { name: match.name } : {}) });
-      }
-    }
-  }
+  const { found: answersIn, missing } = await resolveChannels(deps, context, snapshot, input.channels ?? []);
+  for (const asked of missing) issues.push(`No Slack Channel you are in is called ${asked}. list_slack_channels lists them.`);
 
   const modelOk = input.model === undefined || snapshot.modelCatalog.chat.some(({ id }) => id === input.model);
   if (!modelOk) issues.push(`${input.model} is not a chat model this workspace can use, so the Agent uses the workspace default. list_models lists the others.`);
@@ -105,6 +93,33 @@ export async function proposeAgent(
     create: { tool: 'create_agent', arguments: create },
     issues,
   };
+}
+
+/** Channels by channelId or #name, among those the caller is in or Chickpea knows. */
+export async function resolveChannels(
+  deps: FiveZeroDeps,
+  context: ManagementActorContext,
+  snapshot: ManagementWorkspaceSnapshot,
+  asked: readonly string[],
+): Promise<{ found: Array<{ channelId: string; name?: string }>; missing: string[] }> {
+  const found: Array<{ channelId: string; name?: string }> = [];
+  const missing: string[] = [];
+  if (asked.length === 0) return { found, missing };
+  const directory = await slackDirectory(deps, context);
+  const known = [
+    ...(directory?.channels ?? []).map(({ id, name }) => ({ channelId: id, name })),
+    ...snapshot.channels.map(({ channelId, label }) => ({ channelId, name: label })),
+  ];
+  for (const name of asked) {
+    const wanted = name.trim().replace(/^#/, '');
+    const match = known.find(({ channelId }) => channelId === wanted) ??
+      known.find((channel) => channel.name?.replace(/^#/, '').toLowerCase() === wanted.toLowerCase());
+    if (!match) missing.push(name);
+    else if (!found.some(({ channelId }) => channelId === match.channelId)) {
+      found.push({ channelId: match.channelId, ...(match.name ? { name: match.name } : {}) });
+    }
+  }
+  return { found, missing };
 }
 
 type Change = Out<typeof proposeAgentChangeOutput>['changes'][number];
@@ -161,7 +176,7 @@ export async function proposeAgentChange(
 }
 
 /** The `update_agent` operation patch these fields become; the image model is its own operation. */
-function agentPatch(change: AgentChange): ManagementAgentPatch {
+export function agentPatch(change: Omit<AgentChange, 'imageModel'>): ManagementAgentPatch {
   return {
     ...(change.name !== undefined ? { name: change.name } : {}),
     ...(change.description !== undefined ? { description: change.description } : {}),

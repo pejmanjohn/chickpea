@@ -886,6 +886,8 @@ export interface ManagementApplyResult {
   links?: ManagementResultLinks;
   /** The preview of the change set a confirmation is waiting on; response-only. */
   presentation?: ManagementPresentation;
+  /** A 5.0 call's expiring confirmation; response-only. */
+  confirmation?: { expiresAt: number; preview: ManagementChangeSetPreview };
   /** Setup the approved change set's call held until the approval; response-only. */
   deferredSetup?: ManagementDeferredSetup[];
   /** Workspace mutation receipt token; it is not comparable to an actor-scoped inspection token. */
@@ -1292,6 +1294,8 @@ export interface ApplyWorkspaceChangesInput {
   acknowledgementOwner?: 'service' | 'caller';
   /** Internal typed receipt data stored with the durable result. */
   receiptMetadata?: ManagementApplyResult['receiptMetadata'];
+  /** Set by 5.0 tools only; without it a confirmation never expires. */
+  confirmationLifetimeMs?: number;
 }
 
 export interface ProposeWorkspaceChangesInput {
@@ -1460,6 +1464,9 @@ export interface UndoWorkspaceChangeInput {
   context: ManagementActorContext;
   operationId: string;
   idempotencyKey: string;
+  /** Lets a retried 5.0 undo find its result. */
+  undoOperationId?: string;
+  confirmationLifetimeMs?: number;
 }
 
 export interface ManagementRequestRecord {
@@ -1584,6 +1591,8 @@ export interface ManagementChangeSetProposalRecord {
    * as an approval only while that turn is the Agent's latest in the scope.
    */
   proposedMessageTs?: string;
+  /** A pending set past this can't be confirmed; absent (NULL) never expires. */
+  expiresAt?: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -1592,10 +1601,16 @@ export interface ManagementUndoRecord {
   operationId: string;
   organizationId: string;
   actorUserId: string;
+  /** Set since 4.4; an older record is bound to its person only. */
+  actorMembershipId?: string;
+  /** The MCP app that made the change, which alone undoes it over MCP. */
+  appKey?: string;
   inverse: ManagementOperation;
   resultingRevisions: Record<string, number>;
   agentConfigurationDigest?: string;
   status: 'available' | 'consumed';
+  /** The request that used it, applied or held for confirmation; only its retry replays. */
+  consumedBy?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -1614,6 +1629,7 @@ export class ManagementError extends Error {
       | 'proposal_not_found'
       | 'proposal_binding_mismatch'
       | 'proposal_stale'
+      | 'proposal_expired'
       | 'base_agent_capabilities_require_setup'
       | 'model_provider_unavailable'
       | ModelEffortRejection
@@ -1685,6 +1701,8 @@ export interface PutManagementChangeSetProposalInput {
   targetRevisions: Record<string, number>;
   requestOperationId?: string;
   proposedMessageTs?: string;
+  /** A set found again keeps its own. */
+  expiresAt?: number;
   at: number;
 }
 
@@ -1838,7 +1856,7 @@ export type ManagementRpcRequest =
   | { kind: 'mark_change_set_proposal_stale'; proposalId: string; at: number }
   | { kind: 'put_undo'; record: ManagementUndoRecord }
   | { kind: 'get_undo'; operationId: string }
-  | { kind: 'consume_undo'; operationId: string; at: number }
+  | { kind: 'consume_undo'; operationId: string; at: number; consumedBy?: string }
   | { kind: 'put_setup'; input: PutManagementSetupInput }
   | { kind: 'claim_agent_creation_welcome'; input: ClaimAgentCreationWelcomeInput }
   | { kind: 'get_setup'; setupOperationId: string; at?: number }

@@ -12,7 +12,7 @@ const MARKDOWN_APPROVAL_INSTRUCTION =
   'Show these changes to the person. When they approve, call confirm_workspace_change with the ' +
   'proposalId; if they want something different, inspect again and send a new change.';
 
-/** Portable Markdown: double-asterisk bold, list bullets, and no Slack mrkdwn escaping. */
+/** Portable Markdown: double-asterisk bold, list bullets, and stored text escaped as CommonMark. */
 export const MARKDOWN_PRESENTATION_DIALECT: ChangeSetPresentationDialect = {
   header: '**Proposed changes**',
   approvalInstruction: MARKDOWN_APPROVAL_INSTRUCTION,
@@ -21,8 +21,15 @@ export const MARKDOWN_PRESENTATION_DIALECT: ChangeSetPresentationDialect = {
   textLimit: MARKDOWN_PRESENTATION_TEXT_LIMIT,
   bold: (text) => `**${text}**`,
   bullet: '-',
-  escape: (text) => text,
+  // Stored text reads as written: it cannot open a link, image, emphasis, code span, heading, table, HTML
+  // or entity. An `_` between two letters or digits can't open emphasis, so it stays, as in URL paths.
+  escape: (text) => text.replace(/[\\`*_[\]<>#|~&]/g, (character, at: number, all: string) =>
+    character === '_' && /[A-Za-z0-9]/.test(all[at - 1] ?? '') && /[A-Za-z0-9]/.test(all[at + 1] ?? '')
+      ? character
+      : `\\${character}`),
   code: markdownCodeSpan,
+  // An autolink: CommonMark applies no backslash escapes inside it, and URL parsing encodes `<`, `>` and spaces.
+  link: (url) => `<${new URL(url).href}>`,
 };
 
 /** A CommonMark code span whose fence outlasts every backtick run in the value. */

@@ -58,7 +58,7 @@ import type { ManagementActorContext, ManagementOperation } from './types.ts';
 
 export const WORKSPACE_MANAGEMENT_SERVER_INFO = {
   name: 'chickpea-workspace',
-  version: '4.3.0',
+  version: '4.4.0',
 } as const;
 /**
  * The 4.x tools, backed by the shared tool adapter. The coding-agent door has
@@ -87,7 +87,7 @@ export const WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES = [
   'list_mcp_clients',
   'revoke_mcp_client',
 ] as const satisfies readonly WorkspaceManagementToolName[];
-/** Every tool `tools/list` shows, in order: the 4.x tools, then the 5.0 tools 4.3 adds. */
+/** Every tool `tools/list` shows, in order: the 4.x tools, then the 5.0 tools 4.3 and 4.4 add. */
 export const WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES: readonly string[] = [
   ...WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES,
   ...FIVE_ZERO_TOOL_NAMES,
