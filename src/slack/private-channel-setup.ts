@@ -1,7 +1,16 @@
+import { slackActionResponseUrl } from './action-response-url.ts';
+import {
+  PrivateChannelSetupError,
+  type AddPrivateChannelAgentResult,
+  type PrivateChannelSetupChoice,
+} from './private-channel-setup-service.ts';
+
 /** Versioned alongside the private gateway's narrowly normalized Add action. */
 export const PRIVATE_CHANNEL_SETUP_ADD_ACTION = 'chickpea.private_channel_setup.v1.add';
 export const PRIVATE_CHANNEL_SETUP_AGENT_ACTION = 'chickpea.private_channel_setup.v1.agent';
 export const PRIVATE_CHANNEL_SETUP_CHOICE_BLOCK = 'chickpea.private_channel_setup.v1.choice';
+/** Direct transport only. The gateway does not forward it. */
+export const PRIVATE_CHANNEL_SETUP_AGAIN_ACTION = 'chickpea.private_channel_setup.v1.again';
 
 export interface PrivateChannelSetupAction {
   workspaceId: string;
@@ -11,10 +20,43 @@ export interface PrivateChannelSetupAction {
   /** A valid unselected control produces private guidance, never a mutation. */
   agentId: string | null;
   deliveryId: string;
+  /** Where the clicked card can be replaced. The gateway never forwards one. */
+  responseUrl?: string;
 }
 
 /** Parsing grants no authority. Call only after Slack signature verification. */
 export function parsePrivateChannelSetupAction(payload: unknown): PrivateChannelSetupAction | undefined {
+  const click = parseSetupCardClick(payload, PRIVATE_CHANNEL_SETUP_ADD_ACTION);
+  if (!click) return undefined;
+  const values = record(record(click.root.state)?.values);
+  const control = record(record(values?.[PRIVATE_CHANNEL_SETUP_CHOICE_BLOCK])?.[PRIVATE_CHANNEL_SETUP_AGENT_ACTION]);
+  if (control?.type !== 'static_select') return undefined;
+  const selected = control.selected_option;
+  const agentId = selected === null ? null : record(selected)?.value;
+  if (agentId !== null && !safeId(agentId)) return undefined;
+  return { ...click.action, agentId };
+}
+
+/** "Add another Agent" or "Choose an Agent" on a finished setup card. */
+export interface PrivateChannelSetupAgainAction {
+  workspaceId: string;
+  userId: string;
+  channelId: string;
+  /** The finished card's setup, which binds the click to its inviter. */
+  setupId: string;
+  deliveryId: string;
+  responseUrl: string;
+}
+
+/** Parsing grants no authority. A click without a response_url could not replace its card, so it is none. */
+export function parsePrivateChannelSetupAgainAction(payload: unknown): PrivateChannelSetupAgainAction | undefined {
+  const click = parseSetupCardClick(payload, PRIVATE_CHANNEL_SETUP_AGAIN_ACTION);
+  const responseUrl = click?.action.responseUrl;
+  return click && responseUrl ? { ...click.action, responseUrl } : undefined;
+}
+
+/** One button click on an inviter's own ephemeral setup card. */
+function parseSetupCardClick(payload: unknown, actionId: string) {
   const root = record(payload);
   if (root?.type !== 'block_actions') return undefined;
   const team = record(root.team);
@@ -24,26 +66,23 @@ export function parsePrivateChannelSetupAction(payload: unknown): PrivateChannel
   if (!safeId(team?.id) || !safeId(user?.id) || !safeId(channel?.id) ||
       container?.type !== 'message' || container.is_ephemeral !== true ||
       container.channel_id !== channel.id || !Array.isArray(root.actions)) return undefined;
-  const actions = root.actions.map(record).filter((action) =>
-    action?.action_id === PRIVATE_CHANNEL_SETUP_ADD_ACTION);
+  const actions = root.actions.map(record).filter((action) => action?.action_id === actionId);
   if (actions.length !== 1 || root.actions.length !== 1) return undefined;
   const action = actions[0]!;
   if (!safeId(action.value)) return undefined;
   const actionTs = action.action_ts;
   if (typeof actionTs !== 'string' || !/^\d{1,16}\.\d{1,16}$/.test(actionTs)) return undefined;
-  const values = record(record(root.state)?.values);
-  const control = record(record(values?.[PRIVATE_CHANNEL_SETUP_CHOICE_BLOCK])?.[PRIVATE_CHANNEL_SETUP_AGENT_ACTION]);
-  if (control?.type !== 'static_select') return undefined;
-  const selected = control.selected_option;
-  const agentId = selected === null ? null : record(selected)?.value;
-  if (agentId !== null && !safeId(agentId)) return undefined;
+  const responseUrl = slackActionResponseUrl(root.response_url);
   return {
-    workspaceId: team.id,
-    userId: user.id,
-    channelId: channel.id,
-    setupId: action.value,
-    agentId,
-    deliveryId: `setup:${team.id}:${user.id}:${channel.id}:${action.value}:${actionTs}`,
+    root,
+    action: {
+      workspaceId: team.id,
+      userId: user.id,
+      channelId: channel.id,
+      setupId: action.value,
+      deliveryId: `setup:${team.id}:${user.id}:${channel.id}:${action.value}:${actionTs}`,
+      ...(responseUrl ? { responseUrl } : {}),
+    },
   };
 }
 
@@ -53,12 +92,17 @@ interface SetupChoice {
   handle?: string;
 }
 
+export interface SetupCardMessage {
+  text: string;
+  blocks: Array<Record<string, unknown>>;
+}
+
 export function privateChannelSetupCard(input: {
   setupId: string;
   agents: readonly SetupChoice[];
   truncated?: boolean;
   adminUrl?: string;
-}): { text: string; blocks: Array<Record<string, unknown>> } {
+}): SetupCardMessage {
   const choices = input.agents.slice(0, 100);
   const text = choices.length
     ? 'Choose an Agent to add to this private channel. Only you can see this setup.'
@@ -107,24 +151,157 @@ export function privateChannelSetupCard(input: {
       emoji: false,
     }],
   });
-  if (adminUrl) blocks.push({
-    type: 'actions',
-    elements: [{
-      type: 'button',
-      text: { type: 'plain_text', text: 'Open Chickpea', emoji: false },
-      url: adminUrl,
-    }],
-  });
+  if (adminUrl) blocks.push({ type: 'actions', elements: [openChickpeaButton(adminUrl)] });
   return { text, blocks };
 }
 
-export function privateChannelSetupRecoveryText(adminUrl?: string): string {
+/**
+ * What one setup click does to the inviter's card. A finished card is
+ * replaced, a usable one gets a notice beside it, and some clicks get nothing.
+ * When the card cannot be replaced, `fallback` says what goes out as a new
+ * ephemeral message instead. A card meant to be clicked goes out whole, and
+ * anything else as its text alone.
+ */
+export type SetupCardReply =
+  | { kind: 'replace'; message: SetupCardMessage; fallback: 'text' | 'card' }
+  | { kind: 'notice'; text: string }
+  | { kind: 'silent' };
+
+export type PrivateChannelSetupOutcome =
+  | AddPrivateChannelAgentResult
+  | { kind: 'choose' }
+  | { kind: 'unavailable'; reason: 'expired' | 'used' }
+  | { kind: 'begun'; setupId: string; agents: readonly PrivateChannelSetupChoice[]; choicesTruncated: boolean }
+  /** The finished card's setup is gone, so another click has nothing to bind to. */
+  | { kind: 'missing' }
+  | { kind: 'failed'; error: unknown };
+
+export interface SetupReplyContext {
+  adminUrl?: string;
+  /** The setup an again button binds to, set only when the card can be replaced. */
+  againSetupId?: string;
+}
+
+export function privateChannelSetupReply(
+  outcome: PrivateChannelSetupOutcome,
+  context: SetupReplyContext,
+): SetupCardReply {
+  switch (outcome.kind) {
+    case 'completed':
+      return { kind: 'replace', message: setupConfirmation(outcome.handle, context), fallback: 'text' };
+    case 'in_progress':
+      return { kind: 'notice', text: 'This Agent is being added. Click Add again in a moment to check.' };
+    case 'choose':
+      return { kind: 'notice', text: 'Choose an Agent in the setup card, then click Add.' };
+    case 'no_longer_added':
+      return unavailableReply('removed', context);
+    case 'unavailable':
+      return unavailableReply(outcome.reason, context);
+    case 'recovery_required':
+      return replaceWithText(privateChannelSetupRecoveryText(context.adminUrl));
+    case 'begun':
+      return {
+        kind: 'replace',
+        message: privateChannelSetupCard({
+          setupId: outcome.setupId,
+          agents: outcome.agents.map(({ agentId, name, handle }) => ({ id: agentId, name, handle })),
+          truncated: outcome.choicesTruncated,
+          ...(context.adminUrl ? { adminUrl: context.adminUrl } : {}),
+        }),
+        fallback: 'card',
+      };
+    case 'missing':
+      return replaceWithText(privateChannelSetupUnavailableText('expired', context.adminUrl));
+    case 'failed':
+      return failedReply(outcome.error, context);
+  }
+}
+
+function failedReply(error: unknown, context: SetupReplyContext): SetupCardReply {
+  // An unexpected error leaves the card as it was, so another click can retry.
+  if (!(error instanceof PrivateChannelSetupError)) {
+    return { kind: 'notice', text: privateChannelSetupRecoveryText(context.adminUrl) };
+  }
+  switch (error.code) {
+    case 'forbidden':
+      return { kind: 'silent' };
+    case 'agent_off':
+      return { kind: 'notice', text: error.message };
+    case 'unverifiable':
+      return { kind: 'notice', text: 'I couldn’t check this Agent right now. Click Add again in a moment.' };
+    case 'expired':
+    case 'stale':
+      return unavailableReply(error.code, context);
+    case 'unavailable':
+      return unavailableReply('used', context);
+  }
+}
+
+function setupConfirmation(handle: string, context: SetupReplyContext): SetupCardMessage {
+  const text = `Added @${handle} to this private channel. Mention @${handle} to start a conversation.`;
+  const adminUrl = safeAdminUrl(context.adminUrl);
+  const actions = [
+    ...(context.againSetupId ? [againButton(context.againSetupId, 'Add another Agent',
+      'Choose another Agent to add to this private channel')] : []),
+    ...(adminUrl ? [openChickpeaButton(adminUrl)] : []),
+  ];
+  return {
+    text,
+    blocks: [
+      { type: 'section', text: { type: 'plain_text', text, emoji: false } },
+      ...(actions.length ? [{ type: 'actions', elements: actions }] : []),
+    ],
+  };
+}
+
+function unavailableReply(
+  reason: 'expired' | 'stale' | 'used' | 'removed',
+  context: SetupReplyContext,
+): SetupCardReply {
+  return replaceWithText(
+    privateChannelSetupUnavailableText(reason, context.adminUrl),
+    context.againSetupId
+      ? againButton(context.againSetupId, 'Choose an Agent', 'Choose an Agent to add to this private channel')
+      : undefined,
+  );
+}
+
+/** The text carries its own Open Chickpea link, so it renders as mrkdwn. */
+function replaceWithText(text: string, button?: Record<string, unknown>): SetupCardReply {
+  return {
+    kind: 'replace',
+    message: {
+      text,
+      blocks: [
+        { type: 'section', text: { type: 'mrkdwn', text } },
+        ...(button ? [{ type: 'actions', elements: [button] }] : []),
+      ],
+    },
+    fallback: 'text',
+  };
+}
+
+function againButton(setupId: string, text: string, accessibilityLabel: string): Record<string, unknown> {
+  return {
+    type: 'button',
+    action_id: PRIVATE_CHANNEL_SETUP_AGAIN_ACTION,
+    value: setupId,
+    text: { type: 'plain_text', text, emoji: false },
+    accessibility_label: accessibilityLabel,
+  };
+}
+
+function openChickpeaButton(url: string): Record<string, unknown> {
+  return { type: 'button', text: { type: 'plain_text', text: 'Open Chickpea', emoji: false }, url };
+}
+
+function privateChannelSetupRecoveryText(adminUrl?: string): string {
   const url = safeAdminUrl(adminUrl);
   return 'This setup could not finish. Open Chickpea, choose the Agent, and retry adding this channel.' +
     (url ? ` <${url}|Open Chickpea>` : '');
 }
 
-export function privateChannelSetupUnavailableText(
+function privateChannelSetupUnavailableText(
   reason: 'expired' | 'stale' | 'used' | 'removed',
   adminUrl?: string,
 ): string {

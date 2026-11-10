@@ -132,13 +132,15 @@ test('private invitation offers only an ephemeral card; Add publishes one select
   assert.match(String(f.messages().at(-1)!.input.text), /Choose an Agent/);
   assert.equal(f.groups.length, 0);
   await f.add(f.action(setupId, { deliveryId: 'click2' }));
-  assert.match(String(f.messages().at(-1)!.input.text), /@ops is ready/);
+  assert.deepEqual(f.messages().at(-1)!.input, {
+    channel: 'C1', user: 'U1', text: 'Added @ops to this private channel. Mention @ops to start a conversation.',
+  }, 'the gateway confirmation stays one text-only line');
   assert.equal((await f.stores.config.listAgentChannelGrants('T1', 'C1'))[0]?.status, 'active');
   assert.equal(f.groups.length, 1);
   await f.add(f.action(setupId, { deliveryId: 'click3' }));
   assert.equal(f.groups.length, 1, 'replay never republishes');
   await f.add(f.action(setupId, { deliveryId: 'click4', agentId: null }));
-  assert.match(String(f.messages().at(-1)!.input.text), /@ops is ready/);
+  assert.match(String(f.messages().at(-1)!.input.text), /^Added @ops to this private channel\./);
   await f.stores.config.deleteAgentChannelGrant('T1', 'C1', 'agent_ops');
   await f.add(f.action(setupId, { deliveryId: 'click5' }));
   assert.match(String(f.messages().at(-1)!.input.text), /no longer available/);
