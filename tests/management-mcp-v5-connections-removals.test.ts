@@ -141,6 +141,35 @@ async function lanes(call: Call, agentId: string): Promise<{ apiConnections: Arr
   return inspected.result.agents.find(({ id }) => id === agentId) as never;
 }
 
+/** The one-connection setup page with a token to follow it, never Admin. */
+function assertFocusedSetup(setup: { url: string; setupToken?: string }): void {
+  assert.match(setup.url, /^http:\/\/localhost\/setup\/setup_[^/#]+#setup=/, setup.url);
+  assert.doesNotMatch(setup.url, /\/admin\//);
+  assert.ok(setup.setupToken, 'a setupToken follows the link');
+  assert.equal(new URL(setup.url).pathname, `/setup/${setup.setupToken}`);
+}
+
+/** A catalog Linear sign-in bound to the Agent, as the setup page leaves one it started (pending) or one that broke. */
+async function bindCatalogLinear(
+  f: ManagementAdapterFixture,
+  teamId: string,
+  lifecycle: ConnectionAccount['lifecycle'],
+  preset: 'linear' | 'sentry' = 'linear',
+) {
+  const account = await f.config.putConnectionAccount({
+    id: `connection_${preset === 'linear' ? 'a' : 'b'}${'0'.repeat(31)}`, workspaceId: teamId, ownerKind: 'team', providerId: preset,
+    label: preset === 'linear' ? 'Linear' : 'Sentry', lifecycle, createdByMembershipId: f.owner.membership.id, secretRefId: `secret_${preset}`,
+    policy: {
+      kind: 'mcp', url: `https://mcp.${preset}.example/mcp`, transport: 'streamable-http', authMode: 'oauth', headerNames: [],
+      discoveredTools: [], allowedTools: [], oauthScope: 'read', presetId: preset,
+    },
+  } as Omit<ConnectionAccount, 'revision' | 'createdAt' | 'updatedAt'>);
+  await f.config.putAgentConnectionBinding({
+    agentId: 'agent_research', connectionAccountId: account.id, providerId: preset, allowedCapabilities: [], enabled: true,
+  });
+  return account;
+}
+
 /** Records every prepareConnectorSetup call and what it returned. */
 function spyConnectorSetup(f: ManagementAdapterFixture) {
   const calls: Array<{ input: unknown; result: PrepareConnectorSetupResult }> = [];
@@ -169,6 +198,7 @@ test('connect_service hands out exactly the link prepare_connector_setup makes, 
   assert.equal(connected.status, 'needs_setup');
   assert.equal(connected.setup.url, calls[1]!.result.handoffUrl, 'the link is the method\'s, never built by the tool');
   assert.equal(connected.setup.setupToken, calls[1]!.result.setupOperationId);
+  assertFocusedSetup(connected.setup);
   assert.equal(v4.result.handoffUrl, calls[0]!.result.handoffUrl);
   assert.equal(connected.setup.what, 'Gmail');
   assert.equal(connected.agent.agentId, 'agent_research');
@@ -179,6 +209,16 @@ test('connect_service hands out exactly the link prepare_connector_setup makes, 
   }));
   assert.deepEqual(calls[2]!.input, { agentId: 'agent_research', connector: 'gmail', ownerKind: 'team' });
   assert.equal(team.setup.url, calls[2]!.result.handoffUrl);
+  assertFocusedSetup(team.setup);
+  assert.equal((await f.management.getSetup(team.setup.setupToken))?.action, 'managed_connection');
+
+  // A catalog connector that is not a managed sign-in gets the same page.
+  const linear = structured(await call('connect_service', {
+    agentId: 'agent_research', service: 'Linear', owner: 'team', idempotencyKey: 'linear',
+  }));
+  assert.equal(linear.setup.url, calls[3]!.result.handoffUrl);
+  assertFocusedSetup(linear.setup);
+  assert.equal((await f.management.getSetup(linear.setup.setupToken))?.action, 'catalog_connection');
 
   errorOf(await call('connect_service', {
     agentId: 'agent_research', service: 'Nonexistent Service', owner: 'me', idempotencyKey: 'unknown',
@@ -364,9 +404,61 @@ test('reconnect_service links a custom connection\'s key, and signs a catalog co
   assert.deepEqual(calls.map(({ input }) => input), [{ agentId: 'agent_research', connector: 'hubspot-managed', ownerKind: 'team' }]);
   assert.equal(calls[0]!.result.reconnect?.connectionId, account.id, 'the service reconnects that connection in place');
   assert.equal(catalog.setup.url, calls[0]!.result.handoffUrl);
+  assertFocusedSetup(catalog.setup);
   assert.match(catalog.summary, /^Open the link to reconnect HubSpot · Team\.$/);
 
   errorOf(await call('reconnect_service', { agentId: 'agent_research', connectionId: 'connection_unknown' }), 'not_found');
+});
+
+test('reconnect_service finishes or repairs a catalog sign-in on the page connect_service gives, in place', async (t) => {
+  const { f, teamId, call } = await harness(t, 'reconnect-catalog');
+  await installAgent(f);
+  const calls = spyConnectorSetup(f);
+  const reconnect = async (connectionId = 'linear') => structured(await call('reconnect_service', { agentId: 'agent_research', connectionId }));
+
+  for (const lifecycle of ['pending', 'needs_attention'] as const) {
+    const account = await bindCatalogLinear(f, teamId, lifecycle);
+    calls.length = 0;
+    const linked = await reconnect();
+    assert.deepEqual(calls.map(({ input }) => input), [{ agentId: 'agent_research', connector: 'linear', ownerKind: 'team' }], lifecycle);
+    assert.equal(linked.setup.url, calls[0]!.result.handoffUrl);
+    assertFocusedSetup(linked.setup);
+    const setup = await f.management.getSetup(linked.setup.setupToken);
+    assert.deepEqual([setup?.action, setup?.target.connectionId, setup?.target.replacement], ['catalog_connection', account.id, true],
+      `a ${lifecycle} sign-in is finished in that same connection, never a second one beside it`);
+    assert.match(linked.summary, /^Open the link to reconnect Linear\.$/);
+  }
+
+  // A ready catalog connection, and one the setup page cannot serve, keep their own sign-in link.
+  await bindCatalogLinear(f, teamId, 'ready');
+  calls.length = 0;
+  const ready = await reconnect();
+  assert.equal(calls.length, 0);
+  assertFocusedSetup(ready.setup);
+  assert.equal((await f.management.getSetup(ready.setup.setupToken))?.action, 'mcp_oauth');
+  await bindCatalogLinear(f, teamId, 'needs_attention', 'sentry');
+  const sentry = await reconnect('sentry');
+  assert.equal(calls.length, 1, 'the service is asked first');
+  assert.equal(calls[0]!.result.setupOperationId, undefined, 'it has only Admin\'s page for Sentry');
+  assertFocusedSetup(sentry.setup);
+  assert.equal((await f.management.getSetup(sentry.setup.setupToken))?.action, 'mcp_oauth');
+});
+
+test('check_agent sends an abandoned catalog sign-in to reconnect_service, whose link finishes it on the setup page', async (t) => {
+  const { f, teamId, call } = await harness(t, 'check-abandoned');
+  await installAgent(f);
+  const account = await bindCatalogLinear(f, teamId, 'pending');
+  const checked = structured(await call('check_agent', { agentId: 'agent_research' }));
+  const linear = checked.checks.find(({ part, name }: { part: string; name: string }) => part === 'connection' && name === 'Linear');
+  assert.equal(linear.status, 'warning');
+  assert.deepEqual(linear.fix, {
+    label: 'Finish setting up Linear', tool: 'reconnect_service', arguments: { agentId: 'agent_research', connectionId: 'linear' },
+  }, 'never "Finish its setup in Admin"');
+
+  const followed = structured(await call(linear.fix.tool, linear.fix.arguments));
+  assertFocusedSetup(followed.setup);
+  const setup = await f.management.getSetup(followed.setup.setupToken);
+  assert.deepEqual([setup?.action, setup?.target.connectionId], ['catalog_connection', account.id]);
 });
 
 test('a member cannot connect or reconnect a team connection, or change an Agent they cannot edit', async (t) => {

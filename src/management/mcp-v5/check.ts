@@ -96,9 +96,9 @@ async function connectionChecks(deps: FiveZeroDeps, reading: AgentRunReading): P
         account?.reconnect ? reconnectFix(reading, `Reconnect ${account.label}`, row.connectionId) : agentAdminFix(deps, reading, 'Reconnect it in Admin'));
     }
     if (row.status === 'waiting_for_setup') {
-      // A custom connection waiting for its key gets reconnect_service's link, as one just added does.
+      // A key or sign-in left unfinished gets reconnect_service's link, as a connection just added does.
       const fix = account?.reconnect ? reconnectFix(reading, `Reconnect ${account.label}`, row.connectionId)
-        : row.kind !== 'service' && mayReplaceKey ? reconnectFix(reading, `Finish setting up ${row.name}`, row.connectionId)
+        : mayReplaceKey ? reconnectFix(reading, `Finish setting up ${row.name}`, row.connectionId)
           : agentAdminFix(deps, reading, 'Finish its setup in Admin');
       return withFix({ ...base, status: 'warning', detail: 'Its setup has not finished.' }, fix);
     }

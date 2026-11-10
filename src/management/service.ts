@@ -2129,8 +2129,9 @@ export class WorkspaceManagementService {
           membershipId: actor.membershipId,
           toolkit: connector.managedToolkit,
         })
+      // A sign-in left unfinished is finished in place, as a managed one is, not added again beside it.
       : accounts.find(({ id, lifecycle, ownerKind: owner, ownerMembershipId, providerId, policy }) =>
-          bound.has(id) && lifecycle === 'needs_attention' && owner === ownerKind &&
+          bound.has(id) && (lifecycle === 'needs_attention' || lifecycle === 'pending') && owner === ownerKind &&
           (owner === 'team' || ownerMembershipId === actor.membershipId) &&
           policy.kind !== 'managed' && (providerId === connector.id || policy.presetId === connector.id));
     if (account && !canManageOwnedResource(managementActorPrincipal(actor), account)) {

@@ -301,18 +301,24 @@ export async function reconnectService(
     fail('not_found', `${agent.name} has no connection with that connectionId.`, { nextStep: 'Call get_agent for its connectionIds.' });
   }
   const { agent: summary } = await agentSummary(deps, context, agent.id);
+  const laneEntry = [...agent.apiConnections, ...agent.mcpServers].find(({ id }) => id === row.connectionId);
   const lane = agent.apiConnections.some(({ id }) => id === row.connectionId) ? 'api'
     : agent.mcpServers.some(({ id }) => id === row.connectionId) ? 'mcp' : undefined;
-  if (lane) {
-    const setup = await issueSetup(deps, context, connectionTarget(agent.id, lane, row.connectionId, input.checkPath), row.name);
-    return needsSetup(summary, setup, `Open the link to reconnect ${row.name}.`);
-  }
+  const laneLink = async () => needsSetup(
+    summary,
+    await issueSetup(deps, context, connectionTarget(agent.id, lane!, row.connectionId, input.checkPath), row.name),
+    `Open the link to reconnect ${row.name}.`,
+  );
+  const lanePreset = laneEntry?.presetId ? resolveConnectorCatalogPreset(laneEntry.presetId) : undefined;
+  // A catalog connection whose sign-in was left unfinished or needs attention gets the page connect_service gives.
+  const catalogPreset = lanePreset && !('managedToolkit' in lanePreset) && row.status !== 'ready' ? lanePreset : undefined;
+  if (lane && !catalogPreset) return laneLink();
   // A catalog sign-in: the same link prepare_connector_setup makes for it.
-  const account = agent.connections?.find(({ id }) => id === row.connectionId);
-  const connector = account?.reconnect?.tool === 'prepare_connector_setup'
+  const account = agent.connections?.find(({ id, providerId }) => id === row.connectionId || providerId === row.connectionId);
+  const connector = catalogPreset?.id ?? (account?.reconnect?.tool === 'prepare_connector_setup'
     ? account.reconnect.connector
     : CONNECTION_CATALOG_PRESETS.find((preset) => 'managedToolkit' in preset &&
-        (preset.managedToolkit === account?.providerId || preset.id === account?.providerId))?.id;
+        (preset.managedToolkit === account?.providerId || preset.id === account?.providerId))?.id);
   if (!account || !connector) cannotReconnect(deps, agent.id, row.name);
   if (account.ownerKind === 'team' && snapshot.caller.role === 'member') teamConnectionRefused(`reconnect ${row.name}`);
   const setup = await forManagedAgent(deps.service.prepareConnectorSetup(context, {
@@ -320,8 +326,10 @@ export async function reconnectService(
     connector,
     ownerKind: account.ownerKind,
   }));
-  if (setup.reconnect?.connectionId !== account.id) {
+  // A catalog connection the setup page cannot serve, such as Sentry, keeps its own sign-in link.
+  if (setup.reconnect?.connectionId !== account.id || lane && !setup.setupOperationId) {
     if (setup.setupOperationId) await deps.service.revokeSetupLink(context, setup.setupOperationId);
+    if (lane) return laneLink();
     cannotReconnect(deps, agent.id, row.name);
   }
   return needsSetup(summary, linkFrom(setup), `Open the link to reconnect ${row.name}.`);
