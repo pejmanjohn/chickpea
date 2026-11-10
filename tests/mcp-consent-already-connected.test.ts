@@ -14,7 +14,10 @@ const RESOURCE = `${ORIGIN}/mcp`;
 const CODEX = CODEX_DOCUMENT.url;
 const CODEX_CALLBACK = 'http://127.0.0.1:57943/callback';
 const CODEX_NAME = (JSON.parse(CODEX_DOCUMENT.body) as { client_name: string }).client_name;
+interface Client { id: string; callback: string }
+const CODEX_CLIENT: Client = { id: CODEX, callback: CODEX_CALLBACK };
 const ALREADY_CONNECTED = 'is already connected to Chickpea';
+const ALREADY_CONNECTED_TEXT = 'This app is already connected to Chickpea. You can close this tab and go back to it.';
 const MARKER_ROWS = "SELECT identifier, value, expiresAt FROM verification WHERE identifier LIKE 'chickpea:mcp-redeemed:%'";
 
 async function fixture(t: TestContext) {
@@ -45,10 +48,46 @@ async function fixture(t: TestContext) {
   }));
   const cookie = session.headers.get('set-cookie')!.split(';', 1)[0]!;
 
-  /** Codex's authorization URL for one PKCE verifier, followed to the consent page it lands on. */
-  async function consentFor(verifier: string): Promise<URL> {
+  /** A cookie for a second member of the workspace, who connected nothing. */
+  async function secondPersonCookie(): Promise<string> {
+    const second = await auth.chickpea.reconcileSlackIdentity({
+      slackTeamId: 'T12345678', slackUserId: 'U87654321', displayName: 'Fixture Member',
+      organization: { name: 'Fixture', slug: 'fixture' },
+    });
+    admission = {
+      operationId: 'fixture-second', status: 'active', chickpeaRole: 'member',
+      slackTeamId: 'T12345678', slackUserId: 'U87654321',
+      betterAuthUserId: second.userId, betterAuthOrganizationId: second.organizationId,
+      betterAuthMembershipId: second.membershipId,
+    };
+    const issued = await auth.chickpea.issueSession('fixture-second', new Request(`${ORIGIN}/oauth/finalize`, {
+      method: 'POST', headers: { origin: ORIGIN, 'sec-fetch-site': 'same-origin' },
+    }));
+    return issued.headers.get('set-cookie')!.split(';', 1)[0]!;
+  }
+
+  /** A client registered dynamically under a name it chose. */
+  async function register(clientName: string): Promise<Client> {
+    const callback = 'http://127.0.0.1:57944/callback';
+    const registered = await handler(new Request(`${ORIGIN}/api/auth/oauth2/register`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: ORIGIN },
+      body: JSON.stringify({
+        application_type: 'native', client_name: clientName, grant_types: ['authorization_code'],
+        redirect_uris: [callback], response_types: ['code'], token_endpoint_auth_method: 'none',
+      }),
+    }));
+    assert.equal(registered.status, 201, await registered.clone().text());
+    return { id: (await registered.json() as { client_id: string }).client_id, callback };
+  }
+
+  /**
+   * A client's authorization URL for one PKCE verifier, followed to the consent page it lands on.
+   * It asks for consent, as Chickpea does for a document client and anyone may in a link they build.
+   */
+  async function consentFor(verifier: string, client: Client = CODEX_CLIENT): Promise<URL> {
     const query = new URLSearchParams({
-      response_type: 'code', client_id: CODEX, redirect_uri: CODEX_CALLBACK,
+      response_type: 'code', client_id: client.id, redirect_uri: client.callback, prompt: 'consent',
       scope: 'chickpea:workspace', state: 'codex-state', resource: RESOURCE,
       code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256',
     });
@@ -58,8 +97,8 @@ async function fixture(t: TestContext) {
     assert.equal(consent.pathname, '/auth/mcp/consent');
     return consent;
   }
-  const showConsent = (consent: URL) => browser.request(`${ORIGIN}${consent.pathname}${consent.search}`, {
-    headers: { cookie },
+  const showConsent = (consent: URL, as = cookie) => browser.request(`${ORIGIN}${consent.pathname}${consent.search}`, {
+    headers: { cookie: as },
   });
   const submitConsent = (consent: URL) => browser.request(`${ORIGIN}/auth/mcp/consent`, {
     method: 'POST',
@@ -69,43 +108,47 @@ async function fixture(t: TestContext) {
     body: new URLSearchParams({ oauth_query: consent.search.slice(1), decision: 'allow' }),
   });
   /** The code a consent POST's callback document sends the browser to, if it sends it anywhere. */
-  async function callbackCode(response: Response): Promise<string | undefined> {
+  async function callbackCode(response: Response, client: Client = CODEX_CLIENT): Promise<string | undefined> {
     const destination = /url=([^"]+)"/.exec(await response.clone().text())?.[1]?.replaceAll('&amp;', '&');
     if (!destination) return undefined;
-    assert.equal(`${new URL(destination).origin}${new URL(destination).pathname}`, CODEX_CALLBACK);
+    assert.equal(`${new URL(destination).origin}${new URL(destination).pathname}`, client.callback);
     return new URL(destination).searchParams.get('code') ?? undefined;
   }
   const token = (form: Record<string, string>) => handler(new Request(`${ORIGIN}/api/auth/oauth2/token`, {
     method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams(form),
   }));
-  const exchange = (code: string, verifier: string) => token({
-    grant_type: 'authorization_code', client_id: CODEX, code, code_verifier: verifier,
-    redirect_uri: CODEX_CALLBACK, resource: RESOURCE,
+  const exchange = (code: string, verifier: string, client: Client = CODEX_CLIENT) => token({
+    grant_type: 'authorization_code', client_id: client.id, code, code_verifier: verifier,
+    redirect_uri: client.callback, resource: RESOURCE,
   });
-  /** Codex's whole first sign-in: consent, Allow, and the code exchanged by its loopback listener. */
-  async function signIn(verifier: string): Promise<URL> {
-    const consent = await consentFor(verifier);
-    const code = await callbackCode(await submitConsent(consent));
-    assert.ok(code, 'the first Allow returns a code to Codex');
-    const exchanged = await exchange(code, verifier);
+  /** A client's whole first sign-in: consent, Allow, and the code exchanged by its loopback listener. */
+  async function signIn(verifier: string, client: Client = CODEX_CLIENT): Promise<URL> {
+    const consent = await consentFor(verifier, client);
+    const code = await callbackCode(await submitConsent(consent), client);
+    assert.ok(code, 'the first Allow returns a code to the client');
+    const exchanged = await exchange(code, verifier, client);
     assert.equal(exchanged.status, 200, await exchanged.clone().text());
     return consent;
   }
   const codes = () => (backend.database.prepare(
     "SELECT COUNT(*) AS n FROM verification WHERE identifier NOT LIKE 'chickpea:%'",
   ).get() as { n: number }).n;
-  return { backend, consentFor, showConsent, submitConsent, callbackCode, token, exchange, signIn, codes };
+  return {
+    backend, consentFor, showConsent, submitConsent, callbackCode, token, exchange, signIn, codes,
+    register, secondPersonCookie,
+  };
 }
 
 const verifier = () => randomBytes(32).toString('base64url');
 
-async function assertAlreadyConnected(response: Response) {
+async function assertAlreadyConnected(response: Response, registeredName = CODEX_NAME) {
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('location'), null);
   assert.equal(response.headers.get('cache-control'), 'no-store');
   const page = await response.text();
-  assert.ok(page.includes(`${CODEX_NAME} ${ALREADY_CONNECTED}`), page);
+  assert.ok(page.includes(ALREADY_CONNECTED_TEXT), page);
+  assert.ok(!page.includes(registeredName), `the page never repeats the app's own name: ${page}`);
   assert.ok(!page.includes('<form'), 'no consent form');
   assert.ok(!page.includes('http-equiv="refresh"'), 'no redirect to the loopback callback');
   assert.ok(!page.includes('127.0.0.1'), 'no loopback URL');
@@ -134,6 +177,29 @@ test('Allow in a tab opened before the exchange shows the already-connected page
   const codesAfterSignIn = f.codes();
   await assertAlreadyConnected(await f.submitConsent(earlyTab));
   assert.equal(f.codes(), codesAfterSignIn, 'no new authorization code is stored');
+});
+
+// Defect caught: the page printed a client's registered name as Chickpea's words, to anyone signed in.
+test('the already-connected page never repeats a name an app registered, to its person or anyone else', async (t) => {
+  const f = await fixture(t);
+  const reopened: { name: string; consent: URL }[] = [];
+  for (const name of [
+    'Claude Code, then sign in again at chickpea-auth.co',
+    'ChatGРT', // a Cyrillic Er: reads as ChatGPT
+    'ChatGPT', // ChatGPT's own name, which any registration can claim
+  ]) {
+    const client = await f.register(name);
+    const sameVerifier = verifier();
+    await f.signIn(sameVerifier, client);
+    const consent = await f.consentFor(sameVerifier, client);
+    await assertAlreadyConnected(await f.showConsent(consent), name);
+    await assertAlreadyConnected(await f.submitConsent(consent), name);
+    reopened.push({ name, consent });
+  }
+  const someoneElse = await f.secondPersonCookie();
+  for (const { name, consent } of reopened) {
+    await assertAlreadyConnected(await f.showConsent(consent, someoneElse), name);
+  }
 });
 
 test('a new authorization with a fresh PKCE challenge is asked for consent as before', async (t) => {
