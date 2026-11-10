@@ -155,6 +155,30 @@ export function agentNamed(name: string, handle?: string): string {
 }
 
 /**
+ * A tool result with the `_meta` its host holds for the card, where the
+ * card's tokens and tool name travel: ChatGPT's canonical place is
+ * `window.openai.toolResponseMetadata`. A host may also send `_meta` of its
+ * own, even empty, on the notification; both are kept, and the
+ * notification's keys win.
+ */
+export function withResponseMeta<T extends ToolResult>(result: T, meta: unknown): T {
+  if (typeof meta !== 'object' || meta === null || Array.isArray(meta)) return result;
+  return { ...result, _meta: { ...meta as Record<string, unknown>, ...result._meta } };
+}
+
+/** The longest server summary a sentence for the host's model appends. */
+const SUMMARY_MAX = 200;
+
+/**
+ * A server summary at the end of a sentence for the host's model: one line,
+ * cut short, since it can carry a name a member chose.
+ */
+export function summaryLine(summary: string): string {
+  const line = summary.replace(/\s+/g, ' ').trim();
+  return line.length > SUMMARY_MAX ? `${line.slice(0, SUMMARY_MAX - 1)}…` : line;
+}
+
+/**
  * Where to try an Agent: a mention reaches it only in its Channels, and a
  * direct message always does.
  */

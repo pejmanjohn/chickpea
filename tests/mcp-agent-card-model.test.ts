@@ -2,7 +2,14 @@ import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 
 import { INITIAL, present, step, type Action, type View } from '../src/mcp-cards/agent-card/model.ts';
-import { POLL_BACKOFF_MAX_MS, POLL_CEILING_MS, POLL_INTERVAL_MS, type Effect, type ToolResult } from '../src/mcp-cards/card-model.ts';
+import {
+  POLL_BACKOFF_MAX_MS,
+  POLL_CEILING_MS,
+  POLL_INTERVAL_MS,
+  withResponseMeta,
+  type Effect,
+  type ToolResult,
+} from '../src/mcp-cards/card-model.ts';
 import { createFixtureAgent } from './helpers/management-adapter-fixture.ts';
 import { BASE_URL, cardHost, cardServer, NOW, type CardModelUnderTest, type ServerCall } from './helpers/mcp-card-host.ts';
 
@@ -765,4 +772,47 @@ test('a confirmation whose token never reached the card asks nothing, and says w
   await deleteCard.press('open_admin');
   assert.deepEqual(deleteCard.calls(), []);
   assert.equal(deleteCard.effects.some(({ type }) => type === 'open'), false);
+});
+
+test('what the model hears quotes a long Agent name cut short, and never a server summary that repeats it whole', async (t) => {
+  const { f, call, card: agentCard, clock } = await harness(t, 'card-long-name');
+  const long = `Research ${'x'.repeat(231)}`;
+  assert.equal(long.length, 240);
+  await createFixtureAgent(f, 'agent_research', { name: long });
+  const read = (await call('get_agent', { agentId: 'agent_research' })).structuredContent!;
+  await agentCard.result(await call('propose_agent_change', { agentId: 'agent_research', version: read.version, change: { on: false } }));
+  await agentCard.press('save');
+  assert.deepEqual(contexts(agentCard), [`The person saved the change to the Agent ${JSON.stringify(`${long.slice(0, 59)}…`)} from the card.`]);
+
+  // A summary the sentence ends with is one line of at most 200 characters.
+  const similar = card(answering(call, 'create_agent', {
+    structuredContent: {
+      status: 'similar_agent_exists',
+      summary: `An Agent like this already exists:\n${long} (@research).\nNothing was created.`,
+      matches: [{ agentId: 'agent_research', name: long, handle: 'research' }],
+    },
+  }), clock);
+  await similar.result(await call('propose_agent', PROPOSAL));
+  await similar.press('create');
+  const [sentence = ''] = contexts(similar);
+  const lead = 'The person pressed Create in Slack on the card, but nothing was created: ';
+  assert.ok(sentence.startsWith(lead), sentence);
+  assert.equal(sentence.length, lead.length + 200);
+  assert.ok(!sentence.includes('\n') && !sentence.includes(long));
+});
+
+test('the card finds its tokens in the host\'s copy of _meta, whatever _meta the notification brings', async (t) => {
+  const { call, clock, version } = await heldServer(t, 'card-response-meta');
+  const off = await call('update_agent', { agentId: 'agent_support', version: await version(), on: false, idempotencyKey: 'off' });
+  const { _meta: held, ...bare } = off;
+  const notifications: ToolResult[] = [bare, { ...bare, _meta: {} }, { ...bare, _meta: { 'openai/widgetSessionId': 'widget_1' } }];
+  for (const notified of notifications) {
+    const confirm = card(call, clock);
+    await confirm.result(withResponseMeta(notified, held));
+    assert.deepEqual(confirm.labels(), ['Turn off (danger)', 'Keep it on (secondary)'], JSON.stringify(notified._meta));
+  }
+  assert.deepEqual(withResponseMeta({ _meta: { a: 1, b: 2 } }, { b: 3, c: 4 })._meta, { a: 1, b: 2, c: 4 }, 'the notification\'s own keys win');
+  for (const meta of [undefined, null, ['chickpea/held'], 'chickpea/held']) {
+    assert.deepEqual(withResponseMeta(bare, meta), bare, JSON.stringify(meta));
+  }
 });
