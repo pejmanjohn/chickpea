@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 // @ts-expect-error Build tooling JavaScript helper.
-import { measureStaticClosure } from '../scripts/worker-closure.mjs';
+import { closureFailures, measureStaticClosure } from '../scripts/worker-closure.mjs';
 
 test('the static closure follows static imports from the Worker entry and skips import() targets', (t) => {
   const root = mkdtempSync(path.join(tmpdir(), 'chickpea-worker-closure-'));
@@ -36,4 +36,80 @@ test('the static closure follows static imports from the Worker entry and skips 
   // A report written before modules named their chunk cannot say which load at startup.
   writeFileSync(path.join(root, 'bundle-modules.json'), JSON.stringify([{ id: 'src/app.ts', renderedLength: 90 }]));
   assert.equal(measureStaticClosure(root).modules, undefined);
+});
+
+type Closure = { bytes: number; modules?: Map<string, number> };
+const KIB = 1024;
+const BASE = 'a'.repeat(40);
+const MERGE = 'b'.repeat(40);
+const closure = (modules: Record<string, number>): Closure =>
+  ({ bytes: Object.values(modules).reduce((sum, bytes) => sum + bytes, 0), modules: new Map(Object.entries(modules)) });
+// A train of two merges: the first adds 20 KiB with no note; the second, HEAD, adds 30 KiB under a 40 KiB note.
+const measured = new Map<string | undefined, Closure>([
+  [BASE, closure({ 'src/app.ts': 100 * KIB })],
+  [MERGE, closure({ 'src/app.ts': 100 * KIB, 'src/first.ts': 20 * KIB })],
+  [undefined, closure({ 'src/app.ts': 100 * KIB, 'src/first.ts': 20 * KIB, 'src/second.ts': 30 * KIB })],
+]);
+const plan = {
+  base: BASE, ref: 'origin/main', changes: [
+    { from: BASE, to: MERGE, label: 'merge bbbbbbbbb (Merge pull request #1)', notes: [], allowance: 16 * KIB },
+    { from: MERGE, to: undefined, label: 'merge ccccccccc (Merge pull request #2)', notes: ['40 KiB, the connect route'], allowance: 40 * KIB },
+  ],
+};
+function check(options: { at?: (commit?: string) => Closure; ceiling?: number; unbuildableBaseAllowed?: boolean; plan?: object } = {}) {
+  const logged: string[] = [];
+  const failures: string[] = closureFailures({
+    head: measured.get(undefined), plan, at: (commit?: string) => measured.get(commit), ceiling: 1024 * KIB,
+    ...options, log: (line: string) => logged.push(line),
+  });
+  return { failures, logged };
+}
+
+test('the closure fails a change over its allowance, names its modules, and passes one within its note', () => {
+  const { failures, logged } = check();
+  const [failure = ''] = failures;
+  assert.equal(failures.length, 1);
+  assert.match(failure, /^The Worker static closure grew 20\.0 KiB in merge bbbbbbbbb \(Merge pull request #1\) \(aaaaaaaaa\.\.bbbbbbbbb\), over the 16\.0 KiB/);
+  assert.match(failure, /\+20\.0 KiB {2}src\/first\.ts \(new\)/);
+  assert.doesNotMatch(failure, /second\.ts/);
+  assert.deepEqual(logged, [
+    'The merge base with origin/main is aaaaaaaaa.',
+    'Growth in merge bbbbbbbbb (Merge pull request #1) since aaaaaaaaa: 20.0 KiB, allowed 16.0 KiB.',
+    'Growth in merge ccccccccc (Merge pull request #2) since bbbbbbbbb: 30.0 KiB, allowed 40.0 KiB. Worker-Startup-Growth: 40 KiB, the connect route.',
+  ]);
+});
+
+test('the closure fails over its ceiling whatever each change added', () => {
+  const within = { ...plan, changes: plan.changes.map((change) => ({ ...change, allowance: 64 * KIB })) };
+  assert.deepEqual(check({ plan: within }).failures, []);
+  const { failures } = check({ plan: within, ceiling: 140 * KIB });
+  assert.equal(failures.length, 1);
+  assert.match(failures.join('\n'), /^The static closure is 0\.01 MiB over its ceiling\.\nModules that grew since the merge base:\n {4}\+30\.0 KiB {2}src\/second\.ts \(new\)\n {4}\+20\.0 KiB {2}src\/first\.ts \(new\)\n/);
+  // With no merge base, the ceiling still applies.
+  assert.match(check({ plan: { skip: 'No merge base.' }, ceiling: 140 * KIB }).failures.join('\n'), /over its ceiling\.\nLoad the new code/);
+});
+
+test('a base that cannot be measured fails unless CHICKPEA_BUDGET_UNBUILDABLE_BASE is set, and the ceiling still applies', () => {
+  const at = (commit?: string) => {
+    if (commit === BASE) throw new Error('Building aaaaaaaaa to measure its closure failed. Its package-lock.json is not this checkout\'s.');
+    return measured.get(commit)!;
+  };
+  const failed = check({ at });
+  assert.equal(failed.failures.length, 1);
+  assert.match(failed.failures.join('\n'), /^Growth in merge bbbbbbbbb \(Merge pull request #1\) could not be measured\. Building aaaaaaaaa to measure its closure failed\. Its package-lock\.json is not this checkout's\.\nWhen that commit cannot build with this checkout's dependencies, as after a dependency upgrade, set CHICKPEA_BUDGET_UNBUILDABLE_BASE=1 to check the ceiling alone\.$/);
+
+  const allowed = check({ at, unbuildableBaseAllowed: true });
+  assert.deepEqual(allowed.failures, []);
+  const [, unmeasured = '', measuredMerge = ''] = allowed.logged;
+  assert.match(unmeasured, /^Growth in merge bbbbbbbbb .* is not checked, as CHICKPEA_BUDGET_UNBUILDABLE_BASE is set; the ceiling still is\. Building aaaaaaaaa/);
+  // The merge it could measure is still checked, and so is the ceiling.
+  assert.match(measuredMerge, /^Growth in merge ccccccccc .*: 30\.0 KiB, allowed 40\.0 KiB/);
+  assert.match(check({ at, unbuildableBaseAllowed: true, ceiling: 140 * KIB }).failures.join('\n'), /^The static closure is 0\.01 MiB over its ceiling\.\nLoad/);
+});
+
+test('a skipped plan is printed and a failed one fails', () => {
+  const skipped = check({ plan: { skip: 'This checkout has no Git history.' } });
+  assert.deepEqual(skipped, { failures: [], logged: ['This checkout has no Git history.'] });
+  assert.deepEqual(check({ plan: { error: 'CHICKPEA_BUDGET_BASE=lowr has no merge base with HEAD.' } }).failures,
+    ['CHICKPEA_BUDGET_BASE=lowr has no merge base with HEAD.']);
 });

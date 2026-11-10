@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { importGraph, reachable, workerEntries } from './helpers/import-graph.ts';
 // @ts-expect-error Build tooling JavaScript helper.
-import { compareSizes, exportCommit, formatGrowth, growthFailure, growthPlan } from '../scripts/lib/budget-growth.mjs';
+import { compareSizes, exportCommit, formatGrowth, growthFailure, growthLine, growthPlan, short } from '../scripts/lib/budget-growth.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -89,7 +89,7 @@ const measured = new Map<string, Map<string, number>>();
 function startupSourcesAt(commit: string | undefined): Map<string, number> {
   if (commit === undefined) return current;
   if (!measured.has(commit)) {
-    const directory = exportCommit(ROOT, commit);
+    const directory = exportCommit(ROOT, commit, ['src', 'package.json']);
     try {
       measured.set(commit, startupSources(directory));
     } finally {
@@ -120,16 +120,19 @@ test('the lazily loaded modules stay out of what the Worker loads at startup', (
 test('the repository modules Worker startup loads stay under their ceiling', () => {
   const bytes = [...current.values()].reduce((sum, size) => sum + size, 0);
   if (bytes <= STARTUP_SOURCE_CEILING_BYTES) return;
-  const grew = plan.skip ? '' : `Modules that grew since the merge base:\n${
+  const grew = plan.base === undefined ? '' : `Modules that grew since the merge base:\n${
     formatGrowth(compareSizes(startupSourcesAt(plan.base), current).rows)}\n`;
   assert.fail(`Worker startup loads ${current.size} repository modules, ${bytes} bytes, over the ` +
     `${STARTUP_SOURCE_CEILING_BYTES}-byte ceiling.\n${grew}Load new code with import() where it is used. ` +
     'Once per merge train, STARTUP_SOURCE_CEILING_BYTES may be set to the measured size plus 64 KiB.');
 });
 
-test('a change adds at most its allowance to Worker startup over its merge base', { skip: plan.skip ?? false }, () => {
+test('a change adds at most its allowance to Worker startup over its merge base', { skip: plan.skip ?? false }, (t) => {
+  if (plan.error) assert.fail(plan.error);
+  t.diagnostic(`The merge base with ${plan.ref} is ${short(plan.base)}.`);
   for (const change of plan.changes) {
     const { growth, rows } = compareSizes(startupSourcesAt(change.from), startupSourcesAt(change.to));
+    t.diagnostic(growthLine(change, growth));
     assert.ok(growth <= change.allowance,
       growthFailure({ what: "Worker startup's repository source", change, ref: plan.ref, growth, rows }));
   }
