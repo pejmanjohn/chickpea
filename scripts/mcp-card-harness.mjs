@@ -799,7 +799,7 @@ try {
     await open('confirm');
     await browser.waitForTitle(/^Turn off @support\?$/);
     await browser.click('confirm');
-    await browser.waitForTitle(/^✓ Made the change you confirmed$/);
+    await browser.waitForTitle(/^✓ Turned off Support Desk$/);
     assert.deepEqual(await browser.host('window.harness.calls'), ['confirm_change'], 'one click, one confirmation');
     assert.equal((await current.f.config.getAgent('agent_support')).enabled, false);
     assert.equal(await subtitle(), 'It won\'t answer in Slack until it\'s turned back on.');

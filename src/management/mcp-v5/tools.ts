@@ -3,7 +3,7 @@ import type { z } from 'zod';
 
 import { emitManagementMetric } from '../telemetry.ts';
 import type { CardName } from '../../mcp-cards/published.ts';
-import { holdTokens } from './card-host.ts';
+import { forCardHost } from './card-host.ts';
 import { CARD_URIS } from './cards.ts';
 import {
   mcpErrorResult,
@@ -93,7 +93,7 @@ export const FIVE_ZERO_TOOLS = {
   }),
   get_agent: tool({
     title: 'Get Agent',
-    description: 'One Agent as it is now: instructions, models, skills, connections, website logins, repositories, Slack Channels and Slack status, plus the version a later change sends back. Read it before you propose a change. A member sees only the Agents they may edit. Reads only; changes nothing.',
+    description: 'One Agent as it is now: instructions, models, skills, connections, website logins, repositories, Slack Channels and Slack status, plus the version a later change sends back. Read it before you propose a change; check_agent says how it is doing. A member sees only the Agents they may edit. Reads only; changes nothing.',
     input: schemas.getAgentInput,
     output: schemas.getAgentOutput,
     run: (deps, args) => reads.getAgent(deps, args),
@@ -211,8 +211,8 @@ export const FIVE_ZERO_TOOLS = {
     run: (deps, args) => explainAgent(deps, args),
   }),
   check_agent: tool({
-    title: 'Check an Agent',
-    description: 'Checks every part of one Agent: connections, model, Slack, Channels, schedules, repositories, website logins, and whether a message from a person in a place reaches it. Each check has a status and, when failing, a fix: a tool with its arguments, or a link. Tests custom connections with one request each; changes nothing.',
+    title: 'Check on an Agent\'s health',
+    description: 'How one Agent is doing, for "check on it", "how is it doing" or a health check: its connections, model, Slack, Channels, schedules, repositories, website logins, and whether a message from a person in a place reaches it. Each check has a status and, when failing, a fix: a tool with its arguments, or a link. Tests custom connections with one request each; changes nothing.',
     input: schemas.checkAgentInput,
     output: schemas.checkAgentOutput,
     openWorld: true,
@@ -273,7 +273,7 @@ export const FIVE_ZERO_TOOLS = {
   }),
   add_agent_to_channel: tool({
     title: 'Add an Agent to a Slack Channel',
-    description: 'Let an Agent answer in one Slack Channel, which it joins. In a public Channel it posts a welcome everyone there sees, which cannot be taken back. Everyone in that Channel can then mention it. Applies at once.',
+    description: 'Let an Agent answer in one Slack Channel, which it joins. The Agent must be on; this never turns it on. In a public Channel it posts a welcome everyone there sees, which cannot be taken back. Everyone in that Channel can then mention it. Applies at once.',
     input: schemas.addAgentToChannelInput,
     output: schemas.changeResultOutput,
     write: writeHints({ destructive: true }),
@@ -399,7 +399,7 @@ export const FIVE_ZERO_TOOLS = {
   }),
   run_schedule_now: tool({
     title: 'Run a schedule now',
-    description: 'Run a schedule once now, outside its timing. The Agent does the task, which can use its connections and the web, and posts the result where the schedule posts; a post cannot be taken back. list_agent_runs shows how it went.',
+    description: 'Run a schedule once now, outside its timing. The Agent does the task, which can use its connections and the web, and posts the result where the schedule posts; a post cannot be taken back. list_schedules shows how its last run went.',
     input: schemas.runScheduleNowInput,
     output: schemas.changeResultOutput,
     write: writeHints({ destructive: true, openWorld: true }),
@@ -561,8 +561,9 @@ export function registerFiveZeroTool(
       // Whatever the tool, a card host's model never gets a confirm token.
       const confirms = (parsed.data as { status?: unknown }).status === 'needs_confirmation';
       if (!drawn && !(confirms && cardHost())) return mcpSuccessResult(parsed.data);
-      const { structured, held } = cardHost() ? holdTokens(parsed.data, deps.baseUrl) : { structured: parsed.data };
-      return mcpSuccessResult(structured, { tool: name, held });
+      if (!cardHost()) return mcpSuccessResult(parsed.data, { tool: name });
+      const { structured, held, lead } = forCardHost(parsed.data, deps.baseUrl, definition.card !== undefined);
+      return mcpSuccessResult(structured, { tool: name, held, lead });
     } catch (error) {
       const failure = mcpToolError(error);
       if (failure.code === 'temporarily_unavailable' && !(error instanceof McpToolFailure)) {

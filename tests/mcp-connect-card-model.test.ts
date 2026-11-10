@@ -86,7 +86,8 @@ test('Connect opens Chickpea\'s page for this one connection only when pressed, 
   const { setup } = result.structuredContent!;
   assert.equal(result._meta?.['chickpea/tool'], 'connect_service');
   assert.deepEqual(JSON.parse((result as { content: Array<{ text: string }> }).content[0]!.text), result.structuredContent, 'a client without cards gets it all');
-  assert.equal(setup.owner, 'member');
+  // Chickpea's page asks whose account a new connection is, so the link fixes no owner.
+  assert.equal(setup.owner, undefined);
 
   const connect = card();
   await connect.result(result);
@@ -94,7 +95,7 @@ test('Connect opens Chickpea\'s page for this one connection only when pressed, 
   assert.equal(connect.shown.title, 'Connect Gmail to Research');
   assert.equal(connect.shown.avatarUrl, `${BASE_URL}/assets/agents/agent_research/avatar/1`, 'the Agent\'s own picture');
   assert.deepEqual(connect.shown.subtitle, [{ text: 'You sign in on Chickpea\'s page, never in this chat.' }]);
-  assert.deepEqual(rows(connect.shown), ['Gmail · Your own account · [Connect]']);
+  assert.deepEqual(rows(connect.shown), ['Gmail · [Connect]']);
 
   // Mounting again, coming back into view and its timer only read.
   await connect.dispatch({ type: 'reread', now: clock.now });
@@ -381,7 +382,7 @@ test('a page the host would not open offers Connect again, with the reason', asy
   assert.deepEqual([connect.state.view.kind, connect.shown.error], ['finishing', undefined], 'a refusal of another link says nothing about this page');
   await connect.dispatch({ type: 'refused', effect: page, now: clock.now });
   assert.deepEqual([connect.state.view.kind, connect.shown.error], ['start', 'That did not work. Try again.']);
-  assert.deepEqual(rows(connect.shown), ['Gmail · Your own account · [Connect]']);
+  assert.deepEqual(rows(connect.shown), ['Gmail · [Connect]']);
 });
 
 test('a host that refuses the page a minute late, once Chickpea saw it open, leaves the card following it', async (t) => {

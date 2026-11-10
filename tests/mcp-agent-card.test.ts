@@ -66,7 +66,8 @@ async function harness(t: TestContext, suffix: string, teamName?: string) {
     () => createWorkspaceManagementMcpServer({ principal, service: f.service, baseUrl: BASE_URL }),
     { legacy: 'stateless' },
   );
-  const rpc = async (method: string, params: Record<string, unknown> = {}) => {
+  /** The whole JSON-RPC answer: a result or an error. */
+  const answer = async (method: string, params: Record<string, unknown> = {}) => {
     const response = await handler.fetch(new Request('http://localhost/mcp', {
       method: 'POST',
       headers: {
@@ -81,11 +82,12 @@ async function harness(t: TestContext, suffix: string, teamName?: string) {
     const json = body.trimStart().startsWith('{')
       ? body
       : body.split('\n').find((line) => line.startsWith('data: '))!.slice('data: '.length);
-    return (JSON.parse(json) as { result: any }).result;
+    return JSON.parse(json) as { result?: any; error?: { code: number; message: string } };
   };
+  const rpc = async (method: string, params: Record<string, unknown> = {}) => (await answer(method, params)).result;
   const call = async (name: string, args: Record<string, unknown> = {}) =>
     await rpc('tools/call', { name, arguments: args }) as ToolResult;
-  return { f, rpc, call, teamId: f.owner.binding.slackTeamId };
+  return { f, rpc, answer, call, teamId: f.owner.binding.slackTeamId };
 }
 
 async function version(call: (name: string, args?: Record<string, unknown>) => Promise<ToolResult>, agentId: string) {
@@ -154,7 +156,7 @@ test('each card resource is an MCP App that loads only Chickpea\'s own pictures 
 });
 
 test('every published card is public as inert text and served as published; its URI changes whenever its bytes do', async (t) => {
-  const { rpc } = await harness(t, 'card-versions');
+  const { rpc, answer } = await harness(t, 'card-versions');
   const published = readPublished() as Record<string, Array<{ version: number; sha256: string }>>;
   assert.deepEqual(Object.keys(published), CARD_NAMES);
   assert.deepEqual(Object.keys(CARD_TITLES), CARD_NAMES, 'the build makes every card');
@@ -176,6 +178,15 @@ test('every published card is public as inert text and served as published; its 
     const latest = versions.at(-1)!;
     assert.equal(sha256(await buildCard(card, latest.version)), latest.sha256,
       `The ${card} changed since it was published. Run npm run mcp-cards:build: it publishes the next version.`);
+  }
+  const { resources } = await rpc('resources/list') as { resources: Array<{ uri: string }> };
+  assert.deepEqual(resources.map(({ uri }) => uri).filter((uri) => uri.startsWith('ui://chickpea/')), Object.values(CARD_URIS),
+    'only the newest of each card is listed; an older one is read by the URI its chat kept');
+  const after = cardVersions('agent-card').at(-1)! + 1;
+  const notFound = (await answer('resources/read', { uri: 'ui://chickpea/nothing-v1' })).error;
+  assert.equal(typeof notFound?.code, 'number');
+  for (const uri of ['ui://chickpea/agent-card-v0', 'ui://chickpea/agent-card-v01', `ui://chickpea/agent-card-v${after}`]) {
+    assert.equal((await answer('resources/read', { uri })).error?.code, notFound!.code, `${uri} was never published, so it is not found`);
   }
 });
 
@@ -203,8 +214,11 @@ test('after the next version is published, a chat drawn with an older card still
     // Every card's page goes through stdout; three at once outgrow the default 1 MiB.
     maxBuffer: 64 * 1024 * 1024,
   });
-  const { toolsName, allowlisted, served } = JSON.parse(output) as { toolsName: Record<string, string>; allowlisted: string[]; served: Record<string, string> };
+  const { toolsName, allowlisted, listed, served } = JSON.parse(output) as {
+    toolsName: Record<string, string>; allowlisted: string[]; listed: string[]; served: Record<string, string>;
+  };
   assert.deepEqual(toolsName, { ...CARD_URIS, 'connect-card': `ui://chickpea/connect-card-v${next.version}` }, 'tools name the newest of each card');
+  assert.deepEqual(listed, Object.values(toolsName), 'the resource list names only the newest of each card');
   const all = CARD_NAMES.flatMap((card) => [
     ...before[card].map(({ version: v }) => ({ card, v, text: readFileSync(`assets/${assetPath(card, v)}`, 'utf8') })),
     ...card === 'connect-card' ? [{ card, v: next.version, text: next.html }] : [],

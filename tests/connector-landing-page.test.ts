@@ -7,7 +7,7 @@ import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import {
   renderCatalogConnectionAccessReviewPage,
-  renderCatalogConnectionCancelledPage,
+  renderConnectionCancelledPage,
   renderCatalogConnectionSetupPage,
   renderManagedConnectionDeparturePage,
   renderManagedConnectionSetupPage,
@@ -412,7 +412,7 @@ test('a Slack link to change a shared sign-in\'s pages says the change reaches e
   assert.doesNotMatch(expired, /Changes there/, 'an expired sign-in shows no page list to change');
 });
 
-test('Cancel on a catalog page sends an app\'s link back to the app, and a Slack link to the Agent in Admin', () => {
+test('Cancel on a catalog page cancels an app\'s link and sends the person back to the app; a Slack link opens the Agent in Admin', () => {
   const pages: Array<[string, (setup: ManagementSetupRecord) => string]> = [
     ['setup', (record) => renderCatalogConnectionSetupPage({ setup: record, agent: sprout })],
     ['access review', (record) => renderCatalogConnectionAccessReviewPage({
@@ -424,15 +424,16 @@ test('Cancel on a catalog page sends an app\'s link back to the app, and a Slack
   for (const [name, render] of pages) {
     assert.match(render(fromSlack), /<a class="text-button" href="\/admin\/agents\/agent_sprout">Cancel<\/a>/, `${name}: Slack keeps its Cancel`);
     const app = render(fromApp);
-    assert.match(app, /<a class="text-button" href="\/setup\/setup_catalog_linear\?cancelled=1">Cancel<\/a>/, name);
+    assert.ok(app.includes('<form method="post" action="/setup/setup_catalog_linear/cancel"><button class="text-button" type="submit" name="intent" value="cancel">Cancel</button></form>'),
+      `${name}: an app's Cancel posts, and cancels the link`);
     assert.doesNotMatch(app, /href="\/admin/, `${name}: an app's link never opens Admin`);
   }
 
-  const cancelled = renderCatalogConnectionCancelledPage({ setup: fromApp, agent: sprout, returnTo: { app: 'ChatGPT' } });
+  const cancelled = renderConnectionCancelledPage({ setup: fromApp, agent: sprout, returnTo: { app: 'ChatGPT' } });
   assert.match(cancelled, /<title>Chickpea · Linear not connected<\/title>/);
   assert.match(cancelled, /<h1 id="flow-title">Linear was not connected to Sprout<\/h1>/);
   assert.match(cancelled, /You can close this tab and go back to ChatGPT\./);
-  assert.match(renderCatalogConnectionCancelledPage({ setup: fromApp, agent: sprout, returnTo: {} }), /go back to your app\./);
+  assert.match(renderConnectionCancelledPage({ setup: fromApp, agent: sprout, returnTo: {} }), /go back to your app\./);
   assert.doesNotMatch(cancelled, /\/admin|Slack/);
 });
 
@@ -474,7 +475,7 @@ test('every connector and setup page styles each class it uses, and every styled
       agent: sprout,
       accessReview: { approvedAccountIds: [], tools: [] },
     })],
-    ['catalog cancelled', renderCatalogConnectionCancelledPage({ setup: catalogSetup('linear', 'Linear'), agent: sprout, returnTo: {} })],
+    ['catalog cancelled', renderConnectionCancelledPage({ setup: catalogSetup('linear', 'Linear'), agent: sprout, returnTo: {} })],
     ['managed setup, read', renderManagedConnectionSetupPage({ setup, agent: sprout })],
     ['managed setup with a sign-in to reuse', renderManagedConnectionSetupPage({
       setup: notionSetup, agent: sprout, reusable: { member: [MY_NOTION], team: [] },

@@ -1,4 +1,4 @@
-import type { McpServer } from '@modelcontextprotocol/server';
+import { ResourceNotFoundError, ResourceTemplate, type McpServer } from '@modelcontextprotocol/server';
 import { readPublicAsset } from '#chickpea-assets';
 
 import { CARD_NAMES, cardAssetPath, cardVersions, type CardName } from '../../mcp-cards/published.ts';
@@ -69,25 +69,35 @@ export function cardResourceMeta(card: CardName, baseUrl: string | undefined) {
 /**
  * Every published version of every card stays readable, because a chat
  * drawn with an older card asks for its URI again when it reopens. That card
- * calls today's tools, so a card tool's output only ever gains fields.
+ * calls today's tools, so a card tool's output only ever gains fields. Only
+ * the newest is listed: the older ones are read by the URI a chat kept,
+ * through a template no list names.
  */
 export function registerCards(server: McpServer, baseUrl: string | undefined): void {
   for (const card of CARD_NAMES) {
     const meta = cardResourceMeta(card, baseUrl);
-    for (const version of cardVersions(card)) {
-      server.registerResource(`${card}-v${version}`, cardUri(card, version), {
-        title: CARD_TEXT[card].title,
-        description: CARD_TEXT[card].description,
+    const metadata = {
+      title: CARD_TEXT[card].title,
+      description: CARD_TEXT[card].description,
+      mimeType: MCP_APP_MIME_TYPE,
+      _meta: meta,
+    };
+    const read = async (uri: URL, version: number) => ({
+      contents: [{
+        uri: uri.href,
         mimeType: MCP_APP_MIME_TYPE,
+        text: new TextDecoder().decode(await readPublicAsset(cardAssetPath(card, version))),
         _meta: meta,
-      }, async (uri) => ({
-        contents: [{
-          uri: uri.href,
-          mimeType: MCP_APP_MIME_TYPE,
-          text: new TextDecoder().decode(await readPublicAsset(cardAssetPath(card, version))),
-          _meta: meta,
-        }],
-      }));
-    }
+      }],
+    });
+    const versions = cardVersions(card);
+    const newest = versions.at(-1)!;
+    server.registerResource(`${card}-v${newest}`, cardUri(card, newest), metadata, (uri) => read(uri, newest));
+    const older = new ResourceTemplate(`ui://chickpea/${card}-v{version}`, { list: undefined });
+    server.registerResource(`${card}-older`, older, metadata, (uri, { version }) => {
+      const asked = Number(version);
+      if (String(asked) !== version || !versions.includes(asked)) throw new ResourceNotFoundError(uri.href);
+      return read(uri, asked);
+    });
   }
 }

@@ -199,7 +199,7 @@ import {
   type ConnectorLandingPageInput,
   renderManagedConnectionDeparturePage,
   renderCatalogConnectionAccessReviewPage,
-  renderCatalogConnectionCancelledPage,
+  renderConnectionCancelledPage,
   renderCatalogConnectionSetupPage,
   renderManagedConnectionSetupPage,
   renderManagedConnectionSuccessPage,
@@ -294,6 +294,13 @@ export function createManagementSetupRoutes(
     const principal = await authenticateSetupPrincipal(c, options);
     const session = setupSession(c, setupId);
 
+    // Where Cancel on an app's link ends once it is cancelled: only for the person it was made for.
+    if (setup?.status === 'revoked' && setup.origin.kind === 'mcp' && c.req.query('cancelled') === '1' &&
+        principalMatchesSetup(principal, setup)) {
+      const page = await cancelledPageInput(c, setup, dependencies);
+      if (page) return c.html(renderConnectionCancelledPage({ ...page, ...await setupReturnApp(setup, dependencies, options) }));
+    }
+
     if (setup?.action === 'managed_connection') {
       if (setup.status === 'revoked' || setup.status === 'expired') {
         return managedUnavailablePage(c, setup);
@@ -358,11 +365,11 @@ export function createManagementSetupRoutes(
         return terminalPage(c, setup, dependencies.management);
       }
       if (setup.status === 'failed' && setup.failureCode === 'target_changed') return staleLinkPage(c, setup, 410);
-      // Cancel on an app's link leaves the setup as it was and sends the person back to the app.
-      if (setup.origin.kind === 'mcp' && c.req.query('cancelled') === '1') {
+      // Cancel on an app's link whose sign-in was already being finished: the link stays as it was.
+      if (setup.origin.kind === 'mcp' && setup.status === 'authorizing' && c.req.query('cancelled') === '1') {
         const page = await catalogConnectionPageInput(c, setup, dependencies);
         return page
-          ? c.html(renderCatalogConnectionCancelledPage({ ...page, ...await setupReturnApp(setup, dependencies, options) }))
+          ? c.html(renderConnectionCancelledPage({ ...page, ...await setupReturnApp(setup, dependencies, options) }))
           : unavailablePage(c);
       }
       const page = await catalogConnectionPageInput(c, setup, dependencies, principal);
@@ -974,19 +981,35 @@ export function createManagementSetupRoutes(
     const setup = await requireBrowserSetup(
       c, dependencies.management, setupId, principal, now(),
     );
-    if (!setup || setup.action !== 'managed_connection') return genericDenied(c);
+    if (!setup) return genericDenied(c);
+    // Cancel on an app's link ends it, so the app reads it as cancelled; Start over keeps it.
+    const ends = setup.origin.kind === 'mcp' && (await readFormFields(c))?.intent === 'cancel';
+    if (setup.action !== 'managed_connection' && !(ends && setup.action === 'catalog_connection')) return genericDenied(c);
     try {
-      const agent = await currentManagedAgent(setup, dependencies.config);
-      requireAgentEdit(principal, agent);
-      await cancelManagedAuthorizationFlow(
-        await managedFlowDependencies(dependencies, options, setup),
-        {
-          principal,
-          browserSecret: sha256HexNode(setupSession(c, setupId)!),
-          attemptScopeId: setupId,
-        },
-      );
-      return c.redirect(`/setup/${encodeURIComponent(setupId)}`, 303);
+      if (setup.action === 'managed_connection') {
+        requireAgentEdit(principal, await currentManagedAgent(setup, dependencies.config));
+        await cancelManagedAuthorizationFlow(
+          await managedFlowDependencies(dependencies, options, setup),
+          {
+            principal,
+            browserSecret: sha256HexNode(setupSession(c, setupId)!),
+            attemptScopeId: setupId,
+          },
+        );
+      } else {
+        requireAgentEdit(principal, await currentCatalogAgent(setup, dependencies.config));
+      }
+      if (!ends) return c.redirect(`/setup/${encodeURIComponent(setupId)}`, 303);
+      // A link whose sign-in is already being finished, or is done, stays as it is.
+      await dependencies.management.revokeSetup({
+        setupOperationId: setupId,
+        organizationId: setup.organizationId,
+        actorUserId: principal.userId,
+        at: now(),
+      }).catch((error: unknown) => {
+        if (!(error instanceof ManagementError)) throw error;
+      });
+      return c.redirect(`/setup/${encodeURIComponent(setupId)}?cancelled=1`, 303);
     } catch {
       return genericDenied(c);
     }
@@ -1413,6 +1436,19 @@ async function principalCanEditManagedSetup(
   } catch {
     return false;
   }
+}
+
+/** A cancelled one-connection link's page: its Agent and connector, nothing to continue. */
+async function cancelledPageInput(
+  c: Context,
+  setup: ManagementSetupRecord,
+  dependencies: SetupDependencies,
+): Promise<ConnectorLandingPageInput | undefined> {
+  if ((setup.action !== 'managed_connection' && setup.action !== 'catalog_connection') || !setup.target.agentId) return undefined;
+  const agent = await dependencies.config.getAgent(setup.target.agentId).catch(() => undefined);
+  if (!agent || agent.lifecycle === 'archived') return undefined;
+  const avatarUrl = sameOriginAgentAvatarUrl(agent, requestOrigin(c), agentAvatarInstallation(c.env as PlatformEnv | undefined));
+  return { setup, agent, ...(avatarUrl ? { avatarUrl } : {}) };
 }
 
 async function currentCatalogAgent(

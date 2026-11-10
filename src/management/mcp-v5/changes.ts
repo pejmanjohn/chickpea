@@ -9,6 +9,8 @@ import {
   type ApplyWorkspaceChangesResult,
   type ManagementActorContext,
   type ManagementApplyResult,
+  type ManagementChangeSetPreview,
+  type ManagementChangeStatement,
   type ManagementItemOutcome,
   type ManagementObjectRef,
   type ManagementOperation,
@@ -159,6 +161,10 @@ export async function changeResult(
     status: 'done',
     summary: typeof options.summary === 'function' ? options.summary(agent?.name ?? 'the Agent')
       : options.summary ?? doneSummary(applied.at(-1)?.operationKind, agent?.name),
+    // Whatever changed, an Agent that is off answers no one, so trying it waits until it is on.
+    ...(agent?.status === 'off'
+      ? { nextStep: `${agent.name} is off, so it answers no one in Slack until it is turned on. Don't suggest trying it: if the person wants to, ask whether to turn it on first, then call update_agent with on: true.` }
+      : {}),
     ...(agent ? { agent } : {}),
     ...(version ? { version } : {}),
     ...(applied.length === 1 && applied[0]!.undoAvailable ? { undoToken: result.operationId } : {}),
@@ -340,4 +346,45 @@ const DONE_SUMMARIES: Partial<Record<ManagementOperation['kind'], (name: string)
 function doneSummary(kind: ManagementOperation['kind'] | undefined, agentName = 'the Agent'): string {
   const summary = kind ? DONE_SUMMARIES[kind] : undefined;
   return summary ? summary(agentName) : 'Done.';
+}
+
+/**
+ * A confirmed change, named as its confirmation asked it ("Turn off @x?"
+ * becomes "Turned off X."). A deleted Agent cannot be read again, so a
+ * name comes from what the person confirmed. A change of another kind, or
+ * several at once, reads as the change they confirmed.
+ */
+export function confirmedSummary(preview: ManagementChangeSetPreview | undefined): string | ((agentName: string) => string) {
+  const [change, ...more] = preview?.changes ?? [];
+  if (!change || more.length > 0) return CONFIRMED;
+  if (turnsAgentOff(preview!)) return (name) => `Turned off ${name}.`;
+  return (change.statement && confirmedWords(change.statement)) ?? CONFIRMED;
+}
+
+const CONFIRMED = 'Made the change you confirmed.';
+
+function confirmedWords(statement: ManagementChangeStatement): string | undefined {
+  switch (statement.kind) {
+    case 'delete_agent':
+      return `Deleted ${statement.agent.name}.`;
+    case 'disconnect_connection':
+      return `Disconnected ${statement.connection} from ${statement.agent.name}.`;
+    case 'remove_website_login':
+      return `Removed the ${statement.site ?? 'website'} login from ${statement.agent.name}.`;
+    case 'delete_routine':
+      return statement.routine ? `Deleted the schedule ${statement.routine}.` : 'Deleted the schedule.';
+    case 'remove_provider_credential':
+      return `Removed the ${statement.provider} key.`;
+    case 'revoke_agent_channel':
+      return `${statement.agent?.name ?? 'The Agent'} no longer answers in ${statement.channel ? `#${statement.channel.replace(/^#/, '')}` : 'that Channel'}.`;
+    case 'update_member': {
+      const member = statement.member ?? 'The member';
+      if (statement.status === 'removed') return `Removed ${member} from Chickpea.`;
+      if (statement.status === 'suspended') return `Suspended ${member}.`;
+      if (statement.role === 'owner') return `Made ${member} an Owner.`;
+      return statement.role ? `Changed ${member}'s role.` : undefined;
+    }
+    default:
+      return undefined;
+  }
 }

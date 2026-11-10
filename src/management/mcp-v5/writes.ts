@@ -19,6 +19,7 @@ import {
   callOperationId,
   changeResult,
   CONFIRMATION_LIFETIME_MS,
+  confirmedSummary,
   EXPIRED_NEXT_STEP,
   priorResult,
   requireVersion,
@@ -175,7 +176,8 @@ export async function createAgent(
   return {
     ...result,
     ...(version ? { version } : {}),
-    summary: `${result.summary} It joins ${added} Channel${added === 1 ? '' : 's'}; get_creation_status follows its arrival.`,
+    summary: `${result.summary} It joins ${added} Channel${added === 1 ? '' : 's'}.`,
+    nextStep: 'get_creation_status follows its arrival in Slack.',
     ...(notAdded.length ? { warnings: [...result.warnings ?? [], ...notAdded] } : {}),
   };
 }
@@ -745,17 +747,13 @@ export async function confirmChange(
   const context = await deps.context();
   try {
     // A confirmed undo reads like any other confirmed change: the preview said what it does.
-    return await changeResult(
-      deps,
-      context,
-      await deps.service.confirmWorkspaceChange({ context, proposalId: input.confirmToken }),
-      { summary: 'Made the change you confirmed.' },
-    );
+    const confirmed = await deps.service.confirmWorkspaceChange({ context, proposalId: input.confirmToken });
+    return await changeResult(deps, context, confirmed, { summary: confirmedSummary(confirmed.confirmed?.preview) });
   } catch (error) {
     if (!(error instanceof ManagementError)) throw error;
     // Another person's token reads as missing, as an unknown one does.
     if (error.code === 'proposal_not_found' || error.code === 'proposal_binding_mismatch') {
-      fail('not_found', 'No confirmation of yours has that confirmToken.', {
+      fail('not_found', 'That confirmation isn\'t one of yours, so nothing changed.', {
         nextStep: 'Use the confirmToken from the needs_confirmation result in this conversation.',
       });
     }
@@ -789,7 +787,7 @@ export async function declineChange(
       : { status: 'unchanged', summary: 'Kept as it is. Nothing changed.' };
   } catch (error) {
     if (error instanceof ManagementError && (error.code === 'proposal_not_found' || error.code === 'proposal_binding_mismatch')) {
-      fail('not_found', 'No confirmation of yours has that confirmToken.');
+      fail('not_found', 'That confirmation isn\'t one of yours, so nothing changed.');
     }
     throw error;
   }
@@ -818,7 +816,7 @@ export async function undoChange(
       });
     }
     if (error instanceof ManagementError && error.code === 'undo_unavailable') {
-      fail('nothing_to_undo', 'No change of yours can be undone with that undoToken.', {
+      fail('nothing_to_undo', 'That change can\'t be undone now.', {
         nextStep: 'Use the undoToken a change returned in this conversation. A creation has none, and each undoToken works once.',
       });
     }

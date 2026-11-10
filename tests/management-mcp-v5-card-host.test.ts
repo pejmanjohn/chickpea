@@ -19,6 +19,7 @@ import {
   workspaceManagementPromptText,
   type WorkspaceManagementPromptName,
 } from '../src/management/prompts.ts';
+import { CARD_SHOWS_IT, forCardHost } from '../src/management/mcp-v5/card-host.ts';
 import { writeHints } from '../src/management/mcp-v5/conventions.ts';
 import type { FiveZeroDeps } from '../src/management/mcp-v5/reads.ts';
 import { changeResultOutput, getWorkspaceInput } from '../src/management/mcp-v5/schemas.ts';
@@ -185,7 +186,9 @@ test('a client that draws cards never shows its model a confirm or undo token; i
   assert.ok(!modelView(off).includes(held.confirmToken!), 'the model sees no confirm token');
   assert.equal(off.structuredContent!.summary,
     `Nothing has changed yet. Confirm on the card above, or in Admin: ${BASE_URL}/admin/agents/agent_support.`);
-  assert.deepEqual(JSON.parse(off.content[0]!.text), off.structuredContent, 'the text says the same');
+  assert.deepEqual(off.content.map(({ text }) => text), [CARD_SHOWS_IT, JSON.stringify(off.structuredContent)],
+    'the text leads with what the card shows, then says the same');
+  assert.equal(off.structuredContent!.nextStep, `${CARD_SHOWS_IT} Only the card can confirm it: it holds the confirmToken.`);
   assert.equal((await f.config.getAgent('agent_support')).enabled, true);
 
   // The card's press confirms with the token it holds.
@@ -202,7 +205,7 @@ test('a client that draws cards never shows its model a confirm or undo token; i
   assert.equal(typeof undo, 'string', 'the card holds the undo token');
   assert.equal(renamed.structuredContent!.undoToken, undefined);
   assert.ok(!modelView(renamed).includes(undo!), 'the model sees no undo token');
-  assert.match(renamed.structuredContent!.nextStep, /undo it on the card above/);
+  assert.equal(renamed.structuredContent!.nextStep, `${CARD_SHOWS_IT} They can undo it on the card.`);
 
   // A write no card draws keeps its token where the model can use it.
   const memory = await call('get_agent_memory', { agentId: 'agent_support' });
@@ -211,6 +214,42 @@ test('a client that draws cards never shows its model a confirm or undo token; i
   });
   assert.equal(typeof remembered.structuredContent!.undoToken, 'string', JSON.stringify(remembered));
   assert.equal(remembered._meta, undefined);
+});
+
+test('a card host\'s model hears that a card shows the result: one sentence, nothing restated, then wait', async (t) => {
+  const { connect } = await harness(t, 'card-shows-it');
+  const cards = await connect(CARDS);
+  const plain = await connect({});
+  const shown = {
+    propose_agent: {
+      name: 'Invoice Chaser', handle: 'invoices', job: 'Chases overdue invoices.', instructions: '# Job\nChase invoices.',
+      sampleAsk: 'who is overdue?', promisedAnswer: 'Three invoices are overdue.',
+    },
+    propose_agent_change: { agentId: 'agent_support', version: await version(cards.call, 'agent_support'), change: { description: 'Billing.' } },
+    check_agent: { agentId: 'agent_support' },
+  };
+  for (const [tool, args] of Object.entries(shown)) {
+    const drawn = await cards.call(tool, args);
+    assert.equal(drawn.structuredContent!.nextStep, CARD_SHOWS_IT, tool);
+    assert.deepEqual(drawn.content.map(({ text }) => text), [CARD_SHOWS_IT, JSON.stringify(drawn.structuredContent)],
+      `${tool}: the text leads with it, then the result`);
+    const bare = await plain.call(tool, args);
+    assert.equal(bare.structuredContent!.nextStep, undefined, `${tool}: a client without cards gets the result alone`);
+    assert.deepEqual(bare.content.map(({ text }) => text), [JSON.stringify(bare.structuredContent)], tool);
+  }
+  const read = await cards.call('get_agent', { agentId: 'agent_support' });
+  assert.equal(JSON.stringify(read).includes(CARD_SHOWS_IT), false, 'a result no card draws says nothing about a card');
+});
+
+test('a setup link the card cannot open stays the model\'s to give; one it can open is the card\'s', () => {
+  const link = {
+    status: 'needs_setup', summary: 'Open the link to connect Sentry to Support.', nextStep: 'Give the person the link; they finish there.',
+    setup: { url: `${BASE_URL}/admin/agents/agent_support`, what: 'Sentry' },
+  };
+  assert.deepEqual(forCardHost(link, BASE_URL, true), { structured: link }, 'Admin\'s page: the model hands it over');
+  const page = { ...link, setup: { ...link.setup, url: `${BASE_URL}/setup/setup_1`, setupToken: 'setup_1' } };
+  assert.deepEqual(forCardHost(page, BASE_URL, true), { structured: { ...page, nextStep: CARD_SHOWS_IT }, lead: CARD_SHOWS_IT });
+  assert.deepEqual(forCardHost(page, BASE_URL, false), { structured: page }, 'a result no card draws is left as it is');
 });
 
 test('a client without cards keeps every token where its model reads it, as before', async (t) => {

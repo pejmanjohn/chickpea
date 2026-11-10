@@ -4,9 +4,10 @@ import { registerHooks } from 'node:module';
 /**
  * The cards' server as a release would run it after publishing the versions
  * in PUBLISHED_JSON, with that release's assets in the working directory.
- * Prints what tools name, what the allowlist lets through, and what each card
- * URI serves. tests/mcp-agent-card.test.ts runs it to try a version bump
- * without publishing one.
+ * Prints what tools name, what the allowlist lets through, what the resource
+ * list names, and what each published card URI serves.
+ * tests/mcp-agent-card.test.ts runs it to try a version bump without
+ * publishing one.
  */
 
 const PUBLISHED = new URL('../../src/mcp-cards/published.json', import.meta.url).href;
@@ -38,16 +39,19 @@ async function rpc(method: string, params: Record<string, unknown> = {}): Promis
   return JSON.parse(json);
 }
 
-const versions = Object.entries(JSON.parse(published) as Record<string, Array<{ version: number }>>)
-  .flatMap(([card, list]) => list.map(({ version }) => `mcp-cards/${card}-v${version}.html.txt`));
+const cards = Object.entries(JSON.parse(published) as Record<string, Array<{ version: number }>>)
+  .flatMap(([card, list]) => list.map(({ version }) => ({ card, version })));
+const versions = cards.map(({ card, version }) => `mcp-cards/${card}-v${version}.html.txt`);
 const { result } = await rpc('resources/list');
 const served: Record<string, string> = {};
-for (const { uri } of result.resources as Array<{ uri: string }>) {
+// A chat keeps the URI it was drawn with, so each published one is read by URI, listed or not.
+for (const uri of cards.map(({ card, version }) => `ui://chickpea/${card}-v${version}`)) {
   const read = await rpc('resources/read', { uri });
   served[uri] = read.result?.contents[0].text ?? `error: ${read.error?.message}`;
 }
 console.log(JSON.stringify({
   toolsName: CARD_URIS,
   allowlisted: versions.filter((path) => isPublicAssetPath(path)),
+  listed: (result.resources as Array<{ uri: string }>).map(({ uri }) => uri),
   served,
 }));

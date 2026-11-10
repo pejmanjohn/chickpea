@@ -5301,6 +5301,24 @@ test('the truncated-list fallback carries the edited profile into Add channel', 
   }]);
 });
 
+test('Add channel on the Channels page adds an Agent that is on, never one that is off: adding never turns an Agent on', async () => {
+  const harness = runAdminPageHarness({
+    slackConnection: connectedSlackFixture(),
+    slackChannels: channelsFixture([{ id: 'C_NEW', name: 'new-channel' }], true),
+    agents: [{ ...releaseAgent, enabled: false, lifecycle: 'active' }, { ...opsAgent, lifecycle: 'active' }],
+  });
+  await flushAsync();
+  harness.listeners.click!({ target: actionTarget({ 'data-action': 'toggle-add-channel' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Publish Ops Profile/);
+  harness.listeners.submit!({
+    target: submitTarget({ 'data-action': 'add-channel-form' }, { channelSelect: 'C_NEW' }),
+    preventDefault() {},
+  });
+  await flushAsync();
+  assert.deepEqual(harness.agentChannelPosts, [{ agentId: opsAgent.id, body: { workspaceId: 'T_DESIGN', channelId: 'C_NEW' } }]);
+});
+
 test("Add channel says how to bring in an Agent's own Slack app when Chickpea could not", async () => {
   const harness = runAdminPageHarness({
     slackConnection: connectedSlackFixture(),

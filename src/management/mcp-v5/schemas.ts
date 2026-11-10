@@ -526,6 +526,9 @@ export const listConnectedAppsOutput = z.strictObject({
   })),
 });
 
+/** Only where a card shows the result: it says so, so the model does not repeat it. */
+const zCardNextStep = z.string().optional().describe('For you: what to do next.');
+
 export const proposeAgentOutput = z.strictObject({
   proposal: z.strictObject({
     name: z.string(),
@@ -541,6 +544,7 @@ export const proposeAgentOutput = z.strictObject({
   }),
   create: z.strictObject({ tool: z.literal('create_agent'), arguments: createAgentInputSchema }),
   issues: z.array(z.string()),
+  nextStep: zCardNextStep,
 });
 
 /** One `summarizeTextChange` entry: where an edit sits and a short quote of it. */
@@ -576,6 +580,7 @@ export const proposeAgentChangeOutput = z.strictObject({
   })),
   save: z.strictObject({ tool: z.literal('update_agent'), arguments: updateAgentInputSchema }),
   needsConfirmation: z.boolean(),
+  nextStep: zCardNextStep,
 });
 
 const zSetup = z.strictObject({
@@ -584,7 +589,7 @@ const zSetup = z.strictObject({
   what: z.string(),
   expiresAt: z.string().optional(),
   owner: z.enum(['team', 'member']).optional()
-    .describe('A connection\'s account: team is one sign-in for everyone who uses the Agent; member is the person\'s own.'),
+    .describe('A connection\'s account, when the link fixes it: team is one sign-in for everyone who uses the Agent; member is the person\'s own. Absent: the person chooses on the page.'),
 });
 
 /**
@@ -770,4 +775,5 @@ export const checkAgentOutput = z.strictObject({
     scheduleId: z.string().optional(),
     loginId: z.string().optional(),
   })),
+  nextStep: zCardNextStep,
 });

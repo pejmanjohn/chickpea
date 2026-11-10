@@ -13,6 +13,7 @@ import {
 import { managedPrincipalRef } from '../src/connections/managed-principal.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import type { IdentityResolution } from '../src/identity/types.ts';
+import { connectService, reconnectService } from '../src/management/mcp-v5/connections.ts';
 import { getSetupStatus } from '../src/management/mcp-v5/reads.ts';
 import type { SetupWakeRequest } from '../src/management/receipts.ts';
 import { WorkspaceManagementService } from '../src/management/service.ts';
@@ -174,9 +175,18 @@ async function harness(t: { after: (fn: () => void) => void }, suffix: string) {
     });
   }
 
-  async function page(setupId: string, cookie?: string) {
-    const response = await app.request(`${ORIGIN}/setup/${setupId}`, cookie ? { headers: { cookie } } : {});
+  async function page(setupId: string, cookie?: string, query = '') {
+    const response = await app.request(`${ORIGIN}/setup/${setupId}${query}`, cookie ? { headers: { cookie } } : {});
     return { status: response.status, html: await response.text() };
+  }
+
+  /** The page's Cancel, or with no intent the waiting page's Start over. */
+  async function cancel(setupId: string, cookie: string, intent?: 'cancel') {
+    return app.request(`${ORIGIN}/setup/${setupId}/cancel`, {
+      method: 'POST',
+      headers: { origin: ORIGIN, cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      body: intent ? new URLSearchParams({ intent }).toString() : '',
+    });
   }
 
   /** What get_setup_status tells the app that asked for the link. */
@@ -186,7 +196,7 @@ async function harness(t: { after: (fn: () => void) => void }, suffix: string) {
 
   return {
     identity, config, management, owner, colleague, agent, service, app, clients, posted, woken,
-    managedAuthorizations, mcp, as, exchange, post, page, setupStatus,
+    managedAuthorizations, mcp, as, exchange, post, page, cancel, setupStatus,
     clientLookups: () => clientLookups,
     failClientLookup: () => { clientLookupFails = true; },
   };
@@ -317,7 +327,10 @@ test('an MCP catalog link finishes through /oauth/callback for its person only, 
   assert.equal((await h.page(setupId)).status, 410, 'the colleague does not see the finished link either');
 });
 
-test('Cancel on an MCP catalog link ends on the go-back page, never Admin, and leaves the link as it was', async (t) => {
+const CANCEL_FORM = (setupId: string) =>
+  `<form method="post" action="/setup/${setupId}/cancel"><button class="text-button" type="submit" name="intent" value="cancel">Cancel</button></form>`;
+
+test('Cancel on an MCP catalog link cancels it: the app reads it as cancelled, and the page sends the person back to the app', async (t) => {
   const h = await harness(t, 'mcp-catalog-cancel');
   const context = h.mcp(h.owner, CHATGPT_CLIENT);
   const prepared = await h.service.prepareConnectorSetup(context, { agentId: h.agent.id, connector: 'Linear', ownerKind: 'member' });
@@ -326,21 +339,55 @@ test('Cancel on an MCP catalog link ends on the go-back page, never Admin, and l
   assert.equal(await h.setupStatus(setupId, context), 'opened');
 
   const setupPage = await h.page(setupId, cookie);
-  assert.match(setupPage.html, new RegExp(`<a class="text-button" href="/setup/${setupId}\\?cancelled=1">Cancel</a>`));
+  assert.ok(setupPage.html.includes(CANCEL_FORM(setupId)), 'Cancel posts, so a link preview never cancels a link');
   assert.doesNotMatch(setupPage.html, /href="\/admin/);
-  const cancelled = await h.app.request(`${ORIGIN}/setup/${setupId}?cancelled=1`, { headers: { cookie } });
-  assert.equal(cancelled.status, 200);
-  const html = await cancelled.text();
-  assert.match(html, /Linear was not connected to Project Guide/);
-  assert.match(html, /You can close this tab and go back to ChatGPT\./);
-  assert.doesNotMatch(html, /\/admin|Slack/);
-  assert.equal((await h.management.getSetup(setupId))?.status, 'claimed', 'Cancel changes nothing');
-  assert.equal(await h.setupStatus(setupId, context), 'opened');
-  assert.deepEqual(await h.config.listConnectionAccounts(h.owner.user.slackTeamId), []);
-  assert.match((await h.page(setupId, cookie)).html, /Connect Linear to Project Guide/, 'the person can still continue');
+  assert.match((await h.page(setupId, cookie, '?cancelled=1')).html, /Connect Linear to Project Guide/, 'only Cancel cancels it');
 
   h.as(h.colleague);
-  assert.equal((await h.app.request(`${ORIGIN}/setup/${setupId}?cancelled=1`, { headers: { cookie } })).status, 410);
+  assert.equal((await h.cancel(setupId, cookie, 'cancel')).status, 403, 'only the link\'s person cancels it');
+  assert.equal(await h.setupStatus(setupId, context), 'opened');
+
+  h.as(h.owner);
+  const cancelled = await h.cancel(setupId, cookie, 'cancel');
+  assert.equal(cancelled.status, 303);
+  assert.equal(cancelled.headers.get('location'), `/setup/${setupId}?cancelled=1`);
+  assert.equal((await h.management.getSetup(setupId))?.status, 'revoked');
+  assert.equal(await h.setupStatus(setupId, context), 'cancelled', 'the app that asked for it reads it as cancelled');
+  const back = await h.page(setupId, cookie, '?cancelled=1');
+  assert.equal(back.status, 200);
+  assert.match(back.html, /Linear was not connected to Project Guide/);
+  assert.match(back.html, /You can close this tab and go back to ChatGPT\./);
+  assert.doesNotMatch(back.html, /\/admin|Slack/);
+  assert.deepEqual(await h.config.listConnectionAccounts(h.owner.user.slackTeamId), []);
+  assert.doesNotMatch((await h.page(setupId, cookie)).html, /Connect Linear to Project Guide/, 'the link no longer opens');
+
+  h.as(h.colleague);
+  assert.doesNotMatch((await h.page(setupId, cookie, '?cancelled=1')).html, /Project Guide/, 'nobody else sees where it ended');
+});
+
+test('Cancel on an MCP managed link cancels it; Start over, from the page that waits on a sign-in, keeps it', async (t) => {
+  const h = await harness(t, 'mcp-managed-cancel');
+  const context = h.mcp(h.owner, CHATGPT_CLIENT);
+  const prepared = await h.service.prepareConnectorSetup(context, { agentId: h.agent.id, connector: 'HubSpot', ownerKind: 'member' });
+  const setupId = prepared.setupOperationId!;
+  const cookie = cookieOf(await h.exchange(prepared.handoffUrl));
+  assert.ok((await h.page(setupId, cookie)).html.includes(CANCEL_FORM(setupId)));
+
+  assert.equal((await h.post(setupId, 'authorize', cookie, { ownerKind: 'member', access: 'read' })).status, 200);
+  const restarted = await h.cancel(setupId, cookie);
+  assert.equal(restarted.status, 303);
+  assert.equal(restarted.headers.get('location'), `/setup/${setupId}`);
+  assert.equal(await h.setupStatus(setupId, context), 'waiting', 'Start over keeps the link');
+  assert.match((await h.page(setupId, cookie)).html, /Connect HubSpot to Project Guide/);
+
+  const cancelled = await h.cancel(setupId, cookie, 'cancel');
+  assert.equal(cancelled.headers.get('location'), `/setup/${setupId}?cancelled=1`);
+  assert.equal(await h.setupStatus(setupId, context), 'cancelled');
+  const back = await h.page(setupId, cookie, '?cancelled=1');
+  assert.match(back.html, /HubSpot was not connected to Project Guide/);
+  assert.match(back.html, /You can close this tab and go back to ChatGPT\./);
+  assert.match((await h.page(setupId, cookie)).html, /This link is no longer valid/);
+  assert.deepEqual(await h.config.listConnectionAccounts(h.owner.user.slackTeamId), []);
 });
 
 test('an MCP managed link opens only for its person and sends them back to ChatGPT by name', async (t) => {
@@ -453,6 +500,48 @@ test('an MCP reconnect signs the same managed account in again, and an unknown a
   const success = await h.page(setupId);
   assert.match(success.html, /HubSpot is now connected to Project Guide/);
   assert.match(success.html, /You can close this tab and go back to your app\./);
+});
+
+test('a connect link names whose account it is only when its page fixes that, so the card and the page agree', async (t) => {
+  const h = await harness(t, 'mcp-owner-agrees');
+  const context = h.mcp(h.owner, CHATGPT_CLIENT);
+  const deps = { service: h.service, context: async () => context, baseUrl: ORIGIN };
+  const radio = (html: string, owner: 'member' | 'team') =>
+    new RegExp(`<input type="radio" name="ownerKind" value="${owner}" aria-describedby="[^"]+"([^>]*)>`).exec(html)?.[1];
+
+  // A new connection: the page asks Personal or Team, whatever the model asked for.
+  const fresh = await connectService(deps, { agentId: h.agent.id, service: 'HubSpot', owner: 'me', idempotencyKey: 'hubspot' });
+  assert.equal(fresh.setup?.owner, undefined, 'no owner: the person chooses on the page');
+  const freshPage = (await h.page(fresh.setup!.setupToken!, cookieOf(await h.exchange(fresh.setup!.url)))).html;
+  assert.deepEqual([radio(freshPage, 'member'), radio(freshPage, 'team')], ['', ''], 'both choices are open');
+
+  // A reconnect keeps its account's owner, and the page shows that one, locked.
+  const account = await h.config.putConnectionAccount({
+    id: 'connection_hubspot_team',
+    workspaceId: h.owner.user.slackTeamId,
+    ownerKind: 'team',
+    createdByMembershipId: h.owner.membership.id,
+    providerId: 'hubspot',
+    label: 'HubSpot · Team',
+    policy: {
+      kind: 'managed',
+      adapterId: 'composio',
+      toolkit: 'hubspot',
+      principalRef: managedPrincipalRef(principalOf(h.owner), 'team', undefined)!,
+      accountRef: 'account_hubspot_team',
+      allowedCapabilities: ['hubspot.contacts.search'],
+    },
+    secretRefId: 'secret_hubspot_team',
+    lifecycle: 'needs_attention',
+  });
+  await h.config.putAgentConnectionBinding({
+    agentId: h.agent.id, connectionAccountId: account.id, providerId: account.providerId,
+    allowedCapabilities: ['hubspot.contacts.search'], enabled: true,
+  });
+  const again = await reconnectService(deps, { agentId: h.agent.id, connectionId: account.id });
+  assert.equal(again.setup?.owner, 'team');
+  const againPage = (await h.page(again.setup!.setupToken!, cookieOf(await h.exchange(again.setup!.url)))).html;
+  assert.deepEqual([radio(againPage, 'member'), radio(againPage, 'team')], [' disabled', ' checked disabled']);
 });
 
 type Harness = Awaited<ReturnType<typeof harness>>;
