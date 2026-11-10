@@ -195,7 +195,8 @@ export function createWorkspaceManagementMcpServer(
     title: 'Prepare Agent connector setup',
     description: workspaceManagementToolDescription('prepare_connector_setup', 'mcp'),
     inputSchema: MCP_TOOL_INPUT_SCHEMAS.prepare_connector_setup,
-    annotations: READ_ONLY,
+    // Each call issues a new setup link, as prepare_provider_setup does.
+    annotations: { ...WRITE, idempotentHint: false },
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'prepare_connector_setup',

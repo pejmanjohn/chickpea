@@ -101,6 +101,62 @@ test('managed connector receipts post once into the exact thread as the Agent pe
   assert.equal(result.deliveryRef, 'slack:D_ACK:1800000000.000200');
 });
 
+test('a connector receipt for an MCP link is Chickpea\'s own line in the person\'s DM, naming the Agent', async () => {
+  const posts: unknown[] = [];
+  const deliveries: Array<{ persona: string; text: string }> = [];
+  const record: ManagementReceiptOutboxRecord = {
+    outboxId: 'receipt_setup_mcp_connector',
+    operationId: 'setup_mcp_connector',
+    destination: { kind: 'initiator_dm', organizationId: 'org_ack', userId: 'user_ack' },
+    receipt: {
+      kind: 'connector_connected',
+      setupOperationId: 'setup_mcp_connector',
+      connector: 'HubSpot',
+      toolkit: 'hubspot',
+      agentId: 'agent_sprout',
+      agentName: 'Sprout',
+      ownerKind: 'member',
+      accessLane: 'read',
+      avatarUrl: 'https://chickpea.example/assets/agents/agent_sprout/avatar/4',
+      completedAt: 1_800_000_000_000,
+    },
+    status: 'delivering',
+    attempts: 1,
+    nextAttemptAt: 1_800_000_000_000,
+    createdAt: 1_800_000_000_000,
+    updatedAt: 1_800_000_000_000,
+  };
+
+  await deliverManagementReceiptToSlack(record, {
+    identity: {
+      async listExternalIdentities() {
+        return [{ organizationId: 'org_ack', userId: 'user_ack', slackTeamId: 'T_ACK', slackUserId: 'U_ACK' }] as never;
+      },
+    },
+    resolveInstallation: async (workspaceId) => ({
+      workspaceId,
+      transportMode: 'direct',
+      sharedAppReads: false,
+      botUserId: 'U_BOT',
+      client: {
+        conversations: { async open() { return { ok: true, channel: { id: 'D_ACK' } }; } },
+        chat: {
+          async postMessage(input: unknown) {
+            posts.push(input);
+            return { ok: true, ts: '1800000000.000300' };
+          },
+        },
+      } as unknown as WebClient,
+    }),
+    onDelivered: (_record, delivery) => { deliveries.push({ persona: delivery.persona, text: delivery.text }); },
+  });
+
+  const text = '✅ HubSpot is now connected to Sprout. Your personal, read-only connection is ready.';
+  assert.deepEqual(posts, [{ channel: 'D_ACK', text, client_msg_id: 'receipt_setup_mcp_connector' }],
+    'no Agent username or avatar, and no "ask me here" in a DM the Agent does not answer');
+  assert.deepEqual(deliveries, [{ persona: 'chickpea', text }]);
+});
+
 test('managed connector receipt copy stays connector- and owner-specific', () => {
   const text = formatManagementSetupReceipt({
     kind: 'connector_connected',

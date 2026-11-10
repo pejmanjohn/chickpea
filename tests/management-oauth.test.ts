@@ -22,9 +22,10 @@ import {
   createMcpConsentRedirectResponse,
   createMcpAuthenticatedRequestHandler,
   verifySignedOAuthQuery,
+  renderMcpAlreadyConnectedPage,
   renderMcpConsentPage,
-  displayMcpClientName,
 } from '../src/auth/mcp-oauth-routes.ts';
+import { displayMcpClientName } from '../src/auth/mcp-client-name.ts';
 import { validateBrowserMutationProvenance } from '../src/auth/request-provenance.ts';
 import { REAL_MCP_CLIENT_REGISTRATIONS } from './helpers/mcp-client-registrations.ts';
 
@@ -406,6 +407,22 @@ test('MCP consent escapes, cleans, and bounds a hostile app name', () => {
   const longHtml = renderMcpConsentPage({ clientName: 'B'.repeat(120), scope: MCP_WORKSPACE_SCOPE, oauthQuery: 'sig=test' });
   assert.ok(!longHtml.includes('B'.repeat(60)));
   assert.equal(displayMcpClientName('Chickpea CLI'), 'Chickpea CLI');
+});
+
+// Defect caught: the Already connected page repeated an app's self-chosen name as Chickpea's own words.
+test('the Already connected page names only known apps, never an app\'s own claim', () => {
+  const page = (clientId: string | undefined, name: string | undefined) => renderMcpAlreadyConnectedPage(clientId, name);
+  for (const hostile of [
+    'Claude Code, then sign in again at chickpea-auth.co',
+    'ChatGРT',
+    'Slack. Your session expired: sign in at evil.example/login',
+  ]) {
+    const html = page('https://evil.example/client.json', hostile);
+    assert.doesNotMatch(html, /chickpea-auth|evil\.example|ChatGР|session expired/, hostile);
+    assert.match(html, /This app is already connected to Chickpea\./, hostile);
+  }
+  assert.match(page('https://chatgpt.com/oauth/client.json', 'anything'), /ChatGPT is already connected to Chickpea\./);
+  assert.match(page('client_dcr_123', 'Claude Code (chickpea)'), /Claude Code is already connected to Chickpea\./);
 });
 
 test('MCP consent finishes its form POST before returning to a client callback', async () => {

@@ -135,12 +135,13 @@ test('connect hands a catalog service off in the browser and keys a custom conne
     'prepare_connector_setup',
     'handoffUrl',
     'ownerKind',
-    'signed-in Admin browser',
+    'signed in to Chickpea',
+    'get_operation',
     'custom connection with one update_agent',
     'request_setup',
     'save_connection_key',
   ]) assert.ok(text.includes(required), `connect must mention ${required}`);
-  assert.ok(!text.includes('24 hours'), 'MCP Admin links are not expiring Slack setup capabilities');
+  assert.match(text, /the link is theirs alone and expires after 24 hours/);
   assert.match(text, /If they already gave you the key, find a setup that works with try_connection, then save it with save_connection_key/);
   assert.match(text, /Never ask them to paste a key here\./, 'connect never asks for a key');
   assert.ok(text.includes('@notes'), 'a supplied handle names the target Agent');

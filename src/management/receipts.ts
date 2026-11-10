@@ -138,7 +138,11 @@ export async function completeManagementSetupReceipt(
 
 export function formatManagementSetupReceipt(
   receipt: ManagementReceipt,
-  options: { groupDm?: boolean } = {},
+  options: {
+    groupDm?: boolean;
+    /** Chickpea's DM to the person who asked over MCP, not the Agent's reply in its thread. */
+    initiatorDm?: boolean;
+  } = {},
 ): string {
   if (isRoutineSavedAcknowledgement(receipt) || isScheduleActionReaction(receipt)) {
     throw new Error('A reaction acknowledgement cannot be formatted as a setup receipt.');
@@ -157,6 +161,9 @@ export function formatManagementSetupReceipt(
   if (isConnectorConnectedReceipt(receipt)) {
     const scope = receipt.ownerKind === 'member' ? 'personal' : 'team';
     const access = receipt.accessLane === 'read' ? 'read-only' : 'read and write';
+    if (options.initiatorDm) {
+      return `✅ ${escapeSlackText(receipt.connector)} is now connected to ${escapeSlackText(receipt.agentName)}. Your ${scope}, ${access} connection is ready.`;
+    }
     const copy = managedConnectorReadCopy(receipt.toolkit, receipt.connector);
     const action = receipt.accessLane === 'read'
       ? copy.receiptAction
@@ -703,16 +710,19 @@ export async function deliverManagementReceiptToSlack(
   }
   const groupDm = record.destination.kind === 'thread' &&
     agentWelcomeInGroupDm(record.receipt, record.destination.channelId);
-  const text = formatManagementSetupReceipt(record.receipt, { groupDm });
+  const initiatorDm = record.destination.kind === 'initiator_dm';
+  // A connector's Agent says it in its own thread; Chickpea says it in a DM.
+  const agentReceipt = isConnectorConnectedReceipt(record.receipt) && !initiatorDm ? record.receipt : undefined;
+  const text = formatManagementSetupReceipt(record.receipt, { groupDm, initiatorDm });
   const baseMessage = {
     channel,
     ...(threadTs ? { thread_ts: threadTs } : {}),
     text,
     client_msg_id: record.outboxId,
-    ...(isConnectorConnectedReceipt(record.receipt)
+    ...(agentReceipt
       ? {
-          username: record.receipt.agentName,
-          ...(record.receipt.avatarUrl ? { icon_url: record.receipt.avatarUrl } : {}),
+          username: agentReceipt.agentName,
+          ...(agentReceipt.avatarUrl ? { icon_url: agentReceipt.avatarUrl } : {}),
           unfurl_links: false,
           unfurl_media: false,
         }
@@ -720,9 +730,7 @@ export async function deliverManagementReceiptToSlack(
   } as Parameters<typeof execution.client.chat.postMessage>[0];
   let response;
   let deliveredText = text;
-  let persona: 'agent' | 'chickpea' = isConnectorConnectedReceipt(record.receipt)
-    ? 'agent'
-    : 'chickpea';
+  let persona: 'agent' | 'chickpea' = agentReceipt ? 'agent' : 'chickpea';
   if (isAgentCreatedWelcome(record.receipt)) {
     const slackPresenceIncomplete = record.receipt.publication?.incomplete.includes(
       'slack_presence',

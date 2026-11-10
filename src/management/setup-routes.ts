@@ -7,6 +7,7 @@ import { isRecord } from '../security/content-validation.ts';
 import { sha256HexNode } from '../security/digest.ts';
 import { BetterAuthDirectory, BetterAuthSessionAuthenticator } from '../auth/better-auth-principal.ts';
 import { hostedLoginFence } from '../auth/hosted-login.ts';
+import type { BetterAuthMcpOAuthClients } from '../auth/better-auth-backend.ts';
 import { resolveBetterAuthEnvironment } from '../auth/better-auth-environment.ts';
 import { setCookieValues } from '../auth/cookies.ts';
 import {
@@ -245,6 +246,8 @@ export interface ManagementSetupRoutesOptions {
   connectionCheck?: ConnectionCheckOptions;
   /** Test seam; production resolves the current Better Auth browser session. */
   authenticatePrincipal?: (request: Request) => Promise<AuthPrincipal | undefined>;
+  /** Test seam; production reads Better Auth's MCP clients to name the app a link came from. */
+  mcpOAuthClients?: () => Promise<BetterAuthMcpOAuthClients | undefined>;
 }
 
 export function createManagementSetupRoutes(
@@ -291,7 +294,7 @@ export function createManagementSetupRoutes(
 
     if (setup?.action === 'managed_connection') {
       if (setup.status === 'revoked' || setup.status === 'expired') {
-        return managedUnavailablePage(c);
+        return managedUnavailablePage(c, setup);
       }
       const authorized = await principalCanEditManagedSetup(
         principal,
@@ -299,7 +302,7 @@ export function createManagementSetupRoutes(
         dependencies.config,
       );
       if (setup.status === 'completed') {
-        if (!authorized) return managedUnavailablePage(c);
+        if (!authorized) return managedUnavailablePage(c, setup);
         const page = await managedConnectionPageInput(c, setup, dependencies, options);
         return page
           ? c.html(c.req.query('poll') === '1' && session && CAPABILITY_PATTERN.test(session)
@@ -307,18 +310,19 @@ export function createManagementSetupRoutes(
               : renderManagedConnectionSuccessPage({
                   ...page,
                   continuing: await wakeQueued(setup, dependencies.management),
+                  ...await setupReturnApp(setup, dependencies, options),
                 }))
-          : managedUnavailablePage(c);
+          : managedUnavailablePage(c, setup);
       }
-      if (principal && !authorized) return managedUnavailablePage(c);
+      if (principal && !authorized) return managedUnavailablePage(c, setup);
       if (!principal || !session || !managedSetupSessionMatches(setup, session)) {
         return c.html(renderSetupClaimPage({ setupId, reusable: true }));
       }
-      if (setup.status !== 'pending') return managedUnavailablePage(c);
+      if (setup.status !== 'pending') return managedUnavailablePage(c, setup);
       // The waiting page offers nothing to reuse, so it skips the page listings.
       const polling = c.req.query('poll') === '1';
       const page = await managedConnectionPageInput(c, setup, dependencies, options, polling ? undefined : principal);
-      if (!page) return managedUnavailablePage(c);
+      if (!page) return managedUnavailablePage(c, setup);
       return c.html(polling
         ? renderManagedConnectionWaitingPage(page)
         : renderManagedConnectionSetupPage(page));
@@ -337,6 +341,7 @@ export function createManagementSetupRoutes(
           ? c.html(renderManagedConnectionSuccessPage({
               ...page,
               continuing: await wakeQueued(setup, dependencies.management),
+              ...await setupReturnApp(setup, dependencies, options),
             }))
           : unavailablePage(c);
       }
@@ -405,13 +410,15 @@ export function createManagementSetupRoutes(
       if (setup.action === 'managed_connection') {
         if (setup.status !== 'pending' || !setup.tokenDigest ||
             setup.tokenDigest !== digest(capability) ||
-            principal.organizationId !== setup.organizationId) {
+            principal.organizationId !== setup.organizationId ||
+            !connectorLinkIsFor(principal, setup)) {
           throw new AuthorizationError();
         }
         requireAgentEdit(principal, await currentManagedAgent(setup, dependencies.config));
       } else {
         if (setup.action === 'catalog_connection') {
-          if (principal.organizationId !== setup.organizationId) {
+          if (principal.organizationId !== setup.organizationId ||
+              !connectorLinkIsFor(principal, setup)) {
             throw new AuthorizationError();
           }
           requireAgentEdit(principal, await currentCatalogAgent(setup, dependencies.config));
@@ -501,7 +508,7 @@ export function createManagementSetupRoutes(
     try {
       requireAgentEdit(principal, await currentCatalogAgent(setup, dependencies.config));
       const { account, binding } = await currentCatalogReviewAccount(
-        setup, principal, dependencies.config,
+        setup, principal, dependencies,
       );
       if (account.policy.kind !== 'mcp') throw new AuthorizationError();
       const metaAds = isMetaAdsMcpConnection(account.policy);
@@ -548,7 +555,7 @@ export function createManagementSetupRoutes(
         agentId: binding.agentId,
         connectionKind: 'mcp',
         ownerKind: updated.ownerKind,
-        surface: 'slack',
+        surface: setup.origin.kind,
       });
       await finishSetup(c, setup, catalogSetupResult(updated, principal, setup),
         dependencies, options, now());
@@ -597,12 +604,13 @@ export function createManagementSetupRoutes(
         }
         if (setup.status !== 'pending') return genericDenied(c);
         const selection = managedSetupSelection(setup, fields, dependencies.catalog);
-        if (setup.origin.kind !== 'slack' || !selection) {
+        const workspaceId = await setupWorkspaceId(setup, dependencies.identity);
+        if (!workspaceId || !selection) {
           throw new ManagedAuthorizationError('invalid');
         }
         if (setup.target.replacement && setup.target.connectionId) {
           // A reconnect keeps its account's owner and access, so the page locks both.
-          const reconnecting = await reconnectAccount(setup, dependencies.config);
+          const reconnecting = await reconnectAccount(setup, dependencies);
           if (!reconnecting || selection.ownerKind !== reconnecting.ownerKind ||
               selection.accessLane !== managedAccountAccessLane(
                 reconnecting,
@@ -620,11 +628,11 @@ export function createManagementSetupRoutes(
         if (!browserSession) throw new ManagedAuthorizationError('invalid');
         const browserSecret = sha256HexNode(browserSession);
         const started = await startManagedAuthorizationFlow(
-          await managedFlowDependencies(dependencies, options),
+          await managedFlowDependencies(dependencies, options, setup),
           {
             principal,
             agent,
-            workspaceId: setup.origin.workspaceId,
+            workspaceId,
             ownerKind: selection.ownerKind,
             toolkit: setup.target.provider,
             access: selection.accessLane,
@@ -644,7 +652,7 @@ export function createManagementSetupRoutes(
         const page = await managedConnectionPageInput(c, setup, dependencies, options);
         return page
           ? c.html(renderManagedConnectionDeparturePage(page, authorizationUrl))
-          : managedUnavailablePage(c);
+          : managedUnavailablePage(c, setup);
       }
 
       if (setup.action === 'catalog_connection') {
@@ -774,7 +782,7 @@ export function createManagementSetupRoutes(
         };
         return page
           ? c.html(renderManagedConnectionSetupPage({ ...page, signInNotice }), 409)
-          : managedUnavailablePage(c);
+          : managedUnavailablePage(c, activeSetup);
       }
       const code = safeFailureCode(error);
       await markSetupFailure(activeSetup, c, dependencies.management, code, now());
@@ -786,7 +794,7 @@ export function createManagementSetupRoutes(
         const page = await managedConnectionPageInput(c, activeSetup, dependencies, options, principal);
         return page
           ? c.html(renderManagedConnectionSetupPage({ ...page, failureMessage: message }), 422)
-          : managedUnavailablePage(c);
+          : managedUnavailablePage(c, activeSetup);
       }
       if (activeSetup.action === 'catalog_connection' && code === 'target_changed') {
         return authorizationJsonRequest(c)
@@ -822,16 +830,16 @@ export function createManagementSetupRoutes(
     const setup = await requireBrowserSetup(
       c, dependencies.management, setupId, principal, now(),
     );
-    if (!setup || setup.action !== 'managed_connection' || setup.origin.kind !== 'slack') {
-      return genericDenied(c);
-    }
+    if (!setup || setup.action !== 'managed_connection') return genericDenied(c);
+    const workspaceId = await setupWorkspaceId(setup, dependencies.identity);
+    if (!workspaceId) return genericDenied(c);
 
     try {
       const agent = await currentManagedAgent(setup, dependencies.config);
       requireAgentEdit(principal, agent);
       if (setup.status === 'completed') {
         const cleanup = await cancelManagedAuthorizationFlow(
-          await managedFlowDependencies(dependencies, options),
+          await managedFlowDependencies(dependencies, options, setup),
           {
             principal,
             browserSecret: sha256HexNode(setupSession(c, setupId)!),
@@ -848,11 +856,11 @@ export function createManagementSetupRoutes(
       }
       if (setup.status !== 'pending') return genericDenied(c);
       const result = await pollManagedAuthorizationFlow(
-        await managedFlowDependencies(dependencies, options),
+        await managedFlowDependencies(dependencies, options, setup),
         {
           principal,
           agent,
-          workspaceId: setup.origin.workspaceId,
+          workspaceId,
           browserSecret: sha256HexNode(setupSession(c, setupId)!),
           attemptScopeId: setupId,
           commit: async (account) => {
@@ -962,7 +970,7 @@ export function createManagementSetupRoutes(
       const agent = await currentManagedAgent(setup, dependencies.config);
       requireAgentEdit(principal, agent);
       await cancelManagedAuthorizationFlow(
-        await managedFlowDependencies(dependencies, options),
+        await managedFlowDependencies(dependencies, options, setup),
         {
           principal,
           browserSecret: sha256HexNode(setupSession(c, setupId)!),
@@ -1214,7 +1222,7 @@ export function oauthReturnEndedPage(c: Context, setupId?: string): Response {
   setupResponseHeaders(c);
   const next = setupId
     ? `<p><a href="/setup/${encodeURIComponent(setupId)}">Go back to the setup page</a> to sign in again.</p>`
-    : '<p>Go back to Slack or <a href="/admin">Chickpea Admin</a> to check the connection or start it again.</p>';
+    : '<p>Go back to where you started this connection, or to <a href="/admin">Chickpea Admin</a>, to check it or start it again.</p>';
   return c.html(renderSetupPanelPage({
     title: 'Sign-in ended',
     surface: 'oauth-return-ended',
@@ -1351,6 +1359,7 @@ function setupDependencies(c: Context, options: ManagementSetupRoutesOptions): S
 async function managedFlowDependencies(
   dependencies: SetupDependencies,
   options: ManagementSetupRoutesOptions,
+  setup: ManagementSetupRecord,
 ): Promise<ManagedAuthorizationFlowDependencies> {
   return {
     config: dependencies.config,
@@ -1364,7 +1373,7 @@ async function managedFlowDependencies(
         : {}),
     }),
     ...(dependencies.productTelemetry ? { productTelemetry: dependencies.productTelemetry } : {}),
-    telemetrySurface: 'slack',
+    telemetrySurface: setup.origin.kind,
   };
 }
 
@@ -1385,7 +1394,8 @@ async function principalCanEditManagedSetup(
   setup: ManagementSetupRecord,
   config: ConfigStore,
 ): Promise<boolean> {
-  if (!principal || principal.machine || principal.organizationId !== setup.organizationId) {
+  if (!principal || principal.machine || principal.organizationId !== setup.organizationId ||
+      !connectorLinkIsFor(principal, setup)) {
     return false;
   }
   try {
@@ -1411,9 +1421,10 @@ async function currentCatalogAgent(
 async function currentCatalogReviewAccount(
   setup: ManagementSetupRecord,
   principal: AuthPrincipal,
-  config: ConfigStore,
+  { config, identity }: Pick<SetupDependencies, 'config' | 'identity'>,
 ): Promise<{ account: ConnectionAccount; binding: AgentConnectionBinding }> {
-  if (setup.action !== 'catalog_connection' || setup.origin.kind !== 'slack' ||
+  const workspaceId = await setupWorkspaceId(setup, identity);
+  if (setup.action !== 'catalog_connection' || !workspaceId ||
       !setup.target.connectionId || !setup.target.agentId || !setup.target.presetId ||
       principal.machine || principal.organizationId !== setup.organizationId) {
     throw new AuthorizationError();
@@ -1425,7 +1436,7 @@ async function currentCatalogReviewAccount(
     catalogSetupConnectionId(setup, 'team', principal.membershipId),
   ]);
   const candidates: Array<{ account: ConnectionAccount; binding: AgentConnectionBinding }> = [];
-  for (const account of await config.listConnectionAccounts(setup.origin.workspaceId)) {
+  for (const account of await config.listConnectionAccounts(workspaceId)) {
     if (!candidateIds.has(account.id) || account.lifecycle !== 'ready' ||
         account.providerId !== setup.target.presetId || account.policy.kind !== 'mcp' ||
         !isMcpToolReviewRequired(account.policy)) continue;
@@ -1449,7 +1460,8 @@ async function principalCanEditCatalogSetup(
   setup: ManagementSetupRecord,
   config: ConfigStore,
 ): Promise<boolean> {
-  if (!principal || principal.machine || principal.organizationId !== setup.organizationId) {
+  if (!principal || principal.machine || principal.organizationId !== setup.organizationId ||
+      !connectorLinkIsFor(principal, setup)) {
     return false;
   }
   try {
@@ -1518,24 +1530,25 @@ async function managedConnectionPageInput(
       .capabilities(setup.target.provider, 'write')
       .filter(({ accessLane }) => accessLane === 'write')
       .map(({ id }) => id));
-    const providerContext = (await managedFlowDependencies(dependencies, options)).providerContext;
+    const providerContext = (await managedFlowDependencies(dependencies, options, setup)).providerContext;
     const provider = providerContext.providers.get('composio');
     const writeReady = Boolean(provider?.authorize) && managedProviderAvailability(provider, {
       toolkit: setup.target.provider,
       accessLane: 'write',
     }).status === 'ready';
-    const reconnecting = await reconnectAccount(setup, dependencies.config);
+    const reconnecting = await reconnectAccount(setup, dependencies);
     const changingSelection = reconnecting?.lifecycle === 'ready'
       ? dependencies.catalog.connector(setup.target.provider)?.providerSelection?.label
       : undefined;
     const writeAvailable = writeReady && setup.scopes.some((scope) => writeCapabilities.has(scope));
     const reconnectGroupKey = reconnecting && signInGroupKey(reconnecting);
-    const sharedSignIn = Boolean(reconnectGroupKey) && setup.origin.kind === 'slack' &&
-      (await dependencies.config.listConnectionAccounts(setup.origin.workspaceId))
+    const workspaceId = await setupWorkspaceId(setup, dependencies.identity);
+    const sharedSignIn = Boolean(reconnectGroupKey) && workspaceId !== undefined &&
+      (await dependencies.config.listConnectionAccounts(workspaceId))
         .some((account) => account.id !== reconnecting!.id && signInGroupKey(account) === reconnectGroupKey);
-    const reusable = principal && !reconnecting && setup.origin.kind === 'slack' &&
+    const reusable = principal && !reconnecting && workspaceId &&
         dependencies.catalog.connector(setup.target.provider)?.sharedSignIn
-      ? await reusableSetupSignIns(setup, agent, principal, writeAvailable ? 'write' : 'read', dependencies, providerContext.providers)
+      ? await reusableSetupSignIns(setup, workspaceId, agent, principal, writeAvailable ? 'write' : 'read', dependencies, providerContext.providers)
       : undefined;
     return {
       setup,
@@ -1583,7 +1596,7 @@ async function catalogConnectionPageInput(
         account = (await currentCatalogReviewAccount(
           setup,
           principal,
-          dependencies.config,
+          dependencies,
         )).account;
       } catch (error) {
         if (!(error instanceof AuthorizationError)) throw error;
@@ -1650,7 +1663,7 @@ async function catalogConnectionPageInput(
         };
       }
     }
-    const reconnecting = await reconnectAccount(setup, dependencies.config);
+    const reconnecting = await reconnectAccount(setup, dependencies);
     return {
       setup,
       agent,
@@ -1680,6 +1693,7 @@ async function catalogConnectionPageInput(
 function setupConnectionAccounts(
   dependencies: SetupDependencies,
   providers: ManagedConnectionProviderRegistry,
+  setup: ManagementSetupRecord,
 ): ConnectionAccountService {
   return new ConnectionAccountService({
     config: dependencies.config,
@@ -1687,7 +1701,7 @@ function setupConnectionAccounts(
     managedProviders: providers,
     managedCatalog: dependencies.catalog,
     ...(dependencies.productTelemetry ? { productTelemetry: dependencies.productTelemetry } : {}),
-    telemetrySurface: 'slack',
+    telemetrySurface: setup.origin.kind,
     ...(dependencies.platformEnv ? { platformEnv: dependencies.platformEnv } : {}),
   });
 }
@@ -1699,15 +1713,14 @@ function setupConnectionAccounts(
  */
 async function reusableSetupSignIns(
   setup: ManagementSetupRecord,
+  workspaceId: string,
   agent: CustomAgentConfig,
   principal: AuthPrincipal,
   access: 'read' | 'write',
   dependencies: SetupDependencies,
   providers: ManagedConnectionProviderRegistry,
 ): Promise<NonNullable<ConnectorLandingPageInput['reusable']> | undefined> {
-  if (setup.origin.kind !== 'slack') return undefined;
-  const { workspaceId } = setup.origin;
-  const service = setupConnectionAccounts(dependencies, providers);
+  const service = setupConnectionAccounts(dependencies, providers, setup);
   const signerName = async (membershipId: string) => {
     const membership = await dependencies.identity.getMembership(membershipId);
     const user = membership && await dependencies.identity.getUser(membership.userId);
@@ -1738,10 +1751,12 @@ async function reuseSetupSignIn(
   dependencies: SetupDependencies,
   options: ManagementSetupRoutesOptions,
 ): Promise<Response> {
-  if (setup.origin.kind !== 'slack') throw new ManagedAuthorizationError('invalid');
+  const workspaceId = await setupWorkspaceId(setup, dependencies.identity);
+  if (!workspaceId) throw new ManagedAuthorizationError('invalid');
   const service = setupConnectionAccounts(
     dependencies,
-    (await managedFlowDependencies(dependencies, options)).providerContext.providers,
+    (await managedFlowDependencies(dependencies, options, setup)).providerContext.providers,
+    setup,
   );
   const pages = Object.entries(fields)
     .filter(([key, value]) => key.startsWith('page:') && value === 'on')
@@ -1751,7 +1766,7 @@ async function reuseSetupSignIn(
     ({ account } = await service.reuseSignIn({
       principal,
       agentId: agent.id,
-      workspaceId: setup.origin.workspaceId,
+      workspaceId,
       sourceConnectionId: fields.reuseSignInId!,
       ownerKind: selection.ownerKind,
       access: selection.accessLane,
@@ -1769,7 +1784,7 @@ async function reuseSetupSignIn(
     const page = await managedConnectionPageInput(c, setup, dependencies, options, principal);
     return page
       ? c.html(renderManagedConnectionSetupPage({ ...page, failureMessage: message }), 409)
-      : managedUnavailablePage(c);
+      : managedUnavailablePage(c, setup);
   }
   try {
     await finishSetup(c, setup, {
@@ -1791,12 +1806,12 @@ async function reuseSetupSignIn(
 
 async function reconnectAccount(
   setup: ManagementSetupRecord,
-  config: ConfigStore,
+  { config, identity }: Pick<SetupDependencies, 'config' | 'identity'>,
 ): Promise<ConnectionAccount | undefined> {
-  if (!setup.target.replacement || !setup.target.connectionId || setup.origin.kind !== 'slack') {
-    return undefined;
-  }
-  return (await config.listConnectionAccounts(setup.origin.workspaceId))
+  if (!setup.target.replacement || !setup.target.connectionId) return undefined;
+  const workspaceId = await setupWorkspaceId(setup, identity);
+  if (!workspaceId) return undefined;
+  return (await config.listConnectionAccounts(workspaceId))
     .find(({ id }) => id === setup.target.connectionId);
 }
 
@@ -1836,7 +1851,8 @@ async function beginCatalogConnectionSetup(
   dependencies: SetupDependencies,
   options: ManagementSetupRoutesOptions,
 ): Promise<{ authorizationUrl?: string; result: CatalogSetupResult }> {
-  if (setup.action !== 'catalog_connection' || setup.origin.kind !== 'slack' ||
+  const workspaceId = await setupWorkspaceId(setup, dependencies.identity);
+  if (setup.action !== 'catalog_connection' || !workspaceId ||
       !setup.target.agentId || !setup.target.presetId || !setup.target.connectionId) {
     throw new Error('target_changed');
   }
@@ -1844,7 +1860,7 @@ async function beginCatalogConnectionSetup(
   if (!preset || 'managedToolkit' in preset) throw new Error('target_changed');
   requireAgentEdit(principal, await dependencies.config.getAgent(setup.target.agentId));
   const configuredOAuthCallback = typeof preset.url === 'string'
-    ? await configuredManagementMcpOAuthCallback(preset.url, setup, dependencies)
+    ? await configuredManagementMcpOAuthCallback(preset.url, dependencies)
     : undefined;
   const ownerKind = fields.ownerKind?.trim();
   if (ownerKind !== 'member' && ownerKind !== 'team') throw new Error('invalid_owner');
@@ -1865,7 +1881,7 @@ async function beginCatalogConnectionSetup(
 
   const prepared = await prepareCatalogConnection(preset, fields, options);
   const requestedConnectionId = catalogSetupConnectionId(setup, ownerKind, principal.membershipId);
-  const accounts = await dependencies.config.listConnectionAccounts(setup.origin.workspaceId);
+  const accounts = await dependencies.config.listConnectionAccounts(workspaceId);
   const generatedIds = [
     requestedConnectionId.slice('connection_'.length),
     randomUUID().replaceAll('-', ''),
@@ -1875,7 +1891,7 @@ async function beginCatalogConnectionSetup(
     settings: dependencies.settings,
     randomId: () => generatedIds.shift() ?? randomUUID().replaceAll('-', ''),
     ...(dependencies.productTelemetry ? { productTelemetry: dependencies.productTelemetry } : {}),
-    telemetrySurface: 'slack',
+    telemetrySurface: setup.origin.kind,
   });
   let account = accounts.find(({ id }) => id === requestedConnectionId) ??
     accounts.find(({ id, ownerKind: existingOwner }) =>
@@ -1905,7 +1921,7 @@ async function beginCatalogConnectionSetup(
   }
   if (account) {
     const binding = await dependencies.config.getAgentConnectionBindingForAccount(account.id);
-    if (account.workspaceId !== setup.origin.workspaceId || account.providerId !== preset.id ||
+    if (account.workspaceId !== workspaceId || account.providerId !== preset.id ||
         !binding || binding.agentId !== setup.target.agentId || account.lifecycle === 'revoked' ||
         account.ownerKind !== ownerKind || account.ownerKind === 'member' &&
           account.ownerMembershipId !== principal.membershipId) {
@@ -1927,7 +1943,7 @@ async function beginCatalogConnectionSetup(
     account = (await service.createForAgent({
       principal,
       agentId: setup.target.agentId,
-      workspaceId: setup.origin.workspaceId,
+      workspaceId,
       ownerKind,
       providerId: preset.id,
       label: preset.name,
@@ -1962,7 +1978,7 @@ async function beginCatalogConnectionSetup(
     setupOperationId: setup.setupOperationId,
     authorizationAuthority: {
       organizationId: principal.organizationId,
-      workspaceId: setup.origin.workspaceId,
+      workspaceId,
       membershipId: principal.membershipId,
       agentId: setup.target.agentId,
       ownerKind: pending.ownerKind,
@@ -1976,7 +1992,6 @@ async function beginCatalogConnectionSetup(
 
 async function configuredManagementMcpOAuthCallback(
   serverUrl: string,
-  setup: ManagementSetupRecord,
   dependencies: SetupDependencies,
 ): Promise<string | undefined> {
   if (!configuredMcpOAuthClientDescriptor(serverUrl)) return undefined;
@@ -1984,7 +1999,7 @@ async function configuredManagementMcpOAuthCallback(
     getConfiguredMcpOAuthClient(serverUrl, dependencies.settings),
     dependencies.identity.getAuthControl(),
   ]);
-  if (!client || !control?.canonicalAdminOrigin || setup.origin.kind !== 'slack') {
+  if (!client || !control?.canonicalAdminOrigin) {
     throw new McpOAuthError(
       'oauth_configuration_required',
       'Configure Meta Ads in Admin before signing in.',
@@ -2025,16 +2040,13 @@ async function requireSetupOAuthCallbackAuthority(
     throw new AuthorizationError();
   }
   if (!connectionAccountId) throw new AuthorizationError();
-  const account = await findConnectionAccount(
-    dependencies.config,
-    connectionAccountId,
-    setup.origin.kind === 'slack' ? setup.origin.workspaceId : undefined,
-  );
+  const workspaceId = await setupWorkspaceId(setup, dependencies.identity);
+  const account = await findConnectionAccount(dependencies.config, connectionAccountId, workspaceId);
   const binding = account
     ? await dependencies.config.getAgentConnectionBindingForAccount(account.id)
     : undefined;
   if (!account) throw new AuthorizationError();
-  requireSetupOAuthAccountPermission(setup, principal, account, binding);
+  requireSetupOAuthAccountPermission(setup, principal, account, binding, workspaceId);
 }
 
 function requireSetupOAuthAccountPermission(
@@ -2042,11 +2054,12 @@ function requireSetupOAuthAccountPermission(
   principal: AuthPrincipal,
   account: ConnectionAccount,
   binding: AgentConnectionBinding | undefined,
+  workspaceId: string | undefined,
 ): void {
   if (principal.machine || principal.organizationId !== setup.organizationId ||
       account.lifecycle !== 'pending' || account.policy.kind !== 'mcp' ||
       account.policy.authMode !== 'oauth' || !binding?.enabled ||
-      binding.agentId !== setup.target.agentId || !setupOAuthAccountMatches(setup, account)) {
+      binding.agentId !== setup.target.agentId || !setupOAuthAccountMatches(setup, account, workspaceId)) {
     throw new AuthorizationError();
   }
   if (setup.action === 'mcp_oauth') {
@@ -2061,10 +2074,14 @@ function requireSetupOAuthAccountPermission(
 }
 
 /** A catalog setup completes its preset's account in the member's lane; a management setup, the account it froze. */
-function setupOAuthAccountMatches(setup: ManagementSetupRecord, account: ConnectionAccount): boolean {
+function setupOAuthAccountMatches(
+  setup: ManagementSetupRecord,
+  account: ConnectionAccount,
+  workspaceId: string | undefined,
+): boolean {
   if (setup.action === 'mcp_oauth') return account.id === setup.target.connectionId;
-  return setup.action === 'catalog_connection' && setup.origin.kind === 'slack' &&
-    account.workspaceId === setup.origin.workspaceId && account.providerId === setup.target.presetId;
+  return setup.action === 'catalog_connection' && workspaceId !== undefined &&
+    account.workspaceId === workspaceId && account.providerId === setup.target.presetId;
 }
 
 async function requireCurrentAccountOAuthAuthorization(
@@ -2541,6 +2558,26 @@ function principalMatchesSetup(
     principal.organizationId === setup.organizationId);
 }
 
+/**
+ * Who may open and finish a catalog or managed connector link. One posted in
+ * a Slack thread is for anyone there who can edit its Agent. One an app asked
+ * for over MCP was handed to one person, so only that person can use it.
+ */
+function connectorLinkIsFor(principal: AuthPrincipal, setup: ManagementSetupRecord): boolean {
+  return setup.origin.kind === 'slack' || principalMatchesSetup(principal, setup);
+}
+
+/** A finished MCP link's success page sends the person back to the app that asked for it. */
+async function setupReturnApp(
+  setup: ManagementSetupRecord,
+  dependencies: SetupDependencies,
+  options: ManagementSetupRoutesOptions,
+): Promise<Pick<ConnectorLandingPageInput, 'returnTo'>> {
+  if (setup.origin.kind !== 'mcp') return {};
+  const { mcpReturnApp } = await import('./setup-return-app.ts');
+  return { returnTo: await mcpReturnApp(setup.origin.clientId, setup.actorMembershipId, dependencies, options.mcpOAuthClients) };
+}
+
 export async function completeFormAction(
   setup: ManagementSetupRecord,
   fields: Record<string, string>,
@@ -2863,7 +2900,7 @@ async function verifyMcpConnection(
   if (!connectionAccountId) {
     throw new McpOAuthError('connection_missing', 'OAuth connection no longer exists');
   }
-  const workspaceId = setup.origin.kind === 'slack' ? setup.origin.workspaceId : undefined;
+  const workspaceId = await setupWorkspaceId(setup, dependencies.identity);
   const account = await findConnectionAccount(dependencies.config, connectionAccountId, workspaceId);
   const binding = account
     ? await dependencies.config.getAgentConnectionBindingForAccount(account.id)
@@ -2873,10 +2910,10 @@ async function verifyMcpConnection(
       accountRevision !== undefined && account.revision !== accountRevision ||
       oauthAttemptId !== undefined && account.policy.oauthAttemptId !== oauthAttemptId ||
       !binding || binding.agentId !== setup.target.agentId ||
-      !setupOAuthAccountMatches(setup, account)) {
+      !setupOAuthAccountMatches(setup, account, workspaceId)) {
     throw new McpOAuthError('oauth_attempt_superseded', 'OAuth attempt was superseded');
   }
-  requireSetupOAuthAccountPermission(setup, principal, account, binding);
+  requireSetupOAuthAccountPermission(setup, principal, account, binding, workspaceId);
   await requireCurrentAccountOAuthAuthorization(dependencies, authorizationAuthority, ref);
   const validated = validateMcpUrl(account.policy.url);
   if (!validated.ok) throw new Error('blocked_url');
@@ -2893,7 +2930,7 @@ async function verifyMcpConnection(
         currentBinding?.agentId !== setup.target.agentId) {
       throw new McpOAuthError('oauth_attempt_superseded', 'OAuth attempt was superseded');
     }
-    requireSetupOAuthAccountPermission(setup, principal, current, currentBinding);
+    requireSetupOAuthAccountPermission(setup, principal, current, currentBinding, workspaceId);
     await requireCurrentAccountOAuthAuthorization(dependencies, authorizationAuthority, ref);
   };
   const bearer = await (options.resolveMcpOAuthToken ?? resolveMcpOAuthAccessToken)(
@@ -2917,7 +2954,7 @@ async function verifyMcpConnection(
   }).catch(() => undefined);
   const allowedTools = allowedToolsAfterMcpDiscovery(account.policy, discovery.tools);
   const requiresToolReview = isMcpToolReviewRequired(account.policy);
-  requireSetupOAuthAccountPermission(setup, principal, account, binding);
+  requireSetupOAuthAccountPermission(setup, principal, account, binding, workspaceId);
   await requireCurrentAccountOAuthAuthorization(dependencies, authorizationAuthority, ref);
   const ready = await markConnectionAccountReady(dependencies, { account, binding }, {
     policy: { ...account.policy, discoveredTools: discovery.tools, allowedTools },
@@ -3248,13 +3285,13 @@ async function requireBrowserSetup(
       ? CAPABILITY_PATTERN.test(session)
       : managedSetupSessionMatches(setup, session);
     return !principal.machine && principal.organizationId === setup.organizationId &&
-        sessionAuthorized
+        connectorLinkIsFor(principal, setup) && sessionAuthorized
       ? setup
       : undefined;
   }
   if (setup.action === 'catalog_connection') {
     return !principal.machine && principal.organizationId === setup.organizationId &&
-        sessionMatches(setup, session)
+        connectorLinkIsFor(principal, setup) && sessionMatches(setup, session)
       ? setup
       : undefined;
   }
@@ -3328,7 +3365,7 @@ async function terminalPage(
   management: ManagementStore,
 ): Promise<Response> {
   if (setup.action === 'managed_connection') {
-    return managedUnavailablePage(c);
+    return managedUnavailablePage(c, setup);
   }
   if (setup.status === 'completed') {
     const agent = await wakeQueued(setup, management) ? setupWakeAgent(setup)?.agentName : undefined;
@@ -3362,8 +3399,8 @@ async function wakeQueued(setup: ManagementSetupRecord, management: ManagementSt
   return outbox.status !== 'delivered' || outbox.deliveryRef?.startsWith('wake:') === true;
 }
 
-function managedUnavailablePage(c: Context): Response {
-  return c.html(renderManagedConnectionUnavailablePage(), 410);
+function managedUnavailablePage(c: Context, setup: ManagementSetupRecord): Response {
+  return c.html(renderManagedConnectionUnavailablePage(setup.origin.kind), 410);
 }
 
 function unavailablePage(c: Context): Response {
