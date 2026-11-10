@@ -136,6 +136,21 @@ const MCP_TOOL_ANNOTATIONS = {
   connect_model_provider: { ...DESTRUCTIVE_5, idempotentHint: false },
   confirm_change: DESTRUCTIVE_5,
   undo_change: DESTRUCTIVE_5,
+  // 4.5: a link that adds a connection is additive, but adding an open MCP server asks it for
+  // its tools, and each call makes a new link. Everything else replaces, removes or revokes.
+  connect_service: { ...ADDS_5, openWorldHint: true, idempotentHint: false },
+  reconnect_service: { ...DESTRUCTIVE_5, idempotentHint: false },
+  update_connection: { ...DESTRUCTIVE_5, openWorldHint: true },
+  remove_connection: DESTRUCTIVE_5,
+  set_agent_repositories: DESTRUCTIVE_5,
+  delete_agent: DESTRUCTIVE_5,
+  remove_website_login: DESTRUCTIVE_5,
+  remove_agent_from_channel: DESTRUCTIVE_5,
+  delete_schedule: DESTRUCTIVE_5,
+  remove_model_provider_key: DESTRUCTIVE_5,
+  update_member: DESTRUCTIVE_5,
+  cancel_setup_link: DESTRUCTIVE_5,
+  disconnect_app: DESTRUCTIVE_5,
 };
 
 const CLIENTS = [

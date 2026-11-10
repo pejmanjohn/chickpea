@@ -137,6 +137,9 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
     'add_agent_to_channel', 'save_channel_settings', 'import_skill_from_github', 'upload_skill_files', 'set_agent_skill',
     'save_schedule', 'pause_schedule', 'resume_schedule', 'run_schedule_now', 'take_over_schedule',
     'set_workspace_model', 'connect_model_provider', 'confirm_change', 'undo_change',
+    'connect_service', 'reconnect_service', 'update_connection', 'remove_connection', 'set_agent_repositories',
+    'delete_agent', 'remove_website_login', 'remove_agent_from_channel', 'delete_schedule',
+    'remove_model_provider_key', 'update_member', 'cancel_setup_link', 'disconnect_app',
   ]),
 };
 

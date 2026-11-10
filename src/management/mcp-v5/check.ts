@@ -7,7 +7,7 @@ import { getGithubConnection } from '../../config/github-app.ts';
 import { isProviderKeyId } from '../../config/provider-key-ids.ts';
 import type { ConnectionCheckOutcome } from '../../connections/connection-check.ts';
 import { ADMIN_PATH, adminOrigin, adminSettingsLinks, adminTeamLinks } from '../admin-links.ts';
-import { ManagementError, type ManagementConnectionSnapshot } from '../types.ts';
+import { ManagementError } from '../types.ts';
 import { readAgentRun, readingView, resolveAgentModel, seesChannel, type AgentRunReading } from './agent-run.ts';
 import type { McpErrorFix } from './conventions.ts';
 import { connectionRows, presenceProblem, type FiveZeroDeps } from './reads.ts';
@@ -60,7 +60,7 @@ function withFix(check: Omit<Check, 'fix'>, fix: McpErrorFix | undefined): Check
   return fix ? { ...check, fix } : check;
 }
 
-/** A setup link for a new key or sign-in, through the tool that issues one today. */
+/** A GitHub access link for one repository, which no 5.0 tool issues on its own yet. */
 function requestSetupFix(label: string, target: Record<string, string>): McpErrorFix {
   return {
     label,
@@ -69,17 +69,9 @@ function requestSetupFix(label: string, target: Record<string, string>): McpErro
   };
 }
 
-function reconnectFix(reading: AgentRunReading, account: ManagementConnectionSnapshot | undefined): McpErrorFix | undefined {
-  const reconnect = account?.reconnect;
-  if (!reconnect) return undefined;
-  if (reconnect.tool === 'prepare_connector_setup') {
-    return {
-      label: `Reconnect ${account.label}`,
-      tool: 'prepare_connector_setup',
-      arguments: { agentId: reading.agent.id, connector: reconnect.connector, ownerKind: reconnect.ownerKind },
-    };
-  }
-  return requestSetupFix(`Reconnect ${account.label}`, { ...reconnect.operation.target });
+/** A connection's reconnect link, through the 5.0 tool that hands it out. */
+function reconnectFix(reading: AgentRunReading, label: string, connectionId: string): McpErrorFix {
+  return { label, tool: 'reconnect_service', arguments: { agentId: reading.agent.id, connectionId } };
 }
 
 const CHECK_DETAIL: Readonly<Record<Exclude<ConnectionCheckOutcome['kind'], 'ok'>, [Check['status'], string]>> = {
@@ -99,11 +91,11 @@ async function connectionChecks(deps: FiveZeroDeps, reading: AgentRunReading): P
     if (row.status === 'off') return { ...base, status: 'ok', detail: 'Turned off for this Agent.' };
     if (row.status === 'needs_attention') {
       return withFix({ ...base, status: 'failing', detail: 'It needs to be reconnected.' },
-        reconnectFix(reading, account) ?? agentAdminFix(deps, reading, 'Reconnect it in Admin'));
+        account?.reconnect ? reconnectFix(reading, `Reconnect ${account.label}`, row.connectionId) : agentAdminFix(deps, reading, 'Reconnect it in Admin'));
     }
     if (row.status === 'waiting_for_setup') {
       return withFix({ ...base, status: 'warning', detail: 'Its setup has not finished.' },
-        reconnectFix(reading, account) ?? agentAdminFix(deps, reading, 'Finish its setup in Admin'));
+        account?.reconnect ? reconnectFix(reading, `Reconnect ${account.label}`, row.connectionId) : agentAdminFix(deps, reading, 'Finish its setup in Admin'));
     }
     // A catalog service gets its stored state only; no new call goes to it.
     if (row.kind === 'service') return { ...base, status: 'ok', detail: 'Connected.' };
@@ -130,11 +122,7 @@ async function connectionChecks(deps: FiveZeroDeps, reading: AgentRunReading): P
     // A member's snapshot shows only their own personal accounts; team ones are an Owner's or Admin's to rekey.
     const mayReplaceKey = account !== undefined && (reading.actor.role !== 'member' || account.ownerKind === 'member');
     const fix = (outcome.kind === 'key_rejected' || outcome.kind === 'not_permitted') && mayReplaceKey
-      ? requestSetupFix('Send a link to save a new key', {
-          kind: row.kind === 'custom_mcp' ? 'mcp_connection' : 'api_connection',
-          agentId: reading.agent.id,
-          connectionId: account.id,
-        })
+      ? reconnectFix(reading, 'Send a link to save a new key', row.connectionId)
       : undefined;
     return withFix({ ...base, status, detail }, fix);
   }));
@@ -147,7 +135,7 @@ async function modelChecks(deps: FiveZeroDeps, reading: AgentRunReading): Promis
   const provider = model.model?.split('/')[0];
   const providerFix = provider && isProviderKeyId(provider) && reading.actor.role !== 'member' &&
     model.unavailable === 'credential_missing'
-    ? { label: `Set up ${provider}`, tool: 'prepare_provider_setup', arguments: { providerId: provider } }
+    ? { label: `Set up ${provider}`, tool: 'connect_model_provider', arguments: { provider } }
     : undefined;
   const fix = providerFix ?? settingsFix(deps, reading, 'providers', 'Open Model providers in Admin') ??
     agentAdminFix(deps, reading, 'Choose another model in Admin');

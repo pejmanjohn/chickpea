@@ -14,6 +14,8 @@ import {
 import { checkAgent } from './check.ts';
 import { explainAgent } from './explain.ts';
 import { proposeAgent, proposeAgentChange } from './proposals.ts';
+import * as removals from './removals.ts';
+import * as connections from './connections.ts';
 import * as reads from './reads.ts';
 import type { FiveZeroDeps } from './reads.ts';
 import * as schemas from './schemas.ts';
@@ -227,6 +229,14 @@ export const FIVE_ZERO_TOOLS = {
     write: writeHints({ destructive: false }),
     run: (deps, args) => writes.restoreAgent(deps, args),
   }),
+  delete_agent: tool({
+    title: 'Delete an Agent',
+    description: 'Delete an archived Agent for good, with its memory, schedules and connections. It cannot be undone, so it returns needs_confirmation with a preview first. An Agent still in Slack is refused with still_in_use, naming its Channels; archive_agent clears them. Send the version get_agent returned.',
+    input: schemas.deleteAgentInput,
+    output: schemas.changeResultOutput,
+    write: writeHints({ destructive: true }),
+    run: (deps, args) => removals.deleteAgent(deps, args),
+  }),
   add_agent_to_channel: tool({
     title: 'Add an Agent to a Slack Channel',
     description: 'Let an Agent answer in one Slack Channel, which it joins. In a public Channel it posts a welcome everyone there sees, which cannot be taken back. Everyone in that Channel can then mention it. Applies at once.',
@@ -234,6 +244,14 @@ export const FIVE_ZERO_TOOLS = {
     output: schemas.changeResultOutput,
     write: writeHints({ destructive: true }),
     run: (deps, args) => writes.addAgentToChannel(deps, args),
+  }),
+  remove_agent_from_channel: tool({
+    title: 'Remove an Agent from a Slack Channel',
+    description: 'Stop an Agent answering in one Slack Channel: it leaves the Channel and people there can no longer mention it. Applies at once; undo_change or add_agent_to_channel adds it back.',
+    input: schemas.removeAgentFromChannelInput,
+    output: schemas.changeResultOutput,
+    write: writeHints({ destructive: true }),
+    run: (deps, args) => removals.removeAgentFromChannel(deps, args),
   }),
   save_channel_settings: tool({
     title: 'Save Channel settings',
@@ -266,6 +284,56 @@ export const FIVE_ZERO_TOOLS = {
     output: schemas.changeResultOutput,
     write: writeHints({ destructive: true }),
     run: (deps, args) => writes.setAgentSkill(deps, args),
+  }),
+  connect_service: tool({
+    title: 'Connect a service to an Agent',
+    description: 'Get a Chickpea setup link that connects one service to an Agent: a service from list_services, or with custom an API or MCP server the catalog lacks, which this adds to the Agent first. The person signs in or enters the key on Chickpea\'s page; never ask for it. A connection the Agent already has is refused: use reconnect_service. Each call makes a new link.',
+    input: schemas.connectServiceInput,
+    output: schemas.changeResultOutput,
+    // Adding an open MCP server asks that server for its tools.
+    write: writeHints({ destructive: false, openWorld: true, idempotent: false }),
+    run: (deps, args) => connections.connectService(deps, args),
+  }),
+  reconnect_service: tool({
+    title: 'Reconnect a service',
+    description: 'Get a Chickpea setup link that signs one of an Agent\'s connections in again or replaces its key, by its connectionId from get_agent: for one that needs attention, or to change what a service shares with it. The new sign-in or key replaces the old one. Never ask for the key. Each call makes a new link.',
+    input: schemas.reconnectServiceInput,
+    output: schemas.changeResultOutput,
+    write: writeHints({ destructive: true, idempotent: false }),
+    run: (deps, args) => connections.reconnectService(deps, args),
+  }),
+  update_connection: tool({
+    title: 'Update a custom connection',
+    description: 'Change a custom API or MCP connection\'s settings: its name, hosts, paths, methods, key header, server URL, tools or guide. Send the version get_agent returned. It overwrites those settings and applies at once. When the key would go somewhere new, the connection waits for it again and the result carries the setup link.',
+    input: schemas.updateConnectionInput,
+    output: schemas.changeResultOutput,
+    // A new MCP server URL is asked for its tools.
+    write: writeHints({ destructive: true, openWorld: true }),
+    run: (deps, args) => connections.updateConnection(deps, args),
+  }),
+  remove_connection: tool({
+    title: 'Remove a connection',
+    description: 'Disconnect one of an Agent\'s connections, catalog or custom, by its connectionId from get_agent: the Agent loses access, its saved sign-in or key is retired, and schedules that use it pause. It returns needs_confirmation with a preview first; nothing changes until confirm_change.',
+    input: schemas.removeConnectionInput,
+    output: schemas.changeResultOutput,
+    write: writeHints({ destructive: true }),
+    run: (deps, args) => connections.removeConnection(deps, args),
+  }),
+  remove_website_login: tool({
+    title: 'Remove a website login',
+    description: 'Take one website login off an Agent, by its loginId from get_agent: the Agent can no longer sign in to that site, and if no other Agent uses the login, its saved sign-in is deleted. It returns needs_confirmation with a preview first. Adding a login stays in Admin.',
+    input: schemas.removeWebsiteLoginInput,
+    output: schemas.changeResultOutput,
+    write: writeHints({ destructive: true }),
+    run: (deps, args) => removals.removeWebsiteLogin(deps, args),
+  }),
+  set_agent_repositories: tool({
+    title: 'Set an Agent\'s GitHub repositories',
+    description: 'Set the whole list of GitHub repositories an Agent may work in, as owner/repo; owner/* keeps an account-wide grant the Agent already has. Repositories left out are removed. Send the version get_agent returned. Applies at once; a repository Chickpea cannot reach yet returns needs_setup with a GitHub access link.',
+    input: schemas.setAgentRepositoriesInput,
+    output: schemas.changeResultOutput,
+    write: writeHints({ destructive: true }),
+    run: (deps, args) => connections.setAgentRepositories(deps, args),
   }),
   save_schedule: tool({
     title: 'Save a schedule',
@@ -307,6 +375,14 @@ export const FIVE_ZERO_TOOLS = {
     write: writeHints({ destructive: true }),
     run: (deps, args) => writes.takeOverSchedule(deps, args),
   }),
+  delete_schedule: tool({
+    title: 'Delete a schedule',
+    description: 'Delete a schedule (routine) for good: its future runs stop and it cannot be undone, so it returns needs_confirmation with a preview first. Send the version list_schedules returned. pause_schedule stops it without deleting it.',
+    input: schemas.deleteScheduleInput,
+    output: schemas.changeResultOutput,
+    write: writeHints({ destructive: true }),
+    run: (deps, args) => removals.deleteSchedule(deps, args),
+  }),
   set_workspace_model: tool({
     title: 'Set a workspace model',
     description: 'Set the workspace default chat, image or coding model, which every Agent without its own model uses. Owners and Admins only. Send the role\'s version from list_models. It overwrites the default and applies at once.',
@@ -322,6 +398,38 @@ export const FIVE_ZERO_TOOLS = {
     output: schemas.changeResultOutput,
     write: writeHints({ destructive: true, idempotent: false }),
     run: (deps, args) => writes.connectModelProvider(deps, args),
+  }),
+  remove_model_provider_key: tool({
+    title: 'Remove a model provider key',
+    description: 'Remove the workspace\'s stored key for one model provider. Agents and defaults on that provider\'s models stop answering until a key is back, so it returns needs_confirmation with a preview naming them first. Owners and Admins only.',
+    input: schemas.removeModelProviderKeyInput,
+    output: schemas.changeResultOutput,
+    write: writeHints({ destructive: true }),
+    run: (deps, args) => removals.removeModelProviderKey(deps, args),
+  }),
+  update_member: tool({
+    title: 'Change a member\'s role or access',
+    description: 'Change one person\'s Chickpea role (owner, admin or member) or access (active, suspended or removed), by their slackUserId from list_members. Owners only. Suspending, removing or any Owner change ends access, so it returns needs_confirmation first; an Admin or Member role change applies at once.',
+    input: schemas.updateMemberInput,
+    output: schemas.changeResultOutput,
+    write: writeHints({ destructive: true }),
+    run: (deps, args) => removals.updateMember(deps, args),
+  }),
+  cancel_setup_link: tool({
+    title: 'Cancel a setup link',
+    description: 'Cancel one of your unused setup links by its setupToken, so it no longer opens. With sendNewLink, return a fresh 24-hour link for the same setup. A link being finished cannot be cancelled. Applies at once.',
+    input: schemas.cancelSetupLinkInput,
+    output: schemas.changeResultOutput,
+    write: writeHints({ destructive: true }),
+    run: (deps, args) => removals.cancelSetupLink(deps, args),
+  }),
+  disconnect_app: tool({
+    title: 'Disconnect an app',
+    description: 'Disconnect one of the apps you connected to Chickpea, by its appId from list_connected_apps: it can no longer renew its access, and the access it holds ends within 15 minutes. Disconnecting this app is allowed; it must then sign in again. Applies at once. Tell the person the returned message.',
+    input: schemas.disconnectAppInput,
+    output: schemas.disconnectAppOutput,
+    write: writeHints({ destructive: true }),
+    run: (deps, args) => removals.disconnectApp(deps, args),
   }),
   confirm_change: tool({
     title: 'Confirm a change',

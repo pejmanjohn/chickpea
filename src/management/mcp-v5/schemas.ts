@@ -1,6 +1,8 @@
 import { z } from 'zod';
 
 import { AGENT_ID_PATTERN } from '../../config/agent-id.ts';
+import { CONNECTION_GUIDE_MAX_LENGTH } from '../../config/agent-write-rules.ts';
+import { MAX_MCP_TOOLS } from '../../config/mcp-limits.ts';
 import { MODEL_EFFORTS } from '../../config/model-effort.ts';
 import { PROVIDER_KEY_IDS } from '../../config/provider-key-ids.ts';
 import { MAX_UPLOAD_FILES } from '../../config/skill-upload.ts';
@@ -220,6 +222,88 @@ export const connectModelProviderInput = z.strictObject({
   provider: z.enum(PROVIDER_KEY_IDS),
   replaceExisting: z.boolean().optional().describe('true when a key is stored and the person wants the link to replace it.'),
 });
+const zConnectionId = zText(128).describe('A connectionId from get_agent.');
+const zCheckPath = z.string().max(2_048).regex(/^\/(?!\/)\S*$/)
+  .describe('API only: a read endpoint the setup page checks the key against, such as /v1/me; never the bare prefix.');
+const zCustomFields = {
+  name: zText(240).optional().describe('What people call the connection.'),
+  hosts: z.array(zText(253)).min(1).max(100).optional().describe('API: the hosts the key is sent to, such as api.example.com.'),
+  pathPrefixes: z.array(zText(2_000)).max(100).optional().describe('API: the paths it may call, such as /v1. [] is the whole host.'),
+  methods: z.array(z.enum(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'])).min(1).max(6).optional()
+    .describe('API: GET and HEAD read; add POST, PUT or PATCH to write, DELETE only when asked.'),
+  headerName: zText(120).optional().describe('The header the key goes in, such as X-Api-Key. Omit for Authorization.'),
+  headerValuePrefix: z.string().max(120).optional().describe('Text before the key, such as "Bearer ".'),
+  url: z.url().max(2_000).optional().describe('MCP: the server URL.'),
+  allowedTools: z.array(zText(120)).max(MAX_MCP_TOOLS).optional().describe('MCP: the tools the Agent may use; [] for all.'),
+  guide: z.string().max(CONNECTION_GUIDE_MAX_LENGTH).optional().describe('Notes the Agent reads: endpoints and quirks. Never a key.'),
+};
+export const zCustomConnection = z.strictObject({
+  kind: z.enum(['api', 'mcp']),
+  ...zCustomFields,
+  name: zText(240).describe('What people call the connection, such as Statusboard API.'),
+  auth: z.enum(['key', 'sign_in', 'none']).optional()
+    .describe('MCP: key (the default) for a key in a header, sign_in for an OAuth sign-in, none for an open server.'),
+}).refine((custom) => custom.kind === 'api' ? custom.hosts !== undefined && custom.url === undefined : custom.url !== undefined && custom.hosts === undefined,
+  'An api connection takes hosts; an mcp connection takes url.');
+
+/** One flat object, not a union: MCP clients handle a bare anyOf poorly. */
+export const connectServiceInput = z.strictObject({
+  agentId: zAgentId,
+  service: zText(128).optional().describe('A service from list_services, by service or name.'),
+  owner: z.enum(['team', 'me']).optional()
+    .describe('With service: team connects it for everyone who uses the Agent (Owners and Admins only); me connects your own account.'),
+  custom: zCustomConnection.optional().describe('Only for a service list_services lacks: a custom API or MCP connection.'),
+  checkPath: zCheckPath.optional(),
+  version: zAgentVersion.optional().describe('Required with custom: the version get_agent returned.'),
+  idempotencyKey: zIdempotencyKey,
+}).refine((input) => (input.service === undefined) !== (input.custom === undefined), 'Send service or custom, not both.')
+  .refine((input) => input.service === undefined || input.owner !== undefined, 'Say whose account it is: owner team or me.')
+  .refine((input) => input.custom === undefined || input.version !== undefined, 'Send the version get_agent returned with custom.');
+export const reconnectServiceInput = z.strictObject({
+  agentId: zAgentId,
+  connectionId: zConnectionId,
+  checkPath: zCheckPath.optional(),
+});
+export const updateConnectionInput = z.strictObject({
+  agentId: zAgentId,
+  connectionId: zConnectionId.describe('A custom_api or custom_mcp connectionId from get_agent.'),
+  version: zAgentVersion,
+  changes: z.strictObject(zCustomFields).refine((changes) => Object.keys(changes).length > 0, 'Name at least one field to change.'),
+  checkPath: zCheckPath.optional(),
+  idempotencyKey: zIdempotencyKey,
+});
+export const removeConnectionInput = z.strictObject({ agentId: zAgentId, connectionId: zConnectionId, idempotencyKey: zIdempotencyKey });
+export const setAgentRepositoriesInput = z.strictObject({
+  agentId: zAgentId,
+  version: zAgentVersion,
+  repositories: z.array(z.strictObject({
+    repository: z.string().max(500).regex(/^[A-Za-z0-9_.-]+\/(?:[A-Za-z0-9_.-]+|\*)$/)
+      .describe('owner/repo, or owner/* for every repository of that account.'),
+  })).max(100).describe('The whole list the Agent may use afterwards; [] removes them all.'),
+  idempotencyKey: zIdempotencyKey,
+});
+
+export const deleteAgentInput = z.strictObject({ agentId: zAgentId, version: zAgentVersion, idempotencyKey: zIdempotencyKey });
+export const removeWebsiteLoginInput = z.strictObject({
+  agentId: zAgentId,
+  loginId: z.string().regex(/^wl_[a-f0-9]{32}$/).describe('A loginId from get_agent.'),
+  idempotencyKey: zIdempotencyKey,
+});
+export const removeAgentFromChannelInput = addAgentToChannelInput;
+export const deleteScheduleInput = z.strictObject({ scheduleId: zScheduleId, version: zScheduleVersion, idempotencyKey: zIdempotencyKey });
+export const removeModelProviderKeyInput = z.strictObject({ provider: z.enum(PROVIDER_KEY_IDS), idempotencyKey: zIdempotencyKey });
+export const updateMemberInput = z.strictObject({
+  slackUserId: zText(64).describe('A slackUserId from list_members.'),
+  role: zRole.optional(),
+  status: z.enum(['active', 'suspended', 'removed']).optional().describe('suspended or removed ends their access.'),
+  idempotencyKey: zIdempotencyKey,
+}).refine((input) => input.role !== undefined || input.status !== undefined, 'Send role, status or both.');
+export const cancelSetupLinkInput = z.strictObject({
+  setupToken: zText(128).describe('The setupToken the link came with.'),
+  sendNewLink: z.boolean().optional().describe('true makes a fresh link for the same setup.'),
+});
+export const disconnectAppInput = z.strictObject({ appId: zText(256).describe('An appId from list_connected_apps.') });
+
 export const confirmChangeInput = z.strictObject({
   confirmToken: zText(128).describe('The confirmToken a needs_confirmation result returned.'),
 });
@@ -509,6 +593,12 @@ export const uploadSkillFilesOutput = z.strictObject({
   unchanged: z.array(z.string()),
   conflicts: z.array(z.string()).describe('Same name, different content: left as they are unless replaceExisting is true.'),
   leftOut: z.array(z.strictObject({ file: z.string(), why: z.string() })),
+});
+
+export const disconnectAppOutput = z.strictObject({
+  name: z.string().optional(),
+  thisApp: z.boolean().describe('true when it was the app making this call, which must sign in to Chickpea again.'),
+  message: z.string().describe('One plain sentence to tell the person.'),
 });
 
 export const getCreationStatusOutput = z.strictObject({

@@ -430,7 +430,7 @@ test('a model whose provider has no key cannot run: explain says why and check o
   const [model] = part(await check(call, { agentId: 'agent_ops' }), 'model');
   assert.deepEqual(model, {
     part: 'model', name: 'anthropic/claude-sonnet-4-6', status: 'failing', detail: 'Its provider, anthropic, is not set up.',
-    fix: { label: 'Set up anthropic', tool: 'prepare_provider_setup', arguments: { providerId: 'anthropic' } },
+    fix: { label: 'Set up anthropic', tool: 'connect_model_provider', arguments: { provider: 'anthropic' } },
   });
 });
 
@@ -461,15 +461,16 @@ test('check_agent tests custom connections once each, reads catalog ones from st
   const docs = byName.get('Docs MCP')!;
   assert.equal(docs.status, 'failing');
   assert.equal(docs.detail, 'The service rejected its saved key. HTTP 401. Unauthorized');
-  assert.equal(docs.fix?.tool, 'apply_workspace_changes');
-  assert.deepEqual((docs.fix?.arguments?.operations as unknown[])[0], {
-    itemId: 'setup', kind: 'request_setup', target: { kind: 'mcp_connection', agentId: 'agent_ops', connectionId: 'connection_docs' },
+  assert.deepEqual(docs.fix, {
+    label: 'Send a link to save a new key',
+    tool: 'reconnect_service',
+    arguments: { agentId: 'agent_ops', connectionId: docs.connectionId },
   });
   const zendesk = byName.get('Zendesk')!;
   assert.deepEqual([zendesk.status, zendesk.fix], ['failing', undefined], 'an unreachable host has nothing the caller can fix');
   const linear = byName.get('Linear')!;
   assert.equal(linear.status, 'failing');
-  assert.equal(linear.fix?.label, 'Reconnect Linear');
+  assert.deepEqual(linear.fix, { label: 'Reconnect Linear', tool: 'reconnect_service', arguments: { agentId: 'agent_ops', connectionId: linear.connectionId } });
   assert.equal(checked.healthy, false);
   assertNoInternalIds(JSON.stringify(checked), f);
 
@@ -485,7 +486,7 @@ test('check_agent tests custom connections once each, reads catalog ones from st
   for (const [outcome, status, detail, fixed] of outcomes) {
     checks.connection_zendesk = outcome;
     const row = part(await check(call, { agentId: 'agent_ops' }), 'connection').find(({ name }) => name === 'Zendesk')!;
-    assert.deepEqual([row.status, row.detail, row.fix?.tool], [status, detail, fixed ? 'apply_workspace_changes' : undefined], outcome.kind);
+    assert.deepEqual([row.status, row.detail, row.fix?.tool], [status, detail, fixed ? 'reconnect_service' : undefined], outcome.kind);
   }
 });
 

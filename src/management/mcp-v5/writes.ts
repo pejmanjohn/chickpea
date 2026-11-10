@@ -38,7 +38,7 @@ type Operation<K extends ManagementOperation['kind']> = Extract<ManagementOperat
  */
 
 /** The Agent the caller may edit, checked against the version they read. */
-async function editableAgent(
+export async function editableAgent(
   deps: FiveZeroDeps,
   context: ManagementActorContext,
   agentId: string,
@@ -69,7 +69,7 @@ async function agentChange(
 }
 
 /** The Slack workspace's team ID, which every Channel and schedule operation names. */
-function slackTeamId(snapshot: ManagementWorkspaceSnapshot): string {
+export function slackTeamId(snapshot: ManagementWorkspaceSnapshot): string {
   if (!snapshot.slackTeamId) {
     fail('invalid_input', 'Chickpea is not connected to a Slack workspace yet.', {
       nextStep: 'Tell the person to finish connecting Slack in Chickpea Admin.',
@@ -106,7 +106,7 @@ async function creationChannels(
   return found.map(({ channelId }) => channelId);
 }
 
-function grantRevision(snapshot: ManagementWorkspaceSnapshot, channelId: string, agentId: string): number {
+export function grantRevision(snapshot: ManagementWorkspaceSnapshot, channelId: string, agentId: string): number {
   return snapshot.channels.find((channel) => channel.channelId === channelId)
     ?.grants.find((grant) => grant.agentId === agentId)?.revision ?? 0;
 }
@@ -505,7 +505,7 @@ export async function setAgentSkill(
 type Schedule = ManagementRoutineSnapshot['routines'][number];
 
 /** One schedule the caller can see, checked against the version they read. */
-async function readSchedule(
+export async function readSchedule(
   deps: FiveZeroDeps,
   context: ManagementActorContext,
   scheduleId: string,
