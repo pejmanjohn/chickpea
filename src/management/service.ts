@@ -1730,7 +1730,9 @@ export class WorkspaceManagementService {
     if (reconnecting) {
       return this.prepareConnectorReconnect(actor, agent, connector, reconnecting, baseUrl);
     }
-    if (actor.origin.kind === 'slack' && 'managedToolkit' in connector) {
+    // Slack and MCP callers alike get the one-connection setup page. A
+    // connector that page cannot serve gets Admin's page instead.
+    if ('managedToolkit' in connector) {
       const scopes = await this.managedConnectionCeiling(connector);
       const issued = await this.issueSetupRecord(actor, {
         action: 'managed_connection',
@@ -1758,8 +1760,7 @@ export class WorkspaceManagementService {
         ...setupWakeInstruction(issued.record),
       };
     }
-    if (actor.origin.kind === 'slack' && !('managedToolkit' in connector) &&
-        (await this.agentCreationConnectorEligible(connector, baseUrl))) {
+    if (await this.agentCreationConnectorEligible(connector, baseUrl)) {
       const issued = await this.issueSetupRecord(actor, {
         action: 'catalog_connection',
         target: this.catalogConnectionSetupTarget(agent, connector, input.ownerKind),
@@ -2131,8 +2132,8 @@ export class WorkspaceManagementService {
       ownerKind: account.ownerKind,
       reconnect: { connectionId: account.id, label: account.label },
     };
-    const linked = actor.origin.kind === 'slack' && ('managedToolkit' in connector ||
-      await this.agentCreationConnectorEligible(connector, baseUrl));
+    const linked = 'managedToolkit' in connector ||
+      await this.agentCreationConnectorEligible(connector, baseUrl);
     if (!linked) {
       return { ...result, handoffUrl: new URL(`/admin/agents/${encodeURIComponent(agent.id)}`, baseUrl).href };
     }

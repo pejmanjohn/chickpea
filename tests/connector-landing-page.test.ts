@@ -461,7 +461,7 @@ test('every connector and setup page styles each class it uses, and every styled
       setup: { ...setup, status: 'completed', target: { ...setup.target, provider: 'acme', targetLabel: 'Acme CRM', presetId: 'acme' } },
       agent: sprout,
     })],
-    ['connection unavailable', renderManagedConnectionUnavailablePage()],
+    ['connection unavailable', renderManagedConnectionUnavailablePage('slack')],
     ['one-use claim', renderSetupClaimPage({ setupId: 'setup_claim', reusable: false })],
     ['reusable claim', renderSetupClaimPage({ setupId: 'setup_claim', reusable: true })],
     ['generic setup panel', renderSetupPanelPage({

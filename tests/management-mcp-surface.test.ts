@@ -56,7 +56,9 @@ test('MCP tool descriptions carry no Slack-conversation instructions while Slack
   assert.match(confirm, /links\.admin and links\.slack/);
   const connector = workspaceManagementToolDescription('prepare_connector_setup', 'mcp');
   assert.match(connector, /agentId is required/);
-  assert.doesNotMatch(connector, /24 hours|anyone holding/, 'MCP returns an Admin page, not a bearer setup link');
+  assert.match(connector, /only this same person, signed in to Chickpea, can complete it/);
+  assert.match(connector, /get_operation with that setupOperationId reports status completed/);
+  assert.doesNotMatch(connector, /anyone holding/, 'an MCP setup link is the person\'s alone');
   assert.match(workspaceManagementToolDescription('import_skill', 'mcp'), /installs immediately/);
 });
 
