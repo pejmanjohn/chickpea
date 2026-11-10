@@ -618,6 +618,15 @@ test('update_connection marks a custom MCP connection\'s tools as reads or write
   }), 'invalid_input');
   assert.match((await refused({ readTools: ['export_all'] }, 'unallowed')).message, /^Docs does not allow export_all, so it cannot be marked\.$/);
   assert.match((await refused({ readTools: ['search'], writeTools: ['search'] }, 'both')).message, /as a read or as a write, not both/);
+  // An empty list marks nothing, so it is refused rather than saved as a new version.
+  const marksBefore = (await lanes(call, 'agent_research')).mcpServers[0]?.toolPolicies;
+  for (const [changes, key] of [[{ readTools: [] }, 'empty-read'], [{ readTools: [], writeTools: [] }, 'empty-both'],
+    [{ name: 'Docs wiki', writeTools: [] }, 'empty-with-name']] as const) {
+    const empty = await refused(changes, key);
+    assert.deepEqual([empty.message, empty.nextStep], ['An empty readTools or writeTools marks nothing, so nothing changed.',
+      'Name at least one of its allowedTools from get_agent in readTools or writeTools, or leave both out.']);
+  }
+  assert.deepEqual((await lanes(call, 'agent_research')).mcpServers[0]?.toolPolicies, marksBefore);
   assert.equal(await version(call, 'agent_research'), before, 'a refused mark writes nothing');
 
   structured(await call('connect_service', {
@@ -651,6 +660,17 @@ test('a mark goes with its tool\'s allowance: a tool update_connection allows ag
   const docs = (structured(await call('get_agent', { agentId: 'agent_research' })).connections as Array<Record<string, any>>)
     .find(({ connectionId }) => connectionId === 'docs')!.custom;
   assert.deepEqual([docs.readTools, docs.writeTools], [['search'], undefined], 'nobody marked delete_page when it was allowed again');
+
+  // An argument limit is a restriction, not a mark: it stays with its tool through a narrow and a widen.
+  const [limited] = (await f.config.listConnectionAccounts(f.owner.binding.slackTeamId!)).filter(({ providerId }) => providerId === 'docs');
+  const sandboxed = { effect: 'write', argumentConstraints: { space: ['sandbox'] } };
+  await f.config.putConnectionAccount({
+    ...limited!, policy: { ...limited!.policy, toolPolicies: { search: { effect: 'read' }, delete_page: sandboxed } } as never,
+  }, limited!.revision);
+  await change({ allowedTools: ['search', 'read_page'] }, 'narrow-limited');
+  assert.deepEqual(await marks(), { search: { effect: 'read' }, delete_page: sandboxed }, 'a dis-allowed tool keeps its limit');
+  await change({ allowedTools: ['search', 'read_page', 'delete_page'] }, 'widen-limited');
+  assert.deepEqual(await marks(), { search: { effect: 'read' }, delete_page: sandboxed }, 'and comes back with it');
 
   // A mark left from before this rule, on a tool that is not allowed, does not come back with it either.
   const [account] = (await f.config.listConnectionAccounts(f.owner.binding.slackTeamId!)).filter(({ providerId }) => providerId === 'docs');

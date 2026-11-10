@@ -15,6 +15,7 @@ import type {
   McpConnectionToolInfo,
 } from '../config/types.ts';
 import { CONNECTION_ID_PATTERN } from '../config/agent-write-rules.ts';
+import { keptToolPolicies, withoutMarks } from '../config/mcp-tool-policy.ts';
 import { canonicalMcpServerUrl } from '../config/mcp-url.ts';
 import { canonicalJson } from './contracts.ts';
 import { AgentWriteRuleError, type ManagementSetupRecord } from './types.ts';
@@ -125,10 +126,10 @@ export function mcpConnectionsAfterWrite(
   return written.map((input) => {
     const policy = managementMcpConnection(input);
     const previous = storedById.get(policy.id);
-    // A tool the write dis-allows loses its mark, as on Admin's tool editor and update_connection.
+    // A tool the write dis-allows loses its mark and keeps its limit, as on Admin's tool editor and update_connection.
     const disallowed = previous?.allowedTools.filter((tool) => !policy.allowedTools.includes(tool)) ?? [];
     if (policy.toolPolicies && disallowed.length > 0) {
-      policy.toolPolicies = Object.fromEntries(Object.entries(policy.toolPolicies).filter(([tool]) => !disallowed.includes(tool)));
+      policy.toolPolicies = withoutMarks(policy.toolPolicies, (tool) => disallowed.includes(tool));
     }
     const kept: Omit<McpConnectionConfig, 'lifecycleStatus' | 'statusText' | 'discoveredTools'> = {
       ...policy,
@@ -467,7 +468,7 @@ function mcpConnectionFromAccount(id: string, { account, binding }: AgentConnect
     ...ACCOUNT_STATUS[lifecycle],
     discoveredTools: [...policy.discoveredTools],
     ...(policy.toolAccessMode ? { toolAccessMode: policy.toolAccessMode } : {}),
-    ...(policy.toolPolicies ? { toolPolicies: policy.toolPolicies } : {}),
+    ...(policy.toolPolicies ? { toolPolicies: keptToolPolicies(policy, policy.allowedTools) } : {}),
     allowedTools: [...policy.allowedTools],
     ...(policy.oauthScope ? { oauthScope: policy.oauthScope } : {}),
     ...(policy.oauthAttemptId ? { oauthAttemptId: policy.oauthAttemptId } : {}),

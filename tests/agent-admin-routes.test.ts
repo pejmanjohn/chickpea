@@ -7794,7 +7794,8 @@ test(`custom MCP ${recoverFromToken ? 'token recovery' : 'OAuth creation'} requi
     const policyAccount = (await fixture.store.listConnectionAccounts('T_TEST')).find((entry) => entry.id === accountId);
     assert.deepEqual(policyAccount?.policy.kind === 'mcp' ? policyAccount.policy.toolPolicies : undefined,
       { search_issues: { effect: 'read', argumentConstraints: { team: ['support'] } } });
-    // The editor sends only the allowed tools: one it dis-allows loses its mark, and one it allows again starts unmarked.
+    // The editor sends only the allowed tools: one it dis-allows loses its read mark and keeps its limit, as a
+    // write a test run never calls, and comes back with both when it is allowed again.
     const marksAfterSaving = async (allowedTools: string[]) => {
       const current = (await fixture.store.listConnectionAccounts('T_TEST')).find((entry) => entry.id === accountId)!;
       const response = await saveTools(allowedTools, current.revision);
@@ -7802,8 +7803,9 @@ test(`custom MCP ${recoverFromToken ? 'token recovery' : 'OAuth creation'} requi
       const after = (await fixture.store.listConnectionAccounts('T_TEST')).find((entry) => entry.id === accountId);
       return after?.policy.kind === 'mcp' ? after.policy.toolPolicies : undefined;
     };
-    assert.deepEqual(await marksAfterSaving(['create_issue']), {});
-    assert.deepEqual(await marksAfterSaving(['search_issues', 'create_issue']), {});
+    const limitAsWrite = { search_issues: { effect: 'write', argumentConstraints: { team: ['support'] } } };
+    assert.deepEqual(await marksAfterSaving(['create_issue']), limitAsWrite);
+    assert.deepEqual(await marksAfterSaving(['search_issues', 'create_issue']), limitAsWrite);
     const unmarked = (await fixture.store.listConnectionAccounts('T_TEST')).find((entry) => entry.id === accountId)!;
     assert.equal(unmarked.policy.kind, 'mcp');
     // A mark from before, on a tool that is not allowed, does not come back with it; a kept tool keeps its own.

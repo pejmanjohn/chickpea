@@ -9551,7 +9551,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         : isBugsnagMcpConnection(account.policy)
           ? compileBugsnagToolAccess({ discoveredTools: account.policy.discoveredTools, requestedTools: allowedTools })
           : undefined;
-      // The editor sends only the allowed tools; a tool it allows again starts unmarked.
+      // The editor sends only the allowed tools; a tool it dis-allows or allows again loses its mark, never its limits.
       const toolPolicies = compiled?.toolPolicies ?? parsed.output.toolPolicies ??
         (account.policy.toolPolicies && keptToolPolicies(account.policy, allowedTools));
       const updated = await store(c).putConnectionAccount({

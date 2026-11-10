@@ -368,16 +368,22 @@ function changedEntry<T extends object>(
 
 /**
  * The MCP connection with the named tools marked as reads or writes, the
- * tool policy Admin's API and 4.x declare; a tool not named keeps its mark,
- * and its argument limits stay, while it stays allowed. A tool this change
- * allows again starts unmarked (keptToolPolicies). Only an allowed tool can
- * be marked. A test run calls only the tools marked as reads.
+ * tool policy Admin's API and 4.x declare; a tool not named keeps its mark
+ * while it stays allowed. A tool this change dis-allows or allows again loses
+ * its mark, and every tool keeps its argument limits (keptToolPolicies). Only
+ * an allowed tool can be marked. A test run calls only the tools marked as reads.
  */
 function markedTools(
   stored: SnapshotAgent['mcpServers'][number],
   entry: SnapshotAgent['mcpServers'][number],
-  { readTools = [], writeTools = [] }: CustomChanges,
+  changes: CustomChanges,
 ) {
+  const { readTools = [], writeTools = [] } = changes;
+  if ((changes.readTools || changes.writeTools) && readTools.length + writeTools.length === 0) {
+    fail('invalid_input', 'An empty readTools or writeTools marks nothing, so nothing changed.', {
+      nextStep: 'Name at least one of its allowedTools from get_agent in readTools or writeTools, or leave both out.',
+    });
+  }
   const both = readTools.filter((tool) => writeTools.includes(tool));
   if (both.length) fail('invalid_input', `Mark ${both.join(', ')} as a read or as a write, not both.`);
   const unknown = [...readTools, ...writeTools].filter((tool) => !entry.allowedTools.includes(tool));
