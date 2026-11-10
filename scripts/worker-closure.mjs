@@ -10,9 +10,11 @@
  *
  * Two checks. A change may add GROWTH_ALLOWANCE_BYTES over its merge base
  * (scripts/lib/budget-growth.mjs), measured by building that commit in a
- * temporary export. The ceiling backstops the total: set it to the measured
- * size plus 64 KiB once per merge train, and lower it when a change moves
- * code behind `import()`.
+ * temporary export with this checkout's node_modules. So a dependency upgrade
+ * counts against the ceiling only, and a base that no longer builds with
+ * these dependencies skips the growth check with the build's error. The
+ * ceiling backstops the total: set it to the measured size plus 64 KiB once
+ * per merge train, and lower it when a change moves code behind `import()`.
  *
  * Reads the build in dist-cf, which must be of this checkout. Its builds run
  * inside verify:regression's host reservation; standalone, wrap it in
@@ -97,26 +99,30 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const failures = [];
   const plan = growthPlan(projectRoot);
   let sinceBase;
+  const measured = new Map();
+  const at = (commit) => {
+    if (commit === undefined) return head;
+    if (!measured.has(commit)) measured.set(commit, measureCommit(projectRoot, commit));
+    return measured.get(commit);
+  };
   if (plan.skip) {
     console.log(plan.skip);
   } else {
-    const measured = new Map();
-    const at = (commit) => {
-      if (commit === undefined) return head;
-      if (!measured.has(commit)) measured.set(commit, measureCommit(projectRoot, commit));
-      return measured.get(commit);
-    };
-    for (const change of plan.changes) {
-      const before = at(change.from);
-      const after = at(change.to);
-      const growth = after.bytes - before.bytes;
-      const rows = rowsBetween(before, after);
-      console.log(`Growth in ${change.label} since ${short(change.from)}: ${kib(growth)} (allowed ${kib(change.allowance)})`);
-      if (growth > change.allowance) {
-        failures.push(growthFailure({ what: 'The Worker static closure', change, ref: plan.ref, growth, rows }));
+    try {
+      for (const change of plan.changes) {
+        const before = at(change.from);
+        const after = at(change.to);
+        const growth = after.bytes - before.bytes;
+        const rows = rowsBetween(before, after);
+        console.log(`Growth in ${change.label} since ${short(change.from)}: ${kib(growth)} (allowed ${kib(change.allowance)})`);
+        if (growth > change.allowance) {
+          failures.push(growthFailure({ what: 'The Worker static closure', change, ref: plan.ref, growth, rows }));
+        }
       }
+      sinceBase = rowsBetween(at(plan.base), head);
+    } catch (error) {
+      console.log(`Growth is not checked; the ceiling still is. ${error.message}`);
     }
-    sinceBase = rowsBetween(at(plan.base), head);
   }
   if (head.bytes > WORKER_STATIC_CLOSURE_CEILING_BYTES) {
     failures.push(

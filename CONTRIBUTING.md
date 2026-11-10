@@ -210,8 +210,9 @@ modules Worker startup loads (`tests/worker-startup-imports.test.ts`, in
 `npm run verify:regression` after its build). Each applies two rules:
 
 - **Growth.** A change may add 16 KiB over its merge base. The closure check
-  builds the base in a temporary export to measure it. A failure lists the
-  modules that grew. When the growth is deliberate, add a commit trailer such
+  builds the base in a temporary export with this checkout's dependencies, so
+  a dependency upgrade meets only the ceiling. A failure lists the modules
+  that grew. When the growth is deliberate, add a commit trailer such
   as `Worker-Startup-Growth: 40 KiB, the connect route loads with every Agent`
   to the change; it raises that change's allowance to the size it names.
 - **Ceiling.** A fixed total backstops the growth rule. It carries about
