@@ -140,8 +140,12 @@ async function modelChecks(deps: FiveZeroDeps, reading: AgentRunReading): Promis
     : undefined;
   const fix = providerFix ?? settingsFix(deps, reading, 'providers', 'Open Model providers in Admin') ??
     agentAdminFix(deps, reading, 'Choose another model in Admin');
-  const detail = `${model.why ?? 'It cannot run now.'}${reading.actor.role === 'member' && !fix ? ' An Owner or Admin can fix it.' : ''}`;
-  return [withFix({ part: 'model', name, status: 'failing', detail }, fix)];
+  const owner = reading.actor.role === 'member' && !fix ? ' An Owner or Admin can fix it.' : '';
+  const detail = `${model.why ?? 'It cannot run now.'}${owner}`;
+  // A model Chickpea could not resolve explains itself in engineering terms
+  // (an Agent ID, an environment variable), which only the model should see.
+  const plain = model.unavailable === 'unresolved' ? `No model is ready for it. Choose one in Admin.${owner}` : detail;
+  return [withFix({ part: 'model', name, status: 'failing', detail, plain }, fix)];
 }
 
 async function slackChecks(deps: FiveZeroDeps, reading: AgentRunReading): Promise<Check[]> {

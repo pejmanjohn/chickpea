@@ -435,6 +435,17 @@ test('a model whose provider has no key cannot run: explain says why and check o
   });
 });
 
+test('a model Chickpea cannot resolve keeps its reason for the model and gives the card a plain one', async (t) => {
+  const { f, teamId, call } = await harness(t, 'unresolved');
+  await seedOps(f, teamId, { model: undefined });
+  const explained = await explain(call, { agentId: 'agent_ops' });
+  assert.equal(explained.model.canRun, false);
+  const [model] = part(await check(call, { agentId: 'agent_ops' }), 'model');
+  assert.equal(model?.status, 'failing');
+  assert.equal(model?.detail, explained.model.why);
+  assert.equal(model?.plain, 'No model is ready for it. Choose one in Admin.');
+});
+
 test('check_agent tests custom connections once each, reads catalog ones from storage, and fixes what fails', async (t) => {
   const checks: Record<string, ConnectionCheckOutcome> = {
     connection_docs: { kind: 'key_rejected', status: 401, detail: 'Unauthorized' },
