@@ -250,8 +250,9 @@ async function resolveTestRun(
  * A connection a test run cannot read through, with what fixes it. A custom
  * MCP connection's tools are marked as reads with update_connection, by
  * whoever may change that connection, as in Admin. A managed service's read
- * tools, or a reviewed connector's, are chosen on the Agent's page in Admin.
- * Nothing marks a catalog MCP service's tools, so it gets no fix.
+ * tools, or a reviewed connector's (Bugsnag or Meta Ads, added by URL too),
+ * are chosen on the Agent's page in Admin, and update_connection refuses a
+ * reviewed one. Nothing marks a catalog MCP service's tools, so it gets no fix.
  */
 async function notTestable(
   deps: FiveZeroDeps,
@@ -260,7 +261,7 @@ async function notTestable(
 ): Promise<never> {
   const { agent } = reading;
   const cannot = `None of ${account.label}'s tools are marked as reads, so a test run can't use it.`;
-  if (policy.kind === 'mcp' && !policy.presetId) {
+  if (policy.kind === 'mcp' && !policy.presetId && !isMcpToolReviewRequired(policy)) {
     if (!canManageOwnedResource(reading.actor, account)) {
       fail('not_testable', `${cannot} An Owner or Admin can mark the tools that only read as reads.`);
     }
@@ -268,7 +269,7 @@ async function notTestable(
     const lanes = (await agentConnectionsOf(deps, reading.context, agent.id))?.mcpServers.map(({ id }) => id) ?? [];
     const connectionId = lanes.find((id) => id === account.id) ?? lanes.find((id) => id === account.providerId) ?? account.id;
     fail('not_testable', `${cannot} Mark the tools that only read as reads, then try again.`, {
-      nextStep: 'Ask the person which of its tools only look things up, then call update_connection with those in changes.readTools and the version get_agent returns.',
+      nextStep: 'Ask the person which of its tools only look things up. Mark a tool as a read only when the person confirms it only reads; never from its name alone. Then call update_connection with those in changes.readTools and the version get_agent returns.',
       fix: { label: `Mark ${account.label}'s read tools`, tool: 'update_connection', arguments: { agentId: agent.id, connectionId } },
     });
   }

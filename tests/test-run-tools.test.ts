@@ -5,6 +5,7 @@ import { createMcpHandler } from '@modelcontextprotocol/server';
 
 import { parseTestTurnInitialData } from '../src/agents/test-turn.ts';
 import type { McpAuthenticatedPrincipal } from '../src/auth/mcp-oauth-routes.ts';
+import { BUGSNAG_MCP_SERVER_URL } from '../src/config/bugsnag-policy.ts';
 import { createWorkspaceManagementMcpServer } from '../src/management/mcp.ts';
 import {
   getTestRun,
@@ -257,6 +258,7 @@ test('try_agent_once refuses before a run starts, each with its own words and fi
     label: 'Mark Docs MCP\'s read tools', tool: 'update_connection', arguments: { agentId: 'agent_docs', connectionId: 'docs' },
   }, 'the fix is a 5.0 call that names the connection, never Admin, whose tool editor cannot mark a read');
   assert.match(String(error.nextStep), /update_connection with those in changes\.readTools/);
+  assert.match(String(error.nextStep), /only when the person confirms it only reads; never from its name alone/);
   assert.deepEqual(instances.dispatched, [], 'nothing was dispatched');
 });
 
@@ -315,6 +317,28 @@ test('only someone who may change a connection is offered its fix, as in Admin; 
   assert.equal(structured(await member('update_connection', {
     agentId: 'agent_personal', connectionId: 'own_docs', version: own.version, changes: { readTools: ['search'] }, idempotencyKey: 'mine',
   })).status, 'done');
+
+  // A reviewed connector added by URL is chosen in Admin, and update_connection refuses it, so no fix points there.
+  await seedAgent(f, { id: 'agent_bugsnag', ...mine });
+  await connect(f, teamId, 'agent_bugsnag', {
+    id: 'connection_own_bugsnag', providerId: 'bugsnag', label: 'Bugsnag',
+    ownerKind: 'member', ownerMembershipId: f.admin.membership.id,
+    policy: docsMcp({
+      url: BUGSNAG_MCP_SERVER_URL, toolAccessMode: 'review', allowedTools: ['bugsnag_update_error'],
+      discoveredTools: [{ name: 'bugsnag_update_error' }],
+    }),
+  });
+  error = errorOf(await member('try_agent_once', { agentId: 'agent_bugsnag', idempotencyKey: 'key_bugsnag' }));
+  assert.equal(error.message, 'None of Bugsnag\'s tools are marked as reads, so a test run can\'t use it. Ask Ops in Slack instead.');
+  assert.notEqual((error.fix as { tool?: string } | undefined)?.tool, 'update_connection');
+  const bugsnag = structured(await member('get_agent', { agentId: 'agent_bugsnag' })) as { version: string };
+  error = errorOf(await member('update_connection', {
+    agentId: 'agent_bugsnag', connectionId: 'bugsnag', version: bugsnag.version,
+    changes: { readTools: ['bugsnag_update_error'] }, idempotencyKey: 'mark-bugsnag',
+  }));
+  assert.equal(error.code, 'invalid_input', 'update_connection refuses a reviewed connector, as the fix would have led to');
+  const stored = (await f.config.listConnectionAccounts(teamId)).find(({ id }) => id === 'connection_own_bugsnag');
+  assert.equal(stored?.policy.kind === 'mcp' ? stored.policy.toolPolicies : null, undefined, 'and writes nothing');
 
   // Neither Admin nor update_connection marks a catalog MCP service's tools, so no fix points anywhere.
   await seedAgent(f, { id: 'agent_linear', ...mine });
@@ -433,6 +457,12 @@ test('try_agent_once returns running 15 seconds after the call starts, a slow ad
   const returnedAfter = clock.now() - calledAt;
   assert.equal(TRY_AGENT_ONCE_RETURNS_BY_MS, 15_000);
   assert.ok(returnedAfter <= 15_000 && returnedAfter > 13_000, `it returned ${returnedAfter} ms after the call started`);
+  // A retry of the same key waits for the run only until 15 seconds after it was called, too.
+  const retriedAt = clock.now();
+  const replayed = await tryAgentOnce(deps(f.owner), { agentId: 'agent_tested', idempotencyKey: 'key_wait' }, timing);
+  assert.deepEqual([replayed.status, replayed.runToken], ['running', running.runToken]);
+  const replayedAfter = clock.now() - retriedAt;
+  assert.ok(replayedAfter <= 15_000 && replayedAfter > 13_000, `the retry returned ${replayedAfter} ms after it was called`);
   f.service.testRunStore = testRunStore;
   const polledAt = clock.now();
   const still = await getTestRun(deps(f.owner), { runToken: running.runToken }, timing);

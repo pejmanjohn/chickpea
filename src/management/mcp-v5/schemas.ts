@@ -284,7 +284,7 @@ export const updateConnectionInput = z.strictObject({
   changes: z.strictObject({
     ...zCustomFields,
     readTools: z.array(zText(120)).max(MAX_MCP_TOOLS).optional()
-      .describe('MCP: allowed tools to mark as reads, ones that only look things up and change or send nothing. A test run calls only these. Ask the person when a tool\'s name does not say.'),
+      .describe('MCP: allowed tools to mark as reads, ones that only look things up and change or send nothing. A test run calls only these. Mark a tool as a read only when the person confirms it only reads; never from its name alone.'),
     writeTools: z.array(zText(120)).max(MAX_MCP_TOOLS).optional()
       .describe('MCP: allowed tools to mark as writes. A tool named in neither keeps its mark.'),
   }).refine((changes) => Object.keys(changes).length > 0, 'Name at least one field to change.'),
