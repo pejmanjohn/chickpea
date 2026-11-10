@@ -173,7 +173,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     return closure;
   };
   const failures = closureFailures({
-    head, plan: growthPlan(projectRoot), at, unbuildableBaseAllowed: Boolean(process.env[UNBUILDABLE_BASE_ENV]),
+    head, plan: growthPlan(projectRoot), at, unbuildableBaseAllowed: process.env[UNBUILDABLE_BASE_ENV] === '1',
   });
   for (const failure of failures) console.error(`\n${failure}`);
   if (failures.length > 0) process.exit(1);

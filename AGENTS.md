@@ -154,16 +154,32 @@ which here means Chickpea Cloud running a pinned Core commit.
   update of a lane that holds existing data. Installer or deploy changes get a
   rehearsal with the real artifact. Provider or dependency upgrades get a diff
   of captured request bodies.
-- Each PR runs `npm run test:mcp`, or the related tests for a change outside
-  the management MCP program, plus typecheck, hygiene, and the budgets:
-  `npm run verify:host -- npm run verify:budgets`. T3 live checks stay per PR.
-- PRs merge in trains: one or more PRs, each merged with `--no-ff` onto current
-  `origin/main`, in order. The train's merged tree is the final tree for its
-  one full regression, batch smoke, and staging pin.
+- Each PR runs `npm run test:mcp` when it touches the management MCP program,
+  and the tests related to anything else it changes, plus `npm run typecheck`,
+  `npm run verify:hygiene`, and the budgets:
+  `npm run verify:host -- --wait-ms 600000 npm run verify:budgets`. T3 live
+  checks stay per PR.
+- PRs merge in trains. A train is the merge batch the batch smoke runs on: one
+  or more PRs, and a PR that ships alone, such as a hotfix, is a train of one.
+  The coordinator of the batch builds it in its own worktree: `git fetch
+  origin`, then each PR merged with `--no-ff` onto current `origin/main`, in
+  order. The train's merged tree is the final tree for its one full regression,
+  batch smoke, and staging pin. When the regression passes, merge the train's
+  PRs on GitHub in the same order with `gh pr merge --merge --match-head-commit`,
+  then confirm `origin/main`'s tree equals the tested tree
+  (`git rev-parse origin/main^{tree}`). If `origin/main` moved first, or the
+  trees differ, rebuild the train and repeat the regression.
+- When a train's regression fails, find the first merge that fails: rerun the
+  failing test files at each merge, or
+  `git bisect start --first-parent HEAD origin/main`. Fix that PR on its
+  branch or drop it, rebuild the train from that merge on, and repeat the
+  regression. A failure that needs two PRs together is fixed in the later one.
 - A full regression is
   `npm run verify:host -- --wait-ms 3600000 npm run verify:train`: a build,
   both startup budgets for each merge, then the full suite. Run it on the
   train's merged tree, because two PRs can each pass alone and fail together.
+  A commit added to the train afterwards repeats it, unless it changes only
+  comments or docs. Cloud pins a train's tip, never a merge inside it.
   A `verify:regression` plan with `fullTests: false` runs a subset and is not
   this gate; the tool says so.
 - Review means a fresh, independent first pass (on Claude, a Fable subagent;

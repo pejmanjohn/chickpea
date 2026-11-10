@@ -3,7 +3,7 @@
  * `npm run test:mcp`: the per-PR fast check for the management MCP program.
  * It covers the 5.0 tools, the cards' models and renders, test runs, the
  * confirmations and tool policies behind them, and the Worker startup budget.
- * It does not replace the full suite (`npm test`), which a merge still needs.
+ * It does not replace the full suite (`npm test`), which a train still needs.
  *
  * A test file joins by its name. Any file matching a pattern below is in, so
  * a new tests/management-*.test.ts, tests/mcp-*.test.ts or

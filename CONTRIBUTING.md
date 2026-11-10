@@ -113,7 +113,7 @@ DO_NOT_TRACK=1 npm run verify:cf-smoke:alarm
 ```
 
 Each PR runs a fast check, typecheck, hygiene and the budgets
-(`npm run verify:host -- npm run verify:budgets`, below). On a PR that touches
+(`npm run verify:host -- --wait-ms 600000 npm run verify:budgets`, below). On a PR that touches
 the management MCP program, the fast check is `npm run test:mcp`. In about 25
 seconds it runs the program's tests: the management service and its MCP tools,
 the cards' models and renders, test runs, the confirmations, previews and tool
@@ -227,7 +227,8 @@ rules:
 
 - **Growth.** A change may add 16 KiB over its merge base. The closure check
   builds the base in a temporary export with this checkout's dependencies, so
-  a dependency upgrade meets only the ceiling. A base that does not build fails
+  a dependency upgrade meets only the ceiling; on a train, that skips each
+  change before the upgrade. A base that does not build fails
   the check with the build's output; when it cannot build with the checkout's
   dependencies, `CHICKPEA_BUDGET_UNBUILDABLE_BASE=1` checks the ceiling alone.
   A failure lists the modules that grew. When the growth is deliberate, add a
