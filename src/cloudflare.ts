@@ -1245,6 +1245,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     return this.call((stores) => stores.config.getAgent(agentId));
   }
 
+  async configGetAgentFirstAsk(agentId: string): Promise<StateRpcResult<string | null>> {
+    return this.call((stores) => stores.config.getAgentFirstAsk(agentId));
+  }
+
   async configMaterializeChickpeaAgent(): Promise<StateRpcResult<CustomAgentConfig>> {
     return this.call((stores) => stores.config.materializeChickpeaAgent());
   }
@@ -1252,8 +1256,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
   async configCreateAgent(
     agent: AgentCreateInput,
     creationFence?: AgentCreationFence,
+    firstAsk?: string,
   ): Promise<StateRpcResult<CustomAgentConfig>> {
-    return this.call((stores) => stores.config.createAgent(agent, creationFence));
+    return this.call((stores) => stores.config.createAgent(agent, creationFence, firstAsk));
   }
 
   async configUpdateAgent(

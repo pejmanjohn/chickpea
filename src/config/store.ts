@@ -447,10 +447,17 @@ export interface ConfigStore {
   listAgents(): Promise<CustomAgentConfig[]>;
   listUserAgents(): Promise<CustomAgentConfig[]>;
   getAgent(agentId: string): Promise<CustomAgentConfig>;
+  /**
+   * What the person was to ask the Agent first, as its creation carried it.
+   * Kept apart from the Agent's config: no edit, revision, recipe or archive
+   * touches it. Null for an Agent created without one or before it was kept.
+   */
+  getAgentFirstAsk(agentId: string): Promise<string | null>;
   materializeChickpeaAgent(): Promise<CustomAgentConfig>;
   createAgent(
     agent: AgentCreateInput,
     creationFence?: AgentCreationFence,
+    firstAsk?: string,
   ): Promise<CustomAgentConfig>;
   updateAgent(agentId: string, patch: ConfigAgentPatch, expectedRevision?: number): Promise<CustomAgentConfig>;
   markOAuthReauthorizationRequired(target: OAuthReauthorizationTarget): Promise<boolean>;
@@ -681,6 +688,8 @@ export class ConfigStoreLogic {
           'website_logins_json',
           "TEXT NOT NULL DEFAULT '[]'",
         );
+        // Additive and nullable: an Agent created before it reads null.
+        addColumnIfMissing(this.db, 'config_agents', 'first_ask', 'TEXT');
       }
     }
     // Column presence, read from the schema cache rather than by scanning
@@ -2479,6 +2488,12 @@ export class ConfigStoreLogic {
     return rowToAgent(row as unknown as AgentRow);
   }
 
+  getAgentFirstAsk(agentId: string): string | null {
+    const row = this.db.get('SELECT first_ask FROM config_agents WHERE id = ?', agentId);
+    if (!row) throw new UnknownAgentError(agentId);
+    return typeof row.first_ask === 'string' ? row.first_ask : null;
+  }
+
   materializeChickpeaAgent(): CustomAgentConfig {
     const existing = this.db.get('SELECT * FROM config_agents WHERE id = ?', CHICKPEA_AGENT_ID);
     if (existing) {
@@ -2494,7 +2509,11 @@ export class ConfigStoreLogic {
     return this.getAgent(CHICKPEA_AGENT_ID);
   }
 
-  createAgent(agent: AgentCreateInput, creationFence?: AgentCreationFence): CustomAgentConfig {
+  createAgent(
+    agent: AgentCreateInput,
+    creationFence?: AgentCreationFence,
+    firstAsk?: string,
+  ): CustomAgentConfig {
     validateUserAgent(agent);
     if (creationFence &&
         !validAgentCredentialIncarnation(creationFence.credentialIncarnation)) {
@@ -2506,6 +2525,7 @@ export class ConfigStoreLogic {
         ...(creationFence
           ? { credentialIncarnation: creationFence.credentialIncarnation }
           : {}),
+        ...(firstAsk ? { firstAsk } : {}),
       }));
     } catch (err) {
       if (isConstraintViolation(err)) {
@@ -3341,7 +3361,7 @@ export class ConfigStoreLogic {
 
   private insertAgent(
     agent: AgentCreateInput,
-    options: { allowSystem?: boolean; credentialIncarnation?: string } = {},
+    options: { allowSystem?: boolean; credentialIncarnation?: string; firstAsk?: string } = {},
   ): { changes: number } {
     const kind = agent.kind ?? 'user';
     if (kind === 'system' && !options.allowSystem) {
@@ -3368,8 +3388,8 @@ export class ConfigStoreLogic {
         creator_membership_id, edit_policy, configuration_generation,
         slack_presence_json, archived_at, model, model_effort,
         skills_json, mcp_servers_json, api_connections_json, repositories_json,
-        website_logins_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        website_logins_json, first_ask
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       agent.id,
       kind,
       1,
@@ -3393,6 +3413,7 @@ export class ConfigStoreLogic {
       JSON.stringify(apiConnections),
       JSON.stringify(agent.repositories ?? []),
       JSON.stringify(agent.websiteLogins ?? []),
+      options.firstAsk ?? null,
     );
   }
 

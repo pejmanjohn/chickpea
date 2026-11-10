@@ -336,7 +336,7 @@ export class FreshTagStateStubs {
 /** Direct RPC methods whose replay is harmless: reads, and writes shown idempotent. */
 const REPLAY_SAFE_STATE_METHODS = new Set([
   // Reads.
-  'configGetAgent', 'configGetAgentConnectionBindingForAccount', 'configGetAgentModelRole',
+  'configGetAgent', 'configGetAgentConnectionBindingForAccount', 'configGetAgentFirstAsk', 'configGetAgentModelRole',
   'configGetAgentReferences', 'configGetAgentScheduleReference', 'configGetAgentThreadRoute',
   'configGetChannel', 'configGetWorkspaceInstallation', 'configGetWorkspaceModelDefault',
   'configGetWorkspaceModelRole', 'configListAgentChannelGrants', 'configListAgentConnectionBindings',
@@ -1447,6 +1447,10 @@ export class CfConfigStore implements ConfigStore {
     return rpcVia(this.stub,'configGetAgent', (stub) => stub.configGetAgent(agentId));
   }
 
+  async getAgentFirstAsk(agentId: string): Promise<string | null> {
+    return rpcVia(this.stub, 'configGetAgentFirstAsk', (stub) => stub.configGetAgentFirstAsk(agentId));
+  }
+
   async materializeChickpeaAgent(): Promise<CustomAgentConfig> {
     return rpcVia(this.stub,'configMaterializeChickpeaAgent', (stub) => stub.configMaterializeChickpeaAgent());
   }
@@ -1454,11 +1458,12 @@ export class CfConfigStore implements ConfigStore {
   async createAgent(
     agent: AgentCreateInput,
     creationFence?: AgentCreationFence,
+    firstAsk?: string,
   ): Promise<CustomAgentConfig> {
     return rpcVia(
       this.stub,
       'configCreateAgent',
-      (stub) => stub.configCreateAgent(agent, creationFence),
+      (stub) => stub.configCreateAgent(agent, creationFence, firstAsk),
     );
   }
 

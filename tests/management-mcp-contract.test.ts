@@ -48,7 +48,7 @@ function createAgentCall(firstAsk: string) {
   };
 }
 
-test('create_agent over MCP refuses a firstAsk longer than 200 characters and takes one of 200', () =>
+test('create_agent over MCP refuses a firstAsk longer than 200 characters, and takes and stores one of 200', () =>
   withManagementAdapterFixture('first-ask-mcp', async (f) => {
     const handler = mcpHandler(f);
     const listed = await mcpCall(handler.fetch, 'tools/list', {}) as {
@@ -73,6 +73,7 @@ test('create_agent over MCP refuses a firstAsk longer than 200 characters and ta
     const welcome = await f.management.getOutboxForOperation(longest.structuredContent.result.operationId);
     assert.ok(welcome && 'kind' in welcome.receipt && welcome.receipt.kind === 'agent_created_welcome');
     assert.equal(welcome.receipt.firstAsk, 'a'.repeat(200));
+    assert.equal(await f.config.getAgentFirstAsk('agent_first_ask_200'), 'a'.repeat(200));
   }));
 
 async function mcpCall(

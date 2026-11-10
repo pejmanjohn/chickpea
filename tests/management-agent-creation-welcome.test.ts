@@ -1237,10 +1237,11 @@ test('an Agent created over MCP queues one welcome in its creator\'s direct mess
     assert.equal(receipt.connectorActions, undefined, 'connections are the coding agent\'s follow-on work');
     assert.ok(formatManagementSetupReceipt(receipt).endsWith(`Try asking me: “${FIRST_ASK}”`));
 
+    assert.equal(await f.config.getAgentFirstAsk('agent_crm_desk'), FIRST_ASK);
     assert.doesNotMatch(
       JSON.stringify(await f.config.getAgent('agent_crm_desk')),
       /firstAsk|Who did I add/,
-      'the first ask is never saved on the Agent',
+      'the first ask is kept outside the Agent\'s config',
     );
     assert.deepEqual(metrics.map(({ surface, outcome }) => ({ surface, outcome })), [
       { surface: 'mcp', outcome: 'created' },
@@ -1263,6 +1264,7 @@ test('a replayed MCP creation finds its welcome and queues no second one', async
     const replay = await f.service.applyWorkspaceChanges(call);
     if (!('operationId' in first) || !('operationId' in replay)) assert.fail('expected applied creations');
     assert.equal(replay.operationId, first.operationId);
+    assert.equal(await f.config.getAgentFirstAsk('agent_crm_replay'), FIRST_ASK);
     const queued = await f.management.claimDueOutbox(1_900_000_000_000, 25, 1_900_000_030_000);
     assert.deepEqual(queued.map(({ outboxId }) => outboxId), [`agent_welcome_${first.operationId}`]);
     assert.deepEqual(metrics.map(({ surface, outcome }) => ({ surface, outcome })), [
@@ -1310,7 +1312,7 @@ test('a Slack creation keeps its one welcome in the creation thread and gets no 
   }
 });
 
-test('an MCP call that creates two Agents queues one welcome for each', async () => {
+test('an MCP call that creates two Agents queues one welcome for each, and stores only the first ask it carried', async () => {
   const f = await createPublishingFixture('mcp-hello-two');
   try {
     const applied = await f.service.applyWorkspaceChanges({
@@ -1329,6 +1331,10 @@ test('an MCP call that creates two Agents queues one welcome for each', async ()
         [`agent_welcome_${applied.operationId}:create_crm`, 'agent_crm_one', FIRST_ASK],
         [`agent_welcome_${applied.operationId}:create_pipeline`, 'agent_crm_two', undefined],
       ],
+    );
+    assert.deepEqual(
+      [await f.config.getAgentFirstAsk('agent_crm_one'), await f.config.getAgentFirstAsk('agent_crm_two')],
+      [FIRST_ASK, null],
     );
   } finally {
     f.close();

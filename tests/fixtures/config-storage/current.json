@@ -1,5 +1,5 @@
 {
-  "scenario": "aede56a7a7169154cad0768efb22ca40a2bbc7cbe0da163079aa738ce264b520",
+  "scenario": "66a470f047d2f02b267be5c8592af71e890506f839f6f458ba5ffec48706924a",
   "contract": {
     "schemaVersion": 12,
     "schemaMarker": "agent-first-v1",
@@ -19,7 +19,7 @@
       "config_agent_model_roles": 1,
       "config_agent_schedule_references": 1,
       "config_agent_thread_routes": 1,
-      "config_agents": 1,
+      "config_agents": 2,
       "config_channels": 1,
       "config_chickpea_cutovers": 1,
       "config_connection_accounts": 1,
@@ -99,12 +99,13 @@
           "api_connections_json": "TEXT|1|null|0",
           "repositories_json": "TEXT|1|null|0",
           "model_effort": "TEXT|0|null|0",
-          "website_logins_json": "TEXT|1|'[]'|0"
+          "website_logins_json": "TEXT|1|'[]'|0",
+          "first_ask": "TEXT|0|null|0"
         },
         "indexes": {
           "sqlite_autoindex_config_agents_1": "1|pk|0|id"
         },
-        "sql": "CREATE TABLE config_agents ( id TEXT PRIMARY KEY, agent_kind TEXT NOT NULL DEFAULT 'user' CHECK (agent_kind IN ('user', 'system')), revision INTEGER NOT NULL, credential_incarnation TEXT NOT NULL DEFAULT '', name TEXT NOT NULL, description TEXT, instructions TEXT NOT NULL, enabled INTEGER NOT NULL, lifecycle TEXT NOT NULL, creator_membership_id TEXT, edit_policy TEXT NOT NULL, configuration_generation INTEGER NOT NULL, slack_presence_json TEXT NOT NULL, archived_at INTEGER, model TEXT, skills_json TEXT NOT NULL, mcp_servers_json TEXT NOT NULL, api_connections_json TEXT NOT NULL, repositories_json TEXT NOT NULL , model_effort TEXT, website_logins_json TEXT NOT NULL DEFAULT '[]')",
+        "sql": "CREATE TABLE config_agents ( id TEXT PRIMARY KEY, agent_kind TEXT NOT NULL DEFAULT 'user' CHECK (agent_kind IN ('user', 'system')), revision INTEGER NOT NULL, credential_incarnation TEXT NOT NULL DEFAULT '', name TEXT NOT NULL, description TEXT, instructions TEXT NOT NULL, enabled INTEGER NOT NULL, lifecycle TEXT NOT NULL, creator_membership_id TEXT, edit_policy TEXT NOT NULL, configuration_generation INTEGER NOT NULL, slack_presence_json TEXT NOT NULL, archived_at INTEGER, model TEXT, skills_json TEXT NOT NULL, mcp_servers_json TEXT NOT NULL, api_connections_json TEXT NOT NULL, repositories_json TEXT NOT NULL , model_effort TEXT, website_logins_json TEXT NOT NULL DEFAULT '[]', first_ask TEXT)",
         "rows": {
           "[\"\\\"agent_chickpea\\\"\"]": {
             "id": "\"agent_chickpea\"",
@@ -127,7 +128,8 @@
             "api_connections_json": "[]",
             "repositories_json": "[]",
             "model_effort": "null",
-            "website_logins_json": "[]"
+            "website_logins_json": "[]",
+            "first_ask": "null"
           },
           "[\"\\\"agent_scenario_archivist\\\"\"]": {
             "id": "\"agent_scenario_archivist\"",
@@ -150,7 +152,8 @@
             "api_connections_json": "[]",
             "repositories_json": "[]",
             "model_effort": "null",
-            "website_logins_json": "[]"
+            "website_logins_json": "[]",
+            "first_ask": "null"
           },
           "[\"\\\"agent_scenario_concierge\\\"\"]": {
             "id": "\"agent_scenario_concierge\"",
@@ -173,7 +176,8 @@
             "api_connections_json": "[]",
             "repositories_json": "[]",
             "model_effort": "null",
-            "website_logins_json": "[]"
+            "website_logins_json": "[]",
+            "first_ask": "\"Where do I pick up a visitor badge?\""
           },
           "[\"\\\"agent_scenario_researcher\\\"\"]": {
             "id": "\"agent_scenario_researcher\"",
@@ -196,7 +200,8 @@
             "api_connections_json": "[{\"allowedHosts\":[\"api.weather.example.com\"],\"allowedMethods\":[\"GET\"],\"authMode\":\"credential\",\"credentialRef\":\"connection_<generated>\",\"displayName\":\"Scenario Weather\",\"enabled\":true,\"headerName\":\"Authorization\",\"headerValuePrefix\":\"Bearer \",\"id\":\"api_scenario_weather\",\"lifecycleStatus\":\"ready\",\"pathPrefixes\":[\"/v1/\"],\"presetId\":\"preset_scenario_weather\",\"readyRevision\":2,\"statusText\":\"Connected\"},{\"allowedHosts\":[\"calendar.example.com\"],\"allowedMethods\":[\"GET\",\"POST\"],\"authMode\":\"oauth\",\"credentialRef\":\"connection_<generated>\",\"displayName\":\"Scenario Calendar\",\"enabled\":true,\"headerName\":\"Authorization\",\"id\":\"api_scenario_calendar\",\"identity\":{\"accountName\":\"scenario@example.com\"},\"lifecycleStatus\":\"ready\",\"oauthAppType\":\"external\",\"oauthProvider\":\"google\",\"oauthScopes\":[\"https://calendar.example.com/auth/calendar.readonly\"],\"pathPrefixes\":[\"/calendar/v3/\"],\"statusText\":\"Connected\"},{\"allowedHosts\":[\"legacy.example.com\"],\"allowedMethods\":[\"GET\"],\"credentialRef\":\"connection_<generated>\",\"displayName\":\"Scenario Legacy\",\"enabled\":false,\"headerName\":\"X-Api-Key\",\"id\":\"api_scenario_legacy\",\"pathPrefixes\":[\"/\"]}]",
             "repositories_json": "[{\"accountLogin\":\"example-org\",\"enabled\":true,\"fullName\":\"example-org/scenario-app\",\"id\":\"repo_scenario_app\",\"installationId\":4242},{\"accountLogin\":\"example-user\",\"allRepos\":true,\"enabled\":false,\"fullName\":\"example-user/*\",\"id\":\"repo_scenario_all\",\"installationId\":null}]",
             "model_effort": "\"high\"",
-            "website_logins_json": "[{\"enabled\":true,\"level\":\"act\",\"loginId\":\"login_scenario_portal\"},{\"enabled\":false,\"level\":\"check\",\"loginId\":\"login_scenario_reports\"}]"
+            "website_logins_json": "[{\"enabled\":true,\"level\":\"act\",\"loginId\":\"login_scenario_portal\"},{\"enabled\":false,\"level\":\"check\",\"loginId\":\"login_scenario_reports\"}]",
+            "first_ask": "null"
           },
           "[\"\\\"agent_scenario_scout\\\"\"]": {
             "id": "\"agent_scenario_scout\"",
@@ -219,7 +224,8 @@
             "api_connections_json": "[]",
             "repositories_json": "[]",
             "model_effort": "null",
-            "website_logins_json": "[]"
+            "website_logins_json": "[]",
+            "first_ask": "null"
           }
         }
       },

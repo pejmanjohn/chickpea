@@ -101,6 +101,13 @@ test(`this code reads v${release.release}'s stored values as v${release.release}
     'intended, change readConfigStorageScenario and regenerate the release fixture.');
 });
 
+test(`an Agent v${release.release} created reads no first ask, though its creation carried one`, () => {
+  const { config } = atScenarioClock(() => kit(releaseDatabase()));
+  const agents = config.listAgents();
+  assert.ok(agents.some(({ id }) => id === 'agent_scenario_concierge'), 'the scenario creates the concierge with a first ask');
+  assert.deepEqual(agents.map(({ id }) => [id, config.getAgentFirstAsk(id)]), agents.map(({ id }) => [id, null]));
+});
+
 test(`a personal website login v${release.release} stored keeps its owner on disk and shows as a team login`, async () => {
   const { settings } = kit(releaseDatabase());
   const logins = await listWebsiteLogins({

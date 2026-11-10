@@ -17,7 +17,7 @@
     "config_agent_model_roles": 1,
     "config_agent_schedule_references": 1,
     "config_agent_thread_routes": 1,
-    "config_agents": 1,
+    "config_agents": 2,
     "config_channels": 1,
     "config_chickpea_cutovers": 1,
     "config_connection_accounts": 1,
