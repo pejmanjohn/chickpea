@@ -112,15 +112,30 @@ DO_NOT_TRACK=1 npm run verify:cf-smoke
 DO_NOT_TRACK=1 npm run verify:cf-smoke:alarm
 ```
 
-On each PR that touches the management MCP program, run
-`npm run test:mcp` as the fast check. In about 15 seconds it runs the
-program's tests: the 5.0 tools, the cards' models and renders, test runs, the
-confirmations and tool policies behind them, and the Worker startup budget. It
-needs no host reservation. It does not replace the full suite, which a merge
-still needs. A test file joins by its name (`tests/mcp-*`,
-`tests/management-mcp-*`, `tests/test-run-*`, `tests/test-turn-*`), or by
-adding its path to `scripts/test-mcp.mjs`. `npm run test:mcp -- --list` shows
-the selection. A pattern that matches no file stops the run.
+Each PR runs a fast check, typecheck, hygiene and the budgets
+(`npm run verify:host -- npm run verify:budgets`, below). On a PR that touches
+the management MCP program, the fast check is `npm run test:mcp`. In about 25
+seconds it runs the program's tests: the management service and its MCP tools,
+the cards' models and renders, test runs, the confirmations, previews and tool
+policies behind them, and the Worker startup budget. It needs no host
+reservation. A test file joins by its name (`tests/management-*`,
+`tests/mcp-*`, `tests/test-run-*`, `tests/test-turn-*`), or by adding its path
+to `scripts/test-mcp.mjs`. `npm run test:mcp -- --list` shows the selection. A
+pattern that matches no file stops the run. A PR outside the program runs the
+tests related to its change.
+
+PRs merge in trains. A train is one or more PRs, each merged with `--no-ff`
+onto current `origin/main`, in order, in a local worktree. The train's merged
+tree gets the one full regression:
+
+```sh
+npm run verify:host -- --wait-ms 3600000 npm run verify:train
+```
+
+`verify:train` builds, checks both budgets for each merge, and runs the full
+suite, so the tests that read a build (`tests/public-assets.test.ts`,
+`tests/flue-v2-migration-contract.test.ts`) check this one. Each skips a
+`dist-cf` built from another commit and says so.
 
 The root test suite runs through `scripts/run-tests.mjs` under 8-way
 concurrency, known-slow files first, with `tsc --noEmit` alongside; a type
@@ -206,15 +221,21 @@ Every Durable Object activation that starts an isolate loads the Worker's
 static closure (the chunks its entry imports without `import()`) before its
 constructor runs. Two budgets hold it: the source bytes of the repository
 modules Worker startup loads (`tests/worker-startup-imports.test.ts`, in
-`npm test`), and the built closure (`scripts/worker-closure.mjs`, in
-`npm run verify:regression` after its build). Each applies two rules:
+`npm test` and `test:mcp`), and the built closure (`scripts/worker-closure.mjs`,
+after a build). `npm run verify:budgets` builds and runs both. Each applies two
+rules:
 
 - **Growth.** A change may add 16 KiB over its merge base. The closure check
   builds the base in a temporary export with this checkout's dependencies, so
-  a dependency upgrade meets only the ceiling. A failure lists the modules
-  that grew. When the growth is deliberate, add a commit trailer such
-  as `Worker-Startup-Growth: 40 KiB, the connect route loads with every Agent`
-  to the change; it raises that change's allowance to the size it names.
+  a dependency upgrade meets only the ceiling. A base that does not build fails
+  the check with the build's output; when it cannot build with the checkout's
+  dependencies, `CHICKPEA_BUDGET_UNBUILDABLE_BASE=1` checks the ceiling alone.
+  A failure lists the modules that grew. When the growth is deliberate, add a
+  commit trailer such as
+  `Worker-Startup-Growth: 40 KiB, the connect route loads with every Agent` to
+  the change; it raises that change's allowance to the size it names, at most
+  128 KiB. Both checks print each change's growth and notes, and a PR that
+  carries a note lists it in its description.
 - **Ceiling.** A fixed total backstops the growth rule. It carries about
   64 KiB of headroom, so parallel PRs do not collide on it. When a merge train
   fills it, set it once to the measured size plus 64 KiB. Lower it when a
@@ -222,15 +243,16 @@ modules Worker startup loads (`tests/worker-startup-imports.test.ts`, in
 
 With no CI to name a PR's base, both checks ask Git:
 `git merge-base HEAD origin/main`, using `origin/main` as of the last
-`git fetch origin main`. A branch is one change, measured from that base to
-the working tree. On a local merge onto `origin/main`, where HEAD's
-first-parent history since the base is only merges, each merge is its own
-change, so a train of PRs that each fit still passes. For a PR stacked on
-another branch, set `CHICKPEA_BUDGET_BASE` to that branch. A checkout with no
-Git history or no `origin/main` checks the ceilings alone and says so.
-`tests/worker-startup-imports.test.ts` also keeps the modules it lists off
-Worker startup. Load code the reply path does not need with `import()` where
-it is used.
+`git fetch origin main`. Both print the base. A branch is one change, measured
+from that base to the working tree. On a train, each PR merged with `--no-ff`
+is its own change, measured from its first parent, and so is each run of plain
+commits between merges, such as the ceiling re-set. So a train of PRs that each
+fit still passes. For a PR stacked on another branch, set
+`CHICKPEA_BUDGET_BASE` to that branch; a ref with no merge base fails. A
+checkout with no Git history or no `origin/main` checks the ceilings alone and
+says so. `tests/worker-startup-imports.test.ts` also keeps the modules it lists
+off Worker startup. Load code the reply path does not need with `import()`
+where it is used.
 
 Contributions are provided under the repository's [Apache-2.0 license](LICENSE).
 Be respectful in issues and reviews; criticize the work, not the person.
