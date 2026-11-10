@@ -296,7 +296,7 @@ async function world() {
     arrived[result.structuredContent.agent.agentId] = result;
   }
   await arrive(...Object.keys(arrived));
-  // Linear is someone else's own account, which the caller has yet to sign in to; the docs server declares no read.
+  // Linear is someone else's own account, which the caller has yet to sign in to; the docs server allows no tools yet, so only Admin can fix it.
   for (const [agentId, account] of [
     ['agent_linear_helper', {
       id: 'connection_linear_admin', providerId: 'linear', label: 'Linear', ownerKind: 'member', ownerMembershipId: f.admin.membership.id,
@@ -306,7 +306,7 @@ async function world() {
     ['agent_docs_helper', {
       id: 'connection_docs_helper', providerId: 'docs', label: 'Help center', ownerKind: 'team', createdByMembershipId: f.owner.membership.id,
       lifecycle: 'ready',
-      policy: { kind: 'mcp', url: 'https://mcp.help.example/mcp', transport: 'streamable-http', authMode: 'bearer', headerNames: [], allowedTools: ['search'], discoveredTools: [{ name: 'search' }] },
+      policy: { kind: 'mcp', url: 'https://mcp.help.example/mcp', transport: 'streamable-http', authMode: 'bearer', headerNames: [], allowedTools: [], discoveredTools: [{ name: 'search' }] },
     }],
   ]) {
     await f.config.putConnectionAccount({ workspaceId: teamId, secretRefId: `secret_${account.id}`, ...account });
@@ -956,11 +956,11 @@ try {
     await refused('readyQuiet', 'out-of-usage', /out of usage, so the test run couldn't finish\./, ['Open in Slack']);
     runs.outcome = ANSWERED;
     await refused('readySetup', 'setup', /Finish setting up Linear first, then try again\./, ['Finish its setup in Admin', 'Open in Slack']);
-    await refused('readyDocs', 'untestable', /None of Help center's tools are marked as reads/, ['Open the Agent in Admin', 'Open in Slack']);
+    await refused('readyDocs', 'untestable', /Help center allows no tools yet, so a test run can't use it\./, ['Choose its tools in Admin', 'Open in Slack']);
     await browser.click('try_fix');
     assert.deepEqual(await browser.linksOpened(1), [`${ORIGIN}/admin/agents/agent_docs_helper`], 'its fix opens on the press');
     await shows('/Finish on the Chickpea page that opened, then try again\./', 'Try again after the fix');
-    assert.deepEqual(await buttons(), ['Try again', 'Open the Agent in Admin']);
+    assert.deepEqual(await buttons(), ['Try again', 'Choose its tools in Admin']);
     await shot('4-refused-untestable-fixing');
 
     // Another run holds the workspace: the card asks again every 5 s, and after a minute offers Try again.
