@@ -393,6 +393,27 @@ test('a confirm that finds the digest changed never retires a set another confir
   assert.equal((await f.management.getChangeSetProposal(token))?.status, 'stale');
 });
 
+test('a set whose applier is gone and whose digest no longer matches is retired, not left applying for good', async (t) => {
+  const { f, connect } = await harness(t, 'card-confirm-stuck');
+  const { call } = await connect({});
+  const off = await call('update_agent', { agentId: 'agent_support', version: await version(call, 'agent_support'), on: false, idempotencyKey: 'off' });
+  const { confirmToken } = off.structuredContent!.confirmation;
+  const { organizationId, actorUserId, actorMembershipId, originKey, approvalScopeKey } = (await f.management.getChangeSetProposal(confirmToken))!;
+  // Claimed by a confirm that crashed long ago: its lease has run out.
+  await f.management.claimChangeSetProposal({
+    proposalId: confirmToken, organizationId, actorUserId, actorMembershipId, originKey, approvalScopeKey, at: Date.now() - 60_000,
+  });
+  type Read = (this: object, proposalId: string) => ChangeSet | undefined;
+  const read = (Object.getPrototypeOf(f.management) as { getChangeSetProposal: Read }).getChangeSetProposal;
+  (f.management as unknown as { getChangeSetProposal: Read }).getChangeSetProposal = function (proposalId) {
+    const proposal = read.call(this, proposalId);
+    return proposal && { ...proposal, digest: 'f'.repeat(64) };
+  };
+  const refused = await call('confirm_change', { confirmToken });
+  assert.equal(refused.structuredContent!.error.message, 'That confirmation no longer applies. Ask again to make the change.');
+  assert.equal(read.call(f.management, confirmToken)?.status, 'stale');
+});
+
 const V4_TOOLS = Object.keys(V4_TOOL_REPLACEMENTS);
 const V4_OFF = {
   idempotencyKey: 'v4-off',

@@ -64,8 +64,12 @@ export const DISCOVERY_GUIDE_FIVE_ZERO = applySubstitutions(DISCOVERY_GUIDE, 'di
     'check it with `check_agent` once the key is in place.',
   ],
   [
-    'offer the curated starters the `new-agent` prompt lists; without that prompt, ask what the first Agent should do.',
-    'ask what the first Agent should do.',
+    ' While you have a candidate with evidence, do not offer the curated starters.',
+    '',
+  ],
+  [
+    'offer the curated starters the `new-agent` prompt lists; without that prompt, ask what the first Agent should do. Never invent a starter.',
+    'ask what the first Agent should do. Never invent a job for it.',
   ],
   [
     'Follow `chickpea://guide/agent-authoring/v1`. Create the Agent with one `create_agent` operation through `apply_workspace_changes`, and set `firstAsk` to the front-door message from your proposal. Add the connections you said you would and get each key in place the way that guide says. The new Agent then sends the person a direct message in Slack that ends with that first ask. Hand over the receipt\'s `links.slack`, which opens that conversation, and `links.admin`.',

@@ -3583,6 +3583,11 @@ export class WorkspaceManagementService {
     }
     if (managementOperationDigest(existing.operations) !== existing.digest) {
       const error = new ManagementError('proposal_stale', 'The reviewed change set no longer matches its digest.');
+      // A claim whose lease ran out has no applier left to protect, and recovery never reaches a set whose digest fails.
+      if (existing.status === 'applying' && this.now() - existing.updatedAt >= MANAGEMENT_CHANGE_SET_APPLY_LEASE_MS) {
+        await this.stores.management.markChangeSetProposalStale(existing.proposalId, this.now());
+        throw error;
+      }
       return await this.retireReadChangeSet(actor, existing.proposalId, error);
     }
     let proposal = existing;
