@@ -1,10 +1,8 @@
 import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 
-import { createMcpHandler } from '@modelcontextprotocol/server';
-
 import type { McpAuthenticatedPrincipal } from '../../src/auth/mcp-oauth-routes.ts';
-import { createWorkspaceManagementMcpServer } from '../../src/management/mcp.ts';
+import { workspaceManagementMcpFetch } from '../../src/management/mcp.ts';
 import type { WorkspaceManagementServiceInput } from '../../src/management/service.ts';
 import {
   buttonCount,
@@ -27,11 +25,14 @@ export type ServerCall = (name: string, args?: Record<string, unknown>) => Promi
 /**
  * A fixture workspace with Core's real MCP server, and a clock the server
  * reads. Setup links are on this deployment's https origin, as in production.
+ * With `cards`, the client declares MCP Apps at initialize, as ChatGPT does,
+ * and every call goes in that session.
  */
 export async function cardServer(
   t: TestContext,
   suffix: string,
   overrides: Partial<WorkspaceManagementServiceInput> = {},
+  options: { cards?: boolean } = {},
 ) {
   const clock = { now: NOW };
   const f = await createManagementAdapterFixture(suffix, ({ settings }) => ({
@@ -50,14 +51,27 @@ export async function cardServer(
     role: 'owner',
     clientId: `client_${suffix}`,
   };
-  const handler = createMcpHandler(
-    () => createWorkspaceManagementMcpServer({ principal, service: f.service, baseUrl: BASE_URL }),
-    { legacy: 'stateless' },
-  );
+  const fetch = workspaceManagementMcpFetch({ principal, service: f.service, baseUrl: BASE_URL });
+  const headers = { accept: 'application/json, text/event-stream', 'content-type': 'application/json', 'mcp-protocol-version': '2025-11-25' };
+  const session = options.cards
+    ? (await fetch(new Request('http://localhost/mcp', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          jsonrpc: '2.0', id: 0, method: 'initialize',
+          params: {
+            protocolVersion: '2025-11-25',
+            capabilities: { extensions: { 'io.modelcontextprotocol/ui': { mimeTypes: ['text/html;profile=mcp-app'] } } },
+            clientInfo: { name: 'openai-mcp', version: '1.0.0' },
+          },
+        }),
+      }))).headers.get('mcp-session-id')
+    : null;
+  assert.equal(Boolean(session), Boolean(options.cards), 'a client that draws cards gets a session');
   const call: ServerCall = async (name, args = {}) => {
-    const response = await handler.fetch(new Request('http://localhost/mcp', {
+    const response = await fetch(new Request('http://localhost/mcp', {
       method: 'POST',
-      headers: { accept: 'application/json, text/event-stream', 'content-type': 'application/json', 'mcp-protocol-version': '2025-11-25' },
+      headers: { ...headers, ...session ? { 'mcp-session-id': session } : {} },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
     }));
     const body = await response.text();
@@ -96,16 +110,17 @@ function setupUrlOf(result: ToolResult): unknown {
 
 /**
  * A card's one rule: an event that is not a press (a mount, a re-read, a
- * timer, a reply, a failure) makes only reads and timers. It never writes,
- * sends a message or opens a link, with one exception: the reply to a call a
- * press made carries on that press. It may open the setup link it carries,
- * because that press asked for the link to open, or, when the card will not
- * open that link, ask the chat for the fix instead.
+ * timer, a reply, a failure) makes only reads and timers, and may tell the
+ * host's model what happened. It never writes, sends a message or opens a
+ * link, with one exception: the reply to a call a press made carries on that
+ * press. It may open the setup link it carries, because that press asked for
+ * the link to open, or, when the card will not open that link, ask the chat
+ * for the fix instead.
  */
 function onlyReads(event: CardEvent<string>, effects: readonly Effect[], reads: ReadonlySet<string>, pressed: WeakSet<Call>): void {
   if (event.type === 'press') return;
   for (const effect of effects) {
-    if (effect.type === 'timer' || (effect.type === 'call' && reads.has(effect.call.tool))) continue;
+    if (effect.type === 'timer' || effect.type === 'context' || (effect.type === 'call' && reads.has(effect.call.tool))) continue;
     if (event.type === 'reply' && pressed.has(event.call) &&
       ((effect.type === 'open' && effect.url === setupUrlOf(event.result)) || effect.type === 'message')) continue;
     assert.fail(`${event.type} made ${effect.type === 'call' ? `the write ${effect.call.tool}` : `a ${effect.type}`}`);

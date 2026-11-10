@@ -11,18 +11,30 @@
     {
       "version": 3,
       "sha256": "2fe839ea9f96bebae5abddaa88419cb2c213cedfeb468052d0b1d5d5d467c84a"
+    },
+    {
+      "version": 4,
+      "sha256": "1be28b235158b30963d921b488730c29c0d3a51c05346471b3ac64d7585e8fcc"
     }
   ],
   "connect-card": [
     {
       "version": 1,
       "sha256": "1429861e6b101b2dbac4e983a11b7334b40e9122c05b741bf430a14675bcc59a"
+    },
+    {
+      "version": 2,
+      "sha256": "ecec25a64772f76891a90550524cc47e2bd25f6fa0466be39b194692d02c85e3"
     }
   ],
   "health-card": [
     {
       "version": 1,
       "sha256": "982f55d30b203183e41913dbda282c1d4fc173cb0603597c88f2d28a5c1fbd32"
+    },
+    {
+      "version": 2,
+      "sha256": "43f9b51b6fe6325ea294c0e43b4dfcf8d575d5b78a95d57ff96eada5376584fd"
     }
   ]
 }

@@ -3,7 +3,7 @@
  * ext-apps' `App` does this too, but it ships as one prebundled file with zod
  * and the MCP SDK (about 390 KB minified), so even its two theme helpers cost
  * the whole file. This covers what a card uses: the handshake, the tool
- * result, host context, tool calls, messages, links and size.
+ * result, host context, tool calls, messages, model context, links and size.
  */
 
 /** ext-apps 1.7.5's `LATEST_PROTOCOL_VERSION`; a test keeps them equal. */
@@ -116,6 +116,14 @@ export class HostBridge {
       content: [{ type: 'text', text }],
       ...text === message.draft ? { _meta: { 'openai/message': { target: 'active', send: false } } } : {},
     }));
+  }
+
+  /**
+   * Tells the host's model what the card did, for its next turn. Each call
+   * replaces this card's last one; a host that keeps no model context refuses.
+   */
+  async updateModelContext(text: string): Promise<void> {
+    refused(await this.#request('ui/update-model-context', { content: [{ type: 'text', text }] }));
   }
 
   /**

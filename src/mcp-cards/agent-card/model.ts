@@ -18,6 +18,9 @@ import {
   sequenced,
   show,
   stay,
+  tell,
+  toolOf,
+  tryIt,
   type Block,
   type Button,
   type Call,
@@ -33,7 +36,8 @@ import {
 /**
  * The Agent card as a state machine. Every host message, button press and
  * tool reply is an event; `step` returns the next state and the effects to
- * run. `present` decides everything the card shows.
+ * run. `present` decides everything the card shows. After a press's write
+ * answers, the card tells the host's model what the person did.
  */
 
 type Proposal = z.infer<typeof schemas.proposeAgentOutput>;
@@ -42,17 +46,24 @@ type ChangeResult = z.infer<typeof schemas.changeResultOutput>;
 type CreationStatus = z.infer<typeof schemas.getCreationStatusOutput>;
 type Confirmation = NonNullable<ChangeResult['confirmation']>;
 type CreateArguments = Proposal['create']['arguments'];
+type AgentStatus = NonNullable<NonNullable<ChangeResult['agent']>['status']>;
 type AgentLabel = { name: string; handle?: string | undefined };
 type Need = { name: string };
 
+type Offer =
+  | { kind: 'proposal'; proposal: Proposal }
+  | { kind: 'similar'; summary: string; create: CreateArguments; name: string; avatarUrl?: string | undefined };
+
 export type View =
   | { kind: 'waiting' }
-  | { kind: 'proposal'; proposal: Proposal }
-  | { kind: 'similar'; summary: string; create: CreateArguments; name: string }
+  | Offer
+  /** Create was pressed: the steps show while create_agent runs; a failure goes back to the offer. */
+  | { kind: 'starting'; from: Offer }
   | {
       kind: 'creating';
       agentId: string;
       agent: AgentLabel;
+      avatarUrl?: string | undefined;
       workspaceName?: string | undefined;
       answersIn: string[];
       needs: Need[];
@@ -62,11 +73,14 @@ export type View =
       slow?: true;
       /** Polls in a row that failed; each waits longer before the next. */
       failures?: number;
+      /** The person created it from this card, so its arrival is theirs to hear about. */
+      byPress?: true;
     }
   | {
       kind: 'ready';
       agentId: string;
       agent: AgentLabel;
+      avatarUrl?: string | undefined;
       answersIn: string[];
       needs: Need[];
       adminUrl?: string | undefined;
@@ -77,13 +91,19 @@ export type View =
       kind: 'done';
       summary: string;
       agent?: AgentLabel & { agentId: string };
+      avatarUrl?: string | undefined;
+      status?: AgentStatus | undefined;
+      /** Its Channels' names, where a mention reaches it. */
+      channels?: string[];
       slackUrl?: string | undefined;
       undoToken?: string | undefined;
       version?: string | undefined;
       /** A saved edit: the card suggests trying it. */
       saved?: true;
     }
-  | { kind: 'confirm'; confirmation: Confirmation; agent?: AgentLabel }
+  | { kind: 'confirm'; confirmation: Confirmation; agent?: AgentLabel; avatarUrl?: string | undefined }
+  /** A re-read found the Agent deleted or archived: nothing on the card applies to it any more. */
+  | { kind: 'gone'; agent: AgentLabel; why: 'deleted' | 'archived'; avatarUrl?: string | undefined }
   | { kind: 'notice'; title: string; body?: string | undefined };
 
 export type State = CardState<View>;
@@ -111,10 +131,13 @@ function transition(state: State, event: Event): Next<View> {
     case 'press':
       return state.busy ? stay(state) : press(state, event.action, event.now);
     case 'reply':
-      return outdated(state, event.call) ? stay(state) : reply(state, event.call, event.result, event.now);
+      return outdated(state, event.call) && !lateCreate(state, event.call) ? stay(state) : reply(state, event.call, event.result, event.now);
     case 'unreachable':
       if (outdated(state, event.call)) return stay(state);
-      if (!READS.has(event.call.tool)) return stay({ ...state, busy: false, error: UNREACHABLE });
+      if (!READS.has(event.call.tool)) {
+        // Create again replays the same call, so the offer comes back with its buttons.
+        return stay({ view: state.view.kind === 'starting' ? state.view.from : state.view, busy: false, error: UNREACHABLE });
+      }
       // A failed read is not a failed write: it leaves `busy` alone, and a poll tries again later.
       if (state.view.kind !== 'creating') return stay(state);
       return keepPolling({ ...state.view, failures: (state.view.failures ?? 0) + 1 }, event.now);
@@ -138,32 +161,48 @@ function fromResult(result: ToolResult, now: number): Next<View> {
   if (isProposal(content)) return show({ kind: 'proposal', proposal: content });
   if (isChangePreview(content)) return show({ kind: 'change', preview: content });
   if (isChangeResult(content)) {
-    if (result._meta?.['chickpea/tool'] === 'create_agent' && content.status === 'done' && content.agent) {
+    const tool = toolOf(result);
+    if (tool === 'create_agent' && content.status === 'done' && content.agent) {
       return creating(content, { answersIn: [], needs: [] }, now);
     }
-    return changeView(content, now);
+    // A save the model made itself reads like one from the card; an undo offers no second undo.
+    return changeView(content, now, { saved: tool === 'update_agent', undone: tool === 'undo_change' });
   }
   return show(NOTHING);
 }
 
-function changeView(result: ChangeResult, now: number, options: { saved?: boolean } = {}): Next<View> {
+function changeView(result: ChangeResult, now: number, options: { saved?: boolean; undone?: boolean } = {}): Next<View> {
   switch (result.status) {
     case 'needs_confirmation':
       if (!result.confirmation) return show({ kind: 'notice', title: result.summary });
       if (expired(result.confirmation, now)) return show(EXPIRED);
       return show(
-        { kind: 'confirm', confirmation: result.confirmation, ...result.agent ? { agent: result.agent } : {} },
+        {
+          kind: 'confirm',
+          confirmation: result.confirmation,
+          ...result.agent ? { agent: result.agent, avatarUrl: httpsUrl(result.agent.avatarUrl) } : {},
+        },
         [expiryTimer(result.confirmation, now)],
       );
-    case 'done':
+    case 'done': {
+      const { agent } = result;
       return show({
         kind: 'done',
         summary: result.summary,
-        ...result.agent ? { agent: result.agent, slackUrl: httpsUrl(result.agent.links?.slack) } : {},
-        undoToken: result.undoToken,
+        ...agent
+          ? {
+              agent: { agentId: agent.agentId, name: agent.name, handle: agent.handle },
+              avatarUrl: httpsUrl(agent.avatarUrl),
+              status: agent.status,
+              channels: channelNames(agent.channels ?? []),
+              slackUrl: httpsUrl(agent.links?.slack),
+            }
+          : {},
+        undoToken: options.undone ? undefined : result.undoToken,
         version: result.version,
         ...options.saved ? { saved: true as const } : {},
       });
+    }
     default:
       return show({ kind: 'notice', title: result.summary });
   }
@@ -171,7 +210,7 @@ function changeView(result: ChangeResult, now: number, options: { saved?: boolea
 
 function creating(
   result: ChangeResult,
-  from: { answersIn: string[]; needs: Need[]; workspaceName?: string | undefined },
+  from: { answersIn: string[]; needs: Need[]; workspaceName?: string | undefined; avatarUrl?: string | undefined; byPress?: true },
   now: number,
 ): Next<View> {
   const agent = result.agent!;
@@ -179,11 +218,13 @@ function creating(
     kind: 'creating',
     agentId: agent.agentId,
     agent: { name: agent.name, handle: agent.handle },
+    avatarUrl: httpsUrl(agent.avatarUrl) ?? from.avatarUrl,
     workspaceName: from.workspaceName,
     answersIn: from.answersIn,
     needs: from.needs,
     adminUrl: httpsUrl(agent.links?.admin),
     startedAt: now,
+    ...from.byPress ? { byPress: true as const } : {},
   }, [call('get_creation_status', { agentId: agent.agentId })]);
 }
 
@@ -195,29 +236,32 @@ function press(state: State, action: Action, now: number): Next<View> {
   const busy = (effect: Effect): Next<View> => stay({ view, busy: true }, [effect]);
   switch (action) {
     case 'create':
-      return view.kind === 'proposal' ? busy(call('create_agent', view.proposal.create.arguments)) : stay(state);
+      return view.kind === 'proposal' ? start(view, view.proposal.create.arguments) : stay(state);
     case 'create_anyway':
       return view.kind === 'similar'
-        ? busy(call('create_agent', { ...view.create, createEvenIfSimilar: true, idempotencyKey: `${view.create.idempotencyKey}:anyway` }))
+        ? start(view, { ...view.create, createEvenIfSimilar: true, idempotencyKey: `${view.create.idempotencyKey}:anyway` })
         : stay(state);
     case 'change_something': {
       const name = view.kind === 'proposal' ? view.proposal.proposal.name : view.kind === 'similar' ? view.name : undefined;
-      return name
-        ? stay(state, [{ type: 'message', draft: `Change ${name}: `, sent: `I want to change something about ${name} before you create it.` }])
-        : stay(state);
+      // The same words wherever they land: ChatGPT's composer, or a host that puts the message there itself.
+      return name ? stay(state, [{ type: 'message', draft: `Change ${name}: `, sent: `Change ${name}: ` }]) : stay(state);
     }
     case 'save':
       return view.kind === 'change' && !view.stale ? busy(call('update_agent', view.preview.save.arguments)) : stay(state);
     case 'cancel':
-      return view.kind === 'change' ? show({ kind: 'notice', title: 'Not saved', body: 'Nothing changed.' }) : stay(state);
+      return view.kind === 'change'
+        ? tell(show({ kind: 'notice', title: 'Not saved', body: 'Nothing changed.' }),
+          `The person cancelled this change to ${view.preview.agent.name} on the card. Nothing was saved.`)
+        : stay(state);
     case 'confirm':
       if (view.kind !== 'confirm') return stay(state);
       if (expired(view.confirmation, now)) return show(EXPIRED);
       return busy(call('confirm_change', { confirmToken: view.confirmation.confirmToken }));
     case 'keep':
-      return view.kind === 'confirm'
-        ? show({ kind: 'notice', title: 'Kept as it is', body: 'Nothing changed.' })
-        : stay(state);
+      if (view.kind !== 'confirm') return stay(state);
+      // An expired token can no longer apply, so there is nothing left to cancel.
+      if (expired(view.confirmation, now) || !view.confirmation.confirmToken) return show(EXPIRED);
+      return busy(call('decline_change', { confirmToken: view.confirmation.confirmToken }));
     case 'undo':
       return view.kind === 'done' && view.undoToken
         ? busy(call('undo_change', { undoToken: view.undoToken, idempotencyKey: `undo:${view.undoToken}` }))
@@ -241,6 +285,23 @@ function press(state: State, action: Action, now: number): Next<View> {
   }
 }
 
+/**
+ * The answer to the Create this offer still shows, after the host gave up
+ * on it: the Agent may exist, so it counts, as Create pressed again would.
+ */
+function lateCreate(state: State, made: Call): boolean {
+  const { view } = state;
+  if (state.busy || made.tool !== 'create_agent') return false;
+  const key = made.args.idempotencyKey;
+  return view.kind === 'proposal' ? key === view.proposal.create.arguments.idempotencyKey
+    : view.kind === 'similar' && key === `${view.create.idempotencyKey}:anyway`;
+}
+
+/** The steps show at once; create_agent's answer fills them in. */
+function start(from: Offer, args: Record<string, unknown>): Next<View> {
+  return { state: { view: { kind: 'starting', from }, busy: true }, effects: [call('create_agent', args)] };
+}
+
 // Replies to the card's own tool calls.
 
 function reply(state: State, made: Call, result: ToolResult, now: number): Next<View> {
@@ -250,38 +311,61 @@ function reply(state: State, made: Call, result: ToolResult, now: number): Next<
   const content = result.structuredContent;
   switch (made.tool) {
     case 'create_agent': {
-      if (failure || !isChangeResult(content)) return stay({ view, busy: false, error: failure ?? GENERIC });
-      const from = view.kind === 'proposal' ? view.proposal.proposal : undefined;
+      const offer = view.kind === 'starting' ? view.from : view.kind === 'proposal' || view.kind === 'similar' ? view : undefined;
+      if (failure || !isChangeResult(content)) return stay({ view: offer ?? view, busy: false, error: failure ?? GENERIC });
+      const from = offer?.kind === 'proposal' ? offer.proposal.proposal : undefined;
       if (content.status === 'done' && content.agent) {
-        return creating(content, {
+        const { name, handle } = content.agent;
+        return tell(creating(content, {
           answersIn: channelNames(from?.answersIn ?? []),
           needs: from?.needs ?? [],
           workspaceName: from?.workspaceName,
-        }, now);
+          avatarUrl: offerAvatar(offer),
+          byPress: true,
+        }, now), `The person created ${named(name, handle)} from the card. It is joining Slack now.`);
       }
-      if (content.status === 'similar_agent_exists') {
-        const create = view.kind === 'proposal' ? view.proposal.create.arguments : view.kind === 'similar' ? view.create : undefined;
-        if (create) return show({ kind: 'similar', summary: content.summary, create, name: create.name });
+      if (content.status === 'similar_agent_exists' && offer) {
+        const create = offer.kind === 'proposal' ? offer.proposal.create.arguments : offer.create;
+        return tell(
+          show({ kind: 'similar', summary: content.summary, create, name: create.name, avatarUrl: offerAvatar(offer) }),
+          `The person pressed Create in Slack on the card, but nothing was created: ${content.summary}`,
+        );
       }
       return changeView(content, now);
     }
     case 'get_creation_status':
+      if (code === 'not_found') return goneFrom(state, 'deleted');
       return creationStatus(state, failure ? undefined : content as CreationStatus, now);
-    case 'update_agent':
+    case 'update_agent': {
       if (failure || !isChangeResult(content)) {
         return view.kind === 'change' && code === 'changed_since_read'
           ? stay({ view: { ...view, stale: true }, busy: false, error: failure })
           : stay({ view, busy: false, error: failure ?? GENERIC });
       }
-      return changeView(content, now, { saved: true });
+      const name = view.kind === 'change' ? view.preview.agent.name : content.agent?.name ?? 'the Agent';
+      return tell(changeView(content, now, { saved: true }), content.status === 'needs_confirmation'
+        ? `The person pressed Save on the card for ${name}. Nothing has changed yet: it waits for their confirmation on the card.`
+        : `The person saved the change to ${name} from the card. ${content.summary}`);
+    }
     case 'confirm_change':
       if (code === 'confirmation_expired') return show(EXPIRED);
       if (failure || !isChangeResult(content)) {
         return code === 'temporarily_unavailable' || !failure
           ? stay({ view, busy: false, error: failure ?? GENERIC })
-          : show({ kind: 'notice', title: 'Nothing changed', body: failure });
+          : tell(show({ kind: 'notice', title: 'Nothing changed', body: failure }), `The person confirmed on the card, but nothing changed: ${failure}`);
       }
-      return changeView(content, now);
+      return tell(changeView(content, now), `The person confirmed on the card. ${content.summary}`);
+    case 'decline_change': {
+      if (code === 'temporarily_unavailable' || code === 'in_progress' || (!failure && !isChangeResult(content))) {
+        return stay({ view, busy: false, error: failure ?? GENERIC });
+      }
+      const keep = view.kind === 'confirm' ? view.confirmation.ask.keep : 'Keep it';
+      if (!failure && isChangeResult(content) && content.status === 'done') {
+        return tell(changeView(content, now), `On the card, the person pressed "${keep}", but the change was already made. ${content.summary}`);
+      }
+      // Any other answer leaves a token that can never apply.
+      return tell(show(KEPT), `On the card, the person pressed "${keep}", so nothing changed. Make this change only if they ask for it again.`);
+    }
     case 'undo_change':
       if (failure || !isChangeResult(content)) {
         const gone = code === 'nothing_to_undo' || code === 'changed_since_read';
@@ -291,18 +375,34 @@ function reply(state: State, made: Call, result: ToolResult, now: number): Next<
           error: failure ?? GENERIC,
         });
       }
-      return changeView(content, now);
+      return tell(changeView(content, now, { undone: true }), content.status === 'needs_confirmation'
+        ? 'The person pressed Undo on the card. Nothing has changed yet: it waits for their confirmation on the card.'
+        : `The person undid the change${view.kind === 'done' && view.agent ? ` to ${view.agent.name}` : ''} from the card.`);
     case 'get_agent': {
       if (state.busy) return stay(state); // a write is in flight; its reply decides the view
-      const version = failure ? undefined : (content as { version?: unknown } | undefined)?.version;
-      if (typeof version !== 'string') return stay(state);
-      if (view.kind === 'change' && version !== view.preview.save.arguments.version) return stay({ ...state, view: { ...view, stale: true } });
-      if (view.kind === 'done' && view.undoToken && version !== view.version) return stay({ ...state, view: { ...view, undoToken: undefined } });
+      if (code === 'not_found') return goneFrom(state, 'deleted');
+      const read = failure ? undefined : content as { version?: unknown; status?: unknown } | undefined;
+      if (typeof read?.version !== 'string') return stay(state);
+      if (read.status === 'archived') return goneFrom(state, 'archived');
+      if (view.kind === 'change' && read.version !== view.preview.save.arguments.version) return stay({ ...state, view: { ...view, stale: true } });
+      if (view.kind === 'done' && view.undoToken && read.version !== view.version) return stay({ ...state, view: { ...view, undoToken: undefined } });
       return stay(state);
     }
     default:
       return stay({ ...state, busy: false });
   }
+}
+
+/** An Agent the card shows is no longer there to act on. */
+function goneFrom(state: State, why: 'deleted' | 'archived'): Next<View> {
+  const { view } = state;
+  const agent = view.kind === 'creating' || view.kind === 'ready' ? view.agent
+    : view.kind === 'done' ? view.agent
+      : view.kind === 'change' ? view.preview.agent
+        : undefined;
+  if (!agent) return stay(state);
+  const avatarUrl = view.kind === 'change' ? httpsUrl(view.preview.agent.avatarUrl) : 'avatarUrl' in view ? view.avatarUrl : undefined;
+  return show({ kind: 'gone', agent: { name: agent.name, handle: agent.handle }, why, avatarUrl });
 }
 
 type Creating = Extract<View, { kind: 'creating' }>;
@@ -313,20 +413,28 @@ function creationStatus(state: State, status: CreationStatus | undefined, now: n
   if (!status || typeof status.stage !== 'string') {
     return view.kind === 'creating' ? keepPolling({ ...view, failures: (view.failures ?? 0) + 1 }, now) : stay(state);
   }
+  if (status.agent?.status === 'archived') return goneFrom(state, 'archived');
+  const avatarUrl = httpsUrl(status.agent?.avatarUrl) ?? view.avatarUrl;
   const settled = status.stage === 'needs_attention' || (status.stage !== 'joining' && status.channels !== 'joining');
   if (!settled) {
     const { failures: _failures, ...polling }: Creating = view.kind === 'creating' ? view : { ...view, kind: 'creating', startedAt: now };
-    return keepPolling({ ...polling, status }, now);
+    return keepPolling({ ...polling, avatarUrl, status }, now);
   }
-  return show({
+  const ready = show<View>({
     kind: 'ready',
     agentId: view.agentId,
     agent: view.agent,
+    avatarUrl,
     answersIn: view.answersIn,
     needs: view.needs,
     adminUrl: view.adminUrl,
     status,
   });
+  if (view.kind !== 'creating' || !view.byPress) return ready;
+  const who = named(view.agent.name, view.agent.handle);
+  return tell(ready, status.stage === 'needs_attention'
+    ? `The person created ${who} from the card, but it needs attention in Slack: ${status.problem ?? 'Slack has not finished setting it up.'}`
+    : `The person created ${who} from the card. It is ready in Slack${status.stage === 'said_hello' ? ' and said hello to them there' : ''}.`);
 }
 
 function keepPolling(view: Creating, now: number): Next<View> {
@@ -348,6 +456,9 @@ function tick(state: State, now: number): Next<View> {
 function reread(state: State, now: number): Next<View> {
   const { view } = state;
   switch (view.kind) {
+    // A card that mounts again mid-create lost its answer: Create again replays the same call.
+    case 'starting':
+      return show(view.from);
     case 'creating': {
       const { slow: _slow, failures: _failures, ...polling } = view;
       return stay({ ...state, view: { ...polling, startedAt: now } }, [call('get_creation_status', { agentId: view.agentId })]);
@@ -357,7 +468,7 @@ function reread(state: State, now: number): Next<View> {
     case 'change':
       return stay(state, [call('get_agent', { agentId: view.preview.save.arguments.agentId })]);
     case 'done':
-      return view.undoToken && view.agent ? stay(state, [call('get_agent', { agentId: view.agent.agentId })]) : stay(state);
+      return view.agent ? stay(state, [call('get_agent', { agentId: view.agent.agentId })]) : stay(state);
     case 'confirm': {
       if (expired(view.confirmation, now)) return show(EXPIRED);
       return stay(state, [expiryTimer(view.confirmation, now)]);
@@ -372,6 +483,8 @@ const EXPIRED: View = {
   title: 'This confirmation expired',
   body: 'Nothing changed. Ask again for a fresh one.',
 };
+
+const KEPT: View = { kind: 'notice', title: 'Kept as it is', body: 'Nothing changed.' };
 
 /** A tick when the token expires, so an open card says so without a press. */
 function expiryTimer(confirmation: Confirmation, now: number): Effect {
@@ -388,6 +501,15 @@ function slackUrlOf(view: View): string | undefined {
   if (view.kind === 'creating') return httpsUrl(view.status?.slackUrl);
   if (view.kind === 'done') return view.slackUrl;
   return undefined;
+}
+
+function offerAvatar(offer: Offer | undefined): string | undefined {
+  if (offer?.kind === 'proposal') return httpsUrl(offer.proposal.proposal.avatarUrl);
+  return offer?.avatarUrl;
+}
+
+function named(name: string, handle: string | undefined): string {
+  return handle ? `${name} (@${handle})` : name;
 }
 
 // The shapes a result may take. Fields the card shows are only ever drawn as text.
@@ -437,6 +559,7 @@ function presentView(state: State): Presentation<Action> {
       return {
         ...base,
         avatar: 'agent',
+        avatarUrl: view.avatarUrl,
         title: 'An Agent like this already exists',
         blocks: [{ kind: 'text', text: view.summary }],
         buttons: [
@@ -444,6 +567,8 @@ function presentView(state: State): Presentation<Action> {
           { label: 'Change something', action: 'change_something', tone: 'secondary' },
         ],
       };
+    case 'starting':
+      return { ...base, ...presentStarting(view.from) };
     case 'creating':
       return { ...base, ...presentCreating(view) };
     case 'ready':
@@ -451,30 +576,27 @@ function presentView(state: State): Presentation<Action> {
     case 'change':
       return { ...base, ...presentChange(view.preview, view.stale === true) };
     case 'done':
-      return {
-        ...base,
-        avatar: 'agent',
-        title: view.summary.replace(/\.$/, ''),
-        done: true,
-        ...view.saved && view.agent?.handle
-          ? { subtitle: [{ text: `Try it: mention @${view.agent.handle} in Slack.` }] }
-          : {},
-        blocks: [],
-        buttons: [
-          ...view.undoToken ? [{ label: 'Undo', action: 'undo' as const, tone: 'secondary' as const }] : [],
-          ...view.slackUrl ? [{ label: 'Open in Slack', action: 'open_slack' as const, tone: 'secondary' as const }] : [],
-        ],
-      };
+      return { ...base, ...presentDone(view) };
     case 'confirm':
       return {
         ...base,
         avatar: view.agent ? 'alert' : 'none',
+        avatarUrl: view.avatarUrl,
         title: view.confirmation.ask.question,
         blocks: [{ kind: 'text', text: view.confirmation.ask.consequence }],
         buttons: [
           { label: view.confirmation.ask.confirm, action: 'confirm', tone: 'danger' },
           { label: view.confirmation.ask.keep, action: 'keep', tone: 'secondary' },
         ],
+      };
+    case 'gone':
+      return {
+        ...base,
+        avatar: 'agent',
+        avatarUrl: view.avatarUrl,
+        title: view.why === 'deleted' ? `${view.agent.name} was deleted` : `${view.agent.name} is archived`,
+        blocks: [{ kind: 'text', text: 'It no longer answers in Slack.' }],
+        buttons: [],
       };
     case 'notice':
       return {
@@ -491,6 +613,7 @@ function presentProposal({ proposal, issues }: Proposal): Omit<Presentation<Acti
   const answersIn = ['Your DMs', ...channelNames(proposal.answersIn)];
   return {
     avatar: 'agent',
+    avatarUrl: httpsUrl(proposal.avatarUrl),
     title: proposal.name,
     subtitle: [
       { text: `@${proposal.handle} · ` },
@@ -521,6 +644,29 @@ function presentProposal({ proposal, issues }: Proposal): Omit<Presentation<Acti
   };
 }
 
+/** The moment Create is pressed: the same steps, with Chickpea's own first. */
+function presentStarting(from: Offer): Omit<Presentation<Action>, 'busy' | 'error'> {
+  const proposal = from.kind === 'proposal' ? from.proposal.proposal : undefined;
+  const handle = proposal?.handle ?? (from.kind === 'similar' ? from.create.handle : undefined);
+  const channels = channelNames(proposal?.answersIn ?? []);
+  return {
+    avatar: 'agent',
+    avatarUrl: offerAvatar(from),
+    title: proposal?.name ?? (from.kind === 'similar' ? from.name : ''),
+    subtitle: [{ text: proposal?.workspaceName ? `Setting up in ${proposal.workspaceName}'s Slack…` : 'Setting up in Slack…' }],
+    blocks: [{
+      kind: 'steps',
+      steps: [
+        { label: 'Creating it in Chickpea', state: 'now' },
+        { label: handle ? `Joining Slack as @${handle}` : 'Joining Slack', state: 'todo' },
+        { label: 'Saying hello to you', state: 'todo' },
+        ...channels.length ? [{ label: `Joining ${channels.join(', ')}`, state: 'todo' as const }] : [],
+      ],
+    }],
+    buttons: [],
+  };
+}
+
 /**
  * The steps follow get_creation_status: Slack first, then the hello, while
  * the Channels join beside them. A Channel waits its turn behind Slack.
@@ -531,6 +677,7 @@ function presentCreating(view: Creating): Omit<Presentation<Action>, 'busy' | 'e
   const inSlack = stage !== 'joining';
   return {
     avatar: 'agent',
+    avatarUrl: view.avatarUrl,
     title: view.agent.name,
     subtitle: [{ text: view.workspaceName ? `Setting up in ${view.workspaceName}'s Slack…` : 'Setting up in Slack…' }],
     blocks: [
@@ -563,6 +710,7 @@ function presentReady(view: Extract<View, { kind: 'ready' }>): Omit<Presentation
   if (status.stage === 'needs_attention') {
     return {
       avatar: 'alert',
+      avatarUrl: view.avatarUrl,
       title: `${agent.name} needs attention in Slack`,
       blocks: [{ kind: 'text', text: status.problem ?? 'Slack has not finished setting it up.' }],
       buttons: [
@@ -574,6 +722,7 @@ function presentReady(view: Extract<View, { kind: 'ready' }>): Omit<Presentation
   const reach = view.answersIn.length ? `your DMs and ${joinNames(view.answersIn)}` : 'your DMs';
   return {
     avatar: 'agent',
+    avatarUrl: view.avatarUrl,
     title: status.stage === 'said_hello' ? `${mention} said hello to you in Slack` : `${agent.name} is ready in Slack`,
     subtitle: [{ text: `${agent.name} is ready · answers in ${reach}` }],
     blocks: [
@@ -599,10 +748,33 @@ function readyNextStep(view: Extract<View, { kind: 'ready' }>): Array<Button<Act
   return need ? [{ label: `Connect ${need.name}`, action: 'next_step', tone: 'secondary' }] : [];
 }
 
+/**
+ * A finished change. An Agent that is off says it stays quiet; a save on one
+ * that answers says where to try it.
+ */
+function presentDone(view: Extract<View, { kind: 'done' }>): Omit<Presentation<Action>, 'busy' | 'error'> {
+  const line = view.status === 'off' ? 'It won\'t answer in Slack until it\'s turned back on.'
+    : view.saved && view.agent?.handle && view.status !== 'archived' ? tryIt(view.agent.handle, view.channels ?? [])
+      : undefined;
+  return {
+    avatar: 'agent',
+    avatarUrl: view.avatarUrl,
+    title: view.summary.replace(/\.$/, ''),
+    done: true,
+    ...line ? { subtitle: [{ text: line }] } : {},
+    blocks: [],
+    buttons: [
+      ...view.undoToken ? [{ label: 'Undo', action: 'undo' as const, tone: 'secondary' as const }] : [],
+      ...view.slackUrl ? [{ label: 'Open in Slack', action: 'open_slack' as const, tone: 'secondary' as const }] : [],
+    ],
+  };
+}
+
 function presentChange(preview: ChangePreview, stale: boolean): Omit<Presentation<Action>, 'busy' | 'error'> {
   const count = preview.changes.length;
   return {
     avatar: 'agent',
+    avatarUrl: httpsUrl(preview.agent.avatarUrl),
     title: `Change ${preview.agent.name}`,
     subtitle: [{ text: `${count} ${count === 1 ? 'change' : 'changes'} · nothing is saved until you press Save` }],
     blocks: [

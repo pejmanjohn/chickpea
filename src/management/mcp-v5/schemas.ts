@@ -646,7 +646,7 @@ export const disconnectAppOutput = z.strictObject({
 
 export const getCreationStatusOutput = z.strictObject({
   stage: z.enum(['joining', 'said_hello', 'ready', 'needs_attention']),
-  agent: z.strictObject({ name: z.string(), handle: z.string().optional(), avatarUrl: zAvatarUrl }),
+  agent: z.strictObject({ name: z.string(), handle: z.string().optional(), status: zAgentStatus.optional(), avatarUrl: zAvatarUrl }),
   channels: z.enum(['none', 'joining', 'joined', 'needs_attention']),
   slackUrl: z.string().optional(),
   problem: z.string().optional(),

@@ -2,7 +2,8 @@ import type { Block, Inline, Presentation, Row } from './card-model.ts';
 
 /**
  * Draws a presentation. Every value from a tool result goes in as text, never
- * markup; the only markup is the fixed avatar art below.
+ * markup; the only markup is the fixed avatar art below. An Agent's picture
+ * is an image's source, which the card's CSP limits to Chickpea's origin.
  */
 
 const BEAN = (tile: string, hood: string, face: string) =>
@@ -37,9 +38,28 @@ function element<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
-function avatar(kind: 'agent' | 'alert', size: 'lg' | 'sm' = 'lg'): HTMLElement {
+/** Pictures that did not load: the art stands in, and a redraw does not try again. */
+const unloadable = new Set<string>();
+
+function avatar(kind: 'agent' | 'alert', size: 'lg' | 'sm', url: string | undefined): HTMLElement {
   const holder = element('span', `cp-avatar cp-avatar-${size}`);
-  holder.innerHTML = AVATARS[kind];
+  const art = () => {
+    holder.innerHTML = AVATARS[kind];
+  };
+  if (!url || unloadable.has(url)) {
+    art();
+    return holder;
+  }
+  // Decorative: the name beside it says whose it is.
+  const image = element('img');
+  image.alt = '';
+  image.decoding = 'async';
+  image.addEventListener('error', () => {
+    unloadable.add(url);
+    art();
+  }, { once: true });
+  image.src = url;
+  holder.append(image);
   return holder;
 }
 
@@ -49,7 +69,7 @@ function inline(parts: Inline[]): HTMLElement {
   return line;
 }
 
-function block(item: Block, avatarKind: 'agent' | 'alert'): HTMLElement {
+function block(item: Block, avatarKind: 'agent' | 'alert', avatarUrl: string | undefined): HTMLElement {
   switch (item.kind) {
     case 'text':
       return element('p', 'cp-text', item.text);
@@ -65,12 +85,12 @@ function block(item: Block, avatarKind: 'agent' | 'alert'): HTMLElement {
       const who = element('div', 'cp-who', 'You');
       who.append(element('span', 'cp-who-note', 'example'));
       const personBody = element('div');
-      personBody.append(who, element('div', undefined, item.ask));
+      personBody.append(who, element('div', 'cp-said', item.ask));
       person.append(element('span', 'cp-init', 'Y'), personBody);
       const agent = element('div', 'cp-msg');
       const agentBody = element('div');
-      agentBody.append(element('div', 'cp-who', item.agent), element('div', undefined, item.answer));
-      agent.append(avatar(avatarKind, 'sm'), agentBody);
+      agentBody.append(element('div', 'cp-who', item.agent), element('div', 'cp-said', item.answer));
+      agent.append(avatar(avatarKind, 'sm', avatarUrl), agentBody);
       thread.append(person, agent);
       return thread;
     }
@@ -175,7 +195,8 @@ export function mountCard(root: HTMLElement, onAction: (action: string) => void)
 
       const header = element('header', 'cp-hdr');
       const avatarKind = presentation.avatar === 'none' ? 'agent' : presentation.avatar;
-      if (presentation.avatar !== 'none') header.append(avatar(presentation.avatar));
+      const { avatarUrl } = presentation;
+      if (presentation.avatar !== 'none') header.append(avatar(presentation.avatar, 'lg', avatarUrl));
       const heading = element('div', 'cp-heading');
       const title = element('h2', 'cp-title');
       title.tabIndex = -1;
@@ -190,8 +211,8 @@ export function mountCard(root: HTMLElement, onAction: (action: string) => void)
       header.append(heading);
       const blocks = new Map<string, HTMLElement>();
       const drawnNow = presentation.blocks.map((item) => {
-        const key = JSON.stringify([item, avatarKind]);
-        const node = (!blocks.has(key) && drawnBlocks.get(key)) || block(item, avatarKind);
+        const key = JSON.stringify([item, avatarKind, avatarUrl]);
+        const node = (!blocks.has(key) && drawnBlocks.get(key)) || block(item, avatarKind, avatarUrl);
         if (!blocks.has(key)) blocks.set(key, node);
         return node;
       });

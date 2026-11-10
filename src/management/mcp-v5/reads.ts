@@ -728,7 +728,11 @@ export async function getCreationStatus(
   const hello = welcome === 'delivered' ? agentWelcomeQuote(progress.welcome!.receipt) : undefined;
   return {
     stage,
-    agent: { ...progress.agent, ...agentAvatar(deps, progress.avatar) },
+    agent: {
+      ...progress.agent,
+      status: progress.avatar.lifecycle === 'archived' ? 'archived' : progress.avatar.enabled ? 'on' : 'off',
+      ...agentAvatar(deps, progress.avatar),
+    },
     channels: grants.length === 0 ? 'none'
       : grants.includes('needs_attention') ? 'needs_attention'
         : grants.includes('pending') ? 'joining' : 'joined',

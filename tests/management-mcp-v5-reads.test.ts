@@ -516,7 +516,7 @@ test('get_creation_status follows the Agent into Slack and its hello in the crea
   const status = async () => structured(await call('get_creation_status', { agentId: 'agent_new' }));
   assert.deepEqual(await status(), {
     stage: 'joining',
-    agent: { name: 'Research', handle: 'new-desk', avatarUrl: 'https://chickpea.example.test/assets/agents/agent_new/avatar/1' },
+    agent: { name: 'Research', handle: 'new-desk', status: 'on', avatarUrl: 'https://chickpea.example.test/assets/agents/agent_new/avatar/1' },
     channels: 'none',
     slackUrl: `slack://open?team=${f.owner.binding.slackTeamId}`,
   });

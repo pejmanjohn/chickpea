@@ -5,8 +5,9 @@ import { mountCard } from './render.ts';
 /**
  * A card in a host's iframe: host messages and presses become model events,
  * and the model's effects run here. What the card has done is kept in
- * ChatGPT's widget state, so a card that mounts again (a reopened chat)
- * resumes where it was instead of offering its first buttons again.
+ * ChatGPT's widget state, as private content its model never reads, so a
+ * card that mounts again (a reopened chat) resumes where it was instead of
+ * offering its first buttons again.
  */
 
 declare const CARD_VERSION: number;
@@ -58,6 +59,9 @@ export function runCard<V extends { kind: string }, A extends string>(name: stri
       case 'open':
         bridge.openLink(effect.url).catch(() => dispatch({ type: 'refused', effect, now: Date.now() }));
         return;
+      case 'context':
+        bridge.updateModelContext(effect.text).catch(() => undefined);
+        return;
     }
   }
 
@@ -90,14 +94,16 @@ export function runCard<V extends { kind: string }, A extends string>(name: stri
 }
 
 function keptView<V extends { kind: string }>(): { view: V; seq: number } | undefined {
-  const saved = window.openai?.widgetState as { card?: { version?: unknown; view?: V; seq?: number } } | undefined;
-  const view = saved?.card?.view;
-  return saved?.card?.version === CARD_VERSION && view && typeof view.kind === 'string'
-    ? { view, seq: saved.card.seq ?? 0 }
+  const saved = window.openai?.widgetState as { privateContent?: { card?: { version?: unknown; view?: V; seq?: number } } } | undefined;
+  const card = saved?.privateContent?.card;
+  const view = card?.view;
+  return card?.version === CARD_VERSION && view && typeof view.kind === 'string'
+    ? { view, seq: card.seq ?? 0 }
     : undefined;
 }
 
 function keep<V extends { kind: string }>({ view, seq }: CardState<V>): void {
   if (view.kind === 'waiting') return;
-  void Promise.resolve(window.openai?.setWidgetState?.({ card: { version: CARD_VERSION, view, seq } })).catch(() => undefined);
+  const card = { version: CARD_VERSION, view, seq };
+  void Promise.resolve(window.openai?.setWidgetState?.({ privateContent: { card } })).catch(() => undefined);
 }

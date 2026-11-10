@@ -13,6 +13,7 @@ import {
   sequenced,
   show,
   stay,
+  tell,
   UNREACHABLE,
   type CardEvent,
   type CardState,
@@ -159,7 +160,11 @@ function reply(state: State, tool: string, result: ToolResult): Next<View> {
   }
   if (tool === 'check_agent') {
     if (failure || !isChecked(content)) return stay({ view, busy: false, error: failure ?? GENERIC });
-    return show({ kind: 'health', checked: content, ...view.open ? { open: true as const } : {} });
+    const problems = content.checks.filter(({ status }) => status === 'failing' || status === 'warning').length;
+    return tell(
+      show({ kind: 'health', checked: content, ...view.open ? { open: true as const } : {} }),
+      `The person checked ${content.agent.name} again from the card: ${problems === 0 ? 'no problems found' : `${problems} ${problems === 1 ? 'thing needs' : 'things need'} attention`}.`,
+    );
   }
   // The fix's setup link: the press that asked for it opens it, when it is Chickpea's page for that one connection.
   const setup = !failure && isRecord(content) && isRecord(content.setup) ? content.setup : undefined;
@@ -170,7 +175,11 @@ function reply(state: State, tool: string, result: ToolResult): Next<View> {
   }
   if (typeof setup?.setupToken !== 'string') return show(settled(view), [askChat(view, view.fixing)]);
   const opened = [...(view.opened ?? []).filter((index) => index !== view.fixing), view.fixing];
-  return show({ ...settled(view), opened }, [{ type: 'open', url }]);
+  const fix = view.checked.checks[view.fixing]?.fix;
+  return tell(
+    show({ ...settled(view), opened }, [{ type: 'open', url }]),
+    `The person opened Chickpea's page to ${fix?.label ?? 'fix it'} for ${view.checked.agent.name} from the card. It changes when they finish there.`,
+  );
 }
 
 /** The Agent's connections now: one that became ready since the card first looked reads as healthy. */
@@ -264,6 +273,7 @@ function presentHealth(view: Health): Omit<Presentation<Action>, 'busy' | 'error
   const lastOpened = opened === undefined ? undefined : parts[opened];
   return {
     avatar: parts.some(({ status }) => status === 'failing') ? 'alert' : 'agent',
+    avatarUrl: httpsUrl(checked.agent.avatarUrl),
     title,
     // The title may stay the same after a fix; the row it changed is what a screen reader needs.
     ...lastOpened ? { announce: `${title}. ${titleOf(lastOpened.check)}: ${partRow(view, lastOpened).detail}` } : {},

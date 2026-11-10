@@ -1234,8 +1234,8 @@ export interface ManagementMemorySnapshot {
 /** What the creation card shows while a new Agent joins Slack; read-only. */
 export interface ManagementAgentCreationProgress {
   agent: ManagementAgentLabel;
-  /** What its avatar URL is made from. */
-  avatar: Pick<CustomAgentConfig, 'id' | 'slackPresence'>;
+  /** What its avatar URL and status are made from. */
+  avatar: Pick<CustomAgentConfig, 'id' | 'slackPresence' | 'lifecycle' | 'enabled'>;
   /** Absent for an Agent with no Slack handle. */
   presence?: { health: AgentPresenceHealth; errorCode?: string };
   /** The status of each of the Agent's Channel grants. */

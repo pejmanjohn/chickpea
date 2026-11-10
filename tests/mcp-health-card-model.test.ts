@@ -162,6 +162,10 @@ test('a setup-link fix calls its tool only when pressed, and opens the Chickpea 
   assert.match(page.pathname, /^\/setup\/setup_/, 'Chickpea\'s page for this one connection');
   assert.deepEqual(rows(health.shown)[0], 'now · Linear · Finish on the Chickpea page that opened, then come back. · [Reconnect Linear]');
   assert.equal(health.shown.title, '3 things need attention', 'the title stays the same');
+  assert.deepEqual(health.effects.filter(({ type }) => type === 'context'), [{
+    type: 'context',
+    text: 'The person opened Chickpea\'s page to Reconnect Linear for Ops from the card. It changes when they finish there.',
+  }]);
   assert.equal(health.shown.announce, '3 things need attention. Linear: Finish on the Chickpea page that opened, then come back.');
 
   // Pressed again after the host gave up: the same call, and one link opens.

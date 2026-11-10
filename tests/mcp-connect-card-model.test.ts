@@ -85,6 +85,7 @@ test('Connect opens Chickpea\'s page for this one connection only when pressed, 
   await connect.result(result);
   assert.equal(connect.effects.length, 0, 'showing the link opens nothing');
   assert.equal(connect.shown.title, 'Connect Gmail to Research');
+  assert.equal(connect.shown.avatarUrl, `${BASE_URL}/assets/agents/agent_research/avatar/1`, 'the Agent\'s own picture');
   assert.deepEqual(connect.shown.subtitle, [{ text: 'You sign in on Chickpea\'s page, never in this chat.' }]);
   assert.deepEqual(rows(connect.shown), ['Gmail · Your own account · [Connect]']);
 
@@ -110,6 +111,9 @@ test('Connect opens Chickpea\'s page for this one connection only when pressed, 
   await connect.dispatch({ type: 'tick', now: clock.now });
   assert.equal(connect.state.view.kind, 'connected');
   assert.deepEqual(rows(connect.shown), ['Gmail is connected · [Open in Slack]'], 'a catalog service: connected, and nothing more');
+  assert.deepEqual(connect.effects.filter(({ type }) => type === 'context'), [
+    { type: 'context', text: 'Gmail is connected to Research now. The person signed in on Chickpea\'s page.' },
+  ], 'the model learns what the person finished');
   assert.deepEqual(connect.calls('check_agent'), [], 'nothing checks a catalog service');
 
   await connect.press('open_slack');
@@ -423,4 +427,23 @@ test('an error or a result of the wrong shape shows nothing to press', async (t)
   const cancelled = cardHost(CONNECT_CARD, nothing, clock);
   await cancelled.dispatch({ type: 'no_result', now: clock.now });
   assert.equal(cancelled.shown.title, 'Nothing to show here.');
+});
+
+test('connected, with no Slack link to open, it says where to try the Agent: a mention in its Channels', async (t) => {
+  const { f, call, card, clock, teamId, finish } = await harness(t, 'connect-try');
+  await f.config.putChannel({ workspaceId: teamId, channelId: 'C_SUPPORT', label: 'support', lifecycle: 'active' });
+  await f.config.putAgentChannelGrant({
+    workspaceId: teamId, channelId: 'C_SUPPORT', agentId: 'agent_research', status: 'active',
+    createdByMembershipId: f.owner.membership.id, channelLabel: 'support',
+  });
+  const result = await call('connect_service', { agentId: 'agent_research', service: 'Gmail', owner: 'me', idempotencyKey: 'gmail-try' });
+  const { links: _links, ...agent } = result.structuredContent!.agent;
+  assert.deepEqual(agent.channels, [{ channelId: 'C_SUPPORT', name: 'support' }]);
+  const connect = card();
+  await connect.result({ ...result, structuredContent: { ...result.structuredContent, agent } });
+  await connect.press('connect');
+  finish(result.structuredContent!.setup.setupToken, 'completed');
+  await connect.dispatch({ type: 'tick', now: clock.now });
+  assert.equal(connect.state.view.kind, 'connected');
+  assert.equal(connect.shown.foot, 'Try it: mention @research in #support.');
 });
