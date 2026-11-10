@@ -1865,8 +1865,15 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
   }
 
   /** The model-access lookup's binding of a test run's attempt to its live row. */
-  async testRunModelAccessBind(instanceId: string, submissionId: string) {
-    return this.call((stores) => stores.testRuns.bindModelAccess(instanceId, submissionId) ?? null);
+  async testRunModelAccessBind(
+    instanceId: string,
+    submissionId: string,
+  ): Promise<StateRpcResult<{ runtimePlan: unknown } | null>> {
+    const bound = this.call((stores) => stores.testRuns.bindModelAccess(instanceId, submissionId));
+    if (!bound.ok) return bound;
+    // A submission that landed after its run's erase unerased the run: the alarm erases it again.
+    if (bound.value?.reopened) await this.armAlarmNoLaterThan(Date.now());
+    return { ok: true, value: bound.value && 'runtimePlan' in bound.value ? { runtimePlan: bound.value.runtimePlan } : null };
   }
 
   async testRunStart(request: TestRunStartRequest): Promise<StateRpcResult<TestRunStartResult>> {
@@ -2766,7 +2773,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
         : undefined;
       const outboxRetry = stores.management.nextOutboxDueAt();
       const keepWarmAt = this.keepWarmTickAt();
-      await testRunPass;
+      // An instance that does not answer costs a step its bounds; turns keep being handed over meanwhile.
+      if (testRunPass) await whileDispatching(() => testRunPass);
       const nextWake = earliestDefined(
         turnRetry,
         presentationRepairs.nextRetryAt,
@@ -2938,7 +2946,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       ? Date.now() + ALARM_YIELD_REARM_MS
       : needsRetry ? Date.now() + identityRetryDelayMs : undefined;
     const outboxRetry = stores.management.nextOutboxDueAt();
-    await testRunPass;
+    if (testRunPass) await whileDispatching(() => testRunPass);
     const nextWake = earliestDefined(
       turnRetry,
       presentationRepairs.nextRetryAt,

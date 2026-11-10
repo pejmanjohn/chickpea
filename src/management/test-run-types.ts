@@ -24,7 +24,6 @@ export interface TestRunResult {
 export interface TestRunRow {
   testRunId: string;
   runToken: string;
-  coordinateToken: string;
   organizationId: string;
   actorMembershipId: string;
   agentId: string;
@@ -37,15 +36,12 @@ export interface TestRunRow {
   result: TestRunResult | null;
   usageOperationId: string;
   createdAt: number;
-  settledAt: number | null;
   erasedAt: number | null;
-  expiresAt: number;
 }
 
 export interface TestRunAdmissionRequest {
   testRunId: string;
   runToken: string;
-  coordinateToken: string;
   organizationId: string;
   actorMembershipId: string;
   agentId: string;
@@ -62,8 +58,18 @@ export type TestRunAdmission =
   | { kind: 'replayed'; row: TestRunRow }
   /** The key names a run of another Agent. */
   | { kind: 'key_reused' }
+  /** The key names a run past its hour, which reads as not found. */
+  | { kind: 'expired' }
   | { kind: 'in_progress' }
   | { kind: 'daily_limit'; resumesAt: number };
+
+/** What the model-access lookup's binding answers for a run: undefined when it refuses the submission. */
+export interface TestRunModelAccessBinding {
+  /** The run's plan, only while the run is live. */
+  runtimePlan?: unknown;
+  /** The submission landed after the run's instance was erased, so the run is unerased again. */
+  reopened?: true;
+}
 
 export type TestRunSettlement =
   | { status: 'answered'; result: TestRunResult; terminal: RecordUsageTerminalInput }
@@ -85,7 +91,8 @@ export interface TestRunView {
  * so the plan model access reads and the plan the tools mount from are one.
  */
 export interface TestRunStartRequest {
-  run: Omit<TestRunAdmissionRequest, 'instanceId' | 'planJson'>;
+  /** `coordinateToken`: the plan's, which names the run's Channel stand-in. */
+  run: Omit<TestRunAdmissionRequest, 'instanceId' | 'planJson'> & { coordinateToken: string };
   /** The first ask, escaped as Slack user text is. */
   message: string;
   /** The test agent's creation data (agents/test-turn.ts). */
@@ -95,6 +102,7 @@ export interface TestRunStartRequest {
 export type TestRunStartResult =
   | { kind: 'admitted' | 'replayed'; run: TestRunView }
   | { kind: 'key_reused' }
+  | { kind: 'expired' }
   | { kind: 'in_progress' }
   | { kind: 'daily_limit'; resumesAt: number };
 

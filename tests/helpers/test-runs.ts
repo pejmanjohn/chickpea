@@ -6,6 +6,7 @@
 import type { RuntimePlanV2 } from '../../src/agents/runtime-plan.ts';
 import { compileTestRunPlan } from '../../src/agents/test-run-plan.ts';
 import { installationOwnershipOf } from '../../src/config/installation-scope.ts';
+import type { PlatformEnv } from '../../src/config/state-backend.ts';
 import type { ResolvedAssignment } from '../../src/config/types.ts';
 import type { TestRunStartRequest } from '../../src/management/test-run-types.ts';
 import {
@@ -100,14 +101,32 @@ export class FakeTestRunInstances implements TestRunInstancePort {
   settleEvery: TestRunInstanceSettlement | undefined;
   /** What an answered abort leaves the instance reading, as Flue settles an aborted submission. */
   settleOnAbort: TestRunInstanceSettlement | undefined;
+  /** While set, a dispatch is sent but lands only once it resolves; its call is recorded as it lands. */
+  private dispatchGate: Promise<void> | undefined;
   private submissions = 0;
 
   async dispatch(instanceId: string, dispatch: TestRunDispatch): Promise<{ submissionId: string }> {
-    this.calls.push(['dispatch', instanceId]);
     this.dispatched.push(dispatch);
+    await this.dispatchGate;
+    this.calls.push(['dispatch', instanceId]);
     if (this.dispatchFails) throw new Error('The dispatch receipt was lost.');
     this.submissions += 1;
     return { submissionId: `sub_${this.submissions}` };
+  }
+
+  /** Holds every dispatch sent from now until the returned release. */
+  holdDispatches(): () => void {
+    let release: () => void = () => undefined;
+    this.dispatchGate = new Promise<void>((resolve) => { release = resolve; });
+    return () => {
+      this.dispatchGate = undefined;
+      release();
+    };
+  }
+
+  /** Resolves once `count` dispatches have been sent, landed or not. */
+  async sent(count = 1): Promise<void> {
+    while (this.dispatched.length < count) await new Promise((resolve) => setImmediate(resolve));
   }
 
   async abort(instanceId: string): Promise<void> {
@@ -149,8 +168,16 @@ export class TestClock {
   }
 }
 
-/** The lifecycle the installation's state store runs, over a fake instance and the test's clock. */
-export function testRunLifecycle(installation: HostedInstallation, instances: FakeTestRunInstances, clock: TestClock): TestRunLifecycle {
+/**
+ * The lifecycle the installation's state store runs, over a fake instance and
+ * the test's clock. `platformEnv`: the store's env, the installation's unless given.
+ */
+export function testRunLifecycle(
+  installation: HostedInstallation,
+  instances: FakeTestRunInstances,
+  clock: TestClock,
+  options: { platformEnv?: PlatformEnv | undefined } = { platformEnv: installation.env },
+): TestRunLifecycle {
   return new TestRunLifecycle({
     stores: () => installation.stores,
     port: async () => instances,
@@ -158,6 +185,6 @@ export function testRunLifecycle(installation: HostedInstallation, instances: Fa
       if (installation.storage.alarm === null || at < installation.storage.alarm) await installation.storage.setAlarm(at);
     },
     now: clock.now,
-    platformEnv: installation.env,
+    ...(options.platformEnv ? { platformEnv: options.platformEnv } : {}),
   });
 }

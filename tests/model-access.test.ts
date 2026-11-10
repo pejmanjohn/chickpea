@@ -910,8 +910,11 @@ test('a test run reaches its own case through the state store\'s binding: the fi
       ...request.run, instanceId, planJson: JSON.stringify(request.initialData.runtimePlan),
     }, Date.now());
     const store = getSlackStateStore();
-    store.bindTestRunModelAccess = async (instance, submission) =>
-      installation.stores.testRuns.bindModelAccess(instance, submission);
+    // As the state store's RPC answers: the plan, or nothing.
+    store.bindTestRunModelAccess = async (instance, submission) => {
+      const bound = installation.stores.testRuns.bindModelAccess(instance, submission);
+      return bound && 'runtimePlan' in bound ? { runtimePlan: bound.runtimePlan } : undefined;
+    };
     const attempt = (submissionId: string, agentName = 'chickpea-test-turn-v1'): FlueExecutionContext =>
       ({ instanceId, submissionId, agentName });
     const scopeMissing = (error: unknown) => error instanceof ModelAccessError && error.code === 'scope_missing';
@@ -929,9 +932,9 @@ test('a test run reaches its own case through the state store\'s binding: the fi
         status: 'failed', failure: 'deadline',
         terminal: new TestRunUsageRecorder(installation.stores.usage.getOperation(request.run.usage.operationId)!.operation)
           .interrupted(Date.now(), 'sub_first'),
-      }, Date.now());
+      });
       await assert.rejects(lookupAttemptModelAccess(attempt('sub_first'), async () => installation.env), scopeMissing,
-        'model access ends with the run');
+        'no new attempt gets model access once the run settles');
     } finally {
       delete store.bindTestRunModelAccess;
     }

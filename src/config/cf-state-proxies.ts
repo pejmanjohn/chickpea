@@ -371,6 +371,8 @@ const REPLAY_SAFE_STATE_METHODS = new Set([
   'slackPresentationTransition', // compare-and-swap on the projection version
   // A keyed admission returns the stored run on a repeat; a read runs at most one idempotent settle step.
   'testRunStart', 'testRunReplay', 'testRunObserve',
+  // The same instance and submission get the same answer: a repeat finds the submission it bound.
+  'testRunModelAccessBind',
   // Version-fenced; a replay finds exactly what the committed call wrote and succeeds.
   'modelCredentialPublish', 'modelCredentialRewrap',
 ]);
@@ -2159,7 +2161,7 @@ export class CfSlackStateStore implements SlackStateStore {
     );
   }
 
-  /** Not replayed on a disconnect: the first call may already have bound the submission. */
+  /** A live test run's plan for the submission asking, which the first to ask binds. */
   async bindTestRunModelAccess(instanceId: string, submissionId: string) {
     return orUndefined(await rpcVia(this.stub,
       'testRunModelAccessBind',

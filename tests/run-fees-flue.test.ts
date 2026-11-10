@@ -65,6 +65,7 @@ import {
 import { createSlackCreateChannelTool } from '../src/slack/channel-creation/tools.ts';
 import { GroupDmReceipts } from '../src/slack/group-dm/receipts.ts';
 import { SlackGroupDmService } from '../src/slack/group-dm/service.ts';
+import { testRunSettlement } from '../src/state/test-run-instance.ts';
 import { createSlackGroupDmTool } from '../src/slack/group-dm/tools.ts';
 import { textCell } from '../src/slack/lists/schema.ts';
 import { SlackListsService } from '../src/slack/lists/service.ts';
@@ -1314,7 +1315,11 @@ test('a test run that calls a tool again after its refusal gets one more model r
   ]);
   ran.length = 0;
 
-  await assert.rejects(testTurnReply('test-turn-ended'), (error: unknown) => error instanceof AgentRunError);
+  const ended = await testTurnReply('test-turn-ended').then(() => undefined, (error: unknown) => error);
+  assert.ok(ended instanceof AgentRunError);
+  // Its settlement, as the store reads it: the model's own doing, so nothing is credited back.
+  assert.deepEqual(testRunSettlement({ outcome: 'failed', error: ended.cause }, ended.submissionId, undefined),
+    { kind: 'failed', failure: 'failed', creditBack: null });
   assert.equal(sent.length, 3, 'the request after the second refusal is never sent');
   assert.deepEqual(refusals, [TEST_TURN_TOOL_LIMIT_MESSAGE, TEST_TURN_TOOL_LIMIT_MESSAGE]);
   assert.equal(ran.length, TEST_TURN_TOOL_CALL_LIMIT);

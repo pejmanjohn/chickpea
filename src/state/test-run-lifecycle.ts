@@ -5,6 +5,7 @@
  * it; one step per run at a time, and none once the instance is erased.
  */
 import { deriveRuntimePlanInstanceId, parseRuntimePlanV2 } from '../agents/runtime-plan.ts';
+import { installationScopeOfObjectName, requireInstallationScope } from '../config/installation-scope.ts';
 import type { CreditBackReason } from '../config/platform-funding.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type {
@@ -21,6 +22,7 @@ import type { TestRunStoreLogic } from '../management/test-runs.ts';
 import type { ChickpeaResponseMetadata } from '../usage/response-metadata.ts';
 import { TestRunUsageRecorder } from '../usage/test-run-usage.ts';
 import type { UsageStoreLogic } from '../usage/store.ts';
+import type { RecordUsageTerminalInput } from '../usage/types.ts';
 import { opaqueId } from '../work/admission.ts';
 
 /** Admitted with no submission this long: the dispatch never landed, as far as the store knows. */
@@ -76,20 +78,35 @@ export interface TestRunPassResult {
 }
 
 export interface TestRunLifecycleDependencies {
-  stores: () => { testRuns: TestRunStoreLogic; usage: Pick<UsageStoreLogic, 'getOperation'> };
+  stores: () => {
+    testRuns: TestRunStoreLogic;
+    usage: Pick<UsageStoreLogic, 'getOperation' | 'recordTerminal'>;
+  };
   /** Loaded at its first use: it carries the test agent's dispatch path. */
   port: () => Promise<TestRunInstancePort>;
   /** Arms the store's alarm no later than `at`. */
   armAlarm: (at: number) => Promise<void>;
   now?: () => number;
+  /** The store's env: a run's instance must be one of its installation's. */
   platformEnv?: PlatformEnv;
 }
+
+/** How a run ended, as its usage terminal records it. */
+type TestRunOutcome =
+  | { status: 'answered'; metadata?: ChickpeaResponseMetadata }
+  | { status: 'failed'; failure: TestRunFailure };
 
 export class TestRunLifecycle {
   /** The step going for each run; another caller joins it. */
   private readonly steps = new Map<string, Promise<TestRunRow | undefined>>();
-  /** Runs this instance asked Flue to abort. A restart forgets them, and the next step asks again. */
-  private readonly aborted = new Set<string>();
+  /**
+   * Runs whose abort the instance answered, with the submission the run had
+   * then. An abort sent before a submission landed does not stop it. A
+   * restart forgets them, and the next step asks again.
+   */
+  private readonly aborted = new Map<string, string | null>();
+  /** Runs whose dispatch call has not returned: what it lands can follow any abort or erase sent now. */
+  private readonly dispatching = new Set<string>();
   private readonly now: () => number;
 
   constructor(private readonly deps: TestRunLifecycleDependencies) {
@@ -99,44 +116,67 @@ export class TestRunLifecycle {
   /**
    * Admission, then the dispatch, in one call: no other run can start
    * between them. The row's plan is the creation data's, and it must name
-   * this run, so its instance is the run's own and never another's. A
-   * dispatch that throws leaves the run `admitted` for the 30-second rule;
-   * one that landed binds its submission at its first model request anyway.
+   * this run, its caller, its Agent and an instance of this installation,
+   * so its instance is the run's own and never another's. A dispatch that
+   * throws leaves the run `admitted` for the 30-second rule; one that landed
+   * binds its submission at its first model request anyway.
    */
   async start(request: TestRunStartRequest): Promise<TestRunStartResult> {
     const { testRuns } = this.deps.stores();
+    const { run } = request;
     const plan = parseRuntimePlanV2(request.initialData.runtimePlan);
     const { conversation } = plan;
+    const instanceId = deriveRuntimePlanInstanceId(plan);
     if (conversation.surface !== 'test' ||
-        conversation.continuityKey !== opaqueId('agent', `test:${request.run.testRunId}`) ||
-        conversation.channelId !== `test_${request.run.coordinateToken}`) {
+        conversation.continuityKey !== opaqueId('agent', `test:${run.testRunId}`) ||
+        conversation.channelId !== `test_${run.coordinateToken}` ||
+        plan.actorMembershipId !== run.actorMembershipId ||
+        plan.agentId !== run.agentId ||
+        installationScopeOfObjectName(instanceId)?.installationId !== requireInstallationScope(this.deps.platformEnv)?.installationId) {
       throw new Error('A test run must run its own test run plan.');
     }
     // A run that has finished but that no one has read yet must not hold the lock.
     for (const row of testRuns.unerased()) {
-      if (row.organizationId === request.run.organizationId && live(row)) await this.step(row.testRunId);
+      if (row.organizationId === run.organizationId && live(row)) await this.step(row.testRunId);
     }
     const at = this.now();
-    const admission = testRuns.admit({
-      ...request.run,
-      instanceId: deriveRuntimePlanInstanceId(plan),
-      planJson: JSON.stringify(request.initialData.runtimePlan),
-    }, at);
+    const admission = testRuns.admit({ ...run, instanceId, planJson: JSON.stringify(request.initialData.runtimePlan) }, at);
     if (admission.kind === 'replayed') return { kind: 'replayed', run: testRunView(await this.settled(admission.row)) };
     if (admission.kind !== 'admitted') return admission;
-    await this.deps.armAlarm(this.deps.stores().testRuns.nextDueAt(at) ?? at);
     const { row } = admission;
+    await this.deps.armAlarm(testRuns.nextDueAt(at) ?? at);
     try {
-      const receipt = await bounded((await this.deps.port()).dispatch(row.instanceId, {
-        message: request.message,
-        initialData: request.initialData,
-        idempotencyKey: row.testRunId,
-      }));
-      testRuns.recordSubmission(row.testRunId, receipt.submissionId);
+      await bounded(this.dispatch(row, request));
     } catch (error) {
       log('test_run_dispatch_failed', row, error);
     }
+    // A cancellation that settled the run while its dispatch was out left the instance alone: stop and erase it now.
+    const dispatched = testRuns.get(row.testRunId) ?? row;
+    if (!live(dispatched) && !this.dispatching.has(row.testRunId)) await this.step(row.testRunId);
     return { kind: 'admitted', run: testRunView(testRuns.get(row.testRunId) ?? row) };
+  }
+
+  /**
+   * The dispatch, tracked until its call returns, however long after its
+   * bound that is. A receipt that lands after the run's instance was erased
+   * makes the run unerased again, and the alarm erases it.
+   */
+  private dispatch(row: TestRunRow, request: TestRunStartRequest): Promise<void> {
+    this.dispatching.add(row.testRunId);
+    return (async () => {
+      try {
+        const receipt = await (await this.deps.port()).dispatch(row.instanceId, {
+          message: request.message,
+          initialData: request.initialData,
+          idempotencyKey: row.testRunId,
+        });
+        if (this.deps.stores().testRuns.recordSubmission(row.testRunId, receipt.submissionId)) {
+          await this.deps.armAlarm(this.now());
+        }
+      } finally {
+        this.dispatching.delete(row.testRunId);
+      }
+    })();
   }
 
   async replay(query: TestRunReplayQuery): Promise<TestRunView | undefined> {
@@ -217,21 +257,29 @@ export class TestRunLifecycle {
       row = testRuns.get(testRunId);
       if (!row || live(row)) return row;
     }
+    this.writeOwedTerminal(row, now);
+    // Until its dispatch call returns, an abort or an erase could come before what it lands.
+    if (this.dispatching.has(testRunId) && age < TEST_RUN_FORCED_ERASE_MS) return row;
     if (await this.eraseReady(row, probe, now)) await this.erase(row);
     return testRuns.get(testRunId);
   }
 
   /**
-   * The instance has settled or is gone, or the forced bound has passed. A
-   * run whose instance never reported settled is aborted first; with no
-   * submission to read, an answered abort settles everything it held.
+   * The instance has settled or is gone, or the forced bound has passed. An
+   * instance still running is aborted first. A run with no submission has
+   * nothing to read, so its erase waits for the bound, unless a submission
+   * that lands later binds it and settles.
    */
   private async eraseReady(row: TestRunRow, probe: TestRunInstanceSettlement | undefined, now: number): Promise<boolean> {
     if (now - row.createdAt >= TEST_RUN_FORCED_ERASE_MS) {
+      await this.abortOnce(row);
       log('test_run_forced_erase', row);
       return true;
     }
-    if (row.submissionId === null) return this.abortOnce(row);
+    if (row.submissionId === null) {
+      await this.abortOnce(row);
+      return false;
+    }
     let settled = probe ?? await this.probe(row);
     if (settled.kind !== 'unsettled') return true;
     if (!await this.abortOnce(row)) return false;
@@ -243,17 +291,19 @@ export class TestRunLifecycle {
     try {
       await bounded((await this.deps.port()).erase(row.instanceId));
       this.deps.stores().testRuns.markErased(row.testRunId, this.now());
+      this.aborted.delete(row.testRunId);
+      if (this.terminalOwed(row)) log('test_run_terminal_lost', row);
     } catch (error) {
       log('test_run_erase_failed', row, error);
     }
   }
 
-  /** True once this instance's abort was answered, now or earlier. */
+  /** True once the instance answered an abort sent after the run's current submission was known. */
   private async abortOnce(row: TestRunRow): Promise<boolean> {
-    if (this.aborted.has(row.testRunId)) return true;
+    if (this.aborted.has(row.testRunId) && this.aborted.get(row.testRunId) === row.submissionId) return true;
     try {
       await bounded((await this.deps.port()).abort(row.instanceId));
-      this.aborted.add(row.testRunId);
+      this.aborted.set(row.testRunId, row.submissionId);
       return true;
     } catch (error) {
       log('test_run_abort_failed', row, error);
@@ -277,60 +327,64 @@ export class TestRunLifecycle {
     now: number,
     mode: TestRunStepMode,
   ): Promise<void> {
-    const usage = this.recorder(row);
-    const billing = row.submissionId;
-    let settlement: TestRunSettlement;
-    let creditBack: CreditBackReason | null = null;
     if (settled.kind === 'answered') {
-      settlement = {
+      const result = { reply: settled.reply, read: settled.read };
+      await this.write(row, {
         status: 'answered',
-        result: { reply: settled.reply, read: settled.read },
-        terminal: usage.completed(settled.metadata, now, billing),
-      };
-    } else if (settled.kind === 'not_found') {
-      const failure = now - row.createdAt >= TEST_RUN_DEADLINE_MS ? 'deadline' : 'failed';
-      settlement = {
-        status: 'failed',
-        failure,
-        terminal: failure === 'deadline' ? usage.interrupted(now, billing) : usage.failed(now, billing),
-      };
+        result,
+        terminal: this.terminal(row, { status: 'answered', ...(settled.metadata ? { metadata: settled.metadata } : {}) }, now),
+      }, null);
+      return;
+    }
+    let failure: TestRunFailure;
+    let creditBack: CreditBackReason | null = null;
+    let result: { resumesAt: number } | undefined;
+    if (settled.kind === 'not_found') {
+      failure = now - row.createdAt >= TEST_RUN_DEADLINE_MS ? 'deadline' : 'failed';
     } else if (mode === 'cancel' && settled.failure === 'deadline') {
       // Stopped by this cancellation's own abort, not by a deadline.
-      settlement = { status: 'failed', failure: 'cancelled', terminal: usage.interrupted(now, billing) };
+      failure = 'cancelled';
     } else {
-      settlement = {
-        status: 'failed',
-        failure: settled.failure,
-        ...(settled.resumesAt === undefined ? {} : { result: { resumesAt: settled.resumesAt } }),
-        terminal: settled.failure === 'deadline' ? usage.interrupted(now, billing) : usage.failed(now, billing),
-      };
+      failure = settled.failure;
       creditBack = settled.creditBack;
+      if (settled.resumesAt !== undefined) result = { resumesAt: settled.resumesAt };
     }
-    await this.write(row, settlement, now, creditBack);
-  }
-
-  /**
-   * The store's own terminal, whatever the instance reports: the lock frees,
-   * the plan goes and model access ends with it.
-   */
-  private async force(row: TestRunRow, failure: 'not_dispatched' | 'deadline' | 'cancelled', now: number): Promise<void> {
-    const usage = this.recorder(row);
-    const billing = row.submissionId;
     await this.write(row, {
       status: 'failed',
       failure,
-      terminal: failure === 'not_dispatched' ? usage.failed(now, billing) : usage.interrupted(now, billing),
-    }, now, failure === 'deadline' ? 'timeout' : failure === 'not_dispatched' ? 'chickpea' : null);
+      ...(result ? { result } : {}),
+      terminal: this.terminal(row, { status: 'failed', failure }, now),
+    }, creditBack);
   }
 
-  private async write(
-    row: TestRunRow,
-    settlement: TestRunSettlement,
-    now: number,
-    creditBack: CreditBackReason | null,
-  ): Promise<void> {
-    if (!this.deps.stores().testRuns.settle(row.testRunId, settlement, now)) return;
-    if (!creditBack || row.submissionId === null) return;
+  /**
+   * The store's own terminal, whatever the instance reports: the lock frees
+   * and the plan goes, so no new or resumed attempt gets model access. An
+   * attempt already running stops at Flue's abort or timeout.
+   */
+  private async force(row: TestRunRow, failure: 'not_dispatched' | 'deadline' | 'cancelled', now: number): Promise<void> {
+    await this.write(row, {
+      status: 'failed',
+      failure,
+      terminal: this.terminal(row, { status: 'failed', failure }, now),
+    }, failure === 'deadline' ? 'timeout' : null);
+  }
+
+  /**
+   * Settles the row with its usage terminal. A terminal Usage refuses never
+   * keeps the run live: the row settles without it, and each later step
+   * until the erase writes one with its usage unreported.
+   */
+  private async write(row: TestRunRow, settlement: TestRunSettlement, creditBack: CreditBackReason | null): Promise<void> {
+    const { testRuns } = this.deps.stores();
+    let settled: boolean;
+    try {
+      settled = testRuns.settle(row.testRunId, settlement);
+    } catch (error) {
+      log('test_run_terminal_refused', row, error);
+      settled = testRuns.settleWithoutTerminal(row.testRunId, settlement);
+    }
+    if (!settled || !creditBack || row.submissionId === null) return;
     try {
       await bounded((await this.deps.port()).creditBack(row.submissionId, creditBack));
     } catch (error) {
@@ -338,15 +392,37 @@ export class TestRunLifecycle {
     }
   }
 
-  private recorder(row: TestRunRow): TestRunUsageRecorder {
+  /** A settled run's terminal that Usage refused at settlement, tried again with its usage unreported. */
+  private writeOwedTerminal(row: TestRunRow, now: number): void {
+    if (!this.terminalOwed(row)) return;
+    const outcome: TestRunOutcome = row.status === 'answered'
+      ? { status: 'answered' }
+      : { status: 'failed', failure: row.failure ?? 'failed' };
+    try {
+      this.deps.stores().usage.recordTerminal(this.terminal(row, outcome, now));
+    } catch (error) {
+      log('test_run_terminal_refused', row, error);
+    }
+  }
+
+  private terminalOwed(row: TestRunRow): boolean {
+    return this.deps.stores().usage.getOperation(row.usageOperationId)?.operation.status === 'admitted';
+  }
+
+  /** Deadlines and cancellations are interrupted; any other failure failed. */
+  private terminal(row: TestRunRow, outcome: TestRunOutcome, now: number): RecordUsageTerminalInput {
     const operation = this.deps.stores().usage.getOperation(row.usageOperationId)?.operation;
-    return new TestRunUsageRecorder(operation ?? {
+    const usage = new TestRunUsageRecorder(operation ?? {
       operationId: row.usageOperationId,
       requestedProvider: null,
       requestedModel: null,
       credentialRefId: null,
       credentialVersion: null,
     }, this.deps.platformEnv ? { platformEnv: this.deps.platformEnv } : {});
+    if (outcome.status === 'answered') return usage.completed(outcome.metadata, now, row.submissionId);
+    return outcome.failure === 'deadline' || outcome.failure === 'cancelled'
+      ? usage.interrupted(now, row.submissionId)
+      : usage.failed(now, row.submissionId);
   }
 }
 

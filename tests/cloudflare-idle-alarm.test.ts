@@ -46,7 +46,7 @@ const compiled = ts.transpileModule(
   `${['RELAY_BATCH_WINDOW_MS', 'KEEP_WARM_WINDOW_MS', 'KEEP_WARM_TICK_MS', 'RETENTION_SWEEP_INTERVAL_MS', 'earliestDefined'].map(moduleStatement).join('\n')}
 class StateStoreProbe { ${[
     'alarm', 'drainRelayAlarm', 'deliverStopNotices', 'admitSlackTurn', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'admissionWakeAt',
-    'runnerMode', 'keepWarmTickAt',
+    'runnerMode', 'keepWarmTickAt', 'dispatchingWhile',
   ].map(stateMethod).join('\n')} }\nStateStoreProbe`,
   { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
 ).outputText;
@@ -122,8 +122,12 @@ function newProbe(costs: PartCosts, duringDrain?: (armAt: (at: number) => void) 
     clock += ms ?? 0;
     return {};
   };
+  let gatewayDrains = 0;
   const ProbeClass = vm.runInNewContext(compiled, {
     Date: { now: () => clock },
+    setTimeout,
+    clearTimeout,
+    ALARM_ADMISSION_RECHECK_MS: 2_000,
     console: { warn() {} },
     startRelayAlarmMetrics: () => startRelayAlarmMetrics(() => clock),
     emitRelayAlarm: (metrics: RelayAlarmMetrics) =>
@@ -135,7 +139,10 @@ function newProbe(costs: PartCosts, duringDrain?: (armAt: (at: number) => void) 
     MAX_TURN_DRAIN_BATCH: 16,
     ALARM_PENDING_PER_THREAD: 4,
     RELAY_RETRY_BACKOFF_MS: 2_000,
-    drainGatewayInbox: async () => false,
+    drainGatewayInbox: async () => {
+      gatewayDrains += 1;
+      return false;
+    },
     deliverDueStopNotices: async () => undefined,
     drainLedgerRuns: async () => {
       clock += costs.ledger;
@@ -161,6 +168,8 @@ function newProbe(costs: PartCosts, duringDrain?: (armAt: (at: number) => void) 
     records,
     writes,
     alarm: () => alarm,
+    /** How many times the alarm drained the gateway inbox, admitting turns. */
+    gatewayDrains: () => gatewayDrains,
     /** The platform fires the alarm: it is cleared, then alarm() runs. */
     async fire() {
       alarm = null;
@@ -445,4 +454,28 @@ test('an idle alarm runs the test-run pass while a run is not erased, and looks 
   quiet.probe.testRuns = async () => { throw new Error('no test run, so no lifecycle is loaded'); };
   await quiet.fire();
   assert.deepEqual(quiet.writes, []);
+});
+
+test('in runner mode the alarm waits for a slow test-run pass while it keeps handing over turns that arrive', async () => {
+  const store = idleStore(QUIET, { testRunUnerased: true });
+  store.probe.env = RUNNER_ENV;
+  (store.probe as unknown as { dispatchToRunners(): Promise<number> }).dispatchToRunners = async () => 0;
+  let release: () => void = () => undefined;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  store.probe.testRuns = async () => ({ pass: () => held });
+  // The outbox is read once the alarm's other work is done, just before it waits for the pass.
+  let waiting = false;
+  const stores = store.probe.stores as { management: { nextOutboxDueAt(): number | undefined } };
+  stores.management.nextOutboxDueAt = () => { waiting = true; return undefined; };
+  const tick = () => new Promise((resolve) => setImmediate(resolve));
+  const firing = store.fire();
+  for (let ticks = 0; ticks < 200 && !(waiting && store.probe.dispatchWake); ticks += 1) await tick();
+  assert.ok(waiting && store.probe.dispatchWake, 'an admission wakes the alarm while the pass is out');
+  const drains = store.gatewayDrains();
+  store.probe.dispatchWake();
+  for (let ticks = 0; ticks < 200 && store.gatewayDrains() === drains; ticks += 1) await tick();
+  assert.equal(store.gatewayDrains(), drains + 1, 'the turn that arrived is admitted and handed over at once');
+  release();
+  await firing;
+  assert.deepEqual(store.writes, [NOW + 10_000]);
 });

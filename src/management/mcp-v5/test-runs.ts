@@ -18,9 +18,10 @@ import { agentMemoryPromptBlock } from '../../memory/runtime.ts';
 import { escapeSlackControlCharacters } from '../../slack/message-format.ts';
 import { TestRunUsageRecorder } from '../../usage/test-run-usage.ts';
 import type { TestRunStore, TestRunView } from '../test-run-types.ts';
+import { ManagementError } from '../types.ts';
 import { readAgentRun, resolveAgentModel, type AgentRunReading } from './agent-run.ts';
 import { admissionChecks, agentAdminFix, modelChecks } from './check.ts';
-import { fail, McpToolFailure, type McpErrorFix } from './conventions.ts';
+import { fail, fiveZeroCode, McpToolFailure, type McpErrorFix } from './conventions.ts';
 import type { FiveZeroDeps } from './reads.ts';
 import type * as schemas from './schemas.ts';
 
@@ -82,6 +83,8 @@ export async function tryAgentOnce(
       return fail('usage_limit', dailyLimitText(started.resumesAt, timing.now()));
     case 'key_reused':
       return keyReused();
+    case 'expired':
+      return expired();
     default:
       return result(
         await settle(store, { ...caller, runToken: started.run.runToken }, started.run, timing),
@@ -102,7 +105,10 @@ export async function getTestRun(
   const query = { organizationId: context.organizationId, actorMembershipId: context.membershipId, runToken: input.runToken };
   const first = await store.observe(query) ?? expired();
   // Its Agent, as the caller can still manage it, by a light read: a card polls this. One they cannot reads as gone.
-  const { agent, stores } = await deps.service.agentReader(context, first.agentId).catch(() => expired());
+  const { agent, stores } = await deps.service.agentReader(context, first.agentId).catch((error: unknown) => {
+    if (error instanceof ManagementError && ['not_found', 'not_allowed'].includes(fiveZeroCode(error.code))) expired();
+    throw error;
+  });
   const ask = await stores.config.getAgentFirstAsk?.(agent.id) ?? '';
   return result(await settle(store, query, first, timing), ask, agent.name, timing);
 }

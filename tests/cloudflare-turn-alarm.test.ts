@@ -63,6 +63,7 @@ assert.ok(stateClass && ts.isClassDeclaration(stateClass));
 const methodNames = [
   'enqueueTurn', 'admitSlackTurn', 'resumeTurnAfterOAuth', 'slackInstallationRecoveryRetry',
   'maintainWork', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode', 'keepWarmTickAt',
+  'testRunModelAccessBind',
 ];
 const methods = methodNames.map((name) => {
   const method = stateClass.members.find((member) =>
@@ -114,6 +115,7 @@ type Probe = {
   resumeTurnAfterOAuth(taskId: string, continuationId: string): Promise<Result>;
   slackInstallationRecoveryRetry(workspaceId: string): Promise<Result>;
   maintainWork(at: number): Promise<Result>;
+  testRunModelAccessBind(instanceId: string, submissionId: string): Promise<Result>;
 };
 const ProbeClass = vm.runInNewContext(compiled, {
   Date,
@@ -250,8 +252,15 @@ for (const entry of entryPoints) {
   }
 }
 
-for (const withPendingTurn of [false, true]) {
-  test(`the ${withPendingTurn ? 'pending-turn' : 'empty-turn'} drain ending preserves a concurrent new turn's alarm`, async (context) => {
+for (const { withPendingTurn, testRun } of [
+  { withPendingTurn: false, testRun: false },
+  { withPendingTurn: true, testRun: false },
+  { withPendingTurn: true, testRun: true },
+]) {
+  const name = testRun
+    ? 'the pending-turn drain ending looks again in 10 seconds while a test run is not erased'
+    : `the ${withPendingTurn ? 'pending-turn' : 'empty-turn'} drain ending preserves a concurrent new turn's alarm`;
+  test(name, async (context) => {
     context.mock.method(Date, 'now', () => NOW);
     const alarmMethods = ['alarm', 'drainRelayAlarm', 'deliverStopNotices'].map((name) => {
       const method = stateClass.members.find((member) =>
@@ -298,7 +307,9 @@ for (const withPendingTurn of [false, true]) {
       drainTerminalPresentationRepairs: async () => ({}),
       drainCloudflareScheduleActions: async () => ({}),
       // A new turn can arrive while the receipt delivery awaits Slack.
-      drainCloudflareManagementReceipts: async () => { await storageProbe.enqueueTurn({ id: 'during-drain' }); },
+      drainCloudflareManagementReceipts: async () => {
+        if (!testRun) await storageProbe.enqueueTurn({ id: 'during-drain' });
+      },
       runDriverRetryDelayMs: (_drain: object, retryDelay: number) => retryDelay,
       slackTurnExecutor: () => 'alarm',
       sandboxTurnReaders: () => () => [],
@@ -332,11 +343,18 @@ for (const withPendingTurn of [false, true]) {
         newestEnqueuedAt: () => undefined,
       },
       gatewayInbox: { hasPending: () => false, nextPendingDueAt: () => undefined },
-      testRuns: { hasUnerased: () => false, nextDueAt: () => undefined },
+      testRuns: { hasUnerased: () => testRun, nextDueAt: (now: number) => testRun ? now + 10_000 : undefined },
     };
+    let passes = 0;
+    (drainingProbe as unknown as { testRuns(): Promise<{ pass(): Promise<unknown> }> }).testRuns =
+      async () => ({ pass: async () => { passes += 1; } });
+    // The unerased run is work already persisted, as the arriving turn is in the other cases.
+    if (testRun) storageProbe.call(() => null);
     await drainingProbe.alarm();
-    assert.equal(alarm(), NOW + BATCH_MS);
-    assert.deepEqual(writes, [NOW + BATCH_MS]);
+    assert.equal(passes, testRun ? 1 : 0);
+    const wake = testRun ? NOW + 10_000 : NOW + BATCH_MS;
+    assert.equal(alarm(), wake);
+    assert.deepEqual(writes, [wake]);
     assert.equal(relayAlarmRecords.length, 1);
     assert.equal(
       (relayAlarmRecords[0] as { outcome?: string }).outcome,
@@ -346,6 +364,26 @@ for (const withPendingTurn of [false, true]) {
     assert.equal((relayAlarmRecords[0] as { rearmed?: boolean }).rearmed, true);
   });
 }
+
+test('a model request whose submission unerased an erased test run arms the alarm now; any other binding leaves it', async (context) => {
+  context.mock.method(Date, 'now', () => NOW);
+  const cases: Array<[binding: { runtimePlan?: unknown; reopened?: true } | undefined, value: unknown, armed: number | null]> = [
+    [{ reopened: true }, null, NOW],
+    [{ runtimePlan: { plan: 1 } }, { runtimePlan: { plan: 1 } }, null],
+    [{}, null, null],
+    [undefined, null, null],
+  ];
+  for (const [binding, value, armed] of cases) {
+    const probe = new ProbeClass();
+    probe.env = RUNNER_ENV;
+    let alarm: number | null = null;
+    probe.call = (callback) => ({ ok: true, value: callback({ testRuns: { bindModelAccess: () => binding } }) });
+    probe.ctx = { storage: { getAlarm: async () => alarm, setAlarm: async (at) => { alarm = at; } } };
+    // Through JSON: the probe's objects come from another realm.
+    assert.deepEqual(JSON.parse(JSON.stringify(await probe.testRunModelAccessBind('instance', 'sub_1'))), { ok: true, value });
+    assert.equal(alarm, armed, JSON.stringify(binding));
+  }
+});
 
 type AlarmJob = {
   id: string; attempts: number; turn: Record<string, unknown>; assignment: object;

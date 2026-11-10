@@ -41,7 +41,8 @@ async function harness(t: TestContext, suffix: string, options: Options = {}) {
   const installation = hostedInstallation(`inst_tools_${suffix}`);
   const instances = new FakeTestRunInstances();
   const clock = new TestClock(Date.now());
-  const lifecycle = testRunLifecycle(installation, instances, clock);
+  // The fixture's service compiles plans for an unscoped instance, as a single installation's store would run them.
+  const lifecycle = testRunLifecycle(installation, instances, clock, { platformEnv: undefined });
   const f = await createManagementAdapterFixture(suffix, ({ settings }): Partial<WorkspaceManagementServiceInput> => ({
     settings,
     modelReadiness: async () => async (model) =>
@@ -353,8 +354,24 @@ test('get_test_run reads only the caller\'s own run, and not after an hour', asy
     (error: { error?: { code?: string; message?: string } }) =>
       error.error?.code === 'not_found' && error.error.message === 'This test run has expired.');
   clock.advance(TEST_RUN_VISIBLE_MS);
-  await assert.rejects(getTestRun(deps(f.owner), { runToken: run.runToken }, timing),
-    (error: { error?: { code?: string } }) => error.error?.code === 'not_found');
+  const expired = (error: { error?: { code?: string; message?: string } }) =>
+    error.error?.code === 'not_found' && error.error.message === 'This test run has expired.';
+  await assert.rejects(getTestRun(deps(f.owner), { runToken: run.runToken }, timing), expired);
+  // The same key past the hour neither returns the old run nor starts a new one.
+  await assert.rejects(tryAgentOnce(deps(f.owner), { agentId: 'agent_tested', idempotencyKey: 'key_mine' }, timing), expired);
+  assert.equal(instances.dispatched.length, 1);
+});
+
+test('get_test_run reads only a lost Agent as expired; any other failure is reported as it is', async (t) => {
+  const { f, deps, instances, clock } = await harness(t, 'reader_failure');
+  await seedAgent(f);
+  instances.settleEvery = { kind: 'answered', reply: 'Done.', read: [] };
+  const timing = { now: () => clock.now(), sleep: async (ms: number) => clock.advance(ms) };
+  const run = await tryAgentOnce(deps(f.owner), { agentId: 'agent_tested', idempotencyKey: 'key_reader' }, timing);
+  const failing = deps(f.owner);
+  const service = Object.create(f.service) as typeof f.service;
+  service.agentReader = async () => { throw new Error('The config store did not answer.'); };
+  await assert.rejects(getTestRun({ ...failing, service }, { runToken: run.runToken }, timing), /did not answer/);
 });
 
 test('a failed run says why, in the caller\'s words', async (t) => {

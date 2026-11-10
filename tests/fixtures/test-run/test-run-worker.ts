@@ -162,8 +162,8 @@ export class TestRunStateStore extends DurableObject {
     const row = this.testRuns.get(testRunId);
     if (!row) return;
     const sql = this.ctx.storage.sql;
-    sql.exec(`UPDATE management_test_runs SET status = 'running', failure = NULL, result_json = NULL, settled_at = NULL,
-      erased_at = NULL WHERE test_run_id = ?`, testRunId);
+    sql.exec(`UPDATE management_test_runs SET status = 'running', failure = NULL, result_json = NULL, erased_at = NULL
+      WHERE test_run_id = ?`, testRunId);
     sql.exec('DELETE FROM usage_measurements WHERE operation_id = ?', row.usageOperationId);
     sql.exec(`UPDATE usage_operations SET status = 'admitted', finished_at = NULL WHERE operation_id = ?`, row.usageOperationId);
   }

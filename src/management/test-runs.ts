@@ -11,6 +11,7 @@ import type {
   TestRunAdmission,
   TestRunAdmissionRequest,
   TestRunFailure,
+  TestRunModelAccessBinding,
   TestRunResult,
   TestRunRow,
   TestRunSettlement,
@@ -27,6 +28,8 @@ export const TEST_RUN_VISIBLE_MS = 60 * 60_000;
 export const TEST_RUN_WAKE_MS = 10_000;
 
 const DAY_MS = 24 * 60 * 60_000;
+/** A run's model requests finish after its admission; this absorbs the skew between their clocks. */
+const REQUEST_CLOCK_SKEW_MS = 60_000;
 
 /** The table, created with the management store's schema. */
 export function installTestRunSchema(db: StateDb): void {
@@ -34,11 +37,10 @@ export function installTestRunSchema(db: StateDb): void {
     `CREATE TABLE IF NOT EXISTS management_test_runs (
       test_run_id TEXT PRIMARY KEY,
       run_token TEXT NOT NULL UNIQUE,
-      coordinate_token TEXT NOT NULL,
       organization_id TEXT NOT NULL,
       actor_membership_id TEXT NOT NULL,
       agent_id TEXT NOT NULL,
-      status TEXT NOT NULL CHECK (status IN ('admitted', 'running', 'answered', 'failed')),
+      status TEXT NOT NULL,
       failure TEXT,
       idempotency_key TEXT NOT NULL,
       instance_id TEXT NOT NULL,
@@ -47,9 +49,7 @@ export function installTestRunSchema(db: StateDb): void {
       result_json TEXT,
       usage_operation_id TEXT NOT NULL,
       created_at INTEGER NOT NULL,
-      settled_at INTEGER,
-      erased_at INTEGER,
-      expires_at INTEGER NOT NULL
+      erased_at INTEGER
     )`,
   );
   // One run at a time per installation: the lock frees at settlement, before the erase.
@@ -63,6 +63,11 @@ export function installTestRunSchema(db: StateDb): void {
   );
   db.exec('CREATE INDEX IF NOT EXISTS management_test_runs_instance_idx ON management_test_runs (instance_id)');
   db.exec('CREATE INDEX IF NOT EXISTS management_test_runs_day_idx ON management_test_runs (organization_id, created_at)');
+  // Every alarm asks whether any instance is left to erase.
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS management_test_runs_unerased_idx
+     ON management_test_runs (created_at) WHERE erased_at IS NULL`,
+  );
 }
 
 /**
@@ -111,6 +116,8 @@ export class TestRunStoreLogic {
     return this.db.transaction((): TestRunAdmission => {
       const prior = this.findByIdempotencyKey(request.actorMembershipId, request.idempotencyKey);
       if (prior) {
+        // Past its hour a run reads as not found, so its key starts nothing either.
+        if (at >= prior.createdAt + TEST_RUN_VISIBLE_MS) return { kind: 'expired' };
         return prior.organizationId === request.organizationId && prior.agentId === request.agentId
           ? { kind: 'replayed', row: prior }
           : { kind: 'key_reused' };
@@ -128,13 +135,11 @@ export class TestRunStoreLogic {
         return { kind: 'daily_limit', resumesAt: dayStart + DAY_MS };
       }
       this.db.run(
-        `INSERT INTO management_test_runs (test_run_id, run_token, coordinate_token, organization_id,
-           actor_membership_id, agent_id, status, idempotency_key, instance_id, plan_json, usage_operation_id,
-           created_at, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'admitted', ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO management_test_runs (test_run_id, run_token, organization_id, actor_membership_id, agent_id,
+           status, idempotency_key, instance_id, plan_json, usage_operation_id, created_at)
+         VALUES (?, ?, ?, ?, ?, 'admitted', ?, ?, ?, ?, ?)`,
         request.testRunId,
         request.runToken,
-        request.coordinateToken,
         request.organizationId,
         request.actorMembershipId,
         request.agentId,
@@ -143,7 +148,6 @@ export class TestRunStoreLogic {
         request.planJson,
         request.usage.operationId,
         at,
-        at + TEST_RUN_VISIBLE_MS,
       );
       // The run starts at admission, on the clock its terminal is written by.
       this.usage.admitOperation({ ...request.usage, startedAt: at });
@@ -154,14 +158,16 @@ export class TestRunStoreLogic {
   /**
    * Every model request's list price under today's test runs' submissions.
    * Failed and stopped requests are priced too; an unpriced one counts as zero.
+   * The finish-time bound keeps the scan on the requests' time index.
    */
   private listPriceToday(organizationId: string, dayStart: number): number {
     return Number(this.db.get(
       `SELECT COALESCE(SUM(r.list_price_usd_micros), 0) AS micros FROM usage_model_requests r
-       WHERE r.run_id IN (
+       WHERE r.finished_at >= ? AND r.run_id IN (
          SELECT submission_id FROM management_test_runs
          WHERE organization_id = ? AND created_at >= ? AND submission_id IS NOT NULL
        )`,
+      dayStart - REQUEST_CLOCK_SKEW_MS,
       organizationId,
       dayStart,
     )?.micros ?? 0);
@@ -172,32 +178,39 @@ export class TestRunStoreLogic {
    * run's, whether access is granted or not, and any other is refused.
    * Access is granted only while the run is live with its plan.
    */
-  bindModelAccess(instanceId: string, submissionId: string): { runtimePlan: unknown } | undefined {
+  bindModelAccess(instanceId: string, submissionId: string): TestRunModelAccessBinding | undefined {
     return this.db.transaction(() => {
       const row = this.row('instance_id = ?', instanceId);
       if (!row) return undefined;
-      if (row.submissionId === null) this.recordSubmission(row.testRunId, submissionId);
+      let reopened = false;
+      if (row.submissionId === null) reopened = this.recordSubmission(row.testRunId, submissionId);
       else if (row.submissionId !== submissionId) return undefined;
       const bound = this.require(row.testRunId);
-      return (bound.status === 'admitted' || bound.status === 'running') && bound.planJson !== null
-        ? { runtimePlan: JSON.parse(bound.planJson) as unknown }
-        : undefined;
+      return {
+        ...((bound.status === 'admitted' || bound.status === 'running') && bound.planJson !== null
+          ? { runtimePlan: JSON.parse(bound.planJson) as unknown }
+          : {}),
+        ...(reopened ? { reopened: true as const } : {}),
+      };
     });
   }
 
   /**
    * The dispatch receipt's submission, compare-and-set: one the lookup bound
-   * first stands. A live run is `running` once its submission is known.
+   * first stands. A live run is `running` once its submission is known. A
+   * submission that lands after the run's instance was erased means the
+   * instance holds the run again, so the run is unerased; true then.
    */
-  recordSubmission(testRunId: string, submissionId: string): TestRunRow {
-    this.db.run(
+  recordSubmission(testRunId: string, submissionId: string): boolean {
+    const erasedAt = this.get(testRunId)?.erasedAt ?? null;
+    const changed = this.db.run(
       `UPDATE management_test_runs
-       SET submission_id = ?, status = CASE WHEN status = 'admitted' THEN 'running' ELSE status END
+       SET submission_id = ?, status = CASE WHEN status = 'admitted' THEN 'running' ELSE status END, erased_at = NULL
        WHERE test_run_id = ? AND submission_id IS NULL`,
       submissionId,
       testRunId,
-    );
-    return this.require(testRunId);
+    ).changes;
+    return changed > 0 && erasedAt !== null;
   }
 
   /**
@@ -205,22 +218,29 @@ export class TestRunStoreLogic {
    * nulled and the lock freed, in one transaction. A run already settled
    * keeps its first settlement; false then.
    */
-  settle(testRunId: string, settlement: TestRunSettlement, at: number): boolean {
+  settle(testRunId: string, settlement: TestRunSettlement): boolean {
     return this.db.transaction(() => {
-      const changed = this.db.run(
-        `UPDATE management_test_runs
-         SET status = ?, failure = ?, result_json = ?, plan_json = NULL, settled_at = ?
-         WHERE test_run_id = ? AND status IN ('admitted', 'running')`,
-        settlement.status,
-        settlement.status === 'failed' ? settlement.failure : null,
-        settlement.result ? JSON.stringify(settlement.result) : null,
-        at,
-        testRunId,
-      ).changes;
-      if (changed === 0) return false;
+      if (!this.settleRow(testRunId, settlement)) return false;
       this.usage.recordTerminal(settlement.terminal);
       return true;
     });
+  }
+
+  /** As `settle`, for a terminal Usage refused: the run settles all the same, and its terminal is owed. */
+  settleWithoutTerminal(testRunId: string, settlement: TestRunSettlement): boolean {
+    return this.settleRow(testRunId, settlement);
+  }
+
+  private settleRow(testRunId: string, settlement: TestRunSettlement): boolean {
+    return this.db.run(
+      `UPDATE management_test_runs
+       SET status = ?, failure = ?, result_json = ?, plan_json = NULL
+       WHERE test_run_id = ? AND status IN ('admitted', 'running')`,
+      settlement.status,
+      settlement.status === 'failed' ? settlement.failure : null,
+      settlement.result ? JSON.stringify(settlement.result) : null,
+      testRunId,
+    ).changes > 0;
   }
 
   markErased(testRunId: string, at: number): void {
@@ -272,12 +292,10 @@ export class TestRunStoreLogic {
 }
 
 function testRunFromRow(row: Record<string, unknown>): TestRunRow {
-  const nullableNumber = (value: unknown) => value === null || value === undefined ? null : Number(value);
   const nullableString = (value: unknown) => value === null || value === undefined ? null : String(value);
   return {
     testRunId: String(row.test_run_id),
     runToken: String(row.run_token),
-    coordinateToken: String(row.coordinate_token),
     organizationId: String(row.organization_id),
     actorMembershipId: String(row.actor_membership_id),
     agentId: String(row.agent_id),
@@ -292,8 +310,6 @@ function testRunFromRow(row: Record<string, unknown>): TestRunRow {
       : JSON.parse(String(row.result_json)) as TestRunResult,
     usageOperationId: String(row.usage_operation_id),
     createdAt: Number(row.created_at),
-    settledAt: nullableNumber(row.settled_at),
-    erasedAt: nullableNumber(row.erased_at),
-    expiresAt: Number(row.expires_at),
+    erasedAt: row.erased_at === null || row.erased_at === undefined ? null : Number(row.erased_at),
   };
 }
