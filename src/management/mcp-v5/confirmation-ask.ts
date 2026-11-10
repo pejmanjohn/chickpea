@@ -21,7 +21,6 @@ interface AskTarget {
   channels: readonly string[];
 }
 
-type Change = ManagementChangeSetPreview['changes'][number];
 type Asked = Omit<ConfirmationAsk, 'consequence'>;
 
 /** Plain text: the card shows it as text, so nothing is escaped or marked up. */
@@ -43,14 +42,17 @@ export function confirmationAsk(preview: ManagementChangeSetPreview, target: Ask
   const [change] = preview.changes;
   const plain = formatChangeSetProposal(preview, PLAIN_DIALECT).trim();
   if (preview.changes.length !== 1 || !change) return { ...UNSURE, consequence: plain };
-  if (turnsAgentOff(change)) return turnOffAsk(target);
+  if (turnsAgentOff(preview)) return turnOffAsk(target);
   const asked = change.statement ? statementAsk(change.statement, target) : undefined;
   return { ...asked ?? UNSURE, consequence: plain };
 }
 
-function turnsAgentOff(change: Change): boolean {
+/** Turning an Agent off is the one ask that names its Channels: they go quiet. */
+export function turnsAgentOff(preview: ManagementChangeSetPreview): boolean {
+  const [change, ...more] = preview.changes;
   const enabled = (record: unknown) => (record as { enabled?: unknown } | undefined)?.enabled;
-  return change.operationKind === 'update_agent' && enabled(change.after) === false && enabled(change.before) !== false;
+  return change !== undefined && more.length === 0 && change.operationKind === 'update_agent' &&
+    enabled(change.after) === false && enabled(change.before) !== false;
 }
 
 function turnOffAsk({ agent, channels }: AskTarget): ConfirmationAsk {

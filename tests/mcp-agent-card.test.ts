@@ -215,6 +215,12 @@ test('turning off an Agent asks in plain words, naming the Channels that go quie
     workspaceId: teamId, channelId: 'C_SUPPORT', agentId: 'agent_support', status: 'active',
     createdByMembershipId: f.owner.membership.id, channelLabel: 'support',
   });
+  // A Channel whose name Chickpea does not have is named in words, never by its ID.
+  await f.config.putChannel({ workspaceId: teamId, channelId: 'C0PRIVATE1', lifecycle: 'active' });
+  await f.config.putAgentChannelGrant({
+    workspaceId: teamId, channelId: 'C0PRIVATE1', agentId: 'agent_support', status: 'active',
+    createdByMembershipId: f.owner.membership.id,
+  });
   const off = await call('update_agent', {
     agentId: 'agent_support', version: await version(call, 'agent_support'), on: false, idempotencyKey: 'off',
   });
@@ -222,7 +228,7 @@ test('turning off an Agent asks in plain words, naming the Channels that go quie
   const handle = off.structuredContent!.agent.handle;
   assert.deepEqual(ask, {
     question: `Turn off @${handle}?`,
-    consequence: 'It answers in #support. People who mention it there get no reply until you turn it back on. Its instructions, memory and connections stay as they are.',
+    consequence: 'It answers in #support and a private Channel. People who mention it there get no reply until you turn it back on. Its instructions, memory and connections stay as they are.',
     confirm: 'Turn off',
     keep: 'Keep it on',
   });

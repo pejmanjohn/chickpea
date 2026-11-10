@@ -13,7 +13,8 @@ import {
   type ManagementObjectRef,
   type ManagementOperation,
 } from '../types.ts';
-import { confirmationAsk } from './confirmation-ask.ts';
+import { channelNames } from '../channel-names.ts';
+import { confirmationAsk, turnsAgentOff } from './confirmation-ask.ts';
 import { fail, fiveZeroCode, versionToken, type McpErrorCode } from './conventions.ts';
 import { agentLinks, type FiveZeroDeps } from './reads.ts';
 import type * as schemas from './schemas.ts';
@@ -189,7 +190,10 @@ async function confirmationResult(
       confirmToken: pending.proposalId,
       preview: formatChangeSetProposal(preview, CONFIRMATION_DIALECT),
       expiresAt: new Date(result.confirmation.expiresAt).toISOString(),
-      ask: confirmationAsk(preview, { ...agent ? { agent } : {}, channels: await agentChannels(deps, context, about) }),
+      ask: confirmationAsk(preview, {
+        ...agent ? { agent } : {},
+        channels: turnsAgentOff(preview) ? await agentChannels(deps, context, about) : [],
+      }),
     },
   };
 }
@@ -202,10 +206,10 @@ async function agentChannels(
 ): Promise<string[]> {
   if (!agentId) return [];
   const { channels } = await deps.service.inspectWorkspace(context);
-  return channels
+  return channelNames(channels
     .filter(({ lifecycle, grants }) => lifecycle === 'active' &&
       grants.some((grant) => grant.agentId === agentId && grant.status === 'active'))
-    .map(({ label, channelId }) => `#${(label ?? channelId).replace(/^#/, '')}`);
+    .map(({ label }) => ({ name: label })));
 }
 
 /** The 4.x preview, closing with a line for the person instead of a tool name. */
