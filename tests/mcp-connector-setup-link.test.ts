@@ -317,6 +317,32 @@ test('an MCP catalog link finishes through /oauth/callback for its person only, 
   assert.equal((await h.page(setupId)).status, 410, 'the colleague does not see the finished link either');
 });
 
+test('Cancel on an MCP catalog link ends on the go-back page, never Admin, and leaves the link as it was', async (t) => {
+  const h = await harness(t, 'mcp-catalog-cancel');
+  const context = h.mcp(h.owner, CHATGPT_CLIENT);
+  const prepared = await h.service.prepareConnectorSetup(context, { agentId: h.agent.id, connector: 'Linear', ownerKind: 'member' });
+  const setupId = prepared.setupOperationId!;
+  const cookie = cookieOf(await h.exchange(prepared.handoffUrl));
+  assert.equal(await h.setupStatus(setupId, context), 'opened');
+
+  const setupPage = await h.page(setupId, cookie);
+  assert.match(setupPage.html, new RegExp(`<a class="text-button" href="/setup/${setupId}\\?cancelled=1">Cancel</a>`));
+  assert.doesNotMatch(setupPage.html, /href="\/admin/);
+  const cancelled = await h.app.request(`${ORIGIN}/setup/${setupId}?cancelled=1`, { headers: { cookie } });
+  assert.equal(cancelled.status, 200);
+  const html = await cancelled.text();
+  assert.match(html, /Linear was not connected to Project Guide/);
+  assert.match(html, /You can close this tab and go back to ChatGPT\./);
+  assert.doesNotMatch(html, /\/admin|Slack/);
+  assert.equal((await h.management.getSetup(setupId))?.status, 'claimed', 'Cancel changes nothing');
+  assert.equal(await h.setupStatus(setupId, context), 'opened');
+  assert.deepEqual(await h.config.listConnectionAccounts(h.owner.user.slackTeamId), []);
+  assert.match((await h.page(setupId, cookie)).html, /Connect Linear to Project Guide/, 'the person can still continue');
+
+  h.as(h.colleague);
+  assert.equal((await h.app.request(`${ORIGIN}/setup/${setupId}?cancelled=1`, { headers: { cookie } })).status, 410);
+});
+
 test('an MCP managed link opens only for its person and sends them back to ChatGPT by name', async (t) => {
   const h = await harness(t, 'mcp-managed-link');
   const context = h.mcp(h.owner, CHATGPT_CLIENT);
