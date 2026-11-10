@@ -3,6 +3,7 @@ import type { z } from 'zod';
 
 import { emitManagementMetric } from '../telemetry.ts';
 import type { CardName } from '../../mcp-cards/published.ts';
+import { declaresCards, holdTokens } from './card-host.ts';
 import { CARD_URIS } from './cards.ts';
 import {
   mcpErrorResult,
@@ -451,11 +452,20 @@ export const FIVE_ZERO_TOOLS = {
   }),
   confirm_change: tool({
     title: 'Confirm a change',
-    description: 'The "Are you sure?" step. Apply exactly the change a needs_confirmation result previewed, by its confirmToken, only after the person has read the preview and agreed. A token works for 30 minutes and only for the person it was made for. A retry after it applied returns the same result.',
+    description: 'The "Are you sure?" step. Apply exactly the change a needs_confirmation result previewed, by its confirmToken, only after the person read the preview and approved it in this conversation; never for a change they declined. A token works for 30 minutes, only for its person, and not after they cancel it. A retry after it applied returns the same result.',
     input: schemas.confirmChangeInput,
     output: schemas.changeResultOutput,
     write: writeHints({ destructive: true }),
     run: (deps, args) => writes.confirmChange(deps, args),
+  }),
+  decline_change: tool({
+    title: 'Keep it as it is',
+    description: 'For the confirmation card: the person chose to keep things as they are, so the confirmToken can never apply. A change it already made is returned as it is. Changes nothing else.',
+    input: schemas.declineChangeInput,
+    output: schemas.changeResultOutput,
+    visibility: ['app'],
+    write: writeHints({ destructive: false }),
+    run: (deps, args) => writes.declineChange(deps, args),
   }),
   undo_change: tool({
     title: 'Undo a change',
@@ -486,11 +496,24 @@ class OutputRejected extends Error {
   }
 }
 
-export function registerFiveZeroTools(server: McpServer, deps: FiveZeroDeps): void {
-  for (const name of FIVE_ZERO_TOOL_NAMES) register(server, deps, name, FIVE_ZERO_TOOLS[name]);
+/**
+ * `cardSession`: the client declared cards at `initialize` (card-host.ts). A
+ * 2026-07-28 request declares them itself.
+ */
+export function registerFiveZeroTools(server: McpServer, deps: FiveZeroDeps, cardSession = false): void {
+  const cardHost = () => cardSession || declaresCards(server.server.getClientCapabilities());
+  for (const name of FIVE_ZERO_TOOL_NAMES) register(server, deps, name, FIVE_ZERO_TOOLS[name], cardHost);
 }
 
-function register(server: McpServer, deps: FiveZeroDeps, name: FiveZeroToolName, definition: FiveZeroTool): void {
+function register(
+  server: McpServer,
+  deps: FiveZeroDeps,
+  name: FiveZeroToolName,
+  definition: FiveZeroTool,
+  cardHost: () => boolean,
+): void {
+  // A result only a card sees, or one a card draws: on a card host, the card holds its tokens.
+  const drawn = definition.card !== undefined || definition.visibility?.includes('model') === false;
   server.registerTool(name, {
     title: definition.title,
     description: definition.description,
@@ -510,7 +533,9 @@ function register(server: McpServer, deps: FiveZeroDeps, name: FiveZeroToolName,
       const parsed = definition.output.safeParse(await definition.run(deps, args));
       if (!parsed.success) throw new OutputRejected(parsed.error.issues.map((issue) => issue.path.join('.')));
       emitManagementMetric('tool.call', { surface: 'mcp', tool: name, outcome: 'success', durationMs: Date.now() - startedAt });
-      return mcpSuccessResult(parsed.data, definition.card ? { tool: name } : undefined);
+      if (!drawn) return mcpSuccessResult(parsed.data);
+      const { structured, held } = cardHost() ? holdTokens(parsed.data, deps.baseUrl) : { structured: parsed.data };
+      return mcpSuccessResult(structured, { tool: name, held: held as Record<string, string> | undefined });
     } catch (error) {
       const failure = mcpToolError(error);
       if (failure.code === 'temporarily_unavailable') {

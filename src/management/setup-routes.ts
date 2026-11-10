@@ -163,8 +163,8 @@ import {
 import { signInGroupKey } from '../config/sign-in-group.ts';
 import {
   agentAvatarInstallation,
-  agentAvatarUrl,
   agentAvatarUrlForPresentation,
+  sameOriginAgentAvatarUrl,
 } from '../slack/agent-presence/avatar-assets.ts';
 import { resolveSlackInstallationExecutionContext } from '../slack/installation-execution.ts';
 import { slackPresentationStatePort } from '../slack/presentation-state-port.ts';
@@ -1531,7 +1531,7 @@ async function managedConnectionPageInput(
 ) {
   try {
     const agent = await currentManagedAgent(setup, dependencies.config);
-    const avatarUrl = connectorPageAvatarUrl(
+    const avatarUrl = sameOriginAgentAvatarUrl(
       agent, requestOrigin(c), agentAvatarInstallation(c.env as PlatformEnv | undefined),
     );
     const writeCapabilities = new Set(dependencies.catalog
@@ -1594,7 +1594,7 @@ async function catalogConnectionPageInput(
     if (!preset || 'managedToolkit' in preset) return undefined;
     const agent = await dependencies.config.getAgent(setup.target.agentId);
     if (agent.lifecycle === 'archived') return undefined;
-    const avatarUrl = connectorPageAvatarUrl(
+    const avatarUrl = sameOriginAgentAvatarUrl(
       agent, requestOrigin(c), agentAvatarInstallation(c.env as PlatformEnv | undefined),
     );
     if (setup.status === 'authorizing' && principal &&
@@ -2473,25 +2473,6 @@ function managedAuthorizationUrl(url: URL): string {
     throw new ManagedAuthorizationError('invalid');
   }
   return url.href;
-}
-
-function connectorPageAvatarUrl(
-  agent: CustomAgentConfig,
-  publicOrigin: string,
-  installationId: string | undefined,
-): string | undefined {
-  const presentationUrl = agentAvatarUrlForPresentation(agent, publicOrigin, installationId);
-  if (!presentationUrl || !agent.slackPresence) return presentationUrl;
-  try {
-    if (new URL(presentationUrl).origin === new URL(publicOrigin).origin) {
-      return presentationUrl;
-    }
-  } catch {
-    return undefined;
-  }
-  // Gateway-published avatars are cross-origin. The immutable Chickpea avatar
-  // route serves the same stored revision without widening this page's CSP.
-  return agentAvatarUrl(publicOrigin, agent.id, agent.slackPresence.avatar.revision, installationId);
 }
 
 function managedStartFailureMessage(error: unknown): string {

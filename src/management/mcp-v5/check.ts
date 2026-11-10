@@ -10,7 +10,7 @@ import { ADMIN_PATH, adminOrigin, adminSettingsLinks, adminTeamLinks } from '../
 import { ManagementError } from '../types.ts';
 import { readAgentRun, readingView, resolveAgentModel, seesChannel, type AgentRunReading } from './agent-run.ts';
 import type { McpErrorFix } from './conventions.ts';
-import { connectionRows, presenceProblem, type FiveZeroDeps } from './reads.ts';
+import { agentAvatar, connectionRows, presenceProblem, type FiveZeroDeps } from './reads.ts';
 import type * as schemas from './schemas.ts';
 
 type Output = z.infer<typeof schemas.checkAgentOutput>;
@@ -40,8 +40,10 @@ export async function checkAgent(
   ]);
   // A row whose detail is already Chickpea's own words shows it as it is.
   const checks = groups.flat().map((check) => check.plain === undefined ? { ...check, plain: check.detail } : check);
+  const view = readingView(reading);
   return {
-    ...readingView(reading),
+    ...view,
+    agent: { ...view.agent, ...agentAvatar(deps, reading.agent) },
     healthy: !checks.some(({ status }) => status === 'failing'),
     checks,
   };

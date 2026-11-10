@@ -16,7 +16,7 @@ import {
 import { channelNames } from '../channel-names.ts';
 import { confirmationAsk, turnsAgentOff } from './confirmation-ask.ts';
 import { fail, fiveZeroCode, versionToken, type McpErrorCode } from './conventions.ts';
-import { agentLinks, type FiveZeroDeps } from './reads.ts';
+import { agentAvatar, agentLinks, type FiveZeroDeps } from './reads.ts';
 import type * as schemas from './schemas.ts';
 
 export type ChangeResult = z.infer<typeof schemas.changeResultOutput>;
@@ -135,7 +135,7 @@ export async function changeResult(
   deps: FiveZeroDeps,
   context: ManagementActorContext,
   result: ApplyWorkspaceChangesResult,
-  options: { agentId?: string; summary?: string } = {},
+  options: { agentId?: string; summary?: string | ((agentName: string) => string) } = {},
 ): Promise<ChangeResult> {
   if (result.status === 'clarification_required') {
     const { matches } = result.clarification;
@@ -157,7 +157,8 @@ export async function changeResult(
   const version = versioned ? changedVersion(context, applied, versioned) : undefined;
   return {
     status: 'done',
-    summary: options.summary ?? doneSummary(applied.at(-1)?.operationKind, agent?.name),
+    summary: typeof options.summary === 'function' ? options.summary(agent?.name ?? 'the Agent')
+      : options.summary ?? doneSummary(applied.at(-1)?.operationKind, agent?.name),
     ...(agent ? { agent } : {}),
     ...(version ? { version } : {}),
     ...(applied.length === 1 && applied[0]!.undoAvailable ? { undoToken: result.operationId } : {}),
@@ -275,11 +276,22 @@ export async function agentSummary(
 ): Promise<{ agent?: ChangeResult['agent']; version?: string }> {
   if (!agentId) return {};
   try {
-    const { agent } = await deps.service.agentReader(context, agentId);
+    const { agent, stores } = await deps.service.agentReader(context, agentId);
     const handle = agent.slackPresence?.normalizedHandle || undefined;
-    const links = agentLinks(deps.baseUrl, agent.id, await deps.service.slackAppLink(context));
+    const [slack, grants] = await Promise.all([deps.service.slackAppLink(context), stores.config.listAgentChannelGrants()]);
+    const links = agentLinks(deps.baseUrl, agent.id, slack);
+    const channels = grants.filter((grant) => grant.agentId === agent.id)
+      .map(({ channelId, channelLabel }) => ({ channelId, ...(channelLabel ? { name: channelLabel } : {}) }));
     return {
-      agent: { agentId: agent.id, name: agent.name, ...(handle ? { handle } : {}), ...(links ? { links } : {}) },
+      agent: {
+        agentId: agent.id,
+        name: agent.name,
+        ...(handle ? { handle } : {}),
+        status: agent.lifecycle === 'archived' ? 'archived' : agent.enabled ? 'on' : 'off',
+        ...(channels.length ? { channels } : {}),
+        ...agentAvatar(deps, agent),
+        ...(links ? { links } : {}),
+      },
       version: versionToken('agent', agent.id, agent.revision, context.organizationId),
     };
   } catch (error) {

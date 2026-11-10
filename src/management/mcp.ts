@@ -47,6 +47,7 @@ import {
   registerFiveZeroTools,
   type FiveZeroToolName,
 } from './mcp-v5/tools.ts';
+import { withCardSessions } from './mcp-v5/card-host.ts';
 import { registerCards } from './mcp-v5/cards.ts';
 import { shapeFiveZeroResults } from './mcp-v5/transport.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
@@ -193,6 +194,8 @@ interface WorkspaceManagementMcpServerInput {
   baseUrl?: string;
   /** This deployment's env: instructions and prompts name only the Settings sections its Admin shows. */
   env?: PlatformEnv;
+  /** The client declared cards at `initialize` (mcp-v5/card-host.ts). */
+  cardSession?: boolean;
 }
 
 export function createWorkspaceManagementMcpHandler(
@@ -207,16 +210,22 @@ export function createWorkspaceManagementMcpHandler(
       ...(productTelemetry ? { productTelemetry } : {}),
     },
   });
-  const handler = createMcpHandler(
-    () => createWorkspaceManagementMcpServer({
-      principal,
-      service,
-      ...(setupBaseUrl ? { baseUrl: setupBaseUrl } : {}),
-      ...(env ? { env } : {}),
-    }),
+  return workspaceManagementMcpFetch({
+    principal,
+    service,
+    ...(setupBaseUrl ? { baseUrl: setupBaseUrl } : {}),
+    ...(env ? { env } : {}),
+  });
+}
+
+/** One request to the server, which learns from its session whether the client draws cards. */
+export function workspaceManagementMcpFetch(
+  input: Omit<WorkspaceManagementMcpServerInput, 'cardSession'>,
+): McpRequestHandler {
+  return (request) => withCardSessions(request, (served, cardSession) => createMcpHandler(
+    () => createWorkspaceManagementMcpServer({ ...input, cardSession }),
     { legacy: 'stateless' },
-  );
-  return handler.fetch;
+  ).fetch(served));
 }
 
 export function createWorkspaceManagementMcpServer(
@@ -470,7 +479,7 @@ export function createWorkspaceManagementMcpServer(
     context: adapter.resolveContext,
     ...(input.baseUrl ? { baseUrl: input.baseUrl } : {}),
     ...(input.env ? { env: input.env } : {}),
-  });
+  }, input.cardSession);
   registerCards(server, input.baseUrl);
 
   server.registerResource('workspace', 'chickpea://workspace', {

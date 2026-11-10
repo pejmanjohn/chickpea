@@ -169,7 +169,7 @@ import {
 import { agentStillInSlackRefusal, archiveBeforeDeleting } from '../slack/agent-presence/left-slack.ts';
 import { THREAD_TTL_MS } from '../slack/state-limits.ts';
 import { MAX_SLACK_ATTACHMENTS } from '../slack/attachment-file-ids.ts';
-import { nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
+import { defaultAgentAvatarSeedFor, nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
 import { stripResolvedSlackCommandAddress, type SlackCommandAddress } from '../slack/command-address.ts';
 import { escapeSlackControlCharacters } from '../slack/message-format.ts';
 import { readStoredSlackTeamInfo } from '../slack/credentials.ts';
@@ -4108,6 +4108,37 @@ export class WorkspaceManagementService {
   }
 
   /** For explain_agent and check_agent; hands out the stores only after the edit-authority check. */
+  private async generatedAvatarSeeds(): Promise<string[]> {
+    return (await this.stores.config.listUserAgents()).flatMap((agent) => {
+      const avatar = agent.slackPresence?.avatar;
+      return avatar?.kind === 'generated' ? [avatar.seed ?? agent.id] : [];
+    });
+  }
+
+  /** The default avatar a creation now would pick, before the nonce breaks ties. */
+  async agentAvatarSeeds(context: ManagementActorContext): Promise<string[]> {
+    await this.requireLiveActor(context);
+    return await this.generatedAvatarSeeds();
+  }
+
+  /**
+   * The person's "keep it as it is": a pending confirmation is retired, as a
+   * Slack decline retires one, so its token never applies. A set already
+   * applied returns its result; a retired one returns nothing again.
+   */
+  async declineWorkspaceChange(input: ConfirmWorkspaceChangeInput): Promise<ManagementApplyResult | undefined> {
+    const actor = await this.requireLiveActor(input.context);
+    const proposal = await this.stores.management.getChangeSetProposal(input.proposalId);
+    if (!proposal) throw new ManagementError('proposal_not_found', 'The confirmation was not found.');
+    this.assertProposalBinding(actor, proposal);
+    if (proposal.status === 'completed' && proposal.result) return proposal.result;
+    if (proposal.status === 'applying') {
+      throw new ManagementError('operation_in_progress', 'The confirmation is already applying.');
+    }
+    if (proposal.status === 'pending') await this.stores.management.markChangeSetProposalStale(proposal.proposalId, this.now());
+    return undefined;
+  }
+
   async agentReader(context: ManagementActorContext, agentId: string) {
     const actor = await this.requireLiveActor(context);
     return { actor, agent: await this.requireEditableAgent(actor, agentId), stores: this.stores };
@@ -4136,6 +4167,7 @@ export class WorkspaceManagementService {
     const handle = agent.slackPresence?.normalizedHandle;
     return {
       agent: { name: agent.name, ...(handle ? { handle } : {}) },
+      avatar: agent,
       ...(agent.slackPresence
         ? {
             presence: {
@@ -6297,15 +6329,14 @@ export class WorkspaceManagementService {
         if (operation.agent.modelEffort) {
           await this.assertModelEffortChoice(operation.agent.model, operation.agent.modelEffort);
         }
-        const existingGeneratedSeeds = (await this.stores.config.listUserAgents()).flatMap((agent) => {
-          const avatar = agent.slackPresence?.avatar;
-          return avatar?.kind === 'generated' ? [avatar.seed ?? agent.id] : [];
-        });
+        const nonce = creationNonce ?? randomUUID();
         const intendedAfter = {
           ...materializeManagedAgent(
             actor,
             operation.agent,
-            nextDefaultAgentAvatarSeed(existingGeneratedSeeds, creationNonce ?? randomUUID()),
+            operation.defaultAvatar
+              ? defaultAgentAvatarSeedFor(operation.defaultAvatar, nonce)
+              : nextDefaultAgentAvatarSeed(await this.generatedAvatarSeeds(), nonce),
           ),
           revision: 1,
           credentialIncarnation: newAgentCredentialIncarnation(),

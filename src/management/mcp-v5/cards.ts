@@ -41,18 +41,20 @@ const CARD_TEXT: Record<CardName, { title: string; description: string; widgetDe
 const SLACK_ORIGIN = 'https://slack.com';
 
 /**
- * A card reaches nothing itself: it calls tools through the host, so it
- * needs no connect or resource domains. Links open through the host, to
- * Slack or to this deployment.
+ * A card fetches nothing itself: it calls tools through the host, so it
+ * needs no connect domains. It loads only Agent pictures, from this
+ * deployment, which serves every Agent's avatar on its own origin. Links
+ * open through the host, to Slack or to this deployment.
  */
 export function cardResourceMeta(card: CardName, baseUrl: string | undefined) {
-  const origin = baseUrl ? URL.parse(baseUrl)?.origin : undefined;
+  const parsed = baseUrl ? URL.parse(baseUrl)?.origin : undefined;
+  const own = parsed && parsed !== 'null' ? [parsed] : [];
   return {
-    ui: { csp: { connectDomains: [], resourceDomains: [] }, prefersBorder: true },
+    ui: { csp: { connectDomains: [], resourceDomains: own }, prefersBorder: true },
     'openai/widgetCSP': {
       connect_domains: [],
-      resource_domains: [],
-      redirect_domains: [...origin && origin !== 'null' ? [origin] : [], SLACK_ORIGIN],
+      resource_domains: own,
+      redirect_domains: [...own, SLACK_ORIGIN],
     },
     'openai/widgetDescription': CARD_TEXT[card].widgetDescription,
   };

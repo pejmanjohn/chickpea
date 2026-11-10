@@ -1,11 +1,13 @@
 import type { z } from 'zod';
 
+import { defaultAgentAvatarFileNamed } from '../../slack/agent-presence/default-avatar-pool.ts';
 import { AGENT_AUTHORING_GUIDE_VERSION } from '../agent-authoring/index.ts';
 import {
   ManagementError,
   type ApplyWorkspaceChangesResult,
   type ManageAgentSkillAction,
   type ManagementActorContext,
+  type ManagementAgentPatch,
   type ManagementApplyResult,
   type ManagementOperation,
   type ManagementRoutineSnapshot,
@@ -186,6 +188,7 @@ function createOperation(input: In<typeof schemas.createAgentInputSchema>, id: s
     kind: 'create_agent',
     ...(input.firstAsk ? { firstAsk: input.firstAsk } : {}),
     ...(input.createEvenIfSimilar ? { duplicateResolution: 'create_distinct' as const } : {}),
+    ...(input.avatar ? { defaultAvatar: defaultAgentAvatarFileNamed(input.avatar)! } : {}),
     agent: {
       id,
       name: input.name.trim(),
@@ -253,13 +256,21 @@ export async function updateAgent(
     if (result.status === 'clarification_required') return changeResult(deps, context, result, { agentId });
     results.push(result);
   }
-  const last = await changeResult(deps, context, results.at(-1)!, {
-    agentId,
-    ...(results.length > 1 ? { summary: 'Saved the Agent and its image model.' } : {}),
-  });
+  const saved = results.length > 1 ? 'Saved the Agent and its image model.' : fieldsChange ? savedWords(patch) : undefined;
+  const last = await changeResult(deps, context, results.at(-1)!, { agentId, ...(saved ? { summary: saved } : {}) });
   // A pair is two receipts, so neither alone undoes the change.
   if (results.length > 1) delete last.undoToken;
   return last;
+}
+
+/** A save of one of these fields says what it did; any other save is "Saved {name}." */
+function savedWords(patch: ManagementAgentPatch): ((name: string) => string) | undefined {
+  const fields = Object.keys(patch);
+  if (fields.length !== 1) return undefined;
+  if (patch.enabled !== undefined) return (name) => `Turned ${patch.enabled ? 'on' : 'off'} ${name}.`;
+  if (patch.model !== undefined) return (name) => `Changed ${name}'s model.`;
+  if (patch.editPolicy !== undefined) return (name) => `Changed who can edit ${name}.`;
+  return undefined;
 }
 
 export async function updateAgentMemory(
@@ -749,9 +760,10 @@ export async function confirmChange(
     if (error.code === 'proposal_expired') {
       fail('confirmation_expired', 'This confirmation expired, so nothing changed.', { nextStep: EXPIRED_NEXT_STEP });
     }
+    // The person kept it as it was, or a newer change replaced it.
     if (error.code === 'proposal_stale') {
-      fail('changed_since_read', 'This confirmation is out of date, so nothing changed.', {
-        nextStep: 'A newer change replaced it, or what it changes changed since. Read it again and call the tool again.',
+      fail('changed_since_read', 'That change was cancelled. Ask again to make it.', {
+        nextStep: 'Nothing changed. Propose it again only if the person asks for it again.',
       });
     }
     // What the preview showed changed after it was made, so the person saw something else.
@@ -759,6 +771,28 @@ export async function confirmChange(
       fail('changed_since_read', 'It changed since the preview, so nothing changed.', {
         nextStep: 'Read it again, then call the tool that proposed the change again with a new idempotencyKey for a fresh preview and confirmToken.',
       });
+    }
+    throw error;
+  }
+}
+
+/**
+ * The card's way out of a confirmation: its token can never apply after
+ * this. A change the token already made is returned as it is.
+ */
+export async function declineChange(
+  deps: FiveZeroDeps,
+  input: In<typeof schemas.declineChangeInput>,
+): Promise<ChangeResult> {
+  const context = await deps.context();
+  try {
+    const made = await deps.service.declineWorkspaceChange({ context, proposalId: input.confirmToken });
+    return made
+      ? await changeResult(deps, context, made, { summary: 'That change was already made.' })
+      : { status: 'unchanged', summary: 'Kept as it is. Nothing changed.' };
+  } catch (error) {
+    if (error instanceof ManagementError && (error.code === 'proposal_not_found' || error.code === 'proposal_binding_mismatch')) {
+      fail('not_found', 'No confirmation of yours has that confirmToken.');
     }
     throw error;
   }

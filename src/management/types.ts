@@ -10,6 +10,7 @@ import type {
   AgentPresenceHealth,
   ChannelConfig,
   ConnectionAccountOwnerKind,
+  CustomAgentConfig,
   ModelRole,
   NonChatModelRole,
 } from '../config/types.ts';
@@ -26,6 +27,7 @@ import type {
 } from '../routines/types.ts';
 import type { WebsiteLoginView } from '../browser/agent-website-logins.ts';
 import type { SkillUploadIssue } from '../config/skill-upload.ts';
+import type { DefaultAgentAvatarFile } from '../slack/agent-presence/default-avatar-pool.ts';
 import type { AgentAuthoringReason } from './agent-authoring/index.ts';
 import type {
   ManagementApiConnection,
@@ -141,6 +143,8 @@ export type ManagementOperation =
       duplicateResolution?: 'create_distinct';
       /** MCP only: what the Agent's direct-message welcome invites the requester to send. Kept beside the Agent, outside its config (getAgentFirstAsk). */
       firstAsk?: string;
+      /** MCP only: the default avatar its proposal showed; absent picks one as creation always has. */
+      defaultAvatar?: DefaultAgentAvatarFile;
       agent: ManagementAgentCreateInput;
     })
   | (ManagementOperationBase & {
@@ -1230,6 +1234,8 @@ export interface ManagementMemorySnapshot {
 /** What the creation card shows while a new Agent joins Slack; read-only. */
 export interface ManagementAgentCreationProgress {
   agent: ManagementAgentLabel;
+  /** What its avatar URL is made from. */
+  avatar: Pick<CustomAgentConfig, 'id' | 'slackPresence'>;
   /** Absent for an Agent with no Slack handle. */
   presence?: { health: AgentPresenceHealth; errorCode?: string };
   /** The status of each of the Agent's Channel grants. */

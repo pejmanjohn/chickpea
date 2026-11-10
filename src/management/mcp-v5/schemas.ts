@@ -6,6 +6,7 @@ import { MAX_MCP_TOOLS } from '../../config/mcp-limits.ts';
 import { MODEL_EFFORTS } from '../../config/model-effort.ts';
 import { PROVIDER_KEY_IDS } from '../../config/provider-key-ids.ts';
 import { MAX_UPLOAD_FILES } from '../../config/skill-upload.ts';
+import { DEFAULT_AGENT_AVATAR_NAMES } from '../../slack/agent-presence/default-avatar-pool.ts';
 
 /**
  * Inputs and outputs of the 5.0 management tools. Every output is strict, so
@@ -23,6 +24,7 @@ const zRole = z.enum(['owner', 'admin', 'member']);
 const zLinks = z.strictObject({ admin: z.string(), slack: z.string().optional() });
 const zWhen = z.strictObject({ display: z.string(), isoUtc: z.string() });
 const zAgentStatus = z.enum(['on', 'off', 'archived']);
+const zAvatarUrl = z.string().optional().describe('Its picture in Slack, for a card to draw.');
 
 // Inputs.
 
@@ -111,6 +113,8 @@ export const createAgentInputSchema = z.strictObject({
   })).max(100).optional(),
   firstAsk: zText(200).optional().describe('What the person should ask it first; its hello in Slack ends by inviting it.'),
   channels: z.array(zText(128)).max(20).optional().describe('Slack Channels it answers in, by channelId or #name.'),
+  avatar: z.enum(DEFAULT_AGENT_AVATAR_NAMES).optional()
+    .describe('The default picture propose_agent showed. Omit to let Chickpea pick one.'),
   createEvenIfSimilar: z.boolean().optional()
     .describe('true only after the person chose a new Agent over a similar one this tool returned.'),
   idempotencyKey: zIdempotencyKey,
@@ -316,6 +320,7 @@ export const disconnectAppInput = z.strictObject({ appId: zText(256).describe('A
 export const confirmChangeInput = z.strictObject({
   confirmToken: zText(128).describe('The confirmToken a needs_confirmation result returned.'),
 });
+export const declineChangeInput = confirmChangeInput;
 export const undoChangeInput = z.strictObject({
   undoToken: zText(128).describe('The undoToken a change returned.'),
   idempotencyKey: zIdempotencyKey,
@@ -360,6 +365,7 @@ export const getAgentOutput = z.strictObject({
   agentId: z.string(),
   name: z.string(),
   handle: z.string().optional(),
+  avatarUrl: zAvatarUrl,
   description: z.string().optional(),
   status: zAgentStatus,
   version: zVersion,
@@ -487,7 +493,7 @@ export const getSetupStatusOutput = z.strictObject({
   status: z.enum(['waiting', 'opened', 'signing_in', 'done', 'failed', 'cancelled', 'expired']),
   what: z.string(),
   expires: zWhen.optional(),
-  agent: z.strictObject({ agentId: z.string(), name: z.string().optional() }).optional(),
+  agent: z.strictObject({ agentId: z.string(), name: z.string().optional(), avatarUrl: zAvatarUrl }).optional(),
   connection: z.strictObject({
     connectionId: z.string(),
     name: z.string(),
@@ -520,6 +526,7 @@ export const proposeAgentOutput = z.strictObject({
     answersIn: z.array(z.strictObject({ channelId: z.string(), name: z.string().optional() })),
     model: z.string().optional(),
     workspaceName: z.string().optional().describe('The Slack workspace whose people can message it once it exists.'),
+    avatarUrl: z.string().optional().describe('The default picture it gets in Slack; create.arguments.avatar names it.'),
   }),
   create: z.strictObject({ tool: z.literal('create_agent'), arguments: createAgentInputSchema }),
   issues: z.array(z.string()),
@@ -549,7 +556,7 @@ const zQuote = z.union([
 ]);
 
 export const proposeAgentChangeOutput = z.strictObject({
-  agent: z.strictObject({ name: z.string(), handle: z.string().optional() }),
+  agent: z.strictObject({ name: z.string(), handle: z.string().optional(), avatarUrl: zAvatarUrl }),
   changes: z.array(z.strictObject({
     field: z.enum(['name', 'description', 'handle', 'instructions', 'on', 'model', 'effort', 'imageModel', 'whoCanEdit']),
     before: z.union([z.string(), z.boolean()]).nullable().optional(),
@@ -582,11 +589,15 @@ const changeResultShape = {
     agentId: z.string(),
     name: z.string(),
     handle: z.string().optional(),
+    status: zAgentStatus.optional(),
+    channels: z.array(z.strictObject({ channelId: z.string(), name: z.string().optional() })).optional()
+      .describe('The Slack Channels it answers in, besides direct messages.'),
+    avatarUrl: zAvatarUrl,
     links: zLinks.optional(),
   }).optional(),
   version: zVersion.optional().describe('The new version of what changed, for your next change to it.'),
   confirmation: z.strictObject({
-    confirmToken: z.string(),
+    confirmToken: z.string().optional().describe('Absent when the card above holds it: the person confirms there.'),
     preview: z.string().describe('Markdown to show the person before they agree.'),
     expiresAt: z.string().describe('After this time confirm_change refuses the token; call the tool again.'),
     ask: z.strictObject({
@@ -597,7 +608,7 @@ const changeResultShape = {
     }).describe('The question to put to the person, as a card asks it.'),
   }).optional(),
   setup: zSetup.optional(),
-  undoToken: z.string().optional().describe('Present when undo_change can reverse this change.'),
+  undoToken: z.string().optional().describe('Present when undo_change can reverse this change and no card above holds it.'),
   warnings: z.array(z.string()).optional(),
   matches: z.array(z.strictObject({ agentId: z.string(), name: z.string(), handle: z.string().optional() })).optional()
     .describe('similar_agent_exists: the Agents that already look like this one.'),
@@ -635,7 +646,7 @@ export const disconnectAppOutput = z.strictObject({
 
 export const getCreationStatusOutput = z.strictObject({
   stage: z.enum(['joining', 'said_hello', 'ready', 'needs_attention']),
-  agent: z.strictObject({ name: z.string(), handle: z.string().optional() }),
+  agent: z.strictObject({ name: z.string(), handle: z.string().optional(), avatarUrl: zAvatarUrl }),
   channels: z.enum(['none', 'joining', 'joined', 'needs_attention']),
   slackUrl: z.string().optional(),
   problem: z.string().optional(),
@@ -654,7 +665,7 @@ export const explainAgentInput = z.strictObject({ agentId: zAgentId, place: zPla
 export const checkAgentInput = z.strictObject({ agentId: zAgentId, place: zPlace, asPerson: zAsPerson });
 
 const zTokens = z.number().int().nonnegative();
-const zAgentName = z.strictObject({ agentId: z.string(), name: z.string(), handle: z.string().optional() });
+const zAgentName = z.strictObject({ agentId: z.string(), name: z.string(), handle: z.string().optional(), avatarUrl: zAvatarUrl });
 const zWhere = z.strictObject({
   kind: z.enum(['dm', 'channel']),
   channelId: z.string().optional(),

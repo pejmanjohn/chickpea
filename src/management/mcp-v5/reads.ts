@@ -3,6 +3,8 @@ import type { z } from 'zod';
 import { CHICKPEA_AGENT_ID } from '../../config/agent-id.ts';
 import { resolveConnectorCatalogPreset } from '../../config/presets.ts';
 import type { PlatformEnv } from '../../config/state-backend.ts';
+import type { CustomAgentConfig } from '../../config/types.ts';
+import { agentAvatarInstallation, sameOriginAgentAvatarUrl } from '../../slack/agent-presence/avatar-assets.ts';
 import {
   ADMIN_PATH,
   ADMIN_SETTINGS_SECTIONS,
@@ -142,6 +144,16 @@ function agentStatus(agent: SnapshotAgent): AgentRow['status'] {
   return agent.enabled ? 'on' : 'off';
 }
 
+/** Its picture as Slack shows it, on this deployment's origin, which is all a card's CSP allows. */
+export function agentAvatar(
+  deps: FiveZeroDeps,
+  agent: Pick<CustomAgentConfig, 'id' | 'slackPresence'>,
+): { avatarUrl?: string } {
+  const origin = adminOrigin(deps.baseUrl);
+  const avatarUrl = origin && sameOriginAgentAvatarUrl(agent, origin, agentAvatarInstallation(deps.env));
+  return avatarUrl ? { avatarUrl } : {};
+}
+
 export function agentLinks(baseUrl: string | undefined, agentId: string, slack: string | undefined) {
   const origin = adminOrigin(baseUrl);
   if (!origin) return undefined;
@@ -267,6 +279,7 @@ export async function getAgent(
     agentId: agent.id,
     name: agent.name,
     ...(handle ? { handle } : {}),
+    ...agentAvatar(deps, agent),
     ...(agent.description ? { description: agent.description } : {}),
     status: agentStatus(agent),
     version: agentVersion(snapshot, agent),
@@ -591,13 +604,13 @@ export async function getSetupStatus(
     });
   }
   const { target } = result;
-  const connection = await setupConnection(deps, context, target);
+  const { connection, avatarUrl } = await setupConnection(deps, context, target);
   return {
     status: SETUP_STATUS[result.status],
     what: target.targetLabel,
     expires: when(result.expiresAt),
     ...(target.agentId
-      ? { agent: { agentId: target.agentId, ...(target.agentName ? { name: target.agentName } : {}) } }
+      ? { agent: { agentId: target.agentId, ...(target.agentName ? { name: target.agentName } : {}), ...(avatarUrl ? { avatarUrl } : {}) } }
       : {}),
     ...(connection ? { connection } : {}),
   };
@@ -618,10 +631,10 @@ async function setupConnection(
   deps: FiveZeroDeps,
   context: ManagementActorContext,
   target: ManagementSetupPublicStatus['target'],
-): Promise<Out<typeof schemas.getSetupStatusOutput>['connection']> {
-  if (!target.agentId || !CONNECTION_TARGETS.has(target.kind)) return undefined;
+): Promise<{ connection?: Out<typeof schemas.getSetupStatusOutput>['connection']; avatarUrl?: string }> {
+  if (!target.agentId || !CONNECTION_TARGETS.has(target.kind)) return {};
   const agent = await agentConnectionsOf(deps, context, target.agentId);
-  if (!agent) return undefined;
+  if (!agent) return {};
   const rows = connectionRows(agent);
   let row: ConnectionRow | undefined;
   if (target.connectionId) {
@@ -632,7 +645,10 @@ async function setupConnection(
     const connector = target.presetId ? resolveConnectorCatalogPreset(target.presetId) : undefined;
     row = connector && target.ownerKind ? catalogConnection(agent, connector, target.ownerKind) : undefined;
   }
-  return row && { connectionId: row.connectionId, name: row.name, kind: row.kind, status: row.status };
+  return {
+    ...row ? { connection: { connectionId: row.connectionId, name: row.name, kind: row.kind, status: row.status } } : {},
+    ...agentAvatar(deps, agent.avatar),
+  };
 }
 
 /**
@@ -644,7 +660,7 @@ export async function agentConnectionsOf(
   deps: FiveZeroDeps,
   context: ManagementActorContext,
   agentId: string,
-): Promise<AgentConnectionView | undefined> {
+): Promise<(AgentConnectionView & { avatar: CustomAgentConfig }) | undefined> {
   const reader = await deps.service.agentReader(context, agentId).catch((error: unknown) => {
     if (error instanceof ManagementError) return undefined;
     throw error;
@@ -667,6 +683,7 @@ export async function agentConnectionsOf(
     apiConnections: lanes.apiConnections.map(managementApiConnection),
     connectionStatus: managementConnectionStatus(lanes),
     ...(projected.length > 0 ? { connections: projected.map(withoutRevisions) } : {}),
+    avatar: reader.agent,
   };
 }
 
@@ -711,7 +728,7 @@ export async function getCreationStatus(
   const hello = welcome === 'delivered' ? agentWelcomeQuote(progress.welcome!.receipt) : undefined;
   return {
     stage,
-    agent: progress.agent,
+    agent: { ...progress.agent, ...agentAvatar(deps, progress.avatar) },
     channels: grants.length === 0 ? 'none'
       : grants.includes('needs_attention') ? 'needs_attention'
         : grants.includes('pending') ? 'joining' : 'joined',
