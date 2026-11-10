@@ -744,7 +744,7 @@ function presentProposal({ proposal, issues }: Proposal): Omit<Presentation<Acti
         parts: [
           { text: 'Answers in ' },
           { text: where, strong: true },
-          { text: `. Anyone in ${proposal.workspaceName ?? 'your Slack workspace'} can message it.` },
+          { text: `. Anyone in ${proposal.workspaceName?.trim() || 'your Slack workspace'} can message it.` },
         ],
       },
       ...proposal.needs.length

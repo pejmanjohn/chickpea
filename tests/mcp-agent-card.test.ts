@@ -200,6 +200,8 @@ test('after the next version is published, a chat drawn with an older card still
     cwd: release,
     env: { ...process.env, PUBLISHED_JSON: join(release, 'published.json') },
     encoding: 'utf8',
+    // Every card's page goes through stdout; three at once outgrow the default 1 MiB.
+    maxBuffer: 64 * 1024 * 1024,
   });
   const { toolsName, allowlisted, served } = JSON.parse(output) as { toolsName: Record<string, string>; allowlisted: string[]; served: Record<string, string> };
   assert.deepEqual(toolsName, { ...CARD_URIS, 'connect-card': `ui://chickpea/connect-card-v${next.version}` }, 'tools name the newest of each card');

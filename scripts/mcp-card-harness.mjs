@@ -685,6 +685,8 @@ try {
       'the example reply keeps its line breaks');
     assert.deepEqual((await said()).map(({ cut }) => cut), [false, false], 'a short example shows whole');
     assert.equal(await subtitle(), '@invoices', 'the handle, and no "handle is free"');
+    assert.deepEqual(await browser.inCard('[...document.querySelectorAll(".cp-msg .sr-only")].map((node) => node.textContent)'),
+      ['You: ', 'Invoice Chaser: '], 'a screen reader hears who said each line of the example');
     assert.deepEqual(await smallPrint(), [
       'Answers in your DMs and #finance. Anyone in Acme can message it.',
       'Needs Stripe · you sign in after it\'s created',
