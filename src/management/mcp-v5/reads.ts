@@ -9,6 +9,7 @@ import {
   adminSettingsLinks,
   adminTeamUrl,
 } from '../admin-links.ts';
+import { agentWelcomeQuote } from '../receipts.ts';
 import type { WorkspaceManagementService } from '../service.ts';
 import {
   ManagementError,
@@ -614,6 +615,7 @@ export async function getCreationStatus(
     : welcome === 'delivered' ? 'said_hello'
       : welcome !== undefined || health === 'pending' ? 'joining' : 'ready';
   const grants = progress.channelGrants;
+  const hello = welcome === 'delivered' ? agentWelcomeQuote(progress.welcome!.receipt) : undefined;
   return {
     stage,
     agent: progress.agent,
@@ -622,6 +624,7 @@ export async function getCreationStatus(
         : grants.includes('pending') ? 'joining' : 'joined',
     ...(slackUrl ? { slackUrl } : {}),
     ...(problem ? { problem } : {}),
+    ...(hello ? { hello } : {}),
   };
 }
 

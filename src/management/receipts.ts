@@ -848,13 +848,7 @@ function isChickpeaIntroduction(
 function formatAgentCreatedWelcome(receipt: ManagementAgentCreatedWelcome, groupDm: boolean): string {
   const incomplete = receipt.publication?.incomplete ?? [];
   if (incomplete.includes('slack_presence')) return formatAgentWelcomeFallback(receipt, groupDm);
-  const description = receipt.agentDescription
-    ? boundedSlackText(receipt.agentDescription, 400)
-    : undefined;
-  const handle = receipt.agentHandle ? ` (@${boundedSlackText(receipt.agentHandle, 80)})` : '';
-  const lines = [
-    `Hi — I’m *${boundedSlackText(receipt.agentName, 80)}*${handle}.${description ? ` ${description}` : ''}`,
-  ];
+  const lines = [welcomeGreeting(receipt, boundedSlackText, (name) => `*${name}*`)];
   const handleChange = takenHandleText(receipt, 'my');
   if (handleChange) lines.push(handleChange);
   if (incomplete.includes('source_channel')) {
@@ -893,8 +887,30 @@ function formatAgentCreatedWelcome(receipt: ManagementAgentCreatedWelcome, group
   return lines.join('\n\n');
 }
 
-function firstAskInvitation(firstAsk: string, agent: 'me' | 'it'): string {
-  return `Try asking ${agent}: “${boundedSlackText(firstAsk, 200)}”`;
+type BoundedText = (value: string, max: number) => string;
+
+function welcomeGreeting(receipt: ManagementAgentCreatedWelcome, text: BoundedText, name: (value: string) => string): string {
+  const description = receipt.agentDescription ? text(receipt.agentDescription, 400) : undefined;
+  const handle = receipt.agentHandle ? ` (@${text(receipt.agentHandle, 80)})` : '';
+  return `Hi — I’m ${name(text(receipt.agentName, 80))}${handle}.${description ? ` ${description}` : ''}`;
+}
+
+function firstAskInvitation(firstAsk: string, agent: 'me' | 'it', text: BoundedText = boundedSlackText): string {
+  return `Try asking ${agent}: “${text(firstAsk, 200)}”`;
+}
+
+/**
+ * An Agent's hello in its own name as plain text: the greeting and the first
+ * thing to ask it, without links or notices. None for the hello Chickpea
+ * posts in its place, which says something else.
+ */
+export function agentWelcomeQuote(receipt: ManagementReceipt): string | undefined {
+  if (!isAgentCreatedWelcome(receipt) || receipt.publication?.incomplete.includes('slack_presence')) return undefined;
+  const plain: BoundedText = (value, max) => value.slice(0, max).trim();
+  return [
+    welcomeGreeting(receipt, plain, (name) => name),
+    ...(receipt.firstAsk ? [firstAskInvitation(receipt.firstAsk, 'me', plain)] : []),
+  ].join('\n\n');
 }
 
 function formatAgentWelcomeFallback(receipt: ManagementAgentCreatedWelcome, groupDm: boolean): string {

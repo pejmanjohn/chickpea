@@ -13,6 +13,7 @@ import {
   type ManagementObjectRef,
   type ManagementOperation,
 } from '../types.ts';
+import { confirmationAsk } from './confirmation-ask.ts';
 import { fail, fiveZeroCode, versionToken, type McpErrorCode } from './conventions.ts';
 import { agentLinks, type FiveZeroDeps } from './reads.ts';
 import type * as schemas from './schemas.ts';
@@ -175,7 +176,10 @@ async function confirmationResult(
   if (!pending?.proposalId || !result.confirmation) {
     fail('confirmation_expired', 'This confirmation expired, so nothing changed.', { nextStep: EXPIRED_NEXT_STEP });
   }
-  const { agent } = await agentSummary(deps, context, agentId);
+  const { preview } = result.confirmation;
+  // An undo names no Agent of its own; its frozen change does.
+  const about = agentId ?? preview.changes.map(({ target }) => /^agent:(.+)$/.exec(target)?.[1]).find(Boolean);
+  const { agent } = await agentSummary(deps, context, about);
   return {
     status: 'needs_confirmation',
     summary: 'This change waits for the person\'s confirmation. Nothing has changed yet.',
@@ -183,10 +187,25 @@ async function confirmationResult(
     ...(agent ? { agent } : {}),
     confirmation: {
       confirmToken: pending.proposalId,
-      preview: formatChangeSetProposal(result.confirmation.preview, CONFIRMATION_DIALECT),
+      preview: formatChangeSetProposal(preview, CONFIRMATION_DIALECT),
       expiresAt: new Date(result.confirmation.expiresAt).toISOString(),
+      ask: confirmationAsk(preview, { ...agent ? { agent } : {}, channels: await agentChannels(deps, context, about) }),
     },
   };
+}
+
+/** The Channels an Agent answers in now, by name, for a confirmation that would silence it there. */
+async function agentChannels(
+  deps: FiveZeroDeps,
+  context: ManagementActorContext,
+  agentId: string | undefined,
+): Promise<string[]> {
+  if (!agentId) return [];
+  const { channels } = await deps.service.inspectWorkspace(context);
+  return channels
+    .filter(({ lifecycle, grants }) => lifecycle === 'active' &&
+      grants.some((grant) => grant.agentId === agentId && grant.status === 'active'))
+    .map(({ label, channelId }) => `#${(label ?? channelId).replace(/^#/, '')}`);
 }
 
 /** The 4.x preview, closing with a line for the person instead of a tool name. */

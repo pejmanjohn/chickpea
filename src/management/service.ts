@@ -4144,7 +4144,7 @@ export class WorkspaceManagementService {
           }
         : {}),
       channelGrants: grants.filter((grant) => grant.agentId === agentId).map(({ status }) => status),
-      ...(welcome ? { welcome: { status: welcome.status } } : {}),
+      ...(welcome ? { welcome: { status: welcome.status, receipt: welcome.receipt } } : {}),
     };
   }
 
