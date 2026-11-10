@@ -16,7 +16,7 @@ import {
 } from '../src/agents/runtime-plan.ts';
 import {
   installationAgentObject,
-  routineExecutionCloudflareExtension,
+  creationPlanAgentExtension,
 } from '../src/agents/cloudflare-extension.ts';
 import { MANAGED_CONNECTOR_CATALOG, requireConnectorDetails } from '../src/connections/catalog/index.ts';
 import { CapabilityNotLoadedError } from '../src/runtime/on-demand.ts';
@@ -401,9 +401,10 @@ test('the state store, thread runners and Flue agents serve the installation the
   assert.match(source('agents/turn-input.ts'), /extends \(\s*installationAgentObject\(Base\)/);
   assert.match(source('agents/coding-worker-staging.ts'), /extends \(\s*installationAgentObject\(Base\)/);
   assert.match(source('agents/routine-intent.ts'), /export const cloudflare = installationAgentExtension;/);
-  assert.match(source('agents/routine-execution.ts'), /export const cloudflare = routineExecutionCloudflareExtension;/);
+  assert.match(source('agents/routine-execution.ts'), /export const cloudflare = creationPlanAgentExtension;/);
+  assert.match(source('agents/test-turn.ts'), /export const cloudflare = creationPlanAgentExtension;/);
   assert.match(source('agents/cloudflare-extension.ts'),
-    /routineExecutionCloudflareExtension = \{[\s\S]*?installationAgentObject\(Base\)/);
+    /creationPlanAgentExtension = \{[\s\S]*?installationAgentObject\(Base\)/);
   assert.match(source('agents/slack-thread.ts'), /export const cloudflare = slackThreadCloudflareExtension;/);
   assert.match(source('agents/coding-worker.ts'), /export const cloudflare = codingWorkerCloudflareExtension;/);
   assert.match(
@@ -412,13 +413,13 @@ test('the state store, thread runners and Flue agents serve the installation the
   );
 });
 
-test('a routine run object loads every connector detail when it starts, since no staging precedes its render', async () => {
+test('a routine or test run object loads every connector detail when it starts, since no staging precedes its render', async () => {
   class FakeAgentBase {
     started = 0;
     constructor(_ctx: unknown, _env: unknown) {}
     onStart() { this.started += 1; }
   }
-  const Routine = routineExecutionCloudflareExtension.base(FakeAgentBase as never) as unknown as new (
+  const Routine = creationPlanAgentExtension.base(FakeAgentBase as never) as unknown as new (
     ctx: { id: { name?: string } }, env: unknown,
   ) => { onStart(): Promise<unknown>; started: number };
   const toolkits = MANAGED_CONNECTOR_CATALOG.list().map(({ toolkit }) => toolkit);

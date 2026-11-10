@@ -5,11 +5,13 @@ import { CodingWorker } from '../src/agents/coding-worker.ts';
 import { ChickpeaRoutineExecution } from '../src/agents/routine-execution.ts';
 import { ChickpeaRoutineIntent } from '../src/agents/routine-intent.ts';
 import { ChickpeaSlack } from '../src/agents/slack-thread.ts';
+import { ChickpeaTestTurn } from '../src/agents/test-turn.ts';
 import {
   CHICKPEA_CODING_WORKER_AGENT_NAME,
   CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME,
   CHICKPEA_ROUTINE_INTENT_AGENT_NAME,
   CHICKPEA_SLACK_AGENT_NAME,
+  CHICKPEA_TEST_TURN_AGENT_NAME,
   MANAGED_SUBMISSION_AGENT_NAMES,
   UNATTENDED_AGENT_NAMES,
 } from '../src/agents/names.ts';
@@ -24,6 +26,15 @@ test('registered agent names match the constants runtime policy keys off', () =>
   assert.equal(ChickpeaRoutineIntent.agentName, CHICKPEA_ROUTINE_INTENT_AGENT_NAME);
   assert.equal(ChickpeaRoutineExecution.agentName, CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME);
   assert.equal(CodingWorker.agentName, CHICKPEA_CODING_WORKER_AGENT_NAME);
+  assert.equal(ChickpeaTestTurn.agentName, CHICKPEA_TEST_TURN_AGENT_NAME);
+  assert.equal(ChickpeaTestTurn.agentName, 'chickpea-test-turn-v1', 'the literal names the v12 class FlueChickpeaTestTurnV1Agent');
+});
+
+// The connection write gate's second layer holds only for these names: for
+// any other agent it finds no submission state and lets the write through
+// (memory/tool-policy.ts, assertCurrentRequestContext).
+test('a test run is a managed submission, so the connection write gate holds for it', () => {
+  assert.ok((MANAGED_SUBMISSION_AGENT_NAMES as readonly string[]).includes(ChickpeaTestTurn.agentName!));
 });
 
 test('the coding worker carries no tool authority, so it is not a managed submission', () => {
@@ -38,6 +49,7 @@ test('every agent that runs a Slack submission is covered by the managed-submiss
     ChickpeaSlack.agentName,
     ChickpeaRoutineIntent.agentName,
     ChickpeaRoutineExecution.agentName,
+    ChickpeaTestTurn.agentName,
   ].sort();
   assert.deepEqual([...MANAGED_SUBMISSION_AGENT_NAMES].sort(), registered);
 });
@@ -54,4 +66,6 @@ test('the unattended set is exactly the routine agents', () => {
     false,
     'the interactive Slack agent has a human in the loop and must not be treated as unattended',
   );
+  assert.equal((UNATTENDED_AGENT_NAMES as readonly string[]).includes(ChickpeaTestTurn.agentName!), false,
+    'a test run answers the person who asked for it');
 });

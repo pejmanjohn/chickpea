@@ -2,6 +2,7 @@ import { defineTool, type JsonValue } from '@flue/runtime';
 import * as v from 'valibot';
 
 import { matchesEgressPrefix, type ConnectionScopedFetch } from '../config/egress.ts';
+import { overridesMethod } from '../config/method-override.ts';
 import { assertConnectionWriteAllowed } from '../memory/tool-policy.ts';
 import type { ConnectionAccess, ConnectionDeclaration } from './access.ts';
 import {
@@ -64,6 +65,8 @@ export interface ConnectionRequestToolOptions {
   /** This turn's live connections; resolved per call. */
   resolveAccess(): Promise<ConnectionAccess>;
   agentId: string;
+  /** A test run's: only GET and HEAD, whatever the connection allows. */
+  readsOnly?: boolean;
   /** Operator log line; defaults to console.info. Never receives credentials or bodies. */
   log?: (event: ConnectionRequestLogEvent) => void;
 }
@@ -148,6 +151,9 @@ export function createConnectionRequestTool(options: ConnectionRequestToolOption
         });
         return connectionRefusal(reason, message, extra);
       };
+      if (options.readsOnly && !READ_METHODS.has(method)) {
+        return refuse('write_not_allowed', 'This run can only read through connections: send GET or HEAD.');
+      }
 
       try {
         target = new URL(data.url);
@@ -165,6 +171,12 @@ export function createConnectionRequestTool(options: ConnectionRequestToolOption
       }
       if (target.href.length > MAX_URL_CHARS * 2) {
         return refuse('url_not_allowed', 'The URL with its query is too long.');
+      }
+      // Some services let a GET act as another method, which would skip the
+      // connection's method check and the write gate below.
+      if (READ_METHODS.has(method) && overridesMethod(target, Object.keys(data.headers ?? {}))) {
+        return refuse('write_not_allowed', 'A GET or HEAD cannot carry a method override header or a _method parameter. ' +
+          'The same request will be refused again, so remove the override before retrying.');
       }
 
       const access = await options.resolveAccess();

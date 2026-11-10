@@ -4,7 +4,7 @@ import { mcpOAuthLifecycleDependencies } from '../connections/mcp-oauth-lifecycl
 import type { McpConnectionDefinition } from '@flue/runtime';
 
 import { withMcpHttpTelemetry } from './mcp-telemetry.ts';
-import { assertMcpToolArgumentKeys, assertMcpToolArguments } from './mcp-tool-policy.ts';
+import { assertMcpToolArgumentKeys, assertMcpToolArguments, mcpToolDeclaredRead } from './mcp-tool-policy.ts';
 import {
   META_ADS_ACCOUNT_HELPER,
   assertMetaAdsHelperArguments,
@@ -181,14 +181,19 @@ export function resolveProfileMcpConnections(
  * Materialize a frozen RuntimePlanV2 MCP declaration without capturing a
  * token, request, or Cloudflare invocation context. Each request re-reads the
  * current profile row, requires it to remain within the frozen declaration,
- * and resolves credentials from the trusted settings seam.
+ * and resolves credentials from the trusted settings seam. With `readsOnly`
+ * (a test run), every tool must also still be declared a read.
  */
 export function resolveRuntimePlanMcpConnections(
   profileId: string,
   declarations: readonly RuntimePlanMcpConnectionV2[],
   onConnectionStart?: (connection: { id: string; displayName: string }) => void,
   accountContext?: { workspaceId: string; actorMembershipId: string },
-  testOptions?: { createGuardedFetch?: typeof createMcpGuardedFetch },
+  options: {
+    readsOnly?: boolean;
+    /** Tests only. */
+    createGuardedFetch?: typeof createMcpGuardedFetch;
+  } = {},
 ): McpConnectionDefinition[] {
   return declarations.flatMap((declaration) => {
     const allowedTools = runtimeAllowedToolsForDeclaration(declaration);
@@ -236,7 +241,8 @@ export function resolveRuntimePlanMcpConnections(
         const profile = await config.getAgent(profileId);
         server = profile.mcpServers.find((candidate) => candidate.id === declaration.id);
       }
-      if (!server || !runtimeMcpDeclarationStillAllowed(server, effectiveDeclaration)) {
+      if (!server || !runtimeMcpDeclarationStillAllowed(server, effectiveDeclaration) ||
+          (options.readsOnly && !effectiveDeclaration.allowedTools.every((tool) => mcpToolDeclaredRead(server, tool)))) {
         throw new Error('MCP connection policy changed; a new agent instance is required.');
       }
       try {
@@ -246,7 +252,7 @@ export function resolveRuntimePlanMcpConnections(
       }
       return { server, env };
     };
-    const guardedFetch = (testOptions?.createGuardedFetch ?? createMcpGuardedFetch)({
+    const guardedFetch = (options.createGuardedFetch ?? createMcpGuardedFetch)({
       allowedOrigin: new URL(validated.url).origin,
       authorizeRequest: async () => { await requireCurrentServer(); },
     });
@@ -288,7 +294,7 @@ export function resolveRuntimePlanMcpConnections(
           server,
           invocation,
           headers,
-          testOptions?.createGuardedFetch,
+          options.createGuardedFetch,
           request.signal,
           async () => { await requireCurrentServer(); },
         );

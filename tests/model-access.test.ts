@@ -14,6 +14,7 @@ import type { FlueExecutionContext } from '@flue/runtime';
 
 import { lookupAttemptModelAccess } from '../src/agents/model-access-lookup.ts';
 import { compileRuntimePlanV2, deriveRuntimePlanInstanceId, type RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import { compileTestRunPlan } from '../src/agents/test-run-plan.ts';
 import { createSlackTurnInput, rememberInProcessTurnInput } from '../src/agents/turn-input.ts';
 import {
   codingWorkerInstanceId,
@@ -72,7 +73,7 @@ import { registerPiProvider, registeredPiProvider } from '../src/config/pi-provi
 import { resolveRuntimeModel } from '../src/config/runtime-model.ts';
 import { saveOpenAiAuthMethod } from '../src/config/openai-auth.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
-import { getRoutineStore, type PlatformEnv } from '../src/config/state-backend.ts';
+import { getRoutineStore, getSlackStateStore, type PlatformEnv } from '../src/config/state-backend.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { createWorkModelInvocationInterceptor } from '../src/work/model-invocation.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
@@ -821,6 +822,79 @@ test('the routine lookup binds the running occurrence\'s frozen plan, owned by t
         async () => undefined),
       { env: undefined },
     );
+  });
+});
+
+/** A test run of the lookup's Agent, as admission compiles it for a member's DM. */
+function testRunPlan(env?: PlatformEnv): RuntimePlanV2 {
+  const installation = installationOwnershipOf(env);
+  return compileTestRunPlan({
+    assignment: assistantAssignment(), runtimeModel: 'anthropic/claude-haiku-4-5',
+    imageCapability: { role: 'image', filled: false, acceptsImageInput: false }, sandboxUnavailableFallback: false,
+    websiteLogins: [], webSearch: false, connections: [],
+  }, {
+    workspaceId: 'T1', actorMembershipId: 'membership_1', testRunId: 'testrun_lookup',
+    coordinateToken: 'abcdefghijklmnopqrst234567', ...(installation ? { installation } : {}),
+    instructions: 'Answer.', memoryEpoch: 1,
+  });
+}
+
+test('a test run binds model access only through its live run row, and never gets the default bare access', async () => {
+  await withEnv({ ...NO_DEPLOYMENT_KEYS, SLACK_STATE_DB_PATH: ':memory:' }, async () => {
+    const store = getSlackStateStore();
+    const plan = testRunPlan();
+    const instanceId = deriveRuntimePlanInstanceId(plan);
+    const testRun = (submissionId: string | undefined, instance = instanceId): FlueExecutionContext =>
+      ({ instanceId: instance, ...(submissionId ? { submissionId } : {}), agentName: 'chickpea-test-turn-v1' });
+    const scopeMissing = (error: unknown) => error instanceof ModelAccessError && error.code === 'scope_missing';
+
+    // The default branch gives an agent it does not know bare access; a test run with no row gets none.
+    assert.deepEqual(await lookupAttemptModelAccess({ ...testRun('sub_test'), agentName: 'chickpea-unknown-v1' },
+      async () => undefined), { env: undefined });
+    assert.equal(store.bindTestRunModelAccess, undefined, 'no state store serves test runs yet');
+    await assert.rejects(lookupAttemptModelAccess(testRun('sub_test'), async () => undefined), scopeMissing);
+
+    const asked: Array<[string, string]> = [];
+    let row: { runtimePlan: unknown } | undefined = { runtimePlan: JSON.parse(JSON.stringify(plan)) };
+    store.bindTestRunModelAccess = async (instance, submission) => {
+      asked.push([instance, submission]);
+      return row;
+    };
+    try {
+      // A live row: the plan's frozen credential, with the submission as the run every request and fee carries.
+      const attempt = await lookupAttemptModelAccess(testRun('sub_test'), async () => undefined);
+      assert.deepEqual('grant' in attempt && attempt.grant, {
+        installationId: 'installation_oss', providerId: 'anthropic', credentialRefId: 'cred_anthropic_environment',
+        credentialVersion: 1, runId: 'sub_test', fundingSource: 'customer',
+      });
+      assert.equal(attempt.runKind, 'interactive', 'a test run is a reply its caller asked for');
+      assert.deepEqual(asked, [[instanceId, 'sub_test']], 'the store binds the attempt\'s own submission');
+
+      // Settled, expired or bound to another submission: the store answers none, and the attempt fails closed.
+      row = undefined;
+      await assert.rejects(lookupAttemptModelAccess(testRun('sub_test'), async () => undefined), scopeMissing);
+      // A row whose plan names another instance, or a Slack turn's plan.
+      row = { runtimePlan: plan };
+      await assert.rejects(lookupAttemptModelAccess(testRun('sub_test', `agent_${'f'.repeat(40)}`), async () => undefined), scopeMissing);
+      const slack = compiledPlan();
+      row = { runtimePlan: slack };
+      await assert.rejects(lookupAttemptModelAccess(testRun('sub_test', deriveRuntimePlanInstanceId(slack)), async () => undefined), scopeMissing);
+      // No submission to bind.
+      row = { runtimePlan: plan };
+      await assert.rejects(lookupAttemptModelAccess(testRun(undefined), async () => undefined), scopeMissing);
+
+      // A deployment serving many: the plan, its instance and the attempt's env name one installation.
+      const envA = scopeInstallationEnv(HOSTED as Record<string, unknown>, { installationId: 'inst_a' });
+      const envB = scopeInstallationEnv(HOSTED as Record<string, unknown>, { installationId: 'inst_b' });
+      const hosted = testRunPlan(envA);
+      row = { runtimePlan: hosted };
+      const hostedAttempt = await lookupAttemptModelAccess(testRun('sub_hosted', deriveRuntimePlanInstanceId(hosted)), async () => envA);
+      assert.equal('grant' in hostedAttempt && hostedAttempt.grant.installationId, 'inst_a');
+      await assert.rejects(lookupAttemptModelAccess(testRun('sub_hosted', deriveRuntimePlanInstanceId(hosted)), async () => envB),
+        /another installation/);
+    } finally {
+      delete store.bindTestRunModelAccess;
+    }
   });
 });
 

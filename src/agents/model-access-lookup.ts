@@ -6,12 +6,13 @@
  * only Flue's coordinates `(agentName, instanceId, submissionId)`. The run is
  * found in state the host persisted when it dispatched: a Slack turn through
  * its TurnJob (the `matchFlueObservation` match) and the plan staged beside
- * the thread's instance; a routine occurrence through its persisted dispatch.
+ * the thread's instance; a routine occurrence through its persisted dispatch;
+ * a test run through its run row, only while the run is live.
  * Nothing model-visible or tool-supplied is consulted. The sandbox factory is
  * not a binding point: Flue runs it outside the agent operation when it
  * reconciles a resumed attempt.
  *
- * A Slack or routine attempt whose run is not found fails closed: every turn
+ * A Slack, routine or test attempt whose run is not found fails closed: every turn
  * is staged before its dispatch, and every occurrence persists its dispatch
  * before it starts, so a miss means the lookup broke or the run settled.
  *
@@ -41,6 +42,7 @@ import {
   CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME,
   CHICKPEA_ROUTINE_INTENT_AGENT_NAME,
   CHICKPEA_SLACK_AGENT_NAME,
+  CHICKPEA_TEST_TURN_AGENT_NAME,
 } from './names.ts';
 import {
   readStagedCodingWorkerBinding,
@@ -50,6 +52,8 @@ import {
 import { parseRoutineExecutionInitialData } from './routine-execution-data.ts';
 import {
   assertRuntimePlanInstallation,
+  deriveRuntimePlanInstanceId,
+  parseRuntimePlanV2,
   type RuntimePlanModelCredentialV3,
   type RuntimePlanV2,
 } from './runtime-plan.ts';
@@ -112,6 +116,9 @@ export async function lookupAttemptModelAccess(
       break;
     case CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME:
       if (instanceId) plan = await routineOccurrencePlan(instanceId, env);
+      break;
+    case CHICKPEA_TEST_TURN_AGENT_NAME:
+      if (instanceId && submissionId) plan = await testRunPlan(instanceId, submissionId, env);
       break;
     case CHICKPEA_CODING_WORKER_AGENT_NAME: {
       const staged = submissionId ? await stagedCodingWorkerRun(submissionId) : undefined;
@@ -244,6 +251,16 @@ async function slackTurnPlan(
     isCloudflareTarget() ? undefined : (turnJobId) => getSlackStateStore(env).readTurnInputJson?.(turnJobId),
   );
   return staged?.instanceId === instanceId ? staged.runtimePlan : undefined;
+}
+
+async function testRunPlan(
+  instanceId: string,
+  submissionId: string,
+  env: PlatformEnv | undefined,
+): Promise<RuntimePlanV2 | undefined> {
+  const row = await getSlackStateStore(env).bindTestRunModelAccess?.(instanceId, submissionId);
+  const plan = row && parseRuntimePlanV2(row.runtimePlan);
+  return plan?.conversation.surface === 'test' && deriveRuntimePlanInstanceId(plan) === instanceId ? plan : undefined;
 }
 
 /** The plan in the running occurrence's persisted dispatch, validated as the agent validates it. */
