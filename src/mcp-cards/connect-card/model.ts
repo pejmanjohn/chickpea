@@ -14,6 +14,7 @@ import {
   POLL_CEILING_MS,
   POLL_INTERVAL_MS,
   presentSafely,
+  quoted,
   sequenced,
   show,
   stay,
@@ -108,7 +109,7 @@ export type View =
   | ({ kind: 'elsewhere' } & Link);
 
 export type State = CardState<View>;
-export type Action = 'connect' | 'done' | 'open_slack' | 'new_link' | 'try_once' | 'try_fix' | 'change_something';
+export type Action = 'connect' | 'done' | 'open_slack' | 'new_link' | 'try_once' | 'try_fix' | 'change_something' | 'check_again';
 export type Event = CardEvent<Action>;
 
 export const INITIAL: State = { view: { kind: 'waiting' }, busy: false, seq: 0 };
@@ -222,7 +223,7 @@ function setupStatus(state: State, view: Open, status: SetupStatus, now: number)
   const before = view.flow === 'reconnect' ? view.before ?? connection?.status ?? 'none' : undefined;
   // The Agent has it ready: done, even when this link still waits because it was set up another way.
   const readyNow = connection?.status === 'ready' && (view.flow === 'connect' || before !== 'ready');
-  const what = view.setup.what;
+  const what = quoted(view.setup.what);
   const agent = view.agent ? ` ${view.flow === 'reconnect' ? 'for' : 'to'} ${agentNamed(view.agent.name)}` : '';
   if (status.status === 'done' || readyNow) {
     const done = connected(view, connection, status.agent?.hasFirstAsk === true);

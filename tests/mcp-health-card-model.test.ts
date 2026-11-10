@@ -139,7 +139,7 @@ test('what needs attention comes first, each with its fix as a link; the healthy
   await health.press('hide');
   assert.equal(rows(health.shown).length, 4);
   await health.dispatch({ type: 'reread', now: clock.now });
-  assert.deepEqual(health.calls().map(({ tool }) => tool), ['get_agent'], 'showing it, and coming back to it, read only the Agent');
+  assert.deepEqual(health.calls().map(({ tool }) => tool), ['get_agent', 'get_agent'], 'showing it, and coming back to it, read only the Agent');
 });
 
 // Mutation proof: a health fix never writes without a click.
@@ -164,7 +164,7 @@ test('a setup-link fix calls its tool only when pressed, and opens the Chickpea 
   assert.equal(health.shown.title, '3 things need attention', 'the title stays the same');
   assert.deepEqual(health.effects.filter(({ type }) => type === 'context'), [{
     type: 'context',
-    text: 'The person opened Chickpea\'s page to Reconnect Linear for the Agent "Ops" from the card. It changes when they finish there.',
+    text: 'The person pressed "Reconnect Linear" for the Agent "Ops" on the card, which opened Chickpea\'s page. It changes when they finish there.',
   }]);
   assert.equal(health.shown.announce, '3 things need attention. Linear: Finish on the Chickpea page that opened, then come back.');
 

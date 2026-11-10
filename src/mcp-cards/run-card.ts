@@ -1,18 +1,33 @@
 import { applyHostContext, HostBridge, type CallToolResult } from './bridge.ts';
-import { withResponseMeta, type CardEvent, type CardState, type Effect, type Presentation, type Step } from './card-model.ts';
+import {
+  boundedTold,
+  hostFailed,
+  withResponseMeta,
+  type Call,
+  type CardEvent,
+  type CardState,
+  type Effect,
+  type Memory,
+  type Presentation,
+  type Step,
+} from './card-model.ts';
 import { mountCard } from './render.ts';
 
 /**
  * A card in a host's iframe: host messages and presses become model events,
- * and the model's effects run here. What the card has done is kept in
- * ChatGPT's widget state, as private content its model never reads, so a
- * card that mounts again (a reopened chat) resumes where it was instead of
- * offering its first buttons again.
+ * and the model's effects run here. ChatGPT keeps a card's widget state and
+ * shows all of it to its model, `privateContent` included, so the card keeps
+ * there only what it already told the model and its outcome: never a token,
+ * an ID or instructions. A chat that reopens mounts the card with its first
+ * result, and the card comes back to its outcome from that, then reads where
+ * things stand now.
  */
 
 declare const CARD_VERSION: number;
 
 const REREAD_GAP_MS = 1_000;
+/** A sentence ChatGPT kept that is longer than any a card writes is not one. */
+const TOLD_SENTENCE_MAX = 1_000;
 
 export interface CardModel<V extends { kind: string }, A extends string> {
   /** Its view is `{ kind: 'waiting' }` until the tool result comes. */
@@ -23,26 +38,34 @@ export interface CardModel<V extends { kind: string }, A extends string> {
 
 export function runCard<V extends { kind: string }, A extends string>(name: string, model: CardModel<V, A>): void {
   const bridge = new HostBridge({ name, version: String(CARD_VERSION) });
-  const kept = keptView<V>();
-  let state: CardState<V> = kept ? { view: kept.view, busy: false, seq: kept.seq } : model.initial;
+  let state: CardState<V> = model.initial;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let lastReread = 0;
+  /** The result this card mounted with, and whether it found what it kept; both until the first press. */
+  let mounted: { result: CallToolResult; kept: boolean } | undefined;
 
   const card = mountCard(document.getElementById('card')!, (action) => dispatch({ type: 'press', action: action as A, now: Date.now() }));
 
   function dispatch(event: CardEvent<A>): void {
     const next = model.step(state, event);
-    const moved = next.state.view !== state.view;
+    const remembered = next.state.told !== state.told || next.state.outcome !== state.outcome;
     state = next.state;
-    if (moved) keep(state);
+    if (event.type === 'press') mounted = undefined;
+    if (remembered && event.type !== 'result') keep(state);
     card.render(model.present(state));
     for (const effect of next.effects) run(effect);
+  }
+
+  function answered(made: Call, result: CallToolResult): void {
+    // The host's own failure, with no refusal of Chickpea's in it: as if it never answered.
+    if (hostFailed(result)) dispatch({ type: 'unreachable', call: made, now: Date.now() });
+    else dispatch({ type: 'reply', call: made, result, now: Date.now() });
   }
 
   function run(effect: Effect): void {
     switch (effect.type) {
       case 'call': {
-        const replied = (result: CallToolResult) => dispatch({ type: 'reply', call: effect.call, result, now: Date.now() });
+        const replied = (result: CallToolResult) => answered(effect.call, result);
         bridge.callTool(effect.call.tool, effect.call.args, replied).then(
           replied,
           () => dispatch({ type: 'unreachable', call: effect.call, now: Date.now() }),
@@ -72,38 +95,57 @@ export function runCard<V extends { kind: string }, A extends string>(name: stri
     dispatch({ type: 'reread', now });
   }
 
+  function mount(result: CallToolResult, kept: Memory | undefined): void {
+    mounted = { result, kept: kept !== undefined };
+    lastReread = Date.now();
+    dispatch({ type: 'result', result, kept, now: Date.now() });
+  }
+
   bridge.on('ui/notifications/tool-result', (result) => {
-    // A card that kept its state has moved past this result already.
-    if (kept || state.view.kind !== 'waiting') return;
-    dispatch({ type: 'result', result: withResponseMeta(result as CallToolResult, window.openai?.toolResponseMetadata), now: Date.now() });
-    // A result can be old: a reopened chat mounts the card with the one it had then.
-    reread();
+    if (state.view.kind !== 'waiting') return;
+    // ChatGPT keeps the card's _meta, and its widget state, in globals it may set only now.
+    mount(withResponseMeta(result as CallToolResult, window.openai?.toolResponseMetadata), keptMemory());
   });
   bridge.on('ui/notifications/tool-cancelled', () => dispatch({ type: 'no_result', now: Date.now() }));
   bridge.on('ui/notifications/host-context-changed', () => applyHostContext(bridge.hostContext));
+  // Widget state that comes after the result, before any press, mounts the card again with it.
+  window.addEventListener('openai:set_globals', () => {
+    const kept = mounted && !mounted.kept ? keptMemory() : undefined;
+    if (mounted && kept) mount(mounted.result, kept);
+  });
   window.addEventListener('focus', reread);
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') reread();
   });
+  // Scrolled back to, past newer cards in the chat: what it shows may have changed since.
+  let inView = true;
+  new IntersectionObserver(([entry]) => {
+    if (entry?.isIntersecting && !inView) reread();
+    inView = entry?.isIntersecting ?? inView;
+  }).observe(document.body);
 
   card.render(model.present(state));
-  bridge.connect().then(() => {
-    applyHostContext(bridge.hostContext);
-    if (kept) reread();
-  }, () => dispatch({ type: 'no_result', now: Date.now() }));
+  bridge.connect().then(
+    () => applyHostContext(bridge.hostContext),
+    () => dispatch({ type: 'no_result', now: Date.now() }),
+  );
 }
 
-function keptView<V extends { kind: string }>(): { view: V; seq: number } | undefined {
-  const saved = window.openai?.widgetState as { privateContent?: { card?: { version?: unknown; view?: V; seq?: number } } } | undefined;
+/** What this version of the card kept in ChatGPT's widget state, read as untrusted. */
+function keptMemory(): Memory | undefined {
+  const saved = window.openai?.widgetState as { privateContent?: { card?: { version?: unknown; told?: unknown; outcome?: unknown } } } | undefined;
   const card = saved?.privateContent?.card;
-  const view = card?.view;
-  return card?.version === CARD_VERSION && view && typeof view.kind === 'string'
-    ? { view, seq: card.seq ?? 0 }
-    : undefined;
+  if (card?.version !== CARD_VERSION || !Array.isArray(card.told)) return undefined;
+  const told = card.told.filter((line): line is string => typeof line === 'string' && line.length <= TOLD_SENTENCE_MAX);
+  return { told: boundedTold(told), ...card.outcome === undefined ? {} : { outcome: card.outcome } };
 }
 
-function keep<V extends { kind: string }>({ view, seq }: CardState<V>): void {
-  if (view.kind === 'waiting') return;
-  const card = { version: CARD_VERSION, view, seq };
-  void Promise.resolve(window.openai?.setWidgetState?.({ privateContent: { card } })).catch(() => undefined);
+/**
+ * Only what the model may read: `modelContent` is what the card told it, and
+ * `privateContent` holds the same sentences and the outcome, which ChatGPT
+ * shows its model too.
+ */
+function keep({ told = [], outcome }: CardState<{ kind: string }>): void {
+  const card = { version: CARD_VERSION, told, ...outcome === undefined ? {} : { outcome } };
+  void Promise.resolve(window.openai?.setWidgetState?.({ modelContent: told.join('\n'), privateContent: { card } })).catch(() => undefined);
 }
