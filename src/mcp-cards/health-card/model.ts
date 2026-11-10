@@ -7,8 +7,10 @@ import {
   errorOf,
   GENERIC,
   httpsUrl,
+  isFix,
   isRecord,
   NOTHING,
+  opensSetupLink,
   outdated,
   presentSafely,
   sequenced,
@@ -37,7 +39,6 @@ import { plainWords } from '../check-words.ts';
 
 type Checked = z.infer<typeof schemas.checkAgentOutput>;
 type Check = Checked['checks'][number];
-type Fix = NonNullable<Check['fix']>;
 type ConnectionStatus = z.infer<typeof schemas.getAgentOutput>['connections'][number]['status'];
 
 export type View =
@@ -61,16 +62,6 @@ export type View =
 export type State = CardState<View>;
 export type Action = 'show' | 'hide' | 'check_again' | `fix:${number}`;
 export type Event = CardEvent<Action>;
-
-/**
- * Tools whose only effect is a setup link, so the press that calls one may
- * also open it: the person fixes on Chickpea's page. A fix with any other
- * tool goes to the chat, where the model proposes it first.
- */
-function clickable(fix: Extract<Fix, { tool: string }>): boolean {
-  return fix.tool === 'reconnect_service' || fix.tool === 'connect_model_provider' ||
-    (fix.tool === 'connect_service' && !('custom' in fix.arguments));
-}
 
 export const INITIAL: State = { view: { kind: 'waiting' }, busy: false, seq: 0 };
 
@@ -130,7 +121,7 @@ function press(state: State, view: Health, action: Action): Next<View> {
         const url = httpsUrl(fix.url);
         return url ? stay(state, [{ type: 'open', url }]) : stay(state);
       }
-      if (clickable(fix)) return { state: { view: { ...view, fixing: index }, busy: true }, effects: [call(fix.tool, fix.arguments)] };
+      if (opensSetupLink(fix)) return { state: { view: { ...view, fixing: index }, busy: true }, effects: [call(fix.tool, fix.arguments)] };
       return stay(state, [askChat(view, index)]);
     }
   }
@@ -208,12 +199,6 @@ function isChecked(value: unknown): value is Checked {
     value.checks.every((check) => isRecord(check) && typeof check.name === 'string' && typeof check.detail === 'string' &&
       typeof check.part === 'string' && Object.hasOwn(PART_WORDS, check.part) &&
       typeof check.status === 'string' && Object.hasOwn(ORDER, check.status) && isFix(check.fix));
-}
-
-/** Absent, a link, or a tool with its arguments: a press reads no other shape. */
-function isFix(fix: unknown): boolean {
-  return fix === undefined || (isRecord(fix) && typeof fix.label === 'string' &&
-    (typeof fix.url === 'string' || (typeof fix.tool === 'string' && isRecord(fix.arguments))));
 }
 
 // What the card shows.

@@ -25,6 +25,8 @@ const zLinks = z.strictObject({ admin: z.string(), slack: z.string().optional() 
 const zWhen = z.strictObject({ display: z.string(), isoUtc: z.string() });
 const zAgentStatus = z.enum(['on', 'off', 'archived']);
 const zAvatarUrl = z.string().optional().describe('Its picture in Slack, for a card to draw.');
+const zHasFirstAsk = z.boolean().optional()
+  .describe('true when it has the first question saved when it was created, which a card can run once with try_agent_once.');
 
 // Inputs.
 
@@ -502,7 +504,7 @@ export const getSetupStatusOutput = z.strictObject({
   status: z.enum(['waiting', 'opened', 'signing_in', 'done', 'failed', 'cancelled', 'expired']),
   what: z.string(),
   expires: zWhen.optional(),
-  agent: z.strictObject({ agentId: z.string(), name: z.string().optional(), avatarUrl: zAvatarUrl }).optional(),
+  agent: z.strictObject({ agentId: z.string(), name: z.string().optional(), avatarUrl: zAvatarUrl, hasFirstAsk: zHasFirstAsk }).optional(),
   connection: z.strictObject({
     connectionId: z.string(),
     name: z.string(),
@@ -656,7 +658,13 @@ export const disconnectAppOutput = z.strictObject({
 
 export const getCreationStatusOutput = z.strictObject({
   stage: z.enum(['joining', 'said_hello', 'ready', 'needs_attention']),
-  agent: z.strictObject({ name: z.string(), handle: z.string().optional(), status: zAgentStatus.optional(), avatarUrl: zAvatarUrl }),
+  agent: z.strictObject({
+    name: z.string(),
+    handle: z.string().optional(),
+    status: zAgentStatus.optional(),
+    avatarUrl: zAvatarUrl,
+    hasFirstAsk: zHasFirstAsk,
+  }),
   channels: z.enum(['none', 'joining', 'joined', 'needs_attention']),
   slackUrl: z.string().optional(),
   problem: z.string().optional(),

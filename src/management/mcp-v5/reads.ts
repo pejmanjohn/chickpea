@@ -612,13 +612,20 @@ export async function getSetupStatus(
     });
   }
   const { target } = result;
-  const { connection, avatarUrl } = await setupConnection(deps, context, target);
+  const { connection, avatarUrl, hasFirstAsk } = await setupConnection(deps, context, target);
   return {
     status: SETUP_STATUS[result.status],
     what: target.targetLabel,
     expires: when(result.expiresAt),
     ...(target.agentId
-      ? { agent: { agentId: target.agentId, ...(target.agentName ? { name: target.agentName } : {}), ...(avatarUrl ? { avatarUrl } : {}) } }
+      ? {
+          agent: {
+            agentId: target.agentId,
+            ...(target.agentName ? { name: target.agentName } : {}),
+            ...(avatarUrl ? { avatarUrl } : {}),
+            ...(hasFirstAsk ? { hasFirstAsk } : {}),
+          },
+        }
       : {}),
     ...(connection ? { connection } : {}),
   };
@@ -639,7 +646,7 @@ async function setupConnection(
   deps: FiveZeroDeps,
   context: ManagementActorContext,
   target: ManagementSetupPublicStatus['target'],
-): Promise<{ connection?: Out<typeof schemas.getSetupStatusOutput>['connection']; avatarUrl?: string }> {
+): Promise<{ connection?: Out<typeof schemas.getSetupStatusOutput>['connection']; avatarUrl?: string; hasFirstAsk?: true }> {
   if (!target.agentId || !CONNECTION_TARGETS.has(target.kind)) return {};
   const agent = await agentConnectionsOf(deps, context, target.agentId);
   if (!agent) return {};
@@ -656,19 +663,21 @@ async function setupConnection(
   return {
     ...row ? { connection: { connectionId: row.connectionId, name: row.name, kind: row.kind, status: row.status } } : {},
     ...agentAvatar(deps, agent.config),
+    ...agent.hasFirstAsk ? { hasFirstAsk: true as const } : {},
   };
 }
 
 /**
  * One Agent's connections as inspect_workspace lists them, read alone: a card
  * polls get_setup_status every 2 s, so never the workspace snapshot or Slack.
+ * Also whether it has a first ask, which decides the connect card's next step.
  * undefined when the snapshot would not list the Agent for this caller.
  */
 export async function agentConnectionsOf(
   deps: FiveZeroDeps,
   context: ManagementActorContext,
   agentId: string,
-): Promise<(AgentConnectionView & { config: CustomAgentConfig }) | undefined> {
+): Promise<(AgentConnectionView & { config: CustomAgentConfig; hasFirstAsk: boolean }) | undefined> {
   const reader = await deps.service.agentReader(context, agentId).catch((error: unknown) => {
     if (error instanceof ManagementError) return undefined;
     throw error;
@@ -678,9 +687,10 @@ export async function agentConnectionsOf(
   if (!reader || (acting && acting !== CHICKPEA_AGENT_ID && acting !== agentId)) return undefined;
   const { actor, stores } = reader;
   const workspaceIds = connectionWorkspaceIds(actor, await stores.identity.getOrganization());
-  const [accounts, bindings] = await Promise.all([
+  const [accounts, bindings, firstAsk] = await Promise.all([
     Promise.all(workspaceIds.map((id) => stores.config.listConnectionAccounts(id))).then((groups) => groups.flat()),
     stores.config.listAgentConnectionBindings(agentId),
+    stores.config.getAgentFirstAsk?.(agentId),
   ]);
   const lanes = agentConnections(accounts, bindings, actor.membershipId);
   const projected = projectAgentConnectionAccounts(
@@ -692,6 +702,7 @@ export async function agentConnectionsOf(
     connectionStatus: managementConnectionStatus(lanes),
     ...(projected.length > 0 ? { connections: projected.map(withoutRevisions) } : {}),
     config: reader.agent,
+    hasFirstAsk: Boolean(firstAsk),
   };
 }
 
@@ -740,6 +751,7 @@ export async function getCreationStatus(
       ...progress.agent,
       status: agentStatus(progress.config),
       ...agentAvatar(deps, progress.config),
+      ...(progress.hasFirstAsk ? { hasFirstAsk: true } : {}),
     },
     channels: grants.length === 0 ? 'none'
       : grants.includes('needs_attention') ? 'needs_attention'

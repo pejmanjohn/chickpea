@@ -84,7 +84,7 @@ export async function tryAgentOnce(
   const resolved = await resolveAgentModel(reading);
   const [model] = await modelChecks(deps, reading, resolved);
   if (model?.status === 'failing') {
-    fail('model_unavailable', `${agent.name} can't run right now. ${model.detail}`, model.fix ? { fix: model.fix } : {});
+    fail('model_unavailable', `${agent.name} can't run right now. ${model.plain ?? model.detail}`, model.fix ? { fix: model.fix } : {});
   }
   const run = await resolveTestRun(deps, reading, resolved, ask, input.idempotencyKey);
   const started = await store.start(run.request);
