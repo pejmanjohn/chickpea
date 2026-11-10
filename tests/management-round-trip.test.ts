@@ -1031,6 +1031,37 @@ test('a 4.x write that leaves out toolPolicies leaves them as they are; one that
       'sent explicitly, they replace the stored ones, as before');
   }));
 
+test('undo_workspace_change takes back a mark and a limit a 4.x write gave a connection that had none', () =>
+  withFixture('round-trip-undo-first-marks', async (f) => {
+    const stored = await seedAgent(f, 'agent_ops');
+    await connect(f, stored.id, { ...tracker, policy: { ...tracker.policy, allowedTools: ['search', 'file_issue'] } });
+    const before = await inspect(f, stored.id);
+    assert.equal(before.mcpServers[0]!.toolPolicies, undefined, 'never marked');
+    const limited = { effect: 'write' as const, argumentConstraints: { project: ['sandbox'] } };
+    const written = await mcpApply(f, {
+      idempotencyKey: 'first-marks',
+      operations: [{
+        itemId: 'mark', kind: 'update_agent', agentId: stored.id, expectedRevision: before.revision,
+        patch: { mcpServers: before.mcpServers.map((connection) => ({
+          ...managementMcpConnection(connection), toolPolicies: { search: { effect: 'read' }, file_issue: limited },
+        })) },
+      }],
+    });
+    assert.equal(written.status, 'completed', JSON.stringify(written.outcomes));
+    const policiesOf = async () => {
+      const { policy } = await accountOf(f, stored.id, 'tracker');
+      return policy.kind === 'mcp' ? policy.toolPolicies ?? {} : null;
+    };
+    assert.deepEqual(await policiesOf(), { search: { effect: 'read' }, file_issue: limited });
+
+    const undone = await mcpTool(f, 'undo_workspace_change', {
+      operationId: written.operationId, idempotencyKey: 'undo-first-marks',
+    }) as ManagementApplyResult;
+    assert.equal(undone.status, 'completed', JSON.stringify(undone.outcomes));
+    assert.deepEqual(await policiesOf(), {}, 'neither the mark nor the limit remains');
+    assert.deepEqual((await inspect(f, stored.id)).mcpServers[0]!.toolPolicies ?? {}, {});
+  }));
+
 test('a 4.x write stores a mark only for a tool it allows; one it does not keeps only its limit', () =>
   withFixture('round-trip-hidden-mark', async (f) => {
     const stored = await seedAgent(f, 'agent_ops');

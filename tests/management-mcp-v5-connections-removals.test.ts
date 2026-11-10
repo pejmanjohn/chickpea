@@ -682,6 +682,63 @@ test('a mark goes with its tool\'s allowance: a tool update_connection allows ag
   assert.deepEqual(await marks(), { search: { effect: 'read' } });
 });
 
+test('undo_change takes back a mark: a connection that had none is left unmarked, one that had some keeps them', async (t) => {
+  const { f, call } = await harness(t, 'mark-undo');
+  await installAgent(f);
+  structured(await call('connect_service', {
+    agentId: 'agent_research',
+    custom: { kind: 'mcp', name: 'Docs', url: 'https://mcp.docs.example/mcp', auth: 'none', allowedTools: ['search', 'read_page', 'delete_page'] },
+    version: await version(call, 'agent_research'),
+    idempotencyKey: 'docs',
+  }));
+  const mark = async (readTools: string[], key: string) => structured(await call('update_connection', {
+    agentId: 'agent_research', connectionId: 'docs', version: await version(call, 'agent_research'),
+    changes: { readTools }, idempotencyKey: key,
+  }));
+  const docs = async () => (structured(await call('get_agent', { agentId: 'agent_research' })).connections as Array<Record<string, any>>)
+    .find(({ connectionId }) => connectionId === 'docs')!.custom;
+
+  const first = await mark(['delete_page'], 'first');
+  assert.deepEqual((await docs()).readTools, ['delete_page']);
+  const undone = structured(await call('undo_change', { undoToken: first.undoToken, idempotencyKey: 'undo-first' }));
+  assert.equal(undone.status, 'done');
+  assert.deepEqual([(await docs()).readTools, (await docs()).writeTools], [undefined, undefined], 'the first mark is gone');
+  assert.deepEqual((await lanes(call, 'agent_research')).mcpServers[0]?.toolPolicies ?? {}, {});
+
+  await mark(['search'], 'earlier');
+  const later = await mark(['delete_page'], 'later');
+  structured(await call('undo_change', { undoToken: later.undoToken, idempotencyKey: 'undo-later' }));
+  assert.deepEqual((await docs()).readTools, ['search'], 'the mark from before the change stays');
+});
+
+test('a member takes back a mark on their own connection while the Agent has an unmarked team one', async (t) => {
+  const { f, teamId, as } = await harness(t, 'mark-undo-member', { member: true });
+  await createFixtureAgent(f, 'agent_shared', { name: 'Shared', creatorMembershipId: f.admin.membership.id });
+  await f.config.ensureWorkspaceInstallation({ workspaceId: teamId, transportMode: 'direct', defaultAgentId: 'agent_shared' });
+  const [owner, member] = [as('owner'), as('admin')];
+  for (const [who, name, key] of [[owner, 'Wiki', 'team'], [member, 'Docs', 'mine']] as const) {
+    structured(await who('connect_service', {
+      agentId: 'agent_shared',
+      custom: { kind: 'mcp', name, url: `https://mcp.${name.toLowerCase()}.example/mcp`, auth: 'none', allowedTools: ['search', 'delete_page'] },
+      version: await version(who, 'agent_shared'), idempotencyKey: key,
+    }));
+  }
+  const accounts = async () => new Map((await f.config.listConnectionAccounts(teamId)).map((account) => [account.providerId, account]));
+  const wiki = (await accounts()).get('wiki')!;
+  assert.equal(wiki.ownerKind, 'team');
+
+  const marked = structured(await member('update_connection', {
+    agentId: 'agent_shared', connectionId: 'docs', version: await version(member, 'agent_shared'),
+    changes: { readTools: ['delete_page'] }, idempotencyKey: 'mark',
+  }));
+  const undone = structured(await member('undo_change', { undoToken: marked.undoToken, idempotencyKey: 'undo' }));
+  assert.equal(undone.status, 'done', JSON.stringify(undone));
+  const after = await accounts();
+  const docs = after.get('docs')!.policy;
+  assert.deepEqual(docs.kind === 'mcp' ? docs.toolPolicies ?? {} : null, {}, 'the member\'s mark is gone');
+  assert.deepEqual(after.get('wiki'), wiki, 'the team connection is not written');
+});
+
 test('a custom API whose stored prefix predates the rule still renames and gains a neighbor; a changed prefix meets the rule', async (t) => {
   const { f, teamId, call } = await harness(t, 'kept-prefix');
   await installAgent(f);

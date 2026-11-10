@@ -8068,6 +8068,20 @@ function projectManagementAgentPatch(
   };
 }
 
+/**
+ * The Agent's MCP connections as an undo writes them back. A write that leaves
+ * out toolPolicies keeps the stored ones, so a connection the change gave marks
+ * or limits, and that had none, sends an empty set to clear them.
+ */
+function inverseMcpServers(
+  before: CustomAgentConfig,
+  written: NonNullable<ManagementAgentPatch['mcpServers']>,
+): CustomAgentConfig['mcpServers'] {
+  const after = new Map(mcpConnectionsAfterWrite(before.mcpServers, written).map((connection) => [connection.id, connection]));
+  return before.mcpServers.map((connection) =>
+    connection.toolPolicies || !after.get(connection.id)?.toolPolicies ? connection : { ...connection, toolPolicies: {} });
+}
+
 function agentPatchInverse(before: CustomAgentConfig, patch: ManagementAgentPatch): ManagementAgentPatch {
   const effortChanged = patch.modelEffort !== undefined ||
     agentModelEffortAfterPatch(before, patch) !== before.modelEffort;
@@ -8088,7 +8102,7 @@ function agentPatchInverse(before: CustomAgentConfig, patch: ManagementAgentPatc
     ...(patch.model !== undefined ? { model: before.model ?? null } : {}),
     ...(effortChanged ? { modelEffort: before.modelEffort ?? null } : {}),
     ...(patch.skills ? { skills: before.skills } : {}),
-    ...(patch.mcpServers ? { mcpServers: before.mcpServers } : {}),
+    ...(patch.mcpServers ? { mcpServers: inverseMcpServers(before, patch.mcpServers) } : {}),
     ...(patch.apiConnections ? { apiConnections: before.apiConnections } : {}),
     ...(patch.repositories ? { repositories: before.repositories } : {}),
   };
