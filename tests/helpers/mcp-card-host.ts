@@ -122,12 +122,13 @@ function setupUrlOf(result: ToolResult): unknown {
 /**
  * A card's one rule: an event that is not a press (a mount, a re-read, a
  * timer, a reply, a failure) makes only reads and timers. It never writes,
- * sends a message, opens a link or tells the host's model anything, with one
- * exception: the reply to a call a press made carries on that press. It may
+ * sends a message, opens a link or tells the host's model anything, with two
+ * exceptions. The reply to a call a press made carries on that press. It may
  * tell the model what the press did, open the setup link it carries,
  * because that press asked for the link to open, or, when the card will not
- * open that link, ask the chat for the fix instead. A state that follows up
- * a press may also tell the model how it ended.
+ * open that link, ask the chat for the fix instead. And a timer may send a
+ * press's call again, with exactly its arguments, so a retry replays it. A
+ * state that follows up a press may also tell the model how it ended.
  */
 function onlyReads<V extends { kind: string }>(
   from: CardState<V>,
@@ -135,16 +136,23 @@ function onlyReads<V extends { kind: string }>(
   effects: readonly Effect[],
   model: Pick<CardModelUnderTest<V, string>, 'reads' | 'followsPress'>,
   pressed: WeakSet<Call>,
+  pressedCalls: ReadonlySet<string>,
 ): void {
   if (event.type === 'press') return;
   const pressReply = event.type === 'reply' && pressed.has(event.call);
   for (const effect of effects) {
     if (effect.type === 'timer' || (effect.type === 'call' && model.reads.has(effect.call.tool))) continue;
+    if (effect.type === 'call' && event.type === 'tick' && pressedCalls.has(callKey(effect.call))) continue;
     if (effect.type === 'context' && (pressReply || model.followsPress?.(from) === true)) continue;
     if (event.type === 'reply' && pressReply &&
       ((effect.type === 'open' && effect.url === setupUrlOf(event.result)) || effect.type === 'message')) continue;
     assert.fail(`${event.type} made ${effect.type === 'call' ? `the write ${effect.call.tool}` : `a ${effect.type}`}`);
   }
+}
+
+/** A call by what it sends: its tool and arguments. */
+function callKey(made: Call): string {
+  return JSON.stringify([made.tool, made.args]);
 }
 
 type Refused = Extract<CardEvent<string>, { type: 'refused' }>['effect'];
@@ -165,10 +173,11 @@ export function cardHost<V extends { kind: string }, A extends string>(
   const effects: Effect[] = [];
   const held: Array<{ call: Call; result: ToolResult }> = [];
   const pressed = new WeakSet<Call>();
+  const pressedCalls = new Set<string>();
 
   async function follow(from: CardState<V>, event: CardEvent<A>, deep: boolean): Promise<void> {
     const next = model.step(from, event);
-    onlyReads(from, event, next.effects, model, pressed);
+    onlyReads(from, event, next.effects, model, pressed, pressedCalls);
     if (!deep) return;
     for (const effect of next.effects) {
       if (effect.type !== 'call') continue;
@@ -188,8 +197,14 @@ export function cardHost<V extends { kind: string }, A extends string>(
     held,
     async dispatch(event: CardEvent<A>): Promise<void> {
       const next = model.step(state, event);
-      onlyReads(state, event, next.effects, model, pressed);
-      if (event.type === 'press') for (const effect of next.effects) if (effect.type === 'call') pressed.add(effect.call);
+      onlyReads(state, event, next.effects, model, pressed, pressedCalls);
+      if (event.type === 'press') {
+        for (const effect of next.effects) {
+          if (effect.type !== 'call') continue;
+          pressed.add(effect.call);
+          pressedCalls.add(callKey(effect.call));
+        }
+      }
       state = next.state;
       const shown = model.present(state);
       assert.ok(buttonCount(shown) <= 2, `at most two buttons: ${JSON.stringify(shown)}`);

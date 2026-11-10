@@ -30,6 +30,7 @@ import {
 } from '../card-model.ts';
 import { channelNames } from '../../management/channel-names.ts';
 import { plainWords } from '../check-words.ts';
+import { presentFirstAnswer, stepFirstAnswer, tryOnce, type FirstAnswer } from '../first-answer.ts';
 
 /**
  * The connect card: a setup link from connect_service or reconnect_service.
@@ -97,13 +98,17 @@ export type View =
        * has nothing that proves a read. The words are the check's plain ones.
        */
       check?: 'checking' | { status: Check['status']; words: string };
+      /** The Agent has a first question saved, so the card offers its first answer. */
+      firstAsk?: true;
     }
+  /** "See its first answer", pressed on the connected card. */
+  | FirstAnswer
   | ({ kind: 'ended'; why: 'expired' | 'cancelled' | 'failed' } & Link)
   /** A link that is not Chickpea's page for one connection: the card does not open it. */
   | ({ kind: 'elsewhere' } & Link);
 
 export type State = CardState<View>;
-export type Action = 'connect' | 'done' | 'open_slack' | 'new_link';
+export type Action = 'connect' | 'done' | 'open_slack' | 'new_link' | 'try_once' | 'try_fix' | 'change_something';
 export type Event = CardEvent<Action>;
 
 export const INITIAL: State = { view: { kind: 'waiting' }, busy: false, seq: 0 };
@@ -111,6 +116,8 @@ export const INITIAL: State = { view: { kind: 'waiting' }, busy: false, seq: 0 }
 export const step = sequenced(transition);
 
 function transition(state: State, event: Event): Next<View> {
+  const { view } = state;
+  if (view.kind === 'first_answer' && event.type !== 'result') return stepFirstAnswer({ ...state, view }, event);
   switch (event.type) {
     case 'result':
       return fromResult(event.result);
@@ -168,6 +175,14 @@ function press(state: State, action: Action, now: number): Next<View> {
       return view.kind === 'connected' && view.agent?.slackUrl ? stay(state, [{ type: 'open', url: view.agent.slackUrl }]) : stay(state);
     case 'new_link':
       return view.kind === 'ended' ? stay(state, [{ type: 'message', sent: newLinkAsk(view) }]) : stay(state);
+    case 'try_once': {
+      const agent = view.kind === 'connected' && view.firstAsk ? view.agent : undefined;
+      return agent
+        ? tryOnce({ agentId: agent.agentId, name: agent.name, handle: agent.handle, avatarUrl: agent.avatarUrl, slackUrl: agent.slackUrl }, now)
+        : stay(state);
+    }
+    default:
+      return stay(state);
   }
 }
 
@@ -210,7 +225,7 @@ function setupStatus(state: State, view: Open, status: SetupStatus, now: number)
   const what = view.setup.what;
   const agent = view.agent ? ` ${view.flow === 'reconnect' ? 'for' : 'to'} ${agentNamed(view.agent.name)}` : '';
   if (status.status === 'done' || readyNow) {
-    const done = connected(view, connection);
+    const done = connected(view, connection, status.agent?.hasFirstAsk === true);
     // Ready may come another way than this card's link, so the sentence says only what is true now.
     return view.kind === 'finishing'
       ? tell(done, view.flow === 'reconnect' ? `${what} is signed in again${agent}.` : `${what} is connected${agent} now.`)
@@ -234,7 +249,7 @@ function setupStatus(state: State, view: Open, status: SetupStatus, now: number)
 
 const ENDED_WORDS = { failed: 'failed', cancelled: 'was cancelled', expired: 'expired' } as const;
 
-function connected(view: Open, connection: Connection | undefined): Next<View> {
+function connected(view: Open, connection: Connection | undefined, firstAsk: boolean): Next<View> {
   const custom = connection && connection.kind !== 'service' && view.agent;
   const next: View = {
     kind: 'connected',
@@ -243,6 +258,7 @@ function connected(view: Open, connection: Connection | undefined): Next<View> {
     service: view.setup.what,
     ...connection ? { connectionId: connection.connectionId } : {},
     ...custom ? { check: 'checking' as const } : {},
+    ...firstAsk && view.agent ? { firstAsk: true as const } : {},
   };
   return show(next, custom ? [call('check_agent', { agentId: view.agent!.agentId })] : []);
 }
@@ -350,6 +366,8 @@ function presentView(state: State): Presentation<Action> {
       return { ...base, avatar: 'none', title: 'Loading…', blocks: [], buttons: [] };
     case 'notice':
       return { ...base, avatar: 'none', title: view.title, blocks: [], buttons: [] };
+    case 'first_answer':
+      return { ...base, ...presentFirstAnswer(view) };
     case 'connected': {
       const row = connectedRow(view);
       return {
@@ -427,8 +445,8 @@ function linkRow(view: Extract<View, { kind: 'start' | 'finishing' | 'ended' | '
 
 /**
  * Only what Chickpea checked: a custom connection's one request, or nothing
- * more than that it is connected. The second control is where "See its first
- * answer" goes once that test turn exists (U6a).
+ * more than that it is connected. Then its next step: "See its first answer"
+ * for an Agent with a first question saved, or Slack.
  */
 function connectedRow(view: Extract<View, { kind: 'connected' }>): Row<Action> {
   const { check } = view;
@@ -443,6 +461,7 @@ function connectedRow(view: Extract<View, { kind: 'connected' }>): Row<Action> {
 }
 
 function connectedNextStep(view: Extract<View, { kind: 'connected' }>): Pick<Row<Action>, 'control'> {
+  if (view.firstAsk && view.agent) return { control: { label: 'See its first answer', action: 'try_once', style: 'secondary' } };
   return view.agent?.slackUrl ? { control: { label: 'Open in Slack', action: 'open_slack', style: 'secondary' } } : {};
 }
 
