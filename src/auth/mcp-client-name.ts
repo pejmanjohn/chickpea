@@ -46,6 +46,11 @@ export function returnAppForClientId(clientId: string): string | undefined {
   return RETURN_APPS_BY_CLIENT_ID.get(clientId);
 }
 
+/** The app to name in Chickpea's own words: a known client ID, else a known registered name, else none. */
+export function returnAppName(clientId: string | undefined, registeredName: string | undefined): string | undefined {
+  return RETURN_APPS_BY_CLIENT_ID.get(clientId ?? '') ?? returnAppForRegisteredName(registeredName);
+}
+
 export function returnAppForRegisteredName(name: string | undefined): string | undefined {
   const cleaned = displayMcpClientName(name)?.replace(/ \([^()]*\)$/u, '').toLowerCase();
   return cleaned ? RETURN_APPS_BY_REGISTERED_NAME.get(cleaned) : undefined;

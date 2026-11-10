@@ -27,7 +27,7 @@ import {
   mcpResourceForOrigin,
 } from './mcp-oauth.ts';
 import { clientMetadataHost } from './mcp-client-metadata.ts';
-import { displayMcpClientName, knownMcpAppName } from './mcp-client-name.ts';
+import { displayMcpClientName, knownMcpAppName, returnAppName } from './mcp-client-name.ts';
 import { BetterAuthMcpOAuthContinuationStore } from './mcp-oauth-continuation.ts';
 import { challengeRedeemed } from './mcp-oauth-redemption.ts';
 import { hostedLoginFence, type HostedLoginFence } from './hosted-login.ts';
@@ -270,7 +270,7 @@ async function showMcpConsent(c: Context, environment: BetterAuthEnvironment): P
   }
   const clientId = query.get('client_id') ?? '';
   const clientName = await lookupMcpClientName(environment, clientId, c.req.raw.headers);
-  if (await alreadyRedeemed(environment, query)) return alreadyConnectedResponse(clientName);
+  if (await alreadyRedeemed(environment, query)) return alreadyConnectedResponse(clientId, clientName);
   const clientHost = clientMetadataHost(clientId);
   const scope = query.get('scope') ?? MCP_WORKSPACE_SCOPE;
   return new Response(renderMcpConsentPage({ clientId, clientName, clientHost, scope, oauthQuery: query.toString() }), {
@@ -300,8 +300,9 @@ async function submitMcpConsent(c: Context, environment: BetterAuthEnvironment):
     return invalidBrowserRequest();
   }
   if (await alreadyRedeemed(environment, query)) {
-    const clientName = await lookupMcpClientName(environment, query.get('client_id') ?? '', c.req.raw.headers);
-    return alreadyConnectedResponse(clientName);
+    const clientId = query.get('client_id') ?? '';
+    const clientName = await lookupMcpClientName(environment, clientId, c.req.raw.headers);
+    return alreadyConnectedResponse(clientId, clientName);
   }
   const accept = form.decision === 'allow';
   const handler = createBetterAuthPublicHandler(environment);
@@ -590,16 +591,17 @@ async function alreadyRedeemed(environment: BetterAuthEnvironment, query: URLSea
   }
 }
 
-export function renderMcpAlreadyConnectedPage(clientName: string | undefined): string {
-  const name = displayMcpClientName(clientName);
+/** Names only a known app, in Chickpea's words; never repeats a client's own claim. */
+export function renderMcpAlreadyConnectedPage(clientId: string | undefined, clientName: string | undefined): string {
+  const name = returnAppName(clientId, clientName);
   const app = name ? escapeHtml(name) : 'This app';
   const back = name ? escapeHtml(name) : 'it';
   return brandPage('Already connected', `      <h1>Already connected</h1>
       <p>${app} is already connected to Chickpea. You can close this tab and go back to ${back}.</p>`);
 }
 
-function alreadyConnectedResponse(clientName: string | undefined): Response {
-  return new Response(renderMcpAlreadyConnectedPage(clientName), {
+function alreadyConnectedResponse(clientId: string | undefined, clientName: string | undefined): Response {
+  return new Response(renderMcpAlreadyConnectedPage(clientId, clientName), {
     status: 200,
     headers: browserHeaders('text/html; charset=utf-8'),
   });
