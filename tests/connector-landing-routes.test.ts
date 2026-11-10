@@ -993,6 +993,49 @@ test('replacing a catalog connection in place keeps each argument limit with its
   }
 });
 
+test('an OAuth catalog reconnect keeps each argument limit, as a write, and drops every mark until sign-in allows tools again', async () => {
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await config.createAgent({
+      id: 'agent_triage', name: 'Triage', creatorMembershipId: 'membership_owner',
+      editPolicy: 'all_workspace_members', lifecycle: 'active', configurationGeneration: 1,
+      instructions: 'Triage new issues.', enabled: true,
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const policy = {
+      kind: 'mcp' as const, url: 'https://mcp.linear.app/mcp', transport: 'streamable-http' as const,
+      authMode: 'oauth' as const, headerNames: [], oauthScope: 'read', presetId: 'linear',
+    };
+    const limit = { argumentConstraints: { team: ['support'] } };
+    const { account, binding } = await config.createAgentOwnedConnection({
+      account: {
+        id: 'connection_linear', workspaceId: 'T_REPLACE', ownerKind: 'team',
+        createdByMembershipId: 'membership_owner', providerId: 'linear', label: 'Linear',
+        policy: {
+          ...policy, discoveredTools: [{ name: 'search' }, { name: 'archive' }], allowedTools: ['search', 'archive'],
+          toolPolicies: { search: { effect: 'read', ...limit }, archive: { effect: 'read' } },
+        },
+        secretRefId: 'secret_linear', lifecycle: 'ready',
+      },
+      binding: {
+        agentId: 'agent_triage', connectionAccountId: 'connection_linear', providerId: 'linear',
+        allowedCapabilities: ['search', 'archive'], enabled: true,
+      },
+    });
+    // Before sign-in, nothing is discovered: prepareCatalogConnection's OAuth shape, and what an abandoned reconnect leaves.
+    const replaced = await replaceCatalogConnection({
+      config, settings, account, binding,
+      prepared: { policy: { ...policy, discoveredTools: [], allowedTools: [] }, allowedCapabilities: [] },
+    });
+    assert.deepEqual(replaced.policy.kind === 'mcp' ? [replaced.policy.allowedTools, replaced.policy.toolPolicies] : null,
+      [[], { search: { effect: 'write', ...limit } }]);
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
 test('a failed catalog replacement restores only the binding it wrote, so a later change stays', async () => {
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');

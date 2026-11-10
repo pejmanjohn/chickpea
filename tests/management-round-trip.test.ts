@@ -795,6 +795,23 @@ test('a recipe carries each connection\'s guide, and an overwrite keeps it', () 
     assert.equal(policy.kind === 'api' ? policy.guide : undefined, guide, 'a recipe overwrite keeps the guide');
   }, readyModels));
 
+test('a recipe overwrite keeps each connection\'s marks and argument limits, which a recipe does not carry', () =>
+  withFixture('recipe-limits', async (f) => {
+    const agent = await seedAgent(f, 'agent_researcher', { name: 'Researcher' });
+    const search = { effect: 'read' as const, argumentConstraints: { project: ['support'] } };
+    await connect(f, agent.id, { ...tracker, policy: { ...tracker.policy, toolPolicies: { search } } });
+    const recipe = await exportRecipe(f, [agent.id]);
+    recipe.agents[0]!.instructions = 'Cite every source twice.';
+    const preview = await previewRecipe(f, recipe, 'update');
+    const overwrite = preview.operations.find((operation) => operation.kind === 'update_agent');
+    assert.ok(overwrite?.kind === 'update_agent' && overwrite.patch.mcpServers?.some(({ id }) => id === 'tracker'),
+      'the overwrite writes the tracker connection');
+    const applied = await mcpApply(f, { idempotencyKey: 'recipe-limits-overwrite', operations: preview.operations });
+    assert.equal(applied.status, 'completed', JSON.stringify(applied.outcomes));
+    const { policy } = await accountOf(f, agent.id, 'tracker');
+    assert.deepEqual(policy.kind === 'mcp' ? policy.toolPolicies : null, { search });
+  }, readyModels));
+
 test('a recipe overwrite that drops a connection asks first over MCP, then keeps the rest on confirm', () =>
   withFixture('recipe-overwrite-removal', async (f) => {
     const { researcher } = await seedRecipeSource(f);
@@ -961,6 +978,9 @@ test('a 4.x write that dis-allows a tool drops its mark, so the tool comes back 
   assert.deepEqual(mcpConnectionsAfterWrite([stored!], [{
     ...wikiServer, allowedTools: ['search'], toolPolicies: { ...marks, delete_page: { effect: 'read', ...limit } },
   }])[0]!.toolPolicies, { search: { effect: 'read' }, delete_page: { effect: 'write', ...limit } }, 'a dis-allowed tool keeps its limit, as a write');
+  const hidden = { ...stored!, allowedTools: ['search'], toolPolicies: marks };
+  assert.deepEqual(mcpConnectionsAfterWrite([hidden], [{ ...wikiServer, allowedTools: ['search', 'delete_page'] }])[0]!.toolPolicies,
+    { search: { effect: 'read' } }, 'a write that leaves them out and allows a tool again keeps no mark it had while dis-allowed');
 });
 
 test('a 4.x read shows only allowed tools\' marks, so a write that sends back what it read cannot revive an old one', () =>
