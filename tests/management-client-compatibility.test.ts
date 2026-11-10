@@ -481,7 +481,7 @@ test('supported coding clients share public PKCE registration and stateless MCP 
 test('server instructions are the 5.0 text: short, linkless, and naming only 5.0 tools', () => {
   const text = WORKSPACE_MANAGEMENT_INSTRUCTIONS;
   assert.ok(text.length <= WORKSPACE_MANAGEMENT_INSTRUCTIONS_MAX_CHARACTERS, `${text.length} characters`);
-  for (const required of ['Agents', 'Slack', 'get_agent', 'propose_agent, then create_agent', 'connect_service', 'needs_confirmation', 'confirm_change', 'links']) {
+  for (const required of ['Agents', 'Slack', 'get_agent', 'propose_agent, then create_agent once the person agrees', 'connect_service', 'needs_confirmation', 'confirm_change', 'links']) {
     assert.ok(text.includes(required), `instructions must mention ${required}`);
   }
   assert.ok(!/https?:|\/admin|chickpea:\/\//.test(text), 'no link, Admin path or resource URI');
