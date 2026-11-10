@@ -15,9 +15,9 @@ import {
   versionToken,
 } from '../src/management/mcp-v5/conventions.ts';
 import { agentConnectionsOf } from '../src/management/mcp-v5/reads.ts';
-import { createAgentInputSchema, updateAgentInputSchema } from '../src/management/mcp-v5/schemas.ts';
+import { changeResultOutput, createAgentInputSchema, updateAgentInputSchema } from '../src/management/mcp-v5/schemas.ts';
 import { CARD_URIS } from '../src/management/mcp-v5/cards.ts';
-import { FIVE_ZERO_TOOL_NAMES } from '../src/management/mcp-v5/tools.ts';
+import { FIVE_ZERO_TOOL_NAMES, FIVE_ZERO_TOOLS } from '../src/management/mcp-v5/tools.ts';
 import { emitManagementMetric } from '../src/management/telemetry.ts';
 import { DEFAULT_AGENT_AVATAR_FILES, DEFAULT_AGENT_AVATAR_NAMES } from '../src/slack/agent-presence/default-avatar-pool.ts';
 import type { ManagementReceiptOutboxRecord } from '../src/management/types.ts';
@@ -191,6 +191,14 @@ for (const protocol of [LEGACY, MODERN]) {
     assert.equal(profile.additionalProperties, false);
   });
 }
+
+test('a 5.0 description names only tools this server has, and statuses and codes its results carry', () => {
+  const known = new Set<string>([...FIVE_ZERO_TOOL_NAMES, ...MCP_ERROR_CODES, ...changeResultOutput.shape.status.options]);
+  for (const [name, tool] of Object.entries(FIVE_ZERO_TOOLS)) {
+    const unknown = [...tool.description.matchAll(/\b[a-z]+(?:_[a-z]+)+\b/g)].map(([word]) => word).filter((word) => !known.has(word));
+    assert.deepEqual(unknown, [], `${name} names something no tool, status or code is`);
+  }
+});
 
 test('the profile id is frozen: one derivation, pinned, never reused across memberships', () => {
   assert.equal(accountProfileId('org_fixed', 'mem_fixed'), 'e28ebb3edf4d8f7b74a5d2a3d6283c0a');
