@@ -286,6 +286,17 @@ test('not_testable\'s fix leads somewhere: update_connection marks the read, and
   assert.equal(run.status, 'answered');
   const plan = parseTestTurnInitialData(instances.dispatched[0]!.initialData).runtimePlan;
   assert.deepEqual(plan.mcpConnections.map(({ allowedTools }) => allowedTools), [['search']], 'only the marked read is mounted');
+
+  // A ready connection that allows no tools has none to mark, and get_agent names none to allow: Admin chooses them.
+  await seedAgent(f, { id: 'agent_no_tools' });
+  await connect(f, teamId, 'agent_no_tools', {
+    id: 'connection_no_tools', providerId: 'empty_docs', label: 'Empty Docs', policy: docsMcp({ allowedTools: [] }),
+  });
+  const empty = errorOf(await call('try_agent_once', { agentId: 'agent_no_tools', idempotencyKey: 'key_no_tools' }));
+  assert.deepEqual([empty.code, empty.message, empty.fix], ['not_testable',
+    'Empty Docs allows no tools yet, so a test run can\'t use it. Choose its tools on the Agent\'s page in Admin, then mark the ones that only read.',
+    { label: 'Choose its tools in Admin', url: `${BASE_URL}/admin/agents/agent_no_tools` }]);
+  assert.equal(instances.dispatched.length, 1, 'nothing more was dispatched');
 });
 
 test('only someone who may change a connection is offered its fix, as in Admin; a catalog MCP service gets none', async (t) => {

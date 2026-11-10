@@ -249,10 +249,12 @@ async function resolveTestRun(
 /**
  * A connection a test run cannot read through, with what fixes it. A custom
  * MCP connection's tools are marked as reads with update_connection, by
- * whoever may change that connection, as in Admin. A managed service's read
- * tools, or a reviewed connector's (Bugsnag or Meta Ads, added by URL too),
- * are chosen on the Agent's page in Admin, and update_connection refuses a
- * reviewed one. Nothing marks a catalog MCP service's tools, so it gets no fix.
+ * whoever may change that connection, as in Admin; one that allows no tools
+ * has none to mark, so its tools are chosen in Admin first. A managed
+ * service's read tools, or a reviewed connector's (Bugsnag or Meta Ads, added
+ * by URL too), are chosen on the Agent's page in Admin, and update_connection
+ * refuses a reviewed one. Nothing marks a catalog MCP service's tools, so it
+ * gets no fix.
  */
 async function notTestable(
   deps: FiveZeroDeps,
@@ -264,6 +266,11 @@ async function notTestable(
   if (policy.kind === 'mcp' && !policy.presetId && !isMcpToolReviewRequired(policy)) {
     if (!canManageOwnedResource(reading.actor, account)) {
       fail('not_testable', `${cannot} An Owner or Admin can mark the tools that only read as reads.`);
+    }
+    // update_connection marks only allowed tools, and get_agent names none to allow, so Admin chooses them.
+    if (policy.allowedTools.length === 0) {
+      const fix = agentAdminFix(deps, reading, 'Choose its tools in Admin');
+      fail('not_testable', `${account.label} allows no tools yet, so a test run can't use it. Choose its tools on the Agent's page in Admin, then mark the ones that only read.`, fix ? { fix } : {});
     }
     // The connectionId get_agent shows for it: its provider ID, or its own when two share one.
     const lanes = (await agentConnectionsOf(deps, reading.context, agent.id))?.mcpServers.map(({ id }) => id) ?? [];
