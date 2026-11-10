@@ -454,6 +454,14 @@ test('check_agent tests custom connections once each, reads catalog ones from st
     agentId: 'agent_ops', connectionAccountId: notion.id, providerId: notion.providerId,
     allowedCapabilities: ['notion.databases.query'], enabled: true,
   });
+  const pending = await f.config.putConnectionAccount({
+    id: 'connection_statuspage', workspaceId: teamId, ownerKind: 'team', createdByMembershipId: f.owner.membership.id,
+    providerId: 'statuspage', label: 'Statuspage', lifecycle: 'pending', secretRefId: 'secret_connection_statuspage',
+    policy: { kind: 'api', allowedHosts: ['api.statuspage.example'], pathPrefixes: [], headerName: 'Authorization', allowedMethods: ['GET'], authMode: 'credential' },
+  } as never, 0);
+  await f.config.putAgentConnectionBinding({
+    agentId: 'agent_ops', connectionAccountId: pending.id, providerId: pending.providerId, allowedCapabilities: [], enabled: true,
+  });
   const checked = await check(call, { agentId: 'agent_ops' });
   assert.deepEqual([...tested].sort(), ['connection_docs', 'connection_zendesk'], 'only custom connections get a request; no catalog call');
   const byName = new Map(part(checked, 'connection').map((entry) => [entry.name, entry]));
@@ -471,6 +479,11 @@ test('check_agent tests custom connections once each, reads catalog ones from st
   const linear = byName.get('Linear')!;
   assert.equal(linear.status, 'failing');
   assert.deepEqual(linear.fix, { label: 'Reconnect Linear', tool: 'reconnect_service', arguments: { agentId: 'agent_ops', connectionId: linear.connectionId } });
+  const statuspage = byName.get('Statuspage')!;
+  assert.equal(statuspage.status, 'warning');
+  assert.deepEqual(statuspage.fix, {
+    label: 'Finish setting up Statuspage', tool: 'reconnect_service', arguments: { agentId: 'agent_ops', connectionId: statuspage.connectionId },
+  }, 'a custom connection waiting for its key gets its link, not Admin');
   assert.equal(checked.healthy, false);
   assertNoInternalIds(JSON.stringify(checked), f);
 

@@ -88,14 +88,19 @@ async function connectionChecks(deps: FiveZeroDeps, reading: AgentRunReading): P
   return Promise.all(connectionRows(reading.snapshotAgent).map(async (row): Promise<Check> => {
     const base = { part: 'connection' as const, name: row.name, connectionId: row.connectionId };
     const account = accountFor(row.connectionId);
+    // A member's snapshot shows only their own personal accounts; team ones are an Owner's or Admin's to rekey.
+    const mayReplaceKey = account !== undefined && (reading.actor.role !== 'member' || account.ownerKind === 'member');
     if (row.status === 'off') return { ...base, status: 'ok', detail: 'Turned off for this Agent.' };
     if (row.status === 'needs_attention') {
       return withFix({ ...base, status: 'failing', detail: 'It needs to be reconnected.' },
         account?.reconnect ? reconnectFix(reading, `Reconnect ${account.label}`, row.connectionId) : agentAdminFix(deps, reading, 'Reconnect it in Admin'));
     }
     if (row.status === 'waiting_for_setup') {
-      return withFix({ ...base, status: 'warning', detail: 'Its setup has not finished.' },
-        account?.reconnect ? reconnectFix(reading, `Reconnect ${account.label}`, row.connectionId) : agentAdminFix(deps, reading, 'Finish its setup in Admin'));
+      // A custom connection waiting for its key gets reconnect_service's link, as one just added does.
+      const fix = account?.reconnect ? reconnectFix(reading, `Reconnect ${account.label}`, row.connectionId)
+        : row.kind !== 'service' && mayReplaceKey ? reconnectFix(reading, `Finish setting up ${row.name}`, row.connectionId)
+          : agentAdminFix(deps, reading, 'Finish its setup in Admin');
+      return withFix({ ...base, status: 'warning', detail: 'Its setup has not finished.' }, fix);
     }
     // A catalog service gets its stored state only; no new call goes to it.
     if (row.kind === 'service') return { ...base, status: 'ok', detail: 'Connected.' };
@@ -119,8 +124,6 @@ async function connectionChecks(deps: FiveZeroDeps, reading: AgentRunReading): P
     const [status, summary] = CHECK_DETAIL[outcome.kind];
     const detail = [summary, 'status' in outcome && outcome.status ? `HTTP ${outcome.status}.` : '', outcome.detail]
       .filter(Boolean).join(' ');
-    // A member's snapshot shows only their own personal accounts; team ones are an Owner's or Admin's to rekey.
-    const mayReplaceKey = account !== undefined && (reading.actor.role !== 'member' || account.ownerKind === 'member');
     const fix = (outcome.kind === 'key_rejected' || outcome.kind === 'not_permitted') && mayReplaceKey
       ? reconnectFix(reading, 'Send a link to save a new key', row.connectionId)
       : undefined;

@@ -402,6 +402,11 @@ const REFUSED_WRITES: Array<{ name: string; admin: Record<string, unknown>; mana
   { name: 'two API connections with one id', admin: {
     apiConnections: [billing, { ...billing, allowedHosts: ['other.example.test'] }],
   }, management: { apiConnections: [billing, { ...billing, allowedHosts: ['other.example.test'] }] } },
+  // A value prefix is plain config that recipes export, so it never holds a key.
+  { name: 'a value prefix that holds a key', admin: { apiConnections: [{ ...billing, headerValuePrefix: 'Bearer sk_live_abcdefghij0123 ' }] },
+    management: { apiConnections: [{ ...billing, headerValuePrefix: 'Bearer sk_live_abcdefghij0123 ' }] } },
+  { name: 'a value prefix over 32 characters', admin: { apiConnections: [{ ...billing, headerValuePrefix: 'Custom Scheme For This Example Service ' }] },
+    management: { apiConnections: [{ ...billing, headerValuePrefix: 'Custom Scheme For This Example Service ' }] } },
   { name: 'API connections that overlap', admin: {
     apiConnections: [billing, { ...billing, id: 'billing-admin', pathPrefixes: ['/v1/admin'] }],
   }, management: { apiConnections: [billing, { ...billing, id: 'billing-admin', pathPrefixes: ['/v1/admin'] }] } },

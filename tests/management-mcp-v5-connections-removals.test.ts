@@ -13,6 +13,7 @@ import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import {
   createFixtureAgent,
   createManagementAdapterFixture,
+  ownerMcpContext,
   type ManagementAdapterFixture,
 } from './helpers/management-adapter-fixture.ts';
 
@@ -278,6 +279,70 @@ test('connect_service adds a custom API or MCP connection, then links its key; a
   assertNoInternalIds(JSON.stringify({ added, open, keyed }), f);
 });
 
+test('two custom connections whose names share a slug get their own IDs, and a refusal names the right one', async (t) => {
+  const { f, call } = await harness(t, 'connect-slugs');
+  await installAgent(f);
+  const add = async (name: string, host: string, idempotencyKey: string) => call('connect_service', {
+    agentId: 'agent_research', custom: { kind: 'api', name, hosts: [host] }, version: await version(call, 'agent_research'), idempotencyKey,
+  });
+  const japanese = structured(await add('日本語', 'api.jp.example', 'jp'));
+  const chineseArgs = { agentId: 'agent_research', custom: { kind: 'api', name: '中文', hosts: ['api.cn.example'] }, version: await version(call, 'agent_research'), idempotencyKey: 'cn' };
+  const chinese = structured(await call('connect_service', chineseArgs));
+  assert.deepEqual((await lanes(call, 'agent_research')).apiConnections.map(({ id, displayName, allowedHosts }) => [id, displayName, allowedHosts])
+    .sort(([left], [right]) => left.localeCompare(right)),
+  [['connection', '日本語', ['api.jp.example']], ['connection-2', '中文', ['api.cn.example']]]);
+  assert.equal((await f.management.getSetup(japanese.setup.setupToken))?.target.targetLabel, '日本語');
+  assert.equal((await f.management.getSetup(chinese.setup.setupToken))?.target.targetLabel, '中文');
+  // A retry replays the add, and links the connection it added, found by name.
+  const retried = structured(await call('connect_service', chineseArgs));
+  assert.equal((await lanes(call, 'agent_research')).apiConnections.length, 2);
+  assert.equal((await f.management.getSetup(retried.setup.setupToken))?.target.targetLabel, '中文');
+
+  const again = errorOf(await add('中文', 'api.cn2.example', 'cn-again'), 'invalid_input');
+  assert.deepEqual(again.fix.arguments, { agentId: 'agent_research', connectionId: 'connection-2' }, 'the fix reconnects the one with that name');
+  structured(await add('Acme (EU)', 'eu.acme.example', 'acme-eu-1'));
+  structured(await add('Acme EU', 'eu2.acme.example', 'acme-eu-2'));
+  // An account's ID starts with connection_, which a new connection's never does.
+  structured(await add('Connection Manager', 'api.manager.example', 'manager'));
+  assert.deepEqual((await lanes(call, 'agent_research')).apiConnections.map(({ id }) => id).sort(),
+    ['acme_eu', 'acme_eu-2', 'connection', 'connection-2', 'connection-manager']);
+});
+
+test('custom connect_service refuses the other kind\'s fields, a prefix it would drop, and a key in the prefix', async (t) => {
+  const { f, call } = await harness(t, 'connect-fields');
+  await installAgent(f);
+  const connect = async (custom: Record<string, unknown>, extra: Record<string, unknown> = {}) => call('connect_service', {
+    agentId: 'agent_research', custom, version: await version(call, 'agent_research'), idempotencyKey: JSON.stringify(custom), ...extra,
+  });
+  const api = { kind: 'api', name: 'Statusboard API', hosts: ['api.statusboard.example'] };
+  const mcp = { kind: 'mcp', name: 'Tracker', url: 'https://mcp.tracker.example/mcp' };
+  for (const [custom, field] of [
+    [{ ...api, auth: 'none' }, /no auth/],
+    [{ ...api, allowedTools: ['search'] }, /no allowedTools/],
+    [{ ...api, url: 'https://api.statusboard.example' }, /no url/],
+    [{ ...mcp, pathPrefixes: ['/v1'], methods: ['GET'] }, /no pathPrefixes or methods/],
+    [{ ...mcp, hosts: ['mcp.tracker.example'] }, /no hosts/],
+  ] as const) {
+    const refused = errorOf(await connect(custom), 'invalid_input');
+    assert.match(refused.nextStep, field, JSON.stringify(custom));
+  }
+  const tokenPrefix = errorOf(await connect({ ...mcp, headerValuePrefix: 'Token ' }), 'invalid_input');
+  assert.match(tokenPrefix.message, /cannot send "Token" before it\.$/);
+  errorOf(await connect({ ...mcp, headerName: 'X-Api-Key', headerValuePrefix: 'Bearer ' }), 'invalid_input');
+  errorOf(await connect({ ...mcp, auth: 'none', headerValuePrefix: 'Bearer ' }), 'invalid_input');
+  errorOf(await connect(mcp, { checkPath: '/v1/me' }), 'invalid_input');
+  const keyed = errorOf(await connect({ ...api, headerValuePrefix: 'Token 3f9a8b7c6d5e4f3a2b1c0d ' }), 'invalid_input');
+  assert.match(keyed.message, /value prefix is the text before the key/);
+  errorOf(await connect({ ...api, headerValuePrefix: `${'x '.repeat(16)}y` }), 'invalid_input');
+  assert.deepEqual(await lanes(call, 'agent_research').then(({ apiConnections, mcpServers }) => [apiConnections, mcpServers]), [[], []], 'nothing was added');
+
+  // What the connection can send is kept: "Bearer " in Authorization, and an open server.
+  structured(await connect({ ...mcp, headerValuePrefix: 'Bearer ' }));
+  structured(await connect({ kind: 'mcp', name: 'Docs', url: 'https://mcp.docs.example/mcp', auth: 'none' }));
+  assert.deepEqual((await lanes(call, 'agent_research')).mcpServers.map(({ displayName, authMode }) => [displayName, authMode])
+    .sort(([left], [right]) => left.localeCompare(right)), [['Docs', 'none'], ['Tracker', 'bearer']]);
+});
+
 test('reconnect_service links a custom connection\'s key, and signs a catalog connection in again through prepareConnectorSetup', async (t) => {
   const { f, teamId, call } = await harness(t, 'reconnect');
   await installAgent(f);
@@ -324,6 +389,22 @@ test('a member cannot connect or reconnect a team connection, or change an Agent
   })) errorOf(await member(name, { ...args, idempotencyKey: name }), 'not_found');
   errorOf(await member('reconnect_service', { agentId: 'agent_owner_only', connectionId: 'x' }), 'not_found');
   structured(await member('connect_service', { agentId: 'agent_shared', service: 'gmail', owner: 'me', idempotencyKey: 'mine' }));
+
+  // An Owner's custom connection is the team's: a member can neither link its key nor change it.
+  await f.config.ensureWorkspaceInstallation({ workspaceId: teamId, transportMode: 'direct', defaultAgentId: 'agent_shared' });
+  const owner = as('owner');
+  structured(await owner('connect_service', {
+    agentId: 'agent_shared', custom: { kind: 'api', name: 'Statusboard API', hosts: ['api.statusboard.example'] },
+    version: await version(owner, 'agent_shared'), idempotencyKey: 'team-custom',
+  }));
+  assert.equal(structured(await member('get_agent', { agentId: 'agent_shared' })).connections
+    .find(({ connectionId }: { connectionId: string }) => connectionId === 'statusboard_api')?.owner, 'team');
+  errorOf(await member('reconnect_service', { agentId: 'agent_shared', connectionId: 'statusboard_api' }), 'not_allowed');
+  errorOf(await member('update_connection', {
+    agentId: 'agent_shared', connectionId: 'statusboard_api', version: await version(member, 'agent_shared'),
+    changes: { hosts: ['api.elsewhere.example'] }, idempotencyKey: 'member-change',
+  }), 'not_allowed');
+  assert.deepEqual((await lanes(owner, 'agent_shared')).apiConnections.map(({ allowedHosts }) => allowedHosts), [['api.statusboard.example']]);
 });
 
 test('update_connection changes a custom connection, links its key again when it would go somewhere new, and leaves catalog ones alone', async (t) => {
@@ -411,10 +492,16 @@ test('set_agent_repositories sets the whole list and links GitHub access for a n
   assert.equal(set.status, 'needs_setup');
   assert.match(set.summary, /2 need GitHub access/);
   assert.equal((await f.management.getSetup(set.setup.setupToken))?.action, 'repository_access');
-  assert.equal(set.warnings.length, 1, 'the second repository\'s link');
+  assert.equal(set.warnings, undefined, 'no link goes in the words');
+  assert.equal(set.moreSetups.length, 1, 'the second repository\'s link, with its own token');
   const stored = (await f.config.getAgent('agent_research')).repositories;
   assert.deepEqual(stored.map(({ fullName, installationId, enabled }) => [fullName, installationId, enabled]),
     [['acme/api', null, true], ['acme/web', null, true]]);
+  assert.deepEqual(
+    await Promise.all([set.setup, ...set.moreSetups].map(async ({ setupToken }: { setupToken: string }) => (await f.management.getSetup(setupToken))?.target.repositoryId)),
+    stored.map(({ id }) => id),
+    'each link grants its own repository',
+  );
 
   const accountWide = errorOf(await call('set_agent_repositories', {
     agentId: 'agent_research', version: await version(call, 'agent_research'),
@@ -432,6 +519,30 @@ test('set_agent_repositories sets the whole list and links GitHub access for a n
     agentId: 'agent_research', version: await version(call, 'agent_research'), repositories: [], idempotencyKey: 'none',
   }));
   assert.deepEqual([cleared.status, (await f.config.getAgent('agent_research')).repositories], ['done', []]);
+
+  // Names that share a slug get their own grants, and each link names its own.
+  const alike = structured(await call('set_agent_repositories', {
+    agentId: 'agent_research', version: await version(call, 'agent_research'),
+    repositories: [{ repository: 'acme/x-y' }, { repository: 'acme-x/y' }, { repository: 'acme/x.y' }], idempotencyKey: 'alike',
+  }));
+  const grants = (await f.config.getAgent('agent_research')).repositories;
+  assert.equal(new Set(grants.map(({ id }) => id)).size, 3);
+  const linked = await Promise.all([alike.setup, ...alike.moreSetups].map(async ({ setupToken }: { setupToken: string }) =>
+    (await f.management.getSetup(setupToken))?.target.repositoryId));
+  assert.deepEqual(linked, grants.map(({ id }) => id));
+  assert.deepEqual([alike.setup, ...alike.moreSetups].map(({ what }: { what: string }) => what), ['acme/x-y', 'acme-x/y', 'acme/x.y']);
+
+  // The service refuses two grants with one ID from any door.
+  const agent = await f.config.getAgent('agent_research');
+  const grant = { id: 'repo_same', installationId: null, accountLogin: 'acme', enabled: true };
+  await assert.rejects(f.service.applyWorkspaceChanges({
+    context: ownerMcpContext(f),
+    idempotencyKey: 'duplicate-grants',
+    operations: [{
+      itemId: 'edit', kind: 'update_agent', agentId: agent.id, expectedRevision: agent.revision,
+      patch: { repositories: [{ ...grant, fullName: 'acme/one' }, { ...grant, fullName: 'acme/two' }] },
+    }],
+  }), /Each repository grant needs its own id\./);
 });
 
 test('delete_agent names what blocks it before any confirmation, then confirms the deletion', async (t) => {
@@ -444,11 +555,12 @@ test('delete_agent names what blocks it before any confirmation, then confirms t
   }), 'still_in_use');
   assert.match(blocked.message, /^Archive Research first, then delete it\. .* It answers in #support\. Nothing was deleted\.$/);
   assert.equal(blocked.retryable, false);
+  assert.match(blocked.nextStep, /^Tell the person it must be archived first, .* Archive it only if they agree, then call delete_agent again/);
   assert.equal(blocked.fix.tool, 'archive_agent');
   assert.deepEqual(Object.keys(blocked.fix.arguments).sort(), ['agentId', 'idempotencyKey', 'version']);
   assert.ok(await f.config.getAgent('agent_research'));
 
-  // The fix is a real call.
+  // The fix is a real call, as the person's click on it would make.
   const archived = structured(await call('archive_agent', blocked.fix.arguments));
   errorOf(await call('delete_agent', { agentId: 'agent_research', version: blocked.fix.arguments.version, idempotencyKey: 'stale' }), 'changed_since_read');
   const proposed = structured(await call('delete_agent', { agentId: 'agent_research', version: archived.version, idempotencyKey: 'delete' }));
@@ -462,6 +574,21 @@ test('delete_agent names what blocks it before any confirmation, then confirms t
   assert.equal((await f.config.listUserAgents()).some(({ id }) => id === 'agent_research'), false);
   errorOf(await call('get_agent', { agentId: 'agent_research' }), 'not_found');
   assertNoInternalIds(JSON.stringify({ blocked, proposed, deleted }), f);
+});
+
+test('delete_agent says only time clears a recent thread, and offers archiving only instead of deleting', async (t) => {
+  const { f, call } = await harness(t, 'delete-thread', { overrides: { agentLiveThreadCount: async () => 1 } });
+  await createFixtureAgent(f, 'agent_research');
+  const blocked = errorOf(await call('delete_agent', {
+    agentId: 'agent_research', version: await version(call, 'agent_research'), idempotencyKey: 'blocked',
+  }), 'still_in_use');
+  assert.match(blocked.message, /^Research was used in a Slack thread in the last 30 days, so it cannot be deleted yet\. .* Nothing was deleted\.$/);
+  assert.equal(blocked.fix, undefined, 'archiving does not clear it, so it is not the fix');
+  assert.equal(blocked.nextStep, 'Tell the person when it can be deleted. If they want it to stop answering until then, offer archive_agent instead of deleting; call it only if they agree.');
+
+  const archived = structured(await call('archive_agent', { agentId: 'agent_research', version: await version(call, 'agent_research'), idempotencyKey: 'archive' }));
+  const still = errorOf(await call('delete_agent', { agentId: 'agent_research', version: archived.version, idempotencyKey: 'archived' }), 'still_in_use');
+  assert.deepEqual([still.nextStep, still.fix], ['Tell the person when it can be deleted.', undefined]);
 });
 
 test('a member cannot delete an Agent whose team connection the deletion would disconnect', async (t) => {

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { AGENT_ID_PATTERN } from '../../config/agent-id.ts';
-import { CONNECTION_GUIDE_MAX_LENGTH } from '../../config/agent-write-rules.ts';
+import { CONNECTION_GUIDE_MAX_LENGTH, HEADER_VALUE_PREFIX_MAX_LENGTH } from '../../config/agent-write-rules.ts';
 import { MAX_MCP_TOOLS } from '../../config/mcp-limits.ts';
 import { MODEL_EFFORTS } from '../../config/model-effort.ts';
 import { PROVIDER_KEY_IDS } from '../../config/provider-key-ids.ts';
@@ -225,6 +225,9 @@ export const connectModelProviderInput = z.strictObject({
 const zConnectionId = zText(128).describe('A connectionId from get_agent.');
 const zCheckPath = z.string().max(2_048).regex(/^\/(?!\/)\S*$/)
   .describe('API only: a read endpoint the setup page checks the key against, such as /v1/me; never the bare prefix.');
+/** The fields only one kind of custom connection has; the other kind refuses them. */
+const API_ONLY_FIELDS = ['hosts', 'pathPrefixes', 'methods'] as const;
+const MCP_ONLY_FIELDS = ['url', 'allowedTools', 'auth'] as const;
 const zCustomFields = {
   name: zText(240).optional().describe('What people call the connection.'),
   hosts: z.array(zText(253)).min(1).max(100).optional().describe('API: the hosts the key is sent to, such as api.example.com.'),
@@ -232,8 +235,9 @@ const zCustomFields = {
   methods: z.array(z.enum(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'])).min(1).max(6).optional()
     .describe('API: GET and HEAD read; add POST, PUT or PATCH to write, DELETE only when asked.'),
   headerName: zText(120).optional().describe('The header the key goes in, such as X-Api-Key. Omit for Authorization.'),
-  headerValuePrefix: z.string().max(120).optional().describe('Text before the key, such as "Bearer ".'),
-  url: z.url().max(2_000).optional().describe('MCP: the server URL.'),
+  headerValuePrefix: z.string().max(HEADER_VALUE_PREFIX_MAX_LENGTH).optional()
+    .describe('Text before the key, such as "Bearer "; never the key itself. A custom MCP server takes "Bearer " in Authorization, or no prefix in another header.'),
+  url: z.url().max(2_000).optional().describe('MCP: the server URL. Never put a key in it; the person enters keys on the setup page.'),
   allowedTools: z.array(zText(120)).max(MAX_MCP_TOOLS).optional().describe('MCP: the tools the Agent may use; [] for all.'),
   guide: z.string().max(CONNECTION_GUIDE_MAX_LENGTH).optional().describe('Notes the Agent reads: endpoints and quirks. Never a key.'),
 };
@@ -243,8 +247,12 @@ export const zCustomConnection = z.strictObject({
   name: zText(240).describe('What people call the connection, such as Statusboard API.'),
   auth: z.enum(['key', 'sign_in', 'none']).optional()
     .describe('MCP: key (the default) for a key in a header, sign_in for an OAuth sign-in, none for an open server.'),
-}).refine((custom) => custom.kind === 'api' ? custom.hosts !== undefined && custom.url === undefined : custom.url !== undefined && custom.hosts === undefined,
-  'An api connection takes hosts; an mcp connection takes url.');
+}).refine((custom) => custom.kind === 'api' ? custom.hosts !== undefined : custom.url !== undefined,
+  'An api connection takes hosts; an mcp connection takes url.')
+  .superRefine((custom, context) => {
+    const wrong = (custom.kind === 'api' ? MCP_ONLY_FIELDS : API_ONLY_FIELDS).filter((field) => custom[field] !== undefined);
+    if (wrong.length) context.addIssue({ code: 'custom', message: `A custom ${custom.kind === 'api' ? 'API' : 'MCP'} connection has no ${wrong.join(' or ')}.` });
+  });
 
 /** One flat object, not a union: MCP clients handle a bare anyOf poorly. */
 export const connectServiceInput = z.strictObject({
@@ -258,7 +266,8 @@ export const connectServiceInput = z.strictObject({
   idempotencyKey: zIdempotencyKey,
 }).refine((input) => (input.service === undefined) !== (input.custom === undefined), 'Send service or custom, not both.')
   .refine((input) => input.service === undefined || input.owner !== undefined, 'Say whose account it is: owner team or me.')
-  .refine((input) => input.custom === undefined || input.version !== undefined, 'Send the version get_agent returned with custom.');
+  .refine((input) => input.custom === undefined || input.version !== undefined, 'Send the version get_agent returned with custom.')
+  .refine((input) => input.checkPath === undefined || input.custom?.kind === 'api', 'checkPath is only for a custom API connection.');
 export const reconnectServiceInput = z.strictObject({
   agentId: zAgentId,
   connectionId: zConnectionId,
@@ -544,6 +553,13 @@ export const proposeAgentChangeOutput = z.strictObject({
   needsConfirmation: z.boolean(),
 });
 
+const zSetup = z.strictObject({
+  url: z.string().describe('The Chickpea page to give the person; they finish there.'),
+  setupToken: z.string().optional().describe('For get_setup_status.'),
+  what: z.string(),
+  expiresAt: z.string().optional(),
+});
+
 /**
  * What every 5.0 write returns. Only handles a later call takes appear:
  * agentId, confirmToken, undoToken and setupToken, never a revision.
@@ -565,12 +581,7 @@ const changeResultShape = {
     preview: z.string().describe('Markdown to show the person before they agree.'),
     expiresAt: z.string().describe('After this time confirm_change refuses the token; call the tool again.'),
   }).optional(),
-  setup: z.strictObject({
-    url: z.string().describe('The Chickpea page to give the person; they finish there.'),
-    setupToken: z.string().optional().describe('For get_setup_status.'),
-    what: z.string(),
-    expiresAt: z.string().optional(),
-  }).optional(),
+  setup: zSetup.optional(),
   undoToken: z.string().optional().describe('Present when undo_change can reverse this change.'),
   warnings: z.array(z.string()).optional(),
   matches: z.array(z.strictObject({ agentId: z.string(), name: z.string(), handle: z.string().optional() })).optional()
@@ -578,6 +589,12 @@ const changeResultShape = {
 };
 
 export const changeResultOutput = z.strictObject(changeResultShape);
+
+export const setAgentRepositoriesOutput = z.strictObject({
+  ...changeResultShape,
+  moreSetups: z.array(zSetup).optional()
+    .describe('needs_setup: one link for each further repository that needs GitHub access, after the one in setup.'),
+});
 
 export const importSkillFromGithubOutput = z.strictObject({
   ...changeResultShape,

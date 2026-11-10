@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import type { z } from 'zod';
 
+import { archiveBeforeDeleting } from '../../slack/agent-presence/left-slack.ts';
 import { ManagementError, type ApplyWorkspaceChangesResult, type ManagementActorContext } from '../types.ts';
 import { agentSummary, applyChange, changeResult, requireVersion, type ChangeResult } from './changes.ts';
 import { fail } from './conventions.ts';
@@ -42,9 +43,11 @@ export async function deleteAgent(deps: FiveZeroDeps, input: In<typeof schemas.d
 }
 
 /**
- * The service checks an Agent left Slack before it previews a deletion. Its
- * refusal is said here as still_in_use, with the Channels it answers in and
- * the archive that clears them, so nobody learns it after confirming.
+ * The service checks an Agent left Slack, and that no recent thread uses it,
+ * before it previews a deletion. Its refusal is said here as still_in_use,
+ * with the Channels it answers in, so nobody learns it after confirming.
+ * Archiving is the person's choice, never a step the model takes on its way
+ * to a deletion they have not agreed to.
  */
 async function refuseWhatBlocksDeletion(
   deps: FiveZeroDeps,
@@ -61,23 +64,30 @@ async function refuseWhatBlocksDeletion(
   const channels = snapshot.channels
     .filter(({ grants }) => grants.some((grant) => grant.agentId === agentId))
     .map(({ channelId, label }) => `#${label ?? channelId}`);
-  const archived = agent?.lifecycle === 'archived';
+  const inUse = agent?.lifecycle === 'archived' ? undefined : agent;
+  const inSlack = blocked.code === 'still_referenced' ||
+    (agent !== undefined && blocked.instruction === archiveBeforeDeleting(agent.name));
   fail('still_in_use', [
     blocked.instruction ?? 'The Agent cannot be deleted yet.',
     ...(channels.length ? [`It answers in ${channels.join(', ')}.`] : []),
     'Nothing was deleted.',
-  ].join(' '), {
-    ...(agent && !archived
+  ].join(' '), inSlack
+    ? inUse
       ? {
-          nextStep: 'Archive it with archive_agent first, then call delete_agent again with the version archiving returns.',
+          nextStep: 'Tell the person it must be archived first, which takes it out of its Slack Channels until restore_agent brings it back. Archive it only if they agree, then call delete_agent again with the version archiving returns.',
           fix: {
-            label: `Archive ${agent.name}`,
+            label: `Archive ${inUse.name}`,
             tool: 'archive_agent',
-            arguments: { agentId, version: agentVersion(snapshot, agent), idempotencyKey: randomUUID() },
+            arguments: { agentId, version: agentVersion(snapshot, inUse), idempotencyKey: randomUUID() },
           },
         }
-      : {}),
-  });
+      : {}
+    : {
+        // A recent thread blocks it: only time clears that, and archiving does not.
+        nextStep: `Tell the person when it can be deleted.${inUse
+          ? ' If they want it to stop answering until then, offer archive_agent instead of deleting; call it only if they agree.'
+          : ''}`,
+      });
 }
 
 export async function removeWebsiteLogin(

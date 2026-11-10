@@ -150,13 +150,17 @@ export function validateManagementOperations(
  * Refuses repository grants the runtime would silently drop (for example
  * `allRepos: true` with a repository fullName), so the proposer re-proposes the
  * correct shape instead of saving a grant that removes all repository access.
+ * Grant IDs are unique, as Admin requires: a setup link names its grant by ID.
  */
 export function assertValidRepositoryGrants(
-  repositories: readonly Pick<RepositoryGrant, 'installationId' | 'accountLogin' | 'fullName' | 'allRepos'>[] | undefined,
+  repositories: readonly Pick<RepositoryGrant, 'id' | 'installationId' | 'accountLogin' | 'fullName' | 'allRepos'>[] | undefined,
 ): void {
   if (repositories?.some((grant) =>
     !isValidRepositoryGrantShape(grant, { requireInstallation: true }))) {
     throw invalid(REPOSITORY_GRANT_SHAPE_MESSAGE);
+  }
+  if (repositories && new Set(repositories.map(({ id }) => id)).size !== repositories.length) {
+    throw invalid('Each repository grant needs its own id.');
   }
 }
 

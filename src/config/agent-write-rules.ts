@@ -24,6 +24,17 @@ export const SKILL_NAME_MAX_LENGTH = 64;
 export const SKILL_DESCRIPTION_MAX_LENGTH = 1024;
 export const CONNECTION_GUIDE_MAX_LENGTH = 8_000;
 const HEADER_NAME_PATTERN = /^[A-Za-z0-9-]{1,128}$/;
+/**
+ * A value prefix is stored as plain config and exported in recipes, so it is
+ * a short scheme such as "Bearer ", never a key: a long run of token
+ * characters is refused.
+ */
+export const HEADER_VALUE_PREFIX_MAX_LENGTH = 32;
+const TOKEN_LIKE_RUN = /[A-Za-z0-9_+/=.-]{16,}/;
+
+function isHeaderValuePrefix(prefix: string): boolean {
+  return prefix.length <= HEADER_VALUE_PREFIX_MAX_LENGTH && !TOKEN_LIKE_RUN.test(prefix);
+}
 /** Path-only: a query or fragment would widen credential injection to the whole path. */
 const PATH_PREFIX_PATTERN = /^\/[^\s?#]*$/;
 const API_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
@@ -107,6 +118,9 @@ export function apiConnectionsWriteProblem(connections: readonly ApiConnectionRu
     }
     if (!HEADER_NAME_PATTERN.test(connection.headerName)) {
       return `Connection ${connection.id} has a header name that is not allowed.`;
+    }
+    if (connection.headerValuePrefix !== undefined && !isHeaderValuePrefix(connection.headerValuePrefix)) {
+      return `Connection ${connection.id} value prefix is the text before the key, such as "Bearer ", at most ${HEADER_VALUE_PREFIX_MAX_LENGTH} characters. Keys go in the connection's setup.`;
     }
     if (connection.allowedMethods.length === 0 ||
         !connection.allowedMethods.every((method) => API_METHODS.has(method))) {

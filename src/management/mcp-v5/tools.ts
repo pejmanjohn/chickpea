@@ -231,7 +231,7 @@ export const FIVE_ZERO_TOOLS = {
   }),
   delete_agent: tool({
     title: 'Delete an Agent',
-    description: 'Delete an archived Agent for good, with its memory, schedules and connections. It cannot be undone, so it returns needs_confirmation with a preview first. An Agent still in Slack is refused with still_in_use, naming its Channels; archive_agent clears them. Send the version get_agent returned.',
+    description: 'Delete an archived Agent for good, with its memory, schedules and connections. It cannot be undone, so it returns needs_confirmation with a preview first. An Agent still in Slack, or used in a thread lately, is refused with still_in_use, naming its Channels; archive it only if the person agrees. Send the version get_agent returned.',
     input: schemas.deleteAgentInput,
     output: schemas.changeResultOutput,
     write: writeHints({ destructive: true }),
@@ -304,7 +304,7 @@ export const FIVE_ZERO_TOOLS = {
   }),
   update_connection: tool({
     title: 'Update a custom connection',
-    description: 'Change a custom API or MCP connection\'s settings: its name, hosts, paths, methods, key header, server URL, tools or guide. Send the version get_agent returned. It overwrites those settings and applies at once. When the key would go somewhere new, the connection waits for it again and the result carries the setup link.',
+    description: 'Change a custom API or MCP connection\'s settings: its name, hosts, paths, methods, key header or prefix, server URL, tools or guide. Send the version get_agent returned. It overwrites them and applies at once. Changing its hosts, paths, methods, key header or prefix, or an MCP server\'s URL, deletes the saved key at once; the result links to enter it again. Tell the person first.',
     input: schemas.updateConnectionInput,
     output: schemas.changeResultOutput,
     // A new MCP server URL is asked for its tools.
@@ -329,9 +329,9 @@ export const FIVE_ZERO_TOOLS = {
   }),
   set_agent_repositories: tool({
     title: 'Set an Agent\'s GitHub repositories',
-    description: 'Set the whole list of GitHub repositories an Agent may work in, as owner/repo; owner/* keeps an account-wide grant the Agent already has. Repositories left out are removed. Send the version get_agent returned. Applies at once; a repository Chickpea cannot reach yet returns needs_setup with a GitHub access link.',
+    description: 'Set the whole list of GitHub repositories an Agent may work in, as owner/repo; owner/* keeps an account-wide grant the Agent already has. Repositories left out are removed. Send the version get_agent returned. Applies at once; repositories Chickpea cannot reach yet return needs_setup with a GitHub access link each, in setup and moreSetups.',
     input: schemas.setAgentRepositoriesInput,
-    output: schemas.changeResultOutput,
+    output: schemas.setAgentRepositoriesOutput,
     write: writeHints({ destructive: true }),
     run: (deps, args) => connections.setAgentRepositories(deps, args),
   }),

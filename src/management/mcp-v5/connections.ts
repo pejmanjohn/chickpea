@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import type { z } from 'zod';
 
@@ -33,8 +33,16 @@ type In<T extends z.ZodType> = z.output<T>;
 type SnapshotAgent = ManagementWorkspaceSnapshot['agents'][number];
 type SetupTarget = Extract<ManagementOperation, { kind: 'request_setup' }>['target'];
 type Setup = NonNullable<ChangeResult['setup']>;
+type ConnectionRow = ReturnType<typeof connectionRows>[number];
 
-const SETUP_NEXT_STEP = 'Give the person the link; they finish there. Never ask for the key or password itself. get_setup_status with the setupToken says when it is done.';
+/** For the model: hand the link over. Only a link with a setupToken can be followed. */
+function setupNextStep(setups: readonly Setup[]): string {
+  return [
+    setups.length === 1 ? 'Give the person the link; they finish there.' : 'Give the person each link; they finish there.',
+    'Never ask for the key or password itself.',
+    ...(setups.some(({ setupToken }) => setupToken) ? ['get_setup_status with a setupToken says when it is done.'] : []),
+  ].join(' ');
+}
 
 async function readAgent(deps: FiveZeroDeps, context: ManagementActorContext, agentId: string, version?: string) {
   const snapshot = await deps.service.inspectWorkspace(context);
@@ -60,7 +68,7 @@ function needsSetup(
   setup: Setup,
   summary: string,
 ): ChangeResult {
-  return { status: 'needs_setup', summary, nextStep: SETUP_NEXT_STEP, ...(agent ? { agent } : {}), setup };
+  return { status: 'needs_setup', summary, nextStep: setupNextStep([setup]), ...(agent ? { agent } : {}), setup };
 }
 
 function linkFrom(result: PrepareConnectorSetupResult): Setup {
@@ -141,10 +149,23 @@ function alreadyConnected(agent: SnapshotAgent, connection: { connectionId: stri
 type Custom = In<typeof schemas.zCustomConnection>;
 type CustomChanges = In<typeof schemas.updateConnectionInput>['changes'];
 
-/** A custom connection's ID: its name's slug, so a retry derives the same one. */
-function connectionIdFrom(name: string): string {
-  const slug = name.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 64);
-  return slug || 'connection';
+/**
+ * A new custom connection's ID: its name's slug, with the next free suffix
+ * when another connection holds it, as two names with no Latin letters would.
+ * An account's ID starts with connection_, so a new connection's never does.
+ */
+function freeConnectionId(name: string, taken: ReadonlySet<string>): string {
+  const slug = (name.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'connection')
+    .replace(/^connection_/, 'connection-');
+  for (let n = 1; ; n += 1) {
+    const suffix = n === 1 ? '' : `-${n}`;
+    const id = `${slug.slice(0, 64 - suffix.length)}${suffix}`;
+    if (!taken.has(id)) return id;
+  }
+}
+
+function sameName(left: string, right: string): boolean {
+  return left.trim().toLowerCase() === right.trim().toLowerCase();
 }
 
 function apiEntry(id: string, custom: Custom): SnapshotAgent['apiConnections'][number] {
@@ -164,11 +185,34 @@ function apiEntry(id: string, custom: Custom): SnapshotAgent['apiConnections'][n
   };
 }
 
-function mcpEntry(id: string, custom: Custom): SnapshotAgent['mcpServers'][number] {
-  const auth = custom.auth ?? 'key';
-  const header = auth === 'key' && custom.headerName && custom.headerName.toLowerCase() !== 'authorization'
+/** The header a custom MCP server's key goes in, when it is not Authorization. */
+function mcpKeyHeader(custom: Custom): string | undefined {
+  return (custom.auth ?? 'key') === 'key' && custom.headerName && custom.headerName.toLowerCase() !== 'authorization'
     ? custom.headerName
     : undefined;
+}
+
+/**
+ * A custom MCP server's key goes as "Bearer <key>" in Authorization, or bare
+ * in another header. Its connection stores no other prefix, so one is refused
+ * rather than dropped.
+ */
+function refuseMcpPrefix(custom: Custom): void {
+  const prefix = custom.headerValuePrefix?.trim();
+  if (custom.kind !== 'mcp' || !prefix) return;
+  const auth = custom.auth ?? 'key';
+  const sent = auth !== 'key' ? undefined : mcpKeyHeader(custom) ? '' : 'bearer';
+  if (prefix.toLowerCase() === sent) return;
+  fail('invalid_input', `A custom MCP connection sends its key as "Bearer <key>" in Authorization, or with no prefix in another header, so ${custom.name} cannot send "${prefix}" before it.`, {
+    nextStep: auth === 'key'
+      ? 'Leave out headerValuePrefix to connect it one of those ways, or tell the person Chickpea cannot send that prefix to a custom MCP server.'
+      : 'Leave out headerValuePrefix: this server takes no key.',
+  });
+}
+
+function mcpEntry(id: string, custom: Custom): SnapshotAgent['mcpServers'][number] {
+  const auth = custom.auth ?? 'key';
+  const header = mcpKeyHeader(custom);
   return {
     id,
     displayName: custom.name,
@@ -199,15 +243,22 @@ async function connectCustom(
   input: In<typeof schemas.connectServiceInput>,
   custom: Custom,
 ): Promise<ChangeResult> {
+  refuseMcpPrefix(custom);
   const context = await deps.context();
-  const id = connectionIdFrom(custom.name);
+  let addedId: string | undefined;
   const added = await applyChange(deps, context, {
     tool: 'connect_service',
     args: input,
     operations: async () => {
       const { agent } = await readAgent(deps, context, input.agentId, input.version);
-      const existing = connectionRows(agent).find(({ connectionId }) => connectionId === id);
+      const rows = connectionRows(agent);
+      const existing = rows.find(({ name }) => sameName(name, custom.name));
       if (existing) alreadyConnected(agent, existing);
+      const id = freeConnectionId(custom.name, new Set([
+        ...rows.map(({ connectionId }) => connectionId),
+        ...(agent.connections ?? []).map(({ providerId }) => providerId),
+      ]));
+      addedId = id;
       const patch = custom.kind === 'api'
         ? { apiConnections: [...agent.apiConnections, apiEntry(id, custom)] }
         : { mcpServers: [...agent.mcpServers, mcpEntry(id, custom)] };
@@ -215,7 +266,9 @@ async function connectCustom(
     },
   });
   const saved = await changeResult(deps, context, added, { agentId: input.agentId, summary: `Added ${custom.name}.` });
-  return withSetup(deps, context, saved, input.agentId, id, input.checkPath);
+  // A replay runs no operations; the connection it added is the one with this name.
+  return withSetup(deps, context, saved, input.agentId,
+    (row) => addedId ? row.connectionId === addedId : sameName(row.name, custom.name), input.checkPath);
 }
 
 /** The change's result, or the setup link its connection now waits for. */
@@ -224,16 +277,17 @@ async function withSetup(
   context: ManagementActorContext,
   saved: ChangeResult,
   agentId: string,
-  connectionId: string,
+  isConnection: (row: ConnectionRow) => boolean,
   checkPath: string | undefined,
 ): Promise<ChangeResult> {
   if (saved.status !== 'done') return saved;
   const { agent } = await readAgent(deps, context, agentId);
-  const row = connectionRows(agent).find((candidate) => candidate.connectionId === connectionId);
+  const row = connectionRows(agent).find(isConnection);
   if (row?.status !== 'waiting_for_setup') return saved;
-  const kind = agent.mcpServers.some(({ id }) => id === connectionId) ? 'mcp' : 'api';
-  const setup = await issueSetup(deps, context, connectionTarget(agentId, kind, connectionId, checkPath), row.name);
-  return { ...saved, status: 'needs_setup', summary: `${saved.summary} Open the link to add its key.`, nextStep: SETUP_NEXT_STEP, setup };
+  const mcp = agent.mcpServers.find(({ id }) => id === row.connectionId);
+  const setup = await issueSetup(deps, context, connectionTarget(agentId, mcp ? 'mcp' : 'api', row.connectionId, checkPath), row.name);
+  const finish = mcp?.authMode === 'oauth' ? 'sign it in' : 'add its key';
+  return { ...saved, status: 'needs_setup', summary: `${saved.summary} Open the link to ${finish}.`, nextStep: setupNextStep([setup]), setup };
 }
 
 export async function reconnectService(
@@ -301,9 +355,10 @@ function changedEntry<T extends object>(entry: T, changes: CustomChanges, fields
 }
 
 /**
- * Changes a custom connection's settings. The service keeps its key while
- * the hosts and header it goes to stay the same; otherwise the connection
- * waits for its key again and the result carries the link.
+ * Changes a custom connection's settings. A change to where or how the key is
+ * sent (hosts, paths, methods, header, prefix, or an MCP server's URL) makes
+ * the service delete the saved key, so the result carries a link to enter it
+ * again.
  */
 export async function updateConnection(
   deps: FiveZeroDeps,
@@ -329,7 +384,7 @@ export async function updateConnection(
     },
   });
   const result = await changeResult(deps, context, saved, { agentId: input.agentId, summary: 'Saved the connection.' });
-  return withSetup(deps, context, result, input.agentId, input.connectionId, input.checkPath);
+  return withSetup(deps, context, result, input.agentId, ({ connectionId }) => connectionId === input.connectionId, input.checkPath);
 }
 
 export async function removeConnection(
@@ -350,9 +405,14 @@ export async function removeConnection(
 
 type Grant = SnapshotAgent['repositories'][number];
 
-/** A grant's ID: its repository's slug, so the same repository keeps one grant. */
+/**
+ * A new grant's ID: its repository's slug, readable in Admin, and a digest of
+ * the exact name, because acme/x-y and acme-x/y share a slug.
+ */
 function grantId(fullName: string): string {
-  return `repo_${fullName.toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 100)}`;
+  const name = fullName.toLowerCase();
+  const digest = createHash('sha256').update(name).digest('hex').slice(0, 12);
+  return `repo_${name.replace(/[^a-z0-9]+/g, '_').slice(0, 100)}_${digest}`;
 }
 
 /**
@@ -383,7 +443,7 @@ function repositoryGrants(deps: FiveZeroDeps, agent: SnapshotAgent, asked: Reado
 export async function setAgentRepositories(
   deps: FiveZeroDeps,
   input: In<typeof schemas.setAgentRepositoriesInput>,
-): Promise<ChangeResult> {
+): Promise<z.infer<typeof schemas.setAgentRepositoriesOutput>> {
   const context = await deps.context();
   const saved = await applyChange(deps, context, {
     tool: 'set_agent_repositories',
@@ -414,8 +474,8 @@ export async function setAgentRepositories(
     ...result,
     status: 'needs_setup',
     summary: `${result.summary} ${waiting.length === 1 ? 'It needs' : `${waiting.length} need`} GitHub access before the Agent can use ${waiting.length === 1 ? 'it' : 'them'}.`,
-    nextStep: SETUP_NEXT_STEP,
+    nextStep: setupNextStep(links),
     setup: first!,
-    ...(rest.length ? { warnings: [...result.warnings ?? [], ...rest.map((setup) => `Also give the person this link for ${setup.what}: ${setup.url}`)] } : {}),
+    ...(rest.length ? { moreSetups: rest } : {}),
   };
 }
