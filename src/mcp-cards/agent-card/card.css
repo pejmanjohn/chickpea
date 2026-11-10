@@ -81,6 +81,11 @@ body {
   line-height: 1.25;
 }
 
+/* Focus lands here after a redraw only so the keyboard stays on the card. */
+.cp-title:focus {
+  outline: none;
+}
+
 .cp-sub {
   margin: 2px 0 0;
   color: var(--cp-muted);

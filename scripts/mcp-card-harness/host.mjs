@@ -34,6 +34,7 @@ const bridge = new AppBridge(
       platform: width < 500 ? 'mobile' : 'web',
       locale: 'en-US',
       containerDimensions: { maxWidth: width },
+      'openai/interactionCursor': 'pointer',
     },
   },
 );
@@ -57,4 +58,6 @@ bridge.onsizechange = ({ height }) => {
 bridge.oninitialized = () => {
   void bridge.sendToolResult(scene.result);
 };
+/** A theme change that carries no style variables, which ChatGPT may send. */
+record.flipTheme = (next) => bridge.sendHostContextChange({ theme: next });
 await bridge.connect(new PostMessageTransport(iframe.contentWindow, iframe.contentWindow));

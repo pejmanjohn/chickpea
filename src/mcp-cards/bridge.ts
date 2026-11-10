@@ -18,6 +18,8 @@ export type HostTheme = 'light' | 'dark';
 export interface HostContext {
   theme?: HostTheme;
   styles?: { variables?: Record<string, string | undefined> };
+  /** ChatGPT's cursor for things a person can press, such as `pointer`. */
+  'openai/interactionCursor'?: string;
 }
 interface HostCapabilities {
   experimental?: Record<string, { draft?: unknown } | undefined>;
@@ -66,8 +68,12 @@ export class HostBridge {
       if (event.source !== window.parent) return;
       this.#receive(event.data as Rpc);
     });
-    this.on('ui/notifications/host-context-changed', (changed) => {
-      this.hostContext = { ...this.hostContext, ...changed as HostContext };
+    this.on('ui/notifications/host-context-changed', (params) => {
+      const changed = params as HostContext;
+      const { styles, ...kept } = this.hostContext ?? {};
+      // Style variables are one theme's colors: a new theme without its own drops them.
+      const flipped = changed.theme !== undefined && changed.theme !== kept.theme && !changed.styles;
+      this.hostContext = { ...kept, ...styles && !flipped ? { styles } : {}, ...changed };
     });
   }
 
@@ -90,8 +96,12 @@ export class HostBridge {
     })).observe(document.body);
   }
 
-  async callTool(name: string, args: Record<string, unknown>): Promise<CallToolResult> {
-    return await this.#request('tools/call', { name, arguments: args }) as CallToolResult;
+  /**
+   * A tool call through the host. After a timeout the call rejects, and a
+   * reply that still comes goes to `late`: a write may have run after all.
+   */
+  async callTool(name: string, args: Record<string, unknown>, late: (result: CallToolResult) => void): Promise<CallToolResult> {
+    return await this.#request('tools/call', { name, arguments: args }, late as (value: unknown) => void) as CallToolResult;
   }
 
   /**
@@ -101,31 +111,39 @@ export class HostBridge {
   async sendMessage(message: { draft?: string | undefined; sent: string }): Promise<void> {
     const drafts = this.hostCapabilities?.experimental?.['openai/message']?.draft !== undefined;
     const text = message.draft !== undefined && drafts ? message.draft : message.sent;
-    await this.#request('ui/message', {
+    refused(await this.#request('ui/message', {
       role: 'user',
       content: [{ type: 'text', text }],
       ...text === message.draft ? { _meta: { 'openai/message': { target: 'active', send: false } } } : {},
-    });
+    }));
   }
 
-  /** Opens a link outside the chat. ChatGPT's own call skips the host's redirect parameter. */
+  /**
+   * Opens a link outside the chat. ChatGPT's own call skips the host's
+   * redirect parameter; a host that refuses it may still take the standard request.
+   */
   async openLink(url: string): Promise<void> {
     if (window.openai?.openExternal) {
-      await window.openai.openExternal({ href: url, redirectUrl: false });
-      return;
+      try {
+        await window.openai.openExternal({ href: url, redirectUrl: false });
+        return;
+      } catch {
+        // Fall through to ui/open-link.
+      }
     }
-    await this.#request('ui/open-link', { url });
+    refused(await this.#request('ui/open-link', { url }));
   }
 
   #notify(method: string, params: unknown): void {
     window.parent.postMessage({ jsonrpc: '2.0', method, params } satisfies Rpc, '*');
   }
 
-  #request(method: string, params: unknown): Promise<unknown> {
+  #request(method: string, params: unknown, late?: (value: unknown) => void): Promise<unknown> {
     const id = this.#nextId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.#pending.delete(id);
+        if (late) this.#pending.set(id, { resolve: late, reject: () => undefined });
+        else this.#pending.delete(id);
         reject(new Error(`${method} timed out`));
       }, REQUEST_TIMEOUT_MS);
       this.#pending.set(id, {
@@ -152,6 +170,11 @@ export class HostBridge {
   }
 }
 
+/** A host's `{ isError: true }` reply to a message or a link. */
+function refused(result: unknown): void {
+  if ((result as { isError?: unknown } | undefined)?.isError === true) throw new Error('The host refused it');
+}
+
 /** ext-apps' `applyDocumentTheme`. */
 export function applyDocumentTheme(theme: HostTheme): void {
   document.documentElement.setAttribute('data-theme', theme);
@@ -165,8 +188,23 @@ export function applyHostStyleVariables(styles: Record<string, string | undefine
   }
 }
 
-/** The host's theme and style variables, as given now. */
+let applied: string[] = [];
+
+/**
+ * The host's theme, style variables and cursor, as given now. A variable it
+ * no longer gives is removed, so the card's own colors for the theme show.
+ */
 export function applyHostContext(context: HostContext | undefined): void {
   if (context?.theme) applyDocumentTheme(context.theme);
-  if (context?.styles?.variables) applyHostStyleVariables(context.styles.variables);
+  const cursor = context?.['openai/interactionCursor'];
+  const variables: Record<string, string | undefined> = {
+    ...context?.styles?.variables,
+    // Only a keyword: a url() cursor would fetch something.
+    '--cursor-interaction': typeof cursor === 'string' && /^[a-z-]+$/.test(cursor) ? cursor : undefined,
+  };
+  for (const name of applied) {
+    if (variables[name] === undefined) document.documentElement.style.removeProperty(name);
+  }
+  applyHostStyleVariables(variables);
+  applied = Object.keys(variables).filter((name) => variables[name] !== undefined);
 }

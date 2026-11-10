@@ -19,8 +19,7 @@ let state: State = kept ? { view: kept.view, busy: false, seq: kept.seq } : INIT
 let timer: ReturnType<typeof setTimeout> | undefined;
 let lastReread = 0;
 
-const card = mountCard(document.getElementById('card')!, (action) =>
-  dispatch({ type: 'press', action, key: crypto.randomUUID(), now: Date.now() }));
+const card = mountCard(document.getElementById('card')!, (action) => dispatch({ type: 'press', action, now: Date.now() }));
 
 function dispatch(event: Event): void {
   const next = step(state, event);
@@ -33,21 +32,23 @@ function dispatch(event: Event): void {
 
 function run(effect: Effect): void {
   switch (effect.type) {
-    case 'call':
-      bridge.callTool(effect.call.tool, effect.call.args).then(
-        (result: CallToolResult) => dispatch({ type: 'reply', call: effect.call, result, now: Date.now() }),
+    case 'call': {
+      const replied = (result: CallToolResult) => dispatch({ type: 'reply', call: effect.call, result, now: Date.now() });
+      bridge.callTool(effect.call.tool, effect.call.args, replied).then(
+        replied,
         () => dispatch({ type: 'unreachable', call: effect.call, now: Date.now() }),
       );
       return;
+    }
     case 'timer':
       clearTimeout(timer);
       timer = setTimeout(() => dispatch({ type: 'tick', now: Date.now() }), effect.inMs);
       return;
     case 'message':
-      bridge.sendMessage(effect).catch(() => undefined);
+      bridge.sendMessage(effect).catch(() => dispatch({ type: 'refused', now: Date.now() }));
       return;
     case 'open':
-      bridge.openLink(effect.url).catch(() => undefined);
+      bridge.openLink(effect.url).catch(() => dispatch({ type: 'refused', now: Date.now() }));
       return;
   }
 }
@@ -79,6 +80,7 @@ bridge.on('ui/notifications/tool-result', (result) => {
   // A result can be old: a reopened chat mounts the card with the one it had then.
   reread();
 });
+bridge.on('ui/notifications/tool-cancelled', () => dispatch({ type: 'no_result', now: Date.now() }));
 bridge.on('ui/notifications/host-context-changed', () => applyHostContext(bridge.hostContext));
 window.addEventListener('focus', reread);
 document.addEventListener('visibilitychange', () => {
@@ -86,7 +88,7 @@ document.addEventListener('visibilitychange', () => {
 });
 
 card.render(present(state));
-void bridge.connect().then(() => {
+bridge.connect().then(() => {
   applyHostContext(bridge.hostContext);
   if (kept) reread();
-});
+}, () => dispatch({ type: 'no_result', now: Date.now() }));

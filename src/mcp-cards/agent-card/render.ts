@@ -98,7 +98,9 @@ export interface CardRoot {
 /**
  * Buttons stay the same nodes while the buttons stay the same: a press that
  * also focuses the card's frame re-reads it, and a button replaced between
- * mousedown and mouseup never gets its click.
+ * mousedown and mouseup never gets its click. When a redraw takes away the
+ * node that had focus, focus moves to the title, so a keyboard or screen
+ * reader stays on the card.
  */
 export function mountCard(root: HTMLElement, onAction: (action: Action) => void): CardRoot {
   const status = element('p', 'sr-only');
@@ -122,6 +124,7 @@ export function mountCard(root: HTMLElement, onAction: (action: Action) => void)
       const key = JSON.stringify(presentation);
       if (key === drawn) return;
       drawn = key;
+      const focused = card.contains(document.activeElement);
       if (status.textContent !== presentation.title) status.textContent = presentation.title;
 
       const header = element('header', 'cp-hdr');
@@ -129,6 +132,7 @@ export function mountCard(root: HTMLElement, onAction: (action: Action) => void)
       if (presentation.avatar !== 'none') header.append(avatar(presentation.avatar));
       const heading = element('div', 'cp-heading');
       const title = element('h2', 'cp-title');
+      title.tabIndex = -1;
       if (presentation.done) {
         const mark = element('span', 'cp-ok', '✓ ');
         mark.setAttribute('aria-hidden', 'true');
@@ -161,6 +165,7 @@ export function mountCard(root: HTMLElement, onAction: (action: Action) => void)
       }
       error.textContent = presentation.error ?? '';
       error.hidden = !presentation.error;
+      if (focused && !card.contains(document.activeElement)) title.focus({ preventScroll: true });
     },
   };
 }

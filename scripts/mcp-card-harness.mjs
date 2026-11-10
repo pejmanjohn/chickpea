@@ -132,13 +132,18 @@ async function world() {
       }
     },
   };
-  /** The welcome Chickpea delivers once Slack has the Agent. */
+  /** Its Channels, joining or joined. */
+  async function channels(status) {
+    const agent = await created();
+    for (const grant of (await f.config.listAgentChannelGrants()).filter(({ agentId }) => agentId === agent.id)) {
+      await f.config.putAgentChannelGrant({ ...grant, status });
+    }
+  }
+  /** The welcome Chickpea delivers once Slack has the Agent; a Channel may still be joining. */
   async function sayHello() {
     const agent = await created();
     await f.config.updateAgent(agent.id, { slackPresence: { ...agent.slackPresence, health: 'healthy' } });
-    for (const grant of (await f.config.listAgentChannelGrants()).filter(({ agentId }) => agentId === agent.id)) {
-      await f.config.putAgentChannelGrant({ ...grant, status: 'active' });
-    }
+    await channels('pending');
     // The fixture has no Slack, so create_agent's own hello is Chickpea's stand-in. With Slack,
     // the Agent posts it in its own name: that receipt, delivered as the outbox would.
     const claimed = await f.management.claimDueOutbox(clock.now, 25, clock.now + 60_000);
@@ -157,7 +162,7 @@ async function world() {
     await f.management.claimDueOutbox(clock.now, 25, clock.now + 60_000);
     await f.management.settleOutbox({ outboxId: welcome.outboxId, outcome: 'delivered', at: clock.now, deliveryRef: 'D1:1.1' });
   }
-  return { f, rpc, call, scenes, sayHello, close: () => f.close() };
+  return { f, rpc, call, scenes, sayHello, joinChannels: () => channels('active'), close: () => f.close() };
 }
 
 /** Two origins, like ChatGPT's page and its card sandbox. */
@@ -363,6 +368,17 @@ try {
     await open('proposal');
     await browser.waitForTitle(/^Invoice Chaser$/);
     await shot('1-proposal');
+    assert.equal(await browser.inCard('document.documentElement.style.getPropertyValue("--cursor-interaction")'), 'pointer',
+      'the host\'s cursor for things to press');
+    if (theme === 'light' && width === 728) {
+      // A theme flip without new style variables drops the old theme's colors for the card's own.
+      await browser.host('window.harness.flipTheme("dark")');
+      await browser.waitFor('getComputedStyle(document.body).backgroundColor === "rgb(24, 24, 24)"', 'the dark fallback after a theme-only flip');
+      const worst = await browser.contrast();
+      assert.ok(worst.ratio >= worst.needed, `after the flip: "${worst.text}" has contrast ${worst.ratio}`);
+      await open('proposal');
+      await browser.waitForTitle(/^Invoice Chaser$/);
+    }
     if (theme === 'none') {
       await open('confirm');
       await browser.waitForTitle(/^Turn off @support\?$/);
@@ -374,6 +390,10 @@ try {
     await browser.waitFor('document.querySelector(".cp-steps")', 'the creation steps');
     await shot('2-creating');
     await current.sayHello();
+    await browser.waitFor(`["Joining Slack as @invoices (done)", "Saying hello to you (done)", "Joining #finance (in progress)"]
+      .every((step) => [...document.querySelectorAll('.cp-steps li')].some((li) => li.textContent.endsWith(step)))`, 'the hello done while its Channel joins');
+    await shot('2-hello-joining');
+    await current.joinChannels();
     await browser.waitForTitle(/said hello to you in Slack$/);
     await shot('2-ready');
 

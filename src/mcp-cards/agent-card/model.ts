@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 
+import { channelNames } from '../../management/channel-names.ts';
 import type * as schemas from '../../management/mcp-v5/schemas.ts';
 import { describeTextChange } from '../../management/text-change-wording.ts';
 
@@ -41,6 +42,8 @@ export type View =
       status?: CreationStatus;
       startedAt: number;
       slow?: true;
+      /** Polls in a row that failed; each waits longer before the next. */
+      failures?: number;
     }
   | {
       kind: 'ready';
@@ -101,15 +104,22 @@ export type Effect =
 
 export type Event =
   | { type: 'result'; result: ToolResult; now: number }
-  /** `key` is a fresh unique string for a write the press may send. */
-  | { type: 'press'; action: Action; key: string; now: number }
+  | { type: 'press'; action: Action; now: number }
+  /** A reply to a call the card made, even one that comes after `unreachable`. */
   | { type: 'reply'; call: Call; result: ToolResult; now: number }
+  /** The host refused a call or gave up waiting. A write may still have run. */
   | { type: 'unreachable'; call: Call; now: number }
+  /** The host did not open a link or take a message. */
+  | { type: 'refused'; now: number }
+  /** No result is coming: the host cancelled the tool call or never connected. */
+  | { type: 'no_result'; now: number }
   | { type: 'tick'; now: number }
   /** The card mounted with a state it kept, or came back into view. */
   | { type: 'reread'; now: number };
 
 export const POLL_INTERVAL_MS = 2_000;
+/** A failed poll doubles the wait before the next, up to this. */
+export const POLL_BACKOFF_MAX_MS = 16_000;
 export const POLL_CEILING_MS = 2 * 60_000;
 
 export const INITIAL: State = { view: { kind: 'waiting' }, busy: false, seq: 0 };
@@ -139,17 +149,32 @@ function transition(state: State, event: Event): Next {
     case 'result':
       return fromResult(event.result, event.now);
     case 'press':
-      return state.busy ? stay(state) : press(state, event.action, event.key, event.now);
+      return state.busy ? stay(state) : press(state, event.action, event.now);
     case 'reply':
-      if (READS.has(event.call.tool) && event.call.seq !== state.seq) return stay(state);
-      return reply(state, event.call, event.result, event.now);
+      return outdated(state, event.call) ? stay(state) : reply(state, event.call, event.result, event.now);
     case 'unreachable':
-      return stay({ ...state, busy: false, error: 'Chickpea could not be reached. Try again.' });
+      if (outdated(state, event.call)) return stay(state);
+      if (!READS.has(event.call.tool)) return stay({ ...state, busy: false, error: 'Chickpea could not be reached. Try again.' });
+      // A failed read is not a failed write: it leaves `busy` alone, and a poll tries again later.
+      if (state.view.kind !== 'creating') return stay(state);
+      return keepPolling({ ...state.view, failures: (state.view.failures ?? 0) + 1 }, event.now);
+    case 'refused':
+      return stay({ ...state, error: GENERIC });
+    case 'no_result':
+      return state.view.kind === 'waiting' ? show(NOTHING) : stay(state);
     case 'tick':
       return state.busy ? stay(state) : tick(state, event.now);
     case 'reread':
       return state.busy ? stay(state) : reread(state, event.now);
   }
+}
+
+/**
+ * A reply the card no longer waits for: a read an earlier view made, or a
+ * write's second answer after its first moved the card on.
+ */
+function outdated(state: State, made: Call): boolean {
+  return made.seq !== state.seq && (READS.has(made.tool) || !state.busy);
 }
 
 // What a tool result becomes.
@@ -166,7 +191,7 @@ function fromResult(result: ToolResult, now: number): Next {
     }
     return changeView(content, now);
   }
-  return show({ kind: 'notice', title: 'Nothing to show here.' });
+  return show(NOTHING);
 }
 
 function changeView(result: ChangeResult, now: number, options: { saved?: boolean } = {}): Next {
@@ -210,9 +235,10 @@ function creating(
   }, [call('get_creation_status', { agentId: agent.agentId })]);
 }
 
-// Button presses. Only a press ever sends a write.
+// Button presses. Only a press ever sends a write, and pressing the same
+// button on the same card again sends the same call, so a retry replays.
 
-function press(state: State, action: Action, key: string, now: number): Next {
+function press(state: State, action: Action, now: number): Next {
   const { view } = state;
   const busy = (effect: Effect): Next => stay({ view, busy: true }, [effect]);
   switch (action) {
@@ -220,7 +246,7 @@ function press(state: State, action: Action, key: string, now: number): Next {
       return view.kind === 'proposal' ? busy(call('create_agent', view.proposal.create.arguments)) : stay(state);
     case 'create_anyway':
       return view.kind === 'similar'
-        ? busy(call('create_agent', { ...view.create, createEvenIfSimilar: true, idempotencyKey: key }))
+        ? busy(call('create_agent', { ...view.create, createEvenIfSimilar: true, idempotencyKey: `${view.create.idempotencyKey}:anyway` }))
         : stay(state);
     case 'change_something': {
       const name = view.kind === 'proposal' ? view.proposal.proposal.name : view.kind === 'similar' ? view.name : undefined;
@@ -242,7 +268,7 @@ function press(state: State, action: Action, key: string, now: number): Next {
         : stay(state);
     case 'undo':
       return view.kind === 'done' && view.undoToken
-        ? busy(call('undo_change', { undoToken: view.undoToken, idempotencyKey: key }))
+        ? busy(call('undo_change', { undoToken: view.undoToken, idempotencyKey: `undo:${view.undoToken}` }))
         : stay(state);
     case 'open_slack': {
       const url = slackUrlOf(view);
@@ -276,7 +302,7 @@ function reply(state: State, made: Call, result: ToolResult, now: number): Next 
       const from = view.kind === 'proposal' ? view.proposal.proposal : undefined;
       if (content.status === 'done' && content.agent) {
         return creating(content, {
-          answersIn: (from?.answersIn ?? []).map(({ name, channelId }) => name ? `#${name.replace(/^#/, '')}` : channelId),
+          answersIn: channelNames(from?.answersIn ?? []),
           needs: from?.needs ?? [],
           workspaceName: from?.workspaceName,
         }, now);
@@ -326,12 +352,19 @@ function reply(state: State, made: Call, result: ToolResult, now: number): Next 
   }
 }
 
+type Creating = Extract<View, { kind: 'creating' }>;
+
 function creationStatus(state: State, status: CreationStatus | undefined, now: number): Next {
   const { view } = state;
   if (view.kind !== 'creating' && view.kind !== 'ready') return stay(state);
-  if (!status || typeof status.stage !== 'string') return view.kind === 'creating' ? keepPolling(view, now) : stay(state);
-  const settled = status.stage !== 'joining' && status.channels !== 'joining';
-  if (!settled) return keepPolling({ ...view, kind: 'creating', status, startedAt: view.kind === 'creating' ? view.startedAt : now }, now);
+  if (!status || typeof status.stage !== 'string') {
+    return view.kind === 'creating' ? keepPolling({ ...view, failures: (view.failures ?? 0) + 1 }, now) : stay(state);
+  }
+  const settled = status.stage === 'needs_attention' || (status.stage !== 'joining' && status.channels !== 'joining');
+  if (!settled) {
+    const { failures: _failures, ...polling }: Creating = view.kind === 'creating' ? view : { ...view, kind: 'creating', startedAt: now };
+    return keepPolling({ ...polling, status }, now);
+  }
   return show({
     kind: 'ready',
     agentId: view.agentId,
@@ -343,9 +376,10 @@ function creationStatus(state: State, status: CreationStatus | undefined, now: n
   });
 }
 
-function keepPolling(view: Extract<View, { kind: 'creating' }>, now: number): Next {
+function keepPolling(view: Creating, now: number): Next {
   if (now - view.startedAt >= POLL_CEILING_MS) return show({ ...view, slow: true });
-  return show(view, [{ type: 'timer', inMs: POLL_INTERVAL_MS }]);
+  const wait = Math.min(POLL_INTERVAL_MS * 2 ** (view.failures ?? 0), POLL_BACKOFF_MAX_MS);
+  return show(view, [{ type: 'timer', inMs: wait }]);
 }
 
 function tick(state: State, now: number): Next {
@@ -363,7 +397,7 @@ function reread(state: State, now: number): Next {
   const { view } = state;
   switch (view.kind) {
     case 'creating': {
-      const { slow: _slow, ...polling } = view;
+      const { slow: _slow, failures: _failures, ...polling } = view;
       return stay({ ...state, view: { ...polling, startedAt: now } }, [call('get_creation_status', { agentId: view.agentId })]);
     }
     case 'ready':
@@ -382,6 +416,8 @@ function reread(state: State, now: number): Next {
 }
 
 const GENERIC = 'That did not work. Try again.';
+
+const NOTHING: View = { kind: 'notice', title: 'Nothing to show here.' };
 
 const EXPIRED: View = {
   kind: 'notice',
@@ -492,7 +528,16 @@ const WHO_CAN_EDIT: Record<string, string> = {
   all_workspace_members: 'Anyone in the workspace',
 };
 
+/** A result that is not the shape it claims draws as nothing to show, with no buttons. */
 export function present(state: State): Presentation {
+  try {
+    return presentView(state);
+  } catch {
+    return { busy: state.busy, error: state.error, avatar: 'none', title: 'Nothing to show here.', blocks: [], buttons: [] };
+  }
+}
+
+function presentView(state: State): Presentation {
   const base = { busy: state.busy, error: state.error };
   const { view } = state;
   switch (view.kind) {
@@ -555,7 +600,7 @@ export function present(state: State): Presentation {
 }
 
 function presentProposal({ proposal, issues }: Proposal): Omit<Presentation, 'busy' | 'error'> {
-  const answersIn = ['Your DMs', ...proposal.answersIn.map(({ name, channelId }) => name ? `#${name.replace(/^#/, '')}` : channelId)];
+  const answersIn = ['Your DMs', ...channelNames(proposal.answersIn)];
   return {
     avatar: 'agent',
     title: proposal.name,
@@ -588,9 +633,14 @@ function presentProposal({ proposal, issues }: Proposal): Omit<Presentation, 'bu
   };
 }
 
-function presentCreating(view: Extract<View, { kind: 'creating' }>): Omit<Presentation, 'busy' | 'error'> {
-  const status = view.status;
-  const channels = status?.channels ?? 'none';
+/**
+ * The steps follow get_creation_status: Slack first, then the hello, while
+ * the Channels join beside them. A Channel waits its turn behind Slack.
+ */
+function presentCreating(view: Creating): Omit<Presentation, 'busy' | 'error'> {
+  const stage = view.status?.stage ?? 'joining';
+  const channels = view.status?.channels ?? 'none';
+  const inSlack = stage !== 'joining';
   return {
     avatar: 'agent',
     title: view.agent.name,
@@ -600,11 +650,14 @@ function presentCreating(view: Extract<View, { kind: 'creating' }>): Omit<Presen
         kind: 'steps',
         steps: [
           { label: 'Created in Chickpea', state: 'done' },
-          { label: view.agent.handle ? `Joining Slack as @${view.agent.handle}` : 'Joining Slack', state: 'now' },
-          { label: 'Saying hello to you', state: 'todo' },
+          { label: view.agent.handle ? `Joining Slack as @${view.agent.handle}` : 'Joining Slack', state: inSlack ? 'done' : 'now' },
+          // Ready without a hello: Slack has it, and no hello is coming.
+          ...stage === 'ready' ? [] : [{ label: 'Saying hello to you', state: inSlack ? 'done' as const : 'todo' as const }],
           ...channels === 'none' ? [] : [{
             label: view.answersIn.length ? `Joining ${view.answersIn.join(', ')}` : 'Joining its Channels',
-            state: channels === 'joined' ? 'done' as const : 'todo' as const,
+            state: channels === 'joined' ? 'done' as const
+              : channels === 'needs_attention' ? 'failed' as const
+                : inSlack ? 'now' as const : 'todo' as const,
           }],
         ],
       },
