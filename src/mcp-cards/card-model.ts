@@ -250,8 +250,13 @@ export type Block<A extends string = string> =
   | { kind: 'quote'; text: string }
   | { kind: 'section'; label: string }
   | { kind: 'note'; text: string; tone?: Tone }
+  /**
+   * A question and the Agent's answer as Slack would show them, by picture
+   * alone; a screen reader hears who says each. Long ones show their start.
+   */
   | { kind: 'exchange'; ask: string; answer: string; agent: string }
-  | { kind: 'facts'; rows: Array<{ label: string; value: string; chips?: string[]; note?: string }> }
+  /** A line of small print: words, a stressed part, and services as chips. */
+  | { kind: 'line'; parts: Array<{ text: string; strong?: true } | { chip: string }> }
   | { kind: 'steps'; steps: Array<{ label: string; state: 'done' | 'now' | 'todo' | 'failed' }> }
   | { kind: 'rows'; rows: Array<Row<A>> }
   /** Side by side where there is room: each pane's label, then its text as written. */

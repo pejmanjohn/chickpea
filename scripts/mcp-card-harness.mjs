@@ -156,6 +156,35 @@ async function world() {
       services: ['Stripe'],
       channels: ['#finance'],
     }),
+    // A question with a list pasted in, and a reply too long for the card: each shows its start.
+    proposalLong: () => call('propose_agent', {
+      name: 'Churn Watch',
+      handle: 'churn',
+      job: 'Flags customers who may not renew, from their invoices and email.',
+      instructions: '# Job\nFlag customers who may not renew.',
+      sampleAsk: 'Which of these renew before the quarter ends?\nNorthwind, Lumen Labs, Birch Ltd, Acme Co\nHas anyone talked to them since their last renewal?',
+      promisedAnswer: 'Three of the four renew before the quarter ends.\n\n' +
+        'Northwind renews on the 18th. Dana last emailed them 41 days ago, and they have not opened the last two invoice emails.\n' +
+        'Lumen Labs renews on the 27th. Nobody has written to them since their last renewal, a year ago.\n' +
+        'Birch Ltd renews on the 30th. Sam had a call with them last week; the notes are in HubSpot.\n' +
+        'Acme Co renews next quarter, so I left it out.\n\nI would start with Lumen Labs.',
+      channels: ['#finance', '#billing'],
+    }),
+    // A proposal without its example, as an older or hand-made result may come: its job shows instead.
+    proposalBare: async () => {
+      const result = await scenes.proposalLong();
+      const { sampleExchange: _example, ...proposal } = result.structuredContent.proposal;
+      return { ...result, structuredContent: { ...result.structuredContent, proposal } };
+    },
+    // Support Desk already has @support: the handle says so, and Create finds the Agent like it.
+    proposalTaken: () => call('propose_agent', {
+      name: 'Support Triage',
+      handle: 'support',
+      job: 'Sorts new support requests by product and urgency.',
+      instructions: '# Job\nSort support requests.',
+      sampleAsk: 'what came in overnight?',
+      promisedAnswer: 'Six requests came in overnight: two urgent billing questions and four about the mobile app.',
+    }),
     change: async () => {
       const agent = (await call('get_agent', { agentId: 'agent_invoice_chaser' })).structuredContent;
       return call('propose_agent_change', {
@@ -641,12 +670,25 @@ try {
     };
     const subtitle = () => browser.inCard('document.querySelector(".cp-sub")?.textContent ?? ""');
     const buttons = () => browser.inCard('[...document.querySelectorAll(".cp-acts button")].map((node) => node.textContent)');
+    /** The example's two messages: how many lines each shows, and whether it was cut short. */
+    const said = () => browser.inCard(`[...document.querySelectorAll('.cp-said')].map((node) => {
+      const style = getComputedStyle(node);
+      const line = style.lineHeight.endsWith('px') ? parseFloat(style.lineHeight) : parseFloat(style.lineHeight) * parseFloat(style.fontSize);
+      return { lines: Math.round(node.clientHeight / line), cut: node.scrollHeight > node.clientHeight + 1 };
+    })`);
+    const smallPrint = () => browser.inCard('[...document.querySelectorAll(".cp-line")].map((node) => node.textContent)');
 
     await open('proposal');
     await browser.waitForTitle(/^Invoice Chaser$/);
     await showsPicture('The proposal');
     assert.equal(await browser.inCard('document.querySelectorAll(".cp-said")[1].innerText.split("\\n").length'), 4,
       'the example reply keeps its line breaks');
+    assert.deepEqual((await said()).map(({ cut }) => cut), [false, false], 'a short example shows whole');
+    assert.equal(await subtitle(), '@invoices', 'the handle, and no "handle is free"');
+    assert.deepEqual(await smallPrint(), [
+      'Answers in your DMs and #finance. Anyone in Acme can message it.',
+      'Needs Stripe · you sign in after it\'s created',
+    ]);
     await shot('1-proposal');
     if (host === 'chatgpt' && theme !== 'none') {
       assert.equal(await browser.inCard('document.documentElement.style.getPropertyValue("--cursor-interaction")'), 'pointer',
@@ -694,6 +736,25 @@ try {
     await told(/^The person created the Agent "Invoice Chaser" \(@invoices\) from the card\. It is ready in Slack and said hello to them there\.$/, 'Ready');
     await showsPicture('The ready card');
     await shot('2-ready');
+
+    await open('proposalLong');
+    await browser.waitForTitle(/^Churn Watch$/);
+    assert.deepEqual(await said(), [{ lines: 2, cut: true }, { lines: 5, cut: true }], 'a long question shows two lines, a long reply five');
+    assert.deepEqual(await smallPrint(), ['Answers in your DMs, #finance and #billing. Anyone in Acme can message it.'], 'no Needs without a service');
+    await shot('1-proposal-long');
+    await open('proposalBare');
+    await browser.waitForTitle(/^Churn Watch$/);
+    assert.equal(await browser.inCard('document.querySelector(".cp-thread") ? "an example" : document.querySelector(".cp-text")?.textContent'),
+      'Flags customers who may not renew, from their invoices and email.', 'no example: the job in its place');
+    await shot('1-proposal-no-example');
+    await open('proposalTaken');
+    await browser.waitForTitle(/^Support Triage$/);
+    assert.equal(await subtitle(), '@support · handle is taken');
+    await shot('1-proposal-taken');
+    await browser.click('create');
+    await browser.waitForTitle(/^An Agent like this already exists$/);
+    assert.deepEqual(await buttons(), ['Create it anyway', 'Change something']);
+    await shot('1-similar');
 
     await open('change');
     await browser.waitForTitle(/^Change Invoice Chaser$/);

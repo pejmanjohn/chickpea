@@ -7,6 +7,7 @@ import {
   POLL_CEILING_MS,
   POLL_INTERVAL_MS,
   withResponseMeta,
+  type Block,
   type Effect,
   type ToolResult,
 } from '../src/mcp-cards/card-model.ts';
@@ -39,6 +40,21 @@ async function harness(t: TestContext, suffix: string) {
 
 const UNREACHABLE = 'Chickpea could not be reached. Try again.';
 
+/** A block as one line: stressed words in **, chips in [], and an exchange as its two speakers. */
+function words(block: Block | undefined): string {
+  switch (block?.kind) {
+    case 'exchange':
+      return `You: ${block.ask} / ${block.agent}: ${block.answer}`;
+    case 'line':
+      return block.parts.map((part) => 'chip' in part ? `[${part.chip}]` : part.strong ? `**${part.text}**` : part.text).join('');
+    case 'text':
+    case 'note':
+      return block.text;
+    default:
+      return String(block?.kind);
+  }
+}
+
 const PROPOSAL = {
   name: 'Invoice Chaser',
   handle: 'invoices',
@@ -55,7 +71,13 @@ test('Create in Slack sends the proposal\'s create_agent arguments unchanged, th
   await agentCard.result(proposal);
   const shown = agentCard.shown;
   assert.equal(shown.title, 'Invoice Chaser');
-  assert.equal(shown.foot, 'Everyone in Acme\'s Slack can message it.', 'who can message it sits right above the button');
+  assert.deepEqual(shown.subtitle, [{ text: '@invoices' }], 'the handle, and no "handle is free"');
+  assert.deepEqual(shown.blocks.map(words), [
+    `You: ${PROPOSAL.sampleAsk} / Invoice Chaser: ${PROPOSAL.promisedAnswer}`,
+    'Answers in **your DMs**. Anyone in Acme can message it.',
+    'Needs [Stripe] · you sign in after it\'s created',
+  ], 'shown by example, then where it answers and who can message it, then the service it needs');
+  assert.equal(shown.foot, undefined, 'who can message it is on the line with where it answers');
   assert.deepEqual(agentCard.labels(), ['Create in Slack (primary)', 'Change something (secondary)']);
   assert.deepEqual(agentCard.effects, [], 'showing a proposal does nothing');
 
@@ -474,8 +496,73 @@ test('a Channel without a name shows as a private Channel, never its ID', async 
   await f.config.putChannel({ workspaceId: teamId, channelId: 'C0PRIVATE1', lifecycle: 'active' });
   await f.config.putChannel({ workspaceId: teamId, channelId: 'C_FINANCE', label: 'finance', lifecycle: 'active' });
   await agentCard.result(await call('propose_agent', { ...PROPOSAL, channels: ['C0PRIVATE1', '#finance'] }));
-  const facts = agentCard.shown.blocks.find((block) => block.kind === 'facts');
-  assert.deepEqual(facts?.kind === 'facts' && facts.rows[0], { label: 'Answers in', value: 'Your DMs · #finance · a private Channel' });
+  assert.equal(words(agentCard.shown.blocks[1]), 'Answers in **your DMs, #finance and a private Channel**. Anyone in Acme can message it.');
+});
+
+test('the proposal shows it by example: no labels, Needs only for a service, and who can message it with or without the workspace name', async (t) => {
+  const { f, call, card: agentCard, clock, teamId } = await harness(t, 'card-by-example');
+  await f.config.putChannel({ workspaceId: teamId, channelId: 'C_FINANCE', label: 'finance', lifecycle: 'active' });
+  const answer = 'Overdue this week:\n• Acme Co: $4,200, 41 days\n• Birch Ltd: $860, 33 days';
+  const proposal = await call('propose_agent', {
+    ...PROPOSAL,
+    services: [],
+    channels: ['#finance'],
+    sampleAsk: '  who is overdue this week?\n',
+    promisedAnswer: `\n${answer}\n\n`,
+  });
+  await agentCard.result(proposal);
+  const shown = agentCard.shown;
+  assert.deepEqual(shown.subtitle, [{ text: '@invoices' }]);
+  assert.deepEqual(shown.blocks, [
+    { kind: 'exchange', ask: 'who is overdue this week?', answer, agent: 'Invoice Chaser' },
+    { kind: 'line', parts: [{ text: 'Answers in ' }, { text: 'your DMs and #finance', strong: true }, { text: '. Anyone in Acme can message it.' }] },
+  ], 'the example in place of the job, its line breaks kept and its ends trimmed; no Needs line without a service');
+  const drawn = JSON.stringify(shown);
+  for (const gone of ['handle is free', 'Example in Slack', PROPOSAL.job]) {
+    assert.ok(!drawn.includes(gone), `the card no longer shows "${gone}"`);
+  }
+
+  const { workspaceName: _workspace, ...unnamed } = proposal.structuredContent.proposal;
+  const elsewhere = card(call, clock);
+  await elsewhere.result({ ...proposal, structuredContent: { ...proposal.structuredContent, proposal: unnamed } });
+  assert.equal(words(elsewhere.shown.blocks[1]), 'Answers in **your DMs and #finance**. Anyone in your Slack workspace can message it.');
+
+  const needing = card(call, clock);
+  await needing.result(await call('propose_agent', { ...PROPOSAL, services: ['Stripe', 'HubSpot'] }));
+  assert.equal(words(needing.shown.blocks[2]), 'Needs [Stripe] [HubSpot] · you sign in after it\'s created');
+});
+
+test('the proposal says "handle is taken" only when another Agent has the handle', async (t) => {
+  const { f, call, card: agentCard } = await harness(t, 'card-handle-taken');
+  await createFixtureAgent(f, 'agent_billing', {
+    name: 'Billing Bot',
+    slackPresence: { requestedHandle: 'invoices', normalizedHandle: 'invoices', desiredState: 'active', health: 'healthy', avatar: { kind: 'generated', revision: 1, seed: 'billing' } },
+  });
+  await agentCard.result(await call('propose_agent', PROPOSAL));
+  assert.deepEqual(agentCard.shown.subtitle, [{ text: '@invoices' }, { text: ' · ' }, { text: 'handle is taken', tone: 'warn' }]);
+  assert.ok(agentCard.shown.blocks.some((block) => block.kind === 'note' && block.tone === 'warn' && block.text.includes('@invoices already belongs to Billing Bot')),
+    'the server\'s issue still shows below');
+});
+
+test('a proposal with no example shows its job, and Create still makes the Agent', async (t) => {
+  const { call, card: agentCard, clock } = await harness(t, 'card-no-example');
+  const proposal = await call('propose_agent', { ...PROPOSAL, services: [] });
+  const without = (sampleExchange: unknown) => {
+    const { sampleExchange: _example, ...rest } = proposal.structuredContent.proposal;
+    return { ...proposal, structuredContent: { ...proposal.structuredContent, proposal: sampleExchange === undefined ? rest : { ...rest, sampleExchange } } };
+  };
+  for (const sampleExchange of [undefined, { ask: ' ', answer: 'An answer.' }, { ask: 'A question?', answer: '\n' }, { ask: 'A question?' }, 'neither']) {
+    const bare = card(call, clock);
+    await bare.result(without(sampleExchange));
+    assert.deepEqual(bare.shown.blocks.map(words), [PROPOSAL.job, 'Answers in **your DMs**. Anyone in Acme can message it.'],
+      `${JSON.stringify(sampleExchange)}: the job where the example would go`);
+  }
+
+  await agentCard.result(without(undefined));
+  await agentCard.press('create');
+  assert.equal(agentCard.calls('create_agent').length, 1);
+  assert.equal(agentCard.state.view.kind, 'creating');
+  assert.equal((agentCard.state.view as { promised?: unknown }).promised, undefined, 'no promise to set beside its first answer');
 });
 
 test('a result that is not the shape it claims, or a host that sends none, shows nothing to press', async () => {
