@@ -139,11 +139,11 @@ async function readTestedAgent(deps: FiveZeroDeps, agentId: string): Promise<Age
     return await readAgentInCallerDm(deps, agentId);
   } catch (error) {
     if (!(error instanceof McpToolFailure && error.error.code === 'not_found')) throw error;
-    // One they may use but not change is named; any other reads as missing, in the card's words.
+    // One they may use but not change is named; any other reads as missing.
     const snapshot = await deps.service.inspectWorkspace(await deps.context());
     const usable = snapshot.usableAgents?.find(({ id }) => id === agentId);
     if (usable) fail('not_allowed', `Only someone who can change ${usable.name} can test it.`);
-    return fail('not_found', 'That Agent is gone, or you can no longer change it.', {
+    return fail('not_found', 'That Agent is gone, or you can\'t change it.', {
       ...(error.error.nextStep ? { nextStep: error.error.nextStep } : {}),
     });
   }

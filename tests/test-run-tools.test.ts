@@ -222,13 +222,14 @@ test('try_agent_once refuses before a run starts, each with its own words and fi
   // Chickpea's own Agent is no Agent the caller manages, as the workspace snapshot never lists it.
   await f.config.materializeChickpeaAgent();
   error = await refusal('agent_chickpea');
-  assert.deepEqual([error.code, error.message], ['not_found', 'That Agent is gone, or you can no longer change it.']);
+  assert.deepEqual([error.code, error.message], ['not_found', 'That Agent is gone, or you can\'t change it.']);
 
   // A card's Agent deleted since it was drawn: the person's words, not the model's.
   await seedAgentWithId(f, 'agent_deleted');
   assert.equal(await f.config.deleteAgent('agent_deleted'), true);
   error = await refusal('agent_deleted');
-  assert.deepEqual([error.code, error.message], ['not_found', 'That Agent is gone, or you can no longer change it.']);
+  assert.deepEqual([error.code, error.message, error.nextStep],
+    ['not_found', 'That Agent is gone, or you can\'t change it.', 'Call list_agents for the current agentIds.'], 'the model\'s next step is kept');
 
   await seedAgent(f, { id: 'agent_off', enabled: false });
   error = await refusal('agent_off');
@@ -449,7 +450,7 @@ test('a member who can use an Agent but not change it is told so; one who cannot
   const tryAsMember = async (agentId: string) =>
     errorOf(await callAs(f.admin)('try_agent_once', { agentId, idempotencyKey: `key_${agentId}` }));
   let error = await tryAsMember('agent_tested');
-  assert.deepEqual([error.code, error.message], ['not_found', 'That Agent is gone, or you can no longer change it.'],
+  assert.deepEqual([error.code, error.message], ['not_found', 'That Agent is gone, or you can\'t change it.'],
     'in no Channel, only its creator may use it');
   await f.config.putChannel({ workspaceId: teamId, channelId: 'C_SUPPORT', label: 'support', lifecycle: 'active' });
   await f.config.putAgentChannelGrant({
