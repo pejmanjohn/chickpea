@@ -1222,7 +1222,7 @@ export function oauthReturnEndedPage(c: Context, setupId?: string): Response {
   setupResponseHeaders(c);
   const next = setupId
     ? `<p><a href="/setup/${encodeURIComponent(setupId)}">Go back to the setup page</a> to sign in again.</p>`
-    : '<p>Go back to Slack or <a href="/admin">Chickpea Admin</a> to check the connection or start it again.</p>';
+    : '<p>Go back to where you started this connection, or to <a href="/admin">Chickpea Admin</a>, to check it or start it again.</p>';
   return c.html(renderSetupPanelPage({
     title: 'Sign-in ended',
     surface: 'oauth-return-ended',
