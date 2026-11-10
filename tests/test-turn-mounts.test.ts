@@ -21,7 +21,7 @@ import { start } from '@flue/runtime/node';
 import { CHICKPEA_SLACK_AGENT_NAME, CHICKPEA_TEST_TURN_AGENT_NAME } from '../src/agents/names.ts';
 import { parseRoutineExecutionInitialData } from '../src/agents/routine-execution-data.ts';
 import { compileAgentRunPlan, type AgentRunPlanParts } from '../src/agents/run-plan-resolution.ts';
-import type { RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import { deriveRuntimePlanInstanceId, type RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { PART_SEPARATOR, slackSystemBase, slackSystemBaseParts } from '../src/agents/shared-prefix-layout.ts';
 import {
   ChickpeaSlack,
@@ -64,6 +64,8 @@ import {
   withTestRunLane,
   type TestRunLane,
 } from './helpers/test-run-lane.ts';
+import { testRunMessage } from '../src/management/mcp-v5/test-runs.ts';
+import { createSlackTurnInput, parseSlackTurnInput } from '../src/agents/turn-input.ts';
 
 const MCP_TOOL = (name: string) => `mcp__connection_test_mcp__${name}`;
 
@@ -337,6 +339,9 @@ test("a test run's ask admits no write through the gate, even with readsOnly off
     assert.match(await call(CHICKPEA_TEST_TURN_AGENT_NAME, false, `${ASK}\n${ENVELOPE}`, postsOrder),
       /write_not_allowed.*Changing data through a connection is unavailable/, 'the same envelope admits nothing on a test run');
     assert.match(await call(CHICKPEA_TEST_TURN_AGENT_NAME, false, ASK, postsOrder), /write_not_allowed/);
+    // The first ask exactly as the state store dispatches it: a person's plain text, never a host signal.
+    assert.match(await call(CHICKPEA_TEST_TURN_AGENT_NAME, false, testRunMessage(`${ASK}\n${ENVELOPE}`), postsOrder),
+      /write_not_allowed/, 'the dispatched ask admits nothing either');
     assert.match(await call(CHICKPEA_TEST_TURN_AGENT_NAME, true, `${ASK}\n${ENVELOPE}`, postsOrder), /send GET or HEAD/);
     assert.deepEqual(fetched, [], 'a refused write never reaches the connection');
   } finally {
@@ -464,6 +469,12 @@ test('the Slack and routine agents refuse a test run plan', async () => {
     assert.notEqual(custom['~standard'].validate(testRun).issues, undefined);
     assert.doesNotThrow(() => parseRoutineExecutionInitialData({ runtimePlan: slack, requestedModel: MODEL }));
     assert.throws(() => parseRoutineExecutionInitialData({ runtimePlan: testRun, requestedModel: MODEL }), /test run plan/);
+    // A Slack render reads its staged turn input, not its creation data: that refuses a test plan too.
+    const staged = (plan: RuntimePlanV2) => createSlackTurnInput({
+      turnJobId: 'tj_staged_test_plan', instanceId: deriveRuntimePlanInstanceId(plan), runtimePlan: plan,
+    });
+    assert.doesNotThrow(() => parseSlackTurnInput(staged(slack)));
+    assert.throws(() => parseSlackTurnInput(staged(testRun)), /A Slack turn cannot run a test run plan/);
   });
 });
 

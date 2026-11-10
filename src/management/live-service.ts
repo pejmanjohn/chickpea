@@ -9,6 +9,7 @@ import {
   getRoutineStore,
   getSettingsStore,
   getSlackStateStore,
+  getTestRunStore,
   getUsageStore,
   getWorkStore,
   getSlackCredentialDependencies,
@@ -152,6 +153,7 @@ export function createLiveWorkspaceManagementService(
     settings,
     config: config as ConfigStore,
   });
+  const testRuns = getTestRunStore(env);
   return new WorkspaceManagementService({
     identity: overrides.identity ?? identity,
     config,
@@ -285,6 +287,16 @@ export function createLiveWorkspaceManagementService(
       }
     },
     typedSlackMessage: async (query) => getSlackStateStore(env).typedSlackMessage?.(query),
+    ...(testRuns ? { testRuns } : {}),
+    slackMemberTimezone: async (slackUserId) => {
+      const organization = await identity.getOrganization();
+      if (!organization?.slackTeamId) return undefined;
+      try {
+        return (await (await slackTransport(organization.slackTeamId)).lookupMember(slackUserId)).timezone || undefined;
+      } catch {
+        return undefined;
+      }
+    },
     managedConnectorAvailable: async ({ toolkit, accessLane }) => {
       const provider = (await managedProviders()).get('composio');
       return Boolean(provider?.authorize) &&

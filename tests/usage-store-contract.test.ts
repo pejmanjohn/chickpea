@@ -531,6 +531,12 @@ test('activity attributions list public customer work in range, oldest first, wi
     }));
     // A turn still running: no measurement yet.
     await store.admitOperation(operation('op_running', { startedAt: START + 20, agentId: null, requesterMembershipId: null }));
+    // A test run of an Agent, charged as its caller's direct message.
+    await store.admitOperation(operation('op_test_run', {
+      operationKind: 'test_turn', startedAt: START + 30, conversationKind: 'direct_message', channelId: null, channelLabel: null,
+      requesterMembershipId: 'membership_maya',
+    }));
+    await store.recordTerminal(terminal('op_test_run', { billingRunId: 'sub_ik_test_run', ...priced(250) }));
     // Never listed: a private routine, an internal classification, and work outside the range.
     await store.admitOperation(operation('op_private_routine', {
       operationKind: 'routine_run', conversationKind: 'direct_message', channelLabel: null,
@@ -555,6 +561,11 @@ test('activity attributions list public customer work in range, oldest first, wi
       {
         operationId: 'op_running', operationKind: 'interactive_turn', startedAt: START + 20, agentId: null,
         requesterMembershipId: null, model: 'openai/gpt-4.1-mini', estimateMicros: null, billingRunIds: [],
+      },
+      {
+        operationId: 'op_test_run', operationKind: 'test_turn', startedAt: START + 30, agentId: 'agent_default',
+        requesterMembershipId: 'membership_maya', model: 'openai/gpt-4.1-mini-2025-04-14', estimateMicros: 250,
+        billingRunIds: ['sub_ik_test_run'],
       },
     ]);
 

@@ -9,6 +9,7 @@ import {
   mcpErrorResult,
   mcpSuccessResult,
   mcpToolError,
+  McpToolFailure,
   READ_HINTS,
   toolMeta,
   writeHints,
@@ -183,6 +184,24 @@ export const FIVE_ZERO_TOOLS = {
     output: schemas.getCreationStatusOutput,
     visibility: ['app'],
     run: (deps, args) => reads.getCreationStatus(deps, args),
+  }),
+  try_agent_once: tool({
+    title: 'Try an Agent once',
+    description: 'For the Agent card: runs a new Agent once on the first question saved when it was created, as you, and returns its answer and the services it read. Runs it once, read-only: it makes only read requests and sends nothing to Slack. Spends metered usage under a daily limit.',
+    input: schemas.tryAgentOnceInput,
+    output: schemas.testRunOutput,
+    visibility: ['app'],
+    // U2's hints for a run that spends usage and reaches the open web; a retry with its key returns the same run.
+    write: writeHints({ destructive: true, openWorld: true }),
+    run: async (deps, args) => (await import('./test-runs.ts')).tryAgentOnce(deps, args),
+  }),
+  get_test_run: tool({
+    title: 'Get a test run',
+    description: 'For the Agent card: where one test run stands, by the runToken try_agent_once returned, with its answer once it has one. Only your own runs, for an hour. Reads only; changes nothing.',
+    input: schemas.getTestRunInput,
+    output: schemas.testRunOutput,
+    visibility: ['app'],
+    run: async (deps, args) => (await import('./test-runs.ts')).getTestRun(deps, args),
   }),
   explain_agent: tool({
     title: 'Explain an Agent',
@@ -546,7 +565,7 @@ export function registerFiveZeroTool(
       return mcpSuccessResult(structured, { tool: name, held });
     } catch (error) {
       const failure = mcpToolError(error);
-      if (failure.code === 'temporarily_unavailable') {
+      if (failure.code === 'temporarily_unavailable' && !(error instanceof McpToolFailure)) {
         console.warn('[chickpea:management] unexpected 5.0 tool failure', JSON.stringify({
           tool: name,
           errorName: error instanceof Error ? error.name : typeof error,

@@ -10,6 +10,7 @@ import {
 } from '../identity/installation-binding.ts';
 import { IdentityStoreLogic } from '../identity/store.ts';
 import { ManagementStoreLogic } from '../management/store.ts';
+import { TestRunStoreLogic } from '../management/test-runs.ts';
 import { MemoryStoreLogic } from '../memory/store.ts';
 import { agentRoutineDeletion, RoutineStoreLogic } from '../routines/store.ts';
 import { SlackStateLogic } from '../slack/claim-store.ts';
@@ -40,6 +41,8 @@ export interface TagStateStores {
   usage: UsageStoreLogic;
   work: WorkStoreLogic;
   management: ManagementStoreLogic;
+  /** Test runs, over the management table and the usage store (management/test-runs.ts). */
+  testRuns: TestRunStoreLogic;
 }
 
 /**
@@ -91,9 +94,10 @@ export function buildTagStateStores(
     routines: new RoutineStoreLogic(db, Date.now, objectInventory),
     usage: new UsageStoreLogic(db),
     management: new ManagementStoreLogic(db),
-  } as Omit<TagStateStores, 'work'>;
+  } as Omit<TagStateStores, 'work' | 'testRuns'>;
   return {
     ...stores,
+    testRuns: new TestRunStoreLogic(db, stores.usage),
     work: new WorkStoreLogic(db, {
       env: {
         TAG_RUN_BODY_RETENTION_DAYS:

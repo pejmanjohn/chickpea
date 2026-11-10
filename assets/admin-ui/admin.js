@@ -2409,6 +2409,7 @@
       return operation.routineLabel || (state.usageRoutineNames && state.usageRoutineNames[operation.routineId]) || "Scheduled work";
     }
     if (operation.operationKind === "interaction_classification") return "Interaction classification";
+    if (operation.operationKind === "test_turn") return "Test run";
     if (operation.conversationKind === "direct_message") return "Direct message";
     return operation.channelLabel ? "#" + operation.channelLabel : operation.channelId || "Interactive turn";
   }

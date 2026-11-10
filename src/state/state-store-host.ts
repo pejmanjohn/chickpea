@@ -28,6 +28,7 @@ import {
   type StatePendingWorkCancellation,
 } from './pending-work.ts';
 import type { TagStateStores } from './tag-state-stores.ts';
+import type { TestRunLifecycle } from './test-run-lifecycle.ts';
 
 /**
  * What one installation's state store knows of its coding workspaces: the
@@ -78,6 +79,8 @@ export function stateStoreHostFunctions(store: {
   readonly stopAgents?: (agents: readonly AgentStopTarget[]) => Promise<{ stopped: number; notStopped: number }>;
   /** Where a cancelled occurrence's settlement is reported (the log, by default). */
   readonly persistenceTelemetrySink?: RoutinePersistenceTelemetrySink;
+  /** The store's test runs, which a cancellation settles and erases in the same call. */
+  readonly testRuns?: () => Promise<Pick<TestRunLifecycle, 'pass'>>;
 }): StateStoreHostRpc {
   const stores = (request: ObjectHostRequest): TagStateStores => {
     assertObjectHostCall(store.env, request);
@@ -165,8 +168,16 @@ export function stateStoreHostFunctions(store: {
       });
       await store.storage.deleteAlarm();
       const { stopped, notStopped } = await (store.stopAgents ?? stopCancelledAgents)(agents);
+      // A test run's instance is in no inventory: only this pass reaches it,
+      // and one not yet erased holds erasure's drain and the confirming pass.
+      const tests = store.testRuns && local.testRuns.hasUnerased()
+        ? await (await store.testRuns()).pass('cancel')
+        : { erased: 0, unerased: 0 };
       return {
-        alarmCleared: true, ...cancelled, agentsStopped: stopped, agentsNotStopped: notStopped + agentsUnaddressable,
+        alarmCleared: true,
+        ...cancelled,
+        agentsStopped: stopped + tests.erased,
+        agentsNotStopped: notStopped + agentsUnaddressable + tests.unerased,
       };
     },
   };
@@ -183,18 +194,22 @@ export function stateStoreHostFunctions(store: {
  * this instance's alarm writes when it completes the delivery, as an
  * earlier one's lease is reclaimed by the next drain. `cancel_pending`
  * parks the turns; a delivery leaves flight once its alarm completes it or
- * reclaims its lease.
+ * reclaims its lease. A test run not yet erased refuses it too: the
+ * cancellation pass, or the alarm after resume, erases it.
  */
 export function quiesceStateStoreForRestore(
   stores: {
     readonly turnJobs: Pick<TagStateStores['turnJobs'], 'hasInterruptedAlarmDispatch' | 'hasHandoffs'>;
     readonly gatewayInbox: Pick<TagStateStores['gatewayInbox'], 'hasInFlight'>;
+    readonly testRuns: Pick<TagStateStores['testRuns'], 'hasUnerased'>;
   },
 ): void {
   const owed = [
     stores.turnJobs.hasInterruptedAlarmDispatch() ? 'an alarm turn dispatched' : undefined,
     stores.gatewayInbox.hasInFlight() ? 'a gateway delivery in flight' : undefined,
     stores.turnJobs.hasHandoffs() ? 'a runner hand-off unconfirmed' : undefined,
+    // Its instance is in no restore plan, so a restore before its erase would leave it behind.
+    stores.testRuns.hasUnerased() ? 'a test run not yet erased' : undefined,
   ].filter((reason) => reason !== undefined);
   if (owed.length > 0) {
     throw new ObjectRestoreError(

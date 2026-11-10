@@ -254,11 +254,11 @@ export function createBoundedAgentReplyReader(input: {
   };
 }
 
-function agentViewBase(agentName: string, instanceId: string): string {
+export function agentViewBase(agentName: string, instanceId: string): string {
   return `https://flue.invalid/agents/${encodeURIComponent(agentName)}/${encodeURIComponent(instanceId)}`;
 }
 
-async function readAgentView(
+export async function readAgentView(
   route: AgentUpdatesRoute,
   target: Pick<BoundedObservationTarget, 'agentName' | 'instanceId'>,
   url: string,
@@ -321,7 +321,7 @@ export function createCloudflareBoundedAgentReplyReader(
   });
 }
 
-function agentObjectNamespace(
+export function agentObjectNamespace(
   env: Record<string, unknown> | undefined,
   bindingName: string,
 ): AgentObjectNamespace | undefined {
@@ -331,12 +331,12 @@ function agentObjectNamespace(
     : undefined;
 }
 
-function agentObjectRoute(binding: AgentObjectNamespace, instanceId: string): AgentUpdatesRoute {
+export function agentObjectRoute(binding: AgentObjectNamespace, instanceId: string): AgentUpdatesRoute {
   const stub = binding.get(binding.idFromName(instanceId));
   return (request) => stub.fetch(request);
 }
 
-type AgentConversationSnapshot = Extract<ConversationStreamChunk, { type: 'conversation-reset' }>['snapshot'];
+export type AgentConversationSnapshot = Extract<ConversationStreamChunk, { type: 'conversation-reset' }>['snapshot'];
 
 /**
  * One immediate read of an agent instance's newest `limit` history messages,

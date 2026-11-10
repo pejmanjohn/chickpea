@@ -4,6 +4,7 @@ import { promisify } from '../state/async-facade.ts';
 import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
 import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 import { addColumnIfMissing } from '../state/schema-links.ts';
+import { cleanupTestRunRetention, installTestRunSchema } from './test-runs.ts';
 import {
   ManagementError,
   type ClaimManagementProposalInput,
@@ -1791,6 +1792,7 @@ export class ManagementStoreLogic {
         cutoff,
         boundedLimit,
       );
+      deleted += cleanupTestRunRetention(this.db, at, boundedLimit);
       return deleted;
     });
   }
@@ -1979,6 +1981,7 @@ export class ManagementStoreLogic {
         PRIMARY KEY (organization_id, user_id)
       )`,
     );
+    installTestRunSchema(this.db);
   }
 
   private ensureSetupColumns(): void {

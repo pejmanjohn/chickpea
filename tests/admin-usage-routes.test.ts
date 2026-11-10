@@ -239,6 +239,13 @@ test('usage Admin APIs are authenticated, bounded, and expose no content fields'
     assert.doesNotMatch(metadataText, /staleAfter|reviewDueAt/, 'a price\'s review date is for operators only');
     assert.doesNotMatch(metadataText, /apiKey|authorization|billingCredential|clientSecret/i);
 
+    // A test run's usage lists as a direct message's does.
+    await usage.admitOperation({
+      operationId: 'op_admin_test_run', operationKind: 'test_turn', sourceId: 'testrun_admin', startedAt: 2_000,
+      installationId: 'installation', workspaceId: 'T_ADMIN', agentId: 'agent_default', agentLabel: 'Default',
+      channelId: null, channelLabel: null, conversationKind: 'direct_message', requesterMembershipId: 'membership_admin',
+      requestedProvider: 'openai', requestedModel: 'gpt-4.1-mini', credentialRefId: null, credentialVersion: null,
+    });
     const instances = await app.request(
       '/admin/api/usage/operations?from=1&to=3000&limit=20',
       { headers },
@@ -248,7 +255,7 @@ test('usage Admin APIs are authenticated, bounded, and expose no content fields'
     const instancesBody = JSON.parse(instancesText) as Record<string, any>;
     assert.deepEqual(
       instancesBody.items.map((item: Record<string, any>) => item.operation.operationId),
-      ['op_admin'],
+      ['op_admin_test_run', 'op_admin'],
     );
     assert.doesNotMatch(instancesText, /interaction_classification|op_admin_classifier/);
     assert.doesNotMatch(instancesText, /prompt|resultText|authorization|apiKey/i);

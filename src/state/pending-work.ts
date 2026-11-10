@@ -30,12 +30,16 @@ export interface StatePendingWorkCancellation {
   readonly routineNotices: number;
   /** Management receipts closed unsent. */
   readonly managementReceipts: number;
-  /** Flue instances of dispatched, unsettled turns and attempts asked to abort. */
+  /**
+   * Flue instances of dispatched, unsettled turns and attempts asked to
+   * abort, and test runs whose instance the call erased.
+   */
   readonly agentsStopped: number;
   /**
-   * Those whose abort failed, and dispatched turns whose stored dispatch does
-   * not read, so nothing can address them; the installation's admission
-   * check still refuses their model calls.
+   * Those whose abort failed, dispatched turns whose stored dispatch does
+   * not read, so nothing can address them (the installation's admission
+   * check still refuses their model calls), and test runs not yet erased,
+   * settled or not.
    */
   readonly agentsNotStopped: number;
 }

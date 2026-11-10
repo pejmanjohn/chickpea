@@ -19,6 +19,8 @@ export const USAGE_OPERATION_KINDS = [
   'interactive_turn',
   'routine_run',
   'interaction_classification',
+  /** A read-only test run of a new Agent, charged as a direct message (management/test-runs.ts). */
+  'test_turn',
 ] as const;
 export type UsageOperationKind = (typeof USAGE_OPERATION_KINDS)[number];
 
@@ -273,7 +275,7 @@ export interface UsageSummary {
  */
 export interface UsageActivityAttribution {
   operationId: string;
-  operationKind: 'interactive_turn' | 'routine_run';
+  operationKind: 'interactive_turn' | 'routine_run' | 'test_turn';
   startedAt: number;
   agentId: string | null;
   requesterMembershipId: string | null;

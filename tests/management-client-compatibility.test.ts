@@ -115,6 +115,9 @@ const MCP_TOOL_ANNOTATIONS = {
   propose_agent: READ_5,
   propose_agent_change: READ_5,
   get_creation_status: READ_5,
+  // Card-only: a run that spends metered usage and reads the open web; its key returns the same run.
+  try_agent_once: { ...DESTRUCTIVE_5, openWorldHint: true },
+  get_test_run: READ_5,
   explain_agent: READ_5,
   check_agent: { ...READ_5, openWorldHint: true },
   // 5.0 writes: OpenAI's rule, so an overwrite, removal or irreversible send is destructive,
