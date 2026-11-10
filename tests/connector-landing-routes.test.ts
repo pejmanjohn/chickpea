@@ -941,6 +941,58 @@ test('replacing a catalog connection in place keeps its guide', async () => {
   }
 });
 
+test('replacing a catalog connection in place keeps each argument limit with its tool, and a mark only with its allowance', async () => {
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await config.createAgent({
+      id: 'agent_billing', name: 'Billing Guide', creatorMembershipId: 'membership_owner',
+      editPolicy: 'all_workspace_members', lifecycle: 'active', configurationGeneration: 1,
+      instructions: 'Help the team manage billing.', enabled: true,
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const tools = [{ name: 'search' }, { name: 'refund' }, { name: 'archive' }];
+    const policy = {
+      kind: 'mcp' as const, url: 'https://mcp.stripe.com/', transport: 'streamable-http' as const,
+      authMode: 'bearer' as const, headerNames: [], discoveredTools: tools, presetId: 'stripe',
+    };
+    const limited = (effect: 'read' | 'write', customer: string) => ({ effect, argumentConstraints: { customer: [customer] } });
+    // A 4.x write can set these on a catalog connection; refund was dis-allowed since, and archive has only a mark.
+    const { account, binding } = await config.createAgentOwnedConnection({
+      account: {
+        id: 'connection_stripe', workspaceId: 'T_REPLACE', ownerKind: 'team',
+        createdByMembershipId: 'membership_owner', providerId: 'stripe', label: 'Stripe',
+        policy: {
+          ...policy, allowedTools: ['search', 'archive'],
+          toolPolicies: { search: limited('read', 'cus_support'), refund: limited('read', 'cus_test'), archive: { effect: 'read' } },
+        },
+        secretRefId: 'secret_stripe', lifecycle: 'ready',
+      },
+      binding: {
+        agentId: 'agent_billing', connectionAccountId: 'connection_stripe', providerId: 'stripe',
+        allowedCapabilities: ['search', 'archive'], enabled: true,
+      },
+    });
+    // The sign-in again grants every tool the server offers.
+    const replaced = await replaceCatalogConnection({
+      config, settings, account, binding,
+      prepared: {
+        policy: { ...policy, allowedTools: ['search', 'refund', 'archive'] },
+        credential: 'replacement-token',
+        allowedCapabilities: ['search', 'refund', 'archive'],
+      },
+    });
+    assert.deepEqual(replaced.policy.kind === 'mcp' ? replaced.policy.toolPolicies : null, {
+      search: limited('read', 'cus_support'),
+      refund: limited('write', 'cus_test'),
+      archive: { effect: 'read' },
+    });
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
 test('a failed catalog replacement restores only the binding it wrote, so a later change stays', async () => {
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');

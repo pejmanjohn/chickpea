@@ -74,6 +74,7 @@ import {
   allowedToolsAfterMcpDiscovery,
   isMcpToolReviewRequired,
 } from '../config/mcp-access.ts';
+import { keptToolPolicies } from '../config/mcp-tool-policy.ts';
 import {
   compileMetaAdsToolAccess,
   isMetaAdsMcpConnection,
@@ -2209,6 +2210,10 @@ export async function replaceCatalogConnection(input: {
             }
           : {}),
       };
+    } else if (account.policy.kind === 'mcp' && prepared.policy.kind === 'mcp') {
+      // A mark goes with its tool's allowance; an argument limit stays with its tool.
+      const toolPolicies = { ...keptToolPolicies(account.policy, prepared.policy.allowedTools), ...prepared.policy.toolPolicies };
+      if (Object.keys(toolPolicies).length > 0) nextPolicy = { ...prepared.policy, toolPolicies };
     }
     const guide = account.policy.kind === 'managed' ? undefined : account.policy.guide;
     if (guide && nextPolicy.kind !== 'managed') nextPolicy = { ...nextPolicy, guide };

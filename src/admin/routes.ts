@@ -371,7 +371,7 @@ import {
   type StartMcpOAuthInput,
 } from '../config/mcp-oauth.ts';
 import { allowedToolsAfterMcpDiscovery, isMcpToolReviewRequired } from '../config/mcp-access.ts';
-import { keptToolPolicies } from '../config/mcp-tool-policy.ts';
+import { keptToolPolicies, withoutMarks } from '../config/mcp-tool-policy.ts';
 import { BUGSNAG_MCP_SERVER_URL, BugsnagAccessPolicyError, compileBugsnagToolAccess, isBugsnagMcpConnection } from '../config/bugsnag-policy.ts';
 import { compileMetaAdsToolAccess, isMetaAdsMcpConnection, metaAdsToolEffect, metaAdsToolSchemaSupported, MetaAdsAccessPolicyError } from '../config/meta-ads-policy.ts';
 import { META_ADS_MCP_SERVER_URL, META_ADS_OAUTH_MANAGEMENT_SCOPE, configuredMcpOAuthCallbackUrl, configuredMcpOAuthClientDescriptor, getConfiguredMcpOAuthClient, saveConfiguredMcpOAuthClient, removeConfiguredMcpOAuthClient, resolveConfiguredMcpOAuthScope, ConfiguredMcpOAuthClientError } from '../config/mcp-oauth-clients.ts';
@@ -12100,10 +12100,10 @@ async function replacePendingMcpOAuthConnection(
     oauthScope === META_ADS_OAUTH_MANAGEMENT_SCOPE
     ? policy.allowedTools
     : policy.allowedTools.filter((tool) => metaAdsToolEffect(tool) !== 'write');
-  const toolPolicies = Object.fromEntries(
-    Object.entries(policy.toolPolicies ?? {})
-      .filter(([tool]) => allowedTools.includes(tool)),
-  );
+  // A reviewed connector's policies are compiled again by its review; a custom tool keeps its limit.
+  const toolPolicies = isMcpToolReviewRequired(policy)
+    ? Object.fromEntries(Object.entries(policy.toolPolicies ?? {}).filter(([tool]) => allowedTools.includes(tool)))
+    : withoutMarks(policy.toolPolicies, (tool) => !allowedTools.includes(tool));
   return configStore.putConnectionAccount({
     ...withoutIdentity,
     lifecycle: 'pending',
