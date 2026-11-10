@@ -431,8 +431,8 @@ test('try_agent_once returns running 15 seconds after the call starts, a slow ad
   const running = await tryAgentOnce(deps(f.owner), { agentId: 'agent_tested', idempotencyKey: 'key_wait' }, timing);
   assert.equal(running.status, 'running');
   const returnedAfter = clock.now() - calledAt;
-  assert.ok(returnedAfter <= TRY_AGENT_ONCE_RETURNS_BY_MS && returnedAfter > TRY_AGENT_ONCE_RETURNS_BY_MS - 2_000,
-    `it returned ${returnedAfter} ms after the call started`);
+  assert.equal(TRY_AGENT_ONCE_RETURNS_BY_MS, 15_000);
+  assert.ok(returnedAfter <= 15_000 && returnedAfter > 13_000, `it returned ${returnedAfter} ms after the call started`);
   f.service.testRunStore = testRunStore;
   const polledAt = clock.now();
   const still = await getTestRun(deps(f.owner), { runToken: running.runToken }, timing);

@@ -480,3 +480,14 @@ test('a cancellation that finds the instance still running fails the run as canc
   assert.deepEqual(context.instances.on(instanceId), ['dispatch', 'abort', 'settlement', 'settlement']);
   assert.equal(context.instances.calls.some(([call]) => call.startsWith('credit_back')), false);
 });
+
+test('a cancellation whose abort the instance settles is cancelled, not a timeout, and nothing is credited back', async () => {
+  const context = setup('inst_lifecycle_cancel_aborted');
+  const { row, instanceId } = await started(context);
+  // Flue settles an aborted submission as testRunSettlement reads it: a deadline credited as a timeout.
+  context.instances.settleOnAbort = { kind: 'failed', failure: 'deadline', creditBack: 'timeout' };
+  assert.deepEqual(await context.lifecycle.pass('cancel'), { erased: 1, unerased: 0 });
+  assert.deepEqual([row().status, row().failure], ['failed', 'cancelled']);
+  assert.ok(context.instances.on(instanceId).includes('erase'));
+  assert.equal(context.instances.calls.some(([call]) => call.startsWith('credit_back')), false);
+});

@@ -402,6 +402,37 @@ test('Agent-scoped creation rolls back its account, binding, and staged secret t
   }
 });
 
+test('an Agent connection\'s policy changes only for whoever may manage its account, as Admin\'s tool editor', async () => {
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  let nextId = 0;
+  const service = new ConnectionAccountService({ config, settings, randomId: () => `policy${++nextId}` });
+  try {
+    await config.createAgent(agent('agent_docs', 'membership_member'));
+    await config.ensureWorkspaceInstallation({ workspaceId: 'T_CONNECTIONS', transportMode: 'direct', defaultAgentId: 'agent_docs' });
+    const policy = {
+      kind: 'mcp' as const, url: 'https://mcp.docs.example/mcp', transport: 'streamable-http' as const, authMode: 'none' as const,
+      headerNames: [], discoveredTools: [{ name: 'search' }], allowedTools: ['search'],
+    };
+    const create = (ownerKind: 'team' | 'member', providerId: string, by: AuthPrincipal) => service.createForAgent({
+      principal: by, agentId: 'agent_docs', workspaceId: 'T_CONNECTIONS', ownerKind, providerId, label: providerId, policy,
+    });
+    const { account: team } = await create('team', 'team_docs', principal('membership_admin', 'admin'));
+    const { account: own } = await create('member', 'own_docs', principal('membership_member'));
+    const marked = { ...policy, toolPolicies: { search: { effect: 'read' as const } } };
+    const update = (account: typeof team) => service.updateForAgent({
+      principal: principal('membership_member'), agentId: 'agent_docs', connectionAccountId: account.id,
+      expectedRevision: account.revision, label: account.label, policy: marked, resetCredential: false,
+    });
+    await assert.rejects(update(team), (error: Error) => error.name === 'AuthorizationError',
+      'a member cannot change a team connection\'s policy, though they may edit the Agent');
+    assert.deepEqual((await update(own)).policy, marked);
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
 test('personal accounts resolve only for their owner and language selects a unique label', async () => {
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
