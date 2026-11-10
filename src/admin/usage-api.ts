@@ -53,6 +53,7 @@ export function channelLabelKey(workspaceId: string, channelId: string): string 
 const CUSTOMER_USAGE_OPERATION_KINDS = [
   'interactive_turn',
   'routine_run',
+  'test_turn',
 ] satisfies UsageOperationKind[];
 
 export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {

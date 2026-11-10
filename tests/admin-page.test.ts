@@ -706,6 +706,8 @@ function runAdminPageHarness(
     usageAgentLabel?: string | null;
     usageAgentId?: string;
     usageRoutineId?: string;
+    /** The fixture's activity is a test run of its Agent. */
+    usageTestRun?: boolean;
     usageSlackMessagePath?: string;
     usageClassifierOnly?: boolean;
     usageNextCursor?: string | null;
@@ -1645,6 +1647,9 @@ function runAdminPageHarness(
             operationKind: 'routine_run', channelId: 'C0EXR3L9T', conversationKind: 'named_channel',
             routineId: options.usageRoutineId, routineRunId: 'op_usage_fixture',
           }
+        : {}),
+      ...(options.usageTestRun
+        ? { operationKind: 'test_turn', channelId: null, channelLabel: null, conversationKind: 'direct_message' }
         : {}),
     },
     measurements: [{
@@ -17903,6 +17908,12 @@ test('Usage names the built-in Chickpea Agent on a redacted operation', async ()
 
   assert.match(harness.app.innerHTML, /<td>Chickpea<\/td>/);
   assert.doesNotMatch(harness.app.innerHTML, /agent_chickpea<\/td>/);
+});
+
+test('Usage names a test run "Test run"', async () => {
+  const harness = runAdminPageHarness({ usageAdminUi: true, initialPath: '/admin/usage', usageTestRun: true });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /<strong class="usage-work-label">Test run<\/strong>/);
 });
 
 test('Usage names a redacted scheduled run from the readable scheduled-work list', async () => {

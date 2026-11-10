@@ -54,7 +54,7 @@ export interface ReportRow {
 }
 
 export interface ReportAgentRow extends ReportRow {
-  /** Who uses it most: a person's name, "Routines", or null. */
+  /** Who uses it most: a person's name, "Routines", "Test runs", or null. */
   topPerson: string | null;
   /** The model with the most of its amount, by display name. */
   mainModel: string | null;
@@ -157,6 +157,7 @@ const CHARTED_AGENTS = 4;
 const LISTED_ROWS = 5;
 const FALLBACK_DAYS = 30;
 const ROUTINES = 'routines';
+const TEST_RUNS = 'test_runs';
 const OTHER = 'Other';
 // UTC, as the Plan page's dates read.
 const SHORT_DATE = new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' });
@@ -267,7 +268,7 @@ export function buildUsageReport(inputs: UsageReportInputs): UsageReport {
   const agentName = (id: string) => names.agents.get(id);
   // A billing period's people, as the Plan page's By person; a narrower range could name who asked for one private run.
   const people = range.period === null ? null : names.people;
-  const personName = (key: string) => key === ROUTINES ? 'Routines' : people?.get(key);
+  const personName = (key: string) => key === ROUTINES ? 'Routines' : key === TEST_RUNS ? 'Test runs' : people?.get(key);
   // An Agent with no name now reads as the gathered row, as on the Plan page.
   const agentRow = (id: string | null) => id !== null && names.agents.has(id) ? id : null;
 
@@ -441,7 +442,9 @@ function attributed(attribution: UsageActivityAttribution | undefined): Pick<Cha
   if (!attribution) return { agentId: null, person: null, model: null, matched: false };
   return {
     agentId: attribution.agentId,
-    person: attribution.operationKind === 'routine_run' ? ROUTINES : attribution.requesterMembershipId,
+    person: attribution.operationKind === 'routine_run' ? ROUTINES
+      : attribution.operationKind === 'test_turn' ? TEST_RUNS
+      : attribution.requesterMembershipId,
     model: attribution.model,
     matched: true,
   };
