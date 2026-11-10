@@ -173,8 +173,9 @@ function transition(state: State, event: Event): Next {
  * A reply the card no longer waits for: a read an earlier view made, or a
  * write's second answer after its first moved the card on.
  */
+// The view stands still while a write is in flight, so a call belongs to the view only when seq matches.
 function outdated(state: State, made: Call): boolean {
-  return made.seq !== state.seq && (READS.has(made.tool) || !state.busy);
+  return made.seq !== state.seq;
 }
 
 // What a tool result becomes.
@@ -341,6 +342,7 @@ function reply(state: State, made: Call, result: ToolResult, now: number): Next 
       }
       return changeView(content, now);
     case 'get_agent': {
+      if (state.busy) return stay(state); // a write is in flight; its reply decides the view
       const version = failure ? undefined : (content as { version?: unknown } | undefined)?.version;
       if (typeof version !== 'string') return stay(state);
       if (view.kind === 'change' && version !== view.preview.save.arguments.version) return stay({ ...state, view: { ...view, stale: true } });

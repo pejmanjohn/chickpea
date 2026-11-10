@@ -116,7 +116,10 @@ function card(server: (name: string, args?: Record<string, unknown>) => Promise<
       state = next.state;
       const shown = present(state);
       assert.ok(shown.buttons.length <= 2, `at most two buttons: ${JSON.stringify(shown.buttons)}`);
-      for (const idle of [{ type: 'reread', now: clock.now }, { type: 'tick', now: clock.now }] as const) await follow(state, idle, true);
+      for (const idle of [
+        { type: 'reread', now: clock.now }, { type: 'tick', now: clock.now },
+        { type: 'refused', now: clock.now }, { type: 'no_result', now: clock.now },
+      ] as const) await follow(state, idle, true);
       for (const effect of next.effects) {
         effects.push(effect);
         if (effect.type !== 'call') continue;
@@ -332,6 +335,37 @@ test('Keep changes nothing, and an expired confirmation cannot be confirmed', as
   await unnoticed.press('confirm');
   assert.deepEqual([unnoticed.calls(), unnoticed.shown.title], [[], 'This confirmation expired']);
   assert.equal((await f.config.getAgent('agent_support')).enabled, true);
+});
+
+// Defect caught: a retried write's late second answer landed on a newer view while another write was in flight.
+test('a retried confirm\'s second answer, or its timeout, never moves the card while Undo is in flight', async (t) => {
+  const { f, call, card: agentCard, clock, teamId } = await harness(t, 'card-late-retry');
+  await createFixtureAgent(f, 'agent_support');
+  await f.config.putChannel({ workspaceId: teamId, channelId: 'C_SUPPORT', label: 'support', lifecycle: 'active' });
+  await f.config.putAgentChannelGrant({
+    workspaceId: teamId, channelId: 'C_SUPPORT', agentId: 'agent_support', status: 'active',
+    createdByMembershipId: f.owner.membership.id, channelLabel: 'support',
+  });
+  const read = (await call('get_agent', { agentId: 'agent_support' })).structuredContent!;
+  await agentCard.result(await call('update_agent', { agentId: 'agent_support', version: read.version, on: false, idempotencyKey: 'off' }));
+  agentCard.hold = ({ tool }) => tool === 'confirm_change' || tool === 'undo_change';
+
+  await agentCard.press('confirm');
+  const [first] = agentCard.held;
+  await agentCard.answer('unreachable');
+  await agentCard.press('confirm');
+  const [retry] = agentCard.held;
+  agentCard.held.length = 0;
+  // The first confirm's answer arrives late: the change applied, and Undo is offered.
+  await agentCard.dispatch({ type: 'reply', call: first!.call, result: first!.result, now: clock.now });
+  assert.equal(agentCard.state.view.kind, 'done');
+  await agentCard.press('undo');
+  assert.equal(agentCard.shown.busy, true);
+
+  await agentCard.dispatch({ type: 'reply', call: retry!.call, result: retry!.result, now: clock.now });
+  await agentCard.dispatch({ type: 'unreachable', call: retry!.call, now: clock.now });
+  assert.deepEqual([agentCard.state.view.kind, agentCard.shown.busy], ['done', true], 'the older call\'s answers are dropped');
+  assert.equal(agentCard.calls('undo_change').length, 1, 'no second undo goes out');
 });
 
 test('a read that answers after the card moved on is dropped', async (t) => {
