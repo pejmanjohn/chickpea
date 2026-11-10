@@ -82,7 +82,7 @@ function assertRefusedToMember(result: ManagementApplyResult, teamId: string, in
   assert.equal(outcome?.disposition, 'failed', JSON.stringify(result));
   assert.equal(outcome?.code, 'operational_access_required');
   assert.equal(outcome?.instruction, instruction);
-  assert.equal(outcome?.links?.admin, `http://localhost/admin/channels/${teamId}/${CHANNEL}`);
+  assert.equal(outcome?.links?.admin, undefined, `${teamId}: Admin has no on/off control for a Channel, so no link`);
 }
 
 test('a Member cannot turn Chickpea back on in a Channel an Owner or Admin turned off, over MCP or in Slack', async (t) => {
@@ -100,6 +100,12 @@ test('a Member cannot turn Chickpea back on in a Channel an Owner or Admin turne
     OFF_REFUSED,
   );
   assert.equal((await f.config.getChannel(teamId, CHANNEL))?.label, 'support', 'a Channel that is off keeps its settings');
+  assertRefusedToMember(
+    await putChannel(f, member, teamId, 'member-new-off', { lifecycle: 'archived', channelId: 'C_NEW', label: 'new' }),
+    teamId,
+    OFF_REFUSED,
+  );
+  assert.equal(await f.config.getChannel(teamId, 'C_NEW'), undefined, 'a Member cannot record a new Channel as off');
 
   const offRevision = (await f.config.getChannel(teamId, CHANNEL))!.revision!;
   await assert.rejects(
@@ -200,4 +206,54 @@ test('a confirmation resumed after its requester became a Member does not turn C
   );
   assert.equal(await lifecycle(f, teamId), 'archived', 'the Channel stays off');
   assert.equal((await f.management.getChangeSetProposal(proposed.proposalId))?.status, 'stale');
+});
+
+// Defect caught: an Admin's turn-off landing between the policy read and the write was undone by a Member's change.
+test('a Member write the policy allowed cannot land on a turn-off made after the policy read', async (t) => {
+  const { f, teamId } = await workspace(t, 'channel_reenable_race');
+  await demoteToMember(f);
+  const before = (await f.config.getChannel(teamId, CHANNEL))!;
+  // f.config is the async facade: a Proxy whose methods run the synchronous store
+  // logic with `this` bound to the raw store. Hook the raw prototype method so the
+  // store's own `this.getChannel` reads stay synchronous, and run the Owner's
+  // turn-off inside the Member's policy read, after that read saw the Channel on.
+  const logic = Object.getPrototypeOf(f.config) as {
+    getChannel(this: unknown, workspaceId: string, channelId: string): unknown;
+    putChannel(this: unknown, channel: unknown, expectedRevision?: number): unknown;
+  };
+  const hooked = f.config as unknown as Record<string, unknown>;
+  let fired = false;
+  let firedInPolicy = false;
+  hooked.getChannel = function (this: unknown, workspaceId: string, channelId: string) {
+    const read = logic.getChannel.call(this, workspaceId, channelId);
+    if (!fired && channelId === CHANNEL) {
+      fired = true;
+      firedInPolicy = new Error().stack?.includes('policyFacts') ?? false;
+      logic.putChannel.call(
+        this,
+        { workspaceId: teamId, channelId: CHANNEL, label: 'support', lifecycle: 'archived' },
+        before.revision,
+      );
+    }
+    return read;
+  };
+  let result: ManagementApplyResult;
+  try {
+    // The Member names the revision the turn-off will produce.
+    result = await applyThroughAdapter(f, secondPersonMcp(f), 'member-race', [{
+      itemId: 'channel',
+      kind: 'put_channel',
+      channel: { workspaceId: teamId, channelId: CHANNEL, label: 'renamed', lifecycle: 'active' },
+      expectedRevision: before.revision! + 1,
+    }]);
+  } finally {
+    delete hooked.getChannel;
+  }
+  assert.ok(firedInPolicy, 'the turn-off ran inside the policy read, the first read of the Channel');
+  assert.equal(result.outcomes[0]?.disposition, 'failed', JSON.stringify(result));
+  assert.equal(result.outcomes[0]?.code, 'revision_conflict');
+  const after = await f.config.getChannel(teamId, CHANNEL);
+  assert.equal(after?.lifecycle, 'archived', 'the Channel stays off');
+  assert.equal(after?.label, 'support');
+  assert.equal(after?.revision, before.revision! + 1, 'only the turn-off wrote');
 });

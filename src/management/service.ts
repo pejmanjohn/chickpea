@@ -327,7 +327,7 @@ import {
   type UndoWorkspaceChangeInput,
   isRoutineOperation,
 } from './types.ts';
-import { adminChannelLinks, adminSettingsLinks, adminTeamLinks } from './admin-links.ts';
+import { adminSettingsLinks, adminTeamLinks } from './admin-links.ts';
 
 const MANAGEMENT_CHANGE_SET_APPLY_LEASE_MS = 30_000;
 /** try_connection's limit outside Slack, per member. */
@@ -749,10 +749,10 @@ export class WorkspaceManagementService {
   }
 
   /**
-   * Admin deep link for an outcome that names something only Admin can
+   * Settings deep link for an outcome that names something only Admin can
    * change: a model provider key (setup link issued, replacement awaiting
-   * confirmation, removal, or a member denied), a Workspace model, member
-   * authority, and a Channel a member may not turn on or off. The
+   * confirmation, removal, or a member denied), a Workspace model, and member
+   * authority. The
    * operation supplies the target when the caller has it; a setup-link
    * outcome falls back to its own setup record so confirm and replay paths
    * agree with apply.
@@ -768,13 +768,8 @@ export class WorkspaceManagementService {
           outcome.operationKind === 'set_workspace_model') {
         return adminSettingsLinks(await baseUrl(), 'providers');
       }
-      const operation = operations?.find(({ itemId }) => itemId === outcome.itemId);
-      if (operation?.kind === 'put_channel') {
-        return outcome.code === 'operational_access_required'
-          ? adminChannelLinks(await baseUrl(), operation.channel.workspaceId, operation.channel.channelId)
-          : undefined;
-      }
       if (outcome.operationKind !== 'request_setup') return undefined;
+      const operation = operations?.find(({ itemId }) => itemId === outcome.itemId);
       if (operation?.kind === 'request_setup') {
         return operation.target.kind === 'provider_credential'
           ? adminSettingsLinks(await baseUrl(), 'providers')
@@ -6664,6 +6659,24 @@ export class WorkspaceManagementService {
         return mutationForAgentEdit(agent, prepared.inverse as AgentEditInverse | undefined);
       }
       case 'put_channel': {
+        if (actor.role === 'member') {
+          // Decide the rule on the revision the write replaces, so an Admin's
+          // turn-off landing after the policy read cannot be undone by a member.
+          const current = await this.stores.config.getChannel(
+            operation.channel.workspaceId,
+            operation.channel.channelId,
+          );
+          requireExpectedRevision(operation.expectedRevision, current?.revision ?? 0);
+          if (channelChangeNeedsAdmin(operation.channel.lifecycle, current?.lifecycle)) {
+            // The Channel changed after the policy read it; read again, as any conflict.
+            throw new ChannelRevisionConflictError(
+              operation.channel.workspaceId,
+              operation.channel.channelId,
+              operation.expectedRevision,
+              current?.revision ?? 0,
+            );
+          }
+        }
         if (operation.channel.lifecycle === 'active') {
           await this.stores.assertAgentChannelMembership?.({
             actor,
