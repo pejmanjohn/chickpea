@@ -82,29 +82,27 @@ function block(item: Block, avatarKind: 'agent' | 'alert', avatarUrl: string | u
     case 'note':
       return element('p', `cp-note${item.tone ? ` cp-${item.tone}` : ''}`, item.text);
     case 'exchange': {
-      const thread = element('div', 'cp-thread');
+      const said = (who: string, text: string, lines: 2 | 5) => {
+        const body = element('div');
+        body.append(element('span', 'sr-only', `${who}: `), element('div', `cp-said cp-clamp-${lines}`, text));
+        return body;
+      };
+      const initial = element('span', 'cp-init', 'Y');
+      initial.setAttribute('aria-hidden', 'true');
       const person = element('div', 'cp-msg');
-      const who = element('div', 'cp-who', 'You');
-      who.append(element('span', 'cp-who-note', 'example'));
-      const personBody = element('div');
-      personBody.append(who, element('div', 'cp-said', item.ask));
-      person.append(element('span', 'cp-init', 'Y'), personBody);
+      person.append(initial, said('You', item.ask, 2));
       const agent = element('div', 'cp-msg');
-      const agentBody = element('div');
-      agentBody.append(element('div', 'cp-who', item.agent), element('div', 'cp-said', item.answer));
-      agent.append(avatar(avatarKind, 'sm', avatarUrl), agentBody);
+      agent.append(avatar(avatarKind, 'sm', avatarUrl), said(item.agent, item.answer, 5));
+      const thread = element('div', 'cp-thread');
       thread.append(person, agent);
       return thread;
     }
-    case 'facts': {
-      const list = element('dl', 'cp-facts');
-      for (const row of item.rows) {
-        const value = element('dd', undefined, row.value);
-        for (const chip of row.chips ?? []) value.append(element('span', 'cp-chip', chip), ' ');
-        if (row.note) value.append(element('span', 'cp-faint', row.note));
-        list.append(element('dt', undefined, row.label), value);
+    case 'line': {
+      const line = element('p', 'cp-line');
+      for (const part of item.parts) {
+        line.append('chip' in part ? element('span', 'cp-chip', part.chip) : part.strong ? element('b', undefined, part.text) : part.text);
       }
-      return list;
+      return line;
     }
     case 'steps': {
       const list = element('ul', 'cp-steps');

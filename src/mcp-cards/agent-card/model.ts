@@ -579,11 +579,16 @@ function offerAvatar(offer: Offer | undefined): string | undefined {
 
 /** What the proposal on this card promised it would answer. */
 function promiseOf(offer: Offer | undefined): Promised | undefined {
-  if (offer?.kind === 'proposal') {
-    const { ask, answer } = offer.proposal.proposal.sampleExchange;
-    return { ask, answer };
-  }
-  return offer?.promised;
+  return offer?.kind === 'proposal' ? exampleOf(offer.proposal.proposal) : offer?.promised;
+}
+
+/**
+ * The proposal's question and promised answer, when it has both. A result is
+ * untrusted, so one without them shows the job instead.
+ */
+function exampleOf({ sampleExchange }: Proposal['proposal']): Promised | undefined {
+  const { ask, answer }: Partial<Record<'ask' | 'answer', unknown>> = isRecord(sampleExchange) ? sampleExchange : {};
+  return typeof ask === 'string' && ask.trim() && typeof answer === 'string' && answer.trim() ? { ask, answer } : undefined;
 }
 
 /** Admin can make this change, and the card has the Agent's page there to open. */
@@ -714,34 +719,46 @@ function presentConfirm(view: Extract<View, { kind: 'confirm' }>): Omit<Presenta
   };
 }
 
+/**
+ * Who it is, shown by example: a question and the answer it promises, or its
+ * job when the proposal has no example. Its handle shows a problem only when
+ * there is one.
+ */
 function presentProposal({ proposal, issues }: Proposal): Omit<Presentation<Action>, 'busy' | 'error'> {
-  const answersIn = ['Your DMs', ...channelNames(proposal.answersIn)];
+  const example = exampleOf(proposal);
+  const where = joinNames(['your DMs', ...channelNames(proposal.answersIn)]);
   return {
     avatar: 'agent',
     avatarUrl: httpsUrl(proposal.avatarUrl),
     title: proposal.name,
     subtitle: [
-      { text: `@${proposal.handle} · ` },
-      proposal.handleAvailable ? { text: 'handle is free', tone: 'ok' } : { text: 'handle is taken', tone: 'warn' },
+      { text: `@${proposal.handle}` },
+      ...proposal.handleAvailable === false ? [{ text: ' · ' }, { text: 'handle is taken', tone: 'warn' as const }] : [],
     ],
     blocks: [
-      { kind: 'text', text: proposal.job },
-      { kind: 'section', label: 'Example in Slack' },
-      { kind: 'exchange', ask: proposal.sampleExchange.ask, answer: proposal.sampleExchange.answer, agent: proposal.name },
+      example
+        ? { kind: 'exchange', ask: example.ask.trim(), answer: example.answer.trim(), agent: proposal.name }
+        : { kind: 'text', text: proposal.job },
       {
-        kind: 'facts',
-        rows: [
-          { label: 'Answers in', value: answersIn.join(' · ') },
-          ...proposal.needs.length
-            ? [{ label: 'Needs', value: '', chips: proposal.needs.map(({ name }) => name), note: 'you sign in after it\'s created' }]
-            : [],
+        kind: 'line',
+        parts: [
+          { text: 'Answers in ' },
+          { text: where, strong: true },
+          { text: `. Anyone in ${proposal.workspaceName?.trim() || 'your Slack workspace'} can message it.` },
         ],
       },
+      ...proposal.needs.length
+        ? [{
+            kind: 'line' as const,
+            parts: [
+              { text: 'Needs ' },
+              ...proposal.needs.flatMap(({ name }) => [{ chip: name }, { text: ' ' }]),
+              { text: '· you sign in after it\'s created' },
+            ],
+          }]
+        : [],
       ...issues.map((text): Block<Action> => ({ kind: 'note', text, tone: 'warn' })),
     ],
-    foot: proposal.workspaceName
-      ? `Everyone in ${proposal.workspaceName}'s Slack can message it.`
-      : 'Everyone in your Slack workspace can message it.',
     buttons: [
       { label: 'Create in Slack', action: 'create', tone: 'primary' },
       { label: 'Change something', action: 'change_something', tone: 'secondary' },
