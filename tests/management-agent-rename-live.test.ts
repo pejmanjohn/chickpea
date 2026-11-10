@@ -380,7 +380,7 @@ test('a rename whose Slack update never starts is put back too', async (t) => {
   });
 });
 
-/** Desk answering in a Channel, turned off on a confirmation card over MCP, as the live check had it. */
+/** Desk answering in a Channel and turned off. This line has no 5.0 tools, so the store turns it off. */
 async function offDeskFixture(t: TestContext) {
   const fixture = await renameFixture(t);
   const { f, service, teamId, desk } = fixture;
@@ -419,28 +419,11 @@ async function offDeskFixture(t: TestContext) {
     assert.notEqual(result.isError, true, result.content[0].text);
     return result.structuredContent ?? JSON.parse(result.content[0].text);
   };
-  const version = async () => (await mcp('get_agent', { agentId: 'agent_desk' })).version as string;
-  const off = await mcp('update_agent', { agentId: 'agent_desk', version: await version(), on: false, idempotencyKey: 'off' });
-  assert.equal(off.status, 'needs_confirmation');
-  assert.equal((await mcp('confirm_change', { confirmToken: off.confirmation.confirmToken })).status, 'done');
+  const current = await f.config.getAgent('agent_desk');
+  await f.config.updateAgent('agent_desk', { enabled: false }, current.revision);
   assert.deepEqual(await desk(), { ...DESK, enabled: false });
-  return { ...fixture, mcp, version };
+  return { ...fixture, mcp };
 }
-
-test('saving a description proposal from the MCP card leaves an off Agent off and updates its Slack group', async (t) => {
-  await withEnv({ CHICKPEA_TENANCY: undefined, SLACK_STATE_DB_PATH: ':memory:' }, async () => {
-    const { slack, mcp, version, desk } = await offDeskFixture(t);
-    const proposal = await mcp('propose_agent_change', {
-      agentId: 'agent_desk', version: await version(), change: { description: 'Answers front desk questions.' },
-    });
-    assert.deepEqual(Object.keys(proposal.save.arguments).sort(), ['agentId', 'description', 'idempotencyKey', 'version']);
-
-    assert.equal((await mcp('update_agent', proposal.save.arguments)).status, 'done');
-    assert.equal((await mcp('get_agent', { agentId: 'agent_desk' })).status, 'off');
-    assert.deepEqual(await desk(), { ...DESK, enabled: false });
-    assert.equal(slack.groups.find(({ id }) => id === 'S0DESK')?.description, 'Answers front desk questions.');
-  });
-});
 
 test('a 4.x rename leaves an off Agent off and renames its Slack group', async (t) => {
   await withEnv({ CHICKPEA_TENANCY: undefined, SLACK_STATE_DB_PATH: ':memory:' }, async () => {
