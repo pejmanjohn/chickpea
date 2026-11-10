@@ -159,10 +159,11 @@ test('try_agent_once runs the stored first ask once, as the caller, and answers 
   const row = installation.stores.testRuns.unerased()[0] ?? installation.db.get('SELECT 1') as never;
   assert.ok(row);
   // Its usage operation is a test_turn for the caller, in the test agent's DM shape.
-  const operation = installation.db.get("SELECT operation_kind, conversation_kind, requester_membership_id, profile_id FROM usage_operations") as Record<string, unknown>;
+  const operation = installation.db.get("SELECT operation_kind, conversation_kind, requester_membership_id, profile_id, status FROM usage_operations") as Record<string, unknown>;
   assert.deepEqual(operation, {
     operation_kind: 'test_turn', conversation_kind: 'direct_message', requester_membership_id: f.owner.membership.id, profile_id: 'agent_tested',
-  });
+    status: 'completed',
+  }, 'its terminal is written on the clock its admission was');
   // The same key returns the same run.
   const again = structured(await call('try_agent_once', { agentId: 'agent_tested', idempotencyKey: 'key_answer' }));
   assert.equal(again.runToken, run.runToken);
