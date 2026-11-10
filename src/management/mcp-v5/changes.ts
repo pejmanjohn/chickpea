@@ -232,6 +232,9 @@ export const EXPIRED_NEXT_STEP = 'Call the tool that proposed the change again, 
 export const STALE_CONFIRMATION = 'That confirmation no longer applies. Ask again to make the change.';
 export const STALE_NEXT_STEP = 'Nothing changed. Propose it again, with a new idempotencyKey, only if the person asks for it again.';
 
+/** Adding an Agent to a Channel never turns it on, so the person decides that first. */
+const AGENT_OFF_NEXT_STEP = 'Ask the person whether to turn it on. If they agree, call update_agent with on: true, then call add_agent_to_channel again with a new idempotencyKey.';
+
 const NEXT_STEPS: Partial<Record<McpErrorCode, string>> = {
   changed_since_read: 'Read it again and send the change with the version it returns now, under a new idempotencyKey.',
   key_reused: 'Use a new idempotencyKey: this one already belongs to a different call.',
@@ -249,7 +252,8 @@ function failedOutcome(outcome: ManagementItemOutcome): never {
   // A removal Composio could not finish is cut off already; resending replays it, so a retry needs a new key.
   const nextStep = outcome.code === 'removal_incomplete'
     ? 'Call remove_connection again with a new idempotencyKey, then confirm_change. Resending this call replays this result.'
-    : retired ? STALE_NEXT_STEP : NEXT_STEPS[code];
+    : outcome.code === 'agent_off' ? AGENT_OFF_NEXT_STEP
+      : retired ? STALE_NEXT_STEP : NEXT_STEPS[code];
   fail(code, message, {
     ...(nextStep ? { nextStep } : {}),
     ...(outcome.links?.admin ? { fix: { label: 'Open Chickpea Admin', url: outcome.links.admin } } : {}),

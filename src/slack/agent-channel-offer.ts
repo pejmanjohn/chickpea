@@ -6,6 +6,7 @@ import { isAgentId } from '../config/agent-id.ts';
 import type { CustomAgentConfig } from '../config/types.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import { agentSlackHandle } from './agent-asks.ts';
+import { agentOffMessage } from './agent-presence/errors.ts';
 import { activeOwnerSlackUserIds } from './credits-ask.ts';
 import type { AgentRoutingActor } from './agent-routing.ts';
 import type { SlackTransport } from './transport/types.ts';
@@ -141,6 +142,8 @@ export async function addAgentToChannel(
     text = 'That Agent is not available here.';
   } else if (!actor.principal || !canEditAgent(actor.principal, agent)) {
     text = `${askOwnersToAdd(await namedOwners(deps.identity, request.workspaceId))} to add @${handle} to this channel.`;
+  } else if (!agent.enabled) {
+    text = agentOffMessage(agent);
   } else {
     try {
       text = await deps.publish(agent, actor.principal) === 'bot_left_out'

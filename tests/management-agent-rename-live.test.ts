@@ -460,3 +460,45 @@ test('a description edit from Slack leaves an off Agent off and updates its Slac
     assert.equal(slack.groups.find(({ id }) => id === 'S0DESK')?.description, 'The front desk.');
   });
 });
+
+const DESK_IS_OFF = 'Desk is off. Turn it on first, then add it to the Channel.';
+
+/** Desk into #sales; no Slack call answers Channel reads here, so a refusal must come before any. */
+function addDeskToSales(teamId: string, idempotencyKey: string) {
+  return {
+    idempotencyKey,
+    operations: [{
+      itemId: 'add', kind: 'grant_agent_channel' as const, workspaceId: teamId,
+      channelId: 'C_SALES', agentId: 'agent_desk', expectedRevision: 0,
+    }],
+  };
+}
+
+test('a 4.x Channel add for an off Agent is refused with what to do, and the Agent stays off', async (t) => {
+  await withEnv({ CHICKPEA_TENANCY: undefined, SLACK_STATE_DB_PATH: ':memory:' }, async () => {
+    const { f, mcp, desk, teamId } = await offDeskFixture(t);
+    const applied = await mcp('apply_workspace_changes', addDeskToSales(teamId, 'add-off-4x'));
+    const [outcome] = applied.result.outcomes;
+    assert.deepEqual(
+      [outcome.disposition, outcome.code, outcome.instruction],
+      ['failed', 'agent_off', DESK_IS_OFF],
+    );
+    assert.deepEqual(await desk(), { ...DESK, enabled: false });
+    assert.deepEqual(await f.config.listAgentChannelGrants(teamId, 'C_SALES'), []);
+  });
+});
+
+test('a Slack request to add an off Agent to a Channel is refused before any approval, and the Agent stays off', async (t) => {
+  await withEnv({ CHICKPEA_TENANCY: undefined, SLACK_STATE_DB_PATH: ':memory:' }, async () => {
+    const { f, tool, desk, teamId } = await offDeskFixture(t);
+    const applied = await tool('add Desk to #sales', 'apply_workspace_changes', addDeskToSales(teamId, 'add-off-slack'));
+    if (!applied.ok) assert.fail(inspect(applied, { depth: 8 }));
+    const [outcome] = (applied.result as ManagementApplyResult).outcomes;
+    assert.deepEqual(
+      [outcome?.disposition, outcome?.code, outcome?.instruction, outcome?.proposalId],
+      ['failed', 'agent_off', DESK_IS_OFF, undefined],
+    );
+    assert.deepEqual(await desk(), { ...DESK, enabled: false });
+    assert.deepEqual(await f.config.listAgentChannelGrants(teamId, 'C_SALES'), []);
+  });
+});

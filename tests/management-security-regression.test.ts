@@ -97,6 +97,12 @@ test('management telemetry names each Slack collision reason', () => {
   assert.deepEqual(reasons, ['handle_collision', 'name_collision']);
 });
 
+test('management telemetry names a Channel add refused because the Agent is off', () => {
+  const reasons: unknown[] = [];
+  emitManagementMetric('operation.outcome', { reason: 'agent_off' }, { info: (line) => reasons.push(line.reason) });
+  assert.deepEqual(reasons, ['agent_off']);
+});
+
 test('Agent-authoring telemetry keeps only versioned outcome classes', () => {
   const lines: string[] = [];
   emitManagementMetric('agent_authoring.outcome', {

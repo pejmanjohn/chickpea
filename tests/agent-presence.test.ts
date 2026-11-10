@@ -290,13 +290,12 @@ test('publishing into a renamed Channel refreshes its stored Channel and grant l
   }
 });
 
-test('publishing activates a private Chickpea-created draft before enabling its Channel grant', async () => {
+test('publishing a draft that is on activates it before enabling its Channel grant', async () => {
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent({
       ...agent('agent_support', 'Support Triage', 'support'),
-      enabled: false,
       lifecycle: 'draft',
     });
 
@@ -317,7 +316,12 @@ test('publishing activates a private Chickpea-created draft before enabling its 
   }
 });
 
-test('reconciling or retrying an Agent a person turned off updates Slack and leaves it off; adding it to a Channel turns it on', async () => {
+function isAgentOff(name: string) {
+  return (error: unknown) => error instanceof AgentPresenceError && error.code === 'agent_off' &&
+    error.message === `${name} is off. Turn it on first, then add it to the Channel.`;
+}
+
+test('reconciling or retrying an Agent a person turned off updates Slack and leaves it off', async () => {
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   try {
@@ -335,14 +339,56 @@ test('reconciling or retrying an Agent a person turned off updates Slack and lea
     );
     assert.equal(transport.groups[0]?.description, 'Triages support questions');
     assert.equal((await reconciler.retry('agent_support')).enabled, false);
-    const { agent: joined, grant } = await reconciler.publish({
-      workspaceId: 'TACME',
-      agentId: 'agent_support',
-      channelId: 'C_SUPPORT',
-      actorMembershipId: 'membership_ada',
-      actorSlackUserId: 'UADA',
-    });
-    assert.deepEqual([joined.enabled, grant.status], [true, 'active']);
+  } finally {
+    config.close();
+  }
+});
+
+test('adding an off Agent to a Channel is refused before any Slack work, and works once it is turned on', async () => {
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const transport = new FakeSlackTransport();
+  try {
+    await config.createAgent({ ...agent('agent_support', 'Support', 'support'), enabled: false });
+    const reconciler = new AgentPresenceReconciler({ config, transport, announce: null, now: () => NOW });
+    const lookupChannel = transport.lookupChannel.bind(transport);
+    let channelLookups = 0;
+    transport.lookupChannel = async () => {
+      channelLookups += 1;
+      return lookupChannel();
+    };
+    const before = await config.getAgent('agent_support');
+
+    await assert.rejects(reconciler.publish(PUBLISH_SUPPORT), isAgentOff('Support'));
+    assert.deepEqual(await config.getAgent('agent_support'), before, 'nothing about the Agent changed');
+    assert.deepEqual(await config.listAgentChannelGrants(), []);
+    assert.equal(await config.getChannel('TACME', 'C_SUPPORT'), undefined);
+    assert.deepEqual([channelLookups, transport.joinCalls, transport.createCalls], [0, 0, 0]);
+
+    await config.updateAgent(before.id, { enabled: true }, before.revision);
+    const { agent: joined, grant } = await reconciler.publish(PUBLISH_SUPPORT);
+    assert.deepEqual([joined.enabled, grant.status, transport.createCalls], [true, 'active', 1]);
+  } finally {
+    config.close();
+  }
+});
+
+test('an Agent turned off while Slack catches up stays off, and its Channel add waits', async () => {
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const transport = new FakeSlackTransport();
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    transport.onCreate = async () => {
+      const current = await config.getAgent('agent_support');
+      await config.updateAgent(current.id, { enabled: false }, current.revision);
+    };
+
+    await assert.rejects(
+      new AgentPresenceReconciler({ config, transport, announce: null, now: () => NOW }).publish(PUBLISH_SUPPORT),
+      isAgentOff('Support'),
+    );
+    const after = await config.getAgent('agent_support');
+    assert.deepEqual([after.enabled, after.slackPresence?.health], [false, 'healthy']);
+    assert.deepEqual((await config.listAgentChannelGrants()).map(({ status }) => status), ['pending']);
   } finally {
     config.close();
   }
