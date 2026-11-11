@@ -37,6 +37,8 @@ const ALLOWED = new Map<string, string>([
   ['src/config/provider-keys.ts',
     'Saves and deletes keys and reports which exist, for Admin and readiness; sends nothing.'],
   ['src/config/runtime-model.ts', 'Readiness: checks that a key exists before a run starts; sends nothing.'],
+  ['src/slack/turn-plan-reads.ts',
+    'Names the saved key settings so a standalone turn\'s first read batch fetches them for readiness; sends nothing.'],
   ['src/config/provider-models.ts',
     'Admin key validation and model discovery: lists the provider\'s models with the key; no model request.'],
   ['src/config/model-readiness.ts', 'Reports whether the Workers AI token is set; sends nothing.'],

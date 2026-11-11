@@ -144,6 +144,7 @@ import type {
 } from '../slack/run-presentations.ts';
 import type { TypedActivityStatus } from '../activity/status.ts';
 import { deploymentTenancy, installationObjectName } from './installation-scope.ts';
+import type { StateRead } from './turn-reads.ts';
 import type { InstallationIdentity } from '../identity/installation-binding.ts';
 
 export type { TurnJob } from '../slack/turn-job-types.ts';
@@ -827,6 +828,8 @@ export interface TagStateRpc {
   threadRunnerTurn<K extends ThreadRunnerTurnKind>(
     op: ThreadRunnerTurnOp<K>,
   ): Promise<StateRpcResult<ThreadRunnerTurnResult<K>>>;
+  /** Reads in one round trip, each answered as its own RPC would (null: not batched). */
+  stateReadBatch(reads: readonly StateRead[]): Promise<Array<StateRpcResult<unknown> | null>>;
   /** Provisioning on a multi-installation host (installation-binding.ts). */
   bindInstallation(identity: InstallationIdentity): Promise<StateRpcResult<InstallationIdentity>>;
 }
