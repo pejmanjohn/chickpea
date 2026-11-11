@@ -957,6 +957,23 @@ test('past the read limit a first page keeps whole UTC days, so no hidden run th
   assert.deepEqual((await list(w, { cursor: dms.nextCursor })).runs.map(({ ask }) => ask), ['three days back']);
 });
 
+test('other people\'s DMs with the Agent never decide whether your own reply is kept', async (t) => {
+  const w = await world(t, 'shared-ask-scope');
+  await sharedAgent(w);
+  const mine = await w.run({
+    conversation: 'direct_message', channelId: 'D_MEMBER', requester: 'member', ask: 'my question', reply: 'my answer',
+    startedAt: Date.now() - 120 * MINUTE,
+  });
+  const [row] = (await list(w, {}, 'member')).runs;
+  const reply = async () => structured(await w.member('get_agent_run', { runId: row!.runId })).reply;
+  assert.deepEqual(await reply(), { label: LABEL, text: 'my answer' });
+  // Past every page the shared-ask check reads: usage files all DMs under one channel key.
+  for (let index = 0; index < 505; index += 1) {
+    await w.run({ conversation: 'direct_message', channelId: 'D_OWNER', requester: 'owner', startedAt: mine.startedAt + MINUTE + index * 1_000 });
+  }
+  assert.deepEqual(await reply(), { label: LABEL, text: 'my answer' });
+});
+
 const AUTH_SECRET = 'ab'.repeat(32);
 
 /** A deployment's env as its host hands it to Core: tenancy, the auth secret, and a request's Better Auth backend. */

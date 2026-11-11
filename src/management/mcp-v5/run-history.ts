@@ -539,7 +539,7 @@ async function conversationOf(found: Access, caller: Caller, run: UsageOperation
   const end = after.findIndex(({ role }) => role === 'human');
   const replies = (end < 0 ? after : after.slice(0, end))
     .filter(({ role, agentId }) => role === 'agent' && agentId === run.agentId);
-  const shared = replies.length > 0 && await askShared(found.history.sources, run);
+  const shared = replies.length > 0 && await askShared(found.history.sources, caller, run);
   return {
     ask: quoted(ask.text, CUT.ask),
     reply: replies.length > 0 && !shared ? quoted(replies.map(({ text }) => text).join('\n\n'), CUT.reply) : NOT_KEPT,
@@ -562,7 +562,7 @@ function askRow(
   return anyone || row.authorId === undefined || row.authorId === slackUserId ? row : undefined;
 }
 
-async function askShared(sources: RunHistorySources, run: UsageOperation): Promise<boolean> {
+async function askShared(sources: RunHistorySources, caller: Caller, run: UsageOperation): Promise<boolean> {
   const at = Math.floor(Number(run.slackMessageTs) * 1_000);
   const from = Math.max(0, at - 60_000);
   const to = Math.min(Date.now() + 1, at + SHARED_ASK_WINDOW_MS);
@@ -572,12 +572,14 @@ async function askShared(sources: RunHistorySources, run: UsageOperation): Promi
     const { items, nextCursor } = await sources.usage.listOperations({
       from,
       to,
-      // Usage files every direct message under one channel key.
+      // Usage files every direct message under one channel key, so the read holds only the caller's own:
+      // how many DMs other people sent the Agent never decides whether this reply is kept.
       filters: {
         agent: [run.agentId],
         channel: [run.conversationKind === 'direct_message' ? 'direct_message' : run.channelId],
         workKind: ['interactive_turn'],
       },
+      runHistory: { membershipId: caller.membershipId, rows: 'visible' },
       limit: USAGE_PAGE,
       ...(cursor ? { cursor } : {}),
     });
