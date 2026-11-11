@@ -189,6 +189,8 @@ interface AgentViewPresentationOptions {
    * milestone appended to an open stream.
    */
   onTaskCardStreamed?: () => void;
+  /** Observability only: Slack answered the thread title's call after `ms`, set or failed. */
+  onTitle?: (ms: number) => void;
   /**
    * The host releases answer text by its own rule instead of waiting for the
    * model's declaration (CHICKPEA_SLACK_ANSWER_RELEASE). A receipt whose
@@ -290,6 +292,12 @@ const CONTINUATION_INTENT_GRACE_MS = 60_000;
  * refusal, and the readbacks between them.
  */
 const CONTINUATION_DELIVERY_STEPS = 16;
+
+/** A thread title whose Slack call `sendTitle` already made, for `setTitle` to record. */
+export interface SentTitle {
+  readonly title: string;
+  readonly outcome: Promise<'set' | 'failed'>;
+}
 
 /**
  * One recoverable Agent View artifact for a canonical Slack Run. Flue owns
@@ -967,7 +975,21 @@ export class SlackAgentViewPresentation {
     };
   }
 
-  async setTitle(candidate: string): Promise<void> {
+  /**
+   * Send the thread's title to Slack now, from the presentation as the turn
+   * read it, when `setTitle` would send that title. Only the Slack call moves:
+   * `setTitle` still records the intent and the outcome where it runs, so no
+   * write to the presentation races the turn's others. Never rejects.
+   */
+  sendTitle(candidate: string, presentation: SlackRunPresentation): SentTitle | undefined {
+    const title = deriveSlackThreadTitle(candidate, presentation.plan?.tasks[0]?.title);
+    const state = presentation.title;
+    if (state && (state.valueHash !== hash(title) || state.outcome !== 'pending')) return undefined;
+    return { title, outcome: this.callSetTitle(presentation, title) };
+  }
+
+  /** Record the thread's title and set it, through `sent` when that call already went with this title. */
+  async setTitle(candidate: string, sent?: SentTitle): Promise<void> {
     let presentation = await this.requirePresentation();
     const title = deriveSlackThreadTitle(candidate, presentation.plan?.tasks[0]?.title);
     const valueHash = hash(title);
@@ -981,6 +1003,12 @@ export class SlackAgentViewPresentation {
     if (!titleState || titleState.valueHash !== valueHash || titleState.outcome !== 'pending') {
       return;
     }
+    const outcome = sent?.title === title ? await sent.outcome : await this.callSetTitle(presentation, title);
+    await this.transition(presentation, { kind: 'record_title_outcome', outcome });
+  }
+
+  private async callSetTitle(presentation: SlackRunPresentation, title: string): Promise<'set' | 'failed'> {
+    const startedAt = Date.now();
     let outcome: 'set' | 'failed' = 'set';
     try {
       await this.options.client.assistant.threads.setTitle({
@@ -991,7 +1019,8 @@ export class SlackAgentViewPresentation {
     } catch {
       outcome = 'failed';
     }
-    await this.transition(presentation, { kind: 'record_title_outcome', outcome });
+    this.options.onTitle?.(Date.now() - startedAt);
+    return outcome;
   }
 
   async prepareReceipt(input: {

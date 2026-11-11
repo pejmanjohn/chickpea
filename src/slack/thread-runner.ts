@@ -55,7 +55,7 @@ import {
   type SlackPresentationTransitionResult,
   type SlackRunPresentation,
 } from './run-presentations.ts';
-import { repairSlackInteractionProgress, runTurn, sanitizeError } from './run-turn.ts';
+import { repairSlackInteractionProgress, runTurn, sanitizeError, startEarlyJudgment } from './run-turn.ts';
 import { SlackStatusRegistry, type SlackRunFactsView } from './status-registry.ts';
 import {
   quiesceThreadRunnerForRestore,
@@ -562,6 +562,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       dispatchAgentAsks: (request) => processSlackAgentAsks(request, env),
       dispatchFrontDeskHandoff: (request) => processSlackFrontDeskHandoff(request, env),
       runTurn,
+      startJudgment: startEarlyJudgment,
     };
     const result = await runThreadRunnerAlarm({
       jobs,

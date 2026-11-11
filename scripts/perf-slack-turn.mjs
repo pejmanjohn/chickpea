@@ -41,7 +41,9 @@ function parseFlags(argv) {
       'state-rpc-delay-ms': { type: 'string', default: '40' },
       'provider-delay-spread-ms': { type: 'string', default: '750' },
       'thread-replies': { type: 'string', default: '1' },
-      'clef-delay-ms': { type: 'string', default: '250' },
+      // Staging's warm Clef call took 304 to 502 ms on 2026-11-11. Below the
+      // read branch's length, the reads bound the stage instead of Clef.
+      'clef-delay-ms': { type: 'string', default: '350' },
       'clef-answer': { type: 'string', default: 'reply' },
       'skip-build': { type: 'boolean', default: false },
       out: { type: 'string' },
@@ -162,19 +164,43 @@ function wireMetrics(entries, finals, t0) {
 
 function turnLogMetrics(output, logStart) {
   const slice = output.slice(logStart);
+  const turnLatency = runtimeRecords(slice, 'turn_latency').map(({ fields }) => ({
+    executor: fields.executor,
+    outcome: fields.outcome,
+    firstWrite: fields.firstWrite,
+    admissionToStartMs: fields.admissionToStartMs,
+    admissionToFirstWriteMs: fields.admissionToFirstWriteMs,
+    admissionToModelStartMs: fields.admissionToModelStartMs,
+    admissionToFinalMs: fields.admissionToFinalMs,
+    admissionToAnswerVisibleMs: fields.admissionToAnswerVisibleMs,
+    startToStageMs: fields.startToStageMs,
+    agentStageMs: fields.agentStageMs,
+    titleMs: fields.titleMs,
+    attemptMs: fields.attemptMs,
+  }));
+  const judgment = runtimeRecords(slice, 'interaction_judgment').map(({ fields }) => ({
+    recordedBy: fields.recordedBy,
+    basisMs: fields.basisMs,
+    clefMs: fields.clefMs,
+    managementMs: fields.managementMs,
+    earlyMs: fields.earlyMs,
+    rejudged: fields.rejudged,
+  }));
+  const latency = turnLatency.find((record) => record.admissionToModelStartMs !== undefined);
+  const basisMs = judgment[0]?.basisMs;
   return {
-    turnLatency: runtimeRecords(slice, 'turn_latency').map(({ fields }) => ({
-      executor: fields.executor,
-      outcome: fields.outcome,
-      firstWrite: fields.firstWrite,
-      admissionToStartMs: fields.admissionToStartMs,
-      admissionToFirstWriteMs: fields.admissionToFirstWriteMs,
-      admissionToFinalMs: fields.admissionToFinalMs,
-      admissionToAnswerVisibleMs: fields.admissionToAnswerVisibleMs,
-      startToStageMs: fields.startToStageMs,
-      agentStageMs: fields.agentStageMs,
-      attemptMs: fields.attemptMs,
-    })),
+    turnLatency,
+    judgment,
+    // The stage's parts on the turn's own clock, from its logs: Clef's call,
+    // the recorded basis, the tail after it, and the thread title's Slack call.
+    clefMs: judgment[0]?.clefMs,
+    basisMs,
+    startToStageMs: latency?.startToStageMs,
+    afterBasisMs: latency?.startToStageMs === undefined || basisMs === undefined
+      ? undefined
+      : latency.startToStageMs - basisMs,
+    titleMs: latency?.titleMs,
+    admissionToModelStartMs: latency?.admissionToModelStartMs,
     relayAlarms: runtimeRecords(slice, 'relay_alarm').length,
     stateRpc: {
       maxIsolateCallsBefore: maxIsolateCalls(output.slice(0, logStart)),
@@ -204,7 +230,7 @@ function summarize(samples) {
     const rpcDeltas = group.map((sample) => sample.stateRpc.maxIsolateCallsAfter - sample.stateRpc.maxIsolateCallsBefore);
     summary[name] = {
       turns: group.length,
-      ...Object.fromEntries([...SUMMARY_METRICS]
+      ...Object.fromEntries([...SUMMARY_METRICS, ...LOG_METRICS]
         .map((metric) => [metric, stats(group.map((sample) => sample[metric]))])),
       slackCallsMedian: stats(group.map((sample) => sample.slackCalls)).median,
       topMethods: Object.entries(methods).sort((a, b) => b[1] - a[1]).slice(0, 8)
@@ -221,6 +247,9 @@ function summarize(samples) {
 
 const SUMMARY_METRICS = [
   'final', 'firstVisible', 'firstClef', 'firstModel', 'firstText', 'ack', 'clear', 'tailText', 'tailFinal', 'tailClear',
+];
+const LOG_METRICS = [
+  'clefMs', 'basisMs', 'startToStageMs', 'afterBasisMs', 'titleMs', 'admissionToModelStartMs',
 ];
 
 const cell = (value, width = 6) => String(value ?? '-').padStart(width);
@@ -252,6 +281,11 @@ function printSummary(summary) {
     for (const metric of SUMMARY_METRICS) {
       const { median, min, max, n } = group[metric];
       console.log(`  ${metric.padEnd(13)} ${cell(median)} [${min ?? '-'}..${max ?? '-'}] n=${n}`);
+    }
+    console.log('  from the turn\'s logs (turn_latency, interaction_judgment):');
+    for (const metric of LOG_METRICS) {
+      const { median, min, max, n } = group[metric];
+      console.log(`  ${metric.padEnd(23)} ${cell(median)} [${min ?? '-'}..${max ?? '-'}] n=${n}`);
     }
     console.log(`  slack calls median ${group.slackCallsMedian}; model calls median ${group.modelCallsMedian}; clef calls median ${group.clefCallsMedian}`);
     console.log(`  top methods per turn: ${group.topMethods.map(({ method, perTurn }) => `${method}=${perTurn}`).join(', ')}`);

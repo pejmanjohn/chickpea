@@ -163,6 +163,7 @@ test('interaction_judgment keeps its tokens, scales probabilities to thousandths
     recordedBy: 'clef',
     basis: 'reply',
     basisMs: 312.4,
+    earlyMs: 92.4,
     clef: 'read',
     clefMs: 260,
     clefInputTokens: 878,
@@ -185,6 +186,7 @@ test('interaction_judgment keeps its tokens, scales probabilities to thousandths
   emitInteractionJudgment({
     recordedBy: 'Complete the verification.',
     clef: 'unavailable',
+    rejudged: true,
     gate: 'await_model',
     model: 'slack.botToken',
     clefLate: true,
@@ -199,6 +201,7 @@ test('interaction_judgment keeps its tokens, scales probabilities to thousandths
     recordedBy: 'clef',
     basis: 'reply',
     basisMs: 312,
+    earlyMs: 92,
     clef: 'read',
     clefMs: 260,
     clefInputTokens: 878,
@@ -221,6 +224,7 @@ test('interaction_judgment keeps its tokens, scales probabilities to thousandths
   assert.deepEqual(records[1], {
     component: 'runtime',
     event: 'interaction_judgment',
+    rejudged: true,
     clef: 'unavailable',
     gate: 'await_model',
     clefLate: true,
@@ -838,6 +842,20 @@ test('turn_latency logs how long staging the turn input took and how soon it beg
   new TurnLatencyTracker({ lane: 'node', executor: 'node' }, {}, clock(0).now, sink).emit('returned');
   assert.equal('agentStageMs' in records[1]!, false, 'a turn that staged nothing omits the field');
   assert.equal('startToStageMs' in records[1]!, false);
+});
+
+// Defects caught: the title's time is dropped from the record, a second
+// title call (a retry's) overwrites the first, or a turn that sent no title
+// reports one.
+test('turn_latency logs how long Slack took to answer the thread title, from its first call', () => {
+  const { records, sink } = captureSink();
+  const tracker = new TurnLatencyTracker({ lane: 'cloudflare', executor: 'runner' }, {}, clock(0).now, sink);
+  tracker.markTitle(124);
+  tracker.markTitle(30);
+  tracker.emit('returned');
+  assert.equal(records[0]?.titleMs, 124);
+  new TurnLatencyTracker({ lane: 'cloudflare', executor: 'runner' }, {}, clock(0).now, sink).emit('returned');
+  assert.equal('titleMs' in records[1]!, false, 'a turn that sent no title omits the field');
 });
 
 // Defects caught: the lead is measured to the end of staging instead of its

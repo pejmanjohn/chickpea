@@ -46,6 +46,7 @@ import {
   deliverAgentFailureFinal,
   sanitizeError,
   type runTurn,
+  type startEarlyJudgment,
   type RunTurnOptions,
   type SlackStopEnding,
 } from './run-turn.ts';
@@ -168,6 +169,12 @@ export interface TurnExecutionPorts {
    */
   sandboxes(sandboxKey: string): Array<() => SandboxTurnReader>;
   runTurn: typeof runTurn;
+  /**
+   * Starts the Clef calls of the turn's judgment before its installation and
+   * fold, for `runTurn` to adopt. Absent, the judgment starts them where it
+   * judges. The model classifier always starts there.
+   */
+  startJudgment?: typeof startEarlyJudgment;
 }
 
 /** What a turn's recovery reads from its coding Sandbox. */
@@ -241,6 +248,11 @@ export async function executeTurnJob(
   if (!job.turn.interactionIntent && job.progress.interactionIntent) {
     job.turn.interactionIntent = job.progress.interactionIntent;
   }
+  // The judgment's Clef calls go now, beside the installation's resolution
+  // and the fold claim, instead of after them.
+  const earlyJudgment = stoppedBeforeDispatch
+    ? undefined
+    : ports.startJudgment?.(job.turn, job.assignment, ports.env);
   let installationContext: SlackInstallationExecutionContext;
   try {
     installationContext = await ports.resolveInstallation(effectiveTurnSlackInstallationId(job.turn), job.assignment.agentId);
@@ -528,6 +540,7 @@ export async function executeTurnJob(
       ...(ports.statusRegistry ? { statusRegistry: ports.statusRegistry } : {}),
       ...(runtimePlanDecision ? { runtimePlanDecision } : {}),
       ...(options.agentWake ? { admissionAgentWake: options.agentWake } : {}),
+      ...(earlyJudgment ? { earlyJudgment } : {}),
       onRuntimePlan: async (candidate) => {
         const decision = await ports.turnJobs.freezeRuntimePlan(job.id, candidate);
         frozenPlan = decision.runtimePlan;

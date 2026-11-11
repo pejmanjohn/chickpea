@@ -142,6 +142,7 @@ function threadRunner(env: Record<string, unknown> = HOLD_ENV) {
     getConfigStore: () => ({}),
     sandboxTurnReaders: () => () => [],
     runTurn: () => undefined,
+    startEarlyJudgment: () => undefined,
     runThreadRunnerAlarm: async (deps: { afterJob(job: object): Promise<void> }) => {
       for (const [index, turn] of turns.entries()) {
         await deps.afterJob({ id: `turn_${index}`, runId: `run_${index}`, turn });

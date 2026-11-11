@@ -2331,6 +2331,25 @@ test('thread titles are deterministic, bounded, and reject credential-shaped inp
   }
 });
 
+// Defects caught: a title sent ahead is sent again when it is recorded, its
+// record is skipped, or a retry whose title is already recorded sends one more.
+test('a title sent ahead is recorded through that same call, and a recorded title is not sent ahead again', async () => {
+  const h = harness();
+  try {
+    const titleCalls = () => h.calls.filter((call) => call.method === 'assistant.threads.setTitle').length;
+    const sent = h.presentation.sendTitle('Review the release', h.store.get(h.runId)!);
+    assert.equal(titleCalls(), 1, 'the Slack call goes at once');
+    assert.equal(h.store.get(h.runId)?.title, undefined, 'nothing is recorded until setTitle');
+    await h.presentation.setTitle('Review the release', sent);
+    assert.equal(titleCalls(), 1, 'setTitle records the call already made');
+    assert.equal(h.store.get(h.runId)?.title?.outcome, 'set');
+    assert.equal(h.presentation.sendTitle('Review the release', h.store.get(h.runId)!), undefined);
+    assert.equal(titleCalls(), 1, 'a recorded title is not sent again');
+  } finally {
+    h.db.close();
+  }
+});
+
 for (const alreadyStopped of [false, true]) {
   test(`V3 recovers a finalizing stream after receipt loss (already stopped: ${alreadyStopped})`, async () => {
     const h = harness({ schemaVersion: 3, stopStreamError: alreadyStopped

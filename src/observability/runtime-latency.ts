@@ -484,6 +484,7 @@ export class TurnLatencyTracker {
   private agentWake: { sentAt: number; source: 'admission' | 'plan' } | undefined;
   private agentWakeLeadMs: number | undefined;
   private startToStageMs: number | undefined;
+  private titleMs: number | undefined;
   private taskCardStreamed = false;
   private hostRelease: HostReleaseRecord | undefined;
   private emitted = false;
@@ -591,6 +592,11 @@ export class TurnLatencyTracker {
     this.startToStageMs = Math.max(0, this.now() - ms - this.startedAt);
   }
 
+  /** Slack answered the thread title's call after this long; only the first is kept. */
+  markTitle(ms: number): void {
+    this.titleMs ??= ms;
+  }
+
   /** The terminal was delivered, or handed to a durable outbox. */
   markFinal(kind: 'delivered' | 'deferred'): void {
     if (this.final) return;
@@ -657,6 +663,7 @@ export class TurnLatencyTracker {
       agentWakeLeadMs: this.agentWakeLeadMs,
       agentWakeSource: this.agentWakeLeadMs === undefined ? undefined : this.agentWake?.source,
       startToStageMs: this.startToStageMs,
+      titleMs: this.titleMs,
       attemptMs: end - this.startedAt,
       folded: this.folded > 0 ? this.folded : undefined,
       foldedInformed: this.foldedInformed > 0 ? this.foldedInformed : undefined,
@@ -758,6 +765,8 @@ export function emitInteractionJudgment(
     recordedBy: string;
     basis?: string;
     basisMs?: number;
+    earlyMs?: number;
+    rejudged?: boolean;
     clef: string;
     clefMs?: number;
     clefInputTokens?: number;
@@ -786,6 +795,8 @@ export function emitInteractionJudgment(
     recordedBy: record.recordedBy,
     basis: record.basis,
     basisMs: record.basisMs,
+    earlyMs: record.earlyMs,
+    rejudged: record.rejudged,
     clef: record.clef,
     clefMs: record.clefMs,
     clefInputTokens: record.clefInputTokens,

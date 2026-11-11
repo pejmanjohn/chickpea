@@ -306,6 +306,7 @@ for (const { withPendingTurn, testRun } of [
       localFrontDeskDispatcher: () => undefined,
       localSlackPresentationState: () => ({}),
       runTurn: async () => { throw new Error('the preflight fails first'); },
+      startEarlyJudgment: () => undefined,
       drainGatewayInbox: async () => false,
       drainLedgerRuns: async () => ({}),
       drainSlackInteractionCleanups: async () => {},
@@ -554,6 +555,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     localFrontDeskDispatcher: () => undefined,
     earliestDefined: (...values: Array<number | undefined>) =>
       values.filter((value): value is number => value !== undefined).sort((a, b) => a - b)[0],
+    startEarlyJudgment: () => undefined,
     runTurn: async (_turn: unknown, _assignment: unknown, _env: unknown, options: {
       turnId: string; replayText?: string; replayTerminalResult?: string;
       observationSignal?: AbortSignal; onObservationStarted?: () => void;
