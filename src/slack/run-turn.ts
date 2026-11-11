@@ -2,6 +2,7 @@ import { planAllowsConnectionFileUpload } from '../connections/file-upload-tool.
 import { conversationThreadImageInventory } from './thread-images.ts';
 import { retainThreadFiles, threadFileManifest } from './thread-files.ts';
 import { verifyOwnMemoryWrite } from './memory-update-terminal.ts';
+import type { ConversationStreamChunk } from '@flue/runtime';
 import { WebClient } from '@slack/web-api';
 
 import {
@@ -153,6 +154,7 @@ import { createSlackReadGate, sharesSlackAppReadBudget } from './read-budget.ts'
 import { resolveSlackContextNames } from './context-names.ts';
 import type { FlueDispatchReceiptV1 } from './turn-job-types.ts';
 import type { SlackProgressiveReadRelay } from './progressive-relay.ts';
+import { AnswerReleaseShadow } from './answer-release.ts';
 import {
   TurnLatencyTracker,
   type TurnFirstWrite,
@@ -427,6 +429,13 @@ export interface RunTurnOptions {
   turnLatency?: TurnLatencyContext;
   /** Set by `runTurn` itself when `turnLatency` is present. */
   onSlackWrite?: (surface: TurnFirstWrite) => void;
+  /** Set by `runTurn` itself when `turnLatency` is present: Slack acknowledged streamed answer text. */
+  onAnswerTextStreamed?: () => void;
+  /**
+   * Set by `runTurn` itself when `turnLatency` is present: every chunk the
+   * reply's observation reads, beside the dispatched submission. Must not throw.
+   */
+  onConversationChunk?: (chunk: ConversationStreamChunk, submissionId: string) => void;
   /** Set by `runTurn` itself when `turnLatency` is present: the follow-ups the prompt frames as information only. */
   onFollowUpsInformed?: (count: number) => void;
   /** Set by `runTurn` itself when `turnLatency` is present: a 👀 on a message the turn read became 👍. */
@@ -527,12 +536,15 @@ export async function runTurn(
     ...(options.runAttempt === undefined ? {} : { attempt: options.runAttempt }),
   });
   tracker.markFolded(followUps.length);
+  const answerRelease = new AnswerReleaseShadow();
   const { onDelivered, onDeferredTerminal } = options;
   let stopped = false;
   try {
     await runTurnAttempt(head, assignment, platformEnv, {
       ...options,
       onSlackWrite: (surface) => tracker.markSlackWrite(surface),
+      onAnswerTextStreamed: () => tracker.markStreamedAnswerText(),
+      onConversationChunk: (chunk, submissionId) => answerRelease.onEvent(chunk, submissionId),
       onFollowUpsInformed: (count) => tracker.markFoldedInformed(count),
       onRead: () => tracker.markRead(),
       onMidRunReply: () => tracker.markMidRunReply(),
@@ -552,9 +564,9 @@ export async function runTurn(
           }
         : {}),
     }, followUps, receipts);
-    tracker.emit(stopped ? 'stopped' : 'returned');
+    tracker.emit(stopped ? 'stopped' : 'returned', answerRelease.record());
   } catch (error) {
-    tracker.emit('threw');
+    tracker.emit('threw', answerRelease.record());
     throw error;
   }
 }
@@ -741,6 +753,9 @@ async function runTurnAttempt(
         onNativeStarted: () => onNativeStarted(),
         ...(options.onSlackWrite
           ? { onStreamStarted: () => options.onSlackWrite?.('stream') }
+          : {}),
+        ...(options.onAnswerTextStreamed
+          ? { onAnswerTextStreamed: options.onAnswerTextStreamed }
           : {}),
       })
     : undefined;
@@ -2235,8 +2250,13 @@ async function runTurnAttempt(
                 }
               : {}),
             ...(options.codingTaskStarted ? { codingTaskStarted: true } : {}),
-            ...(reviewSession
-              ? { onConversationChunk: (chunk, submissionId) => reviewSession.ingest(chunk, submissionId) }
+            ...(reviewSession || options.onConversationChunk
+              ? {
+                  onConversationChunk: (chunk, submissionId) => {
+                    options.onConversationChunk?.(chunk, submissionId);
+                    reviewSession?.ingest(chunk, submissionId);
+                  },
+                }
               : {}),
             onWorkspaceMilestone: async (record) => {
               await signalCodingTaskStarted();

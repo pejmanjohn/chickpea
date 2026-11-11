@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 
+import type { AnswerReleaseShadowRecord } from '../slack/answer-release.ts';
 import type { GatewayInboundDelivery } from '../slack/gateway/protocol.ts';
 import type { GatewaySessionRunnerHealthSnapshot } from '../slack/gateway/session-runner.ts';
 import type { SlackThreadRunnerRpc } from '../slack/thread-runner-rpc.ts';
@@ -18,6 +19,7 @@ import type { SlackThreadRunnerRpc } from '../slack/thread-runner-rpc.ts';
 export type RuntimeLatencyEvent =
   | 'relay_alarm'
   | 'turn_latency'
+  | 'answer_release'
   | 'turn_fold'
   | 'state_rpc'
   | 'gateway_delivery'
@@ -45,7 +47,10 @@ const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
   lane: TOKEN,
   executor: TOKEN,
   firstWrite: TOKEN,
+  firstAnswerText: TOKEN,
   final: TOKEN,
+  block: TOKEN,
+  late: TOKEN,
   method: TOKEN,
   firstMethod: TOKEN,
   op: TOKEN,
@@ -368,6 +373,13 @@ export type TurnFirstWrite =
   | 'midrun_reply'
   | 'final';
 
+/**
+ * Where the attempt first showed answer text: `stream` when Slack
+ * acknowledged a stream start with text, or the first text on a task-card
+ * stream; `final` when the terminal was delivered.
+ */
+export type TurnAnswerTextSurface = 'stream' | 'final';
+
 export interface TurnLatencyContext {
   /** `turn_jobs.enqueued_at`: when the relay durably admitted the turn. */
   admittedAt?: number;
@@ -395,6 +407,7 @@ export interface TurnLatencyContext {
 export class TurnLatencyTracker {
   private readonly startedAt: number;
   private firstWrite: { surface: TurnFirstWrite; at: number } | undefined;
+  private answerText: { surface: TurnAnswerTextSurface; at: number } | undefined;
   private final: { kind: 'delivered' | 'deferred'; at: number } | undefined;
   private folded = 0;
   private foldedInformed = 0;
@@ -421,6 +434,11 @@ export class TurnLatencyTracker {
   /** Record an acknowledged Slack write; only the first one is kept. */
   markSlackWrite(surface: TurnFirstWrite): void {
     if (!this.firstWrite) this.firstWrite = { surface, at: this.now() };
+  }
+
+  /** Slack acknowledged answer text on a stream; only the first is kept. */
+  markStreamedAnswerText(): void {
+    this.answerText ??= { surface: 'stream', at: this.now() };
   }
 
   /** The turn took this many queued messages as follow-ups. */
@@ -467,13 +485,17 @@ export class TurnLatencyTracker {
     const at = this.now();
     this.final = { kind, at };
     if (kind === 'delivered' && !this.firstWrite) this.firstWrite = { surface: 'final', at };
+    if (kind === 'delivered') this.answerText ??= { surface: 'final', at };
   }
 
   /**
    * Emit exactly once, when the attempt returns or throws. `stopped`: it
    * returned with a stopped run's ending (KTD3), which is not a failure.
+   * `answerRelease`, the attempt's shadow of the host release rule, adds an
+   * `answer_release` record and the time a release would have shown the
+   * answer, without changing anything Slack showed.
    */
-  emit(outcome: 'returned' | 'threw' | 'stopped'): void {
+  emit(outcome: 'returned' | 'threw' | 'stopped', answerRelease?: AnswerReleaseShadowRecord): void {
     if (this.emitted) return;
     this.emitted = true;
     const { admittedAt, receivedAt } = this.context;
@@ -482,6 +504,12 @@ export class TurnLatencyTracker {
     const sinceReceipt = (at: number | undefined) =>
       receivedAt === undefined || at === undefined ? undefined : at - receivedAt;
     const end = this.now();
+    const answerTextAt = this.answerText?.at;
+    // Only a release nothing followed shows the answer early; a retired one
+    // leaves the answer to the terminal.
+    const releasedAnswerAt = answerRelease?.outcome === 'released' ? answerRelease.releasedAt : undefined;
+    const shadowAnswerTextAt = releasedAnswerAt === undefined ? answerTextAt
+      : Math.min(releasedAnswerAt, answerTextAt ?? releasedAnswerAt);
     emitRuntimeLatency('turn_latency', {
       turnRef: opaqueTurnRef(this.ids.turnJobId),
       runRef: opaqueRunRef(this.ids.runId),
@@ -496,6 +524,11 @@ export class TurnLatencyTracker {
       admissionToFinalMs: this.final?.kind === 'delivered' ? since(this.final.at) : undefined,
       receiptToAdmissionMs: sinceReceipt(admittedAt),
       receiptToFirstWriteMs: sinceReceipt(this.firstWrite?.at),
+      firstAnswerText: this.answerText?.surface ?? 'none',
+      admissionToFirstAnswerTextMs: since(answerTextAt),
+      receiptToFirstAnswerTextMs: sinceReceipt(answerTextAt),
+      admissionToShadowAnswerTextMs: since(shadowAnswerTextAt),
+      receiptToShadowAnswerTextMs: sinceReceipt(shadowAnswerTextAt),
       handoffMs: this.context.handoffMs,
       runnerWakeLeadMs: this.context.runnerWakeLeadMs,
       admissionStatusMs: this.context.admissionStatusMs,
@@ -508,6 +541,16 @@ export class TurnLatencyTracker {
       foldedInformed: this.foldedInformed > 0 ? this.foldedInformed : undefined,
       read: this.read > 0 ? this.read : undefined,
       midRunReplies: this.midRunReplies > 0 ? this.midRunReplies : undefined,
+    }, this.sink);
+    if (!answerRelease) return;
+    const { releasedAt, ...shadow } = answerRelease;
+    emitRuntimeLatency('answer_release', {
+      turnRef: opaqueTurnRef(this.ids.turnJobId),
+      runRef: opaqueRunRef(this.ids.runId),
+      attempt: this.ids.attempt,
+      ...shadow,
+      admissionToReleaseMs: since(releasedAt),
+      receiptToReleaseMs: sinceReceipt(releasedAt),
     }, this.sink);
   }
 }

@@ -7,6 +7,7 @@ import type { WebClient } from '@slack/web-api';
 import ts from 'typescript';
 
 import type { ResolvedAssignment } from '../src/config/types.ts';
+import type { AnswerReleaseShadowRecord } from '../src/slack/answer-release.ts';
 import {
   emitGatewayDelivery,
   emitInteractionJudgment,
@@ -487,9 +488,116 @@ test('turn_latency measures admission to the first acknowledged write and to fin
     admissionToStartMs: 1_000,
     admissionToFirstWriteMs: 1_500,
     admissionToFinalMs: 6_000,
+    firstAnswerText: 'final',
+    admissionToFirstAnswerTextMs: 6_000,
+    admissionToShadowAnswerTextMs: 6_000,
     attemptMs: 5_100,
   }]);
   assertContentFree(records[0]!);
+});
+
+function shadowRecord(overrides: Partial<AnswerReleaseShadowRecord> = {}): AnswerReleaseShadowRecord {
+  return {
+    outcome: 'below_hold',
+    holdChars: 400,
+    toolSteps: 0,
+    answerSteps: 1,
+    preToolText1: 0,
+    preToolText100: 0,
+    preToolText200: 0,
+    preToolText300: 0,
+    preToolText400: 0,
+    preToolText600: 0,
+    preToolText800: 0,
+    finalAnswerChars: 120,
+    ...overrides,
+  };
+}
+
+// Defects caught: a status or task card counted as answer text, a stream
+// start not counted, the shadow time taken from a retired release (whose
+// answer still waits for the terminal), or an epoch timestamp logged as is.
+test('turn_latency times the first answer text as shown and as a host release would have shown it', () => {
+  const { records, sink } = captureSink();
+  const run = (
+    streamAt: number | undefined,
+    answerRelease: AnswerReleaseShadowRecord | undefined,
+  ) => {
+    const time = clock(10_000);
+    const tracker = new TurnLatencyTracker(
+      { receivedAt: 8_000, admittedAt: 9_000, lane: 'cloudflare', executor: 'runner' },
+      { turnJobId: 'evt:T_LATENCY:1785509000.000100', runId: 'run-raw', attempt: 1 },
+      time.now,
+      sink,
+    );
+    time.advance(500);
+    tracker.markSlackWrite('activity_status');
+    if (streamAt !== undefined) {
+      time.advance(streamAt - time.now());
+      tracker.markStreamedAnswerText();
+    }
+    time.advance(30_000 - time.now());
+    tracker.markFinal('delivered');
+    tracker.emit('returned', answerRelease);
+    return records.filter((record) => record.event === 'turn_latency').at(-1)!;
+  };
+
+  const terminal = run(undefined, undefined);
+  assert.equal(terminal.firstWrite, 'activity_status');
+  assert.equal(terminal.firstAnswerText, 'final');
+  assert.equal(terminal.receiptToFirstAnswerTextMs, 22_000);
+  assert.equal(terminal.admissionToFirstAnswerTextMs, 21_000);
+  assert.equal(terminal.receiptToShadowAnswerTextMs, 22_000, 'no release: the shadow shows the answer when the terminal did');
+  assert.equal(records.some((record) => record.event === 'answer_release'), false, 'no shadow, no answer_release');
+
+  const streamed = run(18_000, undefined);
+  assert.equal(streamed.firstAnswerText, 'stream');
+  assert.equal(streamed.receiptToFirstAnswerTextMs, 10_000);
+
+  const released = run(undefined, shadowRecord({
+    outcome: 'released', releasedAt: 21_000, releaseChars: 412, releaseHoldMs: 900, finalAnswerChars: 1_300,
+  }));
+  assert.equal(released.receiptToFirstAnswerTextMs, 22_000);
+  assert.equal(released.receiptToShadowAnswerTextMs, 13_000);
+  assert.equal(released.admissionToShadowAnswerTextMs, 12_000);
+
+  const earlierStream = run(15_000, shadowRecord({ outcome: 'released', releasedAt: 21_000 }));
+  assert.equal(earlierStream.receiptToShadowAnswerTextMs, 7_000, 'never later than what Slack showed');
+
+  const retired = run(undefined, shadowRecord({
+    outcome: 'retired', late: 'tool', releasedAt: 12_000, releaseChars: 430, releaseHoldMs: 600, releaseToLateMs: 1_200,
+    toolSteps: 1, preToolText1: 1, preToolText100: 1, preToolText200: 1, preToolText300: 1, preToolText400: 1,
+  }));
+  assert.equal(retired.receiptToShadowAnswerTextMs, 22_000, 'a retired release leaves the answer to the terminal');
+
+  const shadowLogs = records.filter((record) => record.event === 'answer_release');
+  assert.equal(shadowLogs.length, 3);
+  assert.deepEqual(shadowLogs.at(-1), {
+    component: 'runtime',
+    event: 'answer_release',
+    turnRef: opaqueTurnRef('evt:T_LATENCY:1785509000.000100'),
+    runRef: opaqueRunRef('run-raw'),
+    attempt: 1,
+    outcome: 'retired',
+    late: 'tool',
+    holdChars: 400,
+    releaseChars: 430,
+    releaseHoldMs: 600,
+    releaseToLateMs: 1_200,
+    toolSteps: 1,
+    answerSteps: 1,
+    preToolText1: 1,
+    preToolText100: 1,
+    preToolText200: 1,
+    preToolText300: 1,
+    preToolText400: 1,
+    preToolText600: 0,
+    preToolText800: 0,
+    finalAnswerChars: 120,
+    admissionToReleaseMs: 3_000,
+    receiptToReleaseMs: 4_000,
+  });
+  records.forEach(assertContentFree);
 });
 
 // Defect caught: a record that drops the receipt wake's lead its runner measured.
@@ -626,6 +734,7 @@ test('turn_latency omits durations it cannot measure and never throws', () => {
     outcome: 'returned',
     firstWrite: 'none',
     final: 'deferred',
+    firstAnswerText: 'none',
     attemptMs: 0,
   });
   const failing = new TurnLatencyTracker(

@@ -48,6 +48,8 @@ function harness(input: {
   failRetirementReceipt?: boolean;
   sessionError?: unknown;
   onNativeStarted?: () => Promise<void>;
+  onStreamStarted?: () => void;
+  onAnswerTextStreamed?: () => void;
   readGate?: SlackReadGate;
   /** The workspace read budget a deployment serving many shares (SlackPresentationStatePort). */
   sharedSlackReads?: SlackPresentationStatePort['sharedSlackReads'];
@@ -206,6 +208,8 @@ function harness(input: {
     wait: input.wait ?? (async (milliseconds) => { clock += milliseconds; }),
     onFinalized: (record) => { finalizationRecords.push(structuredClone(record)); },
     ...(input.onNativeStarted ? { onNativeStarted: input.onNativeStarted } : {}),
+    ...(input.onStreamStarted ? { onStreamStarted: input.onStreamStarted } : {}),
+    ...(input.onAnswerTextStreamed ? { onAnswerTextStreamed: input.onAnswerTextStreamed } : {}),
     ...(input.readGate ? { readGate: input.readGate } : {}),
   });
   return {
@@ -2792,6 +2796,87 @@ test('final-answer text appends onto an open native plan stream while milestones
     assert.equal(h.store.get(h.runId)?.stream.presentationOutcome, 'progressive');
   } finally {
     h.db.close();
+  }
+});
+
+async function until(condition: () => boolean, what: string): Promise<void> {
+  for (let attempt = 0; attempt < 50 && !condition(); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assert.ok(condition(), what);
+}
+
+// Defects caught: a task card counted as answer text (the measure would
+// read a status as the answer), the first streamed text not counted, or
+// every append counted again.
+test('answer text is observed once: at a stream start with text, or at the first text on a task card', async () => {
+  const marks: string[] = [];
+  const observed = {
+    onStreamStarted: () => marks.push('stream'),
+    onAnswerTextStreamed: () => marks.push('answer_text'),
+  };
+  const appended = (h: ReturnType<typeof harness>, text: string) => () =>
+    h.calls.some((call) => call.method === 'chat.appendStream' && JSON.stringify(call.input.chunks).includes(text));
+
+  const plain = harness({ schemaVersion: 3, ...observed });
+  try {
+    const relay = await prepareReceipt(plain, {
+      instanceId: 'instance_answer_text',
+      receipt: { submissionId: 'submission_answer_text', acceptedAt: 'now', uid: 'uid' },
+      eligibility: { allowed: true, reason: 'safe_early_release' },
+    });
+    assert.ok(relay);
+    relay.onEvent({
+      type: 'message-started', conversationId: 'conversation',
+      submissionId: 'submission_answer_text', messageId: 'message_answer_text',
+      position: { batch: 1, index: 0 },
+    });
+    declareProgressiveIntent(relay, { submissionId: 'submission_answer_text', messageId: 'message_answer_text' });
+    assert.deepEqual(marks, []);
+    relay.onEvent({
+      type: 'message-delta', conversationId: 'conversation', messageId: 'message_answer_text',
+      kind: 'text', delta: 'First part. ', position: { batch: 4, index: 0 },
+    });
+    await until(() => marks.length > 0, 'the stream opened with text');
+    assert.deepEqual(marks, ['stream', 'answer_text']);
+    relay.onEvent({
+      type: 'message-delta', conversationId: 'conversation', messageId: 'message_answer_text',
+      kind: 'text', delta: 'Second part. ', position: { batch: 5, index: 0 },
+    });
+    await until(appended(plain, 'Second part.'), 'the next text appended');
+    await relay.closeAndDrain();
+    assert.deepEqual(marks, ['stream', 'answer_text'], 'an append after the start adds nothing');
+  } finally {
+    plain.db.close();
+  }
+
+  marks.length = 0;
+  const card = harness({ schemaVersion: 3, tasks: ['Search the docs', 'Write the answer'], ...observed });
+  try {
+    const persisted = card.store.get(card.runId);
+    assert.ok(persisted?.schemaVersion === 3 && persisted.plan);
+    await card.presentation.transitionMilestone({ taskId: persisted.plan.tasks[0]!.id, to: 'in_progress' });
+    const relay = await prepareReceipt(card, {
+      instanceId: 'instance_answer_card',
+      receipt: { submissionId: 'submission_answer_card', acceptedAt: 'now', uid: 'uid' },
+      eligibility: { allowed: true, reason: 'final_answer_release' },
+    });
+    assert.ok(relay);
+    assert.deepEqual(marks, ['stream'], 'the task card is a stream, not answer text');
+    const events = finalAnswerEvents(relay, {
+      submissionId: 'submission_answer_card', messageId: 'message_answer_card',
+    });
+    await events.beforeDeclaration();
+    await events.declaration();
+    events.text('First part. ', 10);
+    await until(appended(card, 'First part.'), 'the first text appended onto the card');
+    assert.deepEqual(marks, ['stream', 'answer_text']);
+    events.text('Second part. ', 11);
+    await until(appended(card, 'Second part.'), 'the next text appended');
+    await relay.closeAndDrain();
+    assert.deepEqual(marks, ['stream', 'answer_text']);
+  } finally {
+    card.db.close();
   }
 });
 
