@@ -367,6 +367,26 @@ test('a confirmation card on a host that kept nothing asks where it stands befor
   assert.equal(waiting.shown.title, 'Kept as it is');
 });
 
+// Mutation proof (review): a get_confirmation answer taken while Turn off is out draws "Made the change you confirmed"
+// before Chickpea has answered the press.
+test('a confirmation read that answers while a press is out leaves the card to the press\'s own answer', async (t) => {
+  const { call, clock, turnOff } = await world(t, 'refusal-read-during-press');
+  const pending = await turnOff();
+  const card = cardHost(AGENT_CARD, asChatGpt(call), clock);
+  await card.result(pending);
+  // The card comes back into view and asks again, and the person presses Turn off before that read answers.
+  card.hold = ({ tool }) => tool === 'get_confirmation' || tool === 'confirm_change';
+  await card.dispatch({ type: 'reread', now: clock.now });
+  await card.press('confirm');
+  assert.deepEqual(card.held.map(({ call: made }) => made.tool), ['get_confirmation', 'confirm_change']);
+  card.held[0]!.result = await call('get_confirmation', { confirmToken: tokenOf(pending) });
+  assert.deepEqual(card.held[0]!.result.structuredContent, { status: 'applied' });
+  await card.answer();
+  assert.deepEqual([card.shown.title, card.shown.busy], ['Turn off @support?', true]);
+  await card.answer();
+  assert.equal(card.shown.title, 'Turned off Support Desk');
+});
+
 test('a card works before ChatGPT lists a newer card-only tool, and reads "MCP Resource not found" as unreachable, not a refusal', async (t) => {
   const { call, clock, turnOff } = await world(t, 'refusal-unlisted');
   const notListed: ToolResult = { isError: true, hostError: hostErrorOf(RESOURCE_NOT_FOUND) };

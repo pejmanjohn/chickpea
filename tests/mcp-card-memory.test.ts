@@ -214,6 +214,9 @@ test('a card that mounts again comes back to what its presses did, and never off
   const createdBefore = await reopen(proposal, { ...withoutId, outcome: { kind: 'created', name: 'Invoice Chaser' } });
   assert.deepEqual([createdBefore.shown.title, createdBefore.shown.done, createdBefore.labels(), createdBefore.calls()],
     ['Created Invoice Chaser', true, [], []]);
+  // What the host kept is untrusted: an ID that is not an Agent's is no ID, and nothing is read with it.
+  const createdOdd = await reopen(proposal, { ...withoutId, outcome: { kind: 'created', name: 'Invoice Chaser', agentId: '../agent_support' } });
+  assert.deepEqual([createdOdd.shown.title, createdOdd.calls()], ['Created Invoice Chaser', []]);
 
   // A host that keeps nothing, as claude.ai: the preview it saved says it changed since.
   const changed = await reopen(preview, undefined);
