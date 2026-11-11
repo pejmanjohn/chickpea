@@ -9,8 +9,10 @@ import { build } from 'esbuild';
 /**
  * Builds the ChatGPT cards: each one self-contained HTML document, its script
  * and styles inline, because an MCP App's CSP blocks external files. Hosts
- * cache a card by its URI, so `publishCard` gives every change a new version
- * in published.json instead of editing a published one.
+ * cache a card by its URI, so `publishCard` never edits a released version:
+ * a change to one publishes the next version in published.json. Until the
+ * coordinator marks the newest version `released`, when it pins it to
+ * production, a change rebuilds that version in place.
  */
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -65,8 +67,9 @@ export async function buildCard(card, version) {
 }
 
 /**
- * The card's newest published version, or, when its source changed since,
- * the next version with its hash appended to the card's list in published.json.
+ * The card's newest version when its page is unchanged. When it changed:
+ * that version rebuilt in place while it is unreleased, or else the next
+ * version, appended unreleased to the card's list in published.json.
  */
 export async function publishCard(card, { published = readPublished(), build = buildCard } = {}) {
   const versions = published[card] ?? [];
@@ -74,15 +77,19 @@ export async function publishCard(card, { published = readPublished(), build = b
   if (latest) {
     const current = await build(card, latest.version);
     if (latest.sha256 === sha256(current)) return { card, version: latest.version, html: current, published };
+    if (!latest.released) {
+      const rebuilt = { version: latest.version, sha256: sha256(current), released: false };
+      return { card, version: latest.version, html: current, published: { ...published, [card]: [...versions.slice(0, -1), rebuilt] } };
+    }
   }
   const version = (latest?.version ?? 0) + 1;
   const html = await build(card, version);
-  return { card, version, html, published: { ...published, [card]: [...versions, { version, sha256: sha256(html) }] } };
+  return { card, version, html, published: { ...published, [card]: [...versions, { version, sha256: sha256(html), released: false }] } };
 }
 
 /**
  * Writes a card and the list of versions. Every older file stays as it was:
- * a chat drawn with an older card asks for that one again.
+ * a chat drawn with a released card asks for that one again.
  */
 export function saveCard({ card, version, html, published }, { assets = join(ROOT, 'assets'), publishedPath = PUBLISHED_PATH } = {}) {
   const target = join(assets, assetPath(card, version));

@@ -1,7 +1,7 @@
 import { ResourceNotFoundError, ResourceTemplate, type McpServer } from '@modelcontextprotocol/server';
 import { readPublicAsset } from '#chickpea-assets';
 
-import { CARD_NAMES, cardAssetPath, cardVersions, type CardName } from '../../mcp-cards/published.ts';
+import { CARD_NAMES, cardAssetPath, cardVersions, RETIRED_CARD_ASSET_PATH, type CardName } from '../../mcp-cards/published.ts';
 
 /**
  * The cards: MCP Apps (`ui://` HTML resources) that ChatGPT and other MCP
@@ -46,10 +46,9 @@ const SLACK_ORIGIN = 'https://slack.com';
  * deployment, which serves every Agent's avatar on its own origin. Links
  * open through the host, to Slack or to this deployment.
  *
- * Every version gets the same CSP, so the older cards, which load no
- * picture, list the origin too; it adds nothing their fixed bytes use. A
- * host applies resource domains to scripts and styles as well, which is
- * safe only while no route on this origin, Core's or Chickpea Cloud's,
+ * Every version gets the same CSP, and so does the retired card, which
+ * loads nothing. A host applies resource domains to scripts and styles as
+ * well, which is safe only while no route on this origin, Core's or Chickpea Cloud's,
  * serves content a person chose as a script or a style.
  */
 export function cardResourceMeta(card: CardName, baseUrl: string | undefined) {
@@ -67,11 +66,12 @@ export function cardResourceMeta(card: CardName, baseUrl: string | undefined) {
 }
 
 /**
- * Every published version of every card stays readable, because a chat
- * drawn with an older card asks for its URI again when it reopens. That card
- * calls today's tools, so a card tool's output only ever gains fields. Only
- * the newest is listed: the older ones are read by the URI a chat kept,
- * through a template no list names.
+ * Each card's served versions stay readable, because a chat drawn with a
+ * card asks for its URI again when it reopens. That card calls today's
+ * tools, so a card tool's output only ever gains fields. Only the newest is
+ * listed: an older one is read by the URI a chat kept, through a template no
+ * list names. A retired version, below the oldest served one, reads as the
+ * retired card, which asks the person to ask again.
  */
 export function registerCards(server: McpServer, baseUrl: string | undefined): void {
   for (const card of CARD_NAMES) {
@@ -82,22 +82,24 @@ export function registerCards(server: McpServer, baseUrl: string | undefined): v
       mimeType: MCP_APP_MIME_TYPE,
       _meta: meta,
     };
-    const read = async (uri: URL, version: number) => ({
+    const read = async (uri: URL, path: string) => ({
       contents: [{
         uri: uri.href,
         mimeType: MCP_APP_MIME_TYPE,
-        text: new TextDecoder().decode(await readPublicAsset(cardAssetPath(card, version))),
+        text: new TextDecoder().decode(await readPublicAsset(path)),
         _meta: meta,
       }],
     });
     const versions = cardVersions(card);
     const newest = versions.at(-1)!;
-    server.registerResource(`${card}-v${newest}`, cardUri(card, newest), metadata, (uri) => read(uri, newest));
+    server.registerResource(`${card}-v${newest}`, cardUri(card, newest), metadata, (uri) => read(uri, cardAssetPath(card, newest)));
     const older = new ResourceTemplate(`ui://chickpea/${card}-v{version}`, { list: undefined });
     server.registerResource(`${card}-older`, older, metadata, (uri, { version }) => {
       const asked = Number(version);
-      if (String(asked) !== version || !versions.includes(asked)) throw new ResourceNotFoundError(uri.href);
-      return read(uri, asked);
+      if (String(asked) !== version) throw new ResourceNotFoundError(uri.href);
+      if (versions.includes(asked)) return read(uri, cardAssetPath(card, asked));
+      if (asked >= 1 && asked < versions[0]!) return read(uri, RETIRED_CARD_ASSET_PATH);
+      throw new ResourceNotFoundError(uri.href);
     });
   }
 }

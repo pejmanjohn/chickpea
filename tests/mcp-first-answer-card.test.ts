@@ -936,15 +936,14 @@ test('the connect card offers its first answer once the service is connected, fo
   assert.deepEqual(card.effects.at(-1), { type: 'message', draft: 'Change Invoice Chaser: ', sent: 'Change Invoice Chaser: ' });
 });
 
-test('on a card host the test-run results reach the card whole, with no token held back', async (t) => {
+test('on a card host the practice-run results reach the card whole, with no token held back', async (t) => {
   const { card, call, runs } = await readyCard(t, 'first-answer-session');
   void card;
-  const tried = await call('try_agent_once', { agentId: 'agent_invoice_chaser', idempotencyKey: 'session-key' });
-  assert.equal(tried._meta?.['chickpea/tool'], 'try_agent_once');
-  assert.equal(tried._meta?.['chickpea/held'], undefined, 'a test run carries no confirm or undo token');
-  assert.deepEqual(Object.keys(tried.structuredContent!).sort(), ['ask', 'note', 'read', 'reply', 'runToken', 'status']);
-  const read = await call('get_test_run', { runToken: tried.structuredContent!.runToken });
-  assert.equal(read._meta?.['chickpea/held'], undefined);
+  const tried = await call('practice_agent', { agentId: 'agent_invoice_chaser', idempotencyKey: 'session-key' });
+  assert.equal(tried._meta, undefined, 'a practice run carries no confirm or undo token');
+  assert.equal(tried.structuredContent!.status, 'answered');
+  const read = await call('get_practice_run', { runToken: tried.structuredContent!.runToken });
+  assert.equal(read._meta, undefined);
   assert.deepEqual(read.structuredContent, tried.structuredContent);
   assert.equal(runs.starts.length, 1);
 });

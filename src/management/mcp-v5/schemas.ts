@@ -724,7 +724,7 @@ export const getCreationStatusOutput = z.strictObject({
   hello: z.string().optional().describe('The hello it posted to the person in Slack, as plain text.'),
 });
 
-// practice_agent and get_practice_run; try_agent_once and get_test_run are their names on cards published before them.
+// practice_agent, get_practice_run and list_practice_runs.
 
 export const practiceAgentInput = z.strictObject({
   agentId: zAgentId,
@@ -823,22 +823,6 @@ export const listPracticeRunsOutput = z.strictObject({
     question: z.string().describe('The question, cut at 200 characters.'),
     agentVersion: zVersion.optional().describe('The version get_agent returned when it ran: whether it saw an edit.'),
   })).describe('Your own practice runs of this Agent that you can still read, newest first, at most 20: each one still going, or ended within the last hour.'),
-  note: z.string(),
-});
-
-export const tryAgentOnceInput = z.strictObject({ agentId: zAgentId, idempotencyKey: zIdempotencyKey });
-
-export const getTestRunInput = z.strictObject({
-  runToken: zText(64).describe('The runToken try_agent_once returned.'),
-});
-
-export const testRunOutput = z.strictObject({
-  status: z.enum(['running', 'answered', 'failed']),
-  runToken: z.string(),
-  ask: z.string().describe('The first question the run answers, as saved when the Agent was created.'),
-  reply: z.string().optional().describe('The Agent\'s answer, in Markdown.'),
-  read: z.array(z.string()).optional().describe('The services the run read, by name.'),
-  problem: z.string().optional(),
   note: z.string(),
 });
 

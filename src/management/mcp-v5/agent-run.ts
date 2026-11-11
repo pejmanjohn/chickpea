@@ -117,7 +117,7 @@ export async function readAgentRun(deps: FiveZeroDeps, input: AgentRunInput): Pr
 }
 
 /**
- * The Agent for the caller in a direct message, read alone. try_agent_once
+ * The Agent for the caller in a direct message, read alone. practice_agent
  * admits a run on it, so it never takes the workspace snapshot, whose reads
  * grow with every Agent and member. It refuses the Agents the snapshot would
  * not list: one the caller cannot edit, Chickpea's own, and any other than

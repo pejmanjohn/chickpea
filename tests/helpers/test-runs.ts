@@ -1,6 +1,6 @@
 /**
  * Test runs over one hosted installation's real stores: a V5 plan, a start
- * request as try_agent_once builds one, and a fake instance whose every call
+ * request as practice_agent builds one, and a fake instance whose every call
  * is recorded by instance, so a test can say which steps reached it.
  */
 import type { RuntimePlanV2 } from '../../src/agents/runtime-plan.ts';
