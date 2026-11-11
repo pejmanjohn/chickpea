@@ -7,14 +7,16 @@
  * No pattern here is built from a saved login or from a record's text. The
  * link rules are fixed patterns that look each host up, and usernames are
  * found by literal search, so no value can make a pattern backtrack or
- * compile without bound. Each rule reads a view of a field with its
- * escapes decoded, and maps what it finds back to where it was written. The
+ * compile without bound. Each rule reads a view of a field with its JSON
+ * escapes, HTML character references and percent escapes decoded, however
+ * they nest, and maps what it finds back to where it was written. The
  * work one copy's scrub does is counted, and a copy past its budget, or past
  * the caps on its logins, is not kept.
  */
 
 import { BROWSER_HANDOFF_LINK_LABEL } from '../browser/requester.ts';
 import { CREDENTIAL_REPLACEMENT } from '../security/content-validation.ts';
+import { htmlNamedReference } from './html-references.ts';
 
 /** The installation's saved website logins, as a copy needs them. */
 export interface RunReviewWebsiteLogins {
@@ -47,7 +49,7 @@ export const MAX_SCRUB_LOGINS = 500;
 export const MAX_SCRUB_USERNAME_CHARS = 320;
 /**
  * The work one copy's scrub may do, in characters read and automaton steps.
- * A copy at the record cap with 500 saved usernames takes about a tenth of it.
+ * A copy at the record cap with 500 saved usernames takes at most about a fifth of it.
  */
 export const SCRUB_BUDGET_STEPS = 20_000_000;
 /** What reading a host that is not in ASCII costs besides its length: a URL parses it in about the time of 80 steps. */
@@ -75,7 +77,7 @@ export class ScrubBudget {
   }
 }
 
-// The link rules read a field's link view (see linkView below): its JSON escapes decoded, then NFKC without
+// The link rules read a field's link view (see linkView below): its escapes decoded, then NFKC without
 // default-ignorable code points. So no pattern here reads an escape.
 
 // A URL ends at whitespace, a double quote, Slack's `<` and `>`, or a backslash. A page's address keeps `'`
@@ -110,14 +112,17 @@ const UNREADABLE_NAME = new RegExp(`^${NAME}$`, 'iu');
  */
 const BROWSER_STEP_HOST = new RegExp(String.raw`^(?:${NAME}|\d{1,3}(?:\.\d{1,3}){3}|\[[\da-f:.]+\])$`, 'iu');
 
-const HANDOFF_LINK = new RegExp(String.raw`<([^<>|]*)\|${escapeRegExp(BROWSER_HANDOFF_LINK_LABEL)}>`, 'g');
-const HANDOFF_LABEL = `|${BROWSER_HANDOFF_LINK_LABEL}>`;
+// The hand-off label, each of its spaces written as one, as a form's `+`, or percent-encoded, which the link view
+// reads as a stand-in (see withStandIns); and Slack's brackets around a link, as written or percent-encoded.
+const HANDOFF_LABEL_TEXT = escapeRegExp(BROWSER_HANDOFF_LINK_LABEL).replace(/ /g, String.raw`[ +\u{F0020}]`);
+const HANDOFF_LINK = new RegExp(String.raw`[<\u{F003C}]([^<>|\u{F003C}\u{F003E}]*)\|${HANDOFF_LABEL_TEXT}[>\u{F003E}]`, 'gu');
+const HANDOFF_LABEL = new RegExp(String.raw`\|${HANDOFF_LABEL_TEXT}[>\u{F003E}]`, 'u');
 /** What a hand-off message links to: an absolute web address, too long to be a word of other text. */
 const HANDOFF_URL = /^https?:\/\/[^\s<>|"\\]{8,}$/i;
-/** A run of text a hand-off URL could be: nothing that ends one. */
-const URL_RUN = /[^\s<>|"\\]+/g;
-const BEFORE_URL_RUN = /[\s<"]/;
-const AFTER_URL_RUN = /[\s>|"\\]/;
+// What may stand right before and right after a hand-off URL that stands alone, as written, percent-encoded (a
+// stand-in), or as a form's space.
+const BEFORE_HANDOFF_URL = /[\s<"+]/;
+const AFTER_HANDOFF_URL = /[\s>|"\\+]/;
 
 /** Shapes of a hosted browser's live view, debugger or connect link, whatever its host. */
 function browserLink(scheme: string | undefined, hostname: string, path: string, suffix: string): boolean {
@@ -191,9 +196,10 @@ export interface WebsiteLoginScrub {
   /**
    * Link rules, on text no other rule has changed: a replacement that holds a
    * space would end a URL early and leave the rest of it. They read the text
-   * with its JSON escapes decoded, in NFKC without default-ignorable code
-   * points, and a link they rewrite comes back as they read it. A hosted
-   * browser link goes whole, and so does a hand-off message's link wherever
+   * with its escapes decoded (see `decoded`), in NFKC without default-ignorable
+   * code points. A link they rewrite comes back as they read it, and one they
+   * leave stays as it was written. A hosted browser link goes whole, and so
+   * does a hand-off message's link wherever
    * else the same text holds it. Every URL loses its userinfo. A host is a
    * login's site when the hostname a URL gives it is, whatever script,
    * encoding or IPv4 spelling it is written in. A link without a scheme
@@ -212,9 +218,9 @@ export interface WebsiteLoginScrub {
    */
   links(text: string, browserStep: boolean): string;
   /**
-   * Each saved username, in any case, as typed, JSON- or snapshot-escaped,
-   * percent- or form-encoded (in part or every character), Slack-escaped,
-   * written by its HTML or JSON number, with any run of whitespace for its
+   * Each saved username, in any case, as typed, snapshot-escaped, with its
+   * JSON escapes, HTML character references and percent or form encoding
+   * however they nest (see `decoded`), with any run of whitespace for its
    * own, or split across snapshot nodes, and its start where a `…`, `...` or
    * the end of a `cut` field follows it. An email address's local part goes
    * too, where it stands alone.
@@ -230,7 +236,7 @@ export interface WebsiteLoginScrub {
  */
 export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginScrub {
   const budget = new ScrubBudget();
-  const viewBuffers: ViewBuffers = [{ starts: new Int32Array(0), ends: new Int32Array(0) }, { starts: new Int32Array(0), ends: new Int32Array(0) }];
+  const maps = new ViewMaps();
   const hostnames = new Set(logins.hosts.map((host) => {
     const site = host.trim().replace(/:\d+$/, '');
     return asciiHost(site) ?? site.toLowerCase();
@@ -269,7 +275,10 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
     return hostname === undefined ? UNREADABLE_NAME.test(host) : loginSite(hostname) || browserbaseHost(hostname);
   };
 
-  /** `source` with each link its view holds rewritten. A link goes back where it was written, read as the view reads it. */
+  /**
+   * `source` with each link its view holds rewritten. A link the rules change goes back where it was written, read
+   * as the view reads it; one they leave stays as written.
+   */
   const scrubLinks = (source: string, view: Written, browserStep: boolean): string => {
     const { text } = view;
     budget.spend(text.length);
@@ -287,10 +296,12 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
       }
       // Slack writes a link as `<url|label>`. A browser step holds a page's text, not Slack's.
       const slackLink = !browserStep && text[match.index - 1] === '<';
-      const [start, end] = written(view, match.index, match.index + link.length);
-      result += `${source.slice(from, Math.max(from, start))}${scrubLink(link, browserStep, slackLink)}`;
-      from = Math.max(from, end);
+      const rewritten = scrubLink(link, browserStep, slackLink);
       pattern.lastIndex = match.index + link.length;
+      if (rewritten === link) continue;
+      const [start, end] = written(view, match.index, match.index + link.length);
+      result += `${source.slice(from, Math.max(from, start))}${withoutStandIns(rewritten)}`;
+      from = Math.max(from, end);
     }
     return result + source.slice(from);
   };
@@ -337,9 +348,9 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
     const local = at > 0 && at < name.length - 1 ? name.slice(0, at) : undefined;
     // A username that holds an escape of its own is searched for as written too, which a serializer escapes again.
     return [
-      searchView(name).text.trim(),
-      searchView(name, false).text.trim(),
-      ...(local !== undefined && !named.has(local) ? [searchView(local).text.trim()] : []),
+      searchView(decoded(name, maps, budget)).text.trim(),
+      searchView({ text: name }).text.trim(),
+      ...(local !== undefined && !named.has(local) ? [searchView(decoded(local, maps, budget)).text.trim()] : []),
     ];
   }).filter(Boolean);
   const index = needles.length ? new UsernameIndex(needles, budget) : undefined;
@@ -347,16 +358,16 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
   return {
     links(text, browserStep) {
       budget.spend(text.length);
-      const view = linkView(text, viewBuffers);
-      if (!view.text.includes(HANDOFF_LABEL)) return scrubLinks(text, view, browserStep);
-      const handedOff = withoutHandoffs(text, view);
+      const view = linkView(text, maps, budget);
+      if (!HANDOFF_LABEL.test(view.text)) return scrubLinks(text, view, browserStep);
+      const handedOff = withoutHandoffs(text, view, budget);
       budget.spend(handedOff.length);
-      return scrubLinks(handedOff, linkView(handedOff, viewBuffers), browserStep);
+      return scrubLinks(handedOff, linkView(handedOff, maps, budget), browserStep);
     },
     usernames(text, { browserStep, cut }) {
       if (!index) return text;
       budget.spend(text.length);
-      const view = searchView(text);
+      const view = searchView(decoded(text, maps, budget));
       const found: Span[] = [];
       index.find(view, { quoted: browserStep, cut }, found, budget);
       // A snapshot writes each node's text on its own line, so a username can run across several.
@@ -369,28 +380,106 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
 }
 
 // ---------------------------------------------------------------------------
-// Reading a field as the link rules do
+// Reading a field with its escapes decoded
 // ---------------------------------------------------------------------------
 
-/**
- * `written` as the link rules read it. Each JSON escape is decoded, and a
- * run of backslashes before one reads as a single escape, as a field escaped
- * again writes it. Then the text is in Unicode NFKC, without the
- * default-ignorable code points a URL drops from a host (a soft hyphen, a
- * zero-width character, a variation selector). So a fullwidth or decomposed
- * letter reads as a URL reads it, and a mark that no letter takes stays.
- * Each code unit keeps where it was written, so a link is replaced there.
- * The view lasts until the next one written into the same buffers.
- */
-function linkView(written: string, [decoding, normalizing]: ViewBuffers): Written {
-  return normalized(jsonDecoded(written, decoding), normalizing);
+/** Text, and where each of its code units was written when that is not where it is. */
+interface Written {
+  text: string;
+  starts?: Int32Array;
+  ends?: Int32Array;
+  /** 1 where percent decoding wrote a code unit, or wrote part of the escape that did. */
+  percent?: Uint8Array;
 }
 
-/** Where a field's views write their maps: one for decoding, one for NFKC. A copy reuses them field after field. */
-type ViewBuffers = [MapBuffers, MapBuffers];
+/** Where one pass over a field writes its view's maps. */
 interface MapBuffers {
   starts: Int32Array;
   ends: Int32Array;
+  percent: Uint8Array;
+}
+
+/**
+ * The two sets of maps a field's views write into in turn, each pass into
+ * the set the view it reads does not use. A copy reuses them field after
+ * field, so a view lasts until the pass after the next one.
+ */
+class ViewMaps {
+  readonly #sets: readonly [MapBuffers, MapBuffers] = [
+    { starts: new Int32Array(0), ends: new Int32Array(0), percent: new Uint8Array(0) },
+    { starts: new Int32Array(0), ends: new Int32Array(0), percent: new Uint8Array(0) },
+  ];
+
+  /** Where a pass that reads `view` writes. */
+  for(view: Written): MapBuffers {
+    const [first, second] = this.#sets;
+    return view.starts?.buffer === first.starts.buffer ? second : first;
+  }
+}
+
+/**
+ * The most passes that decode one field: an address percent-encoded three
+ * times over, inside one more encoding of any kind.
+ */
+const DECODE_PASSES = 4;
+const ESCAPE_START = /[\\&%]/;
+const ESCAPE_STARTS = /[\\&%]/g;
+
+/**
+ * `written` with its escapes decoded, each code unit mapped to where it was
+ * written. One pass decodes every JSON escape, HTML character reference and
+ * percent escape of a UTF-8 character the text holds. A pass that decodes
+ * any is repeated, up to DECODE_PASSES, so text one serializer wrote inside
+ * another's reads as it was first written, whatever the order: JSON in HTML,
+ * HTML in JSON, either in a percent-encoded address, or an address
+ * percent-encoded again (`%253A`). A form's `+` stays; the username search
+ * reads it as a space, and the hand-off rule reads its label with either.
+ */
+function decoded(written: string, maps: ViewMaps, budget: ScrubBudget): Written {
+  let view: Written = { text: written };
+  for (let pass = 0; pass < DECODE_PASSES && ESCAPE_START.test(view.text); pass += 1) {
+    budget.spend(view.text.length);
+    const next = decodedOnce(view, maps.for(view));
+    if (!next) break;
+    view = next;
+  }
+  return view;
+}
+
+/** `view` with each escape it holds decoded, or undefined when none reads as other than it is written. */
+function decodedOnce(view: Written, buffers: MapBuffers): Written | undefined {
+  const { text } = view;
+  let out: WrittenText | undefined;
+  let from = 0;
+  ESCAPE_STARTS.lastIndex = 0;
+  for (let match = ESCAPE_STARTS.exec(text); match; match = ESCAPE_STARTS.exec(text)) {
+    const at = match.index;
+    const escape = escapeAt(text, at);
+    if (!escape) continue;
+    ESCAPE_STARTS.lastIndex = escape.end;
+    if (escape.end === at + 1 && escape.text === text[at]) continue;
+    out ??= new WrittenText(text.length, buffers);
+    out.copy(view, from, at);
+    out.push(escape.text, view, at, escape.end, escape.percent);
+    from = escape.end;
+  }
+  if (!out) return undefined;
+  out.copy(view, from, text.length);
+  return out.done();
+}
+
+/** What an escape that starts at `at` writes, and where it ends. */
+interface Escape {
+  text: string;
+  end: number;
+  percent?: boolean;
+}
+
+function escapeAt(text: string, at: number): Escape | undefined {
+  const code = text.charCodeAt(at);
+  if (code === BACKSLASH) return jsonEscapeAt(text, at);
+  if (code === AMPERSAND) return referenceAt(text, at);
+  return percentEscapeAt(text, at);
 }
 
 // What a JSON escape other than `\uXXXX` writes.
@@ -398,24 +487,151 @@ const JSON_ESCAPED: ReadonlyMap<number, string> = new Map([
   [0x22, '"'], [0x2f, '/'], [0x62, '\b'], [0x66, '\f'], [0x6e, '\n'], [0x72, '\r'], [0x74, '\t'],
 ]);
 
-/** `text` with each JSON escape decoded. A run of backslashes before no escape reads as one backslash. */
-function jsonDecoded(text: string, buffers: MapBuffers): Written {
-  if (!text.includes('\\')) return { text };
-  const out = new WrittenText(text.length, buffers);
-  let from = 0;
-  for (let at = text.indexOf('\\'); at >= 0; at = text.indexOf('\\', at)) {
-    out.copy({ text }, from, at);
-    let next = at + 1;
-    while (text.charCodeAt(next) === BACKSLASH) next += 1;
-    const unicodeEnd = unicodeEscapeEnd(text, at);
-    const escaped = JSON_ESCAPED.get(text.charCodeAt(next));
-    // JSON writes a character past U+FFFF as an escape of each half of its pair, so each half reads on its own.
-    const end = unicodeEnd >= 0 ? unicodeEnd : escaped === undefined ? next : next + 1;
-    out.push(unicodeEnd >= 0 ? String.fromCharCode(escapedUnit(text, unicodeEnd)) : escaped ?? '\\', at, end);
-    at = from = end;
+/**
+ * A JSON escape behind any run of backslashes, which reads as that one
+ * escape, as a field escaped again writes it. A run before no escape reads as
+ * one backslash. JSON writes a character past U+FFFF as an escape of each
+ * half of its pair, so each half reads on its own and joins the other there.
+ */
+function jsonEscapeAt(text: string, at: number): Escape {
+  const unicodeEnd = unicodeEscapeEnd(text, at);
+  if (unicodeEnd >= 0) return { text: String.fromCharCode(escapedUnit(text, unicodeEnd)), end: unicodeEnd };
+  let next = at + 1;
+  while (text.charCodeAt(next) === BACKSLASH) next += 1;
+  const escaped = JSON_ESCAPED.get(text.charCodeAt(next));
+  return escaped === undefined ? { text: '\\', end: next } : { text: escaped, end: next + 1 };
+}
+
+/** Where a JSON `\uXXXX` escape that starts at `index`, after any run of backslashes, ends; -1 for none. */
+function unicodeEscapeEnd(text: string, index: number): number {
+  if (text.charCodeAt(index) !== BACKSLASH) return -1;
+  let next = index + 1;
+  while (text.charCodeAt(next) === BACKSLASH) next += 1;
+  if (text.charCodeAt(next) !== LETTER_U) return -1;
+  for (let digit = next + 1; digit <= next + 4; digit += 1) {
+    if (hexValue(text.charCodeAt(digit)) < 0) return -1;
   }
-  out.copy({ text }, from, text.length);
+  return next + 5;
+}
+
+/** The code unit a `\uXXXX` escape that ends at `end` writes. */
+function escapedUnit(text: string, end: number): number {
+  return parseInt(text.slice(end - 4, end), 16);
+}
+
+const NUMBERED_REFERENCE = /&#(?:[xX]([\da-fA-F]{1,8})|(\d{1,10}));/y;
+// The longest name HTML gives a character, `CounterClockwiseContourIntegral`, has 31 letters.
+const NAMED_REFERENCE = /&([A-Za-z][A-Za-z\d]{1,30});/y;
+
+/**
+ * An HTML character reference by number, or by any name HTML gives one,
+ * with the semicolon every serializer writes. Slack's `&amp;`, `&lt;` and
+ * `&gt;` are among them.
+ */
+function referenceAt(text: string, at: number): Escape | undefined {
+  NUMBERED_REFERENCE.lastIndex = at;
+  const numbered = NUMBERED_REFERENCE.exec(text);
+  if (numbered) {
+    const point = numbered[1] ? parseInt(numbered[1], 16) : Number(numbered[2]);
+    if (point < 1 || point > 0x10ffff || (point >= 0xd800 && point <= 0xdfff)) return undefined;
+    return { text: String.fromCodePoint(point), end: at + numbered[0].length };
+  }
+  NAMED_REFERENCE.lastIndex = at;
+  const named = NAMED_REFERENCE.exec(text);
+  const characters = named ? htmlNamedReference(named[1]!) : undefined;
+  return characters === undefined ? undefined : { text: characters, end: at + named![0].length };
+}
+
+/** The UTF-8 character whose percent escapes start at `at`. Escapes of no character stay as written. */
+function percentEscapeAt(text: string, at: number): Escape | undefined {
+  const lead = hexByteAt(text, at);
+  const bytes = lead < 0 ? 0 : lead < 0x80 ? 1 : lead < 0xc2 ? 0 : lead < 0xe0 ? 2 : lead < 0xf0 ? 3 : lead < 0xf5 ? 4 : 0;
+  if (!bytes) return undefined;
+  let point = bytes === 1 ? lead : lead & (0xff >> (bytes + 1));
+  for (let index = 1; index < bytes; index += 1) {
+    const next = hexByteAt(text, at + index * 3);
+    if (next < 0x80 || next > 0xbf) return undefined;
+    point = (point << 6) | (next & 0x3f);
+  }
+  // Too long a form, a surrogate, or past Unicode: not a character.
+  if ((bytes === 3 && (point < 0x800 || (point >= 0xd800 && point <= 0xdfff))) ||
+      (bytes === 4 && (point < 0x10000 || point > 0x10ffff))) return undefined;
+  return { text: String.fromCodePoint(point), end: at + bytes * 3, percent: true };
+}
+
+function hexByteAt(text: string, at: number): number {
+  if (text.charCodeAt(at) !== PERCENT) return -1;
+  const high = hexValue(text.charCodeAt(at + 1));
+  const low = hexValue(text.charCodeAt(at + 2));
+  return high < 0 || low < 0 ? -1 : high * 16 + low;
+}
+
+function hexValue(code: number): number {
+  if (code >= 0x30 && code <= 0x39) return code - 0x30;
+  if (code >= 0x41 && code <= 0x46) return code - 0x37;
+  if (code >= 0x61 && code <= 0x66) return code - 0x57;
+  return -1;
+}
+
+// ---------------------------------------------------------------------------
+// Reading a field as the link rules do
+// ---------------------------------------------------------------------------
+
+/**
+ * `written` as the link and hand-off rules read it: its escapes decoded,
+ * each character that came through percent decoding and would end a link
+ * read as a stand-in that ends none (see withStandIns), then in Unicode NFKC
+ * without the default-ignorable code points a URL drops from a host (a soft
+ * hyphen, a zero-width character, a variation selector). So a fullwidth or
+ * decomposed letter reads as a URL reads it, and a mark that no letter takes
+ * stays.
+ */
+function linkView(written: string, maps: ViewMaps, budget: ScrubBudget): Written {
+  return normalized(withStandIns(decoded(written, maps, budget), maps), maps);
+}
+
+// What ends a link (see URL_CHAR).
+const LINK_ENDS = /[\s"<>\\]/g;
+/** Where a stand-in for a character that ends a link is: that character's code point past this one, in a private-use plane. */
+const STAND_IN = 0xf0000;
+const STAND_INS = /[\u{F0000}-\u{FFFFD}]/gu;
+
+/**
+ * `view` with each character that would end a link a stand-in that ends
+ * none, where it came through percent decoding: `%20`, `%2520`, `%5C%22`
+ * (an escaped quote), or `&percnt;20` from a serializer that names `%` in
+ * HTML. Percent encoding is an address's own, so what it writes is the
+ * address's data, as a browser reads it, and decoding never ends or splits a
+ * link the written text does not. A JSON or HTML escape of a quote or a
+ * space reads as the text before it was serialized, which the rules read as
+ * they read any text: no URL serializer writes either in an address.
+ */
+function withStandIns(view: Written, maps: ViewMaps): Written {
+  const { text, percent } = view;
+  if (!percent?.includes(1)) return view;
+  let out: WrittenText | undefined;
+  let from = 0;
+  for (const end of text.matchAll(LINK_ENDS)) {
+    const at = end.index;
+    if (!percent[at]) continue;
+    out ??= new WrittenText(text.length, maps.for(view));
+    out.copy(view, from, at);
+    out.push(String.fromCodePoint(STAND_IN + text.charCodeAt(at)), view, at, at + 1);
+    from = at + 1;
+  }
+  if (!out) return view;
+  out.copy(view, from, text.length);
   return out.done();
+}
+
+/** The character a code point stands for: itself, or a stand-in's. */
+function standingFor(point: number): string {
+  return String.fromCodePoint(point >= STAND_IN && point <= 0xffffd ? point - STAND_IN : point);
+}
+
+/** A link as the rules rewrote it, with each stand-in percent-encoded again. */
+function withoutStandIns(link: string): string {
+  return link.replace(STAND_INS, (char) => encodeURIComponent(String.fromCodePoint(char.codePointAt(0)! - STAND_IN)));
 }
 
 const NOT_ASCII = /[^\0-\x7f]/;
@@ -453,10 +669,10 @@ function clusterRead(cluster: string): string {
  * it, so only runs of other characters, with the ASCII character before
  * each, are read. Each cluster keeps where it was written.
  */
-function normalized(view: Written, buffers: MapBuffers): Written {
+function normalized(view: Written, maps: ViewMaps): Written {
   const { text } = view;
   if (!NOT_ASCII.test(text) || (!IGNORABLE.test(text) && text.normalize('NFKC') === text)) return view;
-  const out = new WrittenText(text.length, buffers);
+  const out = new WrittenText(text.length, maps.for(view));
   // Each cluster read once per field, and whether each code point joins the one before it.
   const reads = new Map<string, string>();
   const joins = new Map<number, boolean>();
@@ -481,7 +697,7 @@ function normalized(view: Written, buffers: MapBuffers): Written {
       if (read === undefined) reads.set(cluster, read = clusterRead(cluster));
       if (read === cluster) continue;
       out.copy(view, from, at);
-      out.push(read, ...written(view, at, next));
+      out.push(read, view, at, next);
       from = next;
     }
   }
@@ -505,62 +721,76 @@ class WrittenText {
     if (to <= from) return;
     this.#room(to - from);
     this.#parts.push(view.text.slice(from, to));
-    const { starts, ends } = this.#buffers;
+    const { starts, ends, percent } = this.#buffers;
     for (let index = from; index < to; index += 1) {
       starts[this.#length] = view.starts ? view.starts[index]! : index;
       ends[this.#length] = view.ends ? view.ends[index]! : index + 1;
+      percent[this.#length] = view.percent ? view.percent[index]! : 0;
       this.#length += 1;
     }
   }
 
-  /** `text`, every code unit of it written at `[start, end)`. */
-  push(text: string, start: number, end: number): void {
+  /** `text` in place of `view.text[from, to)`, every code unit of it written where all of that was. */
+  push(text: string, view: Written, from: number, to: number, percentEscape = false): void {
     this.#room(text.length);
     this.#parts.push(text);
+    const [start, end] = written(view, from, to);
+    let percent = percentEscape;
+    for (let index = from; !percent && view.percent && index < to; index += 1) percent = view.percent[index] === 1;
     this.#buffers.starts.fill(start, this.#length, this.#length + text.length);
     this.#buffers.ends.fill(end, this.#length, this.#length + text.length);
+    this.#buffers.percent.fill(percent ? 1 : 0, this.#length, this.#length + text.length);
     this.#length += text.length;
   }
 
   #room(units: number): void {
-    const { starts, ends } = this.#buffers;
+    const { starts, ends, percent } = this.#buffers;
     if (this.#length + units <= starts.length) return;
     const capacity = Math.max(starts.length * 2, this.#length + units);
     this.#buffers.starts = new Int32Array(capacity);
     this.#buffers.ends = new Int32Array(capacity);
+    this.#buffers.percent = new Uint8Array(capacity);
     this.#buffers.starts.set(starts.subarray(0, this.#length));
     this.#buffers.ends.set(ends.subarray(0, this.#length));
+    this.#buffers.percent.set(percent.subarray(0, this.#length));
   }
 
   done(): Written {
-    const { starts, ends } = this.#buffers;
-    return { text: this.#parts.join(''), starts: starts.subarray(0, this.#length), ends: ends.subarray(0, this.#length) };
+    const { starts, ends, percent } = this.#buffers;
+    return {
+      text: this.#parts.join(''),
+      starts: starts.subarray(0, this.#length),
+      ends: ends.subarray(0, this.#length),
+      percent: percent.subarray(0, this.#length),
+    };
   }
 }
 
 /**
  * `source` without a hand-off message's link, and without that link's URL
- * wherever else the text holds it. A thread context row lists a message's
- * links again under its text, unescaped (slack/rich-text-links.ts). Anyone
- * can write the label, so only a whole URL counts, and only where it stands
- * alone: a replacement inside other text would break up a URL or a username
- * before its own rule saw it.
+ * wherever else the text holds it, as the view reads both. A thread context
+ * row lists a message's links again under its text, unescaped
+ * (slack/rich-text-links.ts). Anyone can write the label, so only a whole
+ * URL counts, and only where it stands alone: a replacement inside other
+ * text would break up a URL or a username before its own rule saw it. Each
+ * URL searched for counts the field's length against the budget.
  */
-function withoutHandoffs(source: string, view: Written): string {
+function withoutHandoffs(source: string, view: Written, budget: ScrubBudget): string {
   const { text } = view;
   const spans: Span[] = [];
   const handoffs = new Set<string>();
   for (const match of text.matchAll(HANDOFF_LINK)) {
     spans.push([match.index, match.index + match[0].length]);
-    for (const url of match[1] ? [match[1], unescapedSlackText(match[1])] : []) {
-      if (HANDOFF_URL.test(url)) handoffs.add(url);
-    }
+    if (match[1] && HANDOFF_URL.test(match[1])) handoffs.add(match[1]);
   }
-  if (handoffs.size) {
-    for (const run of text.matchAll(URL_RUN)) {
-      const end = run.index + run[0].length;
-      if (handoffs.has(run[0]) && (run.index === 0 || BEFORE_URL_RUN.test(text[run.index - 1]!)) &&
-          (end === text.length || AFTER_URL_RUN.test(text[end]!))) spans.push([run.index, end]);
+  // A URL that holds `%20` reads with a stand-in inside it, and one in a field percent-encoded whole with stand-ins
+  // around it, so each is searched for whole. Each search reads the field once.
+  for (const url of handoffs) {
+    budget.spend(text.length);
+    for (let at = text.indexOf(url); at >= 0; at = text.indexOf(url, at + 1)) {
+      const end = at + url.length;
+      if ((at === 0 || BEFORE_HANDOFF_URL.test(standingFor(pointBefore(text, at)))) &&
+          (end === text.length || AFTER_HANDOFF_URL.test(standingFor(text.codePointAt(end)!)))) spans.push([at, end]);
     }
   }
   return replaceSpans(source, spans.map(([start, end]) => written(view, start, end)), BROWSER_LINK_OMITTED);
@@ -571,10 +801,10 @@ function withoutHandoffs(source: string, view: Written): string {
 // ---------------------------------------------------------------------------
 
 /**
- * A field as the username search reads it: percent, form, JSON, HTML-number
- * and Slack escapes decoded once, each run of whitespace, an escaped line
- * break or a form's `+` one space, and every letter case-folded. Each code
- * unit keeps where it was written, so a hit leaves the field as written.
+ * A field as the username search reads it: its escapes decoded (see
+ * `decoded`), each run of whitespace or a form's `+` one space, and every
+ * letter case-folded. Each code unit keeps where it was written, so a hit
+ * leaves the field as written.
  */
 interface SearchView {
   text: string;
@@ -587,87 +817,25 @@ interface SearchView {
 
 const BACKSLASH = 0x5c;
 const QUOTE = 0x22;
-const SLASH_CODE = 0x2f;
 const PERCENT = 0x25;
 const AMPERSAND = 0x26;
 const PLUS = 0x2b;
 const SPACE = 0x20;
 const LETTER_U = 0x75;
-// `\n`, `\r`, `\t`, `\b` and `\f` in JSON.
-const ESCAPED_SPACES: ReadonlySet<number> = new Set([0x6e, 0x72, 0x74, 0x62, 0x66]);
 const WHITESPACE = /^\s$/u;
 const CUT_MARK = '…';
 const THREE_DOTS = '...';
 
-/** `written` as the search reads it. Without `decode`, only case and whitespace change. */
-function searchView(written: string, decode = true): SearchView {
-  const { text, starts, ends } = decode ? percentDecoded(written) : { text: written };
-  // Where the source's `[index]` starts and ends in the field as written.
-  const startOf = (index: number) => starts ? starts[index]! : index;
-  const endOf = (index: number) => ends ? ends[index]! : index + 1;
-  const length = text.length;
-  const view = new ViewWriter(length);
-  for (let index = 0; index < length;) {
-    const code = text.charCodeAt(index);
-    const escapeEnd = decode ? unicodeEscapeEnd(text, index) : -1;
-    if (decode && code === BACKSLASH && escapeEnd < 0) {
-      // A serializer that escapes a field again doubles its backslashes, so a run of them reads as one.
-      let next = index + 1;
-      while (text.charCodeAt(next) === BACKSLASH) next += 1;
-      const escaped = text.charCodeAt(next);
-      if (escaped === QUOTE || escaped === SLASH_CODE) {
-        view.point(escaped, startOf(index), endOf(next));
-        index = next + 1;
-      } else if (ESCAPED_SPACES.has(escaped)) {
-        view.space(startOf(index), endOf(next));
-        index = next + 1;
-      } else {
-        view.point(BACKSLASH, startOf(index), endOf(next - 1));
-        index = next;
-      }
-      continue;
-    }
-    if (decode && code === AMPERSAND) {
-      const entity = entityAt(text, index);
-      if (entity) {
-        view.point(entity.point, startOf(index), endOf(index + entity.width - 1));
-        index += entity.width;
-        continue;
-      }
-    }
-    // A code unit as written or JSON-escaped. JSON writes a character past U+FFFF as an escape of each half of
-    // its pair, so a high half then a low one, either written either way, read as that one character.
-    let unit = escapeEnd < 0 ? code : escapedUnit(text, escapeEnd);
-    let end = escapeEnd < 0 ? index + 1 : escapeEnd;
-    if (unit >= 0xd800 && unit <= 0xdbff) {
-      const lowEnd = decode ? unicodeEscapeEnd(text, end) : -1;
-      const low = lowEnd < 0 ? text.charCodeAt(end) : escapedUnit(text, lowEnd);
-      if (low >= 0xdc00 && low <= 0xdfff) {
-        unit = 0x10000 + ((unit - 0xd800) << 10) + (low - 0xdc00);
-        end = lowEnd < 0 ? end + 1 : lowEnd;
-      }
-    }
-    view.point(unit, startOf(index), endOf(end - 1));
-    index = end;
+/** `view` as the search reads it. JSON writes a character past U+FFFF as two escapes, which read here as one character. */
+function searchView({ text, starts, ends }: Written): SearchView {
+  const out = new ViewWriter(text.length);
+  for (let index = 0; index < text.length;) {
+    const point = text.codePointAt(index)!;
+    const next = index + (point > 0xffff ? 2 : 1);
+    out.point(point, starts ? starts[index]! : index, ends ? ends[next - 1]! : next);
+    index = next;
   }
-  return view.done();
-}
-
-/** Where a JSON `\uXXXX` escape that starts at `index`, after any run of backslashes, ends; -1 for none. */
-function unicodeEscapeEnd(text: string, index: number): number {
-  if (text.charCodeAt(index) !== BACKSLASH) return -1;
-  let next = index + 1;
-  while (text.charCodeAt(next) === BACKSLASH) next += 1;
-  if (text.charCodeAt(next) !== LETTER_U) return -1;
-  for (let digit = next + 1; digit <= next + 4; digit += 1) {
-    if (hexValue(text.charCodeAt(digit)) < 0) return -1;
-  }
-  return next + 5;
-}
-
-/** The code unit a `\uXXXX` escape that ends at `end` writes. */
-function escapedUnit(text: string, end: number): number {
-  return parseInt(text.slice(end - 4, end), 16);
+  return out.done();
 }
 
 /** Builds a SearchView one code point at a time. */
@@ -679,7 +847,7 @@ class ViewWriter {
   #spaced = false;
 
   constructor(sourceLength: number) {
-    // No decoding lengthens a character, and folding case lengthens few (`İ`, `ß`), so the view rarely outgrows its source.
+    // Folding case lengthens few characters (`İ`, `ß`), so the view rarely outgrows its source.
     const capacity = sourceLength + 16;
     this.#units = new Uint16Array(capacity);
     this.#starts = new Int32Array(capacity);
@@ -741,95 +909,6 @@ class ViewWriter {
     }
     return { text: parts.join(''), starts: this.#starts.subarray(0, this.#length), ends: this.#ends.subarray(0, this.#length) };
   }
-}
-
-/** Text, and where each of its code units was written when that is not where it is. */
-interface Written {
-  text: string;
-  starts?: Int32Array;
-  ends?: Int32Array;
-}
-
-/** `text` with each percent escape of a UTF-8 character decoded. Other escapes stay as written. */
-function percentDecoded(text: string): Written {
-  if (!text.includes('%')) return { text };
-  const starts = new Int32Array(text.length);
-  const ends = new Int32Array(text.length);
-  const parts: string[] = [];
-  let length = 0;
-  let from = 0;
-  const keep = (to: number) => {
-    parts.push(text.slice(from, to));
-    for (let index = from; index < to; index += 1) {
-      starts[length] = index;
-      ends[length] = index + 1;
-      length += 1;
-    }
-  };
-  for (let at = text.indexOf('%'); at >= 0; at = text.indexOf('%', at)) {
-    const char = percentCharAt(text, at);
-    if (!char) {
-      at += 1;
-      continue;
-    }
-    keep(at);
-    for (let unit = 0; unit < char.text.length; unit += 1) {
-      starts[length] = at;
-      ends[length] = at + char.width;
-      length += 1;
-    }
-    parts.push(char.text);
-    at += char.width;
-    from = at;
-  }
-  keep(text.length);
-  return { text: parts.join(''), starts: starts.subarray(0, length), ends: ends.subarray(0, length) };
-}
-
-/** The UTF-8 character whose percent escapes start at `at`, and how much text they take. */
-function percentCharAt(text: string, at: number): { text: string; width: number } | undefined {
-  const lead = hexByteAt(text, at);
-  const bytes = lead < 0 ? 0 : lead < 0x80 ? 1 : lead < 0xc2 ? 0 : lead < 0xe0 ? 2 : lead < 0xf0 ? 3 : lead < 0xf5 ? 4 : 0;
-  if (!bytes) return undefined;
-  let point = bytes === 1 ? lead : lead & (0xff >> (bytes + 1));
-  for (let index = 1; index < bytes; index += 1) {
-    const next = hexByteAt(text, at + index * 3);
-    if (next < 0x80 || next > 0xbf) return undefined;
-    point = (point << 6) | (next & 0x3f);
-  }
-  // Too long a form, a surrogate, or past Unicode: not a character.
-  if ((bytes === 3 && (point < 0x800 || (point >= 0xd800 && point <= 0xdfff))) ||
-      (bytes === 4 && (point < 0x10000 || point > 0x10ffff))) return undefined;
-  return { text: String.fromCodePoint(point), width: bytes * 3 };
-}
-
-function hexByteAt(text: string, at: number): number {
-  if (text.charCodeAt(at) !== PERCENT) return -1;
-  const high = hexValue(text.charCodeAt(at + 1));
-  const low = hexValue(text.charCodeAt(at + 2));
-  return high < 0 || low < 0 ? -1 : high * 16 + low;
-}
-
-function hexValue(code: number): number {
-  if (code >= 0x30 && code <= 0x39) return code - 0x30;
-  if (code >= 0x41 && code <= 0x46) return code - 0x37;
-  if (code >= 0x61 && code <= 0x66) return code - 0x57;
-  return -1;
-}
-
-const NAMED_ENTITIES: ReadonlyArray<readonly [string, number]> = [['&amp;', 0x26], ['&lt;', 0x3c], ['&gt;', 0x3e]];
-const NUMBERED_ENTITY = /^&#(?:[xX]([0-9A-Fa-f]{1,8})|(\d{1,10}));/;
-
-/** Slack's escapes of `&`, `<` and `>`, and an HTML entity by number. */
-function entityAt(text: string, at: number): { point: number; width: number } | undefined {
-  for (const [entity, point] of NAMED_ENTITIES) {
-    if (text.startsWith(entity, at)) return { point, width: entity.length };
-  }
-  const numbered = NUMBERED_ENTITY.exec(text.slice(at, at + 14));
-  if (!numbered) return undefined;
-  const point = numbered[1] ? parseInt(numbered[1], 16) : Number(numbered[2]);
-  if (point < 1 || point > 0x10ffff || (point >= 0xd800 && point <= 0xdfff)) return undefined;
-  return { point, width: numbered[0].length };
 }
 
 // Where a snapshot ends one node's text and starts the next, as the view reads it:
@@ -1093,10 +1172,6 @@ function replaceSpans(text: string, spans: Span[], replacement: string): string 
     from = end;
   }
   return result + text.slice(from);
-}
-
-function unescapedSlackText(text: string): string {
-  return text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
 }
 
 function unique(values: readonly string[]): string[] {

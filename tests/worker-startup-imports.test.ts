@@ -55,6 +55,7 @@ const LAZY_MODULES: Record<string, string> = {
   'src/routines/pause-notice.ts': "a routine's out-of-usage pause, or the good run after it (routines/execution.ts)",
   'src/review/record.ts': "a run's Help improve Chickpea copy being built, after its reply (review/capture.ts)",
   'src/review/website-logins.ts': "a run's Help improve Chickpea copy being built, after its reply (review/record.ts, from review/capture.ts)",
+  'src/review/html-references.ts': "a run's Help improve Chickpea copy being built, after its reply (review/website-logins.ts)",
   'src/connections/service-error-text.ts': "a Composio-reported failure's reason (connections/providers/composio.ts)",
   'src/admin/usage-report.ts': "a hosted Usage report or activity page (admin/usage-api.ts)",
   'src/admin/billing-api.ts': "the Plan page's API, on its first request (admin/routes.ts)",
