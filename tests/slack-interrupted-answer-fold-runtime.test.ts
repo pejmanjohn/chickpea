@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 
 import { fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai';
 import { init, instrument, useModel, type ConversationStreamChunk } from '@flue/runtime';
@@ -26,7 +26,9 @@ import { openStateDb } from '../src/state/node-state-db.ts';
  * durable partial. A message sent during the continuation must wait for its
  * own turn, as during any released answer, even when the continuation alone
  * is under the hold. Folding it would make the model write a new final step,
- * and the relay would delete the answer Slack already shows.
+ * and the relay would delete the answer Slack already shows. The same holds
+ * when the continuation is cut too: the answer is then two partials and a
+ * continuation, and only the first partial passed the hold.
  */
 
 const MODEL = 'faux/interrupted-answer';
@@ -34,9 +36,10 @@ const PERSON = 'U_PERSON';
 const GENERATION = 'gen-interrupted-answer';
 const HOLD_CHARS = 400;
 const PARTIAL = 'The launch note covers the new pricing tiers, the onboarding changes and the support hours. '.repeat(40).trim();
+// Shorter than the hold with the continuation, wherever its step is cut.
+const SECOND_PARTIAL = 'It also lists the three onboarding steps in order, with one owner each. '.repeat(4).trim();
 const CONTINUATION = ' Support hours stay the same.';
 const LATE = 'Also mention the pricing change.';
-const CUT_AFTER_CHARS = HOLD_CHARS + 50;
 
 function openScenario() {
   const conversation = { workspaceId: 'T_CUT', channelId: 'C_CUT', threadTs: '1800000003.000100' };
@@ -105,39 +108,44 @@ function dispatchState(turns: TurnJobStoreLogic, envelope: ReturnType<TurnJobSto
   return state;
 }
 
-test('a message sent while a resumed answer finishes waits, when the answer streamed past the hold before the cut', { timeout: 60_000 }, async (t) => {
+interface Cut {
+  /** The step the instance's model writes. */
+  text: string;
+  /** The instance is stopped once this much of the step has streamed. */
+  afterChars: number;
+  tokensPerSecond: number;
+}
+
+/**
+ * Runs the head turn through one instance per cut, each stopped mid-step,
+ * then through a last one, whose model writes CONTINUATION while a message
+ * arrives. Every instance resumes from the same database.
+ */
+async function resumeAfterCuts(t: TestContext, cuts: Cut[]) {
   scenario = openScenario();
   const persistence = sqlite();
   let stores: Awaited<ReturnType<typeof persistence.connect>> | undefined;
   const db = {
     migrate: () => persistence.migrate?.(),
     connect: async () => (stores = await persistence.connect()),
-    // The database outlives the cut instance, as an Agent object's storage does.
+    // The database outlives a cut instance, as an Agent object's storage does.
     close: () => {},
   };
   let streamed = 0;
+  let cutAfterChars = Number.POSITIVE_INFINITY;
   let cut: () => void = () => {};
-  const cutPoint = new Promise<void>((resolve) => { cut = resolve; });
   const stopInstrumentation = instrument({
     interceptor: slackToolBoundaryFoldInterceptor,
     observe(event) {
       observeSlackAnswerStep(event);
       if (event.type === 'text_delta') {
         streamed += event.text.length;
-        if (streamed >= CUT_AFTER_CHARS) cut();
+        if (streamed >= cutAfterChars) cut();
       }
     },
     dispose() {},
   });
-  const faux = fauxProvider({ models: [{ id: 'interrupted-answer' }], tokensPerSecond: 200 });
-  faux.setResponses([
-    fauxAssistantMessage(PARTIAL),
-    () => {
-      scenario.arrive('late', LATE);
-      return fauxAssistantMessage(CONTINUATION);
-    },
-    fauxAssistantMessage('A launch note that mentions the pricing change.'),
-  ]);
+  const model = (tokensPerSecond: number) => fauxProvider({ models: [{ id: 'interrupted-answer' }], tokensPerSecond });
   const { envelope } = scenario;
   const state = dispatchState(scenario.turns, envelope);
   const observeReply = createBoundedAgentReplyReader({
@@ -161,19 +169,38 @@ test('a message sent while a resumed answer finishes waits, when the answer stre
       observeReply,
       ...(onConversationChunk ? { onConversationChunk } : {}),
     });
+  const realNow = Date.now.bind(Date);
+  let lapsedMs = 0;
+  t.mock.method(Date, 'now', () => realNow() + lapsedMs);
   try {
-    const cutInstance = await start({ agents: [{ agent: AnswerProbe, name: CHICKPEA_SLACK_AGENT_NAME }], providers: [faux.provider], db });
-    const firstObservation = new AbortController();
-    const first = prompt(firstObservation.signal).catch(() => undefined);
-    await cutPoint;
-    firstObservation.abort();
-    await first;
-    await cutInstance.stop();
-    assert.equal(faux.state.callCount, 1, 'the run was cut during its first step');
-    // The new instance starts once the cut one's claim on the run has lapsed (Flue's 30 s lease).
-    const realNow = Date.now.bind(Date);
-    t.mock.method(Date, 'now', () => realNow() + 31_000);
+    for (const { text, afterChars, tokensPerSecond } of cuts) {
+      const faux = model(tokensPerSecond);
+      faux.setResponses([fauxAssistantMessage(text)]);
+      streamed = 0;
+      cutAfterChars = afterChars;
+      const cutPoint = new Promise<void>((resolve) => { cut = resolve; });
+      const cutInstance = await start({ agents: [{ agent: AnswerProbe, name: CHICKPEA_SLACK_AGENT_NAME }], providers: [faux.provider], db });
+      const observation = new AbortController();
+      const run = prompt(observation.signal).catch(() => undefined);
+      await cutPoint;
+      observation.abort();
+      await run;
+      await cutInstance.stop();
+      assert.equal(faux.state.callCount, 1, 'the run was cut during this step');
+      assert.ok(streamed < text.length, 'the step was cut before it ended');
+      // The next instance starts once the cut one's claim on the run has lapsed (Flue's 30 s lease).
+      lapsedMs += 31_000;
+    }
+    cutAfterChars = Number.POSITIVE_INFINITY;
 
+    const faux = model(200);
+    faux.setResponses([
+      () => {
+        scenario.arrive('late', LATE);
+        return fauxAssistantMessage(CONTINUATION);
+      },
+      fauxAssistantMessage('A launch note that mentions the pricing change.'),
+    ]);
     const effects: string[] = [];
     let relay: HostReleaseRelay | undefined;
     const resumed = await start({ agents: [{ agent: AnswerProbe, name: CHICKPEA_SLACK_AGENT_NAME }], providers: [faux.provider], db });
@@ -193,7 +220,7 @@ test('a message sent while a resumed answer finishes waits, when the answer stre
       });
       await relay?.closeAndDrain();
       assert.ok(effects.includes('intent:requested'), `the host released the answer before the cut: ${effects.join(', ')}`);
-      assert.equal(faux.state.callCount, 2, 'the cut step, then its continuation');
+      assert.equal(faux.state.callCount, 1, 'the continuation, and no step after it');
       assert.ok(result.text.endsWith(CONTINUATION.trim()), result.text);
       assert.deepEqual(scenario.calls, [], 'no would-stop call takes the message');
       assert.equal(scenario.turns.runnerView('late').job!.fold, undefined, 'it waits for its own turn');
@@ -206,4 +233,18 @@ test('a message sent while a resumed answer finishes waits, when the answer stre
     persistence.close?.();
     scenario.close();
   }
+}
+
+const FIRST_CUT: Cut = { text: PARTIAL, afterChars: HOLD_CHARS + 50, tokensPerSecond: 200 };
+
+test('a message sent while a resumed answer finishes waits, when the answer streamed past the hold before the cut', { timeout: 60_000 }, async (t) => {
+  await resumeAfterCuts(t, [FIRST_CUT]);
+});
+
+// Defect caught: the gate counting only the newest partial and its
+// continuation, which are under the hold here.
+test('it waits after a second cut too, when only the first partial passed the hold', { timeout: 60_000 }, async (t) => {
+  assert.ok(SECOND_PARTIAL.length + CONTINUATION.length < HOLD_CHARS);
+  // Slow enough that the instance stops long before the step would end.
+  await resumeAfterCuts(t, [FIRST_CUT, { text: SECOND_PARTIAL, afterChars: 20, tokensPerSecond: 10 }]);
 });
