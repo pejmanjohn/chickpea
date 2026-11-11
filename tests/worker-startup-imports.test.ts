@@ -81,7 +81,7 @@ const LAZY_MODULES: Record<string, string> = {
  * (scripts/lib/budget-growth.mjs); this ceiling backstops the total. Once per
  * merge train it may be set to the measured size plus 64 KiB, and it comes
  * down when a change moves modules behind import(). scripts/worker-closure.mjs
- * holds the built artifact to the same two rules.
+ * holds the built artifact to the growth rule alone.
  */
 const STARTUP_SOURCE_CEILING_BYTES = 9_938_645 + 64 * 1024;
 

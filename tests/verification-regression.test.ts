@@ -262,7 +262,7 @@ test('a step that ran the test runner records every file it reran alone, and a r
 test('proofs after the suite form one group behind a single Node build; the export stays last and alone', () => {
   const full = createRegressionPlan({ files: ['src/new-runtime.ts'], testFiles });
   const scripts = full.steps.map((step: { script?: string, file?: string }) => step.script ?? step.file ?? 'tests');
-  // The closure ceiling reads the build before anything rebuilds dist-cf.
+  // The closure check reads the build before anything rebuilds dist-cf.
   assert.deepEqual(scripts.slice(0, 5), ['verify:hygiene', 'build', 'verify:worker-closure', 'test', 'flue:build']);
   // The alarm-fallback smoke rebuilds dist-cf, so it runs alone after the group.
   assert.equal(full.steps.at(-1).script, 'verify:cf-smoke:alarm');

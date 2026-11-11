@@ -224,25 +224,26 @@ static closure (the chunks its entry imports without `import()`) before its
 constructor runs. Two budgets hold it: the source bytes of the repository
 modules Worker startup loads (`tests/worker-startup-imports.test.ts`, in
 `npm test` and `test:mcp`), and the built closure (`scripts/worker-closure.mjs`,
-after a build). `npm run verify:budgets` builds and runs both. Each applies two
-rules:
+after a build). `npm run verify:budgets` builds and runs both.
 
-- **Growth.** A change may add 16 KiB over its merge base. The closure check
-  builds the base in a temporary export with this checkout's dependencies, so
-  a dependency upgrade meets only the ceiling; on a train, that skips each
-  change before the upgrade. A base that does not build fails
-  the check with the build's output; when it cannot build with the checkout's
-  dependencies, `CHICKPEA_BUDGET_UNBUILDABLE_BASE=1` checks the ceiling alone.
+- **Growth.** Both checks apply it: a change may add 16 KiB over its merge
+  base. The closure check builds the base in a temporary export with this
+  checkout's dependencies, so a dependency upgrade's own growth is not
+  counted. A base that does not build fails the check with the build's
+  output; when it cannot build with the checkout's dependencies, as on a
+  train before an upgrade, `CHICKPEA_BUDGET_UNBUILDABLE_BASE=1` skips the
+  changes that cannot be measured and checks the rest.
   A failure lists the modules that grew. When the growth is deliberate, add a
   commit trailer such as
   `Worker-Startup-Growth: 40 KiB, the connect route loads with every Agent` to
   the change; it raises that change's allowance to the size it names, at most
   128 KiB. Both checks print each change's growth and notes, and a PR that
   carries a note lists it in its description.
-- **Ceiling.** A fixed total backstops the growth rule. It carries about
-  64 KiB of headroom, so parallel PRs do not collide on it. When a merge train
-  fills it, set it once to the measured size plus 64 KiB. Lower it when a
-  change shrinks startup.
+- **Startup-source ceiling.** A fixed total backstops the startup-source
+  check; the built closure has no ceiling. It carries about 64 KiB of
+  headroom, so parallel PRs do not collide on it. When a merge train fills
+  it, set it once to the measured size plus 64 KiB. Lower it when a change
+  shrinks startup.
 
 With no CI to name a PR's base, both checks ask Git:
 `git merge-base HEAD origin/main`, using `origin/main` as of the last
@@ -252,7 +253,7 @@ is its own change, measured from its first parent, and so is each run of plain
 commits between merges, such as the ceiling re-set. So a train of PRs that each
 fit still passes. For a PR stacked on another branch, set
 `CHICKPEA_BUDGET_BASE` to that branch; a ref with no merge base fails. A
-checkout with no Git history or no `origin/main` checks the ceilings alone and
+checkout with no Git history or no `origin/main` skips the growth rule and
 says so. `tests/worker-startup-imports.test.ts` also keeps the modules it lists
 off Worker startup. Load code the reply path does not need with `import()`
 where it is used.
