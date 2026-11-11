@@ -15,7 +15,7 @@ import {
   versionToken,
 } from '../src/management/mcp-v5/conventions.ts';
 import { agentConnectionsOf } from '../src/management/mcp-v5/reads.ts';
-import { changeResultOutput, createAgentInputSchema, updateAgentInputSchema } from '../src/management/mcp-v5/schemas.ts';
+import { changeResultOutput, createAgentInputSchema, getServiceOutput, updateAgentInputSchema } from '../src/management/mcp-v5/schemas.ts';
 import { CARD_URIS } from '../src/management/mcp-v5/cards.ts';
 import { FIVE_ZERO_TOOL_NAMES, FIVE_ZERO_TOOLS } from '../src/management/mcp-v5/tools.ts';
 import { emitManagementMetric } from '../src/management/telemetry.ts';
@@ -198,6 +198,75 @@ test('a 5.0 description names only tools this server has, and statuses and codes
     const unknown = [...tool.description.matchAll(/\b[a-z]+(?:_[a-z]+)+\b/g)].map(([word]) => word).filter((word) => !known.has(word));
     assert.deepEqual(unknown, [], `${name} names something no tool, status or code is`);
   }
+});
+
+test('get_service shows managed reads and writes before connection to any signed-in member', async (t) => {
+  const { f, call } = await harness(t, 'service-managed', 'member');
+  const before = await f.config.listConnectionAccounts(f.admin.binding.slackTeamId);
+  const result = await call('get_service', { service: 'hubspot-managed' });
+  assert.notEqual(result.isError, true, JSON.stringify(result));
+  const service = getServiceOutput.parse(result.structuredContent);
+  assert.equal(service.service, 'hubspot-managed');
+  assert.equal(service.name, 'HubSpot');
+  assert.equal(service.description, 'Research CRM records and make requested updates in one portal.');
+  assert.equal(service.signIn, 'oauth');
+  assert.deepEqual(service.account, { team: true, own: true });
+  assert.equal(service.capabilitiesKnown, 'now');
+  assert.equal(service.practice, 'reads_ready');
+  assert.ok(service.capabilities!.some(({ name, does }) => name === 'hubspot_search_objects' && does === 'read'));
+  assert.ok(service.capabilities!.some(({ name, does, changes }) =>
+    name === 'hubspot_create_contact' && does === 'write' && changes === 'create HubSpot contact'));
+  assert.match(service.nextStep, /connect_service/);
+  assert.match(service.nextStep, /Team accounts need an Owner or Admin/);
+  assert.deepEqual(result.content, [{ type: 'text', text: 'Service capabilities and setup options are in structuredContent.' }]);
+  assertNoInternalIds(JSON.stringify(result), f);
+  assert.deepEqual(await f.config.listConnectionAccounts(f.admin.binding.slackTeamId), before);
+});
+
+test('get_service defers MCP discovery and describes API methods and hosts without credentials', async (t) => {
+  const { f, call } = await harness(t, 'service-presets');
+  const mcp = getServiceOutput.parse((await call('get_service', { service: 'linear' })).structuredContent);
+  assert.equal(mcp.signIn, 'oauth');
+  assert.equal(mcp.capabilitiesKnown, 'after_connecting');
+  assert.equal(mcp.practice, 'needs_read_marks');
+  assert.equal(mcp.capabilities, undefined, 'no tools are invented before discovery');
+  assert.match(mcp.nextStep, /mark reads before practice/);
+
+  const api = getServiceOutput.parse((await call('get_service', { service: 'asana' })).structuredContent);
+  assert.equal(api.signIn, 'key');
+  assert.equal(api.capabilitiesKnown, 'now');
+  assert.equal(api.practice, 'get_only');
+  assert.deepEqual(api.capabilities, [
+    { name: 'GET app.asana.com', does: 'read' },
+    { name: 'POST app.asana.com', does: 'write', changes: 'Can change data on app.asana.com.' },
+    { name: 'PUT app.asana.com', does: 'write', changes: 'Can change data on app.asana.com.' },
+  ]);
+  assert.match(api.nextStep, /Practice uses only GET requests/);
+  assertNoInternalIds(JSON.stringify({ mcp, api }), f);
+  assert.doesNotMatch(JSON.stringify({ mcp, api }), /headerName|valuePrefix|placeholder|Authorization|Bearer/);
+});
+
+test('get_service covers every listed service within the model result budget and refuses unknown services', async (t) => {
+  const { f, call } = await harness(t, 'service-catalog', 'member');
+  const catalog = structured(await call('list_services')).services as Array<{ service: string }>;
+  for (const { service } of catalog) {
+    const result = await call('get_service', { service });
+    assert.notEqual(result.isError, true, JSON.stringify(result));
+    assert.equal(getServiceOutput.parse(result.structuredContent).service, service);
+    assert.ok(JSON.stringify(result).length < 14_000, `${service} must stay well below 28,000 characters`);
+    assertNoInternalIds(JSON.stringify(result), f);
+  }
+  const google = getServiceOutput.parse((await call('get_service', { service: 'gmail' })).structuredContent);
+  assert.equal(google.signIn, 'google');
+  const keyed = getServiceOutput.parse((await call('get_service', { service: 'freshdesk-managed' })).structuredContent);
+  assert.equal(keyed.signIn, 'key');
+  assert.equal(keyed.capabilitiesKnown, 'now');
+  const unknown = await call('get_service', { service: 'not-a-service' });
+  assert.deepEqual(errorOf(unknown), {
+    code: 'not_found',
+    message: 'Call list_services for the services Chickpea knows.',
+    retryable: false,
+  });
 });
 
 test('the profile id is frozen: one derivation, pinned, never reused across memberships', () => {

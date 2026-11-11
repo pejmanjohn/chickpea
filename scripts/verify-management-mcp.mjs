@@ -32,6 +32,7 @@ const MANAGEMENT_MCP_TOOL_NAMES = [
   'list_agents',
   'get_agent',
   'list_services',
+  'get_service',
   'list_models',
   'list_members',
   'list_slack_channels',

@@ -40,6 +40,9 @@ export const getAgentInput = z.strictObject({ agentId: zAgentId });
 export const listServicesInput = z.strictObject({
   search: z.string().max(120).optional().describe('Words to match in a service\'s name or description.'),
 });
+export const getServiceInput = z.strictObject({
+  service: zText(128).describe('A service from list_services.'),
+});
 export const listModelsInput = z.strictObject({});
 export const listMembersInput = z.strictObject({});
 export const listSlackChannelsInput = z.strictObject({
@@ -426,6 +429,26 @@ export const getAgentOutput = z.strictObject({
 export const listServicesOutput = z.strictObject({
   services: z.array(z.strictObject({ service: z.string(), name: z.string(), description: z.string() })),
   count: z.number().int().nonnegative(),
+});
+
+export const getServiceOutput = z.strictObject({
+  service: z.string(),
+  name: z.string(),
+  description: z.string(),
+  signIn: z.enum(['oauth', 'key', 'none', 'google']).describe('How the person connects their account on Chickpea\'s setup page.'),
+  account: z.strictObject({
+    team: z.boolean().describe('Supports a shared team account. Connecting it needs an Owner or Admin.'),
+    own: z.boolean().describe('Supports the signed-in person\'s own account.'),
+  }),
+  capabilities: z.array(z.strictObject({
+    name: z.string().describe('A tool name, or an API method and host.'),
+    does: z.enum(['read', 'write']),
+    changes: z.string().optional().describe('What this write can change.'),
+  })).optional(),
+  capabilitiesKnown: z.enum(['now', 'after_connecting']).describe('Whether capabilities are known before connection or discovered after connecting.'),
+  practice: z.enum(['reads_ready', 'needs_read_marks', 'get_only'])
+    .describe('reads_ready: known reads can run in practice. needs_read_marks: mark discovered tools as reads first. get_only: practice uses only API GET requests.'),
+  nextStep: z.string().describe('For you: what to do next.'),
 });
 
 const zRoleDefault = (withEffort: boolean) => z.strictObject({

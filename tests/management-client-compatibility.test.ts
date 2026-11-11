@@ -104,6 +104,7 @@ const MCP_TOOL_ANNOTATIONS = {
   list_agents: READ_5,
   get_agent: READ_5,
   list_services: READ_5,
+  get_service: READ_5,
   list_models: READ_5,
   list_members: READ_5,
   list_slack_channels: READ_5,

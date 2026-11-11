@@ -34,6 +34,7 @@ export interface FiveZeroTool {
   description: string;
   input: z.ZodType<Structured>;
   output: z.ZodType<Structured>;
+  summary?: string;
   visibility?: readonly McpToolVisibility[];
   profile?: true;
   /** The card that draws its result. */
@@ -53,6 +54,7 @@ function tool<I extends z.ZodType<Structured>, O extends z.ZodType<Structured>>(
   description: string;
   input: I;
   output: O;
+  summary?: string;
   visibility?: readonly McpToolVisibility[];
   profile?: true;
   card?: CardName;
@@ -100,10 +102,18 @@ export const FIVE_ZERO_TOOLS = {
   }),
   list_services: tool({
     title: 'List services',
-    description: 'The services Chickpea can connect an Agent to, such as Gmail, Notion or HubSpot. This is a catalog, not what any Agent reaches now: get_agent lists an Agent\'s connections. search keeps the services whose name or description has every word. Reads only; changes nothing.',
+    description: 'The services Chickpea can connect an Agent to, such as Gmail, Notion or HubSpot. get_service explains capabilities and setup before connecting; get_agent lists an Agent\'s current connections. search keeps the services whose name or description has every word. Reads only; changes nothing.',
     input: schemas.listServicesInput,
     output: schemas.listServicesOutput,
     run: (deps, args) => reads.listServices(deps, args),
+  }),
+  get_service: tool({
+    title: 'Get service',
+    description: 'What one catalog service can do before it is connected: known reads and writes, how to sign in, whose account it supports, and what practice needs. MCP tools are discovered after connecting. Use a service from list_services to choose what to connect. Anyone signed in can read it. Reads only; changes nothing.',
+    input: schemas.getServiceInput,
+    output: schemas.getServiceOutput,
+    summary: 'Service capabilities and setup options are in structuredContent.',
+    run: (deps, args) => reads.getService(deps, args),
   }),
   list_models: tool({
     title: 'List models',
@@ -560,7 +570,13 @@ export function registerFiveZeroTool(
       emitManagementMetric('tool.call', { surface: 'mcp', tool: name, outcome: 'success', durationMs: Date.now() - startedAt });
       // Whatever the tool, a card host's model never gets a confirm token.
       const confirms = (parsed.data as { status?: unknown }).status === 'needs_confirmation';
-      if (!drawn && !(confirms && cardHost())) return mcpSuccessResult(parsed.data);
+      if (!drawn && !(confirms && cardHost())) {
+        if (definition.summary) return {
+          content: [{ type: 'text' as const, text: definition.summary }],
+          structuredContent: parsed.data,
+        };
+        return mcpSuccessResult(parsed.data);
+      }
       if (!cardHost()) return mcpSuccessResult(parsed.data, { tool: name });
       const { structured, held, lead } = forCardHost(parsed.data, deps.baseUrl, definition.card !== undefined);
       return mcpSuccessResult(structured, { tool: name, held, lead });

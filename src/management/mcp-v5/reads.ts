@@ -4,6 +4,7 @@ import { CHICKPEA_AGENT_ID } from '../../config/agent-id.ts';
 import { resolveConnectorCatalogPreset } from '../../config/presets.ts';
 import type { PlatformEnv } from '../../config/state-backend.ts';
 import type { CustomAgentConfig } from '../../config/types.ts';
+import { MANAGED_CONNECTOR_CATALOG, composioHeader } from '../../connections/catalog/index.ts';
 import { agentAvatarInstallation, sameOriginAgentAvatarUrl } from '../../slack/agent-presence/avatar-assets.ts';
 import {
   ADMIN_PATH,
@@ -367,6 +368,57 @@ export async function listServices(
     })
     .map(({ id, name, description }) => ({ service: id, name, description }));
   return { services, count: services.length };
+}
+
+export async function getService(
+  deps: FiveZeroDeps,
+  input: Out<typeof schemas.getServiceInput>,
+): Promise<Out<typeof schemas.getServiceOutput>> {
+  await readWorkspace(deps);
+  const preset = resolveConnectorCatalogPreset(input.service);
+  if (!preset) fail('not_found', 'Call list_services for the services Chickpea knows.');
+  const common = {
+    service: preset.id,
+    name: preset.name,
+    description: preset.description,
+    account: { team: true, own: true },
+    nextStep: 'Choose an Agent, then call connect_service with this service. Team accounts need an Owner or Admin; anyone can connect their own account.',
+  };
+  if ('managedToolkit' in preset) {
+    const capabilities = MANAGED_CONNECTOR_CATALOG.connector(preset.managedToolkit)!.capabilities.map((capability) => ({
+      name: capability.toolName,
+      does: capability.effect === 'read' ? 'read' as const : 'write' as const,
+      ...(capability.sideEffectLabel ? { changes: capability.sideEffectLabel } : {}),
+    }));
+    return {
+      ...common,
+      signIn: 'service' in preset ? 'google' : composioHeader(preset.managedToolkit)?.auth.mode === 'api_key' ? 'key' : 'oauth',
+      capabilities,
+      capabilitiesKnown: 'now',
+      practice: capabilities.some(({ does }) => does === 'read') ? 'reads_ready' : 'needs_read_marks',
+    };
+  }
+  if (preset.auth) {
+    return {
+      ...common,
+      signIn: preset.auth.kind === 'oauth' ? 'oauth' : preset.auth.kind === 'none' ? 'none' : 'key',
+      capabilitiesKnown: 'after_connecting',
+      practice: 'needs_read_marks',
+      nextStep: `${common.nextStep} After connecting, choose the tools it may use and mark reads before practice.`,
+    };
+  }
+  return {
+    ...common,
+    signIn: preset.api.oauth ? 'google' : 'key',
+    capabilities: preset.api.hosts.flatMap((host) => preset.api.methods.map((method) => ({
+      name: `${method} ${host}`,
+      does: method === 'GET' || method === 'HEAD' ? 'read' as const : 'write' as const,
+      ...(method === 'GET' || method === 'HEAD' ? {} : { changes: `Can change data on ${host}.` }),
+    }))),
+    capabilitiesKnown: 'now',
+    practice: 'get_only',
+    nextStep: `${common.nextStep} Practice uses only GET requests.`,
+  };
 }
 
 export async function listModels(deps: FiveZeroDeps): Promise<Out<typeof schemas.listModelsOutput>> {
