@@ -310,6 +310,15 @@ test('a labelled value is hidden before the shared redaction can remove its labe
   assert.equal(filter('SLACK_BOT_TOKEN: abcdefgh winter meadow'), 'SLACK_BOT_TOKEN: […]');
 });
 
+test('a known secret goes whole even when it holds a character that ends a labelled value', () => {
+  for (const secret of ['Abcdefgh, winter meadow', 'Abcdefgh; winter meadow', 'Abcdefgh& winter meadow']) {
+    for (const text of [`password: ${secret}`, `api_key=${secret} rejected`, `rejected ${secret} for this account`]) {
+      const shown = serviceErrorText(text, [secret]);
+      for (const part of ['Abcdefgh', 'winter', 'meadow']) assert.ok(!shown.includes(part), `${part} in ${shown}`);
+    }
+  }
+});
+
 test('a secret word that is not a label keeps what follows', () => {
   keeps('"keyword": "contacts", "error_code": "INVALID_ARGUMENT"');
   keeps('token expired, sign in again');
