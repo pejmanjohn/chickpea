@@ -684,7 +684,10 @@ function resume(view: View, kept: unknown): View | undefined {
   const outcome = outcomeOf(kept);
   switch (outcome?.kind) {
     case 'checking':
-      return checkingView(outcome, view.kind === 'proposal' || view.kind === 'similar' ? offerAvatar(view) : 'avatarUrl' in view ? view.avatarUrl : undefined);
+      // The proposal it mounts with is the one the Agent was created from: its promise goes beside the answer again.
+      return view.kind === 'proposal' || view.kind === 'similar'
+        ? checkingView(outcome, { avatarUrl: offerAvatar(view), promised: promiseOf(view) })
+        : checkingView(outcome, { avatarUrl: 'avatarUrl' in view ? view.avatarUrl : undefined });
     case 'created':
       if (view.kind !== 'proposal') return undefined;
       return outcome.agentId ? createdFrom(view, { name: outcome.name, agentId: outcome.agentId })

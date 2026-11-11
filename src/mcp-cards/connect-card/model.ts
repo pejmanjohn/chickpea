@@ -123,7 +123,7 @@ export const step = sequenced(transition, {
   remember: (view) => view.kind === 'first_answer' ? stillAnswering(view) ?? { kind: 'settled' } : undefined,
   resume: (view, kept) => {
     const still = stillAnsweringOf(kept);
-    return still ? checkingView(still, 'agent' in view ? view.agent?.avatarUrl : undefined) : undefined;
+    return still ? checkingView(still, { avatarUrl: 'agent' in view ? view.agent?.avatarUrl : undefined }) : undefined;
   },
 });
 

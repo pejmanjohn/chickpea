@@ -413,10 +413,13 @@ export function stillAnsweringOf(kept: unknown): StillAnswering | undefined {
  * one read of the run. Its key is never sent: past KEY_FOR_MS, a press that
  * asks again makes a new one.
  */
-export function checkingView(kept: StillAnswering, avatarUrl?: string): FirstAnswer {
+export function checkingView(kept: StillAnswering, from: { avatarUrl?: string | undefined; promised?: Tested['promised'] } = {}): FirstAnswer {
   return {
     kind: 'first_answer',
-    tested: { agentId: kept.agentId, name: kept.name, ...kept.handle ? { handle: kept.handle } : {}, avatarUrl },
+    tested: {
+      agentId: kept.agentId, name: kept.name, ...kept.handle ? { handle: kept.handle } : {}, avatarUrl: from.avatarUrl,
+      ...from.promised ? { promised: from.promised } : {},
+    },
     ...kept.summary === undefined ? {} : { again: { summary: kept.summary } },
     key: `try:${kept.agentId}:0`,
     keyedAt: 0,

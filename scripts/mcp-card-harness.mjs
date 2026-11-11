@@ -1226,7 +1226,8 @@ try {
       const before = (await calls()).length;
       await browser.host('window.harness.reload()');
       await shows('/Still working on it\./', 'a reopened card, still working on it', 30_000);
-      await browser.waitFor('document.querySelectorAll(".cp-acts button:enabled").length >= 1', 'Check again, once the read answers');
+      // A run still going makes get_practice_run wait its 20 seconds.
+      await browser.waitFor('document.querySelectorAll(".cp-acts button:enabled").length >= 1', 'Check again, once the read answers', 30_000);
       assert.deepEqual((await calls()).slice(before), ['get_practice_run'], 'one read of the kept run on mount');
       await shot('4-still-answering-reopened');
     }
@@ -1235,7 +1236,8 @@ try {
     await browser.click('check_again');
     await browser.waitFor('document.querySelectorAll(".cp-pane").length === 2', 'what was promised beside what it answered');
     await told(/^The person ran the Agent "Renewals Desk" \(@renewals\) once from the card, and it answered its first question there\.$/, 'Answered');
-    assert.deepEqual(await buttons(), ['Open in Slack', 'Change something']);
+    // A reopened card keeps no link, so it has no Open in Slack.
+    assert.deepEqual(await buttons(), host === 'chatgpt' ? ['Change something'] : ['Open in Slack', 'Change something']);
     assert.equal(new Set(await tried()).size, 1, 'one key for the press');
     assert.equal(runs.starts.length, 1, 'one run for the press');
     assert.equal(await browser.inCard('document.querySelectorAll(".cp-pane-text")[1].innerText.split("\\n").length'), 5,

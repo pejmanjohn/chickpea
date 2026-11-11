@@ -319,8 +319,9 @@ test('a run still going when the card stops waiting keeps its token where the mo
   assert.equal(runs.starts.length, 1, 'the answer of the run that was charged, and no other');
   assert.equal(JSON.stringify(keptState(card.state, 1)).includes(runToken), false, 'once it answers, no token is kept');
 
-  // A chat reopened after it answered shows that answer.
-  assert.equal((await reopen()).shown.blocks.some((block) => block.kind === 'panes'), true);
+  // A chat reopened after it answered shows that answer, beside the promise of the proposal it mounts with.
+  assert.deepEqual((await reopen()).shown.blocks.find((block) => block.kind === 'panes'),
+    { kind: 'panes', panes: [{ label: 'What we promised', text: PROMISED }, { label: 'What it answered', text: 'Two invoices.' }] });
   assert.equal(runs.starts.length, 1);
 
   // A kept token that is not one is ignored: the card shows its own result.
