@@ -370,6 +370,7 @@ test('MCP consent and its return page name ChatGPT only for ChatGPT\'s own clien
     ['https://apps.example.org/oauth/client.json', 'ChatGPT', 'apps.example.org'],
     ['https://chatgpt.com/oauth/0123456789abcdef/client.json', 'ChatGPT', 'chatgpt.com'],
     ['https://chatgpt.com/oauth/codex/client.json', 'Codex', 'chatgpt.com'],
+    ['https://claude.ai/oauth/mcp-oauth-client-metadata', 'Claude', 'claude.ai'],
     ['dynamically-registered', 'ChatGPT', undefined],
   ] as const) {
     const html = renderMcpConsentPage({ clientId, clientName, clientHost, scope: MCP_WORKSPACE_SCOPE, oauthQuery: 'sig=test' });

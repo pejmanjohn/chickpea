@@ -671,6 +671,34 @@ test('ChatGPT signs in by its published document with private_key_jwt: one owner
   assert.deepEqual(host.requests, [CHATGPT, CHATGPT_KEYS], 'the document and the key set are each fetched once');
 });
 
+// Probe 4: against a server without RFC 9207 `iss`, ChatGPT signs in as a per-callback client ID instead,
+// and only its fixed ID is a card host (knownMcpCardClient).
+test('ChatGPT keeps its fixed client ID: the metadata advertises RFC 9207 iss, and every authorization response carries it', async (t) => {
+  const host = metadataDocumentServer({ [CHATGPT]: CHATGPT_DOCUMENT.body, [CHATGPT_KEYS]: JSON.stringify(assertionSigner().keySet) });
+  const f = await fixture(t, { fetchClientMetadataResource: host.fetch });
+  for (const path of ['/.well-known/oauth-authorization-server/api/auth', '/api/auth/.well-known/oauth-authorization-server']) {
+    const metadata = await (await f.handler(new Request(`${ORIGIN}${path}`))).json() as Record<string, unknown>;
+    assert.equal(metadata.authorization_response_iss_parameter_supported, true, path);
+    assert.equal(metadata.issuer, ISSUER, path);
+  }
+
+  const consentOf = async () => (await f.authorize(CHATGPT, CHATGPT_CALLBACK)).headers.get('location')!;
+  const allowed = await f.approve(await consentOf());
+  assert.equal(`${allowed.origin}${allowed.pathname}`, CHATGPT_CALLBACK);
+  assert.ok(allowed.searchParams.get('code'));
+  assert.equal(allowed.searchParams.get('iss'), ISSUER, 'the issuer the metadata names');
+
+  const denied = await f.handler(new Request(`${ORIGIN}/api/auth/oauth2/consent`, {
+    method: 'POST', headers: { 'content-type': 'application/json', cookie: f.cookie, origin: ORIGIN },
+    body: JSON.stringify({ accept: false, oauth_query: new URL(await consentOf(), ORIGIN).search.slice(1) }),
+  }));
+  assert.equal(denied.status, 200, await denied.clone().text());
+  const refused = new URL((await denied.json() as { url: string }).url);
+  assert.equal(`${refused.origin}${refused.pathname}`, CHATGPT_CALLBACK);
+  assert.equal(refused.searchParams.get('error'), 'access_denied');
+  assert.equal(refused.searchParams.get('iss'), ISSUER, 'an error response names the issuer too');
+});
+
 test('a metadata document may list only the redirects dynamic registration accepts', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-30T00:00:00.000Z') });
   const served: Record<string, ServedDocument> = {};
