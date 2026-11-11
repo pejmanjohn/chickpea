@@ -32,18 +32,20 @@ function escapeRegExp(text: string): string {
 }
 
 /**
- * A whitespace run of a secret as a URL may carry it: whitespace, `+`, or an
- * encoded space, tab, line break or no-break space.
+ * A whitespace run of a secret as text or a URL may carry it: any whitespace,
+ * so a collapsed or rewrapped form matches, `+`, or an encoded space, tab,
+ * line break or no-break space.
  */
-const URL_SPACE = '(?:\\s|\\+|%20|%0[9a-dA-D]|%[cC]2%[aA]0)+';
+const SPACE_FORMS = '(?:\\s|\\+|%20|%0[9a-dA-D]|%[cC]2%[aA]0)+';
 
 /**
- * One character of a secret as a URL may carry it: as it is, or percent-encoded
- * in either hex case. A script that joins a typed value into an address leaves
- * some characters as they are and encodes others, so each one matches both ways.
+ * One character of a secret as text or a URL may carry it: as it is, or
+ * percent-encoded in either hex case. A script that joins a typed value into
+ * an address leaves some characters as they are and encodes others, so each
+ * one matches both ways.
  */
-function urlChar(char: string): string {
-  if (char === ' ') return URL_SPACE;
+function charForms(char: string): string {
+  if (char === ' ') return SPACE_FORMS;
   const encoded = [...new TextEncoder().encode(char)]
     .map((byte) => `%${byte.toString(16).padStart(2, '0').replace(/[a-f]/g, (digit) => `[${digit}${digit.toUpperCase()}]`)}`)
     .join('');
@@ -103,7 +105,8 @@ export class TypedSecrets {
   private readonly short = new Set<string>();
   private readonly inline = new Set<string>();
   private pattern: RegExp | undefined;
-  private urlPattern: RegExp | undefined;
+  /** Matches all that `pattern` does, and each form with any character percent-encoded or a space as `+`. */
+  private encodedPattern: RegExp | undefined;
   private cutForms: CutForm[] = [];
 
   add(value: string): void {
@@ -120,29 +123,26 @@ export class TypedSecrets {
       .sort((a, b) => b.length - a.length);
     // Each whitespace run matches any whitespace, so a collapsed or rewrapped form matches too.
     this.pattern = new RegExp(forms.map((form) => form.split(' ').map(escapeRegExp).join('\\s+')).join('|'), 'g');
+    this.encodedPattern = new RegExp(forms.map((form) => [...form].map(charForms).join('')).join('|'), 'g');
     this.cutForms = forms.map(cutForm);
-    this.urlPattern = new RegExp(forms.map((form) => [...form].map(urlChar).join('')).join('|'), 'g');
   }
 
   redact(text: string): string {
     if (this.short.size > 0 && this.short.has(collapse(text))) return REDACTED;
-    if (!this.pattern) return text;
-    let result = text.replace(this.pattern, REDACTED);
+    if (!this.pattern || !this.encodedPattern) return text;
+    // Only text with a `%` or a `+` can hold an encoded form, and the plain pattern is much the faster on the rest.
+    let result = text.replace(/[%+]/.test(text) ? this.encodedPattern : this.pattern, REDACTED);
     for (const form of this.cutForms) result = redactCutPrefix(result, form);
     return result;
   }
 
   /**
-   * Also redacts a secret the URL carries percent- or form-encoded, as a sign-in
-   * form that submits by GET writes it, or with only some characters encoded,
-   * as a script that joins a typed value into an address leaves it. Each path
-   * segment, query key or value and fragment part is then one field, so a
-   * short secret is found there too.
+   * Also takes each path segment, query key or value and fragment part as one
+   * field, decoded with and without `+` as a space. A short secret that is a
+   * whole part is found there, and so is a form that shows only once decoded.
    */
   redactUrl(url: string): string {
-    // The URL forms first: as plain text, a secret that ends in `%` would match the start of its own `%25`.
-    const text = this.redact(this.urlPattern ? url.replace(this.urlPattern, REDACTED) : url);
-    return text.replace(/[^/?#&=;:@]+/g, (part) => {
+    return this.redact(url).replace(/[^/?#&=;:@]+/g, (part) => {
       const decoded = [percentDecode(part.replace(/\+/g, ' ')), percentDecode(part)];
       return decoded.some((each) => this.redact(each) !== each) ? REDACTED : part;
     });

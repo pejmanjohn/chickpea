@@ -17,6 +17,15 @@ test('a secret is replaced as typed, collapsed, rewrapped and escaped, and nothi
   assert.equal(typed.redact('Synthetic Pass 0042'), 'Synthetic Pass 0042');
 });
 
+test('a secret is replaced where text shows it URL-encoded, as a link, a title or an error that names an address does', () => {
+  const typed = secrets('Synth"etic\\Pass  0042');
+  assert.equal(typed.redact('link "/next?p=Synth%22etic%5CPass%20%200042"'), 'link "/next?p=[redacted]"');
+  assert.equal(typed.redact('Cannot open /reset/Synth%22etic%5cPass++0042/confirm now'), 'Cannot open /reset/[redacted]/confirm now');
+  assert.equal(typed.redact('Synth%22etic%5CPass%20%20042'), 'Synth%22etic%5CPass%20%20042');
+  // Form-encoded with nothing but `+` for its spaces.
+  assert.equal(secrets('Synthetic Pass 0042').redact('No results for q=Synthetic+Pass+0042'), 'No results for q=[redacted]');
+});
+
 test('a secret under 4 characters is replaced only where it is a whole field', () => {
   const typed = secrets('Q7!');
   assert.equal(typed.redact('Q7!'), '[redacted]');

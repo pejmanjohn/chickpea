@@ -806,6 +806,19 @@ test('an error that echoes a typed password in escaped form stays redacted', asy
   await session.close();
 });
 
+test('an error that names an address with a typed password encoded in its path or fragment stays redacted', async () => {
+  const password = 'Synth@tic Pass-0042';
+  const { run, browsers, github, session } = await loginSetup({ password });
+  await run('browser_open', { url: 'https://github.com/login' });
+  await run('browser_sign_in', { loginId: github.id, passwordRef: 'e2' });
+  browsers[0]!.responders.set('Input.insertText', () => ({
+    error: { code: -1, message: `Cannot reach https://github.com/reset/${encodeURIComponent(password)}/confirm#next=Synth@tic%20Pass-0042` },
+  }));
+  const failed = await run('browser_sign_in', { loginId: github.id, passwordRef: 'e2' });
+  assert.equal(failed.error, 'CDP Input.insertText failed: Cannot reach https://github.com/reset/[redacted]/confirm#next=[redacted]');
+  await session.close();
+});
+
 test('browser_sign_in refuses without a bound session, without fields, and for hand-off logins', async () => {
   const { run, github, portal, session } = await loginSetup();
   assert.match((await run('browser_sign_in', { loginId: github.id, passwordRef: 'e2' })).error, /Open github\.com with browser_open first/);
