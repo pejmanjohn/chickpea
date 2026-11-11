@@ -23,6 +23,7 @@ import * as connections from './connections.ts';
 import * as reads from './reads.ts';
 import type { FiveZeroDeps } from './reads.ts';
 import * as schemas from './schemas.ts';
+import * as services from './services.ts';
 import * as writes from './writes.ts';
 
 type Structured = Record<string, unknown>;
@@ -46,6 +47,8 @@ export interface FiveZeroTool {
   openWorld?: true;
   /** A write's hints; a tool without them reads only. */
   write?: ReturnType<typeof writeHints>;
+  /** Its text block, in place of the JSON, when its result's text says more in fewer characters. */
+  text?(output: Structured): Promise<string>;
   run(deps: FiveZeroDeps, args: Structured): Promise<Structured>;
 }
 
@@ -62,6 +65,7 @@ function tool<I extends z.ZodType<Structured>, O extends z.ZodType<Structured>>(
   cardCalls?: true;
   openWorld?: true;
   write?: ReturnType<typeof writeHints>;
+  text?: (output: z.output<O>) => Promise<string>;
   run: (deps: FiveZeroDeps, args: z.output<I>) => Promise<z.output<O>>;
 }): FiveZeroTool {
   return definition;
@@ -108,6 +112,14 @@ export const FIVE_ZERO_TOOLS = {
     input: schemas.listServicesInput,
     output: schemas.listServicesOutput,
     run: (deps, args) => reads.listServices(deps, args),
+  }),
+  get_service: tool({
+    title: 'Get a service',
+    description: 'What one service from list_services can do before it is connected: how it signs in, whose account it can be, its actions marked read or write, and whether a practice run can use it. Reads only; changes nothing.',
+    input: schemas.getServiceInput,
+    output: schemas.getServiceOutput,
+    text: async (output) => services.serviceText(output),
+    run: (deps, args) => services.getService(deps, args),
   }),
   list_models: tool({
     title: 'List models',
@@ -591,6 +603,7 @@ export function registerFiveZeroTool(
       emitManagementMetric('tool.call', { surface: 'mcp', tool: name, outcome: 'success', durationMs: Date.now() - startedAt });
       // Whatever the tool, a card host's model never gets a confirm token.
       const confirms = (parsed.data as { status?: unknown }).status === 'needs_confirmation';
+      if (definition.text) return mcpSuccessResult(parsed.data, undefined, await definition.text(parsed.data));
       if (!drawn && !(confirms && cardHost())) return mcpSuccessResult(parsed.data);
       if (!cardHost()) return mcpSuccessResult(parsed.data, { tool: name });
       const { structured, held, lead } = forCardHost(parsed.data, deps.baseUrl, definition.card !== undefined);
