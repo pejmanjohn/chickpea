@@ -11,6 +11,12 @@ export interface ToolResult {
   structuredContent?: unknown;
   isError?: boolean;
   _meta?: Record<string, unknown>;
+  /**
+   * The host answered the card's call with a JSON-RPC error instead of the
+   * result, as ChatGPT does for a result with `isError`. Its `data` may still
+   * carry the result.
+   */
+  hostError?: { code?: unknown; message?: unknown; data?: unknown };
 }
 
 export interface CardState<V extends { kind: string }> {
@@ -20,6 +26,35 @@ export interface CardState<V extends { kind: string }> {
   error?: string | undefined;
   /** Counts views, so a reply is used only by the view that made its call. */
   seq: number;
+  /** Everything this card told the host's model, oldest first, bounded. */
+  told?: string[];
+  /**
+   * What the card's presses came to, for a card that mounts again with the
+   * result it first had. Each card says what it keeps; never a token or an ID.
+   */
+  outcome?: unknown;
+  /** The card mounted and its first read is out: every button waits until it answers or fails. */
+  checking?: true;
+}
+
+/**
+ * What a card keeps in the host's widget state, which ChatGPT shows its
+ * model: only what the card already told the model, and its outcome.
+ */
+export interface Memory {
+  told: string[];
+  outcome?: unknown;
+}
+
+/**
+ * The widget state a card writes: `modelContent` is what it told the host's
+ * model, and `privateContent` holds the same sentences and the outcome for a
+ * card that mounts again. ChatGPT hides `privateContent` from its model only
+ * beside a `modelContent`, so both always go; neither holds a token, an ID
+ * or instructions.
+ */
+export function keptState({ told = [], outcome }: { told?: string[] | undefined; outcome?: unknown }, version: number) {
+  return { modelContent: told.join('\n'), privateContent: { card: { version, told, ...outcome === undefined ? {} : { outcome } } } };
 }
 
 export interface Call {
@@ -37,13 +72,19 @@ export type Effect =
   | { type: 'message'; draft?: string; sent: string }
   | { type: 'open'; url: string }
   /**
-   * What the card did, for the host's model on its next turn, in place of
-   * what this card told it before. A press's outcome, never what it shows.
+   * What the card did, for the host's model on its next turn. A model's
+   * `tell` names the newest press's outcome, never what the card shows;
+   * `sequenced` sends it with everything the card told before, because each
+   * update replaces this card's last one.
    */
   | { type: 'context'; text: string };
 
 export type CardEvent<A extends string> =
-  | { type: 'result'; result: ToolResult; now: number }
+  /**
+   * The result the card is drawn with: on its first mount, or again when a
+   * chat reopens. `kept` is what the host kept of this card since.
+   */
+  | { type: 'result'; result: ToolResult; now: number; kept?: Memory | undefined }
   | { type: 'press'; action: A; now: number }
   /** A reply to a call the card made, even one that comes after `unreachable`. */
   | { type: 'reply'; call: Call; result: ToolResult; now: number }
@@ -86,21 +127,71 @@ export const call = (tool: string, args: Record<string, unknown>): Effect => ({ 
 export const tell = <V extends { kind: string }>(next: Next<V>, text: string): Next<V> =>
   ({ ...next, effects: [{ type: 'context', text }, ...next.effects] });
 
+/** How one card remembers its presses' outcomes and comes back to them. */
+export interface Remembering<V extends { kind: string }> {
+  /** What a view a press's outcome left means for a card that mounts again; undefined keeps the last. */
+  remember?: (view: V) => unknown;
+  /** The view for the result a card mounts with, after what it kept; undefined shows the result's own. */
+  resume?: (view: V, outcome: unknown) => V | undefined;
+}
+
+/** The most sentences a card sends its host's model at once, and their length together. */
+export const TOLD_MAX = 6;
+export const TOLD_CHARS = 1_500;
+
 /**
  * A card's `step`: a new view counts up `seq`, and each call it makes is
- * stamped with the view that made it.
+ * stamped with the view that made it. A result mounts the card: it shows
+ * what the card kept of its presses, then reads where things stand now, and
+ * its buttons wait until that read answers or fails. Everything the card
+ * told the host's model goes with each new sentence, and a sentence told
+ * again moves to the end instead of taking a second place.
  */
 export function sequenced<V extends { kind: string }, A extends string>(
   transition: (state: CardState<V>, event: CardEvent<A>) => Next<V>,
+  remembering: Remembering<V> = {},
 ): (state: CardState<V>, event: CardEvent<A>) => Step<V> {
   return (state, event) => {
-    const next = transition(state, event.type === 'result' || event.type === 'reply' ? { ...event, result: withHeld(event.result) } : event);
+    if (state.checking && event.type === 'press') return { state, effects: [] };
+    let next = transition(state, event.type === 'result' || event.type === 'reply' ? { ...event, result: withHeld(event.result) } : event);
+    let { told = [], outcome } = state;
+    let checking = false;
+    if (event.type === 'result') {
+      ({ told, outcome } = event.kept ?? { told: [] });
+      const resumed = outcome === undefined ? undefined : remembering.resume?.(next.state.view, outcome);
+      if (resumed) next = { state: { view: resumed, busy: false }, effects: [] };
+      const reread = transition({ ...next.state, seq: state.seq }, { type: 'reread', now: event.now });
+      checking = reread.effects.some(({ type }) => type === 'call');
+      // The re-read's calls and timer supersede the ones the result asked for.
+      const superseded = new Set(reread.effects.map(({ type }) => type));
+      next = { state: reread.state, effects: [...next.effects.filter(({ type }) => !superseded.has(type)), ...reread.effects] };
+    } else {
+      const answered = (event.type === 'reply' || event.type === 'unreachable') && event.call.seq === state.seq;
+      checking = state.checking === true && !answered && next.state.view === state.view;
+    }
+    const sentences = next.effects.flatMap((effect) => effect.type === 'context' ? [effect.text] : []);
+    if (sentences.length > 0) {
+      told = boundedTold([...told.filter((line) => !sentences.includes(line)), ...sentences]);
+      outcome = remembering.remember?.(next.state.view) ?? outcome;
+    }
     const seq = next.state.view === state.view ? state.seq : state.seq + 1;
+    const { told: _told, outcome: _outcome, checking: _checking, ...rest } = next.state;
     return {
-      state: { ...next.state, seq },
-      effects: next.effects.map((effect) => effect.type === 'call' ? { ...effect, call: { ...effect.call, seq } } : effect),
+      state: { ...rest, seq, ...told.length ? { told } : {}, ...outcome === undefined ? {} : { outcome }, ...checking ? { checking: true as const } : {} },
+      effects: [
+        ...sentences.length > 0 ? [{ type: 'context' as const, text: told.join('\n') }] : [],
+        ...next.effects.flatMap((effect): Effect[] => effect.type === 'context' ? []
+          : effect.type === 'call' ? [{ ...effect, call: { ...effect.call, seq } }] : [effect]),
+      ],
     };
   };
+}
+
+/** The newest sentences, as many as fit: the newest always stays. */
+export function boundedTold(told: readonly string[]): string[] {
+  let kept = told.slice(-TOLD_MAX);
+  while (kept.length > 1 && kept.join('\n').length > TOLD_CHARS) kept = kept.slice(1);
+  return kept;
 }
 
 /**
@@ -179,6 +270,15 @@ export function summaryLine(summary: string): string {
 }
 
 /**
+ * Words from a result in a sentence for the host's model: a summary, a
+ * service's name or a button's label, quoted as one short line, so they read
+ * as Chickpea's or a member's words and never as the host's own.
+ */
+export function quoted(words: string): string {
+  return JSON.stringify(summaryLine(words));
+}
+
+/**
  * Where to try an Agent: a mention reaches it only in its Channels, and a
  * direct message always does.
  */
@@ -192,15 +292,57 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** A Chickpea refusal: its code and its sentence, written for the person. */
+export interface Refusal {
+  code: string;
+  message: string;
+  retryable?: unknown;
+  fix?: unknown;
+}
+
+/**
+ * Chickpea's refusal, wherever its host put it: in the result's
+ * `structuredContent`, or in the whole result a host keeps beside it (the
+ * `mcp_tool_result` or `call_tool_result` ChatGPT puts in a result's `_meta`)
+ * or sends with a JSON-RPC error. Never a host's own words: a failure with
+ * no code is the host's, and may have happened after the call ran.
+ */
+export function refusalOf(result: ToolResult): Refusal | undefined {
+  if (!result.isError) return undefined;
+  for (const place of carriers(result)) {
+    const error = isRecord(place.structuredContent) ? place.structuredContent.error : undefined;
+    if (isRecord(error) && typeof error.code === 'string' && typeof error.message === 'string') {
+      return { code: error.code, message: error.message, retryable: error.retryable, fix: error.fix };
+    }
+  }
+  return undefined;
+}
+
+/** The result, and every whole result a host may carry with it, nearest first. */
+function carriers(result: ToolResult): Array<Record<string, unknown>> {
+  const data = result.hostError?.data;
+  const envelopes = (holder: unknown) => isRecord(holder)
+    ? [holder.mcp_tool_result, holder.call_tool_result].filter(isRecord)
+    : [];
+  return [
+    result as Record<string, unknown>,
+    ...envelopes(result._meta),
+    ...isRecord(data) ? [data, ...envelopes(data), ...envelopes(data._meta)] : [],
+  ];
+}
+
 export function errorOf(result: ToolResult): string | undefined {
   if (!result.isError) return undefined;
-  const error = isRecord(result.structuredContent) ? result.structuredContent.error : undefined;
-  return isRecord(error) && typeof error.message === 'string' ? error.message : GENERIC;
+  return refusalOf(result)?.message ?? GENERIC;
 }
 
 export function errorCode(result: ToolResult): string | undefined {
-  const error = isRecord(result.structuredContent) ? result.structuredContent.error : undefined;
-  return result.isError && isRecord(error) && typeof error.code === 'string' ? error.code : undefined;
+  return refusalOf(result)?.code;
+}
+
+/** A host's failure with no refusal of Chickpea's in it: like no answer, a write may have run. */
+export function hostFailed(result: ToolResult): boolean {
+  return result.hostError !== undefined && refusalOf(result) === undefined;
 }
 
 /** A way to fix something: a link, or a tool with its arguments. */
@@ -287,16 +429,22 @@ export interface Presentation<A extends string = string> {
   error?: string | undefined;
 }
 
-/** A result that is not the shape it claims draws as nothing to show, with no buttons. */
-export function presentSafely<S extends { busy: boolean; error?: string | undefined }, A extends string>(
+/**
+ * A result that is not the shape it claims draws as nothing to show, with no
+ * buttons. A card still checking where things stand draws its buttons
+ * waiting, so it keeps its height and nothing can be pressed.
+ */
+export function presentSafely<S extends { busy: boolean; error?: string | undefined; checking?: true }, A extends string>(
   present: (state: S) => Presentation<A>,
 ): (state: S) => Presentation<A> {
   return (state) => {
+    let shown: Presentation<A>;
     try {
-      return present(state);
+      shown = present(state);
     } catch {
       return { busy: state.busy, error: state.error, avatar: 'none', title: NOTHING.title, blocks: [], buttons: [] };
     }
+    return state.checking ? { ...shown, busy: true } : shown;
   };
 }
 

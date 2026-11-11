@@ -13,6 +13,7 @@ import {
   opensSetupLink,
   outdated,
   presentSafely,
+  quoted,
   sequenced,
   show,
   stay,
@@ -170,7 +171,7 @@ function reply(state: State, tool: string, result: ToolResult): Next<View> {
   const fix = view.checked.checks[view.fixing]?.fix;
   return tell(
     show({ ...settled(view), opened }, [{ type: 'open', url }]),
-    `The person opened Chickpea's page to ${fix?.label ?? 'fix it'} for ${agentNamed(view.checked.agent.name)} from the card. It changes when they finish there.`,
+    `The person pressed ${quoted(fix?.label ?? 'Fix it')} for ${agentNamed(view.checked.agent.name)} on the card, which opened Chickpea's page. It changes when they finish there.`,
   );
 }
 

@@ -30,6 +30,8 @@ export interface CallToolResult {
   structuredContent?: unknown;
   isError?: boolean;
   _meta?: Record<string, unknown>;
+  /** The host's JSON-RPC error, when it answered the call with one instead of the result. */
+  hostError?: { code?: unknown; message?: unknown; data?: unknown };
 }
 
 interface Rpc {
@@ -101,9 +103,20 @@ export class HostBridge {
   /**
    * A tool call through the host. After a timeout the call rejects, and a
    * reply that still comes goes to `late`: a write may have run after all.
+   * A host that answers with a JSON-RPC error, as ChatGPT does when the
+   * result has `isError`, gets its error passed on as `hostError`, where the
+   * card looks for Chickpea's refusal.
    */
   async callTool(name: string, args: Record<string, unknown>, late: (result: CallToolResult) => void): Promise<CallToolResult> {
-    return await this.#request('tools/call', { name, arguments: args }, late as (value: unknown) => void) as CallToolResult;
+    const answer = (value: unknown, error?: unknown): CallToolResult => error === undefined
+      ? value as CallToolResult
+      : { isError: true, hostError: error as NonNullable<CallToolResult['hostError']> };
+    try {
+      return answer(await this.#request('tools/call', { name, arguments: args }, (value, error) => late(answer(value, error))));
+    } catch (error) {
+      if (error instanceof Error) throw error;
+      return answer(undefined, error);
+    }
   }
 
   /**
@@ -148,11 +161,12 @@ export class HostBridge {
     window.parent.postMessage({ jsonrpc: '2.0', method, params } satisfies Rpc, '*');
   }
 
-  #request(method: string, params: unknown, late?: (value: unknown) => void): Promise<unknown> {
+  /** `late` hears an answer that comes after the timeout: a value, or the host's error. */
+  #request(method: string, params: unknown, late?: (value: unknown, error?: unknown) => void): Promise<unknown> {
     const id = this.#nextId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        if (late) this.#pending.set(id, { resolve: late, reject: () => undefined });
+        if (late) this.#pending.set(id, { resolve: (value) => late(value), reject: (error) => late(undefined, error ?? {}) });
         else this.#pending.delete(id);
         reject(new Error(`${method} timed out`));
       }, REQUEST_TIMEOUT_MS);

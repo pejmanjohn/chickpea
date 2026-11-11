@@ -234,10 +234,13 @@ test('Keep changes nothing, and an expired confirmation cannot be confirmed', as
   const pending = await call('update_agent', { agentId: 'agent_support', version: read.version, on: false, idempotencyKey: 'off' });
 
   await agentCard.result(pending);
-  assert.deepEqual(agentCard.effects, [{ type: 'timer', inMs: 30 * 60_000 }], 'it will say when the token expires');
+  assert.deepEqual(agentCard.effects, [
+    { type: 'timer', inMs: 30 * 60_000 },
+    { type: 'call', call: { tool: 'get_agent', args: { agentId: 'agent_support' }, seq: 1 } },
+  ], 'it will say when the token expires, and reads its Agent before it offers a button');
   await agentCard.press('keep');
   assert.deepEqual([agentCard.shown.title, agentCard.calls().map(({ tool, args }) => [tool, args])],
-    ['Kept as it is', [['decline_change', { confirmToken: pending.structuredContent!.confirmation.confirmToken }]]],
+    ['Kept as it is', [['get_agent', { agentId: 'agent_support' }], ['decline_change', { confirmToken: pending.structuredContent!.confirmation.confirmToken }]]],
     'Keep retires the token, and nothing else');
   const after = await call('confirm_change', { confirmToken: pending.structuredContent!.confirmation.confirmToken });
   assert.equal(after.isError, true, 'the model cannot confirm what the person kept');
@@ -248,7 +251,7 @@ test('Keep changes nothing, and an expired confirmation cannot be confirmed', as
   await later.dispatch({ type: 'reread', now: clock.now });
   assert.equal(later.shown.title, 'This confirmation expired');
   await later.press('confirm');
-  assert.deepEqual(later.calls(), []);
+  assert.deepEqual(later.calls().map(({ tool }) => tool), ['get_agent'], 'only the read it made when it mounted');
 
   // A card that mounts after the token expired says so at once.
   const mountedLate = card(call, clock);
@@ -261,7 +264,7 @@ test('Keep changes nothing, and an expired confirmation cannot be confirmed', as
   await unnoticed.result(pending);
   clock.now = Date.parse(pending.structuredContent!.confirmation.expiresAt);
   await unnoticed.press('confirm');
-  assert.deepEqual([unnoticed.calls(), unnoticed.shown.title], [[], 'This confirmation expired']);
+  assert.deepEqual([unnoticed.calls('confirm_change'), unnoticed.shown.title], [[], 'This confirmation expired']);
   assert.equal((await f.config.getAgent('agent_support')).enabled, true);
 });
 
@@ -589,8 +592,9 @@ test('a result that is not the shape it claims, or a host that sends none, shows
   assert.equal(cancelled.shown.error, 'That did not work. Try again.');
 });
 
+/** The newest sentence of each update the card sent the host's model; each carries all the card told before. */
 const contexts = (agentCard: { effects: readonly Effect[] }) =>
-  agentCard.effects.flatMap((effect) => effect.type === 'context' ? [effect.text] : []);
+  agentCard.effects.flatMap((effect) => effect.type === 'context' ? [effect.text.split('\n').at(-1)!] : []);
 
 const PRESENCE = {
   requestedHandle: 'research', normalizedHandle: 'research', desiredState: 'active', health: 'healthy',
@@ -679,7 +683,7 @@ test('a session that draws cards confirms, keeps and undoes with tokens only the
   assert.equal(agentCard.shown.title, 'Made the change you confirmed');
   assert.deepEqual(agentCard.shown.subtitle, [{ text: 'It won\'t answer in Slack until it\'s turned back on.' }]);
   assert.ok(agentCard.labels().includes('Undo (secondary)'), 'Undo works from the undo token the card holds');
-  assert.equal(contexts(agentCard).at(-1), 'The person confirmed on the card. Made the change you confirmed.');
+  assert.equal(contexts(agentCard).at(-1), 'The person confirmed on the card. Chickpea said: "Made the change you confirmed."');
 
   const saved = card(call, clock);
   const preview = await call('propose_agent_change', { agentId: 'agent_support', version: await version(), change: { description: 'Billing.' } });
@@ -772,8 +776,9 @@ test('Cancel tells the model nothing was saved', async (t) => {
   const read = (await call('get_agent', { agentId: 'agent_research' })).structuredContent!;
   await agentCard.result(await call('propose_agent_change', { agentId: 'agent_research', version: read.version, change: { description: 'x' } }));
   await agentCard.press('cancel');
-  assert.deepEqual([agentCard.shown.title, contexts(agentCard), agentCard.calls()],
-    ['Not saved', ['The person cancelled this change to the Agent "Research" on the card. Nothing was saved.'], []]);
+  assert.deepEqual([agentCard.shown.title, contexts(agentCard), agentCard.calls().map(({ tool }) => tool)],
+    ['Not saved', ['The person cancelled this change to the Agent "Research" on the card. Nothing was saved.'], ['get_agent']],
+    'only the read the card made when it mounted');
 });
 
 /** A card session's workspace with an Agent that answers in #support, so turning it off asks first. */
@@ -882,9 +887,9 @@ test('what the model hears quotes a long Agent name cut short, and never a serve
   await similar.result(await call('propose_agent', PROPOSAL));
   await similar.press('create');
   const [sentence = ''] = contexts(similar);
-  const lead = 'The person pressed Create in Slack on the card, but nothing was created: ';
-  assert.ok(sentence.startsWith(lead), sentence);
-  assert.equal(sentence.length, lead.length + 200);
+  const lead = 'The person pressed Create in Slack on the card, but nothing was created. Chickpea said: "';
+  assert.ok(sentence.startsWith(lead) && sentence.endsWith('…"'), sentence);
+  assert.equal(sentence.length, lead.length + 200 + 1, 'the summary quoted, cut to 200 characters');
   assert.ok(!sentence.includes('\n') && !sentence.includes(long));
 });
 
