@@ -20,6 +20,15 @@ export class McpBlockedUrlError extends Error {
   }
 }
 
+// The two classes below keep the name `Error`, so the text a tool result or
+// the model shows for them is unchanged. They exist to be told apart by type.
+
+/** The live connection, or the requester's access to it, no longer matches the turn's plan. */
+export class McpConnectionChangedError extends Error {}
+
+/** Chickpea could not narrow a tool listing to the Agent's tools. */
+export class McpToolsListRefusedError extends Error {}
+
 export function classifyMcpError(err: unknown): McpErrorCode {
   const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
   if (message.includes('blocked url')) return 'blocked_url';

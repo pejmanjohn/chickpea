@@ -54,6 +54,7 @@ import { modelAccessInterceptor } from './agents/model-access-lookup.ts';
 import { runFeeInterceptor } from './config/run-fee-interceptor.ts';
 import { observeModelAccess } from './config/model-access.ts';
 import { workspaceRegistryInterceptor } from './sandbox/workspace-registry.ts';
+import { emitMcpConnectionUnavailable } from './config/mcp-unavailable.ts';
 import {
   observeResponseMetadata,
   responseMetadataInterceptor,
@@ -203,6 +204,14 @@ function slackTurnJobIdOf({ instanceId, submissionId }: FlueObservation): string
   }
   return readStagedSlackObservationTarget(instanceId, submissionId)?.turnJobId;
 }
+
+// Flue drops an optional MCP connection it cannot connect with only a warning.
+instrument({
+  key: Symbol.for('chickpea.mcp-connection-unavailable'),
+  interceptor: async (_operation, _context, next) => next(),
+  observe: (event) => emitMcpConnectionUnavailable(event),
+  dispose() {},
+});
 
 instrument({
   key: Symbol.for('chickpea.run-fees'),
