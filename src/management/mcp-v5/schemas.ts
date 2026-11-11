@@ -7,6 +7,7 @@ import { MODEL_EFFORTS } from '../../config/model-effort.ts';
 import { PROVIDER_KEY_IDS } from '../../config/provider-key-ids.ts';
 import { MAX_UPLOAD_FILES } from '../../config/skill-upload.ts';
 import { DEFAULT_AGENT_AVATAR_NAMES } from '../../slack/agent-presence/default-avatar-pool.ts';
+import { MCP_ERROR_CODES } from './conventions.ts';
 
 /**
  * Inputs and outputs of the 5.0 management tools. Every output is strict, so
@@ -329,6 +330,7 @@ export const confirmChangeInput = z.strictObject({
   confirmToken: zText(128).describe('The confirmToken a needs_confirmation result returned.'),
 });
 export const declineChangeInput = confirmChangeInput;
+export const getConfirmationInput = confirmChangeInput;
 export const undoChangeInput = z.strictObject({
   undoToken: zText(128).describe('The undoToken a change returned.'),
   idempotencyKey: zIdempotencyKey,
@@ -756,6 +758,22 @@ const zFix = z.union([
   z.strictObject({ label: z.string(), url: z.string() }),
   z.strictObject({ label: z.string(), tool: z.string(), arguments: z.record(z.string(), z.unknown()) }),
 ]);
+
+/** A refusal as a card session gets it, as a result (card-host.ts `cardRefusal`). */
+export const cardRefusalOutput = z.strictObject({
+  error: z.strictObject({
+    code: z.enum(MCP_ERROR_CODES),
+    message: z.string(),
+    retryable: z.boolean(),
+    nextStep: z.string().optional(),
+    fix: zFix.optional(),
+  }),
+});
+
+export const getConfirmationOutput = z.strictObject({
+  status: z.enum(['pending', 'applied', 'cancelled', 'expired'])
+    .describe('pending: it waits for the person. applied: they confirmed it. cancelled: it can no longer apply, and nothing changed. expired: no one confirmed it in time.'),
+});
 
 export const checkAgentOutput = z.strictObject({
   agent: zAgentName,

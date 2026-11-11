@@ -42,6 +42,7 @@ import {
 import { createLiveWorkspaceManagementService } from './live-service.ts';
 import { observeMcpRequests } from './mcp-request-telemetry.ts';
 import {
+  CARD_REFUSAL_TOOL_NAMES,
   FIVE_ZERO_TOOL_INPUT_SCHEMAS,
   FIVE_ZERO_TOOL_NAMES,
   registerFiveZeroTools,
@@ -196,7 +197,7 @@ class ObservedMcpServer extends McpServer {
     // tool. Its capabilities are known here, after everything registers.
     if (this.cardHost()) for (const registered of this.v4Only.splice(0)) registered.remove();
     observeMcpRequests(transport, { ...MCP_TOOL_INPUT_SCHEMAS, ...FIVE_ZERO_TOOL_INPUT_SCHEMAS });
-    shapeFiveZeroResults(transport, FIVE_ZERO_TOOL_NAME_SET);
+    shapeFiveZeroResults(transport, FIVE_ZERO_TOOL_NAME_SET, { session: () => this.cardHost(), tools: CARD_REFUSAL_TOOL_NAMES });
     return super.connect(transport);
   }
 }

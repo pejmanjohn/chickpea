@@ -793,6 +793,22 @@ export async function declineChange(
   }
 }
 
+/** For a confirmation card that mounts again: whether its buttons can still do anything. */
+export async function getConfirmation(
+  deps: FiveZeroDeps,
+  input: In<typeof schemas.getConfirmationInput>,
+): Promise<z.infer<typeof schemas.getConfirmationOutput>> {
+  const context = await deps.context();
+  try {
+    return { status: await deps.service.workspaceChangeStanding({ context, proposalId: input.confirmToken }) };
+  } catch (error) {
+    if (error instanceof ManagementError && (error.code === 'proposal_not_found' || error.code === 'proposal_binding_mismatch')) {
+      fail('not_found', 'That confirmation isn\'t one of yours.');
+    }
+    throw error;
+  }
+}
+
 /** Undo is itself a change: it may wait for confirmation when the reverse is destructive. */
 export async function undoChange(
   deps: FiveZeroDeps,
