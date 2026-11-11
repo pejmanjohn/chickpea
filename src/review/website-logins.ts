@@ -89,11 +89,15 @@ const SCHEME_URL = String.raw`\b(?:https?|wss?):${SLASH}${SLASH}${URL_CHAR}${MOR
 const AFTER_HOST = String.raw`\.?(?::\d+)?(?:${SLASH}${MORE_URL}|[;?#]${URL_CHAR}${MORE_URL})`;
 // Any host followed by a path or a query, as a browser step's input may name a page.
 const ANY_SCHEMELESS_URL = String.raw`${HOST_START}(?:[a-z0-9-]+\.)+[a-z]{2,}${AFTER_HOST}`;
-// Outside a browser step, a link without a scheme counts on a login's site or the hosted browser's:
-// any host is read, and `host` is looked up before its link is.
-const SCHEMELESS_CANDIDATE = String.raw`${HOST_START}(?<host>(?:[\p{L}\p{N}-]+\.)*[\p{L}\p{N}-]+|\[[\da-f:.]+\])${AFTER_HOST}`;
-const LINKS_ANYWHERE = `${SCHEME_URL}|${SCHEMELESS_CANDIDATE}`;
+// Outside a browser step, a link without a scheme counts on a login's site or the hosted browser's. Any
+// host a link could follow is read, and only its host: it is looked up before the rest of its link is
+// read, so a field of hosts on no login's site costs one reading.
+const SCHEMELESS_HOST = String.raw`${HOST_START}(?<host>(?:[\p{L}\p{N}-]+\.)*[\p{L}\p{N}-]+|\[[\da-f:.]+\])` +
+  String.raw`(?=\.?(?::\d+)?(?:${SLASH}|[;?#]${URL_CHAR}))`;
+const LINKS_ANYWHERE = `${SCHEME_URL}|${SCHEMELESS_HOST}`;
 const LINKS_IN_BROWSER_STEP = `${SCHEME_URL}|${ANY_SCHEMELESS_URL}`;
+/** The rest of a scheme-less link on a login's site, from the end of its host. */
+const REST_OF_LINK = new RegExp(AFTER_HOST, 'yiu');
 
 const HANDOFF_LINK = new RegExp(String.raw`<([^<>|]*)\|${escapeRegExp(BROWSER_HANDOFF_LINK_LABEL)}>`, 'g');
 /** What a hand-off message links to: an absolute web address, too long to be a word of other text. */
@@ -179,17 +183,18 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
     let result = '';
     let from = 0;
     for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+      let link = match[0];
       const host = match.groups?.host;
       if (host !== undefined) {
         const hostname = host.toLowerCase();
-        if (!loginSite(hostname) && !browserbaseHost(hostname)) {
-          // Not a link this rule reads: reading goes on after its host, where another link may start.
-          pattern.lastIndex = match.index + host.length;
-          continue;
-        }
+        // Not a link this rule reads: reading goes on after its host, where another link may start.
+        if (!loginSite(hostname) && !browserbaseHost(hostname)) continue;
+        REST_OF_LINK.lastIndex = match.index + host.length;
+        link += REST_OF_LINK.exec(text)![0];
       }
-      result += `${text.slice(from, match.index)}${scrubLink(match[0], browserStep)}`;
-      from = match.index + match[0].length;
+      result += `${text.slice(from, match.index)}${scrubLink(link, browserStep)}`;
+      from = match.index + link.length;
+      pattern.lastIndex = from;
     }
     return result + text.slice(from);
   };
@@ -277,7 +282,7 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
 /**
  * A field as the username search reads it: percent, form, JSON, HTML-number
  * and Slack escapes decoded once, each run of whitespace, an escaped line
- * break or a form's `+` one space, and every letter in lower case. Each code
+ * break or a form's `+` one space, and every letter case-folded. Each code
  * unit keeps where it was written, so a hit leaves the field as written.
  */
 interface SearchView {
@@ -358,7 +363,7 @@ class ViewWriter {
   #spaced = false;
 
   constructor(sourceLength: number) {
-    // No decoding lengthens a character, and lower case lengthens few (`İ`), so the view rarely outgrows its source.
+    // No decoding lengthens a character, and folding case lengthens few (`İ`, `ß`), so the view rarely outgrows its source.
     const capacity = sourceLength + 16;
     this.#units = new Uint16Array(capacity);
     this.#starts = new Int32Array(capacity);
@@ -376,8 +381,9 @@ class ViewWriter {
       this.space(start, end);
       return;
     }
-    const lower = char.toLowerCase();
-    for (let unit = 0; unit < lower.length; unit += 1) this.#unit(lower.charCodeAt(unit), start, end);
+    // Through upper case, so the letters a case-insensitive match takes as one read as one: ς and σ, ſ and s, ϑ and θ.
+    const folded = char.toUpperCase().toLowerCase();
+    for (let unit = 0; unit < folded.length; unit += 1) this.#unit(folded.charCodeAt(unit), start, end);
   }
 
   /** A run of whitespace reads as one space, which spans all of it. */
