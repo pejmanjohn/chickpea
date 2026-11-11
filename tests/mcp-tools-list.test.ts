@@ -54,11 +54,14 @@ function initializeResult(params: Record<string, unknown> | undefined) {
   };
 }
 
-function eventStream(chunks: readonly string[], options: { open?: boolean } = {}): Response {
+function eventStream(chunks: readonly string[], options: { open?: boolean; onCancel?: () => void } = {}): Response {
   return new Response(new ReadableStream<Uint8Array>({
     start(controller) {
       for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
       if (!options.open) controller.close();
+    },
+    cancel() {
+      options.onCancel?.();
     },
   }), { headers: { 'content-type': 'text/event-stream' } });
 }
@@ -285,12 +288,21 @@ test('a connection that lists none of its grant fails with a reason a person can
   assert.deepEqual(logs.refused, [refusedLine('no-granted-tools'), refusedLine('no-granted-tools')]);
 });
 
-test('a name listed twice mounts once, on one page and across two', async (t) => {
+test('a name listed twice mounts its first copy once, on one page and across two', async (t) => {
   captureLogs(t);
-  for (const pages of [[['alpha', 'gamma', 'alpha']], [['alpha'], ['gamma', 'alpha']]]) {
+  const later = { ...listedTool('alpha'), description: 'A later copy.' };
+  for (const pages of [[['alpha', 'gamma', later]], [['alpha'], ['gamma', later]]]) {
     const server = pagedServer('json', pages);
     await withRuntimeConnection(connectionConfig(), server.fetch, async (definition) => {
-      assert.deepEqual(await mountedNames(definition), ['mcp__srv__alpha', 'mcp__srv__gamma']);
+      const connection = await createMcpConnection(definition);
+      try {
+        assert.deepEqual(connection.tools.map(({ name, description }) => [name, description]), [
+          ['mcp__srv__alpha', 'The alpha tool.'],
+          ['mcp__srv__gamma', 'The gamma tool.'],
+        ]);
+      } finally {
+        await connection.close();
+      }
     });
   }
 });
@@ -304,6 +316,11 @@ test('a granted task-only tool is reported and the rest mount', async (t) => {
     assert.deepEqual(await mountedNames(definition), ['mcp__srv__alpha']);
   });
   assert.deepEqual(logs.missing, [missingLine(['beta'], 2, ['gamma'])]);
+  const nothingMissing = pagedServer('json', [['alpha', taskOnly('gamma')]]);
+  await withRuntimeConnection(connectionConfig({ allowedTools: ['alpha', 'gamma'] }), nothingMissing.fetch, async (definition) => {
+    assert.deepEqual(await mountedNames(definition), ['mcp__srv__alpha']);
+  });
+  assert.deepEqual(logs.missing.at(-1), missingLine([], 2, ['gamma']));
   const onlyTasks = pagedServer('json', [[taskOnly('alpha')]]);
   await withRuntimeConnection(connectionConfig(), onlyTasks.fetch, async (definition) => {
     await assert.rejects(createMcpConnection(definition), /no longer offers any of the tools/);
@@ -336,6 +353,7 @@ test('a listing outside the POST answer fails the connection and mounts nothing'
     ['status', () => new Response(null, { status: 202 })],
     ['content-type', (rpc) => new Response(answer(rpc), { headers: { 'content-type': 'text/plain' } })],
     ['batch', (rpc) => new Response(`[${answer(rpc)}]`, { headers: { 'content-type': 'application/json' } })],
+    ['batch', (rpc) => eventStream([`data: [${answer(rpc)}]\n\n`])],
     ['response-id', (rpc) => Response.json({ jsonrpc: '2.0', id: Number(rpc.id) + 100, result: { tools: [] } })],
     ['response-id', (rpc) => eventStream([
       `data: ${JSON.stringify({ jsonrpc: '2.0', id: Number(rpc.id) + 100, result: { tools: [listedTool('alpha')] } })}\n\n`,
@@ -364,14 +382,16 @@ test('a listing outside the POST answer fails the connection and mounts nothing'
 
 test('events before the answer reach the client, and a stream held open does not delay the mount', { timeout: 10_000 }, async (t) => {
   captureLogs(t);
+  let cancelled = 0;
   const server = mcpServer((rpc) => eventStream([
     ': keep-alive\n\n',
     'event: message\ndata: {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"listing"}}\n\n',
     `id: 1\nevent: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { tools: ['extra', 'alpha'].map(listedTool) } })}\n\n`,
-  ], { open: true }));
+  ], { open: true, onCancel: () => { cancelled += 1; } }));
   await withRuntimeConnection(connectionConfig(), server.fetch, async (definition) => {
     assert.deepEqual(await mountedNames(definition), ['mcp__srv__alpha']);
   });
+  assert.equal(cancelled, 1, 'the open stream is let go once the answer is read');
 });
 
 test('a JSON-RPC error answer to tools/list passes through untouched', async (t) => {
@@ -492,6 +512,25 @@ test("Meta's account helper keeps its rewritten contract when another granted Me
   ], 'once for the mount and once for the direct listing');
 });
 
+test("a listing Meta's rewrite refuses is logged before the connection fails", async (t) => {
+  const logs = captureLogs(t);
+  const helper = { ...listedTool(META_ADS_ACCOUNT_HELPER) };
+  const server = pagedServer('json', [[helper, helper]]);
+  const meta = connectionConfig({
+    id: 'meta', url: 'https://mcp.facebook.com/ads', presetId: 'meta-ads', displayName: 'Meta Ads',
+    allowedTools: [META_ADS_ACCOUNT_HELPER],
+    discoveredTools: [{ name: META_ADS_ACCOUNT_HELPER, inputSchema: metaHelperSchema }],
+    toolPolicies: { [META_ADS_ACCOUNT_HELPER]: { effect: 'read', argumentConstraints: metaScope } },
+  });
+  await withRuntimeConnection(meta, server.fetch, async (definition) => {
+    await assert.rejects(createMcpConnection(definition), /\(duplicate-account-helper\)/);
+  }, {
+    readOnlyTools: [META_ADS_ACCOUNT_HELPER],
+    toolArgumentConstraints: { [META_ADS_ACCOUNT_HELPER]: metaScope },
+  });
+  assert.deepEqual(logs.refused, [{ event: 'chickpea.mcp.tools_list_refused', connectionId: 'meta', reason: 'rewrite' }]);
+});
+
 // --- the filter on its own ------------------------------------------------
 
 const filter = () => createMcpToolsListFilter({ connectionId: 'srv', grant: ['alpha', 'gamma'] });
@@ -552,4 +591,24 @@ test('a JSON-RPC error with a result too, or another JSON-RPC version, is refuse
   ]) {
     await assert.rejects(filter().filterResponse({ id: 3 }, Response.json(payload), 'Example Tools'), /\(json-rpc\)/);
   }
+});
+
+test('media type parameters and case do not change how the answer is read', async (t) => {
+  captureLogs(t);
+  for (const contentType of ['Application/JSON; charset=utf-8', 'text/event-stream; charset=utf-8']) {
+    const body = contentType.startsWith('text/') ? `data: ${answer(3, [{ name: 'extra' }, { name: 'alpha' }])}\n\n`
+      : answer(3, [{ name: 'extra' }, { name: 'alpha' }]);
+    const response = await filter().filterResponse({ id: 3 }, new Response(body, {
+      headers: { 'content-type': contentType },
+    }), 'Example Tools');
+    assert.doesNotMatch(await response.text(), /extra/, contentType);
+  }
+});
+
+test('an event-stream answer with no body is refused', async (t) => {
+  const logs = captureLogs(t);
+  await assert.rejects(filter().filterResponse({ id: 3 }, new Response(null, {
+    headers: { 'content-type': 'text/event-stream' },
+  }), 'Example Tools'), /\(no-response\)/);
+  assert.deepEqual(logs.refused.map(({ reason }) => reason), ['no-response']);
 });
