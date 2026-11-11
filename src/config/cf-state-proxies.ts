@@ -108,6 +108,8 @@ import type {
 import { IdentityStateError } from '../identity/errors.ts';
 import { timedStateRpc } from '../observability/runtime-latency.ts';
 import { isSandboxDisconnect } from '../sandbox/reconnect.ts';
+import { type AgentAppBot, agentAppBots } from '../slack/agent-app-bots.ts';
+import { withStoreFallback } from './store-fallback.ts';
 import {
   ManagementError,
   type ManagementRpcRequest,
@@ -352,7 +354,7 @@ const REPLAY_SAFE_STATE_METHODS = new Set([
   'configGetAgentReferences', 'configGetAgentScheduleReference', 'configGetAgentThreadRoute',
   'configGetChannel', 'configGetWorkspaceInstallation', 'configGetWorkspaceModelDefault',
   'configGetWorkspaceModelRole', 'configListAgentChannelGrants', 'configListAgentConnectionBindings',
-  'configListAgentScheduleReferences', 'configListAgents', 'configListChannels',
+  'configListAgentAppBots', 'configListAgentScheduleReferences', 'configListAgents', 'configListChannels',
   'configListConnectionAccounts', 'configListRecentSlackAgentReplies', 'configListRecentSlackPublicContext',
   'configListSlackPublicContext',
   'configListUserAgents', 'configListWorkspaceInstallations', 'configPreflightChickpeaCutover',
@@ -1463,6 +1465,15 @@ export class CfConfigStore implements ConfigStore {
 
   async listUserAgents(): Promise<CustomAgentConfig[]> {
     return rpcVia(this.stub,'configListUserAgents', (stub) => stub.configListUserAgents());
+  }
+
+  /** A store on code from before configListAgentAppBots answers from its whole Agent list. */
+  async listAgentAppBots(): Promise<AgentAppBot[]> {
+    return rpcVia(this.stub, 'configListAgentAppBots', (stub) => withStoreFallback(
+      'configListAgentAppBots',
+      () => stub.configListAgentAppBots(),
+      async () => ({ ok: true, value: agentAppBots(await this.listAgents()) }),
+    ));
   }
 
   async getAgent(agentId: string): Promise<CustomAgentConfig> {

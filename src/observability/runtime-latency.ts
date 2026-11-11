@@ -26,6 +26,7 @@ export type RuntimeLatencyEvent =
   | 'turn_fold'
   | 'state_rpc'
   | 'state_rpc_summary'
+  | 'state_rpc_fallback'
   | 'gateway_delivery'
   | 'thread_runner_alarm'
   | 'thread_runner_superseded'

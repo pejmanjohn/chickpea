@@ -3228,7 +3228,7 @@ function logMemoryLeaseFailure(stage: 'before_run' | 'after_run', agentId: strin
 async function siblingBotUserIds(
   assignment: Pick<ResolvedAssignment, 'teammates'>,
   readerBotUserId: string | undefined,
-  config: Pick<ConfigStore, 'listAgents' | 'getWorkspaceInstallation'>,
+  config: Pick<ConfigStore, 'listAgentAppBots' | 'getWorkspaceInstallation'>,
   workspaceId: string,
 ): Promise<string[]> {
   const teammates = (assignment.teammates ?? []).flatMap((teammate) => 'botUserId' in teammate ? [teammate.botUserId] : []);
