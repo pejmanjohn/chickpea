@@ -304,6 +304,12 @@ test('a label names a secret by any part, an acronym’s too, or by its last wor
   }
 });
 
+test('a labelled value is hidden before the shared redaction can remove its label', () => {
+  assert.equal(filter('OPENAI_API_KEY=abcdefgh winter meadow'), '[…]');
+  assert.equal(filter('Rejected ANTHROPIC_API_KEY=abcdefgh plain words\nthen 403'), 'Rejected […] then 403');
+  assert.equal(filter('SLACK_BOT_TOKEN: abcdefgh winter meadow'), 'SLACK_BOT_TOKEN: […]');
+});
+
 test('a secret word that is not a label keeps what follows', () => {
   keeps('"keyword": "contacts", "error_code": "INVALID_ARGUMENT"');
   keeps('token expired, sign in again');
