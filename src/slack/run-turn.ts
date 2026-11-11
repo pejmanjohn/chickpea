@@ -2,6 +2,7 @@ import { planAllowsConnectionFileUpload } from '../connections/file-upload-tool.
 import { conversationThreadImageInventory } from './thread-images.ts';
 import { retainThreadFiles, threadFileManifest } from './thread-files.ts';
 import { verifyOwnMemoryWrite } from './memory-update-terminal.ts';
+import type { ConversationStreamChunk } from '@flue/runtime';
 import { WebClient } from '@slack/web-api';
 
 import {
@@ -428,6 +429,15 @@ export interface RunTurnOptions {
   turnLatency?: TurnLatencyContext;
   /** Set by `runTurn` itself when `turnLatency` is present. */
   onSlackWrite?: (surface: TurnFirstWrite) => void;
+  /** Set by `runTurn` itself when `turnLatency` is present: Slack acknowledged streamed answer text. */
+  onAnswerTextStreamed?: () => void;
+  /** Set by `runTurn` itself when `turnLatency` is present: Slack acknowledged native task card rows on the reply's stream. */
+  onTaskCardStreamed?: () => void;
+  /**
+   * Set by `runTurn` itself when `turnLatency` is present: every chunk the
+   * reply's observation reads, beside the dispatched submission. Must not throw.
+   */
+  onConversationChunk?: (chunk: ConversationStreamChunk, submissionId: string) => void;
   /** Set by `runTurn` itself when `turnLatency` is present: the follow-ups the prompt frames as information only. */
   onFollowUpsInformed?: (count: number) => void;
   /** Set by `runTurn` itself when `turnLatency` is present: a 👀 on a message the turn read became 👍. */
@@ -530,14 +540,22 @@ export async function runTurn(
     ...(options.turnId ? { turnJobId: options.turnId } : {}),
     ...(options.runId ? { runId: options.runId } : {}),
     ...(options.runAttempt === undefined ? {} : { attempt: options.runAttempt }),
+    model: resolvedAssignmentModel(assignment),
   });
   tracker.markFolded(followUps.length);
+  // Loaded at a turn's first use, so the shadow stays out of what a Worker
+  // loads at startup. A turn whose load fails runs without one.
+  const answerRelease = await import('./answer-release.ts')
+    .then(({ AnswerReleaseShadow }) => new AnswerReleaseShadow(), () => undefined);
   const { onDelivered, onDeferredTerminal } = options;
   let stopped = false;
   try {
     await tracker.observeStateRpcs(() => runTurnAttempt(head, assignment, platformEnv, {
       ...options,
       onSlackWrite: (surface) => tracker.markSlackWrite(surface),
+      onAnswerTextStreamed: () => tracker.markStreamedAnswerText(),
+      onTaskCardStreamed: () => tracker.markTaskCardStreamed(),
+      onConversationChunk: (chunk, submissionId) => answerRelease?.onEvent(chunk, submissionId),
       onFollowUpsInformed: (count) => tracker.markFoldedInformed(count),
       onRead: () => tracker.markRead(),
       onMidRunReply: () => tracker.markMidRunReply(),
@@ -559,9 +577,9 @@ export async function runTurn(
           }
         : {}),
     }, followUps, receipts));
-    tracker.emit(stopped ? 'stopped' : 'returned');
+    tracker.emit(stopped ? 'stopped' : 'returned', answerRelease?.record());
   } catch (error) {
-    tracker.emit('threw');
+    tracker.emit('threw', answerRelease?.record());
     throw error;
   }
 }
@@ -748,6 +766,12 @@ async function runTurnAttempt(
         onNativeStarted: () => onNativeStarted(),
         ...(options.onSlackWrite
           ? { onStreamStarted: () => options.onSlackWrite?.('stream') }
+          : {}),
+        ...(options.onAnswerTextStreamed
+          ? { onAnswerTextStreamed: options.onAnswerTextStreamed }
+          : {}),
+        ...(options.onTaskCardStreamed
+          ? { onTaskCardStreamed: options.onTaskCardStreamed }
           : {}),
       })
     : undefined;
@@ -2244,8 +2268,13 @@ async function runTurnAttempt(
                 }
               : {}),
             ...(options.codingTaskStarted ? { codingTaskStarted: true } : {}),
-            ...(reviewSession
-              ? { onConversationChunk: (chunk, submissionId) => reviewSession.ingest(chunk, submissionId) }
+            ...(reviewSession || options.onConversationChunk
+              ? {
+                  onConversationChunk: (chunk, submissionId) => {
+                    options.onConversationChunk?.(chunk, submissionId);
+                    reviewSession?.ingest(chunk, submissionId);
+                  },
+                }
               : {}),
             onWorkspaceMilestone: async (record) => {
               await signalCodingTaskStarted();

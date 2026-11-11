@@ -51,6 +51,7 @@ const LAZY_MODULES: Record<string, string> = {
   'src/slack/ui/card-set-message.ts': 'a card click redraw or an update_card call (channels/slack.ts, slack/ui/agent-card-redraw.ts)',
   'src/slack/ui/agent-card-redraw.ts': "update_card's first call (agents/slack-thread.ts)",
   'src/slack/funding-refusal-reply.ts': 'an out-of-usage reply or an Ask an Owner click (slack/run-turn.ts, channels/slack.ts)',
+  'src/slack/answer-release.ts': "a turn's shadow of the host answer release, with its latency log (slack/run-turn.ts)",
   'src/routines/pause-notice.ts': "a routine's out-of-usage pause, or the good run after it (routines/execution.ts)",
   'src/admin/usage-report.ts': "a hosted Usage report or activity page (admin/usage-api.ts)",
   'src/admin/billing-api.ts': "the Plan page's API, on its first request (admin/routes.ts)",

@@ -316,13 +316,14 @@ channel IDs, settings keys or values, or error text. Emission never throws.
 | `runner_boot` | Once per `SlackThreadRunner` activation (an instance constructed in memory), at the first call it serves (Cloudflare) | `firstMethod` (`wake` for the state store waking it at a delivery's receipt, `admit`, `alarm`, `stop`, `status`, `observedStatus`, `midRunReply`, `runFacts`, `presentationGet`, `presentationTransition`, or `host` for a host function), `cold` (the first runner its isolate constructed), `constructMs` (the constructor through its resume check), `constructToFirstCallMs`, and with `wake` or `admit`: `turnRef` and `sentToConstructMs` (the state store's send to the constructor's start) |
 | `agent_boot` | Once per Flue agent object activation (a Slack thread's Agent, a routine run, a coding worker), at the first call it serves (Cloudflare) | `agentClass` (the generated Durable Object class), `firstMethod` (`wake` for the state store waking a thread's object as it hands the turn to its runner, or a runner waking it once the turn's plan froze, `stage` for a runner staging a turn's input, `fetch` for a Flue dispatch or read, `alarm`, or `host`), `cold` (the first agent object its isolate constructed), `constructMs`, `constructToFirstCallMs`, and with `wake` or `stage`: `turnRef` and `sentToConstructMs` (the sender's clock before it addressed the object, to the constructor's start) |
 | `store_boot` | Once per `TagStateStore` activation, at the first RPC or alarm it serves (Cloudflare) | `firstMethod` (`rpc` or `alarm`), `cold` (the first state store its isolate constructed), `versionChanged` (this activation installed the schema: the first on its Worker version), `constructMs` (the constructor through its resume check), `constructToFirstCallMs` |
-| `turn_latency` | Once per relay attempt of one turn (both lanes) | `turnRef`, `runRef`, `lane` (`cloudflare`, `node`), `executor` (`alarm`, `runner`, `node`), `attempt`, `outcome` (`returned`, `threw`, `stopped`: a stopped run's ending), `firstWrite`, `final` (`delivered`, `deferred`, `none`), `admissionToStartMs`, `admissionToFirstWriteMs`, `admissionToFinalMs`, `receiptToAdmissionMs`, `receiptToFirstWriteMs`, `handoffMs` (a runner turn's first attempt: see below), `runnerWakeLeadMs` (a runner turn's first attempt, when the state store woke its runner at receipt: how long before the hand-off it sent the wake), `admissionStatusMs` (a runner turn's first attempt, when the state store tried to show its status before the hand-off: how long the hand-off waited for it; see below), `agentStageMs` (staging the turn's input beside the thread's Agent before dispatch, and loading the connector details its render reads: see below), `agentWakeLeadMs` (a Cloudflare turn whose Agent object was woken: how long before staging the wake was sent), `agentWakeSource` (with `agentWakeLeadMs`: `admission` or `plan`, which wake it counts from), `startToStageMs` (from the attempt's start to that staging's start: see below), `attemptMs`, `folded` (present when the turn took follow-ups: how many queued messages it read with its own), `foldedInformed` (of those, how many were a teammate's, read as information only), `read` (present when the turn replaced a mid-run 👀 with 👍: how many), `admissionToModelStartMs` and `receiptToModelStartMs` (to the moment the turn's first Flue dispatch is sent; absent on an attempt that sent none), `receiptToFinalMs`, `modelSteps`, `toolCalls` and `toolMs` (the model work the attempt's reply observation saw: see below) |
+| `turn_latency` | Once per relay attempt of one turn (both lanes) | `turnRef`, `runRef`, `lane` (`cloudflare`, `node`), `executor` (`alarm`, `runner`, `node`), `attempt`, `modelToken` (see below), `outcome` (`returned`, `threw`, `stopped`: a stopped run's ending), `firstWrite`, `final` (`delivered`, `deferred`, `none`), `admissionToStartMs`, `admissionToFirstWriteMs`, `admissionToFinalMs`, `receiptToAdmissionMs`, `receiptToFirstWriteMs`, `handoffMs` (a runner turn's first attempt: see below), `runnerWakeLeadMs` (a runner turn's first attempt, when the state store woke its runner at receipt: how long before the hand-off it sent the wake), `admissionStatusMs` (a runner turn's first attempt, when the state store tried to show its status before the hand-off: how long the hand-off waited for it; see below), `agentStageMs` (staging the turn's input beside the thread's Agent before dispatch, and loading the connector details its render reads: see below), `agentWakeLeadMs` (a Cloudflare turn whose Agent object was woken: how long before staging the wake was sent), `agentWakeSource` (with `agentWakeLeadMs`: `admission` or `plan`, which wake it counts from), `startToStageMs` (from the attempt's start to that staging's start: see below), `attemptMs`, `folded` (present when the turn took follow-ups: how many queued messages it read with its own), `foldedInformed` (of those, how many were a teammate's, read as information only), `read` (present when the turn replaced a mid-run 👀 with 👍: how many), `admissionToModelStartMs` and `receiptToModelStartMs` (to the moment the turn's first Flue dispatch is sent; absent on an attempt that sent none), `receiptToFinalMs`, `modelSteps`, `toolCalls` and `toolMs` (the model work the attempt's reply observation saw: see below), `firstAnswerText` (`stream`, `final`, `none`), `admissionToFirstAnswerTextMs`, `receiptToFirstAnswerTextMs`, `admissionToShadowAnswerTextMs`, `receiptToShadowAnswerTextMs` (see below) |
+| `answer_release` | With `turn_latency`, when the attempt read its reply's response from the start of a step (both lanes) | `turnRef`, `runRef`, `attempt`, `modelToken`, `outcome` (`below_hold`, `released`, `retired`, `blocked`), `block`, `late`, `holdChars`, `releaseChars`, `releaseHoldMs`, `admissionToReleaseMs`, `receiptToReleaseMs`, `releaseToLateMs`, `toolSteps`, `answerSteps`, `preToolText1`, `preToolText100`, `preToolText200`, `preToolText300`, `preToolText400`, `preToolText600`, `preToolText800`, `finalAnswerChars`, `displayParts`, `keySetupParts`, `taskCardStream` (see below) |
 | `turn_fold` | When the state store confirms that a running turn's model read messages sent while it worked (both lanes) | `turnRef`, `late` (how many messages this confirmation covers; each message is counted once), `informed` (of those, how many were a teammate's, read as information only), `turn` (of those, how many it read after a tool step rather than before its reply), `edits` (edits of messages it had already read, counted apart from `late`) |
 | `turn_fold` (edit) | Once per delivery of a person's edit of a message (both lanes) | `op` (`edit_admission`), `outcome` (`admitted`, `already_admitted` for a redelivery, `no_live_turn`, `not_foldable`, `not_author`, `stale`, `unchanged`, `unsupported` for a state store without edit admission, or `failed` when admission threw and the delivery is retried) |
 | `turn_fold` (coding job) | When a coding job's wait pauses for new messages, a later wait for it ends, or the Agent passes it guidance | `turnRef`, `op` (`coding_pause`, `coding_resume` or `coding_relay`), `outcome` (pause: `messages` or `unchecked`; resume: `completed`, `paused` or a failure reason; relay: `sent`, `finished`, `stopped` or `not_sent`) |
 | `state_rpc` | Sampled calls from a `Cf*Store` proxy into `TagStateStore` | `method` (RPC name), `op` (request kind for `*Execute` RPCs), `ms`, `slow`, `ok`, `isolateCalls`, `isolateSlowCalls` |
 | `state_rpc_summary` | Once per scope: a direct Slack delivery on Cloudflare (`slack_delivery`, from Core's handler to the end of its admission chain), or a relay attempt of one turn (`turn`) | `scope`, `turnRef` (`turn` only), `calls`, `rounds`, `totalMs`, `busyMs`, `failed`, `slowestMethod`, `slowestMs`, `spanMs`, `receiptToStartMs` (`slack_delivery` only), `callsBeforeModelStart`, `roundsBeforeModelStart`, `busyMsBeforeModelStart` (`turn` only: see below) |
-| `model_step` | Once per model request an agent makes, logged by the object that makes it (both lanes) | `turnRef` (a Slack thread's request), `purpose` (`agent`, `compaction`, `compaction_prefix`), `outcome` (the provider's finish reason, such as `stop` or `toolUse`, or `error`), `durationMs`, `firstTokenMs`, `inputTokens`, `cachedInputTokens`, `cacheWriteTokens`, `outputTokens`, `toolCalls` |
+| `model_step` | Once per model request an agent makes, logged by the object that makes it (both lanes) | `turnRef` (a Slack thread's request), `modelToken` (the model that served the request), `purpose` (`agent`, `compaction`, `compaction_prefix`), `outcome` (the provider's finish reason, such as `stop` or `toolUse`, or `error`), `durationMs`, `firstTokenMs`, `inputTokens`, `cachedInputTokens`, `cacheWriteTokens`, `outputTokens`, `toolCalls` |
 | `gateway_delivery` | Once per authenticated gateway delivery at Worker admission (Cloudflare) | `transport` (`http`, `socket`), `deliveryKind` (`event`, `agent_selected`, `channel_agent_add`), `eventType` and `subtype` (Slack's event vocabulary), `outcome` (`accepted`, `duplicate`, `rejected`, `failed`, `filtered`), `lagMs`, `slackLagMs`, socket only: `source` (`store`, `recent`, `filter`), `filterReason`, `queueMs`, `admitMs`, `inFlight`, `sessionPhase`, `sessionHealth`, `sessionAttempt`, `sessionGeneration`, `sessionAgeMs` |
 | `slack_read` | Once per Slack `conversations.history` or `conversations.replies` read for context or a read tool | `source` (`prefetch`, `tool`), `method` (`history`, `replies`), `outcome` (`ok`, `refused` by the shared read budget, `rate_limited`), `gated` (the shared app's one-a-minute budget applies), `limit`, `returned`, `includesRoot`, `reachesAnchor` (the page reached the triggering message), `hasCursor`, `order` (`oldest_first`, `newest_first`, `mixed`) |
 | `interaction_judgment` | Once per guaranteed Slack turn (a DM or a mention) the turn judged itself, after its classifier settled (both lanes) | `turnRef`, `recordedBy` (`shortcut`, `clef`, `model`, `unrecorded`), `basis` (the recorded disposition), `basisMs`, `clef` (`read`, `unavailable`, `timeout`, `error`, `unparseable`, `skipped`), `clefMs`, `clefInputTokens` (Clef is platform infrastructure, so this is where its cost is counted), `clefChoice`, `clefTop`, `clefTextMass` (P(reply) + P(work)) and `clefMemory` (each in thousandths), `gate` (`dispatch`, `await_model`), `clefLate` (Clef would have dispatched but the model recorded first), `model` (the classifier's disposition), `modelFailed`, `modelMs`, `refinement` (after a Clef basis: `none`, `labels`, `disagreed`, `model_unavailable`), `agreed` (Clef's disposition equals the model's), and from Clef's separate management call (absent after a shortcut): `management` (`read`, `unavailable`, `timeout`, `error`, `unparseable`), `managementMs`, `managementInputTokens`, `managementTop` (its noul, in thousandths), `managementFired` (at or above 0.5, so the turn's first request mounts the workspace change tools) |
@@ -522,6 +523,66 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   `runRef` equals the `Slack presentation finalized` record's `runRef`, and
   `turnRef` is a hash of the turn job ID. Thread follow-ups admitted without a
   run ID carry neither `runRef` nor `attempt`; group them by `turnRef`.
+- `modelToken` on `turn_latency` and `answer_release` is the model the turn
+  ran with, and on `model_step` the model that served that request (Flue's
+  provider and model id joined by `/`). It is a token (`modelToken()` in
+  `runtime-latency.ts`): the provider and model id lowercased, every other
+  character `_`, cut to 64 characters. `anthropic/claude-opus-5.5` logs as
+  `anthropic_claude_opus_5_5`. It is `unknown` when the turn had no model,
+  such as one that waits for Model providers to be repaired. Group by it to
+  read any of the three records per model.
+- `turn_latency.firstAnswerText` names where the attempt first showed answer
+  text: `stream` when Slack acknowledged a stream start carrying text, or the
+  first text appended to a task-card stream; `final` when the terminal was
+  delivered; `none` otherwise. A status, a reaction, a task card or a mid-run
+  reply is not answer text. `receiptToFirstAnswerTextMs` is message to first
+  answer text as the person saw it. `receiptToShadowAnswerTextMs` is the same
+  measure had the host released the answer by the rule `answer_release`
+  shadows: the earlier of the release and the answer Slack showed, and equal to
+  `receiptToFirstAnswerTextMs` when the rule would not have released or would
+  have retired its release. The release time is when the reader saw the text
+  that crossed the hold, before the Slack call a real release would make.
+  Compare the two over rows whose `final` is `delivered`: an attempt that
+  delivered no terminal can carry the shadow time alone.
+- `answer_release` is a shadow of the host release rule
+  (`src/slack/answer-release.ts`) and changes nothing in Slack. The rule
+  releases a model step's text once its settled prefix (what
+  `streamableSlackMarkdownPrefix` would stream, so the redaction hold applies)
+  holds `holdChars` characters and no tool call has appeared in the step.
+  `outcome` is `below_hold` when no step reached the hold, `released` when one
+  did and nothing followed, `retired` when a tool call, a blocking data part or
+  a reset followed the released text (`late`: `tool`, `presentation_tool` for a
+  table, display or interactive tool, or a `block` token), and `blocked` when a
+  blocking condition came before any release (`block`: `draft_replacing_tool`,
+  `file_delivery`, `interactive_component`, `agent_creation`, or
+  `conversation_reset` when a snapshot replaced the step boundaries). Nothing
+  releases after a retirement. `releaseChars` is the settled length at the
+  release, `releaseHoldMs` the time from the releasing step's first text to the
+  release, and `releaseToLateMs` how long retired text would have shown.
+  `toolSteps` counts model steps that called a tool and `answerSteps` steps
+  that completed without one (more than one means the response continued after
+  an answer). `preToolTextN` counts tool steps whose settled text before their
+  first tool call reached N characters, so a reply retires at a hold of N when
+  its `preToolTextN` is above 0. `finalAnswerChars` is the settled length of the
+  last step that completed without a tool call: the reply would release at a
+  hold of N, and keep its release, when it is N or more and `preToolTextN` is
+  0. `displayParts` and `keySetupParts` count the
+  display component (cards, chart, details) and key-setup data parts the
+  response wrote. Neither blocks in the shadow, and the release keeps both
+  terminal at first, so a `released` row with either above 0 is a reply it
+  would not stream yet. `taskCardStream` is true when Slack accepted native
+  task card rows on the reply's stream before its terminal: the stream opened
+  as the card, or a milestone added rows to an open stream. The release does
+  not stop and delete such a stream, since the card would go with it, so count
+  its retirements apart. Lengths are counts only; no text is logged. A fault in
+  the shadow logs no record for that attempt. On Cloudflare the reader polls
+  the response (every 150 ms while chunks arrive, 750 ms once it is quiet) and
+  reads a page's chunks at one time, so a `releaseHoldMs` or `releaseToLateMs`
+  of 0 means both ends came in one page: such a retirement is one a release
+  that waits for its page would never show. A reattached attempt reads its
+  response again from the start, so its times are replay times: prefer
+  `attempt` 1. Join it to `Slack presentation finalized` by `runRef` for the
+  offer and policy outcome.
 - `gateway_delivery` is logged when a delivery reaches admission: by
   `TagStateStore.receiveGatewayHttp` for HTTP push (after signature
   verification; challenges and rejected signatures log nothing) and by the

@@ -825,6 +825,50 @@ test('a turn wakes its Agent object once its plan is saved, before it stages, an
   assert.ok(Number(latency[0]?.agentWakeLeadMs) >= 25, `the lead covers the wait to stage: ${latency[0]?.agentWakeLeadMs}`);
 });
 
+// Defects caught: the turn's observation never reaches the shadow (no
+// answer_release record), the record names another run, the shadow time
+// comes out later than the answer Slack showed, or neither record names the
+// turn's model.
+test('a turn logs what the host release rule would have done with its reply', async (t) => {
+  const logs: Record<string, unknown>[] = [];
+  t.mock.method(console, 'info', (record: unknown) => {
+    const event = (record as { event?: unknown } | undefined)?.event;
+    if (event === 'turn_latency' || event === 'answer_release') logs.push(record as Record<string, unknown>);
+  });
+  const answer = 'The synthetic forecast lists three dry days and one windy afternoon. '.repeat(12).trim();
+  const submissionId = 'submission_shadow';
+  await firstStatusTimeline('dm', null, {
+    turnLatency: { receivedAt: Date.now() - 400, admittedAt: Date.now() - 300, lane: 'cloudflare', executor: 'runner' },
+    agentPrompt: async ({ onConversationChunk }) => {
+      let batch = 0;
+      const read = (body: Record<string, unknown>) => onConversationChunk?.({
+        conversationId: 'conversation_shadow', ...body, position: { batch: (batch += 1), index: 0 },
+      } as Parameters<NonNullable<typeof onConversationChunk>>[0], submissionId);
+      read({ type: 'message-started', messageId: 'message_shadow', submissionId });
+      for (const delta of answer.split(/(?= )/)) {
+        read({ type: 'message-delta', messageId: 'message_shadow', kind: 'text', delta });
+      }
+      read({ type: 'message-completed', messageId: 'message_shadow' });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return { ...AGENT_ANSWER, text: answer };
+    },
+  }, dmAssignment);
+  const latency = logs.find((record) => record.event === 'turn_latency');
+  const release = logs.find((record) => record.event === 'answer_release');
+  assert.ok(latency && release, `both records: ${JSON.stringify(logs)}`);
+  assert.equal(release.outcome, 'released');
+  assert.equal(release.runRef, latency.runRef);
+  assert.equal(release.answerSteps, 1);
+  assert.equal(release.modelToken, 'local_stub_first_status', `from ${dmAssignment.model}`);
+  assert.equal(latency.modelToken, release.modelToken);
+  assert.equal(release.taskCardStream, false);
+  assert.ok(Number(release.receiptToReleaseMs) >= 400);
+  assert.equal(latency.firstAnswerText, 'final');
+  assert.ok(Number(latency.receiptToShadowAnswerTextMs) + 20 <= Number(latency.receiptToFirstAnswerTextMs),
+    `the release precedes the final: ${latency.receiptToShadowAnswerTextMs} < ${latency.receiptToFirstAnswerTextMs}`);
+  assert.equal(JSON.stringify(logs).includes('forecast'), false);
+});
+
 // Defects caught: runTurn never wires the dispatch's model start or the
 // observed work into turn_latency, or never counts the attempt's state store
 // calls.

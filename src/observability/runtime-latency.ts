@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 
 import type { FlueObservation } from '@flue/runtime';
 
+import type { AnswerReleaseShadowRecord } from '../slack/answer-release.ts';
 import type { GatewayInboundDelivery } from '../slack/gateway/protocol.ts';
 import type { GatewaySessionRunnerHealthSnapshot } from '../slack/gateway/session-runner.ts';
 import type { SlackThreadRunnerRpc } from '../slack/thread-runner-rpc.ts';
@@ -21,6 +22,7 @@ import type { SlackThreadRunnerRpc } from '../slack/thread-runner-rpc.ts';
 export type RuntimeLatencyEvent =
   | 'relay_alarm'
   | 'turn_latency'
+  | 'answer_release'
   | 'turn_fold'
   | 'state_rpc'
   | 'state_rpc_summary'
@@ -44,6 +46,8 @@ const TOKEN = /^[a-z][a-z0-9_]{0,63}$/i;
 const OPAQUE_REF = /^(run|turn)_[0-9a-f]{24}$/;
 /** A Cloudflare Worker version id (a UUID), or a fixed token instead of one. */
 const VERSION_ID = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[a-z][a-z0-9_]{0,63})$/i;
+/** What `modelToken` returns. */
+const MODEL_TOKEN = /^[a-z][a-z0-9_]{0,63}$/;
 
 /** The only string fields any event may carry, and their allowed shapes. */
 const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
@@ -51,7 +55,10 @@ const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
   lane: TOKEN,
   executor: TOKEN,
   firstWrite: TOKEN,
+  firstAnswerText: TOKEN,
   final: TOKEN,
+  block: TOKEN,
+  late: TOKEN,
   method: TOKEN,
   firstMethod: TOKEN,
   op: TOKEN,
@@ -79,10 +86,22 @@ const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
   supersededBy: VERSION_ID,
   agentClass: TOKEN,
   agentWakeSource: TOKEN,
+  modelToken: MODEL_TOKEN,
   scope: TOKEN,
   slowestMethod: TOKEN,
   purpose: TOKEN,
 };
+
+/**
+ * A model id as a log token, so records can be read per model:
+ * `anthropic/claude-opus-5.5` becomes `anthropic_claude_opus_5_5`. Lowercase,
+ * every character outside a-z and 0-9 becomes `_`, cut to 64 characters, and
+ * `unknown` when there is no id or it does not start with a letter.
+ */
+export function modelToken(modelId: string | undefined): string {
+  const token = (modelId ?? '').toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 64);
+  return MODEL_TOKEN.test(token) ? token : 'unknown';
+}
 
 export function emitRuntimeLatency(
   event: RuntimeLatencyEvent,
@@ -398,6 +417,13 @@ export type TurnFirstWrite =
   | 'midrun_reply'
   | 'final';
 
+/**
+ * Where the attempt first showed answer text: `stream` when Slack
+ * acknowledged a stream start with text, or the first text on a task-card
+ * stream; `final` when the terminal was delivered.
+ */
+export type TurnAnswerTextSurface = 'stream' | 'final';
+
 export interface TurnLatencyContext {
   /** `turn_jobs.enqueued_at`: when the relay durably admitted the turn. */
   admittedAt?: number;
@@ -439,6 +465,7 @@ export class TurnLatencyTracker {
   private work: TurnWork | undefined;
   private stateRpcs: StateRpcSummary | undefined;
   private firstWrite: { surface: TurnFirstWrite; at: number } | undefined;
+  private answerText: { surface: TurnAnswerTextSurface; at: number } | undefined;
   private final: { kind: 'delivered' | 'deferred'; at: number } | undefined;
   private folded = 0;
   private foldedInformed = 0;
@@ -448,11 +475,13 @@ export class TurnLatencyTracker {
   private agentWake: { sentAt: number; source: 'admission' | 'plan' } | undefined;
   private agentWakeLeadMs: number | undefined;
   private startToStageMs: number | undefined;
+  private taskCardStreamed = false;
   private emitted = false;
 
+  /** `model`: the model id the turn runs with, logged as its `modelToken`. */
   constructor(
     private readonly context: TurnLatencyContext,
-    private readonly ids: { turnJobId?: string; runId?: string; attempt?: number },
+    private readonly ids: { turnJobId?: string; runId?: string; attempt?: number; model?: string | undefined },
     private readonly now: () => number = Date.now,
     private readonly sink?: RuntimeLatencySink,
   ) {
@@ -483,6 +512,16 @@ export class TurnLatencyTracker {
   /** Record an acknowledged Slack write; only the first one is kept. */
   markSlackWrite(surface: TurnFirstWrite): void {
     if (!this.firstWrite) this.firstWrite = { surface, at: this.now() };
+  }
+
+  /** Slack acknowledged answer text on a stream; only the first is kept. */
+  markStreamedAnswerText(): void {
+    this.answerText ??= { surface: 'stream', at: this.now() };
+  }
+
+  /** Slack acknowledged native task card rows on the reply's stream before its terminal. */
+  markTaskCardStreamed(): void {
+    this.taskCardStreamed = true;
   }
 
   /** The turn took this many queued messages as follow-ups. */
@@ -529,13 +568,17 @@ export class TurnLatencyTracker {
     const at = this.now();
     this.final = { kind, at };
     if (kind === 'delivered' && !this.firstWrite) this.firstWrite = { surface: 'final', at };
+    if (kind === 'delivered') this.answerText ??= { surface: 'final', at };
   }
 
   /**
    * Emit exactly once, when the attempt returns or throws. `stopped`: it
    * returned with a stopped run's ending (KTD3), which is not a failure.
+   * `answerRelease`, the attempt's shadow of the host release rule, adds an
+   * `answer_release` record and the time a release would have shown the
+   * answer, without changing anything Slack showed.
    */
-  emit(outcome: 'returned' | 'threw' | 'stopped'): void {
+  emit(outcome: 'returned' | 'threw' | 'stopped', answerRelease?: AnswerReleaseShadowRecord): void {
     if (this.emitted) return;
     this.emitted = true;
     const { admittedAt, receivedAt } = this.context;
@@ -544,12 +587,20 @@ export class TurnLatencyTracker {
     const sinceReceipt = (at: number | undefined) =>
       receivedAt === undefined || at === undefined ? undefined : at - receivedAt;
     const end = this.now();
+    const answerTextAt = this.answerText?.at;
+    // Only a release nothing followed shows the answer early; a retired one
+    // leaves the answer to the terminal.
+    const releasedAnswerAt = answerRelease?.outcome === 'released' ? answerRelease.releasedAt : undefined;
+    const shadowAnswerTextAt = releasedAnswerAt === undefined ? answerTextAt
+      : Math.min(releasedAnswerAt, answerTextAt ?? releasedAnswerAt);
+    const model = modelToken(this.ids.model);
     emitRuntimeLatency('turn_latency', {
       turnRef: opaqueTurnRef(this.ids.turnJobId),
       runRef: opaqueRunRef(this.ids.runId),
       lane: this.context.lane,
       executor: this.context.executor,
       attempt: this.ids.attempt,
+      modelToken: model,
       outcome,
       firstWrite: this.firstWrite?.surface ?? 'none',
       final: this.final?.kind ?? 'none',
@@ -561,6 +612,11 @@ export class TurnLatencyTracker {
       receiptToFirstWriteMs: sinceReceipt(this.firstWrite?.at),
       receiptToModelStartMs: sinceReceipt(this.modelStartAt),
       receiptToFinalMs: this.final?.kind === 'delivered' ? sinceReceipt(this.final.at) : undefined,
+      firstAnswerText: this.answerText?.surface ?? 'none',
+      admissionToFirstAnswerTextMs: since(answerTextAt),
+      receiptToFirstAnswerTextMs: sinceReceipt(answerTextAt),
+      admissionToShadowAnswerTextMs: since(shadowAnswerTextAt),
+      receiptToShadowAnswerTextMs: sinceReceipt(shadowAnswerTextAt),
       handoffMs: this.context.handoffMs,
       runnerWakeLeadMs: this.context.runnerWakeLeadMs,
       admissionStatusMs: this.context.admissionStatusMs,
@@ -577,6 +633,19 @@ export class TurnLatencyTracker {
       toolCalls: this.work?.toolCalls,
       toolMs: this.work?.toolMs,
     }, this.sink);
+    if (answerRelease) {
+      const { releasedAt, ...shadow } = answerRelease;
+      emitRuntimeLatency('answer_release', {
+        turnRef: opaqueTurnRef(this.ids.turnJobId),
+        runRef: opaqueRunRef(this.ids.runId),
+        attempt: this.ids.attempt,
+        modelToken: model,
+        ...shadow,
+        taskCardStream: this.taskCardStreamed,
+        admissionToReleaseMs: since(releasedAt),
+        receiptToReleaseMs: sinceReceipt(releasedAt),
+      }, this.sink);
+    }
     this.stateRpcs?.emit({ turnJobId: this.ids.turnJobId });
   }
 }
@@ -980,8 +1049,9 @@ const FIRST_TOKEN_EVENTS: ReadonlySet<FlueObservation['type']> = new Set([
 
 /**
  * Times each model request from Flue's `turn_request` to its first streamed
- * token (text, thinking, or a tool call's arguments), and logs Flue's
- * duration, its token counts and its tool calls when its `turn` ends.
+ * token (text, thinking, or a tool call's arguments), and logs the model that
+ * served it, Flue's duration, its token counts and its tool calls when its
+ * `turn` ends.
  * `inputTokens` excludes the cached input that `cachedInputTokens` counts.
  */
 export class ModelStepMarks {
@@ -1018,8 +1088,10 @@ export class ModelStepMarks {
         // A step whose turn cannot be read is still logged, without its turn.
       }
       const { usage, output, finishReason } = event.response;
+      const { request } = event;
       emitRuntimeLatency('model_step', {
         turnRef: opaqueTurnRef(turnJobId),
+        modelToken: modelToken(request && `${request.providerId}/${request.requestedModel}`),
         purpose: event.purpose,
         outcome: event.isError ? 'error' : finishReason,
         durationMs: event.durationMs,

@@ -20,6 +20,7 @@ import {
   observeMemoryToolPolicy, serializeCurrentRequestEnvelope,
 } from '../src/memory/tool-policy.ts';
 import { RunReviewCollector } from '../src/review/collector.ts';
+import { AnswerReleaseShadow } from '../src/slack/answer-release.ts';
 import { promptSlackThreadAgent, type SlackFlueDispatchState } from '../src/slack/flue-dispatch.ts';
 import {
   slackToolBoundaryFoldInterceptor, useSlackFollowUpFold, type LateFoldRequest,
@@ -259,6 +260,7 @@ test('messages sent while the Agent runs tools reach the model after that tool b
     faux.setResponses(responses);
     const statuses: string[] = [];
     let review: RunReviewCollector | undefined;
+    const release = new AnswerReleaseShadow();
     const { instanceId } = scenario;
     const statusTurn = registerSlackStatusTurn(instanceId, {
       setStatus: async (update) => { statuses.push(update.text); return true; },
@@ -272,10 +274,11 @@ test('messages sent while the Agent runs tools reach the model after that tool b
         onConversationChunk: (chunk, submissionId) => {
           review ??= new RunReviewCollector(submissionId, 'head');
           review.ingest(chunk);
+          release.onEvent(chunk, submissionId);
         },
       });
       await statusTurn.drain();
-      return { result, statuses, review };
+      return { result, statuses, review, release: release.record() };
     } finally {
       statusTurn.close();
       onTool = () => {};
@@ -299,11 +302,18 @@ test('messages sent while the Agent runs tools reach the model after that tool b
           arrivesInTool(1)(step);
         };
         toolDelayMs = () => 20;
-        const { result, statuses, review } = await run([
+        const { result, statuses, review, release } = await run([
           work(1), work(2), work(3), answer('A launch note that mentions the pricing change.'),
         ]);
         assert.deepEqual(lateSeen(), [0, 1, 1, 1], 'read once, from the request right after batch 1');
         assert.equal(result.text, 'A launch note that mentions the pricing change.', 'only the final step posts');
+        // Defect caught: the release shadow misreading Flue's own stream,
+        // which starts every model step under one response id with its
+        // text before its tool call.
+        assert.deepEqual(
+          [release?.outcome, release?.toolSteps, release?.answerSteps, release?.preToolText1, release?.preToolText100],
+          ['below_hold', 3, 1, 3, 0],
+        );
         assert.deepEqual(calls(), [
           { phase: 'turn', received: 0, take: true },
           { phase: 'turn', received: 1, take: true },
