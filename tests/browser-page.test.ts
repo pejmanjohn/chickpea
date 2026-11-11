@@ -107,6 +107,30 @@ test('snapshot truncates at maxNodes, long names at 120 chars, and drops refs pa
   client.close();
 });
 
+test('snapshot hands each name, text and value to the redactor as the page gave it, and refs keep the real name', async () => {
+  const { socket, page, client } = setup();
+  const shown = 'Synth"etic  Pass';
+  socket.responders.set('Accessibility.getFullAXTree', () => ({
+    result: {
+      nodes: [
+        ax('1', 'RootWebArea', { childIds: ['2', '3', '4'] }),
+        ax('2', 'button', { parentId: '1', name: `Copy ${shown}`, backendDOMNodeId: 2 }),
+        ax('3', 'StaticText', { parentId: '1', name: `You typed ${shown}` }),
+        ax('4', 'textbox', { parentId: '1', name: 'Password', backendDOMNodeId: 4, value: { type: 'string', value: shown } }),
+      ],
+    },
+  }));
+  // Matches only the text as Chromium returned it: two spaces, the quote not escaped.
+  const snap = await page.snapshot({ redact: (text) => text.split(shown).join('[redacted]') });
+  assert.equal(snap.text, [
+    '- button "Copy [redacted]" [ref=e1]',
+    '- text "You typed [redacted]"',
+    '- textbox "Password" [ref=e2] value="[redacted]"',
+  ].join('\n'));
+  assert.equal(page.refs.get('e1')?.name, 'Copy Synth"etic Pass');
+  client.close();
+});
+
 test('navigate enables Page once, waits for loadEventFired, and returns url and title', async () => {
   const { socket, client } = setup();
   // Real sleep so readyState polling (after 500ms) cannot beat the load event.

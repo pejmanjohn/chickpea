@@ -262,6 +262,16 @@ test('browser_look answers from a JPEG screenshot, or explains that the model ca
   await blind.session.close();
 });
 
+test('browser_look redacts a typed secret its answer repeats', async () => {
+  const { run, session } = setup({ inspectScreenshot: async () => 'The password box shows Synthetic-Pass-0042 in plain text.' });
+  await run('browser_open', { url: 'https://example.com/pricing' });
+  session.addRedaction('Synthetic-Pass-0042');
+  assert.deepEqual(await run('browser_look', { question: 'What does the password box show?' }), {
+    answer: 'The password box shows [redacted] in plain text.',
+  });
+  await session.close();
+});
+
 test('only browser_open starts a session; the other page tools need an open page', async () => {
   const { run, session, staged } = setup({ inspectScreenshot: async () => 'unused' });
   const noPage = { error: 'No page is open in the browser. Call browser_open first.' };
@@ -1210,6 +1220,20 @@ test('a typed secret in an element name stays out of the approval description wh
   turn.session.addRedaction(secret);
   const held = await turn.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
   assert.equal(held.description, 'click "Confirm the change for the account whose recovery phrase is [redacted]"');
+  assertSecretHidden(held, secret, 'approval description');
+  assertSecretHidden({ description: turn.staged[0]!.title }, secret, 'approval screenshot title');
+  await turn.session.close();
+});
+
+test('a typed secret in the text of a held step stays out of the approval description where the description cuts it', async () => {
+  const secret = 'Synthetic-Recovery-Phrase-0042-alpha-bravo';
+  const turn = await actTurn({ settings: new SqliteSettingsStore(':memory:'), messageTs: TURN_1_TS });
+  await turn.run('browser_open', { url: 'https://billing.example.com/plan' });
+  turn.session.addRedaction(secret);
+  const held = await turn.run('browser_act', {
+    ref: 'e1', action: 'type', text: `The recovery phrase for this account is ${secret}`, mayChangeData: true,
+  });
+  assert.equal(held.description, 'type "The recovery phrase for this account is [redacted]…" into "Customer name"');
   assertSecretHidden(held, secret, 'approval description');
   assertSecretHidden({ description: turn.staged[0]!.title }, secret, 'approval screenshot title');
   await turn.session.close();
