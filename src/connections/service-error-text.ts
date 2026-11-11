@@ -29,15 +29,17 @@ const HIDDEN = '\u0000';
  */
 export function serviceErrorText(text: string, secrets: readonly string[]): string {
   const truncated = text.length > MAX_SOURCE_CHARS;
-  // Three passes, in this order. The turn's own secrets go first and whole, so a value pass that
-  // ends at a `,` inside one cannot leave its tail unmatched. Labelled values go next, before the
-  // shared signatures, which can replace a label with the start of its value (`OPENAI_API_KEY=…`)
-  // and leave the rest unlabelled.
-  let known = unescapeJson(text.slice(0, MAX_SOURCE_CHARS));
+  // No order of the passes is safe alone: hiding the turn's own secrets first can erase a label
+  // that holds one, and hiding labelled values first can cut a secret where a value ends. So
+  // labelled values are found both with and without the turn's secrets in place, and every
+  // character either finds stays hidden. Every pass keeps the length, so positions line up. The
+  // shared signatures run last, since they can replace a label with the start of its value.
+  const source = unescapeJson(text.slice(0, MAX_SOURCE_CHARS));
+  let known = source;
   for (const secret of secrets) {
-    if (secret.length >= 8) known = known.split(secret).join(HIDDEN);
+    if (secret.length >= 8) known = known.split(secret).join(HIDDEN.repeat(secret.length));
   }
-  const readable = redactCredentialLikeContent(hideSecretValues(known))
+  const readable = redactCredentialLikeContent(hiddenInEither(hideSecretValues(source), hideSecretValues(known)))
     .replaceAll(CREDENTIAL_REPLACEMENT, HIDDEN)
     .replaceAll(ESCAPED_QUOTE, '"');
   const chunks = spaceCompactJson(readable).split(/\s+/);
@@ -115,8 +117,8 @@ const QUOTES = new Set(['"', "'", '`', ESCAPED_QUOTE]);
 const CLOSERS: Readonly<Record<string, string>> = { '{': '}', '[': ']' };
 
 /**
- * Each value a secret label or an auth scheme names, as one hidden character, with the label
- * kept. A value has an extent, and a whitespace chunk is not it: a quoted value ends at its
+ * Each value a secret label or an auth scheme names, hidden character for character, with the
+ * label kept. A value has an extent, and a whitespace chunk is not it: a quoted value ends at its
  * closing quote, an object or array at its closing bracket, and any other value, or an auth
  * scheme's, at the end of its line, folded lines included, or at a `,`, `;` or `&` outside
  * quotes. A value with no end takes the rest of the text, and a label that ends its line takes
@@ -132,10 +134,19 @@ function hideSecretValues(text: string): string {
     const start = skip(SPACE, text, LABEL.lastIndex);
     const end = name === undefined ? lineEnd(text, start) : valueEnd(text, start);
     if (end === start) continue;
-    kept += `${text.slice(from, start)}${HIDDEN}`;
+    kept += `${text.slice(from, start)}${HIDDEN.repeat(end - start)}`;
     from = LABEL.lastIndex = end;
   }
   return kept + text.slice(from);
+}
+
+/** Two texts of one length, with each character hidden where either hides it. */
+function hiddenInEither(first: string, second: string): string {
+  let merged = '';
+  for (let at = 0; at < first.length; at += 1) {
+    merged += second.charAt(at) === HIDDEN ? HIDDEN : first.charAt(at);
+  }
+  return merged;
 }
 
 function skip(pattern: RegExp, text: string, at: number): number {
