@@ -4,12 +4,14 @@ import { test, type TestContext } from 'node:test';
 import { DM, WORKER_MENTION, withDirectWorker, type DirectWorker } from './helpers/direct-worker.ts';
 
 /**
- * A direct installation's delivery is admitted by processSlackEvent either
- * over the state store's RPCs (the Worker's path) or on the store's own ports
- * (processDirectSlackEvent with directSlackExecution, as the state store runs
- * it). Each scenario runs on two identical installations, one each way, and
- * must end the same: the same turns, claims, threads and thread record, and
- * the same Slack calls. The local run makes no call over RPC.
+ * A direct installation's delivery is admitted by processSlackEvent over the
+ * state store's RPCs (the Worker's path), on the store's own ports
+ * (processDirectSlackEvent with directSlackExecution), or by the store itself
+ * when the Worker sends it there (CHICKPEA_SLACK_ADMISSION=store,
+ * TagStateStore.admitSlackDelivery). Each scenario runs on identical
+ * installations, one per way, and must end the same: the same turns, claims,
+ * threads and thread record, and the same Slack calls. The local run makes no
+ * call over RPC, and the store's run makes only the Worker's one call.
  */
 
 const THREAD_REPLY = { ...DM, ts: '6000.000200', thread_ts: DM.ts, text: 'and since Monday?' };
@@ -44,7 +46,7 @@ const SCENARIOS: Array<[string, Array<Record<string, unknown> | 'again' | ((work
   ["a DM when the workspace's model cannot resolve", [withoutWorkspaceModel, DM]],
 ];
 
-type Port = 'rpc' | 'local';
+type Port = 'rpc' | 'local' | 'store';
 
 async function admitted(t: TestContext, port: Port, deliveries: (typeof SCENARIOS)[number][1]) {
   let result: Record<string, unknown> = {};
@@ -61,8 +63,14 @@ async function admitted(t: TestContext, port: Port, deliveries: (typeof SCENARIO
     }
     const rpcs = worker.log.filter((entry) => entry.startsWith('rpc:'));
     if (port === 'local') assert.deepEqual(rpcs, [], 'admission on local ports never calls the store over RPC');
+    if (port === 'store') {
+      // A standalone Worker reads its credential bundle, and the installation beside it, to check the signature.
+      const admission = rpcs.filter((entry) => !['rpc:identityExecute', 'rpc:configGetWorkspaceInstallation'].includes(entry));
+      assert.deepEqual(admission, Array(deliveries.filter((delivery) => typeof delivery !== 'function').length)
+        .fill('rpc:admitSlackDelivery'), 'past the signature, the Worker makes one call per delivery, and the store none');
+    }
     result = outcome(worker);
-  });
+  }, port === 'store' ? { env: { CHICKPEA_SLACK_ADMISSION: 'store', SLACK_THREAD_RUNNER: undefined } } : {});
   return result;
 }
 
@@ -108,10 +116,10 @@ function outcome(worker: DirectWorker) {
 // resolve), a direct branch that reaches the store over RPC from inside it,
 // and any admission outcome that differs between the two ports.
 for (const [name, deliveries] of SCENARIOS) {
-  test(`${name}: admitted on the state store's own ports as over its RPCs`, async (t) => {
+  test(`${name}: admitted on the state store's own ports and by the store as over its RPCs`, async (t) => {
     const overRpc = await admitted(t, 'rpc', deliveries);
-    const local = await admitted(t, 'local', deliveries);
-    assert.deepEqual(local, overRpc);
+    assert.deepEqual(await admitted(t, 'local', deliveries), overRpc, 'on local ports');
+    assert.deepEqual(await admitted(t, 'store', deliveries), overRpc, 'by the store');
   });
 }
 

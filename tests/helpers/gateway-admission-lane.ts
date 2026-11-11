@@ -197,7 +197,7 @@ export interface Lane {
 // The production inbox drain, which builds the execution each delivery is admitted with.
 const inboxDrainCode = ts.transpileModule(
   `${cloudflare.statements.filter((node) =>
-    (ts.isFunctionDeclaration(node) && ['drainGatewayInbox', 'gatewayConversationKey'].includes(node.name?.text ?? '')) ||
+    (ts.isFunctionDeclaration(node) && ['drainGatewayInbox', 'gatewayConversationKey', 'slackEventConversationKey'].includes(node.name?.text ?? '')) ||
     (ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) =>
       declaration.name.getText(cloudflare) === 'GATEWAY_INBOX_CONVERSATION_CONCURRENCY')))
     .map((node) => node.getText(cloudflare)).join('\n')}\ndrainGatewayInbox`,

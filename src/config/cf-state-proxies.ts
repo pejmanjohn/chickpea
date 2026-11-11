@@ -181,6 +181,8 @@ import type {
 import type {
   SlackCanonicalAdmissionInput,
   SlackDeliveryNote,
+  SlackDirectDelivery,
+  SlackDirectDeliveryAdmission,
   SlackFrontDeskHandoffNote,
   SlackStateStore,
 } from '../slack/claim-store.ts';
@@ -2058,6 +2060,15 @@ export class CfSlackStateStore implements SlackStateStore {
 
   async noteDelivery(note: SlackDeliveryNote) {
     await rpcVia(this.stub, 'noteSlackDelivery', (stub) => stub.noteSlackDelivery(note));
+  }
+
+  /** Never replayed: on a store that cannot take the call, the Worker's own admission is the replay. */
+  async admitDelivery(delivery: SlackDirectDelivery): Promise<SlackDirectDeliveryAdmission> {
+    return rpcVia(this.stub, 'admitSlackDelivery', (stub) => withStoreFallback<StateRpcResult<SlackDirectDeliveryAdmission>>(
+      'admitSlackDelivery',
+      () => stub.admitSlackDelivery(delivery),
+      async (reason) => ({ ok: true, value: { outcome: 'fallback', reason } }),
+    ));
   }
 
   async noteFrontDeskHandoff(note: SlackFrontDeskHandoffNote) {

@@ -27,6 +27,7 @@ export type RuntimeLatencyEvent =
   | 'state_rpc'
   | 'state_rpc_summary'
   | 'state_rpc_fallback'
+  | 'slack_store_admission'
   | 'gateway_delivery'
   | 'thread_runner_alarm'
   | 'thread_runner_superseded'
@@ -73,6 +74,7 @@ const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
   filterReason: TOKEN,
   order: TOKEN,
   reason: TOKEN,
+  path: TOKEN,
   recordedBy: TOKEN,
   basis: TOKEN,
   clef: TOKEN,
@@ -844,8 +846,12 @@ export function resetStateRpcCountersForTest(): void {
 // caller. `state_rpc` samples only slow calls, so its medians are the slow
 // tail's; this record counts them all.
 
-/** `slack_delivery`: a direct delivery from Core's handler to its admission chain's end. `turn`: one turn attempt. */
-export type StateRpcScope = 'slack_delivery' | 'turn';
+/**
+ * `slack_delivery`: a direct delivery from Core's handler to its admission
+ * chain's end. `turn`: one turn attempt. `store_admission`: a delivery the
+ * state store admits itself, whose calls over RPC must be none.
+ */
+export type StateRpcScope = 'slack_delivery' | 'turn' | 'store_admission';
 
 /**
  * A scope's calls. A round is a run of overlapping calls: one starts while
@@ -905,6 +911,11 @@ export class StateRpcSummary {
     return stateRpcScopes.run(this.tally, fn);
   }
 
+  /** The calls counted so far. */
+  get calls(): number {
+    return this.tally.calls;
+  }
+
   /** The turn's model starts: the calls so far are the ones before it. Only the first is kept. */
   markModelStart(): void {
     this.beforeModelStart ??= {
@@ -919,7 +930,13 @@ export class StateRpcSummary {
    * none). `receivedAt`: the delivery's receipt, so the record shows how long
    * it waited before this scope.
    */
-  emit(fields: { turnJobId?: string | undefined; receivedAt?: number | undefined } = {}): void {
+  emit(fields: {
+    turnJobId?: string | undefined;
+    receivedAt?: number | undefined;
+    /** `slack_delivery`: who admitted it (`store`, `worker`, `fallback`), and on a fallback why. */
+    path?: 'store' | 'worker' | 'fallback';
+    reason?: string | undefined;
+  } = {}): void {
     if (this.emitted) return;
     this.emitted = true;
     if (this.tally.calls === 0) return;
@@ -937,6 +954,8 @@ export class StateRpcSummary {
       slowestMs: tally.slowest?.ms,
       spanMs: at - this.startedAt,
       receiptToStartMs: fields.receivedAt === undefined ? undefined : this.startedAt - fields.receivedAt,
+      path: fields.path,
+      reason: fields.reason,
       callsBeforeModelStart: beforeModelStart?.calls,
       roundsBeforeModelStart: beforeModelStart?.rounds,
       busyMsBeforeModelStart: beforeModelStart?.busyMs,

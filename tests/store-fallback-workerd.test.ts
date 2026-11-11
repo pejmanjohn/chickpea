@@ -14,12 +14,14 @@ const WRANGLER = join(ROOT, 'node_modules', '.bin', 'wrangler');
 const FIXTURE = join(ROOT, 'tests', 'fixtures', 'store-fallback', 'store-fallback-worker.ts');
 
 /**
- * The platform fact the store fallback (withStoreFallback) rests on, in real
- * workerd at the production compatibility date: a Worker that calls a method
- * a Durable Object's code lacks gets a rejected promise, not a throw, and the
- * object runs nothing for it.
+ * Two platform facts store admission rests on, in real workerd at the
+ * production compatibility date. A1: a Worker that calls a method a Durable
+ * Object's code lacks gets a rejected promise, not a throw, and the object
+ * runs nothing for it (withStoreFallback). A2: an object's method stops when
+ * the Worker invocation that called it ends, unless the object holds it with
+ * its own waitUntil, as TagStateStore.admitSlackDelivery does.
  */
-test('a call to a method a store on older code lacks rejects, runs nothing, and falls back once', {
+test("a missing method rejects and runs nothing; a method outlives its caller only when its object holds it", {
   timeout: 120_000,
 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'chickpea-store-fallback-'));
@@ -65,6 +67,18 @@ test('a call to a method a store on older code lacks rejects, runs nothing, and 
     assert.equal(probe.afterFallback, probe.before + 1, 'only the fallback ran');
     assert.deepEqual(probe.answered, { value: 'new' }, 'a store that has the method answers, with no fallback');
     assert.equal(probe.ranOnNew, 1);
+
+    // A2: the Worker that made the call ends before the store's method does.
+    const abandoned = async (held: boolean) => {
+      const token = `t${held ? 'held' : 'plain'}${Date.now()}`;
+      assert.equal(await (await fetch(`http://127.0.0.1:${port}/abandon?token=${token}${held ? '&held=1' : ''}`)).text(), 'left');
+      const written = async () => ((await (await fetch(`http://127.0.0.1:${port}/written?token=${token}`)).json()) as { written: boolean }).written;
+      assert.equal(await written(), false, 'the method was still waiting when its caller ended');
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      return written();
+    };
+    assert.equal(await abandoned(false), false, 'a method its object does not hold stops with its caller');
+    assert.equal(await abandoned(true), true, "a method held by its object's waitUntil runs to its end");
   } finally {
     if (worker) await stopWorker(worker);
     rmSync(root, { recursive: true, force: true });

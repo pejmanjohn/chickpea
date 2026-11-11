@@ -107,6 +107,8 @@ import type {
   SlackDeliveryNote,
   SlackEditAdmission,
   SlackFrontDeskHandoffNote,
+  SlackDirectDelivery,
+  SlackDirectDeliveryResult,
 } from '../slack/claim-store.ts';
 import type { SlackMessageEdit } from '../slack/edits.ts';
 import type { AgentAppBot } from '../slack/agent-app-bots.ts';
@@ -798,6 +800,12 @@ export interface TagStateRpc {
    * the installation's identity while the Worker admits the delivery.
    */
   noteSlackDelivery(note: SlackDeliveryNote): Promise<StateRpcResult<null>>;
+  /**
+   * The direct path's admission in one call (CHICKPEA_SLACK_ADMISSION=store):
+   * the store admits a verified delivery on its own stores. A store on older
+   * code lacks it; the Worker then admits as before (CfSlackStateStore.admitDelivery).
+   */
+  admitSlackDelivery(delivery: SlackDirectDelivery): Promise<StateRpcResult<SlackDirectDeliveryResult>>;
   /**
    * A thread runner's note that Chickpea's run decided a front desk hand-off
    * (SlackStateStore.noteFrontDeskHandoff): wake the runner the takeover turn
