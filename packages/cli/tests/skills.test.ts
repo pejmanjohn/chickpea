@@ -17,7 +17,9 @@ const deployment = new FakeDeployment({
       return {
         status: conflicts.length ? 'needs_choice' : 'done',
         conflicts,
-        added: [], replaced: [], unchanged: [],
+        added: files.filter(({ name }) => name.startsWith('new')).map(() => 'beta'),
+        replaced: [],
+        unchanged: files.filter(({ name }) => name.startsWith('same')).map(() => 'gamma'),
         leftOut: files.filter(({ name }) => name === 'empty.zip').map(({ name }) => ({ file: name, why: 'No skill files found.' })),
         summary: `Received ${files.map(({ name }) => name).join(', ')}.`,
         agent: { links: { admin: 'http://127.0.0.1:9/admin/agents/agent_support' } },
@@ -79,6 +81,19 @@ test('--replace asks the deployment to replace conflicts, and a conflict says ho
   const replaced = await upload([fixture('conflict.md', '# Alpha\n'), '--replace']);
   assert.equal(replaced.code, 0, replaced.stderr);
   assert.equal(deployment.toolCalls.at(-1)!.args.replaceExisting, true);
+});
+
+test('the summary is followed by the skills each list names', async () => {
+  const result = await upload([fixture('new.md', '# Beta\n'), fixture('same.md', '# Gamma\n'), fixture('conflict.md', '# Alpha\n'), '--quiet']);
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stdout, [
+    'Received new.md, same.md, conflict.md.',
+    'Added: beta',
+    'Already installed with the same content: gamma',
+    'Left as they are (same name, different content): alpha',
+    'Agent in Admin: http://127.0.0.1:9/admin/agents/agent_support',
+    '',
+  ].join('\n'));
 });
 
 test('left-out files and normalized JSON retain the 5.0 result', async () => {

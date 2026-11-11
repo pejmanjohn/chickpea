@@ -70,7 +70,7 @@ $ npx chickpea-cli recipe export https://chickpea.example.com --agents agent_sup
 
 `skills upload` reads each file from disk and sends it to the 5.0 `upload_skill_files` tool: markdown as text and archives as base64, so the file content never passes through a model. It splits the files across calls so each call stays under the deployment's 1 MB request cap, and refuses a single file larger than that; upload that file in Admin (the Agent's Skills tab, Upload) instead. Find the Agent id with `chickpea workspace inspect <url>`.
 
-Skill upload prints each call's `summary`, any `Left out <file>: <why>` lines, conflict guidance on stderr, and the Agent's Admin link when returned. `--json` keeps the array of normalized envelopes and preserves the 5.0 fields, including `added`, `replaced`, `unchanged`, `conflicts`, and `leftOut`.
+Skill upload prints each call's `summary`, the names of the skills it added, replaced, found already installed, or left as they are, any `Left out <file>: <why>` lines, conflict guidance on stderr, and the Agent's Admin link when returned. `--json` keeps the array of normalized envelopes and preserves the 5.0 fields, including `added`, `replaced`, `unchanged`, `conflicts`, and `leftOut`.
 
 `recipe preview` was removed. A coding agent applies the exported recipe through `create_agent` and `update_agent`.
 
@@ -80,9 +80,9 @@ Version 0.3.0 uses the 5.0 tools. `workspace inspect`, `recipe export`, and `ski
 
 `workspace inspect --json` now returns `{ workspace, agents, canCreate }`. The human summary replaces the old configuration dump with workspace identity, your role, Agent status, edit access, and attention needed. Use `call` with `get_agent`, `list_slack_channels`, `list_models`, `list_services`, or `list_members` for configuration details, subject to your role.
 
-`call` keeps the CLI's `{ ok, result | error }` JSON format. It reads 5.0 structured content on success and preserves every field of a structured refusal's `error`, including `code`, `message`, `retryable`, `fix`, and `nextStep`. SDK input-validation text becomes an error with code `tool_error`. It also reads 4.x structured or text envelopes, so explicit calls to tools on older self-hosted Core versions still work. The CLI does not declare card support.
+`call` keeps the CLI's `{ ok, result | error }` JSON format. It reads 5.0 structured content on success and preserves every field of a structured refusal's `error`, including `code`, `message`, `retryable`, `fix`, and `nextStep`. A 5.0 tool reports invalid input as a refusal with code `invalid_input`; an error that arrives as plain text, as a 4.x tool's input-validation error does, becomes code `tool_error`. It also reads 4.x structured or text envelopes, so explicit calls to tools on older self-hosted Core versions still work. The CLI does not declare card support.
 
-A write can succeed with `result.status` equal to `needs_confirmation`. Read `result.confirmation.preview`, then call `confirm_change` with its `confirmToken` only after the person agrees. The CLI never confirms a change automatically. Setup links and confirmation tokens in JSON are capabilities. Treat the output as private.
+A write can succeed with `result.status` equal to `needs_confirmation`. Read `result.confirmation.preview`, then call `confirm_change` with its `confirmToken` only after the person agrees. The CLI never confirms a change automatically; it prints the exact `confirm_change` command on stderr. When a result carries a setup link, stderr says so and names `cancel_setup_link`. Setup links and confirmation tokens in JSON are capabilities. Treat the output as private.
 
 ## How sign-in works
 

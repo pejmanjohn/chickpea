@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
 
-import { collectEnvelopeHints, parseToolEnvelope } from '../src/tools.ts';
+import { collectEnvelopeHints, parseToolEnvelope, renderEnvelopeHints } from '../src/tools.ts';
 import { FakeDeployment, fakeBrowser } from './helpers/fake-deployment.ts';
 import { runCli, temporaryStore, type CliRun } from './helpers/run-cli.ts';
 
@@ -91,8 +91,8 @@ test('envelope parsing prefers structured content and hint collection ignores un
   assert.deepEqual(parsed, { ok: true, result: { x: 2 } });
   const textOnly = parseToolEnvelope({ content: [{ type: 'text', text: '{"ok":false,"error":{"code":"e","message":"m"}}' }], isError: true });
   assert.equal(textOnly.ok, false);
-  assert.deepEqual(collectEnvelopeHints({ ok: true, result: { proposalId: 'prop_done', status: 'completed', outcomes: [{ disposition: 'applied', proposalId: 'x' }] } }), { confirmations: [], setupLinks: [] });
-  assert.deepEqual(collectEnvelopeHints({ ok: false, error: { code: 'e', message: 'm' } }), { confirmations: [], setupLinks: [] });
+  assert.deepEqual(collectEnvelopeHints({ ok: true, result: { proposalId: 'prop_done', status: 'completed', outcomes: [{ disposition: 'applied', proposalId: 'x' }] } }), { confirmations: [], setupLinks: [], confirmTokens: [], setupPages: [] });
+  assert.deepEqual(collectEnvelopeHints({ ok: false, error: { code: 'e', message: 'm' } }), { confirmations: [], setupLinks: [], confirmTokens: [], setupPages: [] });
 });
 
 test('--args-file reads arguments from disk and malformed arguments fail before any call', async () => {
@@ -163,4 +163,16 @@ test('5.0 parsing preserves structured success, refusal guidance and SDK validat
     assert.deepEqual(parseToolEnvelope({ content: [{ type: 'text', text: 'Ask an owner.' }], structuredContent: { error }, isError }), { ok: false, error });
   }
   assert.deepEqual(parseToolEnvelope({ content: [{ type: 'text', text: 'Input validation error: agentId is required' }], isError: true }), { ok: false, error: { code: 'tool_error', message: 'Input validation error: agentId is required' } });
+});
+
+test('5.0 results that wait for confirmation or issue a setup link carry the same guidance', async () => {
+  const waiting = { status: 'needs_confirmation', summary: 'Delete Support?', confirmation: { confirmToken: 'confirm_1', preview: 'Deletes Support.' } };
+  const linked = { status: 'needs_setup', summary: 'Sign in to Gmail.', setup: { url: SETUP_URL, setupToken: 'setup_1', what: 'Gmail' } };
+  assert.deepEqual(collectEnvelopeHints({ ok: true, result: waiting }), { confirmations: [], setupLinks: [], confirmTokens: ['confirm_1'], setupPages: [] });
+  const lines = renderEnvelopeHints(collectEnvelopeHints({ ok: true, result: linked }), 'https://chickpea.example');
+  assert.deepEqual(lines.slice(1), [`  ${SETUP_URL}`, 'Cancel it with the cancel_setup_link tool if it leaks.']);
+  const confirm = renderEnvelopeHints(collectEnvelopeHints({ ok: true, result: waiting }), 'https://chickpea.example');
+  assert.equal(confirm.at(-1), `  chickpea call https://chickpea.example confirm_change --args '{"confirmToken":"confirm_1"}'`);
+  // A card host's result holds the token for the card; nothing to confirm from here.
+  assert.deepEqual(collectEnvelopeHints({ ok: true, result: { status: 'needs_confirmation', confirmation: { preview: 'x' } } }).confirmTokens, []);
 });

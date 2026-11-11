@@ -86,12 +86,18 @@ export interface EnvelopeHints {
   confirmations: string[];
   /** Credential-bearing setup links, each one-use and valid for 24 hours. */
   setupLinks: string[];
+  /** 5.0: confirm tokens of changes that wait for an explicit confirm_change call. */
+  confirmTokens: string[];
+  /** 5.0: the same setup links, under `setup.url`; cancel_setup_link cancels one. */
+  setupPages: string[];
 }
 
 export function collectEnvelopeHints(envelope: ToolEnvelope): EnvelopeHints {
   const confirmations = new Set<string>();
   const setupLinks = new Set<string>();
-  if (!envelope.ok) return { confirmations: [], setupLinks: [] };
+  const confirmTokens = new Set<string>();
+  const setupPages = new Set<string>();
+  if (!envelope.ok) return { confirmations: [], setupLinks: [], confirmTokens: [], setupPages: [] };
   const result = envelope.result;
   if (result && typeof result === 'object' && !Array.isArray(result)) {
     const record = result as Record<string, unknown>;
@@ -107,8 +113,17 @@ export function collectEnvelopeHints(envelope: ToolEnvelope): EnvelopeHints {
   }
   walk(result, (key, value) => {
     if (key === 'setupUrl' && typeof value === 'string') setupLinks.add(value);
+    if (!value || typeof value !== 'object') return;
+    const child = value as Record<string, unknown>;
+    if (key === 'confirmation' && typeof child.confirmToken === 'string') confirmTokens.add(child.confirmToken);
+    if (key === 'setup' && typeof child.url === 'string') setupPages.add(child.url);
   });
-  return { confirmations: [...confirmations], setupLinks: [...setupLinks] };
+  return {
+    confirmations: [...confirmations],
+    setupLinks: [...setupLinks],
+    confirmTokens: [...confirmTokens],
+    setupPages: [...setupPages],
+  };
 }
 
 function walk(value: unknown, visit: (key: string, value: unknown) => void, depth = 0): void {
@@ -132,12 +147,21 @@ export function renderEnvelopeHints(hints: EnvelopeHints, origin: string): strin
       `  chickpea call ${origin} confirm_workspace_change --args '${JSON.stringify({ proposalId })}'`,
     );
   }
-  for (const link of hints.setupLinks) {
+  for (const confirmToken of hints.confirmTokens) {
     lines.push(
-      'Setup link issued. Anyone who holds it can complete its exact action without signing in; it expires in 24 hours.',
-      `  ${link}`,
-      'Revoke it with the revoke_setup_link tool if it leaks.',
+      'This change waits for your confirmation. Nothing has been applied.',
+      'Read the preview in result.confirmation.preview, then confirm it with:',
+      `  chickpea call ${origin} confirm_change --args '${JSON.stringify({ confirmToken })}'`,
     );
+  }
+  for (const [links, revoke] of [[hints.setupLinks, 'Revoke it with the revoke_setup_link tool'], [hints.setupPages, 'Cancel it with the cancel_setup_link tool']] as const) {
+    for (const link of links) {
+      lines.push(
+        'Setup link issued. Anyone who holds it can complete its exact action without signing in; it expires in 24 hours.',
+        `  ${link}`,
+        `${revoke} if it leaks.`,
+      );
+    }
   }
   return lines;
 }

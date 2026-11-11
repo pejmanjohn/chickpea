@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
 import { runDoctor, renderDoctorReport } from './doctor.ts';
-import { CliError, describeError, formatErrorLine } from './errors.ts';
+import { CliError, describeError, formatErrorLine, redactSensitive } from './errors.ts';
 import { isMcpClient, MCP_CLIENTS, mcpConfigRecord, renderMcpConfig, type McpClient } from './mcp-config.ts';
 import { connectManagementClient, login, logout, type AuthDeps } from './oauth.ts';
 import { normalizeDeploymentOrigin, mcpUrl } from './origin.ts';
@@ -409,11 +409,22 @@ async function commandSkills(args: readonly string[], flags: ParsedArgs['flags']
     if (!envelope.ok) return failEnvelope(envelope, io);
     const result = envelope.result as {
       summary: string;
+      added: string[];
+      replaced: string[];
+      unchanged: string[];
       conflicts: string[];
       leftOut: Array<{ file: string; why: string }>;
       agent?: { links?: { admin?: string } };
     };
     io.print(result.summary);
+    for (const [label, names] of [
+      ['Added', result.added],
+      ['Replaced', result.replaced],
+      ['Already installed with the same content', result.unchanged],
+      ['Left as they are (same name, different content)', result.conflicts],
+    ] as const) {
+      if (names.length) io.print(`${label}: ${names.join(', ')}`);
+    }
     for (const item of result.leftOut) io.print(`Left out ${item.file}: ${item.why}`);
     conflicts.push(...result.conflicts);
     adminLink ??= result.agent?.links?.admin;
@@ -425,7 +436,7 @@ async function commandSkills(args: readonly string[], flags: ParsedArgs['flags']
 
 function failEnvelope(envelope: Extract<ToolEnvelope, { ok: false }>, io: Io): number {
   if (io.json) io.printJson(envelope);
-  throw new CliError(`TOOL_${envelope.error.code.toUpperCase()}`, envelope.error.message, envelope.error.nextStep);
+  throw new CliError(`TOOL_${envelope.error.code.toUpperCase()}`, envelope.error.message, envelope.error.nextStep && redactSensitive(envelope.error.nextStep));
 }
 
 
