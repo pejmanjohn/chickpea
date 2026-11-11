@@ -153,6 +153,49 @@ test('a page\'s address keeps its \' and |, and a JSON-escaped & or =, inside th
   assert.equal(JSON.parse(read.output ?? '{}').text, '{"link":"https://billing.example.com/magic?[omitted]","next":"x"}');
 });
 
+test('a link keeps no token behind JSON-escaped slashes or a host that ends in a dot', () => {
+  const record = copy({
+    context: [{
+      author: 'U012ABCDEF3', role: 'human', files: [],
+      text: 'Is https://www.browserbase.com./sessions/SYNTHSESS3 the one? I used billing.example.com./magic?token=SYNTHMAGIC0123',
+    }],
+    steps: [
+      // A raw JSON response a page shows, as PHP writes it and as the snapshot then escapes it.
+      browserStep('browser_snapshot', {}, {
+        snapshot: '- text "{\\"next\\":\\"https:\\\\/\\\\/billing.example.com\\\\/callback?code=SYNTHCODE123\\"}"',
+      }),
+      {
+        kind: 'tool', name: 'read_mail', input: '{}',
+        output: '{"link":"https:\\/\\/www.browserbase.com\\/devtools-fullscreen\\/inspector.html?wss=connect.browserbase.com\\/debug\\/SYNTHSESS"}',
+      },
+    ],
+    answer: 'Done: https://billing.example.com./callback?code=SYNTHCODE123 and billing.example.com\\/reset\\/SYNTHRESETTOKEN0123456789',
+  });
+  assert.deepEqual(kept(record, ['SYNTHCODE123', 'SYNTHSESS', 'SYNTHMAGIC0123', 'SYNTHRESETTOKEN', 'browserbase']), []);
+  assert.equal(record.context[0]?.text, `Is ${BROWSER_LINK_OMITTED} the one? I used billing.example.com./magic?[omitted]`);
+  assert.equal(record.answer, 'Done: https://billing.example.com./callback?[omitted] and billing.example.com/reset/[omitted]');
+  const [shown, read] = record.steps;
+  assert.ok(shown?.kind === 'tool' && read?.kind === 'tool');
+  assert.equal(JSON.parse(shown.output ?? '{}').snapshot, '- text "{\\"next\\":\\"https://billing.example.com/callback?[omitted]\\"}"');
+  assert.equal(read.output, `{"link":"${BROWSER_LINK_OMITTED}"}`);
+});
+
+test('a username leaves a JSON unicode escape or an HTML entity of any of its marks', () => {
+  const unicode = (char: string) => '\\' + 'u' + char.charCodeAt(0).toString(16).padStart(4, '0');
+  const name = 'r&d.o\'brien@example.com';
+  const json = name.replace(/[&'@]/g, (char) => unicode(char));
+  const decimal = name.replace(/[&'@]/g, (char) => `&#${char.charCodeAt(0)};`);
+  const hex = name.replace(/[&'@]/g, (char) => `&#x${char.charCodeAt(0).toString(16)};`);
+  assert.equal([json, decimal, hex].some((text) => text.includes('@') || text.includes('\'')), false, 'the test text holds the escapes');
+  const record = copy({
+    steps: [{ kind: 'tool', name: 'read_page', input: '{}', output: JSON.stringify({ body: json }) }],
+    answer: `${json} or ${decimal} or ${hex.toUpperCase()}`,
+  }, { hosts: [], usernames: [name] });
+  assert.deepEqual(kept(record, ['brien', 'example.com']), []);
+  assert.equal(record.answer, '[credential redacted] or [credential redacted] or [credential redacted]');
+  assert.equal(record.steps[0]?.kind === 'tool' && record.steps[0].output, '{"body":"[credential redacted]"}');
+});
+
 test('every hosted browser link goes whole, whatever its host', () => {
   const record = copy({
     trigger: { author: 'U012ABCDEF3', text: 'Is https://www.browserbase.com/sessions/SYNTHSESS3 still open?', files: [] },
