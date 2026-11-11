@@ -43,7 +43,8 @@ if (!args.length || args[0] === '--help') {
     // Reserved commands, which include builds and lane deploys, are watched only on request.
     const stallMs = options.stallMs ?? (process.env.CHICKPEA_STALL_MS ? stallWindowMs(process.env.CHICKPEA_STALL_MS) : options.shared ? DEFAULT_STALL_MS : 0);
     // Under a watching verify:host the command stays in that process group, so the outer stop reaches it.
-    const watched = stallMs > 0 && hostChecksLiveness(Number(process.env.CHICKPEA_VERIFY_HOST_PID)) !== 'live';
+    // A --shared command keeps its group and marker with the stall stop off: run-tests.mjs restarts itself under --shared until it sees the marker.
+    const watched = (options.shared || stallMs > 0) && hostChecksLiveness(Number(process.env.CHICKPEA_VERIFY_HOST_PID)) !== 'live';
     const command = args.join(' ');
     const label = command.length > 200 ? `${command.slice(0, 199)}…` : command;
     const wait = { pollMs: options.pollMs, signal: controller.signal, onWait: (event) => console.error(JSON.stringify(event)) };

@@ -38,17 +38,20 @@ const lastLine = (text) => text.split(/\r?\n|\r/).map((line) => line.trim()).fil
  * The whole group, and nothing outside it, is stopped when the command prints
  * nothing on stdout or stderr for stallMs, or when this process's parent
  * exits, so a killed caller leaves no pass running on. SIGINT, SIGTERM and
- * SIGHUP sent to this process are passed to the group. Resolves { error } for
- * a command that could not start, else { status, signal, stopped }, where
- * stopped is { reason: 'stall' | 'parent', lastLine, groupStopped }.
+ * SIGHUP sent to this process are passed to the group. A stallMs of 0 turns
+ * only the stall stop off. Resolves { error } for a command that could not
+ * start, else { status, signal, stopped }, where stopped is
+ * { reason: 'stall' | 'parent', lastLine, groupStopped }.
  */
 export async function runWithStallStop(command, args, { env = process.env, stallMs = DEFAULT_STALL_MS } = {}) {
-  const child = spawn(command, args, { env, stdio: ['inherit', 'pipe', 'pipe'], detached: true });
+  let child;
+  // spawn() throws some failures (ENOTDIR, E2BIG) instead of emitting them.
+  try { child = spawn(command, args, { env, stdio: ['inherit', 'pipe', 'pipe'], detached: true }); } catch (error) { return { error }; }
   const forward = (signal) => { try { if (child.pid) process.kill(-child.pid, signal); } catch {} };
   for (const signal of FORWARDED_SIGNALS) process.on(signal, forward);
   // A reader that goes away (`| head`) must not end this process while it owns the group and its slot.
   // pipe() leaves the source paused when its destination fails; keep draining so the command never blocks on a full pipe.
-  const ignore = () => { child.stdout.resume(); child.stderr.resume(); };
+  const ignore = () => { child.stdout?.resume(); child.stderr?.resume(); };
   process.stdout.on('error', ignore); process.stderr.on('error', ignore);
   const parent = process.ppid;
   let tail = '';
@@ -59,12 +62,12 @@ export async function runWithStallStop(command, args, { env = process.env, stall
   try {
     const failed = await new Promise((resolve) => { child.once('spawn', () => resolve(undefined)); child.once('error', resolve); });
     if (failed) return { error: failed };
-    timer = setTimeout(() => stop('stall'), stallMs);
+    if (stallMs > 0) timer = setTimeout(() => stop('stall'), stallMs);
     orphaned = setInterval(() => { if (process.ppid !== parent) stop('parent'); }, 1000);
     const closed = [[child.stdout, process.stdout], [child.stderr, process.stderr]].map(([stream, sink]) => {
       stream.on('data', (chunk) => {
         if (stopped) return;
-        timer.refresh();
+        timer?.refresh();
         tail = (tail + chunk).slice(-4096);
       });
       stream.pipe(sink, { end: false });
@@ -77,7 +80,7 @@ export async function runWithStallStop(command, args, { env = process.env, stall
     return { status, signal, stopped: stopped && { ...stopped, groupStopped: await stopped.groupStopped } };
   } finally {
     clearTimeout(timer); clearInterval(orphaned);
-    child.stdout.destroy(); child.stderr.destroy();
+    child.stdout?.destroy(); child.stderr?.destroy();
     for (const name of FORWARDED_SIGNALS) process.removeListener(name, forward);
     process.stdout.removeListener('error', ignore); process.stderr.removeListener('error', ignore);
   }

@@ -161,6 +161,7 @@ under a watching `verify:host` stays in that group, so the outer stop reaches
 it.
 
 `--stall-ms MS` or `CHICKPEA_STALL_MS` sets another window, and 0 turns the
-stop off. A command that prints only at the end needs a longer window, such as
+stall stop off; a `--shared` command still runs in its own group and stops
+when its caller exits. A command that prints only at the end needs a longer window, such as
 the cards harness:
 `npm run verify:host -- --shared --stall-ms 1800000 -- npm run mcp-cards:harness`.

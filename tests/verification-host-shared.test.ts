@@ -204,7 +204,24 @@ test('a reserved command is watched only on request; a shared one always is', (t
     const watched = run(extra, ...args);
     assert.equal(watched.watcher, watched.pid, `${why}: watched by verify:host itself`);
   }
-  assert.equal(run({}, '--shared', '--stall-ms', '0').watcher, 'undefined', '0 turns the stop off');
+  assert.equal(run({}, '--stall-ms', '0').watcher, 'undefined', '0 leaves a reserved command unwatched');
+  // run-tests.mjs restarts itself under --shared until it sees this marker, so a shared command carries it with the stop off too.
+  for (const [extra, args] of [[{}, ['--shared', '--stall-ms', '0']], [{ CHICKPEA_STALL_MS: '0' }, ['--shared']]] as const) {
+    const off = run(extra, ...args);
+    assert.equal(off.watcher, off.pid, '0 turns only the stall stop off for a shared command');
+  }
+});
+
+test('a watched command that cannot start releases its reservation', (t) => {
+  const { env, home, exclusive } = isolatedHome(t);
+  writeFileSync(join(home, 'file'), '');
+  // spawn() throws ENOTDIR and emits ENOENT.
+  for (const command of [join(home, 'file', 'command'), join(home, 'missing')]) {
+    const run = spawnSync(process.execPath, [VERIFY_HOST, '--stall-ms', '60000', '--', command], { env, encoding: 'utf8' });
+    assert.equal(run.status, 2, run.stderr);
+    assert.match(run.stderr, /Command could not start: .* \(ENO(TDIR|ENT)\)\. It holds no host reservation\./);
+    assert.deepEqual(exclusive.map(existsSync), [false, false]);
+  }
 });
 
 test('a command nested under a watching verify:host stays in its group, so the outer stop reaches it', async (t) => {
