@@ -3,7 +3,7 @@ import type { z } from 'zod';
 
 import { browserCapabilityForTurn } from '../../browser/capability.ts';
 import { getGithubConnection } from '../../config/github-app.ts';
-import { isProviderKeyId } from '../../config/provider-key-ids.ts';
+import { isProviderKeyId, PROVIDER_DISPLAY_NAMES } from '../../config/provider-key-ids.ts';
 import type { ConnectionCheckOutcome } from '../../connections/connection-check.ts';
 import { ADMIN_PATH, adminOrigin, adminSettingsLinks, adminTeamLinks } from '../admin-links.ts';
 import { ManagementError } from '../types.ts';
@@ -140,7 +140,7 @@ export async function modelChecks(
   const provider = model.model?.split('/')[0];
   const providerFix = provider && isProviderKeyId(provider) && reading.actor.role !== 'member' &&
     model.unavailable === 'credential_missing'
-    ? { label: `Set up ${provider}`, tool: 'connect_model_provider', arguments: { provider } }
+    ? { label: `Set up ${PROVIDER_DISPLAY_NAMES[provider]}`, tool: 'connect_model_provider', arguments: { provider } }
     : undefined;
   const fix = providerFix ?? settingsFix(deps, reading, 'providers', 'Open Model providers in Admin') ??
     agentAdminFix(deps, reading, 'Choose another model in Admin');
@@ -300,19 +300,30 @@ export function admissionChecks(deps: FiveZeroDeps, reading: AgentAdmissionReadi
   return checks.map((check) => check.status === 'failing' && fix ? { ...check, fix } : check);
 }
 
+/**
+ * Who may DM the Agent, and how a DM reaches it. The card shows one
+ * sentence with what to do (`plain`); how Chickpea routes the DM stays in
+ * `detail` for the model.
+ */
 function dmAdmission(reading: AgentAdmissionReading, name: string): Check[] {
   const { agent, person, installation, snapshotAgent } = reading;
   const active = reading.grants.filter(({ agentId, status }) => agentId === agent.id && status === 'active');
-  const check = (status: Check['status'], detail: string): Check => ({ part: 'admission', name, status, detail });
+  const check = (status: Check['status'], detail: string, plain: string): Check => ({ part: 'admission', name, status, detail, plain });
+  const who = person.you ? 'You' : person.name ?? 'This person';
+  const how = snapshotAgent.ownSlackApp ? `message @${snapshotAgent.ownSlackApp.handle}`
+    : installation?.defaultAgentId === agent.id ? 'message Chickpea'
+      : 'choose it in Chickpea\'s Home tab in Slack';
   let audience: Check;
   if (active.length === 0) {
     audience = agent.creatorMembershipId === person.membershipId
-      ? check('ok', `It is in no Channel, so only the person who created it may DM it, and ${person.you ? 'you did' : 'they did'}.`)
-      : check('failing', 'It is in no Channel, so only the person who created it may DM it. Adding it to a public Channel lets the whole workspace use it.');
+      ? check('ok', `It is in no Channel, so only the person who created it may DM it, and ${person.you ? 'you did' : 'they did'}.`, `${who} can DM it: ${how}.`)
+      : check('failing', 'It is in no Channel, so only the person who created it may DM it. Adding it to a public Channel lets the whole workspace use it.',
+        'Only the person who created it can DM it until it is in a public Channel.');
   } else if (active.some(({ channelIsPrivate }) => channelIsPrivate === false)) {
-    audience = check('ok', 'It is in a public Channel, so everyone in the workspace may DM it.');
+    audience = check('ok', 'It is in a public Channel, so everyone in the workspace may DM it.', `${who} can DM it: ${how}.`);
   } else {
-    audience = check('unknown', 'It is only in private Channels, so only their members may DM it. Slack says whether this person is one when the message arrives.');
+    audience = check('unknown', 'It is only in private Channels, so only their members may DM it. Slack says whether this person is one when the message arrives.',
+      `${who} may not be able to DM it: it is only in private Channels.`);
   }
   if (audience.status === 'failing') return [audience];
   const route = snapshotAgent.ownSlackApp

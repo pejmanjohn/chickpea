@@ -374,7 +374,7 @@ function expired(): never {
 }
 
 function keyReused(): never {
-  return fail('key_reused', 'That idempotencyKey was already used for another test run.', {
+  return fail('key_reused', 'That test run was already asked for.', {
     nextStep: 'Send a new idempotencyKey.',
   });
 }

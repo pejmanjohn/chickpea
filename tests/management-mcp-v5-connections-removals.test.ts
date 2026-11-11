@@ -426,7 +426,9 @@ test('reconnect_service links a custom connection\'s key, and signs a catalog co
   assertFocusedSetup(catalog.setup);
   assert.match(catalog.summary, /^Open the link to reconnect HubSpot · Team\.$/);
 
-  errorOf(await call('reconnect_service', { agentId: 'agent_research', connectionId: 'connection_unknown' }), 'not_found');
+  // A card draws an error's message (review SHOULD 5), so it names no field.
+  const gone = errorOf(await call('reconnect_service', { agentId: 'agent_research', connectionId: 'connection_unknown' }), 'not_found');
+  assert.equal(gone.message, `${(await f.config.getAgent('agent_research'))!.name} no longer has that connection.`);
 });
 
 test('reconnect_service finishes or repairs a catalog sign-in on the page connect_service gives, in place', async (t) => {
@@ -786,7 +788,7 @@ test('remove_connection confirms first, as policy.ts says, then confirm_change d
   assert.match(proposed.confirmation.preview, /Disconnect \*\*Docs\*\* from \*\*Research\*\*/);
   assert.equal((await lanes(call, 'agent_research')).mcpServers.length, 1, 'nothing changed yet');
   const done = structured(await call('confirm_change', { confirmToken: proposed.confirmation.confirmToken }));
-  assert.equal(done.status, 'done');
+  assert.deepEqual([done.status, done.summary], ['done', 'Disconnected Docs from Research.'], 'it names what the person confirmed');
   assert.deepEqual(structured(await call('get_agent', { agentId: 'agent_research' })).connections, []);
   errorOf(await call('remove_connection', { agentId: 'agent_research', connectionId: 'docs', idempotencyKey: 'again' }), 'invalid_input');
   assertNoInternalIds(JSON.stringify({ proposed, done }), f);
@@ -880,6 +882,7 @@ test('delete_agent names what blocks it before any confirmation, then confirms t
   assert.ok(await f.config.getAgent('agent_research'), 'nothing is deleted before the confirmation');
   const deleted = structured(await call('confirm_change', { confirmToken: proposed.confirmation.confirmToken }));
   assert.equal(deleted.status, 'done');
+  assert.equal(deleted.summary, 'Deleted Research.', 'a deleted Agent is named from what the person confirmed');
   assert.equal(deleted.agent, undefined);
   assert.equal((await f.config.listUserAgents()).some(({ id }) => id === 'agent_research'), false);
   errorOf(await call('get_agent', { agentId: 'agent_research' }), 'not_found');
@@ -937,9 +940,11 @@ test('remove_agent_from_channel applies at once with undo; delete_schedule confi
   assert.equal(proposed.status, 'needs_confirmation');
   assert.match(proposed.confirmation.preview, /Delete \*\*Digest\*\* permanently/);
   assert.equal((await f.routines.getRoutine(schedule.scheduleId))?.deletedAt, null, 'nothing is deleted yet');
-  structured(await call('confirm_change', { confirmToken: proposed.confirmation.confirmToken }));
+  assert.equal(structured(await call('confirm_change', { confirmToken: proposed.confirmation.confirmToken })).summary, 'Deleted the schedule Digest.');
   assert.notEqual((await f.routines.getRoutine(schedule.scheduleId))?.deletedAt, null);
   errorOf(await call('delete_schedule', { scheduleId: schedule.scheduleId, version: schedule.version, idempotencyKey: 'again' }), 'changed_since_read');
+  const missing = errorOf(await call('delete_schedule', { scheduleId: 'schedule_missing', version: schedule.version, idempotencyKey: 'missing' }), 'not_found');
+  assert.equal(missing.message, 'That schedule is gone, or you can\'t see it.', 'a card draws it, so it names no field');
 });
 
 test('remove_model_provider_key confirms first and is an Owner\'s or Admin\'s; an unknown website login is refused', async (t) => {
@@ -959,7 +964,7 @@ test('remove_model_provider_key confirms first and is an Owner\'s or Admin\'s; a
   assert.equal(stored, 'stored');
   errorOf(await as('admin')('remove_model_provider_key', { provider: 'openai', idempotencyKey: 'member' }), 'not_allowed');
   errorOf(await as('admin')('confirm_change', { confirmToken: proposed.confirmation.confirmToken }), 'not_found');
-  structured(await owner('confirm_change', { confirmToken: proposed.confirmation.confirmToken }));
+  assert.equal(structured(await owner('confirm_change', { confirmToken: proposed.confirmation.confirmToken })).summary, 'Removed the OpenAI key.');
   assert.equal(stored, 'missing');
   errorOf(await owner('remove_model_provider_key', { provider: 'openai', idempotencyKey: 'again' }), 'invalid_input');
 
@@ -986,7 +991,8 @@ test('remove_website_login confirms first, and a member cannot remove a team log
   assert.equal(proposed.status, 'needs_confirmation');
   assert.match(proposed.confirmation.preview, /Remove the \*\*portal\.example\.com\*\* login from \*\*Research\*\*/);
   assert.equal((await f.config.getAgent(agent.id)).websiteLogins?.length, 1, 'nothing changed yet');
-  structured(await owner('confirm_change', { confirmToken: proposed.confirmation.confirmToken }));
+  assert.equal(structured(await owner('confirm_change', { confirmToken: proposed.confirmation.confirmToken })).summary,
+    'Removed the portal.example.com login from Research.');
   assert.deepEqual((await f.config.getAgent(agent.id)).websiteLogins ?? [], []);
   assert.doesNotMatch(JSON.stringify(proposed), /synthetic-portal-password/);
 });
@@ -998,7 +1004,8 @@ test('update_member is an Owner\'s: suspending confirms first, an Admin to Membe
   assert.ok(admin.slackUserId);
 
   errorOf(await as('admin')('update_member', { slackUserId: admin.slackUserId, role: 'member', idempotencyKey: 'self' }), 'not_allowed');
-  errorOf(await owner('update_member', { slackUserId: 'U_NOBODY', status: 'suspended', idempotencyKey: 'nobody' }), 'not_found');
+  const nobody = errorOf(await owner('update_member', { slackUserId: 'U_NOBODY', status: 'suspended', idempotencyKey: 'nobody' }), 'not_found');
+  assert.equal(nobody.message, 'That person isn\'t in this workspace.', 'a card draws it, so it names no field');
 
   // An Owner change and a removal confirm first, as Admin asks.
   const promote = structured(await owner('update_member', { slackUserId: admin.slackUserId, role: 'owner', idempotencyKey: 'promote' }));
@@ -1022,7 +1029,7 @@ test('update_member is an Owner\'s: suspending confirms first, an Admin to Membe
   assert.match(suspend.confirmation.preview, /Suspend \*\*Admin\*\*’s Chickpea access/);
   assert.equal((await f.identity.getMembership(f.admin.membership.id))?.status, 'active', 'nothing changed yet');
   const confirmed = structured(await owner('confirm_change', { confirmToken: suspend.confirmation.confirmToken }));
-  assert.equal(confirmed.status, 'done');
+  assert.deepEqual([confirmed.status, confirmed.summary], ['done', 'Suspended Admin.']);
   assert.equal((await f.identity.getMembership(f.admin.membership.id))?.status, 'suspended');
   assertNoInternalIds(JSON.stringify({ suspend, demoted, confirmed }), f);
 });

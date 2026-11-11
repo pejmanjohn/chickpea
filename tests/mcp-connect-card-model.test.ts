@@ -86,7 +86,8 @@ test('Connect opens Chickpea\'s page for this one connection only when pressed, 
   const { setup } = result.structuredContent!;
   assert.equal(result._meta?.['chickpea/tool'], 'connect_service');
   assert.deepEqual(JSON.parse((result as { content: Array<{ text: string }> }).content[0]!.text), result.structuredContent, 'a client without cards gets it all');
-  assert.equal(setup.owner, 'member');
+  // Chickpea's page asks whose account a new connection is, so the link fixes no owner.
+  assert.equal(setup.owner, undefined);
 
   const connect = card();
   await connect.result(result);
@@ -94,7 +95,7 @@ test('Connect opens Chickpea\'s page for this one connection only when pressed, 
   assert.equal(connect.shown.title, 'Connect Gmail to Research');
   assert.equal(connect.shown.avatarUrl, `${BASE_URL}/assets/agents/agent_research/avatar/1`, 'the Agent\'s own picture');
   assert.deepEqual(connect.shown.subtitle, [{ text: 'You sign in on Chickpea\'s page, never in this chat.' }]);
-  assert.deepEqual(rows(connect.shown), ['Gmail · Your own account · [Connect]']);
+  assert.deepEqual(rows(connect.shown), ['Gmail · [Connect]']);
 
   // Mounting again, coming back into view and its timer only read.
   await connect.dispatch({ type: 'reread', now: clock.now });
@@ -267,9 +268,12 @@ test('the card names whose account it is only when the link fixes it', async (t)
   const { call, card } = await harness(t, 'connect-owner');
   const mine = await call('connect_service', { agentId: 'agent_research', service: 'Notion', owner: 'me', idempotencyKey: 'mine' });
   const team = await call('connect_service', { agentId: 'agent_research', service: 'Gmail', owner: 'team', idempotencyKey: 'team' });
-  const { owner: _owner, ...open } = mine.structuredContent!.setup;
+  // A new link's page asks Personal or Team, so the server names no owner; a link that fixes one names it.
+  assert.equal('owner' in mine.structuredContent!.setup, false);
+  const fixed = (result: typeof mine, owner: 'member' | 'team') =>
+    ({ ...result, structuredContent: { ...result.structuredContent!, setup: { ...result.structuredContent!.setup, owner } } });
   const shown: Record<string, string[]> = {};
-  for (const [name, result] of Object.entries({ mine, team, open: { ...mine, structuredContent: { ...mine.structuredContent!, setup: open } } })) {
+  for (const [name, result] of Object.entries({ mine: fixed(mine, 'member'), team: fixed(team, 'team'), open: mine })) {
     const connect = card();
     await connect.result(result);
     shown[name] = rows(connect.shown);
@@ -430,7 +434,7 @@ test('a page the host would not open offers Connect again, with the reason', asy
   assert.deepEqual([connect.state.view.kind, connect.shown.error], ['finishing', undefined], 'a refusal of another link says nothing about this page');
   await connect.dispatch({ type: 'refused', effect: page, now: clock.now });
   assert.deepEqual([connect.state.view.kind, connect.shown.error], ['start', 'That did not work. Try again.']);
-  assert.deepEqual(rows(connect.shown), ['Gmail · Your own account · [Connect]']);
+  assert.deepEqual(rows(connect.shown), ['Gmail · [Connect]']);
 });
 
 test('a host that refuses the page a minute late, once Chickpea saw it open, leaves the card following it', async (t) => {

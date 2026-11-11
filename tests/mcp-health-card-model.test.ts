@@ -133,7 +133,8 @@ test('what needs attention comes first, each with its fix as a link; the healthy
     'done · #support · Answers here.',
     ...rows(health.shown).slice(7),
   ]);
-  assert.match(rows(health.shown)[7]!, /^done · You, in a DM · It is in a public Channel/);
+  // One sentence and what to do; how Chickpea routes a DM stays in detail, for the model.
+  assert.equal(rows(health.shown)[7]!, 'done · You, in a DM · You can DM it: choose it in Chickpea\'s Home tab in Slack.');
   assert.equal(rows(health.shown).length, 8);
   assertPlain(health.shown, ids);
   await health.press('hide');
@@ -396,7 +397,7 @@ test('an error or a result of the wrong shape shows nothing to press', async (t)
   const { call, card, clock } = await harness(t, 'health-errors');
   const missing = card();
   await missing.result(await call('check_agent', { agentId: 'agent_missing' }));
-  assert.deepEqual([missing.shown.title, missing.labels()], ['No Agent you can manage has that agentId.', []]);
+  assert.deepEqual([missing.shown.title, missing.labels()], ['That Agent is gone, or you can\'t manage it.', []]);
   const nothing = async (): Promise<ToolResult> => ({ isError: true });
   const linear = { part: 'connection', name: 'Linear', detail: 'It needs to be reconnected.', status: 'failing' };
   for (const check of [

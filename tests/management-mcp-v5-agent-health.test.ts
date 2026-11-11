@@ -426,12 +426,13 @@ test('a model whose provider has no key cannot run: explain says why and check o
   await seedOps(f, teamId, { model: 'anthropic/claude-sonnet-4-6' });
   const explained = await explain(call, { agentId: 'agent_ops' });
   assert.equal(explained.model.canRun, false);
-  assert.equal(explained.model.why, 'Its provider, anthropic, is not set up.');
+  // The card shows the provider by its name, never its ID.
+  assert.equal(explained.model.why, 'Its provider, Anthropic, is not set up.');
   const [model] = part(await check(call, { agentId: 'agent_ops' }), 'model');
   assert.deepEqual(model, {
-    part: 'model', name: 'anthropic/claude-sonnet-4-6', status: 'failing', detail: 'Its provider, anthropic, is not set up.',
-    plain: 'Its provider, anthropic, is not set up.',
-    fix: { label: 'Set up anthropic', tool: 'connect_model_provider', arguments: { provider: 'anthropic' } },
+    part: 'model', name: 'anthropic/claude-sonnet-4-6', status: 'failing', detail: 'Its provider, Anthropic, is not set up.',
+    plain: 'Its provider, Anthropic, is not set up.',
+    fix: { label: 'Set up Anthropic', tool: 'connect_model_provider', arguments: { provider: 'anthropic' } },
   });
 });
 

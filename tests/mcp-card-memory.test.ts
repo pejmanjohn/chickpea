@@ -163,7 +163,7 @@ test('a card that mounts again comes back to what its presses did, and never off
   assert.equal((await f.config.getAgent('agent_support'))!.enabled, false);
   const confirmedAgain = await reopen(confirmed, memoryOf(confirming.state));
   assert.deepEqual([confirmedAgain.shown.title, confirmedAgain.shown.done, confirmedAgain.labels(), writes(confirmedAgain)],
-    ['Made the change you confirmed', true, [], []]);
+    ['Turned off Support Desk', true, [], []]);
   assert.deepEqual(confirmedAgain.calls().map(({ tool }) => tool), ['get_agent'], 'it reads where the Agent stands');
 
   // Saved, then undone, on a change card.

@@ -892,6 +892,8 @@ export interface ManagementApplyResult {
   presentation?: ManagementPresentation;
   /** A 5.0 call's expiring confirmation; response-only. */
   confirmation?: { expiresAt: number; preview: ManagementChangeSetPreview };
+  /** What the person confirmed, when a 5.0 confirmation applied; response-only. */
+  confirmed?: { preview: ManagementChangeSetPreview };
   /** Setup the approved change set's call held until the approval; response-only. */
   deferredSetup?: ManagementDeferredSetup[];
   /** Workspace mutation receipt token; it is not comparable to an actor-scoped inspection token. */

@@ -5,7 +5,9 @@ import { createMcpHandler } from '@modelcontextprotocol/server';
 
 import type { McpAuthenticatedPrincipal } from '../src/auth/mcp-oauth-routes.ts';
 import { createWorkspaceManagementMcpServer } from '../src/management/mcp.ts';
+import { confirmedSummary } from '../src/management/mcp-v5/changes.ts';
 import type { WorkspaceManagementServiceInput } from '../src/management/service.ts';
+import type { ManagementChangeSetPreview } from '../src/management/types.ts';
 import {
   createFixtureAgent,
   createManagementAdapterFixture,
@@ -145,7 +147,9 @@ test('create_agent takes propose_agent\'s arguments unchanged, joins its Channel
 
   const created = structured(await call('create_agent', args));
   assert.equal(created.status, 'done');
-  assert.match(created.summary, /^Created Support Desk\. It joins 1 Channel;/);
+  // The summary is for the person, so it names no tool; following its arrival is the model's next step.
+  assert.equal(created.summary, 'Created Support Desk. It joins 1 Channel.');
+  assert.equal(created.nextStep, 'get_creation_status follows its arrival in Slack.');
   const { agentId } = created.agent;
   assert.equal(agentId, 'agent_support_desk');
   assert.equal(created.agent.links.admin, 'https://chickpea.example.test/admin/agents/agent_support_desk');
@@ -343,6 +347,38 @@ test('a 4.x confirmation still never expires', async (t) => {
   assert.equal((await f.config.getAgent('agent_research')).enabled, false);
 });
 
+// Mutation proof (review SHOULD 3 and 4): the 4.x tool passing the confirmed preview on, and the
+// service attaching it to a confirmation that never expires.
+test('only a 5.0 confirmation names what was confirmed: the 4.x confirm and a 4.x set carry no preview', async (t) => {
+  const { f, call, teamId } = await harness(t, 'confirmed-4x');
+  const agent = await createFixtureAgent(f, 'agent_research');
+  await grantChannel(f, teamId, 'agent_research');
+  const { confirmToken } = structured(await call('update_agent', {
+    agentId: agent.id, version: await version(call, agent.id), on: false, idempotencyKey: 'off',
+  })).confirmation;
+  const text = (await call('confirm_workspace_change', { proposalId: confirmToken })).content[0]!.text;
+  const legacy = JSON.parse(text);
+  assert.deepEqual([legacy.ok, legacy.result.status], [true, 'completed']);
+  assert.equal('confirmed' in legacy.result, false, 'a 4.x result keeps its shape');
+  assert.doesNotMatch(text, /"before"|creatorMembershipId/, 'and shows none of the stored record');
+  assert.equal((await f.config.getAgent(agent.id)).enabled, false);
+
+  await f.config.updateAgent(agent.id, { enabled: true });
+  const current = await f.config.getAgent(agent.id);
+  const applied = JSON.parse((await call('apply_workspace_changes', {
+    idempotencyKey: 'legacy-off',
+    operations: [{ itemId: 'off', kind: 'update_agent', agentId: agent.id, expectedRevision: current!.revision, patch: { enabled: false } }],
+  })).content[0]!.text);
+  const confirmed = await f.service.confirmWorkspaceChange({
+    context: {
+      userId: f.owner.user.id, membershipId: f.owner.membership.id, organizationId: f.owner.membership.organizationId,
+      origin: { kind: 'mcp', clientId: 'client_confirmed-4x' },
+    },
+    proposalId: applied.result.outcomes[0].proposalId,
+  });
+  assert.deepEqual([confirmed.status, 'confirmed' in confirmed], ['completed', false], 'a set with no expiry gets no preview from the service');
+});
+
 test('undo_change reverses a change once, replays its retry, and confirms a destructive reverse first', async (t) => {
   const { f, as, call, teamId } = await harness(t, 'undo');
   await createFixtureAgent(f, 'agent_research');
@@ -388,7 +424,10 @@ test('undo_change reverses a change once, replays its retry, and confirms a dest
   const legacy = JSON.parse((await call('undo_workspace_change', { operationId: on.undoToken, idempotencyKey: 'undo-on-4x' })).content[0]!.text);
   assert.deepEqual([legacy.ok, legacy.error.code], [false, 'undo_unavailable']);
   const reversed = structured(await call('confirm_change', { confirmToken: reverse.confirmation.confirmToken }));
-  assert.deepEqual([reversed.status, reversed.summary], ['done', 'Made the change you confirmed.']);
+  // A confirmed undo names what it did, as its confirmation asked it.
+  assert.deepEqual([reversed.status, reversed.summary], ['done', 'Turned off Research.']);
+  // The person just turned it off: nothing about trying it, or about turning it back on.
+  assert.equal(reversed.nextStep, 'Research is off, so it answers no one in Slack. Don\'t suggest trying it.');
   assert.equal((await f.config.getAgent('agent_paused')).enabled, false);
   // Turned on again, the Agent is as the token's change left it, and the token stays used.
   assert.equal(structured(await call('update_agent', {
@@ -428,6 +467,50 @@ test('add_agent_to_channel refuses an off Agent and says to turn it on first; tu
   assert.equal(structured(await call('undo_change', { undoToken: added.undoToken, idempotencyKey: 'undo-add' })).status, 'done');
   assert.deepEqual(await grants(), []);
   assert.equal((await f.config.getAgent('agent_research')).enabled, true);
+});
+
+test('a change saved to an Agent that is off says not to suggest trying it; one that is on says nothing of the kind', async (t) => {
+  const { f, call } = await harness(t, 'off-save');
+  await createFixtureAgent(f, 'agent_research', { enabled: false });
+  const saved = structured(await call('update_agent', {
+    agentId: 'agent_research', version: await version(call, 'agent_research'), description: 'Finds sources.', idempotencyKey: 'describe-off',
+  }));
+  assert.deepEqual([saved.status, saved.summary, saved.agent.status], ['done', 'Saved Research.', 'off']);
+  assert.equal(saved.nextStep, 'Research is off, so it answers no one in Slack. Don\'t suggest trying it.');
+  assert.equal((await f.config.getAgent('agent_research')).enabled, false, 'saving it never turns it on');
+
+  const on = structured(await call('update_agent', {
+    agentId: 'agent_research', version: saved.version, on: true, idempotencyKey: 'on',
+  }));
+  assert.deepEqual([on.summary, on.nextStep], ['Turned on Research.', undefined]);
+  const again = structured(await call('update_agent', {
+    agentId: 'agent_research', version: on.version, description: 'Finds two sources.', idempotencyKey: 'describe-on',
+  }));
+  assert.equal(again.nextStep, undefined);
+});
+
+test('a confirmed change is named as its confirmation asked it; several, or one it cannot name, read as the change confirmed', () => {
+  const agent = { name: 'Research', handle: 'research' };
+  const preview = (...changes: Array<Partial<ManagementChangeSetPreview['changes'][number]>>) => ({
+    summary: '', missingSetup: [], changes: changes.map((change, index) => ({ itemId: `item_${index}`, operationKind: 'update_agent', target: 'agent:agent_research', ...change })),
+  }) as ManagementChangeSetPreview;
+  const named = (confirmed: ManagementChangeSetPreview | undefined) => {
+    const summary = confirmedSummary(confirmed);
+    return typeof summary === 'function' ? summary('Research') : summary;
+  };
+  assert.equal(named(preview({ before: { enabled: true }, after: { enabled: false } })), 'Turned off Research.');
+  assert.equal(named(preview({ operationKind: 'revoke_agent_channel', statement: { kind: 'revoke_agent_channel', agent, channel: 'support' } })),
+    'Research no longer answers in #support.');
+  assert.equal(named(preview({ operationKind: 'update_member', statement: { kind: 'update_member', member: 'Dana', status: 'removed' } })),
+    'Removed Dana from Chickpea.');
+  assert.equal(named(preview({ operationKind: 'update_member', statement: { kind: 'update_member', member: 'Dana', role: 'owner' } })),
+    'Made Dana an Owner.');
+  for (const unnamed of [
+    undefined,
+    preview({ before: { enabled: false }, after: { enabled: true } }),
+    preview({ operationKind: 'archive_agent', statement: { kind: 'archive_agent', agent, channelCount: 0 } }),
+    preview({ operationKind: 'delete_agent', statement: { kind: 'delete_agent', agent } }, { before: { enabled: true }, after: { enabled: false } }),
+  ]) assert.equal(named(unnamed), 'Made the change you confirmed.');
 });
 
 test('the immediate writes apply in the call, as policy.ts says for this door', async (t) => {

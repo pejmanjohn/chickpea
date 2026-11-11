@@ -10,6 +10,7 @@ import { ModelResolutionError } from '../../config/errors.ts';
 import { resolveModelCredentialAttribution } from '../../config/model-credential-refs.ts';
 import { resolveModelPolicyForAssignment } from '../../config/model-policy.ts';
 import type { ModelUnavailable } from '../../config/model-readiness.ts';
+import { isProviderKeyId, PROVIDER_DISPLAY_NAMES } from '../../config/provider-key-ids.ts';
 import {
   agentAppIsLive,
   type AgentChannelGrant,
@@ -189,7 +190,7 @@ async function managedAgent(service: WorkspaceManagementService, context: Manage
   } catch (error) {
     // As get_agent: an Agent the caller may not edit reads as missing.
     if (error instanceof ManagementError && error.code === 'forbidden') {
-      fail('not_found', 'No Agent you can manage has that agentId.', { nextStep: 'Call list_agents for the current agentIds.' });
+      agentNotFound();
     }
     throw error;
   }
@@ -384,5 +385,6 @@ export function readingView(reading: AgentRunReading) {
 export function unavailableText(answer: ModelUnavailable, model: string): string {
   if (answer.unavailable === 'model_unsupported') return answer.message;
   if (answer.unavailable === 'funding_not_offered') return 'It is not available on Chickpea\'s models.';
-  return `Its provider, ${model.split('/')[0]}, is not set up.`;
+  const provider = model.split('/')[0]!;
+  return `Its provider, ${isProviderKeyId(provider) ? PROVIDER_DISPLAY_NAMES[provider] : provider}, is not set up.`;
 }

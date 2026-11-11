@@ -218,7 +218,7 @@ test('a destructive confirmation waits for the click: no mount, focus or timer c
   await agentCard.press('confirm');
   assert.deepEqual(agentCard.calls('confirm_change').map(({ args }) => args), [{ confirmToken: ask && pending.structuredContent!.confirmation.confirmToken }]);
   assert.equal((await f.config.getAgent('agent_support')).enabled, false);
-  assert.equal(agentCard.shown.title, 'Made the change you confirmed');
+  assert.equal(agentCard.shown.title, 'Turned off Research');
   assert.deepEqual(agentCard.labels(), ['Undo (secondary)'], 'a confirmed turn-off can be undone');
 });
 
@@ -680,10 +680,10 @@ test('a session that draws cards confirms, keeps and undoes with tokens only the
   await agentCard.press('confirm');
   assert.deepEqual(agentCard.calls('confirm_change').map(({ args }) => args), [{ confirmToken: (again._meta?.['chickpea/held'] as { confirmToken: string }).confirmToken }]);
   assert.equal((await f.config.getAgent('agent_support')).enabled, false);
-  assert.equal(agentCard.shown.title, 'Made the change you confirmed');
+  assert.equal(agentCard.shown.title, 'Turned off Research');
   assert.deepEqual(agentCard.shown.subtitle, [{ text: 'It won\'t answer in Slack until it\'s turned back on.' }]);
   assert.ok(agentCard.labels().includes('Undo (secondary)'), 'Undo works from the undo token the card holds');
-  assert.equal(contexts(agentCard).at(-1), 'The person confirmed on the card. Chickpea said: "Made the change you confirmed."');
+  assert.equal(contexts(agentCard).at(-1), 'The person confirmed on the card. Chickpea said: "Turned off Research."');
 
   const saved = card(call, clock);
   const preview = await call('propose_agent_change', { agentId: 'agent_support', version: await version(), change: { description: 'Billing.' } });

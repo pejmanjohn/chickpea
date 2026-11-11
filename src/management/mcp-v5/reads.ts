@@ -334,7 +334,7 @@ export function requireAgent(snapshot: ManagementWorkspaceSnapshot, agentId: str
 }
 
 export function agentNotFound(): never {
-  fail('not_found', 'No Agent you can manage has that agentId.', { nextStep: 'Call list_agents for the current agentIds.' });
+  fail('not_found', 'That Agent is gone, or you can\'t manage it.', { nextStep: 'Call list_agents for the current agentIds.' });
 }
 
 /**

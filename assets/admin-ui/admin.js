@@ -814,12 +814,15 @@
     return state.grants.filter(function (grant) { return grant.agentId === agentId; });
   }
 
-  // Admin's default Agent: the first active one, else the first not archived,
-  // so landing never opens a draft, needs-attention or archived Agent while an
-  // active one exists.
+  // Admin's default Agent: the first active one that is on, else the first
+  // active one, else the first not archived, so landing never opens a draft,
+  // needs-attention or archived Agent while an active one exists, and Add
+  // channel never picks one that is off while one is on: adding never turns
+  // an Agent on.
   function firstAgent() {
     function lifecycle(agent) { return agent.lifecycle || (agent.enabled ? "active" : "archived"); }
-    return state.agents.find(function (agent) { return lifecycle(agent) === "active"; }) ||
+    return state.agents.find(function (agent) { return agent.enabled && lifecycle(agent) === "active"; }) ||
+      state.agents.find(function (agent) { return lifecycle(agent) === "active"; }) ||
       state.agents.find(function (agent) { return lifecycle(agent) !== "archived"; }) ||
       state.agents[0] || null;
   }

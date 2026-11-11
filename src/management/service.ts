@@ -3547,7 +3547,10 @@ export class WorkspaceManagementService {
         emitAgentAuthoringOutcome(actor, changeSet.operations, {
           proposalOutcome: authoringProposalOutcome(result),
         });
-        return result;
+        // A 5.0 confirmation expires; its result names what the person confirmed.
+        return changeSet.expiresAt === undefined
+          ? result
+          : { ...result, confirmed: { preview: publicChangeSetPreview(changeSet.preview) } };
       } catch (error) {
         emitAgentAuthoringOutcome(actor, changeSet.operations, authoringProposalFailure(error));
         throw error;

@@ -430,7 +430,8 @@ test('one run at a time, ten a day, and a key names one run', async (t) => {
   assert.equal((await tryOnce('key_first')).runToken, first.runToken);
   // The same key for another Agent is refused.
   await seedAgentWithId(f, 'agent_other');
-  await assert.rejects(tryOnce('key_first', 'agent_other'), refused('key_reused'));
+  // A card may draw it, so it names no field.
+  await assert.rejects(tryOnce('key_first', 'agent_other'), refused('key_reused', /^That test run was already asked for\.$/));
   assert.equal(Number(installation.db.get('SELECT COUNT(*) AS n FROM management_test_runs')?.n), TEST_RUN_DAILY_RUNS);
 });
 

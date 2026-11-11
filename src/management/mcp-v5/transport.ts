@@ -80,7 +80,7 @@ function withFiveZeroError(message: ResultResponse, tool: string): JSONRPCMessag
   const error: McpToolError = text.startsWith('Input validation error:')
     ? {
         code: 'invalid_input',
-        message: `${tool} did not accept these arguments.`,
+        message: 'Chickpea did not accept that request.',
         retryable: false,
         nextStep: `Fix the arguments and call ${tool} again. ${text.replace(/^Input validation error: /, '')}`,
       }

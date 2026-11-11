@@ -113,7 +113,7 @@ export function renderManagedConnectionSetupPage(input: ConnectorLandingPageInpu
               <p class="flow-alert" id="flow-alert" role="alert"${failureMessage ? '' : ' hidden'}>${escapeHtml(failureMessage)}</p>
             </form>
             <div class="flow-actions">
-              <form method="post" action="/setup/${encodeURIComponent(setup.setupOperationId)}/cancel"><button class="text-button" type="submit">Cancel</button></form>
+              ${cancelForm(setup)}
               <button class="primary-button" type="submit" form="connector-form" name="intent" value="authorize" data-label="${escapeHtml(continueLabel)}" data-different-label="${escapeHtml(differentAccountLabel)}" disabled>${escapeHtml(notice ? differentAccountLabel : continueLabel)}</button>
             </div>
           </section>
@@ -415,8 +415,8 @@ export function renderManagedConnectionSuccessPage(input: ConnectorLandingPageIn
   });
 }
 
-/** Where Cancel on an app's catalog link ends: nothing was connected, and the person goes back to the app. */
-export function renderCatalogConnectionCancelledPage(input: ConnectorLandingPageInput): string {
+/** Where Cancel on an app's one-connection link ends: nothing was connected, and the person goes back to the app. */
+export function renderConnectionCancelledPage(input: ConnectorLandingPageInput): string {
   const connector = input.setup.target.targetLabel;
   return pageShell({
     title: `${connector} not connected`,
@@ -434,15 +434,21 @@ export function renderCatalogConnectionCancelledPage(input: ConnectorLandingPage
 }
 
 /**
- * Cancel leaves a catalog page and changes nothing. A link an app asked for
- * ends on a page that sends the person back to the app; a Slack link opens the
- * Agent in Admin, as it always has.
+ * Cancel on a catalog page connects nothing. A link an app asked for is
+ * cancelled, so the app reads it as cancelled, and ends on a page that sends
+ * the person back to the app; a Slack link opens the Agent in Admin, as it
+ * always has.
  */
 function catalogCancel(setup: ManagementSetupRecord, agent: CustomAgentConfig): string {
-  const href = setup.origin.kind === 'mcp'
-    ? `/setup/${encodeURIComponent(setup.setupOperationId)}?cancelled=1`
-    : `/admin/agents/${encodeURIComponent(agent.id)}`;
-  return `<a class="text-button" href="${href}">Cancel</a>`;
+  return setup.origin.kind === 'mcp'
+    ? cancelForm(setup)
+    : `<a class="text-button" href="/admin/agents/${encodeURIComponent(agent.id)}">Cancel</a>`;
+}
+
+/** Cancel on a one-connection page. A link an app asked for is cancelled; a Slack link's sign-in starts over. */
+function cancelForm(setup: ManagementSetupRecord): string {
+  const intent = setup.origin.kind === 'mcp' ? ' name="intent" value="cancel"' : '';
+  return `<form method="post" action="/setup/${encodeURIComponent(setup.setupOperationId)}/cancel"><button class="text-button" type="submit"${intent}>Cancel</button></form>`;
 }
 
 /** For a link that cannot be used. It says to ask for a new one where the link came from. */

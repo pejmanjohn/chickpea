@@ -15,9 +15,9 @@ import {
   versionToken,
 } from '../src/management/mcp-v5/conventions.ts';
 import { agentConnectionsOf } from '../src/management/mcp-v5/reads.ts';
-import { createAgentInputSchema, updateAgentInputSchema } from '../src/management/mcp-v5/schemas.ts';
+import { changeResultOutput, createAgentInputSchema, updateAgentInputSchema } from '../src/management/mcp-v5/schemas.ts';
 import { CARD_URIS } from '../src/management/mcp-v5/cards.ts';
-import { FIVE_ZERO_TOOL_NAMES } from '../src/management/mcp-v5/tools.ts';
+import { FIVE_ZERO_TOOL_NAMES, FIVE_ZERO_TOOLS } from '../src/management/mcp-v5/tools.ts';
 import { emitManagementMetric } from '../src/management/telemetry.ts';
 import { DEFAULT_AGENT_AVATAR_FILES, DEFAULT_AGENT_AVATAR_NAMES } from '../src/slack/agent-presence/default-avatar-pool.ts';
 import type { ManagementReceiptOutboxRecord } from '../src/management/types.ts';
@@ -191,6 +191,14 @@ for (const protocol of [LEGACY, MODERN]) {
     assert.equal(profile.additionalProperties, false);
   });
 }
+
+test('a 5.0 description names only tools this server has, and statuses and codes its results carry', () => {
+  const known = new Set<string>([...FIVE_ZERO_TOOL_NAMES, ...MCP_ERROR_CODES, ...changeResultOutput.shape.status.options]);
+  for (const [name, tool] of Object.entries(FIVE_ZERO_TOOLS)) {
+    const unknown = [...tool.description.matchAll(/\b[a-z]+(?:_[a-z]+)+\b/g)].map(([word]) => word).filter((word) => !known.has(word));
+    assert.deepEqual(unknown, [], `${name} names something no tool, status or code is`);
+  }
+});
 
 test('the profile id is frozen: one derivation, pinned, never reused across memberships', () => {
   assert.equal(accountProfileId('org_fixed', 'mem_fixed'), 'e28ebb3edf4d8f7b74a5d2a3d6283c0a');
@@ -389,10 +397,14 @@ test('5.0 errors share one shape, including the SDK\'s input refusals; 4.x error
   const missing = errorOf(await call('get_agent', { agentId: 'agent_missing' }));
   assert.equal(missing.code, 'not_found');
   assert.equal(missing.retryable, false);
+  // A card shows an error's message, so it names no tool and no field; the next step, for the model, does.
+  assert.equal(missing.message, 'That Agent is gone, or you can\'t manage it.');
+  assert.match(missing.nextStep as string, /list_agents/);
 
   const refused = errorOf(await call('get_agent', { agentId: 'Not An Id!' }));
   assert.equal(refused.code, 'invalid_input');
-  assert.match(refused.nextStep as string, /agentId/);
+  assert.equal(refused.message, 'Chickpea did not accept that request.');
+  assert.match(refused.nextStep as string, /^Fix the arguments and call get_agent again\. .*agentId/);
 
   assert.equal(errorOf(await call('get_agent_memory', { agentId: 'agent_missing' })).code, 'not_found');
 

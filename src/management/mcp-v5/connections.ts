@@ -60,12 +60,18 @@ function needsSetup(
   return { status: 'needs_setup', summary, nextStep: setupNextStep([setup]), ...(agent ? { agent } : {}), setup };
 }
 
+/**
+ * Chickpea's page for a new connection asks whose account it is, so its
+ * owner is named only where it is fixed: a reconnect keeps its account's,
+ * and Admin's page is for the one asked for.
+ */
 function linkFrom(result: PrepareConnectorSetupResult): Setup {
+  const fixed = result.reconnect !== undefined || result.setupOperationId === undefined;
   return {
     url: result.handoffUrl,
     ...(result.setupOperationId ? { setupToken: result.setupOperationId } : {}),
     what: result.connector.name,
-    owner: result.ownerKind,
+    ...(fixed ? { owner: result.ownerKind } : {}),
   };
 }
 
@@ -291,7 +297,7 @@ export async function reconnectService(
   const { snapshot, agent } = await readAgent(deps, context, input.agentId);
   const row = connectionRows(agent).find(({ connectionId }) => connectionId === input.connectionId);
   if (!row) {
-    fail('not_found', `${agent.name} has no connection with that connectionId.`, { nextStep: 'Call get_agent for its connectionIds.' });
+    fail('not_found', `${agent.name} no longer has that connection.`, { nextStep: 'Call get_agent for its connectionIds.' });
   }
   const { agent: summary } = await agentSummary(deps, context, agent.id);
   const laneEntry = [...agent.apiConnections, ...agent.mcpServers].find(({ id }) => id === row.connectionId);

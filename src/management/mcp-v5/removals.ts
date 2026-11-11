@@ -182,7 +182,7 @@ export async function updateMember(deps: FiveZeroDeps, input: In<typeof schemas.
         });
       }
       const member = team.members.find(({ slackUserId }) => slackUserId === input.slackUserId);
-      if (!member) fail('not_found', 'No one in this workspace has that slackUserId.', { nextStep: 'Call list_members for the current slackUserIds.' });
+      if (!member) fail('not_found', 'That person isn\'t in this workspace.', { nextStep: 'Call list_members for the current slackUserIds.' });
       return [{
         itemId: 'update_member',
         kind: 'update_member',

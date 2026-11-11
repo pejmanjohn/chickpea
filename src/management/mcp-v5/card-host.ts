@@ -1,5 +1,5 @@
 import { ADMIN_PATH, adminOrigin } from '../admin-links.ts';
-import type { ChangeResult } from './changes.ts';
+import { offNextStep, type ChangeResult } from './changes.ts';
 
 /**
  * Whether a card draws this connection's results. A client that declares
@@ -67,33 +67,57 @@ export interface HeldTokens {
 }
 
 /**
- * A change result as a card host's model sees it: no token it could use
- * without the person's press, and words that send the person to the card,
- * or, should the host fail to draw it, to Admin or to a new chat.
+ * What a card host's model hears with a result a card shows. The card
+ * changes when the person presses, and the model's own words would not, so
+ * it says one sentence and waits instead of listing what the card shows.
  */
-export function holdTokens(
+export const CARD_SHOWS_IT = 'The card above shows this to the person, and they act on it there. Reply in one short sentence: don\'t restate what the card shows, and don\'t say whether anything was created, saved, connected or changed, because the card changes when they press. Then wait for them.';
+
+/**
+ * A result as a card host's model sees it: no token it could use without
+ * the person's press, and words that send the person to the card, or,
+ * should the host fail to draw it, to Admin or to a new chat. `drawn`: a
+ * card draws this tool's result, so the model is told the card shows it,
+ * in the result's next step and in a text block before its JSON.
+ */
+export function forCardHost(
   result: Record<string, unknown>,
   baseUrl: string | undefined,
-): { structured: Record<string, unknown>; held?: HeldTokens } {
+  drawn: boolean,
+): { structured: Record<string, unknown>; held?: HeldTokens; lead?: string } {
   const change = result as Partial<ChangeResult>;
   const confirmToken = change.confirmation?.confirmToken;
   const { undoToken } = change;
-  if (confirmToken === undefined && undoToken === undefined) return { structured: result };
+  const shows = drawn && cardActsOn(change);
+  if (confirmToken === undefined && undoToken === undefined && !shows) return { structured: result };
   const { undoToken: _undo, ...rest } = change;
   const structured: Partial<ChangeResult> = rest;
   if (confirmToken !== undefined) {
     const { confirmToken: _confirm, ...confirmation } = change.confirmation!;
     structured.confirmation = confirmation;
     structured.summary = `Nothing has changed yet. ${elsewhere(confirmation.inAdmin, change.agent?.links?.admin ?? workspaceAdmin(baseUrl))}`;
-    structured.nextStep = 'The person confirms on the card, which holds the confirmToken. Wait for them.';
   }
-  if (undoToken !== undefined) {
-    structured.nextStep = [change.nextStep, 'The person can undo it on the card above.'].filter(Boolean).join(' ');
-  }
+  structured.nextStep = shows
+    ? [
+        CARD_SHOWS_IT,
+        confirmToken !== undefined ? 'Only the card can confirm it: it holds the confirmToken.' : undefined,
+        undoToken !== undefined ? 'They can undo it on the card.' : undefined,
+        change.status === 'done' && change.agent?.status === 'off' ? offNextStep(change.agent.name) : undefined,
+      ].filter(Boolean).join(' ')
+    : confirmToken !== undefined
+      ? 'The person confirms on the card, which holds the confirmToken. Wait for them.'
+      : [change.nextStep, 'The person can undo it on the card above.'].filter(Boolean).join(' ');
+  const held = { ...confirmToken !== undefined ? { confirmToken } : {}, ...undoToken !== undefined ? { undoToken } : {} };
   return {
     structured,
-    held: { ...confirmToken !== undefined ? { confirmToken } : {}, ...undoToken !== undefined ? { undoToken } : {} },
+    ...Object.keys(held).length ? { held } : {},
+    ...shows ? { lead: CARD_SHOWS_IT } : {},
   };
+}
+
+/** A setup link with no setupToken is not Chickpea's page for one connection: the card cannot open it, so the model gives it. */
+function cardActsOn(result: Partial<ChangeResult>): boolean {
+  return !(result.status === 'needs_setup' && !result.setup?.setupToken);
 }
 
 /** Where else the person can make the change, should the card not show: only a way that exists. */
