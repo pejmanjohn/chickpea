@@ -1297,6 +1297,9 @@ try {
     await shot('4-answered-partial');
     await browser.click('try_fix');
     await shows('/Finish it in the chat, then try again\./', 'the fix in the chat');
+    for (let tries = 0; tries < 50 && (await browser.host('window.harness.messages.length')) === 0; tries += 1) {
+      await new Promise((done) => setTimeout(done, 100));
+    }
     assert.equal((await browser.host('window.harness.messages')).at(-1)?.content?.[0]?.text, 'Mark Help center\'s read tools for Docs Helper.');
     assert.deepEqual(await buttons(), ['Try again', 'Mark Help center\'s read tools']);
     await shot('4-answered-partial-fixing');
