@@ -21,6 +21,8 @@ const PRACTICE_RESULTS_CHARS = 12_000;
 export const PRACTICE_RESULT_CHARS = 1_500;
 /** A step's input, `why`, or an `off` line. */
 export const PRACTICE_LINE_CHARS = 200;
+/** A service's or connection's name, wherever a result shows it: a label can be 240 characters, and 25 steps repeat it. */
+const PRACTICE_NAME_CHARS = 60;
 
 const ACTIVATE_SKILL_TOOL_NAME = 'activate_skill';
 
@@ -74,8 +76,16 @@ function cut(text: string, keep: number): string {
 
 /** One line a client shows as it is: no image, no credential, at most 200 characters. */
 export function practiceLine(text: string): string {
-  const line = redactCredentialLikeContent(withoutImages(text.replace(/\s+/g, ' ').trim()));
-  return line.length > PRACTICE_LINE_CHARS ? `${line.slice(0, PRACTICE_LINE_CHARS - 1)}…` : line;
+  return shortened(redactCredentialLikeContent(withoutImages(text.replace(/\s+/g, ' ').trim())), PRACTICE_LINE_CHARS);
+}
+
+/** A service's or connection's name, as a line, at most 60 characters. */
+export function practiceName(name: string): string {
+  return shortened(practiceLine(name), PRACTICE_NAME_CHARS);
+}
+
+function shortened(line: string, most: number): string {
+  return line.length > most ? `${line.slice(0, most - 1)}…` : line;
 }
 
 function skillStep(plan: RuntimePlanV2, call: PracticeToolCall): PracticeStep {
