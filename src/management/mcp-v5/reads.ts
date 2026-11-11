@@ -381,7 +381,11 @@ export async function listServices(
       return words.every((word) => text.includes(word));
     })
     .map(({ id, name, description }) => ({ service: id, name, description }));
-  return { services, count: services.length };
+  return {
+    services,
+    count: services.length,
+    nextStep: 'get_service with a service says how it signs in and what it can read and write before it is connected; connect_service connects it to an Agent.',
+  };
 }
 
 export async function listModels(deps: FiveZeroDeps): Promise<Out<typeof schemas.listModelsOutput>> {
@@ -796,7 +800,7 @@ function displayDate(iso: string): string {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
 }
 
-function when(at: number): { display: string; isoUtc: string } {
+export function when(at: number): { display: string; isoUtc: string } {
   const date = new Date(at);
   return {
     display: `${date.toLocaleString('en-US', {

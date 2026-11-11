@@ -25,8 +25,8 @@ const MAX_URL_CHARS = 2048;
 const MAX_QUERY_KEYS = 50;
 const MAX_HEADERS = 20;
 
-const METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'] as const;
-type Method = (typeof METHODS)[number];
+export const CONNECTION_REQUEST_METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'] as const;
+type Method = (typeof CONNECTION_REQUEST_METHODS)[number];
 const READ_METHODS = new Set<Method>(['GET', 'HEAD']);
 
 /** Credential-bearing or transport-owned headers a request may never set. */
@@ -98,7 +98,7 @@ const scalar = v.union([v.string(), v.number(), v.boolean()]);
 const INPUT = v.pipe(
   v.object({
     connection: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(200))),
-    method: v.optional(v.picklist(METHODS)),
+    method: v.optional(v.picklist(CONNECTION_REQUEST_METHODS)),
     url: v.pipe(v.string(), v.minLength(1), v.maxLength(MAX_URL_CHARS)),
     query: v.optional(v.pipe(
       v.record(v.pipe(v.string(), v.minLength(1), v.maxLength(200)), v.union([scalar, v.array(v.string())])),

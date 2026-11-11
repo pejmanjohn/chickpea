@@ -3,7 +3,7 @@ import test from 'node:test';
 import { BrowserBudgetExhaustedError, BrowserTurnSession } from '../src/browser/turn-session.ts';
 import { FakeCdpSocket, fakeBrowserProvider } from './helpers/fake-cdp-socket.ts';
 
-function setup(overrides: { maxSessionMs?: number } = {}) {
+function setup(overrides: { maxSessionMs?: number; grantsWebsiteLogins?: boolean } = {}) {
   let clock = 1_000_000;
   const sockets: FakeCdpSocket[] = [];
   const closedInfo: Array<{ sessionId: string; seconds: number }> = [];
@@ -18,6 +18,7 @@ function setup(overrides: { maxSessionMs?: number } = {}) {
     now: () => clock,
     sleep: async () => undefined,
     ...(overrides.maxSessionMs === undefined ? {} : { maxSessionMs: overrides.maxSessionMs }),
+    ...(overrides.grantsWebsiteLogins === undefined ? {} : { grantsWebsiteLogins: overrides.grantsWebsiteLogins }),
     onClosed: async (info) => {
       closedInfo.push(info);
     },
@@ -44,6 +45,19 @@ test('ensure creates one recorded session lazily and reuses it', async () => {
   assert.equal(session.sessionId, 'sess-1');
   assert.equal(session.startedAt, 1_000_000);
   assert.deepEqual(session.policy, { readOnly: true });
+  await session.close();
+});
+
+test('the secret matcher loads with the first session, and a secret typed in one stays matched in the next', async () => {
+  const { session } = setup();
+  assert.equal(session.redact('Synthetic-Pass-1234'), 'Synthetic-Pass-1234', 'nothing typed before a session');
+  assert.throws(() => session.addRedaction('Synthetic-Pass-1234'), /only into an open browser session/);
+  await session.ensure();
+  session.addRedaction('Synthetic-Pass-1234');
+  await session.close();
+  await session.ensure();
+  assert.equal(session.redact('Wrong password: Synthetic-Pass-1234'), 'Wrong password: [redacted]');
+  assert.equal(session.redactUrl('https://site.example/?p=Synthetic-Pass-1234'), 'https://site.example/?p=[redacted]');
   await session.close();
 });
 
@@ -176,6 +190,63 @@ test('a hand-off session is kept alive for ten minutes and detach lets it outliv
   assert.equal(await session.detach(), undefined);
 });
 
+/** The CDP methods a screenshot of the open session's page sends. */
+async function screenshotMethods(session: BrowserTurnSession, socket: FakeCdpSocket): Promise<string[]> {
+  socket.responders.set('Page.captureScreenshot', () => ({ result: { data: 'iVBORw0KGgo=' } }));
+  socket.responders.set('DOMSnapshot.captureSnapshot', () => ({ result: { documents: [], strings: [] } }));
+  const from = socket.sent.length;
+  const shot = await (await session.ensure()).page.screenshot();
+  assert.ok('bytes' in shot);
+  return socket.sent.slice(from).map(({ method }) => method);
+}
+
+const CHECKED = ['Target.setAutoAttach', 'DOMSnapshot.captureSnapshot', 'Page.captureScreenshot', 'DOMSnapshot.captureSnapshot'];
+
+test('a session in a run that grants no website login takes a screenshot without reading the page', async () => {
+  const { session, sockets } = setup({ grantsWebsiteLogins: false });
+  await session.ensure();
+  assert.deepEqual(await screenshotMethods(session, sockets[0]!), ['Page.captureScreenshot']);
+  assert.equal(await (await session.ensure()).page.secretOnPage(), undefined);
+  assert.deepEqual(await screenshotMethods(session, sockets[0]!), ['Page.captureScreenshot']);
+  await session.close();
+});
+
+test('a run that grants a website login, or does not say, checks every picture its sessions take', async () => {
+  for (const grantsWebsiteLogins of [true, undefined]) {
+    const { session, sockets } = setup(grantsWebsiteLogins === undefined ? {} : { grantsWebsiteLogins });
+    await session.ensure();
+    assert.deepEqual(await screenshotMethods(session, sockets[0]!), CHECKED, `public, grantsWebsiteLogins ${grantsWebsiteLogins}`);
+    await session.ensureFor(GITHUB);
+    assert.deepEqual(await screenshotMethods(session, sockets[1]!), CHECKED, `bound, grantsWebsiteLogins ${grantsWebsiteLogins}`);
+    await session.close();
+  }
+  const { session, sockets } = setup({ grantsWebsiteLogins: false });
+  await session.ensureFor(GITHUB);
+  assert.deepEqual(await screenshotMethods(session, sockets[0]!), ['Page.captureScreenshot'], 'only false skips the check');
+  await session.close();
+});
+
+test('a session handed to a person to sign in checks its pictures, even in a run that grants no website login', async () => {
+  const { session, sockets } = setup({ grantsWebsiteLogins: false });
+  await session.ensure();
+  assert.deepEqual(await screenshotMethods(session, sockets[0]!), ['Page.captureScreenshot']);
+  await session.openForHandoff(GITHUB);
+  assert.deepEqual(await screenshotMethods(session, sockets[1]!), CHECKED);
+  await session.detach();
+});
+
+test('once a secret is typed in a turn, its open session and every later one check their pictures', async () => {
+  const { session, sockets } = setup({ grantsWebsiteLogins: false });
+  await session.ensure();
+  assert.deepEqual(await screenshotMethods(session, sockets[0]!), ['Page.captureScreenshot']);
+  session.addRedaction('Synthetic-Pass-1234');
+  assert.deepEqual(await screenshotMethods(session, sockets[0]!), CHECKED, 'the open session, from then on');
+  await session.close();
+  await session.ensure();
+  assert.deepEqual(await screenshotMethods(session, sockets[1]!), CHECKED, 'a later session of the same turn');
+  await session.close();
+});
+
 test('every session refuses downloads at the browser, and a browser that cannot still opens', async (t) => {
   const { session, sockets } = setup();
   await session.ensure();
@@ -199,12 +270,15 @@ test('every session refuses downloads at the browser, and a browser that cannot 
   await refusing.close();
 });
 
-test('redaction replaces typed secrets and skips values too short to redact safely', () => {
+test('redaction replaces typed secrets, and a value too short to redact inside text only as a whole field', async () => {
   const { session } = setup();
+  await session.ensure();
   session.addRedaction('hunter2!');
   session.addRedaction('287082');
   session.addRedaction('ab');
   assert.equal(session.redact('pw hunter2! code 287082 tab'), 'pw [redacted] code [redacted] tab');
+  assert.equal(session.redact('ab'), '[redacted]');
+  await session.close();
 });
 
 test('the policy follows the bound login: read-only unless its grant allows actions', async () => {

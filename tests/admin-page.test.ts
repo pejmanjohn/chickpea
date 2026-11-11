@@ -17943,10 +17943,10 @@ test('Usage names the built-in Chickpea Agent on a redacted operation', async ()
   assert.doesNotMatch(harness.app.innerHTML, /agent_chickpea<\/td>/);
 });
 
-test('Usage names a test run "Test run"', async () => {
+test('Usage names a practice run "Practice run"', async () => {
   const harness = runAdminPageHarness({ usageAdminUi: true, initialPath: '/admin/usage', usageTestRun: true });
   await flushAsync();
-  assert.match(harness.app.innerHTML, /<strong class="usage-work-label">Test run<\/strong>/);
+  assert.match(harness.app.innerHTML, /<strong class="usage-work-label">Practice run<\/strong>/);
 });
 
 test('Usage names a redacted scheduled run from the readable scheduled-work list', async () => {

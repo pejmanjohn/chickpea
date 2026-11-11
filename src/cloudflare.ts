@@ -287,7 +287,15 @@ import type { InstallationWorkspaceObject } from './state/object-inventory.ts';
 import { ResidencyHold, residencyHoldMs } from './state/residency-hold.ts';
 import { stateStoreHostFunctions, type StateStoreHostRpc } from './state/state-store-host.ts';
 import type { TestRunLifecycle } from './state/test-run-lifecycle.ts';
-import type { TestRunQuery, TestRunReplayQuery, TestRunStartRequest, TestRunStartResult, TestRunView } from './management/test-run-types.ts';
+import type {
+  PracticeRunListing,
+  PracticeRunsQuery,
+  TestRunQuery,
+  TestRunReplayQuery,
+  TestRunStartRequest,
+  TestRunStartResult,
+  TestRunView,
+} from './management/test-run-types.ts';
 import { StateSchemaMarker, stateSchemaFingerprint } from './state/schema-lifecycle.ts';
 import { cloudflareWorkerVersionId } from './config/cloudflare-version.ts';
 import { applicationIdentity, viteServeLane } from './release/identity.ts';
@@ -932,7 +940,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     const alarmTurn = read(() => stores.turnJobs.hasInterruptedAlarmDispatch());
     const inbox = read(() => stores.gatewayInbox.hasOrphanedLease());
     const handoffs = this.versionChanged && read(() => stores.turnJobs.hasHandoffs());
-    const testRun = read(() => stores.testRuns.hasUnerased());
+    const testRun = read(() => stores.testRuns.nextDueAt(Date.now()) !== undefined);
     if (!alarmTurn && !inbox && !handoffs && !testRun) return;
     try {
       const armed = (await this.ctx.storage.getAlarm()) === null;
@@ -1901,6 +1909,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     return this.callTestRuns(async () => await (await this.testRuns()).observe(query) ?? null);
   }
 
+  async testRunList(query: PracticeRunsQuery): Promise<StateRpcResult<PracticeRunListing[]>> {
+    return this.callTestRuns(async () => (await this.testRuns()).list(query));
+  }
+
   /** One lifecycle per object: it holds which runs' steps are going and which it aborted. */
   private testRuns(): Promise<TestRunLifecycle> {
     this.testRunLifecycle ??= import('./state/test-run-lifecycle.ts').then(({ TestRunLifecycle }) => new TestRunLifecycle({
@@ -2665,6 +2677,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       this.lastRetentionSweepAt = retentionStartedAt;
       retentionMs = Date.now() - retentionStartedAt;
     }
+    // A practice run goes an hour after it settles, on the wake nextDueAt arms for it.
+    stores.testRuns.eraseExpired(retentionStartedAt);
     // New turns go to their thread's SlackThreadRunner (the default executor)
     // and this alarm only finishes turns it already dispatched to Flue: rows
     // admitted before the runner became the default. The emergency gate

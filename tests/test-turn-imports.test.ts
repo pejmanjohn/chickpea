@@ -8,7 +8,7 @@ import { reachable } from './helpers/import-graph.ts';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const TEST_RUN_MODULES = [
-  'src/agents/test-turn.ts', 'src/agents/test-run-plan.ts', 'src/agents/test-turn-limits.ts',
+  'src/agents/test-turn.ts', 'src/agents/test-run-plan.ts',
   // The state store's side and the tools that start and read a run.
   'src/state/test-run-lifecycle.ts', 'src/state/test-run-instance.ts', 'src/management/test-runs.ts',
   'src/management/mcp-v5/test-runs.ts',

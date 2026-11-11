@@ -467,6 +467,21 @@ const BUILT_IN_SKILL_LABELS: Readonly<Record<string, string>> = {
 };
 
 /**
+ * A skill Chickpea mounts itself, by a person's name for it: a built-in
+ * one's label, or a connection guide's service, whose skill name carries the
+ * connection's ID. An Agent's own skill keeps its own name, even when it
+ * shadows a built-in one, so it has none here.
+ */
+export function skillDisplayName(
+  plan: Pick<RuntimePlanV2, 'skills' | 'apiConnections' | 'mcpConnections'>,
+  name: string,
+): string | undefined {
+  if (plan.skills.some((skill) => skill.name === name)) return undefined;
+  return BUILT_IN_SKILL_LABELS[name] ?? [...plan.apiConnections, ...plan.mcpConnections]
+    .find(({ id, displayName, guide }) => guide && displayName && connectionGuideSkillName(id) === name)?.displayName;
+}
+
+/**
  * Compile the only data allowed to cross Flue's durable creation boundary.
  * Credential identities, versions, values, tokens, and live request objects
  * are intentionally absent. Non-secret auth and header policy is frozen here;
@@ -712,8 +727,6 @@ export function buildRuntimePlanActivityContext(
     families.add(descriptor.descriptor.target);
   }
 
-  const guideLabels = new Map([...plan.apiConnections, ...plan.mcpConnections].flatMap(({ id, displayName, guide }) =>
-    guide && displayName ? [[connectionGuideSkillName(id), displayName] as const] : []));
   return buildSemanticActivityContext(
     dedupeActivityDescriptors(descriptors),
     [...families],
@@ -722,10 +735,7 @@ export function buildRuntimePlanActivityContext(
         ...options.mountedSkillNames ?? plan.skills.map(({ name }) => name),
         ...(options.includeAgentAuthoringSkill ? [AGENT_AUTHORING_SKILL_NAME] : []),
       ].map((name) => {
-        // An Agent's own skill keeps its own name even when it shadows a built-in one.
-        const label = plan.skills.some((skill) => skill.name === name)
-          ? undefined
-          : BUILT_IN_SKILL_LABELS[name] ?? guideLabels.get(name);
+        const label = skillDisplayName(plan, name);
         return label ? { name, displayName: label } : { name };
       }),
       mcpConnections: plan.mcpConnections.flatMap(({ id, displayName }) =>

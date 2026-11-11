@@ -27,15 +27,20 @@ import {
   type BrowserWebsiteLogin,
 } from './binding.ts';
 import {
+  BROWSER_APPROVAL_HOLDS_SECRET_MESSAGE,
   BROWSER_APPROVAL_INSTRUCTION,
   BROWSER_DATA_CHANGE_REFUSAL,
   BROWSER_HANDED_OFF_MESSAGE,
   BROWSER_NO_APPROVER_MESSAGE,
   BROWSER_NO_PAGE_MESSAGE,
   BROWSER_PAGE_CHANGED_MESSAGE,
+  browserApprovalScreenshotWithheldNote,
+  browserApprovedStepFailedMessage,
   browserCheckOnlyRefusal,
 } from './messages.ts';
+import { keyDefinition } from './keys.ts';
 import type { BrowserAction, BrowserPage, ElementRef, PageInfo } from './page.ts';
+import { RedactionBudget } from './redaction-budget.ts';
 import type { BrowserTurnSession } from './turn-session.ts';
 
 /**
@@ -170,10 +175,18 @@ export class BrowserFormSteps {
   }
 }
 
+/** Whether any string in `value`, at any depth, passes `test`. */
+function someString(value: unknown, test: (text: string) => boolean): boolean {
+  if (typeof value === 'string') return test(value);
+  if (Array.isArray(value)) return value.some((item) => someString(item, test));
+  return value !== null && typeof value === 'object' && Object.values(value).some((item) => someString(item, test));
+}
+
 function approvalErrorMessage(error: BrowserActionError): string {
   switch (error.code) {
     case 'consumed': return 'That approval was already used. Take a new snapshot and ask again if another step is needed.';
     case 'expired': return 'That approval expired. Take a new snapshot and ask again if the step is still right.';
+    case 'outdated': return 'That step was held for approval before Chickpea was updated, so it can no longer be taken. Take a new snapshot and ask the person to approve it again if it is still right.';
     case 'not_approved': return 'The person has not approved that step with their latest reply. Ask them to reply exactly "approve" in this thread, and end your reply.';
     default: return 'That approval is not for this conversation. Ask the person again if the step is still right.';
   }
@@ -186,7 +199,7 @@ export interface BrowserApprovalContext {
   formSteps: BrowserFormSteps;
   readPage: (pageInfo?: PageInfo) => Promise<BrowserPageReport>;
   stageArtifact: (artifact: { bytes: Uint8Array; filename: string; title: string; kind: 'image' }) => Promise<unknown>;
-  redact: (text: string) => string;
+  redact: (text: string, budget?: RedactionBudget) => string;
   errorMessage: (error: unknown) => string;
   now: () => Date;
   navigationTimeoutMs: number;
@@ -227,7 +240,37 @@ export function createBrowserApprovalSteps(context: BrowserApprovalContext) {
     if (!websiteLoginMatchesUrl(login.host, new URL(info.url))) {
       return refuse(`The page is no longer on ${login.host}. Open it with browser_open first.`);
     }
-    const description = context.redact(describeBrowserAction(target, data.action, data));
+    const prelude = formSteps.preludeFor(info.url);
+    // Everything the record keeps about the step, and the words Slack shows for it.
+    const step = {
+      url: info.url,
+      title: info.title,
+      ref: data.ref,
+      role: target.role,
+      name: target.name,
+      occurrence: occurrenceOf(page, data.ref, target),
+      action: data.action,
+      ...(data.text === undefined ? {} : { text: data.text }),
+      ...(data.key === undefined ? {} : { key: data.key }),
+      ...(data.submit === undefined ? {} : { submit: data.submit }),
+      ...(prelude ? { prelude } : {}),
+      description: describeBrowserAction(target, data.action, data),
+    };
+    // The record is stored, shown in Slack and replayed in a later turn, which knows no secret typed in this one.
+    // A step any of whose strings holds one is refused whole, never stored with the secret redacted.
+    const budget = new RedactionBudget();
+    if (session.redactUrl(step.url, budget) !== step.url || someString(step, (text) => context.redact(text, budget) !== text)) {
+      return refuse(BROWSER_APPROVAL_HOLDS_SECRET_MESSAGE);
+    }
+    // A key the browser cannot press would fail only once the step is replayed.
+    if (step.action === 'press') {
+      try {
+        keyDefinition(step.key ?? '');
+      } catch (error) {
+        return refuse(context.errorMessage(error));
+      }
+    }
+    const { description } = step;
     const settings = await approvals.settings();
     const at = context.now().getTime();
     // Cleanup of old records runs at most once a turn, and only once there is something to clear.
@@ -235,46 +278,32 @@ export function createBrowserApprovalSteps(context: BrowserApprovalContext) {
       swept = true;
       await sweepBrowserActions({ settings, now: at, minIndexSize: SWEEP_MIN_INDEX }).catch(() => undefined);
     }
-    const prelude = formSteps.preludeFor(info.url);
     const [record, picture] = await Promise.all([
-      createBrowserAction(settings, {
-        ...approvals.scope,
-        loginId: login.id,
-        host: login.host,
-        url: info.url,
-        title: info.title,
-        ref: data.ref,
-        role: target.role,
-        name: target.name,
-        occurrence: occurrenceOf(page, data.ref, target),
-        action: data.action,
-        ...(data.text === undefined ? {} : { text: data.text }),
-        ...(data.key === undefined ? {} : { key: data.key }),
-        ...(data.submit === undefined ? {} : { submit: data.submit }),
-        ...(prelude ? { prelude } : {}),
-        description,
-        now: at,
-      }),
-      page.screenshot({ format: 'jpeg', quality: 70 }).then(
-        (bytes) => ({ bytes }),
-        (error: unknown) => ({ error }),
-      ),
+      createBrowserAction(settings, { ...approvals.scope, loginId: login.id, host: login.host, ...step, now: at }),
+      page.screenshot({ format: 'jpeg', quality: 70 }).catch((error: unknown) => ({ error })),
     ]);
     // The picture of the page rides with the question; the step waits either way.
+    const withheld = 'withheld' in picture ? picture.withheld : undefined;
+    if (withheld) context.log?.warn('browser_act withheld a picture of the page', { reason: withheld });
     try {
       if ('error' in picture) throw picture.error;
-      await context.stageArtifact({
-        bytes: picture.bytes,
-        filename: artifactFilename(undefined, 'about-to', 'jpg'),
-        title: `About to: ${description}`.slice(0, 200),
-        kind: 'image',
-      });
+      if ('bytes' in picture) {
+        await context.stageArtifact({
+          bytes: picture.bytes,
+          filename: artifactFilename(undefined, 'about-to', 'jpg'),
+          title: `About to: ${description}`.slice(0, 200),
+          kind: 'image',
+        });
+      }
     } catch (error) {
       context.log?.warn('browser_act could not attach the approval screenshot', { error: context.errorMessage(error) });
     }
     approvals.onAwaitingApproval?.();
     return {
-      output: { awaitingApproval: true, actionId: record.id, description, instruction: BROWSER_APPROVAL_INSTRUCTION },
+      output: {
+        awaitingApproval: true, actionId: record.id, description, instruction: BROWSER_APPROVAL_INSTRUCTION,
+        ...(withheld ? { note: browserApprovalScreenshotWithheldNote(withheld) } : {}),
+      },
     };
   };
 
@@ -305,15 +334,26 @@ export function createBrowserApprovalSteps(context: BrowserApprovalContext) {
     if (session.handedOff.has(login.id)) return refuse(BROWSER_HANDED_OFF_MESSAGE);
     const recordedHost = new URL(record.url).host;
     const timeoutMs = context.navigationTimeoutMs;
+    // Navigating and acting take what the record stores, and their errors can repeat it to this
+    // turn, which knows no secret typed in the one that asked: they name the step as the person
+    // approved it instead.
+    const replaying = async <T>(stage: 'navigate' | 'act', work: () => Promise<T>): Promise<T> => {
+      try {
+        return await work();
+      } catch (error) {
+        context.log?.warn('browser_act approved step failed', { stage, error: error instanceof Error ? error.name : typeof error });
+        throw new Error(browserApprovedStepFailedMessage(record.description));
+      }
+    };
     let page: BrowserPage;
     let info: PageInfo;
     if (session.active && session.binding?.loginId === login.id) {
       page = (await requireOpenPage(session)).page;
       info = await page.pageInfo();
-      if (info.url !== record.url) info = await page.navigate(record.url, { timeoutMs });
+      if (info.url !== record.url) info = await replaying('navigate', () => page.navigate(record.url, { timeoutMs }));
     } else {
       page = (await session.ensureFor(await logins.bindingFor(login, live))).page;
-      info = await page.navigate(record.url, { timeoutMs });
+      info = await replaying('navigate', () => page.navigate(record.url, { timeoutMs }));
     }
     const onRecordedHost = () => {
       try {
@@ -342,19 +382,19 @@ export function createBrowserApprovalSteps(context: BrowserApprovalContext) {
     for (const step of record.prelude ?? []) {
       const ref = await settledRef(step, info);
       if (!ref) return pageChanged('element_missing');
-      info = await page.act(ref, step.action, {
+      info = await replaying('act', () => page.act(ref, step.action, {
         ...(step.text === undefined ? {} : { text: step.text }),
         ...(step.key === undefined ? {} : { key: step.key }),
-      });
+      }));
       if (!onRecordedHost()) return pageChanged('host_changed', info);
     }
     const ref = await settledRef(record, info);
     if (!ref) return pageChanged('element_missing');
-    const done = await page.act(ref, record.action, {
+    const done = await replaying('act', () => page.act(ref, record.action, {
       ...(record.text === undefined ? {} : { text: record.text }),
       ...(record.key === undefined ? {} : { key: record.key }),
       ...(record.submit === undefined ? {} : { submit: record.submit }),
-    });
+    }));
     formSteps.reset(done.url);
     return { output: { approvedStepTaken: record.description, ...(await readPage(done)) } };
   };
