@@ -4,7 +4,7 @@ import { CliError } from './errors.ts';
 
 /** The deployment's MCP request body cap, less room for the JSON-RPC envelope around the files. */
 const MAX_CALL_FILE_BYTES = 1024 * 1024 - 16 * 1024;
-/** upload_skills reads at most this many files in one call. */
+/** upload_skill_files reads at most this many files in one call. */
 const MAX_CALL_FILES = 50;
 
 export type SkillUploadFile = { name: string; text: string } | { name: string; base64: string };
@@ -16,7 +16,7 @@ export function skillUploadFile(path: string, bytes: Uint8Array): SkillUploadFil
   throw new CliError('INVALID_ARGUMENT', `${name} is not a skill file`, 'Upload .md, .markdown, .zip or .skill files.');
 }
 
-/** Groups files in order so each upload_skills call stays under the deployment's request cap. */
+/** Groups files in order so each upload_skill_files call stays under the deployment's request cap. */
 export function skillUploadBatches(
   files: readonly SkillUploadFile[],
   adminUrl: string,

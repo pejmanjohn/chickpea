@@ -11,7 +11,7 @@ import { normalizeDeploymentOrigin, mcpUrl } from './origin.ts';
 import { Io } from './output.ts';
 import { skillUploadBatches, skillUploadFile } from './skills.ts';
 import { CredentialStore, resolveConfigDir } from './store.ts';
-import { callManagementTool, collectEnvelopeHints, renderEnvelopeHints, renderToolList, type ToolEnvelope } from './tools.ts';
+import { callManagementTool, collectEnvelopeHints, renderEnvelopeHints, renderToolList, requireManagementTools, type ToolEnvelope } from './tools.ts';
 import { CLI_VERSION } from './version.ts';
 import { renderWorkspaceSummary } from './workspace.ts';
 
@@ -40,12 +40,11 @@ Usage:
   chickpea chatgpt connect <deployment-url>            Connect a ChatGPT plan to this installation
   chickpea login <deployment-url>                     Sign in through the browser and save a session
   chickpea logout <deployment-url>                    Revoke the saved session and delete it
-  chickpea workspace inspect <deployment-url>         Summarize Agents, channels, providers, and team
+  chickpea workspace inspect <deployment-url>         Summarize the workspace, your role, and Agents
   chickpea tools list <deployment-url>                List every management tool
   chickpea call <deployment-url> <tool> [--args json | --args-file file]
-                                                      Call a management tool; prints the { ok, result | error } envelope
+                                                      Call a management tool; prints normalized { ok, result | error } JSON
   chickpea recipe export <deployment-url> [--agents id,id]
-  chickpea recipe preview <deployment-url> <recipe.json>
   chickpea skills upload <deployment-url> <agent-id> <file...> [--replace]
                                                       Install skills from SKILL.md, markdown, .zip or .skill files
 
@@ -270,7 +269,14 @@ async function commandWorkspace(args: readonly string[], io: Io, deps: CliDeps):
     throw new CliError('UNKNOWN_COMMAND', `Unknown workspace subcommand "${subcommand ?? ''}"`, 'Usage: chickpea workspace inspect <deployment-url> [--json]');
   }
   const origin = requireOrigin(rest, 'chickpea workspace inspect <deployment-url> [--json]');
-  const envelope = await withConnection(origin, io, deps, (client) => callManagementTool(client, 'inspect_workspace', {}));
+  const envelope = await withConnection(origin, io, deps, async (client): Promise<ToolEnvelope> => {
+    await requireManagementTools(client, ['get_workspace', 'list_agents']);
+    const workspace = await callManagementTool(client, 'get_workspace', {});
+    if (!workspace.ok) return workspace;
+    const agents = await callManagementTool(client, 'list_agents', {});
+    if (!agents.ok) return agents;
+    return { ok: true, result: { workspace: workspace.result, ...(agents.result as object) } };
+  });
   if (!envelope.ok) return failEnvelope(envelope, io);
   if (io.json) io.printJson(envelope.result);
   else io.print(renderWorkspaceSummary(envelope.result));
@@ -342,40 +348,19 @@ async function commandRecipe(args: readonly string[], flags: ParsedArgs['flags']
       ? agents.split(',').map((id) => id.trim()).filter(Boolean)
       : undefined;
     if (agents === true) throw new CliError('INVALID_ARGUMENT', '--agents needs a comma-separated list of Agent ids');
-    const envelope = await withConnection(origin, io, deps, (client) => callManagementTool(
-      client,
-      'export_workspace_recipe',
-      agentIds && agentIds.length ? { agentIds } : {},
-    ));
+    const envelope = await withConnection(origin, io, deps, async (client) => {
+      await requireManagementTools(client, ['export_agents']);
+      return callManagementTool(client, 'export_agents', agentIds && agentIds.length ? { agentIds } : {});
+    });
     if (!envelope.ok) return failEnvelope(envelope, io);
     io.printJson(envelope.result);
     return 0;
   }
   if (subcommand === 'preview') {
-    const origin = requireOrigin(rest, 'chickpea recipe preview <deployment-url> <recipe.json>');
-    const file = rest[1];
-    if (!file) throw new CliError('MISSING_ARGUMENT', 'A recipe file is required', 'Usage: chickpea recipe preview <deployment-url> <recipe.json>');
-    let recipe: unknown;
-    try {
-      recipe = JSON.parse(deps.readFile(file));
-    } catch (error) {
-      throw new CliError('INVALID_ARGUMENT', `Cannot read recipe ${file} (${error instanceof Error ? error.message : String(error)})`);
-    }
-    const envelope = await withConnection(origin, io, deps, (client) => callManagementTool(
-      client,
-      'preview_workspace_recipe',
-      { recipe },
-    ));
-    if (!envelope.ok) return failEnvelope(envelope, io);
-    if (io.json) {
-      io.printJson(envelope.result);
-    } else {
-      io.print(renderRecipePreview(envelope.result));
-      io.note(`Apply the returned operations with: chickpea call ${origin} apply_workspace_changes --args-file <file>`);
-    }
-    return 0;
+    io.warn('recipe preview was removed. A coding agent applies a recipe through create_agent and update_agent.');
+    return 1;
   }
-  throw new CliError('UNKNOWN_COMMAND', `Unknown recipe subcommand "${subcommand ?? ''}"`, 'Usage: chickpea recipe export|preview ...');
+  throw new CliError('UNKNOWN_COMMAND', `Unknown recipe subcommand "${subcommand ?? ''}"`, 'Usage: chickpea recipe export <deployment-url> [--agents id,id]');
 }
 
 async function commandSkills(args: readonly string[], flags: ParsedArgs['flags'], io: Io, deps: CliDeps): Promise<number> {
@@ -400,9 +385,10 @@ async function commandSkills(args: readonly string[], flags: ParsedArgs['flags']
   });
   const batches = skillUploadBatches(files, `${origin}/admin/agents/${encodeURIComponent(agentId)}`);
   const envelopes = await withConnection(origin, io, deps, async (client) => {
+    await requireManagementTools(client, ['upload_skill_files']);
     const results: ToolEnvelope[] = [];
     for (const batch of batches) {
-      const envelope = await callManagementTool(client, 'upload_skills', {
+      const envelope = await callManagementTool(client, 'upload_skill_files', {
         agentId,
         files: batch,
         idempotencyKey: `cli-skills-upload-${randomUUID()}`,
@@ -422,42 +408,24 @@ async function commandSkills(args: readonly string[], flags: ParsedArgs['flags']
   for (const envelope of envelopes) {
     if (!envelope.ok) return failEnvelope(envelope, io);
     const result = envelope.result as {
-      presentation: { markdown: string };
-      conflicts: Array<{ name: string }>;
-      links?: { admin?: string };
+      summary: string;
+      conflicts: string[];
+      leftOut: Array<{ file: string; why: string }>;
+      agent?: { links?: { admin?: string } };
     };
-    io.print(result.presentation.markdown);
-    conflicts.push(...result.conflicts.map(({ name }) => name));
-    adminLink ??= result.links?.admin;
+    io.print(result.summary);
+    for (const item of result.leftOut) io.print(`Left out ${item.file}: ${item.why}`);
+    conflicts.push(...result.conflicts);
+    adminLink ??= result.agent?.links?.admin;
   }
   if (conflicts.length) io.note(`To replace ${conflicts.join(', ')}, run the same command with --replace.`);
   if (adminLink) io.print(`Agent in Admin: ${adminLink}`);
   return 0;
 }
 
-function renderRecipePreview(result: unknown): string {
-  if (!result || typeof result !== 'object') return JSON.stringify(result, null, 2);
-  const record = result as Record<string, unknown>;
-  const agents = Array.isArray(record.agents) ? record.agents as Array<Record<string, unknown>> : [];
-  const operations = Array.isArray(record.operations) ? record.operations as Array<Record<string, unknown>> : [];
-  const lines = [`Recipe digest ${String(record.recipeDigest ?? '?')}`, '', `Agents (${agents.length})`];
-  for (const agent of agents) {
-    const setup = Array.isArray(agent.setupRequired) && agent.setupRequired.length ? `  setup required: ${agent.setupRequired.join(', ')}` : '';
-    const unavailable = Array.isArray(agent.unavailable) && agent.unavailable.length ? `  unavailable: ${agent.unavailable.join(', ')}` : '';
-    const choices = Array.isArray(agent.choices) && agent.choices.length ? `  choices: ${agent.choices.join('/')}` : '';
-    lines.push(`  ${String(agent.symbol)}: ${String(agent.status)}${agent.existingAgentId ? ` (existing ${String(agent.existingAgentId)})` : ''}${setup}${unavailable}${choices}`);
-  }
-  lines.push('', `Operations (${operations.length})`);
-  for (const operation of operations) {
-    lines.push(`  ${String(operation.itemId)}: ${String(operation.kind)}${operation.confirmationReason ? ` (${String(operation.confirmationReason)})` : ''}`);
-  }
-  lines.push('', JSON.stringify({ operations }, null, 2));
-  return lines.join('\n');
-}
-
 function failEnvelope(envelope: Extract<ToolEnvelope, { ok: false }>, io: Io): number {
   if (io.json) io.printJson(envelope);
-  throw new CliError(`TOOL_${envelope.error.code.toUpperCase()}`, envelope.error.message);
+  throw new CliError(`TOOL_${envelope.error.code.toUpperCase()}`, envelope.error.message, envelope.error.nextStep);
 }
 
 

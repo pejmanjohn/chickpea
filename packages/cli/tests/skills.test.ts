@@ -11,17 +11,16 @@ type UploadedFile = { name: string; text?: string; base64?: string };
 
 const deployment = new FakeDeployment({
   tools: {
-    upload_skills: (args) => {
+    upload_skill_files: (args) => {
       const files = args.files as UploadedFile[];
-      const conflicts = files.filter(({ name }) => name.startsWith('conflict')).map(() => ({ name: 'alpha', path: 'conflict.md' }));
+      const conflicts = files.filter(({ name }) => name.startsWith('conflict')).map(() => 'alpha');
       return {
-        ok: true,
-        result: {
-          status: conflicts.length ? 'unchanged' : 'updated',
-          conflicts,
-          presentation: { markdown: `Received ${files.map(({ name }) => name).join(', ')}.` },
-          links: { admin: 'http://127.0.0.1:9/admin/agents/agent_support' },
-        },
+        status: conflicts.length ? 'needs_choice' : 'done',
+        conflicts,
+        added: [], replaced: [], unchanged: [],
+        leftOut: files.filter(({ name }) => name === 'empty.zip').map(({ name }) => ({ file: name, why: 'No skill files found.' })),
+        summary: `Received ${files.map(({ name }) => name).join(', ')}.`,
+        agent: { links: { admin: 'http://127.0.0.1:9/admin/agents/agent_support' } },
       };
     },
   },
@@ -48,7 +47,7 @@ function upload(argv: string[]): Promise<CliRun> {
 
 function uploadCalls(since: number): UploadedFile[][] {
   return deployment.toolCalls.slice(since)
-    .filter(({ name }) => name === 'upload_skills')
+    .filter(({ name }) => name === 'upload_skill_files')
     .map(({ args }) => args.files as UploadedFile[]);
 }
 
@@ -60,7 +59,7 @@ test('skills upload sends markdown as exact text and an archive as base64 in one
   assert.equal(result.code, 0, result.stderr);
   const call = deployment.toolCalls.at(-1)!;
   assert.equal(deployment.toolCalls.length, calls + 1);
-  assert.equal(call.name, 'upload_skills');
+  assert.equal(call.name, 'upload_skill_files');
   assert.equal(call.args.agentId, 'agent_support');
   assert.match(String(call.args.idempotencyKey), /^cli-skills-upload-[0-9a-f-]{36}$/);
   assert.equal(call.args.replaceExisting, undefined);
@@ -80,6 +79,29 @@ test('--replace asks the deployment to replace conflicts, and a conflict says ho
   const replaced = await upload([fixture('conflict.md', '# Alpha\n'), '--replace']);
   assert.equal(replaced.code, 0, replaced.stderr);
   assert.equal(deployment.toolCalls.at(-1)!.args.replaceExisting, true);
+});
+
+test('left-out files and normalized JSON retain the 5.0 result', async () => {
+  const file = fixture('empty.zip', new Uint8Array([0x50, 0x4b, 0x05, 0x06]));
+  const human = await upload([file]);
+  assert.equal(human.code, 0, human.stderr);
+  assert.match(human.stdout, /Left out empty.zip: No skill files found\./);
+  const json = await upload([file, '--json']);
+  assert.equal(json.code, 0, json.stderr);
+  assert.deepEqual(JSON.parse(json.stdout)[0].result.leftOut, [{ file: 'empty.zip', why: 'No skill files found.' }]);
+});
+
+test('skill upload on an older Core asks for an update before sending files', async (t) => {
+  const older = new FakeDeployment({ legacyOnly: true });
+  await older.start();
+  t.after(() => older.stop());
+  const olderStore = temporaryStore();
+  const login = await runCli(['login', older.url], { store: olderStore, openBrowser: fakeBrowser, loginTimeoutMs: 10_000 });
+  assert.equal(login.code, 0, login.stderr);
+  const result = await runCli(['skills', 'upload', older.url, 'agent_support', fixture('older.md', '# Skill')], { store: olderStore });
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /UPDATE_REQUIRED: Update your Chickpea Core.*upload_skill_files/);
+  assert.deepEqual(older.toolCalls, []);
 });
 
 test('files that together pass the request cap go in separate calls', async () => {

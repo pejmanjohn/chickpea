@@ -4,16 +4,24 @@ import { CliError } from './errors.ts';
 
 export type ToolEnvelope =
   | { ok: true; result: unknown }
-  | { ok: false; error: { code: string; message: string } };
+  | { ok: false; error: ToolError };
 
-/**
- * Every management tool answers with `{ ok, result | error }` both as
- * structured content and as the first text block. Prefer the structured
- * copy; fall back to the text so older servers still parse.
- */
+interface ToolError {
+  code: string;
+  message: string;
+  retryable?: boolean;
+  nextStep?: string;
+  fix?: { label: string; url: string } | { label: string; tool: string; arguments: Record<string, unknown> };
+}
+
+/** Normalize 5.0 structured results and older envelopes for CLI scripts. */
 export function parseToolEnvelope(result: CallToolResult): ToolEnvelope {
   const structured = result.structuredContent;
   if (isEnvelope(structured)) return structured;
+  if (structured && typeof structured === 'object' && !Array.isArray(structured)) {
+    if ('error' in structured && isToolError(structured.error)) return { ok: false, error: structured.error };
+    if (!result.isError) return { ok: true, result: structured };
+  }
   const first = result.content?.find((block) => block.type === 'text');
   if (first && first.type === 'text') {
     try {
@@ -31,7 +39,13 @@ export function parseToolEnvelope(result: CallToolResult): ToolEnvelope {
       : 'The tool reported an error without a readable body.';
     return { ok: false, error: { code: 'tool_error', message } };
   }
-  throw new CliError('UNEXPECTED_RESULT', 'The tool result did not carry a { ok, result | error } envelope', 'Check that the URL points at a Chickpea deployment');
+  throw new CliError('UNEXPECTED_RESULT', 'The tool result did not carry structured content or a legacy envelope', 'Check that the URL points at a Chickpea deployment');
+}
+
+function isToolError(value: unknown): value is ToolError {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const error = value as Record<string, unknown>;
+  return typeof error.code === 'string' && typeof error.message === 'string';
 }
 
 function isEnvelope(value: unknown): value is ToolEnvelope {
@@ -39,10 +53,23 @@ function isEnvelope(value: unknown): value is ToolEnvelope {
   const record = value as Record<string, unknown>;
   if (record.ok === true) return 'result' in record;
   if (record.ok === false) {
-    const error = record.error as Record<string, unknown> | undefined;
-    return !!error && typeof error === 'object' && typeof error.code === 'string';
+    return isToolError(record.error);
   }
   return false;
+}
+
+export async function requireManagementTools(client: Client, names: readonly string[]): Promise<void> {
+  const available = new Set<string>();
+  let cursor: string | undefined;
+  do {
+    const page = await client.listTools(cursor ? { cursor } : {});
+    for (const tool of page.tools) available.add(tool.name);
+    cursor = page.nextCursor;
+  } while (cursor);
+  const missing = names.filter((name) => !available.has(name));
+  if (missing.length) {
+    throw new CliError('UPDATE_REQUIRED', `Update your Chickpea Core to use this command; missing 5.0 tools: ${missing.join(', ')}`);
+  }
 }
 
 export async function callManagementTool(

@@ -19,11 +19,11 @@ You do not need the CLI to connect a coding agent. Admin **Settings → MCP** on
 | `chickpea login <url>` | browser | Registers a public PKCE client, opens the browser for Slack sign-in and consent, and saves the tokens. |
 | `chickpea chatgpt connect <url>` | browser | Opens owner approval in Chickpea, completes ChatGPT sign-in through a local callback, and waits for account confirmation. OpenAI tokens stay on the deployment. |
 | `chickpea logout <url>` | saved | Revokes the refresh token at the deployment and deletes the saved session. The last access token keeps working until it expires, up to 15 minutes. |
-| `chickpea workspace inspect <url> [--json]` | saved | Calls `inspect_workspace` and prints Agents, skills, connections, repositories, channels, provider availability, and team. |
+| `chickpea workspace inspect <url> [--json]` | saved | Calls `get_workspace` and `list_agents` to summarize the workspace, your role, Agent handles, status, edit access, and attention needed. |
 | `chickpea tools list <url>` | saved | Lists every management tool with its annotations. |
-| `chickpea call <url> <tool> [--args '<json>' \| --args-file <file>]` | saved | Calls any tool and prints its `{ ok, result \| error }` envelope as JSON. Exit 1 when `ok` is false. |
-| `chickpea recipe export <url> [--agents id,id]` | saved | Writes a secret-free portable recipe to stdout. |
-| `chickpea recipe preview <url> <recipe.json>` | saved | Compares a recipe with the live workspace and prints the operations to apply. |
+| `chickpea call <url> <tool> [--args '<json>' \| --args-file <file>]` | saved | Calls any tool and normalizes its result to `{ ok, result \| error }` JSON. Exit 1 on a refusal or input-validation error. |
+| `chickpea recipe export <url> [--agents id,id]` | saved | Calls `export_agents` and writes its secret-free portable recipe to stdout. |
+| `chickpea recipe preview` | no | Removed. Prints a one-line message to use a coding agent with `create_agent` and `update_agent`, then exits 1. |
 | `chickpea skills upload <url> <agent-id> <file...> [--replace]` | saved | Installs skills on an Agent from `SKILL.md` and other markdown files and `.zip` or `.skill` archives, keeping its other skills. A same-name skill with different content is left as it is unless you pass `--replace`. |
 
 Global flags: `--json` for machine output on stdout (`skills upload` prints one envelope per call, as an array), `--quiet` to silence progress notes on stderr, `--help`, `--version`.
@@ -45,46 +45,44 @@ Opening your browser to sign in to https://chickpea.example.com.
 Signed in to https://chickpea.example.com. Session saved to /home/you/.config/chickpea/credentials.json (mode 0600).
 
 $ npx chickpea-cli workspace inspect https://chickpea.example.com
-Workspace org_7f3a (revision 41)
+Workspace Example
+You: Alex  owner
 
 Agents (2)
-  Support  @support  id=agent_support  rev=12  active  presence=healthy
-    model: openai/gpt-5.6-terra
-    skills: refunds
-    connections: ops@example.com (team, ready)
-  Revops  @revops  id=agent_revops  rev=3  active  presence=healthy
+  Support  @support  id=agent_support  on  can edit
+  Revops  @revops  id=agent_revops  on  can edit
 
-Channels (1)
-  #support C0123ABC  active  grants: agent_support:active
+Can create Agents: yes
+Workspace in Admin: https://chickpea.example.com/admin
 
-Providers (3)
-  openai: configured (env, read-only), 2 inheriting Agents
-  anthropic: not configured
-  openrouter: not configured
-
-$ npx chickpea-cli call https://chickpea.example.com apply_workspace_changes --args-file delete.json
+$ npx chickpea-cli call https://chickpea.example.com get_agent --args '{"agentId":"agent_support"}'
 {
   "ok": true,
   "result": {
-    "operationId": "op_9c2",
-    "status": "confirmation_required",
-    "outcomes": [
-      { "itemId": "delete", "operationKind": "delete_agent", "disposition": "confirmation_required", "proposalId": "changeset_5e1" }
-    ],
-    "presentation": { "markdown": "..." }
+    "agentId": "agent_support",
+    "name": "Support",
+    "...": "remaining Agent fields"
   }
 }
-This change is destructive and waits for your confirmation (changeset_5e1). Nothing has been applied.
-Read the preview in result.presentation.markdown, then confirm it from this same CLI session with:
-  chickpea call https://chickpea.example.com confirm_workspace_change --args '{"proposalId":"changeset_5e1"}'
 
 $ npx chickpea-cli recipe export https://chickpea.example.com --agents agent_support > recipe.json
-$ npx chickpea-cli recipe preview https://chickpea.example.com recipe.json
 ```
 
-`skills upload` reads each file from disk and sends it to the `upload_skills` tool: markdown as text and archives as base64, so the file content never passes through a model. It splits the files across calls so each call stays under the deployment's 1 MB request cap, and refuses a single file larger than that; upload that file in Admin (the Agent's Skills tab, Upload) instead. Find the Agent id with `chickpea workspace inspect <url>`.
+`skills upload` reads each file from disk and sends it to the 5.0 `upload_skill_files` tool: markdown as text and archives as base64, so the file content never passes through a model. It splits the files across calls so each call stays under the deployment's 1 MB request cap, and refuses a single file larger than that; upload that file in Admin (the Agent's Skills tab, Upload) instead. Find the Agent id with `chickpea workspace inspect <url>`.
 
-A recipe preview returns typed operations. Apply them with `chickpea call <url> apply_workspace_changes --args-file ops.json`, where the file wraps them as `{ "idempotencyKey": "...", "operations": [...] }`. The [workspace management runbook](https://github.com/pejmanjohn/chickpea/blob/main/docs/runbooks/workspace-management-mcp.md) describes every tool, which changes ask for confirmation, and what the setup links do.
+Skill upload prints each call's `summary`, any `Left out <file>: <why>` lines, conflict guidance on stderr, and the Agent's Admin link when returned. `--json` keeps the array of normalized envelopes and preserves the 5.0 fields, including `added`, `replaced`, `unchanged`, `conflicts`, and `leftOut`.
+
+`recipe preview` was removed. A coding agent applies the exported recipe through `create_agent` and `update_agent`.
+
+## Compatibility and result format
+
+Version 0.3.0 uses the 5.0 tools. `workspace inspect`, `recipe export`, and `skills upload` refuse an older Core that lacks their required tools, with `UPDATE_REQUIRED` and an "Update your Chickpea Core" message. Update the self-hosted deployment before you use these commands.
+
+`workspace inspect --json` now returns `{ workspace, agents, canCreate }`. The human summary replaces the old configuration dump with workspace identity, your role, Agent status, edit access, and attention needed. Use `call` with `get_agent`, `list_slack_channels`, `list_models`, `list_services`, or `list_members` for configuration details, subject to your role.
+
+`call` keeps the CLI's `{ ok, result | error }` JSON format. It reads 5.0 structured content on success and preserves every field of a structured refusal's `error`, including `code`, `message`, `retryable`, `fix`, and `nextStep`. SDK input-validation text becomes an error with code `tool_error`. It also reads 4.x structured or text envelopes, so explicit calls to tools on older self-hosted Core versions still work. The CLI does not declare card support.
+
+A write can succeed with `result.status` equal to `needs_confirmation`. Read `result.confirmation.preview`, then call `confirm_change` with its `confirmToken` only after the person agrees. The CLI never confirms a change automatically. Setup links and confirmation tokens in JSON are capabilities. Treat the output as private.
 
 ## How sign-in works
 
@@ -121,13 +119,14 @@ Every error is `chickpea: <CODE>: <message>. <hint>.` on stderr with exit code 1
 | `NOT_LOGGED_IN` | No saved session for that origin. Run `chickpea login`. |
 | `SESSION_EXPIRED` | The refresh token was revoked or the membership ended. Run `chickpea login`. |
 | `AUTHORIZATION_DENIED`, `LOGIN_TIMEOUT`, `STATE_MISMATCH` | The browser step did not complete. Retry `chickpea login`. |
-| `TOOL_<code>` | A tool answered `ok: false`; the envelope is still printed with `--json`. |
+| `TOOL_<code>` | A tool refused the request or rejected its input; the normalized envelope is still printed with `--json`. |
+| `UPDATE_REQUIRED` | The Core lacks a required 5.0 tool. Update your Chickpea Core. |
 | `FILE_TOO_LARGE` | `skills upload` was given a file larger than one call can carry. Upload it in Admin. |
 | `UNSUPPORTED_FLAG` | A credential-shaped flag was passed. |
 
 ## Development
 
-The package lives at `packages/cli` in the [Chickpea repository](https://github.com/pejmanjohn/chickpea). Tests run against an in-process fake deployment that mirrors the server's OAuth and MCP contract:
+The package lives at `packages/cli` in the [Chickpea repository](https://github.com/pejmanjohn/chickpea). Package tests run against an in-process MCP server with fake OAuth and tool data. The root test `tests/cli-management-mcp-v5.test.ts` also runs the commands against Core's real management server over loopback HTTP, with isolated in-memory stores:
 
 ```sh
 npm --workspace packages/cli test

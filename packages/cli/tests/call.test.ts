@@ -12,27 +12,8 @@ const SETUP_URL = 'http://127.0.0.1:9/admin/setup/complete#setup=AAAAAAAAAAAAAAA
 
 const deployment = new FakeDeployment({
   tools: {
-    inspect_workspace: () => ({
-      ok: true,
-      result: {
-        organizationId: 'org_test',
-        effectiveRevision: 'rev_9',
-        connectors: [{ id: 'gmail', name: 'Gmail', description: '' }],
-        agents: [{
-          id: 'agent_support', revision: 3, name: 'Support', instructions: '', enabled: true, lifecycle: 'active',
-          model: 'openai/gpt-5.6-terra', skills: [{ name: 'refunds' }], mcpServers: [], apiConnections: [],
-          slackPresence: { requestedHandle: 'support', normalizedHandle: 'support', desiredState: 'active', health: 'healthy', avatar: {} },
-          connections: [{ id: 'c1', providerId: 'gmail', label: 'ops@example.com', ownerKind: 'team', lifecycle: 'ready', enabled: true, allowedCapabilities: [] }],
-          repositories: [{ name: 'acme/api' }],
-        }],
-        channels: [{ workspaceId: 'T1', channelId: 'C1', revision: 1, label: '#support', lifecycle: 'active', grants: [{ agentId: 'agent_support', status: 'active', revision: 1 }] }],
-        providers: [
-          { id: 'openai', source: 'env', mutable: false, workspaceDefaultAffected: true, inheritingAgentCount: 1, affectedAgents: [] },
-          { id: 'anthropic', source: 'missing', mutable: true, workspaceDefaultAffected: false, inheritingAgentCount: 0, affectedAgents: [] },
-        ],
-        team: { members: [{ id: 'm1', userId: 'u1', displayName: 'Alex', role: 'owner', status: 'active', revision: 1 }] },
-      },
-    }),
+    get_workspace: () => ({ name: 'Example', you: { name: 'Alex', role: 'owner' }, agentCount: 1, adminUrl: 'https://chickpea.example/admin', adminOnly: [] }),
+    list_agents: () => ({ agents: [{ agentId: 'agent_support', name: 'Support', handle: 'support', status: 'on', canEdit: true, needsAttention: ['Connect Gmail.'] }], canCreate: true }),
     get_operation: (args) => ({ ok: true, result: { operation: { operationId: args.operationId, status: 'completed' } } }),
     inspect_memory: () => ({ ok: false, error: { code: 'not_found', message: 'No such Agent.' } }),
     apply_workspace_changes: () => ({
@@ -47,15 +28,7 @@ const deployment = new FakeDeployment({
       },
     }),
     confirm_workspace_change: (args) => ({ ok: true, result: { proposalId: args.proposalId, status: 'applied' } }),
-    export_workspace_recipe: (args) => ({ ok: true, result: { schemaVersion: 1, name: 'Workspace', agents: (args.agentIds as string[] | undefined ?? ['all']).map((id) => ({ symbol: id })) } }),
-    preview_workspace_recipe: (args) => ({
-      ok: true,
-      result: {
-        recipeDigest: 'digest_1',
-        agents: [{ symbol: (args.recipe as { agents: Array<{ symbol: string }> }).agents[0]!.symbol, status: 'create', setupRequired: ['gmail'], unavailable: [] }],
-        operations: [{ itemId: 'a', kind: 'create_agent' }, { itemId: 'b', kind: 'request_setup' }],
-      },
-    }),
+    export_agents: (args) => ({ schemaVersion: 2, name: 'Workspace', agents: (args.agentIds as string[] | undefined ?? ['all']).map((id) => ({ symbol: id })) }),
   },
 });
 const store = temporaryStore();
@@ -137,44 +110,57 @@ test('--args-file reads arguments from disk and malformed arguments fail before 
   assert.equal(deployment.toolCalls.length, calls);
 });
 
-test('workspace inspect renders Agents, connections, repositories, channels, providers, and team', async () => {
+test('workspace inspect combines 5.0 reads and prints workspace, role and Agent status', async () => {
   const result = await runCli(['workspace', 'inspect', deployment.url], { store });
   assert.equal(result.code, 0, result.stderr);
-  const out = result.stdout;
-  assert.match(out, /^Workspace org_test \(revision rev_9\)/);
-  assert.match(out, /Agents \(1\)\n  Support  @support  id=agent_support  rev=3  active  presence=healthy/);
-  assert.match(out, /model: openai\/gpt-5\.6-terra/);
-  assert.match(out, /skills: refunds/);
-  assert.match(out, /connections: ops@example\.com \(team, ready\)/);
-  assert.match(out, /repositories: acme\/api/);
-  assert.match(out, /Channels \(1\)\n  #support C1  active  grants: agent_support:active/);
-  assert.match(out, /openai: configured \(env, read-only\), 1 inheriting Agent/);
-  assert.match(out, /anthropic: not configured/);
-  assert.match(out, /Connector catalog \(1\): gmail/);
-  assert.match(out, /Team \(1\)\n  Alex  owner  active/);
+  assert.equal(result.stdout, 'Workspace Example\nYou: Alex  owner\n\nAgents (1)\n  Support  @support  id=agent_support  on  can edit\n    needs attention: Connect Gmail.\n\nCan create Agents: yes\nWorkspace in Admin: https://chickpea.example/admin\n');
+  assert.deepEqual(deployment.toolCalls.slice(-2).map(({ name }) => name), ['get_workspace', 'list_agents']);
+  const json = await runCli(['workspace', 'inspect', deployment.url, '--json'], { store });
+  assert.equal(json.code, 0, json.stderr);
+  assert.equal(JSON.parse(json.stdout).workspace.you.role, 'owner');
+  assert.equal(JSON.parse(json.stdout).agents[0].agentId, 'agent_support');
 });
 
-test('recipe export writes the recipe JSON to stdout and preview summarizes the plan', async () => {
+test('recipe export uses export_agents and prints the recipe unchanged', async () => {
   const exported = await runCli(['recipe', 'export', deployment.url, '--agents', 'agent_a, agent_b'], { store });
   assert.equal(exported.code, 0, exported.stderr);
-  const recipe = JSON.parse(exported.stdout) as { schemaVersion: number; agents: Array<{ symbol: string }> };
-  assert.equal(recipe.schemaVersion, 1);
-  assert.deepEqual(recipe.agents.map((agent) => agent.symbol), ['agent_a', 'agent_b']);
-  assert.deepEqual(deployment.toolCalls.at(-1), { name: 'export_workspace_recipe', args: { agentIds: ['agent_a', 'agent_b'] } });
+  const recipe = JSON.parse(exported.stdout);
+  assert.equal(recipe.schemaVersion, 2);
+  assert.deepEqual(recipe.agents.map((agent: { symbol: string }) => agent.symbol), ['agent_a', 'agent_b']);
+  assert.deepEqual(deployment.toolCalls.at(-1), { name: 'export_agents', args: { agentIds: ['agent_a', 'agent_b'] } });
+});
 
-  const dir = mkdtempSync(path.join(tmpdir(), 'chickpea-recipe-'));
-  const file = path.join(dir, 'recipe.json');
-  writeFileSync(file, exported.stdout);
-  const preview = await runCli(['recipe', 'preview', deployment.url, file], { store });
-  assert.equal(preview.code, 0, preview.stderr);
-  assert.match(preview.stdout, /Recipe digest digest_1/);
-  assert.match(preview.stdout, /agent_a: create  setup required: gmail/);
-  assert.match(preview.stdout, /Operations \(2\)\n  a: create_agent\n  b: request_setup/);
-  assert.match(preview.stderr, /apply_workspace_changes --args-file/);
-  assert.equal(deployment.toolCalls.at(-1)!.name, 'preview_workspace_recipe');
-  assert.deepEqual((deployment.toolCalls.at(-1)!.args.recipe as { schemaVersion: number }).schemaVersion, 1);
+test('recipe preview is removed without reading files, signing in or calling a tool', async () => {
+  const calls = deployment.toolCalls.length;
+  for (const flags of [[], ['--json'], ['--quiet']]) {
+    const preview = await runCli(['recipe', 'preview', ...flags], { readFile: () => { throw new Error('must not read'); } });
+    assert.equal(preview.code, 1);
+    assert.equal(preview.stdout, '');
+    assert.equal(preview.stderr, 'recipe preview was removed. A coding agent applies a recipe through create_agent and update_agent.\n');
+  }
+  assert.equal(deployment.toolCalls.length, calls);
+});
 
-  const json = await runCli(['recipe', 'preview', deployment.url, file, '--json'], { store });
-  assert.equal(json.code, 0);
-  assert.equal(JSON.parse(json.stdout).recipeDigest, 'digest_1');
+test('built-in commands on an older Core ask for an update without calling 4.x tools', async (t) => {
+  const older = new FakeDeployment({ legacyOnly: true });
+  await older.start();
+  t.after(() => older.stop());
+  const olderStore = temporaryStore();
+  const login = await runCli(['login', older.url], { store: olderStore, openBrowser: fakeBrowser, loginTimeoutMs: 10_000 });
+  assert.equal(login.code, 0, login.stderr);
+  for (const argv of [['workspace', 'inspect', older.url], ['recipe', 'export', older.url]]) {
+    const result = await runCli(argv, { store: olderStore });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /UPDATE_REQUIRED: Update your Chickpea Core/);
+  }
+  assert.deepEqual(older.toolCalls, []);
+});
+
+test('5.0 parsing preserves structured success, refusal guidance and SDK validation text', () => {
+  assert.deepEqual(parseToolEnvelope({ content: [{ type: 'text', text: 'display only' }], structuredContent: { agents: [] } }), { ok: true, result: { agents: [] } });
+  const error = { code: 'not_allowed', message: 'Ask an owner.', nextStep: 'Open Admin.', fix: { label: 'Admin', url: 'https://chickpea.example/admin' }, retryable: false };
+  for (const isError of [true, false]) {
+    assert.deepEqual(parseToolEnvelope({ content: [{ type: 'text', text: 'Ask an owner.' }], structuredContent: { error }, isError }), { ok: false, error });
+  }
+  assert.deepEqual(parseToolEnvelope({ content: [{ type: 'text', text: 'Input validation error: agentId is required' }], isError: true }), { ok: false, error: { code: 'tool_error', message: 'Input validation error: agentId is required' } });
 });
