@@ -1319,7 +1319,7 @@ test('a test run that calls a tool again after its refusal gets one more model r
   assert.ok(ended instanceof AgentRunError);
   // Its settlement, as the store reads it: the model's own doing, so nothing is credited back.
   assert.deepEqual(testRunSettlement({ outcome: 'failed', error: ended.cause }, ended.submissionId, undefined),
-    { kind: 'failed', failure: 'failed', creditBack: null });
+    { kind: 'failed', failure: 'failed', stopped: 'tool_limit', creditBack: null });
   assert.equal(sent.length, 3, 'the request after the second refusal is never sent');
   assert.deepEqual(refusals, [TEST_TURN_TOOL_LIMIT_MESSAGE, TEST_TURN_TOOL_LIMIT_MESSAGE]);
   assert.equal(ran.length, TEST_TURN_TOOL_CALL_LIMIT);

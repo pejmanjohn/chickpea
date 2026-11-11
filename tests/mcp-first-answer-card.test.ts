@@ -7,6 +7,7 @@ import * as connectCard from '../src/mcp-cards/connect-card/model.ts';
 import { GIVE_UP_MS, HELD_FOR_MS, HELD_RETRY_MS, KEY_FOR_MS, plainText } from '../src/mcp-cards/first-answer.ts';
 import { TEST_RUN_VISIBLE_MS } from '../src/management/test-runs.ts';
 import { assertPlain, cardHost, cardServer, type CardModelUnderTest } from './helpers/mcp-card-host.ts';
+import { slackMember } from './helpers/slack-members.ts';
 import { StubTestRuns } from './helpers/stub-test-runs.ts';
 
 /**
@@ -39,15 +40,18 @@ const REPLY = '**2 invoices** are overdue:\n- Northwind, $1,240\n- [Lumen Labs](
 
 async function world(t: TestContext, suffix: string, options: { unserved?: true } = {}) {
   const runs = new StubTestRuns({ status: 'answered', failure: null, result: { reply: REPLY, read: ['Stripe', 'Notion'] } });
+  /** What Slack says of the caller: a full member of the workspace unless a test makes them a guest. */
+  const slack = { team: '', guest: false };
   const server = await cardServer(t, suffix, {
     modelReadiness: async () => async () => undefined,
-    slackMemberTimezone: async () => 'Europe/Paris',
+    slackMember: async (id) => slackMember(id, slack.team, { restricted: slack.guest }),
     ...options.unserved ? {} : { testRuns: runs },
   }, { cards: true });
   const { f, teamId } = server;
+  slack.team = teamId;
   runs.now = () => server.clock.now;
   await f.config.ensureWorkspaceInstallation({ workspaceId: teamId, transportMode: 'direct', botUserId: 'UBOT', runtimeContract: 'chickpea-v1' });
-  return { ...server, runs };
+  return { ...server, runs, slack };
 }
 
 /** The Agent card, from the proposal through Create to its hello in Slack. */
@@ -261,20 +265,20 @@ test('Check again on the slow view reads the run once, and shows its answer once
 });
 
 // Mutation proof (item 1): read only from structuredContent, this refusal looks like the host ending the call, and the card retries for three minutes.
-test('today\'s limit reaches the first answer when the host answers with an error that carries the result', async (t) => {
+test('a refusal that no retry passes reaches the first answer when the host answers with an error that carries the result', async (t) => {
   const wraps: Record<string, (result: ToolResult) => ToolResult> = {
     result: (result) => ({ isError: true, hostError: { code: -32603, message: 'Tool call failed', data: result } }),
     envelope: (result) => ({ isError: true, hostError: { code: -32603, message: 'Tool call failed', data: { status: 'error', mcp_tool_result: result } } }),
   };
   for (const [how, wrap] of Object.entries(wraps)) {
     const limited = await readyCard(t, `first-answer-limit-${how}`);
-    limited.runs.refuse = { kind: 'daily_limit', resumesAt: Date.now() + 3 * 3_600_000 - 60_000 };
+    limited.slack.guest = true;
     limited.card.hold = (made) => made.tool === 'try_agent_once';
     await limited.card.press('try_once');
     limited.card.held[0]!.result = wrap(limited.card.held[0]!.result);
     await limited.card.answer();
     assert.deepEqual(limited.card.shown.blocks,
-      [{ kind: 'text', text: 'Test runs for this workspace have reached today\'s limit. They start again in about 3 hours.' }], how);
+      [{ kind: 'text', text: 'You can\'t message Invoice Chaser in Slack yet, so you can\'t practice with it.' }], how);
     assert.deepEqual(limited.card.labels(), ['Open in Slack (primary)'], how);
     await limited.card.dispatch({ type: 'tick', now: limited.clock.now });
     assert.equal(limited.card.calls('try_agent_once').length, 1, `${how}: no retry`);
@@ -438,7 +442,7 @@ test('every refusal reads plainly on the card, with its own next step and no cod
   await plain.dispatch({ type: 'tick', now: unserved.clock.now });
   assert.deepEqual(plain.labels(), ['Open in Slack (primary)', 'See its first answer (secondary)'], 'offered whether or not this workspace runs them');
   await plain.press('try_once');
-  assert.deepEqual(shown(plain), [{ kind: 'text', text: 'Test runs aren\'t available on this workspace yet.' }]);
+  assert.deepEqual(shown(plain), [{ kind: 'text', text: 'Practice runs aren\'t available on this workspace yet.' }]);
   assert.deepEqual(plain.labels(), ['Open in Slack (primary)'], 'a retry would read the same');
   assert.equal(told(plain), NOT_STARTED);
   plainly(plain.shown, ['agent_invoice_chaser']);
@@ -459,11 +463,11 @@ test('every refusal reads plainly on the card, with its own next step and no cod
   await passing.card.press('try_once');
   assert.deepEqual(passing.card.calls('try_agent_once').at(-1)!.args, retried!.args, 'a refusal stored no run, so the same key is a new try');
 
-  // Today's limit.
+  // Slack would refuse the person a DM: a guest.
   const limited = await readyCard(t, 'first-answer-limit');
-  limited.runs.refuse = { kind: 'daily_limit', resumesAt: Date.now() + 3 * 3_600_000 - 60_000 };
+  limited.slack.guest = true;
   await limited.card.press('try_once');
-  assert.deepEqual(shown(limited.card), [{ kind: 'text', text: 'Test runs for this workspace have reached today\'s limit. They start again in about 3 hours.' }]);
+  assert.deepEqual(shown(limited.card), [{ kind: 'text', text: 'You can\'t message Invoice Chaser in Slack yet, so you can\'t practice with it.' }]);
   assert.deepEqual(limited.card.labels(), ['Open in Slack (primary)'], 'not one that passes on a retry');
   assert.deepEqual(limited.runs.starts, []);
 
@@ -471,7 +475,7 @@ test('every refusal reads plainly on the card, with its own next step and no cod
   const failed = await readyCard(t, 'first-answer-failed');
   failed.runs.outcome = { status: 'failed', failure: 'deadline', result: null };
   await failed.card.press('try_once');
-  assert.deepEqual(shown(failed.card), [{ kind: 'text', text: 'The test run took too long and was stopped. Ask Invoice Chaser in Slack instead.' }]);
+  assert.deepEqual(shown(failed.card), [{ kind: 'text', text: 'The practice run took too long and was stopped.' }]);
   assert.deepEqual(failed.card.labels(), ['Open in Slack (primary)']);
   assert.equal(told(failed.card), 'The person ran the Agent "Invoice Chaser" (@invoices) once from the card, but it did not finish answering.');
 
@@ -487,7 +491,7 @@ test('every refusal reads plainly on the card, with its own next step and no cod
   await untestable.card.press('try_once');
   assert.deepEqual(shown(untestable.card), [{
     kind: 'text',
-    text: 'Docs MCP allows no tools yet, so a test run can\'t use it. Choose its tools on the Agent\'s page in Admin, then mark the ones that only read.',
+    text: 'Docs MCP allows no tools yet, so a practice run can\'t use it. Choose its tools on the Agent\'s page in Admin, then mark the ones that only read.',
   }]);
   assert.deepEqual(untestable.card.labels(), ['Choose its tools in Admin (primary)', 'Open in Slack (secondary)']);
   plainly(untestable.card.shown, ['connection_docs']);
@@ -509,7 +513,7 @@ test('every refusal reads plainly on the card, with its own next step and no cod
     structuredContent: {
       error: {
         code: 'not_testable', retryable: false,
-        message: 'None of Docs MCP\'s tools are marked as reads, so a test run can\'t use it. Mark the tools that only read as reads, then try again.',
+        message: 'None of Docs MCP\'s tools are marked as reads, so a practice run can\'t use it. Mark the tools that only read as reads, then try again.',
         fix: { label: 'Mark Docs MCP\'s read tools', tool: 'update_connection', arguments: { agentId: 'agent_invoice_chaser', connectionId: 'docs' } },
       },
     },
@@ -636,7 +640,7 @@ test('a fix that is a link is offered and opened only when it is a web link', as
       structuredContent: {
         error: {
           code: 'not_testable', retryable: false,
-          message: 'None of Docs MCP\'s tools are marked as reads, so a test run can\'t use it.',
+          message: 'None of Docs MCP\'s tools are marked as reads, so a practice run can\'t use it.',
           fix: { label: 'Open the Agent in Admin', url },
         },
       },
@@ -665,7 +669,7 @@ test('a link or message the host refused counts only when this view offered it, 
     structuredContent: {
       error: {
         code: 'not_testable', retryable: false,
-        message: 'None of Docs MCP\'s tools are marked as reads, so a test run can\'t use it.',
+        message: 'None of Docs MCP\'s tools are marked as reads, so a practice run can\'t use it.',
         fix: { label: 'Open the Agent in Admin', url: admin },
       },
     },
@@ -679,7 +683,7 @@ test('a link or message the host refused counts only when this view offered it, 
   await card.dispatch({ type: 'refused', effect: { type: 'open', url: admin }, now: clock.now });
   assert.equal(card.state.error, 'That did not work. Try again.');
   assert.deepEqual(card.shown.blocks, [{
-    kind: 'text', text: 'None of Docs MCP\'s tools are marked as reads, so a test run can\'t use it.',
+    kind: 'text', text: 'None of Docs MCP\'s tools are marked as reads, so a practice run can\'t use it.',
   }], 'no page opened');
   assert.deepEqual(card.labels(), ['Open the Agent in Admin (primary)', 'Open in Slack (secondary)']);
 
@@ -706,7 +710,7 @@ test('while another test run holds the workspace, the card asks again every 5 se
   }
   clock.now += HELD_RETRY_MS;
   await card.dispatch({ type: 'tick', now: clock.now });
-  assert.deepEqual(card.shown.blocks, [{ kind: 'text', text: 'Another test run is going in this workspace. Try again in a minute.' }]);
+  assert.deepEqual(card.shown.blocks, [{ kind: 'text', text: 'A practice run is still going. Wait for it, then ask again.' }]);
   assert.deepEqual(card.labels(), ['Try again (primary)', 'Open in Slack (secondary)']);
   const tries = card.calls('try_agent_once');
   assert.equal(tries.length, HELD_FOR_MS / HELD_RETRY_MS + 1, 'every 5 s for a minute');

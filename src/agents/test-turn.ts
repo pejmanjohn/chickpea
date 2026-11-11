@@ -34,7 +34,7 @@ export function parseTestTurnInitialData(value: unknown): TestTurnInitialData {
   return { ...data, runtimePlan };
 }
 
-/** One read-only run of an Agent on its first ask, as the caller, posting nowhere. */
+/** One read-only practice run of an Agent on a question, as the caller, posting nowhere. */
 export function ChickpeaTestTurn({ id }: AgentProps) {
   const { runtimePlan: plan, memoryBlock, requester } = parseTestTurnInitialData(useInitialData());
   useInstruction(plan.instructions);
@@ -59,13 +59,14 @@ export function testTurnSystemBase(kind: AgentKind): string {
 }
 
 export function testTurnFraming({ name, timezone, askedAt }: TestTurnInitialData['requester']): string {
-  return `This is a test run, not a Slack conversation. ${name} asked to see how you answer their first question, ` +
-    `from outside Slack. Your answer goes back to them and is not posted anywhere. It is ${localTime(timezone, askedAt)} ` +
-    `in their timezone, ${timezone}.\n\nAnswer as you would in a direct message from them, and read what you need the ` +
-    'way you normally would. Only tools that read are available here. Nothing can send, post, create, change, delete ' +
-    'or remember anything, and Slack reading, files, images, the browser and coding workspaces are off. If the ' +
-    'question needs one of those, do the reading part, then say in one sentence what you would do and that you can ' +
-    'do it once they ask you in Slack. Don\'t mention this test otherwise. There are no earlier messages.';
+  return `This is a practice run, not a Slack conversation. ${name} sent this question from an app they connected to ` +
+    `Chickpea, to see how you answer. Your answer goes back to them there and is not posted anywhere. It is ` +
+    `${localTime(timezone, askedAt)} in their timezone, ${timezone}.\n\nAnswer as you would in a direct message from them, ` +
+    'and read what you need the way you normally would. Only tools that read are available here. Nothing can send, ' +
+    'post, create, change, delete or remember anything, and Slack reading, files, images, the browser and coding ' +
+    'workspaces are off. If the question needs one of those, do the reading part, then say in one sentence what you ' +
+    'would do and that you can do it once they ask you in Slack. Don\'t mention this practice run otherwise. There are ' +
+    'no earlier messages.';
 }
 
 /** "Monday, 9 November 2026, 14:05"; undefined for an unknown timezone. */

@@ -922,7 +922,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     const alarmTurn = read(() => stores.turnJobs.hasInterruptedAlarmDispatch());
     const inbox = read(() => stores.gatewayInbox.hasOrphanedLease());
     const handoffs = this.versionChanged && read(() => stores.turnJobs.hasHandoffs());
-    const testRun = read(() => stores.testRuns.hasUnerased());
+    const testRun = read(() => stores.testRuns.nextDueAt(Date.now()) !== undefined);
     if (!alarmTurn && !inbox && !handoffs && !testRun) return;
     try {
       const armed = (await this.ctx.storage.getAlarm()) === null;
@@ -2643,6 +2643,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       this.lastRetentionSweepAt = retentionStartedAt;
       retentionMs = Date.now() - retentionStartedAt;
     }
+    // A practice run's text goes an hour after it was asked, on the wake nextDueAt arms for it.
+    stores.testRuns.eraseExpiredText(retentionStartedAt);
     // New turns go to their thread's SlackThreadRunner (the default executor)
     // and this alarm only finishes turns it already dispatched to Flue: rows
     // admitted before the runner became the default. The emergency gate

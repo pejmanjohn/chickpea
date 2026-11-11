@@ -5,7 +5,7 @@ import type { FlueExecutionInterceptor } from '@flue/runtime';
 import { CHICKPEA_TEST_TURN_AGENT_NAME } from './names.ts';
 
 export const TEST_TURN_TOOL_CALL_LIMIT = 25;
-export const TEST_TURN_TOOL_LIMIT_MESSAGE = `Test runs allow ${TEST_TURN_TOOL_CALL_LIMIT} tool calls. Answer with what you have.`;
+export const TEST_TURN_TOOL_LIMIT_MESSAGE = `Practice runs allow ${TEST_TURN_TOOL_CALL_LIMIT} tool calls. Answer with what you have.`;
 export const TEST_TURN_ATTEMPT_ENDED_MESSAGE = 'The test run kept calling tools past its limit, so it was ended.';
 
 /** Flue gives a tool call's context no submission, so the count lives in the agent operation's. */

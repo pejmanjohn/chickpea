@@ -1,24 +1,26 @@
 /**
- * The state store's side of a test run (U6a §3.2): admission and dispatch
- * in one call, then the settle step, which alone addresses the run's
- * instance. The alarm, the caller's polls and a cancellation pass all run
- * it; one step per run at a time, and none once the instance is erased.
+ * The state store's side of a practice run (U6a §3.2): admission and
+ * dispatch in one call, then the settle step, which alone addresses the
+ * run's instance. The alarm, the caller's polls and a cancellation pass all
+ * run it; one step per run at a time, and none once the instance is erased.
  */
 import { deriveRuntimePlanInstanceId, parseRuntimePlanV2 } from '../agents/runtime-plan.ts';
 import { installationScopeOfObjectName, requireInstallationScope } from '../config/installation-scope.ts';
-import type { CreditBackReason } from '../config/platform-funding.ts';
+import type { CreditBackReason, PlatformFundingRefusal } from '../config/platform-funding.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type {
+  PracticeStep,
   TestRunFailure,
   TestRunQuery,
   TestRunReplayQuery,
+  TestRunResult,
   TestRunRow,
   TestRunSettlement,
   TestRunStartRequest,
   TestRunStartResult,
   TestRunView,
 } from '../management/test-run-types.ts';
-import type { TestRunStoreLogic } from '../management/test-runs.ts';
+import { PRACTICE_CREDITED_TIMEOUTS, type TestRunStoreLogic } from '../management/test-runs.ts';
 import type { ChickpeaResponseMetadata } from '../usage/response-metadata.ts';
 import { TestRunUsageRecorder } from '../usage/test-run-usage.ts';
 import type { UsageStoreLogic } from '../usage/store.ts';
@@ -48,11 +50,20 @@ export type TestRunInstanceSettlement =
   | { kind: 'unsettled' }
   /** No instance, or no stream: counted as settled, with nothing to read. */
   | { kind: 'not_found' }
-  | { kind: 'answered'; reply: string; read: string[]; metadata?: ChickpeaResponseMetadata }
+  | {
+      kind: 'answered';
+      reply: string;
+      replyTruncated?: true;
+      read: string[];
+      steps: PracticeStep[];
+      stopped?: 'tool_limit';
+      metadata?: ChickpeaResponseMetadata;
+    }
   | {
       kind: 'failed';
       failure: Extract<TestRunFailure, 'deadline' | 'out_of_usage' | 'daily_limit' | 'failed'>;
-      resumesAt?: number;
+      funding?: PlatformFundingRefusal;
+      stopped?: 'tool_limit';
       creditBack: CreditBackReason | null;
     };
 
@@ -114,12 +125,12 @@ export class TestRunLifecycle {
   }
 
   /**
-   * Admission, then the dispatch, in one call: no other run can start
-   * between them. The row's plan is the creation data's, and it must name
-   * this run, its caller, its Agent and an instance of this installation,
-   * so its instance is the run's own and never another's. A dispatch that
-   * throws leaves the run `admitted` for the 30-second rule; one that landed
-   * binds its submission at its first model request anyway.
+   * Admission, then the dispatch, in one call. The row's plan is the
+   * creation data's, and it must name this run, its caller, its Agent and an
+   * instance of this installation, so its instance is the run's own and
+   * never another's. A dispatch that throws leaves the run `admitted` for
+   * the 30-second rule; one that landed binds its submission at its first
+   * model request anyway.
    */
   async start(request: TestRunStartRequest): Promise<TestRunStartResult> {
     const { testRuns } = this.deps.stores();
@@ -135,14 +146,17 @@ export class TestRunLifecycle {
         installationScopeOfObjectName(instanceId)?.installationId !== requireInstallationScope(this.deps.platformEnv)?.installationId) {
       throw new Error('A test run must run its own test run plan.');
     }
-    // A run that has finished but that no one has read yet must not hold the lock.
-    for (const row of testRuns.unerased()) {
-      if (row.organizationId === run.organizationId && live(row)) await this.step(row.testRunId);
-    }
     const at = this.now();
     const admission = testRuns.admit({ ...run, instanceId, planJson: JSON.stringify(request.initialData.runtimePlan) }, at);
-    if (admission.kind === 'replayed') return { kind: 'replayed', run: testRunView(await this.settled(admission.row)) };
-    if (admission.kind !== 'admitted') return admission;
+    switch (admission.kind) {
+      case 'in_progress':
+        return admission;
+      case 'replayed':
+      case 'running':
+        return { kind: admission.kind, run: testRunView(await this.settled(admission.row)) };
+      case 'repeat':
+        return { kind: 'repeat', run: { ...testRunView(admission.row), repeat: true } };
+    }
     const { row } = admission;
     await this.deps.armAlarm(testRuns.nextDueAt(at) ?? at);
     try {
@@ -184,10 +198,8 @@ export class TestRunLifecycle {
   }
 
   async replay(query: TestRunReplayQuery): Promise<TestRunView | undefined> {
-    const row = this.deps.stores().testRuns.findByIdempotencyKey(query.actorMembershipId, query.idempotencyKey);
-    if (!row || row.organizationId !== query.organizationId) return undefined;
-    const read = this.deps.stores().testRuns.read({ ...query, runToken: row.runToken }, this.now());
-    return read ? testRunView(await this.settled(read)) : undefined;
+    const row = this.deps.stores().testRuns.replay(query, this.now());
+    return row ? testRunView(await this.settled(row)) : undefined;
   }
 
   async observe(query: TestRunQuery): Promise<TestRunView | undefined> {
@@ -332,16 +344,17 @@ export class TestRunLifecycle {
     mode: TestRunStepMode,
   ): Promise<void> {
     if (settled.kind === 'answered') {
+      const { kind: _kind, metadata, ...result } = settled;
       await this.write(row, {
         status: 'answered',
-        result: { reply: settled.reply, read: settled.read },
-        terminal: this.terminal(row, { status: 'answered', ...(settled.metadata ? { metadata: settled.metadata } : {}) }, now),
+        result,
+        terminal: this.terminal(row, { status: 'answered', ...(metadata ? { metadata } : {}) }, now),
       }, null);
       return;
     }
     let failure: TestRunFailure;
     let creditBack: CreditBackReason | null = null;
-    let result: { resumesAt: number } | undefined;
+    let result: TestRunResult | undefined;
     if (settled.kind === 'not_found') {
       failure = now - row.createdAt >= TEST_RUN_DEADLINE_MS ? 'deadline' : 'failed';
     } else if (mode === 'cancel' && settled.failure === 'deadline') {
@@ -350,7 +363,10 @@ export class TestRunLifecycle {
     } else {
       failure = settled.failure;
       creditBack = settled.creditBack;
-      if (settled.resumesAt !== undefined) result = { resumesAt: settled.resumesAt };
+      result = {
+        ...(settled.funding ? { funding: settled.funding } : {}),
+        ...(settled.stopped ? { stopped: settled.stopped } : {}),
+      };
     }
     await this.write(row, {
       status: 'failed',
@@ -376,10 +392,24 @@ export class TestRunLifecycle {
   /**
    * Settles the row with its usage terminal. A terminal Usage refuses never
    * keeps the run live: the row settles without it, and each later step
-   * until the erase writes one with its usage unreported.
+   * until the erase writes one with its usage unreported. A deadline is
+   * credited back as a direct message's is, for the person's first
+   * timeouts each UTC day; later ones are charged, so a client that keeps
+   * running out the clock pays for it.
    */
-  private async write(row: TestRunRow, settlement: TestRunSettlement, creditBack: CreditBackReason | null): Promise<void> {
+  private async write(row: TestRunRow, settlement: TestRunSettlement, reason: CreditBackReason | null): Promise<void> {
     const { testRuns } = this.deps.stores();
+    let creditBack = reason;
+    if (creditBack === 'timeout' && settlement.status === 'failed' && settlement.failure === 'deadline' &&
+        testRuns.timeoutsToday(row, this.now()) >= PRACTICE_CREDITED_TIMEOUTS) {
+      creditBack = null;
+    }
+    if (row.submissionId !== null && reason !== null) {
+      settlement = {
+        ...settlement,
+        result: { ...settlement.result, ...(creditBack ? { creditedBack: true as const } : { timeoutCharged: true as const }) },
+      };
+    }
     let settled: boolean;
     try {
       settled = testRuns.settle(row.testRunId, settlement);
@@ -437,6 +467,10 @@ function testRunView(row: TestRunRow): TestRunView {
     failure: row.failure,
     result: row.result,
     createdAt: row.createdAt,
+    settledAt: row.settledAt,
+    practiceId: row.practiceId,
+    turn: row.turn,
+    question: row.question,
   };
 }
 

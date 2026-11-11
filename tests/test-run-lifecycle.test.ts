@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { deriveRuntimePlanInstanceId, parseRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
-import { TEST_RUN_DAILY_LIMIT_USD_MICROS, TEST_RUN_VISIBLE_MS, TEST_RUN_WAKE_MS } from '../src/management/test-runs.ts';
+import { practiceQuestionDigest, TEST_RUN_WAKE_MS } from '../src/management/test-runs.ts';
 import {
   TEST_RUN_ABORT_AFTER_MS,
   TEST_RUN_DEADLINE_MS,
@@ -18,6 +18,9 @@ import {
 import { quiesceStateStoreForRestore } from '../src/state/state-store-host.ts';
 import type { TestRunLifecycle } from '../src/state/test-run-lifecycle.ts';
 import { FakeTestRunInstances, startRequest, TestClock, testRunLifecycle } from './helpers/test-runs.ts';
+
+/** How long a caller reads their run, and when its text goes. */
+const AN_HOUR = 60 * 60_000;
 
 const NOON = Date.UTC(2027, 0, 15, 12);
 
@@ -63,19 +66,19 @@ test('a run is admitted and dispatched in one call, as a plain message keyed by 
 test('an answered run settles with its reply, frees the lock, and its instance is erased', async () => {
   const context = setup('inst_lifecycle_answer');
   const { request, instanceId, row } = await started(context);
-  context.instances.settlements.set(instanceId, { kind: 'answered', reply: 'Order 42 shipped.', read: ['Orders'] });
+  context.instances.settlements.set(instanceId, { kind: 'answered', reply: 'Order 42 shipped.', read: ['Orders'], steps: [] });
   context.clock.advance(12_000);
   const view = await context.lifecycle.observe({
     organizationId: request.run.organizationId, actorMembershipId: request.run.actorMembershipId, runToken: request.run.runToken,
   });
-  assert.deepEqual(view && [view.status, view.result], ['answered', { reply: 'Order 42 shipped.', read: ['Orders'] }]);
+  assert.deepEqual(view && [view.status, view.result], ['answered', {
+    off: ['Posting, files and images in Slack'], reply: 'Order 42 shipped.', read: ['Orders'], steps: [],
+  }]);
   assert.equal(row().planJson, null);
   assert.equal(row().erasedAt, NOON + 12_000);
   assert.deepEqual(context.instances.on(instanceId), ['dispatch', 'settlement', 'erase']);
   assert.deepEqual(usageOf(context.installation, request.run.usage.operationId), { status: 'completed', billingRunId: 'sub_1' });
-  assert.equal(context.lifecycle.nextDueAt(), undefined, 'nothing left to wake for');
-  // The lock is free.
-  assert.equal((await context.lifecycle.start(startRequest(context.installation))).kind, 'admitted');
+  assert.equal(context.lifecycle.nextDueAt(), NOON + AN_HOUR, 'only its text\'s erase is left to wake for');
 });
 
 test('an instance that never settles is aborted at 125 seconds, failed at 150 whatever it reports, and erased at 10 minutes', async () => {
@@ -95,7 +98,7 @@ test('an instance that never settles is aborted at 125 seconds, failed at 150 wh
   assert.deepEqual(usageOf(context.installation, request.run.usage.operationId), { status: 'interrupted', billingRunId: 'sub_1' });
   assert.ok(context.instances.calls.some(([call, id]) => call === 'credit_back:timeout' && id === 'sub_1'));
   assert.equal(row().erasedAt, null, 'an instance that still reports running is not erased yet');
-  // The lock is free though: the next run is admitted.
+  // Another run is admitted meanwhile.
   assert.equal((await context.lifecycle.start(startRequest(context.installation, { at: context.clock.now() }))).kind, 'admitted');
 
   context.clock.advance(TEST_RUN_FORCED_ERASE_MS - TEST_RUN_DEADLINE_MS - 1);
@@ -129,7 +132,7 @@ test('an instance not found counts as settled: the run fails and its instance is
   assert.deepEqual(usageOf(context.installation, request.run.usage.operationId), { status: 'failed', billingRunId: 'sub_1' });
 });
 
-test('a lost receipt: the run\'s first model request binds its submission, its spend counts, and it settles and is erased', async () => {
+test('a lost receipt: the run\'s first model request binds its submission, and it settles and is erased', async () => {
   const context = setup('inst_lifecycle_lost_receipt');
   context.instances.dispatchFails = true;
   const { instanceId, row, request } = await started(context);
@@ -137,23 +140,12 @@ test('a lost receipt: the run\'s first model request binds its submission, its s
   // The dispatch landed after all: its first model request binds it.
   assert.ok(context.installation.stores.testRuns.bindModelAccess(instanceId, 'sub_landed'));
   assert.deepEqual([row().status, row().submissionId], ['running', 'sub_landed']);
-  context.installation.stores.usage.recordModelRequest({
-    requestId: 'req_landed', installationId: context.installation.installationId, runId: 'sub_landed', attemptId: 'sub_landed:1',
-    agentId: 'agent_tested', purpose: 'reply', provider: 'anthropic', model: 'claude-haiku-4-5', fundingSource: 'platform',
-    outcome: 'completed', inputTokens: 1, outputTokens: { total: 1, reasoning: null }, cacheReadTokens: 0,
-    cacheWriteTokens: { total: 0, oneHour: null }, priceVersionId: 'price_1', listPriceUsdMicros: TEST_RUN_DAILY_LIMIT_USD_MICROS,
-    priceUnknownReason: null, providerCostUsdMicros: null, providerResponseId: null, providerServiceTier: null,
-    providerInferenceGeo: null, finishedAt: NOON,
-  });
   // Past the 30-second rule: a bound run is not failed as undispatched.
   context.clock.advance(TEST_RUN_DISPATCH_GRACE_MS);
-  context.instances.settlements.set(instanceId, { kind: 'answered', reply: 'Shipped.', read: [] });
+  context.instances.settlements.set(instanceId, { kind: 'answered', reply: 'Shipped.', read: [], steps: [] });
   await context.lifecycle.pass();
   assert.deepEqual([row().status, row().erasedAt], ['answered', context.clock.now()]);
   assert.deepEqual(usageOf(context.installation, request.run.usage.operationId), { status: 'completed', billingRunId: 'sub_landed' });
-  // Its spend counts: the day's $2 is used.
-  const next = await context.lifecycle.start(startRequest(context.installation, { at: context.clock.now() }));
-  assert.equal(next.kind, 'daily_limit');
 });
 
 test('a run with no submission 30 seconds after admission fails as not dispatched and is aborted; with nothing to read, its erase waits', async () => {
@@ -289,7 +281,7 @@ test('a receipt that lands after its bound and after a cancellation deleted the 
 test('no step addresses an erased run\'s instance', async () => {
   const context = setup('inst_lifecycle_erased');
   const { instanceId, request } = await started(context);
-  context.instances.settlements.set(instanceId, { kind: 'answered', reply: 'Done.', read: [] });
+  context.instances.settlements.set(instanceId, { kind: 'answered', reply: 'Done.', read: [], steps: [] });
   await context.lifecycle.pass();
   const calls = context.instances.on(instanceId).length;
   context.clock.advance(TEST_RUN_FORCED_ERASE_MS);
@@ -306,7 +298,7 @@ test('a failed erase is retried at the next step', async () => {
   const context = setup('inst_lifecycle_erase_retry');
   context.instances.eraseFailures = 1;
   const { instanceId, row } = await started(context);
-  context.instances.settlements.set(instanceId, { kind: 'answered', reply: 'Done.', read: [] });
+  context.instances.settlements.set(instanceId, { kind: 'answered', reply: 'Done.', read: [], steps: [] });
   await context.lifecycle.pass();
   assert.deepEqual([row().status, row().erasedAt], ['answered', null]);
   assert.ok(context.lifecycle.nextDueAt() !== undefined, 'the alarm comes back for it');
@@ -407,7 +399,7 @@ test('a terminal Usage refuses never keeps the run live: the 150-second bound se
   assert.equal(usageOf(context.installation, request.run.usage.operationId).status, 'admitted', 'refused again');
   refuse = false;
   assert.equal((await context.lifecycle.start(startRequest(context.installation, { at: context.clock.now() }))).kind, 'admitted',
-    'the lock is free');
+    'another run is admitted');
   context.clock.advance(TEST_RUN_WAKE_MS);
   await context.lifecycle.pass();
   assert.deepEqual(usageOf(context.installation, request.run.usage.operationId), { status: 'interrupted', billingRunId: 'sub_1' },
@@ -425,9 +417,9 @@ test('an answer whose terminal Usage refuses keeps its reply, with its usage unr
     if (refusals-- > 0) throw new Error('Usage refused the token counts.');
     return record(input);
   };
-  context.instances.settlements.set(instanceId, { kind: 'answered', reply: 'Shipped.', read: [] });
+  context.instances.settlements.set(instanceId, { kind: 'answered', reply: 'Shipped.', read: [], steps: [] });
   await context.lifecycle.pass();
-  assert.deepEqual([row().status, row().result, row().erasedAt], ['answered', { reply: 'Shipped.', read: [] }, NOON]);
+  assert.deepEqual([row().status, row().result, row().erasedAt], ['answered', { off: ['Posting, files and images in Slack'], reply: 'Shipped.', read: [], steps: [] }, NOON]);
   const detail = context.installation.stores.usage.getOperation(request.run.usage.operationId)!;
   assert.deepEqual([detail.operation.status, detail.measurements.at(-1)?.usageCompleteness], ['completed', 'not_reported']);
 });
@@ -445,18 +437,19 @@ test('the store runs only a plan for this run, its caller and its Agent, on an i
   assert.equal((await context.lifecycle.start(request)).kind, 'admitted');
 });
 
-test('past its hour a run is gone to its caller: a replay and the same key both read as not found', async () => {
+test('past its hour a run is gone to its caller: a replay reads as not found, and the same key starts a new run', async () => {
   const context = setup('inst_lifecycle_replay_hour');
   const { request, instanceId } = await started(context);
-  context.instances.settlements.set(instanceId, { kind: 'answered', reply: 'Shipped.', read: [] });
+  context.instances.settlements.set(instanceId, { kind: 'answered', reply: 'Shipped.', read: [], steps: [] });
   const replay = { organizationId: request.run.organizationId, actorMembershipId: request.run.actorMembershipId,
-    idempotencyKey: request.run.idempotencyKey };
-  context.clock.advance(TEST_RUN_VISIBLE_MS - 1);
+    idempotencyKey: request.run.idempotencyKey, agentId: request.run.agentId, practiceId: null,
+    questionDigest: practiceQuestionDigest(request.run.organizationId, request.run.question) };
+  context.clock.advance(AN_HOUR - 1);
   assert.equal((await context.lifecycle.replay(replay))?.status, 'answered');
   context.clock.advance(1);
   assert.equal(await context.lifecycle.replay(replay), undefined);
-  const again = startRequest(context.installation, { at: context.clock.now(), idempotencyKey: request.run.idempotencyKey });
-  assert.deepEqual(await context.lifecycle.start(again), { kind: 'expired' });
+  const again = startRequest(context.installation, { at: context.clock.now(), idempotencyKey: request.run.idempotencyKey, question: request.run.question });
+  assert.equal((await context.lifecycle.start(again)).kind, 'admitted');
 });
 
 test('after a cancellation deletes the alarm, a caller\'s read of a run not yet erased arms it again', async () => {
@@ -490,4 +483,60 @@ test('a cancellation whose abort the instance settles is cancelled, not a timeou
   assert.deepEqual([row().status, row().failure], ['failed', 'cancelled']);
   assert.ok(context.instances.on(instanceId).includes('erase'));
   assert.equal(context.instances.calls.some(([call]) => call.startsWith('credit_back')), false);
+});
+
+test('a person\'s first two timeouts a UTC day are credited back, as a direct message\'s are; the third is charged and says so', async () => {
+  const context = setup('inst_lifecycle_timeout_credit');
+  const timedOut = async (actorMembershipId: string) => {
+    const run = await started(context, { actorMembershipId });
+    context.clock.advance(TEST_RUN_DEADLINE_MS);
+    await context.lifecycle.pass();
+    return run.row();
+  };
+  const first = await timedOut('membership_ada');
+  const second = await timedOut('membership_ada');
+  const other = await timedOut('membership_bo');
+  const third = await timedOut('membership_ada');
+  const credited = context.instances.calls.filter(([call]) => call === 'credit_back:timeout').map(([, submission]) => submission);
+  assert.deepEqual(credited, [first.submissionId, second.submissionId, other.submissionId], 'another person\'s timeouts are their own');
+  assert.deepEqual([first.failure, first.result], ['deadline', { off: ['Posting, files and images in Slack'], creditedBack: true }]);
+  assert.deepEqual([third.failure, third.result], ['deadline', { off: ['Posting, files and images in Slack'], timeoutCharged: true }]);
+  // A deadline the instance reports is held to the same rule.
+  const fourth = await started(context, { actorMembershipId: 'membership_ada' });
+  context.instances.settlements.set(fourth.instanceId, { kind: 'failed', failure: 'deadline', creditBack: 'timeout' });
+  await context.lifecycle.pass();
+  assert.equal(fourth.row().result?.timeoutCharged, true);
+  assert.equal(context.instances.calls.filter(([call]) => call === 'credit_back:timeout').length, 3);
+  // A failure Chickpea owns that is no timeout is credited back whatever the count.
+  const fifth = await started(context, { actorMembershipId: 'membership_ada' });
+  context.instances.settlements.set(fifth.instanceId, { kind: 'failed', failure: 'failed', creditBack: 'chickpea' });
+  await context.lifecycle.pass();
+  assert.equal(fifth.row().result?.creditedBack, true);
+  // The next UTC day starts the count again.
+  context.clock.advance(24 * 60 * 60_000);
+  const tomorrow = await timedOut('membership_ada');
+  assert.equal(tomorrow.result?.creditedBack, true);
+});
+
+test('admission steps no one else\'s run: another member\'s stuck instance never delays it', async () => {
+  const context = setup('inst_lifecycle_others_stuck');
+  const stuck = await started(context, { actorMembershipId: 'membership_ada' });
+  const before = context.instances.on(stuck.instanceId).length;
+  context.instances.settlement = () => new Promise<never>(() => undefined);
+  const mine = await context.lifecycle.start(startRequest(context.installation, { actorMembershipId: 'membership_bo', at: context.clock.now() }));
+  assert.equal(mine.kind, 'admitted');
+  assert.equal(context.instances.on(stuck.instanceId).length, before, 'the stuck run\'s instance was never asked');
+});
+
+test('the same ask on the same plan moments after it settled is that run again, marked a repeat, with nothing dispatched', async () => {
+  const context = setup('inst_lifecycle_repeat');
+  const first = await started(context, { question: 'Who is overdue?' });
+  context.instances.settlements.set(first.instanceId, { kind: 'answered', reply: 'Two.', read: [], steps: [] });
+  await context.lifecycle.pass();
+  context.clock.advance(30_000);
+  const again = await context.lifecycle.start(startRequest(context.installation, { question: 'Who is overdue?', at: context.clock.now() }));
+  assert.equal(again.kind, 'repeat');
+  assert.deepEqual(again.kind === 'repeat' && [again.run.runToken, again.run.repeat, again.run.result?.reply],
+    [first.request.run.runToken, true, 'Two.']);
+  assert.equal(context.instances.dispatched.length, 1);
 });

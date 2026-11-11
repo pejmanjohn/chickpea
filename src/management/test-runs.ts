@@ -1,13 +1,17 @@
 /**
- * Test runs: one read-only run of a new Agent on its stored first ask, as
- * the caller, posting nowhere (U6a). The row is the run's whole record, from
- * admission to the erase of its instance. Only the installation's state
- * store writes it; the lifecycle (state/test-run-lifecycle.ts) owns every
- * step that addresses the instance.
+ * Practice runs (internally, test runs): one read-only run of an Agent on a
+ * question, as the caller, posting nowhere (U6a, practice runs §3-§4). The
+ * row is the run's whole record, from admission to the erase of its
+ * instance. Only the installation's state store writes it; the lifecycle
+ * (state/test-run-lifecycle.ts) owns every step that addresses the instance.
  */
+import { createHash } from 'node:crypto';
+
+import { addColumnIfMissing } from '../state/schema-links.ts';
 import type { StateDb } from '../state/state-db.ts';
 import type { UsageStoreLogic } from '../usage/store.ts';
 import type {
+  PracticeAsk,
   TestRunAdmission,
   TestRunAdmissionRequest,
   TestRunFailure,
@@ -18,18 +22,26 @@ import type {
   TestRunStatus,
 } from './test-run-types.ts';
 
-/** At most this many runs admitted per installation per UTC day. */
-export const TEST_RUN_DAILY_RUNS = 10;
-/** List price of today's test runs' model requests, past which no run is admitted. */
-export const TEST_RUN_DAILY_LIMIT_USD_MICROS = 2_000_000;
-/** A run reads as not found this long after its admission. */
+/** A run settled this recently answers the same ask on the same plan again, rather than run twice. */
+export const PRACTICE_REPEAT_MS = 2 * 60_000;
+/** A person's first timed-out runs each UTC day are credited back, as a direct message's are; later ones are charged. */
+export const PRACTICE_CREDITED_TIMEOUTS = 2;
+/** A run reads as not found this long after its admission, and its text is erased then. */
 export const TEST_RUN_VISIBLE_MS = 60 * 60_000;
 /** How often the state store's alarm looks at a run whose instance is not erased yet. */
 export const TEST_RUN_WAKE_MS = 10_000;
 
 const DAY_MS = 24 * 60 * 60_000;
-/** A run's model requests finish after its admission; this absorbs the skew between their clocks. */
-const REQUEST_CLOCK_SKEW_MS = 60_000;
+const HAS_TEXT = '(result_json IS NOT NULL OR question IS NOT NULL OR question_digest IS NOT NULL)';
+
+/**
+ * The question's digest, so a key or a repeat can match an ask after the
+ * question itself is gone. Salted with the installation's organization; it is
+ * erased with the question.
+ */
+export function practiceQuestionDigest(organizationId: string, question: string): string {
+  return createHash('sha256').update(`chickpea-practice-question:v1:${organizationId}:${question}`).digest('hex');
+}
 
 /** The table, created with the management store's schema. */
 export function installTestRunSchema(db: StateDb): void {
@@ -52,35 +64,55 @@ export function installTestRunSchema(db: StateDb): void {
       erased_at INTEGER
     )`,
   );
-  // One run at a time per installation: the lock frees at settlement, before the erase.
-  db.exec(
-    `CREATE UNIQUE INDEX IF NOT EXISTS management_test_runs_live_idx
-     ON management_test_runs (organization_id) WHERE status IN ('admitted', 'running')`,
-  );
+  for (const [column, definition] of [
+    ['practice_id', 'TEXT'], ['turn', 'INTEGER'], ['question', 'TEXT'], ['question_digest', 'TEXT'], ['plan_digest', 'TEXT'],
+    ['settled_at', 'INTEGER'],
+  ] as const) {
+    addColumnIfMissing(db, 'management_test_runs', column, definition);
+  }
+  // Practice runs share the plan's limits, as a direct message does, so no lock holds a workspace to one run.
+  // contract: the per-installation lock never served production (U6a shipped to staging only), so nothing reads it.
+  db.exec('DROP INDEX IF EXISTS management_test_runs_live_idx');
   db.exec(
     `CREATE UNIQUE INDEX IF NOT EXISTS management_test_runs_idempotency_idx
      ON management_test_runs (actor_membership_id, idempotency_key)`,
   );
   db.exec('CREATE INDEX IF NOT EXISTS management_test_runs_instance_idx ON management_test_runs (instance_id)');
   db.exec('CREATE INDEX IF NOT EXISTS management_test_runs_day_idx ON management_test_runs (organization_id, created_at)');
+  // A person's runs: the same ask going or just settled, and their timeouts today.
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS management_test_runs_person_idx
+     ON management_test_runs (organization_id, actor_membership_id, created_at)`,
+  );
   // Every alarm asks whether any instance is left to erase.
   db.exec(
     `CREATE INDEX IF NOT EXISTS management_test_runs_unerased_idx
      ON management_test_runs (created_at) WHERE erased_at IS NULL`,
   );
+  // And when the next run's text is an hour old.
+  db.exec(`CREATE INDEX IF NOT EXISTS management_test_runs_text_idx ON management_test_runs (created_at) WHERE ${HAS_TEXT}`);
 }
 
 /**
- * The retention sweep's part: a settled row loses its reply once it can no
+ * A run's text goes once it can no longer be read: the question, the reply,
+ * its steps and the question's digest. The alarm runs this whenever it wakes,
+ * and wakes for it (`nextDueAt`).
+ */
+function eraseTestRunText(db: StateDb, at: number): number {
+  return db.run(
+    `UPDATE management_test_runs SET result_json = NULL, question = NULL, question_digest = NULL
+     WHERE ${HAS_TEXT} AND created_at <= ?`,
+    at - TEST_RUN_VISIBLE_MS,
+  ).changes;
+}
+
+/**
+ * The retention sweep's part: a settled row loses its text once it can no
  * longer be read, and goes once that hour and its UTC day have both passed
- * and its instance is erased. The daily cap counts it until then.
+ * and its instance is erased. The timeout credit rule reads it until then.
  */
 export function cleanupTestRunRetention(db: StateDb, at: number, limit: number): number {
-  db.run(
-    `UPDATE management_test_runs SET result_json = NULL
-     WHERE result_json IS NOT NULL AND created_at <= ?`,
-    at - TEST_RUN_VISIBLE_MS,
-  );
+  eraseTestRunText(db, at);
   return db.run(
     `DELETE FROM management_test_runs WHERE test_run_id IN (
        SELECT test_run_id FROM management_test_runs
@@ -97,80 +129,114 @@ export function utcDayStart(at: number): number {
   return Math.floor(at / DAY_MS) * DAY_MS;
 }
 
+interface Caller {
+  organizationId: string;
+  actorMembershipId: string;
+}
+
 export class TestRunStoreLogic {
   constructor(
     private readonly db: StateDb,
     private readonly usage: Pick<UsageStoreLogic, 'admitOperation' | 'recordTerminal'>,
   ) {}
 
-  /** The caller's run under an idempotency key, for a replay before any check. */
-  findByIdempotencyKey(actorMembershipId: string, idempotencyKey: string): TestRunRow | undefined {
-    return this.row('actor_membership_id = ? AND idempotency_key = ?', actorMembershipId, idempotencyKey);
+  /** The caller's run under a key, within its hour, only for the same ask: a key for another ask names none. */
+  replay(query: Caller & PracticeAsk & { idempotencyKey: string }, at: number): TestRunRow | undefined {
+    const row = this.row('actor_membership_id = ? AND idempotency_key = ?', query.actorMembershipId, query.idempotencyKey);
+    return row && row.organizationId === query.organizationId && sameAsk(row, query) && at < row.createdAt + TEST_RUN_VISIBLE_MS
+      ? row
+      : undefined;
   }
 
   /**
-   * One transaction: the replay, the lock, both daily limits, the row and the
-   * run's usage operation. The caller arms the alarm before it dispatches.
+   * One transaction: the key, the same ask going or settled moments ago on
+   * the same plan, the conversation's last turn still going, then the row and
+   * the run's usage operation. A key that names another ask, or a run past
+   * its hour, is treated as absent: the run starts under a key of its own.
+   * The plan's funding limits the run as it limits a direct message, at its
+   * first model request. The caller arms the alarm before it dispatches.
    */
   admit(request: TestRunAdmissionRequest, at: number): TestRunAdmission {
     return this.db.transaction((): TestRunAdmission => {
-      const prior = this.findByIdempotencyKey(request.actorMembershipId, request.idempotencyKey);
-      if (prior) {
-        // Past its hour a run reads as not found, so its key starts nothing either.
-        if (at >= prior.createdAt + TEST_RUN_VISIBLE_MS) return { kind: 'expired' };
-        return prior.organizationId === request.organizationId && prior.agentId === request.agentId
-          ? { kind: 'replayed', row: prior }
-          : { kind: 'key_reused' };
+      let { idempotencyKey } = request;
+      if (this.row('actor_membership_id = ? AND idempotency_key = ?', request.actorMembershipId, idempotencyKey)) {
+        const replayed = this.replay(request, at);
+        if (replayed) return { kind: 'replayed', row: replayed };
+        idempotencyKey = `minted_${request.testRunId}`;
       }
-      if (this.row("organization_id = ? AND status IN ('admitted', 'running')", request.organizationId)) {
-        return { kind: 'in_progress' };
-      }
-      const dayStart = utcDayStart(at);
-      const runs = Number(this.db.get(
-        'SELECT COUNT(*) AS runs FROM management_test_runs WHERE organization_id = ? AND created_at >= ?',
-        request.organizationId,
-        dayStart,
-      )?.runs ?? 0);
-      if (runs >= TEST_RUN_DAILY_RUNS || this.listPriceToday(request.organizationId, dayStart) >= TEST_RUN_DAILY_LIMIT_USD_MICROS) {
-        return { kind: 'daily_limit', resumesAt: dayStart + DAY_MS };
-      }
-      this.db.run(
-        `INSERT INTO management_test_runs (test_run_id, run_token, organization_id, actor_membership_id, agent_id,
-           status, idempotency_key, instance_id, plan_json, usage_operation_id, created_at)
-         VALUES (?, ?, ?, ?, ?, 'admitted', ?, ?, ?, ?, ?)`,
-        request.testRunId,
-        request.runToken,
-        request.organizationId,
+      const same = this.sameAsks(request, at);
+      const running = same.find((row) => row.status === 'admitted' || row.status === 'running');
+      if (running) return { kind: 'running', row: running };
+      const repeat = same.find((row) => row.settledAt !== null && row.settledAt >= at - PRACTICE_REPEAT_MS &&
+        row.planDigest === request.planDigest);
+      if (repeat) return { kind: 'repeat', row: repeat };
+      // A conversation's turns run one after another: the next waits for the last to settle.
+      const turn = request.practiceId === null ? undefined : this.row(
+        "practice_id = ? AND actor_membership_id = ? AND status IN ('admitted', 'running')",
+        request.practiceId,
         request.actorMembershipId,
-        request.agentId,
-        request.idempotencyKey,
-        request.instanceId,
-        request.planJson,
-        request.usage.operationId,
-        at,
       );
+      if (turn) return { kind: 'in_progress', runToken: turn.runToken };
+      try {
+        this.db.run(
+          `INSERT INTO management_test_runs (test_run_id, run_token, organization_id, actor_membership_id, agent_id,
+             status, idempotency_key, instance_id, plan_json, result_json, usage_operation_id, created_at,
+             practice_id, turn, question, question_digest, plan_digest)
+           VALUES (?, ?, ?, ?, ?, 'admitted', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          request.testRunId,
+          request.runToken,
+          request.organizationId,
+          request.actorMembershipId,
+          request.agentId,
+          idempotencyKey,
+          request.instanceId,
+          request.planJson,
+          Object.keys(request.admitted).length > 0 ? JSON.stringify(request.admitted satisfies TestRunResult) : null,
+          request.usage.operationId,
+          at,
+          request.newPracticeId,
+          request.turn,
+          request.question,
+          request.questionDigest,
+          request.planDigest,
+        );
+      } catch (error) {
+        // An older Worker version recreates its one-run-per-installation lock when it starts this store.
+        if (/UNIQUE constraint failed: management_test_runs\.organization_id\b/.test(error instanceof Error ? error.message : '')) {
+          return { kind: 'in_progress' };
+        }
+        throw error;
+      }
       // The run starts at admission, on the clock its terminal is written by.
       this.usage.admitOperation({ ...request.usage, startedAt: at });
       return { kind: 'admitted', row: this.require(request.testRunId) };
     });
   }
 
-  /**
-   * Every model request's list price under today's test runs' submissions.
-   * Failed and stopped requests are priced too; an unpriced one counts as zero.
-   * The requests' run-ID index, or else the finish-time bound, keeps it off a scan.
-   */
-  private listPriceToday(organizationId: string, dayStart: number): number {
+  /** The caller's runs of the same ask that are going, or settled within the repeat window; newest first. */
+  private sameAsks(ask: Caller & PracticeAsk, at: number): TestRunRow[] {
+    return this.db.all(
+      `SELECT * FROM management_test_runs
+       WHERE organization_id = ? AND actor_membership_id = ? AND created_at > ?
+         AND (status IN ('admitted', 'running') OR settled_at >= ?)
+       ORDER BY created_at DESC`,
+      ask.organizationId,
+      ask.actorMembershipId,
+      at - TEST_RUN_VISIBLE_MS,
+      at - PRACTICE_REPEAT_MS,
+    ).map((row) => testRunFromRow(row)).filter((row) => sameAsk(row, ask));
+  }
+
+  /** The caller's other runs today that ran out of time: the credit-back rule reads it. */
+  timeoutsToday(row: Pick<TestRunRow, 'testRunId' | 'organizationId' | 'actorMembershipId'>, at: number): number {
     return Number(this.db.get(
-      `SELECT COALESCE(SUM(r.list_price_usd_micros), 0) AS micros FROM usage_model_requests r
-       WHERE r.finished_at >= ? AND r.run_id IN (
-         SELECT submission_id FROM management_test_runs
-         WHERE organization_id = ? AND created_at >= ? AND submission_id IS NOT NULL
-       )`,
-      dayStart - REQUEST_CLOCK_SKEW_MS,
-      organizationId,
-      dayStart,
-    )?.micros ?? 0);
+      `SELECT COUNT(*) AS runs FROM management_test_runs
+       WHERE organization_id = ? AND actor_membership_id = ? AND created_at >= ? AND failure = 'deadline' AND test_run_id <> ?`,
+      row.organizationId,
+      row.actorMembershipId,
+      utcDayStart(at),
+      row.testRunId,
+    )?.runs ?? 0);
   }
 
   /**
@@ -231,14 +297,18 @@ export class TestRunStoreLogic {
     return this.settleRow(testRunId, settlement);
   }
 
+  /** What admission stored of the run (what it could not use, what it ran) stays beside its outcome. */
   private settleRow(testRunId: string, settlement: TestRunSettlement): boolean {
+    const admitted = this.get(testRunId)?.result ?? {};
+    const result = { ...admitted, ...settlement.result };
     return this.db.run(
       `UPDATE management_test_runs
-       SET status = ?, failure = ?, result_json = ?, plan_json = NULL
+       SET status = ?, failure = ?, result_json = ?, plan_json = NULL, settled_at = ?
        WHERE test_run_id = ? AND status IN ('admitted', 'running')`,
       settlement.status,
       settlement.status === 'failed' ? settlement.failure : null,
-      settlement.result ? JSON.stringify(settlement.result) : null,
+      Object.keys(result).length > 0 ? JSON.stringify(result) : null,
+      settlement.terminal.finishedAt,
       testRunId,
     ).changes > 0;
   }
@@ -270,13 +340,27 @@ export class TestRunStoreLogic {
       .map((row) => testRunFromRow(row)));
   }
 
+  /** Runs this hour's-end erase on every alarm, so the text never waits for the five-minute retention sweep. */
+  eraseExpiredText(at: number): number {
+    return eraseTestRunText(this.db, at);
+  }
+
   hasUnerased(): boolean {
     return this.db.get('SELECT 1 AS present FROM management_test_runs WHERE erased_at IS NULL LIMIT 1') !== undefined;
   }
 
-  /** When the alarm looks again, while any run's instance is not erased. */
+  /**
+   * When the alarm looks again: soon while any run's instance is not erased,
+   * and when the oldest run's text is an hour old. Text already due waits
+   * one look, so an erase that keeps failing never spins the alarm.
+   */
   nextDueAt(now: number): number | undefined {
-    return this.hasUnerased() ? now + TEST_RUN_WAKE_MS : undefined;
+    const look = this.hasUnerased() ? now + TEST_RUN_WAKE_MS : undefined;
+    const oldest = this.db.get(`SELECT MIN(created_at) AS at FROM management_test_runs WHERE ${HAS_TEXT}`)?.at;
+    const erase = oldest === null || oldest === undefined
+      ? undefined
+      : Math.max(Number(oldest) + TEST_RUN_VISIBLE_MS, now + TEST_RUN_WAKE_MS);
+    return look === undefined ? erase : erase === undefined ? look : Math.min(look, erase);
   }
 
   private require(testRunId: string): TestRunRow {
@@ -291,8 +375,19 @@ export class TestRunStoreLogic {
   }
 }
 
+/**
+ * Two asks are one when they name the same Agent and question, and both
+ * start a conversation or both continue the same one. A new conversation's
+ * ID is minted per run, so it cannot tell two first questions apart.
+ */
+function sameAsk(row: TestRunRow, ask: PracticeAsk): boolean {
+  if (row.agentId !== ask.agentId || row.questionDigest === null || row.questionDigest !== ask.questionDigest) return false;
+  return ask.practiceId === null ? row.turn === 1 : row.practiceId === ask.practiceId && (row.turn ?? 0) > 1;
+}
+
 function testRunFromRow(row: Record<string, unknown>): TestRunRow {
   const nullableString = (value: unknown) => value === null || value === undefined ? null : String(value);
+  const nullableNumber = (value: unknown) => value === null || value === undefined ? null : Number(value);
   return {
     testRunId: String(row.test_run_id),
     runToken: String(row.run_token),
@@ -310,6 +405,12 @@ function testRunFromRow(row: Record<string, unknown>): TestRunRow {
       : JSON.parse(String(row.result_json)) as TestRunResult,
     usageOperationId: String(row.usage_operation_id),
     createdAt: Number(row.created_at),
-    erasedAt: row.erased_at === null || row.erased_at === undefined ? null : Number(row.erased_at),
+    erasedAt: nullableNumber(row.erased_at),
+    practiceId: nullableString(row.practice_id),
+    turn: nullableNumber(row.turn),
+    question: nullableString(row.question),
+    questionDigest: nullableString(row.question_digest),
+    planDigest: nullableString(row.plan_digest),
+    settledAt: nullableNumber(row.settled_at),
   };
 }
