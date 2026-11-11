@@ -405,8 +405,11 @@ npm run deploy -- --var CHICKPEA_SLACK_ANSWER_RELEASE:host
 
 Unset, or any other value, keeps the model's declaration as the only way an
 answer streams. That is the default. A hold that is not a whole number from
-100 to 4000 also turns host release off; the deploy does not refuse it, so
-after you set one, check that `answer_release` shows it in `holdChars`.
+100 to 4000 also turns host release off; the deploy does not refuse it. Each
+isolate that reads such a hold logs one warning, `answer_release_hold_refused`
+with `component: "slack"` and `reason` (`not_whole_number` or
+`out_of_range`), and never the value. After you set a hold, check that
+`answer_release` shows it in `holdChars`.
 `SLACK_TAG_PROGRESSIVE_STREAMING=false` turns all streaming off either way.
 Upgrades keep both variables.
 
