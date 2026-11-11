@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
 
+import type { FlueObservation } from '@flue/runtime';
 import type { WebClient } from '@slack/web-api';
 import ts from 'typescript';
 
@@ -15,6 +16,7 @@ import {
   emitThreadRunnerAlarm,
   emitRuntimeLatency,
   modelToken,
+  ModelStepMarks,
   opaqueRunRef,
   opaqueTurnRef,
   recordStateRpc,
@@ -25,6 +27,8 @@ import {
   startRelayAlarmMetrics,
   STATE_RPC_SAMPLE_EVERY,
   STATE_RPC_SLOW_MS,
+  StateRpcSummary,
+  StoreBootMarks,
   timedStateRpc,
   TurnLatencyTracker,
 } from '../src/observability/runtime-latency.ts';
@@ -379,7 +383,7 @@ const alarmMethod = stateClass.members.find((member) =>
 assert.ok(alarmMethod, 'production alarm() exists');
 const AlarmProbe = vm.runInNewContext(
   ts.transpileModule(
-    `class AlarmProbe { ${alarmMethod.getText(cloudflareSource)} }\nAlarmProbe`,
+    `class AlarmProbe { boot = { call() {} }; ${alarmMethod.getText(cloudflareSource)} }\nAlarmProbe`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
   ).outputText,
   {
@@ -751,6 +755,269 @@ test("turn_latency counts the lead from admission's wake of the Agent object whe
   tracker.emit('returned');
   assert.equal(records[0]?.agentWakeLeadMs, 3_600, "from admission's send (the state store's clock) to the staging send");
   assert.equal(records[0]?.agentWakeSource, 'admission');
+});
+
+// Defects caught: model start or final counted from admission only (or from
+// a later dispatch), the model work dropped or summed across updates, and the
+// attempt's state store calls missing or not split at model start.
+test('turn_latency logs model start and final from receipt, the model work, and the attempt\'s state store calls', async (context) => {
+  const time = clock(10_000);
+  context.mock.method(Date, 'now', time.now);
+  context.mock.method(console, 'info', () => {});
+  const { records, sink } = captureSink();
+  const tracker = new TurnLatencyTracker(
+    { receivedAt: 7_500, admittedAt: 9_000, lane: 'cloudflare', executor: 'runner' },
+    { turnJobId: 'evt:T_LATENCY:1785509000.000100', attempt: 1 },
+    time.now,
+    sink,
+  );
+  await tracker.observeStateRpcs(async () => {
+    await timedStateRpc('configGetAgent', Promise.resolve().then(() => time.advance(400)));
+    time.advance(800);
+    tracker.markModelStart();
+    time.advance(300);
+    tracker.markModelStart();
+    tracker.markWork({ modelSteps: 1, toolCalls: 0, toolMs: 0 });
+    tracker.markWork({ modelSteps: 3, toolCalls: 2, toolMs: 2_450 });
+    await timedStateRpc('snapshotReplace', Promise.resolve().then(() => time.advance(600)));
+    time.advance(19_400);
+    tracker.markFinal('delivered');
+  });
+  tracker.emit('returned');
+  assert.equal(records.length, 2);
+  const [latency, rpcs] = records;
+  assert.equal(latency?.event, 'turn_latency');
+  assert.deepEqual({
+    admissionToModelStartMs: latency?.admissionToModelStartMs,
+    receiptToModelStartMs: latency?.receiptToModelStartMs,
+    admissionToFinalMs: latency?.admissionToFinalMs,
+    receiptToFinalMs: latency?.receiptToFinalMs,
+    modelSteps: latency?.modelSteps,
+    toolCalls: latency?.toolCalls,
+    toolMs: latency?.toolMs,
+  }, {
+    admissionToModelStartMs: 2_200,
+    receiptToModelStartMs: 3_700,
+    admissionToFinalMs: 22_500,
+    receiptToFinalMs: 24_000,
+    modelSteps: 3,
+    toolCalls: 2,
+    toolMs: 2_450,
+  });
+  assert.deepEqual(rpcs, {
+    component: 'runtime',
+    event: 'state_rpc_summary',
+    scope: 'turn',
+    turnRef: opaqueTurnRef('evt:T_LATENCY:1785509000.000100'),
+    calls: 2,
+    rounds: 2,
+    totalMs: 1_000,
+    busyMs: 1_000,
+    slowestMethod: 'snapshotReplace',
+    slowestMs: 600,
+    spanMs: 21_500,
+    callsBeforeModelStart: 1,
+    roundsBeforeModelStart: 1,
+    busyMsBeforeModelStart: 400,
+  });
+  assertContentFree(latency!);
+  assertContentFree(rpcs!);
+});
+
+test('turn_latency omits model start and work for an attempt that sent no dispatch', () => {
+  const { records, sink } = captureSink();
+  const time = clock(10_000);
+  const tracker = new TurnLatencyTracker(
+    { receivedAt: 7_500, admittedAt: 9_000, lane: 'cloudflare', executor: 'runner' }, {}, time.now, sink,
+  );
+  tracker.markFinal('deferred');
+  tracker.emit('returned');
+  for (const field of ['admissionToModelStartMs', 'receiptToModelStartMs', 'receiptToFinalMs', 'modelSteps', 'toolCalls', 'toolMs']) {
+    assert.equal(field in records[0]!, false, field);
+  }
+});
+
+test('state_rpc_summary logs nothing for a scope that made no call', async () => {
+  const { records, sink } = captureSink();
+  const summary = new StateRpcSummary('turn', Date.now, sink);
+  await summary.run(async () => undefined);
+  summary.emit();
+  assert.deepEqual(records, []);
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
+}
+
+// Defects caught: only slow calls counted (the bias this record removes),
+// overlapping calls counted as separate rounds, a failure dropped, a call
+// outside the scope counted, and two scopes in one isolate mixing their calls.
+test('state_rpc_summary counts every call of its scope, its rounds, busy time and slowest method', async (context) => {
+  let now = 1_000;
+  context.mock.method(Date, 'now', () => now);
+  context.mock.method(console, 'info', () => {});
+  const { records, sink } = captureSink();
+  const delivery = new StateRpcSummary('slack_delivery', () => now, sink);
+  const other = new StateRpcSummary('turn', () => now, sink);
+  await delivery.run(async () => {
+    const a = deferred<{ ok: true }>();
+    const b = deferred<{ ok: true }>();
+    const first = timedStateRpc('configGetWorkspaceInstallation', a.promise);
+    now += 30;
+    const second = timedStateRpc('snapshotGet', b.promise);
+    const elsewhere = other.run(() => timedStateRpc('settingGet', Promise.resolve({ ok: true })));
+    now += 50;
+    a.resolve({ ok: true });
+    await first;
+    now += 290;
+    b.resolve({ ok: true });
+    await second;
+    await elsewhere;
+    now += 100;
+    const c = deferred<never>();
+    const third = timedStateRpc('admitSlackTurn', c.promise);
+    now += 900;
+    c.reject(new Error('rpc disconnected'));
+    await assert.rejects(third);
+  });
+  await timedStateRpc('settingGet', Promise.resolve({ ok: true }));
+  now += 40;
+  delivery.emit({ receivedAt: 400 });
+  delivery.emit({ receivedAt: 400 });
+  other.emit();
+  assert.deepEqual(records, [{
+    component: 'runtime',
+    event: 'state_rpc_summary',
+    scope: 'slack_delivery',
+    calls: 3,
+    rounds: 2,
+    totalMs: 1_320,
+    busyMs: 1_270,
+    failed: 1,
+    slowestMethod: 'admitSlackTurn',
+    slowestMs: 900,
+    spanMs: 1_410,
+    receiptToStartMs: 600,
+  }, {
+    component: 'runtime',
+    event: 'state_rpc_summary',
+    scope: 'turn',
+    calls: 1,
+    rounds: 1,
+    totalMs: 50,
+    busyMs: 50,
+    slowestMethod: 'settingGet',
+    slowestMs: 50,
+    spanMs: 1_410,
+  }]);
+});
+
+// Defect caught: a cold store invisible in the logs (no record), logged on
+// every call, or counted as cold because a runner booted in its isolate first.
+test('store_boot logs a state store activation once, at its first call, with whether it installed the schema', () => {
+  resetRunnerActivationsForTest();
+  const time = clock(90_000);
+  const { records, sink } = captureSink();
+  new RunnerBootMarks(time.now, sink).call('alarm');
+  const store = new StoreBootMarks(time.now, sink);
+  time.advance(20);
+  store.constructedOnVersion(true);
+  time.advance(5);
+  store.call('rpc');
+  store.call('alarm');
+  const next = new StoreBootMarks(time.now, sink);
+  next.constructedOnVersion(false);
+  next.call('alarm');
+  assert.deepEqual(records.slice(1), [{
+    component: 'runtime',
+    event: 'store_boot',
+    versionChanged: true,
+    firstMethod: 'rpc',
+    cold: true,
+    constructMs: 20,
+    constructToFirstCallMs: 5,
+  }, {
+    component: 'runtime',
+    event: 'store_boot',
+    versionChanged: false,
+    firstMethod: 'alarm',
+    cold: false,
+    constructMs: 0,
+    constructToFirstCallMs: 0,
+  }]);
+});
+
+function flueEvent(event: Record<string, unknown>): FlueObservation {
+  return { v: 3, eventIndex: 0, timestamp: '2026-11-10T00:00:00.000Z', instanceId: 'agent_x', submissionId: 'sub_x', ...event } as unknown as FlueObservation;
+}
+
+// Defects caught: message or tool text in the record, first token timed from
+// the wrong request or from a later token, the turn read on every streamed
+// token, cached input folded into input, and a request that ended without a
+// start (or with an error) dropped.
+test('model_step logs each model request\'s first token, duration, tokens and tool calls without content', () => {
+  const time = clock(5_000);
+  const { records, sink } = captureSink();
+  const steps = new ModelStepMarks(time.now, sink);
+  let reads = 0;
+  const turnOf = () => {
+    reads += 1;
+    return 'evt:T_LATENCY:1785509000.000100';
+  };
+  steps.observe(flueEvent({ type: 'turn_request', turnId: 'step_1', purpose: 'agent', request: { input: { systemPrompt: 'Complete the verification.' } } }), turnOf);
+  time.advance(100);
+  steps.observe(flueEvent({ type: 'turn_request', turnId: 'step_other', purpose: 'agent' }), turnOf);
+  time.advance(600);
+  steps.observe(flueEvent({ type: 'thinking_start', turnId: 'step_1' }), turnOf);
+  time.advance(50);
+  steps.observe(flueEvent({ type: 'text_delta', turnId: 'step_1', text: 'Complete the verification.' }), turnOf);
+  steps.observe(flueEvent({
+    type: 'turn',
+    turnId: 'step_1',
+    purpose: 'agent',
+    durationMs: 6_200,
+    isError: false,
+    response: {
+      finishReason: 'toolUse',
+      usage: { input: 1_200, output: 340, cacheRead: 30_000, cacheWrite: 900, totalTokens: 32_440, cost: {} },
+      output: { role: 'assistant', content: [
+        { type: 'text', text: 'Complete the verification.' },
+        { type: 'toolCall', id: 'call_a', name: 'slack_read', arguments: { user: 'U_LATENCY' } },
+        { type: 'toolCall', id: 'call_b', name: 'slack_read', arguments: { channel: 'C_LATENCY' } },
+      ] },
+    },
+  }), turnOf);
+  steps.observe(flueEvent({ type: 'turn', turnId: 'step_lost', purpose: 'compaction', durationMs: 900, isError: true, response: {} }), () => {
+    throw new Error('Staged Slack turn input belongs to another submission.');
+  });
+  assert.equal(reads, 1, 'the turn is read once, when its request ends');
+  assert.deepEqual(records, [{
+    component: 'runtime',
+    event: 'model_step',
+    turnRef: opaqueTurnRef('evt:T_LATENCY:1785509000.000100'),
+    purpose: 'agent',
+    outcome: 'toolUse',
+    durationMs: 6_200,
+    firstTokenMs: 700,
+    inputTokens: 1_200,
+    cachedInputTokens: 30_000,
+    cacheWriteTokens: 900,
+    outputTokens: 340,
+    toolCalls: 2,
+  }, {
+    component: 'runtime',
+    event: 'model_step',
+    purpose: 'compaction',
+    outcome: 'error',
+    durationMs: 900,
+  }]);
+  assertContentFree(records[0]!);
 });
 
 test('turn_latency omits durations it cannot measure and never throws', () => {

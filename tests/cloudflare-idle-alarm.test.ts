@@ -44,7 +44,8 @@ const moduleStatement = (name: string) => {
 };
 const compiled = ts.transpileModule(
   `${['RELAY_BATCH_WINDOW_MS', 'KEEP_WARM_WINDOW_MS', 'KEEP_WARM_TICK_MS', 'RETENTION_SWEEP_INTERVAL_MS', 'earliestDefined'].map(moduleStatement).join('\n')}
-class StateStoreProbe { ${[
+class StateStoreProbe { boot = { call() {} };
+${[
     'alarm', 'drainRelayAlarm', 'deliverStopNotices', 'admitSlackTurn', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'admissionWakeAt',
     'runnerMode', 'keepWarmTickAt', 'dispatchingWhile',
   ].map(stateMethod).join('\n')} }\nStateStoreProbe`,

@@ -43,7 +43,7 @@ import {
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { deploymentTenancy, requireInstallationScope } from '../config/installation-scope.ts';
 import { currentFundingRefusal } from '../config/platform-funding.ts';
-import { emitSlackEditAdmission } from '../observability/runtime-latency.ts';
+import { emitSlackEditAdmission, StateRpcSummary } from '../observability/runtime-latency.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import { createPlatformProductTelemetry } from '../telemetry/platform.ts';
 import { createRequestTelemetryLifecycle } from '../telemetry/runtime.ts';
@@ -141,6 +141,7 @@ import {
   slackInstallationCredentialId,
 } from '../slack/hosted-slack-app.ts';
 import { slackInteractionAckOf } from '../slack/interaction-ack.ts';
+import { slackReceiptAt } from '../slack/slack-arrival.ts';
 import { recordFirstHostedSlackDelivery } from '../slack/hosted-installation.ts';
 import { recordPendingSlackChallenge } from '../slack/installation-handshake.ts';
 import { recordSlackRecoveryEventsProof } from '../auth/recovery.ts';
@@ -884,9 +885,14 @@ function handleAgentAppSlackInteractions(
 function handleDirectSlackEvents(
   credentialRevision: string | null,
 ): NonNullable<SlackChannelOptions['events']> {
-  return async ({ c, payload }) => {
-    const receivedAt = Date.now();
+  // `stateRpcs` counts the delivery's state store calls, and is logged once
+  // the admission chain of a delivery that starts one ends.
+  const serve = async (
+    { c, payload }: Parameters<NonNullable<SlackChannelOptions['events']>>[0],
+    stateRpcs: StateRpcSummary,
+  ) => {
     const platformEnv = c.env as PlatformEnv | undefined;
+    const receivedAt = slackReceiptAt(platformEnv);
     const hosted = deploymentTenancy(platformEnv) === 'installation';
     // A host's delivery must be for its app, and for the workspace whose
     // installation received it (hostedSlackEventRoute), before any record.
@@ -987,8 +993,12 @@ function handleDirectSlackEvents(
       c,
       processSlackEvent(payload as unknown as SlackEventFixture, platformEnv, undefined, undefined, undefined, known).catch((error) => {
         console.error('[chickpea] Slack event intake failed:', sanitizeError(error));
-      }),
+      }).finally(() => stateRpcs.emit({ receivedAt })),
     );
+  };
+  return (delivery) => {
+    const stateRpcs = new StateRpcSummary('slack_delivery');
+    return stateRpcs.run(() => serve(delivery, stateRpcs));
   };
 }
 

@@ -19,6 +19,7 @@ import { CLEF_TIMEOUT_MS } from '../src/slack/clef-intent.ts';
 import { runTurn, type RunTurnOptions } from '../src/slack/run-turn.ts';
 import type { FrozenRuntimePlanDecision } from '../src/slack/turn-job-types.ts';
 import { SlackStatusRegistry } from '../src/slack/status-registry.ts';
+import { timedStateRpc } from '../src/observability/runtime-latency.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
@@ -866,6 +867,36 @@ test('a turn logs what the host release rule would have done with its reply', as
   assert.ok(Number(latency.receiptToShadowAnswerTextMs) + 20 <= Number(latency.receiptToFirstAnswerTextMs),
     `the release precedes the final: ${latency.receiptToShadowAnswerTextMs} < ${latency.receiptToFirstAnswerTextMs}`);
   assert.equal(JSON.stringify(logs).includes('forecast'), false);
+});
+
+// Defects caught: runTurn never wires the dispatch's model start or the
+// observed work into turn_latency, or never counts the attempt's state store
+// calls.
+test('a turn logs its model start, its model work and its state store calls', async (t) => {
+  const records: Record<string, unknown>[] = [];
+  t.mock.method(console, 'info', (record: unknown) => {
+    const event = (record as { event?: unknown } | undefined)?.event;
+    if (event === 'turn_latency' || event === 'state_rpc_summary') records.push(record as Record<string, unknown>);
+  });
+  const receivedAt = Date.now() - 2_500;
+  await firstStatusTimeline('dm', null, {
+    turnLatency: { receivedAt, admittedAt: receivedAt + 1_500, lane: 'cloudflare', executor: 'runner' },
+    agentPrompt: async ({ onDispatchSent, onTurnWork }) => {
+      await timedStateRpc('settingGet', Promise.resolve({ ok: true }));
+      onDispatchSent?.();
+      onTurnWork?.({ modelSteps: 2, toolCalls: 1, toolMs: 640 });
+      return AGENT_ANSWER;
+    },
+  }, dmAssignment);
+  const latency = records.find((record) => record.event === 'turn_latency');
+  assert.ok(Number(latency?.receiptToModelStartMs) >= 2_500, `model start counts from receipt: ${latency?.receiptToModelStartMs}`);
+  assert.ok(Number(latency?.admissionToModelStartMs) >= 1_000);
+  assert.ok(Number(latency?.receiptToFinalMs) >= Number(latency?.receiptToModelStartMs));
+  assert.deepEqual([latency?.modelSteps, latency?.toolCalls, latency?.toolMs], [2, 1, 640]);
+  const rpcs = records.find((record) => record.event === 'state_rpc_summary');
+  assert.equal(rpcs?.scope, 'turn');
+  assert.equal(rpcs?.turnRef, latency?.turnRef);
+  assert.ok(Number(rpcs?.callsBeforeModelStart) >= 1, 'the call before the dispatch counts');
 });
 
 // Defect caught: the plan's model, image-role, browser and login reads

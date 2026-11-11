@@ -156,6 +156,7 @@ import type { FlueDispatchReceiptV1 } from './turn-job-types.ts';
 import type { SlackProgressiveReadRelay } from './progressive-relay.ts';
 import {
   TurnLatencyTracker,
+  type TurnWork,
   type TurnFirstWrite,
   type TurnLatencyContext,
 } from '../observability/runtime-latency.ts';
@@ -445,6 +446,10 @@ export interface RunTurnOptions {
   onMidRunReply?: () => void;
   /** Set by `runTurn` itself when `turnLatency` is present: how long staging the turn's input took. */
   onAgentStaged?: (ms: number) => void;
+  /** Set by `runTurn` itself when `turnLatency` is present: the turn's first dispatch is being sent. */
+  onDispatchSent?: () => void;
+  /** Set by `runTurn` itself when `turnLatency` is present: the model work its observation saw. */
+  onTurnWork?: (work: TurnWork) => void;
   /**
    * Set by `runTurn` itself when `turnLatency` is present: the turn's Agent
    * object was woken, by the freeze now or by admission (`admissionSentAt`).
@@ -545,7 +550,7 @@ export async function runTurn(
   const { onDelivered, onDeferredTerminal } = options;
   let stopped = false;
   try {
-    await runTurnAttempt(head, assignment, platformEnv, {
+    await tracker.observeStateRpcs(() => runTurnAttempt(head, assignment, platformEnv, {
       ...options,
       onSlackWrite: (surface) => tracker.markSlackWrite(surface),
       onAnswerTextStreamed: () => tracker.markStreamedAnswerText(),
@@ -556,6 +561,8 @@ export async function runTurn(
       onMidRunReply: () => tracker.markMidRunReply(),
       onAgentStaged: (ms) => tracker.markAgentStage(ms),
       onAgentWake: (admissionSentAt) => tracker.markAgentWake(admissionSentAt),
+      onDispatchSent: () => tracker.markModelStart(),
+      onTurnWork: (work) => tracker.markWork(work),
       onDelivered: async (outcome) => {
         tracker.markFinal('delivered');
         if (outcome === 'stopped') stopped = true;
@@ -569,7 +576,7 @@ export async function runTurn(
             },
           }
         : {}),
-    }, followUps, receipts);
+    }, followUps, receipts));
     tracker.emit(stopped ? 'stopped' : 'returned', answerRelease?.record());
   } catch (error) {
     tracker.emit('threw', answerRelease?.record());
@@ -2249,6 +2256,8 @@ async function runTurnAttempt(
               ? { onObservationStarted: options.onObservationStarted }
               : {}),
             ...(options.onAgentStaged ? { onAgentStaged: options.onAgentStaged } : {}),
+            ...(options.onDispatchSent ? { onDispatchSent: options.onDispatchSent } : {}),
+            ...(options.onTurnWork ? { onTurnWork: options.onTurnWork } : {}),
             ...(preparedMemory
               ? {
                   onSettlementObserved: (settled) => {

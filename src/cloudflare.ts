@@ -19,6 +19,7 @@ import {
   emitGatewayDelivery,
   emitRelayAlarm,
   startRelayAlarmMetrics,
+  StoreBootMarks,
   type RelayAlarmMetrics,
 } from './observability/runtime-latency.ts';
 
@@ -889,13 +890,18 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
   private versionChanged = false;
   /** The only caller of this installation's test run instances, loaded at the first test run. */
   private testRunLifecycle: Promise<TestRunLifecycle> | undefined;
+  /** This activation's marks, logged as `store_boot` at its first RPC or alarm. */
+  private readonly boot = new StoreBootMarks();
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, objectInstallationEnv(ctx, env));
     this.stores = this.tryInit();
     // Work the previous instance was running stopped with it (a code update,
     // a reset). Arm the alarm now rather than wait for the platform's retry.
-    void ctx.blockConcurrencyWhile(() => this.resumeAfterRestart());
+    void ctx.blockConcurrencyWhile(async () => {
+      await this.resumeAfterRestart();
+      this.boot.constructedOnVersion(this.versionChanged);
+    });
   }
 
   /**
@@ -2608,6 +2614,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
    * listed/run, groups, re-arm); emission cannot throw or change the result.
    */
   async alarm(): Promise<void> {
+    this.boot.call('alarm');
     const metrics = startRelayAlarmMetrics();
     try {
       await this.drainRelayAlarm(metrics);
@@ -3233,6 +3240,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
    * preserved for server-side logs.
    */
   private call<T>(fn: (stores: TagStateStores) => T): StateRpcResult<T> {
+    this.boot.call('rpc');
     // Self-heal: re-attempt a construction that failed on first boot rather
     // than latching the isolate into permanent failure. A still-broken store
     // returns the {ok:false} envelope only for THIS call.
