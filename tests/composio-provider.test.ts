@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 
 import type { ConnectionAccountManagedPolicy } from '../src/config/types.ts';
 import { MANAGED_ARTIFACT_ARGUMENT } from '../src/connections/artifacts.ts';
+import { MANAGED_CONNECTOR_CATALOG } from '../src/connections/catalog/index.ts';
 import {
   ManagedAuthorizationAllocatedError,
   ManagedAuthorizationExpiredError,
@@ -374,7 +375,7 @@ test('a YouTube write that cannot be verified logs its Composio log ID', async (
   }]);
 });
 
-test('each managed call logs one content-free line, success or failure', async (t) => {
+function captureExecutionLines(t: TestContext) {
   const lines: Record<string, unknown>[] = [];
   const output: string[] = [];
   for (const method of ['log', 'warn'] as const) {
@@ -387,13 +388,18 @@ test('each managed call logs one content-free line, success or failure', async (
       }
     });
   }
+  const events = () => lines.filter(({ event }) =>
+    typeof event === 'string' && event.startsWith('chickpea.managed_connection.execute'));
+  return { lines, output, events };
+}
+
+test('each managed call logs one content-free line, success or failure', async (t) => {
+  const { lines, output, events } = captureExecutionLines(t);
   const execute = (provider: ComposioManagedConnectionProvider) => provider.execute({
     policy: POLICY,
     capability: 'gmail.messages.search',
     arguments: { query: 'from:synthetic-sender@example.test' },
   });
-  const events = () => lines.filter(({ event }) =>
-    typeof event === 'string' && event.startsWith('chickpea.managed_connection.execute'));
 
   await assert.rejects(execute(failingSearchProvider({
     data: { status_code: 400 },
@@ -459,6 +465,72 @@ test('each managed call logs one content-free line, success or failure', async (
   }]);
 
   for (const content of ['synthetic_stage', 'synthetic-sender', 'synthetic gateway failure', 'xoxb-']) {
+    assert.ok(!output.some((line) => line.includes(content)), `logs carry no ${content}`);
+  }
+});
+
+test('throttled, expired and unexpected failures each log their outcome and no text', async (t) => {
+  const { lines, output, events } = captureExecutionLines(t);
+  const throwingProvider = (failure: Error, accountStatus = 'ACTIVE') =>
+    new ComposioManagedConnectionProvider({
+      apiKey: 'test-key',
+      getConnectedAccount: async () => ({
+        id: POLICY.accountRef, status: accountStatus, isDisabled: false,
+        toolkit: POLICY.toolkit, userId: POLICY.principalRef,
+      }),
+      createClient: async () => ({
+        sessions: { async create() { throw new Error('session execution must not be used'); } },
+        tools: { async execute() { throw failure; } },
+      }),
+    });
+  const search = {
+    policy: POLICY,
+    capability: 'gmail.messages.search',
+    arguments: { query: 'from:synthetic-sender@example.test' },
+  };
+  const gmailLine = {
+    event: 'chickpea.managed_connection.execute_failed',
+    adapterId: 'composio',
+    toolkit: 'gmail',
+    capability: 'gmail.messages.search',
+  };
+
+  await assert.rejects(throwingProvider(Object.assign(new Error('synthetic rate limit'), {
+    status: 429,
+    headers: new Headers({ 'retry-after': '30', 'x-ratelimit-remaining': '0' }),
+  })).execute(search), (error: unknown) =>
+    error instanceof ManagedProviderRequestError && error.code === 'throttled');
+  assert.deepEqual(events(), [{ ...gmailLine, outcome: 'throttled', dispatched: true, httpStatus: 429 }]);
+
+  lines.length = 0;
+  await assert.rejects(
+    throwingProvider(Object.assign(new Error('synthetic unauthorized'), { status: 401 }), 'EXPIRED')
+      .execute(search),
+    ManagedAuthorizationExpiredError,
+  );
+  assert.deepEqual(events(), [{
+    ...gmailLine, outcome: 'authorization_expired', dispatched: true, httpStatus: 401,
+  }]);
+
+  // A manifest connector's chunk that fails to load is the error no provider path converts.
+  lines.length = 0;
+  t.mock.method(MANAGED_CONNECTOR_CATALOG, 'detail', () => ({
+    async load() { throw new Error('synthetic chunk failure'); },
+  }));
+  await assert.rejects(throwingProvider(new Error('no Composio call')).execute({
+    policy: { ...POLICY, toolkit: 'cal', allowedCapabilities: ['cal.fetch_all_bookings'] },
+    capability: 'cal.fetch_all_bookings',
+    arguments: {},
+  }), /synthetic chunk failure/);
+  assert.deepEqual(events(), [{
+    event: 'chickpea.managed_connection.execute_failed',
+    adapterId: 'composio',
+    toolkit: 'cal',
+    capability: 'cal.fetch_all_bookings',
+    outcome: 'failed',
+  }]);
+
+  for (const content of ['synthetic rate limit', 'synthetic unauthorized', 'synthetic chunk failure', 'synthetic-sender']) {
     assert.ok(!output.some((line) => line.includes(content)), `logs carry no ${content}`);
   }
 });
