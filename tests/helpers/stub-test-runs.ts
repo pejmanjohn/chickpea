@@ -2,7 +2,7 @@
  * The state store's practice runs as the card's try_agent_once and
  * get_test_run see them, for card tests and the card harness: a run per
  * caller and key, replayed by that key for the same ask before anything
- * else, for the hour the store keeps it by `now`. Every run reads as
+ * else, while the store would keep it by `now`. Every run reads as
  * `outcome` says, and a start answers `refuse` instead of admitting one
  * while it is set.
  */
@@ -48,8 +48,9 @@ export class StubTestRuns implements TestRunStore {
     return run && this.visible(run.view) ? this.read(run.view) : undefined;
   }
 
+  /** As the store: a run going reads, a settled one for an hour from its settlement. */
   private visible(view: TestRunView): boolean {
-    return this.now() < view.createdAt + TEST_RUN_VISIBLE_MS;
+    return this.outcome.status === 'admitted' || this.outcome.status === 'running' || this.now() < view.createdAt + TEST_RUN_VISIBLE_MS;
   }
 
   private read(view: TestRunView): TestRunView {

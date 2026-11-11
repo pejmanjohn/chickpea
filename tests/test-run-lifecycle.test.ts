@@ -79,7 +79,7 @@ test('an answered run settles with its reply, frees the lock, and its instance i
   assert.equal(row().erasedAt, NOON + 12_000);
   assert.deepEqual(context.instances.on(instanceId), ['dispatch', 'settlement', 'erase']);
   assert.deepEqual(usageOf(context.installation, request.run.usage.operationId), { status: 'completed', billingRunId: 'sub_1' });
-  assert.equal(context.lifecycle.nextDueAt(), NOON + AN_HOUR, 'only its text\'s erase is left to wake for');
+  assert.equal(context.lifecycle.nextDueAt(), NOON + 12_000 + AN_HOUR, 'only its text\'s erase, an hour after it settled, is left to wake for');
 });
 
 test('an instance that never settles is aborted at 125 seconds, failed at 150 whatever it reports, and erased at 10 minutes', async () => {
@@ -321,7 +321,7 @@ test('a restore inside a run: the row comes back unerased past its deadline, is 
   const context = setup('inst_lifecycle_restore');
   const { instanceId, row } = await started(context);
   // The restore brought back the row as it was; its instance, outside the plan, was erased long ago.
-  context.clock.advance(4 * 60_000);
+  context.clock.advance(TEST_RUN_DEADLINE_MS + 60_000);
   context.instances.settlements.set(instanceId, { kind: 'not_found' });
   await context.lifecycle.pass();
   assert.deepEqual([row().status, row().failure], ['failed', 'deadline']);
@@ -446,13 +446,14 @@ test('the store runs only a plan for this run, its caller and its Agent, on an i
   assert.equal((await context.lifecycle.start(request)).kind, 'admitted');
 });
 
-test('past its hour a run is gone to its caller: a replay reads as not found, and the same key starts a new run', async () => {
+test('an hour after it settles a run is gone to its caller: a replay reads as not found, and the same key starts a new run', async () => {
   const context = setup('inst_lifecycle_replay_hour');
   const { request, instanceId } = await started(context);
   context.instances.settlements.set(instanceId, { kind: 'answered', reply: 'Shipped.', read: [], steps: [] });
   const replay = { organizationId: request.run.organizationId, actorMembershipId: request.run.actorMembershipId,
     idempotencyKey: request.run.idempotencyKey, agentId: request.run.agentId, practiceId: null,
     questionDigest: practiceQuestionDigest(request.run.organizationId, request.run.question) };
+  assert.equal((await context.lifecycle.replay(replay))?.status, 'answered', 'settled now');
   context.clock.advance(AN_HOUR - 1);
   assert.equal((await context.lifecycle.replay(replay))?.status, 'answered');
   context.clock.advance(1);

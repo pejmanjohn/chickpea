@@ -12,6 +12,7 @@ import { scopedObjectName } from '../src/config/installation-scope.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import type { TestRunStartRequest, TestRunStartResult, TestRunView } from '../src/management/test-run-types.ts';
 import { practiceQuestionDigest } from '../src/management/test-runs.ts';
+import { TEST_RUN_DEADLINE_MS, TEST_RUN_FORCED_ERASE_MS } from '../src/state/test-run-lifecycle.ts';
 import { TestRunUsageRecorder } from '../src/usage/test-run-usage.ts';
 
 // @ts-expect-error Executable helpers are JavaScript, shared with the verifiers.
@@ -75,8 +76,8 @@ function startRequest(ask: string, options: { member?: string; practiceId?: stri
 
 interface Row {
   status: string; failure: string | null; submissionId: string | null; planJson: string | null; erasedAt: number | null;
-  usageOperationId: string; result: { reply?: string; read?: string[]; steps?: unknown[] } | null; practiceId: string | null;
-  question: string | null; createdAt: number;
+  usageOperationId: string; result: { reply?: string; read?: string[]; skills?: string[]; steps?: unknown[] } | null; practiceId: string | null;
+  question: string | null; createdAt: number; settledAt: number | null;
 }
 
 /**
@@ -84,9 +85,9 @@ interface Row {
  * a real Flue agent object: admission and dispatch from the state store, the
  * settlement read across objects, the host erase, a run nobody reads again,
  * runs side by side, a follow-up during its turn, a cancellation mid-run, the
- * restore refusal while an instance is not erased, the 150-second bound and
- * the forced erase, a restore inside a run whose instance is gone, and the
- * run's erase at its hour.
+ * restore refusal while an instance is not erased, the deadline a direct
+ * message's timeout sets and the forced erase, a restore inside a run whose
+ * instance is gone, and each run's erase an hour after it settles.
  */
 test('a practice run is admitted, dispatched, settled and erased on workerd, and its bounds hold', { timeout: 300_000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'chickpea-test-run-'));
@@ -154,7 +155,7 @@ test('a practice run is admitted, dispatched, settled and erased on workerd, and
     assert.ok(live.submissionId);
     const done = await until(answered.request.run.testRunId, (current) => current.erasedAt !== null, 'answered and erased');
     assert.deepEqual([done.status, done.failure, done.planJson, done.result],
-      ['answered', null, null, { reply: 'Order 42 shipped on Monday.', read: [], steps: [] }]);
+      ['answered', null, null, { reply: 'Order 42 shipped on Monday.', read: [], skills: [], steps: [] }]);
     assert.deepEqual(await call('/usage', { operationId: done.usageOperationId }),
       { status: 'completed', billingRunId: live.submissionId });
     assert.equal(await call('/restore-refusal'), null, 'every instance is erased: a restore may be prepared');
@@ -162,18 +163,6 @@ test('a practice run is admitted, dispatched, settled and erased on workerd, and
       query: { organizationId: 'org_workerd', actorMembershipId: 'membership_caller', runToken: answered.request.run.runToken },
     });
     assert.equal(view.status, 'answered');
-
-    // A restore inside a run: the row comes back live, past its deadline. Its object was erased but is
-    // still in memory, so its stream reads as an error, not as not found: the store's own bounds end it.
-    await call('/restore-row', { testRunId: answered.request.run.testRunId });
-    await call('/advance', { ms: 4 * MINUTE });
-    await call('/pass', { mode: 'due' });
-    const restored = await row(answered.request.run.testRunId);
-    assert.deepEqual([restored.status, restored.failure, restored.erasedAt], ['failed', 'deadline', null],
-      'failed at once, since 150 seconds have passed');
-    assert.match(String(await call('/restore-refusal')), /a test run not yet erased/);
-    await call('/advance', { ms: 6 * MINUTE });
-    await until(answered.request.run.testRunId, (current) => current.erasedAt !== null, 'restored run erased at 10 minutes');
 
     // A cancellation mid-run: its instance is aborted and the run fails.
     const cancelled = startRequest('Please be slow about order 7.');
@@ -224,11 +213,37 @@ test('a practice run is admitted, dispatched, settled and erased on workerd, and
     await call('/advance', { ms: 10 * MINUTE });
     await until(slow.request.run.testRunId, (current) => current.erasedAt !== null, 'stuck run erased');
 
-    // An instance that never settles: aborted at 125 s, failed at 150 s whatever it reports, erased by 10 minutes.
+    // With every instance erased, the alarm wakes next an hour after the earliest run settled, and then every run goes, text and row.
+    await ofCaller('membership_caller', cancelled.request.run.runToken);
+    const oldest = await row(dropped.request.run.testRunId);
+    assert.equal(await call('/alarm-at'), oldest.settledAt! + 60 * MINUTE);
+    await call('/advance', { ms: 60 * MINUTE });
+    await call('/wake');
+    for (const { request } of [answered, dropped, ...together, slow, beside, cancelled]) {
+      assert.equal(await row(request.run.testRunId), null, `${request.run.testRunId}: the run is gone`);
+    }
+    assert.equal(await ofCaller('membership_caller', answered.request.run.runToken), null, 'and its caller reads it no more');
+
+    // A restore inside a run: the row comes back live, past its deadline. Its object was erased but is
+    // still in memory, so its stream reads as an error, not as not found: the store's own bounds end it.
+    const again = startRequest('Where is order 21?');
+    assert.equal((await call<TestRunStartResult>('/start', { request: again.request })).kind, 'admitted');
+    await until(again.request.run.testRunId, (current) => current.erasedAt !== null, 'answered and erased');
+    await call('/restore-row', { testRunId: again.request.run.testRunId });
+    await call('/advance', { ms: TEST_RUN_DEADLINE_MS });
+    await call('/pass', { mode: 'due' });
+    const restored = await row(again.request.run.testRunId);
+    assert.deepEqual([restored.status, restored.failure, restored.erasedAt], ['failed', 'deadline', null],
+      'failed at once, since its deadline has passed');
+    assert.match(String(await call('/restore-refusal')), /a test run not yet erased/);
+    await call('/advance', { ms: TEST_RUN_FORCED_ERASE_MS - TEST_RUN_DEADLINE_MS });
+    await until(again.request.run.testRunId, (current) => current.erasedAt !== null, 'restored run erased at the forced bound');
+
+    // An instance that never settles: aborted 5 s past Flue's timeout, failed 30 s past it whatever it reports, erased by the forced bound.
     const stuck = startRequest('Please be slow about order 9.');
     assert.equal((await call<TestRunStartResult>('/start', { request: stuck.request })).kind, 'admitted');
     await new Promise((resolve) => setTimeout(resolve, 2_000));
-    await call('/advance', { ms: 150_000 });
+    await call('/advance', { ms: TEST_RUN_DEADLINE_MS });
     await call('/pass', { mode: 'due' });
     const deadline = await row(stuck.request.run.testRunId);
     assert.deepEqual([deadline.status, deadline.failure, deadline.planJson], ['failed', 'deadline', null]);
@@ -237,21 +252,20 @@ test('a practice run is admitted, dispatched, settled and erased on workerd, and
     // Another run starts while its instance waits to be erased.
     const next = startRequest('Where is order 3?');
     assert.equal((await call<TestRunStartResult>('/start', { request: next.request })).kind, 'admitted');
-    await call('/advance', { ms: 10 * MINUTE });
+    await call('/advance', { ms: TEST_RUN_FORCED_ERASE_MS - TEST_RUN_DEADLINE_MS });
     const erased = await until(stuck.request.run.testRunId, (current) => current.erasedAt !== null, 'stuck run erased');
     assert.equal(erased.failure, 'deadline');
     await until(next.request.run.testRunId, (current) => current.erasedAt !== null, 'the next run erased');
 
-    // With every instance erased, the alarm wakes next for the oldest run's hour, and then every run goes, text and row.
-    await ofCaller('membership_caller', next.request.run.runToken);
-    const oldest = await row(dropped.request.run.testRunId);
-    assert.equal(await call('/alarm-at'), oldest.createdAt + 60 * MINUTE);
+    // Runs that went to their deadline, past the hour since they started, still go only an hour after they settled.
+    for (const { request } of [again, stuck, next]) {
+      assert.notEqual((await row(request.run.testRunId))?.question ?? null, null, `${request.run.testRunId} keeps its text inside its hour`);
+    }
     await call('/advance', { ms: 60 * MINUTE });
     await call('/wake');
-    for (const { request } of [answered, dropped, ...together, slow, beside, cancelled, stuck, next]) {
-      assert.equal(await row(request.run.testRunId), null, `${request.run.testRunId}: the run is gone`);
+    for (const { request } of [again, stuck, next]) {
+      assert.equal(await row(request.run.testRunId), null, `${request.run.testRunId}: gone an hour after it settled`);
     }
-    assert.equal(await ofCaller('membership_caller', next.request.run.runToken), null, 'and its caller reads it no more');
   } finally {
     if (worker) await stopWorker(worker);
     rmSync(root, { recursive: true, force: true });

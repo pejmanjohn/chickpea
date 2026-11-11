@@ -5,6 +5,7 @@
  * run it; one step per run at a time, and none once the instance is erased.
  */
 import { deriveRuntimePlanInstanceId, parseRuntimePlanV2, type RuntimePlanV2 } from '../agents/runtime-plan.ts';
+import { CHICKPEA_SUBMISSION_DURABILITY } from '../agents/submission-durability.ts';
 import { installationScopeOfObjectName, requireInstallationScope } from '../config/installation-scope.ts';
 import type { CreditBackReason, PlatformFundingRefusal } from '../config/platform-funding.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
@@ -30,12 +31,12 @@ import { opaqueId } from '../work/admission.ts';
 
 /** Admitted with no submission this long: the dispatch never landed, as far as the store knows. */
 export const TEST_RUN_DISPATCH_GRACE_MS = 30_000;
-/** The store aborts a run still unsettled this long after admission, past Flue's own 120 s. */
-export const TEST_RUN_ABORT_AFTER_MS = 125_000;
+/** The store aborts a run still unsettled this long after admission, 5 s past Flue's own timeout, a direct message's. */
+export const TEST_RUN_ABORT_AFTER_MS = CHICKPEA_SUBMISSION_DURABILITY.timeoutMs + 5_000;
 /** The store fails a run still unsettled this long after admission, whatever the instance reports. */
-export const TEST_RUN_DEADLINE_MS = 150_000;
+export const TEST_RUN_DEADLINE_MS = CHICKPEA_SUBMISSION_DURABILITY.timeoutMs + 30_000;
 /** The erase waits for the instance to settle no longer than this after admission. */
-export const TEST_RUN_FORCED_ERASE_MS = 10 * 60_000;
+export const TEST_RUN_FORCED_ERASE_MS = TEST_RUN_DEADLINE_MS + 7.5 * 60_000;
 /** Each dispatch, abort, settlement read and erase is one request to the instance. */
 export const TEST_RUN_INSTANCE_CALL_MS = 10_000;
 
@@ -57,14 +58,14 @@ export type TestRunInstanceSettlement =
       replyTruncated?: true;
       read: string[];
       steps: PracticeStep[];
-      stopped?: 'tool_limit';
+      moreSteps?: number;
+      skills?: string[];
       metadata?: ChickpeaResponseMetadata;
     }
   | {
       kind: 'failed';
       failure: Extract<TestRunFailure, 'deadline' | 'out_of_usage' | 'daily_limit' | 'failed'>;
       funding?: PlatformFundingRefusal;
-      stopped?: 'tool_limit';
       creditBack: CreditBackReason | null;
     };
 
@@ -366,10 +367,7 @@ export class TestRunLifecycle {
     } else {
       failure = settled.failure;
       creditBack = settled.creditBack;
-      result = {
-        ...(settled.funding ? { funding: settled.funding } : {}),
-        ...(settled.stopped ? { stopped: settled.stopped } : {}),
-      };
+      result = settled.funding ? { funding: settled.funding } : {};
     }
     await this.write(row, {
       status: 'failed',
