@@ -159,7 +159,8 @@ test('Try it again asks the first question with practice_agent, and draws Before
     { kind: 'panes', panes: [{ label: 'Before', text: FIRST_SHOWN }, { label: 'After', text: SECOND_SHOWN }] },
     { kind: 'note', text: 'It read Stripe.' },
   ]);
-  assert.deepEqual(card.labels(), ['Try it again (primary)', 'Undo (secondary)']);
+  assert.deepEqual(card.labels(), ['Try it again (primary)', 'Undo the change (secondary)']);
+  assert.equal(card.shown.title, 'Invoice Chaser after this change', 'not its first answer: the heading follows Before and After');
   // Its picture's address may name the Agent; nothing else drawn does.
   const drawn = JSON.stringify({ ...card.shown, avatarUrl: undefined });
   assert.equal(drawn.includes('&lt;'), false, 'the `<` the Agent wrote, never &lt;');
@@ -246,8 +247,10 @@ test('the card draws Before only when both runs name their versions and they dif
   w.clock.now += 3 * 60_000;
   await failed.press('try_once');
   assert.deepEqual(failed.labels(), [], 'nothing to press while the earlier answer is read');
+  assert.equal(failed.shown.title, 'Invoice Chaser after this change', 'answering after the save');
   await failed.answer('unreachable');
-  assert.deepEqual([labels(failed), failed.labels()], [['What it answered'], ['Try it again (primary)', 'Undo (secondary)']]);
+  assert.deepEqual([labels(failed), failed.labels()], [['What it answered'], ['Try it again (primary)', 'Undo the change (secondary)']]);
+  assert.equal(failed.shown.title, 'Invoice Chaser\'s answer', 'no Before, so no "after this change"');
 });
 
 test('what the card keeps says only that it offers Try it again, never an answer, a run\'s token or the undo token', async (t) => {
@@ -307,7 +310,7 @@ test('a connection the run left out is named under the answer; the save\'s Undo 
   const saved = await w.saved();
   await saved.press('try_once');
   assert.deepEqual(saved.shown.blocks.slice(2), LEFT_OUT);
-  assert.deepEqual(saved.labels(), ['Try it again (primary)', 'Undo (secondary)'], 'the line, and the save\'s Undo where it was');
+  assert.deepEqual(saved.labels(), ['Try it again (primary)', 'Undo the change (secondary)'], 'the line, and the save\'s Undo where it was');
   await saved.press('undo');
   assert.equal(saved.shown.title, 'Undid the change');
 
@@ -361,7 +364,7 @@ test('Undo stays beside a Try it again answer and undoes the save', async (t) =>
   const card = await w.saved();
   const { undoToken } = card.state.view as { undoToken: string };
   await card.press('try_once');
-  assert.deepEqual(card.labels(), ['Try it again (primary)', 'Undo (secondary)']);
+  assert.deepEqual(card.labels(), ['Try it again (primary)', 'Undo the change (secondary)']);
   await card.press('undo');
   assert.deepEqual(card.calls('undo_change').map(({ args }) => args), [{ undoToken, idempotencyKey: `undo:${undoToken}` }]);
   assert.equal(card.shown.title, 'Undid the change');
@@ -383,16 +386,18 @@ test('Undo stays beside a Try it again answer and undoes the save', async (t) =>
 });
 
 test('a refusal or a failed run shows its own sentence on Try it again, as ChatGPT delivers it', async (t) => {
-  const NOT_STARTED = 'The person pressed "Try it again" for the Agent "Invoice Chaser" (@invoices) on the card, but the practice run did not start.';
+  const GUEST = 'You can\'t message Invoice Chaser in Slack yet, so you can\'t practice with it.';
+  const NOT_STARTED = `The person pressed "Try it again" for the Agent "Invoice Chaser" (@invoices) on the card, but the practice run did not start. Chickpea said: ${JSON.stringify(GUEST)}`;
 
   // Slack would refuse the person a DM: no Try again, which would read the same.
   const guest = await world(t, 'try-again-guest');
   const refused = await guest.saved();
   guest.slack.guest = true;
   await refused.press('try_once');
-  assert.deepEqual(refused.shown.blocks, [{ kind: 'text', text: 'You can\'t message Invoice Chaser in Slack yet, so you can\'t practice with it.' }]);
-  assert.deepEqual(refused.labels(), ['Open in Slack (primary)', 'Undo (secondary)'], 'not one that passes on a retry; the save\'s Undo stays');
-  assert.equal(told(refused), NOT_STARTED);
+  assert.deepEqual(refused.shown.blocks, [{ kind: 'text', text: GUEST }]);
+  assert.equal(refused.shown.title, 'Couldn\'t practice with Invoice Chaser', 'the heading names the refusal');
+  assert.deepEqual(refused.labels(), ['Open in Slack (primary)', 'Undo the change (secondary)'], 'not one that passes on a retry; the save\'s Undo stays');
+  assert.equal(told(refused), NOT_STARTED, 'the model hears why, so its next reply fits');
   assert.deepEqual(guest.runs.starts, []);
   await refused.press('undo');
   assert.equal(refused.shown.title, 'Undid the change');
@@ -408,7 +413,7 @@ test('a refusal or a failed run shows its own sentence on Try it again, as ChatG
     await busy.dispatch({ type: 'tick', now: held.clock.now });
   }
   assert.deepEqual(busy.shown.blocks, [{ kind: 'text', text: 'A practice run is still going. Wait for it, then ask again.' }]);
-  assert.deepEqual(busy.labels(), ['Try again (primary)', 'Undo (secondary)']);
+  assert.deepEqual(busy.labels(), ['Try again (primary)', 'Undo the change (secondary)']);
   held.runs.refuse = undefined;
   await busy.press('try_once');
   assert.equal(new Set(busy.calls('practice_agent').map(({ args }) => args.idempotencyKey)).size, 1);
@@ -420,7 +425,7 @@ test('a refusal or a failed run shows its own sentence on Try it again, as ChatG
   funded.runs.outcome = { status: 'failed', failure: 'out_of_usage', result: { funding: { kind: 'credits_exhausted' } } } as TestRunOutcome;
   await out.press('try_once');
   assert.deepEqual(out.shown.blocks, [{ kind: 'text', text: 'This workspace is out of usage for now, so I can\'t start this one. Once an Owner adds more, send it again.' }]);
-  assert.deepEqual(out.labels(), ['Open in Slack (primary)', 'Undo (secondary)']);
+  assert.deepEqual(out.labels(), ['Open in Slack (primary)', 'Undo the change (secondary)']);
   assert.equal(told(out), 'The person pressed "Try it again" for the Agent "Invoice Chaser" (@invoices) on the card, but it did not finish answering.');
 
   // Before ChatGPT lists practice_agent ("MCP Resource not found"): unreachable, tried again, then Check again.
@@ -430,9 +435,42 @@ test('a refusal or a failed run shows its own sentence on Try it again, as ChatG
   assert.deepEqual(waiting.effects.at(-1), { type: 'timer', inMs: 2_000 }, 'not a refusal: the same call again');
   unlisted.clock.now += GIVE_UP_MS;
   await waiting.dispatch({ type: 'tick', now: unlisted.clock.now });
-  assert.deepEqual(waiting.labels(), ['Check again (primary)', 'Undo (secondary)']);
+  assert.deepEqual(waiting.labels(), ['Check again (primary)', 'Undo the change (secondary)']);
   assert.equal(told(waiting), 'The person pressed "Try it again" for the Agent "Invoice Chaser" (@invoices) on the card, but its answer did not come back in time.');
   assert.deepEqual(unlisted.runs.starts, []);
+});
+
+// Mutation proof: a refusal drawn without the earlier answer, or offering Admin for a turned-off Agent, fails here.
+test('Try it again on an Agent turned off since: the refusal says so under the answer it showed, and offers to turn it back on', async (t) => {
+  const w = await world(t, 'try-again-off');
+  const { runs, clock } = w;
+  await firstAnswer(w);
+  clock.now += 60_000;
+  const card = await w.saved();
+  runs.outcome = answered(SECOND);
+  await card.press('try_once');
+  const answer = card.shown.blocks.slice(0, 2);
+  assert.deepEqual(answer[1], { kind: 'panes', panes: [{ label: 'Before', text: FIRST_SHOWN }, { label: 'After', text: SECOND_SHOWN }] });
+
+  await w.f.config.updateAgent(AGENT, { enabled: false });
+  clock.now += 3 * 60_000;
+  await card.press('try_once');
+  const OFF = 'Invoice Chaser is turned off, so you can\'t practice with it.';
+  assert.equal(card.shown.title, 'Couldn\'t practice with Invoice Chaser');
+  assert.deepEqual(card.shown.blocks, [...answer, { kind: 'text', text: OFF }], 'the refusal goes under the answer, never in its place');
+  assert.deepEqual(card.labels(), ['Turn it back on (primary)', 'Undo the change (secondary)']);
+  assert.equal(told(card), `The person pressed "Try it again" for the Agent "Invoice Chaser" (@invoices) on the card, but the practice run did not start. Chickpea said: ${JSON.stringify(OFF)}`);
+
+  // The fix goes to the chat, where the model turns it on; then Try again.
+  await card.press('try_fix');
+  assert.deepEqual(card.effects.findLast(({ type }) => type === 'message'), { type: 'message', sent: 'Turn it back on for Invoice Chaser.' });
+  assert.deepEqual(card.shown.blocks.at(-1), { kind: 'note', text: 'Finish it in the chat, then try again.' });
+  assert.deepEqual(card.labels(), ['Try again (primary)', 'Turn it back on (secondary)']);
+  await w.f.config.updateAgent(AGENT, { enabled: true });
+  await card.press('try_once');
+  assert.equal(card.shown.title, 'Invoice Chaser after this change');
+  assert.deepEqual((panes(card) as { panes: Array<{ label: string }> }).panes.map(({ label }) => label), ['Before', 'After']);
+  assert.deepEqual(card.labels(), ['Try it again (primary)', 'Undo the change (secondary)']);
 });
 
 // Mutation proof: an Agent card that keeps the run's token once Try it again settles fails here.
@@ -448,7 +486,7 @@ test('a Try it again run still going keeps its token beside the Saved card\'s ti
   w.clock.now += GIVE_UP_MS;
   await card.answer();
   const runToken = w.runs.runs.at(-1)!.view.runToken;
-  assert.deepEqual([card.shown.blocks, card.labels()], [[{ kind: 'text', text: 'Still working on it.' }], ['Check again (primary)', 'Undo (secondary)']]);
+  assert.deepEqual([card.shown.blocks, card.labels()], [[{ kind: 'text', text: 'Still working on it.' }], ['Check again (primary)', 'Undo the change (secondary)']]);
   const kept = keptState(card.state, cardVersions('agent-card').at(-1)!);
   assert.deepEqual(kept.privateContent.card.outcome,
     { kind: 'checking', runToken, agentId: AGENT, name: 'Invoice Chaser', handle: 'invoices', summary: 'Saved Invoice Chaser.' });

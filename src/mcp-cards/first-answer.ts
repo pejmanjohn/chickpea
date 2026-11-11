@@ -82,11 +82,11 @@ type Stage =
       before?: string; reading?: string; leftOut: LeftOut[]; acted?: Acted;
     }
   /**
-   * It did not start or did not finish: Chickpea's own sentence, and what the
-   * person can do next. Once they act on its fix, on the Chickpea page it
-   * opened or in the chat, it offers Try again.
+   * It did not start (`refused`) or did not finish: Chickpea's own sentence,
+   * and what the person can do next. Once they act on its fix, on the
+   * Chickpea page it opened or in the chat, it offers Try again.
    */
-  | { kind: 'stopped'; problem: string; then: 'fix' | 'again' | 'slack'; fix?: Fix; fixing?: true; acted?: Acted }
+  | { kind: 'stopped'; problem: string; then: 'fix' | 'again' | 'slack'; refused?: true; fix?: Fix; fixing?: true; acted?: Acted }
   /**
    * Three minutes and no answer. With the run's token, it is still going:
    * Check again reads that run, never starts one. `again`: Check again
@@ -108,6 +108,8 @@ export interface FirstAnswer {
   kind: 'first_answer';
   tested: Tested;
   again?: Again | undefined;
+  /** The answer this card showed before the press, kept above a run that did not come to one. */
+  earlier?: Shown | undefined;
   /** Every practice_agent this view sends carries it. */
   key: string;
   /** When the key was made: past KEY_FOR_MS it starts nothing. */
@@ -116,6 +118,9 @@ export interface FirstAnswer {
   startedAt: number;
   stage: Stage;
 }
+
+/** An answer the card showed, which a later press that did not come to one leaves in place. */
+type Shown = Pick<Extract<Stage, { kind: 'answered' }>, 'ask' | 'reply' | 'before'>;
 
 type State = CardState<FirstAnswer>;
 
@@ -135,10 +140,18 @@ export function tryAgain(tested: Tested, again: Again, now: number): Next<FirstA
   return start(tested, again, now);
 }
 
-function start(tested: Tested, again: Again | undefined, now: number): Next<FirstAnswer> {
+function start(tested: Tested, again: Again | undefined, now: number, earlier?: Shown): Next<FirstAnswer> {
   return ask({
-    kind: 'first_answer', tested, ...again ? { again } : {}, key: `try:${tested.agentId}:${now}`, keyedAt: now, startedAt: now, stage: { kind: 'asking' },
+    kind: 'first_answer', tested, ...again ? { again } : {}, ...earlier ? { earlier } : {},
+    key: `try:${tested.agentId}:${now}`, keyedAt: now, startedAt: now, stage: { kind: 'asking' },
   });
+}
+
+/** The answer a new press leaves in place: the one shown now, or the one an earlier press left. */
+function shownNow(view: FirstAnswer): Shown | undefined {
+  const { stage } = view;
+  if (stage.kind !== 'answered' || stage.reading) return view.earlier;
+  return { ask: stage.ask, reply: stage.reply, ...stage.before === undefined ? {} : { before: stage.before } };
 }
 
 /** With no question, the run asks the first question saved when the Agent was created. */
@@ -178,7 +191,7 @@ function press(state: State, action: string, now: number): Next<FirstAnswer> {
   switch (action) {
     case 'try_once': {
       // A new run, under a new key: Try it again, or Try again once the person acted on a left-out connection's fix.
-      if (stage.kind === 'answered' && !stage.reading && (view.again || stage.acted)) return start(tested, view.again, now);
+      if (stage.kind === 'answered' && !stage.reading && (view.again || stage.acted)) return start(tested, view.again, now, shownNow(view));
       const again = stage.kind === 'lost' ||
         (stage.kind === 'stopped' && (stage.then === 'again' || (stage.then === 'fix' && stage.acted !== undefined)));
       return again ? askAgainByPress(view, now) : stay(state);
@@ -219,7 +232,7 @@ function press(state: State, action: string, now: number): Next<FirstAnswer> {
 function askAgainByPress(view: FirstAnswer, now: number): Next<FirstAnswer> {
   return now - view.keyedAt < KEY_FOR_MS - GIVE_UP_MS - 60_000
     ? ask({ ...view, startedAt: now, stage: { kind: 'asking' } })
-    : start(view.tested, view.again, now);
+    : start(view.tested, view.again, now, view.earlier);
 }
 
 /** A fix the card does not run itself: the model proposes it in the chat first. */
@@ -338,7 +351,9 @@ function settled(view: FirstAnswer, run: Run, now: number): Next<FirstAnswer> {
         ...reading ? { reading } : {},
       };
       const told = view.again ? `${pressed(view)}. ${PRACTICE_SHOWN}` : ran(view, 'and it answered its first question there');
-      return reading ? tell({ state: { view: { ...view, stage }, busy: true }, effects: [poll(reading)] }, told) : finished(view, stage, told);
+      // The new answer takes the earlier one's place.
+      const { earlier: _earlier, ...answering } = view;
+      return reading ? tell({ state: { view: { ...answering, stage }, busy: true }, effects: [poll(reading)] }, told) : finished(answering, stage, told);
     }
     case 'failed':
       return finished(view, { kind: 'stopped', problem: run.problem ?? didNotFinish(view), then: 'slack' },
@@ -464,10 +479,11 @@ function fixOf(fix: unknown): Fix | undefined {
   return 'url' in fix && httpsUrl(fix.url) === undefined ? undefined : fix;
 }
 
+/** The model hears Chickpea's sentence, so its next reply says why and offers the fix. */
 function refused(view: FirstAnswer, problem: string, then: 'fix' | 'again' | 'slack', fix?: Fix): Next<FirstAnswer> {
   return tell(
-    show({ ...view, stage: { kind: 'stopped', problem, then, ...fix ? { fix } : {} } }),
-    `${pressed(view)}, but the practice run did not start.`,
+    show({ ...view, stage: { kind: 'stopped', problem, then, refused: true, ...fix ? { fix } : {} } }),
+    `${pressed(view)}, but the practice run did not start. Chickpea said: ${quoted(problem)}`,
   );
 }
 
@@ -601,9 +617,21 @@ function didNotFinish(view: FirstAnswer): string {
 const RUNNING_LINE = 'A practice run: it makes only read requests and sends nothing to Slack.';
 const ANSWERED_LINE = 'A practice run: it made only read requests and sent nothing to Slack.';
 
+/**
+ * The heading follows what the card shows: the first answer, the answer
+ * after a save beside the one from before it, or a run that did not start.
+ */
+function titleOf(view: FirstAnswer): string {
+  const { tested: { name }, stage } = view;
+  if (stage.kind === 'stopped' && stage.refused) return `Couldn't practice with ${name}`;
+  if (!view.again) return `${name}'s first answer`;
+  const alone = stage.kind === 'answered' && stage.reading === undefined && stage.before === undefined;
+  return alone ? `${name}'s answer` : `${name} after this change`;
+}
+
 export function presentFirstAnswer(view: FirstAnswer): Omit<Presentation<FirstAnswerAction>, 'busy' | 'error'> {
   const { tested, stage } = view;
-  const title = `${tested.name}'s first answer`;
+  const title = titleOf(view);
   const head = { avatar: 'agent' as const, avatarUrl: tested.avatarUrl, title };
   const slack: Array<Button<FirstAnswerAction>> = tested.slackUrl ? [{ label: 'Open in Slack', action: 'open_slack', tone: 'primary' }] : [];
   switch (stage.kind) {
@@ -618,13 +646,7 @@ export function presentFirstAnswer(view: FirstAnswer): Omit<Presentation<FirstAn
     case 'answered': {
       // While the earlier answer is read, the card still shows it answering: Before and After come together.
       if (stage.reading) return answering(view, stage.ask);
-      const promised = promisedFor(tested, stage.ask);
-      const answer = shownAnswer(stage.reply);
-      const panes = !view.again
-        ? [...promised ? [{ label: 'What we promised', text: promised }] : [], { label: 'What it answered', text: answer }]
-        : stage.before !== undefined
-          ? [{ label: 'Before', text: stage.before }, { label: 'After', text: answer }]
-          : [{ label: 'What it answered', text: answer }];
+      const panes = panesOf(view, stage);
       // A left-out connection's fix takes the second place. On Try it again the save's Undo keeps it while
       // the card holds one, and the fix leaves once the person acts on it.
       const fix = leftOutFix(stage);
@@ -637,7 +659,7 @@ export function presentFirstAnswer(view: FirstAnswer): Omit<Presentation<FirstAn
         subtitle: [{ text: ANSWERED_LINE }],
         blocks: [
           askedLine(stage.ask),
-          { kind: 'panes', panes },
+          panes,
           ...stage.read.length ? [{ kind: 'note' as const, text: `It read ${joinNames(stage.read)}.` }] : [],
           ...stage.leftOut.map(({ service }): Block<FirstAnswerAction> => ({ kind: 'note', text: leftOutWords(service), tone: 'warn' })),
           ...stage.acted ? [{ kind: 'note' as const, text: ACTED[stage.acted.kind] }] : [],
@@ -648,10 +670,12 @@ export function presentFirstAnswer(view: FirstAnswer): Omit<Presentation<FirstAn
       };
     }
     case 'stopped':
+      // A run that did not come to an answer goes under the answer the card showed before.
       return {
         ...head,
         announce: `${title}. ${stage.problem}`,
         blocks: [
+          ...view.earlier ? [askedLine(view.earlier.ask), panesOf(view, view.earlier)] : [],
           { kind: 'text', text: stage.problem },
           ...stage.acted ? [{ kind: 'note' as const, text: ACTED[stage.acted.kind] }] : [],
         ],
@@ -686,8 +710,21 @@ export function presentFirstAnswer(view: FirstAnswer): Omit<Presentation<FirstAn
   }
 }
 
-function answering({ tested }: FirstAnswer, ask: string): Omit<Presentation<FirstAnswerAction>, 'busy' | 'error'> {
-  const title = `${tested.name}'s first answer`;
+/** The answer, beside what the proposal promised, or on Try it again beside the answer from before the change. */
+function panesOf(view: FirstAnswer, shown: Shown): Block<FirstAnswerAction> {
+  const answer = shownAnswer(shown.reply);
+  if (view.again) {
+    return { kind: 'panes', panes: shown.before !== undefined
+      ? [{ label: 'Before', text: shown.before }, { label: 'After', text: answer }]
+      : [{ label: 'What it answered', text: answer }] };
+  }
+  const promised = promisedFor(view.tested, shown.ask);
+  return { kind: 'panes', panes: [...promised ? [{ label: 'What we promised', text: promised }] : [], { label: 'What it answered', text: answer }] };
+}
+
+function answering(view: FirstAnswer, ask: string): Omit<Presentation<FirstAnswerAction>, 'busy' | 'error'> {
+  const { tested } = view;
+  const title = titleOf(view);
   return {
     avatar: 'agent',
     avatarUrl: tested.avatarUrl,

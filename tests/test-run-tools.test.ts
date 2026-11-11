@@ -283,9 +283,11 @@ test('practice_agent with no question, as a card sends it, refuses before a run 
   assert.deepEqual([error.code, error.message, error.nextStep],
     ['not_found', 'That Agent is gone, or you can\'t change it.', 'Call list_agents for the current agentIds.'], 'the model\'s next step is kept');
 
+  // Off, not new: its fix turns it back on, the same one check_agent offers.
   await seedAgent(f, { id: 'agent_off', enabled: false });
   error = await refusal('agent_off');
-  assert.deepEqual([error.code, error.message], ['not_allowed', 'You can\'t message Ops in Slack yet, so you can\'t practice with it.']);
+  assert.deepEqual([error.code, error.message, error.fix], ['not_allowed', 'Ops is turned off, so you can\'t practice with it.',
+    { label: 'Turn it back on', tool: 'update_agent', arguments: { agentId: 'agent_off', on: true } }]);
 
   await seedAgent(f, { id: 'agent_slow', model: 'local-stub/slow' });
   error = await refusal('agent_slow');

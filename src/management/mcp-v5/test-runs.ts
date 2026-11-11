@@ -307,6 +307,13 @@ async function requireSlackDm(deps: FiveZeroDeps, reading: AgentAdmissionReading
   const silent = (): never => fail('temporarily_unavailable',
     `Couldn't check with Slack whether you can message ${agent.name}. Try again in a minute.`);
   const admission = admissionChecks(deps, reading).find(({ status }) => status === 'failing');
+  // Off, not new: its fix turns it back on.
+  if (admission && agent.lifecycle !== 'archived' && !agent.enabled) {
+    fail('not_allowed', `${agent.name} is turned off, so you can't practice with it.`, {
+      nextStep: 'Tell the person. Turn it back on with update_agent (on: true) only if they ask, then practice again.',
+      ...admission.fix ? { fix: admission.fix } : {},
+    });
+  }
   if (admission) cannot(admission.fix);
   const slackUserId = reading.person.slackUserId ?? cannot();
   if (!stores.slackMember) return silent();

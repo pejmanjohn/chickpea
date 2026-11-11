@@ -880,8 +880,17 @@ try {
     await open('change');
     await browser.waitForTitle(/^Change Invoice Chaser$/);
     await showsPicture('The change');
+    // Every changed word, which the preview's short quote cut, once the card's read of the saved instructions answers.
+    await browser.waitFor('/open with the customer\'s name\\.”/.test(document.querySelector(".cp-quote")?.textContent ?? "")', 'the whole change');
     await shot('5-change');
+    await browser.waitFor('document.querySelectorAll(".cp-acts button:enabled").length === 2', 'Save, once the read answers');
+    await browser.host('window.harness.holding = ["update_agent"]');
     await browser.click('save');
+    await browser.waitFor('/Saving…/.test(document.querySelector(".cp-steps")?.textContent ?? "")', 'Saving…');
+    assert.equal(await subtitle(), '', 'no "nothing is saved" while it saves');
+    assert.deepEqual(await buttons(), [], 'no buttons while it saves');
+    await shot('5-saving');
+    await browser.host('window.harness.holding = []; window.harness.answerHeld()');
     await browser.waitForTitle(/^✓ Saved Invoice Chaser$/);
     assert.equal(await subtitle(), 'Try it: mention @invoices in #finance.', 'a mention reaches it in its Channel');
     await told(/^The person saved the change to the Agent "Invoice Chaser" from the card\.$/, 'Saved');
@@ -1339,6 +1348,7 @@ try {
     await browser.click('try_once');
     await browser.waitFor('document.querySelectorAll(".cp-pane").length === 2', 'Before beside After');
     assert.deepEqual(await labels(), ['Before', 'After']);
+    await browser.waitForTitle(/^Renewals Desk after this change$/);
     await told(/^The person pressed "Try it again" for the Agent "Renewals Desk" \(@renewals\) on the card\. A practice answer is shown on the card\.$/, 'Tried again');
     assert.equal(runs.starts.length, starts + 1, 'one run for the press');
     assert.equal(runs.starts.at(-1).run.question, 'which renewals are due this month?', 'the first question, which the card never sends');
@@ -1347,7 +1357,7 @@ try {
     assert.match(after, /Dana <dana@northwind\.example>/, 'the `<` the Agent wrote, drawn as text');
     assert.doesNotMatch(after, /&lt;|\*\*/, 'never &lt; or a Markdown mark');
     assert.doesNotMatch(await browser.inCard('document.querySelector(".cp-panes").innerHTML'), /<(?!\/?(section|h3|div)\b)/, 'the answer is text, never markup');
-    assert.deepEqual(await buttons(), ['Try it again', 'Undo']);
+    assert.deepEqual(await buttons(), ['Try it again', 'Undo the change']);
     const context = (await browser.host('window.harness.contexts')).at(-1);
     assert.doesNotMatch(context, /Northwind|renews/, 'the model hears that an answer is on the card, never the answer');
     await shot('5-try-again-before-after');
@@ -1378,6 +1388,7 @@ try {
     await browser.click('try_once');
     await browser.waitFor('document.querySelectorAll(".cp-pane").length === 1', 'the answer alone');
     assert.deepEqual(await labels(), ['What it answered']);
+    await browser.waitForTitle(/^Notes Desk's answer$/);
     await shot('5-try-again-alone');
     // The plan refused it as it would a direct message: its own sentence, on the Saved card's view.
     runs.outcome = { status: 'failed', failure: 'out_of_usage', result: { funding: { kind: 'credits_exhausted' } } };
@@ -1387,6 +1398,7 @@ try {
     await browser.waitForTitle(/^✓ Saved Renewals Desk$/);
     await browser.click('try_once');
     await shows('/This workspace is out of usage for now, so I can\'t start this one\./', 'the funding refusal');
+    await browser.waitForTitle(/^Renewals Desk after this change$/);
     await plain('Try it again refused');
     await shot('5-try-again-refused');
     current.slack.guest = true;
@@ -1397,8 +1409,36 @@ try {
     await browser.waitForTitle(/^✓ Saved Renewals Desk$/);
     await browser.click('try_once');
     await shows('/You can\'t message Renewals Desk in Slack yet, so you can\'t practice with it\./', 'the Slack refusal');
+    await browser.waitForTitle(/^Couldn't practice with Renewals Desk$/);
+    assert.deepEqual(await buttons(), ['Open in Slack', 'Undo the change']);
     await shot('5-try-again-not-allowed');
     current.slack.guest = false;
+    // Turned off after an answer: the refusal says so under that answer, and offers to turn it back on.
+    await open('changeRenewals');
+    await browser.waitForTitle(/^Change Renewals Desk$/);
+    await browser.click('save');
+    await browser.waitForTitle(/^✓ Saved Renewals Desk$/);
+    await browser.click('try_once');
+    await browser.waitFor('document.querySelectorAll(".cp-pane").length >= 1 && document.querySelectorAll(".cp-acts button:enabled").length === 2', 'an answer');
+    const answered = await labels();
+    await current.f.config.updateAgent('agent_renewals_desk', { enabled: false });
+    await browser.click('try_once');
+    await browser.waitForTitle(/^Couldn't practice with Renewals Desk$/);
+    await shows('/Renewals Desk is turned off, so you can\'t practice with it\./', 'the turned-off refusal');
+    assert.deepEqual(await labels(), answered, 'the answer it showed stays above the refusal');
+    assert.deepEqual(await buttons(), ['Turn it back on', 'Undo the change']);
+    await told(/^The person pressed "Try it again" for the Agent "Renewals Desk" \(@renewals\) on the card, but the practice run did not start\. Chickpea said: "Renewals Desk is turned off, so you can't practice with it\."$/, 'Turned off');
+    // No plain() here: the answer above is the Agent's own words, whose amounts read like status codes.
+    await shot('5-try-again-turned-off');
+    await browser.click('try_fix');
+    await shows('/Finish it in the chat, then try again\./', 'the turn-on in the chat');
+    for (let tries = 0; tries < 50 && (await browser.host('window.harness.messages.length')) === 0; tries += 1) {
+      await new Promise((done) => setTimeout(done, 100));
+    }
+    assert.equal((await browser.host('window.harness.messages')).at(-1)?.content?.[0]?.text, 'Turn it back on for Renewals Desk.');
+    assert.deepEqual(await buttons(), ['Try again', 'Turn it back on']);
+    await shot('5-try-again-turned-off-fixing');
+    await current.f.config.updateAgent('agent_renewals_desk', { enabled: true });
     current.close();
   }
 } finally {

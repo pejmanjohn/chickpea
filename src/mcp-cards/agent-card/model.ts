@@ -3,7 +3,8 @@ import type { z } from 'zod';
 import { isAgentId } from '../../config/agent-id.ts';
 import { channelNames } from '../../management/channel-names.ts';
 import type * as schemas from '../../management/mcp-v5/schemas.ts';
-import { describeTextChange } from '../../management/text-change-wording.ts';
+import { describeTextChange, describeWholeTextChange } from '../../management/text-change-wording.ts';
+import { textChangeWindows } from '../../management/text-changes.ts';
 import {
   agentNamed,
   call,
@@ -114,7 +115,12 @@ export type View =
     }
   /** "See its first answer", pressed on the ready card, or "Try it again" on a Saved card. */
   | FirstAnswer
-  | { kind: 'change'; preview: ChangePreview; stale?: true }
+  /**
+   * `whole`: the instructions change as the card's own read of the saved
+   * instructions finds it, every changed word quoted, in place of the
+   * preview's quotes, which may cut the change.
+   */
+  | { kind: 'change'; preview: ChangePreview; stale?: true; whole?: string[] }
   | {
       kind: 'done';
       summary: string;
@@ -383,8 +389,8 @@ function undoBeside(view: FirstAnswer): boolean {
 /** Undo in place of Change something or a second Open in Slack; after a lone button, or alone. Two at most. */
 function withUndo(buttons: ReadonlyArray<Button<Action>>): Array<Button<Action>> {
   const gives = ({ action, tone }: Button<Action>) => action === 'change_something' || (action === 'open_slack' && tone === 'secondary');
-  if (buttons.some(gives)) return buttons.map((button) => gives(button) ? UNDO : button);
-  return buttons.length < 2 ? [...buttons, UNDO] : [...buttons];
+  if (buttons.some(gives)) return buttons.map((button) => gives(button) ? UNDO_CHANGE : button);
+  return buttons.length < 2 ? [...buttons, UNDO_CHANGE] : [...buttons];
 }
 
 /** "Try it again" on a Saved card: an Agent that still answers, after a save that changed how. */
@@ -525,16 +531,32 @@ function reply(state: State, made: Call, result: ToolResult, now: number): Next<
     case 'get_agent': {
       if (state.busy) return stay(state); // a write is in flight; its reply decides the view
       if (code === 'not_found') return goneFrom(state, 'unavailable');
-      const read = failure ? undefined : content as { version?: unknown; status?: unknown } | undefined;
+      const read = failure ? undefined : content as { version?: unknown; status?: unknown; instructions?: unknown } | undefined;
       if (typeof read?.version !== 'string' || view.kind === 'confirm') return stay(state);
       if (read.status === 'archived') return goneFrom(state, 'archived');
       if (view.kind === 'change' && read.version !== view.preview.save.arguments.version) return stay({ ...state, view: { ...view, stale: true } });
+      if (view.kind === 'change' && !view.whole && typeof read.instructions === 'string') {
+        const whole = wholeChange(view.preview, read.instructions);
+        return whole ? stay({ ...state, view: { ...view, whole } }) : stay(state);
+      }
       if (view.kind === 'done' && view.undoToken && read.version !== view.version) return stay({ ...state, view: { ...view, undoToken: undefined } });
       return stay(state);
     }
     default:
       return stay({ ...state, busy: false });
   }
+}
+
+/**
+ * The instructions change from the instructions the save is based on, as
+ * the preview read them: every changed word, in the preview's own sentences.
+ */
+function wholeChange(preview: ChangePreview, saved: string): string[] | undefined {
+  const after = preview.save.arguments.instructions;
+  if (typeof after !== 'string' || !preview.changes.some(({ field }) => field === 'instructions')) return undefined;
+  return textChangeWindows(saved, after).map(({ window, ...change }) => window
+    ? describeWholeTextChange(change, window, (text) => `“${text}”`, CHANGE_QUOTE_MAX)
+    : describeTextChange(change, (text) => `“${text}”`));
 }
 
 function withoutUndo(view: View): View {
@@ -871,7 +893,7 @@ function presentView(state: State): Presentation<Action> {
     case 'ready':
       return { ...base, ...presentReady(view) };
     case 'change':
-      return { ...base, ...presentChange(view.preview, view.stale === true) };
+      return { ...base, ...presentChange(view, state.busy) };
     case 'done':
       return { ...base, ...presentDone(view) };
     case 'confirm':
@@ -904,6 +926,8 @@ function presentView(state: State): Presentation<Action> {
 }
 
 const UNDO: Button<Action> = { label: 'Undo', action: 'undo', tone: 'secondary' };
+/** The save's Undo beside a practice answer or refusal, which it does not undo. */
+const UNDO_CHANGE: Button<Action> = { label: 'Undo the change', action: 'undo', tone: 'secondary' };
 
 /**
  * "Are you sure?" with its two buttons; a card without the token says where
@@ -1116,28 +1140,40 @@ function presentDone(view: Extract<View, { kind: 'done' }>): Omit<Presentation<A
   };
 }
 
-function presentChange(preview: ChangePreview, stale: boolean): Omit<Presentation<Action>, 'busy' | 'error'> {
+/** The most characters an instructions change shows with the words around it; a changed span up to `CHANGED_SPAN_MAX` shows whole past it. */
+const CHANGE_QUOTE_MAX = 240;
+
+/**
+ * The change, with Save and Cancel. Once Save is pressed it says it is
+ * saving, as Create and See its first answer show their steps, until
+ * update_agent answers.
+ */
+function presentChange(view: Extract<View, { kind: 'change' }>, saving: boolean): Omit<Presentation<Action>, 'busy' | 'error'> {
+  const { preview, stale } = view;
   const count = preview.changes.length;
   return {
     avatar: 'agent',
     avatarUrl: httpsUrl(preview.agent.avatarUrl),
     title: `Change ${preview.agent.name}`,
-    subtitle: [{ text: `${count} ${count === 1 ? 'change' : 'changes'} · nothing is saved until you press Save` }],
+    // The heading stays, so the live region says the step.
+    ...saving ? { announce: `Change ${preview.agent.name}. Saving…` } : { subtitle: [{ text: `${count} ${count === 1 ? 'change' : 'changes'} · nothing is saved until you press Save` }] },
     blocks: [
-      ...preview.changes.flatMap((change): Array<Block<Action>> => [{ kind: 'section', label: FIELD_LABELS[change.field] }, ...changeBlocks(change)]),
+      ...preview.changes.flatMap((change): Array<Block<Action>> => [{ kind: 'section', label: FIELD_LABELS[change.field] }, ...changeBlocks(change, view.whole)]),
       ...stale ? [{ kind: 'note' as const, text: 'It changed since this preview. Ask again for a fresh one.', tone: 'warn' as const }] : [],
+      ...saving ? [{ kind: 'steps' as const, steps: [{ label: 'Saving…', state: 'now' as const }] }] : [],
     ],
-    buttons: [
+    buttons: saving ? [] : [
       ...stale ? [] : [{ label: 'Save', action: 'save' as const, tone: 'primary' as const }],
       { label: 'Cancel', action: 'cancel', tone: 'secondary' },
     ],
   };
 }
 
-function changeBlocks(change: ChangePreview['changes'][number]): Array<Block<Action>> {
+function changeBlocks(change: ChangePreview['changes'][number], whole: string[] | undefined): Array<Block<Action>> {
   if (change.field === 'instructions') {
-    return change.quotes.length
-      ? change.quotes.map((quote) => ({ kind: 'quote', text: describeTextChange(quote, (text) => `“${text}”`) }))
+    const quotes = whole ?? change.quotes.map((quote) => describeTextChange(quote, (text) => `“${text}”`));
+    return quotes.length
+      ? quotes.map((text) => ({ kind: 'quote', text }))
       : [{ kind: 'text', text: 'Only spacing or line breaks change.' }];
   }
   if (change.field === 'on') return [{ kind: 'text', text: change.after ? 'Turns it back on.' : 'Turns it off.' }];
