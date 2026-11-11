@@ -255,7 +255,8 @@ export async function readEventData(body: ReadableStream<Uint8Array>, take: (dat
     let start = 0;
     for (let end = pending.indexOf('\n'); end >= 0; end = pending.indexOf('\n', start)) {
       if (line(pending.slice(start, end))) {
-        // A cloned body's cancel settles only once the other branch ends too.
+        // Not awaited: on Node a cloned body's cancel settles only once the
+        // other branch ends too. workerd settles it at once.
         void reader.cancel().catch(() => undefined);
         return;
       }

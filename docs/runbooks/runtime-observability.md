@@ -695,8 +695,12 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   `response.output_text.delta`. It is absent for other providers and for a
   request that wrote no text. A `firstTextMs` close to `durationMs` means the
   step's text reached Flue all at once at its end. If `upstreamFirstTextMs` is
-  close to it too, the provider sent the text late. If it is well before, the
-  text waited inside the Worker. `inputTokens` excludes the cached input `cachedInputTokens` counts,
+  close to it too, the text reached the Worker late: the provider held it, or
+  the network path to the provider did, and the field cannot tell which. If
+  it is more than about 1 s before `firstTextMs`, the text waited inside the
+  Worker. A gap of up to 1 s is Flue's own: Flue reports a text delta once
+  its record is written, and it writes streamed deltas at most once a second.
+  `inputTokens` excludes the cached input `cachedInputTokens` counts,
   so the prompt cache's hit rate is `cachedInputTokens / (inputTokens +
   cachedInputTokens + cacheWriteTokens)`. Token fields are absent when the
   provider reported no usage. `toolCalls` counts the tool calls in that
