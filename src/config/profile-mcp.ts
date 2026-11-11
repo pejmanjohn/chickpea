@@ -20,9 +20,11 @@ import {
   metaAdsToolEffect,
 } from './meta-ads-policy.ts';
 import {
+  advertiseMetaAdsAccountHelper,
   advertiseMetaAdsAccountHelperOutput,
   sanitizeMetaAdsAccountHelperResponse,
 } from './meta-ads-response.ts';
+import { createMcpToolsListFilter } from './mcp-tools-list.ts';
 import { assertMetaAdsWriteAccountOwnership, META_ADS_OWNERSHIP_ORIGIN } from './meta-ads-write-guard.ts';
 import { META_ADS_OAUTH_MANAGEMENT_SCOPE } from './mcp-oauth-clients.ts';
 import {
@@ -52,10 +54,10 @@ import { ConnectionCredentialUnavailableError } from '../connections/errors.ts';
 
 /**
  * Turn-time MCP connection declarations for Flue. Definitions carry policy
- * only (URL, transport, the approved tool list); Flue owns discovery,
- * namespacing, and the strict tool allowlist. Every request re-reads the live
- * connection policy, and secrets always resolve live from env/settings, so a
- * revoked connection or rotated credential takes effect on the next call.
+ * only (URL, transport, the approved tools); Flue owns discovery and
+ * namespacing. Every request re-reads the live connection policy, and secrets
+ * always resolve live from env/settings, so a revoked connection or rotated
+ * credential takes effect on the next call.
  */
 
 interface ResolveProfileMcpConnectionsOptions {
@@ -183,6 +185,11 @@ export function resolveProfileMcpConnections(
  * current profile row, requires it to remain within the frozen declaration,
  * and resolves credentials from the trusted settings seam. With `readsOnly`
  * (a test run), every tool must also still be declared a read.
+ *
+ * Flue mounts what tools/list returns, and every listing is filtered to the
+ * granted tools the server still lists, in grant order. A tool the server
+ * stops listing leaves the rest working, and comes back when the server lists
+ * it again; the grant itself is never rewritten.
  */
 export function resolveRuntimePlanMcpConnections(
   profileId: string,
@@ -256,6 +263,12 @@ export function resolveRuntimePlanMcpConnections(
       allowedOrigin: new URL(validated.url).origin,
       authorizeRequest: async () => { await requireCurrentServer(); },
     });
+    const toolsList = createMcpToolsListFilter({
+      connectionId: declaration.id,
+      transport: declaration.transport,
+      grant: allowedTools,
+      ...(usesMetaAdsOutputAdapter(declaration) ? { rewriteTools: advertiseMetaAdsAccountHelper } : {}),
+    });
     const fetchWithLiveHeaders = withMcpHttpTelemetry(async (input, init) => {
       const request = new Request(input, init);
       const invocation = await mcpToolInvocation(request);
@@ -269,7 +282,6 @@ export function resolveRuntimePlanMcpConnections(
         }
       }
       const { server, env } = await requireCurrentServer();
-      const advertisedRequest = usesMetaAdsOutputAdapter(server) ? request.clone() : undefined;
       if (invocation && isMetaAdsMcpConnection(server)) {
         assertServerMcpToolInvocation(server, effectiveDeclaration.allowedTools, invocation);
       }
@@ -302,20 +314,19 @@ export function resolveRuntimePlanMcpConnections(
         assertUnchangedMetaInvocationSchema(server, current, invocation.name);
         assertServerMcpToolInvocation(current, effectiveDeclaration.allowedTools, invocation);
       }
+      const listsTools = await toolsList.noteRequest(request);
       await requireCurrentServer();
       const response = await guardedFetch(new Request(request, { headers }));
       if (response.status === 401 && declaration.authMode === 'oauth') {
         rejectedAccessToken = presentedBearerToken(headers);
       }
-      const advertised = advertisedRequest
-        ? await advertiseMetaAdsAccountHelperOutput(advertisedRequest, response)
-        : response;
+      const listed = await toolsList.filterResponse(request, response, server.displayName, listsTools);
       if (!invocation || !isMetaAdsMcpConnection(server)) {
-        return advertised;
+        return listed;
       }
       const sanitized = invocation.name === META_ADS_ACCOUNT_HELPER
-        ? await sanitizeAccountHelperResponse(server, advertised)
-        : advertised;
+        ? await sanitizeAccountHelperResponse(server, listed)
+        : listed;
       await requireCurrentServer();
       return sanitized;
     }, { connectionId: declaration.id, authMode: declaration.authMode });
@@ -323,7 +334,6 @@ export function resolveRuntimePlanMcpConnections(
       name: declaration.id,
       url: validated.url,
       transport: declaration.transport,
-      tools: allowedTools,
       optional: declaration.optional,
       timeoutMs: 30_000,
       fetch: fetchWithLiveHeaders,
