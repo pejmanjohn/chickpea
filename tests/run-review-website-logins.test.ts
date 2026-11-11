@@ -544,6 +544,15 @@ test('a username with spaces leaves a form, and one that holds an escape of its 
   assert.equal(record.answer, 'Sent https://forms.example/s?u=[credential redacted]&ok=1 and [credential redacted]');
 });
 
+test('a username leaves text that writes it with another case of the same letters', () => {
+  // A capital Σ is σ in lower case, but a word ends in ς; ſ is an s, ϑ a θ, and the Kelvin sign a k.
+  const record = copy({
+    answer: 'ΖΗΣΗΣ.SYNTHETIC@EXAMPLE.COM, Opſ.Synthetic@example.com, ϑεα.synthetic@example.com and Kassia.synthetic@example.com',
+  }, { hosts: [], usernames: ['Ζησης.synthetic@example.com', USERNAME, 'θεα.synthetic@example.com', 'kassia.synthetic@example.com'] });
+  assert.equal(record.answer,
+    '[credential redacted], [credential redacted], [credential redacted] and [credential redacted]');
+});
+
 test('a username leaves text whose letters grow longer in lower case, and the text around it stays as written', () => {
   // `İ` is one code unit, and two in lower case.
   const title = 'İ'.repeat(40);
@@ -599,6 +608,16 @@ test('a username of repeated spaces or backslashes takes no longer against a nea
     }));
   `);
   assert.deepEqual(result, { nearMisses: [true, true], matches: '[credential redacted]. [credential redacted].' });
+});
+
+test('a field with no space reads each host once, and a login site\'s link at its end still loses its token', () => {
+  // Every `=x/` could start a link without a scheme on another site. A field with no space near its cap is scrubbed whole.
+  const result = inChild(`
+    const run = 'x/='.repeat(400000);
+    const read = logins.websiteLoginScrub({ hosts: ['billing.example.com'], usernames: [] }).links(run + 'billing.example.com/cb?code=SYNTHCODE123', false);
+    console.log(JSON.stringify({ same: read.startsWith(run), end: read.slice(run.length) }));
+  `);
+  assert.deepEqual(result, { same: true, end: 'billing.example.com/cb?[omitted]' });
 });
 
 test('a page that names the start of every saved and planned username stays within half a Worker\'s memory', () => {
