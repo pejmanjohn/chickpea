@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import { deriveRuntimePlanInstanceId, parseRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import {
+  installTestRunSchema,
   PRACTICE_REPEAT_MS,
   TEST_RUN_WAKE_MS,
 } from '../src/management/test-runs.ts';
@@ -127,6 +128,19 @@ test('for two minutes after it settles, the same ask on the same plan returns th
   assert.equal(store.admit(back, NOON + 50_000).kind, 'repeat', 'the run on the same plan, not the newest one');
   const later = admission(installation, { question: 'Who is overdue?', planDigest: 'plan_a' });
   assert.equal(store.admit(later, NOON + 40_001 + PRACTICE_REPEAT_MS).kind, 'admitted', 'past the window');
+});
+
+test('a store that held the one-run lock loses it when it starts on this version, and two people then run at once', () => {
+  const installation = hostedInstallation('inst_test_store_lock_dropped');
+  const lock = () => installation.db.get("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'management_test_runs_live_idx'");
+  installation.db.exec(`CREATE UNIQUE INDEX management_test_runs_live_idx
+    ON management_test_runs (organization_id) WHERE status IN ('admitted', 'running')`);
+  assert.ok(lock(), 'as an older version left it');
+  installTestRunSchema(installation.db);
+  assert.equal(lock(), undefined);
+  const store = testRuns(installation);
+  assert.equal(store.admit(admission(installation, { actorMembershipId: 'membership_ada' }), NOON).kind, 'admitted');
+  assert.equal(store.admit(admission(installation, { actorMembershipId: 'membership_bo' }), NOON).kind, 'admitted');
 });
 
 test('an older Worker version\'s one-run lock reads as in progress, never as an error', () => {

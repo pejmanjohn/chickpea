@@ -187,6 +187,8 @@ test('a backtick a client reads another way keeps no span in its paragraph', () 
   // A lone carriage return ends a line.
   none(`~~~\n~~~\r${tag}`);
   none(`\`\`\`\ncode\n\`\`\`\r${tag}\n`);
+  // markdown-it reads a fence line with a pipe as a table's header when a delimiter row follows.
+  none(`~~~${tag} | b\n|---|---|\n~~~\n${tag}`);
   // A table splits its row at each pipe before it reads a cell's code.
   none(`| a | b | c |\n|---|---|---|\n| \` | ${tag} | \` |`);
   none(`| a | b |\n|---|---|\n| \`a | b\` c \` ${tag} \` |`);

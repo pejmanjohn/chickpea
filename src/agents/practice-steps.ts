@@ -233,8 +233,8 @@ function mcpToolNamePart(value: string): string {
  * samples arrive as written. Anywhere a client could pair backticks another
  * way, everything is escaped: the whole paragraph around a doubtful line,
  * and the rest of the reply from a fence indented two or three spaces, which
- * can sit in a list item that ends before the fence does. Line endings come
- * back as `\n`.
+ * can sit in a list item that ends before the fence does, or from one whose
+ * line holds a `|`. Line endings come back as `\n`.
  */
 export function escapeHtmlOutsideCode(markdown: string): string {
   const shown: string[] = [];
@@ -260,7 +260,8 @@ export function escapeHtmlOutsideCode(markdown: string): string {
       shown.push(escapeTags(line));
     } else if (marker && !(marker[0] === '`' && line.slice(opener[0].length).includes('`'))) {
       endParagraph();
-      if (opener[1]!.length >= 2) {
+      // markdown-it reads a fence line that holds a `|` as a table's header when a delimiter row follows it.
+      if (opener[1]!.length >= 2 || line.includes('|')) {
         rest = true;
         shown.push(escapeTags(line));
       } else {
