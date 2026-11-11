@@ -59,7 +59,7 @@ test('slots are counted, refused when all are taken, and free again on release',
   assert.deepEqual(claims(dir), [], 'every release removes its own claim');
 });
 
-test('a slot whose PID has exited is reclaimed; a live one, or one rewritten since it was read, is not', (t) => {
+test('a slot whose PID has exited is reclaimed and reported; a live holder keeps its slot', (t) => {
   const { dir, exclusive } = slotDirs(t);
   mkdirSync(dir, { recursive: true });
   const dead = stoppedPid();
