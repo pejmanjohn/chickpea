@@ -91,7 +91,7 @@ test('Connect opens Chickpea\'s page for this one connection only when pressed, 
 
   const connect = card();
   await connect.result(result);
-  assert.equal(connect.effects.length, 0, 'showing the link opens nothing');
+  assert.deepEqual(connect.effects.map(({ type }) => type), ['call'], 'showing the link reads where it stands, and opens nothing');
   assert.equal(connect.shown.title, 'Connect Gmail to Research');
   assert.equal(connect.shown.avatarUrl, `${BASE_URL}/assets/agents/agent_research/avatar/1`, 'the Agent\'s own picture');
   assert.deepEqual(connect.shown.subtitle, [{ text: 'You sign in on Chickpea\'s page, never in this chat.' }]);
@@ -100,8 +100,10 @@ test('Connect opens Chickpea\'s page for this one connection only when pressed, 
   // Mounting again, coming back into view and its timer only read.
   await connect.dispatch({ type: 'reread', now: clock.now });
   await connect.dispatch({ type: 'tick', now: clock.now });
-  assert.deepEqual(connect.effects.map(({ type }) => type), ['call']);
-  assert.deepEqual(connect.calls().map(({ tool, args }) => [tool, args]), [['get_setup_status', { setupToken: setup.setupToken }]]);
+  assert.deepEqual(connect.effects.map(({ type }) => type), ['call', 'call']);
+  assert.deepEqual(connect.calls().map(({ tool, args }) => [tool, args]), [
+    ['get_setup_status', { setupToken: setup.setupToken }], ['get_setup_status', { setupToken: setup.setupToken }],
+  ]);
   assert.equal(connect.state.view.kind, 'start', 'an unopened link waits for Connect');
 
   await connect.press('connect');
@@ -120,7 +122,7 @@ test('Connect opens Chickpea\'s page for this one connection only when pressed, 
   assert.equal(connect.state.view.kind, 'connected');
   assert.deepEqual(rows(connect.shown), ['Gmail is connected · [Open in Slack]'], 'a catalog service: connected, and nothing more');
   assert.deepEqual(connect.effects.filter(({ type }) => type === 'context'), [
-    { type: 'context', text: 'Gmail is connected to the Agent "Research" now.' },
+    { type: 'context', text: '"Gmail" is connected to the Agent "Research" now.' },
   ], 'the model learns what the person finished');
   assert.deepEqual(connect.calls('check_agent'), [], 'nothing checks a catalog service');
 
@@ -231,6 +233,56 @@ test('an expired, cancelled or failed link says so and asks the chat for a new o
   for (const ended of [cancelled, failed, expired]) {
     assert.deepEqual(ended.calls().filter(({ tool }) => tool !== 'get_setup_status'), [], 'only reads');
   }
+});
+
+// Live check 2, bug 7: the card kept waiting after the person cancelled on Chickpea's page.
+test('a link cancelled while the card waits shows as cancelled, polling or after I\'m done, and asks the chat for a new one', async (t) => {
+  const { call, card, clock, finish } = await harness(t, 'connect-cancel-waiting');
+  const result = await call('connect_service', { agentId: 'agent_research', service: 'Notion', owner: 'me', idempotencyKey: 'notion' });
+  const { setupToken } = result.structuredContent!.setup;
+  const polling = card();
+  await polling.result(result);
+  await polling.press('connect');
+  finish(setupToken, 'revoked');
+  await polling.dispatch({ type: 'tick', now: clock.now });
+  assert.deepEqual(rows(polling.shown), ['This link was cancelled · Ask for a new link to try again. · [Get a new link]']);
+  assert.equal((polling.effects.findLast(({ type }) => type === 'context') as { text: string }).text,
+    '"Notion" did not connect to the Agent "Research": the link was cancelled. Nothing changed.');
+  await polling.press('new_link');
+  assert.deepEqual(polling.effects.at(-1), { type: 'message', sent: 'Send me a new link to connect Notion to Research.' });
+
+  // Two minutes on, polling has stopped: I'm done reads it.
+  const again = await call('connect_service', { agentId: 'agent_research', service: 'Notion', owner: 'me', idempotencyKey: 'notion-again' });
+  const waited = card();
+  await waited.result(again);
+  await waited.press('connect');
+  clock.now += POLL_CEILING_MS;
+  await waited.dispatch({ type: 'tick', now: clock.now });
+  assert.match(rows(waited.shown)[0]!, /Finish on the Chickpea page that opened, then press I'm done\./);
+  finish(again.structuredContent!.setup.setupToken, 'revoked');
+  await waited.press('done');
+  assert.deepEqual(rows(waited.shown), ['This link was cancelled · Ask for a new link to try again. · [Get a new link]']);
+});
+
+test('the card names whose account it is only when the link fixes it', async (t) => {
+  const { call, card } = await harness(t, 'connect-owner');
+  const mine = await call('connect_service', { agentId: 'agent_research', service: 'Notion', owner: 'me', idempotencyKey: 'mine' });
+  const team = await call('connect_service', { agentId: 'agent_research', service: 'Gmail', owner: 'team', idempotencyKey: 'team' });
+  // A new link's page asks Personal or Team, so the server names no owner; a link that fixes one names it.
+  assert.equal('owner' in mine.structuredContent!.setup, false);
+  const fixed = (result: typeof mine, owner: 'member' | 'team') =>
+    ({ ...result, structuredContent: { ...result.structuredContent!, setup: { ...result.structuredContent!.setup, owner } } });
+  const shown: Record<string, string[]> = {};
+  for (const [name, result] of Object.entries({ mine: fixed(mine, 'member'), team: fixed(team, 'team'), open: mine })) {
+    const connect = card();
+    await connect.result(result);
+    shown[name] = rows(connect.shown);
+  }
+  assert.deepEqual(shown, {
+    mine: ['Notion · Your own account · [Connect]'],
+    team: ['Gmail · For everyone who uses Research · [Connect]'],
+    open: ['Notion · [Connect]'],
+  }, 'a link that lets the person choose Personal or Team says neither');
 });
 
 test('polls every 2 s, waits longer after each failed poll, and stops for good two minutes after Connect', async (t) => {

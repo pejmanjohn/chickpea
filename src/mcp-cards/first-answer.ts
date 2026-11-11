@@ -10,9 +10,10 @@ import {
   opensSetupLink,
   outdated,
   pollDelay,
+  quoted,
+  refusalOf,
   show,
   stay,
-  summaryLine,
   tell,
   UNREACHABLE,
   type Block,
@@ -41,7 +42,7 @@ import {
  * get_test_run, and asks for a press for one it does not.
  */
 
-export type FirstAnswerAction = 'try_once' | 'try_fix' | 'open_slack' | 'change_something';
+export type FirstAnswerAction = 'try_once' | 'try_fix' | 'open_slack' | 'change_something' | 'check_again';
 
 /** The Agent a card tests, as that card knows it. */
 export interface Tested {
@@ -68,8 +69,8 @@ type Stage =
    * opened or in the chat, it offers Try again.
    */
   | { kind: 'stopped'; problem: string; then: 'fix' | 'again' | 'slack'; fix?: Fix; fixing?: true; acted?: Acted }
-  /** Three minutes and no answer. */
-  | { kind: 'slow'; runToken?: string }
+  /** Three minutes and no answer. `again`: Check again found it still answering. */
+  | { kind: 'slow'; runToken?: string; again?: true }
   /** The card mounted again while its first call was out: that answer went to the card that closed. */
   | { kind: 'lost' };
 
@@ -135,11 +136,7 @@ function press(state: State, action: string, now: number): Next<FirstAnswer> {
     case 'try_once': {
       const again = stage.kind === 'lost' ||
         (stage.kind === 'stopped' && (stage.then === 'again' || (stage.then === 'fix' && stage.acted !== undefined)));
-      if (!again) return stay(state);
-      // The same key while it and its retries last: a run the first press started is the one this press gets.
-      return now - view.keyedAt < KEY_FOR_MS - GIVE_UP_MS - 60_000
-        ? ask({ ...view, startedAt: now, stage: { kind: 'asking' } })
-        : tryOnce(tested, now);
+      return again ? askAgainByPress(view, now) : stay(state);
     }
     case 'try_fix': {
       const fix = stage.kind === 'stopped' ? stage.fix : undefined;
@@ -148,6 +145,10 @@ function press(state: State, action: string, now: number): Next<FirstAnswer> {
       if (opensSetupLink(fix)) return { state: { view: { ...view, stage: { ...stage, fixing: true } }, busy: true }, effects: [call(fix.tool, fix.arguments)] };
       return show({ ...view, stage: { ...stage, acted: { kind: 'chat' } } }, [askChat(view, fix)]);
     }
+    case 'check_again':
+      if (stage.kind !== 'slow') return stay(state);
+      // One read of the run it knows of; with none, the first press's call again.
+      return stage.runToken ? { state: { view, busy: true }, effects: [poll(stage.runToken)] } : askAgainByPress(view, now);
     case 'open_slack':
       return tested.slackUrl ? stay(state, [{ type: 'open', url: tested.slackUrl }]) : stay(state);
     case 'change_something':
@@ -157,6 +158,16 @@ function press(state: State, action: string, now: number): Next<FirstAnswer> {
     default:
       return stay(state);
   }
+}
+
+/**
+ * The same key while it and its retries last: a run the first press started
+ * is the one this press gets. Past that, a new key.
+ */
+function askAgainByPress(view: FirstAnswer, now: number): Next<FirstAnswer> {
+  return now - view.keyedAt < KEY_FOR_MS - GIVE_UP_MS - 60_000
+    ? ask({ ...view, startedAt: now, stage: { kind: 'asking' } })
+    : tryOnce(view.tested, now);
 }
 
 /** A fix the card does not run itself: the model proposes it in the chat first. */
@@ -228,7 +239,10 @@ function polled(state: State, result: ToolResult, now: number): Next<FirstAnswer
   const code = errorCode(result);
   if (code === 'not_found') return finished(view, { kind: 'stopped', problem: errorOf(result)!, then: 'slack' }, ran(view, 'but its answer is no longer there'));
   const run = result.isError ? undefined : testRun(result.structuredContent);
-  if (stage.kind === 'slow') return run && run.status !== 'running' ? settled(view, run, now) : stay({ ...state, busy: false });
+  if (stage.kind === 'slow') {
+    if (run && run.status !== 'running') return settled(view, run, now);
+    return run ? show({ ...view, stage: { ...stage, again: true } }) : stay({ ...state, busy: false });
+  }
   if (stage.kind !== 'running') return stay({ ...state, busy: false });
   if (!run) return pollAgain(view, stage, now);
   return settled(view, run, now);
@@ -287,11 +301,10 @@ const REFUSALS: ReadonlySet<string> = new Set([
 ]);
 
 function refusal(view: FirstAnswer, code: string, result: ToolResult): Next<FirstAnswer> {
-  if (!REFUSALS.has(code)) return refused(view, didNotStart(view), 'slack');
-  const error = isRecord(result.structuredContent) ? result.structuredContent.error : undefined;
-  const fix = isRecord(error) ? fixOf(error.fix) : undefined;
-  const then = fix ? 'fix' : isRecord(error) && error.retryable === true ? 'again' : 'slack';
-  return refused(view, errorOf(result) ?? GENERIC, then, fix);
+  const error = refusalOf(result);
+  if (!REFUSALS.has(code) || !error) return refused(view, didNotStart(view), 'slack');
+  const fix = fixOf(error.fix);
+  return refused(view, error.message, fix ? 'fix' : error.retryable === true ? 'again' : 'slack', fix);
 }
 
 /** A fix the card can offer: a tool, or a link only when it is a web link, as every card opens. */
@@ -321,7 +334,7 @@ function fixed(view: FirstAnswer, stage: Extract<Stage, { kind: 'stopped' }>, re
   if (typeof setup?.setupToken !== 'string') return show({ ...view, stage: { ...rest, acted: { kind: 'chat' } } }, [askChat(view, stage.fix)]);
   return tell(
     show({ ...view, stage: { ...rest, acted: { kind: 'page', url } } }, [{ type: 'open', url }]),
-    `The person opened Chickpea's page to ${summaryLine(stage.fix.label)} for ${agentNamed(view.tested.name, view.tested.handle)} from the card. They can try it again once they finish there.`,
+    `The person pressed ${quoted(stage.fix.label)} for ${agentNamed(view.tested.name, view.tested.handle)} on the card, which opened Chickpea's page. They can try it again once they finish there.`,
   );
 }
 
@@ -368,7 +381,8 @@ function reread(state: State): Next<FirstAnswer> {
       return { state: { view: { ...view, stage: running }, busy: true }, effects: [poll(stage.runToken)] };
     }
     case 'slow':
-      return stage.runToken ? { state: { view, busy: true }, effects: [poll(stage.runToken)] } : stay(state);
+      // A read that leaves Check again pressable: the press that focused the card is the one it reads for.
+      return stage.runToken ? stay(state, [poll(stage.runToken)]) : stay(state);
     default:
       return stay(state);
   }
@@ -455,8 +469,18 @@ export function presentFirstAnswer(view: FirstAnswer): Omit<Presentation<FirstAn
         buttons: stoppedButtons(stage, slack),
       };
     case 'slow': {
-      const line = `Its answer is taking longer than it should. Ask ${tested.name} in Slack instead.`;
-      return { ...head, announce: `${title}. ${line}`, blocks: [{ kind: 'text', text: line }], buttons: slack };
+      const line = stage.again
+        ? `It's still answering. Check again in a moment, or ask ${tested.name} in Slack.`
+        : `Its answer is taking longer than it should. Check again in a moment, or ask ${tested.name} in Slack.`;
+      return {
+        ...head,
+        announce: `${title}. ${line}`,
+        blocks: [{ kind: 'text', text: line }],
+        buttons: [
+          { label: 'Check again', action: 'check_again', tone: 'primary' },
+          ...slack.map((button): Button<FirstAnswerAction> => ({ ...button, tone: 'secondary' })),
+        ],
+      };
     }
     case 'lost': {
       const line = 'This card closed before the test run answered.';

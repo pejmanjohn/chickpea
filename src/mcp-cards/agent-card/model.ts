@@ -16,10 +16,10 @@ import {
   pollDelay,
   POLL_CEILING_MS,
   presentSafely,
+  quoted,
   sequenced,
   show,
   stay,
-  summaryLine,
   tell,
   toolOf,
   tryIt,
@@ -125,7 +125,7 @@ export type View =
   | {
       kind: 'confirm';
       confirmation: Confirmation;
-      agent?: AgentLabel;
+      agent?: AgentLabel & { agentId: string };
       avatarUrl?: string | undefined;
       adminUrl?: string | undefined;
     }
@@ -153,7 +153,7 @@ export type Event = CardEvent<Action>;
 
 export const INITIAL: State = { view: { kind: 'waiting' }, busy: false, seq: 0 };
 
-export const step = sequenced(transition);
+export const step = sequenced(transition, { remember, resume });
 
 function transition(state: State, event: Event): Next<View> {
   const { view } = state;
@@ -214,7 +214,11 @@ function changeView(result: ChangeResult, now: number, options: { saved?: boolea
           kind: 'confirm',
           confirmation: result.confirmation,
           ...result.agent
-            ? { agent: result.agent, avatarUrl: httpsUrl(result.agent.avatarUrl), adminUrl: httpsUrl(result.agent.links?.admin) }
+            ? {
+                agent: { agentId: result.agent.agentId, name: result.agent.name, handle: result.agent.handle },
+                avatarUrl: httpsUrl(result.agent.avatarUrl),
+                adminUrl: httpsUrl(result.agent.links?.admin),
+              }
             : {},
         },
         [expiryTimer(result.confirmation, now)],
@@ -392,7 +396,7 @@ function reply(state: State, made: Call, result: ToolResult, now: number): Next<
         const promised = promiseOf(offer);
         return tell(
           show({ kind: 'similar', summary: content.summary, create, name: create.name, avatarUrl: offerAvatar(offer), ...promised ? { promised } : {} }),
-          `The person pressed Create in Slack on the card, but nothing was created: ${summaryLine(content.summary)}`,
+          `The person pressed Create in Slack on the card, but nothing was created. Chickpea said: ${quoted(content.summary)}`,
         );
       }
       return changeView(content, now);
@@ -412,17 +416,19 @@ function reply(state: State, made: Call, result: ToolResult, now: number): Next<
       return tell(changeView(content, now, { saved: true }), content.status === 'needs_confirmation'
         ? `The person pressed Save on the card for ${agent}. Nothing has changed yet: it waits for their confirmation on the card.`
         : name === undefined
-          ? `The person saved the change from the card. ${summaryLine(content.summary)}`
+          ? `The person saved the change from the card. Chickpea said: ${quoted(content.summary)}`
           : `The person saved the change to ${agent} from the card.`);
     }
     case 'confirm_change':
       if (code === 'confirmation_expired') return show(EXPIRED);
       if (failure || !isChangeResult(content)) {
-        return code === 'temporarily_unavailable' || !failure
-          ? stay({ view, busy: false, error: failure ?? GENERIC })
-          : tell(show({ kind: 'notice', title: 'Nothing changed', body: failure }), `The person confirmed on the card, but nothing changed: ${failure}`);
+        // Only Chickpea's refusal says nothing changed. An error with no code is the host's, and
+        // the change may have been made: the buttons stay, and pressing again sends the same token.
+        return failure && code !== undefined && code !== 'temporarily_unavailable'
+          ? tell(show({ kind: 'notice', title: 'Nothing changed', body: failure }), `The person confirmed on the card, but nothing changed. Chickpea said: ${quoted(failure)}`)
+          : stay({ view, busy: false, error: failure ?? GENERIC });
       }
-      return tell(changeView(content, now), `The person confirmed on the card. ${summaryLine(content.summary)}`);
+      return tell(changeView(content, now), `The person confirmed on the card. Chickpea said: ${quoted(content.summary)}`);
     case 'decline_change': {
       // Kept only on an answer that proves the token dead: Chickpea retired it, or holds no
       // confirmation of this person's under it. Any other failure may leave it live.
@@ -430,9 +436,9 @@ function reply(state: State, made: Call, result: ToolResult, now: number): Next<
       if (!retired) return stay({ view, busy: false, error: failure ?? GENERIC });
       const keep = view.kind === 'confirm' ? view.confirmation.ask.keep : 'Keep it';
       if (!failure && isChangeResult(content) && content.status === 'done') {
-        return tell(changeView(content, now), `On the card, the person pressed "${keep}", but the change was already made. ${summaryLine(content.summary)}`);
+        return tell(changeView(content, now), `On the card, the person pressed ${quoted(keep)}, but the change was already made. Chickpea said: ${quoted(content.summary)}`);
       }
-      return tell(show(KEPT), `On the card, the person pressed "${keep}", so nothing changed. Make this change only if they ask for it again.`);
+      return tell(show(KEPT), `On the card, the person pressed ${quoted(keep)}, so nothing changed. Make this change only if they ask for it again.`);
     }
     case 'undo_change':
       if (failure || !isChangeResult(content)) {
@@ -450,7 +456,7 @@ function reply(state: State, made: Call, result: ToolResult, now: number): Next<
       if (state.busy) return stay(state); // a write is in flight; its reply decides the view
       if (code === 'not_found') return goneFrom(state, 'unavailable');
       const read = failure ? undefined : content as { version?: unknown; status?: unknown } | undefined;
-      if (typeof read?.version !== 'string') return stay(state);
+      if (typeof read?.version !== 'string' || view.kind === 'confirm') return stay(state);
       if (read.status === 'archived') return goneFrom(state, 'archived');
       if (view.kind === 'change' && read.version !== view.preview.save.arguments.version) return stay({ ...state, view: { ...view, stale: true } });
       if (view.kind === 'done' && view.undoToken && read.version !== view.version) return stay({ ...state, view: { ...view, undoToken: undefined } });
@@ -464,10 +470,9 @@ function reply(state: State, made: Call, result: ToolResult, now: number): Next<
 /** An Agent the card shows is no longer there to act on. */
 function goneFrom(state: State, why: 'unavailable' | 'archived'): Next<View> {
   const { view } = state;
-  const agent = view.kind === 'creating' || view.kind === 'ready' ? view.agent
-    : view.kind === 'done' ? view.agent
-      : view.kind === 'change' ? view.preview.agent
-        : undefined;
+  const agent = view.kind === 'creating' || view.kind === 'ready' || view.kind === 'done' || view.kind === 'confirm' ? view.agent
+    : view.kind === 'change' ? view.preview.agent
+      : undefined;
   if (!agent) return stay(state);
   const avatarUrl = view.kind === 'change' ? httpsUrl(view.preview.agent.avatarUrl) : 'avatarUrl' in view ? view.avatarUrl : undefined;
   return show({ kind: 'gone', agent: { name: agent.name, handle: agent.handle }, why, avatarUrl });
@@ -502,7 +507,7 @@ function creationStatus(state: State, status: CreationStatus | undefined, now: n
   if (view.kind !== 'creating' || !view.byPress) return ready;
   const who = agentNamed(view.agent.name, view.agent.handle);
   return tell(ready, status.stage === 'needs_attention'
-    ? `The person created ${who} from the card, but it needs attention in Slack: ${status.problem ?? 'Slack has not finished setting it up.'}`
+    ? `The person created ${who} from the card, but it needs attention in Slack. Chickpea said: ${quoted(status.problem ?? 'Slack has not finished setting it up.')}`
     : `The person created ${who} from the card. It is ready in Slack${status.stage === 'said_hello' ? ' and said hello to them there' : ''}.`);
 }
 
@@ -540,11 +545,72 @@ function reread(state: State, now: number): Next<View> {
       return view.agent ? stay(state, [call('get_agent', { agentId: view.agent.agentId })]) : stay(state);
     case 'confirm': {
       if (expired(view.confirmation, now)) return show(EXPIRED);
-      return stay(state, [expiryTimer(view.confirmation, now)]);
+      // A confirmation whose Agent is gone has nothing left to confirm.
+      const read = view.confirmation.confirmToken && view.agent ? [call('get_agent', { agentId: view.agent.agentId })] : [];
+      return stay(state, [expiryTimer(view.confirmation, now), ...read]);
     }
     default:
       return stay(state);
   }
+}
+
+// What a reopened card comes back to. ChatGPT shows its model the widget
+// state an outcome is kept in, so it holds only words the card showed:
+// never a token, an ID or instructions. Without a token the card offers no
+// Undo, and without the ID of an Agent it created it shows only that it did.
+
+type Outcome =
+  | { kind: 'created'; name: string }
+  | { kind: 'done'; summary: string }
+  | { kind: 'notice'; title: string; body?: string };
+
+function remember(view: View): Outcome | undefined {
+  switch (view.kind) {
+    case 'creating':
+    case 'ready':
+      return { kind: 'created', name: view.agent.name };
+    case 'done':
+      return { kind: 'done', summary: view.summary };
+    case 'notice':
+      return { kind: 'notice', title: view.title, ...view.body ? { body: view.body } : {} };
+    default:
+      return undefined;
+  }
+}
+
+function resume(view: View, kept: unknown): View | undefined {
+  const outcome = outcomeOf(kept);
+  switch (outcome?.kind) {
+    case 'created':
+      return view.kind === 'proposal' ? { kind: 'done', summary: `Created ${outcome.name}.`, avatarUrl: offerAvatar(view) } : undefined;
+    case 'notice':
+      return view.kind === 'change' || view.kind === 'confirm' ? { kind: 'notice', title: outcome.title, body: outcome.body } : undefined;
+    case 'done':
+      if (view.kind === 'done') {
+        const { undoToken: _undo, version: _version, saved: _saved, status: _status, ...rest } = view;
+        return { ...rest, summary: outcome.summary };
+      }
+      if (view.kind === 'change') {
+        const { agent, save } = view.preview;
+        return { kind: 'done', summary: outcome.summary, agent: { agentId: save.arguments.agentId, name: agent.name, handle: agent.handle }, avatarUrl: httpsUrl(agent.avatarUrl) };
+      }
+      return view.kind === 'confirm'
+        ? { kind: 'done', summary: outcome.summary, ...view.agent ? { agent: view.agent } : {}, avatarUrl: view.avatarUrl }
+        : undefined;
+    default:
+      return undefined;
+  }
+}
+
+/** An outcome as the host kept it: untrusted, so only its shape is checked. */
+function outcomeOf(kept: unknown): Outcome | undefined {
+  if (!isRecord(kept)) return undefined;
+  if (kept.kind === 'created' && typeof kept.name === 'string') return { kind: 'created', name: kept.name };
+  if (kept.kind === 'done' && typeof kept.summary === 'string') return { kind: 'done', summary: kept.summary };
+  if (kept.kind === 'notice' && typeof kept.title === 'string') {
+    return { kind: 'notice', title: kept.title, ...typeof kept.body === 'string' ? { body: kept.body } : {} };
+  }
+  return undefined;
 }
 
 const EXPIRED: View = {

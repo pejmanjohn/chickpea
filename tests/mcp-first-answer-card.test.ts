@@ -141,8 +141,12 @@ test('the ready card offers its first answer, starts it only on the press, and s
   const told = card.effects.filter(({ type }) => type === 'context');
   assert.deepEqual(told.at(-1), {
     type: 'context',
-    text: 'The person ran the Agent "Invoice Chaser" (@invoices) once from the card, and it answered its first question there.',
-  }, 'one bounded sentence, without the answer');
+    text: [
+      'The person created the Agent "Invoice Chaser" (@invoices) from the card. It is joining Slack now.',
+      'The person created the Agent "Invoice Chaser" (@invoices) from the card. It is ready in Slack and said hello to them there.',
+      'The person ran the Agent "Invoice Chaser" (@invoices) once from the card, and it answered its first question there.',
+    ].join('\n'),
+  }, 'everything the card told before, then one bounded sentence, without the answer');
 
   await card.press('change_something');
   await card.press('open_slack');
@@ -201,10 +205,11 @@ test('three minutes after the press the card gives up and points to Slack, and l
   clock.now += GIVE_UP_MS;
   await card.answer();
   assert.equal(card.shown.title, 'Invoice Chaser\'s first answer');
-  assert.deepEqual(card.shown.blocks, [{ kind: 'text', text: 'Its answer is taking longer than it should. Ask Invoice Chaser in Slack instead.' }]);
-  assert.deepEqual(card.labels(), ['Open in Slack (primary)']);
+  assert.deepEqual(card.shown.blocks, [{ kind: 'text', text: 'Its answer is taking longer than it should. Check again in a moment, or ask Invoice Chaser in Slack.' }]);
+  assert.deepEqual(card.labels(), ['Check again (primary)', 'Open in Slack (secondary)']);
   assert.match(String((card.effects.findLast(({ type }) => type === 'context') as { text: string }).text),
-    /^The person ran the Agent "Invoice Chaser" \(@invoices\) once from the card, but its answer did not come back in time\.$/);
+    /^The person created the Agent .*\nThe person ran the Agent "Invoice Chaser" \(@invoices\) once from the card, but its answer did not come back in time\.$/s,
+    'the give-up follows what the card told before, so the model still knows the Agent exists');
   const polls = card.calls('get_test_run').length;
   await card.dispatch({ type: 'tick', now: clock.now });
   assert.equal(card.calls('get_test_run').length, polls, 'a give-up stops the reads');
@@ -215,6 +220,65 @@ test('three minutes after the press the card gives up and points to Slack, and l
   await card.answer();
   assert.deepEqual(card.labels(), ['Open in Slack (primary)', 'Change something (secondary)']);
   assert.equal(runs.starts.length, 1);
+});
+
+// U7: the person was told to leave while the run was still readable for an hour.
+test('Check again on the slow view reads the run once, and shows its answer once it has one', async (t) => {
+  const { card, runs, clock } = await readyCard(t, 'first-answer-check-again');
+  fastTime(t);
+  runs.outcome = { status: 'running', failure: null, result: null };
+  card.hold = (made) => made.tool === 'get_test_run';
+  await card.press('try_once');
+  clock.now += GIVE_UP_MS;
+  await card.answer();
+  const polls = card.calls('get_test_run').length;
+  // A press focuses the card first, which reads the run: Check again stays pressable meanwhile.
+  await card.dispatch({ type: 'reread', now: clock.now });
+  assert.deepEqual([card.calls('get_test_run').length, card.labels()], [polls + 1, ['Check again (primary)', 'Open in Slack (secondary)']]);
+  card.hold = () => false;
+  await card.press('check_again');
+  assert.equal(card.calls('get_test_run').length, polls + 2, 'one read for the press');
+  assert.deepEqual([card.shown.blocks, card.labels()], [
+    [{ kind: 'text', text: 'It\'s still answering. Check again in a moment, or ask Invoice Chaser in Slack.' }],
+    ['Check again (primary)', 'Open in Slack (secondary)'],
+  ]);
+  runs.outcome = { status: 'answered', failure: null, result: { reply: 'Done.', read: [] } };
+  await card.press('check_again');
+  assert.deepEqual(card.labels(), ['Open in Slack (primary)', 'Change something (secondary)']);
+  assert.deepEqual([card.calls('try_agent_once').length, runs.starts.length], [1, 1], 'Check again started nothing');
+
+  // No run ever came back: Check again sends the press's own call again, with its key.
+  const lost = await readyCard(t, 'first-answer-check-again-no-run');
+  lost.card.hold = (made) => made.tool === 'try_agent_once';
+  await lost.card.press('try_once');
+  lost.clock.now += GIVE_UP_MS;
+  await lost.card.answer('unreachable');
+  assert.deepEqual(lost.card.labels(), ['Check again (primary)', 'Open in Slack (secondary)']);
+  lost.card.hold = () => false;
+  await lost.card.press('check_again');
+  assert.deepEqual(new Set(keys(lost.card.calls('try_agent_once'))).size, 1, 'the same key gets the run the first call started');
+  assert.equal(lost.card.shown.blocks.some((block) => block.kind === 'panes'), true, 'its answer');
+});
+
+// Mutation proof (item 1): read only from structuredContent, this refusal looks like the host ending the call, and the card retries for three minutes.
+test('today\'s limit reaches the first answer when the host answers with an error that carries the result', async (t) => {
+  const wraps: Record<string, (result: ToolResult) => ToolResult> = {
+    result: (result) => ({ isError: true, hostError: { code: -32603, message: 'Tool call failed', data: result } }),
+    envelope: (result) => ({ isError: true, hostError: { code: -32603, message: 'Tool call failed', data: { status: 'error', mcp_tool_result: result } } }),
+  };
+  for (const [how, wrap] of Object.entries(wraps)) {
+    const limited = await readyCard(t, `first-answer-limit-${how}`);
+    limited.runs.refuse = { kind: 'daily_limit', resumesAt: Date.now() + 3 * 3_600_000 - 60_000 };
+    limited.card.hold = (made) => made.tool === 'try_agent_once';
+    await limited.card.press('try_once');
+    limited.card.held[0]!.result = wrap(limited.card.held[0]!.result);
+    await limited.card.answer();
+    assert.deepEqual(limited.card.shown.blocks,
+      [{ kind: 'text', text: 'Test runs for this workspace have reached today\'s limit. They start again in about 3 hours.' }], how);
+    assert.deepEqual(limited.card.labels(), ['Open in Slack (primary)'], how);
+    await limited.card.dispatch({ type: 'tick', now: limited.clock.now });
+    assert.equal(limited.card.calls('try_agent_once').length, 1, `${how}: no retry`);
+  }
 });
 
 test('when the host gives up on try_agent_once, the card sends the same call again and gets the run the first one started', async (t) => {
@@ -356,7 +420,8 @@ async function connect(w: Awaited<ReturnType<typeof world>>, agentId: string, ac
   await f.config.putAgentConnectionBinding({ agentId, connectionAccountId: account.id, providerId: account.providerId, allowedCapabilities: [], enabled: true });
 }
 
-const told = (card: { effects: Array<{ type: string }> }) => (card.effects.findLast(({ type }) => type === 'context') as { text: string } | undefined)?.text;
+/** The newest sentence the card told the host's model. */
+const told = (card: { effects: Array<{ type: string }> }) => (card.effects.findLast(({ type }) => type === 'context') as { text: string } | undefined)?.text.split('\n').at(-1);
 
 test('every refusal reads plainly on the card, with its own next step and no code or ID', async (t) => {
   const NOT_STARTED = 'The person pressed "See its first answer" for the Agent "Invoice Chaser" (@invoices) on the card, but the test run did not start.';
@@ -503,7 +568,7 @@ test('every refusal reads plainly on the card, with its own next step and no cod
   assert.deepEqual(reconnect.card.shown.blocks.at(-1), { kind: 'note', text: 'Finish on the Chickpea page that opened, then try again.' });
   assert.deepEqual(reconnect.card.labels(), ['Try again (primary)', 'Finish setting up Notion (secondary)']);
   assert.equal(told(reconnect.card),
-    'The person opened Chickpea\'s page to Finish setting up Notion for the Agent "Invoice Chaser" (@invoices) from the card. They can try it again once they finish there.');
+    'The person pressed "Finish setting up Notion" for the Agent "Invoice Chaser" (@invoices) on the card, which opened Chickpea\'s page. They can try it again once they finish there.');
   const tries = reconnect.card.calls('try_agent_once');
   await reconnect.card.press('try_once');
   assert.deepEqual(reconnect.card.calls('try_agent_once').at(-1)!.args, tries[0]!.args, 'Try again sends the same key');
