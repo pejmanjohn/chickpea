@@ -6,14 +6,44 @@
  * JSON or HTML, in another letter case, cut short, or URL-encoded, and a
  * snapshot collapses, cuts and escapes it again. The tools redact each raw
  * name, value and message before they transform it, then redact their output
- * once more. This is the second layer: the fields a secret was typed into are
- * hidden by identity, whatever they hold (`BrowserPage.fillSecret`).
+ * once more. This is the second layer: a field that holds a password or code
+ * is hidden whatever it holds (`BrowserPage.snapshot`), and no picture of a
+ * page that could show one leaves the browser (`BrowserPage.screenshot`).
  */
+import { BROWSER_TOO_LARGE_TO_CHECK_MESSAGE } from './messages.ts';
 
 export const REDACTED = '[redacted]';
 
-/** What a screenshot shows in place of a typed secret: always this long, so it does not give away the secret's length. */
-const MASK = '••••••••';
+/**
+ * Matching work one surface may spend, such as a page read, a screenshot
+ * check or an error: characters of text times characters of the pattern
+ * they are matched against. The slowest text measured cost 0.3 ns a unit, so
+ * a surface stays under about 150 ms. Ordinary text costs about 100 units a
+ * character with a 20-character password and a code typed.
+ */
+const WORK_BUDGET = 500_000_000;
+
+/** Text that would take more matching work than its surface allows. It is withheld, never shown unchecked. */
+export class RedactionBudgetError extends Error {
+  constructor() {
+    super(BROWSER_TOO_LARGE_TO_CHECK_MESSAGE);
+    this.name = 'RedactionBudgetError';
+  }
+}
+
+/** The matching work left to one surface. Pass the same budget to every piece of text it shows. */
+export class RedactionBudget {
+  #left: number;
+
+  constructor(units = WORK_BUDGET) {
+    this.#left = units;
+  }
+
+  spend(units: number): void {
+    this.#left -= units;
+    if (this.#left < 0) throw new RedactionBudgetError();
+  }
+}
 
 /**
  * A secret shorter than this is replaced only where it is a whole field, such
@@ -169,10 +199,14 @@ function replaceCutPrefix(text: string, { form, failure }: CutForm, replacement:
 export class TypedSecrets {
   private readonly short = new Set<string>();
   private readonly inline = new Set<string>();
+  /** Each inline secret, composed and decomposed. */
+  private variants: string[] = [];
   private pattern: RegExp | undefined;
   /** Matches all that `pattern` does, and each form with any character percent-encoded or a space as `+`. */
   private encodedPattern: RegExp | undefined;
   private cutForms: CutForm[] = [];
+  /** Matching work per character of text, for `pattern` and for `encodedPattern`. */
+  private weight = { plain: 0, encoded: 0 };
 
   /** No secret has been typed. */
   get empty(): boolean {
@@ -192,25 +226,37 @@ export class TypedSecrets {
     // Longest first, so a secret that contains another is replaced whole.
     const variants = [...new Set([...this.inline].flatMap((each) => [each, each.normalize('NFC'), each.normalize('NFD')]))]
       .sort((a, b) => b.length - a.length);
+    this.variants = variants;
     this.pattern = new RegExp(variants.map((each) => secretPattern(each, false)).join('|'), 'g');
     this.encodedPattern = new RegExp(variants.map((each) => secretPattern(each, true)).join('|'), 'g');
     this.cutForms = [...new Set(variants.flatMap((each) => [each, escapeQuoted(each)]))]
       .sort((a, b) => b.length - a.length)
       .map(cutForm);
+    // Matching work at each character of text grows with the pattern's size, and each cut form scans the text once.
+    const passes = this.cutForms.length + 1;
+    this.weight = { plain: this.pattern.source.length + passes, encoded: this.encodedPattern.source.length + passes };
   }
 
-  redact(text: string): string {
-    return this.replace(text, REDACTED);
-  }
-
-  /** The text with each typed secret drawn as bullets, for a screenshot. */
-  mask(text: string): string {
-    return this.replace(text, MASK);
+  /** Throws `RedactionBudgetError` when matching the text would exceed the budget, before any matching. */
+  redact(text: string, budget: RedactionBudget = new RedactionBudget()): string {
+    return this.replace(text, REDACTED, budget);
   }
 
   /** Whether the text shows a typed secret in any form `redact` replaces. */
-  shows(text: string): boolean {
-    return this.redact(text) !== text;
+  shows(text: string, budget: RedactionBudget = new RedactionBudget()): boolean {
+    return this.redact(text, budget) !== text;
+  }
+
+  /**
+   * Whether the whole text is the start of a typed secret, 4 characters or
+   * longer, as a form field that cut what was typed into it holds it. In
+   * another letter case too when the secret is 8 characters or more.
+   */
+  startsSecret(text: string): boolean {
+    const value = collapse(text);
+    if (value.length < MIN_INLINE_LENGTH) return false;
+    return this.variants.some((secret) => secret.startsWith(value) ||
+      (secret.length >= CASELESS_MIN_LENGTH && secret.toLowerCase().startsWith(value.toLowerCase())));
   }
 
   /**
@@ -218,18 +264,23 @@ export class TypedSecrets {
    * field, decoded with and without `+` as a space. A short secret that is a
    * whole part is found there, and so is a form that shows only once decoded.
    */
-  redactUrl(url: string): string {
-    return this.redact(url).replace(/[^/?#&=;:@]+/g, (part) => {
+  redactUrl(url: string, budget: RedactionBudget = new RedactionBudget()): string {
+    return this.redact(url, budget).replace(/[^/?#&=;:@]+/g, (part) => {
       const decoded = [percentDecode(part.replace(/\+/g, ' ')), percentDecode(part)];
-      return decoded.some((each) => this.shows(each)) ? REDACTED : part;
+      return decoded.some((each) => this.shows(each, budget)) ? REDACTED : part;
     });
   }
 
-  private replace(text: string, replacement: string): string {
-    if (this.short.size > 0 && this.short.has(collapse(text))) return replacement;
+  private replace(text: string, replacement: string, budget: RedactionBudget): string {
+    if (this.short.size > 0) {
+      budget.spend(text.length);
+      if (this.short.has(collapse(text))) return replacement;
+    }
     if (!this.pattern || !this.encodedPattern) return text;
     // Only text with a `%` or a `+` can hold an encoded form, and the plain pattern is much the faster on the rest.
-    let result = text.replace(/[%+]/.test(text) ? this.encodedPattern : this.pattern, replacement);
+    const encoded = /[%+]/.test(text);
+    budget.spend(text.length * (encoded ? this.weight.encoded : this.weight.plain));
+    let result = text.replace(encoded ? this.encodedPattern : this.pattern, replacement);
     for (const form of this.cutForms) result = replaceCutPrefix(result, form, replacement);
     return result;
   }

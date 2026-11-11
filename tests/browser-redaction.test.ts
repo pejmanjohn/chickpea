@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { TypedSecrets } from '../src/browser/redaction.ts';
+import { RedactionBudget, RedactionBudgetError, TypedSecrets } from '../src/browser/redaction.ts';
 
 function secrets(...values: string[]): TypedSecrets {
   const typed = new TypedSecrets();
@@ -162,14 +162,60 @@ test('the start of a secret left before three dots is replaced', () => {
   assert.equal(typed.redact('Syn...'), 'Syn...');
 });
 
-test('mask draws a typed secret as bullets of one length, and shows tells whether text holds one', () => {
+test('shows tells whether text holds a typed secret', () => {
   const typed = secrets('Synthetic-Pass-1234', 'Q7!');
-  assert.equal(typed.mask('Wrong password: Synthetic-Pass-1234'), 'Wrong password: ••••••••');
-  assert.equal(typed.mask('Q7!'), '••••••••');
   assert.equal(typed.shows('Wrong password: synthetic-pass-1234'), true);
+  assert.equal(typed.shows('Q7!'), true);
   assert.equal(typed.shows('Wrong password'), false);
   assert.equal(new TypedSecrets().empty, true);
   assert.equal(typed.empty, false);
+});
+
+test('startsSecret finds a field value that is the start of a typed secret, as a field that cut it holds', () => {
+  const typed = secrets('Synthetic-Pass-1234', '493817', 'Ab1');
+  assert.equal(typed.startsSecret('Synthetic-'), true);
+  assert.equal(typed.startsSecret('  SYNTHETIC-PA '), true, 'in another case, for a secret of 8 characters or more');
+  assert.equal(typed.startsSecret('4938'), true);
+  assert.equal(typed.startsSecret('Syn'), false, 'under 4 characters');
+  assert.equal(typed.startsSecret('Pass-1234'), false, 'not its start');
+  assert.equal(typed.startsSecret('Synthetic-Pass-12345'), false, 'longer than the secret');
+  assert.equal(new TypedSecrets().startsSecret('Synthetic-'), false);
+});
+
+test('matching that would exceed its budget throws before it starts, and one budget spans every call it is given to', () => {
+  // The re-review's costly input: a 1,001-character secret of & against 1 MB of near-miss &amp;.
+  const costly = secrets('&'.repeat(1001));
+  const started = performance.now();
+  assert.throws(() => costly.redact('&amp;'.repeat(200_000)), RedactionBudgetError);
+  assert.throws(() => costly.redactUrl(`https://site.example/?q=${'%26'.repeat(333_333)}`), RedactionBudgetError);
+  assert.throws(() => costly.shows('%' + '&amp;'.repeat(200_000)), RedactionBudgetError);
+  assert.ok(performance.now() - started < 50, 'no matching ran');
+
+  const typed = secrets('Synthetic-Pass-1234', '493817');
+  const page = 'The quick brown fox jumps over the lazy dog. Synthetic-Pass-1234 '.repeat(15_000);
+  assert.equal(typed.redact(page).includes('Synthetic'), false, 'a megabyte of ordinary text stays within one budget');
+  const budget = new RedactionBudget(page.length * 200);
+  typed.redact(page, budget);
+  assert.throws(() => typed.redact(page, budget), RedactionBudgetError, 'the second call spends what the first left');
+  assert.equal(new TypedSecrets().redact('x'.repeat(10_000_000), new RedactionBudget(1)), 'x'.repeat(10_000_000), 'nothing typed costs nothing');
+  assert.throws(() => secrets('Q7!').redact('x'.repeat(100), new RedactionBudget(10)), RedactionBudgetError, 'a short secret costs its comparison');
+});
+
+test('redactUrl checks each part of the address against the same budget as the whole', () => {
+  class Counted extends RedactionBudget {
+    spent = 0;
+    override spend(units: number): void {
+      this.spent += units;
+      super.spend(units);
+    }
+  }
+  const typed = secrets('Synthetic-Pass-1234');
+  const url = 'https://site.example/a/b?c=d&e=f#g';
+  const whole = new Counted();
+  typed.redact(url, whole);
+  const parts = new Counted();
+  typed.redactUrl(url, parts);
+  assert.ok(parts.spent > whole.spent * 2, `${parts.spent} against ${whole.spent}`);
 });
 
 test('a value of only whitespace adds no secret', () => {

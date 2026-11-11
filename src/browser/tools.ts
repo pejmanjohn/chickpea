@@ -48,13 +48,17 @@ import {
   BROWSER_LOGIN_REVOKED_MESSAGE,
   BROWSER_NOT_CONNECTED_MESSAGE,
   BROWSER_RECORDING_WITHHELD_MESSAGE,
-  BROWSER_SCREENSHOT_WITHHELD_MESSAGE,
   BROWSER_SIGN_IN_NOTE,
+  BROWSER_TOO_LARGE_TO_CHECK_MESSAGE,
   BROWSER_VISION_UNAVAILABLE_MESSAGE,
   browserCheckOnlyRefusal,
+  browserRecordingWithheldMessage,
+  browserScreenshotWithheldMessage,
 } from './messages.ts';
 import type { PageInfo } from './page.ts';
+import type { SecretOnPage } from './page-secrets.ts';
 import { awaitRecordingDownload, BrowserProviderError, HostedBrowserFailure } from './provider.ts';
+import { RedactionBudget, RedactionBudgetError } from './redaction.ts';
 import { browserHandoffMessage, type NotifyRequester } from './requester.ts';
 import { totpCode } from './totp.ts';
 import type { BrowserTurnSession } from './turn-session.ts';
@@ -177,7 +181,14 @@ export function resolveBrowserTarget(input: string): { url: string; searched: bo
  */
 export function browserErrorMessage(error: unknown, redact: (text: string) => string = (text) => text): string {
   const raw = error instanceof Error ? error.message : String(error);
-  return redactCredentialLikeContent(redact(raw))
+  let redacted: string;
+  try {
+    redacted = redact(raw);
+  } catch (failure) {
+    if (failure instanceof RedactionBudgetError) return BROWSER_TOO_LARGE_TO_CHECK_MESSAGE;
+    throw failure;
+  }
+  return redactCredentialLikeContent(redacted)
     .replace(/(wss?|https?):\/\/[^\s"'<>]*\?[^\s"'<>]*/gi, (match) => `${match.split('?')[0]}?[redacted]`)
     .replace(/((?:api[-_]?key|signingKey|token)\s*[=:]\s*)[^\s&"',]+/gi, '$1[redacted]')
     .slice(0, 500);
@@ -367,24 +378,34 @@ export function createBrowserTools(options: BrowserToolsOptions) {
   const doFetch = options.fetch ?? globalThis.fetch.bind(globalThis);
   const now = options.now ?? (() => new Date());
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  const redact = (text: string) => session.redact(text);
+  const redact = (text: string, budget?: RedactionBudget) => session.redact(text, budget);
   const fail = (error: unknown, tool: BrowserToolName) => {
     const message = browserErrorMessage(error, redact);
     options.log?.warn(`${tool} failed`, { error: message });
     return { output: { error: message } };
   };
   const refuse = (error: string) => ({ output: { error } });
+  /** No picture leaves the browser while the page could show a sign-in secret. */
+  const withheld = (tool: BrowserToolName, reason: SecretOnPage) => {
+    options.log?.warn(`${tool} withheld a picture of the page`, { reason });
+    return browserScreenshotWithheldMessage(reason);
+  };
 
   const logins = new BrowserLoginBinder(session, options.logins, sleep, () => now().getTime(), options.noLoginsMessage);
   const formSteps = new BrowserFormSteps();
 
+  /** A page read spends one redaction budget; past it, the whole read is withheld as an error. */
   const readPage = async (pageInfo?: PageInfo) => {
     const { page } = await requireOpenPage(session);
-    const snap = await page.snapshot({ ...(pageInfo ? { pageInfo } : {}), redact });
+    const budget = new RedactionBudget();
+    const redactPage = (text: string) => session.redact(text, budget);
+    const snap = await page.snapshot({ ...(pageInfo ? { pageInfo } : {}), redact: redactPage });
     // Cap before redacting, keeping a margin so a secret at the cut is still whole when redacted.
     const kept = MAX_SNAPSHOT_CHARS + REDACTION_MARGIN_CHARS;
-    const capped = capSnapshot(redact(snap.text.slice(0, kept)), snap.truncated || snap.text.length > kept);
-    return { url: session.redactUrl(snap.url), title: redact(snap.title), snapshot: capped.snapshot, truncated: capped.truncated };
+    const capped = capSnapshot(redactPage(snap.text.slice(0, kept)), snap.truncated || snap.text.length > kept);
+    return {
+      url: session.redactUrl(snap.url, budget), title: redactPage(snap.title), snapshot: capped.snapshot, truncated: capped.truncated,
+    };
   };
 
   const { askApproval, runApproved } = createBrowserApprovalSteps({
@@ -488,11 +509,11 @@ export function createBrowserTools(options: BrowserToolsOptions) {
       if (!options.inspectScreenshot) return { output: { error: BROWSER_VISION_UNAVAILABLE_MESSAGE } };
       try {
         const { page } = await requireOpenPage(session);
-        const bytes = await page.screenshot({ format: 'jpeg', quality: 70 });
-        if (!bytes) return { output: { error: BROWSER_SCREENSHOT_WITHHELD_MESSAGE } };
+        const shot = await page.screenshot({ format: 'jpeg', quality: 70 });
+        if ('withheld' in shot) return { output: { error: withheld('browser_look', shot.withheld) } };
         const answer = await options.inspectScreenshot({
           question: data.question,
-          bytes,
+          bytes: shot.bytes,
           mimeType: 'image/jpeg',
           ...(signal ? { signal } : {}),
         });
@@ -511,8 +532,9 @@ export function createBrowserTools(options: BrowserToolsOptions) {
     async run({ data }) {
       try {
         const { page } = await requireOpenPage(session);
-        const bytes = await page.screenshot({ format: 'png', ...(data.fullPage ? { fullPage: true } : {}) });
-        if (!bytes) return { output: { attached: false, error: BROWSER_SCREENSHOT_WITHHELD_MESSAGE } };
+        const shot = await page.screenshot({ format: 'png', ...(data.fullPage ? { fullPage: true } : {}) });
+        if ('withheld' in shot) return { output: { attached: false, error: withheld('browser_screenshot', shot.withheld) } };
+        const { bytes } = shot;
         const filename = artifactFilename(undefined, 'screenshot', 'png');
         const outcome = await options.stageArtifact({
           bytes,
@@ -542,8 +564,15 @@ export function createBrowserTools(options: BrowserToolsOptions) {
     input: RECORDING_INPUT,
     async run({ data }) {
       try {
-        // A recording is every frame of the session: no mask applies to it.
+        // A recording is every frame of the session, so one in which a secret was typed is never sent.
         if (session.typedSecret) return { output: { attached: false, error: BROWSER_RECORDING_WITHHELD_MESSAGE } };
+        if (session.active) {
+          const shown = await (await session.ensure()).page.secretOnPage();
+          if (shown) {
+            options.log?.warn('browser_recording withheld a picture of the page', { reason: shown });
+            return { output: { attached: false, error: browserRecordingWithheldMessage(shown) } };
+          }
+        }
         // Ending the session is what lets the provider finalize its recording.
         const ended = await session.close();
         if (!ended) {

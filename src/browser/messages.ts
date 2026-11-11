@@ -2,6 +2,7 @@
  * The fixed text the browser tools return to the model, and the Slack status
  * shown while a step waits for approval.
  */
+import type { SecretOnPage } from './page-secrets.ts';
 
 export const BROWSER_NOT_CONNECTED_MESSAGE =
   'The browser is not connected. Ask an Admin to connect it in Settings › Browser.';
@@ -20,12 +21,33 @@ export const BROWSER_PAGE_CHANGED_MESSAGE =
 /** Slack status while a data-changing step waits for the person. */
 export const BROWSER_APPROVAL_ACTIVITY = ['checking', 'Waiting for approval on', 'a website'] as const;
 export const BROWSER_NO_PAGE_MESSAGE = 'No page is open in the browser. Call browser_open first.';
-export const BROWSER_SCREENSHOT_WITHHELD_MESSAGE =
-  'The screenshot was withheld because the page shows a sign-in password or code that could not be hidden. Read the page with browser_snapshot instead.';
-export const BROWSER_APPROVAL_SCREENSHOT_WITHHELD_NOTE =
-  'No screenshot goes with this request: the page shows a sign-in password or code that could not be hidden.';
+
+/** Why the page is not pictured, in words that follow "because". */
+const SECRET_ON_PAGE: Record<SecretOnPage, string> = {
+  field: 'a sign-in field on the page holds a password or code',
+  text: 'the page shows the password or code typed to sign in',
+  unchecked: 'the page could not be checked for a sign-in password or code',
+};
+export function browserScreenshotWithheldMessage(reason: SecretOnPage): string {
+  const next = reason === 'field'
+    ? 'Take it once the sign-in has finished and the form is gone, or read the page with browser_snapshot.'
+    : 'Read the page with browser_snapshot instead.';
+  return `The screenshot was withheld because ${SECRET_ON_PAGE[reason]}. ${next}`;
+}
+export function browserApprovalScreenshotWithheldNote(reason: SecretOnPage): string {
+  return `No screenshot goes with this request: ${SECRET_ON_PAGE[reason]}.`;
+}
 export const BROWSER_RECORDING_WITHHELD_MESSAGE =
   'The recording was withheld because a sign-in password or code was typed in this browser session, and the recording could show it. The session is still open. Describe what it showed, or attach a screenshot with browser_screenshot.';
+export function browserRecordingWithheldMessage(reason: SecretOnPage): string {
+  return `The recording was withheld because ${SECRET_ON_PAGE[reason]}. The session is still open. Describe what it showed instead.`;
+}
+/** Text too large to check for a typed secret in the time a tool may take, withheld whole. */
+export const BROWSER_TOO_LARGE_TO_CHECK_MESSAGE =
+  'This was withheld because it is too large to check for the password or code typed to sign in. Open a smaller page on the site, such as one item or a search result.';
+/** A held step is stored until approval; one that would keep a typed secret is never held. */
+export const BROWSER_APPROVAL_HOLDS_SECRET_MESSAGE =
+  "This step cannot wait for approval: the page's address or the form holds the password or code typed to sign in, and a held step never keeps it. Open the page again from a link on the site, fill in the form again, and ask again.";
 export const BROWSER_VISION_UNAVAILABLE_MESSAGE =
   "This Agent's model cannot look at images. Use browser_snapshot instead.";
 export const BROWSER_NO_LOGINS_MESSAGE =

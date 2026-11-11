@@ -15,7 +15,7 @@
 import type { CdpClient, CdpSocket } from './cdp.ts';
 import type { BrowserPage } from './page.ts';
 import type { BrowserProvider } from './provider.ts';
-import { TypedSecrets } from './redaction.ts';
+import { TypedSecrets, type RedactionBudget } from './redaction.ts';
 
 export const DEFAULT_BROWSER_SESSION_MS = 10 * 60 * 1000;
 export const BROWSER_VIEWPORT = { width: 1280, height: 800 } as const;
@@ -155,12 +155,13 @@ export class BrowserTurnSession {
     this.secrets.add(value);
   }
 
-  redact(text: string): string {
-    return this.secrets.redact(text);
+  /** Pass one `budget` for every piece of text one tool result shows; it throws `RedactionBudgetError` once spent. */
+  redact(text: string, budget?: RedactionBudget): string {
+    return this.secrets.redact(text, budget);
   }
 
-  redactUrl(url: string): string {
-    return this.secrets.redactUrl(url);
+  redactUrl(url: string, budget?: RedactionBudget): string {
+    return this.secrets.redactUrl(url, budget);
   }
 
   /** The open session, whichever login it is bound to; opens a public one when none is open. */

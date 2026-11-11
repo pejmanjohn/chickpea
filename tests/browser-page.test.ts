@@ -17,10 +17,36 @@ function setup() {
     if (expression === 'document.readyState') return { result: { result: { type: 'string', value: 'complete' } } };
     return { result: { result: { type: 'number', value: 42 } } };
   });
+  socket.responders.set('DOM.describeNode', () => ({ result: { node: { nodeName: 'INPUT', attributes: ['type', 'text'] } } }));
+  socket.responders.set('DOMSnapshot.captureSnapshot', () => ({ result: domSnapshot() }));
   const client = new CdpClient(socket);
-  const page = new BrowserPage(client, SESSION, { sleep: async () => undefined });
-  return { socket, client, page };
+  const secrets = new TypedSecrets();
+  const page = new BrowserPage(client, SESSION, { sleep: async () => undefined, secrets });
+  return { socket, client, page, secrets };
 }
+
+/** One target's `DOMSnapshot.captureSnapshot`: its inputs, frame elements whose document is elsewhere, and other strings. */
+function domSnapshot(content: {
+  inputs?: Array<{ id: number; type?: string; value: string }>;
+  remoteFrames?: number[];
+  strings?: string[];
+} = {}) {
+  const strings: string[] = [];
+  const at = (text: string) => (strings.includes(text) ? strings.indexOf(text) : strings.push(text) - 1);
+  const inputs = content.inputs ?? [];
+  const frames = content.remoteFrames ?? [];
+  const nodes = {
+    nodeName: [...inputs.map(() => at('INPUT')), ...frames.map(() => at('IFRAME'))],
+    backendNodeId: [...inputs.map((input) => input.id), ...frames],
+    attributes: [...inputs.map((input) => [at('type'), at(input.type ?? 'text')]), ...frames.map(() => [])],
+    inputValue: { index: inputs.map((_, index) => index), value: inputs.map((input) => (input.value ? at(input.value) : -1)) },
+  };
+  for (const text of content.strings ?? []) at(text);
+  return { documents: [{ nodes, layout: { nodeIndex: [], text: [] } }], strings };
+}
+
+/** CDP methods that read a page without changing it. */
+const READ_ONLY = new Set(['Target.setAutoAttach', 'DOMSnapshot.captureSnapshot', 'DOM.describeNode', 'Page.captureScreenshot', 'Page.getLayoutMetrics', 'Page.getFrameTree']);
 
 const ax = (
   nodeId: string,
@@ -406,18 +432,142 @@ test('a secret field shows [redacted] for any value and nothing of what it holds
   ]);
 });
 
-test('screenshot captures nothing when a secret was typed and the page cannot be masked', async () => {
-  const socket = new FakeCdpSocket();
-  const client = new CdpClient(socket);
-  const secrets = new TypedSecrets();
-  const page = new BrowserPage(client, SESSION, { secrets });
-  socket.responders.set('Page.captureScreenshot', () => ({ result: { data: 'iVBORw0KGgo=' } }));
-  assert.ok(await page.screenshot());
-  assert.deepEqual(socket.methods(), ['Page.captureScreenshot'], 'with nothing typed, a plain screenshot');
+test('snapshot shows [redacted] for the value of a password or code field whoever filled it, and of a field holding the start of a typed secret', async () => {
+  const { socket, page, client, secrets } = setup();
   secrets.add('Synthetic-Pass-1234');
-  // The fake browser refuses an isolated world.
-  assert.equal(await page.screenshot(), undefined);
-  assert.equal(socket.methods().filter((method) => method === 'Page.captureScreenshot').length, 1);
+  const kinds: Record<number, string[]> = { 40: ['type', 'password'], 41: ['autocomplete', 'one-time-code'] };
+  socket.responders.set('DOM.describeNode', (message) => {
+    const id = Number(message.params.backendNodeId);
+    if (id === 44) return { error: { code: -32000, message: 'No node with given id found' } };
+    return { result: { node: { nodeName: 'INPUT', attributes: kinds[id] ?? ['type', 'text'] } } };
+  });
+  const field = (nodeId: string, name: string, id: number, value: string) =>
+    ax(nodeId, 'textbox', { parentId: '1', name, backendDOMNodeId: id, value: { type: 'string', value } });
+  socket.responders.set('Accessibility.getFullAXTree', () => ({
+    result: {
+      nodes: [
+        ax('1', 'RootWebArea', { childIds: ['2', '3', '4', '5', '6', '7'] }),
+        // A masked password field, filled by the page or a person: Chromium gives one bullet per character.
+        field('2', 'Password', 40, '•••••••••••••••••••'),
+        field('3', 'Code', 41, '493817'),
+        // A copy of a password field that cut what was typed, made after the sign-in.
+        field('4', 'Password', 42, 'Synthetic-'),
+        ax('5', 'searchbox', { parentId: '1', name: 'Search', backendDOMNodeId: 43, value: { type: 'string', value: 'invoices' } }),
+        field('6', 'Gone', 44, 'Anything'),
+        field('7', 'Empty', 45, ''),
+      ],
+    },
+  }));
+  assert.deepEqual((await page.snapshot()).text.split('\n'), [
+    '- textbox "Password" [ref=e1] value="[redacted]"',
+    '- textbox "Code" [ref=e2] value="[redacted]"',
+    '- textbox "Password" [ref=e3] value="[redacted]"',
+    '- searchbox "Search" [ref=e4] value="invoices"',
+    '- textbox "Gone" [ref=e5] value="[redacted]"',
+    '- textbox "Empty" [ref=e6]',
+  ]);
+  const described = socket.sent.filter((message) => message.method === 'DOM.describeNode').map((message) => message.params.backendNodeId);
+  assert.deepEqual(described.sort(), [40, 41, 43, 44], 'only fields that hold a value are described, and not one that starts a secret');
+  client.close();
+});
+
+test('snapshot redacts only the lines it keeps', async () => {
+  const { socket, page, client } = setup();
+  socket.responders.set('Accessibility.getFullAXTree', () => ({
+    result: {
+      nodes: [
+        ax('1', 'RootWebArea', { childIds: ['2', '3', '4'] }),
+        ...['One', 'Two', 'Three'].map((name, index) => ax(String(index + 2), 'button', { parentId: '1', name, backendDOMNodeId: index + 2 })),
+      ],
+    },
+  }));
+  const seen: string[] = [];
+  const snap = await page.snapshot({ maxNodes: 2, redact: (text) => (seen.push(text), text) });
+  assert.deepEqual(seen.filter(Boolean), ['One', 'Two']);
+  assert.equal(snap.nodeCount, 3);
+  client.close();
+});
+
+test('screenshot reads the page before and after the capture, and changes nothing on it', async () => {
+  const { socket, page, client } = setup();
+  socket.responders.set('Page.captureScreenshot', () => ({ result: { data: 'iVBORw0KGgo=' } }));
+  const shot = await page.screenshot();
+  assert.ok('bytes' in shot);
+  assert.deepEqual(socket.methods(), ['Target.setAutoAttach', 'DOMSnapshot.captureSnapshot', 'Page.captureScreenshot', 'DOMSnapshot.captureSnapshot']);
+  await page.screenshot();
+  assert.equal(socket.methods().filter((method) => method === 'Target.setAutoAttach').length, 1, 'frames attach once');
+  assert.deepEqual(socket.methods().filter((method) => !READ_ONLY.has(method)), []);
+  client.close();
+});
+
+test('screenshot is withheld, with nothing captured, while a password field holds a value, and taken once the form is gone', async () => {
+  const { socket, page, client } = setup();
+  let page1 = domSnapshot({ inputs: [{ id: 40, type: 'password', value: 'Synthetic-Pass-1234' }] });
+  socket.responders.set('DOMSnapshot.captureSnapshot', () => ({ result: page1 }));
+  socket.responders.set('Page.captureScreenshot', () => ({ result: { data: 'iVBORw0KGgo=' } }));
+  assert.deepEqual(await page.screenshot(), { withheld: 'field' });
+  assert.equal(socket.methods().includes('Page.captureScreenshot'), false);
+  page1 = domSnapshot({ strings: ['Welcome back'] });
+  assert.ok('bytes' in await page.screenshot());
+  client.close();
+});
+
+test('a capture is discarded when the page shows a typed secret by the time it is taken', async () => {
+  const { socket, page, client, secrets } = setup();
+  secrets.add('Synthetic-Pass-1234');
+  let captured = false;
+  socket.responders.set('Page.captureScreenshot', () => {
+    captured = true;
+    return { result: { data: 'iVBORw0KGgo=' } };
+  });
+  socket.responders.set('DOMSnapshot.captureSnapshot', () => ({
+    result: domSnapshot({ strings: captured ? ['You typed Synthetic-Pass-1234'] : ['Sign in'] }),
+  }));
+  assert.deepEqual(await page.screenshot(), { withheld: 'text' });
+  assert.equal(captured, true);
+  client.close();
+});
+
+test('screenshot is unchecked, with nothing captured, when the browser cannot read the page', async () => {
+  const { socket, page, client } = setup();
+  socket.responders.set('DOMSnapshot.captureSnapshot', () => ({ error: { code: -32000, message: 'snapshot failed' } }));
+  assert.deepEqual(await page.screenshot(), { withheld: 'unchecked' });
+  assert.equal(socket.methods().includes('Page.captureScreenshot'), false);
+  client.close();
+});
+
+test('screenshot reads each out-of-process frame the browser attaches, and a frame it did not attach leaves the page unchecked', async () => {
+  const { socket, page, client, secrets } = setup();
+  secrets.add('Synthetic-Pass-1234');
+  socket.responders.set('Target.setAutoAttach', (message) => {
+    // The browser reports the frames already there after the command arrives and before it answers.
+    const child = { [SESSION]: ['frame-1', 'F1'], 'frame-1': ['frame-2', 'F2'] }[message.sessionId!];
+    if (child) {
+      queueMicrotask(() => socket.emitEvent('Target.attachedToTarget', { sessionId: child[0], targetInfo: { type: 'iframe', targetId: child[1] } }, message.sessionId));
+    }
+    return { result: {} };
+  });
+  const frames: Record<string, ReturnType<typeof domSnapshot>> = {
+    [SESSION]: domSnapshot({ remoteFrames: [50] }),
+    'frame-1': domSnapshot({ remoteFrames: [7], strings: ['Welcome'] }),
+    'frame-2': domSnapshot({ strings: ['deep Synthetic-Pass-1234'] }),
+  };
+  socket.responders.set('DOMSnapshot.captureSnapshot', (message) => ({ result: frames[message.sessionId!]! }));
+  const frameIds: Record<string, string> = { [`${SESSION}:50`]: 'F1', 'frame-1:7': 'F2' };
+  socket.responders.set('DOM.describeNode', (message) => ({
+    result: { node: { nodeName: 'IFRAME', frameId: frameIds[`${message.sessionId}:${String(message.params.backendNodeId)}`] } },
+  }));
+  assert.deepEqual(await page.screenshot(), { withheld: 'text' });
+  assert.deepEqual(
+    socket.sent.filter((message) => message.method === 'DOMSnapshot.captureSnapshot').map((message) => message.sessionId),
+    [SESSION, 'frame-1', 'frame-2'],
+  );
+
+  frames['frame-2'] = domSnapshot({ strings: ['Welcome'] });
+  socket.responders.set('Page.captureScreenshot', () => ({ result: { data: 'iVBORw0KGgo=' } }));
+  assert.ok('bytes' in await page.screenshot());
+  socket.emitEvent('Target.detachedFromTarget', { sessionId: 'frame-2' }, 'frame-1');
+  assert.deepEqual(await page.screenshot(), { withheld: 'unchecked' }, 'frame-1 still holds the frame that left');
   client.close();
 });
 
@@ -430,9 +580,10 @@ test('act with an unknown ref asks for a new snapshot', async () => {
 test('screenshot decodes base64 image data', async () => {
   const { socket, page, client } = setup();
   socket.responders.set('Page.captureScreenshot', () => ({ result: { data: 'iVBORw0KGgo=' } }));
-  const bytes = await page.screenshot({ format: 'jpeg', quality: 70 });
-  assert.deepEqual([...bytes!], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-  assert.deepEqual(socket.sent[0]!.params, { format: 'jpeg', quality: 70 });
+  const shot = await page.screenshot({ format: 'jpeg', quality: 70 });
+  assert.ok('bytes' in shot);
+  assert.deepEqual([...shot.bytes], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  assert.deepEqual(socket.sent.find((m) => m.method === 'Page.captureScreenshot')!.params, { format: 'jpeg', quality: 70 });
 
   socket.responders.set('Page.getLayoutMetrics', () => ({ result: { cssContentSize: { x: 0, y: 0, width: 1280.4, height: 3000 } } }));
   await page.screenshot({ fullPage: true });

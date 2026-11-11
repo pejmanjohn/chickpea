@@ -12,6 +12,7 @@ import {
   type BrowserToolsOptions,
 } from '../src/browser/tools.ts';
 import { BrowserTurnSession } from '../src/browser/turn-session.ts';
+import { TypedSecrets } from '../src/browser/redaction.ts';
 import { PENDING_CONTEXT_DELETIONS_SETTING } from '../src/browser/context-deletions.ts';
 import { createWebsiteLogin, deleteWebsiteLogin, getWebsiteLogin, type WebsiteLogin } from '../src/browser/logins.ts';
 import {
@@ -23,11 +24,14 @@ import {
 import { browserHandoffMessage, createSlackRequesterNotifier } from '../src/browser/requester.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import {
+  BROWSER_APPROVAL_HOLDS_SECRET_MESSAGE,
   BROWSER_APPROVAL_INSTRUCTION,
-  BROWSER_APPROVAL_SCREENSHOT_WITHHELD_NOTE,
   BROWSER_RECORDING_WITHHELD_MESSAGE,
-  BROWSER_SCREENSHOT_WITHHELD_MESSAGE,
+  BROWSER_TOO_LARGE_TO_CHECK_MESSAGE,
   HOSTED_BROWSER_UNAVAILABLE_MESSAGE,
+  browserApprovalScreenshotWithheldNote,
+  browserRecordingWithheldMessage,
+  browserScreenshotWithheldMessage,
 } from '../src/browser/messages.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import type { SlackArtifactStageInput, SlackArtifactStageOutcome } from '../src/sandbox/artifact-tool.ts';
@@ -52,23 +56,20 @@ const FIELD_ROLES = new Set(['textbox', 'searchbox', 'combobox']);
 
 /**
  * A scripted page: navigation sets the URL and title, and fires the load
- * event. Each node's name stands for text the page draws, except the names
- * in `attributeNames` (an `aria-label`, say), which masking cannot reach.
- * Masking for a screenshot shows in the tree until the page is restored.
+ * event. The browser's DOM snapshot reports each field of the tree as an
+ * input holding its value, of type password when `passwordFields` names it,
+ * and every name and value as a string, as it reports text, attributes and
+ * CSS content.
  */
 class ScriptedBrowser extends FakeCdpSocket {
   url = 'about:blank';
   title = '';
   tree: AXNode[] = TREE;
-  readonly attributeNames = new Set<string>();
-  /** The page puts back any style put on its fields, as a script of its own could. */
-  undoesMask = false;
-  /** What the page drew at each screenshot: every name and value in the tree. */
-  readonly captured: string[] = [];
+  /** Fields whose input type is password, by backend node id. */
+  readonly passwordFields = new Set<number>();
+  /** Screenshots the browser took. */
+  captures = 0;
   private loads = 0;
-  private readonly maskedNames = new Map<string, string>();
-  private readonly hiddenFields = new Set<number>();
-  private read: { names: string[]; inputs: number[] } = { names: [], inputs: [] };
 
   constructor() {
     super();
@@ -86,60 +87,34 @@ class ScriptedBrowser extends FakeCdpSocket {
         ? { result: { type: 'object', value: { url: this.url, title: this.title } } }
         : { result: { type: 'string', value: 'complete' } },
     }));
-    this.responders.set('Accessibility.getFullAXTree', () => ({ result: { nodes: this.drawn() } }));
+    this.responders.set('Accessibility.getFullAXTree', () => ({ result: { nodes: this.tree } }));
     this.responders.set('DOM.getBoxModel', () => ({ result: { model: { content: [0, 0, 10, 0, 10, 10, 0, 10] } } }));
     this.responders.set('Page.captureScreenshot', (message) => {
-      this.captured.push(this.drawn().flatMap((node) => [node.name?.value, node.value?.value]).filter(Boolean).join('\n'));
+      this.captures += 1;
       return { result: { data: toBase64(message.params.format === 'jpeg' ? JPEG_BYTES : PNG_BYTES) } };
     });
     this.responders.set('Page.getFrameTree', () => ({ result: { frameTree: { frame: { id: 'f1', loaderId: `l${this.loads}` } } } }));
-    this.responders.set('Page.createIsolatedWorld', () => ({ result: { executionContextId: 9 } }));
-    this.responders.set('DOM.resolveNode', (message) => ({ result: { object: { objectId: `node-${message.params.backendNodeId}` } } }));
-    this.responders.set('Runtime.callFunctionOn', (message) => ({ result: { result: { value: this.mask(message.params) } } }));
+    this.responders.set('DOM.describeNode', (message) => ({
+      result: { node: { nodeName: 'INPUT', attributes: ['type', this.passwordFields.has(Number(message.params.backendNodeId)) ? 'password' : 'text'] } },
+    }));
+    this.responders.set('DOMSnapshot.captureSnapshot', () => ({ result: this.domSnapshot() }));
   }
 
-  /** The tree as the browser now draws it. */
-  drawn(): AXNode[] {
-    return this.tree.map((node) => {
-      const name = this.maskedNames.get(node.nodeId);
-      const hidden = node.backendDOMNodeId !== undefined && this.hiddenFields.has(node.backendDOMNodeId) && !this.undoesMask;
-      const value = typeof node.value?.value === 'string' && hidden ? '•'.repeat(node.value.value.length) : undefined;
-      return {
-        ...node,
-        ...(name === undefined ? {} : { name: { type: 'computedString', value: name } }),
-        ...(value === undefined ? {} : { value: { type: 'string', value } }),
-      };
-    });
-  }
-
-  private mask(params: Record<string, unknown>): unknown {
-    const [step, payload, ...elements] = (params.arguments as Array<{ value?: any; objectId?: string }>);
-    switch (step?.value) {
-      case 'hide':
-        for (const element of elements) this.hiddenFields.add(Number(element.objectId!.replace('node-', '')));
-        return true;
-      case 'read': {
-        const drawn = this.drawn();
-        const texts = drawn.filter((node) => node.name?.value && node.role?.value !== 'RootWebArea' && !this.attributeNames.has(node.nodeId));
-        const inputs = drawn.filter((node) => FIELD_ROLES.has(String(node.role?.value)) && !this.hiddenFields.has(node.backendDOMNodeId!));
-        this.read = { names: texts.map((node) => node.nodeId), inputs: inputs.map((node) => node.backendDOMNodeId!) };
-        return {
-          texts: texts.map((node) => node.name!.value),
-          inputs: inputs.map((node) => node.value?.value ?? ''),
-          hiddenShown: this.undoesMask && this.hiddenFields.size > 0,
-        };
-      }
-      case 'mask':
-        for (const [index, masked] of payload!.value.texts) this.maskedNames.set(this.read.names[index]!, masked);
-        for (const index of payload!.value.inputs) this.hiddenFields.add(this.read.inputs[index]!);
-        return true;
-      case 'restore':
-        this.maskedNames.clear();
-        this.hiddenFields.clear();
-        return true;
-      default:
-        throw new Error(`unexpected page function ${String(step?.value)}`);
-    }
+  private domSnapshot() {
+    const strings: string[] = [];
+    const at = (text: string) => (strings.includes(text) ? strings.indexOf(text) : strings.push(text) - 1);
+    const fields = this.tree.filter((node) => FIELD_ROLES.has(String(node.role?.value)) && node.backendDOMNodeId !== undefined);
+    const nodes = {
+      nodeName: fields.map(() => at('INPUT')),
+      backendNodeId: fields.map((node) => node.backendDOMNodeId!),
+      attributes: fields.map((node) => [at('type'), at(this.passwordFields.has(node.backendDOMNodeId!) ? 'password' : 'text')]),
+      inputValue: {
+        index: fields.map((_, index) => index),
+        value: fields.map((node) => (node.value?.value ? at(String(node.value.value)) : -1)),
+      },
+    };
+    for (const node of this.tree) for (const text of [node.name?.value, node.value?.value]) if (text) at(String(text));
+    return { documents: [{ nodes }], strings };
   }
 }
 
@@ -886,57 +861,80 @@ test('a field that holds a password or code shows [redacted], whatever it holds:
   await session.close();
 });
 
-test('a screenshot after signing in is taken with the typed password masked, and the page is put back after it', async () => {
-  const password = 'Synthetic-Pass-1234';
-  const { run, browsers, github, session, staged } = await loginSetup({ password, browser: () => new RevealingLoginBrowser() });
-  await run('browser_open', { url: 'https://github.com/login' });
-  await run('browser_sign_in', { loginId: github.id, usernameRef: 'e1', passwordRef: 'e2', submitRef: 'e4' });
-  const browser = browsers[0]!;
-  assert.ok(browser.drawn().some((node) => node.name?.value === password), 'the page shows the password');
-  const shot = await run('browser_screenshot', {});
-  assert.equal(shot.attached, true);
-  assert.equal(staged.length, 1);
-  assert.equal(browser.captured.length, 1);
-  assert.doesNotMatch(browser.captured[0]!, /Synthetic/);
-  assert.match(browser.captured[0]!, /octo@example\.com/);
-  assert.deepEqual(browser.drawn(), browser.tree, 'the page is put back');
-  await session.close();
-});
-
-test('a screenshot is withheld when the page shows a typed secret it cannot mask, and browser_look sends no image', async () => {
+test('no picture leaves the browser while a field the sign-in filled holds its value; once the form is gone, one does', async () => {
   const password = 'Synthetic-Pass-1234';
   const looked: unknown[] = [];
-  const { run, browsers, github, session, staged } = await loginSetup({
+  const { run, browsers, github, session, staged, warnings } = await loginSetup({
     password,
     browser: () => new RevealingLoginBrowser(),
     inspectScreenshot: async (input) => {
       looked.push(input);
-      return 'unused';
+      return 'A welcome page.';
     },
   });
   await run('browser_open', { url: 'https://github.com/login' });
   await run('browser_sign_in', { loginId: github.id, usernameRef: 'e1', passwordRef: 'e2', submitRef: 'e4' });
   const browser = browsers[0]!;
-  // The echo is an aria-label, say, which no text masking reaches.
-  browser.attributeNames.add('9');
-  assert.deepEqual(await run('browser_screenshot', {}), { attached: false, error: BROWSER_SCREENSHOT_WITHHELD_MESSAGE });
-  assert.deepEqual(await run('browser_look', { question: 'What does the page show?' }), { error: BROWSER_SCREENSHOT_WITHHELD_MESSAGE });
-  assert.equal(browser.captured.length, 0);
+  warnings.length = 0;
+  const field = browserScreenshotWithheldMessage('field');
+  assert.deepEqual(await run('browser_screenshot', {}), { attached: false, error: field });
+  assert.deepEqual(await run('browser_look', { question: 'What does the page show?' }), { error: field });
+  assert.equal(browser.captures, 0);
   assert.equal(staged.length, 0);
   assert.equal(looked.length, 0);
-  assert.deepEqual(browser.drawn(), browser.tree, 'the page is put back');
+  assert.deepEqual(warnings, [
+    ['browser_screenshot withheld a picture of the page', { reason: 'field' }],
+    ['browser_look withheld a picture of the page', { reason: 'field' }],
+  ]);
+
+  // A single-page app signs in without navigating: the form goes, and the page still shows the password.
+  browser.tree = [ax('1', 'RootWebArea', { childIds: ['2', '9'] }), ax('2', 'heading', { parentId: '1', label: 'Welcome', backendDOMNodeId: 5 }),
+    ax('9', 'StaticText', { parentId: '1', label: `You typed ${password}` })];
+  assert.deepEqual(await run('browser_screenshot', {}), { attached: false, error: browserScreenshotWithheldMessage('text') });
+  assert.equal(browser.captures, 0);
+  browser.tree = browser.tree.slice(0, 2);
+  assert.equal((await run('browser_screenshot', {})).attached, true);
+  assert.deepEqual(await run('browser_look', { question: 'What does the page show?' }), { answer: 'A welcome page.' });
+  assert.equal(browser.captures, 2);
   await session.close();
 });
 
-test('a screenshot is withheld when the page undoes the mask on a field a secret was typed into', async () => {
-  const { run, browsers, github, session, staged } = await loginSetup({ browser: () => new RevealingLoginBrowser() });
+test('a password field holding a value withholds every picture, though no secret was typed this turn', async () => {
+  const { run, browsers, session, staged } = await loginSetup({ browser: () => new RevealingLoginBrowser() });
   await run('browser_open', { url: 'https://github.com/login' });
-  await run('browser_sign_in', { loginId: github.id, usernameRef: 'e1', passwordRef: 'e2', submitRef: 'e4' });
-  browsers[0]!.undoesMask = true;
-  assert.deepEqual(await run('browser_screenshot', {}), { attached: false, error: BROWSER_SCREENSHOT_WITHHELD_MESSAGE });
-  assert.equal(browsers[0]!.captured.length, 0);
+  const browser = browsers[0]!;
+  browser.passwordFields.add(12);
+  browser.tree = browser.tree.map((node) => (node.backendDOMNodeId === 12 ? { ...node, value: { type: 'string', value: '•••••' } } : node));
+  assert.deepEqual(await run('browser_screenshot', {}), { attached: false, error: browserScreenshotWithheldMessage('field') });
+  assert.deepEqual(await run('browser_recording', {}), { attached: false, error: browserRecordingWithheldMessage('field') });
+  assert.match((await run('browser_snapshot')).snapshot, /textbox "Password" \[ref=e2\] value="\[redacted\]"/);
+  assert.equal(browser.captures, 0);
   assert.equal(staged.length, 0);
+  assert.equal(session.active, true);
   await session.close();
+});
+
+test('a page read too large to check for a typed secret is withheld whole, with a log line that holds none of it', async () => {
+  const { run, browsers, github, session, warnings } = await loginSetup({ password: `${'x'.repeat(1000)}y` });
+  await run('browser_open', { url: 'https://github.com/login' });
+  await run('browser_sign_in', { loginId: github.id, passwordRef: 'e2' });
+  const browser = browsers[0]!;
+  // Each line alone fits the budget; the page read as a whole does not.
+  const ids = Array.from({ length: 10 }, (_, index) => String(index + 2));
+  browser.tree = [
+    ax('1', 'RootWebArea', { childIds: ids }),
+    ...ids.map((id, index) => ax(id, 'StaticText', { parentId: '1', label: 'x'.repeat(100_000 - index) })),
+  ];
+  warnings.length = 0;
+  assert.deepEqual(await run('browser_snapshot'), { error: BROWSER_TOO_LARGE_TO_CHECK_MESSAGE });
+  assert.deepEqual(warnings, [['browser_snapshot failed', { error: BROWSER_TOO_LARGE_TO_CHECK_MESSAGE }]]);
+  await session.close();
+});
+
+test('an error too large to check for a typed secret is replaced whole', () => {
+  const secrets = new TypedSecrets();
+  secrets.add(`${'x'.repeat(1000)}y`);
+  assert.equal(browserErrorMessage(new Error('x'.repeat(1_000_000)), (text) => secrets.redact(text)), BROWSER_TOO_LARGE_TO_CHECK_MESSAGE);
 });
 
 test('browser_recording is withheld, and the session left open, once a password was typed in it', async () => {
@@ -1383,56 +1381,83 @@ test('an action login holds a data-changing step for approval with a screenshot,
   await approved.session.close();
 });
 
-test('a typed secret in an element name stays out of the approval description where the description cuts it', async () => {
+test('the start of a typed secret the approval description cuts short is redacted', async () => {
   const secret = 'Synthetic-Recovery-Phrase-0042-alpha-bravo';
   const tree = FORM_TREE.map((node) => (node.nodeId === '4'
-    ? { ...node, name: { type: 'computedString', value: `Confirm the change for the account whose recovery phrase is ${secret}` } }
+    ? { ...node, name: { type: 'computedString', value: 'Confirm the change for the account whose recovery phrase begins Synthetic-Recovery-Phrase' } }
     : node));
   const turn = await actTurn({ settings: new SqliteSettingsStore(':memory:'), messageTs: TURN_1_TS, tree });
   await turn.run('browser_open', { url: 'https://billing.example.com/plan' });
   turn.session.addRedaction(secret);
   const held = await turn.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
-  assert.equal(held.description, 'click "Confirm the change for the account whose recovery phrase is [redacted]"');
-  assertSecretHidden(held, secret, 'approval description');
-  assertSecretHidden({ description: turn.staged[0]!.title }, secret, 'approval screenshot title');
+  assert.equal(held.description, 'click "Confirm the change for the account whose recovery phrase begins [redacted]…"');
+  assert.equal(turn.staged[0]!.title, `About to: ${held.description}`);
   assert.equal(held.note, undefined);
-  assert.equal(turn.browsers[0]!.captured.length, 1);
-  assertSecretHidden({ description: turn.browsers[0]!.captured[0]! }, secret, 'approval screenshot');
   await turn.session.close();
 });
 
-test('an approval asks without a screenshot when the page shows a typed secret it cannot mask', async () => {
+test('an approval asks without a screenshot when the page shows a typed secret', async () => {
   const secret = 'Synthetic-Recovery-Phrase-0042-alpha-bravo';
-  const tree = FORM_TREE.map((node) => (node.nodeId === '4'
-    ? { ...node, name: { type: 'computedString', value: `Confirm the change for ${secret}` } }
-    : node));
-  const turn = await actTurn({
-    settings: new SqliteSettingsStore(':memory:'), messageTs: TURN_1_TS, tree,
-    // The button's name is its aria-label, which no text masking reaches.
-    prepare: (browser) => browser.attributeNames.add('4'),
-  });
+  const tree = [
+    { ...FORM_TREE[0]!, childIds: [...FORM_TREE[0]!.childIds!, '9'] },
+    ...FORM_TREE.slice(1),
+    ax('9', 'StaticText', { parentId: '1', label: `Your recovery phrase is ${secret}` }),
+  ];
+  const turn = await actTurn({ settings: new SqliteSettingsStore(':memory:'), messageTs: TURN_1_TS, tree });
   await turn.run('browser_open', { url: 'https://billing.example.com/plan' });
   turn.session.addRedaction(secret);
   const held = await turn.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
   assert.equal(held.awaitingApproval, true);
-  assert.equal(held.note, BROWSER_APPROVAL_SCREENSHOT_WITHHELD_NOTE);
+  assert.equal(held.note, browserApprovalScreenshotWithheldNote('text'));
   assert.equal(turn.staged.length, 0);
-  assert.equal(turn.browsers[0]!.captured.length, 0);
+  assert.equal(turn.browsers[0]!.captures, 0);
   await turn.session.close();
 });
 
-test('a typed secret in the text of a held step stays out of the approval description where the description cuts it', async () => {
+test('a step is never held while the page address, its title, its element, its text or a step before it holds a typed secret', async () => {
   const secret = 'Synthetic-Recovery-Phrase-0042-alpha-bravo';
-  const turn = await actTurn({ settings: new SqliteSettingsStore(':memory:'), messageTs: TURN_1_TS });
-  await turn.run('browser_open', { url: 'https://billing.example.com/plan' });
-  turn.session.addRedaction(secret);
-  const held = await turn.run('browser_act', {
-    ref: 'e1', action: 'type', text: `The recovery phrase for this account is ${secret}`, mayChangeData: true,
-  });
-  assert.equal(held.description, 'type "The recovery phrase for this account is [redacted]…" into "Customer name"');
-  assertSecretHidden(held, secret, 'approval description');
-  assertSecretHidden({ description: turn.staged[0]!.title }, secret, 'approval screenshot title');
-  await turn.session.close();
+  const cases: Array<[string, (turn: Awaited<ReturnType<typeof actTurn>>) => Promise<Record<string, unknown>>]> = [
+    ['address', async (turn) => {
+      // A sign-in sent as a GET form leaves the password in the address.
+      turn.browsers[0]!.url = `https://billing.example.com/plan?password=${encodeURIComponent(secret)}`;
+      return turn.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
+    }],
+    ['title', async (turn) => {
+      turn.browsers[0]!.title = `Signed in with ${secret}`;
+      return turn.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
+    }],
+    ['element', async (turn) => {
+      turn.browsers[0]!.tree = FORM_TREE.map((node) => (node.nodeId === '4' ? { ...node, name: { type: 'computedString', value: `Confirm ${secret}` } } : node));
+      await turn.run('browser_snapshot');
+      return turn.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
+    }],
+    ['text', async (turn) => turn.run('browser_act', { ref: 'e1', action: 'type', text: `phrase ${secret}`, mayChangeData: true })],
+    ['step before', async (turn) => {
+      turn.browsers[0]!.tree = FORM_TREE.map((node) => (node.nodeId === '2' ? { ...node, name: { type: 'computedString', value: `Name for ${secret}` } } : node));
+      await turn.run('browser_snapshot');
+      await turn.run('browser_act', { ref: 'e1', action: 'type', text: 'Ada' });
+      return turn.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
+    }],
+  ];
+  const control = new SqliteSettingsStore(':memory:');
+  const held = await actTurn({ settings: control, messageTs: TURN_1_TS });
+  await held.run('browser_open', { url: 'https://billing.example.com/plan' });
+  held.session.addRedaction(secret);
+  assert.equal((await held.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true })).awaitingApproval, true);
+  assert.notEqual(await control.getSetting('browseraction_index'), undefined, 'a held step is stored');
+  await held.session.close();
+  for (const [where, ask] of cases) {
+    const settings = new SqliteSettingsStore(':memory:');
+    const turn = await actTurn({ settings, messageTs: TURN_1_TS });
+    await turn.run('browser_open', { url: 'https://billing.example.com/plan' });
+    turn.session.addRedaction(secret);
+    const refused = await ask(turn);
+    assert.deepEqual(refused, { error: BROWSER_APPROVAL_HOLDS_SECRET_MESSAGE }, where);
+    assert.equal(turn.waiting(), 0, where);
+    assert.equal(turn.staged.length, 0, where);
+    assert.equal(await settings.getSetting('browseraction_index'), undefined, `${where}: nothing stored`);
+    await turn.session.close();
+  }
 });
 
 test('an approved step waits for its element when the reopened page is still rendering', async () => {

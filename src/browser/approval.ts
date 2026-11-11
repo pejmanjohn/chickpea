@@ -27,16 +27,18 @@ import {
   type BrowserWebsiteLogin,
 } from './binding.ts';
 import {
+  BROWSER_APPROVAL_HOLDS_SECRET_MESSAGE,
   BROWSER_APPROVAL_INSTRUCTION,
-  BROWSER_APPROVAL_SCREENSHOT_WITHHELD_NOTE,
   BROWSER_DATA_CHANGE_REFUSAL,
   BROWSER_HANDED_OFF_MESSAGE,
   BROWSER_NO_APPROVER_MESSAGE,
   BROWSER_NO_PAGE_MESSAGE,
   BROWSER_PAGE_CHANGED_MESSAGE,
+  browserApprovalScreenshotWithheldNote,
   browserCheckOnlyRefusal,
 } from './messages.ts';
 import type { BrowserAction, BrowserPage, ElementRef, PageInfo } from './page.ts';
+import { RedactionBudget } from './redaction.ts';
 import type { BrowserTurnSession } from './turn-session.ts';
 
 /**
@@ -187,7 +189,7 @@ export interface BrowserApprovalContext {
   formSteps: BrowserFormSteps;
   readPage: (pageInfo?: PageInfo) => Promise<BrowserPageReport>;
   stageArtifact: (artifact: { bytes: Uint8Array; filename: string; title: string; kind: 'image' }) => Promise<unknown>;
-  redact: (text: string) => string;
+  redact: (text: string, budget?: RedactionBudget) => string;
   errorMessage: (error: unknown) => string;
   now: () => Date;
   navigationTimeoutMs: number;
@@ -228,9 +230,16 @@ export function createBrowserApprovalSteps(context: BrowserApprovalContext) {
     if (!websiteLoginMatchesUrl(login.host, new URL(info.url))) {
       return refuse(`The page is no longer on ${login.host}. Open it with browser_open first.`);
     }
-    // The name is redacted before the description cuts it to length.
-    const named = { role: target.role, name: context.redact(target.name) };
-    const description = context.redact(describeBrowserAction(named, data.action, data));
+    const prelude = formSteps.preludeFor(info.url);
+    // The record is stored and its page reopened in a later turn, which knows no secret typed in this one.
+    const budget = new RedactionBudget();
+    const holds = (text: string | undefined) => text !== undefined && context.redact(text, budget) !== text;
+    if (session.redactUrl(info.url, budget) !== info.url || holds(info.title) || holds(target.name) || holds(data.text) ||
+      prelude?.some((step) => holds(step.name) || holds(step.text))) {
+      return refuse(BROWSER_APPROVAL_HOLDS_SECRET_MESSAGE);
+    }
+    // Cutting the name or the text to length can leave the start of a secret before the ellipsis.
+    const description = context.redact(describeBrowserAction(target, data.action, data));
     const settings = await approvals.settings();
     const at = context.now().getTime();
     // Cleanup of old records runs at most once a turn, and only once there is something to clear.
@@ -238,7 +247,6 @@ export function createBrowserApprovalSteps(context: BrowserApprovalContext) {
       swept = true;
       await sweepBrowserActions({ settings, now: at, minIndexSize: SWEEP_MIN_INDEX }).catch(() => undefined);
     }
-    const prelude = formSteps.preludeFor(info.url);
     const [record, picture] = await Promise.all([
       createBrowserAction(settings, {
         ...approvals.scope,
@@ -258,16 +266,14 @@ export function createBrowserApprovalSteps(context: BrowserApprovalContext) {
         description,
         now: at,
       }),
-      page.screenshot({ format: 'jpeg', quality: 70 }).then(
-        (bytes) => ({ bytes }),
-        (error: unknown) => ({ error }),
-      ),
+      page.screenshot({ format: 'jpeg', quality: 70 }).catch((error: unknown) => ({ error })),
     ]);
     // The picture of the page rides with the question; the step waits either way.
-    const withheld = 'bytes' in picture && !picture.bytes;
+    const withheld = 'withheld' in picture ? picture.withheld : undefined;
+    if (withheld) context.log?.warn('browser_act withheld a picture of the page', { reason: withheld });
     try {
       if ('error' in picture) throw picture.error;
-      if (picture.bytes) {
+      if ('bytes' in picture) {
         await context.stageArtifact({
           bytes: picture.bytes,
           filename: artifactFilename(undefined, 'about-to', 'jpg'),
@@ -282,7 +288,7 @@ export function createBrowserApprovalSteps(context: BrowserApprovalContext) {
     return {
       output: {
         awaitingApproval: true, actionId: record.id, description, instruction: BROWSER_APPROVAL_INSTRUCTION,
-        ...(withheld ? { note: BROWSER_APPROVAL_SCREENSHOT_WITHHELD_NOTE } : {}),
+        ...(withheld ? { note: browserApprovalScreenshotWithheldNote(withheld) } : {}),
       },
     };
   };
