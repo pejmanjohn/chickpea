@@ -173,6 +173,14 @@ test('where a Markdown client could find code elsewhere, everything is escaped',
   // A fence in a list item ends with the item, so the line after it is HTML to a client.
   assert.equal(escapeHtmlOutsideCode('- item\n  ```\n<script>x</script>\n```\n<b>'), '- item\n  ```\n&lt;script>x&lt;/script>\n```\n&lt;b>');
   assert.equal(escapeHtmlOutsideCode(' ```\n<p>one space is a top-level fence</p>\n ```'), ' ```\n<p>one space is a top-level fence</p>\n ```');
+  // A tab is four columns here and two behind a quote mark, where the text block shows the reply: there a
+  // tab-indented fence line opens a fence, or closes one, so the fence line after it is read the other way round.
+  for (const reply of ['\t```\n```\n<script>x</script>\n```', ' \t~~~\n~~~\n<script>x</script>', '~~~\n\t~~~\n<script>x</script>\n~~~']) {
+    assert.ok(!escapeHtmlOutsideCode(reply).includes('<script'), JSON.stringify(reply));
+  }
+  // The same line runs a paragraph on here, where its backticks can pair with the line's before it.
+  assert.equal(escapeHtmlOutsideCode('a `<b>`\n\t```\nb'), 'a `&lt;b>`\n\t```\nb');
+  assert.equal(escapeHtmlOutsideCode('```\n\tindented <b> code\n```'), '```\n\tindented <b> code\n```', 'a tab inside code is only a tab');
 });
 
 test('a backtick a client reads another way keeps no span in its paragraph', () => {
@@ -200,6 +208,7 @@ test('a backtick a client reads another way keeps no span in its paragraph', () 
   none(`[bar\`]: /u\n\n[foo][bar\`] ${tag} \``);
   none(`x[^a\`] ${tag} \``);
   none(`see https://x.example/\`a ${tag} \`b`);
+  none(`see ftp://x.example/\`a ${tag} \`b`);
   // An email autolink keeps one as well, and can start with a digit, so its `<` is escaped and the span after it is code.
   assert.equal(escapeHtmlOutsideCode('<1`@example.com> <b> `'), '&lt;1`@example.com> <b> `');
   // One unpaired backtick, and a client may leave every backtick before it as text.

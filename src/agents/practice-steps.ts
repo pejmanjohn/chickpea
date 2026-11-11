@@ -244,16 +244,19 @@ function mcpToolNamePart(value: string): string {
  * way, everything is escaped: the whole paragraph around a doubtful line,
  * and the rest of the reply from a fence indented two or three spaces, which
  * can sit in a list item that ends before the fence does, or from one whose
- * line holds a `|`. Line endings come back as `\n`.
+ * line holds a `|`, or from a fence line indented with a tab, in code or out
+ * of it: a tab's width depends on where its line starts, so behind a quote
+ * mark, as the text block shows the reply, that line opens or closes a fence
+ * it does not here. Line endings come back as `\n`.
  */
 export function escapeHtmlOutsideCode(markdown: string): string {
   const shown: string[] = [];
   let fence: { char: string; length: number } | undefined;
   let rest = false;
   let paragraph: string[] = [];
-  const endParagraph = () => {
+  const endParagraph = (doubt = false) => {
     const read = paragraph.map(escapeOutsideSpans);
-    const kept = read.every(({ doubtful }) => !doubtful);
+    const kept = !doubt && read.every(({ doubtful }) => !doubtful);
     shown.push(...read.map(({ shown: line }, index) => kept ? line : escapeTags(paragraph[index]!)));
     paragraph = [];
   };
@@ -261,6 +264,12 @@ export function escapeHtmlOutsideCode(markdown: string): string {
   for (const line of markdown.split(/\r\n?|\n/)) {
     const opener = /^( {0,3})(`{3,}|~{3,})/.exec(line);
     const marker = opener?.[2];
+    if (!rest && /^ *\t[ \t]*(?:`{3,}|~{3,})/.test(line)) {
+      // Here the line runs its paragraph on, and its backticks can pair with any before it.
+      if (!fence) endParagraph(true);
+      fence = undefined;
+      rest = true;
+    }
     if (fence) {
       // Only spaces and tabs may follow a closing fence: a client keeps reading code past any other space.
       if (marker && marker[0] === fence.char && marker.length >= fence.length &&
@@ -308,8 +317,8 @@ function escapeOutsideSpans(line: string): { shown: string; doubtful: boolean } 
   for (let open = 0; open < runs.length; open += 1) {
     const run = runs[open]!;
     const before = line.slice(from, run.at);
-    // A web address written bare runs on through a backtick, to the next space.
-    if (/(?:https?:\/\/|www\.)\S*$/i.test(before)) doubtful = true;
+    // An address written bare runs on through a backtick, to the next space, under any scheme a client links: ftp too.
+    if (/(?:[a-z][a-z0-9+.-]*:\/\/|www\.)\S*$/i.test(before)) doubtful = true;
     const escaped = /\\*$/.exec(before)![0].length % 2 === 1;
     const opening = escaped ? { at: run.at + 1, length: run.length - 1 } : run;
     if (opening.length === 0) continue;

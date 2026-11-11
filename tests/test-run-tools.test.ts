@@ -703,6 +703,13 @@ test('the text block\'s excerpt ends a code span early, so the tag it held is es
   assert.match(text, /`&lt;b onmouseover=x>h\n…the full answer is in the structured result\./);
 });
 
+test('the text block quotes the answer, and a tab-indented fence opens no code behind the quote mark', () => {
+  // Behind `> ` the tab is two columns, so its line opens a fence, the next line closes it, and the tag would be HTML.
+  const { reply } = practiceReply('\t```\n```\n<b onmouseover=x>hi</b>\n```');
+  const text = practiceText({ status: 'answered', runToken: 'tr_x', agent: 'Ops', question: 'Q?', reply, nextStep: 'Next.', note: PRACTICE_NOTE });
+  assert.ok(text.includes('> \t```\n> ```\n> &lt;b onmouseover=x>hi&lt;/b>\n> ```'), text);
+});
+
 test('a raw result is labelled by its service\'s own name, never by a name an outside server gave its tool', async (t) => {
   const { f, call, instances } = await harness(t, 'practice_labels');
   await seedAgent(f);
