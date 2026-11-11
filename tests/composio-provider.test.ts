@@ -289,7 +289,7 @@ test('every reproduction from the reviews of this change reaches the model as [�
     // `first` reads as a word, so only the label rule drops it.
     ['Authorization: Bearer first\nSyntheticTail42', 'Authorization: […]'],
     [String.raw`Authorization: Bearer first\nSyntheticTail42`, 'Authorization: […]'],
-    ['{"cookies":{"nested":{"sid":"SyntheticInner42"},"other":"SyntheticOther42"}}', '{ "cookies": { "nested": { "sid": […] "other": […]'],
+    ['{"cookies":{"nested":{"sid":"SyntheticInner42"},"other":"SyntheticOther42"}}', '{ "cookies": […]'],
     ['Invalid API key provided: keySyntheticAb123', 'Invalid API key provided: […]'],
     ['HTTP 403 record for other-tenant@example.test: balance overdue', 'HTTP 403 record for […] balance overdue'],
     // The first review's cases, with the turn's Composio key.
