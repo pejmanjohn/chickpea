@@ -10,7 +10,8 @@ import { toContextMessage } from '../src/slack/thread-context.ts';
 import { PRODUCERS, type Producer } from './helpers/encoders.ts';
 
 const LOGINS: RunReviewWebsiteLogins = {
-  hosts: ['billing.example.com', normalizeWebsiteLoginHost('bücher.example')],
+  // A site saved with `www.`, which a browser's address bar hides.
+  hosts: ['billing.example.com', normalizeWebsiteLoginHost('bücher.example'), 'www.ledger.example.org'],
   usernames: ['Müller.Synthuser@example.com', 'Jörg.O\'Brien+synthops@example.com'],
 };
 
@@ -86,6 +87,25 @@ const CREDENTIALS: readonly Credential[] = [
   { name: 'sign-in token in a login site\'s path', text: 'https://billing.example.com/magic/SynthPath64/done', secrets: ['SynthPath64'], fields: EVERY_FIELD },
   { name: 'sign-in token on an IDN login site', text: 'https://bücher.example/callback?code=SynthIdn65', secrets: ['SynthIdn65'], fields: EVERY_FIELD },
   {
+    name: 'sign-in token on a login site saved with www.',
+    text: 'https://www.ledger.example.org/callback?code=SynthWww66',
+    secrets: ['SynthWww66'],
+    fields: EVERY_FIELD,
+  },
+  // A site builds a segment from a bearer with encodeURIComponent, which writes its `/` as `%2F`: one segment, two words.
+  {
+    name: 'sign-in bearer with a slash in a login site\'s path segment',
+    text: `https://billing.example.com/magic/${encodeURIComponent('SynthAlpha/SynthBravo')}/done`,
+    secrets: ['SynthAlpha', 'SynthBravo'],
+    fields: EVERY_FIELD,
+  },
+  {
+    name: 'sign-in bearer with a slash in a path segment on a login site saved with www.',
+    text: `https://www.ledger.example.org/magic/${encodeURIComponent('SynthCharlie/SynthDelta')}/done`,
+    secrets: ['SynthCharlie', 'SynthDelta'],
+    fields: EVERY_FIELD,
+  },
+  {
     name: 'sign-in token in a browser step\'s query',
     text: 'https://accounts.other.example/oauth/callback?code=SynthCode71',
     secrets: ['SynthCode71'],
@@ -101,6 +121,12 @@ const CREDENTIALS: readonly Credential[] = [
     name: 'sign-in token in a browser step\'s path',
     text: 'https://accounts.other.example/magic/SynthPath73/done',
     secrets: ['SynthPath73'],
+    fields: ['browser step'],
+  },
+  {
+    name: 'sign-in bearer with a slash in a browser step\'s path segment',
+    text: `https://accounts.other.example/magic/${encodeURIComponent('SynthEcho/SynthFoxtrot')}/done`,
+    secrets: ['SynthEcho', 'SynthFoxtrot'],
     fields: ['browser step'],
   },
 ];

@@ -201,6 +201,36 @@ test('a login site\'s or a browser step\'s path keeps no segment with a mark ins
   assert.equal(record.answer, `See ${scrubbed}, then https://billing.example.com/help/billing! or (https://billing.example.com/magic/[omitted]).`);
 });
 
+test('a delimiter percent decoding wrote is the address\'s data, so a path segment that holds one goes whole, in every field', () => {
+  // A site builds one segment from a bearer with encodeURIComponent, and a server that matches `/magic/:token/done`
+  // decodes it whole: `SynthAlpha/SynthBravo` is one bearer, not two words.
+  const link = (inside: string, host = 'billing.example.com') => `https://${host}/magic/SynthAlpha${inside}SynthBravo/done`;
+  const inside = ['%2F', '%3F', '%23', '%3B', '%26', '%3D', '%252F', '&percnt;2F', `${'\\'}u00252F`];
+  const links = inside.map((escape) => link(escape)).join(' ');
+  const scrubbed = inside.map(() => 'https://billing.example.com/magic/[omitted]/done').join(' ');
+  const whole = encodeURIComponent(link('%2F'));
+  const record = copy({
+    trigger: { author: 'U012ABCDEF3', text: `Use ${links}.`, files: [] },
+    context: [{ author: 'U012ABCDEF3', role: 'human', text: `<${link('%2F')}|Sign in> or billing.example.com/magic/SynthAlpha%2FSynthBravo`, files: [] }],
+    steps: [
+      browserStep('browser_open', { url: link('%2F') }, { url: link('%2F', 'accounts.other.example'), title: 'Signed in' }),
+      { kind: 'tool', name: 'read_mail', input: '{}', output: JSON.stringify(JSON.stringify({ text: links })) },
+    ],
+    answer: `See ${whole} or https://other.example/redirect?next=${encodeURIComponent(whole)} today`,
+  });
+  assert.deepEqual(kept(record, ['SynthAlpha', 'SynthBravo']), []);
+  assert.equal(record.trigger.text, `Use ${scrubbed}.`);
+  assert.equal(record.context[0]?.text, '<https://billing.example.com/magic/[omitted]/done|Sign in> or billing.example.com/magic/[omitted]');
+  const [opened, mail] = record.steps;
+  assert.ok(opened?.kind === 'tool' && mail?.kind === 'tool');
+  assert.equal(opened.input, '{"url":"https://billing.example.com/magic/[omitted]/done"}');
+  assert.equal(opened.output, '{"url":"https://accounts.other.example/magic/[omitted]/done","title":"Signed in"}');
+  assert.equal(JSON.parse(JSON.parse(mail.output ?? '""')).text, scrubbed);
+  assert.equal(record.answer, 'See https:%2F%2Fbilling.example.com[omitted] or ' +
+    'https://other.example/redirect?next=https:%2F%2Fbilling.example.com[omitted] today',
+  'past the host of an address percent-encoded whole, all of it is one segment');
+});
+
 test('a URL on an IDN login site loses its token whatever form the URL and the saved site are written in, with a scheme or without', () => {
   const site = normalizeWebsiteLoginHost('bücher.example');
   assert.equal(site, 'xn--bcher-kva.example', 'the catalog saves the ASCII form');
@@ -245,6 +275,47 @@ test('a URL on an IDN login site loses its token whatever form the URL and the s
     snapshot: '- link "Next": пример.рф/s?[omitted] example.xn--p1ai/s?[omitted]',
   });
   assert.equal(record.answer, `Signed in at <https://café.example/home?[omitted]>. Watch at ${BROWSER_LINK_OMITTED}`);
+});
+
+test('an address percent-encoded whole is still one address, and a rewritten link writes each delimiter decoding wrote as its escape again', () => {
+  const record = copy({
+    answer: [
+      // The decoded `/` after the host ends it, so the `@` of an email address in the path starts no host.
+      encodeURIComponent('https://billing.example.com/u/ops@example.com/cb?code=SYNTHWHOLE1'),
+      encodeURIComponent('billing.example.com/cb?code=SYNTHWHOLE2'),
+      encodeURIComponent('http://127.0.0.1:9222/devtools/inspector.html?ws=127.0.0.1:9222/devtools/page/SYNTHWHOLE3'),
+      // Another site's query keeps its meaning when a link inside it is rewritten.
+      'https://other.example/r?note=a%26b%3Dc%3Bd%2Fe%3Ff%23g&next=https://billing.example.com/cb?code=SYNTHWHOLE4',
+    ].join(' '),
+  });
+  assert.deepEqual(kept(record, ['SYNTHWHOLE']), []);
+  assert.equal(record.answer, `https:%2F%2Fbilling.example.com[omitted] billing.example.com[omitted] ${BROWSER_LINK_OMITTED} ` +
+    'https://other.example/r?note=a%26b%3Dc%3Bd%2Fe%3Ff%23g&next=https://billing.example.com/cb?[omitted]');
+});
+
+test('a saved site reads without one leading `www.`, and any host under it is that site, so the address bar\'s form of its link loses its token', () => {
+  // A browser's address bar hides `www.`, and a person or an Agent may copy the address as it shows it.
+  const bucher = normalizeWebsiteLoginHost('www.bücher.example');
+  assert.equal(bucher, 'www.xn--bcher-kva.example');
+  // `www.example` has only one label past `www.`, so it stays whole: `other.example` is no host under it.
+  const logins: RunReviewWebsiteLogins = { hosts: ['www.billing.example.com', bucher, 'www.example'], usernames: [] };
+  const text = 'Open billing.example.com/callback?code=SYNTHWWW1 or https://billing.example.com/cb#t=SYNTHWWW2 or ' +
+    'https://www.billing.example.com/magic/SYNTHWWW3 or accounts.billing.example.com/cb?code=SYNTHWWW4 or ' +
+    '<https://login.billing.example.com/cb?code=SYNTHWWW5|Done> or bücher.example/cb?code=SYNTHWWW6 or ' +
+    'https://m.billing.example.com/cb?code=SYNTHWWW7. Public: https://other.example/s?q=kept and https://billing.example.org/s?q=kept';
+  const scrubbed = 'Open billing.example.com/callback?[omitted] or https://billing.example.com/cb?[omitted] or ' +
+    'https://www.billing.example.com/magic/[omitted] or accounts.billing.example.com/cb?[omitted] or ' +
+    '<https://login.billing.example.com/cb?[omitted]> or bücher.example/cb?[omitted] or ' +
+    'https://m.billing.example.com/cb?[omitted]. Public: https://other.example/s?q=kept and https://billing.example.org/s?q=kept';
+  const record = copy({
+    trigger: { author: 'U012ABCDEF3', text, files: [] },
+    context: [{ author: 'Billing Agent', role: 'agent', text, files: [] }],
+    answer: JSON.stringify({ text }),
+  }, logins);
+  assert.deepEqual(kept(record, ['SYNTHWWW']), []);
+  assert.equal(record.trigger.text, scrubbed);
+  assert.equal(record.context[0]?.text, scrubbed);
+  assert.equal(JSON.parse(record.answer ?? '{}').text, scrubbed);
 });
 
 test('a link on an IDN login site in JSON that keeps to ASCII loses its token, and comes back as JSON reads it while one kept stays as written', () => {
@@ -642,9 +713,10 @@ test('a login site\'s or the hosted browser\'s link percent-encoded whole, once 
     answer: `See ${encoded} today`,
   });
   assert.deepEqual(kept(record, ['SYNTHPCT', 'browserbase']), []);
-  assert.equal(record.answer, 'See https://billing.example.com/cb?[omitted] next=https://billing.example.com/cb?[omitted] ' +
-    'https://billing.example.com/cb?[omitted] state=next%3Dhttps://billing.example.com/cb?[omitted] ' +
-    `https://other.example/redirect?next=https://billing.example.com/cb?[omitted] ${BROWSER_LINK_OMITTED} ` +
+  // Past the host of an address percent-encoded whole, what decoding wrote is one segment, which goes.
+  const signedIn = 'https:%2F%2Fbilling.example.com[omitted]';
+  assert.equal(record.answer, `See ${signedIn} next=${signedIn} ${signedIn} state=next%3D${signedIn} ` +
+    `https://other.example/redirect?next=${signedIn} ${BROWSER_LINK_OMITTED} ` +
     `https://other.example/redirect?next=${BROWSER_LINK_OMITTED} today`);
 });
 
@@ -662,7 +734,7 @@ test('a percent-encoded space, quote, angle bracket or backslash inside an addre
   assert.deepEqual(kept(record, ['SYNTHSTAND']), []);
   const scrubbed = inside.map(() => 'https://billing.example.com/cb?[omitted]').join(' ');
   assert.equal(record.answer, `${scrubbed} https://other.example/s?q=a%20b%22c%3Cd and ` +
-    'https://other.example/r?note=a%20b&next=https://billing.example.com/cb?[omitted]',
+    'https://other.example/r?note=a%20b&next=https:%2F%2Fbilling.example.com[omitted]',
   'a link the rules keep stays as written, and one they rewrite writes each such character as its escape again');
   assert.equal(record.steps[0]?.kind === 'tool' && record.steps[0].output, scrubbed);
 });
@@ -722,19 +794,44 @@ test('a hand-off link a later turn reads back from Slack goes from both places i
   assert.deepEqual(kept(record, ['SYNTHLIVE', 'live.provider']), []);
   assert.match(record.context[0]?.text ?? '', /Links in this Slack message:\n- \[browser link omitted\]$/);
 
-  // Anyone can write the label. What it wraps is removed elsewhere only as a whole web address,
-  // so it cannot break up a link or a username before their own rules see them.
+  // Anyone can write the label. What it wraps is removed elsewhere only as a whole web address, and only with the
+  // whole link that holds it, so it cannot break up a link or a username before their own rules see them.
   const written = copy({
     trigger: {
       author: 'U012ABCDEF3',
       text: '<.|Open the browser> <then|Open the browser> <https://billing.example.com/c|Open the browser> then ' +
-        'https://billing.example.com/callback?code=SYNTHCODE123 as Ops.Synthetic@example.com',
+        'https://billing.example.com/callback?code=SYNTHCODE123 or https://billing.example.com/account?code=SYNTHCODE124 ' +
+        'as Ops.Synthetic@example.com',
       files: [],
     },
   });
-  assert.deepEqual(kept(written, ['SYNTHCODE123', 'ops.synthetic', 'synthetic@']), []);
+  assert.deepEqual(kept(written, ['SYNTHCODE12', 'ops.synthetic', 'synthetic@']), []);
   assert.equal(written.trigger.text, `${BROWSER_LINK_OMITTED} ${BROWSER_LINK_OMITTED} ${BROWSER_LINK_OMITTED} then ` +
-    'https://billing.example.com/callback?[omitted] as [credential redacted]');
+    `${BROWSER_LINK_OMITTED} or https://billing.example.com/account?[omitted] as [credential redacted]`);
+});
+
+test('a link that holds a hand-off URL goes whole, however many encodings hold it and whatever comes around it', () => {
+  // A context row carried as one path segment of a login site's link, as encodeURIComponent writes it, then encoded
+  // again: the URL it lists again ends where the segment does, before `/done`, written or itself encoded. A form
+  // writes a space as `+`, which a link holds.
+  const liveView = 'https://live.provider.example/s/SYNTHLIVE7?view=full&t=SYNTHLIVE8';
+  const row = toContextMessage({
+    ts: '1792915200.000100', user: 'U0BOT12345', text: browserHandoffMessage('portal.example.com', liveView),
+    blocks: [{ type: 'rich_text', elements: [{ type: 'rich_text_section', elements: [{ type: 'link', url: liveView, text: 'Open the browser' }] }] }],
+  }, { botUserId: 'U0BOT12345' })!.text;
+  const segment = `https://billing.example.com/magic/${encodeURIComponent(row)}/done`;
+  const form = new URLSearchParams({ text: `${browserHandoffMessage('portal.example.com', liveView)} Open: ${liveView}` }).toString();
+  // A browser step keeps a path's words, so a URL whose path is words goes only with the whole link that holds it.
+  const wordsView = 'https://live.provider.example/view/SynthLetters';
+  const joined = `${browserHandoffMessage('portal.example.com', wordsView)} and https://other.example/x+${wordsView}`;
+  for (const text of [segment, encodeURIComponent(segment), `${row} and ${liveView}/more?x=1`, joined, form, form.replace(/%2F/g, '/')]) {
+    const record = copy({
+      answer: text,
+      context: [{ author: 'Billing Agent', role: 'agent', text, files: [] }],
+      steps: [{ kind: 'tool', name: 'browser_snapshot', input: '{}', output: text }],
+    });
+    assert.deepEqual(kept(record, ['SYNTHLIVE', 'SynthLetters', 'live.provider']), [], text);
+  }
 });
 
 test('a saved username leaves every field, in any case and in every escaped or encoded form', () => {
@@ -1085,7 +1182,7 @@ test('each decoding pass counts against the copy\'s budget', () => {
   }, (error) => error instanceof RunReviewScrubLimit && error.event === 'scrub_over_budget');
 });
 
-test('each hand-off URL searched for counts the field against the copy\'s budget', () => {
+test('each hand-off URL looked for counts each link it reads against the copy\'s budget', () => {
   const links = (count: number) => Array.from({ length: count }, (_, index) =>
     `<https://live.provider.example/s/SYNTHMANY${index}|Open the browser> https://live.provider.example/s/SYNTHMANY${index}`).join(' ');
   const scrub = () => websiteLoginScrub({ hosts: [], usernames: [] });

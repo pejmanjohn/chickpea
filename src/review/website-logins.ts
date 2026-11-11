@@ -94,13 +94,22 @@ const NAME = String.raw`(?:${LABEL_CHAR}+${DOT})+(?:\p{L}[\p{L}\p{M}]+|xn--[a-z\
 // A host as a link writes one: a name or a bracketed IP address.
 const READABLE_HOST = /^(?:[\p{L}\p{M}\p{N}.-]+|\[[\da-f:.]+\])$/iu;
 
-const SCHEME_URL = String.raw`\b(?:https?|wss?):\/\/${URL_CHAR}+`;
+// A `/` and a `;`, `?` or `#`, each as written or as the stand-in percent decoding wrote (see withStandIns). Only a
+// scheme's `//` and the end of an authority or a host read them either way: no host holds one, and an address
+// percent-encoded whole is still one address. Past its host, the stand-in is the address's data.
+const SLASH = String.raw`[/\u{F002F}]`;
+const HOST_END_MARK = String.raw`[;?#\u{F003B}\u{F003F}\u{F0023}]`;
+const SCHEME_URL = String.raw`\b(?:https?|wss?):${SLASH}{2}${URL_CHAR}+`;
 // What follows a scheme-less host, which may end in a dot: a port, then a path or a query.
-const AFTER_HOST = String.raw`${DOT}?(?::\d+)?(?:\/${URL_CHAR}*|[;?#]${URL_CHAR}+)`;
+const AFTER_HOST = String.raw`${DOT}?(?::\d+)?(?:${SLASH}${URL_CHAR}*|${HOST_END_MARK}${URL_CHAR}+)`;
 // Any host a link without a scheme could follow. Only its host is read: it is looked up before the rest of its
 // link is read, so a field of hosts that start no link costs one reading.
 const SCHEMELESS_HOST = String.raw`${HOST_START}(?<host>(?:${LABEL_CHAR}+${DOT})*${LABEL_CHAR}+|\[[\da-f:.]+\])` +
-  String.raw`(?=${DOT}?(?::\d+)?(?:\/|[;?#]${URL_CHAR}))`;
+  String.raw`(?=${DOT}?(?::\d+)?(?:${SLASH}|${HOST_END_MARK}${URL_CHAR}))`;
+const SCHEME = new RegExp(String.raw`^([a-z][a-z0-9+.-]*):${SLASH}{2}`, 'iu');
+const AUTHORITY_END = new RegExp(String.raw`${SLASH}|[?#\u{F003F}\u{F0023}]`, 'u');
+// `;` and `|` end a host too: no host holds one, and a Slack link's label may follow `|`.
+const HOST_END = new RegExp(String.raw`${SLASH}|${HOST_END_MARK}|\|`, 'u');
 const LINKS = `${SCHEME_URL}|${SCHEMELESS_HOST}`;
 /** The rest of a scheme-less link, from the end of its host. */
 const REST_OF_LINK = new RegExp(AFTER_HOST, 'yiu');
@@ -118,11 +127,8 @@ const HANDOFF_LABEL_TEXT = escapeRegExp(BROWSER_HANDOFF_LINK_LABEL).replace(/ /g
 const HANDOFF_LINK = new RegExp(String.raw`[<\u{F003C}]([^<>|\u{F003C}\u{F003E}]*)\|${HANDOFF_LABEL_TEXT}[>\u{F003E}]`, 'gu');
 const HANDOFF_LABEL = new RegExp(String.raw`\|${HANDOFF_LABEL_TEXT}[>\u{F003E}]`, 'u');
 /** What a hand-off message links to: an absolute web address, too long to be a word of other text. */
-const HANDOFF_URL = /^https?:\/\/[^\s<>|"\\]{8,}$/i;
-// What may stand right before and right after a hand-off URL that stands alone, as written, percent-encoded (a
-// stand-in), or as a form's space.
-const BEFORE_HANDOFF_URL = /[\s<"+]/;
-const AFTER_HANDOFF_URL = /[\s>|"\\+]/;
+const HANDOFF_URL = new RegExp(String.raw`^https?:${SLASH}{2}[^\s<>|"\\]{8,}$`, 'iu');
+const NO_HANDOFFS: ReadonlySet<string> = new Set();
 
 /** Shapes of a hosted browser's live view, debugger or connect link, whatever its host. */
 function browserLink(scheme: string | undefined, hostname: string, path: string, suffix: string): boolean {
@@ -177,6 +183,15 @@ function asciiHost(host: string, plain = plainName(host)): string | undefined {
   return end > 0 ? hostname.slice(0, end) : undefined;
 }
 
+/**
+ * A saved site as the scrub compares it: without one leading `www.` label,
+ * which a browser's address bar hides, unless that would leave one label.
+ * Any host under what is left counts as the site (see loginSite).
+ */
+function withoutWww(site: string): string {
+  return /^www\.[^.]+\./.test(site) ? site.slice(4) : site;
+}
+
 // A path segment a site is unlikely to take as a bearer: a word of up to 20 letters.
 const PLAIN_SEGMENT = /^[A-Za-z]{1,20}$/;
 // What a sentence may put right after a link.
@@ -186,7 +201,9 @@ const SENTENCE_MARKS = '.,!)\'';
  * The path of a link on a login's site, or of any link in a browser step,
  * with each segment omitted that is not a word of up to 20 letters. Any
  * other segment, a number, an ID or a slug as much as a token, may be what
- * the site takes as its sign-in bearer.
+ * the site takes as its sign-in bearer. Only a `/` as written divides one: a
+ * `/` percent decoding wrote is a stand-in (see withStandIns), so
+ * `abc%2Fdef` is the one segment a site's server decodes it to, and goes.
  */
 function plainPath(path: string): string {
   return path.split('/').map((segment) => segment === '' || PLAIN_SEGMENT.test(segment) ? segment : URL_PART_OMITTED).join('/');
@@ -199,17 +216,20 @@ export interface WebsiteLoginScrub {
    * with its escapes decoded (see `decoded`), in NFKC without default-ignorable
    * code points. A link they rewrite comes back as they read it, and one they
    * leave stays as it was written. A hosted browser link goes whole, and so
-   * does a hand-off message's link wherever
-   * else the same text holds it. Every URL loses its userinfo. A host is a
-   * login's site when the hostname a URL gives it is, whatever script,
-   * encoding or IPv4 spelling it is written in. A link without a scheme
+   * do a hand-off message's link and every link in the same text that holds
+   * its URL. Every URL loses its userinfo. A host is a login's site when the
+   * hostname a URL gives it is that site without one leading `www.`, or any
+   * host under it, whatever script, encoding or IPv4 spelling it is written
+   * in. A link without a scheme
    * counts on a login's site or the hosted browser's, or on a name no URL can
    * read; in a browser step, on any name, any IPv4 address in four decimal
    * parts and any bracketed IPv6 address too. A URL on a login's site, or any
    * URL in a browser step, keeps its scheme and host, keeps a path segment
    * only where it is a word of up to 20 letters (so its numbers, IDs and
-   * slugs go too), and loses everything from its first `;`, `?` or `#`. So
-   * does a URL whose host cannot be read as one, and its host goes too. Only
+   * slugs go too), and loses everything from its first `;`, `?` or `#`. One
+   * that percent decoding wrote is the address's data past its host, so a
+   * segment that holds it goes whole. So does a URL whose host cannot be read
+   * as one, and its host goes too. Only
    * the marks a sentence puts right after the whole URL stay. In Slack's
    * `<url|label>` outside a browser step, the label after the first `|`
    * before the query is text, and goes by these rules as any text does.
@@ -239,7 +259,7 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
   const maps = new ViewMaps();
   const hostnames = new Set(logins.hosts.map((host) => {
     const site = host.trim().replace(/:\d+$/, '');
-    return asciiHost(site) ?? site.toLowerCase();
+    return withoutWww(asciiHost(site) ?? site.toLowerCase());
   }).filter(Boolean));
   const names = unique(logins.usernames.map((username) => username.trim()).filter(Boolean));
   if (hostnames.size > MAX_SCRUB_LOGINS || names.length > MAX_SCRUB_LOGINS ||
@@ -247,8 +267,9 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
     throw new RunReviewScrubLimit('scrub_over_logins');
   }
   const longestSite = Math.max(0, ...[...hostnames].map((site) => site.length));
-  // The site itself or any host under it, each in its ASCII form. A suffix longer than every site is none of
-  // them, so a long host is read only from where one could start.
+  // The site itself or any host under it, each in its ASCII form and the site without one leading `www.`. So a
+  // link with `www.` or without it, as an address bar shows it, counts, and so does `accounts.` or `login.` before
+  // the site. A suffix longer than every site is none of them, so a long host is read only from where one could start.
   const loginSite = (hostname: string): boolean => {
     let at = 0;
     if (hostname.length > longestSite) {
@@ -267,6 +288,14 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
     return asciiHost(host, plain);
   };
 
+  // Whether a link holds a hand-off URL, as written or percent-encoded. Looking for each URL reads the link once.
+  const holdsHandoff = (link: string, handoffs: ReadonlySet<string>): boolean => {
+    budget.spend(handoffs.size * link.length);
+    const read = standingForEach(link);
+    for (const url of handoffs) if (read.includes(url)) return true;
+    return false;
+  };
+
   // Whether a host without a scheme starts a link: one on a login's site or the hosted browser's, or a name no URL
   // can read, which may hide either. In a browser step any host a page's address may have starts one.
   const startsLink = (host: string, browserStep: boolean): boolean => {
@@ -277,9 +306,9 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
 
   /**
    * `source` with each link its view holds rewritten. A link the rules change goes back where it was written, read
-   * as the view reads it; one they leave stays as written.
+   * as the view reads it; one they leave stays as written. `handoffs` are the field's hand-off URLs.
    */
-  const scrubLinks = (source: string, view: Written, browserStep: boolean): string => {
+  const scrubLinks = (source: string, view: Written, browserStep: boolean, handoffs: ReadonlySet<string>): string => {
     const { text } = view;
     budget.spend(text.length);
     const pattern = new RegExp(LINKS, 'giu');
@@ -296,7 +325,7 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
       }
       // Slack writes a link as `<url|label>`. A browser step holds a page's text, not Slack's.
       const slackLink = !browserStep && text[match.index - 1] === '<';
-      const rewritten = scrubLink(link, browserStep, slackLink);
+      const rewritten = scrubLink(link, browserStep, slackLink, handoffs);
       pattern.lastIndex = match.index + link.length;
       if (rewritten === link) continue;
       const [start, end] = written(view, match.index, match.index + link.length);
@@ -306,35 +335,40 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
     return result + source.slice(from);
   };
   /** Links inside a link the view already read. */
-  const scrubRead = (text: string, browserStep: boolean): string => scrubLinks(text, { text }, browserStep);
+  const scrubRead = (text: string, browserStep: boolean, handoffs: ReadonlySet<string>): string =>
+    scrubLinks(text, { text }, browserStep, handoffs);
 
-  const scrubLink = (link: string, browserStep: boolean, slackLink: boolean): string => {
-    const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(link);
+  const scrubLink = (link: string, browserStep: boolean, slackLink: boolean, handoffs: ReadonlySet<string>): string => {
+    const scheme = SCHEME.exec(link);
     const afterScheme = scheme ? link.slice(scheme[0].length) : link;
     // Userinfo, which no link keeps, ends at the last `@` before the path, whatever it holds.
-    const authorityEnd = afterScheme.search(/[/?#]/);
+    const authorityEnd = afterScheme.search(AUTHORITY_END);
     const authority = authorityEnd < 0 ? afterScheme : afterScheme.slice(0, authorityEnd);
     const hostAndRest = afterScheme.slice(authority.lastIndexOf('@') + 1);
-    // `;` and `|` end a host too: no host holds one, and a Slack link's label may follow `|`.
-    const hostEnd = hostAndRest.search(/[/;?#|]/);
+    const hostEnd = hostAndRest.search(HOST_END);
     const host = hostEnd < 0 ? hostAndRest : hostAndRest.slice(0, hostEnd);
     const rest = hostEnd < 0 ? '' : hostAndRest.slice(hostEnd);
     const name = host.replace(/:\d*$/, '');
     const hostname = readHost(name);
     const readable = hostname !== undefined && READABLE_HOST.test(name);
+    // A `;`, `?` or `#` as written starts the query. One percent decoding wrote is the path's data.
     const pathEnd = rest.search(/[;?#]/);
     const path = pathEnd < 0 ? rest : rest.slice(0, pathEnd);
-    const suffix = pathEnd < 0 ? '' : rest.slice(pathEnd);
-    if (browserLink(scheme?.[1], hostname ?? '', path, suffix)) return BROWSER_LINK_OMITTED;
+    // A hosted browser's link has its shape in any encoding, so it is read with every stand-in as its character.
+    const decodedRest = standingForEach(rest);
+    const decodedEnd = decodedRest.search(/[;?#]/);
+    if (browserLink(scheme?.[1], hostname ?? '', decodedEnd < 0 ? decodedRest : decodedRest.slice(0, decodedEnd),
+      decodedEnd < 0 ? '' : decodedRest.slice(decodedEnd))) return BROWSER_LINK_OMITTED;
+    if (handoffs.size && holdsHandoff(link, handoffs)) return BROWSER_LINK_OMITTED;
     // A host that cannot be read as one may hide a login's site or a token, so it goes, and its link goes by the login rule.
     const start = `${scheme?.[0] ?? ''}${readable ? host : URL_PART_OMITTED}`;
     // What follows the host can hold another link, as a Slack link's label or a redirect's query does.
     if (!browserStep && readable && !loginSite(hostname)) {
-      return `${start}${scrubRead(rest, browserStep)}`;
+      return `${start}${scrubRead(rest, browserStep, handoffs)}`;
     }
     budget.spend(rest.length);
     const label = slackLink ? path.indexOf('|') : -1;
-    if (label >= 0) return `${start}${plainPath(path.slice(0, label))}|${scrubRead(rest.slice(label + 1), false)}`;
+    if (label >= 0) return `${start}${plainPath(path.slice(0, label))}|${scrubRead(rest.slice(label + 1), false, handoffs)}`;
     let end = rest.length;
     while (end > 0 && SENTENCE_MARKS.includes(rest[end - 1]!)) end -= 1;
     const kept = pathEnd < 0 ? plainPath(rest.slice(0, end)) : `${plainPath(path)}?${URL_PART_OMITTED}`;
@@ -359,10 +393,10 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
     links(text, browserStep) {
       budget.spend(text.length);
       const view = linkView(text, maps, budget);
-      if (!HANDOFF_LABEL.test(view.text)) return scrubLinks(text, view, browserStep);
-      const handedOff = withoutHandoffs(text, view, budget);
-      budget.spend(handedOff.length);
-      return scrubLinks(handedOff, linkView(handedOff, maps, budget), browserStep);
+      if (!HANDOFF_LABEL.test(view.text)) return scrubLinks(text, view, browserStep, NO_HANDOFFS);
+      const handedOff = withoutHandoffs(text, view);
+      budget.spend(handedOff.text.length);
+      return scrubLinks(handedOff.text, linkView(handedOff.text, maps, budget), browserStep, handedOff.urls);
     },
     usernames(text, { browserStep, cut }) {
       if (!index) return text;
@@ -590,28 +624,32 @@ function linkView(written: string, maps: ViewMaps, budget: ScrubBudget): Written
   return normalized(withStandIns(decoded(written, maps, budget), maps), maps);
 }
 
-// What ends a link (see URL_CHAR).
-const LINK_ENDS = /[\s"<>\\]/g;
-/** Where a stand-in for a character that ends a link is: that character's code point past this one, in a private-use plane. */
+// What ends a link (see URL_CHAR), and what divides one: a path's `/`, and what starts a query, a fragment, a
+// parameter, its value or a matrix part.
+const ADDRESS_STRUCTURE = /[\s"<>\\/?#&=;]/g;
+/** Where a stand-in for a character of an address's structure is: that character's code point past this one, in a private-use plane. */
 const STAND_IN = 0xf0000;
 const STAND_INS = /[\u{F0000}-\u{FFFFD}]/gu;
 
 /**
- * `view` with each character that would end a link a stand-in that ends
- * none, where it came through percent decoding: `%20`, `%2520`, `%5C%22`
- * (an escaped quote), or `&percnt;20` from a serializer that names `%` in
- * HTML. Percent encoding is an address's own, so what it writes is the
- * address's data, as a browser reads it, and decoding never ends or splits a
- * link the written text does not. A JSON or HTML escape of a quote or a
- * space reads as the text before it was serialized, which the rules read as
- * they read any text: no URL serializer writes either in an address.
+ * `view` with each character that would end or divide a link a stand-in
+ * that does neither, where it came through percent decoding: `%20`, `%2F`,
+ * `%3F`, `%2520`, `%5C%22` (an escaped quote), or `&percnt;2F` from a
+ * serializer that names `%` in HTML. Percent encoding is an address's own,
+ * so what it writes is the address's data, as a browser and the site's
+ * server read it: `/magic/abc%2Fdef` has the one segment `abc/def`, and
+ * decoding never ends or splits a link the written text does not. Only a
+ * scheme's `//` and the end of a host read a stand-in as its character (see
+ * SLASH). A JSON or HTML escape of any of these characters reads as the text
+ * before it was serialized, which the rules read as they read any text: no
+ * URL serializer writes a quote or a space in an address.
  */
 function withStandIns(view: Written, maps: ViewMaps): Written {
   const { text, percent } = view;
   if (!percent?.includes(1)) return view;
   let out: WrittenText | undefined;
   let from = 0;
-  for (const end of text.matchAll(LINK_ENDS)) {
+  for (const end of text.matchAll(ADDRESS_STRUCTURE)) {
     const at = end.index;
     if (!percent[at]) continue;
     out ??= new WrittenText(text.length, maps.for(view));
@@ -624,9 +662,9 @@ function withStandIns(view: Written, maps: ViewMaps): Written {
   return out.done();
 }
 
-/** The character a code point stands for: itself, or a stand-in's. */
-function standingFor(point: number): string {
-  return String.fromCodePoint(point >= STAND_IN && point <= 0xffffd ? point - STAND_IN : point);
+/** `text` with each stand-in read as the character it stands for. */
+function standingForEach(text: string): string {
+  return text.replace(STAND_INS, (char) => String.fromCodePoint(char.codePointAt(0)! - STAND_IN));
 }
 
 /** A link as the rules rewrote it, with each stand-in percent-encoded again. */
@@ -767,33 +805,20 @@ class WrittenText {
 }
 
 /**
- * `source` without a hand-off message's link, and without that link's URL
- * wherever else the text holds it, as the view reads both. A thread context
- * row lists a message's links again under its text, unescaped
- * (slack/rich-text-links.ts). Anyone can write the label, so only a whole
- * URL counts, and only where it stands alone: a replacement inside other
- * text would break up a URL or a username before its own rule saw it. Each
- * URL searched for counts the field's length against the budget.
+ * `source` without a hand-off message's link, as the view reads it, and the
+ * URLs those links hold. A thread context row lists a message's links again
+ * under its text, unescaped (slack/rich-text-links.ts), so a link that holds
+ * one of those URLs goes too, wherever else the field holds it (see
+ * holdsHandoff). Anyone can write the label, so only a whole URL counts.
  */
-function withoutHandoffs(source: string, view: Written, budget: ScrubBudget): string {
-  const { text } = view;
+function withoutHandoffs(source: string, view: Written): { text: string; urls: ReadonlySet<string> } {
   const spans: Span[] = [];
-  const handoffs = new Set<string>();
-  for (const match of text.matchAll(HANDOFF_LINK)) {
-    spans.push([match.index, match.index + match[0].length]);
-    if (match[1] && HANDOFF_URL.test(match[1])) handoffs.add(match[1]);
+  const urls = new Set<string>();
+  for (const match of view.text.matchAll(HANDOFF_LINK)) {
+    spans.push(written(view, match.index, match.index + match[0].length));
+    if (match[1] && HANDOFF_URL.test(match[1])) urls.add(standingForEach(match[1]));
   }
-  // A URL that holds `%20` reads with a stand-in inside it, and one in a field percent-encoded whole with stand-ins
-  // around it, so each is searched for whole. Each search reads the field once.
-  for (const url of handoffs) {
-    budget.spend(text.length);
-    for (let at = text.indexOf(url); at >= 0; at = text.indexOf(url, at + 1)) {
-      const end = at + url.length;
-      if ((at === 0 || BEFORE_HANDOFF_URL.test(standingFor(pointBefore(text, at)))) &&
-          (end === text.length || AFTER_HANDOFF_URL.test(standingFor(text.codePointAt(end)!)))) spans.push([at, end]);
-    }
-  }
-  return replaceSpans(source, spans.map(([start, end]) => written(view, start, end)), BROWSER_LINK_OMITTED);
+  return { text: replaceSpans(source, spans, BROWSER_LINK_OMITTED), urls };
 }
 
 // ---------------------------------------------------------------------------
