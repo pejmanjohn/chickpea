@@ -140,7 +140,10 @@ async function world(t: TestContext, suffix: string, share: Shared = shared(), i
       }),
       discoverSlackChannels: async () => {
         if (share.directory === 'unavailable') throw new Error('slack down');
-        return { truncated: false, channels: share.directory.map((id) => ({ id, name: id, isPrivate: false, isMember: true })) };
+        return {
+          truncated: false,
+          channels: share.directory.map((id) => ({ id, name: id, isPrivate: share.channels[id]?.private === true, isMember: true })),
+        };
       },
     };
   });
@@ -768,12 +771,13 @@ test('run history imports nothing under src/review/, directly or through a helpe
   assert.ok(seen.size > 20, `followed the module graph (${seen.size} files)`);
 });
 
-test('1,005 hidden runs never reach the read: no since and no poll shows a change, for an Owner or a member', async (t) => {
+test('1,005 hidden runs of each kind never reach the read: no since and no poll shows a change, for an Owner or a member', async (t) => {
   const day = 24 * 60 * MINUTE;
   for (const who of ['owner', 'member'] as const) {
     const w = await world(t, `thousand-${who}`);
     await sharedAgent(w);
-    w.share.directory = ['C_PUBLIC'];
+    // The member is in a private Channel too, which the directory marks private.
+    w.share.directory = ['C_PUBLIC', 'G_PRIVATE'];
     const now = Date.now();
     const other: 'owner' | 'member' = who === 'owner' ? 'member' : 'owner';
     const ownDm = who === 'owner' ? 'D_OWNER' : 'D_MEMBER';
@@ -799,16 +803,21 @@ test('1,005 hidden runs never reach the read: no since and no poll shows a chang
       return pages;
     };
     const before = await view();
-    for (const [index, startedAt] of hiddenAt.entries()) {
-      const hidden: Parameters<World['run']>[0] = [
-        { conversation: 'direct_message' as const, channelId: other === 'owner' ? 'D_OWNER' : 'D_MEMBER', requester: other },
-        { conversation: 'direct_message' as const, channelId: 'G_GROUPDM', requester: who },
-        { conversation: 'named_channel' as const, channelId: 'G_PRIVATE', requester: who, recordedPublic: false },
-        { conversation: 'named_channel' as const, channelId: 'C_OTHER', requester: who, recordedPublic: true },
-      ][index % (who === 'owner' ? 2 : 4)]!;
-      await w.run({ ...hidden, startedAt });
+    // Each kind alone is past the read limit, so each guard of the read is what keeps it out.
+    const kinds: Array<Parameters<World['run']>[0]> = who === 'owner'
+      ? [
+          { conversation: 'direct_message', channelId: 'D_MEMBER', requester: 'member' },
+          { conversation: 'direct_message', channelId: 'G_GROUPDM', requester: 'owner' },
+        ]
+      : [
+          { conversation: 'direct_message', channelId: 'D_OWNER', requester: 'owner' },
+          { conversation: 'named_channel', channelId: 'C_OTHER', requester: 'member', recordedPublic: true },
+          { conversation: 'named_channel', channelId: 'G_PRIVATE', requester: 'member', recordedPublic: false },
+        ];
+    for (const startedAt of hiddenAt) {
+      for (const [offset, kind] of kinds.entries()) await w.run({ ...kind, startedAt: startedAt - offset });
     }
-    assert.deepEqual(await view(), before, `${who}: 1,005 hidden runs change nothing the caller sees`);
+    assert.deepEqual(await view(), before, `${who}: hidden runs change nothing the caller sees`);
     for (let poll = 0; poll < 5; poll += 1) {
       await w.run({ conversation: 'direct_message', channelId: 'G_GROUPDM', requester: who, startedAt: Date.now() - 1_000 + poll });
       assert.deepEqual(await view(), before, `${who}: poll ${poll}`);
