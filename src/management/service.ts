@@ -36,6 +36,8 @@ import {
 } from '../config/errors.ts';
 import type { ConfigAgentPatch, ConfigStore } from '../config/store.ts';
 import type { TestRunStore } from './test-run-types.ts';
+import type { RunHistorySources } from './run-history-sources.ts';
+import type { SlackChannel } from '../slack/transport/types.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { ModelReadiness } from '../config/model-readiness.ts';
@@ -608,6 +610,8 @@ export interface WorkspaceManagementServiceInput {
   ) => Promise<T>;
   /** Better Auth's record of people's MCP clients; undefined where Better Auth does not sign people in. */
   mcpOAuthClients?: () => Promise<BetterAuthMcpOAuthClients | undefined>;
+  /** What list_agent_runs and get_agent_run read; a deployment without them has no run history. */
+  runHistory?: RunHistorySources;
   now?: () => number;
   randomId?: () => string;
   randomCapability?: () => string;
@@ -4146,6 +4150,44 @@ export class WorkspaceManagementService {
   async testRunStore(context: ManagementActorContext): Promise<TestRunStore | undefined> {
     await this.requireLiveActor(context);
     return this.stores.testRuns;
+  }
+
+  /**
+   * For list_agent_runs and get_agent_run, once the caller is live: run
+   * history's sources, the caller's Slack user, and Slack's current facts for
+   * one of an Agent's Channels, read as the Agent's own app when it has one
+   * and undefined when Slack cannot say. Which runs the caller may see, the
+   * tool decides on every call. Undefined where this deployment keeps no run
+   * history.
+   */
+  async runHistory(context: ManagementActorContext): Promise<{
+    sources: RunHistorySources;
+    slackUserId?: string;
+    slackChannel(agentId: string, channelId: string): Promise<SlackChannel | undefined>;
+  } | undefined> {
+    await this.requireLiveActor(context);
+    const sources = this.stores.runHistory;
+    if (!sources) return undefined;
+    const user = await this.stores.identity.getUser(context.userId);
+    const facts = new Map<string, Promise<PrivateAgentPlacementFacts>>();
+    const factsFor = (workspaceId: string, agentId: string) => {
+      let found = facts.get(agentId);
+      if (!found) {
+        facts.set(agentId, found = this.stores.config.getAgent(agentId)
+          .catch(() => undefined)
+          .then((agent) => this.slackFactsFor(workspaceId, agent))
+          .then(oneLookupPerChannel));
+      }
+      return found;
+    };
+    return {
+      sources,
+      ...(user?.slackUserId ? { slackUserId: user.slackUserId } : {}),
+      slackChannel: async (agentId, channelId) => {
+        if (!user?.slackTeamId) return undefined;
+        return (await factsFor(user.slackTeamId, agentId)).lookupChannel(channelId).catch(() => undefined);
+      },
+    };
   }
 
   /** For explain_agent and check_agent; hands out the stores only after the edit-authority check. */

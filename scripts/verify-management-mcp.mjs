@@ -40,6 +40,8 @@ const MANAGEMENT_MCP_TOOL_NAMES = [
   'get_setup_status',
   'export_agents',
   'list_connected_apps',
+  'list_agent_runs',
+  'get_agent_run',
   'propose_agent',
   'propose_agent_change',
   'get_creation_status',

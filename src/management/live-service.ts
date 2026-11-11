@@ -70,6 +70,7 @@ import {
   type WorkspaceManagementServiceInput,
 } from './service.ts';
 import { createManagementModelSources } from './model-sources.ts';
+import { liveRunHistorySources } from './run-history-live.ts';
 import { ManagementError } from './types.ts';
 import {
   discoverOpenMcpServer,
@@ -486,6 +487,14 @@ export function createLiveWorkspaceManagementService(
       const control = await identity.getAuthControl();
       return control ? (await resolveBetterAuthEnvironment({ control, platformEnv: env }))?.backend : undefined;
     },
+    runHistory: liveRunHistorySources({
+      env,
+      identity,
+      config: config as ConfigStore,
+      usage: () => options.usage ?? getUsageStore(env),
+      work: () => getWorkStore(env),
+      routines: () => getRoutineStore(env),
+    }),
     ...agentAvatarInstallationField(env),
     ...overrides,
   });

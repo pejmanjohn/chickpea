@@ -255,7 +255,8 @@ export function mcpErrorResult(error: McpToolError) {
 /**
  * A success: `structuredContent` matches the tool's `outputSchema`, and the
  * text block carries the same JSON for a client that passes only `content` to
- * its model, so no handle a follow-up call needs is lost there. A result a
+ * its model, so no handle a follow-up call needs is lost there. A tool may
+ * give its own `text`, which must carry those handles too. A result a
  * card draws names its tool in `_meta`, which only the card reads: hosts do
  * not say which tool a result came from. The tokens a card holds go there too.
  * `lead` comes before the JSON, for a card host's model: what the card shows.
@@ -263,11 +264,12 @@ export function mcpErrorResult(error: McpToolError) {
 export function mcpSuccessResult<T extends Record<string, unknown>>(
   structured: T,
   card?: { tool: string; held?: HeldTokens | undefined; lead?: string | undefined },
+  text: string = JSON.stringify(structured),
 ) {
   return {
     content: [
       ...card?.lead ? [{ type: 'text' as const, text: card.lead }] : [],
-      { type: 'text' as const, text: JSON.stringify(structured) },
+      { type: 'text' as const, text },
     ],
     structuredContent: structured,
     ...(card ? { _meta: { 'chickpea/tool': card.tool, ...card.held ? { 'chickpea/held': card.held } : {} } } : {}),
