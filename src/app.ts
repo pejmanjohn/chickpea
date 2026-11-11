@@ -54,7 +54,6 @@ import { ModelStepMarks } from './observability/runtime-latency.ts';
 import { readStagedSlackObservationTarget } from './agents/turn-input.ts';
 import { modelAccessInterceptor } from './agents/model-access-lookup.ts';
 import { runFeeInterceptor } from './config/run-fee-interceptor.ts';
-import { testTurnToolCallInterceptor } from './agents/test-turn-limits.ts';
 import { observeModelAccess } from './config/model-access.ts';
 import { workspaceRegistryInterceptor } from './sandbox/workspace-registry.ts';
 import {
@@ -206,14 +205,6 @@ function slackTurnJobIdOf({ instanceId, submissionId }: FlueObservation): string
   }
   return readStagedSlackObservationTarget(instanceId, submissionId)?.turnJobId;
 }
-
-// Outside the run fees, so a test run's call refused past its limit posts no fee.
-instrument({
-  key: Symbol.for('chickpea.test-turn-tool-calls'),
-  interceptor: testTurnToolCallInterceptor,
-  observe() {},
-  dispose() {},
-});
 
 instrument({
   key: Symbol.for('chickpea.run-fees'),

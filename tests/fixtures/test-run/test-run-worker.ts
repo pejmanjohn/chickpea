@@ -24,6 +24,7 @@ import { Agent, getAgentByName } from 'agents';
 import * as v from 'valibot';
 
 import { installationAgentExtension } from '../../../src/agents/cloudflare-extension.ts';
+import { CHICKPEA_SUBMISSION_DURABILITY } from '../../../src/agents/submission-durability.ts';
 import { objectInstallationEnv } from '../../../src/config/installation-scope.ts';
 import type { PlatformEnv } from '../../../src/config/state-backend.ts';
 import type { TestRunQuery, TestRunStartRequest } from '../../../src/management/test-run-types.ts';
@@ -64,7 +65,7 @@ export function TestRunProbe() {
   return 'Answer the question.';
 }
 TestRunProbe.agentName = AGENT_NAME;
-TestRunProbe.durability = { maxAttempts: 1, timeoutMs: 120_000 };
+TestRunProbe.durability = CHICKPEA_SUBMISSION_DURABILITY;
 TestRunProbe.initialData = v.custom<unknown>(() => true);
 
 registerFlueAgents([{ identity: AGENT_NAME, agent: TestRunProbe }]);
@@ -187,8 +188,20 @@ export class TestRunStateStore extends DurableObject {
     }
   }
 
-  override async alarm() {
+  /** As the state store's alarm: an hour-old run goes, every run takes a step, and the alarm looks again when one is due. */
+  async wake() {
+    this.testRuns.eraseExpired(Date.now() + this.offset);
     await this.lifecycle.pass();
+    const due = this.lifecycle.nextDueAt();
+    if (due !== undefined) await this.ctx.storage.setAlarm(due);
+  }
+
+  async alarmAt() {
+    return await this.ctx.storage.getAlarm();
+  }
+
+  override async alarm() {
+    await this.wake();
   }
 }
 
@@ -232,6 +245,8 @@ export default {
       case '/restore-row': return json(await store.restoreRow(String(body.testRunId)));
       case '/usage': return json(await store.usageOf(String(body.operationId)));
       case '/restore-refusal': return json(await store.restoreRefusal());
+      case '/wake': return json(await store.wake());
+      case '/alarm-at': return json(await store.alarmAt());
       case '/instance-tables': return json(await instanceTables(String(body.instanceId), String(body.installationId)));
       default: return new Response('not found', { status: 404 });
     }

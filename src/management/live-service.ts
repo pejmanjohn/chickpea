@@ -289,14 +289,10 @@ export function createLiveWorkspaceManagementService(
     },
     typedSlackMessage: async (query) => getSlackStateStore(env).typedSlackMessage?.(query),
     ...(testRuns ? { testRuns } : {}),
-    slackMemberTimezone: async (slackUserId) => {
+    slackMember: async (slackUserId) => {
       const organization = await identity.getOrganization();
-      if (!organization?.slackTeamId) return undefined;
-      try {
-        return (await (await slackTransport(organization.slackTeamId)).lookupMember(slackUserId)).timezone || undefined;
-      } catch {
-        return undefined;
-      }
+      if (!organization?.slackTeamId) throw new Error('The workspace is not connected to Slack.');
+      return await (await slackTransport(organization.slackTeamId)).lookupMember(slackUserId);
     },
     managedConnectorAvailable: async ({ toolkit, accessLane }) => {
       const provider = (await managedProviders()).get('composio');

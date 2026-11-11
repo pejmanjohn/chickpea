@@ -348,7 +348,7 @@ for (const { withPendingTurn, testRun } of [
         newestEnqueuedAt: () => undefined,
       },
       gatewayInbox: { hasPending: () => false, nextPendingDueAt: () => undefined },
-      testRuns: { hasUnerased: () => testRun, nextDueAt: (now: number) => testRun ? now + 10_000 : undefined },
+      testRuns: { hasUnerased: () => testRun, nextDueAt: (now: number) => testRun ? now + 10_000 : undefined, eraseExpired: () => 0 },
     };
     let passes = 0;
     (drainingProbe as unknown as { testRuns(): Promise<{ pass(): Promise<unknown> }> }).testRuns =
@@ -653,7 +653,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
       endTurn: (id: string, turnJobs: { markDelivered(id: string): unknown }) => turnJobs.markDelivered(id),
     },
     gatewayInbox: { hasPending: () => false, nextPendingDueAt: () => undefined },
-    testRuns: { hasUnerased: () => false, nextDueAt: () => undefined },
+    testRuns: { hasUnerased: () => false, nextDueAt: () => undefined, eraseExpired: () => 0 },
     presentations: { get: (runId: string) => ({ runId, projectionVersion: 3 }) },
     config: {
       getWorkspaceInstallation: (workspaceId: string) => ({
@@ -1265,7 +1265,8 @@ function restartFixture(state: {
       hasHandoffs: read(state.handoffs),
     },
     gatewayInbox: { hasOrphanedLease: read(state.inbox) },
-    testRuns: { hasUnerased: read(state.testRun) },
+    // Due while a run's instance waits to be erased, or its text for its hour.
+    testRuns: { nextDueAt: (now: number) => state.testRun ? now + 10_000 : undefined },
   };
   let alarm = state.alarm;
   probe.ctx = { storage: {

@@ -226,6 +226,7 @@ import {
   type ConnectionCheckOutcome,
 } from '../connections/connection-check.ts';
 import type { SlackMessageQuery, SlackTypedMessage } from '../slack/turn-jobs.ts';
+import type { SlackMember } from '../slack/transport/types.ts';
 import { approvedNewKeyedApiConnections, CONNECTION_APPROVAL_WINDOW_MS } from './connection-approval.ts';
 import type { IssuedSetup, SetupDelivery } from './slack-key-setup.ts';
 import { isConnectionSetup, setupWakeAgent } from './setup-wake.ts';
@@ -521,8 +522,8 @@ export interface WorkspaceManagementServiceInput {
   takeConnectionTry?: (membershipId: string) => Promise<number | undefined>;
   /** What a person typed in one Slack message, from the host's own turn record. */
   typedSlackMessage?: (query: SlackMessageQuery) => Promise<SlackTypedMessage | undefined>;
-  /** A Slack member's timezone, as ingress reads it; undefined when Slack gives none. */
-  slackMemberTimezone?: (slackUserId: string) => Promise<string | undefined>;
+  /** Slack's record of one member, as ingress reads it; throws when Slack does not answer. */
+  slackMember?: (slackUserId: string) => Promise<SlackMember>;
   /** The installation's test runs; only a deployment serving many installations has them. */
   testRuns?: TestRunStore;
   /** Lists an open MCP server's tools before a write saves it, as Admin's Test connection does. */
@@ -4811,8 +4812,8 @@ export class WorkspaceManagementService {
       (actor.origin.kind !== 'slack' || actor.origin.channelId === routine.channelId);
   }
 
-  /** Whether the person may DM this Agent, which a DM routine needs too. */
-  private async privateAgentUse(
+  /** Whether the person may DM this Agent, which a DM routine and a practice run need too. */
+  async privateAgentUse(
     actor: LiveManagementActor,
     agent: CustomAgentConfig,
     workspaceId: string,
