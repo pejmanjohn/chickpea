@@ -400,7 +400,7 @@ export function projectMcpToolInputSchema(
     }
     if (metaAdsHelper) {
       const runtime = metaAdsHelperRuntimeArgumentNames(metaAdsToolName!);
-      if ([...required].some((name) => !runtime.includes(name))) ambiguous = true;
+      if ([...required].some((name) => !runtime.includes(name) || !Object.hasOwn(properties, name))) ambiguous = true;
     }
   }
   if (metaAdsHelper) {

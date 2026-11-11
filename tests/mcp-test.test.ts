@@ -629,6 +629,12 @@ test('Meta helper projection refuses an added argument that is required or names
     ['required addition', liveAccountHelper(metaHelperAdditions, ['advertiser_job'])],
     ['required addition on the field helper', liveFieldHelper(metaHelperAdditions, ['field_names', 'scheduled_task_run'])],
     ['required name with no property', liveAccountHelper({}, ['advertiser_job'])],
+    ['required reviewed name with no property', projectMcpToolInputSchema({
+      type: 'object', required: ['advertiser_request'], properties: { client_conversation_id: { type: 'string' } },
+    }, 'ads_get_ad_accounts')],
+    ['required reviewed name with no properties at all', projectMcpToolInputSchema({
+      type: 'object', required: ['advertiser_request'],
+    }, 'ads_get_ad_accounts')],
     ['optional account field', liveAccountHelper({ ad_account_id: { type: 'string' } })],
     ['optional account field on the field helper', liveFieldHelper({ account_id: { type: 'string' } })],
     ['account-like name', liveAccountHelper({ ad_account: { type: 'string' } })],
