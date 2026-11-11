@@ -708,6 +708,9 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   `reason: reply_read_interrupted` on a thrown attempt means a read failed
   with no other in flight, and the next attempt reattaches to the same
   submission.
+  The settlement reads of coding jobs and test runs, and the coding task
+  stop's wait, join a stalled read through a new stub the same way, and log
+  no count.
   Count retries as `turn_latency` records with `attempt` above 1, and read why
   from the `reason` of the attempt before each one.
 - `state_rpc` is logged by the calling isolate (a Flue agent Durable Object,
