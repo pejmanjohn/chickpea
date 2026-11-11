@@ -70,6 +70,14 @@ function kept(record: RunReviewRecordV1, values: readonly string[]): string[] {
 const browserStep = (name: string, input: unknown, output: unknown) =>
   ({ kind: 'tool' as const, name, input: JSON.stringify(input), output: JSON.stringify(output) });
 
+/** `base` with a username and a password, as the URL standard's setters write them. */
+function address(base: string, username: string, password = ''): string {
+  const url = new URL(base);
+  url.username = username;
+  url.password = password;
+  return url.href;
+}
+
 test('link rules see each URL whole, before a username or a key replacement can end it early', () => {
   const key = ['sb', 'live', 'synthKey0123456789'].join('_');
   const record = copy({
@@ -554,12 +562,6 @@ test('a link right after another link\'s host, behind //, or behind a host no si
 test('a URL\'s userinfo goes whole whatever delimiters its encoding writes, and hides neither its host nor its token, in every field', () => {
   // The URL standard's setters write a `/`, `?`, `#`, `@` or `:` in a username or password as its percent escape.
   // Decoded, it is the userinfo's data: the host follows the userinfo's last `@`, before the first `/`, `?` or `#` as written.
-  const address = (base: string, username: string, password = '') => {
-    const url = new URL(base);
-    url.username = username;
-    url.password = password;
-    return url.href;
-  };
   const signIn = (username: string, password?: string) =>
     address('https://billing.example.com/cb?code=SynthUserinfoCode1', username, password);
   const slashed = signIn('SynthOps/SynthTeam', 'SynthPass/?#@:4417');
@@ -612,6 +614,35 @@ test('a URL\'s userinfo goes whole whatever delimiters its encoding writes, and 
     `${signedInWhole}, ${signedInWhole}, ${BROWSER_LINK_OMITTED} [omitted][omitted]/cb?[omitted], ` +
     'https://other.example/s?q=kept or https://other.example/s?q=kept today, then ' +
     'https://billing.example.com[omitted] https://billing.example.com[omitted] https://billing.example.com[omitted]/reset/[omitted]');
+});
+
+test('a link behind `//` loses its userinfo on any site, and an email address\'s domain starts no link', () => {
+  // A protocol-relative address, or one of a scheme no rule names, holds an authority behind `//` as any URL does:
+  // its host follows the userinfo's last `@`, and the link starts where the userinfo does, whatever site it is on.
+  const withUserinfo = address('https://billing.example.com/cb?code=SynthUserinfoCode3', 'SynthOps/SynthTeam', 'SynthPass4417');
+  const protocolRelative = withUserinfo.slice('https:'.length);
+  const record = copy({
+    trigger: { author: 'U012ABCDEF3', text: `Use //SynthOps:SynthPass@billing.example.com/cb?code=SynthUserinfoCode4 or ${protocolRelative}.`, files: [] },
+    steps: [
+      browserStep('browser_open', { url: protocolRelative }, { url: '//SynthOps:SynthPass@accounts.other.example/inbox?q=SynthUserinfoCode5' }),
+      { kind: 'tool', name: 'read_mail', input: '{}', output: JSON.stringify({ text: `Next: ${new URLSearchParams({ next: protocolRelative })}` }) },
+    ],
+    answer: 'See https://other.example/r?next=//SynthOps:SynthPass@billing.example.com/cb?code=SynthUserinfoCode6 and ' +
+      'postgres://SynthOps:SynthPass@billing.example.com:5432/app?sslkey=SynthUserinfoCode7, ' +
+      '//SynthOps:SynthPass@other.example/s?q=kept and redis://SynthOps:SynthPass@cache.other.example:6379/0. ' +
+      // An email address's `@`, as written or percent-encoded, and one in a path, starts no authority.
+      'Write to ops@billing.example.com/help, ops%40billing.example.com%2Fhelp or //go.example.org/u/ops@billing.example.com/help.',
+  });
+  assert.deepEqual(kept(record, ['SynthOps', 'SynthTeam', 'SynthPass', 'SynthUserinfoCode']), []);
+  assert.equal(record.trigger.text, 'Use //billing.example.com/cb?[omitted] or //billing.example.com/cb?[omitted].');
+  const [opened, mail] = record.steps;
+  assert.ok(opened?.kind === 'tool' && mail?.kind === 'tool');
+  assert.equal(opened.input, '{"url":"//billing.example.com/cb?[omitted]"}');
+  assert.equal(opened.output, '{"url":"//accounts.other.example/inbox?[omitted]"}');
+  assert.equal(JSON.parse(mail.output ?? '{}').text, 'Next: next=%2F%2Fbilling.example.com[omitted]');
+  assert.equal(record.answer, 'See https://other.example/r?next=//billing.example.com/cb?[omitted] and ' +
+    'postgres://billing.example.com:5432/app?[omitted], //other.example/s?q=kept and redis://cache.other.example:6379/0. ' +
+    'Write to ops@billing.example.com/help, ops%40billing.example.com%2Fhelp or //go.example.org/u/ops@billing.example.com/help.');
 });
 
 test('a login site\'s link without a scheme keeps no token after a JSON line break or tab, escaped once or twice, or behind JSON-escaped slashes', () => {

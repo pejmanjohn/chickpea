@@ -154,14 +154,11 @@ const CREDENTIALS: readonly Credential[] = [
 ];
 
 /**
- * Cells that do not pass yet, each with its reason. Every other realistic
- * encoding, and every pair of them, leaves no credential.
+ * Cells that cannot pass without breaking the coordinator's criterion,
+ * each with its reason. Empty: every realistic encoding, and every pair of
+ * them, leaves no credential.
  */
-const PROTOCOL_RELATIVE_USERINFO = 'HTML references a userinfo builder keeps as written decode to an address on host `https` whose ' +
-  'path holds `//user:password@billing.example.com/…`: a link without a scheme behind `//`, whose userinfo starts no link';
-const ACCEPTED: ReadonlyMap<string, string> = new Map(['password and token behind a userinfo that holds delimiters', 'password in another site\'s userinfo that holds delimiters']
-  .flatMap((credential) => ['RFC 3986', 'Go net/url'].map((builder) =>
-    [`${credential} | PHP htmlentities(ENT_HTML5) → URL userinfo by ${builder} | prose`, PROTOCOL_RELATIVE_USERINFO] as const)));
+const ACCEPTED: ReadonlyMap<string, string> = new Map();
 
 function record(field: Field, text: string): RunReviewRecordV1 {
   const input: RunReviewInput = {
