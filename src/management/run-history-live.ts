@@ -52,9 +52,14 @@ export function liveRunHistorySources(input: {
       for (const row of rows) if (row.runId !== null) byRun.set(row.runId, [...byRun.get(row.runId) ?? [], row]);
       const charges = new Map<string, RunCharge>();
       for (const { operation, measurements } of items) {
-        const billed = [...new Set(measurements.flatMap(({ billingRunId }) => billingRunId ? [billingRunId] : []))]
-          .flatMap((runId) => byRun.get(runId) ?? []);
-        if (billed.length === 0) continue;
+        const keys = [...new Set(measurements.flatMap(({ billingRunId }) => billingRunId ? [billingRunId] : []))];
+        const billed = keys.flatMap((runId) => byRun.get(runId) ?? []);
+        // The bill leaves out a run whose rows net to nothing, so a run it was read for and does not name was billed
+        // nothing. A billing key comes with the run's terminal; a run with none to look for has no amount.
+        if (billed.length === 0) {
+          if (keys.length > 0) charges.set(operation.operationId, { micros: 0 });
+          continue;
+        }
         charges.set(operation.operationId, {
           micros: billed.reduce((total, row) => total + row.modelMicros + row.feeMicros - row.creditedBackMicros, 0),
         });

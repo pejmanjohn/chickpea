@@ -61,6 +61,11 @@ const RUNNING_AT_MOST_MS = 60 * 60 * 1_000;
 export const RUN_HISTORY_RESULT_BYTES = 28_000;
 const CUT = { preview: 200, ask: 2_000, reply: 6_000 } as const;
 const NOT_KEPT = { state: 'not_kept' as const };
+/**
+ * What Slack leaves in place of a deleted message that has replies. It
+ * arrives as an edit, so the thread record holds it as the person's words.
+ */
+const SLACK_DELETED_PLACEHOLDER = 'This message was deleted.';
 const NOTE = 'Run records go back 90 days. The words of a conversation stay for up to 30 days after its last activity, and are never shown for other people\'s direct messages, group DMs or private Channels. The raw results of the Agent\'s tools are never shown.';
 
 /** Who is asking, as far as run history cares. */
@@ -121,18 +126,20 @@ function scheduleWhere(run: UsageOperation, postsTo: 'your_dm' | 'channel'): Whe
   return { kind: 'schedule', ...(run.routineLabel ? { schedule: run.routineLabel } : {}), postsTo };
 }
 
-/** Runs of these kinds only: classification and practice runs are never listed. */
-function kindsFor(place: ListInput['place']): Array<'interactive_turn' | 'routine_run'> {
-  if (place === 'schedules') return ['routine_run'];
-  if (place === 'my_dms' || place === 'channels') return ['interactive_turn'];
-  return ['interactive_turn', 'routine_run'];
-}
+/**
+ * The list reads message runs only: classification and practice runs are
+ * never listed, and schedule runs not yet. A Channel schedule run has no
+ * ledger run on Cloud, so it could never be judged public; listing only a
+ * person's DM schedules would read as if the Agent's Channel schedules never
+ * ran. A schedule run's runId from an earlier list still opens in get_agent_run.
+ */
+const LISTED_KINDS: Array<'interactive_turn'> = ['interactive_turn'];
+const SCHEDULES_NOT_LISTED = 'Schedule runs aren\'t listed here yet. list_schedules shows when each schedule last ran and how that run ended.';
 
 function inPlace(where: Where, place: ListInput['place']): boolean {
   return place === undefined ||
     (place === 'my_dms' && where.kind === 'your_dm') ||
-    (place === 'channels' && where.kind === 'channel') ||
-    (place === 'schedules' && where.kind === 'schedule');
+    (place === 'channels' && where.kind === 'channel');
 }
 
 // Access.
@@ -243,6 +250,14 @@ export async function listAgentRuns(deps: FiveZeroDeps, input: ListInput): Promi
     });
   }
   const place = cursor ? cursor.place : input.place;
+  if (place === 'schedules') {
+    return {
+      label: SLACK_QUOTE_LABEL,
+      runs: [],
+      nextStep: 'Tell the person schedule runs aren\'t listed yet, and call list_schedules for when each schedule last ran.',
+      note: `${SCHEDULES_NOT_LISTED} ${NOTE}`,
+    };
+  }
   const limit = input.limit ?? RUN_HISTORY_PAGE.default;
   const verdicts = judge(found, agent.editor);
   const scope = await visibleScope(found, verdicts.caller);
@@ -266,7 +281,7 @@ export async function listAgentRuns(deps: FiveZeroDeps, input: ListInput): Promi
       // From the whole UTC day for every caller, so a page's edge never falls at the exact since.
       from: countFrom,
       to: now + 1,
-      filters: { agent: [input.agentId], workKind: kindsFor(place) },
+      filters: { agent: [input.agentId], workKind: LISTED_KINDS },
       runHistory: scope,
       limit: USAGE_PAGE,
       ...(usageCursor ? { cursor: usageCursor } : {}),
@@ -316,7 +331,7 @@ export async function listAgentRuns(deps: FiveZeroDeps, input: ListInput): Promi
     hidden += (await found.history.sources.usage.summarize({
       from: countFrom,
       to: today,
-      filters: { agent: [input.agentId], workKind: kindsFor(place) },
+      filters: { agent: [input.agentId], workKind: LISTED_KINDS },
       runHistory: { membershipId: verdicts.caller.membershipId, rows: 'hidden' },
     })).totals.operationCount;
   }
@@ -549,7 +564,8 @@ async function conversationOf(found: Access, caller: Caller, run: UsageOperation
 /**
  * The person's row at the run's message. For a run the caller asked, the row
  * must be theirs whenever it names its author; `anyone` is for a public
- * Channel run someone else asked.
+ * Channel run someone else asked. A row edited into Slack's placeholder for a
+ * deleted message is gone, as a deleted row is.
  */
 function askRow(
   rows: readonly SlackPublicContextEntry[],
@@ -558,7 +574,7 @@ function askRow(
   anyone = false,
 ): SlackPublicContextEntry | undefined {
   const row = rows.find(({ role, messageTs }) => role === 'human' && messageTs === run.slackMessageTs);
-  if (!row) return undefined;
+  if (!row || (row.contentVersionTs !== undefined && row.text === SLACK_DELETED_PLACEHOLDER)) return undefined;
   return anyone || row.authorId === undefined || row.authorId === slackUserId ? row : undefined;
 }
 

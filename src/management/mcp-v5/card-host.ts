@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { ADMIN_PATH, adminOrigin } from '../admin-links.ts';
 import { offNextStep, type ChangeResult } from './changes.ts';
-import { mcpErrorText, type McpToolError } from './conventions.ts';
+import { mcpErrorText, openOutputSchema, type McpToolError } from './conventions.ts';
 import { cardRefusalOutput } from './schemas.ts';
 
 /**
@@ -88,7 +88,7 @@ let refusalSchema: Record<string, unknown> | undefined;
  */
 export function withRefusalOutput(schema: Record<string, unknown>): Record<string, unknown> {
   const { $schema, ...own } = schema;
-  refusalSchema ??= z.toJSONSchema(cardRefusalOutput, { io: 'output', target: 'draft-2020-12' }) as Record<string, unknown>;
+  refusalSchema ??= openOutputSchema(z.toJSONSchema(cardRefusalOutput, { io: 'output', target: 'draft-2020-12' }) as Record<string, unknown>);
   const { $schema: _same, ...refusal } = refusalSchema;
   return { ...$schema === undefined ? {} : { $schema }, type: 'object', anyOf: [own, refusal] };
 }

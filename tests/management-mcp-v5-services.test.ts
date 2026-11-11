@@ -93,9 +93,9 @@ test('get_service lists the tool as a read with an outputSchema, and list_servic
   const tool = tools.find(({ name }) => name === 'get_service')!;
   assert.deepEqual(tool.annotations, { readOnlyHint: true, destructiveHint: false, openWorldHint: false });
   assert.deepEqual(tool.securitySchemes, [{ type: 'oauth2', scopes: ['chickpea:workspace'] }]);
-  const output = tool.outputSchema as { type: string; additionalProperties: boolean; required: string[] };
+  const output = tool.outputSchema as { type: string; additionalProperties?: boolean; required: string[] };
   assert.equal(output.type, 'object');
-  assert.equal(output.additionalProperties, false);
+  assert.equal(output.additionalProperties, undefined, 'a listed output accepts a field a later release adds');
   assert.deepEqual(
     [...output.required].sort(),
     ['account', 'capabilitiesKnown', 'description', 'name', 'nextStep', 'practice', 'service', 'signIn'],
