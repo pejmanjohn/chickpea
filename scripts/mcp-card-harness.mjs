@@ -1215,7 +1215,9 @@ try {
     for (let tries = 0; tries < 50 && (await calls()).filter((name) => name === 'get_practice_run').length === readsBefore; tries += 1) {
       await new Promise((done) => setTimeout(done, 100));
     }
-    await shows('/Still working on it\./', 'Check again, still running', 30_000);
+    // The read waits its 20 seconds for a run still going; then Check again is pressable again.
+    await browser.waitFor('document.querySelectorAll(".cp-acts button:enabled").length >= 1', 'Check again, once the read answers', 30_000);
+    await shows('/Still working on it\./', 'Check again, still running');
     assert.equal((await calls()).filter((name) => name === 'practice_agent').length, practiced, 'Check again reads the run, and starts none');
     await shot('4-still-answering');
     if (host === 'chatgpt') {
