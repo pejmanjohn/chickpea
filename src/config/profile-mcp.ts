@@ -20,9 +20,12 @@ import {
   metaAdsToolEffect,
 } from './meta-ads-policy.ts';
 import {
+  advertiseMetaAdsAccountHelper,
   advertiseMetaAdsAccountHelperOutput,
+  reviewedMetaAdsTools,
   sanitizeMetaAdsAccountHelperResponse,
 } from './meta-ads-response.ts';
+import { createMcpToolsListFilter, type ToolsRewrite } from './mcp-tools-list.ts';
 import { assertMetaAdsWriteAccountOwnership, META_ADS_OWNERSHIP_ORIGIN } from './meta-ads-write-guard.ts';
 import { META_ADS_OAUTH_MANAGEMENT_SCOPE } from './mcp-oauth-clients.ts';
 import {
@@ -52,10 +55,10 @@ import { ConnectionCredentialUnavailableError } from '../connections/errors.ts';
 
 /**
  * Turn-time MCP connection declarations for Flue. Definitions carry policy
- * only (URL, transport, the approved tool list); Flue owns discovery,
- * namespacing, and the strict tool allowlist. Every request re-reads the live
- * connection policy, and secrets always resolve live from env/settings, so a
- * revoked connection or rotated credential takes effect on the next call.
+ * only (URL, transport, the approved tools); Flue owns discovery and
+ * namespacing. Every request re-reads the live connection policy, and secrets
+ * always resolve live from env/settings, so a revoked connection or rotated
+ * credential takes effect on the next call.
  */
 
 interface ResolveProfileMcpConnectionsOptions {
@@ -183,6 +186,12 @@ export function resolveProfileMcpConnections(
  * current profile row, requires it to remain within the frozen declaration,
  * and resolves credentials from the trusted settings seam. With `readsOnly`
  * (a test run), every tool must also still be declared a read.
+ *
+ * On Streamable HTTP, Flue mounts what tools/list returns, and every listing
+ * is filtered to the granted tools the server still lists, in grant order. A
+ * tool the server stops listing leaves the rest working, and comes back when
+ * the server lists it again; the grant itself is never rewritten. A Meta tool
+ * shows only the arguments reviewed on the current row.
  */
 export function resolveRuntimePlanMcpConnections(
   profileId: string,
@@ -256,9 +265,16 @@ export function resolveRuntimePlanMcpConnections(
       allowedOrigin: new URL(validated.url).origin,
       authorizeRequest: async () => { await requireCurrentServer(); },
     });
+    // The legacy SSE transport answers tools/list on its GET stream, which the
+    // filter does not read, so it keeps Flue's strict allowlist.
+    const toolsList = declaration.transport === 'streamable-http'
+      ? createMcpToolsListFilter({ connectionId: declaration.id, grant: allowedTools })
+      : undefined;
     const fetchWithLiveHeaders = withMcpHttpTelemetry(async (input, init) => {
       const request = new Request(input, init);
-      const invocation = await mcpToolInvocation(request);
+      const rpc = await mcpRpcRequest(request);
+      const invocation = mcpToolInvocationIn(rpc);
+      const readAnswer = toolsList?.request(rpc);
       if (invocation) {
         if (!effectiveDeclaration.allowedTools.includes(invocation.name)) {
           throw new Error('MCP tool is not selected for this Agent.');
@@ -269,7 +285,7 @@ export function resolveRuntimePlanMcpConnections(
         }
       }
       const { server, env } = await requireCurrentServer();
-      const advertisedRequest = usesMetaAdsOutputAdapter(server) ? request.clone() : undefined;
+      const advertisedRequest = !toolsList && usesMetaAdsOutputAdapter(server) ? request.clone() : undefined;
       if (invocation && isMetaAdsMcpConnection(server)) {
         assertServerMcpToolInvocation(server, effectiveDeclaration.allowedTools, invocation);
       }
@@ -307,9 +323,11 @@ export function resolveRuntimePlanMcpConnections(
       if (response.status === 401 && declaration.authMode === 'oauth') {
         rejectedAccessToken = presentedBearerToken(headers);
       }
-      const advertised = advertisedRequest
-        ? await advertiseMetaAdsAccountHelperOutput(advertisedRequest, response)
-        : response;
+      const advertised = readAnswer
+        ? await readAnswer(response, server.displayName, metaAdsToolsRewrite(server))
+        : advertisedRequest
+          ? await advertiseMetaAdsAccountHelperOutput(advertisedRequest, response)
+          : response;
       if (!invocation || !isMetaAdsMcpConnection(server)) {
         return advertised;
       }
@@ -323,10 +341,10 @@ export function resolveRuntimePlanMcpConnections(
       name: declaration.id,
       url: validated.url,
       transport: declaration.transport,
-      tools: allowedTools,
+      ...(toolsList ? {} : { tools: allowedTools }),
       optional: declaration.optional,
       timeoutMs: 30_000,
-      fetch: fetchWithLiveHeaders,
+      fetch: toolsList ? toolsList.guardGets(fetchWithLiveHeaders) : fetchWithLiveHeaders,
       ...(declaration.authMode === 'none'
         ? {}
         : {
@@ -513,15 +531,30 @@ interface McpToolInvocation {
   arguments: unknown;
 }
 
-async function mcpToolInvocation(request: Request): Promise<McpToolInvocation | undefined> {
+interface McpRpcRequest {
+  id?: unknown;
+  method?: unknown;
+  params?: { name?: unknown; arguments?: unknown; cursor?: unknown };
+}
+
+/** The JSON-RPC request in a POST body. A body that is not one object is refused. */
+async function mcpRpcRequest(request: Request): Promise<McpRpcRequest | undefined> {
   if (request.method !== 'POST') return undefined;
-  const rpc = await request.clone().json() as { method?: string; params?: { name?: string; arguments?: unknown } };
+  const rpc = await request.clone().json() as McpRpcRequest;
   if (!rpc || typeof rpc !== 'object' || Array.isArray(rpc)) {
     throw new Error('Invalid MCP tool invocation.');
   }
-  if (rpc.method !== 'tools/call') return undefined;
+  return rpc;
+}
+
+function mcpToolInvocationIn(rpc: McpRpcRequest | undefined): McpToolInvocation | undefined {
+  if (rpc?.method !== 'tools/call') return undefined;
   if (typeof rpc.params?.name !== 'string') throw new Error('Invalid MCP tool invocation.');
   return { name: rpc.params.name, arguments: rpc.params.arguments };
+}
+
+async function mcpToolInvocation(request: Request): Promise<McpToolInvocation | undefined> {
+  return mcpToolInvocationIn(await mcpRpcRequest(request));
 }
 
 function runtimeAllowedToolsForServer(server: McpConnectionConfig): string[] {
@@ -539,6 +572,13 @@ function usesMetaAdsOutputAdapter(connection: Pick<McpConnectionConfig, 'url'>):
   } catch {
     return false;
   }
+}
+
+/** Meta's listing as the model may use it: the account helper's rebuilt contract, and reviewed arguments only. */
+function metaAdsToolsRewrite(server: McpConnectionConfig): ToolsRewrite | undefined {
+  if (!isMetaAdsMcpConnection(server)) return undefined;
+  return (tools) =>
+    reviewedMetaAdsTools(usesMetaAdsOutputAdapter(server) ? advertiseMetaAdsAccountHelper(tools) : tools, server);
 }
 
 function serverNeedsInvocationGuard(server: McpConnectionConfig): boolean {
@@ -634,7 +674,7 @@ async function sanitizeAccountHelperResponse(
   if (!approvedAccountIds) {
     throw new Error('Meta Ads account verification scope changed; review the connection before using it.');
   }
-  return sanitizeMetaAdsAccountHelperResponse(response, approvedAccountIds);
+  return sanitizeMetaAdsAccountHelperResponse(response, approvedAccountIds, { connectionId: server.id });
 }
 
 async function requireCurrentProfileMcpServer(

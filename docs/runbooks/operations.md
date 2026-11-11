@@ -384,9 +384,12 @@ Before you turn it on, know these four points:
 
 To check it, read the `state_rpc_summary` records of scope `slack_delivery`:
 `path` says who admitted each delivery (`store`, `worker`, `fallback`), and
-`calls` is 1 on the store's path. The store logs `slack_store_admission` for
-each delivery it admits, with `rpcCalls` 0. See
-[runtime observability](runtime-observability.md).
+`calls` is 1 on the store's path. A `fallback` with `reason: store_failed`
+is a delivery the store's admission failed on. The Worker does not admit it
+again, so it is lost unless the store committed a turn before it failed:
+`turns` on its `slack_store_admission` record (`outcome: failed`) says. The
+store logs `slack_store_admission` for each delivery it admits, with
+`rpcCalls` 0. See [runtime observability](runtime-observability.md).
 
 ### Stream answers by host release
 
@@ -403,8 +406,11 @@ npm run deploy -- --var CHICKPEA_SLACK_ANSWER_RELEASE:host
 
 Unset, or any other value, keeps the model's declaration as the only way an
 answer streams. That is the default. A hold that is not a whole number from
-100 to 4000 also turns host release off; the deploy does not refuse it, so
-after you set one, check that `answer_release` shows it in `holdChars`.
+100 to 4000 also turns host release off; the deploy does not refuse it. Each
+isolate that reads such a hold logs one warning, `answer_release_hold_refused`
+with `component: "slack"` and `reason` (`not_whole_number` or
+`out_of_range`), and never the value. After you set a hold, check that
+`answer_release` shows it in `holdChars`.
 `SLACK_TAG_PROGRESSIVE_STREAMING=false` turns all streaming off either way.
 Upgrades keep both variables.
 

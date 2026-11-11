@@ -2,11 +2,12 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 import {
   useAgentFinish, useDelivery, useDispatchMessage, usePersistentState, useResponseStart,
-  type DeliveredMessageInput, type FlueExecutionInterceptor, type FlueObservation,
+  type DeliveredMessageInput, type FlueExecutionInterceptor, type FlueObservation, type LlmMessage,
 } from '@flue/runtime';
 
 import { CHICKPEA_SLACK_AGENT_NAME } from '../agents/names.ts';
 import { validTurnJobId } from '../agents/turn-input.ts';
+import { recoverySignalType } from '../config/pi-provider-registry.ts';
 import {
   currentRequestEnvelopeText,
   currentRequestOffersProgressiveStreaming,
@@ -209,8 +210,8 @@ interface ToolBoundary {
   workEnded: boolean;
   /**
    * The text of the model steps since the response's last tool step: what the
-   * host release would show (observeSlackAnswerStep). A recovered step's
-   * continuation adds to it.
+   * host release would show (observeSlackAnswerStep). A resumed response that
+   * continues interrupted partials starts from their text.
    */
   answerText: string;
   /** The latest render's check (useSlackFollowUpFold). */
@@ -271,6 +272,14 @@ export const slackToolBoundaryFoldInterceptor: FlueExecutionInterceptor = async 
 
 /** Keeps a Slack response's answer text for the finish check (ToolBoundary.answerText). */
 export function observeSlackAnswerStep(event: FlueObservation): void {
+  if (event.type === 'turn_request' && event.purpose === 'agent') {
+    // A resumed response's first request: the partials' steps ended in the
+    // instance that was cut, so their text never reached this one.
+    const partials = continuedPartials(event.request.input.messages);
+    const boundary = toolBoundaries.getStore();
+    if (partials !== undefined && boundary) boundary.answerText = partials;
+    return;
+  }
   if (event.type !== 'message_end' || event.message.role !== 'assistant') return;
   const boundary = toolBoundaries.getStore();
   if (!boundary) return;
@@ -283,4 +292,20 @@ export function observeSlackAnswerStep(event: FlueObservation): void {
     if (part.type === 'text') text += part.text;
   }
   boundary.answerText += text;
+}
+
+/**
+ * The text of the interrupted partials a request asks the model to continue,
+ * oldest first: Flue follows each with its two recovery signals. Undefined for
+ * any other request.
+ */
+function continuedPartials(messages: readonly LlmMessage[]): string | undefined {
+  let text: string | undefined;
+  for (let end = messages.length; end >= 3; end -= 3) {
+    const [partial, interrupted, continued] = messages.slice(end - 3, end);
+    if (partial?.role !== 'assistant' || recoverySignalType(interrupted) !== 'stream_interrupted' ||
+        recoverySignalType(continued) !== 'stream_continued') break;
+    text = partial.content.map((part) => part.type === 'text' ? part.text : '').join('') + (text ?? '');
+  }
+  return text;
 }

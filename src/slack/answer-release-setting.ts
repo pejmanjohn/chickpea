@@ -21,6 +21,17 @@ export interface AnswerReleaseSetting {
   holdChars: number;
 }
 
+/** Why a hold was refused: not a whole number, or one outside the range. */
+type RefusedHold = 'not_whole_number' | 'out_of_range';
+
+function readHold(value: unknown): number | RefusedHold {
+  if (value === undefined || value === '') return DEFAULT_ANSWER_RELEASE_CHARS;
+  const digits = typeof value === 'number' ? String(value) : value;
+  if (typeof digits !== 'string' || !/^[0-9]+$/.test(digits)) return 'not_whole_number';
+  const chars = Number(digits);
+  return chars >= MIN_ANSWER_RELEASE_CHARS && chars <= MAX_ANSWER_RELEASE_CHARS ? chars : 'out_of_range';
+}
+
 /**
  * The hold an ANSWER_RELEASE_CHARS_VARIABLE value sets. Unset or empty is the
  * default. Throws for anything but a whole number from MIN_ANSWER_RELEASE_CHARS
@@ -28,28 +39,33 @@ export interface AnswerReleaseSetting {
  * reaches the Worker, where `answerReleaseSetting` turns host release off.
  */
 export function parseAnswerReleaseChars(value: unknown): number {
-  if (value === undefined || value === '') return DEFAULT_ANSWER_RELEASE_CHARS;
-  const digits = typeof value === 'number' ? String(value) : value;
-  const chars = typeof digits === 'string' && /^[0-9]+$/.test(digits) ? Number(digits) : Number.NaN;
-  if (!(chars >= MIN_ANSWER_RELEASE_CHARS && chars <= MAX_ANSWER_RELEASE_CHARS)) {
-    throw new Error(
-      `${ANSWER_RELEASE_CHARS_VARIABLE} must be a whole number of characters from ` +
-      `${MIN_ANSWER_RELEASE_CHARS} to ${MAX_ANSWER_RELEASE_CHARS}, or unset for ${DEFAULT_ANSWER_RELEASE_CHARS}.`,
-    );
-  }
-  return chars;
+  const hold = readHold(value);
+  if (typeof hold === 'number') return hold;
+  throw new Error(
+    `${ANSWER_RELEASE_CHARS_VARIABLE} must be a whole number of characters from ` +
+    `${MIN_ANSWER_RELEASE_CHARS} to ${MAX_ANSWER_RELEASE_CHARS}, or unset for ${DEFAULT_ANSWER_RELEASE_CHARS}.`,
+  );
 }
+
+let refusedHoldLogged = false;
 
 /**
  * Host release as this deployment's env sets it; undefined when it is off. A
- * hold outside the range turns it off rather than guess a value.
+ * hold the parser refuses turns it off rather than guess a value, and the
+ * first refusal in an isolate logs why, without the value.
  */
 export function answerReleaseSetting(env: PlatformEnv | undefined): AnswerReleaseSetting | undefined {
   const value = env?.[ANSWER_RELEASE_VARIABLE];
   if (typeof value !== 'string' || value.trim().toLowerCase() !== 'host') return undefined;
-  try {
-    return { holdChars: parseAnswerReleaseChars(env?.[ANSWER_RELEASE_CHARS_VARIABLE]) };
-  } catch {
-    return undefined;
+  const hold = readHold(env?.[ANSWER_RELEASE_CHARS_VARIABLE]);
+  if (typeof hold === 'number') return { holdChars: hold };
+  if (!refusedHoldLogged) {
+    refusedHoldLogged = true;
+    console.warn({ component: 'slack', event: 'answer_release_hold_refused', reason: hold });
   }
+  return undefined;
+}
+
+export function resetAnswerReleaseWarningForTests(): void {
+  refusedHoldLogged = false;
 }

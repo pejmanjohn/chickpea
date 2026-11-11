@@ -206,8 +206,11 @@ import type { ShadowWorkLifecycle } from '../work/lifecycle.ts';
 import type { RunExecutionAuthority, WorkStore } from '../work/types.ts';
 import {
   judgeGuaranteedInteraction,
+  startClefCalls,
+  type ClefCalls,
   type SlackInteractionClassification,
   type SlackInteractionIntent,
+  type SlackInteractionIntentContext,
 } from './interaction-intent.ts';
 import {
   AGENT_VIEW_STREAM_AGE_CHECK_MS,
@@ -454,6 +457,14 @@ export interface RunTurnOptions {
   onMidRunReply?: () => void;
   /** Set by `runTurn` itself when `turnLatency` is present: how long staging the turn's input took. */
   onAgentStaged?: (ms: number) => void;
+  /** Set by `runTurn` itself when `turnLatency` is present: Slack answered the thread title's call after `ms`. */
+  onTitle?: (ms: number) => void;
+  /**
+   * The judgment's Clef calls, started on the turn's head text before its
+   * fold (startEarlyJudgment). Its judgment adopts them when the fold left
+   * the request as they read it, and otherwise asks Clef again.
+   */
+  earlyJudgment?: ClefCalls;
   /** Set by `runTurn` itself when `turnLatency` is present: the turn's first dispatch is being sent. */
   onDispatchSent?: () => void;
   /** Set by `runTurn` itself when `turnLatency` is present: the model work its observation saw. */
@@ -573,6 +584,7 @@ export async function runTurn(
       onRead: () => tracker.markRead(),
       onMidRunReply: () => tracker.markMidRunReply(),
       onAgentStaged: (ms) => tracker.markAgentStage(ms),
+      onTitle: (ms) => tracker.markTitle(ms),
       onAgentWake: (admissionSentAt) => tracker.markAgentWake(admissionSentAt),
       onDispatchSent: () => tracker.markModelStart(),
       onTurnWork: (work) => tracker.markWork(work),
@@ -605,6 +617,53 @@ export function attemptEndReason(error: unknown): string {
   if (error instanceof AgentReplyReadInterrupted) return 'reply_read_interrupted';
   if (error instanceof AgentPromptFailure) return error.recoveryRequired ? 'recovery_required' : 'agent_failure';
   return 'other';
+}
+
+/**
+ * Start the Clef calls of a turn's judgment on its head's text, before its
+ * fold. They write nothing and leave no usage record, so a judgment that
+ * cannot adopt them drops them at no one's cost. The model classifier is a
+ * provider call on the Agent's model and starts only where the judgment
+ * meters it. Only a turn that may judge starts the calls: one with no
+ * recorded basis, a model to run, and no command the host answers. A
+ * routine command is told apart without the bot's address here, so any
+ * `!routine` holds them back.
+ */
+export function startEarlyJudgment(
+  turn: NormalizedSlackTurn,
+  assignment: ResolvedAssignment,
+  env: PlatformEnv | undefined,
+): ClefCalls | undefined {
+  if (turn.interactionIntent || turn.managementApprovalProposalId) return undefined;
+  if (assignment.runtimeContract === 'chickpea-v1' && !resolvedAssignmentModel(assignment)) return undefined;
+  if (slackTurnTypedByPerson(turn) && (parseMemoryCommand(turn.text) || /!routines?\b/i.test(turn.text))) {
+    return undefined;
+  }
+  return startClefCalls(guaranteedInteractionContext(turn, assignment, turn.text), env);
+}
+
+/** What a turn's judgment reads, for `text`: the request as the turn frames it. */
+function guaranteedInteractionContext(
+  turn: NormalizedSlackTurn,
+  assignment: ResolvedAssignment,
+  text: string,
+): SlackInteractionIntentContext & { guaranteed: true } {
+  return {
+    workspaceId: turn.workspaceId,
+    channelId: turn.channelId,
+    eventId: turn.eventId,
+    text,
+    source: turn.source,
+    guaranteed: true,
+    ...(turn.activeWorkAtAdmission === undefined
+      ? {}
+      : { activeWork: turn.activeWorkAtAdmission }),
+    profileInstructions:
+      'instructions' in assignment && typeof assignment.instructions === 'string'
+        ? assignment.instructions
+        : assignment.agent.instructions,
+    requestedModel: resolvedAssignmentModel(assignment) ?? null,
+  };
 }
 
 async function runTurnAttempt(
@@ -798,6 +857,7 @@ async function runTurnAttempt(
         ...(options.onTaskCardStreamed
           ? { onTaskCardStreamed: options.onTaskCardStreamed }
           : {}),
+        ...(options.onTitle ? { onTitle: options.onTitle } : {}),
         ...(answerRelease ? { answerRelease } : {}),
         ...(options.onHostRelease ? { onHostRelease: options.onHostRelease } : {}),
       })
@@ -1308,25 +1368,11 @@ async function runTurnAttempt(
   // restores its recorded basis on `turn.interactionIntent` and judges nothing.
   const judgment = deterministicCommand || turn.interactionIntent || stoppedBeforeDispatch
     ? undefined
-    : judgeGuaranteedInteraction({
-        workspaceId: turn.workspaceId,
-        channelId: turn.channelId,
-        eventId: turn.eventId,
-        text: requestText,
-        source: turn.source,
-        guaranteed: true,
-        ...(turn.activeWorkAtAdmission === undefined
-          ? {}
-          : { activeWork: turn.activeWorkAtAdmission }),
-        profileInstructions:
-          'instructions' in assignment && typeof assignment.instructions === 'string'
-            ? assignment.instructions
-            : assignment.agent.instructions,
-        requestedModel: resolvedModel ?? null,
-      }, {
+    : judgeGuaranteedInteraction(guaranteedInteractionContext(turn, assignment, requestText), {
         env: platformEnv,
         ...(settingsStore ? { settings: settingsStore } : {}),
         ...(options.turnId ? { turnJobId: options.turnId } : {}),
+        ...(options.earlyJudgment ? { early: options.earlyJudgment } : {}),
         record: async (intent) => {
           turn.interactionIntent = intent;
           await options.onInteractionIntent?.(intent);
@@ -1787,6 +1833,20 @@ async function runTurnAttempt(
     leaseCheck?.catch(() => undefined);
     const contextRead = dispatchExpected ? readTurnContext() : undefined;
     const contextReadSettled = contextRead?.catch(() => undefined);
+    // A click's or form's text is host-authored, and an ask or a later
+    // co-addressed turn joins a thread a person's message already titled.
+    const personTypedText = typedByPerson && !turn.uiResponse;
+    // The title is a visible write: it waits for the lease and the opening
+    // status, but not for the basis. Its Slack call goes once those are in;
+    // `setTitle` records it after the basis, where it always has.
+    const titleSent = personTypedText && frozenPresentation && modelRepairText === undefined
+      ? Promise.all([leaseCheck, openingStatusShown]).then(
+          ([held]) => (preparedMemory?.ownerBound && !held
+            ? undefined
+            : agentViewPresentation?.sendTitle(turn.text, frozenPresentation)),
+          () => undefined,
+        )
+      : undefined;
     // Nothing below acts before the basis is recorded; a retry restores it and
     // never judges again.
     const intent = await judgment?.basis ?? turn.interactionIntent;
@@ -1817,11 +1877,9 @@ async function runTurnAttempt(
       await finishDelivery('failed');
       return;
     }
-    // A click's or form's text is host-authored, and an ask or a later
-    // co-addressed turn joins a thread a person's message already titled.
-    const personTypedText = typedByPerson && !turn.uiResponse;
+    const sentTitle = await titleSent;
     const titleSet = personTypedText
-      ? agentViewPresentation?.setTitle(turn.text).catch(() => {
+      ? agentViewPresentation?.setTitle(turn.text, sentTitle).catch(() => {
           console.warn('[chickpea] Slack Agent View title could not be recorded');
         })
       : undefined;

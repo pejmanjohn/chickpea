@@ -238,6 +238,7 @@ import {
   repairSlackInteractionProgress,
   runTurn,
   sanitizeError,
+  startEarlyJudgment,
 } from './slack/run-turn.ts';
 import {
   ALARM_ADMISSION_RECHECK_MS,
@@ -3052,6 +3053,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       dispatchAgentAsks: localAgentAskDispatcher(stores, this.env as PlatformEnv, productTelemetry),
       dispatchFrontDeskHandoff: localFrontDeskDispatcher(stores, this.env as PlatformEnv, productTelemetry),
       runTurn,
+      startJudgment: startEarlyJudgment,
     };
     const runJob = (
       job: (typeof pending)[number],

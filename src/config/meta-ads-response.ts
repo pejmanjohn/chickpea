@@ -1,7 +1,8 @@
-import { META_ADS_ACCOUNT_HELPER, canonicalMetaAdsAccountId } from './meta-ads-policy.ts';
+import { META_ADS_ACCOUNT_HELPER, canonicalMetaAdsAccountId, metaAdsRuntimePropertyNames } from './meta-ads-policy.ts';
+import { readToolsListAnswer, type ToolsRewrite } from './mcp-tools-list.ts';
+import type { McpConnectionConfig } from './types.ts';
 
 const MAX_META_ADS_HELPER_RESPONSE_BYTES = 512_000;
-const MAX_META_ADS_TOOL_LIST_BYTES = 8_000_000;
 const MAX_META_ADS_ACCOUNT_RECORDS = 1_000;
 const MAX_META_ADS_ACCOUNT_TEXT = 240;
 const META_ADS_HELPER_RESPONSE_DEADLINE_MS = 30_000;
@@ -51,12 +52,14 @@ interface SafeMetaAdsAccount {
 /**
  * Replace the broad account-enumeration result with a new selected-account-only
  * MCP result. No provider content block, structured payload, or outer object is
- * forwarded. Unknown envelopes fail before any provider text reaches the model.
+ * forwarded. An envelope without exactly one account array, or with more
+ * pages, fails before any provider text reaches the model; other top-level
+ * keys are dropped and their names logged.
  */
 export async function sanitizeMetaAdsAccountHelperResponse(
   response: Response,
   approvedAccountIds: readonly string[],
-  options: { deadlineMs?: number } = {},
+  options: { deadlineMs?: number; connectionId?: string } = {},
 ): Promise<Response> {
   if (!response.ok) throw unsupportedResponse(response, 'upstream-status');
   const approved = new Map<string, string>();
@@ -70,15 +73,43 @@ export async function sanitizeMetaAdsAccountHelperResponse(
   const body = await readBoundedText(response, options.deadlineMs ?? META_ADS_HELPER_RESPONSE_DEADLINE_MS);
   if (contentType.includes('text/event-stream')) {
     const payload = parseSingleSsePayload(body, response);
-    const sanitized = sanitizeJsonRpcPayload(payload, approved, response);
+    const sanitized = sanitizeJsonRpcPayload(payload, approved, response, options.connectionId);
     return rebuiltResponse(response, `event: message\ndata: ${JSON.stringify(sanitized)}\n\n`, 'text/event-stream');
   }
   if (!contentType.includes('application/json')) {
     throw unsupportedResponse(response, 'content-type');
   }
   const payload = parseJson(body, response);
-  const sanitized = sanitizeJsonRpcPayload(payload, approved, response);
+  const sanitized = sanitizeJsonRpcPayload(payload, approved, response, options.connectionId);
   return rebuiltResponse(response, JSON.stringify(sanitized), 'application/json');
+}
+
+/**
+ * Show the model each Meta tool's reviewed arguments only, the ones the
+ * call-time key check permits. A tool whose live schema requires another
+ * argument, or that has no reviewed schema, is withheld: no call to it can
+ * pass both Meta and that check.
+ */
+export function reviewedMetaAdsTools(
+  tools: unknown[],
+  connection: Pick<McpConnectionConfig, 'discoveredTools'>,
+): ReturnType<ToolsRewrite> {
+  const withheld = new Map<string, string[]>();
+  const shown = tools.flatMap((tool) => {
+    if (!isRecord(tool) || typeof tool.name !== 'string') return [tool];
+    const reviewed = metaAdsRuntimePropertyNames(connection, tool.name);
+    const schema = isRecord(tool.inputSchema) ? tool.inputSchema : {};
+    const required: unknown[] = Array.isArray(schema.required) ? schema.required : [];
+    const unreviewed = required.filter((name) => typeof name !== 'string' || !reviewed?.includes(name));
+    if (!reviewed || unreviewed.length > 0) {
+      withheld.set(tool.name, reviewed ? loggedNames(unreviewed) : []);
+      return [];
+    }
+    const properties = Object.entries(isRecord(schema.properties) ? schema.properties : {})
+      .filter(([name]) => reviewed.includes(name));
+    return [{ ...tool, inputSchema: { ...schema, properties: Object.fromEntries(properties) } }];
+  });
+  return { tools: shown, withheld };
 }
 
 /**
@@ -86,38 +117,52 @@ export async function sanitizeMetaAdsAccountHelperResponse(
  * output schema no longer describes what the MCP client receives. Replace only
  * that advertised contract; input schemas and every other tool stay untouched.
  */
+export function advertiseMetaAdsAccountHelper(tools: unknown[]): unknown[] {
+  let matches = 0;
+  const rewritten = tools.map((tool) => {
+    if (!isRecord(tool) || tool.name !== META_ADS_ACCOUNT_HELPER) return tool;
+    matches += 1;
+    return {
+      ...tool,
+      description: META_ADS_ACCOUNT_HELPER_DESCRIPTION,
+      outputSchema: META_ADS_ACCOUNT_HELPER_OUTPUT_SCHEMA,
+    };
+  });
+  if (matches > 1) throw unsupportedToolListing('duplicate-account-helper');
+  return rewritten;
+}
+
+/** {@link advertiseMetaAdsAccountHelper} over one tools/list answer. */
 export async function advertiseMetaAdsAccountHelperOutput(
   request: Request,
   response: Response,
 ): Promise<Response> {
-  if (!(await isToolsListRequest(request)) || !response.ok) return response;
-  const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
-  const body = await readBoundedText(
-    response,
-    META_ADS_HELPER_RESPONSE_DEADLINE_MS,
-    MAX_META_ADS_TOOL_LIST_BYTES,
-    (reason) => unsupportedToolListing(reason),
-  );
-  if (contentType.includes('text/event-stream')) {
-    return rebuiltResponse(response, rewriteToolsListSse(body), 'text/event-stream');
-  }
-  if (!contentType.includes('application/json')) throw unsupportedToolListing('content-type');
-  const payload = parseJson(body, response);
-  return rebuiltResponse(response, JSON.stringify(rewriteToolsListPayload(payload)), 'application/json');
+  const listing = await toolsListRequest(request);
+  if (!listing || !response.ok) return response;
+  return readToolsListAnswer(response, {
+    id: listing.id,
+    page: (result) => ({ ...result, tools: advertiseMetaAdsAccountHelper(result.tools) }),
+    refuse: unsupportedToolListing,
+  });
 }
 
-async function readBoundedText(
-  response: Response,
-  deadlineMs: number,
-  maxBytes = MAX_META_ADS_HELPER_RESPONSE_BYTES,
-  failure: (reason: string) => Error = (reason) => unsupportedResponse(response, reason),
-): Promise<string> {
+async function toolsListRequest(request: Request): Promise<Record<string, unknown> | undefined> {
+  if (request.method !== 'POST') return undefined;
+  try {
+    const value = await request.clone().json() as unknown;
+    return isRecord(value) && value.method === 'tools/list' ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function readBoundedText(response: Response, deadlineMs: number): Promise<string> {
   if (!Number.isFinite(deadlineMs) || deadlineMs <= 0 || deadlineMs > META_ADS_HELPER_RESPONSE_DEADLINE_MS) {
     throw new RangeError('Meta Ads helper response deadline is invalid.');
   }
   const declared = Number(response.headers.get('content-length'));
-  if (Number.isFinite(declared) && declared > maxBytes) {
-    throw failure('response-size');
+  if (Number.isFinite(declared) && declared > MAX_META_ADS_HELPER_RESPONSE_BYTES) {
+    throw unsupportedResponse(response, 'response-size');
   }
   if (!response.body) return '';
   const reader = response.body.getReader();
@@ -129,9 +174,9 @@ async function readBoundedText(
       const chunk = await reader.read();
       if (chunk.done) break;
       bytes += chunk.value.byteLength;
-      if (bytes > maxBytes) {
+      if (bytes > MAX_META_ADS_HELPER_RESPONSE_BYTES) {
         await reader.cancel();
-        throw failure('response-size');
+        throw unsupportedResponse(response, 'response-size');
       }
       value += decoder.decode(chunk.value, { stream: true });
     }
@@ -142,7 +187,7 @@ async function readBoundedText(
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       void reader.cancel();
-      reject(failure('response-deadline'));
+      reject(unsupportedResponse(response, 'response-deadline'));
     }, deadlineMs);
   });
   try {
@@ -151,73 +196,6 @@ async function readBoundedText(
     if (timer !== undefined) clearTimeout(timer);
     reader.releaseLock();
   }
-}
-
-async function isToolsListRequest(request: Request): Promise<boolean> {
-  if (request.method !== 'POST') return false;
-  try {
-    const value = await request.clone().json() as unknown;
-    return isRecord(value) && value.method === 'tools/list';
-  } catch {
-    return false;
-  }
-}
-
-function rewriteToolsListPayload(value: unknown): Record<string, unknown> {
-  if (!isRecord(value) || value.jsonrpc !== '2.0' || !('id' in value) || 'error' in value ||
-      !(['string', 'number'].includes(typeof value.id) || value.id === null) ||
-      !isRecord(value.result) || !Array.isArray(value.result.tools)) {
-    throw unsupportedToolListing('json-rpc');
-  }
-  let matches = 0;
-  const tools = value.result.tools.map((tool) => {
-    if (!isRecord(tool) || tool.name !== META_ADS_ACCOUNT_HELPER) return tool;
-    matches += 1;
-    return {
-      ...tool,
-      description: META_ADS_ACCOUNT_HELPER_DESCRIPTION,
-      outputSchema: META_ADS_ACCOUNT_HELPER_OUTPUT_SCHEMA,
-    };
-  });
-  if (matches > 1) throw unsupportedToolListing('duplicate-account-helper');
-  return { ...value, result: { ...value.result, tools } };
-}
-
-function rewriteToolsListSse(body: string): string {
-  const events = body.replace(/\r\n/g, '\n').split('\n\n').filter((block) => block.trim());
-  let responses = 0;
-  const rewritten = events.map((event) => {
-    const lines = event.split('\n');
-    const dataIndexes: number[] = [];
-    const data: string[] = [];
-    for (const [index, line] of lines.entries()) {
-      if (line.startsWith('data:')) {
-        dataIndexes.push(index);
-        data.push(line.slice(5).replace(/^ /, ''));
-      } else if (line && !line.startsWith(':') && !line.startsWith('event:') &&
-          !line.startsWith('id:') && !line.startsWith('retry:')) {
-        throw unsupportedToolListing('sse-field');
-      }
-    }
-    if (data.length === 0) return event;
-    let value: unknown;
-    try {
-      value = JSON.parse(data.join('\n')) as unknown;
-    } catch {
-      throw unsupportedToolListing('invalid-json');
-    }
-    if (isRecord(value) && isRecord(value.result) && Array.isArray(value.result.tools)) {
-      value = rewriteToolsListPayload(value);
-      responses += 1;
-    }
-    const first = dataIndexes[0]!;
-    return lines.flatMap((line, index) => {
-      if (index === first) return [`data: ${JSON.stringify(value)}`];
-      return dataIndexes.includes(index) ? [] : [line];
-    }).join('\n');
-  });
-  if (responses !== 1) throw unsupportedToolListing('sse-response-count');
-  return `${rewritten.join('\n\n')}\n\n`;
 }
 
 function parseSingleSsePayload(body: string, response: Response): unknown {
@@ -249,6 +227,7 @@ function sanitizeJsonRpcPayload(
   value: unknown,
   approved: ReadonlyMap<string, string>,
   response: Response,
+  connectionId: string | undefined,
 ): Record<string, unknown> {
   if (!isRecord(value) || value.jsonrpc !== '2.0' || !('id' in value) ||
       !(['string', 'number'].includes(typeof value.id) || value.id === null)) {
@@ -277,7 +256,13 @@ function sanitizeJsonRpcPayload(
   }
   if (candidates.length === 0) throw unsupportedResponse(response, 'account-payload', value);
 
-  const projected = candidates.map((candidate) => projectApprovedAccounts(candidate, approved, response));
+  const extraKeys = new Set<string>();
+  const projected = candidates.map((candidate) => projectApprovedAccounts(candidate, approved, response, extraKeys));
+  if (extraKeys.size > 0) {
+    console.info({
+      event: 'chickpea.meta_ads.account_envelope_extra_keys', connectionId, keys: loggedNames([...extraKeys]),
+    });
+  }
   const canonical = JSON.stringify(projected[0]);
   if (projected.some((candidate) => JSON.stringify(candidate) !== canonical)) {
     throw unsupportedResponse(response, 'conflicting-payloads', value);
@@ -298,8 +283,9 @@ function projectApprovedAccounts(
   value: unknown,
   approved: ReadonlyMap<string, string>,
   response: Response,
+  extraKeys: Set<string>,
 ): SafeMetaAdsAccount[] {
-  const records = accountRecords(value, response);
+  const records = accountRecords(value, response, extraKeys);
   if (records.length > MAX_META_ADS_ACCOUNT_RECORDS) throw unsupportedResponse(response, 'record-count');
   const selected = new Map<string, SafeMetaAdsAccount>();
   for (const value of records) {
@@ -349,18 +335,17 @@ function projectApprovedAccounts(
   return [...selected.values()].sort((left, right) => left.ad_account_id.localeCompare(right.ad_account_id));
 }
 
-function accountRecords(value: unknown, response: Response): unknown[] {
+/** The one account array, from a complete answer. Other top-level keys go to `extraKeys`: nothing forwards them. */
+function accountRecords(value: unknown, response: Response, extraKeys: Set<string>): unknown[] {
   if (Array.isArray(value)) return value;
   if (!isRecord(value)) throw unsupportedResponse(response, 'account-envelope', value);
   const arrayKeys = ['accounts', 'ad_accounts', 'data'].filter((key) => Array.isArray(value[key]));
   if (arrayKeys.length !== 1) throw unsupportedResponse(response, 'account-envelope', value);
-  const allowedKeys = new Set([
-    arrayKeys[0]!, 'next_cursor', 'nextCursor', 'cursor', 'has_more', 'hasMore', 'paging',
-  ]);
-  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
-    throw unsupportedResponse(response, 'account-envelope-keys', value);
-  }
   if (hasMorePages(value)) throw unsupportedResponse(response, 'incomplete-pagination', value);
+  const knownKeys = [arrayKeys[0]!, 'next_cursor', 'nextCursor', 'cursor', 'has_more', 'hasMore', 'paging'];
+  for (const key of Object.keys(value)) {
+    if (!knownKeys.includes(key)) extraKeys.add(key);
+  }
   return value[arrayKeys[0]!] as unknown[];
 }
 
@@ -397,6 +382,12 @@ function unsupportedResponse(response: Response, reason: string, value?: unknown
   return new Error(
     `Meta Ads account verification returned an unsupported response (${reason}; response-kind=${responseKind}; top-level=${topLevel}).`,
   );
+}
+
+/** Names the provider chose, as a log may carry them: the first 20, and none that is not a short identifier. */
+function loggedNames(names: readonly unknown[]): string[] {
+  return names.slice(0, 20).map((name) =>
+    typeof name === 'string' && /^[\w.-]{1,120}$/.test(name) ? name : '(other)');
 }
 
 function unsupportedToolListing(reason: string): Error {

@@ -246,19 +246,37 @@ export async function agentSubmissionSettledBounded(
   env: Record<string, unknown> | undefined,
   target: Pick<BoundedObservationTarget, 'agentName' | 'instanceId' | 'submissionId'>,
 ): Promise<boolean> {
+  return await readAgentSubmissionBounded(env, target) !== undefined;
+}
+
+/**
+ * One pass over a submission's instance through the agent's namespace that
+ * never waits: undefined while it runs, else its settlement and, with
+ * `history`, a completed submission's history view. A stalled read is joined
+ * by one through a new stub, as the reply reader's are, and the history is
+ * read through the route that answered.
+ */
+export async function readAgentSubmissionBounded(
+  env: Record<string, unknown> | undefined,
+  target: Pick<BoundedObservationTarget, 'agentName' | 'instanceId' | 'submissionId'>,
+  options: { history?: boolean } = {},
+): Promise<(ObservedSettlement & { history?: AgentConversationSnapshot }) | undefined> {
   const bindingName = agentObjectBindingName(target.agentName);
   const binding = agentObjectNamespace(env, bindingName);
   if (!binding) throw new AgentObjectBindingUnavailableError(bindingName);
+  const resolveRoute = () => agentObjectRoute(binding, target.instanceId);
+  const view = new AgentView(resolveRoute(), target, { reconnect: resolveRoute });
   const caughtUp = new Error('caught up');
+  let settlement: ObservedSettlement;
   try {
-    await observeAgentSettlementBounded(agentObjectRoute(binding, target.instanceId), target, {
-      sleep: () => Promise.reject(caughtUp),
-    });
-    return true;
+    settlement = await observeSettlement(view, target, { sleep: () => Promise.reject(caughtUp) });
   } catch (error) {
-    if (error === caughtUp) return false;
+    if (error === caughtUp) return undefined;
     throw error;
   }
+  if (!options.history || settlement.outcome !== 'completed') return settlement;
+  const page = await view.read(`${agentViewBase(target.agentName, target.instanceId)}?view=history`);
+  return { ...settlement, history: page.body as AgentConversationSnapshot };
 }
 
 /** Mirrors Flue's settlement detection on the updates stream. */
@@ -346,7 +364,7 @@ export function agentViewBase(agentName: string, instanceId: string): string {
   return `https://flue.invalid/agents/${encodeURIComponent(agentName)}/${encodeURIComponent(instanceId)}`;
 }
 
-export async function readAgentView(
+async function readAgentView(
   route: AgentUpdatesRoute,
   target: Pick<BoundedObservationTarget, 'agentName' | 'instanceId'>,
   url: string,
