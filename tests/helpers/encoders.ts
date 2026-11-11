@@ -171,4 +171,7 @@ export const PRODUCERS: readonly Producer[] = [
     },
   },
   { name: 'Redirect parameter', encode: (text) => `https://other.example/redirect?next=${encodeURIComponent(text)}` },
+  // A login site that carries a value as one segment of its path, as a `/magic/:token/done` route reads it back.
+  // encodeURIComponent writes each `/`, `?`, `#`, `&`, `=` and `;` of the value as its escape.
+  { name: 'Login site path segment', encode: (text) => `https://billing.example.com/magic/${encodeURIComponent(text)}/done` },
 ];
