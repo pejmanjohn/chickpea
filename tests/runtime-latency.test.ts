@@ -655,6 +655,28 @@ test("turn_latency logs a runner turn's hand-off delay and wake lead from its co
   records.forEach(assertContentFree);
 });
 
+// Defects caught: a retried attempt with no reason for the one before it, a
+// reason on an attempt that returned, and a stalled read the record misses.
+test('turn_latency names why a thrown attempt ended, and counts reads a fresh one joined', () => {
+  const { records, sink } = captureSink();
+  const interrupted = new TurnLatencyTracker(
+    { admittedAt: 9_000, lane: 'cloudflare', executor: 'runner' }, { attempt: 1 }, clock(10_000).now, sink,
+  );
+  interrupted.emit('threw', undefined, 'reply_read_interrupted');
+  const resumed = new TurnLatencyTracker(
+    { admittedAt: 9_000, lane: 'cloudflare', executor: 'runner' }, { attempt: 2 }, clock(10_000).now, sink,
+  );
+  resumed.markStalledRead();
+  resumed.markStalledRead();
+  resumed.markFinal('delivered');
+  resumed.emit('returned');
+  assert.deepEqual(records.map(({ attempt, outcome, reason, stalledReads }) => ({ attempt, outcome, reason, stalledReads })), [
+    { attempt: 1, outcome: 'threw', reason: 'reply_read_interrupted', stalledReads: undefined },
+    { attempt: 2, outcome: 'returned', reason: undefined, stalledReads: 2 },
+  ]);
+  records.forEach(assertContentFree);
+});
+
 // Defects caught: a first write that ignores the status the state store
 // showed before the hand-off (receiptToFirstWriteMs would then count to the
 // runner's later write), one a later write replaces, a wait that is not
@@ -1217,6 +1239,7 @@ test('runTurn emits one content-free turn_latency record per relay attempt', asy
   }));
   assert.equal(logged.length, 1);
   assert.equal(logged[0]?.outcome, 'threw');
+  assert.equal(logged[0]?.reason, 'other', 'a failed Slack write is none of the reattaching reasons');
   assert.equal(logged[0]?.final, 'none');
   assert.equal(logged[0]?.firstWrite, 'none');
 });

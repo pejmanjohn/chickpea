@@ -7,7 +7,7 @@ const ERROR_KINDS = new Set([
   'AgentRunError', 'BoundedObservationAbortedError', 'AlarmTurnBudgetYield',
   'Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError',
   'AggregateError', 'AbortError', 'TimeoutError', 'FlueError',
-  'AgentPromptFailure', 'AgentObservationYield', 'StateStoreUnavailable',
+  'AgentPromptFailure', 'AgentObservationYield', 'StateStoreUnavailable', 'AgentReplyReadInterrupted',
   'StateStoreDisconnectedError', 'SlackPresentationStateError',
   'AgentInstanceNotFoundError', 'WorkStateError',
   'SlackTransportError', 'PersistedSlackDeliveryError',
