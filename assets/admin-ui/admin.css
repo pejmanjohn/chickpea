@@ -3853,6 +3853,15 @@ button.capability-pill { cursor: pointer; }
   .coding-agents-page .command-box .btn, .mcp-snippet .btn, .mcp-client-deeplink .btn { width: 100%; }
 }
 
+/* ---- Settings → Connected apps: rows as on the Websites tab. */
+.connected-apps-page { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.connected-apps-page .connected-apps-notice { color: var(--ok); font-weight: 700; margin: 0; }
+@media (max-width: 480px) {
+  /* One button, not the two-column grid other rows fill. */
+  .connected-app-row .agent-schedule-actions { display: flex; }
+  .connected-app-row .agent-schedule-actions .btn { width: auto; }
+}
+
 /* ---- Settings → Coding sandbox: redeploy required ------------------------
    One status (the section badge), then prerequisite, path choice, and
    numbered steps. Copyable values are full-width so nothing truncates. */

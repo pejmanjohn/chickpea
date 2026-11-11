@@ -514,6 +514,20 @@ test('visual fixture serves display-safe website logins for the Websites tab aft
   }
 });
 
+test('visual fixture serves sample connected apps only after authorization', async () => {
+  const { startAdminVisualFixture } = await loadFixtureModule();
+  const fixture = await startAdminVisualFixture();
+  try {
+    const unauthenticated = await fetch(`${fixture.baseUrl}/admin/api/connected-apps`, { redirect: 'manual' });
+    assert.notEqual(unauthenticated.status, 200);
+    assert.doesNotMatch(await unauthenticated.text(), /ChatGPT/);
+    const listed = await fixtureJson<{ apps: Array<{ name: string }> }>(fixture, '/admin/api/connected-apps');
+    assert.deepEqual(listed.apps.map(({ name }) => name), ['ChatGPT', 'Claude Code', 'Pipeline reporter']);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test('canonical visual states use authenticated production URLs and UI actions only', async () => {
   const { startAdminVisualFixture } = await loadFixtureModule();
   const fixture = await startAdminVisualFixture();
@@ -532,6 +546,7 @@ test('canonical visual states use authenticated production URLs and UI actions o
       settingsProviders: { path: '/admin/settings/providers', actions: [] },
       settingsUpdates: { path: '/admin/settings/updates', actions: ['Preview report'] },
       settingsCodingAgents: { path: '/admin/settings/agents-clients', actions: [] },
+      settingsConnectedApps: { path: '/admin/settings/connected-apps', actions: [] },
       settingsBrowser: { path: '/admin/settings/browser', actions: [] },
       agentInstructions: { path: '/admin/agents/agent_research', actions: [] },
       agentBlankDescription: { path: '/admin/agents/agent_customer', actions: [] },
