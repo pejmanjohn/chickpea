@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import type { ConversationStreamChunk } from '@flue/runtime';
 import * as v from 'valibot';
 
-import { createWebsiteLogin, WEBSITE_LOGINS_SETTING } from '../src/browser/logins.ts';
+import { createWebsiteLogin, normalizeWebsiteLoginHost, WEBSITE_LOGINS_SETTING } from '../src/browser/logins.ts';
 import type { AXNode } from '../src/browser/page.ts';
 import { browserHandoffMessage } from '../src/browser/requester.ts';
 import { createBrowserTools } from '../src/browser/tools.ts';
@@ -22,7 +22,12 @@ import {
   type RunReviewInput,
   type RunReviewRecordV1,
 } from '../src/review/record.ts';
-import { BROWSER_LINK_OMITTED, type RunReviewWebsiteLogins } from '../src/review/website-logins.ts';
+import {
+  BROWSER_LINK_OMITTED,
+  RunReviewScrubLimit,
+  websiteLoginScrub,
+  type RunReviewWebsiteLogins,
+} from '../src/review/website-logins.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { toContextMessage } from '../src/slack/thread-context.ts';
 import { FakeCdpSocket, fakeBrowserProvider } from './helpers/fake-cdp-socket.ts';
@@ -132,7 +137,7 @@ test('a URL on a login\'s site, or any URL in a browser step, keeps its scheme, 
   'a login site\'s slug goes, and a path outside a link, a public query and another site\'s link a person shares stay');
 });
 
-test('a URL on a login\'s site, or any URL in a browser step, keeps a path segment only where it reads as a word or a short number', () => {
+test('a URL on a login\'s site, or any URL in a browser step, keeps a path segment only where it is a word of up to 20 letters', () => {
   // A site may take any short path segment as its sign-in bearer, so length is no proof a segment is safe.
   const record = copy({
     trigger: {
@@ -149,18 +154,124 @@ test('a URL on a login\'s site, or any URL in a browser step, keeps a path segme
     answer: 'Then https://ledger.example.net/r/1234/12345/abcdefghijklmnopqrst/abcdefghijklmnopqrstu/how-to-pay ' +
       '(see https://billing.example.com/help).',
   });
-  assert.deepEqual(kept(record, ['k7Qx2', '12345', '48213', 'a1b2c3', 'abcdefghijklmnopqrstu', 'v2']), [
+  assert.deepEqual(kept(record, ['k7Qx2', '12345', '48213', '2041', '1234', 'a1b2c3', 'abcdefghijklmnopqrstu', 'v2']), [
     'k7Qx2', '48213',
   ], 'only the public link keeps its segments');
   assert.equal(record.trigger.text, 'Use https://billing.example.com/magic/[omitted] or <https://billing.example.com/m/[omitted]|Sign in> or ' +
-    'billing.example.com/invoices/2041/[omitted], then https://billing.example.com/account/settings. ' +
+    'billing.example.com/invoices/[omitted]/[omitted], then https://billing.example.com/account/settings. ' +
     'Public: https://search.example/s/k7Qx2/48213/how-to-pay');
   const [opened] = record.steps;
   assert.ok(opened?.kind === 'tool');
   assert.equal(opened.input, '{"url":"https://docs.example.org/guide/[omitted]/[omitted]"}');
-  assert.equal(opened.output, '{"url":"https://docs.example.org/Guide/[omitted]/2041?[omitted]","title":"Docs"}');
-  assert.equal(record.answer, 'Then https://ledger.example.net/r/1234/[omitted]/abcdefghijklmnopqrst/[omitted]/[omitted] ' +
+  assert.equal(opened.output, '{"url":"https://docs.example.org/Guide/[omitted]/[omitted]?[omitted]","title":"Docs"}');
+  assert.equal(record.answer, 'Then https://ledger.example.net/r/[omitted]/[omitted]/abcdefghijklmnopqrst/[omitted]/[omitted] ' +
     '(see https://billing.example.com/help).');
+});
+
+test('a login site\'s or a browser step\'s path keeps no segment with a mark inside it, and `|` divides one only before a Slack link\'s label', () => {
+  // `shorttoken!` and `short|token` are whole segments a site may take as its bearer. Only the end of the whole link is a sentence's.
+  const links = 'https://billing.example.com/magic/shorttoken!/done https://billing.example.com/magic/short|token ' +
+    'https://billing.example.com/magic/7391';
+  const scrubbed = 'https://billing.example.com/magic/[omitted]/done https://billing.example.com/magic/[omitted] ' +
+    'https://billing.example.com/magic/[omitted]';
+  const record = copy({
+    trigger: {
+      author: 'U012ABCDEF3',
+      text: `Use ${links}. Or <https://billing.example.com/m/48213|Sign in>, <https://billing.example.com|billing>, ` +
+        '<billing.example.com/magic/short|token> or <https://billing.example.com/cb?code=SYNTHCODE123|Done>!',
+      files: [],
+    },
+    context: [{ author: 'U012ABCDEF3', role: 'human', text: links, files: [] }],
+    steps: [browserStep('browser_snapshot', {}, {
+      url: 'https://billing.example.com/magic/shorttoken!',
+      snapshot: `- text "${links} <https://docs.example.org/magic/short|token> https://docs.example.org/a/b!/c."`,
+    })],
+    answer: `See ${links}, then https://billing.example.com/help/billing! or (https://billing.example.com/magic/7391).`,
+  });
+  assert.equal(record.trigger.text, `Use ${scrubbed}. Or <https://billing.example.com/m/[omitted]|Sign in>, ` +
+    '<https://billing.example.com|billing>, <billing.example.com/magic/short|token> or <https://billing.example.com/cb?[omitted]>!',
+  'in Slack\'s markup a label follows the first `|` before the query, and the URL before it keeps only words');
+  assert.equal(record.context[0]?.text, scrubbed);
+  const [shown] = record.steps;
+  assert.ok(shown?.kind === 'tool');
+  assert.deepEqual(JSON.parse(shown.output ?? '{}'), {
+    url: 'https://billing.example.com/magic/shorttoken!',
+    snapshot: `- text "${scrubbed} <https://docs.example.org/magic/[omitted]> https://docs.example.org/a/[omitted]/c."`,
+  }, 'a browser step reads no Slack label, and the marks that end a link stay after its last word');
+  assert.equal(record.answer, `See ${scrubbed}, then https://billing.example.com/help/billing! or (https://billing.example.com/magic/[omitted]).`);
+});
+
+test('a URL on an IDN login site loses its token whatever form the URL and the saved site are written in, with a scheme or without', () => {
+  const site = normalizeWebsiteLoginHost('bücher.example');
+  assert.equal(site, 'xn--bcher-kva.example', 'the catalog saves the ASCII form');
+  // A plan may hold a site as it was typed, before the catalog read it.
+  const logins: RunReviewWebsiteLogins = { hosts: [site, 'café.example'], usernames: [] };
+  const [wideB, wideDot, ideographicDot, alef] = [0xff42, 0xff0e, 0x3002, 0x5d0].map((point) => String.fromCodePoint(point));
+  const wideWww = String.fromCodePoint(0xff57).repeat(3);
+  const record = copy({
+    trigger: {
+      author: 'U012ABCDEF3',
+      text: 'Open https://bücher.example/cb?code=SYNTHIDN01 or bücher.example/cb?code=SYNTHIDN02 or ' +
+        'https://BÜCHER.example./cb?code=SYNTHIDN03 or shop.bücher.example/r/cb?code=SYNTHIDN04 or ' +
+        `${wideB}ücher${wideDot}example/cb?code=SYNTHIDN05 or bücher${ideographicDot}example/cb?code=SYNTHIDN06 or ` +
+        'https://b%C3%BCcher.example/cb?code=SYNTHIDN07 or b%C3%BCcher.example/cb?code=SYNTHIDN08 or ' +
+        'https://XN--BCHER-KVA.example/cb?code=SYNTHIDN09 or xn--caf-dma.example/cb?code=SYNTHIDN10. ' +
+        // Letters a URL refuses to put together in one name: a Latin then a Hebrew one.
+        `Elsewhere https://ab${alef}.example/cb?code=SYNTHIDN16. Public: https://straße.example/s?q=kept and пример.рф/s?q=kept`,
+      files: [],
+    },
+    steps: [browserStep('browser_open', { url: 'bücher.example/cb?code=SYNTHIDN11' }, {
+      url: 'https://bücher.example/cb?code=SYNTHIDN12',
+      snapshot: '- link "Next": пример.рф/s?q=SYNTHIDN13 example.xn--p1ai/s?q=SYNTHIDN14',
+    })],
+    answer: 'Signed in at <https://café.example/home?session=SYNTHIDN15|café.example>. ' +
+      `Watch at ${wideWww}.browserbase.com/sessions/SYNTHIDN17`,
+  }, logins);
+  assert.deepEqual(kept(record, ['SYNTHIDN']), []);
+  assert.equal(record.trigger.text,
+    'Open https://bücher.example/cb?[omitted] or bücher.example/cb?[omitted] or ' +
+    'https://BÜCHER.example./cb?[omitted] or shop.bücher.example/r/cb?[omitted] or ' +
+    '[omitted]/cb?[omitted] or [omitted]/cb?[omitted] or ' +
+    'https://[omitted]/cb?[omitted] or [omitted]/cb?[omitted] or ' +
+    'https://XN--BCHER-KVA.example/cb?[omitted] or xn--caf-dma.example/cb?[omitted]. ' +
+    'Elsewhere https://[omitted]/cb?[omitted]. Public: https://straße.example/s?q=kept and пример.рф/s?q=kept',
+  'a host written in a form a link does not read as written, or that no URL can hold, goes, as an unreadable host does');
+  const [opened] = record.steps;
+  assert.ok(opened?.kind === 'tool');
+  assert.equal(opened.input, '{"url":"bücher.example/cb?[omitted]"}');
+  assert.deepEqual(JSON.parse(opened.output ?? '{}'), {
+    url: 'https://bücher.example/cb?[omitted]',
+    snapshot: '- link "Next": пример.рф/s?[omitted] example.xn--p1ai/s?[omitted]',
+  });
+  assert.equal(record.answer, `Signed in at <https://café.example/home?[omitted]>. Watch at ${BROWSER_LINK_OMITTED}`);
+});
+
+test('a link on an IDN login site in JSON that keeps to ASCII loses its token, and another site\'s link keeps its host', () => {
+  // Python's json.dumps writes every character past ASCII as an escape, so a connector's result may hold a host that way.
+  const asciiJson = (value: unknown) => JSON.stringify(value)
+    .replace(/[^\0-~]/g, (unit) => `${'\\'}u${unit.charCodeAt(0).toString(16).padStart(4, '0')}`);
+  const alef = String.fromCodePoint(0x5d0);
+  const mail = asciiJson({
+    text: 'Reset at https://bücher.example/reset?token=SYNTHIDN21, bücher.example/cb?code=SYNTHIDN22 or ' +
+      `https://über.bücher.example/x?code=SYNTHIDN23 or https://${alef}a.example/cb?code=SYNTHIDN25. ` +
+      'Menu: https://café.example/menu?item=kept',
+  });
+  const page = asciiJson({ snapshot: '- text "über.example/s?q=SYNTHIDN24"' });
+  assert.equal(/[^\0-~]/.test(mail + page), false, 'the test text holds escapes only');
+  const record = copy({
+    steps: [
+      { kind: 'tool', name: 'read_mail', input: '{}', output: mail },
+      { kind: 'tool', name: 'browser_snapshot', input: '{}', output: page },
+    ],
+  }, { hosts: [normalizeWebsiteLoginHost('bücher.example')], usernames: [] });
+  assert.deepEqual(kept(record, ['SYNTHIDN']), []);
+  const [read, shown] = record.steps;
+  assert.ok(read?.kind === 'tool' && shown?.kind === 'tool');
+  assert.equal(read.output, asciiJson({
+    text: 'Reset at https://bücher.example/reset?[omitted], bücher.example/cb?[omitted] or ' +
+      'https://über.bücher.example/x?[omitted] or https://[omitted]/cb?[omitted]. Menu: https://café.example/menu?item=kept',
+  }), 'each link keeps its host as written, but for one no URL can hold');
+  assert.equal(shown.output, asciiJson({ snapshot: '- text "über.example/s?[omitted]"' }));
 });
 
 test('a page\'s address keeps its \' and |, and a JSON-escaped & or =, inside the URL a copy cuts', () => {
@@ -232,6 +343,19 @@ test('a link right after another link\'s host, behind //, or behind a host no si
     'https://billing.example.com/cb?[omitted] https://billing.example.com/cb?[omitted] ' +
     'https://go.example.org/r?next=//billing.example.com/cb?[omitted] and //ledger.example.net/r?[omitted] ' +
     '<https://go.example.org|Report?id=5>');
+});
+
+test('a login site\'s link without a scheme keeps no token after a JSON line break or tab, or behind JSON-escaped slashes', () => {
+  const backslash = '\\';
+  const mail = JSON.stringify({ text: 'Reset:\nbilling.example.com/reset?token=SYNTHGAP1\tledger.example.net/cb?code=SYNTHGAP2' });
+  const linked = `{"link":"${backslash}/${backslash}/billing.example.com${backslash}/cb?code=SYNTHGAP3"}`;
+  // A backslash that JSON escapes is written as two, so the letter after them is text.
+  const literal = JSON.stringify({ path: `C:${backslash}nbilling.example.com/cb?code=kept` });
+  const record = copy({ steps: [{ kind: 'tool', name: 'read_mail', input: '{}', output: `${mail} ${linked} ${literal}` }] });
+  const [read] = record.steps;
+  assert.ok(read?.kind === 'tool');
+  assert.equal(read.output, '{"text":"Reset:\\nbilling.example.com/reset?[omitted]\\tledger.example.net/cb?[omitted]"} ' +
+    `{"link":"${backslash}/${backslash}/billing.example.com/cb?[omitted]"} ${literal}`);
 });
 
 test('a login site\'s link without a scheme keeps no token after another host\'s text, and other text stays as written', () => {
@@ -680,6 +804,35 @@ test('a field with no space reads each host once, and a login site\'s link at it
     console.log(JSON.stringify({ same: read.startsWith(run), end: read.slice(run.length) }));
   `);
   assert.deepEqual(result, { same: true, end: 'billing.example.com/cb?[omitted]' });
+});
+
+test('a host of thousands of labels, dots, escapes or backslashes takes no longer to read than a short one', () => {
+  // A host is compared from where a saved site could start, so no suffix of it is read longer than a site.
+  // A host starts at an escape or a run of backslashes, never inside one, so each run has one start.
+  const result = inChild(`
+    const read = (text, browserStep = false) =>
+      logins.websiteLoginScrub({ hosts: ['billing.example.com'], usernames: [] }).links(text, browserStep);
+    const backslash = String.fromCharCode(92);
+    const dotted = ('https://a' + '.'.repeat(16384) + 'b/x ').repeat(256);
+    const labels = ('a.'.repeat(8192) + 'b/x ').repeat(256);
+    const runs = ['%41'.repeat(400000), (backslash + 'u00fc').repeat(200000), backslash.repeat(1200000)];
+    const login = 'x.billing.example.com/cb?code=SYNTHCODE123';
+    console.log(JSON.stringify({
+      dotted: [false, true].map((browserStep) => read(dotted, browserStep) === dotted),
+      labels: read(labels + login) === labels + 'x.billing.example.com/cb?[omitted]',
+      under: read('a.'.repeat(8192) + login).endsWith('x.billing.example.com/cb?[omitted]'),
+      runs: runs.flatMap((run) => [false, true].map((browserStep) => read(run, browserStep) === run)),
+    }));
+  `);
+  assert.deepEqual(result, { dotted: [true, true], labels: true, under: true, runs: Array(6).fill(true) });
+});
+
+test('each host read in another script counts its parse against the copy\'s budget', () => {
+  const scrub = () => websiteLoginScrub({ hosts: ['billing.example.com'], usernames: [] });
+  const hosts = (count: number) => '日本/x '.repeat(count);
+  assert.equal(scrub().links(hosts(10_000), false), hosts(10_000), 'a field of 10,000 such hosts stays within it');
+  assert.throws(() => scrub().links(hosts(300_000), false), (error) =>
+    error instanceof RunReviewScrubLimit && error.event === 'scrub_over_budget');
 });
 
 test('a page that names the start of every saved and planned username stays within half a Worker\'s memory', () => {
