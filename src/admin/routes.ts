@@ -8030,11 +8030,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ...(platformEnv !== undefined ? { env: platformEnv } : {}),
       });
       const models = catalogLane
-        ? result.models.filter((model) => resolveActiveCatalogRoute(
-            `${id}/${model.id}`,
-            catalogLane,
-            platformEnv,
-          ) !== undefined)
+        ? result.models.flatMap((model) => {
+            const specifier = `${id}/${model.id}`;
+            if (resolveActiveCatalogRoute(specifier, catalogLane, platformEnv) === undefined) return [];
+            const name = chatModelName(specifier, platformEnv) ?? model.display_name;
+            return [name ? { ...model, display_name: name } : model];
+          })
         : result.models;
       return c.json({ provider: id, models, cached: result.cached });
     } catch (err) {

@@ -23,5 +23,8 @@ const BUILTIN_MODELS: Record<string, Record<string, unknown>> = {
 } satisfies Record<ProviderKeyId | 'cloudflare-workers-ai' | 'openai-codex', Record<string, unknown>>;
 
 export function getBuiltinModel(provider: string, modelId: string): Model<string> | undefined {
-  return BUILTIN_MODELS[provider]?.[modelId] as Model<string> | undefined;
+  // Ids are free text; `openai/constructor` must not find Object.prototype.
+  if (!Object.hasOwn(BUILTIN_MODELS, provider)) return undefined;
+  const models = BUILTIN_MODELS[provider]!;
+  return Object.hasOwn(models, modelId) ? models[modelId] as Model<string> : undefined;
 }

@@ -582,7 +582,7 @@ function runAdminPageHarness(
     workersAiFavorites?: string[];
     workersAiModels?: Array<{ id: string }>;
     workersAiEnabledError?: { status: number; error: string; message?: string };
-    anthropicModels?: Array<{ id: string }>;
+    anthropicModels?: Array<{ id: string; display_name?: string }>;
     openaiModels?: Array<{ id: string }>;
     openAiModelsAfterMethodSwitch?: Array<{ id: string }>;
     providerKeyReject?: { status: number; detail: string };
@@ -19309,6 +19309,7 @@ test('the profile Model picker renders the FULL live Anthropic list with a user-
       { id: 'claude-opus-5' },
       { id: 'claude-sonnet-5' },
       { id: 'claude-haiku-4-5' },
+      { id: 'claude-opus-4-8', display_name: 'Claude Opus 4.8' },
     ],
   });
   await flushAsync();
@@ -19329,6 +19330,8 @@ test('the profile Model picker renders the FULL live Anthropic list with a user-
   assert.match(html, /data-model="anthropic\/claude-opus-5"/);
   assert.match(html, /data-model="anthropic\/claude-sonnet-5"/);
   assert.match(html, /data-model="anthropic\/claude-haiku-4-5"/);
+  // A live-only model has no suggestion name; its row's name still shows.
+  assert.match(html, /data-model="anthropic\/claude-opus-4-8"><span class="combo-name">Claude Opus 4\.8<\/span><span class="combo-id"> · anthropic\/claude-opus-4-8<\/span>/);
 });
 
 test('the profile Model picker filters options by the typed specifier', async () => {

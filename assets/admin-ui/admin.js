@@ -6707,9 +6707,9 @@
     var effectiveName = agentChatModelName(projected, effectiveId);
     var effective = effectiveName || effectiveId || "Not selected";
     var effort = appliedEffortLabel(agentEffortView(draft));
-    var sourceSummary = '<div class="workspace-default-meta"><span class="badge-src">' + source + '</span><span class="mono hint">' + esc(effective + (effort ? " · " + effort : "")) + '</span></div>';
+    var sourceSummary = '<div class="workspace-default-meta"><span class="badge-src">' + source + '</span><span class="' + (effectiveName ? "hint" : "mono hint") + '">' + esc(effective + (effort ? " · " + effort : "")) + '</span></div>';
     if (draft.canEdit === false) {
-      return '<div class="field"><span class="field-label">Model</span>' + sourceSummary + '<div class="input mono" aria-label="Agent model">' + esc(effectiveId ? modelOptionLabel(effectiveId, effectiveName) : effective) + '</div></div>';
+      return '<div class="field"><span class="field-label">Model</span>' + sourceSummary + '<div class="input mono" aria-label="Agent model">' + esc(effectiveId ? modelOptionLabel(effectiveId, effectiveName) : "Not selected") + '</div></div>';
     }
     var open = state.modelPickerOpen;
     // Click-to-open combobox (F6): the input is always the current pin; clicking
@@ -6894,9 +6894,9 @@
     var effectiveId = model || workspaceModel;
     var effectiveName = imageModelName(effectiveId);
     var effective = effectiveName || effectiveId || "Not selected";
-    var sourceSummary = '<div class="workspace-default-meta"><span class="badge-src">' + source + '</span><span class="mono hint">' + esc(effective) + '</span></div>';
+    var sourceSummary = '<div class="workspace-default-meta"><span class="badge-src">' + source + '</span><span class="' + (effectiveName ? "hint" : "mono hint") + '">' + esc(effective) + '</span></div>';
     if (draft.canEdit === false) {
-      return '<div class="field"><span class="field-label">Image model</span>' + sourceSummary + '<div class="input mono" aria-label="Agent image model">' + esc(effectiveId ? modelOptionLabel(effectiveId, effectiveName) : effective) + '</div></div>';
+      return '<div class="field"><span class="field-label">Image model</span>' + sourceSummary + '<div class="input mono" aria-label="Agent image model">' + esc(effectiveId ? modelOptionLabel(effectiveId, effectiveName) : "Not selected") + '</div></div>';
     }
     var open = state.imageModelPickerOpen;
     return '<div class="field"><label class="field-label" for="p-image-model">Image model</label>' + sourceSummary +
@@ -10816,13 +10816,19 @@
     return providerId;
   }
 
+  // Suggestions are named in /admin/api/models; a vendor's full live list,
+  // which the picker shows once loaded, names its own rows.
   function chatModelName(specifier) {
     var providers = state.models && state.models.providers ? state.models.providers : [];
     for (var i = 0; i < providers.length; i++) {
       var names = providers[i].modelNames;
       if (names && Object.prototype.hasOwnProperty.call(names, specifier)) return names[specifier];
     }
-    return "";
+    var slash = specifier.indexOf("/");
+    var live = slash > 0 ? state.providerModels[specifier.slice(0, slash)] : null;
+    var modelId = specifier.slice(slash + 1);
+    var row = (live || []).filter(function (model) { return model.id === modelId; })[0];
+    return (row && row.display_name) || "";
   }
 
   function modelOptionLabel(id, name) {

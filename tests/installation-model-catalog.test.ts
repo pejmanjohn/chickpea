@@ -117,6 +117,7 @@ test('a model takes its name from its installation\'s catalog before Pi', async 
     assert.equal(chatModelName(TENANT_MODEL, bundled), null);
     assert.equal(chatModelName('anthropic/claude-opus-5-5', hosted), 'Hosted Opus');
     assert.equal(chatModelName('anthropic/claude-opus-5-5', bundled), 'Claude Opus 5.5');
+    assert.equal(chatModelName('openai/constructor', bundled), null, 'a typed id never reads Object.prototype');
   });
 });
 

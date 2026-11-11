@@ -790,7 +790,7 @@ test('an Agent image override is saved and reads back as Pinned on its Model tab
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'model' }) });
   await flushAsync();
   assert.match(harness.app.innerHTML, new RegExp(
-    '<label class="field-label" for="p-image-model">Image model</label><div class="workspace-default-meta"><span class="badge-src">Pinned</span><span class="mono hint">GPT Image 2.5 Sunburst</span>',
+    '<label class="field-label" for="p-image-model">Image model</label><div class="workspace-default-meta"><span class="badge-src">Pinned</span><span class="hint">GPT Image 2.5 Sunburst</span>',
   ));
   assert.equal(harness.imageModelInput.value, SUNBURST, 'the input keeps the specifier people type');
 });
@@ -992,7 +992,7 @@ test('choosing an Agent effort marks it dirty and saves modelEffort with the mod
   const html = harness.app.innerHTML;
   assert.doesNotMatch(html, /save-bar-sticky is-clean/);
   assert.deepEqual(effortRadios(html, 'profile-effort').find(([, checked]) => checked), ['xhigh', true, false]);
-  assert.match(html, /<span class="mono hint">Claude Opus 5\.5 · Extra high<\/span>/);
+  assert.match(html, /<span class="hint">Claude Opus 5\.5 · Extra high<\/span>/);
 
   click({ target: actionTarget({ 'data-action': 'save-profile' }) });
   await flushAsync();
@@ -1086,7 +1086,7 @@ test('an Agent following the Workspace default shows its effort, disabled, until
   ]);
   assert.match(html, /Follows the Workspace default\. Pin a model to choose a different effort\./);
   assert.doesNotMatch(html, /Standard is/);
-  assert.match(html, /<span class="mono hint">Claude Opus 5\.5 · High<\/span>/);
+  assert.match(html, /<span class="hint">Claude Opus 5\.5 · High<\/span>/);
 
   // Pinning again starts from the model's standard level, not the cleared effort.
   click({ target: comboTarget({ 'data-action': 'profile-model' }) });
@@ -1122,7 +1122,7 @@ test('an Agent Model tab names its models and keeps the specifiers in the inputs
   const modelField = (html: string) => html.slice(html.indexOf('<label class="field-label" for="p-model">'), html.indexOf('<div class="model-combo">'));
   let harness = runHarness({ initialPath: '/admin/agents/agent_release?tab=model', agents: [pinnedAgent(OPUS, null)] });
   await flushAsync();
-  assert.match(modelField(harness.app.innerHTML), /<span class="badge-src">Pinned<\/span><span class="mono hint">Claude Opus 5\.5<\/span>/);
+  assert.match(modelField(harness.app.innerHTML), /<span class="badge-src">Pinned<\/span><span class="hint">Claude Opus 5\.5<\/span>/);
   assert.equal(harness.modelInput.value, OPUS);
 
   // The picker cannot name an Agent's model it does not offer; the projection still can.
@@ -1132,7 +1132,7 @@ test('an Agent Model tab names its models and keeps the specifiers in the inputs
     agents: [pinnedAgent(gemini, null, { modelPolicy: { source: 'pinned', effectiveModel: gemini, effectiveModelName: 'Gemini 4 Argon', live: true } })],
   });
   await flushAsync();
-  assert.match(modelField(harness.app.innerHTML), /<span class="mono hint">Gemini 4 Argon<\/span>/);
+  assert.match(modelField(harness.app.innerHTML), /<span class="hint">Gemini 4 Argon<\/span>/);
 
   harness = runHarness({
     initialPath: '/admin/agents/agent_release?tab=model',

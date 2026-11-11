@@ -748,8 +748,9 @@ test('provider models proxy caches OpenAI chat models and refresh bypasses the c
           assert.deepEqual(await first.json(), {
             provider: 'openai',
             models: [
-              { id: 'gpt-4.1' },
-              { id: 'gpt-4.1-mini' },
+              // OpenAI's list has no names; the catalog and Pi name the rows they know.
+              { id: 'gpt-4.1', display_name: 'GPT-4.1' },
+              { id: 'gpt-4.1-mini', display_name: 'GPT-4.1 mini' },
               {
                 id: 'gpt-6.1-sol',
                 display_name: 'GPT-6.1 Sol',
@@ -803,8 +804,8 @@ test('provider models proxy caches OpenAI chat models and refresh bypasses the c
           assert.deepEqual(await cached.json(), {
             provider: 'openai',
             models: [
-              { id: 'gpt-4.1' },
-              { id: 'gpt-4.1-mini' },
+              { id: 'gpt-4.1', display_name: 'GPT-4.1' },
+              { id: 'gpt-4.1-mini', display_name: 'GPT-4.1 mini' },
               {
                 id: 'gpt-6.1-sol',
                 display_name: 'GPT-6.1 Sol',
@@ -857,7 +858,7 @@ test('provider models proxy caches OpenAI chat models and refresh bypasses the c
           assert.deepEqual(await refreshed.json(), {
             provider: 'openai',
             models: [
-              { id: 'gpt-5.5' },
+              { id: 'gpt-5.5', display_name: 'GPT-5.5' },
               {
                 id: 'gpt-6.1-sol',
                 display_name: 'GPT-6.1 Sol',
