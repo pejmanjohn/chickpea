@@ -162,14 +162,16 @@ test('the runner delivers a resumed run\'s answer when its read was cut with the
       }),
     });
     const pickupWindowMs = 5_000;
-    const outcome = await Promise.race([
-      reply,
-      (async () => {
-        while (answeredAt === undefined) await new Promise((resolve) => setTimeout(resolve, 50));
-        await new Promise((resolve) => setTimeout(resolve, pickupWindowMs));
-        return undefined;
-      })(),
-    ]);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const missed = new Promise<undefined>((resolve) => {
+      const waitForAnswer = () => {
+        timer = answeredAt === undefined
+          ? setTimeout(waitForAnswer, 50)
+          : setTimeout(resolve, pickupWindowMs, undefined);
+      };
+      waitForAnswer();
+    });
+    const outcome = await Promise.race([reply, missed]).finally(() => clearTimeout(timer));
     if (!outcome) {
       assert.fail(`the runner missed the resumed run's answer for ${pickupWindowMs} ms after its last step`);
     }
