@@ -261,6 +261,109 @@ test('a reported failure without a status names none', async () => {
       'Service error: Rate window exceeded for this synthetic account');
 });
 
+const REPORTED_FAILURE_PREFIX = 'Composio reported that the managed connection request did not succeed. ' +
+  'If the service error points to the request, change the request before retrying. Service error: ';
+
+async function reportedFailureMessage(error: string): Promise<string> {
+  const failure = await failingSearchProvider({ data: {}, error, successful: false }).execute({
+    policy: POLICY,
+    capability: 'gmail.messages.search',
+    arguments: { query: 'is:unread' },
+  }).then(() => assert.fail('a reported failure must reject'), (thrown: unknown) => thrown);
+  assert.ok(failure instanceof ManagedProviderRequestError);
+  return failure.message;
+}
+
+test('a reported failure keeps URL queries, URL logins and named credentials from the model', async () => {
+  assert.equal(
+    await reportedFailureMessage(
+      '401 Client Error: Unauthorized for url: ' +
+      'https://synthetic-user:synthetic-pass@api.example.test/1/boards/synthetic?key=synthetic-key-value&token=synthetic-token-value ' +
+      'after Authorization: Bearer synthetic.bearer-value_1234 and refresh_token=synthetic-refresh-value ' +
+      'and {"api_key":"synthetic-api-key-value"} with test-key. Bearer authentication failed.',
+    ),
+    `${REPORTED_FAILURE_PREFIX}401 Client Error: Unauthorized for url: ` +
+      'https://api.example.test/1/boards/synthetic?[redacted] ' +
+      'after Authorization: Bearer [redacted] and refresh_token=[redacted] ' +
+      'and {"api_key":"[redacted]"} with [credential redacted]. Bearer authentication failed.',
+  );
+});
+
+test('a credential the redaction bound cuts is dropped, not shown in part', async () => {
+  // Indented text: once its whitespace collapses, the end of the scanned text is in view.
+  const lead = `Upstream said:${' '.repeat(1_700)}${'detail '.repeat(42)}`;
+  assert.ok(lead.length < 2_024 && lead.length + SYNTHETIC_SLACK_TOKEN.length > 2_024);
+
+  const indented = await reportedFailureMessage(`${lead}${SYNTHETIC_SLACK_TOKEN} and more`);
+  assert.equal(indented, `${REPORTED_FAILURE_PREFIX}Upstream said: ${'detail '.repeat(42)}[credential redacted] and more`);
+
+  // A redacted key shortens the text the same way. The bound falls inside the token, where it
+  // is too short to match its signature.
+  const key = `-----BEGIN PRIVATE KEY----- ${'A'.repeat(1_200)} -----END PRIVATE KEY-----`;
+  const head = `${`${key} ${'detail '.repeat(200)}`.slice(0, 2_015)} `;
+  assert.ok(head.length === 2_016 && !head.includes('  '));
+  const shortened = await reportedFailureMessage(`${head}${SYNTHETIC_SLACK_TOKEN} and more`);
+  assert.equal(
+    shortened,
+    `${REPORTED_FAILURE_PREFIX}[credential redacted] ${head.slice(key.length + 1).trimEnd()}…`,
+  );
+});
+
+test('a YouTube write that cannot be verified logs its Composio log ID', async (t) => {
+  const lines: Record<string, unknown>[] = [];
+  t.mock.method(console, 'warn', (line: unknown) => {
+    lines.push(JSON.parse(String(line)) as Record<string, unknown>);
+  });
+  const policy: ConnectionAccountManagedPolicy = {
+    ...POLICY,
+    toolkit: 'youtube',
+    accountRef: 'ca_youtube',
+    allowedCapabilities: ['youtube.videos.update'],
+    resourceConstraints: {
+      channelIds: [{ handle: 'channel_chickpea', providerRef: 'UCchickpea', label: 'Chickpea' }],
+    },
+  };
+  let updated = false;
+  const provider = new ComposioManagedConnectionProvider({
+    apiKey: 'test-key',
+    createClient: async () => ({
+      sessions: { async create() { throw new Error('session execution must not be used'); } },
+      tools: {
+        async execute(tool) {
+          if (tool === 'YOUTUBE_LIST_CHANNELS') {
+            return { data: { items: [{ id: 'UCchickpea', snippet: { title: 'Chickpea' } }] }, error: null };
+          }
+          if (tool === 'YOUTUBE_UPDATE_VIDEO') {
+            updated = true;
+            return { data: { id: 'video_1' }, error: null, successful: true, logId: 'log_update' };
+          }
+          // The ownership check before the write succeeds; the readback after it does not.
+          return updated
+            ? { data: {}, error: 'synthetic readback failure', successful: false }
+            : { data: { items: [{ id: 'video_1', snippet: { channelId: 'UCchickpea' } }] }, error: null };
+        },
+      },
+    }),
+  });
+
+  await assert.rejects(provider.execute({
+    policy,
+    capability: 'youtube.videos.update',
+    arguments: { channelHandle: 'channel_chickpea', videoId: 'video_1', title: 'Updated demo' },
+  }), (error: unknown) =>
+    error instanceof ManagedProviderRequestError && error.code === 'ambiguous' &&
+    error.metadata.providerLogId === 'log_update');
+  assert.deepEqual(lines, [{
+    event: 'chickpea.managed_connection.execute_failed',
+    adapterId: 'composio',
+    toolkit: 'youtube',
+    capability: 'youtube.videos.update',
+    outcome: 'ambiguous',
+    dispatched: true,
+    providerLogId: 'log_update',
+  }]);
+});
+
 test('each managed call logs one content-free line, success or failure', async (t) => {
   const lines: Record<string, unknown>[] = [];
   const output: string[] = [];
