@@ -297,7 +297,7 @@ export async function reconnectService(
   const { snapshot, agent } = await readAgent(deps, context, input.agentId);
   const row = connectionRows(agent).find(({ connectionId }) => connectionId === input.connectionId);
   if (!row) {
-    fail('not_found', `${agent.name} has no connection with that connectionId.`, { nextStep: 'Call get_agent for its connectionIds.' });
+    fail('not_found', `${agent.name} no longer has that connection.`, { nextStep: 'Call get_agent for its connectionIds.' });
   }
   const { agent: summary } = await agentSummary(deps, context, agent.id);
   const laneEntry = [...agent.apiConnections, ...agent.mcpServers].find(({ id }) => id === row.connectionId);

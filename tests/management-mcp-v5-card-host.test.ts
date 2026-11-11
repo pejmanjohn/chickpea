@@ -205,7 +205,11 @@ test('a client that draws cards never shows its model a confirm or undo token; i
   assert.equal(typeof undo, 'string', 'the card holds the undo token');
   assert.equal(renamed.structuredContent!.undoToken, undefined);
   assert.ok(!modelView(renamed).includes(undo!), 'the model sees no undo token');
-  assert.equal(renamed.structuredContent!.nextStep, `${CARD_SHOWS_IT} They can undo it on the card.`);
+  // Mutation proof (review SHOULD 1): the card's sentence replacing the off Agent's next step.
+  const name = renamed.structuredContent!.agent.name as string;
+  assert.equal(renamed.structuredContent!.nextStep,
+    `${CARD_SHOWS_IT} They can undo it on the card. ${name} is off, so it answers no one in Slack. Don't suggest trying it.`,
+    'the Agent is off since the confirmation, and a card host\'s model hears so too');
 
   // A write no card draws keeps its token where the model can use it.
   const memory = await call('get_agent_memory', { agentId: 'agent_support' });

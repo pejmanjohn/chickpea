@@ -531,7 +531,7 @@ export async function readSchedule(
   const { routines } = await deps.service.inspectRoutines(context, { workspaceId, routineId: scheduleId });
   const schedule = routines.find(({ id }) => id === scheduleId);
   if (!schedule) {
-    fail('not_found', 'No schedule you can see has that scheduleId.', {
+    fail('not_found', 'That schedule is gone, or you can\'t see it.', {
       nextStep: 'Call list_schedules for the current scheduleIds.',
     });
   }

@@ -162,9 +162,7 @@ export async function changeResult(
     summary: typeof options.summary === 'function' ? options.summary(agent?.name ?? 'the Agent')
       : options.summary ?? doneSummary(applied.at(-1)?.operationKind, agent?.name),
     // Whatever changed, an Agent that is off answers no one, so trying it waits until it is on.
-    ...(agent?.status === 'off'
-      ? { nextStep: `${agent.name} is off, so it answers no one in Slack until it is turned on. Don't suggest trying it: if the person wants to, ask whether to turn it on first, then call update_agent with on: true.` }
-      : {}),
+    ...(agent?.status === 'off' ? { nextStep: offNextStep(agent.name) } : {}),
     ...(agent ? { agent } : {}),
     ...(version ? { version } : {}),
     ...(applied.length === 1 && applied[0]!.undoAvailable ? { undoToken: result.operationId } : {}),
@@ -346,6 +344,15 @@ const DONE_SUMMARIES: Partial<Record<ManagementOperation['kind'], (name: string)
 function doneSummary(kind: ManagementOperation['kind'] | undefined, agentName = 'the Agent'): string {
   const summary = kind ? DONE_SUMMARIES[kind] : undefined;
   return summary ? summary(agentName) : 'Done.';
+}
+
+/**
+ * What the model hears after a change to an Agent that is off, including the
+ * one that turned it off: nothing that suggests trying it, and nothing that
+ * suggests turning it on.
+ */
+export function offNextStep(agentName: string): string {
+  return `${agentName} is off, so it answers no one in Slack. Don't suggest trying it.`;
 }
 
 /**

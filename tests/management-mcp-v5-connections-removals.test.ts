@@ -426,7 +426,9 @@ test('reconnect_service links a custom connection\'s key, and signs a catalog co
   assertFocusedSetup(catalog.setup);
   assert.match(catalog.summary, /^Open the link to reconnect HubSpot · Team\.$/);
 
-  errorOf(await call('reconnect_service', { agentId: 'agent_research', connectionId: 'connection_unknown' }), 'not_found');
+  // A card draws an error's message (review SHOULD 5), so it names no field.
+  const gone = errorOf(await call('reconnect_service', { agentId: 'agent_research', connectionId: 'connection_unknown' }), 'not_found');
+  assert.equal(gone.message, `${(await f.config.getAgent('agent_research'))!.name} no longer has that connection.`);
 });
 
 test('reconnect_service finishes or repairs a catalog sign-in on the page connect_service gives, in place', async (t) => {
@@ -941,6 +943,8 @@ test('remove_agent_from_channel applies at once with undo; delete_schedule confi
   assert.equal(structured(await call('confirm_change', { confirmToken: proposed.confirmation.confirmToken })).summary, 'Deleted the schedule Digest.');
   assert.notEqual((await f.routines.getRoutine(schedule.scheduleId))?.deletedAt, null);
   errorOf(await call('delete_schedule', { scheduleId: schedule.scheduleId, version: schedule.version, idempotencyKey: 'again' }), 'changed_since_read');
+  const missing = errorOf(await call('delete_schedule', { scheduleId: 'schedule_missing', version: schedule.version, idempotencyKey: 'missing' }), 'not_found');
+  assert.equal(missing.message, 'That schedule is gone, or you can\'t see it.', 'a card draws it, so it names no field');
 });
 
 test('remove_model_provider_key confirms first and is an Owner\'s or Admin\'s; an unknown website login is refused', async (t) => {
@@ -1000,7 +1004,8 @@ test('update_member is an Owner\'s: suspending confirms first, an Admin to Membe
   assert.ok(admin.slackUserId);
 
   errorOf(await as('admin')('update_member', { slackUserId: admin.slackUserId, role: 'member', idempotencyKey: 'self' }), 'not_allowed');
-  errorOf(await owner('update_member', { slackUserId: 'U_NOBODY', status: 'suspended', idempotencyKey: 'nobody' }), 'not_found');
+  const nobody = errorOf(await owner('update_member', { slackUserId: 'U_NOBODY', status: 'suspended', idempotencyKey: 'nobody' }), 'not_found');
+  assert.equal(nobody.message, 'That person isn\'t in this workspace.', 'a card draws it, so it names no field');
 
   // An Owner change and a removal confirm first, as Admin asks.
   const promote = structured(await owner('update_member', { slackUserId: admin.slackUserId, role: 'owner', idempotencyKey: 'promote' }));

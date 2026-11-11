@@ -1,5 +1,5 @@
 import { ADMIN_PATH, adminOrigin } from '../admin-links.ts';
-import type { ChangeResult } from './changes.ts';
+import { offNextStep, type ChangeResult } from './changes.ts';
 
 /**
  * Whether a card draws this connection's results. A client that declares
@@ -102,6 +102,7 @@ export function forCardHost(
         CARD_SHOWS_IT,
         confirmToken !== undefined ? 'Only the card can confirm it: it holds the confirmToken.' : undefined,
         undoToken !== undefined ? 'They can undo it on the card.' : undefined,
+        change.status === 'done' && change.agent?.status === 'off' ? offNextStep(change.agent.name) : undefined,
       ].filter(Boolean).join(' ')
     : confirmToken !== undefined
       ? 'The person confirms on the card, which holds the confirmToken. Wait for them.'

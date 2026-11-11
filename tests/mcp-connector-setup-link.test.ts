@@ -390,6 +390,59 @@ test('Cancel on an MCP managed link cancels it; Start over, from the page that w
   assert.deepEqual(await h.config.listConnectionAccounts(h.owner.user.slackTeamId), []);
 });
 
+// Mutation proof (review SHOULD 4): Cancel revokes only an app's link, and only an app's link ends on the cancelled page.
+test('Cancel on a Slack link keeps the link, and a Slack link revoked another way never shows the cancelled page', async (t) => {
+  const h = await harness(t, 'slack-cancel');
+  const slack: ManagementActorContext = {
+    userId: h.owner.user.id,
+    membershipId: h.owner.membership.id,
+    organizationId: h.owner.membership.organizationId,
+    origin: { kind: 'slack', workspaceId: h.owner.user.slackTeamId, channelId: 'D_OWNER', threadTs: '1800200000.000100', agentId: h.agent.id },
+  };
+  const claim = async (connector: string) => {
+    const prepared = await h.service.prepareConnectorSetup(slack, { agentId: h.agent.id, connector, ownerKind: 'member' });
+    const setupId = new URL(prepared.handoffUrl).pathname.split('/').at(-1)!;
+    return { setupId, cookie: cookieOf(await h.exchange(prepared.handoffUrl)) };
+  };
+
+  // A managed link's Cancel stops its sign-in and reloads the page, as before; the link stays.
+  const managed = await claim('HubSpot');
+  const managedBefore = (await h.management.getSetup(managed.setupId))?.status;
+  const reloaded = await h.cancel(managed.setupId, managed.cookie, 'cancel');
+  assert.equal(reloaded.status, 303);
+  assert.equal(reloaded.headers.get('location'), `/setup/${managed.setupId}`);
+  assert.equal((await h.management.getSetup(managed.setupId))?.status, managedBefore);
+
+  // A catalog link from Slack has no Cancel to post.
+  const catalog = await claim('Linear');
+  const catalogBefore = (await h.management.getSetup(catalog.setupId))?.status;
+  assert.equal((await h.cancel(catalog.setupId, catalog.cookie, 'cancel')).status, 403);
+  assert.equal((await h.management.getSetup(catalog.setupId))?.status, catalogBefore);
+  assert.deepEqual([managedBefore, catalogBefore], ['pending', 'claimed'], 'both links were live');
+
+  await h.management.revokeSetup({
+    setupOperationId: catalog.setupId, organizationId: h.owner.membership.organizationId, actorUserId: h.owner.user.id, at: Date.now(),
+  });
+  const revoked = await h.page(catalog.setupId, catalog.cookie, '?cancelled=1');
+  assert.doesNotMatch(revoked.html, /was not connected to|go back to/, 'the page for an app\'s link only');
+});
+
+// Mutation proof (review SHOULD 4): a refused revoke answering 403 instead of ending on the cancelled page's address.
+test('Cancel on an app\'s catalog link whose sign-in is under way leaves the link as it is', async (t) => {
+  const h = await harness(t, 'mcp-catalog-cancel-signing-in');
+  const context = h.mcp(h.owner, CHATGPT_CLIENT);
+  const prepared = await h.service.prepareConnectorSetup(context, { agentId: h.agent.id, connector: 'Linear', ownerKind: 'member' });
+  const setupId = prepared.setupOperationId!;
+  const cookie = cookieOf(await h.exchange(prepared.handoffUrl));
+  assert.equal((await h.post(setupId, 'authorize', cookie, { ownerKind: 'member' })).status, 200);
+  assert.equal(await h.setupStatus(setupId, context), 'signing_in');
+
+  const cancelled = await h.cancel(setupId, cookie, 'cancel');
+  assert.equal(cancelled.status, 303);
+  assert.equal(cancelled.headers.get('location'), `/setup/${setupId}?cancelled=1`);
+  assert.equal(await h.setupStatus(setupId, context), 'signing_in', 'the store keeps a link whose sign-in is being finished');
+});
+
 test('an MCP managed link opens only for its person and sends them back to ChatGPT by name', async (t) => {
   const h = await harness(t, 'mcp-managed-link');
   const context = h.mcp(h.owner, CHATGPT_CLIENT);

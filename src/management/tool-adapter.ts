@@ -397,7 +397,9 @@ async function executeWorkspaceManagementTool<TName extends WorkspaceManagementT
       }
       case 'confirm_workspace_change': {
         const value = args as WorkspaceManagementToolArguments['confirm_workspace_change'];
-        return service.confirmWorkspaceChange({ context, ...value });
+        // What the person confirmed is for 5.0's summary; a 4.x result stays as it was.
+        const { confirmed: _confirmed, ...result } = await service.confirmWorkspaceChange({ context, ...value });
+        return result;
       }
       case 'undo_workspace_change': {
         const value = args as WorkspaceManagementToolArguments['undo_workspace_change'];
