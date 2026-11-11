@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 
+import { isAgentId } from '../../config/agent-id.ts';
 import { channelNames } from '../../management/channel-names.ts';
 import type * as schemas from '../../management/mcp-v5/schemas.ts';
 import { describeTextChange } from '../../management/text-change-wording.ts';
@@ -147,7 +148,7 @@ export type Action =
   | 'undo';
 
 /** Calls that only read. A reply that comes after the card moved on is stale and dropped. */
-const READS: ReadonlySet<string> = new Set(['get_creation_status', 'get_agent']);
+const READS: ReadonlySet<string> = new Set(['get_creation_status', 'get_agent', 'get_confirmation']);
 
 export type Event = CardEvent<Action>;
 
@@ -452,6 +453,16 @@ function reply(state: State, made: Call, result: ToolResult, now: number): Next<
       return tell(changeView(content, now, { undone: true }), content.status === 'needs_confirmation'
         ? 'The person pressed Undo on the card. Nothing has changed yet: it waits for their confirmation on the card.'
         : `The person undid the change${view.kind === 'done' && view.agent ? ` to ${agentNamed(view.agent.name)}` : ''} from the card.`);
+    case 'get_confirmation': {
+      if (state.busy || view.kind !== 'confirm') return stay(state);
+      const standing = failure ? undefined : (content as { status?: unknown } | undefined)?.status;
+      if (standing === 'applied') {
+        return show({ kind: 'done', summary: CONFIRMED, ...view.agent ? { agent: view.agent } : {}, avatarUrl: view.avatarUrl });
+      }
+      if (standing === 'cancelled') return show(RETIRED);
+      // Pending, or no answer: the buttons stay, and a press gets Chickpea's answer.
+      return standing === 'expired' ? show(EXPIRED) : stay(state);
+    }
     case 'get_agent': {
       if (state.busy) return stay(state); // a write is in flight; its reply decides the view
       if (code === 'not_found') return goneFrom(state, 'unavailable');
@@ -545,22 +556,29 @@ function reread(state: State, now: number): Next<View> {
       return view.agent ? stay(state, [call('get_agent', { agentId: view.agent.agentId })]) : stay(state);
     case 'confirm': {
       if (expired(view.confirmation, now)) return show(EXPIRED);
-      // A confirmation whose Agent is gone has nothing left to confirm.
-      const read = view.confirmation.confirmToken && view.agent ? [call('get_agent', { agentId: view.agent.agentId })] : [];
-      return stay(state, [expiryTimer(view.confirmation, now), ...read]);
+      const { confirmToken } = view.confirmation;
+      if (!confirmToken) return stay(state, [expiryTimer(view.confirmation, now)]);
+      // Kept, confirmed or retired elsewhere since, as a host that keeps no widget state cannot say;
+      // and a confirmation whose Agent is gone has nothing left to confirm.
+      return stay(state, [
+        expiryTimer(view.confirmation, now),
+        call('get_confirmation', { confirmToken }),
+        ...view.agent ? [call('get_agent', { agentId: view.agent.agentId })] : [],
+      ]);
     }
     default:
       return stay(state);
   }
 }
 
-// What a reopened card comes back to. ChatGPT shows its model the widget
-// state an outcome is kept in, so it holds only words the card showed:
-// never a token, an ID or instructions. Without a token the card offers no
-// Undo, and without the ID of an Agent it created it shows only that it did.
+// What a reopened card comes back to. An outcome is kept in ChatGPT's
+// `privateContent`, which ChatGPT hides from its model beside the
+// `modelContent` the card always writes: words the card showed, and the ID
+// of an Agent it created, so a reopened creation reads its arrival again.
+// Never a token or instructions, so a reopened change offers no Undo.
 
 type Outcome =
-  | { kind: 'created'; name: string }
+  | { kind: 'created'; name: string; agentId?: string }
   | { kind: 'done'; summary: string }
   | { kind: 'notice'; title: string; body?: string };
 
@@ -568,7 +586,7 @@ function remember(view: View): Outcome | undefined {
   switch (view.kind) {
     case 'creating':
     case 'ready':
-      return { kind: 'created', name: view.agent.name };
+      return { kind: 'created', name: view.agent.name, agentId: view.agentId };
     case 'done':
       return { kind: 'done', summary: view.summary };
     case 'notice':
@@ -582,7 +600,9 @@ function resume(view: View, kept: unknown): View | undefined {
   const outcome = outcomeOf(kept);
   switch (outcome?.kind) {
     case 'created':
-      return view.kind === 'proposal' ? { kind: 'done', summary: `Created ${outcome.name}.`, avatarUrl: offerAvatar(view) } : undefined;
+      if (view.kind !== 'proposal') return undefined;
+      return outcome.agentId ? createdFrom(view, { name: outcome.name, agentId: outcome.agentId })
+        : { kind: 'done', summary: `Created ${outcome.name}.`, avatarUrl: offerAvatar(view) };
     case 'notice':
       return view.kind === 'change' || view.kind === 'confirm' ? { kind: 'notice', title: outcome.title, body: outcome.body } : undefined;
     case 'done':
@@ -602,10 +622,29 @@ function resume(view: View, kept: unknown): View | undefined {
   }
 }
 
+/** The Agent a reopened proposal created: its re-read finds where its arrival in Slack stands now. */
+function createdFrom(view: Extract<View, { kind: 'proposal' }>, created: { name: string; agentId: string }): View {
+  const { proposal, create } = view.proposal;
+  const promised = promiseOf(view);
+  return {
+    kind: 'creating',
+    agentId: created.agentId,
+    agent: { name: created.name, handle: create.arguments.handle ?? proposal.handle },
+    avatarUrl: offerAvatar(view),
+    workspaceName: proposal.workspaceName,
+    answersIn: channelNames(proposal.answersIn),
+    needs: proposal.needs,
+    startedAt: 0,
+    ...promised ? { promised } : {},
+  };
+}
+
 /** An outcome as the host kept it: untrusted, so only its shape is checked. */
 function outcomeOf(kept: unknown): Outcome | undefined {
   if (!isRecord(kept)) return undefined;
-  if (kept.kind === 'created' && typeof kept.name === 'string') return { kind: 'created', name: kept.name };
+  if (kept.kind === 'created' && typeof kept.name === 'string') {
+    return { kind: 'created', name: kept.name, ...typeof kept.agentId === 'string' && isAgentId(kept.agentId) ? { agentId: kept.agentId } : {} };
+  }
   if (kept.kind === 'done' && typeof kept.summary === 'string') return { kind: 'done', summary: kept.summary };
   if (kept.kind === 'notice' && typeof kept.title === 'string') {
     return { kind: 'notice', title: kept.title, ...typeof kept.body === 'string' ? { body: kept.body } : {} };
@@ -620,6 +659,16 @@ const EXPIRED: View = {
 };
 
 const KEPT: View = { kind: 'notice', title: 'Kept as it is', body: 'Nothing changed.' };
+
+/** Kept, replaced by a newer change, or failed when confirmed: nothing stored says which. */
+const RETIRED: View = {
+  kind: 'notice',
+  title: 'This confirmation no longer applies',
+  body: 'Nothing changed. Ask again to make the change.',
+};
+
+/** The server's summary for a confirmed change, when the card has no other. */
+const CONFIRMED = 'Made the change you confirmed.';
 
 /** A tick when the token expires, so an open card says so without a press. */
 function expiryTimer(confirmation: Confirmation, now: number): Effect {

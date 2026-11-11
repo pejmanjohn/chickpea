@@ -41,7 +41,7 @@ const CARD_TOOLS: Record<string, CardName> = {
 };
 
 /** The card-only tools: hidden from the model, called by a card. */
-const CARD_ONLY = ['get_creation_status', 'decline_change', 'try_agent_once', 'get_test_run'];
+const CARD_ONLY = ['get_creation_status', 'decline_change', 'get_confirmation', 'try_agent_once', 'get_test_run'];
 
 type ToolResult = {
   content: Array<{ type: string; text: string }>;

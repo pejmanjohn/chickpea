@@ -4186,6 +4186,32 @@ export class WorkspaceManagementService {
   }
 
   /**
+   * Where one confirmation stands, for its own person only: whether a card
+   * that mounts again can still confirm or keep it. A claim whose lease ran
+   * out waits for a confirm to finish it, so it reads as pending. A set that
+   * completed with nothing applied, or was retired, can no longer apply.
+   * Reads only.
+   */
+  async workspaceChangeStanding(
+    input: ConfirmWorkspaceChangeInput,
+  ): Promise<'pending' | 'applied' | 'cancelled' | 'expired'> {
+    const actor = await this.requireLiveActor(input.context);
+    const proposal = await this.stores.management.getChangeSetProposal(input.proposalId);
+    if (!proposal) throw new ManagementError('proposal_not_found', 'The confirmation was not found.');
+    this.assertProposalBinding(actor, proposal);
+    switch (proposal.status) {
+      case 'pending':
+        return proposal.expiresAt !== undefined && this.now() >= proposal.expiresAt ? 'expired' : 'pending';
+      case 'applying':
+        return this.now() - proposal.updatedAt < MANAGEMENT_CHANGE_SET_APPLY_LEASE_MS ? 'applied' : 'pending';
+      case 'completed':
+        return proposal.result?.status === 'failed' ? 'cancelled' : 'applied';
+      case 'stale':
+        return 'cancelled';
+    }
+  }
+
+  /**
    * What a creation card polls while a new Agent joins Slack: light reads
    * only, never the workspace snapshot. The caller must be able to edit it.
    */

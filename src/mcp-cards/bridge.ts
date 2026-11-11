@@ -1,3 +1,5 @@
+import { hostErrorOf, type HostError } from './card-model.ts';
+
 /**
  * A card's side of MCP Apps: JSON-RPC 2.0 over `postMessage` with the host.
  * ext-apps' `App` does this too, but it ships as one prebundled file with zod
@@ -30,8 +32,8 @@ export interface CallToolResult {
   structuredContent?: unknown;
   isError?: boolean;
   _meta?: Record<string, unknown>;
-  /** The host's JSON-RPC error, when it answered the call with one instead of the result. */
-  hostError?: { code?: unknown; message?: unknown; data?: unknown };
+  /** The host's JSON-RPC error, when it answered the call with one instead of the result; never its message. */
+  hostError?: HostError;
 }
 
 interface Rpc {
@@ -103,14 +105,14 @@ export class HostBridge {
   /**
    * A tool call through the host. After a timeout the call rejects, and a
    * reply that still comes goes to `late`: a write may have run after all.
-   * A host that answers with a JSON-RPC error, as ChatGPT does when the
-   * result has `isError`, gets its error passed on as `hostError`, where the
-   * card looks for Chickpea's refusal.
+   * A host that answers with a JSON-RPC error, as ChatGPT does for a tool it
+   * has not listed yet or a result with `isError`, gets its error passed on
+   * as `hostError`, where the card looks for Chickpea's refusal.
    */
   async callTool(name: string, args: Record<string, unknown>, late: (result: CallToolResult) => void): Promise<CallToolResult> {
     const answer = (value: unknown, error?: unknown): CallToolResult => error === undefined
       ? value as CallToolResult
-      : { isError: true, hostError: error as NonNullable<CallToolResult['hostError']> };
+      : { isError: true, hostError: hostErrorOf(error) };
     try {
       return answer(await this.#request('tools/call', { name, arguments: args }, (value, error) => late(answer(value, error))));
     } catch (error) {

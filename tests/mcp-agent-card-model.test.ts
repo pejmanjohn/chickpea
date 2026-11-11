@@ -24,7 +24,7 @@ const AGENT_CARD: CardModelUnderTest<View, Action> = {
   initial: INITIAL,
   step,
   present,
-  reads: new Set(['get_creation_status', 'get_agent']),
+  reads: new Set(['get_creation_status', 'get_agent', 'get_confirmation']),
   // A creation the person pressed Create for: its polls may tell the model it is ready.
   followsPress: ({ view }) => view.kind === 'creating' && view.byPress === true,
 };
@@ -233,36 +233,43 @@ test('Keep changes nothing, and an expired confirmation cannot be confirmed', as
   const read = (await call('get_agent', { agentId: 'agent_support' })).structuredContent!;
   const pending = await call('update_agent', { agentId: 'agent_support', version: read.version, on: false, idempotencyKey: 'off' });
 
+  const confirmToken = pending.structuredContent!.confirmation.confirmToken;
   await agentCard.result(pending);
   assert.deepEqual(agentCard.effects, [
     { type: 'timer', inMs: 30 * 60_000 },
+    { type: 'call', call: { tool: 'get_confirmation', args: { confirmToken }, seq: 1 } },
     { type: 'call', call: { tool: 'get_agent', args: { agentId: 'agent_support' }, seq: 1 } },
-  ], 'it will say when the token expires, and reads its Agent before it offers a button');
+  ], 'it will say when the token expires, and reads where the confirmation and its Agent stand before it offers a button');
   await agentCard.press('keep');
   assert.deepEqual([agentCard.shown.title, agentCard.calls().map(({ tool, args }) => [tool, args])],
-    ['Kept as it is', [['get_agent', { agentId: 'agent_support' }], ['decline_change', { confirmToken: pending.structuredContent!.confirmation.confirmToken }]]],
+    ['Kept as it is', [['get_confirmation', { confirmToken }], ['get_agent', { agentId: 'agent_support' }], ['decline_change', { confirmToken }]]],
     'Keep retires the token, and nothing else');
   const after = await call('confirm_change', { confirmToken: pending.structuredContent!.confirmation.confirmToken });
   assert.equal(after.isError, true, 'the model cannot confirm what the person kept');
+  // A card for it that mounts later asks before it offers a button, and finds it kept.
+  const reopened = card(call, clock);
+  await reopened.result(pending);
+  assert.deepEqual([reopened.shown.title, reopened.labels()], ['This confirmation no longer applies', []]);
 
+  const fresh = await call('update_agent', { agentId: 'agent_support', version: read.version, on: false, idempotencyKey: 'off-again' });
   const later = card(call, clock);
-  await later.result(pending);
-  clock.now = Date.parse(pending.structuredContent!.confirmation.expiresAt);
+  await later.result(fresh);
+  clock.now = Date.parse(fresh.structuredContent!.confirmation.expiresAt);
   await later.dispatch({ type: 'reread', now: clock.now });
   assert.equal(later.shown.title, 'This confirmation expired');
   await later.press('confirm');
-  assert.deepEqual(later.calls().map(({ tool }) => tool), ['get_agent'], 'only the read it made when it mounted');
+  assert.deepEqual(later.calls().map(({ tool }) => tool), ['get_confirmation', 'get_agent'], 'only the reads it made when it mounted');
 
   // A card that mounts after the token expired says so at once.
   const mountedLate = card(call, clock);
-  await mountedLate.result(pending);
+  await mountedLate.result(fresh);
   assert.equal(mountedLate.shown.title, 'This confirmation expired');
 
   // Pressed after it expired, before the card noticed: still nothing is sent.
   const unnoticed = card(call, clock);
   clock.now = NOW;
-  await unnoticed.result(pending);
-  clock.now = Date.parse(pending.structuredContent!.confirmation.expiresAt);
+  await unnoticed.result(fresh);
+  clock.now = Date.parse(fresh.structuredContent!.confirmation.expiresAt);
   await unnoticed.press('confirm');
   assert.deepEqual([unnoticed.calls('confirm_change'), unnoticed.shown.title], [[], 'This confirmation expired']);
   assert.equal((await f.config.getAgent('agent_support')).enabled, true);
