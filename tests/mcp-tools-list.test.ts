@@ -27,7 +27,9 @@ const NO_GRANTED_TOOLS = 'Example Tools no longer offers any of the tools this A
   'An Admin can pick its tools again in Chickpea Admin.';
 
 type Wire = 'json' | 'sse';
-type Rpc = { jsonrpc: '2.0'; id?: number; method: string; params?: { cursor?: string; name?: string } };
+type Rpc = {
+  jsonrpc: '2.0'; id?: number; method: string; params?: { cursor?: string; name?: string; arguments?: unknown };
+};
 type ListedTool = string | Record<string, unknown>;
 
 const encoder = new TextEncoder();
@@ -70,9 +72,10 @@ function reply(wire: Wire, payload: unknown): Response {
   return wire === 'sse' ? eventStream([`event: message\ndata: ${JSON.stringify(payload)}\n\n`]) : Response.json(payload);
 }
 
-/** A Streamable HTTP server; `answerList` answers each tools/list POST. */
-function mcpServer(answerList: (rpc: Rpc) => Response) {
+/** A Streamable HTTP server; `answerList` answers each tools/list POST, and `answerCall` each tools/call. */
+function mcpServer(answerList: (rpc: Rpc) => Response, answerCall?: (rpc: Rpc) => Response) {
   const calls: string[] = [];
+  const callArguments: unknown[] = [];
   const gets: Request[] = [];
   const fetch = (async (input, init) => {
     const request = new Request(input, init);
@@ -89,11 +92,13 @@ function mcpServer(answerList: (rpc: Rpc) => Response) {
     if (rpc.method === 'tools/list') return answerList(rpc);
     if (rpc.method === 'tools/call') {
       calls.push(String(rpc.params?.name));
+      callArguments.push(rpc.params?.arguments);
+      if (answerCall) return answerCall(rpc);
       return Response.json({ jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: 'done' }] } });
     }
     throw new Error(`Unexpected synthetic MCP request: ${rpc.method}`);
   }) as typeof globalThis.fetch;
-  return { fetch, calls, gets };
+  return { fetch, calls, callArguments, gets };
 }
 
 function pagedServer(wire: Wire, pages: readonly (readonly ListedTool[])[]) {
@@ -207,15 +212,17 @@ function captureLogs(t: TestContext) {
   const missing: Array<Record<string, unknown>> = [];
   const refused: Array<Record<string, unknown>> = [];
   const http: Array<Record<string, unknown>> = [];
+  const envelopeKeys: Array<Record<string, unknown>> = [];
   const info = console.info.bind(console);
   t.mock.method(console, 'info', (event: unknown, ...rest: unknown[]) => {
     const name = (event as { event?: string } | undefined)?.event;
     if (name === 'chickpea.mcp.tools_missing') missing.push(event as Record<string, unknown>);
     else if (name === 'chickpea.mcp.tools_list_refused') refused.push(event as Record<string, unknown>);
     else if (name === 'chickpea.mcp.http') http.push(event as Record<string, unknown>);
+    else if (name === 'chickpea.meta_ads.account_envelope_extra_keys') envelopeKeys.push(event as Record<string, unknown>);
     else info(event, ...rest);
   });
-  return { missing, refused, http };
+  return { missing, refused, http, envelopeKeys };
 }
 
 const missingLine = (missing: string[], listedCount: number, taskOnly: string[] = []) => ({
@@ -736,6 +743,237 @@ test("a listing Meta's rewrite refuses is logged before the connection fails", a
     toolArgumentConstraints: { [META_ADS_ACCOUNT_HELPER]: metaScope },
   });
   assert.deepEqual(logs.refused, [{ event: 'chickpea.mcp.tools_list_refused', connectionId: 'meta', reason: 'rewrite' }]);
+});
+
+// Meta adds optional arguments to tools Chickpea reviewed at connect time.
+// Synthetic data shaped like Meta's: `advertiser_job` and `scheduled_task_run`
+// stand for the new correlation arguments, and `entity_ids` and `object_ids`
+// are reviewed filters Chickpea never lets a call send.
+const META_REPORT = 'ads_insights_performance_trend';
+const META_ENTITIES = 'ads_get_ad_entities';
+const META_GRANT = [META_ADS_ACCOUNT_HELPER, META_REPORT, META_ENTITIES];
+const metaAccount = { ad_account_id: ['123450001'] };
+const metaConstraints: Record<string, Record<string, string[]>> = {
+  [META_ADS_ACCOUNT_HELPER]: metaScope, [META_REPORT]: metaAccount, [META_ENTITIES]: metaAccount,
+};
+const reportSchema = (propertyNames: string[], fingerprint: string) => ({
+  propertyNames,
+  accountFields: [{ name: 'ad_account_id' as const, type: 'string' as const, required: true }],
+  ambiguous: false,
+  fingerprint,
+});
+const META_STORED = [
+  { name: META_ADS_ACCOUNT_HELPER, inputSchema: { ...metaHelperSchema,
+    propertyNames: ['advertiser_request', 'client_conversation_id', 'cursor', 'limit'] } },
+  { name: META_REPORT, inputSchema: reportSchema(
+    ['ad_account_id', 'client_conversation_id', 'date_preset', 'entity_ids'], 'd'.repeat(64)) },
+  { name: META_ENTITIES, inputSchema: reportSchema(
+    ['ad_account_id', 'client_conversation_id', 'fields', 'object_ids'], 'e'.repeat(64)) },
+];
+
+function metaConnection(overrides: Partial<McpConnectionConfig> = {}): McpConnectionConfig {
+  const grant = overrides.allowedTools ?? META_GRANT;
+  return connectionConfig({
+    id: 'meta', url: 'https://mcp.facebook.com/ads', presetId: 'meta-ads', displayName: 'Meta Ads',
+    allowedTools: grant,
+    discoveredTools: META_STORED,
+    toolPolicies: Object.fromEntries(grant.map((name) =>
+      [name, { effect: 'read' as const, argumentConstraints: metaConstraints[name]! }])),
+    ...overrides,
+  });
+}
+
+const metaDeclaration = (grant: readonly string[] = META_GRANT): Partial<RuntimePlanMcpConnectionV2> => ({
+  readOnlyTools: [...grant],
+  toolArgumentConstraints: Object.fromEntries(grant.map((name) => [name, metaConstraints[name]!])),
+});
+
+const text = { type: 'string' };
+const list = { type: 'array', items: text };
+const metaAdditions = { advertiser_job: { type: 'string', description: 'Synthetic job reference.' }, scheduled_task_run: text };
+
+/** A tool as Meta lists it today: its reviewed arguments plus the new ones. */
+function liveMetaTool(name: string, properties: Record<string, unknown>, required: string[] = []) {
+  return {
+    name,
+    description: `Synthetic ${name}.`,
+    inputSchema: {
+      type: 'object', properties: { ...properties, ...metaAdditions }, required, additionalProperties: false,
+    },
+  };
+}
+
+const liveHelper = {
+  ...liveMetaTool(META_ADS_ACCOUNT_HELPER, {
+    advertiser_request: text, client_conversation_id: text, cursor: text, limit: { type: 'integer' },
+  }),
+  description: 'Provider pagination instructions.',
+  outputSchema: { type: 'object', properties: { accounts: { type: 'array' } }, required: ['accounts'] },
+};
+const liveReport = (required = ['ad_account_id']) => liveMetaTool(META_REPORT, {
+  ad_account_id: text, client_conversation_id: text, date_preset: text, entity_ids: list,
+}, required);
+const liveEntities = liveMetaTool(META_ENTITIES, {
+  ad_account_id: text, client_conversation_id: text, fields: list, object_ids: list,
+}, ['ad_account_id']);
+
+/** The input schema Flue gives the model for a mounted tool. */
+function shownSchema(tool: object): { properties: Record<string, { type?: string }>; required?: unknown } {
+  const symbol = Object.getOwnPropertySymbols(tool).find((candidate) => candidate.description === 'flue.preparedToolAdapter');
+  assert.ok(symbol);
+  return (Reflect.get(tool, symbol) as { parameters: ReturnType<typeof shownSchema> }).parameters;
+}
+
+const mounted = (connection: { tools: readonly { name: string }[] }, name: string) =>
+  connection.tools.find((tool) => tool.name === `mcp__meta__${name}`)!;
+
+test('each mounted Meta tool shows the model only its reviewed arguments, never a blocked one', async (t) => {
+  const logs = captureLogs(t);
+  const server = pagedServer('json', [[liveHelper, liveReport(), liveEntities, 'ads_synthetic_unreviewed']]);
+  await withRuntimeConnection(metaConnection(), server.fetch, async (definition) => {
+    const connection = await createMcpConnection(definition);
+    try {
+      assert.deepEqual(connection.tools.map(({ name }) => name), META_GRANT.map((name) => `mcp__meta__${name}`));
+      assert.deepEqual(shownSchema(mounted(connection, META_REPORT)), {
+        type: 'object',
+        properties: { ad_account_id: text, client_conversation_id: text, date_preset: text },
+        required: ['ad_account_id'],
+        additionalProperties: false,
+      });
+      assert.deepEqual(Object.keys(shownSchema(mounted(connection, META_ENTITIES)).properties),
+        ['ad_account_id', 'client_conversation_id', 'fields']);
+      // The helper's reviewed runtime arguments leave out the stored cursor and limit.
+      const helper = mounted(connection, META_ADS_ACCOUNT_HELPER) as { name: string; description?: string };
+      assert.deepEqual(Object.keys(shownSchema(helper).properties), ['advertiser_request', 'client_conversation_id']);
+      assert.equal(helper.description, META_ADS_ACCOUNT_HELPER_DESCRIPTION);
+    } finally {
+      await connection.close();
+    }
+    const listing = await definition.fetch!('https://mcp.facebook.com/ads', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+    });
+    const { result } = await listing.json() as { result: { tools: Array<Record<string, unknown>> } };
+    const helper = result.tools.find(({ name }) => name === META_ADS_ACCOUNT_HELPER)!;
+    assert.equal(helper.description, META_ADS_ACCOUNT_HELPER_DESCRIPTION);
+    assert.deepEqual((helper.outputSchema as { required: string[] }).required, ['ad_accounts']);
+  }, metaDeclaration());
+  assert.deepEqual(logs.missing, [], 'an ungranted tool is not reported');
+});
+
+test('a Meta call built from every argument the model is shown passes the key check and reaches Meta', async (t) => {
+  captureLogs(t);
+  const server = pagedServer('json', [[liveHelper, liveReport(), liveEntities]]);
+  await withRuntimeConnection(metaConnection(), server.fetch, async (definition) => {
+    const connection = await createMcpConnection(definition);
+    try {
+      const report = mounted(connection, META_REPORT);
+      // The model fills in what it is shown, as it filled in advertiser_job.
+      const args = Object.fromEntries(Object.entries(shownSchema(report).properties).map(([name, schema]) =>
+        [name, name === 'ad_account_id' ? '123450001' : schema.type === 'array' ? ['synthetic'] : 'synthetic']));
+      assert.equal(await preparedMcpExecutor(report)(args), 'done');
+      // The call-time key check still refuses an argument nobody reviewed.
+      await assert.rejects(preparedMcpExecutor(report)({ ...args, advertiser_job: 'synthetic' }),
+        /does not permit the argument advertiser_job/);
+    } finally {
+      await connection.close();
+    }
+  }, metaDeclaration());
+  assert.deepEqual(server.calls, [META_REPORT]);
+  assert.deepEqual(server.callArguments, [{
+    ad_account_id: '123450001', client_conversation_id: 'synthetic', date_preset: 'synthetic',
+  }]);
+});
+
+test('a Meta tool whose live schema requires an unreviewed argument is not mounted, and the rest are', async (t) => {
+  const logs = captureLogs(t);
+  const server = pagedServer('json', [[liveHelper, liveReport(['ad_account_id', 'advertiser_job']), liveEntities]]);
+  await withRuntimeConnection(metaConnection(), server.fetch, async (definition) => {
+    assert.deepEqual(await mountedNames(definition),
+      [`mcp__meta__${META_ADS_ACCOUNT_HELPER}`, `mcp__meta__${META_ENTITIES}`]);
+  }, metaDeclaration());
+  assert.deepEqual(logs.missing, [{
+    event: 'chickpea.mcp.tools_missing', connectionId: 'meta', missing: [], taskOnly: [], listedCount: 3,
+    schemaRequires: { [META_REPORT]: ['advertiser_job'] },
+  }]);
+});
+
+test('a granted Meta tool with no usable reviewed schema is not mounted, and the rest are', async (t) => {
+  const logs = captureLogs(t);
+  const server = pagedServer('json', [[liveHelper, liveReport(), liveEntities]]);
+  const stored = META_STORED.map((tool) => tool.name === META_ENTITIES ? { name: tool.name } : tool);
+  await withRuntimeConnection(metaConnection({ discoveredTools: stored }), server.fetch, async (definition) => {
+    assert.deepEqual(await mountedNames(definition),
+      [`mcp__meta__${META_ADS_ACCOUNT_HELPER}`, `mcp__meta__${META_REPORT}`]);
+  }, metaDeclaration());
+  assert.deepEqual(logs.missing, [{
+    event: 'chickpea.mcp.tools_missing', connectionId: 'meta', missing: [], taskOnly: [], listedCount: 3,
+    schemaRequires: { [META_ENTITIES]: [] },
+  }]);
+});
+
+test('a Meta connection whose every granted tool is withheld fails with a reason a person can act on', async (t) => {
+  const logs = captureLogs(t);
+  const server = pagedServer('json', [[liveHelper, liveReport(['ad_account_id', 'scheduled_task_run'])]]);
+  await withRuntimeConnection(metaConnection({ allowedTools: [META_REPORT] }), server.fetch, async (definition) => {
+    await assert.rejects(createMcpConnection(definition),
+      /^Error: Meta Ads no longer offers any of the tools this Agent may use\./);
+  }, metaDeclaration([META_REPORT]));
+  assert.deepEqual(logs.missing.map(({ schemaRequires }) => schemaRequires), [{ [META_REPORT]: ['scheduled_task_run'] }]);
+  assert.deepEqual(logs.refused, [{ event: 'chickpea.mcp.tools_list_refused', connectionId: 'meta', reason: 'no-granted-tools' }]);
+});
+
+/** Meta's account list, as structured content and as text, the way Meta answers. */
+function accountAnswer(accounts: Record<string, unknown>) {
+  return (rpc: Rpc) => Response.json({
+    jsonrpc: '2.0', id: rpc.id,
+    result: { content: [{ type: 'text', text: JSON.stringify(accounts) }], structuredContent: accounts },
+  });
+}
+
+const metaAccounts = [
+  { ad_account_id: 'act_123450001', is_ads_mcp_enabled: true, is_queryable: true, ad_account_name: 'Synthetic Advertiser' },
+  { ad_account_id: 'act_999000999', is_ads_mcp_enabled: true, is_queryable: true, ad_account_name: 'Not Approved' },
+];
+
+test('an account answer with a new top-level key verifies, without that key, and logs its name once', async (t) => {
+  const logs = captureLogs(t);
+  const server = mcpServer(
+    (rpc) => Response.json({ jsonrpc: '2.0', id: rpc.id, result: { tools: [liveHelper] } }),
+    accountAnswer({ accounts: metaAccounts, has_more: false, request_context: { trace: 'synthetic-private-trace' } }),
+  );
+  const grant = [META_ADS_ACCOUNT_HELPER];
+  await withRuntimeConnection(metaConnection({ allowedTools: grant }), server.fetch, async (definition) => {
+    const connection = await createMcpConnection(definition);
+    try {
+      const answer = await preparedMcpExecutor(mounted(connection, META_ADS_ACCOUNT_HELPER))({});
+      assert.match(answer, /"ad_account_id": "123450001"/);
+      assert.doesNotMatch(answer, /request_context|synthetic-private-trace|999000999|Not Approved/);
+    } finally {
+      await connection.close();
+    }
+  }, metaDeclaration(grant));
+  assert.deepEqual(logs.envelopeKeys, [{
+    event: 'chickpea.meta_ads.account_envelope_extra_keys', connectionId: 'meta', keys: ['request_context'],
+  }]);
+});
+
+test('an account answer that signals more pages is still refused, whatever new keys it holds', async (t) => {
+  captureLogs(t);
+  const server = mcpServer(
+    (rpc) => Response.json({ jsonrpc: '2.0', id: rpc.id, result: { tools: [liveHelper] } }),
+    accountAnswer({ accounts: metaAccounts, has_more: true, request_context: {} }),
+  );
+  const grant = [META_ADS_ACCOUNT_HELPER];
+  await withRuntimeConnection(metaConnection({ allowedTools: grant }), server.fetch, async (definition) => {
+    const connection = await createMcpConnection(definition);
+    try {
+      await assert.rejects(preparedMcpExecutor(mounted(connection, META_ADS_ACCOUNT_HELPER))({}),
+        /unsupported response \(incomplete-pagination;/);
+    } finally {
+      await connection.close();
+    }
+  }, metaDeclaration(grant));
 });
 
 // --- the filter on its own ------------------------------------------------

@@ -201,3 +201,58 @@ test('account helper fails closed on malformed, raw, conflicting, or incomplete 
         !/private provider text|private-cursor/.test(error.message), label);
   }
 });
+
+test('account helper ignores a new top-level envelope key, forwards none of it, and logs its name once', async (t) => {
+  const logged: unknown[] = [];
+  t.mock.method(console, 'info', (event: unknown) => { logged.push(event); });
+  const provider = {
+    data: [{ ad_account_id: '123450001', is_ads_mcp_enabled: true, is_queryable: true }],
+    paging: { cursors: { before: 'synthetic-before', after: '' } },
+    summary: { total: 'synthetic-private-total' },
+    request_context: 'synthetic-private-context',
+  };
+  const response = await sanitizeMetaAdsAccountHelperResponse(rpcResult({
+    content: [{ type: 'text', text: JSON.stringify(provider) }],
+    structuredContent: provider,
+  }), approved, { connectionId: 'meta-test' });
+  const body = await response.text();
+  assert.match(body, /"ad_account_id":"123450001"/);
+  assert.doesNotMatch(body, /summary|request_context|synthetic-/);
+  assert.deepEqual(logged, [{
+    event: 'chickpea.meta_ads.account_envelope_extra_keys', connectionId: 'meta-test', keys: ['summary', 'request_context'],
+  }], 'once for the response, though both payloads carry the keys');
+});
+
+test('account helper logs nothing for an envelope it knows', async (t) => {
+  const logged: unknown[] = [];
+  t.mock.method(console, 'info', (event: unknown) => { logged.push(event); });
+  const provider = {
+    accounts: [{ ad_account_id: '123450001', is_ads_mcp_enabled: true, is_queryable: true }],
+    next_cursor: '', nextCursor: null, cursor: '', has_more: false, hasMore: false, paging: null,
+  };
+  await sanitizeMetaAdsAccountHelperResponse(rpcResult({ structuredContent: provider }), approved);
+  assert.deepEqual(logged, []);
+});
+
+test('account helper still refuses more pages or a second account array, whatever new keys the envelope holds', async (t) => {
+  t.mock.method(console, 'info', () => undefined);
+  const records = [{ ad_account_id: '123450001', is_ads_mcp_enabled: true, is_queryable: true }];
+  const cases: Array<[Record<string, unknown>, string]> = [
+    [{ accounts: records, next_cursor: 'private-cursor', extra: 1 }, 'incomplete-pagination'],
+    [{ accounts: records, nextCursor: 'private-cursor', extra: 1 }, 'incomplete-pagination'],
+    [{ accounts: records, cursor: 'private-cursor', extra: 1 }, 'incomplete-pagination'],
+    [{ accounts: records, has_more: true, extra: 1 }, 'incomplete-pagination'],
+    [{ accounts: records, hasMore: true, extra: 1 }, 'incomplete-pagination'],
+    [{ data: records, paging: { next: 'https://private.example/next' }, extra: 1 }, 'incomplete-pagination'],
+    [{ data: records, paging: { cursors: { after: 'private-cursor' } }, extra: 1 }, 'incomplete-pagination'],
+    [{ data: records, paging: { previous: 'private-cursor' }, extra: 1 }, 'incomplete-pagination'],
+    [{ data: records, paging: 'private-cursor', extra: 1 }, 'incomplete-pagination'],
+    [{ accounts: records, data: [], extra: 1 }, 'account-envelope'],
+    [{ extra: records }, 'account-envelope'],
+  ];
+  for (const [provider, reason] of cases) {
+    await assert.rejects(sanitizeMetaAdsAccountHelperResponse(rpcResult({ structuredContent: provider }), approved),
+      (error: unknown) => error instanceof Error && error.message.includes(`(${reason};`) &&
+        !/private/.test(error.message), JSON.stringify(provider));
+  }
+});
