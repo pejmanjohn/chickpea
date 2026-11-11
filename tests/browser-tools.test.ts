@@ -1540,6 +1540,42 @@ test('an approved step that fails names itself by the description the person app
   }
 });
 
+test('a step held before every string it stores was checked for a typed secret is refused before its page opens, and repeats nothing', async () => {
+  const secret = 'Synthetic-Pass-1234';
+  const withoutButton = FORM_TREE.filter((node) => node.nodeId !== '4');
+  // What an earlier version could store, on a page that still has the button or no longer does.
+  const stored: Array<[string, Record<string, unknown>, AXNode[]]> = [
+    ['address', { url: `https://billing.example.com/reset/${secret}/confirm` }, FORM_TREE],
+    ['address, button gone', { url: `https://billing.example.com/reset/${secret}/confirm` }, withoutButton],
+    ['title', { title: `Reset ${secret}` }, FORM_TREE],
+    ['step before', { prelude: [{ role: 'textbox', name: 'Customer name', occurrence: 0, action: 'type', text: secret }] }, FORM_TREE],
+    ['nothing secret', {}, FORM_TREE],
+  ];
+  for (const [what, patch, tree] of stored) {
+    const settings = new SqliteSettingsStore(':memory:');
+    const ask = await actTurn({ settings, messageTs: TURN_1_TS });
+    await ask.run('browser_open', { url: 'https://billing.example.com/plan' });
+    const held = await ask.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
+    await ask.session.close();
+    const key = `browseraction_${held.actionId}`;
+    const older = JSON.parse((await settings.getSetting(key))!);
+    delete older.format;
+    await settings.setSetting(key, JSON.stringify({ ...older, ...patch }));
+    await approveFromSlack(settings, TURN_2_TS);
+    const turn = await actTurn({ settings, messageTs: TURN_2_TS, tree });
+    const output = await turn.run('browser_act', { ref: 'e3', action: 'click', approvedActionId: held.actionId });
+    for (const line of [JSON.stringify(output), ...turn.logs]) assert.ok(!line.includes(secret), `${what}: ${line}`);
+    assert.deepEqual(Object.keys(output), ['error'], what);
+    assert.match(output.error, /before Chickpea was updated/, what);
+    assert.equal(turn.browsers.length, 0, `${what}: no page opened`);
+    // Spent: taking it again finds it expired.
+    const again = await turn.run('browser_act', { ref: 'e3', action: 'click', approvedActionId: held.actionId });
+    assert.match(again.error, /approval expired/, what);
+    await turn.session.close();
+    settings.close();
+  }
+});
+
 test('an approved step waits for its element when the reopened page is still rendering', async () => {
   const settings = new SqliteSettingsStore(':memory:');
   const ask = await actTurn({ settings, messageTs: TURN_1_TS });
