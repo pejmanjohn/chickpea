@@ -90,7 +90,9 @@ without these reservations, process inspection, or contributor test suites.
 `verify:regression` acquires the reservation automatically. Wrap standalone groups
 with `npm run verify:host -- COMMAND [ARG ...]`; see
 [host coordination](qa/live/operator/host-checks.md). Focused unit checks can run
-independently when they do not build artifacts or start heavy fixtures.
+independently when they do not build artifacts or start heavy fixtures; test
+passes and `npm run typecheck` take a shared CPU slot themselves, and other
+CPU-heavy commands take one with `npm run verify:host -- --shared -- COMMAND`.
 All verification runs locally. This repository does not use GitHub Actions
 workflows or GitHub-hosted test runs, except the tag-triggered npm publish of
 `packages/cli` (`.github/workflows/publish-cli.yml`), which is not a merge gate.

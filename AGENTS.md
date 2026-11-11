@@ -72,6 +72,10 @@
   [update guide](UPDATE_CHICKPEA_CLOUDFLARE.md)
   without contributor host reservations, process inspection, or test suites.
   Continue lightweight independent checks; never stop another task's processes.
+- Wrap mutation passes and `npm run mcp-cards:harness` in a shared CPU slot:
+  `npm run verify:host -- --shared -- COMMAND`, adding `--stall-ms 1800000` for
+  the harness, which prints only at the end. Test passes and `typecheck` take
+  one themselves; see [shared CPU slots](qa/live/operator/host-checks.md#shared-cpu-slots).
 - For Cloudflare deployment use `npm run deploy` (the guarded wrapper), not bare
   `wrangler deploy`. Confirm the intended target before any live mutation.
 - For ordinary customer updates, follow the [update guide](UPDATE_CHICKPEA_CLOUDFLARE.md)

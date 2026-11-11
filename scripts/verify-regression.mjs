@@ -35,9 +35,13 @@ export function parseRegressionArgs(argv) {
   return options;
 }
 
+/** Tokens that let a nested command share its parent's host reservation or shared CPU slot. */
+const OWNER_TOKENS = ['CHICKPEA_CHECK_OWNER', 'CHICKPEA_SHARED_CHECK_OWNER'];
+
 export function regressionEnvironment(env = process.env) {
   const clean = { ...env };
-  delete clean.CHICKPEA_CHECK_OWNER; // Coordination tokens are not verification inputs.
+  // Coordination tokens are not verification inputs.
+  for (const key of [...OWNER_TOKENS, 'CHICKPEA_VERIFY_HOST_PID']) delete clean[key];
   // Keep parent-process Node injection from changing tests and their nested tools.
   delete clean.NODE_OPTIONS;
   delete clean.NODE_PATH;
@@ -245,6 +249,8 @@ export async function main(argv) {
     const scratch = mkdtempSync(path.join(tmpdir(), 'chickpea-regression-'));
     let env = {
       ...regressionEnvironment(),
+      // Steps share the reservation or shared slot this run is nested in, so a nested typecheck never waits on its parent.
+      ...Object.fromEntries(OWNER_TOKENS.filter((key) => process.env[key]).map((key) => [key, process.env[key]])),
       npm_config_cache: path.join(scratch, 'npm-cache'),
       WRANGLER_LOG_PATH: path.join(scratch, 'wrangler.log'),
     };
