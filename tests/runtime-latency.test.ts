@@ -548,6 +548,42 @@ function shadowRecord(overrides: Partial<AnswerReleaseShadowRecord> = {}): Answe
   };
 }
 
+// Defects caught: the reply's text taken as visible only at final, a later
+// acknowledgement (the stream's stop) moving it, or an attempt that never
+// showed text logging a time.
+test('turn_latency times the reply text Slack acknowledged, apart from final', () => {
+  const { records, sink } = captureSink();
+  const time = clock(10_000);
+  const tracker = new TurnLatencyTracker(
+    { receivedAt: 8_000, admittedAt: 9_000, lane: 'cloudflare', executor: 'runner' },
+    { turnJobId: 'evt:T_LATENCY:1785509000.000200', runId: 'run-visible', attempt: 1 },
+    time.now,
+    sink,
+  );
+  time.advance(14_000 - time.now());
+  tracker.markAnswerVisible();
+  time.advance(600);
+  tracker.markAnswerVisible();
+  time.advance(15_400 - time.now());
+  tracker.markFinal('delivered');
+  tracker.emit('returned');
+  const visible = records.filter((record) => record.event === 'turn_latency').at(-1)!;
+  assert.equal(visible.receiptToAnswerVisibleMs, 6_000);
+  assert.equal(visible.admissionToAnswerVisibleMs, 5_000);
+  assert.equal(visible.receiptToFinalMs, 7_400);
+
+  const silent = new TurnLatencyTracker(
+    { receivedAt: 8_000, admittedAt: 9_000, lane: 'cloudflare', executor: 'runner' },
+    { turnJobId: 'evt:T_LATENCY:1785509000.000300' },
+    time.now,
+    sink,
+  );
+  silent.markFinal('delivered');
+  silent.emit('returned');
+  const none = records.filter((record) => record.event === 'turn_latency').at(-1)!;
+  assert.equal('receiptToAnswerVisibleMs' in none, false, 'no acknowledged text, no time');
+});
+
 // Defects caught: a status or task card counted as answer text, a stream
 // start not counted, the shadow time taken from a retired release (whose
 // answer still waits for the terminal), an epoch timestamp logged as is, a

@@ -175,6 +175,12 @@ interface AgentViewPresentationOptions {
    */
   onAnswerTextStreamed?: () => void;
   /**
+   * Observability only: Slack acknowledged the terminal call that completes
+   * the reply's text: the stream start carrying it, the stop adding its rest,
+   * or the update that replaces it.
+   */
+  onAnswerVisible?: () => void;
+  /**
    * Observability only: Slack acknowledged native task card rows on this
    * run's stream before its terminal, as the card's stream start or as rows a
    * milestone appended to an open stream.
@@ -1279,6 +1285,7 @@ export class SlackAgentViewPresentation {
         });
         throw error;
       }
+      if (first) this.observeAnswerVisible();
       const messageTs = requireSlackTs(started.ts);
       presentation = await this.recordStreamStarted(
         presentation,
@@ -2202,6 +2209,7 @@ export class SlackAgentViewPresentation {
         ...(chunks.length > 0 ? { chunks } : {}),
         ...(blocks.length > 0 ? { blocks } : {}),
       });
+      this.observeAnswerVisible();
     } catch (error) {
       console.warn(
         `[chickpea] Slack Agent View stream finalization ${slackEffectOutcome(error)}: ` +
@@ -2325,6 +2333,7 @@ export class SlackAgentViewPresentation {
         if (rejectedContent) await this.replanFreshFinal(approved, format, tablePresentation);
         return freshFinalResult(await this.requirePresentation());
       }
+      this.observeAnswerVisible();
       presentation = await this.transition(presentation, {
         kind: 'mark_artifact_delivered', outcome: presentation.stream.presentationOutcome ?? 'terminal_only',
       });
@@ -2450,6 +2459,7 @@ export class SlackAgentViewPresentation {
         await this.transition(presentation, { kind: 'stream_message_lost', messageTs });
         return freshFinalResult(await this.requirePresentation());
       }
+      this.observeAnswerVisible();
     } catch (error) {
       await this.markUnknown(presentation, 'unknown_effect');
       await this.recordTerminalDeliveryReceipt('unknown');
@@ -2741,6 +2751,14 @@ export class SlackAgentViewPresentation {
       this.options.onAnswerTextStreamed?.();
     } catch {
       // Latency observation cannot affect text Slack already accepted.
+    }
+  }
+
+  private observeAnswerVisible(): void {
+    try {
+      this.options.onAnswerVisible?.();
+    } catch {
+      // Latency observation cannot affect a reply Slack already accepted.
     }
   }
 

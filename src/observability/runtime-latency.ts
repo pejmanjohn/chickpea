@@ -469,6 +469,7 @@ export class TurnLatencyTracker {
   private stateRpcs: StateRpcSummary | undefined;
   private firstWrite: { surface: TurnFirstWrite; at: number } | undefined;
   private answerText: { surface: TurnAnswerTextSurface; at: number } | undefined;
+  private answerVisibleAt: number | undefined;
   private final: { kind: 'delivered' | 'deferred'; at: number } | undefined;
   private folded = 0;
   private foldedInformed = 0;
@@ -521,6 +522,11 @@ export class TurnLatencyTracker {
   /** Slack acknowledged answer text on a stream; only the first is kept. */
   markStreamedAnswerText(): void {
     this.answerText ??= { surface: 'stream', at: this.now() };
+  }
+
+  /** Slack acknowledged the call that completes the final's text; only the first is kept. */
+  markAnswerVisible(): void {
+    this.answerVisibleAt ??= this.now();
   }
 
   /** Slack acknowledged native task card rows on the reply's stream before its terminal. */
@@ -626,6 +632,8 @@ export class TurnLatencyTracker {
       firstAnswerText: this.answerText?.surface ?? 'none',
       admissionToFirstAnswerTextMs: since(answerTextAt),
       receiptToFirstAnswerTextMs: sinceReceipt(answerTextAt),
+      admissionToAnswerVisibleMs: since(this.answerVisibleAt),
+      receiptToAnswerVisibleMs: sinceReceipt(this.answerVisibleAt),
       admissionToShadowAnswerTextMs: since(shadowAnswerTextAt),
       receiptToShadowAnswerTextMs: sinceReceipt(shadowAnswerTextAt),
       handoffMs: this.context.handoffMs,

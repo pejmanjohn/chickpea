@@ -109,19 +109,28 @@ function finalWireEntry(entries, final) {
     .find((entry) => entry.method === 'chat.stopStream' && String(entry.body.ts ?? '') === head.responseTs);
 }
 
+const isClassifier = (entry) => JSON.stringify(entry.body).includes(CLASSIFIER_PROMPT);
+
+/**
+ * `tail*`: from the model's last reply ending at the fake provider to Slack
+ * answering the reply's text (`Text`), its stream stop (`Final`), and the
+ * status clear's arrival (`Clear`).
+ */
 function wireMetrics(entries, finals, t0) {
   const since = (entry) => (entry ? entry.at - t0 : null);
   const slack = entries.filter((entry) => entry.kind === 'slack');
   const modelCalls = entries.filter((entry) => entry.kind === 'provider' && entry.method === 'chat/completions');
   const clefCalls = entries.filter((entry) => entry.kind === 'provider' && entry.method === 'ai/run');
   const finalEntry = finalWireEntry(entries, finals[0]);
+  const textEntry = finals[0] ? entries[finals[0].index] : undefined;
+  const modelEnd = modelCalls.filter((entry) => !isClassifier(entry)).at(-1)?.respondedAt;
+  const afterModel = (at) => (modelEnd === undefined || at === undefined ? null : at - modelEnd);
   const clear = finalEntry
     ? slack.filter((entry) => entry.at >= finalEntry.at && entry.method === 'assistant.threads.setStatus' &&
       String(entry.body.status ?? '') === '').at(-1)
     : undefined;
   const byMethod = {};
   for (const entry of slack) byMethod[entry.method] = (byMethod[entry.method] ?? 0) + 1;
-  const isClassifier = (entry) => JSON.stringify(entry.body).includes(CLASSIFIER_PROMPT);
   return {
     firstVisible: since(slack.find((entry) => VISIBLE_METHODS.has(entry.method))),
     firstVisibleMethod: slack.find((entry) => VISIBLE_METHODS.has(entry.method))?.method ?? null,
@@ -134,6 +143,9 @@ function wireMetrics(entries, finals, t0) {
     final: since(finalEntry),
     finalVia: finalEntry?.method ?? null,
     clear: since(clear),
+    tailText: afterModel(textEntry?.respondedAt),
+    tailFinal: afterModel(finalEntry?.respondedAt),
+    tailClear: afterModel(clear?.at),
     slackCalls: slack.length,
     byMethod,
     slackErrors: slack.filter((entry) => entry.ok === false).map((entry) => entry.method),
@@ -158,6 +170,7 @@ function turnLogMetrics(output, logStart) {
       admissionToStartMs: fields.admissionToStartMs,
       admissionToFirstWriteMs: fields.admissionToFirstWriteMs,
       admissionToFinalMs: fields.admissionToFinalMs,
+      admissionToAnswerVisibleMs: fields.admissionToAnswerVisibleMs,
       startToStageMs: fields.startToStageMs,
       agentStageMs: fields.agentStageMs,
       attemptMs: fields.attemptMs,
@@ -191,7 +204,7 @@ function summarize(samples) {
     const rpcDeltas = group.map((sample) => sample.stateRpc.maxIsolateCallsAfter - sample.stateRpc.maxIsolateCallsBefore);
     summary[name] = {
       turns: group.length,
-      ...Object.fromEntries(['final', 'firstVisible', 'firstClef', 'firstModel', 'firstText', 'ack', 'clear']
+      ...Object.fromEntries([...SUMMARY_METRICS]
         .map((metric) => [metric, stats(group.map((sample) => sample[metric]))])),
       slackCallsMedian: stats(group.map((sample) => sample.slackCalls)).median,
       topMethods: Object.entries(methods).sort((a, b) => b[1] - a[1]).slice(0, 8)
@@ -206,12 +219,16 @@ function summarize(samples) {
   return summary;
 }
 
+const SUMMARY_METRICS = [
+  'final', 'firstVisible', 'firstClef', 'firstModel', 'firstText', 'ack', 'clear', 'tailText', 'tailFinal', 'tailClear',
+];
+
 const cell = (value, width = 6) => String(value ?? '-').padStart(width);
 
 function printTable(samples) {
   const columns = [
     ['case', 8], ['turn', 6], ['ack', 6], ['visible', 8], ['clef', 6], ['model', 6], ['text', 6], ['final', 6],
-    ['clear', 6], ['slack', 6], ['models', 7], ['clefs', 6], ['rpc~', 6], ['finals', 7], ['err', 4], ['tl.start', 9],
+    ['clear', 6], ['t.text', 7], ['t.final', 8], ['t.clear', 8], ['slack', 6], ['models', 7], ['clefs', 6], ['rpc~', 6], ['finals', 7], ['err', 4], ['tl.start', 9],
     ['tl.first', 9], ['tl.final', 9],
   ];
   console.log(columns.map(([name, width]) => cell(name, width)).join(' '));
@@ -220,7 +237,7 @@ function printTable(samples) {
     const row = [
       sample.case, sample.reply === null ? `${sample.turn}` : `${sample.turn}.${sample.reply}`, sample.ack,
       sample.firstVisible, sample.firstClef, sample.firstModel, sample.firstText, sample.final, sample.clear,
-      sample.slackCalls, sample.modelCalls, sample.clefCalls,
+      sample.tailText, sample.tailFinal, sample.tailClear, sample.slackCalls, sample.modelCalls, sample.clefCalls,
       sample.stateRpc.maxIsolateCallsAfter - sample.stateRpc.maxIsolateCallsBefore,
       sample.finalsCount, sample.errors.length, latency?.admissionToStartMs, latency?.admissionToFirstWriteMs,
       latency?.admissionToFinalMs,
@@ -231,8 +248,8 @@ function printTable(samples) {
 
 function printSummary(summary) {
   for (const [name, group] of Object.entries(summary)) {
-    console.log(`\n${name} (${group.turns} turns), ms from the signed POST: median [min..max]`);
-    for (const metric of ['final', 'firstVisible', 'firstClef', 'firstModel', 'firstText', 'ack', 'clear']) {
+    console.log(`\n${name} (${group.turns} turns), ms from the signed POST (tail*: from the model's reply end): median [min..max]`);
+    for (const metric of SUMMARY_METRICS) {
       const { median, min, max, n } = group[metric];
       console.log(`  ${metric.padEnd(13)} ${cell(median)} [${min ?? '-'}..${max ?? '-'}] n=${n}`);
     }
