@@ -21,11 +21,11 @@ import {
 } from '../sandbox/artifact-tool.ts';
 import type { ActivityKind } from '../activity/semantic.ts';
 import { redactCredentialLikeContent } from '../security/content-validation.ts';
-import {
+import type {
+  BrowserApprovalOptions,
   BrowserFormSteps,
   createBrowserApprovalSteps,
   formStepFor,
-  type BrowserApprovalOptions,
 } from './approval.ts';
 import {
   BrowserLoginBinder,
@@ -392,7 +392,6 @@ export function createBrowserTools(options: BrowserToolsOptions) {
   };
 
   const logins = new BrowserLoginBinder(session, options.logins, sleep, () => now().getTime(), options.noLoginsMessage);
-  const formSteps = new BrowserFormSteps();
 
   /** A page read spends one redaction budget; past it, the whole read is withheld as an error. */
   const readPage = async (pageInfo?: PageInfo) => {
@@ -408,20 +407,40 @@ export function createBrowserTools(options: BrowserToolsOptions) {
     };
   };
 
-  const { askApproval, runApproved } = createBrowserApprovalSteps({
-    session,
-    logins,
-    approvals: options.approvals,
-    formSteps,
-    readPage,
-    stageArtifact: options.stageArtifact,
-    redact,
-    errorMessage: (error) => browserErrorMessage(error, redact),
-    now,
-    navigationTimeoutMs: NAVIGATION_TIMEOUT_MS,
-    sleep,
-    log: options.log,
-  });
+  /**
+   * The form steps a held step replays, and the held-step half of browser_act.
+   * They load with the first browser_open or browser_act, which keeps them out
+   * of the Worker's startup graph. Concurrent first calls share one instance.
+   */
+  let approvalSteps: (ReturnType<typeof createBrowserApprovalSteps> & {
+    formSteps: BrowserFormSteps;
+    formStepFor: typeof formStepFor;
+  }) | undefined;
+  const approval = async () => {
+    if (approvalSteps) return approvalSteps;
+    const loaded = await import('./approval.ts');
+    if (approvalSteps) return approvalSteps;
+    const formSteps = new loaded.BrowserFormSteps();
+    approvalSteps = {
+      formSteps,
+      formStepFor: loaded.formStepFor,
+      ...loaded.createBrowserApprovalSteps({
+        session,
+        logins,
+        approvals: options.approvals,
+        formSteps,
+        readPage,
+        stageArtifact: options.stageArtifact,
+        redact,
+        errorMessage: (error) => browserErrorMessage(error, redact),
+        now,
+        navigationTimeoutMs: NAVIGATION_TIMEOUT_MS,
+        sleep,
+        log: options.log,
+      }),
+    };
+    return approvalSteps;
+  };
 
   const open = defineTool({
     name: 'browser_open',
@@ -435,7 +454,7 @@ export function createBrowserTools(options: BrowserToolsOptions) {
         const binding = login ? await logins.bindingFor(login, logins.liveReader()) : undefined;
         const { page } = await session.ensureFor(binding);
         const info = await page.navigate(target.url, { timeoutMs: NAVIGATION_TIMEOUT_MS });
-        formSteps.reset(info.url);
+        (await approval()).formSteps.reset(info.url);
         return {
           output: {
             ...(target.searched ? { searched: true } : {}),
@@ -468,6 +487,7 @@ export function createBrowserTools(options: BrowserToolsOptions) {
     input: ACT_INPUT,
     async run({ data }) {
       try {
+        const { askApproval, runApproved, formSteps, formStepFor } = await approval();
         if (data.approvedActionId) return await runApproved(data.approvedActionId);
         if (data.mayChangeData) {
           if (session.policy.readOnly) {
