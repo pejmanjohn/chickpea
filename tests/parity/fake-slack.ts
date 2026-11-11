@@ -46,6 +46,7 @@ export interface WireEntry {
   ok?: boolean;
   responseTs?: string;
   at: number;
+  /** When the HTTP listener answered a Slack call, or finished a delayed provider reply. */
   respondedAt?: number;
 }
 
@@ -1392,7 +1393,8 @@ export class FakeSlackBackend {
     if (this.providerMode !== 'ok' || this.providerDelayMs <= 0) return false;
     const body = decodeWireBody(bodyString);
 
-    this.wireLog.push({ kind: 'provider', method: 'chat/completions', url, body, at: arrivedAt });
+    const entry: WireEntry = { kind: 'provider', method: 'chat/completions', url, body, at: arrivedAt };
+    this.wireLog.push(entry);
     res.writeHead(200, {
       'content-type': 'text/event-stream',
       'cache-control': 'no-cache',
@@ -1411,6 +1413,7 @@ export class FakeSlackBackend {
       if (res.writableEnded) return;
       res.write(content);
       res.end();
+      entry.respondedAt = Date.now();
     }, this.heldDelayMs(classifierReply !== null));
     return true;
   }
