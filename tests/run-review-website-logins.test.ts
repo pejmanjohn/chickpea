@@ -259,6 +259,37 @@ test('a username leaves a JSON unicode escape or an HTML entity of any of its ma
   assert.equal(record.steps[0]?.kind === 'tool' && record.steps[0].output, '{"body":"[credential redacted]"}');
 });
 
+test('a username leaves the JSON escapes of a character past U+FFFF, one per half, in either case, mixed with the character as written or escaped again', () => {
+  // U+10400 folds to U+10428, so each half of its pair alone folds to neither.
+  const name = `${String.fromCodePoint(0x10400)}synthetic`;
+  const [high, low] = [name.charCodeAt(0), name.charCodeAt(1)];
+  const small = String.fromCodePoint(0x10428);
+  const escape = (unit: number, backslashes = 1) => `${'\\'.repeat(backslashes)}u${unit.toString(16).padStart(4, '0')}`;
+  const everyUnit = Array.from({ length: name.length }, (_, index) => escape(name.charCodeAt(index)).toUpperCase().replace('\\U', '\\u')).join('');
+  const forms = [
+    `${escape(high)}${escape(low)}synthetic`,
+    `${escape(high)}${String.fromCharCode(low)}synthetic`,
+    `${String.fromCharCode(high)}${escape(low)}synthetic`,
+    `${escape(high, 2)}${escape(low, 2)}synthetic`,
+    everyUnit,
+    `${escape(small.charCodeAt(0))}${escape(small.charCodeAt(1))}SYNTHETIC`,
+  ];
+  assert.ok(forms.every((form) => !form.includes(name)) && JSON.parse(`"${forms[0]}"`) === name && everyUnit.includes('\\uD801'),
+    'the test text holds the escapes, and JSON reads the first as the username');
+  assert.equal(JSON.parse(`"${forms[5]}"`), name.toLowerCase().replace('synthetic', 'SYNTHETIC'), 'and the last as its other case');
+  // A lone half is a character of its own: it stays, and the username beside it still goes.
+  const lone = `${escape(high)}x ${escape(high)}${forms[0]}`;
+  const record = copy({
+    context: [{ author: 'U012ABCDEF3', role: 'human', text: `Signed in as ${forms[0]} today`, files: [] }],
+    steps: [{ kind: 'tool', name: 'read_page', input: '{}', output: `{"user":"${forms[3]}","next":"x"}` }],
+    answer: `${forms.join(' or ')}; ${lone}.`,
+  }, { hosts: [], usernames: [name] });
+  assert.deepEqual(kept(record, ['synthetic']), []);
+  assert.equal(record.context[0]?.text, 'Signed in as [credential redacted] today');
+  assert.equal(record.steps[0]?.kind === 'tool' && record.steps[0].output, '{"user":"[credential redacted]","next":"x"}');
+  assert.equal(record.answer, `${forms.map(() => '[credential redacted]').join(' or ')}; ${escape(high)}x ${escape(high)}[credential redacted].`);
+});
+
 test('a username percent-encoded in every character, or in mixed forms, leaves the copy and the text around it stays as written', () => {
   const percent = (text: string) => [...new TextEncoder().encode(text)].map((byte) => `%${byte.toString(16).padStart(2, '0')}`).join('');
   const accented = 'josé.synthetic@example.com';

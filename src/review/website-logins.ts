@@ -318,7 +318,8 @@ function searchView(written: string, decode = true): SearchView {
   const view = new ViewWriter(length);
   for (let index = 0; index < length;) {
     const code = text.charCodeAt(index);
-    if (decode && code === BACKSLASH) {
+    const escapeEnd = decode ? unicodeEscapeEnd(text, index) : -1;
+    if (decode && code === BACKSLASH && escapeEnd < 0) {
       // A serializer that escapes a field again doubles its backslashes, so a run of them reads as one.
       let next = index + 1;
       while (text.charCodeAt(next) === BACKSLASH) next += 1;
@@ -329,9 +330,6 @@ function searchView(written: string, decode = true): SearchView {
       } else if (ESCAPED_SPACES.has(escaped)) {
         view.space(startOf(index), endOf(next));
         index = next + 1;
-      } else if (escaped === LETTER_U && /^[0-9A-Fa-f]{4}$/.test(text.slice(next + 1, next + 5))) {
-        view.point(parseInt(text.slice(next + 1, next + 5), 16), startOf(index), endOf(next + 4));
-        index = next + 5;
       } else {
         view.point(BACKSLASH, startOf(index), endOf(next - 1));
         index = next;
@@ -346,12 +344,39 @@ function searchView(written: string, decode = true): SearchView {
         continue;
       }
     }
-    const point = text.codePointAt(index)!;
-    const width = point > 0xffff ? 2 : 1;
-    view.point(point, startOf(index), endOf(index + width - 1));
-    index += width;
+    // A code unit as written or JSON-escaped. JSON writes a character past U+FFFF as an escape of each half of
+    // its pair, so a high half then a low one, either written either way, read as that one character.
+    let unit = escapeEnd < 0 ? code : escapedUnit(text, escapeEnd);
+    let end = escapeEnd < 0 ? index + 1 : escapeEnd;
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const lowEnd = decode ? unicodeEscapeEnd(text, end) : -1;
+      const low = lowEnd < 0 ? text.charCodeAt(end) : escapedUnit(text, lowEnd);
+      if (low >= 0xdc00 && low <= 0xdfff) {
+        unit = 0x10000 + ((unit - 0xd800) << 10) + (low - 0xdc00);
+        end = lowEnd < 0 ? end + 1 : lowEnd;
+      }
+    }
+    view.point(unit, startOf(index), endOf(end - 1));
+    index = end;
   }
   return view.done();
+}
+
+/** Where a JSON `\uXXXX` escape that starts at `index`, after any run of backslashes, ends; -1 for none. */
+function unicodeEscapeEnd(text: string, index: number): number {
+  if (text.charCodeAt(index) !== BACKSLASH) return -1;
+  let next = index + 1;
+  while (text.charCodeAt(next) === BACKSLASH) next += 1;
+  if (text.charCodeAt(next) !== LETTER_U) return -1;
+  for (let digit = next + 1; digit <= next + 4; digit += 1) {
+    if (hexValue(text.charCodeAt(digit)) < 0) return -1;
+  }
+  return next + 5;
+}
+
+/** The code unit a `\uXXXX` escape that ends at `end` writes. */
+function escapedUnit(text: string, end: number): number {
+  return parseInt(text.slice(end - 4, end), 16);
 }
 
 /** Builds a SearchView one code point at a time. */
