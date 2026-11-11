@@ -137,7 +137,7 @@ export function emitMcpConnectionUnavailable(
       connectionId: /^[A-Za-z0-9_.:-]{1,128}$/.test(server) ? server : '(other)',
       reason: cause.reason,
       ...(cause.status === undefined ? {} : { status: cause.status }),
-      ...(instanceId ? { flueInstanceRef: opaqueId('flueinstance', instanceId) } : {}),
+      ...(observation.instanceId ? { flueInstanceRef: opaqueId('flueinstance', observation.instanceId) } : {}),
       ...(submissionId ? { flueSubmissionRef: opaqueId('fluesubmission', submissionId) } : {}),
     });
   } catch {
