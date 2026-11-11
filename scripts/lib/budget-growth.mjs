@@ -1,7 +1,9 @@
 /**
  * Growth budgets for Worker startup: a change may add at most
- * GROWTH_ALLOWANCE_BYTES over its merge base, beside a fixed ceiling that
- * backstops the total. Two PRs that each fit a ceiling set just above
+ * GROWTH_ALLOWANCE_BYTES over its merge base. The startup-source check
+ * (tests/worker-startup-imports.test.ts) also keeps a fixed ceiling that
+ * backstops its total; the built closure (scripts/worker-closure.mjs) has
+ * only the growth rule. Two PRs that each fit a ceiling set just above
  * today's size fail together once both merge; measured against their own
  * merge bases, each passes alone.
  *
@@ -9,22 +11,21 @@
  * so Git supplies it: `git merge-base HEAD origin/main`, using origin/main
  * as of the last `git fetch`. CHICKPEA_BUDGET_BASE names another ref, such
  * as the branch a stacked PR is based on; one with no merge base fails. A
- * checkout with no Git history (a source export), or no origin/main, checks
- * the ceiling alone and says why.
+ * checkout with no Git history (a source export), or no origin/main, skips
+ * the growth rule and says why.
  *
  * The unit. A branch is one change, measured from the base to the working
  * tree, including a branch that merged main in. A train is HEAD's
  * first-parent history when it starts on the base and holds a merge, as when
  * PRs are merged onto origin/main with --no-ff. Each merge in it is one
  * change, measured from its first parent, and so is each run of plain
- * commits between merges, such as the train's ceiling re-set. So a train of
- * PRs that each fit still passes. A branch shaped like a train is measured
- * like one; the ceiling bounds it. The last change is measured to the
- * working tree.
+ * commits between merges, such as the train's startup-source ceiling re-set.
+ * So a train of PRs that each fit still passes. A branch shaped like a train
+ * is measured like one. The last change is measured to the working tree.
  *
  * A note. A commit trailer `Worker-Startup-Growth: 40 KiB, <why>` raises the
  * allowance of the change that holds it to the size it names, at most
- * NOTE_LIMIT_BYTES. It never lifts the ceiling. Each check prints the notes
+ * NOTE_LIMIT_BYTES. It never lifts a ceiling. Each check prints the notes
  * it counts, and a PR that carries one lists it in its description.
  */
 import { execFileSync } from 'node:child_process';
@@ -76,7 +77,7 @@ export function growthPlan(root, env = process.env) {
   try {
     if (realpathSync(git('rev-parse', '--show-toplevel')) !== realpathSync(root)) throw new Error('not this checkout');
   } catch {
-    return { skip: 'This checkout has no Git history, so growth over a merge base is not checked; the ceiling still is.' };
+    return { skip: 'This checkout has no Git history, so growth over a merge base is not checked.' };
   }
   let base;
   try {
@@ -84,7 +85,7 @@ export function growthPlan(root, env = process.env) {
   } catch {
     if (named) return { error: `${BUDGET_BASE_ENV}=${named} has no merge base with HEAD. Set it to the branch this one is based on.` };
     return {
-      skip: `No merge base with ${ref}, so growth is not checked; the ceiling still is. ` +
+      skip: `No merge base with ${ref}, so growth is not checked. ` +
         `Run git fetch origin main, or set ${BUDGET_BASE_ENV} to the branch this one is based on.`,
     };
   }

@@ -56,11 +56,10 @@ const plan = {
     { from: MERGE, to: undefined, label: 'merge ccccccccc (Merge pull request #2)', notes: ['40 KiB, the connect route'], allowance: 40 * KIB },
   ],
 };
-function check(options: { at?: (commit?: string) => Closure; ceiling?: number; unbuildableBaseAllowed?: boolean; plan?: object } = {}) {
+function check(options: { at?: (commit?: string) => Closure; unbuildableBaseAllowed?: boolean; plan?: object } = {}) {
   const logged: string[] = [];
   const failures: string[] = closureFailures({
-    head: measured.get(undefined), plan, at: (commit?: string) => measured.get(commit), ceiling: 1024 * KIB,
-    ...options, log: (line: string) => logged.push(line),
+    plan, at: (commit?: string) => measured.get(commit), ...options, log: (line: string) => logged.push(line),
   });
   return { failures, logged };
 }
@@ -79,32 +78,26 @@ test('the closure fails a change over its allowance, names its modules, and pass
   ]);
 });
 
-test('the closure fails over its ceiling whatever each change added', () => {
-  const within = { ...plan, changes: plan.changes.map((change) => ({ ...change, allowance: 64 * KIB })) };
-  assert.deepEqual(check({ plan: within }).failures, []);
-  const { failures } = check({ plan: within, ceiling: 140 * KIB });
-  assert.equal(failures.length, 1);
-  assert.match(failures.join('\n'), /^The static closure is 0\.01 MiB over its ceiling\.\nModules that grew since the merge base:\n {4}\+30\.0 KiB {2}src\/second\.ts \(new\)\n {4}\+20\.0 KiB {2}src\/first\.ts \(new\)\n/);
-  // With no merge base, the ceiling still applies.
-  assert.match(check({ plan: { skip: 'No merge base.' }, ceiling: 140 * KIB }).failures.join('\n'), /over its ceiling\.\nLoad the new code/);
-});
-
-test('a base that cannot be measured fails unless CHICKPEA_BUDGET_UNBUILDABLE_BASE is set, and the ceiling still applies', () => {
+test('a base that cannot be measured fails unless CHICKPEA_BUDGET_UNBUILDABLE_BASE is set', () => {
   const at = (commit?: string) => {
     if (commit === BASE) throw new Error('Building aaaaaaaaa to measure its closure failed. Its package-lock.json is not this checkout\'s.');
     return measured.get(commit)!;
   };
   const failed = check({ at });
   assert.equal(failed.failures.length, 1);
-  assert.match(failed.failures.join('\n'), /^Growth in merge bbbbbbbbb \(Merge pull request #1\) could not be measured\. Building aaaaaaaaa to measure its closure failed\. Its package-lock\.json is not this checkout's\.\nWhen that commit cannot build with this checkout's dependencies, as after a dependency upgrade, set CHICKPEA_BUDGET_UNBUILDABLE_BASE=1 to check the ceiling alone\.$/);
+  assert.match(failed.failures.join('\n'), /^Growth in merge bbbbbbbbb \(Merge pull request #1\) could not be measured\. Building aaaaaaaaa to measure its closure failed\. Its package-lock\.json is not this checkout's\.\nWhen that commit cannot build with this checkout's dependencies, as after a dependency upgrade, set CHICKPEA_BUDGET_UNBUILDABLE_BASE=1 to check only the changes that can be measured\.$/);
 
   const allowed = check({ at, unbuildableBaseAllowed: true });
   assert.deepEqual(allowed.failures, []);
   const [, unmeasured = '', measuredMerge = ''] = allowed.logged;
-  assert.match(unmeasured, /^Growth in merge bbbbbbbbb .* is not checked, as CHICKPEA_BUDGET_UNBUILDABLE_BASE is set; the ceiling still is\. Building aaaaaaaaa/);
-  // The merge it could measure is still checked, and so is the ceiling.
+  assert.match(unmeasured, /^Growth in merge bbbbbbbbb .* is not checked, as CHICKPEA_BUDGET_UNBUILDABLE_BASE is set\. Building aaaaaaaaa/);
+  // The merge it could measure is still checked.
   assert.match(measuredMerge, /^Growth in merge ccccccccc .*: 30\.0 KiB, allowed 40\.0 KiB/);
-  assert.match(check({ at, unbuildableBaseAllowed: true, ceiling: 140 * KIB }).failures.join('\n'), /^The static closure is 0\.01 MiB over its ceiling\.\nLoad/);
+  // And it fails when it is over its allowance: the variable skips only what cannot be measured.
+  const [first, second] = plan.changes;
+  const over = check({ at, unbuildableBaseAllowed: true, plan: { ...plan, changes: [first, { ...second, allowance: 16 * KIB }] } });
+  assert.equal(over.failures.length, 1);
+  assert.match(over.failures.join('\n'), /^The Worker static closure grew 30\.0 KiB in merge ccccccccc \(Merge pull request #2\) \(bbbbbbbbb\.\.the working tree\), over the 16\.0 KiB/);
 });
 
 test('a skipped plan is printed and a failed one fails', () => {

@@ -161,14 +161,14 @@ test('CHICKPEA_BUDGET_BASE names the base branch of a stacked change', (t) => {
   });
 });
 
-test('with no Git history or no base ref, growth is skipped with the reason and the ceiling still applies', (t) => {
+test('with no Git history or no base ref, growth is skipped with the reason', (t) => {
   const { root, git, commit } = repository(t);
   commit('base');
   assert.match(growthPlan(root, {}).skip, /No merge base with origin\/main.*git fetch origin main.*CHICKPEA_BUDGET_BASE/);
   const exported = exportCommit(root, git('rev-parse', 'HEAD'));
   t.after(() => rmSync(exported, { recursive: true, force: true }));
   assert.equal(readFileSync(join(exported, 'file.txt'), 'utf8'), 'base\n');
-  assert.match(growthPlan(exported, {}).skip, /no Git history.*the ceiling still is/);
+  assert.match(growthPlan(exported, {}).skip, /no Git history, so growth over a merge base is not checked\.$/);
 });
 
 test('growth lists the modules that grew, largest first, and marks new ones', () => {
