@@ -146,8 +146,9 @@ test('a store on older code rejects the call; each delivery is admitted by the W
   }, { env: STORE_PATH, admission });
 });
 
-// Defect caught: a store's answer, even a failure, followed by the Worker's
-// own admission (a second run nobody needed).
+// Defects caught: a store's answer, even a failure, followed by the Worker's
+// own admission (a second run nobody needed); the lost delivery logged as
+// the store's admission.
 test("a store that answers with a failure is not second-guessed by the Worker's chain", async (t) => {
   const records = logged(t);
   await withDirectWorker(t, async (worker) => {
@@ -157,7 +158,8 @@ test("a store that answers with a failure is not second-guessed by the Worker's 
     assert.deepEqual(turns(worker), []);
     assert.equal(worker.failures.length, 1, 'the failure is logged');
     assert.deepEqual(records.fallbacks, []);
-    assert.deepEqual(records.summaries.map(({ path }) => path), ['store']);
+    assert.deepEqual(records.summaries.map(({ path, reason }) => ({ path, reason })),
+      [{ path: 'fallback', reason: 'store_failed' }]);
   }, {
     env: STORE_PATH,
     admission: async () => ({ ok: false, error: { code: 'internal', message: 'a dependency failed' } }),

@@ -384,7 +384,9 @@ Before you turn it on, know these four points:
 
 To check it, read the `state_rpc_summary` records of scope `slack_delivery`:
 `path` says who admitted each delivery (`store`, `worker`, `fallback`), and
-`calls` is 1 on the store's path. The store logs `slack_store_admission` for
+`calls` is 1 on the store's path. A `fallback` with `reason: store_failed`
+was admitted by nobody: the store's admission failed, and the Worker does not
+admit it again. The store logs `slack_store_admission` for
 each delivery it admits, with `rpcCalls` 0. See
 [runtime observability](runtime-observability.md).
 
