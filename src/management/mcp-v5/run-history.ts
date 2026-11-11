@@ -229,7 +229,8 @@ export async function listAgentRuns(deps: FiveZeroDeps, input: ListInput): Promi
   const agent = found.agents.get(input.agentId);
   if (!agent) agentNotFound();
   const cursor = input.cursor === undefined ? undefined : await openCursor(found.sealer, input.cursor, input.agentId);
-  const since = cursor?.since ?? (input.since === undefined ? now - RUN_HISTORY_DEFAULT_DAYS * DAY_MS : Date.parse(input.since));
+  // A since still to come is an empty window, never a read that ends before it starts.
+  const since = cursor?.since ?? (input.since === undefined ? now - RUN_HISTORY_DEFAULT_DAYS * DAY_MS : Math.min(now, Date.parse(input.since)));
   if (since < now - RUN_HISTORY_DAYS * DAY_MS) {
     fail('invalid_input', 'Run history goes back 90 days.', {
       nextStep: 'Send a since within the last 90 days, or leave it out for the last 7.',
@@ -252,7 +253,9 @@ export async function listAgentRuns(deps: FiveZeroDeps, input: ListInput): Promi
   let partial = false;
   scan: while (true) {
     const { items, nextCursor } = await found.history.sources.usage.listOperations({
-      from: counting ? countFrom : since,
+      // From the whole UTC day for every caller: the read limit counts hidden runs too, so a read
+      // from the exact since would let anyone find where the limit fell, to the millisecond.
+      from: countFrom,
       to: now + 1,
       filters: { agent: [input.agentId], workKind: kindsFor(place) },
       limit: USAGE_PAGE,
@@ -398,7 +401,8 @@ function summaryOf(shown: readonly UsageOperation[], window: {
     ...(window.hidden ? {
       notShown: {
         runs: window.hidden,
-        why: `${window.hidden} more ${window.hidden === 1 ? 'run was' : 'runs were'} in other people's direct messages, group DMs or private Channels, so ${window.hidden === 1 ? 'it isn\'t' : 'they aren\'t'} shown. Counted in whole days (UTC), up to the start of today.`,
+        // Also the runs of a Channel that is shared, that the Agent's app left, or that Slack would not describe.
+        why: `${window.hidden} more ${window.hidden === 1 ? 'run isn\'t' : 'runs aren\'t'} shown: ${window.hidden === 1 ? 'it was' : 'they were'} in other people's direct messages, group DMs or private Channels, or in a Channel Chickpea can't confirm is public right now. Counted in whole days (UTC), up to the start of today.`,
       },
     } : {}),
     ...(window.partial ? { partial: true as const } : {}),

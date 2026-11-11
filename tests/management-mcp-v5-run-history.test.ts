@@ -605,6 +605,84 @@ test('the worst cases stay inside the byte bound, in Japanese, emoji and escaped
   assert.ok(page.runs.every(({ ask }) => ask === undefined || Array.from(ask).length <= 201));
 });
 
+test('the reply is this Agent\'s rows up to the next person\'s message: never another Agent\'s, an app\'s or a later exchange\'s', async (t) => {
+  const w = await world(t, 'reply-rows');
+  await createFixtureAgent(w.f, AGENT);
+  await createFixtureAgent(w.f, 'agent_other');
+  const asked = await w.run({ conversation: 'named_channel', channelId: 'C_PUBLIC', requester: 'owner', recordedPublic: true, ask: 'first ask' });
+  const second = asked.messageTs.split('.')[0];
+  const put = (fraction: string, row: { role: 'human' | 'agent' | 'app'; text: string; agentId?: string; authorId?: string }) =>
+    w.f.config.putSlackPublicContext({ workspaceId: w.workspaceId, channelId: 'C_PUBLIC', rootTs: asked.messageTs, messageTs: `${second}.${fraction}`, ...row });
+  await put('900001', { role: 'agent', agentId: 'agent_other', text: 'another Agent answers' });
+  await put('900002', { role: 'app', authorId: 'B_ALERTS', text: 'an alert bot posts' });
+  await put('900003', { role: 'agent', agentId: AGENT, text: 'the real reply' });
+  await put('900004', { role: 'human', authorId: 'U_SOMEONE', text: 'someone follows up' });
+  await put('900005', { role: 'agent', agentId: AGENT, text: 'the reply to the follow-up' });
+  const [row] = (await list(w)).runs;
+  const detail = structured(await w.call('get_agent_run', { runId: row!.runId }));
+  assert.deepEqual(detail.ask, { label: LABEL, text: 'first ask' });
+  assert.deepEqual(detail.reply, { label: LABEL, text: 'the real reply' });
+});
+
+test('the one-call read limit moves by whole UTC days, so since cannot find where a hidden run fell', async (t) => {
+  const w = await world(t, 'read-limit');
+  await sharedAgent(w);
+  const day = 24 * 60 * MINUTE;
+  const noonYesterday = Math.floor(Date.now() / day) * day - day / 2;
+  const at = (index: number) => noonYesterday - index * 1_000;
+  // Another person's DMs with the Agent: 1,005 runs the member never sees, all in one UTC day.
+  for (let index = 0; index < 1_005; index += 1) {
+    await w.run({ conversation: 'direct_message', channelId: 'D_OWNER', requester: 'owner', startedAt: at(index) });
+  }
+  const read = async (since: number) => {
+    const page = await list(w, { since: new Date(since).toISOString() }, 'member');
+    assert.deepEqual(page.runs, []);
+    assert.equal(page.summary?.notShown, undefined);
+    return { partial: page.summary?.partial, more: page.nextCursor !== undefined };
+  };
+  assert.deepEqual(await read(at(998)), await read(at(1_001)), 'a since on either side of the 1,000th hidden run reads the same');
+});
+
+test('a since still to come lists nothing; a run before since is not listed, though hidden runs are counted by the day', async (t) => {
+  const w = await world(t, 'since-edges');
+  await sharedAgent(w);
+  const day = 24 * 60 * MINUTE;
+  const noonYesterday = Math.floor(Date.now() / day) * day - day / 2;
+  await w.run({ conversation: 'direct_message', channelId: 'D_OWNER', requester: 'owner', ask: 'before since', startedAt: noonYesterday - 60 * MINUTE });
+  await w.run({ conversation: 'direct_message', channelId: 'D_OWNER', requester: 'owner', ask: 'after since', startedAt: noonYesterday + 60 * MINUTE });
+  assert.deepEqual((await list(w, { since: new Date(noonYesterday).toISOString() })).runs.map(({ ask }) => ask), ['after since']);
+  for (const who of ['owner', 'member'] as const) {
+    for (const ahead of [60 * MINUTE, 3 * day]) {
+      const page = await list(w, { since: new Date(Date.now() + ahead).toISOString() }, who);
+      assert.deepEqual(page.runs, [], `${who}, ${ahead} ms ahead`);
+      assert.equal(page.summary?.runs, 0);
+    }
+  }
+});
+
+test('a Channel Slack calls a group DM is hidden; a schedule\'s post in another Channel gets no link', async (t) => {
+  const w = await world(t, 'mpim-and-post');
+  await createFixtureAgent(w.f, AGENT);
+  const scheduled = await w.run({ kind: 'routine_run', conversation: 'named_channel', channelId: 'C_PUBLIC', requester: 'owner', recordedPublic: true });
+  w.share.posts.set(scheduled.routineRunId, { channelId: 'G_PRIVATE', messageTs: '1800000000.000100' });
+  const [row] = (await list(w)).runs;
+  assert.equal(structured(await w.call('get_agent_run', { runId: row!.runId })).slackUrl, undefined);
+  w.share.channels.C_PUBLIC = { ...w.share.channels.C_PUBLIC!, mpim: true };
+  assert.deepEqual((await list(w)).runs, []);
+});
+
+test('the list shows no start of another person\'s ask, even from a row that names no author', async (t) => {
+  const w = await world(t, 'unauthored');
+  await createFixtureAgent(w.f, AGENT);
+  const asked = await w.run({ conversation: 'named_channel', channelId: 'C_PUBLIC', requester: 'member', recordedPublic: true });
+  await w.f.config.putSlackPublicContext({
+    workspaceId: w.workspaceId, channelId: 'C_PUBLIC', rootTs: asked.messageTs, messageTs: asked.messageTs, role: 'human', text: 'a teammate asked this',
+  });
+  const [row] = (await list(w)).runs;
+  assert.equal(row!.ask, undefined);
+  assert.deepEqual(structured(await w.call('get_agent_run', { runId: row!.runId })).ask, { label: LABEL, text: 'a teammate asked this' });
+});
+
 test('the output schemas name no internal ID or revision, and results carry no bare Slack timestamp', async (t) => {
   const forbidden = /^(operationId|workId|bindingId|revision|messageTs|threadTs|ts)$/;
   const keys = (schema: unknown): string[] => {
