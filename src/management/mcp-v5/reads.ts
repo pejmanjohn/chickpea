@@ -1,9 +1,11 @@
 import type { z } from 'zod';
 
 import { CHICKPEA_AGENT_ID } from '../../config/agent-id.ts';
+import { isMcpToolReviewRequired } from '../../config/mcp-access.ts';
+import { mcpToolDeclaredRead } from '../../config/mcp-tool-policy.ts';
 import { resolveConnectorCatalogPreset } from '../../config/presets.ts';
 import type { PlatformEnv } from '../../config/state-backend.ts';
-import type { CustomAgentConfig } from '../../config/types.ts';
+import type { CustomAgentConfig, McpConnectionConfig } from '../../config/types.ts';
 import { agentAvatarInstallation, sameOriginAgentAvatarUrl } from '../../slack/agent-presence/avatar-assets.ts';
 import {
   ADMIN_PATH,
@@ -196,6 +198,7 @@ type ConnectionRow = Out<typeof schemas.getAgentOutput>['connections'][number];
  */
 export function connectionRows(agent: AgentConnectionView): ConnectionRow[] {
   const status = new Map(agent.connectionStatus.map((entry) => [`${entry.kind}:${entry.id}`, entry.lifecycleStatus]));
+  const discovered = (id: string) => agent.connectionStatus.find((entry) => entry.kind === 'mcp' && entry.id === id)?.discoveredTools ?? [];
   const laneStatus = (kind: 'mcp' | 'api', id: string, enabled: boolean): ConnectionRow['status'] => {
     if (!enabled) return 'off';
     const lifecycle = status.get(`${kind}:${id}`);
@@ -234,10 +237,14 @@ export function connectionRows(agent: AgentConnectionView): ConnectionRow[] {
         custom: {
           url: mcp.url,
           allowedTools: [...mcp.allowedTools],
-          ...toolMarks(mcp),
+          ...toolMarks(mcp, discovered(mcp.id)),
           ...(mcp.guide ? { guide: mcp.guide } : {}),
         },
       }),
+      // A reviewed connector's tools are chosen in Admin, and update_connection marks none of them.
+      ...(mcp.presetId && !isMcpToolReviewRequired(mcp)
+        ? { tools: { allowedTools: [...mcp.allowedTools], ...toolMarks(mcp, discovered(mcp.id)) } }
+        : {}),
     })),
   ];
   const shown = new Set(lanes.map(({ connectionId }) => connectionId));
@@ -255,10 +262,18 @@ export function connectionRows(agent: AgentConnectionView): ConnectionRow[] {
   return [...lanes, ...signIns];
 }
 
-/** The allowed tools an Admin marked as reads or writes; a tool with no mark is in neither. */
-function toolMarks(mcp: AgentConnectionView['mcpServers'][number]): { readTools?: string[]; writeTools?: string[] } {
-  const marked = (effect: 'read' | 'write') => mcp.allowedTools.filter((tool) => mcp.toolPolicies?.[tool]?.effect === effect);
-  const [readTools, writeTools] = [marked('read'), marked('write')];
+/**
+ * The allowed tools marked as reads or writes; a tool with no mark is in
+ * neither. A read is one a practice run calls (mcpToolDeclaredRead), so a read
+ * mark its server now says writes is in neither too.
+ */
+function toolMarks(
+  mcp: AgentConnectionView['mcpServers'][number],
+  discoveredTools: McpConnectionConfig['discoveredTools'],
+): { readTools?: string[]; writeTools?: string[] } {
+  const connection = { ...mcp, discoveredTools };
+  const readTools = mcp.allowedTools.filter((tool) => mcpToolDeclaredRead(connection, tool));
+  const writeTools = mcp.allowedTools.filter((tool) => mcp.toolPolicies?.[tool]?.effect === 'write');
   return { ...(readTools.length ? { readTools } : {}), ...(writeTools.length ? { writeTools } : {}) };
 }
 

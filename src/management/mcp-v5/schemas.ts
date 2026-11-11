@@ -284,7 +284,7 @@ export const reconnectServiceInput = z.strictObject({
 });
 export const updateConnectionInput = z.strictObject({
   agentId: zAgentId,
-  connectionId: zConnectionId.describe('A custom_api or custom_mcp connectionId from get_agent.'),
+  connectionId: zConnectionId.describe('A custom_api or custom_mcp connectionId from get_agent, or a service\'s with tools, for readTools and writeTools only.'),
   version: zAgentVersion,
   changes: z.strictObject({
     ...zCustomFields,
@@ -419,6 +419,11 @@ export const getAgentOutput = z.strictObject({
       writeTools: z.array(z.string()).optional().describe('MCP: allowed tools marked as writes. A tool in neither is unmarked.'),
       guide: z.string().optional(),
     }).optional(),
+    tools: z.strictObject({
+      allowedTools: z.array(z.string()),
+      readTools: z.array(z.string()).optional(),
+      writeTools: z.array(z.string()).optional(),
+    }).optional().describe('A catalog MCP service: its tools and their marks, as custom has them. update_connection marks them.'),
   })),
   websiteLogins: z.array(z.strictObject({ loginId: z.string(), site: z.string() })),
   repositories: z.array(z.strictObject({ repository: z.string() })),
