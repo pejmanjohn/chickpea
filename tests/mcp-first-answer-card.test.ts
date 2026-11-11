@@ -124,7 +124,7 @@ test('the ready card offers its first answer, starts it only on the press, and s
   const [tried] = card.calls('try_agent_once');
   assert.deepEqual(tried!.args, { agentId: 'agent_invoice_chaser', idempotencyKey: `try:agent_invoice_chaser:${clock.now}` });
   assert.equal(runs.starts.length, 1, JSON.stringify(card.shown));
-  assert.equal(runs.starts[0]!.message, ASK, 'the stored first question');
+  assert.equal(runs.starts[0]!.run.question, ASK, 'the stored first question');
 
   const shown = card.shown;
   assert.equal(shown.title, 'Invoice Chaser\'s first answer');

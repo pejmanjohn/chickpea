@@ -12,6 +12,9 @@ import type { StateDb } from '../state/state-db.ts';
 import type { UsageStoreLogic } from '../usage/store.ts';
 import type {
   PracticeAsk,
+  PracticeRunListing,
+  PracticeRunsQuery,
+  PracticeTurn,
   TestRunAdmission,
   TestRunAdmissionRequest,
   TestRunFailure,
@@ -27,9 +30,15 @@ export const PRACTICE_REPEAT_MS = 2 * 60_000;
 /**
  * A settled run reads as not found this long after it settled, and it is
  * erased then. A run still going always reads: it can run as long as a direct
- * message, past the hour.
+ * message, past the hour. A practice conversation takes follow-ups for as
+ * long from its first question; each turn it quotes settled after that, so
+ * every one is still kept.
  */
 export const TEST_RUN_VISIBLE_MS = 60 * 60_000;
+/** A practice conversation's questions, at most. */
+export const PRACTICE_TURNS = 10;
+/** A listing's runs, newest first, at most. */
+export const PRACTICE_LISTED_RUNS = 20;
 /** How often the state store's alarm looks at a run whose instance is not erased yet. */
 export const TEST_RUN_WAKE_MS = 10_000;
 
@@ -132,6 +141,15 @@ interface Caller {
   actorMembershipId: string;
 }
 
+type Conversation =
+  | { kind: 'open'; practiceId: string; turn: number; earlier: PracticeTurn[] }
+  | Extract<TestRunAdmission, { kind: 'ended' | 'in_progress' }>;
+
+/** Admitted or running: not settled yet. */
+export function liveTestRun(row: Pick<TestRunRow, 'status'>): boolean {
+  return row.status === 'admitted' || row.status === 'running';
+}
+
 export class TestRunStoreLogic {
   constructor(
     private readonly db: StateDb,
@@ -146,7 +164,7 @@ export class TestRunStoreLogic {
 
   /**
    * One transaction: the key, the same ask going or answered moments ago on
-   * the same plan, the conversation's last turn still going, then the row and
+   * the same plan, the conversation a follow-up continues, then the row and
    * the run's usage operation. A key that names another ask, or a run past
    * its hour, is treated as absent: the run starts under a key of its own.
    * The plan's funding limits the run as it limits a direct message, at its
@@ -161,19 +179,18 @@ export class TestRunStoreLogic {
         idempotencyKey = `minted_${request.testRunId}`;
       }
       const same = this.sameAsks(request, at);
-      const running = same.find((row) => row.status === 'admitted' || row.status === 'running');
+      const running = same.find(liveTestRun);
       if (running) return { kind: 'running', row: running };
       // Only an answer is given again: a run that failed is asked again, as a direct message would be.
       const repeat = same.find((row) => row.status === 'answered' && row.settledAt !== null &&
         row.settledAt >= at - PRACTICE_REPEAT_MS && row.planDigest === request.planDigest);
       if (repeat) return { kind: 'repeat', row: repeat };
-      // A conversation's turns run one after another: the next waits for the last to settle.
-      const turn = request.practiceId === null ? undefined : this.row(
-        "practice_id = ? AND actor_membership_id = ? AND status IN ('admitted', 'running')",
-        request.practiceId,
-        request.actorMembershipId,
-      );
-      if (turn) return { kind: 'in_progress', runToken: turn.runToken };
+      let conversation: Extract<Conversation, { kind: 'open' }> = { kind: 'open', practiceId: request.newPracticeId, turn: 1, earlier: [] };
+      if (request.practiceId !== null) {
+        const continued = this.conversation(request, request.practiceId, at);
+        if (continued.kind !== 'open') return continued;
+        conversation = continued;
+      }
       try {
         this.db.run(
           `INSERT INTO management_test_runs (test_run_id, run_token, organization_id, actor_membership_id, agent_id,
@@ -191,8 +208,8 @@ export class TestRunStoreLogic {
           Object.keys(request.admitted).length > 0 ? JSON.stringify(request.admitted satisfies TestRunResult) : null,
           request.usage.operationId,
           at,
-          request.newPracticeId,
-          request.turn,
+          conversation.practiceId,
+          conversation.turn,
           request.question,
           request.questionDigest,
           request.planDigest,
@@ -206,7 +223,79 @@ export class TestRunStoreLogic {
       }
       // The run starts at admission, on the clock its terminal is written by.
       this.usage.admitOperation({ ...request.usage, startedAt: at });
-      return { kind: 'admitted', row: this.require(request.testRunId) };
+      return { kind: 'admitted', row: this.require(request.testRunId), earlier: conversation.earlier };
+    });
+  }
+
+  /**
+   * The conversation a follow-up continues, from the caller's own rows: open
+   * while its first turn is kept, names this Agent, is inside its hour and
+   * has a turn left. Its turns run one after another, so the next waits for
+   * the last to settle. A failed turn is not quoted to the next.
+   */
+  private conversation(ask: Caller & PracticeAsk, practiceId: string, at: number): Conversation {
+    const turns = this.db.all(
+      `SELECT * FROM management_test_runs
+       WHERE organization_id = ? AND actor_membership_id = ? AND practice_id = ?
+       ORDER BY turn`,
+      ask.organizationId,
+      ask.actorMembershipId,
+      practiceId,
+    ).map((row) => testRunFromRow(row));
+    const first = turns[0];
+    const last = turns.at(-1)?.turn ?? 0;
+    if (!first || first.turn !== 1 || first.agentId !== ask.agentId || at >= first.createdAt + TEST_RUN_VISIBLE_MS ||
+        last >= PRACTICE_TURNS) {
+      return { kind: 'ended' };
+    }
+    const going = turns.find(liveTestRun);
+    if (going) return { kind: 'in_progress', runToken: going.runToken };
+    return {
+      kind: 'open',
+      practiceId,
+      turn: last + 1,
+      earlier: turns.flatMap(({ status, turn, question, result }): PracticeTurn[] =>
+        status === 'answered' && turn !== null && question !== null
+          ? [{ turn, question, reply: result?.reply ?? '', steps: result?.steps ?? [] }]
+          : []),
+    };
+  }
+
+  /** A follow-up's earlier turns its message left out for length, kept beside its outcome; written before its dispatch. */
+  recordDroppedTurns(testRunId: string, droppedTurns: number): void {
+    const result = this.get(testRunId)?.result ?? {};
+    this.db.run(
+      `UPDATE management_test_runs SET result_json = ? WHERE test_run_id = ? AND status = 'admitted'`,
+      JSON.stringify({ ...result, droppedTurns } satisfies TestRunResult),
+      testRunId,
+    );
+  }
+
+  /** The caller's practice runs of one Agent whose text is still kept, newest first; another person's never. */
+  list(query: PracticeRunsQuery, at: number): PracticeRunListing[] {
+    return this.db.all(
+      `SELECT * FROM management_test_runs
+       WHERE organization_id = ? AND actor_membership_id = ? AND agent_id = ? AND created_at > ?
+         AND practice_id IS NOT NULL AND turn IS NOT NULL AND question IS NOT NULL
+       ORDER BY created_at DESC, turn DESC
+       LIMIT ?`,
+      query.organizationId,
+      query.actorMembershipId,
+      query.agentId,
+      at - TEST_RUN_VISIBLE_MS,
+      PRACTICE_LISTED_RUNS,
+    ).map((value) => {
+      const row = testRunFromRow(value);
+      const agentVersion = row.result?.ran?.agentVersion;
+      return {
+        runToken: row.runToken,
+        practiceId: row.practiceId!,
+        turn: row.turn!,
+        status: row.status,
+        question: row.question!,
+        createdAt: row.createdAt,
+        ...(agentVersion ? { agentVersion } : {}),
+      };
     });
   }
 

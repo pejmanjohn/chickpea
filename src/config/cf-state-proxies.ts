@@ -16,6 +16,7 @@ import {
 } from './errors.ts';
 import type { UiSurfaceRpcRequest } from '../slack/ui/surface-store.ts';
 import type {
+  PracticeRunsQuery,
   TestRunQuery,
   TestRunReplayQuery,
   TestRunStartRequest,
@@ -376,6 +377,7 @@ const REPLAY_SAFE_STATE_METHODS = new Set([
   'slackPresentationTransition', // compare-and-swap on the projection version
   // A keyed admission returns the stored run on a repeat; a read runs at most one idempotent settle step.
   'testRunStart', 'testRunReplay', 'testRunObserve',
+  'testRunList', // a read
   // The same instance and submission get the same answer: a repeat finds the submission it bound.
   'testRunModelAccessBind',
   // Version-fenced; a replay finds exactly what the committed call wrote and succeeds.
@@ -3372,5 +3374,9 @@ export class CfTestRunStore implements TestRunStore {
 
   async observe(query: TestRunQuery) {
     return orUndefined(await rpcVia(this.stub, 'testRunObserve', (stub) => stub.testRunObserve(query)));
+  }
+
+  list(query: PracticeRunsQuery) {
+    return rpcVia(this.stub, 'testRunList', (stub) => stub.testRunList(query));
   }
 }

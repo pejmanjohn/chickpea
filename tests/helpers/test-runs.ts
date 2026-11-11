@@ -86,8 +86,7 @@ export function startRequest(
       agentId: options.agentId ?? ASSIGNMENT.agentId,
       idempotencyKey: options.idempotencyKey ?? `key_${testRunId}`,
       practiceId: options.practiceId ?? null,
-      newPracticeId: options.practiceId ?? `pr_${testRunId}`,
-      turn: options.practiceId ? 2 : 1,
+      newPracticeId: `pr_${testRunId}`,
       question,
       questionDigest: practiceQuestionDigest(organizationId, question),
       planDigest: options.planDigest ?? 'plan_digest_unchanged',
@@ -98,7 +97,6 @@ export function startRequest(
         credentialRefId: null, credentialVersion: null, platformEnv: installation.env,
       }),
     },
-    message: question,
     initialData: {
       runtimePlan: JSON.parse(JSON.stringify(plan)) as unknown,
       requester: { name: 'Pat', timezone: 'UTC', askedAt: options.at ?? Date.now() },
