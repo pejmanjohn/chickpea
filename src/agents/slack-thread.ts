@@ -289,6 +289,7 @@ import {
 import { stageArtifactWithReceipt, reuseImageWithReceipt } from '../slack/artifact-staging.ts';
 import { FILE_COMPLETION_INSTRUCTION, useFileDeliveryCompletion, type FileDeliveryCompletion } from '../slack/file-delivery-completion.ts';
 import { useSlackFollowUpFold, type SlackFollowUps } from '../slack/follow-up-fold.ts';
+import { answerReleaseSetting } from '../slack/answer-release-setting.ts';
 import { useSlackMidRunReplyTool } from '../slack/midrun-reply.ts';
 import { createSlackAttachmentClient } from '../slack/attachment-client.ts';
 import {
@@ -1356,6 +1357,7 @@ export function useRuntimePlanAgent(
     instanceId: id,
     blocked: () => fileCompletion.unresolved() || fileCompletion.state().repairRequested,
     fold: async (request) => getSlackStateStore(await resolveAgentPlatformEnv()).foldTurn?.(request),
+    answerRelease: async () => answerReleaseSetting(await resolveAgentPlatformEnv()),
   });
   const reserveImageCall = useImageCallBudget();
   const writeWorkspaceUse = useDataWriter(CODING_WORKSPACE_USE_DATA_NAME, {

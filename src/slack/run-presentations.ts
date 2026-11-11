@@ -136,6 +136,13 @@ export type SlackProgressiveIntentDenialReason =
   | 'persistence_failure'
   | 'runtime_denied';
 
+/**
+ * The tool call id a host release records its intent under: the host, not
+ * the model's `stream_answer`, requested streaming (host-release-relay.ts).
+ * Stored rows read it as any other requested intent.
+ */
+export const HOST_RELEASE_INTENT_ID = 'host_release';
+
 export type SlackProgressiveIntent =
   | { status: 'unresolved' }
   | { status: 'pending'; toolCallId: string }
@@ -3023,6 +3030,9 @@ function presentationPolicyOutcome(presentation: SlackRunPresentation): string {
   if (intent.status === 'denied') return `requested_denied:${intent.reason}`;
   if (intent.status !== 'requested') return `offered_${intent.status}`;
   const outcome = presentation.stream.presentationOutcome;
+  // A retired release posts its final fresh, which records `fallback`, as a
+  // stream Slack refused does; the `answer_release` log tells them apart.
+  if (intent.toolCallId === HOST_RELEASE_INTENT_ID) return `host_released_${outcome ?? 'pending'}`;
   if (outcome === 'progressive') {
     return eligibility.reason === 'final_answer_release'
       ? 'requested_final_progressive'

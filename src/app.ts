@@ -40,7 +40,7 @@ import {
   agentFailureDiagnosticsInterceptor,
   observeAgentResultDiagnostics,
 } from './slack/agent-failure-diagnostics.ts';
-import { slackToolBoundaryFoldInterceptor } from './slack/follow-up-fold.ts';
+import { observeSlackAnswerStep, slackToolBoundaryFoldInterceptor } from './slack/follow-up-fold.ts';
 import {
   observePresentationToolPolicy,
   presentationToolPolicyInterceptor,
@@ -150,7 +150,7 @@ instrument({
 instrument({
   key: Symbol.for('chickpea.slack-tool-boundary-fold'),
   interceptor: slackToolBoundaryFoldInterceptor,
-  observe() {},
+  observe: observeSlackAnswerStep,
   dispose() {},
 });
 

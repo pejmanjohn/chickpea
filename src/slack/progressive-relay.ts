@@ -2,6 +2,7 @@ import type { ConversationStreamChunk } from '@flue/runtime';
 
 import type { ProgressiveStreamingMode } from '../memory/tool-policy.ts';
 import { FILE_DELIVERY_DATA_NAME } from './file-delivery-completion.ts';
+import type { HostReleaseLate } from './host-release-relay.ts';
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from './presentation-intent.ts';
 import type {
   SlackProgressiveIntent,
@@ -105,11 +106,12 @@ export interface SlackProgressiveReadRelay {
 type RelayOperation =
   | { kind: 'intent'; transition: ProgressiveIntentTransition }
   | { kind: 'append'; chunk: ProgressiveTextChunk; count: number }
-  | { kind: 'invalidate'; reason: ProgressiveRelayInvalidationReason };
+  | { kind: 'invalidate'; reason: ProgressiveRelayInvalidationReason }
+  | { kind: 'retire'; late: HostReleaseLate };
 
 /**
  * A relay's Slack effects, applied one at a time in the order queued: intent
- * writes, appends and invalidations. A failed
+ * writes, appends, invalidations and the host release's retirement. A failed
  * intent write or append drops what is still queued, invalidates the sink and
  * calls `stop`, so its relay reads nothing more.
  */
@@ -129,7 +131,7 @@ export class ProgressiveEffects {
   private invalidationReason: ProgressiveRelayInvalidationReason | undefined;
 
   constructor(
-    private readonly sink: ProgressiveTextSink,
+    private readonly sink: ProgressiveTextSink & { retire?(late: HostReleaseLate): Promise<void> },
     private readonly stop: () => void,
   ) {}
 
@@ -151,6 +153,22 @@ export class ProgressiveEffects {
     this.stop();
     this.close();
     this.queue.push({ kind: 'invalidate', reason });
+    this.startPump();
+  }
+
+  /**
+   * Text that has not reached Slack yet never will; then the sink retires
+   * what did. An append already under way finishes first.
+   */
+  retire(late: HostReleaseLate): void {
+    for (let index = this.queue.length - 1; index >= 0; index -= 1) {
+      const operation = this.queue[index]!;
+      if (operation.kind !== 'append') continue;
+      this.queuedTextChunks = Math.max(0, this.queuedTextChunks - operation.count);
+      this.queue.splice(index, 1);
+    }
+    this.close();
+    this.queue.push({ kind: 'retire', late });
     this.startPump();
   }
 
@@ -201,6 +219,14 @@ export class ProgressiveEffects {
         } catch {
           // The sink already owns durable recovery. Relay invalidation is
           // best-effort after that boundary and must not expose its error.
+        }
+        continue;
+      }
+      if (operation.kind === 'retire') {
+        try {
+          await this.sink.retire?.(operation.late);
+        } catch {
+          // The sink leaves the stream for the terminal to reconcile.
         }
         continue;
       }

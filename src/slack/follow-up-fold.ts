@@ -2,12 +2,17 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 import {
   useAgentFinish, useDelivery, useDispatchMessage, usePersistentState, useResponseStart,
-  type DeliveredMessageInput, type FlueExecutionInterceptor,
+  type DeliveredMessageInput, type FlueExecutionInterceptor, type FlueObservation,
 } from '@flue/runtime';
 
 import { CHICKPEA_SLACK_AGENT_NAME } from '../agents/names.ts';
 import { validTurnJobId } from '../agents/turn-input.ts';
-import { currentRequestEnvelopeText, parseCurrentRequestEnvelope } from '../memory/tool-policy.ts';
+import {
+  currentRequestEnvelopeText,
+  currentRequestOffersProgressiveStreaming,
+  parseCurrentRequestEnvelope,
+} from '../memory/tool-policy.ts';
+import type { AnswerReleaseSetting } from './answer-release-setting.ts';
 import { publishActivityStatus } from './activity-publisher.ts';
 import {
   foldActivityStatus, followUpSignalBody, MAX_FOLD_CYCLES, MAX_TURN_FOLD_CYCLES, TOOL_BOUNDARY_PULL_INTERVAL_MS,
@@ -57,7 +62,8 @@ export type LateFoldRequest = Exclude<TurnFoldRequest, { phase: 'start' }>;
  *
  * The gate shuts once the response can do no more work (a successful
  * `stream_answer`, whose answer may already be in Slack, or a posted
- * question, which ends the reply), on a v1 envelope (it streams without
+ * question, which ends the reply), once the host may have released the
+ * answer (see `answerMayBeReleased`), on a v1 envelope (it streams without
  * one), past each phase's cap, and while file delivery is unchecked or
  * repairing. A shut would-stop gate still tells the store how many folds the
  * model read, which is how a fold's messages come to end with this reply:
@@ -76,6 +82,8 @@ export function useSlackFollowUpFold(input: {
   blocked: () => boolean;
   /** The state store's fold (TurnJobStoreLogic.fold); undefined where the store has none. */
   fold: (request: LateFoldRequest) => Promise<TurnFoldClaim | undefined>;
+  /** This deployment's host answer release (CHICKPEA_SLACK_ANSWER_RELEASE); undefined when it is off. */
+  answerRelease?: () => Promise<AnswerReleaseSetting | undefined>;
 }): SlackFollowUps {
   const delivery = useDelivery();
   const dispatch = useDispatchMessage();
@@ -97,11 +105,31 @@ export function useSlackFollowUpFold(input: {
   const attributes = signal?.attributes ?? {};
   const envelope = signal && currentRequestEnvelopeText(signal.body);
   const requesterId = attributes.slackUserId;
+  const policy = envelope === undefined ? undefined : parseCurrentRequestEnvelope(envelope);
   const framing = requesterId !== undefined && envelope !== undefined &&
     signal?.type === 'slack.message' && signal.tagName === 'slack_message' &&
-    parseCurrentRequestEnvelope(envelope)?.schemaVersion === 2
+    policy?.schemaVersion === 2
     ? { requesterId, envelope }
     : undefined;
+  /**
+   * Whether the host may be streaming this answer: streaming was offered,
+   * host release is on, and the response's answer text since its last tool
+   * step passes the release rule. A message that arrives now then waits for
+   * its own turn, as after a declaration, instead of a new final step
+   * replacing an answer Slack already shows. Off, or unsure, it folds.
+   */
+  const answerMayBeReleased = async (): Promise<boolean> => {
+    const text = toolBoundaries.getStore()?.answerText;
+    if (!text || !currentRequestOffersProgressiveStreaming(policy)) return false;
+    try {
+      const setting = await input.answerRelease?.();
+      if (!setting) return false;
+      const { answerReleasePoint } = await import('./answer-release.ts');
+      return answerReleasePoint(text, setting.holdChars) !== undefined;
+    } catch {
+      return false;
+    }
+  };
   const claim = (phase: LateFoldRequest['phase'], received: number, take: boolean) => input.fold({
     phase,
     headId: validTurnJobId(attributes.turnJobId),
@@ -158,7 +186,7 @@ export function useSlackFollowUpFold(input: {
     const { cycles, finishes, read } = current();
     const take = framing !== undefined && finishes < MAX_FOLD_CYCLES &&
       !response.toolCalls.some((call) => endsResponseWork(call.tool) && !call.isError) &&
-      !input.blocked();
+      !input.blocked() && !(await answerMayBeReleased());
     if (!take && cycles === 0) return;
     try {
       const claimed = await claim('finish', cycles, take);
@@ -179,6 +207,12 @@ interface ToolBoundary {
   running: number;
   /** A successful stream_answer or posted question: the response does no more work (endsResponseWork). */
   workEnded: boolean;
+  /**
+   * The text of the model steps since the response's last tool step: what the
+   * host release would show (observeSlackAnswerStep). A recovered step's
+   * continuation adds to it.
+   */
+  answerText: string;
   /** The latest render's check (useSlackFollowUpFold). */
   pull?: () => Promise<void>;
   /** The check in progress, so two never claim the same cycle. */
@@ -212,7 +246,7 @@ function bindToolBoundaryFold(pull: () => Promise<void>): void {
 export const slackToolBoundaryFoldInterceptor: FlueExecutionInterceptor = async (operation, context, next) => {
   const boundary = toolBoundaries.getStore();
   if (operation.type === 'agent' && context.agentName === CHICKPEA_SLACK_AGENT_NAME && boundary === undefined) {
-    return toolBoundaries.run({ running: 0, workEnded: false, pulling: Promise.resolve() }, next);
+    return toolBoundaries.run({ running: 0, workEnded: false, answerText: '', pulling: Promise.resolve() }, next);
   }
   if (operation.type !== 'tool' || boundary === undefined) return next();
   boundary.running += 1;
@@ -234,3 +268,19 @@ export const slackToolBoundaryFoldInterceptor: FlueExecutionInterceptor = async 
     }
   }
 };
+
+/** Keeps a Slack response's answer text for the finish check (ToolBoundary.answerText). */
+export function observeSlackAnswerStep(event: FlueObservation): void {
+  if (event.type !== 'message_end' || event.message.role !== 'assistant') return;
+  const boundary = toolBoundaries.getStore();
+  if (!boundary) return;
+  let text = '';
+  for (const part of event.message.content) {
+    if (part.type === 'toolCall') {
+      boundary.answerText = '';
+      return;
+    }
+    if (part.type === 'text') text += part.text;
+  }
+  boundary.answerText += text;
+}
