@@ -6,7 +6,7 @@ import {
   earlyInteractionJudgment,
   judgeGuaranteedInteraction,
   refineEarly,
-  startJudgmentCalls,
+  startClefCalls,
   type EarlyIntent,
   type GuaranteedInteractionJudgmentOptions,
   type SlackInteractionClassification,
@@ -497,10 +497,10 @@ test('a management call that never answers is no signal at Clef\'s bound, and th
   assert.equal(trace.managementTop, undefined);
 });
 
-// Defect caught: the judgment asks Clef and the model again about the request
-// its early calls already asked, doubling both on every turn; or its basisMs
+// Defect caught: the judgment asks Clef again about the request its early
+// calls already asked, doubling both calls on every turn; or its basisMs
 // counts from the calls' start, which hides what starting them early saved.
-test('calls started before the fold are adopted for the same context: nothing is asked twice, and basisMs counts from the judgment', async () => {
+test('Clef calls started before the fold are adopted for the same context: nothing is asked twice, and basisMs counts from the judgment', async () => {
   const fake = fakeClefEnv('reply', { delayMs: 40 });
   const model = deferred<SlackInteractionClassification>();
   let classifyCalls = 0;
@@ -508,9 +508,10 @@ test('calls started before the fold are adopted for the same context: nothing is
     classifyCalls += 1;
     return model.promise;
   };
-  const early = startJudgmentCalls(context, { env: fake.env, classify });
-  assert.ok(early, 'a request with no shortcut starts its calls');
+  const early = startClefCalls(context, fake.env);
+  assert.ok(early, 'a request with no shortcut starts its Clef calls');
   await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.equal(fake.calls.length + fake.managementCalls.length, 2, 'both Clef calls went before the judgment');
   const recorded: SlackInteractionIntent[] = [];
   const metered: SlackInteractionClassification[] = [];
   const judgment = judgeGuaranteedInteraction({ ...context }, {
@@ -525,9 +526,9 @@ test('calls started before the fold are adopted for the same context: nothing is
   const trace = await judgment.settled;
   assert.equal(fake.calls.length, 1, 'one interaction call');
   assert.equal(fake.managementCalls.length, 1, 'one management call');
-  assert.equal(classifyCalls, 1, 'one classifier call');
+  assert.equal(classifyCalls, 1, 'one classifier call, made by the judgment');
   assert.deepEqual(recorded, [REPLY]);
-  assert.equal(metered.length, 1, 'the adopted classification is metered once');
+  assert.equal(metered.length, 1, 'the classification is metered once');
   assert.equal(trace.recordedBy, 'clef');
   assert.equal(trace.rejudged, undefined);
   assert.ok(trace.earlyMs !== undefined && trace.earlyMs >= 80, `earlyMs ${trace.earlyMs}`);
@@ -535,61 +536,56 @@ test('calls started before the fold are adopted for the same context: nothing is
     `basisMs ${trace.basisMs} counts from the judgment; Clef took ${trace.clefMs} ms`);
 });
 
-// Defect caught: a fold that added follow-ups is judged on the head's text
-// alone, or the head's answer is recorded or metered as the turn's.
-test('a fold that changed the text drops the early calls and asks again about the folded text', async () => {
-  const fake = fakeClefEnv('uncertain');
-  const headModel = deferred<SlackInteractionClassification>();
-  const foldedModel = deferred<SlackInteractionClassification>();
-  const asked: string[] = [];
-  const early = startJudgmentCalls(context, {
-    env: fake.env,
-    classify: (input) => {
-      asked.push(input.text);
-      return headModel.promise;
-    },
-  });
+// Defects caught: a fold that added follow-ups is judged on the head's text
+// alone (Clef's early answer about the head decides the folded request); or
+// the classifier is asked about the head too, a provider call nothing meters.
+test('a fold that changed the text drops the early Clef calls and asks again about the folded text', async () => {
+  // Clef is confident about the head alone and unsure about the folded request.
+  const headClef = fakeClefEnv('reply');
+  const foldedClef = fakeClefEnv('uncertain');
+  const early = startClefCalls(context, headClef.env);
+  assert.ok(early);
+  assert.equal((await early.clef).kind, 'read');
   const folded = { ...context, text: `${MESSAGE}\n\nAlso, which of them changed the API?` };
+  const model = deferred<SlackInteractionClassification>();
+  const asked: string[] = [];
   const recorded: SlackInteractionIntent[] = [];
   const metered: SlackInteractionClassification[] = [];
   const judgment = judgeGuaranteedInteraction(folded, {
-    env: fake.env,
+    env: foldedClef.env,
     record: async (intent) => { recorded.push(intent); },
     meter: async (classification) => { metered.push(classification); },
     classify: (input) => {
       asked.push(input.text);
-      return foldedModel.promise;
+      return model.promise;
     },
-    ...(early ? { early } : {}),
+    early,
   });
-  headModel.resolve({ intent: MODEL_WORK, failed: false });
   await tick();
-  const folding = { intent: REPLY, failed: false };
-  foldedModel.resolve(folding);
-  assert.deepEqual(await judgment.basis, REPLY, 'the folded request decides, not the head alone');
+  assert.deepEqual(recorded, [], "Clef's answer about the head alone records nothing");
+  const classification = { intent: MODEL_WORK, failed: false };
+  model.resolve(classification);
+  assert.deepEqual(await judgment.basis, MODEL_WORK, 'the folded request decides, not the head alone');
   const trace = await judgment.settled;
-  assert.deepEqual(asked, [MESSAGE, folded.text]);
-  assert.equal(fake.calls.length, 2);
-  assert.equal(fake.managementCalls.length, 2);
-  assert.ok(JSON.stringify(fake.calls[1]!.inputs).includes('changed the API'), 'Clef is asked about the folded text');
-  assert.deepEqual(recorded, [REPLY]);
-  assert.deepEqual(metered, [folding], 'only the classification the turn acted on is metered');
+  assert.deepEqual(asked, [folded.text], 'the classifier is asked once, about the folded text');
+  assert.equal(headClef.calls.length + headClef.managementCalls.length, 2, 'the early calls are not repeated');
+  assert.equal(foldedClef.calls.length, 1);
+  assert.equal(foldedClef.managementCalls.length, 1);
+  assert.ok(JSON.stringify(foldedClef.calls[0]!.inputs).includes('changed the API'), 'Clef is asked about the folded text');
+  assert.ok(JSON.stringify(foldedClef.managementCalls[0]!.inputs).includes('changed the API'),
+    'and so is its management call');
+  assert.deepEqual(recorded, [MODEL_WORK]);
+  assert.deepEqual(metered, [classification], 'the one classification is metered');
+  assert.equal(trace.recordedBy, 'model');
+  assert.equal(trace.clefChoice, 'reply', "the trace reads the second call's answer");
+  assert.equal(trace.gate, 'await_model');
   assert.equal(trace.rejudged, true);
   assert.equal(trace.earlyMs, undefined);
 });
 
-// Defect caught: a turn a shortcut decides spends Clef and classifier calls
-// before its fold.
-test('no calls start for a request a shortcut decides', () => {
+// Defect caught: a turn a shortcut decides spends Clef calls before its fold.
+test('no Clef calls start for a request a shortcut decides', () => {
   const fake = fakeClefEnv('reply');
-  let classifyCalls = 0;
-  const early = startJudgmentCalls({ ...context, text: '<@UBOT> thanks!' }, {
-    env: fake.env,
-    classify: async () => {
-      classifyCalls += 1;
-      return { intent: REPLY, failed: false };
-    },
-  });
-  assert.equal(early, undefined);
-  assert.equal(fake.calls.length + fake.managementCalls.length + classifyCalls, 0);
+  assert.equal(startClefCalls({ ...context, text: '<@UBOT> thanks!' }, fake.env), undefined);
+  assert.equal(fake.calls.length + fake.managementCalls.length, 0);
 });

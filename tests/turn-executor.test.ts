@@ -15,7 +15,7 @@ import {
 import { AgentObservationYield, AgentPromptFailure } from '../src/slack/flue-dispatch.ts';
 import { SlackInstallationUnavailableError } from '../src/slack/installation-execution.ts';
 import type { RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
-import type { JudgmentCalls } from '../src/slack/interaction-intent.ts';
+import type { ClefCalls } from '../src/slack/interaction-intent.ts';
 import type { RunTurnOptions } from '../src/slack/run-turn.ts';
 import {
   executeTurnJob,
@@ -188,8 +188,8 @@ test('a run that claims its follow-ups records its attempt beside the claim, and
 // turn stopped before its dispatch, which judges nothing.
 test("the judgment's calls start before the installation and the fold, and reach the turn", async () => {
   const events: string[] = [];
-  const calls = { startedAt: 1 } as unknown as JudgmentCalls;
-  let settingsSeen: unknown;
+  const calls = { startedAt: 1 } as unknown as ClefCalls;
+  let envSeen: unknown;
   const h = fakePorts(async (options) => {
     await options.claimFold!({ phase: 'start', headId: 'turn_1' });
     events.push('runTurn');
@@ -199,9 +199,9 @@ test("the judgment's calls start before the installation and the fold, and reach
     return { workspaceId: 'T1', client: {} as WebClient };
   });
   Object.assign(h.ports, {
-    startJudgment: (_turn: unknown, _assignment: unknown, _env: unknown, settings: unknown) => {
+    startJudgment: (_turn: unknown, _assignment: unknown, env: unknown) => {
       events.push('judgment');
-      settingsSeen = settings;
+      envSeen = env;
       return calls;
     },
   });
@@ -214,7 +214,7 @@ test("the judgment's calls start before the installation and the fold, and reach
   assert.equal(await executeTurnJob(pendingJob(), h.ports, h.options), true);
   assert.deepEqual(events, ['judgment', 'installation', 'fold', 'runTurn']);
   assert.equal(h.runs[0]?.earlyJudgment, calls);
-  assert.equal(settingsSeen, h.ports.settingsStore);
+  assert.equal(envSeen, h.ports.env, "Clef is asked through the executor's own env");
 
   let started = 0;
   const stopped = fakePorts(async () => undefined);

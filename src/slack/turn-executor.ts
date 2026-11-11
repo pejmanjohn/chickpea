@@ -170,8 +170,9 @@ export interface TurnExecutionPorts {
   sandboxes(sandboxKey: string): Array<() => SandboxTurnReader>;
   runTurn: typeof runTurn;
   /**
-   * Starts the turn's judgment calls before its installation and fold, for
-   * `runTurn` to adopt. Absent, the judgment starts them where it judges.
+   * Starts the Clef calls of the turn's judgment before its installation and
+   * fold, for `runTurn` to adopt. Absent, the judgment starts them where it
+   * judges. The model classifier always starts there.
    */
   startJudgment?: typeof startEarlyJudgment;
 }
@@ -247,11 +248,11 @@ export async function executeTurnJob(
   if (!job.turn.interactionIntent && job.progress.interactionIntent) {
     job.turn.interactionIntent = job.progress.interactionIntent;
   }
-  // The judgment's calls go now, beside the installation's resolution and the
-  // fold claim, instead of after them.
+  // The judgment's Clef calls go now, beside the installation's resolution
+  // and the fold claim, instead of after them.
   const earlyJudgment = stoppedBeforeDispatch
     ? undefined
-    : ports.startJudgment?.(job.turn, job.assignment, ports.env, ports.settingsStore ?? ports.appStores?.settings);
+    : ports.startJudgment?.(job.turn, job.assignment, ports.env);
   let installationContext: SlackInstallationExecutionContext;
   try {
     installationContext = await ports.resolveInstallation(effectiveTurnSlackInstallationId(job.turn), job.assignment.agentId);

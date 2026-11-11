@@ -429,53 +429,45 @@ export interface GuaranteedInteractionJudgmentOptions {
    */
   readonly classify?: (context: SlackInteractionIntentContext) => Promise<SlackInteractionClassification>;
   /**
-   * Calls the turn started before its fold. The judgment adopts them when
-   * they were asked about this context, and otherwise asks again.
+   * Clef calls the turn started before its fold. The judgment adopts them
+   * when they were asked about this context, and otherwise asks again.
    */
-  readonly early?: JudgmentCalls;
+  readonly early?: ClefCalls;
 }
 
 /**
- * A guaranteed turn's three judgment calls on one context: Clef's
- * interaction and management calls and the model classifier. Starting them
- * writes nothing, so a turn may start them before its fold. Each never
+ * A guaranteed turn's two Clef calls on one context: the interaction call
+ * and the management call. Starting them writes nothing, and Clef is
+ * platform infrastructure with no usage record, so a turn may start them
+ * before its fold and drop them if the fold changes the request. The model
+ * classifier is never among them: it is a provider call on the Agent's
+ * model, so it starts only in the judgment that meters it. Each never
  * rejects.
  */
-export interface JudgmentCalls {
+export interface ClefCalls {
   readonly context: SlackInteractionIntentContext & { guaranteed: true };
   readonly startedAt: number;
   readonly clef: Promise<ClefOutcome>;
   readonly management: Promise<ClefManagementOutcome>;
-  readonly model: Promise<{ readonly classification: SlackInteractionClassification; readonly ms: number }>;
 }
 
-/** Start the calls, unless a shortcut rule decides the context and nothing would be asked. */
-export function startJudgmentCalls(
+/** Start Clef's calls, unless a shortcut rule decides the context and nothing would be asked. */
+export function startClefCalls(
   context: SlackInteractionIntentContext & { guaranteed: true },
-  options: Pick<GuaranteedInteractionJudgmentOptions, 'env' | 'settings' | 'classify'>,
-): JudgmentCalls | undefined {
-  return resolveImmediateSlackInteractionIntent(context) ? undefined : askJudgmentCalls(context, options);
+  env: PlatformEnv | undefined,
+): ClefCalls | undefined {
+  return resolveImmediateSlackInteractionIntent(context) ? undefined : askClefCalls(context, env);
 }
 
-function askJudgmentCalls(
+function askClefCalls(
   context: SlackInteractionIntentContext & { guaranteed: true },
-  options: Pick<GuaranteedInteractionJudgmentOptions, 'env' | 'settings' | 'classify'>,
-): JudgmentCalls {
-  const startedAt = Date.now();
-  const classify = options.classify ?? ((input: SlackInteractionIntentContext) =>
-    classifySlackInteraction(input, options.env, undefined, undefined, {
-      ...(options.settings ? { settings: options.settings } : {}),
-    }));
+  env: PlatformEnv | undefined,
+): ClefCalls {
   return {
     context,
-    startedAt,
-    // The model side never rejects by contract; a rejection would otherwise hang `basis`.
-    model: classify(context).then(
-      (classification) => ({ classification, ms: Date.now() - startedAt }),
-      () => ({ classification: { intent: fallbackIntent(true), failed: true }, ms: Date.now() - startedAt }),
-    ),
-    clef: readClefInteraction(context, options.env),
-    management: readClefManagement(context, options.env),
+    startedAt: Date.now(),
+    clef: readClefInteraction(context, env),
+    management: readClefManagement(context, env),
   };
 }
 
@@ -504,13 +496,17 @@ export interface InteractionJudgmentTrace {
   readonly recordedBy: 'shortcut' | 'clef' | 'model' | 'unrecorded';
   readonly basis?: SlackInteractionDisposition;
   /**
-   * From the judgment's start to the recorded basis. With calls started
+   * From the judgment's start to the recorded basis. With Clef calls started
    * before the judgment (`earlyMs`), it can be shorter than `clefMs`.
    */
   readonly basisMs?: number;
-  /** The judgment adopted calls started this long before it. */
+  /** The judgment adopted Clef calls started this long before it. */
   readonly earlyMs?: number;
-  /** Calls started before the fold asked about other text, so the judgment asked again. */
+  /**
+   * Clef calls started before the fold asked about other text, so the
+   * judgment dropped them and asked Clef again. The classifier is asked once
+   * either way.
+   */
   readonly rejudged?: boolean;
   /** How Clef ended; `skipped` after a shortcut. */
   readonly clef: ClefOutcome['kind'] | 'skipped';
@@ -572,9 +568,18 @@ export function judgeGuaranteedInteraction(
     return { basis, lateChecklist: Promise.resolve(undefined), managementLikely: Promise.resolve(false), settled };
   }
 
+  const classify = options.classify ?? ((input: SlackInteractionIntentContext) =>
+    classifySlackInteraction(input, options.env, undefined, undefined, {
+      ...(options.settings ? { settings: options.settings } : {}),
+    }));
+  // The model side never rejects by contract; a rejection would otherwise hang `basis`.
+  const model = classify(context).then(
+    (classification) => ({ classification, ms: Date.now() - startedAt }),
+    () => ({ classification: { intent: fallbackIntent(true), failed: true }, ms: Date.now() - startedAt }),
+  );
   const adopted = options.early && sameJudgmentContext(options.early.context, context) ? options.early : undefined;
-  const calls = adopted ?? askJudgmentCalls(context, options);
-  const { model, management } = calls;
+  const calls = adopted ?? askClefCalls(context, options.env);
+  const { management } = calls;
   const clef = calls.clef.then((outcome) => ({
     outcome,
     early: earlyInteractionJudgment(outcome),

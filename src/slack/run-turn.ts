@@ -206,8 +206,8 @@ import type { ShadowWorkLifecycle } from '../work/lifecycle.ts';
 import type { RunExecutionAuthority, WorkStore } from '../work/types.ts';
 import {
   judgeGuaranteedInteraction,
-  startJudgmentCalls,
-  type JudgmentCalls,
+  startClefCalls,
+  type ClefCalls,
   type SlackInteractionClassification,
   type SlackInteractionIntent,
   type SlackInteractionIntentContext,
@@ -460,11 +460,11 @@ export interface RunTurnOptions {
   /** Set by `runTurn` itself when `turnLatency` is present: Slack answered the thread title's call after `ms`. */
   onTitle?: (ms: number) => void;
   /**
-   * The turn's judgment calls, started on its head's text before its fold
-   * (startEarlyJudgment). Its judgment adopts them when the fold left the
-   * request as they read it, and otherwise asks again.
+   * The judgment's Clef calls, started on the turn's head text before its
+   * fold (startEarlyJudgment). Its judgment adopts them when the fold left
+   * the request as they read it, and otherwise asks Clef again.
    */
-  earlyJudgment?: JudgmentCalls;
+  earlyJudgment?: ClefCalls;
   /** Set by `runTurn` itself when `turnLatency` is present: the turn's first dispatch is being sent. */
   onDispatchSent?: () => void;
   /** Set by `runTurn` itself when `turnLatency` is present: the model work its observation saw. */
@@ -620,27 +620,26 @@ export function attemptEndReason(error: unknown): string {
 }
 
 /**
- * Start a turn's judgment calls on its head's text, before its fold:
- * Clef's two calls and the model classifier, which write nothing. Only a
- * turn that may judge starts them: one with no recorded basis, a model to
- * judge with, and no command the host answers. A routine command is told
- * apart without the bot's address here, so any `!routine` holds them back.
+ * Start the Clef calls of a turn's judgment on its head's text, before its
+ * fold. They write nothing and leave no usage record, so a judgment that
+ * cannot adopt them drops them at no one's cost. The model classifier is a
+ * provider call on the Agent's model and starts only where the judgment
+ * meters it. Only a turn that may judge starts the calls: one with no
+ * recorded basis, a model to run, and no command the host answers. A
+ * routine command is told apart without the bot's address here, so any
+ * `!routine` holds them back.
  */
 export function startEarlyJudgment(
   turn: NormalizedSlackTurn,
   assignment: ResolvedAssignment,
   env: PlatformEnv | undefined,
-  settings: SettingsStore | undefined,
-): JudgmentCalls | undefined {
+): ClefCalls | undefined {
   if (turn.interactionIntent || turn.managementApprovalProposalId) return undefined;
   if (assignment.runtimeContract === 'chickpea-v1' && !resolvedAssignmentModel(assignment)) return undefined;
   if (slackTurnTypedByPerson(turn) && (parseMemoryCommand(turn.text) || /!routines?\b/i.test(turn.text))) {
     return undefined;
   }
-  return startJudgmentCalls(guaranteedInteractionContext(turn, assignment, turn.text), {
-    env,
-    ...(settings ? { settings } : {}),
-  });
+  return startClefCalls(guaranteedInteractionContext(turn, assignment, turn.text), env);
 }
 
 /** What a turn's judgment reads, for `text`: the request as the turn frames it. */

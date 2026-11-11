@@ -630,13 +630,13 @@ test('a confident Clef reply dispatches on its record before the classifier answ
   });
 });
 
-// Defect caught: a turn that will not judge (a command the host answers, an
-// approval, a recorded basis, a model to repair) spends Clef and classifier
-// calls before its fold that nothing reads.
-test('only a turn that may judge starts its judgment calls before the fold', async () => {
+// Defects caught: a turn that will not judge (a command the host answers, an
+// approval, a recorded basis, a model to repair) spends Clef calls before its
+// fold that nothing reads; or the model classifier starts there too, a
+// provider call on the Agent's model that a changed fold would drop unmetered.
+test('only a turn that may judge starts Clef before the fold, and none starts the classifier there', async () => {
   const clef = fakeClefEnv('reply');
   const turn = surfaceTurn('dm');
-  const settings = resolveStores().settings;
   for (const [held, why] of [
     [{ ...turn, text: '!memory' }, 'a memory command'],
     [{ ...turn, text: '<@U_CHICKPEA> !memory list' }, 'an addressed memory command'],
@@ -644,20 +644,25 @@ test('only a turn that may judge starts its judgment calls before the fold', asy
     [{ ...turn, interactionIntent: { disposition: 'reply', reason: 'substantive_request' } }, 'a recorded basis'],
     [{ ...turn, managementApprovalProposalId: 'proposal_first_status' }, 'an approval'],
   ] as const) {
-    assert.equal(startEarlyJudgment(held, classifiedAssignment, clef.env, settings), undefined, why);
+    assert.equal(startEarlyJudgment(held, classifiedAssignment, clef.env), undefined, why);
   }
   const unpinned: ResolvedAssignment = { ...assignment, runtimeContract: 'chickpea-v1' };
   delete unpinned.model;
-  assert.equal(startEarlyJudgment(turn, unpinned, clef.env, settings), undefined, 'a model to repair');
+  assert.equal(startEarlyJudgment(turn, unpinned, clef.env), undefined, 'a model to repair');
   assert.equal(clef.calls.length + clef.managementCalls.length, 0, 'none asked Clef');
   await withScriptedClassifier(async () => {
-    scriptedProvider([async (model) => scriptedMessage(model, [{ type: 'text', text: REPLY_ANSWER }], 'stop')],
-      { providerId: 'anthropic' });
-    const calls = startEarlyJudgment(turn, classifiedAssignment, clef.env, settings);
-    assert.ok(calls, 'a request to judge starts its calls');
-    const [, , model] = await Promise.all([calls.clef, calls.management, calls.model]);
-    assert.equal(model.classification.failed, false);
+    // The Agent's provider is ready to answer, so a classifier call would reach it.
+    const provider = scriptedProvider(
+      [async (model) => scriptedMessage(model, [{ type: 'text', text: REPLY_ANSWER }], 'stop')],
+      { providerId: 'anthropic' },
+    );
+    const calls = startEarlyJudgment(turn, classifiedAssignment, clef.env);
+    assert.ok(calls, 'a request to judge starts its Clef calls');
+    assert.deepEqual(Object.keys(calls).sort(), ['clef', 'context', 'management', 'startedAt']);
+    await Promise.all([calls.clef, calls.management]);
     assert.equal(clef.calls.length + clef.managementCalls.length, 2);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(provider.sent.length, 0, "the Agent's model is not asked before the judgment");
   });
 });
 
