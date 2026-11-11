@@ -478,7 +478,7 @@ test('an installation records only instances its own name scopes', () => {
 const ADDRESSING_SITES: Record<string, { covered: string; sites: readonly string[] }> = {
   'config/state-rpc.ts': {
     covered: 'state store, named after the installation',
-    sites: ['return namespace.getByName(tagStateInstanceName(env));'],
+    sites: ['if (!locationHint) return namespace.getByName(name);', 'return namespace.getByName(name, { locationHint });'],
   },
   'slack/thread-runner-rpc.ts': {
     covered: "thread_runner, recorded at turn enqueue; a receipt's wake may reach it first, and a runner never handed a job stores nothing",

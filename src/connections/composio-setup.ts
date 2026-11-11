@@ -22,6 +22,7 @@ import {
 import {
   createComposioClient,
   isComposioAuthConfigId,
+  retryComposioWrite,
   type ComposioAuthConfigLike,
   type ComposioClientLike,
 } from './providers/composio.ts';
@@ -371,14 +372,22 @@ async function prepareAllToolkits(input: {
         }
       }
       if (matching.length === 0) {
-        await input.beforeCreate();
-        input.signal?.throwIfAborted();
-        const created = await authConfigs.create(
-          connector.toolkit,
-          authConfigMode(connector.toolkit).create(defaultAuthConfigName(connector.toolkit)),
-          input.signal ? { signal: input.signal } : undefined,
-        );
-        if (isComposioAuthConfigId(created.id) && authConfigMode(connector.toolkit).matches(created) &&
+        const created = await retryComposioWrite(async (retry) => {
+          // The lost attempt may have created the config. The lease keeps any other setup from
+          // creating one meanwhile, so a compatible config now is that attempt's.
+          if (retry && (await listCompatibleConfigs(authConfigs, connector.toolkit, input.signal)).length > 0) {
+            return undefined;
+          }
+          await input.beforeCreate();
+          input.signal?.throwIfAborted();
+          return authConfigs.create(
+            connector.toolkit,
+            authConfigMode(connector.toolkit).create(defaultAuthConfigName(connector.toolkit)),
+            input.signal ? { signal: input.signal } : undefined,
+          );
+        }, input.signal);
+        if (created && isComposioAuthConfigId(created.id) &&
+            authConfigMode(connector.toolkit).matches(created) &&
             created.toolkit.toLowerCase() === connector.toolkit) {
           selectedId = created.id;
         } else {

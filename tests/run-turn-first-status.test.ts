@@ -19,6 +19,7 @@ import { CLEF_TIMEOUT_MS } from '../src/slack/clef-intent.ts';
 import { runTurn, type RunTurnOptions } from '../src/slack/run-turn.ts';
 import type { FrozenRuntimePlanDecision } from '../src/slack/turn-job-types.ts';
 import { SlackStatusRegistry } from '../src/slack/status-registry.ts';
+import { timedStateRpc } from '../src/observability/runtime-latency.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
@@ -822,6 +823,80 @@ test('a turn wakes its Agent object once its plan is saved, before it stages, an
   assert.deepEqual(events, ['freeze', 'freeze:saved', `wake:${instanceId}`, 'stage']);
   assert.equal(latency.length, 1);
   assert.ok(Number(latency[0]?.agentWakeLeadMs) >= 25, `the lead covers the wait to stage: ${latency[0]?.agentWakeLeadMs}`);
+});
+
+// Defects caught: the turn's observation never reaches the shadow (no
+// answer_release record), the record names another run, the shadow time
+// comes out later than the answer Slack showed, or neither record names the
+// turn's model.
+test('a turn logs what the host release rule would have done with its reply', async (t) => {
+  const logs: Record<string, unknown>[] = [];
+  t.mock.method(console, 'info', (record: unknown) => {
+    const event = (record as { event?: unknown } | undefined)?.event;
+    if (event === 'turn_latency' || event === 'answer_release') logs.push(record as Record<string, unknown>);
+  });
+  const answer = 'The synthetic forecast lists three dry days and one windy afternoon. '.repeat(12).trim();
+  const submissionId = 'submission_shadow';
+  await firstStatusTimeline('dm', null, {
+    turnLatency: { receivedAt: Date.now() - 400, admittedAt: Date.now() - 300, lane: 'cloudflare', executor: 'runner' },
+    agentPrompt: async ({ onConversationChunk }) => {
+      let batch = 0;
+      const read = (body: Record<string, unknown>) => onConversationChunk?.({
+        conversationId: 'conversation_shadow', ...body, position: { batch: (batch += 1), index: 0 },
+      } as Parameters<NonNullable<typeof onConversationChunk>>[0], submissionId);
+      read({ type: 'message-started', messageId: 'message_shadow', submissionId });
+      for (const delta of answer.split(/(?= )/)) {
+        read({ type: 'message-delta', messageId: 'message_shadow', kind: 'text', delta });
+      }
+      read({ type: 'message-completed', messageId: 'message_shadow' });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return { ...AGENT_ANSWER, text: answer };
+    },
+  }, dmAssignment);
+  const latency = logs.find((record) => record.event === 'turn_latency');
+  const release = logs.find((record) => record.event === 'answer_release');
+  assert.ok(latency && release, `both records: ${JSON.stringify(logs)}`);
+  assert.equal(release.outcome, 'released');
+  assert.equal(release.runRef, latency.runRef);
+  assert.equal(release.answerSteps, 1);
+  assert.equal(release.modelToken, 'local_stub_first_status', `from ${dmAssignment.model}`);
+  assert.equal(latency.modelToken, release.modelToken);
+  assert.equal(release.taskCardStream, false);
+  assert.ok(Number(release.receiptToReleaseMs) >= 400);
+  assert.equal(latency.firstAnswerText, 'final');
+  assert.ok(Number(latency.receiptToShadowAnswerTextMs) + 20 <= Number(latency.receiptToFirstAnswerTextMs),
+    `the release precedes the final: ${latency.receiptToShadowAnswerTextMs} < ${latency.receiptToFirstAnswerTextMs}`);
+  assert.equal(JSON.stringify(logs).includes('forecast'), false);
+});
+
+// Defects caught: runTurn never wires the dispatch's model start or the
+// observed work into turn_latency, or never counts the attempt's state store
+// calls.
+test('a turn logs its model start, its model work and its state store calls', async (t) => {
+  const records: Record<string, unknown>[] = [];
+  t.mock.method(console, 'info', (record: unknown) => {
+    const event = (record as { event?: unknown } | undefined)?.event;
+    if (event === 'turn_latency' || event === 'state_rpc_summary') records.push(record as Record<string, unknown>);
+  });
+  const receivedAt = Date.now() - 2_500;
+  await firstStatusTimeline('dm', null, {
+    turnLatency: { receivedAt, admittedAt: receivedAt + 1_500, lane: 'cloudflare', executor: 'runner' },
+    agentPrompt: async ({ onDispatchSent, onTurnWork }) => {
+      await timedStateRpc('settingGet', Promise.resolve({ ok: true }));
+      onDispatchSent?.();
+      onTurnWork?.({ modelSteps: 2, toolCalls: 1, toolMs: 640 });
+      return AGENT_ANSWER;
+    },
+  }, dmAssignment);
+  const latency = records.find((record) => record.event === 'turn_latency');
+  assert.ok(Number(latency?.receiptToModelStartMs) >= 2_500, `model start counts from receipt: ${latency?.receiptToModelStartMs}`);
+  assert.ok(Number(latency?.admissionToModelStartMs) >= 1_000);
+  assert.ok(Number(latency?.receiptToFinalMs) >= Number(latency?.receiptToModelStartMs));
+  assert.deepEqual([latency?.modelSteps, latency?.toolCalls, latency?.toolMs], [2, 1, 640]);
+  const rpcs = records.find((record) => record.event === 'state_rpc_summary');
+  assert.equal(rpcs?.scope, 'turn');
+  assert.equal(rpcs?.turnRef, latency?.turnRef);
+  assert.ok(Number(rpcs?.callsBeforeModelStart) >= 1, 'the call before the dispatch counts');
 });
 
 // Defect caught: the plan's model, image-role, browser and login reads

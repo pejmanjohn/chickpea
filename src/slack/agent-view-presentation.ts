@@ -169,6 +169,17 @@ interface AgentViewPresentationOptions {
   onNativeStarted?: () => Promise<void>;
   /** Observability only: Slack acknowledged a progressive or native stream start. */
   onStreamStarted?: () => void;
+  /**
+   * Observability only: Slack acknowledged this run's first streamed answer
+   * text, as a stream start or as the first text on a task-card stream.
+   */
+  onAnswerTextStreamed?: () => void;
+  /**
+   * Observability only: Slack acknowledged native task card rows on this
+   * run's stream before its terminal, as the card's stream start or as rows a
+   * milestone appended to an open stream.
+   */
+  onTaskCardStreamed?: () => void;
   onFinalized?: (record: SlackPresentationFinalizationRecord) => MaybePromise<void>;
   /**
    * The workspace's shared Slack read budget. Without one, a shared-app
@@ -1814,6 +1825,7 @@ export class SlackAgentViewPresentation {
         { instanceId, submissionId, messageId: chunk.messageId },
       );
       this.observeStreamStarted();
+      this.observeAnswerTextStreamed();
       await this.recordAcknowledgedPrefix(presentation, chunk.position, safePrefix);
       this.nextAppendAt = this.now() + this.appendIntervalMs();
       return;
@@ -1839,6 +1851,7 @@ export class SlackAgentViewPresentation {
     const delta = safePrefix.slice(acknowledged.length);
     if (!delta) return;
     if (slot === 'yielded') return;
+    const firstAnswerText = acknowledged.length === 0;
     if (slot === 'reserved') {
       this.appendSlot = undefined;
     } else {
@@ -1894,6 +1907,7 @@ export class SlackAgentViewPresentation {
       cursor: pending.cursor,
       acknowledgedPrefixHash: pending.hash,
     });
+    if (firstAnswerText) this.observeAnswerTextStreamed();
     this.nextAppendAt = this.now() + this.appendIntervalMs();
   }
 
@@ -2079,6 +2093,7 @@ export class SlackAgentViewPresentation {
       { instanceId, submissionId },
     );
     this.observeStreamStarted();
+    this.observeTaskCardStreamed();
     try {
       await this.options.onNativeStarted?.();
     } catch {
@@ -2721,6 +2736,22 @@ export class SlackAgentViewPresentation {
     }
   }
 
+  private observeAnswerTextStreamed(): void {
+    try {
+      this.options.onAnswerTextStreamed?.();
+    } catch {
+      // Latency observation cannot affect text Slack already accepted.
+    }
+  }
+
+  private observeTaskCardStreamed(): void {
+    try {
+      this.options.onTaskCardStreamed?.();
+    } catch {
+      // Latency observation cannot affect rows Slack already accepted.
+    }
+  }
+
   private emitFinalizationRecord(presentation: SlackRunPresentation): void {
     const record = slackPresentationFinalizationRecord(presentation);
     if (this.appendBudget.deferrals > 0 || this.appendBudget.yielded > 0 ||
@@ -2822,6 +2853,7 @@ export class SlackAgentViewPresentation {
         ts: presentation.stream.messageTs,
         chunks: taskChunks(presentation, { only: new Set(changed) }),
       } as unknown as Parameters<WebClient['chat']['appendStream']>[0]);
+      this.observeTaskCardStreamed();
     } catch (error) {
       // Execution truth is already durable. A Slack projection failure cannot
       // rewrite a completed/failed milestone into a different work outcome.

@@ -11,7 +11,10 @@ export default {
     const client = new Composio({
       apiKey: 'ak_workerd_import_smoke',
       baseURL: backendUrl,
+      userApiKey: null,
+      orgApiKey: null,
       allowTracking: false,
+      disableVersionCheck: true,
       sensitiveFileUploadProtection: true,
     });
     const link = await client.connectedAccounts.link(
