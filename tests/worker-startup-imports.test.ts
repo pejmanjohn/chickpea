@@ -62,6 +62,8 @@ const LAZY_MODULES: Record<string, string> = {
   'src/agents/test-run-plan.ts': 'the test-run instance port or tools (state/test-run-instance.ts, management/mcp-v5/test-runs.ts)',
   'src/management/mcp-v5/test-runs.ts': "try_agent_once's or get_test_run's first call (management/mcp-v5/tools.ts)",
   'src/browser/approval.ts': "browser_open's or browser_act's first call (browser/tools.ts)",
+  'src/slack/turn-plan-reads.ts': "a thread runner's first turn (slack/thread-runner.ts)",
+  'src/config/turn-read-batch.ts': "a thread runner's first turn, or a state store's first read batch (cloudflare.ts)",
 };
 
 /**

@@ -221,8 +221,9 @@ test('the Worker entry exports SlackThreadRunner for its v11 binding', () => {
 test('the runner executes through the shared turn executor as the runner executor', () => {
   const runner = readFileSync(new URL('../src/slack/thread-runner.ts', import.meta.url), 'utf8');
   // The turn's latency context takes the hand-off delay of the job it runs,
-  // and the turn the wake admission sent its Agent object.
-  assert.match(runner, /const handoff = this\.takeHandoff\(job\.id\);\s*return executeTurnJob\(job, ports, \{\s*latency: \{ lane: 'cloudflare', executor: 'runner', \.\.\.handoff\.latency \},\s*\.\.\.\(handoff\.agentWake \? \{ agentWake: handoff\.agentWake \} : \{\}\),/);
+  // and the turn the wake admission sent its Agent object; the turn runs
+  // inside the reads its batch answers (turn-reads.ts).
+  assert.match(runner, /const handoff = this\.takeHandoff\(job\.id\);[\s\S]{0,400}?prefetchTurnReads\(env, job,[\s\S]{0,200}?return withTurnReads\(reads, \(\) => executeTurnJob\(job, ports, \{\s*latency: \{ lane: 'cloudflare', executor: 'runner', \.\.\.handoff\.latency \},\s*\.\.\.\(handoff\.agentWake \? \{ agentWake: handoff\.agentWake \} : \{\}\),/);
   assert.match(runner, /observationRoute: \{ executor: 'runner'/);
   assert.match(runner, /statusRegistry: this\.registry/);
 });

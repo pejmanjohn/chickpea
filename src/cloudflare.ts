@@ -71,6 +71,7 @@ import type {
   RuntimeDrainStatus,
 } from './config/state-rpc.ts';
 import { buildRuntimeDrainStatus, tagStateStub } from './config/state-rpc.ts';
+import type { StateRead } from './config/turn-reads.ts';
 import {
   installationOwnershipOf,
   installationScopeOf,
@@ -2596,6 +2597,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
         .catch(() => undefined);
     }
     return result;
+  }
+
+  /** A thread runner's turn reads, in one round trip (config/turn-read-batch.ts). */
+  async stateReadBatch(reads: readonly StateRead[]): Promise<Array<StateRpcResult<unknown> | null>> {
+    const { answerStateReads } = await import('./config/turn-read-batch.ts');
+    return answerStateReads(reads, this);
   }
 
   /** Per-turn writes from the SlackThreadRunner executing that turn. */

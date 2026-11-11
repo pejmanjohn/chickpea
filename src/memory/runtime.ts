@@ -11,6 +11,7 @@ import { agentAppIsLive, type CustomAgentConfig, type ResolvedAssignment, type W
 import { currentHumanIdentityDirectory } from '../identity/current-directory.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import { isStateStoreDisconnect } from '../config/cf-state-proxies.ts';
+import { outsideTurnReads } from '../config/turn-reads.ts';
 import { resolveSlackCredentials } from '../slack/credentials.ts';
 import {
   hasLeadingSlackCommandAddress,
@@ -205,10 +206,10 @@ export async function prepareMemoryTurn(input: {
       confirmInjection: async () => true,
       validateReceiptLease: async (revision, chainedFrom) =>
         (revision === memory.revision + 1 || chainedFrom === memory.revision) &&
-        validateAgentMemoryLease(input.turn, runtime, memory, revision),
+        outsideTurnReads(() => validateAgentMemoryLease(input.turn, runtime, memory, revision)),
       validateLease: async () => {
         const valid = await deferredLeaseMetric(
-          () => validateAgentMemoryLease(input.turn, runtime, memory),
+          () => outsideTurnReads(() => validateAgentMemoryLease(input.turn, runtime, memory)),
         );
         emitMemoryMetric('delivery_lease', { outcome: valid ? 'valid' : 'rejected' });
         return valid;
@@ -327,14 +328,14 @@ async function prepareWorkspaceManagementTurn(
     ownerBound: true,
     confirmInjection: async () => true,
     validateLease: async () => {
-      const valid = await deferredLeaseMetric(() => validateWorkspaceManagementLease(
+      const valid = await deferredLeaseMetric(() => outsideTurnReads(() => validateWorkspaceManagementLease(
         turn,
         assignment,
         input.platformEnv,
         slack,
         botUserId,
         config,
-      ));
+      )));
       emitMemoryMetric('delivery_lease', { outcome: valid ? 'valid' : 'rejected' });
       return valid;
     },
@@ -500,6 +501,16 @@ async function validateAgentMemoryLease(
 ): Promise<boolean> {
   try {
     const config = runtime.config;
+    // An explicit base-bot mention inside a DM still normalizes to
+    // `app_mention`, so trust the conversation shape rather than the source
+    // alone: a DM has no Channel grant and no non-im conversation facts. A
+    // group DM has no grant either, but must still be the group DM it was.
+    const kind = slackConversationKind(turn);
+    // Read beside the rest and judged after it, as when it was read after it.
+    const channelGrants = kind === 'channel'
+      ? config.listAgentChannelGrants(turn.workspaceId, turn.channelId)
+      : undefined;
+    channelGrants?.catch(() => undefined);
     const [agent, installation, current] = await Promise.all([
       config.getAgent(runtime.assignment.agentId),
       config.getWorkspaceInstallation(turn.workspaceId),
@@ -511,14 +522,9 @@ async function validateAgentMemoryLease(
         (receiptRevision === undefined
           ? current.revision !== selected.revision || current.body !== selected.body
           : current.revision !== receiptRevision)) return false;
-    // An explicit base-bot mention inside a DM still normalizes to
-    // `app_mention`, so trust the conversation shape rather than the source
-    // alone: a DM has no Channel grant and no non-im conversation facts. A
-    // group DM has no grant either, but must still be the group DM it was.
-    const kind = slackConversationKind(turn);
     if (kind === 'im') return true;
-    if (kind === 'channel') {
-      const grants = await config.listAgentChannelGrants(turn.workspaceId, turn.channelId);
+    if (channelGrants) {
+      const grants = await channelGrants;
       if (!grants.some((grant) =>
         grant.agentId === runtime.assignment.agentId && grant.status === 'active'
       )) return false;

@@ -9,6 +9,7 @@ import type { TurnLatencyContext } from '../observability/runtime-latency.ts';
 import { isStateStoreDisconnect } from '../config/cf-state-proxies.ts';
 import { reportInteractiveDelivery } from '../config/hosted-activity.ts';
 import { installationScopeOf } from '../config/installation-scope.ts';
+import { endTurnReads } from '../config/turn-reads.ts';
 import { readSandboxTurnProgress, type CodingTaskStopReport } from '../sandbox/coding-task-stop.ts';
 import { slackTurnSandboxKey } from '../sandbox/thread-key.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
@@ -305,6 +306,8 @@ export async function executeTurnJob(
       threadFileIds?: readonly string[],
       workspaceChangeTools?: boolean,
     ) => {
+      // The turn's prefetched reads answer its preparation only.
+      endTurnReads();
       try {
         return await ports.turnJobs.prepareFlueDispatch(
           job.id,
