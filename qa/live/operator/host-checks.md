@@ -157,11 +157,11 @@ wrapper's own process group. A reserved full suite is still watched: each
 reservation and gets the stop. A stalled reserved command releases the
 reservation the normal way once no process of its group is left; if one
 survives, the reservation is retained for reconciliation. A command nested
-under a watching `verify:host` stays in that group, so the outer stop reaches
-it.
+under a watching `verify:host` stays in that group, so the outer stop and the
+outer window apply to it; a `--stall-ms` it passes is reported and ignored.
 
 `--stall-ms MS` or `CHICKPEA_STALL_MS` sets another window, and 0 turns the
 stall stop off; a `--shared` command still runs in its own group and stops
-when its caller exits. A command that prints only at the end needs a longer window, such as
-the cards harness:
+when its caller exits. A command that prints only at the end needs a longer
+window, such as the cards harness:
 `npm run verify:host -- --shared --stall-ms 1800000 -- npm run mcp-cards:harness`.

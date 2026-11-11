@@ -232,14 +232,16 @@ test('a watched reserved command ended by a signal keeps its reservation, as an 
   assert.equal(exclusive.filter(existsSync).length, 1);
 });
 
-test('a command nested under a watching verify:host stays in its group, so the outer stop reaches it', async (t) => {
+test('a command nested under a watching verify:host stays in its group, so the outer stop and window reach it', async (t) => {
   const { env, home, shared } = isolatedHome(t);
   const pidFile = join(home, 'nested.pid');
   const stubborn = `process.on('SIGTERM', () => {}); require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); console.log('nested'); setInterval(() => {}, 1e6);`;
-  const run = spawnSync(process.execPath, [VERIFY_HOST, '--shared', '--stall-ms', '3000', '--', process.execPath, VERIFY_HOST, '--shared', '--', process.execPath, '-e', stubborn], { env, encoding: 'utf8', timeout: 60_000 });
+  const run = spawnSync(process.execPath, [VERIFY_HOST, '--shared', '--stall-ms', '3000', '--', process.execPath, VERIFY_HOST, '--shared', '--stall-ms', '1800000', '--', process.execPath, '-e', stubborn], { env, encoding: 'utf8', timeout: 60_000 });
   t.after(() => { try { process.kill(Number(readFileSync(pidFile, 'utf8')), 'SIGKILL'); } catch {} });
   assert.ifError(run.error);
   assert.equal(run.status, 124, run.stderr);
+  assert.match(run.stderr, /^\[verify:host\] --stall-ms ignored: this command runs inside verify:host PID \d+, whose stall window applies\.$/m);
+  assert.match(run.stderr, /Stalled: no output for 3 s/, 'the outer 3 s window, not the nested 30 minutes, stopped it');
   assert.ok(await ended(Number(readFileSync(pidFile, 'utf8'))), 'a nested command that ignores SIGTERM still ends with the outer group');
   assert.deepEqual(claims(shared), []);
 });
@@ -247,8 +249,9 @@ test('a command nested under a watching verify:host stays in its group, so the o
 test('a watched command stops with its group when its caller is killed, and frees the slot', async (t) => {
   const { env, home, shared } = isolatedHome(t);
   const pidFile = join(home, 'orphan.pid');
+  const stderrFile = join(home, 'wrapper.stderr');
   const quiet = `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1e6);`;
-  const caller = spawn(process.execPath, ['-e', `require('node:child_process').spawn(process.execPath, [${JSON.stringify(VERIFY_HOST)}, '--shared', '--', process.execPath, '-e', ${JSON.stringify(quiet)}], { stdio: 'ignore' }); setInterval(() => {}, 1e6);`], { env, stdio: 'ignore' });
+  const caller = spawn(process.execPath, ['-e', `const fs = require('node:fs'); require('node:child_process').spawn(process.execPath, [${JSON.stringify(VERIFY_HOST)}, '--shared', '--', process.execPath, '-e', ${JSON.stringify(quiet)}], { stdio: ['ignore', 'ignore', fs.openSync(${JSON.stringify(stderrFile)}, 'w')] }); setInterval(() => {}, 1e6);`], { env, stdio: 'ignore' });
   t.after(() => caller.kill('SIGKILL'));
   let wrapper = 0;
   for (let attempt = 0; attempt < 200 && !(wrapper && existsSync(pidFile)); attempt += 1) {
@@ -261,6 +264,8 @@ test('a watched command stops with its group when its caller is killed, and free
   assert.ok(await ended(Number(readFileSync(pidFile, 'utf8'))), 'the command did not run on as an orphan');
   assert.ok(await ended(wrapper), 'verify:host exited');
   assert.deepEqual(claims(shared), [], 'its slot was released');
+  assert.match(readFileSync(stderrFile, 'utf8'), /^\[verify:host\] Its caller exited, so the process group of `.*node -e .*` was stopped\.$/m);
+  assert.doesNotMatch(readFileSync(stderrFile, 'utf8'), /Stalled/);
 });
 
 test('a reader that goes away neither blocks the command nor strands its reservation', async (t) => {
