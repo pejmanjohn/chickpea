@@ -19,7 +19,7 @@ You do not need the CLI to connect a coding agent. Admin **Settings → MCP** on
 | `chickpea login <url>` | browser | Registers a public PKCE client, opens the browser for Slack sign-in and consent, and saves the tokens. |
 | `chickpea chatgpt connect <url>` | browser | Opens owner approval in Chickpea, completes ChatGPT sign-in through a local callback, and waits for account confirmation. OpenAI tokens stay on the deployment. |
 | `chickpea logout <url>` | saved | Revokes the refresh token at the deployment and deletes the saved session. The last access token keeps working until it expires, up to 15 minutes. |
-| `chickpea workspace inspect <url> [--json]` | saved | Calls `get_workspace` and `list_agents` to summarize the workspace, your role, Agent handles, status, edit access, and attention needed. |
+| `chickpea workspace inspect <url> [--include-archived] [--json]` | saved | Calls `get_workspace` and every page of `list_agents` to summarize the workspace, your role, Agent handles, status, edit access, and attention needed. Archived Agents are left out unless you pass `--include-archived`. |
 | `chickpea tools list <url>` | saved | Lists every management tool with its annotations. |
 | `chickpea call <url> <tool> [--args '<json>' \| --args-file <file>]` | saved | Calls any tool and normalizes its result to `{ ok, result \| error }` JSON. Exit 1 on a refusal or input-validation error. |
 | `chickpea recipe export <url> [--agents id,id]` | saved | Calls `export_agents` and writes its secret-free portable recipe to stdout. |
@@ -48,7 +48,7 @@ $ npx chickpea-cli workspace inspect https://chickpea.example.com
 Workspace Example
 You: Alex  owner
 
-Agents (2)
+Agents (2 shown; archived Agents are left out, --include-archived lists them)
   Support  @support  id=agent_support  on  can edit
   Revops  @revops  id=agent_revops  on  can edit
 
@@ -78,7 +78,9 @@ Skill upload prints each call's `summary`, the names of the skills it added, rep
 
 Version 0.3.0 uses the 5.0 tools. `workspace inspect`, `recipe export`, and `skills upload` refuse an older Core that lacks their required tools, with `UPDATE_REQUIRED` and an "Update your Chickpea Core" message. Update the self-hosted deployment before you use these commands.
 
-`workspace inspect --json` now returns `{ workspace, agents, canCreate }`. The human summary replaces the old configuration dump with workspace identity, your role, Agent status, edit access, and attention needed. Use `call` with `get_agent`, `list_slack_channels`, `list_models`, `list_services`, or `list_members` for configuration details, subject to your role.
+`workspace inspect --json` now returns `{ workspace, agents, canCreate }`, plus `archivedLeftOut: true` when the deployment left archived Agents out. The human summary replaces the old configuration dump with workspace identity, your role, Agent status, edit access, and attention needed. Use `call` with `get_agent`, `list_slack_channels`, `list_models`, `list_services`, or `list_members` for configuration details, subject to your role.
+
+`workspace inspect` reads every page of `list_agents`: it sends each `nextCursor` back as `cursor` until a page has none, for at most 50 pages. If more pages remain after 50, it exits with `TOO_MANY_PAGES` and prints nothing, so it never prints only part of the list. A Core that pages `list_agents` leaves archived Agents out. On such a Core, the summary line says so, and `--include-archived` sends `includeArchived: true` to list them. An older Core lists archived Agents on one page and does not accept `includeArchived`. On that Core, the CLI does not send it, and the output is the same as before. The CLI does not read Agent links from `list_agents`. Use `call` with `get_agent` for an Agent's links.
 
 `call` keeps the CLI's `{ ok, result | error }` JSON format. It reads 5.0 structured content on success and preserves every field of a structured refusal's `error`, including `code`, `message`, `retryable`, `fix`, and `nextStep`. A 5.0 tool reports invalid input as a refusal with code `invalid_input`; an error that arrives as plain text, as a 4.x tool's input-validation error does, becomes code `tool_error`. It also reads 4.x structured or text envelopes, so explicit calls to tools on older self-hosted Core versions still work. The CLI does not declare card support.
 
