@@ -60,6 +60,15 @@ export function agentAdminFix(deps: FiveZeroDeps, reading: Pick<AgentAdmissionRe
   return origin ? { label, url: `${origin}${ADMIN_PATH}/agents/${encodeURIComponent(reading.agent.id)}` } : undefined;
 }
 
+/**
+ * A turned-off Agent's fix: turning it back on, through update_agent, which
+ * the model proposes in the chat. Everyone a reading is for may do it: both
+ * readings refuse an Agent the caller cannot edit, as get_agent does.
+ */
+export function turnOnFix(reading: Pick<AgentAdmissionReading, 'agent'>): McpErrorFix {
+  return { label: 'Turn it back on', tool: 'update_agent', arguments: { agentId: reading.agent.id, on: true } };
+}
+
 function settingsFix(deps: FiveZeroDeps, reading: AgentAdmissionReading, section: 'providers' | 'github' | 'browser', label: string) {
   if (reading.actor.role === 'member') return undefined;
   const url = adminSettingsLinks(deps.baseUrl, section, reading.stores.env)?.admin;
@@ -290,7 +299,7 @@ export function admissionChecks(deps: FiveZeroDeps, reading: AgentAdmissionReadi
   const fix = agentAdminFix(deps, reading, 'Open the Agent in Admin');
   const no = (detail: string, to = fix): Check[] => [withFix({ part: 'admission', name, status: 'failing', detail }, to)];
   if (agent.lifecycle === 'archived') return no(`${agent.name} is archived, so it answers no one.`);
-  if (!agent.enabled) return no(`${agent.name} is turned off, so it answers no one.`);
+  if (!agent.enabled) return no(`${agent.name} is turned off, so it answers no one.`, turnOnFix(reading));
   if (person.status !== 'active') {
     const team = reading.actor.role === 'member' ? undefined : adminTeamLinks(deps.baseUrl)?.admin;
     return no(`${person.you ? 'Your' : 'Their'} Chickpea membership is ${person.status}, so Chickpea ignores ${person.you ? 'your' : 'their'} messages.`,

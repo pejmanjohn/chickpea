@@ -500,7 +500,7 @@ async function connect(w: Awaited<ReturnType<typeof world>>, agentId: string, ac
 const told = (card: { effects: Array<{ type: string }> }) => (card.effects.findLast(({ type }) => type === 'context') as { text: string } | undefined)?.text.split('\n').at(-1);
 
 test('every refusal reads plainly on the card, with its own next step and no code or ID', async (t) => {
-  const NOT_STARTED = 'The person pressed "See its first answer" for the Agent "Invoice Chaser" (@invoices) on the card, but the practice run did not start.';
+  const NOT_STARTED = 'The person pressed "See its first answer" for the Agent "Invoice Chaser" (@invoices) on the card, but the practice run did not start. Chickpea said: "Practice runs aren\'t available on this workspace yet."';
   const shown = (card: { shown: { blocks: unknown[] } }) => card.shown.blocks;
 
   // A deployment that serves no test runs.
@@ -516,6 +516,7 @@ test('every refusal reads plainly on the card, with its own next step and no cod
   await plain.press('try_once');
   assert.deepEqual(shown(plain), [{ kind: 'text', text: 'Practice runs aren\'t available on this workspace yet.' }]);
   assert.deepEqual(plain.labels(), ['Open in Slack (primary)'], 'a retry would read the same');
+  assert.equal(plain.shown.title, 'Couldn\'t practice with Invoice Chaser', 'the heading names the refusal, not a first answer');
   assert.equal(told(plain), NOT_STARTED);
   plainly(plain.shown, ['agent_invoice_chaser']);
 
@@ -549,6 +550,7 @@ test('every refusal reads plainly on the card, with its own next step and no cod
   await failed.card.press('try_once');
   assert.deepEqual(shown(failed.card), [{ kind: 'text', text: 'The practice run took too long and was stopped.' }]);
   assert.deepEqual(failed.card.labels(), ['Open in Slack (primary)']);
+  assert.equal(failed.card.shown.title, 'Invoice Chaser\'s first answer', 'a run that started stays its first answer');
   assert.equal(told(failed.card), 'The person ran the Agent "Invoice Chaser" (@invoices) once from the card, but it did not finish answering.');
 
   // A connection that allows no tools yet: the run leaves it out and answers. The card says so under the

@@ -7,9 +7,11 @@ import {
   HEADING_MAX_CHARACTERS,
   QUOTE_MAX_CHARACTERS,
   summarizeTextChange,
+  textChangeWindows,
   type LineHunk,
   type TextChange,
 } from '../src/management/text-changes.ts';
+import { describeWholeTextChange } from '../src/management/text-change-wording.ts';
 import {
   rewordItems,
   rewordMarker,
@@ -210,4 +212,21 @@ test('a heading whose section runs on past the change is an edit, not a whole se
     describe(skill.replace(syntheticSection(6), `${syntheticSection(6)}${syntheticSection(9, 'Archive')}`)),
     ['adds section Step 9: Archive'],
   );
+});
+
+// Mutation proof: a window that cuts the changed words, or drops the leading words before the trailing ones, fails here.
+test('a change\'s window holds every changed word; fitting it drops the trailing words, then the leading ones', () => {
+  const before = 'one two three four five six seven eight nine ten';
+  const changed = 'a very long replacement that runs well past any quote';
+  const after = `one two three four five ${changed} eight nine ten`;
+  const [entry] = textChangeWindows(before, after);
+  assert.deepEqual(entry!.window, {
+    lead: 'two three four five', changed, trail: 'eight nine ten', moreBefore: true, moreAfter: false,
+  });
+  assert.deepEqual(summarizeTextChange(before, after), [(({ window: _window, ...change }) => change)(entry!)], 'the quotes are unchanged');
+  const quoted = (text: string) => `“${text}”`;
+  const { window, ...change } = entry!;
+  assert.equal(describeWholeTextChange(change, window!, quoted, 500), `Changes wording to: “…two three four five ${changed} eight nine ten”`);
+  assert.equal(describeWholeTextChange(change, window!, quoted, changed.length + 6), `Changes wording to: “…five ${changed}…”`);
+  assert.equal(describeWholeTextChange(change, window!, quoted, 5), `Changes wording to: “…${changed}…”`, 'never shorter than the change');
 });

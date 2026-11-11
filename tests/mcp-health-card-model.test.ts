@@ -243,6 +243,19 @@ test('a fix that would change the Agent goes to the chat, and a link fix opens o
   }
 });
 
+test('a turned-off Agent\'s check offers to turn it back on, through the chat', async (t) => {
+  const { f, teamId, call, card } = await harness(t, 'health-off');
+  await seedOps(f, teamId);
+  await f.config.updateAgent('agent_ops', { enabled: false });
+  const health = card();
+  await health.result(await call('check_agent', { agentId: 'agent_ops' }));
+  const row = rows(health.shown).find((line) => line.includes('turned off'));
+  assert.match(row ?? '', /Ops is turned off, so it answers no one\. · \[Turn it back on\]$/);
+  await health.press(fixOf(health.shown, 'You, in a DM'));
+  assert.deepEqual(health.effects.at(-1), { type: 'message', sent: 'Fix you, in a DM for Ops: Turn it back on.' });
+  assert.deepEqual(health.calls().filter(({ tool }) => tool !== 'get_agent'), [], 'the model turns it on, not the card');
+});
+
 // Mutation proof: the card opens a fix's link only when it is Chickpea's page for that one connection.
 test('a fix whose answer is not Chickpea\'s page for one connection asks the chat instead of opening it', async (t) => {
   const { f, teamId, call, clock } = await harness(t, 'health-admin-link');
