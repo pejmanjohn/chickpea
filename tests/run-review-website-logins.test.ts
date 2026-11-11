@@ -673,7 +673,8 @@ test('a hand-off link goes percent-encoded whole, and a hand-off URL holding an 
   const record = copy({
     context: [{ author: 'Billing Agent', role: 'agent', text: `${message}\nLinks in this Slack message:\n- ${liveView}`, files: [] }],
     steps: [{ kind: 'tool', name: 'browser_snapshot', input: '{}', output: encodeURIComponent(message) }],
-    answer: new URLSearchParams({ text: message }).toString(),
+    // A field percent-encoded whole that holds the message and its link listed again, as a context row writes it.
+    answer: new URLSearchParams({ text: `${message}\nLinks in this Slack message:\n- ${liveView}` }).toString(),
   });
   assert.deepEqual(kept(record, ['SYNTHHAND', 'live.provider']), []);
   assert.match(record.context[0]?.text ?? '', /\[browser link omitted\] and sign in;.*\nLinks in this Slack message:\n- \[browser link omitted\]$/s);
@@ -1082,6 +1083,15 @@ test('each decoding pass counts against the copy\'s budget', () => {
   assert.throws(() => {
     for (let read = 0; read < 10; read += 1) scrub.links(field, false);
   }, (error) => error instanceof RunReviewScrubLimit && error.event === 'scrub_over_budget');
+});
+
+test('each hand-off URL searched for counts the field against the copy\'s budget', () => {
+  const links = (count: number) => Array.from({ length: count }, (_, index) =>
+    `<https://live.provider.example/s/SYNTHMANY${index}|Open the browser> https://live.provider.example/s/SYNTHMANY${index}`).join(' ');
+  const scrub = () => websiteLoginScrub({ hosts: [], usernames: [] });
+  assert.equal(scrub().links(links(10), false).includes('SYNTHMANY'), false, 'a field of 10 hand-off links stays within it');
+  assert.throws(() => scrub().links(links(4000), false), (error) =>
+    error instanceof RunReviewScrubLimit && error.event === 'scrub_over_budget');
 });
 
 test('a character reference or percent escape of no character stays as written, and the copy is kept', () => {

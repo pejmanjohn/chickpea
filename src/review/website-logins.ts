@@ -119,10 +119,10 @@ const HANDOFF_LINK = new RegExp(String.raw`[<\u{F003C}]([^<>|\u{F003C}\u{F003E}]
 const HANDOFF_LABEL = new RegExp(String.raw`\|${HANDOFF_LABEL_TEXT}[>\u{F003E}]`, 'u');
 /** What a hand-off message links to: an absolute web address, too long to be a word of other text. */
 const HANDOFF_URL = /^https?:\/\/[^\s<>|"\\]{8,}$/i;
-/** A run of text a hand-off URL could be: nothing that ends one. */
-const URL_RUN = /[^\s<>|"\\]+/g;
-const BEFORE_URL_RUN = /[\s<"]/;
-const AFTER_URL_RUN = /[\s>|"\\]/;
+// What may stand right before and right after a hand-off URL that stands alone, as written, percent-encoded (a
+// stand-in), or as a form's space.
+const BEFORE_HANDOFF_URL = /[\s<"+]/;
+const AFTER_HANDOFF_URL = /[\s>|"\\+]/;
 
 /** Shapes of a hosted browser's live view, debugger or connect link, whatever its host. */
 function browserLink(scheme: string | undefined, hostname: string, path: string, suffix: string): boolean {
@@ -360,7 +360,7 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
       budget.spend(text.length);
       const view = linkView(text, maps, budget);
       if (!HANDOFF_LABEL.test(view.text)) return scrubLinks(text, view, browserStep);
-      const handedOff = withoutHandoffs(text, view);
+      const handedOff = withoutHandoffs(text, view, budget);
       budget.spend(handedOff.length);
       return scrubLinks(handedOff, linkView(handedOff, maps, budget), browserStep);
     },
@@ -624,6 +624,11 @@ function withStandIns(view: Written, maps: ViewMaps): Written {
   return out.done();
 }
 
+/** The character a code point stands for: itself, or a stand-in's. */
+function standingFor(point: number): string {
+  return String.fromCodePoint(point >= STAND_IN && point <= 0xffffd ? point - STAND_IN : point);
+}
+
 /** A link as the rules rewrote it, with each stand-in percent-encoded again. */
 function withoutStandIns(link: string): string {
   return link.replace(STAND_INS, (char) => encodeURIComponent(String.fromCodePoint(char.codePointAt(0)! - STAND_IN)));
@@ -765,12 +770,12 @@ class WrittenText {
  * `source` without a hand-off message's link, and without that link's URL
  * wherever else the text holds it, as the view reads both. A thread context
  * row lists a message's links again under its text, unescaped
- * (slack/rich-text-links.ts). Anyone
- * can write the label, so only a whole URL counts, and only where it stands
- * alone: a replacement inside other text would break up a URL or a username
- * before its own rule saw it.
+ * (slack/rich-text-links.ts). Anyone can write the label, so only a whole
+ * URL counts, and only where it stands alone: a replacement inside other
+ * text would break up a URL or a username before its own rule saw it. Each
+ * URL searched for counts the field's length against the budget.
  */
-function withoutHandoffs(source: string, view: Written): string {
+function withoutHandoffs(source: string, view: Written, budget: ScrubBudget): string {
   const { text } = view;
   const spans: Span[] = [];
   const handoffs = new Set<string>();
@@ -778,11 +783,14 @@ function withoutHandoffs(source: string, view: Written): string {
     spans.push([match.index, match.index + match[0].length]);
     if (match[1] && HANDOFF_URL.test(match[1])) handoffs.add(match[1]);
   }
-  if (handoffs.size) {
-    for (const run of text.matchAll(URL_RUN)) {
-      const end = run.index + run[0].length;
-      if (handoffs.has(run[0]) && (run.index === 0 || BEFORE_URL_RUN.test(text[run.index - 1]!)) &&
-          (end === text.length || AFTER_URL_RUN.test(text[end]!))) spans.push([run.index, end]);
+  // A URL that holds `%20` reads with a stand-in inside it, and one in a field percent-encoded whole with stand-ins
+  // around it, so each is searched for whole. Each search reads the field once.
+  for (const url of handoffs) {
+    budget.spend(text.length);
+    for (let at = text.indexOf(url); at >= 0; at = text.indexOf(url, at + 1)) {
+      const end = at + url.length;
+      if ((at === 0 || BEFORE_HANDOFF_URL.test(standingFor(pointBefore(text, at)))) &&
+          (end === text.length || AFTER_HANDOFF_URL.test(standingFor(text.codePointAt(end)!)))) spans.push([at, end]);
     }
   }
   return replaceSpans(source, spans.map(([start, end]) => written(view, start, end)), BROWSER_LINK_OMITTED);

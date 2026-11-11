@@ -6,6 +6,7 @@ import { browserHandoffMessage } from '../src/browser/requester.ts';
 import { htmlNamedReference } from '../src/review/html-references.ts';
 import { buildRunReviewRecord, runReviewPseudonymizer, type RunReviewInput, type RunReviewRecordV1 } from '../src/review/record.ts';
 import type { RunReviewWebsiteLogins } from '../src/review/website-logins.ts';
+import { toContextMessage } from '../src/slack/thread-context.ts';
 import { PRODUCERS, type Producer } from './helpers/encoders.ts';
 
 const LOGINS: RunReviewWebsiteLogins = {
@@ -24,6 +25,7 @@ interface Credential {
 }
 
 const EVERY_FIELD: readonly Field[] = ['prose', 'browser step'];
+const HANDOFF_URL = 'https://live.provider.example/s/SynthLive53?view=full&t=SynthLive54';
 
 /**
  * Each kind of credential a copy could see. A typed password or one-time
@@ -58,6 +60,15 @@ const CREDENTIALS: readonly Credential[] = [
     name: 'hand-off message',
     text: browserHandoffMessage('portal.example.com', 'https://live.provider.example/s/SynthLive51?view=full&t=SynthLive52'),
     secrets: ['SynthLive51', 'SynthLive52'],
+    fields: EVERY_FIELD,
+  },
+  {
+    name: 'hand-off message in a later turn\'s context row',
+    text: toContextMessage({
+      ts: '1792915200.000100', user: 'U0BOT12345', text: browserHandoffMessage('portal.example.com', HANDOFF_URL),
+      blocks: [{ type: 'rich_text', elements: [{ type: 'rich_text_section', elements: [{ type: 'link', url: HANDOFF_URL, text: 'Open the browser' }] }] }],
+    }, { botUserId: 'U0BOT12345' })!.text,
+    secrets: ['SynthLive53', 'SynthLive54'],
     fields: EVERY_FIELD,
   },
   {
