@@ -41,7 +41,7 @@ export function createMcpToolsListFilter(options: McpToolsListFilterOptions) {
     const listed = new Map<string, unknown>();
     for (const tool of tools) {
       if (!isRecord(tool) || typeof tool.name !== 'string') throw unsupported('tool');
-      if (!listed.has(tool.name)) listed.set(tool.name, tool);
+      listed.set(tool.name, tool);
     }
     listing.listedCount += tools.length;
     const kept = options.grant.filter((name) => listed.has(name) && !listing.granted.has(name));
@@ -215,6 +215,8 @@ function rewriteStreamedMessage(message: unknown, rewrite: ToolsListRewrite): un
  * lines end in CR, LF, or CRLF; an event needs a data line; comments, unknown
  * fields, and an unfinished last event are dropped. Each event is written back
  * in one canonical form, so the client reads exactly the events read here.
+ * Values the client ignores (an id with NUL, a retry that is not a number)
+ * pass as they came.
  */
 function eventStreamRewriter(
   rewriteData: (data: string) => string,
@@ -240,7 +242,6 @@ function eventStreamRewriter(
 
   const line = (text: string): string => {
     if (text === '') return dispatch();
-    if (text.startsWith(':')) return '';
     const colon = text.indexOf(':');
     const field = colon === -1 ? text : text.slice(0, colon);
     const value = colon === -1 ? '' : text.slice(text.charCodeAt(colon + 1) === 32 ? colon + 2 : colon + 1);
@@ -250,8 +251,8 @@ function eventStreamRewriter(
     } else if (field === 'event') {
       type = value || undefined;
     } else if (field === 'id') {
-      id = value.includes('\0') ? undefined : value;
-    } else if (field === 'retry' && /^\d+$/.test(value)) {
+      id = value;
+    } else if (field === 'retry') {
       return `retry: ${value}\n\n`;
     }
     return '';
@@ -259,7 +260,7 @@ function eventStreamRewriter(
 
   return (text) => {
     // A long line arrives in many chunks; do not rescan it for each one.
-    if (!pending.endsWith('\r') && !text.includes('\n') && !text.includes('\r')) {
+    if (!text.includes('\n') && !text.includes('\r')) {
       pending += text;
       if (pending.length + size > MAX_TOOLS_LIST_BYTES) throw tooLarge();
       return '';

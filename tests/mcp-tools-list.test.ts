@@ -390,7 +390,8 @@ test('an event stream is split the way the MCP client splits it and written back
     '﻿: comment\r',
     `\nretry: 250\rid: 7\r\nevent: message\r\nunknown: field\r\ndata: ${listing.slice(0, 10)}`,
     `${listing.slice(10)}\r\n\r`,
-    '\nevent: message\ndata: {"jsonrpc":"2.0",\ndata:"method":"notifications/progress"}\n\n',
+    '\nid: 8\n\nevent: message\ndata: {"jsonrpc":"2.0",\r',
+    '\ndata:"method":"notifications/progress"}\n\n',
     'data: an event the stream never finished',
   ]), 'Example Tools', false);
   assert.equal(await response.text(),
@@ -407,10 +408,12 @@ test('every answer to a pending listing is filtered, so a decoy cannot use the f
     `event: ignored\ndata: ${answer(3, unfiltered)}\n\n`,
     `data: ${answer('3', unfiltered)}\n\n`,
     `data: [${answer(3, unfiltered)}]\n\n`,
+    'data: {"jsonrpc":"2.0","id":3,"method":"ping"}\n\n',
   ]), 'Example Tools', false);
   const text = await response.text();
   assert.doesNotMatch(text, /extra/);
   assert.equal([...text.matchAll(/"alpha"/g)].length, 3, 'each answer is narrowed to the grant');
+  assert.ok(text.endsWith('data: {"jsonrpc":"2.0","id":3,"method":"ping"}\n\n'), 'a server request is not an answer');
 });
 
 test('a malformed listing on a stream becomes the error answer to that listing', async () => {
@@ -440,10 +443,13 @@ test('answers to other requests and to a listing before initialize pass through 
 test('an oversized event stops the stream', async () => {
   const tools = filter();
   await tools.noteRequest(rpcRequest(3, 'tools/list'));
-  const response = await tools.filterResponse(getStream(), eventStream([
-    'data: ', 'x'.repeat(4_000_000), 'x'.repeat(4_000_001),
-  ]), 'Example Tools', false);
-  await assert.rejects(response.text(), /unsupported response \(response-size\)/);
+  for (const chunks of [
+    ['data: ', 'x'.repeat(4_000_000), 'x'.repeat(4_000_001)],
+    [`data: ${'x'.repeat(4_000_000)}\n`, `data: ${'x'.repeat(4_000_001)}\n`],
+  ]) {
+    const response = await tools.filterResponse(getStream(), eventStream(chunks), 'Example Tools', false);
+    await assert.rejects(response.text(), /unsupported response \(response-size\)/);
+  }
 });
 
 test('a listing POST needs a JSON or event-stream body within the size cap', async () => {
@@ -470,6 +476,10 @@ test('a listing POST needs a JSON or event-stream body within the size cap', asy
 
 test('bodies that carry no listing answer pass through untouched', async () => {
   const listing = rpcRequest(3, 'tools/list');
+  const error = '{ "jsonrpc": "2.0", "id": 3, "error": { "code": -32601, "message": "Method not found" } }';
+  assert.equal(await (await filter().filterResponse(listing, new Response(error, {
+    headers: { 'content-type': 'application/json' },
+  }), 'Example Tools', true)).text(), error);
   const accepted = new Response('Accepted', { status: 202 });
   assert.equal(await filter().filterResponse(listing, accepted, 'Example Tools', true), accepted);
   const legacy = new Response('Accepted', { status: 200, headers: { 'content-type': 'text/plain' } });
