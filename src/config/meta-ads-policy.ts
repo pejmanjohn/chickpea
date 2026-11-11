@@ -155,11 +155,13 @@ const META_ADS_HELPER_RUNTIME_ARGUMENTS: Readonly<Record<string, readonly string
  * custom conversions reads come from Meta's tool descriptions, which name no
  * arguments, not from a live schema. Each names one argument per filter its
  * description mentions; any other ID-shaped argument keeps the tool
- * unavailable. The activity log also lists `oid` and `uid`, Graph's names for
- * its object and user filters, which the ID-shape check would not catch.
+ * unavailable. The activity log also lists `oid`, `uid` and `extra_oids`,
+ * Graph's names for its object and user filters, which the ID-shape check
+ * would not catch. A filter under any other name without that shape stays
+ * sendable, so each list is confirmed against the live schema before release.
  */
 const META_ADS_NON_ACCOUNT_ID_ARGUMENTS = {
-  ads_account_get_activity_logs: ['client_conversation_id', 'object_id', 'oid', 'user_id', 'uid'],
+  ads_account_get_activity_logs: ['client_conversation_id', 'extra_oids', 'object_id', 'oid', 'user_id', 'uid'],
   ads_get_ad_account_custom_audiences: ['client_conversation_id'],
   ads_get_ad_accounts: [],
   ads_get_ad_entities: ['client_conversation_id', 'object_ids'],

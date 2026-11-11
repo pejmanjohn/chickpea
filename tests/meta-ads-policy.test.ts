@@ -277,12 +277,18 @@ test("Meta's account-wide reads are admitted with one required account field and
 
 test("the activity log's Graph-named object and user filters are admitted but never sent", () => {
   const name = 'ads_account_get_activity_logs';
-  const graphNamed = metaAccountReadSchema(name, { extra: { oid: { type: 'string' }, uid: { type: 'string' } } });
+  const graphNamed = metaAccountReadSchema(name, { extra: {
+    oid: { type: 'string' }, uid: { type: 'string' }, extra_oids: { type: 'array', items: { type: 'string' } },
+  } });
   const tool = accountRead(name, graphNamed);
   assert.equal(metaAdsToolSchemaSupported(tool), true);
   const runtime = metaAdsRuntimePropertyNames({ discoveredTools: [tool] }, name)!;
-  for (const filter of ['object_id', 'oid', 'user_id', 'uid']) assert.equal(runtime.includes(filter), false, filter);
-  for (const filter of ['oid', 'uid']) {
+  for (const filter of ['object_id', 'oid', 'extra_oids', 'user_id', 'uid']) {
+    assert.equal(runtime.includes(filter), false, filter);
+    assert.throws(() => assertMcpToolArgumentKeys(name, { ad_account_id: '123450001', [filter]: '1' }, runtime),
+      new RegExp(`does not permit the argument ${filter}`));
+  }
+  for (const filter of ['oid', 'uid', 'extra_oids']) {
     assert.equal(accountRead(name, { ...graphNamed, required: ['ad_account_id', filter] }).inputSchema?.ambiguous,
       true, `a required ${filter} would narrow every call, so it is refused`);
   }
