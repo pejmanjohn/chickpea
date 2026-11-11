@@ -1227,6 +1227,50 @@ test('models endpoint folds OpenRouter favorites into the picker suggestions (no
   }
 });
 
+test('models endpoint names each suggestion it knows and leaves the rest unnamed', async () => {
+  const app = new Hono();
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  app.route('/', createAdminRoutes({
+    store: config,
+    settings,
+    ...testAdminAuthority(ADMIN_TOKEN),
+    knownProviders: new Set(['openai', 'openrouter', 'google', 'cloudflare']),
+  }));
+  try {
+    const saved = await app.request('/admin/api/providers/openrouter/favorites', {
+      method: 'PUT',
+      headers: { ...auth(), 'content-type': 'application/json' },
+      body: JSON.stringify({ favorites: ['deepseek/deepseek-v4.1-flash', 'acme/ops-large'] }),
+    });
+    assert.equal(saved.status, 200);
+
+    const response = await app.request('/admin/api/models', { headers: auth() });
+    assert.equal(response.status, 200);
+    const { providers } = (await response.json()) as {
+      providers: Array<{ id: string; suggestions: string[]; modelNames: Record<string, string> }>;
+    };
+    const names = (id: string) => providers.find((provider) => provider.id === id)?.modelNames;
+    // Pi 1.1 has no GPT-6.1 Terra; only the catalog names it.
+    assert.equal(names('openai')?.['openai/gpt-6.1-terra'], 'GPT-6.1 Terra');
+    assert.equal(names('google')?.['google/gemini-4-argon'], 'Gemini 4 Argon');
+    assert.equal(names('cloudflare')?.['cloudflare/@cf/zai-org/glm-4.7-flash'], 'GLM-4.7-Flash');
+    assert.deepEqual(names('openrouter'), {
+      'openrouter/deepseek/deepseek-v4.1-flash': 'DeepSeek: DeepSeek V4.1 Flash',
+    }, 'a model neither the catalog nor Pi knows has no name');
+    for (const provider of providers) {
+      assert.deepEqual(
+        Object.keys(provider.modelNames).filter((model) => !provider.suggestions.includes(model)),
+        [],
+        `${provider.id} names only its own suggestions`,
+      );
+    }
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
 test('Workers AI models return 409 on node when REST credentials are absent', async () => {
   const { app, close } = appWithProviderAdmin();
   try {

@@ -75,6 +75,7 @@ import { installationFunding, platformFundsProvider } from '../config/platform-f
 import {
   activeCatalogModels,
   availableRoleModels,
+  chatModelName,
   chatModelPickerProviders,
   codingModelChoiceError,
   IMAGE_ROLE_PROVIDER_IDS,
@@ -2816,8 +2817,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         }
         return efforts;
       },
-      displayName: (model) =>
-        activeModelCatalogSnapshot(env).entries.find((entry) => entry.id === model)?.displayName ?? null,
+      displayName: (model) => chatModelName(model, env),
     };
   };
   const agentAdminProjectionForRequest = async (
@@ -13471,7 +13471,7 @@ interface ModelEffortProjection {
 /** One request's model lookups, shared by every Agent it projects. */
 interface AgentProjectionModels {
   efforts(model: string): Promise<ModelEffort[]>;
-  /** The active catalog's name for the model, or null for an id it does not list. */
+  /** The model's name for people, or null when none is known. */
   displayName(model: string): string | null;
 }
 
