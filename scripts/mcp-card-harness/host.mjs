@@ -1,5 +1,7 @@
 import { AppBridge, PostMessageTransport } from '@modelcontextprotocol/ext-apps/app-bridge';
 
+import { chatGptError, GATEWAY_TIMEOUT, RESOURCE_NOT_FOUND } from '../../tests/helpers/chatgpt-delivery.ts';
+
 /**
  * A stand-in for ChatGPT: ext-apps' own host bridge, ChatGPT's style
  * variables, its app label and bordered frame. The card runs on another
@@ -14,19 +16,26 @@ const chatgpt = params.get('host') !== 'claude';
 const styles = chatgpt ? window.HARNESS_STYLES[theme] : undefined;
 const record = {
   calls: [], args: [], messages: [], links: [], sizes: [], contexts: [], holdCreate: false, release: undefined,
-  /** Tools whose calls wait for `answerHeld`, which sends them on or fails them as a host that gave up would. */
+  /**
+   * Tools whose calls wait for `answerHeld`, which sends them on, fails them as a host that gave up
+   * would ('fail'), or answers with an error result of the host's own ('failResult').
+   */
   holding: [], held: [],
+  /** Tools ChatGPT has not listed since the app connected: it answers them itself, without asking Chickpea. */
+  unlisted: params.get('unlisted')?.split(',') ?? [],
+  /** Tools whose calls run on Chickpea but reach the card as ChatGPT's 504 page, as at 300 s (probe 13). */
+  timedOut: [],
   answerHeld(how = 'send') {
     for (const settle of record.held.splice(0)) settle(how);
   },
   /** What the card saved with window.openai.setWidgetState, oldest first. */
   widgetStates: [],
   /**
-   * How a result with isError reaches the card: as the result (ext-apps'
-   * own host), or as a JSON-RPC error carrying ChatGPT's copy of the result
-   * in its data ('data') or carrying only its words ('bare').
+   * How a result with isError reaches the card: as the result, as ext-apps'
+   * own host and claude.ai hand it over, or as ChatGPT does (probe 12): a
+   * JSON-RPC error that keeps only its text.
    */
-  errors: 'result',
+  errors: chatgpt ? 'chatgpt' : 'result',
 };
 window.harness = record;
 
@@ -74,15 +83,14 @@ async function mount(widgetState) {
     if (record.holding.includes(request.name)) {
       const how = await new Promise((resolve) => { record.held.push(resolve); });
       if (how === 'fail') throw new Error('The host gave up on the call.');
+      if (how === 'failResult') return { isError: true, content: [{ type: 'text', text: 'Request timed out' }] };
     }
+    const hostError = ({ code, message }) => Object.assign(new Error(message), { code });
+    if (record.unlisted.includes(request.name)) throw hostError(RESOURCE_NOT_FOUND);
     const response = await fetch('/call', { method: 'POST', body: JSON.stringify(request) });
     const result = await response.json();
-    if (result.isError && record.errors !== 'result') {
-      throw Object.assign(new Error(result.content?.[0]?.text ?? 'Tool call failed'), {
-        code: -32603,
-        ...record.errors === 'data' ? { data: { status: 'error', mcp_tool_result: result } } : {},
-      });
-    }
+    if (record.timedOut.includes(request.name)) throw hostError(GATEWAY_TIMEOUT);
+    if (result.isError && record.errors === 'chatgpt') throw hostError(chatGptError(result));
     return result;
   };
   bridge.onmessage = async (message) => {
