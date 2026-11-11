@@ -48,6 +48,8 @@ export const MAX_SCRUB_USERNAME_CHARS = 320;
  * A copy at the record cap with 500 saved usernames takes about a tenth of it.
  */
 export const SCRUB_BUDGET_STEPS = 20_000_000;
+/** What reading a host that is not in ASCII costs besides its length: a URL parses it in about the time of 80 steps. */
+const HOST_PARSE_STEPS = 80;
 
 /** A copy the scrub stopped: past its budget, or past the caps on its logins. `event` is its only log line. */
 export class RunReviewScrubLimit extends Error {
@@ -76,24 +78,37 @@ export class ScrubBudget {
 const URL_CHAR = String.raw`[^\s"<>\\]`;
 // The JSON escape of `&`, `'`, `+` or `=` does not end a URL: Go, Gson and .NET write them that way.
 const ESCAPED_ASCII = String.raw`\\+u00(?:26|27|2[bB]|3[dD])`;
+// Nor does the JSON escape of a character past ASCII, as a serializer that keeps to ASCII writes every one.
+const ESCAPED_UNICODE = String.raw`\\+u(?!00[0-7])[\da-f]{4}`;
 // A slash, which JSON may escape with a backslash: PHP does by default.
 const SLASH = String.raw`\\*\/`;
-// Not inside a word, an email address or a path. A protocol-relative `//` may come before it.
-const HOST_START = String.raw`(?<![\p{L}\p{N}.@_-])(?<!(?:^|[^/])\/)`;
+// A dot between a host's labels. A URL reads the ideographic and fullwidth full stops as one too.
+const DOT = String.raw`[.\u3002\uFF0E\uFF61]`;
+// A character of a host's label, in any script, or a percent or JSON escape of one.
+const LABEL_CHAR = String.raw`(?:[\p{L}\p{N}-]|%[\da-f]{2}|${ESCAPED_UNICODE})`;
+// After an odd run of backslashes, which JSON writes to escape the letter that follows.
+const AFTER_ESCAPE = String.raw`(?:^|[^\\])(?:\\\\)*\\`;
+// Not inside a word, an escape or a run of backslashes, an email address or a path. A JSON escape of a line
+// break or a tab may come right before it, and so may a protocol-relative `//`, its slashes escaped or not.
+const HOST_START = String.raw`(?:(?<![\p{L}\p{N}.\u3002\uFF0E\uFF61@_-])|(?<=${AFTER_ESCAPE}[nrtbf]))(?![nrtbf](?<=${AFTER_ESCAPE}[nrtbf]))` +
+  String.raw`(?!(?<=%)[\da-f]{2})(?!(?<=\\)(?:\\|u[\da-f]{4}))(?<!(?:^|[^/\\])\\*\/)`;
 // A host as a link writes one: a name or a bracketed IP address.
 const READABLE_HOST = /^(?:[\p{L}\p{N}.-]+|\[[\da-f:.]+\])$/iu;
+// A host already in the form a URL gives it, but for case.
+const ASCII_HOST = /^[a-z\d.-]+$/i;
 
-const MORE_URL = String.raw`${URL_CHAR}*(?:(?:${ESCAPED_ASCII}|\\+\/)${URL_CHAR}*)*`;
-const SCHEME_URL = String.raw`\b(?:https?|wss?):${SLASH}${SLASH}${URL_CHAR}${MORE_URL}`;
+const MORE_URL = String.raw`${URL_CHAR}*(?:(?:${ESCAPED_ASCII}|${ESCAPED_UNICODE}|\\+\/)${URL_CHAR}*)*`;
+const SCHEME_URL = String.raw`\b(?:https?|wss?):${SLASH}${SLASH}(?:${URL_CHAR}|${ESCAPED_UNICODE})${MORE_URL}`;
 // What follows a scheme-less host, which may end in a dot: a port, then a path or a query.
-const AFTER_HOST = String.raw`\.?(?::\d+)?(?:${SLASH}${MORE_URL}|[;?#]${URL_CHAR}${MORE_URL})`;
-// Any host followed by a path or a query, as a browser step's input may name a page.
-const ANY_SCHEMELESS_URL = String.raw`${HOST_START}(?:[a-z0-9-]+\.)+[a-z]{2,}${AFTER_HOST}`;
+const AFTER_HOST = String.raw`${DOT}?(?::\d+)?(?:${SLASH}${MORE_URL}|[;?#]${URL_CHAR}${MORE_URL})`;
+// Any host followed by a path or a query, as a browser step's input may name a page. Its top-level label
+// is letters, or the ASCII form of a name in another script.
+const ANY_SCHEMELESS_URL = String.raw`${HOST_START}(?:${LABEL_CHAR}+${DOT})+(?:\p{L}{2,}|xn--[a-z\d-]+)${AFTER_HOST}`;
 // Outside a browser step, a link without a scheme counts on a login's site or the hosted browser's. Any
 // host a link could follow is read, and only its host: it is looked up before the rest of its link is
 // read, so a field of hosts on no login's site costs one reading.
-const SCHEMELESS_HOST = String.raw`${HOST_START}(?<host>(?:[\p{L}\p{N}-]+\.)*[\p{L}\p{N}-]+|\[[\da-f:.]+\])` +
-  String.raw`(?=\.?(?::\d+)?(?:${SLASH}|[;?#]${URL_CHAR}))`;
+const SCHEMELESS_HOST = String.raw`${HOST_START}(?<host>(?:${LABEL_CHAR}+${DOT})*${LABEL_CHAR}+|\[[\da-f:.]+\])` +
+  String.raw`(?=${DOT}?(?::\d+)?(?:${SLASH}|[;?#]${URL_CHAR}))`;
 const LINKS_ANYWHERE = `${SCHEME_URL}|${SCHEMELESS_HOST}`;
 const LINKS_IN_BROWSER_STEP = `${SCHEME_URL}|${ANY_SCHEMELESS_URL}`;
 /** The rest of a scheme-less link on a login's site, from the end of its host. */
@@ -118,23 +133,46 @@ function browserbaseHost(hostname: string): boolean {
   return hostname === 'browserbase.com' || hostname.endsWith('.browserbase.com');
 }
 
-// A path segment a site is unlikely to take as a bearer: a plain word or a short number.
-const PLAIN_SEGMENT = /^(?:[A-Za-z]{1,20}|\d{1,4})$/;
+/** A host with each JSON escape read as the character it writes. */
+function unescapedHost(host: string): string {
+  return host.includes('\\') ? host.replace(/\\+u([\da-f]{4})/gi, (_, hex: string) => String.fromCharCode(parseInt(hex, 16))) : host;
+}
+
+/**
+ * A host as a browser reads it, to compare with a login's site: its ASCII
+ * form, in lower case, without the dots that may end it. A name in another
+ * script, a fullwidth letter or a percent escape reads as the ASCII name a
+ * URL gives it. Undefined for a host no URL can hold.
+ */
+function asciiHost(host: string): string | undefined {
+  let hostname: string;
+  if (ASCII_HOST.test(host)) {
+    hostname = host.toLowerCase();
+  } else {
+    try {
+      hostname = new URL(`https://${host}/`).hostname;
+    } catch {
+      return undefined;
+    }
+  }
+  let end = hostname.length;
+  while (end > 0 && hostname[end - 1] === '.') end -= 1;
+  return end > 0 ? hostname.slice(0, end) : undefined;
+}
+
+// A path segment a site is unlikely to take as a bearer: a word of up to 20 letters.
+const PLAIN_SEGMENT = /^[A-Za-z]{1,20}$/;
 // What a sentence may put right after a link.
 const SENTENCE_MARKS = '.,!)\'';
 
 /**
- * A path segment of a link on a login's site, or of any link in a browser
- * step, kept only where it reads as a plain word of up to 20 letters or a
- * number of up to 4 digits. Any other segment, an ID or a slug as much as a
- * token, may be what the site takes as its sign-in bearer, so it goes. The
- * marks a sentence puts after a link stay after either.
+ * The path of a link on a login's site, or of any link in a browser step,
+ * with each segment omitted that is not a word of up to 20 letters. Any
+ * other segment, a number, an ID or a slug as much as a token, may be what
+ * the site takes as its sign-in bearer.
  */
-function plainSegment(segment: string): string {
-  let end = segment.length;
-  while (end > 0 && SENTENCE_MARKS.includes(segment[end - 1]!)) end -= 1;
-  const word = segment.slice(0, end);
-  return word === '' || PLAIN_SEGMENT.test(word) ? segment : `${URL_PART_OMITTED}${segment.slice(end)}`;
+function plainPath(path: string): string {
+  return path.split('/').map((segment) => segment === '' || PLAIN_SEGMENT.test(segment) ? segment : URL_PART_OMITTED).join('/');
 }
 
 export interface WebsiteLoginScrub {
@@ -142,13 +180,18 @@ export interface WebsiteLoginScrub {
    * Link rules, on text no other rule has changed: a replacement that holds
    * a space would end a URL early and leave the rest of it. A hosted browser
    * link goes whole, and so does a hand-off message's link wherever else the
-   * same text holds it. Every URL loses its userinfo. A URL on a login's site,
-   * or any URL in a browser step, keeps its scheme and host, keeps a path
-   * segment only where it is a plain word or a short number (so its IDs and
-   * slugs go too), and loses everything from its first `;`, `?` or `#`.
-   * So does a URL whose host cannot be read as one, and its host goes too.
-   * Elsewhere a link inside another one's path or query, as a Slack link's
-   * label or a redirect holds it, goes by its own rule.
+   * same text holds it. Every URL loses its userinfo. A host is a login's
+   * site when its ASCII form is, whatever script or encoding it is written
+   * in. A URL on a login's site, or any URL in a browser step, keeps its
+   * scheme and host, keeps a path segment only where it is a word of up to
+   * 20 letters (so its numbers, IDs and slugs go too), and loses everything
+   * from its first `;`, `?` or `#`. So does a URL whose host cannot be read
+   * as one, and its host goes too. Only the marks a sentence puts right
+   * after the whole URL stay. In Slack's `<url|label>` outside a browser
+   * step, the label after the first `|` before the query is text, and goes
+   * by these rules as any text does. Elsewhere a link inside another one's
+   * path or query, as a Slack link's label or a redirect holds it, goes by
+   * its own rule.
    */
   links(text: string, browserStep: boolean): string;
   /**
@@ -170,19 +213,33 @@ export interface WebsiteLoginScrub {
  */
 export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginScrub {
   const budget = new ScrubBudget();
-  const hostnames = new Set(logins.hosts.map((host) => host.trim().toLowerCase().replace(/:\d+$/, '')).filter(Boolean));
+  const hostnames = new Set(logins.hosts.map((host) => {
+    const site = host.trim().replace(/:\d+$/, '');
+    return asciiHost(site) ?? site.toLowerCase();
+  }).filter(Boolean));
   const names = unique(logins.usernames.map((username) => username.trim()).filter(Boolean));
   if (hostnames.size > MAX_SCRUB_LOGINS || names.length > MAX_SCRUB_LOGINS ||
       names.some((name) => name.length > MAX_SCRUB_USERNAME_CHARS)) {
     throw new RunReviewScrubLimit('scrub_over_logins');
   }
-  // The site itself or any host under it.
+  const longestSite = Math.max(0, ...[...hostnames].map((site) => site.length));
+  // The site itself or any host under it, each in its ASCII form. A suffix longer than every site is none of
+  // them, so a long host is read only from where one could start.
   const loginSite = (hostname: string): boolean => {
-    for (let at = 0; ; at += 1) {
+    let at = 0;
+    if (hostname.length > longestSite) {
+      at = hostname.indexOf('.', hostname.length - longestSite - 1) + 1;
+      if (at === 0) return false;
+    }
+    for (; ; at += 1) {
       if (hostnames.has(hostname.slice(at))) return true;
       at = hostname.indexOf('.', at);
       if (at < 0) return false;
     }
+  };
+  const readHost = (host: string): string | undefined => {
+    budget.spend(ASCII_HOST.test(host) ? host.length : host.length + HOST_PARSE_STEPS);
+    return asciiHost(unescapedHost(host));
   };
 
   const scrubLinks = (text: string, browserStep: boolean): string => {
@@ -194,20 +251,23 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
       let link = match[0];
       const host = match.groups?.host;
       if (host !== undefined) {
-        const hostname = host.toLowerCase();
-        // Not a link this rule reads: reading goes on after its host, where another link may start.
-        if (!loginSite(hostname) && !browserbaseHost(hostname)) continue;
+        const hostname = readHost(host);
+        // Not a link this rule reads: reading goes on after its host, where another link may start. A host
+        // no URL can hold is no page's address.
+        if (hostname === undefined || (!loginSite(hostname) && !browserbaseHost(hostname))) continue;
         REST_OF_LINK.lastIndex = match.index + host.length;
         link += REST_OF_LINK.exec(text)![0];
       }
-      result += `${text.slice(from, match.index)}${scrubLink(link, browserStep)}`;
+      // Slack writes a link as `<url|label>`. A browser step holds a page's text, not Slack's.
+      const slackLink = !browserStep && text[match.index - 1] === '<';
+      result += `${text.slice(from, match.index)}${scrubLink(link, browserStep, slackLink)}`;
       from = match.index + link.length;
       pattern.lastIndex = from;
     }
     return result + text.slice(from);
   };
 
-  const scrubLink = (matched: string, browserStep: boolean): string => {
+  const scrubLink = (matched: string, browserStep: boolean, slackLink: boolean): string => {
     // A plain slash is valid JSON too, so the link comes back without its escapes.
     const raw = matched.replace(/\\+\//g, '/');
     const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(raw);
@@ -220,22 +280,27 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
     const hostEnd = hostAndRest.search(/[/;?#|]/);
     const host = hostEnd < 0 ? hostAndRest : hostAndRest.slice(0, hostEnd);
     const rest = hostEnd < 0 ? '' : hostAndRest.slice(hostEnd);
-    // `host.example.` names the same site as `host.example`.
-    const hostname = host.replace(/:\d*$/, '').replace(/\.+$/, '').toLowerCase();
-    const readable = READABLE_HOST.test(hostname);
+    const written = host.replace(/:\d*$/, '');
+    const hostname = readHost(written);
+    // An escape reads as what it writes, so a host that escapes a mark no host holds cannot be read either.
+    const readable = hostname !== undefined && READABLE_HOST.test(unescapedHost(written));
     const pathEnd = rest.search(/[;?#]/);
     const path = pathEnd < 0 ? rest : rest.slice(0, pathEnd);
     const suffix = pathEnd < 0 ? '' : rest.slice(pathEnd);
-    if (browserLink(scheme?.[1], hostname, path, suffix)) return BROWSER_LINK_OMITTED;
+    if (browserLink(scheme?.[1], hostname ?? '', path, suffix)) return BROWSER_LINK_OMITTED;
     // A host that cannot be read as one may hide a login's site or a token, so it goes, and its link goes by the login rule.
     const start = `${scheme?.[0] ?? ''}${readable ? host : URL_PART_OMITTED}`;
     // What follows the host can hold another link, as a Slack link's label or a redirect's query does.
     if (!browserStep && readable && !loginSite(hostname)) {
       return `${start}${scrubLinks(rest, browserStep)}`;
     }
-    // A Slack link's label may follow `|`, and a page's path may hold one, so each side is read as segments.
-    budget.spend(path.length);
-    return `${start}${path.replace(/[^/|]+/g, plainSegment)}${suffix ? `?${URL_PART_OMITTED}` : ''}`;
+    budget.spend(rest.length);
+    const label = slackLink ? path.indexOf('|') : -1;
+    if (label >= 0) return `${start}${plainPath(path.slice(0, label))}|${scrubLinks(rest.slice(label + 1), false)}`;
+    let end = rest.length;
+    while (end > 0 && SENTENCE_MARKS.includes(rest[end - 1]!)) end -= 1;
+    const kept = pathEnd < 0 ? plainPath(rest.slice(0, end)) : `${plainPath(path)}?${URL_PART_OMITTED}`;
+    return `${start}${kept}${rest.slice(end)}`;
   };
 
   // An email address's local part goes where it stands alone too, as a site's greeting writes it.
