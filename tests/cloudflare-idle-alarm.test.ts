@@ -13,9 +13,9 @@ import { StopAbortFence } from '../src/slack/runner-stops.ts';
 import { slackTurnExecutor } from '../src/slack/turn-executor-flag.ts';
 import { TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
-import { KEEP_WARM_WINDOW_MS, ResidencyHold } from '../src/state/residency-hold.ts';
+import { residencyHoldMs } from '../src/state/residency-hold.ts';
 import { turnJob as maintenanceTurnJob } from './fixtures/state-db/maintenance.ts';
-import { ScriptedTimers } from './helpers/residency-hold.ts';
+import { HOLD_ENV, HOLD_MS, holdOn, ScriptedTimers } from './helpers/residency-hold.ts';
 
 // The production alarm(), its idle drain (no turn pending) and the admission
 // RPC, over stubbed stores: the idle drains advance a scripted clock, so each
@@ -45,16 +45,17 @@ const moduleStatement = (name: string) => {
   return statement.getText(source);
 };
 const compiled = ts.transpileModule(
-  `${['RELAY_BATCH_WINDOW_MS', 'KEEP_WARM_TICK_MS', 'RETENTION_SWEEP_INTERVAL_MS', 'earliestDefined'].map(moduleStatement).join('\n')}
+  `${['RELAY_BATCH_WINDOW_MS', 'KEEP_WARM_WINDOW_MS', 'KEEP_WARM_TICK_MS', 'RETENTION_SWEEP_INTERVAL_MS', 'earliestDefined'].map(moduleStatement).join('\n')}
 class StateStoreProbe { ${[
     'alarm', 'drainRelayAlarm', 'deliverStopNotices', 'admitSlackTurn', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'admissionWakeAt',
-    'runnerMode', 'keepWarmTickAt', 'dispatchingWhile',
+    'runnerMode', 'keepWarmTickAt', 'dispatchingWhile', 'hold', 'threadRunnerTurn',
   ].map(stateMethod).join('\n')} }\nStateStoreProbe`,
   { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
 ).outputText;
 
 const NOW = 1_800_000_000_000;
-/** The product's keep-warm tick (src/cloudflare.ts). */
+/** The product's keep-warm window and tick (src/cloudflare.ts). */
+const KEEP_WARM_WINDOW_MS = 10 * 60_000;
 const KEEP_WARM_TICK_MS = 20_000;
 const RETENTION_SWEEP_INTERVAL_MS = 5 * 60_000;
 const RUNNER_ENV = { SLACK_THREAD_RUNNER: {} };
@@ -96,7 +97,6 @@ interface Probe {
   call: (callback: (stores: unknown) => unknown) => Result;
   stopAborts: StopAbortFence;
   carriedAlarmTurns: Map<string, string>;
-  conversationHold: ResidencyHold;
   lastHumanTurnAt?: number;
   testRuns?: () => Promise<{ pass(): Promise<unknown> }>;
   alarmAdmissionWake?: () => void;
@@ -106,6 +106,7 @@ interface Probe {
   offerCreatedStop(): Promise<void>;
   alarm(): Promise<void>;
   admitSlackTurn(input: object): Promise<Result>;
+  threadRunnerTurn(op: { kind: string; id: string }): Promise<Result>;
 }
 
 /**
@@ -126,11 +127,15 @@ function newProbe(costs: PartCosts, duringDrain?: (armAt: (at: number) => void) 
     return {};
   };
   let gatewayDrains = 0;
+  const timers = new ScriptedTimers(() => clock);
   const ProbeClass = vm.runInNewContext(compiled, {
     Date: { now: () => clock },
     setTimeout,
     clearTimeout,
-    KEEP_WARM_WINDOW_MS,
+    ResidencyHold: holdOn(timers),
+    residencyHoldMs,
+    cloudflareWorkerVersionId: () => undefined,
+    applyThreadRunnerTurnOp: () => null,
     ALARM_ADMISSION_RECHECK_MS: 2_000,
     console: { warn() {} },
     startRelayAlarmMetrics: () => startRelayAlarmMetrics(() => clock),
@@ -167,8 +172,6 @@ function newProbe(costs: PartCosts, duringDrain?: (armAt: (at: number) => void) 
   // Class fields the method-only probe does not carry.
   probe.stopAborts = new StopAbortFence();
   probe.carriedAlarmTurns = new Map();
-  const timers = new ScriptedTimers(() => clock);
-  probe.conversationHold = new ResidencyHold(timers);
   return {
     probe,
     records,
@@ -203,12 +206,14 @@ function idleStore(costs: PartCosts, options: {
   /** A test run whose instance is not erased yet: the alarm looks again every 10 seconds. */
   testRunUnerased?: boolean;
   duringDrain?: (armAt: (at: number) => void) => void;
+  /** The deployment's env: none sets a residency hold unless given. */
+  env?: object;
 } = {}) {
   const store = newProbe(costs, options.duringDrain);
   let reads = 0;
   let sweeps = 0;
   let cleanupChecks = 0;
-  store.probe.env = {};
+  store.probe.env = options.env ?? {};
   if (options.lastHumanTurnAt !== undefined) store.probe.lastHumanTurnAt = options.lastHumanTurnAt;
   store.probe.createAlarmIdentityResolver = () => async () => ({ client: {} });
   store.probe.stores = {
@@ -246,16 +251,24 @@ function idleStore(costs: PartCosts, options: {
  * A state store admitting turns under the default runner executor, whose
  * runner takes every dispatchable turn at once: admission arms no admission
  * wake, so only the keep-warm tick can arm the alarm. `admission` is what the
- * canonical admission answers.
+ * canonical admission answers; `env` adds to the runner executor's; `rows`
+ * tell a person's turn from the host's own when the runner reports one's end.
  */
-function admissionStore(admission: object = { claimed: true, admission: {} }) {
+function admissionStore(
+  admission: object = { claimed: true, admission: {} },
+  env: object = HOLD_ENV,
+  rows?: TurnJobStoreLogic,
+) {
   const store = newProbe(QUIET);
-  store.probe.env = RUNNER_ENV;
+  store.probe.env = { ...RUNNER_ENV, ...env };
   store.probe.call = (callback) => ({
     ok: true,
     value: callback({
       slack: { admitCanonical: () => admission },
-      turnJobs: { dispatchableNow: (id: string) => ({ id }) },
+      turnJobs: {
+        dispatchableNow: (id: string) => ({ id }),
+        ...(rows ? { isPersonTurn: (id: string) => rows.isPersonTurn(id) } : {}),
+      },
     }),
   });
   store.probe.admitToRunner = async () => true;
@@ -315,17 +328,18 @@ test('a tick armed from a handed-over admission wakes no running alarm', async (
 });
 
 // Defects caught: a store kept only by its alarm, which hibernates it 10 s
-// after each tick; a hold shorter than the window; one that outlives it.
-test("a person's turn holds the store in memory through the window, and not past it", async () => {
+// after each tick; a hold shorter than the configured window, or one that
+// outlives it; a window taken from the tick's constant, not the setting.
+test("a person's turn holds the store in memory through the configured window, and not past it", async () => {
   const store = admissionStore();
   assert.equal((await store.probe.admitSlackTurn({ turnJob: { id: 'turn_person', turn: {} } })).ok, true);
   let elapsed = 0;
   for (const gap of [15_000, 45_000, 3 * 60_000, 8 * 60_000]) {
     store.advance(gap - elapsed);
     elapsed = gap;
-    assert.deepEqual(store.heldUntil(), [NOW + KEEP_WARM_WINDOW_MS], `held ${gap / 1_000} s after the turn`);
+    assert.deepEqual(store.heldUntil(), [NOW + HOLD_MS], `held ${gap / 1_000} s after the turn`);
   }
-  store.advance(KEEP_WARM_WINDOW_MS - elapsed);
+  store.advance(HOLD_MS - elapsed);
   assert.deepEqual(store.heldUntil(), [], 'let go when the window ends');
 });
 
@@ -336,12 +350,68 @@ test("a person's next turn renews the hold from that turn", async () => {
   await store.probe.admitSlackTurn({ turnJob: { id: 'turn_first', turn: {} } });
   store.advance(8 * 60_000);
   await store.probe.admitSlackTurn({ turnJob: { id: 'turn_next', turn: {} } });
-  const renewed = NOW + 8 * 60_000 + KEEP_WARM_WINDOW_MS;
+  const renewed = NOW + 8 * 60_000 + HOLD_MS;
   assert.deepEqual(store.heldUntil(), [renewed], 'one timer, at the next turn plus the window');
-  store.advance(2 * 60_000);
+  store.advance(HOLD_MS - 8 * 60_000);
   assert.deepEqual(store.heldUntil(), [renewed], "the first turn's window ending lets nothing go");
   store.advance(8 * 60_000);
   assert.deepEqual(store.heldUntil(), []);
+});
+
+/** Turn rows for a person's turn, an Agent's ask and a setup wake, as the runner reports their ends. */
+function endingRows(): TurnJobStoreLogic {
+  const rows = new TurnJobStoreLogic(openStateDb(':memory:'), () => NOW);
+  const job = (id: string, turn: object) => {
+    const base = maintenanceTurnJob(id);
+    return { ...base, turn: { ...base.turn, ...turn } };
+  };
+  rows.enqueue(job('turn_person', {}));
+  rows.enqueue(job('turn_ask', { agentAsk: { exchangeId: 'exchange_1' } }));
+  rows.enqueue(job('turn_setup', { setupWake: { setupOperationId: 'op_1', notice: 'Connected.' } }));
+  return rows;
+}
+
+// Defects caught: a store whose window counts from admission alone, so after
+// a long turn it has less of the window left than the runner and the Agent
+// object; a renewal at the end of the host's own turns, or at a turn's other
+// reports.
+test("a person's turn ending renews the store's hold from its end, as the runner reports it", async () => {
+  const store = admissionStore(undefined, HOLD_ENV, endingRows());
+  await store.probe.admitSlackTurn({ turnJob: { id: 'turn_person', turn: {} } });
+  store.advance(6 * 60_000);
+  await store.probe.threadRunnerTurn({ kind: 'recordAttempt', id: 'turn_person' });
+  assert.deepEqual(store.heldUntil(), [NOW + HOLD_MS], 'a report before the end renews nothing');
+  await store.probe.threadRunnerTurn({ kind: 'markDelivered', id: 'turn_person' });
+  const ended = NOW + 6 * 60_000;
+  assert.deepEqual(store.heldUntil(), [ended + HOLD_MS], 'from the delivered answer');
+  store.advance(60_000);
+  for (const id of ['turn_ask', 'turn_setup']) {
+    await store.probe.threadRunnerTurn({ kind: 'markDelivered', id });
+    await store.probe.threadRunnerTurn({ kind: 'markError', id });
+  }
+  assert.deepEqual(store.heldUntil(), [ended + HOLD_MS], "an Agent's ask or a setup wake ending renews nothing");
+  await store.probe.threadRunnerTurn({ kind: 'markError', id: 'turn_person' });
+  assert.deepEqual(store.heldUntil(), [ended + 60_000 + HOLD_MS], 'a failed turn ends too');
+  store.advance(HOLD_MS);
+  assert.deepEqual(store.heldUntil(), []);
+});
+
+// Defects caught: a hold on a deployment that sets no window, sets 0, or
+// sets one the deploy refuses, which would bill every idle store; and a tick
+// that moved with the setting.
+test('without a valid hold window nothing holds the store, and the keep-warm tick runs as before', async () => {
+  for (const value of [undefined, '', '0', '900001', '10m']) {
+    const env = value === undefined ? {} : { CHICKPEA_RESIDENCY_HOLD_MS: value };
+    const store = admissionStore(undefined, env, endingRows());
+    await store.probe.admitSlackTurn({ turnJob: { id: 'turn_person', turn: {} } });
+    assert.deepEqual(store.writes, [NOW + KEEP_WARM_TICK_MS], `${value}: the tick`);
+    await store.probe.threadRunnerTurn({ kind: 'markDelivered', id: 'turn_person' });
+    assert.deepEqual(store.heldUntil(), [], `${value}: neither admission nor the turn's end holds`);
+    const cold = idleStore(QUIET, { newestEnqueuedAt: NOW - 60_000, env });
+    await cold.fire();
+    assert.deepEqual(cold.writes, [NOW + KEEP_WARM_TICK_MS], `${value}: a cold store ticks`);
+    assert.deepEqual(cold.heldUntil(), [], `${value}: a cold store holds nothing`);
+  }
 });
 
 test("an Agent's ask, a setup wake, or a stop alone arms no tick and holds nothing", async () => {
@@ -390,21 +460,21 @@ test('a due time earlier than the tick wins, and a tick never moves an armed ala
 });
 
 test('a store that starts cold derives the window from its newest turn row, once', async () => {
-  const recent = idleStore(QUIET, { newestEnqueuedAt: NOW - 2 * 60_000 });
+  const recent = idleStore(QUIET, { newestEnqueuedAt: NOW - 2 * 60_000, env: HOLD_ENV });
   await recent.fire();
   assert.deepEqual(recent.writes, [NOW + KEEP_WARM_TICK_MS]);
   assert.equal(recent.records[0]?.keepWarm, true);
-  assert.deepEqual(recent.heldUntil(), [NOW - 2 * 60_000 + KEEP_WARM_WINDOW_MS], 'and holds itself for the rest of it');
+  assert.deepEqual(recent.heldUntil(), [NOW - 2 * 60_000 + HOLD_MS], 'and holds itself for the rest of the hold window');
   recent.advance(KEEP_WARM_TICK_MS);
   await recent.fire();
   assert.deepEqual(recent.writes, [NOW + KEEP_WARM_TICK_MS, NOW + 2 * KEEP_WARM_TICK_MS]);
   assert.equal(recent.reads(), 1, 'the newest row is read once per instance');
-  const stale = idleStore(QUIET, { newestEnqueuedAt: NOW - 15 * 60_000 });
+  const stale = idleStore(QUIET, { newestEnqueuedAt: NOW - 15 * 60_000, env: HOLD_ENV });
   await stale.fire();
   assert.deepEqual(stale.writes, []);
   assert.equal(stale.records[0]?.keepWarm, false);
   assert.deepEqual(stale.heldUntil(), [], 'a window that ended holds nothing');
-  const empty = idleStore(QUIET);
+  const empty = idleStore(QUIET, { env: HOLD_ENV });
   await empty.fire();
   await empty.fire();
   assert.deepEqual(empty.writes, []);

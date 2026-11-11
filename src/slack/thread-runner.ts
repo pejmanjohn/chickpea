@@ -24,7 +24,7 @@ import {
 import { sandboxTurnReaders } from '../sandbox/sandbox-object.ts';
 import { sandboxThreadKey } from '../sandbox/thread-key.ts';
 import { DoSqlStateDb } from '../state/do-state-db.ts';
-import { KEEP_WARM_WINDOW_MS, ResidencyHold } from '../state/residency-hold.ts';
+import { ResidencyHold, residencyHoldMs } from '../state/residency-hold.ts';
 import {
   objectHostFunctions,
   type InstallationObjectHostRpc,
@@ -142,8 +142,8 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   private readonly supersede: RunnerSupersedeState = createRunnerSupersedeState();
   /** The stops of this runner's turns (see RunnerStops). */
   private stopHandling: RunnerStops | undefined;
-  /** Keeps this runner in memory for KEEP_WARM_WINDOW_MS after a person's turn ends here. */
-  private readonly conversationHold = new ResidencyHold();
+  /** Keeps this runner in memory for the deployment's hold window after a person's turn ends here. */
+  private readonly conversationHold = new ResidencyHold(residencyHoldMs(this.env as PlatformEnv));
   /** Runs the loop, one at a time, from the alarm or an admission. */
   private readonly runSoon = runnerLoopScheduler({
     runOnce: () => this.runAlarm(),
@@ -611,9 +611,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       afterJob: async (job) => {
         this.targets.clear();
         // As the state store's window: a person's turn, not an Agent's ask or a setup wake.
-        if (!job.turn.agentAsk && !job.turn.setupWake) {
-          this.conversationHold.extendTo(Date.now() + KEEP_WARM_WINDOW_MS);
-        }
+        if (!job.turn.agentAsk && !job.turn.setupWake) this.conversationHold.holdFrom(Date.now());
         await presentation.publish(job.runId);
       },
       repair: () => drainSlackPresentationRepairs({

@@ -2,7 +2,7 @@ import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { loadConnectorDetails, preloadManagedConnectionDetails } from '../connections/catalog/index.ts';
 import { sha256Hex } from '../security/digest.ts';
 import type { FlueObservationTarget, FlueTurnObservationV1 } from '../slack/turn-job-types.ts';
-import { KEEP_WARM_WINDOW_MS, ResidencyHold } from '../state/residency-hold.ts';
+import { ResidencyHold, residencyHoldMs } from '../state/residency-hold.ts';
 import {
   FLUE_CLOUDFLARE_EXTENSION_BRAND,
   installationAgentObject,
@@ -322,6 +322,7 @@ export function readStagedTurnInputJsonBySubmission(sql: TurnInputSql, submissio
 
 interface AgentObjectInstance {
   ctx: { storage: { sql: TurnInputSql } };
+  env: Record<string, unknown> | undefined;
   fetch(request: Request): Promise<Response>;
   onStart?(props?: unknown): unknown;
 }
@@ -366,16 +367,16 @@ export const slackThreadCloudflareExtension = {
       }
 
       /**
-       * A turn's requests (its dispatch, each read of its reply) hold
-       * the object in memory until KEEP_WARM_WINDOW_MS after the last, so a
-       * follow-up in the thread finds it warm. Unlike the runner, the object
-       * cannot tell a person's turn from an Agent's ask; both come from its
-       * one thread.
+       * Where the deployment sets a residency hold, a turn's requests (its
+       * dispatch, each read of its reply) hold the object in memory for its
+       * window after the last, so a follow-up in the thread finds it warm.
+       * Unlike the runner, the object cannot tell a person's turn from an
+       * Agent's ask; both come from its one thread.
        */
       fetch(request: Request): Promise<Response> {
-        const hold = conversationHolds.get(this) ?? new ResidencyHold();
+        const hold = conversationHolds.get(this) ?? new ResidencyHold(residencyHoldMs(this.env));
         conversationHolds.set(this, hold);
-        hold.extendTo(Date.now() + KEEP_WARM_WINDOW_MS);
+        hold.holdFrom(Date.now());
         return super.fetch(request);
       }
 

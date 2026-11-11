@@ -40,9 +40,8 @@ import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { reportInteractiveDelivery } from '../src/config/hosted-activity.ts';
 import { installationOwnershipOf, installationScopeOf } from '../src/config/installation-scope.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
-import { KEEP_WARM_WINDOW_MS } from '../src/state/residency-hold.ts';
+import { ResidencyHold, residencyHoldMs } from '../src/state/residency-hold.ts';
 import { turnJob as maintenanceTurnJob } from './fixtures/state-db/maintenance.ts';
-import { unobservedHold } from './helpers/residency-hold.ts';
 import { createAgentAskCollector } from '../src/slack/agent-asks.ts';
 import { admissionStatusPresentation, showAdmissionStatus } from '../src/slack/admission-activity.ts';
 import { givenUpRecoveryText } from '../src/usage/run-settlement.ts';
@@ -65,7 +64,7 @@ assert.ok(stateClass && ts.isClassDeclaration(stateClass));
 const methodNames = [
   'enqueueTurn', 'admitSlackTurn', 'resumeTurnAfterOAuth', 'slackInstallationRecoveryRetry',
   'maintainWork', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode', 'keepWarmTickAt',
-  'testRunModelAccessBind',
+  'testRunModelAccessBind', 'hold',
 ];
 const methods = methodNames.map((name) => {
   const method = stateClass.members.find((member) =>
@@ -77,16 +76,13 @@ const batchDeclaration = source.statements.find((node) =>
   ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) =>
     declaration.name.getText(source) === 'RELAY_BATCH_WINDOW_MS'));
 assert.ok(batchDeclaration);
-const keepWarmDeclarations = [
-  `const KEEP_WARM_WINDOW_MS = ${KEEP_WARM_WINDOW_MS};`,
-  ...['KEEP_WARM_TICK_MS', 'RETENTION_SWEEP_INTERVAL_MS'].map((name) => {
-    const declaration = source.statements.find((node) =>
-      ts.isVariableStatement(node) && node.declarationList.declarations.some((candidate) =>
-        candidate.name.getText(source) === name));
-    assert.ok(declaration, `production ${name} exists`);
-    return declaration.getText(source);
-  }),
-].join('\n');
+const keepWarmDeclarations = ['KEEP_WARM_WINDOW_MS', 'KEEP_WARM_TICK_MS', 'RETENTION_SWEEP_INTERVAL_MS'].map((name) => {
+  const declaration = source.statements.find((node) =>
+    ts.isVariableStatement(node) && node.declarationList.declarations.some((candidate) =>
+      candidate.name.getText(source) === name));
+  assert.ok(declaration, `production ${name} exists`);
+  return declaration.getText(source);
+}).join('\n');
 // The alarm runs each job through the shared turn executor; evaluate that
 // production function beside it so the same injected collaborators apply.
 const executorSource = ts.createSourceFile(
@@ -124,6 +120,8 @@ type Probe = {
 };
 const ProbeClass = vm.runInNewContext(compiled, {
   Date,
+  ResidencyHold,
+  residencyHoldMs,
   oauthResumeTurnJobId: (id: string) => `oauthresume:${id}`,
   slackTurnExecutor: (env: Record<string, unknown>) => slackTurnExecutor(env, {}),
 }) as new () => Probe;
@@ -157,7 +155,7 @@ const entryPoints: Array<{
 ];
 
 function fixture(initialAlarm: number | null, result?: Result, env: object = RUNNER_ENV) {
-  const probe = Object.assign(new ProbeClass(), { conversationHold: unobservedHold() });
+  const probe = new ProbeClass();
   probe.env = env;
   let alarm = initialAlarm;
   let persisted = false;
@@ -282,6 +280,8 @@ for (const { withPendingTurn, testRun } of [
     const AlarmProbe = vm.runInNewContext(alarmCode, {
       ...stopGlobals,
       Date,
+      ResidencyHold,
+      residencyHoldMs,
       setTimeout,
       clearTimeout,
       AbortController,
@@ -331,7 +331,7 @@ for (const { withPendingTurn, testRun } of [
       alarm(): Promise<void>;
       createAlarmIdentityResolver(): object;
     };
-    const drainingProbe = Object.assign(new AlarmProbe(), { conversationHold: unobservedHold() });
+    const drainingProbe = new AlarmProbe();
     drainingProbe.ctx = storageProbe.ctx;
     (drainingProbe as unknown as { env: object }).env = {};
     // Class fields the method-only probe does not carry.
@@ -379,7 +379,7 @@ test('a model request whose submission unerased an erased test run arms the alar
     [undefined, null, null],
   ];
   for (const [binding, value, armed] of cases) {
-    const probe = Object.assign(new ProbeClass(), { conversationHold: unobservedHold() });
+    const probe = new ProbeClass();
     probe.env = RUNNER_ENV;
     let alarm: number | null = null;
     probe.call = (callback) => ({ ok: true, value: callback({ testRuns: { bindModelAccess: () => binding } }) });
@@ -435,7 +435,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
   const { alarmYieldIsFree } = await import('../src/slack/alarm-turn-drain.ts');
   const alarmMethods = [
     'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'alarm', 'drainRelayAlarm', 'dispatchToRunners', 'admitToRunner', 'wakeAgentAtHandoff',
-    'showStatusAtHandoff', 'dispatchingWhile', 'deliverStopNotices', 'keepWarmTickAt',
+    'showStatusAtHandoff', 'dispatchingWhile', 'deliverStopNotices', 'keepWarmTickAt', 'hold',
   ].map((name) => {
     const method = (stateClass as ts.ClassDeclaration).members.find((member) =>
       ts.isMethodDeclaration(member) && member.name.getText(source) === name);
@@ -466,6 +466,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
   const AlarmProbe = vm.runInNewContext(alarmCode, {
     ...stopGlobals,
     Date, setTimeout, clearTimeout, AbortController, Promise,
+    ResidencyHold, residencyHoldMs,
     MAX_TURN_DRAIN_BATCH: 16,
     RUNNER_DISPATCH_MAX_PAGES: 16,
     admissionStatusPresentation,
@@ -582,7 +583,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     stores: object; env: object; ctx: object; alarm(): Promise<void>;
     createAlarmIdentityResolver(): unknown;
   };
-  const probe = Object.assign(new AlarmProbe(), { conversationHold: unobservedHold() });
+  const probe = new AlarmProbe();
   probe.env = {
     ...(hooks.noRunnerBinding ? {} : { SLACK_THREAD_RUNNER: {} }),
     ...(hooks.executorVar === undefined ? {} : { SLACK_TAG_TURN_EXECUTOR: hooks.executorVar }),
@@ -979,7 +980,7 @@ test('an OAuth continuation already handed to a thread runner is admitted there 
 function admissionHarness(runner: { refuse?: boolean } = {}) {
   const methods = [
     'admitSlackTurn', 'admitToRunner', 'wakeAgentAtHandoff', 'showStatusAtHandoff', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan',
-    'admissionWakeAt', 'runnerMode', 'keepWarmTickAt',
+    'admissionWakeAt', 'runnerMode', 'keepWarmTickAt', 'hold',
   ].map((name) => {
     const method = (stateClass as ts.ClassDeclaration).members.find((member) =>
       ts.isMethodDeclaration(member) && member.name.getText(source) === name);
@@ -993,6 +994,8 @@ function admissionHarness(runner: { refuse?: boolean } = {}) {
   const admissions: Array<{ id: string; threadKey: string }> = [];
   const AdmissionProbe = vm.runInNewContext(code, {
     Date,
+    ResidencyHold,
+    residencyHoldMs,
     console: { warn() {} },
     admissionStatusPresentation,
     showAdmissionStatus,
@@ -1011,7 +1014,7 @@ function admissionHarness(runner: { refuse?: boolean } = {}) {
   const db = openStateDb(':memory:');
   let clock = NOW;
   const turns = new TurnJobStoreLogic(db, () => clock++);
-  const probe = Object.assign(new AdmissionProbe(), { firstHandoffs: new Set<string>(), conversationHold: unobservedHold() });
+  const probe = Object.assign(new AdmissionProbe(), { firstHandoffs: new Set<string>() });
   probe.stores = {
     turnJobs: turns,
     presentations: { get: () => undefined },

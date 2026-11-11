@@ -38,6 +38,8 @@ export function createHarness() {
   mkdirSync(authDir, { recursive: true });
   mkdirSync(path.join(root, 'src', 'config'), { recursive: true });
   copyFileSync(path.join(PROJECT_ROOT, 'src/config/qa-targets.ts'), path.join(root, 'src/config/qa-targets.ts'));
+  mkdirSync(path.join(root, 'src', 'state'), { recursive: true });
+  copyFileSync(path.join(PROJECT_ROOT, 'src/state/residency-hold.ts'), path.join(root, 'src/state/residency-hold.ts'));
   mkdirSync(releaseDir, { recursive: true });
   mkdirSync(authMigrationsDir, { recursive: true });
   mkdirSync(wranglerDir, { recursive: true });

@@ -283,7 +283,7 @@ import type {
   ObjectRestoreRestartRequest,
 } from './state/object-host.ts';
 import type { InstallationWorkspaceObject } from './state/object-inventory.ts';
-import { KEEP_WARM_WINDOW_MS, ResidencyHold } from './state/residency-hold.ts';
+import { ResidencyHold, residencyHoldMs } from './state/residency-hold.ts';
 import { stateStoreHostFunctions, type StateStoreHostRpc } from './state/state-store-host.ts';
 import type { TestRunLifecycle } from './state/test-run-lifecycle.ts';
 import type { TestRunQuery, TestRunReplayQuery, TestRunStartRequest, TestRunStartResult, TestRunView } from './management/test-run-types.ts';
@@ -788,14 +788,16 @@ const RELAY_RETRY_BACKOFF_MS = 2_000;
 const RELAY_BATCH_WINDOW_MS = 250;
 
 /**
- * Keep-warm: for KEEP_WARM_WINDOW_MS after a person's turn, the state store
- * holds itself in memory (ResidencyHold), and its alarm fires at least every
- * KEEP_WARM_TICK_MS. A store that left memory made the next message pay
- * 1.5-2.4 s at ingress for its first state read (production, 2026-11-10); the
- * alarm alone never kept it there. A tick runs the ordinary idle drain, and a
- * store that restarted inside the window holds itself again at its next tick
- * (drainRelayAlarm). Constants, not settings; Node has no alarms.
+ * Keep-warm: for KEEP_WARM_WINDOW_MS after a person's turn, the state store's
+ * alarm fires at least every KEEP_WARM_TICK_MS. A tick runs the ordinary idle
+ * drain (see keepWarmTickAt). The tick alone does not keep the store in
+ * memory: a store that left it made the next message pay 1.5-2.4 s at ingress
+ * for its first state read (production, 2026-11-10). Where the deployment
+ * sets a residency hold (ResidencyHold), the store holds itself for that
+ * window, and a store that restarted inside it holds itself again at its next
+ * tick (drainRelayAlarm). Constants, not settings; Node has no alarms.
  */
+const KEEP_WARM_WINDOW_MS = 10 * 60_000;
 const KEEP_WARM_TICK_MS = 20_000;
 
 /**
@@ -870,8 +872,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
    * when there is none.
    */
   private lastHumanTurnAt: number | undefined;
-  /** Keeps this instance in memory until KEEP_WARM_WINDOW_MS after lastHumanTurnAt. */
-  private readonly conversationHold = new ResidencyHold();
+  /** Keeps this instance in memory after a person's turn (see hold()). */
+  private conversationHold: ResidencyHold | undefined;
   /** When this instance last ran the management retention sweep (drainRelayAlarm). */
   private lastRetentionSweepAt: number | undefined;
   /**
@@ -1775,7 +1777,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       const { agentAsk, setupWake } = input.turnJob.turn;
       if (!agentAsk && !setupWake) {
         this.lastHumanTurnAt = Date.now();
-        this.conversationHold.extendTo(this.lastHumanTurnAt + KEEP_WARM_WINDOW_MS);
+        this.hold().holdFrom(this.lastHumanTurnAt);
       }
       const ready = this.runnerMode()
         ? this.call((stores) => stores.turnJobs.dispatchableNow(turnJobId))
@@ -2590,6 +2592,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     }
     const result = this.call((stores) =>
       applyThreadRunnerTurnOp(stores, op as ThreadRunnerTurnOp, this.env as PlatformEnv) as ThreadRunnerTurnResult<K>);
+    // A turn's end renews the hold from it, as the runner's and the Agent
+    // object's count from it; for a person's turn only, as at admission.
+    if (result.ok && (op.kind === 'markDelivered' || op.kind === 'markError') && this.hold().active) {
+      const person = this.call((stores) => stores.turnJobs.isPersonTurn(op.id));
+      if (person.ok && person.value) this.hold().holdFrom(Date.now());
+    }
     if (op.kind === 'begin' && result.ok && servingVersion !== undefined) {
       return { ok: true, value: { ...(result.value as RunnerTurnBegin), servingVersion } as ThreadRunnerTurnResult<K> };
     }
@@ -2634,7 +2642,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     // A store woken cold learns from its newest turn row whether a
     // conversation is live, and holds itself for the rest of it.
     this.lastHumanTurnAt ??= stores.turnJobs.newestEnqueuedAt() ?? 0;
-    this.conversationHold.extendTo(this.lastHumanTurnAt + KEEP_WARM_WINDOW_MS);
+    this.hold().holdFrom(this.lastHumanTurnAt);
     const productTelemetry = createPlatformProductTelemetry({
       env: this.env as PlatformEnv,
       settings: localSettingsStore(stores),
@@ -3174,11 +3182,21 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
   }
 
   /**
+   * This store's residency hold, for the window the deployment sets
+   * (RESIDENCY_HOLD_VARIABLE): from a person's admitted turn, and again from
+   * its end, which the runner reports (threadRunnerTurn).
+   */
+  private hold(): ResidencyHold {
+    this.conversationHold ??= new ResidencyHold(residencyHoldMs(this.env as PlatformEnv));
+    return this.conversationHold;
+  }
+
+  /**
    * The next keep-warm tick while a person's turn was admitted here within
    * KEEP_WARM_WINDOW_MS; undefined outside the window, and before any turn is
    * known. Armed as the latest the alarm may wait (armAlarmNoLaterThan keeps
-   * an earlier due time), so a firing inside the window re-arms it. The
-   * conversationHold stops the store hibernating; the tick alone does not.
+   * an earlier due time), so a firing inside the window re-arms it. A
+   * residency hold stops the store hibernating; the tick alone does not.
    * Where a pending timer does not block eviction (see ResidencyHold), each
    * firing restarts the 70 to 140 seconds an idle object has before it.
    */

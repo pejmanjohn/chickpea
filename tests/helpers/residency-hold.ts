@@ -1,4 +1,12 @@
-import { ResidencyHold, type HoldTimers } from '../../src/state/residency-hold.ts';
+import { RESIDENCY_HOLD_VARIABLE, ResidencyHold, type HoldTimers } from '../../src/state/residency-hold.ts';
+
+/**
+ * A configured hold window. It differs from the state store's 10-minute
+ * keep-warm tick window, so a test tells the setting from that constant.
+ */
+export const HOLD_MS = 12 * 60_000;
+/** A deployment's env that sets HOLD_MS. */
+export const HOLD_ENV: Readonly<Record<string, string>> = Object.freeze({ [RESIDENCY_HOLD_VARIABLE]: String(HOLD_MS) });
 
 /**
  * Timers on a test's clock. Nothing fires until `fireDue`, so no test waits
@@ -33,7 +41,11 @@ export class ScriptedTimers implements HoldTimers {
   }
 }
 
-/** A hold for a probe that does not look at it. */
-export function unobservedHold(): ResidencyHold {
-  return new ResidencyHold(new ScriptedTimers(Date.now));
+/** ResidencyHold on `timers`, for production code that builds its own hold from its env. */
+export function holdOn(timers: ScriptedTimers): typeof ResidencyHold {
+  return class extends ResidencyHold {
+    constructor(windowMs: number | undefined) {
+      super(windowMs, timers);
+    }
+  };
 }
