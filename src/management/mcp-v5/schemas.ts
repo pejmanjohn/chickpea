@@ -23,6 +23,8 @@ const zEffort = z.enum(MODEL_EFFORTS);
 const zWhoCanEdit = z.enum(['creator_and_admins', 'all_workspace_members']);
 const zRole = z.enum(['owner', 'admin', 'member']);
 const zLinks = z.strictObject({ admin: z.string(), slack: z.string().optional() });
+const zConnectedAppsUrl = z.string().optional()
+  .describe('The Connected apps page in Chickpea, where the person sees their connected apps and disconnects one themselves.');
 const zWhen = z.strictObject({ display: z.string(), isoUtc: z.string() });
 const zAgentStatus = z.enum(['on', 'off', 'archived']);
 const zAvatarUrl = z.string().optional().describe('Its picture in Slack, for a card to draw.');
@@ -526,6 +528,7 @@ export const listConnectedAppsOutput = z.strictObject({
     lastActive: z.strictObject({ display: z.string() }).optional(),
     thisApp: z.boolean(),
   })),
+  adminUrl: zConnectedAppsUrl,
 });
 
 /** Only where a card shows the result: it says so, so the model does not repeat it. */
@@ -661,6 +664,7 @@ export const disconnectAppOutput = z.strictObject({
   name: z.string().optional(),
   thisApp: z.boolean().describe('true when it was the app making this call, which must sign in to Chickpea again.'),
   message: z.string().describe('One plain sentence to tell the person.'),
+  adminUrl: zConnectedAppsUrl,
 });
 
 export const getCreationStatusOutput = z.strictObject({

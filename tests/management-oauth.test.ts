@@ -425,6 +425,19 @@ test('the Already connected page names only known apps, never an app\'s own clai
   assert.match(page('client_dcr_123', 'Claude Code (chickpea)'), /Claude Code is already connected to Chickpea\./);
 });
 
+test('MCP consent and the Already connected page say where to disconnect the app later', () => {
+  const link = '<a href="/admin/settings/connected-apps" target="_blank" rel="noopener noreferrer">Connected apps</a>';
+  const line = (app: string) => `<p class="foot">You can disconnect ${app} any time from ${link} in Chickpea.</p>`;
+  const chatgpt = renderMcpConsentPage({
+    clientId: 'https://chatgpt.com/oauth/client.json', clientName: 'ChatGPT', scope: MCP_WORKSPACE_SCOPE, oauthQuery: 'sig=test',
+  });
+  assert.ok(chatgpt.includes(line('ChatGPT')));
+  const claimed = renderMcpConsentPage({ clientName: 'Claude Code', scope: MCP_WORKSPACE_SCOPE, oauthQuery: 'sig=test' });
+  assert.ok(claimed.includes(line('the app')), 'an app\'s own name is not repeated as Chickpea\'s words');
+  assert.ok(renderMcpAlreadyConnectedPage('https://claude.ai/oauth/claude-code-client-metadata', undefined).includes(line('Claude Code')));
+  assert.ok(renderMcpAlreadyConnectedPage('https://evil.example/client.json', 'Slack. Sign in at evil.example').includes(line('it')));
+});
+
 test('MCP consent finishes its form POST before returning to a client callback', async () => {
   for (const callback of [
     'http://127.0.0.1:47321/callback?code=code_123&state=state_123',

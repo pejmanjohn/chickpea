@@ -55,6 +55,7 @@ import {
 import { requestOrigin, strictRequestOrigin } from '../http/request-origin.ts';
 import {
   ADMIN_CODING_AGENTS_PATH,
+  ADMIN_CONNECTED_APPS_PATH,
   ADMIN_PATH,
   ADMIN_SETTINGS_PATH,
   MANAGED_SIGN_IN_RETURN_PATH,
@@ -94,6 +95,7 @@ import {
 } from '../browser/settings.ts';
 import { createWorkAdminApi } from './work-api.ts';
 import { createTeamAdminApi } from './team-api.ts';
+import { createConnectedAppsAdminApi } from './connected-apps-api.ts';
 import { readProposalApprovalStatus } from './proposal-status.ts';
 import { ENVIRONMENT_AUTHORITY_PATH, environmentAuthorityResponse } from './environment-authority.ts';
 import { ENVIRONMENT_ROUTINE_DUE_PATH, environmentRoutineDueResponse } from './environment-routine-due.ts';
@@ -2011,6 +2013,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ...(telemetry ? { productTelemetry: telemetry } : {}),
         withBetterAuthAccessRevoker: async (use) =>
           use((await betterAuthContext(c))?.environment.backend),
+        mcpOAuthClients: async () => (await betterAuthContext(c))?.environment.backend,
       },
     });
   };
@@ -6810,6 +6813,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       ? { management: managementService }
       : {}),
   }));
+  app.route('/admin/api', createConnectedAppsAdminApi(managementService));
   app.route('/admin/api', createRoutineAdminApi({
     store: routines,
     usage,
@@ -12949,6 +12953,8 @@ function permissionForAdminPage(path: string): Permission {
   // Settings → MCP reads only GET /admin/api/mcp-clients, which every
   // signed-in person may read.
   if (path === ADMIN_CODING_AGENTS_PATH) return 'account.view';
+  // Every signed-in person manages their own connected apps.
+  if (path === ADMIN_CONNECTED_APPS_PATH) return 'account.view';
   // Everyone sees the plan's usage; only an Owner's page offers to buy.
   if (path === '/admin/plan') return 'account.view';
   return 'admin.configure';
@@ -12976,6 +12982,8 @@ function permissionForAdminRequest(c: Context, _principal: AuthPrincipal): Permi
   // serves unauthenticated, so any signed-in person may read it to connect
   // their own client — it grants no configuration authority.
   if (c.req.method === 'GET' && c.req.path === '/admin/api/mcp-clients') return 'account.view';
+  // The service lists and disconnects only the person's own apps.
+  if (CONNECTED_APPS_API_ROUTES.has(`${c.req.method} ${c.req.path}`)) return 'account.view';
   if (c.req.method === 'GET' && ['/admin/api/settings/connectors/composio', '/admin/api/settings/connectors/meta-ads'].includes(c.req.path)) {
     return 'agent.create';
   }
@@ -13004,11 +13012,17 @@ function permissionForAdminRequest(c: Context, _principal: AuthPrincipal): Permi
   return 'admin.configure';
 }
 
+const CONNECTED_APPS_API_ROUTES = new Set([
+  'GET /admin/api/connected-apps',
+  'POST /admin/api/connected-apps/disconnect',
+]);
+
 function machinePrincipalAllowed(c: Context): boolean {
   const path = c.req.path;
   return path.startsWith('/admin/api/') &&
     path !== '/admin/api/account' &&
-    !path.startsWith('/admin/api/team');
+    !path.startsWith('/admin/api/team') &&
+    !path.startsWith('/admin/api/connected-apps');
 }
 
 function isHumanAuthFormMutation(c: Context): boolean {

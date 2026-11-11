@@ -40,6 +40,7 @@ const MEMBER_PAGES = [
   '/admin/agents/new',
   '/admin/agents/agent_support',
   '/admin/settings/agents-clients',
+  '/admin/settings/connected-apps',
 ];
 const SETTINGS_PAGES = [
   '/admin/settings',

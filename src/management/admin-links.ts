@@ -20,6 +20,7 @@ export const ADMIN_SETTINGS_SECTIONS = {
   sandbox: 'Coding sandbox',
   browser: 'Browser',
   'agents-clients': 'MCP',
+  'connected-apps': 'Connected apps',
 } as const;
 
 export type AdminSettingsSection = keyof typeof ADMIN_SETTINGS_SECTIONS;

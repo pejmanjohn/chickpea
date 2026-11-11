@@ -830,7 +830,7 @@ export class WorkspaceManagementService {
     };
   }
 
-  /** Ends one of the person's own MCP clients at once; there is no Admin UI to confirm in. */
+  /** Ends one of the person's own MCP clients at once; Admin's Connected apps page confirms first. */
   async revokeMcpClient(
     context: ApplyWorkspaceChangesInput['context'],
     clientId: string,
@@ -863,11 +863,11 @@ export class WorkspaceManagementService {
   private async ownMcpClients(context: ApplyWorkspaceChangesInput['context']): Promise<{
     clients: BetterAuthMcpOAuthClients;
     betterAuthUserId: string;
-    currentClientId: string;
+    currentClientId: string | undefined;
   }> {
     const actor = await this.requireLiveActor(context);
-    if (actor.origin.kind !== 'mcp') {
-      throw new ManagementError('forbidden', 'Connected MCP clients are listed and revoked over the Chickpea MCP.');
+    if (actor.origin.kind === 'slack') {
+      throw new ManagementError('forbidden', 'Connected MCP clients are listed and revoked over the Chickpea MCP or in Admin.');
     }
     const [clients, bindings] = await Promise.all([
       this.stores.mcpOAuthClients?.(),
@@ -878,7 +878,11 @@ export class WorkspaceManagementService {
     if (!clients || !betterAuthUserId) {
       throw new ManagementError('invalid_request', 'This deployment does not sign MCP clients in with Chickpea accounts.');
     }
-    return { clients, betterAuthUserId, currentClientId: actor.origin.clientId };
+    return {
+      clients,
+      betterAuthUserId,
+      currentClientId: actor.origin.kind === 'mcp' ? actor.origin.clientId : undefined,
+    };
   }
 
   async proposeSkillImport(
