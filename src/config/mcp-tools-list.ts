@@ -366,9 +366,8 @@ async function readEventStreamAnswer(response: Response, answer: RequestAnswer):
 
 /**
  * A GET event stream as the client will read it: split as it splits events,
- * each event passed through `read` when the client asks for more, and
- * written back in one canonical form without event ids, which the SDK never
- * sends back when it reconnects.
+ * each event passed through `read`, and written back in one canonical form
+ * without event ids, which the SDK never sends back when it reconnects.
  */
 function filteredEventStream(response: Response, read: (event: StreamEvent) => StreamEvent[]): Response {
   const reader = response.body!.getReader();
@@ -385,7 +384,7 @@ function filteredEventStream(response: Response, read: (event: StreamEvent) => S
       }
     },
     cancel: (reason) => reader.cancel(reason),
-  }, { highWaterMark: 0 }));
+  }));
 }
 
 type StreamEvent = { id?: string; event?: string; data: string } | { retry: string };

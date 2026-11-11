@@ -1179,9 +1179,13 @@ const answer = (id: number, tools: unknown) => JSON.stringify({ jsonrpc: '2.0', 
 async function legacyStream() {
   const sse = createMcpToolsListFilter({ connectionId: 'srv', grant: ['alpha', 'gamma'], transport: 'sse' });
   let upstream!: ReadableStreamDefaultController<Uint8Array>;
+  let upstreamCancelled = false;
   const get = sse.guardGets((async () => new Response(new ReadableStream<Uint8Array>({
     start(controller) {
       upstream = controller;
+    },
+    cancel() {
+      upstreamCancelled = true;
     },
   }), { headers: { 'content-type': 'text/event-stream' } })) as typeof globalThis.fetch);
   const reader = (await get(URL_, { method: 'GET' })).body!.getReader();
@@ -1191,6 +1195,7 @@ async function legacyStream() {
     push: (text: string) => upstream.enqueue(encoder.encode(text)),
     read: async () => decoder.decode((await reader.read()).value),
     close: () => reader.cancel(),
+    upstreamCancelled: () => upstreamCancelled,
   };
 }
 const note = 'data: {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"x"}}\n\n';
@@ -1232,6 +1237,7 @@ test('after the last legacy SSE page, the stream passes answers without reading 
   stream.push(`${call}data: not json\n\n`);
   assert.equal(await stream.read(), `${call}data: not json\n\n`);
   await stream.close();
+  assert.ok(stream.upstreamCancelled(), "letting go of the client's stream lets go of the server's");
 });
 
 test('a legacy SSE listing still owed when another closes the window is filtered, and other answers pass', async (t) => {
