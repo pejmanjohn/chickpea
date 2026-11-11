@@ -5660,7 +5660,9 @@ function reportedFailureReason(error: unknown, apiKey: string): string | undefin
 
 /**
  * The rule of the browser tools' error text: no credential, no URL query (it can hold a key or
- * a signature), and no named key or token. A URL's login and a bearer value go as well.
+ * a signature), and no named key or token. A URL's login, an Authorization header's value and
+ * a bearer or basic value go as well. A credential that is none of these, in plain prose, has
+ * no shape to find.
  */
 function redactReportedFailureText(text: string, apiKey: string): string {
   return redactConnectionText(
@@ -5668,8 +5670,11 @@ function redactReportedFailureText(text: string, apiKey: string): string {
       .replace(/\b(https?:\/\/)[^\s/?#@"'<>]*@/gi, '$1')
       .replace(/\b(https?:\/\/[^\s?"'<>]*)\?[^\s"'<>]*/gi, '$1?[redacted]')
       .replace(/((?:api[-_]?key|token|secret|password)["']?\s*[=:]\s*["']?)[^\s&"',}]+/gi, '$1[redacted]')
-      // A bearer value holds a digit or a mark; the word after "Bearer" in prose holds neither.
-      .replace(/\b(Bearer\s+)(?=[\w.~+/=-]*[\d._~+/=-])[\w.~+/=-]{8,}/gi, '$1[redacted]'),
+      // An Authorization header's value, after its scheme when it names one.
+      .replace(/(authorization["']?\s*[=:]\s*["']?(?:[a-z]+\s+)?)[^\s"',}]+/gi, '$1[redacted]')
+      // Outside a header, a bearer or basic value holds a digit or a mark; the word after
+      // "Bearer" or "Basic" in prose holds neither.
+      .replace(/\b((?:Bearer|Basic)\s+)(?=[\w.~+/=-]*[\d._~+/=])[\w.~+/=-]{8,}/gi, '$1[redacted]'),
     [apiKey],
   );
 }

@@ -273,6 +273,16 @@ test('a reported failure keeps URL queries, URL logins and named credentials fro
       'after Authorization: Bearer [redacted] and refresh_token=[redacted] ' +
       'and {"api_key":"[redacted]"} with [credential redacted]. Bearer authentication failed.',
   );
+  assert.equal(
+    await reportedFailureMessage(
+      'Upstream echoed {"access_token":"syntheticOAuthToken42","refresh_token":"syntheticRefreshToken42"} ' +
+      'and Authorization: Basic c3ludGhldGljOnN5bnRoZXRpYw== and "authorization":"syntheticOpaqueValue" ' +
+      'and a header of Basic c3ludGhldGljOnBhc3M9 too. Basic authentication is required.',
+    ),
+    `${REPORTED_FAILURE_PREFIX}Upstream echoed {"access_token":"[redacted]","refresh_token":"[redacted]"} ` +
+      'and Authorization: Basic [redacted] and "authorization":"[redacted]" ' +
+      'and a header of Basic [redacted] too. Basic authentication is required.',
+  );
 });
 
 test('a credential the redaction bound cuts is dropped, not shown in part', async () => {
