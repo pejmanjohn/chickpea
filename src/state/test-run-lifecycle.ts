@@ -4,7 +4,7 @@
  * run's instance. The alarm, the caller's polls and a cancellation pass all
  * run it; one step per run at a time, and none once the instance is erased.
  */
-import { deriveRuntimePlanInstanceId, parseRuntimePlanV2 } from '../agents/runtime-plan.ts';
+import { deriveRuntimePlanInstanceId, parseRuntimePlanV2, type RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import { installationScopeOfObjectName, requireInstallationScope } from '../config/installation-scope.ts';
 import type { CreditBackReason, PlatformFundingRefusal } from '../config/platform-funding.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
@@ -23,6 +23,7 @@ import type {
 import type { TestRunStoreLogic } from '../management/test-runs.ts';
 import type { ChickpeaResponseMetadata } from '../usage/response-metadata.ts';
 import { TestRunUsageRecorder } from '../usage/test-run-usage.ts';
+import { givenUpReason, planFunding } from '../usage/run-settlement.ts';
 import type { UsageStoreLogic } from '../usage/store.ts';
 import type { RecordUsageTerminalInput } from '../usage/types.ts';
 import { opaqueId } from '../work/admission.ts';
@@ -357,6 +358,8 @@ export class TestRunLifecycle {
     let result: TestRunResult | undefined;
     if (settled.kind === 'not_found') {
       failure = now - row.createdAt >= TEST_RUN_DEADLINE_MS ? 'deadline' : 'failed';
+      // The run is lost: credited as a direct message's lost run is, whatever the time.
+      creditBack = givenUpReason(undefined, planFunding(planOf(row) as Pick<RuntimePlanV2, 'modelCredential'> | undefined));
     } else if (mode === 'cancel' && settled.failure === 'deadline') {
       // Stopped by this cancellation's own abort, not by a deadline.
       failure = 'cancelled';

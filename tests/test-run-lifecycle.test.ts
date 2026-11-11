@@ -123,14 +123,22 @@ test('an instance that settles after the store\'s deadline is erased as soon as 
   assert.equal(row().failure, 'deadline', 'the store\'s terminal stands');
 });
 
-test('an instance not found counts as settled: the run fails and its instance is erased', async () => {
+test('an instance not found is a lost run: it fails, is erased, and is credited back as a direct message\'s lost run is, at its deadline too', async () => {
   const context = setup('inst_lifecycle_not_found');
   const { instanceId, row, request } = await started(context);
   context.instances.settlements.set(instanceId, { kind: 'not_found' });
   await context.lifecycle.pass();
-  assert.deepEqual([row().status, row().failure], ['failed', 'failed']);
+  assert.deepEqual([row().status, row().failure, row().result?.creditedBack], ['failed', 'failed', true]);
   assert.equal(row().erasedAt, NOON);
   assert.deepEqual(usageOf(context.installation, request.run.usage.operationId), { status: 'failed', billingRunId: 'sub_1' });
+  // Lost at its deadline it reads as a timeout, and is credited all the same: never charged as one.
+  const late = await started(context, { actorMembershipId: 'membership_ada' });
+  context.clock.advance(TEST_RUN_DEADLINE_MS);
+  context.instances.settlements.set(late.instanceId, { kind: 'not_found' });
+  await context.lifecycle.pass();
+  assert.deepEqual([late.row().failure, late.row().result?.creditedBack], ['deadline', true]);
+  assert.deepEqual(context.instances.calls.filter(([call]) => call.startsWith('credit_back')),
+    [['credit_back:evicted', row().submissionId], ['credit_back:evicted', late.row().submissionId]], 'the reason a direct message\'s lost run gets');
 });
 
 test('a lost receipt: the run\'s first model request binds its submission, and it settles and is erased', async () => {
