@@ -28,15 +28,30 @@ export function serviceErrorText(text: string, secrets: readonly string[]): stri
   // A shared credential signature or the turn's key becomes a NUL, which no class admits.
   const readable = redactConnectionText(unescapeJson(text.slice(0, MAX_SOURCE_CHARS)), secrets)
     .replaceAll(CREDENTIAL_REPLACEMENT, '\u0000');
-  const chunks = readable.split(/\s+/);
+  const chunks = spaceCompactJson(readable).split(/\s+/);
   // The source cut can land inside a chunk, and no part of a chunk is ever judged alone.
   if (truncated) chunks.pop();
   const shown: string[] = [];
   let length = 0;
   let cut = truncated;
+  let valueNext = false;
+  let separatorNext = false;
   for (const chunk of chunks) {
     if (!chunk) continue;
-    const piece = readsAsLanguage(chunk) ? chunk : DROPPED;
+    let piece: string;
+    if (valueNext) {
+      piece = DROPPED;
+      valueNext = false;
+    } else if (separatorNext && SEPARATOR.test(chunk)) {
+      piece = DROPPED;
+      valueNext = true;
+    } else {
+      piece = readsAsLanguage(chunk) ? chunk : DROPPED;
+    }
+    separatorNext = false;
+    const label = secretLabel(chunk);
+    if (label === 'value') valueNext = true;
+    else if (label === 'separator') separatorNext = true;
     if (piece === DROPPED && shown.at(-1) === DROPPED) continue;
     const grown = length + (shown.length ? 1 : 0) + piece.length;
     if (grown > MAX_CHARS) {
@@ -53,7 +68,38 @@ export function serviceErrorText(text: string, secrets: readonly string[]): stri
   return shown.length ? `${shown.join(' ')}…` : '';
 }
 
-const JSON_ESCAPED: Readonly<Record<string, string>> = { '"': '"', '\\': '\\', '/': '/', n: '\n', r: '\r', t: '\t' };
+/**
+ * Compact JSON glues a whole object into one chunk, which the filter drops. A space after each
+ * key's colon and before each key splits it into keys and values, each judged alone, so a raw
+ * body such as `{"ok":false,"error":"channel_not_found"}` reads as it would pretty-printed.
+ */
+function spaceCompactJson(text: string): string {
+  return text.replace(/\{(?=")/g, '{ ').replace(/":(?=\S)/g, '": ').replace(/,(?=")/g, ', ');
+}
+
+/**
+ * A label that names a secret: whatever follows its `:` or `=` is a value, and the filter drops
+ * it even when it reads as a word (`password: hunter`, `"client_secret": "words"`). An auth
+ * scheme names its credential the same way (`Bearer first`). A label used as a plain word, as in
+ * `token expired`, keeps the next word.
+ */
+const SECRET_LABEL =
+  /(?:password|passwd|pwd|passphrase|secret|token|api[_-]?key|authorization|auth|credentials?|session(?:[_-]?id)?|sessid|sid|cookie|signature|sig|otp|private[_-]?key)$/i;
+const AUTH_SCHEME = /^(?:bearer|basic)$/i;
+const SEPARATOR = /^[:=]$/;
+
+function secretLabel(chunk: string): 'value' | 'separator' | undefined {
+  const core = coreOf(chunk);
+  if (AUTH_SCHEME.test(core)) return 'value';
+  const bare = chunk.replace(/["'`\\]+$/, '');
+  if (/[:=]$/.test(bare)) {
+    const label = coreOf(bare.slice(0, -1));
+    return SECRET_LABEL.test(label) ? 'value' : undefined;
+  }
+  return SECRET_LABEL.test(core) ? 'separator' : undefined;
+}
+
+const JSON_ESCAPED: Readonly<Record<string, string>> ={ '"': '"', '\\': '\\', '/': '/', n: '\n', r: '\r', t: '\t' };
 
 /** One layer of JSON string escapes, for readability. A second layer keeps its backslashes. */
 function unescapeJson(text: string): string {
@@ -111,13 +157,18 @@ function isIdentifier(core: string): boolean {
   });
 }
 
-/** A chunk whose core, inside its edge punctuation, is empty, a word, a number or an identifier. */
-function readsAsLanguage(chunk: string): boolean {
+/** A chunk without its edge punctuation. */
+function coreOf(chunk: string): string {
   let start = 0;
   let end = chunk.length;
   while (start < end && LEADING.has(chunk.charAt(start))) start += 1;
   while (end > start && TRAILING.has(chunk.charAt(end - 1))) end -= 1;
-  const core = chunk.slice(start, end);
+  return chunk.slice(start, end);
+}
+
+/** A chunk whose core, inside its edge punctuation, is empty, a word, a number or an identifier. */
+function readsAsLanguage(chunk: string): boolean {
+  const core = coreOf(chunk);
   return !core ||
     (core.length <= MAX_WORD_CHARS && WORD.test(core)) ||
     NUMBER.test(core) ||
