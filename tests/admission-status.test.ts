@@ -34,7 +34,9 @@ import type { TurnJob } from '../src/slack/turn-job-types.ts';
 import { TurnJobStoreLogic, type PendingTurnJob } from '../src/slack/turn-jobs.ts';
 import type { SlackEvent } from '../src/slack/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
+import { KEEP_WARM_WINDOW_MS } from '../src/state/residency-hold.ts';
 import { AGENT_MENTION, message, withLane, delivery, type Lane } from './helpers/gateway-admission-lane.ts';
+import { unobservedHold } from './helpers/residency-hold.ts';
 
 /**
  * The state store shows a turn's opening status, as its Agent, before the
@@ -68,7 +70,7 @@ const moduleStatement = (name: string) => {
 };
 const HandoffProbe = vm.runInNewContext(
   ts.transpileModule(
-    `${['RELAY_BATCH_WINDOW_MS', 'KEEP_WARM_WINDOW_MS', 'KEEP_WARM_TICK_MS', 'localSlackPresentationState'].map(moduleStatement).join('\n')}
+    `${['RELAY_BATCH_WINDOW_MS', 'KEEP_WARM_TICK_MS', 'localSlackPresentationState'].map(moduleStatement).join('\n')}
 class HandoffProbe { ${[
       'admitSlackTurn', 'dispatchToRunners', 'admitToRunner', 'wakeAgentAtHandoff', 'showStatusAtHandoff',
       'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode', 'keepWarmTickAt',
@@ -79,6 +81,7 @@ class HandoffProbe { ${[
     Date,
     Promise,
     console: { warn() {} },
+    KEEP_WARM_WINDOW_MS,
     MAX_TURN_DRAIN_BATCH: 16,
     RUNNER_DISPATCH_MAX_PAGES: 4,
     slackTurnExecutor: (env: Record<string, unknown>) => slackTurnExecutor(env, {}),
@@ -167,6 +170,7 @@ function handoffStore(config: ConfigStoreLogic, answer: SlackAnswer = 'ok', onSt
     stores,
     env,
     firstHandoffs: new Set<string>(),
+    conversationHold: unobservedHold(),
     call(run: (value: typeof stores) => unknown) {
       try {
         return { ok: true, value: run(stores) };

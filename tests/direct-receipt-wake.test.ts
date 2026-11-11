@@ -47,10 +47,12 @@ import { TurnJobStoreLogic, type PendingTurnJob } from '../src/slack/turn-jobs.t
 import type { SlackEvent } from '../src/slack/types.ts';
 import { DoSqlStateDb } from '../src/state/do-state-db.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
+import { KEEP_WARM_WINDOW_MS } from '../src/state/residency-hold.ts';
 import { buildTagStateStores } from '../src/state/tag-state-stores.ts';
 import { withCloudflareUserAgent } from './helpers/cloudflare-target.ts';
 import { AGENT_MENTION, delivery, message, withLane, type Lane } from './helpers/gateway-admission-lane.ts';
 import { FakeObjectStorage } from './helpers/installation-objects.ts';
+import { unobservedHold } from './helpers/residency-hold.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
 /**
@@ -88,7 +90,7 @@ const moduleStatement = (name: string) => {
 };
 const ReceiptProbe = vm.runInNewContext(
   ts.transpileModule(
-    `${['RELAY_BATCH_WINDOW_MS', 'KEEP_WARM_WINDOW_MS', 'KEEP_WARM_TICK_MS', 'localSlackPresentationState'].map(moduleStatement).join('\n')}
+    `${['RELAY_BATCH_WINDOW_MS', 'KEEP_WARM_TICK_MS', 'localSlackPresentationState'].map(moduleStatement).join('\n')}
 class ReceiptProbe { ${[
       'noteSlackDelivery', 'wakeRunnerAtReceipt', 'sendRunnerWake', 'createAlarmIdentityResolver', 'admitSlackTurn', 'admitToRunner',
       'wakeAgentAtHandoff', 'showStatusAtHandoff', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode', 'keepWarmTickAt',
@@ -99,6 +101,7 @@ class ReceiptProbe { ${[
     Date,
     Promise,
     console: { warn() {} },
+    KEEP_WARM_WINDOW_MS,
     receiptRunnerWake,
     threadRunnerStub,
     slackTurnExecutor: (env: Record<string, unknown>) => slackTurnExecutor(env, {}),
@@ -243,6 +246,7 @@ function directStore(config: ConfigStoreLogic, options: {
     env,
     stores,
     firstHandoffs: new Set<string>(),
+    conversationHold: unobservedHold(),
     call(run: (value: typeof stores) => unknown) {
       try {
         return { ok: true, value: run(stores) };

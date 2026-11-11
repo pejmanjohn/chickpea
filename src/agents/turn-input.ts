@@ -2,6 +2,7 @@ import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { loadConnectorDetails, preloadManagedConnectionDetails } from '../connections/catalog/index.ts';
 import { sha256Hex } from '../security/digest.ts';
 import type { FlueObservationTarget, FlueTurnObservationV1 } from '../slack/turn-job-types.ts';
+import { KEEP_WARM_WINDOW_MS, ResidencyHold } from '../state/residency-hold.ts';
 import {
   FLUE_CLOUDFLARE_EXTENSION_BRAND,
   installationAgentObject,
@@ -321,10 +322,14 @@ export function readStagedTurnInputJsonBySubmission(sql: TurnInputSql, submissio
 
 interface AgentObjectInstance {
   ctx: { storage: { sql: TurnInputSql } };
+  fetch(request: Request): Promise<Response>;
   onStart?(props?: unknown): unknown;
 }
 
 type AgentObjectClass = new (...args: never[]) => object;
+
+/** Each Slack thread Agent object's hold, kept off the instance Flue and the Agents SDK own. */
+const conversationHolds = new WeakMap<object, ResidencyHold>();
 
 export const slackThreadCloudflareExtension = {
   base: (Base: AgentObjectClass): AgentObjectClass =>
@@ -358,6 +363,20 @@ export const slackThreadCloudflareExtension = {
           turnJobId: input.turnJobId,
         });
         await preloadManagedConnectionDetails(input.runtimePlan.managedConnections);
+      }
+
+      /**
+       * A turn's requests (its dispatch, each read of its reply) hold
+       * the object in memory until KEEP_WARM_WINDOW_MS after the last, so a
+       * follow-up in the thread finds it warm. Unlike the runner, the object
+       * cannot tell a person's turn from an Agent's ask; both come from its
+       * one thread.
+       */
+      fetch(request: Request): Promise<Response> {
+        const hold = conversationHolds.get(this) ?? new ResidencyHold();
+        conversationHolds.set(this, hold);
+        hold.extendTo(Date.now() + KEEP_WARM_WINDOW_MS);
+        return super.fetch(request);
       }
 
       /**

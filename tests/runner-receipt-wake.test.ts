@@ -33,6 +33,7 @@ import {
   withLane,
 } from './helpers/gateway-admission-lane.ts';
 import { FakeObjectRestoreContext, FakeObjectStorage } from './helpers/installation-objects.ts';
+import { unobservedHold } from './helpers/residency-hold.ts';
 
 /** Settles within a second, or fails: the receipt never waits for the wake. */
 function promptly<T>(promise: Promise<T>): Promise<T> {
@@ -225,6 +226,7 @@ function runnerOver(storage: FakeObjectStorage, clock: { now: number }, records:
       SlackStatusRegistry,
       createRunnerSupersedeState,
       runnerLoopScheduler,
+      ResidencyHold: unobservedHold,
     },
   ) as new (ctx: unknown, env: unknown) => RunnerProbe;
   const runner = new Runner(new FakeObjectRestoreContext(storage, { name: 'T1:C1:5000.000100:owner-i1' }), {});

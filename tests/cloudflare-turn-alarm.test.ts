@@ -40,7 +40,9 @@ import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { reportInteractiveDelivery } from '../src/config/hosted-activity.ts';
 import { installationOwnershipOf, installationScopeOf } from '../src/config/installation-scope.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
+import { KEEP_WARM_WINDOW_MS } from '../src/state/residency-hold.ts';
 import { turnJob as maintenanceTurnJob } from './fixtures/state-db/maintenance.ts';
+import { unobservedHold } from './helpers/residency-hold.ts';
 import { createAgentAskCollector } from '../src/slack/agent-asks.ts';
 import { admissionStatusPresentation, showAdmissionStatus } from '../src/slack/admission-activity.ts';
 import { givenUpRecoveryText } from '../src/usage/run-settlement.ts';
@@ -75,13 +77,16 @@ const batchDeclaration = source.statements.find((node) =>
   ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) =>
     declaration.name.getText(source) === 'RELAY_BATCH_WINDOW_MS'));
 assert.ok(batchDeclaration);
-const keepWarmDeclarations = ['KEEP_WARM_WINDOW_MS', 'KEEP_WARM_TICK_MS', 'RETENTION_SWEEP_INTERVAL_MS'].map((name) => {
-  const declaration = source.statements.find((node) =>
-    ts.isVariableStatement(node) && node.declarationList.declarations.some((candidate) =>
-      candidate.name.getText(source) === name));
-  assert.ok(declaration, `production ${name} exists`);
-  return declaration.getText(source);
-}).join('\n');
+const keepWarmDeclarations = [
+  `const KEEP_WARM_WINDOW_MS = ${KEEP_WARM_WINDOW_MS};`,
+  ...['KEEP_WARM_TICK_MS', 'RETENTION_SWEEP_INTERVAL_MS'].map((name) => {
+    const declaration = source.statements.find((node) =>
+      ts.isVariableStatement(node) && node.declarationList.declarations.some((candidate) =>
+        candidate.name.getText(source) === name));
+    assert.ok(declaration, `production ${name} exists`);
+    return declaration.getText(source);
+  }),
+].join('\n');
 // The alarm runs each job through the shared turn executor; evaluate that
 // production function beside it so the same injected collaborators apply.
 const executorSource = ts.createSourceFile(
@@ -152,7 +157,7 @@ const entryPoints: Array<{
 ];
 
 function fixture(initialAlarm: number | null, result?: Result, env: object = RUNNER_ENV) {
-  const probe = new ProbeClass();
+  const probe = Object.assign(new ProbeClass(), { conversationHold: unobservedHold() });
   probe.env = env;
   let alarm = initialAlarm;
   let persisted = false;
@@ -326,7 +331,7 @@ for (const { withPendingTurn, testRun } of [
       alarm(): Promise<void>;
       createAlarmIdentityResolver(): object;
     };
-    const drainingProbe = new AlarmProbe();
+    const drainingProbe = Object.assign(new AlarmProbe(), { conversationHold: unobservedHold() });
     drainingProbe.ctx = storageProbe.ctx;
     (drainingProbe as unknown as { env: object }).env = {};
     // Class fields the method-only probe does not carry.
@@ -374,7 +379,7 @@ test('a model request whose submission unerased an erased test run arms the alar
     [undefined, null, null],
   ];
   for (const [binding, value, armed] of cases) {
-    const probe = new ProbeClass();
+    const probe = Object.assign(new ProbeClass(), { conversationHold: unobservedHold() });
     probe.env = RUNNER_ENV;
     let alarm: number | null = null;
     probe.call = (callback) => ({ ok: true, value: callback({ testRuns: { bindModelAccess: () => binding } }) });
@@ -577,7 +582,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     stores: object; env: object; ctx: object; alarm(): Promise<void>;
     createAlarmIdentityResolver(): unknown;
   };
-  const probe = new AlarmProbe();
+  const probe = Object.assign(new AlarmProbe(), { conversationHold: unobservedHold() });
   probe.env = {
     ...(hooks.noRunnerBinding ? {} : { SLACK_THREAD_RUNNER: {} }),
     ...(hooks.executorVar === undefined ? {} : { SLACK_TAG_TURN_EXECUTOR: hooks.executorVar }),
@@ -1006,7 +1011,7 @@ function admissionHarness(runner: { refuse?: boolean } = {}) {
   const db = openStateDb(':memory:');
   let clock = NOW;
   const turns = new TurnJobStoreLogic(db, () => clock++);
-  const probe = Object.assign(new AdmissionProbe(), { firstHandoffs: new Set<string>() });
+  const probe = Object.assign(new AdmissionProbe(), { firstHandoffs: new Set<string>(), conversationHold: unobservedHold() });
   probe.stores = {
     turnJobs: turns,
     presentations: { get: () => undefined },

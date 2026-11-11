@@ -37,7 +37,9 @@ import { slackTurnExecutor } from '../src/slack/turn-executor-flag.ts';
 import type { TurnJob } from '../src/slack/turn-job-types.ts';
 import { TurnJobStoreLogic, type PendingTurnJob } from '../src/slack/turn-jobs.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
+import { KEEP_WARM_WINDOW_MS } from '../src/state/residency-hold.ts';
 import { delivery, message, withLane, type Lane, type Wake } from './helpers/gateway-admission-lane.ts';
+import { unobservedHold } from './helpers/residency-hold.ts';
 
 /**
  * A DM the front desk hands to an Agent is two turns: Chickpea's decides and
@@ -236,7 +238,7 @@ const moduleStatement = (name: string) => {
 };
 const HandoffProbe = vm.runInNewContext(
   ts.transpileModule(
-    `${['RELAY_BATCH_WINDOW_MS', 'KEEP_WARM_WINDOW_MS', 'KEEP_WARM_TICK_MS', 'localSlackPresentationState'].map(moduleStatement).join('\n')}
+    `${['RELAY_BATCH_WINDOW_MS', 'KEEP_WARM_TICK_MS', 'localSlackPresentationState'].map(moduleStatement).join('\n')}
 class HandoffProbe { ${[
       'noteFrontDeskHandoff', 'sendRunnerWake', 'admitSlackTurn', 'admitToRunner', 'wakeAgentAtHandoff',
       'showStatusAtHandoff', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode', 'keepWarmTickAt',
@@ -247,6 +249,7 @@ class HandoffProbe { ${[
     Date,
     Promise,
     console: { warn() {} },
+    KEEP_WARM_WINDOW_MS,
     frontDeskHandoffRunnerWake,
     threadRunnerStub,
     slackTurnExecutor: (env: Record<string, unknown>) => slackTurnExecutor(env, {}),
@@ -318,6 +321,7 @@ function handoffStore(config: ConfigStoreLogic, options: {
     env,
     stores,
     firstHandoffs: new Set<string>(),
+    conversationHold: unobservedHold(),
     call(run: (value: typeof stores) => unknown) {
       try {
         return { ok: true, value: run(stores) };

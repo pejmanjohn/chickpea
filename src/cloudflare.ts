@@ -283,6 +283,7 @@ import type {
   ObjectRestoreRestartRequest,
 } from './state/object-host.ts';
 import type { InstallationWorkspaceObject } from './state/object-inventory.ts';
+import { KEEP_WARM_WINDOW_MS, ResidencyHold } from './state/residency-hold.ts';
 import { stateStoreHostFunctions, type StateStoreHostRpc } from './state/state-store-host.ts';
 import type { TestRunLifecycle } from './state/test-run-lifecycle.ts';
 import type { TestRunQuery, TestRunReplayQuery, TestRunStartRequest, TestRunStartResult, TestRunView } from './management/test-run-types.ts';
@@ -787,15 +788,14 @@ const RELAY_RETRY_BACKOFF_MS = 2_000;
 const RELAY_BATCH_WINDOW_MS = 250;
 
 /**
- * Keep-warm: while a person has talked to this installation in the last
- * KEEP_WARM_WINDOW_MS, the state store's alarm fires at least every
- * KEEP_WARM_TICK_MS so the object stays in memory. Measured on Chickpea Cloud
- * staging: the object leaves memory about 30 s after its last activity, and a
- * message after that pays 0.9-1.3 s at ingress for its first state read. A
- * tick runs the ordinary idle drain (see keepWarmTickAt). Constants, not
- * settings; Node has no alarms.
+ * Keep-warm: for KEEP_WARM_WINDOW_MS after a person's turn, the state store
+ * holds itself in memory (ResidencyHold), and its alarm fires at least every
+ * KEEP_WARM_TICK_MS. A store that left memory made the next message pay
+ * 1.5-2.4 s at ingress for its first state read (production, 2026-11-10); the
+ * alarm alone never kept it there. A tick runs the ordinary idle drain, and a
+ * store that restarted inside the window holds itself again at its next tick
+ * (drainRelayAlarm). Constants, not settings; Node has no alarms.
  */
-const KEEP_WARM_WINDOW_MS = 10 * 60_000;
 const KEEP_WARM_TICK_MS = 20_000;
 
 /**
@@ -870,6 +870,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
    * when there is none.
    */
   private lastHumanTurnAt: number | undefined;
+  /** Keeps this instance in memory until KEEP_WARM_WINDOW_MS after lastHumanTurnAt. */
+  private readonly conversationHold = new ResidencyHold();
   /** When this instance last ran the management retention sweep (drainRelayAlarm). */
   private lastRetentionSweepAt: number | undefined;
   /**
@@ -1771,7 +1773,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       // A person's turn opens the keep-warm window; the host's own turns, an
       // Agent's ask and a setup wake, do not.
       const { agentAsk, setupWake } = input.turnJob.turn;
-      if (!agentAsk && !setupWake) this.lastHumanTurnAt = Date.now();
+      if (!agentAsk && !setupWake) {
+        this.lastHumanTurnAt = Date.now();
+        this.conversationHold.extendTo(this.lastHumanTurnAt + KEEP_WARM_WINDOW_MS);
+      }
       const ready = this.runnerMode()
         ? this.call((stores) => stores.turnJobs.dispatchableNow(turnJobId))
         : undefined;
@@ -1781,8 +1786,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       if (!handedOver) {
         await this.armAlarmNoLaterThan(this.admissionWakeAt(), true);
       } else {
-        // The runner has the turn; the alarm only keeps this store warm for
-        // the next one, so a running alarm's dispatch loop is not woken for it.
+        // The runner has the turn; the alarm only ticks for the keep-warm
+        // window, so a running alarm's dispatch loop is not woken for it.
         const tick = this.keepWarmTickAt();
         if (tick !== undefined) await this.setAlarmNoLaterThan(tick);
       }
@@ -2626,8 +2631,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       throw new Error(`state store unavailable in alarm: ${this.initError ?? 'unknown'}`);
     }
     const stores = this.stores;
-    // A store woken cold learns from its newest turn row whether a conversation is live.
+    // A store woken cold learns from its newest turn row whether a
+    // conversation is live, and holds itself for the rest of it.
     this.lastHumanTurnAt ??= stores.turnJobs.newestEnqueuedAt() ?? 0;
+    this.conversationHold.extendTo(this.lastHumanTurnAt + KEEP_WARM_WINDOW_MS);
     const productTelemetry = createPlatformProductTelemetry({
       env: this.env as PlatformEnv,
       settings: localSettingsStore(stores),
@@ -3170,8 +3177,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
    * The next keep-warm tick while a person's turn was admitted here within
    * KEEP_WARM_WINDOW_MS; undefined outside the window, and before any turn is
    * known. Armed as the latest the alarm may wait (armAlarmNoLaterThan keeps
-   * an earlier due time), so a firing inside the window re-arms it and the
-   * store never leaves memory during a conversation.
+   * an earlier due time), so a firing inside the window re-arms it. The
+   * conversationHold keeps the store in memory; the tick does not.
    */
   private keepWarmTickAt(): number | undefined {
     const now = Date.now();
