@@ -177,6 +177,15 @@ function asciiHost(host: string, plain = plainName(host)): string | undefined {
   return end > 0 ? hostname.slice(0, end) : undefined;
 }
 
+/**
+ * A saved site as the scrub compares it: without one leading `www.` label,
+ * which a browser's address bar hides, unless that would leave one label.
+ * Any host under what is left counts as the site (see loginSite).
+ */
+function withoutWww(site: string): string {
+  return /^www\.[^.]+\./.test(site) ? site.slice(4) : site;
+}
+
 // A path segment a site is unlikely to take as a bearer: a word of up to 20 letters.
 const PLAIN_SEGMENT = /^[A-Za-z]{1,20}$/;
 // What a sentence may put right after a link.
@@ -201,8 +210,9 @@ export interface WebsiteLoginScrub {
    * leave stays as it was written. A hosted browser link goes whole, and so
    * does a hand-off message's link wherever
    * else the same text holds it. Every URL loses its userinfo. A host is a
-   * login's site when the hostname a URL gives it is, whatever script,
-   * encoding or IPv4 spelling it is written in. A link without a scheme
+   * login's site when the hostname a URL gives it is that site without one
+   * leading `www.`, or any host under it, whatever script, encoding or IPv4
+   * spelling it is written in. A link without a scheme
    * counts on a login's site or the hosted browser's, or on a name no URL can
    * read; in a browser step, on any name, any IPv4 address in four decimal
    * parts and any bracketed IPv6 address too. A URL on a login's site, or any
@@ -239,7 +249,7 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
   const maps = new ViewMaps();
   const hostnames = new Set(logins.hosts.map((host) => {
     const site = host.trim().replace(/:\d+$/, '');
-    return asciiHost(site) ?? site.toLowerCase();
+    return withoutWww(asciiHost(site) ?? site.toLowerCase());
   }).filter(Boolean));
   const names = unique(logins.usernames.map((username) => username.trim()).filter(Boolean));
   if (hostnames.size > MAX_SCRUB_LOGINS || names.length > MAX_SCRUB_LOGINS ||
@@ -247,8 +257,9 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
     throw new RunReviewScrubLimit('scrub_over_logins');
   }
   const longestSite = Math.max(0, ...[...hostnames].map((site) => site.length));
-  // The site itself or any host under it, each in its ASCII form. A suffix longer than every site is none of
-  // them, so a long host is read only from where one could start.
+  // The site itself or any host under it, each in its ASCII form and the site without one leading `www.`. So a
+  // link with `www.` or without it, as an address bar shows it, counts, and so does `accounts.` or `login.` before
+  // the site. A suffix longer than every site is none of them, so a long host is read only from where one could start.
   const loginSite = (hostname: string): boolean => {
     let at = 0;
     if (hostname.length > longestSite) {

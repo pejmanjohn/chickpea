@@ -247,6 +247,31 @@ test('a URL on an IDN login site loses its token whatever form the URL and the s
   assert.equal(record.answer, `Signed in at <https://café.example/home?[omitted]>. Watch at ${BROWSER_LINK_OMITTED}`);
 });
 
+test('a saved site reads without one leading `www.`, and any host under it is that site, so the address bar\'s form of its link loses its token', () => {
+  // A browser's address bar hides `www.`, and a person or an Agent may copy the address as it shows it.
+  const bucher = normalizeWebsiteLoginHost('www.bücher.example');
+  assert.equal(bucher, 'www.xn--bcher-kva.example');
+  // `www.example` has only one label past `www.`, so it stays whole: `other.example` is no host under it.
+  const logins: RunReviewWebsiteLogins = { hosts: ['www.billing.example.com', bucher, 'www.example'], usernames: [] };
+  const text = 'Open billing.example.com/callback?code=SYNTHWWW1 or https://billing.example.com/cb#t=SYNTHWWW2 or ' +
+    'https://www.billing.example.com/magic/SYNTHWWW3 or accounts.billing.example.com/cb?code=SYNTHWWW4 or ' +
+    '<https://login.billing.example.com/cb?code=SYNTHWWW5|Done> or bücher.example/cb?code=SYNTHWWW6 or ' +
+    'https://m.billing.example.com/cb?code=SYNTHWWW7. Public: https://other.example/s?q=kept and https://billing.example.org/s?q=kept';
+  const scrubbed = 'Open billing.example.com/callback?[omitted] or https://billing.example.com/cb?[omitted] or ' +
+    'https://www.billing.example.com/magic/[omitted] or accounts.billing.example.com/cb?[omitted] or ' +
+    '<https://login.billing.example.com/cb?[omitted]> or bücher.example/cb?[omitted] or ' +
+    'https://m.billing.example.com/cb?[omitted]. Public: https://other.example/s?q=kept and https://billing.example.org/s?q=kept';
+  const record = copy({
+    trigger: { author: 'U012ABCDEF3', text, files: [] },
+    context: [{ author: 'Billing Agent', role: 'agent', text, files: [] }],
+    answer: JSON.stringify({ text }),
+  }, logins);
+  assert.deepEqual(kept(record, ['SYNTHWWW']), []);
+  assert.equal(record.trigger.text, scrubbed);
+  assert.equal(record.context[0]?.text, scrubbed);
+  assert.equal(JSON.parse(record.answer ?? '{}').text, scrubbed);
+});
+
 test('a link on an IDN login site in JSON that keeps to ASCII loses its token, and comes back as JSON reads it while one kept stays as written', () => {
   // Python's json.dumps writes every character past ASCII as an escape, so a connector's result may hold a host that way.
   const asciiJson = (value: unknown) => JSON.stringify(value)
