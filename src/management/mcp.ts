@@ -43,6 +43,7 @@ import {
 import { createLiveWorkspaceManagementService } from './live-service.ts';
 import { observeMcpRequests } from './mcp-request-telemetry.ts';
 import {
+  CARD_REFUSAL_TOOL_NAMES,
   FIVE_ZERO_TOOL_INPUT_SCHEMAS,
   FIVE_ZERO_TOOL_NAMES,
   registerFiveZeroTools,
@@ -195,9 +196,17 @@ class ObservedMcpServer extends McpServer {
     // person's press, and 5.0 covers every 4.x tool, so a card host gets
     // only 5.0, and no prompt or guide that tells its model to call a 4.x
     // tool. Its capabilities are known here, after everything registers.
-    if (this.cardHost()) for (const registered of this.v4Only.splice(0)) registered.remove();
+    const hidesV4 = this.cardHost();
+    if (hidesV4) for (const registered of this.v4Only.splice(0)) registered.remove();
+    // Shaped first, so the request metric reads each result as the tool made it: a refusal
+    // that leaves a card session as a result still counts as a refusal.
+    shapeFiveZeroResults(
+      transport,
+      FIVE_ZERO_TOOL_NAME_SET,
+      { session: () => this.cardHost(), tools: CARD_REFUSAL_TOOL_NAMES },
+      hidesV4 ? WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAME_SET : undefined,
+    );
     observeMcpRequests(transport, { ...MCP_TOOL_INPUT_SCHEMAS, ...FIVE_ZERO_TOOL_INPUT_SCHEMAS });
-    shapeFiveZeroResults(transport, FIVE_ZERO_TOOL_NAME_SET, this.cardHost() ? WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAME_SET : undefined);
     return super.connect(transport);
   }
 }

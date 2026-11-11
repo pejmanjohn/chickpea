@@ -555,7 +555,7 @@ test('a person lists and revokes only their own connected MCP clients, over MCP 
       assert.ok(!fromSlack.ok, 'Slack has no MCP clients to manage');
       assert.deepEqual(fromSlack.error, {
         code: 'forbidden',
-        message: 'Connected MCP clients are listed and revoked over the Chickpea MCP.',
+        message: 'Connected MCP clients are listed and revoked over the Chickpea MCP or in Admin.',
       });
     }, { mcpOAuthClients: async () => backend });
   } finally {

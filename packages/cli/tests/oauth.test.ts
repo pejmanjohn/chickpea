@@ -75,7 +75,7 @@ test('login registers a public PKCE client, exchanges the code, and stores token
   // The session works for an authenticated command.
   const inspect = await runCli(['workspace', 'inspect', deployment.url, '--json'], { store, now });
   assert.equal(inspect.code, 0, inspect.stderr);
-  assert.equal(JSON.parse(inspect.stdout).organizationId, 'org_test');
+  assert.equal(JSON.parse(inspect.stdout).workspace.name, 'Example');
   assert.equal(deployment.refreshCount, 0);
 });
 
@@ -108,7 +108,7 @@ test('a token the server rejects early is refreshed on the 401 and the call is r
   deployment.invalidateAccessTokens();
   const inspect = await runCli(['workspace', 'inspect', deployment.url], { store, now });
   assert.equal(inspect.code, 0, inspect.stderr);
-  assert.match(inspect.stdout, /^Workspace org_test/);
+  assert.match(inspect.stdout, /^Workspace Example/);
   assert.equal(deployment.refreshCount, refreshesBefore + 1);
 });
 

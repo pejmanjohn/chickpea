@@ -1146,8 +1146,10 @@ test('disconnect_app revokes one of the person\'s own apps, this one included', 
     { clientId: 'client_chatgpt', name: 'ChatGPT', connectedAt: at, lastTokenAt: null },
   ]);
   const owner = as('owner');
+  const page = 'https://chickpea.example.test/admin/settings/connected-apps';
+  assert.equal(structured(await owner('list_connected_apps')).adminUrl, page);
   const other = structured(await owner('disconnect_app', { appId: 'client_chatgpt' }));
-  assert.deepEqual([other.name, other.thisApp], ['ChatGPT', false]);
+  assert.deepEqual([other.name, other.thisApp, other.adminUrl], ['ChatGPT', false, page]);
   assert.match(other.message, /^Revoked ChatGPT\./);
   errorOf(await owner('disconnect_app', { appId: 'client_chatgpt' }), 'not_found');
   errorOf(await as('admin')('disconnect_app', { appId: 'client_disconnect-app' }), 'not_found');

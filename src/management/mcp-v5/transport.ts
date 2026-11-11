@@ -8,11 +8,20 @@ import {
   type Transport,
 } from '@modelcontextprotocol/server';
 
+import { cardRefusal, withRefusalOutput } from './card-host.ts';
 import { mcpErrorResult, type McpToolError } from './conventions.ts';
 
+/** On a card session, the tools whose refusals are results (tools.ts `cardReceives`). */
+export interface CardRefusals {
+  session(): boolean;
+  tools: ReadonlySet<string>;
+}
+
+const NO_CARDS: CardRefusals = { session: () => false, tools: new Set() };
+
 /**
- * SDK gaps for a 5.0 client, applied to the messages
- * this transport sends. Call before the server connects, as with
+ * What the SDK cannot express for a 5.0 tool, applied to the messages this
+ * transport sends. Call before the server connects, as with
  * `observeMcpRequests`.
  *
  * - `tools/list` emits a fixed descriptor field set, so a tool's top-level
@@ -22,14 +31,19 @@ import { mcpErrorResult, type McpToolError } from './conventions.ts';
  *   is plain text. For a 5.0 tool it becomes the 5.0 error shape, so every
  *   error from these tools carries `structuredContent.error`. A 4.x tool's
  *   result passes through untouched.
+ * - On a card session, a refusal from a tool a card receives becomes a
+ *   result (`cardRefusal`), and that tool's listed output schema names the
+ *   refusal too. The SDK checks a result against its tool's own schema
+ *   before it gets here, so the refusal leaves the tool as an error.
  * - A card host's hidden 4.x tool is not found in the 5.0 error shape. The
  *   SDK answers with a protocol error, which carries no `resultType`, and a
  *   2026-07-28 client rejects a result without one, so a request that names
- *   its revision gets it here.
+ *   its revision gets it here. It stays an error on a card session too.
  */
 export function shapeFiveZeroResults(
   transport: Transport,
   toolNames: ReadonlySet<string>,
+  cards: CardRefusals = NO_CARDS,
   hiddenToolNames?: ReadonlySet<string>,
 ): void {
   const toolLists = new Set<RequestId>();
@@ -74,17 +88,18 @@ export function shapeFiveZeroResults(
       } };
     }
     if (!isJSONRPCResultResponse(message)) return message;
-    if (toolLists.delete(message.id)) return withSecuritySchemes(message);
+    if (toolLists.delete(message.id)) return listed(message, cards.session() ? cards.tools : NO_CARDS.tools);
     const tool = fiveZeroCalls.get(message.id);
     if (tool === undefined) return message;
     fiveZeroCalls.delete(message.id);
-    return withFiveZeroError(message, tool);
+    const result = withFiveZeroError(message, tool);
+    return cards.session() && cards.tools.has(tool) ? asResult(result) : result;
   }
 }
 
 type ResultResponse = Extract<JSONRPCMessage, { result: unknown }>;
 
-function withSecuritySchemes(message: ResultResponse): JSONRPCMessage {
+function listed(message: ResultResponse, refusing: ReadonlySet<string>): JSONRPCMessage {
   const tools = (message.result as { tools?: unknown }).tools;
   if (!Array.isArray(tools)) return message;
   return {
@@ -93,10 +108,34 @@ function withSecuritySchemes(message: ResultResponse): JSONRPCMessage {
       ...message.result,
       tools: tools.map((tool: Record<string, unknown>) => {
         const schemes = (tool._meta as { securitySchemes?: unknown } | undefined)?.securitySchemes;
-        return Array.isArray(schemes) && !('securitySchemes' in tool) ? { ...tool, securitySchemes: schemes } : tool;
+        const output = tool.outputSchema;
+        return {
+          ...tool,
+          ...Array.isArray(schemes) && !('securitySchemes' in tool) ? { securitySchemes: schemes } : {},
+          ...refusing.has(tool.name as string) && typeof output === 'object' && output !== null
+            ? { outputSchema: withRefusalOutput(output as Record<string, unknown>) }
+            : {},
+        };
       }),
     },
   };
+}
+
+function asResult(message: JSONRPCMessage): JSONRPCMessage {
+  if (!isJSONRPCResultResponse(message)) return message;
+  const result = message.result as { isError?: unknown; structuredContent?: { error?: McpToolError } };
+  const error = result.structuredContent?.error;
+  return result.isError === true && error !== undefined ? reshaped(message, cardRefusal(error)) : message;
+}
+
+/**
+ * A result this transport rewrites keeps what the SDK stamped beside it. On
+ * 2026-07-28 that is the required `resultType`, without which a client
+ * rejects the whole result, and `_meta`. Earlier revisions stamp nothing.
+ */
+function reshaped(message: ResultResponse, result: ReturnType<typeof mcpErrorResult | typeof cardRefusal>): JSONRPCMessage {
+  const { content: _content, structuredContent: _structured, isError: _isError, ...stamped } = message.result as Record<string, unknown>;
+  return { ...message, result: { ...result, ...stamped } };
 }
 
 function withFiveZeroError(message: ResultResponse, tool: string): JSONRPCMessage {
@@ -120,5 +159,5 @@ function withFiveZeroError(message: ResultResponse, tool: string): JSONRPCMessag
         retryable: true,
         nextStep: 'Try the same call again in a moment.',
       };
-  return { ...message, result: mcpErrorResult(error) };
+  return reshaped(message, mcpErrorResult(error));
 }

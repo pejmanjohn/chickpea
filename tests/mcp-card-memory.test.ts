@@ -3,6 +3,7 @@ import { test, type TestContext } from 'node:test';
 
 import { INITIAL, present, step, type Action, type View } from '../src/mcp-cards/agent-card/model.ts';
 import {
+  hostErrorOf,
   hostFailed,
   keptState,
   refusalOf,
@@ -24,13 +25,15 @@ import { cardHost, cardServer, type CardModelUnderTest } from './helpers/mcp-car
  * a refusal reached the card without its code; a reopened card offered
  * buttons that could not work; the card's widget state, which ChatGPT shows
  * its model, held tokens; and each update to the model replaced the last.
+ * Probe 12 then found ChatGPT hides `privateContent` from its model beside a
+ * `modelContent`, so a created Agent's ID may be kept there.
  */
 
 const AGENT_CARD: CardModelUnderTest<View, Action> = {
   initial: INITIAL,
   step,
   present,
-  reads: new Set(['get_creation_status', 'get_agent']),
+  reads: new Set(['get_creation_status', 'get_agent', 'get_confirmation']),
   followsPress: ({ view }) => view.kind === 'creating' && view.byPress === true,
 };
 
@@ -66,22 +69,25 @@ const memoryOf = ({ told = [], outcome }: CardState<View>): Memory => ({ told, .
 test('a refusal reaches the card wherever its host put it: in the result, beside it, or with a JSON-RPC error', async (t) => {
   const { call, turnOff, card } = await world(t, 'memory-refusal');
   const pending = await turnOff();
-  // Kept on another card: the token this card holds is retired.
+  // Kept on another card after this one asked where it stands: the token this card holds is retired.
   await call('decline_change', { confirmToken: tokenOf(pending) });
   const refused = await call('confirm_change', { confirmToken: tokenOf(pending) });
   const sentence = 'That confirmation no longer applies. Ask again to make the change.';
   assert.equal((refused.structuredContent as { error: { code: string; message: string } }).error.message, sentence);
+  assert.equal(refused.isError, false, 'a card session gets the refusal as a result');
 
   const { structuredContent: _stripped, ...bare } = refused;
   const deliveries: Record<string, ToolResult> = {
     'the result itself': refused,
     'ChatGPT\'s copy of the whole result, beside a result without it': { ...bare, _meta: { mcp_tool_result: refused } },
-    'a JSON-RPC error carrying the result': { isError: true, hostError: { code: -32603, message: 'Tool call failed', data: refused } },
-    'a JSON-RPC error carrying ChatGPT\'s envelope': { isError: true, hostError: { code: -32603, message: 'Tool call failed', data: { status: 'error', mcp_tool_result: refused } } },
+    'a JSON-RPC error carrying the result': { isError: true, hostError: hostErrorOf({ code: -32603, message: 'Tool call failed', data: refused }) },
+    'a JSON-RPC error carrying ChatGPT\'s envelope': { isError: true, hostError: hostErrorOf({ code: -32603, message: 'Tool call failed', data: { status: 'error', mcp_tool_result: refused } }) },
   };
   for (const [how, result] of Object.entries(deliveries)) {
     const confirm = card();
+    confirm.hold = ({ tool }) => tool === 'get_confirmation';
     await confirm.result(pending);
+    await confirm.answer('unreachable');
     confirm.hold = ({ tool }) => tool === 'confirm_change';
     await confirm.press('confirm');
     confirm.held[0]!.result = result;
@@ -93,7 +99,8 @@ test('a refusal reaches the card wherever its host put it: in the result, beside
   }
 
   // A host's own words are never shown as Chickpea's: without a refusal in it, the error is the host's.
-  const words: ToolResult = { isError: true, hostError: { code: -32603, message: sentence } };
+  const words: ToolResult = { isError: true, hostError: hostErrorOf({ code: -32603, message: sentence }) };
+  assert.deepEqual(words.hostError, { code: -32603 }, 'the host\'s words never come in');
   assert.deepEqual([refusalOf(words), hostFailed(words)], [undefined, true]);
   const carried = deliveries['a JSON-RPC error carrying the result']!;
   assert.deepEqual([refusalOf(carried)?.code, hostFailed(carried)], ['changed_since_read', false]);
@@ -125,25 +132,28 @@ test('an error with no Chickpea code, answering Turn off, keeps the buttons: the
   assert.equal(confirm.shown.done, true, confirm.shown.title);
 });
 
-test('a card first drawn with an error finds its sentence in ChatGPT\'s copy of the result', async (t) => {
+test('a card first drawn with a refusal shows its sentence, from the result or ChatGPT\'s copy of it', async (t) => {
   const { call, card } = await world(t, 'memory-error-result');
   const refused = await call('get_agent', { agentId: 'agent_missing' });
-  assert.equal(refused.isError, true);
+  const { error } = refused.structuredContent as { error: { code: string; message: string } };
+  assert.deepEqual([refused.isError, error.code], [false, 'not_found']);
   const { structuredContent: _stripped, ...bare } = refused;
-  const drawn = card();
-  await drawn.result({ ...bare, _meta: { mcp_tool_result: refused } });
-  assert.equal(drawn.shown.title, (refused.structuredContent as { error: { message: string } }).error.message);
+  for (const result of [refused, { ...bare, _meta: { mcp_tool_result: refused } }]) {
+    const drawn = card();
+    await drawn.result(result);
+    assert.deepEqual([drawn.shown.title, drawn.labels()], [error.message, []]);
+  }
 });
 
 // Mutation proof (item 2): a card that ignores what it kept offers Keep it on, Save or Create again.
 test('a card that mounts again comes back to what its presses did, and never offers a button that cannot work', async (t) => {
-  const { call, f, turnOff, version, card } = await world(t, 'memory-reopen');
+  const { call, f, turnOff, version, card, clock } = await world(t, 'memory-reopen');
   const reopen = async (result: ToolResult, kept: Memory | undefined) => {
     const again = card();
-    await again.dispatch({ type: 'result', result, kept, now: Date.now() });
+    await again.dispatch({ type: 'result', result, kept, now: clock.now });
     return again;
   };
-  const writes = (opened: ReturnType<typeof card>) => opened.calls().filter(({ tool }) => tool !== 'get_agent' && tool !== 'get_creation_status');
+  const writes = (opened: ReturnType<typeof card>) => opened.calls().filter(({ tool }) => !AGENT_CARD.reads.has(tool));
 
   // Kept on the card, then the chat reopens.
   const kept = await turnOff();
@@ -165,6 +175,7 @@ test('a card that mounts again comes back to what its presses did, and never off
   assert.deepEqual([confirmedAgain.shown.title, confirmedAgain.shown.done, confirmedAgain.labels(), writes(confirmedAgain)],
     ['Turned off Support Desk', true, [], []]);
   assert.deepEqual(confirmedAgain.calls().map(({ tool }) => tool), ['get_agent'], 'it reads where the Agent stands');
+  assert.equal(confirming.state.outcome !== undefined && !JSON.stringify(confirming.state.outcome).includes(tokenOf(confirmed)), true, 'no token kept');
 
   // Saved, then undone, on a change card.
   await f.config.updateAgent('agent_support', { enabled: true });
@@ -176,7 +187,7 @@ test('a card that mounts again comes back to what its presses did, and never off
   const undoneAgain = await reopen(preview, memoryOf(changing.state));
   assert.deepEqual([undoneAgain.shown.title, undoneAgain.labels(), writes(undoneAgain)], ['Undid the change', [], []]);
 
-  // Created from the proposal: it shows that it did, and offers no second Create.
+  // Created from the proposal: it follows the Agent it created, and offers no second Create.
   const proposal = await call('propose_agent', {
     name: 'Invoice Chaser', handle: 'invoices', job: 'Chases overdue invoices.', instructions: '# Job\nChase invoices.',
     sampleAsk: 'who is overdue?', promisedAnswer: 'I list them.',
@@ -185,8 +196,27 @@ test('a card that mounts again comes back to what its presses did, and never off
   await creating.result(proposal);
   await creating.press('create');
   const createdAgain = await reopen(proposal, memoryOf(creating.state));
-  assert.deepEqual([createdAgain.shown.title, createdAgain.shown.done, createdAgain.labels(), createdAgain.calls()],
+  assert.deepEqual([createdAgain.state.view.kind, createdAgain.shown.title, createdAgain.calls().map(({ tool, args }) => [tool, args])],
+    ['creating', 'Invoice Chaser', [['get_creation_status', { agentId: 'agent_invoice_chaser' }]]], 'it reads the arrival of the Agent it created');
+  assert.deepEqual([writes(createdAgain), createdAgain.effects.some(({ type }) => type === 'context')], [[], false], 'and tells the model nothing new');
+  // Arrived in Slack meanwhile: Open in Slack and its next step come back.
+  await createdAgain.dispatch({
+    type: 'reply',
+    call: { tool: 'get_creation_status', args: { agentId: 'agent_invoice_chaser' }, seq: createdAgain.state.seq },
+    result: { structuredContent: { stage: 'said_hello', agent: { name: 'Invoice Chaser', handle: 'invoices', hasFirstAsk: true }, channels: 'none', slackUrl: 'https://slack.com/app_redirect?team=T1&app=A1' } },
+    now: clock.now,
+  });
+  assert.deepEqual([createdAgain.shown.title, createdAgain.labels()],
+    ['@invoices said hello to you in Slack', ['Open in Slack (primary)', 'See its first answer (secondary)']]);
+  assert.equal(createdAgain.effects.some(({ type }) => type === 'context'), false, 'its arrival is not news to the model');
+  // What an older card kept, with no ID: it shows only that it created it.
+  const { outcome: _outcome, ...withoutId } = memoryOf(creating.state);
+  const createdBefore = await reopen(proposal, { ...withoutId, outcome: { kind: 'created', name: 'Invoice Chaser' } });
+  assert.deepEqual([createdBefore.shown.title, createdBefore.shown.done, createdBefore.labels(), createdBefore.calls()],
     ['Created Invoice Chaser', true, [], []]);
+  // What the host kept is untrusted: an ID that is not an Agent's is no ID, and nothing is read with it.
+  const createdOdd = await reopen(proposal, { ...withoutId, outcome: { kind: 'created', name: 'Invoice Chaser', agentId: '../agent_support' } });
+  assert.deepEqual([createdOdd.shown.title, createdOdd.calls()], ['Created Invoice Chaser', []]);
 
   // A host that keeps nothing, as claude.ai: the preview it saved says it changed since.
   const changed = await reopen(preview, undefined);
@@ -252,7 +282,7 @@ test('a delete confirmation keeps its buttons after the mount read finds its Age
   const deleting = await call('delete_agent', { agentId: 'agent_support', version: (archived.structuredContent as { version: string }).version, idempotencyKey: 'delete' });
   const confirm = card();
   await confirm.result(deleting);
-  assert.deepEqual(confirm.calls().map(({ tool }) => tool), ['get_agent'], 'it read where the Agent stands');
+  assert.deepEqual(confirm.calls().map(({ tool }) => tool), ['get_confirmation', 'get_agent'], 'it read where the confirmation and the Agent stand');
   assert.deepEqual([confirm.labels(), confirm.shown.busy], [['Delete (danger)', 'Keep it (secondary)'], false]);
 });
 
@@ -269,10 +299,12 @@ test('an older card drops Undo once a newer change exists, however its change wa
 });
 
 // Mutation proof (review SHOULD 2): keptState writing the view, tokens included, into privateContent.
-// It is what run-card writes to the widget state, and ChatGPT's model may read all of it.
-test('what a card keeps where the host\'s model reads it holds no token, ID or instructions', async (t) => {
+// It is what run-card writes to the widget state. ChatGPT's model reads modelContent, and privateContent
+// beside it only when there is none (probe 12), so only privateContent may hold a created Agent's ID.
+test('what a card keeps holds no token or instructions, and only its private part holds an ID', async (t) => {
   const { call, f, version, turnOff, card } = await world(t, 'memory-safe');
-  const secrets = new Set<string>(['agent_support', 'agent_invoice_chaser', INSTRUCTIONS, 'Chase invoices.']);
+  const ids = ['agent_support', 'agent_invoice_chaser'];
+  const secrets = new Set<string>([INSTRUCTIONS, 'Chase invoices.']);
   const kept: Array<ReturnType<typeof keptState>> = [];
   const watch = (opened: ReturnType<typeof card>) => {
     const dispatch = opened.dispatch.bind(opened);
@@ -309,13 +341,18 @@ test('what a card keeps where the host\'s model reads it holds no token, ID or i
 
   const cards = kept.map(({ privateContent }) => privateContent.card);
   assert.ok(cards.some(({ outcome }) => outcome !== undefined) && cards.some(({ told }) => told.length === 2), 'the journeys kept something');
+  assert.ok(cards.some(({ outcome }) => JSON.stringify(outcome) === '{"kind":"created","name":"Invoice Chaser","agentId":"agent_invoice_chaser"}'),
+    'a creation keeps its Agent\'s ID');
   for (const state of kept) {
     const written = JSON.stringify(state);
     assert.deepEqual([Object.keys(state), Object.keys(state.privateContent)], [['modelContent', 'privateContent'], ['card']], written);
     assert.ok(Object.keys(state.privateContent.card).every((key) => ['version', 'told', 'outcome'].includes(key)), written);
     assert.equal(state.modelContent, state.privateContent.card.told.join('\n'), 'the model reads what the card told it');
+    for (const secret of [...secrets, ...ids]) assert.equal(state.modelContent.includes(secret), false, `${secret} told: ${written}`);
     for (const secret of secrets) assert.equal(written.includes(secret), false, `${secret} kept: ${written}`);
-    assert.doesNotMatch(written, /changeset_|"agentId"|https?:/, written);
+    const { agentId: _id, ...outcome } = (state.privateContent.card.outcome ?? {}) as { agentId?: string };
+    for (const id of ids) assert.equal(JSON.stringify({ ...state.privateContent.card, outcome }).includes(id), false, `${id} kept outside a creation: ${written}`);
+    assert.doesNotMatch(written, /changeset_|https?:/, written);
   }
 });
 

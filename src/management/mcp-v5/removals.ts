@@ -6,7 +6,7 @@ import { archiveBeforeDeleting } from '../../slack/agent-presence/left-slack.ts'
 import { ManagementError, type ApplyWorkspaceChangesResult, type ManagementActorContext } from '../types.ts';
 import { agentSummary, applyChange, changeResult, requireVersion, type ChangeResult } from './changes.ts';
 import { fail } from './conventions.ts';
-import { agentVersion, requireAgent, type FiveZeroDeps } from './reads.ts';
+import { agentVersion, connectedAppsLink, requireAgent, type FiveZeroDeps } from './reads.ts';
 import type * as schemas from './schemas.ts';
 import { editableAgent, grantRevision, readSchedule, slackTeamId } from './writes.ts';
 
@@ -232,7 +232,12 @@ export async function disconnectApp(
 ): Promise<z.infer<typeof schemas.disconnectAppOutput>> {
   try {
     const revoked = await deps.service.revokeMcpClient(await deps.context(), input.appId);
-    return { ...(revoked.name ? { name: revoked.name } : {}), thisApp: revoked.current, message: revoked.message };
+    return {
+      ...(revoked.name ? { name: revoked.name } : {}),
+      thisApp: revoked.current,
+      message: revoked.message,
+      ...connectedAppsLink(deps),
+    };
   } catch (error) {
     if (error instanceof ManagementError && error.code === 'mcp_client_not_found') {
       fail('not_found', 'None of your connected apps has that appId.', { nextStep: 'Call list_connected_apps for the current appIds.' });

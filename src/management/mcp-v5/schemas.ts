@@ -7,6 +7,7 @@ import { MODEL_EFFORTS } from '../../config/model-effort.ts';
 import { PROVIDER_KEY_IDS } from '../../config/provider-key-ids.ts';
 import { MAX_UPLOAD_FILES } from '../../config/skill-upload.ts';
 import { DEFAULT_AGENT_AVATAR_NAMES } from '../../slack/agent-presence/default-avatar-pool.ts';
+import { MCP_ERROR_CODES } from './conventions.ts';
 
 /**
  * Inputs and outputs of the 5.0 management tools. Every output is strict, so
@@ -22,6 +23,8 @@ const zEffort = z.enum(MODEL_EFFORTS);
 const zWhoCanEdit = z.enum(['creator_and_admins', 'all_workspace_members']);
 const zRole = z.enum(['owner', 'admin', 'member']);
 const zLinks = z.strictObject({ admin: z.string(), slack: z.string().optional() });
+const zConnectedAppsUrl = z.string().optional()
+  .describe('The Connected apps page in Chickpea, where the person sees their connected apps and disconnects one themselves.');
 const zWhen = z.strictObject({ display: z.string(), isoUtc: z.string() });
 const zAgentStatus = z.enum(['on', 'off', 'archived']);
 const zAvatarUrl = z.string().optional().describe('Its picture in Slack, for a card to draw.');
@@ -329,6 +332,7 @@ export const confirmChangeInput = z.strictObject({
   confirmToken: zText(128).describe('The confirmToken a needs_confirmation result returned.'),
 });
 export const declineChangeInput = confirmChangeInput;
+export const getConfirmationInput = confirmChangeInput;
 export const undoChangeInput = z.strictObject({
   undoToken: zText(128).describe('The undoToken a change returned.'),
   idempotencyKey: zIdempotencyKey,
@@ -524,6 +528,7 @@ export const listConnectedAppsOutput = z.strictObject({
     lastActive: z.strictObject({ display: z.string() }).optional(),
     thisApp: z.boolean(),
   })),
+  adminUrl: zConnectedAppsUrl,
 });
 
 /** Only where a card shows the result: it says so, so the model does not repeat it. */
@@ -659,6 +664,7 @@ export const disconnectAppOutput = z.strictObject({
   name: z.string().optional(),
   thisApp: z.boolean().describe('true when it was the app making this call, which must sign in to Chickpea again.'),
   message: z.string().describe('One plain sentence to tell the person.'),
+  adminUrl: zConnectedAppsUrl,
 });
 
 export const getCreationStatusOutput = z.strictObject({
@@ -756,6 +762,22 @@ const zFix = z.union([
   z.strictObject({ label: z.string(), url: z.string() }),
   z.strictObject({ label: z.string(), tool: z.string(), arguments: z.record(z.string(), z.unknown()) }),
 ]);
+
+/** A refusal as a card session gets it, as a result (card-host.ts `cardRefusal`). */
+export const cardRefusalOutput = z.strictObject({
+  error: z.strictObject({
+    code: z.enum(MCP_ERROR_CODES),
+    message: z.string(),
+    retryable: z.boolean(),
+    nextStep: z.string().optional(),
+    fix: zFix.optional(),
+  }),
+});
+
+export const getConfirmationOutput = z.strictObject({
+  status: z.enum(['pending', 'applied', 'cancelled', 'expired'])
+    .describe('pending: it waits for the person. applied: they confirmed it. cancelled: it can no longer apply, and nothing changed. expired: no one confirmed it in time.'),
+});
 
 export const checkAgentOutput = z.strictObject({
   agent: zAgentName,
