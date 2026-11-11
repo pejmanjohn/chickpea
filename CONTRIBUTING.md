@@ -250,8 +250,8 @@ With no CI to name a PR's base, both checks ask Git:
 `git fetch origin main`. Both print the base. A branch is one change, measured
 from that base to the working tree. On a train, each PR merged with `--no-ff`
 is its own change, measured from its first parent, and so is each run of plain
-commits between merges, such as the ceiling re-set. So a train of PRs that each
-fit still passes. For a PR stacked on another branch, set
+commits between merges, such as the startup-source ceiling re-set. So a train
+of PRs that each fit still passes. For a PR stacked on another branch, set
 `CHICKPEA_BUDGET_BASE` to that branch; a ref with no merge base fails. A
 checkout with no Git history or no `origin/main` skips the growth rule and
 says so. `tests/worker-startup-imports.test.ts` also keeps the modules it lists

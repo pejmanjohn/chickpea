@@ -93,6 +93,11 @@ test('a base that cannot be measured fails unless CHICKPEA_BUDGET_UNBUILDABLE_BA
   assert.match(unmeasured, /^Growth in merge bbbbbbbbb .* is not checked, as CHICKPEA_BUDGET_UNBUILDABLE_BASE is set\. Building aaaaaaaaa/);
   // The merge it could measure is still checked.
   assert.match(measuredMerge, /^Growth in merge ccccccccc .*: 30\.0 KiB, allowed 40\.0 KiB/);
+  // And it fails when it is over its allowance: the variable skips only what cannot be measured.
+  const [first, second] = plan.changes;
+  const over = check({ at, unbuildableBaseAllowed: true, plan: { ...plan, changes: [first, { ...second, allowance: 16 * KIB }] } });
+  assert.equal(over.failures.length, 1);
+  assert.match(over.failures.join('\n'), /^The Worker static closure grew 30\.0 KiB in merge ccccccccc \(Merge pull request #2\) \(bbbbbbbbb\.\.the working tree\), over the 16\.0 KiB/);
 });
 
 test('a skipped plan is printed and a failed one fails', () => {
