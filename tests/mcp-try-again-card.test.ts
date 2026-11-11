@@ -111,6 +111,7 @@ test('the Saved card offers Try it again only for an Agent with a first question
   const off = await w.saved({ instructions: '# Job\nChase invoices later.', on: false });
   assert.equal(off.shown.subtitle?.[0]?.text, 'It won\'t answer in Slack until it\'s turned back on.');
   assert.equal(off.labels().some((label) => label.startsWith('Try it again')), false);
+  assert.equal('practice' in (memoryOf(off.state).outcome as object), false, 'nor kept for a reopened chat, which reads no status');
 
   // A save the model made itself says nothing of what changed, so its card offers no Try it again.
   const bare = cardHost(AGENT_CARD, w.call, w.clock);
@@ -237,7 +238,7 @@ test('Undo stays beside a Try it again answer and undoes the save', async (t) =>
   assert.equal((await w.f.config.getAgent(AGENT))!.instructions, '# Job\nChase invoices.');
   assert.deepEqual(memoryOf(card.state).outcome, { kind: 'done', summary: 'Undid the change.' }, 'no Try it again after an undo');
 
-  // Undo is offered only beside the answer, and only with the save's token.
+  // Undo is offered only once the run has come to something, and only with the save's token.
   fastTime(t);
   const running = await w.saved();
   w.runs.outcome = { status: 'running', failure: null, result: null };
@@ -257,9 +258,12 @@ test('a refusal or a failed run shows its own sentence on Try it again, as ChatG
   guest.slack.guest = true;
   await refused.press('try_once');
   assert.deepEqual(refused.shown.blocks, [{ kind: 'text', text: 'You can\'t message Invoice Chaser in Slack yet, so you can\'t practice with it.' }]);
-  assert.deepEqual(refused.labels(), ['Open in Slack (primary)'], 'not one that passes on a retry');
+  assert.deepEqual(refused.labels(), ['Open in Slack (primary)', 'Undo (secondary)'], 'not one that passes on a retry; the save\'s Undo stays');
   assert.equal(told(refused), NOT_STARTED);
   assert.deepEqual(guest.runs.starts, []);
+  await refused.press('undo');
+  assert.equal(refused.shown.title, 'Undid the change');
+  assert.equal((await guest.f.config.getAgent(AGENT))!.instructions, '# Job\nChase invoices.', 'a refused run does not cost the person their Undo');
 
   // A run another holds: the card waits a minute, then shows the sentence with Try again, which sends the same key.
   const held = await world(t, 'try-again-in-progress');
@@ -271,7 +275,7 @@ test('a refusal or a failed run shows its own sentence on Try it again, as ChatG
     await busy.dispatch({ type: 'tick', now: held.clock.now });
   }
   assert.deepEqual(busy.shown.blocks, [{ kind: 'text', text: 'A practice run is still going. Wait for it, then ask again.' }]);
-  assert.deepEqual(busy.labels(), ['Try again (primary)', 'Open in Slack (secondary)']);
+  assert.deepEqual(busy.labels(), ['Try again (primary)', 'Undo (secondary)']);
   held.runs.refuse = undefined;
   await busy.press('try_once');
   assert.equal(new Set(busy.calls('practice_agent').map(({ args }) => args.idempotencyKey)).size, 1);
@@ -283,6 +287,7 @@ test('a refusal or a failed run shows its own sentence on Try it again, as ChatG
   funded.runs.outcome = { status: 'failed', failure: 'out_of_usage', result: { funding: { kind: 'credits_exhausted' } } } as TestRunOutcome;
   await out.press('try_once');
   assert.deepEqual(out.shown.blocks, [{ kind: 'text', text: 'This workspace is out of usage for now, so I can\'t start this one. Once an Owner adds more, send it again.' }]);
+  assert.deepEqual(out.labels(), ['Open in Slack (primary)', 'Undo (secondary)']);
   assert.equal(told(out), 'The person pressed "Try it again" for the Agent "Invoice Chaser" (@invoices) on the card, but it did not finish answering.');
 
   // Before ChatGPT lists practice_agent ("MCP Resource not found"): unreachable, tried again, then Check again.
@@ -292,7 +297,7 @@ test('a refusal or a failed run shows its own sentence on Try it again, as ChatG
   assert.deepEqual(waiting.effects.at(-1), { type: 'timer', inMs: 2_000 }, 'not a refusal: the same call again');
   unlisted.clock.now += GIVE_UP_MS;
   await waiting.dispatch({ type: 'tick', now: unlisted.clock.now });
-  assert.deepEqual(waiting.labels(), ['Check again (primary)', 'Open in Slack (secondary)']);
+  assert.deepEqual(waiting.labels(), ['Check again (primary)', 'Undo (secondary)']);
   assert.equal(told(waiting), 'The person pressed "Try it again" for the Agent "Invoice Chaser" (@invoices) on the card, but its answer did not come back in time.');
   assert.deepEqual(unlisted.runs.starts, []);
 });

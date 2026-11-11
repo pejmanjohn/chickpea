@@ -371,9 +371,20 @@ function undoing(event: Event): boolean {
   return (event.type === 'reply' || event.type === 'unreachable') && event.call.tool === 'undo_change';
 }
 
-/** Undo stands beside the answer to Try it again, while the card holds the save's token. */
+/**
+ * Undo stands beside what Try it again came to, an answer or a run that did
+ * not start or finish, while the card holds the save's token.
+ */
 function undoBeside(view: FirstAnswer): boolean {
-  return view.again?.undoToken !== undefined && view.stage.kind === 'answered';
+  const { kind } = view.stage;
+  return view.again?.undoToken !== undefined && (kind === 'answered' || kind === 'stopped' || kind === 'slow');
+}
+
+/** Undo in place of Change something or a second Open in Slack; after a lone button, or alone. Two at most. */
+function withUndo(buttons: ReadonlyArray<Button<Action>>): Array<Button<Action>> {
+  const gives = ({ action, tone }: Button<Action>) => action === 'change_something' || (action === 'open_slack' && tone === 'secondary');
+  if (buttons.some(gives)) return buttons.map((button) => gives(button) ? UNDO : button);
+  return buttons.length < 2 ? [...buttons, UNDO] : [...buttons];
 }
 
 /** "Try it again" on a Saved card: an Agent that still answers, after a save that changed how. */
@@ -644,7 +655,8 @@ function remember(view: View): Outcome | undefined {
     case 'ready':
       return { kind: 'created', name: view.agent.name, agentId: view.agentId };
     case 'done':
-      return { kind: 'done', summary: view.summary, ...view.practice ? { practice: kept(view.practice.before) } : {} };
+      // Only a Saved card that offers it: one whose save also turned the Agent off comes back without it.
+      return { kind: 'done', summary: view.summary, ...view.practice && offersTryAgain(view) ? { practice: kept(view.practice.before) } : {} };
     case 'first_answer':
       return view.again ? { kind: 'done', summary: view.again.summary, practice: kept(lastAnswer(view)) } : undefined;
     case 'notice':
@@ -878,11 +890,7 @@ function presentView(state: State): Presentation<Action> {
       };
     case 'first_answer': {
       const shown = presentFirstAnswer(view);
-      // The Saved card's Undo takes Change something's place beside a Try it again answer.
-      const buttons = undoBeside(view)
-        ? shown.buttons.map((button): Button<Action> => button.action === 'change_something' ? UNDO : button)
-        : shown.buttons;
-      return { ...base, ...shown, buttons };
+      return { ...base, ...shown, buttons: undoBeside(view) ? withUndo(shown.buttons) : shown.buttons };
     }
   }
 }
