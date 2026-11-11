@@ -517,8 +517,9 @@ test('a listing pushed on the held-open initialize stream never reaches the clie
   }) as typeof globalThis.fetch;
   await withRuntimeConnection(connectionConfig(), fetch, async (definition) => {
     assert.deepEqual(await mountOutcome(definition), ['mcp__srv__alpha']);
+    assert.deepEqual(await mountOutcome(definition), ['mcp__srv__alpha'], 'a second connection on the same definition');
   });
-  assert.equal(cancelled, 1, 'the initialize stream is let go at its own answer');
+  assert.equal(cancelled, 2, 'each initialize stream is let go at its own answer');
 });
 
 test('a malformed error answer fails the listing, and its stream cannot be resumed from a GET', { timeout: 10_000 }, async (t) => {
@@ -738,31 +739,33 @@ test("a listing Meta's rewrite refuses is logged before the connection fails", a
 // --- the filter on its own ------------------------------------------------
 
 const filter = () => createMcpToolsListFilter({ connectionId: 'srv', grant: ['alpha', 'gamma'] });
+/** One tools/list answer through a fresh filter. */
+const readListing = (response: Response) => filter().request({ id: 3, method: 'tools/list' })!(response, 'Example Tools');
 const answer = (id: number, tools: unknown) => JSON.stringify({ jsonrpc: '2.0', id, result: { tools } });
 
-test('an event stream is split the way the MCP client splits it and ends at the answer', async (t) => {
+test('an event stream is split the way the MCP client splits it, loses its event ids, and ends at the answer', async (t) => {
   captureLogs(t);
   const listing = answer(3, [{ name: 'extra' }, { name: 'alpha' }]);
-  const response = await filter().filterResponse({ id: 3 }, eventStream([
+  const response = await readListing(eventStream([
     '﻿: comment\r',
     '\nretry: 250\rid: 8\n\nunknown: field\r\nevent: message\ndata: {"jsonrpc":"2.0",\r',
     '\ndata:"method":"notifications/progress"}\n\n',
     `id: 7\r\nevent: message\r\ndata: ${listing.slice(0, 10)}`,
     `${listing.slice(10)}\r\n\r`,
     '\ndata: {"jsonrpc":"2.0","id":3,"result":{"tools":[{"name":"gamma"}]}}\n\n',
-  ]), 'Example Tools');
+  ]));
   assert.equal(await response.text(),
     'retry: 250\n\n' +
     'event: message\ndata: {"jsonrpc":"2.0",\ndata: "method":"notifications/progress"}\n\n' +
-    `id: 7\nevent: message\ndata: ${answer(3, [{ name: 'alpha' }])}\n\n`);
+    `event: message\ndata: ${answer(3, [{ name: 'alpha' }])}\n\n`);
 });
 
 test('an answer in an event the client ignores does not end the listing', async (t) => {
   captureLogs(t);
-  const response = await filter().filterResponse({ id: 3 }, eventStream([
+  const response = await readListing(eventStream([
     `event: other\ndata: ${answer(3, [{ name: 'extra' }])}\n\n`,
     `data: ${answer(3, [{ name: 'extra' }, { name: 'gamma' }])}\n\n`,
-  ]), 'Example Tools');
+  ]));
   assert.equal(await response.text(),
     `event: other\ndata: ${answer(3, [{ name: 'extra' }])}\n\ndata: ${answer(3, [{ name: 'gamma' }])}\n\n`);
 });
@@ -770,20 +773,20 @@ test('an answer in an event the client ignores does not end the listing', async 
 test('an HTTP error passes through for the client to fail or retry', async (t) => {
   captureLogs(t);
   const unauthorized = new Response('unauthorized', { status: 401 });
-  assert.equal(await filter().filterResponse({ id: 3 }, unauthorized, 'Example Tools'), unauthorized);
+  assert.equal(await readListing(unauthorized), unauthorized);
 });
 
 test('a listing larger than the cap is refused on both bodies', async (t) => {
   const logs = captureLogs(t);
-  await assert.rejects(filter().filterResponse({ id: 3 }, new Response('{}', {
+  await assert.rejects(readListing(new Response('{}', {
     headers: { 'content-type': 'application/json', 'content-length': '8000001' },
-  }), 'Example Tools'), /\(response-size\)/);
-  await assert.rejects(filter().filterResponse({ id: 3 }, new Response('{}', {
+  })), /\(response-size\)/);
+  await assert.rejects(readListing(new Response('{}', {
     headers: { 'content-type': 'text/event-stream', 'content-length': '8000001' },
-  }), 'Example Tools'), /\(response-size\)/);
-  await assert.rejects(filter().filterResponse({ id: 3 }, eventStream([
+  })), /\(response-size\)/);
+  await assert.rejects(readListing(eventStream([
     `data: ${'x'.repeat(4_000_000)}`, 'x'.repeat(4_000_001),
-  ]), 'Example Tools'), /\(response-size\)/);
+  ])), /\(response-size\)/);
   assert.deepEqual(logs.refused.map(({ reason }) => reason), ['response-size', 'response-size', 'response-size']);
 });
 
@@ -795,9 +798,9 @@ test('an answer whose id is the request id as a string is read, as the MCP clien
   await withRuntimeConnection(connectionConfig(), server.fetch, async (definition) => {
     assert.deepEqual(await mountedNames(definition), ['mcp__srv__alpha', 'mcp__srv__gamma']);
   });
-  await assert.rejects(filter().filterResponse({ id: 3 }, new Response(answer(3, []).replace('"id":3', '"id":"4"'), {
+  await assert.rejects(readListing(new Response(answer(3, []).replace('"id":3', '"id":"4"'), {
     headers: { 'content-type': 'application/json' },
-  }), 'Example Tools'), /\(response-id\)/);
+  })), /\(response-id\)/);
   assert.deepEqual(logs.refused.map(({ reason }) => reason), ['response-id']);
 });
 
@@ -807,7 +810,7 @@ test('a JSON-RPC error with a result too, or another JSON-RPC version, is refuse
     { jsonrpc: '2.0', id: 3, error: { code: -1, message: 'no' }, result: { tools: [] } },
     { jsonrpc: '1.0', id: 3, result: { tools: [{ name: 'alpha' }] } },
   ]) {
-    await assert.rejects(filter().filterResponse({ id: 3 }, Response.json(payload), 'Example Tools'), /\(json-rpc\)/);
+    await assert.rejects(readListing(Response.json(payload)), /\(json-rpc\)/);
   }
 });
 
@@ -816,17 +819,17 @@ test('media type parameters and case do not change how the answer is read', asyn
   for (const contentType of ['Application/JSON; charset=utf-8', 'text/event-stream; charset=utf-8']) {
     const body = contentType.startsWith('text/') ? `data: ${answer(3, [{ name: 'extra' }, { name: 'alpha' }])}\n\n`
       : answer(3, [{ name: 'extra' }, { name: 'alpha' }]);
-    const response = await filter().filterResponse({ id: 3 }, new Response(body, {
+    const response = await readListing(new Response(body, {
       headers: { 'content-type': contentType },
-    }), 'Example Tools');
+    }));
     assert.doesNotMatch(await response.text(), /extra/, contentType);
   }
 });
 
 test('an event-stream answer with no body is refused', async (t) => {
   const logs = captureLogs(t);
-  await assert.rejects(filter().filterResponse({ id: 3 }, new Response(null, {
+  await assert.rejects(readListing(new Response(null, {
     headers: { 'content-type': 'text/event-stream' },
-  }), 'Example Tools'), /\(no-response\)/);
+  })), /\(no-response\)/);
   assert.deepEqual(logs.refused.map(({ reason }) => reason), ['no-response']);
 });

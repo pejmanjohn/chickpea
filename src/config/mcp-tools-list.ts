@@ -5,7 +5,7 @@ import { declaredContentLength, readBoundedText } from '../http/bounded-body.ts'
  * gets the same cap, so none that mounts today fails on size.
  */
 const MAX_TOOLS_LIST_BYTES = 8_000_000;
-/** Flue's per-request MCP timeout; reading a listing never takes longer. */
+/** Flue's per-request MCP timeout; reading an answer during the listing never takes longer. */
 const TOOLS_LIST_DEADLINE_MS = 30_000;
 
 export type ToolsListResult = Record<string, unknown> & { tools: unknown[] };
@@ -19,6 +19,17 @@ export interface ToolsListAnswer {
   refuse: (reason: string) => Error;
 }
 
+/** The answer one request's response must hold, and what to forward for its result. */
+interface RequestAnswer {
+  id: unknown;
+  /** The result to forward. Throws to refuse the answer. */
+  result: (result: Record<string, unknown>) => Record<string, unknown>;
+  refuse: (reason: string) => Error;
+}
+
+/** Reads one request's response before the MCP client sees it. */
+export type McpAnswerReader = (response: Response, displayName: string) => Promise<Response>;
+
 interface McpToolsListFilterOptions {
   connectionId: string;
   /** The tools this Agent may use, in the order the model sees them. */
@@ -30,14 +41,27 @@ interface McpToolsListFilterOptions {
 /**
  * Narrow every tools/list answer of one Streamable HTTP connection to the
  * granted tools the server still lists, in grant order, first listing of a
- * name only. The answer must arrive in the POST's own response: the MCP
- * client also accepts one from the GET stream, which this never reads, so
- * any other shape is refused.
+ * name only.
+ *
+ * The MCP client resolves a pending request from any stream it reads, so the
+ * listing has a window: it opens with the connection's first request (again
+ * with `initialize` or any tools/list) and closes once a last page has passed
+ * the filter. Inside it, the client reads only each request's own response
+ * up to that request's answer, and nothing from a GET. After it, tool calls
+ * and their resumption GETs pass untouched.
  */
 export function createMcpToolsListFilter(options: McpToolsListFilterOptions) {
   let listing = newListing();
+  let listingOpen = true;
   const logRefusal = (reason: string) => {
     console.info({ event: 'chickpea.mcp.tools_list_refused', connectionId: options.connectionId, reason });
+  };
+  const noGrantedTools = (displayName: string, reason: string) => {
+    logRefusal(reason);
+    return new Error(
+      `${displayName} no longer offers any of the tools this Agent may use. ` +
+      'An Admin can pick its tools again in Chickpea Admin.',
+    );
   };
 
   const filterPage = (result: ToolsListResult, displayName: string, refuse: (reason: string) => Error) => {
@@ -62,7 +86,8 @@ export function createMcpToolsListFilter(options: McpToolsListFilterOptions) {
       const execution = listed.get(name)!.execution;
       if (isRecord(execution) && execution.taskSupport === 'required') listing.taskOnly.push(name);
     }
-    if (result.nextCursor === undefined) {
+    // The MCP client stops paging at a cursor it already sent, without an error.
+    if (result.nextCursor === undefined || listing.cursors.has(result.nextCursor)) {
       const { granted, taskOnly, listedCount } = listing;
       listing = newListing();
       const missing = options.grant.filter((name) => !granted.has(name));
@@ -71,36 +96,68 @@ export function createMcpToolsListFilter(options: McpToolsListFilterOptions) {
           event: 'chickpea.mcp.tools_missing', connectionId: options.connectionId, missing, taskOnly, listedCount,
         });
       }
-      if (granted.size === taskOnly.length) {
-        logRefusal('no-granted-tools');
-        throw new Error(
-          `${displayName} no longer offers any of the tools this Agent may use. ` +
-          'An Admin can pick its tools again in Chickpea Admin.',
-        );
-      }
+      if (granted.size === taskOnly.length) throw noGrantedTools(displayName, 'no-granted-tools');
+      listingOpen = false;
     }
     return { ...result, tools: kept.map((name) => listed.get(name)) };
   };
 
+  /** Without the tools capability the MCP client lists nothing and Flue mounts nothing, silently. */
+  const requireTools = (result: Record<string, unknown>, displayName: string) => {
+    if (!isRecord(result.capabilities) || !result.capabilities.tools) {
+      throw noGrantedTools(displayName, 'no-tools-capability');
+    }
+    return result;
+  };
+
   return {
-    /** Filter the response to a tools/list POST, `rpc` being the parsed request. */
-    async filterResponse(
-      rpc: { id?: unknown; params?: unknown },
-      response: Response,
-      displayName: string,
-    ): Promise<Response> {
-      if (!isRecord(rpc.params) || rpc.params.cursor === undefined) listing = newListing();
-      // An HTTP error carries no listing; the MCP client fails or retries it.
-      if (!response.ok) return response;
-      const refuse = (reason: string) => {
-        logRefusal(reason);
-        return new Error(`${displayName} tool discovery returned an unsupported response (${reason}).`);
+    /**
+     * Note a POST's JSON-RPC request before it is sent. Returns the reader its
+     * response must pass: every tools/list answer, and while the listing is
+     * open every request's answer. Notifications and the client's own
+     * responses carry no answer and pass.
+     */
+    request(rpc: { id?: unknown; method?: unknown; params?: unknown } | undefined): McpAnswerReader | undefined {
+      if (rpc?.id === undefined || typeof rpc.method !== 'string') return undefined;
+      const { id, method } = rpc;
+      if (method === 'initialize' || method === 'tools/list') listingOpen = true;
+      if (method === 'tools/list') {
+        const cursor = isRecord(rpc.params) ? rpc.params.cursor : undefined;
+        if (cursor === undefined) listing = newListing();
+        else listing.cursors.add(cursor);
+      }
+      if (!listingOpen) return undefined;
+      return async (response, displayName) => {
+        // An HTTP error carries no answer the client reads; it fails or retries it.
+        if (!response.ok) return response;
+        const refuse = (reason: string) => {
+          logRefusal(reason);
+          return new Error(`${displayName} tool discovery returned an unsupported response (${reason}).`);
+        };
+        if (method === 'tools/list') {
+          return readToolsListAnswer(response, { id, refuse, page: (page) => filterPage(page, displayName, refuse) });
+        }
+        const result = method === 'initialize'
+          ? (value: Record<string, unknown>) => requireTools(value, displayName)
+          : (value: Record<string, unknown>) => value;
+        return readRequestAnswer(response, { id, result, refuse });
       };
-      return readToolsListAnswer(response, {
-        id: rpc.id,
-        page: (result) => filterPage(result, displayName, refuse),
-        refuse,
-      });
+    },
+    /**
+     * Answer locally, with the 405 the MCP client reads as "no stream", every
+     * GET while the listing is open, and the standalone GET stream always:
+     * Flue uses nothing it carries. After the listing, a GET with
+     * `Last-Event-ID` resumes a tool call's own stream and goes through.
+     */
+    guardGets(fetchFn: typeof fetch): typeof fetch {
+      return async (input, init) => {
+        const method = init?.method ?? (input instanceof Request ? input.method : 'GET');
+        if (method.toUpperCase() === 'GET' &&
+            (listingOpen || !new Request(input, init).headers.has('last-event-id'))) {
+          return new Response(null, { status: 405, statusText: 'Method Not Allowed' });
+        }
+        return fetchFn(input, init);
+      };
     },
   };
 }
@@ -110,7 +167,23 @@ export function createMcpToolsListFilter(options: McpToolsListFilterOptions) {
  * its result. Only a 200 with a JSON or event-stream body that holds the
  * answer to `answer.id` passes; a JSON-RPC error answer passes unchanged.
  */
-export async function readToolsListAnswer(response: Response, answer: ToolsListAnswer): Promise<Response> {
+export function readToolsListAnswer(response: Response, answer: ToolsListAnswer): Promise<Response> {
+  return readRequestAnswer(response, {
+    id: answer.id,
+    refuse: answer.refuse,
+    result: (result) => {
+      if (!Array.isArray(result.tools)) throw answer.refuse('json-rpc');
+      return answer.page(result as ToolsListResult);
+    },
+  });
+}
+
+/**
+ * Read one request's answer from its own response. Only a 200 with a JSON or
+ * event-stream body that holds the answer to `answer.id` passes, and an event
+ * stream ends at that answer.
+ */
+async function readRequestAnswer(response: Response, answer: RequestAnswer): Promise<Response> {
   if (response.status !== 200) throw answer.refuse('status');
   const essence = (response.headers.get('content-type') ?? '').split(';', 1)[0]!.trim().toLowerCase();
   if (essence === 'text/event-stream') return readEventStreamAnswer(response, answer);
@@ -131,16 +204,29 @@ export async function readToolsListAnswer(response: Response, answer: ToolsListA
   return rebuiltResponse(response, rewritten === value ? text : JSON.stringify(rewritten));
 }
 
-function rewriteAnswer(value: unknown, answer: ToolsListAnswer): unknown {
+/**
+ * The answer as forwarded. Only the envelope the MCP client reads as an
+ * answer passes: anything else leaves the request open for another stream.
+ */
+function rewriteAnswer(value: unknown, answer: RequestAnswer): unknown {
   if (Array.isArray(value)) throw answer.refuse('batch');
   if (!isRecord(value) || value.jsonrpc !== '2.0') throw answer.refuse('json-rpc');
   if (!answersRequest(value.id, answer.id)) throw answer.refuse('response-id');
   if ('error' in value) {
-    if ('result' in value) throw answer.refuse('json-rpc');
+    const { error } = value;
+    if (!hasOnlyKeys(value, ['jsonrpc', 'id', 'error']) || !isRecord(error) ||
+        !Number.isInteger(error.code) || typeof error.message !== 'string') {
+      throw answer.refuse('json-rpc');
+    }
     return value;
   }
-  if (!isRecord(value.result) || !Array.isArray(value.result.tools)) throw answer.refuse('json-rpc');
-  return { ...value, result: answer.page(value.result as ToolsListResult) };
+  if (!hasOnlyKeys(value, ['jsonrpc', 'id', 'result']) || !isRecord(value.result)) throw answer.refuse('json-rpc');
+  const result = answer.result(value.result);
+  return result === value.result ? value : { ...value, result };
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return Object.keys(value).every((key) => keys.includes(key));
 }
 
 /** The MCP client matches an answer to its request by `Number(id)`, so `"3"` answers request 3. */
@@ -150,10 +236,12 @@ function answersRequest(id: unknown, requestId: unknown): boolean {
 
 /**
  * Read events as they arrive and stop at the answer: a server may hold the
- * stream open after it. Events before the answer are forwarded in one
- * canonical form, so the client reads exactly the events read here.
+ * stream open after it. Events up to the answer are forwarded in one
+ * canonical form, so the client reads exactly the events read here, and
+ * without their ids, so the client holds no token to resume this stream
+ * with a GET that would bring it an answer read nowhere here.
  */
-async function readEventStreamAnswer(response: Response, answer: ToolsListAnswer): Promise<Response> {
+async function readEventStreamAnswer(response: Response, answer: RequestAnswer): Promise<Response> {
   const declared = declaredContentLength(response.headers);
   if (declared !== undefined && declared > MAX_TOOLS_LIST_BYTES) throw answer.refuse('response-size');
   if (!response.body) throw answer.refuse('no-response');
@@ -187,8 +275,8 @@ async function readEventStreamAnswer(response: Response, answer: ToolsListAnswer
 
 type StreamEvent = { id?: string; event?: string; data: string } | { retry: string };
 
-/** The event rewritten when it answers the listing; undefined to forward it as it is. */
-function answerIn(event: StreamEvent, answer: ToolsListAnswer): StreamEvent | undefined {
+/** The event rewritten when it holds a response; undefined to forward it as it is. */
+function answerIn(event: StreamEvent, answer: RequestAnswer): StreamEvent | undefined {
   // The MCP client reads only message events.
   if ('retry' in event || (event.event !== undefined && event.event !== 'message')) return undefined;
   let value: unknown;
@@ -203,8 +291,7 @@ function answerIn(event: StreamEvent, answer: ToolsListAnswer): StreamEvent | un
 
 function serializeEvent(event: StreamEvent): string {
   if ('retry' in event) return `retry: ${event.retry}\n\n`;
-  return (event.id === undefined ? '' : `id: ${event.id}\n`) +
-    (event.event === undefined ? '' : `event: ${event.event}\n`) +
+  return (event.event === undefined ? '' : `event: ${event.event}\n`) +
     event.data.split('\n').map((line) => `data: ${line}\n`).join('') + '\n';
 }
 
@@ -271,7 +358,7 @@ function eventStreamParser(): (text: string) => StreamEvent[] {
 }
 
 function newListing() {
-  return { granted: new Set<string>(), taskOnly: [] as string[], listedCount: 0 };
+  return { granted: new Set<string>(), taskOnly: [] as string[], listedCount: 0, cursors: new Set<unknown>() };
 }
 
 function rebuiltResponse(response: Response, body: string): Response {

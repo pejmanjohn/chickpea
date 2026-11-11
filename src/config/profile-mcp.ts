@@ -276,7 +276,7 @@ export function resolveRuntimePlanMcpConnections(
       const request = new Request(input, init);
       const rpc = await mcpRpcRequest(request);
       const invocation = mcpToolInvocationIn(rpc);
-      const listing = toolsList && rpc?.method === 'tools/list' ? rpc : undefined;
+      const readAnswer = toolsList?.request(rpc);
       if (invocation) {
         if (!effectiveDeclaration.allowedTools.includes(invocation.name)) {
           throw new Error('MCP tool is not selected for this Agent.');
@@ -325,8 +325,8 @@ export function resolveRuntimePlanMcpConnections(
       if (response.status === 401 && declaration.authMode === 'oauth') {
         rejectedAccessToken = presentedBearerToken(headers);
       }
-      const advertised = toolsList && listing
-        ? await toolsList.filterResponse(listing, response, server.displayName)
+      const advertised = readAnswer
+        ? await readAnswer(response, server.displayName)
         : advertisedRequest
           ? await advertiseMetaAdsAccountHelperOutput(advertisedRequest, response)
           : response;
@@ -346,7 +346,7 @@ export function resolveRuntimePlanMcpConnections(
       ...(toolsList ? {} : { tools: allowedTools }),
       optional: declaration.optional,
       timeoutMs: 30_000,
-      fetch: toolsList ? withoutStandaloneStream(fetchWithLiveHeaders) : fetchWithLiveHeaders,
+      fetch: toolsList ? toolsList.guardGets(fetchWithLiveHeaders) : fetchWithLiveHeaders,
       ...(declaration.authMode === 'none'
         ? {}
         : {
@@ -563,24 +563,6 @@ function runtimeAllowedToolsForServer(server: McpConnectionConfig): string[] {
   return isMetaAdsMcpConnection(server)
     ? metaAdsRuntimeAllowedTools(server)
     : [...server.allowedTools];
-}
-
-/**
- * Answer a Streamable HTTP connection's standalone GET stream locally with
- * 405, which the MCP client reads as "no stream". The server could send a
- * tools/list answer there that the filter never reads, and Flue uses nothing
- * else from it. A GET with `Last-Event-ID` resumes a request's own stream and
- * goes through; it cannot happen during a listing, whose POST answer must
- * hold the result.
- */
-function withoutStandaloneStream(fetchFn: typeof fetch): typeof fetch {
-  return async (input, init) => {
-    const method = init?.method ?? (input instanceof Request ? input.method : 'GET');
-    if (method.toUpperCase() === 'GET' && !new Request(input, init).headers.has('last-event-id')) {
-      return new Response(null, { status: 405, statusText: 'Method Not Allowed' });
-    }
-    return fetchFn(input, init);
-  };
 }
 
 function usesMetaAdsOutputAdapter(connection: Pick<McpConnectionConfig, 'url'>): boolean {
