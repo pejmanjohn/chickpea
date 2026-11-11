@@ -8,14 +8,13 @@ import type { McpAuthenticatedPrincipal } from '../src/auth/mcp-oauth-routes.ts'
 import { BUGSNAG_MCP_SERVER_URL } from '../src/config/bugsnag-policy.ts';
 import { createWorkspaceManagementMcpServer } from '../src/management/mcp.ts';
 import {
-  getTestRun,
+  getPracticeRun,
   PRACTICE_NOTE,
   PRACTICE_RESULT_BUDGET_CHARS,
   PRACTICE_RETURNS_BY_MS,
   PRACTICE_TEXT_REPLY_REST,
   practiceText,
   practiceAgent,
-  tryAgentOnce,
 } from '../src/management/mcp-v5/test-runs.ts';
 import { FIVE_ZERO_TOOLS } from '../src/management/mcp-v5/tools.ts';
 import type { WorkspaceManagementServiceInput } from '../src/management/service.ts';
@@ -174,27 +173,14 @@ function errorOf(result: ToolResult): Record<string, unknown> {
   return result.structuredContent!.error!;
 }
 
-test('try_agent_once and get_test_run are card-only names for cards published before practice_agent, with U2\'s hints', () => {
-  const tryOnce = FIVE_ZERO_TOOLS.try_agent_once;
-  assert.deepEqual(tryOnce.visibility, ['app']);
-  assert.deepEqual(FIVE_ZERO_TOOLS.get_test_run.visibility, ['app']);
-  assert.deepEqual(tryOnce.write, { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true });
-  assert.equal(FIVE_ZERO_TOOLS.get_test_run.write, undefined, 'get_test_run reads only');
-  assert.match(tryOnce.description, /Call practice_agent instead\.$/);
-  assert.match(FIVE_ZERO_TOOLS.get_test_run.description, /Call get_practice_run instead\.$/);
-  assert.equal(PRACTICE_NOTE, 'A practice run: it made only read requests and sent nothing to Slack.');
-});
-
-test('try_agent_once runs the stored first ask once, as the caller, and answers with what it read', async (t) => {
+test('practice_agent with no question runs the stored first ask once, as the caller, and answers with what it read', async (t) => {
   const { f, call, instances, installation } = await harness(t, 'answer');
   await seedAgent(f);
   instances.settleEvery = { kind: 'answered', reply: 'Two tickets: **#41** and **#42**.', read: ['Zendesk'], steps: [] };
-  const result = await call('try_agent_once', { agentId: 'agent_tested', idempotencyKey: 'key_answer' });
-  const run = structured(result);
-  assert.deepEqual({ ...run, runToken: typeof run.runToken }, {
-    status: 'answered', runToken: 'string', ask: ASK, reply: 'Two tickets: **#41** and **#42**.', read: ['Zendesk'], note: PRACTICE_NOTE,
-  });
-  assert.equal(JSON.parse(result.content[0]!.text).note, PRACTICE_NOTE, 'a client without the card reads the same');
+  const run = structured(await call('practice_agent', { agentId: 'agent_tested', idempotencyKey: 'key_answer' }));
+  assert.deepEqual([run.status, run.question, run.reply, run.read, run.note],
+    ['answered', ASK, 'Two tickets: **#41** and **#42**.', ['Zendesk'], PRACTICE_NOTE]);
+  assert.equal(PRACTICE_NOTE, 'A practice run: it made only read requests and sent nothing to Slack.');
 
   // Dispatched as a plain message, the ask escaped as Slack user text is, with the caller's framing facts.
   const [dispatch] = instances.dispatched;
@@ -212,24 +198,11 @@ test('try_agent_once runs the stored first ask once, as the caller, and answers 
     status: 'completed',
   }, 'its terminal is written on the clock its admission was');
   // The same key returns the same run.
-  const again = structured(await call('try_agent_once', { agentId: 'agent_tested', idempotencyKey: 'key_answer' }));
+  const again = structured(await call('practice_agent', { agentId: 'agent_tested', idempotencyKey: 'key_answer' }));
   assert.equal(again.runToken, run.runToken);
   assert.equal(instances.dispatched.length, 1);
-  // get_test_run reads it back.
-  assert.deepEqual(structured(await call('get_test_run', { runToken: run.runToken })), run);
-});
-
-test('the card\'s reply keeps the `<` the Agent wrote, which the card draws as plain text; an image tag stays escaped', async (t) => {
-  const { f, call, instances } = await harness(t, 'alias_plain');
-  await seedAgent(f);
-  instances.settleEvery = { kind: 'answered', ...practiceReply('From Ada <ada@example.com>, then <img src=x'), read: [], steps: [] };
-  const card = structured(await call('try_agent_once', { agentId: 'agent_tested', idempotencyKey: 'key_plain' }));
-  assert.equal(card.reply, 'From Ada <ada@example.com>, then &lt;img src=x');
-  assert.equal(structured(await call('get_test_run', { runToken: card.runToken })).reply, card.reply);
-  // The same run for any client keeps the escape.
-  const practice = structured(await call('practice_agent', { agentId: 'agent_tested' }));
-  assert.deepEqual([practice.runToken, practice.repeat, practice.reply],
-    [card.runToken, true, 'From Ada &lt;ada@example.com>, then &lt;img src=x']);
+  // get_practice_run reads it back.
+  assert.deepEqual(structured(await call('get_practice_run', { runToken: run.runToken })), run);
 });
 
 const api = (host: string) => ({
@@ -255,7 +228,7 @@ async function connect(
 test('Node and a standalone deployment have no test runs, which no retry changes', async (t) => {
   const { f, call } = await harness(t, 'unserved', { unserved: true });
   await seedAgent(f);
-  for (const [tool, args] of [['try_agent_once', { agentId: 'agent_tested', idempotencyKey: 'k' }], ['get_test_run', { runToken: 'tr_x' }]] as const) {
+  for (const [tool, args] of [['practice_agent', { agentId: 'agent_tested', idempotencyKey: 'k' }], ['get_practice_run', { runToken: 'tr_x' }]] as const) {
     const error = errorOf(await call(tool, args));
     assert.deepEqual([error.code, error.message, error.retryable],
       ['test_run_unavailable', 'Practice runs aren\'t available on this workspace yet.', false]);
@@ -479,7 +452,7 @@ test('a personal connection the caller has signed in to is no reason to refuse',
   });
   instances.settleEvery = { kind: 'answered', reply: 'Done.', read: ['Linear'], steps: [] };
   const timing = { now: () => clock.now(), sleep: async (ms: number) => clock.advance(ms) };
-  const run = await tryAgentOnce(deps(f.owner), { agentId: 'agent_tested', idempotencyKey: 'key_mine' }, timing);
+  const run = await practiceAgent(deps(f.owner), { agentId: 'agent_tested', idempotencyKey: 'key_mine' }, timing);
   assert.deepEqual([run.status, run.read], ['answered', ['Linear']]);
 });
 
@@ -495,14 +468,14 @@ test('a caller who can no longer change the Agent no longer reads its run', asyn
   });
   instances.settleEvery = { kind: 'answered', reply: 'Done.', read: [], steps: [] };
   const timing = { now: () => clock.now(), sleep: async (ms: number) => clock.advance(ms) };
-  const run = await tryAgentOnce(deps(f.admin), { agentId: 'agent_tested', idempotencyKey: 'key_admin' }, timing);
+  const run = await practiceAgent(deps(f.admin), { agentId: 'agent_tested', idempotencyKey: 'key_admin' }, timing);
   assert.equal(run.status, 'answered', 'an Admin may change it, and the Channel lets them message it');
-  assert.equal((await getTestRun(deps(f.admin), { runToken: run.runToken }, timing)).status, 'answered');
+  assert.equal((await getPracticeRun(deps(f.admin), { runToken: run.runToken }, timing)).status, 'answered');
   await f.identity.updateMembershipAuthority({
     membershipId: f.admin.membership.id, role: 'member', actorMembershipId: f.owner.membership.id,
     correlationId: 'lost-edit-demotion', authenticationSurface: 'better_auth', reasonCode: 'test_run_tools',
   });
-  await assert.rejects(getTestRun(deps(f.admin), { runToken: run.runToken }, timing),
+  await assert.rejects(getPracticeRun(deps(f.admin), { runToken: run.runToken }, timing),
     (error: { error?: { code?: string; message?: string } }) =>
       error.error?.code === 'not_found' && error.error.message === 'This practice run has expired.');
 });
@@ -511,7 +484,7 @@ test('no practice limits: runs follow one another freely, a key names one ask, a
   const { f, deps, instances, installation, timing } = await harness(t, 'limits');
   await seedAgent(f);
   const tryOnce = (idempotencyKey: string, agentId = 'agent_tested') =>
-    tryAgentOnce(deps(f.owner), { agentId, idempotencyKey }, timing);
+    practiceAgent(deps(f.owner), { agentId, idempotencyKey }, timing);
   const first = await tryOnce('key_first');
   assert.equal(first.status, 'running');
   // The same first question going: that run, under any key.
@@ -545,7 +518,7 @@ test('a member who can use an Agent but not change it is told so; one who cannot
   });
   await seedAgent(f);
   const tryAsMember = async (agentId: string) =>
-    errorOf(await callAs(f.admin)('try_agent_once', { agentId, idempotencyKey: `key_${agentId}` }));
+    errorOf(await callAs(f.admin)('practice_agent', { agentId, idempotencyKey: `key_${agentId}` }));
   let error = await tryAsMember('agent_tested');
   assert.deepEqual([error.code, error.message], ['not_found', 'That Agent is gone, or you can\'t change it.'],
     'in no Channel, only its creator may use it');
@@ -558,7 +531,7 @@ test('a member who can use an Agent but not change it is told so; one who cannot
   assert.deepEqual([error.code, error.message], ['not_allowed', 'Only someone who can change Ops can practice with it.']);
 });
 
-test('try_agent_once returns running 15 seconds after the call starts, a slow admission included; get_test_run waits 20', async (t) => {
+test('practice_agent returns running 15 seconds after the call starts, a slow admission included; get_practice_run waits 20', async (t) => {
   const { f, deps, instances, clock } = await harness(t, 'waits');
   await seedAgent(f);
   const timing = { now: () => clock.now(), sleep: async (ms: number) => clock.advance(ms) };
@@ -569,25 +542,25 @@ test('try_agent_once returns running 15 seconds after the call starts, a slow ad
     return testRunStore(context);
   };
   const calledAt = clock.now();
-  const running = await tryAgentOnce(deps(f.owner), { agentId: 'agent_tested', idempotencyKey: 'key_wait' }, timing);
+  const running = await practiceAgent(deps(f.owner), { agentId: 'agent_tested', idempotencyKey: 'key_wait' }, timing);
   assert.equal(running.status, 'running');
   const returnedAfter = clock.now() - calledAt;
   assert.equal(PRACTICE_RETURNS_BY_MS, 15_000);
   assert.ok(returnedAfter <= 15_000 && returnedAfter > 13_000, `it returned ${returnedAfter} ms after the call started`);
   // A retry of the same key waits for the run only until 15 seconds after it was called, too.
   const retriedAt = clock.now();
-  const replayed = await tryAgentOnce(deps(f.owner), { agentId: 'agent_tested', idempotencyKey: 'key_wait' }, timing);
+  const replayed = await practiceAgent(deps(f.owner), { agentId: 'agent_tested', idempotencyKey: 'key_wait' }, timing);
   assert.deepEqual([replayed.status, replayed.runToken], ['running', running.runToken]);
   const replayedAfter = clock.now() - retriedAt;
   assert.ok(replayedAfter <= 15_000 && replayedAfter > 13_000, `the retry returned ${replayedAfter} ms after it was called`);
   f.service.testRunStore = testRunStore;
   const polledAt = clock.now();
-  const still = await getTestRun(deps(f.owner), { runToken: running.runToken }, timing);
+  const still = await getPracticeRun(deps(f.owner), { runToken: running.runToken }, timing);
   assert.equal(still.status, 'running');
   const waited = clock.now() - polledAt;
-  assert.ok(waited <= 20_000 && waited > 18_000, `get_test_run waited ${waited} ms, about 20 seconds`);
+  assert.ok(waited <= 20_000 && waited > 18_000, `get_practice_run waited ${waited} ms, about 20 seconds`);
   instances.settleEvery = { kind: 'answered', reply: 'Here it is.', read: ['Zendesk'], steps: [] };
-  const answered = await getTestRun(deps(f.owner), { runToken: running.runToken }, timing);
+  const answered = await getPracticeRun(deps(f.owner), { runToken: running.runToken }, timing);
   assert.deepEqual([answered.status, answered.reply, answered.read], ['answered', 'Here it is.', ['Zendesk']]);
 });
 
@@ -611,41 +584,41 @@ test('admission reads the tested Agent alone: never the workspace snapshot, nor 
     };
   }
   const timing = { now: () => clock.now(), sleep: async (ms: number) => clock.advance(ms) };
-  const run = await tryAgentOnce(deps(f.owner), { agentId: 'agent_tested', idempotencyKey: 'key_scoped' }, timing);
+  const run = await practiceAgent(deps(f.owner), { agentId: 'agent_tested', idempotencyKey: 'key_scoped' }, timing);
   assert.equal(run.status, 'answered');
   assert.equal(snapshots, 0);
   assert.deepEqual(perAgent.filter((call) => !call.endsWith(':agent_tested')), [], 'no other Agent was read');
 });
 
-test('get_test_run reads only the caller\'s own run, and not after an hour', async (t) => {
+test('get_practice_run reads only the caller\'s own run, and not after an hour', async (t) => {
   const { f, deps, instances, clock } = await harness(t, 'caller_only');
   await seedAgent(f);
   instances.settleEvery = { kind: 'answered', reply: 'Done.', read: [], steps: [] };
   const timing = { now: () => clock.now(), sleep: async (ms: number) => clock.advance(ms) };
-  const run = await tryAgentOnce(deps(f.owner), { agentId: 'agent_tested', idempotencyKey: 'key_mine' }, timing);
-  await assert.rejects(getTestRun(deps(f.admin), { runToken: run.runToken }, timing),
+  const run = await practiceAgent(deps(f.owner), { agentId: 'agent_tested', idempotencyKey: 'key_mine' }, timing);
+  await assert.rejects(getPracticeRun(deps(f.admin), { runToken: run.runToken }, timing),
     (error: { error?: { code?: string; message?: string } }) =>
       error.error?.code === 'not_found' && error.error.message === 'This practice run has expired.');
   clock.advance(AN_HOUR);
   const expired = (error: { error?: { code?: string; message?: string } }) =>
     error.error?.code === 'not_found' && error.error.message === 'This practice run has expired.';
-  await assert.rejects(getTestRun(deps(f.owner), { runToken: run.runToken }, timing), expired);
+  await assert.rejects(getPracticeRun(deps(f.owner), { runToken: run.runToken }, timing), expired);
   // The same key past the hour starts a new run.
-  const again = await tryAgentOnce(deps(f.owner), { agentId: 'agent_tested', idempotencyKey: 'key_mine' }, timing);
+  const again = await practiceAgent(deps(f.owner), { agentId: 'agent_tested', idempotencyKey: 'key_mine' }, timing);
   assert.notEqual(again.runToken, run.runToken);
   assert.equal(instances.dispatched.length, 2);
 });
 
-test('get_test_run reads only a lost Agent as expired; any other failure is reported as it is', async (t) => {
+test('get_practice_run reads only a lost Agent as expired; any other failure is reported as it is', async (t) => {
   const { f, deps, instances, clock } = await harness(t, 'reader_failure');
   await seedAgent(f);
   instances.settleEvery = { kind: 'answered', reply: 'Done.', read: [], steps: [] };
   const timing = { now: () => clock.now(), sleep: async (ms: number) => clock.advance(ms) };
-  const run = await tryAgentOnce(deps(f.owner), { agentId: 'agent_tested', idempotencyKey: 'key_reader' }, timing);
+  const run = await practiceAgent(deps(f.owner), { agentId: 'agent_tested', idempotencyKey: 'key_reader' }, timing);
   const failing = deps(f.owner);
   const service = Object.create(f.service) as typeof f.service;
   service.agentReader = async () => { throw new Error('The config store did not answer.'); };
-  await assert.rejects(getTestRun({ ...failing, service }, { runToken: run.runToken }, timing), /did not answer/);
+  await assert.rejects(getPracticeRun({ ...failing, service }, { runToken: run.runToken }, timing), /did not answer/);
 });
 
 test('a failed run says why: a timeout was not charged, however many came before, and a plan\'s refusal is a direct message\'s own words', async (t) => {
@@ -663,7 +636,7 @@ test('a failed run says why: a timeout was not charged, however many came before
   ] as const;
   for (const [index, [settlement, problem]] of cases.entries()) {
     instances.settleEvery = settlement as never;
-    const run = await tryAgentOnce(deps(f.owner), { agentId: 'agent_tested', idempotencyKey: `key_fail_${index}` }, timing);
+    const run = await practiceAgent(deps(f.owner), { agentId: 'agent_tested', idempotencyKey: `key_fail_${index}` }, timing);
     assert.deepEqual([run.status, run.reply], ['failed', undefined]);
     assert.match(String(run.problem), problem);
     // A run that failed is never given again: the card's same stored question runs anew each time.
@@ -999,8 +972,6 @@ test('a connection with nothing that reads is left out of the run, listed with i
   assert.match(String(run.nextStep), /fixes says how to let it in, with the person's yes/);
   const plan = parseTestTurnInitialData(instances.dispatched[0]!.initialData).runtimePlan;
   assert.deepEqual(plan.mcpConnections, [], 'neither is mounted');
-  // A card published before practice runs gets the same: its old name runs with them left out too.
-  assert.equal(structured(await call('try_agent_once', { agentId: 'agent_tested', idempotencyKey: 'card' })).status, 'answered');
 });
 
 test('a tool its server says writes can\'t be marked as a read', async (t) => {

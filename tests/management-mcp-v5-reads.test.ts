@@ -177,7 +177,7 @@ for (const protocol of [LEGACY, MODERN]) {
       assert.equal((tool.outputSchema as { type?: string } | undefined)?.type, 'object', tool.name);
       assert.deepEqual(
         meta.ui,
-        ['get_creation_status', 'decline_change', 'get_confirmation', 'try_agent_once', 'get_test_run'].includes(tool.name) ? { visibility: ['app'] }
+        ['get_creation_status', 'decline_change', 'get_confirmation'].includes(tool.name) ? { visibility: ['app'] }
           : CARD_TOOLS[tool.name] ? { resourceUri: CARD_TOOLS[tool.name] } : undefined,
         tool.name,
       );

@@ -14,7 +14,7 @@ import { CARD_URIS, MCP_APP_MIME_TYPE } from '../src/management/mcp-v5/cards.ts'
 import { FIVE_ZERO_TOOLS } from '../src/management/mcp-v5/tools.ts';
 import { agentWelcomeQuote, formatManagementSetupReceipt } from '../src/management/receipts.ts';
 import type { ManagementAgentCreatedWelcome } from '../src/management/types.ts';
-import { CARD_NAMES, cardAssetPath, cardVersions, type CardName } from '../src/mcp-cards/published.ts';
+import { CARD_NAMES, cardAssetPath, cardVersions, RETIRED_CARD_ASSET_PATH, type CardName } from '../src/mcp-cards/published.ts';
 import { PROTOCOL_VERSION } from '../src/mcp-cards/bridge.ts';
 import { SLACK_SETTING_KEYS } from '../src/slack/credentials.ts';
 // @ts-expect-error Build tooling JavaScript helper.
@@ -41,7 +41,7 @@ const CARD_TOOLS: Record<string, CardName> = {
 };
 
 /** The card-only tools: hidden from the model, called by a card. */
-const CARD_ONLY = ['get_creation_status', 'decline_change', 'get_confirmation', 'try_agent_once', 'get_test_run'];
+const CARD_ONLY = ['get_creation_status', 'decline_change', 'get_confirmation'];
 
 type ToolResult = {
   content: Array<{ type: string; text: string }>;
@@ -155,14 +155,20 @@ test('each card resource is an MCP App that loads only Chickpea\'s own pictures 
   assert.equal(descriptions.size, CARD_NAMES.length, 'each card tells the model what it shows');
 });
 
-test('every published card is public as inert text and served as published; its URI changes whenever its bytes do', async (t) => {
+type Published = Record<CardName, Array<{ version: number; sha256: string; released: boolean }>>;
+
+test('every served card is public as inert text and served as published; only its newest may be unreleased', async (t) => {
   const { rpc, answer } = await harness(t, 'card-versions');
-  const published = readPublished() as Record<string, Array<{ version: number; sha256: string }>>;
+  const published = readPublished() as Published;
   assert.deepEqual(Object.keys(published), CARD_NAMES);
   assert.deepEqual(Object.keys(CARD_TITLES), CARD_NAMES, 'the build makes every card');
   for (const card of CARD_NAMES) {
     const versions = published[card]!;
-    assert.deepEqual(versions.map(({ version: v }) => v), versions.map((_, index) => index + 1), `${card}: versions count up from 1`);
+    assert.ok(versions.length > 0, `${card} serves a version`);
+    assert.ok(versions.every(({ version: v }, index) => Number.isInteger(v) && v >= 1 && (index === 0 || v === versions[index - 1]!.version + 1)),
+      `${card}: served versions count up by one`);
+    assert.ok(versions.every(({ released }) => typeof released === 'boolean'), `${card}: each version says whether it is released`);
+    assert.ok(versions.slice(0, -1).every(({ released }) => released), `${card}: only the newest version may be unreleased`);
     assert.deepEqual(cardVersions(card), versions.map(({ version: v }) => v));
     assert.equal(new Set(versions.map(({ sha256: hash }) => hash)).size, versions.length, `${card}: no two versions share bytes`);
     for (const { version: v, sha256: hash } of versions) {
@@ -171,17 +177,17 @@ test('every published card is public as inert text and served as published; its 
       assert.match(path, /\.txt$/, 'never an .html page on Chickpea\'s own origin');
       assert.ok(isPublicAssetPath(path), `${card} v${v}: readPublicAsset may read it`);
       const stored = readFileSync(`assets/${path}`);
-      assert.equal(sha256(stored), hash, `${card} v${v} changed after it was published. A published card never changes; the build publishes the next version.`);
+      assert.equal(sha256(stored), hash, `${card} v${v} differs from published.json. Run npm run mcp-cards:build.`);
       const { contents } = await rpc('resources/read', { uri: `ui://chickpea/${card}-v${v}` }) as { contents: Array<{ text: string }> };
       assert.equal(contents[0]!.text, stored.toString('utf8'), `${card} v${v} is served`);
     }
     const latest = versions.at(-1)!;
     assert.equal(sha256(await buildCard(card, latest.version)), latest.sha256,
-      `The ${card} changed since it was published. Run npm run mcp-cards:build: it publishes the next version.`);
+      `The ${card} changed since it was built. Run npm run mcp-cards:build: it rebuilds an unreleased version in place and publishes the next after a released one.`);
   }
   const { resources } = await rpc('resources/list') as { resources: Array<{ uri: string }> };
   assert.deepEqual(resources.map(({ uri }) => uri).filter((uri) => uri.startsWith('ui://chickpea/')), Object.values(CARD_URIS),
-    'only the newest of each card is listed; an older one is read by the URI its chat kept');
+    'only the newest of each card is listed; an older or retired one is read by the URI its chat kept');
   const after = cardVersions('agent-card').at(-1)! + 1;
   const notFound = (await answer('resources/read', { uri: 'ui://chickpea/nothing-v1' })).error;
   assert.equal(typeof notFound?.code, 'number');
@@ -190,16 +196,60 @@ test('every published card is public as inert text and served as published; its 
   }
 });
 
-test('after the next version is published, a chat drawn with an older card still gets it', async (t) => {
+test('a retired card version reads as one static card that asks the person to ask again', async (t) => {
+  const { rpc } = await harness(t, 'card-retired');
+  const retired = readFileSync(`assets/${RETIRED_CARD_ASSET_PATH}`, 'utf8');
+  assert.ok(isPublicAssetPath(RETIRED_CARD_ASSET_PATH), 'readPublicAsset may read it');
+  assert.match(RETIRED_CARD_ASSET_PATH, /\.txt$/, 'never an .html page on Chickpea\'s own origin');
+  assert.match(retired, /^<!doctype html>/);
+  assert.equal(retired.match(/<p>([^<]*)<\/p>/)?.[1], 'This card is from an older version of Chickpea. Ask again to see it.');
+  assert.doesNotMatch(retired, /<(?:script|button|a|form|input|img|link|iframe)\b|\bon\w+=|url\(/i, 'no buttons, calls, links, pictures or loads');
+  for (const card of CARD_NAMES) {
+    const oldest = cardVersions(card)[0]!;
+    // Agent card v1 to v12, connect card v1 to v10 and health card v1 to v6 were drawn in staging test chats.
+    assert.ok(oldest > 1, `${card} has retired versions`);
+    for (const v of [1, oldest - 1]) {
+      const uri = `ui://chickpea/${card}-v${v}`;
+      const { contents } = await rpc('resources/read', { uri }) as { contents: Array<Record<string, any>> };
+      assert.equal(contents.length, 1);
+      assert.equal(contents[0]!.uri, uri);
+      assert.equal(contents[0]!.mimeType, MCP_APP_MIME_TYPE);
+      assert.equal(contents[0]!.text, retired, `${uri} is retired`);
+    }
+  }
+});
+
+test('the build rebuilds an unreleased newest version in place, and publishes the next after a released one', async (t) => {
+  const changed = async (card: string, v: number) => `${await buildCard(card, v)}<!-- changed -->\n`;
+  const before = readPublished() as Published;
+  const newest = before['connect-card'].at(-1)!;
+
+  // Unreleased: the same version, its new bytes, still unreleased; nothing else moves.
+  const unreleased = { ...before, 'connect-card': [...before['connect-card'].slice(0, -1), { ...newest, released: false }] };
+  const inPlace = await publishCard('connect-card', { published: unreleased, build: changed });
+  assert.equal(inPlace.version, newest.version);
+  assert.deepEqual(inPlace.published, {
+    ...unreleased,
+    'connect-card': [...before['connect-card'].slice(0, -1), { version: newest.version, sha256: sha256(inPlace.html), released: false }],
+  });
+  assert.notEqual(sha256(inPlace.html), newest.sha256);
+
+  // Unchanged: nothing to write, released or not.
+  const same = await publishCard('connect-card', { published: unreleased });
+  assert.equal(same.version, newest.version);
+  assert.equal(same.published, unreleased);
+
+  // Released: the next version, unreleased, after the released one, which stays.
+  const released = { ...before, 'connect-card': [...before['connect-card'].slice(0, -1), { ...newest, released: true }] };
+  const next = await publishCard('connect-card', { published: released, build: changed });
+  assert.equal(next.version, newest.version + 1);
+  assert.deepEqual(next.published['connect-card'], [...released['connect-card'], { version: next.version, sha256: sha256(next.html), released: false }]);
+  assert.deepEqual(Object.keys(next.published), CARD_NAMES);
+
+  // That release, served: tools name the next version, and a chat drawn with the released one still gets it.
   const release = mkdtempSync(join(tmpdir(), 'card-release-'));
   t.after(() => rmSync(release, { recursive: true, force: true }));
   cpSync('assets/mcp-cards', join(release, 'assets', 'mcp-cards'), { recursive: true });
-  const before = readPublished() as Record<CardName, Array<{ version: number; sha256: string }>>;
-
-  // The build after the connect card's page changed, saved into the scratch release instead of this checkout.
-  const next = await publishCard('connect-card', { build: async (card: string, v: number) => `${await buildCard(card, v)}<!-- changed -->\n` });
-  const newest = cardVersions('connect-card').at(-1)!;
-  assert.equal(next.version, newest + 1);
   saveCard(next, { assets: join(release, 'assets'), publishedPath: join(release, 'published.json') });
   for (const card of CARD_NAMES) {
     for (const { version: v } of before[card]) {

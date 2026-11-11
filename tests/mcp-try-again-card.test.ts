@@ -508,65 +508,25 @@ test('a Try it again run still going keeps its token beside the Saved card\'s ti
   assert.equal(JSON.stringify(after).includes(runToken), false, 'once it answers, no token is kept');
 });
 
-/**
- * What every first-answer view of an Agent card published before practice
- * runs (agent v6 to v10, connect v4 to v8) reads from the names it calls:
- * a status, a runToken and the question as `ask`, then the reply as text.
- */
-function readByAnOldCard(content: unknown): { status: string; runToken: string; ask: string; reply?: string; read?: string[] } {
-  const run = content as Record<string, unknown>;
-  assert.ok(['running', 'answered', 'failed'].includes(run.status as string), JSON.stringify(run));
-  assert.equal(typeof run.runToken, 'string');
-  assert.equal(typeof run.ask, 'string');
-  return run as never;
-}
-
-// Mutation proof (the alias decision): unregistered, a redrawn old card gets "tool not found"; mapped to the new shape, it reads no `ask`.
-test('a card published before practice runs gets the same run under its old names, in the shape it reads', async (t) => {
-  const w = await world(t, 'try-again-old-names');
-  const { call, runs } = w;
-  runs.outcome = answered(SECOND);
-  const tried = await call('try_agent_once', { agentId: AGENT, idempotencyKey: 'old-card-key' });
-  assert.equal(tried.isError, undefined);
-  assert.deepEqual(Object.keys(tried.structuredContent!).sort(), ['ask', 'note', 'read', 'reply', 'runToken', 'status']);
-  const run = readByAnOldCard(tried.structuredContent);
-  assert.deepEqual([run.status, run.ask, run.reply], ['answered', ASK, 'Northwind owes $1,240. Write to Ada <ada@northwind.example> first.'],
-    'an old card draws the reply as text, so it gets the `<` the Agent wrote');
-  assert.deepEqual(readByAnOldCard((await call('get_test_run', { runToken: run.runToken })).structuredContent), run);
-  // The same run practice_agent started for that key: one run, admitted by the same checks.
-  const practice = await call('practice_agent', { agentId: AGENT, idempotencyKey: 'old-card-key' });
-  assert.equal(practice.structuredContent!.runToken, run.runToken);
-  assert.equal(runs.starts.length, 1);
-  // On a card session its refusals are results an old card reads.
-  w.slack.guest = true;
-  const refused = await call('try_agent_once', { agentId: AGENT, idempotencyKey: 'old-card-guest' });
-  assert.equal(refused.isError, false);
-  assert.equal((refused.structuredContent as { error: { code: string } }).error.code, 'not_allowed');
-  // Listed for cards only.
-  const listed = JSON.parse(await w.send('tools/list', {})).result.tools as Array<{ name: string; _meta?: { ui?: { visibility?: string[] } } }>;
-  for (const name of ['try_agent_once', 'get_test_run']) {
-    assert.deepEqual(listed.find((tool) => tool.name === name)?._meta?.ui?.visibility, ['app'], name);
-  }
-});
-
-// Mutation proof (the alias decision): dropping either name fails here while a published card still sends it.
-test('every tool name a published card sends is registered, listed for cards, and takes the arguments that card sends', async (t) => {
+test('every practice tool name a served card sends is registered and takes the arguments that card sends', async (t) => {
   const { send } = await world(t, 'try-again-published-names');
   const listed = JSON.parse(await send('tools/list', {})).result.tools as Array<{ name: string; inputSchema: { properties: Record<string, unknown>; required?: string[] } }>;
   const sends: Record<string, string[]> = {};
   for (const card of CARD_NAMES) {
     for (const version of cardVersions(card)) {
       const page = readFileSync(`assets/${cardAssetPath(card, version)}`, 'utf8');
+      // A retired version reads as the retired card, so no served card sends the names practice runs replaced.
+      assert.doesNotMatch(page, /try_agent_once|get_test_run/, `${card} v${version}`);
       // The bundle calls a tool as b("name",{…}): its name and the keys of the object it sends.
-      for (const [, name, keys] of page.matchAll(/\b[A-Za-z_$][\w$]*\("(try_agent_once|get_test_run|practice_agent|get_practice_run)",\{([^}]*)\}\)/g)) {
+      for (const [, name, keys] of page.matchAll(/\b[A-Za-z_$][\w$]*\("(practice_agent|get_practice_run)",\{([^}]*)\}\)/g)) {
         sends[name!] = [...new Set([...sends[name!] ?? [], ...keys!.split(',').map((pair) => pair.split(':')[0]!.trim())])];
       }
     }
   }
-  assert.deepEqual(Object.keys(sends).sort(), ['get_practice_run', 'get_test_run', 'practice_agent', 'try_agent_once'], JSON.stringify(sends));
+  assert.deepEqual(Object.keys(sends).sort(), ['get_practice_run', 'practice_agent'], JSON.stringify(sends));
   for (const [name, keys] of Object.entries(sends)) {
     const tool = listed.find((entry) => entry.name === name);
-    assert.ok(tool, `${name} is sent by a published card, so it stays registered until the versions collapse`);
+    assert.ok(tool, `${name} is sent by a served card, so it stays registered`);
     assert.deepEqual(keys.filter((key) => !(key in tool.inputSchema.properties)), [], `${name} takes ${keys}`);
     assert.deepEqual((tool.inputSchema.required ?? []).filter((key) => !keys.includes(key)), [], `${name} needs nothing a card does not send`);
   }

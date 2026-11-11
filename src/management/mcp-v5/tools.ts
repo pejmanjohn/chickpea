@@ -247,24 +247,6 @@ export const FIVE_ZERO_TOOLS = {
     output: schemas.listPracticeRunsOutput,
     run: async (deps, args) => (await import('./test-runs.ts')).listPracticeRuns(deps, args),
   }),
-  // The names Agent cards published before practice_agent send, until the card versions collapse to one.
-  try_agent_once: tool({
-    title: 'Try an Agent once',
-    description: 'For Agent cards drawn before practice_agent: practice_agent with no question, in the shape those cards read. Call practice_agent instead.',
-    input: schemas.tryAgentOnceInput,
-    output: schemas.testRunOutput,
-    visibility: ['app'],
-    write: writeHints({ destructive: true, openWorld: true }),
-    run: async (deps, args) => (await import('./test-runs.ts')).tryAgentOnce(deps, args),
-  }),
-  get_test_run: tool({
-    title: 'Get a test run',
-    description: 'For Agent cards drawn before practice_agent: get_practice_run, in the shape those cards read. Call get_practice_run instead.',
-    input: schemas.getTestRunInput,
-    output: schemas.testRunOutput,
-    visibility: ['app'],
-    run: async (deps, args) => (await import('./test-runs.ts')).getTestRun(deps, args),
-  }),
   explain_agent: tool({
     title: 'Explain an Agent',
     description: 'One Agent as it would run for a person in a place, by default their direct messages with it: each part of its prompt, its tools by connection and why any are missing, its model and whether it can run now, and the tokens it starts with and their three biggest sources. Reads only; changes nothing.',

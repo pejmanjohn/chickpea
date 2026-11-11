@@ -29,9 +29,9 @@ const AGENT_CARD: CardModelUnderTest<agentCard.View, agentCard.Action> = {
   initial: agentCard.INITIAL,
   step: agentCard.step,
   present: agentCard.present,
-  reads: new Set(['get_creation_status', 'get_agent', 'get_confirmation', 'get_test_run']),
+  reads: new Set(['get_creation_status', 'get_agent', 'get_confirmation', 'get_practice_run']),
   followsPress: ({ view }) => (view.kind === 'creating' && view.byPress === true) || view.kind === 'first_answer',
-  replays: new Set(['try_agent_once']),
+  replays: new Set(['practice_agent']),
 };
 const CONNECT_CARD: CardModelUnderTest<connectCard.View, connectCard.Action> = {
   initial: connectCard.INITIAL,
@@ -102,8 +102,8 @@ test('on a card session the tools a card receives send a refusal as a result, wh
   assert.deepEqual([...CARD_REFUSAL_TOOL_NAMES].sort(), [
     'check_agent', 'confirm_change', 'connect_model_provider', 'connect_service', 'create_agent', 'decline_change',
     'delete_agent', 'delete_schedule', 'get_agent', 'get_confirmation', 'get_creation_status', 'get_practice_run', 'get_setup_status',
-    'get_test_run', 'practice_agent', 'propose_agent', 'propose_agent_change', 'reconnect_service', 'remove_connection',
-    'remove_model_provider_key', 'remove_website_login', 'try_agent_once', 'undo_change', 'update_agent', 'update_member',
+    'practice_agent', 'propose_agent', 'propose_agent_change', 'reconnect_service', 'remove_connection',
+    'remove_model_provider_key', 'remove_website_login', 'undo_change', 'update_agent', 'update_member',
   ], 'a card draws it, only a card calls it, only a card\'s press calls it, or a card also calls it');
 
   assert.deepEqual(await call('confirm_change', { confirmToken: 'changeset_unknown' }), {

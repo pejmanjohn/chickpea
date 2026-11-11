@@ -3,10 +3,7 @@
  * and §2, addendum 1): one read-only run of an Agent on a question, as the
  * caller's direct message would run it, posting nowhere, with its answer and
  * every step it took; a follow-up continues a practice conversation.
- * try_agent_once and get_test_run are the same two calls under the names
- * that Agent cards published before practice runs send, in the shape those
- * cards read. They go when the card versions collapse to one before the
- * production pin. Every check is here; the state store admits, writes the
+ * Every check is here; the state store admits, writes the
  * message, dispatches, settles and erases. Loaded at a call.
  */
 import { createHash, randomBytes } from 'node:crypto';
@@ -53,7 +50,6 @@ import { agentConnectionsOf, when, type FiveZeroDeps } from './reads.ts';
 import type * as schemas from './schemas.ts';
 
 type PracticeOutput = z.infer<typeof schemas.practiceRunOutput>;
-type AliasOutput = z.infer<typeof schemas.testRunOutput>;
 type ListOutput = z.infer<typeof schemas.listPracticeRunsOutput>;
 
 /** What every result says of the run, whatever its status. */
@@ -166,24 +162,6 @@ export async function listPracticeRuns(
 function listedQuestion(question: string): string {
   // eslint-disable-next-line no-control-regex
   return practiceLine(question.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')).toWellFormed();
-}
-
-/** practice_agent with no question, for a card published before it. */
-export async function tryAgentOnce(
-  deps: FiveZeroDeps,
-  input: z.infer<typeof schemas.tryAgentOnceInput>,
-  timing: TestRunTiming = REAL_TIME,
-): Promise<AliasOutput> {
-  return aliasResult(await ask(deps, input, timing));
-}
-
-/** get_practice_run, for a card published before it. */
-export async function getTestRun(
-  deps: FiveZeroDeps,
-  input: z.infer<typeof schemas.getTestRunInput>,
-  timing: TestRunTiming = REAL_TIME,
-): Promise<AliasOutput> {
-  return aliasResult(await follow(deps, input.runToken, timing));
 }
 
 /**
@@ -906,24 +884,6 @@ function largestFitting(most: number, shaped: (keep: number) => PracticeOutput):
     else high = middle - 1;
   }
   return low;
-}
-
-/**
- * The card's shape, unchanged: what it draws of the same run. The card draws
- * the reply as plain text, where an escaped `<` would show as `&lt;`, so its
- * reply keeps the `<` the Agent wrote; an image tag stays escaped, as before.
- */
-function aliasResult({ view, agentName, question }: Asked): AliasOutput {
-  const status = statusOf(view);
-  return {
-    status,
-    runToken: view.runToken,
-    ask: question,
-    ...(status === 'answered' && view.result?.reply ? { reply: view.result.reply.replace(/&lt;(?!img)/gi, '<') } : {}),
-    ...(status === 'answered' && view.result?.read ? { read: view.result.read } : {}),
-    ...(status === 'failed' ? { problem: problemText(view, agentName) } : {}),
-    note: PRACTICE_NOTE,
-  };
 }
 
 function validTimezone(timezone: string | undefined): string {
