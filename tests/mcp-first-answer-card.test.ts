@@ -318,6 +318,11 @@ test('a run still going when the card stops waiting keeps its token where the mo
     { kind: 'panes', panes: [{ label: 'What we promised', text: PROMISED }, { label: 'What it answered', text: 'Two invoices.' }] });
   assert.equal(runs.starts.length, 1, 'the answer of the run that was charged, and no other');
   assert.equal(JSON.stringify(keptState(card.state, 1)).includes(runToken), false, 'once it answers, no token is kept');
+  // Nor on the connect card, which then keeps nothing of the run.
+  await connect.press('check_again');
+  assert.equal(connect.shown.blocks.some((block) => block.kind === 'panes'), true, 'its answer');
+  assert.deepEqual(keptState(connect.state, 1).privateContent.card.outcome, { kind: 'settled' });
+  assert.deepEqual([connect.calls('practice_agent'), runs.starts.length], [[], 1]);
 
   // A chat reopened after it answered shows that answer, beside the promise of the proposal it mounts with.
   assert.deepEqual((await reopen()).shown.blocks.find((block) => block.kind === 'panes'),

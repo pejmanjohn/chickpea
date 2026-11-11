@@ -71,7 +71,9 @@ export interface Memory {
  * model, and `privateContent` holds the same sentences and the outcome for a
  * card that mounts again. ChatGPT hides `privateContent` from its model only
  * beside a `modelContent`, even an empty one (probe 12), so both always go.
- * `modelContent` holds no ID; neither holds a token or instructions.
+ * `modelContent` holds no ID, token or instructions. `privateContent` holds
+ * no instructions, and one token only: a practice run's, while it is still
+ * going (first-answer.ts `stillAnswering`).
  */
 export function keptState({ told = [], outcome }: { told?: string[] | undefined; outcome?: unknown }, version: number) {
   return { modelContent: told.join('\n'), privateContent: { card: { version, told, ...outcome === undefined ? {} : { outcome } } } };
