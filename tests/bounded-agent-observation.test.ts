@@ -394,3 +394,57 @@ test('a reattached observation seeded as coding backs off after 10 s idle, then 
     ...Array(20).fill(150), ...Array(12).fill(750),
   ]);
 });
+
+/** A route whose reads answer only when the test answers them. */
+function heldRoute() {
+  const requests: Request[] = [];
+  const answers: Array<(response: Response) => void> = [];
+  const route: AgentUpdatesRoute = (request) => {
+    requests.push(request);
+    return new Promise((resolve) => answers.push(resolve));
+  };
+  return { route, requests, answer: (index: number, response: Response) => answers[index]!(response) };
+}
+
+const settledPage = () => Response.json([CHECKPOINT, settled()], { headers: { 'Stream-Next-Offset': '0_2' } });
+
+test('a read that does not answer is joined by one through a fresh route, and the first answer wins', async () => {
+  const stuck = heldRoute();
+  const { route: fresh, requests } = fakeRoute([{ items: [settled()], next: '0_2' }]);
+  let stalls = 0;
+  let reconnects = 0;
+  const settlement = await observeAgentSettlementBounded(stuck.route, {
+    ...TARGET, onStalledRead: () => { stalls += 1; },
+  }, { stalledReadMs: 20, sleep: async () => {}, reconnect: () => { reconnects += 1; return fresh; } });
+  assert.equal(settlement.outcome, 'completed');
+  assert.deepEqual([stalls, reconnects], [1, 1]);
+  assert.equal(requests[0]?.searchParams.get('offset'), '-1', 'the fresh read starts from the same offset');
+  assert.equal(stuck.requests[0]?.signal.aborted, true, 'the stuck read is cancelled once another answers');
+});
+
+test('a slow read still wins after fresh reads joined it', async () => {
+  const slow = heldRoute();
+  const stuck = heldRoute();
+  setTimeout(() => slow.answer(0, settledPage()), 100);
+  let stalls = 0;
+  const settlement = await observeAgentSettlementBounded(slow.route, {
+    ...TARGET, onStalledRead: () => { stalls += 1; },
+  }, { stalledReadMs: 40, sleep: async () => {}, reconnect: () => stuck.route });
+  assert.equal(settlement.outcome, 'completed');
+  assert.equal(stalls, 2);
+  assert.deepEqual(stuck.requests.map((request) => request.signal.aborted), [true, true]);
+});
+
+test('at most three reads stay in flight, and the observation\'s abort ends them', async () => {
+  const stuck = heldRoute();
+  const controller = new AbortController();
+  const yieldReason = new Error('yield');
+  const observed = observeAgentSettlementBounded(stuck.route, { ...TARGET, signal: controller.signal },
+    { stalledReadMs: 10 });
+  while (stuck.requests.length < 4) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.deepEqual(stuck.requests.map((request) => request.signal.aborted), [true, false, false, false],
+    'the fourth read cancels the oldest; without a reconnect each goes through the same route');
+  controller.abort(yieldReason);
+  await assert.rejects(observed, (error: unknown) => error === yieldReason);
+  assert.ok(stuck.requests.every((request) => request.signal.aborted));
+});
