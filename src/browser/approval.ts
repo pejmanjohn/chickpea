@@ -38,7 +38,7 @@ import {
   browserCheckOnlyRefusal,
 } from './messages.ts';
 import type { BrowserAction, BrowserPage, ElementRef, PageInfo } from './page.ts';
-import { RedactionBudget } from './redaction.ts';
+import { RedactionBudget } from './redaction-budget.ts';
 import type { BrowserTurnSession } from './turn-session.ts';
 
 /**

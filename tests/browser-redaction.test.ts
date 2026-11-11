@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { RedactionBudget, RedactionBudgetError, TypedSecrets } from '../src/browser/redaction.ts';
+import { RedactionBudget, RedactionBudgetError } from '../src/browser/redaction-budget.ts';
+import { TypedSecrets } from '../src/browser/redaction.ts';
 
 function secrets(...values: string[]): TypedSecrets {
   const typed = new TypedSecrets();

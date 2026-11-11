@@ -4,7 +4,8 @@
  * roots, open or closed. Page scripts cannot see or change this reading, and
  * nothing on the page changes for it.
  */
-import { RedactionBudget, RedactionBudgetError, type TypedSecrets } from './redaction.ts';
+import { RedactionBudget, RedactionBudgetError } from './redaction-budget.ts';
+import type { TypedSecrets } from './redaction.ts';
 
 /**
  * Why the page is not pictured: a sign-in field holds a value, the page shows

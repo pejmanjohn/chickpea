@@ -47,6 +47,19 @@ test('ensure creates one recorded session lazily and reuses it', async () => {
   await session.close();
 });
 
+test('the secret matcher loads with the first session, and a secret typed in one stays matched in the next', async () => {
+  const { session } = setup();
+  assert.equal(session.redact('Synthetic-Pass-1234'), 'Synthetic-Pass-1234', 'nothing typed before a session');
+  assert.throws(() => session.addRedaction('Synthetic-Pass-1234'), /only into an open browser session/);
+  await session.ensure();
+  session.addRedaction('Synthetic-Pass-1234');
+  await session.close();
+  await session.ensure();
+  assert.equal(session.redact('Wrong password: Synthetic-Pass-1234'), 'Wrong password: [redacted]');
+  assert.equal(session.redactUrl('https://site.example/?p=Synthetic-Pass-1234'), 'https://site.example/?p=[redacted]');
+  await session.close();
+});
+
 test('close is idempotent, ends the session once, and reports its duration', async () => {
   const { session, ended, closedInfo, sockets, advance } = setup();
   assert.equal(await session.close(), undefined);
@@ -199,13 +212,15 @@ test('every session refuses downloads at the browser, and a browser that cannot 
   await refusing.close();
 });
 
-test('redaction replaces typed secrets, and a value too short to redact inside text only as a whole field', () => {
+test('redaction replaces typed secrets, and a value too short to redact inside text only as a whole field', async () => {
   const { session } = setup();
+  await session.ensure();
   session.addRedaction('hunter2!');
   session.addRedaction('287082');
   session.addRedaction('ab');
   assert.equal(session.redact('pw hunter2! code 287082 tab'), 'pw [redacted] code [redacted] tab');
   assert.equal(session.redact('ab'), '[redacted]');
+  await session.close();
 });
 
 test('the policy follows the bound login: read-only unless its grant allows actions', async () => {

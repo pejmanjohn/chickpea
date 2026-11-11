@@ -58,7 +58,7 @@ import {
 import type { PageInfo } from './page.ts';
 import type { SecretOnPage } from './page-secrets.ts';
 import { awaitRecordingDownload, BrowserProviderError, HostedBrowserFailure } from './provider.ts';
-import { RedactionBudget, RedactionBudgetError } from './redaction.ts';
+import { RedactionBudget, RedactionBudgetError } from './redaction-budget.ts';
 import { browserHandoffMessage, type NotifyRequester } from './requester.ts';
 import { totpCode } from './totp.ts';
 import type { BrowserTurnSession } from './turn-session.ts';
