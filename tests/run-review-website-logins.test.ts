@@ -232,10 +232,11 @@ test('a URL on an IDN login site loses its token whatever form the URL and the s
     'Open https://bücher.example/cb?[omitted] or bücher.example/cb?[omitted] or ' +
     'https://BÜCHER.example./cb?[omitted] or shop.bücher.example/r/cb?[omitted] or ' +
     '[omitted]/cb?[omitted] or [omitted]/cb?[omitted] or ' +
-    'https://[omitted]/cb?[omitted] or [omitted]/cb?[omitted] or ' +
+    'https://bücher.example/cb?[omitted] or bücher.example/cb?[omitted] or ' +
     'https://XN--BCHER-KVA.example/cb?[omitted] or xn--caf-dma.example/cb?[omitted]. ' +
     'Elsewhere https://[omitted]/cb?[omitted]. Public: https://straße.example/s?q=kept and пример.рф/s?q=kept',
-  'a host written in a form a link does not show as itself (an escape, a fullwidth or ideographic full stop), or that no URL can hold, goes');
+  'a percent-encoded host comes back decoded; one written in a form a link does not show as itself (a fullwidth or ' +
+  'ideographic full stop), or that no URL can hold, goes');
   const [opened] = record.steps;
   assert.ok(opened?.kind === 'tool');
   assert.equal(opened.input, '{"url":"bücher.example/cb?[omitted]"}');
@@ -246,7 +247,7 @@ test('a URL on an IDN login site loses its token whatever form the URL and the s
   assert.equal(record.answer, `Signed in at <https://café.example/home?[omitted]>. Watch at ${BROWSER_LINK_OMITTED}`);
 });
 
-test('a link on an IDN login site in JSON that keeps to ASCII loses its token, and each link comes back as JSON reads it', () => {
+test('a link on an IDN login site in JSON that keeps to ASCII loses its token, and comes back as JSON reads it while one kept stays as written', () => {
   // Python's json.dumps writes every character past ASCII as an escape, so a connector's result may hold a host that way.
   const asciiJson = (value: unknown) => JSON.stringify(value)
     .replace(/[^\0-~]/g, (unit) => `${'\\'}u${unit.charCodeAt(0).toString(16).padStart(4, '0')}`);
@@ -267,11 +268,12 @@ test('a link on an IDN login site in JSON that keeps to ASCII loses its token, a
   assert.deepEqual(kept(record, ['SYNTHIDN']), []);
   const [read, shown] = record.steps;
   assert.ok(read?.kind === 'tool' && shown?.kind === 'tool');
-  // A link is rewritten as the rules read it, so it comes back without its escapes, which JSON need not write.
+  // A link the rules rewrite comes back as they read it, without the escapes JSON need not write. A link they keep
+  // stays as written.
   assert.equal(read.output, JSON.stringify({
     text: 'Reset at https://bücher.example/reset?[omitted], bücher.example/cb?[omitted] or ' +
       'https://über.bücher.example/x?[omitted] or https://[omitted]/cb?[omitted]. Menu: https://café.example/menu?item=kept',
-  }), 'each link keeps its host, but for one no URL can hold');
+  }).replace('é', '\\u00e9'), 'each link keeps its host, but for one no URL can hold');
   assert.equal(shown.output, JSON.stringify({ snapshot: '- text "über.example/s?[omitted]"' }));
 });
 
@@ -616,6 +618,66 @@ test('a hand-off link goes from a field that JSON-escapes its markup, as Go writ
   const [read] = record.steps;
   assert.ok(read?.kind === 'tool');
   assert.match(read.output ?? '', /\[browser link omitted\] and sign in;[^"]*"\},\{"text":"Links:\\n- \[browser link omitted\]"\}\]\}$/);
+});
+
+test('a login site\'s or the hosted browser\'s link percent-encoded whole, once or twice, as a form or in a redirect, loses its token in every field', () => {
+  const signIn = 'https://billing.example.com/cb?code=SYNTHPCT1';
+  const session = 'https://www.browserbase.com/sessions/SYNTHPCT2';
+  const encoded = [
+    encodeURIComponent(signIn),
+    new URLSearchParams({ next: signIn }).toString(),
+    encodeURIComponent(encodeURIComponent(signIn)),
+    new URLSearchParams({ state: new URLSearchParams({ next: signIn }).toString() }).toString(),
+    `https://other.example/redirect?next=${encodeURIComponent(signIn)}`,
+    encodeURIComponent(session),
+    `https://other.example/redirect?next=${encodeURIComponent(encodeURIComponent(session))}`,
+  ].join(' ');
+  assert.equal(/SYNTHPCT\d\b/.test(decodeURIComponent(encoded)) && !encoded.includes('://billing'), true, 'the test text holds the escapes');
+  const record = copy({
+    context: [{ author: 'U012ABCDEF3', role: 'human', text: encoded, files: [] }],
+    steps: [
+      browserStep('browser_snapshot', {}, { url: encoded }),
+      { kind: 'tool', name: 'read_mail', input: '{}', output: JSON.stringify({ text: encoded }) },
+    ],
+    answer: `See ${encoded} today`,
+  });
+  assert.deepEqual(kept(record, ['SYNTHPCT', 'browserbase']), []);
+  assert.equal(record.answer, 'See https://billing.example.com/cb?[omitted] next=https://billing.example.com/cb?[omitted] ' +
+    'https://billing.example.com/cb?[omitted] state=next%3Dhttps://billing.example.com/cb?[omitted] ' +
+    `https://other.example/redirect?next=https://billing.example.com/cb?[omitted] ${BROWSER_LINK_OMITTED} ` +
+    `https://other.example/redirect?next=${BROWSER_LINK_OMITTED} today`);
+});
+
+test('a percent-encoded space, quote, angle bracket or backslash inside an address ends no link, so the token after it goes', () => {
+  // A browser reads `%20` in an address as data. Decoded as a space, it would end the link and leave the token after it.
+  const inside = ['%20', '%22', '%3C', '%3E', '%5C', '%2520', '%5C%22', '%C2%A0', '%26lt%3B'];
+  const links = inside.map((escape, index) => `https://billing.example.com/cb?x=a${escape}b&code=SYNTHSTAND${index}`).join(' ');
+  const others = 'https://other.example/s?q=a%20b%22c%3Cd and https://other.example/r?note=a%20b&next=' +
+    encodeURIComponent('https://billing.example.com/cb?code=SYNTHSTAND9');
+  const record = copy({
+    steps: [{ kind: 'tool', name: 'browser_snapshot', input: '{}', output: links }],
+    answer: `${links} ${others}`,
+  });
+  assert.deepEqual(kept(record, ['SYNTHSTAND']), []);
+  const scrubbed = inside.map(() => 'https://billing.example.com/cb?[omitted]').join(' ');
+  assert.equal(record.answer, `${scrubbed} https://other.example/s?q=a%20b%22c%3Cd and ` +
+    'https://other.example/r?note=a%20b&next=https://billing.example.com/cb?[omitted]',
+  'a link the rules keep stays as written, and one they rewrite writes each such character as its escape again');
+  assert.equal(record.steps[0]?.kind === 'tool' && record.steps[0].output, scrubbed);
+});
+
+test('a login site\'s link, a hand-off link and a username written in HTML character references leave every field', () => {
+  // Python's encode('ascii', 'xmlcharrefreplace') and html.escape, and PHP's htmlentities, as the security delta re-review wrote them.
+  const logins = { hosts: [normalizeWebsiteLoginHost('bücher.example')], usernames: ['müller.synthetic@example.com'] };
+  const handoff = '&lt;https://handoff.example/live?token=SYNTHHTML2|Open the browser&gt;';
+  const text = `b&#252;cher.example/cb?code=SYNTHHTML1 ${handoff} as m&uuml;ller.synthetic@example.com`;
+  const record = copy({
+    context: [{ author: 'Billing Agent', role: 'agent', text, files: [] }],
+    steps: [{ kind: 'tool', name: 'browser_snapshot', input: '{}', output: text }],
+    answer: text,
+  }, logins);
+  assert.deepEqual(kept(record, ['SYNTHHTML', 'handoff.example', 'ller.synthetic']), []);
+  assert.equal(record.answer, `bücher.example/cb?[omitted] ${BROWSER_LINK_OMITTED} as [credential redacted]`);
 });
 
 test('every hosted browser link goes whole, whatever its host', () => {
@@ -972,6 +1034,31 @@ test('a host of thousands of labels, dots, escapes or backslashes takes no longe
     }));
   `);
   assert.deepEqual(result, { dotted: [true, true], labels: true, under: true, runs: Array(6).fill(true) });
+});
+
+test('a field of nested escapes takes at most four decoding passes, each read once, and reads as the fourth leaves it', () => {
+  // Each shape decodes one layer a pass: `%2525…` to `%25…`, `&amp;amp;` to `&amp;`, and escapes of one kind inside another's.
+  const result = inChild(`
+    const scrub = () => logins.websiteLoginScrub({ hosts: ['billing.example.com'], usernames: ['Ops.Synthetic@example.com'] });
+    const backslash = String.fromCharCode(92);
+    const shapes = ['%25'.repeat(400000), '%252525'.repeat(170000), '&amp;amp;amp;'.repeat(90000), '%26amp%3B'.repeat(130000),
+      '&#37;25'.repeat(170000), (backslash + 'u0025' + '25').repeat(120000), ('%5C' + 'u0026amp;').repeat(100000)];
+    const nested = (layers) => {
+      let text = 'https://billing.example.com/cb?code=SYNTHNEST';
+      for (let layer = 0; layer < layers; layer += 1) text = encodeURIComponent(text);
+      return text;
+    };
+    console.log(JSON.stringify({
+      links: shapes.map((shape) => scrub().links(shape, false) === shape),
+      usernames: shapes.map((shape) => scrub().usernames(shape, { browserStep: false, cut: false }) === shape),
+      layers: [1, 2, 3, 4, 5].map((layers) => scrub().links(nested(layers), false).includes('SYNTHNEST')),
+    }));
+  `);
+  assert.deepEqual(result, {
+    links: Array(7).fill(true),
+    usernames: Array(7).fill(true),
+    layers: [false, false, false, false, true],
+  }, 'an address encoded four times loses its token; one encoded five times is deliberate, and its fifth layer stays');
 });
 
 test('each host read in another script counts its parse against the copy\'s budget', () => {
