@@ -269,7 +269,7 @@ for (const { withPendingTurn, testRun } of [
       return method.getText(source);
     });
     const alarmCode = ts.transpileModule(
-      `${batchDeclaration.getText(source)}\n${keepWarmDeclarations}\n${executorCode}\n${portCode}\nclass AlarmProbe { ${methods.join('\n')}\n${alarmMethods.join('\n')} }\nAlarmProbe`,
+      `${batchDeclaration.getText(source)}\n${keepWarmDeclarations}\n${executorCode}\n${portCode}\nclass AlarmProbe { boot = { call() {} };\n${methods.join('\n')}\n${alarmMethods.join('\n')} }\nAlarmProbe`,
       { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
     ).outputText;
     const { probe: storageProbe, alarm, writes } = fixture(null, undefined, {});
@@ -438,7 +438,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     return method.getText(source);
   });
   const alarmCode = ts.transpileModule(
-    `${executorCode}\n${portCode}\nclass AlarmProbe { ${alarmMethods.join('\n')} }\nAlarmProbe`,
+    `${executorCode}\n${portCode}\nclass AlarmProbe { boot = { call() {} };\n${alarmMethods.join('\n')} }\nAlarmProbe`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
   ).outputText;
   const jobs = new Map(initial.map((job) => [job.id, job]));
