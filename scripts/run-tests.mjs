@@ -37,8 +37,14 @@
  *
  * The root suite, the CLI package's tests and verify:regression's focused test
  * steps all run through this runner.
+ *
+ * A pass started outside verify:host restarts itself under
+ * `verify:host --shared`: it takes one of the host's shared CPU slots, unless
+ * it already runs under one or under the exclusive reservation, and stops
+ * with its whole process group after 10 minutes without output
+ * (qa/live/operator/host-checks.md).
  */
-import { execFile } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { basename, resolve, relative } from 'node:path';
 import { finished } from 'node:stream/promises';
@@ -48,9 +54,11 @@ import { fileURLToPath } from 'node:url';
 import { recordFileReports } from './lib/test-file-reports.mjs';
 import { appendRunResult, RUN_RESULT_FILE_ENV } from './lib/test-run-results.mjs';
 import { runnerTestTimeoutMs } from './lib/test-timeout.mjs';
+import { hostChecksLiveness } from './lib/verification-host.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const REPORT_PIPE = new URL('./lib/test-report-pipe.mjs', import.meta.url).href;
+const VERIFY_HOST = fileURLToPath(new URL('./verify-host.mjs', import.meta.url));
 
 const CONCURRENCY = 8;
 const MAX_RETRIED_FILES = CONCURRENCY;
@@ -69,14 +77,17 @@ while (['--typecheck', '--fail-on-retry'].includes(args[0])) options.add(args.sh
 const withTypecheck = options.has('--typecheck');
 const failOnRetry = options.has('--fail-on-retry');
 const files = args.map((file) => resolve(file));
-// Out of the environment before any test process starts, so a runner that a
-// test starts cannot write into this pass's result file.
-const resultFile = process.env[RUN_RESULT_FILE_ENV];
-delete process.env[RUN_RESULT_FILE_ENV];
 if (files.length === 0) {
   console.error('Usage: node scripts/run-tests.mjs [--typecheck] [--fail-on-retry] <test files...>');
   process.exitCode = 2;
+} else if (hostChecksLiveness(Number(process.env.CHICKPEA_VERIFY_HOST_PID)) !== 'live') {
+  const pass = spawnSync(process.execPath, [VERIFY_HOST, '--shared', '--', process.execPath, fileURLToPath(import.meta.url), ...process.argv.slice(2)], { stdio: 'inherit' });
+  process.exitCode = pass.status ?? 1;
 } else {
+  // Out of the environment before any test process starts, so a runner that a
+  // test starts cannot write into this pass's result file.
+  const resultFile = process.env[RUN_RESULT_FILE_ENV];
+  delete process.env[RUN_RESULT_FILE_ENV];
   const result = await main(longestFirst(files));
   if (resultFile) {
     appendRunResult(resultFile, { ...result, retries: result.retries.map(({ file, alone }) => ({ file: relative(ROOT, file), alone })) });
