@@ -49,7 +49,7 @@ const compiled = ts.transpileModule(
   `${['RELAY_BATCH_WINDOW_MS', 'KEEP_WARM_WINDOW_MS', 'KEEP_WARM_TICK_MS', 'RETENTION_SWEEP_INTERVAL_MS', 'earliestDefined'].map(moduleStatement).join('\n')}
 class StateStoreProbe { boot = { call() {} };
 ${[
-    'alarm', 'drainRelayAlarm', 'deliverStopNotices', 'admitSlackTurn', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'admissionWakeAt',
+    'alarm', 'drainRelayAlarm', 'deliverStopNotices', 'admitSlackTurn', 'afterSlackAdmission', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'admissionWakeAt',
     'runnerMode', 'keepWarmTickAt', 'dispatchingWhile', 'hold', 'threadRunnerTurn',
   ].map(stateMethod).join('\n')} }\nStateStoreProbe`,
   { compilerOptions: { target: ts.ScriptTarget.ES2022 } },

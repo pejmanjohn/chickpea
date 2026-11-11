@@ -675,6 +675,7 @@ Chickpea is offline-safe by default. Left unset, most variables take a local pat
 | `DO_NOT_TRACK` / `CHICKPEA_DISABLE_TELEMETRY` | optional | Set either to `1`, `true`, or `yes` to disable anonymous [product telemetry](TELEMETRY.md) completely. |
 | `CHICKPEA_TELEMETRY_ENVIRONMENT` | optional | Label telemetry as `production`, `development`, or `test`; defaults to production on Cloudflare and development on Node. |
 | `CHICKPEA_RESIDENCY_HOLD_MS` | optional, Cloudflare | Keeps a conversation's Durable Objects in memory for this many milliseconds (at most 900000) after each turn, so follow-ups skip a cold start. Off by default. Held objects are billed, and Workers Free's daily duration limit can run out; read [the conditions](docs/runbooks/operations.md#hold-a-conversations-objects-in-memory) first. |
+| `CHICKPEA_SLACK_ADMISSION` | optional, Cloudflare | `store` has a direct installation's state store admit its Slack messages and mentions, in one call from the Worker, instead of the Worker admitting them over many calls to the store. Off by default. Read [the conditions](docs/runbooks/operations.md#admit-slack-messages-in-the-state-store) first. |
 | `TAG_DB_PATH` / `SLACK_STATE_DB_PATH` | optional, Node | SQLite paths for durable transcripts and app-owned state. |
 | `CHICKPEA_RECOVERY_TOKEN` | optional break-glass | One short-lived repair capability. Not a login credential. |
 

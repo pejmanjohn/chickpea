@@ -4,11 +4,11 @@ import type { TestContext } from 'node:test';
 
 import { Hono, type ExecutionContext } from 'hono';
 
-import { channel as slackChannel, directSlackExecution, processDirectSlackEvent } from '../../src/channels/slack.ts';
+import { channel as slackChannel, processDirectSlackEvent } from '../../src/channels/slack.ts';
 import type { PlatformEnv } from '../../src/config/state-backend.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../../src/config/types.ts';
 import type { IdentityStore } from '../../src/identity/types.ts';
-import type { SlackCanonicalAdmissionInput, SlackDeliveryNote } from '../../src/slack/claim-store.ts';
+import type { SlackCanonicalAdmissionInput, SlackDeliveryNote, SlackDirectDelivery } from '../../src/slack/claim-store.ts';
 import { generateCredentialKeyring, workerCredentialKeySlot } from '../../src/slack/credential-keyring.ts';
 import {
   invalidateSlackInstallationCredentialCache,
@@ -21,6 +21,7 @@ import type { TurnJob } from '../../src/slack/turn-job-types.ts';
 import type { SlackEventFixture } from '../../src/slack/types.ts';
 import { DoSqlStateDb } from '../../src/state/do-state-db.ts';
 import { buildTagStateStores, localGatewayAppStores, localTurnEnqueue } from '../../src/state/tag-state-stores.ts';
+import { directStore, type DirectStore } from './direct-store-probe.ts';
 import { withCloudflareUserAgent } from './cloudflare-target.ts';
 import { FakeObjectStorage } from './installation-objects.ts';
 import { createSlackOwner } from './slack-owner.ts';
@@ -54,11 +55,25 @@ export interface DirectWorker {
   deliver(body: Record<string, unknown>, ctx?: ExecutionContext, arrivedAt?: number): Promise<Response>;
   /**
    * Admit `body` (an `event()`) as the state store would on its own stores:
-   * processDirectSlackEvent with directSlackExecution, local ports and its
-   * own queue. A call it makes to the stub is in `log` like any other.
+   * processDirectSlackEvent on local ports and its own queue. A call it
+   * makes to the stub is in `log` like any other.
    */
   admitLocally(body: Record<string, unknown>): Promise<void>;
   event(event: Record<string, unknown>): Record<string, unknown>;
+  /** The state store's own admission (TagStateStore.admitSlackDelivery) over `stores`. */
+  store: DirectStore;
+  env: PlatformEnv;
+}
+
+/** How the state store answers `admitSlackDelivery`: as this code does, as older code does (workerd rejects the call), or by `answer`. */
+export type StoreAdmission =
+  | 'current'
+  | 'missing'
+  | ((delivery: SlackDirectDelivery, store: DirectStore) => Promise<unknown>);
+
+/** workerd's rejection of a call to a method the object's code lacks (tests/store-fallback-workerd.test.ts). */
+export function missingMethod(name: string): Promise<never> {
+  return Promise.reject(new TypeError(`The RPC receiver does not implement the method "${name}".`));
 }
 
 /**
@@ -72,7 +87,16 @@ export interface DirectWorker {
 export async function withDirectWorker(
   t: TestContext,
   run: (worker: DirectWorker) => Promise<void>,
-  options: { note?: () => Promise<unknown> } = {},
+  options: {
+    note?: () => Promise<unknown>;
+    /** Deployment variables, such as CHICKPEA_SLACK_ADMISSION. */
+    env?: Record<string, unknown>;
+    admission?: StoreAdmission;
+    /** Answers a Slack Web API call before the table does; undefined leaves it to the table. */
+    slack?: (method: string) => Response | undefined | Promise<Response | undefined>;
+    /** `app`: the app's own credentials alone, as before the workspace connected it, so no bot token. */
+    credentials?: 'app';
+  } = {},
 ): Promise<void> {
   const keyring = generateCredentialKeyring('key_v1');
   const log: string[] = [];
@@ -81,6 +105,7 @@ export async function withDirectWorker(
   const platform: Record<string, unknown> = {
     CHICKPEA_CREDENTIAL_KEY_CURRENT_ID: keyring.currentKeyId,
     [workerCredentialKeySlot(keyring.currentKeyId)]: keyring.keys[keyring.currentKeyId],
+    ...options.env,
   };
   const storage = new FakeObjectStorage();
   const db = new DoSqlStateDb(storage.asDurableObjectStorage());
@@ -121,6 +146,11 @@ export async function withDirectWorker(
       notes.push(received);
       return options.note ? options.note() : Promise.resolve({ ok: true, value: null });
     },
+    admitSlackDelivery: (delivery: SlackDirectDelivery) => {
+      const admission = options.admission ?? 'current';
+      if (admission === 'missing') return missingMethod('admitSlackDelivery');
+      return admission === 'current' ? store.admitSlackDelivery(delivery) : admission(delivery, store);
+    },
   };
   const configRpc = (name: string) => (...args: unknown[]) => call(() => {
     const method = name.slice('config'.length);
@@ -140,6 +170,7 @@ export async function withDirectWorker(
   });
   platform.TAG_STATE = { getByName: () => stub };
   const env = platform as PlatformEnv;
+  const store = directStore(stores, env);
 
   const identity = stores.identity as unknown as IdentityStore;
   const owner = await createSlackOwner(identity, { teamId: 'T1', userId: 'U1' });
@@ -152,11 +183,14 @@ export async function withDirectWorker(
     lastChangedByMembershipId: owner.membership.id,
   }, stores.config.getWorkspaceModelDefault('T1')?.revision ?? 0);
   const dependencies = { state: identity, keyring };
+  const appOnly = options.credentials === 'app';
   const staged = await stageSlackCredentialBundle(dependencies, {
     identityId: WORKSPACE_SLACK_INSTALLATION_ID, identityClass: 'workspace_installation',
-    purpose: 'connected_credentials', expectedActiveRevision: null, appId: 'A1', teamId: 'T1', botUserId: 'UBOT',
-    grantedScopes: ['chat:write'], validatedAt: Date.now(),
-    secrets: { botToken: 'xoxb-direct-worker', signingSecret: SIGNING_SECRET },
+    purpose: appOnly ? 'app_credentials' : 'connected_credentials', expectedActiveRevision: null,
+    appId: 'A1', ...appOnly ? {} : { teamId: 'T1', botUserId: 'UBOT' }, grantedScopes: ['chat:write'], validatedAt: Date.now(),
+    secrets: appOnly
+      ? { clientId: 'client-1', clientSecret: 'client-secret-1', signingSecret: SIGNING_SECRET }
+      : { botToken: 'xoxb-direct-worker', signingSecret: SIGNING_SECRET },
   });
   await promoteSlackCredentialBundle(dependencies, {
     identityId: WORKSPACE_SLACK_INSTALLATION_ID, candidateRevision: staged.revision, expectedActiveRevision: null,
@@ -168,6 +202,8 @@ export async function withDirectWorker(
     const url = new URL(request.url);
     const method = url.pathname.split('/').at(-1)!;
     log.push(`slack:${method}`);
+    const answered = await options.slack?.(method);
+    if (answered) return answered;
     const body = new URLSearchParams(await request.clone().text().catch(() => ''));
     const user = body.get('user') ?? 'U1';
     const answer = method === 'auth.test'
@@ -200,18 +236,18 @@ export async function withDirectWorker(
       failures,
       stores,
       db,
+      store,
+      env,
       async admitLocally(body) {
         const credentials = await resolveSlackInstallationCredentials(WORKSPACE_SLACK_INSTALLATION_ID, env, { state: identity, env });
         const installation = stores.config.getWorkspaceInstallation(String(body.team_id));
         assert.ok(installation, 'the delivery is for this installation');
-        const execution = directSlackExecution({
+        await processDirectSlackEvent(body as unknown as SlackEventFixture, env, {
           stores: localGatewayAppStores(stores),
           credentials,
-          botUserId: credentials.botUserId ?? installation.botUserId!,
+          botUserId: credentials.botUserId ?? installation.botUserId,
           enqueueTurn: localTurnEnqueue(stores),
-        });
-        assert.ok(execution, 'the installation has a bot token');
-        await processDirectSlackEvent(body as unknown as SlackEventFixture, env, execution, installation);
+        }, installation);
       },
       async deliver(body, ctx, arrivedAt) {
         const raw = JSON.stringify(body);

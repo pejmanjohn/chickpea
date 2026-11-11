@@ -19,7 +19,9 @@ import { emitRuntimeCorrelation } from './work/trace-correlation.ts';
 import {
   emitGatewayDelivery,
   emitRelayAlarm,
+  emitRuntimeLatency,
   startRelayAlarmMetrics,
+  StateRpcSummary,
   StoreBootMarks,
   type RelayAlarmMetrics,
 } from './observability/runtime-latency.ts';
@@ -74,6 +76,7 @@ import type {
 import { buildRuntimeDrainStatus, tagStateStub } from './config/state-rpc.ts';
 import type { StateRead } from './config/turn-reads.ts';
 import {
+  deploymentTenancy,
   installationOwnershipOf,
   installationScopeOf,
   objectInstallationEnv,
@@ -201,7 +204,22 @@ import {
   type WarmWindowStorage,
   workspaceWarmWindowMs,
 } from './sandbox/warm-window.ts';
-import type { SlackCanonicalAdmissionInput, SlackDeliveryNote, SlackFrontDeskHandoffNote } from './slack/claim-store.ts';
+import type {
+  SlackCanonicalAdmissionInput,
+  SlackDeliveryNote,
+  SlackDirectDelivery,
+  SlackDirectDeliveryResult,
+  SlackFrontDeskHandoffNote,
+  SlackStateStore,
+} from './slack/claim-store.ts';
+import {
+  resolveSlackInstallationCredentials,
+  SlackCredentialRecoveryOnlyError,
+  type ResolvedSlackInstallationCredentials,
+} from './slack/installation-credentials.ts';
+import { recordFirstHostedSlackDelivery } from './slack/hosted-installation.ts';
+import type { SlackEventFixture } from './slack/types.ts';
+import { ConversationOrder } from './state/conversation-order.ts';
 import type { SlackMessageEdit } from './slack/edits.ts';
 import {
   SlackPresentationStateError,
@@ -333,6 +351,7 @@ import {
   processGatewayUiAction,
   processGatewayViewSubmission,
   processGatewaySlackEnvelope,
+  processDirectSlackEvent,
   processSlackAgentAsks,
   processSlackFrontDeskHandoff,
   admitSetupWake,
@@ -896,6 +915,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
    * from before the status, then the first hand-off a later one.
    */
   private readonly firstHandoffs = new Set<string>();
+  /** Direct deliveries this instance admits, one conversation at a time (admitSlackDelivery). */
+  private readonly directAdmissions = new ConversationOrder();
   /**
    * This instance, as the owner of the gateway inbox leases it takes. Only one
    * instance owns this object's storage at a time; a lease under any other
@@ -1793,31 +1814,33 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     if (result.ok && result.value.claimed && 'steered' in result.value) {
       await this.offerCreatedStop(result.value.steered);
     }
-    if (result.ok && input.turnJob && 'admission' in result.value) {
-      const turnJobId = input.turnJob.id;
-      // A person's turn opens the keep-warm window; the host's own turns, an
-      // Agent's ask and a setup wake, do not.
-      const { agentAsk, setupWake } = input.turnJob.turn;
-      if (!agentAsk && !setupWake) {
-        this.lastHumanTurnAt = Date.now();
-        this.hold().holdFrom(this.lastHumanTurnAt);
-      }
-      const ready = this.runnerMode()
-        ? this.call((stores) => stores.turnJobs.dispatchableNow(turnJobId))
-        : undefined;
-      const handedOver = ready?.ok && ready.value
-        ? await this.admitToRunner(ready.value, true).catch(() => false)
-        : false;
-      if (!handedOver) {
-        await this.armAlarmNoLaterThan(this.admissionWakeAt(), true);
-      } else {
-        // The runner has the turn; the alarm only ticks for the keep-warm
-        // window, so a running alarm's dispatch loop is not woken for it.
-        const tick = this.keepWarmTickAt();
-        if (tick !== undefined) await this.setAlarmNoLaterThan(tick);
-      }
-    }
+    if (result.ok && input.turnJob && 'admission' in result.value) await this.afterSlackAdmission(input.turnJob);
     return result;
+  }
+
+  /** A just-admitted turn: hold this store, hand the turn over with its first status, arm the alarm. */
+  private async afterSlackAdmission(turnJob: TurnJob): Promise<void> {
+    // A person's turn opens the keep-warm window; the host's own turns, an
+    // Agent's ask and a setup wake, do not.
+    const { agentAsk, setupWake } = turnJob.turn;
+    if (!agentAsk && !setupWake) {
+      this.lastHumanTurnAt = Date.now();
+      this.hold().holdFrom(this.lastHumanTurnAt);
+    }
+    const ready = this.runnerMode()
+      ? this.call((stores) => stores.turnJobs.dispatchableNow(turnJob.id))
+      : undefined;
+    const handedOver = ready?.ok && ready.value
+      ? await this.admitToRunner(ready.value, true).catch(() => false)
+      : false;
+    if (!handedOver) {
+      await this.armAlarmNoLaterThan(this.admissionWakeAt(), true);
+    } else {
+      // The runner has the turn; the alarm only ticks for the keep-warm
+      // window, so a running alarm's dispatch loop is not woken for it.
+      const tick = this.keepWarmTickAt();
+      if (tick !== undefined) await this.setAlarmNoLaterThan(tick);
+    }
   }
 
   async slackTurnAdmitEdit(edit: SlackMessageEdit) {
@@ -2480,6 +2503,147 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       }
     }
     return { ok: true, value: null };
+  }
+
+  /**
+   * CHICKPEA_SLACK_ADMISSION=store: admit a direct installation's verified
+   * message on this store's own stores. On arrival it checks the gate and the
+   * installation and takes its place in its thread's order; in that place it
+   * checks again and reads the credentials. Held by waitUntil; never throws.
+   */
+  async admitSlackDelivery(delivery: SlackDirectDelivery): Promise<StateRpcResult<SlackDirectDeliveryResult>> {
+    const admitting = this.admitDirectDelivery(delivery);
+    const state = this.ctx as DurableObjectState & { waitUntil?(promise: Promise<unknown>): void };
+    if (typeof state.waitUntil === 'function') state.waitUntil(admitting);
+    return admitting;
+  }
+
+  private async admitDirectDelivery(delivery: SlackDirectDelivery): Promise<StateRpcResult<SlackDirectDeliveryResult>> {
+    const startedAt = Date.now();
+    const { workspaceId, eventId, eventTime, event, appId, receivedAt } = delivery;
+    const env = this.env as PlatformEnv;
+    const hosted = deploymentTenancy(env) === 'installation';
+    // Every store call admission makes is local; one over RPC would be this store calling itself.
+    const calls = new StateRpcSummary('store_admission');
+    const record = { turns: 0, orderWaitMs: 0, rateLimited: 0 };
+    const answer = (result: StateRpcResult<SlackDirectDeliveryResult>) => {
+      emitRuntimeLatency('slack_store_admission', {
+        outcome: result.ok ? result.value.outcome : 'failed',
+        reason: result.ok && result.value.outcome === 'refused' ? result.value.reason : undefined,
+        ...record,
+        rpcCalls: calls.calls,
+        receiptToStartMs: Number.isFinite(receivedAt) ? startedAt - receivedAt : undefined,
+        durationMs: Date.now() - startedAt,
+      });
+      return result;
+    };
+    const refusal = (reason: 'recovery_only' | 'installation'): StateRpcResult<SlackDirectDeliveryResult> =>
+      ({ ok: true, value: { outcome: 'refused', reason } });
+    const serving = (stores: TagStateStores) => {
+      if (stores.identity.getAuthControl()?.healthGate === 'recovery_only') return 'recovery_only' as const;
+      const installation = stores.config.getWorkspaceInstallation(workspaceId);
+      if (!installation || installation.transportMode !== 'direct' || installation.health === 'revoked' ||
+          (installation.appId && installation.appId !== appId) || (hosted && !installation.appId)) return 'installation' as const;
+      return installation;
+    };
+    const checked = this.call((stores) => {
+      const installation = serving(stores);
+      return typeof installation === 'string' ? installation : {
+        installation,
+        releaseReceipt: Number.isFinite(receivedAt) ? stores.turnJobs.noteReceipt(eventId, receivedAt) : undefined,
+        resolveIdentity: this.createAlarmIdentityResolver(stores),
+      };
+    });
+    if (!checked.ok) return answer(checked);
+    if (typeof checked.value === 'string') return answer(refusal(checked.value));
+    const { installation: arrived, releaseReceipt, resolveIdentity } = checked.value;
+    // In the check's synchronous turn: the thread's order is arrival order.
+    const place = this.directAdmissions.enter(slackEventConversationKey(event));
+    const enteredAt = Date.now();
+    const stores = this.stores!;
+    const handOffs: Array<Promise<void>> = [];
+    let result: StateRpcResult<SlackDirectDeliveryResult>;
+    try {
+      if (this.wakeRunnerAtReceipt({ kind: 'event.deliver', envelope: { workspaceId, eventId, eventTime, event } })) {
+        void resolveIdentity(workspaceId).catch(() => undefined);
+      }
+      result = await calls.run(async () => {
+        const local = localGatewayAppStores(stores);
+        if (hosted) await recordFirstHostedSlackDelivery(local.config, arrived);
+        await place;
+        record.orderWaitMs = Date.now() - enteredAt;
+        const current = this.call(serving);
+        if (!current.ok) return current;
+        if (typeof current.value === 'string') return refusal(current.value);
+        const installation = current.value;
+        let credentials: ResolvedSlackInstallationCredentials;
+        try {
+          credentials = await resolveSlackInstallationCredentials(
+            slackInstallationCredentialId(env), env, { state: stores.identity as unknown as IdentityStore, env },
+          );
+        } catch (error) {
+          if (error instanceof SlackCredentialRecoveryOnlyError) return refusal('recovery_only');
+          throw error;
+        }
+        const botUserId = credentials.botUserId ?? installation.botUserId ??
+          (await resolveIdentity(workspaceId).catch(() => undefined))?.botUserId;
+        const admitted = new Set<string>();
+        const slackState = this.admittingSlackState(local.slackState, (job) => {
+          admitted.add(job.id);
+          record.turns += 1;
+          // Armed at the commit: if this object stops before the hand-off, the alarm makes it.
+          handOffs.push(this.setAlarmNoLaterThan(Date.now() + KEEP_WARM_TICK_MS)
+            .then(() => this.afterSlackAdmission(job))
+            .catch(() => { console.warn('[chickpea] an admitted turn was not handed over; the alarm hands it over'); }));
+        });
+        await processDirectSlackEvent({
+          token: '', team_id: workspaceId, api_app_id: appId, event_id: eventId, event_time: eventTime,
+          type: 'event_callback', event,
+        } as SlackEventFixture, env, {
+          stores: { ...local, slackState },
+          credentials,
+          botUserId,
+          // As enqueueTurn: a turn admitted without a canonical admission (a legacy turn, an edit's).
+          enqueueTurn: async (job) => {
+            if (admitted.has(job.id)) return { ok: true, value: null };
+            stores.turnJobs.enqueue(job);
+            await this.armAlarmNoLaterThan(this.admissionWakeAt(), true);
+            return { ok: true, value: null };
+          },
+          onRateLimited: () => { record.rateLimited += 1; },
+        }, installation);
+        return { ok: true, value: { outcome: 'processed' } };
+      });
+    } catch (error) {
+      result = { ok: false, error: { code: 'internal', message: error instanceof Error ? error.message : String(error) } };
+    } finally {
+      // The thread's next delivery goes on beside this one's status and hand-off.
+      void place.then((release) => release());
+      // As managementExecute: Chickpea's introduction, queued by a person's first message, is sent now.
+      await this.armReceiptDrainAfter('claim_introduction').catch(() => undefined);
+      await Promise.all(handOffs);
+      releaseReceipt?.();
+    }
+    return answer(result);
+  }
+
+  /** This store's Slack state for admitSlackDelivery, doing what its RPCs do around the same writes. */
+  private admittingSlackState(local: SlackStateStore, admitted: (job: TurnJob) => void): SlackStateStore {
+    return {
+      ...local,
+      admitCanonical: async (input) => {
+        const result = await local.admitCanonical(input);
+        if (result.claimed && 'steered' in result) await this.offerCreatedStop(result.steered);
+        if (input.turnJob && 'admission' in result) admitted(input.turnJob);
+        return result;
+      },
+      steerTurn: async (request, enqueue) => {
+        const decision = await local.steerTurn!(request, enqueue);
+        if (decision.outcome === 'enqueue' && decision.enqueued) await this.armAlarmNoLaterThan(this.admissionWakeAt(), true);
+        else await this.offerCreatedStop(decision);
+        return decision;
+      },
+    };
   }
 
   /**
@@ -3859,12 +4023,14 @@ const GATEWAY_INBOX_CONVERSATION_CONCURRENCY = 4;
  * one ordered group.
  */
 function gatewayConversationKey(delivery: GatewayInboundDelivery): string {
-  if (delivery.kind !== 'event.deliver') return 'other';
-  const event = delivery.envelope.event as { channel?: unknown; thread_ts?: unknown; ts?: unknown };
-  const root = typeof event.thread_ts === 'string' ? event.thread_ts : event.ts;
-  return typeof event.channel === 'string' && typeof root === 'string'
-    ? `${event.channel}:${root}`
-    : 'other';
+  return delivery.kind === 'event.deliver' ? slackEventConversationKey(delivery.envelope.event) : 'other';
+}
+
+/** A Slack event's channel and thread root; `other` when it names none. */
+function slackEventConversationKey(event: unknown): string {
+  const { channel, thread_ts: threadTs, ts } = event as { channel?: unknown; thread_ts?: unknown; ts?: unknown };
+  const root = typeof threadTs === 'string' ? threadTs : ts;
+  return typeof channel === 'string' && typeof root === 'string' ? `${channel}:${root}` : 'other';
 }
 
 /**

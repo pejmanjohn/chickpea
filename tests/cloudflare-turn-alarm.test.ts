@@ -62,7 +62,7 @@ const stateClass = source.statements.find((node) =>
   ts.isClassDeclaration(node) && node.name?.text === 'TagStateStore');
 assert.ok(stateClass && ts.isClassDeclaration(stateClass));
 const methodNames = [
-  'enqueueTurn', 'admitSlackTurn', 'resumeTurnAfterOAuth', 'slackInstallationRecoveryRetry',
+  'enqueueTurn', 'admitSlackTurn', 'afterSlackAdmission', 'resumeTurnAfterOAuth', 'slackInstallationRecoveryRetry',
   'maintainWork', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode', 'keepWarmTickAt',
   'testRunModelAccessBind', 'hold',
 ];
@@ -979,7 +979,7 @@ test('an OAuth continuation already handed to a thread runner is admitted there 
 
 function admissionHarness(runner: { refuse?: boolean } = {}) {
   const methods = [
-    'admitSlackTurn', 'admitToRunner', 'wakeAgentAtHandoff', 'showStatusAtHandoff', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan',
+    'admitSlackTurn', 'afterSlackAdmission', 'admitToRunner', 'wakeAgentAtHandoff', 'showStatusAtHandoff', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan',
     'admissionWakeAt', 'runnerMode', 'keepWarmTickAt', 'hold',
   ].map((name) => {
     const method = (stateClass as ts.ClassDeclaration).members.find((member) =>
@@ -1409,7 +1409,7 @@ function stopOutboxHarness(input: {
   runner?: boolean;
 }) {
   const methods = [
-    'deliverStopNotices', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'slackTurnSteer', 'admitSlackTurn', 'offerCreatedStop',
+    'deliverStopNotices', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'slackTurnSteer', 'admitSlackTurn', 'afterSlackAdmission', 'offerCreatedStop',
   ].map((name) => {
     const method = (stateClass as ts.ClassDeclaration).members.find((member) =>
       ts.isMethodDeclaration(member) && member.name.getText(source) === name);
@@ -1633,10 +1633,10 @@ test('a late fold over the state RPC takes follow-ups only for a head its thread
 /** The production inbox drain, with its collaborators injected. */
 function inboxDrainProbe(context: Record<string, unknown>) {
   const declarations = source.statements.filter((node) =>
-    (ts.isFunctionDeclaration(node) && ['drainGatewayInbox', 'gatewayConversationKey'].includes(node.name?.text ?? '')) ||
+    (ts.isFunctionDeclaration(node) && ['drainGatewayInbox', 'gatewayConversationKey', 'slackEventConversationKey'].includes(node.name?.text ?? '')) ||
     (ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) =>
       declaration.name.getText(source) === 'GATEWAY_INBOX_CONVERSATION_CONCURRENCY')));
-  assert.equal(declarations.length, 3);
+  assert.equal(declarations.length, 4);
   const code = ts.transpileModule(`${declarations.map((node) => node.getText(source)).join('\n')}\ndrainGatewayInbox`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
   }).outputText;

@@ -25,6 +25,24 @@ export class NewStore extends OldStore {
     await this.ctx.storage.put('ran', (await this.ran()) + 1);
     return { ok: true, value: 'new' };
   }
+
+  /** Writes `token` after `ms`, past the end of a caller that does not wait. */
+  async slowWrite(token: string, ms: number): Promise<Answer> {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+    await this.ctx.storage.put(`slow:${token}`, Date.now());
+    return { ok: true, value: token };
+  }
+
+  /** slowWrite, held by the object's own waitUntil. */
+  async heldWrite(token: string, ms: number): Promise<Answer> {
+    const work = this.slowWrite(token, ms);
+    (this.ctx as unknown as { waitUntil(promise: Promise<unknown>): void }).waitUntil(work);
+    return work;
+  }
+
+  async written(token: string): Promise<boolean> {
+    return (await this.ctx.storage.get(`slow:${token}`)) !== undefined;
+  }
 }
 
 interface Env {
@@ -66,6 +84,16 @@ export default {
       const current = env.NEW_STORE.getByName(crypto.randomUUID());
       const answered = await addedOrExisting(current as unknown as OldStore);
       return Response.json({ threw, rejected, before, after, fallback, afterFallback, answered, ranOnNew: await current.ran() });
+    }
+    if (url.pathname === '/abandon') {
+      // The call is started and never awaited; this invocation ends with the response.
+      const store = env.NEW_STORE.getByName('abandoned');
+      const token = url.searchParams.get('token')!;
+      void (url.searchParams.get('held') ? store.heldWrite(token, 800) : store.slowWrite(token, 800)).catch(() => undefined);
+      return new Response('left');
+    }
+    if (url.pathname === '/written') {
+      return Response.json({ written: await env.NEW_STORE.getByName('abandoned').written(url.searchParams.get('token')!) });
     }
     return new Response('ok');
   },

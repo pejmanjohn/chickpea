@@ -1,15 +1,17 @@
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 
+import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 import { DM, WORKER_MENTION, withDirectWorker, type DirectWorker } from './helpers/direct-worker.ts';
 
 /**
- * A direct installation's delivery is admitted by processSlackEvent either
- * over the state store's RPCs (the Worker's path) or on the store's own ports
- * (processDirectSlackEvent with directSlackExecution, as the state store runs
- * it). Each scenario runs on two identical installations, one each way, and
- * must end the same: the same turns, claims, threads and thread record, and
- * the same Slack calls. The local run makes no call over RPC.
+ * A direct installation's delivery is admitted by processSlackEvent over the
+ * state store's RPCs (the Worker's path), on the store's own ports
+ * (processDirectSlackEvent), or by the store itself when the Worker sends it
+ * there (CHICKPEA_SLACK_ADMISSION=store, TagStateStore.admitSlackDelivery). Each scenario runs on identical
+ * installations, one per way, and must end the same: the same turns, claims,
+ * threads and thread record, and the same Slack calls. The local run makes no
+ * call over RPC, and the store's run makes only the Worker's one call.
  */
 
 const THREAD_REPLY = { ...DM, ts: '6000.000200', thread_ts: DM.ts, text: 'and since Monday?' };
@@ -21,6 +23,11 @@ const EDITED_DM = {
   previous_message: { type: 'message', user: 'U1', ts: DM.ts, text: DM.text },
 };
 const BOT_POST = { ...DM, ts: '6000.000400', text: 'an answer', bot_id: 'BBOT', user: 'UBOT' };
+const DELETED_REPLY = {
+  type: 'message', subtype: 'message_deleted', channel: 'D1', channel_type: 'im', ts: '6000.000500',
+  deleted_ts: THREAD_REPLY.ts,
+  previous_message: { type: 'message', user: 'U1', ts: THREAD_REPLY.ts, thread_ts: DM.ts, text: THREAD_REPLY.text },
+};
 
 /** The workspace's model cannot resolve: admission asks Slack itself whether the sender may be answered. */
 function withoutWorkspaceModel(worker: DirectWorker): void {
@@ -44,9 +51,26 @@ const SCENARIOS: Array<[string, Array<Record<string, unknown> | 'again' | ((work
   ["a DM when the workspace's model cannot resolve", [withoutWorkspaceModel, DM]],
 ];
 
-type Port = 'rpc' | 'local';
+type Port = 'rpc' | 'local' | 'store';
 
-async function admitted(t: TestContext, port: Port, deliveries: (typeof SCENARIOS)[number][1]) {
+/** Chickpea's DM thread with the person, and its first message, in the record. */
+function withChickpeaThread(worker: DirectWorker): void {
+  const agent = worker.stores.config.getAgent(CHICKPEA_AGENT_ID)!;
+  worker.stores.config.putAgentThreadRoute({
+    workspaceId: 'T1', channelId: 'D1', threadTs: DM.ts, agentId: agent.id,
+    agentGeneration: agent.configurationGeneration ?? agent.revision,
+  });
+  worker.stores.config.putSlackPublicContext({
+    workspaceId: 'T1', channelId: 'D1', rootTs: DM.ts, messageTs: DM.ts, role: 'human', text: DM.text, authorId: 'U1',
+  });
+}
+
+async function admitted(
+  t: TestContext,
+  port: Port,
+  deliveries: (typeof SCENARIOS)[number][1],
+  options: { credentials?: 'app' } = {},
+) {
   let result: Record<string, unknown> = {};
   await withDirectWorker(t, async (worker) => {
     let previous: Record<string, unknown> | undefined;
@@ -61,8 +85,14 @@ async function admitted(t: TestContext, port: Port, deliveries: (typeof SCENARIO
     }
     const rpcs = worker.log.filter((entry) => entry.startsWith('rpc:'));
     if (port === 'local') assert.deepEqual(rpcs, [], 'admission on local ports never calls the store over RPC');
+    if (port === 'store') {
+      // A standalone Worker reads its credential bundle, and the installation beside it, to check the signature.
+      const admission = rpcs.filter((entry) => !['rpc:identityExecute', 'rpc:configGetWorkspaceInstallation'].includes(entry));
+      assert.deepEqual(admission, Array(deliveries.filter((delivery) => typeof delivery !== 'function').length)
+        .fill('rpc:admitSlackDelivery'), 'past the signature, the Worker makes one call per delivery, and the store none');
+    }
     result = outcome(worker);
-  });
+  }, { ...options, ...port === 'store' ? { env: { CHICKPEA_SLACK_ADMISSION: 'store', SLACK_THREAD_RUNNER: undefined } } : {} });
   return result;
 }
 
@@ -108,10 +138,10 @@ function outcome(worker: DirectWorker) {
 // resolve), a direct branch that reaches the store over RPC from inside it,
 // and any admission outcome that differs between the two ports.
 for (const [name, deliveries] of SCENARIOS) {
-  test(`${name}: admitted on the state store's own ports as over its RPCs`, async (t) => {
+  test(`${name}: admitted on the state store's own ports and by the store as over its RPCs`, async (t) => {
     const overRpc = await admitted(t, 'rpc', deliveries);
-    const local = await admitted(t, 'local', deliveries);
-    assert.deepEqual(local, overRpc);
+    assert.deepEqual(await admitted(t, 'local', deliveries), overRpc, 'on local ports');
+    assert.deepEqual(await admitted(t, 'store', deliveries), overRpc, 'by the store');
   });
 }
 
@@ -120,4 +150,16 @@ test('the scenarios admit turns and leave their record', async (t) => {
   const outcome = await admitted(t, 'local', [DM, THREAD_REPLY]) as { turns: unknown[]; record: unknown[]; failures: unknown[] };
   assert.deepEqual(outcome.failures, []);
   assert.equal(outcome.turns.length, 2, 'the DM and its reply each became a turn');
+});
+
+// Defect caught (Fable review, finding 8): with no bot token the store doing
+// nothing, where the Worker's chain still keeps the thread record (a reply
+// recorded, a delete removed) before it stops for want of a bot.
+test('with no bot token, the record follows a reply and a delete in the store as over its RPCs', async (t) => {
+  const deliveries = [withChickpeaThread, THREAD_REPLY, DELETED_REPLY, EDITED_DM];
+  const overRpc = await admitted(t, 'rpc', deliveries, { credentials: 'app' }) as { turns: unknown[]; record: Array<{ text: unknown }> };
+  assert.deepEqual(overRpc.turns, [], 'nothing is admitted without a bot');
+  assert.deepEqual(overRpc.record.map(({ text }) => text), ['hello again'], "the reply came and went; the edit changed the first message's text");
+  assert.deepEqual(await admitted(t, 'local', deliveries, { credentials: 'app' }), overRpc, 'on local ports');
+  assert.deepEqual(await admitted(t, 'store', deliveries, { credentials: 'app' }), overRpc, 'by the store');
 });

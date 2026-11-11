@@ -336,6 +336,58 @@ Before you turn it on, check these four points:
   and Agent object. Wait 5 minutes before such a check, or run it in a
   workspace that has been quiet for longer than the window.
 
+### Admit Slack messages in the state store
+
+On Cloudflare, the Worker admits a direct installation's Slack message itself.
+It verifies the request, then makes 20 or more calls to the installation's
+state store before the turn is admitted, each one a round trip. That is about
+a second before the first status shows. With the deployment variable
+`CHICKPEA_SLACK_ADMISSION` set to `store`, the Worker sends a verified
+`message` or `app_mention` to the state store in one call. The store admits it
+on its own stores, as it admits the shared gateway's deliveries, and shows the
+first status from there.
+
+```sh
+npm run deploy -- --var CHICKPEA_SLACK_ADMISSION:store
+```
+
+Unset, or any other value, keeps the Worker's own admission. That is the
+default. Every other Slack event (reactions, joins, App Home, the Stop button,
+installation events) takes the Worker's path either way. To turn it off,
+deploy with `--var CHICKPEA_SLACK_ADMISSION:worker`. Upgrades keep the
+variable.
+
+Before you turn it on, know these four points:
+
+- **The store reads Slack.** Admission reads the sender, and for a Channel the
+  conversation, with the installation's bot token from the state store
+  instead of the Worker. The reads count against the same read budget.
+- **A thread's new messages keep their order.** The store admits one
+  thread's messages in the order they reached it, and different threads side
+  by side. A message checks the recovery gate and the installation, and
+  reads the bot's credentials, when its turn in the thread comes. A Slack
+  call that hangs holds that thread's later messages for up to 10 seconds,
+  the Slack client's timeout. A Slack rate limit does not hold them: the
+  store does not wait out Slack's `Retry-After`, and the rate-limited
+  message fails as it does on the Worker's path once that wait ends.
+  `slack_store_admission` counts it in `rateLimited`. Edits and deletes are
+  not ordered with their message's thread, as on the Worker's path.
+- **A store on the previous code falls back.** After a deploy that brings the
+  store's new method, a store still in memory runs the previous code for up
+  to 5 minutes, and the Worker's call to it fails. The Worker then admits that
+  message itself, once, and logs `state_rpc_fallback`. With the residency
+  hold on, every conversation active in the last window meets this. A deploy
+  that only turns the variable on, on a release that already has the method,
+  has no such window.
+- **A failure after Slack's acknowledgement is not retried,** as before.
+  Slack is acknowledged before the message is admitted.
+
+To check it, read the `state_rpc_summary` records of scope `slack_delivery`:
+`path` says who admitted each delivery (`store`, `worker`, `fallback`), and
+`calls` is 1 on the store's path. The store logs `slack_store_admission` for
+each delivery it admits, with `rpcCalls` 0. See
+[runtime observability](runtime-observability.md).
+
 ## Upgrade and compatibility policy
 
 For routine Cloudflare updates, follow the
