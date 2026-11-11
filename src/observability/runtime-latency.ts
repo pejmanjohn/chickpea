@@ -1,5 +1,9 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 
+import type { FlueObservation } from '@flue/runtime';
+
+import type { AnswerReleaseShadowRecord } from '../slack/answer-release.ts';
 import type { GatewayInboundDelivery } from '../slack/gateway/protocol.ts';
 import type { GatewaySessionRunnerHealthSnapshot } from '../slack/gateway/session-runner.ts';
 import type { SlackThreadRunnerRpc } from '../slack/thread-runner-rpc.ts';
@@ -18,15 +22,19 @@ import type { SlackThreadRunnerRpc } from '../slack/thread-runner-rpc.ts';
 export type RuntimeLatencyEvent =
   | 'relay_alarm'
   | 'turn_latency'
+  | 'answer_release'
   | 'turn_fold'
   | 'state_rpc'
+  | 'state_rpc_summary'
   | 'gateway_delivery'
   | 'thread_runner_alarm'
   | 'thread_runner_superseded'
   | 'runner_boot'
   | 'agent_boot'
+  | 'store_boot'
   | 'slack_read'
-  | 'interaction_judgment';
+  | 'interaction_judgment'
+  | 'model_step';
 
 type RuntimeLatencyValue = number | boolean | string;
 
@@ -38,6 +46,8 @@ const TOKEN = /^[a-z][a-z0-9_]{0,63}$/i;
 const OPAQUE_REF = /^(run|turn)_[0-9a-f]{24}$/;
 /** A Cloudflare Worker version id (a UUID), or a fixed token instead of one. */
 const VERSION_ID = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[a-z][a-z0-9_]{0,63})$/i;
+/** What `modelToken` returns. */
+const MODEL_TOKEN = /^[a-z][a-z0-9_]{0,63}$/;
 
 /** The only string fields any event may carry, and their allowed shapes. */
 const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
@@ -45,7 +55,10 @@ const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
   lane: TOKEN,
   executor: TOKEN,
   firstWrite: TOKEN,
+  firstAnswerText: TOKEN,
   final: TOKEN,
+  block: TOKEN,
+  late: TOKEN,
   method: TOKEN,
   firstMethod: TOKEN,
   op: TOKEN,
@@ -73,7 +86,22 @@ const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
   supersededBy: VERSION_ID,
   agentClass: TOKEN,
   agentWakeSource: TOKEN,
+  modelToken: MODEL_TOKEN,
+  scope: TOKEN,
+  slowestMethod: TOKEN,
+  purpose: TOKEN,
 };
+
+/**
+ * A model id as a log token, so records can be read per model:
+ * `anthropic/claude-opus-5.5` becomes `anthropic_claude_opus_5_5`. Lowercase,
+ * every character outside a-z and 0-9 becomes `_`, cut to 64 characters, and
+ * `unknown` when there is no id or it does not start with a letter.
+ */
+export function modelToken(modelId: string | undefined): string {
+  const token = (modelId ?? '').toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 64);
+  return MODEL_TOKEN.test(token) ? token : 'unknown';
+}
 
 export function emitRuntimeLatency(
   event: RuntimeLatencyEvent,
@@ -253,8 +281,8 @@ export function emitThreadRunnerSuperseded(
 }
 
 // ---------------------------------------------------------------------------
-// runner_boot and agent_boot: one record per in-memory activation of a
-// SlackThreadRunner, or of a Flue agent's Durable Object.
+// runner_boot, agent_boot and store_boot: one record per in-memory activation
+// of a SlackThreadRunner, a Flue agent's Durable Object, or a TagStateStore.
 
 /** What a runner activation served first: an RPC, its alarm, or a host function. */
 export type RunnerBootMethod = keyof SlackThreadRunnerRpc | 'alarm' | 'host';
@@ -267,8 +295,11 @@ export type RunnerBootMethod = keyof SlackThreadRunnerRpc | 'alarm' | 'host';
  */
 export type AgentBootMethod = 'wake' | 'stage' | 'fetch' | 'alarm' | 'host';
 
+/** What a state store activation served first: an RPC, or its alarm. */
+export type StoreBootMethod = 'rpc' | 'alarm';
+
 /** Activations this isolate has constructed, by kind. */
-const activations = { runner_boot: 0, agent_boot: 0 };
+const activations = { runner_boot: 0, agent_boot: 0, store_boot: 0 };
 
 /**
  * The marks of one object activation (an instance constructed in memory),
@@ -286,7 +317,7 @@ class ObjectBootMarks<Method extends string> {
 
   constructor(
     private readonly event: keyof typeof activations,
-    private readonly fields: { agentClass?: string },
+    protected readonly fields: Record<string, RuntimeLatencyValue | undefined>,
     private readonly now: () => number,
     private readonly sink: RuntimeLatencySink | undefined,
   ) {
@@ -342,10 +373,28 @@ export class AgentBootMarks extends ObjectBootMarks<AgentBootMethod> {
   }
 }
 
+/**
+ * A TagStateStore activation's marks, logged as `store_boot`. No caller sends
+ * its clock, so a cold store shows as this record's time against the
+ * delivery's arrival. `versionChanged`: this activation installed the schema,
+ * the first on its Worker version.
+ */
+export class StoreBootMarks extends ObjectBootMarks<StoreBootMethod> {
+  constructor(now: () => number = Date.now, sink?: RuntimeLatencySink) {
+    super('store_boot', {}, now, sink);
+  }
+
+  constructedOnVersion(versionChanged: boolean): void {
+    this.fields.versionChanged = versionChanged;
+    this.constructed();
+  }
+}
+
 /** Focused tests only: the next activation of each kind is this isolate's first. */
 export function resetRunnerActivationsForTest(): void {
   activations.runner_boot = 0;
   activations.agent_boot = 0;
+  activations.store_boot = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -367,6 +416,13 @@ export type TurnFirstWrite =
   | 'stream'
   | 'midrun_reply'
   | 'final';
+
+/**
+ * Where the attempt first showed answer text: `stream` when Slack
+ * acknowledged a stream start with text, or the first text on a task-card
+ * stream; `final` when the terminal was delivered.
+ */
+export type TurnAnswerTextSurface = 'stream' | 'final';
 
 export interface TurnLatencyContext {
   /** `turn_jobs.enqueued_at`: when the relay durably admitted the turn. */
@@ -392,9 +448,24 @@ export interface TurnLatencyContext {
   executor: TurnLatencyExecutor;
 }
 
+/**
+ * The model work a turn's reply observation saw for its submission: model
+ * steps (Flue's per-step turn ids), tool calls, and the tools' own reported
+ * time.
+ */
+export interface TurnWork {
+  modelSteps: number;
+  toolCalls: number;
+  toolMs: number;
+}
+
 export class TurnLatencyTracker {
   private readonly startedAt: number;
+  private modelStartAt: number | undefined;
+  private work: TurnWork | undefined;
+  private stateRpcs: StateRpcSummary | undefined;
   private firstWrite: { surface: TurnFirstWrite; at: number } | undefined;
+  private answerText: { surface: TurnAnswerTextSurface; at: number } | undefined;
   private final: { kind: 'delivered' | 'deferred'; at: number } | undefined;
   private folded = 0;
   private foldedInformed = 0;
@@ -404,11 +475,13 @@ export class TurnLatencyTracker {
   private agentWake: { sentAt: number; source: 'admission' | 'plan' } | undefined;
   private agentWakeLeadMs: number | undefined;
   private startToStageMs: number | undefined;
+  private taskCardStreamed = false;
   private emitted = false;
 
+  /** `model`: the model id the turn runs with, logged as its `modelToken`. */
   constructor(
     private readonly context: TurnLatencyContext,
-    private readonly ids: { turnJobId?: string; runId?: string; attempt?: number },
+    private readonly ids: { turnJobId?: string; runId?: string; attempt?: number; model?: string | undefined },
     private readonly now: () => number = Date.now,
     private readonly sink?: RuntimeLatencySink,
   ) {
@@ -418,9 +491,37 @@ export class TurnLatencyTracker {
     }
   }
 
+  /** Run the attempt with its state store calls counted, logged as `state_rpc_summary` (scope `turn`). */
+  observeStateRpcs<T>(attempt: () => Promise<T>): Promise<T> {
+    this.stateRpcs ??= new StateRpcSummary('turn', this.now, this.sink);
+    return this.stateRpcs.run(attempt);
+  }
+
+  /** The turn's Flue dispatch is being sent: its model starts. Only the first is kept. */
+  markModelStart(): void {
+    if (this.modelStartAt !== undefined) return;
+    this.modelStartAt = this.now();
+    this.stateRpcs?.markModelStart();
+  }
+
+  /** The model work observed so far; the latest replaces the last. */
+  markWork(work: TurnWork): void {
+    this.work = { ...work };
+  }
+
   /** Record an acknowledged Slack write; only the first one is kept. */
   markSlackWrite(surface: TurnFirstWrite): void {
     if (!this.firstWrite) this.firstWrite = { surface, at: this.now() };
+  }
+
+  /** Slack acknowledged answer text on a stream; only the first is kept. */
+  markStreamedAnswerText(): void {
+    this.answerText ??= { surface: 'stream', at: this.now() };
+  }
+
+  /** Slack acknowledged native task card rows on the reply's stream before its terminal. */
+  markTaskCardStreamed(): void {
+    this.taskCardStreamed = true;
   }
 
   /** The turn took this many queued messages as follow-ups. */
@@ -467,13 +568,17 @@ export class TurnLatencyTracker {
     const at = this.now();
     this.final = { kind, at };
     if (kind === 'delivered' && !this.firstWrite) this.firstWrite = { surface: 'final', at };
+    if (kind === 'delivered') this.answerText ??= { surface: 'final', at };
   }
 
   /**
    * Emit exactly once, when the attempt returns or throws. `stopped`: it
    * returned with a stopped run's ending (KTD3), which is not a failure.
+   * `answerRelease`, the attempt's shadow of the host release rule, adds an
+   * `answer_release` record and the time a release would have shown the
+   * answer, without changing anything Slack showed.
    */
-  emit(outcome: 'returned' | 'threw' | 'stopped'): void {
+  emit(outcome: 'returned' | 'threw' | 'stopped', answerRelease?: AnswerReleaseShadowRecord): void {
     if (this.emitted) return;
     this.emitted = true;
     const { admittedAt, receivedAt } = this.context;
@@ -482,20 +587,36 @@ export class TurnLatencyTracker {
     const sinceReceipt = (at: number | undefined) =>
       receivedAt === undefined || at === undefined ? undefined : at - receivedAt;
     const end = this.now();
+    const answerTextAt = this.answerText?.at;
+    // Only a release nothing followed shows the answer early; a retired one
+    // leaves the answer to the terminal.
+    const releasedAnswerAt = answerRelease?.outcome === 'released' ? answerRelease.releasedAt : undefined;
+    const shadowAnswerTextAt = releasedAnswerAt === undefined ? answerTextAt
+      : Math.min(releasedAnswerAt, answerTextAt ?? releasedAnswerAt);
+    const model = modelToken(this.ids.model);
     emitRuntimeLatency('turn_latency', {
       turnRef: opaqueTurnRef(this.ids.turnJobId),
       runRef: opaqueRunRef(this.ids.runId),
       lane: this.context.lane,
       executor: this.context.executor,
       attempt: this.ids.attempt,
+      modelToken: model,
       outcome,
       firstWrite: this.firstWrite?.surface ?? 'none',
       final: this.final?.kind ?? 'none',
       admissionToStartMs: since(this.startedAt),
       admissionToFirstWriteMs: since(this.firstWrite?.at),
       admissionToFinalMs: this.final?.kind === 'delivered' ? since(this.final.at) : undefined,
+      admissionToModelStartMs: since(this.modelStartAt),
       receiptToAdmissionMs: sinceReceipt(admittedAt),
       receiptToFirstWriteMs: sinceReceipt(this.firstWrite?.at),
+      receiptToModelStartMs: sinceReceipt(this.modelStartAt),
+      receiptToFinalMs: this.final?.kind === 'delivered' ? sinceReceipt(this.final.at) : undefined,
+      firstAnswerText: this.answerText?.surface ?? 'none',
+      admissionToFirstAnswerTextMs: since(answerTextAt),
+      receiptToFirstAnswerTextMs: sinceReceipt(answerTextAt),
+      admissionToShadowAnswerTextMs: since(shadowAnswerTextAt),
+      receiptToShadowAnswerTextMs: sinceReceipt(shadowAnswerTextAt),
       handoffMs: this.context.handoffMs,
       runnerWakeLeadMs: this.context.runnerWakeLeadMs,
       admissionStatusMs: this.context.admissionStatusMs,
@@ -508,7 +629,24 @@ export class TurnLatencyTracker {
       foldedInformed: this.foldedInformed > 0 ? this.foldedInformed : undefined,
       read: this.read > 0 ? this.read : undefined,
       midRunReplies: this.midRunReplies > 0 ? this.midRunReplies : undefined,
+      modelSteps: this.work?.modelSteps,
+      toolCalls: this.work?.toolCalls,
+      toolMs: this.work?.toolMs,
     }, this.sink);
+    if (answerRelease) {
+      const { releasedAt, ...shadow } = answerRelease;
+      emitRuntimeLatency('answer_release', {
+        turnRef: opaqueTurnRef(this.ids.turnJobId),
+        runRef: opaqueRunRef(this.ids.runId),
+        attempt: this.ids.attempt,
+        modelToken: model,
+        ...shadow,
+        taskCardStream: this.taskCardStreamed,
+        admissionToReleaseMs: since(releasedAt),
+        receiptToReleaseMs: sinceReceipt(releasedAt),
+      }, this.sink);
+    }
+    this.stateRpcs?.emit({ turnJobId: this.ids.turnJobId });
   }
 }
 
@@ -652,7 +790,9 @@ export async function timedStateRpc<T>(
   pending: Promise<T>,
   op?: string,
 ): Promise<T> {
+  const tally = stateRpcScopes.getStore();
   const startedAt = Date.now();
+  tally?.start(startedAt);
   let ok = false;
   try {
     if (PERF_STATE_RPC_DELAY_MS > 0) await new Promise((resolve) => setTimeout(resolve, PERF_STATE_RPC_DELAY_MS));
@@ -660,7 +800,9 @@ export async function timedStateRpc<T>(
     ok = true;
     return result;
   } finally {
-    recordStateRpc(method, Date.now() - startedAt, ok, op);
+    const endedAt = Date.now();
+    tally?.end(method, endedAt - startedAt, ok, endedAt);
+    recordStateRpc(method, endedAt - startedAt, ok, op);
   }
 }
 
@@ -694,6 +836,111 @@ export function recordStateRpc(
 export function resetStateRpcCountersForTest(): void {
   stateRpcCounters.calls = 0;
   stateRpcCounters.slow = 0;
+}
+
+// ---------------------------------------------------------------------------
+// state_rpc_summary: every state store call one scope made, timed at the
+// caller. `state_rpc` samples only slow calls, so its medians are the slow
+// tail's; this record counts them all.
+
+/** `slack_delivery`: a direct delivery from Core's handler to its admission chain's end. `turn`: one turn attempt. */
+export type StateRpcScope = 'slack_delivery' | 'turn';
+
+/**
+ * A scope's calls. A round is a run of overlapping calls: one starts while
+ * none is in flight. `busyMs` is the time at least one call was in flight.
+ */
+class StateRpcTally {
+  calls = 0;
+  failed = 0;
+  rounds = 0;
+  totalMs = 0;
+  slowest: { method: string; ms: number } | undefined;
+  private busyMs = 0;
+  private inFlight = 0;
+  private busySince = 0;
+
+  start(at: number): void {
+    this.calls += 1;
+    if (this.inFlight === 0) {
+      this.rounds += 1;
+      this.busySince = at;
+    }
+    this.inFlight += 1;
+  }
+
+  end(method: string, ms: number, ok: boolean, at: number): void {
+    this.totalMs += ms;
+    if (!ok) this.failed += 1;
+    if (!this.slowest || ms > this.slowest.ms) this.slowest = { method, ms };
+    this.inFlight -= 1;
+    if (this.inFlight === 0) this.busyMs += at - this.busySince;
+  }
+
+  busyAt(at: number): number {
+    return this.busyMs + (this.inFlight > 0 ? at - this.busySince : 0);
+  }
+}
+
+const stateRpcScopes = new AsyncLocalStorage<StateRpcTally>();
+
+/** One scope's state store calls, logged once as `state_rpc_summary`. */
+export class StateRpcSummary {
+  private readonly tally = new StateRpcTally();
+  private readonly startedAt: number;
+  private beforeModelStart: { calls: number; rounds: number; busyMs: number } | undefined;
+  private emitted = false;
+
+  constructor(
+    private readonly scope: StateRpcScope,
+    private readonly now: () => number = Date.now,
+    private readonly sink?: RuntimeLatencySink,
+  ) {
+    this.startedAt = now();
+  }
+
+  /** Count every state store call `fn` makes, including work it starts and does not await. */
+  run<T>(fn: () => T): T {
+    return stateRpcScopes.run(this.tally, fn);
+  }
+
+  /** The turn's model starts: the calls so far are the ones before it. Only the first is kept. */
+  markModelStart(): void {
+    this.beforeModelStart ??= {
+      calls: this.tally.calls,
+      rounds: this.tally.rounds,
+      busyMs: this.tally.busyAt(this.now()),
+    };
+  }
+
+  /**
+   * Logged once, and only when the scope made a call (a Node turn makes
+   * none). `receivedAt`: the delivery's receipt, so the record shows how long
+   * it waited before this scope.
+   */
+  emit(fields: { turnJobId?: string | undefined; receivedAt?: number | undefined } = {}): void {
+    if (this.emitted) return;
+    this.emitted = true;
+    if (this.tally.calls === 0) return;
+    const at = this.now();
+    const { tally, beforeModelStart } = this;
+    emitRuntimeLatency('state_rpc_summary', {
+      scope: this.scope,
+      turnRef: opaqueTurnRef(fields.turnJobId),
+      calls: tally.calls,
+      rounds: tally.rounds,
+      totalMs: tally.totalMs,
+      busyMs: tally.busyAt(at),
+      failed: tally.failed > 0 ? tally.failed : undefined,
+      slowestMethod: tally.slowest?.method,
+      slowestMs: tally.slowest?.ms,
+      spanMs: at - this.startedAt,
+      receiptToStartMs: fields.receivedAt === undefined ? undefined : this.startedAt - fields.receivedAt,
+      callsBeforeModelStart: beforeModelStart?.calls,
+      roundsBeforeModelStart: beforeModelStart?.rounds,
+      busyMsBeforeModelStart: beforeModelStart?.busyMs,
+    }, this.sink);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -787,5 +1034,76 @@ export function emitGatewayDelivery(
     }, sink);
   } catch {
     // Observability is best effort and never changes admission.
+  }
+}
+
+// ---------------------------------------------------------------------------
+// model_step: one record per model request, from Flue's observations in the
+// object that makes it.
+
+/** Requests started and not yet ended that one isolate keeps marks for. */
+const MODEL_STEP_OPEN_LIMIT = 64;
+const FIRST_TOKEN_EVENTS: ReadonlySet<FlueObservation['type']> = new Set([
+  'text_delta', 'thinking_start', 'thinking_delta', 'toolcall_delta',
+]);
+
+/**
+ * Times each model request from Flue's `turn_request` to its first streamed
+ * token (text, thinking, or a tool call's arguments), and logs the model that
+ * served it, Flue's duration, its token counts and its tool calls when its
+ * `turn` ends.
+ * `inputTokens` excludes the cached input that `cachedInputTokens` counts.
+ */
+export class ModelStepMarks {
+  private readonly open = new Map<string, { startedAt: number; firstTokenAt?: number }>();
+
+  constructor(
+    private readonly now: () => number = Date.now,
+    private readonly sink?: RuntimeLatencySink,
+  ) {}
+
+  /** `turnJobIdOf`: the Slack turn the request belongs to, read only when a request ends. */
+  observe(event: FlueObservation, turnJobIdOf: () => string | undefined = () => undefined): void {
+    try {
+      const { turnId } = event;
+      if (turnId === undefined) return;
+      if (event.type === 'turn_request') {
+        this.open.delete(turnId);
+        this.open.set(turnId, { startedAt: this.now() });
+        if (this.open.size > MODEL_STEP_OPEN_LIMIT) this.open.delete(this.open.keys().next().value!);
+        return;
+      }
+      if (FIRST_TOKEN_EVENTS.has(event.type)) {
+        const open = this.open.get(turnId);
+        if (open) open.firstTokenAt ??= this.now();
+        return;
+      }
+      if (event.type !== 'turn') return;
+      const open = this.open.get(turnId);
+      this.open.delete(turnId);
+      let turnJobId: string | undefined;
+      try {
+        turnJobId = turnJobIdOf();
+      } catch {
+        // A step whose turn cannot be read is still logged, without its turn.
+      }
+      const { usage, output, finishReason } = event.response;
+      const { request } = event;
+      emitRuntimeLatency('model_step', {
+        turnRef: opaqueTurnRef(turnJobId),
+        modelToken: modelToken(request && `${request.providerId}/${request.requestedModel}`),
+        purpose: event.purpose,
+        outcome: event.isError ? 'error' : finishReason,
+        durationMs: event.durationMs,
+        firstTokenMs: open?.firstTokenAt === undefined ? undefined : open.firstTokenAt - open.startedAt,
+        inputTokens: usage?.input,
+        cachedInputTokens: usage?.cacheRead,
+        cacheWriteTokens: usage?.cacheWrite,
+        outputTokens: usage?.output,
+        toolCalls: output?.content.filter((part) => part.type === 'toolCall').length,
+      }, this.sink);
+    } catch {
+      // Observability is best effort and never changes the model request.
+    }
   }
 }

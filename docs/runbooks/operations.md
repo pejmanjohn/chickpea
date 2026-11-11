@@ -271,6 +271,71 @@ snapshot/restore tool. Keep credential secrets recoverable and follow the
 specific release's migration/recovery procedure; stop if it requires a recovery
 capability you have not established. Read the [AUTH_DB contract](auth-db-deployment.md).
 
+### Hold a conversation's objects in memory
+
+An idle Durable Object leaves memory about 10 seconds after its last
+activity. The next message in that conversation then waits while the object
+starts again, up to about 2.4 s for the state store's first read. The
+deployment variable `CHICKPEA_RESIDENCY_HOLD_MS` keeps a conversation's
+objects in memory for a window after each turn:
+
+- the state store, after a person's turn is admitted and after it ends
+- the thread's runner, after a person's turn ends there
+- the thread's Agent object, after the last request of any turn it serves
+
+The value is the window in milliseconds, a whole number up to `900000`
+(15 minutes, the longest one pending timer holds an object). Unset, empty or
+`0` holds nothing. That is the default, and Chickpea then behaves as it did
+before the setting existed. To turn the hold on, deploy with the variable:
+
+```sh
+npm run deploy -- --var CHICKPEA_RESIDENCY_HOLD_MS:600000
+```
+
+The deploy refuses any other value. A Worker that reads one anyway, for
+example after an edit in the Cloudflare dashboard, holds nothing. Upgrades
+keep the variable.
+
+Before you turn it on, check these four points:
+
+- **The thread's objects need a compatibility date of 2026-10-01 or later.**
+  The hold is a pending timer. A pending timer always stops an object from
+  hibernating. It stops Cloudflare from evicting the object only from
+  compatibility date `2026-10-01`, or with the
+  `durable_object_io_tasks_prevent_eviction` compatibility flag
+  ([changelog](https://developers.cloudflare.com/changelog/post/2026-10-01-pending-io-keep-alive/)).
+  `wrangler.jsonc` has neither. Without them, the state store stays in memory
+  only while its 20-second keep-warm alarm runs, because each firing counts
+  as activity. The alarm runs for 10 minutes after a person's turn is
+  admitted, whatever the window. It does not start again when the turn ends,
+  so the rest of a window after a long turn, or a window over 10 minutes, is
+  not covered. The runner and the Agent object are evicted 70 to 140 seconds
+  after a turn.
+- **A held object is billed.** Cloudflare bills duration at 128 MB for as
+  long as an object cannot hibernate
+  ([pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/)).
+  A 10-minute window is 76.8 GB-s per object. On Workers Paid that is about
+  $0.00096 at $12.50 per million GB-s, after the 400,000 GB-s included each
+  month. An installation whose people talk to it at least every 10 minutes
+  keeps its state store in memory all day, about 11,000 GB-s.
+- **Workers Free can run out.** Workers Free allows 13,000 GB-s of duration a
+  day. Past it, the installation's Durable Objects fail until 00:00 UTC. With
+  a 10-minute window, the state store uses about 461 GB-s per hour of
+  conversation. Each thread conversation adds about 154 GB-s for its runner
+  and Agent object once eviction is blocked. Eight active hours and about 60
+  thread conversations reach the limit. Turn the hold on only on Workers
+  Paid.
+- **After a deploy, recently active conversations run the previous code for
+  up to 5 minutes.** Cloudflare defers a code update for an object in memory
+  for up to 300 seconds, and an object that has left memory starts on the new
+  code at its next request
+  ([code updates](https://developers.cloudflare.com/durable-objects/deployments/durable-objects-code-updates/)).
+  With the hold on, every object active in the last window is in memory at
+  the deploy. So a check right after a deploy, in a workspace that was active
+  in the last window, can exercise the previous release's state store, runner
+  and Agent object. Wait 5 minutes before such a check, or run it in a
+  workspace that has been quiet for longer than the window.
+
 ## Upgrade and compatibility policy
 
 For routine Cloudflare updates, follow the

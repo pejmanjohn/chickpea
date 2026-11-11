@@ -9,7 +9,6 @@ import { replyFromSnapshot } from '@flue/runtime/internal';
 import { CHICKPEA_TEST_TURN_AGENT_NAME } from '../agents/names.ts';
 import { parseRuntimePlanV2, type RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import { practiceReply, practiceSteps, type PracticeToolCall } from '../agents/practice-steps.ts';
-import { TEST_TURN_ATTEMPT_ENDED_MESSAGE } from '../agents/test-turn-limits.ts';
 import { installationRefusesWork } from '../config/installation-admission.ts';
 import { CREDITS_EXHAUSTED_CODE } from '../config/platform-funding.ts';
 import {
@@ -139,17 +138,12 @@ export function testRunSettlement(
     return {
       kind: 'answered',
       ...practiceReply(text),
-      ...plan ? practiceSteps(plan, submissionToolCalls(settled.completed!.history, submissionId)) : { read: [], steps: [] },
+      ...plan ? practiceSteps(plan, submissionToolCalls(settled.completed!.history, submissionId)) : { read: [], skills: [], steps: [] },
       ...(metadata ? { metadata } : {}),
     };
   }
   if (settled.outcome === 'aborted' || errorType(settled.error) === 'submission_timeout') {
     return { kind: 'failed', failure: 'deadline', creditBack: 'timeout' };
-  }
-  // The model kept calling tools past the run's limit: its own doing, so nothing is credited back.
-  if ((settled.error as { meta?: { reason?: unknown } } | undefined)?.meta?.reason === TEST_TURN_ATTEMPT_ENDED_MESSAGE
-    || errorMessages(settled.error).some((message) => message.includes(TEST_TURN_ATTEMPT_ENDED_MESSAGE))) {
-    return { kind: 'failed', failure: 'failed', stopped: 'tool_limit', creditBack: null };
   }
   const failure = classifyFlueRunFailure(new AgentRunError({
     outcome: 'failed',
@@ -215,15 +209,4 @@ function readPlan(plan: unknown): RuntimePlanV2 | undefined {
 function errorType(error: unknown): string | undefined {
   const type = typeof error === 'object' && error !== null ? (error as { type?: unknown }).type : undefined;
   return typeof type === 'string' ? type : undefined;
-}
-
-/** An error's message and its causes', at most five deep. Flue prefixes a failed operation's message with the operation. */
-function errorMessages(error: unknown): string[] {
-  const messages: string[] = [];
-  for (let current = error, depth = 0; typeof current === 'object' && current !== null && depth < 5; depth += 1) {
-    const { message, cause } = current as { message?: unknown; cause?: unknown };
-    if (typeof message === 'string') messages.push(message);
-    current = cause;
-  }
-  return messages;
 }

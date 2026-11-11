@@ -6,6 +6,7 @@ import { ChickpeaRoutineExecution } from '../src/agents/routine-execution.ts';
 import { ChickpeaRoutineIntent } from '../src/agents/routine-intent.ts';
 import { ChickpeaSlack } from '../src/agents/slack-thread.ts';
 import { ChickpeaTestTurn } from '../src/agents/test-turn.ts';
+import { TEST_RUN_ABORT_AFTER_MS, TEST_RUN_DEADLINE_MS, TEST_RUN_FORCED_ERASE_MS } from '../src/state/test-run-lifecycle.ts';
 import {
   CHICKPEA_CODING_WORKER_AGENT_NAME,
   CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME,
@@ -33,6 +34,14 @@ test('registered agent names match the constants runtime policy keys off', () =>
 // The connection write gate's second layer holds only for these names: for
 // any other agent it finds no submission state and lets the write through
 // (memory/tool-policy.ts, assertCurrentRequestContext).
+test('a practice run is bounded as a direct message is: its durability, and a store deadline 30 seconds past its timeout', () => {
+  assert.deepEqual(ChickpeaTestTurn.durability, ChickpeaSlack.durability);
+  assert.deepEqual(ChickpeaSlack.durability, { maxAttempts: 10, timeoutMs: 155 * 60_000 });
+  const timeout = ChickpeaSlack.durability!.timeoutMs!;
+  assert.deepEqual([TEST_RUN_ABORT_AFTER_MS, TEST_RUN_DEADLINE_MS, TEST_RUN_FORCED_ERASE_MS],
+    [timeout + 5_000, timeout + 30_000, timeout + 30_000 + 7.5 * 60_000], 'abort, deadline and forced erase follow the timeout, with the margins they had');
+});
+
 test('a test run is a managed submission, so the connection write gate holds for it', () => {
   assert.ok((MANAGED_SUBMISSION_AGENT_NAMES as readonly string[]).includes(ChickpeaTestTurn.agentName!));
 });

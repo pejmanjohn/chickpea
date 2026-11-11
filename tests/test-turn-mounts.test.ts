@@ -323,7 +323,7 @@ test('a test run refuses creation data that is not a test run', async () => {
     assert.equal(accepts({ ...valid, extra: true }), false, 'an unknown field');
     assert.equal(accepts({ ...valid, quotesEarlierTurns: true }), true, 'a follow-up');
     assert.equal(accepts({ ...valid, quotesEarlierTurns: false }), false, 'set only to say so');
-    assert.deepEqual(ChickpeaTestTurn.durability, { maxAttempts: 1, timeoutMs: 120_000 });
+    assert.deepEqual(ChickpeaTestTurn.durability, { maxAttempts: 10, timeoutMs: 155 * 60_000 }, 'a direct message\'s durability');
   });
 });
 

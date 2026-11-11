@@ -10,7 +10,7 @@ export type TestRunStatus = 'admitted' | 'running' | 'answered' | 'failed';
 
 /**
  * Why a run failed. `not_dispatched`: no submission 30 s after admission.
- * `deadline`: Flue's 120 s or the store's 150 s. `out_of_usage` and
+ * `deadline`: Flue's timeout, a direct message's, or the store's deadline 30 s after it. `out_of_usage` and
  * `daily_limit`: the plan's funding refused it, as it would a direct
  * message. `cancelled`: an operator's cancellation pass while the workspace
  * was suspended.
@@ -71,7 +71,10 @@ export interface TestRunResult {
   replyTruncated?: true;
   read?: string[];
   steps?: PracticeStep[];
-  stopped?: 'tool_limit';
+  /** The calls past the listed steps. */
+  moreSteps?: number;
+  /** The skills it loaded, over every call; a row from before practice runs has none. */
+  skills?: string[];
   /** The plan's refusal, which a direct message would get in the same words. */
   funding?: PlatformFundingRefusal;
   /** A failure Chickpea credited back, as a direct message's is. */

@@ -16,7 +16,6 @@ import { cutResult, escapeHtmlOutsideCode, PRACTICE_LINE_CHARS, practiceLine, pr
 import { resolveAgentRunPlan, type AgentRunPlanParts } from '../../agents/run-plan-resolution.ts';
 import type { RuntimePlanV2 } from '../../agents/runtime-plan.ts';
 import { compileTestRunPlan, untestableConnections } from '../../agents/test-run-plan.ts';
-import { TEST_TURN_TOOL_CALL_LIMIT } from '../../agents/test-turn-limits.ts';
 import type { TestTurnInitialData } from '../../agents/test-turn.ts';
 import { slackTenantInstructions } from '../../agents/shared-prefix-layout.ts';
 import { canManageOwnedResource } from '../../auth/permissions.ts';
@@ -595,12 +594,11 @@ function practiceResult({ view, agentName, question }: Asked): PracticeOutput {
     ...(result.ran ? {
       ran: {
         ...result.ran,
-        skills: [...new Set(steps.filter(({ kind, outcome }) => kind === 'skill' && outcome === 'ok').map(({ tool }) => tool))],
+        skills: result.skills ?? [...new Set(steps.filter(({ kind, outcome }) => kind === 'skill' && outcome === 'ok').map(({ tool }) => tool))],
       },
     } : {}),
     ...(result.partial ? { partial: true as const } : {}),
     ...(result.droppedTurns ? { droppedTurns: result.droppedTurns } : {}),
-    ...(result.stopped ? { stopped: result.stopped } : {}),
     ...(status === 'failed' ? { problem: problemText(view, agentName) } : {}),
     ...(status !== 'running' && view.settledAt !== null ? {
       usage: { seconds: Math.max(0, Math.round((view.settledAt - view.createdAt) / 1_000)), charged: charged(view) },
@@ -614,6 +612,7 @@ function practiceResult({ view, agentName, question }: Asked): PracticeOutput {
         ...raw ? { result: { label: dataLabel(service === undefined ? undefined : practiceName(service), step.tool), ...raw } } : {},
       })),
     } : {}),
+    ...(status === 'answered' && result.moreSteps ? { moreSteps: result.moreSteps } : {}),
     ...(result.off?.length ? { off: result.off } : {}),
     ...(result.available?.length ? { available: result.available.map(({ service, tools }) => ({ service: practiceName(service), tools })) } : {}),
     ...(result.fixes?.length ? { fixes: result.fixes } : {}),
@@ -682,7 +681,6 @@ function problemText(view: TestRunView, agentName: string): string {
       // A direct message's own words: the plan refused it.
       return result.funding ? withSlackDateFallbacks(fundingRefusalText(result.funding)) : `The practice run didn't finish. Ask ${agentName} in Slack instead.`;
     default:
-      if (result.stopped === 'tool_limit') return `It stopped at the practice limit of ${TEST_TURN_TOOL_CALL_LIMIT} tool calls.`;
       return `The practice run didn't finish. Ask ${agentName} in Slack instead.`;
   }
 }
@@ -711,6 +709,7 @@ export function practiceText(output: PracticeOutput): string {
     lines.push('', 'What it did:', ...output.steps.map((step, index) =>
       `${index + 1}. ${step.kind === 'skill' ? 'Skill' : step.service ?? 'Chickpea'}: ${step.tool} (${step.outcome})`));
   }
+  if (output.moreSteps) lines.push(`…and ${output.moreSteps} more ${output.moreSteps === 1 ? 'call' : 'calls'}.`);
   if (output.off?.length) lines.push('', `Not available in a practice run: ${output.off.join('; ')}`);
   lines.push('', `Next: ${output.nextStep}`);
   return lines.join('\n');
@@ -725,7 +724,8 @@ function practiceSize(output: PracticeOutput): number {
  * Inside the budget, whatever the run read: each stage cuts one part to the
  * most that fits, in order, until the result fits. The question goes first,
  * since the caller wrote it, then the inputs, so what room is left keeps raw
- * results; the reply goes last.
+ * results. Steps are dropped from the end, and counted, only before the
+ * reply, which goes last.
  */
 function fitted(output: PracticeOutput): PracticeOutput {
   let current = output;
@@ -771,6 +771,7 @@ const FIT_STAGES: ReadonlyArray<{ most(output: PracticeOutput): number; shape(ou
       return keep > 0 && off ? { ...rest, off: off.slice(0, keep) } : rest;
     },
   },
+  { most: (output) => output.steps?.length ?? 0, shape: droppingSteps },
   {
     most: (output) => output.reply?.length ?? 0,
     shape: (output, keep) => output.reply === undefined || recut(output.reply, keep) === output.reply
@@ -781,6 +782,18 @@ const FIT_STAGES: ReadonlyArray<{ most(output: PracticeOutput): number; shape(ou
 
 function withSteps(output: PracticeOutput, each: (step: Steps[number]) => Steps[number]): PracticeOutput {
   return output.steps ? { ...output, steps: output.steps.map(each) } : output;
+}
+
+/** The first `keep` steps, the rest counted in `moreSteps`, every key where the schema puts it. */
+function droppingSteps(output: PracticeOutput, keep: number): PracticeOutput {
+  const listed = output.steps ?? [];
+  if (keep >= listed.length) return output;
+  const moreSteps = (output.moreSteps ?? 0) + listed.length - keep;
+  return Object.fromEntries(Object.entries(output).flatMap(([key, value]): Array<[string, unknown]> => {
+    if (key === 'moreSteps') return [];
+    if (key !== 'steps') return [[key, value]];
+    return [...keep > 0 ? [['steps', listed.slice(0, keep)] as [string, unknown]] : [], ['moreSteps', moreSteps]];
+  })) as PracticeOutput;
 }
 
 /** Text cut to `keep` characters with Chickpea's line, counting from its whole length if it was cut before. */

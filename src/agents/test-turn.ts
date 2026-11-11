@@ -7,6 +7,7 @@ import { parseRuntimePlanV2, type RuntimePlanV2 } from './runtime-plan.ts';
 import { PART_SEPARATOR, slackAgentKind, slackSystemBaseParts, type SlackSystemPart } from './shared-prefix-layout.ts';
 import { useRuntimePlanAgent } from './slack-thread.ts';
 import { creationPlanAgentExtension } from './cloudflare-extension.ts';
+import { CHICKPEA_SUBMISSION_DURABILITY } from './submission-durability.ts';
 import { MAX_MEMORY_BLOCK_BYTES } from './turn-input.ts';
 import type { AgentKind } from '../config/types.ts';
 import { ADVISORY_MEMORY_FINAL_CHECK } from '../slack/web-client-context.ts';
@@ -91,7 +92,8 @@ function localTime(timezone: string, at: number): string | undefined {
 // Must stay a static literal — see the note on ChickpeaRoutineExecution.
 ChickpeaTestTurn.agentName = 'chickpea-test-turn-v1';
 export const cloudflare = creationPlanAgentExtension;
-ChickpeaTestTurn.durability = { maxAttempts: 1, timeoutMs: 120_000 };
+// A direct message's own durability: a practice run is bounded only as a direct message to the same Agent is.
+ChickpeaTestTurn.durability = CHICKPEA_SUBMISSION_DURABILITY;
 ChickpeaTestTurn.initialData = v.custom<TestTurnInitialData>((value) => {
   try {
     parseTestTurnInitialData(value);
