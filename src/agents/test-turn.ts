@@ -7,6 +7,7 @@ import { parseRuntimePlanV2, type RuntimePlanV2 } from './runtime-plan.ts';
 import { PART_SEPARATOR, slackAgentKind, slackSystemBaseParts, type SlackSystemPart } from './shared-prefix-layout.ts';
 import { useRuntimePlanAgent } from './slack-thread.ts';
 import { creationPlanAgentExtension } from './cloudflare-extension.ts';
+import { CHICKPEA_SUBMISSION_DURABILITY } from './submission-durability.ts';
 import { MAX_MEMORY_BLOCK_BYTES } from './turn-input.ts';
 import type { AgentKind } from '../config/types.ts';
 import { ADVISORY_MEMORY_FINAL_CHECK } from '../slack/web-client-context.ts';
@@ -34,7 +35,7 @@ export function parseTestTurnInitialData(value: unknown): TestTurnInitialData {
   return { ...data, runtimePlan };
 }
 
-/** One read-only run of an Agent on its first ask, as the caller, posting nowhere. */
+/** One read-only practice run of an Agent on a question, as the caller, posting nowhere. */
 export function ChickpeaTestTurn({ id }: AgentProps) {
   const { runtimePlan: plan, memoryBlock, requester } = parseTestTurnInitialData(useInitialData());
   useInstruction(plan.instructions);
@@ -59,13 +60,14 @@ export function testTurnSystemBase(kind: AgentKind): string {
 }
 
 export function testTurnFraming({ name, timezone, askedAt }: TestTurnInitialData['requester']): string {
-  return `This is a test run, not a Slack conversation. ${name} asked to see how you answer their first question, ` +
-    `from outside Slack. Your answer goes back to them and is not posted anywhere. It is ${localTime(timezone, askedAt)} ` +
-    `in their timezone, ${timezone}.\n\nAnswer as you would in a direct message from them, and read what you need the ` +
-    'way you normally would. Only tools that read are available here. Nothing can send, post, create, change, delete ' +
-    'or remember anything, and Slack reading, files, images, the browser and coding workspaces are off. If the ' +
-    'question needs one of those, do the reading part, then say in one sentence what you would do and that you can ' +
-    'do it once they ask you in Slack. Don\'t mention this test otherwise. There are no earlier messages.';
+  return `This is a practice run, not a Slack conversation. ${name} sent this question from an app they connected to ` +
+    `Chickpea, to see how you answer. Your answer goes back to them there and is not posted anywhere. It is ` +
+    `${localTime(timezone, askedAt)} in their timezone, ${timezone}.\n\nAnswer as you would in a direct message from them, ` +
+    'and read what you need the way you normally would. Only tools that read are available here. Nothing can send, ' +
+    'post, create, change, delete or remember anything, and Slack reading, files, images, the browser and coding ' +
+    'workspaces are off. If the question needs one of those, do the reading part, then say in one sentence what you ' +
+    'would do and that you can do it once they ask you in Slack. Don\'t mention this practice run otherwise. There are ' +
+    'no earlier messages.';
 }
 
 /** "Monday, 9 November 2026, 14:05"; undefined for an unknown timezone. */
@@ -84,7 +86,8 @@ function localTime(timezone: string, at: number): string | undefined {
 // Must stay a static literal — see the note on ChickpeaRoutineExecution.
 ChickpeaTestTurn.agentName = 'chickpea-test-turn-v1';
 export const cloudflare = creationPlanAgentExtension;
-ChickpeaTestTurn.durability = { maxAttempts: 1, timeoutMs: 120_000 };
+// A direct message's own durability: a practice run is bounded only as a direct message to the same Agent is.
+ChickpeaTestTurn.durability = CHICKPEA_SUBMISSION_DURABILITY;
 ChickpeaTestTurn.initialData = v.custom<TestTurnInitialData>((value) => {
   try {
     parseTestTurnInitialData(value);

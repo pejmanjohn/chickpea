@@ -238,7 +238,7 @@ test('a test run opens with the Slack base minus what it cannot do, and ends wit
     assert.ok(system.slice(system.indexOf(framing) + framing.length).startsWith('## Available Skills'),
       'the framing is the last instruction');
     assert.ok(system.indexOf(plan.instructions) < system.indexOf('Orders ship on Fridays.'));
-    assert.ok(system.indexOf('Orders ship on Fridays.') < system.indexOf('This is a test run'));
+    assert.ok(system.indexOf('Orders ship on Fridays.') < system.indexOf('This is a practice run'));
     // `task` always mounts, and Flue always writes this section; an empty roster leaves `task` nothing to run.
     assert.match(system.slice(system.indexOf('## Available Agents')),
       /^## Available Agents\n\nNone\. No subagents are currently declared/, 'no subagent roster');
@@ -246,13 +246,13 @@ test('a test run opens with the Slack base minus what it cannot do, and ends wit
 });
 
 test('the framing names the caller and their local time, and that only reads are available', () => {
-  assert.equal(testTurnFraming(REQUESTER), 'This is a test run, not a Slack conversation. Ada Lovelace asked to see how ' +
-    'you answer their first question, from outside Slack. Your answer goes back to them and is not posted anywhere. ' +
+  assert.equal(testTurnFraming(REQUESTER), 'This is a practice run, not a Slack conversation. Ada Lovelace sent this question ' +
+    'from an app they connected to Chickpea, to see how you answer. Your answer goes back to them there and is not posted anywhere. ' +
     'It is Monday, 9 November 2026, 14:05 in their timezone, Europe/London.\n\nAnswer as you would in a direct message ' +
     'from them, and read what you need the way you normally would. Only tools that read are available here. Nothing can ' +
     'send, post, create, change, delete or remember anything, and Slack reading, files, images, the browser and coding ' +
     'workspaces are off. If the question needs one of those, do the reading part, then say in one sentence what you would ' +
-    'do and that you can do it once they ask you in Slack. Don\'t mention this test otherwise. There are no earlier messages.');
+    'do and that you can do it once they ask you in Slack. Don\'t mention this practice run otherwise. There are no earlier messages.');
   assert.match(testTurnFraming({ ...REQUESTER, timezone: 'America/Los_Angeles' }), /It is Monday, 9 November 2026, 06:05 in their timezone, America\/Los_Angeles\./);
 });
 
@@ -267,7 +267,7 @@ test('a test run refuses creation data that is not a test run', async () => {
     assert.equal(accepts({ ...valid, runtimePlan: slack }), false, 'a Slack plan');
     assert.equal(accepts({ ...valid, requester: { ...REQUESTER, timezone: 'Mars/Olympus' } }), false, 'an unknown timezone');
     assert.equal(accepts({ ...valid, extra: true }), false, 'an unknown field');
-    assert.deepEqual(ChickpeaTestTurn.durability, { maxAttempts: 1, timeoutMs: 120_000 });
+    assert.deepEqual(ChickpeaTestTurn.durability, { maxAttempts: 10, timeoutMs: 155 * 60_000 }, 'a direct message\'s durability');
   });
 });
 

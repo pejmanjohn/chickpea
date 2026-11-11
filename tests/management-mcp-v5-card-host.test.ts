@@ -764,6 +764,29 @@ for (const [app, clientId] of [
   });
 }
 
+for (const [app, clientId] of [
+  ['ChatGPT', 'https://chatgpt.com/oauth/client.json'],
+  ['claude.ai', 'https://claude.ai/oauth/mcp-oauth-client-metadata'],
+] as const) for (const protocol of [LEGACY, MODERN]) {
+  test(`${app} on ${protocol} gets the practice tools and the card's names for them with refusals as results`, async (t) => {
+    const h = await harness(t, `oauth-${app}-${protocol}-practice`);
+    const { request, call } = withoutCardSignals(h, clientId, protocol);
+    const tools = (await request('tools/list')).message.result.tools as Array<{ name: string; outputSchema?: Record<string, unknown> }>;
+    const practice = ['practice_agent', 'get_practice_run', 'try_agent_once', 'get_test_run'];
+    assert.deepEqual(practice.map((name) => 'anyOf' in (tools.find((tool) => tool.name === name)?.outputSchema ?? {})), [true, true, true, true]);
+    for (const [name, args] of [
+      ['practice_agent', { agentId: 'agent_support', question: 'Who is overdue?' }],
+      ['get_practice_run', { runToken: 'tr_unknown' }],
+      ['try_agent_once', { agentId: 'agent_support', idempotencyKey: 'try' }],
+      ['get_test_run', { runToken: 'tr_unknown' }],
+    ] as const) {
+      const refused = await call(name, args);
+      assert.equal(refused.isError, false, `${name}: a refusal leaves as a result`);
+      assert.match(refused.content[0]!.text, new RegExp(`^Refused \\(${refused.structuredContent!.error.code}\\): `), name);
+    }
+  });
+}
+
 // Every byte a plain client gets: the same for Codex, an unknown client, and the client the harness signs in as.
 test('Codex and an unknown client get the same bytes as any plain client, refusals and 4.x tools included', async (t) => {
   const h = await harness(t, 'oauth-plain-bytes');

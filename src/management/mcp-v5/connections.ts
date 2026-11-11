@@ -377,14 +377,23 @@ function changedEntry<T extends object>(
  * tool policy Admin's API and 4.x declare; a tool not named keeps its mark
  * while it stays allowed. A tool this change dis-allows or allows again loses
  * its mark, and every tool keeps its argument limits (keptToolPolicies). Only
- * an allowed tool can be marked. A test run calls only the tools marked as reads.
+ * an allowed tool can be marked, and never as a read when its server says it
+ * writes. A practice run calls only the tools marked as reads.
  */
 function markedTools(
   stored: SnapshotAgent['mcpServers'][number],
   entry: SnapshotAgent['mcpServers'][number],
   changes: CustomChanges,
+  discovered: ReadonlyArray<{ name: string; readOnlyHint?: boolean }> = [],
 ) {
   const { readTools = [], writeTools = [] } = changes;
+  // The server's own word that a tool writes stands: a practice run must never call it.
+  const writes = readTools.filter((tool) => discovered.some(({ name, readOnlyHint }) => name === tool && readOnlyHint === false));
+  if (writes.length) {
+    fail('invalid_input', `${writes.join(', ')} ${writes.length === 1 ? 'says it changes' : 'say they change'} things, so ${writes.length === 1 ? 'it' : 'they'} can't be marked as a read.`, {
+      nextStep: 'Leave it out of readTools. A practice run never calls a tool that is not marked as a read.',
+    });
+  }
   if ((changes.readTools || changes.writeTools) && readTools.length + writeTools.length === 0) {
     fail('invalid_input', 'An empty readTools or writeTools marks nothing, so nothing changed.', {
       nextStep: 'Name at least one of its allowedTools from get_agent in readTools or writeTools, or leave both out.',
@@ -435,7 +444,8 @@ export async function updateConnection(
         ? { apiConnections: agent.apiConnections.map((entry) => entry === api ? changedEntry(entry, input.changes, API_CHANGES, 'API') : entry) }
         : {
             mcpServers: agent.mcpServers.map((entry) => entry === mcp
-              ? markedTools(entry, changedEntry(entry, input.changes, MCP_CHANGES, 'MCP', MCP_MARKS), input.changes)
+              ? markedTools(entry, changedEntry(entry, input.changes, MCP_CHANGES, 'MCP', MCP_MARKS), input.changes,
+                agent.connectionStatus.find(({ kind, id }) => kind === 'mcp' && id === entry.id)?.discoveredTools)
               : entry),
           };
       return [{ itemId: 'update_connection', kind: 'update_agent', agentId: agent.id, expectedRevision: agent.revision, patch }];

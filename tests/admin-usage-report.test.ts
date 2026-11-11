@@ -344,7 +344,7 @@ test('last billing period compares with the one before it only while Core still 
     'on Nov 9 it is 94 days back, past retention, so its deleted activity never reads as a change');
 });
 
-test('a test run counts toward the Agent it tested, and under "Test runs" by person, as routines gather under "Routines"', () => {
+test('a test run counts toward the Agent it tested, and under "Practice runs" by person, as routines gather under "Routines"', () => {
   const shown = report({
     attributions: [
       activity('a1', 'agent_a', '2026-10-08T09:00:00Z'),
@@ -352,7 +352,7 @@ test('a test run counts toward the Agent it tested, and under "Test runs" by per
     ],
     billed: { current: [billedRow('sub_a1', '2026-10-08', 1), billedRow('sub_t1', '2026-10-09', 0.25)], prior: [] },
   });
-  assert.deepEqual(rows(shown.people), [['membership_maya', 'Maya Chen', '$1', 80], ['test_runs', 'Test runs', '$0.25', 20]]);
+  assert.deepEqual(rows(shown.people), [['membership_maya', 'Maya Chen', '$1', 80], ['test_runs', 'Practice runs', '$0.25', 20]]);
   assert.deepEqual(shown.agents?.map((agent) => [agent.key, agent.amount.text, agent.topPerson]),
-    [['agent_a', '$1', 'Maya Chen'], ['agent_b', '$0.25', 'Test runs']]);
+    [['agent_a', '$1', 'Maya Chen'], ['agent_b', '$0.25', 'Practice runs']]);
 });
