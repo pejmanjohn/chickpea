@@ -30,6 +30,7 @@ test('the start of a secret left before an ellipsis is replaced', () => {
   assert.equal(typed.redact('"Your phrase is aabaaab-Synth…"'), '"Your phrase is [redacted]…"');
   // The longest prefix that ends at the ellipsis, even when an earlier partial match overlaps it.
   assert.equal(typed.redact('aabaabaaab-Syn…'), 'aab[redacted]…');
+  assert.equal(typed.redact('aabaaabaaab-Syn…'), 'aaba[redacted]…');
   assert.equal(typed.redact('aabaaab-Syn and more'), 'aabaaab-Syn and more');
   assert.equal(typed.redact('see aab…'), 'see aab…');
   assert.equal(secrets('Synth"etic-Passphrase').redact('value="Synth\\"etic-Pa…"'), 'value="[redacted]…"');
