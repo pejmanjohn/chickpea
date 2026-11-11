@@ -1,5 +1,6 @@
-import { META_ADS_ACCOUNT_HELPER, canonicalMetaAdsAccountId } from './meta-ads-policy.ts';
-import { readToolsListAnswer } from './mcp-tools-list.ts';
+import { META_ADS_ACCOUNT_HELPER, canonicalMetaAdsAccountId, metaAdsRuntimePropertyNames } from './meta-ads-policy.ts';
+import { readToolsListAnswer, type ToolsRewrite } from './mcp-tools-list.ts';
+import type { McpConnectionConfig } from './types.ts';
 
 const MAX_META_ADS_HELPER_RESPONSE_BYTES = 512_000;
 const MAX_META_ADS_ACCOUNT_RECORDS = 1_000;
@@ -51,12 +52,14 @@ interface SafeMetaAdsAccount {
 /**
  * Replace the broad account-enumeration result with a new selected-account-only
  * MCP result. No provider content block, structured payload, or outer object is
- * forwarded. Unknown envelopes fail before any provider text reaches the model.
+ * forwarded. An envelope without exactly one account array, or with more
+ * pages, fails before any provider text reaches the model; other top-level
+ * keys are dropped and their names logged.
  */
 export async function sanitizeMetaAdsAccountHelperResponse(
   response: Response,
   approvedAccountIds: readonly string[],
-  options: { deadlineMs?: number } = {},
+  options: { deadlineMs?: number; connectionId?: string } = {},
 ): Promise<Response> {
   if (!response.ok) throw unsupportedResponse(response, 'upstream-status');
   const approved = new Map<string, string>();
@@ -70,15 +73,43 @@ export async function sanitizeMetaAdsAccountHelperResponse(
   const body = await readBoundedText(response, options.deadlineMs ?? META_ADS_HELPER_RESPONSE_DEADLINE_MS);
   if (contentType.includes('text/event-stream')) {
     const payload = parseSingleSsePayload(body, response);
-    const sanitized = sanitizeJsonRpcPayload(payload, approved, response);
+    const sanitized = sanitizeJsonRpcPayload(payload, approved, response, options.connectionId);
     return rebuiltResponse(response, `event: message\ndata: ${JSON.stringify(sanitized)}\n\n`, 'text/event-stream');
   }
   if (!contentType.includes('application/json')) {
     throw unsupportedResponse(response, 'content-type');
   }
   const payload = parseJson(body, response);
-  const sanitized = sanitizeJsonRpcPayload(payload, approved, response);
+  const sanitized = sanitizeJsonRpcPayload(payload, approved, response, options.connectionId);
   return rebuiltResponse(response, JSON.stringify(sanitized), 'application/json');
+}
+
+/**
+ * Show the model each Meta tool's reviewed arguments only, the ones the
+ * call-time key check permits. A tool whose live schema requires another
+ * argument, or that has no reviewed schema, is withheld: no call to it can
+ * pass both Meta and that check.
+ */
+export function reviewedMetaAdsTools(
+  tools: unknown[],
+  connection: Pick<McpConnectionConfig, 'discoveredTools'>,
+): ReturnType<ToolsRewrite> {
+  const withheld = new Map<string, string[]>();
+  const shown = tools.flatMap((tool) => {
+    if (!isRecord(tool) || typeof tool.name !== 'string') return [tool];
+    const reviewed = metaAdsRuntimePropertyNames(connection, tool.name);
+    const schema = isRecord(tool.inputSchema) ? tool.inputSchema : {};
+    const required: unknown[] = Array.isArray(schema.required) ? schema.required : [];
+    const unreviewed = required.filter((name) => typeof name !== 'string' || !reviewed?.includes(name));
+    if (!reviewed || unreviewed.length > 0) {
+      withheld.set(tool.name, reviewed ? loggedNames(unreviewed) : []);
+      return [];
+    }
+    const properties = Object.entries(isRecord(schema.properties) ? schema.properties : {})
+      .filter(([name]) => reviewed.includes(name));
+    return [{ ...tool, inputSchema: { ...schema, properties: Object.fromEntries(properties) } }];
+  });
+  return { tools: shown, withheld };
 }
 
 /**
@@ -196,6 +227,7 @@ function sanitizeJsonRpcPayload(
   value: unknown,
   approved: ReadonlyMap<string, string>,
   response: Response,
+  connectionId: string | undefined,
 ): Record<string, unknown> {
   if (!isRecord(value) || value.jsonrpc !== '2.0' || !('id' in value) ||
       !(['string', 'number'].includes(typeof value.id) || value.id === null)) {
@@ -224,7 +256,13 @@ function sanitizeJsonRpcPayload(
   }
   if (candidates.length === 0) throw unsupportedResponse(response, 'account-payload', value);
 
-  const projected = candidates.map((candidate) => projectApprovedAccounts(candidate, approved, response));
+  const extraKeys = new Set<string>();
+  const projected = candidates.map((candidate) => projectApprovedAccounts(candidate, approved, response, extraKeys));
+  if (extraKeys.size > 0) {
+    console.info({
+      event: 'chickpea.meta_ads.account_envelope_extra_keys', connectionId, keys: loggedNames([...extraKeys]),
+    });
+  }
   const canonical = JSON.stringify(projected[0]);
   if (projected.some((candidate) => JSON.stringify(candidate) !== canonical)) {
     throw unsupportedResponse(response, 'conflicting-payloads', value);
@@ -245,8 +283,9 @@ function projectApprovedAccounts(
   value: unknown,
   approved: ReadonlyMap<string, string>,
   response: Response,
+  extraKeys: Set<string>,
 ): SafeMetaAdsAccount[] {
-  const records = accountRecords(value, response);
+  const records = accountRecords(value, response, extraKeys);
   if (records.length > MAX_META_ADS_ACCOUNT_RECORDS) throw unsupportedResponse(response, 'record-count');
   const selected = new Map<string, SafeMetaAdsAccount>();
   for (const value of records) {
@@ -296,18 +335,17 @@ function projectApprovedAccounts(
   return [...selected.values()].sort((left, right) => left.ad_account_id.localeCompare(right.ad_account_id));
 }
 
-function accountRecords(value: unknown, response: Response): unknown[] {
+/** The one account array, from a complete answer. Other top-level keys go to `extraKeys`: nothing forwards them. */
+function accountRecords(value: unknown, response: Response, extraKeys: Set<string>): unknown[] {
   if (Array.isArray(value)) return value;
   if (!isRecord(value)) throw unsupportedResponse(response, 'account-envelope', value);
   const arrayKeys = ['accounts', 'ad_accounts', 'data'].filter((key) => Array.isArray(value[key]));
   if (arrayKeys.length !== 1) throw unsupportedResponse(response, 'account-envelope', value);
-  const allowedKeys = new Set([
-    arrayKeys[0]!, 'next_cursor', 'nextCursor', 'cursor', 'has_more', 'hasMore', 'paging',
-  ]);
-  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
-    throw unsupportedResponse(response, 'account-envelope-keys', value);
-  }
   if (hasMorePages(value)) throw unsupportedResponse(response, 'incomplete-pagination', value);
+  const knownKeys = [arrayKeys[0]!, 'next_cursor', 'nextCursor', 'cursor', 'has_more', 'hasMore', 'paging'];
+  for (const key of Object.keys(value)) {
+    if (!knownKeys.includes(key)) extraKeys.add(key);
+  }
   return value[arrayKeys[0]!] as unknown[];
 }
 
@@ -344,6 +382,12 @@ function unsupportedResponse(response: Response, reason: string, value?: unknown
   return new Error(
     `Meta Ads account verification returned an unsupported response (${reason}; response-kind=${responseKind}; top-level=${topLevel}).`,
   );
+}
+
+/** Names the provider chose, as a log may carry them: the first 20, and none that is not a short identifier. */
+function loggedNames(names: readonly unknown[]): string[] {
+  return names.slice(0, 20).map((name) =>
+    typeof name === 'string' && /^[\w.-]{1,120}$/.test(name) ? name : '(other)');
 }
 
 function unsupportedToolListing(reason: string): Error {

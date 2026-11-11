@@ -27,21 +27,28 @@ interface RequestAnswer {
   refuse: (reason: string) => Error;
 }
 
+/**
+ * Rewrites each listed page before the grant, such as Meta's reviewed
+ * schemas. Returns the tools to list and, by name, the ones it withholds,
+ * each with the arguments its live schema requires that Chickpea never
+ * reviewed: none when Chickpea holds no reviewed schema for it.
+ */
+export type ToolsRewrite = (tools: unknown[]) => { tools: unknown[]; withheld?: ReadonlyMap<string, string[]> };
+
 /** Reads one request's response before the MCP client sees it. */
-export type McpAnswerReader = (response: Response, displayName: string) => Promise<Response>;
+export type McpAnswerReader =
+  (response: Response, displayName: string, rewriteTools?: ToolsRewrite) => Promise<Response>;
 
 interface McpToolsListFilterOptions {
   connectionId: string;
   /** The tools this Agent may use, in the order the model sees them. */
   grant: readonly string[];
-  /** Runs on each listed page before the grant, such as Meta's account helper contract. */
-  rewriteTools?: ((tools: unknown[]) => unknown[]) | undefined;
 }
 
 /**
  * Narrow every tools/list answer of one Streamable HTTP connection to the
  * granted tools the server still lists, in grant order, first listing of a
- * name only.
+ * name only, without a name the request's rewrite withholds.
  *
  * The MCP client resolves a pending request from any stream it reads, so the
  * listing has a window: it opens with the connection's first request (again
@@ -64,22 +71,29 @@ export function createMcpToolsListFilter(options: McpToolsListFilterOptions) {
     );
   };
 
-  const filterPage = (result: ToolsListResult, displayName: string, refuse: (reason: string) => Error) => {
-    let tools: unknown[];
+  const filterPage = (
+    result: ToolsListResult, displayName: string, refuse: (reason: string) => Error, rewriteTools?: ToolsRewrite,
+  ) => {
+    let page: ReturnType<ToolsRewrite>;
     try {
-      tools = options.rewriteTools ? options.rewriteTools(result.tools) : result.tools;
+      page = rewriteTools ? rewriteTools(result.tools) : { tools: result.tools };
     } catch (error) {
       logRefusal('rewrite');
       throw error;
     }
     const listed = new Map<string, Record<string, unknown>>();
-    for (const tool of tools) {
+    for (const tool of page.tools) {
       if (!isRecord(tool) || typeof tool.name !== 'string') throw refuse('tool');
       // Flue would adapt both copies of a name and fail the connection.
       if (!listed.has(tool.name)) listed.set(tool.name, tool);
     }
-    listing.listedCount += tools.length;
-    const kept = options.grant.filter((name) => listed.has(name) && !listing.granted.has(name));
+    listing.listedCount += result.tools.length;
+    // A name with a withheld copy stays unmounted, unless an earlier page mounted it.
+    for (const [name, required] of page.withheld ?? []) {
+      if (options.grant.includes(name) && !listing.granted.has(name)) listing.withheld.set(name, required);
+    }
+    const kept = options.grant.filter((name) =>
+      listed.has(name) && !listing.granted.has(name) && !listing.withheld.has(name));
     for (const name of kept) {
       listing.granted.add(name);
       // Flue skips a task-only tool with a warning; count it so the log explains the gap.
@@ -88,12 +102,13 @@ export function createMcpToolsListFilter(options: McpToolsListFilterOptions) {
     }
     // The MCP client stops paging at a cursor it already sent, without an error.
     if (result.nextCursor === undefined || listing.cursors.has(result.nextCursor)) {
-      const { granted, taskOnly, listedCount } = listing;
+      const { granted, taskOnly, listedCount, withheld } = listing;
       listing = newListing();
-      const missing = options.grant.filter((name) => !granted.has(name));
-      if (missing.length > 0 || taskOnly.length > 0) {
+      const missing = options.grant.filter((name) => !granted.has(name) && !withheld.has(name));
+      if (missing.length > 0 || taskOnly.length > 0 || withheld.size > 0) {
         console.info({
           event: 'chickpea.mcp.tools_missing', connectionId: options.connectionId, missing, taskOnly, listedCount,
+          ...(withheld.size > 0 ? { schemaRequires: Object.fromEntries(withheld) } : {}),
         });
       }
       if (granted.size === taskOnly.length) throw noGrantedTools(displayName, 'no-granted-tools');
@@ -127,7 +142,7 @@ export function createMcpToolsListFilter(options: McpToolsListFilterOptions) {
         else listing.cursors.add(cursor);
       }
       if (!listingOpen) return undefined;
-      return async (response, displayName) => {
+      return async (response, displayName, rewriteTools) => {
         // An HTTP error carries no answer the client reads; it fails or retries it.
         if (!response.ok) return response;
         const refuse = (reason: string) => {
@@ -135,7 +150,9 @@ export function createMcpToolsListFilter(options: McpToolsListFilterOptions) {
           return new Error(`${displayName} tool discovery returned an unsupported response (${reason}).`);
         };
         if (method === 'tools/list') {
-          return readToolsListAnswer(response, { id, refuse, page: (page) => filterPage(page, displayName, refuse) });
+          return readToolsListAnswer(response, {
+            id, refuse, page: (page) => filterPage(page, displayName, refuse, rewriteTools),
+          });
         }
         const result = method === 'initialize'
           ? (value: Record<string, unknown>) => requireTools(value, displayName)
@@ -362,7 +379,10 @@ function eventStreamParser(): (text: string) => StreamEvent[] {
 }
 
 function newListing() {
-  return { granted: new Set<string>(), taskOnly: [] as string[], listedCount: 0, cursors: new Set<unknown>() };
+  return {
+    granted: new Set<string>(), withheld: new Map<string, string[]>(), taskOnly: [] as string[], listedCount: 0,
+    cursors: new Set<unknown>(),
+  };
 }
 
 function rebuiltResponse(response: Response, body: string): Response {
