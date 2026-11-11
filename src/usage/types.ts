@@ -211,11 +211,26 @@ interface UsageCursor {
   operationId: string;
 }
 
+/**
+ * Run history's boundary (management/mcp-v5/run-history.ts), never derived
+ * from a customer query parameter. `visible` keeps the operations one
+ * member could be shown: their own 1:1 direct messages (a `D` channel) and
+ * Channel runs, in `channelIds` only when it is given. `hidden` keeps every
+ * other operation except another person's direct-message routine runs, which
+ * run history never counts.
+ */
+export interface UsageRunHistoryScope {
+  membershipId: string;
+  channelIds?: readonly string[];
+  rows: 'visible' | 'hidden';
+}
+
 export interface UsageQuery {
   from: number;
   to: number;
   /** Internal shared-surface privacy boundary; never derived from a customer query parameter. */
   excludePrivateRoutines?: boolean;
+  runHistory?: UsageRunHistoryScope;
   filters?: UsageFilters;
   groupBy?: UsageGroupBy;
   currency?: string;
@@ -227,6 +242,7 @@ export interface NormalizedUsageQuery {
   from: number;
   to: number;
   excludePrivateRoutines: boolean;
+  runHistory: UsageRunHistoryScope | null;
   filters: UsageFilters;
   groupBy: UsageGroupBy | null;
   currency: string | null;

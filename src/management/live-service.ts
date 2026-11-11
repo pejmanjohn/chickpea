@@ -482,6 +482,14 @@ export function createLiveWorkspaceManagementService(
       const control = await identity.getAuthControl();
       return control ? (await resolveBetterAuthEnvironment({ control, platformEnv: env }))?.backend : undefined;
     },
+    runHistory: async () => (await import('./run-history-live.ts')).liveRunHistorySources({
+      env,
+      identity,
+      config: config as ConfigStore,
+      usage: () => options.usage ?? getUsageStore(env),
+      work: () => getWorkStore(env),
+      routines: () => getRoutineStore(env),
+    }),
     ...agentAvatarInstallationField(env),
     ...overrides,
   });

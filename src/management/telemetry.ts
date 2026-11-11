@@ -140,6 +140,7 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
     'connect_service', 'reconnect_service', 'update_connection', 'remove_connection', 'set_agent_repositories',
     'delete_agent', 'remove_website_login', 'remove_agent_from_channel', 'delete_schedule',
     'remove_model_provider_key', 'update_member', 'cancel_setup_link', 'disconnect_app',
+    'list_agent_runs', 'get_agent_run',
   ]),
 };
 

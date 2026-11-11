@@ -36,6 +36,8 @@ import {
 } from '../config/errors.ts';
 import type { ConfigAgentPatch, ConfigStore } from '../config/store.ts';
 import type { TestRunStore } from './test-run-types.ts';
+import type { RunHistorySources } from './run-history-sources.ts';
+import type { SlackChannel } from '../slack/transport/types.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { ModelReadiness } from '../config/model-readiness.ts';
@@ -609,6 +611,11 @@ export interface WorkspaceManagementServiceInput {
   ) => Promise<T>;
   /** Better Auth's record of people's MCP clients; undefined where Better Auth does not sign people in. */
   mcpOAuthClients?: () => Promise<BetterAuthMcpOAuthClients | undefined>;
+  /**
+   * What list_agent_runs and get_agent_run read, opened on first use so it
+   * stays out of Worker startup; a deployment without them has no run history.
+   */
+  runHistory?: () => Promise<RunHistorySources>;
   now?: () => number;
   randomId?: () => string;
   randomCapability?: () => string;
@@ -4147,6 +4154,37 @@ export class WorkspaceManagementService {
   async testRunStore(context: ManagementActorContext): Promise<TestRunStore | undefined> {
     await this.requireLiveActor(context);
     return this.stores.testRuns;
+  }
+
+  /**
+   * For list_agent_runs and get_agent_run, once the caller is live: run
+   * history's sources, the caller's Slack user, and Slack's current facts for
+   * a Channel, undefined when Slack cannot say. The facts are read as
+   * Chickpea's own app, never an Agent's: only Chickpea's app subscribes to
+   * Channel messages (`message.channels`, `message.groups`), so only while it
+   * is in a Channel do Slack's deletions reach the thread record. Which runs
+   * the caller may see, the tool decides on every call. Undefined where this
+   * deployment keeps no run history.
+   */
+  async runHistory(context: ManagementActorContext): Promise<{
+    sources: RunHistorySources;
+    slackUserId?: string;
+    slackChannel(channelId: string): Promise<SlackChannel | undefined>;
+  } | undefined> {
+    await this.requireLiveActor(context);
+    const sources = await this.stores.runHistory?.();
+    if (!sources) return undefined;
+    const user = await this.stores.identity.getUser(context.userId);
+    let facts: Promise<PrivateAgentPlacementFacts> | undefined;
+    return {
+      sources,
+      ...(user?.slackUserId ? { slackUserId: user.slackUserId } : {}),
+      slackChannel: async (channelId) => {
+        if (!user?.slackTeamId) return undefined;
+        facts ??= this.slackFactsFor(user.slackTeamId).then(oneLookupPerChannel);
+        return (await facts).lookupChannel(channelId).catch(() => undefined);
+      },
+    };
   }
 
   /** For explain_agent and check_agent; hands out the stores only after the edit-authority check. */

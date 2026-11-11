@@ -113,6 +113,8 @@ const MCP_TOOL_ANNOTATIONS = {
   get_setup_status: READ_5,
   export_agents: READ_5,
   list_connected_apps: READ_5,
+  list_agent_runs: READ_5,
+  get_agent_run: READ_5,
   propose_agent: READ_5,
   propose_agent_change: READ_5,
   get_creation_status: READ_5,
