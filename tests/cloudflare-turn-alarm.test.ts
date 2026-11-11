@@ -39,6 +39,7 @@ import { slackAgentThreadKey } from '../src/slack/thread-key.ts';
 import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { reportInteractiveDelivery } from '../src/config/hosted-activity.ts';
 import { installationOwnershipOf, installationScopeOf } from '../src/config/installation-scope.ts';
+import { endTurnReads } from '../src/config/turn-reads.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { ResidencyHold, residencyHoldMs } from '../src/state/residency-hold.ts';
 import { turnJob as maintenanceTurnJob } from './fixtures/state-db/maintenance.ts';
@@ -550,6 +551,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     createAgentAskCollector,
     installationScopeOf,
     reportInteractiveDelivery,
+    endTurnReads,
     localAgentAskDispatcher: () => undefined,
     localFrontDeskDispatcher: () => undefined,
     earliestDefined: (...values: Array<number | undefined>) =>

@@ -24,7 +24,7 @@ import type { ResolvedAssignment } from '../src/config/types.ts';
 import { prepareMemoryTurn } from '../src/memory/runtime.ts';
 import { freezeRuntimePlanForTurn } from '../src/slack/run-turn.ts';
 import type { PendingTurnJob } from '../src/slack/turn-jobs.ts';
-import { prefetchTurnReads } from '../src/slack/turn-plan-reads.ts';
+import { prefetchTurnReads, turnPlanReads } from '../src/slack/turn-plan-reads.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { EVERY_PROVIDER_FUNDED, NO_RUN_FEES } from './helpers/platform-funding.ts';
@@ -409,6 +409,16 @@ test("a hosted turn reads its model credentials in the batch, once, BYOK or plat
     const byok = await assertSamePreparation(lane, fixture, env, 'BYOK');
     assert.ok(byok.prepared.plan, 'the BYOK plan froze');
     assert.deepEqual(byok.batched, [], 'batched, nothing is read again');
+
+    // Defect caught: a hosted turn's batch reading the installation's stored
+    // browser key, which a deployment serving many installations never reads.
+    const planned = async (plannedEnv: PlatformEnv) => turnPlanReads(
+      { id: 'turn_keys', turn: lane.turn(fixture), assignment: await lane.assignment(READY_AGENT, fixture.place) } as unknown as PendingTurnJob,
+      plannedEnv,
+    )[0]!.args[0] as string[];
+    const browserKeys = (keys: readonly string[]) => keys.filter((key) => key.startsWith('browser.browserbase.'));
+    assert.deepEqual(browserKeys(await planned(env)), [], 'hosted, the batch names no stored browser key');
+    assert.equal(browserKeys(await planned({} as PlatformEnv)).length, 2, 'standalone, it reads the browser key and project');
 
     // The turn's other credential readers: readiness, usage attribution, and the classifier's key.
     const readCredentials = async (batched: boolean) => {

@@ -17,16 +17,6 @@ import { slackAgentContinuityKey, slackConversationKind } from './thread-key.ts'
 import type { PendingTurnJob } from './turn-jobs.ts';
 
 /**
- * Settings every turn reads while it prepares: the model catalog and what its
- * dispatch freezes (turn-envelope.ts), and the browser.
- */
-const TURN_PLAN_SETTING_KEYS: readonly string[] = [...new Set([
-  ...TURN_ENVELOPE_SETTING_KEYS,
-  BROWSER_SETTING_KEYS.apiKey,
-  BROWSER_SETTING_KEYS.projectId,
-])];
-
-/**
  * The reads a runner's turn makes first while it prepares, as the RPCs its
  * Cf store proxies send: its settings and credentials, the Agent with its
  * memory and Channel grant (memory), the connections, model roles and
@@ -41,8 +31,12 @@ export function turnPlanReads(
   const { turn, assignment } = job;
   const { agentId } = assignment;
   const hosted = deploymentServesManyInstallations(env);
-  const settingKeys = [...TURN_PLAN_SETTING_KEYS];
+  // Every turn reads the model catalog and what its dispatch freezes (turn-envelope.ts).
+  const settingKeys = [...TURN_ENVELOPE_SETTING_KEYS];
   if (!hosted) {
+    // A hosted browser comes from the host's access (browser/capability.ts):
+    // an installation's stored browser key is never read there.
+    settingKeys.push(BROWSER_SETTING_KEYS.apiKey, BROWSER_SETTING_KEYS.projectId);
     // A hosted GitHub App comes from the deployment, not settings.
     settingKeys.push(GITHUB_SETTING_KEYS.appId, GITHUB_SETTING_KEYS.appSlug, GITHUB_SETTING_KEYS.privateKey);
     // A model of a key-backed provider is ready only with a key: its readiness reads them all.

@@ -12,6 +12,8 @@ import {
   type CreditBackReason,
   type RunRef,
 } from '../src/config/platform-funding.ts';
+import { TurnReads } from '../src/config/turn-read-batch.ts';
+import { turnReads, withTurnReads } from '../src/config/turn-reads.ts';
 import { AgentObservationYield, AgentPromptFailure } from '../src/slack/flue-dispatch.ts';
 import { SlackInstallationUnavailableError } from '../src/slack/installation-execution.ts';
 import type { RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
@@ -909,4 +911,27 @@ test("the installation is resolved for the turn's Agent, so an Agent with its ow
   });
   assert.equal(await executeTurnJob(pendingJob(), h.ports, h.options), true);
   assert.deepEqual(seen, [['T1', 'analyst']]);
+});
+
+// Defect caught: an attempt that already holds its dispatch envelope (a
+// reattached run, a retry after preparation) never prepares a dispatch, so
+// nothing ended its prefetched reads: its settings and model credential
+// records stayed as read at the attempt's start for the whole run.
+test('an attempt that already prepared its dispatch reads the state store, not a batch', async () => {
+  const readInRun = async (job: PendingTurnJob) => {
+    let answer: unknown;
+    const h = fakePorts(async (options) => {
+      answer = await turnReads()?.read('settingGet', ['catalog'], async () => ({ ok: true, value: 'live' }));
+      await options.onDelivered?.('completed' as never);
+    });
+    const reads = new TurnReads(Promise.resolve([
+      [{ method: 'settingGet', args: ['catalog'] }, { ok: true, value: 'batched' }] as const,
+    ]));
+    assert.equal(await withTurnReads(reads, () => executeTurnJob(job, h.ports, h.options)), true);
+    return answer;
+  };
+  assert.deepEqual(await readInRun(pendingJob()), { ok: true, value: 'batched' },
+    'a first attempt prepares from its batch');
+  assert.deepEqual(await readInRun(pendingJob({ dispatchEnvelope: { instanceId: 'agent' } as never })),
+    { ok: true, value: 'live' }, 'an attempt past its preparation reads the state store');
 });
