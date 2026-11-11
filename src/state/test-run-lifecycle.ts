@@ -167,9 +167,9 @@ export class TestRunLifecycle {
         return admission;
       case 'replayed':
       case 'running':
-        return { kind: admission.kind, run: testRunView(await this.settled(admission.row)) };
+        return { kind: admission.kind, run: this.view(await this.settled(admission.row)) };
       case 'repeat':
-        return { kind: 'repeat', run: { ...testRunView(admission.row), repeat: true } };
+        return { kind: 'repeat', run: { ...this.view(admission.row), repeat: true } };
     }
     const { row } = admission;
     const { message, quoted } = practiceMessage(run.question, admission.earlier);
@@ -186,7 +186,7 @@ export class TestRunLifecycle {
     // A cancellation that settled the run while its dispatch was out left the instance alone: stop and erase it now.
     const dispatched = testRuns.get(row.testRunId) ?? row;
     if (!live(dispatched) && !this.dispatching.has(row.testRunId)) await this.step(row.testRunId);
-    return { kind: 'admitted', run: testRunView(testRuns.get(row.testRunId) ?? row) };
+    return { kind: 'admitted', run: this.view(testRuns.get(row.testRunId) ?? row) };
   }
 
   /**
@@ -214,12 +214,18 @@ export class TestRunLifecycle {
 
   async replay(query: TestRunReplayQuery): Promise<TestRunView | undefined> {
     const row = this.deps.stores().testRuns.replay(query, this.now());
-    return row ? testRunView(await this.settled(row)) : undefined;
+    return row ? this.view(await this.settled(row)) : undefined;
   }
 
   async observe(query: TestRunQuery): Promise<TestRunView | undefined> {
     const row = this.deps.stores().testRuns.read(query, this.now());
-    return row ? testRunView(await this.settled(row)) : undefined;
+    return row ? this.view(await this.settled(row)) : undefined;
+  }
+
+  /** What the caller learns of a run, with the earlier answer to the same question, of another version, beside it. */
+  private view(row: TestRunRow): TestRunView {
+    const before = this.deps.stores().testRuns.before(row, this.now());
+    return { ...testRunView(row), ...before ? { before } : {} };
   }
 
   /** A read of the rows as they stand: no run is stepped for it. */

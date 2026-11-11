@@ -220,19 +220,19 @@ export const FIVE_ZERO_TOOLS = {
     output: schemas.listPracticeRunsOutput,
     run: async (deps, args) => (await import('./test-runs.ts')).listPracticeRuns(deps, args),
   }),
+  // The names Agent cards published before practice_agent send, until the card versions collapse to one.
   try_agent_once: tool({
     title: 'Try an Agent once',
-    description: 'For the Agent card: a practice run of a new Agent on the first question saved when it was created, as you, with its answer and the services it read. It makes only read requests and sends nothing to Slack. Uses the workspace\'s usage like a Slack message.',
+    description: 'For Agent cards drawn before practice_agent: practice_agent with no question, in the shape those cards read. Call practice_agent instead.',
     input: schemas.tryAgentOnceInput,
     output: schemas.testRunOutput,
     visibility: ['app'],
-    // U2's hints for a run that spends usage and reaches the open web; a retry with its key returns the same run.
     write: writeHints({ destructive: true, openWorld: true }),
     run: async (deps, args) => (await import('./test-runs.ts')).tryAgentOnce(deps, args),
   }),
   get_test_run: tool({
     title: 'Get a test run',
-    description: 'For the Agent card: where one practice run stands, by the runToken try_agent_once returned, with its answer once it has one. Only your own runs, until an hour after each ends. Reads only; changes nothing.',
+    description: 'For Agent cards drawn before practice_agent: get_practice_run, in the shape those cards read. Call get_practice_run instead.',
     input: schemas.getTestRunInput,
     output: schemas.testRunOutput,
     visibility: ['app'],

@@ -35,7 +35,18 @@ import {
   type ToolResult,
   UNREACHABLE,
 } from '../card-model.ts';
-import { presentFirstAnswer, stepFirstAnswer, tryOnce, type FirstAnswer, type Tested } from '../first-answer.ts';
+import {
+  checkingView,
+  presentFirstAnswer,
+  stillAnswering,
+  stillAnsweringOf,
+  stepFirstAnswer,
+  tryAgain,
+  tryOnce,
+  type FirstAnswer,
+  type StillAnswering,
+  type Tested,
+} from '../first-answer.ts';
 
 /**
  * The Agent card as a state machine. Every host message, button press and
@@ -101,7 +112,7 @@ export type View =
       status: CreationStatus;
       promised?: Promised | undefined;
     }
-  /** "See its first answer", pressed on the ready card. */
+  /** "See its first answer", pressed on the ready card, or "Try it again" on a Saved card. */
   | FirstAnswer
   | { kind: 'change'; preview: ChangePreview; stale?: true }
   | {
@@ -117,6 +128,8 @@ export type View =
       version?: string | undefined;
       /** A saved edit: the card suggests trying it. */
       saved?: true;
+      /** The card offers "Try it again": the Agent has a first question, and the save changed how it answers. */
+      practice?: true;
     }
   /**
    * "Are you sure?". Without its token (a host that dropped `_meta`, or a
@@ -152,13 +165,16 @@ const READS: ReadonlySet<string> = new Set(['get_creation_status', 'get_agent', 
 
 export type Event = CardEvent<Action>;
 
+/** The fields a save can change that change how the Agent answers its first question. */
+const ANSWER_FIELDS: ReadonlySet<string> = new Set<ChangePreview['changes'][number]['field']>(['instructions', 'model', 'effort']);
+
 export const INITIAL: State = { view: { kind: 'waiting' }, busy: false, seq: 0 };
 
 export const step = sequenced(transition, { remember, resume });
 
 function transition(state: State, event: Event): Next<View> {
   const { view } = state;
-  if (view.kind === 'first_answer' && event.type !== 'result') return stepFirstAnswer({ ...state, view }, event);
+  if (view.kind === 'first_answer' && event.type !== 'result' && !undoing(event)) return stepFirstAnswer({ ...state, view }, event);
   switch (event.type) {
     case 'result':
       return fromResult(event.result, event.now);
@@ -205,7 +221,7 @@ function fromResult(result: ToolResult, now: number): Next<View> {
   return show(NOTHING);
 }
 
-function changeView(result: ChangeResult, now: number, options: { saved?: boolean; undone?: boolean } = {}): Next<View> {
+function changeView(result: ChangeResult, now: number, options: { saved?: boolean; undone?: boolean; practice?: boolean } = {}): Next<View> {
   switch (result.status) {
     case 'needs_confirmation':
       if (!result.confirmation) return show({ kind: 'notice', title: result.summary });
@@ -241,6 +257,7 @@ function changeView(result: ChangeResult, now: number, options: { saved?: boolea
         undoToken: options.undone ? undefined : result.undoToken,
         version: result.version,
         ...options.saved ? { saved: true as const } : {},
+        ...options.practice ? { practice: true as const } : {},
       });
     }
     default:
@@ -309,10 +326,10 @@ function press(state: State, action: Action, now: number): Next<View> {
       // Even past its time on this device's clock: only the server's answer says the token is dead.
       if (view.kind !== 'confirm' || !view.confirmation.confirmToken) return stay(state);
       return busy(call('decline_change', { confirmToken: view.confirmation.confirmToken }));
-    case 'undo':
-      return view.kind === 'done' && view.undoToken
-        ? busy(call('undo_change', { undoToken: view.undoToken, idempotencyKey: `undo:${view.undoToken}` }))
-        : stay(state);
+    case 'undo': {
+      const undoToken = view.kind === 'done' ? view.undoToken : view.kind === 'first_answer' && undoBeside(view) ? view.again?.undoToken : undefined;
+      return undoToken ? busy(call('undo_change', { undoToken, idempotencyKey: `undo:${undoToken}` })) : stay(state);
+    }
     case 'open_slack': {
       const url = slackUrlOf(view);
       return url ? stay(state, [{ type: 'open', url }]) : stay(state);
@@ -331,10 +348,53 @@ function press(state: State, action: Action, now: number): Next<View> {
     case 'check_again':
       return reread(state, now);
     case 'try_once':
-      return view.kind === 'ready' && offersFirstAnswer(view) ? tryOnce(tested(view), now) : stay(state);
+      if (view.kind === 'ready' && offersFirstAnswer(view)) return tryOnce(tested(view), now);
+      if (view.kind === 'done' && view.agent && offersTryAgain(view)) {
+        const { agent } = view;
+        return tryAgain(
+          { agentId: agent.agentId, name: agent.name, handle: agent.handle, avatarUrl: view.avatarUrl, slackUrl: view.slackUrl },
+          { summary: view.summary, undoToken: view.undoToken },
+          now,
+        );
+      }
+      return stay(state);
     case 'try_fix':
       return stay(state);
   }
+}
+
+/** The Saved card's Undo, pressed beside a Try it again answer: its press and its answer are this card's. */
+function undoing(event: Event): boolean {
+  if (event.type === 'press') return event.action === 'undo';
+  return (event.type === 'reply' || event.type === 'unreachable') && event.call.tool === 'undo_change';
+}
+
+/**
+ * Undo stands beside what Try it again came to, an answer or a run that did
+ * not start or finish, while the card holds the save's token.
+ */
+function undoBeside(view: FirstAnswer): boolean {
+  const { stage } = view;
+  // An answer whose earlier one is still being read shows as answering: nothing to press yet.
+  const came = stage.kind === 'answered' ? stage.reading === undefined : stage.kind === 'stopped' || stage.kind === 'slow';
+  return view.again?.undoToken !== undefined && came;
+}
+
+/** Undo in place of Change something or a second Open in Slack; after a lone button, or alone. Two at most. */
+function withUndo(buttons: ReadonlyArray<Button<Action>>): Array<Button<Action>> {
+  const gives = ({ action, tone }: Button<Action>) => action === 'change_something' || (action === 'open_slack' && tone === 'secondary');
+  if (buttons.some(gives)) return buttons.map((button) => gives(button) ? UNDO : button);
+  return buttons.length < 2 ? [...buttons, UNDO] : [...buttons];
+}
+
+/** "Try it again" on a Saved card: an Agent that still answers, after a save that changed how. */
+function offersTryAgain(view: Extract<View, { kind: 'done' }>): boolean {
+  return view.practice !== undefined && view.agent !== undefined && view.status !== 'off' && view.status !== 'archived';
+}
+
+/** Only the card's own Save says what changed: an Agent with a first question, and a change to how it answers. */
+function practiceAfter(preview: ChangePreview): boolean {
+  return preview.agent.hasFirstAsk === true && preview.changes.some(({ field }) => ANSWER_FIELDS.has(field));
 }
 
 /** The ready Agent as the first answer tests it, with the promise only this card's proposal made. */
@@ -414,7 +474,8 @@ function reply(state: State, made: Call, result: ToolResult, now: number): Next<
       const name = view.kind === 'change' ? view.preview.agent.name : content.agent?.name;
       const agent = name === undefined ? 'the Agent' : agentNamed(name);
       // The summary names the Agent again, whole and unquoted, so it is left out when this sentence names it.
-      return tell(changeView(content, now, { saved: true }), content.status === 'needs_confirmation'
+      const practice = view.kind === 'change' && practiceAfter(view.preview);
+      return tell(changeView(content, now, { saved: true, practice }), content.status === 'needs_confirmation'
         ? `The person pressed Save on the card for ${agent}. Nothing has changed yet: it waits for their confirmation on the card.`
         : name === undefined
           ? `The person saved the change from the card. Chickpea said: ${quoted(content.summary)}`
@@ -441,18 +502,16 @@ function reply(state: State, made: Call, result: ToolResult, now: number): Next<
       }
       return tell(show(KEPT), `On the card, the person pressed ${quoted(keep)}, so nothing changed. Make this change only if they ask for it again.`);
     }
-    case 'undo_change':
+    case 'undo_change': {
       if (failure || !isChangeResult(content)) {
         const gone = code === 'nothing_to_undo' || code === 'changed_since_read';
-        return stay({
-          view: gone && view.kind === 'done' ? { ...view, undoToken: undefined } : view,
-          busy: false,
-          error: failure ?? GENERIC,
-        });
+        return stay({ view: gone ? withoutUndo(view) : view, busy: false, error: failure ?? GENERIC });
       }
+      const name = view.kind === 'done' ? view.agent?.name : view.kind === 'first_answer' ? view.tested.name : undefined;
       return tell(changeView(content, now, { undone: true }), content.status === 'needs_confirmation'
         ? 'The person pressed Undo on the card. Nothing has changed yet: it waits for their confirmation on the card.'
-        : `The person undid the change${view.kind === 'done' && view.agent ? ` to ${agentNamed(view.agent.name)}` : ''} from the card.`);
+        : `The person undid the change${name === undefined ? '' : ` to ${agentNamed(name)}`} from the card.`);
+    }
     case 'get_confirmation': {
       if (state.busy || view.kind !== 'confirm') return stay(state);
       const standing = failure ? undefined : (content as { status?: unknown } | undefined)?.status;
@@ -476,6 +535,12 @@ function reply(state: State, made: Call, result: ToolResult, now: number): Next<
     default:
       return stay({ ...state, busy: false });
   }
+}
+
+function withoutUndo(view: View): View {
+  if (view.kind === 'done') return { ...view, undoToken: undefined };
+  if (view.kind === 'first_answer' && view.again) return { ...view, again: { ...view.again, undoToken: undefined } };
+  return view;
 }
 
 /** An Agent the card shows is no longer there to act on. */
@@ -575,12 +640,17 @@ function reread(state: State, now: number): Next<View> {
 // `privateContent`, which ChatGPT hides from its model beside the
 // `modelContent` the card always writes: words the card showed, and the ID
 // of an Agent it created, so a reopened creation reads its arrival again.
-// Never a token or instructions, so a reopened change offers no Undo.
+// Never a token or instructions, so a reopened change offers no Undo. A
+// Saved card that offers Try it again keeps that, never an answer: Chickpea
+// finds the answer from before the change itself. A practice run still
+// going when the card stopped waiting keeps its token there, so a reopened
+// card reads that run once (first-answer.ts `stillAnswering`).
 
 type Outcome =
   | { kind: 'created'; name: string; agentId?: string }
-  | { kind: 'done'; summary: string }
-  | { kind: 'notice'; title: string; body?: string };
+  | { kind: 'done'; summary: string; practice?: true }
+  | { kind: 'notice'; title: string; body?: string }
+  | StillAnswering;
 
 function remember(view: View): Outcome | undefined {
   switch (view.kind) {
@@ -588,7 +658,16 @@ function remember(view: View): Outcome | undefined {
     case 'ready':
       return { kind: 'created', name: view.agent.name, agentId: view.agentId };
     case 'done':
-      return { kind: 'done', summary: view.summary };
+      // Only a Saved card that offers it: one whose save also turned the Agent off comes back without it.
+      return { kind: 'done', summary: view.summary, ...view.practice && offersTryAgain(view) ? { practice: true as const } : {} };
+    case 'first_answer': {
+      // Once the run settles, the card comes back to where its press began: the Saved card, or the Agent it created.
+      const still = stillAnswering(view);
+      if (still) return still;
+      return view.again
+        ? { kind: 'done', summary: view.again.summary, practice: true }
+        : { kind: 'created', name: view.tested.name, agentId: view.tested.agentId };
+    }
     case 'notice':
       return { kind: 'notice', title: view.title, ...view.body ? { body: view.body } : {} };
     default:
@@ -596,9 +675,19 @@ function remember(view: View): Outcome | undefined {
   }
 }
 
+/** Try it again, as a reopened card offers it again. */
+function practiceFrom(outcome: Extract<Outcome, { kind: 'done' }>): { practice?: true } {
+  return outcome.practice ? { practice: true } : {};
+}
+
 function resume(view: View, kept: unknown): View | undefined {
   const outcome = outcomeOf(kept);
   switch (outcome?.kind) {
+    case 'checking':
+      // The proposal it mounts with is the one the Agent was created from: its promise goes beside the answer again.
+      return view.kind === 'proposal' || view.kind === 'similar'
+        ? checkingView(outcome, { avatarUrl: offerAvatar(view), promised: promiseOf(view) })
+        : checkingView(outcome, { avatarUrl: 'avatarUrl' in view ? view.avatarUrl : undefined });
     case 'created':
       if (view.kind !== 'proposal') return undefined;
       return outcome.agentId ? createdFrom(view, { name: outcome.name, agentId: outcome.agentId })
@@ -607,12 +696,18 @@ function resume(view: View, kept: unknown): View | undefined {
       return view.kind === 'change' || view.kind === 'confirm' ? { kind: 'notice', title: outcome.title, body: outcome.body } : undefined;
     case 'done':
       if (view.kind === 'done') {
-        const { undoToken: _undo, version: _version, saved: _saved, status: _status, ...rest } = view;
-        return { ...rest, summary: outcome.summary };
+        const { undoToken: _undo, version: _version, saved: _saved, status: _status, practice: _practice, ...rest } = view;
+        return { ...rest, summary: outcome.summary, ...practiceFrom(outcome) };
       }
       if (view.kind === 'change') {
         const { agent, save } = view.preview;
-        return { kind: 'done', summary: outcome.summary, agent: { agentId: save.arguments.agentId, name: agent.name, handle: agent.handle }, avatarUrl: httpsUrl(agent.avatarUrl) };
+        return {
+          kind: 'done',
+          summary: outcome.summary,
+          agent: { agentId: save.arguments.agentId, name: agent.name, handle: agent.handle },
+          avatarUrl: httpsUrl(agent.avatarUrl),
+          ...practiceFrom(outcome),
+        };
       }
       return view.kind === 'confirm'
         ? { kind: 'done', summary: outcome.summary, ...view.agent ? { agent: view.agent } : {}, avatarUrl: view.avatarUrl }
@@ -645,7 +740,10 @@ function outcomeOf(kept: unknown): Outcome | undefined {
   if (kept.kind === 'created' && typeof kept.name === 'string') {
     return { kind: 'created', name: kept.name, ...typeof kept.agentId === 'string' && isAgentId(kept.agentId) ? { agentId: kept.agentId } : {} };
   }
-  if (kept.kind === 'done' && typeof kept.summary === 'string') return { kind: 'done', summary: kept.summary };
+  if (kept.kind === 'done' && typeof kept.summary === 'string') {
+    return { kind: 'done', summary: kept.summary, ...kept.practice === true ? { practice: true as const } : {} };
+  }
+  if (kept.kind === 'checking') return stillAnsweringOf(kept);
   if (kept.kind === 'notice' && typeof kept.title === 'string') {
     return { kind: 'notice', title: kept.title, ...typeof kept.body === 'string' ? { body: kept.body } : {} };
   }
@@ -798,10 +896,14 @@ function presentView(state: State): Presentation<Action> {
         blocks: view.body ? [{ kind: 'text', text: view.body }] : [],
         buttons: [],
       };
-    case 'first_answer':
-      return { ...base, ...presentFirstAnswer(view) };
+    case 'first_answer': {
+      const shown = presentFirstAnswer(view);
+      return { ...base, ...shown, buttons: undoBeside(view) ? withUndo(shown.buttons) : shown.buttons };
+    }
   }
 }
+
+const UNDO: Button<Action> = { label: 'Undo', action: 'undo', tone: 'secondary' };
 
 /**
  * "Are you sure?" with its two buttons; a card without the token says where
@@ -1005,10 +1107,12 @@ function presentDone(view: Extract<View, { kind: 'done' }>): Omit<Presentation<A
     done: true,
     ...line ? { subtitle: [{ text: line }] } : {},
     blocks: [],
+    // At most two: Try it again first, then Undo, then Slack.
     buttons: [
-      ...view.undoToken ? [{ label: 'Undo', action: 'undo' as const, tone: 'secondary' as const }] : [],
+      ...offersTryAgain(view) ? [{ label: 'Try it again', action: 'try_once' as const, tone: 'primary' as const }] : [],
+      ...view.undoToken ? [UNDO] : [],
       ...view.slackUrl ? [{ label: 'Open in Slack', action: 'open_slack' as const, tone: 'secondary' as const }] : [],
-    ],
+    ].slice(0, 2),
   };
 }
 

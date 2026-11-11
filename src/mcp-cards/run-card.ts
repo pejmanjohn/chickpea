@@ -20,10 +20,10 @@ import { mountCard } from './render.ts';
  * and the model's effects run here. ChatGPT keeps a card's widget state and
  * shows its model the `modelContent`, which holds only what the card already
  * told the model. Its outcome goes in `privateContent`, which ChatGPT hides
- * from the model beside a `modelContent`; it may hold an ID, never a token or
- * instructions. A chat that reopens mounts the card with its first result,
- * and the card comes back to its outcome from that, then reads where things
- * stand now.
+ * from the model beside a `modelContent`; it may hold an ID and the token of a
+ * practice run still going, never another token or instructions. A chat that
+ * reopens mounts the card with its first result, and the card comes back to
+ * its outcome from that, then reads where things stand now.
  */
 
 declare const CARD_VERSION: number;

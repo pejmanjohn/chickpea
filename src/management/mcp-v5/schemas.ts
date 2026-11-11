@@ -581,7 +581,7 @@ const zQuote = z.union([
 ]);
 
 export const proposeAgentChangeOutput = z.strictObject({
-  agent: z.strictObject({ name: z.string(), handle: z.string().optional(), avatarUrl: zAvatarUrl }),
+  agent: z.strictObject({ name: z.string(), handle: z.string().optional(), avatarUrl: zAvatarUrl, hasFirstAsk: zHasFirstAsk }),
   changes: z.array(z.strictObject({
     field: z.enum(['name', 'description', 'handle', 'instructions', 'on', 'model', 'effort', 'imageModel', 'whoCanEdit']),
     before: z.union([z.string(), z.boolean()]).nullable().optional(),
@@ -687,7 +687,7 @@ export const getCreationStatusOutput = z.strictObject({
   hello: z.string().optional().describe('The hello it posted to the person in Slack, as plain text.'),
 });
 
-// practice_agent and get_practice_run; try_agent_once and get_test_run are their card-only aliases until PR C.
+// practice_agent and get_practice_run; try_agent_once and get_test_run are their names on cards published before them.
 
 export const practiceAgentInput = z.strictObject({
   agentId: zAgentId,
@@ -745,6 +745,8 @@ export const practiceRunOutput = z.strictObject({
     charged: z.boolean().describe('Whether it counts against the workspace\'s usage, as a direct message would.'),
   }).optional(),
   repeat: z.literal(true).optional().describe('The same question on the unchanged Agent, answered moments ago: that run, not a new one.'),
+  before: z.strictObject({ runToken: z.string(), agentVersion: zVersion }).optional()
+    .describe('Your latest earlier answer to the same question from another version of this Agent, from the last hour. get_practice_run reads it.'),
   read: z.array(z.string()).optional().describe('The services it read, by name.'),
   steps: z.array(zPracticeStep).optional().describe('Its tool calls and skill loads, in order: the first 25.'),
   moreSteps: z.number().int().positive().optional().describe('How many more calls it made after the steps listed.'),

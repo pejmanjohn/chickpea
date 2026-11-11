@@ -303,6 +303,59 @@ test('only the caller reads a run, by its token: while it goes, and for an hour 
   assert.equal(testRuns(installation).read(query, NOON + 3 * AN_HOUR), undefined);
 });
 
+// Mutation proof: a lookup without the caller, the Agent, the answer, the first turn or the order names a run here.
+test('Before is only the caller\'s own earlier answer to the same first question of the same Agent, from another version, while it reads', () => {
+  const installation = hostedInstallation('inst_test_store_before');
+  const store = testRuns(installation);
+  const QUESTION = 'Who is overdue?';
+  let at = NOON;
+  /** One run of the question at an Agent version, three minutes after the last, so none repeats; answered unless `failed`. */
+  /** A practice conversation's first turn, on another question and answered, for a follow-up to continue. */
+  const opened = () => {
+    const first = admission(installation, { question: 'Who is new?' });
+    at += 3 * 60_000;
+    assert.equal(store.admit(first, at).kind, 'admitted');
+    answer(installation, first.testRunId, at);
+    return first.newPracticeId;
+  };
+  const run = (version: string, options: Parameters<typeof startRequest>[1] & { failed?: true; followUp?: true } = {}) => {
+    const { failed, followUp, ...ask } = options;
+    const request = admission(installation, { question: QUESTION, ...ask, ...followUp ? { practiceId: opened() } : {} });
+    at += 3 * 60_000;
+    const ran = { agentVersion: version, model: 'anthropic/claude-haiku-4-5', memory: false, place: 'dm' as const };
+    assert.equal(store.admit({ ...request, admitted: { ...request.admitted, ran } }, at).kind, 'admitted');
+    if (failed) {
+      const recorder = new TestRunUsageRecorder(installation.stores.usage.getOperation(request.usage.operationId)!.operation);
+      store.settle(request.testRunId, { status: 'failed', failure: 'failed', terminal: recorder.failed(at, null) });
+    } else {
+      answer(installation, request.testRunId, at);
+    }
+    return request.testRunId;
+  };
+  const before = (testRunId: string, when = at) => store.before(store.get(testRunId)!, when);
+
+  // Answers of version 1 that are not the caller's own to this question of this Agent, and a run of theirs that failed.
+  run('version_1', { actorMembershipId: 'membership_other' });
+  run('version_1', { agentId: 'agent_other' });
+  run('version_1', { question: 'Who paid?' });
+  run('version_1', { followUp: true });
+  run('version_1', { failed: true });
+  const second = run('version_2');
+  assert.equal(before(second), undefined, 'another person\'s, another Agent\'s, another question\'s, a later turn\'s and a failed run are never named');
+
+  const third = run('version_3');
+  const named = { runToken: store.get(second)!.runToken, agentVersion: 'version_2' };
+  assert.deepEqual(before(third), named, 'the caller\'s own earlier answer');
+  assert.equal(before(second), undefined, 'never a run asked after it');
+  assert.equal(before(run('version_4', { followUp: true })), undefined, 'a conversation\'s later turn names none');
+
+  // Named only while the caller can still read it: to the millisecond its hour ends.
+  const hourEnds = store.get(second)!.settledAt! + AN_HOUR;
+  const reads = (when: number) => store.read({ organizationId: installation.organizationId, actorMembershipId: 'membership_caller', runToken: named.runToken }, when);
+  assert.deepEqual([before(third, hourEnds - 1), reads(hourEnds - 1)?.testRunId], [named, second]);
+  assert.deepEqual([before(third, hourEnds), reads(hourEnds)], [undefined, undefined]);
+});
+
 test('retention erases a run once its hour has passed and its instance is erased, whatever the day', () => {
   const installation = hostedInstallation('inst_test_store_retention');
   const { management } = installation.stores;
