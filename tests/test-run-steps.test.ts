@@ -176,6 +176,7 @@ test('a backtick a client reads another way keeps no span in its paragraph', () 
   none(`\`\`\`\ncode\n\`\`\`\f\n\`\`\`\n${tag}\n\`\`\``);
   // A line of no-break space is text, so the paragraph and its open backtick run on.
   none(`a \`\n\u00a0\nb \` ${tag} \`x\``);
+  none(`a \`\n\u00a0\nb \` ${tag} \``);
   // A lone carriage return ends a line.
   none(`~~~\n~~~\r${tag}`);
   none(`\`\`\`\ncode\n\`\`\`\r${tag}\n`);
