@@ -134,18 +134,32 @@ test('a managed service lists its tools now, its writes as write with what they 
   assert.equal(service(await call('get_service', { service: 'freshdesk-managed' })).signIn, 'key');
 });
 
-test('an MCP preset says its tools come after connecting, and practice needs read marks', async (t) => {
+test('an MCP preset says its tools come after connecting, and a practice run leaves it out', async (t) => {
   const { f, call } = await harness(t, 'svc-mcp');
   const linear = service(await call('get_service', { service: 'linear' }));
   assert.equal(linear.signIn, 'oauth');
   assert.equal(linear.capabilitiesKnown, 'after_connecting');
   assert.equal(linear.capabilities, undefined);
-  assert.equal(linear.practice, 'needs_read_marks');
-  assert.match(linear.nextStep, /practice run leaves it out until the ones that only read are marked as reads in Admin/);
+  // Neither Admin nor update_connection marks a catalog MCP service's tools, so it promises no way in.
+  assert.equal(linear.practice, 'not_in_practice');
+  assert.match(linear.nextStep, /practice run leaves it out, since nothing marks a catalog service's tools as reads; ask the Agent in Slack/);
+  assert.doesNotMatch(linear.nextStep, /marked as reads in Admin|until/);
   assert.equal(service(await call('get_service', { service: 'stripe' })).signIn, 'key');
   assertNoInternals(JSON.stringify(linear), f);
   // The server's URL is the catalog's business, not the model's.
   assert.equal(JSON.stringify(linear).includes('https://'), false);
+
+  // A reviewed connector's tool choices carry Chickpea's own read marks, so its reads come with them.
+  for (const reviewed of ['bugsnag', 'meta-ads']) {
+    const result = service(await call('get_service', { service: reviewed }));
+    assert.equal(result.practice, 'needs_read_marks', reviewed);
+    assert.match(result.nextStep, /leaves it out until they are chosen on the Agent's page in Admin/);
+  }
+  for (const preset of CONNECTION_CATALOG_PRESETS) {
+    if ('managedToolkit' in preset || preset.url === undefined) continue;
+    const { practice } = service(await call('get_service', { service: preset.id }));
+    assert.equal(practice, preset.toolAccessMode === 'review' ? 'needs_read_marks' : 'not_in_practice', preset.id);
+  }
 });
 
 test('an API preset lists its methods and hosts, and practice sends only GET', async (t) => {
@@ -190,6 +204,10 @@ test('every catalog service returns under 28,000 characters, and every managed o
       const header = MANAGED_CONNECTOR_CATALOG.connector(preset.managedToolkit);
       assert.ok(header, `${preset.id}: the catalog has its capability headers`);
       assert.ok(header.capabilities.some(({ effect }) => effect === 'read'), `${preset.id}: a practice run has a read to use`);
+      // `does` follows effect, as a practice run does; a lane that disagreed would show a write as a read.
+      for (const { toolName, effect, accessLane } of header.capabilities) {
+        assert.equal(accessLane === 'read', effect === 'read', `${toolName}: its lane and effect agree`);
+      }
     }
     const result = await call('get_service', { service: preset.id });
     const parsed = service(result);

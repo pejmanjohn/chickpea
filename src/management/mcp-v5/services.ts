@@ -22,7 +22,8 @@ const READ_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD']);
 
 const PRACTICE: Readonly<Record<Service['practice'], string>> = {
   reads_ready: 'A practice run can use its read actions.',
-  needs_read_marks: 'Its tools are listed once someone connects it, and a practice run leaves it out until the ones that only read are marked as reads in Admin.',
+  needs_read_marks: 'Its tools are listed once someone connects it, and a practice run leaves it out until they are chosen on the Agent\'s page in Admin; it then uses the ones Chickpea knows only read.',
+  not_in_practice: 'Its tools are listed once someone connects it. A practice run leaves it out, since nothing marks a catalog service\'s tools as reads; ask the Agent in Slack to try it.',
   get_only: 'A practice run sends it only GET and HEAD requests.',
 };
 
@@ -66,11 +67,16 @@ function describe(preset: ConnectorCatalogPreset): Described {
       capabilities,
       capabilitiesKnown: 'now',
       // A practice run keeps a managed connection's read capabilities (test-run-plan.ts).
-      practice: capabilities.some(({ does }) => does === 'read') ? 'reads_ready' : 'needs_read_marks',
+      practice: capabilities.some(({ does }) => does === 'read') ? 'reads_ready' : 'not_in_practice',
     };
   }
   if (preset.url !== undefined && preset.auth) {
-    return { signIn: mcpSignIn(preset.auth), capabilitiesKnown: 'after_connecting', practice: 'needs_read_marks' };
+    return {
+      signIn: mcpSignIn(preset.auth),
+      capabilitiesKnown: 'after_connecting',
+      // Only a reviewed connector's tool choices carry read marks; nothing marks another catalog MCP service's tools.
+      practice: preset.toolAccessMode === 'review' ? 'needs_read_marks' : 'not_in_practice',
+    };
   }
   const { api } = preset as Extract<ConnectorPreset, { api: unknown }>;
   const paths = api.pathPrefixes?.length ? api.pathPrefixes : [''];

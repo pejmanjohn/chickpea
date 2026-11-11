@@ -453,8 +453,8 @@ export const getServiceOutput = z.strictObject({
   })).optional().describe('What the Agent can do with it. Absent until it is connected when capabilitiesKnown is after_connecting.'),
   capabilitiesKnown: z.enum(['now', 'after_connecting'])
     .describe('after_connecting: the service lists its tools only once someone signs in.'),
-  practice: z.enum(['reads_ready', 'needs_read_marks', 'get_only'])
-    .describe('What a practice run can use: reads_ready, its read actions; needs_read_marks, nothing until its tools that only read are marked as reads in Admin, so a practice run leaves it out until then; get_only, GET and HEAD requests only.'),
+  practice: z.enum(['reads_ready', 'needs_read_marks', 'not_in_practice', 'get_only'])
+    .describe('What a practice run can use: reads_ready, its read actions; needs_read_marks, nothing until its tools are chosen on the Agent\'s page in Admin, then the ones Chickpea knows only read; not_in_practice, nothing, since nothing marks its tools as reads, so a practice run leaves it out; get_only, GET and HEAD requests only.'),
   nextStep: z.string(),
 });
 
