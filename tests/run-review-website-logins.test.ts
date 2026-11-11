@@ -180,6 +180,20 @@ test('a hand-off link a later turn reads back from Slack goes from both places i
   const record = copy({ context: [{ author: 'Billing Agent', role: 'agent', text: row!.text, files: [] }] });
   assert.deepEqual(kept(record, ['SYNTHLIVE', 'live.provider']), []);
   assert.match(record.context[0]?.text ?? '', /Links in this Slack message:\n- \[browser link omitted\]$/);
+
+  // Anyone can write the label. What it wraps is removed elsewhere only as a whole web address,
+  // so it cannot break up a link or a username before their own rules see them.
+  const written = copy({
+    trigger: {
+      author: 'U012ABCDEF3',
+      text: '<.|Open the browser> <then|Open the browser> <https://billing.example.com/c|Open the browser> then ' +
+        'https://billing.example.com/callback?code=SYNTHCODE123 as Ops.Synthetic@example.com',
+      files: [],
+    },
+  });
+  assert.deepEqual(kept(written, ['SYNTHCODE123', 'ops.synthetic', 'synthetic@']), []);
+  assert.equal(written.trigger.text, `${BROWSER_LINK_OMITTED} ${BROWSER_LINK_OMITTED} ${BROWSER_LINK_OMITTED} then ` +
+    'https://billing.example.com/callback?[omitted] as [credential redacted]');
 });
 
 test('a saved username leaves every field, in any case and in every escaped or encoded form', () => {
