@@ -199,12 +199,13 @@ test('every session refuses downloads at the browser, and a browser that cannot 
   await refusing.close();
 });
 
-test('redaction replaces typed secrets and skips values too short to redact safely', () => {
+test('redaction replaces typed secrets, and a value too short to redact inside text only as a whole field', () => {
   const { session } = setup();
   session.addRedaction('hunter2!');
   session.addRedaction('287082');
   session.addRedaction('ab');
   assert.equal(session.redact('pw hunter2! code 287082 tab'), 'pw [redacted] code [redacted] tab');
+  assert.equal(session.redact('ab'), '[redacted]');
 });
 
 test('the policy follows the bound login: read-only unless its grant allows actions', async () => {
