@@ -671,8 +671,14 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   instance. A read that has not answered after 10 s is joined by a fresh read
   through a new stub, the first answer wins, and the reply arrives once the
   resumed run settles: `stalledReads` on a delivered attempt counts those
-  reads. `reason: reply_read_interrupted` on a thrown attempt means a read
-  failed outright, and the next attempt reattaches to the same submission.
+  reads. A fresh read that fails is dropped while another is still in flight.
+  `stalledReads` times 10 s is about how long the attempt's reads went
+  unanswered. Compare the end of that wait with the resumed instance's
+  `agent_boot`: within about 10 s of it, a fresh stub reached the new instance
+  while the old read hung; minutes past it, fresh reads hung too.
+  `reason: reply_read_interrupted` on a thrown attempt means a read failed
+  with no other in flight, and the next attempt reattaches to the same
+  submission.
   Count retries as `turn_latency` records with `attempt` above 1, and read why
   from the `reason` of the attempt before each one.
 - `state_rpc` is logged by the calling isolate (a Flue agent Durable Object,

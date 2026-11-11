@@ -395,13 +395,19 @@ test('a reattached observation seeded as coding backs off after 10 s idle, then 
   ]);
 });
 
-/** A route whose reads answer only when the test answers them. */
+/**
+ * A route whose reads answer only when the test answers them. Like `fetch`, a
+ * read rejects once its request is cancelled.
+ */
 function heldRoute() {
   const requests: Request[] = [];
   const answers: Array<(response: Response) => void> = [];
   const route: AgentUpdatesRoute = (request) => {
     requests.push(request);
-    return new Promise((resolve) => answers.push(resolve));
+    return new Promise((resolve, reject) => {
+      answers.push(resolve);
+      request.signal.addEventListener('abort', () => reject(new DOMException('cancelled', 'AbortError')), { once: true });
+    });
   };
   return { route, requests, answer: (index: number, response: Response) => answers[index]!(response) };
 }
@@ -447,4 +453,45 @@ test('at most three reads stay in flight, and the observation\'s abort ends them
   controller.abort(yieldReason);
   await assert.rejects(observed, (error: unknown) => error === yieldReason);
   assert.ok(stuck.requests.every((request) => request.signal.aborted));
+});
+
+test('once a fresh route answers, later reads go through it', async () => {
+  const stuck = heldRoute();
+  const { route: fresh, requests } = fakeRoute([
+    { next: '0_1', upToDate: true },
+    { items: [settled()], next: '0_2' },
+  ]);
+  const settlement = await observeAgentSettlementBounded(stuck.route, TARGET,
+    { stalledReadMs: 20, sleep: async () => {}, reconnect: () => fresh });
+  assert.equal(settlement.outcome, 'completed');
+  assert.deepEqual(requests.map((url) => url.searchParams.get('offset')), ['-1', '0_1']);
+  assert.equal(stuck.requests.length, 1, 'the route that stalled is not read again');
+});
+
+// Defect caught: a fresh read that fails (the object is still being replaced)
+// ending a read that would have answered, which spends an attempt of the turn.
+test('a fresh read that fails leaves the slow read to answer', async () => {
+  const slow = heldRoute();
+  setTimeout(() => slow.answer(0, settledPage()), 100);
+  let reconnects = 0;
+  const settlement = await observeAgentSettlementBounded(slow.route, TARGET, {
+    stalledReadMs: 30,
+    sleep: async () => {},
+    reconnect: () => {
+      reconnects += 1;
+      return async () => { throw new TypeError('Network connection lost'); };
+    },
+  });
+  assert.equal(settlement.outcome, 'completed');
+  assert.ok(reconnects >= 2, 'each stall still sends a fresh read');
+});
+
+test('a read fails once no read is left in flight, with the last failure', async () => {
+  const lost = new TypeError('Network connection lost');
+  const failing: AgentUpdatesRoute = () => new Promise((_, reject) => setTimeout(reject, 60, lost));
+  await assert.rejects(observeAgentSettlementBounded(failing, TARGET, {
+    stalledReadMs: 20,
+    sleep: async () => {},
+    reconnect: () => async () => { throw new Error('still being replaced'); },
+  }), (error: unknown) => error === lost);
 });

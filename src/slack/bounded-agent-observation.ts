@@ -121,7 +121,9 @@ interface AgentViewPage {
  * while the run resumes on a new instance. So a read that has not answered
  * after 10 s is joined by a fresh one through a new route, and the first
  * answer wins. A slow read is never abandoned for that: the oldest of three
- * in flight is.
+ * in flight is. A read that fails ends the wait only when no other is in
+ * flight, so a fresh read that fails while the object is being replaced does
+ * not spend one of the turn's attempts.
  */
 class AgentView {
   constructor(
@@ -151,7 +153,12 @@ class AgentView {
         reads.push(read);
         readAgentViewPage(route, this.target, url, read.signal).then(
           (page) => settle(() => { this.route = route; resolve(page); }),
-          (error: unknown) => { if (!read.signal.aborted) settle(() => reject(error)); },
+          (error: unknown) => {
+            const at = reads.indexOf(read);
+            if (at < 0) return;
+            reads.splice(at, 1);
+            if (reads.length === 0) settle(() => reject(error));
+          },
         );
         timer = setTimeout(stalled, stalledReadMs);
       };
