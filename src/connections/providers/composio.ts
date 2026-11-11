@@ -5739,12 +5739,14 @@ function reportedFailureReason(error: unknown, apiKey: string): string | undefin
 
 /**
  * The first `max` characters, less the token a cut lands in, however long: its start can be
- * part of a credential that no rule recognizes once it is cut.
+ * part of a credential that no rule recognizes once it is cut. A scan, not a regex: `\S+$`
+ * takes quadratic time over a long token followed by a space.
  */
 function cutBeforeToken(text: string, max: number): string {
   if (text.length <= max) return text;
-  const head = text.slice(0, max);
-  return /\s/.test(text.charAt(max)) ? head : head.replace(/\S+$/, '');
+  let end = max;
+  while (end > 0 && !/\s/.test(text.charAt(end))) end -= 1;
+  return text.slice(0, end);
 }
 
 /** The connected service's HTTP status, when Composio's failed result carries one. */
