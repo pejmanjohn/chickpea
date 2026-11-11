@@ -3,18 +3,32 @@
  * browser tools can show them in.
  *
  * A page may show a typed value with its whitespace collapsed, escaped as
- * JSON, cut short, or URL-encoded, and a snapshot collapses, cuts and escapes
- * it again. The tools redact each raw name, value and message before they
- * transform it, then redact their output once more.
+ * JSON or HTML, in another letter case, cut short, or URL-encoded, and a
+ * snapshot collapses, cuts and escapes it again. The tools redact each raw
+ * name, value and message before they transform it, then redact their output
+ * once more. This is the second layer: the fields a secret was typed into are
+ * hidden by identity, whatever they hold (`BrowserPage.fillSecret`).
  */
 
-const REDACTED = '[redacted]';
+export const REDACTED = '[redacted]';
+
+/** What a screenshot shows in place of a typed secret: always this long, so it does not give away the secret's length. */
+const MASK = '••••••••';
 
 /**
  * A secret shorter than this is replaced only where it is a whole field, such
  * as a revealed password box. Inside text it would erase ordinary words.
  */
 const MIN_INLINE_LENGTH = 4;
+
+/**
+ * A secret at least this long also matches in another letter case, as a page
+ * that upper-cases text shows it. A shorter one would match ordinary words.
+ */
+const CASELESS_MIN_LENGTH = 8;
+
+/** A secret of only this many digits or more, such as a one-time code, also matches with its digits grouped. */
+const GROUPED_DIGITS = /^\d{6,}$/;
 
 const ELLIPSIS = '…';
 
@@ -31,26 +45,74 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/**
- * A whitespace run of a secret as text or a URL may carry it: any whitespace,
- * so a collapsed or rewrapped form matches, `+`, or an encoded space, tab,
- * line break or no-break space.
- */
-const SPACE_FORMS = '(?:\\s|\\+|%20|%0[9a-dA-D]|%[cC]2%[aA]0)+';
+function caselessHex(hex: string): string {
+  return hex.replace(/[a-f]/g, (digit) => `[${digit}${digit.toUpperCase()}]`);
+}
+
+/** HTML's no-break space, in any of its references. */
+const HTML_SPACE = '&nbsp;|&#0*160;|&#[xX]0*[aA]0;';
+
+/** A whitespace run of a secret in page text: any whitespace, so a collapsed or rewrapped form matches, or a no-break space reference. */
+const TEXT_SPACE = `(?:\\s|${HTML_SPACE})+`;
 
 /**
- * One character of a secret as text or a URL may carry it: as it is, or
- * percent-encoded in either hex case. A script that joins a typed value into
- * an address leaves some characters as they are and encodes others, so each
- * one matches both ways.
+ * A whitespace run of a secret as text or a URL may carry it: as in text,
+ * `+`, or an encoded space, tab, line break or no-break space.
  */
-function charForms(char: string): string {
-  if (char === ' ') return SPACE_FORMS;
-  const encoded = [...new TextEncoder().encode(char)]
-    .map((byte) => `%${byte.toString(16).padStart(2, '0').replace(/[a-f]/g, (digit) => `[${digit}${digit.toUpperCase()}]`)}`)
-    .join('');
-  // The encoded form first: `%` is the start of its own encoding, `%25`.
-  return `(?:${encoded}|${escapeRegExp(char)})`;
+const ENCODED_SPACE = `(?:\\s|\\+|%20|%0[9a-dA-D]|%[cC]2%[aA]0|${HTML_SPACE})+`;
+
+const JSON_ESCAPED = new Set(['"', '\\', '/']);
+const HTML_NAMES: Record<string, string> = { '"': 'quot', "'": 'apos', '&': 'amp', '<': 'lt', '>': 'gt' };
+
+/** A character percent-encoded as UTF-8, in either hex case. */
+function percentEncoded(char: string): string {
+  return [...new TextEncoder().encode(char)].map((byte) => `%${caselessHex(byte.toString(16).padStart(2, '0'))}`).join('');
+}
+
+/**
+ * The patterns for one character of a secret escaped, as page text may carry
+ * it: JSON's `\"`, `\\` and `\/` (PHP escapes the slash), `é` for a
+ * character outside ASCII (Python's default), and HTML's named and numeric
+ * references. Only characters that encoders escape get them. `encoded` lets
+ * a JSON escape's own characters be percent-encoded, as JSON in a query is.
+ */
+function escapedForms(char: string, encoded: boolean): string[] {
+  const either = (text: string) => (encoded ? `(?:${percentEncoded(text)}|${escapeRegExp(text)})` : escapeRegExp(text));
+  const forms: string[] = [];
+  if (JSON_ESCAPED.has(char)) forms.push(either('\\') + either(char));
+  const code = char.codePointAt(0)!;
+  const name = HTML_NAMES[char];
+  if (code > 0x7e) {
+    const units = Array.from({ length: char.length }, (_, index) => char.charCodeAt(index));
+    forms.push(units.map((unit) => `${either('\\')}u${caselessHex(unit.toString(16).padStart(4, '0'))}`).join(''));
+  }
+  if (name || code > 0x7e) forms.push(`&#0*${code};`, `&#[xX]0*${caselessHex(code.toString(16))};`);
+  if (name) forms.push(`&${name};`);
+  return forms;
+}
+
+/**
+ * One character of a secret in any form text may carry it: as it is, in
+ * either case for a long secret, or escaped. `encoded` adds percent-encoding:
+ * a script that joins a typed value into an address leaves some characters as
+ * they are and encodes others, so each one matches both ways.
+ */
+function charPattern(char: string, options: { caseless: boolean; encoded: boolean }): string {
+  if (char === ' ') return options.encoded ? ENCODED_SPACE : TEXT_SPACE;
+  const lower = char.toLowerCase();
+  const upper = char.toUpperCase();
+  const literal = options.caseless && lower !== upper && lower.length === 1 && upper.length === 1
+    ? `[${lower}${upper}]`
+    : escapeRegExp(char);
+  // Longer forms first: `%` and `\` start their own escapes, `%25` and `\\`.
+  const forms = [...(options.encoded ? [percentEncoded(char)] : []), ...escapedForms(char, options.encoded), literal];
+  return forms.length === 1 ? literal : `(?:${forms.join('|')})`;
+}
+
+function secretPattern(secret: string, encoded: boolean): string {
+  const options = { caseless: secret.length >= CASELESS_MIN_LENGTH, encoded };
+  const separator = GROUPED_DIGITS.test(secret) ? (encoded ? '(?:[\\s.+-]|%20)?' : '[\\s.-]?') : '';
+  return [...secret].map((char) => charPattern(char, options)).join(separator);
 }
 
 /** Decodes each run of %XX escapes; a run that is not valid UTF-8 stays as it is. */
@@ -81,18 +143,21 @@ function cutForm(form: string): CutForm {
 }
 
 /**
- * Replaces the start of a secret left in front of an ellipsis, as cutting a
- * long value leaves it: the longest prefix of the form that ends there.
+ * Replaces the start of a secret left in front of an ellipsis or three dots,
+ * as cutting a long value leaves it: the longest prefix of the form that ends
+ * there.
  */
-function redactCutPrefix(text: string, { form, failure }: CutForm): string {
-  if (!text.includes(ELLIPSIS)) return text;
+function replaceCutPrefix(text: string, { form, failure }: CutForm, replacement: string): string {
+  if (!text.includes(ELLIPSIS) && !text.includes('...')) return text;
   let result = '';
   let from = 0;
   let matched = 0;
   for (let i = 0; i < text.length; i += 1) {
     const char = text[i]!;
-    if (char === ELLIPSIS && matched >= MIN_INLINE_LENGTH) {
-      result += text.slice(from, Math.max(from, i - matched)) + REDACTED;
+    const cut = char === ELLIPSIS || (char === '.' && text.startsWith('...', i));
+    if (cut && matched >= MIN_INLINE_LENGTH) {
+      // A prefix that reaches back into the last replacement extends it.
+      if (i - matched >= from) result += text.slice(from, i - matched) + replacement;
       from = i;
     }
     while (matched > 0 && (matched === form.length || form[matched] !== char)) matched = failure[matched - 1]!;
@@ -109,6 +174,11 @@ export class TypedSecrets {
   private encodedPattern: RegExp | undefined;
   private cutForms: CutForm[] = [];
 
+  /** No secret has been typed. */
+  get empty(): boolean {
+    return this.short.size === 0 && this.inline.size === 0;
+  }
+
   add(value: string): void {
     const secret = collapse(value);
     if (!secret) return;
@@ -118,22 +188,29 @@ export class TypedSecrets {
     }
     if (this.inline.has(secret)) return;
     this.inline.add(secret);
+    // Composed and decomposed, so a page that normalizes the text differently still matches.
     // Longest first, so a secret that contains another is replaced whole.
-    const forms = [...new Set([...this.inline].flatMap((each) => [each, escapeQuoted(each)]))]
+    const variants = [...new Set([...this.inline].flatMap((each) => [each, each.normalize('NFC'), each.normalize('NFD')]))]
       .sort((a, b) => b.length - a.length);
-    // Each whitespace run matches any whitespace, so a collapsed or rewrapped form matches too.
-    this.pattern = new RegExp(forms.map((form) => form.split(' ').map(escapeRegExp).join('\\s+')).join('|'), 'g');
-    this.encodedPattern = new RegExp(forms.map((form) => [...form].map(charForms).join('')).join('|'), 'g');
-    this.cutForms = forms.map(cutForm);
+    this.pattern = new RegExp(variants.map((each) => secretPattern(each, false)).join('|'), 'g');
+    this.encodedPattern = new RegExp(variants.map((each) => secretPattern(each, true)).join('|'), 'g');
+    this.cutForms = [...new Set(variants.flatMap((each) => [each, escapeQuoted(each)]))]
+      .sort((a, b) => b.length - a.length)
+      .map(cutForm);
   }
 
   redact(text: string): string {
-    if (this.short.size > 0 && this.short.has(collapse(text))) return REDACTED;
-    if (!this.pattern || !this.encodedPattern) return text;
-    // Only text with a `%` or a `+` can hold an encoded form, and the plain pattern is much the faster on the rest.
-    let result = text.replace(/[%+]/.test(text) ? this.encodedPattern : this.pattern, REDACTED);
-    for (const form of this.cutForms) result = redactCutPrefix(result, form);
-    return result;
+    return this.replace(text, REDACTED);
+  }
+
+  /** The text with each typed secret drawn as bullets, for a screenshot. */
+  mask(text: string): string {
+    return this.replace(text, MASK);
+  }
+
+  /** Whether the text shows a typed secret in any form `redact` replaces. */
+  shows(text: string): boolean {
+    return this.redact(text) !== text;
   }
 
   /**
@@ -144,7 +221,16 @@ export class TypedSecrets {
   redactUrl(url: string): string {
     return this.redact(url).replace(/[^/?#&=;:@]+/g, (part) => {
       const decoded = [percentDecode(part.replace(/\+/g, ' ')), percentDecode(part)];
-      return decoded.some((each) => this.redact(each) !== each) ? REDACTED : part;
+      return decoded.some((each) => this.shows(each)) ? REDACTED : part;
     });
+  }
+
+  private replace(text: string, replacement: string): string {
+    if (this.short.size > 0 && this.short.has(collapse(text))) return replacement;
+    if (!this.pattern || !this.encodedPattern) return text;
+    // Only text with a `%` or a `+` can hold an encoded form, and the plain pattern is much the faster on the rest.
+    let result = text.replace(/[%+]/.test(text) ? this.encodedPattern : this.pattern, replacement);
+    for (const form of this.cutForms) result = replaceCutPrefix(result, form, replacement);
+    return result;
   }
 }

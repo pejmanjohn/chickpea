@@ -117,6 +117,61 @@ test('a URL loses a secret a script joined into it, where some characters are en
   );
 });
 
+test('a secret is replaced where page text escapes it for JSON or HTML', () => {
+  const typed = secrets('Synth/"é<Pass>&\'42');
+  // PHP's JSON escapes the slash; Python's escapes every character outside ASCII.
+  assert.equal(typed.redact('{"p":"Synth\\/\\"\\u00e9<Pass>&\'42"}'), '{"p":"[redacted]"}');
+  assert.equal(typed.redact('{"p":"Synth/\\"\\u00E9<Pass>&\'42"}'), '{"p":"[redacted]"}');
+  assert.equal(typed.redact('<input value="Synth/&quot;é&lt;Pass&gt;&amp;&#39;42">'), '<input value="[redacted]">');
+  assert.equal(typed.redact('value="Synth/&#34;&#xE9;&#60;Pass&#x3e;&#038;&apos;42"'), 'value="[redacted]"');
+  assert.equal(secrets('Synthetic Pass').redact('Synthetic&nbsp;Pass'), '[redacted]');
+});
+
+test('a secret of 8 characters or more is replaced in another letter case, and a shorter one only as typed', () => {
+  assert.equal(secrets('Synthetic-Pass-1234').redact('YOU TYPED SYNTHETIC-PASS-1234'), 'YOU TYPED [redacted]');
+  assert.equal(secrets('Synthetic-Pass-1234').redact('synthetic-pass-1234'), '[redacted]');
+  assert.equal(secrets('Summer26').redact('summer26 sale'), '[redacted] sale');
+  // Under 8, another case would erase ordinary words: `Ops1` would take every `OPS1` part number.
+  assert.equal(secrets('Ops1').redact('Part OPS1 and Ops1'), 'Part OPS1 and [redacted]');
+});
+
+test('a secret typed with surrounding whitespace is replaced where the page trims it', () => {
+  assert.equal(secrets('  Synthetic-Pass-1234 \n').redact('Wrong password: Synthetic-Pass-1234.'), 'Wrong password: [redacted].');
+});
+
+test('a code of 6 digits or more is replaced with its digits grouped, and only such a code', () => {
+  const typed = secrets('482913');
+  assert.equal(typed.redact('Code: 482 913'), 'Code: [redacted]');
+  assert.equal(typed.redact('Code: 482-913 or 48.29.13'), 'Code: [redacted] or [redacted]');
+  assert.equal(typed.redactUrl('https://site.example/verify?code=482+913'), 'https://site.example/verify?code=[redacted]');
+  assert.equal(typed.redact('Code: 482  913'), 'Code: 482  913');
+  assert.equal(secrets('Synth-1234').redact('Synth 1234'), 'Synth 1234');
+});
+
+test('a secret is replaced in either Unicode normalization form', () => {
+  const composed = 'Synth\u00e9-Pass';
+  const decomposed = 'Synthe\u0301-Pass';
+  assert.equal(secrets(composed).redact(`Wrong password: ${decomposed}`), 'Wrong password: [redacted]');
+  assert.equal(secrets(decomposed).redact(`Wrong password: ${composed}`), 'Wrong password: [redacted]');
+});
+
+test('the start of a secret left before three dots is replaced', () => {
+  const typed = secrets('Synthetic-Passphrase-0042');
+  assert.equal(typed.redact('Your phrase: Synthetic-Pa...'), 'Your phrase: [redacted]...');
+  assert.equal(typed.redact('Synthetic-Pa.. and more'), 'Synthetic-Pa.. and more');
+  assert.equal(typed.redact('Syn...'), 'Syn...');
+});
+
+test('mask draws a typed secret as bullets of one length, and shows tells whether text holds one', () => {
+  const typed = secrets('Synthetic-Pass-1234', 'Q7!');
+  assert.equal(typed.mask('Wrong password: Synthetic-Pass-1234'), 'Wrong password: ••••••••');
+  assert.equal(typed.mask('Q7!'), '••••••••');
+  assert.equal(typed.shows('Wrong password: synthetic-pass-1234'), true);
+  assert.equal(typed.shows('Wrong password'), false);
+  assert.equal(new TypedSecrets().empty, true);
+  assert.equal(typed.empty, false);
+});
+
 test('a value of only whitespace adds no secret', () => {
   const typed = secrets('   ', '');
   assert.equal(typed.redact(' '), ' ');
