@@ -314,6 +314,10 @@ test('every reproduction from the reviews of this change reaches the model as [�
       '{"clientsecret":"winter","accesstoken":"meadow","sessionid":"alpha","PHPSESSID":"beta"}',
       '{ "clientsecret": […] "accesstoken": […] "sessionid": […] "PHPSESSID": […]',
     ],
+    // The automatic commit review of the label pass.
+    ['password:\nhunter', 'password: […]'],
+    ['“password”: winter', '“password”: […]'],
+    ['user[password]=alpha beta', '[…]'],
     // The first review's cases, with the turn's Composio key. An unquoted secret value runs to
     // the end of its line, so the first `token=` takes the rest of it.
     [
