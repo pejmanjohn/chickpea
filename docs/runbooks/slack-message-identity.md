@@ -717,6 +717,24 @@ their draft.
 When native progress is already visible, retire it before publishing the
 combined file reply; preserve uncertainty if that cleanup cannot be confirmed.
 
+With `CHICKPEA_SLACK_ANSWER_RELEASE=host` the host does not wait for a
+declaration (`src/slack/host-release-relay.ts`). It holds each model step's
+text and streams the step once its settled prefix reaches the hold with no
+tool call in the step, after it records the `requested` intent under the
+`host_release` call id. Text before a tool call is never streamed. A tool
+call, another step, a reset or a data part outside the release's list after
+the release means the step was not the final answer: queued text is dropped,
+the host stops and deletes the stream (the file-reply path), and the final
+posts fresh with no `_Corrected_` marker. A stream that carries the native task
+card stays on its prefix and the final corrects it. Flue's recovery of an
+interrupted step continues the stream. The same blocking conditions as above
+keep a reply terminal when they come first. The Agent object skips its
+would-stop fold once its final step passes the same rule, so a message sent
+during a streamed answer waits for its own turn. Checks that need live Slack:
+a `chat.stopStream` and `chat.delete` on a message seconds into its stream
+leaves no stub or unread mark on desktop and mobile, and a second stream in
+the same thread a few seconds later posts in order with the same persona.
+
 Validate both layers: deterministic tests for protocol, concurrency, replay,
 and destination binding; real-model cases for contextual requests, prohibitions,
 and quoted instructions. A parser test that allows a tool does not prove the

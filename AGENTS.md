@@ -189,23 +189,6 @@ which here means Chickpea Cloud running a pinned Core commit.
 - Run a delta re-review only for security, storage, or money fixes, or a fix
   larger than about 50 changed lines. The automatic commit security review
   always runs.
-- A PR gets at most one first review. The security-focused delta review
-  belongs to T3 and T4 only; T1 and T2 rely on the automatic commit security
-  review.
-- A PR gets at most three fix rounds. A fix round is the author's answer to
-  one batch of review findings, however many pushes it takes. The reviewer's
-  own small fixes, a fix for a failed gate, and a train's rebuild are not fix
-  rounds. After the third, never start a fourth. Redesign instead, in a
-  design note and a new PR, or write each remaining finding into the PR
-  description as accepted residual risk with its reason, then merge or close.
-  A remaining security, privacy, or money finding is the maintainer's to
-  accept: ask once, and hold only that merge. Findings that keep naming new
-  cases of one kind mean the approach is wrong, not that it needs another
-  round.
-- Run a mutation pass at most once per PR, by the author or the reviewer, not
-  both. A fix round tests its change with ordinary tests. A long harness such
-  as `npm run mcp-cards:harness` runs at most once per PR and once per train,
-  not once per reviewer.
 
 ## Human gates
 
