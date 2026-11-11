@@ -222,7 +222,7 @@ export class TestRunStoreLogic {
     const earlier = this.db.all(
       `SELECT * FROM management_test_runs
        WHERE organization_id = ? AND created_at < ? AND actor_membership_id = ? AND agent_id = ?
-         AND question_digest = ? AND turn = 1 AND status = 'answered' AND settled_at >= ?
+         AND question_digest = ? AND turn = 1 AND status = 'answered' AND settled_at > ?
        ORDER BY created_at DESC`,
       row.organizationId,
       row.createdAt,
