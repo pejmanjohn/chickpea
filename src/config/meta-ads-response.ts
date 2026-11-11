@@ -1,7 +1,7 @@
 import { META_ADS_ACCOUNT_HELPER, canonicalMetaAdsAccountId } from './meta-ads-policy.ts';
+import { readToolsListAnswer } from './mcp-tools-list.ts';
 
 const MAX_META_ADS_HELPER_RESPONSE_BYTES = 512_000;
-const MAX_META_ADS_TOOL_LIST_BYTES = 8_000_000;
 const MAX_META_ADS_ACCOUNT_RECORDS = 1_000;
 const MAX_META_ADS_ACCOUNT_TEXT = 240;
 const META_ADS_HELPER_RESPONSE_DEADLINE_MS = 30_000;
@@ -86,38 +86,52 @@ export async function sanitizeMetaAdsAccountHelperResponse(
  * output schema no longer describes what the MCP client receives. Replace only
  * that advertised contract; input schemas and every other tool stay untouched.
  */
+export function advertiseMetaAdsAccountHelper(tools: unknown[]): unknown[] {
+  let matches = 0;
+  const rewritten = tools.map((tool) => {
+    if (!isRecord(tool) || tool.name !== META_ADS_ACCOUNT_HELPER) return tool;
+    matches += 1;
+    return {
+      ...tool,
+      description: META_ADS_ACCOUNT_HELPER_DESCRIPTION,
+      outputSchema: META_ADS_ACCOUNT_HELPER_OUTPUT_SCHEMA,
+    };
+  });
+  if (matches > 1) throw unsupportedToolListing('duplicate-account-helper');
+  return rewritten;
+}
+
+/** {@link advertiseMetaAdsAccountHelper} over one tools/list answer. */
 export async function advertiseMetaAdsAccountHelperOutput(
   request: Request,
   response: Response,
 ): Promise<Response> {
-  if (!(await isToolsListRequest(request)) || !response.ok) return response;
-  const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
-  const body = await readBoundedText(
-    response,
-    META_ADS_HELPER_RESPONSE_DEADLINE_MS,
-    MAX_META_ADS_TOOL_LIST_BYTES,
-    (reason) => unsupportedToolListing(reason),
-  );
-  if (contentType.includes('text/event-stream')) {
-    return rebuiltResponse(response, rewriteToolsListSse(body), 'text/event-stream');
-  }
-  if (!contentType.includes('application/json')) throw unsupportedToolListing('content-type');
-  const payload = parseJson(body, response);
-  return rebuiltResponse(response, JSON.stringify(rewriteToolsListPayload(payload)), 'application/json');
+  const listing = await toolsListRequest(request);
+  if (!listing || !response.ok) return response;
+  return readToolsListAnswer(response, {
+    id: listing.id,
+    page: (result) => ({ ...result, tools: advertiseMetaAdsAccountHelper(result.tools) }),
+    refuse: unsupportedToolListing,
+  });
 }
 
-async function readBoundedText(
-  response: Response,
-  deadlineMs: number,
-  maxBytes = MAX_META_ADS_HELPER_RESPONSE_BYTES,
-  failure: (reason: string) => Error = (reason) => unsupportedResponse(response, reason),
-): Promise<string> {
+async function toolsListRequest(request: Request): Promise<Record<string, unknown> | undefined> {
+  if (request.method !== 'POST') return undefined;
+  try {
+    const value = await request.clone().json() as unknown;
+    return isRecord(value) && value.method === 'tools/list' ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function readBoundedText(response: Response, deadlineMs: number): Promise<string> {
   if (!Number.isFinite(deadlineMs) || deadlineMs <= 0 || deadlineMs > META_ADS_HELPER_RESPONSE_DEADLINE_MS) {
     throw new RangeError('Meta Ads helper response deadline is invalid.');
   }
   const declared = Number(response.headers.get('content-length'));
-  if (Number.isFinite(declared) && declared > maxBytes) {
-    throw failure('response-size');
+  if (Number.isFinite(declared) && declared > MAX_META_ADS_HELPER_RESPONSE_BYTES) {
+    throw unsupportedResponse(response, 'response-size');
   }
   if (!response.body) return '';
   const reader = response.body.getReader();
@@ -129,9 +143,9 @@ async function readBoundedText(
       const chunk = await reader.read();
       if (chunk.done) break;
       bytes += chunk.value.byteLength;
-      if (bytes > maxBytes) {
+      if (bytes > MAX_META_ADS_HELPER_RESPONSE_BYTES) {
         await reader.cancel();
-        throw failure('response-size');
+        throw unsupportedResponse(response, 'response-size');
       }
       value += decoder.decode(chunk.value, { stream: true });
     }
@@ -142,7 +156,7 @@ async function readBoundedText(
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       void reader.cancel();
-      reject(failure('response-deadline'));
+      reject(unsupportedResponse(response, 'response-deadline'));
     }, deadlineMs);
   });
   try {
@@ -151,73 +165,6 @@ async function readBoundedText(
     if (timer !== undefined) clearTimeout(timer);
     reader.releaseLock();
   }
-}
-
-async function isToolsListRequest(request: Request): Promise<boolean> {
-  if (request.method !== 'POST') return false;
-  try {
-    const value = await request.clone().json() as unknown;
-    return isRecord(value) && value.method === 'tools/list';
-  } catch {
-    return false;
-  }
-}
-
-function rewriteToolsListPayload(value: unknown): Record<string, unknown> {
-  if (!isRecord(value) || value.jsonrpc !== '2.0' || !('id' in value) || 'error' in value ||
-      !(['string', 'number'].includes(typeof value.id) || value.id === null) ||
-      !isRecord(value.result) || !Array.isArray(value.result.tools)) {
-    throw unsupportedToolListing('json-rpc');
-  }
-  let matches = 0;
-  const tools = value.result.tools.map((tool) => {
-    if (!isRecord(tool) || tool.name !== META_ADS_ACCOUNT_HELPER) return tool;
-    matches += 1;
-    return {
-      ...tool,
-      description: META_ADS_ACCOUNT_HELPER_DESCRIPTION,
-      outputSchema: META_ADS_ACCOUNT_HELPER_OUTPUT_SCHEMA,
-    };
-  });
-  if (matches > 1) throw unsupportedToolListing('duplicate-account-helper');
-  return { ...value, result: { ...value.result, tools } };
-}
-
-function rewriteToolsListSse(body: string): string {
-  const events = body.replace(/\r\n/g, '\n').split('\n\n').filter((block) => block.trim());
-  let responses = 0;
-  const rewritten = events.map((event) => {
-    const lines = event.split('\n');
-    const dataIndexes: number[] = [];
-    const data: string[] = [];
-    for (const [index, line] of lines.entries()) {
-      if (line.startsWith('data:')) {
-        dataIndexes.push(index);
-        data.push(line.slice(5).replace(/^ /, ''));
-      } else if (line && !line.startsWith(':') && !line.startsWith('event:') &&
-          !line.startsWith('id:') && !line.startsWith('retry:')) {
-        throw unsupportedToolListing('sse-field');
-      }
-    }
-    if (data.length === 0) return event;
-    let value: unknown;
-    try {
-      value = JSON.parse(data.join('\n')) as unknown;
-    } catch {
-      throw unsupportedToolListing('invalid-json');
-    }
-    if (isRecord(value) && isRecord(value.result) && Array.isArray(value.result.tools)) {
-      value = rewriteToolsListPayload(value);
-      responses += 1;
-    }
-    const first = dataIndexes[0]!;
-    return lines.flatMap((line, index) => {
-      if (index === first) return [`data: ${JSON.stringify(value)}`];
-      return dataIndexes.includes(index) ? [] : [line];
-    }).join('\n');
-  });
-  if (responses !== 1) throw unsupportedToolListing('sse-response-count');
-  return `${rewritten.join('\n\n')}\n\n`;
 }
 
 function parseSingleSsePayload(body: string, response: Response): unknown {

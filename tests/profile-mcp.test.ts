@@ -696,12 +696,12 @@ test('runtime-plan Meta account helper accepts bounded metadata and sanitizes JS
           ] } },
         });
       } });
-      assert.deepEqual(definition?.tools, [META_ADS_ACCOUNT_HELPER]);
       const listing = await definition!.fetch!('https://mcp.facebook.com/ads', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'tools/list', params: {} }),
       });
       const listed = await listing.json() as { result: { tools: Array<Record<string, unknown>> } };
+      assert.deepEqual(listed.result.tools.map(({ name }) => name), [META_ADS_ACCOUNT_HELPER]);
       assert.deepEqual((listed.result.tools[0]!.outputSchema as { required: string[] }).required, ['ad_accounts']);
       const response = await definition!.fetch!('https://mcp.facebook.com/ads', {
         method: 'POST', headers: { 'content-type': 'application/json' },
@@ -732,7 +732,11 @@ test('runtime-plan direct Meta definitions withhold unscoped tools and reject an
     readOnlyTools: [metaReportTool, metaScoreTool],
     toolArgumentConstraints: { [metaReportTool]: { ad_account_id: ['act_123'] } },
   }]);
-  assert.deepEqual(definition?.tools, [metaReportTool]);
+  await assert.rejects(definition!.fetch!('https://mcp.facebook.com/ads', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: metaScoreTool, arguments: {} } }),
+  }), /not selected for this Agent/);
   await assert.rejects(definition!.fetch!('https://mcp.facebook.com/ads', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call',
@@ -1098,7 +1102,7 @@ async function accountMcpRequest(
       }], undefined, { workspaceId: 'T_TEST', actorMembershipId: 'member' }, {
         createGuardedFetch: () => (async (input, init) => {
           captured.push(new Request(input, init));
-          return new Response('{}');
+          return Response.json({ jsonrpc: '2.0', id: 1, result: { tools: [{ name: 'search' }] } });
         }) as typeof fetch,
       });
       try {
