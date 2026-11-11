@@ -258,6 +258,16 @@ export class TestRunStoreLogic {
     };
   }
 
+  /** A follow-up's earlier turns its message left out for length, kept beside its outcome; written before its dispatch. */
+  recordDroppedTurns(testRunId: string, droppedTurns: number): void {
+    const result = this.get(testRunId)?.result ?? {};
+    this.db.run(
+      `UPDATE management_test_runs SET result_json = ? WHERE test_run_id = ? AND status = 'admitted'`,
+      JSON.stringify({ ...result, droppedTurns } satisfies TestRunResult),
+      testRunId,
+    );
+  }
+
   /** The caller's practice runs of one Agent whose text is still kept, newest first; another person's never. */
   list(query: PracticeRunsQuery, at: number): PracticeRunListing[] {
     return this.db.all(

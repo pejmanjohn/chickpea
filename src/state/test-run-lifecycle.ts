@@ -165,6 +165,8 @@ export class TestRunLifecycle {
     }
     const { row } = admission;
     const { message, quoted } = practiceMessage(run.question, admission.earlier);
+    // Before any wait, so the run is still admitted: the result says which turns its Agent never saw.
+    if (quoted < admission.earlier.length) testRuns.recordDroppedTurns(row.testRunId, admission.earlier.length - quoted);
     const { quotesEarlierTurns: _sent, ...data } = request.initialData;
     const initialData = quoted > 0 ? { ...data, quotesEarlierTurns: true as const } : data;
     await this.deps.armAlarm(testRuns.nextDueAt(at) ?? at);

@@ -82,7 +82,8 @@ export function practiceDigest(steps: readonly PracticeStep[]): string {
 /** [service, tool] for a call; [skill, 'skill'] for a skill load; [tool] for a call of no service. */
 function digestNames(step: PracticeStep): string[] {
   if (step.kind === 'skill') return [oneLine(step.tool), 'skill'];
-  const tool = step.tool === CONNECTION_REQUEST_TOOL_NAME ? requestMethod(step.input) : oneLine(step.tool);
+  // The method the settled step recorded from the call's own arguments; never read back from its cut input line.
+  const tool = step.tool === CONNECTION_REQUEST_TOOL_NAME ? step.method ?? 'request' : oneLine(step.tool);
   const service = step.service ?? (step.tool === READ_WEB_PAGE_TOOL_NAME || step.tool === WEB_SEARCH_TOOL_NAME ? 'the web' : undefined);
   return service ? [oneLine(service), tool] : [tool];
 }
@@ -90,13 +91,6 @@ function digestNames(step: PracticeStep): string[] {
 /** A service's or tool's own name on the digest's one line: `practiceLine` keeps a NEL, which is no space to it. */
 function oneLine(text: string): string {
   return practiceLine(text.split(LINE_BREAK).join(' '));
-}
-
-/** A request's method from its one-line input; GET when the whole input names none, as the tool defaults. */
-function requestMethod(input: string | undefined): string {
-  const method = /"method":"([A-Z]+)"/.exec(input ?? '')?.[1];
-  if (method) return method;
-  return input?.endsWith('…') ? 'request' : 'GET';
 }
 
 function byteLength(text: string): number {

@@ -5,7 +5,7 @@
  * Nothing here names an internal ID: an MCP tool by its server's own name,
  * a service by the name an Admin gave it.
  */
-import { CONNECTION_REQUEST_TOOL_NAME } from '../connections/request-tool.ts';
+import { CONNECTION_REQUEST_METHODS, CONNECTION_REQUEST_TOOL_NAME } from '../connections/request-tool.ts';
 import { MANAGED_CONNECTOR_CATALOG } from '../connections/catalog/index.ts';
 import { matchesEgressPrefix } from '../config/egress.ts';
 import type { PracticeStep } from '../management/test-run-types.ts';
@@ -102,9 +102,19 @@ function toolStep(plan: RuntimePlanV2, call: PracticeToolCall): PracticeStep {
   const { service, tool } = toolName(plan, call);
   const input = inputLine(call);
   const named = { kind: 'tool' as const, ...service ? { service: practiceLine(service) } : {}, tool: practiceLine(tool), ...input ? { input } : {} };
+  if (call.toolName === CONNECTION_REQUEST_TOOL_NAME) {
+    const requested = { ...named, method: requestMethod(call.input) };
+    return { ...requested, ...call.error !== undefined ? errorOutcome(call.error) : requestOutcome(call.output) };
+  }
   if (call.error !== undefined) return { ...named, ...errorOutcome(call.error) };
-  if (call.toolName === CONNECTION_REQUEST_TOOL_NAME) return { ...named, ...requestOutcome(call.output) };
   return { ...named, outcome: 'ok', result: raw(asText(call.output)) };
+}
+
+/** The method a request asked for, from its own arguments: GET when it named none, as the tool defaults; "request" for one the tool knows not. */
+function requestMethod(input: unknown): string {
+  const method = typeof input === 'object' && input !== null ? (input as { method?: unknown }).method : undefined;
+  if (method === undefined) return 'GET';
+  return (CONNECTION_REQUEST_METHODS as readonly unknown[]).includes(method) ? String(method) : 'request';
 }
 
 /** A tool by the name its server or Chickpea gave it, and the service it belongs to. */

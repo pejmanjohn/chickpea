@@ -22,10 +22,10 @@ const STEPS: PracticeStep[] = [
   { kind: 'tool', service: 'Probe Board', tool: 'probe_board_search', input: '{"q":"refunds"}', outcome: 'ok', result: raw },
   { kind: 'tool', service: 'Probe Board', tool: 'probe_board_search', input: '{"q":"late"}', outcome: 'ok', result: raw },
   {
-    kind: 'tool', service: 'Release API', tool: 'connection_request', input: '{"method":"POST","url":"https://api.example.test/v1/releases"}',
+    kind: 'tool', service: 'Release API', tool: 'connection_request', input: '{"method":"POST","url":"https://api.example.test/v1/releases"}', method: 'POST',
     outcome: 'refused', why: 'This run can only read through connections.', result: raw,
   },
-  { kind: 'tool', service: 'Release API', tool: 'connection_request', input: '{"url":"https://api.example.test/v1/releases"}', outcome: 'ok', result: raw },
+  { kind: 'tool', service: 'Release API', tool: 'connection_request', input: '{"url":"https://api.example.test/v1/releases"}', method: 'GET', outcome: 'ok', result: raw },
   { kind: 'tool', tool: 'web_search', input: '{"query":"refund policy"}', outcome: 'failed', why: 'The tool call failed.', result: raw },
   { kind: 'tool', tool: 'bash', input: '{"command":"cat notes.md"}', outcome: 'ok', result: raw },
 ];
@@ -38,8 +38,14 @@ test('a turn\'s line names what it read and how each call went, never what it re
   assert.equal(practiceDigest(STEPS), 'Read: triage (skill, ok); Probe Board (probe_board_search, ok, 2 times); ' +
     'Release API (POST, refused); Release API (GET, ok); the web (web_search, failed); bash (ok).');
   assert.equal(practiceDigest([]), 'Read: nothing.');
-  // A request input cut before its method names a request, not a guessed method.
-  assert.equal(practiceDigest([{ kind: 'tool', service: 'Release API', tool: 'connection_request', input: `{"url":"${'x'.repeat(180)}…`, outcome: 'ok' }]),
+  // The method is the one settlement recorded from the call's arguments, never read back from its input line:
+  // a GET whose query holds a method key is still a GET.
+  assert.equal(practiceDigest([{
+    kind: 'tool', service: 'Release API', tool: 'connection_request', input: '{"url":"https://api.example.test/x","query":{"method":"DELETE"}}',
+    method: 'GET', outcome: 'ok',
+  }]), 'Read: Release API (GET, ok).');
+  // A step settled before the method was recorded names a request, never a guess.
+  assert.equal(practiceDigest([{ kind: 'tool', service: 'Release API', tool: 'connection_request', input: '{"method":"DELETE"}', outcome: 'ok' }]),
     'Read: Release API (request, ok).');
   for (const leak of ['SECRET_ROW', 'Northwind', 'refunds', 'notes.md', 'only read through']) {
     assert.doesNotMatch(practiceDigest(STEPS), new RegExp(leak), `no ${leak}: names and outcomes only`);

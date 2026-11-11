@@ -34,6 +34,8 @@ export interface PracticeStep {
   why?: string;
   /** What the tool handed the Agent's model, as text, cut to the run's bound. */
   result?: { data: string; size: number; truncated: boolean };
+  /** A connection request's method, for a follow-up's Read line; no result shows it. */
+  method?: string;
 }
 
 /** What a run ran: the version handle get_agent returns, never a revision or an internal ID. */
@@ -60,6 +62,8 @@ export interface TestRunResult {
   ran?: PracticeRan;
   /** A connection with no reads was left out, so an answer that needs it can't be judged. */
   partial?: true;
+  /** A follow-up's oldest answered turns that its message left out for length: the Agent never saw them. */
+  droppedTurns?: number;
   off?: string[];
   available?: Array<{ service: string; tools: string[] }>;
   fixes?: PracticeFix[];

@@ -738,6 +738,8 @@ export const practiceRunOutput = z.strictObject({
     place: z.literal('dm'),
   }).optional().describe('What ran: the Agent as a direct message from you runs it.'),
   partial: z.literal(true).optional().describe('A connection was left out, so an answer that needs it can\'t be judged here; see off.'),
+  droppedTurns: z.number().int().optional()
+    .describe('How many of the conversation\'s oldest turns were too long to quote to the Agent, which never saw them.'),
   stopped: z.literal('tool_limit').optional().describe(`It stopped at the practice limit of ${TEST_TURN_TOOL_CALL_LIMIT} tool calls.`),
   problem: z.string().optional(),
   usage: z.strictObject({

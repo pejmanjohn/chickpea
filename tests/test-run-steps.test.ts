@@ -58,6 +58,7 @@ test('a connection request keeps its status, URL and body; its connection, heade
   }]);
   assert.equal(step!.service, 'Release API');
   assert.equal(step!.input, '{"url":"https://api.release.example/v1/releases"}');
+  assert.equal(step!.method, 'GET', 'no method asked is the tool\'s GET');
   assert.deepEqual(JSON.parse(step!.result!.data), {
     ok: true, status: 200, method: 'GET', url: 'https://api.release.example/v1/releases',
     response: { token: '[credential redacted]', name: 'v1' },
@@ -84,7 +85,7 @@ test('each refusal and failure has Chickpea\'s own sentence; what the service sa
     toolName: 'connection_request', input: { method: 'POST', url: 'https://api.release.example/v1/releases' }, output,
   }]).steps[0]!;
   const write = request({ ok: false, sent: false, reason: 'write_not_allowed', message: 'This run can only read through connections: send GET or HEAD.' });
-  assert.deepEqual([write.outcome, write.why], ['refused', 'This run can only read through connections.']);
+  assert.deepEqual([write.outcome, write.why, write.method], ['refused', 'This run can only read through connections.', 'POST']);
   assert.equal(request({ ok: false, sent: false, reason: 'url_not_allowed', message: 'x' }).why, 'The connection doesn\'t allow that request.');
   const dropped = request({ ok: false, sent: false, reason: 'failed', message: 'x' });
   assert.deepEqual([dropped.outcome, dropped.why], ['failed', 'The request didn\'t complete: a network error or a timeout.']);
@@ -228,4 +229,15 @@ test('the reply has no image, is escaped, and is cut at its bound with Chickpea\
   assert.deepEqual(long, {
     reply: `${'y'.repeat(PRACTICE_REPLY_CHARS)}\n[cut by Chickpea: first 6,000 of 7,000 characters]`, replyTruncated: true,
   });
+});
+
+test('a connection request records the method its own arguments asked for, whatever its query, body or error holds', () => {
+  const method = (input: Record<string, unknown>, error?: string) =>
+    steps([{ toolName: 'connection_request', input, ...error ? { error } : { output: { ok: true, status: 200 } } }]).steps[0]!.method;
+  assert.equal(method({ url: 'https://api.release.example/v1/x', query: { method: 'DELETE' } }), 'GET');
+  assert.equal(method({ method: 'HEAD', url: 'https://api.release.example/v1/x', body: '{"method":"PUT"}' }), 'HEAD');
+  assert.equal(method({ method: 'PATCH', url: 'https://api.release.example/v1/x' }, 'Invalid input'), 'PATCH', 'a failed call too');
+  assert.equal(method({ method: 'get <b>', url: 'https://api.release.example/v1/x' }, 'Invalid input'), 'request', 'one the tool knows not');
+  assert.equal(steps([{ toolName: 'mcp__conn_probe_7f3__probe_search', input: { method: 'DELETE' }, output: 'ok' }]).steps[0]!.method,
+    undefined, 'only a connection request has one');
 });
