@@ -41,17 +41,25 @@ interface PracticeSteps {
   stopped?: 'tool_limit';
 }
 
-/** Every call of the run, in order: a skill load as a skill, anything else as a tool, each result cut to the run's bound. */
+/**
+ * Every call of the run, in order: a skill load as a skill, anything else as
+ * a tool, each result cut to the run's bound. The calls refused past the
+ * limit are one step, so the limit bounds the steps too.
+ */
 export function practiceSteps(plan: RuntimePlanV2, calls: readonly PracticeToolCall[]): PracticeSteps {
   const read = new Set<string>();
   let stopped: PracticeSteps['stopped'];
-  const steps = calls.map((call): PracticeStep => {
-    if (call.error?.includes(TEST_TURN_TOOL_LIMIT_MESSAGE)) stopped = 'tool_limit';
-    if (call.toolName === ACTIVATE_SKILL_TOOL_NAME) return skillStep(plan, call);
+  const steps = calls.flatMap((call): PracticeStep[] => {
+    if (call.error?.includes(TEST_TURN_TOOL_LIMIT_MESSAGE)) {
+      // One model turn can make any number of calls past the limit, each refused alike: the first says it.
+      if (stopped) return [];
+      stopped = 'tool_limit';
+    }
+    if (call.toolName === ACTIVATE_SKILL_TOOL_NAME) return [skillStep(plan, call)];
     const step = toolStep(plan, call);
     const service = readService(plan, call);
     if (step.outcome === 'ok' && service) read.add(service);
-    return step;
+    return [step];
   });
   return { steps: bounded(steps), read: [...read], ...stopped ? { stopped } : {} };
 }

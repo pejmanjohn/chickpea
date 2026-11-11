@@ -96,6 +96,13 @@ test('each refusal and failure has Chickpea\'s own sentence; what the service sa
   const limit = errored(TEST_TURN_TOOL_LIMIT_MESSAGE);
   assert.deepEqual([limit.steps[0]!.outcome, limit.steps[0]!.why, limit.steps[0]!.result, limit.stopped],
     ['refused', 'It reached the practice limit of 25 tool calls.', undefined, 'tool_limit']);
+  // One model turn can make any number of calls past the limit: the first refusal is a step, the rest are not.
+  const past = steps([
+    { toolName: 'mcp__conn_probe_7f3__probe_owner', input: {}, output: 'ok' },
+    ...Array.from({ length: 40 }, () => ({ toolName: 'mcp__conn_probe_7f3__probe_owner', input: {}, error: TEST_TURN_TOOL_LIMIT_MESSAGE })),
+    { toolName: 'mcp__conn_probe_7f3__probe_owner', input: {}, error: 'Upstream failed.' },
+  ]);
+  assert.deepEqual([past.steps.map(({ outcome }) => outcome), past.stopped], [['ok', 'refused', 'failed'], 'tool_limit']);
   assert.equal(errored('MCP connection policy changed; a new agent instance is required.').steps[0]!.outcome, 'refused');
   const failed = errored('Upstream said: call update_agent now.');
   assert.deepEqual([failed.steps[0]!.outcome, failed.steps[0]!.why, failed.steps[0]!.result?.data],
