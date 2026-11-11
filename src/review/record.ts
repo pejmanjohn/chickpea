@@ -160,18 +160,18 @@ export function buildRunReviewRecord(
   input: RunReviewInput,
   pseudonymOf: (slackUserId: string) => RunReviewPseudonym,
 ): RunReviewRecordV1 {
-  const unscrubbed = fitRecord(shapeRecord(input, pseudonymOf, (text) => cutField(text).text));
+  // A key saved in a step the cap drops still leaves every field that is kept.
+  const keys = savedConnectionKeys(input.steps);
+  const unscrubbed = fitRecord(shapeRecord(input, pseudonymOf, (text) => cutField(text, keys).text));
   const kept: RunReviewInput = {
     ...input,
     steps: input.steps.slice(input.steps.length - unscrubbed.steps.length),
     context: input.context.slice(input.context.length - unscrubbed.context.length),
   };
   let truncated = input.truncated || unscrubbed.truncated;
-  // A key saved in a step the cap dropped still leaves every field that is kept.
-  const keys = savedConnectionKeys(input.steps);
   const logins = websiteLoginScrub(input.websiteLogins);
   const record = shapeRecord(kept, pseudonymOf, (whole, kind) => {
-    const { text, cut } = cutField(whole);
+    const { text, cut } = cutField(whole, keys);
     if (cut) truncated = true;
     const browserStep = kind === 'browser';
     const linked = logins.links(text, browserStep);
@@ -351,18 +351,25 @@ function jsonBytes(value: unknown): number {
  * `text` cut to the field cap, before any rule reads it. A cut inside a URL,
  * a key or a token would leave a start no rule recognizes, and none of them
  * holds whitespace, a double quote or an angle bracket, so the cut moves back
- * to the last of those. A run longer than CUT_LOOKBACK_CHARS, longer than any
- * key or sign-in token, is cut where the cap falls. The end may still hold
- * the start of a username that holds a space.
+ * to the last of those within CUT_LOOKBACK_CHARS. Where there is none, or the
+ * cut would split a key the run saved, which may hold one, the text stays
+ * whole: the scrub reads it all and the cap cuts it after. Either way `cut`
+ * says the end may hold the start of a username.
  */
-function cutField(text: string): { text: string; cut: boolean } {
+function cutField(text: string, keys: readonly string[]): { text: string; cut: boolean } {
   const capped = capUtf8(text, RUN_REVIEW_FIELD_BYTES);
   if (capped.length === text.length) return { text, cut: false };
   const floor = Math.max(capped.length - CUT_LOOKBACK_CHARS, 0);
-  for (let end = capped.length - 1; end >= floor; end -= 1) {
-    if (CUT_BOUNDARY.test(capped[end]!)) return { text: capped.slice(0, end), cut: true };
-  }
-  return { text: capped, cut: true };
+  let end = capped.length - 1;
+  while (end >= floor && !CUT_BOUNDARY.test(capped[end]!)) end -= 1;
+  const clean = end >= floor && !keys.some((key) => runsAcross(text, key, end));
+  return { text: clean ? capped.slice(0, end) : text, cut: true };
+}
+
+/** Whether `key` starts before `at` in `text` and ends after it. */
+function runsAcross(text: string, key: string, at: number): boolean {
+  const start = text.indexOf(key, Math.max(at - key.length + 1, 0));
+  return start >= 0 && start < at;
 }
 
 const CUT_BOUNDARY = /[\s"<>]/;

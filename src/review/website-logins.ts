@@ -79,7 +79,8 @@ export interface WebsiteLoginScrub {
    * same text holds it. Every URL loses its userinfo. A URL on a login's site,
    * or any URL in a browser step, keeps its scheme, host and path, loses
    * token-shaped path segments, and loses everything from its first `;`,
-   * `?` or `#`, as does a URL whose host cannot be read as one. A link inside
+   * `?` or `#`. So does a URL whose host cannot be read as one, and its host
+   * goes too. A link inside
    * another one's path or query, as a Slack link's label or a redirect holds
    * it, goes by its own rule.
    */
@@ -112,21 +113,25 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
     const raw = matched.replace(/\\+\//g, '/');
     const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(raw);
     const afterScheme = scheme ? raw.slice(scheme[0].length) : raw;
-    // `|` ends a host too: no host holds one, and a Slack link's label may follow it.
-    const authorityEnd = afterScheme.search(/[/;?#|]/);
+    // Userinfo, which no link keeps, ends at the last `@` before the path, whatever it holds.
+    const authorityEnd = afterScheme.search(/[/?#]/);
     const authority = authorityEnd < 0 ? afterScheme : afterScheme.slice(0, authorityEnd);
-    const rest = authorityEnd < 0 ? '' : afterScheme.slice(authorityEnd);
-    const host = authority.slice(authority.lastIndexOf('@') + 1);
+    const hostAndRest = afterScheme.slice(authority.lastIndexOf('@') + 1);
+    // `;` and `|` end a host too: no host holds one, and a Slack link's label may follow `|`.
+    const hostEnd = hostAndRest.search(/[/;?#|]/);
+    const host = hostEnd < 0 ? hostAndRest : hostAndRest.slice(0, hostEnd);
+    const rest = hostEnd < 0 ? '' : hostAndRest.slice(hostEnd);
     // `host.example.` names the same site as `host.example`.
     const hostname = host.replace(/:\d*$/, '').replace(/\.+$/, '').toLowerCase();
+    const readable = READABLE_HOST.test(hostname);
     const pathEnd = rest.search(/[;?#]/);
     const path = pathEnd < 0 ? rest : rest.slice(0, pathEnd);
     const suffix = pathEnd < 0 ? '' : rest.slice(pathEnd);
     if (browserLink(scheme?.[1], hostname, path, suffix)) return BROWSER_LINK_OMITTED;
-    const start = `${scheme?.[0] ?? ''}${host}`;
+    // A host that cannot be read as one may hide a login's site or a token, so it goes, and its link goes by the login rule.
+    const start = `${scheme?.[0] ?? ''}${readable ? host : URL_PART_OMITTED}`;
     // What follows the host can hold another link, as a Slack link's label or a redirect's query does.
-    // A host that cannot be read as one may hide a login's site, so its link goes by the login rule.
-    if (!browserStep && READABLE_HOST.test(hostname) && !loginSite(hostname)) {
+    if (!browserStep && readable && !loginSite(hostname)) {
       return `${start}${scrubLinks(rest, browserStep)}`;
     }
     const kept = path.split('/').map((segment) => tokenShaped(segment) ? URL_PART_OMITTED : segment).join('/');

@@ -184,6 +184,7 @@ test('a link right after another link\'s host, behind //, or behind a host no si
         '<https://go.example.org|billing.example.com/cb?code=SYNTHCODE456> ' +
         'https://go.example.org\'billing.example.com/cb?code=SYNTHCODE789 ' +
         'https://ops\'x:SYNTHPASS@billing.example.com/cb?code=SYNTHCODE678 ' +
+        'https://ops|x:SYNTHPASS@billing.example.com/cb?code=SYNTHCODE901 https://u;x:SYNTHPASS@billing.example.com/cb?code=SYNTHCODE902 ' +
         'https://go.example.org/r?next=//billing.example.com/cb?code=SYNTHCODE012 and //ledger.example.net/r?t=SYNTHCODE345 ' +
         '<https://go.example.org|Report?id=5>',
       files: [],
@@ -193,8 +194,9 @@ test('a link right after another link\'s host, behind //, or behind a host no si
   assert.equal(record.trigger.text,
     '<https://go.example.org|https://billing.example.com/cb?[omitted]> ' +
     '<https://go.example.org|billing.example.com/cb?[omitted]> ' +
-    'https://go.example.org\'billing.example.com/cb?[omitted] ' +
+    'https://[omitted]/cb?[omitted] ' +
     'https://billing.example.com/cb?[omitted] ' +
+    'https://billing.example.com/cb?[omitted] https://billing.example.com/cb?[omitted] ' +
     'https://go.example.org/r?next=//billing.example.com/cb?[omitted] and //ledger.example.net/r?[omitted] ' +
     '<https://go.example.org|Report?id=5>');
 });
@@ -370,18 +372,24 @@ test('a field over its cap is cut before the scrub, back to where no link, key o
   };
   const token = `SYNTHMAGIC${'7'.repeat(30)}`;
   const key = ['ghp', `SYNTHKEY${'4'.repeat(32)}`].join('_');
-  const record = copy({
-    steps: [
-      { kind: 'tool', name: 'web_fetch', input: '{}', output: straddling(` https://billing.example.com/magic/${token} next`, 40) },
-      { kind: 'tool', name: 'web_fetch', input: '{}', output: straddling(` key ${key} next`, 20) },
-      { kind: 'tool', name: 'web_fetch', input: '{}', output: straddling(' Signed in as Billing Ops Team today', 28) },
-    ],
-  }, { hosts: ['billing.example.com'], usernames: ['Billing Ops Team'] });
-  assert.deepEqual(kept(record, ['SYNTHMAGIC', 'SYNTHKEY', 'billing ops']), []);
+  const spaced = 'SYNTHSAVED part two 0123456789';
+  const longRun = `${'x'.repeat(5000)},${['ghp', `SYNTHLONG${'5'.repeat(32)}`].join('_')}`;
+  const steps = [
+    { kind: 'tool' as const, name: 'save_connection_key', input: JSON.stringify({ connectionId: 'ledger', key: spaced }), output: '{}' },
+    { kind: 'tool' as const, name: 'web_fetch', input: '{}', output: straddling(` https://billing.example.com/magic/${token} next`, 40) },
+    { kind: 'tool' as const, name: 'web_fetch', input: '{}', output: straddling(` key ${key} next`, 20) },
+    { kind: 'tool' as const, name: 'web_fetch', input: '{}', output: straddling(' Signed in as Billing Ops Team today', 28) },
+    { kind: 'tool' as const, name: 'web_fetch', input: '{}', output: straddling(` saved ${spaced} next`, 22) },
+    { kind: 'tool' as const, name: 'web_fetch', input: '{}', output: straddling(` ${longRun} next`, 5020) },
+  ];
+  const record = copy({ steps }, { hosts: ['billing.example.com'], usernames: ['Billing Ops Team'] });
+  assert.deepEqual(kept(record, ['SYNTHMAGIC', 'SYNTHKEY', 'billing ops', 'SYNTHSAVED', 'SYNTHLONG']), []);
   const outputs = record.steps.map((step) => step.kind === 'tool' ? step.output ?? '' : '');
-  assert.ok(outputs[0]!.endsWith('Report line with words. '), 'the link the cap cut goes whole');
-  assert.ok(outputs[1]!.endsWith(' key'), 'so does the key');
-  assert.match(outputs[2]!, / Signed in as \[credential [a-z]*$/, 'a username\'s start before the cut goes, and the cap cuts its marker');
+  assert.ok(outputs[1]!.endsWith('Report line with words. '), 'the link the cap cut goes whole');
+  assert.ok(outputs[2]!.endsWith(' key'), 'so does the key');
+  assert.match(outputs[3]!, / Signed in as \[credential [a-z]*$/, 'a username\'s start before the cut goes, and the cap cuts its marker');
+  assert.ok(outputs[4]!.includes(' saved [credential'), 'a saved key a cut back would split is scrubbed whole, then capped');
+  assert.ok(outputs[5]!.includes('x,[credential'), 'so is a run with nowhere to cut back to');
   assert.equal(record.truncated, true);
 });
 
