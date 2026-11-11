@@ -171,6 +171,8 @@ import {
   type SlackPresentationOwner,
 } from './run-presentations.ts';
 import { slackProgressiveStreamingEnabled } from './progressive-ops-flag.ts';
+import { answerReleaseSetting } from './answer-release-setting.ts';
+import type { HostReleaseRecord } from './host-release-relay.ts';
 import { slackSemanticActivityStatusEnabled } from './semantic-status-flag.ts';
 import {
   assembleSlackPrompt,
@@ -437,6 +439,8 @@ export interface RunTurnOptions {
   onAnswerVisible?: () => void;
   /** Set by `runTurn` itself when `turnLatency` is present: Slack acknowledged native task card rows on the reply's stream. */
   onTaskCardStreamed?: () => void;
+  /** Set by `runTurn` itself when `turnLatency` is present: what the host answer release did. */
+  onHostRelease?: (record: HostReleaseRecord) => void;
   /**
    * Set by `runTurn` itself when `turnLatency` is present: every chunk the
    * reply's observation reads, beside the dispatched submission. Must not throw.
@@ -551,8 +555,9 @@ export async function runTurn(
   tracker.markFolded(followUps.length);
   // Loaded at a turn's first use, so the shadow stays out of what a Worker
   // loads at startup. A turn whose load fails runs without one.
+  const holdChars = answerReleaseSetting(platformEnv)?.holdChars;
   const answerRelease = await import('./answer-release.ts')
-    .then(({ AnswerReleaseShadow }) => new AnswerReleaseShadow(), () => undefined);
+    .then(({ AnswerReleaseShadow }) => new AnswerReleaseShadow(Date.now, holdChars), () => undefined);
   const { onDelivered, onDeferredTerminal } = options;
   let stopped = false;
   try {
@@ -562,6 +567,7 @@ export async function runTurn(
       onAnswerTextStreamed: () => tracker.markStreamedAnswerText(),
       onAnswerVisible: () => tracker.markAnswerVisible(),
       onTaskCardStreamed: () => tracker.markTaskCardStreamed(),
+      onHostRelease: (record) => tracker.markHostRelease(record),
       onConversationChunk: (chunk, submissionId) => answerRelease?.onEvent(chunk, submissionId),
       onFollowUpsInformed: (count) => tracker.markFoldedInformed(count),
       onRead: () => tracker.markRead(),
@@ -760,6 +766,7 @@ async function runTurnAttempt(
   let onNativeStarted = async (): Promise<void> => {};
   // A reply mentions its teammates live; each mention asks that Agent.
   const liveAgentHandles = agentTeammateHandles(assignment);
+  const answerRelease = answerReleaseSetting(platformEnv);
   const agentViewPresentation = options.presentationState && options.runId
     ? new SlackAgentViewPresentation({
         client,
@@ -791,6 +798,8 @@ async function runTurnAttempt(
         ...(options.onTaskCardStreamed
           ? { onTaskCardStreamed: options.onTaskCardStreamed }
           : {}),
+        ...(answerRelease ? { answerRelease } : {}),
+        ...(options.onHostRelease ? { onHostRelease: options.onHostRelease } : {}),
       })
     : undefined;
   // A delegated coding task's progress shows in the working indicator.

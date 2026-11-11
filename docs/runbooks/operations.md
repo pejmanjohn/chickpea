@@ -388,6 +388,48 @@ To check it, read the `state_rpc_summary` records of scope `slack_delivery`:
 each delivery it admits, with `rpcCalls` 0. See
 [runtime observability](runtime-observability.md).
 
+### Stream answers by host release
+
+An Agent's answer streams into Slack today only when the model calls
+`stream_answer` before it, and models rarely do. With the deployment variable
+`CHICKPEA_SLACK_ANSWER_RELEASE` set to `host`, the host streams a model step's
+text itself once the step holds `CHICKPEA_SLACK_ANSWER_RELEASE_CHARS` settled
+characters (400 when unset) and has made no tool call. A shorter answer posts
+whole, as before.
+
+```sh
+npm run deploy -- --var CHICKPEA_SLACK_ANSWER_RELEASE:host
+```
+
+Unset, or any other value, keeps the model's declaration as the only way an
+answer streams. That is the default. A hold that is not a whole number from
+100 to 4000 also turns host release off; the deploy does not refuse it, so
+after you set one, check that `answer_release` shows it in `holdChars`.
+`SLACK_TAG_PROGRESSIVE_STREAMING=false` turns all streaming off either way.
+Upgrades keep both variables.
+
+Before you turn it on, know these points:
+
+- **Text can appear and then disappear.** A model may write past the hold and
+  then call a tool. The host then stops and deletes the streamed message, the
+  tool runs, and the final answer posts fresh, with no correction marker. This
+  happens in DMs and Channel threads alike. A stream that carries the native
+  task card keeps its text instead, and the final corrects it, so the card
+  stays.
+- **Some replies still post whole.** A reply that changes workspace settings,
+  hands off to another Agent, creates an Agent, uploads files, asks a question,
+  or shows cards or the Add key card stays terminal-only.
+- **A message sent during the answer waits.** Once the final step passes the
+  hold, a message the person sends meanwhile gets its own turn instead of
+  joining this reply.
+- **The hold is a measured choice.** A lower hold streams sooner and deletes
+  more often. Read `answer_release` before you change it: `hostRelease` says
+  what the release did, and `preToolTextN` how often a model writes N
+  characters before a tool call. See
+  [runtime observability](runtime-observability.md).
+- **`stream_answer` stays mounted.** A model that declares still locks its
+  later tools, as before; the host release does not wait for the declaration.
+
 ## Upgrade and compatibility policy
 
 For routine Cloudflare updates, follow the

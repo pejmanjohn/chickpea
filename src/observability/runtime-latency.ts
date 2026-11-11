@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import type { FlueObservation } from '@flue/runtime';
 
 import type { AnswerReleaseShadowRecord } from '../slack/answer-release.ts';
+import type { HostReleaseRecord } from '../slack/host-release-relay.ts';
 import type { GatewayInboundDelivery } from '../slack/gateway/protocol.ts';
 import type { GatewaySessionRunnerHealthSnapshot } from '../slack/gateway/session-runner.ts';
 import type { SlackThreadRunnerRpc } from '../slack/thread-runner-rpc.ts';
@@ -61,6 +62,9 @@ const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
   final: TOKEN,
   block: TOKEN,
   late: TOKEN,
+  hostRelease: TOKEN,
+  hostBlock: TOKEN,
+  hostLate: TOKEN,
   method: TOKEN,
   firstMethod: TOKEN,
   op: TOKEN,
@@ -481,6 +485,7 @@ export class TurnLatencyTracker {
   private agentWakeLeadMs: number | undefined;
   private startToStageMs: number | undefined;
   private taskCardStreamed = false;
+  private hostRelease: HostReleaseRecord | undefined;
   private emitted = false;
 
   /** `model`: the model id the turn runs with, logged as its `modelToken`. */
@@ -532,6 +537,15 @@ export class TurnLatencyTracker {
   /** Slack acknowledged native task card rows on the reply's stream before its terminal. */
   markTaskCardStreamed(): void {
     this.taskCardStreamed = true;
+  }
+
+  /**
+   * What the host answer release did; the latest replaces the last. Text it
+   * retired was not the answer, so the answer's first text is the final's.
+   */
+  markHostRelease(record: HostReleaseRecord): void {
+    this.hostRelease = { ...record };
+    if (record.outcome === 'retired' && this.answerText?.surface === 'stream') this.answerText = undefined;
   }
 
   /** The turn took this many queued messages as follow-ups. */
@@ -662,6 +676,12 @@ export class TurnLatencyTracker {
         modelToken: model,
         ...shadow,
         taskCardStream: this.taskCardStreamed,
+        hostRelease: this.hostRelease?.outcome,
+        hostBlock: this.hostRelease?.outcome === 'blocked' ? this.hostRelease.block : undefined,
+        hostLate: this.hostRelease && 'late' in this.hostRelease ? this.hostRelease.late : undefined,
+        retiredVisibleMs: this.hostRelease && 'retiredVisibleMs' in this.hostRelease
+          ? this.hostRelease.retiredVisibleMs
+          : undefined,
         admissionToReleaseMs: since(releasedAt),
         receiptToReleaseMs: sinceReceipt(releasedAt),
       }, this.sink);

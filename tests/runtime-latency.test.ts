@@ -680,6 +680,55 @@ test('turn_latency times the first answer text as shown and as a host release wo
   records.forEach(assertContentFree);
 });
 
+// Defects caught: the live release unlogged, its retirement's visible time
+// lost, or text it retired counted as the answer's first text.
+test('answer_release logs what the host release did, and retired text is not the first answer text', () => {
+  const { records, sink } = captureSink();
+  const run = (records_: Parameters<TurnLatencyTracker['markHostRelease']>[0][]) => {
+    const time = clock(10_000);
+    const tracker = new TurnLatencyTracker(
+      { receivedAt: 8_000, admittedAt: 9_000, lane: 'cloudflare', executor: 'runner' },
+      { turnJobId: 'evt:T_LATENCY:1785509000.000100', runId: 'run-raw', attempt: 1 },
+      time.now,
+      sink,
+    );
+    time.advance(4_000);
+    tracker.markStreamedAnswerText();
+    for (const record of records_) tracker.markHostRelease(record);
+    time.advance(30_000 - time.now());
+    tracker.markFinal('delivered');
+    tracker.emit('returned', shadowRecord({ outcome: 'released', releasedAt: 14_000 }));
+    return {
+      latency: records.filter((record) => record.event === 'turn_latency').at(-1)!,
+      release: records.filter((record) => record.event === 'answer_release').at(-1)!,
+    };
+  };
+
+  const kept = run([{ outcome: 'released' }]);
+  assert.equal(kept.release.hostRelease, 'released');
+  assert.equal(kept.latency.firstAnswerText, 'stream');
+  assert.equal(kept.latency.receiptToFirstAnswerTextMs, 6_000);
+
+  const retired = run([{ outcome: 'released' }, { outcome: 'retired', late: 'tool', retiredVisibleMs: 1_400 }]);
+  assert.deepEqual(
+    [retired.release.hostRelease, retired.release.hostLate, retired.release.retiredVisibleMs],
+    ['retired', 'tool', 1_400],
+  );
+  assert.equal(retired.latency.firstAnswerText, 'final', 'the retired text was not the answer');
+  assert.equal(retired.latency.receiptToFirstAnswerTextMs, 22_000);
+
+  const corrected = run([{ outcome: 'released' }, { outcome: 'corrected', late: 'presentation_tool' }]);
+  assert.deepEqual([corrected.release.hostRelease, corrected.release.hostLate], ['corrected', 'presentation_tool']);
+  assert.equal(corrected.latency.firstAnswerText, 'stream', 'a corrected stream keeps its text in Slack');
+
+  const blocked = run([{ outcome: 'blocked', block: 'display_component' }]);
+  assert.deepEqual([blocked.release.hostRelease, blocked.release.hostBlock], ['blocked', 'display_component']);
+
+  const off = run([]);
+  assert.equal('hostRelease' in off.release, false, 'no host release, no field');
+  records.forEach(assertContentFree);
+});
+
 // Defect caught: a record that drops the receipt wake's lead its runner measured.
 test("turn_latency logs a runner turn's hand-off delay and wake lead from its context", () => {
   const { records, sink } = captureSink();

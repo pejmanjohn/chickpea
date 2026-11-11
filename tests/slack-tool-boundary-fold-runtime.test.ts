@@ -21,9 +21,11 @@ import {
 } from '../src/memory/tool-policy.ts';
 import { RunReviewCollector } from '../src/review/collector.ts';
 import { AnswerReleaseShadow } from '../src/slack/answer-release.ts';
+import type { AnswerReleaseSetting } from '../src/slack/answer-release-setting.ts';
+import { HostReleaseRelay } from '../src/slack/host-release-relay.ts';
 import { promptSlackThreadAgent, type SlackFlueDispatchState } from '../src/slack/flue-dispatch.ts';
 import {
-  slackToolBoundaryFoldInterceptor, useSlackFollowUpFold, type LateFoldRequest,
+  observeSlackAnswerStep, slackToolBoundaryFoldInterceptor, useSlackFollowUpFold, type LateFoldRequest,
 } from '../src/slack/follow-up-fold.ts';
 import {
   followUpSignalMessages, MAX_TURN_FOLD_CYCLES, TOOL_BOUNDARY_PULL_INTERVAL_MS,
@@ -77,6 +79,8 @@ let requests: ModelRequest[] = [];
 /** Runs at the start of `work` step `step`, before its delay. */
 let onTool: (step: number) => Promise<void> | void = () => {};
 let toolDelayMs: (step: number) => number = () => 0;
+/** The deployment's host answer release, as the Agent object reads it. */
+let answerRelease: AnswerReleaseSetting | undefined;
 /** How far `performance.now()` runs ahead of real time, so a test crosses the check interval without waiting. */
 let elapsedMs = 0;
 /** The next tool boundary comes past the check interval (TOOL_BOUNDARY_PULL_INTERVAL_MS). */
@@ -88,7 +92,10 @@ function PullProbe({ id }: AgentProps) {
   useModel(MODEL);
   bindCurrentRequestConversation(scenario.plan.conversation);
   deliveries.push(useDelivery());
-  useSlackFollowUpFold({ instanceId: id, blocked: () => false, fold: (request) => scenario.fold(request) });
+  useSlackFollowUpFold({
+    instanceId: id, blocked: () => false, fold: (request) => scenario.fold(request),
+    answerRelease: async () => answerRelease,
+  });
   useTool({
     name: 'work',
     description: 'Do one step of work.',
@@ -122,7 +129,7 @@ function PullProbe({ id }: AgentProps) {
 
 let thread = 0;
 
-function openScenario(options: { failFold?: boolean } = {}): Scenario {
+function openScenario(options: { failFold?: boolean; streamingOffered?: boolean } = {}): Scenario {
   thread += 1;
   const threadTs = `1800002${String(thread).padStart(3, '0')}.000100`;
   const conversation = { workspaceId: 'T_PULL', channelId: 'C_PULL', threadTs };
@@ -156,7 +163,8 @@ function openScenario(options: { failFold?: boolean } = {}): Scenario {
   const plan = compileRuntimePlanV2({ turn: head.turn, assignment, instructions: 'Help.', memoryEpoch: 1 });
   turns.freezeRuntimePlan('head', plan);
   turns.prepareFlueDispatch('head', `Draft the launch note.\n\n${serializeCurrentRequestEnvelope(
-    '', false, PERSON, head.turn.messageTs, { schemaVersion: 2 },
+    '', false, PERSON, head.turn.messageTs,
+    { schemaVersion: 2, progressiveStreamingOffered: options.streamingOffered === true },
   )}`, { generation: GENERATION });
   const calls: LateFoldRequest[] = [];
   return {
@@ -237,6 +245,7 @@ test('messages sent while the Agent runs tools reach the model after that tool b
     interceptor,
     observe(event, context) {
       observeMemoryToolPolicy(event, context);
+      observeSlackAnswerStep(event);
       if (event.type !== 'turn_request' || event.purpose !== 'agent') return;
       const messages: readonly LlmMessage[] = event.request.input.messages;
       requests.push({
@@ -261,6 +270,9 @@ test('messages sent while the Agent runs tools reach the model after that tool b
     const statuses: string[] = [];
     let review: RunReviewCollector | undefined;
     const release = new AnswerReleaseShadow();
+    // The host relay over Flue's own chunks, into a sink that records each effect.
+    const hostEffects: string[] = [];
+    let host: HostReleaseRelay | undefined;
     const { instanceId } = scenario;
     const statusTurn = registerSlackStatusTurn(instanceId, {
       setStatus: async (update) => { statuses.push(update.text); return true; },
@@ -275,10 +287,22 @@ test('messages sent while the Agent runs tools reach the model after that tool b
           review ??= new RunReviewCollector(submissionId, 'head');
           review.ingest(chunk);
           release.onEvent(chunk, submissionId);
+          host ??= new HostReleaseRelay({
+            submissionId, holdChars: 400, initial: { status: 'unresolved' },
+            modelIntent: {
+              initial: { status: 'unresolved' },
+              transition: async (intent) => { hostEffects.push(`intent:${intent.kind}`); },
+            },
+            append: async () => { hostEffects.push('append'); },
+            invalidate: async (reason) => { hostEffects.push(`invalidate:${reason}`); },
+            retire: async (late) => { hostEffects.push(`retire:${late}`); },
+          });
+          host.onEvent(chunk);
         },
       });
+      await host?.closeAndDrain();
       await statusTurn.drain();
-      return { result, statuses, review, release: release.record() };
+      return { result, statuses, review, release: release.record(), hostEffects };
     } finally {
       statusTurn.close();
       onTool = () => {};
@@ -505,6 +529,68 @@ test('messages sent while the Agent runs tools reach the model after that tool b
           { userId: PERSON, messageTs: headTs, text: edited, edit: { previousText: 'Draft the launch note.' } },
         ]);
         assert.deepEqual(review?.followUps().map(({ text }) => text), [edited], 'the help-improve copy keeps the new text');
+      } finally {
+        scenario.close();
+      }
+    });
+
+    const LONG_ANSWER = 'The launch note covers the new pricing tiers, the onboarding changes and the support hours. '.repeat(6).trim();
+
+    // Defect caught: the finish check folding a message into a response whose
+    // answer the host already streams, so a new final step replaces it.
+    await t.test('with host release on, a final answer past the hold shuts the finish check: the message waits', async () => {
+      scenario = openScenario({ streamingOffered: true });
+      answerRelease = { holdChars: 400 };
+      try {
+        const { result, hostEffects } = await run([arrivesDuring('late', LATE, answer(LONG_ANSWER))]);
+        assert.equal(result.text, LONG_ANSWER);
+        assert.deepEqual(scenario.calls, [], 'no would-stop call takes it');
+        assert.equal(scenario.turns.runnerView('late').job!.fold, undefined, 'it waits for its own turn');
+        assert.deepEqual(hostEffects.filter((effect) => effect !== 'append'), ['intent:candidate', 'intent:requested']);
+      } finally {
+        answerRelease = undefined;
+        scenario.close();
+      }
+    });
+
+    await t.test('the finish check still folds a short answer, an answer with host release off, or one not offered streaming', async () => {
+      for (const [label, offered, setting, text] of [
+        ['short of the hold', true, { holdChars: 400 }, 'A launch note.'],
+        ['host release off', true, undefined, LONG_ANSWER],
+        ['streaming not offered', false, { holdChars: 400 }, LONG_ANSWER],
+      ] as const) {
+        scenario = openScenario({ streamingOffered: offered });
+        answerRelease = setting;
+        try {
+          const { result } = await run([
+            arrivesDuring('late', LATE, answer(text)),
+            answer('A launch note that mentions the pricing change.'),
+          ]);
+          assert.equal(result.text, 'A launch note that mentions the pricing change.', label);
+          assert.deepEqual(calls(), [
+            { phase: 'finish', received: 0, take: true },
+            { phase: 'finish', received: 1, take: true },
+          ], label);
+        } finally {
+          answerRelease = undefined;
+          scenario.close();
+        }
+      }
+    });
+
+    // The fact the release rests on: Flue reports a step's text before its
+    // tool call, so text past the hold is released, then retired by the call.
+    await t.test('a long text and a tool call in one step: the release comes first, then its retirement', async () => {
+      scenario = openScenario();
+      try {
+        const { result, hostEffects, release } = await run([
+          fauxAssistantMessage([fauxText(LONG_ANSWER), fauxToolCall('work', { step: 1 })], { stopReason: 'toolUse' }),
+          answer('Done.'),
+        ]);
+        assert.equal(result.text, 'Done.');
+        assert.deepEqual(hostEffects.filter((effect) => effect !== 'append'),
+          ['intent:candidate', 'intent:requested', 'retire:tool']);
+        assert.deepEqual([release?.outcome, release?.late], ['retired', 'tool']);
       } finally {
         scenario.close();
       }

@@ -1,6 +1,7 @@
 import type { ConversationStreamChunk } from '@flue/runtime';
 
 import { SLACK_AGENT_CREATION_TERMINAL_DATA_NAME } from './agent-creation-terminal.ts';
+import { DEFAULT_ANSWER_RELEASE_CHARS } from './answer-release-setting.ts';
 import { FILE_DELIVERY_DATA_NAME } from './file-delivery-completion.ts';
 import { streamableSlackMarkdownPrefix } from './message-format.ts';
 import {
@@ -15,19 +16,20 @@ import { KEY_SETUP_TOOL_DATA_NAME } from './ui/surface.ts';
 
 /**
  * Settled characters a model step must hold, with no tool call in it, before
- * the host would release its text to Slack. A starting value: the shadow
- * below measures the text models write before tool calls to set it.
+ * the host releases its text to Slack, unless the deployment sets another
+ * hold (answer-release-setting.ts). The shadow below measures the text models
+ * write before tool calls, which is what sets it.
  */
-export const RELEASE_AFTER_CHARS = 400;
+export const RELEASE_AFTER_CHARS = DEFAULT_ANSWER_RELEASE_CHARS;
 
 /**
  * The settled length at which a step's text is released, or undefined.
  * "Settled" is what `streamableSlackMarkdownPrefix` would show now, so the
  * redaction hold governs every released character.
  */
-export function answerReleasePoint(stepText: string): number | undefined {
+export function answerReleasePoint(stepText: string, holdChars = RELEASE_AFTER_CHARS): number | undefined {
   const settled = streamableSlackMarkdownPrefix(stepText).length;
-  return settled >= RELEASE_AFTER_CHARS ? settled : undefined;
+  return settled >= holdChars ? settled : undefined;
 }
 
 /** What keeps a whole response terminal when it comes before any release. */
@@ -104,16 +106,20 @@ type ShadowState =
   | { phase: 'released'; release: Release }
   | { phase: 'retired'; release: Release; late: AnswerReleaseLate; lateAt: number };
 
-interface Step {
+/** One model step's text as the release rule reads it. */
+export interface ReleaseStep {
   text: string;
-  firstTextAt?: number;
-  toolCalled: boolean;
   /** Past `EXACT_CHECK_CHARS`, the length the next check waits for. */
   nextCheckAt: number;
 }
 
+interface Step extends ReleaseStep {
+  firstTextAt?: number;
+  toolCalled: boolean;
+}
+
 /** Text longer than this is not read further; Flue refuses such a step anyway. */
-const MAX_STEP_TEXT_CHARS = 128 * 1_024;
+export const MAX_STEP_TEXT_CHARS = 128 * 1_024;
 /**
  * The settled prefix ends at a space or a line start, so it can move only
  * when a delta brings one. Formatting lengthens text by a character here and
@@ -121,12 +127,11 @@ const MAX_STEP_TEXT_CHARS = 128 * 1_024;
  * the hold cannot reach it.
  */
 const SETTLING_DELTA = /[ \n\r]/;
-const MIN_CHECK_CHARS = RELEASE_AFTER_CHARS / 2;
 /**
- * Up to this length the rule is checked on every such delta, as a live
- * release would be. Text that grows past it unsettled (one long line under
- * open markup, an armored block) is checked when it grows by an eighth or
- * breaks a line, which keeps the formatter's cost bounded.
+ * Up to this length the rule is checked on every such delta. Text that grows
+ * past it unsettled (one long line under open markup, an armored block) is
+ * checked when it grows by an eighth or breaks a line, which keeps the
+ * formatter's cost bounded.
  */
 const EXACT_CHECK_CHARS = 4_096;
 
@@ -138,6 +143,7 @@ const EXACT_CHECK_CHARS = 4_096;
  * only what it saw.
  */
 export class AnswerReleaseShadow {
+  readonly #holdChars: number;
   #submissionId: string | undefined;
   #messageId: string | undefined;
   #position: { batch: number; index: number } | undefined;
@@ -152,7 +158,10 @@ export class AnswerReleaseShadow {
   #displayParts = 0;
   #keySetupParts = 0;
 
-  constructor(private readonly now: () => number = Date.now) {}
+  /** `holdChars`: the hold the live release uses, so both read a reply alike. */
+  constructor(private readonly now: () => number = Date.now, holdChars = RELEASE_AFTER_CHARS) {
+    this.#holdChars = holdChars;
+  }
 
   /**
    * Never throws: an observer fault ends the shadow, never the turn. A
@@ -178,7 +187,7 @@ export class AnswerReleaseShadow {
       ...(state.phase === 'retired'
         ? { late: state.late, releaseToLateMs: state.lateAt - state.release.at }
         : {}),
-      holdChars: RELEASE_AFTER_CHARS,
+      holdChars: this.#holdChars,
       ...(release
         ? { releasedAt: release.at, releaseChars: release.chars, releaseHoldMs: release.holdMs }
         : {}),
@@ -223,7 +232,7 @@ export class AnswerReleaseShadow {
       step.firstTextAt ??= this.now();
       if (step.text.length >= MAX_STEP_TEXT_CHARS) return;
       step.text += chunk.delta;
-      if (checkDue(step, chunk.delta)) this.#tryRelease(step);
+      if (releaseCheckDue(step, chunk.delta, this.#holdChars)) this.#tryRelease(step);
       return;
     }
     if (chunk.type === 'tool-input') {
@@ -257,7 +266,7 @@ export class AnswerReleaseShadow {
 
   #tryRelease(step: Step): void {
     if (this.#state.phase !== 'holding' || step.toolCalled) return;
-    const chars = answerReleasePoint(step.text);
+    const chars = answerReleasePoint(step.text, this.#holdChars);
     if (chars === undefined) return;
     const at = this.now();
     this.#state = { phase: 'released', release: { at, chars, holdMs: at - (step.firstTextAt ?? at) } };
@@ -279,15 +288,17 @@ export class AnswerReleaseShadow {
   }
 }
 
-function checkDue(step: Step, delta: string): boolean {
+/** Whether `delta`, just added to the step's text, can have moved its settled length to the hold. */
+export function releaseCheckDue(step: ReleaseStep, delta: string, holdChars: number): boolean {
   const length = step.text.length;
-  if (length < MIN_CHECK_CHARS || !SETTLING_DELTA.test(delta)) return false;
+  if (length < holdChars / 2 || !SETTLING_DELTA.test(delta)) return false;
   if (length > EXACT_CHECK_CHARS && length < step.nextCheckAt && !delta.includes('\n')) return false;
   step.nextCheckAt = length + Math.ceil(length / 8);
   return true;
 }
 
-function toolBlock(toolName: string): AnswerReleaseBlock | undefined {
+/** The blocking condition a tool call is, if it is one. */
+export function toolBlock(toolName: string): AnswerReleaseBlock | undefined {
   if (DRAFT_REPLACING_TOOL_NAMES.has(toolName)) return 'draft_replacing_tool';
   if (isArtifactUploadTool(toolName)) return 'file_delivery';
   if (INTERACTIVE_TOOL_NAMES.has(toolName)) return 'interactive_component';

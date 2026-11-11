@@ -2,6 +2,7 @@ import type { ConversationStreamChunk } from '@flue/runtime';
 
 import type { ProgressiveStreamingMode } from '../memory/tool-policy.ts';
 import { FILE_DELIVERY_DATA_NAME } from './file-delivery-completion.ts';
+import type { HostReleaseLate } from './host-release-relay.ts';
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from './presentation-intent.ts';
 import type {
   SlackProgressiveIntent,
@@ -32,7 +33,7 @@ export type ProgressiveIntentTransition =
   | { kind: 'not_requested' }
   | { kind: 'denied'; reason: SlackProgressiveIntentDenialReason };
 
-interface ProgressiveRelaySummary {
+export interface ProgressiveRelaySummary {
   acceptedChunks: number;
   acceptedBytes: number;
   targetMessageCompleted: boolean;
@@ -50,7 +51,7 @@ export interface ProgressiveAppendControl {
   closed: Promise<void>;
 }
 
-interface ProgressiveTextSink {
+export interface ProgressiveTextSink {
   /**
    * Waits until the next append may go to Slack. Chunks that arrive during
    * the wait join the append that follows it.
@@ -105,7 +106,180 @@ export interface SlackProgressiveReadRelay {
 type RelayOperation =
   | { kind: 'intent'; transition: ProgressiveIntentTransition }
   | { kind: 'append'; chunk: ProgressiveTextChunk; count: number }
-  | { kind: 'invalidate'; reason: ProgressiveRelayInvalidationReason };
+  | { kind: 'invalidate'; reason: ProgressiveRelayInvalidationReason }
+  | { kind: 'retire'; late: HostReleaseLate };
+
+/**
+ * A relay's Slack effects, applied one at a time in the order queued: intent
+ * writes, appends, invalidations and the host release's retirement. A failed
+ * intent write or append drops what is still queued, invalidates the sink and
+ * calls `stop`, so its relay reads nothing more.
+ */
+export class ProgressiveEffects {
+  private readonly queue: RelayOperation[] = [];
+  private closing = false;
+  private readonly closed = Promise.withResolvers<void>();
+  private readonly appendControl: ProgressiveAppendControl = {
+    closing: () => this.closing,
+    closed: this.closed.promise,
+  };
+  private pumpPromise: Promise<void> | undefined;
+  private queuedTextChunks = 0;
+  private acceptedChunks = 0;
+  private acceptedBytes = 0;
+  private invalidated = false;
+  private invalidationReason: ProgressiveRelayInvalidationReason | undefined;
+
+  constructor(
+    private readonly sink: ProgressiveTextSink & { retire?(late: HostReleaseLate): Promise<void> },
+    private readonly stop: () => void,
+  ) {}
+
+  text(chunk: ProgressiveTextChunk): void {
+    this.queuedTextChunks += 1;
+    this.queue.push({ kind: 'append', count: 1, chunk });
+    this.startPump();
+  }
+
+  intent(transition: ProgressiveIntentTransition): void {
+    this.queue.push({ kind: 'intent', transition });
+    this.startPump();
+  }
+
+  invalidate(reason: ProgressiveRelayInvalidationReason): void {
+    if (this.invalidated) return;
+    this.invalidated = true;
+    this.invalidationReason = reason;
+    this.stop();
+    this.close();
+    this.queue.push({ kind: 'invalidate', reason });
+    this.startPump();
+  }
+
+  /**
+   * Text that has not reached Slack yet never will; then the sink retires
+   * what did. An append already under way finishes first.
+   */
+  retire(late: HostReleaseLate): void {
+    for (let index = this.queue.length - 1; index >= 0; index -= 1) {
+      const operation = this.queue[index]!;
+      if (operation.kind !== 'append') continue;
+      this.queuedTextChunks = Math.max(0, this.queuedTextChunks - operation.count);
+      this.queue.splice(index, 1);
+    }
+    this.close();
+    this.queue.push({ kind: 'retire', late });
+    this.startPump();
+  }
+
+  /** The relay stops reading: an append waiting for the Slack budget gives way. */
+  close(): void {
+    this.closing = true;
+    this.closed.resolve();
+  }
+
+  hasText(): boolean {
+    return this.queuedTextChunks > 0 || this.acceptedChunks > 0;
+  }
+
+  async drain(): Promise<void> {
+    while (this.pumpPromise || this.queue.length > 0) {
+      this.startPump();
+      await this.pumpPromise;
+    }
+  }
+
+  summary(targetMessageCompleted: boolean): ProgressiveRelaySummary {
+    return {
+      acceptedChunks: this.acceptedChunks,
+      acceptedBytes: this.acceptedBytes,
+      targetMessageCompleted,
+      invalidated: this.invalidated,
+      ...(this.invalidationReason ? { invalidationReason: this.invalidationReason } : {}),
+    };
+  }
+
+  private startPump(): void {
+    if (this.pumpPromise) return;
+    const wrapped = this.pump().finally(() => {
+      if (this.pumpPromise === wrapped) {
+        this.pumpPromise = undefined;
+      }
+      if (this.queue.length > 0) this.startPump();
+    });
+    this.pumpPromise = wrapped;
+  }
+
+  private async pump(): Promise<void> {
+    while (this.queue.length > 0) {
+      const operation = this.queue.shift()!;
+      if (operation.kind === 'invalidate') {
+        try {
+          await this.sink.invalidate(operation.reason);
+        } catch {
+          // The sink already owns durable recovery. Relay invalidation is
+          // best-effort after that boundary and must not expose its error.
+        }
+        continue;
+      }
+      if (operation.kind === 'retire') {
+        try {
+          await this.sink.retire?.(operation.late);
+        } catch {
+          // The sink leaves the stream for the terminal to reconcile.
+        }
+        continue;
+      }
+      if (operation.kind === 'intent') {
+        try {
+          await this.sink.modelIntent!.transition(operation.transition);
+        } catch {
+          this.invalidated = true;
+          this.invalidationReason = 'intent_persistence_failed';
+          this.stop();
+          this.queue.length = 0;
+          try {
+            await this.sink.invalidate('intent_persistence_failed');
+          } catch {
+            // The missing durable transition is itself the recovery signal.
+          }
+        }
+        continue;
+      }
+      if (this.invalidationReason === 'sink_failed' ||
+          this.invalidationReason === 'intent_persistence_failed') continue;
+      try {
+        // Wait for the Slack pace first, then take every chunk that arrived
+        // meanwhile: a slower cadence carries more text per append.
+        if (this.sink.prepareAppend) await this.sink.prepareAppend(this.appendControl);
+        while (this.queue[0]?.kind === 'append') {
+          const next = this.queue.shift() as Extract<RelayOperation, { kind: 'append' }>;
+          operation.chunk = {
+            messageId: operation.chunk.messageId,
+            delta: operation.chunk.delta + next.chunk.delta,
+            position: next.chunk.position,
+          };
+          operation.count += next.count;
+        }
+        await this.sink.append(operation.chunk, this.appendControl);
+        this.acceptedChunks += operation.count;
+        this.acceptedBytes += new TextEncoder().encode(operation.chunk.delta).byteLength;
+      } catch (error) {
+        this.invalidated = true;
+        this.invalidationReason = 'sink_failed';
+        this.stop();
+        this.queue.length = 0;
+        try {
+          await this.sink.invalidate('sink_failed', error);
+        } catch {
+          // Same fail-closed rule as an explicit invalidation above.
+        }
+      } finally {
+        this.queuedTextChunks = Math.max(0, this.queuedTextChunks - operation.count);
+      }
+    }
+  }
+}
 
 /**
  * `early`: the declaration must precede every other tool and all answer text.
@@ -190,10 +364,10 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
         this.denyAndInvalidate(
           'structured_output',
           'structured_output',
-          this.hasQueuedOrAcceptedText(),
+          this.effects.hasText(),
         );
       } else {
-        this.queueInvalidation('structured_output');
+        this.effects.invalidate('structured_output');
       }
       return;
     }
@@ -225,30 +399,18 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
       this.preIntentTextSeen = true;
       return;
     }
-    this.queueText({
+    this.effects.text({
       messageId: chunk.messageId,
       delta: chunk.delta,
       position: { ...chunk.position },
     });
   };
 
-  private readonly queue: RelayOperation[] = [];
-  private closing = false;
-  private readonly closed = Promise.withResolvers<void>();
-  private readonly appendControl: ProgressiveAppendControl = {
-    closing: () => this.closing,
-    closed: this.closed.promise,
-  };
-  private pumpPromise: Promise<void> | undefined;
+  private readonly effects: ProgressiveEffects;
   private accepting = true;
   private targetMessageId: string | undefined;
   private lastSeenPosition: { batch: number; index: number } | undefined;
-  private queuedTextChunks = 0;
-  private acceptedChunks = 0;
-  private acceptedBytes = 0;
   private targetMessageCompleted = false;
-  private invalidated = false;
-  private invalidationReason: ProgressiveRelayInvalidationReason | undefined;
   private intentStatus: SlackProgressiveIntent['status'];
   private intentToolCallId: string | undefined;
   private preIntentTextSeen = false;
@@ -276,6 +438,7 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
     if (!boundedIdentity(options.submissionId)) {
       throw new Error('Progressive relay submission identity is invalid.');
     }
+    this.effects = new ProgressiveEffects(options, () => { this.accepting = false; });
     const initial = options.modelIntent?.initial;
     this.intentStatus = initial?.status ?? 'requested';
     this.intentToolCallId = initial?.status === 'pending' || initial?.status === 'requested'
@@ -303,25 +466,25 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
     if (this.accepting && this.usesModelIntent) {
       if (this.intentStatus === 'unresolved') {
         this.intentStatus = 'not_requested';
-        this.queueIntent({ kind: 'not_requested' });
+        this.effects.intent({ kind: 'not_requested' });
       } else if (this.intentStatus === 'pending') {
         this.intentStatus = 'denied';
-        this.queueIntent({ kind: 'denied', reason: 'declaration_failed' });
+        this.effects.intent({ kind: 'denied', reason: 'declaration_failed' });
       }
     }
     this.accepting = false;
-    this.markClosing();
-    await this.drain();
-    return this.summary();
+    this.effects.close();
+    await this.effects.drain();
+    return this.effects.summary(this.targetMessageCompleted);
   }
 
   async invalidateAndDrain(
     reason: ProgressiveRelayInvalidationReason,
   ): Promise<ProgressiveRelaySummary> {
-    this.queueInvalidation(reason);
-    this.markClosing();
-    await this.drain();
-    return this.summary();
+    this.effects.invalidate(reason);
+    this.effects.close();
+    await this.effects.drain();
+    return this.effects.summary(this.targetMessageCompleted);
   }
 
   async suspendAndDrain(): Promise<ProgressiveRelaySummary> {
@@ -329,19 +492,14 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
     // queue: the next read replays the receipt from its start, and the sink's
     // durable position skips everything this relay already accepted.
     this.accepting = false;
-    this.markClosing();
-    await this.drain();
-    return this.summary();
-  }
-
-  private markClosing(): void {
-    this.closing = true;
-    this.closed.resolve();
+    this.effects.close();
+    await this.effects.drain();
+    return this.effects.summary(this.targetMessageCompleted);
   }
 
   private handleToolInput(toolName: string, toolCallId: string): void {
     if (!this.usesModelIntent) {
-      this.queueInvalidation('tool_activity');
+      this.effects.invalidate('tool_activity');
       return;
     }
     if (!boundedIdentity(toolCallId)) {
@@ -359,7 +517,7 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
       this.denyAndInvalidate(
         'non_presentation_tool',
         'tool_activity',
-        this.hasQueuedOrAcceptedText(),
+        this.effects.hasText(),
       );
       return;
     }
@@ -377,7 +535,7 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
       this.intentStatus = 'pending';
       this.intentToolCallId = toolCallId;
       this.declarationStepOpen = true;
-      this.queueIntent({ kind: 'candidate', toolCallId });
+      this.effects.intent({ kind: 'candidate', toolCallId });
       return;
     }
     if ((this.intentStatus === 'pending' || this.intentStatus === 'requested') &&
@@ -390,7 +548,7 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
       }
       return;
     }
-    this.denyAndInvalidate('repeated_declaration', 'tool_activity', this.hasQueuedOrAcceptedText());
+    this.denyAndInvalidate('repeated_declaration', 'tool_activity', this.effects.hasText());
   }
 
   /** Final-answer mode: a non-declaration tool call in the target response. */
@@ -401,13 +559,13 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
       return;
     }
     if (this.intentStatus === 'pending' || this.declarationStepOpen) {
-      this.denyAndInvalidate('concurrent_tool', 'tool_activity', this.hasQueuedOrAcceptedText());
+      this.denyAndInvalidate('concurrent_tool', 'tool_activity', this.effects.hasText());
       return;
     }
     // The answer-only lock refuses this call before it runs, so no effect
     // can follow released text. Released text cannot be reconciled with a
     // later step, though, so any text already relayed ends the stream.
-    if (this.hasQueuedOrAcceptedText()) {
+    if (this.effects.hasText()) {
       this.denyAndInvalidate('non_presentation_tool', 'tool_activity', true);
       return;
     }
@@ -426,12 +584,12 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
       this.denyAndInvalidate(
         'mismatched_declaration',
         'tool_activity',
-        this.hasQueuedOrAcceptedText(),
+        this.effects.hasText(),
       );
       return;
     }
     if (!succeeded) {
-      this.denyAndInvalidate('declaration_failed', 'tool_activity', this.hasQueuedOrAcceptedText());
+      this.denyAndInvalidate('declaration_failed', 'tool_activity', this.effects.hasText());
       return;
     }
     if (this.preIntentTextSeen) {
@@ -439,18 +597,7 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
       return;
     }
     this.intentStatus = 'requested';
-    this.queueIntent({ kind: 'requested', toolCallId });
-  }
-
-  private queueText(chunk: ProgressiveTextChunk): void {
-    this.queuedTextChunks += 1;
-    this.queue.push({ kind: 'append', count: 1, chunk });
-    this.startPump();
-  }
-
-  private queueIntent(transition: ProgressiveIntentTransition): void {
-    this.queue.push({ kind: 'intent', transition });
-    this.startPump();
+    this.effects.intent({ kind: 'requested', toolCallId });
   }
 
   private denyAndInvalidate(
@@ -459,108 +606,18 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
     hardInvalidate: boolean,
   ): void {
     if (!this.usesModelIntent) {
-      this.queueInvalidation(invalidation);
+      this.effects.invalidate(invalidation);
       return;
     }
     if (this.intentStatus === 'denied' || this.intentStatus === 'not_requested') return;
     this.intentStatus = 'denied';
-    this.queueIntent({ kind: 'denied', reason: denial });
+    this.effects.intent({ kind: 'denied', reason: denial });
     this.accepting = false;
-    if (hardInvalidate) this.queueInvalidation(invalidation);
-  }
-
-  private queueInvalidation(reason: ProgressiveRelayInvalidationReason): void {
-    if (this.invalidated) return;
-    this.invalidated = true;
-    this.invalidationReason = reason;
-    this.accepting = false;
-    this.markClosing();
-    this.queue.push({ kind: 'invalidate', reason });
-    this.startPump();
-  }
-
-  private startPump(): void {
-    if (this.pumpPromise) return;
-    const wrapped = this.pump().finally(() => {
-      if (this.pumpPromise === wrapped) {
-        this.pumpPromise = undefined;
-      }
-      if (this.queue.length > 0) this.startPump();
-    });
-    this.pumpPromise = wrapped;
-  }
-
-  private async pump(): Promise<void> {
-    while (this.queue.length > 0) {
-      const operation = this.queue.shift()!;
-      if (operation.kind === 'invalidate') {
-        try {
-          await this.options.invalidate(operation.reason);
-        } catch {
-          // The sink already owns durable recovery. Relay invalidation is
-          // best-effort after that boundary and must not expose its error.
-        }
-        continue;
-      }
-      if (operation.kind === 'intent') {
-        try {
-          await this.options.modelIntent!.transition(operation.transition);
-        } catch {
-          this.invalidated = true;
-          this.invalidationReason = 'intent_persistence_failed';
-          this.accepting = false;
-          this.queue.length = 0;
-          try {
-            await this.options.invalidate('intent_persistence_failed');
-          } catch {
-            // The missing durable transition is itself the recovery signal.
-          }
-        }
-        continue;
-      }
-      if (this.invalidationReason === 'sink_failed' ||
-          this.invalidationReason === 'intent_persistence_failed') continue;
-      try {
-        // Wait for the Slack pace first, then take every chunk that arrived
-        // meanwhile: a slower cadence carries more text per append.
-        if (this.options.prepareAppend) await this.options.prepareAppend(this.appendControl);
-        while (this.queue[0]?.kind === 'append') {
-          const next = this.queue.shift() as Extract<RelayOperation, { kind: 'append' }>;
-          operation.chunk = {
-            messageId: operation.chunk.messageId,
-            delta: operation.chunk.delta + next.chunk.delta,
-            position: next.chunk.position,
-          };
-          operation.count += next.count;
-        }
-        await this.options.append(operation.chunk, this.appendControl);
-        this.acceptedChunks += operation.count;
-        this.acceptedBytes += new TextEncoder().encode(operation.chunk.delta).byteLength;
-      } catch (error) {
-        this.invalidated = true;
-        this.invalidationReason = 'sink_failed';
-        this.accepting = false;
-        this.queue.length = 0;
-        try {
-          await this.options.invalidate('sink_failed', error);
-        } catch {
-          // Same fail-closed rule as an explicit invalidation above.
-        }
-      } finally {
-        this.queuedTextChunks = Math.max(0, this.queuedTextChunks - operation.count);
-      }
-    }
-  }
-
-  private async drain(): Promise<void> {
-    while (this.pumpPromise || this.queue.length > 0) {
-      this.startPump();
-      await this.pumpPromise;
-    }
+    if (hardInvalidate) this.effects.invalidate(invalidation);
   }
 
   streamedAnswer(): boolean {
-    return this.intentStatus === 'requested' || this.hasQueuedOrAcceptedText();
+    return this.intentStatus === 'requested' || this.effects.hasText();
   }
 
   streamedPrefixBound(): string | undefined {
@@ -571,22 +628,8 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
     return this.options.canonicalStreamText?.(text);
   }
 
-  private hasQueuedOrAcceptedText(): boolean {
-    return this.queuedTextChunks > 0 || this.acceptedChunks > 0;
-  }
-
   private sawTargetActivity(): boolean {
-    return this.preIntentTextSeen || this.hasQueuedOrAcceptedText();
-  }
-
-  private summary(): ProgressiveRelaySummary {
-    return {
-      acceptedChunks: this.acceptedChunks,
-      acceptedBytes: this.acceptedBytes,
-      targetMessageCompleted: this.targetMessageCompleted,
-      invalidated: this.invalidated,
-      ...(this.invalidationReason ? { invalidationReason: this.invalidationReason } : {}),
-    };
+    return this.preIntentTextSeen || this.effects.hasText();
   }
 }
 
@@ -597,18 +640,18 @@ export function isEmptyFileDeliveryResult(name: string, data: unknown): boolean 
   return result.unresolved === false && Array.isArray(result.files) && result.files.length === 0;
 }
 
-function validPosition(value: { batch: number; index: number }): boolean {
+export function validPosition(value: { batch: number; index: number }): boolean {
   return Number.isSafeInteger(value.batch) && value.batch >= 0 &&
     Number.isSafeInteger(value.index) && value.index >= 0;
 }
 
-function comparePosition(
+export function comparePosition(
   left: { batch: number; index: number },
   right: { batch: number; index: number },
 ): number {
   return left.batch === right.batch ? left.index - right.index : left.batch - right.batch;
 }
 
-function boundedIdentity(value: string): boolean {
+export function boundedIdentity(value: string): boolean {
   return value.length > 0 && value.length <= 200 && !/[\u0000-\u001f\u007f]/.test(value);
 }
