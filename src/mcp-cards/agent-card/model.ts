@@ -1140,7 +1140,7 @@ function presentDone(view: Extract<View, { kind: 'done' }>): Omit<Presentation<A
   };
 }
 
-/** The most characters an instructions change shows with the words around it; its changed words always show whole. */
+/** The most characters an instructions change shows with the words around it; a changed span up to `CHANGED_SPAN_MAX` shows whole past it. */
 const CHANGE_QUOTE_MAX = 240;
 
 /**
@@ -1155,7 +1155,8 @@ function presentChange(view: Extract<View, { kind: 'change' }>, saving: boolean)
     avatar: 'agent',
     avatarUrl: httpsUrl(preview.agent.avatarUrl),
     title: `Change ${preview.agent.name}`,
-    ...saving ? {} : { subtitle: [{ text: `${count} ${count === 1 ? 'change' : 'changes'} · nothing is saved until you press Save` }] },
+    // The heading stays, so the live region says the step.
+    ...saving ? { announce: `Change ${preview.agent.name}. Saving…` } : { subtitle: [{ text: `${count} ${count === 1 ? 'change' : 'changes'} · nothing is saved until you press Save` }] },
     blocks: [
       ...preview.changes.flatMap((change): Array<Block<Action>> => [{ kind: 'section', label: FIELD_LABELS[change.field] }, ...changeBlocks(change, view.whole)]),
       ...stale ? [{ kind: 'note' as const, text: 'It changed since this preview. Ask again for a fresh one.', tone: 'warn' as const }] : [],

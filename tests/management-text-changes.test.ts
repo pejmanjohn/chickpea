@@ -11,7 +11,7 @@ import {
   type LineHunk,
   type TextChange,
 } from '../src/management/text-changes.ts';
-import { describeWholeTextChange } from '../src/management/text-change-wording.ts';
+import { CHANGED_SPAN_END, CHANGED_SPAN_MAX, describeWholeTextChange } from '../src/management/text-change-wording.ts';
 import {
   rewordItems,
   rewordMarker,
@@ -229,4 +229,40 @@ test('a change\'s window holds every changed word; fitting it drops the trailing
   assert.equal(describeWholeTextChange(change, window!, quoted, 500), `Changes wording to: “…two three four five ${changed} eight nine ten”`);
   assert.equal(describeWholeTextChange(change, window!, quoted, changed.length + 6), `Changes wording to: “…five ${changed}…”`);
   assert.equal(describeWholeTextChange(change, window!, quoted, 5), `Changes wording to: “…${changed}…”`, 'never shorter than the change');
+});
+
+test('a changed span of 600 characters shows whole; a longer one shows its two ends and counts the rest', () => {
+  const quoted = (text: string) => `“${text}”`;
+  const whole = (before: string, after: string) => textChangeWindows(before, after)
+    .map(({ window, ...change }) => describeWholeTextChange(change, window!, quoted, 240));
+  const span = (length: number) => 'abcd '.repeat(length / 5 + 1).slice(0, length - 1) + 'z';
+  const around = (changed: string) => `aa bb cc dd ${changed} ee ff gg hh`;
+
+  const exact = span(CHANGED_SPAN_MAX);
+  assert.equal(exact.length, 600);
+  assert.deepEqual(whole(around('old'), around(exact)), [`Changes wording to: “…${exact}…”`], 'exactly 600: every changed character');
+
+  const over = span(CHANGED_SPAN_MAX + 1);
+  const [cut] = whole(around('old'), around(over));
+  const [head, line, tail] = cut!.slice('Changes wording to: “…'.length, -'…”'.length).split('\n');
+  assert.equal(over.startsWith(head!) && over.endsWith(tail!), true, 'its own first and last words');
+  assert.equal(head!.length <= CHANGED_SPAN_END && tail!.length <= CHANGED_SPAN_END, true);
+  assert.equal(line, `… ${over.length - head!.length - tail!.length} more characters changed …`);
+  assert.equal(/ $|^ /.test(head! + tail!), false, 'cut at a word');
+
+  // A full rewrite of long instructions: one long line, and many lines.
+  const words = (prefix: string) => Array.from({ length: 16_000 }, (_, index) => `${prefix}${index}`).join(' ');
+  const [oneLine] = whole(words('word'), words('term'));
+  assert.equal(oneLine!.length < 600, true, `${oneLine!.length} characters`);
+  assert.match(oneLine!, /^At the start, changes wording to: “term0 term1 .+\n… 148,\d{3} more characters changed …\n.+ term15999”$/s);
+  const lines = (text: (index: number) => string) => Array.from({ length: 5_000 }, (_, index) => text(index)).join('\n');
+  const rewritten = whole(lines((index) => `Line ${index} says something fairly ordinary here.`), lines((index) => `Totally different ${index * 7} content appears on this row.`));
+  assert.equal(rewritten.length, 1);
+  assert.equal(rewritten[0]!.length < 600, true, `${rewritten[0]!.length} characters`);
+  assert.match(rewritten[0]!, /changes wording to: “Totally different 0 .+\n… 262,\d{3} more characters changed …\n.+ on this row\.”$/s);
+
+  // Counted and cut by character, never through a surrogate pair; one long word has no word to cut at.
+  const emoji = '👋'.repeat(700);
+  const [pictures] = whole('hi', emoji);
+  assert.equal(pictures, `At the start, changes wording to: “${'👋'.repeat(250)}\n… 200 more characters changed …\n${'👋'.repeat(250)}”`);
 });

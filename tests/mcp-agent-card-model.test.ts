@@ -222,6 +222,7 @@ test('the change card quotes every changed word of the instructions, and says Sa
   agentCard.hold = ({ tool }) => tool === 'update_agent';
   await agentCard.press('save');
   assert.equal(agentCard.shown.subtitle, undefined, 'no "nothing is saved" while it saves');
+  assert.equal(agentCard.shown.announce, 'Change Colours. Saving…', 'the heading stays, so the live region says the step');
   assert.deepEqual(agentCard.shown.blocks.at(-1), { kind: 'steps', steps: [{ label: 'Saving…', state: 'now' }] });
   assert.deepEqual(agentCard.labels(), []);
   await agentCard.answer();
