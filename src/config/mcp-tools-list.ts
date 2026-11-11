@@ -220,7 +220,11 @@ function rewriteAnswer(value: unknown, answer: RequestAnswer): unknown {
     }
     return value;
   }
-  if (!hasOnlyKeys(value, ['jsonrpc', 'id', 'result']) || !isRecord(value.result)) throw answer.refuse('json-rpc');
+  // The client drops a result whose `_meta` is not an object, which would leave its request open.
+  if (!hasOnlyKeys(value, ['jsonrpc', 'id', 'result']) || !isRecord(value.result) ||
+      (value.result._meta !== undefined && !isRecord(value.result._meta))) {
+    throw answer.refuse('json-rpc');
+  }
   const result = answer.result(value.result);
   return result === value.result ? value : { ...value, result };
 }

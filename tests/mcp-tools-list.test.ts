@@ -630,6 +630,8 @@ test('an answer the MCP client would not read as one is refused', async (t) => {
     (rpc) => ({ jsonrpc: '2.0', id: rpc.id, error: { code: -32000 } }),
     (rpc) => ({ jsonrpc: '2.0', id: rpc.id, error: { code: -32000, message: 'no' }, extra: true }),
     (rpc) => ({ jsonrpc: '2.0', id: rpc.id, result: { tools: [listedTool('alpha')] }, extra: true }),
+    (rpc) => ({ jsonrpc: '2.0', id: rpc.id, result: { tools: [listedTool('alpha')], _meta: 1 } }),
+    (rpc) => ({ jsonrpc: '2.0', id: rpc.id, result: { tools: [listedTool('alpha')], _meta: null } }),
   ];
   for (const answer of malformed) {
     for (const wire of ['json', 'sse'] as const) {
