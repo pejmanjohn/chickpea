@@ -167,6 +167,30 @@ test('an MCP tool counts as a read only when declared one, and a Meta Ads tool o
   });
 });
 
+test('a catalog MCP tool is a read only when marked one: never one its server added later, nor one its server says writes', async () => {
+  await withTestRunLane(async (lane) => {
+    const parts = await lane.parts();
+    const catalog = (policy: object) => compileTestRunPlan({
+      ...parts,
+      connections: parts.connections.map((connection) => connection.policy.kind === 'mcp'
+        ? { ...connection, policy: { ...connection.policy, presetId: 'linear', ...policy } } as typeof connection
+        : connection),
+    }, testConversation(lane));
+    const toolsOf = (plan: RuntimePlanV2) => plan.mcpConnections.flatMap(({ allowedTools }) => allowedTools);
+    const names = Object.values(MCP_TOOLS);
+
+    assert.deepEqual(toolsOf(catalog({})), [MCP_TOOLS.read], 'a catalog service\'s mark counts as a custom one\'s');
+    const added = 'list_customers';
+    assert.deepEqual(toolsOf(catalog({
+      allowedTools: [...names, added],
+      discoveredTools: [...names.map((name) => ({ name })), { name: added, readOnlyHint: true }],
+    })), [MCP_TOOLS.read], 'a tool the server added later, read-only by its own word, has no mark');
+    const flipped = catalog({ discoveredTools: names.map((name) => ({ name, ...(name === MCP_TOOLS.read ? { readOnlyHint: false } : {}) })) });
+    assert.deepEqual(flipped.mcpConnections, [], 'its one read mark is outranked by the server, so the connection drops out');
+    assert.equal(flipped.connectionAccountIds?.includes(MCP_ACCOUNT), false);
+  });
+});
+
 test('a connector with no read capability drops out of a test run', async () => {
   await withTestRunLane(async (lane) => {
     const parts = await lane.parts();

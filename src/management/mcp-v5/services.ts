@@ -16,16 +16,19 @@ import type * as schemas from './schemas.ts';
 type Out<T extends z.ZodType> = z.infer<T>;
 type Service = Out<typeof schemas.getServiceOutput>;
 type Capability = NonNullable<Service['capabilities']>[number];
-type Described = Omit<Service, 'service' | 'name' | 'description' | 'account' | 'nextStep'>;
+/** A reviewed connector (BugSnag, Meta Ads) is marked by Chickpea's review, so its practice step is Admin's. */
+type Described = Omit<Service, 'service' | 'name' | 'description' | 'account' | 'nextStep'> & { reviewed?: true };
 
 const READ_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD']);
 
 const PRACTICE: Readonly<Record<Service['practice'], string>> = {
   reads_ready: 'A practice run can use its read actions.',
-  needs_read_marks: 'Its tools are listed once someone connects it, and a practice run leaves it out until they are chosen on the Agent\'s page in Admin; it then uses the ones Chickpea knows only read.',
-  not_in_practice: 'Its tools are listed once someone connects it. A practice run leaves it out, since nothing marks a catalog service\'s tools as reads; ask the Agent in Slack to try it.',
+  needs_read_marks: 'Once someone connects it, get_agent lists its tools under tools, and a practice run leaves it out until update_connection marks the ones that only read with readTools. Mark only the tools the person confirms only read.',
+  not_in_practice: 'A practice run leaves it out, since none of its actions only reads; ask the Agent in Slack to try it.',
   get_only: 'A practice run sends it only GET and HEAD requests.',
 };
+
+const REVIEWED_PRACTICE = 'Its tools are listed once someone connects it, and a practice run leaves it out until they are chosen on the Agent\'s page in Admin; it then uses the ones Chickpea knows only read.';
 
 export async function getService(
   deps: FiveZeroDeps,
@@ -52,7 +55,7 @@ export async function getService(
     ...(described.capabilities ? { capabilities: described.capabilities } : {}),
     capabilitiesKnown: described.capabilitiesKnown,
     practice: described.practice,
-    nextStep: `connect_service with service ${preset.id}, an agentId and ${owner} connects it. ${PRACTICE[described.practice]}`,
+    nextStep: `connect_service with service ${preset.id}, an agentId and ${owner} connects it. ${described.reviewed ? REVIEWED_PRACTICE : PRACTICE[described.practice]}`,
   };
 }
 
@@ -74,8 +77,9 @@ function describe(preset: ConnectorCatalogPreset): Described {
     return {
       signIn: mcpSignIn(preset.auth),
       capabilitiesKnown: 'after_connecting',
-      // Only a reviewed connector's tool choices carry read marks; nothing marks another catalog MCP service's tools.
-      practice: preset.toolAccessMode === 'review' ? 'needs_read_marks' : 'not_in_practice',
+      // update_connection marks its reads, or for a reviewed connector its tool choices in Admin carry Chickpea's own.
+      practice: 'needs_read_marks',
+      ...(preset.toolAccessMode === 'review' ? { reviewed: true as const } : {}),
     };
   }
   const { api } = preset as Extract<ConnectorPreset, { api: unknown }>;

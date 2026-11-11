@@ -400,8 +400,8 @@ export const FIVE_ZERO_TOOLS = {
     run: (deps, args) => connections.reconnectService(deps, args),
   }),
   update_connection: tool({
-    title: 'Update a custom connection',
-    description: 'Change a custom API or MCP connection\'s settings: its name, hosts, paths, methods, key header or prefix, server URL, tools, which tools only read, or guide. Send the version get_agent returned. It overwrites them and applies at once. Changing its hosts, paths, methods, key header or prefix, or an MCP server\'s URL, deletes the saved key at once; the result links to enter it again. Tell the person first.',
+    title: 'Update a connection',
+    description: 'Change a custom API or MCP connection\'s settings: its name, hosts, paths, methods, key header or prefix, server URL, tools, which tools only read, or guide. For a catalog service, only which tools only read. Send get_agent\'s version; it overwrites them at once. Changing its hosts, paths, methods, key header or prefix, or server URL deletes the saved key; the result links to enter it again. Tell the person first.',
     input: schemas.updateConnectionInput,
     output: schemas.changeResultOutput,
     // A new MCP server URL is asked for its tools.

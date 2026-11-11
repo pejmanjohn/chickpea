@@ -500,6 +500,55 @@ test('a test run stops calling an MCP tool once an Admin no longer declares it a
   });
 });
 
+/** The lane's MCP server discovered again, with one tool's hint as its server now gives it. */
+async function rediscover(tool: string, readOnlyHint: boolean): Promise<void> {
+  const config = getConfigStore();
+  const account = (await config.listConnectionAccounts(WORKSPACE)).find(({ id }) => id === MCP_ACCOUNT)!;
+  if (account.policy.kind !== 'mcp') throw new Error('not the lane\'s MCP account');
+  const discoveredTools = account.policy.discoveredTools.map((entry) => entry.name === tool ? { ...entry, readOnlyHint } : entry);
+  await config.putConnectionAccount({ ...account, policy: { ...account.policy, discoveredTools } }, account.revision);
+}
+
+test('a test run stops calling a tool marked as a read once its server says it changes things', async () => {
+  await withTestRunLane(async (lane) => {
+    const plan = await testPlan(lane);
+    const testRun = resolveRuntimePlanMcpConnections(plan.agentId, plan.mcpConnections, undefined,
+      { workspaceId: WORKSPACE, actorMembershipId: lane.actorMembershipId }, { readsOnly: true })[0]!;
+    const lookUp = async () => (await testRun.fetch!(MCP_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: MCP_TOOLS.read, arguments: {} } }),
+    })).status;
+    const calls = mcp.calls.length;
+    await rediscover(MCP_TOOLS.read, true);
+    assert.equal(await lookUp(), 200, 'the mark and the server agree');
+    await rediscover(MCP_TOOLS.read, false);
+    await assert.rejects(lookUp(), /policy changed/, 'the server now says it writes, and the mark is still stored');
+    assert.deepEqual(mcp.calls.slice(calls), [MCP_TOOLS.read]);
+  });
+});
+
+test('a test run with two tools marked as reads stops calling the one its server now says changes things', async () => {
+  await withTestRunLane(async (lane) => {
+    await redeclare({ [MCP_TOOLS.read]: { effect: 'read' }, [MCP_TOOLS.undeclared]: { effect: 'read' } });
+    const plan = await testPlan(lane);
+    assert.deepEqual(plan.mcpConnections.flatMap(({ allowedTools }) => allowedTools), [MCP_TOOLS.undeclared, MCP_TOOLS.read].sort());
+    const testRun = resolveRuntimePlanMcpConnections(plan.agentId, plan.mcpConnections, undefined,
+      { workspaceId: WORKSPACE, actorMembershipId: lane.actorMembershipId }, { readsOnly: true })[0]!;
+    const callTool = async (name: string) => (await testRun.fetch!(MCP_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: {} } }),
+    })).status;
+    const calls = mcp.calls.length;
+    assert.equal(await callTool(MCP_TOOLS.undeclared), 200);
+    await rediscover(MCP_TOOLS.undeclared, false);
+    // The other mark still stands, and it does not carry this one.
+    await assert.rejects(callTool(MCP_TOOLS.undeclared), /policy changed/);
+    assert.deepEqual(mcp.calls.slice(calls), [MCP_TOOLS.undeclared]);
+  });
+});
+
 test("a test run's render checks its MCP calls against the live declaration", async () => {
   await withTestRunLane(async (lane) => {
     const plan = await testPlan(lane);

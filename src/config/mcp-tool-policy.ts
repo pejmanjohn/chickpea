@@ -39,13 +39,20 @@ export function mcpToolEffect(connection: Pick<McpConnectionConfig, 'toolPolicie
 /**
  * A tool a test run may call: an Admin declared it a read, since a server's
  * own hint is not a declaration, and a Meta Ads tool is also a reviewed read.
+ * A server that says the tool changes things outranks the mark, whichever
+ * door set it and however long ago.
  */
 export function mcpToolDeclaredRead(
-  connection: Pick<McpConnectionConfig, 'toolPolicies' | 'presetId' | 'url'>,
+  connection: Pick<McpConnectionConfig, 'toolPolicies' | 'presetId' | 'url' | 'discoveredTools'>,
   name: string,
 ): boolean {
-  return connection.toolPolicies?.[name]?.effect === 'read' &&
+  return connection.toolPolicies?.[name]?.effect === 'read' && !mcpServerSaysWrites(connection, name) &&
     (!isMetaAdsMcpConnection(connection) || metaAdsToolEffect(name) === 'read');
+}
+
+/** The server's last discovery said this tool changes things (readOnlyHint false); no hint says nothing. */
+export function mcpServerSaysWrites(connection: Pick<McpConnectionConfig, 'discoveredTools'>, name: string): boolean {
+  return connection.discoveredTools.some((tool) => tool.name === name && tool.readOnlyHint === false);
 }
 
 /** Enforced at outbound MCP invocation, before sending the tool request. */

@@ -134,16 +134,16 @@ test('a managed service lists its tools now, its writes as write with what they 
   assert.equal(service(await call('get_service', { service: 'freshdesk-managed' })).signIn, 'key');
 });
 
-test('an MCP preset says its tools come after connecting, and a practice run leaves it out', async (t) => {
+test('an MCP preset says its tools come after connecting, and how practice gets its reads: update_connection, or Admin for a reviewed one', async (t) => {
   const { f, call } = await harness(t, 'svc-mcp');
   const linear = service(await call('get_service', { service: 'linear' }));
   assert.equal(linear.signIn, 'oauth');
   assert.equal(linear.capabilitiesKnown, 'after_connecting');
   assert.equal(linear.capabilities, undefined);
-  // Neither Admin nor update_connection marks a catalog MCP service's tools, so it promises no way in.
-  assert.equal(linear.practice, 'not_in_practice');
-  assert.match(linear.nextStep, /practice run leaves it out, since nothing marks a catalog service's tools as reads; ask the Agent in Slack/);
-  assert.doesNotMatch(linear.nextStep, /marked as reads in Admin|until/);
+  // update_connection marks a catalog MCP service's reads once it is connected, and get_agent lists the tools to mark.
+  assert.equal(linear.practice, 'needs_read_marks');
+  assert.match(linear.nextStep, /get_agent lists its tools under tools, and a practice run leaves it out until update_connection marks the ones that only read with readTools\. Mark only the tools the person confirms only read\.$/);
+  assert.doesNotMatch(linear.nextStep, /Admin|in Slack/);
   assert.equal(service(await call('get_service', { service: 'stripe' })).signIn, 'key');
   assertNoInternals(JSON.stringify(linear), f);
   // The server's URL is the catalog's business, not the model's.
@@ -154,11 +154,12 @@ test('an MCP preset says its tools come after connecting, and a practice run lea
     const result = service(await call('get_service', { service: reviewed }));
     assert.equal(result.practice, 'needs_read_marks', reviewed);
     assert.match(result.nextStep, /leaves it out until they are chosen on the Agent's page in Admin/);
+    assert.doesNotMatch(result.nextStep, /update_connection/, 'update_connection refuses a reviewed connector');
   }
   for (const preset of CONNECTION_CATALOG_PRESETS) {
     if ('managedToolkit' in preset || preset.url === undefined) continue;
     const { practice } = service(await call('get_service', { service: preset.id }));
-    assert.equal(practice, preset.toolAccessMode === 'review' ? 'needs_read_marks' : 'not_in_practice', preset.id);
+    assert.equal(practice, 'needs_read_marks', preset.id);
   }
 });
 

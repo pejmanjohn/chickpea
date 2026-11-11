@@ -504,20 +504,21 @@ function practiceAvailable(plan: RuntimePlanV2): Array<{ service: string; tools:
 }
 
 /**
- * What lets a run use a connection it left out. A custom MCP connection's
- * tools are marked as reads with update_connection, by whoever may change
- * that connection, as in Admin; one that allows no tools has none to mark, so
- * its tools are chosen in Admin first. A managed service's read tools, or a
- * reviewed connector's (Bugsnag or Meta Ads, added by URL too), are chosen on
- * the Agent's page in Admin, and update_connection refuses a reviewed one.
- * Nothing marks a catalog MCP service's tools, so it gets no fix.
+ * What lets a run use a connection it left out. A custom or catalog MCP
+ * connection's tools are marked as reads with update_connection, by whoever
+ * may change that connection, as in Admin. A custom one that allows no tools
+ * has none to mark, so its tools are chosen in Admin first; a catalog one
+ * gets no fix, since Admin chooses no catalog service's tools. A managed
+ * service's read tools, or a reviewed connector's (Bugsnag or Meta Ads, added
+ * by URL too), are chosen on the Agent's page in Admin, and update_connection
+ * refuses a reviewed one.
  */
 async function practiceFix(
   deps: FiveZeroDeps,
   reading: AgentAdmissionReading,
   { account, policy }: EffectiveConnectionAccount,
 ): Promise<McpErrorFix | undefined> {
-  if (policy.kind === 'mcp' && !policy.presetId && !isMcpToolReviewRequired(policy)) {
+  if (policy.kind === 'mcp' && !isMcpToolReviewRequired(policy) && (!policy.presetId || policy.allowedTools.length > 0)) {
     if (!canManageOwnedResource(reading.actor, account)) return undefined;
     // update_connection marks only allowed tools, and get_agent names none to allow, so Admin chooses them.
     if (policy.allowedTools.length === 0) return agentAdminFix(deps, reading, 'Choose its tools in Admin');

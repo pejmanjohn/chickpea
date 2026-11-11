@@ -356,7 +356,7 @@ test('the fix for a connection left out leads somewhere: update_connection marks
   assert.deepEqual(empty.fixes, [{ label: 'Choose its tools in Admin', url: `${BASE_URL}/admin/agents/agent_no_tools` }]);
 });
 
-test('only someone who may change a connection is offered its fix, as in Admin; a catalog MCP service gets none', async (t) => {
+test('only someone who may change a connection is offered its fix, as in Admin; a catalog MCP service with no tools gets none', async (t) => {
   const { f, teamId, callAs, instances } = await harness(t, 'mark_authority', { asMember: true });
   // The member created both Agents, so they may change them and DM them.
   const mine = { creatorMembershipId: f.admin.membership.id };
@@ -405,14 +405,66 @@ test('only someone who may change a connection is offered its fix, as in Admin; 
   const stored = (await f.config.listConnectionAccounts(teamId)).find(({ id }) => id === 'connection_own_bugsnag');
   assert.equal(stored?.policy.kind === 'mcp' ? stored.policy.toolPolicies : null, undefined, 'and writes nothing');
 
-  // Neither Admin nor update_connection marks a catalog MCP service's tools, so no fix points anywhere.
+  // A team catalog MCP service is marked as a team custom one is: by an Owner or Admin.
   await seedAgent(f, { id: 'agent_linear', ...mine });
   await connect(f, teamId, 'agent_linear', {
     id: 'connection_linear', providerId: 'linear', label: 'Linear',
     policy: docsMcp({ url: 'https://mcp.linear.app/mcp', presetId: 'linear', authMode: 'oauth', allowedTools: ['list_issues'], discoveredTools: [{ name: 'list_issues' }] }),
   });
-  assert.equal(await fixesOf('agent_linear'), undefined);
-  assert.equal(instances.dispatched.length, 4, 'each ran without the connection it left out');
+  assert.equal(await fixesOf('agent_linear'), undefined, 'an Owner or Admin marks a team catalog service\'s reads');
+  // One that allows no tools has none to mark, and Admin chooses none for it: no fix points anywhere.
+  await seedAgent(f, { id: 'agent_sentry', ...mine });
+  await connect(f, teamId, 'agent_sentry', {
+    id: 'connection_own_sentry', providerId: 'sentry', label: 'Sentry', ownerKind: 'member', ownerMembershipId: f.admin.membership.id,
+    policy: docsMcp({ url: 'https://mcp.sentry.dev/mcp', presetId: 'sentry', authMode: 'oauth', allowedTools: [], discoveredTools: [] }),
+  });
+  assert.equal(await fixesOf('agent_sentry'), undefined);
+  assert.equal(instances.dispatched.length, 5, 'each ran without the connection it left out');
+});
+
+test('a practice run uses a catalog MCP service\'s tools marked as reads, never an unmarked one, nor one its server added later', async (t) => {
+  const { f, teamId, call, instances } = await harness(t, 'catalog_reads');
+  await seedAgent(f);
+  const tools = [{ name: 'list_issues', readOnlyHint: true }, { name: 'get_issue' }, { name: 'save_issue', readOnlyHint: false }];
+  await connect(f, teamId, 'agent_tested', {
+    id: 'connection_linear', providerId: 'linear', label: 'Linear',
+    policy: docsMcp({ url: 'https://mcp.linear.app/mcp', presetId: 'linear', authMode: 'oauth', allowedTools: tools.map(({ name }) => name), discoveredTools: tools }),
+  });
+  instances.settleEvery = { kind: 'answered', reply: 'Two issues.', read: ['Linear'], steps: [] };
+  const practice = async (question: string) => {
+    const run = structured(await call('practice_agent', { agentId: 'agent_tested', question }));
+    assert.equal(run.status, 'answered');
+    const { mcpConnections } = parseTestTurnInitialData(instances.dispatched.at(-1)!.initialData).runtimePlan;
+    return { run, mounted: mcpConnections.map(({ allowedTools }) => allowedTools) };
+  };
+  const unmarked = await practice('Which issues are open?');
+  assert.deepEqual([unmarked.run.partial, unmarked.mounted], [true, []], 'a server\'s own read-only hint is not a mark: the service is left out');
+  assert.deepEqual(unmarked.run.fixes,
+    [{ label: 'Mark Linear\'s read tools', tool: 'update_connection', arguments: { agentId: 'agent_tested', connectionId: 'linear' } }],
+    'and its fix is the custom connection\'s');
+  const mark = async (changes: Record<string, unknown>, key: string) => call('update_connection', {
+    agentId: 'agent_tested', connectionId: 'linear',
+    version: (structured(await call('get_agent', { agentId: 'agent_tested' })) as { version: string }).version, changes, idempotencyKey: key,
+  });
+  assert.equal(errorOf(await mark({ readTools: ['save_issue'] }, 'write-as-read')).code, 'invalid_input');
+  assert.equal(structured(await mark({ readTools: ['list_issues'], writeTools: ['save_issue'] }, 'marks')).status, 'done');
+
+  const marked = await practice('Which issues are assigned to me?');
+  assert.deepEqual([marked.run.partial, marked.mounted], [undefined, [['list_issues']]],
+    'only the marked read: get_issue has no mark, save_issue is a write');
+
+  // The server adds a tool that says it only reads, and the connection allows it: still not a read.
+  const [account] = (await f.config.listConnectionAccounts(teamId)).filter(({ id }) => id === 'connection_linear');
+  if (account!.policy.kind !== 'mcp') throw new Error('not an MCP account');
+  await f.config.putConnectionAccount({
+    ...account!,
+    policy: {
+      ...account!.policy,
+      discoveredTools: [...tools, { name: 'list_projects', readOnlyHint: true }],
+      allowedTools: [...account!.policy.allowedTools, 'list_projects'],
+    },
+  }, account!.revision);
+  assert.deepEqual((await practice('Which projects are late?')).mounted, [['list_issues']]);
 });
 
 test('a personal connection the caller has signed in to is no reason to refuse', async (t) => {
@@ -937,8 +989,10 @@ test('a connection with nothing that reads is left out of the run, listed with i
     'Docs MCP was not available in this practice run, so an answer that needs it can\'t be judged here.',
     'Linear was not available in this practice run, so an answer that needs it can\'t be judged here.',
   ]);
-  assert.deepEqual(run.fixes, [{ label: 'Mark Docs MCP\'s read tools', tool: 'update_connection', arguments: { agentId: 'agent_tested', connectionId: 'docs' } }],
-    'Linear has no fix: nothing marks a catalog MCP service\'s tools');
+  assert.deepEqual(run.fixes, [
+    { label: 'Mark Docs MCP\'s read tools', tool: 'update_connection', arguments: { agentId: 'agent_tested', connectionId: 'docs' } },
+    { label: 'Mark Linear\'s read tools', tool: 'update_connection', arguments: { agentId: 'agent_tested', connectionId: 'linear' } },
+  ], 'a catalog MCP service\'s tools are marked as a custom connection\'s are');
   assert.match(String(run.nextStep), /fixes says how to let it in, with the person's yes/);
   const plan = parseTestTurnInitialData(instances.dispatched[0]!.initialData).runtimePlan;
   assert.deepEqual(plan.mcpConnections, [], 'neither is mounted');

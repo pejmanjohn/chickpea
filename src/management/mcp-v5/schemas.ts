@@ -292,7 +292,7 @@ export const reconnectServiceInput = z.strictObject({
 });
 export const updateConnectionInput = z.strictObject({
   agentId: zAgentId,
-  connectionId: zConnectionId.describe('A custom_api or custom_mcp connectionId from get_agent.'),
+  connectionId: zConnectionId.describe('A custom_api or custom_mcp connectionId from get_agent, or a service\'s with tools, for readTools and writeTools only.'),
   version: zAgentVersion,
   changes: z.strictObject({
     ...zCustomFields,
@@ -427,6 +427,11 @@ export const getAgentOutput = z.strictObject({
       writeTools: z.array(z.string()).optional().describe('MCP: allowed tools marked as writes. A tool in neither is unmarked.'),
       guide: z.string().optional(),
     }).optional(),
+    tools: z.strictObject({
+      allowedTools: z.array(z.string()),
+      readTools: z.array(z.string()).optional(),
+      writeTools: z.array(z.string()).optional(),
+    }).optional().describe('A catalog MCP service: its tools and their marks, as custom has them. update_connection marks them.'),
   })),
   websiteLogins: z.array(z.strictObject({ loginId: z.string(), site: z.string() })),
   repositories: z.array(z.strictObject({ repository: z.string() })),
@@ -459,7 +464,7 @@ export const getServiceOutput = z.strictObject({
   capabilitiesKnown: z.enum(['now', 'after_connecting'])
     .describe('after_connecting: the service lists its tools only once someone signs in.'),
   practice: z.enum(['reads_ready', 'needs_read_marks', 'not_in_practice', 'get_only'])
-    .describe('What a practice run can use: reads_ready, its read actions; needs_read_marks, nothing until its tools are chosen on the Agent\'s page in Admin, then the ones Chickpea knows only read; not_in_practice, nothing, since nothing marks its tools as reads, so a practice run leaves it out; get_only, GET and HEAD requests only.'),
+    .describe('What a practice run can use: reads_ready, its read actions; needs_read_marks, nothing until the tools that only read are marked, with update_connection readTools once it is connected, or for BugSnag and Meta Ads by choosing its tools on the Agent\'s page in Admin; not_in_practice, nothing, since none of its actions only reads, so a practice run leaves it out; get_only, GET and HEAD requests only.'),
   nextStep: z.string(),
 });
 
