@@ -221,7 +221,24 @@ test('the value after a secret label or an auth scheme is dropped, even when it 
   assert.equal(filter('X-Api-Key: wordlike missing'), 'X-Api-Key: […] missing');
 });
 
+test('a label names a secret when any part of it is a secret word', () => {
+  assert.equal(filter('{"client_key":"wordlike","key":"other"}'), '{ "client_key": […] "key": […]');
+  assert.equal(filter('{"pin":"1234"} rejected'), '{ "pin": […] rejected');
+  assert.equal(filter('privateKey: wordlike rejected'), 'privateKey: […] rejected');
+  assert.equal(filter('{"sessionId":"plainword","passcode":"words"}'), '{ "sessionId": […] "passcode": […]');
+});
+
+test('a secret label drops a whole object or array value', () => {
+  assert.equal(
+    filter('{"credentials":{"user":"plainuser","password":"words"},"status":"error"}'),
+    '{ "credentials": […] "status": "error"}',
+  );
+  assert.equal(filter('tokens: ["alpha", "beta"] rejected'), 'tokens: […] rejected');
+  assert.equal(filter('"cookies": { "sid": "plain" , "theme": "dark" } then 403'), '"cookies": […] then 403');
+});
+
 test('a secret label used as a plain word keeps the next word', () => {
+  keeps('"keyword": "contacts", "error_code": "INVALID_ARGUMENT"');
   keeps('token expired, sign in again');
   keeps('The session has ended');
   keeps('error_code: INVALID_ARGUMENT');

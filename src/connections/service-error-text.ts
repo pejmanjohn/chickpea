@@ -36,12 +36,18 @@ export function serviceErrorText(text: string, secrets: readonly string[]): stri
   let cut = truncated;
   let valueNext = false;
   let separatorNext = false;
+  // Open brackets of a secret's object or array value, which every chunk inside is dropped with.
+  let depth = 0;
   for (const chunk of chunks) {
     if (!chunk) continue;
     let piece: string;
-    if (valueNext) {
+    if (depth > 0) {
+      piece = DROPPED;
+      depth = Math.max(0, depth + nesting(chunk));
+    } else if (valueNext) {
       piece = DROPPED;
       valueNext = false;
+      depth = Math.max(0, nesting(chunk));
     } else if (separatorNext && SEPARATOR.test(chunk)) {
       piece = DROPPED;
       valueNext = true;
@@ -49,7 +55,7 @@ export function serviceErrorText(text: string, secrets: readonly string[]): stri
       piece = readsAsLanguage(chunk) ? chunk : DROPPED;
     }
     separatorNext = false;
-    const label = secretLabel(chunk);
+    const label = depth > 0 ? undefined : secretLabel(chunk);
     if (label === 'value') valueNext = true;
     else if (label === 'separator') separatorNext = true;
     if (piece === DROPPED && shown.at(-1) === DROPPED) continue;
@@ -79,24 +85,44 @@ function spaceCompactJson(text: string): string {
 
 /**
  * A label that names a secret: whatever follows its `:` or `=` is a value, and the filter drops
- * it even when it reads as a word (`password: hunter`, `"client_secret": "words"`). An auth
- * scheme names its credential the same way (`Bearer first`). A label used as a plain word, as in
- * `token expired`, keeps the next word.
+ * it even when it reads as a word or a short number (`password: hunter`, `"pin":"1234"`), and
+ * drops a whole object or array value. A label names a secret when any part of it, split at
+ * `_ . -` and at camelCase, is one of these words (`client_key`, `X-Api-Key`, `privateKey`,
+ * `sessionId`). An auth scheme names its credential the same way (`Bearer first`). A label used
+ * as a plain word, as in `token expired`, keeps the next word.
  */
-const SECRET_LABEL =
-  /(?:password|passwd|pwd|passphrase|secret|token|api[_-]?key|authorization|auth|credentials?|session(?:[_-]?id)?|sessid|sid|cookie|signature|sig|otp|private[_-]?key)$/i;
+const SECRET_PARTS = new Set([
+  'password', 'passwd', 'pwd', 'pass', 'passcode', 'passphrase', 'pin', 'secret', 'token', 'key', 'apikey',
+  'auth', 'authorization', 'credential', 'credentials', 'session', 'sessid', 'sid', 'cookie', 'cookies',
+  'signature', 'sig', 'otp', 'jwt', 'bearer', 'private',
+]);
+const LABEL_PARTS = /[_.\-]+|(?<=[\p{Ll}\p{N}])(?=\p{Lu})/u;
 const AUTH_SCHEME = /^(?:bearer|basic)$/i;
 const SEPARATOR = /^[:=]$/;
+
+/** A part names a secret as a singular or plural word (`token`, `tokens`). */
+const isSecretPart = (part: string) => {
+  const word = part.toLowerCase();
+  return SECRET_PARTS.has(word) || (word.endsWith('s') && SECRET_PARTS.has(word.slice(0, -1)));
+};
+const namesASecret = (label: string) => label.split(LABEL_PARTS).some(isSecretPart);
 
 function secretLabel(chunk: string): 'value' | 'separator' | undefined {
   const core = coreOf(chunk);
   if (AUTH_SCHEME.test(core)) return 'value';
   const bare = chunk.replace(/["'`\\]+$/, '');
-  if (/[:=]$/.test(bare)) {
-    const label = coreOf(bare.slice(0, -1));
-    return SECRET_LABEL.test(label) ? 'value' : undefined;
+  if (/[:=]$/.test(bare)) return namesASecret(coreOf(bare.slice(0, -1))) ? 'value' : undefined;
+  return namesASecret(core) ? 'separator' : undefined;
+}
+
+/** How many brackets a chunk opens, less the ones it closes. */
+function nesting(chunk: string): number {
+  let open = 0;
+  for (const character of chunk) {
+    if (character === '{' || character === '[') open += 1;
+    else if (character === '}' || character === ']') open -= 1;
   }
-  return SECRET_LABEL.test(core) ? 'separator' : undefined;
+  return open;
 }
 
 const JSON_ESCAPED: Readonly<Record<string, string>> ={ '"': '"', '\\': '\\', '/': '/', n: '\n', r: '\r', t: '\t' };
