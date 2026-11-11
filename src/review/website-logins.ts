@@ -118,15 +118,23 @@ function browserbaseHost(hostname: string): boolean {
   return hostname === 'browserbase.com' || hostname.endsWith('.browserbase.com');
 }
 
+// A path segment a site is unlikely to take as a bearer: a plain word or a short number.
+const PLAIN_SEGMENT = /^(?:[A-Za-z]{1,20}|\d{1,4})$/;
+// What a sentence may put right after a link.
+const SENTENCE_MARKS = '.,!)\'';
+
 /**
- * A path segment that looks like a token rather than a word or an ID: long,
- * with a long run that mixes letters and digits or a very long run. A short
- * or word-like token is not recognized.
+ * A path segment of a link on a login's site, or of any link in a browser
+ * step, kept only where it reads as a plain word of up to 20 letters or a
+ * number of up to 4 digits. Any other segment, an ID or a slug as much as a
+ * token, may be what the site takes as its sign-in bearer, so it goes. The
+ * marks a sentence puts after a link stay after either.
  */
-function tokenShaped(segment: string): boolean {
-  if (segment.length < 20) return false;
-  return (segment.match(/[A-Za-z0-9]+/g) ?? []).some((run) =>
-    run.length >= 24 || (run.length >= 10 && /[A-Za-z]/.test(run) && /\d/.test(run)));
+function plainSegment(segment: string): string {
+  let end = segment.length;
+  while (end > 0 && SENTENCE_MARKS.includes(segment[end - 1]!)) end -= 1;
+  const word = segment.slice(0, end);
+  return word === '' || PLAIN_SEGMENT.test(word) ? segment : `${URL_PART_OMITTED}${segment.slice(end)}`;
 }
 
 export interface WebsiteLoginScrub {
@@ -135,12 +143,12 @@ export interface WebsiteLoginScrub {
    * a space would end a URL early and leave the rest of it. A hosted browser
    * link goes whole, and so does a hand-off message's link wherever else the
    * same text holds it. Every URL loses its userinfo. A URL on a login's site,
-   * or any URL in a browser step, keeps its scheme, host and path, loses
-   * token-shaped path segments, and loses everything from its first `;`,
-   * `?` or `#`. So does a URL whose host cannot be read as one, and its host
-   * goes too. A link inside
-   * another one's path or query, as a Slack link's label or a redirect holds
-   * it, goes by its own rule.
+   * or any URL in a browser step, keeps its scheme and host, keeps a path
+   * segment only where it is a plain word or a short number (so its IDs and
+   * slugs go too), and loses everything from its first `;`, `?` or `#`.
+   * So does a URL whose host cannot be read as one, and its host goes too.
+   * Elsewhere a link inside another one's path or query, as a Slack link's
+   * label or a redirect holds it, goes by its own rule.
    */
   links(text: string, browserStep: boolean): string;
   /**
@@ -225,8 +233,9 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
     if (!browserStep && readable && !loginSite(hostname)) {
       return `${start}${scrubLinks(rest, browserStep)}`;
     }
-    const kept = path.split('/').map((segment) => tokenShaped(segment) ? URL_PART_OMITTED : segment).join('/');
-    return `${start}${scrubLinks(kept, browserStep)}${suffix ? `?${URL_PART_OMITTED}` : ''}`;
+    // A Slack link's label may follow `|`, and a page's path may hold one, so each side is read as segments.
+    budget.spend(path.length);
+    return `${start}${path.replace(/[^/|]+/g, plainSegment)}${suffix ? `?${URL_PART_OMITTED}` : ''}`;
   };
 
   // An email address's local part goes where it stands alone too, as a site's greeting writes it.
