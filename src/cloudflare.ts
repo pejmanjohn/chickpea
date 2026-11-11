@@ -19,6 +19,7 @@ import {
   emitGatewayDelivery,
   emitRelayAlarm,
   startRelayAlarmMetrics,
+  StoreBootMarks,
   type RelayAlarmMetrics,
 } from './observability/runtime-latency.ts';
 
@@ -283,6 +284,7 @@ import type {
   ObjectRestoreRestartRequest,
 } from './state/object-host.ts';
 import type { InstallationWorkspaceObject } from './state/object-inventory.ts';
+import { ResidencyHold, residencyHoldMs } from './state/residency-hold.ts';
 import { stateStoreHostFunctions, type StateStoreHostRpc } from './state/state-store-host.ts';
 import type { TestRunLifecycle } from './state/test-run-lifecycle.ts';
 import type { TestRunQuery, TestRunReplayQuery, TestRunStartRequest, TestRunStartResult, TestRunView } from './management/test-run-types.ts';
@@ -787,13 +789,14 @@ const RELAY_RETRY_BACKOFF_MS = 2_000;
 const RELAY_BATCH_WINDOW_MS = 250;
 
 /**
- * Keep-warm: while a person has talked to this installation in the last
- * KEEP_WARM_WINDOW_MS, the state store's alarm fires at least every
- * KEEP_WARM_TICK_MS so the object stays in memory. Measured on Chickpea Cloud
- * staging: the object leaves memory about 30 s after its last activity, and a
- * message after that pays 0.9-1.3 s at ingress for its first state read. A
- * tick runs the ordinary idle drain (see keepWarmTickAt). Constants, not
- * settings; Node has no alarms.
+ * Keep-warm: for KEEP_WARM_WINDOW_MS after a person's turn, the state store's
+ * alarm fires at least every KEEP_WARM_TICK_MS. A tick runs the ordinary idle
+ * drain (see keepWarmTickAt). The tick alone does not keep the store in
+ * memory: a store that left it made the next message pay 1.5-2.4 s at ingress
+ * for its first state read (production, 2026-11-10). Where the deployment
+ * sets a residency hold (ResidencyHold), the store holds itself for that
+ * window, and a store that restarted inside it holds itself again at its next
+ * tick (drainRelayAlarm). Constants, not settings; Node has no alarms.
  */
 const KEEP_WARM_WINDOW_MS = 10 * 60_000;
 const KEEP_WARM_TICK_MS = 20_000;
@@ -870,6 +873,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
    * when there is none.
    */
   private lastHumanTurnAt: number | undefined;
+  /** Keeps this instance in memory after a person's turn (see hold()). */
+  private conversationHold: ResidencyHold | undefined;
   /** When this instance last ran the management retention sweep (drainRelayAlarm). */
   private lastRetentionSweepAt: number | undefined;
   /**
@@ -889,13 +894,18 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
   private versionChanged = false;
   /** The only caller of this installation's test run instances, loaded at the first test run. */
   private testRunLifecycle: Promise<TestRunLifecycle> | undefined;
+  /** This activation's marks, logged as `store_boot` at its first RPC or alarm. */
+  private readonly boot = new StoreBootMarks();
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, objectInstallationEnv(ctx, env));
     this.stores = this.tryInit();
     // Work the previous instance was running stopped with it (a code update,
     // a reset). Arm the alarm now rather than wait for the platform's retry.
-    void ctx.blockConcurrencyWhile(() => this.resumeAfterRestart());
+    void ctx.blockConcurrencyWhile(async () => {
+      await this.resumeAfterRestart();
+      this.boot.constructedOnVersion(this.versionChanged);
+    });
   }
 
   /**
@@ -1771,7 +1781,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       // A person's turn opens the keep-warm window; the host's own turns, an
       // Agent's ask and a setup wake, do not.
       const { agentAsk, setupWake } = input.turnJob.turn;
-      if (!agentAsk && !setupWake) this.lastHumanTurnAt = Date.now();
+      if (!agentAsk && !setupWake) {
+        this.lastHumanTurnAt = Date.now();
+        this.hold().holdFrom(this.lastHumanTurnAt);
+      }
       const ready = this.runnerMode()
         ? this.call((stores) => stores.turnJobs.dispatchableNow(turnJobId))
         : undefined;
@@ -1781,8 +1794,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       if (!handedOver) {
         await this.armAlarmNoLaterThan(this.admissionWakeAt(), true);
       } else {
-        // The runner has the turn; the alarm only keeps this store warm for
-        // the next one, so a running alarm's dispatch loop is not woken for it.
+        // The runner has the turn; the alarm only ticks for the keep-warm
+        // window, so a running alarm's dispatch loop is not woken for it.
         const tick = this.keepWarmTickAt();
         if (tick !== undefined) await this.setAlarmNoLaterThan(tick);
       }
@@ -2585,6 +2598,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     }
     const result = this.call((stores) =>
       applyThreadRunnerTurnOp(stores, op as ThreadRunnerTurnOp, this.env as PlatformEnv) as ThreadRunnerTurnResult<K>);
+    // A turn's end renews the hold from it, as the runner's and the Agent
+    // object's count from it; for a person's turn only, as at admission.
+    if (result.ok && (op.kind === 'markDelivered' || op.kind === 'markError') && this.hold().active) {
+      const person = this.call((stores) => stores.turnJobs.isPersonTurn(op.id));
+      if (person.ok && person.value) this.hold().holdFrom(Date.now());
+    }
     if (op.kind === 'begin' && result.ok && servingVersion !== undefined) {
       return { ok: true, value: { ...(result.value as RunnerTurnBegin), servingVersion } as ThreadRunnerTurnResult<K> };
     }
@@ -2608,6 +2627,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
    * listed/run, groups, re-arm); emission cannot throw or change the result.
    */
   async alarm(): Promise<void> {
+    this.boot.call('alarm');
     const metrics = startRelayAlarmMetrics();
     try {
       await this.drainRelayAlarm(metrics);
@@ -2626,8 +2646,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       throw new Error(`state store unavailable in alarm: ${this.initError ?? 'unknown'}`);
     }
     const stores = this.stores;
-    // A store woken cold learns from its newest turn row whether a conversation is live.
+    // A store woken cold learns from its newest turn row whether a
+    // conversation is live, and holds itself for the rest of it.
     this.lastHumanTurnAt ??= stores.turnJobs.newestEnqueuedAt() ?? 0;
+    this.hold().holdFrom(this.lastHumanTurnAt);
     const productTelemetry = createPlatformProductTelemetry({
       env: this.env as PlatformEnv,
       settings: localSettingsStore(stores),
@@ -3169,11 +3191,23 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
   }
 
   /**
+   * This store's residency hold, for the window the deployment sets
+   * (RESIDENCY_HOLD_VARIABLE): from a person's admitted turn, and again from
+   * its end, which the runner reports (threadRunnerTurn).
+   */
+  private hold(): ResidencyHold {
+    this.conversationHold ??= new ResidencyHold(residencyHoldMs(this.env as PlatformEnv));
+    return this.conversationHold;
+  }
+
+  /**
    * The next keep-warm tick while a person's turn was admitted here within
    * KEEP_WARM_WINDOW_MS; undefined outside the window, and before any turn is
    * known. Armed as the latest the alarm may wait (armAlarmNoLaterThan keeps
-   * an earlier due time), so a firing inside the window re-arms it and the
-   * store never leaves memory during a conversation.
+   * an earlier due time), so a firing inside the window re-arms it. A
+   * residency hold stops the store hibernating; the tick alone does not.
+   * Where a pending timer does not block eviction (see ResidencyHold), each
+   * firing restarts the 70 to 140 seconds an idle object has before it.
    */
   private keepWarmTickAt(): number | undefined {
     const now = Date.now();
@@ -3235,6 +3269,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
    * preserved for server-side logs.
    */
   private call<T>(fn: (stores: TagStateStores) => T): StateRpcResult<T> {
+    this.boot.call('rpc');
     // Self-heal: re-attempt a construction that failed on first boot rather
     // than latching the isolate into permanent failure. A still-broken store
     // returns the {ok:false} envelope only for THIS call.

@@ -24,6 +24,7 @@ import { createRunnerSupersedeState, runnerLoopScheduler } from '../src/slack/th
 import type { TurnJob } from '../src/slack/turn-job-types.ts';
 import type { SlackEvent } from '../src/slack/types.ts';
 import { DoSqlStateDb } from '../src/state/do-state-db.ts';
+import { ResidencyHold, residencyHoldMs } from '../src/state/residency-hold.ts';
 import {
   AGENT_MENTION,
   delivery,
@@ -225,6 +226,8 @@ function runnerOver(storage: FakeObjectStorage, clock: { now: number }, records:
       SlackStatusRegistry,
       createRunnerSupersedeState,
       runnerLoopScheduler,
+      ResidencyHold,
+      residencyHoldMs,
     },
   ) as new (ctx: unknown, env: unknown) => RunnerProbe;
   const runner = new Runner(new FakeObjectRestoreContext(storage, { name: 'T1:C1:5000.000100:owner-i1' }), {});

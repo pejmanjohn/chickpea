@@ -2,7 +2,7 @@ import { GATEWAY_HTTP_PATH, handleHttpDeliveryRequest } from './slack/gateway/ht
 import { createAgentSlackAppRoutes } from './slack/agent-apps/index.ts';
 import { deploymentTenancy } from './config/installation-scope.ts';
 import { tagStateStub } from './config/state-rpc.ts';
-import { instrument } from '@flue/runtime';
+import { instrument, type FlueObservation } from '@flue/runtime';
 import { Hono, type Context } from 'hono';
 
 import { createAdminRoutes } from './admin/routes.ts';
@@ -49,7 +49,9 @@ import { startNodeTurnRelay, wakeNodeTurnRelay } from './slack/node-turn-relay.t
 import { createPlatformProductTelemetry } from './telemetry/platform.ts';
 import { createRequestTelemetryLifecycle } from './telemetry/runtime.ts';
 import { startNodeGatewaySession } from './slack/gateway/node-runtime.ts';
-import { workModelInvocationInterceptor } from './work/model-invocation.ts';
+import { currentFlueObservationContext, workModelInvocationInterceptor } from './work/model-invocation.ts';
+import { ModelStepMarks } from './observability/runtime-latency.ts';
+import { readStagedSlackObservationTarget } from './agents/turn-input.ts';
 import { modelAccessInterceptor } from './agents/model-access-lookup.ts';
 import { runFeeInterceptor } from './config/run-fee-interceptor.ts';
 import { observeModelAccess } from './config/model-access.ts';
@@ -181,6 +183,28 @@ instrument({
   observe: observeModelAccess,
   dispose() {},
 });
+
+// One content-free model_step record per model request, timed in the object
+// that makes it; a Slack turn's names the turn.
+const modelSteps = new ModelStepMarks();
+instrument({
+  key: Symbol.for('chickpea.model-step-latency'),
+  interceptor: async (_operation, _context, next) => next(),
+  observe(event, context) {
+    modelSteps.observe(event, () => (context.agentName === CHICKPEA_SLACK_AGENT_NAME ? slackTurnJobIdOf(event) : undefined));
+  },
+  dispose() {},
+});
+
+/** The Slack turn a thread agent's activity belongs to: the attempt's own match, else its staged input. */
+function slackTurnJobIdOf({ instanceId, submissionId }: FlueObservation): string | undefined {
+  if (!instanceId || !submissionId) return undefined;
+  const active = currentFlueObservationContext();
+  if (active?.target && active.instanceId === instanceId && active.submissionId === submissionId) {
+    return active.target.turnJobId;
+  }
+  return readStagedSlackObservationTarget(instanceId, submissionId)?.turnJobId;
+}
 
 instrument({
   key: Symbol.for('chickpea.run-fees'),
