@@ -471,18 +471,174 @@ test('the standalone GET stream never reaches the server, and the connection sti
   assert.deepEqual(logs.http.filter(({ httpMethod }) => httpMethod === 'GET'), [], 'the local answer is not logged');
 });
 
-test('a GET that resumes a stream with Last-Event-ID still reaches the server', async (t) => {
+// --- the listing window ------------------------------------------------------
+// Until the last tools/list page is filtered, the client reads only each
+// request POST's own response, up to its own answer, and nothing from a GET.
+
+/** The mounted names, or the error message when the connection fails. */
+async function mountOutcome(definition: McpConnectionDefinition): Promise<string[] | string> {
+  return createMcpConnection(definition).then(async (connection) => {
+    const names = connection.tools.map(({ name }) => name);
+    await connection.close();
+    return names;
+  }, (error: Error) => error.message);
+}
+
+const unsupported = (reason: string) => `Example Tools tool discovery returned an unsupported response (${reason}).`;
+const resumeGet = (definition: McpConnectionDefinition) => definition.fetch!(URL_, {
+  method: 'GET', headers: { accept: 'text/event-stream', 'last-event-id': '7' },
+});
+
+test('a listing pushed on the held-open initialize stream never reaches the client', { timeout: 10_000 }, async (t) => {
+  captureLogs(t);
+  let push: ((text: string) => void) | undefined;
+  let cancelled = 0;
+  const fetch = (async (input, init) => {
+    const request = new Request(input, init);
+    if (request.method !== 'POST') return new Response(null, { status: 405 });
+    const rpc = await request.json() as Rpc;
+    if (rpc.id === undefined) return new Response(null, { status: 202 });
+    if (rpc.method === 'initialize') {
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          push = (text) => controller.enqueue(encoder.encode(text));
+          push(`data: ${JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: initializeResult(rpc.params as Record<string, unknown>) })}\n\n`);
+        },
+        cancel() {
+          push = undefined;
+          cancelled += 1;
+        },
+      }), { headers: { 'content-type': 'text/event-stream' } });
+    }
+    const listing = { jsonrpc: '2.0', id: rpc.id, result: { tools: ['extra', 'alpha'].map(listedTool) } };
+    push?.(`data: ${JSON.stringify(listing)}\n\n`);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    return Response.json(listing);
+  }) as typeof globalThis.fetch;
+  await withRuntimeConnection(connectionConfig(), fetch, async (definition) => {
+    assert.deepEqual(await mountOutcome(definition), ['mcp__srv__alpha']);
+  });
+  assert.equal(cancelled, 1, 'the initialize stream is let go at its own answer');
+});
+
+test('a malformed error answer fails the listing, and its stream cannot be resumed from a GET', { timeout: 10_000 }, async (t) => {
+  const logs = captureLogs(t);
+  const gets: Request[] = [];
+  let listId: number | undefined;
+  const fetch = (async (input, init) => {
+    const request = new Request(input, init);
+    if (request.method === 'GET') {
+      gets.push(request);
+      return eventStream([`data: ${JSON.stringify({ jsonrpc: '2.0', id: listId, result: { tools: ['extra', 'alpha'].map(listedTool) } })}\n\n`]);
+    }
+    const rpc = await request.json() as Rpc;
+    if (rpc.id === undefined) return new Response(null, { status: 202 });
+    if (rpc.method === 'initialize') {
+      return Response.json({ jsonrpc: '2.0', id: rpc.id, result: initializeResult(rpc.params as Record<string, unknown>) });
+    }
+    listId = rpc.id;
+    return eventStream([`retry: 1\n\nid: 5\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: rpc.id, error: 'nope' })}\n\n`]);
+  }) as typeof globalThis.fetch;
+  await withRuntimeConnection(connectionConfig(), fetch, async (definition) => {
+    assert.deepEqual(await mountOutcome(definition), unsupported('json-rpc'));
+  });
+  assert.deepEqual(gets, []);
+  assert.deepEqual(logs.refused, [refusedLine('json-rpc')]);
+});
+
+test('a response to another request on a request stream fails the connection', { timeout: 10_000 }, async (t) => {
+  const logs = captureLogs(t);
+  const server = pagedServer('json', [['extra', 'alpha']]);
+  const fetch = (async (input, init) => {
+    const request = new Request(input, init);
+    if (request.method === 'POST') {
+      const rpc = await request.clone().json() as Rpc;
+      if (rpc.method === 'initialize') {
+        const next = { jsonrpc: '2.0', id: Number(rpc.id) + 1, result: { tools: ['extra', 'alpha'].map(listedTool) } };
+        return eventStream([
+          `data: ${JSON.stringify(next)}\n\n`,
+          `data: ${JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: initializeResult(rpc.params as Record<string, unknown>) })}\n\n`,
+        ]);
+      }
+    }
+    return server.fetch(request);
+  }) as typeof globalThis.fetch;
+  await withRuntimeConnection(connectionConfig(), fetch, async (definition) => {
+    assert.deepEqual(await mountOutcome(definition), unsupported('response-id'));
+  });
+  assert.deepEqual(logs.refused, [refusedLine('response-id')]);
+});
+
+test('a GET that resumes a stream waits for the listing to finish, then reaches the server', async (t) => {
   const logs = captureLogs(t);
   const server = pagedServer('json', [['alpha']]);
   await withRuntimeConnection(connectionConfig(), server.fetch, async (definition) => {
-    const resumed = await definition.fetch!(URL_, {
-      method: 'GET', headers: { accept: 'text/event-stream', 'last-event-id': '7' },
-    });
+    assert.equal((await resumeGet(definition)).status, 405, 'no GET goes upstream while the listing is open');
+    assert.deepEqual(await mountOutcome(definition), ['mcp__srv__alpha']);
+    const resumed = await resumeGet(definition);
     assert.equal(resumed.status, 200);
     assert.equal(await resumed.text(), ': resumed\n\n');
   });
   assert.deepEqual(server.gets.map((request) => request.headers.get('last-event-id')), ['7']);
-  assert.deepEqual(logs.http.map(({ httpMethod, status }) => [httpMethod, status]), [['GET', 200]]);
+  assert.deepEqual(logs.http.filter(({ httpMethod }) => httpMethod === 'GET').map(({ status }) => status), [200]);
+});
+
+test('a page whose next cursor repeats ends the listing, as the MCP client ends it', async (t) => {
+  const logs = captureLogs(t);
+  const looping = (tools: readonly string[]) => mcpServer((rpc) => Response.json({
+    jsonrpc: '2.0', id: rpc.id, result: { tools: tools.map(listedTool), nextCursor: 'again' },
+  }));
+  const server = looping(['gamma', 'extra', 'alpha']);
+  await withRuntimeConnection(connectionConfig(), server.fetch, async (definition) => {
+    assert.deepEqual(await mountOutcome(definition), ['mcp__srv__alpha', 'mcp__srv__gamma']);
+    assert.equal((await resumeGet(definition)).status, 200, 'the listing window closed');
+  });
+  assert.deepEqual(logs.missing, [missingLine(['beta'], 6)]);
+  await withRuntimeConnection(connectionConfig(), looping(['extra']).fetch, async (definition) => {
+    assert.equal(await mountOutcome(definition), NO_GRANTED_TOOLS);
+  });
+  assert.deepEqual(logs.refused, [refusedLine('no-granted-tools')]);
+});
+
+test('a server that declares no tools fails the connection instead of mounting none', async (t) => {
+  const logs = captureLogs(t);
+  const server = pagedServer('json', [['alpha']]);
+  const fetch = (async (input, init) => {
+    const request = new Request(input, init);
+    if (request.method === 'POST') {
+      const rpc = await request.clone().json() as Rpc;
+      if (rpc.method === 'initialize') {
+        const result = { ...initializeResult(rpc.params as Record<string, unknown>), capabilities: { logging: {} } };
+        return Response.json({ jsonrpc: '2.0', id: rpc.id, result });
+      }
+    }
+    return server.fetch(request);
+  }) as typeof globalThis.fetch;
+  await withRuntimeConnection(connectionConfig(), fetch, async (definition) => {
+    assert.equal(await mountOutcome(definition), NO_GRANTED_TOOLS);
+  });
+  assert.deepEqual(logs.refused, [refusedLine('no-tools-capability')]);
+});
+
+test('an answer the MCP client would not read as one is refused', async (t) => {
+  const logs = captureLogs(t);
+  const malformed: Array<(rpc: Rpc) => Record<string, unknown>> = [
+    (rpc) => ({ jsonrpc: '2.0', id: rpc.id, error: 'nope' }),
+    (rpc) => ({ jsonrpc: '2.0', id: rpc.id, error: { code: '-32000', message: 'no' } }),
+    (rpc) => ({ jsonrpc: '2.0', id: rpc.id, error: { code: -32000.5, message: 'no' } }),
+    (rpc) => ({ jsonrpc: '2.0', id: rpc.id, error: { code: -32000 } }),
+    (rpc) => ({ jsonrpc: '2.0', id: rpc.id, error: { code: -32000, message: 'no' }, extra: true }),
+    (rpc) => ({ jsonrpc: '2.0', id: rpc.id, result: { tools: [listedTool('alpha')] }, extra: true }),
+  ];
+  for (const answer of malformed) {
+    for (const wire of ['json', 'sse'] as const) {
+      const server = mcpServer((rpc) => reply(wire, answer(rpc)));
+      await withRuntimeConnection(connectionConfig(), server.fetch, async (definition) => {
+        assert.equal(await mountOutcome(definition), unsupported('json-rpc'), `${wire} ${JSON.stringify(answer({ jsonrpc: '2.0', id: 1, method: 'tools/list' }))}`);
+      });
+    }
+  }
+  assert.deepEqual(logs.refused, malformed.flatMap(() => [refusedLine('json-rpc'), refusedLine('json-rpc')]));
 });
 
 // --- the legacy SSE transport keeps Flue's strict allowlist ----------------
