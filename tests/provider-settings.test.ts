@@ -748,8 +748,9 @@ test('provider models proxy caches OpenAI chat models and refresh bypasses the c
           assert.deepEqual(await first.json(), {
             provider: 'openai',
             models: [
-              { id: 'gpt-4.1' },
-              { id: 'gpt-4.1-mini' },
+              // OpenAI's list has no names; the catalog and Pi name the rows they know.
+              { id: 'gpt-4.1', display_name: 'GPT-4.1' },
+              { id: 'gpt-4.1-mini', display_name: 'GPT-4.1 mini' },
               {
                 id: 'gpt-6.1-sol',
                 display_name: 'GPT-6.1 Sol',
@@ -803,8 +804,8 @@ test('provider models proxy caches OpenAI chat models and refresh bypasses the c
           assert.deepEqual(await cached.json(), {
             provider: 'openai',
             models: [
-              { id: 'gpt-4.1' },
-              { id: 'gpt-4.1-mini' },
+              { id: 'gpt-4.1', display_name: 'GPT-4.1' },
+              { id: 'gpt-4.1-mini', display_name: 'GPT-4.1 mini' },
               {
                 id: 'gpt-6.1-sol',
                 display_name: 'GPT-6.1 Sol',
@@ -857,7 +858,7 @@ test('provider models proxy caches OpenAI chat models and refresh bypasses the c
           assert.deepEqual(await refreshed.json(), {
             provider: 'openai',
             models: [
-              { id: 'gpt-5.5' },
+              { id: 'gpt-5.5', display_name: 'GPT-5.5' },
               {
                 id: 'gpt-6.1-sol',
                 display_name: 'GPT-6.1 Sol',
@@ -1224,6 +1225,50 @@ test('models endpoint folds OpenRouter favorites into the picker suggestions (no
     assert.ok(anthropic.suggestions.includes('anthropic/claude-fable-5'));
   } finally {
     close();
+  }
+});
+
+test('models endpoint names each suggestion it knows and leaves the rest unnamed', async () => {
+  const app = new Hono();
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  app.route('/', createAdminRoutes({
+    store: config,
+    settings,
+    ...testAdminAuthority(ADMIN_TOKEN),
+    knownProviders: new Set(['openai', 'openrouter', 'google', 'cloudflare']),
+  }));
+  try {
+    const saved = await app.request('/admin/api/providers/openrouter/favorites', {
+      method: 'PUT',
+      headers: { ...auth(), 'content-type': 'application/json' },
+      body: JSON.stringify({ favorites: ['deepseek/deepseek-v4.1-flash', 'acme/ops-large'] }),
+    });
+    assert.equal(saved.status, 200);
+
+    const response = await app.request('/admin/api/models', { headers: auth() });
+    assert.equal(response.status, 200);
+    const { providers } = (await response.json()) as {
+      providers: Array<{ id: string; suggestions: string[]; modelNames: Record<string, string> }>;
+    };
+    const names = (id: string) => providers.find((provider) => provider.id === id)?.modelNames;
+    // Pi 1.1 has no GPT-6.1 Terra; only the catalog names it.
+    assert.equal(names('openai')?.['openai/gpt-6.1-terra'], 'GPT-6.1 Terra');
+    assert.equal(names('google')?.['google/gemini-4-argon'], 'Gemini 4 Argon');
+    assert.equal(names('cloudflare')?.['cloudflare/@cf/zai-org/glm-4.7-flash'], 'GLM-4.7-Flash');
+    assert.deepEqual(names('openrouter'), {
+      'openrouter/deepseek/deepseek-v4.1-flash': 'DeepSeek: DeepSeek V4.1 Flash',
+    }, 'a model neither the catalog nor Pi knows has no name');
+    for (const provider of providers) {
+      assert.deepEqual(
+        Object.keys(provider.modelNames).filter((model) => !provider.suggestions.includes(model)),
+        [],
+        `${provider.id} names only its own suggestions`,
+      );
+    }
+  } finally {
+    config.close();
+    settings.close();
   }
 });
 

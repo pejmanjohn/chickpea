@@ -8,17 +8,15 @@ import { z } from 'zod';
 export const SCOPE = 'chickpea:workspace';
 export const OAUTH_SCOPE = `${SCOPE} offline_access`;
 
-export type FakeEnvelope =
-  | { ok: true; result: unknown }
-  | { ok: false; error: { code: string; message: string } };
-
 export type FakeMode = 'ready' | 'setup-incomplete' | 'wrong-origin' | 'wrong-issuer' | 'switch-issuer-after-preflight' | 'wrong-endpoints';
 
 export interface FakeDeploymentOptions {
   mode?: FakeMode;
   accessTokenTtlSeconds?: number;
   now?: () => number;
-  tools?: Record<string, (args: Record<string, unknown>) => FakeEnvelope>;
+  legacyOnly?: boolean;
+  createMcpServer?: () => McpServer;
+  tools?: Record<string, (args: Record<string, unknown>) => Record<string, unknown>>;
   accessTokenRevocationStatus?: number;
   alternateAuthorizationServer?: string;
 }
@@ -64,21 +62,27 @@ export class FakeDeployment {
   private readonly codes = new Map<string, PendingCode>();
   private readonly accessTokens = new Map<string, IssuedAccessToken>();
   private readonly refreshTokens = new Map<string, IssuedRefreshToken>();
+  private readonly serverFactory: (() => McpServer) | undefined;
   private readonly mode: FakeMode;
   private readonly ttl: number;
   private readonly now: () => number;
-  private readonly tools: Record<string, (args: Record<string, unknown>) => FakeEnvelope>;
+  private readonly tools: Record<string, (args: Record<string, unknown>) => Record<string, unknown>>;
   private readonly accessTokenRevocationStatus: number | undefined;
   private readonly alternateAuthorizationServer: string | undefined;
 
   constructor(options: FakeDeploymentOptions = {}) {
     this.mode = options.mode ?? 'ready';
+    this.serverFactory = options.createMcpServer;
     this.accessTokenRevocationStatus = options.accessTokenRevocationStatus;
     this.alternateAuthorizationServer = options.alternateAuthorizationServer;
     this.ttl = options.accessTokenTtlSeconds ?? 900;
     this.now = options.now ?? Date.now;
     this.tools = {
       inspect_workspace: () => ({ ok: true, result: { organizationId: 'org_test', agents: [], channels: [], providers: [], connectors: [], effectiveRevision: 'r1' } }),
+      ...(options.legacyOnly ? {} : {
+        get_workspace: () => ({ name: 'Example', you: { role: 'owner' }, agentCount: 0, adminOnly: [] }),
+        list_agents: () => ({ agents: [], canCreate: true }),
+      }),
       ...options.tools,
     };
   }
@@ -333,7 +337,7 @@ export class FakeDeployment {
       if (typeof value === 'string') headers.set(name, value);
       else if (Array.isArray(value)) headers.set(name, value.join(', '));
     }
-    const handler = createMcpHandler(() => this.createMcpServer(), { legacy: 'stateless' });
+    const handler = createMcpHandler(() => this.serverFactory ? this.serverFactory() : this.createMcpServer(), { legacy: 'stateless' });
     const result = await handler.fetch(new Request(url.href, { method: 'POST', headers, body }));
     const outHeaders: Record<string, string> = {};
     result.headers.forEach((value, name) => { outHeaders[name] = value; });
@@ -361,7 +365,7 @@ export class FakeDeployment {
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(envelope) }],
           structuredContent: envelope,
-          ...(envelope.ok ? {} : { isError: true }),
+          ...(envelope.ok === false || envelope.error ? { isError: true } : {}),
         };
       });
     }

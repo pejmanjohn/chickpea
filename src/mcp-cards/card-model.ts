@@ -13,10 +13,30 @@ export interface ToolResult {
   _meta?: Record<string, unknown>;
   /**
    * The host answered the card's call with a JSON-RPC error instead of the
-   * result, as ChatGPT does for a result with `isError`. Its `data` may still
-   * carry the result.
+   * result: its own failure, such as ChatGPT's "MCP Resource not found" for a
+   * tool it has not listed yet. ChatGPT also answers this way for a result
+   * with `isError`, keeping only its text (probe 12), so a card session gets
+   * Chickpea's refusals as results. Another host's `data` may carry one.
+   * Never the error's message (`hostErrorOf`).
    */
-  hostError?: { code?: unknown; message?: unknown; data?: unknown };
+  hostError?: HostError;
+}
+
+export interface HostError {
+  code?: unknown;
+  data?: unknown;
+}
+
+/**
+ * A host's JSON-RPC error as a card keeps it: its code, and `data`, which
+ * may carry Chickpea's refusal. Its message is the host's own words, which
+ * can be a whole web page, such as Cloudflare's 504 page with the person's
+ * IP address that ChatGPT sends when a call runs past 300 s (probe 13), so
+ * it is dropped where the error comes in, and a card can never show or log it.
+ */
+export function hostErrorOf(error: unknown): HostError {
+  if (!isRecord(error)) return {};
+  return { ...'code' in error ? { code: error.code } : {}, ...isRecord(error.data) ? { data: error.data } : {} };
 }
 
 export interface CardState<V extends { kind: string }> {
@@ -30,16 +50,16 @@ export interface CardState<V extends { kind: string }> {
   told?: string[];
   /**
    * What the card's presses came to, for a card that mounts again with the
-   * result it first had. Each card says what it keeps; never a token or an ID.
+   * result it first had. Each card says what it keeps; never a token.
    */
   outcome?: unknown;
-  /** The card mounted and its first read is out: every button waits until it answers or fails. */
-  checking?: true;
+  /** The card mounted, and this many of its first reads are out: every button waits until each answers or fails. */
+  checking?: number;
 }
 
 /**
- * What a card keeps in the host's widget state, which ChatGPT shows its
- * model: only what the card already told the model, and its outcome.
+ * What a card keeps in the host's widget state: what it already told the
+ * host's model, and its outcome.
  */
 export interface Memory {
   told: string[];
@@ -50,8 +70,8 @@ export interface Memory {
  * The widget state a card writes: `modelContent` is what it told the host's
  * model, and `privateContent` holds the same sentences and the outcome for a
  * card that mounts again. ChatGPT hides `privateContent` from its model only
- * beside a `modelContent`, so both always go; neither holds a token, an ID
- * or instructions.
+ * beside a `modelContent`, even an empty one (probe 12), so both always go.
+ * `modelContent` holds no ID; neither holds a token or instructions.
  */
 export function keptState({ told = [], outcome }: { told?: string[] | undefined; outcome?: unknown }, version: number) {
   return { modelContent: told.join('\n'), privateContent: { card: { version, told, ...outcome === undefined ? {} : { outcome } } } };
@@ -143,9 +163,9 @@ export const TOLD_CHARS = 1_500;
  * A card's `step`: a new view counts up `seq`, and each call it makes is
  * stamped with the view that made it. A result mounts the card: it shows
  * what the card kept of its presses, then reads where things stand now, and
- * its buttons wait until that read answers or fails. Everything the card
- * told the host's model goes with each new sentence, and a sentence told
- * again moves to the end instead of taking a second place.
+ * its buttons wait until each of those reads answers or fails. Everything
+ * the card told the host's model goes with each new sentence, and a
+ * sentence told again moves to the end instead of taking a second place.
  */
 export function sequenced<V extends { kind: string }, A extends string>(
   transition: (state: CardState<V>, event: CardEvent<A>) => Next<V>,
@@ -155,19 +175,19 @@ export function sequenced<V extends { kind: string }, A extends string>(
     if (state.checking && event.type === 'press') return { state, effects: [] };
     let next = transition(state, event.type === 'result' || event.type === 'reply' ? { ...event, result: withHeld(event.result) } : event);
     let { told = [], outcome } = state;
-    let checking = false;
+    let checking = 0;
     if (event.type === 'result') {
       ({ told, outcome } = event.kept ?? { told: [] });
       const resumed = outcome === undefined ? undefined : remembering.resume?.(next.state.view, outcome);
       if (resumed) next = { state: { view: resumed, busy: false }, effects: [] };
       const reread = transition({ ...next.state, seq: state.seq }, { type: 'reread', now: event.now });
-      checking = reread.effects.some(({ type }) => type === 'call');
+      checking = reread.effects.filter(({ type }) => type === 'call').length;
       // The re-read's calls and timer supersede the ones the result asked for.
       const superseded = new Set(reread.effects.map(({ type }) => type));
       next = { state: reread.state, effects: [...next.effects.filter(({ type }) => !superseded.has(type)), ...reread.effects] };
-    } else {
+    } else if (state.checking && next.state.view === state.view) {
       const answered = (event.type === 'reply' || event.type === 'unreachable') && event.call.seq === state.seq;
-      checking = state.checking === true && !answered && next.state.view === state.view;
+      checking = state.checking - (answered ? 1 : 0);
     }
     const sentences = next.effects.flatMap((effect) => effect.type === 'context' ? [effect.text] : []);
     if (sentences.length > 0) {
@@ -177,7 +197,7 @@ export function sequenced<V extends { kind: string }, A extends string>(
     const seq = next.state.view === state.view ? state.seq : state.seq + 1;
     const { told: _told, outcome: _outcome, checking: _checking, ...rest } = next.state;
     return {
-      state: { ...rest, seq, ...told.length ? { told } : {}, ...outcome === undefined ? {} : { outcome }, ...checking ? { checking: true as const } : {} },
+      state: { ...rest, seq, ...told.length ? { told } : {}, ...outcome === undefined ? {} : { outcome }, ...checking > 0 ? { checking } : {} },
       effects: [
         ...sentences.length > 0 ? [{ type: 'context' as const, text: told.join('\n') }] : [],
         ...next.effects.flatMap((effect): Effect[] => effect.type === 'context' ? []
@@ -302,13 +322,13 @@ export interface Refusal {
 
 /**
  * Chickpea's refusal, wherever its host put it: in the result's
- * `structuredContent`, or in the whole result a host keeps beside it (the
+ * `structuredContent`, where a card session gets it in a result without
+ * `isError`, or in the whole result a host keeps beside it (the
  * `mcp_tool_result` or `call_tool_result` ChatGPT puts in a result's `_meta`)
  * or sends with a JSON-RPC error. Never a host's own words: a failure with
  * no code is the host's, and may have happened after the call ran.
  */
 export function refusalOf(result: ToolResult): Refusal | undefined {
-  if (!result.isError) return undefined;
   for (const place of carriers(result)) {
     const error = isRecord(place.structuredContent) ? place.structuredContent.error : undefined;
     if (isRecord(error) && typeof error.code === 'string' && typeof error.message === 'string') {
@@ -332,8 +352,7 @@ function carriers(result: ToolResult): Array<Record<string, unknown>> {
 }
 
 export function errorOf(result: ToolResult): string | undefined {
-  if (!result.isError) return undefined;
-  return refusalOf(result)?.message ?? GENERIC;
+  return refusalOf(result)?.message ?? (result.isError ? GENERIC : undefined);
 }
 
 export function errorCode(result: ToolResult): string | undefined {
@@ -434,7 +453,7 @@ export interface Presentation<A extends string = string> {
  * buttons. A card still checking where things stand draws its buttons
  * waiting, so it keeps its height and nothing can be pressed.
  */
-export function presentSafely<S extends { busy: boolean; error?: string | undefined; checking?: true }, A extends string>(
+export function presentSafely<S extends { busy: boolean; error?: string | undefined; checking?: number }, A extends string>(
   present: (state: S) => Presentation<A>,
 ): (state: S) => Presentation<A> {
   return (state) => {

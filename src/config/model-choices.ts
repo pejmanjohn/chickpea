@@ -2,6 +2,7 @@ import { planDependencies, planStatus } from '../chatgpt-plan/connection.ts';
 import { imageModelProfileReady } from '../images/provider.ts';
 import { findImageModel, listImageModels } from '../model-catalog/image-profiles.ts';
 import { activeModelCatalogSnapshot, loadModelCatalog } from '../model-catalog/index.ts';
+import { getBuiltinModel } from '../model-catalog/pi-builtin-models.ts';
 import { openAiSubscriptionAvailable } from '../openai-subscription/availability.ts';
 import type { ModelRequestFundingSource } from '../usage/model-requests.ts';
 import { deploymentServesManyInstallations } from './installation-scope.ts';
@@ -37,20 +38,51 @@ export interface ChatModelPickerProvider extends RuntimeModelProvider {
     subscription?: Awaited<ReturnType<typeof chatSubscriptionStatus>>;
     subscriptionAvailable: boolean;
   };
+  /** Each suggestion's name, for the suggestions that have one. */
+  modelNames: Record<string, string>;
 }
 
 /**
- * Admin's chat model picker: each provider group, whether it is ready, and
- * its suggested models. Reviewed catalog entries augment the API-key
- * providers. OpenRouter and the keyless Workers AI binding show only the
- * starred favorites. On Chickpea's models only priced, served models remain.
+ * A chat model's name for people: the active catalog's, else Pi's. Null for
+ * a model neither knows.
  */
-export async function chatModelPickerProviders(input: {
+export function chatModelName(model: string, env: PlatformEnv | undefined): string | null {
+  const catalogName = activeModelCatalogSnapshot(env).entries.find((entry) => entry.id === model)?.displayName;
+  if (catalogName) return catalogName;
+  const provider = chatModelProviderId(model);
+  if (!provider) return null;
+  // The keyless binding pins Workers AI models as `cloudflare/<model>`.
+  const piProvider = provider === 'cloudflare' ? 'cloudflare-workers-ai' : provider;
+  return getBuiltinModel(piProvider, model.slice(provider.length + 1))?.name ?? null;
+}
+
+type ChatModelPickerGroup = Omit<ChatModelPickerProvider, 'modelNames'>;
+
+type ChatModelPickerInput = {
   settings: SettingsStore;
   env: PlatformEnv | undefined;
   runtimeProviders: RuntimeModelProvider[];
   funding?: ModelRequestFundingSource;
-}): Promise<ChatModelPickerProvider[]> {
+};
+
+/**
+ * Admin's chat model picker: each provider group, whether it is ready, and
+ * its suggested models with their names. Reviewed catalog entries augment
+ * the API-key providers. OpenRouter and the keyless Workers AI binding show
+ * only the starred favorites. On Chickpea's models only priced, served
+ * models remain.
+ */
+export async function chatModelPickerProviders(input: ChatModelPickerInput): Promise<ChatModelPickerProvider[]> {
+  return (await chatModelPickerGroups(input)).map((provider) => ({
+    ...provider,
+    modelNames: Object.fromEntries(provider.suggestions.flatMap((model) => {
+      const name = chatModelName(model, input.env);
+      return name ? [[model, name]] : [];
+    })),
+  }));
+}
+
+async function chatModelPickerGroups(input: ChatModelPickerInput): Promise<ChatModelPickerGroup[]> {
   const { settings, env, runtimeProviders } = input;
   // A deployment serving many offers its installations no subscription lane.
   const subscriptionAvailable = !deploymentServesManyInstallations(env);
@@ -69,7 +101,7 @@ export async function chatModelPickerProviders(input: {
   const providers = await Promise.all(
     runtimeProviders
       .filter((provider) => provider.id !== 'cloudflare' || workersAiEnabled)
-      .map(async (provider): Promise<ChatModelPickerProvider> => {
+      .map(async (provider): Promise<ChatModelPickerGroup> => {
         // The binding-backed CF provider surfaces as `cloudflare`; its favorites
         // live under the `workers-ai` key and pin as `cloudflare/<model>`.
         if (provider.id === 'cloudflare') {

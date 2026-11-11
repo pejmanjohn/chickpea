@@ -26,6 +26,8 @@ export const ADMIN_PATH = '/admin';
 export const ADMIN_SETTINGS_PATH = '/admin/settings';
 /** Settings → MCP (page heading "Coding agents"): every client's snippet plus the one-click installs. */
 export const ADMIN_CODING_AGENTS_PATH = '/admin/settings/agents-clients';
+/** Settings → Connected apps: the apps the signed-in person connected, each with Disconnect. */
+export const ADMIN_CONNECTED_APPS_PATH = '/admin/settings/connected-apps';
 export const MCP_SERVER_NAME = 'chickpea';
 export const DISCOVERY_GUIDE_URI = 'chickpea://guide/discovery/v1';
 

@@ -26,6 +26,7 @@ import { workspaceManagementMcpFetch } from '../src/management/mcp.ts';
 import { CARD_URIS } from '../src/management/mcp-v5/cards.ts';
 import { readAgentAvatarAsset } from '../src/slack/agent-presence/avatar-assets.ts';
 import { SLACK_SETTING_KEYS } from '../src/slack/credentials.ts';
+import { GATEWAY_TIMEOUT_IP } from '../tests/helpers/chatgpt-delivery.ts';
 import { createFixtureAgent, createManagementAdapterFixture } from '../tests/helpers/management-adapter-fixture.ts';
 import { StubTestRuns } from '../tests/helpers/stub-test-runs.ts';
 
@@ -210,6 +211,9 @@ async function world() {
       const { _meta, ...bare } = await scenes.confirm();
       return { ...bare, [OPENAI_META]: _meta };
     },
+    changeRefused: () => call('propose_agent_change', {
+      agentId: 'agent_invoice_chaser', version: '0123456789abcdef', change: { description: 'Chases invoices every day.' },
+    }),
     turnedOff: async () => call('update_agent', { agentId: 'agent_dm', version: await version('agent_dm'), on: false, idempotencyKey: `dm-off-${Math.random()}` }),
     savedDm: async () => {
       await f.config.updateAgent('agent_dm', { enabled: true });
@@ -504,8 +508,18 @@ async function chrome(picture) {
   let id = 0;
   const waiting = new Map();
   const contexts = new Map();
+  /** What each page logged, and every error it left uncaught, by execution context. */
+  const logged = [];
   socket.addEventListener('message', ({ data }) => {
     const message = JSON.parse(data);
+    if (message.method === 'Runtime.consoleAPICalled') {
+      const { executionContextId, args: values } = message.params;
+      logged.push({ contextId: executionContextId, text: values.map((value) => value.value ?? value.description ?? '').join(' ') });
+    }
+    if (message.method === 'Runtime.exceptionThrown') {
+      const { executionContextId, exception, text } = message.params.exceptionDetails;
+      logged.push({ contextId: executionContextId, text: `${text} ${exception?.description ?? exception?.value ?? ''}` });
+    }
     if (message.method === 'Runtime.executionContextCreated') {
       const { context } = message.params;
       if (context.auxData?.isDefault) contexts.set(context.auxData.frameId, context.id);
@@ -550,6 +564,11 @@ async function chrome(picture) {
       await send('Page.navigate', { url });
     },
     inCard,
+    /** What the card's page logged or left uncaught since it loaded. */
+    cardLogged: async () => {
+      const context = await cardContext();
+      return logged.filter(({ contextId }) => contextId === context).map(({ text }) => text);
+    },
     host: (expression) => evaluate(expression),
     /** Waits until the card's page makes `expression` true. */
     async waitFor(expression, what, timeoutMs = 15_000) {
@@ -666,7 +685,11 @@ try {
   for (const { host, theme, width } of runs) {
     current = await world();
     const label = `${host === 'claude' ? 'claude-' : ''}${theme === 'none' ? 'no-host-theme' : theme}-${width}`;
-    const open = (scene) => browser.open(`${servers.host}/?scene=${scene}&host=${host}&theme=${theme}&width=${width}&card=${encodeURIComponent(servers.card)}`, { width, theme });
+    /** `unlisted`: tools ChatGPT has not listed yet, which it answers with "MCP Resource not found". */
+    const open = (scene, { unlisted = [] } = {}) => browser.open(
+      `${servers.host}/?scene=${scene}&host=${host}&theme=${theme}&width=${width}&card=${encodeURIComponent(servers.card)}${unlisted.length ? `&unlisted=${unlisted.join(',')}` : ''}`,
+      { width, theme },
+    );
     const shot = async (name) => {
       const file = join(OUT, `${name}-${label}.png`);
       await browser.screenshot(file);
@@ -692,8 +715,9 @@ try {
     const subtitle = () => browser.inCard('document.querySelector(".cp-sub")?.textContent ?? ""');
     const buttons = () => browser.inCard('[...document.querySelectorAll(".cp-acts button")].map((node) => node.textContent)');
     /**
-     * What the card saved to ChatGPT's widget state, which its model may read:
-     * only what the card told the model and its outcome, never a token, key, ID or link.
+     * What the card saved to ChatGPT's widget state. Its model reads `modelContent`: only what the card
+     * told it, never an ID. `privateContent`, hidden from the model beside it, may also hold a created
+     * Agent's ID. Neither holds a token, key or link.
      */
     const keptOnlyTold = async (what) => {
       const [states, sent, held] = await Promise.all([
@@ -701,15 +725,20 @@ try {
         browser.host('window.harness.args'),
         browser.host('window.harness.scene.result._meta?.["chickpea/held"] ?? {}'),
       ]);
-      const secrets = [...sent.flatMap((args) => Object.entries(args ?? {})), ...Object.entries(held)]
-        .flatMap(([key, value]) => /Token$|idempotencyKey|Id$/.test(key) && typeof value === 'string' ? [value] : []);
+      const fields = [...sent.flatMap((args) => Object.entries(args ?? {})), ...Object.entries(held)];
+      const named = (pattern) => fields.flatMap(([key, value]) => pattern.test(key) && typeof value === 'string' ? [value] : []);
+      const [secrets, ids] = [named(/Token$|idempotencyKey/), named(/Id$/)];
       assert.ok(states.length > 0, `${what}: the card kept something`);
       for (const state of states) {
         const written = JSON.stringify(state);
         assert.deepEqual([Object.keys(state), Object.keys(state.privateContent)], [['modelContent', 'privateContent'], ['card']], `${what}: ${written}`);
         assert.ok(Object.keys(state.privateContent.card).every((key) => ['version', 'told', 'outcome'].includes(key)), `${what}: ${written}`);
         assert.equal(state.modelContent, state.privateContent.card.told.join('\n'), `${what}: the model reads what the card told it`);
-        assert.doesNotMatch(written, /agent_|changeset_|https?:/, `${what}: ${written}`);
+        const { agentId, ...outcome } = state.privateContent.card.outcome ?? {};
+        assert.ok(agentId === undefined || outcome.kind === 'created', `${what}: an ID only for a created Agent: ${written}`);
+        const besides = JSON.stringify({ modelContent: state.modelContent, card: { ...state.privateContent.card, outcome } });
+        assert.doesNotMatch(besides, /agent_|changeset_|https?:/, `${what}: ${written}`);
+        for (const id of ids) assert.equal(besides.includes(id), false, `${what}: ${id} kept`);
         for (const secret of secrets) assert.equal(written.includes(secret), false, `${what}: ${secret} kept`);
       }
     };
@@ -787,13 +816,17 @@ try {
     const before = (await browser.host('window.harness.calls')).length;
     await browser.host('window.harness.reload()');
     if (host === 'chatgpt') {
-      await browser.waitForTitle(/^✓ Created Invoice Chaser$/);
-      assert.deepEqual(await buttons(), [], 'a reopened card offers no second Create');
+      // ChatGPT kept the Agent's ID where its model does not read it: the card follows that Agent again.
+      await browser.waitForTitle(/said hello to you in Slack$/);
+      await browser.waitFor('document.querySelectorAll(".cp-acts button:enabled").length === 2', 'its buttons, once the read answers');
+      assert.deepEqual(await buttons(), ['Open in Slack', 'Connect Stripe'], 'a reopened creation offers its buttons again, and no second Create');
+      const reread = (await browser.host('window.harness.calls')).slice(before);
+      assert.ok(reread.length > 0 && reread.every((name) => name === 'get_creation_status'), `reopening only read: ${reread}`);
     } else {
       // claude.ai keeps no widget state: the proposal again, whose Create replays the same Agent.
       await browser.waitForTitle(/^Invoice Chaser$/);
+      assert.deepEqual((await browser.host('window.harness.calls')).slice(before), [], 'reopening made no call');
     }
-    assert.deepEqual((await browser.host('window.harness.calls')).slice(before), [], 'reopening made no call');
     await shot('2-reopened');
 
     await open('proposalLong');
@@ -849,7 +882,7 @@ try {
     await browser.waitForTitle(/^Turn off @support\?$/);
     await new Promise((done) => setTimeout(done, 3_000));
     await browser.inCard('window.dispatchEvent(new Event("focus"))');
-    const nonReads = async () => (await browser.host('window.harness.calls')).filter((name) => name !== 'get_agent');
+    const nonReads = async () => (await browser.host('window.harness.calls')).filter((name) => name !== 'get_agent' && name !== 'get_confirmation');
     assert.deepEqual(await nonReads(), [], 'the card only read before the click');
     assert.equal((await current.f.config.getAgent('agent_support')).enabled, true);
     await showsPicture('The confirmation');
@@ -868,15 +901,10 @@ try {
       assert.deepEqual(await buttons(), [], 'no Turn off or Keep it on for a retired confirmation');
       await shot('6-kept-reopened');
     } else {
-      // claude.ai keeps nothing, and no read says the token is retired: a press gets Chickpea's own sentence.
-      await browser.waitForTitle(/^Turn off @support\?$/);
-      await browser.waitFor('document.querySelectorAll(".cp-acts button:enabled").length === 2', 'the buttons, once the read answers');
+      // claude.ai keeps nothing: the card asks Chickpea, which says the confirmation can no longer apply.
+      await browser.waitForTitle(/^This confirmation no longer applies$/);
+      assert.deepEqual(await buttons(), [], 'no Turn off or Keep it on for a retired confirmation');
       await shot('6-kept-reopened');
-      await browser.click('confirm');
-      await browser.waitForTitle(/^Nothing changed$/);
-      assert.match(await browser.inCard('document.querySelector(".cp-card").textContent'), /That confirmation no longer applies\./);
-      assert.deepEqual(await buttons(), []);
-      await shot('6-retired-refused');
     }
     assert.equal((await current.f.config.getAgent('agent_support')).enabled, true, 'nothing reopened turned it off');
     await open('confirm');
@@ -888,6 +916,12 @@ try {
     assert.equal(await subtitle(), 'It won\'t answer in Slack until it\'s turned back on.');
     if (host === 'chatgpt') await keptOnlyTold('Confirmed');
     await shot('6-confirmed');
+    // Reopened: ChatGPT kept what it came to; claude.ai kept nothing, and Chickpea says it was confirmed.
+    await browser.host('window.harness.reload()');
+    await browser.waitForTitle(host === 'chatgpt' ? /^✓ Turned off Support Desk$/ : /^✓ Made the change you confirmed$/);
+    assert.deepEqual(await buttons(), [], 'nothing to confirm again, and no Undo without its token');
+    assert.deepEqual(await nonReads(), ['confirm_change'], 'reopening only read');
+    await shot('6-confirmed-reopened');
 
     await open('confirmBare');
     await browser.waitForTitle(/^Turn off @support\?$/);
@@ -904,47 +938,78 @@ try {
     await browser.waitForTitle(/^Kept as it is$/);
     assert.deepEqual(await nonReads(), ['decline_change']);
 
+    // Kept on another card after this one drew its buttons. On a card session Chickpea sends the
+    // refusal as a result, which every host, ChatGPT included, hands the card whole.
+    await open('confirm');
+    await browser.waitForTitle(/^Turn off @support\?$/);
+    await browser.waitFor('document.querySelectorAll(".cp-acts button:enabled").length === 2', 'the buttons, once the reads answer');
+    const token = await browser.host('window.harness.scene.result._meta["chickpea/held"].confirmToken');
+    await current.call('decline_change', { confirmToken: token });
+    await browser.click('confirm');
+    await browser.waitForTitle(/^Nothing changed$/);
+    assert.match(await browser.inCard('document.querySelector(".cp-card").textContent'), /That confirmation no longer applies\./);
+    assert.deepEqual(await buttons(), []);
+    await told(/^The person confirmed on the card, but nothing changed\. Chickpea said: "That confirmation no longer applies\./, 'Retired');
+    await shot('6-retired-refused');
+    assert.equal((await current.f.config.getAgent('agent_support')).enabled, true);
+
     if (host === 'chatgpt') {
-      // ChatGPT answers a refused call with a JSON-RPC error. With its copy of the result in the
-      // error's data the card shows Chickpea's sentence; with only words it can only say it failed.
-      for (const errors of ['data', ...theme === 'light' && width === 728 ? ['bare'] : []]) {
-        await open('confirm');
-        await browser.waitForTitle(/^Turn off @support\?$/);
-        await browser.waitFor('document.querySelectorAll(".cp-acts button:enabled").length === 2', 'the buttons, once the read answers');
-        const token = await browser.host('window.harness.scene.result._meta["chickpea/held"].confirmToken');
-        await current.call('decline_change', { confirmToken: token });
-        await browser.host(`window.harness.errors = ${JSON.stringify(errors)}`);
-        await browser.click('confirm');
-        if (errors === 'data') {
-          await browser.waitForTitle(/^Nothing changed$/);
-          assert.match(await browser.inCard('document.querySelector(".cp-card").textContent'), /That confirmation no longer applies\./);
-          assert.deepEqual(await buttons(), []);
-          await told(/^The person confirmed on the card, but nothing changed\. Chickpea said: "That confirmation no longer applies\./, 'Retired');
-          await shot('6-retired-refused');
-        } else {
-          await browser.waitFor('!document.querySelector(".cp-error").hidden', 'the failure');
-          await shot('6-retired-refused-no-data');
-        }
-        assert.equal((await current.f.config.getAgent('agent_support')).enabled, true);
+      // A call ChatGPT cut off at 300 s: Chickpea ran it, and the card gets Cloudflare's 504 page,
+      // which holds the person's IP address. The card says only that Chickpea could not be reached.
+      await open('confirm');
+      await browser.waitForTitle(/^Turn off @support\?$/);
+      await browser.waitFor('document.querySelectorAll(".cp-acts button:enabled").length === 2', 'the buttons, once the reads answer');
+      await browser.host('window.harness.timedOut = ["confirm_change"]');
+      await browser.inCard('console.info("harness: the card\'s console is watched")');
+      await browser.click('confirm');
+      await browser.waitFor('/could not be reached/.test(document.querySelector(".cp-error")?.textContent ?? "")', 'the host giving up');
+      assert.equal((await current.f.config.getAgent('agent_support')).enabled, false, 'Chickpea made the change');
+      const drawn = await browser.inCard('document.title + document.getElementById("card").outerHTML');
+      const logs = (await browser.cardLogged()).join('\n');
+      assert.match(logs, /harness: the card's console is watched/);
+      for (const words of ['Gateway time-out', 'gateway time-out', GATEWAY_TIMEOUT_IP, 'Ray ID', 'Cloudflare', 'cf-wrapper']) {
+        assert.equal(drawn.includes(words), false, `the page's "${words}" reached the card`);
+        assert.equal(logs.includes(words), false, `the card logged the page's "${words}"`);
       }
-      if (theme === 'light' && width === 728) {
-        // The host gives up on Turn off and the person presses it again. Only then does the first
-        // try's own failure come, with nothing of Chickpea's in it: the card still waits for the second.
+      assert.deepEqual(await buttons(), ['Turn off', 'Keep it on']);
+      await shot('6-timed-out');
+      await browser.host('window.harness.timedOut = []');
+      await browser.click('confirm');
+      await browser.waitForTitle(/^✓ Turned off Support Desk$/);
+      assert.deepEqual(await nonReads(), ['confirm_change', 'confirm_change'], 'Turn off again: Chickpea answers with what it did');
+
+      // get_confirmation is new: until Refresh tools, ChatGPT answers it "MCP Resource not found".
+      // That is no refusal: the card offers its buttons, and Keep works.
+      await open('confirm', { unlisted: ['get_confirmation'] });
+      await browser.waitForTitle(/^Turn off @support\?$/);
+      await browser.waitFor('document.querySelectorAll(".cp-acts button:enabled").length === 2', 'the buttons, once the reads answer or fail');
+      assert.equal(await browser.inCard('document.querySelector(".cp-error")?.hidden ?? true'), true, 'no failure shown for a read');
+      await shot('6-confirm-tool-not-listed');
+      await browser.click('keep');
+      await browser.waitForTitle(/^Kept as it is$/);
+      assert.deepEqual(await nonReads(), ['decline_change']);
+    }
+    if (host === 'chatgpt' && theme === 'light' && width === 728) {
+      // The host gives up on Turn off and the person presses it again. Only then does the first try's
+      // own failure come, with nothing of Chickpea's in it: as a JSON-RPC error, as ChatGPT sends one,
+      // or as an error result, as another host may. Either way the card still waits for the second.
+      for (const how of ['fail', 'failResult']) {
         await open('confirm');
         await browser.waitForTitle(/^Turn off @support\?$/);
+        await browser.waitFor('document.querySelectorAll(".cp-acts button:enabled").length === 2', 'the buttons, once the reads answer');
         await browser.host('window.harness.holding = ["confirm_change"]');
         await browser.inCard('window.harnessTimeout = setTimeout; window.setTimeout = (run, ms, ...rest) => window.harnessTimeout(run, ms === 60_000 ? 200 : ms, ...rest)');
         await browser.click('confirm');
-        await browser.waitFor('/could not be reached/.test(document.querySelector(".cp-error")?.textContent ?? "")', 'the host giving up');
+        await browser.waitFor('/could not be reached/.test(document.querySelector(".cp-error")?.textContent ?? "")', `${how}: the host giving up`);
         await browser.inCard('window.setTimeout = window.harnessTimeout');
         await browser.click('confirm');
-        await browser.host('window.harness.held.shift()("fail")');
+        await browser.host(`window.harness.held.shift()(${JSON.stringify(how)})`);
         await new Promise((done) => setTimeout(done, 500));
         assert.deepEqual(await browser.inCard('[...document.querySelectorAll(".cp-acts button")].map((node) => node.disabled)'), [true, true],
-          'the second Turn off is still out');
+          `${how}: the second Turn off is still out`);
         await browser.host('window.harness.holding = []; window.harness.answerHeld()');
         await browser.waitForTitle(/^✓ Turned off Support Desk$/);
-        assert.deepEqual(await nonReads(), ['confirm_change', 'confirm_change'], 'Turn off twice, and no Keep it on');
+        assert.deepEqual(await nonReads(), ['confirm_change', 'confirm_change'], `${how}: Turn off twice, and no Keep it on`);
         assert.equal((await current.f.config.getAgent('agent_support')).enabled, false);
       }
     }
@@ -952,6 +1017,12 @@ try {
     await open('expired');
     await browser.waitForTitle(/^This confirmation expired$/);
     await shot('6-expired');
+
+    // The model's own call refused on a card session: a result, so ChatGPT draws the card with the sentence.
+    await open('changeRefused');
+    await browser.waitForTitle(/^Invoice Chaser changed since you read it\.$/);
+    assert.deepEqual(await buttons(), []);
+    await shot('5-change-refused');
 
     // Someone archives the Agent while its change card is open.
     await open('change');
@@ -1159,16 +1230,6 @@ try {
     current.serve(true);
     runs.refuse = { kind: 'daily_limit', resumesAt: Date.now() + 5 * 3_600_000 - 60_000 };
     await refused('readyQuiet', 'limit', /reached today's limit\. They start again in about 5 hours\./, ['Open in Slack']);
-    if (host === 'chatgpt') {
-      // As ChatGPT delivers a refused call: a JSON-RPC error carrying its copy of the result.
-      await open('readyQuiet');
-      await browser.waitForTitle(/said hello to you in Slack$/, 10_000);
-      await browser.host('window.harness.errors = "data"');
-      await browser.click('try_once');
-      await shows(/reached today's limit\. They start again in about 5 hours\./, 'the limit, through a JSON-RPC error');
-      assert.equal((await tried()).length, 1, 'no retry of a refusal');
-      await shot('4-refused-limit-host-error');
-    }
     runs.refuse = undefined;
     runs.outcome = { status: 'failed', failure: 'deadline', result: null };
     await refused('readyQuiet', 'deadline', /took too long and was stopped\. Ask Quiet Desk in Slack instead\./, ['Open in Slack']);

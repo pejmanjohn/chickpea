@@ -238,7 +238,7 @@ function polled(state: State, result: ToolResult, now: number): Next<FirstAnswer
   const { stage } = view;
   const code = errorCode(result);
   if (code === 'not_found') return finished(view, { kind: 'stopped', problem: errorOf(result)!, then: 'slack' }, ran(view, 'but its answer is no longer there'));
-  const run = result.isError ? undefined : testRun(result.structuredContent);
+  const run = errorOf(result) ? undefined : testRun(result.structuredContent);
   if (stage.kind === 'slow') {
     if (run && run.status !== 'running') return settled(view, run, now);
     return run ? show({ ...view, stage: { ...stage, again: true } }) : stay({ ...state, busy: false });

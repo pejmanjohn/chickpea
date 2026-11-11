@@ -422,6 +422,7 @@ type ModelProviderFixture = {
   configured: boolean;
   source: string;
   suggestions: string[];
+  modelNames?: Record<string, string>;
   authMethods?: {
     activeMethod?: 'api_key' | 'subscription';
     apiKeyConfigured: boolean;
@@ -581,7 +582,7 @@ function runAdminPageHarness(
     workersAiFavorites?: string[];
     workersAiModels?: Array<{ id: string }>;
     workersAiEnabledError?: { status: number; error: string; message?: string };
-    anthropicModels?: Array<{ id: string }>;
+    anthropicModels?: Array<{ id: string; display_name?: string }>;
     openaiModels?: Array<{ id: string }>;
     openAiModelsAfterMethodSwitch?: Array<{ id: string }>;
     providerKeyReject?: { status: number; detail: string };
@@ -625,6 +626,7 @@ function runAdminPageHarness(
     githubAccountDisconnectError?: { status: number; error: string };
     settingsLoadFetch?: (path: string, method: string) => Promise<FakeResponse> | undefined;
     websiteLoginsFetch?: (path: string, method: string, body: string | undefined) => Promise<FakeResponse> | undefined;
+    connectedAppsFetch?: (path: string, method: string, body: string | undefined) => Promise<FakeResponse> | undefined;
     /** Answers the shared Notion sign-in routes: reusable sign-ins, reuse, and an Agent's pages. */
     notionPagesFetch?: (path: string, method: string, body: string | undefined) => Promise<FakeResponse> | undefined;
     githubRepoPages?: Record<string, GithubRepoPageFixture>;
@@ -1198,6 +1200,7 @@ function runAdminPageHarness(
   const githubStatus = options.githubStatus;
   const settingsLoadFetch = options.settingsLoadFetch;
   const websiteLoginsFetch = options.websiteLoginsFetch;
+  const connectedAppsFetch = options.connectedAppsFetch;
   const notionPagesFetch = options.notionPagesFetch;
   const confirmMessages: string[] = [];
   const githubRepoPages = options.githubRepoPages;
@@ -1545,6 +1548,14 @@ function runAdminPageHarness(
       if (modelPolicyAction && appHtml.includes(`data-action="${modelPolicyAction}"`)) {
         return focusElement(modelPolicyAction);
       }
+      const connectedAppsFocus = selector.match(/^\[data-(?:action|role)="(connected-app-disconnect-(?:keep|confirm)|connected-apps-notice)"\]$/)?.[1];
+      if (connectedAppsFocus && appHtml.includes(`="${connectedAppsFocus}"`)) {
+        return focusElement(connectedAppsFocus);
+      }
+      const connectedAppDisconnect = selector.match(/^\[data-action="connected-app-disconnect"\]\[data-app-id="([^"]*)"\]$/)?.[1];
+      if (connectedAppDisconnect && appHtml.includes(`data-action="connected-app-disconnect" data-app-id="${connectedAppDisconnect}"`)) {
+        return focusElement(`connected-app-disconnect:${connectedAppDisconnect}`);
+      }
       const agentScheduleAction = selector.match(/^\[data-action="(agent-schedule-delete-(?:cancel|confirm))"\]$/)?.[1];
       if (agentScheduleAction && appHtml.includes(`data-action="${agentScheduleAction}"`)) {
         return focusElement(agentScheduleAction);
@@ -1682,6 +1693,10 @@ function runAdminPageHarness(
     if (notionPagesFetch && /^\/admin\/api\/agents\/[^/]+\/connections\/(?:managed\/reus(?:e|able)|[^/]+\/pages)(?:\?|$)/.test(path)) {
       const notionPagesResponse = notionPagesFetch(path, method, options?.body);
       if (notionPagesResponse) return notionPagesResponse;
+    }
+    if (connectedAppsFetch && path.startsWith('/admin/api/connected-apps')) {
+      const connectedAppsResponse = connectedAppsFetch(path, method, options?.body);
+      if (connectedAppsResponse) return connectedAppsResponse;
     }
     if (websiteLoginsFetch && /^\/admin\/api\/agents\/[^/]+\/website-logins(?:\/|$)/.test(path)) {
       const websiteLoginsResponse = websiteLoginsFetch(path, method, options?.body);
@@ -15924,8 +15939,8 @@ test('on Chickpea\'s models the Agent model picker lists the models Chickpea off
   await flushAsync();
 
   const list = harness.app.innerHTML.match(/<div class="combo-list" role="listbox">[\s\S]*?<div class="combo-settings">/)?.[0] ?? '';
-  assert.match(list, /<div class="combo-group">anthropic<span class="src">· Chickpea’s models<\/span><\/div>/);
-  assert.match(list, /<div class="combo-group">openrouter<span class="src">· Chickpea’s models<\/span><\/div>/);
+  assert.match(list, /<div class="combo-group">Anthropic<span class="src">· Chickpea’s models<\/span><\/div>/);
+  assert.match(list, /<div class="combo-group">OpenRouter<span class="src">· Chickpea’s models<\/span><\/div>/);
   assert.deepEqual(
     [...list.matchAll(/data-action="pick-model" data-model="([^"]+)"/g)].map((match) => match[1]),
     [OFFERED_MODEL, 'anthropic/claude-sonnet-5-5', ...PLATFORM_OPENROUTER.suggestions],
@@ -18974,7 +18989,7 @@ test('Settings shows the Cloudflare provider card on the Cloudflare target with 
   click({ target: actionTarget({ 'data-action': 'new-profile' }) });
   click({ target: actionTarget({ 'data-action': 'profile-model' }) });
   await flushAsync();
-  assert.doesNotMatch(harness.app.innerHTML, /<div class="combo-group">workers-ai/);
+  assert.doesNotMatch(harness.app.innerHTML, /<div class="combo-group">Cloudflare Workers AI/);
 });
 
 test('Workers AI toggle restores its confirmed state when saving fails', async () => {
@@ -19061,7 +19076,7 @@ test('Workers AI renders Off on a fresh load and recovers a failed model refresh
   click({ target: actionTarget({ 'data-action': 'new-profile' }) });
   click({ target: actionTarget({ 'data-action': 'profile-model' }) });
   await flushAsync();
-  assert.match(harness.app.innerHTML, /<div class="combo-group">workers-ai/);
+  assert.match(harness.app.innerHTML, /<div class="combo-group">Cloudflare Workers AI/);
 });
 
 test('Workers AI toggle ignores an older providers response that resolves after the PUT', async () => {
@@ -19240,7 +19255,7 @@ test('a failed async Model load preserves page position, focus, and caret', asyn
   assert.deepEqual(harness.modelSelectionRanges.at(-1), [5, 5]);
 });
 
-test('the profile Model picker labels Cloudflare binding suggestions as workers-ai', async () => {
+test('the profile Model picker labels Cloudflare binding suggestions as Cloudflare Workers AI', async () => {
   const harness = runAdminPageHarness({
     modelProviders: [
       {
@@ -19260,8 +19275,8 @@ test('the profile Model picker labels Cloudflare binding suggestions as workers-
   click({ target: actionTarget({ 'data-action': 'profile-model' }) });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /<div class="combo-group">workers-ai<span class="src">· Workers AI binding<\/span><\/div>/);
-  assert.doesNotMatch(harness.app.innerHTML, /<div class="combo-group">cloudflare<span/);
+  assert.match(harness.app.innerHTML, /<div class="combo-group">Cloudflare Workers AI<span class="src">· Workers AI binding<\/span><\/div>/);
+  assert.doesNotMatch(harness.app.innerHTML, /<div class="combo-group">(cloudflare|workers-ai)<span/);
   // The binding group's options carry the cloudflare/ specifier prefix, built
   // from the starred favorites (not the leaked src path or a raw @cf id).
   assert.match(harness.app.innerHTML, /data-model="cloudflare\/@cf\/zai-org\/glm-5\.2"/);
@@ -19294,6 +19309,7 @@ test('the profile Model picker renders the FULL live Anthropic list with a user-
       { id: 'claude-opus-5' },
       { id: 'claude-sonnet-5' },
       { id: 'claude-haiku-4-5' },
+      { id: 'claude-opus-4-8', display_name: 'Claude Opus 4.8' },
     ],
   });
   await flushAsync();
@@ -19305,15 +19321,17 @@ test('the profile Model picker renders the FULL live Anthropic list with a user-
   await flushAsync();
 
   const html = harness.app.innerHTML;
-  // The group is labeled by provider id with a user-facing phrase — never the
+  // The group is labeled by provider name with a user-facing phrase — never the
   // leaked src path.
-  assert.match(html, /<div class="combo-group">anthropic<span class="src">· via your key<\/span><\/div>/);
+  assert.match(html, /<div class="combo-group">Anthropic<span class="src">· via your key<\/span><\/div>/);
   assert.doesNotMatch(html, /registered in src\/app\.ts/);
   // Every live model renders as an anthropic/ specifier.
   assert.match(html, /data-model="anthropic\/claude-fable-5"/);
   assert.match(html, /data-model="anthropic\/claude-opus-5"/);
   assert.match(html, /data-model="anthropic\/claude-sonnet-5"/);
   assert.match(html, /data-model="anthropic\/claude-haiku-4-5"/);
+  // A live-only model has no suggestion name; its row's name still shows.
+  assert.match(html, /data-model="anthropic\/claude-opus-4-8"><span class="combo-name">Claude Opus 4\.8<\/span><span class="combo-id"> · anthropic\/claude-opus-4-8<\/span>/);
 });
 
 test('the profile Model picker filters options by the typed specifier', async () => {
@@ -19346,6 +19364,47 @@ test('the profile Model picker filters options by the typed specifier', async ()
   assert.doesNotMatch(html, /data-model="anthropic\/claude-haiku-4-5"/);
 });
 
+test('the profile Model picker names each model beside its id and finds it by name', async () => {
+  const harness = runAdminPageHarness({
+    modelProviders: [
+      {
+        id: 'google',
+        configured: true,
+        source: 'registered in src/app.ts',
+        suggestions: ['google/gemini-4-argon'],
+        modelNames: { 'google/gemini-4-argon': 'Gemini 4 Argon' },
+      },
+      {
+        id: 'openrouter',
+        configured: true,
+        source: 'via OPENROUTER_API_KEY',
+        suggestions: ['openrouter/deepseek/deepseek-v4.1-flash', 'openrouter/acme/ops-large'],
+        modelNames: { 'openrouter/deepseek/deepseek-v4.1-flash': 'DeepSeek: DeepSeek V4.1 Flash' },
+      },
+    ],
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click);
+  assert.ok(input);
+  click({ target: actionTarget({ 'data-action': 'new-profile' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-model' }) });
+  await flushAsync();
+
+  let html = harness.app.innerHTML;
+  assert.match(html, /<div class="combo-group">Google Gemini<span class="src">· via your key<\/span><\/div>/);
+  assert.match(html, /data-model="google\/gemini-4-argon"><span class="combo-name">Gemini 4 Argon<\/span><span class="combo-id"> · google\/gemini-4-argon<\/span><\/button>/);
+  assert.match(html, /data-model="openrouter\/acme\/ops-large">openrouter\/acme\/ops-large<\/button>/);
+
+  // "gemini 4" is in the name only; the id spells it gemini-4.
+  input({ target: inputTarget({ 'data-action': 'profile-model' }, 'Gemini 4') });
+  await flushAsync();
+  html = harness.app.innerHTML;
+  assert.match(html, /data-model="google\/gemini-4-argon"/);
+  assert.doesNotMatch(html, /data-model="openrouter\//);
+});
+
 test('the profile Model picker suppresses configured provider groups with no favorites', async () => {
   const harness = runAdminPageHarness({
     modelProviders: [
@@ -19367,7 +19426,7 @@ test('the profile Model picker suppresses configured provider groups with no fav
   click({ target: actionTarget({ 'data-action': 'profile-model' }) });
   await flushAsync();
 
-  assert.doesNotMatch(harness.app.innerHTML, /<div class="combo-group">openrouter/);
+  assert.doesNotMatch(harness.app.innerHTML, /<div class="combo-group">OpenRouter/);
   assert.doesNotMatch(harness.app.innerHTML, /no providers configured/);
   assert.match(harness.app.innerHTML, /Star models in Settings to add picker shortcuts/);
 });
@@ -20218,6 +20277,136 @@ test('Coding agents offers a retry when its client table cannot be read', async 
   );
   assert.match(harness.app.innerHTML, /data-action="mcp-clients-retry"/);
   assert.doesNotMatch(harness.app.innerHTML, /mcp-client-pick/);
+});
+
+const CHATGPT_APP_ID = 'https://chatgpt.com/oauth/client.json';
+const CONNECTED_APPS = [
+  { appId: CHATGPT_APP_ID, name: 'ChatGPT', connectedAt: '2026-10-02T12:00:00.000Z', lastActiveAt: '2026-10-25T10:00:00.000Z' },
+  { appId: 'client_tool', name: 'Spreadsheet helper', nameFromApp: true, connectedAt: '2026-10-20T12:00:00.000Z', lastActiveAt: null },
+  { appId: 'client_unnamed', name: null, connectedAt: '2026-10-21T12:00:00.000Z', lastActiveAt: null },
+];
+
+function connectedAppsHarness(
+  apps: Array<Record<string, unknown>>,
+  options: { workspaceAdminUi?: boolean; initialPath?: string; list?: () => FakeResponse; disconnect?: () => FakeResponse } = {},
+) {
+  let current = apps;
+  const posts: Array<{ appId: string }> = [];
+  let gets = 0;
+  const harness = runAdminPageHarness({
+    initialPath: options.initialPath ?? '/admin/settings/connected-apps',
+    workspaceAdminUi: options.workspaceAdminUi ?? false,
+    now: Date.parse('2026-10-25T12:00:00.000Z'),
+    connectedAppsFetch(path, method, body) {
+      if (method === 'GET' && path === '/admin/api/connected-apps') {
+        gets += 1;
+        return Promise.resolve(options.list?.() ?? jsonResponse({ apps: current }));
+      }
+      if (method === 'POST' && path === '/admin/api/connected-apps/disconnect') {
+        const request = JSON.parse(body ?? '{}') as { appId: string };
+        posts.push(request);
+        const response = options.disconnect?.() ?? jsonResponse({ name: 'ChatGPT' });
+        if (response.ok) current = current.filter((app) => app.appId !== request.appId);
+        return Promise.resolve(response);
+      }
+      return undefined;
+    },
+  });
+  const click = (attributes: Record<string, string>) => harness.listeners.click!({ target: actionTarget(attributes) });
+  return { harness, posts, gets: () => gets, click };
+}
+
+test('Connected apps shows a member each of their apps with when it connected and was last active', async () => {
+  const { harness } = connectedAppsHarness(CONNECTED_APPS);
+  await flushAsync();
+  const html = harness.app.innerHTML;
+
+  const rail = html.match(/<nav class="rail[^"]*"[^>]*>[\s\S]*?<\/nav>/)?.[0];
+  assert.ok(rail);
+  assert.match(rail, /data-section="agents-clients"[\s\S]*data-action="settings-section" data-section="connected-apps" aria-current="page"><span class="chan-name">Connected apps<\/span><span class="chan-meta">Apps signed in as you<\/span>/);
+  assert.match(html, /<h1 class="page-title">Connected apps<\/h1>/);
+  assert.match(html, /Apps you connected to Chickpea, such as ChatGPT or Claude Code\. Each one acts as you and can do only what you can do\./);
+  assert.match(html, /<span class="agent-schedule-name">ChatGPT<\/span><\/div><div class="agent-schedule-meta"><span class="agent-schedule-meta-item">Connected Oct 2, 2026<\/span><span class="agent-schedule-separator" aria-hidden="true">&middot;<\/span><span class="agent-schedule-meta-item">last active 2 hours ago<\/span>/);
+  assert.match(html, /<span class="agent-schedule-name">Spreadsheet helper<\/span><\/div><div class="agent-schedule-meta"><span class="agent-schedule-meta-item">Name provided by the app<\/span>/);
+  assert.match(html, /<span class="agent-schedule-name">Unnamed app<\/span>/);
+  assert.match(html, /aria-label="Disconnect ChatGPT">Disconnect<\/button>/);
+  // An app's ID rides only in the attribute the Disconnect button sends back; the page never shows it.
+  for (const app of CONNECTED_APPS) {
+    assert.equal(html.split(app.appId).length, html.split(`data-app-id="${app.appId}"`).length, app.appId);
+  }
+  assert.equal(harness.locationPath(), '/admin/settings/connected-apps');
+});
+
+test('Connected apps says so in one line when there are none, and offers a retry when it cannot load', async () => {
+  const empty = connectedAppsHarness([]);
+  await flushAsync();
+  assert.match(empty.harness.app.innerHTML, /<p class="hint">You have no connected apps\.<\/p>/);
+  assert.doesNotMatch(empty.harness.app.innerHTML, /data-action="connected-app-disconnect"/);
+
+  let fail = true;
+  const failing = connectedAppsHarness(CONNECTED_APPS, { list: () => (fail ? jsonResponse({ error: 'internal_error' }, 500) : jsonResponse({ apps: [] })) });
+  await flushAsync();
+  assert.match(failing.harness.app.innerHTML, /Your connected apps could not be loaded\. Try again\./);
+  fail = false;
+  failing.click({ 'data-action': 'connected-apps-retry' });
+  await flushAsync();
+  assert.equal(failing.gets(), 2);
+  assert.match(failing.harness.app.innerHTML, /You have no connected apps\./);
+});
+
+test('Disconnect asks in the row first, then disconnects the app and says it is signed out', async () => {
+  const { harness, posts, gets, click } = connectedAppsHarness(CONNECTED_APPS);
+  await flushAsync();
+
+  click({ 'data-action': 'connected-app-disconnect', 'data-app-id': CHATGPT_APP_ID });
+  assert.match(harness.app.innerHTML, /Disconnect ChatGPT\? It is signed out of Chickpea within 15 minutes, even if you are using it right now\. To use it again, connect it and sign in again\./);
+  assert.equal(harness.focusedAction(), 'connected-app-disconnect-keep');
+  click({ 'data-action': 'connected-app-disconnect-keep' });
+  assert.doesNotMatch(harness.app.innerHTML, /Disconnect ChatGPT\?/);
+  assert.equal(harness.focusedAction(), `connected-app-disconnect:${CHATGPT_APP_ID}`);
+  assert.deepEqual(posts, []);
+
+  click({ 'data-action': 'connected-app-disconnect', 'data-app-id': CHATGPT_APP_ID });
+  click({ 'data-action': 'connected-app-disconnect-confirm', 'data-app-id': CHATGPT_APP_ID });
+  assert.match(harness.app.innerHTML, /disabled>Disconnecting&hellip;<\/button>/);
+  await flushAsync();
+  assert.deepEqual(posts, [{ appId: CHATGPT_APP_ID }]);
+  assert.match(harness.app.innerHTML, /role="status" tabindex="-1" data-role="connected-apps-notice">ChatGPT is disconnected\. It is signed out of Chickpea within 15 minutes\.<\/p>/);
+  assert.equal(harness.focusedAction(), 'connected-apps-notice');
+  assert.doesNotMatch(harness.app.innerHTML, /<span class="agent-schedule-name">ChatGPT<\/span>/);
+  assert.equal(gets(), 2, 'the list is read again');
+});
+
+test('a failed Disconnect keeps the row and says so; an app already gone reads as disconnected', async () => {
+  let response = jsonResponse({ error: 'internal_error' }, 500);
+  const { harness, click } = connectedAppsHarness(CONNECTED_APPS, { disconnect: () => response });
+  await flushAsync();
+  click({ 'data-action': 'connected-app-disconnect', 'data-app-id': CHATGPT_APP_ID });
+  click({ 'data-action': 'connected-app-disconnect-confirm', 'data-app-id': CHATGPT_APP_ID });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /<span class="field-error" role="alert">ChatGPT could not be disconnected\. Try again\.<\/span>/);
+  assert.match(harness.app.innerHTML, /data-action="connected-app-disconnect-confirm"[^>]*>Disconnect<\/button>/);
+  assert.equal(harness.focusedAction(), 'connected-app-disconnect-confirm');
+
+  response = jsonResponse({ error: 'not_found' }, 404);
+  click({ 'data-action': 'connected-app-disconnect-confirm', 'data-app-id': CHATGPT_APP_ID });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /ChatGPT was already disconnected\./);
+  assert.doesNotMatch(harness.app.innerHTML, /could not be disconnected/);
+});
+
+test('an Owner finds Connected apps after MCP in Settings', async () => {
+  const { harness, gets, click } = connectedAppsHarness(CONNECTED_APPS, { workspaceAdminUi: true, initialPath: '/admin/settings/providers' });
+  await flushAsync();
+  const rail = harness.app.innerHTML.match(/<nav class="rail[^"]*"[^>]*>[\s\S]*?<\/nav>/)?.[0];
+  assert.ok(rail);
+  assert.match(rail, /data-section="providers"[\s\S]*data-section="agents-clients"[\s\S]*data-section="connected-apps"/);
+  assert.equal(gets(), 0);
+  click({ 'data-action': 'settings-section', 'data-section': 'connected-apps' });
+  await flushAsync();
+  assert.equal(gets(), 1);
+  assert.equal(harness.locationPath(), '/admin/settings/connected-apps');
+  assert.match(harness.app.innerHTML, /<span class="agent-schedule-name">ChatGPT<\/span>/);
 });
 
 test('Settings › Browser renders the Browserbase setup steps when no key is connected', async () => {
