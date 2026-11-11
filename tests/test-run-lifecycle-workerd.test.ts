@@ -41,7 +41,7 @@ let sequence = 0;
  * first question, which starts a conversation; with `practiceId`, a later
  * turn of that conversation.
  */
-function startRequest(ask: string, options: { member?: string; practiceId?: string; turn?: number } = {}): { request: TestRunStartRequest; instanceId: string } {
+function startRequest(ask: string, options: { member?: string; practiceId?: string } = {}): { request: TestRunStartRequest; instanceId: string } {
   sequence += 1;
   const member = options.member ?? 'membership_caller';
   const testRunId = `testrun_workerd_${sequence}`;
@@ -60,7 +60,7 @@ function startRequest(ask: string, options: { member?: string; practiceId?: stri
       run: {
         testRunId, runToken: `tr_${testRunId}`, coordinateToken, organizationId: 'org_workerd',
         actorMembershipId: member, agentId: 'agent_tested', idempotencyKey: `key_${testRunId}`,
-        practiceId: options.practiceId ?? null, newPracticeId: options.practiceId ?? `pr_${testRunId}`, turn: options.turn ?? 1,
+        practiceId: options.practiceId ?? null, newPracticeId: `pr_${testRunId}`,
         question: ask, questionDigest: practiceQuestionDigest('org_workerd', ask), planDigest: 'plan_workerd', admitted: {},
         usage: TestRunUsageRecorder.admission({
           testRunId, startedAt: Date.now(), workspaceId: 'T0WORKERD', agentId: 'agent_tested', agentLabel: 'Tested',
@@ -68,7 +68,6 @@ function startRequest(ask: string, options: { member?: string; practiceId?: stri
           credentialVersion: null,
         }),
       },
-      message: ask,
       initialData: { runtimePlan: JSON.parse(JSON.stringify(plan)) as unknown, requester: { name: 'Pat', timezone: 'UTC', askedAt: Date.now() } },
     },
   };
@@ -199,7 +198,7 @@ test('a practice run is admitted, dispatched, settled and erased on workerd, and
     const slow = startRequest('Please be slow about order 13.');
     assert.equal((await call<TestRunStartResult>('/start', { request: slow.request })).kind, 'admitted');
     const conversation = (await row(slow.request.run.testRunId)).practiceId!;
-    const followUp = startRequest('And order 14?', { practiceId: conversation, turn: 2 });
+    const followUp = startRequest('And order 14?', { practiceId: conversation });
     assert.deepEqual(await call('/start', { request: followUp.request }), { kind: 'in_progress', runToken: slow.request.run.runToken });
     assert.equal(await row(followUp.request.run.testRunId), null, 'nothing stored or dispatched for it');
     const beside = startRequest('Where is order 15?', { member: 'membership_other' });

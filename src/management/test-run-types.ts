@@ -34,6 +34,8 @@ export interface PracticeStep {
   why?: string;
   /** What the tool handed the Agent's model, as text, cut to the run's bound. */
   result?: { data: string; size: number; truncated: boolean };
+  /** A connection request's method, for a follow-up's Read line; no result shows it. */
+  method?: string;
 }
 
 /** What a run ran: the version handle get_agent returns, never a revision or an internal ID. */
@@ -60,6 +62,8 @@ export interface TestRunResult {
   ran?: PracticeRan;
   /** A connection with no reads was left out, so an answer that needs it can't be judged. */
   partial?: true;
+  /** A follow-up's oldest answered turns that its message left out for length: the Agent never saw them. */
+  droppedTurns?: number;
   off?: string[];
   available?: Array<{ service: string; tools: string[] }>;
   fixes?: PracticeFix[];
@@ -124,9 +128,8 @@ export interface TestRunAdmissionRequest extends PracticeAsk {
   /** The compiled plan, as the dispatch's creation data carries it. */
   planJson: string;
   usage: AdmitUsageOperationInput;
-  /** The conversation this run is a turn of; a first question's is minted for it. */
+  /** A first question's conversation, minted for it; a follow-up's turn is the store's to number. */
   newPracticeId: string;
-  turn: number;
   question: string;
   /** The compiled plan's digest without what each compile makes anew. */
   planDigest: string;
@@ -134,8 +137,17 @@ export interface TestRunAdmissionRequest extends PracticeAsk {
   admitted: Pick<TestRunResult, 'ran' | 'partial' | 'off' | 'available' | 'fixes'>;
 }
 
+/** An earlier answered turn of a practice conversation, as the store quotes it to the next. */
+export interface PracticeTurn {
+  turn: number;
+  question: string;
+  reply: string;
+  steps: readonly PracticeStep[];
+}
+
 export type TestRunAdmission =
-  | { kind: 'admitted'; row: TestRunRow }
+  /** `earlier`: the conversation's answered turns, oldest first; none for a first question. */
+  | { kind: 'admitted'; row: TestRunRow; earlier: PracticeTurn[] }
   /** The same caller's key for the same ask: the stored run, before any check. */
   | { kind: 'replayed'; row: TestRunRow }
   /** The same ask, going now: that run. */
@@ -146,7 +158,13 @@ export type TestRunAdmission =
    * The conversation's last turn is still going, with its token; or, with
    * none, an older Worker version's one-run lock holds the installation.
    */
-  | { kind: 'in_progress'; runToken?: string };
+  | { kind: 'in_progress'; runToken?: string }
+  /**
+   * The conversation a follow-up names is not the caller's open one with
+   * this Agent: unknown, another person's or another Agent's, past its hour,
+   * or at its last turn.
+   */
+  | { kind: 'ended' };
 
 /** What the model-access lookup's binding answers for a run: undefined when it refuses the submission. */
 export interface TestRunModelAccessBinding {
@@ -186,19 +204,20 @@ export interface TestRunView {
  * Admission and dispatch, as the caller asks the state store for them. The
  * store derives the row's plan and instance from `initialData.runtimePlan`,
  * so the plan model access reads and the plan the tools mount from are one.
+ * It writes the message itself, from the question and its own rows of the
+ * conversation, so no caller supplies an earlier turn.
  */
 export interface TestRunStartRequest {
   /** `coordinateToken`: the plan's, which names the run's Channel stand-in. */
   run: Omit<TestRunAdmissionRequest, 'instanceId' | 'planJson'> & { coordinateToken: string };
-  /** The question, escaped as Slack user text is. */
-  message: string;
-  /** The test agent's creation data (agents/test-turn.ts). */
+  /** The test agent's creation data (agents/test-turn.ts), but for what only the store sets. */
   initialData: { runtimePlan: unknown } & Record<string, unknown>;
 }
 
 export type TestRunStartResult =
   | { kind: 'admitted' | 'replayed' | 'running' | 'repeat'; run: TestRunView }
-  | { kind: 'in_progress'; runToken?: string };
+  | { kind: 'in_progress'; runToken?: string }
+  | { kind: 'ended' };
 
 export interface TestRunQuery {
   organizationId: string;
@@ -213,6 +232,24 @@ export interface TestRunReplayQuery extends PracticeAsk {
   idempotencyKey: string;
 }
 
+/** Whose runs of which Agent a listing reads: only the caller's own. */
+export interface PracticeRunsQuery {
+  organizationId: string;
+  actorMembershipId: string;
+  agentId: string;
+}
+
+/** One run in a listing: never its reply, steps or results, which get_practice_run returns. */
+export interface PracticeRunListing {
+  runToken: string;
+  practiceId: string;
+  turn: number;
+  status: TestRunStatus;
+  question: string;
+  createdAt: number;
+  agentVersion?: string;
+}
+
 /** The state store's test runs, served only on a deployment serving many installations. */
 export interface TestRunStore {
   start(request: TestRunStartRequest): Promise<TestRunStartResult>;
@@ -220,5 +257,7 @@ export interface TestRunStore {
   replay(query: TestRunReplayQuery): Promise<TestRunView | undefined>;
   /** The caller's run, settled a step further if one is due; another's, or one past its hour, is none. */
   observe(query: TestRunQuery): Promise<TestRunView | undefined>;
+  /** The caller's practice runs of one Agent whose text is still kept, newest first, as they stand. */
+  list(query: PracticeRunsQuery): Promise<PracticeRunListing[]>;
 }
 

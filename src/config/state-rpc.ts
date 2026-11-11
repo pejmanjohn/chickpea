@@ -1,4 +1,6 @@
 import type {
+  PracticeRunListing,
+  PracticeRunsQuery,
   TestRunQuery,
   TestRunReplayQuery,
   TestRunStartRequest,
@@ -631,6 +633,8 @@ export interface TagStateRpc {
   testRunStart(request: TestRunStartRequest): Promise<StateRpcResult<TestRunStartResult>>;
   testRunReplay(query: TestRunReplayQuery): Promise<StateRpcResult<TestRunView | null>>;
   testRunObserve(query: TestRunQuery): Promise<StateRpcResult<TestRunView | null>>;
+  /** The caller's practice runs of one Agent from the last hour, read only (TestRunStoreLogic.list). */
+  testRunList(query: PracticeRunsQuery): Promise<StateRpcResult<PracticeRunListing[]>>;
   slackTurnRecoveryRequired(id: string, reason: string): Promise<StateRpcResult<null>>;
   slackTurnRecoveryList(limit: number): Promise<StateRpcResult<SlackTurnRecoveryItem[]>>;
   slackInstallationRecoveryRetry(workspaceId: string): Promise<StateRpcResult<number>>;

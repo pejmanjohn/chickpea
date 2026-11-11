@@ -4,10 +4,12 @@ import { test } from 'node:test';
 import { deriveRuntimePlanInstanceId, parseRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import {
   installTestRunSchema,
+  PRACTICE_LISTED_RUNS,
   PRACTICE_REPEAT_MS,
+  PRACTICE_TURNS,
   TEST_RUN_WAKE_MS,
 } from '../src/management/test-runs.ts';
-import type { TestRunAdmissionRequest } from '../src/management/test-run-types.ts';
+import type { PracticeStep, TestRunAdmissionRequest } from '../src/management/test-run-types.ts';
 import { TestRunUsageRecorder } from '../src/usage/test-run-usage.ts';
 import { hostedInstallation, type HostedInstallation } from './helpers/installation-objects.ts';
 import { startRequest } from './helpers/test-runs.ts';
@@ -308,9 +310,17 @@ test('Before is only the caller\'s own earlier answer to the same first question
   const QUESTION = 'Who is overdue?';
   let at = NOON;
   /** One run of the question at an Agent version, three minutes after the last, so none repeats; answered unless `failed`. */
-  const run = (version: string, options: Parameters<typeof startRequest>[1] & { failed?: true } = {}) => {
-    const { failed, ...ask } = options;
-    const request = admission(installation, { question: QUESTION, ...ask });
+  /** A practice conversation's first turn, on another question and answered, for a follow-up to continue. */
+  const opened = () => {
+    const first = admission(installation, { question: 'Who is new?' });
+    at += 3 * 60_000;
+    assert.equal(store.admit(first, at).kind, 'admitted');
+    answer(installation, first.testRunId, at);
+    return first.newPracticeId;
+  };
+  const run = (version: string, options: Parameters<typeof startRequest>[1] & { failed?: true; followUp?: true } = {}) => {
+    const { failed, followUp, ...ask } = options;
+    const request = admission(installation, { question: QUESTION, ...ask, ...followUp ? { practiceId: opened() } : {} });
     at += 3 * 60_000;
     const ran = { agentVersion: version, model: 'anthropic/claude-haiku-4-5', memory: false, place: 'dm' as const };
     assert.equal(store.admit({ ...request, admitted: { ...request.admitted, ran } }, at).kind, 'admitted');
@@ -328,7 +338,7 @@ test('Before is only the caller\'s own earlier answer to the same first question
   run('version_1', { actorMembershipId: 'membership_other' });
   run('version_1', { agentId: 'agent_other' });
   run('version_1', { question: 'Who paid?' });
-  run('version_1', { practiceId: 'pr_earlier_conversation' });
+  run('version_1', { followUp: true });
   run('version_1', { failed: true });
   const second = run('version_2');
   assert.equal(before(second), undefined, 'another person\'s, another Agent\'s, another question\'s, a later turn\'s and a failed run are never named');
@@ -337,7 +347,7 @@ test('Before is only the caller\'s own earlier answer to the same first question
   const named = { runToken: store.get(second)!.runToken, agentVersion: 'version_2' };
   assert.deepEqual(before(third), named, 'the caller\'s own earlier answer');
   assert.equal(before(second), undefined, 'never a run asked after it');
-  assert.equal(before(run('version_4', { practiceId: 'pr_later_conversation' })), undefined, 'a conversation\'s later turn names none');
+  assert.equal(before(run('version_4', { followUp: true })), undefined, 'a conversation\'s later turn names none');
 
   // Named only while the caller can still read it: to the millisecond its hour ends.
   const hourEnds = store.get(second)!.settledAt! + AN_HOUR;
@@ -366,4 +376,142 @@ test('retention erases a run once its hour has passed and its instance is erased
   testRuns(installation).markErased(unerased.testRunId, NOON + AN_HOUR + 2);
   management.cleanupRetention(NOON + AN_HOUR + 3, 250);
   assert.equal(testRuns(installation).get(unerased.testRunId), undefined, 'and its row once its instance is erased');
+});
+
+/** Settles a run with a reply and steps of its own, as the lifecycle does. */
+function answerWith(installation: HostedInstallation, testRunId: string, reply: string, steps: PracticeStep[] = []): void {
+  const row = installation.stores.testRuns.get(testRunId)!;
+  const recorder = new TestRunUsageRecorder(installation.stores.usage.getOperation(row.usageOperationId)!.operation);
+  assert.equal(installation.stores.testRuns.settle(testRunId, {
+    status: 'answered', result: { reply, read: [], steps }, terminal: recorder.completed(undefined, row.createdAt, row.submissionId),
+  }), true);
+}
+
+function fail(installation: HostedInstallation, testRunId: string): void {
+  const row = installation.stores.testRuns.get(testRunId)!;
+  const recorder = new TestRunUsageRecorder(installation.stores.usage.getOperation(row.usageOperationId)!.operation);
+  installation.stores.testRuns.settle(testRunId, { status: 'failed', failure: 'failed', terminal: recorder.failed(row.createdAt, null) });
+}
+
+/** A conversation of the caller's, its first turn answered at NOON; the new turn's ID. */
+function conversation(installation: HostedInstallation): { practiceId: string; first: TestRunAdmissionRequest } {
+  const first = admission(installation, { question: 'Who is overdue?' });
+  assert.equal(testRuns(installation).admit(first, NOON).kind, 'admitted');
+  answerWith(installation, first.testRunId, 'Northwind is overdue.');
+  return { practiceId: testRuns(installation).get(first.testRunId)!.practiceId!, first };
+}
+
+test('a follow-up continues only the caller\'s own conversation with the same Agent: another person\'s or another Agent\'s reads as ended', () => {
+  const installation = hostedInstallation('inst_test_store_follow_owner');
+  const store = testRuns(installation);
+  const { practiceId } = conversation(installation);
+  const theirs = admission(installation, { actorMembershipId: 'membership_other', practiceId, question: 'And last week?' });
+  assert.deepEqual(store.admit(theirs, NOON + 60_000), { kind: 'ended' }, 'another person\'s conversation');
+  const otherAgent = admission(installation, { agentId: 'agent_other', practiceId, question: 'And last week?' });
+  assert.deepEqual(store.admit(otherAgent, NOON + 60_000), { kind: 'ended' }, 'another Agent');
+  const otherOrganization = admission(installation, { organizationId: 'org_other', practiceId, question: 'And last week?' });
+  assert.deepEqual(store.admit(otherOrganization, NOON + 60_000), { kind: 'ended' }, 'another workspace');
+  assert.deepEqual(store.admit(admission(installation, { practiceId: 'pr_unknown', question: 'And last week?' }), NOON + 60_000),
+    { kind: 'ended' }, 'an unknown conversation');
+  for (const refused of [theirs, otherAgent, otherOrganization]) {
+    assert.equal(store.get(refused.testRunId), undefined, 'nothing stored');
+    assert.equal(installation.stores.usage.getOperation(refused.usage.operationId), undefined, 'no usage operation');
+  }
+  const mine = admission(installation, { practiceId, question: 'And last week?' });
+  const admitted = store.admit(mine, NOON + 60_000);
+  assert.equal(admitted.kind, 'admitted');
+  assert.deepEqual([store.get(mine.testRunId)!.practiceId, store.get(mine.testRunId)!.turn], [practiceId, 2],
+    'the store numbers the turn in the caller\'s conversation');
+});
+
+test('a conversation takes 10 questions, within the hour from its first; then it has ended', () => {
+  const installation = hostedInstallation('inst_test_store_follow_bounds');
+  const store = testRuns(installation);
+  const { practiceId } = conversation(installation);
+  // Ten, by the ruling: the constant is not trusted to say so.
+  assert.equal(PRACTICE_TURNS, 10);
+  for (let turn = 2; turn <= 10; turn += 1) {
+    const next = admission(installation, { practiceId, question: `Turn ${turn}?` });
+    assert.equal(store.admit(next, NOON + turn * 1_000).kind, 'admitted', `turn ${turn}`);
+    assert.equal(store.get(next.testRunId)!.turn, turn);
+    answerWith(installation, next.testRunId, `Answer ${turn}.`);
+  }
+  assert.deepEqual(store.admit(admission(installation, { practiceId, question: 'An eleventh?' }), NOON + 20_000), { kind: 'ended' });
+
+  const timed = hostedInstallation('inst_test_store_follow_hour');
+  const { practiceId: hourly } = conversation(timed);
+  assert.equal(testRuns(timed).admit(admission(timed, { practiceId: hourly, question: 'Inside the hour?' }), NOON + AN_HOUR - 1).kind,
+    'admitted');
+  answerWith(timed, testRuns(timed).unerased().at(-1)!.testRunId, 'Yes.');
+  assert.deepEqual(testRuns(timed).admit(admission(timed, { practiceId: hourly, question: 'Past it?' }), NOON + AN_HOUR),
+    { kind: 'ended' }, 'an hour from its first question, not its last');
+});
+
+test('a conversation whose first turn is gone has ended, whatever later turns are left', () => {
+  const installation = hostedInstallation('inst_test_store_follow_lost_first');
+  const store = testRuns(installation);
+  const { practiceId, first } = conversation(installation);
+  const second = admission(installation, { practiceId, question: 'And last week?' });
+  store.admit(second, NOON + 1_000);
+  answerWith(installation, second.testRunId, 'Contoso.');
+  installation.db.run('DELETE FROM management_test_runs WHERE test_run_id = ?', first.testRunId);
+  assert.deepEqual(store.admit(admission(installation, { practiceId, question: 'And today?' }), NOON + 2_000), { kind: 'ended' });
+});
+
+test('a follow-up while its conversation\'s last turn is going gets that turn\'s runToken', () => {
+  const installation = hostedInstallation('inst_test_store_follow_going');
+  const store = testRuns(installation);
+  const { practiceId } = conversation(installation);
+  const second = admission(installation, { practiceId, question: 'And last week?' });
+  store.admit(second, NOON + 1_000);
+  assert.deepEqual(store.admit(admission(installation, { practiceId, question: 'And today?' }), NOON + 2_000),
+    { kind: 'in_progress', runToken: second.runToken });
+  // Only the caller's open conversation with this Agent says so: named with another Agent it has ended, and no token is returned.
+  assert.deepEqual(store.admit(admission(installation, { agentId: 'agent_other', practiceId, question: 'And today?' }), NOON + 2_000),
+    { kind: 'ended' });
+});
+
+test('a follow-up gets its conversation\'s answered turns in order, with their steps; a failed turn is left out', () => {
+  const installation = hostedInstallation('inst_test_store_follow_history');
+  const store = testRuns(installation);
+  const { practiceId } = conversation(installation);
+  const steps: PracticeStep[] = [{ kind: 'tool', service: 'Probe Board', tool: 'probe_board_search', outcome: 'ok' }];
+  const second = admission(installation, { practiceId, question: 'Why?' });
+  store.admit(second, NOON + 1_000);
+  fail(installation, second.testRunId);
+  const third = admission(installation, { practiceId, question: 'And last week?' });
+  store.admit(third, NOON + 2_000);
+  answerWith(installation, third.testRunId, 'Contoso.', steps);
+  const fourth = store.admit(admission(installation, { practiceId, question: 'And today?' }), NOON + 3_000);
+  assert.equal(fourth.kind, 'admitted');
+  assert.deepEqual(fourth.kind === 'admitted' && fourth.earlier, [
+    { turn: 1, question: 'Who is overdue?', reply: 'Northwind is overdue.', steps: [] },
+    { turn: 3, question: 'And last week?', reply: 'Contoso.', steps },
+  ]);
+  assert.equal(fourth.kind === 'admitted' && fourth.row.turn, 4, 'a failed turn still counts toward the 10');
+  const fresh = store.admit(admission(installation, { question: 'A new conversation?' }), NOON + 4_000);
+  assert.deepEqual(fresh.kind === 'admitted' && [fresh.earlier, fresh.row.turn], [[], 1]);
+});
+
+test('a listing holds only the caller\'s own runs of that Agent from the last hour, newest first, and never a reply', () => {
+  const installation = hostedInstallation('inst_test_store_list');
+  const store = testRuns(installation);
+  const { practiceId, first } = conversation(installation);
+  const second = admission(installation, { practiceId, question: 'And last week?' });
+  store.admit(second, NOON + 1_000);
+  store.admit(admission(installation, { actorMembershipId: 'membership_other', question: 'Theirs?' }), NOON + 2_000);
+  store.admit(admission(installation, { agentId: 'agent_other', question: 'Another Agent?' }), NOON + 3_000);
+  const query = { organizationId: first.organizationId, actorMembershipId: first.actorMembershipId, agentId: first.agentId };
+  assert.deepEqual(store.list(query, NOON + 4_000), [
+    { runToken: second.runToken, practiceId, turn: 2, status: 'admitted', question: 'And last week?', createdAt: NOON + 1_000 },
+    { runToken: first.runToken, practiceId, turn: 1, status: 'answered', question: 'Who is overdue?', createdAt: NOON },
+  ]);
+  assert.deepEqual(store.list({ ...query, organizationId: 'org_other' }, NOON + 4_000), []);
+  assert.deepEqual(store.list(query, NOON + AN_HOUR).map(({ turn }) => turn), [2], 'the first turn\'s hour is over');
+  assert.deepEqual(store.list(query, NOON + AN_HOUR + 1_000), [], 'nothing after the hour');
+  for (let run = 0; run < 25; run += 1) store.admit(admission(installation, { question: `Q${run}?` }), NOON + 10_000 + run);
+  const listed = store.list(query, NOON + 20_000);
+  assert.equal(listed.length, 20, 'the newest 20, which the result budget is measured for');
+  assert.equal(PRACTICE_LISTED_RUNS, 20);
+  assert.equal(listed[0]!.question, 'Q24?', 'newest first');
 });
