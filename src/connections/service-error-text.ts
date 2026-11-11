@@ -12,6 +12,9 @@ const REDACTED = '[redacted]';
  *
  * A credential under 32 characters in plain prose, with no field name, header, URL or known
  * prefix around it, has no shape to find and stays.
+ *
+ * The caller bounds the text. A few rules take quadratic time within one long run: about 3 ms
+ * at 2,000 characters, but about 100 ms at 16,000.
  */
 export function scrubServiceErrorText(text: string, secrets: readonly string[]): string {
   const redacted = redactConnectionText(decoded(text), secrets).replaceAll(CREDENTIAL_REPLACEMENT, REDACTED);
