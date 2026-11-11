@@ -146,8 +146,9 @@ export function runReviewPseudonymizer(key: Uint8Array): (slackUserId: string) =
  * The record a port stores. Every string goes through, in order: the link
  * rules for website logins and the hosted browser, which must see each URL
  * whole; each key the run saved with save_connection_key or tried with
- * try_connection; each saved website login's username; recognizable
- * credentials; every Slack user ID; then its cap. File notes keep only a name
+ * try_connection; each saved website login's username, except in the
+ * record's fixed tokens (run, Agent and model IDs, tool names, an error's
+ * class); recognizable credentials; every Slack user ID; then its cap. File notes keep only a name
  * and size; and a Slack List or canvas tool's output and error, and a Slack
  * read's result from another conversation, are omitted. The builder adds no
  * Slack team, channel, thread or message IDs. Past the record cap the oldest
@@ -160,10 +161,11 @@ export function buildRunReviewRecord(
   let truncated = input.truncated;
   const keys = savedConnectionKeys(input.steps);
   const logins = websiteLoginScrub(input.websiteLogins);
-  const field = (text: string, browserStep = false): string => {
+  const field = (text: string, kind: FieldKind = 'text'): string => {
+    const browserStep = kind === 'browser';
     const linked = logins.links(text, browserStep);
     const keyed = keys.reduce((value, key) => value.split(key).join(CREDENTIAL_REPLACEMENT), linked);
-    const named = logins.usernames(keyed, { browserStep, cut: text.length >= COLLECTED_FIELD_CHARS });
+    const named = kind === 'fixed' ? keyed : logins.usernames(keyed, { browserStep, cut: text.length >= COLLECTED_FIELD_CHARS });
     const scrubbed = redactCredentialLikeContent(named).replace(SLACK_USER_ID, (id) => pseudonymOf(id));
     const capped = capUtf8(scrubbed, RUN_REVIEW_FIELD_BYTES);
     if (capped.length < scrubbed.length) truncated = true;
@@ -173,11 +175,11 @@ export function buildRunReviewRecord(
     notes.map((note) => ({ name: field(note.name), ...(note.size === undefined ? {} : { size: note.size }) }));
   const record: RunReviewRecordV1 = {
     format: RUN_REVIEW_RECORD_FORMAT,
-    runId: field(input.runId),
+    runId: field(input.runId, 'fixed'),
     recordedAt: input.recordedAt,
     surface: input.surface,
-    agentId: field(input.agentId),
-    ...(input.model === undefined ? {} : { model: field(input.model) }),
+    agentId: field(input.agentId, 'fixed'),
+    ...(input.model === undefined ? {} : { model: field(input.model, 'fixed') }),
     trigger: {
       author: input.trigger.author === 'routine' ? 'routine' : pseudonymOf(input.trigger.author),
       text: field(input.trigger.text),
@@ -199,21 +201,21 @@ export function buildRunReviewRecord(
     })),
     steps: input.steps.map((step): RunReviewStep => {
       if (step.kind !== 'tool') return { kind: step.kind, text: field(step.text) };
-      const browserStep = BROWSER_TOOLS.has(step.name);
+      const kind: FieldKind = BROWSER_TOOLS.has(step.name) ? 'browser' : 'text';
       return {
         kind: 'tool',
-        name: field(step.name),
-        input: field(keptInput(step.name, step.input), browserStep),
-        ...(step.output === undefined ? {} : { output: field(keptOutput(step.name, step.output), browserStep) }),
+        name: field(step.name, 'fixed'),
+        input: field(keptInput(step.name, step.input), kind),
+        ...(step.output === undefined ? {} : { output: field(keptOutput(step.name, step.output), kind) }),
         ...(step.error === undefined
           ? {}
-          : { error: field(sharingUnknownTool(step.name) ? OTHER_CONVERSATION_OMITTED : step.error, browserStep) }),
+          : { error: field(sharingUnknownTool(step.name) ? OTHER_CONVERSATION_OMITTED : step.error, kind) }),
         ...(step.durationMs === undefined ? {} : { durationMs: step.durationMs }),
       };
     }),
     ...(input.answer === undefined ? {} : { answer: field(input.answer) }),
     outcome: input.outcome,
-    ...(input.error ? { error: { class: field(input.error.class), message: field(input.error.message) } } : {}),
+    ...(input.error ? { error: { class: field(input.error.class, 'fixed'), message: field(input.error.message) } } : {}),
     timings: input.timings,
     truncated: false,
     source: input.source,
@@ -232,6 +234,13 @@ function sharingUnknownTool(toolName: string): boolean {
 }
 
 const BROWSER_TOOLS: ReadonlySet<string> = new Set(BROWSER_TOOL_NAMES);
+
+/**
+ * What a field holds: text, a browser step's text, or a fixed token of the
+ * record. A username that is an ordinary word would break a token, and
+ * `agentId` files the copy, so tokens skip the username rule.
+ */
+type FieldKind = 'text' | 'browser' | 'fixed';
 
 /** The tools whose input carries a key the person pasted. */
 const CONNECTION_KEY_TOOLS: ReadonlySet<string> = new Set(['save_connection_key', 'try_connection']);

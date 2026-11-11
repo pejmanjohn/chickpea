@@ -312,6 +312,26 @@ test('usernames match whole words, and one under four characters only as a whole
   assert.equal(short.answer, 'bob approved it.');
 });
 
+test('a username that is a word of the record\'s IDs, model, tool names or error class leaves them whole', () => {
+  const record = copy({
+    runId: 'run_billing',
+    agentId: 'agent_billing',
+    model: 'billing-model-1',
+    steps: [{ kind: 'tool', name: 'billing_lookup', input: '{"for":"billing"}', output: 'billing is current', error: 'billing timed out' }],
+    error: { class: 'billing_error', message: 'billing failed' },
+    answer: 'The billing run finished.',
+  }, { hosts: [], usernames: ['billing'] });
+  assert.equal(record.runId, 'run_billing');
+  assert.equal(record.agentId, 'agent_billing', 'Cloud files the copy under this Agent');
+  assert.equal(record.model, 'billing-model-1');
+  assert.deepEqual(record.error, { class: 'billing_error', message: '[credential redacted] failed' });
+  assert.deepEqual(record.steps[0], {
+    kind: 'tool', name: 'billing_lookup', input: '{"for":"[credential redacted]"}',
+    output: '[credential redacted] is current', error: '[credential redacted] timed out',
+  });
+  assert.equal(record.answer, 'The [credential redacted] run finished.');
+});
+
 test('a username leaves prose written without spaces between words', () => {
   const record = copy({
     trigger: { author: 'U012ABCDEF3', text: 'ユーザー名Ops.Synthetic@example.comでログインしてください', files: [] },
