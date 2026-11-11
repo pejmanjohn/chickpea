@@ -36,7 +36,10 @@ const URL_CHAR = String.raw`[^\s"<>\\]`;
 const ESCAPED_ASCII = String.raw`\\+u00(?:26|27|2[bB]|3[dD])`;
 // A slash, which JSON may escape with a backslash: PHP does by default.
 const SLASH = String.raw`\\*\/`;
-const HOST_START = String.raw`(?<![\p{L}\p{N}.@/_-])`;
+// Not inside a word, an email address or a path. A protocol-relative `//` may come before it.
+const HOST_START = String.raw`(?<![\p{L}\p{N}.@_-])(?<!(?:^|[^/])\/)`;
+// A host as a link writes one: a name or a bracketed IP address.
+const READABLE_HOST = /^(?:[\p{L}\p{N}.-]+|\[[\da-f:.]+\])$/iu;
 
 const MORE_URL = String.raw`${URL_CHAR}*(?:(?:${ESCAPED_ASCII}|\\+\/)${URL_CHAR}*)*`;
 const SCHEME_URL = String.raw`\b(?:https?|wss?):${SLASH}${SLASH}${URL_CHAR}${MORE_URL}`;
@@ -76,8 +79,9 @@ export interface WebsiteLoginScrub {
    * same text holds it. Every URL loses its userinfo. A URL on a login's site,
    * or any URL in a browser step, keeps its scheme, host and path, loses
    * token-shaped path segments, and loses everything from its first `;`,
-   * `?` or `#`. A link inside another one's path or query, as a Slack link's
-   * label or a redirect holds it, goes by its own rule.
+   * `?` or `#`, as does a URL whose host cannot be read as one. A link inside
+   * another one's path or query, as a Slack link's label or a redirect holds
+   * it, goes by its own rule.
    */
   links(text: string, browserStep: boolean): string;
   /**
@@ -108,7 +112,8 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
     const raw = matched.replace(/\\+\//g, '/');
     const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(raw);
     const afterScheme = scheme ? raw.slice(scheme[0].length) : raw;
-    const authorityEnd = afterScheme.search(/[/;?#]/);
+    // `|` ends a host too: no host holds one, and a Slack link's label may follow it.
+    const authorityEnd = afterScheme.search(/[/;?#|]/);
     const authority = authorityEnd < 0 ? afterScheme : afterScheme.slice(0, authorityEnd);
     const rest = authorityEnd < 0 ? '' : afterScheme.slice(authorityEnd);
     const host = authority.slice(authority.lastIndexOf('@') + 1);
@@ -120,7 +125,10 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
     if (browserLink(scheme?.[1], hostname, path, suffix)) return BROWSER_LINK_OMITTED;
     const start = `${scheme?.[0] ?? ''}${host}`;
     // What follows the host can hold another link, as a Slack link's label or a redirect's query does.
-    if (!browserStep && !loginSite(hostname)) return `${start}${scrubLinks(rest, browserStep)}`;
+    // A host that cannot be read as one may hide a login's site, so its link goes by the login rule.
+    if (!browserStep && READABLE_HOST.test(hostname) && !loginSite(hostname)) {
+      return `${start}${scrubLinks(rest, browserStep)}`;
+    }
     const kept = path.split('/').map((segment) => tokenShaped(segment) ? URL_PART_OMITTED : segment).join('/');
     return `${start}${scrubLinks(kept, browserStep)}${suffix ? `?${URL_PART_OMITTED}` : ''}`;
   };

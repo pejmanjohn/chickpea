@@ -176,6 +176,29 @@ test('in prose and Slack text a URL keeps its \' and |, a link inside another go
   assert.equal(record.answer, `Watch at ${BROWSER_LINK_OMITTED} or ${BROWSER_LINK_OMITTED} now`);
 });
 
+test('a link right after another link\'s host, behind //, or behind a host no site has, keeps no token', () => {
+  const record = copy({
+    trigger: {
+      author: 'U012ABCDEF3',
+      text: '<https://go.example.org|https://billing.example.com/cb?code=SYNTHCODE123> ' +
+        '<https://go.example.org|billing.example.com/cb?code=SYNTHCODE456> ' +
+        'https://go.example.org\'billing.example.com/cb?code=SYNTHCODE789 ' +
+        'https://ops\'x:SYNTHPASS@billing.example.com/cb?code=SYNTHCODE678 ' +
+        'https://go.example.org/r?next=//billing.example.com/cb?code=SYNTHCODE012 and //ledger.example.net/r?t=SYNTHCODE345 ' +
+        '<https://go.example.org|Report?id=5>',
+      files: [],
+    },
+  });
+  assert.deepEqual(kept(record, ['SYNTHCODE', 'SYNTHPASS']), []);
+  assert.equal(record.trigger.text,
+    '<https://go.example.org|https://billing.example.com/cb?[omitted]> ' +
+    '<https://go.example.org|billing.example.com/cb?[omitted]> ' +
+    'https://go.example.org\'billing.example.com/cb?[omitted] ' +
+    'https://billing.example.com/cb?[omitted] ' +
+    'https://go.example.org/r?next=//billing.example.com/cb?[omitted] and //ledger.example.net/r?[omitted] ' +
+    '<https://go.example.org|Report?id=5>');
+});
+
 test('a link keeps no token behind JSON-escaped slashes or a host that ends in a dot', () => {
   const record = copy({
     context: [{
