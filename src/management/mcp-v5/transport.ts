@@ -1,4 +1,6 @@
 import {
+  PROTOCOL_VERSION_META_KEY,
+  isJSONRPCErrorResponse,
   isJSONRPCRequest,
   isJSONRPCResultResponse,
   type JSONRPCMessage,
@@ -33,10 +35,21 @@ const NO_CARDS: CardRefusals = { session: () => false, tools: new Set() };
  *   result (`cardRefusal`), and that tool's listed output schema names the
  *   refusal too. The SDK checks a result against its tool's own schema
  *   before it gets here, so the refusal leaves the tool as an error.
+ * - A card host's hidden 4.x tool is not found in the 5.0 error shape. The
+ *   SDK answers with a protocol error, which carries no `resultType`, and a
+ *   2026-07-28 client rejects a result without one, so a request that names
+ *   its revision gets it here. It stays an error on a card session too.
  */
-export function shapeFiveZeroResults(transport: Transport, toolNames: ReadonlySet<string>, cards: CardRefusals = NO_CARDS): void {
+export function shapeFiveZeroResults(
+  transport: Transport,
+  toolNames: ReadonlySet<string>,
+  cards: CardRefusals = NO_CARDS,
+  hiddenToolNames?: ReadonlySet<string>,
+): void {
   const toolLists = new Set<RequestId>();
   const fiveZeroCalls = new Map<RequestId, string>();
+  /** Each hidden call, and whether its request names its revision (2026-07-28 on). */
+  const hiddenCalls = new Map<RequestId, boolean>();
   const onmessage = transport.onmessage;
   transport.onmessage = (message, extra) => {
     try {
@@ -45,6 +58,10 @@ export function shapeFiveZeroResults(transport: Transport, toolNames: ReadonlySe
         const name = (message.params as { name?: unknown } | undefined)?.name;
         if (message.method === 'tools/call' && typeof name === 'string' && toolNames.has(name)) {
           fiveZeroCalls.set(message.id, name);
+        }
+        if (message.method === 'tools/call' && typeof name === 'string' && hiddenToolNames?.has(name)) {
+          const meta = (message.params as { _meta?: unknown } | undefined)?._meta;
+          hiddenCalls.set(message.id, typeof meta === 'object' && meta !== null && PROTOCOL_VERSION_META_KEY in meta);
         }
       }
     } catch {
@@ -56,7 +73,21 @@ export function shapeFiveZeroResults(transport: Transport, toolNames: ReadonlySe
   transport.send = (message, options) => send(shaped(message), options);
 
   function shaped(message: JSONRPCMessage): JSONRPCMessage {
-    if (!isJSONRPCResultResponse(message) || message.id === undefined) return message;
+    if (!(isJSONRPCResultResponse(message) || isJSONRPCErrorResponse(message)) || message.id === undefined) return message;
+    const namesRevision = hiddenCalls.get(message.id);
+    hiddenCalls.delete(message.id);
+    if (namesRevision !== undefined && isJSONRPCErrorResponse(message)) {
+      return { jsonrpc: '2.0', id: message.id, result: {
+        ...mcpErrorResult({
+          code: 'not_found',
+          message: 'That tool is not available.',
+          retryable: false,
+          nextStep: 'Call tools/list to see the available tools.',
+        }),
+        ...namesRevision ? { resultType: 'complete' } : {},
+      } };
+    }
+    if (!isJSONRPCResultResponse(message)) return message;
     if (toolLists.delete(message.id)) return listed(message, cards.session() ? cards.tools : NO_CARDS.tools);
     const tool = fiveZeroCalls.get(message.id);
     if (tool === undefined) return message;
