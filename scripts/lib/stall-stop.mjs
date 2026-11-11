@@ -10,9 +10,8 @@ const FORWARDED_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
 
 /** A stall window from --stall-ms or CHICKPEA_STALL_MS: whole milliseconds, 0 turns the stop off. */
 export function stallWindowMs(value) {
-  if (value === undefined || value === '') return DEFAULT_STALL_MS;
   const ms = Number(value);
-  if (!Number.isSafeInteger(ms) || ms < 0 || ms > 86_400_000) throw new Error('The stall window must be 0..86400000 ms; 0 turns the stall stop off.');
+  if (value === '' || !Number.isSafeInteger(ms) || ms < 0 || ms > 86_400_000) throw new Error('The stall window must be 0..86400000 ms; 0 turns the stall stop off.');
   return ms;
 }
 
@@ -36,40 +35,50 @@ const lastLine = (text) => text.split(/\r?\n|\r/).map((line) => line.trim()).fil
 
 /**
  * Runs a command in its own process group and passes its output through.
- * When it prints nothing on stdout or stderr for stallMs, the whole group,
- * and nothing outside it, is stopped. SIGINT, SIGTERM and SIGHUP sent to this
- * process are passed to the group. Resolves { error } for a command that
- * could not start, else { status, signal, stall }, where stall is
- * { lastLine, groupStopped } when the window ran out.
+ * The whole group, and nothing outside it, is stopped when the command prints
+ * nothing on stdout or stderr for stallMs, or when this process's parent
+ * exits, so a killed caller leaves no pass running on. SIGINT, SIGTERM and
+ * SIGHUP sent to this process are passed to the group. Resolves { error } for
+ * a command that could not start, else { status, signal, stopped }, where
+ * stopped is { reason: 'stall' | 'parent', lastLine, groupStopped }.
  */
 export async function runWithStallStop(command, args, { env = process.env, stallMs = DEFAULT_STALL_MS } = {}) {
   const child = spawn(command, args, { env, stdio: ['inherit', 'pipe', 'pipe'], detached: true });
-  const failed = await new Promise((resolve) => { child.once('spawn', () => resolve(undefined)); child.once('error', resolve); });
-  if (failed) return { error: failed };
-  const forward = (signal) => { try { process.kill(-child.pid, signal); } catch {} };
+  const forward = (signal) => { try { if (child.pid) process.kill(-child.pid, signal); } catch {} };
   for (const signal of FORWARDED_SIGNALS) process.on(signal, forward);
   // A reader that goes away (`| head`) must not end this process while it owns the group and its slot.
   // pipe() leaves the source paused when its destination fails; keep draining so the command never blocks on a full pipe.
   const ignore = () => { child.stdout.resume(); child.stderr.resume(); };
   process.stdout.on('error', ignore); process.stderr.on('error', ignore);
+  const parent = process.ppid;
   let tail = '';
-  let stall;
-  const timer = stallMs > 0 ? setTimeout(() => { stall = { lastLine: lastLine(tail), stopped: stopGroup(child.pid) }; }, stallMs) : undefined;
-  const closed = [[child.stdout, process.stdout], [child.stderr, process.stderr]].map(([stream, sink]) => {
-    stream.on('data', (chunk) => {
-      if (stall) return;
-      timer?.refresh();
-      tail = (tail + chunk).slice(-4096);
+  let stopped;
+  const stop = (reason) => { stopped ??= { reason, lastLine: lastLine(tail), groupStopped: stopGroup(child.pid) }; };
+  let timer;
+  let orphaned;
+  try {
+    const failed = await new Promise((resolve) => { child.once('spawn', () => resolve(undefined)); child.once('error', resolve); });
+    if (failed) return { error: failed };
+    timer = setTimeout(() => stop('stall'), stallMs);
+    orphaned = setInterval(() => { if (process.ppid !== parent) stop('parent'); }, 1000);
+    const closed = [[child.stdout, process.stdout], [child.stderr, process.stderr]].map(([stream, sink]) => {
+      stream.on('data', (chunk) => {
+        if (stopped) return;
+        timer.refresh();
+        tail = (tail + chunk).slice(-4096);
+      });
+      stream.pipe(sink, { end: false });
+      return new Promise((resolve) => stream.once('close', resolve));
     });
-    stream.pipe(sink, { end: false });
-    return new Promise((resolve) => stream.once('close', resolve));
-  });
-  const [status, signal] = await new Promise((resolve) => child.once('exit', (...result) => resolve(result)));
-  clearTimeout(timer);
-  // A descendant that left the group can hold the pipes open; it does not hold this run.
-  await Promise.race([Promise.all(closed), delay(DRAIN_MS, undefined, { ref: false })]);
-  child.stdout.destroy(); child.stderr.destroy();
-  for (const name of FORWARDED_SIGNALS) process.removeListener(name, forward);
-  process.stdout.removeListener('error', ignore); process.stderr.removeListener('error', ignore);
-  return { status, signal, stall: stall && { lastLine: stall.lastLine, groupStopped: await stall.stopped } };
+    const [status, signal] = await new Promise((resolve) => child.once('exit', (...result) => resolve(result)));
+    clearTimeout(timer); clearInterval(orphaned);
+    // A descendant that left the group can hold the pipes open; it does not hold this run.
+    await Promise.race([Promise.all(closed), delay(DRAIN_MS, undefined, { ref: false })]);
+    return { status, signal, stopped: stopped && { ...stopped, groupStopped: await stopped.groupStopped } };
+  } finally {
+    clearTimeout(timer); clearInterval(orphaned);
+    child.stdout.destroy(); child.stderr.destroy();
+    for (const name of FORWARDED_SIGNALS) process.removeListener(name, forward);
+    process.stdout.removeListener('error', ignore); process.stderr.removeListener('error', ignore);
+  }
 }

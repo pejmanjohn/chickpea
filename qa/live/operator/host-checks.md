@@ -140,18 +140,27 @@ removes a slot whose PID has exited and reports it as `"status":"reclaimed"`.
 
 ## Stall stop
 
-Every command run through `verify:host`, reserved or shared, runs in its own
-process group. When it prints nothing on stdout or stderr for 10 minutes, the
-wrapper stops that group (SIGTERM, then SIGKILL after 5 seconds), prints one
-`[verify:host] Stalled:` line naming the command and its last output line, and
-exits 124. Once no process of the group is left, it releases the reservation
-the normal way; if one survives, the reservation is retained for
-reconciliation. The stop reaches only that command's own group, never another
-owner's processes. SIGINT, SIGTERM and SIGHUP sent to the wrapper also reach
-the group.
+A `--shared` command, and so every `run-tests.mjs` pass and `npm run
+typecheck`, runs in its own process group. When it prints nothing on stdout or
+stderr for 10 minutes, the wrapper stops that group (SIGTERM, then SIGKILL
+after 5 seconds), prints one `[verify:host] Stalled:` line naming the command
+and its last output line, and exits 124. It stops the group the same way when
+its caller exits, so a killed caller leaves no pass running on. The stop
+reaches only that command's own group, never another owner's processes.
+SIGINT, SIGTERM and SIGHUP sent to the wrapper also reach the group.
+
+A reserved command is watched only when `--stall-ms MS` or `CHICKPEA_STALL_MS`
+sets a window, because builds and lane deploys run under the reservation and
+some print nothing for long stretches. Without one it runs as before, in the
+wrapper's own process group. A reserved full suite is still watched: each
+`run-tests.mjs` pass inside it restarts under `--shared`, inherits the
+reservation and gets the stop. A stalled reserved command releases the
+reservation the normal way once no process of its group is left; if one
+survives, the reservation is retained for reconciliation. A command nested
+under a watching `verify:host` stays in that group, so the outer stop reaches
+it.
 
 `--stall-ms MS` or `CHICKPEA_STALL_MS` sets another window, and 0 turns the
-stop off. Every `run-tests.mjs` pass runs under the wrapper, so it gets the
-stop too. A command that prints only at the end needs a longer window, such as
+stop off. A command that prints only at the end needs a longer window, such as
 the cards harness:
 `npm run verify:host -- --shared --stall-ms 1800000 -- npm run mcp-cards:harness`.

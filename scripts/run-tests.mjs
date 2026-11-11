@@ -69,6 +69,7 @@ const SLOW_FIRST = [
   'environment-registry', 'upgrade-cli', 'verification-record', 'node-installer-bootstrap',
   'flue-progressive-characterization', 'environment-preflight', 'deploy-with-epilogue',
   'live-contract-coordinator', 'environment-wait', 'chickpea-art', 'images-openai-client-workerd', 'admin-visual-fixture',
+  'verification-host-shared',
 ];
 
 const args = process.argv.slice(2);
