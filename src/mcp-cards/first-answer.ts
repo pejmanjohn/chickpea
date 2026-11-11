@@ -44,8 +44,9 @@ import {
  *
  * `busy` holds while this page has a call out or a retry due. A card that
  * mounts again has neither: its re-read follows a run it knows of with
- * get_practice_run, and asks for a press for one it does not. The run's
- * token stays in the card's own memory, never in what the host keeps.
+ * get_practice_run, and asks for a press for one it does not. The host keeps
+ * a run's token only while that run is still going when the card stops
+ * waiting (`stillAnswering`), where its model never reads it.
  */
 
 export type FirstAnswerAction = 'try_once' | 'try_fix' | 'open_slack' | 'change_something' | 'check_again';
@@ -628,9 +629,10 @@ export function presentFirstAnswer(view: FirstAnswer): Omit<Presentation<FirstAn
         : stage.before !== undefined
           ? [{ label: 'Before', text: stage.before }, { label: 'After', text: answer }]
           : [{ label: 'What it answered', text: answer }];
-      // A left-out connection's fix takes the second place; on Try it again, only until the person acts on it.
+      // A left-out connection's fix takes the second place. On Try it again the save's Undo keeps it while
+      // the card holds one, and the fix leaves once the person acts on it.
       const fix = leftOutFix(stage);
-      const second: Button<FirstAnswerAction> = fix && !(view.again && stage.acted)
+      const second: Button<FirstAnswerAction> = fix && !(view.again && (stage.acted || view.again.undoToken !== undefined))
         ? { label: fix.label, action: 'try_fix', tone: 'secondary' }
         : { label: 'Change something', action: 'change_something', tone: 'secondary' };
       return {

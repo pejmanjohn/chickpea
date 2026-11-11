@@ -290,8 +290,8 @@ test('what the card keeps says only that it offers Try it again, never an answer
   }
 });
 
-// Mutation proof: a card that reads no left-out line, or offers no fix for it, fails here.
-test('a connection the run left out is named under the answer, with its fix in place of Undo until the person acts on it', async (t) => {
+// Mutation proof: a card that reads no left-out line, offers no fix for it, or gives its fix the save's Undo's place, fails here.
+test('a connection the run left out is named under the answer; the save\'s Undo keeps its place, and a card with no Undo offers the fix', async (t) => {
   const w = await world(t, 'try-again-left-out');
   const { f, teamId } = w;
   await f.config.putConnectionAccount({
@@ -300,19 +300,31 @@ test('a connection the run left out is named under the answer, with its fix in p
     policy: { kind: 'mcp', url: 'https://mcp.docs.example/mcp', transport: 'streamable-http', authMode: 'bearer', headerNames: [], allowedTools: ['search'], discoveredTools: [{ name: 'search' }] },
   } as never, 0);
   await f.config.putAgentConnectionBinding({ agentId: AGENT, connectionAccountId: 'connection_docs', providerId: 'docs', allowedCapabilities: [], enabled: true });
-  const card = await w.saved();
-  await card.press('try_once');
-  assert.deepEqual(card.shown.blocks.slice(2), [
+  const LEFT_OUT = [
     { kind: 'note', text: 'It read Stripe.' },
     { kind: 'note', text: 'Docs MCP wasn\'t used: none of its tools are marked as ones that only read.', tone: 'warn' },
-  ]);
+  ];
+  const saved = await w.saved();
+  await saved.press('try_once');
+  assert.deepEqual(saved.shown.blocks.slice(2), LEFT_OUT);
+  assert.deepEqual(saved.labels(), ['Try it again (primary)', 'Undo (secondary)'], 'the line, and the save\'s Undo where it was');
+  await saved.press('undo');
+  assert.equal(saved.shown.title, 'Undid the change');
+
+  // A reopened card holds no Undo: the fix is its second button, until the person acts on it.
+  const card = cardHost(AGENT_CARD, asChatGpt(w.call), w.clock);
+  const result = await w.call('propose_agent_change', { agentId: AGENT, version: await w.version(), change: { description: 'Chases invoices.' } });
+  await card.dispatch({ type: 'result', result, now: w.clock.now, kept: { told: [], outcome: { kind: 'done', summary: 'Saved Invoice Chaser.', practice: true } } });
+  w.clock.now += 3 * 60_000;
+  await card.press('try_once');
+  assert.deepEqual(card.shown.blocks.slice(2), LEFT_OUT);
   assert.deepEqual(card.labels(), ['Try it again (primary)', 'Mark Docs MCP\'s read tools (secondary)']);
   assert.equal(JSON.stringify({ ...card.shown, avatarUrl: undefined }).includes('connection_docs'), false);
   await card.press('try_fix');
   assert.deepEqual(card.effects.at(-1), { type: 'message', sent: 'Mark Docs MCP\'s read tools for Invoice Chaser.' });
   assert.deepEqual(card.calls('update_connection'), [], 'the card never makes that change itself');
   assert.deepEqual(card.shown.blocks.at(-1), { kind: 'note', text: 'Finish it in the chat, then try again.' });
-  assert.deepEqual(card.labels(), ['Try it again (primary)', 'Undo (secondary)'], 'the save\'s Undo comes back');
+  assert.deepEqual(card.labels(), ['Try it again (primary)', 'Change something (secondary)']);
   // The host refused the message: the fix is offered again, with no note that it was acted on.
   await card.dispatch({ type: 'refused', effect: { type: 'message', sent: 'Mark Docs MCP\'s read tools for Invoice Chaser.' }, now: w.clock.now });
   assert.equal(card.shown.blocks.some((block) => block.kind === 'note' && block.text.startsWith('Finish it')), false);
@@ -396,6 +408,41 @@ test('a refusal or a failed run shows its own sentence on Try it again, as ChatG
   assert.deepEqual(waiting.labels(), ['Check again (primary)', 'Undo (secondary)']);
   assert.equal(told(waiting), 'The person pressed "Try it again" for the Agent "Invoice Chaser" (@invoices) on the card, but its answer did not come back in time.');
   assert.deepEqual(unlisted.runs.starts, []);
+});
+
+// Mutation proof: an Agent card that keeps the run's token once Try it again settles fails here.
+test('a Try it again run still going keeps its token beside the Saved card\'s title, and once it answers the card keeps only that it offers Try it again', async (t) => {
+  const w = await world(t, 'try-again-still');
+  fastTime(t);
+  await firstAnswer(w);
+  w.clock.now += 60_000;
+  const card = await w.saved();
+  w.runs.outcome = { status: 'running', failure: null, result: null };
+  card.hold = (made) => made.tool === 'get_practice_run';
+  await card.press('try_once');
+  w.clock.now += GIVE_UP_MS;
+  await card.answer();
+  const runToken = w.runs.runs.at(-1)!.view.runToken;
+  assert.deepEqual([card.shown.blocks, card.labels()], [[{ kind: 'text', text: 'Still working on it.' }], ['Check again (primary)', 'Undo (secondary)']]);
+  const kept = keptState(card.state, cardVersions('agent-card').at(-1)!);
+  assert.deepEqual(kept.privateContent.card.outcome,
+    { kind: 'checking', runToken, agentId: AGENT, name: 'Invoice Chaser', handle: 'invoices', summary: 'Saved Invoice Chaser.' });
+  assert.equal(kept.modelContent.includes(runToken), false, 'the model never reads the token');
+
+  // The chat reopens: one read of that run, no Undo, and Check again reads it again. Nothing starts a run.
+  const reopened = cardHost(AGENT_CARD, asChatGpt(w.call), w.clock);
+  const result = await w.call('propose_agent_change', { agentId: AGENT, version: await w.version(), change: { description: 'Chases invoices.' } });
+  await reopened.dispatch({ type: 'result', result, now: w.clock.now, kept: memoryOf(card.state) });
+  assert.deepEqual(reopened.calls().map(({ tool, args }) => [tool, args]), [['get_practice_run', { runToken }]]);
+  assert.deepEqual([reopened.shown.blocks, reopened.labels()], [[{ kind: 'text', text: 'Still working on it.' }], ['Check again (primary)']]);
+  w.runs.outcome = answered(SECOND);
+  await reopened.press('check_again');
+  assert.deepEqual(panes(reopened), { kind: 'panes', panes: [{ label: 'Before', text: FIRST_SHOWN }, { label: 'After', text: SECOND_SHOWN }] });
+  assert.deepEqual(reopened.labels(), ['Try it again (primary)', 'Change something (secondary)']);
+  assert.deepEqual([reopened.calls('practice_agent').length, w.runs.starts.length], [0, 2], 'the first answer and the one Try it again: no run of the reopened card\'s');
+  const after = keptState(reopened.state, cardVersions('agent-card').at(-1)!);
+  assert.deepEqual(after.privateContent.card.outcome, { kind: 'done', summary: 'Saved Invoice Chaser.', practice: true });
+  assert.equal(JSON.stringify(after).includes(runToken), false, 'once it answers, no token is kept');
 });
 
 /**
