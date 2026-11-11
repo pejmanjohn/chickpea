@@ -38,6 +38,12 @@ A new Meta app starts in Development mode, and only people with a role on the
 app (Admin, Developer, or Tester) can grant its permissions. Add each person
 who will sign in from Chickpea to the app first.
 
+Reporting tools answer for one approved ad account per call. Besides
+campaign reporting and insights, they cover the account's change history,
+delivery errors, creatives, custom audiences and custom conversions. Their
+optional filters for particular campaigns, ads, objects or people stay
+unavailable, so each answers for the whole account.
+
 The tool catalog is gated by the schemas returned by the latest Meta discovery.
 Chickpea shows only tools whose current schemas pass its safety checks. The
 current catalog supports changes to existing ad sets through

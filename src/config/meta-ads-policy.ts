@@ -22,8 +22,13 @@ export const META_ADS_WRITE_TOOL_EFFECTS = {
 
 /** Tools reviewed against Meta's official Ads MCP documentation. */
 export const META_ADS_REVIEWED_TOOL_EFFECTS = {
+  ads_account_get_activity_logs: 'read',
+  ads_get_ad_account_custom_audiences: 'read',
   ads_get_ad_accounts: 'read',
   ads_get_ad_entities: 'read',
+  ads_get_creatives: 'read',
+  ads_get_customconversions: 'read',
+  ads_get_errors: 'read',
   ads_get_field_context: 'read',
   ads_get_opportunity_score: 'read',
   ads_insights_advertiser_context: 'read',
@@ -145,10 +150,22 @@ const META_ADS_HELPER_RUNTIME_ARGUMENTS: Readonly<Record<string, readonly string
  * entity filters whose names end in `_id`/`_ids`. Entity-filter semantics are
  * not used as account-scope evidence: those arguments remain unavailable at
  * runtime so callers can only target the exact constrained `ad_account_id`.
+ *
+ * The lists for the activity log, errors, creatives, custom audiences and
+ * custom conversions reads come from Meta's tool descriptions, which name no
+ * arguments, not from a live schema. Each names one argument per filter its
+ * description mentions; any other ID-shaped argument keeps the tool
+ * unavailable. The activity log also lists `oid` and `uid`, Graph's names for
+ * its object and user filters, which the ID-shape check would not catch.
  */
 const META_ADS_NON_ACCOUNT_ID_ARGUMENTS = {
+  ads_account_get_activity_logs: ['client_conversation_id', 'object_id', 'oid', 'user_id', 'uid'],
+  ads_get_ad_account_custom_audiences: ['client_conversation_id'],
   ads_get_ad_accounts: [],
   ads_get_ad_entities: ['client_conversation_id', 'object_ids'],
+  ads_get_creatives: ['client_conversation_id'],
+  ads_get_customconversions: ['client_conversation_id'],
+  ads_get_errors: ['client_conversation_id', 'entity_ids'],
   ads_get_field_context: [],
   ads_get_opportunity_score: ['client_conversation_id'],
   ads_insights_advertiser_context: ['client_conversation_id', 'entity_ids'],
