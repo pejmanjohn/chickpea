@@ -368,3 +368,148 @@ test('the same mention delivered as app_mention and as message is one turn, hand
     assert.equal(worker.store.handed.length, 1);
   }, { env: STORE_PATH });
 });
+
+/** The turns the store commits, in order, from now on. */
+function commits(worker: DirectWorker): string[] {
+  const committed: string[] = [];
+  const admitCanonical = worker.stores.slack.admitCanonical.bind(worker.stores.slack);
+  worker.stores.slack.admitCanonical = (input, ...rest) => {
+    if (input.turnJob) committed.push(input.turnJob.id);
+    return admitCanonical(input, ...rest);
+  };
+  return committed;
+}
+
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const LATER_REPLY = { ...REPLY, ts: '6000.000300', text: 'and Tuesday?' };
+
+// Defects caught (security delta review, finding 1): a delivery that waited
+// in its thread's order admitted on the recovery gate, installation and
+// credentials it read before the wait, so recovery, or a revoked
+// installation, does not stop it.
+test("a delivery that waited in its thread's order admits on the gate and installation as they are after the wait", async (t) => {
+  const changes: Array<[string, (worker: DirectWorker) => void]> = [
+    ['recovery_only', (worker) => {
+      const control = worker.stores.identity.getAuthControl()!;
+      worker.stores.identity.updateAuthControl({ expectedRevision: control.revision, healthGate: 'recovery_only' });
+    }],
+    ['installation', (worker) => {
+      const installation = worker.stores.config.getWorkspaceInstallation('T1')!;
+      worker.stores.config.updateWorkspaceInstallation('T1', { health: 'revoked' }, installation.revision);
+    }],
+  ];
+  for (const [reason, change] of changes) {
+    await t.test(reason, async (t) => {
+      const records = logged(t);
+      let releaseFirstLookup!: () => void;
+      const firstLookup = new Promise<void>((resolve) => { releaseFirstLookup = resolve; });
+      let lookups = 0;
+      let arrived = 0;
+      await withDirectWorker(t, async (worker) => {
+        const first = deliver(worker, worker.event(DM));
+        await settled(() => lookups === 1);
+        const second = deliver(worker, worker.event(REPLY));
+        await settled(() => arrived === 2);
+        // The reply is in its thread's order, behind the first message's Slack read.
+        await pause(50);
+        change(worker);
+        releaseFirstLookup();
+        await Promise.all([first, second]);
+        assert.equal(lookups, 1, 'the reply made no Slack call');
+        assert.deepEqual(turns(worker), ['msg:D1:6000.000100'], 'the reply was not admitted');
+        assert.deepEqual(records.admissions.filter(({ outcome }) => outcome === 'refused').map(({ reason }) => reason), [reason]);
+      }, {
+        env: { ...STORE_PATH, SLACK_THREAD_RUNNER: undefined },
+        admission: (delivery, store) => {
+          arrived += 1;
+          return store.admitSlackDelivery(delivery);
+        },
+        slack: async (method) => {
+          if (method === 'users.info' && ++lookups === 1) await firstLookup;
+          return undefined;
+        },
+      });
+    });
+  }
+});
+
+// Defect caught (Fable review, finding 4): a delivery taking its place in its
+// thread's order only after its credential read, so a reply whose read is
+// quicker overtakes its thread's first message and is dropped as a reply to
+// an unknown thread.
+test("a delivery takes its place in its thread's order when it reaches the store, before its credential read", async (t) => {
+  let releaseFirstRead!: () => void;
+  const firstRead = new Promise<void>((resolve) => { releaseFirstRead = resolve; });
+  let reads = 0;
+  let arrived = 0;
+  // Set as the store takes the first message, past the Worker's signature check.
+  let delayNext = false;
+  await withDirectWorker(t, async (worker) => {
+    const committed = commits(worker);
+    const identity = worker.stores.identity;
+    const read = identity.getActiveSlackCredentialRevision.bind(identity);
+    // The first message's credential read is slow; the Worker's own reads, and the reply's, are not.
+    identity.getActiveSlackCredentialRevision = ((identityId: string) => {
+      if (!delayNext) return read(identityId);
+      delayNext = false;
+      reads += 1;
+      return firstRead.then(() => read(identityId));
+    }) as typeof identity.getActiveSlackCredentialRevision;
+    const first = deliver(worker, worker.event(DM));
+    await settled(() => reads === 1);
+    const second = deliver(worker, worker.event(REPLY));
+    await settled(() => arrived === 2);
+    await pause(50);
+    releaseFirstRead();
+    await Promise.all([first, second]);
+    assert.deepEqual(committed, ['msg:D1:6000.000100', 'msg:D1:6000.000200'], 'the reply was admitted after its first message');
+  }, {
+    env: { ...STORE_PATH, SLACK_THREAD_RUNNER: undefined },
+    admission: (delivery, store) => {
+      arrived += 1;
+      if (arrived === 1) delayNext = true;
+      return store.admitSlackDelivery(delivery);
+    },
+  });
+});
+
+// Defects caught (security delta review, finding 2): a Slack rate limit
+// holding a thread's order while Slack's client waits out Retry-After, so the
+// thread's later messages wait behind it; and the rate limit not logged.
+test("a Slack rate limit fails its call at once and does not hold its thread's later messages", async (t) => {
+  const records = logged(t);
+  let lookups = 0;
+  await withDirectWorker(t, async (worker) => {
+    await deliver(worker, worker.event(DM));
+    const committed = commits(worker);
+    const limited = deliver(worker, worker.event(REPLY));
+    await settled(() => lookups === 2);
+    const later = deliver(worker, worker.event(LATER_REPLY));
+    await settled(() => committed.includes('msg:D1:6000.000300'));
+    await Promise.all([limited, later]);
+    assert.deepEqual(committed, ['msg:D1:6000.000300'], 'the rate-limited reply was not admitted; the next one was');
+    assert.equal(worker.failures.filter((line) => line.includes('Slack event intake failed')).length, 1,
+      "the rate-limited message fails as on the Worker's path");
+    assert.deepEqual(records.admissions.slice(1).map(({ outcome, rateLimited }) => ({ outcome, rateLimited })), [
+      { outcome: 'failed', rateLimited: 1 },
+      { outcome: 'processed', rateLimited: 0 },
+    ]);
+  }, {
+    env: { ...STORE_PATH, SLACK_THREAD_RUNNER: undefined },
+    slack: (method) => method === 'users.info' && ++lookups === 2
+      ? new Response('', { status: 429, headers: { 'retry-after': '3' } })
+      : undefined,
+  });
+});
+
+// Defect caught (Fable review, finding 6): a fallback that fails before its
+// admission starts logged as the store's path.
+test("a fallback that fails before it admits is logged as the fallback's", async (t) => {
+  const records = logged(t);
+  await withDirectWorker(t, async (worker) => {
+    worker.stores.config.getWorkspaceInstallation = () => { throw new Error('the store cannot answer'); };
+    await deliver(worker, worker.event(DM));
+    assert.equal(worker.failures.length, 1);
+    assert.deepEqual(records.summaries.map(({ path, reason }) => ({ path, reason })), [{ path: 'fallback', reason: 'method_missing' }]);
+  }, { env: STORE_PATH, admission: 'missing' });
+});

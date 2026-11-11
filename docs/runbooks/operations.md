@@ -362,10 +362,16 @@ Before you turn it on, know these four points:
 - **The store reads Slack.** Admission reads the sender, and for a Channel the
   conversation, with the installation's bot token from the state store
   instead of the Worker. The reads count against the same read budget.
-- **A thread's messages keep their order.** The store admits one thread's
-  messages in the order they reached it, and different threads side by side.
-  A Slack read that hangs holds that thread's later messages for up to
-  10 seconds, the Slack client's timeout.
+- **A thread's new messages keep their order.** The store admits one
+  thread's messages in the order they reached it, and different threads side
+  by side. A message checks the recovery gate and the installation, and
+  reads the bot's credentials, when its turn in the thread comes. A Slack
+  call that hangs holds that thread's later messages for up to 10 seconds,
+  the Slack client's timeout. A Slack rate limit does not hold them: the
+  store does not wait out Slack's `Retry-After`, and the rate-limited
+  message fails as it does on the Worker's path once that wait ends.
+  `slack_store_admission` counts it in `rateLimited`. Edits and deletes are
+  not ordered with their message's thread, as on the Worker's path.
 - **A store on the previous code falls back.** After a deploy that brings the
   store's new method, a store still in memory runs the previous code for up
   to 5 minutes, and the Worker's call to it fails. The Worker then admits that

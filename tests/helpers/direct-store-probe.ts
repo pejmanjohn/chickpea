@@ -5,7 +5,7 @@ import vm from 'node:vm';
 import ts from 'typescript';
 
 import { wakeSlackAgentObject } from '../../src/agents/turn-input.ts';
-import { directSlackExecution, processDirectSlackEvent } from '../../src/channels/slack.ts';
+import { processDirectSlackEvent } from '../../src/channels/slack.ts';
 import { deploymentTenancy, installationOwnershipOf } from '../../src/config/installation-scope.ts';
 import type { PlatformEnv } from '../../src/config/state-backend.ts';
 import type { StateRpcResult } from '../../src/config/state-rpc.ts';
@@ -92,7 +92,6 @@ class StoreProbe { ${[
     resolveSlackInstallationCredentials,
     slackInstallationCredentialId,
     SlackCredentialRecoveryOnlyError,
-    directSlackExecution,
     processDirectSlackEvent,
     receiptRunnerWake,
     threadRunnerStub,

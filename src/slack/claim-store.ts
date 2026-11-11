@@ -292,12 +292,7 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
    * on the request path; nothing here changes what the Worker admits.
    */
   noteDelivery?(note: SlackDeliveryNote): Promise<void>;
-  /**
-   * Cloudflare, the direct path with CHICKPEA_SLACK_ADMISSION=store: the
-   * state store admits a verified `message` or `app_mention` on its own
-   * stores (TagStateStore.admitSlackDelivery). `fallback` when the store
-   * could not take the call: the Worker then admits it over the store's RPCs.
-   */
+  /** CHICKPEA_SLACK_ADMISSION=store: the store admits it (admitSlackDelivery); on `fallback` the Worker does. */
   admitDelivery?(delivery: SlackDirectDelivery): Promise<SlackDirectDeliveryAdmission>;
   /**
    * Cloudflare, a thread runner: Chickpea's run decided to hand its root DM

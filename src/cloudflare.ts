@@ -351,7 +351,6 @@ import {
   processGatewayViewSubmission,
   processGatewaySlackEnvelope,
   processDirectSlackEvent,
-  directSlackExecution,
   processSlackAgentAsks,
   processSlackFrontDeskHandoff,
   admitSetupWake,
@@ -1818,11 +1817,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     return result;
   }
 
-  /**
-   * A turn just admitted here: hold this store for a person's turn, hand the
-   * turn to its runner with its first status, and arm the alarm for what is
-   * left (admitSlackTurn, admitSlackDelivery).
-   */
+  /** A just-admitted turn: hold this store, hand the turn over with its first status, arm the alarm. */
   private async afterSlackAdmission(turnJob: TurnJob): Promise<void> {
     // A person's turn opens the keep-warm window; the host's own turns, an
     // Agent's ask and a setup wake, do not.
@@ -2510,15 +2505,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
   }
 
   /**
-   * The direct path's admission in one call (CHICKPEA_SLACK_ADMISSION=store):
-   * the Worker verified a direct installation's `message` or `app_mention`,
-   * and this store admits it on its own stores, as its inbox drain admits a
-   * gateway delivery. In one store turn it refuses a recovery-only or
-   * mismatched installation and keeps the receipt time. Then it wakes the
-   * runner, admits the delivery once its thread's earlier deliveries are
-   * admitted, and gives each turn admitSlackTurn's tail. Held by this
-   * object's waitUntil, so a caller that ends first does not stop it. A
-   * failure answers `ok: false`; nothing throws.
+   * CHICKPEA_SLACK_ADMISSION=store: admit a direct installation's verified
+   * message on this store's own stores. On arrival it checks the gate and the
+   * installation and takes its place in its thread's order; in that place it
+   * checks again and reads the credentials. Held by waitUntil; never throws.
    */
   async admitSlackDelivery(delivery: SlackDirectDelivery): Promise<StateRpcResult<SlackDirectDeliveryResult>> {
     const admitting = this.admitDirectDelivery(delivery);
@@ -2534,7 +2524,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     const hosted = deploymentTenancy(env) === 'installation';
     // Every store call admission makes is local; one over RPC would be this store calling itself.
     const calls = new StateRpcSummary('store_admission');
-    const record = { turns: 0, orderWaitMs: 0 };
+    const record = { turns: 0, orderWaitMs: 0, rateLimited: 0 };
     const answer = (result: StateRpcResult<SlackDirectDeliveryResult>) => {
       emitRuntimeLatency('slack_store_admission', {
         outcome: result.ok ? result.value.outcome : 'failed',
@@ -2546,94 +2536,97 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       });
       return result;
     };
-    const checked = this.call((stores) => {
+    const refusal = (reason: 'recovery_only' | 'installation'): StateRpcResult<SlackDirectDeliveryResult> =>
+      ({ ok: true, value: { outcome: 'refused', reason } });
+    const serving = (stores: TagStateStores) => {
       if (stores.identity.getAuthControl()?.healthGate === 'recovery_only') return 'recovery_only' as const;
       const installation = stores.config.getWorkspaceInstallation(workspaceId);
       if (!installation || installation.transportMode !== 'direct' || installation.health === 'revoked' ||
           (installation.appId && installation.appId !== appId) || (hosted && !installation.appId)) return 'installation' as const;
-      return {
+      return installation;
+    };
+    const checked = this.call((stores) => {
+      const installation = serving(stores);
+      return typeof installation === 'string' ? installation : {
         installation,
         releaseReceipt: Number.isFinite(receivedAt) ? stores.turnJobs.noteReceipt(eventId, receivedAt) : undefined,
         resolveIdentity: this.createAlarmIdentityResolver(stores),
       };
     });
     if (!checked.ok) return answer(checked);
-    if (typeof checked.value === 'string') return answer({ ok: true, value: { outcome: 'refused', reason: checked.value } });
-    const { installation: checkedInstallation, releaseReceipt, resolveIdentity } = checked.value;
+    if (typeof checked.value === 'string') return answer(refusal(checked.value));
+    const { installation: arrived, releaseReceipt, resolveIdentity } = checked.value;
+    // In the check's synchronous turn: the thread's order is arrival order.
+    const place = this.directAdmissions.enter(slackEventConversationKey(event));
+    const enteredAt = Date.now();
     const stores = this.stores!;
-    const envelope = { workspaceId, eventId, eventTime, event };
-    if (this.wakeRunnerAtReceipt({ kind: 'event.deliver', envelope })) void resolveIdentity(workspaceId).catch(() => undefined);
+    const handOffs: Array<Promise<void>> = [];
     let result: StateRpcResult<SlackDirectDeliveryResult>;
     try {
+      if (this.wakeRunnerAtReceipt({ kind: 'event.deliver', envelope: { workspaceId, eventId, eventTime, event } })) {
+        void resolveIdentity(workspaceId).catch(() => undefined);
+      }
       result = await calls.run(async () => {
         const local = localGatewayAppStores(stores);
-        if (hosted) await recordFirstHostedSlackDelivery(local.config, checkedInstallation);
-        const installation = stores.config.getWorkspaceInstallation(workspaceId) ?? checkedInstallation;
+        if (hosted) await recordFirstHostedSlackDelivery(local.config, arrived);
+        await place;
+        record.orderWaitMs = Date.now() - enteredAt;
+        const current = this.call(serving);
+        if (!current.ok) return current;
+        if (typeof current.value === 'string') return refusal(current.value);
+        const installation = current.value;
         let credentials: ResolvedSlackInstallationCredentials;
         try {
           credentials = await resolveSlackInstallationCredentials(
             slackInstallationCredentialId(env), env, { state: stores.identity as unknown as IdentityStore, env },
           );
         } catch (error) {
-          if (error instanceof SlackCredentialRecoveryOnlyError) return { ok: true, value: { outcome: 'refused', reason: 'recovery_only' } };
+          if (error instanceof SlackCredentialRecoveryOnlyError) return refusal('recovery_only');
           throw error;
         }
         const botUserId = credentials.botUserId ?? installation.botUserId ??
           (await resolveIdentity(workspaceId).catch(() => undefined))?.botUserId;
-        const handOffs: Array<Promise<void>> = [];
         const admitted = new Set<string>();
-        const waitedFrom = Date.now();
-        const release = await this.directAdmissions.enter(slackEventConversationKey(event));
-        record.orderWaitMs = Date.now() - waitedFrom;
-        try {
-          const slackState = this.admittingSlackState(local.slackState, (job) => {
-            admitted.add(job.id);
-            record.turns += 1;
-            // Armed at the commit: if this object stops before the hand-off, the alarm makes it.
-            handOffs.push(this.setAlarmNoLaterThan(Date.now() + KEEP_WARM_TICK_MS)
-              .then(() => this.afterSlackAdmission(job))
-              .catch(() => { console.warn('[chickpea] an admitted turn was not handed over; the alarm hands it over'); }));
-          });
-          const execution = botUserId ? directSlackExecution({
-            stores: { ...local, slackState },
-            credentials,
-            botUserId,
-            // As enqueueTurn: a turn admitted without a canonical admission (a legacy turn, an edit's).
-            enqueueTurn: async (job) => {
-              if (admitted.has(job.id)) return { ok: true, value: null };
-              stores.turnJobs.enqueue(job);
-              await this.armAlarmNoLaterThan(this.admissionWakeAt(), true);
-              return { ok: true, value: null };
-            },
-          }) : undefined;
-          if (execution) {
-            await processDirectSlackEvent({
-              token: '', team_id: workspaceId, api_app_id: appId, event_id: eventId, event_time: eventTime,
-              type: 'event_callback', event,
-            } as SlackEventFixture, env, execution, installation);
-          }
-        } finally {
-          release();
-          // As managementExecute: Chickpea's introduction, queued by a person's first message, is sent now.
-          await this.armReceiptDrainAfter('claim_introduction').catch(() => undefined);
-        }
-        await Promise.all(handOffs);
+        const slackState = this.admittingSlackState(local.slackState, (job) => {
+          admitted.add(job.id);
+          record.turns += 1;
+          // Armed at the commit: if this object stops before the hand-off, the alarm makes it.
+          handOffs.push(this.setAlarmNoLaterThan(Date.now() + KEEP_WARM_TICK_MS)
+            .then(() => this.afterSlackAdmission(job))
+            .catch(() => { console.warn('[chickpea] an admitted turn was not handed over; the alarm hands it over'); }));
+        });
+        await processDirectSlackEvent({
+          token: '', team_id: workspaceId, api_app_id: appId, event_id: eventId, event_time: eventTime,
+          type: 'event_callback', event,
+        } as SlackEventFixture, env, {
+          stores: { ...local, slackState },
+          credentials,
+          botUserId,
+          // As enqueueTurn: a turn admitted without a canonical admission (a legacy turn, an edit's).
+          enqueueTurn: async (job) => {
+            if (admitted.has(job.id)) return { ok: true, value: null };
+            stores.turnJobs.enqueue(job);
+            await this.armAlarmNoLaterThan(this.admissionWakeAt(), true);
+            return { ok: true, value: null };
+          },
+          onRateLimited: () => { record.rateLimited += 1; },
+        }, installation);
         return { ok: true, value: { outcome: 'processed' } };
       });
     } catch (error) {
       result = { ok: false, error: { code: 'internal', message: error instanceof Error ? error.message : String(error) } };
     } finally {
+      // The thread's next delivery goes on beside this one's status and hand-off.
+      void place.then((release) => release());
+      // As managementExecute: Chickpea's introduction, queued by a person's first message, is sent now.
+      await this.armReceiptDrainAfter('claim_introduction').catch(() => undefined);
+      await Promise.all(handOffs);
       releaseReceipt?.();
     }
     return answer(result);
   }
 
-  /**
-   * This store's Slack state for a delivery it admits itself, doing what its
-   * RPCs do around the same writes: a canonical admission offers a stop it
-   * created and reports its turn (`admitted`, which starts admitSlackTurn's
-   * tail), and a steering decision arms the alarm or offers its stop.
-   */
+  /** This store's Slack state for admitSlackDelivery, doing what its RPCs do around the same writes. */
   private admittingSlackState(local: SlackStateStore, admitted: (job: TurnJob) => void): SlackStateStore {
     return {
       ...local,

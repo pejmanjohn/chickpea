@@ -4,7 +4,7 @@ import type { TestContext } from 'node:test';
 
 import { Hono, type ExecutionContext } from 'hono';
 
-import { channel as slackChannel, directSlackExecution, processDirectSlackEvent } from '../../src/channels/slack.ts';
+import { channel as slackChannel, processDirectSlackEvent } from '../../src/channels/slack.ts';
 import type { PlatformEnv } from '../../src/config/state-backend.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../../src/config/types.ts';
 import type { IdentityStore } from '../../src/identity/types.ts';
@@ -55,8 +55,8 @@ export interface DirectWorker {
   deliver(body: Record<string, unknown>, ctx?: ExecutionContext, arrivedAt?: number): Promise<Response>;
   /**
    * Admit `body` (an `event()`) as the state store would on its own stores:
-   * processDirectSlackEvent with directSlackExecution, local ports and its
-   * own queue. A call it makes to the stub is in `log` like any other.
+   * processDirectSlackEvent on local ports and its own queue. A call it
+   * makes to the stub is in `log` like any other.
    */
   admitLocally(body: Record<string, unknown>): Promise<void>;
   event(event: Record<string, unknown>): Record<string, unknown>;
@@ -94,6 +94,8 @@ export async function withDirectWorker(
     admission?: StoreAdmission;
     /** Answers a Slack Web API call before the table does; undefined leaves it to the table. */
     slack?: (method: string) => Response | undefined | Promise<Response | undefined>;
+    /** `app`: the app's own credentials alone, as before the workspace connected it, so no bot token. */
+    credentials?: 'app';
   } = {},
 ): Promise<void> {
   const keyring = generateCredentialKeyring('key_v1');
@@ -181,11 +183,14 @@ export async function withDirectWorker(
     lastChangedByMembershipId: owner.membership.id,
   }, stores.config.getWorkspaceModelDefault('T1')?.revision ?? 0);
   const dependencies = { state: identity, keyring };
+  const appOnly = options.credentials === 'app';
   const staged = await stageSlackCredentialBundle(dependencies, {
     identityId: WORKSPACE_SLACK_INSTALLATION_ID, identityClass: 'workspace_installation',
-    purpose: 'connected_credentials', expectedActiveRevision: null, appId: 'A1', teamId: 'T1', botUserId: 'UBOT',
-    grantedScopes: ['chat:write'], validatedAt: Date.now(),
-    secrets: { botToken: 'xoxb-direct-worker', signingSecret: SIGNING_SECRET },
+    purpose: appOnly ? 'app_credentials' : 'connected_credentials', expectedActiveRevision: null,
+    appId: 'A1', ...appOnly ? {} : { teamId: 'T1', botUserId: 'UBOT' }, grantedScopes: ['chat:write'], validatedAt: Date.now(),
+    secrets: appOnly
+      ? { clientId: 'client-1', clientSecret: 'client-secret-1', signingSecret: SIGNING_SECRET }
+      : { botToken: 'xoxb-direct-worker', signingSecret: SIGNING_SECRET },
   });
   await promoteSlackCredentialBundle(dependencies, {
     identityId: WORKSPACE_SLACK_INSTALLATION_ID, candidateRevision: staged.revision, expectedActiveRevision: null,
@@ -237,14 +242,12 @@ export async function withDirectWorker(
         const credentials = await resolveSlackInstallationCredentials(WORKSPACE_SLACK_INSTALLATION_ID, env, { state: identity, env });
         const installation = stores.config.getWorkspaceInstallation(String(body.team_id));
         assert.ok(installation, 'the delivery is for this installation');
-        const execution = directSlackExecution({
+        await processDirectSlackEvent(body as unknown as SlackEventFixture, env, {
           stores: localGatewayAppStores(stores),
           credentials,
-          botUserId: credentials.botUserId ?? installation.botUserId!,
+          botUserId: credentials.botUserId ?? installation.botUserId,
           enqueueTurn: localTurnEnqueue(stores),
-        });
-        assert.ok(execution, 'the installation has a bot token');
-        await processDirectSlackEvent(body as unknown as SlackEventFixture, env, execution, installation);
+        }, installation);
       },
       async deliver(body, ctx, arrivedAt) {
         const raw = JSON.stringify(body);

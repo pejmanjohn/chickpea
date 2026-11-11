@@ -1004,14 +1004,15 @@ function handleDirectSlackEvents(
       // One call: the state store admits it. A store that cannot take the
       // call (older code, replaced mid-call) is served as before, once.
       const { team_id: workspaceId, event_id: eventId, event_time: eventTime, event } = payload as unknown as SlackEventFixture;
+      let fallback: { path: 'fallback'; reason: string } | undefined;
       detach(c, stores.slackState.admitDelivery({
         workspaceId, eventId, eventTime, event, appId: payload.api_app_id ?? '', receivedAt,
       }).then(async (admission) => {
         if (admission.outcome !== 'fallback') return stateRpcs.emit({ receivedAt, path: 'store' });
-        await admitOnWorker({ path: 'fallback', reason: admission.reason });
+        await admitOnWorker(fallback = { path: 'fallback', reason: admission.reason });
       }).catch((error) => {
         console.error('[chickpea] Slack event intake failed:', sanitizeError(error));
-        stateRpcs.emit({ receivedAt, path: 'store' });
+        stateRpcs.emit({ receivedAt, ...fallback ?? { path: 'store' } });
       }));
       return;
     }
@@ -1748,33 +1749,39 @@ export async function processGatewaySlackEnvelope(
   return 'accepted';
 }
 
-/** A direct installation's own bot on the caller's ports; undefined without a bot token. */
-export function directSlackExecution(input: {
-  stores: AppStores;
-  credentials: ResolvedSlackInstallationCredentials;
-  botUserId: string;
-  enqueueTurn(job: TurnJob): Promise<StateRpcResult<null>>;
-}): SlackEventExecution | undefined {
-  const { stores, credentials } = input;
-  if (!credentials.botToken) return undefined;
-  return {
-    transport: createDirectSlackTransport(credentials.botToken, ownerUserGroupToken(credentials, stores.settings)),
-    client: createSlackWebClient(credentials.botToken),
-    botUserId: input.botUserId,
-    stores,
-    enqueueTurn: input.enqueueTurn,
-    direct: { credentials },
-  };
-}
-
-/** Admit a direct installation's verified event on its execution's ports (directSlackExecution). */
+/**
+ * A store admits a direct event on its own ports, in its thread's order: a
+ * rate-limited call fails at once, as its wait would end. No bot: record only.
+ */
 export async function processDirectSlackEvent(
   payload: SlackEventFixture,
   platformEnv: PlatformEnv | undefined,
-  execution: SlackEventExecution,
+  ports: {
+    stores: AppStores;
+    credentials: ResolvedSlackInstallationCredentials;
+    botUserId: string | undefined;
+    enqueueTurn(job: TurnJob): Promise<StateRpcResult<null>>;
+    onRateLimited?(): void;
+  },
   installation: WorkspaceInstallation,
 ): Promise<void> {
-  await processSlackEvent(payload, platformEnv, execution, undefined, undefined, { installation });
+  const { stores, credentials, botUserId, enqueueTurn, onRateLimited } = ports;
+  const clients = { rejectRateLimitedCalls: true, ...(onRateLimited ? { onRateLimited } : {}) };
+  if (!credentials.botToken || !botUserId) {
+    const client = credentials.botToken ? { client: createSlackWebClient(credentials.botToken, clients) } : {};
+    await processSlackEvent(payload, platformEnv, undefined, undefined, undefined, {
+      installation, credentials, recordOnly: { stores, enqueueTurn, ...client },
+    });
+    return;
+  }
+  await processSlackEvent(payload, platformEnv, {
+    transport: createDirectSlackTransport(credentials.botToken, ownerUserGroupToken(credentials, stores.settings), clients),
+    client: createSlackWebClient(credentials.botToken, clients),
+    botUserId,
+    stores,
+    enqueueTurn,
+    direct: { credentials },
+  }, undefined, undefined, { installation });
 }
 
 // The Node relay runs turns in this process and admits their asks and hand-offs here.
@@ -3342,7 +3349,7 @@ async function answerPrivateChannelSetupClick(
 async function steerWithSlackEdit(input: {
   edit: SlackMessageEdit;
   state: SlackStateStore;
-  execution: SlackEventExecution | undefined;
+  execution: Pick<SlackEventExecution, 'enqueueTurn' | 'durableIngress'> | undefined;
   platformEnv: PlatformEnv | undefined;
 }): Promise<void> {
   const { execution, platformEnv } = input;
@@ -3399,11 +3406,17 @@ async function processSlackEvent(
   execution?: SlackEventExecution,
   ui?: SlackUiAdmission,
   ask?: SlackHostAddressedAdmission,
-  known?: { installation: WorkspaceInstallation; credentials?: ResolvedSlackInstallationCredentials },
+  known?: {
+    installation: WorkspaceInstallation;
+    credentials?: ResolvedSlackInstallationCredentials;
+    /** A store's own ports with no bot (processDirectSlackEvent): the record follows the event, nothing more. */
+    recordOnly?: Pick<SlackEventExecution, 'stores' | 'enqueueTurn'> & { client?: SlackUiClient };
+  },
 ): Promise<void> {
   // A click is admitted like a message; every early return below is a refusal
   // (its outcome starts at `unavailable`, a takeover's at `refused`).
-  const stores = execution?.stores ?? resolveStores(platformEnv);
+  const recordOnly = known?.recordOnly;
+  const stores = execution?.stores ?? recordOnly?.stores ?? resolveStores(platformEnv);
   const installation = known?.installation ?? await stores.config.getWorkspaceInstallation(payload.team_id);
   if (!installation || installation.health === 'revoked') return;
   // An Agent app's caller checks its installation.
@@ -3411,7 +3424,7 @@ async function processSlackEvent(
   if (!execution?.agentApp && installation.transportMode !== transportMode) return;
   // An edit steers its message's turn, then the public record below takes the new text too.
   const edit = ask ? undefined : parseSlackMessageEdit(payload);
-  if (edit) await steerWithSlackEdit({ edit, state: stores.slackState, execution, platformEnv });
+  if (edit) await steerWithSlackEdit({ edit, state: stores.slackState, execution: execution ?? recordOnly, platformEnv });
   // The front desk's card holds a copy of the message it offers: an edit or a
   // delete closes it, so a pick never sends words the person took back.
   const takenBack = edit ?? (ask ? undefined : parseSlackMessageDelete(payload));
@@ -3422,7 +3435,8 @@ async function processSlackEvent(
     return undefined;
   });
   if (closedChoice?.messageTs) {
-    const client = execution?.client ?? await directSlackClient(platformEnv).catch(() => undefined);
+    const client = execution?.client ??
+      (recordOnly ? recordOnly.client : await directSlackClient(platformEnv).catch(() => undefined));
     if (client) await redrawUiSurface(surfaceMessenger(client, closedChoice.channelId), closedChoice);
   }
   if (
@@ -3452,6 +3466,7 @@ async function processSlackEvent(
       siblingBotUserIds: tenantBots,
     }, threadRoute);
   }
+  if (recordOnly) return;
   const credentials = execution
     ? execution.direct?.credentials ?? ({ connectionRevision: null } as ResolvedSlackInstallationCredentials)
     : known?.credentials ??

@@ -2,7 +2,7 @@ import type { View } from '@slack/types';
 import type { WebClient } from '@slack/web-api';
 
 import { withUserGroupAuthority, type OwnerUserGroupToken } from '../user-group-authority.ts';
-import { createSlackWebClient } from '../web-client.ts';
+import { createSlackWebClient, type SlackWebClientOptions } from '../web-client.ts';
 import { slackClientMessageId } from './message-id.ts';
 import {
   channelIncludesMember,
@@ -57,10 +57,14 @@ export interface DirectSlackApiClient {
 type UserGroupMethod = keyof DirectSlackApiClient['usergroups'];
 
 /** Construct a direct customer-owned adapter while keeping the tokens captured. */
-export function createDirectSlackTransport(botToken: string, owner: OwnerUserGroupToken | undefined): SlackTransport {
-  const client = createSlackWebClient(botToken) as unknown as DirectSlackApiClient;
+export function createDirectSlackTransport(
+  botToken: string,
+  owner: OwnerUserGroupToken | undefined,
+  options: SlackWebClientOptions = {},
+): SlackTransport {
+  const client = createSlackWebClient(botToken, options) as unknown as DirectSlackApiClient;
   const ownerClient = owner
-    ? createSlackWebClient(owner.token) as unknown as DirectSlackApiClient
+    ? createSlackWebClient(owner.token, options) as unknown as DirectSlackApiClient
     : undefined;
   return createDirectSlackTransportFromClient(client, ownerClient, owner?.dead);
 }
@@ -248,5 +252,6 @@ function normalizeError(error: unknown, operation: string): SlackTransportError 
   const value = record(error);
   const data = record(value.data);
   const code = stringValue(data.error) || stringValue(value.code) || 'slack_unreachable';
-  return new SlackTransportError(operation, code);
+  // A rate limit rejected at once (rejectRateLimitedCalls) is still retryable.
+  return new SlackTransportError(operation, code, code === 'slack_webapi_rate_limited_error' ? { retryable: true } : {});
 }
