@@ -87,6 +87,26 @@ function webAddress(text: string): URL | undefined {
   return /^https?:\/\/[\p{L}\p{M}\p{N}.%:[\]-]+(?:[/?#]\S*)?$/iu.test(text) && URL.canParse(text) ? new URL(text) : undefined;
 }
 
+// Each delimiter a builder must escape in a userinfo, and `:`, which only some escape in a password.
+const USERINFO_DELIMITERS = '/?#@:';
+
+/**
+ * An address and the user and password a URL builder puts in its userinfo. A web address gains a user and a
+ * password that each hold `/ ? # @ :`, so what they write must hide neither its host nor what follows it. Other
+ * text is the user, and the password after `/ ? # @ :`, in a login site's address.
+ */
+function userinfoParts(text: string): { url: URL; user: string; password: string } {
+  const url = webAddress(text);
+  if (url) return { url, user: `ops${USERINFO_DELIMITERS}team`, password: `pass${USERINFO_DELIMITERS}word` };
+  return { url: new URL('https://billing.example.com/callback'), user: text, password: `${USERINFO_DELIMITERS}${text}` };
+}
+
+/** `text` with a userinfo (see userinfoParts) that `escape` writes. */
+function userinfoAddress(text: string, escape: (part: string, password: boolean) => string): string {
+  const { url, user, password } = userinfoParts(text);
+  return `${url.protocol}//${escape(user, false)}:${escape(password, true)}@${url.host}${url.pathname}${url.search}${url.hash}`;
+}
+
 export const PRODUCERS: readonly Producer[] = [
   { name: 'JS JSON.stringify', encode: (text) => JSON.stringify(text) },
   { name: 'JS encodeURI', encode: (text) => encodeURI(text) },
@@ -174,4 +194,23 @@ export const PRODUCERS: readonly Producer[] = [
   // A login site that carries a value as one segment of its path, as a `/magic/:token/done` route reads it back.
   // encodeURIComponent writes each `/`, `?`, `#`, `&`, `=` and `;` of the value as its escape.
   { name: 'Login site path segment', encode: (text) => `https://billing.example.com/magic/${encodeURIComponent(text)}/done` },
+  // A user and a password in an address's userinfo (see userinfoParts). The URL standard's setters write `/`, `?`,
+  // `#`, `@` and `:` as escapes, but keep `%`, `&` and most marks.
+  {
+    name: 'URL userinfo by the URL setters',
+    encode: (text) => {
+      const { url, user, password } = userinfoParts(text);
+      url.username = user;
+      url.password = password;
+      return url.href;
+    },
+  },
+  // RFC 3986's userinfo keeps its unreserved characters and sub-delimiters as written, and `:` in a password.
+  {
+    name: 'URL userinfo by RFC 3986',
+    encode: (text) => userinfoAddress(text, (part, password) =>
+      percentEncoded(part, password ? /^[A-Za-z0-9._~!$&'()*+,;=:-]$/ : /^[A-Za-z0-9._~!$&'()*+,;=-]$/)),
+  },
+  // Go's url.UserPassword keeps letters, digits, `-._~` and `$&+,;=`, and escapes the rest, a space as `%20`.
+  { name: 'URL userinfo by Go net/url', encode: (text) => userinfoAddress(text, (part) => percentEncoded(part, /^[A-Za-z0-9._~$&+,;=-]$/)) },
 ];

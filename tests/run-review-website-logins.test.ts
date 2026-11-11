@@ -551,6 +551,69 @@ test('a link right after another link\'s host, behind //, or behind a host no si
     '<https://go.example.org|Report?id=5>');
 });
 
+test('a URL\'s userinfo goes whole whatever delimiters its encoding writes, and hides neither its host nor its token, in every field', () => {
+  // The URL standard's setters write a `/`, `?`, `#`, `@` or `:` in a username or password as its percent escape.
+  // Decoded, it is the userinfo's data: the host follows the userinfo's last `@`, before the first `/`, `?` or `#` as written.
+  const address = (base: string, username: string, password = '') => {
+    const url = new URL(base);
+    url.username = username;
+    url.password = password;
+    return url.href;
+  };
+  const signIn = (username: string, password?: string) =>
+    address('https://billing.example.com/cb?code=SynthUserinfoCode1', username, password);
+  const slashed = signIn('SynthOps/SynthTeam', 'SynthPass/?#@:4417');
+  assert.equal(slashed, 'https://SynthOps%2FSynthTeam:SynthPass%2F%3F%23%40%3A4417@billing.example.com/cb?code=SynthUserinfoCode1');
+  const queried = signIn('SynthOps?SynthTeam');
+  const hashed = signIn('SynthOps#SynthTeam', 'SynthPass4417');
+  const other = address('https://other.example/s?q=kept', 'SynthOps?SynthTeam', 'SynthPass#4417');
+  // A userinfo that spells a login site makes another site's link no login site's.
+  const spelled = address('https://other.example/s?q=kept', 'billing.example.com/x');
+  // An address percent-encoded whole may hold the `@` of an email address in its path, past the end of its authority,
+  // and a link without a scheme may be one: either is read from the first host it can have that is a login site, the
+  // hosted browser's, or none a URL reads.
+  const emailPath = encodeURIComponent('https://billing.example.com/u/ops@corp.example/reset/SynthPathToken');
+  const twice = encodeURIComponent(encodeURIComponent(
+    address('https://billing.example.com/u/ops@corp.example/SynthPathToken', 'SynthOps/SynthTeam')));
+  const session = encodeURIComponent('https://www.browserbase.com/sessions/ops@corp.example/SynthSession');
+  // A written `//` before what was percent-encoded once more: the host a URL would read ends at a `/` decoding wrote,
+  // which no URL reads as written, so the address reads as decoding would leave it, and only an `@` as written ends a
+  // userinfo a URL reads as written.
+  const encodedAfterScheme = [
+    'https://billing.example.com%2Fu%2Fops%40corp.example%2Freset%2FSynthPath1Token',
+    'https://billing.example.com%2Fu%2Fops@corp.example%2Freset%2FSynthPath2Token',
+    'https://billing.example.com%2Fu%2Fops%40corp.example/reset/SynthPath3Token',
+  ].join(' ');
+  const unreadable = `ab${String.fromCodePoint(0x5d0)}.example%2FSynthOps@other.example/cb?code=SynthUserinfoCode2`;
+  const whole = encodeURIComponent(slashed);
+  const record = copy({
+    trigger: { author: 'U012ABCDEF3', text: `Use ${slashed} or ${queried}.`, files: [] },
+    // An email address written as a username, its `@` as written: the userinfo ends at the last `@`.
+    context: [{ author: 'U012ABCDEF3', role: 'human', text: `Signed in at ${hashed} and ${other} as ` +
+      'https://SynthOps@corp.example:SynthPass@other.example/s?q=kept', files: [] }],
+    steps: [
+      browserStep('browser_open', { url: slashed }, { url: hashed }),
+      { kind: 'tool', name: 'read_mail', input: '{}', output: JSON.stringify({ text: `${slashed} ${whole}` }) },
+    ],
+    answer: `See ${whole}, ${new URLSearchParams({ next: slashed })}, https://other.example/redirect?next=${whole}, ` +
+      `${emailPath}, ${twice}, ${session}, ${unreadable}, ${spelled} or ${other} today, then ${encodedAfterScheme}`,
+  });
+  assert.deepEqual(kept(record, ['SynthOps', 'SynthTeam', 'SynthPass', 'SynthUserinfoCode', 'SynthPath', 'SynthSession']), []);
+  const signedIn = 'https://billing.example.com/cb?[omitted]';
+  const signedInWhole = 'https:%2F%2Fbilling.example.com[omitted]';
+  assert.equal(record.trigger.text, `Use ${signedIn} or ${signedIn}.`);
+  assert.equal(record.context[0]?.text, `Signed in at ${signedIn} and https://other.example/s?q=kept as https://other.example/s?q=kept`);
+  const [opened, mail] = record.steps;
+  assert.ok(opened?.kind === 'tool' && mail?.kind === 'tool');
+  assert.equal(opened.input, `{"url":"${signedIn}"}`);
+  assert.equal(opened.output, `{"url":"${signedIn}"}`);
+  assert.equal(JSON.parse(mail.output ?? '{}').text, `${signedIn} ${signedInWhole}`);
+  assert.equal(record.answer, `See ${signedInWhole}, next=${signedInWhole}, https://other.example/redirect?next=${signedInWhole}, ` +
+    `${signedInWhole}, ${signedInWhole}, ${BROWSER_LINK_OMITTED} [omitted][omitted]/cb?[omitted], ` +
+    'https://other.example/s?q=kept or https://other.example/s?q=kept today, then ' +
+    'https://billing.example.com[omitted] https://billing.example.com[omitted] https://billing.example.com[omitted]/reset/[omitted]');
+});
+
 test('a login site\'s link without a scheme keeps no token after a JSON line break or tab, escaped once or twice, or behind JSON-escaped slashes', () => {
   const backslash = '\\';
   const mail = JSON.stringify({ text: 'Reset:\nbilling.example.com/reset?token=SYNTHGAP1\tledger.example.net/cb?code=SYNTHGAP2' });
