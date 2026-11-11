@@ -7,8 +7,10 @@
  * No pattern here is built from a saved login or from a record's text. The
  * link rules are fixed patterns that look each host up, and usernames are
  * found by literal search, so no value can make a pattern backtrack or
- * compile without bound. The work one copy's scrub does is counted, and a
- * copy past its budget, or past the caps on its logins, is not kept.
+ * compile without bound. Each rule reads a view of a field with its
+ * escapes decoded, and maps what it finds back to where it was written. The
+ * work one copy's scrub does is counted, and a copy past its budget, or past
+ * the caps on its logins, is not kept.
  */
 
 import { BROWSER_HANDOFF_LINK_LABEL } from '../browser/requester.ts';
@@ -73,48 +75,43 @@ export class ScrubBudget {
   }
 }
 
+// The link rules read a field's link view (see linkView below): its JSON escapes decoded, then NFKC without
+// default-ignorable code points. So no pattern here reads an escape.
+
 // A URL ends at whitespace, a double quote, Slack's `<` and `>`, or a backslash. A page's address keeps `'`
 // and `|` as they are, so neither ends one, and a Slack link's label goes with its URL.
 const URL_CHAR = String.raw`[^\s"<>\\]`;
-// The JSON escape of `&`, `'`, `+` or `=` does not end a URL: Go, Gson and .NET write them that way.
-const ESCAPED_ASCII = String.raw`\\+u00(?:26|27|2[bB]|3[dD])`;
-// Nor does the JSON escape of a character past ASCII, as a serializer that keeps to ASCII writes every one.
-const ESCAPED_UNICODE = String.raw`\\+u(?!00[0-7])[\da-f]{4}`;
-// A slash, which JSON may escape with a backslash: PHP does by default.
-const SLASH = String.raw`\\*\/`;
-// A dot between a host's labels. A URL reads the ideographic and fullwidth full stops as one too.
+// A dot between a host's labels. A URL reads the ideographic full stop and its halfwidth form as one too.
 const DOT = String.raw`[.\u3002\uFF0E\uFF61]`;
-// A character of a host's label, in any script, or a percent or JSON escape of one.
-const LABEL_CHAR = String.raw`(?:[\p{L}\p{N}-]|%[\da-f]{2}|${ESCAPED_UNICODE})`;
-// After an odd run of backslashes, which JSON writes to escape the letter that follows.
-const AFTER_ESCAPE = String.raw`(?:^|[^\\])(?:\\\\)*\\`;
-// Not inside a word, an escape or a run of backslashes, an email address or a path. A JSON escape of a line
-// break or a tab may come right before it, and so may a protocol-relative `//`, its slashes escaped or not.
-const HOST_START = String.raw`(?:(?<![\p{L}\p{N}.\u3002\uFF0E\uFF61@_-])|(?<=${AFTER_ESCAPE}[nrtbf]))(?![nrtbf](?<=${AFTER_ESCAPE}[nrtbf]))` +
-  String.raw`(?!(?<=%)[\da-f]{2})(?!(?<=\\)(?:\\|u[\da-f]{4}))(?<!(?:^|[^/\\])\\*\/)`;
+// A character of a host's label: a letter in any script, a mark that goes with one, a digit, a hyphen or a percent escape.
+const LABEL_CHAR = String.raw`(?:[\p{L}\p{M}\p{N}-]|%[\da-f]{2})`;
+// Not inside a word, a percent escape, an email address or a path. A protocol-relative `//` may come right before it.
+const HOST_START = String.raw`(?<![\p{L}\p{M}\p{N}.\u3002\uFF0E\uFF61@_-])(?!(?<=%)[\da-f]{2})(?<!(?:^|[^/])\/)`;
+// A name whose top-level label is letters, or the ASCII form of a name in another script.
+const NAME = String.raw`(?:${LABEL_CHAR}+${DOT})+(?:\p{L}[\p{L}\p{M}]+|xn--[a-z\d-]+)`;
 // A host as a link writes one: a name or a bracketed IP address.
-const READABLE_HOST = /^(?:[\p{L}\p{N}.-]+|\[[\da-f:.]+\])$/iu;
-// A host already in the form a URL gives it, but for case.
-const ASCII_HOST = /^[a-z\d.-]+$/i;
+const READABLE_HOST = /^(?:[\p{L}\p{M}\p{N}.-]+|\[[\da-f:.]+\])$/iu;
 
-const MORE_URL = String.raw`${URL_CHAR}*(?:(?:${ESCAPED_ASCII}|${ESCAPED_UNICODE}|\\+\/)${URL_CHAR}*)*`;
-const SCHEME_URL = String.raw`\b(?:https?|wss?):${SLASH}${SLASH}(?:${URL_CHAR}|${ESCAPED_UNICODE})${MORE_URL}`;
+const SCHEME_URL = String.raw`\b(?:https?|wss?):\/\/${URL_CHAR}+`;
 // What follows a scheme-less host, which may end in a dot: a port, then a path or a query.
-const AFTER_HOST = String.raw`${DOT}?(?::\d+)?(?:${SLASH}${MORE_URL}|[;?#]${URL_CHAR}${MORE_URL})`;
-// Any host followed by a path or a query, as a browser step's input may name a page. Its top-level label
-// is letters, or the ASCII form of a name in another script.
-const ANY_SCHEMELESS_URL = String.raw`${HOST_START}(?:${LABEL_CHAR}+${DOT})+(?:\p{L}{2,}|xn--[a-z\d-]+)${AFTER_HOST}`;
-// Outside a browser step, a link without a scheme counts on a login's site or the hosted browser's. Any
-// host a link could follow is read, and only its host: it is looked up before the rest of its link is
-// read, so a field of hosts on no login's site costs one reading.
+const AFTER_HOST = String.raw`${DOT}?(?::\d+)?(?:\/${URL_CHAR}*|[;?#]${URL_CHAR}+)`;
+// Any host a link without a scheme could follow. Only its host is read: it is looked up before the rest of its
+// link is read, so a field of hosts that start no link costs one reading.
 const SCHEMELESS_HOST = String.raw`${HOST_START}(?<host>(?:${LABEL_CHAR}+${DOT})*${LABEL_CHAR}+|\[[\da-f:.]+\])` +
-  String.raw`(?=${DOT}?(?::\d+)?(?:${SLASH}|[;?#]${URL_CHAR}))`;
-const LINKS_ANYWHERE = `${SCHEME_URL}|${SCHEMELESS_HOST}`;
-const LINKS_IN_BROWSER_STEP = `${SCHEME_URL}|${ANY_SCHEMELESS_URL}`;
-/** The rest of a scheme-less link on a login's site, from the end of its host. */
+  String.raw`(?=${DOT}?(?::\d+)?(?:\/|[;?#]${URL_CHAR}))`;
+const LINKS = `${SCHEME_URL}|${SCHEMELESS_HOST}`;
+/** The rest of a scheme-less link, from the end of its host. */
 const REST_OF_LINK = new RegExp(AFTER_HOST, 'yiu');
+/** A name no URL can read: it may hide a login's site, so its link goes by the login rule. */
+const UNREADABLE_NAME = new RegExp(`^${NAME}$`, 'iu');
+/**
+ * A host a page's address may have, which starts a link without a scheme anywhere in a browser step: a name,
+ * an IPv4 address in four decimal parts, or a bracketed IPv6 address.
+ */
+const BROWSER_STEP_HOST = new RegExp(String.raw`^(?:${NAME}|\d{1,3}(?:\.\d{1,3}){3}|\[[\da-f:.]+\])$`, 'iu');
 
 const HANDOFF_LINK = new RegExp(String.raw`<([^<>|]*)\|${escapeRegExp(BROWSER_HANDOFF_LINK_LABEL)}>`, 'g');
+const HANDOFF_LABEL = `|${BROWSER_HANDOFF_LINK_LABEL}>`;
 /** What a hand-off message links to: an absolute web address, too long to be a word of other text. */
 const HANDOFF_URL = /^https?:\/\/[^\s<>|"\\]{8,}$/i;
 /** A run of text a hand-off URL could be: nothing that ends one. */
@@ -133,20 +130,35 @@ function browserbaseHost(hostname: string): boolean {
   return hostname === 'browserbase.com' || hostname.endsWith('.browserbase.com');
 }
 
-/** A host with each JSON escape read as the character it writes. */
-function unescapedHost(host: string): string {
-  return host.includes('\\') ? host.replace(/\\+u([\da-f]{4})/gi, (_, hex: string) => String.fromCharCode(parseInt(hex, 16))) : host;
+const PLAIN_NAME = /^[a-z\d.-]+$/i;
+const IDNA_LABEL = /(?:^|\.)xn--/i;
+// A label a URL reads as a number, which makes the host an IPv4 address.
+const NUMBER_LABEL = /^(?:\d+|0x[\da-f]*)$/i;
+
+/**
+ * Whether a URL gives `host` back as it is written, but for case: ASCII
+ * letters, digits, dots and hyphens, with no `xn--` label, which a URL
+ * checks, and a last label (before one dot that may end it) that is no
+ * number, which makes a URL read the host as an IPv4 address. Any other host
+ * is parsed.
+ */
+function plainName(host: string): boolean {
+  if (!PLAIN_NAME.test(host) || IDNA_LABEL.test(host)) return false;
+  const end = host.endsWith('.') ? host.length - 1 : host.length;
+  const last = host.slice(host.lastIndexOf('.', end - 1) + 1, end);
+  return last === '' || !NUMBER_LABEL.test(last);
 }
 
 /**
- * A host as a browser reads it, to compare with a login's site: its ASCII
- * form, in lower case, without the dots that may end it. A name in another
- * script, a fullwidth letter or a percent escape reads as the ASCII name a
- * URL gives it. Undefined for a host no URL can hold.
+ * A host as a browser reads it, to compare with a login's site: the
+ * hostname a URL gives it, without the dots that may end it. A name in
+ * another script or a percent escape reads as its ASCII form, and an IPv4
+ * address in hex, in octal or in fewer than four parts as its four decimal
+ * ones. Undefined for a host no URL can hold.
  */
-function asciiHost(host: string): string | undefined {
+function asciiHost(host: string, plain = plainName(host)): string | undefined {
   let hostname: string;
-  if (ASCII_HOST.test(host)) {
+  if (plain) {
     hostname = host.toLowerCase();
   } else {
     try {
@@ -177,21 +189,26 @@ function plainPath(path: string): string {
 
 export interface WebsiteLoginScrub {
   /**
-   * Link rules, on text no other rule has changed: a replacement that holds
-   * a space would end a URL early and leave the rest of it. A hosted browser
-   * link goes whole, and so does a hand-off message's link wherever else the
-   * same text holds it. Every URL loses its userinfo. A host is a login's
-   * site when its ASCII form is, whatever script or encoding it is written
-   * in. A URL on a login's site, or any URL in a browser step, keeps its
-   * scheme and host, keeps a path segment only where it is a word of up to
-   * 20 letters (so its numbers, IDs and slugs go too), and loses everything
-   * from its first `;`, `?` or `#`. So does a URL whose host cannot be read
-   * as one, and its host goes too. Only the marks a sentence puts right
-   * after the whole URL stay. In Slack's `<url|label>` outside a browser
-   * step, the label after the first `|` before the query is text, and goes
-   * by these rules as any text does. Elsewhere a link inside another one's
-   * path or query, as a Slack link's label or a redirect holds it, goes by
-   * its own rule.
+   * Link rules, on text no other rule has changed: a replacement that holds a
+   * space would end a URL early and leave the rest of it. They read the text
+   * with its JSON escapes decoded, in NFKC without default-ignorable code
+   * points, and a link they rewrite comes back as they read it. A hosted
+   * browser link goes whole, and so does a hand-off message's link wherever
+   * else the same text holds it. Every URL loses its userinfo. A host is a
+   * login's site when the hostname a URL gives it is, whatever script,
+   * encoding or IPv4 spelling it is written in. A link without a scheme
+   * counts on a login's site or the hosted browser's, or on a name no URL can
+   * read; in a browser step, on any name, any IPv4 address in four decimal
+   * parts and any bracketed IPv6 address too. A URL on a login's site, or any
+   * URL in a browser step, keeps its scheme and host, keeps a path segment
+   * only where it is a word of up to 20 letters (so its numbers, IDs and
+   * slugs go too), and loses everything from its first `;`, `?` or `#`. So
+   * does a URL whose host cannot be read as one, and its host goes too. Only
+   * the marks a sentence puts right after the whole URL stay. In Slack's
+   * `<url|label>` outside a browser step, the label after the first `|`
+   * before the query is text, and goes by these rules as any text does.
+   * Elsewhere a link inside another one's path or query, as a Slack link's
+   * label or a redirect holds it, goes by its own rule.
    */
   links(text: string, browserStep: boolean): string;
   /**
@@ -213,6 +230,7 @@ export interface WebsiteLoginScrub {
  */
 export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginScrub {
   const budget = new ScrubBudget();
+  const viewBuffers: ViewBuffers = [{ starts: new Int32Array(0), ends: new Int32Array(0) }, { starts: new Int32Array(0), ends: new Int32Array(0) }];
   const hostnames = new Set(logins.hosts.map((host) => {
     const site = host.trim().replace(/:\d+$/, '');
     return asciiHost(site) ?? site.toLowerCase();
@@ -238,40 +256,50 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
     }
   };
   const readHost = (host: string): string | undefined => {
-    budget.spend(ASCII_HOST.test(host) ? host.length : host.length + HOST_PARSE_STEPS);
-    return asciiHost(unescapedHost(host));
+    const plain = plainName(host);
+    budget.spend(plain ? host.length : host.length + HOST_PARSE_STEPS);
+    return asciiHost(host, plain);
   };
 
-  const scrubLinks = (text: string, browserStep: boolean): string => {
+  // Whether a host without a scheme starts a link: one on a login's site or the hosted browser's, or a name no URL
+  // can read, which may hide either. In a browser step any host a page's address may have starts one.
+  const startsLink = (host: string, browserStep: boolean): boolean => {
+    if (browserStep && BROWSER_STEP_HOST.test(host)) return true;
+    const hostname = readHost(host);
+    return hostname === undefined ? UNREADABLE_NAME.test(host) : loginSite(hostname) || browserbaseHost(hostname);
+  };
+
+  /** `source` with each link its view holds rewritten. A link goes back where it was written, read as the view reads it. */
+  const scrubLinks = (source: string, view: Written, browserStep: boolean): string => {
+    const { text } = view;
     budget.spend(text.length);
-    const pattern = new RegExp(browserStep ? LINKS_IN_BROWSER_STEP : LINKS_ANYWHERE, 'giu');
+    const pattern = new RegExp(LINKS, 'giu');
     let result = '';
     let from = 0;
     for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
       let link = match[0];
       const host = match.groups?.host;
       if (host !== undefined) {
-        const hostname = readHost(host);
-        // Not a link this rule reads: reading goes on after its host, where another link may start. A host
-        // no URL can hold is no page's address.
-        if (hostname === undefined || (!loginSite(hostname) && !browserbaseHost(hostname))) continue;
+        // Not a link this rule reads: reading goes on after its host, where another link may start.
+        if (!startsLink(host, browserStep)) continue;
         REST_OF_LINK.lastIndex = match.index + host.length;
         link += REST_OF_LINK.exec(text)![0];
       }
       // Slack writes a link as `<url|label>`. A browser step holds a page's text, not Slack's.
       const slackLink = !browserStep && text[match.index - 1] === '<';
-      result += `${text.slice(from, match.index)}${scrubLink(link, browserStep, slackLink)}`;
-      from = match.index + link.length;
-      pattern.lastIndex = from;
+      const [start, end] = written(view, match.index, match.index + link.length);
+      result += `${source.slice(from, Math.max(from, start))}${scrubLink(link, browserStep, slackLink)}`;
+      from = Math.max(from, end);
+      pattern.lastIndex = match.index + link.length;
     }
-    return result + text.slice(from);
+    return result + source.slice(from);
   };
+  /** Links inside a link the view already read. */
+  const scrubRead = (text: string, browserStep: boolean): string => scrubLinks(text, { text }, browserStep);
 
-  const scrubLink = (matched: string, browserStep: boolean, slackLink: boolean): string => {
-    // A plain slash is valid JSON too, so the link comes back without its escapes.
-    const raw = matched.replace(/\\+\//g, '/');
-    const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(raw);
-    const afterScheme = scheme ? raw.slice(scheme[0].length) : raw;
+  const scrubLink = (link: string, browserStep: boolean, slackLink: boolean): string => {
+    const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(link);
+    const afterScheme = scheme ? link.slice(scheme[0].length) : link;
     // Userinfo, which no link keeps, ends at the last `@` before the path, whatever it holds.
     const authorityEnd = afterScheme.search(/[/?#]/);
     const authority = authorityEnd < 0 ? afterScheme : afterScheme.slice(0, authorityEnd);
@@ -280,10 +308,9 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
     const hostEnd = hostAndRest.search(/[/;?#|]/);
     const host = hostEnd < 0 ? hostAndRest : hostAndRest.slice(0, hostEnd);
     const rest = hostEnd < 0 ? '' : hostAndRest.slice(hostEnd);
-    const written = host.replace(/:\d*$/, '');
-    const hostname = readHost(written);
-    // An escape reads as what it writes, so a host that escapes a mark no host holds cannot be read either.
-    const readable = hostname !== undefined && READABLE_HOST.test(unescapedHost(written));
+    const name = host.replace(/:\d*$/, '');
+    const hostname = readHost(name);
+    const readable = hostname !== undefined && READABLE_HOST.test(name);
     const pathEnd = rest.search(/[;?#]/);
     const path = pathEnd < 0 ? rest : rest.slice(0, pathEnd);
     const suffix = pathEnd < 0 ? '' : rest.slice(pathEnd);
@@ -292,11 +319,11 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
     const start = `${scheme?.[0] ?? ''}${readable ? host : URL_PART_OMITTED}`;
     // What follows the host can hold another link, as a Slack link's label or a redirect's query does.
     if (!browserStep && readable && !loginSite(hostname)) {
-      return `${start}${scrubLinks(rest, browserStep)}`;
+      return `${start}${scrubRead(rest, browserStep)}`;
     }
     budget.spend(rest.length);
     const label = slackLink ? path.indexOf('|') : -1;
-    if (label >= 0) return `${start}${plainPath(path.slice(0, label))}|${scrubLinks(rest.slice(label + 1), false)}`;
+    if (label >= 0) return `${start}${plainPath(path.slice(0, label))}|${scrubRead(rest.slice(label + 1), false)}`;
     let end = rest.length;
     while (end > 0 && SENTENCE_MARKS.includes(rest[end - 1]!)) end -= 1;
     const kept = pathEnd < 0 ? plainPath(rest.slice(0, end)) : `${plainPath(path)}?${URL_PART_OMITTED}`;
@@ -320,19 +347,11 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
   return {
     links(text, browserStep) {
       budget.spend(text.length);
-      // A thread context row lists a message's links again under its text, unescaped (slack/rich-text-links.ts).
-      // Anyone can write the label, so only a whole URL counts, and only where it stands alone: a
-      // replacement inside other text would break up a URL or a username before its own rule saw it.
-      const handoffs = new Set([...text.matchAll(HANDOFF_LINK)]
-        .flatMap(([, url]) => url ? [url, unescapedSlackText(url)] : [])
-        .filter((url) => HANDOFF_URL.test(url)));
-      const linked = text.replace(HANDOFF_LINK, BROWSER_LINK_OMITTED);
-      const withoutHandoffs = handoffs.size === 0 ? linked : linked.replace(URL_RUN, (run, at: number, whole: string) =>
-        handoffs.has(run) && (at === 0 || BEFORE_URL_RUN.test(whole[at - 1]!)) &&
-          (at + run.length === whole.length || AFTER_URL_RUN.test(whole[at + run.length]!))
-          ? BROWSER_LINK_OMITTED
-          : run);
-      return scrubLinks(withoutHandoffs, browserStep);
+      const view = linkView(text, viewBuffers);
+      if (!view.text.includes(HANDOFF_LABEL)) return scrubLinks(text, view, browserStep);
+      const handedOff = withoutHandoffs(text, view);
+      budget.spend(handedOff.length);
+      return scrubLinks(handedOff, linkView(handedOff, viewBuffers), browserStep);
     },
     usernames(text, { browserStep, cut }) {
       if (!index) return text;
@@ -343,10 +362,208 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
       // A snapshot writes each node's text on its own line, so a username can run across several.
       const joinedView = joined(view);
       if (joinedView) index.find(joinedView, { quoted: false, cut }, found, budget);
-      return found.length ? replaceSpans(text, found) : text;
+      return found.length ? replaceSpans(text, found, CREDENTIAL_REPLACEMENT) : text;
     },
     spend: (steps) => budget.spend(steps),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Reading a field as the link rules do
+// ---------------------------------------------------------------------------
+
+/**
+ * `written` as the link rules read it. Each JSON escape is decoded, and a
+ * run of backslashes before one reads as a single escape, as a field escaped
+ * again writes it. Then the text is in Unicode NFKC, without the
+ * default-ignorable code points a URL drops from a host (a soft hyphen, a
+ * zero-width character, a variation selector). So a fullwidth or decomposed
+ * letter reads as a URL reads it, and a mark that no letter takes stays.
+ * Each code unit keeps where it was written, so a link is replaced there.
+ * The view lasts until the next one written into the same buffers.
+ */
+function linkView(written: string, [decoding, normalizing]: ViewBuffers): Written {
+  return normalized(jsonDecoded(written, decoding), normalizing);
+}
+
+/** Where a field's views write their maps: one for decoding, one for NFKC. A copy reuses them field after field. */
+type ViewBuffers = [MapBuffers, MapBuffers];
+interface MapBuffers {
+  starts: Int32Array;
+  ends: Int32Array;
+}
+
+// What a JSON escape other than `\uXXXX` writes.
+const JSON_ESCAPED: ReadonlyMap<number, string> = new Map([
+  [0x22, '"'], [0x2f, '/'], [0x62, '\b'], [0x66, '\f'], [0x6e, '\n'], [0x72, '\r'], [0x74, '\t'],
+]);
+
+/** `text` with each JSON escape decoded. A run of backslashes before no escape reads as one backslash. */
+function jsonDecoded(text: string, buffers: MapBuffers): Written {
+  if (!text.includes('\\')) return { text };
+  const out = new WrittenText(text.length, buffers);
+  let from = 0;
+  for (let at = text.indexOf('\\'); at >= 0; at = text.indexOf('\\', at)) {
+    out.copy({ text }, from, at);
+    let next = at + 1;
+    while (text.charCodeAt(next) === BACKSLASH) next += 1;
+    const unicodeEnd = unicodeEscapeEnd(text, at);
+    const escaped = JSON_ESCAPED.get(text.charCodeAt(next));
+    // JSON writes a character past U+FFFF as an escape of each half of its pair, so each half reads on its own.
+    const end = unicodeEnd >= 0 ? unicodeEnd : escaped === undefined ? next : next + 1;
+    out.push(unicodeEnd >= 0 ? String.fromCharCode(escapedUnit(text, unicodeEnd)) : escaped ?? '\\', at, end);
+    at = from = end;
+  }
+  out.copy({ text }, from, text.length);
+  return out.done();
+}
+
+const NOT_ASCII = /[^\0-\x7f]/;
+const NOT_ASCII_RUNS = /[^\0-\x7f]+/g;
+const IGNORABLE = /\p{Default_Ignorable_Code_Point}/u;
+const IGNORABLES = /\p{Default_Ignorable_Code_Point}/gu;
+// A code point NFKC can join to the one before it: a mark, a default-ignorable one, a Hangul vowel or final
+// consonant jamo in any of its forms, a halfwidth kana voicing mark, or a Kirat Rai vowel sign.
+const JOINS_BEFORE = /[\p{M}\p{Default_Ignorable_Code_Point}\u1160-\u11FF\u3131-\u318E\uD7B0-\uD7FF\uFF9E-\uFFDC\u{16D67}\u{16D68}]/u;
+
+function nfkc(text: string): string {
+  return text.replace(IGNORABLES, '').normalize('NFKC').replace(IGNORABLES, '');
+}
+
+// What the link rules read as a link's structure: whitespace, and ASCII other than a letter or a digit.
+const STRUCTURE = /[\s\x00-\x2f\x3a-\x40\x5b-\x60\x7b-\x7f]/;
+
+/**
+ * A cluster as the link rules read it: in NFKC without default-ignorable
+ * code points, unless NFKC would turn it into or out of whitespace or ASCII
+ * punctuation (`¨` into a space and a mark, a fullwidth `＂`, `／` or `．`,
+ * `<` and a combining long solidus into `≮`). A browser reads those as
+ * written in a link, so they stay, and NFKC never ends, splits or hides a
+ * link the written text does not.
+ */
+function clusterRead(cluster: string): string {
+  const bare = cluster.replace(IGNORABLES, '');
+  const read = nfkc(bare);
+  return read !== bare && (STRUCTURE.test(read) || STRUCTURE.test(bare)) ? bare : read;
+}
+
+/**
+ * `view` in NFKC without default-ignorable code points, cluster by cluster:
+ * a code point and those that join it. No ASCII character joins one before
+ * it, so only runs of other characters, with the ASCII character before
+ * each, are read. Each cluster keeps where it was written.
+ */
+function normalized(view: Written, buffers: MapBuffers): Written {
+  const { text } = view;
+  if (!NOT_ASCII.test(text) || (!IGNORABLE.test(text) && text.normalize('NFKC') === text)) return view;
+  const out = new WrittenText(text.length, buffers);
+  // Each cluster read once per field, and whether each code point joins the one before it.
+  const reads = new Map<string, string>();
+  const joins = new Map<number, boolean>();
+  const joinsBefore = (point: number): boolean => {
+    if (point < 0x300) return point === 0xad;
+    let known = joins.get(point);
+    if (known === undefined) joins.set(point, known = JOINS_BEFORE.test(String.fromCodePoint(point)));
+    return known;
+  };
+  // `text[from, at)` is copied as written when the next change comes.
+  let from = 0;
+  for (const run of text.matchAll(NOT_ASCII_RUNS)) {
+    const start = run.index > 0 ? run.index - 1 : 0;
+    const end = run.index + run[0].length;
+    const segment = text.slice(start, end);
+    if (nfkc(segment) === segment) continue;
+    for (let at = start, next = start; at < end; at = next) {
+      next = at + (text.codePointAt(at)! > 0xffff ? 2 : 1);
+      while (next < end && joinsBefore(text.codePointAt(next)!)) next += text.codePointAt(next)! > 0xffff ? 2 : 1;
+      const cluster = text.slice(at, next);
+      let read = reads.get(cluster);
+      if (read === undefined) reads.set(cluster, read = clusterRead(cluster));
+      if (read === cluster) continue;
+      out.copy(view, from, at);
+      out.push(read, ...written(view, at, next));
+      from = next;
+    }
+  }
+  out.copy(view, from, text.length);
+  return out.done();
+}
+
+/** Text built from parts of a view, each code unit with where it was written, in `buffers`. */
+class WrittenText {
+  #parts: string[] = [];
+  #buffers: MapBuffers;
+  #length = 0;
+
+  constructor(capacity: number, buffers: MapBuffers) {
+    this.#buffers = buffers;
+    this.#room(capacity);
+  }
+
+  /** `view.text[from, to)`, written where the view says. */
+  copy(view: Written, from: number, to: number): void {
+    if (to <= from) return;
+    this.#room(to - from);
+    this.#parts.push(view.text.slice(from, to));
+    const { starts, ends } = this.#buffers;
+    for (let index = from; index < to; index += 1) {
+      starts[this.#length] = view.starts ? view.starts[index]! : index;
+      ends[this.#length] = view.ends ? view.ends[index]! : index + 1;
+      this.#length += 1;
+    }
+  }
+
+  /** `text`, every code unit of it written at `[start, end)`. */
+  push(text: string, start: number, end: number): void {
+    this.#room(text.length);
+    this.#parts.push(text);
+    this.#buffers.starts.fill(start, this.#length, this.#length + text.length);
+    this.#buffers.ends.fill(end, this.#length, this.#length + text.length);
+    this.#length += text.length;
+  }
+
+  #room(units: number): void {
+    const { starts, ends } = this.#buffers;
+    if (this.#length + units <= starts.length) return;
+    const capacity = Math.max(starts.length * 2, this.#length + units);
+    this.#buffers.starts = new Int32Array(capacity);
+    this.#buffers.ends = new Int32Array(capacity);
+    this.#buffers.starts.set(starts.subarray(0, this.#length));
+    this.#buffers.ends.set(ends.subarray(0, this.#length));
+  }
+
+  done(): Written {
+    const { starts, ends } = this.#buffers;
+    return { text: this.#parts.join(''), starts: starts.subarray(0, this.#length), ends: ends.subarray(0, this.#length) };
+  }
+}
+
+/**
+ * `source` without a hand-off message's link, and without that link's URL
+ * wherever else the text holds it. A thread context row lists a message's
+ * links again under its text, unescaped (slack/rich-text-links.ts). Anyone
+ * can write the label, so only a whole URL counts, and only where it stands
+ * alone: a replacement inside other text would break up a URL or a username
+ * before its own rule saw it.
+ */
+function withoutHandoffs(source: string, view: Written): string {
+  const { text } = view;
+  const spans: Span[] = [];
+  const handoffs = new Set<string>();
+  for (const match of text.matchAll(HANDOFF_LINK)) {
+    spans.push([match.index, match.index + match[0].length]);
+    for (const url of match[1] ? [match[1], unescapedSlackText(match[1])] : []) {
+      if (HANDOFF_URL.test(url)) handoffs.add(url);
+    }
+  }
+  if (handoffs.size) {
+    for (const run of text.matchAll(URL_RUN)) {
+      const end = run.index + run[0].length;
+      if (handoffs.has(run[0]) && (run.index === 0 || BEFORE_URL_RUN.test(text[run.index - 1]!)) &&
+          (end === text.length || AFTER_URL_RUN.test(text[end]!))) spans.push([run.index, end]);
+    }
+  }
+  return replaceSpans(source, spans.map(([start, end]) => written(view, start, end)), BROWSER_LINK_OMITTED);
 }
 
 // ---------------------------------------------------------------------------
@@ -857,12 +1074,12 @@ function isUnspaced(point: number): boolean {
 }
 
 /** Where `[start, end)` of a view was written. */
-function written(view: SearchView, start: number, end: number): Span {
-  return [view.starts[start]!, view.ends[end - 1]!];
+function written(view: Written, start: number, end: number): Span {
+  return view.starts && view.ends ? [view.starts[start]!, view.ends[end - 1]!] : [start, end];
 }
 
 /** `text` with each span replaced; spans that overlap are replaced once, together. */
-function replaceSpans(text: string, spans: Span[]): string {
+function replaceSpans(text: string, spans: Span[], replacement: string): string {
   const merged: Span[] = [];
   for (const [start, end] of spans.sort(([left], [right]) => left - right)) {
     const last = merged.at(-1);
@@ -872,7 +1089,7 @@ function replaceSpans(text: string, spans: Span[]): string {
   let result = '';
   let from = 0;
   for (const [start, end] of merged) {
-    result += `${text.slice(from, start)}${CREDENTIAL_REPLACEMENT}`;
+    result += `${text.slice(from, start)}${replacement}`;
     from = end;
   }
   return result + text.slice(from);
