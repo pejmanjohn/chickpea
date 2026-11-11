@@ -1012,7 +1012,7 @@ function handleDirectSlackEvents(
         await admitOnWorker(fallback = { path: 'fallback', reason: admission.reason });
       }).catch((error) => {
         console.error('[chickpea] Slack event intake failed:', sanitizeError(error));
-        // Before a fallback, nobody admitted it: the store answered a failure, or the call was never sent.
+        // Before a fallback, the Worker admits nothing: the store's admission failed, or the call was never sent.
         stateRpcs.emit({ receivedAt, ...fallback ?? { path: 'fallback', reason: 'store_failed' } });
       }));
       return;
