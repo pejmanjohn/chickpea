@@ -130,6 +130,28 @@ test('a URL on a login\'s site, or any URL in a browser step, keeps its scheme, 
   'a slug, a short ID, a public query and another site\'s link a person shares stay');
 });
 
+test('a page\'s address keeps its \' and |, and a JSON-escaped & or =, inside the URL a copy cuts', () => {
+  // A connector's text result that another program serialized: Go and Gson write `&` and `=` as JSON escapes.
+  const escaped = (char: string) => `${'\\'}u${char.charCodeAt(0).toString(16).padStart(4, '0')}`;
+  const mail = `{"link":"https://billing.example.com/magic?email=a${escaped('&')}token${escaped('=')}SYNTHMAGIC0123","next":"x"}`;
+  assert.equal(mail.includes('&') || mail.includes('token='), false, 'the test text holds the escapes');
+  const record = copy({
+    steps: [
+      browserStep('browser_open', { url: 'https://portal.example.org/users/o\'brien/callback?code=SYNTHCODE123' }, {
+        url: 'https://billing.example.com/callback?scope=read|write&code=SYNTHCODE123',
+        snapshot: '- link "Search" [ref=e1]',
+      }),
+      { kind: 'tool', name: 'read_mail', input: '{}', output: JSON.stringify({ text: mail }) },
+    ],
+  });
+  assert.deepEqual(kept(record, ['SYNTHCODE123', 'SYNTHMAGIC0123']), []);
+  const [opened, read] = record.steps;
+  assert.ok(opened?.kind === 'tool' && read?.kind === 'tool');
+  assert.equal(opened.input, '{"url":"https://portal.example.org/users/o\'brien/callback?[omitted]"}');
+  assert.match(opened.output ?? '', /"url":"https:\/\/billing\.example\.com\/callback\?\[omitted\]"/);
+  assert.equal(JSON.parse(read.output ?? '{}').text, '{"link":"https://billing.example.com/magic?[omitted]","next":"x"}');
+});
+
 test('every hosted browser link goes whole, whatever its host', () => {
   const record = copy({
     trigger: { author: 'U012ABCDEF3', text: 'Is https://www.browserbase.com/sessions/SYNTHSESS3 still open?', files: [] },
@@ -214,6 +236,21 @@ test('usernames match whole words, and one under four characters only as a whole
   const output = short.steps[0]?.kind === 'tool' ? short.steps[0].output ?? '' : '';
   assert.equal(JSON.parse(output).snapshot, '- textbox "User" [ref=e1] value="[credential redacted]"\n- text "bob approved it"');
   assert.equal(short.answer, 'bob approved it.');
+});
+
+test('a username leaves prose written without spaces between words', () => {
+  const record = copy({
+    trigger: { author: 'U012ABCDEF3', text: 'ユーザー名Ops.Synthetic@example.comでログインしてください', files: [] },
+    context: [{ author: 'U012ABCDEF3', role: 'human', text: '已使用ops.synthetic@example.com登录', files: [] }],
+    answer: 'ops.synthetic@example.com으로 로그인했습니다. เข้าสู่ระบบด้วยops.synthetic@example.comแล้ว',
+  });
+  assert.deepEqual(kept(record, ['ops.synthetic']), []);
+  assert.equal(record.trigger.text, 'ユーザー名[credential redacted]でログインしてください');
+  assert.equal(record.context[0]?.text, '已使用[credential redacted]登录');
+  assert.equal(record.answer, '[credential redacted]으로 로그인했습니다. เข้าสู่ระบบด้วย[credential redacted]แล้ว');
+
+  const admin = copy({ answer: '管理者adminです。sysadminです。' }, { hosts: [], usernames: ['admin'] });
+  assert.equal(admin.answer, '管理者[credential redacted]です。sysadminです。', 'a Latin word still keeps a username inside it');
 });
 
 function fakePort(t: TestContext): RunReviewRecordV1[] {

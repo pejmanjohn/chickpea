@@ -29,13 +29,27 @@ export const MIN_USERNAME_CHARS = 4;
 /** The shortest start of a username removed where a cut or a `…` ends it. */
 export const MIN_CUT_PREFIX_CHARS = 4;
 
-// A URL ends at whitespace, a quote, Slack's `<`, `>` and `|`, or a JSON escape.
+// A URL ends at whitespace, a quote, Slack's `<`, `>` and `|`, or a backslash.
 const URL_CHAR = String.raw`[^\s"'<>|\\]`;
-const SCHEME_URL = String.raw`\b(?:https?|wss?):\/\/${URL_CHAR}+`;
+// A browser step holds a tool's JSON, not prose or Slack markup, and a page's address keeps `'` and `|` as they are.
+const STEP_URL_CHAR = String.raw`[^\s"<>\\]`;
+// The JSON escape of `&`, `'`, `+` or `=` does not end a URL: Go, Gson and .NET write them that way.
+const ESCAPED_ASCII = String.raw`\\+u00(?:26|27|2[bB]|3[dD])`;
 const HOST_START = String.raw`(?<![\p{L}\p{N}.@/_-])`;
-const AFTER_HOST = String.raw`(?::\d+)?(?:\/${URL_CHAR}*|[;?#]${URL_CHAR}+)`;
+
+/** A URL with a scheme, and what follows a scheme-less host, over one class of URL characters. */
+function urlPatterns(char: string): { scheme: string; afterHost: string } {
+  const more = String.raw`${char}*(?:${ESCAPED_ASCII}${char}*)*`;
+  return {
+    scheme: String.raw`\b(?:https?|wss?):\/\/${char}${more}`,
+    afterHost: String.raw`(?::\d+)?(?:\/${more}|[;?#]${char}${more})`,
+  };
+}
+
+const TEXT_URL = urlPatterns(URL_CHAR);
+const STEP_URL = urlPatterns(STEP_URL_CHAR);
 // Any host followed by a path or a query, as a browser step's input may name a page.
-const ANY_SCHEMELESS_URL = String.raw`${HOST_START}(?:[a-z0-9-]+\.)+[a-z]{2,}${AFTER_HOST}`;
+const ANY_SCHEMELESS_URL = String.raw`${HOST_START}(?:[a-z0-9-]+\.)+[a-z]{2,}${STEP_URL.afterHost}`;
 
 const HANDOFF_LINK = new RegExp(String.raw`<[^<>|]*\|${escapeRegExp(BROWSER_HANDOFF_LINK_LABEL)}>`, 'g');
 
@@ -81,11 +95,11 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
   const loginSite = (hostname: string) =>
     hostnames.some((host) => hostname === host || hostname.endsWith(`.${host}`));
   const loginSchemeless = hostnames.length
-    ? String.raw`${HOST_START}(?:[a-z0-9-]+\.)*(?:${hostnames.map(escapeRegExp).join('|')})${AFTER_HOST}`
+    ? String.raw`${HOST_START}(?:[a-z0-9-]+\.)*(?:${hostnames.map(escapeRegExp).join('|')})${TEXT_URL.afterHost}`
     : undefined;
   const linkPatterns = {
-    anywhere: new RegExp([SCHEME_URL, loginSchemeless].filter(Boolean).join('|'), 'giu'),
-    browserStep: new RegExp([SCHEME_URL, ANY_SCHEMELESS_URL].join('|'), 'giu'),
+    anywhere: new RegExp([TEXT_URL.scheme, loginSchemeless].filter(Boolean).join('|'), 'giu'),
+    browserStep: new RegExp([STEP_URL.scheme, ANY_SCHEMELESS_URL].join('|'), 'giu'),
   };
 
   const scrubLink = (raw: string, browserStep: boolean): string => {
@@ -143,9 +157,11 @@ const CUT_MARK = '…';
 const WORD = /[\p{L}\p{N}]/u;
 const ASCII_WORD = /[A-Za-z0-9]/;
 const WORD_CHAR = String.raw`[\p{L}\p{N}]`;
-// Not inside a word, though a JSON, percent or Slack escape may sit right before it.
-const WORD_START = String.raw`(?:(?<!${WORD_CHAR})|(?<=\\[nrtbf]|\\u[0-9A-Fa-f]{4}|%[0-9A-Fa-f]{2}|&(?:amp|lt|gt);))`;
-const WORD_END = String.raw`(?!${WORD_CHAR})`;
+// Chinese, Japanese, Korean and Thai put no space between a word and a username beside it.
+const UNSPACED_LETTER = String.raw`[\p{scx=Han}\p{scx=Hiragana}\p{scx=Katakana}\p{scx=Hangul}\p{scx=Thai}]`;
+// Not inside a word, though an unspaced letter or a JSON, percent or Slack escape may sit right before it.
+const WORD_START = String.raw`(?:(?<!${WORD_CHAR})|(?<=${UNSPACED_LETTER}|\\[nrtbf]|\\u[0-9A-Fa-f]{4}|%[0-9A-Fa-f]{2}|&(?:amp|lt|gt);))`;
+const WORD_END = String.raw`(?:(?!${WORD_CHAR})|(?=${UNSPACED_LETTER}))`;
 // Where a snapshot ends one node's text and starts the next: `"`, a line break, `- text "`.
 const NODE_BREAK = String.raw`(?:\\*"(?: \[ref=e\d+\])?(?:\s|\\+[nrt])+-\s[A-Za-z]+\s\\*")?`;
 const CUT_AHEAD = String.raw`(?:\s|\\+[nrt])*${CUT_MARK}`;
