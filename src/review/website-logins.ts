@@ -49,7 +49,7 @@ export const MAX_SCRUB_LOGINS = 500;
 export const MAX_SCRUB_USERNAME_CHARS = 320;
 /**
  * The work one copy's scrub may do, in characters read and automaton steps.
- * A copy at the record cap with 500 saved usernames takes about a tenth of it.
+ * A copy at the record cap with 500 saved usernames takes at most a seventh of it.
  */
 export const SCRUB_BUDGET_STEPS = 20_000_000;
 /** What reading a host that is not in ASCII costs besides its length: a URL parses it in about the time of 80 steps. */
