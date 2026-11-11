@@ -256,3 +256,21 @@ test('account helper still refuses more pages or a second account array, whateve
         !/private/.test(error.message), JSON.stringify(provider));
   }
 });
+
+test('account helper logs a new envelope key from an event-stream answer too', async (t) => {
+  const logged: unknown[] = [];
+  t.mock.method(console, 'info', (event: unknown) => { logged.push(event); });
+  const provider = {
+    accounts: [{ ad_account_id: '123450001', is_ads_mcp_enabled: true, is_queryable: true }],
+    request_context: 'synthetic-private-context',
+  };
+  const envelope = { jsonrpc: '2.0', id: 'call-2', result: { structuredContent: provider } };
+  const response = await sanitizeMetaAdsAccountHelperResponse(new Response(
+    `event: message\ndata: ${JSON.stringify(envelope)}\n\n`,
+    { headers: { 'content-type': 'text/event-stream' } },
+  ), approved, { connectionId: 'meta-test' });
+  assert.doesNotMatch(await response.text(), /request_context|synthetic-/);
+  assert.deepEqual(logged, [{
+    event: 'chickpea.meta_ads.account_envelope_extra_keys', connectionId: 'meta-test', keys: ['request_context'],
+  }]);
+});

@@ -901,15 +901,44 @@ test('a Meta tool whose live schema requires an unreviewed argument is not mount
 test('a granted Meta tool with no usable reviewed schema is not mounted, and the rest are', async (t) => {
   const logs = captureLogs(t);
   const server = pagedServer('json', [[liveHelper, liveReport(), liveEntities]]);
-  const stored = META_STORED.map((tool) => tool.name === META_ENTITIES ? { name: tool.name } : tool);
+  // The helper's live schema requires nothing; the entities tool's requires its account.
+  const stored = META_STORED.map((tool) => tool.name === META_REPORT ? tool : { name: tool.name });
   await withRuntimeConnection(metaConnection({ discoveredTools: stored }), server.fetch, async (definition) => {
-    assert.deepEqual(await mountedNames(definition),
-      [`mcp__meta__${META_ADS_ACCOUNT_HELPER}`, `mcp__meta__${META_REPORT}`]);
+    assert.deepEqual(await mountedNames(definition), [`mcp__meta__${META_REPORT}`]);
   }, metaDeclaration());
   assert.deepEqual(logs.missing, [{
     event: 'chickpea.mcp.tools_missing', connectionId: 'meta', missing: [], taskOnly: [], listedCount: 3,
-    schemaRequires: { [META_ENTITIES]: [] },
+    schemaRequires: { [META_ADS_ACCOUNT_HELPER]: [], [META_ENTITIES]: [] },
   }]);
+});
+
+test('a Meta name listed twice stays unmounted after a withheld first copy, and stays mounted after a mounted one', async (t) => {
+  const logs = captureLogs(t);
+  const grant = [META_REPORT, META_ENTITIES];
+  const unusable = liveReport(['ad_account_id', 'advertiser_job']);
+  const withheldFirst = pagedServer('json', [[unusable, liveReport(), liveEntities]]);
+  await withRuntimeConnection(metaConnection({ allowedTools: grant }), withheldFirst.fetch, async (definition) => {
+    assert.deepEqual(await mountedNames(definition), [`mcp__meta__${META_ENTITIES}`]);
+  }, metaDeclaration(grant));
+  assert.deepEqual(logs.missing.map(({ missing, schemaRequires }) => ({ missing, schemaRequires })), [
+    { missing: [], schemaRequires: { [META_REPORT]: ['advertiser_job'] } },
+  ]);
+
+  logs.missing.length = 0;
+  const mountedFirst = pagedServer('json', [[liveReport()], [unusable, liveEntities]]);
+  await withRuntimeConnection(metaConnection({ allowedTools: grant }), mountedFirst.fetch, async (definition) => {
+    assert.deepEqual(await mountedNames(definition), [`mcp__meta__${META_REPORT}`, `mcp__meta__${META_ENTITIES}`]);
+  }, metaDeclaration(grant));
+  assert.deepEqual(logs.missing, [], 'a later copy of a mounted name is ignored, not reported');
+});
+
+test('a malformed tool in a Meta listing still fails the listing instead of disappearing', async (t) => {
+  const logs = captureLogs(t);
+  const server = pagedServer('json', [[liveReport(), { description: 'A synthetic tool without a name.' }]]);
+  await withRuntimeConnection(metaConnection(), server.fetch, async (definition) => {
+    await assert.rejects(createMcpConnection(definition), /Meta Ads tool discovery returned an unsupported response \(tool\)/);
+  }, metaDeclaration());
+  assert.deepEqual(logs.refused, [{ event: 'chickpea.mcp.tools_list_refused', connectionId: 'meta', reason: 'tool' }]);
 });
 
 test('a Meta connection whose every granted tool is withheld fails with a reason a person can act on', async (t) => {
