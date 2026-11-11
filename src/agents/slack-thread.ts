@@ -1461,7 +1461,7 @@ export function useRuntimePlanAgent(
       JSON.stringify(plan.apiConnections.map(({ id, displayName, allowedHosts, pathPrefixes, allowedMethods }) => ({ id, displayName, allowedHosts, pathPrefixes, allowedMethods }))),
     ].join('\n'));
   }
-  const browserSession = browserMounted ? useBrowserSession(id, createRuntimePlanBrowserSession) : undefined;
+  const browserSession = browserMounted ? useBrowserSession(id, () => createRuntimePlanBrowserSession(plan)) : undefined;
   // The delivery's verified Slack signal, parsed once for the two uses below.
   const browserSignal = browserSession && plan.websiteLogins?.length
     ? runtimePlanSlackSignal(plan)
@@ -2344,9 +2344,11 @@ function runtimePlanBrowserLogins(
  * deployment serving many installations meters its sessions in the hosted
  * wrapper instead.
  */
-export function createRuntimePlanBrowserSession(): BrowserTurnSession {
+export function createRuntimePlanBrowserSession(plan: Pick<RuntimePlanV2, 'websiteLogins'>): BrowserTurnSession {
   return new BrowserTurnSession({
     provider: createRuntimePlanBrowserProvider(),
+    // The plan's logins are what mount sign-in and hand-off, so without one no sign-in secret reaches the browser.
+    grantsWebsiteLogins: (plan.websiteLogins?.length ?? 0) > 0,
     connect: async (connectUrl) => (await import('../browser/cdp.ts')).connectCdpSocket(connectUrl),
     onClosed: async ({ sessionId, seconds }) => {
       try {

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { CdpClient } from '../src/browser/cdp.ts';
-import { BrowserPage, type AXNode } from '../src/browser/page.ts';
+import { BrowserPage, buildSnapshotLines, type AXNode } from '../src/browser/page.ts';
+import { TypedSecrets } from '../src/browser/redaction.ts';
 import { FakeCdpSocket } from './helpers/fake-cdp-socket.ts';
 
 const SESSION = 'page-sess';
@@ -16,10 +17,36 @@ function setup() {
     if (expression === 'document.readyState') return { result: { result: { type: 'string', value: 'complete' } } };
     return { result: { result: { type: 'number', value: 42 } } };
   });
+  socket.responders.set('DOM.describeNode', () => ({ result: { node: { nodeName: 'INPUT', attributes: ['type', 'text'] } } }));
+  socket.responders.set('DOMSnapshot.captureSnapshot', () => ({ result: domSnapshot() }));
   const client = new CdpClient(socket);
-  const page = new BrowserPage(client, SESSION, { sleep: async () => undefined });
-  return { socket, client, page };
+  const secrets = new TypedSecrets();
+  const page = new BrowserPage(client, SESSION, { sleep: async () => undefined, secrets });
+  return { socket, client, page, secrets };
 }
+
+/** One target's `DOMSnapshot.captureSnapshot`: its inputs, frame elements whose document is elsewhere, and other strings. */
+function domSnapshot(content: {
+  inputs?: Array<{ id: number; type?: string; value: string }>;
+  remoteFrames?: number[];
+  strings?: string[];
+} = {}) {
+  const strings: string[] = [];
+  const at = (text: string) => (strings.includes(text) ? strings.indexOf(text) : strings.push(text) - 1);
+  const inputs = content.inputs ?? [];
+  const frames = content.remoteFrames ?? [];
+  const nodes = {
+    nodeName: [...inputs.map(() => at('INPUT')), ...frames.map(() => at('IFRAME'))],
+    backendNodeId: [...inputs.map((input) => input.id), ...frames],
+    attributes: [...inputs.map((input) => [at('type'), at(input.type ?? 'text')]), ...frames.map(() => [])],
+    inputValue: { index: inputs.map((_, index) => index), value: inputs.map((input) => (input.value ? at(input.value) : -1)) },
+  };
+  for (const text of content.strings ?? []) at(text);
+  return { documents: [{ nodes, layout: { nodeIndex: [], text: [] } }], strings };
+}
+
+/** CDP methods that read a page without changing it. */
+const READ_ONLY = new Set(['Target.setAutoAttach', 'DOMSnapshot.captureSnapshot', 'DOM.describeNode', 'Page.captureScreenshot', 'Page.getLayoutMetrics', 'Page.getFrameTree']);
 
 const ax = (
   nodeId: string,
@@ -104,6 +131,30 @@ test('snapshot truncates at maxNodes, long names at 120 chars, and drops refs pa
   assert.equal(snap.truncated, true);
   assert.equal(snap.nodeCount, 3);
   assert.deepEqual([...page.refs.keys()], ['e1', 'e2']);
+  client.close();
+});
+
+test('snapshot hands each name, text and value to the redactor as the page gave it, and refs keep the real name', async () => {
+  const { socket, page, client } = setup();
+  const shown = 'Synth"etic  Pass';
+  socket.responders.set('Accessibility.getFullAXTree', () => ({
+    result: {
+      nodes: [
+        ax('1', 'RootWebArea', { childIds: ['2', '3', '4'] }),
+        ax('2', 'button', { parentId: '1', name: `Copy ${shown}`, backendDOMNodeId: 2 }),
+        ax('3', 'StaticText', { parentId: '1', name: `You typed ${shown}` }),
+        ax('4', 'textbox', { parentId: '1', name: 'Password', backendDOMNodeId: 4, value: { type: 'string', value: shown } }),
+      ],
+    },
+  }));
+  // Matches only the text as Chromium returned it: two spaces, the quote not escaped.
+  const snap = await page.snapshot({ redact: (text) => text.split(shown).join('[redacted]') });
+  assert.equal(snap.text, [
+    '- button "Copy [redacted]" [ref=e1]',
+    '- text "You typed [redacted]"',
+    '- textbox "Password" [ref=e2] value="[redacted]"',
+  ].join('\n'));
+  assert.equal(page.refs.get('e1')?.name, 'Copy Synth"etic Pass');
   client.close();
 });
 
@@ -304,6 +355,242 @@ test('fillSecret focuses the node, clears it, and inserts the value without touc
   client.close();
 });
 
+test('fillSecret hides the field it fills, and each field its typing filled, until the page shows another document', async () => {
+  const { socket, page, client } = setup();
+  const code = '493817';
+  let typed = '';
+  let loaderId = 'l1';
+  // One-digit code boxes that the page fills from the first, beside a search box that keeps its own text.
+  socket.responders.set('Accessibility.getFullAXTree', () => ({
+    result: {
+      nodes: [
+        ax('1', 'RootWebArea', { childIds: ['2', '3', '4', '5', '6', '7', '8'] }),
+        ...[...code].map((_, index) => ax(String(index + 2), 'textbox', {
+          parentId: '1', name: `Digit ${index + 1}`, backendDOMNodeId: 51 + index,
+          ...(typed ? { value: { type: 'string', value: typed[index]! } } : {}),
+        })),
+        ax('8', 'searchbox', { parentId: '1', name: 'Search', backendDOMNodeId: 60, value: { type: 'string', value: 'invoices' } }),
+      ],
+    },
+  }));
+  socket.responders.set('Input.insertText', (message) => {
+    typed = String(message.params.text);
+    return {};
+  });
+  socket.responders.set('Page.getFrameTree', () => ({ result: { frameTree: { frame: { id: 'f1', loaderId } } } }));
+  await page.snapshot();
+  assert.equal(page.typedSecret, false);
+  await page.fillSecret('e1', code);
+  assert.equal(page.typedSecret, true);
+  const hidden = (await page.snapshot()).text;
+  assert.deepEqual(hidden.split('\n'), [
+    ...[1, 2, 3, 4, 5, 6].map((n) => `- textbox "Digit ${n}" [ref=e${n}] value="[redacted]"`),
+    '- searchbox "Search" [ref=e7] value="invoices"',
+  ]);
+  // Another document may reuse the node ids; its fields are not secret.
+  loaderId = 'l2';
+  assert.match((await page.snapshot()).text, /textbox "Digit 1" \[ref=e1\] value="4"/);
+  assert.equal(page.typedSecret, true);
+  client.close();
+});
+
+test('fillSecret with visible types a value that stays readable', async () => {
+  const { socket, page, client } = setup();
+  socket.responders.set('Accessibility.getFullAXTree', () => ({
+    result: { nodes: [ax('1', 'textbox', { name: 'Email', backendDOMNodeId: 30, value: { type: 'string', value: 'octo@example.com' } })] },
+  }));
+  await page.snapshot();
+  await page.fillSecret('e1', 'octo@example.com', { visible: true });
+  assert.equal(page.typedSecret, false);
+  assert.equal((await page.snapshot()).text, '- textbox "Email" [ref=e1] value="octo@example.com"');
+  client.close();
+});
+
+test('a secret field shows [redacted] for any value and nothing of what it holds; other nodes with its id are not hidden', () => {
+  const nodes = [
+    ax('1', 'RootWebArea', { childIds: ['2', '5', '7', '8'] }),
+    // A text field as Chromium gives it: its value again as a text node inside it.
+    ax('2', 'textbox', { parentId: '1', name: 'Password', backendDOMNodeId: 9, value: { type: 'string', value: 'Synthetic-' }, childIds: ['3'] }),
+    ax('3', 'generic', { parentId: '2', backendDOMNodeId: 10, childIds: ['4'], properties: [{ name: 'editable', value: { type: 'token', value: 'plaintext' } }] }),
+    ax('4', 'StaticText', { parentId: '3', name: 'Synthetic-' }),
+    ax('5', 'generic', {
+      parentId: '1', backendDOMNodeId: 15, value: { type: 'string', value: '••••••' }, childIds: ['6'],
+      properties: [{ name: 'editable', value: { type: 'token', value: 'richtext' } }],
+    }),
+    ax('6', 'StaticText', { parentId: '5', name: '••••••' }),
+    ax('7', 'listitem', { parentId: '1', backendDOMNodeId: 20, childIds: ['9'] }),
+    ax('9', 'StaticText', { parentId: '7', name: 'Welcome back' }),
+    ax('8', 'textbox', { parentId: '1', name: 'Code', backendDOMNodeId: 21 }),
+  ];
+  const lines = buildSnapshotLines(nodes, { secretFields: new Set([9, 15, 20, 21]) }).map((line) => line.text);
+  assert.deepEqual(lines, [
+    '- textbox "Password" [ref=e1] value="[redacted]"',
+    '- text "[redacted]"',
+    '- listitem',
+    '  - text "Welcome back"',
+    '- textbox "Code" [ref=e2]',
+  ]);
+});
+
+test('snapshot shows [redacted] for the value of a password or code field whoever filled it, and of a field holding the start of a typed secret', async () => {
+  const { socket, page, client, secrets } = setup();
+  secrets.add('Synthetic-Pass-1234');
+  const kinds: Record<number, string[]> = { 40: ['type', 'password'], 41: ['autocomplete', 'one-time-code'] };
+  socket.responders.set('DOM.describeNode', (message) => {
+    const id = Number(message.params.backendNodeId);
+    if (id === 44) return { error: { code: -32000, message: 'No node with given id found' } };
+    return { result: { node: { nodeName: 'INPUT', attributes: kinds[id] ?? ['type', 'text'] } } };
+  });
+  const field = (nodeId: string, name: string, id: number, value: string) =>
+    ax(nodeId, 'textbox', { parentId: '1', name, backendDOMNodeId: id, value: { type: 'string', value } });
+  socket.responders.set('Accessibility.getFullAXTree', () => ({
+    result: {
+      nodes: [
+        ax('1', 'RootWebArea', { childIds: ['2', '3', '4', '5', '6', '7'] }),
+        // A masked password field, filled by the page or a person: Chromium gives one bullet per character.
+        field('2', 'Password', 40, '•••••••••••••••••••'),
+        field('3', 'Code', 41, '493817'),
+        // A copy of a password field that cut what was typed, made after the sign-in.
+        field('4', 'Password', 42, 'Synthetic-'),
+        ax('5', 'searchbox', { parentId: '1', name: 'Search', backendDOMNodeId: 43, value: { type: 'string', value: 'invoices' } }),
+        field('6', 'Gone', 44, 'Anything'),
+        field('7', 'Empty', 45, ''),
+      ],
+    },
+  }));
+  assert.deepEqual((await page.snapshot()).text.split('\n'), [
+    '- textbox "Password" [ref=e1] value="[redacted]"',
+    '- textbox "Code" [ref=e2] value="[redacted]"',
+    '- textbox "Password" [ref=e3] value="[redacted]"',
+    '- searchbox "Search" [ref=e4] value="invoices"',
+    '- textbox "Gone" [ref=e5] value="[redacted]"',
+    '- textbox "Empty" [ref=e6]',
+  ]);
+  const described = socket.sent.filter((message) => message.method === 'DOM.describeNode').map((message) => message.params.backendNodeId);
+  assert.deepEqual(described.sort(), [40, 41, 43, 44], 'only fields that hold a value are described, and not one that starts a secret');
+  client.close();
+});
+
+test('snapshot redacts only the lines it keeps', async () => {
+  const { socket, page, client } = setup();
+  socket.responders.set('Accessibility.getFullAXTree', () => ({
+    result: {
+      nodes: [
+        ax('1', 'RootWebArea', { childIds: ['2', '3', '4'] }),
+        ...['One', 'Two', 'Three'].map((name, index) => ax(String(index + 2), 'button', { parentId: '1', name, backendDOMNodeId: index + 2 })),
+      ],
+    },
+  }));
+  const seen: string[] = [];
+  const snap = await page.snapshot({ maxNodes: 2, redact: (text) => (seen.push(text), text) });
+  assert.deepEqual(seen.filter(Boolean), ['One', 'Two']);
+  assert.equal(snap.nodeCount, 3);
+  client.close();
+});
+
+test('screenshot reads the page before and after the capture, and changes nothing on it', async () => {
+  const { socket, page, client } = setup();
+  socket.responders.set('Page.captureScreenshot', () => ({ result: { data: 'iVBORw0KGgo=' } }));
+  const shot = await page.screenshot();
+  assert.ok('bytes' in shot);
+  assert.deepEqual(socket.methods(), ['Target.setAutoAttach', 'DOMSnapshot.captureSnapshot', 'Page.captureScreenshot', 'DOMSnapshot.captureSnapshot']);
+  await page.screenshot();
+  assert.equal(socket.methods().filter((method) => method === 'Target.setAutoAttach').length, 1, 'frames attach once');
+  assert.deepEqual(socket.methods().filter((method) => !READ_ONLY.has(method)), []);
+  client.close();
+});
+
+test('a page that could hold no sign-in secret is not read for a screenshot until one is typed into it', async () => {
+  const { socket, client, secrets } = await pageWithRefs();
+  const page = new BrowserPage(client, SESSION, { sleep: async () => undefined, secrets, mayHoldSecret: false });
+  await page.snapshot();
+  socket.responders.set('Page.captureScreenshot', () => ({ result: { data: 'iVBORw0KGgo=' } }));
+  socket.responders.set('DOMSnapshot.captureSnapshot', () => ({
+    result: domSnapshot({ inputs: [{ id: 30, type: 'password', value: 'Synthetic-Pass-1234' }] }),
+  }));
+  const from = socket.sent.length;
+  assert.ok('bytes' in await page.screenshot());
+  assert.deepEqual(socket.sent.slice(from).map(({ method }) => method), ['Page.captureScreenshot']);
+  await page.fillSecret('e3', 'Synthetic-Pass-1234');
+  assert.equal(secrets.empty, true, 'only the typing tells the page');
+  assert.deepEqual(await page.screenshot(), { withheld: 'field' });
+
+  const unknown = new BrowserPage(client, SESSION, { sleep: async () => undefined, secrets: new TypedSecrets() });
+  assert.deepEqual(await unknown.screenshot(), { withheld: 'field' }, 'a page not told whether it could hold a secret checks');
+  client.close();
+});
+
+test('screenshot is withheld, with nothing captured, while a password field holds a value, and taken once the form is gone', async () => {
+  const { socket, page, client } = setup();
+  let page1 = domSnapshot({ inputs: [{ id: 40, type: 'password', value: 'Synthetic-Pass-1234' }] });
+  socket.responders.set('DOMSnapshot.captureSnapshot', () => ({ result: page1 }));
+  socket.responders.set('Page.captureScreenshot', () => ({ result: { data: 'iVBORw0KGgo=' } }));
+  assert.deepEqual(await page.screenshot(), { withheld: 'field' });
+  assert.equal(socket.methods().includes('Page.captureScreenshot'), false);
+  page1 = domSnapshot({ strings: ['Welcome back'] });
+  assert.ok('bytes' in await page.screenshot());
+  client.close();
+});
+
+test('a capture is discarded when the page shows a typed secret by the time it is taken', async () => {
+  const { socket, page, client, secrets } = setup();
+  secrets.add('Synthetic-Pass-1234');
+  let captured = false;
+  socket.responders.set('Page.captureScreenshot', () => {
+    captured = true;
+    return { result: { data: 'iVBORw0KGgo=' } };
+  });
+  socket.responders.set('DOMSnapshot.captureSnapshot', () => ({
+    result: domSnapshot({ strings: captured ? ['You typed Synthetic-Pass-1234'] : ['Sign in'] }),
+  }));
+  assert.deepEqual(await page.screenshot(), { withheld: 'text' });
+  assert.equal(captured, true);
+  client.close();
+});
+
+test('screenshot is unchecked, with nothing captured, when the browser cannot read the page', async () => {
+  const { socket, page, client } = setup();
+  socket.responders.set('DOMSnapshot.captureSnapshot', () => ({ error: { code: -32000, message: 'snapshot failed' } }));
+  assert.deepEqual(await page.screenshot(), { withheld: 'unchecked' });
+  assert.equal(socket.methods().includes('Page.captureScreenshot'), false);
+  client.close();
+});
+
+test('screenshot reads each out-of-process frame the browser attaches, and a frame it did not attach leaves the page unchecked', async () => {
+  const { socket, page, client, secrets } = setup();
+  secrets.add('Synthetic-Pass-1234');
+  socket.responders.set('Target.setAutoAttach', (message) => {
+    // The browser reports the frames already there after the command arrives and before it answers.
+    const child = { [SESSION]: ['frame-1', 'F1'], 'frame-1': ['frame-2', 'F2'] }[message.sessionId!];
+    if (child) {
+      queueMicrotask(() => socket.emitEvent('Target.attachedToTarget', { sessionId: child[0], targetInfo: { type: 'iframe', targetId: child[1] } }, message.sessionId));
+    }
+    return { result: {} };
+  });
+  const frames: Record<string, ReturnType<typeof domSnapshot>> = {
+    [SESSION]: domSnapshot({ remoteFrames: [50] }),
+    'frame-1': domSnapshot({ remoteFrames: [7], strings: ['Welcome'] }),
+    'frame-2': domSnapshot({ strings: ['deep Synthetic-Pass-1234'] }),
+  };
+  socket.responders.set('DOMSnapshot.captureSnapshot', (message) => ({ result: frames[message.sessionId!]! }));
+  const frameIds: Record<string, string> = { [`${SESSION}:50`]: 'F1', 'frame-1:7': 'F2' };
+  socket.responders.set('DOM.describeNode', (message) => ({
+    result: { node: { nodeName: 'IFRAME', frameId: frameIds[`${message.sessionId}:${String(message.params.backendNodeId)}`] } },
+  }));
+  assert.deepEqual(await page.screenshot(), { withheld: 'text' });
+  assert.deepEqual(
+    socket.sent.filter((message) => message.method === 'DOMSnapshot.captureSnapshot').map((message) => message.sessionId),
+    [SESSION, 'frame-1', 'frame-2'],
+  );
+
+  frames['frame-2'] = domSnapshot({ strings: ['Welcome'] });
+  socket.responders.set('Page.captureScreenshot', () => ({ result: { data: 'iVBORw0KGgo=' } }));
+  assert.ok('bytes' in await page.screenshot());
+  socket.emitEvent('Target.detachedFromTarget', { sessionId: 'frame-2' }, 'frame-1');
+  assert.deepEqual(await page.screenshot(), { withheld: 'unchecked' }, 'frame-1 still holds the frame that left');
+  client.close();
+});
+
 test('act with an unknown ref asks for a new snapshot', async () => {
   const { page, client } = await pageWithRefs();
   await assert.rejects(page.act('e9', 'click'), { message: 'Unknown element reference e9; take a new snapshot' });
@@ -313,9 +600,10 @@ test('act with an unknown ref asks for a new snapshot', async () => {
 test('screenshot decodes base64 image data', async () => {
   const { socket, page, client } = setup();
   socket.responders.set('Page.captureScreenshot', () => ({ result: { data: 'iVBORw0KGgo=' } }));
-  const bytes = await page.screenshot({ format: 'jpeg', quality: 70 });
-  assert.deepEqual([...bytes], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-  assert.deepEqual(socket.sent[0]!.params, { format: 'jpeg', quality: 70 });
+  const shot = await page.screenshot({ format: 'jpeg', quality: 70 });
+  assert.ok('bytes' in shot);
+  assert.deepEqual([...shot.bytes], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  assert.deepEqual(socket.sent.find((m) => m.method === 'Page.captureScreenshot')!.params, { format: 'jpeg', quality: 70 });
 
   socket.responders.set('Page.getLayoutMetrics', () => ({ result: { cssContentSize: { x: 0, y: 0, width: 1280.4, height: 3000 } } }));
   await page.screenshot({ fullPage: true });

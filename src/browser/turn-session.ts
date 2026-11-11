@@ -15,6 +15,8 @@
 import type { CdpClient, CdpSocket } from './cdp.ts';
 import type { BrowserPage } from './page.ts';
 import type { BrowserProvider } from './provider.ts';
+import type { RedactionBudget } from './redaction-budget.ts';
+import type { TypedSecrets } from './redaction.ts';
 
 export const DEFAULT_BROWSER_SESSION_MS = 10 * 60 * 1000;
 export const BROWSER_VIEWPORT = { width: 1280, height: 800 } as const;
@@ -48,6 +50,12 @@ export interface BrowserTurnSessionDeps {
    * it is bound to a login whose grant allows actions.
    */
   policy?: BrowserPolicy;
+  /**
+   * Whether the run grants a website login. Only false lets a session skip
+   * checking pictures for a sign-in secret, until a secret is typed into it.
+   * A hand-off session always checks.
+   */
+  grantsWebsiteLogins?: boolean;
   connect: (connectUrl: string) => Promise<CdpSocket>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -73,6 +81,7 @@ interface ActiveSession {
 
 interface OpenOptions {
   binding?: BrowserSessionBinding;
+  /** A hand-off session, kept alive for a person to sign in. */
   keepAlive?: boolean;
   timeoutSeconds?: number;
 }
@@ -81,8 +90,6 @@ interface OpenOptions {
 export const BROWSER_HANDOFF_SECONDS = 600;
 /** Refusing downloads is best effort; a browser that does not answer must not hold up the session. */
 const DOWNLOAD_POLICY_TIMEOUT_MS = 5_000;
-/** Secrets shorter than this are not redacted from page text (they would erase ordinary words). */
-const MIN_REDACTED_LENGTH = 4;
 
 function sameBinding(left: BrowserSessionBinding | undefined, right: BrowserSessionBinding | undefined): boolean {
   return left?.loginId === right?.loginId;
@@ -98,7 +105,8 @@ export class BrowserTurnSession {
   private opening: Promise<ActiveSession> | undefined;
   private closing: Promise<BrowserSessionClosedInfo | undefined> | undefined;
   private usedMs = 0;
-  private readonly redactions = new Set<string>();
+  /** Secrets typed this turn. The matcher loads with the first session, before anything can be typed. */
+  private secrets: TypedSecrets | undefined;
   /** Logins handed to a person this turn; browsing them again must wait for the reply. */
   readonly handedOff = new Set<string>();
   private readonly now: () => number;
@@ -138,23 +146,32 @@ export class BrowserTurnSession {
     return this.deps.provider;
   }
 
+  /** Whether a sign-in password or code was typed in the open session. */
+  get typedSecret(): boolean {
+    return this.current?.page.typedSecret ?? false;
+  }
+
   /** The login the open session is bound to; undefined when public or closed. */
   get binding(): BrowserSessionBinding | undefined {
     return this.current?.binding;
   }
 
   /**
-   * Remember a secret typed this turn so page text and errors shown to the
-   * model replace it with [redacted].
+   * Remember a secret typed this turn so page text, URLs and errors shown to
+   * the model replace it with [redacted], in every form the page can show it.
    */
   addRedaction(value: string): void {
-    if (value.length >= MIN_REDACTED_LENGTH) this.redactions.add(value);
+    if (!this.secrets) throw new Error('A secret can be typed only into an open browser session.');
+    this.secrets.add(value);
   }
 
-  redact(text: string): string {
-    let result = text;
-    for (const secret of this.redactions) result = result.split(secret).join('[redacted]');
-    return result;
+  /** Pass one `budget` for every piece of text one tool result shows; it throws `RedactionBudgetError` once spent. */
+  redact(text: string, budget?: RedactionBudget): string {
+    return this.secrets ? this.secrets.redact(text, budget) : text;
+  }
+
+  redactUrl(url: string, budget?: RedactionBudget): string {
+    return this.secrets ? this.secrets.redactUrl(url, budget) : url;
   }
 
   /** The open session, whichever login it is bound to; opens a public one when none is open. */
@@ -243,11 +260,13 @@ export class BrowserTurnSession {
     try {
       // The CDP client and page driver load only when a turn actually
       // browses, which keeps them out of the Worker's startup graph.
-      const [socket, { CdpClient }, { BrowserPage }] = await Promise.all([
+      const [socket, { CdpClient }, { BrowserPage }, { TypedSecrets }] = await Promise.all([
         this.deps.connect(handle.connectUrl),
         import('./cdp.ts'),
         import('./page.ts'),
+        import('./redaction.ts'),
       ]);
+      this.secrets ??= new TypedSecrets();
       const client = new CdpClient(socket);
       try {
         const pageSessionId = await client.attachFirstPage();
@@ -256,7 +275,11 @@ export class BrowserTurnSession {
           .catch(() => {
             console.warn('[chickpea] A browser session could not refuse downloads');
           });
-        const page = new BrowserPage(client, pageSessionId, this.deps.sleep ? { sleep: this.deps.sleep } : {});
+        const page = new BrowserPage(client, pageSessionId, {
+          secrets: this.secrets,
+          mayHoldSecret: this.deps.grantsWebsiteLogins !== false || options.keepAlive === true,
+          ...(this.deps.sleep ? { sleep: this.deps.sleep } : {}),
+        });
         const active: ActiveSession = { sessionId: handle.id, client, page, startedAt, ...(binding ? { binding } : {}) };
         this.current = active;
         return active;

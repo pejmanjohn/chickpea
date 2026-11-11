@@ -61,6 +61,7 @@ const LAZY_MODULES: Record<string, string> = {
   'src/usage/test-run-usage.ts': 'the test-run lifecycle or tools (state/test-run-lifecycle.ts, management/mcp-v5/test-runs.ts)',
   'src/agents/test-run-plan.ts': 'the test-run instance port or tools (state/test-run-instance.ts, management/mcp-v5/test-runs.ts)',
   'src/management/mcp-v5/test-runs.ts': "try_agent_once's or get_test_run's first call (management/mcp-v5/tools.ts)",
+  'src/browser/approval.ts': "browser_open's or browser_act's first call (browser/tools.ts)",
 };
 
 /**
