@@ -2278,6 +2278,7 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
               remoteCallCount,
               providerToolCallCount,
               capabilityToolDispatched,
+              ...(result.logId ? { providerLogId: result.logId } : {}),
             },
           );
         }
@@ -5622,8 +5623,11 @@ function recordExecutionFailure(
 }
 
 const MAX_REPORTED_FAILURE_REASON_CHARS = 1_000;
-// Redaction runs before the cut, over extra text, so the cut cannot halve a credential.
+// Redaction scans this much more than the model reads. It is also longer than any part of a
+// credential that a cut can leave too short to match its signature.
 const REPORTED_FAILURE_REDACTION_MARGIN_CHARS = 1_024;
+const REPORTED_FAILURE_CUT_TOKEN = new RegExp(`\\S{1,${REPORTED_FAILURE_REDACTION_MARGIN_CHARS}}$`);
+const MAX_REPORTED_FAILURE_SOURCE_CHARS = 16_384;
 
 function reportedFailureMessage(
   providerStatus: number | undefined,
@@ -5639,14 +5643,35 @@ function reportedFailureMessage(
 /** Composio's own failure text, which can echo the request, so it is redacted and bounded. */
 function reportedFailureReason(error: unknown, apiKey: string): string | undefined {
   if (typeof error !== 'string') return undefined;
-  const reason = redactConnectionText(
-    error.slice(0, MAX_REPORTED_FAILURE_REASON_CHARS + REPORTED_FAILURE_REDACTION_MARGIN_CHARS),
-    [apiKey],
-  ).replace(/[\s\u0000-\u001f\u007f]+/g, ' ').trim();
+  // Whitespace collapses first, so the bounds count the characters the model would read.
+  const text = error.slice(0, MAX_REPORTED_FAILURE_SOURCE_CHARS)
+    .replace(/[\s\u0000-\u001f\u007f]+/g, ' ').trim();
+  const scanChars = MAX_REPORTED_FAILURE_REASON_CHARS + REPORTED_FAILURE_REDACTION_MARGIN_CHARS;
+  const cut = error.length > MAX_REPORTED_FAILURE_SOURCE_CHARS || text.length > scanChars;
+  // The token a cut ends in is dropped: it can be the start of a credential that redaction
+  // no longer recognizes. Cut PEM armor holds spaces, and redaction removes it to its end.
+  const scanned = cut ? text.slice(0, scanChars).replace(REPORTED_FAILURE_CUT_TOKEN, '') : text;
+  const reason = redactReportedFailureText(scanned, apiKey).trim();
   if (!reason) return undefined;
-  return reason.length > MAX_REPORTED_FAILURE_REASON_CHARS
-    ? `${reason.slice(0, MAX_REPORTED_FAILURE_REASON_CHARS - 1)}…`
-    : reason;
+  return !cut && reason.length <= MAX_REPORTED_FAILURE_REASON_CHARS
+    ? reason
+    : `${reason.slice(0, MAX_REPORTED_FAILURE_REASON_CHARS - 1)}…`;
+}
+
+/**
+ * The rule of the browser tools' error text: no credential, no URL query (it can hold a key or
+ * a signature), and no named key or token. A URL's login and a bearer value go as well.
+ */
+function redactReportedFailureText(text: string, apiKey: string): string {
+  return redactConnectionText(
+    text
+      .replace(/\b(https?:\/\/)[^\s/?#@"'<>]*@/gi, '$1')
+      .replace(/\b(https?:\/\/[^\s?"'<>]*)\?[^\s"'<>]*/gi, '$1?[redacted]')
+      .replace(/((?:api[-_]?key|token|secret|password)["']?\s*[=:]\s*["']?)[^\s&"',}]+/gi, '$1[redacted]')
+      // A bearer value holds a digit or a mark; the word after "Bearer" in prose holds neither.
+      .replace(/\b(Bearer\s+)(?=[\w.~+/=-]*[\d._~+/=-])[\w.~+/=-]{8,}/gi, '$1[redacted]'),
+    [apiKey],
+  );
 }
 
 /** The connected service's HTTP status, when Composio's failed result carries one. */
