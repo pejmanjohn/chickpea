@@ -10,13 +10,9 @@ type ToolStep = Extract<RunReviewStep, { kind: 'tool' }>;
 type CollectedStep = RunReviewStep & { messageId?: string };
 type RunReviewFollowUp = Pick<FoldedMessage, 'userId' | 'messageTs' | 'text'>;
 
-/**
- * Generous enough that the record's own caps, applied after the redactor has
- * seen whole text, usually bind first; small enough to bound a long run's
- * memory. A field this long was cut, and its end may hold the start of a
- * username.
- */
-export const COLLECTED_FIELD_CHARS = 32 * 1024;
+// Generous enough that the record's own caps, applied after the redactor has
+// seen whole text, always bind first; small enough to bound a long run's memory.
+const FIELD_CHARS = 32 * 1024;
 const TOTAL_CHARS = 1024 * 1024;
 
 /**
@@ -189,9 +185,9 @@ export class RunReviewCollector {
   }
 
   #cap(text: string): string {
-    if (text.length <= COLLECTED_FIELD_CHARS) return text;
+    if (text.length <= FIELD_CHARS) return text;
     this.#truncated = true;
-    return text.slice(0, COLLECTED_FIELD_CHARS);
+    return text.slice(0, FIELD_CHARS);
   }
 }
 

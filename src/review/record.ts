@@ -10,7 +10,6 @@ import { BROWSER_TOOL_NAMES } from '../browser/tools.ts';
 import { CREDENTIAL_REPLACEMENT, redactCredentialLikeContent } from '../security/content-validation.ts';
 import { SLACK_CANVAS_TOOL_NAMES } from '../slack/canvases/tools.ts';
 import { SLACK_LIST_TOOL_NAMES } from '../slack/lists/tools.ts';
-import { COLLECTED_FIELD_CHARS } from './collector.ts';
 import { websiteLoginScrub, type RunReviewWebsiteLogins } from './website-logins.ts';
 
 export const RUN_REVIEW_RECORD_FORMAT = 'chickpea.run-review.v1';
@@ -143,39 +142,58 @@ export function runReviewPseudonymizer(key: Uint8Array): (slackUserId: string) =
 }
 
 /**
- * The record a port stores. Every string goes through, in order: the link
- * rules for website logins and the hosted browser, which must see each URL
- * whole; each key the run saved with save_connection_key or tried with
- * try_connection; each saved website login's username, except in the
+ * The record a port stores. Each field is first cut to its cap, and the
+ * record to its cap, so the scrub reads about what a copy keeps rather than
+ * all the collector held. Then every string that is left goes through, in
+ * order: the link rules for website logins and the hosted browser, which must
+ * see each URL whole; each key the run saved with save_connection_key or tried
+ * with try_connection; each saved website login's username, except in the
  * record's fixed tokens (run, Agent and model IDs, tool names, an error's
- * class); recognizable credentials; every Slack user ID; then its cap. File notes keep only a name
- * and size; and a Slack List or canvas tool's output and error, and a Slack
- * read's result from another conversation, are omitted. The builder adds no
- * Slack team, channel, thread or message IDs. Past the record cap the oldest
- * steps go first, then the oldest context.
+ * class); recognizable credentials; every Slack user ID; then its cap again,
+ * since a replacement can be longer than what it replaced. File notes keep
+ * only a name and size; and a Slack List or canvas tool's output and error,
+ * and a Slack read's result from another conversation, are omitted. The
+ * builder adds no Slack team, channel, thread or message IDs. Past the record
+ * cap the oldest steps go first, then the oldest context.
  */
 export function buildRunReviewRecord(
   input: RunReviewInput,
   pseudonymOf: (slackUserId: string) => RunReviewPseudonym,
 ): RunReviewRecordV1 {
-  let truncated = input.truncated;
+  const unscrubbed = fitRecord(shapeRecord(input, pseudonymOf, (text) => cutField(text).text));
+  const kept: RunReviewInput = {
+    ...input,
+    steps: input.steps.slice(input.steps.length - unscrubbed.steps.length),
+    context: input.context.slice(input.context.length - unscrubbed.context.length),
+  };
+  let truncated = input.truncated || unscrubbed.truncated;
+  // A key saved in a step the cap dropped still leaves every field that is kept.
   const keys = savedConnectionKeys(input.steps);
   const logins = websiteLoginScrub(input.websiteLogins);
-  const field = (text: string, kind: FieldKind = 'text'): string => {
+  const record = shapeRecord(kept, pseudonymOf, (whole, kind) => {
+    const { text, cut } = cutField(whole);
+    if (cut) truncated = true;
     const browserStep = kind === 'browser';
     const linked = logins.links(text, browserStep);
     const keyed = keys.reduce((value, key) => value.split(key).join(CREDENTIAL_REPLACEMENT), linked);
-    const named = kind === 'fixed' && FIXED_TOKEN.test(text)
-      ? keyed
-      : logins.usernames(keyed, { browserStep, cut: text.length >= COLLECTED_FIELD_CHARS });
+    const named = kind === 'fixed' && FIXED_TOKEN.test(text) ? keyed : logins.usernames(keyed, { browserStep, cut });
     const scrubbed = redactCredentialLikeContent(named).replace(SLACK_USER_ID, (id) => pseudonymOf(id));
     const capped = capUtf8(scrubbed, RUN_REVIEW_FIELD_BYTES);
     if (capped.length < scrubbed.length) truncated = true;
     return capped;
-  };
+  });
+  return fitRecord({ ...record, truncated });
+}
+
+/** The record's shape, with each string passed through `field`. */
+function shapeRecord(
+  input: RunReviewInput,
+  pseudonymOf: (slackUserId: string) => RunReviewPseudonym,
+  field: (text: string, kind: FieldKind) => string,
+): RunReviewRecordV1 {
   const files = (notes: readonly RunReviewFileNote[]): RunReviewFileNote[] =>
-    notes.map((note) => ({ name: field(note.name), ...(note.size === undefined ? {} : { size: note.size }) }));
-  const record: RunReviewRecordV1 = {
+    notes.map((note) => ({ name: field(note.name, 'text'), ...(note.size === undefined ? {} : { size: note.size }) }));
+  return {
     format: RUN_REVIEW_RECORD_FORMAT,
     runId: field(input.runId, 'fixed'),
     recordedAt: input.recordedAt,
@@ -184,25 +202,25 @@ export function buildRunReviewRecord(
     ...(input.model === undefined ? {} : { model: field(input.model, 'fixed') }),
     trigger: {
       author: input.trigger.author === 'routine' ? 'routine' : pseudonymOf(input.trigger.author),
-      text: field(input.trigger.text),
+      text: field(input.trigger.text, 'text'),
       files: files(input.trigger.files),
       ...(input.trigger.followUps?.length
         ? {
             followUps: input.trigger.followUps.map((message) => ({
               author: pseudonymOf(message.author),
-              text: field(message.text),
+              text: field(message.text, 'text'),
             })),
           }
         : {}),
     },
     context: input.context.map((message) => ({
-      author: message.role === 'human' ? pseudonymOf(message.author) : field(message.author),
+      author: message.role === 'human' ? pseudonymOf(message.author) : field(message.author, 'text'),
       role: message.role,
-      text: field(message.text),
+      text: field(message.text, 'text'),
       files: files(message.files),
     })),
     steps: input.steps.map((step): RunReviewStep => {
-      if (step.kind !== 'tool') return { kind: step.kind, text: field(step.text) };
+      if (step.kind !== 'tool') return { kind: step.kind, text: field(step.text, 'text') };
       const kind: FieldKind = BROWSER_TOOLS.has(step.name) ? 'browser' : 'text';
       return {
         kind: 'tool',
@@ -215,14 +233,15 @@ export function buildRunReviewRecord(
         ...(step.durationMs === undefined ? {} : { durationMs: step.durationMs }),
       };
     }),
-    ...(input.answer === undefined ? {} : { answer: field(input.answer) }),
+    ...(input.answer === undefined ? {} : { answer: field(input.answer, 'text') }),
     outcome: input.outcome,
-    ...(input.error ? { error: { class: field(input.error.class, 'fixed'), message: field(input.error.message) } } : {}),
+    ...(input.error
+      ? { error: { class: field(input.error.class, 'fixed'), message: field(input.error.message, 'text') } }
+      : {}),
     timings: input.timings,
     truncated: false,
     source: input.source,
   };
-  return fitRecord({ ...record, truncated });
 }
 
 /**
@@ -327,6 +346,27 @@ const encoder = new TextEncoder();
 function jsonBytes(value: unknown): number {
   return encoder.encode(JSON.stringify(value)).byteLength;
 }
+
+/**
+ * `text` cut to the field cap, before any rule reads it. A cut inside a URL,
+ * a key or a token would leave a start no rule recognizes, and none of them
+ * holds whitespace, a double quote or an angle bracket, so the cut moves back
+ * to the last of those. A run longer than CUT_LOOKBACK_CHARS, longer than any
+ * key or sign-in token, is cut where the cap falls. The end may still hold
+ * the start of a username that holds a space.
+ */
+function cutField(text: string): { text: string; cut: boolean } {
+  const capped = capUtf8(text, RUN_REVIEW_FIELD_BYTES);
+  if (capped.length === text.length) return { text, cut: false };
+  const floor = Math.max(capped.length - CUT_LOOKBACK_CHARS, 0);
+  for (let end = capped.length - 1; end >= floor; end -= 1) {
+    if (CUT_BOUNDARY.test(capped[end]!)) return { text: capped.slice(0, end), cut: true };
+  }
+  return { text: capped, cut: true };
+}
+
+const CUT_BOUNDARY = /[\s"<>]/;
+const CUT_LOOKBACK_CHARS = 4096;
 
 /** The longest prefix of `text` within `maxBytes` of UTF-8, never splitting a character. */
 function capUtf8(text: string, maxBytes: number): string {

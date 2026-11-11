@@ -12,7 +12,6 @@ import { BrowserTurnSession } from '../src/browser/turn-session.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { SqliteSettingsStore, type SettingsStore } from '../src/config/settings-store.ts';
 import { startRunReview, type RunReviewEnding } from '../src/review/capture.ts';
-import { COLLECTED_FIELD_CHARS } from '../src/review/collector.ts';
 import { configureRunReview, type RunReviewPort } from '../src/review/port.ts';
 import {
   buildRunReviewRecord,
@@ -319,15 +318,10 @@ test('a saved username leaves every field, in any case and in every escaped or e
   ].join('\n'));
 });
 
-test('a username split across snapshot lines, or cut before a … or at the collector\'s cap, leaves no part of it', () => {
+test('a username split across snapshot lines, or cut before a …, leaves no part of it', () => {
   const split = '- text "Account"\n  - text "Ops.Synthetic"\n  - link "@" [ref=e4]\n  - text "example.com"';
   const cutAtSnapshotCap = `- text "Signed in as Ops.Synthetic@ex\n… (snapshot cut at 12000 characters)`;
   const splitAfterState = '- button "Ops.Synthetic" [ref=e3] expanded\n  - text "@example.com"\n- heading "Ops.Synthetic" level=2\n- text "@example.com"';
-  const longQuery = `https://billing.example.com/report?filter=${'x'.repeat(200)} `;
-  const cutEnd = ' Signed in as Ops.Synth';
-  const collected = longQuery.repeat(Math.ceil(COLLECTED_FIELD_CHARS / longQuery.length))
-    .slice(0, COLLECTED_FIELD_CHARS - cutEnd.length) + cutEnd;
-  assert.equal(collected.length, COLLECTED_FIELD_CHARS);
   const record = copy({
     context: [{ author: 'Billing Agent', role: 'agent', text: 'Signed in as Ops.Synth…', files: [] }],
     steps: [
@@ -335,7 +329,6 @@ test('a username split across snapshot lines, or cut before a … or at the coll
       browserStep('browser_snapshot', {}, { snapshot: cutAtSnapshotCap }),
       browserStep('browser_snapshot', {}, { snapshot: splitAfterState }),
       browserStep('browser_snapshot', {}, { snapshot: '- textbox "Email" [ref=e1] value="Ops.Synthetic@exam…"' }),
-      { kind: 'tool', name: 'web_fetch', input: '{}', output: collected },
     ],
   });
   assert.deepEqual(kept(record, ['ops.synth']), []);
@@ -344,9 +337,41 @@ test('a username split across snapshot lines, or cut before a … or at the coll
   assert.equal(JSON.parse(outputs[1]!).snapshot, '- text "Signed in as [credential redacted]\n… (snapshot cut at 12000 characters)');
   assert.equal(JSON.parse(outputs[2]!).snapshot, '- button "[credential redacted]"\n- heading "[credential redacted]"');
   assert.equal(record.context[0]?.text, 'Signed in as [credential redacted]…');
-  assert.ok(new TextEncoder().encode(outputs[4]!).byteLength < RUN_REVIEW_FIELD_BYTES,
-    'the cut field shrank below the record\'s cap, so its cut end reaches the copy');
-  assert.match(outputs[4]!, /Signed in as \[credential redacted\]$/);
+});
+
+test('a field over its cap is cut before the scrub, back to where no link, key or username without a space goes on', () => {
+  // Text that ends `at` UTF-8 bytes past the field cap, so the cap cuts `tail` there.
+  const straddling = (tail: string, at: number) => {
+    const head = 'Report line with words. '.repeat(RUN_REVIEW_FIELD_BYTES / 16);
+    return head.slice(0, RUN_REVIEW_FIELD_BYTES - at) + tail;
+  };
+  const token = `SYNTHMAGIC${'7'.repeat(30)}`;
+  const key = ['ghp', `SYNTHKEY${'4'.repeat(32)}`].join('_');
+  const record = copy({
+    steps: [
+      { kind: 'tool', name: 'web_fetch', input: '{}', output: straddling(` https://billing.example.com/magic/${token} next`, 40) },
+      { kind: 'tool', name: 'web_fetch', input: '{}', output: straddling(` key ${key} next`, 20) },
+      { kind: 'tool', name: 'web_fetch', input: '{}', output: straddling(' Signed in as Billing Ops Team today', 28) },
+    ],
+  }, { hosts: ['billing.example.com'], usernames: ['Billing Ops Team'] });
+  assert.deepEqual(kept(record, ['SYNTHMAGIC', 'SYNTHKEY', 'billing ops']), []);
+  const outputs = record.steps.map((step) => step.kind === 'tool' ? step.output ?? '' : '');
+  assert.ok(outputs[0]!.endsWith('Report line with words. '), 'the link the cap cut goes whole');
+  assert.ok(outputs[1]!.endsWith(' key'), 'so does the key');
+  assert.match(outputs[2]!, / Signed in as \[credential [a-z]*$/, 'a username\'s start before the cut goes, and the cap cuts its marker');
+  assert.equal(record.truncated, true);
+});
+
+test('a copy chooses its steps by their size before the scrub, so the scrub reads about the record cap, not all the collector held', () => {
+  const query = `?filter=${'q'.repeat(8 * 1024)}`;
+  const steps = Array.from({ length: 40 }, (_, index) =>
+    browserStep('browser_open', { n: index }, { url: `https://billing.example.com/report/${index}${query}` }));
+  const record = copy({ steps });
+  assert.ok(new TextEncoder().encode(JSON.stringify(steps)).byteLength > 300 * 1024);
+  const first = record.steps[0]?.kind === 'tool' ? JSON.parse(record.steps[0].input).n as number : undefined;
+  assert.ok(first !== undefined && first > 0 && record.steps.length === 40 - first,
+    'the oldest steps went, though each would shrink to a few bytes once its query went');
+  assert.equal(record.truncated, true);
 });
 
 test('usernames match whole words, and one under four characters only as a whole value in a browser step', () => {
