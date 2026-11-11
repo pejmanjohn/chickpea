@@ -23,6 +23,7 @@ import * as connections from './connections.ts';
 import * as reads from './reads.ts';
 import type { FiveZeroDeps } from './reads.ts';
 import * as schemas from './schemas.ts';
+import * as services from './services.ts';
 import * as writes from './writes.ts';
 
 type Structured = Record<string, unknown>;
@@ -111,6 +112,14 @@ export const FIVE_ZERO_TOOLS = {
     input: schemas.listServicesInput,
     output: schemas.listServicesOutput,
     run: (deps, args) => reads.listServices(deps, args),
+  }),
+  get_service: tool({
+    title: 'Get a service',
+    description: 'What one service from list_services can do before it is connected: how it signs in, whose account it can be, its actions marked read or write, and whether a practice run can use it. Reads only; changes nothing.',
+    input: schemas.getServiceInput,
+    output: schemas.getServiceOutput,
+    text: async (output) => services.serviceText(output),
+    run: (deps, args) => services.getService(deps, args),
   }),
   list_models: tool({
     title: 'List models',

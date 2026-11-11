@@ -48,6 +48,9 @@ export const getAgentInput = z.strictObject({ agentId: zAgentId });
 export const listServicesInput = z.strictObject({
   search: z.string().max(120).optional().describe('Words to match in a service\'s name or description.'),
 });
+export const getServiceInput = z.strictObject({
+  service: zText(128).describe('A service from list_services, by service or name.'),
+});
 export const listModelsInput = z.strictObject({});
 export const listMembersInput = z.strictObject({});
 export const listSlackChannelsInput = z.strictObject({
@@ -435,6 +438,29 @@ export const getAgentOutput = z.strictObject({
 export const listServicesOutput = z.strictObject({
   services: z.array(z.strictObject({ service: z.string(), name: z.string(), description: z.string() })),
   count: z.number().int().nonnegative(),
+  nextStep: z.string(),
+});
+
+export const getServiceOutput = z.strictObject({
+  service: z.string().describe('Its service, for connect_service.'),
+  name: z.string(),
+  description: z.string(),
+  signIn: z.enum(['oauth', 'key', 'none', 'google'])
+    .describe('How the person connects it on Chickpea\'s page: oauth signs in to the service, key enters a key, none needs neither, google signs in with Google.'),
+  account: z.strictObject({
+    team: z.boolean().describe('It can be a team account everyone who uses the Agent shares; only an Owner or Admin connects one.'),
+    own: z.boolean().describe('Each person can connect their own account.'),
+  }),
+  capabilities: z.array(z.strictObject({
+    name: z.string().describe('The tool the Agent calls, or for an API the requests it sends.'),
+    does: z.enum(['read', 'write']),
+    changes: z.string().optional().describe('What a write changes.'),
+  })).optional().describe('What the Agent can do with it. Absent until it is connected when capabilitiesKnown is after_connecting.'),
+  capabilitiesKnown: z.enum(['now', 'after_connecting'])
+    .describe('after_connecting: the service lists its tools only once someone signs in.'),
+  practice: z.enum(['reads_ready', 'needs_read_marks', 'not_in_practice', 'get_only'])
+    .describe('What a practice run can use: reads_ready, its read actions; needs_read_marks, nothing until its tools are chosen on the Agent\'s page in Admin, then the ones Chickpea knows only read; not_in_practice, nothing, since nothing marks its tools as reads, so a practice run leaves it out; get_only, GET and HEAD requests only.'),
+  nextStep: z.string(),
 });
 
 const zRoleDefault = (withEffort: boolean) => z.strictObject({
