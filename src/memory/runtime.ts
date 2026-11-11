@@ -506,11 +506,20 @@ async function validateAgentMemoryLease(
     // alone: a DM has no Channel grant and no non-im conversation facts. A
     // group DM has no grant either, but must still be the group DM it was.
     const kind = slackConversationKind(turn);
-    // Read beside the rest and judged after it, as when it was read after it.
+    // The Channel grant and Slack's facts are read beside the rest and judged
+    // after it, so the store still decides first.
     const channelGrants = kind === 'channel'
       ? config.listAgentChannelGrants(turn.workspaceId, turn.channelId)
       : undefined;
     channelGrants?.catch(() => undefined);
+    const slackFacts = kind !== 'im' && runtime.slack && runtime.botUserId
+      ? Promise.all([
+          runtime.slack.conversation(turn.channelId),
+          runtime.slack.user(turn.userId),
+          runtime.slack.members(turn.channelId),
+        ])
+      : undefined;
+    slackFacts?.catch(() => undefined);
     const [agent, installation, current] = await Promise.all([
       config.getAgent(runtime.assignment.agentId),
       config.getWorkspaceInstallation(turn.workspaceId),
@@ -529,12 +538,8 @@ async function validateAgentMemoryLease(
         grant.agentId === runtime.assignment.agentId && grant.status === 'active'
       )) return false;
     }
-    if (!runtime.slack || !runtime.botUserId) return false;
-    const [conversation, actor, members] = await Promise.all([
-      runtime.slack.conversation(turn.channelId),
-      runtime.slack.user(turn.userId),
-      runtime.slack.members(turn.channelId),
-    ]);
+    if (!slackFacts || !runtime.botUserId) return false;
+    const [conversation, actor, members] = await slackFacts;
     throwIfMemoryScopeRetryable([conversation, actor, members]);
     const facts = conversation.facts;
     return Boolean(

@@ -61,6 +61,7 @@ interface WorkExecutionBoundaryOptions {
   mode?: ConstructorParameters<typeof ShadowWorkLifecycle>[0]['mode'];
   persistenceMode?: ConstructorParameters<typeof ShadowWorkLifecycle>[0]['persistenceMode'];
   deadlineAt?: ConstructorParameters<typeof ShadowWorkLifecycle>[0]['deadlineAt'];
+  queueReplyStages?: boolean;
 }
 
 /**
@@ -120,6 +121,7 @@ export async function createWorkExecutionBoundary(
     ...(options.mode ? { mode: options.mode } : {}),
     ...(options.persistenceMode ? { persistenceMode: options.persistenceMode } : {}),
     ...(options.deadlineAt === undefined ? {} : { deadlineAt: options.deadlineAt }),
+    ...(options.queueReplyStages ? { queueReplyStages: true } : {}),
   });
   const receiptBase = {
     runId: run.id,

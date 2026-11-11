@@ -1037,6 +1037,28 @@ test('a turn judged react_only before its plan is saved sends no wake', async ()
   assert.deepEqual(wakes, []);
 });
 
+/**
+ * `store` with `methods` held until `held` resolves, once the Agent is
+ * prompted (the classifier records its usage before); each landing is marked
+ * `landed:<label>.<method>`.
+ */
+function heldUntil<T extends object>(label: string, store: T, methods: readonly string[], held: Promise<void>): T {
+  return new Proxy(store, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (typeof value !== 'function' || !methods.includes(String(property)) ||
+          !currentTimeline.includes('agentPrompt')) return value;
+      return async (...args: unknown[]) => {
+        currentTimeline.push(`${label}.${String(property)}`);
+        await held;
+        const result = await (value as (...values: unknown[]) => unknown).apply(target, args);
+        currentTimeline.push(`landed:${label}.${String(property)}`);
+        return result;
+      };
+    },
+  });
+}
+
 // Defect caught: turn_latency marks the reply's text only at final, after the
 // stream's stop, the reply's cards and the status clear.
 test('the reply text is marked visible when Slack acknowledges the stream start, before the stop', async (t) => {
@@ -1061,4 +1083,102 @@ test('the reply text is marked visible when Slack acknowledges the stream start,
   assert.equal(visible - Number(latency?.admissionToAnswerVisibleMs), 500);
   assert.ok(visible + 40 <= Number(latency?.receiptToFinalMs),
     `the stop's 40 ms come after the text: ${visible} < ${latency?.receiptToFinalMs}`);
+});
+
+// Defect caught: the reply waits for the answer's usage record and its Work
+// settlement, response and delivery records before Slack sees it, each up to
+// its 100 ms budget.
+test('the reply goes out before its usage and Work records land, and is marked delivered after them', async (t) => {
+  const warnings: string[] = [];
+  t.mock.method(console, 'warn', (...values: unknown[]) => { warnings.push(values.map(String).join(' ')); });
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const real = resolveStores();
+  holdSlackWrite = async (method, timeline) => {
+    if (method === 'chat.startStream') {
+      timeline.push('records released at the stream start');
+      release();
+    }
+  };
+  let timeline: string[];
+  try {
+    ({ timeline } = await firstStatusTimeline('dm', null, {
+      usageRecordingEnabled: true,
+      usageStore: heldUntil('usage', real.usage, ['recordTerminal'], held),
+      workStore: heldUntil('work', real.work, ['settleRunExecution', 'recordRunResponse', 'startRunDelivery'], held),
+      onDelivered: async () => { currentTimeline.push('delivered'); },
+    }, dmAssignment));
+  } finally {
+    holdSlackWrite = undefined;
+    release();
+  }
+  const at = (entry: string) => {
+    const index = timeline.indexOf(entry);
+    assert.ok(index >= 0, `${entry} in ${JSON.stringify(timeline)}`);
+    return index;
+  };
+  const start = at('slack:chat.startStream');
+  for (const record of ['usage.recordTerminal', 'work.settleRunExecution']) {
+    assert.ok(at(record) < start, `${record} starts before the reply`);
+    assert.ok(start < at(`landed:${record}`), `the reply does not wait for ${record}`);
+  }
+  assert.ok(start < at('work.recordRunResponse'), 'the response record queues behind the held settlement');
+  assert.ok(at('landed:usage.recordTerminal') < at('delivered'), 'the usage record lands before the turn is marked delivered');
+  assert.deepEqual(warnings.filter((warning) => /budget|timed_out/.test(warning)), [],
+    'no record outlived its budget while the reply waited');
+});
+
+// Defect caught: the answer's display components are read only after its
+// settlement record lands, one more round before the reply.
+test("the answer's display components are read beside its settlement record", async () => {
+  const { timeline } = await firstStatusTimeline('dm', null, {
+    agentPrompt: async ({ onSettlementObserved }) => {
+      onSettlementObserved?.(AGENT_ANSWER);
+      await waitUntil(() => currentTimeline.includes('slackState.executeUiSurface'));
+      currentTimeline.push('settlement recorded');
+      return AGENT_ANSWER;
+    },
+  }, dmAssignment);
+  assert.ok(timeline.indexOf('slackState.executeUiSurface') >= 0, JSON.stringify(timeline));
+  assert.ok(timeline.indexOf('slackState.executeUiSurface') < timeline.indexOf('settlement recorded'),
+    'the components are read while the settlement is recorded');
+});
+
+// Defect caught: the reply's thread-context record holds the reply's cards
+// and the status clear behind it.
+test("the reply's thread context is recorded beside its cleanup, before the turn is marked delivered", async () => {
+  const clears = () => currentTimeline.filter((entry) => entry === 'slack:assistant.threads.setStatus').length;
+  const { timeline } = await firstStatusTimeline('dm', null, {
+    onPublicMessageDelivered: async () => {
+      currentTimeline.push('public context');
+      await waitUntil(() => clears() >= 2);
+      currentTimeline.push('public context recorded');
+    },
+    onDelivered: async () => { currentTimeline.push('delivered'); },
+  }, dmAssignment);
+  const clear = timeline.lastIndexOf('slack:assistant.threads.setStatus');
+  assert.ok(timeline.indexOf('public context') < clear, JSON.stringify(timeline));
+  assert.ok(clear < timeline.indexOf('public context recorded'), 'the status clears while the context is recorded');
+  assert.ok(timeline.indexOf('public context recorded') < timeline.indexOf('delivered'));
+});
+
+// Defect caught: the turn looks for the approval card it owes only after the
+// reply and its other cards are out, two more reads before its status clears.
+test('the approval a reply owes is looked up while the reply is delivered', async () => {
+  const lookedUp = () => currentTimeline.indexOf('identity.resolveSlackIdentity', currentTimeline.indexOf('agentPrompt')) >= 0;
+  holdSlackWrite = async (method) => {
+    if (method === 'chat.stopStream') await waitUntil(lookedUp);
+  };
+  let timeline: string[];
+  try {
+    ({ timeline } = await firstStatusTimeline('dm', null, {}, dmAssignment));
+  } finally {
+    holdSlackWrite = undefined;
+  }
+  const lookups = timeline.slice(timeline.indexOf('agentPrompt'))
+    .filter((entry) => entry === 'identity.resolveSlackIdentity').length;
+  const lookup = timeline.indexOf('identity.resolveSlackIdentity', timeline.indexOf('agentPrompt'));
+  assert.ok(lookup >= 0, JSON.stringify(timeline));
+  assert.ok(lookup < timeline.indexOf('slack:chat.stopStream'), 'the lookup ran before the stream stopped');
+  assert.equal(lookups, 1, 'the card posts from that lookup, without a second one');
 });

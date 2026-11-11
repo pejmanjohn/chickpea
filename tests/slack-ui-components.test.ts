@@ -291,6 +291,47 @@ test('delivery posts the turn surface once, skips a restated question, and close
   state.close();
 });
 
+// Defect caught: delivery reads this turn's surfaces only after the older
+// ones are closed, one more store round between the reply and its status clear.
+test('delivery reads its own surfaces beside closing older ones, and still redraws before it posts', async () => {
+  const store = new SqliteSlackStateStore(':memory:');
+  const effects: string[] = [];
+  let ts = 0;
+  const messenger: UiSurfaceMessenger = {
+    async post() { effects.push('post'); ts += 1; return `9.00000${ts}`; },
+    async update(messageTs) { effects.push(`redraw ${messageTs}`); },
+  };
+  const put = async (turnJobId: string, spec: UiSurfaceRecord['spec']) => store.executeUiSurface!({
+    kind: 'put_surface',
+    record: surface(spec, { id: uiSurfaceId(turnJobId, 'interactive'), turnJobId, status: 'pending_delivery' }),
+  });
+  const turn = { workspaceId: 'T1', channelId: 'C1', threadTs: '1.000001' };
+  await put('job1', { kind: 'question', question: { question: 'Which env?', options: options(2), answerFrom: 'requester' } });
+  await deliverInteractiveSurfaces({ turn, agentId: 'agent_a', turnJobId: 'job1', state: store, messenger, answerText: 'Here.' });
+  effects.length = 0;
+
+  await put('job2', { kind: 'actions', actions: { actions: [{ label: 'Open', url: 'https://example.com' }] } });
+  let listRequested!: () => void;
+  const listing = new Promise<boolean>((resolve) => { listRequested = () => resolve(true); });
+  let listedWhileClosing = false;
+  const state = {
+    async executeUiSurface(request: Parameters<NonNullable<typeof store.executeUiSurface>>[0]) {
+      if (request.kind === 'list_turn_surfaces') listRequested();
+      if (request.kind === 'supersede_surfaces') {
+        listedWhileClosing = await Promise.race([
+          listing,
+          new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 200)),
+        ]);
+      }
+      return store.executeUiSurface!(request);
+    },
+  } as unknown as typeof store;
+  await deliverInteractiveSurfaces({ turn, agentId: 'agent_a', turnJobId: 'job2', state, messenger, answerText: 'Here it is.' });
+  assert.equal(listedWhileClosing, true, 'its own surfaces are read while the older ones close');
+  assert.deepEqual(effects, ['redraw 9.000001', 'post'], 'the older question closes before the new card posts');
+  store.close();
+});
+
 test('a reply that is only an ask_user question delivers the question as its text', () => {
   const result = resultFromAgentReply({
     text: '',

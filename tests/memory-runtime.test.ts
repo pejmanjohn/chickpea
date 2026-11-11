@@ -589,6 +589,105 @@ test('a rate-limited Slack lease check retries the attempt instead of rejecting 
   }
 });
 
+// Defect caught: a Channel reply's lease asks Slack only after its store reads
+// return, one more round before the reply.
+test("a Channel lease asks Slack beside its store reads, and the store's answer still decides first", async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-agent-memory-lease-round-'));
+  const previousStatePath = process.env.SLACK_STATE_DB_PATH;
+  process.env.SLACK_STATE_DB_PATH = join(directory, 'state.sqlite');
+  closeNodeStateStores();
+  try {
+    const config = getConfigStore();
+    const agent = await config.createAgent({
+      id: 'agent_round', name: 'Round', description: 'Answers', instructions: '', enabled: true,
+      lifecycle: 'active', creatorMembershipId: 'membership_owner', editPolicy: 'creator_and_admins',
+      model: 'local-stub/round', skills: [], mcpServers: [], apiConnections: [], repositories: [],
+      slackPresence: {
+        requestedHandle: 'round', normalizedHandle: 'round', desiredState: 'active',
+        health: 'healthy', userGroupId: 'SROUND',
+        avatar: { kind: 'generated', revision: 1, seed: 'round' },
+      },
+    });
+    const installation = await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_ROUND', teamId: 'T_ROUND', transportMode: 'direct', runtimeContract: 'legacy',
+      defaultAgentId: agent.id, botUserId: 'U_CHICKPEA',
+    });
+    await config.updateWorkspaceInstallation('T_ROUND', { health: 'healthy' }, installation.revision);
+    await config.putAgentChannelGrant({
+      workspaceId: 'T_ROUND', channelId: 'C_ROUND', agentId: agent.id,
+      status: 'active', createdByMembershipId: 'membership_owner',
+      channelLabel: 'round', channelIsPrivate: false,
+    });
+    const turn: NormalizedSlackTurn = {
+      workspaceId: 'T_ROUND', channelId: 'C_ROUND', eventId: 'Ev-round',
+      text: '<!subteam^SROUND|@round> answer', userId: 'U_MEMBER',
+      messageTs: '200.1', threadTs: '200.1', source: 'agent_mention',
+      channelType: 'channel', contextMode: 'channel_history',
+    };
+    const slackCalls: string[] = [];
+    let rateLimited = false;
+    const client = {
+      auth: { test: async () => ({ user_id: 'U_CHICKPEA' }) },
+      conversations: {
+        info: async () => {
+          slackCalls.push('conversations.info');
+          if (rateLimited) {
+            throw new SlackTransportError('conversations.info', 'gateway_rate_limited', { retryable: true });
+          }
+          return { channel: { id: turn.channelId, context_team_id: turn.workspaceId, is_member: true } };
+        },
+        members: async () => {
+          slackCalls.push('conversations.members');
+          return { members: [turn.userId, 'U_CHICKPEA'] };
+        },
+      },
+      users: {
+        info: async () => {
+          slackCalls.push('users.info');
+          return { user: { id: turn.userId, team_id: turn.workspaceId } };
+        },
+      },
+    } as unknown as WebClient;
+    let agentRead: Promise<void> | undefined;
+    const heldConfig = new Proxy(config, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (property !== 'getAgent' || typeof value !== 'function') return value;
+        return async (...args: unknown[]) => {
+          await agentRead;
+          return (value as (...values: unknown[]) => unknown).apply(target, args);
+        };
+      },
+    });
+    const prepared = await prepareMemoryTurn({
+      turn,
+      assignment: { workspaceId: turn.workspaceId, channelId: turn.channelId, agentId: agent.id, agent },
+      client,
+      botUserId: 'U_CHICKPEA',
+      platformEnv: undefined,
+      dependencies: { config: heldConfig },
+    });
+    let answerAgentRead!: () => void;
+    agentRead = new Promise((resolve) => { answerAgentRead = resolve; });
+    const lease = prepared.validateLease();
+    for (let pass = 0; pass < 5; pass += 1) await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(slackCalls.sort(), ['conversations.info', 'conversations.members', 'users.info'],
+      'Slack is asked while the Agent read is still out');
+    answerAgentRead();
+    agentRead = undefined;
+    assert.equal(await lease, true);
+
+    await getMemoryStateStore().putAgentMemory({ agentId: agent.id, expectedRevision: 0, body: 'Changed mid-run.' });
+    rateLimited = true;
+    assert.equal(await prepared.validateLease(), false, "a changed memory ends the lease, whatever Slack says");
+  } finally {
+    closeNodeStateStores();
+    if (previousStatePath === undefined) delete process.env.SLACK_STATE_DB_PATH;
+    else process.env.SLACK_STATE_DB_PATH = previousStatePath;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('an Agent answering in a group DM keeps memory as in a DM, while Slack still calls it that group DM', async () => {
   // Amber 2026-10-25: "@Chickpea" in a group DM was admitted, then every run
   // died at delivery with memory_delivery_lease_rejected, because both lease

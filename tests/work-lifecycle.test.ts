@@ -180,6 +180,83 @@ for (const slow of [
   });
 }
 
+// Defect caught: a Slack turn's reply waits on the observer's settlement,
+// response and delivery records, up to 100 ms each, before Slack sees it.
+test("a Slack turn's reply stages never wait for the observer, and land in order behind it", async (context) => {
+  // A budget never elapses: a stage that waited for one would hold the reply.
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  context.mock.method(console, 'warn', () => undefined);
+  const fixture = await slowDmFixture('settleRunExecution');
+  try {
+    const gaps: string[] = [];
+    let tick = 0;
+    const lifecycle = await createWorkExecutionLifecycle(fixture.store, {
+      runId: fixture.runId,
+      attemptNumber: 1,
+      executorKind: 'agent',
+      agentName: 'agent_try',
+      canonicalModel: 'openai/gpt-5.6-terra',
+      routeEvidence: { providerAuthRoute: 'openai_api_key' },
+    }, { mode: 'observe', queueReplyStages: true, now: () => NOW + (++tick), onGap: (stage) => gaps.push(stage) });
+    await lifecycle.prepareExecution('Hi Chickpea. What is a good first teammate?');
+    let replied = false;
+    const reply = (async () => {
+      await lifecycle.settleExecution({ outcome: 'succeeded', rawStatus: 'flue_succeeded' });
+      const attemptId = await lifecycle.beforeDelivery({
+        method: 'slack_chat_stream',
+        approvedOutput: 'Start with a planner.',
+        renderedPayload: '{"stop":"Start with a planner."}',
+      });
+      await lifecycle.afterDelivery({ attemptId, outcome: 'delivered', deliveryRef: 'slack:D0TRY:1900000000.000002' });
+      replied = true;
+      return attemptId;
+    })();
+    for (let turn = 0; turn < 5; turn += 1) await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(replied, true, 'the reply went out while the settlement record was held, waiting for no budget');
+    assert.ok(await reply, 'the delivery keeps its attempt');
+    assert.equal(fixture.calls('recordRunResponse'), 0, 'nothing is written ahead of the held settlement');
+
+    fixture.release();
+    await lifecycle.settled();
+    const run = await fixture.store.getRun(fixture.runId);
+    assert.equal(run?.status, 'settled');
+    assert.equal(run?.deliveryStatus, 'delivered');
+    assert.deepEqual(gaps, []);
+    assert.deepEqual(
+      (await fixture.store.listAuditEvents(fixture.runId)).reverse().map((event) => event.eventType).slice(-4),
+      ['work.execution_settled', 'work.response_recorded', 'work.delivery_started', 'work.delivery_delivered'],
+    );
+  } finally {
+    fixture.close();
+  }
+});
+
+test('a ledger turn still records each reply stage before Slack sees the reply', async (context) => {
+  context.mock.method(console, 'warn', () => undefined);
+  const fixture = await slowDmFixture('settleRunExecution');
+  try {
+    const lifecycle = await createWorkExecutionLifecycle(fixture.store, {
+      runId: fixture.runId,
+      attemptNumber: 1,
+      executorKind: 'agent',
+      agentName: 'agent_try',
+      canonicalModel: 'openai/gpt-5.6-terra',
+      routeEvidence: { providerAuthRoute: 'openai_api_key' },
+    }, { mode: 'enforce', queueReplyStages: true });
+    await lifecycle.prepareExecution('Hi Chickpea. What is a good first teammate?');
+    let settled = false;
+    const settling = lifecycle.settleExecution({ outcome: 'succeeded', rawStatus: 'flue_succeeded' })
+      .then(() => { settled = true; });
+    for (let turn = 0; turn < 5; turn += 1) await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(settled, false, 'enforcement waits for its write');
+    fixture.release();
+    await settling;
+    assert.equal((await fixture.store.getRunExecution(lifecycle.executionId))?.outcome, 'succeeded');
+  } finally {
+    fixture.close();
+  }
+});
+
 test('a slow write that then fails is a gap, and nothing is recorded behind it', async (context) => {
   context.mock.method(console, 'warn', () => undefined);
   const fixture = await slowDmFixture('prepareRunInput');
