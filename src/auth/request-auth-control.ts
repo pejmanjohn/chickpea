@@ -7,6 +7,7 @@ import { runWithRequestTiming, timed } from '../http/request-timing.ts';
 import type { AuthControl, IdentityStore } from '../identity/types.ts';
 
 const controlByContext = new WeakMap<Context, Promise<AuthControl | undefined>>();
+const controlByRequest = new WeakMap<Request, Promise<AuthControl | undefined>>();
 
 /**
  * This request's auth control, read once. Each read is a state-store round
@@ -14,6 +15,9 @@ const controlByContext = new WeakMap<Context, Promise<AuthControl | undefined>>(
  * Admin's, the Better Auth context and authentication. The first reader's
  * `read` runs and the rest share its result through the request's context,
  * so every reader in one request must name the same installation's store.
+ * Admin answers under its own context (app.ts mounts it with lazyRoutes), so
+ * the result also rides the incoming Request into it; body limits may swap
+ * the Request later, so the context stays the first key.
  * A later request reads again. A failed read is not kept: the next reader in
  * the same request retries it.
  */
@@ -23,10 +27,13 @@ export function requestAuthControl(
 ): Promise<AuthControl | undefined> {
   const shared = controlByContext.get(c);
   if (shared) return shared;
-  const pending = read();
+  const request = c.req.raw;
+  const pending = controlByRequest.get(request) ?? read();
   controlByContext.set(c, pending);
+  controlByRequest.set(request, pending);
   pending.catch(() => {
     if (controlByContext.get(c) === pending) controlByContext.delete(c);
+    if (controlByRequest.get(request) === pending) controlByRequest.delete(request);
   });
   return pending;
 }

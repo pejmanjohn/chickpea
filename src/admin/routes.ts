@@ -1,11 +1,10 @@
 import { planDependencies, planStatus, preparePlanConnection, pollPlanHandoff, completePlanHandoff, confirmPlanConnection, cancelPlanConnection, disconnectPlan, resolvePlanSession } from '../chatgpt-plan/connection.ts';
+import { agentAppPresenceHooks, agentDmPlacementFacts } from '../slack/agent-apps/index.ts';
 import {
   type AgentSlackAppAdminDeps,
-  agentAppPresenceHooks,
-  agentDmPlacementFacts,
   createAgentSlackAppAdminRoutes,
   isAgentSlackAppTokenApiPath,
-} from '../slack/agent-apps/index.ts';
+} from '../slack/agent-apps/admin-routes.ts';
 import { ChannelDirectoryCache } from '../slack/channel-directory-cache.ts';
 import { apiOAuthLifecycleDependencies } from '../connections/api-oauth-lifecycle.ts';
 import { mcpOAuthLifecycleDependencies } from '../connections/mcp-oauth-lifecycle.ts';

@@ -1,4 +1,3 @@
-export { type AgentSlackAppAdminDeps, createAgentSlackAppAdminRoutes, isAgentSlackAppTokenApiPath } from './admin-routes.ts';
 export { type AgentSlackAppHandoff, agentSlackAppsHost, endAgentSlackApp } from './host.ts';
 export { agentAppIsLive, normalizeAgentAppPresence } from './lifecycle.ts';
 export {
