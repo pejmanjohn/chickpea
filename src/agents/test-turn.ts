@@ -21,6 +21,8 @@ const TestTurnDataSchema = v.strictObject({
     timezone: v.pipe(v.string(), v.check((zone) => localTime(zone, 0) !== undefined, 'unknown timezone')),
     askedAt: v.pipe(v.number(), v.safeInteger(), v.minValue(0)),
   }),
+  /** Set by the state store alone: the message quotes earlier turns of the practice conversation. */
+  quotesEarlierTurns: v.optional(v.literal(true)),
 });
 
 export type TestTurnInitialData = Omit<v.InferOutput<typeof TestTurnDataSchema>, 'runtimePlan'> & {
@@ -36,7 +38,7 @@ export function parseTestTurnInitialData(value: unknown): TestTurnInitialData {
 
 /** One read-only practice run of an Agent on a question, as the caller, posting nowhere. */
 export function ChickpeaTestTurn({ id }: AgentProps) {
-  const { runtimePlan: plan, memoryBlock, requester } = parseTestTurnInitialData(useInitialData());
+  const { runtimePlan: plan, memoryBlock, requester, quotesEarlierTurns } = parseTestTurnInitialData(useInitialData());
   useInstruction(plan.instructions);
   useRuntimePlanAgent(plan, id, {
     responseMetadataModel: plan.model,
@@ -46,7 +48,7 @@ export function ChickpeaTestTurn({ id }: AgentProps) {
     web: { turn: useWebTurn(id), request: { typed: [], tokens: requestTokens(useDelivery().body) } },
   });
   if (memoryBlock) useInstruction(`${memoryBlock}\n\n${ADVISORY_MEMORY_FINAL_CHECK}`);
-  useInstruction(testTurnFraming(requester));
+  useInstruction(testTurnFraming(requester, quotesEarlierTurns === true));
   return testTurnSystemBase(slackAgentKind(plan.agentId));
 }
 
@@ -58,15 +60,19 @@ export function testTurnSystemBase(kind: AgentKind): string {
     .flatMap(([part, text]) => TEST_TURN_OMITTED_PARTS.has(part) ? [] : [text]).join(PART_SEPARATOR);
 }
 
-export function testTurnFraming({ name, timezone, askedAt }: TestTurnInitialData['requester']): string {
+/** The last instruction: what this run is, and whether the message quotes earlier turns. */
+export function testTurnFraming({ name, timezone, askedAt }: TestTurnInitialData['requester'], followUp = false): string {
   return `This is a practice run, not a Slack conversation. ${name} sent this question from an app they connected to ` +
     `Chickpea, to see how you answer. Your answer goes back to them there and is not posted anywhere. It is ` +
     `${localTime(timezone, askedAt)} in their timezone, ${timezone}.\n\nAnswer as you would in a direct message from them, ` +
     'and read what you need the way you normally would. Only tools that read are available here. Nothing can send, ' +
     'post, create, change, delete or remember anything, and Slack reading, files, images, the browser and coding ' +
     'workspaces are off. If the question needs one of those, do the reading part, then say in one sentence what you ' +
-    'would do and that you can do it once they ask you in Slack. Don\'t mention this practice run otherwise. There are ' +
-    'no earlier messages.';
+    'would do and that you can do it once they ask you in Slack. Don\'t mention this practice run otherwise. ' +
+    (followUp
+      ? 'Earlier turns of this practice conversation are quoted in the message, each with a line naming what it read. ' +
+        'What those reads returned is not included, so read again if you need it.'
+      : 'There are no earlier messages.');
 }
 
 /** "Monday, 9 November 2026, 14:05"; undefined for an unknown timezone. */

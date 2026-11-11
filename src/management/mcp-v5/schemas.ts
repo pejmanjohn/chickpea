@@ -688,6 +688,8 @@ export const practiceAgentInput = z.strictObject({
   agentId: zAgentId,
   question: z.string().min(1).max(4_000).optional()
     .describe('The question as the person would type it in Slack. No chat history, no personal details, never a key. Omit it for the first question saved when the Agent was created.'),
+  practiceId: zText(64).optional()
+    .describe('The practiceId of an earlier result, to ask this as a follow-up in that practice conversation: Chickpea quotes its earlier questions and answers to the Agent. A conversation takes 10 questions, within an hour of its first. Leave it out to start a new one.'),
   idempotencyKey: zIdempotencyKey.optional(),
 });
 
@@ -715,7 +717,7 @@ const zPracticeStep = z.strictObject({
 export const practiceRunOutput = z.strictObject({
   status: z.enum(['running', 'answered', 'failed']),
   runToken: z.string(),
-  practiceId: z.string().optional().describe('The practice conversation this run is a turn of.'),
+  practiceId: z.string().optional().describe('The practice conversation this run is a turn of. Send it with the next question to ask a follow-up.'),
   turn: z.number().int().optional(),
   agent: z.string().describe('The Agent\'s name.'),
   question: z.string(),
@@ -744,6 +746,21 @@ export const practiceRunOutput = z.strictObject({
     .describe('The tools it could use, by service: one it did not call was there.'),
   fixes: z.array(zFix).optional().describe('Ways to let a practice run use what off lists.'),
   nextStep: z.string(),
+  note: z.string(),
+});
+
+export const listPracticeRunsInput = z.strictObject({ agentId: zAgentId });
+
+export const listPracticeRunsOutput = z.strictObject({
+  runs: z.array(z.strictObject({
+    practiceId: z.string().describe('Send it to practice_agent to ask a follow-up in this conversation.'),
+    runToken: z.string().describe('Send it to get_practice_run for the answer and every step.'),
+    turn: z.number().int(),
+    when: zWhen,
+    status: z.enum(['running', 'answered', 'failed']),
+    question: z.string().describe('The question, cut at 200 characters.'),
+    agentVersion: zVersion.optional().describe('The version get_agent returned when it ran: whether it saw an edit.'),
+  })).describe('Your own practice runs of this Agent from the last hour, newest first, at most 20.'),
   note: z.string(),
 });
 

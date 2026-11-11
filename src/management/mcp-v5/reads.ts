@@ -775,7 +775,7 @@ function displayDate(iso: string): string {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
 }
 
-function when(at: number): { display: string; isoUtc: string } {
+export function when(at: number): { display: string; isoUtc: string } {
   const date = new Date(at);
   return {
     display: `${date.toLocaleString('en-US', {

@@ -118,6 +118,7 @@ const MCP_TOOL_ANNOTATIONS = {
   // A run that spends metered usage and reads the open web; its key returns the same run.
   practice_agent: { ...DESTRUCTIVE_5, openWorldHint: true },
   get_practice_run: READ_5,
+  list_practice_runs: READ_5,
   // Card-only: a run that spends metered usage and reads the open web; its key returns the same run.
   try_agent_once: { ...DESTRUCTIVE_5, openWorldHint: true },
   get_test_run: READ_5,

@@ -285,7 +285,15 @@ import type {
 import type { InstallationWorkspaceObject } from './state/object-inventory.ts';
 import { stateStoreHostFunctions, type StateStoreHostRpc } from './state/state-store-host.ts';
 import type { TestRunLifecycle } from './state/test-run-lifecycle.ts';
-import type { TestRunQuery, TestRunReplayQuery, TestRunStartRequest, TestRunStartResult, TestRunView } from './management/test-run-types.ts';
+import type {
+  PracticeRunListing,
+  PracticeRunsQuery,
+  TestRunQuery,
+  TestRunReplayQuery,
+  TestRunStartRequest,
+  TestRunStartResult,
+  TestRunView,
+} from './management/test-run-types.ts';
 import { StateSchemaMarker, stateSchemaFingerprint } from './state/schema-lifecycle.ts';
 import { cloudflareWorkerVersionId } from './config/cloudflare-version.ts';
 import { applicationIdentity, viteServeLane } from './release/identity.ts';
@@ -1886,6 +1894,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
 
   async testRunObserve(query: TestRunQuery): Promise<StateRpcResult<TestRunView | null>> {
     return this.callTestRuns(async () => await (await this.testRuns()).observe(query) ?? null);
+  }
+
+  async testRunList(query: PracticeRunsQuery): Promise<StateRpcResult<PracticeRunListing[]>> {
+    return this.callTestRuns(async () => (await this.testRuns()).list(query));
   }
 
   /** One lifecycle per object: it holds which runs' steps are going and which it aborted. */

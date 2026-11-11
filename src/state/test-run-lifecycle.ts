@@ -4,11 +4,14 @@
  * run's instance. The alarm, the caller's polls and a cancellation pass all
  * run it; one step per run at a time, and none once the instance is erased.
  */
+import { practiceMessage } from '../agents/practice-history.ts';
 import { deriveRuntimePlanInstanceId, parseRuntimePlanV2 } from '../agents/runtime-plan.ts';
 import { installationScopeOfObjectName, requireInstallationScope } from '../config/installation-scope.ts';
 import type { CreditBackReason, PlatformFundingRefusal } from '../config/platform-funding.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type {
+  PracticeRunListing,
+  PracticeRunsQuery,
   PracticeStep,
   TestRunFailure,
   TestRunQuery,
@@ -20,7 +23,7 @@ import type {
   TestRunStartResult,
   TestRunView,
 } from '../management/test-run-types.ts';
-import type { TestRunStoreLogic } from '../management/test-runs.ts';
+import { liveTestRun as live, type TestRunStoreLogic } from '../management/test-runs.ts';
 import type { ChickpeaResponseMetadata } from '../usage/response-metadata.ts';
 import { TestRunUsageRecorder } from '../usage/test-run-usage.ts';
 import type { UsageStoreLogic } from '../usage/store.ts';
@@ -128,9 +131,11 @@ export class TestRunLifecycle {
    * Admission, then the dispatch, in one call. The row's plan is the
    * creation data's, and it must name this run, its caller, its Agent and an
    * instance of this installation, so its instance is the run's own and
-   * never another's. A dispatch that throws leaves the run `admitted` for
-   * the 30-second rule; one that landed binds its submission at its first
-   * model request anyway.
+   * never another's. The message is the store's: a follow-up quotes the
+   * conversation's earlier turns from its own rows, and the creation data
+   * says so for the framing. A dispatch that throws leaves the run
+   * `admitted` for the 30-second rule; one that landed binds its submission
+   * at its first model request anyway.
    */
   async start(request: TestRunStartRequest): Promise<TestRunStartResult> {
     const { testRuns } = this.deps.stores();
@@ -150,6 +155,7 @@ export class TestRunLifecycle {
     const admission = testRuns.admit({ ...run, instanceId, planJson: JSON.stringify(request.initialData.runtimePlan) }, at);
     switch (admission.kind) {
       case 'in_progress':
+      case 'ended':
         return admission;
       case 'replayed':
       case 'running':
@@ -158,9 +164,12 @@ export class TestRunLifecycle {
         return { kind: 'repeat', run: { ...testRunView(admission.row), repeat: true } };
     }
     const { row } = admission;
+    const { message, quoted } = practiceMessage(run.question, admission.earlier);
+    const { quotesEarlierTurns: _sent, ...data } = request.initialData;
+    const initialData = quoted > 0 ? { ...data, quotesEarlierTurns: true as const } : data;
     await this.deps.armAlarm(testRuns.nextDueAt(at) ?? at);
     try {
-      await bounded(this.dispatch(row, request));
+      await bounded(this.dispatch(row, { message, initialData }));
     } catch (error) {
       log('test_run_dispatch_failed', row, error);
     }
@@ -175,15 +184,11 @@ export class TestRunLifecycle {
    * bound that is. A receipt that lands after the run's instance was erased
    * makes the run unerased again, and the alarm erases it.
    */
-  private dispatch(row: TestRunRow, request: TestRunStartRequest): Promise<void> {
+  private dispatch(row: TestRunRow, sent: Omit<TestRunDispatch, 'idempotencyKey'>): Promise<void> {
     this.dispatching.add(row.testRunId);
     return (async () => {
       try {
-        const receipt = await (await this.deps.port()).dispatch(row.instanceId, {
-          message: request.message,
-          initialData: request.initialData,
-          idempotencyKey: row.testRunId,
-        });
+        const receipt = await (await this.deps.port()).dispatch(row.instanceId, { ...sent, idempotencyKey: row.testRunId });
         if (this.deps.stores().testRuns.recordSubmission(row.testRunId, receipt.submissionId)) {
           await this.deps.armAlarm(this.now());
         }
@@ -205,6 +210,11 @@ export class TestRunLifecycle {
   async observe(query: TestRunQuery): Promise<TestRunView | undefined> {
     const row = this.deps.stores().testRuns.read(query, this.now());
     return row ? testRunView(await this.settled(row)) : undefined;
+  }
+
+  /** A read of the rows as they stand: no run is stepped for it. */
+  async list(query: PracticeRunsQuery): Promise<PracticeRunListing[]> {
+    return this.deps.stores().testRuns.list(query, this.now());
   }
 
   /** A caller's read runs the run's step and re-arms the alarm, which a cancellation deletes. */
@@ -463,10 +473,6 @@ function testRunView(row: TestRunRow): TestRunView {
     turn: row.turn,
     question: row.question,
   };
-}
-
-function live(row: TestRunRow): boolean {
-  return row.status === 'admitted' || row.status === 'running';
 }
 
 function planOf(row: TestRunRow): unknown {

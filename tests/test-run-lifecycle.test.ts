@@ -50,7 +50,7 @@ test('a run is admitted and dispatched in one call, as a plain message keyed by 
   const { request, instanceId, row } = await started(context);
   assert.deepEqual(context.instances.on(instanceId), ['dispatch']);
   assert.deepEqual(context.instances.dispatched, [{
-    message: request.message, initialData: request.initialData, idempotencyKey: request.run.testRunId,
+    message: request.run.question, initialData: request.initialData, idempotencyKey: request.run.testRunId,
   }]);
   assert.equal(row().status, 'running');
   assert.equal(row().submissionId, 'sub_1');
@@ -534,4 +534,49 @@ test('the same ask on the same plan moments after it settled is that run again, 
   assert.deepEqual(again.kind === 'repeat' && [again.run.runToken, again.run.repeat, again.run.result?.reply],
     [first.request.run.runToken, true, 'Two.']);
   assert.equal(context.instances.dispatched.length, 1);
+});
+
+test('a follow-up is dispatched with its conversation\'s earlier turns from the store\'s rows, and the creation data says so', async () => {
+  const context = setup('inst_lifecycle_follow_up');
+  const RAW = 'SECRET_ROW: {"customer":"Northwind"}';
+  const first = await started(context, { question: 'Who is <overdue>?' });
+  context.instances.settlements.set(first.instanceId, {
+    kind: 'answered', reply: 'Northwind is overdue.', read: ['Probe Board'],
+    steps: [{ kind: 'tool', service: 'Probe Board', tool: 'probe_board_search', input: '{"q":"overdue"}', outcome: 'ok', result: { data: RAW, size: RAW.length, truncated: false } }],
+  });
+  context.clock.advance(5_000);
+  await context.lifecycle.pass();
+  const practiceId = first.row().practiceId!;
+  assert.equal(first.row().status, 'answered');
+
+  // A Worker never sets the flag; one it sent anyway is the store's to decide.
+  const request = startRequest(context.installation, { at: context.clock.now(), practiceId, question: 'And last week?' });
+  const sent = { ...request, initialData: { ...request.initialData, quotesEarlierTurns: true } };
+  const followUp = await context.lifecycle.start(sent);
+  assert.deepEqual([followUp.kind, followUp.kind === 'admitted' && followUp.run.turn], ['admitted', 2]);
+  const dispatched = context.instances.dispatched.at(-1)!;
+  assert.equal(dispatched.message, [
+    'Earlier in this practice conversation (quoted):',
+    '',
+    'Turn 1. They asked:',
+    '> Who is &lt;overdue&gt;?',
+    'You answered:',
+    '> Northwind is overdue.',
+    'Read: Probe Board (probe_board_search, ok).',
+    '',
+    'New question:',
+    'And last week?',
+  ].join('\n'));
+  assert.doesNotMatch(dispatched.message, /SECRET_ROW|"q"/, 'no raw result or input');
+  assert.deepEqual(dispatched.initialData, { ...request.initialData, quotesEarlierTurns: true });
+
+  const fresh = startRequest(context.installation, { at: context.clock.now(), question: 'A new one?' });
+  await context.lifecycle.start({ ...fresh, initialData: { ...fresh.initialData, quotesEarlierTurns: true } });
+  assert.deepEqual(context.instances.dispatched.at(-1), {
+    message: 'A new one?', initialData: fresh.initialData, idempotencyKey: fresh.run.testRunId,
+  }, 'a first question quotes nothing, and its creation data says nothing of earlier turns');
+
+  const ended = startRequest(context.installation, { at: context.clock.now(), practiceId, actorMembershipId: 'membership_other', question: 'Theirs?' });
+  assert.deepEqual(await context.lifecycle.start(ended), { kind: 'ended' });
+  assert.equal(context.instances.dispatched.length, 3, 'an ended conversation dispatches nothing');
 });

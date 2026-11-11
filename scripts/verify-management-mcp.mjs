@@ -45,6 +45,7 @@ const MANAGEMENT_MCP_TOOL_NAMES = [
   'get_creation_status',
   'practice_agent',
   'get_practice_run',
+  'list_practice_runs',
   'try_agent_once',
   'get_test_run',
   'explain_agent',
