@@ -19874,6 +19874,45 @@ test('Meta tool review shows only available reporting and write tools, and Selec
   });
 });
 
+test("Meta tool review describes the account-wide reads in Chickpea's words, as reports", async () => {
+  const reads: Array<[string, string]> = [
+    ['ads_account_get_activity_logs', "View the account&#39;s change history."],
+    ['ads_get_errors', "Find errors that stop the account&#39;s ads from running."],
+    ['ads_get_creatives', "View the account&#39;s ad creatives, including text, links, and media."],
+    ['ads_get_ad_account_custom_audiences', "View the account&#39;s custom and lookalike audiences."],
+    ['ads_get_customconversions', "View the account&#39;s custom conversions."],
+  ];
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: { attached: [ownedConnection({
+      id: 'connection_meta', workspaceId: 'T_DESIGN', revision: 3,
+      ownerKind: 'member', providerId: 'meta-ads', label: 'Meta Ads',
+      lifecycle: 'ready', credentialConfigured: true,
+      policy: {
+        kind: 'mcp', url: 'https://mcp.facebook.com/ads', transport: 'streamable-http',
+        authMode: 'oauth', headerNames: [], presetId: 'meta-ads', toolAccessMode: 'review',
+        discoveredTools: reads.map(([name]) => ({
+          name, description: 'Synthetic provider description.', available: true, effect: 'read',
+        })),
+        allowedTools: [], toolPolicies: {},
+      },
+    })] },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'custom-mcp-tools-open', 'data-connection-id': 'connection_meta' }) });
+  for (const [name, description] of reads) {
+    assert.match(harness.app.innerHTML, new RegExp(`${name} · Reporting</span><span class="tool-desc">${description}<`));
+  }
+  assert.doesNotMatch(harness.app.innerHTML, /Synthetic provider description/);
+  assert.match(harness.app.innerHTML, /0 of 5 selected/);
+});
+
 test('background connection refresh keeps a same-Agent tool editor visible and in place', async () => {
   let resolveRefresh!: (response: FakeResponse) => void;
   const reports = ownedConnection({

@@ -23,6 +23,12 @@ import {
 import { projectMcpToolInputSchema } from '../src/config/mcp-test.ts';
 import { assertMcpToolArgumentKeys } from '../src/config/mcp-tool-policy.ts';
 import type { McpConnectionConfig, McpConnectionToolInfo } from '../src/config/types.ts';
+import {
+  META_ACCOUNT_READ_NAMES,
+  META_ACCOUNT_READS,
+  metaAccountReadProperties,
+  metaAccountReadSchema,
+} from './helpers/meta-ads-account-reads.ts';
 
 const fingerprint = 'a'.repeat(64);
 const reportTool = 'ads_get_ad_entities';
@@ -235,6 +241,79 @@ test('a helper that requires an unreviewed argument or has an account field is s
     assert.throws(() => compileMetaAdsToolAccess({
       discoveredTools: [tool], requestedTools: [tool.name], approvedAccountIds: ['123450001'],
     }), MetaAdsAccessPolicyError, label);
+  }
+});
+
+function accountRead(name: string, schema = metaAccountReadSchema(name)): McpConnectionToolInfo {
+  return { name, inputSchema: projectMcpToolInputSchema(schema, name) };
+}
+
+test("Meta's account-wide reads are admitted with one required account field and never send their filters", () => {
+  const discoveredTools = META_ACCOUNT_READ_NAMES.map((name) => accountRead(name));
+  for (const tool of discoveredTools) {
+    assert.equal(metaAdsToolEffect(tool.name), 'read', tool.name);
+    assert.equal(tool.inputSchema?.ambiguous, false, tool.name);
+    assert.deepEqual(tool.inputSchema?.accountFields, [{ name: 'ad_account_id', type: 'string', required: true }], tool.name);
+    assert.equal(metaAdsToolSchemaSupported(tool), true, tool.name);
+  }
+  const compiled = compileMetaAdsToolAccess({
+    discoveredTools, requestedTools: META_ACCOUNT_READ_NAMES, approvedAccountIds: ['123450001'],
+  });
+  assert.deepEqual(compiled.toolPolicies, Object.fromEntries(META_ACCOUNT_READ_NAMES.map((name) =>
+    [name, { effect: 'read', argumentConstraints: { ad_account_id: ['123450001'] } }])));
+  const connection = { discoveredTools, ...compiled };
+  assert.deepEqual(metaAdsRuntimeAllowedTools(connection), META_ACCOUNT_READ_NAMES);
+  for (const { name, filters } of META_ACCOUNT_READS) {
+    const runtime = metaAdsRuntimePropertyNames(connection, name)!;
+    assert.deepEqual(runtime, Object.keys(metaAccountReadProperties(name))
+      .filter((property) => !Object.hasOwn(filters, property)).sort(), name);
+    assert.ok(runtime.includes('client_conversation_id'), name);
+    for (const filter of Object.keys(filters)) {
+      assert.throws(() => assertMcpToolArgumentKeys(name, { ad_account_id: '123450001', [filter]: '1' }, runtime),
+        new RegExp(`does not permit the argument ${filter}`));
+    }
+  }
+});
+
+test("the activity log's Graph-named object and user filters are admitted but never sent", () => {
+  const name = 'ads_account_get_activity_logs';
+  const graphNamed = metaAccountReadSchema(name, { extra: { oid: { type: 'string' }, uid: { type: 'string' } } });
+  const tool = accountRead(name, graphNamed);
+  assert.equal(metaAdsToolSchemaSupported(tool), true);
+  const runtime = metaAdsRuntimePropertyNames({ discoveredTools: [tool] }, name)!;
+  for (const filter of ['object_id', 'oid', 'user_id', 'uid']) assert.equal(runtime.includes(filter), false, filter);
+  for (const filter of ['oid', 'uid']) {
+    assert.equal(accountRead(name, { ...graphNamed, required: ['ad_account_id', filter] }).inputSchema?.ambiguous,
+      true, `a required ${filter} would narrow every call, so it is refused`);
+  }
+});
+
+test("Meta's account-wide reads are refused with another account field, an optional account, or an unreviewed ID", () => {
+  const text = { type: 'string' };
+  for (const { name, filters } of META_ACCOUNT_READS) {
+    const refused: Array<[string, Record<string, unknown>]> = [
+      ['a second account field', metaAccountReadSchema(name, { extra: { account_id: text } })],
+      ['a second account selector', metaAccountReadSchema(name, { extra: { ad_account_ids: { type: 'array', items: text } } })],
+      ['an optional account field', metaAccountReadSchema(name, { required: [] })],
+      ['an unlisted required ID', metaAccountReadSchema(name, {
+        extra: { business_id: text }, required: ['ad_account_id', 'business_id'],
+      })],
+      // Listed for ads_get_ad_entities, not for these reads.
+      ['an unlisted optional ID', metaAccountReadSchema(name, { extra: { object_ids: { type: 'array', items: text } } })],
+      ['an account nested in an argument', metaAccountReadSchema(name, {
+        extra: { filtering: { type: 'object', properties: { account_id: text } } },
+      })],
+      ...Object.keys(filters).map((filter): [string, Record<string, unknown>] =>
+        [`${filter} required`, metaAccountReadSchema(name, { required: ['ad_account_id', filter] })]),
+    ];
+    for (const [label, schema] of refused) {
+      const tool = accountRead(name, schema);
+      assert.equal(tool.inputSchema?.ambiguous, true, `${name}: ${label}`);
+      assert.equal(metaAdsToolSchemaSupported(tool), false, `${name}: ${label}`);
+      assert.throws(() => compileMetaAdsToolAccess({
+        discoveredTools: [tool], requestedTools: [name], approvedAccountIds: ['123450001'],
+      }), /cannot be restricted to an approved ad account/, `${name}: ${label}`);
+    }
   }
 });
 
