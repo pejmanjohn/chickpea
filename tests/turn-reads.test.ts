@@ -14,7 +14,7 @@ import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { resolveModelCredentialAttribution, rotateInstallationModelCredential } from '../src/config/model-credential-refs.ts';
 import { configurePlatformFunding, resetPlatformFundingForTests } from '../src/config/platform-funding.ts';
 import { PROVIDER_KEY_IDS } from '../src/config/provider-key-ids.ts';
-import { describeProviderKeySources, invalidateProviderKeyCache, resolveProviderApiKey } from '../src/config/provider-keys.ts';
+import { describeProviderKeySources, invalidateProviderKeyCache, PROVIDER_KEY_SETTING_KEYS, resolveProviderApiKey } from '../src/config/provider-keys.ts';
 import type { ModelCredentialStore } from '../src/config/settings-store.ts';
 import type { AppStores, PlatformEnv } from '../src/config/state-backend.ts';
 import type { StateRpcResult, TagStateRpc } from '../src/config/state-rpc.ts';
@@ -437,6 +437,26 @@ test("a hosted turn reads its model credentials in the batch, once, BYOK or plat
     const browserKeys = (keys: readonly string[]) => keys.filter((key) => key.startsWith('browser.browserbase.'));
     assert.deepEqual(browserKeys(await planned(env)), [], 'hosted, the batch names no stored browser key');
     assert.equal(browserKeys(await planned({} as PlatformEnv)).length, 2, 'standalone, it reads the browser key and project');
+
+    // Defect caught: a hosted turn's batch naming the saved provider-key
+    // settings, which a hosted Worker never reads; it reads the credential
+    // records instead (tests/model-access-bypass.test.ts allows this module).
+    const providerKeySettings = new Set(Object.values(PROVIDER_KEY_SETTING_KEYS));
+    const allReads = async (plannedEnv: PlatformEnv) => turnPlanReads(
+      { id: 'turn_keys', turn: lane.turn(fixture), assignment: await lane.assignment(READY_AGENT, fixture.place) } as unknown as PendingTurnJob,
+      plannedEnv,
+    );
+    const namedKeySettings = (reads: Awaited<ReturnType<typeof allReads>>) => reads
+      .filter((read) => read.method === 'settingGet' || read.method === 'settingGetMany')
+      .flatMap((read) => (read.method === 'settingGet' ? [read.args[0]] : read.args[0]) as string[])
+      .filter((key) => providerKeySettings.has(key));
+    const credentialRecords = (reads: Awaited<ReturnType<typeof allReads>>) => reads
+      .filter((read) => read.method === 'modelCredentialRead').map((read) => read.args[0]);
+    assert.deepEqual(namedKeySettings(await allReads(env)), [], 'hosted, the batch names no provider-key setting');
+    assert.deepEqual(credentialRecords(await allReads(env)), [...PROVIDER_KEY_IDS], 'hosted, it reads each credential record');
+    assert.equal(namedKeySettings(await allReads({} as PlatformEnv)).length, PROVIDER_KEY_IDS.length,
+      'standalone, a key-backed model reads the saved provider keys');
+    assert.deepEqual(credentialRecords(await allReads({} as PlatformEnv)), [], 'standalone, no credential record');
 
     // The turn's other credential readers: readiness, usage attribution, and the classifier's key.
     const readCredentials = async (batched: boolean) => {
