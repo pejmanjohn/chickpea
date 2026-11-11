@@ -2,6 +2,7 @@ import { applyHostContext, HostBridge, type CallToolResult } from './bridge.ts';
 import {
   boundedTold,
   hostFailed,
+  keptState,
   withResponseMeta,
   type Call,
   type CardEvent,
@@ -15,10 +16,10 @@ import { mountCard } from './render.ts';
 
 /**
  * A card in a host's iframe: host messages and presses become model events,
- * and the model's effects run here. ChatGPT keeps a card's widget state and
- * shows all of it to its model, `privateContent` included, so the card keeps
- * there only what it already told the model and its outcome: never a token,
- * an ID or instructions. A chat that reopens mounts the card with its first
+ * and the model's effects run here. ChatGPT keeps a card's widget state, and
+ * its model may read all of it, so the card keeps there only what it already
+ * told the model and its outcome: never a token, an ID or instructions. A
+ * chat that reopens mounts the card with its first
  * result, and the card comes back to its outcome from that, then reads where
  * things stand now.
  */
@@ -66,7 +67,10 @@ export function runCard<V extends { kind: string }, A extends string>(name: stri
     switch (effect.type) {
       case 'call': {
         const replied = (result: CallToolResult) => answered(effect.call, result);
-        bridge.callTool(effect.call.tool, effect.call.args, replied).then(
+        // A late failure of the host's own says nothing the timeout did not, and the card may be
+        // busy with a press made since. Only a late answer carrying Chickpea's word is news.
+        const late = (result: CallToolResult) => { if (!hostFailed(result)) replied(result); };
+        bridge.callTool(effect.call.tool, effect.call.args, late).then(
           replied,
           () => dispatch({ type: 'unreachable', call: effect.call, now: Date.now() }),
         );
@@ -140,12 +144,6 @@ function keptMemory(): Memory | undefined {
   return { told: boundedTold(told), ...card.outcome === undefined ? {} : { outcome: card.outcome } };
 }
 
-/**
- * Only what the model may read: `modelContent` is what the card told it, and
- * `privateContent` holds the same sentences and the outcome, which ChatGPT
- * shows its model too.
- */
-function keep({ told = [], outcome }: CardState<{ kind: string }>): void {
-  const card = { version: CARD_VERSION, told, ...outcome === undefined ? {} : { outcome } };
-  void Promise.resolve(window.openai?.setWidgetState?.({ modelContent: told.join('\n'), privateContent: { card } })).catch(() => undefined);
+function keep(state: CardState<{ kind: string }>): void {
+  void Promise.resolve(window.openai?.setWidgetState?.(keptState(state, CARD_VERSION))).catch(() => undefined);
 }

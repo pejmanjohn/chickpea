@@ -422,9 +422,11 @@ function reply(state: State, made: Call, result: ToolResult, now: number): Next<
     case 'confirm_change':
       if (code === 'confirmation_expired') return show(EXPIRED);
       if (failure || !isChangeResult(content)) {
-        return code === 'temporarily_unavailable' || !failure
-          ? stay({ view, busy: false, error: failure ?? GENERIC })
-          : tell(show({ kind: 'notice', title: 'Nothing changed', body: failure }), `The person confirmed on the card, but nothing changed. Chickpea said: ${quoted(failure)}`);
+        // Only Chickpea's refusal says nothing changed. An error with no code is the host's, and
+        // the change may have been made: the buttons stay, and pressing again sends the same token.
+        return failure && code !== undefined && code !== 'temporarily_unavailable'
+          ? tell(show({ kind: 'notice', title: 'Nothing changed', body: failure }), `The person confirmed on the card, but nothing changed. Chickpea said: ${quoted(failure)}`)
+          : stay({ view, busy: false, error: failure ?? GENERIC });
       }
       return tell(changeView(content, now), `The person confirmed on the card. Chickpea said: ${quoted(content.summary)}`);
     case 'decline_change': {

@@ -33,7 +33,7 @@ export interface CardState<V extends { kind: string }> {
    * result it first had. Each card says what it keeps; never a token or an ID.
    */
   outcome?: unknown;
-  /** The card mounted and its first read is out: no button shows until it answers. */
+  /** The card mounted and its first read is out: every button waits until it answers or fails. */
   checking?: true;
 }
 
@@ -44,6 +44,17 @@ export interface CardState<V extends { kind: string }> {
 export interface Memory {
   told: string[];
   outcome?: unknown;
+}
+
+/**
+ * The widget state a card writes: `modelContent` is what it told the host's
+ * model, and `privateContent` holds the same sentences and the outcome for a
+ * card that mounts again. ChatGPT hides `privateContent` from its model only
+ * beside a `modelContent`, so both always go; neither holds a token, an ID
+ * or instructions.
+ */
+export function keptState({ told = [], outcome }: { told?: string[] | undefined; outcome?: unknown }, version: number) {
+  return { modelContent: told.join('\n'), privateContent: { card: { version, told, ...outcome === undefined ? {} : { outcome } } } };
 }
 
 export interface Call {
@@ -132,8 +143,9 @@ export const TOLD_CHARS = 1_500;
  * A card's `step`: a new view counts up `seq`, and each call it makes is
  * stamped with the view that made it. A result mounts the card: it shows
  * what the card kept of its presses, then reads where things stand now, and
- * shows no button until that read answers. Everything the card told the
- * host's model goes with each new sentence.
+ * its buttons wait until that read answers or fails. Everything the card
+ * told the host's model goes with each new sentence, and a sentence told
+ * again moves to the end instead of taking a second place.
  */
 export function sequenced<V extends { kind: string }, A extends string>(
   transition: (state: CardState<V>, event: CardEvent<A>) => Next<V>,
@@ -159,7 +171,7 @@ export function sequenced<V extends { kind: string }, A extends string>(
     }
     const sentences = next.effects.flatMap((effect) => effect.type === 'context' ? [effect.text] : []);
     if (sentences.length > 0) {
-      told = boundedTold([...told, ...sentences]);
+      told = boundedTold([...told.filter((line) => !sentences.includes(line)), ...sentences]);
       outcome = remembering.remember?.(next.state.view) ?? outcome;
     }
     const seq = next.state.view === state.view ? state.seq : state.seq + 1;
@@ -419,7 +431,8 @@ export interface Presentation<A extends string = string> {
 
 /**
  * A result that is not the shape it claims draws as nothing to show, with no
- * buttons. A card still checking where things stand shows none either.
+ * buttons. A card still checking where things stand draws its buttons
+ * waiting, so it keeps its height and nothing can be pressed.
  */
 export function presentSafely<S extends { busy: boolean; error?: string | undefined; checking?: true }, A extends string>(
   present: (state: S) => Presentation<A>,
@@ -431,17 +444,7 @@ export function presentSafely<S extends { busy: boolean; error?: string | undefi
     } catch {
       return { busy: state.busy, error: state.error, avatar: 'none', title: NOTHING.title, blocks: [], buttons: [] };
     }
-    return state.checking ? withoutButtons(shown) : shown;
-  };
-}
-
-function withoutButtons<A extends string>(shown: Presentation<A>): Presentation<A> {
-  return {
-    ...shown,
-    blocks: shown.blocks.map((block) => block.kind === 'rows'
-      ? { ...block, rows: block.rows.map(({ control: _control, ...row }) => row) }
-      : block),
-    buttons: [],
+    return state.checking ? { ...shown, busy: true } : shown;
   };
 }
 

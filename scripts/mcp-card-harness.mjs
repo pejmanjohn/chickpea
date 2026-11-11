@@ -583,6 +583,8 @@ async function chrome(picture) {
       const find = label
         ? `[...document.querySelectorAll('button[data-action]')].find((node) => node.textContent === ${JSON.stringify(label)})`
         : `document.querySelector('button[data-action="${action}"]')`;
+      // A card draws its buttons waiting while its first read is out.
+      await this.waitFor(`(${find})?.disabled === false`, `${label ?? action}, ready to press`);
       const box = await inCard(`(() => { const r = ${find}.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
       const frame = await evaluate('(() => { const r = document.querySelector("iframe").getBoundingClientRect(); return { x: r.x, y: r.y }; })()');
       await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: frame.x + box.x, y: frame.y + box.y });
@@ -689,6 +691,28 @@ try {
     };
     const subtitle = () => browser.inCard('document.querySelector(".cp-sub")?.textContent ?? ""');
     const buttons = () => browser.inCard('[...document.querySelectorAll(".cp-acts button")].map((node) => node.textContent)');
+    /**
+     * What the card saved to ChatGPT's widget state, which its model may read:
+     * only what the card told the model and its outcome, never a token, key, ID or link.
+     */
+    const keptOnlyTold = async (what) => {
+      const [states, sent, held] = await Promise.all([
+        browser.host('window.harness.widgetStates'),
+        browser.host('window.harness.args'),
+        browser.host('window.harness.scene.result._meta?.["chickpea/held"] ?? {}'),
+      ]);
+      const secrets = [...sent.flatMap((args) => Object.entries(args ?? {})), ...Object.entries(held)]
+        .flatMap(([key, value]) => /Token$|idempotencyKey|Id$/.test(key) && typeof value === 'string' ? [value] : []);
+      assert.ok(states.length > 0, `${what}: the card kept something`);
+      for (const state of states) {
+        const written = JSON.stringify(state);
+        assert.deepEqual([Object.keys(state), Object.keys(state.privateContent)], [['modelContent', 'privateContent'], ['card']], `${what}: ${written}`);
+        assert.ok(Object.keys(state.privateContent.card).every((key) => ['version', 'told', 'outcome'].includes(key)), `${what}: ${written}`);
+        assert.equal(state.modelContent, state.privateContent.card.told.join('\n'), `${what}: the model reads what the card told it`);
+        assert.doesNotMatch(written, /agent_|changeset_|https?:/, `${what}: ${written}`);
+        for (const secret of secrets) assert.equal(written.includes(secret), false, `${what}: ${secret} kept`);
+      }
+    };
     /** The example's two messages: how many lines each shows, and whether it was cut short. */
     const said = () => browser.inCard(`[...document.querySelectorAll('.cp-said')].map((node) => {
       const style = getComputedStyle(node);
@@ -759,6 +783,7 @@ try {
     await shot('2-ready');
     assert.match((await browser.host('window.harness.contexts')).at(-1), /^The person created .* It is joining Slack now\.\nThe person created .* said hello to them there\.$/,
       'the ready sentence carries the one before it');
+    if (host === 'chatgpt') await keptOnlyTold('Created');
     const before = (await browser.host('window.harness.calls')).length;
     await browser.host('window.harness.reload()');
     if (host === 'chatgpt') {
@@ -803,6 +828,7 @@ try {
     await browser.waitForTitle(/^✓ Undid the change$/);
     assert.deepEqual(await buttons(), ['Open in Slack'], 'no second Undo, which would redo the change');
     await told(/^The person undid the change to the Agent "Invoice Chaser" from the card\.$/, 'Undone');
+    if (host === 'chatgpt') await keptOnlyTold('Saved and undone');
     await shot('5-undone');
     await browser.host('window.harness.reload()');
     await browser.waitForTitle(host === 'chatgpt' ? /^✓ Undid the change$/ : /^Change Invoice Chaser$/);
@@ -833,6 +859,7 @@ try {
     assert.deepEqual(await nonReads(), ['decline_change'], 'Keep retires the confirmation, and nothing else');
     await told(/^On the card, the person pressed "Keep it on", so nothing changed\./, 'Kept');
     assert.equal((await current.f.config.getAgent('agent_support')).enabled, true);
+    if (host === 'chatgpt') await keptOnlyTold('Kept');
     await shot('6-kept');
     // The chat reopens with the confirmation's first result: ChatGPT's widget state says it was kept.
     await browser.host('window.harness.reload()');
@@ -843,7 +870,7 @@ try {
     } else {
       // claude.ai keeps nothing, and no read says the token is retired: a press gets Chickpea's own sentence.
       await browser.waitForTitle(/^Turn off @support\?$/);
-      await browser.waitFor('document.querySelectorAll(".cp-acts button").length === 2', 'the buttons, once the read answers');
+      await browser.waitFor('document.querySelectorAll(".cp-acts button:enabled").length === 2', 'the buttons, once the read answers');
       await shot('6-kept-reopened');
       await browser.click('confirm');
       await browser.waitForTitle(/^Nothing changed$/);
@@ -859,6 +886,7 @@ try {
     assert.deepEqual(await nonReads(), ['confirm_change'], 'one click, one confirmation');
     assert.equal((await current.f.config.getAgent('agent_support')).enabled, false);
     assert.equal(await subtitle(), 'It won\'t answer in Slack until it\'s turned back on.');
+    if (host === 'chatgpt') await keptOnlyTold('Confirmed');
     await shot('6-confirmed');
 
     await open('confirmBare');
@@ -882,7 +910,7 @@ try {
       for (const errors of ['data', ...theme === 'light' && width === 728 ? ['bare'] : []]) {
         await open('confirm');
         await browser.waitForTitle(/^Turn off @support\?$/);
-        await browser.waitFor('document.querySelectorAll(".cp-acts button").length === 2', 'the buttons, once the read answers');
+        await browser.waitFor('document.querySelectorAll(".cp-acts button:enabled").length === 2', 'the buttons, once the read answers');
         const token = await browser.host('window.harness.scene.result._meta["chickpea/held"].confirmToken');
         await current.call('decline_change', { confirmToken: token });
         await browser.host(`window.harness.errors = ${JSON.stringify(errors)}`);
@@ -898,6 +926,26 @@ try {
           await shot('6-retired-refused-no-data');
         }
         assert.equal((await current.f.config.getAgent('agent_support')).enabled, true);
+      }
+      if (theme === 'light' && width === 728) {
+        // The host gives up on Turn off and the person presses it again. Only then does the first
+        // try's own failure come, with nothing of Chickpea's in it: the card still waits for the second.
+        await open('confirm');
+        await browser.waitForTitle(/^Turn off @support\?$/);
+        await browser.host('window.harness.holding = ["confirm_change"]');
+        await browser.inCard('window.harnessTimeout = setTimeout; window.setTimeout = (run, ms, ...rest) => window.harnessTimeout(run, ms === 60_000 ? 200 : ms, ...rest)');
+        await browser.click('confirm');
+        await browser.waitFor('/could not be reached/.test(document.querySelector(".cp-error")?.textContent ?? "")', 'the host giving up');
+        await browser.inCard('window.setTimeout = window.harnessTimeout');
+        await browser.click('confirm');
+        await browser.host('window.harness.held.shift()("fail")');
+        await new Promise((done) => setTimeout(done, 500));
+        assert.deepEqual(await browser.inCard('[...document.querySelectorAll(".cp-acts button")].map((node) => node.disabled)'), [true, true],
+          'the second Turn off is still out');
+        await browser.host('window.harness.holding = []; window.harness.answerHeld()');
+        await browser.waitForTitle(/^✓ Made the change you confirmed$/);
+        assert.deepEqual(await nonReads(), ['confirm_change', 'confirm_change'], 'Turn off twice, and no Keep it on');
+        assert.equal((await current.f.config.getAgent('agent_support')).enabled, false);
       }
     }
 

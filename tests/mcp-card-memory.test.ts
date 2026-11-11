@@ -4,6 +4,7 @@ import { test, type TestContext } from 'node:test';
 import { INITIAL, present, step, type Action, type View } from '../src/mcp-cards/agent-card/model.ts';
 import {
   hostFailed,
+  keptState,
   refusalOf,
   sequenced,
   show,
@@ -98,6 +99,32 @@ test('a refusal reaches the card wherever its host put it: in the result, beside
   assert.deepEqual([refusalOf(carried)?.code, hostFailed(carried)], ['changed_since_read', false]);
 });
 
+// Mutation proof (review MUST 1): taking an error with no code as Chickpea's refusal shows and keeps "Nothing changed".
+test('an error with no Chickpea code, answering Turn off, keeps the buttons: the change may have been made', async (t) => {
+  const { f, turnOff, card } = await world(t, 'memory-host-error');
+  const pending = await turnOff();
+  const confirm = card();
+  await confirm.result(pending);
+  confirm.hold = ({ tool }) => tool === 'confirm_change';
+  await confirm.press('confirm');
+  assert.equal((await f.config.getAgent('agent_support'))!.enabled, false, 'the server made the change');
+  // The host answers with an error result of its own: words, no structuredContent.
+  const timedOut = { isError: true, content: [{ type: 'text', text: 'Request timed out' }] };
+  confirm.held[0]!.result = timedOut;
+  const told = confirm.effects.length;
+  await confirm.answer();
+  assert.deepEqual([confirm.shown.title, confirm.labels(), confirm.shown.busy], ['Turn off @support?', ['Turn off (danger)', 'Keep it on (secondary)'], false]);
+  assert.equal(confirm.shown.error, 'That did not work. Try again.');
+  assert.deepEqual(confirm.effects.slice(told).filter(({ type }) => type === 'context'), [], 'the model is told nothing');
+  assert.equal(confirm.state.outcome, undefined, 'nothing is kept for a reopened card');
+
+  // Pressed again, the same token: Chickpea's answer decides.
+  confirm.hold = () => false;
+  await confirm.press('confirm');
+  assert.deepEqual(confirm.calls('confirm_change').map(({ args }) => args.confirmToken), [tokenOf(pending), tokenOf(pending)]);
+  assert.equal(confirm.shown.done, true, confirm.shown.title);
+});
+
 test('a card first drawn with an error finds its sentence in ChatGPT\'s copy of the result', async (t) => {
   const { call, card } = await world(t, 'memory-error-result');
   const refused = await call('get_agent', { agentId: 'agent_missing' });
@@ -167,18 +194,26 @@ test('a card that mounts again comes back to what its presses did, and never off
     [['Cancel (secondary)'], { kind: 'note', text: 'It changed since this preview. Ask again for a fresh one.', tone: 'warn' }]);
 });
 
-// Mutation proof (item 2): a card that draws its buttons at once offers Turn off before it knows the Agent is there.
-test('a card that mounts draws no button until its first read answers', async (t) => {
+// Mutation proof (item 2): a card that takes presses at once offers Turn off before it knows the Agent is there.
+test('a card that mounts draws its buttons waiting until its first read answers or fails', async (t) => {
   const { turnOff, card } = await world(t, 'memory-checking');
   const pending = await turnOff();
   const confirm = card();
   confirm.hold = ({ tool }) => tool === 'get_agent';
   await confirm.result(pending);
-  assert.deepEqual([confirm.shown.title, confirm.labels()], ['Turn off @support?', []], 'the question shows; its buttons wait');
+  assert.deepEqual([confirm.shown.title, confirm.labels(), confirm.shown.busy], ['Turn off @support?', ['Turn off (danger)', 'Keep it on (secondary)'], true],
+    'the question and its buttons show; the buttons wait');
   await confirm.press('confirm');
   assert.deepEqual(confirm.calls('confirm_change'), [], 'a press before the read sends nothing');
   await confirm.answer();
-  assert.deepEqual(confirm.labels(), ['Turn off (danger)', 'Keep it on (secondary)']);
+  assert.deepEqual([confirm.labels(), confirm.shown.busy], [['Turn off (danger)', 'Keep it on (secondary)'], false]);
+
+  // A read that fails is not a failed write: the buttons stop waiting, and Chickpea decides on a press.
+  const unread = card();
+  unread.hold = ({ tool }) => tool === 'get_agent';
+  await unread.result(pending);
+  await unread.answer('unreachable');
+  assert.deepEqual([unread.labels(), unread.shown.busy], [['Turn off (danger)', 'Keep it on (secondary)'], false]);
 
   // Its Agent deleted since: the confirmation has nothing left to confirm.
   const gone = card();
@@ -187,6 +222,38 @@ test('a card that mounts draws no button until its first read answers', async (t
   gone.held[0]!.result = { isError: true, structuredContent: { error: { code: 'not_found', message: 'No Agent.', retryable: false } } };
   await gone.answer();
   assert.deepEqual([gone.shown.title, gone.labels()], ['Support Desk is no longer available', []]);
+});
+
+// Mutation proof (review SHOULD 3): a resumed done card that keeps its undoToken offers an Undo that redoes the change.
+test('a done card that mounts again after its Undo offers no Undo, even when its read fails', async (t) => {
+  const { call, version, card } = await world(t, 'memory-undone-reopen');
+  // A change the model made: the card is drawn with update_agent's done result and its Undo.
+  const saved = await call('update_agent', { agentId: 'agent_support', version: await version(), description: 'Answers support questions.', idempotencyKey: 'described' });
+  assert.equal((saved.structuredContent as { status: string }).status, 'done');
+  const first = card();
+  await first.result(saved);
+  assert.ok(first.labels().includes('Undo (secondary)'), JSON.stringify(first.labels()));
+  await first.press('undo');
+  assert.equal(first.shown.title, 'Undid the change');
+
+  const again = card();
+  again.hold = ({ tool }) => tool === 'get_agent';
+  await again.dispatch({ type: 'result', result: saved, kept: memoryOf(first.state), now: Date.now() });
+  const undo = () => again.labels().filter((label) => label.startsWith('Undo'));
+  assert.deepEqual([again.shown.title, undo()], ['Undid the change', []], 'while it reads');
+  await again.answer('unreachable');
+  assert.deepEqual([again.shown.title, undo()], ['Undid the change', []], 'after its read fails');
+});
+
+// Mutation proof (review SHOULD 3): a mount read that judges a confirmation replaces Delete with "is archived".
+test('a delete confirmation keeps its buttons after the mount read finds its Agent archived', async (t) => {
+  const { call, version, card } = await world(t, 'memory-delete-archived');
+  const archived = await call('archive_agent', { agentId: 'agent_support', version: await version(), idempotencyKey: 'archive' });
+  const deleting = await call('delete_agent', { agentId: 'agent_support', version: (archived.structuredContent as { version: string }).version, idempotencyKey: 'delete' });
+  const confirm = card();
+  await confirm.result(deleting);
+  assert.deepEqual(confirm.calls().map(({ tool }) => tool), ['get_agent'], 'it read where the Agent stands');
+  assert.deepEqual([confirm.labels(), confirm.shown.busy], [['Delete (danger)', 'Keep it (secondary)'], false]);
 });
 
 test('an older card drops Undo once a newer change exists, however its change was made', async (t) => {
@@ -201,16 +268,17 @@ test('an older card drops Undo once a newer change exists, however its change wa
   assert.deepEqual(confirmed.labels(), [], 'scrolled back to, it reads the Agent and offers no Undo');
 });
 
-// The widget state run-card writes is exactly `told` and `outcome`, and ChatGPT shows all of it to its model.
+// Mutation proof (review SHOULD 2): keptState writing the view, tokens included, into privateContent.
+// It is what run-card writes to the widget state, and ChatGPT's model may read all of it.
 test('what a card keeps where the host\'s model reads it holds no token, ID or instructions', async (t) => {
   const { call, f, version, turnOff, card } = await world(t, 'memory-safe');
   const secrets = new Set<string>(['agent_support', 'agent_invoice_chaser', INSTRUCTIONS, 'Chase invoices.']);
-  const kept: Memory[] = [];
+  const kept: Array<ReturnType<typeof keptState>> = [];
   const watch = (opened: ReturnType<typeof card>) => {
     const dispatch = opened.dispatch.bind(opened);
     opened.dispatch = async (event) => {
       await dispatch(event);
-      kept.push(memoryOf(opened.state));
+      kept.push(keptState(opened.state, 9));
     };
     return opened;
   };
@@ -239,9 +307,13 @@ test('what a card keeps where the host\'s model reads it holds no token, ID or i
   await create.result(proposal);
   await create.press('create');
 
-  assert.ok(kept.some(({ outcome }) => outcome !== undefined) && kept.some(({ told }) => told.length === 2), 'the journeys kept something');
-  for (const memory of kept) {
-    const written = JSON.stringify(memory);
+  const cards = kept.map(({ privateContent }) => privateContent.card);
+  assert.ok(cards.some(({ outcome }) => outcome !== undefined) && cards.some(({ told }) => told.length === 2), 'the journeys kept something');
+  for (const state of kept) {
+    const written = JSON.stringify(state);
+    assert.deepEqual([Object.keys(state), Object.keys(state.privateContent)], [['modelContent', 'privateContent'], ['card']], written);
+    assert.ok(Object.keys(state.privateContent.card).every((key) => ['version', 'told', 'outcome'].includes(key)), written);
+    assert.equal(state.modelContent, state.privateContent.card.told.join('\n'), 'the model reads what the card told it');
     for (const secret of secrets) assert.equal(written.includes(secret), false, `${secret} kept: ${written}`);
     assert.doesNotMatch(written, /changeset_|"agentId"|https?:/, written);
   }
@@ -250,12 +322,13 @@ test('what a card keeps where the host\'s model reads it holds no token, ID or i
 // Mutation proof (item 4): sending only the newest sentence loses what the card said before.
 test('each update to the host\'s model carries everything the card told before, newest last, bounded', () => {
   type Counted = { kind: 'n'; n: number };
-  const counting = sequenced<Counted, 'say' | 'shout'>((state, event) => event.type === 'press'
-    ? tell(show({ kind: 'n', n: state.view.n + 1 }), event.action === 'shout' ? 'x'.repeat(TOLD_CHARS + 10) : `Sentence ${state.view.n + 1}.`)
+  const counting = sequenced<Counted, 'say' | 'shout' | 'again'>((state, event) => event.type === 'press'
+    ? tell(show({ kind: 'n', n: state.view.n + 1 }), event.action === 'shout' ? 'x'.repeat(TOLD_CHARS + 10)
+      : event.action === 'again' ? 'Nothing new.' : `Sentence ${state.view.n + 1}.`)
     : stay(state));
   let state: CardState<Counted> = { view: { kind: 'n', n: 0 }, busy: false, seq: 0 };
   const sent: string[] = [];
-  const press = (action: 'say' | 'shout') => {
+  const press = (action: 'say' | 'shout' | 'again') => {
     const next = counting(state, { type: 'press', action, now: 0 });
     state = next.state;
     sent.push(...next.effects.flatMap((effect) => effect.type === 'context' ? [effect.text] : []));
@@ -270,4 +343,8 @@ test('each update to the host\'s model carries everything the card told before, 
   press('say');
   assert.equal(sent.at(-1), 'Sentence 14.', 'a long sentence leaves as soon as a newer one would not fit beside it');
   assert.equal(state.told?.join('\n'), sent.at(-1), 'the state holds what was sent');
+
+  // Mutation proof (review SHOULD 5): a sentence told again takes one place, so repeated presses keep what came before.
+  for (let i = 0; i < TOLD_MAX + 2; i += 1) press('again');
+  assert.equal(sent.at(-1), 'Sentence 14.\nNothing new.', 'the same sentence again moves to the end');
 });
