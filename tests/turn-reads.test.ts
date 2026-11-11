@@ -441,22 +441,34 @@ test("a hosted turn reads its model credentials in the batch, once, BYOK or plat
     // Defect caught: a hosted turn's batch naming the saved provider-key
     // settings, which a hosted Worker never reads; it reads the credential
     // records instead (tests/model-access-bypass.test.ts allows this module).
-    const providerKeySettings = new Set(Object.values(PROVIDER_KEY_SETTING_KEYS));
-    const allReads = async (plannedEnv: PlatformEnv) => turnPlanReads(
-      { id: 'turn_keys', turn: lane.turn(fixture), assignment: await lane.assignment(READY_AGENT, fixture.place) } as unknown as PendingTurnJob,
-      plannedEnv,
-    );
-    const namedKeySettings = (reads: Awaited<ReturnType<typeof allReads>>) => reads
+    const providerKeySettings = new Set<string>(Object.values(PROVIDER_KEY_SETTING_KEYS));
+    const keysJob = { id: 'turn_keys', turn: lane.turn(fixture), assignment: await lane.assignment(READY_AGENT, fixture.place) } as unknown as PendingTurnJob;
+    const allReads = (plannedEnv: PlatformEnv | undefined) => turnPlanReads(keysJob, plannedEnv);
+    const namedKeySettings = (reads: ReturnType<typeof allReads>) => reads
       .filter((read) => read.method === 'settingGet' || read.method === 'settingGetMany')
       .flatMap((read) => (read.method === 'settingGet' ? [read.args[0]] : read.args[0]) as string[])
       .filter((key) => providerKeySettings.has(key));
-    const credentialRecords = (reads: Awaited<ReturnType<typeof allReads>>) => reads
+    const credentialRecords = (reads: ReturnType<typeof allReads>) => reads
       .filter((read) => read.method === 'modelCredentialRead').map((read) => read.args[0]);
-    assert.deepEqual(namedKeySettings(await allReads(env)), [], 'hosted, the batch names no provider-key setting');
-    assert.deepEqual(credentialRecords(await allReads(env)), [...PROVIDER_KEY_IDS], 'hosted, it reads each credential record');
-    assert.equal(namedKeySettings(await allReads({} as PlatformEnv)).length, PROVIDER_KEY_IDS.length,
+    assert.deepEqual(namedKeySettings(allReads(env)), [], 'hosted, the batch names no provider-key setting');
+    assert.deepEqual(credentialRecords(allReads(env)), [...PROVIDER_KEY_IDS], 'hosted, it reads each credential record');
+    assert.equal(namedKeySettings(allReads({} as PlatformEnv)).length, PROVIDER_KEY_IDS.length,
       'standalone, a key-backed model reads the saved provider keys');
-    assert.deepEqual(credentialRecords(await allReads({} as PlatformEnv)), [], 'standalone, no credential record');
+    assert.deepEqual(credentialRecords(allReads({} as PlatformEnv)), [], 'standalone, no credential record');
+
+    // Defect caught: a caller that passes no env, or one without the tenancy,
+    // getting a standalone batch on a deployment that serves many installations.
+    const previousTenancy = process.env.CHICKPEA_TENANCY;
+    process.env.CHICKPEA_TENANCY = 'installation';
+    try {
+      for (const [label, omitted] of [['no env', undefined], ['an env without the tenancy', {} as PlatformEnv]] as const) {
+        assert.deepEqual(namedKeySettings(allReads(omitted)), [], `hosted by the deployment's variables, ${label}: no provider-key setting`);
+        assert.deepEqual(credentialRecords(allReads(omitted)), [...PROVIDER_KEY_IDS], `hosted by the deployment's variables, ${label}: each credential record`);
+      }
+    } finally {
+      if (previousTenancy === undefined) delete process.env.CHICKPEA_TENANCY;
+      else process.env.CHICKPEA_TENANCY = previousTenancy;
+    }
 
     // The turn's other credential readers: readiness, usage attribution, and the classifier's key.
     const readCredentials = async (batched: boolean) => {
