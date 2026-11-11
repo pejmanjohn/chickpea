@@ -22,9 +22,10 @@ import {
 import {
   advertiseMetaAdsAccountHelper,
   advertiseMetaAdsAccountHelperOutput,
+  reviewedMetaAdsTools,
   sanitizeMetaAdsAccountHelperResponse,
 } from './meta-ads-response.ts';
-import { createMcpToolsListFilter } from './mcp-tools-list.ts';
+import { createMcpToolsListFilter, type ToolsRewrite } from './mcp-tools-list.ts';
 import { assertMetaAdsWriteAccountOwnership, META_ADS_OWNERSHIP_ORIGIN } from './meta-ads-write-guard.ts';
 import { META_ADS_OAUTH_MANAGEMENT_SCOPE } from './mcp-oauth-clients.ts';
 import {
@@ -189,7 +190,8 @@ export function resolveProfileMcpConnections(
  * On Streamable HTTP, Flue mounts what tools/list returns, and every listing
  * is filtered to the granted tools the server still lists, in grant order. A
  * tool the server stops listing leaves the rest working, and comes back when
- * the server lists it again; the grant itself is never rewritten.
+ * the server lists it again; the grant itself is never rewritten. A Meta tool
+ * shows only the arguments reviewed on the current row.
  */
 export function resolveRuntimePlanMcpConnections(
   profileId: string,
@@ -266,11 +268,7 @@ export function resolveRuntimePlanMcpConnections(
     // The legacy SSE transport answers tools/list on its GET stream, which the
     // filter does not read, so it keeps Flue's strict allowlist.
     const toolsList = declaration.transport === 'streamable-http'
-      ? createMcpToolsListFilter({
-          connectionId: declaration.id,
-          grant: allowedTools,
-          ...(usesMetaAdsOutputAdapter(declaration) ? { rewriteTools: advertiseMetaAdsAccountHelper } : {}),
-        })
+      ? createMcpToolsListFilter({ connectionId: declaration.id, grant: allowedTools })
       : undefined;
     const fetchWithLiveHeaders = withMcpHttpTelemetry(async (input, init) => {
       const request = new Request(input, init);
@@ -326,7 +324,7 @@ export function resolveRuntimePlanMcpConnections(
         rejectedAccessToken = presentedBearerToken(headers);
       }
       const advertised = readAnswer
-        ? await readAnswer(response, server.displayName)
+        ? await readAnswer(response, server.displayName, metaAdsToolsRewrite(server))
         : advertisedRequest
           ? await advertiseMetaAdsAccountHelperOutput(advertisedRequest, response)
           : response;
@@ -576,6 +574,13 @@ function usesMetaAdsOutputAdapter(connection: Pick<McpConnectionConfig, 'url'>):
   }
 }
 
+/** Meta's listing as the model may use it: the account helper's rebuilt contract, and reviewed arguments only. */
+function metaAdsToolsRewrite(server: McpConnectionConfig): ToolsRewrite | undefined {
+  if (!isMetaAdsMcpConnection(server)) return undefined;
+  return (tools) =>
+    reviewedMetaAdsTools(usesMetaAdsOutputAdapter(server) ? advertiseMetaAdsAccountHelper(tools) : tools, server);
+}
+
 function serverNeedsInvocationGuard(server: McpConnectionConfig): boolean {
   return isMetaAdsMcpConnection(server) || server.allowedTools.some((name) =>
     server.toolPolicies?.[name]?.argumentConstraints !== undefined);
@@ -669,7 +674,7 @@ async function sanitizeAccountHelperResponse(
   if (!approvedAccountIds) {
     throw new Error('Meta Ads account verification scope changed; review the connection before using it.');
   }
-  return sanitizeMetaAdsAccountHelperResponse(response, approvedAccountIds);
+  return sanitizeMetaAdsAccountHelperResponse(response, approvedAccountIds, { connectionId: server.id });
 }
 
 async function requireCurrentProfileMcpServer(
