@@ -196,6 +196,32 @@ test('a username leaves a JSON unicode escape or an HTML entity of any of its ma
   assert.equal(record.steps[0]?.kind === 'tool' && record.steps[0].output, '{"body":"[credential redacted]"}');
 });
 
+test('a username percent-encoded in every character, or in mixed forms, leaves the copy and the text around it stays as written', () => {
+  const percent = (text: string) => [...new TextEncoder().encode(text)].map((byte) => `%${byte.toString(16).padStart(2, '0')}`).join('');
+  const accented = 'josé.synthetic@example.com';
+  const mixed = `${percent('Ops.')}Synthetic${'\\'}u0040${percent('example')}.com`;
+  const record = copy({
+    steps: [{ kind: 'tool', name: 'read_mail', input: '{}', output: `{"link":"https://forms.example/next?u=${percent(USERNAME)}&x=1"}` }],
+    answer: `Sent ${percent(USERNAME).toUpperCase()}, ${mixed}, ${percent(accented)} and ${percent('Ops Synthetic')}; %ZZ, %C3 and 100%25 stay.`,
+  }, { hosts: [], usernames: [USERNAME, accented, 'Ops Synthetic'] });
+  assert.equal(record.steps[0]?.kind === 'tool' && record.steps[0].output, '{"link":"https://forms.example/next?u=[credential redacted]&x=1"}');
+  assert.equal(record.answer,
+    'Sent [credential redacted], [credential redacted], [credential redacted] and [credential redacted]; %ZZ, %C3 and 100%25 stay.');
+});
+
+test('an email address\'s local part leaves the copy where it stands alone, under the same length and word rules', () => {
+  const record = copy({
+    steps: [browserStep('browser_snapshot', {}, {
+      snapshot: '- heading "Welcome back, Ops.Synthetic" level=1\n- option "bob" [ref=e2]\n- text "bob approved it"',
+    })],
+    answer: 'Welcome back, OPS.SYNTHETIC. Ops.Synthetics and xOps.Synthetic stay, and bob approved it.',
+  }, { hosts: [], usernames: [USERNAME, 'bob@example.com'] });
+  const output = record.steps[0]?.kind === 'tool' ? record.steps[0].output ?? '' : '';
+  assert.equal(JSON.parse(output).snapshot,
+    '- heading "Welcome back, [credential redacted]" level=1\n- option "[credential redacted]" [ref=e2]\n- text "bob approved it"');
+  assert.equal(record.answer, 'Welcome back, [credential redacted]. Ops.Synthetics and xOps.Synthetic stay, and bob approved it.');
+});
+
 test('every hosted browser link goes whole, whatever its host', () => {
   const record = copy({
     trigger: { author: 'U012ABCDEF3', text: 'Is https://www.browserbase.com/sessions/SYNTHSESS3 still open?', files: [] },

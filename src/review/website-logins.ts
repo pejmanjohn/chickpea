@@ -89,8 +89,10 @@ export interface WebsiteLoginScrub {
   links(text: string, browserStep: boolean): string;
   /**
    * Each saved username, in any case, as typed, JSON- or snapshot-escaped,
-   * percent- or form-encoded, Slack-escaped, or split across snapshot lines,
-   * and its start where a `…` or the end of a `cut` field follows it.
+   * percent- or form-encoded (in part or every character), Slack-escaped, or
+   * split across snapshot lines, and its start where a `…` or the end of a
+   * `cut` field follows it. An email address's local part goes too, where it
+   * stands alone.
    */
   usernames(text: string, options: { browserStep: boolean; cut: boolean }): string;
 }
@@ -128,11 +130,19 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
     return `${start}${kept}${suffix ? `?${URL_PART_OMITTED}` : ''}`;
   };
 
-  // Longest first, so a username that holds another goes whole.
-  const names = unique(logins.usernames.map((username) => username.trim()).filter(Boolean))
-    .sort((left, right) => right.length - left.length);
-  const long = names.filter((name) => [...name].length >= MIN_USERNAME_CHARS).map(usernameMatcher);
-  const short = names.filter((name) => [...name].length < MIN_USERNAME_CHARS);
+  const names = unique(logins.usernames.map((username) => username.trim()).filter(Boolean));
+  // An email address's local part goes where it stands alone too, as a site's greeting writes it.
+  const localParts = unique(names.flatMap((name) => {
+    const at = name.lastIndexOf('@');
+    return at > 0 && at < name.length - 1 ? [name.slice(0, at)] : [];
+  })).filter((part) => !names.includes(part));
+  const isLong = (name: string) => [...name].length >= MIN_USERNAME_CHARS;
+  // A username's own cut start already covers every start of its local part.
+  const long = [
+    ...names.filter(isLong).map((name) => usernameMatcher(name, { cutStart: true })),
+    ...localParts.filter(isLong).map((name) => usernameMatcher(name, { cutStart: false })),
+  ];
+  const short = [...names, ...localParts].filter((name) => !isLong(name));
   const quoted = short.length
     ? new RegExp(String.raw`(?<=")(?:${short.map((name) => [...name].map(charPattern).join('')).join('|')})(?=\\*")`, 'giu')
     : undefined;
@@ -154,19 +164,25 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
         .replace(browserStep ? linkPatterns.browserStep : linkPatterns.anywhere, (raw) => scrubLink(raw, browserStep));
     },
     usernames(text, { browserStep, cut }) {
-      const lower = text.toLowerCase();
+      // Matching reads the text with its percent escapes decoded, so a username encoded letter by
+      // letter is found too, and each match is removed from the text as it was written.
+      const view = percentDecoded(text);
+      const lower = view.text.toLowerCase();
       const holds = (runs: readonly string[]) => runs.every((run) => lower.includes(run));
-      let result = text;
+      const found: Span[] = [];
+      const find = (pattern: RegExp) => {
+        for (const match of view.text.matchAll(pattern)) found.push(view.written(match.index, match.index + match[0].length));
+      };
       for (const matcher of long) {
-        if (holds(matcher.runs)) result = result.replace(matcher.whole(), CREDENTIAL_REPLACEMENT);
+        if (holds(matcher.runs)) find(matcher.whole());
       }
-      if (cut || result.includes(CUT_MARK)) {
+      if (cut || view.text.includes(CUT_MARK)) {
         for (const matcher of long) {
-          if (matcher.prefix && holds(matcher.prefix.runs)) result = result.replace(matcher.prefix.pattern(cut), CREDENTIAL_REPLACEMENT);
+          if (matcher.prefix && holds(matcher.prefix.runs)) find(matcher.prefix.pattern(cut));
         }
       }
-      if (quoted && browserStep) result = result.replace(quoted, CREDENTIAL_REPLACEMENT);
-      return result;
+      if (quoted && browserStep) find(quoted);
+      return replaceSpans(text, found);
     },
   };
 }
@@ -177,20 +193,20 @@ const ASCII_WORD = /[A-Za-z0-9]/;
 const WORD_CHAR = String.raw`[\p{L}\p{N}]`;
 // Chinese, Japanese, Korean and Thai put no space between a word and a username beside it.
 const UNSPACED_LETTER = String.raw`[\p{scx=Han}\p{scx=Hiragana}\p{scx=Katakana}\p{scx=Hangul}\p{scx=Thai}]`;
-// Not inside a word, though an unspaced letter or a JSON, percent or Slack escape may sit right before it.
-const WORD_START = String.raw`(?:(?<!${WORD_CHAR})|(?<=${UNSPACED_LETTER}|\\[nrtbf]|\\u[0-9A-Fa-f]{4}|%[0-9A-Fa-f]{2}|&(?:amp|lt|gt);))`;
+// Not inside a word, though an unspaced letter or a JSON or Slack escape may sit right before it.
+const WORD_START = String.raw`(?:(?<!${WORD_CHAR})|(?<=${UNSPACED_LETTER}|\\[nrtbf]|\\u[0-9A-Fa-f]{4}|&(?:amp|lt|gt);))`;
 const WORD_END = String.raw`(?:(?!${WORD_CHAR})|(?=${UNSPACED_LETTER}))`;
 // Where a snapshot ends one node's text and starts the next: `"`, its ref and state, a line break, `- text "`.
 const NODE_STATE = String.raw`(?: (?:level=\d+|checked(?:=mixed)?|selected|expanded|disabled))*`;
 const NODE_BREAK = String.raw`(?:\\*"(?: \[ref=e\d+\])?${NODE_STATE}(?:\s|\\+[nrt])+-\s[A-Za-z]+\s\\*")?`;
 const CUT_AHEAD = String.raw`(?:\s|\\+[nrt])*${CUT_MARK}`;
 
-const encoder = new TextEncoder();
-
-/** One character of a username in each form a copy's text can hold it. */
+/**
+ * One character of a username in each form a copy's text can hold it, once
+ * its percent escapes are decoded. A form writes a space as `+`.
+ */
 function charPattern(char: string): string {
-  if (/\s/u.test(char)) return String.raw`(?:\s+|\+|%20)`;
-  const percent = [...encoder.encode(char)].map((byte) => `%${byte.toString(16).padStart(2, '0')}`).join('');
+  if (/\s/u.test(char)) return String.raw`(?:\s+|\+)`;
   const escaped: Record<string, string> = {
     '"': String.raw`\\*"`,
     '\\': String.raw`\\+`,
@@ -204,18 +220,19 @@ function charPattern(char: string): string {
   const numbered = ASCII_WORD.test(char) || code > 0xffff
     ? ''
     : String.raw`|\\+u${hex.padStart(4, '0')}|&#(?:0*${code}|x0*${hex});`;
-  return `(?:${escaped[char] ?? escapeRegExp(char)}|${percent}${numbered})`;
+  return `(?:${escaped[char] ?? escapeRegExp(char)}${numbered})`;
 }
 
 interface UsernameMatcher {
   /**
-   * The username's runs of ASCII letters and digits, lowercased. No encoder
-   * or escape changes those characters, and a snapshot breaks a value only
-   * at the edge of a run, so a field that lacks one cannot hold the username.
+   * The username's runs of ASCII letters and digits, lowercased. Once a
+   * field's percent escapes are decoded, no escape a serializer writes
+   * changes those characters, and a snapshot breaks a value only at the edge
+   * of a run, so a field that lacks one cannot hold the username.
    */
   runs: string[];
   whole(): RegExp;
-  /** Absent for a username too short to leave a start of MIN_CUT_PREFIX_CHARS before its end. */
+  /** Absent for a local part, and for a username too short to leave a start of MIN_CUT_PREFIX_CHARS before its end. */
   prefix?: {
     /** The runs of the username's first MIN_CUT_PREFIX_CHARS characters. */
     runs: string[];
@@ -225,12 +242,12 @@ interface UsernameMatcher {
 }
 
 /** Each pattern compiles on first use, a few milliseconds, and most fields never need it. */
-function usernameMatcher(name: string): UsernameMatcher {
+function usernameMatcher(name: string, { cutStart }: { cutStart: boolean }): UsernameMatcher {
   const chars = [...name];
   const start = WORD.test(chars[0]!) ? WORD_START : '';
   const end = WORD.test(chars.at(-1)!) ? WORD_END : '';
   const matcher = { runs: asciiRuns(name), whole: once(() => new RegExp(`${start}${joined(chars)}${end}`, 'giu')) };
-  if (chars.length <= MIN_CUT_PREFIX_CHARS) return matcher;
+  if (!cutStart || chars.length <= MIN_CUT_PREFIX_CHARS) return matcher;
   const required = joined(chars.slice(0, MIN_CUT_PREFIX_CHARS));
   const optional = chars.slice(MIN_CUT_PREFIX_CHARS, -1).reduceRight(
     (tail, char, index) => `(?:${breakBefore(chars, MIN_CUT_PREFIX_CHARS + index)}${charPattern(char)}${tail})?`,
@@ -257,6 +274,88 @@ function joined(chars: readonly string[]): string {
 function breakBefore(chars: readonly string[], index: number): string {
   if (index === 0) return '';
   return ASCII_WORD.test(chars[index - 1]!) && ASCII_WORD.test(chars[index]!) ? '' : NODE_BREAK;
+}
+
+/** Where a match starts and ends in a field's text, `[start, end)`. */
+type Span = [number, number];
+
+/** `text` with each span replaced; spans that overlap are replaced once, together. */
+function replaceSpans(text: string, spans: Span[]): string {
+  const merged: Span[] = [];
+  for (const [start, end] of spans.sort(([left], [right]) => left - right)) {
+    const last = merged.at(-1);
+    if (last && start < last[1]) last[1] = Math.max(last[1], end);
+    else merged.push([start, end]);
+  }
+  let result = '';
+  let from = 0;
+  for (const [start, end] of merged) {
+    result += `${text.slice(from, start)}${CREDENTIAL_REPLACEMENT}`;
+    from = end;
+  }
+  return result + text.slice(from);
+}
+
+interface DecodedView {
+  text: string;
+  /** Where the view's `[start, end)` was written in the original text. */
+  written(start: number, end: number): Span;
+}
+
+const PERCENT_RUN = /(?:%[0-9A-Fa-f]{2})+/g;
+const strictUtf8 = new TextDecoder('utf-8', { fatal: true });
+
+/** `text` with each percent escape of a UTF-8 character decoded. Other escapes stay as written. */
+function percentDecoded(text: string): DecodedView {
+  if (!text.includes('%')) return { text, written: (start, end) => [start, end] };
+  // For each character of the view, where it starts and ends in `text`.
+  const starts: number[] = [];
+  const ends: number[] = [];
+  let decoded = '';
+  const keep = (from: number, to: number) => {
+    for (let index = from; index < to; index += 1) {
+      starts.push(index);
+      ends.push(index + 1);
+    }
+    decoded += text.slice(from, to);
+  };
+  let from = 0;
+  for (const match of text.matchAll(PERCENT_RUN)) {
+    keep(from, match.index);
+    const bytes = Uint8Array.from(match[0].slice(1).split('%'), (hex) => parseInt(hex, 16));
+    for (let index = 0; index < bytes.length;) {
+      const at = match.index + index * 3;
+      const char = utf8CharAt(bytes, index);
+      if (char === undefined) {
+        keep(at, at + 3);
+        index += 1;
+        continue;
+      }
+      const end = at + char.bytes * 3;
+      for (let unit = 0; unit < char.text.length; unit += 1) {
+        starts.push(at);
+        ends.push(end);
+      }
+      decoded += char.text;
+      index += char.bytes;
+    }
+    from = match.index + match[0].length;
+  }
+  keep(from, text.length);
+  return { text: decoded, written: (start, end) => [starts[start]!, ends[end - 1]!] };
+}
+
+/** The UTF-8 character that starts at `bytes[index]`, or undefined where none does. */
+function utf8CharAt(bytes: Uint8Array, index: number): { text: string; bytes: number } | undefined {
+  const lead = bytes[index]!;
+  if (lead < 0x80) return { text: String.fromCharCode(lead), bytes: 1 };
+  const length = lead < 0xc2 ? 0 : lead < 0xe0 ? 2 : lead < 0xf0 ? 3 : lead < 0xf5 ? 4 : 0;
+  if (!length || index + length > bytes.length) return undefined;
+  try {
+    return { text: strictUtf8.decode(bytes.subarray(index, index + length)), bytes: length };
+  } catch {
+    return undefined;
+  }
 }
 
 function asciiRuns(text: string): string[] {
