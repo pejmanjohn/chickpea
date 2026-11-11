@@ -215,6 +215,9 @@ test('a helper that requires an unreviewed argument or has an account field is s
     ['stored account field name on the field helper', { name: META_ADS_FIELD_HELPER, inputSchema: {
       ...helper(META_ADS_FIELD_HELPER).inputSchema!, propertyNames: ['account_id', 'field_names'],
     } }],
+    ['stored account-like name', { name: META_ADS_ACCOUNT_HELPER, inputSchema: {
+      ...helper(META_ADS_ACCOUNT_HELPER).inputSchema!, propertyNames: ['advertiser_request', 'business_ad_account'],
+    } }],
     ['stored account field', { name: META_ADS_FIELD_HELPER, inputSchema: {
       ...helper(META_ADS_FIELD_HELPER).inputSchema!, propertyNames: ['advertiser_job'],
       accountFields: [{ name: 'account_id', type: 'string', required: true }],

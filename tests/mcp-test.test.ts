@@ -620,6 +620,8 @@ test('Meta helper projection admits optional arguments Meta adds', () => {
     assert.equal(liveAccountHelper(extra).ambiguous, false, name);
     assert.equal(liveFieldHelper(extra).ambiguous, false, name);
   }
+  // Only the account helper reviews pagination; on the field helper it is an addition.
+  assert.equal(liveFieldHelper({ cursor: { type: 'object' } }).ambiguous, false);
 });
 
 test('Meta helper projection refuses an added argument that is required or names an account', () => {
@@ -638,6 +640,12 @@ test('Meta helper projection refuses an added argument that is required or names
     })],
     ['unsupported reviewed shape beside additions', liveAccountHelper({
       ...metaHelperAdditions, limit: { type: 'string' },
+    })],
+    ['required argument another helper reviews', liveAccountHelper({
+      field_names: { type: 'array', items: { type: 'string' } },
+    }, ['field_names'])],
+    ['selector inside a reviewed argument', liveFieldHelper({
+      field_names: { type: 'array', items: { type: 'string', properties: { campaign_id: { type: 'string' } } } },
     })],
   ] as const) {
     assert.equal(projection.ambiguous, true, name);
