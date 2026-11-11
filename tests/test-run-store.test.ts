@@ -113,7 +113,8 @@ test('the same first question going returns that run; a conversation\'s next tur
   assert.equal(store.admit(admission(installation, { practiceId, question: 'And last week?' }), NOON + 11_000).kind, 'admitted');
 });
 
-test('for two minutes after it settles, the same ask on the same plan returns the settled run; an edit runs it again', () => {
+test('for two minutes after it answers, the same ask on the same plan returns that run; an edit runs it again', () => {
+  assert.equal(PRACTICE_REPEAT_MS, 120_000, 'two minutes');
   const installation = hostedInstallation('inst_test_store_repeat');
   const store = testRuns(installation);
   const first = admission(installation, { question: 'Who is overdue?', planDigest: 'plan_a' });
