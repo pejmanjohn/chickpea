@@ -39,7 +39,7 @@ export const TURN_ENVELOPE_MAX_SETTING_BYTES = 16 * 1024;
 const MAX_REPOSITORIES = 200;
 
 /**
- * Non-secret settings that Agent-side tool code reads, frozen at dispatch.
+ * Non-secret settings that Agent-side tool code reads, as read at turn start, frozen at dispatch.
  * Never add a credential here: anything listed is persisted with the TurnJob.
  */
 export const TURN_ENVELOPE_SETTING_KEYS: readonly string[] = Object.freeze([

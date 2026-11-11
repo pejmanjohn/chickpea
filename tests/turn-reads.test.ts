@@ -18,7 +18,7 @@ import { describeProviderKeySources, invalidateProviderKeyCache, resolveProvider
 import type { ModelCredentialStore } from '../src/config/settings-store.ts';
 import type { AppStores, PlatformEnv } from '../src/config/state-backend.ts';
 import type { StateRpcResult, TagStateRpc } from '../src/config/state-rpc.ts';
-import { answerStateReads, STATE_READ_BATCH_MAX, TurnReads } from '../src/config/turn-read-batch.ts';
+import { answerStateReads, STATE_READ_BATCH_MAX, TURN_READS_MAX_AGE_MS, TurnReads } from '../src/config/turn-read-batch.ts';
 import { endTurnReads, withTurnReads, type StateRead } from '../src/config/turn-reads.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { prepareMemoryTurn } from '../src/memory/runtime.ts';
@@ -63,6 +63,24 @@ test("a prefetched read answers the turn's first identical read; a later one rea
     okAnswer({ id: 'agent_a', revision: 2 }), 'the second read is the state store\'s');
   await reads.read('configGetAgent', ['agent_b'], rpcOf(sent, 'other agent', null));
   assert.deepEqual(sent, ['agent', 'other agent']);
+});
+
+// Defect caught: kept reads answering for the whole run on a path that never
+// reaches dispatch preparation, the only place that ends them.
+test('kept reads stop answering once they are older than their maximum age', async () => {
+  const sent: string[] = [];
+  let now = 1_000;
+  const reads = new TurnReads(Promise.resolve<Answered>([
+    [{ method: 'settingGetMany', args: [['a']] }, okAnswer(['kept'])],
+    [{ method: 'configGetAgent', args: ['agent_a'] }, okAnswer({ id: 'agent_a', revision: 1 })],
+  ]), () => now);
+  assert.deepEqual(await reads.read('settingGet', ['a'], rpcOf(sent, 'a', 'live')), okAnswer('kept'));
+  now += TURN_READS_MAX_AGE_MS + 1;
+  assert.deepEqual(await reads.read('configGetAgent', ['agent_a'], rpcOf(sent, 'agent', { id: 'agent_a', revision: 2 })),
+    okAnswer({ id: 'agent_a', revision: 2 }), 'an old once-only answer is not used');
+  assert.deepEqual(await reads.read('settingGet', ['a'], rpcOf(sent, 'a', 'live')), okAnswer('live'),
+    'old settings are read again');
+  assert.deepEqual(sent, ['agent', 'a']);
 });
 
 // Defects caught: settings answered only for the exact key list batched, or

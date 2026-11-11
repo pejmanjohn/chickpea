@@ -88,6 +88,12 @@ function writtenStore(method: string, op: string | undefined): Store | undefined
 
 const readKey = (read: StateRead) => `${read.method} ${JSON.stringify(read.args)}`;
 
+/**
+ * How long a turn's kept reads answer at most. Dispatch preparation ends them
+ * well before this; the bound covers any path that never reaches it.
+ */
+export const TURN_READS_MAX_AGE_MS = 10_000;
+
 export class TurnReads implements TurnReadScope {
   /** Null is an absent setting. */
   private readonly settings = new Map<string, string | null>();
@@ -99,8 +105,13 @@ export class TurnReads implements TurnReadScope {
   private readonly written = new Set<Store>();
   private readonly prefetched: Promise<void>;
   private open = true;
+  private readonly openedAt: number;
 
-  constructor(prefetch: Promise<ReadonlyArray<readonly [StateRead, StateRpcResult<unknown> | null]> | undefined>) {
+  constructor(
+    prefetch: Promise<ReadonlyArray<readonly [StateRead, StateRpcResult<unknown> | null]> | undefined>,
+    private readonly now: () => number = Date.now,
+  ) {
+    this.openedAt = now();
     this.prefetched = prefetch.then((answered) => {
       if (!this.open || !answered) return;
       for (const [read, answer] of answered) {
@@ -123,6 +134,7 @@ export class TurnReads implements TurnReadScope {
   ): Promise<StateRpcResult<T>> {
     if (!this.open) return send();
     await this.prefetched;
+    if (this.now() - this.openedAt > TURN_READS_MAX_AGE_MS) this.close();
     if (!this.open) return send();
     if (method === 'settingGet' || method === 'settingGetMany') return this.readSettings({ method, args }, send);
     if (method === 'modelCredentialRead') return this.readCredential(String(args[0]), send);
