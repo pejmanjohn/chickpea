@@ -30,6 +30,7 @@ import {
   BROWSER_TOO_LARGE_TO_CHECK_MESSAGE,
   HOSTED_BROWSER_UNAVAILABLE_MESSAGE,
   browserApprovalScreenshotWithheldNote,
+  browserApprovedStepFailedMessage,
   browserRecordingWithheldMessage,
   browserScreenshotWithheldMessage,
 } from '../src/browser/messages.ts';
@@ -1265,6 +1266,7 @@ async function actTurn(options: {
     sleep: async () => undefined,
   });
   const staged: SlackArtifactStageInput[] = [];
+  const logs: string[] = [];
   let waiting = 0;
   let liveReads = 0;
   const tools = createBrowserTools({
@@ -1276,6 +1278,7 @@ async function actTurn(options: {
     transportMaxBytes: async () => undefined,
     sleep: async () => undefined,
     now: () => new Date(Date.UTC(2026, 8, 22, 14, 5)),
+    log: { warn: (...args: unknown[]) => { logs.push(JSON.stringify(args)); } },
     logins: { granted, readLive: async () => { liveReads += 1; return live; }, dependencies: async () => deps },
     ...(options.approvals === false ? {} : {
       approvals: {
@@ -1298,7 +1301,7 @@ async function actTurn(options: {
     });
     return JSON.parse(JSON.stringify(result.output));
   };
-  return { run, session, browsers, staged, billing, waiting: () => waiting, liveReads: () => liveReads, ...fake };
+  return { run, session, browsers, staged, logs, billing, waiting: () => waiting, liveReads: () => liveReads, ...fake };
 }
 
 async function approveFromSlack(settings: SqliteSettingsStore, messageTs: string) {
@@ -1381,18 +1384,20 @@ test('an action login holds a data-changing step for approval with a screenshot,
   await approved.session.close();
 });
 
-test('the start of a typed secret the approval description cuts short is redacted', async () => {
+test('a step whose description would cut a typed secret short is never held', async () => {
   const secret = 'Synthetic-Recovery-Phrase-0042-alpha-bravo';
+  // The name holds only the start of the secret; cut to length, the description leaves it before an ellipsis.
   const tree = FORM_TREE.map((node) => (node.nodeId === '4'
     ? { ...node, name: { type: 'computedString', value: 'Confirm the change for the account whose recovery phrase begins Synthetic-Recovery-Phrase' } }
     : node));
-  const turn = await actTurn({ settings: new SqliteSettingsStore(':memory:'), messageTs: TURN_1_TS, tree });
+  const settings = new SqliteSettingsStore(':memory:');
+  const turn = await actTurn({ settings, messageTs: TURN_1_TS, tree });
   await turn.run('browser_open', { url: 'https://billing.example.com/plan' });
   turn.session.addRedaction(secret);
-  const held = await turn.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
-  assert.equal(held.description, 'click "Confirm the change for the account whose recovery phrase begins [redacted]…"');
-  assert.equal(turn.staged[0]!.title, `About to: ${held.description}`);
-  assert.equal(held.note, undefined);
+  const refused = await turn.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
+  assert.deepEqual(refused, { error: BROWSER_APPROVAL_HOLDS_SECRET_MESSAGE });
+  assert.equal(turn.staged.length, 0);
+  assert.equal(await settings.getSetting('browseraction_index'), undefined, 'nothing stored');
   await turn.session.close();
 });
 
@@ -1420,6 +1425,12 @@ test('a step is never held while the page address, its title, its element, its t
     ['address', async (turn) => {
       // A sign-in sent as a GET form leaves the password in the address.
       turn.browsers[0]!.url = `https://billing.example.com/plan?password=${encodeURIComponent(secret)}`;
+      return turn.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
+    }],
+    ['short code in the address', async (turn) => {
+      // Only a whole part of the address can be a code this short.
+      turn.session.addRedaction('Ab1');
+      turn.browsers[0]!.url = 'https://billing.example.com/plan?code=Ab1';
       return turn.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
     }],
     ['title', async (turn) => {
@@ -1457,6 +1468,75 @@ test('a step is never held while the page address, its title, its element, its t
     assert.equal(turn.staged.length, 0, where);
     assert.equal(await settings.getSetting('browseraction_index'), undefined, `${where}: nothing stored`);
     await turn.session.close();
+  }
+});
+
+test('a press step whose key is a typed secret is never held, so no later turn can replay it', async () => {
+  const secret = 'Synthetic-Pass-1234';
+  const settings = new SqliteSettingsStore(':memory:');
+  const turn = await actTurn({ settings, messageTs: TURN_1_TS });
+  await turn.run('browser_open', { url: 'https://billing.example.com/plan' });
+  turn.session.addRedaction(secret);
+  const refused = await turn.run('browser_act', { ref: 'e3', action: 'press', key: secret, mayChangeData: true });
+  assert.deepEqual(refused, { error: BROWSER_APPROVAL_HOLDS_SECRET_MESSAGE });
+  // A key sent with another action is stored too, though no description shows it.
+  const stray = await turn.run('browser_act', { ref: 'e3', action: 'click', key: secret, mayChangeData: true });
+  assert.deepEqual(stray, { error: BROWSER_APPROVAL_HOLDS_SECRET_MESSAGE });
+  assert.equal(turn.waiting(), 0);
+  assert.equal(turn.staged.length, 0);
+  assert.equal(await settings.getSetting('browseraction_index'), undefined, 'nothing stored');
+  await turn.session.close();
+  settings.close();
+});
+
+test('a press step with a key the browser cannot press is refused before it is held, without repeating the key', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const turn = await actTurn({ settings, messageTs: TURN_1_TS });
+  await turn.run('browser_open', { url: 'https://billing.example.com/plan' });
+  const refused = await turn.run('browser_act', { ref: 'e3', action: 'press', key: 'Hyperdrive', mayChangeData: true });
+  assert.match(refused.error, /^Unsupported key\. Use a single character or one of: Enter, Tab,/);
+  assert.doesNotMatch(refused.error, /Hyperdrive/);
+  assert.equal(turn.waiting(), 0);
+  assert.equal(await settings.getSetting('browseraction_index'), undefined, 'nothing stored');
+  const held = await turn.run('browser_act', { ref: 'e3', action: 'press', key: 'Enter', mayChangeData: true });
+  assert.equal(held.awaitingApproval, true);
+  assert.equal(held.description, 'press Enter');
+  await turn.session.close();
+  settings.close();
+});
+
+test('an approved step that fails names itself by the description the person approved, and repeats nothing else it stored', async () => {
+  const secret = 'Synthetic-Pass-1234';
+  // A dropdown without the option asked for: the browser's error repeats what was asked.
+  const noSuchOption = (browser: FormBrowser) => {
+    browser.responders.set('DOM.resolveNode', () => ({ result: { object: { objectId: 'node-1' } } }));
+    browser.responders.set('Runtime.callFunctionOn', () => ({ result: { result: { value: { ok: false, options: ['Monthly'] } } } }));
+  };
+  // Records as an earlier version stored them: a key, an address, an option or a step before holding a typed secret.
+  const stored: Array<[string, Record<string, unknown>, ((browser: FormBrowser) => void)?]> = [
+    ['key', { action: 'press', key: secret }],
+    ['address', { url: `https://billing.example.com/reset/${secret}/confirm` }, (browser) => {
+      browser.responders.set('Page.navigate', () => ({ result: { frameId: 'f1', errorText: 'net::ERR_ABORTED' } }));
+    }],
+    ['option', { action: 'select', text: secret }, noSuchOption],
+    ['step before', { prelude: [{ role: 'textbox', name: 'Customer name', occurrence: 0, action: 'select', text: secret }] }, noSuchOption],
+  ];
+  for (const [what, patch, prepare] of stored) {
+    const settings = new SqliteSettingsStore(':memory:');
+    const ask = await actTurn({ settings, messageTs: TURN_1_TS });
+    await ask.run('browser_open', { url: 'https://billing.example.com/plan' });
+    const held = await ask.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
+    await ask.session.close();
+    const key = `browseraction_${held.actionId}`;
+    await settings.setSetting(key, JSON.stringify({ ...JSON.parse((await settings.getSetting(key))!), ...patch }));
+    await approveFromSlack(settings, TURN_2_TS);
+    const turn = await actTurn({ settings, messageTs: TURN_2_TS, ...(prepare ? { prepare } : {}) });
+    const output = await turn.run('browser_act', { ref: 'e3', action: 'click', approvedActionId: held.actionId });
+    assert.deepEqual(output, { error: browserApprovedStepFailedMessage('click "Confirm change"') }, what);
+    assert.ok(turn.logs.length > 0, what);
+    for (const line of turn.logs) assert.ok(!line.includes(secret), `${what}: ${line}`);
+    await turn.session.close();
+    settings.close();
   }
 });
 

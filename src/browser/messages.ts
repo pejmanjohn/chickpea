@@ -18,6 +18,14 @@ export const BROWSER_APPROVAL_INSTRUCTION =
   'Ask the person to approve this step with the Approve step button under your reply, or by replying "approve" in this thread ("stop" cancels it). Describe the step in one sentence and end your reply after asking.';
 export const BROWSER_PAGE_CHANGED_MESSAGE =
   'The page changed since approval; take a new snapshot and ask again if the step is still right.';
+/**
+ * An approved step that failed, named by the words the person approved. The
+ * error itself could repeat what the step stored, and this turn knows no
+ * secret typed in the one that asked.
+ */
+export function browserApprovedStepFailedMessage(description: string): string {
+  return `The approved step (${description}) could not be taken. Take a new snapshot and ask again if the step is still needed.`;
+}
 /** Slack status while a data-changing step waits for the person. */
 export const BROWSER_APPROVAL_ACTIVITY = ['checking', 'Waiting for approval on', 'a website'] as const;
 export const BROWSER_NO_PAGE_MESSAGE = 'No page is open in the browser. Call browser_open first.';
@@ -47,7 +55,7 @@ export const BROWSER_TOO_LARGE_TO_CHECK_MESSAGE =
   'This was withheld because it is too large to check for the password or code typed to sign in. Open a smaller page on the site, such as one item or a search result.';
 /** A held step is stored until approval; one that would keep a typed secret is never held. */
 export const BROWSER_APPROVAL_HOLDS_SECRET_MESSAGE =
-  "This step cannot wait for approval: the page's address or the form holds the password or code typed to sign in, and a held step never keeps it. Open the page again from a link on the site, fill in the form again, and ask again.";
+  "This step cannot wait for approval: the step, the page's address or the form holds the password or code typed to sign in, and a held step never keeps it. Open the page again from a link on the site, fill in the form again, and ask again.";
 export const BROWSER_VISION_UNAVAILABLE_MESSAGE =
   "This Agent's model cannot look at images. Use browser_snapshot instead.";
 export const BROWSER_NO_LOGINS_MESSAGE =

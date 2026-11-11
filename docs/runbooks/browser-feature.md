@@ -90,7 +90,15 @@ state, deploy path, and first checks when a browser tool fails.
   delete, sign up) waits for an exact `approve` or `stop` reply in the thread.
 - Pending action records: `browseraction_<id>`, 15-minute TTL, valid for that
   exact step only. An expired or mismatched record is refused, and the Agent
-  asks again.
+  asks again. The id is random and the thread's pointer is a hash of the
+  conversation, so neither comes from the step.
+- A step is never held while any string it would store holds a password or
+  code typed that turn: the page's address and title, the element's role,
+  name and ref, the typed text or key, the form steps before it, or the
+  description Slack shows. A `press` step's key must be one the browser can
+  press. An approved step that fails is reported by that description, never
+  by its error, which could repeat what the record stored to a turn that
+  cannot redact it.
 
 ## Deploys
 
