@@ -1,5 +1,4 @@
-import { CREDENTIAL_REPLACEMENT } from '../security/content-validation.ts';
-import { redactConnectionText } from './response.ts';
+import { CREDENTIAL_REPLACEMENT, redactCredentialLikeContent } from '../security/content-validation.ts';
 
 const MAX_SOURCE_CHARS = 16_384;
 const MAX_CHARS = 1_000;
@@ -30,10 +29,15 @@ const HIDDEN = '\u0000';
  */
 export function serviceErrorText(text: string, secrets: readonly string[]): string {
   const truncated = text.length > MAX_SOURCE_CHARS;
-  // Labelled values are hidden before the shared redaction, which can replace a label together
-  // with the start of its value (`OPENAI_API_KEY=…`) and leave the rest of the value unlabelled.
-  const hidden = hideSecretValues(unescapeJson(text.slice(0, MAX_SOURCE_CHARS)));
-  const readable = redactConnectionText(hidden, secrets)
+  // Three passes, in this order. The turn's own secrets go first and whole, so a value pass that
+  // ends at a `,` inside one cannot leave its tail unmatched. Labelled values go next, before the
+  // shared signatures, which can replace a label with the start of its value (`OPENAI_API_KEY=…`)
+  // and leave the rest unlabelled.
+  let known = unescapeJson(text.slice(0, MAX_SOURCE_CHARS));
+  for (const secret of secrets) {
+    if (secret.length >= 8) known = known.split(secret).join(HIDDEN);
+  }
+  const readable = redactCredentialLikeContent(hideSecretValues(known))
     .replaceAll(CREDENTIAL_REPLACEMENT, HIDDEN)
     .replaceAll(ESCAPED_QUOTE, '"');
   const chunks = spaceCompactJson(readable).split(/\s+/);
