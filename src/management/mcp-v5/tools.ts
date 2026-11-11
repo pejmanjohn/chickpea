@@ -200,6 +200,7 @@ export const FIVE_ZERO_TOOLS = {
     output: schemas.practiceRunOutput,
     // A GET can act on some services, and a read mark binds to a tool's name, so it stays destructive (finding 7).
     write: writeHints({ destructive: true, openWorld: true }),
+    cardCalls: true,
     text: async (output) => (await import('./test-runs.ts')).practiceText(output),
     run: async (deps, args) => (await import('./test-runs.ts')).practiceAgent(deps, args),
   }),
@@ -208,6 +209,7 @@ export const FIVE_ZERO_TOOLS = {
     description: 'Where one practice run stands, by the runToken practice_agent returned, with its answer and what it read once it has them. Waits up to 20 seconds. Only your own runs, for an hour. Reads only; changes nothing.',
     input: schemas.getPracticeRunInput,
     output: schemas.practiceRunOutput,
+    cardCalls: true,
     text: async (output) => (await import('./test-runs.ts')).practiceText(output),
     run: async (deps, args) => (await import('./test-runs.ts')).getPracticeRun(deps, args),
   }),
@@ -633,7 +635,6 @@ export function registerFiveZeroTool(
         reason: failure.code,
         durationMs: Date.now() - startedAt,
       });
-      // PR R: practice_agent's and get_practice_run's refusals on a card session become results here, through R's shared helper.
       return mcpErrorResult(failure);
     }
   });

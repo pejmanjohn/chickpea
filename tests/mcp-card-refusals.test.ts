@@ -101,8 +101,8 @@ test('on a card session the tools a card receives send a refusal as a result, wh
   const { call } = await world(t, 'refusal-card-session');
   assert.deepEqual([...CARD_REFUSAL_TOOL_NAMES].sort(), [
     'check_agent', 'confirm_change', 'connect_model_provider', 'connect_service', 'create_agent', 'decline_change',
-    'delete_agent', 'delete_schedule', 'get_agent', 'get_confirmation', 'get_creation_status', 'get_setup_status',
-    'get_test_run', 'propose_agent', 'propose_agent_change', 'reconnect_service', 'remove_connection',
+    'delete_agent', 'delete_schedule', 'get_agent', 'get_confirmation', 'get_creation_status', 'get_practice_run', 'get_setup_status',
+    'get_test_run', 'practice_agent', 'propose_agent', 'propose_agent_change', 'reconnect_service', 'remove_connection',
     'remove_model_provider_key', 'remove_website_login', 'try_agent_once', 'undo_change', 'update_agent', 'update_member',
   ], 'a card draws it, only a card calls it, only a card\'s press calls it, or a card also calls it');
 
