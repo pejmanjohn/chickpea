@@ -7,6 +7,7 @@ import { test, type TestContext } from 'node:test';
 import { createMcpConnection, type McpConnectionDefinition } from '@flue/runtime';
 
 import type { RuntimePlanMcpConnectionV2 } from '../src/agents/runtime-plan.ts';
+import { projectMcpToolInputSchema } from '../src/config/mcp-test.ts';
 import { createMcpToolsListFilter } from '../src/config/mcp-tools-list.ts';
 import { resolveRuntimePlanMcpConnections } from '../src/config/profile-mcp.ts';
 import {
@@ -883,6 +884,48 @@ test('a Meta call built from every argument the model is shown passes the key ch
   assert.deepEqual(server.callArguments, [{
     ad_account_id: '123450001', client_conversation_id: 'synthetic', date_preset: 'synthetic',
   }]);
+});
+
+test("after a fresh discovery stores Meta's added helper arguments, the helpers mount with only reviewed ones", async (t) => {
+  const logs = captureLogs(t);
+  const liveFields = liveMetaTool(META_ADS_FIELD_HELPER, {
+    advertiser_request: text, client_conversation_id: text, field_names: list,
+  }, ['field_names']);
+  const grant = [META_ADS_ACCOUNT_HELPER, META_ADS_FIELD_HELPER];
+  // What a reconnect or a new Meta connection stores from today's listing.
+  const fresh = [liveHelper, liveFields].map(({ name, inputSchema }) =>
+    ({ name, inputSchema: projectMcpToolInputSchema(inputSchema, name) }));
+  const meta = metaConnection({
+    allowedTools: grant, discoveredTools: fresh,
+    toolPolicies: Object.fromEntries(grant.map((name) => [name, { effect: 'read' as const, argumentConstraints: metaScope }])),
+  });
+  const server = pagedServer('json', [[liveHelper, liveFields]]);
+  await withRuntimeConnection(meta, server.fetch, async (definition) => {
+    const connection = await createMcpConnection(definition);
+    try {
+      assert.deepEqual(connection.tools.map(({ name }) => name), grant.map((name) => `mcp__meta__${name}`));
+      assert.deepEqual(Object.keys(shownSchema(mounted(connection, META_ADS_ACCOUNT_HELPER)).properties),
+        ['advertiser_request', 'client_conversation_id']);
+      const fields = mounted(connection, META_ADS_FIELD_HELPER);
+      assert.deepEqual(shownSchema(fields), {
+        type: 'object',
+        properties: { advertiser_request: text, client_conversation_id: text, field_names: list },
+        required: ['field_names'],
+        additionalProperties: false,
+      });
+      assert.equal(await preparedMcpExecutor(fields)({ field_names: ['spend'] }), 'done');
+      await assert.rejects(preparedMcpExecutor(fields)({ field_names: ['spend'], advertiser_job: 'synthetic' }),
+        /does not permit the argument advertiser_job/);
+    } finally {
+      await connection.close();
+    }
+  }, {
+    readOnlyTools: grant,
+    toolArgumentConstraints: Object.fromEntries(grant.map((name) => [name, metaScope])),
+  });
+  assert.deepEqual(server.calls, [META_ADS_FIELD_HELPER]);
+  assert.deepEqual(server.callArguments, [{ field_names: ['spend'] }]);
+  assert.deepEqual(logs.missing, []);
 });
 
 test('a Meta tool whose live schema requires an unreviewed argument is not mounted, and the rest are', async (t) => {

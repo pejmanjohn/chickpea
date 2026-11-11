@@ -159,6 +159,82 @@ test('helper schema or scope drift revokes runtime access', () => {
   assert.deepEqual(metaAdsRuntimeAllowedTools(connection), []);
 });
 
+// Synthetic schemas shaped like Meta's live helper listings: Meta added the
+// optional `advertiser_job` and `scheduled_task_run` next to the reviewed ones.
+const helperAdditions = { advertiser_job: { type: 'string' }, scheduled_task_run: { type: 'string' } };
+
+function liveHelper(
+  name: typeof META_ADS_ACCOUNT_HELPER | typeof META_ADS_FIELD_HELPER,
+  extra: Record<string, unknown> = helperAdditions,
+  required: string[] = name === META_ADS_FIELD_HELPER ? ['field_names'] : [],
+): McpConnectionToolInfo {
+  const reviewed = name === META_ADS_ACCOUNT_HELPER
+    ? { cursor: { type: ['string', 'null'] }, limit: { type: 'integer' } }
+    : { field_names: { type: 'array', items: { type: 'string' } } };
+  return { name, inputSchema: projectMcpToolInputSchema({
+    type: 'object', required, properties: {
+      advertiser_request: { type: 'string' }, client_conversation_id: { type: ['string', 'null'] },
+      ...reviewed, ...extra,
+    },
+  }, name) };
+}
+
+test('helpers whose live schema gains optional arguments stay grantable with only their reviewed arguments', () => {
+  const discoveredTools = [liveHelper(META_ADS_ACCOUNT_HELPER), liveHelper(META_ADS_FIELD_HELPER)];
+  const helpers = [META_ADS_ACCOUNT_HELPER, META_ADS_FIELD_HELPER];
+  for (const tool of discoveredTools) assert.equal(metaAdsToolSchemaSupported(tool), true, tool.name);
+  const connection = {
+    discoveredTools,
+    ...compileMetaAdsToolAccess({ discoveredTools, requestedTools: helpers, approvedAccountIds: ['123450001'] }),
+  };
+  assert.deepEqual(metaAdsRuntimeAllowedTools(connection), helpers);
+  assert.deepEqual(metaAdsRuntimePropertyNames(connection, META_ADS_ACCOUNT_HELPER),
+    ['advertiser_request', 'client_conversation_id']);
+  assert.deepEqual(metaAdsRuntimePropertyNames(connection, META_ADS_FIELD_HELPER),
+    ['advertiser_request', 'client_conversation_id', 'field_names']);
+  for (const name of helpers) {
+    for (const added of Object.keys(helperAdditions)) {
+      assert.throws(() => assertMcpToolArgumentKeys(name, { [added]: 'synthetic' },
+        metaAdsRuntimePropertyNames(connection, name)!), new RegExp(`does not permit the argument ${added}`));
+    }
+  }
+});
+
+test('a helper that requires an unreviewed argument or has an account field is still refused', () => {
+  const refused: Array<[string, McpConnectionToolInfo]> = [
+    ['required addition', liveHelper(META_ADS_ACCOUNT_HELPER, helperAdditions, ['advertiser_job'])],
+    ['required addition on the field helper',
+      liveHelper(META_ADS_FIELD_HELPER, helperAdditions, ['field_names', 'scheduled_task_run'])],
+    ['account field', liveHelper(META_ADS_ACCOUNT_HELPER, { ...helperAdditions, ad_account_id: { type: 'string' } })],
+    ['account field on the field helper',
+      liveHelper(META_ADS_FIELD_HELPER, { ...helperAdditions, account_id: { type: 'string' } })],
+    // Stored projections, as a reader meets them.
+    ['stored account field name', { name: META_ADS_ACCOUNT_HELPER, inputSchema: {
+      ...helper(META_ADS_ACCOUNT_HELPER).inputSchema!, propertyNames: ['advertiser_job', 'ad_account_id'],
+    } }],
+    ['stored account field name on the field helper', { name: META_ADS_FIELD_HELPER, inputSchema: {
+      ...helper(META_ADS_FIELD_HELPER).inputSchema!, propertyNames: ['account_id', 'field_names'],
+    } }],
+    ['stored account field', { name: META_ADS_FIELD_HELPER, inputSchema: {
+      ...helper(META_ADS_FIELD_HELPER).inputSchema!, propertyNames: ['advertiser_job'],
+      accountFields: [{ name: 'account_id', type: 'string', required: true }],
+    } }],
+    ['stored ambiguous schema', { name: META_ADS_ACCOUNT_HELPER, inputSchema: {
+      ...helper(META_ADS_ACCOUNT_HELPER).inputSchema!, propertyNames: ['advertiser_job'], ambiguous: true,
+    } }],
+    ['stored invalid fingerprint', { name: META_ADS_FIELD_HELPER, inputSchema: {
+      ...helper(META_ADS_FIELD_HELPER).inputSchema!, propertyNames: ['advertiser_job'], fingerprint: 'x',
+    } }],
+  ];
+  for (const [label, tool] of refused) {
+    assert.equal(metaAdsToolSchemaSupported(tool), false, label);
+    assert.equal(metaAdsRuntimePropertyNames({ discoveredTools: [tool] }, tool.name), undefined, label);
+    assert.throws(() => compileMetaAdsToolAccess({
+      discoveredTools: [tool], requestedTools: [tool.name], approvedAccountIds: ['123450001'],
+    }), MetaAdsAccessPolicyError, label);
+  }
+});
+
 test('compiler rejects tools without one required scalar account field', () => {
   const invalid: McpConnectionToolInfo[] = [
     { name: reportTool },
