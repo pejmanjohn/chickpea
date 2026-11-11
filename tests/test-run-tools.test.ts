@@ -1187,12 +1187,15 @@ test('when the 48 KB cut leaves out a follow-up\'s oldest turns, the result says
 
   const fourth = await ask('Turn four?');
   assert.deepEqual([fourth.turn, fourth.droppedTurns], [4, 1]);
-  assert.match(String(fourth.nextStep), / The oldest turn was too long to include, so Ops didn't see it\. Start a new practice conversation to ask about it\. /);
+  assert.ok(first.ran && first.off, 'admission stores what ran and what a run could not use');
+  assert.deepEqual([fourth.ran, fourth.off], [first.ran, first.off], 'the count is written beside what admission stored, not over it');
+  assert.match(String(fourth.nextStep), / The oldest turn was too long to include, so the Agent didn't see it\. Start a new practice conversation to ask about it\. /);
   assert.match(instances.dispatched.at(-1)!.message, /^Earlier in this practice conversation \(quoted\):\n\nTurn 2\./, 'turn 1 left out');
 
   const fifth = await ask('Turn five?');
   assert.deepEqual([fifth.turn, fifth.droppedTurns], [5, 2]);
-  assert.match(String(fifth.nextStep), / The 2 oldest turns were too long to include, so Ops didn't see them\. Start a new practice conversation to ask about them\. /);
+  assert.match(String(fifth.nextStep), / The 2 oldest turns were too long to include, so the Agent didn't see them\. Start a new practice conversation to ask about them\. /);
+  assert.doesNotMatch(String(fifth.nextStep), /Ops/, 'the next step is Chickpea\'s own words: it never holds the Agent\'s stored name');
   assert.match(instances.dispatched.at(-1)!.message, /^Earlier in this practice conversation \(quoted\):\n\nTurn 3\./);
   // Kept beside the answer, so a later read says the same.
   assert.deepEqual(structured(await call('get_practice_run', { runToken: fifth.runToken })), fifth);
