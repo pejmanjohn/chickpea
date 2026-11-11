@@ -1652,6 +1652,8 @@ details[open].advanced summary::before {
   width: 100%;
 }
 .combo-opt.plain { font-family: var(--font); font-weight: 600; }
+.combo-opt .combo-name { font-family: var(--font); font-size: 0.8125rem; }
+.combo-opt .combo-id { color: var(--text-3); font-size: 0.6875rem; }
 .combo-opt:hover { background: #f6eedc; }
 .combo-opt.active { background: rgba(221, 160, 51, 0.22); color: var(--ember-press); }
 .combo-foot { border-top: 1.5px solid var(--well); color: var(--text-3); font-size: 0.75rem; margin-top: 4px; padding: 9px 10px 4px; }

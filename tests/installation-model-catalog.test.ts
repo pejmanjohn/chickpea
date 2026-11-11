@@ -3,6 +3,7 @@ import { test, type TestContext } from 'node:test';
 
 import { InstallationContextError, scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { ModelResolutionError } from '../src/config/errors.ts';
+import { chatModelName } from '../src/config/model-choices.ts';
 import { resolveAgentModelPolicy } from '../src/config/model-policy.ts';
 import {
   freezeRuntimeModelRoute,
@@ -98,6 +99,25 @@ test('each installation routes, freezes and lists with the catalog its own setti
     );
     assert.throws(() => resolveAgentModelPolicy({ agent: pinned, runtimeContract: 'chickpea-v1', platformEnv: envA }),
       ModelResolutionError);
+  });
+});
+
+test('a model takes its name from its installation\'s catalog before Pi', async (t) => {
+  await withEnv({ CHICKPEA_TENANCY: undefined }, async () => {
+    const { env } = installations(t);
+    const [bundled, hosted] = [env('inst_bundled_names'), env('inst_hosted_names')];
+    const document = JSON.parse(new TextDecoder().decode(catalogBytes(60)));
+    document.entries.push({ ...document.entries[0], canonical: 'anthropic/claude-opus-5-5', displayName: 'Hosted Opus' });
+    activateModelCatalog({
+      document: parseModelCatalogBytes(new TextEncoder().encode(JSON.stringify(document))),
+      sha256: 'e'.repeat(64),
+    }, hosted);
+
+    assert.equal(chatModelName(TENANT_MODEL, hosted), 'Hosted tenant model');
+    assert.equal(chatModelName(TENANT_MODEL, bundled), null);
+    assert.equal(chatModelName('anthropic/claude-opus-5-5', hosted), 'Hosted Opus');
+    assert.equal(chatModelName('anthropic/claude-opus-5-5', bundled), 'Claude Opus 5.5');
+    assert.equal(chatModelName('openai/constructor', bundled), null, 'a typed id never reads Object.prototype');
   });
 });
 
