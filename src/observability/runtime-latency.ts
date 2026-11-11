@@ -1106,13 +1106,13 @@ const FIRST_TOKEN_EVENTS: ReadonlySet<FlueObservation['type']> = new Set([
 
 /**
  * Times each model request from Flue's `turn_request` to its first streamed
- * token (text, thinking, or a tool call's arguments), and logs the model that
- * served it, Flue's duration, its token counts and its tool calls when its
- * `turn` ends.
+ * token (text, thinking, or a tool call's arguments) and to its first
+ * non-empty text, and logs the model that served it, Flue's duration, its
+ * token counts and its tool calls when its `turn` ends.
  * `inputTokens` excludes the cached input that `cachedInputTokens` counts.
  */
 export class ModelStepMarks {
-  private readonly open = new Map<string, { startedAt: number; firstTokenAt?: number }>();
+  private readonly open = new Map<string, { startedAt: number; firstTokenAt?: number; firstTextAt?: number }>();
 
   constructor(
     private readonly now: () => number = Date.now,
@@ -1132,7 +1132,10 @@ export class ModelStepMarks {
       }
       if (FIRST_TOKEN_EVENTS.has(event.type)) {
         const open = this.open.get(turnId);
-        if (open) open.firstTokenAt ??= this.now();
+        if (!open) return;
+        const at = this.now();
+        open.firstTokenAt ??= at;
+        if (event.type === 'text_delta' && event.text.length > 0) open.firstTextAt ??= at;
         return;
       }
       if (event.type !== 'turn') return;
@@ -1153,6 +1156,7 @@ export class ModelStepMarks {
         outcome: event.isError ? 'error' : finishReason,
         durationMs: event.durationMs,
         firstTokenMs: open?.firstTokenAt === undefined ? undefined : open.firstTokenAt - open.startedAt,
+        firstTextMs: open?.firstTextAt === undefined ? undefined : open.firstTextAt - open.startedAt,
         inputTokens: usage?.input,
         cachedInputTokens: usage?.cacheRead,
         cacheWriteTokens: usage?.cacheWrite,
