@@ -1041,7 +1041,7 @@ async function createDefaultAuthConfigInspector(apiKey: string): Promise<(
   input: { apiKey: string; authConfigId: string },
 ) => Promise<ComposioInspectedAuthConfig>> {
   const { Composio } = await import('@composio/core');
-  const client = new Composio({ apiKey, allowTracking: false });
+  const client = new Composio({ apiKey, allowTracking: false, disableVersionCheck: true });
   return async (input) => {
     const value = await client.authConfigs.get(input.authConfigId, {
       signal: AbortSignal.timeout(10_000),

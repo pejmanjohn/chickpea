@@ -10,6 +10,7 @@ import {
 } from '../src/connections/managed-errors.ts';
 import {
   ComposioManagedConnectionProvider,
+  createComposioClient,
   inspectComposioConnectedAccount,
 } from '../src/connections/providers/composio.ts';
 import { COMPOSIO_TOOLKIT_VERSIONS } from '../src/connections/providers/composio/versions.ts';
@@ -104,6 +105,19 @@ test('reconciliation inspects the exact account through the ownership-filtered R
     'https://backend.composio.dev/api/v3.1/connected_accounts' +
       '?connected_account_ids=ca_test&user_ids=chickpea%3Amembership%3Amembership_test&limit=1',
   );
+});
+
+test('the Composio client never asks npm for a newer SDK', async (t) => {
+  const requested: string[] = [];
+  t.mock.method(globalThis, 'fetch', async (input: string | URL | Request) => {
+    requested.push(input instanceof Request ? input.url : String(input));
+    return Response.json({ version: '99.0.0' });
+  });
+
+  await createComposioClient({ apiKey: 'test-key' });
+  await new Promise((done) => setTimeout(done, 50));
+
+  assert.deepEqual(requested.filter((url) => new URL(url).hostname === 'registry.npmjs.org'), []);
 });
 
 test('production execution pins the dated toolkit version and exact account', async () => {

@@ -3431,6 +3431,8 @@ export async function createComposioClient(
   const client = new Composio({
     apiKey: input.apiKey,
     allowTracking: false,
+    // Otherwise every client fetches npm's latest version and logs an upgrade notice.
+    disableVersionCheck: true,
     sensitiveFileUploadProtection: true,
   });
   return {

@@ -219,7 +219,7 @@
     "@better-auth/mcp": "1.7.14",
     "@cfworker/json-schema": "4.1.1",
     "@cloudflare/sandbox": "0.12.14",
-    "@composio/core": "0.17.0",
+    "@composio/core": "0.29.0",
     "@earendil-works/pi-ai": "1.1.0",
     "@flue/runtime": "2.3.0",
     "@flue/slack": "2.3.0",
