@@ -1750,6 +1750,7 @@ export class SlackAgentViewPresentation {
       this.observeHostRelease({ outcome: 'corrected', late });
       return;
     }
+    let deleted = true;
     try {
       await this.retireInterimStream(presentation);
     } catch (error) {
@@ -1760,12 +1761,14 @@ export class SlackAgentViewPresentation {
         this.observeHostRelease({ outcome: 'corrected', late });
         return;
       }
+      // Slack still shows the text until the terminal deletes it: no visible time to report.
+      deleted = false;
     }
     this.answerShownAt = undefined;
     this.observeHostRelease({
       outcome: 'retired',
       late,
-      ...(shownAt === undefined ? {} : { retiredVisibleMs: this.now() - shownAt }),
+      ...(deleted && shownAt !== undefined ? { retiredVisibleMs: this.now() - shownAt } : {}),
     });
   }
 

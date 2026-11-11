@@ -598,12 +598,16 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   `key_setup`, `structured_output` for a data part outside the release's list,
   and `identity_conflict`). `hostLate` names what followed (the shadow's `late`
   tokens plus `step`). `retiredVisibleMs` is how long Slack showed retired text,
-  from the acknowledgement of its first text to the deletion. Text the host
+  from the acknowledgement of its first text to the deletion. It is absent
+  when the text never reached Slack, and when Slack refused the stop or the
+  delete: the text then stays until the final deletes it, and a
+  `released answer retirement failed` warning marks the turn. Text the host
   retired is not the answer, so `turn_latency.firstAnswerText` is then the
   final's. The `Slack presentation finalized` record's `policyOutcome` for a
   host release is `host_released_` and the delivery outcome: `progressive`,
-  `corrected`, or `fallback` when the final posted fresh after a retirement
-  (or after a stream Slack refused; `hostRelease` tells them apart).
+  `corrected`, `fallback` when the final posted fresh after a retirement
+  (or after a stream Slack refused; `hostRelease` tells them apart), or
+  `terminal_only` when no released text reached Slack before the final.
 - `gateway_delivery` is logged when a delivery reaches admission: by
   `TagStateStore.receiveGatewayHttp` for HTTP push (after signature
   verification; challenges and rejected signatures log nothing) and by the

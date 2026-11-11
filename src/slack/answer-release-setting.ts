@@ -24,7 +24,8 @@ export interface AnswerReleaseSetting {
 /**
  * The hold an ANSWER_RELEASE_CHARS_VARIABLE value sets. Unset or empty is the
  * default. Throws for anything but a whole number from MIN_ANSWER_RELEASE_CHARS
- * to MAX_ANSWER_RELEASE_CHARS; the guarded deploy refuses such a value with it.
+ * to MAX_ANSWER_RELEASE_CHARS. No deploy check calls it yet, so such a value
+ * reaches the Worker, where `answerReleaseSetting` turns host release off.
  */
 export function parseAnswerReleaseChars(value: unknown): number {
   if (value === undefined || value === '') return DEFAULT_ANSWER_RELEASE_CHARS;
@@ -41,7 +42,7 @@ export function parseAnswerReleaseChars(value: unknown): number {
 
 /**
  * Host release as this deployment's env sets it; undefined when it is off. A
- * hold the deploy would refuse turns it off rather than guess a value.
+ * hold outside the range turns it off rather than guess a value.
  */
 export function answerReleaseSetting(env: PlatformEnv | undefined): AnswerReleaseSetting | undefined {
   const value = env?.[ANSWER_RELEASE_VARIABLE];

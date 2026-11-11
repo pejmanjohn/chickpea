@@ -3688,6 +3688,43 @@ for (const [kind, channelId] of [['DM', 'D_HOST_RELEASE'], ['Channel thread', 'C
   });
 }
 
+// Defect caught: a retirement Slack refused logged as a deletion, with a
+// visible time that ends while Slack still shows the text.
+test('a retirement Slack refuses reports no visible time, and the final finishes the deletion', async () => {
+  const records: HostReleaseRecord[] = [];
+  const controls: NonNullable<Parameters<typeof harness>[0]> = {
+    schemaVersion: 3, answerRelease: HOST_RELEASE,
+    onHostRelease: (record) => records.push(record),
+  };
+  const h = harness(controls);
+  try {
+    const read = await hostReleaseRead(h);
+    read.step();
+    read.text(HOST_ANSWER.slice(0, 500));
+    await until(() => h.calls.some((call) => call.method === 'chat.startStream'), 'the preamble streams');
+    const streamTs = h.store.get(h.runId)!.stream.messageTs;
+    assert.ok(streamTs);
+    controls.stopStreamError = Object.assign(new Error('ratelimited'), { code: ErrorCode.RateLimitedError, retryAfter: 1 });
+    h.advanceClock(1_500);
+    read.tool('web_search');
+    await read.relay.closeAndDrain();
+    assert.equal(h.calls.some((call) => call.method === 'chat.delete'), false, 'the stop was refused, so nothing was deleted');
+    assert.equal(h.store.get(h.runId)!.stream.priorStreamMessageTs, streamTs, 'the coordinate waits for the final');
+    assert.deepEqual(records, [{ outcome: 'released' }, { outcome: 'retired', late: 'tool' }]);
+
+    controls.stopStreamError = undefined;
+    const result = await h.presentation.finalize('The final answer, after the search.', 'markdown', 'complete', observer([]));
+    assert.equal(result.handled, false);
+    assert.deepEqual(h.calls.slice(-2), [
+      { method: 'chat.stopStream', input: { channel: ROOT.channelId, ts: streamTs } },
+      { method: 'chat.delete', input: { channel: ROOT.channelId, ts: streamTs } },
+    ]);
+    assert.equal(h.store.get(h.runId)!.stream.priorStreamMessageTs, undefined);
+  } finally {
+    h.db.close();
+  }
+});
+
 // Defect caught: deleting a stream that carries the native task card, which
 // takes the card with it.
 test('a tool call after host-released text on a task-card stream keeps the card and the final corrects it', async () => {
