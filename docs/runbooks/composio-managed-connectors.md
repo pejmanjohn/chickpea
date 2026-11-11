@@ -455,6 +455,8 @@ Never use `latest` or `dangerouslySkipVersionCheck` in the production adapter. U
 
 Connector measurements are separate from LLM token measurements. Every attempted managed capability produces one terminal record, including local policy denial, invalid grant, provider outage, throttling, ambiguous write, or success. Stored fields are bounded metadata; arguments, results, tokens, provider account references, resource labels, and OAuth principals are excluded. Interactive calls correlate to their Work operation and execution. Scheduled calls correlate to the durable routine usage operation.
 
+Each call that reaches the Composio adapter also logs one content-free line. A success logs `chickpea.managed_connection.execute`. A failure logs `chickpea.managed_connection.execute_failed` with `outcome` (the report's outcome token, or `failed` for an unexpected error), `dispatched` when known, `httpStatus` for a failed Composio request, and `providerStatus` when Composio's failed result names the connected service's status. Both lines carry `adapterId`, `toolkit`, `capability`, and `providerLogId` when Composio returned one. Neither carries error text, arguments, or results. When Composio reports a call unsuccessful, the model receives Composio's own error text, redacted and cut to 1,000 characters, so it can correct the request instead of retrying it unchanged.
+
 Authenticated Admins can query a bounded report:
 
 ```text

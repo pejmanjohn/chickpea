@@ -174,8 +174,166 @@ test('direct execution rejects Composio responses that explicitly report unsucce
   }), (error: unknown) =>
     error instanceof ManagedProviderRequestError &&
     error.code === 'provider_unavailable' &&
+    error.message === 'Composio reported that the managed connection request did not succeed' &&
     error.metadata.providerLogId === 'log_unsuccessful' &&
     error.metadata.capabilityToolDispatched === true);
+});
+
+const SYNTHETIC_SLACK_TOKEN = `xoxb-${'1'.repeat(12)}-${'a'.repeat(24)}`;
+const SYNTHETIC_PROVIDER_ERROR =
+  `Invalid filter: property "synthetic_stage" does not exist on contacts. Sent with ${SYNTHETIC_SLACK_TOKEN}. ` +
+  'detail '.repeat(400);
+
+function failingSearchProvider(response: {
+  data: Record<string, unknown>;
+  error: string | null;
+  successful: boolean;
+  logId?: string;
+}) {
+  return new ComposioManagedConnectionProvider({
+    apiKey: 'test-key',
+    createClient: async () => ({
+      sessions: { async create() { throw new Error('session execution must not be used'); } },
+      tools: { async execute() { return response; } },
+    }),
+  });
+}
+
+test('a Composio-reported failure gives the model the service reason, redacted and bounded', async () => {
+  const provider = failingSearchProvider({
+    data: { status_code: 400 },
+    error: SYNTHETIC_PROVIDER_ERROR,
+    successful: false,
+    logId: 'log_reason',
+  });
+
+  const error = await provider.execute({
+    policy: POLICY,
+    capability: 'gmail.messages.search',
+    arguments: { query: 'is:unread' },
+  }).then(() => assert.fail('a reported failure must reject'), (failure: unknown) => failure);
+
+  assert.ok(error instanceof ManagedProviderRequestError);
+  assert.equal(error.code, 'provider_unavailable');
+  assert.equal(error.metadata.providerStatus, 400);
+  assert.equal(error.metadata.providerLogId, 'log_reason');
+  const prefix = 'Composio reported that the managed connection request did not succeed (status 400). ' +
+    'If the service error points to the request, change the request before retrying. Service error: ';
+  assert.ok(error.message.startsWith(prefix), error.message);
+  const reason = error.message.slice(prefix.length);
+  assert.ok(reason.startsWith('Invalid filter: property "synthetic_stage" does not exist on contacts. ' +
+    'Sent with [credential redacted].'), reason);
+  assert.ok(!error.message.includes('xoxb-'));
+  assert.equal(reason.length, 1_000);
+  assert.ok(reason.endsWith('…'));
+});
+
+test('a reported failure without a status names none', async () => {
+  const provider = failingSearchProvider({
+    data: { status: 'error', status_code: 'bad' },
+    error: 'Rate window exceeded for this synthetic account',
+    successful: false,
+  });
+
+  await assert.rejects(provider.execute({
+    policy: POLICY,
+    capability: 'gmail.messages.search',
+    arguments: { query: 'is:unread' },
+  }), (error: unknown) =>
+    error instanceof ManagedProviderRequestError &&
+    error.metadata.providerStatus === undefined &&
+    error.message === 'Composio reported that the managed connection request did not succeed. ' +
+      'If the service error points to the request, change the request before retrying. ' +
+      'Service error: Rate window exceeded for this synthetic account');
+});
+
+test('each managed call logs one content-free line, success or failure', async (t) => {
+  const lines: Record<string, unknown>[] = [];
+  const output: string[] = [];
+  for (const method of ['log', 'warn'] as const) {
+    t.mock.method(console, method, (line: unknown) => {
+      output.push(String(line));
+      try {
+        lines.push(JSON.parse(String(line)) as Record<string, unknown>);
+      } catch {
+        // Not a structured event.
+      }
+    });
+  }
+  const execute = (provider: ComposioManagedConnectionProvider) => provider.execute({
+    policy: POLICY,
+    capability: 'gmail.messages.search',
+    arguments: { query: 'from:synthetic-sender@example.test' },
+  });
+  const events = () => lines.filter(({ event }) =>
+    typeof event === 'string' && event.startsWith('chickpea.managed_connection.execute'));
+
+  await assert.rejects(execute(failingSearchProvider({
+    data: { status_code: 400 },
+    error: SYNTHETIC_PROVIDER_ERROR,
+    successful: false,
+    logId: 'log_reported',
+  })));
+  assert.deepEqual(events(), [{
+    event: 'chickpea.managed_connection.execute_failed',
+    adapterId: 'composio',
+    toolkit: 'gmail',
+    capability: 'gmail.messages.search',
+    outcome: 'provider_unavailable',
+    dispatched: true,
+    providerStatus: 400,
+    providerLogId: 'log_reported',
+  }]);
+
+  lines.length = 0;
+  await assert.rejects(execute(new ComposioManagedConnectionProvider({
+    apiKey: 'test-key',
+    getConnectedAccount: async () => ({
+      id: POLICY.accountRef, status: 'ACTIVE', isDisabled: false,
+      toolkit: POLICY.toolkit, userId: POLICY.principalRef,
+    }),
+    createClient: async () => ({
+      sessions: { async create() { throw new Error('session execution must not be used'); } },
+      tools: {
+        async execute() {
+          throw Object.assign(new Error('synthetic gateway failure'), { status: 502 });
+        },
+      },
+    }),
+  })));
+  assert.deepEqual(events(), [{
+    event: 'chickpea.managed_connection.execute_failed',
+    adapterId: 'composio',
+    toolkit: 'gmail',
+    capability: 'gmail.messages.search',
+    outcome: 'provider_unavailable',
+    dispatched: true,
+    httpStatus: 502,
+  }]);
+
+  lines.length = 0;
+  await execute(new ComposioManagedConnectionProvider({
+    apiKey: 'test-key',
+    createClient: async () => ({
+      sessions: { async create() { throw new Error('session execution must not be used'); } },
+      tools: {
+        async execute() {
+          return { data: { messages: [] }, error: null, successful: true, logId: 'log_success' };
+        },
+      },
+    }),
+  }));
+  assert.deepEqual(events(), [{
+    event: 'chickpea.managed_connection.execute',
+    adapterId: 'composio',
+    toolkit: 'gmail',
+    capability: 'gmail.messages.search',
+    providerLogId: 'log_success',
+  }]);
+
+  for (const content of ['synthetic_stage', 'synthetic-sender', 'synthetic gateway failure', 'xoxb-']) {
+    assert.ok(!output.some((line) => line.includes(content)), `logs carry no ${content}`);
+  }
 });
 
 test('post-dispatch write transport failures are ambiguous while reads remain safely retryable', async () => {
