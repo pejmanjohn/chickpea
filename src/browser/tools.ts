@@ -47,6 +47,8 @@ import {
   BROWSER_HANDOFF_NOTE,
   BROWSER_LOGIN_REVOKED_MESSAGE,
   BROWSER_NOT_CONNECTED_MESSAGE,
+  BROWSER_RECORDING_WITHHELD_MESSAGE,
+  BROWSER_SCREENSHOT_WITHHELD_MESSAGE,
   BROWSER_SIGN_IN_NOTE,
   BROWSER_VISION_UNAVAILABLE_MESSAGE,
   browserCheckOnlyRefusal,
@@ -487,6 +489,7 @@ export function createBrowserTools(options: BrowserToolsOptions) {
       try {
         const { page } = await requireOpenPage(session);
         const bytes = await page.screenshot({ format: 'jpeg', quality: 70 });
+        if (!bytes) return { output: { error: BROWSER_SCREENSHOT_WITHHELD_MESSAGE } };
         const answer = await options.inspectScreenshot({
           question: data.question,
           bytes,
@@ -509,6 +512,7 @@ export function createBrowserTools(options: BrowserToolsOptions) {
       try {
         const { page } = await requireOpenPage(session);
         const bytes = await page.screenshot({ format: 'png', ...(data.fullPage ? { fullPage: true } : {}) });
+        if (!bytes) return { output: { attached: false, error: BROWSER_SCREENSHOT_WITHHELD_MESSAGE } };
         const filename = artifactFilename(undefined, 'screenshot', 'png');
         const outcome = await options.stageArtifact({
           bytes,
@@ -538,6 +542,8 @@ export function createBrowserTools(options: BrowserToolsOptions) {
     input: RECORDING_INPUT,
     async run({ data }) {
       try {
+        // A recording is every frame of the session: no mask applies to it.
+        if (session.typedSecret) return { output: { attached: false, error: BROWSER_RECORDING_WITHHELD_MESSAGE } };
         // Ending the session is what lets the provider finalize its recording.
         const ended = await session.close();
         if (!ended) {
@@ -651,7 +657,8 @@ export function createBrowserTools(options: BrowserToolsOptions) {
         let lastRef: string | undefined;
         for (const [field, ref] of fields) {
           if (!ref) continue;
-          await page.fillSecret(ref, values[field]);
+          // The username stays readable: the Agent needs to see which account it is in.
+          await page.fillSecret(ref, values[field], { visible: field === 'username' });
           lastRef = ref;
         }
         if (data.submitRef) await page.act(data.submitRef, 'click');

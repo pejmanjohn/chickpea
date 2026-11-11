@@ -6,7 +6,7 @@
  */
 import { base64ToBytes } from '../security/base64url.ts';
 import type { CdpClient } from './cdp.ts';
-import { escapeQuoted } from './redaction.ts';
+import { escapeQuoted, REDACTED, TypedSecrets } from './redaction.ts';
 
 export interface PageInfo {
   url: string;
@@ -40,6 +40,14 @@ export interface BrowserActOptions {
 
 export interface BrowserPageOptions {
   sleep?: (ms: number) => Promise<void>;
+  /** Secrets typed this turn: no screenshot shows them. */
+  secrets?: TypedSecrets;
+}
+
+export interface ScreenshotOptions {
+  format?: 'png' | 'jpeg';
+  quality?: number;
+  fullPage?: boolean;
 }
 
 /** Time to wait after an action for a navigation to start. */
@@ -79,6 +87,9 @@ const INTERACTIVE_ROLES = new Set([
   'link', 'button', 'textbox', 'searchbox', 'combobox', 'checkbox', 'radio', 'switch', 'slider', 'spinbutton',
   'listbox', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'tab', 'option',
 ]);
+
+/** Roles of form fields: a secret typed into one of them is hidden by identity. */
+const FIELD_ROLES = new Set(['textbox', 'searchbox', 'spinbutton', 'combobox']);
 
 /** Roles that are pure containers and never produce their own line. */
 const TRANSPARENT_ROLES = new Set(['RootWebArea', 'WebArea', 'none', 'presentation', 'InlineTextBox']);
@@ -149,6 +160,43 @@ function property(node: AXNode, name: string): unknown {
   return node.properties?.find((p) => p.name === name)?.value?.value;
 }
 
+/** A form field or other text a person can edit. */
+function isField(node: AXNode): boolean {
+  return FIELD_ROLES.has(roleOf(node)) || property(node, 'editable') !== undefined;
+}
+
+/** Each field's value, by backend node id. */
+function fieldValues(nodes: AXNode[]): Map<number, string> {
+  const values = new Map<number, string>();
+  for (const node of nodes) {
+    if (typeof node.backendDOMNodeId === 'number' && isField(node)) values.set(node.backendDOMNodeId, axString(node.value));
+  }
+  return values;
+}
+
+/**
+ * Whether text the browser draws shows a typed secret, as its accessibility
+ * tree reports that text after styles apply. A field's value is left to the
+ * text node inside it, which shows bullets once the field is masked. The page
+ * title is not drawn in a screenshot.
+ */
+function accessibleTextShows(nodes: AXNode[], secrets: TypedSecrets): boolean {
+  return nodes.some((node) => {
+    if (node.ignored) return false;
+    const role = roleOf(node);
+    if (role !== 'RootWebArea' && role !== 'WebArea' && secrets.shows(axString(node.name))) return true;
+    return !isField(node) && secrets.shows(axString(node.value));
+  });
+}
+
+/** Text nodes and form values a screenshot would draw, as the page masking function reads them. */
+interface PageText {
+  texts: string[];
+  inputs: string[];
+  /** An element drawn as bullets lost that style, as a page script may undo it. */
+  hiddenShown: boolean;
+}
+
 export interface SnapshotLine {
   text: string;
   ref?: { id: string; target: ElementRef };
@@ -156,11 +204,19 @@ export interface SnapshotLine {
 
 export class BrowserPage {
   refs = new Map<string, ElementRef>();
+  /**
+   * Fields a sign-in secret was typed into, by backend node id, and the
+   * document that holds them. Another document may reuse the ids.
+   */
+  private secretFields: { loaderId: string | undefined; ids: Set<number> } | undefined;
+  private typed = false;
   private pageEnabled = false;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly secrets: TypedSecrets;
 
   constructor(readonly client: CdpClient, readonly sessionId: string, options: BrowserPageOptions = {}) {
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.secrets = options.secrets ?? new TypedSecrets();
   }
 
   private cdp<T extends Record<string, unknown> = Record<string, unknown>>(
@@ -232,16 +288,50 @@ export class BrowserPage {
     return result.result?.value;
   }
 
+  /** Whether a sign-in secret was typed into this page; it stays true after the page navigates. */
+  get typedSecret(): boolean {
+    return this.typed;
+  }
+
+  private async accessibilityNodes(): Promise<AXNode[]> {
+    return (await this.cdp<{ nodes?: AXNode[] }>('Accessibility.getFullAXTree')).nodes ?? [];
+  }
+
+  private async mainFrame(): Promise<{ id?: string; loaderId?: string }> {
+    const tree = await this.cdp<{ frameTree?: { frame?: { id?: string; loaderId?: string } } }>('Page.getFrameTree');
+    return tree.frameTree?.frame ?? {};
+  }
+
+  /** The secret fields of the document the page now shows. */
+  private async currentSecretFields(): Promise<ReadonlySet<number>> {
+    if (!this.secretFields) return new Set();
+    if ((await this.mainFrame()).loaderId !== this.secretFields.loaderId) this.secretFields = undefined;
+    return this.secretFields?.ids ?? new Set();
+  }
+
+  private async addSecretFields(ids: number[]): Promise<void> {
+    const { loaderId } = await this.mainFrame();
+    const fields = this.secretFields && this.secretFields.loaderId === loaderId
+      ? this.secretFields
+      : { loaderId, ids: new Set<number>() };
+    for (const id of ids) fields.ids.add(id);
+    this.secretFields = fields;
+    this.typed = true;
+  }
+
   /**
    * Reads the page as an accessibility snapshot. Pass the `pageInfo` a
    * `navigate` or `act` just returned to skip reading it again. `redact` gets
    * each name and value as the page gave it, before the snapshot collapses,
-   * cuts or escapes it.
+   * cuts or escapes it. A field a secret was typed into shows its value as
+   * [redacted], whatever it holds.
    */
   async snapshot(options: { maxNodes?: number; pageInfo?: PageInfo; redact?: (text: string) => string } = {}): Promise<PageSnapshot> {
     const maxNodes = options.maxNodes ?? 400;
-    const tree = await this.cdp<{ nodes?: AXNode[] }>('Accessibility.getFullAXTree');
-    const lines = buildSnapshotLines(tree.nodes ?? [], options.redact);
+    const lines = buildSnapshotLines(await this.accessibilityNodes(), {
+      ...(options.redact ? { redact: options.redact } : {}),
+      secretFields: await this.currentSecretFields(),
+    });
     const kept = lines.slice(0, maxNodes);
     const truncated = lines.length > kept.length;
     const refs = new Map<string, ElementRef>();
@@ -320,14 +410,20 @@ export class BrowserPage {
   }
 
   /**
-   * Types a secret into the element behind `ref`: focus it, clear it, and
-   * insert the value as one text input. The value never passes through `act`,
-   * a snapshot, or an error message, and the refs map is left untouched.
+   * Types a sign-in value into the element behind `ref`: focus it, clear it,
+   * and insert the value as one text input. The value never passes through
+   * `act`, a snapshot, or an error message, and the refs map is left
+   * untouched. Unless `visible`, the field becomes a secret field, and so does
+   * any other field the typing changed, such as the code boxes a page fills
+   * from the first: snapshots and screenshots never show what they hold.
    */
-  async fillSecret(ref: string, value: string): Promise<void> {
+  async fillSecret(ref: string, value: string, options: { visible?: boolean } = {}): Promise<void> {
     const target = this.refs.get(ref);
     if (!target) throw new Error(`Unknown element reference ${ref}; take a new snapshot`);
     const backendNodeId = target.backendDOMNodeId;
+    const secret = !options.visible;
+    const before = secret ? await this.accessibilityNodes().then(fieldValues, () => undefined) : undefined;
+    if (secret) await this.addSecretFields([backendNodeId]);
     await this.cdp('DOM.scrollIntoViewIfNeeded', { backendNodeId }).catch(() => undefined);
     try {
       await this.cdp('DOM.focus', { backendNodeId });
@@ -336,6 +432,11 @@ export class BrowserPage {
     }
     await this.selectAllAndDelete();
     await this.cdp('Input.insertText', { text: value });
+    if (!before) return;
+    // A page may spread the typed value over other fields from a timer.
+    await this.sleep(SETTLE_MS);
+    const after = await this.accessibilityNodes().then(fieldValues, () => new Map<number, string>());
+    await this.addSecretFields([...after].flatMap(([id, now]) => (now && before.get(id) !== now ? [id] : [])));
   }
 
   /** Waits until the document finishes loading, up to `timeoutMs`. */
@@ -348,7 +449,76 @@ export class BrowserPage {
     }
   }
 
-  async screenshot(options: { format?: 'png' | 'jpeg'; quality?: number; fullPage?: boolean } = {}): Promise<Uint8Array> {
+  /**
+   * A screenshot that shows no secret typed this turn. While the browser
+   * captures it, each secret field, and each text or form value that matches
+   * a typed secret, is drawn as bullets; the page is put back afterwards.
+   * Undefined, with nothing captured, when masking fails or the page still
+   * shows a secret after it. With no secret typed, it is a plain screenshot.
+   */
+  async screenshot(options: ScreenshotOptions = {}): Promise<Uint8Array | undefined> {
+    if (!this.typedSecret && this.secrets.empty) return this.capture(options);
+    let world: number;
+    try {
+      world = await this.isolatedWorld();
+    } catch {
+      return undefined;
+    }
+    try {
+      const hidden = await this.hideSecrets(world).catch(() => false);
+      return hidden ? await this.capture(options) : undefined;
+    } finally {
+      await this.runMask(world, 'restore').catch(() => undefined);
+    }
+  }
+
+  /** An execution context on the page that the page's own scripts cannot see or change. */
+  private async isolatedWorld(): Promise<number> {
+    const frameId = (await this.mainFrame()).id;
+    if (!frameId) throw new Error('The page has no main frame');
+    const world = await this.cdp<{ executionContextId?: number }>('Page.createIsolatedWorld', { frameId, worldName: 'chickpea-mask' });
+    if (typeof world.executionContextId !== 'number') throw new Error('The page refused an isolated world');
+    return world.executionContextId;
+  }
+
+  private async runMask<T = unknown>(
+    world: number,
+    step: 'hide' | 'read' | 'mask' | 'restore',
+    payload: unknown = null,
+    objectIds: string[] = [],
+  ): Promise<T> {
+    const result = await this.cdp<{ result?: { value?: unknown }; exceptionDetails?: unknown }>('Runtime.callFunctionOn', {
+      executionContextId: world,
+      functionDeclaration: MASK_FUNCTION,
+      arguments: [{ value: step }, { value: payload }, ...objectIds.map((objectId) => ({ objectId }))],
+      returnByValue: true,
+    });
+    if (result.exceptionDetails) throw new Error('Masking the page failed');
+    return result.result?.value as T;
+  }
+
+  /** Draws every typed secret on the page as bullets; false when the page still shows one. */
+  private async hideSecrets(world: number): Promise<boolean> {
+    const { secrets } = this;
+    const fields = await Promise.all([...await this.currentSecretFields()].map((backendNodeId) =>
+      this.cdp<{ object?: { objectId?: string } }>('DOM.resolveNode', { backendNodeId, executionContextId: world })
+        // A field the page has since removed draws nothing.
+        .then((resolved) => resolved.object?.objectId, () => undefined)));
+    await this.runMask(world, 'hide', null, fields.filter((objectId): objectId is string => objectId !== undefined));
+    const shown = await this.runMask<PageText>(world, 'read');
+    await this.runMask(world, 'mask', {
+      texts: shown.texts.flatMap((text, index) => {
+        const masked = secrets.mask(text);
+        return masked === text ? [] : [[index, masked]];
+      }),
+      inputs: shown.inputs.flatMap((value, index) => (secrets.shows(value) ? [index] : [])),
+    });
+    const left = await this.runMask<PageText>(world, 'read');
+    if (left.hiddenShown || [...left.texts, ...left.inputs].some((text) => secrets.shows(text))) return false;
+    return !accessibleTextShows(await this.accessibilityNodes(), secrets);
+  }
+
+  private async capture(options: ScreenshotOptions): Promise<Uint8Array> {
     const format = options.format ?? 'png';
     const params: Record<string, unknown> = { format };
     if (format === 'jpeg' && options.quality !== undefined) params.quality = Math.max(0, Math.min(100, Math.round(options.quality)));
@@ -443,6 +613,77 @@ export class BrowserPage {
   }
 }
 
+/**
+ * Masks typed secrets for a screenshot, run in an isolated world one step at
+ * a time. `hide` draws the given elements' text as bullets. `read` lists the
+ * text nodes and form values outside hidden elements, in the page and its
+ * open shadow roots. `mask` replaces listed text with the masked text it is
+ * given and hides listed form fields. `restore` undoes each change the page
+ * has not overwritten since.
+ */
+const MASK_FUNCTION = `function (step, payload, ...elements) {
+  const state = globalThis.__chickpeaMask ??= { hidden: new Set(), texts: [], inputs: [], undo: [] };
+  const hide = (element) => {
+    if (!element || !element.style || state.hidden.has(element)) return;
+    state.hidden.add(element);
+    const attribute = element.getAttribute('style');
+    element.style.setProperty('-webkit-text-security', 'disc', 'important');
+    const masked = element.getAttribute('style');
+    state.undo.push(() => {
+      if (element.getAttribute('style') !== masked) return;
+      if (attribute === null) element.removeAttribute('style');
+      else element.setAttribute('style', attribute);
+    });
+  };
+  if (step === 'hide') {
+    elements.forEach(hide);
+  } else if (step === 'read') {
+    const skipped = new Set(['script', 'style', 'noscript', 'template']);
+    state.texts = [];
+    state.inputs = [];
+    const roots = [document];
+    for (let index = 0; index < roots.length; index += 1) {
+      const walker = document.createTreeWalker(roots[index], NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+        acceptNode(node) {
+          if (node.nodeType === Node.TEXT_NODE) return NodeFilter.FILTER_ACCEPT;
+          if (state.hidden.has(node) || skipped.has(node.localName)) return NodeFilter.FILTER_REJECT;
+          // A text area draws its value, not the text inside it.
+          if (node.localName === 'textarea') {
+            state.inputs.push(node);
+            return NodeFilter.FILTER_REJECT;
+          }
+          return NodeFilter.FILTER_ACCEPT;
+        },
+      });
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          if (node.data.trim()) state.texts.push(node);
+          continue;
+        }
+        if (node.shadowRoot) roots.push(node.shadowRoot);
+        if (node.localName === 'input' && node.type !== 'hidden') state.inputs.push(node);
+      }
+    }
+    const hiddenShown = [...state.hidden].some((element) =>
+      element.isConnected && getComputedStyle(element).getPropertyValue('-webkit-text-security') !== 'disc');
+    return { texts: state.texts.map((node) => node.data), inputs: state.inputs.map((node) => node.value), hiddenShown };
+  } else if (step === 'mask') {
+    for (const [index, masked] of payload.texts) {
+      const node = state.texts[index];
+      const original = node.data;
+      node.data = masked;
+      state.undo.push(() => {
+        if (node.data === masked) node.data = original;
+      });
+    }
+    payload.inputs.forEach((index) => hide(state.inputs[index]));
+  } else if (step === 'restore') {
+    while (state.undo.length) state.undo.pop()();
+    state.hidden = new Set();
+  }
+  return true;
+}`;
+
 const SELECT_OPTION_FUNCTION = `function (wanted) {
   if (!(this instanceof HTMLSelectElement)) return { ok: false, reason: 'not-select' };
   const options = Array.from(this.options);
@@ -457,11 +698,21 @@ const SELECT_OPTION_FUNCTION = `function (wanted) {
   return { ok: true, value: match.value };
 }`;
 
+export interface SnapshotRedaction {
+  /** Gets each name and value as the page gave it, before the snapshot collapses, cuts or escapes it. */
+  redact?: (text: string) => string;
+  /** Fields a secret was typed into: a value shows as [redacted], whatever it is, and nothing inside them shows. */
+  secretFields?: ReadonlySet<number>;
+}
+
 /**
  * Builds the indented snapshot lines from a flat CDP AX node list. Refs keep
  * an element's real name, so an approved step finds it again in a later turn.
  */
-export function buildSnapshotLines(nodes: AXNode[], redact: (text: string) => string = (text) => text): SnapshotLine[] {
+export function buildSnapshotLines(
+  nodes: AXNode[],
+  { redact = (text) => text, secretFields = new Set() }: SnapshotRedaction = {},
+): SnapshotLine[] {
   const byId = new Map<string, AXNode>();
   for (const node of nodes) byId.set(node.nodeId, node);
   const roots = nodes.filter((node) => !node.parentId || !byId.has(node.parentId));
@@ -503,6 +754,8 @@ export function buildSnapshotLines(nodes: AXNode[], redact: (text: string) => st
     const axName = axString(node.name);
     const rawName = axName.replace(/\s+/g, ' ').trim();
     const indent = '  '.repeat(depth);
+    // Only a field shows what was typed into it, whatever ref the sign-in was given.
+    const secret = typeof node.backendDOMNodeId === 'number' && secretFields.has(node.backendDOMNodeId) && isField(node);
 
     if (isStructural(node)) {
       let text = `${indent}- ${role}`;
@@ -514,10 +767,16 @@ export function buildSnapshotLines(nodes: AXNode[], redact: (text: string) => st
         text += ` [ref=${id}]`;
         line.ref = { id, target: { backendDOMNodeId: node.backendDOMNodeId, role, name: rawName } };
       }
-      text += describeState(node, redact);
+      text += describeState(node, redact, secret);
       line.text = text;
       lines.push(line);
-      for (const child of children(node)) visit(child, depth + 1, rawName, visited);
+      // A field's children repeat its value as text.
+      if (!secret) for (const child of children(node)) visit(child, depth + 1, rawName, visited);
+      return;
+    }
+
+    if (secret) {
+      if (axString(node.value).trim()) lines.push({ text: `${indent}- text "${REDACTED}"` });
       return;
     }
 
@@ -538,7 +797,7 @@ export function buildSnapshotLines(nodes: AXNode[], redact: (text: string) => st
   return lines;
 }
 
-function describeState(node: AXNode, redact: (text: string) => string): string {
+function describeState(node: AXNode, redact: (text: string) => string, secret: boolean): string {
   const parts: string[] = [];
   const role = roleOf(node);
   const level = property(node, 'level');
@@ -552,7 +811,8 @@ function describeState(node: AXNode, redact: (text: string) => string): string {
   if (expanded === true || expanded === 'true') parts.push('expanded');
   const disabled = property(node, 'disabled');
   if (disabled === true || disabled === 'true') parts.push('disabled');
-  const value = redact(axString(node.value)).replace(/\s+/g, ' ').trim();
+  const raw = axString(node.value);
+  const value = secret ? (raw.trim() ? REDACTED : '') : redact(raw).replace(/\s+/g, ' ').trim();
   if (value && role !== 'heading') parts.push(`value="${cleanName(value)}"`);
   return parts.length ? ` ${parts.join(' ')}` : '';
 }

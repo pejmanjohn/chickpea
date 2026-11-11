@@ -20,6 +20,12 @@ export const BROWSER_PAGE_CHANGED_MESSAGE =
 /** Slack status while a data-changing step waits for the person. */
 export const BROWSER_APPROVAL_ACTIVITY = ['checking', 'Waiting for approval on', 'a website'] as const;
 export const BROWSER_NO_PAGE_MESSAGE = 'No page is open in the browser. Call browser_open first.';
+export const BROWSER_SCREENSHOT_WITHHELD_MESSAGE =
+  'The screenshot was withheld because the page shows a sign-in password or code that could not be hidden. Read the page with browser_snapshot instead.';
+export const BROWSER_APPROVAL_SCREENSHOT_WITHHELD_NOTE =
+  'No screenshot goes with this request: the page shows a sign-in password or code that could not be hidden.';
+export const BROWSER_RECORDING_WITHHELD_MESSAGE =
+  'The recording was withheld because a sign-in password or code was typed in this browser session, and the recording could show it. The session is still open. Describe what it showed, or attach a screenshot with browser_screenshot.';
 export const BROWSER_VISION_UNAVAILABLE_MESSAGE =
   "This Agent's model cannot look at images. Use browser_snapshot instead.";
 export const BROWSER_NO_LOGINS_MESSAGE =

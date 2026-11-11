@@ -137,6 +137,11 @@ export class BrowserTurnSession {
     return this.deps.provider;
   }
 
+  /** Whether a sign-in password or code was typed in the open session. */
+  get typedSecret(): boolean {
+    return this.current?.page.typedSecret ?? false;
+  }
+
   /** The login the open session is bound to; undefined when public or closed. */
   get binding(): BrowserSessionBinding | undefined {
     return this.current?.binding;
@@ -257,7 +262,10 @@ export class BrowserTurnSession {
           .catch(() => {
             console.warn('[chickpea] A browser session could not refuse downloads');
           });
-        const page = new BrowserPage(client, pageSessionId, this.deps.sleep ? { sleep: this.deps.sleep } : {});
+        const page = new BrowserPage(client, pageSessionId, {
+          secrets: this.secrets,
+          ...(this.deps.sleep ? { sleep: this.deps.sleep } : {}),
+        });
         const active: ActiveSession = { sessionId: handle.id, client, page, startedAt, ...(binding ? { binding } : {}) };
         this.current = active;
         return active;

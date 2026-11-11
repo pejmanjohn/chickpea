@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { CdpClient } from '../src/browser/cdp.ts';
-import { BrowserPage, type AXNode } from '../src/browser/page.ts';
+import { BrowserPage, buildSnapshotLines, type AXNode } from '../src/browser/page.ts';
+import { TypedSecrets } from '../src/browser/redaction.ts';
 import { FakeCdpSocket } from './helpers/fake-cdp-socket.ts';
 
 const SESSION = 'page-sess';
@@ -328,6 +329,98 @@ test('fillSecret focuses the node, clears it, and inserts the value without touc
   client.close();
 });
 
+test('fillSecret hides the field it fills, and each field its typing filled, until the page shows another document', async () => {
+  const { socket, page, client } = setup();
+  const code = '493817';
+  let typed = '';
+  let loaderId = 'l1';
+  // One-digit code boxes that the page fills from the first, beside a search box that keeps its own text.
+  socket.responders.set('Accessibility.getFullAXTree', () => ({
+    result: {
+      nodes: [
+        ax('1', 'RootWebArea', { childIds: ['2', '3', '4', '5', '6', '7', '8'] }),
+        ...[...code].map((_, index) => ax(String(index + 2), 'textbox', {
+          parentId: '1', name: `Digit ${index + 1}`, backendDOMNodeId: 51 + index,
+          ...(typed ? { value: { type: 'string', value: typed[index]! } } : {}),
+        })),
+        ax('8', 'searchbox', { parentId: '1', name: 'Search', backendDOMNodeId: 60, value: { type: 'string', value: 'invoices' } }),
+      ],
+    },
+  }));
+  socket.responders.set('Input.insertText', (message) => {
+    typed = String(message.params.text);
+    return {};
+  });
+  socket.responders.set('Page.getFrameTree', () => ({ result: { frameTree: { frame: { id: 'f1', loaderId } } } }));
+  await page.snapshot();
+  assert.equal(page.typedSecret, false);
+  await page.fillSecret('e1', code);
+  assert.equal(page.typedSecret, true);
+  const hidden = (await page.snapshot()).text;
+  assert.deepEqual(hidden.split('\n'), [
+    ...[1, 2, 3, 4, 5, 6].map((n) => `- textbox "Digit ${n}" [ref=e${n}] value="[redacted]"`),
+    '- searchbox "Search" [ref=e7] value="invoices"',
+  ]);
+  // Another document may reuse the node ids; its fields are not secret.
+  loaderId = 'l2';
+  assert.match((await page.snapshot()).text, /textbox "Digit 1" \[ref=e1\] value="4"/);
+  assert.equal(page.typedSecret, true);
+  client.close();
+});
+
+test('fillSecret with visible types a value that stays readable', async () => {
+  const { socket, page, client } = setup();
+  socket.responders.set('Accessibility.getFullAXTree', () => ({
+    result: { nodes: [ax('1', 'textbox', { name: 'Email', backendDOMNodeId: 30, value: { type: 'string', value: 'octo@example.com' } })] },
+  }));
+  await page.snapshot();
+  await page.fillSecret('e1', 'octo@example.com', { visible: true });
+  assert.equal(page.typedSecret, false);
+  assert.equal((await page.snapshot()).text, '- textbox "Email" [ref=e1] value="octo@example.com"');
+  client.close();
+});
+
+test('a secret field shows [redacted] for any value and nothing of what it holds; other nodes with its id are not hidden', () => {
+  const nodes = [
+    ax('1', 'RootWebArea', { childIds: ['2', '5', '7', '8'] }),
+    // A text field as Chromium gives it: its value again as a text node inside it.
+    ax('2', 'textbox', { parentId: '1', name: 'Password', backendDOMNodeId: 9, value: { type: 'string', value: 'Synthetic-' }, childIds: ['3'] }),
+    ax('3', 'generic', { parentId: '2', backendDOMNodeId: 10, childIds: ['4'], properties: [{ name: 'editable', value: { type: 'token', value: 'plaintext' } }] }),
+    ax('4', 'StaticText', { parentId: '3', name: 'Synthetic-' }),
+    ax('5', 'generic', {
+      parentId: '1', backendDOMNodeId: 15, value: { type: 'string', value: '••••••' }, childIds: ['6'],
+      properties: [{ name: 'editable', value: { type: 'token', value: 'richtext' } }],
+    }),
+    ax('6', 'StaticText', { parentId: '5', name: '••••••' }),
+    ax('7', 'listitem', { parentId: '1', backendDOMNodeId: 20, childIds: ['9'] }),
+    ax('9', 'StaticText', { parentId: '7', name: 'Welcome back' }),
+    ax('8', 'textbox', { parentId: '1', name: 'Code', backendDOMNodeId: 21 }),
+  ];
+  const lines = buildSnapshotLines(nodes, { secretFields: new Set([9, 15, 20, 21]) }).map((line) => line.text);
+  assert.deepEqual(lines, [
+    '- textbox "Password" [ref=e1] value="[redacted]"',
+    '- text "[redacted]"',
+    '- listitem',
+    '  - text "Welcome back"',
+    '- textbox "Code" [ref=e2]',
+  ]);
+});
+
+test('screenshot captures nothing when a secret was typed and the page cannot be masked', async () => {
+  const socket = new FakeCdpSocket();
+  const client = new CdpClient(socket);
+  const secrets = new TypedSecrets();
+  const page = new BrowserPage(client, SESSION, { secrets });
+  socket.responders.set('Page.captureScreenshot', () => ({ result: { data: 'iVBORw0KGgo=' } }));
+  assert.ok(await page.screenshot());
+  assert.deepEqual(socket.methods(), ['Page.captureScreenshot'], 'with nothing typed, a plain screenshot');
+  secrets.add('Synthetic-Pass-1234');
+  // The fake browser refuses an isolated world.
+  assert.equal(await page.screenshot(), undefined);
+  assert.equal(socket.methods().filter((method) => method === 'Page.captureScreenshot').length, 1);
+  client.close();
+});
+
 test('act with an unknown ref asks for a new snapshot', async () => {
   const { page, client } = await pageWithRefs();
   await assert.rejects(page.act('e9', 'click'), { message: 'Unknown element reference e9; take a new snapshot' });
@@ -338,7 +431,7 @@ test('screenshot decodes base64 image data', async () => {
   const { socket, page, client } = setup();
   socket.responders.set('Page.captureScreenshot', () => ({ result: { data: 'iVBORw0KGgo=' } }));
   const bytes = await page.screenshot({ format: 'jpeg', quality: 70 });
-  assert.deepEqual([...bytes], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  assert.deepEqual([...bytes!], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   assert.deepEqual(socket.sent[0]!.params, { format: 'jpeg', quality: 70 });
 
   socket.responders.set('Page.getLayoutMetrics', () => ({ result: { cssContentSize: { x: 0, y: 0, width: 1280.4, height: 3000 } } }));

@@ -22,7 +22,13 @@ import {
 } from '../src/browser/provider.ts';
 import { browserHandoffMessage, createSlackRequesterNotifier } from '../src/browser/requester.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
-import { BROWSER_APPROVAL_INSTRUCTION, HOSTED_BROWSER_UNAVAILABLE_MESSAGE } from '../src/browser/messages.ts';
+import {
+  BROWSER_APPROVAL_INSTRUCTION,
+  BROWSER_APPROVAL_SCREENSHOT_WITHHELD_NOTE,
+  BROWSER_RECORDING_WITHHELD_MESSAGE,
+  BROWSER_SCREENSHOT_WITHHELD_MESSAGE,
+  HOSTED_BROWSER_UNAVAILABLE_MESSAGE,
+} from '../src/browser/messages.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import type { SlackArtifactStageInput, SlackArtifactStageOutcome } from '../src/sandbox/artifact-tool.ts';
 import { FakeCdpSocket, fakeBrowserProvider } from './helpers/fake-cdp-socket.ts';
@@ -42,11 +48,27 @@ const TREE: AXNode[] = [
   ax('3', 'link', { parentId: '1', label: 'Plans', backendDOMNodeId: 7 }),
 ];
 
-/** A scripted page: navigation sets the URL and title, and fires the load event. */
+const FIELD_ROLES = new Set(['textbox', 'searchbox', 'combobox']);
+
+/**
+ * A scripted page: navigation sets the URL and title, and fires the load
+ * event. Each node's name stands for text the page draws, except the names
+ * in `attributeNames` (an `aria-label`, say), which masking cannot reach.
+ * Masking for a screenshot shows in the tree until the page is restored.
+ */
 class ScriptedBrowser extends FakeCdpSocket {
   url = 'about:blank';
   title = '';
   tree: AXNode[] = TREE;
+  readonly attributeNames = new Set<string>();
+  /** The page puts back any style put on its fields, as a script of its own could. */
+  undoesMask = false;
+  /** What the page drew at each screenshot: every name and value in the tree. */
+  readonly captured: string[] = [];
+  private loads = 0;
+  private readonly maskedNames = new Map<string, string>();
+  private readonly hiddenFields = new Set<number>();
+  private read: { names: string[]; inputs: number[] } = { names: [], inputs: [] };
 
   constructor() {
     super();
@@ -55,19 +77,69 @@ class ScriptedBrowser extends FakeCdpSocket {
     this.responders.set('Page.navigate', (message) => {
       this.url = String(message.params.url);
       this.title = this.url.includes('duckduckgo') ? 'Search results' : 'Example Pricing';
+      this.loads += 1;
       queueMicrotask(() => this.emitEvent('Page.loadEventFired', {}, 'page-1'));
-      return { result: { frameId: 'f1', loaderId: 'l1' } };
+      return { result: { frameId: 'f1', loaderId: `l${this.loads}` } };
     });
     this.responders.set('Runtime.evaluate', (message) => ({
       result: String(message.params.expression).includes('location.href')
         ? { result: { type: 'object', value: { url: this.url, title: this.title } } }
         : { result: { type: 'string', value: 'complete' } },
     }));
-    this.responders.set('Accessibility.getFullAXTree', () => ({ result: { nodes: this.tree } }));
+    this.responders.set('Accessibility.getFullAXTree', () => ({ result: { nodes: this.drawn() } }));
     this.responders.set('DOM.getBoxModel', () => ({ result: { model: { content: [0, 0, 10, 0, 10, 10, 0, 10] } } }));
-    this.responders.set('Page.captureScreenshot', (message) => ({
-      result: { data: toBase64(message.params.format === 'jpeg' ? JPEG_BYTES : PNG_BYTES) },
-    }));
+    this.responders.set('Page.captureScreenshot', (message) => {
+      this.captured.push(this.drawn().flatMap((node) => [node.name?.value, node.value?.value]).filter(Boolean).join('\n'));
+      return { result: { data: toBase64(message.params.format === 'jpeg' ? JPEG_BYTES : PNG_BYTES) } };
+    });
+    this.responders.set('Page.getFrameTree', () => ({ result: { frameTree: { frame: { id: 'f1', loaderId: `l${this.loads}` } } } }));
+    this.responders.set('Page.createIsolatedWorld', () => ({ result: { executionContextId: 9 } }));
+    this.responders.set('DOM.resolveNode', (message) => ({ result: { object: { objectId: `node-${message.params.backendNodeId}` } } }));
+    this.responders.set('Runtime.callFunctionOn', (message) => ({ result: { result: { value: this.mask(message.params) } } }));
+  }
+
+  /** The tree as the browser now draws it. */
+  drawn(): AXNode[] {
+    return this.tree.map((node) => {
+      const name = this.maskedNames.get(node.nodeId);
+      const hidden = node.backendDOMNodeId !== undefined && this.hiddenFields.has(node.backendDOMNodeId) && !this.undoesMask;
+      const value = typeof node.value?.value === 'string' && hidden ? '•'.repeat(node.value.value.length) : undefined;
+      return {
+        ...node,
+        ...(name === undefined ? {} : { name: { type: 'computedString', value: name } }),
+        ...(value === undefined ? {} : { value: { type: 'string', value } }),
+      };
+    });
+  }
+
+  private mask(params: Record<string, unknown>): unknown {
+    const [step, payload, ...elements] = (params.arguments as Array<{ value?: any; objectId?: string }>);
+    switch (step?.value) {
+      case 'hide':
+        for (const element of elements) this.hiddenFields.add(Number(element.objectId!.replace('node-', '')));
+        return true;
+      case 'read': {
+        const drawn = this.drawn();
+        const texts = drawn.filter((node) => node.name?.value && node.role?.value !== 'RootWebArea' && !this.attributeNames.has(node.nodeId));
+        const inputs = drawn.filter((node) => FIELD_ROLES.has(String(node.role?.value)) && !this.hiddenFields.has(node.backendDOMNodeId!));
+        this.read = { names: texts.map((node) => node.nodeId), inputs: inputs.map((node) => node.backendDOMNodeId!) };
+        return {
+          texts: texts.map((node) => node.name!.value),
+          inputs: inputs.map((node) => node.value?.value ?? ''),
+          hiddenShown: this.undoesMask && this.hiddenFields.size > 0,
+        };
+      }
+      case 'mask':
+        for (const [index, masked] of payload!.value.texts) this.maskedNames.set(this.read.names[index]!, masked);
+        for (const index of payload!.value.inputs) this.hiddenFields.add(this.read.inputs[index]!);
+        return true;
+      case 'restore':
+        this.maskedNames.clear();
+        this.hiddenFields.clear();
+        return true;
+      default:
+        throw new Error(`unexpected page function ${String(step?.value)}`);
+    }
   }
 }
 
@@ -500,7 +572,8 @@ class EchoingLoginBrowser extends ScriptedBrowser {
 class RevealingLoginBrowser extends EchoingLoginBrowser {
   private focused = 0;
   private readonly typed = new Map<number, string>();
-  constructor() {
+  /** `shown` is what a field displays of what was typed into it, by its backend node id. */
+  constructor(shown: (field: number, typed: string) => string = (_, typed) => typed) {
     super();
     this.responders.set('DOM.focus', (message) => {
       this.focused = Number(message.params.backendNodeId);
@@ -516,7 +589,7 @@ class RevealingLoginBrowser extends EchoingLoginBrowser {
         { ...root!, childIds: [...root!.childIds!, ...(password === undefined ? [] : ['9'])] },
         ...fields.map((node) => {
           const value = this.typed.get(node.backendDOMNodeId!);
-          return value === undefined ? node : { ...node, value: { type: 'string', value } };
+          return value === undefined ? node : { ...node, value: { type: 'string', value: shown(node.backendDOMNodeId!, value) } };
         }),
         ...(password === undefined ? [] : [ax('9', 'StaticText', { parentId: '1', label: password })]),
       ];
@@ -557,6 +630,7 @@ async function loginSetup(options: {
   settings?: SqliteSettingsStore;
   password?: string;
   browser?: () => EchoingLoginBrowser;
+  inspectScreenshot?: BrowserToolsOptions['inspectScreenshot'];
 } = {}) {
   const settings = options.settings ?? new SqliteSettingsStore(':memory:');
   const deps = { store: settings, keyring: generateCredentialKeyring('browser_tools_test') };
@@ -596,10 +670,15 @@ async function loginSetup(options: {
   });
   const notices: Array<{ text: string }> = [];
   const warnings: unknown[] = [];
+  const staged: SlackArtifactStageInput[] = [];
   const tools = createBrowserTools({
     session,
-    stageArtifact: async (input) => ({ attached: true, byteLength: input.bytes.byteLength }),
+    stageArtifact: async (input) => {
+      staged.push(input);
+      return { attached: true, byteLength: input.bytes.byteLength };
+    },
     transportMaxBytes: async () => undefined,
+    ...(options.inspectScreenshot ? { inspectScreenshot: options.inspectScreenshot } : {}),
     sleep: async () => undefined,
     now: () => new Date(Date.UTC(2026, 8, 22, 14, 5)),
     log: { warn: (...args: unknown[]) => { warnings.push(args); } },
@@ -617,7 +696,7 @@ async function loginSetup(options: {
     });
     return JSON.parse(JSON.stringify(result.output));
   };
-  return { settings, deps, github, portal, granted, state, browsers, session, notices, warnings, run, ...fake };
+  return { settings, deps, github, portal, granted, state, browsers, session, notices, warnings, staged, run, ...fake };
 }
 
 test('browser_open binds a granted host and its subdomains, and switches sessions when the site changes', async () => {
@@ -791,6 +870,87 @@ for (const [shape, password] of SHOWN_PASSWORDS) {
     await session.close();
   });
 }
+
+test('a field that holds a password or code shows [redacted], whatever it holds: a cut prefix or one bullet per digit', async () => {
+  const password = 'Synthetic-Pass-1234';
+  // A password field with maxlength="10", and a code field masked as usual.
+  const shown = (field: number, typed: string) => (field === 12 ? typed.slice(0, 10) : field === 13 ? '•'.repeat(typed.length) : typed);
+  const { run, browsers, github, session } = await loginSetup({ password, browser: () => new RevealingLoginBrowser(shown) });
+  await run('browser_open', { url: 'https://github.com/login' });
+  const signedIn = await run('browser_sign_in', { loginId: github.id, usernameRef: 'e1', passwordRef: 'e2', codeRef: 'e3', submitRef: 'e4' });
+  assert.deepEqual(browsers[0]!.tree.flatMap((node) => (node.value ? [node.value.value] : [])), [USERNAME, 'Synthetic-', '••••••']);
+  assert.match(signedIn.snapshot, /textbox "Email" \[ref=e1\] value="octo@example\.com"/);
+  assert.match(signedIn.snapshot, /textbox "Password" \[ref=e2\] value="\[redacted\]"/);
+  assert.match(signedIn.snapshot, /textbox "Authentication code" \[ref=e3\] value="\[redacted\]"/);
+  assert.doesNotMatch(signedIn.snapshot, /Synthetic-"|•/);
+  await session.close();
+});
+
+test('a screenshot after signing in is taken with the typed password masked, and the page is put back after it', async () => {
+  const password = 'Synthetic-Pass-1234';
+  const { run, browsers, github, session, staged } = await loginSetup({ password, browser: () => new RevealingLoginBrowser() });
+  await run('browser_open', { url: 'https://github.com/login' });
+  await run('browser_sign_in', { loginId: github.id, usernameRef: 'e1', passwordRef: 'e2', submitRef: 'e4' });
+  const browser = browsers[0]!;
+  assert.ok(browser.drawn().some((node) => node.name?.value === password), 'the page shows the password');
+  const shot = await run('browser_screenshot', {});
+  assert.equal(shot.attached, true);
+  assert.equal(staged.length, 1);
+  assert.equal(browser.captured.length, 1);
+  assert.doesNotMatch(browser.captured[0]!, /Synthetic/);
+  assert.match(browser.captured[0]!, /octo@example\.com/);
+  assert.deepEqual(browser.drawn(), browser.tree, 'the page is put back');
+  await session.close();
+});
+
+test('a screenshot is withheld when the page shows a typed secret it cannot mask, and browser_look sends no image', async () => {
+  const password = 'Synthetic-Pass-1234';
+  const looked: unknown[] = [];
+  const { run, browsers, github, session, staged } = await loginSetup({
+    password,
+    browser: () => new RevealingLoginBrowser(),
+    inspectScreenshot: async (input) => {
+      looked.push(input);
+      return 'unused';
+    },
+  });
+  await run('browser_open', { url: 'https://github.com/login' });
+  await run('browser_sign_in', { loginId: github.id, usernameRef: 'e1', passwordRef: 'e2', submitRef: 'e4' });
+  const browser = browsers[0]!;
+  // The echo is an aria-label, say, which no text masking reaches.
+  browser.attributeNames.add('9');
+  assert.deepEqual(await run('browser_screenshot', {}), { attached: false, error: BROWSER_SCREENSHOT_WITHHELD_MESSAGE });
+  assert.deepEqual(await run('browser_look', { question: 'What does the page show?' }), { error: BROWSER_SCREENSHOT_WITHHELD_MESSAGE });
+  assert.equal(browser.captured.length, 0);
+  assert.equal(staged.length, 0);
+  assert.equal(looked.length, 0);
+  assert.deepEqual(browser.drawn(), browser.tree, 'the page is put back');
+  await session.close();
+});
+
+test('a screenshot is withheld when the page undoes the mask on a field a secret was typed into', async () => {
+  const { run, browsers, github, session, staged } = await loginSetup({ browser: () => new RevealingLoginBrowser() });
+  await run('browser_open', { url: 'https://github.com/login' });
+  await run('browser_sign_in', { loginId: github.id, usernameRef: 'e1', passwordRef: 'e2', submitRef: 'e4' });
+  browsers[0]!.undoesMask = true;
+  assert.deepEqual(await run('browser_screenshot', {}), { attached: false, error: BROWSER_SCREENSHOT_WITHHELD_MESSAGE });
+  assert.equal(browsers[0]!.captured.length, 0);
+  assert.equal(staged.length, 0);
+  await session.close();
+});
+
+test('browser_recording is withheld, and the session left open, once a password was typed in it', async () => {
+  const { run, github, session, staged, ended } = await loginSetup();
+  await run('browser_open', { url: 'https://github.com/login' });
+  await run('browser_sign_in', { loginId: github.id, usernameRef: 'e1', submitRef: 'e4' });
+  assert.equal(session.typedSecret, false, 'a username alone is no secret');
+  await run('browser_sign_in', { loginId: github.id, passwordRef: 'e2', submitRef: 'e4' });
+  assert.deepEqual(await run('browser_recording', {}), { attached: false, error: BROWSER_RECORDING_WITHHELD_MESSAGE });
+  assert.equal(session.active, true);
+  assert.deepEqual(ended, []);
+  assert.equal(staged.length, 0);
+  await session.close();
+});
 
 test('an error that echoes a typed password in escaped form stays redacted', async () => {
   const password = 'Synth"etic\\Pass-0042';
@@ -1235,6 +1395,29 @@ test('a typed secret in an element name stays out of the approval description wh
   assert.equal(held.description, 'click "Confirm the change for the account whose recovery phrase is [redacted]"');
   assertSecretHidden(held, secret, 'approval description');
   assertSecretHidden({ description: turn.staged[0]!.title }, secret, 'approval screenshot title');
+  assert.equal(held.note, undefined);
+  assert.equal(turn.browsers[0]!.captured.length, 1);
+  assertSecretHidden({ description: turn.browsers[0]!.captured[0]! }, secret, 'approval screenshot');
+  await turn.session.close();
+});
+
+test('an approval asks without a screenshot when the page shows a typed secret it cannot mask', async () => {
+  const secret = 'Synthetic-Recovery-Phrase-0042-alpha-bravo';
+  const tree = FORM_TREE.map((node) => (node.nodeId === '4'
+    ? { ...node, name: { type: 'computedString', value: `Confirm the change for ${secret}` } }
+    : node));
+  const turn = await actTurn({
+    settings: new SqliteSettingsStore(':memory:'), messageTs: TURN_1_TS, tree,
+    // The button's name is its aria-label, which no text masking reaches.
+    prepare: (browser) => browser.attributeNames.add('4'),
+  });
+  await turn.run('browser_open', { url: 'https://billing.example.com/plan' });
+  turn.session.addRedaction(secret);
+  const held = await turn.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
+  assert.equal(held.awaitingApproval, true);
+  assert.equal(held.note, BROWSER_APPROVAL_SCREENSHOT_WITHHELD_NOTE);
+  assert.equal(turn.staged.length, 0);
+  assert.equal(turn.browsers[0]!.captured.length, 0);
   await turn.session.close();
 });
 

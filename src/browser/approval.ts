@@ -28,6 +28,7 @@ import {
 } from './binding.ts';
 import {
   BROWSER_APPROVAL_INSTRUCTION,
+  BROWSER_APPROVAL_SCREENSHOT_WITHHELD_NOTE,
   BROWSER_DATA_CHANGE_REFUSAL,
   BROWSER_HANDED_OFF_MESSAGE,
   BROWSER_NO_APPROVER_MESSAGE,
@@ -263,20 +264,26 @@ export function createBrowserApprovalSteps(context: BrowserApprovalContext) {
       ),
     ]);
     // The picture of the page rides with the question; the step waits either way.
+    const withheld = 'bytes' in picture && !picture.bytes;
     try {
       if ('error' in picture) throw picture.error;
-      await context.stageArtifact({
-        bytes: picture.bytes,
-        filename: artifactFilename(undefined, 'about-to', 'jpg'),
-        title: `About to: ${description}`.slice(0, 200),
-        kind: 'image',
-      });
+      if (picture.bytes) {
+        await context.stageArtifact({
+          bytes: picture.bytes,
+          filename: artifactFilename(undefined, 'about-to', 'jpg'),
+          title: `About to: ${description}`.slice(0, 200),
+          kind: 'image',
+        });
+      }
     } catch (error) {
       context.log?.warn('browser_act could not attach the approval screenshot', { error: context.errorMessage(error) });
     }
     approvals.onAwaitingApproval?.();
     return {
-      output: { awaitingApproval: true, actionId: record.id, description, instruction: BROWSER_APPROVAL_INSTRUCTION },
+      output: {
+        awaitingApproval: true, actionId: record.id, description, instruction: BROWSER_APPROVAL_INSTRUCTION,
+        ...(withheld ? { note: BROWSER_APPROVAL_SCREENSHOT_WITHHELD_NOTE } : {}),
+      },
     };
   };
 
