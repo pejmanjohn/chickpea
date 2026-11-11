@@ -1,7 +1,7 @@
 import { Hono, type Context } from 'hono';
 import * as v from 'valibot';
 
-import { displayMcpClientName, returnAppName } from '../auth/mcp-client-name.ts';
+import { displayMcpClientName, returnAppForClientId } from '../auth/mcp-client-name.ts';
 import { requestPrincipal } from '../auth/service.ts';
 import type { WorkspaceManagementService } from '../management/service.ts';
 import { ManagementError, type ManagementActorContext } from '../management/types.ts';
@@ -46,9 +46,13 @@ export function createConnectedAppsAdminApi(
   return app;
 }
 
-/** A known app in Chickpea's words; any other name is the app's own claim, and the page says so, as consent does. */
+/**
+ * Chickpea names an app in its own words only by a client ID it knows: a
+ * registered name is the app's own claim, so a stranger that calls itself
+ * "Cursor" is labelled as such, as on the consent page.
+ */
 function appName(clientId: string, registeredName: string | null): { name: string | null; nameFromApp?: true } {
-  const known = returnAppName(clientId, registeredName ?? undefined);
+  const known = returnAppForClientId(clientId);
   if (known) return { name: known };
   const claimed = displayMcpClientName(registeredName ?? undefined);
   return claimed ? { name: claimed, nameFromApp: true } : { name: null };

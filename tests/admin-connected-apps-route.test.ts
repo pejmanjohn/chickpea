@@ -126,7 +126,8 @@ test('a person lists only their own connected apps, with nothing but name and da
     ],
   });
   assert.deepEqual((await list('member')).body, {
-    apps: [{ appId: 'client_theirs', name: 'Codex', connectedAt: '2026-10-21T09:00:00.000Z', lastActiveAt: '2026-10-21T09:00:00.000Z' }],
+    // Registered as "Codex" under an unknown client ID: the app's own claim, never Chickpea's word.
+    apps: [{ appId: 'client_theirs', name: 'Codex', nameFromApp: true, connectedAt: '2026-10-21T09:00:00.000Z', lastActiveAt: '2026-10-21T09:00:00.000Z' }],
   });
 });
 
@@ -149,7 +150,7 @@ test('another member\'s app cannot be disconnected through the page', async (t) 
   assert.deepEqual(grants(CLAUDE_CODE), { consents: 1, refreshTokens: 1 });
   assert.deepEqual(((await list('member')).body.apps as Array<{ appId: string }>).map(({ appId }) => appId), ['client_theirs']);
 
-  assert.deepEqual(await disconnect('member', 'client_theirs'), { status: 200, body: { name: 'Codex' } });
+  assert.deepEqual(await disconnect('member', 'client_theirs'), { status: 200, body: { name: 'Codex', nameFromApp: true } });
   assert.deepEqual(grants('client_theirs'), { consents: 0, refreshTokens: 0 });
   assert.deepEqual(grants(CLAUDE_CODE), { consents: 1, refreshTokens: 1 });
 });
