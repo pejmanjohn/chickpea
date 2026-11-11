@@ -42,8 +42,13 @@ const DAY_MS = 24 * 60 * 60 * 1_000;
 /** One call reads at most this many runs, so a busy Agent's window costs a bounded read. */
 const SCAN_LIMIT = 1_000;
 const USAGE_PAGE = 100;
-/** Usage pages read for other runs of one message; past them, the ask counts as shared and its reply is not kept. */
-const SHARED_ASK_PAGES = 3;
+/**
+ * Another run of one message (an edit, a second mention) starts within this
+ * long of it; the usage pages read for one, past which the ask counts as
+ * shared and its reply is not kept.
+ */
+const SHARED_ASK_WINDOW_MS = 24 * 60 * 60 * 1_000;
+const SHARED_ASK_PAGES = 5;
 /** A run still admitted after this long never settled, so how it ended is unknown. */
 const RUNNING_AT_MOST_MS = 60 * 60 * 1_000;
 /** The text block and `structuredContent` together, as UTF-8: safe for text in any script (probe 13). */
@@ -54,7 +59,6 @@ const NOTE = 'Run records go back 90 days. The words of a conversation stay for 
 
 /** Who is asking, as far as run history cares. */
 interface Caller {
-  organizationId: string;
   membershipId: string;
   slackUserId?: string | undefined;
   /** May change the Agent: every public Channel run, and a count of the runs they cannot see. */
@@ -146,7 +150,6 @@ async function access(deps: FiveZeroDeps): Promise<Access> {
   let channels: Promise<ReadonlySet<string> | undefined> | undefined;
   return {
     caller: {
-      organizationId: snapshot.organizationId,
       membershipId: snapshot.caller.membershipId,
       slackUserId: history.slackUserId,
       editor: false,
@@ -259,7 +262,7 @@ export async function listAgentRuns(deps: FiveZeroDeps, input: ListInput): Promi
     for (const [index, detail] of items.entries()) {
       const { operation } = detail;
       const seen = verdict[index]!;
-      lastRead = { startedAt: operation.startedAt, operationId: operation.operationId };
+      lastRead = positionOf(operation);
       read += 1;
       if (seen.shown && operation.startedAt >= since && inPlace(seen.where, place)) {
         if (page.length < limit) page.push({ detail, where: seen.where });
@@ -495,13 +498,15 @@ function askRow(
 }
 
 async function askShared(sources: RunHistorySources, run: UsageOperation): Promise<boolean> {
-  const at = Number(run.slackMessageTs) * 1_000;
-  if (!Number.isFinite(at) || !run.agentId || !run.channelId) return true;
+  const at = Math.floor(Number(run.slackMessageTs) * 1_000);
+  const from = Math.max(0, at - 60_000);
+  const to = Math.min(Date.now() + 1, at + SHARED_ASK_WINDOW_MS);
+  if (!Number.isFinite(at) || !run.agentId || !run.channelId || to <= from) return true;
   let cursor: Position | undefined;
   for (let page = 0; page < SHARED_ASK_PAGES; page += 1) {
     const { items, nextCursor } = await sources.usage.listOperations({
-      from: Math.max(0, Math.floor(at) - 60_000),
-      to: Date.now() + 1,
+      from,
+      to,
       // Usage files every direct message under one channel key.
       filters: {
         agent: [run.agentId],
