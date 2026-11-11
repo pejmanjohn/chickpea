@@ -364,16 +364,16 @@ export class TestRunStoreLogic {
   }
 }
 
-/**
- * Two asks are one when they name the same Agent and question, and both
- * start a conversation or both continue the same one. A new conversation's
- * ID is minted per run, so it cannot tell two first questions apart.
- */
 /** A run going reads; a settled one, for an hour from its settlement. */
 function readable(row: TestRunRow, at: number): boolean {
   return row.status === 'admitted' || row.status === 'running' || at < (row.settledAt ?? row.createdAt) + TEST_RUN_VISIBLE_MS;
 }
 
+/**
+ * Two asks are one when they name the same Agent and question, and both
+ * start a conversation or both continue the same one. A new conversation's
+ * ID is minted per run, so it cannot tell two first questions apart.
+ */
 function sameAsk(row: TestRunRow, ask: PracticeAsk): boolean {
   if (row.agentId !== ask.agentId || row.questionDigest === null || row.questionDigest !== ask.questionDigest) return false;
   return ask.practiceId === null ? row.turn === 1 : row.practiceId === ask.practiceId && (row.turn ?? 0) > 1;

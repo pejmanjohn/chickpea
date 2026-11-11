@@ -9,6 +9,7 @@ import {
   TEST_RUN_DISPATCH_GRACE_MS,
   TEST_RUN_FORCED_ERASE_MS,
   TEST_RUN_INSTANCE_CALL_MS,
+  TEST_RUN_UNBOUND_ERASE_MS,
 } from '../src/state/test-run-lifecycle.ts';
 import { hostedDeployment, hostedInstallation, type HostedInstallation } from './helpers/installation-objects.ts';
 import {
@@ -82,12 +83,12 @@ test('an answered run settles with its reply, frees the lock, and its instance i
   assert.equal(context.lifecycle.nextDueAt(), NOON + 12_000 + AN_HOUR, 'only its text\'s erase, an hour after it settled, is left to wake for');
 });
 
-test('an instance that never settles is aborted at 125 seconds, failed at 150 whatever it reports, and erased at 10 minutes', async () => {
+test('an instance that never settles is aborted 5 seconds past the timeout, failed 30 seconds past it whatever it reports, and erased 7.5 minutes after that', async () => {
   const context = setup('inst_lifecycle_deadline');
   const { instanceId, row, request } = await started(context);
   context.clock.advance(TEST_RUN_ABORT_AFTER_MS - 1);
   await context.lifecycle.pass();
-  assert.deepEqual(context.instances.on(instanceId), ['dispatch', 'settlement'], 'nothing is aborted before 125 seconds');
+  assert.deepEqual(context.instances.on(instanceId), ['dispatch', 'settlement'], 'nothing is aborted before then');
   context.clock.advance(1);
   await context.lifecycle.pass();
   assert.deepEqual(context.instances.on(instanceId).slice(2), ['abort', 'settlement']);
@@ -185,13 +186,16 @@ test('a run with no submission 30 seconds after admission fails as not dispatche
   assert.equal(row().failure, 'not_dispatched', 'the store\'s terminal stands');
 });
 
-test('a run that never gets a submission is erased at the ten-minute bound', async () => {
+test('a run that never gets a submission is erased ten minutes after admission: it has no timeout to outlast', async () => {
+  assert.equal(TEST_RUN_UNBOUND_ERASE_MS, 10 * 60_000);
   const context = setup('inst_lifecycle_never_bound');
   context.instances.dispatchFails = true;
   const { instanceId, row } = await started(context);
   context.clock.advance(TEST_RUN_DISPATCH_GRACE_MS);
   await context.lifecycle.pass();
-  context.clock.advance(TEST_RUN_FORCED_ERASE_MS - TEST_RUN_DISPATCH_GRACE_MS - 1);
+  context.clock.advance(TEST_RUN_UNBOUND_ERASE_MS - TEST_RUN_DISPATCH_GRACE_MS - 1);
+  // A cancellation pass cannot erase it sooner, so until then it holds a restore and erasure's drain.
+  assert.deepEqual(await context.lifecycle.pass('cancel'), { erased: 0, unerased: 1 });
   await context.lifecycle.pass();
   assert.equal(row().erasedAt, null);
   assert.deepEqual(context.instances.on(instanceId), ['dispatch', 'abort'], 'asked to stop once, then left to its bound');
@@ -251,7 +255,10 @@ test('a receipt that lands after the forced erase unerases the run and arms the 
   await context.instances.sent();
   const row = () => context.installation.stores.testRuns.get(request.run.testRunId)!;
   const instanceId = row().instanceId;
-  context.clock.advance(TEST_RUN_FORCED_ERASE_MS);
+  context.clock.advance(TEST_RUN_UNBOUND_ERASE_MS - 1);
+  await context.lifecycle.pass();
+  assert.equal(row().erasedAt, null, 'until its bound, an outstanding dispatch holds the erase');
+  context.clock.advance(1);
   await context.lifecycle.pass();
   assert.equal(row().erasedAt, context.clock.now(), 'past the bound, an outstanding dispatch no longer holds the erase');
   assert.deepEqual(context.instances.on(instanceId), ['abort', 'erase']);
@@ -387,7 +394,7 @@ test('cancellation settles and erases a test run in the same call; one not yet e
   assert.deepEqual((await cancel() as { agentsStopped: number; agentsNotStopped: number }).agentsStopped, 0, 'an erased run is not counted again');
 });
 
-test('a terminal Usage refuses never keeps the run live: the 150-second bound settles it, the lock frees, and a later step writes the terminal', async (t) => {
+test('a terminal Usage refuses never keeps the run live: the store\'s deadline settles it, the lock frees, and a later step writes the terminal', async (t) => {
   t.mock.method(console, 'warn', () => undefined);
   const context = setup('inst_lifecycle_terminal_refused');
   const { row, request } = await started(context);
@@ -449,10 +456,13 @@ test('the store runs only a plan for this run, its caller and its Agent, on an i
 test('an hour after it settles a run is gone to its caller: a replay reads as not found, and the same key starts a new run', async () => {
   const context = setup('inst_lifecycle_replay_hour');
   const { request, instanceId } = await started(context);
-  context.instances.settlements.set(instanceId, { kind: 'answered', reply: 'Shipped.', read: [], steps: [] });
   const replay = { organizationId: request.run.organizationId, actorMembershipId: request.run.actorMembershipId,
     idempotencyKey: request.run.idempotencyKey, agentId: request.run.agentId, practiceId: null,
     questionDigest: practiceQuestionDigest(request.run.organizationId, request.run.question) };
+  // It settles two hours after it was asked, as a direct message can: its hour starts then.
+  context.clock.advance(2 * AN_HOUR);
+  assert.equal((await context.lifecycle.replay(replay))?.status, 'running', 'a run still going replays past the hour');
+  context.instances.settlements.set(instanceId, { kind: 'answered', reply: 'Shipped.', read: [], steps: [] });
   assert.equal((await context.lifecycle.replay(replay))?.status, 'answered', 'settled now');
   context.clock.advance(AN_HOUR - 1);
   assert.equal((await context.lifecycle.replay(replay))?.status, 'answered');

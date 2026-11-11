@@ -37,6 +37,12 @@ export const TEST_RUN_ABORT_AFTER_MS = CHICKPEA_SUBMISSION_DURABILITY.timeoutMs 
 export const TEST_RUN_DEADLINE_MS = CHICKPEA_SUBMISSION_DURABILITY.timeoutMs + 30_000;
 /** The erase waits for the instance to settle no longer than this after admission. */
 export const TEST_RUN_FORCED_ERASE_MS = TEST_RUN_DEADLINE_MS + 7.5 * 60_000;
+/**
+ * A run that never had a submission while it was live never ran, so it has
+ * no timeout to outlast: its erase waits only this long after admission, for
+ * a dispatch that lands late.
+ */
+export const TEST_RUN_UNBOUND_ERASE_MS = 10 * 60_000;
 /** Each dispatch, abort, settlement read and erase is one request to the instance. */
 export const TEST_RUN_INSTANCE_CALL_MS = 10_000;
 
@@ -277,7 +283,7 @@ export class TestRunLifecycle {
     }
     this.writeOwedTerminal(row, now);
     // Until its dispatch call returns, an abort or an erase could come before what it lands.
-    if (this.dispatching.has(testRunId) && age < TEST_RUN_FORCED_ERASE_MS) return row;
+    if (this.dispatching.has(testRunId) && !eraseForced(row, now)) return row;
     if (await this.eraseReady(row, probe, now)) await this.erase(row);
     return testRuns.get(testRunId);
   }
@@ -285,11 +291,11 @@ export class TestRunLifecycle {
   /**
    * The instance has settled or is gone, or the forced bound has passed. An
    * instance still running is aborted first. A run with no submission has
-   * nothing to read, so its erase waits for the bound, unless a submission
-   * that lands later binds it and settles.
+   * nothing to read, so its erase waits for its own bound, unless a
+   * submission that lands later binds it and settles.
    */
   private async eraseReady(row: TestRunRow, probe: TestRunInstanceSettlement | undefined, now: number): Promise<boolean> {
-    if (now - row.createdAt >= TEST_RUN_FORCED_ERASE_MS) {
+    if (eraseForced(row, now)) {
       await this.abortOnce(row);
       log('test_run_forced_erase', row);
       return true;
@@ -464,6 +470,16 @@ function testRunView(row: TestRunRow): TestRunView {
     turn: row.turn,
     question: row.question,
   };
+}
+
+/**
+ * The erase stops waiting for the instance: at the forced bound, or sooner
+ * for a run that never ran. A submission that binds after the store failed
+ * the run as not dispatched gets no model access, so that run never ran either.
+ */
+function eraseForced(row: TestRunRow, now: number): boolean {
+  const neverRan = row.submissionId === null || row.failure === 'not_dispatched';
+  return now - row.createdAt >= (neverRan ? TEST_RUN_UNBOUND_ERASE_MS : TEST_RUN_FORCED_ERASE_MS);
 }
 
 function live(row: TestRunRow): boolean {
