@@ -189,26 +189,42 @@ const CORPUS: { text: string; keeps: string[] }[] = [
 ];
 
 /** Whitespace chunks once JSON escapes are decoded: an escaped line break splits, others do not. */
-function sourceChunks(text: string): number {
-  return text.replace(/\\[nrt]/g, ' ').split(/\s+/).filter(Boolean).length;
-}
+/** Runs of letters and digits, the unit that does not change when the filter adds spaces. */
+const runs = (text: string) => text.replace(/\\[nrt]/g, ' ').match(/[\p{L}\p{N}]+/gu)?.length ?? 0;
 
 test('realistic service errors keep their field names, error codes and statuses', (t) => {
-  let chunks = 0;
+  let source = 0;
   let kept = 0;
   for (const { text, keeps: phrases } of CORPUS) {
     const shown = filter(text);
     for (const phrase of phrases) assert.ok(shown.includes(phrase), `${phrase}\n  in ${shown}`);
-    chunks += sourceChunks(text);
-    kept += shown.split(' ').filter((chunk) => chunk && chunk !== '[…]').length;
+    source += runs(text);
+    kept += runs(shown);
   }
-  t.diagnostic(`${kept} of ${chunks} chunks kept (${(100 * kept / chunks).toFixed(1)}%)`);
-  assert.ok(kept / chunks >= 0.9, `${kept} of ${chunks}`);
+  t.diagnostic(`${kept} of ${source} runs of letters and digits kept (${(100 * kept / source).toFixed(1)}%)`);
+  assert.ok(kept / source >= 0.8, `${kept} of ${source}`);
 });
 
-test('compact JSON keeps none of its glued values, a known cost', () => {
-  assert.equal(filter('{"ok":false,"error":"channel_not_found"}'), '[…]');
-  assert.equal(filter('Request body: {"client_secret":"syntheticClientSecretValue"}'), 'Request body: […]');
+test('compact JSON reads as it would pretty-printed', () => {
+  assert.equal(filter('{"ok":false,"error":"channel_not_found"}'), '{ "ok": false, "error": "channel_not_found"}');
+  assert.equal(filter('{"status":"error","errors":[{"field":"hs_lead_status"}]}'), '{ "status": "error", "errors": [{ "field": "hs_lead_status"}]}');
+});
+
+test('the value after a secret label or an auth scheme is dropped, even when it reads as a word', () => {
+  assert.equal(filter('password: hunter rejected'), 'password: […] rejected');
+  assert.equal(filter('password = hunter rejected'), 'password […] rejected');
+  assert.equal(filter('Authorization: Bearer first rejected'), 'Authorization: […] rejected');
+  assert.equal(filter('Bearer first rejected'), 'Bearer […] rejected');
+  assert.equal(filter('basic words rejected'), 'basic […] rejected');
+  assert.equal(filter('Request body: {"client_secret":"plain words"}'), 'Request body: { "client_secret": […] words"}');
+  assert.equal(filter('{"access_token":"wordlike","scope":"read"}'), '{ "access_token": […] "scope": "read"}');
+  assert.equal(filter('X-Api-Key: wordlike missing'), 'X-Api-Key: […] missing');
+});
+
+test('a secret label used as a plain word keeps the next word', () => {
+  keeps('token expired, sign in again');
+  keeps('The session has ended');
+  keeps('error_code: INVALID_ARGUMENT');
 });
 
 /** Synthetic keys from a seeded generator (mulberry32), so each run checks the same ones. */

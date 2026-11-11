@@ -442,13 +442,13 @@ async function reportedFailureMessage(error: string): Promise<string> {
 test('every reproduction from the reviews of this change reaches the model as […]', async () => {
   const cases: [string, string][] = [
     // The #737 security review.
-    ['Authorization: Bearer syntheticOAuthToken42', 'Authorization: Bearer […]'],
-    ['{"access_token":"syntheticOAuthToken42","refresh_token":"syntheticRefreshToken42"}', '[…]'],
+    ['Authorization: Bearer syntheticOAuthToken42', 'Authorization: […]'],
+    ['{"access_token":"syntheticOAuthToken42","refresh_token":"syntheticRefreshToken42"}', '{ "access_token": […] "refresh_token": […]'],
     // The first security re-review.
     ['Cookie: sessionid=syntheticSession42; theme=light', 'Cookie: […]'],
     ['Set-Cookie: sid=syntheticSession42; HttpOnly', 'Set-Cookie: […] HttpOnly'],
     ['Invalid API key provided: sk_live_syntheticStripeCredential42', 'Invalid API key provided: […]'],
-    [String.raw`Request body: {\"client_secret\":\"syntheticClientSecret42\"}`, 'Request body: […]'],
+    [String.raw`Request body: {\"client_secret\":\"syntheticClientSecret42\"}`, 'Request body: { "client_secret": […]'],
     [String.raw`403 for https:\/\/files.example.test\/object?X-Amz-Signature=syntheticSignature42`, '403 for […]'],
     ['Request body: client%5Fsecret=syntheticClientSecret42', 'Request body: […]'],
     ['Request body: {&quot;client_secret&quot;:&quot;syntheticClientSecret42&quot;}', 'Request body: […]'],
@@ -458,17 +458,17 @@ test('every reproduction from the reviews of this change reaches the model as [�
     ...['%40', '%2F', '%3F', '%23'].map((escape): [string, string] =>
       [`https://user:first${escape}SyntheticTail42@db.example.test/v1`, '[…]']),
     ['https://files.example.test/object?x=first%22SyntheticTail42', '[…]'],
-    [String.raw`{"client_secret":"first\"SyntheticTail42"}`, '[…]'],
+    [String.raw`{"client_secret":"first\"SyntheticTail42"}`, '{ "client_secret": […]'],
     [
       '{"error":"invalid_client","error_description":"Invalid client_secret: first,SyntheticTail42"}',
-      '[…] client_secret: […]',
+      '{ "error": "invalid_client", "error_description": "Invalid client_secret: […]',
     ],
     ['password=first;SyntheticTail42', '[…]'],
     ['api_key=first%20SyntheticTail42', '[…]'],
-    // `first` is a plain word, the residual every allowlist of words has; the rest is dropped.
-    ['Authorization: Bearer first\nSyntheticTail42', 'Authorization: Bearer first […]'],
-    [String.raw`Authorization: Bearer first\nSyntheticTail42`, 'Authorization: Bearer first […]'],
-    ['{"cookies":{"nested":{"sid":"SyntheticInner42"},"other":"SyntheticOther42"}}', '[…]'],
+    // `first` reads as a word, so only the label rule drops it.
+    ['Authorization: Bearer first\nSyntheticTail42', 'Authorization: […]'],
+    [String.raw`Authorization: Bearer first\nSyntheticTail42`, 'Authorization: […]'],
+    ['{"cookies":{"nested":{"sid":"SyntheticInner42"},"other":"SyntheticOther42"}}', '{ "cookies": { "nested": { "sid": […] "other": […]'],
     ['Invalid API key provided: keySyntheticAb123', 'Invalid API key provided: […]'],
     ['HTTP 403 record for other-tenant@example.test: balance overdue', 'HTTP 403 record for […] balance overdue'],
     // The first review's cases, with the turn's Composio key.
@@ -477,15 +477,15 @@ test('every reproduction from the reviews of this change reaches the model as [�
         'https://synthetic-user:synthetic-pass@api.example.test/1/boards/synthetic?key=synthetic-key-value&token=synthetic-token-value ' +
         'after Authorization: Bearer synthetic.bearer-value_1234 and refresh_token=synthetic-refresh-value ' +
         'and {"api_key":"synthetic-api-key-value"} with test-key. Bearer authentication failed.',
-      '401 Client Error: Unauthorized for url: […] after Authorization: Bearer […] and […] and […] with […] ' +
-        'Bearer authentication failed.',
+      '401 Client Error: Unauthorized for url: […] after Authorization: […] and […] and { "api_key": […] with […] ' +
+        'Bearer […] failed.',
     ],
     [
       'Upstream echoed {"access_token":"syntheticOAuthToken42","refresh_token":"syntheticRefreshToken42"} ' +
         'and Authorization: Basic c3ludGhldGljOnN5bnRoZXRpYw== and "authorization":"syntheticOpaqueValue" ' +
         'and a header of Basic c3ludGhldGljOnBhc3M9 too. Basic authentication is required.',
-      'Upstream echoed […] and Authorization: Basic […] and […] and a header of Basic […] too. ' +
-        'Basic authentication is required.',
+      'Upstream echoed { "access_token": […] "refresh_token": […] and Authorization: […] and "authorization": […] ' +
+        'and a header of Basic […] too. Basic […] is required.',
     ],
   ];
   for (const [error, reason] of cases) {
