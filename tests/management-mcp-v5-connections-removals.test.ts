@@ -849,6 +849,15 @@ test('a catalog tool its server says changes things is never marked as a read, a
   const tools = (structured(await call('get_agent', { agentId: 'agent_research' })).connections as Array<Record<string, any>>)
     .find(({ connectionId }) => connectionId === 'linear')!.tools;
   assert.deepEqual(tools, { allowedTools: ['list_issues', 'get_issue', 'save_issue'], writeTools: ['save_issue'] });
+  // Two at once are named together, and the next step says them.
+  const both = errorOf(await call('update_connection', {
+    agentId: 'agent_research', connectionId: 'linear', version: await version(call, 'agent_research'),
+    changes: { readTools: ['list_issues', 'save_issue'] }, idempotencyKey: 'two-writes-as-reads',
+  }), 'invalid_input');
+  assert.deepEqual([both.message, both.nextStep], [
+    'list_issues, save_issue say they change things, so they can\'t be marked as a read.',
+    'Leave them out of readTools. A practice run never calls a tool that is not marked as a read.',
+  ]);
 });
 
 test('a custom MCP tool its server says changes things is never marked as a read either, and get_agent drops a read its server now says writes', async (t) => {
@@ -953,9 +962,10 @@ test('a reviewed catalog connector lists no tools to mark, and update_connection
   const refused = errorOf(await call('update_connection', {
     agentId: 'agent_research', connectionId: 'bugsnag', version: before, changes: { readTools: ['list_errors'] }, idempotencyKey: 'reviewed',
   }), 'invalid_input');
-  assert.deepEqual([refused.message, refused.nextStep], [
-    'Research has no custom connection with that connectionId.',
-    'Send a custom_api or custom_mcp connectionId from get_agent. A catalog service\'s settings are Chickpea\'s; reconnect_service signs it in again.',
+  assert.deepEqual([refused.message, refused.nextStep, refused.fix], [
+    'BugSnag\'s tools are chosen on the Agent\'s page in Admin, so update_connection doesn\'t mark them.',
+    'Its tools are chosen on the Agent\'s page in Admin, where Chickpea marks the ones that only read.',
+    { label: 'Open the Agent in Admin', url: 'https://chickpea.example.test/admin/agents/agent_research' },
   ]);
   assert.equal(await version(call, 'agent_research'), before);
 });

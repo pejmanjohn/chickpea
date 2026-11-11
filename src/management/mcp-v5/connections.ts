@@ -392,7 +392,7 @@ function markedTools(
   const writes = readTools.filter((tool) => discovered.some(({ name, readOnlyHint }) => name === tool && readOnlyHint === false));
   if (writes.length) {
     fail('invalid_input', `${writes.join(', ')} ${writes.length === 1 ? 'says it changes' : 'say they change'} things, so ${writes.length === 1 ? 'it' : 'they'} can't be marked as a read.`, {
-      nextStep: 'Leave it out of readTools. A practice run never calls a tool that is not marked as a read.',
+      nextStep: `Leave ${writes.length === 1 ? 'it' : 'them'} out of readTools. A practice run never calls a tool that is not marked as a read.`,
     });
   }
   if ((changes.readTools || changes.writeTools) && readTools.length + writeTools.length === 0) {
@@ -456,9 +456,16 @@ export async function updateConnection(
         const patch = { mcpServers: agent.mcpServers.map((entry) => entry === mcp ? catalogMarks(agent, entry, input.changes) : entry) };
         return [{ itemId: 'update_connection', kind: 'update_agent', agentId: agent.id, expectedRevision: agent.revision, patch }];
       }
-      if ((!api && !mcp) || (api ?? mcp)!.presetId) {
-        fail('invalid_input', `${agent.name} has no custom connection with that connectionId.`, {
-          nextStep: 'Send a custom_api or custom_mcp connectionId from get_agent. A catalog service\'s settings are Chickpea\'s; reconnect_service signs it in again.',
+      if (mcp?.presetId) {
+        const origin = adminOrigin(deps.baseUrl);
+        fail('invalid_input', `${mcp.displayName}'s tools are chosen on the Agent's page in Admin, so update_connection doesn't mark them.`, {
+          nextStep: 'Its tools are chosen on the Agent\'s page in Admin, where Chickpea marks the ones that only read.',
+          ...(origin ? { fix: { label: 'Open the Agent in Admin', url: `${origin}${ADMIN_PATH}/agents/${encodeURIComponent(agent.id)}` } } : {}),
+        });
+      }
+      if ((!api && !mcp) || api?.presetId) {
+        fail('invalid_input', `${agent.name} has no custom connection or catalog MCP service with that connectionId.`, {
+          nextStep: 'Send a custom_api or custom_mcp connectionId from get_agent, or a service\'s that lists tools. Another catalog service\'s settings are Chickpea\'s; reconnect_service signs it in again.',
         });
       }
       const patch = api
