@@ -35,6 +35,13 @@ import {
 import type { SlackStateStore } from '../src/slack/claim-store.ts';
 import { stopNodeTurnRelay, wakeNodeTurnRelay } from '../src/slack/node-turn-relay.ts';
 import {
+  AgentObservationYield,
+  AgentPromptFailure,
+  AgentReplyReadInterrupted,
+  StateStoreUnavailable,
+} from '../src/slack/flue-dispatch.ts';
+import {
+  attemptEndReason,
   runTurn,
   WORKSPACE_DEFAULT_MODEL_REPAIR_TEXT,
   type RunTurnOptions,
@@ -675,6 +682,22 @@ test('turn_latency names why a thrown attempt ended, and counts reads a fresh on
     { attempt: 2, outcome: 'returned', reason: undefined, stalledReads: 2 },
   ]);
   records.forEach(assertContentFree);
+});
+
+// Defect caught: a failure class logged under another class's reason, so
+// retries are counted under the wrong cause.
+test('a thrown attempt\'s reason names its failure class', () => {
+  assert.deepEqual([
+    new AgentObservationYield(),
+    new StateStoreUnavailable(),
+    new AgentReplyReadInterrupted(new TypeError('Network connection lost')),
+    new AgentPromptFailure('agent', 409, true),
+    new AgentPromptFailure('agent', 503, false, true),
+    new Error('slack unavailable'),
+  ].map(attemptEndReason), [
+    'observation_yield', 'state_store_unavailable', 'reply_read_interrupted',
+    'recovery_required', 'agent_failure', 'other',
+  ]);
 });
 
 // Defects caught: a first write that ignores the status the state store

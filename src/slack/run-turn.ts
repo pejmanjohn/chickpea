@@ -589,7 +589,7 @@ export async function runTurn(
 }
 
 /** Why an attempt ended without a final, as a log token. */
-function attemptEndReason(error: unknown): string {
+export function attemptEndReason(error: unknown): string {
   if (error instanceof AgentObservationYield) return 'observation_yield';
   if (error instanceof StateStoreUnavailable) return 'state_store_unavailable';
   if (error instanceof AgentReplyReadInterrupted) return 'reply_read_interrupted';
