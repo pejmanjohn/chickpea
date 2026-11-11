@@ -167,20 +167,21 @@ test('only an answer is given again: the same ask after a run that failed runs a
   assert.equal(again.kind, 'admitted', 'a plan that refused the first may allow the second');
 });
 
-test('a run is erased at its hour, text and row, and the alarm wakes for it in an idle workspace', () => {
+test('a run is erased an hour after it settles, text and row, and the alarm wakes for it in an idle workspace', () => {
   const installation = hostedInstallation('inst_test_store_text');
   const store = testRuns(installation);
   const request = admission(installation);
   store.admit(request, NOON);
-  answer(installation, request.testRunId, NOON + 20_000);
+  const settled = NOON + 20_000;
+  answer(installation, request.testRunId, settled);
   store.markErased(request.testRunId, NOON + 30_000);
   assert.equal(store.hasUnerased(), false, 'nothing is left for the run pass');
-  assert.equal(store.nextDueAt(NOON + 60_000), NOON + AN_HOUR, 'the wake is the hour');
-  assert.equal(store.eraseExpired(NOON + AN_HOUR - 1), 0);
+  assert.equal(store.nextDueAt(NOON + 60_000), settled + AN_HOUR, 'the wake is an hour after it settled');
+  assert.equal(store.eraseExpired(settled + AN_HOUR - 1), 0);
   assert.ok(store.get(request.testRunId)?.result, 'inside its hour it reads whole');
-  assert.equal(store.eraseExpired(NOON + AN_HOUR), 1);
+  assert.equal(store.eraseExpired(settled + AN_HOUR), 1);
   assert.equal(store.get(request.testRunId), undefined, 'the row goes with its text: nothing counts a run afterwards');
-  assert.equal(store.nextDueAt(NOON + AN_HOUR), undefined, 'then nothing wakes it');
+  assert.equal(store.nextDueAt(settled + AN_HOUR), undefined, 'then nothing wakes it');
   // A run whose instance is not erased yet loses its text at the hour, and its row once the instance is erased.
   const held = admission(installation);
   store.admit(held, NOON);
@@ -275,7 +276,17 @@ test('a run settles once: the first settlement writes the usage terminal, and a 
   assert.deepEqual([detail.operation.status, detail.measurements.length], ['completed', 1]);
 });
 
-test('only the caller reads a run, by its token, for an hour', () => {
+test('a run still going keeps its text and row past the hour, as a direct message runs that long', () => {
+  const installation = hostedInstallation('inst_test_store_going');
+  const store = testRuns(installation);
+  const request = admission(installation);
+  store.admit(request, NOON);
+  assert.equal(store.eraseExpired(NOON + 3 * AN_HOUR), 0);
+  assert.equal(store.get(request.testRunId)?.question, request.question);
+  assert.equal(store.nextDueAt(NOON + 3 * AN_HOUR), NOON + 3 * AN_HOUR + TEST_RUN_WAKE_MS, 'only the look at its instance wakes for it');
+});
+
+test('only the caller reads a run, by its token: while it goes, and for an hour after it settles', () => {
   const installation = hostedInstallation('inst_test_store_read');
   const request = admission(installation);
   testRuns(installation).admit(request, NOON);
@@ -284,8 +295,10 @@ test('only the caller reads a run, by its token, for an hour', () => {
   assert.equal(testRuns(installation).read({ ...query, actorMembershipId: 'membership_other' }, NOON), undefined);
   assert.equal(testRuns(installation).read({ ...query, organizationId: 'org_other' }, NOON), undefined);
   assert.equal(testRuns(installation).read({ ...query, runToken: 'tr_unknown' }, NOON), undefined);
-  assert.equal(testRuns(installation).read(query, NOON + AN_HOUR - 1)?.testRunId, request.testRunId);
-  assert.equal(testRuns(installation).read(query, NOON + AN_HOUR), undefined);
+  assert.equal(testRuns(installation).read(query, NOON + 2 * AN_HOUR)?.testRunId, request.testRunId, 'a run going reads past the hour');
+  answer(installation, request.testRunId, NOON + 2 * AN_HOUR);
+  assert.equal(testRuns(installation).read(query, NOON + 3 * AN_HOUR - 1)?.testRunId, request.testRunId);
+  assert.equal(testRuns(installation).read(query, NOON + 3 * AN_HOUR), undefined);
 });
 
 test('retention erases a run once its hour has passed and its instance is erased, whatever the day', () => {

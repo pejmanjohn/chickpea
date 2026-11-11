@@ -1,6 +1,5 @@
 import { z } from 'zod';
 
-import { TEST_TURN_TOOL_CALL_LIMIT } from '../../agents/test-turn-limits.ts';
 import { AGENT_ID_PATTERN } from '../../config/agent-id.ts';
 import { CONNECTION_GUIDE_MAX_LENGTH, HEADER_VALUE_PREFIX_MAX_LENGTH } from '../../config/agent-write-rules.ts';
 import { MAX_MCP_TOOLS } from '../../config/mcp-limits.ts';
@@ -736,7 +735,6 @@ export const practiceRunOutput = z.strictObject({
     place: z.literal('dm'),
   }).optional().describe('What ran: the Agent as a direct message from you runs it.'),
   partial: z.literal(true).optional().describe('A connection was left out, so an answer that needs it can\'t be judged here; see off.'),
-  stopped: z.literal('tool_limit').optional().describe(`It stopped at the practice limit of ${TEST_TURN_TOOL_CALL_LIMIT} tool calls.`),
   problem: z.string().optional(),
   usage: z.strictObject({
     seconds: z.number().int(),
@@ -744,7 +742,8 @@ export const practiceRunOutput = z.strictObject({
   }).optional(),
   repeat: z.literal(true).optional().describe('The same question on the unchanged Agent, answered moments ago: that run, not a new one.'),
   read: z.array(z.string()).optional().describe('The services it read, by name.'),
-  steps: z.array(zPracticeStep).optional().describe('Every tool call and skill load, in order.'),
+  steps: z.array(zPracticeStep).optional().describe('Its tool calls and skill loads, in order: the first 25.'),
+  moreSteps: z.number().int().positive().optional().describe('How many more calls it made after the steps listed.'),
   off: z.array(z.string()).optional().describe('What a Slack message could use that this run could not.'),
   available: z.array(z.strictObject({ service: z.string(), tools: z.array(z.string()) })).optional()
     .describe('The tools it could use, by service: one it did not call was there.'),

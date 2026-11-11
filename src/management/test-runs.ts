@@ -24,7 +24,11 @@ import type {
 
 /** A run answered this recently answers the same ask on the same plan again, rather than run twice. */
 export const PRACTICE_REPEAT_MS = 2 * 60_000;
-/** A run reads as not found this long after its admission, and it is erased then. */
+/**
+ * A settled run reads as not found this long after it settled, and it is
+ * erased then. A run still going always reads: it can run as long as a direct
+ * message, past the hour.
+ */
 export const TEST_RUN_VISIBLE_MS = 60 * 60_000;
 /** How often the state store's alarm looks at a run whose instance is not erased yet. */
 export const TEST_RUN_WAKE_MS = 10_000;
@@ -32,6 +36,9 @@ export const TEST_RUN_WAKE_MS = 10_000;
 /** Rows one alarm deletes; the next alarm takes the rest. */
 const ERASE_BATCH = 250;
 const HAS_TEXT = '(result_json IS NOT NULL OR question IS NOT NULL OR question_digest IS NOT NULL)';
+const SETTLED = "status NOT IN ('admitted', 'running')";
+/** When a run's hour starts: its settlement, or for a row from before practice runs, its admission. */
+const HOUR_FROM = 'COALESCE(settled_at, created_at)';
 
 /**
  * The question's digest, so a key or a repeat can match an ask after the
@@ -84,8 +91,8 @@ export function installTestRunSchema(db: StateDb): void {
     `CREATE INDEX IF NOT EXISTS management_test_runs_unerased_idx
      ON management_test_runs (created_at) WHERE erased_at IS NULL`,
   );
-  // And when the next run's text is an hour old.
-  db.exec(`CREATE INDEX IF NOT EXISTS management_test_runs_text_idx ON management_test_runs (created_at) WHERE ${HAS_TEXT}`);
+  // And when the next run's text is an hour past its settlement.
+  db.exec(`CREATE INDEX IF NOT EXISTS management_test_runs_text_idx ON management_test_runs (${HOUR_FROM}) WHERE ${HAS_TEXT}`);
 }
 
 /**
@@ -96,14 +103,14 @@ export function installTestRunSchema(db: StateDb): void {
 function eraseTestRunText(db: StateDb, at: number): number {
   return db.run(
     `UPDATE management_test_runs SET result_json = NULL, question = NULL, question_digest = NULL
-     WHERE ${HAS_TEXT} AND created_at <= ?`,
+     WHERE ${HAS_TEXT} AND ${SETTLED} AND ${HOUR_FROM} <= ?`,
     at - TEST_RUN_VISIBLE_MS,
   ).changes;
 }
 
 /**
- * A run goes once it can no longer be read: its text at its hour, and the
- * row with it once its instance is erased. Nothing counts a run after that.
+ * A run goes once it can no longer be read: its text an hour after it
+ * settles, and the row with it once its instance is erased. Nothing counts a run after that.
  * The alarm runs this whenever it wakes, and wakes for it (`nextDueAt`); the
  * retention sweep runs it too. Returns the rows it deleted.
  */
@@ -112,8 +119,8 @@ export function cleanupTestRunRetention(db: StateDb, at: number, limit: number):
   return db.run(
     `DELETE FROM management_test_runs WHERE test_run_id IN (
        SELECT test_run_id FROM management_test_runs
-       WHERE erased_at IS NOT NULL AND created_at <= ?
-       ORDER BY created_at LIMIT ?
+       WHERE erased_at IS NOT NULL AND ${SETTLED} AND ${HOUR_FROM} <= ?
+       ORDER BY ${HOUR_FROM} LIMIT ?
      )`,
     at - TEST_RUN_VISIBLE_MS,
     limit,
@@ -131,12 +138,10 @@ export class TestRunStoreLogic {
     private readonly usage: Pick<UsageStoreLogic, 'admitOperation' | 'recordTerminal'>,
   ) {}
 
-  /** The caller's run under a key, within its hour, only for the same ask: a key for another ask names none. */
+  /** The caller's run under a key, while it can be read, only for the same ask: a key for another ask names none. */
   replay(query: Caller & PracticeAsk & { idempotencyKey: string }, at: number): TestRunRow | undefined {
     const row = this.row('actor_membership_id = ? AND idempotency_key = ?', query.actorMembershipId, query.idempotencyKey);
-    return row && row.organizationId === query.organizationId && sameAsk(row, query) && at < row.createdAt + TEST_RUN_VISIBLE_MS
-      ? row
-      : undefined;
+    return row && row.organizationId === query.organizationId && sameAsk(row, query) && readable(row, at) ? row : undefined;
   }
 
   /**
@@ -205,16 +210,19 @@ export class TestRunStoreLogic {
     });
   }
 
-  /** The caller's runs of the same ask that are going, or settled within the repeat window; newest first. Their installation's hour of rows is all the table holds. */
+  /**
+   * The caller's runs of the same ask that are going, or settled within the
+   * repeat window; newest first. The table holds only the installation's
+   * runs still going or settled within the hour.
+   */
   private sameAsks(ask: Caller & PracticeAsk, at: number): TestRunRow[] {
     return this.db.all(
       `SELECT * FROM management_test_runs
-       WHERE organization_id = ? AND actor_membership_id = ? AND created_at > ?
+       WHERE organization_id = ? AND actor_membership_id = ?
          AND (status IN ('admitted', 'running') OR settled_at >= ?)
        ORDER BY created_at DESC`,
       ask.organizationId,
       ask.actorMembershipId,
-      at - TEST_RUN_VISIBLE_MS,
       at - PRACTICE_REPEAT_MS,
     ).map((row) => testRunFromRow(row)).filter((row) => sameAsk(row, ask));
   }
@@ -305,11 +313,11 @@ export class TestRunStoreLogic {
     return this.row('test_run_id = ?', testRunId);
   }
 
-  /** The caller's own run by its token, within the hour it can be read; another's reads as none. */
+  /** The caller's own run by its token, while it can be read; another's reads as none. */
   read(query: { organizationId: string; actorMembershipId: string; runToken: string }, at: number): TestRunRow | undefined {
     const row = this.row('run_token = ?', query.runToken);
     return row && row.organizationId === query.organizationId && row.actorMembershipId === query.actorMembershipId &&
-      at < row.createdAt + TEST_RUN_VISIBLE_MS
+      readable(row, at)
       ? row
       : undefined;
   }
@@ -331,13 +339,13 @@ export class TestRunStoreLogic {
 
   /**
    * When the alarm looks again: soon while any run's instance is not erased,
-   * and when the oldest run's text is an hour old, which is when the run
-   * goes. Text already due waits one look, so an erase that keeps failing
-   * never spins the alarm.
+   * and an hour after the earliest settled run with text settled, which is
+   * when the run goes. Text already due waits one look, so an erase that
+   * keeps failing never spins the alarm.
    */
   nextDueAt(now: number): number | undefined {
     const look = this.hasUnerased() ? now + TEST_RUN_WAKE_MS : undefined;
-    const oldest = this.db.get(`SELECT MIN(created_at) AS at FROM management_test_runs WHERE ${HAS_TEXT}`)?.at;
+    const oldest = this.db.get(`SELECT MIN(${HOUR_FROM}) AS at FROM management_test_runs WHERE ${HAS_TEXT} AND ${SETTLED}`)?.at;
     const erase = oldest === null || oldest === undefined
       ? undefined
       : Math.max(Number(oldest) + TEST_RUN_VISIBLE_MS, now + TEST_RUN_WAKE_MS);
@@ -354,6 +362,11 @@ export class TestRunStoreLogic {
     const row = this.db.get(`SELECT * FROM management_test_runs WHERE ${where} LIMIT 1`, ...params);
     return row ? testRunFromRow(row) : undefined;
   }
+}
+
+/** A run going reads; a settled one, for an hour from its settlement. */
+function readable(row: TestRunRow, at: number): boolean {
+  return row.status === 'admitted' || row.status === 'running' || at < (row.settledAt ?? row.createdAt) + TEST_RUN_VISIBLE_MS;
 }
 
 /**

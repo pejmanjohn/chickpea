@@ -12,7 +12,6 @@ import type { PracticeStep } from '../management/test-run-types.ts';
 import { redactCredentialLikeContent } from '../security/content-validation.ts';
 import { READ_WEB_PAGE_TOOL_NAME, WEB_SEARCH_TOOL_NAME } from '../web/names.ts';
 import { skillDisplayName, type RuntimePlanV2 } from './runtime-plan.ts';
-import { TEST_TURN_TOOL_CALL_LIMIT, TEST_TURN_TOOL_LIMIT_MESSAGE } from './test-turn-limits.ts';
 
 /** The reply a run keeps, in characters. */
 export const PRACTICE_REPLY_CHARS = 6_000;
@@ -21,8 +20,10 @@ const PRACTICE_RESULTS_CHARS = 12_000;
 export const PRACTICE_RESULT_CHARS = 1_500;
 /** A step's input, `why`, or an `off` line. */
 export const PRACTICE_LINE_CHARS = 200;
-/** A service's or connection's name, wherever a result shows it: a label can be 240 characters, and 25 steps repeat it. */
+/** A service's or connection's name, wherever a result shows it: a connection's label can be 160 characters, and each step repeats it. */
 const PRACTICE_NAME_CHARS = 60;
+/** The steps a result lists, first first; it counts the rest. A run has no limit on its calls, as a direct message has none. */
+const PRACTICE_STEPS = 25;
 
 const ACTIVATE_SKILL_TOOL_NAME = 'activate_skill';
 
@@ -36,24 +37,32 @@ export interface PracticeToolCall {
 
 interface PracticeSteps {
   steps: PracticeStep[];
-  /** The services it read, in the order it first read each: the card's "It read …" line. */
+  /** The calls past the listed steps. */
+  moreSteps?: number;
+  /** The services it read, in the order it first read each, over every call: the card's "It read …" line. */
   read: string[];
-  stopped?: 'tool_limit';
+  /** The skills it loaded, over every call. */
+  skills: string[];
 }
 
-/** Every call of the run, in order: a skill load as a skill, anything else as a tool, each result cut to the run's bound. */
+/**
+ * Every call of the run, in order: a skill load as a skill, anything else as
+ * a tool. The first 25 are listed, each result cut to the run's bound, and
+ * the rest are counted.
+ */
 export function practiceSteps(plan: RuntimePlanV2, calls: readonly PracticeToolCall[]): PracticeSteps {
   const read = new Set<string>();
-  let stopped: PracticeSteps['stopped'];
-  const steps = calls.map((call): PracticeStep => {
-    if (call.error?.includes(TEST_TURN_TOOL_LIMIT_MESSAGE)) stopped = 'tool_limit';
-    if (call.toolName === ACTIVATE_SKILL_TOOL_NAME) return skillStep(plan, call);
-    const step = toolStep(plan, call);
-    const service = readService(plan, call);
+  const skills = new Set<string>();
+  const steps: PracticeStep[] = [];
+  for (const call of calls) {
+    const step = call.toolName === ACTIVATE_SKILL_TOOL_NAME ? skillStep(plan, call) : toolStep(plan, call);
+    if (step.outcome === 'ok' && step.kind === 'skill') skills.add(step.tool);
+    const service = step.kind === 'tool' ? readService(plan, call) : undefined;
     if (step.outcome === 'ok' && service) read.add(service);
-    return step;
-  });
-  return { steps: bounded(steps), read: [...read], ...stopped ? { stopped } : {} };
+    if (steps.length < PRACTICE_STEPS) steps.push(step);
+  }
+  const more = calls.length - steps.length;
+  return { steps: bounded(steps), read: [...read], skills: [...skills], ...more > 0 ? { moreSteps: more } : {} };
 }
 
 /**
@@ -156,9 +165,6 @@ function inputLine({ toolName, input }: PracticeToolCall): string | undefined {
 
 /** Chickpea's own refusals by their sentence; anything else is the tool's failure, with what it said. */
 function errorOutcome(error: string): Pick<PracticeStep, 'outcome' | 'why' | 'result'> {
-  if (error.includes(TEST_TURN_TOOL_LIMIT_MESSAGE)) {
-    return { outcome: 'refused', why: `It reached the practice limit of ${TEST_TURN_TOOL_CALL_LIMIT} tool calls.` };
-  }
   if (error.includes('MCP connection policy changed')) {
     return { outcome: 'refused', why: 'This tool is not marked as a read now, so a practice run can\'t call it.' };
   }
@@ -244,16 +250,19 @@ function mcpToolNamePart(value: string): string {
  * way, everything is escaped: the whole paragraph around a doubtful line,
  * and the rest of the reply from a fence indented two or three spaces, which
  * can sit in a list item that ends before the fence does, or from one whose
- * line holds a `|`. Line endings come back as `\n`.
+ * line holds a `|`, or from a fence line indented with a tab, in code or out
+ * of it: a tab's width depends on where its line starts, so behind a quote
+ * mark, as the text block shows the reply, that line opens or closes a fence
+ * it does not here. Line endings come back as `\n`.
  */
 export function escapeHtmlOutsideCode(markdown: string): string {
   const shown: string[] = [];
   let fence: { char: string; length: number } | undefined;
   let rest = false;
   let paragraph: string[] = [];
-  const endParagraph = () => {
+  const endParagraph = (doubt = false) => {
     const read = paragraph.map(escapeOutsideSpans);
-    const kept = read.every(({ doubtful }) => !doubtful);
+    const kept = !doubt && read.every(({ doubtful }) => !doubtful);
     shown.push(...read.map(({ shown: line }, index) => kept ? line : escapeTags(paragraph[index]!)));
     paragraph = [];
   };
@@ -261,6 +270,12 @@ export function escapeHtmlOutsideCode(markdown: string): string {
   for (const line of markdown.split(/\r\n?|\n/)) {
     const opener = /^( {0,3})(`{3,}|~{3,})/.exec(line);
     const marker = opener?.[2];
+    if (!rest && /^ *\t[ \t]*(?:`{3,}|~{3,})/.test(line)) {
+      // Here the line runs its paragraph on, and its backticks can pair with any before it.
+      if (!fence) endParagraph(true);
+      fence = undefined;
+      rest = true;
+    }
     if (fence) {
       // Only spaces and tabs may follow a closing fence: a client keeps reading code past any other space.
       if (marker && marker[0] === fence.char && marker.length >= fence.length &&
@@ -308,8 +323,8 @@ function escapeOutsideSpans(line: string): { shown: string; doubtful: boolean } 
   for (let open = 0; open < runs.length; open += 1) {
     const run = runs[open]!;
     const before = line.slice(from, run.at);
-    // A web address written bare runs on through a backtick, to the next space.
-    if (/(?:https?:\/\/|www\.)\S*$/i.test(before)) doubtful = true;
+    // An address written bare runs on through a backtick, to the next space, under any scheme a client links: ftp too.
+    if (/(?:[a-z][a-z0-9+.-]*:\/\/|www\.)\S*$/i.test(before)) doubtful = true;
     const escaped = /\\*$/.exec(before)![0].length % 2 === 1;
     const opening = escaped ? { at: run.at + 1, length: run.length - 1 } : run;
     if (opening.length === 0) continue;

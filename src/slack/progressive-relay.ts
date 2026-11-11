@@ -590,7 +590,7 @@ export class ReceiptScopedTextRelay implements SlackProgressiveReadRelay {
   }
 }
 
-function isEmptyFileDeliveryResult(name: string, data: unknown): boolean {
+export function isEmptyFileDeliveryResult(name: string, data: unknown): boolean {
   if (name !== FILE_DELIVERY_DATA_NAME || !data || typeof data !== 'object') return false;
   // The same condition under which resolveFileDeliveryText keeps the text.
   const result = data as { unresolved?: unknown; files?: unknown };

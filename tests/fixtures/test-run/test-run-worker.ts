@@ -24,6 +24,7 @@ import { Agent, getAgentByName } from 'agents';
 import * as v from 'valibot';
 
 import { installationAgentExtension } from '../../../src/agents/cloudflare-extension.ts';
+import { CHICKPEA_SUBMISSION_DURABILITY } from '../../../src/agents/submission-durability.ts';
 import { objectInstallationEnv } from '../../../src/config/installation-scope.ts';
 import type { PlatformEnv } from '../../../src/config/state-backend.ts';
 import type { TestRunQuery, TestRunStartRequest } from '../../../src/management/test-run-types.ts';
@@ -64,7 +65,7 @@ export function TestRunProbe() {
   return 'Answer the question.';
 }
 TestRunProbe.agentName = AGENT_NAME;
-TestRunProbe.durability = { maxAttempts: 1, timeoutMs: 120_000 };
+TestRunProbe.durability = CHICKPEA_SUBMISSION_DURABILITY;
 TestRunProbe.initialData = v.custom<unknown>(() => true);
 
 registerFlueAgents([{ identity: AGENT_NAME, agent: TestRunProbe }]);

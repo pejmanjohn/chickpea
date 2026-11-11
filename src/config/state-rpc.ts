@@ -833,7 +833,32 @@ export interface TagStateRpc {
  * workers-types) so the node lane compiles without Cloudflare's global types.
  */
 interface TagStateNamespace {
-  getByName(name: string): TagStateRpc;
+  getByName(name: string, options?: { locationHint: TagStateLocationHint }): TagStateRpc;
+}
+
+export const TAG_STATE_LOCATION_HINT_VARIABLE = 'TAG_STATE_LOCATION_HINT';
+
+/** Cloudflare's documented Durable Object location hints. */
+export const TAG_STATE_LOCATION_HINTS = Object.freeze([
+  'wnam', 'enam', 'sam', 'weur', 'eeur', 'apac', 'apac-ne', 'apac-se', 'oc', 'afr', 'me',
+] as const);
+
+export type TagStateLocationHint = (typeof TAG_STATE_LOCATION_HINTS)[number];
+
+/**
+ * Where Cloudflare should create a state store that does not exist yet.
+ * Cloudflare applies a hint only when it creates the object; an existing store
+ * never moves. A value outside the documented list throws rather than being
+ * ignored, because ignoring it would place every new store near its first
+ * caller for good.
+ */
+export function tagStateLocationHint(env: Record<string, unknown> | undefined): TagStateLocationHint | undefined {
+  const configured = env?.[TAG_STATE_LOCATION_HINT_VARIABLE];
+  if (configured === undefined || configured === '') return undefined;
+  if (!(TAG_STATE_LOCATION_HINTS as readonly unknown[]).includes(configured)) {
+    throw new Error(`${TAG_STATE_LOCATION_HINT_VARIABLE} must be one of ${TAG_STATE_LOCATION_HINTS.join(', ')}, or unset.`);
+  }
+  return configured as TagStateLocationHint;
 }
 
 /**
@@ -871,5 +896,8 @@ export function tagStateStub(env: Record<string, unknown> | undefined): TagState
       'TAG_STATE Durable Object binding is missing — check wrangler.jsonc durable_objects.bindings',
     );
   }
-  return namespace.getByName(tagStateInstanceName(env));
+  const name = tagStateInstanceName(env);
+  const locationHint = tagStateLocationHint(env);
+  if (!locationHint) return namespace.getByName(name);
+  return namespace.getByName(name, { locationHint });
 }

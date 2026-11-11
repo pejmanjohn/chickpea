@@ -267,7 +267,7 @@ test('a test run refuses creation data that is not a test run', async () => {
     assert.equal(accepts({ ...valid, runtimePlan: slack }), false, 'a Slack plan');
     assert.equal(accepts({ ...valid, requester: { ...REQUESTER, timezone: 'Mars/Olympus' } }), false, 'an unknown timezone');
     assert.equal(accepts({ ...valid, extra: true }), false, 'an unknown field');
-    assert.deepEqual(ChickpeaTestTurn.durability, { maxAttempts: 1, timeoutMs: 120_000 });
+    assert.deepEqual(ChickpeaTestTurn.durability, { maxAttempts: 10, timeoutMs: 155 * 60_000 }, 'a direct message\'s durability');
   });
 });
 

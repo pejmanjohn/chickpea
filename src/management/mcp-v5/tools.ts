@@ -206,7 +206,7 @@ export const FIVE_ZERO_TOOLS = {
   }),
   get_practice_run: tool({
     title: 'Get a practice run',
-    description: 'Where one practice run stands, by the runToken practice_agent returned, with its answer and what it read once it has them. Waits up to 20 seconds. Only your own runs, for an hour. Reads only; changes nothing.',
+    description: 'Where one practice run stands, by the runToken practice_agent returned, with its answer and what it read once it has them. Waits up to 20 seconds. Only your own runs, until an hour after each ends. Reads only; changes nothing.',
     input: schemas.getPracticeRunInput,
     output: schemas.practiceRunOutput,
     cardCalls: true,

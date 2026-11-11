@@ -48,7 +48,7 @@ interface PresentationToolPolicyState {
 }
 
 /** Interactive components: at most one per reply; ask_user ends the reply. */
-const INTERACTIVE_TOOL_NAMES: ReadonlySet<string> = new Set([
+export const INTERACTIVE_TOOL_NAMES: ReadonlySet<string> = new Set([
   SLACK_ASK_USER_TOOL_NAME,
   SLACK_OFFER_ACTIONS_TOOL_NAME,
   SLACK_REQUEST_FORM_TOOL_NAME,
@@ -71,7 +71,7 @@ export function endsResponseWork(toolName: string): boolean {
 }
 /** Display components ride in the answer; other presentation tools may follow them. */
 const DISPLAY_TOOL_NAMES: ReadonlySet<string> = new Set(Object.keys(DISPLAY_TOOL_KINDS));
-const PRESENTATION_TOOL_NAMES: ReadonlySet<string> = new Set([
+export const PRESENTATION_TOOL_NAMES: ReadonlySet<string> = new Set([
   SLACK_PRESENT_TABLE_TOOL_NAME,
   ...DISPLAY_TOOL_NAMES,
   ...INTERACTIVE_TOOL_NAMES,
@@ -97,7 +97,7 @@ const FILE_REPAIR_TOOLS = new Set([
  * verified own write delivers the answer as written, and a lease that fails
  * instead replaces a streamed answer with the failure notice, as for any turn.
  */
-const DRAFT_REPLACING_TOOL_NAMES: ReadonlySet<string> = new Set([
+export const DRAFT_REPLACING_TOOL_NAMES: ReadonlySet<string> = new Set([
   'apply_workspace_changes',
   'undo_workspace_change',
   FRONT_DESK_TOOL_NAME,
@@ -227,7 +227,7 @@ export const presentationToolPolicyInterceptor: FlueExecutionInterceptor = async
   }
 };
 
-function isArtifactUploadTool(name: string): boolean {
+export function isArtifactUploadTool(name: string): boolean {
   // An empty completion is bookkeeping, not an upload attempt. Its actual
   // staging is recorded by the durable callback bound above.
   return ARTIFACT_DELIVERY_TOOL_NAMES.has(name) && name !== 'complete_file_delivery';
