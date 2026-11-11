@@ -388,7 +388,7 @@ interface Written {
   text: string;
   starts?: Int32Array;
   ends?: Int32Array;
-  /** 1 where a code unit came through percent decoding: of its own escape, or of text an escape of it is written in. */
+  /** 1 where percent decoding wrote a code unit, or wrote part of the escape that did. */
   percent?: Uint8Array;
 }
 
