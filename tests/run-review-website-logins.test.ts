@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { test, type TestContext } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import type { ConversationStreamChunk } from '@flue/runtime';
 import * as v from 'valibot';
@@ -11,7 +13,7 @@ import { createBrowserTools } from '../src/browser/tools.ts';
 import { BrowserTurnSession } from '../src/browser/turn-session.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { SqliteSettingsStore, type SettingsStore } from '../src/config/settings-store.ts';
-import { startRunReview, type RunReviewEnding } from '../src/review/capture.ts';
+import { runReviewError, startRunReview, type RunReviewEnding } from '../src/review/capture.ts';
 import { configureRunReview, type RunReviewPort } from '../src/review/port.ts';
 import {
   buildRunReviewRecord,
@@ -199,6 +201,19 @@ test('a link right after another link\'s host, behind //, or behind a host no si
     'https://billing.example.com/cb?[omitted] https://billing.example.com/cb?[omitted] ' +
     'https://go.example.org/r?next=//billing.example.com/cb?[omitted] and //ledger.example.net/r?[omitted] ' +
     '<https://go.example.org|Report?id=5>');
+});
+
+test('a login site\'s link without a scheme keeps no token after another host\'s text, and other text stays as written', () => {
+  const record = copy({
+    trigger: {
+      author: 'U012ABCDEF3',
+      text: 'See go.example.org/r?next=billing.example.com/cb?code=SYNTHCODE123 and app.ledger.example.net:8443/x;sid=SYNTHSID ' +
+        'but not docs.example.org\\/a?b=c or and/or.',
+      files: [],
+    },
+  });
+  assert.equal(record.trigger.text, 'See go.example.org/r?next=billing.example.com/cb?[omitted] and app.ledger.example.net:8443/x?[omitted] ' +
+    'but not docs.example.org\\/a?b=c or and/or.');
 });
 
 test('a link keeps no token behind JSON-escaped slashes or a host that ends in a dot', () => {
@@ -432,7 +447,7 @@ test('usernames match whole words, and one under four characters only as a whole
   assert.equal(short.answer, 'bob approved it.');
 });
 
-test('a username that is a word of the record\'s IDs, model, tool names or error class leaves them whole', () => {
+test('a username that is a word of the record\'s run ID, Agent ID or model leaves them whole, and nothing else', () => {
   const record = copy({
     runId: 'run_billing',
     agentId: 'agent_billing',
@@ -444,18 +459,57 @@ test('a username that is a word of the record\'s IDs, model, tool names or error
   assert.equal(record.runId, 'run_billing');
   assert.equal(record.agentId, 'agent_billing', 'Cloud files the copy under this Agent');
   assert.equal(record.model, 'billing-model-1');
-  assert.deepEqual(record.error, { class: 'billing_error', message: '[credential redacted] failed' });
+  assert.deepEqual(record.error, { class: '[credential redacted]_error', message: '[credential redacted] failed' });
   assert.deepEqual(record.steps[0], {
-    kind: 'tool', name: 'billing_lookup', input: '{"for":"[credential redacted]"}',
+    kind: 'tool', name: '[credential redacted]_lookup', input: '{"for":"[credential redacted]"}',
     output: '[credential redacted] is current', error: '[credential redacted] timed out',
   });
   assert.equal(record.answer, 'The [credential redacted] run finished.');
 
-  const shaped = copy({
-    steps: [{ kind: 'tool', name: `lookup ${USERNAME}`, input: '{}' }],
-    error: { class: `for:${USERNAME}`, message: 'failed' },
+  const shaped = copy({ runId: `run:${USERNAME}`, agentId: `agent ${USERNAME}`, model: `${USERNAME}/model` });
+  assert.deepEqual(kept(shaped, ['ops.synthetic']), [], 'an ID that is not shaped like one gets the username rule');
+});
+
+test('a tool name or an error class that holds a saved username loses it, streamed or read from history', async (t) => {
+  // A model can call a tool by any name, and an error can carry any name: neither is Chickpea's own token.
+  const builder = copy({
+    steps: [{ kind: 'tool', name: 'Ops.Synthetic', input: '{}', error: 'No such tool.' }],
+    error: { class: 'Ops.Synthetic', message: 'failed' },
   });
-  assert.deepEqual(kept(shaped, ['ops.synthetic']), [], 'a token that is not shaped like one gets the username rule');
+  assert.equal(builder.steps[0]?.kind === 'tool' && builder.steps[0].name, '[credential redacted]');
+  assert.equal(builder.error?.class, '[credential redacted]');
+
+  const records = fakePort(t);
+  const settings = catalogSettings(JSON.stringify([{ host: 'billing.example.com', username: USERNAME }]));
+  const failure = Object.assign(new Error('The run failed.'), { name: 'Ops.Synthetic' });
+  const streamed = await startRunReview(HOSTED_ENV, { surface: 'dm', settings: () => settings });
+  streamed!.ingest(chunk({ type: 'message-started', messageId: 'm', submissionId: SUBMISSION }), SUBMISSION);
+  streamed!.ingest(chunk({ type: 'tool-input', messageId: 'm', toolCallId: 'c1', toolName: 'Ops.Synthetic', input: {} }), SUBMISSION);
+  streamed!.ingest(chunk({ type: 'tool-output-error', toolCallId: 'c1', errorText: 'No such tool.' }), SUBMISSION);
+  await streamed!.finish({ ...ENDING, outcome: 'failed', error: runReviewError(failure) });
+
+  const settled = await startRunReview(HOSTED_ENV, { surface: 'dm', settings: () => settings });
+  await settled!.finish({
+    ...ENDING,
+    outcome: 'failed',
+    error: runReviewError(failure),
+    history: {
+      submissionId: SUBMISSION,
+      read: async () => ({
+        v: 1, conversationId: 'conversation', offset: '1', settlements: [],
+        messages: [{
+          id: 'm', role: 'assistant', purpose: 'assistant', display: 'visible', submissionId: SUBMISSION,
+          parts: [{ type: 'dynamic-tool', toolName: 'Ops.Synthetic', toolCallId: 'c1', state: 'output-error', input: {}, errorText: 'No such tool.' }],
+        }],
+      }),
+    },
+  });
+  assert.deepEqual(records.map((record) => record.source), ['stream', 'history']);
+  for (const record of records) {
+    assert.deepEqual(kept(record, ['ops.synthetic']), [], record.source);
+    assert.equal(record.steps[0]?.kind === 'tool' && record.steps[0].name, '[credential redacted]');
+    assert.equal(record.error?.class, '[credential redacted]');
+  }
 });
 
 test('a username leaves prose written without spaces between words', () => {
@@ -471,6 +525,98 @@ test('a username leaves prose written without spaces between words', () => {
 
   const admin = copy({ answer: '管理者adminです。sysadminです。' }, { hosts: [], usernames: ['admin'] });
   assert.equal(admin.answer, '管理者[credential redacted]です。sysadminです。', 'a Latin word still keeps a username inside it');
+});
+
+test('a username\'s start before three dots leaves the copy, as before a …', () => {
+  const record = copy({
+    answer: 'Signed in as Ops.Synth... then as OPS.SYNTHETIC@EXAM ... and the Ops team... xOps.Synth… stays',
+  });
+  assert.equal(record.answer,
+    'Signed in as [credential redacted]... then as [credential redacted] ... and the Ops team... xOps.Synth… stays');
+});
+
+test('a username with spaces leaves a form, and one that holds an escape of its own leaves text that escapes it again', () => {
+  const record = copy({
+    trigger: { author: 'U012ABCDEF3', text: 'Posted name=Ops+Synthetic&x=1 as promo%20team@example.com', files: [] },
+    answer: 'Sent https://forms.example/s?u=promo%2520team%40example.com&ok=1 and r&amp;amp;d.synthetic@example.com',
+  }, { hosts: [], usernames: ['Ops Synthetic', 'promo%20team@example.com', 'r&amp;d.synthetic@example.com'] });
+  assert.equal(record.trigger.text, 'Posted name=[credential redacted]&x=1 as [credential redacted]');
+  assert.equal(record.answer, 'Sent https://forms.example/s?u=[credential redacted]&ok=1 and [credential redacted]');
+});
+
+test('a username leaves text whose letters grow longer in lower case, and the text around it stays as written', () => {
+  // `İ` is one code unit, and two in lower case.
+  const title = 'İ'.repeat(40);
+  const record = copy({ answer: `${title} ${title} İSMAIL.SYNTHETIC@EXAMPLE.COM.` }, { hosts: [], usernames: ['İsmail.Synthetic@example.com'] });
+  assert.equal(record.answer, `${title} ${title} [credential redacted].`);
+});
+
+test('a long username\'s start split by snapshot node breaks past its 64th character leaves no part of it', () => {
+  const long = `${'a'.repeat(64)}${'.b'.repeat(12)}@example.com`;
+  // Each break is one a snapshot writes between nodes: a ref, node states, a line break and the next node.
+  const node = '" [ref=e123] level=2 checked=mixed selected expanded disabled\n- text "';
+  const start = `${'a'.repeat(64)}${'.b'.repeat(10)}`;
+  const snapshot = `- text "${start.slice(0, 64)}${[...start.slice(64)].join(node)}…"`;
+  assert.ok(snapshot.length > 1_400);
+  const record = copy({
+    steps: [
+      browserStep('browser_snapshot', {}, { snapshot }),
+      { kind: 'tool', name: 'browser_snapshot', input: '{}', output: snapshot },
+    ],
+  }, { hosts: [], usernames: [long] });
+  assert.deepEqual(kept(record, ['aaaaaaaa']), []);
+  const [serialized, literal] = record.steps.map((step) => step.kind === 'tool' ? step.output ?? '' : '');
+  assert.equal(JSON.parse(serialized!).snapshot, '- text "[credential redacted]…"');
+  assert.equal(literal, '- text "[credential redacted]…"');
+});
+
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
+
+/**
+ * Runs `body` in its own Node process with 64 MB of heap, half a Worker's
+ * memory, and a deadline, so a scrub that backtracks or compiles without
+ * bound fails here rather than holding the test file. `body` has the scrub's
+ * module as `logins` and prints one JSON line.
+ */
+function inChild(body: string): unknown {
+  const result = spawnSync(process.execPath, [
+    '--max-old-space-size=64', '--import', 'tsx', '--input-type=module', '-e',
+    `const logins = await import('./src/review/website-logins.ts');\n${body}`,
+  ], { cwd: ROOT, encoding: 'utf8', timeout: 45_000 });
+  assert.equal(result.status, 0,
+    `the scrub's process ${result.signal ? `was stopped (${result.signal})` : 'failed'}: ${result.stderr.slice(0, 1500)}`);
+  return JSON.parse(result.stdout.trim().split('\n').at(-1)!);
+}
+
+test('a username of repeated spaces or backslashes takes no longer against a near miss than against itself', () => {
+  // Each near miss holds every character of the username but fails its last word boundary.
+  const result = inChild(`
+    const scrub = logins.websiteLoginScrub({ hosts: [], usernames: ['aaaa' + ' '.repeat(8) + 'z', 'bbbb' + '\\\\'.repeat(8) + 'y'] });
+    const read = (text) => scrub.usernames(text, { browserStep: false, cut: false });
+    console.log(JSON.stringify({
+      nearMisses: ['aaaa' + ' '.repeat(100) + 'zX', 'bbbb' + '\\\\'.repeat(100) + 'yX'].map((text) => read(text) === text),
+      matches: read('aaaa' + ' '.repeat(100) + 'z. bbbb' + '\\\\'.repeat(100) + 'y.'),
+    }));
+  `);
+  assert.deepEqual(result, { nearMisses: [true, true], matches: '[credential redacted]. [credential redacted].' });
+});
+
+test('a page that names the start of every saved and planned username stays within half a Worker\'s memory', () => {
+  // The plan's 100 and a replacement catalog's 100, each as long as the catalog allows, then 500 at the scrub's cap.
+  const result = inChild(`
+    const names = (count) => Array.from({ length: count }, (_, i) => ('u' + i + '.' + 'a.'.repeat(155) + 'z' + i + '@x.example').slice(0, 320));
+    const starts = (usernames) => usernames.map((name) => name.slice(0, 64) + '…').join('\\n');
+    const scrubbed = (usernames) => logins.websiteLoginScrub({ hosts: [], usernames }).usernames(starts(usernames), { browserStep: true, cut: true });
+    const union = scrubbed(names(200));
+    const atCap = scrubbed(names(500));
+    console.log(JSON.stringify({
+      pageChars: starts(names(200)).length,
+      redacted: union.split('[credential redacted]…').length - 1,
+      kept: names(200).filter((name) => union.includes(name.slice(0, 12))).length,
+      redactedAtCap: atCap.split('[credential redacted]…').length - 1,
+    }));
+  `);
+  assert.deepEqual(result, { pageChars: 13_199, redacted: 200, kept: 0, redactedAtCap: 500 });
 });
 
 function fakePort(t: TestContext): RunReviewRecordV1[] {
@@ -576,6 +722,36 @@ test('a catalog that cannot be read or parsed keeps no copy', async (t) => {
   const none = await startRunReview(HOSTED_ENV, { surface: 'dm', settings: () => catalogSettings(undefined) });
   await none!.finish(ENDING);
   assert.equal(records.length, 1, 'an installation with no logins is copied');
+});
+
+test('a copy past the scrub\'s caps or its budget is not kept, and its one log line names only the reason', async (t) => {
+  const records = fakePort(t);
+  const warnings: string[] = [];
+  t.mock.method(console, 'warn', (line: string) => { warnings.push(line); });
+  const catalog = (usernames: readonly string[]) =>
+    JSON.stringify(usernames.map((username, index) => ({ host: `site${index}.example.com`, username })));
+  const long = (index: number, length: number) => `${`ops.${index}.${'synthetic.'.repeat(40)}`.slice(0, length - 12)}@example.com`;
+  const cases: Array<[readonly string[], RunReviewEnding]> = [
+    [Array.from({ length: 501 }, (_, index) => `ops.synthetic.${index}@example.com`), ENDING],
+    [[long(0, 321)], ENDING],
+    // Usernames that end one another, against runs of their one letter: every position ends hundreds of them.
+    [Array.from({ length: 317 }, (_, index) => 'a'.repeat(index + 4)), {
+      ...ENDING,
+      context: Array.from({ length: 8 }, () => ({ author: 'Ledger Agent', role: 'agent' as const, text: 'a'.repeat(16_000), files: [] })),
+    }],
+  ];
+  for (const [usernames, ending] of cases) {
+    const session = await startRunReview(HOSTED_ENV, { surface: 'dm', settings: () => catalogSettings(catalog(usernames)) });
+    await session!.finish(ending);
+  }
+  assert.equal(records.length, 0);
+  assert.deepEqual(warnings, ['scrub_over_logins', 'scrub_over_logins', 'scrub_over_budget']
+    .map((event) => JSON.stringify({ component: 'run_review', event })));
+
+  const atCaps = Array.from({ length: 500 }, (_, index) => long(index, 320));
+  const session = await startRunReview(HOSTED_ENV, { surface: 'dm', settings: () => catalogSettings(catalog(atCaps)) });
+  await session!.finish({ ...ENDING, answer: `Signed in as ${atCaps[499]}` });
+  assert.equal(records[0]?.answer, 'Signed in as [credential redacted]', 'a copy at the caps is kept');
 });
 
 test('a copy built from settled history drops the same values', async (t) => {

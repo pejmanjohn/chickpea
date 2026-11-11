@@ -12,6 +12,8 @@ import { SLACK_CANVAS_TOOL_NAMES } from '../slack/canvases/tools.ts';
 import { SLACK_LIST_TOOL_NAMES } from '../slack/lists/tools.ts';
 import { websiteLoginScrub, type RunReviewWebsiteLogins } from './website-logins.ts';
 
+export { RunReviewScrubLimit } from './website-logins.ts';
+
 export const RUN_REVIEW_RECORD_FORMAT = 'chickpea.run-review.v1';
 
 /** A Slack user's stand-in: an HMAC of their ID under the installation's own review key. */
@@ -148,13 +150,16 @@ export function runReviewPseudonymizer(key: Uint8Array): (slackUserId: string) =
  * order: the link rules for website logins and the hosted browser, which must
  * see each URL whole; each key the run saved with save_connection_key or tried
  * with try_connection; each saved website login's username, except in the
- * record's fixed tokens (run, Agent and model IDs, tool names, an error's
- * class); recognizable credentials; every Slack user ID; then its cap again,
- * since a replacement can be longer than what it replaced. File notes keep
- * only a name and size; and a Slack List or canvas tool's output and error,
- * and a Slack read's result from another conversation, are omitted. The
- * builder adds no Slack team, channel, thread or message IDs. Past the record
- * cap the oldest steps go first, then the oldest context.
+ * run ID, Agent ID and model, which no page or person writes; recognizable
+ * credentials; every Slack user ID; then its cap again, since a replacement
+ * can be longer than what it replaced. File notes keep only a name and size;
+ * and a Slack List or canvas tool's output and error, and a Slack read's
+ * result from another conversation, are omitted. The builder adds no Slack
+ * team, channel, thread or message IDs. Past the record cap the oldest steps
+ * go first, then the oldest context.
+ *
+ * Throws RunReviewScrubLimit when the scrub passes its budget, or the logins
+ * pass its caps: such a copy is not kept, rather than kept part scrubbed.
  */
 export function buildRunReviewRecord(
   input: RunReviewInput,
@@ -175,8 +180,10 @@ export function buildRunReviewRecord(
     if (cut) truncated = true;
     const browserStep = kind === 'browser';
     const linked = logins.links(text, browserStep);
+    logins.spend(linked.length * keys.length);
     const keyed = keys.reduce((value, key) => value.split(key).join(CREDENTIAL_REPLACEMENT), linked);
     const named = kind === 'fixed' && FIXED_TOKEN.test(text) ? keyed : logins.usernames(keyed, { browserStep, cut });
+    logins.spend(named.length);
     const scrubbed = redactCredentialLikeContent(named).replace(SLACK_USER_ID, (id) => pseudonymOf(id));
     const capped = capUtf8(scrubbed, RUN_REVIEW_FIELD_BYTES);
     if (capped.length < scrubbed.length) truncated = true;
@@ -224,7 +231,7 @@ function shapeRecord(
       const kind: FieldKind = BROWSER_TOOLS.has(step.name) ? 'browser' : 'text';
       return {
         kind: 'tool',
-        name: field(step.name, 'fixed'),
+        name: field(step.name, 'text'),
         input: field(keptInput(step.name, step.input), kind),
         ...(step.output === undefined ? {} : { output: field(keptOutput(step.name, step.output), kind) }),
         ...(step.error === undefined
@@ -236,7 +243,7 @@ function shapeRecord(
     ...(input.answer === undefined ? {} : { answer: field(input.answer, 'text') }),
     outcome: input.outcome,
     ...(input.error
-      ? { error: { class: field(input.error.class, 'fixed'), message: field(input.error.message, 'text') } }
+      ? { error: { class: field(input.error.class, 'text'), message: field(input.error.message, 'text') } }
       : {}),
     timings: input.timings,
     truncated: false,
@@ -257,9 +264,12 @@ function sharingUnknownTool(toolName: string): boolean {
 const BROWSER_TOOLS: ReadonlySet<string> = new Set(BROWSER_TOOL_NAMES);
 
 /**
- * What a field holds: text, a browser step's text, or a fixed token of the
- * record. A username that is an ordinary word would break a token, and
- * `agentId` files the copy, so tokens skip the username rule.
+ * What a field holds: text, a browser step's text, or a token that Chickpea
+ * or the model provider writes: the run ID, the Agent ID and the model. A
+ * username that is an ordinary word would break a token, and `agentId` files
+ * the copy, so tokens skip the username rule. A tool's name and an error's
+ * class are text: a model can call a tool by any name, and an error can carry
+ * any.
  */
 type FieldKind = 'text' | 'browser' | 'fixed';
 /** A fixed token's shape. One that holds anything else, such as an email address, gets the username rule after all. */

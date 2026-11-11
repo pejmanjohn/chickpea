@@ -8,7 +8,7 @@ import { decodeBase64Url, encodeBase64Url } from '../security/base64url.ts';
 import type { SlackTurnContext } from '../slack/thread-context.ts';
 import { RunReviewCollector } from './collector.ts';
 import { runReview, type RunReviewPort } from './port.ts';
-import type { RunReviewInput, RunReviewOutcome, RunReviewSurface } from './record.ts';
+import type { RunReviewInput, RunReviewOutcome, RunReviewRecordV1, RunReviewSurface } from './record.ts';
 
 /** 32 random bytes, written once by compare-and-set; independent of the telemetry opt-out. */
 export const RUN_REVIEW_PSEUDONYM_SETTING = 'review.pseudonym.v1';
@@ -184,7 +184,7 @@ class Session implements RunReviewSession {
     const settings = this.start.settings();
     // A catalog that cannot be read keeps no copy, as a review key that cannot be read does.
     // The builder and its scrub rules load here, after the reply, so no Worker startup loads them.
-    const [key, catalog, { buildRunReviewRecord, runReviewPseudonymizer }] = await Promise.all([
+    const [key, catalog, { buildRunReviewRecord, runReviewPseudonymizer, RunReviewScrubLimit }] = await Promise.all([
       loadOrCreateRunReviewKey(settings, this.start.prefetched),
       websiteLoginNames(settings),
       import('./record.ts'),
@@ -195,7 +195,7 @@ class Session implements RunReviewSession {
       usernames: [...catalog.usernames, ...planned.flatMap((login) => login.username ? [login.username] : [])],
     };
     const now = new Date().toISOString();
-    const record = buildRunReviewRecord({
+    const input: RunReviewInput = {
       runId: ending.runId,
       recordedAt: now,
       surface: this.start.surface,
@@ -215,7 +215,16 @@ class Session implements RunReviewSession {
       truncated: collector?.truncated ?? false,
       source,
       websiteLogins,
-    }, runReviewPseudonymizer(key));
+    };
+    let record: RunReviewRecordV1;
+    try {
+      record = buildRunReviewRecord(input, runReviewPseudonymizer(key));
+    } catch (error) {
+      // A scrub past its limits keeps no copy. Its line names the limit and nothing of the run.
+      if (!(error instanceof RunReviewScrubLimit)) throw error;
+      warn(error.event);
+      return;
+    }
     if (abandoned()) return;
     await this.port.record(this.installationId, record);
   }
