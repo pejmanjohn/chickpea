@@ -34,6 +34,12 @@ interface ShadowWorkLifecycleOptions {
   deadlineAt?: number;
   /** Legacy-only budget so shadow writes cannot delay the established path. */
   observeWriteBudgetMs?: number;
+  /**
+   * Legacy only: the reply's stages queue in order and are never awaited (see
+   * REPLY_STAGES). Its owner awaits settled() before it ends, as a Slack turn
+   * does.
+   */
+  queueReplyStages?: boolean;
   resumedExecution?: RunExecutionRecord;
 }
 
@@ -51,10 +57,24 @@ type ShadowDeliveryOutcome = 'delivered' | 'failed' | 'unknown';
 
 /**
  * What became of one observe-mode stage when the turn moved on: `deferred` is
- * queued behind a write that outlived its budget (see observe); `gap` was not
- * recorded, because this stage or an earlier one is a gap.
+ * queued, as a queued reply stage or any stage behind a write that outlived
+ * its budget (see observe); `gap` was not recorded, because this stage or an
+ * earlier one is a gap.
  */
 type ObservedWrite = 'recorded' | 'deferred' | 'gap';
+
+/**
+ * The stages from the model's answer to its Slack reply. With
+ * `queueReplyStages`, a legacy turn queues them in order and never waits for
+ * them, so the person never waits for the observer between the answer and the
+ * reply.
+ */
+const REPLY_STAGES: ReadonlySet<ShadowLifecycleStage> = new Set([
+  'settle_execution',
+  'record_response',
+  'start_delivery',
+  'finalize_delivery',
+]);
 
 /**
  * How long one deferred observational write may take, and one read the turn
@@ -90,9 +110,10 @@ export class ShadowWorkLifecycle {
   private executionDeferred = false;
   private terminalDisposition: RunDisposition = 'succeeded';
   /**
-   * The last observe-mode write queued behind one that outlived its budget.
-   * Once a write is slow, every later stage of this attempt queues behind it
-   * in order, off the turn's path. Undefined while writes keep up.
+   * The last observe-mode write queued: a queued reply stage, or a write
+   * behind one that outlived its budget. Every later stage of this attempt
+   * queues behind it in order, off the turn's path. Undefined until the
+   * first one.
    */
   private backlog: Promise<boolean> | undefined;
   /** Ends the deferred write in flight once the backlog is past its deadline. */
@@ -133,11 +154,11 @@ export class ShadowWorkLifecycle {
   }
 
   /**
-   * Resolves once every write deferred behind a slow one is recorded or
-   * abandoned, within SHADOW_BACKLOG_DEADLINE_MS; never rejects. A legacy turn
-   * awaits it after its reply and cleanup, so the Run still settles and the
-   * user never waits for it. Past the deadline the write in flight is a gap,
-   * and nothing behind it is recorded.
+   * Resolves once every queued write is recorded or abandoned, within
+   * SHADOW_BACKLOG_DEADLINE_MS; never rejects. A legacy turn awaits it after
+   * its reply and cleanup, so the Run still settles and the user never waits
+   * for it. Past the deadline the write in flight is a gap, and nothing
+   * behind it is recorded.
    */
   async settled(): Promise<void> {
     if (!this.backlog) return;
@@ -406,8 +427,10 @@ export class ShadowWorkLifecycle {
 
   private async observe(stage: ShadowLifecycleStage, write: () => unknown): Promise<ObservedWrite> {
     if (!this.usable) return 'gap';
-    if (this.backlog) {
-      // Behind a write still in flight: keep the order, never wait for it.
+    if (this.backlog ||
+        (this.bounded && this.options.queueReplyStages === true && REPLY_STAGES.has(stage))) {
+      // Behind a write still in flight, or on the reply's path: keep the
+      // order, never wait for it.
       this.defer(stage, write);
       return 'deferred';
     }

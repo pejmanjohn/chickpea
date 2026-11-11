@@ -35,6 +35,13 @@ import {
 import type { SlackStateStore } from '../src/slack/claim-store.ts';
 import { stopNodeTurnRelay, wakeNodeTurnRelay } from '../src/slack/node-turn-relay.ts';
 import {
+  AgentObservationYield,
+  AgentPromptFailure,
+  AgentReplyReadInterrupted,
+  StateStoreUnavailable,
+} from '../src/slack/flue-dispatch.ts';
+import {
+  attemptEndReason,
   runTurn,
   WORKSPACE_DEFAULT_MODEL_REPAIR_TEXT,
   type RunTurnOptions,
@@ -541,6 +548,42 @@ function shadowRecord(overrides: Partial<AnswerReleaseShadowRecord> = {}): Answe
   };
 }
 
+// Defects caught: the reply's text taken as visible only at final, a later
+// acknowledgement (the stream's stop) moving it, or an attempt that never
+// showed text logging a time.
+test('turn_latency times the reply text Slack acknowledged, apart from final', () => {
+  const { records, sink } = captureSink();
+  const time = clock(10_000);
+  const tracker = new TurnLatencyTracker(
+    { receivedAt: 8_000, admittedAt: 9_000, lane: 'cloudflare', executor: 'runner' },
+    { turnJobId: 'evt:T_LATENCY:1785509000.000200', runId: 'run-visible', attempt: 1 },
+    time.now,
+    sink,
+  );
+  time.advance(14_000 - time.now());
+  tracker.markAnswerVisible();
+  time.advance(600);
+  tracker.markAnswerVisible();
+  time.advance(15_400 - time.now());
+  tracker.markFinal('delivered');
+  tracker.emit('returned');
+  const visible = records.filter((record) => record.event === 'turn_latency').at(-1)!;
+  assert.equal(visible.receiptToAnswerVisibleMs, 6_000);
+  assert.equal(visible.admissionToAnswerVisibleMs, 5_000);
+  assert.equal(visible.receiptToFinalMs, 7_400);
+
+  const silent = new TurnLatencyTracker(
+    { receivedAt: 8_000, admittedAt: 9_000, lane: 'cloudflare', executor: 'runner' },
+    { turnJobId: 'evt:T_LATENCY:1785509000.000300' },
+    time.now,
+    sink,
+  );
+  silent.markFinal('delivered');
+  silent.emit('returned');
+  const none = records.filter((record) => record.event === 'turn_latency').at(-1)!;
+  assert.equal('receiptToAnswerVisibleMs' in none, false, 'no acknowledged text, no time');
+});
+
 // Defects caught: a status or task card counted as answer text, a stream
 // start not counted, the shadow time taken from a retired release (whose
 // answer still waits for the terminal), an epoch timestamp logged as is, a
@@ -702,6 +745,44 @@ test("turn_latency logs a runner turn's hand-off delay and wake lead from its co
   ).emit('returned');
   assert.equal('runnerWakeLeadMs' in records[1]!, false, 'a turn whose runner no wake reached omits the field');
   records.forEach(assertContentFree);
+});
+
+// Defects caught: a retried attempt with no reason for the one before it, a
+// reason on an attempt that returned, and a stalled read the record misses.
+test('turn_latency names why a thrown attempt ended, and counts reads a fresh one joined', () => {
+  const { records, sink } = captureSink();
+  const interrupted = new TurnLatencyTracker(
+    { admittedAt: 9_000, lane: 'cloudflare', executor: 'runner' }, { attempt: 1 }, clock(10_000).now, sink,
+  );
+  interrupted.emit('threw', undefined, 'reply_read_interrupted');
+  const resumed = new TurnLatencyTracker(
+    { admittedAt: 9_000, lane: 'cloudflare', executor: 'runner' }, { attempt: 2 }, clock(10_000).now, sink,
+  );
+  resumed.markStalledRead();
+  resumed.markStalledRead();
+  resumed.markFinal('delivered');
+  resumed.emit('returned');
+  assert.deepEqual(records.map(({ attempt, outcome, reason, stalledReads }) => ({ attempt, outcome, reason, stalledReads })), [
+    { attempt: 1, outcome: 'threw', reason: 'reply_read_interrupted', stalledReads: undefined },
+    { attempt: 2, outcome: 'returned', reason: undefined, stalledReads: 2 },
+  ]);
+  records.forEach(assertContentFree);
+});
+
+// Defect caught: a failure class logged under another class's reason, so
+// retries are counted under the wrong cause.
+test('a thrown attempt\'s reason names its failure class', () => {
+  assert.deepEqual([
+    new AgentObservationYield(),
+    new StateStoreUnavailable(),
+    new AgentReplyReadInterrupted(new TypeError('Network connection lost')),
+    new AgentPromptFailure('agent', 409, true),
+    new AgentPromptFailure('agent', 503, false, true),
+    new Error('slack unavailable'),
+  ].map(attemptEndReason), [
+    'observation_yield', 'state_store_unavailable', 'reply_read_interrupted',
+    'recovery_required', 'agent_failure', 'other',
+  ]);
 });
 
 // Defects caught: a first write that ignores the status the state store
@@ -1266,6 +1347,7 @@ test('runTurn emits one content-free turn_latency record per relay attempt', asy
   }));
   assert.equal(logged.length, 1);
   assert.equal(logged[0]?.outcome, 'threw');
+  assert.equal(logged[0]?.reason, 'other', 'a failed Slack write is none of the reattaching reasons');
   assert.equal(logged[0]?.final, 'none');
   assert.equal(logged[0]?.firstWrite, 'none');
 });

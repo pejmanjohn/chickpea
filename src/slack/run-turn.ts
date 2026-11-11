@@ -33,6 +33,7 @@ import {
   deliverAgentChoiceSurface,
   deliverHostApprovalSurfaces,
   deliverInteractiveSurfaces,
+  findHostApprovals,
   markDisplaySurfacesDelivered,
   prepareDisplaySurfaces,
   renderDisplayComponents,
@@ -81,6 +82,7 @@ import { isStateStoreDisconnect } from '../config/cf-state-proxies.ts';
 import {
   agentFailureText,
   AgentObservationYield,
+  AgentReplyReadInterrupted,
   AgentRunAborted,
   StateStoreUnavailable,
   AgentPromptFailure,
@@ -433,6 +435,8 @@ export interface RunTurnOptions {
   onSlackWrite?: (surface: TurnFirstWrite) => void;
   /** Set by `runTurn` itself when `turnLatency` is present: Slack acknowledged streamed answer text. */
   onAnswerTextStreamed?: () => void;
+  /** Set by `runTurn` itself when `turnLatency` is present: Slack acknowledged the final's text. */
+  onAnswerVisible?: () => void;
   /** Set by `runTurn` itself when `turnLatency` is present: Slack acknowledged native task card rows on the reply's stream. */
   onTaskCardStreamed?: () => void;
   /** Set by `runTurn` itself when `turnLatency` is present: what the host answer release did. */
@@ -454,6 +458,8 @@ export interface RunTurnOptions {
   onDispatchSent?: () => void;
   /** Set by `runTurn` itself when `turnLatency` is present: the model work its observation saw. */
   onTurnWork?: (work: TurnWork) => void;
+  /** Set by `runTurn` itself when `turnLatency` is present: a read of the reply stalled and a fresh one joined it. */
+  onStalledRead?: () => void;
   /**
    * Set by `runTurn` itself when `turnLatency` is present: the turn's Agent
    * object was woken, by the freeze now or by admission (`admissionSentAt`).
@@ -559,6 +565,7 @@ export async function runTurn(
       ...options,
       onSlackWrite: (surface) => tracker.markSlackWrite(surface),
       onAnswerTextStreamed: () => tracker.markStreamedAnswerText(),
+      onAnswerVisible: () => tracker.markAnswerVisible(),
       onTaskCardStreamed: () => tracker.markTaskCardStreamed(),
       onHostRelease: (record) => tracker.markHostRelease(record),
       onConversationChunk: (chunk, submissionId) => answerRelease?.onEvent(chunk, submissionId),
@@ -569,6 +576,7 @@ export async function runTurn(
       onAgentWake: (admissionSentAt) => tracker.markAgentWake(admissionSentAt),
       onDispatchSent: () => tracker.markModelStart(),
       onTurnWork: (work) => tracker.markWork(work),
+      onStalledRead: () => tracker.markStalledRead(),
       onDelivered: async (outcome) => {
         tracker.markFinal('delivered');
         if (outcome === 'stopped') stopped = true;
@@ -585,9 +593,18 @@ export async function runTurn(
     }, followUps, receipts));
     tracker.emit(stopped ? 'stopped' : 'returned', answerRelease?.record());
   } catch (error) {
-    tracker.emit('threw', answerRelease?.record());
+    tracker.emit('threw', answerRelease?.record(), attemptEndReason(error));
     throw error;
   }
+}
+
+/** Why an attempt ended without a final, as a log token. */
+export function attemptEndReason(error: unknown): string {
+  if (error instanceof AgentObservationYield) return 'observation_yield';
+  if (error instanceof StateStoreUnavailable) return 'state_store_unavailable';
+  if (error instanceof AgentReplyReadInterrupted) return 'reply_read_interrupted';
+  if (error instanceof AgentPromptFailure) return error.recoveryRequired ? 'recovery_required' : 'agent_failure';
+  return 'other';
 }
 
 async function runTurnAttempt(
@@ -777,6 +794,7 @@ async function runTurnAttempt(
         ...(options.onAnswerTextStreamed
           ? { onAnswerTextStreamed: options.onAnswerTextStreamed }
           : {}),
+        ...(options.onAnswerVisible ? { onAnswerVisible: options.onAnswerVisible } : {}),
         ...(options.onTaskCardStreamed
           ? { onTaskCardStreamed: options.onTaskCardStreamed }
           : {}),
@@ -793,6 +811,13 @@ async function runTurnAttempt(
   let stoppedEnding = false;
   /** The turn is taking the stopped ending: whatever interrupts it is retried, never a failure. */
   let stopping = false;
+  /**
+   * The thread context of each message the reply posted, recorded in order
+   * beside the rest of the turn and awaited before the turn is marked
+   * delivered, so the thread's next turn reads it.
+   */
+  let publicDeliveries: Promise<void> = Promise.resolve();
+  const recordPublicDelivery = options.onPublicMessageDelivered;
   const deliveryObserver: SlackDeliveryObserver = {
     beforeDelivery: async (input) => deliveryLifecycle?.beforeDelivery(input),
     afterDelivery: async (input) => {
@@ -844,9 +869,16 @@ async function runTurnAttempt(
           },
         }
       : {}),
-    ...(options.onPublicMessageDelivered
-      ? { onPublicDelivery: options.onPublicMessageDelivered }
+    ...(recordPublicDelivery
+      ? {
+          onPublicDelivery: (delivery: SlackPublicDelivery) => {
+            publicDeliveries = publicDeliveries
+              .then(() => recordPublicDelivery(delivery))
+              .catch(() => console.warn('[chickpea] Slack public-context recording failed'));
+          },
+        }
       : {}),
+    ...(options.onAnswerVisible ? { onAnswerVisible: options.onAnswerVisible } : {}),
   });
   const statusGeneration = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
   const semanticActivityEnabled = frozenPresentation?.schemaVersion === 3
@@ -1465,6 +1497,8 @@ async function runTurnAttempt(
     terminalStatusFinished = true;
   };
   let usageRecorder: InteractiveUsageRecorder | undefined;
+  /** The answer's usage terminal, written while the reply is delivered. */
+  let usageRecording: Promise<void> | undefined;
   const usageRecordingEnabled = options.usageRecordingEnabled ??
     usageRuntimeRecordingEnabled(platformEnv);
   const openUsageRecorder = async (): Promise<void> => {
@@ -1615,6 +1649,8 @@ async function runTurnAttempt(
     outcome?: 'succeeded' | 'no_op' | 'failed' | 'stopped',
     reviewOutcome: RunReviewOutcome | undefined = outcome,
   ): Promise<void> => {
+    await usageRecording;
+    await publicDeliveries;
     // Delivery gets its durable tombstone before the best-effort repair so a
     // slow reporting backend can never make Slack retry already-delivered work.
     await options.onDelivered?.(outcome);
@@ -2168,12 +2204,14 @@ async function runTurnAttempt(
     const settledBeforePrompt = options.flueDispatch?.flueSettlement?.outcome === 'completed';
     const surfaceState = options.appStores?.slackState ?? getSlackStateStore(platformEnv);
     const surfaceTurnJobId = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
-    const readDisplaySurfaces = () => prepareDisplaySurfaces({
+    const readDisplaySurfaces = (
+      fresh: NonNullable<AgentDispatchResult['displayComponents']> = agentResult?.displayComponents ?? [],
+    ) => prepareDisplaySurfaces({
       state: surfaceState,
       turn,
       agentId: assignment.agent.id,
       turnJobId: surfaceTurnJobId,
-      ...(settledBeforePrompt ? {} : { fresh: agentResult?.displayComponents ?? [] }),
+      ...(settledBeforePrompt ? {} : { fresh }),
     }).catch(() => {
       console.warn('[chickpea] display components were not stored; the answer posts without them');
       return [];
@@ -2267,15 +2305,18 @@ async function runTurnAttempt(
             ...(options.onAgentStaged ? { onAgentStaged: options.onAgentStaged } : {}),
             ...(options.onDispatchSent ? { onDispatchSent: options.onDispatchSent } : {}),
             ...(options.onTurnWork ? { onTurnWork: options.onTurnWork } : {}),
-            ...(preparedMemory
-              ? {
-                  onSettlementObserved: (settled) => {
-                    if (!plainAnswer(settled)) return;
-                    settledLeaseCheck = preparedMemory.validateLease();
-                    settledLeaseCheck.catch(() => undefined);
-                  },
-                }
-              : {}),
+            ...(options.onStalledRead ? { onStalledRead: options.onStalledRead } : {}),
+            // What the reply waits for starts beside its settlement record.
+            onSettlementObserved: (settled) => {
+              if (!plainAnswer(settled)) return;
+              if (preparedMemory) {
+                settledLeaseCheck = preparedMemory.validateLease();
+                settledLeaseCheck.catch(() => undefined);
+              }
+              if (!handedBack && options.replayTerminalResult === undefined) {
+                earlyDisplaySurfaces = readDisplaySurfaces(settled.displayComponents ?? []);
+              }
+            },
             ...(options.codingTaskStarted ? { codingTaskStarted: true } : {}),
             ...(reviewSession || options.onConversationChunk
               ? {
@@ -2319,18 +2360,20 @@ async function runTurnAttempt(
             ? { flueSubmissionRef: agentResult.flueSubmissionRef }
             : {}),
         });
-        const recordingUsage = usageRecorder?.recordSuccess(agentResult);
-        recordingUsage?.catch(() => undefined);
+        // Bounded and never decides the reply: recorded beside it, and
+        // awaited before the turn is marked delivered.
+        usageRecording = usageRecorder?.recordSuccess(agentResult).catch(() => {
+          console.warn('[usage] terminal persistence failed; the reply is delivered');
+        });
         const plain = plainAnswer(agentResult);
         if (preparedMemory && plain) {
           earlyLeaseCheck = settledLeaseCheck ?? preparedMemory.validateLease();
           earlyLeaseCheck.catch(() => undefined);
         }
         if (!handedBack && plain && options.replayTerminalResult === undefined) {
-          earlyDisplaySurfaces = readDisplaySurfaces();
+          earlyDisplaySurfaces ??= readDisplaySurfaces();
         }
         await settling;
-        await recordingUsage;
       } catch (err) {
         // A Flue identity or idempotency conflict is not an ordinary model
         // failure. Its TurnJob already entered recovery_required and must not
@@ -2685,6 +2728,17 @@ async function runTurnAttempt(
     const ownAnswer = terminalResult === 'answer' && recoveredText === undefined && leaseValid;
     const displaySurfaces = ownAnswer ? await (earlyDisplaySurfaces ?? readDisplaySurfaces()) : [];
     const displayComponents = renderDisplayComponents(displaySurfaces);
+    const approvalTurn = {
+      turn,
+      assignment,
+      ...(settingsStore ? { settings: settingsStore } : {}),
+      identity: options.appStores?.identity ?? getIdentityStore(platformEnv),
+      management: options.appStores?.management ?? getManagementStore(platformEnv),
+    };
+    // Looked up while the reply is delivered; its card still posts after it.
+    const approvals = terminalResult === 'answer' && surfaceState.executeUiSurface
+      ? findHostApprovals(approvalTurn).catch(() => [])
+      : undefined;
     await presenter.deliverFinal(
       text,
       'markdown',
@@ -2720,13 +2774,10 @@ async function runTurnAttempt(
       // An approval this turn is holding gets host buttons under the reply.
       // A failure here never undoes the delivered answer; typed approval works.
       await deliverHostApprovalSurfaces({
-        turn,
-        assignment,
+        ...approvalTurn,
+        ...(approvals ? { approvals } : {}),
         turnJobId: options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`,
         state: options.appStores?.slackState ?? getSlackStateStore(platformEnv),
-        ...(settingsStore ? { settings: settingsStore } : {}),
-        identity: options.appStores?.identity ?? getIdentityStore(platformEnv),
-        management: options.appStores?.management ?? getManagementStore(platformEnv),
         messenger: {
           post: (rendered) => presenter.postSurfaceMessage(rendered),
           update: (messageTs, rendered) => presenter.updateSurfaceMessage(messageTs, rendered),
@@ -2762,6 +2813,8 @@ async function runTurnAttempt(
   } finally {
     // An attempt that ended before its opening status writes landed leaves none in flight.
     await openingStatusShown;
+    await usageRecording;
+    await publicDeliveries;
     // A yielded turn is still running: it ends nothing a reattaching attempt
     // needs (its status and acknowledgment), the same as an attempt the
     // platform killed mid-observation.
@@ -2972,6 +3025,8 @@ async function createSlackShadowLifecycle(input: {
       ...(input.resumeSettled ? { resumeSettled: true } : {}),
     }, {
       mode: input.mode,
+      // The turn awaits the queue once its reply and cleanup are done.
+      queueReplyStages: true,
     });
   } catch (error) {
     if (input.mode === 'enforce') throw error;

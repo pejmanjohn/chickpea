@@ -473,11 +473,13 @@ export class TurnLatencyTracker {
   private stateRpcs: StateRpcSummary | undefined;
   private firstWrite: { surface: TurnFirstWrite; at: number } | undefined;
   private answerText: { surface: TurnAnswerTextSurface; at: number } | undefined;
+  private answerVisibleAt: number | undefined;
   private final: { kind: 'delivered' | 'deferred'; at: number } | undefined;
   private folded = 0;
   private foldedInformed = 0;
   private read = 0;
   private midRunReplies = 0;
+  private stalledReads = 0;
   private agentStageMs: number | undefined;
   private agentWake: { sentAt: number; source: 'admission' | 'plan' } | undefined;
   private agentWakeLeadMs: number | undefined;
@@ -527,6 +529,11 @@ export class TurnLatencyTracker {
     this.answerText ??= { surface: 'stream', at: this.now() };
   }
 
+  /** Slack acknowledged the call that completes the final's text; only the first is kept. */
+  markAnswerVisible(): void {
+    this.answerVisibleAt ??= this.now();
+  }
+
   /** Slack acknowledged native task card rows on the reply's stream before its terminal. */
   markTaskCardStreamed(): void {
     this.taskCardStreamed = true;
@@ -561,6 +568,11 @@ export class TurnLatencyTracker {
     this.midRunReplies += 1;
   }
 
+  /** A read of the reply had not answered in time, and a fresh one joined it. */
+  markStalledRead(): void {
+    this.stalledReads += 1;
+  }
+
   /**
    * The turn's Agent object was woken: by admission at `admissionSentAt` (the
    * state store's clock), or by the turn now. Only the first wake is kept.
@@ -593,9 +605,10 @@ export class TurnLatencyTracker {
    * returned with a stopped run's ending (KTD3), which is not a failure.
    * `answerRelease`, the attempt's shadow of the host release rule, adds an
    * `answer_release` record and the time a release would have shown the
-   * answer, without changing anything Slack showed.
+   * answer, without changing anything Slack showed. `reason`: why a thrown
+   * attempt ended without a final, a fixed token.
    */
-  emit(outcome: 'returned' | 'threw' | 'stopped', answerRelease?: AnswerReleaseShadowRecord): void {
+  emit(outcome: 'returned' | 'threw' | 'stopped', answerRelease?: AnswerReleaseShadowRecord, reason?: string): void {
     if (this.emitted) return;
     this.emitted = true;
     const { admittedAt, receivedAt } = this.context;
@@ -619,6 +632,7 @@ export class TurnLatencyTracker {
       attempt: this.ids.attempt,
       modelToken: model,
       outcome,
+      reason,
       firstWrite: this.firstWrite?.surface ?? 'none',
       final: this.final?.kind ?? 'none',
       admissionToStartMs: since(this.startedAt),
@@ -632,6 +646,8 @@ export class TurnLatencyTracker {
       firstAnswerText: this.answerText?.surface ?? 'none',
       admissionToFirstAnswerTextMs: since(answerTextAt),
       receiptToFirstAnswerTextMs: sinceReceipt(answerTextAt),
+      admissionToAnswerVisibleMs: since(this.answerVisibleAt),
+      receiptToAnswerVisibleMs: sinceReceipt(this.answerVisibleAt),
       admissionToShadowAnswerTextMs: since(shadowAnswerTextAt),
       receiptToShadowAnswerTextMs: sinceReceipt(shadowAnswerTextAt),
       handoffMs: this.context.handoffMs,
@@ -646,6 +662,7 @@ export class TurnLatencyTracker {
       foldedInformed: this.foldedInformed > 0 ? this.foldedInformed : undefined,
       read: this.read > 0 ? this.read : undefined,
       midRunReplies: this.midRunReplies > 0 ? this.midRunReplies : undefined,
+      stalledReads: this.stalledReads > 0 ? this.stalledReads : undefined,
       modelSteps: this.work?.modelSteps,
       toolCalls: this.work?.toolCalls,
       toolMs: this.work?.toolMs,
