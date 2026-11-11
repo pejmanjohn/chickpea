@@ -430,6 +430,38 @@ Before you turn it on, know these points:
 - **`stream_answer` stays mounted.** A model that declares still locks its
   later tools, as before; the host release does not wait for the declaration.
 
+### Ask Anthropic for thinking without text
+
+Chickpea asks Anthropic for adaptive thinking with summarized text, as pi-ai
+does by default. Anthropic's own default for Claude Opus 5.5 is `omitted`:
+each thinking block comes back with empty text and the signature that replays
+it. Anthropic notes that summarized thinking can delay an answer's first text.
+To ask for `omitted`, set the deployment variable
+`CHICKPEA_ANTHROPIC_THINKING_DISPLAY`:
+
+```sh
+npm run deploy -- --var CHICKPEA_ANTHROPIC_THINKING_DISPLAY:omitted
+```
+
+It applies to every Anthropic request with adaptive thinking, whoever pays
+for it: Agent turns, compaction and Chickpea's own side calls. Other
+providers and budgeted thinking are unchanged. Unset, `summarized`, or any
+other value keeps the summarized text. Upgrades keep the variable.
+
+Before you set it, know what it removes:
+
+- **The Agent's thinking text.** Stored conversations keep each thinking
+  block with empty text. The block and its signature still go back to
+  Anthropic on the next request, so the model keeps its own reasoning.
+- **Reasoning in review copies.** A Help improve Chickpea copy keeps a
+  reasoning step with empty text where the summary was.
+- **Thinking in compaction.** A compaction summary no longer sees what the
+  Agent thought, only what it wrote and the tools it called.
+
+Slack shows no thinking text either way.
+To see the effect, compare `firstTextMs` with `durationMs` on `model_step`.
+See [runtime observability](runtime-observability.md).
+
 ## Upgrade and compatibility policy
 
 For routine Cloudflare updates, follow the

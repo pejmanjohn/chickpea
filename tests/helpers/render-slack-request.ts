@@ -77,14 +77,21 @@ export interface SlackRequestVariant {
   frontDesk?: import('../../src/config/types.ts').FrontDeskDirectory;
   /** More host attributes on every turn's Slack signal, such as the change-tools signal. */
   signalAttributes?: Record<string, string>;
+  /** Deployment variables in the env model access is bound with. */
+  vars?: Record<string, string>;
 }
 
 export const USER_AGENT_ID = 'agent_brief_writer';
 
-/** What the model answers one request with: a tool call, which the turn runs, or a final text. */
-export type ScriptedReply =
+/**
+ * What the model answers one request with: a tool call, which the turn runs,
+ * or a final text. Anthropic only: `thinkingSignature` opens the reply with a
+ * thinking block of no text and that signature, as display `omitted` sends it.
+ */
+export type ScriptedReply = (
   | { toolCall: { name: string; input: Record<string, unknown> } }
-  | { text: string };
+  | { text: string }
+) & { thinkingSignature?: string };
 
 let captured: RenderedRequest | undefined;
 let charged: { sharedPrefix: SharedPrefixId | null; requestId: string } | undefined;
@@ -105,19 +112,28 @@ function answer(params: unknown): ScriptedReply {
 Anthropic.Beta.Messages.prototype.create = function (params: { model: string }) {
   const reply = answer(params);
   const id = `toolu_render_${sent.length}`;
+  const index = reply.thinkingSignature ? 1 : 0;
+  const thinking = reply.thinkingSignature
+    ? [
+        { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } },
+        { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: reply.thinkingSignature } },
+        { type: 'content_block_stop', index: 0 },
+      ]
+    : [];
   const content = 'text' in reply
     ? [
-        { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
-        { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: reply.text } },
+        { type: 'content_block_start', index, content_block: { type: 'text', text: '' } },
+        { type: 'content_block_delta', index, delta: { type: 'text_delta', text: reply.text } },
       ]
     : [
-        { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id, name: reply.toolCall.name, input: {} } },
-        { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify(reply.toolCall.input) } },
+        { type: 'content_block_start', index, content_block: { type: 'tool_use', id, name: reply.toolCall.name, input: {} } },
+        { type: 'content_block_delta', index, delta: { type: 'input_json_delta', partial_json: JSON.stringify(reply.toolCall.input) } },
       ];
   const events = [
     { type: 'message_start', message: { id: `msg_render_${sent.length}`, model: params.model, usage: { input_tokens: 1, output_tokens: 0 } } },
+    ...thinking,
     ...content,
-    { type: 'content_block_stop', index: 0 },
+    { type: 'content_block_stop', index },
     { type: 'message_delta', delta: { stop_reason: 'text' in reply ? 'end_turn' : 'tool_use' }, usage: { output_tokens: 1 } },
     { type: 'message_stop' },
   ];
@@ -348,7 +364,9 @@ async function renderSlackTurn(
     installationId: `inst_${variant.workspace}`, providerId: provider, runId: `run_${variant.thread}_${index}`,
     fundingSource: variant.funding ?? 'platform', credentialRefId: `platform:${provider}`, credentialVersion: 1,
   } as any;
-  const env = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: grant.installationId }) as any;
+  const env = scopeInstallationEnv(
+    { CHICKPEA_TENANCY: 'installation', ...variant.vars }, { installationId: grant.installationId },
+  ) as any;
   try {
     await withModelAccess(grant, env, 'reply', () => harness.prompt(body));
   } catch (error) {
