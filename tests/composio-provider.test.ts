@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { test, type TestContext } from 'node:test';
 
 import type { ConnectionAccountManagedPolicy } from '../src/config/types.ts';
@@ -11,7 +12,10 @@ import {
 } from '../src/connections/managed-errors.ts';
 import {
   ComposioManagedConnectionProvider,
+  createComposioClient,
   inspectComposioConnectedAccount,
+  newComposioSdk,
+  retryComposioWrite,
 } from '../src/connections/providers/composio.ts';
 import { COMPOSIO_TOOLKIT_VERSIONS } from '../src/connections/providers/composio/versions.ts';
 
@@ -105,6 +109,181 @@ test('reconciliation inspects the exact account through the ownership-filtered R
     'https://backend.composio.dev/api/v3.1/connected_accounts' +
       '?connected_account_ids=ca_test&user_ids=chickpea%3Amembership%3Amembership_test&limit=1',
   );
+});
+
+test('the Composio client never asks npm for a newer SDK', async (t) => {
+  const requested: string[] = [];
+  t.mock.method(globalThis, 'fetch', async (input: string | URL | Request) => {
+    requested.push(input instanceof Request ? input.url : String(input));
+    return Response.json({ version: '99.0.0' });
+  });
+
+  await createComposioClient({ apiKey: 'test-key' });
+  await new Promise((done) => setTimeout(done, 50));
+
+  assert.deepEqual(requested.filter((url) => new URL(url).hostname === 'registry.npmjs.org'), []);
+});
+
+// The Composio client's names for a request that got no response, and for one that timed out.
+class APIConnectionError extends Error {}
+class APIConnectionTimeoutError extends APIConnectionError {}
+
+function statusFailure(status: number, headers?: Record<string, string>) {
+  return Object.assign(new Error(`synthetic ${status}`), {
+    status,
+    ...(headers ? { headers: new Headers(headers) } : {}),
+  });
+}
+
+async function composioWrite(
+  failures: unknown[],
+  options: { signal?: AbortSignal; onSleep?: () => void } = {},
+) {
+  const delays: number[] = [];
+  const retries: boolean[] = [];
+  const result = await retryComposioWrite(async (retry) => {
+    retries.push(retry);
+    const failure = failures.shift();
+    if (failure) throw failure;
+    return 'written';
+  }, options.signal, async (ms) => {
+    delays.push(ms);
+    options.onSleep?.();
+  }).catch((error: unknown) => error);
+  return { result, delays, retries };
+}
+
+test('a Composio write is sent again after no response, a 5xx or a short 429, at most twice', async () => {
+  // The SDK wraps a failed link in its own error, with the client's error as its cause.
+  const lostLink = new Error('Failed to create connected account link', {
+    cause: new APIConnectionError('Connection error.'),
+  });
+  assert.deepEqual(await composioWrite([lostLink, statusFailure(503)]), {
+    result: 'written', delays: [500, 1_000], retries: [false, true, true],
+  });
+  assert.deepEqual(await composioWrite([statusFailure(429, { 'retry-after': '2' })]), {
+    result: 'written', delays: [2_000], retries: [false, true],
+  });
+  assert.deepEqual(await composioWrite([statusFailure(429)]), {
+    result: 'written', delays: [500], retries: [false, true],
+  });
+
+  const last = statusFailure(502);
+  assert.deepEqual(await composioWrite([statusFailure(500), statusFailure(504), last]), {
+    result: last, delays: [500, 1_000], retries: [false, true, true],
+  });
+});
+
+test('a Composio write is not sent again after a long 429, a 4xx, a timeout or an abort', async () => {
+  for (const failure of [
+    statusFailure(429, { 'retry-after': '3' }),
+    statusFailure(429, { 'retry-after': 'Wed, 11 Nov 2026 08:00:00 GMT' }),
+    statusFailure(400),
+    statusFailure(409),
+    new APIConnectionTimeoutError('Request timed out.'),
+    new Error('synthetic local failure'),
+  ]) {
+    assert.deepEqual(await composioWrite([failure]), { result: failure, delays: [], retries: [false] });
+  }
+
+  const aborted = new AbortController();
+  aborted.abort();
+  const before = statusFailure(503);
+  assert.deepEqual(await composioWrite([before], { signal: aborted.signal }), {
+    result: before, delays: [], retries: [false],
+  });
+
+  const during = new AbortController();
+  const waiting = statusFailure(503);
+  assert.deepEqual(await composioWrite([waiting], { signal: during.signal, onSleep: () => during.abort() }), {
+    result: waiting, delays: [500], retries: [false],
+  });
+});
+
+const COMPOSIO_ENVIRONMENT = ['COMPOSIO_BASE_URL', 'COMPOSIO_USER_API_KEY', 'COMPOSIO_ORG_API_KEY'] as const;
+
+/** A local Composio for the real SDK, through the base URL it reads from the environment. */
+async function fakeComposio(
+  t: TestContext,
+  handle: (request: IncomingMessage, response: ServerResponse, path: string) => void,
+  env: Partial<Record<(typeof COMPOSIO_ENVIRONMENT)[number], string>> = {},
+): Promise<void> {
+  const server = createServer((request, response) =>
+    handle(request, response, new URL(request.url ?? '/', 'http://localhost').pathname));
+  await new Promise<void>((listening) => server.listen(0, '127.0.0.1', listening));
+  const saved = COMPOSIO_ENVIRONMENT.map((name) => [name, process.env[name]] as const);
+  t.after(() => {
+    for (const [name, value] of saved) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    server.closeAllConnections();
+    server.close();
+  });
+  const { port } = server.address() as { port: number };
+  Object.assign(process.env, { COMPOSIO_BASE_URL: `http://127.0.0.1:${port}`, ...env });
+}
+
+function replyJson(response: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}) {
+  response.writeHead(status, { 'content-type': 'application/json', ...headers });
+  response.end(JSON.stringify(body));
+}
+
+test('a sign-in start through the real SDK survives a dropped connection and a short 429', async (t) => {
+  let linkPosts = 0;
+  await fakeComposio(t, (request, response, path) => {
+    if (request.method === 'GET' && path.endsWith('/connected_accounts')) {
+      return replyJson(response, 200, { items: [], next_cursor: null, total_pages: 0, current_page: 1, total_items: 0 });
+    }
+    if (request.method === 'POST' && path.endsWith('/connected_accounts/link')) {
+      linkPosts += 1;
+      if (linkPosts === 1) return request.socket.destroy();
+      if (linkPosts === 2) {
+        return replyJson(response, 429, { error: { message: 'synthetic rate limit', code: 429, status: 429 } }, {
+          'retry-after': '0',
+        });
+      }
+      return replyJson(response, 201, {
+        link_token: 'lt_synthetic',
+        redirect_url: 'https://connect.example.test/link/lk_synthetic',
+        expires_at: '2026-11-12T00:00:00.000Z',
+        connected_account_id: 'ca_synthetic_linked',
+      });
+    }
+    replyJson(response, 404, { error: { message: 'not found', code: 404, status: 404 } });
+  });
+
+  const started = await new ComposioManagedConnectionProvider({
+    apiKey: 'test-key',
+    authConfigIds: { gmail: { read: 'ac_synthetic_gmail_read' } },
+  }).authorize({
+    principalRef: POLICY.principalRef,
+    toolkit: 'gmail',
+    allowedCapabilities: ['gmail.messages.search'],
+  });
+
+  assert.equal(started.authorizationRef, 'ca_synthetic_linked');
+  assert.equal(started.authorizationUrl.toString(), 'https://connect.example.test/link/lk_synthetic');
+  assert.equal(linkPosts, 3);
+});
+
+test("Chickpea's Composio client sends only its project key, never one from the environment", async (t) => {
+  const credentials: Record<string, string>[] = [];
+  await fakeComposio(t, (request, response) => {
+    credentials.push(Object.fromEntries(Object.entries(request.headers)
+      .filter(([name]) => /api-key|authorization/i.test(name))
+      .map(([name, value]) => [name, String(value)])));
+    replyJson(response, 404, { error: { message: 'not found', code: 404, status: 404 } });
+  }, { COMPOSIO_USER_API_KEY: 'uak_synthetic_user', COMPOSIO_ORG_API_KEY: 'oak_synthetic_org' });
+
+  // Listing organizations takes no project key, so the client would send an ambient key here.
+  // No public SDK call does that, so this reaches the SDK's protected API client.
+  const sdk = await newComposioSdk('test-key') as unknown as {
+    client: { org: { list(): Promise<unknown> } };
+  };
+  await sdk.client.org.list().catch(() => undefined);
+
+  assert.deepEqual(credentials, [{ 'x-api-key': 'test-key' }]);
 });
 
 test('production execution pins the dated toolkit version and exact account', async () => {
