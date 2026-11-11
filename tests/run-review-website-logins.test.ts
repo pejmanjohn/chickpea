@@ -117,7 +117,7 @@ test('a URL on a login\'s site, or any URL in a browser step, keeps its scheme, 
   assert.deepEqual(kept(record, [
     'SYNTHMAGIC0123', 'SYNTHPASS', 'SYNTHRESETTOKEN', 'SYNTHGUIDE42', 'SYNTHSESSION', 'SYNTHTOKEN789',
   ]), []);
-  assert.equal(record.trigger.text, 'Use <http://billing.example.com/magic?[omitted]|billing.example.com/magic?[omitted]> ' +
+  assert.equal(record.trigger.text, 'Use <http://billing.example.com/magic?[omitted]> ' +
     'or https://search.example/x, and see https://search.example/?q=kept#top');
   assert.equal(record.context[0]?.text, 'Reset: https://ledger.example.net/reset/[omitted]');
   const [opened, snapshot] = record.steps;
@@ -151,6 +151,30 @@ test('a page\'s address keeps its \' and |, and a JSON-escaped & or =, inside th
   assert.equal(opened.input, '{"url":"https://portal.example.org/users/o\'brien/callback?[omitted]"}');
   assert.match(opened.output ?? '', /"url":"https:\/\/billing\.example\.com\/callback\?\[omitted\]"/);
   assert.equal(JSON.parse(read.output ?? '{}').text, '{"link":"https://billing.example.com/magic?[omitted]","next":"x"}');
+});
+
+test('in prose and Slack text a URL keeps its \' and |, a link inside another goes by its own rule, and a Browserbase link needs no scheme', () => {
+  const record = copy({
+    trigger: {
+      author: 'U012ABCDEF3',
+      text: 'Try https://billing.example.com/users/o\'brien/callback?code=SYNTHCODE123 and ' +
+        '<https://billing.example.com/cb?scope=read|write&code=SYNTHCODE456|callback>',
+      files: [],
+    },
+    context: [{
+      author: 'U012ABCDEF3', role: 'human', files: [],
+      text: '<https://go.example.org/r|https://billing.example.com/cb?code=SYNTHCODE789> or ' +
+        'https://go.example.org/r?next=https://ledger.example.net/cb?code=SYNTHCODE012',
+    }],
+    answer: 'Watch at www.browserbase.com/devtools-fullscreen/inspector.html?wss=connect.browserbase.com/debug/SYNTHSESS ' +
+      'or browserbase.com/sessions/SYNTHSESS2 now',
+  });
+  assert.deepEqual(kept(record, ['SYNTHCODE', 'SYNTHSESS', 'browserbase']), []);
+  assert.equal(record.trigger.text,
+    'Try https://billing.example.com/users/o\'brien/callback?[omitted] and <https://billing.example.com/cb?[omitted]>');
+  assert.equal(record.context[0]?.text, '<https://go.example.org/r|https://billing.example.com/cb?[omitted]> or ' +
+    'https://go.example.org/r?next=https://ledger.example.net/cb?[omitted]');
+  assert.equal(record.answer, `Watch at ${BROWSER_LINK_OMITTED} or ${BROWSER_LINK_OMITTED} now`);
 });
 
 test('a link keeps no token behind JSON-escaped slashes or a host that ends in a dot', () => {

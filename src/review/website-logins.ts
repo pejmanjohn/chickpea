@@ -29,29 +29,21 @@ export const MIN_USERNAME_CHARS = 4;
 /** The shortest start of a username removed where a cut or a `…` ends it. */
 export const MIN_CUT_PREFIX_CHARS = 4;
 
-// A URL ends at whitespace, a quote, Slack's `<`, `>` and `|`, or a backslash.
-const URL_CHAR = String.raw`[^\s"'<>|\\]`;
-// A browser step holds a tool's JSON, not prose or Slack markup, and a page's address keeps `'` and `|` as they are.
-const STEP_URL_CHAR = String.raw`[^\s"<>\\]`;
+// A URL ends at whitespace, a double quote, Slack's `<` and `>`, or a backslash. A page's address keeps `'`
+// and `|` as they are, so neither ends one, and a Slack link's label goes with its URL.
+const URL_CHAR = String.raw`[^\s"<>\\]`;
 // The JSON escape of `&`, `'`, `+` or `=` does not end a URL: Go, Gson and .NET write them that way.
 const ESCAPED_ASCII = String.raw`\\+u00(?:26|27|2[bB]|3[dD])`;
 // A slash, which JSON may escape with a backslash: PHP does by default.
 const SLASH = String.raw`\\*\/`;
 const HOST_START = String.raw`(?<![\p{L}\p{N}.@/_-])`;
 
-/** A URL with a scheme, and what follows a scheme-less host, over one class of URL characters. */
-function urlPatterns(char: string): { scheme: string; afterHost: string } {
-  const more = String.raw`${char}*(?:(?:${ESCAPED_ASCII}|\\+\/)${char}*)*`;
-  return {
-    scheme: String.raw`\b(?:https?|wss?):${SLASH}${SLASH}${char}${more}`,
-    afterHost: String.raw`(?::\d+)?(?:${SLASH}${more}|[;?#]${char}${more})`,
-  };
-}
-
-const TEXT_URL = urlPatterns(URL_CHAR);
-const STEP_URL = urlPatterns(STEP_URL_CHAR);
-// Any host followed by a path or a query, as a browser step's input may name a page. A host may end in a dot.
-const ANY_SCHEMELESS_URL = String.raw`${HOST_START}(?:[a-z0-9-]+\.)+[a-z]{2,}\.?${STEP_URL.afterHost}`;
+const MORE_URL = String.raw`${URL_CHAR}*(?:(?:${ESCAPED_ASCII}|\\+\/)${URL_CHAR}*)*`;
+const SCHEME_URL = String.raw`\b(?:https?|wss?):${SLASH}${SLASH}${URL_CHAR}${MORE_URL}`;
+// What follows a scheme-less host, which may end in a dot: a port, then a path or a query.
+const AFTER_HOST = String.raw`\.?(?::\d+)?(?:${SLASH}${MORE_URL}|[;?#]${URL_CHAR}${MORE_URL})`;
+// Any host followed by a path or a query, as a browser step's input may name a page.
+const ANY_SCHEMELESS_URL = String.raw`${HOST_START}(?:[a-z0-9-]+\.)+[a-z]{2,}${AFTER_HOST}`;
 
 const HANDOFF_LINK = new RegExp(String.raw`<([^<>|]*)\|${escapeRegExp(BROWSER_HANDOFF_LINK_LABEL)}>`, 'g');
 /** What a hand-off message links to: an absolute web address, too long to be a word of other text. */
@@ -84,7 +76,8 @@ export interface WebsiteLoginScrub {
    * same text holds it. Every URL loses its userinfo. A URL on a login's site,
    * or any URL in a browser step, keeps its scheme, host and path, loses
    * token-shaped path segments, and loses everything from its first `;`,
-   * `?` or `#`.
+   * `?` or `#`. A link inside another one's path or query, as a Slack link's
+   * label or a redirect holds it, goes by its own rule.
    */
   links(text: string, browserStep: boolean): string;
   /**
@@ -101,13 +94,14 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
   const hostnames = unique(logins.hosts.map((host) => host.trim().toLowerCase().replace(/:\d+$/, '')).filter(Boolean));
   const loginSite = (hostname: string) =>
     hostnames.some((host) => hostname === host || hostname.endsWith(`.${host}`));
-  const loginSchemeless = hostnames.length
-    ? String.raw`${HOST_START}(?:[a-z0-9-]+\.)*(?:${hostnames.map(escapeRegExp).join('|')})\.?${TEXT_URL.afterHost}`
-    : undefined;
+  // Outside a browser step, a link without a scheme is recognized on a login's site and the hosted browser's.
+  const knownHosts = [...hostnames.map(escapeRegExp), String.raw`browserbase\.com`].join('|');
   const linkPatterns = {
-    anywhere: new RegExp([TEXT_URL.scheme, loginSchemeless].filter(Boolean).join('|'), 'giu'),
-    browserStep: new RegExp([STEP_URL.scheme, ANY_SCHEMELESS_URL].join('|'), 'giu'),
+    anywhere: new RegExp(String.raw`${SCHEME_URL}|${HOST_START}(?:[a-z0-9-]+\.)*(?:${knownHosts})${AFTER_HOST}`, 'giu'),
+    browserStep: new RegExp(`${SCHEME_URL}|${ANY_SCHEMELESS_URL}`, 'giu'),
   };
+  const scrubLinks = (text: string, browserStep: boolean): string =>
+    text.replace(browserStep ? linkPatterns.browserStep : linkPatterns.anywhere, (raw) => scrubLink(raw, browserStep));
 
   const scrubLink = (matched: string, browserStep: boolean): string => {
     // A plain slash is valid JSON too, so the link comes back without its escapes.
@@ -125,9 +119,10 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
     const suffix = pathEnd < 0 ? '' : rest.slice(pathEnd);
     if (browserLink(scheme?.[1], hostname, path, suffix)) return BROWSER_LINK_OMITTED;
     const start = `${scheme?.[0] ?? ''}${host}`;
-    if (!browserStep && !loginSite(hostname)) return `${start}${rest}`;
+    // What follows the host can hold another link, as a Slack link's label or a redirect's query does.
+    if (!browserStep && !loginSite(hostname)) return `${start}${scrubLinks(rest, browserStep)}`;
     const kept = path.split('/').map((segment) => tokenShaped(segment) ? URL_PART_OMITTED : segment).join('/');
-    return `${start}${kept}${suffix ? `?${URL_PART_OMITTED}` : ''}`;
+    return `${start}${scrubLinks(kept, browserStep)}${suffix ? `?${URL_PART_OMITTED}` : ''}`;
   };
 
   const names = unique(logins.usernames.map((username) => username.trim()).filter(Boolean));
@@ -155,13 +150,12 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
       const handoffs = unique([...text.matchAll(HANDOFF_LINK)]
         .flatMap(([, url]) => url ? [url, unescapedSlackText(url)] : [])
         .filter((url) => HANDOFF_URL.test(url)));
-      return handoffs
-        .reduce(
-          (value, url) => value.replace(
-            new RegExp(String.raw`(?<![^\s<"])${escapeRegExp(url)}(?![^\s>|"\\])`, 'g'), BROWSER_LINK_OMITTED),
-          text.replace(HANDOFF_LINK, BROWSER_LINK_OMITTED),
-        )
-        .replace(browserStep ? linkPatterns.browserStep : linkPatterns.anywhere, (raw) => scrubLink(raw, browserStep));
+      const withoutHandoffs = handoffs.reduce(
+        (value, url) => value.replace(
+          new RegExp(String.raw`(?<![^\s<"])${escapeRegExp(url)}(?![^\s>|"\\])`, 'g'), BROWSER_LINK_OMITTED),
+        text.replace(HANDOFF_LINK, BROWSER_LINK_OMITTED),
+      );
+      return scrubLinks(withoutHandoffs, browserStep);
     },
     usernames(text, { browserStep, cut }) {
       // Matching reads the text with its percent escapes decoded, so a username encoded letter by
