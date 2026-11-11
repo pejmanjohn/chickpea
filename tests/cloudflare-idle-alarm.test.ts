@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import test from 'node:test';
+import test, { mock } from 'node:test';
 import vm from 'node:vm';
 import ts from 'typescript';
 
@@ -397,16 +397,21 @@ test("a person's turn ending renews the store's hold from its end, as the runner
 });
 
 // Defects caught: a hold on a deployment that sets no window, sets 0, or
-// sets one the deploy refuses, which would bill every idle store; and a tick
-// that moved with the setting.
+// sets one the deploy refuses, which would bill every idle store; a turn's
+// end that reads its row for a hold it cannot set; and a tick that moved with
+// the setting.
 test('without a valid hold window nothing holds the store, and the keep-warm tick runs as before', async () => {
   for (const value of [undefined, '', '0', '900001', '10m']) {
     const env = value === undefined ? {} : { CHICKPEA_RESIDENCY_HOLD_MS: value };
-    const store = admissionStore(undefined, env, endingRows());
+    const rows = endingRows();
+    const kindReads = mock.method(rows, 'isPersonTurn');
+    const store = admissionStore(undefined, env, rows);
     await store.probe.admitSlackTurn({ turnJob: { id: 'turn_person', turn: {} } });
     assert.deepEqual(store.writes, [NOW + KEEP_WARM_TICK_MS], `${value}: the tick`);
     await store.probe.threadRunnerTurn({ kind: 'markDelivered', id: 'turn_person' });
+    await store.probe.threadRunnerTurn({ kind: 'markError', id: 'turn_person' });
     assert.deepEqual(store.heldUntil(), [], `${value}: neither admission nor the turn's end holds`);
+    assert.equal(kindReads.mock.callCount(), 0, `${value}: the turn's end reads no row`);
     const cold = idleStore(QUIET, { newestEnqueuedAt: NOW - 60_000, env });
     await cold.fire();
     assert.deepEqual(cold.writes, [NOW + KEEP_WARM_TICK_MS], `${value}: a cold store ticks`);

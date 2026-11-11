@@ -304,9 +304,13 @@ Before you turn it on, check these four points:
   compatibility date `2026-10-01`, or with the
   `durable_object_io_tasks_prevent_eviction` compatibility flag
   ([changelog](https://developers.cloudflare.com/changelog/post/2026-10-01-pending-io-keep-alive/)).
-  `wrangler.jsonc` has neither. Without them, the state store still stays in
-  memory, because its 20-second keep-warm alarm counts as activity. The
-  runner and the Agent object are evicted 70 to 140 seconds after a turn.
+  `wrangler.jsonc` has neither. Without them, the state store stays in memory
+  only while its 20-second keep-warm alarm runs, because each firing counts
+  as activity. The alarm runs for 10 minutes after a person's turn is
+  admitted, whatever the window. It does not start again when the turn ends,
+  so the rest of a window after a long turn, or a window over 10 minutes, is
+  not covered. The runner and the Agent object are evicted 70 to 140 seconds
+  after a turn.
 - **A held object is billed.** Cloudflare bills duration at 128 MB for as
   long as an object cannot hibernate
   ([pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/)).
@@ -323,8 +327,8 @@ Before you turn it on, check these four points:
   Paid.
 - **After a deploy, recently active conversations run the previous code for
   up to 5 minutes.** Cloudflare defers a code update for an object in memory
-  for up to 300 seconds, and an idle object starts on the new code at its next
-  request
+  for up to 300 seconds, and an object that has left memory starts on the new
+  code at its next request
   ([code updates](https://developers.cloudflare.com/durable-objects/deployments/durable-objects-code-updates/)).
   With the hold on, every object active in the last window is in memory at
   the deploy. So a check right after a deploy, in a workspace that was active
