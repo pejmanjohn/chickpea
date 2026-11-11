@@ -28,6 +28,8 @@ export const MIN_USERNAME_CHARS = 4;
 
 /** The shortest start of a username removed where a cut or a `…` ends it. */
 export const MIN_CUT_PREFIX_CHARS = 4;
+/** The longest start a cut's pattern matches character by character; a longer one runs on to the cut. */
+const MAX_CUT_PREFIX_CHARS = 64;
 
 // A URL ends at whitespace, a double quote, Slack's `<` and `>`, or a backslash. A page's address keeps `'`
 // and `|` as they are, so neither ends one, and a Slack link's label goes with its URL.
@@ -256,9 +258,13 @@ function usernameMatcher(name: string, { cutStart }: { cutStart: boolean }): Use
   const matcher = { runs: asciiRuns(name), whole: once(() => new RegExp(`${start}${joined(chars)}${end}`, 'giu')) };
   if (!cutStart || chars.length <= MIN_CUT_PREFIX_CHARS) return matcher;
   const required = joined(chars.slice(0, MIN_CUT_PREFIX_CHARS));
-  const optional = chars.slice(MIN_CUT_PREFIX_CHARS, -1).reduceRight(
+  // Past MAX_CUT_PREFIX_CHARS a start runs on to the cut unspelled: a pattern nested deeper costs
+  // hundreds of megabytes and seconds to compile for the longest usernames the catalog allows.
+  const spelledEnd = Math.min(chars.length - 1, MAX_CUT_PREFIX_CHARS);
+  const runsOn = spelledEnd < chars.length - 1 ? String.raw`[^\s"<>${CUT_MARK}]*` : '';
+  const optional = chars.slice(MIN_CUT_PREFIX_CHARS, spelledEnd).reduceRight(
     (tail, char, index) => `(?:${breakBefore(chars, MIN_CUT_PREFIX_CHARS + index)}${charPattern(char)}${tail})?`,
-    '',
+    runsOn,
   );
   const compile = (cut: boolean) =>
     new RegExp(`${start}${required}${optional}(?=${CUT_AHEAD}${cut ? '|$' : ''})`, 'giu');

@@ -405,6 +405,16 @@ test('a copy chooses its steps by their size before the scrub, so the scrub read
   assert.equal(record.truncated, true);
 });
 
+test('a long username\'s start, cut past its 64th character, leaves no part of it', () => {
+  const long = `ops.${'synthetic.'.repeat(9)}team@example.com`;
+  assert.ok(long.length > 100);
+  const record = copy({
+    answer: `Signed in as ${long.slice(0, 90)}… and ${long.slice(0, 40)}…`,
+  }, { hosts: [], usernames: [long] });
+  assert.deepEqual(kept(record, ['synthetic']), []);
+  assert.equal(record.answer, 'Signed in as [credential redacted]… and [credential redacted]…');
+});
+
 test('usernames match whole words, and one under four characters only as a whole value in a browser step', () => {
   const admin = copy({ answer: 'Ask an Admin, not the sysadmin, to administer billing.' }, { hosts: [], usernames: ['admin'] });
   assert.equal(admin.answer, 'Ask an [credential redacted], not the sysadmin, to administer billing.');
