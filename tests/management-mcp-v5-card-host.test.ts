@@ -636,15 +636,18 @@ for (const [app, clientId] of [
       assert.deepEqual(v4Named(resourceText((await request('resources/read', { uri })).message)), [], uri);
     }
     assert.equal(resourceText((await request('resources/read', { uri: DISCOVERY_GUIDE_URI })).message), DISCOVERY_GUIDE_FIVE_ZERO);
-    for (const name of ['apply_workspace_changes', 'save_connection_key']) {
+    const read = (await request('tools/call', { name: 'get_workspace', arguments: {} })).message.result;
+    for (const name of V4_TOOLS) {
       const message = (await request('tools/call', { name, arguments: name === 'apply_workspace_changes' ? V4_OFF : {} })).message;
-      assert.equal(message.result?.isError, true);
-      assert.equal(message.result.structuredContent.error.code, 'not_found');
+      assert.equal(message.result?.isError, true, name);
+      assert.equal(message.result.structuredContent.error.code, 'not_found', name);
       assert.equal(message.result.structuredContent.error.retryable, false);
       const error = message.result.structuredContent.error;
       assert.equal(message.result.content[0].text, `${error.message}\n${error.nextStep}`);
       assert.equal(message.error, undefined, 'the refusal uses the 5.0 result shape');
+      assert.equal(message.result.resultType, read.resultType, 'stamped as the SDK stamps every result on this revision');
     }
+    assert.equal(read.resultType, protocol === MODERN ? 'complete' : undefined);
     assert.equal((await h.f.config.getAgent('agent_support')).enabled, true);
   });
 }

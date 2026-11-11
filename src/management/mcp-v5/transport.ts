@@ -1,4 +1,5 @@
 import {
+  PROTOCOL_VERSION_META_KEY,
   isJSONRPCErrorResponse,
   isJSONRPCRequest,
   isJSONRPCResultResponse,
@@ -21,7 +22,10 @@ import { mcpErrorResult, type McpToolError } from './conventions.ts';
  *   is plain text. For a 5.0 tool it becomes the 5.0 error shape, so every
  *   error from these tools carries `structuredContent.error`. A 4.x tool's
  *   result passes through untouched.
- * - A card host's hidden 4.x tool is not found in the 5.0 error shape.
+ * - A card host's hidden 4.x tool is not found in the 5.0 error shape. The
+ *   SDK answers with a protocol error, which carries no `resultType`, and a
+ *   2026-07-28 client rejects a result without one, so a request that names
+ *   its revision gets it here.
  */
 export function shapeFiveZeroResults(
   transport: Transport,
@@ -30,7 +34,8 @@ export function shapeFiveZeroResults(
 ): void {
   const toolLists = new Set<RequestId>();
   const fiveZeroCalls = new Map<RequestId, string>();
-  const hiddenCalls = new Set<RequestId>();
+  /** Each hidden call, and whether its request names its revision (2026-07-28 on). */
+  const hiddenCalls = new Map<RequestId, boolean>();
   const onmessage = transport.onmessage;
   transport.onmessage = (message, extra) => {
     try {
@@ -41,7 +46,8 @@ export function shapeFiveZeroResults(
           fiveZeroCalls.set(message.id, name);
         }
         if (message.method === 'tools/call' && typeof name === 'string' && hiddenToolNames?.has(name)) {
-          hiddenCalls.add(message.id);
+          const meta = (message.params as { _meta?: unknown } | undefined)?._meta;
+          hiddenCalls.set(message.id, typeof meta === 'object' && meta !== null && PROTOCOL_VERSION_META_KEY in meta);
         }
       }
     } catch {
@@ -54,13 +60,18 @@ export function shapeFiveZeroResults(
 
   function shaped(message: JSONRPCMessage): JSONRPCMessage {
     if (!(isJSONRPCResultResponse(message) || isJSONRPCErrorResponse(message)) || message.id === undefined) return message;
-    if (hiddenCalls.delete(message.id) && isJSONRPCErrorResponse(message)) {
-      return { jsonrpc: '2.0', id: message.id, result: mcpErrorResult({
-        code: 'not_found',
-        message: 'That tool is not available.',
-        retryable: false,
-        nextStep: 'Call tools/list to see the available tools.',
-      }) };
+    const namesRevision = hiddenCalls.get(message.id);
+    hiddenCalls.delete(message.id);
+    if (namesRevision !== undefined && isJSONRPCErrorResponse(message)) {
+      return { jsonrpc: '2.0', id: message.id, result: {
+        ...mcpErrorResult({
+          code: 'not_found',
+          message: 'That tool is not available.',
+          retryable: false,
+          nextStep: 'Call tools/list to see the available tools.',
+        }),
+        ...namesRevision ? { resultType: 'complete' } : {},
+      } };
     }
     if (!isJSONRPCResultResponse(message)) return message;
     if (toolLists.delete(message.id)) return withSecuritySchemes(message);
