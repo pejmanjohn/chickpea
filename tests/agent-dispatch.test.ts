@@ -5,6 +5,7 @@ import {
   agentFailureText,
   AgentObservationYield,
   AgentPromptFailure,
+  AgentReplyReadInterrupted,
   classifyAgentPromptFailure,
   promptSlackThreadAgent,
   StateStoreUnavailable,
@@ -863,17 +864,20 @@ test('an interrupted bounded observation retains the receipt and reconnects with
       ...promptInput(dispatchState, agent),
       observeReply: async () => { throw new TypeError('Network connection lost'); },
     }),
-    (error: unknown) => error instanceof AgentPromptFailure && error.retryable,
+    (error: unknown) => error instanceof AgentReplyReadInterrupted && error.retryable,
   );
   assert.equal(dispatches, 1);
   assert.equal(settlements, 0);
   assert.deepEqual(dispatchState.dispatchReceipt, RECEIPT, 'the durable receipt survives the interruption');
 
+  let stalledReads = 0;
   const recovered = await promptSlackThreadAgent({
     ...promptInput(dispatchState, agent),
-    observeReply: async ({ handle: reader, receipt, instanceId, onEvent }) => {
+    onStalledRead: () => { stalledReads += 1; },
+    observeReply: async ({ handle: reader, receipt, instanceId, onEvent, onStalledRead }) => {
       assert.equal(receipt.submissionId, RECEIPT.submissionId);
       assert.equal(instanceId, ENVELOPE.instanceId);
+      onStalledRead?.();
       onEvent({ type: 'message-started', conversationId: 'c', messageId: 'response',
         submissionId: RECEIPT.submissionId, position: { batch: 1, index: 0 } });
       observed.push('observed');
@@ -882,6 +886,7 @@ test('an interrupted bounded observation retains the receipt and reconnects with
   });
   assert.equal(recovered.text, 'settled reply');
   assert.deepEqual(observed, ['observed']);
+  assert.equal(stalledReads, 1, 'the reader\'s stalled reads reach the turn');
   assert.equal(dispatches, 1, 'the retry observes the same submission; it never re-dispatches');
   assert.equal(settlements, 1);
 });

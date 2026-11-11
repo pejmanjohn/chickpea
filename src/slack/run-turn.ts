@@ -81,6 +81,7 @@ import { isStateStoreDisconnect } from '../config/cf-state-proxies.ts';
 import {
   agentFailureText,
   AgentObservationYield,
+  AgentReplyReadInterrupted,
   AgentRunAborted,
   StateStoreUnavailable,
   AgentPromptFailure,
@@ -450,6 +451,8 @@ export interface RunTurnOptions {
   onDispatchSent?: () => void;
   /** Set by `runTurn` itself when `turnLatency` is present: the model work its observation saw. */
   onTurnWork?: (work: TurnWork) => void;
+  /** Set by `runTurn` itself when `turnLatency` is present: a read of the reply stalled and a fresh one joined it. */
+  onStalledRead?: () => void;
   /**
    * Set by `runTurn` itself when `turnLatency` is present: the turn's Agent
    * object was woken, by the freeze now or by admission (`admissionSentAt`).
@@ -563,6 +566,7 @@ export async function runTurn(
       onAgentWake: (admissionSentAt) => tracker.markAgentWake(admissionSentAt),
       onDispatchSent: () => tracker.markModelStart(),
       onTurnWork: (work) => tracker.markWork(work),
+      onStalledRead: () => tracker.markStalledRead(),
       onDelivered: async (outcome) => {
         tracker.markFinal('delivered');
         if (outcome === 'stopped') stopped = true;
@@ -579,9 +583,18 @@ export async function runTurn(
     }, followUps, receipts));
     tracker.emit(stopped ? 'stopped' : 'returned', answerRelease?.record());
   } catch (error) {
-    tracker.emit('threw', answerRelease?.record());
+    tracker.emit('threw', answerRelease?.record(), attemptEndReason(error));
     throw error;
   }
+}
+
+/** Why an attempt ended without a final, as a log token. */
+export function attemptEndReason(error: unknown): string {
+  if (error instanceof AgentObservationYield) return 'observation_yield';
+  if (error instanceof StateStoreUnavailable) return 'state_store_unavailable';
+  if (error instanceof AgentReplyReadInterrupted) return 'reply_read_interrupted';
+  if (error instanceof AgentPromptFailure) return error.recoveryRequired ? 'recovery_required' : 'agent_failure';
+  return 'other';
 }
 
 async function runTurnAttempt(
@@ -2258,6 +2271,7 @@ async function runTurnAttempt(
             ...(options.onAgentStaged ? { onAgentStaged: options.onAgentStaged } : {}),
             ...(options.onDispatchSent ? { onDispatchSent: options.onDispatchSent } : {}),
             ...(options.onTurnWork ? { onTurnWork: options.onTurnWork } : {}),
+            ...(options.onStalledRead ? { onStalledRead: options.onStalledRead } : {}),
             ...(preparedMemory
               ? {
                   onSettlementObserved: (settled) => {
