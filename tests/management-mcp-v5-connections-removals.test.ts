@@ -851,6 +851,59 @@ test('a catalog tool its server says changes things is never marked as a read, a
   assert.deepEqual(tools, { allowedTools: ['list_issues', 'get_issue', 'save_issue'], writeTools: ['save_issue'] });
 });
 
+test('a custom MCP tool its server says changes things is never marked as a read either, and get_agent drops a read its server now says writes', async (t) => {
+  const { f, teamId, call } = await harness(t, 'custom-marks-guard');
+  await installAgent(f);
+  const account = await f.config.putConnectionAccount({
+    id: 'connection_docs_team', workspaceId: teamId, ownerKind: 'team', providerId: 'docs', label: 'Docs', lifecycle: 'ready',
+    createdByMembershipId: f.owner.membership.id, secretRefId: 'secret_docs',
+    policy: {
+      kind: 'mcp', url: 'https://docs.example/mcp', transport: 'streamable-http', authMode: 'none', headerNames: [],
+      discoveredTools: LINEAR_TOOLS, allowedTools: LINEAR_TOOLS.map(({ name }) => name),
+    },
+  } as Omit<ConnectionAccount, 'revision' | 'createdAt' | 'updatedAt'>);
+  await f.config.putAgentConnectionBinding({
+    agentId: 'agent_research', connectionAccountId: account.id, providerId: 'docs', allowedCapabilities: [], enabled: true,
+  });
+  const stored = async () => {
+    const [current] = (await f.config.listConnectionAccounts(teamId)).filter(({ id }) => id === account.id);
+    if (current?.policy.kind !== 'mcp') throw new Error('not an MCP account');
+    return { ...current, policy: current.policy };
+  };
+  const unchanged = await version(call, 'agent_research');
+  const refused = errorOf(await call('update_connection', {
+    agentId: 'agent_research', connectionId: 'docs', version: unchanged, changes: { readTools: ['save_issue'] }, idempotencyKey: 'write-as-read',
+  }), 'invalid_input');
+  assert.equal(refused.message, 'save_issue says it changes things, so it can\'t be marked as a read.');
+  assert.equal((await stored()).policy.toolPolicies, undefined, 'nothing was written');
+
+  structured(await call('update_connection', {
+    agentId: 'agent_research', connectionId: 'docs', version: unchanged, changes: { readTools: ['list_issues'] }, idempotencyKey: 'mark',
+  }));
+  const current = await stored();
+  await f.config.putConnectionAccount({
+    ...current,
+    policy: { ...current.policy, discoveredTools: LINEAR_TOOLS.map((tool) => tool.name === 'list_issues' ? { ...tool, readOnlyHint: false } : tool) },
+  }, current.revision);
+  const { custom } = (structured(await call('get_agent', { agentId: 'agent_research' })).connections as Array<Record<string, any>>)
+    .find(({ connectionId }) => connectionId === 'docs')!;
+  assert.deepEqual(custom, { url: 'https://docs.example/mcp', allowedTools: ['list_issues', 'get_issue', 'save_issue'] });
+});
+
+test('marking a catalog service that waits for its sign-in gives no key link: reconnect_service signs it in', async (t) => {
+  const { f, teamId, call } = await harness(t, 'catalog-marks-pending');
+  await installAgent(f);
+  const ready = await bindReadyCatalog(f, teamId, 'agent_research', 'linear');
+  const account = await f.config.putConnectionAccount({ ...ready, lifecycle: 'pending' }, ready.revision);
+  const marked = structured(await call('update_connection', {
+    agentId: 'agent_research', connectionId: 'linear', version: await version(call, 'agent_research'),
+    changes: { readTools: ['list_issues'] }, idempotencyKey: 'mark-pending',
+  }));
+  assert.deepEqual([marked.status, marked.setup], ['done', undefined]);
+  const [after] = (await f.config.listConnectionAccounts(teamId)).filter(({ id }) => id === account.id);
+  assert.deepEqual([after!.lifecycle, after!.policy.kind === 'mcp' && after!.policy.toolPolicies], ['pending', { list_issues: { effect: 'read' } }]);
+});
+
 test('a catalog service\'s tools are marked only by whoever may change that connection: a member\'s own, not the team\'s', async (t) => {
   const { f, teamId, as } = await harness(t, 'catalog-marks-authority', { member: true });
   // The member created the Agent, so they may change it and its connections they own.
