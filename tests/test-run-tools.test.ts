@@ -845,6 +845,45 @@ test('a key replays only its own ask; a keyless retry gets the run going, or the
   assert.equal(installation.db.all('SELECT DISTINCT plan_digest FROM management_test_runs').length, 2);
 });
 
+// Mutation proof: a lookup that takes any earlier answer, or the latest of the same version, names one here.
+test('an answered first question names the caller\'s latest earlier answer to it from another version of the Agent, never one of the same version', async (t) => {
+  const { f, call, deps, timing, instances, clock } = await harness(t, 'practice_before');
+  await seedAgent(f);
+  instances.settleEvery = { kind: 'answered', reply: 'Northwind.', read: [], steps: [] };
+  const ask = async (question?: string) => {
+    const run = await practiceAgent(deps(f.owner), { agentId: 'agent_tested', ...question ? { question } : {} }, timing);
+    assert.equal(run.status, 'answered');
+    return run;
+  };
+  const edit = async (instructions: string) => {
+    const { version } = structured(await call('get_agent', { agentId: 'agent_tested' })) as { version: string };
+    assert.equal(structured(await call('update_agent', { agentId: 'agent_tested', version, instructions, idempotencyKey: instructions })).status, 'done');
+  };
+  const first = await ask();
+  assert.equal(first.before, undefined, 'nothing earlier');
+  clock.advance(3 * 60_000);
+  const again = await ask();
+  assert.notEqual(again.runToken, first.runToken, 'past the repeat window: a second run');
+  assert.equal(again.before, undefined, 'the same version says nothing of a change');
+
+  await edit('Keep the support queue moving, and name the oldest first.');
+  const after = await ask();
+  assert.deepEqual(after.before, { runToken: again.runToken, agentVersion: again.ran!.agentVersion }, 'the latest earlier answer, of the version before');
+  assert.notEqual(after.ran!.agentVersion, again.ran!.agentVersion);
+  assert.deepEqual(structured(await call('get_practice_run', { runToken: after.runToken })).before, after.before, 'get_practice_run names it too');
+  assert.equal((await ask('Who paid?')).before, undefined, 'another question has none');
+
+  // The answer of the same version as this one, after the edit, is never the one named.
+  clock.advance(3 * 60_000);
+  const later = await ask();
+  assert.deepEqual(later.before, { runToken: again.runToken, agentVersion: again.ran!.agentVersion });
+
+  // Past its hour, an earlier answer is gone.
+  clock.advance(61 * 60_000);
+  await edit('Keep the support queue moving.');
+  assert.equal((await ask()).before, undefined);
+});
+
 function result(toolResult: ToolResult): string {
   return toolResult.content.map(({ text }) => text).join('\n');
 }

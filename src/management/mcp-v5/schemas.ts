@@ -741,6 +741,8 @@ export const practiceRunOutput = z.strictObject({
     charged: z.boolean().describe('Whether it counts against the workspace\'s usage, as a direct message would.'),
   }).optional(),
   repeat: z.literal(true).optional().describe('The same question on the unchanged Agent, answered moments ago: that run, not a new one.'),
+  before: z.strictObject({ runToken: z.string(), agentVersion: zVersion }).optional()
+    .describe('Your latest earlier answer to the same question from another version of this Agent, from the last hour. get_practice_run reads it.'),
   read: z.array(z.string()).optional().describe('The services it read, by name.'),
   steps: z.array(zPracticeStep).optional().describe('Its tool calls and skill loads, in order: the first 25.'),
   moreSteps: z.number().int().positive().optional().describe('How many more calls it made after the steps listed.'),

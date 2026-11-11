@@ -174,6 +174,12 @@ export interface TestRunView {
   question: string | null;
   /** The run from moments ago, returned again rather than run twice. */
   repeat?: true;
+  /**
+   * An answered first question only: the caller's latest earlier answered run
+   * of the same question to the same Agent, while it can be read, that ran
+   * an earlier version of the Agent.
+   */
+  before?: { runToken: string; agentVersion: string };
 }
 
 /**

@@ -4,7 +4,7 @@ import { test, type TestContext } from 'node:test';
 
 import * as agentCard from '../src/mcp-cards/agent-card/model.ts';
 import { keptState, type CardState, type Memory } from '../src/mcp-cards/card-model.ts';
-import { GIVE_UP_MS, HELD_FOR_MS, HELD_RETRY_MS, KEPT_ANSWER_CHARS, PRACTICE_SHOWN } from '../src/mcp-cards/first-answer.ts';
+import { GIVE_UP_MS, HELD_FOR_MS, HELD_RETRY_MS, PRACTICE_SHOWN } from '../src/mcp-cards/first-answer.ts';
 import { cardAssetPath, cardVersions, CARD_NAMES } from '../src/mcp-cards/published.ts';
 import { asChatGpt, cardHost, cardServer, type CardModelUnderTest } from './helpers/mcp-card-host.ts';
 import { slackMember } from './helpers/slack-members.ts';
@@ -13,9 +13,10 @@ import { StubTestRuns, type TestRunOutcome } from './helpers/stub-test-runs.ts';
 /**
  * "Try it again" on the Saved card, against Core's real MCP server through
  * ChatGPT's delivery: practice_agent with no question, then
- * get_practice_run, over a stub of the state store's runs. The card draws
- * the answer as After, beside the last practice answer it has as Before,
- * and tells the host's model only that a practice answer is on the card.
+ * get_practice_run, over a stub of the state store's runs that keeps its
+ * repeat window. The card draws the answer as After beside Before only when
+ * Chickpea names an answer to the same question from another version of the
+ * Agent, and tells the host's model only that a practice answer is on the card.
  */
 
 const AGENT_CARD: CardModelUnderTest<agentCard.View, agentCard.Action> = {
@@ -127,102 +128,195 @@ test('the Saved card offers Try it again only for an Agent with a first question
   assert.equal(w.runs.starts.length + plain.runs.starts.length, 0, 'nothing ran');
 });
 
-test('Try it again asks the first question with practice_agent, then draws After, and Before beside the next one', async (t) => {
-  const { runs, clock, saved } = await world(t, 'try-again-before-after');
-  const card = await saved();
+const FIRST_SHOWN = '2 invoices are overdue:\n• Northwind, $1,240\n• Lumen Labs, $860';
+const SECOND_SHOWN = 'Northwind owes $1,240. Write to Ada <ada@northwind.example> first.';
+const labels = (card: Card) => (panes(card) as { panes: Array<{ label: string }> } | undefined)?.panes.map(({ label }) => label);
+
+/** A first answer before any change, as "See its first answer" or the model asks it: practice_agent with no question. */
+async function firstAnswer(w: Awaited<ReturnType<typeof world>>) {
+  const run = await w.call('practice_agent', { agentId: AGENT, idempotencyKey: `first-${w.clock.now}` });
+  assert.equal(run.structuredContent!.status, 'answered');
+  return run.structuredContent as { runToken: string; ran: { agentVersion: string } };
+}
+
+test('Try it again asks the first question with practice_agent, and draws Before only from an answer of the Agent before the save', async (t) => {
+  const w = await world(t, 'try-again-before-after');
+  const { runs, clock } = w;
+  const earlier = await firstAnswer(w);
+  clock.now += 60_000;
+  const card = await w.saved();
   assert.equal(card.shown.subtitle?.[0]?.text, 'Try it: message @invoices in Slack.');
+  runs.outcome = answered(SECOND);
   await card.press('try_once');
   assert.deepEqual(card.calls('practice_agent').map(({ args }) => args), [{ agentId: AGENT, idempotencyKey: `try:${AGENT}:${clock.now}` }],
     'no question and no practiceId: the stored first question');
-  assert.equal(runs.starts[0]!.run.question, ASK);
+  assert.equal(runs.starts.at(-1)!.run.question, ASK);
+  const after = runs.runs.at(-1)!;
+  assert.notEqual(after.request.run.admitted.ran!.agentVersion, earlier.ran.agentVersion, 'the save made a new version');
+  assert.deepEqual(card.calls('get_practice_run').map(({ args }) => args).at(-1), { runToken: earlier.runToken }, 'Chickpea named the answer from before');
   assert.deepEqual(card.shown.blocks, [
     { kind: 'note', text: `First question: “${ASK}”` },
-    { kind: 'panes', panes: [{ label: 'After', text: '2 invoices are overdue:\n• Northwind, $1,240\n• Lumen Labs, $860' }] },
+    { kind: 'panes', panes: [{ label: 'Before', text: FIRST_SHOWN }, { label: 'After', text: SECOND_SHOWN }] },
     { kind: 'note', text: 'It read Stripe.' },
-  ], 'no answer from before this card, so After alone');
+  ]);
   assert.deepEqual(card.labels(), ['Try it again (primary)', 'Undo (secondary)']);
-  assert.equal(told(card), `The person pressed "Try it again" for the Agent "Invoice Chaser" (@invoices) on the card. ${PRACTICE_SHOWN}`);
-
-  // After another change made elsewhere: the answer this card showed is Before.
-  runs.outcome = answered(SECOND);
-  clock.now += 60_000;
-  await card.press('try_once');
-  assert.equal(runs.starts.length, 2, 'a new key: a new run');
-  assert.deepEqual(panes(card), { kind: 'panes', panes: [
-    { label: 'Before', text: '2 invoices are overdue:\n• Northwind, $1,240\n• Lumen Labs, $860' },
-    { label: 'After', text: 'Northwind owes $1,240. Write to Ada <ada@northwind.example> first.' },
-  ] });
   // Its picture's address may name the Agent; nothing else drawn does.
   const drawn = JSON.stringify({ ...card.shown, avatarUrl: undefined });
   assert.equal(drawn.includes('&lt;'), false, 'the `<` the Agent wrote, never &lt;');
-  for (const id of [AGENT, runs.runs[0]!.view.runToken, runs.runs[1]!.view.runToken, 'try:']) assert.equal(drawn.includes(id), false, `${id} drawn`);
-  // Everything the card told before, then one sentence, without the answer.
+  for (const id of [AGENT, earlier.runToken, after.view.runToken, 'try:']) assert.equal(drawn.includes(id), false, `${id} drawn`);
+  // Everything the card told before, then one sentence, without either answer.
   const context = (card.effects.findLast(({ type }) => type === 'context') as { text: string }).text;
   assert.deepEqual(context.split('\n'), [
     'The person saved the change to the Agent "Invoice Chaser" from the card.',
     `The person pressed "Try it again" for the Agent "Invoice Chaser" (@invoices) on the card. ${PRACTICE_SHOWN}`,
-  ], 'the same sentence told again moves to the end');
+  ]);
   assert.doesNotMatch(context, /Northwind|overdue/);
+
+  // Pressed again with nothing changed, within two minutes: the same run again, and the same answer from before.
+  const starts = runs.starts.length;
+  clock.now += 30_000;
+  await card.press('try_once');
+  assert.equal(runs.starts.length, starts, 'the store\'s repeat: no second run');
+  assert.deepEqual(labels(card), ['Before', 'After']);
+  assert.equal(told(card), `The person pressed "Try it again" for the Agent "Invoice Chaser" (@invoices) on the card. ${PRACTICE_SHOWN}`);
 });
 
-test('what the card keeps holds the last answer only where the host hides it from its model, and never the run\'s token', async (t) => {
-  const w = await world(t, 'try-again-kept');
+// Mutation proof: a Before from any earlier run, or from this card's own last answer, draws two answers of one version here.
+test('with no answer from another version, Try it again draws the answer alone, and never two answers of the same version', async (t) => {
+  const w = await world(t, 'try-again-alone');
   const card = await w.saved();
-  const memory = memoryOf(card.state);
-  assert.deepEqual(memory.outcome, { kind: 'done', summary: 'Saved Invoice Chaser.', practice: {} }, 'the save offers Try it again');
   await card.press('try_once');
+  assert.deepEqual(card.shown.blocks, [
+    { kind: 'note', text: `First question: “${ASK}”` },
+    { kind: 'panes', panes: [{ label: 'What it answered', text: FIRST_SHOWN }] },
+    { kind: 'note', text: 'It read Stripe.' },
+  ], 'no Before, and no label that claims a comparison');
+  assert.deepEqual(card.calls('get_practice_run'), [], 'nothing to read');
+
+  // A new run of the same saved Agent, past the repeat window, with another answer: still alone.
+  w.clock.now += 3 * 60_000;
+  w.runs.outcome = answered(SECOND);
+  await card.press('try_once');
+  assert.equal(w.runs.starts.length, 2, 'a second run of the same version');
+  assert.deepEqual(panes(card), { kind: 'panes', panes: [{ label: 'What it answered', text: SECOND_SHOWN }] });
+
+  // An answer from before the save, past its hour, is gone: alone again.
+  const later = await world(t, 'try-again-past-hour');
+  await firstAnswer(later);
+  later.clock.now += 61 * 60_000;
+  const old = await later.saved();
+  later.runs.outcome = answered(SECOND);
+  await old.press('try_once');
+  assert.deepEqual(labels(old), ['What it answered']);
+});
+
+// Mutation proof: the card's own version checks, against results that would break them.
+test('the card draws Before only when both runs name their versions and they differ', async (t) => {
+  const w = await world(t, 'try-again-versions');
+  const earlier = await firstAnswer(w);
+  w.clock.now += 60_000;
+  w.runs.outcome = answered(SECOND);
+
+  // A result that names its earlier run as one of its own version reads nothing.
+  const same = await w.saved({ instructions: '# Job\nChase invoices. Name each customer.' });
+  same.hold = ({ tool }) => tool === 'practice_agent';
+  await same.press('try_once');
+  const held = same.held[0]!;
+  const content = held.result.structuredContent as { ran: { agentVersion: string }; before: { runToken: string; agentVersion: string } };
+  assert.equal(content.before.runToken, earlier.runToken);
+  held.result = { ...held.result, structuredContent: { ...content, before: { ...content.before, agentVersion: content.ran.agentVersion } } };
+  await same.answer();
+  assert.deepEqual([same.calls('get_practice_run'), labels(same)], [[], ['What it answered']]);
+
+  // An earlier run whose own result names the same version as this one is not drawn.
+  const read = await w.saved({ instructions: '# Job\nChase invoices. Name each customer and the amount.' });
+  read.hold = ({ tool }) => tool === 'get_practice_run';
+  w.clock.now += 3 * 60_000;
+  await read.press('try_once');
+  const earlierRead = read.held[0]!;
+  const version = (w.runs.runs.at(-1)!.request.run.admitted.ran!).agentVersion;
+  const run = earlierRead.result.structuredContent as { ran: Record<string, unknown> };
+  earlierRead.result = { ...earlierRead.result, structuredContent: { ...run, ran: { ...run.ran, agentVersion: version } } };
+  await read.answer();
+  assert.deepEqual(labels(read), ['What it answered']);
+
+  // A read of the earlier run that fails draws the answer alone.
+  const failed = await w.saved({ instructions: '# Job\nChase invoices. Name each customer, the amount and the date.' });
+  failed.hold = ({ tool }) => tool === 'get_practice_run';
+  w.clock.now += 3 * 60_000;
+  await failed.press('try_once');
+  assert.deepEqual(failed.labels(), [], 'nothing to press while the earlier answer is read');
+  await failed.answer('unreachable');
+  assert.deepEqual([labels(failed), failed.labels()], [['What it answered'], ['Try it again (primary)', 'Undo (secondary)']]);
+});
+
+test('what the card keeps says only that it offers Try it again, never an answer, a run\'s token or the undo token', async (t) => {
+  const w = await world(t, 'try-again-kept');
+  await firstAnswer(w);
+  w.clock.now += 60_000;
+  const card = await w.saved();
+  assert.deepEqual(memoryOf(card.state).outcome, { kind: 'done', summary: 'Saved Invoice Chaser.', practice: true }, 'the save offers Try it again');
+  w.runs.outcome = answered(SECOND);
+  await card.press('try_once');
+  assert.deepEqual(labels(card), ['Before', 'After']);
   const state = keptState(card.state, cardVersions('agent-card').at(-1)!);
-  const answer = '2 invoices are overdue:\n• Northwind, $1,240\n• Lumen Labs, $860';
-  assert.deepEqual(state.privateContent.card.outcome, { kind: 'done', summary: 'Saved Invoice Chaser.', practice: { answer } });
+  assert.deepEqual(state.privateContent.card.outcome, { kind: 'done', summary: 'Saved Invoice Chaser.', practice: true });
   assert.equal(state.modelContent, state.privateContent.card.told.join('\n'), 'the model reads only what the card told it');
   assert.ok(state.modelContent.endsWith(PRACTICE_SHOWN));
-  assert.doesNotMatch(state.modelContent, /Northwind|overdue/, 'the answer is not the model\'s to read here');
   const written = JSON.stringify(state);
+  assert.doesNotMatch(written, /Northwind|overdue/, 'no answer kept anywhere');
   const undoToken = (card.state.view as { again?: { undoToken?: string } }).again?.undoToken;
   assert.ok(undoToken, 'the card holds Undo beside the answer');
-  for (const secret of [w.runs.runs[0]!.view.runToken, 'try:', AGENT, 'practiceId', undoToken]) {
+  for (const secret of [...w.runs.runs.map(({ view }) => view.runToken), 'try:', AGENT, 'practiceId', undoToken]) {
     assert.equal(written.includes(secret), false, `${secret} kept`);
   }
 
-  // The chat reopens: the card comes back to the Saved card, and its next answer has the kept one as Before.
+  // The chat reopens: the Saved card with Try it again, and Chickpea again finds the answer from before the save.
   const reopened = cardHost(AGENT_CARD, asChatGpt(w.call), w.clock);
-  // A reopened card mounts with the preview it was first drawn with.
   const result = await w.call('propose_agent_change', { agentId: AGENT, version: await w.version(), change: { description: 'Chases invoices.' } });
   await reopened.dispatch({ type: 'result', result, now: w.clock.now, kept: memoryOf(card.state) });
   assert.equal(reopened.shown.title, 'Saved Invoice Chaser');
   assert.deepEqual(reopened.labels(), ['Try it again (primary)'], 'no Undo: a reopened card holds no token');
-  w.runs.outcome = answered(SECOND);
-  w.clock.now += 60_000;
+  w.clock.now += 3 * 60_000;
   await reopened.press('try_once');
-  assert.deepEqual(panes(reopened), { kind: 'panes', panes: [
-    { label: 'Before', text: answer },
-    { label: 'After', text: 'Northwind owes $1,240. Write to Ada <ada@northwind.example> first.' },
-  ] });
+  assert.deepEqual(panes(reopened), { kind: 'panes', panes: [{ label: 'Before', text: FIRST_SHOWN }, { label: 'After', text: SECOND_SHOWN }] });
   assert.deepEqual(reopened.labels(), ['Try it again (primary)', 'Change something (secondary)']);
 
-  // Kept state is untrusted: an answer longer than any the card keeps is dropped, and Try it again stays.
-  const tampered = cardHost(AGENT_CARD, w.call, w.clock);
-  await tampered.dispatch({
-    type: 'result', result, now: w.clock.now,
-    kept: { told: [], outcome: { kind: 'done', summary: 'Saved Invoice Chaser.', practice: { answer: 'x'.repeat(KEPT_ANSWER_CHARS + 1) } } },
-  });
-  assert.deepEqual(tampered.labels(), ['Try it again (primary)']);
-  await tampered.press('try_once');
-  assert.deepEqual((panes(tampered) as { panes: Array<{ label: string }> }).panes.map(({ label }) => label), ['After']);
+  // Kept state is untrusted: only `practice: true` offers Try it again.
+  for (const practice of [{}, 'yes', { answer: 'x' }]) {
+    const tampered = cardHost(AGENT_CARD, w.call, w.clock);
+    await tampered.dispatch({ type: 'result', result, now: w.clock.now, kept: { told: [], outcome: { kind: 'done', summary: 'Saved Invoice Chaser.', practice } } });
+    assert.deepEqual(tampered.labels(), [], JSON.stringify(practice));
+  }
 });
 
-test('an answer longer than the card keeps is cut for Before, with a mark that it was cut', async (t) => {
-  const w = await world(t, 'try-again-long');
+// Mutation proof: a card that reads no left-out line, or offers no fix for it, fails here.
+test('a connection the run left out is named under the answer, with its fix in place of Undo until the person acts on it', async (t) => {
+  const w = await world(t, 'try-again-left-out');
+  const { f, teamId } = w;
+  await f.config.putConnectionAccount({
+    id: 'connection_docs', providerId: 'docs', label: 'Docs MCP', ownerKind: 'team', workspaceId: teamId, createdByMembershipId: f.owner.membership.id,
+    secretRefId: 'secret_docs', lifecycle: 'ready',
+    policy: { kind: 'mcp', url: 'https://mcp.docs.example/mcp', transport: 'streamable-http', authMode: 'bearer', headerNames: [], allowedTools: ['search'], discoveredTools: [{ name: 'search' }] },
+  } as never, 0);
+  await f.config.putAgentConnectionBinding({ agentId: AGENT, connectionAccountId: 'connection_docs', providerId: 'docs', allowedCapabilities: [], enabled: true });
   const card = await w.saved();
-  w.runs.outcome = answered('word '.repeat(1_000));
   await card.press('try_once');
-  w.runs.outcome = answered('Short now.');
-  w.clock.now += 60_000;
-  await card.press('try_once');
-  const [before] = (panes(card) as { panes: Array<{ label: string; text: string }> }).panes;
-  assert.equal(before!.label, 'Before');
-  assert.equal(before!.text.length, KEPT_ANSWER_CHARS);
-  assert.ok(before!.text.endsWith('…'));
+  assert.deepEqual(card.shown.blocks.slice(2), [
+    { kind: 'note', text: 'It read Stripe.' },
+    { kind: 'note', text: 'Docs MCP wasn\'t used: none of its tools are marked as ones that only read.', tone: 'warn' },
+  ]);
+  assert.deepEqual(card.labels(), ['Try it again (primary)', 'Mark Docs MCP\'s read tools (secondary)']);
+  assert.equal(JSON.stringify({ ...card.shown, avatarUrl: undefined }).includes('connection_docs'), false);
+  await card.press('try_fix');
+  assert.deepEqual(card.effects.at(-1), { type: 'message', sent: 'Mark Docs MCP\'s read tools for Invoice Chaser.' });
+  assert.deepEqual(card.calls('update_connection'), [], 'the card never makes that change itself');
+  assert.deepEqual(card.shown.blocks.at(-1), { kind: 'note', text: 'Finish it in the chat, then try again.' });
+  assert.deepEqual(card.labels(), ['Try it again (primary)', 'Undo (secondary)'], 'the save\'s Undo comes back');
+  // The host refused the message: the fix is offered again, with no note that it was acted on.
+  await card.dispatch({ type: 'refused', effect: { type: 'message', sent: 'Mark Docs MCP\'s read tools for Invoice Chaser.' }, now: w.clock.now });
+  assert.equal(card.shown.blocks.some((block) => block.kind === 'note' && block.text.startsWith('Finish it')), false);
+  assert.deepEqual(card.labels(), ['Try it again (primary)', 'Mark Docs MCP\'s read tools (secondary)']);
 });
 
 test('Undo stays beside a Try it again answer and undoes the save', async (t) => {
@@ -239,7 +333,9 @@ test('Undo stays beside a Try it again answer and undoes the save', async (t) =>
   assert.deepEqual(memoryOf(card.state).outcome, { kind: 'done', summary: 'Undid the change.' }, 'no Try it again after an undo');
 
   // Undo is offered only once the run has come to something, and only with the save's token.
+  // Past the repeat window, so the same plan runs again instead of answering from the run above.
   fastTime(t);
+  w.clock.now += 3 * 60_000;
   const running = await w.saved();
   w.runs.outcome = { status: 'running', failure: null, result: null };
   running.hold = ({ tool }) => tool === 'get_practice_run';
@@ -279,7 +375,7 @@ test('a refusal or a failed run shows its own sentence on Try it again, as ChatG
   held.runs.refuse = undefined;
   await busy.press('try_once');
   assert.equal(new Set(busy.calls('practice_agent').map(({ args }) => args.idempotencyKey)).size, 1);
-  assert.equal((panes(busy) as { panes: Array<{ label: string }> }).panes.at(-1)!.label, 'After');
+  assert.equal((panes(busy) as { panes: Array<{ label: string }> }).panes.at(-1)!.label, 'What it answered');
 
   // The plan refused it as it would a direct message: its own words.
   const funded = await world(t, 'try-again-funding');

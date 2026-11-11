@@ -36,13 +36,15 @@ import {
   UNREACHABLE,
 } from '../card-model.ts';
 import {
-  KEPT_ANSWER_CHARS,
-  lastAnswer,
+  checkingView,
   presentFirstAnswer,
+  stillAnswering,
+  stillAnsweringOf,
   stepFirstAnswer,
   tryAgain,
   tryOnce,
   type FirstAnswer,
+  type StillAnswering,
   type Tested,
 } from '../first-answer.ts';
 
@@ -126,12 +128,8 @@ export type View =
       version?: string | undefined;
       /** A saved edit: the card suggests trying it. */
       saved?: true;
-      /**
-       * The card offers "Try it again": the Agent has a first question, and
-       * the save changed how it answers. `before` is the last practice answer
-       * the card has.
-       */
-      practice?: { before?: string };
+      /** The card offers "Try it again": the Agent has a first question, and the save changed how it answers. */
+      practice?: true;
     }
   /**
    * "Are you sure?". Without its token (a host that dropped `_meta`, or a
@@ -259,7 +257,7 @@ function changeView(result: ChangeResult, now: number, options: { saved?: boolea
         undoToken: options.undone ? undefined : result.undoToken,
         version: result.version,
         ...options.saved ? { saved: true as const } : {},
-        ...options.practice ? { practice: {} } : {},
+        ...options.practice ? { practice: true as const } : {},
       });
     }
     default:
@@ -355,7 +353,7 @@ function press(state: State, action: Action, now: number): Next<View> {
         const { agent } = view;
         return tryAgain(
           { agentId: agent.agentId, name: agent.name, handle: agent.handle, avatarUrl: view.avatarUrl, slackUrl: view.slackUrl },
-          { summary: view.summary, before: view.practice?.before, undoToken: view.undoToken },
+          { summary: view.summary, undoToken: view.undoToken },
           now,
         );
       }
@@ -376,8 +374,10 @@ function undoing(event: Event): boolean {
  * not start or finish, while the card holds the save's token.
  */
 function undoBeside(view: FirstAnswer): boolean {
-  const { kind } = view.stage;
-  return view.again?.undoToken !== undefined && (kind === 'answered' || kind === 'stopped' || kind === 'slow');
+  const { stage } = view;
+  // An answer whose earlier one is still being read shows as answering: nothing to press yet.
+  const came = stage.kind === 'answered' ? stage.reading === undefined : stage.kind === 'stopped' || stage.kind === 'slow';
+  return view.again?.undoToken !== undefined && came;
 }
 
 /** Undo in place of Change something or a second Open in Slack; after a lone button, or alone. Two at most. */
@@ -641,13 +641,16 @@ function reread(state: State, now: number): Next<View> {
 // `modelContent` the card always writes: words the card showed, and the ID
 // of an Agent it created, so a reopened creation reads its arrival again.
 // Never a token or instructions, so a reopened change offers no Undo. A
-// Saved card that offers Try it again keeps that, and its last practice
-// answer for Before; never the run's token.
+// Saved card that offers Try it again keeps that, never an answer: Chickpea
+// finds the answer from before the change itself. A practice run still
+// going when the card stopped waiting keeps its token there, so a reopened
+// card reads that run once (first-answer.ts `stillAnswering`).
 
 type Outcome =
   | { kind: 'created'; name: string; agentId?: string }
-  | { kind: 'done'; summary: string; practice?: { answer?: string } }
-  | { kind: 'notice'; title: string; body?: string };
+  | { kind: 'done'; summary: string; practice?: true }
+  | { kind: 'notice'; title: string; body?: string }
+  | StillAnswering;
 
 function remember(view: View): Outcome | undefined {
   switch (view.kind) {
@@ -656,9 +659,15 @@ function remember(view: View): Outcome | undefined {
       return { kind: 'created', name: view.agent.name, agentId: view.agentId };
     case 'done':
       // Only a Saved card that offers it: one whose save also turned the Agent off comes back without it.
-      return { kind: 'done', summary: view.summary, ...view.practice && offersTryAgain(view) ? { practice: kept(view.practice.before) } : {} };
-    case 'first_answer':
-      return view.again ? { kind: 'done', summary: view.again.summary, practice: kept(lastAnswer(view)) } : undefined;
+      return { kind: 'done', summary: view.summary, ...view.practice && offersTryAgain(view) ? { practice: true as const } : {} };
+    case 'first_answer': {
+      // Once the run settles, the card comes back to where its press began: the Saved card, or the Agent it created.
+      const still = stillAnswering(view);
+      if (still) return still;
+      return view.again
+        ? { kind: 'done', summary: view.again.summary, practice: true }
+        : { kind: 'created', name: view.tested.name, agentId: view.tested.agentId };
+    }
     case 'notice':
       return { kind: 'notice', title: view.title, ...view.body ? { body: view.body } : {} };
     default:
@@ -666,19 +675,16 @@ function remember(view: View): Outcome | undefined {
   }
 }
 
-function kept(answer: string | undefined): { answer?: string } {
-  return answer ? { answer } : {};
-}
-
-/** Try it again, as a reopened card offers it again, with the answer it kept for Before. */
-function practiceFrom(outcome: Extract<Outcome, { kind: 'done' }>): { practice?: { before?: string } } {
-  if (!outcome.practice) return {};
-  return { practice: outcome.practice.answer ? { before: outcome.practice.answer } : {} };
+/** Try it again, as a reopened card offers it again. */
+function practiceFrom(outcome: Extract<Outcome, { kind: 'done' }>): { practice?: true } {
+  return outcome.practice ? { practice: true } : {};
 }
 
 function resume(view: View, kept: unknown): View | undefined {
   const outcome = outcomeOf(kept);
   switch (outcome?.kind) {
+    case 'checking':
+      return checkingView(outcome, view.kind === 'proposal' || view.kind === 'similar' ? offerAvatar(view) : 'avatarUrl' in view ? view.avatarUrl : undefined);
     case 'created':
       if (view.kind !== 'proposal') return undefined;
       return outcome.agentId ? createdFrom(view, { name: outcome.name, agentId: outcome.agentId })
@@ -732,10 +738,9 @@ function outcomeOf(kept: unknown): Outcome | undefined {
     return { kind: 'created', name: kept.name, ...typeof kept.agentId === 'string' && isAgentId(kept.agentId) ? { agentId: kept.agentId } : {} };
   }
   if (kept.kind === 'done' && typeof kept.summary === 'string') {
-    if (!isRecord(kept.practice)) return { kind: 'done', summary: kept.summary };
-    const { answer } = kept.practice;
-    return { kind: 'done', summary: kept.summary, practice: typeof answer === 'string' && answer.length <= KEPT_ANSWER_CHARS ? { answer } : {} };
+    return { kind: 'done', summary: kept.summary, ...kept.practice === true ? { practice: true as const } : {} };
   }
+  if (kept.kind === 'checking') return stillAnsweringOf(kept);
   if (kept.kind === 'notice' && typeof kept.title === 'string') {
     return { kind: 'notice', title: kept.title, ...typeof kept.body === 'string' ? { body: kept.body } : {} };
   }

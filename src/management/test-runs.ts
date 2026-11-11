@@ -211,6 +211,34 @@ export class TestRunStoreLogic {
   }
 
   /**
+   * For an answered first question: the caller's latest earlier answered run
+   * of the same question to the same Agent, still readable, that ran another
+   * version of the Agent. Never one of the same version, which says nothing
+   * of a change.
+   */
+  before(row: TestRunRow, at: number): { runToken: string; agentVersion: string } | undefined {
+    const version = row.result?.ran?.agentVersion;
+    if (row.status !== 'answered' || row.turn !== 1 || row.questionDigest === null || version === undefined) return undefined;
+    const earlier = this.db.all(
+      `SELECT * FROM management_test_runs
+       WHERE organization_id = ? AND created_at < ? AND actor_membership_id = ? AND agent_id = ?
+         AND question_digest = ? AND turn = 1 AND status = 'answered' AND settled_at >= ?
+       ORDER BY created_at DESC`,
+      row.organizationId,
+      row.createdAt,
+      row.actorMembershipId,
+      row.agentId,
+      row.questionDigest,
+      at - TEST_RUN_VISIBLE_MS,
+    ).map((found) => testRunFromRow(found)).find((found) => {
+      const other = found.result?.ran?.agentVersion;
+      return other !== undefined && other !== version;
+    });
+    const agentVersion = earlier?.result?.ran?.agentVersion;
+    return earlier && agentVersion ? { runToken: earlier.runToken, agentVersion } : undefined;
+  }
+
+  /**
    * The caller's runs of the same ask that are going, or settled within the
    * repeat window; newest first. The table holds only the installation's
    * runs still going or settled within the hour.

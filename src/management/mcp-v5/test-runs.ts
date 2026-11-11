@@ -35,6 +35,7 @@ import { classifySlackUserForAdmission } from '../../slack/user-classification.t
 import { TestRunUsageRecorder } from '../../usage/test-run-usage.ts';
 import { READ_WEB_PAGE_TOOL_NAME, WEB_SEARCH_TOOL_NAME } from '../../web/names.ts';
 import type { PracticeFix, TestRunResult, TestRunStore, TestRunView } from '../test-run-types.ts';
+import { leftOutLine, markReadsLabel } from '../practice-words.ts';
 import { practiceQuestionDigest } from '../test-runs.ts';
 import { ManagementError } from '../types.ts';
 import { readAgentInCallerDm, resolveAgentModel, type AgentAdmissionReading } from './agent-run.ts';
@@ -406,7 +407,7 @@ function practiceOff(parts: AgentRunPlanParts, untestable: readonly EffectiveCon
     const { policy } = connection;
     const name = practiceName(connection.account.label);
     if (untestable.includes(connection)) {
-      lines.push(`${name} was not available in this practice run, so an answer that needs it can't be judged here.`);
+      lines.push(leftOutLine(name));
     } else if (policy.kind === 'mcp') {
       const writes = policy.allowedTools.filter((tool) => !mcpToolDeclaredRead(policy, tool));
       if (writes.length > 0) lines.push(`${name}: ${writes.join(', ')} (not marked as a read)`);
@@ -461,7 +462,7 @@ async function practiceFix(
     const agentId = reading.agent.id;
     const lanes = (await agentConnectionsOf(deps, reading.context, agentId))?.mcpServers.map(({ id }) => id) ?? [];
     const connectionId = lanes.find((id) => id === account.id) ?? lanes.find((id) => id === account.providerId) ?? account.id;
-    return { label: `Mark ${practiceName(account.label)}'s read tools`, tool: 'update_connection', arguments: { agentId, connectionId } };
+    return { label: markReadsLabel(practiceName(account.label)), tool: 'update_connection', arguments: { agentId, connectionId } };
   }
   return policy.kind === 'managed' || isMcpToolReviewRequired(policy)
     ? agentAdminFix(deps, reading, 'Open the Agent in Admin')
@@ -523,6 +524,7 @@ function practiceResult({ view, agentName, question }: Asked): PracticeOutput {
       usage: { seconds: Math.max(0, Math.round((view.settledAt - view.createdAt) / 1_000)), charged: charged(view) },
     } : {}),
     ...(view.repeat ? { repeat: true as const } : {}),
+    ...(status === 'answered' && view.before ? { before: view.before } : {}),
     ...(status === 'answered' && result.read ? { read: result.read.map(practiceName) } : {}),
     ...(steps.length > 0 ? {
       steps: steps.map(({ result: raw, service, ...step }) => ({

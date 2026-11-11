@@ -311,6 +311,10 @@ async function world() {
     }),
     connectRenewals: () => link({ agentId: 'agent_renewals_desk', service: 'Gmail', owner: 'team' }),
     // Scene 5: an edit to the instructions of an Agent with a first question, so the Saved card offers Try it again.
+    changeNotes: async () => {
+      const agent = (await call('get_agent', { agentId: 'agent_notes_desk' })).structuredContent;
+      return call('propose_agent_change', { agentId: agent.agentId, version: agent.version, change: { instructions: `${agent.instructions}\nList each decision with its owner.` } });
+    },
     changeRenewals: async () => {
       const agent = (await call('get_agent', { agentId: 'agent_renewals_desk' })).structuredContent;
       return call('propose_agent_change', {
@@ -352,12 +356,13 @@ async function world() {
     ['Quiet Desk', 'quiet', 'what changed in the queue today?'],
     ['Linear Helper', 'linear-helper', 'which issues are blocked?'],
     ['Docs Helper', 'docs-helper', 'where is the refund policy?'],
+    ['Notes Desk', 'notes', 'what did we decide this week?'],
   ]) {
     const result = await call('create_agent', { name, handle, instructions: 'Answer briefly.', firstAsk, idempotencyKey: `create-${handle}` });
     arrived[result.structuredContent.agent.agentId] = result;
   }
   await arrive(...Object.keys(arrived));
-  // Linear is someone else's own account, which the caller has yet to sign in to; the docs server allows no tools yet, so only Admin can fix it.
+  // Linear is someone else's own account, which the caller has yet to sign in to; none of the docs server's tools is marked as only reading.
   for (const [agentId, account] of [
     ['agent_linear_helper', {
       id: 'connection_linear_admin', providerId: 'linear', label: 'Linear', ownerKind: 'member', ownerMembershipId: f.admin.membership.id,
@@ -367,7 +372,7 @@ async function world() {
     ['agent_docs_helper', {
       id: 'connection_docs_helper', providerId: 'docs', label: 'Help center', ownerKind: 'team', createdByMembershipId: f.owner.membership.id,
       lifecycle: 'ready',
-      policy: { kind: 'mcp', url: 'https://mcp.help.example/mcp', transport: 'streamable-http', authMode: 'bearer', headerNames: [], allowedTools: [], discoveredTools: [{ name: 'search' }] },
+      policy: { kind: 'mcp', url: 'https://mcp.help.example/mcp', transport: 'streamable-http', authMode: 'bearer', headerNames: [], allowedTools: ['search'], discoveredTools: [{ name: 'search' }] },
     }],
   ]) {
     await f.config.putConnectionAccount({ workspaceId: teamId, secretRefId: `secret_${account.id}`, ...account });
@@ -756,12 +761,14 @@ try {
         assert.deepEqual([Object.keys(state), Object.keys(state.privateContent)], [['modelContent', 'privateContent'], ['card']], `${what}: ${written}`);
         assert.ok(Object.keys(state.privateContent.card).every((key) => ['version', 'told', 'outcome'].includes(key)), `${what}: ${written}`);
         assert.equal(state.modelContent, state.privateContent.card.told.join('\n'), `${what}: the model reads what the card told it`);
-        const { agentId, ...outcome } = state.privateContent.card.outcome ?? {};
-        assert.ok(agentId === undefined || outcome.kind === 'created', `${what}: an ID only for a created Agent: ${written}`);
+        const { agentId, runToken, ...outcome } = state.privateContent.card.outcome ?? {};
+        assert.ok(agentId === undefined || outcome.kind === 'created' || outcome.kind === 'checking', `${what}: an ID only for a created Agent or a run still going: ${written}`);
+        assert.ok(runToken === undefined || outcome.kind === 'checking', `${what}: a run's token only while it is still going: ${written}`);
+        assert.equal(state.modelContent.includes(runToken ?? '\u0000'), false, `${what}: the model never reads a run's token`);
         const besides = JSON.stringify({ modelContent: state.modelContent, card: { ...state.privateContent.card, outcome } });
         assert.doesNotMatch(besides, /agent_|changeset_|https?:/, `${what}: ${written}`);
         for (const id of ids) assert.equal(besides.includes(id), false, `${what}: ${id} kept`);
-        for (const secret of secrets) assert.equal(written.includes(secret), false, `${what}: ${secret} kept`);
+        for (const secret of secrets.filter((secret) => secret !== runToken)) assert.equal(written.includes(secret), false, `${what}: ${secret} kept`);
       }
     };
     /** The example's two messages: how many lines each shows, and whether it was cut short. */
@@ -1194,16 +1201,35 @@ try {
     await shot('4-running');
     await later(181_000);
     await browser.host('window.harness.holding = []; window.harness.answerHeld("fail")');
-    await shows('/taking longer than it should/', 'the card giving up');
+    await shows('/Still working on it\./', 'the card no longer waiting, the run still going');
     assert.deepEqual(await buttons(), ['Check again', 'Open in Slack']);
     await told(/^The person ran the Agent "Renewals Desk" \(@renewals\) once from the card, but its answer did not come back in time\.$/, 'Gave up');
     assert.match((await browser.host('window.harness.contexts')).at(-1), /^The person created the Agent "Renewals Desk".*\n/s,
       'the model still hears that the Agent was created');
     await plain('Gave up');
     await shot('4-gave-up');
+    const calls = async () => browser.host('window.harness.calls');
+    const practiced = (await calls()).filter((name) => name === 'practice_agent').length;
+    const readsBefore = (await calls()).filter((name) => name === 'get_practice_run').length;
     await browser.click('check_again');
-    await shows('/It\'s still answering\./', 'Check again, still running', 30_000);
+    for (let tries = 0; tries < 50 && (await calls()).filter((name) => name === 'get_practice_run').length === readsBefore; tries += 1) {
+      await new Promise((done) => setTimeout(done, 100));
+    }
+    await shows('/Still working on it\./', 'Check again, still running', 30_000);
+    assert.equal((await calls()).filter((name) => name === 'practice_agent').length, practiced, 'Check again reads the run, and starts none');
     await shot('4-still-answering');
+    if (host === 'chatgpt') {
+      await keptOnlyTold('Still working on it');
+      const kept = (await browser.host('window.harness.widgetStates')).at(-1);
+      assert.equal(kept.privateContent.card.outcome.kind, 'checking', 'the run\'s token, where ChatGPT hides it from its model');
+      // The chat reopens: the card reads that run once, and asks for nothing new.
+      const before = (await calls()).length;
+      await browser.host('window.harness.reload()');
+      await shows('/Still working on it\./', 'a reopened card, still working on it', 30_000);
+      await browser.waitFor('document.querySelectorAll(".cp-acts button:enabled").length >= 1', 'Check again, once the read answers');
+      assert.deepEqual((await calls()).slice(before), ['get_practice_run'], 'one read of the kept run on mount');
+      await shot('4-still-answering-reopened');
+    }
     // Check again once more, and the answer has come.
     runs.outcome = ANSWERED;
     await browser.click('check_again');
@@ -1259,13 +1285,19 @@ try {
     await refused('readyQuiet', 'out-of-usage', /This workspace is out of usage for now, so I can't start this one\. Once an Owner adds more, send it again\./, ['Open in Slack']);
     runs.outcome = ANSWERED;
     await refused('readySetup', 'setup', /Finish setting up Linear first, then try again\./, ['Finish its setup in Admin', 'Open in Slack']);
-    // A connection with no reads is left out of the run, which answers: the card draws the answer, never what was left out.
+    // A connection with no tool marked as only reading is left out of the run, which answers: one line says so, with its fix.
     await open('readyDocs');
     await browser.waitForTitle(/said hello to you in Slack$/, 10_000);
     await browser.click('try_once');
     await browser.waitFor('document.querySelectorAll(".cp-pane").length === 1', 'the answer of a run that left a connection out');
-    assert.doesNotMatch(await browser.inCard('document.querySelector(".cp-card").textContent'), /Help center/, 'nothing of what the run left out');
+    await shows('/Help center wasn\'t used: none of its tools are marked as ones that only read\./', 'the left-out line');
+    assert.deepEqual(await buttons(), ['Open in Slack', 'Mark Help center\'s read tools']);
     await shot('4-answered-partial');
+    await browser.click('try_fix');
+    await shows('/Finish it in the chat, then try again\./', 'the fix in the chat');
+    assert.equal((await browser.host('window.harness.messages')).at(-1)?.content?.[0]?.text, 'Mark Help center\'s read tools for Docs Helper.');
+    assert.deepEqual(await buttons(), ['Try again', 'Mark Help center\'s read tools']);
+    await shot('4-answered-partial-fixing');
 
     // Chickpea says another practice run is going: the card asks again every 5 s, and after a minute offers Try again.
     runs.refuse = { kind: 'in_progress' };
@@ -1286,7 +1318,9 @@ try {
     assert.ok(keys.length >= 3, 'asked again while it waited');
     assert.equal(new Set(keys).size, 1, 'every call for the press, Try again included, sends one key');
 
-    // Scene 5, continued: Try it again on the Saved card, after an edit to Renewals Desk's instructions.
+    // Scene 5, continued: Try it again on the Saved card, after an edit to Renewals Desk's instructions. Its
+    // first answer above, from before the edit, is Before; the store's repeat window holds, as in production.
+    const labels = () => browser.inCard('[...document.querySelectorAll(".cp-pane-label")].map((node) => node.textContent)');
     await open('changeRenewals');
     await browser.waitForTitle(/^Change Renewals Desk$/);
     await browser.click('save');
@@ -1294,41 +1328,50 @@ try {
     assert.deepEqual(await buttons(), ['Try it again', 'Undo'], 'the save changed how it answers its first question');
     await shot('5-saved-try-again');
     const starts = runs.starts.length;
-    await browser.click('try_once');
-    await browser.waitFor('document.querySelectorAll(".cp-pane").length === 1', 'After alone: no answer before this card');
-    assert.deepEqual(await browser.inCard('[...document.querySelectorAll(".cp-pane-label")].map((node) => node.textContent)'), ['After']);
-    await told(/^The person pressed "Try it again" for the Agent "Renewals Desk" \(@renewals\) on the card\. A practice answer is shown on the card\.$/, 'Tried again');
-    assert.equal(runs.starts.length, starts + 1, 'one run for the press');
-    assert.equal(runs.starts.at(-1).run.question, 'which renewals are due this month?', 'the first question, which the card never sends');
-    assert.deepEqual(await buttons(), ['Try it again', 'Undo']);
-    await shot('5-try-again-after');
     runs.outcome = ANSWERED_AFTER;
     await browser.click('try_once');
     await browser.waitFor('document.querySelectorAll(".cp-pane").length === 2', 'Before beside After');
-    assert.deepEqual(await browser.inCard('[...document.querySelectorAll(".cp-pane-label")].map((node) => node.textContent)'), ['Before', 'After']);
+    assert.deepEqual(await labels(), ['Before', 'After']);
+    await told(/^The person pressed "Try it again" for the Agent "Renewals Desk" \(@renewals\) on the card\. A practice answer is shown on the card\.$/, 'Tried again');
+    assert.equal(runs.starts.length, starts + 1, 'one run for the press');
+    assert.equal(runs.starts.at(-1).run.question, 'which renewals are due this month?', 'the first question, which the card never sends');
+    assert.match(await browser.inCard('document.querySelectorAll(".cp-pane-text")[0].textContent'), /^Two renewals are due this month/, 'the answer from before the edit');
     const after = await browser.inCard('document.querySelectorAll(".cp-pane-text")[1].textContent');
     assert.match(after, /Dana <dana@northwind\.example>/, 'the `<` the Agent wrote, drawn as text');
     assert.doesNotMatch(after, /&lt;|\*\*/, 'never &lt; or a Markdown mark');
     assert.doesNotMatch(await browser.inCard('document.querySelector(".cp-panes").innerHTML'), /<(?!\/?(section|h3|div)\b)/, 'the answer is text, never markup');
+    assert.deepEqual(await buttons(), ['Try it again', 'Undo']);
     const context = (await browser.host('window.harness.contexts')).at(-1);
     assert.doesNotMatch(context, /Northwind|renews/, 'the model hears that an answer is on the card, never the answer');
     await shot('5-try-again-before-after');
+    // Pressed again with nothing changed: the store gives the same run again, so the same two answers.
+    await browser.click('try_once');
+    await browser.waitFor('document.querySelectorAll(".cp-pane").length === 2', 'the same Before and After');
+    assert.equal(runs.starts.length, starts + 1, 'the repeat window: no second run');
     if (host === 'chatgpt') {
       await keptOnlyTold('Tried again');
       const kept = (await browser.host('window.harness.widgetStates')).at(-1);
-      assert.match(kept.privateContent.card.outcome.practice.answer, /^Northwind renews on the 18th/, 'the last answer, for Before, where ChatGPT hides it from its model');
-      assert.doesNotMatch(kept.modelContent, /Northwind/);
-      // The chat reopens: the Saved card comes back with Try it again, and the answer it kept is Before.
+      assert.deepEqual(kept.privateContent.card.outcome, { kind: 'done', summary: 'Saved Renewals Desk.', practice: true }, 'no answer kept');
+      // The chat reopens: the Saved card with Try it again, and Chickpea finds the answer from before the edit again.
       await browser.host('window.harness.reload()');
       await browser.waitForTitle(/^✓ Saved Renewals Desk$/);
       await browser.waitFor('document.querySelectorAll(".cp-acts button:enabled").length === 1', 'Try it again, once the read answers');
       assert.deepEqual(await buttons(), ['Try it again'], 'no Undo: a reopened card holds no token');
-      runs.outcome = ANSWERED;
       await browser.click('try_once');
-      await browser.waitFor('document.querySelectorAll(".cp-pane").length === 2', 'Before from what the card kept');
-      assert.match(await browser.inCard('document.querySelectorAll(".cp-pane-text")[0].textContent'), /^Northwind renews on the 18th/);
+      await browser.waitFor('document.querySelectorAll(".cp-pane").length === 2', 'Before from Chickpea');
+      assert.match(await browser.inCard('document.querySelectorAll(".cp-pane-text")[0].textContent'), /^Two renewals are due this month/);
       await shot('5-try-again-reopened');
     }
+    // An Agent no one practiced before the edit: the answer alone, with no label that claims a comparison.
+    runs.outcome = ANSWERED;
+    await open('changeNotes');
+    await browser.waitForTitle(/^Change Notes Desk$/);
+    await browser.click('save');
+    await browser.waitForTitle(/^✓ Saved Notes Desk$/);
+    await browser.click('try_once');
+    await browser.waitFor('document.querySelectorAll(".cp-pane").length === 1', 'the answer alone');
+    assert.deepEqual(await labels(), ['What it answered']);
+    await shot('5-try-again-alone');
     // The plan refused it as it would a direct message: its own sentence, on the Saved card's view.
     runs.outcome = { status: 'failed', failure: 'out_of_usage', result: { funding: { kind: 'credits_exhausted' } } };
     await open('changeRenewals');
