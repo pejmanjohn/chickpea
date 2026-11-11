@@ -87,16 +87,18 @@ const URL_CHAR = String.raw`[^\s"<>\\]`;
 const DOT = String.raw`[.\u3002\uFF0E\uFF61]`;
 // A character of a host's label: a letter in any script, a mark that goes with one, a digit, a hyphen or a percent escape.
 const LABEL_CHAR = String.raw`(?:[\p{L}\p{M}\p{N}-]|%[\da-f]{2})`;
-// Not inside a word, a percent escape, an email address or a path. A protocol-relative `//` may come right before it.
-const HOST_START = String.raw`(?<![\p{L}\p{M}\p{N}.\u3002\uFF0E\uFF61@_-])(?!(?<=%)[\da-f]{2})(?<!(?:^|[^/])\/)`;
+// Not inside a word, a percent escape or a path. A protocol-relative `//` may come right before it, and so may an `@`,
+// as written or as percent decoding wrote it, though a host behind one starts a link only in an authority behind `//`
+// (see authorityStart), not in an email address.
+const HOST_START = String.raw`(?<![\p{L}\p{M}\p{N}.\u3002\uFF0E\uFF61_-])(?!(?<=%)[\da-f]{2})(?<!(?:^|[^/])\/)`;
 // A name whose top-level label is letters, or the ASCII form of a name in another script.
 const NAME = String.raw`(?:${LABEL_CHAR}+${DOT})+(?:\p{L}[\p{L}\p{M}]+|xn--[a-z\d-]+)`;
 // A host as a link writes one: a name or a bracketed IP address.
 const READABLE_HOST = /^(?:[\p{L}\p{M}\p{N}.-]+|\[[\da-f:.]+\])$/iu;
 
 // A `/` and a `;`, `?` or `#`, each as written or as the stand-in percent decoding wrote (see withStandIns). Only a
-// scheme's `//` and the end of an authority or a host read them either way: no host holds one, and an address
-// percent-encoded whole is still one address. Past its host, the stand-in is the address's data.
+// scheme's `//` and the end of a host read them either way: no host holds one, and an address percent-encoded whole
+// is still one address. Past its host, the stand-in is the address's data, and so it is in its userinfo (see linkHost).
 const SLASH = String.raw`[/\u{F002F}]`;
 const HOST_END_MARK = String.raw`[;?#\u{F003B}\u{F003F}\u{F0023}]`;
 const SCHEME_URL = String.raw`\b(?:https?|wss?):${SLASH}{2}${URL_CHAR}+`;
@@ -107,10 +109,18 @@ const AFTER_HOST = String.raw`${DOT}?(?::\d+)?(?:${SLASH}${URL_CHAR}*|${HOST_END
 const SCHEMELESS_HOST = String.raw`${HOST_START}(?<host>(?:${LABEL_CHAR}+${DOT})*${LABEL_CHAR}+|\[[\da-f:.]+\])` +
   String.raw`(?=${DOT}?(?::\d+)?(?:${SLASH}|${HOST_END_MARK}${URL_CHAR}))`;
 const SCHEME = new RegExp(String.raw`^([a-z][a-z0-9+.-]*):${SLASH}{2}`, 'iu');
-const AUTHORITY_END = new RegExp(String.raw`${SLASH}|[?#\u{F003F}\u{F0023}]`, 'u');
+// The end of an authority as written, and as percent decoding wrote it, and what ends a userinfo either way.
+const AUTHORITY_END = /[/?#]/;
+const DECODED_AUTHORITY_END = /[\u{F002F}\u{F003F}\u{F0023}]/u;
+const AT_SIGNS = /[@\u{F0040}]/gu;
 // `;` and `|` end a host too: no host holds one, and a Slack link's label may follow `|`.
-const HOST_END = new RegExp(String.raw`${SLASH}|${HOST_END_MARK}|\|`, 'u');
+const HOST_END = new RegExp(String.raw`${SLASH}|${HOST_END_MARK}|\|`, 'gu');
 const LINKS = `${SCHEME_URL}|${SCHEMELESS_HOST}`;
+// What opens an authority without a scheme: `//`, as written or as percent decoding wrote it, which opens one only
+// where none is open. Anything else that ends a link, and a `/`, `?` or `#` as written, closes it.
+const AUTHORITY_MARKS = /(?<open>\/{2,})|(?<encoded>\u{F002F}{2,})|[\s"<>\\/?#]/gu;
+// An `@` percent decoding wrote, as its stand-in (see withStandIns).
+const ENCODED_AT_SIGN = '\u{F0040}';
 /** The rest of a scheme-less link, from the end of its host. */
 const REST_OF_LINK = new RegExp(AFTER_HOST, 'yiu');
 /** A name no URL can read: it may hide a login's site, so its link goes by the login rule. */
@@ -209,6 +219,12 @@ function plainPath(path: string): string {
   return path.split('/').map((segment) => segment === '' || PLAIN_SEGMENT.test(segment) ? segment : URL_PART_OMITTED).join('/');
 }
 
+/**
+ * A link's host with its port, where it ends, and the hostname a URL gives it. It is readable where a URL reads it
+ * and a link can write it as it is.
+ */
+type LinkHost = { host: string; end: number } & ({ readable: true; hostname: string } | { readable: false; hostname: string | undefined });
+
 export interface WebsiteLoginScrub {
   /**
    * Link rules, on text no other rule has changed: a replacement that holds a
@@ -217,13 +233,19 @@ export interface WebsiteLoginScrub {
    * code points. A link they rewrite comes back as they read it, and one they
    * leave stays as it was written. A hosted browser link goes whole, and so
    * do a hand-off message's link and every link in the same text that holds
-   * its URL. Every URL loses its userinfo. A host is a login's site when the
+   * its URL. Every URL loses its userinfo: everything before the last `@` of
+   * its authority, which ends at the first `/`, `?` or `#` as written. One of
+   * them, or an `@`, that percent decoding wrote is the userinfo's data, unless
+   * the link reads only as an address encoded once more (see linkHost). A host
+   * is a login's site when the
    * hostname a URL gives it is that site without one leading `www.`, or any
    * host under it, whatever script, encoding or IPv4 spelling it is written
    * in. A link without a scheme
    * counts on a login's site or the hosted browser's, or on a name no URL can
    * read; in a browser step, on any name, any IPv4 address in four decimal
-   * parts and any bracketed IPv6 address too. A URL on a login's site, or any
+   * parts and any bracketed IPv6 address too. Behind `//` and a userinfo, as
+   * written or percent-encoded, it counts on any site, and starts where its
+   * userinfo does; behind an email address's `@` it does not start. A URL on a login's site, or any
    * URL in a browser step, keeps its scheme and host, keeps a path segment
    * only where it is a word of up to 20 letters (so its numbers, IDs and
    * slugs go too), and loses everything from its first `;`, `?` or `#`. One
@@ -312,23 +334,49 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
     const { text } = view;
     budget.spend(text.length);
     const pattern = new RegExp(LINKS, 'giu');
+    // Where the authority behind the last `//` read starts, or -1 where none is open, and the next mark after it.
+    let authority = -1;
+    let read = 0;
+    let mark: RegExpExecArray | null | undefined;
+    /** The start of the authority without a scheme that `at` is in, or -1. Each mark is read once. */
+    const authorityStart = (at: number): number => {
+      for (;;) {
+        if (mark === undefined) {
+          AUTHORITY_MARKS.lastIndex = read;
+          mark = AUTHORITY_MARKS.exec(text);
+        }
+        if (!mark || mark.index >= at) return authority;
+        read = mark.index + mark[0].length;
+        if (mark.groups?.open !== undefined || (mark.groups?.encoded !== undefined && authority < 0)) authority = read;
+        else if (mark.groups?.encoded === undefined) authority = -1;
+        mark = undefined;
+      }
+    };
     let result = '';
     let from = 0;
     for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+      let at = match.index;
       let link = match[0];
       const host = match.groups?.host;
       if (host !== undefined) {
-        // Not a link this rule reads: reading goes on after its host, where another link may start.
-        if (!startsLink(host, browserStep)) continue;
+        // A host behind an `@` is an email address's, or a path's, but in an authority behind `//` it starts a link
+        // whatever site it is: its userinfo starts the link, and goes.
+        if (text[at - 1] === '@' || text.endsWith(ENCODED_AT_SIGN, at)) {
+          at = authorityStart(at);
+          if (at < 0) continue;
+        } else if (!startsLink(host, browserStep)) {
+          // Not a link this rule reads: reading goes on after its host, where another link may start.
+          continue;
+        }
         REST_OF_LINK.lastIndex = match.index + host.length;
-        link += REST_OF_LINK.exec(text)![0];
+        link = text.slice(at, match.index) + link + REST_OF_LINK.exec(text)![0];
       }
       // Slack writes a link as `<url|label>`. A browser step holds a page's text, not Slack's.
-      const slackLink = !browserStep && text[match.index - 1] === '<';
+      const slackLink = !browserStep && text[at - 1] === '<';
       const rewritten = scrubLink(link, browserStep, slackLink, handoffs);
-      pattern.lastIndex = match.index + link.length;
+      pattern.lastIndex = at + link.length;
       if (rewritten === link) continue;
-      const [start, end] = written(view, match.index, match.index + link.length);
+      const [start, end] = written(view, at, at + link.length);
       result += `${source.slice(from, Math.max(from, start))}${withoutStandIns(rewritten)}`;
       from = Math.max(from, end);
     }
@@ -338,19 +386,57 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
   const scrubRead = (text: string, browserStep: boolean, handoffs: ReadonlySet<string>): string =>
     scrubLinks(text, { text }, browserStep, handoffs);
 
+  /** The host that starts at `start` of what follows a link's scheme, with its port. */
+  const hostAt = (afterScheme: string, start: number): LinkHost => {
+    HOST_END.lastIndex = start;
+    const end = HOST_END.exec(afterScheme)?.index ?? afterScheme.length;
+    const host = afterScheme.slice(start, end);
+    const name = host.replace(/:\d*$/, '');
+    const hostname = readHost(name);
+    return hostname !== undefined && READABLE_HOST.test(name)
+      ? { host, end, readable: true, hostname }
+      : { host, end, readable: false, hostname };
+  };
+
+  /**
+   * The host of a link, given what follows its scheme. Everything before it is userinfo, which no link keeps,
+   * whatever it holds. A link whose `//` is written reads as a URL reads it: its authority ends at the first `/`, `?`
+   * or `#` as written, and its host follows the last `@` as written. One percent decoding wrote is the userinfo's
+   * data, as a URL's setters write a username or a password.
+   *
+   * A link reads otherwise where it may be an address percent-encoded once more: one without a scheme, one whose
+   * `//` decoding wrote, and one whose host would end at a `/`, `?`, `#` or `;` decoding wrote, which no URL reads
+   * as written. Its authority may end at any `/`, `?` or `#` decoding wrote, and its userinfo at any `@`, and an
+   * `@` may follow in its path, as an email address there writes one. So it is read from the first host it can
+   * have that is a login site or the hosted browser's, or that no URL can read and may hide either, and otherwise
+   * from the one after its last `@`.
+   */
+  const linkHost = (afterScheme: string, writtenScheme: boolean): LinkHost => {
+    const authorityEnd = afterScheme.search(AUTHORITY_END);
+    const authority = authorityEnd < 0 ? afterScheme : afterScheme.slice(0, authorityEnd);
+    if (writtenScheme) {
+      const written = hostAt(afterScheme, authority.lastIndexOf('@') + 1);
+      const next = afterScheme.codePointAt(written.end);
+      if (next === undefined || next < STAND_IN) return written;
+    }
+    // A host starts the authority or follows an `@`, and the authority can end after it only before the next `@`.
+    let from = 0;
+    AT_SIGNS.lastIndex = 0;
+    for (let sign = AT_SIGNS.exec(authority); sign; sign = AT_SIGNS.exec(authority)) {
+      if (DECODED_AUTHORITY_END.test(authority.slice(from, sign.index))) {
+        const read = hostAt(afterScheme, from);
+        if (!read.readable || loginSite(read.hostname) || browserbaseHost(read.hostname)) return read;
+      }
+      from = sign.index + sign[0].length;
+    }
+    return hostAt(afterScheme, from);
+  };
+
   const scrubLink = (link: string, browserStep: boolean, slackLink: boolean, handoffs: ReadonlySet<string>): string => {
     const scheme = SCHEME.exec(link);
     const afterScheme = scheme ? link.slice(scheme[0].length) : link;
-    // Userinfo, which no link keeps, ends at the last `@` before the path, whatever it holds.
-    const authorityEnd = afterScheme.search(AUTHORITY_END);
-    const authority = authorityEnd < 0 ? afterScheme : afterScheme.slice(0, authorityEnd);
-    const hostAndRest = afterScheme.slice(authority.lastIndexOf('@') + 1);
-    const hostEnd = hostAndRest.search(HOST_END);
-    const host = hostEnd < 0 ? hostAndRest : hostAndRest.slice(0, hostEnd);
-    const rest = hostEnd < 0 ? '' : hostAndRest.slice(hostEnd);
-    const name = host.replace(/:\d*$/, '');
-    const hostname = readHost(name);
-    const readable = hostname !== undefined && READABLE_HOST.test(name);
+    const { host, end: hostEnd, readable, hostname } = linkHost(afterScheme, scheme?.[0].endsWith('//') === true);
+    const rest = afterScheme.slice(hostEnd);
     // A `;`, `?` or `#` as written starts the query. One percent decoding wrote is the path's data.
     const pathEnd = rest.search(/[;?#]/);
     const path = pathEnd < 0 ? rest : rest.slice(0, pathEnd);
@@ -625,8 +711,8 @@ function linkView(written: string, maps: ViewMaps, budget: ScrubBudget): Written
 }
 
 // What ends a link (see URL_CHAR), and what divides one: a path's `/`, and what starts a query, a fragment, a
-// parameter, its value or a matrix part.
-const ADDRESS_STRUCTURE = /[\s"<>\\/?#&=;]/g;
+// parameter, its value or a matrix part, or ends a userinfo.
+const ADDRESS_STRUCTURE = /[\s"<>\\/?#&=;@]/g;
 /** Where a stand-in for a character of an address's structure is: that character's code point past this one, in a private-use plane. */
 const STAND_IN = 0xf0000;
 const STAND_INS = /[\u{F0000}-\u{FFFFD}]/gu;

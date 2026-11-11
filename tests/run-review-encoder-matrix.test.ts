@@ -28,6 +28,14 @@ interface Credential {
 const EVERY_FIELD: readonly Field[] = ['prose', 'browser step'];
 const HANDOFF_URL = 'https://live.provider.example/s/SynthLive53?view=full&t=SynthLive54';
 
+/** `address` with a user and a password, as the URL standard's setters write them. */
+function withUserinfo(address: string, user: string, password: string): string {
+  const url = new URL(address);
+  url.username = user;
+  url.password = password;
+  return url.href;
+}
+
 /**
  * Each kind of credential a copy could see. A typed password or one-time
  * code reaches a copy only in an address, as a form sent by GET or a
@@ -103,6 +111,20 @@ const CREDENTIALS: readonly Credential[] = [
     name: 'sign-in bearer with a slash in a path segment on a login site saved with www.',
     text: `https://www.ledger.example.org/magic/${encodeURIComponent('SynthCharlie/SynthDelta')}/done`,
     secrets: ['SynthCharlie', 'SynthDelta'],
+    fields: EVERY_FIELD,
+  },
+  // The setters write each `/`, `?`, `#`, `@` and `:` of a user or a password as its escape: the userinfo's data,
+  // which hides neither the login site nor its token, and goes whole.
+  {
+    name: 'password and token behind a userinfo that holds delimiters',
+    text: withUserinfo('https://billing.example.com/callback?code=SynthUserinfo81', 'SynthOps/SynthTeam', 'SynthPass/?#@:4417'),
+    secrets: ['SynthOps', 'SynthTeam', 'SynthPass', 'SynthUserinfo81'],
+    fields: EVERY_FIELD,
+  },
+  {
+    name: 'password in another site\'s userinfo that holds delimiters',
+    text: withUserinfo('https://accounts.other.example/inbox?q=kept', 'SynthCrew?SynthMate', 'SynthWord#4418'),
+    secrets: ['SynthCrew', 'SynthMate', 'SynthWord'],
     fields: EVERY_FIELD,
   },
   {
