@@ -330,6 +330,12 @@ test('a username that is a word of the record\'s IDs, model, tool names or error
     output: '[credential redacted] is current', error: '[credential redacted] timed out',
   });
   assert.equal(record.answer, 'The [credential redacted] run finished.');
+
+  const shaped = copy({
+    steps: [{ kind: 'tool', name: `lookup ${USERNAME}`, input: '{}' }],
+    error: { class: `for:${USERNAME}`, message: 'failed' },
+  });
+  assert.deepEqual(kept(shaped, ['ops.synthetic']), [], 'a token that is not shaped like one gets the username rule');
 });
 
 test('a username leaves prose written without spaces between words', () => {

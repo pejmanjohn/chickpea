@@ -165,7 +165,9 @@ export function buildRunReviewRecord(
     const browserStep = kind === 'browser';
     const linked = logins.links(text, browserStep);
     const keyed = keys.reduce((value, key) => value.split(key).join(CREDENTIAL_REPLACEMENT), linked);
-    const named = kind === 'fixed' ? keyed : logins.usernames(keyed, { browserStep, cut: text.length >= COLLECTED_FIELD_CHARS });
+    const named = kind === 'fixed' && FIXED_TOKEN.test(text)
+      ? keyed
+      : logins.usernames(keyed, { browserStep, cut: text.length >= COLLECTED_FIELD_CHARS });
     const scrubbed = redactCredentialLikeContent(named).replace(SLACK_USER_ID, (id) => pseudonymOf(id));
     const capped = capUtf8(scrubbed, RUN_REVIEW_FIELD_BYTES);
     if (capped.length < scrubbed.length) truncated = true;
@@ -241,6 +243,8 @@ const BROWSER_TOOLS: ReadonlySet<string> = new Set(BROWSER_TOOL_NAMES);
  * `agentId` files the copy, so tokens skip the username rule.
  */
 type FieldKind = 'text' | 'browser' | 'fixed';
+/** A fixed token's shape. One that holds anything else, such as an email address, gets the username rule after all. */
+const FIXED_TOKEN = /^[A-Za-z0-9_.:\/-]{1,200}$/;
 
 /** The tools whose input carries a key the person pasted. */
 const CONNECTION_KEY_TOOLS: ReadonlySet<string> = new Set(['save_connection_key', 'try_connection']);
