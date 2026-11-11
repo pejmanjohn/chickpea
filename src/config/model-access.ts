@@ -604,35 +604,6 @@ const CUSTOMER_PAYLOAD_MODES: Partial<Record<ModelAccessProviderId, PayloadMode>
   openai: { sharePrefix: shareOpenAIPrefix },
 };
 
-/**
- * What an Anthropic adaptive-thinking request asks its thinking blocks to
- * carry. `omitted` returns each with empty text and the signature that
- * replays it. Unset, or any other value, keeps pi-ai's `summarized`. pi-ai's
- * `streamSimple` does not forward its `thinkingDisplay` option, so the proxy
- * sets the built payload's.
- */
-export const ANTHROPIC_THINKING_DISPLAY_VARIABLE = 'CHICKPEA_ANTHROPIC_THINKING_DISPLAY';
-const ANTHROPIC_THINKING_DISPLAYS = ['summarized', 'omitted'] as const;
-type AnthropicThinkingDisplay = (typeof ANTHROPIC_THINKING_DISPLAYS)[number];
-
-function anthropicThinkingDisplay(env: PlatformEnv | undefined): AnthropicThinkingDisplay | undefined {
-  const value = env?.[ANTHROPIC_THINKING_DISPLAY_VARIABLE];
-  const display = typeof value === 'string' ? value.trim().toLowerCase() : undefined;
-  return ANTHROPIC_THINKING_DISPLAYS.find((known) => known === display);
-}
-
-function withThinkingDisplay(
-  callerHook: StreamOptions['onPayload'],
-  display: AnthropicThinkingDisplay,
-): NonNullable<StreamOptions['onPayload']> {
-  return async (payload, model) => {
-    const returned = await callerHook?.(payload, model);
-    const composed = returned === undefined ? payload : returned;
-    if (!isRecord(composed) || !isRecord(composed.thinking) || composed.thinking.type !== 'adaptive') return returned;
-    return { ...composed, thinking: { ...composed.thinking, display } };
-  };
-}
-
 type ListPricedProvider = keyof typeof LIST_PRICE_MODES;
 
 function listPricedProvider(providerId: string): ListPricedProvider | undefined {
@@ -675,14 +646,11 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
   const payloadMode = platformGrant
     ? listPriced && LIST_PRICE_MODES[listPriced]
     : bound && CUSTOMER_PAYLOAD_MODES[bound.grant.providerId];
-  const display = model.api === 'anthropic-messages' ? anthropicThinkingDisplay(cell.env) : undefined;
-  const callerHook = display ? withThinkingDisplay(options?.onPayload, display) : options?.onPayload;
-  const payloadHook = payloadMode && requestPayload(callerHook, payloadMode, {
+  const payloadHook = payloadMode && requestPayload(options?.onPayload, payloadMode, {
     requestId: request.requestId,
     scope: { installationId: cell.attribution.installationId },
     purpose: cell.purpose,
   });
-  const onPayload = payloadHook ? payloadHook.onPayload : display && callerHook;
   const send = (start: (model: TModel) => AssistantMessageEventStream) =>
     sendRequest(cell, sent, request, platformGrant, reader, payloadHook, start);
   if (!bound) return { model, options, redact: (stream) => stream, send };
@@ -694,7 +662,7 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
       apiKey: access.apiKey,
       ...(access.headers ? { headers: { ...options?.headers, ...access.headers } } : {}),
       ...(reader ? { fetch: reader.fetch } : {}),
-      ...(onPayload ? { onPayload } : {}),
+      ...(payloadHook ? { onPayload: payloadHook.onPayload } : {}),
     } as TOptions,
     redact: (stream) => withoutKeyInErrors(stream, access.apiKey),
     send,

@@ -102,14 +102,6 @@ test('an upgrade keeps the host answer release and its hold an installation set'
   const { vars } = overlayInstallation(config, installation, { worker: 'custom', profile: 'core' });
   assert.deepEqual([vars.CHICKPEA_SLACK_ANSWER_RELEASE, vars.CHICKPEA_SLACK_ANSWER_RELEASE_CHARS], ['host', '600']);
 });
-// Defect caught: an upgrade that refuses, or drops, an installation's Anthropic thinking display.
-test('an upgrade keeps the Anthropic thinking display an installation set', () => {
-  const remote: any = fixture();
-  remote.bindings.push({ name: 'CHICKPEA_ANTHROPIC_THINKING_DISPLAY', type: 'plain_text', text: 'omitted' });
-  const installation = validateInstallation(remote);
-  const config = { name: 'custom', vars: { CHICKPEA_APP_VERSION: '0.1.1', CHICKPEA_SOURCE_COMMIT: 'b'.repeat(40) }, d1_databases: [{ binding: 'AUTH_DB', database_name: 'auth', database_id: '' }], durable_objects: { bindings: [{ name: 'TAG_STATE', class_name: 'TagStateStore' }] }, ai: { binding: 'AI' }, assets: { binding: 'ASSETS' }, version_metadata: { binding: 'CF_VERSION_METADATA' } };
-  assert.equal(overlayInstallation(config, installation, { worker: 'custom', profile: 'core' }).vars.CHICKPEA_ANTHROPIC_THINKING_DISPLAY, 'omitted');
-});
 test('a retired variable does not block an upgrade and is not carried forward', () => {
   const value: any = fixture();
   value.bindings.push({ name: 'SLACK_TAG_UNASSIGNED_HINT', type: 'plain_text', text: 'false' });
