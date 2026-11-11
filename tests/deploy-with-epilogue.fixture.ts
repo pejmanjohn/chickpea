@@ -38,6 +38,8 @@ export function createHarness() {
   mkdirSync(authDir, { recursive: true });
   mkdirSync(path.join(root, 'src', 'config'), { recursive: true });
   copyFileSync(path.join(PROJECT_ROOT, 'src/config/qa-targets.ts'), path.join(root, 'src/config/qa-targets.ts'));
+  mkdirSync(path.join(root, 'src', 'state'), { recursive: true });
+  copyFileSync(path.join(PROJECT_ROOT, 'src/state/residency-hold.ts'), path.join(root, 'src/state/residency-hold.ts'));
   mkdirSync(releaseDir, { recursive: true });
   mkdirSync(authMigrationsDir, { recursive: true });
   mkdirSync(wranglerDir, { recursive: true });
@@ -510,6 +512,8 @@ export function writeCutoverArtifact(
     completeCanary?: boolean;
     /** SLACK_TAG_TURN_EXECUTOR in the artifact's vars. */
     turnExecutor?: string;
+    /** CHICKPEA_RESIDENCY_HOLD_MS in the artifact's vars, as an upgrade carries it over. */
+    residencyHold?: string;
     /** Omit the thread runner execution path from the bundle. */
     runnerSeams?: boolean;
     missingBinding?: string;
@@ -564,6 +568,7 @@ export function writeCutoverArtifact(
     vars: {
       SLACK_TAG_LEDGER_CANARY_CHANNELS: options.selector ?? '',
       ...(options.turnExecutor === undefined ? {} : { SLACK_TAG_TURN_EXECUTOR: options.turnExecutor }),
+      ...(options.residencyHold === undefined ? {} : { CHICKPEA_RESIDENCY_HOLD_MS: options.residencyHold }),
       ...(target ? {
         CHICKPEA_DEPLOY_TARGET: target,
         CHICKPEA_TELEMETRY_ENVIRONMENT: 'test',

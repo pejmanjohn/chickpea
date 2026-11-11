@@ -51,9 +51,11 @@ const LAZY_MODULES: Record<string, string> = {
   'src/slack/ui/card-set-message.ts': 'a card click redraw or an update_card call (channels/slack.ts, slack/ui/agent-card-redraw.ts)',
   'src/slack/ui/agent-card-redraw.ts': "update_card's first call (agents/slack-thread.ts)",
   'src/slack/funding-refusal-reply.ts': 'an out-of-usage reply or an Ask an Owner click (slack/run-turn.ts, channels/slack.ts)',
+  'src/slack/answer-release.ts': "a turn's shadow of the host answer release, with its latency log (slack/run-turn.ts)",
   'src/routines/pause-notice.ts': "a routine's out-of-usage pause, or the good run after it (routines/execution.ts)",
   'src/review/record.ts': "a run's Help improve Chickpea copy being built, after its reply (review/capture.ts)",
   'src/review/website-logins.ts': "a run's Help improve Chickpea copy being built, after its reply (review/record.ts, from review/capture.ts)",
+  'src/connections/service-error-text.ts': "a Composio-reported failure's reason (connections/providers/composio.ts)",
   'src/admin/usage-report.ts': "a hosted Usage report or activity page (admin/usage-api.ts)",
   'src/admin/billing-api.ts': "the Plan page's API, on its first request (admin/routes.ts)",
   'src/state/test-run-lifecycle.ts': "a state store's first test run, test-run alarm pass or cancellation pass (cloudflare.ts)",
@@ -61,6 +63,7 @@ const LAZY_MODULES: Record<string, string> = {
   'src/usage/test-run-usage.ts': 'the test-run lifecycle or tools (state/test-run-lifecycle.ts, management/mcp-v5/test-runs.ts)',
   'src/agents/test-run-plan.ts': 'the test-run instance port or tools (state/test-run-instance.ts, management/mcp-v5/test-runs.ts)',
   'src/management/mcp-v5/test-runs.ts': "try_agent_once's or get_test_run's first call (management/mcp-v5/tools.ts)",
+  'src/browser/approval.ts': "browser_open's or browser_act's first call (browser/tools.ts)",
 };
 
 /**

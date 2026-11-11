@@ -12,6 +12,7 @@ import {
   type BrowserToolsOptions,
 } from '../src/browser/tools.ts';
 import { BrowserTurnSession } from '../src/browser/turn-session.ts';
+import { TypedSecrets } from '../src/browser/redaction.ts';
 import { PENDING_CONTEXT_DELETIONS_SETTING } from '../src/browser/context-deletions.ts';
 import { createWebsiteLogin, deleteWebsiteLogin, getWebsiteLogin, type WebsiteLogin } from '../src/browser/logins.ts';
 import {
@@ -22,7 +23,17 @@ import {
 } from '../src/browser/provider.ts';
 import { browserHandoffMessage, createSlackRequesterNotifier } from '../src/browser/requester.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
-import { BROWSER_APPROVAL_INSTRUCTION, HOSTED_BROWSER_UNAVAILABLE_MESSAGE } from '../src/browser/messages.ts';
+import {
+  BROWSER_APPROVAL_HOLDS_SECRET_MESSAGE,
+  BROWSER_APPROVAL_INSTRUCTION,
+  BROWSER_RECORDING_WITHHELD_MESSAGE,
+  BROWSER_TOO_LARGE_TO_CHECK_MESSAGE,
+  HOSTED_BROWSER_UNAVAILABLE_MESSAGE,
+  browserApprovalScreenshotWithheldNote,
+  browserApprovedStepFailedMessage,
+  browserRecordingWithheldMessage,
+  browserScreenshotWithheldMessage,
+} from '../src/browser/messages.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import type { SlackArtifactStageInput, SlackArtifactStageOutcome } from '../src/sandbox/artifact-tool.ts';
 import { FakeCdpSocket, fakeBrowserProvider } from './helpers/fake-cdp-socket.ts';
@@ -42,11 +53,24 @@ const TREE: AXNode[] = [
   ax('3', 'link', { parentId: '1', label: 'Plans', backendDOMNodeId: 7 }),
 ];
 
-/** A scripted page: navigation sets the URL and title, and fires the load event. */
+const FIELD_ROLES = new Set(['textbox', 'searchbox', 'combobox']);
+
+/**
+ * A scripted page: navigation sets the URL and title, and fires the load
+ * event. The browser's DOM snapshot reports each field of the tree as an
+ * input holding its value, of type password when `passwordFields` names it,
+ * and every name and value as a string, as it reports text, attributes and
+ * CSS content.
+ */
 class ScriptedBrowser extends FakeCdpSocket {
   url = 'about:blank';
   title = '';
   tree: AXNode[] = TREE;
+  /** Fields whose input type is password, by backend node id. */
+  readonly passwordFields = new Set<number>();
+  /** Screenshots the browser took. */
+  captures = 0;
+  private loads = 0;
 
   constructor() {
     super();
@@ -55,8 +79,9 @@ class ScriptedBrowser extends FakeCdpSocket {
     this.responders.set('Page.navigate', (message) => {
       this.url = String(message.params.url);
       this.title = this.url.includes('duckduckgo') ? 'Search results' : 'Example Pricing';
+      this.loads += 1;
       queueMicrotask(() => this.emitEvent('Page.loadEventFired', {}, 'page-1'));
-      return { result: { frameId: 'f1', loaderId: 'l1' } };
+      return { result: { frameId: 'f1', loaderId: `l${this.loads}` } };
     });
     this.responders.set('Runtime.evaluate', (message) => ({
       result: String(message.params.expression).includes('location.href')
@@ -65,9 +90,32 @@ class ScriptedBrowser extends FakeCdpSocket {
     }));
     this.responders.set('Accessibility.getFullAXTree', () => ({ result: { nodes: this.tree } }));
     this.responders.set('DOM.getBoxModel', () => ({ result: { model: { content: [0, 0, 10, 0, 10, 10, 0, 10] } } }));
-    this.responders.set('Page.captureScreenshot', (message) => ({
-      result: { data: toBase64(message.params.format === 'jpeg' ? JPEG_BYTES : PNG_BYTES) },
+    this.responders.set('Page.captureScreenshot', (message) => {
+      this.captures += 1;
+      return { result: { data: toBase64(message.params.format === 'jpeg' ? JPEG_BYTES : PNG_BYTES) } };
+    });
+    this.responders.set('Page.getFrameTree', () => ({ result: { frameTree: { frame: { id: 'f1', loaderId: `l${this.loads}` } } } }));
+    this.responders.set('DOM.describeNode', (message) => ({
+      result: { node: { nodeName: 'INPUT', attributes: ['type', this.passwordFields.has(Number(message.params.backendNodeId)) ? 'password' : 'text'] } },
     }));
+    this.responders.set('DOMSnapshot.captureSnapshot', () => ({ result: this.domSnapshot() }));
+  }
+
+  private domSnapshot() {
+    const strings: string[] = [];
+    const at = (text: string) => (strings.includes(text) ? strings.indexOf(text) : strings.push(text) - 1);
+    const fields = this.tree.filter((node) => FIELD_ROLES.has(String(node.role?.value)) && node.backendDOMNodeId !== undefined);
+    const nodes = {
+      nodeName: fields.map(() => at('INPUT')),
+      backendNodeId: fields.map((node) => node.backendDOMNodeId!),
+      attributes: fields.map((node) => [at('type'), at(this.passwordFields.has(node.backendDOMNodeId!) ? 'password' : 'text')]),
+      inputValue: {
+        index: fields.map((_, index) => index),
+        value: fields.map((node) => (node.value?.value ? at(String(node.value.value)) : -1)),
+      },
+    };
+    for (const node of this.tree) for (const text of [node.name?.value, node.value?.value]) if (text) at(String(text));
+    return { documents: [{ nodes }], strings };
   }
 }
 
@@ -260,6 +308,16 @@ test('browser_look answers from a JPEG screenshot, or explains that the model ca
     error: "This Agent's model cannot look at images. Use browser_snapshot instead.",
   });
   await blind.session.close();
+});
+
+test('browser_look redacts a typed secret its answer repeats', async () => {
+  const { run, session } = setup({ inspectScreenshot: async () => 'The password box shows Synthetic-Pass-0042 in plain text.' });
+  await run('browser_open', { url: 'https://example.com/pricing' });
+  session.addRedaction('Synthetic-Pass-0042');
+  assert.deepEqual(await run('browser_look', { question: 'What does the password box show?' }), {
+    answer: 'The password box shows [redacted] in plain text.',
+  });
+  await session.close();
 });
 
 test('only browser_open starts a session; the other page tools need an open page', async () => {
@@ -482,18 +540,80 @@ class EchoingLoginBrowser extends ScriptedBrowser {
   }
 }
 
+/**
+ * A sign-in page with its show-password toggle on: each field displays what
+ * was typed into it, the password is repeated on a line of its own, and the
+ * form falls back to a GET submission that puts the fields in the URL.
+ */
+class RevealingLoginBrowser extends EchoingLoginBrowser {
+  private focused = 0;
+  private readonly typed = new Map<number, string>();
+  /** `shown` is what a field displays of what was typed into it, by its backend node id. */
+  constructor(shown: (field: number, typed: string) => string = (_, typed) => typed) {
+    super();
+    this.responders.set('DOM.focus', (message) => {
+      this.focused = Number(message.params.backendNodeId);
+      return { result: {} };
+    });
+    this.responders.set('Input.insertText', (message) => {
+      const text = String(message.params.text);
+      this.inserted.push(text);
+      this.typed.set(this.focused, text);
+      const password = this.typed.get(12);
+      const [root, ...fields] = LOGIN_TREE;
+      this.tree = [
+        { ...root!, childIds: [...root!.childIds!, ...(password === undefined ? [] : ['9'])] },
+        ...fields.map((node) => {
+          const value = this.typed.get(node.backendDOMNodeId!);
+          return value === undefined ? node : { ...node, value: { type: 'string', value: shown(node.backendDOMNodeId!, value) } };
+        }),
+        ...(password === undefined ? [] : [ax('9', 'StaticText', { parentId: '1', label: password })]),
+      ];
+      this.url = `https://github.com/session?${new URLSearchParams({ login: this.typed.get(11) ?? '', password: password ?? '' })}`;
+      return { result: {} };
+    });
+  }
+}
+
+/** The forms in which a page or the tools could show `secret`: as typed, collapsed, escaped, URL-encoded, or cut short. */
+function revealedForms(secret: string): string[] {
+  const collapsed = secret.replace(/\s+/g, ' ').trim();
+  const forms = [
+    secret,
+    collapsed,
+    collapsed.replace(/\\/g, '\\\\').replace(/"/g, '\\"'),
+    encodeURIComponent(secret),
+    new URLSearchParams({ s: secret }).toString().slice(2),
+  ];
+  if (collapsed.length > 12) forms.push(collapsed.slice(0, 12));
+  return [...new Set(forms)];
+}
+
+function assertSecretHidden(output: Record<string, unknown>, secret: string, label: string): void {
+  const shown = ['snapshot', 'url', 'title', 'error', 'description']
+    .map((key) => output[key])
+    .filter((value): value is string => typeof value === 'string')
+    .join('\n');
+  for (const form of revealedForms(secret)) {
+    assert.ok(!shown.includes(form), `${label}: ${JSON.stringify(form)} reached the model in\n${shown}`);
+  }
+}
+
 async function loginSetup(options: {
   provider?: Partial<BrowserProvider>;
   notify?: boolean;
   withLogins?: boolean;
   settings?: SqliteSettingsStore;
+  password?: string;
+  browser?: () => EchoingLoginBrowser;
+  inspectScreenshot?: BrowserToolsOptions['inspectScreenshot'];
 } = {}) {
   const settings = options.settings ?? new SqliteSettingsStore(':memory:');
   const deps = { store: settings, keyring: generateCredentialKeyring('browser_tools_test') };
   const existing = await import('../src/browser/logins.ts').then((m) => m.listWebsiteLogins(settings));
   const github = existing.find((login) => login.host === 'github.com') ?? await createWebsiteLogin(deps, {
     host: 'github.com', label: 'GitHub', ownerKind: 'team', createdByMembershipId: 'mem_owner',
-    method: 'credentials', username: USERNAME, password: PASSWORD, totpSeed: TOTP_SEED,
+    method: 'credentials', username: USERNAME, password: options.password ?? PASSWORD, totpSeed: TOTP_SEED,
   });
   const portal = existing.find((login) => login.host === 'portal.example.com') ?? await createWebsiteLogin(deps, {
     host: 'portal.example.com', label: 'Portal', ownerKind: 'team', createdByMembershipId: 'mem_owner', method: 'handoff',
@@ -518,7 +638,7 @@ async function loginSetup(options: {
   const session = new BrowserTurnSession({
     provider: fake.provider,
     connect: async () => {
-      const browser = new EchoingLoginBrowser();
+      const browser = options.browser?.() ?? new EchoingLoginBrowser();
       browsers.push(browser);
       return browser;
     },
@@ -526,10 +646,15 @@ async function loginSetup(options: {
   });
   const notices: Array<{ text: string }> = [];
   const warnings: unknown[] = [];
+  const staged: SlackArtifactStageInput[] = [];
   const tools = createBrowserTools({
     session,
-    stageArtifact: async (input) => ({ attached: true, byteLength: input.bytes.byteLength }),
+    stageArtifact: async (input) => {
+      staged.push(input);
+      return { attached: true, byteLength: input.bytes.byteLength };
+    },
     transportMaxBytes: async () => undefined,
+    ...(options.inspectScreenshot ? { inspectScreenshot: options.inspectScreenshot } : {}),
     sleep: async () => undefined,
     now: () => new Date(Date.UTC(2026, 8, 22, 14, 5)),
     log: { warn: (...args: unknown[]) => { warnings.push(args); } },
@@ -547,7 +672,7 @@ async function loginSetup(options: {
     });
     return JSON.parse(JSON.stringify(result.output));
   };
-  return { settings, deps, github, portal, granted, state, browsers, session, notices, warnings, run, ...fake };
+  return { settings, deps, github, portal, granted, state, browsers, session, notices, warnings, staged, run, ...fake };
 }
 
 test('browser_open binds a granted host and its subdomains, and switches sessions when the site changes', async () => {
@@ -699,6 +824,157 @@ test('browser_sign_in without a submit ref presses Enter in the last field, and 
   const failed = await run('browser_sign_in', { loginId: github.id, passwordRef: 'e2' });
   assert.ok(failed.error);
   assert.doesNotMatch(JSON.stringify(failed), new RegExp(PASSWORD));
+  await session.close();
+});
+
+const SHOWN_PASSWORDS = [
+  ['a quote and a backslash', 'Synth"etic\\Pass-0042'],
+  ['runs of whitespace', 'Synthetic  Pass   0042'],
+  ['more than 120 characters', `Synthetic-Passphrase-${'x7Q'.repeat(45)}`],
+  ['fewer than 4 characters', 'Q7!'],
+] as const;
+
+for (const [shape, password] of SHOWN_PASSWORDS) {
+  test(`a password with ${shape} stays redacted when the page shows it`, async () => {
+    const { run, github, session } = await loginSetup({ password, browser: () => new RevealingLoginBrowser() });
+    await run('browser_open', { url: 'https://github.com/login' });
+    const signedIn = await run('browser_sign_in', { loginId: github.id, usernameRef: 'e1', passwordRef: 'e2', submitRef: 'e4' });
+    assert.match(signedIn.snapshot, /textbox "Password" \[ref=e2\] value="\[redacted\]"/);
+    assert.match(signedIn.snapshot, /textbox "Email" \[ref=e1\] value="octo@example\.com"/);
+    assertSecretHidden(signedIn, password, 'browser_sign_in');
+    assertSecretHidden(await run('browser_snapshot'), password, 'browser_snapshot');
+    await session.close();
+  });
+}
+
+test('a field that holds a password or code shows [redacted], whatever it holds: a cut prefix or one bullet per digit', async () => {
+  const password = 'Synthetic-Pass-1234';
+  // A password field with maxlength="10", and a code field masked as usual.
+  const shown = (field: number, typed: string) => (field === 12 ? typed.slice(0, 10) : field === 13 ? '•'.repeat(typed.length) : typed);
+  const { run, browsers, github, session } = await loginSetup({ password, browser: () => new RevealingLoginBrowser(shown) });
+  await run('browser_open', { url: 'https://github.com/login' });
+  const signedIn = await run('browser_sign_in', { loginId: github.id, usernameRef: 'e1', passwordRef: 'e2', codeRef: 'e3', submitRef: 'e4' });
+  assert.deepEqual(browsers[0]!.tree.flatMap((node) => (node.value ? [node.value.value] : [])), [USERNAME, 'Synthetic-', '••••••']);
+  assert.match(signedIn.snapshot, /textbox "Email" \[ref=e1\] value="octo@example\.com"/);
+  assert.match(signedIn.snapshot, /textbox "Password" \[ref=e2\] value="\[redacted\]"/);
+  assert.match(signedIn.snapshot, /textbox "Authentication code" \[ref=e3\] value="\[redacted\]"/);
+  assert.doesNotMatch(signedIn.snapshot, /Synthetic-"|•/);
+  await session.close();
+});
+
+test('no picture leaves the browser while a field the sign-in filled holds its value; once the form is gone, one does', async () => {
+  const password = 'Synthetic-Pass-1234';
+  const looked: unknown[] = [];
+  const { run, browsers, github, session, staged, warnings } = await loginSetup({
+    password,
+    browser: () => new RevealingLoginBrowser(),
+    inspectScreenshot: async (input) => {
+      looked.push(input);
+      return 'A welcome page.';
+    },
+  });
+  await run('browser_open', { url: 'https://github.com/login' });
+  await run('browser_sign_in', { loginId: github.id, usernameRef: 'e1', passwordRef: 'e2', submitRef: 'e4' });
+  const browser = browsers[0]!;
+  warnings.length = 0;
+  const field = browserScreenshotWithheldMessage('field');
+  assert.deepEqual(await run('browser_screenshot', {}), { attached: false, error: field });
+  assert.deepEqual(await run('browser_look', { question: 'What does the page show?' }), { error: field });
+  assert.equal(browser.captures, 0);
+  assert.equal(staged.length, 0);
+  assert.equal(looked.length, 0);
+  assert.deepEqual(warnings, [
+    ['browser_screenshot withheld a picture of the page', { reason: 'field' }],
+    ['browser_look withheld a picture of the page', { reason: 'field' }],
+  ]);
+
+  // A single-page app signs in without navigating: the form goes, and the page still shows the password.
+  browser.tree = [ax('1', 'RootWebArea', { childIds: ['2', '9'] }), ax('2', 'heading', { parentId: '1', label: 'Welcome', backendDOMNodeId: 5 }),
+    ax('9', 'StaticText', { parentId: '1', label: `You typed ${password}` })];
+  assert.deepEqual(await run('browser_screenshot', {}), { attached: false, error: browserScreenshotWithheldMessage('text') });
+  assert.equal(browser.captures, 0);
+  browser.tree = browser.tree.slice(0, 2);
+  assert.equal((await run('browser_screenshot', {})).attached, true);
+  assert.deepEqual(await run('browser_look', { question: 'What does the page show?' }), { answer: 'A welcome page.' });
+  assert.equal(browser.captures, 2);
+  await session.close();
+});
+
+test('a password field holding a value withholds every picture, though no secret was typed this turn', async () => {
+  const { run, browsers, session, staged } = await loginSetup({ browser: () => new RevealingLoginBrowser() });
+  await run('browser_open', { url: 'https://github.com/login' });
+  const browser = browsers[0]!;
+  browser.passwordFields.add(12);
+  browser.tree = browser.tree.map((node) => (node.backendDOMNodeId === 12 ? { ...node, value: { type: 'string', value: '•••••' } } : node));
+  assert.deepEqual(await run('browser_screenshot', {}), { attached: false, error: browserScreenshotWithheldMessage('field') });
+  assert.deepEqual(await run('browser_recording', {}), { attached: false, error: browserRecordingWithheldMessage('field') });
+  assert.match((await run('browser_snapshot')).snapshot, /textbox "Password" \[ref=e2\] value="\[redacted\]"/);
+  assert.equal(browser.captures, 0);
+  assert.equal(staged.length, 0);
+  assert.equal(session.active, true);
+  await session.close();
+});
+
+test('a page read too large to check for a typed secret is withheld whole, with a log line that holds none of it', async () => {
+  const { run, browsers, github, session, warnings } = await loginSetup({ password: `${'x'.repeat(1000)}y` });
+  await run('browser_open', { url: 'https://github.com/login' });
+  await run('browser_sign_in', { loginId: github.id, passwordRef: 'e2' });
+  const browser = browsers[0]!;
+  // Each line alone fits the budget; the page read as a whole does not.
+  const ids = Array.from({ length: 10 }, (_, index) => String(index + 2));
+  browser.tree = [
+    ax('1', 'RootWebArea', { childIds: ids }),
+    ...ids.map((id, index) => ax(id, 'StaticText', { parentId: '1', label: 'x'.repeat(100_000 - index) })),
+  ];
+  warnings.length = 0;
+  assert.deepEqual(await run('browser_snapshot'), { error: BROWSER_TOO_LARGE_TO_CHECK_MESSAGE });
+  assert.deepEqual(warnings, [['browser_snapshot failed', { error: BROWSER_TOO_LARGE_TO_CHECK_MESSAGE }]]);
+  await session.close();
+});
+
+test('an error too large to check for a typed secret is replaced whole', () => {
+  const secrets = new TypedSecrets();
+  secrets.add(`${'x'.repeat(1000)}y`);
+  assert.equal(browserErrorMessage(new Error('x'.repeat(1_000_000)), (text) => secrets.redact(text)), BROWSER_TOO_LARGE_TO_CHECK_MESSAGE);
+});
+
+test('browser_recording is withheld, and the session left open, once a password was typed in it', async () => {
+  const { run, github, session, staged, ended } = await loginSetup();
+  await run('browser_open', { url: 'https://github.com/login' });
+  await run('browser_sign_in', { loginId: github.id, usernameRef: 'e1', submitRef: 'e4' });
+  assert.equal(session.typedSecret, false, 'a username alone is no secret');
+  await run('browser_sign_in', { loginId: github.id, passwordRef: 'e2', submitRef: 'e4' });
+  assert.deepEqual(await run('browser_recording', {}), { attached: false, error: BROWSER_RECORDING_WITHHELD_MESSAGE });
+  assert.equal(session.active, true);
+  assert.deepEqual(ended, []);
+  assert.equal(staged.length, 0);
+  await session.close();
+});
+
+test('an error that echoes a typed password in escaped form stays redacted', async () => {
+  const password = 'Synth"etic\\Pass-0042';
+  const { run, browsers, github, session } = await loginSetup({ password });
+  await run('browser_open', { url: 'https://github.com/login' });
+  await run('browser_sign_in', { loginId: github.id, passwordRef: 'e2' });
+  browsers[0]!.responders.set('Input.insertText', () => ({
+    error: { code: -1, message: `insertText rejected ${JSON.stringify({ text: password })}` },
+  }));
+  const failed = await run('browser_sign_in', { loginId: github.id, passwordRef: 'e2' });
+  assert.match(failed.error, /insertText rejected/);
+  assertSecretHidden(failed, password, 'browser_sign_in error');
+  await session.close();
+});
+
+test('an error that names an address with a typed password encoded in its path or fragment stays redacted', async () => {
+  const password = 'Synth@tic Pass-0042';
+  const { run, browsers, github, session } = await loginSetup({ password });
+  await run('browser_open', { url: 'https://github.com/login' });
+  await run('browser_sign_in', { loginId: github.id, passwordRef: 'e2' });
+  browsers[0]!.responders.set('Input.insertText', () => ({
+    error: { code: -1, message: `Cannot reach https://github.com/reset/${encodeURIComponent(password)}/confirm#next=Synth@tic%20Pass-0042` },
+  }));
+  const failed = await run('browser_sign_in', { loginId: github.id, passwordRef: 'e2' });
+  assert.equal(failed.error, 'CDP Input.insertText failed: Cannot reach https://github.com/reset/[redacted]/confirm#next=[redacted]');
   await session.close();
 });
 
@@ -990,6 +1266,7 @@ async function actTurn(options: {
     sleep: async () => undefined,
   });
   const staged: SlackArtifactStageInput[] = [];
+  const logs: string[] = [];
   let waiting = 0;
   let liveReads = 0;
   const tools = createBrowserTools({
@@ -1001,6 +1278,7 @@ async function actTurn(options: {
     transportMaxBytes: async () => undefined,
     sleep: async () => undefined,
     now: () => new Date(Date.UTC(2026, 8, 22, 14, 5)),
+    log: { warn: (...args: unknown[]) => { logs.push(JSON.stringify(args)); } },
     logins: { granted, readLive: async () => { liveReads += 1; return live; }, dependencies: async () => deps },
     ...(options.approvals === false ? {} : {
       approvals: {
@@ -1023,7 +1301,7 @@ async function actTurn(options: {
     });
     return JSON.parse(JSON.stringify(result.output));
   };
-  return { run, session, browsers, staged, billing, waiting: () => waiting, liveReads: () => liveReads, ...fake };
+  return { run, session, browsers, staged, logs, billing, waiting: () => waiting, liveReads: () => liveReads, ...fake };
 }
 
 async function approveFromSlack(settings: SqliteSettingsStore, messageTs: string) {
@@ -1104,6 +1382,198 @@ test('an action login holds a data-changing step for approval with a screenshot,
   assert.match((await approved.run('browser_act', { ref: 'e4', action: 'click', approvedActionId: held.actionId })).error, /already used/);
   assert.deepEqual(browser.clicked(), [21, 23]);
   await approved.session.close();
+});
+
+test('a step whose description would cut a typed secret short is never held', async () => {
+  const secret = 'Synthetic-Recovery-Phrase-0042-alpha-bravo';
+  // The name holds only the start of the secret; cut to length, the description leaves it before an ellipsis.
+  const tree = FORM_TREE.map((node) => (node.nodeId === '4'
+    ? { ...node, name: { type: 'computedString', value: 'Confirm the change for the account whose recovery phrase begins Synthetic-Recovery-Phrase' } }
+    : node));
+  const settings = new SqliteSettingsStore(':memory:');
+  const turn = await actTurn({ settings, messageTs: TURN_1_TS, tree });
+  await turn.run('browser_open', { url: 'https://billing.example.com/plan' });
+  turn.session.addRedaction(secret);
+  const refused = await turn.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
+  assert.deepEqual(refused, { error: BROWSER_APPROVAL_HOLDS_SECRET_MESSAGE });
+  assert.equal(turn.staged.length, 0);
+  assert.equal(await settings.getSetting('browseraction_index'), undefined, 'nothing stored');
+  await turn.session.close();
+});
+
+test('an approval asks without a screenshot when the page shows a typed secret', async () => {
+  const secret = 'Synthetic-Recovery-Phrase-0042-alpha-bravo';
+  const tree = [
+    { ...FORM_TREE[0]!, childIds: [...FORM_TREE[0]!.childIds!, '9'] },
+    ...FORM_TREE.slice(1),
+    ax('9', 'StaticText', { parentId: '1', label: `Your recovery phrase is ${secret}` }),
+  ];
+  const turn = await actTurn({ settings: new SqliteSettingsStore(':memory:'), messageTs: TURN_1_TS, tree });
+  await turn.run('browser_open', { url: 'https://billing.example.com/plan' });
+  turn.session.addRedaction(secret);
+  const held = await turn.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
+  assert.equal(held.awaitingApproval, true);
+  assert.equal(held.note, browserApprovalScreenshotWithheldNote('text'));
+  assert.equal(turn.staged.length, 0);
+  assert.equal(turn.browsers[0]!.captures, 0);
+  await turn.session.close();
+});
+
+test('a step is never held while the page address, its title, its element, its text or a step before it holds a typed secret', async () => {
+  const secret = 'Synthetic-Recovery-Phrase-0042-alpha-bravo';
+  const cases: Array<[string, (turn: Awaited<ReturnType<typeof actTurn>>) => Promise<Record<string, unknown>>]> = [
+    ['address', async (turn) => {
+      // A sign-in sent as a GET form leaves the password in the address.
+      turn.browsers[0]!.url = `https://billing.example.com/plan?password=${encodeURIComponent(secret)}`;
+      return turn.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
+    }],
+    ['short code in the address', async (turn) => {
+      // Only a whole part of the address can be a code this short.
+      turn.session.addRedaction('Ab1');
+      turn.browsers[0]!.url = 'https://billing.example.com/plan?code=Ab1';
+      return turn.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
+    }],
+    ['title', async (turn) => {
+      turn.browsers[0]!.title = `Signed in with ${secret}`;
+      return turn.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
+    }],
+    ['element', async (turn) => {
+      turn.browsers[0]!.tree = FORM_TREE.map((node) => (node.nodeId === '4' ? { ...node, name: { type: 'computedString', value: `Confirm ${secret}` } } : node));
+      await turn.run('browser_snapshot');
+      return turn.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
+    }],
+    ['text', async (turn) => turn.run('browser_act', { ref: 'e1', action: 'type', text: `phrase ${secret}`, mayChangeData: true })],
+    ['step before', async (turn) => {
+      turn.browsers[0]!.tree = FORM_TREE.map((node) => (node.nodeId === '2' ? { ...node, name: { type: 'computedString', value: `Name for ${secret}` } } : node));
+      await turn.run('browser_snapshot');
+      await turn.run('browser_act', { ref: 'e1', action: 'type', text: 'Ada' });
+      return turn.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
+    }],
+  ];
+  const control = new SqliteSettingsStore(':memory:');
+  const held = await actTurn({ settings: control, messageTs: TURN_1_TS });
+  await held.run('browser_open', { url: 'https://billing.example.com/plan' });
+  held.session.addRedaction(secret);
+  assert.equal((await held.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true })).awaitingApproval, true);
+  assert.notEqual(await control.getSetting('browseraction_index'), undefined, 'a held step is stored');
+  await held.session.close();
+  for (const [where, ask] of cases) {
+    const settings = new SqliteSettingsStore(':memory:');
+    const turn = await actTurn({ settings, messageTs: TURN_1_TS });
+    await turn.run('browser_open', { url: 'https://billing.example.com/plan' });
+    turn.session.addRedaction(secret);
+    const refused = await ask(turn);
+    assert.deepEqual(refused, { error: BROWSER_APPROVAL_HOLDS_SECRET_MESSAGE }, where);
+    assert.equal(turn.waiting(), 0, where);
+    assert.equal(turn.staged.length, 0, where);
+    assert.equal(await settings.getSetting('browseraction_index'), undefined, `${where}: nothing stored`);
+    await turn.session.close();
+  }
+});
+
+test('a press step whose key is a typed secret is never held, so no later turn can replay it', async () => {
+  const secret = 'Synthetic-Pass-1234';
+  const settings = new SqliteSettingsStore(':memory:');
+  const turn = await actTurn({ settings, messageTs: TURN_1_TS });
+  await turn.run('browser_open', { url: 'https://billing.example.com/plan' });
+  turn.session.addRedaction(secret);
+  const refused = await turn.run('browser_act', { ref: 'e3', action: 'press', key: secret, mayChangeData: true });
+  assert.deepEqual(refused, { error: BROWSER_APPROVAL_HOLDS_SECRET_MESSAGE });
+  // A key sent with another action is stored too, though no description shows it.
+  const stray = await turn.run('browser_act', { ref: 'e3', action: 'click', key: secret, mayChangeData: true });
+  assert.deepEqual(stray, { error: BROWSER_APPROVAL_HOLDS_SECRET_MESSAGE });
+  assert.equal(turn.waiting(), 0);
+  assert.equal(turn.staged.length, 0);
+  assert.equal(await settings.getSetting('browseraction_index'), undefined, 'nothing stored');
+  await turn.session.close();
+  settings.close();
+});
+
+test('a press step with a key the browser cannot press is refused before it is held, without repeating the key', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const turn = await actTurn({ settings, messageTs: TURN_1_TS });
+  await turn.run('browser_open', { url: 'https://billing.example.com/plan' });
+  const refused = await turn.run('browser_act', { ref: 'e3', action: 'press', key: 'Hyperdrive', mayChangeData: true });
+  assert.match(refused.error, /^Unsupported key\. Use a single character or one of: Enter, Tab,/);
+  assert.doesNotMatch(refused.error, /Hyperdrive/);
+  assert.equal(turn.waiting(), 0);
+  assert.equal(await settings.getSetting('browseraction_index'), undefined, 'nothing stored');
+  const held = await turn.run('browser_act', { ref: 'e3', action: 'press', key: 'Enter', mayChangeData: true });
+  assert.equal(held.awaitingApproval, true);
+  assert.equal(held.description, 'press Enter');
+  await turn.session.close();
+  settings.close();
+});
+
+test('an approved step that fails names itself by the description the person approved, and repeats nothing else it stored', async () => {
+  const secret = 'Synthetic-Pass-1234';
+  // A dropdown without the option asked for: the browser's error repeats what was asked.
+  const noSuchOption = (browser: FormBrowser) => {
+    browser.responders.set('DOM.resolveNode', () => ({ result: { object: { objectId: 'node-1' } } }));
+    browser.responders.set('Runtime.callFunctionOn', () => ({ result: { result: { value: { ok: false, options: ['Monthly'] } } } }));
+  };
+  // Records holding a secret the asking turn did not know, such as one the person typed in a hand-off: a key, an address, an option or a step before.
+  const stored: Array<[string, Record<string, unknown>, ((browser: FormBrowser) => void)?]> = [
+    ['key', { action: 'press', key: secret }],
+    ['address', { url: `https://billing.example.com/reset/${secret}/confirm` }, (browser) => {
+      browser.responders.set('Page.navigate', () => ({ result: { frameId: 'f1', errorText: 'net::ERR_ABORTED' } }));
+    }],
+    ['option', { action: 'select', text: secret }, noSuchOption],
+    ['step before', { prelude: [{ role: 'textbox', name: 'Customer name', occurrence: 0, action: 'select', text: secret }] }, noSuchOption],
+  ];
+  for (const [what, patch, prepare] of stored) {
+    const settings = new SqliteSettingsStore(':memory:');
+    const ask = await actTurn({ settings, messageTs: TURN_1_TS });
+    await ask.run('browser_open', { url: 'https://billing.example.com/plan' });
+    const held = await ask.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
+    await ask.session.close();
+    const key = `browseraction_${held.actionId}`;
+    await settings.setSetting(key, JSON.stringify({ ...JSON.parse((await settings.getSetting(key))!), ...patch }));
+    await approveFromSlack(settings, TURN_2_TS);
+    const turn = await actTurn({ settings, messageTs: TURN_2_TS, ...(prepare ? { prepare } : {}) });
+    const output = await turn.run('browser_act', { ref: 'e3', action: 'click', approvedActionId: held.actionId });
+    assert.deepEqual(output, { error: browserApprovedStepFailedMessage('click "Confirm change"') }, what);
+    assert.ok(turn.logs.length > 0, what);
+    for (const line of turn.logs) assert.ok(!line.includes(secret), `${what}: ${line}`);
+    await turn.session.close();
+    settings.close();
+  }
+});
+
+test('a step held before every string it stores was checked for a typed secret is refused before its page opens, and repeats nothing', async () => {
+  const secret = 'Synthetic-Pass-1234';
+  const withoutButton = FORM_TREE.filter((node) => node.nodeId !== '4');
+  // What an earlier version could store, on a page that still has the button or no longer does.
+  const stored: Array<[string, Record<string, unknown>, AXNode[]]> = [
+    ['address', { url: `https://billing.example.com/reset/${secret}/confirm` }, FORM_TREE],
+    ['address, button gone', { url: `https://billing.example.com/reset/${secret}/confirm` }, withoutButton],
+    ['title', { title: `Reset ${secret}` }, FORM_TREE],
+    ['step before', { prelude: [{ role: 'textbox', name: 'Customer name', occurrence: 0, action: 'type', text: secret }] }, FORM_TREE],
+    ['nothing secret', {}, FORM_TREE],
+  ];
+  for (const [what, patch, tree] of stored) {
+    const settings = new SqliteSettingsStore(':memory:');
+    const ask = await actTurn({ settings, messageTs: TURN_1_TS });
+    await ask.run('browser_open', { url: 'https://billing.example.com/plan' });
+    const held = await ask.run('browser_act', { ref: 'e3', action: 'click', mayChangeData: true });
+    await ask.session.close();
+    const key = `browseraction_${held.actionId}`;
+    const older = JSON.parse((await settings.getSetting(key))!);
+    delete older.format;
+    await settings.setSetting(key, JSON.stringify({ ...older, ...patch }));
+    await approveFromSlack(settings, TURN_2_TS);
+    const turn = await actTurn({ settings, messageTs: TURN_2_TS, tree });
+    const output = await turn.run('browser_act', { ref: 'e3', action: 'click', approvedActionId: held.actionId });
+    for (const line of [JSON.stringify(output), ...turn.logs]) assert.ok(!line.includes(secret), `${what}: ${line}`);
+    assert.deepEqual(Object.keys(output), ['error'], what);
+    assert.match(output.error, /before Chickpea was updated/, what);
+    assert.equal(turn.browsers.length, 0, `${what}: no page opened`);
+    // Spent: taking it again finds it expired.
+    const again = await turn.run('browser_act', { ref: 'e3', action: 'click', approvedActionId: held.actionId });
+    assert.match(again.error, /approval expired/, what);
+    await turn.session.close();
+    settings.close();
+  }
 });
 
 test('an approved step waits for its element when the reopened page is still rendering', async () => {

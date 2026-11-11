@@ -11,6 +11,7 @@ import {
   ComposioConfigurationStateError,
   describeComposioConfiguration,
   disableStoredComposioConfiguration,
+  inspectComposioAuthConfigOverrides,
   recordComposioPreparationResult,
   resolveComposioConfiguration,
   saveStoredComposioProjectKey,
@@ -309,6 +310,24 @@ test('legacy auth config IDs are validated lane-locally against the active proje
   assert.match(warnings[0] ?? '', /"reason":"incompatible"/);
   assert.equal(warnings.join('\n').includes('ak_project_b'), false);
   assert.equal(warnings.join('\n').includes('ac_project_a_gmail'), false);
+});
+
+test("the Admin auth-config inspector's Composio client never asks npm for a newer SDK", async (t) => {
+  const requested: URL[] = [];
+  t.mock.method(globalThis, 'fetch', async (input: string | URL | Request) => {
+    requested.push(new URL(input instanceof Request ? input.url : String(input)));
+    return Response.json({ error: { message: 'not found', code: 404, status: 404 } }, { status: 404 });
+  });
+
+  const overrides = await inspectComposioAuthConfigOverrides('ak_synthetic_project', {
+    env: { COMPOSIO_GMAIL_READ_AUTH_CONFIG_ID: 'ac_synthetic_gmail_read' },
+  });
+  await new Promise((done) => setTimeout(done, 50));
+
+  assert.equal(overrides.gmail?.read?.id, 'ac_synthetic_gmail_read');
+  assert.ok(requested.some(({ pathname }) => pathname.endsWith('/auth_configs/ac_synthetic_gmail_read')),
+    'the inspector asked Composio for the auth config');
+  assert.deepEqual(requested.filter(({ hostname }) => hostname === 'registry.npmjs.org'), []);
 });
 
 test('deployment preparation replaces corrupt or future-version metadata', async () => {

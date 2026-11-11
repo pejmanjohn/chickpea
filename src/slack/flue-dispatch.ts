@@ -61,6 +61,7 @@ import {
 import { opaqueId } from '../work/admission.ts';
 import { settlementFailureFacts } from './agent-failure-diagnostics.ts';
 import type { WorkTraceCorrelation } from '../work/trace-correlation.ts';
+import type { TurnWork } from '../observability/runtime-latency.ts';
 import type {
   FlueDispatchEnvelopeV1,
   FlueDispatchReceiptV1,
@@ -288,6 +289,13 @@ interface PromptSlackAgentInput {
    * naming the thread's agent object and its staging call, which activate it.
    */
   onAgentStaged?: (ms: number) => void;
+  /** The turn's first dispatch is about to be sent: its model starts. Must not throw. */
+  onDispatchSent?: () => void;
+  /**
+   * The model work the reply's observation has seen for its submission,
+   * after each chunk that changes it. Must not throw.
+   */
+  onTurnWork?: (work: TurnWork) => void;
   /** Images already in this Slack conversation, collected by the host fetch. */
   threadImages?: readonly ThreadImageRecord[];
   threadFileIds?: readonly string[];
@@ -495,6 +503,7 @@ export async function promptSlackThreadAgent(
   if (!receipt) {
     let admitted: DispatchReceipt;
     try {
+      input.onDispatchSent?.();
       admitted = await handle.dispatch({
         message: envelope.message,
         ...(envelope.initialData ? { initialData: envelope.initialData } : {}),
@@ -586,7 +595,7 @@ export async function promptSlackThreadAgent(
     terminalText.onEvent(chunk);
     progressiveRelay?.onEvent(chunk);
     milestones?.onEvent(chunk);
-    toolCalls.onEvent(chunk);
+    if (toolCalls.onEvent(chunk)) input.onTurnWork?.(toolCalls.work());
     input.onConversationChunk?.(chunk, submissionId);
   };
   input.onObservationStarted?.();
@@ -758,6 +767,10 @@ type ConversationMessage = Extract<ConversationStreamChunk, { type: 'message-app
 class SubmissionToolCalls {
   readonly #ids = new Set<string>();
   readonly #messageIds = new Set<string>();
+  /** Model steps: each step's turn id; Flue folds every step into one message id. */
+  readonly #steps = new Set<string>();
+  /** Each tool call's own reported duration. */
+  readonly #toolMs = new Map<string, number>();
   constructor(private readonly submissionId: string) {}
 
   get count(): number {
@@ -769,27 +782,48 @@ class SubmissionToolCalls {
     return this.count > 0 ? { toolCallCount: this.count } : {};
   }
 
-  onEvent(chunk: ConversationStreamChunk): void {
+  /** Steps this observation saw start, tool calls, and the tools' summed durations. */
+  work(): TurnWork {
+    let toolMs = 0;
+    for (const ms of this.#toolMs.values()) toolMs += ms;
+    return { modelSteps: this.#steps.size, toolCalls: this.count, toolMs };
+  }
+
+  /** Whether the chunk changed the submission's work. */
+  onEvent(chunk: ConversationStreamChunk): boolean {
+    const before = this.#steps.size + this.#ids.size + this.#toolMs.size;
     if (chunk.type === 'message-started') {
-      if (chunk.submissionId === this.submissionId) this.#messageIds.add(chunk.messageId);
+      if (chunk.submissionId === this.submissionId) {
+        this.#messageIds.add(chunk.messageId);
+        this.#steps.add(chunk.turnId ?? chunk.messageId);
+      }
     } else if (chunk.type === 'tool-input') {
       if (this.#messageIds.has(chunk.messageId)) this.#add(chunk.toolName, chunk.toolCallId);
+    } else if (chunk.type === 'tool-output' || chunk.type === 'tool-output-error') {
+      this.#timed(chunk.toolCallId, chunk.durationMs);
     } else if (chunk.type === 'conversation-reset') {
       for (const message of chunk.snapshot.messages) this.#observe(message);
     } else if (chunk.type === 'message-appended') {
       this.#observe(chunk.message);
     }
+    return this.#steps.size + this.#ids.size + this.#toolMs.size !== before;
   }
 
   #observe(message: ConversationMessage): void {
     if (message.submissionId !== this.submissionId) return;
     for (const part of message.parts) {
-      if (part.type === 'dynamic-tool') this.#add(part.toolName, part.toolCallId);
+      if (part.type !== 'dynamic-tool') continue;
+      this.#add(part.toolName, part.toolCallId);
+      if (part.state !== 'input-available') this.#timed(part.toolCallId, part.durationMs);
     }
   }
 
   #add(toolName: string, toolCallId: string): void {
     if (toolName !== SLACK_STREAM_ANSWER_TOOL_NAME) this.#ids.add(toolCallId);
+  }
+
+  #timed(toolCallId: string, durationMs: number | undefined): void {
+    if (durationMs !== undefined && this.#ids.has(toolCallId)) this.#toolMs.set(toolCallId, durationMs);
   }
 }
 

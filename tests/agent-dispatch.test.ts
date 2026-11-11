@@ -32,6 +32,7 @@ import { SLACK_TABLE_PRESENTATION_DATA_NAME } from '../src/slack/table-presentat
 import { CODING_WORKSPACE_USE_DATA_NAME } from '../src/sandbox/workspace-use.ts';
 import { WORKSPACE_MILESTONE_DATA_NAME, type WorkspaceMilestoneRecord } from '../src/slack/coding-worker-run.ts';
 import { createBoundedAgentReplyReader } from '../src/slack/bounded-agent-observation.ts';
+import type { TurnWork } from '../src/observability/runtime-latency.ts';
 
 function envelope(type: string, message: string): string {
   return JSON.stringify({ error: { type, message, details: 'private detail' } });
@@ -712,6 +713,59 @@ test('a failed reply carries the tools its own submission called, apart from its
   assert.deepEqual(declaredState.flueSettlement, {
     outcome: 'failed', settledAt: 1_800_000_000_000, failureKind: 'invalid-output',
   }, 'a run that called no tool settles as it always has');
+});
+
+// Defects caught: model start marked after the dispatch returns, or on a
+// reattach that sends none; steps counted per message (Flue folds every step
+// into the response's message id) instead of per model step; another
+// submission's work counted; a redelivered chunk counted twice; and tool time
+// missing for a tool whose output or failure timed it.
+test('a dispatch marks its model start as it is sent, and the turn sees its own submission\'s steps, tools and tool time', async () => {
+  const order: string[] = [];
+  const works: TurnWork[] = [];
+  const started = (messageId: string, submissionId: string, turnId: string) => ({
+    type: 'message-started', conversationId: 'c', messageId, submissionId, turnId,
+  });
+  const toolInput = (messageId: string, toolCallId: string) => ({
+    type: 'tool-input', conversationId: 'c', messageId, toolCallId, toolName: 'read_slack_channel', input: {},
+  });
+  const chunks = [
+    started('earlier', 'submission_earlier', 'turn_old'),
+    toolInput('earlier', 'call_old'),
+    { type: 'tool-output', conversationId: 'c', toolCallId: 'call_old', output: {}, durationMs: 9_000 },
+    started('response', RECEIPT.submissionId, 'step_1'),
+    toolInput('response', 'call_a'),
+    { type: 'tool-output', conversationId: 'c', toolCallId: 'call_a', output: {}, durationMs: 1_200 },
+    started('response', RECEIPT.submissionId, 'step_2'),
+    toolInput('response', 'call_b'),
+    { type: 'tool-output-error', conversationId: 'c', toolCallId: 'call_b', errorText: 'U_LATENCY', durationMs: 300 },
+    started('response', RECEIPT.submissionId, 'step_2'),
+    started('response', RECEIPT.submissionId, 'step_3'),
+  ];
+  const agent = (dispatched: () => void) => handle({
+    async dispatch() {
+      dispatched();
+      return RECEIPT;
+    },
+    async read(_receipt, options) {
+      chunks.forEach((chunk, index) => options?.onEvent?.({ ...chunk, position: { batch: 1, index } } as never));
+      return { text: 'done', data: {}, metadata: {}, submissionId: RECEIPT.submissionId };
+    },
+  });
+  await promptSlackThreadAgent({
+    ...promptInput(state(), agent(() => order.push('dispatch'))),
+    onDispatchSent: () => order.push('model start'),
+    onTurnWork: (work) => works.push(work),
+  });
+  assert.deepEqual(order, ['model start', 'dispatch']);
+  assert.deepEqual(works.at(-1), { modelSteps: 3, toolCalls: 2, toolMs: 1_500 });
+
+  order.length = 0;
+  await promptSlackThreadAgent({
+    ...promptInput(state({ dispatchEnvelope: ENVELOPE, dispatchReceipt: RECEIPT }), agent(() => order.push('dispatch'))),
+    onDispatchSent: () => order.push('model start'),
+  });
+  assert.deepEqual(order, [], 'a reattached turn sends no dispatch and marks no model start');
 });
 
 test('short punctuation, structured results and ordinary long answers remain valid', async () => {

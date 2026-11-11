@@ -34,6 +34,7 @@ import type { TurnJob } from '../src/slack/turn-job-types.ts';
 import { TurnJobStoreLogic, type PendingTurnJob } from '../src/slack/turn-jobs.ts';
 import type { SlackEvent } from '../src/slack/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
+import { ResidencyHold, residencyHoldMs } from '../src/state/residency-hold.ts';
 import { AGENT_MENTION, message, withLane, delivery, type Lane } from './helpers/gateway-admission-lane.ts';
 
 /**
@@ -71,13 +72,15 @@ const HandoffProbe = vm.runInNewContext(
     `${['RELAY_BATCH_WINDOW_MS', 'KEEP_WARM_WINDOW_MS', 'KEEP_WARM_TICK_MS', 'localSlackPresentationState'].map(moduleStatement).join('\n')}
 class HandoffProbe { ${[
       'admitSlackTurn', 'dispatchToRunners', 'admitToRunner', 'wakeAgentAtHandoff', 'showStatusAtHandoff',
-      'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode', 'keepWarmTickAt',
+      'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode', 'keepWarmTickAt', 'hold',
     ].map(stateMethod).join('\n')} }\nHandoffProbe`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
   ).outputText,
   {
     Date,
     Promise,
+    ResidencyHold,
+    residencyHoldMs,
     console: { warn() {} },
     MAX_TURN_DRAIN_BATCH: 16,
     RUNNER_DISPATCH_MAX_PAGES: 4,

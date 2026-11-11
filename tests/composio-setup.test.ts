@@ -385,6 +385,50 @@ test('the create response survives a stale list and prevents duplicate defaults 
   });
 });
 
+test('a failed create is sent again unless reading back finds the config it made', async () => {
+  await withDependencies(async ({ dependencies }) => {
+    await saveStoredComposioProjectKey('ak_retry_setup_key', dependencies);
+    const configs = new Map<string, ComposioAuthConfigLike[]>();
+    const base = setupClient(configs).authConfigs!;
+    const attempts = new Map<string, number>();
+    const client: ComposioClientLike = {
+      ...setupClient(configs),
+      authConfigs: {
+        ...base,
+        async create(toolkit, options, requestOptions) {
+          const attempt = (attempts.get(toolkit) ?? 0) + 1;
+          attempts.set(toolkit, attempt);
+          if (toolkit === 'gmail' && attempt === 1) {
+            // Refused before it acted.
+            throw Object.assign(new Error('synthetic rate limit'), {
+              status: 429,
+              headers: new Headers({ 'retry-after': '0' }),
+            });
+          }
+          const created = await base.create(toolkit, options, requestOptions);
+          if (toolkit === 'googlecalendar' && attempt === 1) {
+            // Acted, and then its response was lost.
+            throw Object.assign(new Error('synthetic gateway failure'), { status: 503 });
+          }
+          return created;
+        },
+      },
+    };
+
+    const result = await prepareResolvedComposioManagedAuthConfigs({
+      ...dependencies,
+      createClient: async () => client,
+    });
+
+    assert.equal(result.status, 'ready');
+    assert.equal(attempts.get('gmail'), 2);
+    assert.equal(result.authConfigIds.gmail?.read, 'ac_gmail_created');
+    assert.equal(attempts.get('googlecalendar'), 1);
+    assert.deepEqual(configs.get('googlecalendar')?.map(({ id }) => id), ['ac_googlecalendar_created']);
+    assert.equal(result.authConfigIds.googlecalendar?.read, 'ac_googlecalendar_created');
+  });
+});
+
 test('a durable setup lease rejects a concurrent preparation request', async () => {
   await withDependencies(async ({ dependencies }) => {
     await saveStoredComposioProjectKey('ak_concurrent_setup_key', dependencies);
