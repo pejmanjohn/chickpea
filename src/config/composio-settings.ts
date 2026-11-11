@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 import type { ManagedAccessLane } from '../connections/catalog/index.ts';
 import { MANAGED_CONNECTOR_CATALOG } from '../connections/catalog/index.ts';
-import { isComposioAuthConfigId } from '../connections/providers/composio.ts';
+import { isComposioAuthConfigId, newComposioSdk } from '../connections/providers/composio.ts';
 import { loadCredentialKeyring } from '../slack/credential-keyring.ts';
 import {
   decryptSlackSecretEnvelope,
@@ -1040,8 +1040,7 @@ function mergeAuthConfigIds(
 async function createDefaultAuthConfigInspector(apiKey: string): Promise<(
   input: { apiKey: string; authConfigId: string },
 ) => Promise<ComposioInspectedAuthConfig>> {
-  const { Composio } = await import('@composio/core');
-  const client = new Composio({ apiKey, allowTracking: false, disableVersionCheck: true });
+  const client = await newComposioSdk(apiKey);
   return async (input) => {
     const value = await client.authConfigs.get(input.authConfigId, {
       signal: AbortSignal.timeout(10_000),

@@ -1709,9 +1709,11 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
       if (!authConfigId) {
         throw new Error('managed auth config is unavailable');
       }
-      const client = await this.client(apiKey);
-      if (!client.connectedAccounts) throw new Error('authorization is unavailable');
-      const request = await client.connectedAccounts.link(
+      const { connectedAccounts } = await this.client(apiKey);
+      if (!connectedAccounts) throw new Error('authorization is unavailable');
+      // A retry after a lost response leaves the account that attempt allocated unfinished:
+      // no one holds its link, so it gets no credentials, and its link expires.
+      const request = await retryComposioWrite(() => connectedAccounts.link(
         input.principalRef,
         authConfigId,
         {
@@ -1722,7 +1724,7 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
           ...(input.returnUrl ? { callbackUrl: input.returnUrl } : {}),
         },
         { signal },
-      );
+      ), signal);
       if (/^[A-Za-z0-9_.:@-]{1,256}$/.test(request.id)) {
         allocatedAuthorizationRef = request.id;
       }
@@ -3425,17 +3427,96 @@ function googleAdsNextPageToken(data: Record<string, unknown>): string | undefin
   return token && token.length <= 2_000 ? token : undefined;
 }
 
-export async function createComposioClient(
-  input: { apiKey: string },
-): Promise<ComposioClientLike> {
+/** Every Composio SDK client Chickpea builds, so each sends only the project key it is given. */
+export async function newComposioSdk(apiKey: string) {
   const { Composio } = await import('@composio/core');
-  const client = new Composio({
-    apiKey: input.apiKey,
+  return new Composio({
+    apiKey,
+    // Null stops the SDK reading COMPOSIO_USER_API_KEY and COMPOSIO_ORG_API_KEY from the
+    // environment and choosing one of them over the project key per operation.
+    userApiKey: null,
+    orgApiKey: null,
     allowTracking: false,
     // Otherwise every client fetches npm's latest version and logs an upgrade notice.
     disableVersionCheck: true,
     sensitiveFileUploadProtection: true,
   });
+}
+
+const COMPOSIO_WRITE_RETRIES = 2;
+const COMPOSIO_WRITE_MAX_RETRY_AFTER_MS = 2_000;
+
+/**
+ * The SDK sends a POST once. This sends a Composio write again after a transient failure, at
+ * most twice, as the SDK's 0.17.0 client did. It retries after no response, a 5xx, or a 429
+ * whose Retry-After is at most two seconds. A longer Retry-After fails at once, so a person
+ * starting a sign-in does not wait on it. `write` learns when it is a retry, so it can first
+ * read back what the lost attempt may have created.
+ */
+export async function retryComposioWrite<T>(
+  write: (retry: boolean) => Promise<T>,
+  signal?: AbortSignal,
+  sleep: (ms: number, signal?: AbortSignal) => Promise<void> = abortableDelay,
+): Promise<T> {
+  for (let retries = 0; ; retries += 1) {
+    try {
+      return await write(retries > 0);
+    } catch (error) {
+      const delayMs = retries < COMPOSIO_WRITE_RETRIES && !signal?.aborted
+        ? composioWriteRetryDelayMs(error, retries)
+        : undefined;
+      if (delayMs === undefined) throw error;
+      await sleep(delayMs, signal);
+      if (signal?.aborted) throw error;
+    }
+  }
+}
+
+function composioWriteRetryDelayMs(error: unknown, retries: number): number | undefined {
+  const backoffMs = 500 * 2 ** retries;
+  const status = safeHttpStatus(error);
+  if (status === 429) {
+    if (safeHeader(error, 'retry-after') === undefined) return backoffMs;
+    const retryAfterMs = safeRetryAfterMs(error);
+    return retryAfterMs !== undefined && retryAfterMs <= COMPOSIO_WRITE_MAX_RETRY_AFTER_MS
+      ? retryAfterMs
+      : undefined;
+  }
+  if (status !== undefined) return status >= 500 ? backoffMs : undefined;
+  return composioConnectionFailed(error) ? backoffMs : undefined;
+}
+
+/**
+ * The Composio client's error for a request that got no response. Its timeout subclass is not
+ * one: the write ran for a minute and may have landed.
+ */
+function composioConnectionFailed(error: unknown): boolean {
+  const visited = new Set<unknown>();
+  let current = error;
+  for (let depth = 0; depth < 8 && current instanceof Error && !visited.has(current); depth += 1) {
+    visited.add(current);
+    if (current.constructor.name === 'APIConnectionError') return true;
+    current = current.cause;
+  }
+  return false;
+}
+
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener('abort', done, { once: true });
+  });
+}
+
+export async function createComposioClient(
+  input: { apiKey: string },
+): Promise<ComposioClientLike> {
+  const client = await newComposioSdk(input.apiKey);
   return {
     authConfigs: {
       list: (query, requestOptions) => client.authConfigs.list(query, requestOptions),
