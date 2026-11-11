@@ -12,7 +12,6 @@ import { BrowserTurnSession } from '../src/browser/turn-session.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { SqliteSettingsStore, type SettingsStore } from '../src/config/settings-store.ts';
 import { startRunReview, type RunReviewEnding } from '../src/review/capture.ts';
-import { COLLECTED_FIELD_CHARS } from '../src/review/collector.ts';
 import { configureRunReview, type RunReviewPort } from '../src/review/port.ts';
 import {
   buildRunReviewRecord,
@@ -117,7 +116,7 @@ test('a URL on a login\'s site, or any URL in a browser step, keeps its scheme, 
   assert.deepEqual(kept(record, [
     'SYNTHMAGIC0123', 'SYNTHPASS', 'SYNTHRESETTOKEN', 'SYNTHGUIDE42', 'SYNTHSESSION', 'SYNTHTOKEN789',
   ]), []);
-  assert.equal(record.trigger.text, 'Use <http://billing.example.com/magic?[omitted]|billing.example.com/magic?[omitted]> ' +
+  assert.equal(record.trigger.text, 'Use <http://billing.example.com/magic?[omitted]> ' +
     'or https://search.example/x, and see https://search.example/?q=kept#top');
   assert.equal(record.context[0]?.text, 'Reset: https://ledger.example.net/reset/[omitted]');
   const [opened, snapshot] = record.steps;
@@ -151,6 +150,55 @@ test('a page\'s address keeps its \' and |, and a JSON-escaped & or =, inside th
   assert.equal(opened.input, '{"url":"https://portal.example.org/users/o\'brien/callback?[omitted]"}');
   assert.match(opened.output ?? '', /"url":"https:\/\/billing\.example\.com\/callback\?\[omitted\]"/);
   assert.equal(JSON.parse(read.output ?? '{}').text, '{"link":"https://billing.example.com/magic?[omitted]","next":"x"}');
+});
+
+test('in prose and Slack text a URL keeps its \' and |, a link inside another goes by its own rule, and a Browserbase link needs no scheme', () => {
+  const record = copy({
+    trigger: {
+      author: 'U012ABCDEF3',
+      text: 'Try https://billing.example.com/users/o\'brien/callback?code=SYNTHCODE123 and ' +
+        '<https://billing.example.com/cb?scope=read|write&code=SYNTHCODE456|callback>',
+      files: [],
+    },
+    context: [{
+      author: 'U012ABCDEF3', role: 'human', files: [],
+      text: '<https://go.example.org/r|https://billing.example.com/cb?code=SYNTHCODE789> or ' +
+        'https://go.example.org/r?next=https://ledger.example.net/cb?code=SYNTHCODE012',
+    }],
+    answer: 'Watch at www.browserbase.com/devtools-fullscreen/inspector.html?wss=connect.browserbase.com/debug/SYNTHSESS ' +
+      'or browserbase.com/sessions/SYNTHSESS2 now',
+  });
+  assert.deepEqual(kept(record, ['SYNTHCODE', 'SYNTHSESS', 'browserbase']), []);
+  assert.equal(record.trigger.text,
+    'Try https://billing.example.com/users/o\'brien/callback?[omitted] and <https://billing.example.com/cb?[omitted]>');
+  assert.equal(record.context[0]?.text, '<https://go.example.org/r|https://billing.example.com/cb?[omitted]> or ' +
+    'https://go.example.org/r?next=https://ledger.example.net/cb?[omitted]');
+  assert.equal(record.answer, `Watch at ${BROWSER_LINK_OMITTED} or ${BROWSER_LINK_OMITTED} now`);
+});
+
+test('a link right after another link\'s host, behind //, or behind a host no site has, keeps no token', () => {
+  const record = copy({
+    trigger: {
+      author: 'U012ABCDEF3',
+      text: '<https://go.example.org|https://billing.example.com/cb?code=SYNTHCODE123> ' +
+        '<https://go.example.org|billing.example.com/cb?code=SYNTHCODE456> ' +
+        'https://go.example.org\'billing.example.com/cb?code=SYNTHCODE789 ' +
+        'https://ops\'x:SYNTHPASS@billing.example.com/cb?code=SYNTHCODE678 ' +
+        'https://ops|x:SYNTHPASS@billing.example.com/cb?code=SYNTHCODE901 https://u;x:SYNTHPASS@billing.example.com/cb?code=SYNTHCODE902 ' +
+        'https://go.example.org/r?next=//billing.example.com/cb?code=SYNTHCODE012 and //ledger.example.net/r?t=SYNTHCODE345 ' +
+        '<https://go.example.org|Report?id=5>',
+      files: [],
+    },
+  });
+  assert.deepEqual(kept(record, ['SYNTHCODE', 'SYNTHPASS']), []);
+  assert.equal(record.trigger.text,
+    '<https://go.example.org|https://billing.example.com/cb?[omitted]> ' +
+    '<https://go.example.org|billing.example.com/cb?[omitted]> ' +
+    'https://[omitted]/cb?[omitted] ' +
+    'https://billing.example.com/cb?[omitted] ' +
+    'https://billing.example.com/cb?[omitted] https://billing.example.com/cb?[omitted] ' +
+    'https://go.example.org/r?next=//billing.example.com/cb?[omitted] and //ledger.example.net/r?[omitted] ' +
+    '<https://go.example.org|Report?id=5>');
 });
 
 test('a link keeps no token behind JSON-escaped slashes or a host that ends in a dot', () => {
@@ -194,6 +242,32 @@ test('a username leaves a JSON unicode escape or an HTML entity of any of its ma
   assert.deepEqual(kept(record, ['brien', 'example.com']), []);
   assert.equal(record.answer, '[credential redacted] or [credential redacted] or [credential redacted]');
   assert.equal(record.steps[0]?.kind === 'tool' && record.steps[0].output, '{"body":"[credential redacted]"}');
+});
+
+test('a username percent-encoded in every character, or in mixed forms, leaves the copy and the text around it stays as written', () => {
+  const percent = (text: string) => [...new TextEncoder().encode(text)].map((byte) => `%${byte.toString(16).padStart(2, '0')}`).join('');
+  const accented = 'josé.synthetic@example.com';
+  const mixed = `${percent('Ops.')}Synthetic${'\\'}u0040${percent('example')}.com`;
+  const record = copy({
+    steps: [{ kind: 'tool', name: 'read_mail', input: '{}', output: `{"link":"https://forms.example/next?u=${percent(USERNAME)}&x=1"}` }],
+    answer: `Sent ${percent(USERNAME).toUpperCase()}, ${mixed}, ${percent(accented)} and ${percent('Ops Synthetic')}; %ZZ, %C3 and 100%25 stay.`,
+  }, { hosts: [], usernames: [USERNAME, accented, 'Ops Synthetic'] });
+  assert.equal(record.steps[0]?.kind === 'tool' && record.steps[0].output, '{"link":"https://forms.example/next?u=[credential redacted]&x=1"}');
+  assert.equal(record.answer,
+    'Sent [credential redacted], [credential redacted], [credential redacted] and [credential redacted]; %ZZ, %C3 and 100%25 stay.');
+});
+
+test('an email address\'s local part leaves the copy where it stands alone, under the same length and word rules', () => {
+  const record = copy({
+    steps: [browserStep('browser_snapshot', {}, {
+      snapshot: '- heading "Welcome back, Ops.Synthetic" level=1\n- option "bob" [ref=e2]\n- text "bob approved it"',
+    })],
+    answer: 'Welcome back, OPS.SYNTHETIC. Ops.Synthetics and xOps.Synthetic stay, and bob approved it.',
+  }, { hosts: [], usernames: [USERNAME, 'bob@example.com'] });
+  const output = record.steps[0]?.kind === 'tool' ? record.steps[0].output ?? '' : '';
+  assert.equal(JSON.parse(output).snapshot,
+    '- heading "Welcome back, [credential redacted]" level=1\n- option "[credential redacted]" [ref=e2]\n- text "bob approved it"');
+  assert.equal(record.answer, 'Welcome back, [credential redacted]. Ops.Synthetics and xOps.Synthetic stay, and bob approved it.');
 });
 
 test('every hosted browser link goes whole, whatever its host', () => {
@@ -269,15 +343,10 @@ test('a saved username leaves every field, in any case and in every escaped or e
   ].join('\n'));
 });
 
-test('a username split across snapshot lines, or cut before a … or at the collector\'s cap, leaves no part of it', () => {
+test('a username split across snapshot lines, or cut before a …, leaves no part of it', () => {
   const split = '- text "Account"\n  - text "Ops.Synthetic"\n  - link "@" [ref=e4]\n  - text "example.com"';
   const cutAtSnapshotCap = `- text "Signed in as Ops.Synthetic@ex\n… (snapshot cut at 12000 characters)`;
   const splitAfterState = '- button "Ops.Synthetic" [ref=e3] expanded\n  - text "@example.com"\n- heading "Ops.Synthetic" level=2\n- text "@example.com"';
-  const longQuery = `https://billing.example.com/report?filter=${'x'.repeat(200)} `;
-  const cutEnd = ' Signed in as Ops.Synth';
-  const collected = longQuery.repeat(Math.ceil(COLLECTED_FIELD_CHARS / longQuery.length))
-    .slice(0, COLLECTED_FIELD_CHARS - cutEnd.length) + cutEnd;
-  assert.equal(collected.length, COLLECTED_FIELD_CHARS);
   const record = copy({
     context: [{ author: 'Billing Agent', role: 'agent', text: 'Signed in as Ops.Synth…', files: [] }],
     steps: [
@@ -285,7 +354,6 @@ test('a username split across snapshot lines, or cut before a … or at the coll
       browserStep('browser_snapshot', {}, { snapshot: cutAtSnapshotCap }),
       browserStep('browser_snapshot', {}, { snapshot: splitAfterState }),
       browserStep('browser_snapshot', {}, { snapshot: '- textbox "Email" [ref=e1] value="Ops.Synthetic@exam…"' }),
-      { kind: 'tool', name: 'web_fetch', input: '{}', output: collected },
     ],
   });
   assert.deepEqual(kept(record, ['ops.synth']), []);
@@ -294,9 +362,61 @@ test('a username split across snapshot lines, or cut before a … or at the coll
   assert.equal(JSON.parse(outputs[1]!).snapshot, '- text "Signed in as [credential redacted]\n… (snapshot cut at 12000 characters)');
   assert.equal(JSON.parse(outputs[2]!).snapshot, '- button "[credential redacted]"\n- heading "[credential redacted]"');
   assert.equal(record.context[0]?.text, 'Signed in as [credential redacted]…');
-  assert.ok(new TextEncoder().encode(outputs[4]!).byteLength < RUN_REVIEW_FIELD_BYTES,
-    'the cut field shrank below the record\'s cap, so its cut end reaches the copy');
-  assert.match(outputs[4]!, /Signed in as \[credential redacted\]$/);
+});
+
+test('a field over its cap is cut before the scrub, back to where no link, key or username without a space goes on', () => {
+  // Text that ends `at` UTF-8 bytes past the field cap, so the cap cuts `tail` there.
+  const straddling = (tail: string, at: number) => {
+    const head = 'Report line with words. '.repeat(RUN_REVIEW_FIELD_BYTES / 16);
+    return head.slice(0, RUN_REVIEW_FIELD_BYTES - at) + tail;
+  };
+  const token = `SYNTHMAGIC${'7'.repeat(30)}`;
+  const key = ['ghp', `SYNTHKEY${'4'.repeat(32)}`].join('_');
+  const spaced = 'SYNTHSAVED part two 0123456789';
+  const longRun = `${'x'.repeat(5000)},${['ghp', `SYNTHLONG${'5'.repeat(32)}`].join('_')}`;
+  const steps = [
+    { kind: 'tool' as const, name: 'save_connection_key', input: JSON.stringify({ connectionId: 'ledger', key: spaced }), output: '{}' },
+    { kind: 'tool' as const, name: 'web_fetch', input: '{}', output: straddling(` https://billing.example.com/magic/${token} next`, 40) },
+    { kind: 'tool' as const, name: 'web_fetch', input: '{}', output: straddling(` key ${key} next`, 20) },
+    { kind: 'tool' as const, name: 'web_fetch', input: '{}', output: straddling(' Signed in as Billing Ops Team today', 28) },
+    { kind: 'tool' as const, name: 'web_fetch', input: '{}', output: straddling(` saved ${spaced} next`, 22) },
+    { kind: 'tool' as const, name: 'web_fetch', input: '{}', output: straddling(` ${longRun} next`, 5020) },
+  ];
+  const record = copy({ steps }, { hosts: ['billing.example.com'], usernames: ['Billing Ops Team'] });
+  assert.deepEqual(kept(record, ['SYNTHMAGIC', 'SYNTHKEY', 'billing ops', 'SYNTHSAVED', 'SYNTHLONG']), []);
+  const outputs = record.steps.map((step) => step.kind === 'tool' ? step.output ?? '' : '');
+  assert.ok(outputs[1]!.endsWith('Report line with words. '), 'the link the cap cut goes whole');
+  assert.ok(outputs[2]!.endsWith(' key'), 'so does the key');
+  assert.match(outputs[3]!, / Signed in as \[credential [a-z]*$/, 'a username\'s start before the cut goes, and the cap cuts its marker');
+  assert.ok(outputs[4]!.includes(' saved [credential'), 'a saved key a cut back would split is scrubbed whole, then capped');
+  assert.ok(outputs[5]!.includes('x,[credential'), 'so is a run with nowhere to cut back to');
+  assert.equal(record.truncated, true);
+});
+
+test('a copy chooses its steps by their size before the scrub, so the scrub reads about the record cap, not all the collector held', () => {
+  const query = `?filter=${'q'.repeat(8 * 1024)}`;
+  const steps = Array.from({ length: 40 }, (_, index) =>
+    browserStep('browser_open', { n: index }, { url: `https://billing.example.com/report/${index}${query}` }));
+  const record = copy({ steps });
+  assert.ok(new TextEncoder().encode(JSON.stringify(steps)).byteLength > 300 * 1024);
+  const first = record.steps[0]?.kind === 'tool' ? JSON.parse(record.steps[0].input).n as number : undefined;
+  assert.ok(first !== undefined && first > 0 && record.steps.length === 40 - first,
+    'the oldest steps went, though each would shrink to a few bytes once its query went');
+  assert.equal(record.truncated, true);
+});
+
+test('a long username\'s start, cut past its 64th character, leaves no part of it', () => {
+  const long = `ops.${'synthetic.'.repeat(9)}team@example.com`;
+  const spaced = `ops.${'synthetic.'.repeat(7)}night "shift" team@example.com`;
+  assert.ok(long.length > 100 && spaced.indexOf(' ') > 64);
+  const record = copy({
+    steps: [browserStep('browser_snapshot', {}, { snapshot: `- text "Signed in as ${spaced.slice(0, 84)}…"` })],
+    answer: `Signed in as ${long.slice(0, 90)}… and ${long.slice(0, 40)}…`,
+  }, { hosts: [], usernames: [long, spaced] });
+  assert.deepEqual(kept(record, ['synthetic', 'shift']), []);
+  assert.equal(record.answer, 'Signed in as [credential redacted]… and [credential redacted]…');
+  const output = record.steps[0]?.kind === 'tool' ? record.steps[0].output ?? '' : '';
+  assert.equal(JSON.parse(output).snapshot, '- text "Signed in as [credential redacted]…"', 'a space or an escaped quote past the 64th does not stop it');
 });
 
 test('usernames match whole words, and one under four characters only as a whole value in a browser step', () => {
@@ -310,6 +430,32 @@ test('usernames match whole words, and one under four characters only as a whole
   const output = short.steps[0]?.kind === 'tool' ? short.steps[0].output ?? '' : '';
   assert.equal(JSON.parse(output).snapshot, '- textbox "User" [ref=e1] value="[credential redacted]"\n- text "bob approved it"');
   assert.equal(short.answer, 'bob approved it.');
+});
+
+test('a username that is a word of the record\'s IDs, model, tool names or error class leaves them whole', () => {
+  const record = copy({
+    runId: 'run_billing',
+    agentId: 'agent_billing',
+    model: 'billing-model-1',
+    steps: [{ kind: 'tool', name: 'billing_lookup', input: '{"for":"billing"}', output: 'billing is current', error: 'billing timed out' }],
+    error: { class: 'billing_error', message: 'billing failed' },
+    answer: 'The billing run finished.',
+  }, { hosts: [], usernames: ['billing'] });
+  assert.equal(record.runId, 'run_billing');
+  assert.equal(record.agentId, 'agent_billing', 'Cloud files the copy under this Agent');
+  assert.equal(record.model, 'billing-model-1');
+  assert.deepEqual(record.error, { class: 'billing_error', message: '[credential redacted] failed' });
+  assert.deepEqual(record.steps[0], {
+    kind: 'tool', name: 'billing_lookup', input: '{"for":"[credential redacted]"}',
+    output: '[credential redacted] is current', error: '[credential redacted] timed out',
+  });
+  assert.equal(record.answer, 'The [credential redacted] run finished.');
+
+  const shaped = copy({
+    steps: [{ kind: 'tool', name: `lookup ${USERNAME}`, input: '{}' }],
+    error: { class: `for:${USERNAME}`, message: 'failed' },
+  });
+  assert.deepEqual(kept(shaped, ['ops.synthetic']), [], 'a token that is not shaped like one gets the username rule');
 });
 
 test('a username leaves prose written without spaces between words', () => {
@@ -398,6 +544,22 @@ test('a copy drops the username of every login the installation saved, read when
   assert.equal(records.length, 1);
   assert.deepEqual(kept(records[0]!, ['ledger.synthetic', 'legacy.synthetic', 'SYNTHSID']), []);
   assert.equal(records[0]!.context[0]?.text, 'Signed in to https://ledger.example.net/home?[omitted] as [credential redacted]');
+});
+
+test('a copy drops the logins the run\'s plan froze, though the catalog no longer holds them', async (t) => {
+  const records = fakePort(t);
+  const session = await startRunReview(HOSTED_ENV, {
+    surface: 'dm',
+    planWebsiteLogins: [{ host: 'portal.example.org', username: USERNAME }, { host: 'ledger.example.net' }],
+    settings: () => catalogSettings('[]'),
+  });
+  await session!.finish({
+    ...ENDING,
+    answer: `Signed in to https://portal.example.org/home?sid=SYNTHSID as ${USERNAME}, then https://ledger.example.net/r?t=SYNTHT`,
+  });
+  assert.equal(records.length, 1);
+  assert.equal(records[0]!.answer,
+    'Signed in to https://portal.example.org/home?[omitted] as [credential redacted], then https://ledger.example.net/r?[omitted]');
 });
 
 test('a catalog that cannot be read or parsed keeps no copy', async (t) => {

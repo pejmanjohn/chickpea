@@ -28,30 +28,29 @@ export const MIN_USERNAME_CHARS = 4;
 
 /** The shortest start of a username removed where a cut or a `…` ends it. */
 export const MIN_CUT_PREFIX_CHARS = 4;
+/** The longest start a cut's pattern matches character by character; a longer one runs on to the cut. */
+const MAX_CUT_PREFIX_CHARS = 64;
+/** The most text one character of a username takes in a copy's escaped forms, snapshot breaks included. */
+const RUN_ON_CHARS_PER_CHAR = 16;
 
-// A URL ends at whitespace, a quote, Slack's `<`, `>` and `|`, or a backslash.
-const URL_CHAR = String.raw`[^\s"'<>|\\]`;
-// A browser step holds a tool's JSON, not prose or Slack markup, and a page's address keeps `'` and `|` as they are.
-const STEP_URL_CHAR = String.raw`[^\s"<>\\]`;
+// A URL ends at whitespace, a double quote, Slack's `<` and `>`, or a backslash. A page's address keeps `'`
+// and `|` as they are, so neither ends one, and a Slack link's label goes with its URL.
+const URL_CHAR = String.raw`[^\s"<>\\]`;
 // The JSON escape of `&`, `'`, `+` or `=` does not end a URL: Go, Gson and .NET write them that way.
 const ESCAPED_ASCII = String.raw`\\+u00(?:26|27|2[bB]|3[dD])`;
 // A slash, which JSON may escape with a backslash: PHP does by default.
 const SLASH = String.raw`\\*\/`;
-const HOST_START = String.raw`(?<![\p{L}\p{N}.@/_-])`;
+// Not inside a word, an email address or a path. A protocol-relative `//` may come before it.
+const HOST_START = String.raw`(?<![\p{L}\p{N}.@_-])(?<!(?:^|[^/])\/)`;
+// A host as a link writes one: a name or a bracketed IP address.
+const READABLE_HOST = /^(?:[\p{L}\p{N}.-]+|\[[\da-f:.]+\])$/iu;
 
-/** A URL with a scheme, and what follows a scheme-less host, over one class of URL characters. */
-function urlPatterns(char: string): { scheme: string; afterHost: string } {
-  const more = String.raw`${char}*(?:(?:${ESCAPED_ASCII}|\\+\/)${char}*)*`;
-  return {
-    scheme: String.raw`\b(?:https?|wss?):${SLASH}${SLASH}${char}${more}`,
-    afterHost: String.raw`(?::\d+)?(?:${SLASH}${more}|[;?#]${char}${more})`,
-  };
-}
-
-const TEXT_URL = urlPatterns(URL_CHAR);
-const STEP_URL = urlPatterns(STEP_URL_CHAR);
-// Any host followed by a path or a query, as a browser step's input may name a page. A host may end in a dot.
-const ANY_SCHEMELESS_URL = String.raw`${HOST_START}(?:[a-z0-9-]+\.)+[a-z]{2,}\.?${STEP_URL.afterHost}`;
+const MORE_URL = String.raw`${URL_CHAR}*(?:(?:${ESCAPED_ASCII}|\\+\/)${URL_CHAR}*)*`;
+const SCHEME_URL = String.raw`\b(?:https?|wss?):${SLASH}${SLASH}${URL_CHAR}${MORE_URL}`;
+// What follows a scheme-less host, which may end in a dot: a port, then a path or a query.
+const AFTER_HOST = String.raw`\.?(?::\d+)?(?:${SLASH}${MORE_URL}|[;?#]${URL_CHAR}${MORE_URL})`;
+// Any host followed by a path or a query, as a browser step's input may name a page.
+const ANY_SCHEMELESS_URL = String.raw`${HOST_START}(?:[a-z0-9-]+\.)+[a-z]{2,}${AFTER_HOST}`;
 
 const HANDOFF_LINK = new RegExp(String.raw`<([^<>|]*)\|${escapeRegExp(BROWSER_HANDOFF_LINK_LABEL)}>`, 'g');
 /** What a hand-off message links to: an absolute web address, too long to be a word of other text. */
@@ -84,13 +83,18 @@ export interface WebsiteLoginScrub {
    * same text holds it. Every URL loses its userinfo. A URL on a login's site,
    * or any URL in a browser step, keeps its scheme, host and path, loses
    * token-shaped path segments, and loses everything from its first `;`,
-   * `?` or `#`.
+   * `?` or `#`. So does a URL whose host cannot be read as one, and its host
+   * goes too. A link inside
+   * another one's path or query, as a Slack link's label or a redirect holds
+   * it, goes by its own rule.
    */
   links(text: string, browserStep: boolean): string;
   /**
    * Each saved username, in any case, as typed, JSON- or snapshot-escaped,
-   * percent- or form-encoded, Slack-escaped, or split across snapshot lines,
-   * and its start where a `…` or the end of a `cut` field follows it.
+   * percent- or form-encoded (in part or every character), Slack-escaped, or
+   * split across snapshot lines, and its start where a `…` or the end of a
+   * `cut` field follows it. An email address's local part goes too, where it
+   * stands alone.
    */
   usernames(text: string, options: { browserStep: boolean; cut: boolean }): string;
 }
@@ -99,40 +103,58 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
   const hostnames = unique(logins.hosts.map((host) => host.trim().toLowerCase().replace(/:\d+$/, '')).filter(Boolean));
   const loginSite = (hostname: string) =>
     hostnames.some((host) => hostname === host || hostname.endsWith(`.${host}`));
-  const loginSchemeless = hostnames.length
-    ? String.raw`${HOST_START}(?:[a-z0-9-]+\.)*(?:${hostnames.map(escapeRegExp).join('|')})\.?${TEXT_URL.afterHost}`
-    : undefined;
+  // Outside a browser step, a link without a scheme is recognized on a login's site and the hosted browser's.
+  const knownHosts = [...hostnames.map(escapeRegExp), String.raw`browserbase\.com`].join('|');
   const linkPatterns = {
-    anywhere: new RegExp([TEXT_URL.scheme, loginSchemeless].filter(Boolean).join('|'), 'giu'),
-    browserStep: new RegExp([STEP_URL.scheme, ANY_SCHEMELESS_URL].join('|'), 'giu'),
+    anywhere: new RegExp(String.raw`${SCHEME_URL}|${HOST_START}(?:[a-z0-9-]+\.)*(?:${knownHosts})${AFTER_HOST}`, 'giu'),
+    browserStep: new RegExp(`${SCHEME_URL}|${ANY_SCHEMELESS_URL}`, 'giu'),
   };
+  const scrubLinks = (text: string, browserStep: boolean): string =>
+    text.replace(browserStep ? linkPatterns.browserStep : linkPatterns.anywhere, (raw) => scrubLink(raw, browserStep));
 
   const scrubLink = (matched: string, browserStep: boolean): string => {
     // A plain slash is valid JSON too, so the link comes back without its escapes.
     const raw = matched.replace(/\\+\//g, '/');
     const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(raw);
     const afterScheme = scheme ? raw.slice(scheme[0].length) : raw;
-    const authorityEnd = afterScheme.search(/[/;?#]/);
+    // Userinfo, which no link keeps, ends at the last `@` before the path, whatever it holds.
+    const authorityEnd = afterScheme.search(/[/?#]/);
     const authority = authorityEnd < 0 ? afterScheme : afterScheme.slice(0, authorityEnd);
-    const rest = authorityEnd < 0 ? '' : afterScheme.slice(authorityEnd);
-    const host = authority.slice(authority.lastIndexOf('@') + 1);
+    const hostAndRest = afterScheme.slice(authority.lastIndexOf('@') + 1);
+    // `;` and `|` end a host too: no host holds one, and a Slack link's label may follow `|`.
+    const hostEnd = hostAndRest.search(/[/;?#|]/);
+    const host = hostEnd < 0 ? hostAndRest : hostAndRest.slice(0, hostEnd);
+    const rest = hostEnd < 0 ? '' : hostAndRest.slice(hostEnd);
     // `host.example.` names the same site as `host.example`.
     const hostname = host.replace(/:\d*$/, '').replace(/\.+$/, '').toLowerCase();
+    const readable = READABLE_HOST.test(hostname);
     const pathEnd = rest.search(/[;?#]/);
     const path = pathEnd < 0 ? rest : rest.slice(0, pathEnd);
     const suffix = pathEnd < 0 ? '' : rest.slice(pathEnd);
     if (browserLink(scheme?.[1], hostname, path, suffix)) return BROWSER_LINK_OMITTED;
-    const start = `${scheme?.[0] ?? ''}${host}`;
-    if (!browserStep && !loginSite(hostname)) return `${start}${rest}`;
+    // A host that cannot be read as one may hide a login's site or a token, so it goes, and its link goes by the login rule.
+    const start = `${scheme?.[0] ?? ''}${readable ? host : URL_PART_OMITTED}`;
+    // What follows the host can hold another link, as a Slack link's label or a redirect's query does.
+    if (!browserStep && readable && !loginSite(hostname)) {
+      return `${start}${scrubLinks(rest, browserStep)}`;
+    }
     const kept = path.split('/').map((segment) => tokenShaped(segment) ? URL_PART_OMITTED : segment).join('/');
-    return `${start}${kept}${suffix ? `?${URL_PART_OMITTED}` : ''}`;
+    return `${start}${scrubLinks(kept, browserStep)}${suffix ? `?${URL_PART_OMITTED}` : ''}`;
   };
 
-  // Longest first, so a username that holds another goes whole.
-  const names = unique(logins.usernames.map((username) => username.trim()).filter(Boolean))
-    .sort((left, right) => right.length - left.length);
-  const long = names.filter((name) => [...name].length >= MIN_USERNAME_CHARS).map(usernameMatcher);
-  const short = names.filter((name) => [...name].length < MIN_USERNAME_CHARS);
+  const names = unique(logins.usernames.map((username) => username.trim()).filter(Boolean));
+  // An email address's local part goes where it stands alone too, as a site's greeting writes it.
+  const localParts = unique(names.flatMap((name) => {
+    const at = name.lastIndexOf('@');
+    return at > 0 && at < name.length - 1 ? [name.slice(0, at)] : [];
+  })).filter((part) => !names.includes(part));
+  const isLong = (name: string) => [...name].length >= MIN_USERNAME_CHARS;
+  // A username's own cut start already covers every start of its local part.
+  const long = [
+    ...names.filter(isLong).map((name) => usernameMatcher(name, { cutStart: true })),
+    ...localParts.filter(isLong).map((name) => usernameMatcher(name, { cutStart: false })),
+  ];
+  const short = [...names, ...localParts].filter((name) => !isLong(name));
   const quoted = short.length
     ? new RegExp(String.raw`(?<=")(?:${short.map((name) => [...name].map(charPattern).join('')).join('|')})(?=\\*")`, 'giu')
     : undefined;
@@ -145,28 +167,33 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
       const handoffs = unique([...text.matchAll(HANDOFF_LINK)]
         .flatMap(([, url]) => url ? [url, unescapedSlackText(url)] : [])
         .filter((url) => HANDOFF_URL.test(url)));
-      return handoffs
-        .reduce(
-          (value, url) => value.replace(
-            new RegExp(String.raw`(?<![^\s<"])${escapeRegExp(url)}(?![^\s>|"\\])`, 'g'), BROWSER_LINK_OMITTED),
-          text.replace(HANDOFF_LINK, BROWSER_LINK_OMITTED),
-        )
-        .replace(browserStep ? linkPatterns.browserStep : linkPatterns.anywhere, (raw) => scrubLink(raw, browserStep));
+      const withoutHandoffs = handoffs.reduce(
+        (value, url) => value.replace(
+          new RegExp(String.raw`(?<![^\s<"])${escapeRegExp(url)}(?![^\s>|"\\])`, 'g'), BROWSER_LINK_OMITTED),
+        text.replace(HANDOFF_LINK, BROWSER_LINK_OMITTED),
+      );
+      return scrubLinks(withoutHandoffs, browserStep);
     },
     usernames(text, { browserStep, cut }) {
-      const lower = text.toLowerCase();
+      // Matching reads the text with its percent escapes decoded, so a username encoded letter by
+      // letter is found too, and each match is removed from the text as it was written.
+      const view = percentDecoded(text);
+      const lower = view.text.toLowerCase();
       const holds = (runs: readonly string[]) => runs.every((run) => lower.includes(run));
-      let result = text;
+      const found: Span[] = [];
+      const find = (pattern: RegExp) => {
+        for (const match of view.text.matchAll(pattern)) found.push(view.written(match.index, match.index + match[0].length));
+      };
       for (const matcher of long) {
-        if (holds(matcher.runs)) result = result.replace(matcher.whole(), CREDENTIAL_REPLACEMENT);
+        if (holds(matcher.runs)) find(matcher.whole());
       }
-      if (cut || result.includes(CUT_MARK)) {
+      if (cut || view.text.includes(CUT_MARK)) {
         for (const matcher of long) {
-          if (matcher.prefix && holds(matcher.prefix.runs)) result = result.replace(matcher.prefix.pattern(cut), CREDENTIAL_REPLACEMENT);
+          if (matcher.prefix && holds(matcher.prefix.runs)) find(matcher.prefix.pattern(cut));
         }
       }
-      if (quoted && browserStep) result = result.replace(quoted, CREDENTIAL_REPLACEMENT);
-      return result;
+      if (quoted && browserStep) find(quoted);
+      return replaceSpans(text, found);
     },
   };
 }
@@ -177,20 +204,20 @@ const ASCII_WORD = /[A-Za-z0-9]/;
 const WORD_CHAR = String.raw`[\p{L}\p{N}]`;
 // Chinese, Japanese, Korean and Thai put no space between a word and a username beside it.
 const UNSPACED_LETTER = String.raw`[\p{scx=Han}\p{scx=Hiragana}\p{scx=Katakana}\p{scx=Hangul}\p{scx=Thai}]`;
-// Not inside a word, though an unspaced letter or a JSON, percent or Slack escape may sit right before it.
-const WORD_START = String.raw`(?:(?<!${WORD_CHAR})|(?<=${UNSPACED_LETTER}|\\[nrtbf]|\\u[0-9A-Fa-f]{4}|%[0-9A-Fa-f]{2}|&(?:amp|lt|gt);))`;
+// Not inside a word, though an unspaced letter or a JSON or Slack escape may sit right before it.
+const WORD_START = String.raw`(?:(?<!${WORD_CHAR})|(?<=${UNSPACED_LETTER}|\\[nrtbf]|\\u[0-9A-Fa-f]{4}|&(?:amp|lt|gt);))`;
 const WORD_END = String.raw`(?:(?!${WORD_CHAR})|(?=${UNSPACED_LETTER}))`;
 // Where a snapshot ends one node's text and starts the next: `"`, its ref and state, a line break, `- text "`.
 const NODE_STATE = String.raw`(?: (?:level=\d+|checked(?:=mixed)?|selected|expanded|disabled))*`;
 const NODE_BREAK = String.raw`(?:\\*"(?: \[ref=e\d+\])?${NODE_STATE}(?:\s|\\+[nrt])+-\s[A-Za-z]+\s\\*")?`;
 const CUT_AHEAD = String.raw`(?:\s|\\+[nrt])*${CUT_MARK}`;
 
-const encoder = new TextEncoder();
-
-/** One character of a username in each form a copy's text can hold it. */
+/**
+ * One character of a username in each form a copy's text can hold it, once
+ * its percent escapes are decoded. A form writes a space as `+`.
+ */
 function charPattern(char: string): string {
-  if (/\s/u.test(char)) return String.raw`(?:\s+|\+|%20)`;
-  const percent = [...encoder.encode(char)].map((byte) => `%${byte.toString(16).padStart(2, '0')}`).join('');
+  if (/\s/u.test(char)) return String.raw`(?:\s+|\+)`;
   const escaped: Record<string, string> = {
     '"': String.raw`\\*"`,
     '\\': String.raw`\\+`,
@@ -204,18 +231,19 @@ function charPattern(char: string): string {
   const numbered = ASCII_WORD.test(char) || code > 0xffff
     ? ''
     : String.raw`|\\+u${hex.padStart(4, '0')}|&#(?:0*${code}|x0*${hex});`;
-  return `(?:${escaped[char] ?? escapeRegExp(char)}|${percent}${numbered})`;
+  return `(?:${escaped[char] ?? escapeRegExp(char)}${numbered})`;
 }
 
 interface UsernameMatcher {
   /**
-   * The username's runs of ASCII letters and digits, lowercased. No encoder
-   * or escape changes those characters, and a snapshot breaks a value only
-   * at the edge of a run, so a field that lacks one cannot hold the username.
+   * The username's runs of ASCII letters and digits, lowercased. Once a
+   * field's percent escapes are decoded, no escape a serializer writes
+   * changes those characters, and a snapshot breaks a value only at the edge
+   * of a run, so a field that lacks one cannot hold the username.
    */
   runs: string[];
   whole(): RegExp;
-  /** Absent for a username too short to leave a start of MIN_CUT_PREFIX_CHARS before its end. */
+  /** Absent for a local part, and for a username too short to leave a start of MIN_CUT_PREFIX_CHARS before its end. */
   prefix?: {
     /** The runs of the username's first MIN_CUT_PREFIX_CHARS characters. */
     runs: string[];
@@ -225,16 +253,23 @@ interface UsernameMatcher {
 }
 
 /** Each pattern compiles on first use, a few milliseconds, and most fields never need it. */
-function usernameMatcher(name: string): UsernameMatcher {
+function usernameMatcher(name: string, { cutStart }: { cutStart: boolean }): UsernameMatcher {
   const chars = [...name];
   const start = WORD.test(chars[0]!) ? WORD_START : '';
   const end = WORD.test(chars.at(-1)!) ? WORD_END : '';
   const matcher = { runs: asciiRuns(name), whole: once(() => new RegExp(`${start}${joined(chars)}${end}`, 'giu')) };
-  if (chars.length <= MIN_CUT_PREFIX_CHARS) return matcher;
+  if (!cutStart || chars.length <= MIN_CUT_PREFIX_CHARS) return matcher;
   const required = joined(chars.slice(0, MIN_CUT_PREFIX_CHARS));
-  const optional = chars.slice(MIN_CUT_PREFIX_CHARS, -1).reduceRight(
+  // Past MAX_CUT_PREFIX_CHARS a start runs on to the cut unspelled, over anything but a `…` and
+  // as far as the rest of the username could take in any escaped form: a pattern nested deeper
+  // costs hundreds of megabytes and seconds to compile for the longest usernames the catalog allows.
+  const spelledEnd = Math.min(chars.length - 1, MAX_CUT_PREFIX_CHARS);
+  const runsOn = spelledEnd < chars.length - 1
+    ? `[^${CUT_MARK}]{0,${(chars.length - spelledEnd) * RUN_ON_CHARS_PER_CHAR}}?`
+    : '';
+  const optional = chars.slice(MIN_CUT_PREFIX_CHARS, spelledEnd).reduceRight(
     (tail, char, index) => `(?:${breakBefore(chars, MIN_CUT_PREFIX_CHARS + index)}${charPattern(char)}${tail})?`,
-    '',
+    runsOn,
   );
   const compile = (cut: boolean) =>
     new RegExp(`${start}${required}${optional}(?=${CUT_AHEAD}${cut ? '|$' : ''})`, 'giu');
@@ -257,6 +292,88 @@ function joined(chars: readonly string[]): string {
 function breakBefore(chars: readonly string[], index: number): string {
   if (index === 0) return '';
   return ASCII_WORD.test(chars[index - 1]!) && ASCII_WORD.test(chars[index]!) ? '' : NODE_BREAK;
+}
+
+/** Where a match starts and ends in a field's text, `[start, end)`. */
+type Span = [number, number];
+
+/** `text` with each span replaced; spans that overlap are replaced once, together. */
+function replaceSpans(text: string, spans: Span[]): string {
+  const merged: Span[] = [];
+  for (const [start, end] of spans.sort(([left], [right]) => left - right)) {
+    const last = merged.at(-1);
+    if (last && start < last[1]) last[1] = Math.max(last[1], end);
+    else merged.push([start, end]);
+  }
+  let result = '';
+  let from = 0;
+  for (const [start, end] of merged) {
+    result += `${text.slice(from, start)}${CREDENTIAL_REPLACEMENT}`;
+    from = end;
+  }
+  return result + text.slice(from);
+}
+
+interface DecodedView {
+  text: string;
+  /** Where the view's `[start, end)` was written in the original text. */
+  written(start: number, end: number): Span;
+}
+
+const PERCENT_RUN = /(?:%[0-9A-Fa-f]{2})+/g;
+const strictUtf8 = new TextDecoder('utf-8', { fatal: true });
+
+/** `text` with each percent escape of a UTF-8 character decoded. Other escapes stay as written. */
+function percentDecoded(text: string): DecodedView {
+  if (!text.includes('%')) return { text, written: (start, end) => [start, end] };
+  // For each character of the view, where it starts and ends in `text`.
+  const starts: number[] = [];
+  const ends: number[] = [];
+  let decoded = '';
+  const keep = (from: number, to: number) => {
+    for (let index = from; index < to; index += 1) {
+      starts.push(index);
+      ends.push(index + 1);
+    }
+    decoded += text.slice(from, to);
+  };
+  let from = 0;
+  for (const match of text.matchAll(PERCENT_RUN)) {
+    keep(from, match.index);
+    const bytes = Uint8Array.from(match[0].slice(1).split('%'), (hex) => parseInt(hex, 16));
+    for (let index = 0; index < bytes.length;) {
+      const at = match.index + index * 3;
+      const char = utf8CharAt(bytes, index);
+      if (char === undefined) {
+        keep(at, at + 3);
+        index += 1;
+        continue;
+      }
+      const end = at + char.bytes * 3;
+      for (let unit = 0; unit < char.text.length; unit += 1) {
+        starts.push(at);
+        ends.push(end);
+      }
+      decoded += char.text;
+      index += char.bytes;
+    }
+    from = match.index + match[0].length;
+  }
+  keep(from, text.length);
+  return { text: decoded, written: (start, end) => [starts[start]!, ends[end - 1]!] };
+}
+
+/** The UTF-8 character that starts at `bytes[index]`, or undefined where none does. */
+function utf8CharAt(bytes: Uint8Array, index: number): { text: string; bytes: number } | undefined {
+  const lead = bytes[index]!;
+  if (lead < 0x80) return { text: String.fromCharCode(lead), bytes: 1 };
+  const length = lead < 0xc2 ? 0 : lead < 0xe0 ? 2 : lead < 0xf0 ? 3 : lead < 0xf5 ? 4 : 0;
+  if (!length || index + length > bytes.length) return undefined;
+  try {
+    return { text: strictUtf8.decode(bytes.subarray(index, index + length)), bytes: length };
+  } catch {
+    return undefined;
+  }
 }
 
 function asciiRuns(text: string): string[] {
