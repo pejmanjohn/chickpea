@@ -724,14 +724,18 @@ function largestFitting(most: number, shaped: (keep: number) => PracticeOutput):
   return low;
 }
 
-/** The card's shape, unchanged: what it draws of the same run. */
+/**
+ * The card's shape, unchanged: what it draws of the same run. The card draws
+ * the reply as plain text, where an escaped `<` would show as `&lt;`, so its
+ * reply keeps the `<` the Agent wrote; an image tag stays escaped, as before.
+ */
 function aliasResult({ view, agentName, question }: Asked): AliasOutput {
   const status = statusOf(view);
   return {
     status,
     runToken: view.runToken,
     ask: question,
-    ...(status === 'answered' && view.result?.reply ? { reply: view.result.reply } : {}),
+    ...(status === 'answered' && view.result?.reply ? { reply: view.result.reply.replace(/&lt;(?!img)/gi, '<') } : {}),
     ...(status === 'answered' && view.result?.read ? { read: view.result.read } : {}),
     ...(status === 'failed' ? { problem: problemText(view, agentName) } : {}),
     note: PRACTICE_NOTE,

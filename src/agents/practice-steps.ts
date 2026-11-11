@@ -91,7 +91,7 @@ function skillStep(plan: RuntimePlanV2, call: PracticeToolCall): PracticeStep {
 function toolStep(plan: RuntimePlanV2, call: PracticeToolCall): PracticeStep {
   const { service, tool } = toolName(plan, call);
   const input = inputLine(call);
-  const named = { kind: 'tool' as const, ...service ? { service } : {}, tool: practiceLine(tool), ...input ? { input } : {} };
+  const named = { kind: 'tool' as const, ...service ? { service: practiceLine(service) } : {}, tool: practiceLine(tool), ...input ? { input } : {} };
   if (call.error !== undefined) return { ...named, ...errorOutcome(call.error) };
   if (call.toolName === CONNECTION_REQUEST_TOOL_NAME) return { ...named, ...requestOutcome(call.output) };
   return { ...named, outcome: 'ok', result: raw(asText(call.output)) };
@@ -161,12 +161,19 @@ function errorOutcome(error: string): Pick<PracticeStep, 'outcome' | 'why' | 're
 /**
  * A connection request's outcome from its own output. The result keeps the
  * status, URL and response the Agent read; the connection's ID and the
- * echoed response headers never leave.
+ * echoed response headers never leave, and a refusal that lists the Agent's
+ * connections lists them by name.
  */
 function requestOutcome(output: unknown): Pick<PracticeStep, 'outcome' | 'why' | 'result'> {
   const shown = typeof output === 'object' && output !== null ? output as Record<string, unknown> : {};
-  const data = Object.fromEntries(Object.entries(shown).filter(([key]) =>
-    !['connection', 'displayName', 'headers'].includes(key)));
+  const data = Object.fromEntries(Object.entries(shown).flatMap(([key, value]) => {
+    if (['connection', 'displayName', 'headers'].includes(key)) return [];
+    if (key !== 'connections') return [[key, value]];
+    return [[key, (Array.isArray(value) ? value : []).flatMap((listed: unknown) => {
+      const name = (listed as { displayName?: unknown } | null)?.displayName;
+      return typeof name === 'string' ? [name] : [];
+    })]];
+  }));
   const result = raw(asText(data));
   if (shown.sent === false) {
     if (shown.reason === 'write_not_allowed') return { outcome: 'refused', why: 'This run can only read through connections.', result };
@@ -219,74 +226,115 @@ function mcpToolNamePart(value: string): string {
 }
 
 /**
- * Raw HTML tag openers become `&lt;` outside code, where no client should
- * render them. Fences and code spans keep their text, so `Map<string,
- * number>` and HTML samples arrive as written. Where a CommonMark client
- * could find code elsewhere, everything is escaped: to the end of the reply
- * from a fence indented two or three spaces, which can sit in a list item
- * that ends before the fence does, and to the end of a paragraph from a
- * backtick run with no partner on its line, which a client can pair across
- * lines.
+ * A `<` that could open a tag or an autolink becomes `&lt;` outside code,
+ * where no client should render one. A fence that starts a line, or one
+ * space in, keeps its text, and so do the code spans of a paragraph whose
+ * every backtick pairs on its own line, so `Map<string, number>` and HTML
+ * samples arrive as written. Anywhere a client could pair backticks another
+ * way, everything is escaped: the whole paragraph around a doubtful line,
+ * and the rest of the reply from a fence indented two or three spaces, which
+ * can sit in a list item that ends before the fence does. Line endings come
+ * back as `\n`.
  */
 export function escapeHtmlOutsideCode(markdown: string): string {
+  const shown: string[] = [];
   let fence: { char: string; length: number } | undefined;
   let rest = false;
-  let paragraph = false;
-  return markdown.split('\n').map((line) => {
+  let paragraph: string[] = [];
+  const endParagraph = () => {
+    const read = paragraph.map(escapeOutsideSpans);
+    const kept = read.every(({ doubtful }) => !doubtful);
+    shown.push(...read.map(({ shown: line }, index) => kept ? line : escapeTags(paragraph[index]!)));
+    paragraph = [];
+  };
+  // A lone carriage return ends a line for a client too.
+  for (const line of markdown.split(/\r\n?|\n/)) {
     const opener = /^( {0,3})(`{3,}|~{3,})/.exec(line);
     const marker = opener?.[2];
     if (fence) {
-      if (marker && marker[0] === fence.char && marker.length >= fence.length && line.trim() === marker) fence = undefined;
-      return line;
-    }
-    if (rest) return escapeTags(line);
-    if (marker && !(marker[0] === '`' && line.slice(opener[0].length).includes('`'))) {
-      paragraph = false;
+      // Only spaces and tabs may follow a closing fence: a client keeps reading code past any other space.
+      if (marker && marker[0] === fence.char && marker.length >= fence.length &&
+          /^[ \t]*$/.test(line.slice(opener[0].length))) fence = undefined;
+      shown.push(line);
+    } else if (rest) {
+      shown.push(escapeTags(line));
+    } else if (marker && !(marker[0] === '`' && line.slice(opener[0].length).includes('`'))) {
+      endParagraph();
       if (opener[1]!.length >= 2) {
         rest = true;
-        return escapeTags(line);
+        shown.push(escapeTags(line));
+      } else {
+        fence = { char: marker[0]!, length: marker.length };
+        shown.push(line);
       }
-      fence = { char: marker[0]!, length: marker.length };
-      return line;
+    } else if (/^[ \t]*$/.test(line)) {
+      // A line of any other space, such as a no-break space, is text: the paragraph runs on.
+      endParagraph();
+      shown.push(line);
+    } else {
+      paragraph.push(line);
     }
-    if (line.trim() === '') paragraph = false;
-    if (paragraph) return escapeTags(line);
-    const { shown, unpaired } = escapeOutsideSpans(line);
-    paragraph = unpaired;
-    return shown;
-  }).join('\n');
+  }
+  endParagraph();
+  return shown.join('\n');
 }
 
 /**
- * A code span opens with a run of backticks and closes at the next run of
- * exactly its length. A backslash before a run escapes its first backtick;
- * inside a span, a backslash is text.
+ * One line with its code spans kept. A span opens with a run of backticks
+ * and closes at the next run of exactly its length; a backslash before a run
+ * escapes its first backtick, and inside a span a backslash is text.
+ * `doubtful`: a client may read this line's backticks another way, so no
+ * span in its paragraph is kept. That is a run with no partner on the line,
+ * which a client can pair across lines or leave as text; a span across a
+ * `|`, where a table splits its row before it reads a cell's code; and a
+ * backtick a link or a bare web address keeps as its own text.
  */
-function escapeOutsideSpans(line: string): { shown: string; unpaired: boolean } {
+function escapeOutsideSpans(line: string): { shown: string; doubtful: boolean } {
   const runs = [...line.matchAll(/`+/g)].map((match) => ({ at: match.index, length: match[0].length }));
   let shown = '';
   let from = 0;
-  let unpaired = false;
+  let doubtful = linkHoldsBacktick(line);
   for (let open = 0; open < runs.length; open += 1) {
     const run = runs[open]!;
-    const escaped = /\\*$/.exec(line.slice(from, run.at))![0].length % 2 === 1;
+    const before = line.slice(from, run.at);
+    // A web address written bare runs on through a backtick, to the next space.
+    if (/(?:https?:\/\/|www\.)\S*$/i.test(before)) doubtful = true;
+    const escaped = /\\*$/.exec(before)![0].length % 2 === 1;
     const opening = escaped ? { at: run.at + 1, length: run.length - 1 } : run;
     if (opening.length === 0) continue;
     const close = runs.findIndex((other, index) => index > open && other.length === opening.length);
     if (close < 0) {
-      unpaired = true;
+      doubtful = true;
       continue;
     }
     const end = runs[close]!.at + runs[close]!.length;
+    if (line.slice(opening.at, end).includes('|')) doubtful = true;
     shown += escapeTags(line.slice(from, opening.at)) + line.slice(opening.at, end);
     from = end;
     open = close;
   }
-  return { shown: shown + escapeTags(line.slice(from)), unpaired };
+  return { shown: shown + escapeTags(line.slice(from)), doubtful };
 }
 
+/**
+ * A link's destination, title or reference label, and a footnote's label,
+ * keep a backtick as their own text. True when one of them on this line
+ * holds a backtick, or does not plainly end on it: a destination or a title
+ * can run on to the next line, and a title, a nested parenthesis, an angle
+ * bracket or an escape can hold the character that would end it.
+ */
+function linkHoldsBacktick(line: string): boolean {
+  for (const tail of line.matchAll(/\][([]|\[\^/g)) {
+    const from = tail.index + 2;
+    const end = line.indexOf(tail[0] === '](' ? ')' : ']', from);
+    if (end < 0 || /[`"'(<\\]/.test(line.slice(from, end))) return true;
+  }
+  return false;
+}
+
+/** A `<` before a space opens nothing, so `a < b` stays as written. */
 function escapeTags(text: string): string {
-  return text.replace(/<(?=[A-Za-z!?/])/g, '&lt;');
+  return text.replace(/<(?=\S)/g, '&lt;');
 }
 
 /**

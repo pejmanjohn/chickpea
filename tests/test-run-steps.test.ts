@@ -58,6 +58,20 @@ test('a connection request keeps its status, URL and body; its connection, heade
   assert.doesNotMatch(JSON.stringify(step), /conn_release|x-trace|<next>|ghp_/);
 });
 
+test('a refusal that lists the Agent\'s connections lists them by name, never by ID', () => {
+  const { steps: [step] } = steps([{
+    toolName: 'connection_request',
+    input: { url: 'https://other.example/v1/releases' },
+    output: {
+      ok: false, sent: false, reason: 'url_not_allowed', message: 'That URL is not an endpoint this Agent\'s connections allow.',
+      connections: [{ id: 'conn_release_9a2', displayName: 'Release API' }, { id: 'conn_other_1b4', displayName: 'Other API' }],
+    },
+  }]);
+  assert.equal(step!.outcome, 'refused');
+  assert.deepEqual(JSON.parse(step!.result!.data).connections, ['Release API', 'Other API']);
+  assert.doesNotMatch(JSON.stringify(step), /conn_release|conn_other/);
+});
+
 test('each refusal and failure has Chickpea\'s own sentence; what the service said is only in the result', () => {
   const request = (output: Record<string, unknown>) => steps([{
     toolName: 'connection_request', input: { method: 'POST', url: 'https://api.release.example/v1/releases' }, output,
@@ -152,6 +166,50 @@ test('where a Markdown client could find code elsewhere, everything is escaped',
   // A fence in a list item ends with the item, so the line after it is HTML to a client.
   assert.equal(escapeHtmlOutsideCode('- item\n  ```\n<script>x</script>\n```\n<b>'), '- item\n  ```\n&lt;script>x&lt;/script>\n```\n&lt;b>');
   assert.equal(escapeHtmlOutsideCode(' ```\n<p>one space is a top-level fence</p>\n ```'), ' ```\n<p>one space is a top-level fence</p>\n ```');
+});
+
+test('a backtick a client reads another way keeps no span in its paragraph', () => {
+  const tag = '<script>x</script>';
+  const none = (reply: string) => assert.ok(!escapeHtmlOutsideCode(reply).includes('<script'), JSON.stringify(reply));
+  // A closing fence takes only spaces and tabs after it, so a client is still in code here, and out of it at the next fence.
+  none(`\`\`\`\ncode\n\`\`\`\u00a0\n\`\`\`\n${tag}\n\`\`\``);
+  none(`\`\`\`\ncode\n\`\`\`\f\n\`\`\`\n${tag}\n\`\`\``);
+  // A line of no-break space is text, so the paragraph and its open backtick run on.
+  none(`a \`\n\u00a0\nb \` ${tag} \`x\``);
+  // A lone carriage return ends a line.
+  none(`~~~\n~~~\r${tag}`);
+  none(`\`\`\`\ncode\n\`\`\`\r${tag}\n`);
+  // A table splits its row at each pipe before it reads a cell's code.
+  none(`| a | b | c |\n|---|---|---|\n| \` | ${tag} | \` |`);
+  none(`| a | b |\n|---|---|\n| \`a | b\` c \` ${tag} \` |`);
+  // A link keeps a backtick in its destination, title or label, and a bare web address keeps one too.
+  none(`[a](b\`c) ${tag} \``);
+  none(`[a](b "\`") ${tag} \``);
+  none(`[a](\nb\`c) ${tag} \``);
+  none(`[a](b "t)\n\`x") ${tag} \``);
+  none(`[bar\`]: /u\n\n[foo][bar\`] ${tag} \``);
+  none(`x[^a\`] ${tag} \``);
+  none(`see https://x.example/\`a ${tag} \`b`);
+  // An email autolink keeps one as well, and can start with a digit, so its `<` is escaped and the span after it is code.
+  assert.equal(escapeHtmlOutsideCode('<1`@example.com> <b> `'), '&lt;1`@example.com> <b> `');
+  // One unpaired backtick, and a client may leave every backtick before it as text.
+  none(`[\`a${tag}\` \``);
+  none(`[\`a${tag}\`\nand \`\`more`);
+  // None of that costs a plain paragraph its code, on a line with a link or a table included.
+  for (const kept of [
+    'See [the docs](https://x.example/a) for `Map<string, number>`.',
+    '| `Map<string, number>` | the type |',
+    'Run `curl https://api.example.com/v1/users/<id>` and read `a < b`.',
+    '- first `<T>`\n- second `Promise<void>`',
+    'CRLF `<b>` stays\r\n\r\n```\r\n<p>fenced</p>\r\n```',
+  ]) {
+    assert.equal(escapeHtmlOutsideCode(kept), kept.replaceAll('\r\n', '\n'), kept);
+  }
+  // Escaping again changes nothing, so every cut can escape again.
+  for (const reply of ['a << b <<![CDATA[ <1@x.co>', `[\`a${tag}\` \``, 'x <= y and <b>']) {
+    const once = escapeHtmlOutsideCode(reply);
+    assert.equal(escapeHtmlOutsideCode(once), once, reply);
+  }
 });
 
 test('the reply has no image, is escaped, and is cut at its bound with Chickpea\'s line', () => {

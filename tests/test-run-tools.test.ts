@@ -216,6 +216,19 @@ test('try_agent_once runs the stored first ask once, as the caller, and answers 
   assert.deepEqual(structured(await call('get_test_run', { runToken: run.runToken })), run);
 });
 
+test('the card\'s reply keeps the `<` the Agent wrote, which the card draws as plain text; an image tag stays escaped', async (t) => {
+  const { f, call, instances } = await harness(t, 'alias_plain');
+  await seedAgent(f);
+  instances.settleEvery = { kind: 'answered', ...practiceReply('From Ada <ada@example.com>, then <img src=x'), read: [], steps: [] };
+  const card = structured(await call('try_agent_once', { agentId: 'agent_tested', idempotencyKey: 'key_plain' }));
+  assert.equal(card.reply, 'From Ada <ada@example.com>, then &lt;img src=x');
+  assert.equal(structured(await call('get_test_run', { runToken: card.runToken })).reply, card.reply);
+  // The same run for any client keeps the escape.
+  const practice = structured(await call('practice_agent', { agentId: 'agent_tested' }));
+  assert.deepEqual([practice.runToken, practice.repeat, practice.reply],
+    [card.runToken, true, 'From Ada &lt;ada@example.com>, then &lt;img src=x']);
+});
+
 const api = (host: string) => ({
   kind: 'api' as const, allowedHosts: [host], pathPrefixes: ['/api/'], headerName: 'Authorization',
   allowedMethods: ['GET' as const], authMode: 'credential' as const,
