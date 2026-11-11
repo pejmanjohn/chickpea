@@ -94,7 +94,17 @@ function asResult(message: JSONRPCMessage): JSONRPCMessage {
   if (!isJSONRPCResultResponse(message)) return message;
   const result = message.result as { isError?: unknown; structuredContent?: { error?: McpToolError } };
   const error = result.structuredContent?.error;
-  return result.isError === true && error !== undefined ? { ...message, result: cardRefusal(error) } : message;
+  return result.isError === true && error !== undefined ? reshaped(message, cardRefusal(error)) : message;
+}
+
+/**
+ * A result this transport rewrites keeps what the SDK stamped beside it. On
+ * 2026-07-28 that is the required `resultType`, without which a client
+ * rejects the whole result, and `_meta`. Earlier revisions stamp nothing.
+ */
+function reshaped(message: ResultResponse, result: ReturnType<typeof mcpErrorResult | typeof cardRefusal>): JSONRPCMessage {
+  const { content: _content, structuredContent: _structured, isError: _isError, ...stamped } = message.result as Record<string, unknown>;
+  return { ...message, result: { ...result, ...stamped } };
 }
 
 function withFiveZeroError(message: ResultResponse, tool: string): JSONRPCMessage {
@@ -118,5 +128,5 @@ function withFiveZeroError(message: ResultResponse, tool: string): JSONRPCMessag
         retryable: true,
         nextStep: 'Try the same call again in a moment.',
       };
-  return { ...message, result: mcpErrorResult(error) };
+  return reshaped(message, mcpErrorResult(error));
 }

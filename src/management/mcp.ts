@@ -196,8 +196,10 @@ class ObservedMcpServer extends McpServer {
     // only 5.0, and no prompt or guide that tells its model to call a 4.x
     // tool. Its capabilities are known here, after everything registers.
     if (this.cardHost()) for (const registered of this.v4Only.splice(0)) registered.remove();
-    observeMcpRequests(transport, { ...MCP_TOOL_INPUT_SCHEMAS, ...FIVE_ZERO_TOOL_INPUT_SCHEMAS });
+    // Shaped first, so the request metric reads each result as the tool made it: a refusal
+    // that leaves a card session as a result still counts as a refusal.
     shapeFiveZeroResults(transport, FIVE_ZERO_TOOL_NAME_SET, { session: () => this.cardHost(), tools: CARD_REFUSAL_TOOL_NAMES });
+    observeMcpRequests(transport, { ...MCP_TOOL_INPUT_SCHEMAS, ...FIVE_ZERO_TOOL_INPUT_SCHEMAS });
     return super.connect(transport);
   }
 }

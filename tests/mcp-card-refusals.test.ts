@@ -4,6 +4,7 @@ import { test, type TestContext } from 'node:test';
 import { Validator } from '@cfworker/json-schema';
 
 import { cardRefusal } from '../src/management/mcp-v5/card-host.ts';
+import { workspaceManagementMcpFetch } from '../src/management/mcp.ts';
 import type { McpToolError } from '../src/management/mcp-v5/conventions.ts';
 import { CARD_REFUSAL_TOOL_NAMES } from '../src/management/mcp-v5/tools.ts';
 import * as agentCard from '../src/mcp-cards/agent-card/model.ts';
@@ -12,7 +13,7 @@ import * as connectCard from '../src/mcp-cards/connect-card/model.ts';
 import * as healthCard from '../src/mcp-cards/health-card/model.ts';
 import { GATEWAY_TIMEOUT, GATEWAY_TIMEOUT_IP, RESOURCE_NOT_FOUND } from './helpers/chatgpt-delivery.ts';
 import { createFixtureAgent } from './helpers/management-adapter-fixture.ts';
-import { asChatGpt, cardHost, cardServer, type CardModelUnderTest, type ServerCall } from './helpers/mcp-card-host.ts';
+import { asChatGpt, BASE_URL, cardHost, cardServer, jsonRequest, type CardModelUnderTest, type ServerCall } from './helpers/mcp-card-host.ts';
 import { StubTestRuns } from './helpers/stub-test-runs.ts';
 
 /**
@@ -122,6 +123,57 @@ test('outside a card session a refusal is what it was, byte for byte, and no lis
     '"nextStep":"Use the confirmToken from the needs_confirmation result in this conversation."}},"isError":true},"jsonrpc":"2.0","id":1}');
   const listed = JSON.parse(await plain.send('tools/list', {})).result.tools as Array<{ name: string; outputSchema?: Record<string, unknown> }>;
   assert.deepEqual(listed.filter(({ outputSchema }) => outputSchema && 'anyOf' in outputSchema).map(({ name }) => name), []);
+});
+
+// Mutation proof (review): observing after the conversion counts every refusal on a card session as a success,
+// and loses the fields an input refusal names.
+test('a refusal sent as a result still counts as a refusal in the request metric', async (t) => {
+  const { call } = await world(t, 'refusal-metrics');
+  const metrics: Array<Record<string, unknown>> = [];
+  t.mock.method(console, 'info', (record: unknown) => {
+    if (record && typeof record === 'object') metrics.push(record as Record<string, unknown>);
+  });
+  const seen = () => metrics.splice(0).filter(({ event }) => event === 'mcp.request' || event === 'tool.validation_failure')
+    .map(({ event, tool, outcome }) => ({ event, tool, outcome }));
+
+  assert.equal((await call('confirm_change', { confirmToken: 'changeset_unknown' })).isError, false);
+  assert.deepEqual(seen(), [{ event: 'mcp.request', tool: 'confirm_change', outcome: 'tool_error' }]);
+  assert.equal((await call('get_confirmation', { confirmToken: '' })).isError, false);
+  assert.deepEqual(seen(), [
+    { event: 'tool.validation_failure', tool: 'get_confirmation', outcome: undefined },
+    { event: 'mcp.request', tool: 'get_confirmation', outcome: 'input_refused' },
+  ]);
+  await call('get_agent', { agentId: 'agent_support' });
+  assert.deepEqual(seen(), [{ event: 'mcp.request', tool: 'get_agent', outcome: 'success' }]);
+});
+
+// Mutation proof (review): a rewritten result that drops what the SDK stamped is one a 2026-07-28 client rejects whole.
+test('on 2026-07-28 a rewritten result keeps its resultType, so a client accepts the refusal', async (t) => {
+  const { f, principal } = await world(t, 'refusal-modern');
+  const fetch = workspaceManagementMcpFetch({ principal, service: f.service, baseUrl: BASE_URL });
+  const call = async (name: string, args: Record<string, unknown>, capabilities: Record<string, unknown>) => {
+    const response = await fetch(jsonRequest({
+      accept: 'application/json, text/event-stream', 'content-type': 'application/json',
+      'mcp-protocol-version': '2026-07-28', 'mcp-method': 'tools/call', 'mcp-name': name,
+    }, {
+      jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: {
+        name, arguments: args,
+        _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28', 'io.modelcontextprotocol/clientCapabilities': capabilities },
+      },
+    }));
+    const body = await response.text();
+    const { result } = JSON.parse(body.trimStart().startsWith('{') ? body : body.split('\n').find((line) => line.startsWith('data: '))!.slice(6)) as
+      { result: ToolResult & { resultType?: string } };
+    return [result.isError, (result.structuredContent as { error: McpToolError }).error.code, result.resultType, Object.keys(result._meta ?? {})];
+  };
+  const cards = { extensions: { 'io.modelcontextprotocol/ui': { mimeTypes: ['text/html;profile=mcp-app'] } } };
+  const stamped = ['complete', ['io.modelcontextprotocol/serverInfo']];
+
+  assert.deepEqual(await call('confirm_change', { confirmToken: 'changeset_unknown' }, cards), [false, 'not_found', ...stamped], 'a refusal as a result');
+  assert.deepEqual(await call('get_confirmation', { confirmToken: '' }, cards), [false, 'invalid_input', ...stamped], 'and one the SDK made');
+  assert.deepEqual(await call('archive_agent', { agentId: 7 }, {}), [true, 'invalid_input', ...stamped], 'an SDK error in the 5.0 shape, on any session');
+  assert.deepEqual(await call('confirm_change', { confirmToken: 'changeset_unknown' }, {}), [true, 'not_found', ...stamped], 'as a tool\'s own error is');
 });
 
 // Mutation proof (item 1): listing each such tool's own schema alone makes every refusal invalid to a client that checks.
