@@ -1,4 +1,5 @@
 import {
+  isJSONRPCErrorResponse,
   isJSONRPCRequest,
   isJSONRPCResultResponse,
   type JSONRPCMessage,
@@ -9,7 +10,7 @@ import {
 import { mcpErrorResult, type McpToolError } from './conventions.ts';
 
 /**
- * Two things the SDK cannot express for a 5.0 tool, applied to the messages
+ * SDK gaps for a 5.0 client, applied to the messages
  * this transport sends. Call before the server connects, as with
  * `observeMcpRequests`.
  *
@@ -20,10 +21,16 @@ import { mcpErrorResult, type McpToolError } from './conventions.ts';
  *   is plain text. For a 5.0 tool it becomes the 5.0 error shape, so every
  *   error from these tools carries `structuredContent.error`. A 4.x tool's
  *   result passes through untouched.
+ * - A card host's hidden 4.x tool is not found in the 5.0 error shape.
  */
-export function shapeFiveZeroResults(transport: Transport, toolNames: ReadonlySet<string>): void {
+export function shapeFiveZeroResults(
+  transport: Transport,
+  toolNames: ReadonlySet<string>,
+  hiddenToolNames?: ReadonlySet<string>,
+): void {
   const toolLists = new Set<RequestId>();
   const fiveZeroCalls = new Map<RequestId, string>();
+  const hiddenCalls = new Set<RequestId>();
   const onmessage = transport.onmessage;
   transport.onmessage = (message, extra) => {
     try {
@@ -32,6 +39,9 @@ export function shapeFiveZeroResults(transport: Transport, toolNames: ReadonlySe
         const name = (message.params as { name?: unknown } | undefined)?.name;
         if (message.method === 'tools/call' && typeof name === 'string' && toolNames.has(name)) {
           fiveZeroCalls.set(message.id, name);
+        }
+        if (message.method === 'tools/call' && typeof name === 'string' && hiddenToolNames?.has(name)) {
+          hiddenCalls.add(message.id);
         }
       }
     } catch {
@@ -43,7 +53,16 @@ export function shapeFiveZeroResults(transport: Transport, toolNames: ReadonlySe
   transport.send = (message, options) => send(shaped(message), options);
 
   function shaped(message: JSONRPCMessage): JSONRPCMessage {
-    if (!isJSONRPCResultResponse(message) || message.id === undefined) return message;
+    if (!(isJSONRPCResultResponse(message) || isJSONRPCErrorResponse(message)) || message.id === undefined) return message;
+    if (hiddenCalls.delete(message.id) && isJSONRPCErrorResponse(message)) {
+      return { jsonrpc: '2.0', id: message.id, result: mcpErrorResult({
+        code: 'not_found',
+        message: 'That tool is not available.',
+        retryable: false,
+        nextStep: 'Call tools/list to see the available tools.',
+      }) };
+    }
+    if (!isJSONRPCResultResponse(message)) return message;
     if (toolLists.delete(message.id)) return withSecuritySchemes(message);
     const tool = fiveZeroCalls.get(message.id);
     if (tool === undefined) return message;
