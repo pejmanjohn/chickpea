@@ -16,7 +16,7 @@ import type { ResolvedAssignment } from '../src/config/types.ts';
 import type { SlackPresentationStatePort } from '../src/slack/agent-view-presentation.ts';
 import { SlackRunPresentationStoreLogic, type SlackRunPresentation } from '../src/slack/run-presentations.ts';
 import { CLEF_TIMEOUT_MS } from '../src/slack/clef-intent.ts';
-import { runTurn, type RunTurnOptions } from '../src/slack/run-turn.ts';
+import { runTurn, startEarlyJudgment, type RunTurnOptions } from '../src/slack/run-turn.ts';
 import type { FrozenRuntimePlanDecision } from '../src/slack/turn-job-types.ts';
 import { SlackStatusRegistry } from '../src/slack/status-registry.ts';
 import { timedStateRpc } from '../src/observability/runtime-latency.ts';
@@ -630,28 +630,70 @@ test('a confident Clef reply dispatches on its record before the classifier answ
   });
 });
 
+// Defect caught: a turn that will not judge (a command the host answers, an
+// approval, a recorded basis, a model to repair) spends Clef and classifier
+// calls before its fold that nothing reads.
+test('only a turn that may judge starts its judgment calls before the fold', async () => {
+  const clef = fakeClefEnv('reply');
+  const turn = surfaceTurn('dm');
+  const settings = resolveStores().settings;
+  for (const [held, why] of [
+    [{ ...turn, text: '!memory' }, 'a memory command'],
+    [{ ...turn, text: '<@U_CHICKPEA> !memory list' }, 'an addressed memory command'],
+    [{ ...turn, text: '<@U_CHICKPEA> !routines' }, 'a routine command'],
+    [{ ...turn, interactionIntent: { disposition: 'reply', reason: 'substantive_request' } }, 'a recorded basis'],
+    [{ ...turn, managementApprovalProposalId: 'proposal_first_status' }, 'an approval'],
+  ] as const) {
+    assert.equal(startEarlyJudgment(held, classifiedAssignment, clef.env, settings), undefined, why);
+  }
+  const unpinned: ResolvedAssignment = { ...assignment, runtimeContract: 'chickpea-v1' };
+  delete unpinned.model;
+  assert.equal(startEarlyJudgment(turn, unpinned, clef.env, settings), undefined, 'a model to repair');
+  assert.equal(clef.calls.length + clef.managementCalls.length, 0, 'none asked Clef');
+  await withScriptedClassifier(async () => {
+    scriptedProvider([async (model) => scriptedMessage(model, [{ type: 'text', text: REPLY_ANSWER }], 'stop')],
+      { providerId: 'anthropic' });
+    const calls = startEarlyJudgment(turn, classifiedAssignment, clef.env, settings);
+    assert.ok(calls, 'a request to judge starts its calls');
+    const [, , model] = await Promise.all([calls.clef, calls.management, calls.model]);
+    assert.equal(model.classification.failed, false);
+    assert.equal(clef.calls.length + clef.managementCalls.length, 2);
+  });
+});
+
 // Defect caught: the title's Slack call still waits for the basis, so it
 // stays in the stage's tail; or it goes before the opening status, is sent
 // twice, or is no longer recorded.
 test('the title goes to Slack after the opening status and before the basis, once, and is recorded set', async () => {
-  const clef = fakeClefEnv('reply', { delayMs: 150 });
+  const clef = fakeClefEnv('reply', { delayMs: 250 });
   platformEnv = clef.env;
   holdClassifierAnswer = answerAfterDispatch;
+  // Slack acknowledges the admitted status 80 ms late; the title still waits for it.
+  let held = false;
+  holdCustomStatus = async () => {
+    if (held) return;
+    held = true;
+    await new Promise((resolve) => setTimeout(resolve, 80));
+  };
   const titleMs: number[] = [];
-  await withScriptedClassifier(async () => {
-    const { timeline, presentation } = await firstStatusTimeline(
-      'dm', null, { onTitle: (ms) => titleMs.push(ms) }, classifiedAssignment,
-    );
-    const status = timeline.indexOf('slack:assistant.threads.setStatus');
-    const titled = timeline.indexOf('slack:assistant.threads.setTitle');
-    const recorded = timeline.indexOf('turnJobs.recordInteractionIntent');
-    assert.ok(status >= 0 && titled >= 0 && recorded >= 0, `status, title and basis: ${timeline.join(' ')}`);
-    assert.ok(status < titled, `the title follows the opening status: ${timeline.join(' ')}`);
-    assert.ok(titled < recorded, `the title does not wait for the basis: ${timeline.join(' ')}`);
-    assert.equal(timeline.filter((entry) => entry === 'slack:assistant.threads.setTitle').length, 1);
-    assert.equal(presentation?.title?.outcome, 'set', 'the outcome is recorded');
-    assert.equal(titleMs.length, 1, 'its time is reported once');
-  });
+  try {
+    await withScriptedClassifier(async () => {
+      const { timeline, presentation } = await firstStatusTimeline(
+        'dm', null, { onTitle: (ms) => titleMs.push(ms) }, classifiedAssignment,
+      );
+      const acknowledged = timeline.indexOf('acknowledged:assistant.threads.setStatus');
+      const titled = timeline.indexOf('slack:assistant.threads.setTitle');
+      const recorded = timeline.indexOf('turnJobs.recordInteractionIntent');
+      assert.ok(acknowledged >= 0 && titled >= 0 && recorded >= 0, `status, title and basis: ${timeline.join(' ')}`);
+      assert.ok(acknowledged < titled, `the title waits for the opening status: ${timeline.join(' ')}`);
+      assert.ok(titled < recorded, `the title does not wait for the basis: ${timeline.join(' ')}`);
+      assert.equal(timeline.filter((entry) => entry === 'slack:assistant.threads.setTitle').length, 1);
+      assert.equal(presentation?.title?.outcome, 'set', 'the outcome is recorded');
+      assert.equal(titleMs.length, 1, 'its time is reported once');
+    });
+  } finally {
+    holdCustomStatus = undefined;
+  }
 });
 
 // Defect caught: the eyes wait for the model's labels, or the labels never
