@@ -2373,6 +2373,72 @@ test('an MCP header setup stores one credential and records the tools the server
   }
 });
 
+test('a saved optional MCP key, such as Exa\'s, is replaced on the key page in the same secret slot', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => START });
+  const owner = await createSlackOwner(identity, { now: START, suffix: 'mcp-optional-key-replace' });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const management = new SqliteManagementStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const agent = await config.createAgent({
+      id: 'agent_research', name: 'Research', creatorMembershipId: owner.membership.id,
+      editPolicy: 'creator_and_admins', instructions: 'Search the web.', enabled: true,
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    // An optional key's account is ready from the start, as Exa used without a key is.
+    const { account: exa } = await new ConnectionAccountService({ config, settings }).createForAgent({
+      principal: browserPrincipal(owner),
+      agentId: agent.id,
+      workspaceId: owner.user.slackTeamId,
+      ownerKind: 'team',
+      allowedCapabilities: [],
+      providerId: 'exa',
+      label: 'Exa',
+      policy: {
+        kind: 'mcp', url: 'https://mcp.exa.ai/mcp', transport: 'streamable-http', authMode: 'none',
+        headerNames: ['x-api-key'], credentialHeaderName: 'x-api-key', credentialOptional: true,
+        discoveredTools: [{ name: 'web_search_exa' }], allowedTools: ['web_search_exa'], presetId: 'exa',
+      },
+    });
+    await saveConnectionAccountSecret(exa.secretRefId, 'old-exa-key', undefined, settings);
+    const service = new WorkspaceManagementService({
+      identity, config, management, settings, setupBaseUrl: 'http://localhost', now: () => START,
+      randomId: () => 'mcp_optional_key', randomCapability: () => CAPABILITY,
+    });
+    const setupId = await requestConnectionSetup(service, owner, {
+      kind: 'mcp_connection', agentId: agent.id, connectionId: 'exa',
+    });
+    const requestHeaders: Array<Record<string, string>> = [];
+    const app = createManagementSetupRoutes({
+      management, config, settings, identity,
+      now: () => START,
+      authenticatePrincipal: async () => browserPrincipal(owner),
+      deliverReceipt: async () => ({ deliveryRef: 'mcp:receipt' }),
+      discoverMcp: async (input) => {
+        requestHeaders.push(input.headers ?? {});
+        return { tools: [{ name: 'web_search_exa' }] };
+      },
+      identifyMcp: async () => undefined,
+    });
+    const cookie = await claimSetup(app, setupId);
+    const completed = await postSetupForm(app, setupId, 'complete', cookie, { 'header:x-api-key': 'new-exa-key' });
+    assert.equal(completed.status, 303, await completed.clone().text());
+
+    assert.deepEqual(requestHeaders, [{ 'x-api-key': 'new-exa-key' }], 'the new key is checked against the server');
+    assert.equal(await storedSecret(settings, exa), 'new-exa-key');
+    const ready = await currentAccount(config, exa);
+    assert.equal(ready.lifecycle, 'ready');
+    assert.ok(ready.policy.kind === 'mcp');
+    assert.equal(ready.policy.credentialOptional, true, 'the key stays optional');
+    assert.deepEqual(ready.policy.allowedTools, ['web_search_exa']);
+  } finally {
+    identity.close();
+    config.close();
+    management.close();
+    settings.close();
+  }
+});
+
 test('an MCP header setup the server rejects names the host and saves nothing', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => START });
   const owner = await createSlackOwner(identity, { now: START, suffix: 'mcp-header-rejected' });
