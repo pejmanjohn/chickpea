@@ -407,12 +407,16 @@ test('a copy chooses its steps by their size before the scrub, so the scrub read
 
 test('a long username\'s start, cut past its 64th character, leaves no part of it', () => {
   const long = `ops.${'synthetic.'.repeat(9)}team@example.com`;
-  assert.ok(long.length > 100);
+  const spaced = `ops.${'synthetic.'.repeat(7)}night "shift" team@example.com`;
+  assert.ok(long.length > 100 && spaced.indexOf(' ') > 64);
   const record = copy({
+    steps: [browserStep('browser_snapshot', {}, { snapshot: `- text "Signed in as ${spaced.slice(0, 84)}…"` })],
     answer: `Signed in as ${long.slice(0, 90)}… and ${long.slice(0, 40)}…`,
-  }, { hosts: [], usernames: [long] });
-  assert.deepEqual(kept(record, ['synthetic']), []);
+  }, { hosts: [], usernames: [long, spaced] });
+  assert.deepEqual(kept(record, ['synthetic', 'shift']), []);
   assert.equal(record.answer, 'Signed in as [credential redacted]… and [credential redacted]…');
+  const output = record.steps[0]?.kind === 'tool' ? record.steps[0].output ?? '' : '';
+  assert.equal(JSON.parse(output).snapshot, '- text "Signed in as [credential redacted]…"', 'a space or an escaped quote past the 64th does not stop it');
 });
 
 test('usernames match whole words, and one under four characters only as a whole value in a browser step', () => {
