@@ -1,5 +1,6 @@
 import type { ConversationStreamChunk } from '@flue/runtime';
 
+import { websiteLoginNames } from '../browser/logins.ts';
 import { installationScopeOf } from '../config/installation-scope.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
@@ -38,7 +39,7 @@ export interface RunReviewStart {
   grantsWebsiteLogins: boolean;
   /** The Slack turn job the run answers; follow-ups dispatched into its run under that id are copied with it. */
   turnJobId?: string;
-  /** Where the installation's review key is kept; reached only once a copy is built. */
+  /** Where the installation's review key and website logins are kept; reached only once a copy is built. */
   settings: () => SettingsStore;
   /** A read of the key already made, as a thread runner's is; it answers the first read only. */
   prefetched?: SettingsStore;
@@ -191,7 +192,12 @@ class Session implements RunReviewSession {
         source = 'history';
       }
     }
-    const key = await loadOrCreateRunReviewKey(this.start.settings(), this.start.prefetched);
+    const settings = this.start.settings();
+    // A catalog that cannot be read keeps no copy, as a review key that cannot be read does.
+    const [key, websiteLogins] = await Promise.all([
+      loadOrCreateRunReviewKey(settings, this.start.prefetched),
+      websiteLoginNames(settings),
+    ]);
     const now = new Date().toISOString();
     const record = buildRunReviewRecord({
       runId: ending.runId,
@@ -212,6 +218,7 @@ class Session implements RunReviewSession {
       },
       truncated: collector?.truncated ?? false,
       source,
+      websiteLogins,
     }, runReviewPseudonymizer(key));
     if (abandoned()) return;
     await this.port.record(this.installationId, record);

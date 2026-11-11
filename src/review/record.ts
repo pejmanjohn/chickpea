@@ -6,9 +6,12 @@
 
 import { createHmac } from 'node:crypto';
 
+import { BROWSER_TOOL_NAMES } from '../browser/tools.ts';
 import { CREDENTIAL_REPLACEMENT, redactCredentialLikeContent } from '../security/content-validation.ts';
 import { SLACK_CANVAS_TOOL_NAMES } from '../slack/canvases/tools.ts';
 import { SLACK_LIST_TOOL_NAMES } from '../slack/lists/tools.ts';
+import { COLLECTED_FIELD_CHARS } from './collector.ts';
+import { websiteLoginScrub, type RunReviewWebsiteLogins } from './website-logins.ts';
 
 export const RUN_REVIEW_RECORD_FORMAT = 'chickpea.run-review.v1';
 
@@ -101,6 +104,8 @@ export interface RunReviewInput {
   /** The trace was already cut while it was collected. */
   truncated: boolean;
   source: RunReviewRecordV1['source'];
+  /** Every website login the installation saved, whichever Agents it is granted to. */
+  websiteLogins: RunReviewWebsiteLogins;
 }
 
 export const RUN_REVIEW_FIELD_BYTES = 16 * 1024;
@@ -138,14 +143,15 @@ export function runReviewPseudonymizer(key: Uint8Array): (slackUserId: string) =
 }
 
 /**
- * The record a port stores. Every string loses each key the run saved with
- * save_connection_key or tried with try_connection and recognizable
- * credentials, then every Slack user
- * ID, then is cut to its cap; file notes keep only a
- * name and size; and a Slack List or canvas tool's output and error, and a Slack read's
- * result from another conversation, are omitted. The builder adds no Slack
- * team, channel, thread or message IDs. Past the record cap the oldest steps
- * go first, then the oldest context.
+ * The record a port stores. Every string goes through, in order: the link
+ * rules for website logins and the hosted browser, which must see each URL
+ * whole; each key the run saved with save_connection_key or tried with
+ * try_connection; each saved website login's username; recognizable
+ * credentials; every Slack user ID; then its cap. File notes keep only a name
+ * and size; and a Slack List or canvas tool's output and error, and a Slack
+ * read's result from another conversation, are omitted. The builder adds no
+ * Slack team, channel, thread or message IDs. Past the record cap the oldest
+ * steps go first, then the oldest context.
  */
 export function buildRunReviewRecord(
   input: RunReviewInput,
@@ -153,10 +159,12 @@ export function buildRunReviewRecord(
 ): RunReviewRecordV1 {
   let truncated = input.truncated;
   const keys = savedConnectionKeys(input.steps);
-  const field = (text: string): string => {
-    const scrubbed = redactCredentialLikeContent(
-      keys.reduce((value, key) => value.split(key).join(CREDENTIAL_REPLACEMENT), text),
-    ).replace(SLACK_USER_ID, (id) => pseudonymOf(id));
+  const logins = websiteLoginScrub(input.websiteLogins);
+  const field = (text: string, browserStep = false): string => {
+    const linked = logins.links(text, browserStep);
+    const keyed = keys.reduce((value, key) => value.split(key).join(CREDENTIAL_REPLACEMENT), linked);
+    const named = logins.usernames(keyed, { browserStep, cut: text.length >= COLLECTED_FIELD_CHARS });
+    const scrubbed = redactCredentialLikeContent(named).replace(SLACK_USER_ID, (id) => pseudonymOf(id));
     const capped = capUtf8(scrubbed, RUN_REVIEW_FIELD_BYTES);
     if (capped.length < scrubbed.length) truncated = true;
     return capped;
@@ -189,18 +197,20 @@ export function buildRunReviewRecord(
       text: field(message.text),
       files: files(message.files),
     })),
-    steps: input.steps.map((step): RunReviewStep => step.kind === 'tool'
-      ? {
-          kind: 'tool',
-          name: field(step.name),
-          input: field(keptInput(step.name, step.input)),
-          ...(step.output === undefined ? {} : { output: field(keptOutput(step.name, step.output)) }),
-          ...(step.error === undefined
-            ? {}
-            : { error: field(sharingUnknownTool(step.name) ? OTHER_CONVERSATION_OMITTED : step.error) }),
-          ...(step.durationMs === undefined ? {} : { durationMs: step.durationMs }),
-        }
-      : { kind: step.kind, text: field(step.text) }),
+    steps: input.steps.map((step): RunReviewStep => {
+      if (step.kind !== 'tool') return { kind: step.kind, text: field(step.text) };
+      const browserStep = BROWSER_TOOLS.has(step.name);
+      return {
+        kind: 'tool',
+        name: field(step.name),
+        input: field(keptInput(step.name, step.input), browserStep),
+        ...(step.output === undefined ? {} : { output: field(keptOutput(step.name, step.output), browserStep) }),
+        ...(step.error === undefined
+          ? {}
+          : { error: field(sharingUnknownTool(step.name) ? OTHER_CONVERSATION_OMITTED : step.error, browserStep) }),
+        ...(step.durationMs === undefined ? {} : { durationMs: step.durationMs }),
+      };
+    }),
     ...(input.answer === undefined ? {} : { answer: field(input.answer) }),
     outcome: input.outcome,
     ...(input.error ? { error: { class: field(input.error.class), message: field(input.error.message) } } : {}),
@@ -220,6 +230,8 @@ function sharingUnknownTool(toolName: string): boolean {
   return (SLACK_LIST_TOOL_NAMES as readonly string[]).includes(toolName) ||
     (SLACK_CANVAS_TOOL_NAMES as readonly string[]).includes(toolName);
 }
+
+const BROWSER_TOOLS: ReadonlySet<string> = new Set(BROWSER_TOOL_NAMES);
 
 /** The tools whose input carries a key the person pasted. */
 const CONNECTION_KEY_TOOLS: ReadonlySet<string> = new Set(['save_connection_key', 'try_connection']);
