@@ -102,7 +102,7 @@ export function reviewedMetaAdsTools(
     const required: unknown[] = Array.isArray(schema.required) ? schema.required : [];
     const unreviewed = required.filter((name) => typeof name !== 'string' || !reviewed?.includes(name));
     if (!reviewed || unreviewed.length > 0) {
-      withheld.set(tool.name, reviewed ? unreviewed.map(String) : []);
+      withheld.set(tool.name, reviewed ? loggedNames(unreviewed) : []);
       return [];
     }
     const properties = Object.entries(isRecord(schema.properties) ? schema.properties : {})
@@ -259,7 +259,9 @@ function sanitizeJsonRpcPayload(
   const extraKeys = new Set<string>();
   const projected = candidates.map((candidate) => projectApprovedAccounts(candidate, approved, response, extraKeys));
   if (extraKeys.size > 0) {
-    console.info({ event: 'chickpea.meta_ads.account_envelope_extra_keys', connectionId, keys: [...extraKeys] });
+    console.info({
+      event: 'chickpea.meta_ads.account_envelope_extra_keys', connectionId, keys: loggedNames([...extraKeys]),
+    });
   }
   const canonical = JSON.stringify(projected[0]);
   if (projected.some((candidate) => JSON.stringify(candidate) !== canonical)) {
@@ -380,6 +382,12 @@ function unsupportedResponse(response: Response, reason: string, value?: unknown
   return new Error(
     `Meta Ads account verification returned an unsupported response (${reason}; response-kind=${responseKind}; top-level=${topLevel}).`,
   );
+}
+
+/** Names the provider chose, as a log may carry them: the first 20, and none that is not a short identifier. */
+function loggedNames(names: readonly unknown[]): string[] {
+  return names.slice(0, 20).map((name) =>
+    typeof name === 'string' && /^[\w.-]{1,120}$/.test(name) ? name : '(other)');
 }
 
 function unsupportedToolListing(reason: string): Error {

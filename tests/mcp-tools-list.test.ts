@@ -952,6 +952,20 @@ test('a Meta connection whose every granted tool is withheld fails with a reason
   assert.deepEqual(logs.refused, [{ event: 'chickpea.mcp.tools_list_refused', connectionId: 'meta', reason: 'no-granted-tools' }]);
 });
 
+test('a withheld Meta tool logs only short identifier names from the live schema, and at most 20', async (t) => {
+  const logs = captureLogs(t);
+  const many = Array.from({ length: 30 }, (_, index) => `synthetic_${index}`);
+  const server = pagedServer('json', [[
+    liveHelper, liveReport(['ad_account_id', 'synthetic private sentence', { nested: true }, ...many] as string[]),
+  ]]);
+  await withRuntimeConnection(metaConnection({ allowedTools: [META_REPORT] }), server.fetch, async (definition) => {
+    await assert.rejects(createMcpConnection(definition), /no longer offers any of the tools/);
+  }, metaDeclaration([META_REPORT]));
+  assert.deepEqual(logs.missing.map(({ schemaRequires }) => schemaRequires), [{
+    [META_REPORT]: ['(other)', '(other)', ...many.slice(0, 18)],
+  }]);
+});
+
 /** Meta's account list, as structured content and as text, the way Meta answers. */
 function accountAnswer(accounts: Record<string, unknown>) {
   return (rpc: Rpc) => Response.json({

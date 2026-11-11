@@ -223,6 +223,25 @@ test('account helper ignores a new top-level envelope key, forwards none of it, 
   }], 'once for the response, though both payloads carry the keys');
 });
 
+test('account helper logs at most 20 envelope key names, and none that is not a short identifier', async (t) => {
+  const logged: Array<{ keys?: string[] }> = [];
+  t.mock.method(console, 'info', (event: { keys?: string[] }) => { logged.push(event); });
+  const provider: Record<string, unknown> = {
+    data: [{ ad_account_id: '123450001', is_ads_mcp_enabled: true, is_queryable: true }],
+    'synthetic private sentence': 1,
+    ['k'.repeat(121)]: 1,
+    request_context: 1,
+  };
+  for (let index = 0; index < 30; index += 1) provider[`extra_${index}`] = 1;
+  await sanitizeMetaAdsAccountHelperResponse(
+    rpcResult({ structuredContent: provider }), approved, { connectionId: 'meta-test' },
+  );
+  assert.equal(logged.length, 1);
+  assert.deepEqual(logged[0]!.keys, [
+    '(other)', '(other)', 'request_context', ...Array.from({ length: 17 }, (_, index) => `extra_${index}`),
+  ]);
+});
+
 test('account helper logs nothing for an envelope it knows', async (t) => {
   const logged: unknown[] = [];
   t.mock.method(console, 'info', (event: unknown) => { logged.push(event); });
