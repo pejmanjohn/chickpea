@@ -95,7 +95,7 @@ export const FIVE_ZERO_TOOLS = {
   }),
   list_agents: tool({
     title: 'List Agents',
-    description: 'The Agents, AI teammates in Slack, that the signed-in person can use: each one\'s agentId, @handle, whether it is on, whether they can edit it, plain reasons it needs attention, and its Admin and Slack links. include "mine" lists only the ones they created. Reads only; changes nothing.',
+    description: 'The Agents, AI teammates in Slack, that the signed-in person can use: each one\'s agentId, @handle, a short description, whether it is on, whether they can edit it, and plain reasons it needs attention. get_agent has the rest. include "mine" lists only the ones they created; includeArchived adds archived ones. A long list comes in pages: send nextCursor as cursor. Reads only; changes nothing.',
     input: schemas.listAgentsInput,
     output: schemas.listAgentsOutput,
     run: (deps, args) => reads.listAgents(deps, args),
@@ -233,7 +233,7 @@ export const FIVE_ZERO_TOOLS = {
   }),
   get_practice_run: tool({
     title: 'Get a practice run',
-    description: 'Where one practice run stands, by the runToken practice_agent returned, with its answer and what it read once it has them. Waits up to 20 seconds. Only your own runs, until an hour after each ends. Reads only; changes nothing.',
+    description: 'Where one practice run stands, by the runToken practice_agent returned, with its answer and what it read once it has them. With step, more of that step\'s raw result, 20,000 characters at a time from offset. Waits up to 20 seconds. Only your own runs, until an hour after each ends. Reads only; changes nothing.',
     input: schemas.getPracticeRunInput,
     output: schemas.practiceRunOutput,
     cardCalls: true,
@@ -242,7 +242,7 @@ export const FIVE_ZERO_TOOLS = {
   }),
   list_practice_runs: tool({
     title: 'List practice runs',
-    description: 'Your own practice runs of one Agent from the last hour, newest first: each one\'s practiceId, runToken, turn, question and status, to find results again after losing them. get_practice_run returns a run\'s answer and steps. Reads only; changes nothing.',
+    description: 'Your own practice runs of one Agent that you can still read, newest first: those still going and those that ended in the last hour, each with its practiceId, runToken, turn, question and status, to find results again after losing them. get_practice_run returns a run\'s answer and steps. Reads only; changes nothing.',
     input: schemas.listPracticeRunsInput,
     output: schemas.listPracticeRunsOutput,
     run: async (deps, args) => (await import('./test-runs.ts')).listPracticeRuns(deps, args),

@@ -46,9 +46,11 @@ export function practiceMessage(question: string, earlier: readonly PracticeTurn
   };
 }
 
-function turnBlock({ turn, question, reply, steps }: PracticeTurn): string {
-  return [`Turn ${turn}. They asked:`, quoted(question), 'You answered:', quoted(reply), escapeSlackControlCharacters(practiceDigest(steps))]
-    .join('\n');
+function turnBlock({ turn, question, reply, steps, moreSteps }: PracticeTurn): string {
+  return [
+    `Turn ${turn}. They asked:`, quoted(question), 'You answered:', quoted(reply),
+    escapeSlackControlCharacters(practiceDigest(steps, moreSteps)),
+  ].join('\n');
 }
 
 /** Every line behind `> `, so nothing quoted can stand as a line of Chickpea's own. */
@@ -59,9 +61,10 @@ function quoted(text: string): string {
 /**
  * What a turn read, by name and outcome, in the order it first did each:
  * `Read: Probe Board (probe_board_search, ok); Release API (GET, refused)`.
- * A request names its method; a repeat is counted, not listed again.
+ * A request names its method; a repeat is counted, not listed again. The
+ * calls past its 25 listed steps are counted at the end: `…and 7 more calls`.
  */
-export function practiceDigest(steps: readonly PracticeStep[]): string {
+export function practiceDigest(steps: readonly PracticeStep[], moreSteps = 0): string {
   const entries = new Map<string, { what: string[]; times: number }>();
   for (const step of steps) {
     const what = [...digestNames(step), step.outcome];
@@ -71,16 +74,17 @@ export function practiceDigest(steps: readonly PracticeStep[]): string {
     else entries.set(key, { what, times: 1 });
   }
   if (entries.size === 0) return 'Read: nothing.';
+  const calls = moreSteps > 0 ? `; …and ${moreSteps} more ${moreSteps === 1 ? 'call' : 'calls'}.` : '.';
   const shown = [...entries.values()].map(({ what: [name, ...rest], times }) =>
     `${name} (${[...rest, ...times > 1 ? [`${times} times`] : []].join(', ')})`);
   let line = 'Read:';
   for (const [index, entry] of shown.entries()) {
     const left = shown.length - index - 1;
     const next = `${line}${index === 0 ? ' ' : '; '}${entry}`;
-    if (`${next}${left > 0 ? `; and ${left} more.` : '.'}`.length > DIGEST_CHARS) return `${line}; and ${left + 1} more.`;
+    if (`${next}${left > 0 ? `; and ${left} more` : ''}${calls}`.length > DIGEST_CHARS) return `${line}; and ${left + 1} more${calls}`;
     line = next;
   }
-  return `${line}.`;
+  return `${line}${calls}`;
 }
 
 /** [service, tool] for a call; [skill, 'skill'] for a skill load; [tool] for a call of no service. */

@@ -233,15 +233,48 @@ function assertNoInternalIds(serialized: string, f: ManagementAdapterFixture): v
   ]) assert.equal(serialized.includes(forbidden), false, `${forbidden} leaked: ${serialized.slice(0, 400)}`);
 }
 
+test('list_agents leaves archived Agents out unless asked, keeps each entry short, and pages inside 20,000 characters', async (t) => {
+  const { f, call } = await harness(t, 'list-pages');
+  await createFixtureAgent(f, 'agent_long', { name: 'Long', description: `${'A'.repeat(150)}\n\nmore` });
+  await createFixtureAgent(f, 'agent_shelved', { name: 'Shelved', lifecycle: 'archived', enabled: false });
+  const first = structured(await call('list_agents'));
+  assert.deepEqual((first.agents as Array<{ agentId: string }>).map(({ agentId }) => agentId), ['agent_long'], 'archived left out');
+  assert.equal((first.agents as Array<{ description: string }>)[0]!.description, `${'A'.repeat(99)}…`, 'one line, cut at 100');
+  const all = structured(await call('list_agents', { includeArchived: true }));
+  assert.deepEqual((all.agents as Array<{ agentId: string; status: string }>).map(({ agentId, status }) => [agentId, status]),
+    [['agent_long', 'on'], ['agent_shelved', 'archived']]);
+  // Ninety Agents with the longest descriptions a list keeps: pages that each fit, and every Agent once.
+  for (let index = 0; index < 90; index += 1) {
+    await createFixtureAgent(f, `agent_many_${String(index).padStart(2, '0')}`, { name: `Many ${index} ${'n'.repeat(40)}`, description: 'd'.repeat(300) });
+  }
+  const seen: string[] = [];
+  let cursor: string | undefined;
+  let pages = 0;
+  do {
+    const made = await call('list_agents', cursor ? { cursor } : {});
+    const size = made.content.map(({ text }) => text).join('').length + JSON.stringify(made.structuredContent).length;
+    assert.ok(size <= 20_000, `${size} characters on page ${pages + 1}`);
+    const page = structured(made);
+    seen.push(...(page.agents as Array<{ agentId: string }>).map(({ agentId }) => agentId));
+    cursor = page.nextCursor as string | undefined;
+    pages += 1;
+  } while (cursor);
+  assert.ok(pages >= 2, `${pages} pages`);
+  assert.deepEqual(seen.sort(), ['agent_long', ...Array.from({ length: 90 }, (_, index) => `agent_many_${String(index).padStart(2, '0')}`)].sort());
+  assert.equal(new Set(seen).size, seen.length, 'no Agent twice');
+  const refused = await call('list_agents', { cursor: 'abc' });
+  assert.equal(refused.isError, true);
+});
+
 test('list_agents, get_agent and the other reads carry handles and versions, never revisions', async (t) => {
   const { f, call } = await harness(t, 'reads');
   await createFixtureAgent(f, 'agent_research', { description: 'Finds sources.' });
   await grantChannel(f, 'agent_research');
   const agents = structured(await call('list_agents'));
-  const [row, ...others] = agents.agents as Array<Record<string, unknown> & { links: { admin: string } }>;
+  const [row, ...others] = agents.agents as Array<Record<string, unknown>>;
   assert.deepEqual(others, []);
-  const { links, ...fields } = row!;
-  assert.deepEqual(fields, {
+  // A list's entry only: get_agent has the links and the whole description.
+  assert.deepEqual(row, {
     agentId: 'agent_research',
     name: 'Research',
     handle: 'research',
@@ -250,8 +283,8 @@ test('list_agents, get_agent and the other reads carry handles and versions, nev
     canEdit: true,
     needsAttention: [],
   });
-  assert.equal(links.admin, 'https://chickpea.example.test/admin/agents/agent_research');
   assert.equal(agents.canCreate, true);
+  assert.equal(agents.nextCursor, undefined);
   assert.deepEqual(structured(await call('list_agents', { include: 'mine' })).agents, agents.agents);
 
   const agent = structured(await call('get_agent', { agentId: 'agent_research' }));

@@ -331,6 +331,31 @@ test('a connection the run left out is named under the answer; the save\'s Undo 
   assert.deepEqual(card.labels(), ['Try it again (primary)', 'Mark Docs MCP\'s read tools (secondary)']);
 });
 
+// Mutation proof: a card that finds the connection by off's sentence again, or offers an Admin link as the fix, fails here.
+test('the card finds a left-out connection in the result\'s leftOut, never in off\'s sentence, and offers only its tool fix', async (t) => {
+  const w = await world(t, 'try-again-left-out-field');
+  const mark = { label: 'Mark Docs MCP\'s read tools', tool: 'update_connection', arguments: { agentId: AGENT, connectionId: 'docs' } };
+  const read = { kind: 'note', text: 'It read Stripe.' };
+  const line = { kind: 'note', text: 'Docs MCP wasn\'t used: none of its tools are marked as ones that only read.', tone: 'warn' };
+  const drawn = async (result: Record<string, unknown>) => {
+    w.runs.outcome = { status: 'answered', failure: null, result: { reply: 'One invoice.', read: ['Stripe'], ...result } };
+    // A reopened card holds no Undo, so a fix would be its second button.
+    const card = cardHost(AGENT_CARD, asChatGpt(w.call), w.clock);
+    const proposed = await w.call('propose_agent_change', { agentId: AGENT, version: await w.version(), change: { description: 'Chases invoices.' } });
+    await card.dispatch({ type: 'result', result: proposed, now: w.clock.now, kept: { told: [], outcome: { kind: 'done', summary: 'Saved Invoice Chaser.', practice: true } } });
+    w.clock.now += 3 * 60_000;
+    await card.press('try_once');
+    return { blocks: card.shown.blocks.slice(2), labels: card.labels() };
+  };
+  const sentence = 'Docs MCP was not available in this practice run, so an answer that needs it can\'t be judged here.';
+  assert.deepEqual(await drawn({ off: [sentence], fixes: [mark] }),
+    { blocks: [read], labels: ['Try it again (primary)', 'Change something (secondary)'] }, 'off\'s sentence alone names nothing');
+  assert.deepEqual(await drawn({ leftOut: [{ service: 'Docs MCP', fix: mark }] }),
+    { blocks: [read, line], labels: ['Try it again (primary)', 'Mark Docs MCP\'s read tools (secondary)'] });
+  assert.deepEqual(await drawn({ leftOut: [{ service: 'Docs MCP', fix: { label: 'Choose its tools in Admin', url: 'https://chickpea.example.test/admin/agents/agent_invoices' } }] }),
+    { blocks: [read, line], labels: ['Try it again (primary)', 'Change something (secondary)'] }, 'an Admin link is not the answer\'s fix');
+});
+
 test('Undo stays beside a Try it again answer and undoes the save', async (t) => {
   const w = await world(t, 'try-again-undo');
   const card = await w.saved();
