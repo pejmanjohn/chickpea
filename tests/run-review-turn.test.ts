@@ -316,6 +316,19 @@ test('a turn whose plan grants a website login is copied without the login\'s us
   assert.equal(port.records[0]!.record.answer, 'Signed in as [credential redacted]. Invoice INV-2041 is due.');
 });
 
+test('a turn whose login was deleted before its copy was built still leaves out the username its plan froze', async (t) => {
+  await turnState(t);
+  const port = reviewPort();
+  // No catalog row: the login is gone by the time the copy reads the catalog.
+  await reviewedTurn(HOSTED_ENV, {
+    ...streamedReply('deleted_login', { steps: SIGNED_IN_STEPS, text: 'Signed in as ops@example.com.' }),
+    browser: SIGNED_IN,
+  });
+  assert.equal(port.records.length, 1);
+  assert.equal(port.records[0]!.record.answer, 'Signed in as [credential redacted].');
+  assert.equal(/ops@example\.com|SYNTHCODE123|SYNTHTOKEN789/i.test(JSON.stringify(port.records[0]!.record)), false);
+});
+
 test('a turn whose Agent is granted a login is copied whether or not the plan froze it', async (t) => {
   await turnState(t);
   await savedLogin();
