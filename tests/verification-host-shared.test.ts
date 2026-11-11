@@ -224,11 +224,20 @@ test('a watched command that cannot start releases its reservation', (t) => {
   }
 });
 
+test('a watched reserved command ended by a signal keeps its reservation, as an unwatched one does', (t) => {
+  const { env, exclusive } = isolatedHome(t);
+  const run = spawnSync(process.execPath, [VERIFY_HOST, '--stall-ms', '60000', '--', process.execPath, '-e', "process.kill(process.pid, 'SIGKILL')"], { env, encoding: 'utf8' });
+  assert.equal(run.status, 1, run.stderr);
+  assert.match(run.stderr, /Interrupted command: host reservation retained\./);
+  assert.equal(exclusive.filter(existsSync).length, 1);
+});
+
 test('a command nested under a watching verify:host stays in its group, so the outer stop reaches it', async (t) => {
   const { env, home, shared } = isolatedHome(t);
   const pidFile = join(home, 'nested.pid');
   const stubborn = `process.on('SIGTERM', () => {}); require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); console.log('nested'); setInterval(() => {}, 1e6);`;
   const run = spawnSync(process.execPath, [VERIFY_HOST, '--shared', '--stall-ms', '3000', '--', process.execPath, VERIFY_HOST, '--shared', '--', process.execPath, '-e', stubborn], { env, encoding: 'utf8', timeout: 60_000 });
+  t.after(() => { try { process.kill(Number(readFileSync(pidFile, 'utf8')), 'SIGKILL'); } catch {} });
   assert.ifError(run.error);
   assert.equal(run.status, 124, run.stderr);
   assert.ok(await ended(Number(readFileSync(pidFile, 'utf8'))), 'a nested command that ignores SIGTERM still ends with the outer group');
