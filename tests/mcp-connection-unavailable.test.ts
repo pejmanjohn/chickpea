@@ -235,6 +235,45 @@ test('each optional connection Flue drops logs one line with its reason, and non
   }
 });
 
+test('the observer registered in src/app.ts logs the line to the console', { timeout: 60_000 }, async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-mcp-unavailable-app-'));
+  t.after(() => {
+    closeNodeStateStores();
+    rmSync(directory, { recursive: true, force: true });
+  });
+  const info = t.mock.method(console, 'info', () => {});
+  t.mock.method(console, 'warn', () => {});
+
+  await withEnv({ SLACK_STATE_DB_PATH: join(directory, 'state.db') }, async () => {
+    await import('../src/app.ts');
+    function AppObserverProbe({ id }: AgentProps) {
+      useModel(`cloudflare/${MODEL}`);
+      useMcpConnection(withMcpFailureCause({
+        name: 'srv', url: 'https://mcp.example.com/mcp', optional: true,
+        fetch: async () => new Response(RAW, { status: 502 }),
+      }, id));
+      return 'Answer briefly.';
+    }
+    const provider = createCloudflareBindingProvider({ run: async () => modelAnswer() });
+    const runtime = await start({ agents: [{ agent: AppObserverProbe, name: 'mcp-unavailable-app-probe' }], providers: [provider] });
+    try {
+      const agent = init(AppObserverProbe, { id: 'app-observer' });
+      assert.ok(await agent.read(await agent.dispatch('Synthetic request.')));
+    } finally {
+      await runtime.stop();
+    }
+  });
+
+  const lines = info.mock.calls.map((call) => call.arguments[0] as Record<string, unknown> | undefined)
+    .filter((line) => line?.event === 'chickpea.mcp.connection_unavailable');
+  assert.equal(lines.length, 1);
+  assert.deepEqual(
+    { connectionId: lines[0]!.connectionId, reason: lines[0]!.reason, status: lines[0]!.status, flueInstanceRef: lines[0]!.flueInstanceRef },
+    { connectionId: 'srv', reason: 'http_error', status: 502, flueInstanceRef: opaqueId('flueinstance', 'app-observer') },
+  );
+  assert.ok(!JSON.stringify(lines[0]).includes(RAW));
+});
+
 test('a later request on the same attempt replaces an earlier failure, and an abort records none', async () => {
   const lines: Array<Record<string, unknown>> = [];
   let status = 401;
