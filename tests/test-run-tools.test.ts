@@ -1354,6 +1354,8 @@ test('get_practice_run with step reads more of a cut result, 20,000 characters a
   assert.doesNotMatch(read!.result.data, /Microsoft Teams/, 'the excerpt never reached the answer\'s source');
   assert.match(String(run.nextStep), / For more of a truncated result, call get_practice_run with this runToken and step, its number in steps\. /);
   assert.equal(Number(installation.db.get('SELECT COUNT(*) AS n FROM management_test_run_results')!.n), 1, 'kept beside the run');
+  assert.doesNotMatch(String(installation.db.get('SELECT result_json FROM management_test_runs')!.result_json), /"results"/,
+    'and never in the run\'s own result, which every read returns');
 
   const firstRead = await call('get_practice_run', { runToken: run.runToken, step: 2 });
   const first = structured(firstRead);
