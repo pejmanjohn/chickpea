@@ -30,9 +30,12 @@ const HIDDEN = '\u0000';
  */
 export function serviceErrorText(text: string, secrets: readonly string[]): string {
   const truncated = text.length > MAX_SOURCE_CHARS;
-  const redacted = redactConnectionText(unescapeJson(text.slice(0, MAX_SOURCE_CHARS)), secrets)
-    .replaceAll(CREDENTIAL_REPLACEMENT, HIDDEN);
-  const readable = hideSecretValues(redacted).replaceAll(ESCAPED_QUOTE, '"');
+  // Labelled values are hidden before the shared redaction, which can replace a label together
+  // with the start of its value (`OPENAI_API_KEY=…`) and leave the rest of the value unlabelled.
+  const hidden = hideSecretValues(unescapeJson(text.slice(0, MAX_SOURCE_CHARS)));
+  const readable = redactConnectionText(hidden, secrets)
+    .replaceAll(CREDENTIAL_REPLACEMENT, HIDDEN)
+    .replaceAll(ESCAPED_QUOTE, '"');
   const chunks = spaceCompactJson(readable).split(/\s+/);
   // The source cut can land inside a chunk, and no part of a chunk is ever judged alone.
   if (truncated) chunks.pop();
