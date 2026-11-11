@@ -3,11 +3,15 @@ import { test } from 'node:test';
 
 import { Hono } from 'hono';
 
+import { ADMIN_ROUTE_PATHS } from '../src/admin/route-paths.ts';
+import { createAdminRoutes } from '../src/admin/routes.ts';
 import { betterAuthPublicRouteKeys } from '../src/auth/better-auth-routes.ts';
 import { createBetterAuthRuntimeRoutes } from '../src/auth/better-auth-runtime.ts';
 import { createMcpOAuthRuntimeRoutes } from '../src/auth/mcp-oauth-routes.ts';
 import { BETTER_AUTH_PUBLIC_PATHS, MCP_OAUTH_PATHS } from '../src/auth/public-auth-paths.ts';
 import { lazyRoutes } from '../src/http/lazy-routes.ts';
+import { createConnectRoutes } from '../src/management/connect-routes.ts';
+import { createManagementSetupRoutes } from '../src/management/setup-routes.ts';
 
 /** A request path a registered route pattern answers: `:param` and `*` become one segment. */
 function examplePath(pattern: string): string {
@@ -18,6 +22,9 @@ function examplePath(pattern: string): string {
 const SURFACES = [
   { name: 'Better Auth', paths: BETTER_AUTH_PUBLIC_PATHS, routes: () => createBetterAuthRuntimeRoutes() },
   { name: 'MCP OAuth', paths: MCP_OAUTH_PATHS, routes: () => createMcpOAuthRuntimeRoutes() },
+  { name: 'Admin', paths: ADMIN_ROUTE_PATHS, routes: () => createAdminRoutes() },
+  { name: 'setup', paths: ADMIN_ROUTE_PATHS, routes: () => createManagementSetupRoutes() },
+  { name: 'connect', paths: ADMIN_ROUTE_PATHS, routes: () => createConnectRoutes() },
 ];
 
 for (const surface of SURFACES) {
@@ -25,6 +32,8 @@ for (const surface of SURFACES) {
     const mount = lazyRoutes(surface.name, surface.paths, async () => new Hono().all('*', (c) => c.text('mounted')));
     const app = new Hono().route('/', mount);
     for (const route of surface.routes().routes) {
+      // Admin's catch-all middlewares run on its own paths only.
+      if (route.path === '/*') continue;
       const method = route.method === 'ALL' ? 'POST' : route.method;
       const response = await app.request(examplePath(route.path), { method });
       assert.equal(response.status, 200, `${method} ${route.path} is registered outside the lazy mount`);

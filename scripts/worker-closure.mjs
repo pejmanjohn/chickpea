@@ -31,7 +31,7 @@ import { builtWorkerConfigPath, staleBuildReason } from './lib/built-worker-conf
 import { compareSizes, exportCommit, formatGrowth, growthFailure, growthLine, growthPlan, short } from './lib/budget-growth.mjs';
 
 const MIB = 1024 * 1024;
-export const WORKER_STATIC_CLOSURE_CEILING_BYTES = Math.round(7.75 * MIB);
+export const WORKER_STATIC_CLOSURE_CEILING_BYTES = 7_377_653 + 64 * 1024;
 export const UNBUILDABLE_BASE_ENV = 'CHICKPEA_BUDGET_UNBUILDABLE_BASE';
 const ENTRY = 'virtual:cloudflare/worker-entry';
 const BASE_REPORT = 'budget-modules.json';

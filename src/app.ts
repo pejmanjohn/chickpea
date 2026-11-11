@@ -5,7 +5,7 @@ import { tagStateStub } from './config/state-rpc.ts';
 import { instrument, type FlueObservation } from '@flue/runtime';
 import { Hono, type Context } from 'hono';
 
-import { createAdminRoutes } from './admin/routes.ts';
+import { ADMIN_ROUTE_PATHS } from './admin/route-paths.ts';
 import { CHICKPEA_SLACK_AGENT_NAME } from './agents/names.ts';
 import {
   getConfigStore,
@@ -23,8 +23,6 @@ import type { OAuthContinuation } from './connections/types.ts';
 import { BETTER_AUTH_PUBLIC_PATHS, MCP_OAUTH_PATHS } from './auth/public-auth-paths.ts';
 import { lazyRoutes } from './http/lazy-routes.ts';
 import { recoveryOnlyGate } from './auth/request-auth-control.ts';
-import { createManagementSetupRoutes } from './management/setup-routes.ts';
-import { createConnectRoutes } from './management/connect-routes.ts';
 import { activityStatusForObservation } from './activity/status.ts';
 import { noteAgentAuthoringActivation } from './management/workspace-change-tools.ts';
 import {
@@ -291,14 +289,25 @@ app.route('/', lazyRoutes('Better Auth routes', BETTER_AUTH_PUBLIC_PATHS, async 
   (await import('./auth/better-auth-runtime.ts')).createBetterAuthRuntimeRoutes()));
 app.route('/', lazyRoutes('MCP OAuth routes', MCP_OAUTH_PATHS, async () =>
   (await import('./auth/mcp-oauth-routes.ts')).createMcpOAuthRuntimeRoutes({ productTelemetry: productTelemetryForRequest })));
-app.route('/', createManagementSetupRoutes({
-  productTelemetry: productTelemetryForRequest,
-  wakeAgent: admitSetupWake,
-}));
-app.route('/', createConnectRoutes());
-app.route('/', createAdminRoutes({
-  onOAuthContinuationReady: resumeOAuthContinuation,
-  productTelemetry: productTelemetryForRequest,
+// Admin, the setup links and the connect pages load on their first request
+// too. They share one app, in this order, because a setup link's OAuth return
+// falls through to Admin's.
+app.route('/', lazyRoutes('Admin routes', ADMIN_ROUTE_PATHS, async () => {
+  const [{ createManagementSetupRoutes }, { createConnectRoutes }, { createAdminRoutes }] = await Promise.all([
+    import('./management/setup-routes.ts'),
+    import('./management/connect-routes.ts'),
+    import('./admin/routes.ts'),
+  ]);
+  return new Hono()
+    .route('/', createManagementSetupRoutes({
+      productTelemetry: productTelemetryForRequest,
+      wakeAgent: admitSetupWake,
+    }))
+    .route('/', createConnectRoutes())
+    .route('/', createAdminRoutes({
+      onOAuthContinuationReady: resumeOAuthContinuation,
+      productTelemetry: productTelemetryForRequest,
+    }));
 }));
 app.route('/', createAgentSlackAppRoutes({ serveDelivery: serveAgentAppSlackDelivery }));
 app.route('/channels/slack', channel.route());

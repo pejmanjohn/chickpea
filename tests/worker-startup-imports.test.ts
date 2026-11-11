@@ -56,6 +56,14 @@ const LAZY_MODULES: Record<string, string> = {
   'src/routines/pause-notice.ts': "a routine's out-of-usage pause, or the good run after it (routines/execution.ts)",
   'src/connections/service-error-text.ts': "a Composio-reported failure's reason (connections/providers/composio.ts)",
   'src/admin/usage-report.ts': "a hosted Usage report or activity page (admin/usage-api.ts)",
+  'src/admin/routes.ts': "Admin's first request (app.ts)",
+  'src/management/setup-routes.ts': "a setup link's or Admin's first request (app.ts, admin/routes.ts)",
+  'src/management/connect-routes.ts': "a connect page's first request (app.ts)",
+  'src/slack/agent-apps/admin-routes.ts': "an Agent app's token page, in Admin (admin/routes.ts)",
+  'src/admin/page.ts': "an Admin page's first render (admin/routes.ts, slack/agent-apps/admin-routes.ts)",
+  'src/management/connector-landing-page.ts': 'a connect page or a setup link (management/connect-routes.ts, management/setup-routes.ts)',
+  'src/config/connector-logos.ts': 'an Admin page or a connect page (admin/page.ts, management/connector-landing-page.ts)',
+  'src/config/suggested-skills.ts': "an Admin page's first render (admin/page.ts)",
   'src/admin/billing-api.ts': "the Plan page's API, on its first request (admin/routes.ts)",
   'src/state/test-run-lifecycle.ts': "a state store's first test run, test-run alarm pass or cancellation pass (cloudflare.ts)",
   'src/state/test-run-instance.ts': "a test run's first dispatch or step (cloudflare.ts)",
@@ -75,7 +83,7 @@ const LAZY_MODULES: Record<string, string> = {
  * down when a change moves modules behind import(). scripts/worker-closure.mjs
  * holds the built artifact to the same two rules.
  */
-const STARTUP_SOURCE_CEILING_BYTES = 11_240_139 + 64 * 1024;
+const STARTUP_SOURCE_CEILING_BYTES = 9_938_645 + 64 * 1024;
 
 function isModule(node: string, module: string): boolean {
   return node === module || node.startsWith(module + '/');

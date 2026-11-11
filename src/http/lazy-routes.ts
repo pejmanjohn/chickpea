@@ -9,7 +9,8 @@ import { onDemand } from '../runtime/on-demand.ts';
  * this and a Slack turn never pays for it. The loaded sub-app answers the
  * request itself, so `paths` must cover every route it registers. It answers
  * through its own context: the parent's error handler and per-request caches
- * keyed on the parent context do not reach it (neither surface uses them).
+ * keyed on the parent context do not reach it (no surface uses them; the
+ * request's auth control read follows the Request, auth/request-auth-control.ts).
  */
 export function lazyRoutes(name: string, paths: readonly string[], load: () => Promise<Hono>): Hono {
   const routes = onDemand(name, load);
