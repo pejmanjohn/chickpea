@@ -78,15 +78,15 @@ test('account helper advertises the same contract through SSE and preserves noti
 });
 
 test('account helper output advertisement fails closed on malformed JSON-RPC listings', async () => {
-  for (const payload of [
-    { jsonrpc: '2.0', id: {}, result: { tools: [] } },
-    { jsonrpc: '2.0', id: 1, error: { code: -1 }, result: { tools: [] } },
-    { jsonrpc: '2.0', id: 1, result: { tools: [
+  for (const [payload, reason] of [
+    [{ jsonrpc: '2.0', id: {}, result: { tools: [] } }, 'response-id'],
+    [{ jsonrpc: '2.0', id: 2, error: { code: -1 }, result: { tools: [] } }, 'json-rpc'],
+    [{ jsonrpc: '2.0', id: 2, result: { tools: [
       { name: 'ads_get_ad_accounts' }, { name: 'ads_get_ad_accounts' },
-    ] } },
-  ]) {
+    ] } }, 'duplicate-account-helper'],
+  ] as const) {
     await assert.rejects(advertiseMetaAdsAccountHelperOutput(toolsListRequest, Response.json(payload)),
-      /Meta Ads tool discovery returned an unsupported response/);
+      new RegExp(`Meta Ads tool discovery returned an unsupported response \\(${reason}\\)`));
   }
 });
 

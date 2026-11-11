@@ -1,5 +1,5 @@
 import { META_ADS_ACCOUNT_HELPER, canonicalMetaAdsAccountId } from './meta-ads-policy.ts';
-import { rewriteToolsListResponse, toolsListRequestId } from './mcp-tools-list.ts';
+import { readToolsListAnswer } from './mcp-tools-list.ts';
 
 const MAX_META_ADS_HELPER_RESPONSE_BYTES = 512_000;
 const MAX_META_ADS_ACCOUNT_RECORDS = 1_000;
@@ -106,13 +106,23 @@ export async function advertiseMetaAdsAccountHelperOutput(
   request: Request,
   response: Response,
 ): Promise<Response> {
-  const id = await toolsListRequestId(request);
-  if (id === undefined || !response.ok) return response;
-  return rewriteToolsListResponse(response, {
-    ids: new Set([id]),
+  const listing = await toolsListRequest(request);
+  if (!listing || !response.ok) return response;
+  return readToolsListAnswer(response, {
+    id: listing.id,
     page: (result) => ({ ...result, tools: advertiseMetaAdsAccountHelper(result.tools) }),
-    unsupported: unsupportedToolListing,
+    refuse: unsupportedToolListing,
   });
+}
+
+async function toolsListRequest(request: Request): Promise<Record<string, unknown> | undefined> {
+  if (request.method !== 'POST') return undefined;
+  try {
+    const value = await request.clone().json() as unknown;
+    return isRecord(value) && value.method === 'tools/list' ? value : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function readBoundedText(response: Response, deadlineMs: number): Promise<string> {

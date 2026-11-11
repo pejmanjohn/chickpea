@@ -30,6 +30,8 @@ type Wire = 'json' | 'sse';
 type Rpc = { jsonrpc: '2.0'; id?: number; method: string; params?: { cursor?: string; name?: string } };
 type ListedTool = string | Record<string, unknown>;
 
+const encoder = new TextEncoder();
+
 function listedTool(tool: ListedTool): Record<string, unknown> {
   return typeof tool === 'string'
     ? { name: tool, description: `The ${tool} tool.`, inputSchema: { type: 'object', properties: {} } }
@@ -52,38 +54,42 @@ function initializeResult(params: Record<string, unknown> | undefined) {
   };
 }
 
-/** A Streamable HTTP server that answers each POST in JSON or as one SSE event. */
-function streamableServer(wire: Wire, listing: (rpc: Rpc) => unknown) {
+function eventStream(chunks: readonly string[], options: { open?: boolean } = {}): Response {
+  return new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      if (!options.open) controller.close();
+    },
+  }), { headers: { 'content-type': 'text/event-stream' } });
+}
+
+function reply(wire: Wire, payload: unknown): Response {
+  return wire === 'sse' ? eventStream([`event: message\ndata: ${JSON.stringify(payload)}\n\n`]) : Response.json(payload);
+}
+
+/** A Streamable HTTP server; `answerList` answers each tools/list POST. */
+function mcpServer(answerList: (rpc: Rpc) => Response) {
   const calls: string[] = [];
   const fetch = (async (input, init) => {
     const request = new Request(input, init);
     if (request.method !== 'POST') return new Response(null, { status: 405 });
     const rpc = await request.json() as Rpc;
     if (rpc.id === undefined) return new Response(null, { status: 202 });
-    let payload: unknown;
     if (rpc.method === 'initialize') {
-      payload = { jsonrpc: '2.0', id: rpc.id, result: initializeResult(rpc.params as Record<string, unknown>) };
-    } else if (rpc.method === 'tools/list') {
-      payload = listing(rpc);
-    } else if (rpc.method === 'tools/call') {
-      calls.push(String(rpc.params?.name));
-      payload = { jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: 'done' }] } };
-    } else {
-      throw new Error(`Unexpected synthetic MCP request: ${rpc.method}`);
+      return Response.json({ jsonrpc: '2.0', id: rpc.id, result: initializeResult(rpc.params as Record<string, unknown>) });
     }
-    return wire === 'sse'
-      ? new Response(`event: message\ndata: ${JSON.stringify(payload)}\n\n`, {
-          headers: { 'content-type': 'text/event-stream' },
-        })
-      : Response.json(payload);
+    if (rpc.method === 'tools/list') return answerList(rpc);
+    if (rpc.method === 'tools/call') {
+      calls.push(String(rpc.params?.name));
+      return Response.json({ jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: 'done' }] } });
+    }
+    throw new Error(`Unexpected synthetic MCP request: ${rpc.method}`);
   }) as typeof globalThis.fetch;
   return { fetch, calls };
 }
 
 function pagedServer(wire: Wire, pages: readonly (readonly ListedTool[])[]) {
-  return streamableServer(wire, (rpc) => ({
-    jsonrpc: '2.0', id: rpc.id, result: pageResult(pages, rpc.params?.cursor),
-  }));
+  return mcpServer((rpc) => reply(wire, { jsonrpc: '2.0', id: rpc.id, result: pageResult(pages, rpc.params?.cursor) }));
 }
 
 /**
@@ -91,7 +97,6 @@ function pagedServer(wire: Wire, pages: readonly (readonly ListedTool[])[]) {
  * before the POST's 202 returns, as a fast server can.
  */
 function legacySseServer(tools: readonly ListedTool[]) {
-  const encoder = new TextEncoder();
   let push: ((text: string) => void) | undefined;
   const fetch = (async (input, init) => {
     const request = new Request(input, init);
@@ -149,6 +154,7 @@ async function withRuntimeConnection<T>(
   fetch: typeof globalThis.fetch,
   run: (definition: McpConnectionDefinition) => Promise<T>,
   declaration: Partial<RuntimePlanMcpConnectionV2> = {},
+  options: { readsOnly?: boolean } = {},
 ): Promise<T> {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-mcp-tools-list-'));
   try {
@@ -169,7 +175,7 @@ async function withRuntimeConnection<T>(
         optional: true,
         allowedTools: [...stored.allowedTools],
         ...declaration,
-      }], undefined, undefined, { createGuardedFetch: () => fetch });
+      }], undefined, undefined, { createGuardedFetch: () => fetch, ...options });
       assert.ok(definition);
       return await run(definition);
     });
@@ -188,56 +194,84 @@ async function mountedNames(definition: McpConnectionDefinition): Promise<string
   }
 }
 
-function captureMissingTools(t: TestContext): Array<Record<string, unknown>> {
-  const events: Array<Record<string, unknown>> = [];
+/** Collect the filter's log lines and silence the per-request MCP telemetry. */
+function captureLogs(t: TestContext) {
+  const missing: Array<Record<string, unknown>> = [];
+  const refused: Array<Record<string, unknown>> = [];
   const info = console.info.bind(console);
   t.mock.method(console, 'info', (event: unknown, ...rest: unknown[]) => {
-    if ((event as { event?: string } | undefined)?.event === 'chickpea.mcp.tools_missing') {
-      events.push(event as Record<string, unknown>);
-      return;
-    }
-    if ((event as { event?: string } | undefined)?.event === 'chickpea.mcp.http') return;
-    info(event, ...rest);
+    const name = (event as { event?: string } | undefined)?.event;
+    if (name === 'chickpea.mcp.tools_missing') missing.push(event as Record<string, unknown>);
+    else if (name === 'chickpea.mcp.tools_list_refused') refused.push(event as Record<string, unknown>);
+    else if (name !== 'chickpea.mcp.http') info(event, ...rest);
   });
-  return events;
+  return { missing, refused };
 }
+
+const missingLine = (missing: string[], listedCount: number, taskOnly: string[] = []) => ({
+  event: 'chickpea.mcp.tools_missing', connectionId: 'srv', missing, taskOnly, listedCount,
+});
+const refusedLine = (reason: string) => ({ event: 'chickpea.mcp.tools_list_refused', connectionId: 'srv', reason });
+
+// --- mounting through Flue -------------------------------------------------
 
 for (const wire of ['json', 'sse'] as const) {
   test(`a granted tool the server stopped listing leaves the rest mounted in grant order (${wire})`, async (t) => {
-    const missing = captureMissingTools(t);
+    const logs = captureLogs(t);
     const server = pagedServer(wire, [['gamma', 'extra', 'alpha']]);
     await withRuntimeConnection(connectionConfig(), server.fetch, async (definition) => {
       assert.deepEqual(await mountedNames(definition), ['mcp__srv__alpha', 'mcp__srv__gamma']);
     });
-    assert.deepEqual(missing, [{
-      event: 'chickpea.mcp.tools_missing', connectionId: 'srv', missing: ['beta'], listedCount: 3,
-    }]);
+    assert.deepEqual(logs.missing, [missingLine(['beta'], 3)]);
+    assert.deepEqual(logs.refused, []);
   });
 }
 
 test('a grant split across two pages mounts what each page lists and reports what is missing after the last', async (t) => {
-  const missing = captureMissingTools(t);
+  const logs = captureLogs(t);
   const server = pagedServer('sse', [['extra', 'gamma'], ['alpha']]);
   await withRuntimeConnection(connectionConfig(), server.fetch, async (definition) => {
     assert.deepEqual(await mountedNames(definition), ['mcp__srv__gamma', 'mcp__srv__alpha']);
   });
-  assert.deepEqual(missing, [{
-    event: 'chickpea.mcp.tools_missing', connectionId: 'srv', missing: ['beta'], listedCount: 3,
-  }]);
+  assert.deepEqual(logs.missing, [missingLine(['beta'], 3)]);
+});
+
+test('mounted names stay inside the grant over JSON, SSE, and two pages', async (t) => {
+  captureLogs(t);
+  const grantNames = new Set(GRANT.map((name) => `mcp__srv__${name}`));
+  for (const wire of ['json', 'sse'] as const) {
+    for (const pages of [[['extra', 'gamma', 'alpha', 'other']], [['extra', 'alpha'], ['other', 'gamma', 'beta']]]) {
+      const server = pagedServer(wire, pages);
+      await withRuntimeConnection(connectionConfig(), server.fetch, async (definition) => {
+        const mounted = await mountedNames(definition);
+        assert.ok(mounted.length > 0);
+        assert.ok(mounted.every((name) => grantNames.has(name)), `${wire} ${JSON.stringify(pages)}: ${mounted.join(', ')}`);
+      });
+    }
+  }
 });
 
 test('a full listing logs nothing and mounts the whole grant in grant order', async (t) => {
-  const missing = captureMissingTools(t);
+  const logs = captureLogs(t);
   const server = pagedServer('json', [['gamma', 'beta', 'alpha']]);
   await withRuntimeConnection(connectionConfig(), server.fetch, async (definition) => {
     assert.equal(definition.tools, undefined, 'Flue mounts the filtered listing, not a strict allowlist');
     assert.deepEqual(await mountedNames(definition), ['mcp__srv__alpha', 'mcp__srv__beta', 'mcp__srv__gamma']);
   });
-  assert.deepEqual(missing, []);
+  assert.deepEqual(logs, { missing: [], refused: [] });
+});
+
+test('a test run mounts the same intersection', async (t) => {
+  captureLogs(t);
+  const server = pagedServer('json', [['gamma', 'extra', 'alpha']]);
+  const reads = Object.fromEntries(GRANT.map((name) => [name, { effect: 'read' as const }]));
+  await withRuntimeConnection(connectionConfig({ toolPolicies: reads }), server.fetch, async (definition) => {
+    assert.deepEqual(await mountedNames(definition), ['mcp__srv__alpha', 'mcp__srv__gamma']);
+  }, { readOnlyTools: GRANT }, { readsOnly: true });
 });
 
 test('a connection that lists none of its grant fails with a reason a person can act on', async (t) => {
-  const missing = captureMissingTools(t);
+  const logs = captureLogs(t);
   for (const wire of ['json', 'sse'] as const) {
     const server = pagedServer(wire, [['extra']]);
     await withRuntimeConnection(connectionConfig(), server.fetch, async (definition) => {
@@ -247,55 +281,132 @@ test('a connection that lists none of its grant fails with a reason a person can
       });
     });
   }
-  assert.deepEqual(missing, []);
+  assert.deepEqual(logs.missing, [missingLine(GRANT, 1), missingLine(GRANT, 1)]);
+  assert.deepEqual(logs.refused, [refusedLine('no-granted-tools'), refusedLine('no-granted-tools')]);
 });
 
-test('the legacy SSE transport mounts only granted tools the server still lists', async (t) => {
-  const missing = captureMissingTools(t);
-  const server = legacySseServer(['extra', 'alpha']);
-  await withRuntimeConnection(connectionConfig({ transport: 'sse' }), server.fetch, async (definition) => {
-    assert.deepEqual(await mountedNames(definition), ['mcp__srv__alpha']);
-  });
-  assert.deepEqual(missing, [{
-    event: 'chickpea.mcp.tools_missing', connectionId: 'srv', missing: ['beta', 'gamma'], listedCount: 2,
-  }]);
-});
-
-test('the legacy SSE transport never mounts an ungranted tool', async (t) => {
-  captureMissingTools(t);
-  const server = legacySseServer(['extra', 'beta', 'alpha', 'gamma']);
-  await withRuntimeConnection(connectionConfig({ transport: 'sse' }), server.fetch, async (definition) => {
-    assert.deepEqual(await mountedNames(definition), ['mcp__srv__alpha', 'mcp__srv__beta', 'mcp__srv__gamma']);
-  });
-});
-
-test('a malformed tool listing fails the connection closed', async (t) => {
-  captureMissingTools(t);
-  for (const wire of ['json', 'sse'] as const) {
-    const server = streamableServer(wire, (rpc) => ({
-      jsonrpc: '2.0', id: rpc.id, result: { tools: [{ name: 'alpha' }, 'beta'] },
-    }));
+test('a name listed twice mounts once, on one page and across two', async (t) => {
+  captureLogs(t);
+  for (const pages of [[['alpha', 'gamma', 'alpha']], [['alpha'], ['gamma', 'alpha']]]) {
+    const server = pagedServer('json', pages);
     await withRuntimeConnection(connectionConfig(), server.fetch, async (definition) => {
-      await assert.rejects(createMcpConnection(definition), /Example Tools tool discovery returned an unsupported response/);
+      assert.deepEqual(await mountedNames(definition), ['mcp__srv__alpha', 'mcp__srv__gamma']);
     });
   }
 });
 
+test('a granted task-only tool is reported and the rest mount', async (t) => {
+  const logs = captureLogs(t);
+  t.mock.method(console, 'warn', () => {});
+  const taskOnly = (name: string) => ({ ...listedTool(name), execution: { taskSupport: 'required' } });
+  const server = pagedServer('json', [['alpha', taskOnly('gamma')]]);
+  await withRuntimeConnection(connectionConfig(), server.fetch, async (definition) => {
+    assert.deepEqual(await mountedNames(definition), ['mcp__srv__alpha']);
+  });
+  assert.deepEqual(logs.missing, [missingLine(['beta'], 2, ['gamma'])]);
+  const onlyTasks = pagedServer('json', [[taskOnly('alpha')]]);
+  await withRuntimeConnection(connectionConfig(), onlyTasks.fetch, async (definition) => {
+    await assert.rejects(createMcpConnection(definition), /no longer offers any of the tools/);
+  });
+});
+
+test('a reconnect starts a new listing instead of carrying the one that failed', async (t) => {
+  const logs = captureLogs(t);
+  let listings = 0;
+  const server = mcpServer((rpc) => {
+    if (rpc.params?.cursor === undefined) listings += 1;
+    if (listings === 1) {
+      return rpc.params?.cursor === undefined
+        ? Response.json({ jsonrpc: '2.0', id: rpc.id, result: { tools: [listedTool('alpha')], nextCursor: 'more' } })
+        : new Response(null, { status: 202 });
+    }
+    return Response.json({ jsonrpc: '2.0', id: rpc.id, result: { tools: ['alpha', 'gamma'].map(listedTool) } });
+  });
+  await withRuntimeConnection(connectionConfig(), server.fetch, async (definition) => {
+    await assert.rejects(createMcpConnection(definition), /unsupported response \(status\)/);
+    assert.deepEqual(await mountedNames(definition), ['mcp__srv__alpha', 'mcp__srv__gamma']);
+  });
+  assert.deepEqual(logs.refused, [refusedLine('status')]);
+});
+
+test('a listing outside the POST answer fails the connection and mounts nothing', async (t) => {
+  const logs = captureLogs(t);
+  const answer = (rpc: Rpc) => JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { tools: [listedTool('alpha')] } });
+  const cases: Array<[string, (rpc: Rpc) => Response]> = [
+    ['status', () => new Response(null, { status: 202 })],
+    ['content-type', (rpc) => new Response(answer(rpc), { headers: { 'content-type': 'text/plain' } })],
+    ['batch', (rpc) => new Response(`[${answer(rpc)}]`, { headers: { 'content-type': 'application/json' } })],
+    ['response-id', (rpc) => Response.json({ jsonrpc: '2.0', id: Number(rpc.id) + 100, result: { tools: [] } })],
+    ['response-id', (rpc) => eventStream([
+      `data: ${JSON.stringify({ jsonrpc: '2.0', id: Number(rpc.id) + 100, result: { tools: [listedTool('alpha')] } })}\n\n`,
+      `data: ${answer(rpc)}\n\n`,
+    ])],
+    ['no-response', () => eventStream([
+      'data: {"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":1}}\n\n',
+    ])],
+    ['invalid-json', () => new Response('{"jsonrpc":', { headers: { 'content-type': 'application/json' } })],
+    ['json-rpc', (rpc) => Response.json({ jsonrpc: '2.0', id: rpc.id, result: { tools: 'alpha' } })],
+    ['tool', (rpc) => Response.json({ jsonrpc: '2.0', id: rpc.id, result: { tools: [listedTool('alpha'), 'beta'] } })],
+    ['tool', (rpc) => reply('sse', { jsonrpc: '2.0', id: rpc.id, result: { tools: [listedTool('alpha'), { description: 'no name' }] } })],
+  ];
+  for (const [reason, answerList] of cases) {
+    const server = mcpServer(answerList);
+    await withRuntimeConnection(connectionConfig(), server.fetch, async (definition) => {
+      await assert.rejects(
+        createMcpConnection(definition),
+        (error: Error) => error.message === `Example Tools tool discovery returned an unsupported response (${reason}).`,
+        reason,
+      );
+    });
+  }
+  assert.deepEqual(logs.refused, cases.map(([reason]) => refusedLine(reason)));
+});
+
+test('events before the answer reach the client, and a stream held open does not delay the mount', { timeout: 10_000 }, async (t) => {
+  captureLogs(t);
+  const server = mcpServer((rpc) => eventStream([
+    ': keep-alive\n\n',
+    'event: message\ndata: {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"listing"}}\n\n',
+    `id: 1\nevent: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { tools: ['extra', 'alpha'].map(listedTool) } })}\n\n`,
+  ], { open: true }));
+  await withRuntimeConnection(connectionConfig(), server.fetch, async (definition) => {
+    assert.deepEqual(await mountedNames(definition), ['mcp__srv__alpha']);
+  });
+});
+
 test('a JSON-RPC error answer to tools/list passes through untouched', async (t) => {
-  captureMissingTools(t);
-  const error = { jsonrpc: '2.0', id: 4, error: { code: -32601, message: 'Method not found' } };
-  const server = streamableServer('json', () => error);
+  captureLogs(t);
+  const error = '{ "jsonrpc": "2.0", "id": 4, "error": { "code": -32601, "message": "Method not found" } }';
+  const server = mcpServer(() => new Response(error, { headers: { 'content-type': 'application/json' } }));
   await withRuntimeConnection(connectionConfig(), server.fetch, async (definition) => {
     const response = await definition.fetch!(URL_, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 4, method: 'tools/list', params: {} }),
     });
-    assert.deepEqual(await response.json(), error);
+    assert.equal(await response.text(), error);
   });
 });
 
+test('a tools/list request that is not one JSON-RPC object never reaches the server', async (t) => {
+  captureLogs(t);
+  let outbound = 0;
+  const server = pagedServer('json', [['alpha']]);
+  const counted = (async (input, init) => {
+    outbound += 1;
+    return server.fetch(input, init);
+  }) as typeof globalThis.fetch;
+  await withRuntimeConnection(connectionConfig(), counted, async (definition) => {
+    for (const body of ['{"jsonrpc":"2.0","id":1,"method":"tools/list"', '[{"jsonrpc":"2.0","id":1,"method":"tools/list"}]']) {
+      await assert.rejects(definition.fetch!(URL_, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body,
+      }));
+    }
+  });
+  assert.equal(outbound, 0);
+});
+
 test('a tool call for a listed but ungranted tool is refused before it leaves Chickpea', async (t) => {
-  captureMissingTools(t);
+  captureLogs(t);
   const server = pagedServer('json', [['alpha', 'extra']]);
   await withRuntimeConnection(connectionConfig(), server.fetch, async (definition) => {
     await assert.rejects(definition.fetch!(URL_, {
@@ -306,6 +417,32 @@ test('a tool call for a listed but ungranted tool is refused before it leaves Ch
   assert.deepEqual(server.calls, []);
 });
 
+// --- the legacy SSE transport keeps Flue's strict allowlist ----------------
+
+test('the legacy SSE transport keeps the strict allowlist and no filter', async (t) => {
+  captureLogs(t);
+  const server = legacySseServer(['extra', 'beta', 'alpha', 'gamma']);
+  await withRuntimeConnection(connectionConfig({ transport: 'sse' }), server.fetch, async (definition) => {
+    assert.deepEqual(definition.tools, GRANT);
+    const accepted = await definition.fetch!(URL_, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'tools/list', params: {} }),
+    });
+    assert.equal(accepted.status, 202, 'the POST carries no listing on this transport');
+    assert.deepEqual(await mountedNames(definition), ['mcp__srv__alpha', 'mcp__srv__beta', 'mcp__srv__gamma']);
+  });
+});
+
+test('on the legacy SSE transport a missing granted tool still fails the connection (residual)', async (t) => {
+  captureLogs(t);
+  const server = legacySseServer(['extra', 'alpha', 'gamma']);
+  await withRuntimeConnection(connectionConfig({ transport: 'sse' }), server.fetch, async (definition) => {
+    await assert.rejects(createMcpConnection(definition), /does not expose "beta"/);
+  });
+});
+
+// --- Meta ------------------------------------------------------------------
+
 const metaHelperSchema = {
   propertyNames: ['advertiser_request', 'client_conversation_id'],
   accountFields: [],
@@ -315,7 +452,7 @@ const metaHelperSchema = {
 const metaScope = { [META_ADS_APPROVED_ACCOUNT_SCOPE]: ['123450001'] };
 
 test("Meta's account helper keeps its rewritten contract when another granted Meta tool disappears", async (t) => {
-  const missing = captureMissingTools(t);
+  const logs = captureLogs(t);
   const providerHelper = {
     name: META_ADS_ACCOUNT_HELPER,
     description: 'Provider pagination instructions.',
@@ -349,159 +486,70 @@ test("Meta's account helper keeps its rewritten contract when another granted Me
     readOnlyTools: grant,
     toolArgumentConstraints: Object.fromEntries(grant.map((name) => [name, metaScope])),
   });
-  assert.deepEqual(missing.map(({ missing: names, listedCount }) => ({ names, listedCount })), [
-    { names: [META_ADS_FIELD_HELPER], listedCount: 2 },
-    { names: [META_ADS_FIELD_HELPER], listedCount: 2 },
+  assert.deepEqual(logs.missing.map(({ missing, listedCount }) => ({ missing, listedCount })), [
+    { missing: [META_ADS_FIELD_HELPER], listedCount: 2 },
+    { missing: [META_ADS_FIELD_HELPER], listedCount: 2 },
   ], 'once for the mount and once for the direct listing');
 });
 
 // --- the filter on its own ------------------------------------------------
 
-function filter(transport: 'streamable-http' | 'sse' = 'streamable-http') {
-  return createMcpToolsListFilter({ connectionId: 'srv', transport, grant: ['alpha', 'gamma'] });
-}
+const filter = () => createMcpToolsListFilter({ connectionId: 'srv', grant: ['alpha', 'gamma'] });
+const answer = (id: number, tools: unknown) => JSON.stringify({ jsonrpc: '2.0', id, result: { tools } });
 
-function rpcRequest(id: number, method: string, params: Record<string, unknown> = {}): Request {
-  return new Request(URL_, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
-  });
-}
-
-const getStream = () => new Request(URL_, { method: 'GET' });
-
-function eventStream(chunks: readonly string[]): Response {
-  const encoder = new TextEncoder();
-  return new Response(new ReadableStream<Uint8Array>({
-    start(controller) {
-      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
-      controller.close();
-    },
-  }), { headers: { 'content-type': 'text/event-stream' } });
-}
-
-const answer = (id: number | string, tools: unknown) => JSON.stringify({ jsonrpc: '2.0', id, result: { tools } });
-
-test('an event stream is split the way the MCP client splits it and written back in one form', async () => {
-  const tools = filter();
-  await tools.noteRequest(rpcRequest(3, 'tools/list'));
+test('an event stream is split the way the MCP client splits it and ends at the answer', async (t) => {
+  captureLogs(t);
   const listing = answer(3, [{ name: 'extra' }, { name: 'alpha' }]);
-  const response = await tools.filterResponse(getStream(), eventStream([
+  const response = await filter().filterResponse({ id: 3 }, eventStream([
     '﻿: comment\r',
-    `\nretry: 250\rid: 7\r\nevent: message\r\nunknown: field\r\ndata: ${listing.slice(0, 10)}`,
-    `${listing.slice(10)}\r\n\r`,
-    '\nid: 8\n\nevent: message\ndata: {"jsonrpc":"2.0",\r',
+    '\nretry: 250\rid: 8\n\nunknown: field\r\nevent: message\ndata: {"jsonrpc":"2.0",\r',
     '\ndata:"method":"notifications/progress"}\n\n',
-    'data: an event the stream never finished',
-  ]), 'Example Tools', false);
+    `id: 7\r\nevent: message\r\ndata: ${listing.slice(0, 10)}`,
+    `${listing.slice(10)}\r\n\r`,
+    '\ndata: {"jsonrpc":"2.0","id":3,"result":{"tools":[{"name":"gamma"}]}}\n\n',
+  ]), 'Example Tools');
   assert.equal(await response.text(),
     'retry: 250\n\n' +
-    `id: 7\nevent: message\ndata: ${answer(3, [{ name: 'alpha' }])}\n\n` +
-    'event: message\ndata: {"jsonrpc":"2.0",\ndata: "method":"notifications/progress"}\n\n');
+    'event: message\ndata: {"jsonrpc":"2.0",\ndata: "method":"notifications/progress"}\n\n' +
+    `id: 7\nevent: message\ndata: ${answer(3, [{ name: 'alpha' }])}\n\n`);
 });
 
-test('every answer to a pending listing is filtered, so a decoy cannot use the filter up', async () => {
-  const tools = filter();
-  await tools.noteRequest(rpcRequest(3, 'tools/list'));
-  const unfiltered = [{ name: 'extra' }, { name: 'alpha' }];
-  const response = await tools.filterResponse(getStream(), eventStream([
-    `event: ignored\ndata: ${answer(3, unfiltered)}\n\n`,
-    `data: ${answer('3', unfiltered)}\n\n`,
-    `data: [${answer(3, unfiltered)}]\n\n`,
-    'data: {"jsonrpc":"2.0","id":3,"method":"ping"}\n\n',
-  ]), 'Example Tools', false);
-  const text = await response.text();
-  assert.doesNotMatch(text, /extra/);
-  assert.equal([...text.matchAll(/"alpha"/g)].length, 3, 'each answer is narrowed to the grant');
-  assert.ok(text.endsWith('data: {"jsonrpc":"2.0","id":3,"method":"ping"}\n\n'), 'a server request is not an answer');
+test('an answer in an event the client ignores does not end the listing', async (t) => {
+  captureLogs(t);
+  const response = await filter().filterResponse({ id: 3 }, eventStream([
+    `event: other\ndata: ${answer(3, [{ name: 'extra' }])}\n\n`,
+    `data: ${answer(3, [{ name: 'extra' }, { name: 'gamma' }])}\n\n`,
+  ]), 'Example Tools');
+  assert.equal(await response.text(),
+    `event: other\ndata: ${answer(3, [{ name: 'extra' }])}\n\ndata: ${answer(3, [{ name: 'gamma' }])}\n\n`);
 });
 
-test('a malformed listing on a stream becomes the error answer to that listing', async () => {
-  const tools = filter();
-  await tools.noteRequest(rpcRequest(5, 'tools/list'));
-  const response = await tools.filterResponse(getStream(), eventStream([
-    `data: ${JSON.stringify({ jsonrpc: '2.0', id: 5, result: { tools: 'alpha' } })}\n\n`,
-  ]), 'Example Tools', false);
-  assert.equal(await response.text(), `data: ${JSON.stringify({
-    jsonrpc: '2.0', id: 5,
-    error: { code: -32603, message: 'Example Tools tool discovery returned an unsupported response (json-rpc).' },
-  })}\n\n`);
+test('an HTTP error passes through for the client to fail or retry', async (t) => {
+  captureLogs(t);
+  const unauthorized = new Response('unauthorized', { status: 401 });
+  assert.equal(await filter().filterResponse({ id: 3 }, unauthorized, 'Example Tools'), unauthorized);
 });
 
-test('answers to other requests and to a listing before initialize pass through as sent', async () => {
-  const tools = filter();
-  await tools.noteRequest(rpcRequest(3, 'tools/list'));
-  await tools.noteRequest(rpcRequest(0, 'initialize'));
-  const other = '{"jsonrpc": "2.0", "id": 9, "result": {"tools": [{"name": "extra"}]}}';
-  const earlier = answer(3, [{ name: 'extra' }]);
-  const response = await tools.filterResponse(getStream(), eventStream([
-    `data: ${other}\n\ndata: ${earlier}\n\n`,
-  ]), 'Example Tools', false);
-  assert.equal(await response.text(), `data: ${other}\n\ndata: ${earlier}\n\n`);
+test('a listing larger than the cap is refused on both bodies', async (t) => {
+  const logs = captureLogs(t);
+  await assert.rejects(filter().filterResponse({ id: 3 }, new Response('{}', {
+    headers: { 'content-type': 'application/json', 'content-length': '8000001' },
+  }), 'Example Tools'), /\(response-size\)/);
+  await assert.rejects(filter().filterResponse({ id: 3 }, new Response('{}', {
+    headers: { 'content-type': 'text/event-stream', 'content-length': '8000001' },
+  }), 'Example Tools'), /\(response-size\)/);
+  await assert.rejects(filter().filterResponse({ id: 3 }, eventStream([
+    `data: ${'x'.repeat(4_000_000)}`, 'x'.repeat(4_000_001),
+  ]), 'Example Tools'), /\(response-size\)/);
+  assert.deepEqual(logs.refused.map(({ reason }) => reason), ['response-size', 'response-size', 'response-size']);
 });
 
-test('an oversized event stops the stream', async () => {
-  const tools = filter();
-  await tools.noteRequest(rpcRequest(3, 'tools/list'));
-  for (const chunks of [
-    ['data: ', 'x'.repeat(4_000_000), 'x'.repeat(4_000_001)],
-    [`data: ${'x'.repeat(4_000_000)}\n`, `data: ${'x'.repeat(4_000_001)}\n`],
+test('a JSON-RPC error with a result too, or another JSON-RPC version, is refused', async (t) => {
+  captureLogs(t);
+  for (const payload of [
+    { jsonrpc: '2.0', id: 3, error: { code: -1, message: 'no' }, result: { tools: [] } },
+    { jsonrpc: '1.0', id: 3, result: { tools: [{ name: 'alpha' }] } },
   ]) {
-    const response = await tools.filterResponse(getStream(), eventStream(chunks), 'Example Tools', false);
-    await assert.rejects(response.text(), /unsupported response \(response-size\)/);
+    await assert.rejects(filter().filterResponse({ id: 3 }, Response.json(payload), 'Example Tools'), /\(json-rpc\)/);
   }
-});
-
-test('a listing POST needs a JSON or event-stream body within the size cap', async () => {
-  const tools = filter();
-  const listing = rpcRequest(3, 'tools/list');
-  assert.equal(await tools.noteRequest(listing), true);
-  await assert.rejects(
-    tools.filterResponse(listing, new Response('{}'), 'Example Tools', true),
-    /unsupported response \(content-type\)/,
-  );
-  await assert.rejects(
-    tools.filterResponse(listing, new Response('{}', {
-      headers: { 'content-type': 'application/json', 'content-length': '8000001' },
-    }), 'Example Tools', true),
-    /unsupported response \(response-size\)/,
-  );
-  await assert.rejects(
-    tools.filterResponse(listing, new Response('{"jsonrpc":', {
-      headers: { 'content-type': 'application/json; charset=utf-8' },
-    }), 'Example Tools', true),
-    /unsupported response \(invalid-json\)/,
-  );
-});
-
-test('bodies that carry no listing answer pass through untouched', async () => {
-  const listing = rpcRequest(3, 'tools/list');
-  const error = '{ "jsonrpc": "2.0", "id": 3, "error": { "code": -32601, "message": "Method not found" } }';
-  assert.equal(await (await filter().filterResponse(listing, new Response(error, {
-    headers: { 'content-type': 'application/json' },
-  }), 'Example Tools', true)).text(), error);
-  const accepted = new Response('Accepted', { status: 202 });
-  assert.equal(await filter().filterResponse(listing, accepted, 'Example Tools', true), accepted);
-  const legacy = new Response('Accepted', { status: 200, headers: { 'content-type': 'text/plain' } });
-  assert.equal(await filter('sse').filterResponse(listing, legacy, 'Example Tools', true), legacy);
-  const failed = Response.json({ error: 'unavailable' }, { status: 503 });
-  assert.equal(await filter().filterResponse(listing, failed, 'Example Tools', true), failed);
-  const call = Response.json(JSON.parse(answer(3, [{ name: 'extra' }])));
-  assert.equal(await filter().filterResponse(rpcRequest(3, 'tools/call'), call, 'Example Tools', false), call);
-});
-
-test('a name listed on two pages mounts once, and an empty grant is judged after the last page', async () => {
-  const tools = filter();
-  const page = async (id: number, cursor: string | undefined, listed: unknown, next?: string) => {
-    const request = rpcRequest(id, 'tools/list', cursor === undefined ? {} : { cursor });
-    await tools.noteRequest(request);
-    const response = await tools.filterResponse(request, Response.json({
-      jsonrpc: '2.0', id, result: { tools: listed, ...(next ? { nextCursor: next } : {}) },
-    }), 'Example Tools', true);
-    return (await response.json() as { result: { tools: Array<{ name: string }> } }).result.tools.map(({ name }) => name);
-  };
-  assert.deepEqual(await page(1, undefined, [{ name: 'alpha' }], 'p2'), ['alpha']);
-  assert.deepEqual(await page(2, 'p2', [{ name: 'gamma' }, { name: 'alpha' }]), ['gamma']);
-  assert.deepEqual(await page(3, undefined, [{ name: 'extra' }], 'p2'), []);
-  await assert.rejects(page(4, 'p2', [{ name: 'other' }]), /no longer offers any of the tools/);
 });
