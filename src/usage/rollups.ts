@@ -28,6 +28,19 @@ export function usageWhere(query: NormalizedUsageQuery, includeCursor = false): 
   if (query.excludePrivateRoutines) {
     clauses.push("NOT (o.operation_kind = 'routine_run' AND o.conversation_kind = 'direct_message')");
   }
+  if (query.runHistory) {
+    const { membershipId, channelIds, rows } = query.runHistory;
+    // One bound list: DO SQLite takes at most 100 parameters a query.
+    const visible = `COALESCE((o.conversation_kind = 'direct_message' AND o.requester_membership_id = ?
+        AND substr(o.channel_id, 1, 1) = 'D')
+      OR (o.conversation_kind = 'named_channel' AND o.channel_id IS NOT NULL${channelIds
+        ? ' AND o.channel_id IN (SELECT value FROM json_each(?))'
+        : ''}), 0)`;
+    clauses.push(rows === 'visible'
+      ? visible
+      : `NOT ${visible} AND NOT (o.operation_kind = 'routine_run' AND o.conversation_kind = 'direct_message')`);
+    params.push(membershipId, ...channelIds ? [JSON.stringify(channelIds)] : []);
+  }
   for (const [key, column] of Object.entries(FILTER_COLUMNS)) {
     const values = query.filters[key as keyof typeof FILTER_COLUMNS];
     if (!values || values.length === 0) continue;

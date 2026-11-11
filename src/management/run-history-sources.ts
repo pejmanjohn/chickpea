@@ -13,7 +13,7 @@ export interface RunCharge {
  * results, the ledger's copy of a message, or a Help-improve copy.
  */
 export interface RunHistorySources {
-  usage: Pick<UsageStore, 'listOperations' | 'getOperation'>;
+  usage: Pick<UsageStore, 'listOperations' | 'getOperation' | 'summarize'>;
   /**
    * Whether each ledger run's conversation was public when it ran, as Admin's
    * Usage page reads it (`WorkStore.getRunVisibilities`): at most 100 a call.

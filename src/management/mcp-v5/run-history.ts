@@ -3,7 +3,7 @@ import type { z } from 'zod';
 import type { SlackPublicContextEntry } from '../../config/types.ts';
 import { redactCredentialLikeContent } from '../../security/content-validation.ts';
 import type { SlackChannel } from '../../slack/transport/types.ts';
-import type { UsageOperation, UsageOperationDetail } from '../../usage/types.ts';
+import type { UsageOperation, UsageOperationDetail, UsageRunHistoryScope } from '../../usage/types.ts';
 import { formatUsageDollars, type UsageMicros } from '../../usage/usage-display.ts';
 import type { RunCharge, RunHistorySources } from '../run-history-sources.ts';
 import { agentNotFound, readWorkspace, slackDirectory, type FiveZeroDeps } from './reads.ts';
@@ -39,7 +39,11 @@ type Quoted = NonNullable<GetOutput['ask']>;
 type History = NonNullable<Awaited<ReturnType<FiveZeroDeps['service']['runHistory']>>>;
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
-/** One call reads at most this many runs, so a busy Agent's window costs a bounded read. */
+/**
+ * One call reads at most this many runs, so a busy Agent's window costs a
+ * bounded read. The read holds only runs the caller could be shown
+ * (`visibleScope`), so where the limit falls says nothing of anyone else's.
+ */
 const SCAN_LIMIT = 1_000;
 const USAGE_PAGE = 100;
 /**
@@ -136,7 +140,7 @@ interface Access {
   history: History;
   agents: ReadonlyMap<string, { name: string; editor: boolean }>;
   sealer: Sealer;
-  /** The Channels a member who cannot change the Agent is in; read once a call, and only when needed. */
+  /** The public Channels a member who cannot change the Agent is in; read once a call, and only when needed. */
   memberChannels(): Promise<ReadonlySet<string> | undefined>;
 }
 
@@ -160,7 +164,7 @@ async function access(deps: FiveZeroDeps): Promise<Access> {
     sealer: await sealerFor(history.sources, snapshot.organizationId),
     // A Channel missing from a list Slack cut short is a Channel the member is not shown in.
     memberChannels: () => channels ??= slackDirectory(deps, context)
-      .then((directory) => directory && new Set(directory.channels.map(({ id }) => id))),
+      .then((directory) => directory && new Set(directory.channels.flatMap(({ id, isPrivate }) => isPrivate ? [] : [id]))),
   };
 }
 
@@ -173,13 +177,13 @@ function runNotFound(): never {
 }
 
 /** The verdict on each run of one Agent, reading each fact at most once a call. */
-function judge(found: Access, agentId: string, editor: boolean) {
+function judge(found: Access, editor: boolean) {
   const caller = { ...found.caller, editor };
   const visibility = new Map<string, boolean>();
   const channels = new Map<string, Promise<SlackChannel | undefined>>();
   const channel = (channelId: string) => {
     let read = channels.get(channelId);
-    if (!read) channels.set(channelId, read = found.history.slackChannel(agentId, channelId));
+    if (!read) channels.set(channelId, read = found.history.slackChannel(channelId));
     return read;
   };
   return {
@@ -238,7 +242,8 @@ export async function listAgentRuns(deps: FiveZeroDeps, input: ListInput): Promi
   }
   const place = cursor ? cursor.place : input.place;
   const limit = input.limit ?? RUN_HISTORY_PAGE.default;
-  const verdicts = judge(found, input.agentId, agent.editor);
+  const verdicts = judge(found, agent.editor);
+  const scope = await visibleScope(found, verdicts.caller);
   // Hidden runs are counted in whole UTC days, up to the start of today, so no choice of since or moment pins one down.
   const today = Math.floor(now / DAY_MS) * DAY_MS;
   const countFrom = Math.floor(since / DAY_MS) * DAY_MS;
@@ -253,11 +258,11 @@ export async function listAgentRuns(deps: FiveZeroDeps, input: ListInput): Promi
   let partial = false;
   scan: while (true) {
     const { items, nextCursor } = await found.history.sources.usage.listOperations({
-      // From the whole UTC day for every caller: the read limit counts hidden runs too, so a read
-      // from the exact since would let anyone find where the limit fell, to the millisecond.
+      // From the whole UTC day for every caller, so a page's edge never falls at the exact since.
       from: countFrom,
       to: now + 1,
       filters: { agent: [input.agentId], workKind: kindsFor(place) },
+      runHistory: scope,
       limit: USAGE_PAGE,
       ...(usageCursor ? { cursor: usageCursor } : {}),
     });
@@ -285,6 +290,15 @@ export async function listAgentRuns(deps: FiveZeroDeps, input: ListInput): Promi
     }
     usageCursor = nextCursor;
   }
+  // The runs the read never held, which only someone who can change the Agent gets counted.
+  if (counting && today > countFrom) {
+    hidden += (await found.history.sources.usage.summarize({
+      from: countFrom,
+      to: today,
+      filters: { agent: [input.agentId], workKind: kindsFor(place) },
+      runHistory: { membershipId: verdicts.caller.membershipId, rows: 'hidden' },
+    })).totals.operationCount;
+  }
   const rows = await listRows(found, verdicts.caller, page);
   const nextAt = more
     ? page.length === limit ? positionOf(page.at(-1)!.detail.operation) : lastRead
@@ -307,6 +321,17 @@ export async function listAgentRuns(deps: FiveZeroDeps, input: ListInput): Promi
     note: NOTE,
   };
   return fittedList(output, input.agentId, since, place, found.sealer, page);
+}
+
+/**
+ * What the read may hold for this caller: their own 1:1 DMs and Channel runs,
+ * and for a member who cannot change the Agent only the public Channels Slack
+ * shows them in. Every run is still judged after the read; this only keeps
+ * runs no one would show the caller from spending the read limit.
+ */
+async function visibleScope(found: Access, caller: Caller): Promise<UsageRunHistoryScope> {
+  if (caller.editor) return { membershipId: caller.membershipId, rows: 'visible' };
+  return { membershipId: caller.membershipId, channelIds: [...await found.memberChannels() ?? []], rows: 'visible' };
 }
 
 function positionOf({ startedAt, operationId }: Position): Position {
@@ -426,7 +451,7 @@ export async function getAgentRun(deps: FiveZeroDeps, input: GetInput): Promise<
   // The Agent check runs again on every call: a runId outlives the access it was listed under.
   const agent = found.agents.get(run.agentId);
   if (!agent) runNotFound();
-  const verdicts = judge(found, run.agentId, agent.editor);
+  const verdicts = judge(found, agent.editor);
   const [seen] = await verdicts.seen([run]);
   if (!seen?.shown) runNotFound();
   const { caller } = verdicts;
@@ -731,6 +756,12 @@ function largest(most: number, fits: (keep: number) => boolean): number {
  * every installation's organization ID is the same, so the organization in
  * the associated data adds nothing there. Opaque to the client, and never
  * authority: the caller is judged again on every call.
+ *
+ * The IV is synthetic: an HMAC, under a second key from the same HKDF, of
+ * everything sealed. One run then has one runId on every list, and an IV
+ * repeats only with the whole input, giving the same ciphertext, so GCM never
+ * sees one nonce with two plaintexts. Equal handles show only that two
+ * results name one run, which is what a stable runId is for.
  */
 interface Sealer {
   seal(purpose: 'run' | 'cursor', payload: string): Promise<string>;
@@ -742,13 +773,15 @@ const HANDLE_PREFIX = { run: 'run1_', cursor: 'next1_' } as const;
 async function sealerFor(sources: RunHistorySources, organizationId: string): Promise<Sealer> {
   const secret = await sources.handleSecret();
   if (!secret) unavailable();
-  const key = await runHandleKey(secret.secret, secret.installationId);
-  const data = (purpose: 'run' | 'cursor') => encoder.encode(`chickpea-run-history:v1:${purpose}:${organizationId}`);
+  const { key, ivKey } = await runHandleKeys(secret.secret, secret.installationId);
+  const data = (purpose: 'run' | 'cursor') => `chickpea-run-history:v1:${purpose}:${organizationId}`;
   return {
     async seal(purpose, payload) {
-      const iv = globalThis.crypto.getRandomValues(new Uint8Array(12));
+      const iv = new Uint8Array(await globalThis.crypto.subtle.sign(
+        'HMAC', ivKey, encoder.encode(JSON.stringify([data(purpose), payload])),
+      )).slice(0, 12);
       const sealed = new Uint8Array(await globalThis.crypto.subtle.encrypt(
-        { name: 'AES-GCM', iv, additionalData: data(purpose), tagLength: 128 },
+        { name: 'AES-GCM', iv, additionalData: encoder.encode(data(purpose)), tagLength: 128 },
         key,
         encoder.encode(payload),
       ));
@@ -763,7 +796,7 @@ async function sealerFor(sources: RunHistorySources, organizationId: string): Pr
         const joined = fromBase64Url(handle.slice(HANDLE_PREFIX[purpose].length));
         if (joined.byteLength < 12 + 16) return undefined;
         return new TextDecoder('utf-8', { fatal: true }).decode(await globalThis.crypto.subtle.decrypt(
-          { name: 'AES-GCM', iv: joined.slice(0, 12), additionalData: data(purpose), tagLength: 128 },
+          { name: 'AES-GCM', iv: joined.slice(0, 12), additionalData: encoder.encode(data(purpose)), tagLength: 128 },
           key,
           joined.slice(12),
         ));
@@ -774,21 +807,27 @@ async function sealerFor(sources: RunHistorySources, organizationId: string): Pr
   };
 }
 
-/** The run handle key: its own HKDF info, so it is never the key of anything else the secret keys. */
-async function runHandleKey(secret: string, installationId: string): Promise<CryptoKey> {
+/** The run handle keys: their own HKDF info, so neither is the key of anything else the secret keys. */
+async function runHandleKeys(secret: string, installationId: string): Promise<{ key: CryptoKey; ivKey: CryptoKey }> {
   const base = await globalThis.crypto.subtle.importKey('raw', encoder.encode(secret), 'HKDF', false, ['deriveKey']);
-  return globalThis.crypto.subtle.deriveKey(
-    {
-      name: 'HKDF',
-      hash: 'SHA-256',
-      salt: encoder.encode(`chickpea-installation:${installationId}`),
-      info: encoder.encode('chickpea-run-history-handle:v1'),
-    },
-    base,
-    { name: 'AES-GCM', length: 256 },
-    false,
-    ['encrypt', 'decrypt'],
-  );
+  const derive = <T extends AesKeyGenParams | HmacImportParams>(info: string, algorithm: T, usages: KeyUsage[]) =>
+    globalThis.crypto.subtle.deriveKey(
+      {
+        name: 'HKDF',
+        hash: 'SHA-256',
+        salt: encoder.encode(`chickpea-installation:${installationId}`),
+        info: encoder.encode(info),
+      },
+      base,
+      algorithm,
+      false,
+      usages,
+    );
+  const [key, ivKey] = await Promise.all([
+    derive('chickpea-run-history-handle:v1', { name: 'AES-GCM', length: 256 }, ['encrypt', 'decrypt']),
+    derive('chickpea-run-history-iv:v1', { name: 'HMAC', hash: 'SHA-256', length: 256 }, ['sign']),
+  ]);
+  return { key, ivKey };
 }
 
 function base64Url(bytes: Uint8Array): string {

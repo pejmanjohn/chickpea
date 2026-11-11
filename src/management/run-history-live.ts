@@ -25,6 +25,7 @@ export function liveRunHistorySources(input: {
     usage: {
       listOperations: (query) => input.usage().listOperations(query),
       getOperation: (operationId) => input.usage().getOperation(operationId),
+      summarize: (query) => input.usage().summarize(query),
     },
     async runVisibilities(runIds) {
       const found = await input.work().getRunVisibilities(runIds as RunId[]);

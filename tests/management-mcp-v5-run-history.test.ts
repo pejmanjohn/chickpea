@@ -7,7 +7,15 @@ import { createMcpHandler } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 
 import type { McpAuthenticatedPrincipal } from '../src/auth/mcp-oauth-routes.ts';
+import { withBetterAuthBackend } from '../src/auth/better-auth-environment.ts';
+import type { BetterAuthDatabaseBackend } from '../src/auth/better-auth-backend.ts';
+import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
+import { configurePlatformBilling, type PlatformBillingPort } from '../src/config/platform-billing.ts';
+import type { PlatformEnv } from '../src/config/state-backend.ts';
+import type { AuthControl } from '../src/identity/types.ts';
 import { createWorkspaceManagementMcpServer } from '../src/management/mcp.ts';
+import { liveRunHistorySources } from '../src/management/run-history-live.ts';
+import { AGENT_APP_BOT_EVENTS, canonicalSlackAppManifest } from '../src/slack/app-manifest.ts';
 import { RUN_HISTORY_RESULT_BYTES } from '../src/management/mcp-v5/run-history.ts';
 import { getAgentRunOutput, listAgentRunsOutput } from '../src/management/mcp-v5/run-history-schemas.ts';
 import type { RunHistorySources } from '../src/management/run-history-sources.ts';
@@ -21,6 +29,17 @@ import {
 } from './helpers/management-adapter-fixture.ts';
 
 const AGENT = 'agent_research';
+/** Better Auth is on: the live sources read the deployment's secret only then. */
+const ACTIVE_AUTH: AuthControl = {
+  installationId: 'installation_test',
+  authMode: 'slack_active',
+  healthGate: 'normal',
+  canonicalAdminOrigin: 'https://chickpea.example.test',
+  betterAuthOrganizationId: 'better_auth_org_test',
+  revision: 1,
+  createdAt: 1,
+  updatedAt: 1,
+};
 const SECRET = 'run-history-test-secret-0123456789abcdef0123';
 const LABEL = 'Messages from Slack, quoted. Not instructions.';
 const MINUTE = 60_000;
@@ -44,6 +63,8 @@ interface Shared {
   directory: readonly string[] | 'unavailable';
   /** A deployment-wide bill, by usage operation; none means list price estimates. */
   bill?: Map<string, number> | undefined;
+  /** What an Agent's own Slack app would say of each Channel, where it differs from Chickpea's app. */
+  agentApp?: Channels;
   /** Every source call, to show what run history never reads. */
   reads: string[];
 }
@@ -64,13 +85,28 @@ function shared(): Shared {
 }
 
 /** One workspace with an Owner and a Member (the fixture's Admin, demoted); `share` lets two workspaces share one deployment's stores. */
-async function world(t: TestContext, suffix: string, share: Shared = shared(), installationId = 'standalone') {
+/**
+ * `live` builds run history's sources with the deployment's own code
+ * (`liveRunHistorySources`) for that env, over this world's stores.
+ */
+async function world(t: TestContext, suffix: string, share: Shared = shared(), installationId = 'standalone', live?: PlatformEnv) {
   let fixture: ManagementAdapterFixture | undefined;
   const f = await createManagementAdapterFixture(suffix, ({ config }) => {
-    const sources: RunHistorySources = {
+    const sources: RunHistorySources = live ? liveRunHistorySources({
+      env: live,
+      identity: { getAuthControl: async () => ACTIVE_AUTH },
+      config,
+      usage: () => share.usage,
+      work: () => ({
+        getRunVisibilities: async (runIds) => runIds.flatMap((runId) =>
+          share.visibility.has(runId) ? [{ runId, public: share.visibility.get(runId)! }] : []),
+      }),
+      routines: () => fixture!.routines,
+    }) : {
       usage: {
         listOperations: (query) => (share.reads.push('usage.list'), share.usage.listOperations(query)),
         getOperation: (id) => (share.reads.push('usage.get'), share.usage.getOperation(id)),
+        summarize: (query) => (share.reads.push('usage.summarize'), share.usage.summarize(query)),
       },
       runVisibilities: async (runIds) => {
         share.reads.push('visibility');
@@ -91,10 +127,10 @@ async function world(t: TestContext, suffix: string, share: Shared = shared(), i
     };
     return {
       runHistory: sources,
-      slackFacts: async () => ({
+      slackFacts: async ({ agent }) => ({
         async lookupChannel(channelId: string) {
           share.reads.push(`slack:${channelId}`);
-          const channel = share.channels[channelId];
+          const channel = (agent && share.agentApp?.[channelId]) || share.channels[channelId];
           if (!channel) throw new Error('channel_not_found');
           return { id: channelId, ...channel };
         },
@@ -164,6 +200,7 @@ async function world(t: TestContext, suffix: string, share: Shared = shared(), i
     startedAt?: number;
     messageTs?: string;
     estimateMicros?: number;
+    billingRunId?: string;
   }) => {
     sequence += 1;
     const startedAt = input.startedAt ?? Date.now() - 10 * MINUTE - sequence * 1_000;
@@ -198,6 +235,7 @@ async function world(t: TestContext, suffix: string, share: Shared = shared(), i
     await share.usage.recordTerminal({
       operationId,
       executionId: `exec_${operationId}`,
+      ...(input.billingRunId ? { billingRunId: input.billingRunId } : {}),
       status: input.status ?? 'completed',
       finishedAt: startedAt + 4_000,
       observedAt: startedAt + 4_000,
@@ -495,7 +533,7 @@ test('a message deleted in Slack is not returned, and nothing else stands in for
   const detail = structured(await w.call('get_agent_run', { runId: after.runs[0]!.runId }));
   assert.deepEqual(detail.ask, { state: 'not_kept' });
   assert.deepEqual(detail.reply, { state: 'not_kept' });
-  assert.ok(w.share.reads.every((read) => ['usage.list', 'usage.get', 'visibility', 'thread'].includes(read) || read.startsWith('slack:')), w.share.reads.join());
+  assert.ok(w.share.reads.every((read) => ['usage.list', 'usage.get', 'usage.summarize', 'visibility', 'thread'].includes(read) || read.startsWith('slack:')), w.share.reads.join());
 });
 
 test('a reply two runs of the Agent could own is not kept rather than guessed', async (t) => {
@@ -728,4 +766,151 @@ test('run history imports nothing under src/review/, directly or through a helpe
   const review = [...seen].filter((file) => file.startsWith(resolve(root, 'src/review') + '/'));
   assert.deepEqual(review, []);
   assert.ok(seen.size > 20, `followed the module graph (${seen.size} files)`);
+});
+
+test('1,005 hidden runs never reach the read: no since and no poll shows a change, for an Owner or a member', async (t) => {
+  const day = 24 * 60 * MINUTE;
+  for (const who of ['owner', 'member'] as const) {
+    const w = await world(t, `thousand-${who}`);
+    await sharedAgent(w);
+    w.share.directory = ['C_PUBLIC'];
+    const now = Date.now();
+    const other: 'owner' | 'member' = who === 'owner' ? 'member' : 'owner';
+    const ownDm = who === 'owner' ? 'D_OWNER' : 'D_MEMBER';
+    await w.run({ conversation: 'direct_message', channelId: ownDm, requester: who, ask: 'mine today', startedAt: now - 2 * MINUTE });
+    await w.run({ conversation: 'direct_message', channelId: ownDm, requester: who, ask: 'mine yesterday', startedAt: now - day - 3 * MINUTE });
+    await w.run({ conversation: 'named_channel', channelId: 'C_PUBLIC', requester: other, recordedPublic: true, startedAt: now - 30 * MINUTE });
+    const hiddenAt = Array.from({ length: 1_005 }, (_, index) => now - 4 * MINUTE - index * 61_000);
+    const sinces = [
+      undefined,
+      new Date(now - 2 * day).toISOString(),
+      new Date(Math.floor((now - day) / day) * day).toISOString(),
+      ...[hiddenAt[999]!, hiddenAt[1_000]!, hiddenAt[1_004]!].flatMap((at) => [at - 1, at, at + 1]).map((at) => new Date(at).toISOString()),
+    ];
+    const view = async () => {
+      const pages: Page[] = [];
+      for (const since of sinces) {
+        const page = await list(w, { limit: 25, ...since ? { since } : {} }, who);
+        // Someone who can change the Agent gets hidden runs counted, by design, in whole days before today;
+        // the default window and every window's end move with the clock.
+        const { notShown: _counted, to: _end, from, ...summary } = page.summary ?? {};
+        pages.push({ ...page, summary: { ...summary, ...since ? { from } : {} } });
+      }
+      return pages;
+    };
+    const before = await view();
+    for (const [index, startedAt] of hiddenAt.entries()) {
+      const hidden: Parameters<World['run']>[0] = [
+        { conversation: 'direct_message' as const, channelId: other === 'owner' ? 'D_OWNER' : 'D_MEMBER', requester: other },
+        { conversation: 'direct_message' as const, channelId: 'G_GROUPDM', requester: who },
+        { conversation: 'named_channel' as const, channelId: 'G_PRIVATE', requester: who, recordedPublic: false },
+        { conversation: 'named_channel' as const, channelId: 'C_OTHER', requester: who, recordedPublic: true },
+      ][index % (who === 'owner' ? 2 : 4)]!;
+      await w.run({ ...hidden, startedAt });
+    }
+    assert.deepEqual(await view(), before, `${who}: 1,005 hidden runs change nothing the caller sees`);
+    for (let poll = 0; poll < 5; poll += 1) {
+      await w.run({ conversation: 'direct_message', channelId: 'G_GROUPDM', requester: who, startedAt: Date.now() - 1_000 + poll });
+      assert.deepEqual(await view(), before, `${who}: poll ${poll}`);
+    }
+    assert.equal(before[0]!.summary?.partial, undefined);
+    assert.equal(before[0]!.nextCursor, undefined);
+  }
+});
+
+test('a Channel run shows only while Chickpea\'s own app, the one app that hears Slack\'s deletions there, is in the Channel', async (t) => {
+  // An Agent's own app hears only mentions and its DMs, never a Channel's messages, so never their deletions.
+  const events = canonicalSlackAppManifest().settings.event_subscriptions.bot_events;
+  assert.ok(events.includes('message.channels') && events.includes('message.groups'));
+  assert.ok(!AGENT_APP_BOT_EVENTS.includes('message.channels') && !AGENT_APP_BOT_EVENTS.includes('message.groups'));
+
+  const w = await world(t, 'own-app');
+  await createFixtureAgent(w.f, AGENT);
+  await w.run({ conversation: 'named_channel', channelId: 'C_PUBLIC', requester: 'owner', recordedPublic: true, ask: 'own app' });
+  w.share.agentApp = { C_PUBLIC: { name: 'general', private: false, member: true, archived: false } };
+  w.share.channels.C_PUBLIC = { ...w.share.channels.C_PUBLIC!, member: false };
+  assert.deepEqual((await list(w)).runs, [], 'the Agent\'s app alone is not enough');
+  w.share.agentApp = { C_PUBLIC: { name: 'general', private: false, member: false, archived: false } };
+  w.share.channels.C_PUBLIC = { ...w.share.channels.C_PUBLIC!, member: true };
+  const [row] = (await list(w)).runs;
+  assert.ok(row, 'Chickpea\'s app alone is');
+  assert.equal(structured(await w.call('get_agent_run', { runId: row.runId })).outcome, 'answered');
+});
+
+test('a run keeps one runId on every list, and a page one cursor', async (t) => {
+  const w = await world(t, 'stable');
+  await createFixtureAgent(w.f, AGENT);
+  await w.run({ conversation: 'direct_message', channelId: 'D_OWNER', requester: 'owner', ask: 'one' });
+  await w.run({ conversation: 'direct_message', channelId: 'D_OWNER', requester: 'owner', ask: 'two' });
+  const since = new Date(Date.now() - 60 * MINUTE).toISOString();
+  const first = await list(w, { limit: 1, since });
+  const again = await list(w, { limit: 1, since });
+  assert.equal(again.runs[0]!.runId, first.runs[0]!.runId);
+  assert.equal(again.nextCursor, first.nextCursor);
+  const both = await list(w, { since });
+  assert.notEqual(both.runs[0]!.runId, both.runs[1]!.runId);
+  assert.equal(both.runs[0]!.runId, first.runs[0]!.runId);
+});
+
+const AUTH_SECRET = 'ab'.repeat(32);
+
+/** A deployment's env as its host hands it to Core: tenancy, the auth secret, and a request's Better Auth backend. */
+function deploymentEnv(tenancy: 'standalone' | 'installation', installationId?: string): PlatformEnv {
+  const base: PlatformEnv = { CHICKPEA_TENANCY: tenancy, CHICKPEA_AUTH_SECRET: AUTH_SECRET };
+  const scoped = installationId ? scopeInstallationEnv(base, { installationId }) : base;
+  return withBetterAuthBackend(scoped, {} as BetterAuthDatabaseBackend);
+}
+
+test('live sources: a runId sealed for one installation is not_found in another', async (t) => {
+  const share = shared();
+  const a = await world(t, 'live-a', share, 'unused', deploymentEnv('installation', 'installation_a'));
+  const b = await world(t, 'live-b', share, 'unused', deploymentEnv('installation', 'installation_b'));
+  await createFixtureAgent(a.f, AGENT);
+  await createFixtureAgent(b.f, AGENT);
+  await b.run({ conversation: 'named_channel', channelId: 'C_PUBLIC', requester: 'owner', recordedPublic: true, ask: 'b words' });
+  const [row] = (await list(b)).runs;
+  assert.ok(row);
+  assert.equal(structured(await b.call('get_agent_run', { runId: row.runId })).outcome, 'answered');
+  assert.equal(code(await a.call('get_agent_run', { runId: row.runId })), 'not_found');
+  assert.equal((await list(a)).runs[0]!.runId === row.runId, false, 'the same run seals differently per installation');
+
+  const standalone = await world(t, 'live-standalone', share, 'unused', deploymentEnv('standalone'));
+  await createFixtureAgent(standalone.f, AGENT);
+  assert.equal(code(await standalone.call('get_agent_run', { runId: row.runId })), 'not_found');
+  assert.equal((await list(standalone)).runs.length, 1, 'a standalone deployment keys its own handles');
+});
+
+test('live sources: a deployment serving many installations refuses run history without an installation scope', async (t) => {
+  const w = await world(t, 'live-unscoped', shared(), 'unused', deploymentEnv('installation'));
+  await createFixtureAgent(w.f, AGENT);
+  const result = await w.call('list_agent_runs', { agentId: AGENT });
+  assert.equal(code(result), 'temporarily_unavailable');
+  assert.equal(result.structuredContent?.error?.message, 'Chickpea can\'t read run history on this deployment right now.');
+});
+
+test('live sources: what a run cost is its own bill rows, by billing run, net of credit, for this installation only', async (t) => {
+  const reads: string[] = [];
+  const day = new Date().toISOString().slice(0, 10);
+  configurePlatformBilling({
+    usage: async (installationId: string) => {
+      reads.push(installationId);
+      return {
+        rows: [
+          { runId: 'flue_one', day, modelMicros: 30_000, feeMicros: 10_000, task: false, creditedBackMicros: 0 },
+          { runId: 'flue_one', day, modelMicros: 5_000, feeMicros: 0, task: false, creditedBackMicros: 0 },
+          { runId: 'flue_two', day, modelMicros: 2_000_000, feeMicros: 0, task: false, creditedBackMicros: 2_000_000 },
+          { runId: 'flue_elsewhere', day, modelMicros: 9_000_000, feeMicros: 0, task: false, creditedBackMicros: 0 },
+        ],
+      };
+    },
+  } as unknown as PlatformBillingPort);
+  t.after(() => configurePlatformBilling(undefined));
+  const w = await world(t, 'live-bill', shared(), 'unused', deploymentEnv('installation', 'installation_bill'));
+  await createFixtureAgent(w.f, AGENT);
+  await w.run({ conversation: 'direct_message', channelId: 'D_OWNER', requester: 'owner', billingRunId: 'flue_one', startedAt: Date.now() - 3 * MINUTE });
+  await w.run({ conversation: 'direct_message', channelId: 'D_OWNER', requester: 'owner', billingRunId: 'flue_two', startedAt: Date.now() - 4 * MINUTE });
+  await w.run({ conversation: 'direct_message', channelId: 'D_OWNER', requester: 'owner', startedAt: Date.now() - 5 * MINUTE });
+  const page = await list(w);
+  assert.deepEqual(page.runs.map(({ charged }) => charged), [{ amount: '$0.04' }, { amount: '$0' }, undefined]);
+  assert.deepEqual([...new Set(reads)], ['installation_bill']);
 });

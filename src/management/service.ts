@@ -4155,37 +4155,30 @@ export class WorkspaceManagementService {
   /**
    * For list_agent_runs and get_agent_run, once the caller is live: run
    * history's sources, the caller's Slack user, and Slack's current facts for
-   * one of an Agent's Channels, read as the Agent's own app when it has one
-   * and undefined when Slack cannot say. Which runs the caller may see, the
-   * tool decides on every call. Undefined where this deployment keeps no run
-   * history.
+   * a Channel, undefined when Slack cannot say. The facts are read as
+   * Chickpea's own app, never an Agent's: only Chickpea's app subscribes to
+   * Channel messages (`message.channels`, `message.groups`), so only while it
+   * is in a Channel do Slack's deletions reach the thread record. Which runs
+   * the caller may see, the tool decides on every call. Undefined where this
+   * deployment keeps no run history.
    */
   async runHistory(context: ManagementActorContext): Promise<{
     sources: RunHistorySources;
     slackUserId?: string;
-    slackChannel(agentId: string, channelId: string): Promise<SlackChannel | undefined>;
+    slackChannel(channelId: string): Promise<SlackChannel | undefined>;
   } | undefined> {
     await this.requireLiveActor(context);
     const sources = this.stores.runHistory;
     if (!sources) return undefined;
     const user = await this.stores.identity.getUser(context.userId);
-    const facts = new Map<string, Promise<PrivateAgentPlacementFacts>>();
-    const factsFor = (workspaceId: string, agentId: string) => {
-      let found = facts.get(agentId);
-      if (!found) {
-        facts.set(agentId, found = this.stores.config.getAgent(agentId)
-          .catch(() => undefined)
-          .then((agent) => this.slackFactsFor(workspaceId, agent))
-          .then(oneLookupPerChannel));
-      }
-      return found;
-    };
+    let facts: Promise<PrivateAgentPlacementFacts> | undefined;
     return {
       sources,
       ...(user?.slackUserId ? { slackUserId: user.slackUserId } : {}),
-      slackChannel: async (agentId, channelId) => {
+      slackChannel: async (channelId) => {
         if (!user?.slackTeamId) return undefined;
-        return (await factsFor(user.slackTeamId, agentId)).lookupChannel(channelId).catch(() => undefined);
+        facts ??= this.slackFactsFor(user.slackTeamId).then(oneLookupPerChannel);
+        return (await facts).lookupChannel(channelId).catch(() => undefined);
       },
     };
   }
