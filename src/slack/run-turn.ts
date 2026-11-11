@@ -431,6 +431,8 @@ export interface RunTurnOptions {
   onSlackWrite?: (surface: TurnFirstWrite) => void;
   /** Set by `runTurn` itself when `turnLatency` is present: Slack acknowledged streamed answer text. */
   onAnswerTextStreamed?: () => void;
+  /** Set by `runTurn` itself when `turnLatency` is present: Slack acknowledged the final's text. */
+  onAnswerVisible?: () => void;
   /** Set by `runTurn` itself when `turnLatency` is present: Slack acknowledged native task card rows on the reply's stream. */
   onTaskCardStreamed?: () => void;
   /**
@@ -554,6 +556,7 @@ export async function runTurn(
       ...options,
       onSlackWrite: (surface) => tracker.markSlackWrite(surface),
       onAnswerTextStreamed: () => tracker.markStreamedAnswerText(),
+      onAnswerVisible: () => tracker.markAnswerVisible(),
       onTaskCardStreamed: () => tracker.markTaskCardStreamed(),
       onConversationChunk: (chunk, submissionId) => answerRelease?.onEvent(chunk, submissionId),
       onFollowUpsInformed: (count) => tracker.markFoldedInformed(count),
@@ -770,6 +773,7 @@ async function runTurnAttempt(
         ...(options.onAnswerTextStreamed
           ? { onAnswerTextStreamed: options.onAnswerTextStreamed }
           : {}),
+        ...(options.onAnswerVisible ? { onAnswerVisible: options.onAnswerVisible } : {}),
         ...(options.onTaskCardStreamed
           ? { onTaskCardStreamed: options.onTaskCardStreamed }
           : {}),
@@ -838,6 +842,7 @@ async function runTurnAttempt(
     ...(options.onPublicMessageDelivered
       ? { onPublicDelivery: options.onPublicMessageDelivered }
       : {}),
+    ...(options.onAnswerVisible ? { onAnswerVisible: options.onAnswerVisible } : {}),
   });
   const statusGeneration = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
   const semanticActivityEnabled = frozenPresentation?.schemaVersion === 3

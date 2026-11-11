@@ -248,6 +248,8 @@ export interface SlackPresenterOptions {
   liveAgentHandles?: SlackLiveAgentHandles;
   /** Successful non-ephemeral final, for the ownership handoff ledger. */
   onPublicDelivery?: (input: SlackPublicDelivery) => void | Promise<void>;
+  /** Observability only: Slack acknowledged the final's text. Must not throw. */
+  onAnswerVisible?: () => void;
   /** Rehydrates the one V3 activity artifact after an isolate restart. */
   activityProjection?: SlackPresentationActivityProjection;
   /** A native write had an ambiguous receipt and therefore still needs clear. */
@@ -928,6 +930,7 @@ export class WebClientPresenter {
         started = undefined as never;
       }
       if (started) {
+        this.options.onAnswerVisible?.();
         try {
           await this.client.chat.stopStream({
             channel: this.target.channelId,
@@ -977,6 +980,7 @@ export class WebClientPresenter {
     });
     try {
       const posted = await this.client.chat.postMessage(postPayload);
+      this.options.onAnswerVisible?.();
       if (forcePostFallback) {
         // Persist the exact replacement coordinate before the Work delivery
         // receipt. A restart can then settle Work without posting again.

@@ -151,6 +151,8 @@ let holdCustomStatus: ((timeline: string[]) => Promise<void>) | undefined;
 let holdNativeStart: ((timeline: string[]) => Promise<void>) | undefined;
 /** Holds Slack's answer to a thread read; its end is marked `answered:<method>`. */
 let holdThreadRead: ((timeline: string[]) => Promise<void>) | undefined;
+/** Holds Slack's answer to any write the turn makes, once the hook is set. */
+let holdSlackWrite: ((method: string, timeline: string[]) => Promise<void>) | undefined;
 type PresentationRead = () => SlackRunPresentation | undefined;
 let holdClassifierAnswer: ((timeline: string[], presentation: PresentationRead) => Promise<void>) | undefined;
 const REPLY_ANSWER = '{"disposition":"reply","reason":"substantive_request"}';
@@ -280,6 +282,7 @@ async function firstStatusTimeline(
       await holdThreadRead(timeline);
       timeline.push(`answered:${method}`);
     }
+    if (holdSlackWrite && !SLACK_READS.has(`slack:${method}`)) await holdSlackWrite(method, timeline);
     return { ok: true, ts: '1788000100.000100', channel: turn.channelId, messages: [] };
   };
   const client = {
@@ -1032,4 +1035,30 @@ test('a turn judged react_only before its plan is saved sends no wake', async ()
     assert.equal(timeline.includes('agentPrompt'), false, `no dispatch: ${timeline.join(' ')}`);
   });
   assert.deepEqual(wakes, []);
+});
+
+// Defect caught: turn_latency marks the reply's text only at final, after the
+// stream's stop, the reply's cards and the status clear.
+test('the reply text is marked visible when Slack acknowledges the stream start, before the stop', async (t) => {
+  const records: Record<string, unknown>[] = [];
+  t.mock.method(console, 'info', (record: unknown) => {
+    if ((record as { event?: unknown } | undefined)?.event === 'turn_latency') records.push(record as Record<string, unknown>);
+  });
+  holdSlackWrite = async (method) => {
+    if (method === 'chat.stopStream') await new Promise((resolve) => setTimeout(resolve, 40));
+  };
+  const receivedAt = Date.now() - 1_000;
+  try {
+    await firstStatusTimeline('dm', null, {
+      turnLatency: { receivedAt, admittedAt: receivedAt + 500, lane: 'cloudflare', executor: 'runner' },
+    }, dmAssignment);
+  } finally {
+    holdSlackWrite = undefined;
+  }
+  const latency = records.find((record) => record.event === 'turn_latency');
+  const visible = Number(latency?.receiptToAnswerVisibleMs);
+  assert.ok(visible >= 1_000, `visible counts from receipt: ${latency?.receiptToAnswerVisibleMs}`);
+  assert.equal(visible - Number(latency?.admissionToAnswerVisibleMs), 500);
+  assert.ok(visible + 40 <= Number(latency?.receiptToFinalMs),
+    `the stop's 40 ms come after the text: ${visible} < ${latency?.receiptToFinalMs}`);
 });
