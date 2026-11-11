@@ -5,6 +5,7 @@ import { createMcpHandler } from '@modelcontextprotocol/server';
 
 import type { McpAuthenticatedPrincipal } from '../src/auth/mcp-oauth-routes.ts';
 import { createWebsiteLogin } from '../src/browser/logins.ts';
+import { BUGSNAG_MCP_SERVER_URL } from '../src/config/bugsnag-policy.ts';
 import type { ConnectionAccount } from '../src/config/types.ts';
 import { createWorkspaceManagementMcpServer } from '../src/management/mcp.ts';
 import type { WorkspaceManagementServiceInput } from '../src/management/service.ts';
@@ -166,6 +167,32 @@ async function bindCatalogLinear(
   } as Omit<ConnectionAccount, 'revision' | 'createdAt' | 'updatedAt'>);
   await f.config.putAgentConnectionBinding({
     agentId: 'agent_research', connectionAccountId: account.id, providerId: preset, allowedCapabilities: [], enabled: true,
+  });
+  return account;
+}
+
+/** A signed-in catalog Linear whose server said one tool reads, one writes, and nothing of the third. */
+const LINEAR_TOOLS = [{ name: 'list_issues', readOnlyHint: true }, { name: 'get_issue' }, { name: 'save_issue', readOnlyHint: false }];
+
+async function bindReadyCatalog(
+  f: ManagementAdapterFixture,
+  teamId: string,
+  agentId: string,
+  preset: 'linear' | 'sentry',
+  owner: { ownerKind: 'team' } | { ownerKind: 'member'; ownerMembershipId: string } = { ownerKind: 'team' },
+) {
+  const account = await f.config.putConnectionAccount({
+    id: `connection_${preset}_${owner.ownerKind}`, workspaceId: teamId, ...owner, providerId: preset,
+    label: preset === 'linear' ? 'Linear' : 'Sentry', lifecycle: 'ready', identity: { workspaceName: 'Acme' },
+    createdByMembershipId: owner.ownerKind === 'member' ? owner.ownerMembershipId : f.owner.membership.id,
+    secretRefId: `secret_${preset}_${owner.ownerKind}`,
+    policy: {
+      kind: 'mcp', url: `https://mcp.${preset}.example/mcp`, transport: 'streamable-http', authMode: 'oauth', headerNames: [],
+      discoveredTools: LINEAR_TOOLS, allowedTools: LINEAR_TOOLS.map(({ name }) => name), oauthScope: 'read', presetId: preset,
+    },
+  } as Omit<ConnectionAccount, 'revision' | 'createdAt' | 'updatedAt'>);
+  await f.config.putAgentConnectionBinding({
+    agentId, connectionAccountId: account.id, providerId: preset, allowedCapabilities: [], enabled: true,
   });
   return account;
 }
@@ -739,6 +766,174 @@ test('a member takes back a mark on their own connection while the Agent has an 
   const docs = after.get('docs')!.policy;
   assert.deepEqual(docs.kind === 'mcp' ? docs.toolPolicies ?? {} : null, {}, 'the member\'s mark is gone');
   assert.deepEqual(after.get('wiki'), wiki, 'the team connection is not written');
+});
+
+test('update_connection marks and unmarks a catalog MCP service\'s tools, which get_agent lists, and changes nothing else', async (t) => {
+  const { f, teamId, call } = await harness(t, 'catalog-marks');
+  await installAgent(f);
+  const before = await bindReadyCatalog(f, teamId, 'agent_research', 'linear');
+  const linear = async () => (structured(await call('get_agent', { agentId: 'agent_research' })).connections as Array<Record<string, any>>)
+    .find(({ connectionId }) => connectionId === 'linear')!;
+  const allowedTools = ['list_issues', 'get_issue', 'save_issue'];
+  assert.deepEqual(await linear(), { connectionId: 'linear', name: 'Linear', kind: 'service', owner: 'team', status: 'ready', tools: { allowedTools } },
+    'its tools are listed, unmarked: a server\'s own hint is not a mark');
+  const mark = async (changes: Record<string, unknown>, key: string) => structured(await call('update_connection', {
+    agentId: 'agent_research', connectionId: 'linear', version: await version(call, 'agent_research'), changes, idempotencyKey: key,
+  }));
+
+  const marked = await mark({ readTools: ['list_issues', 'get_issue'], writeTools: ['save_issue'] }, 'mark');
+  assert.deepEqual([marked.status, marked.setup], ['done', undefined], 'marks apply at once, with no sign-in link');
+  assert.deepEqual((await linear()).tools, { allowedTools, readTools: ['list_issues', 'get_issue'], writeTools: ['save_issue'] });
+  // The marks are the whole change: the same account, sign-in, server, tools and binding.
+  const [after] = (await f.config.listConnectionAccounts(teamId)).filter(({ id }) => id === before.id);
+  const { revision: _revision, updatedAt: _updatedAt, ...kept } = after!;
+  const { revision: _was, updatedAt: _then, ...was } = before;
+  assert.deepEqual(kept, {
+    ...was,
+    policy: { ...before.policy, toolPolicies: { list_issues: { effect: 'read' }, get_issue: { effect: 'read' }, save_issue: { effect: 'write' } } },
+  });
+  assert.deepEqual((await f.config.listAgentConnectionBindings('agent_research')).map(({ allowedCapabilities, enabled }) => [allowedCapabilities, enabled]),
+    [[[], true]]);
+
+  // A tool not named keeps its mark; one named again moves.
+  const unmarked = await mark({ writeTools: ['get_issue'] }, 'unmark');
+  assert.deepEqual((await linear()).tools, { allowedTools, readTools: ['list_issues'], writeTools: ['get_issue', 'save_issue'] });
+  structured(await call('undo_change', { undoToken: unmarked.undoToken, idempotencyKey: 'undo' }));
+  assert.deepEqual((await linear()).tools, { allowedTools, readTools: ['list_issues', 'get_issue'], writeTools: ['save_issue'] }, 'undo takes it back');
+
+  // Its other settings are Chickpea's: a change that names one is refused whole.
+  const unchanged = await version(call, 'agent_research');
+  const refused = errorOf(await call('update_connection', {
+    agentId: 'agent_research', connectionId: 'linear', version: unchanged,
+    changes: { guide: 'Search first.', url: 'https://evil.example/mcp', readTools: ['list_issues'] }, idempotencyKey: 'other-fields',
+  }), 'invalid_input');
+  assert.deepEqual([refused.message, refused.nextStep], [
+    'Linear is a catalog service, so update_connection changes only its readTools and writeTools.',
+    'Leave out url and guide. reconnect_service signs it in again.',
+  ]);
+  assert.equal(await version(call, 'agent_research'), unchanged, 'nothing was written');
+});
+
+test('a catalog tool its server says changes things is never marked as a read, and a read loses its mark once its server says so', async (t) => {
+  const { f, teamId, call } = await harness(t, 'catalog-marks-guard');
+  await installAgent(f);
+  const account = await bindReadyCatalog(f, teamId, 'agent_research', 'linear');
+  const unchanged = await version(call, 'agent_research');
+  const refused = errorOf(await call('update_connection', {
+    agentId: 'agent_research', connectionId: 'linear', version: unchanged,
+    changes: { readTools: ['list_issues', 'save_issue'] }, idempotencyKey: 'write-as-read',
+  }), 'invalid_input');
+  assert.deepEqual([refused.message, refused.nextStep], [
+    'save_issue says it changes things, so it can\'t be marked as a read.',
+    'Leave it out of readTools. A practice run never calls a tool that is not marked as a read.',
+  ]);
+  assert.equal(await version(call, 'agent_research'), unchanged, 'nothing was written, list_issues included');
+  const stored = async () => {
+    const [current] = (await f.config.listConnectionAccounts(teamId)).filter(({ id }) => id === account.id);
+    if (current?.policy.kind !== 'mcp') throw new Error('not an MCP account');
+    return { ...current, policy: current.policy };
+  };
+  assert.equal((await stored()).policy.toolPolicies, undefined);
+
+  // Marked as a write, it is what the server says.
+  structured(await call('update_connection', {
+    agentId: 'agent_research', connectionId: 'linear', version: unchanged,
+    changes: { readTools: ['list_issues'], writeTools: ['save_issue'] }, idempotencyKey: 'marks',
+  }));
+  // The server then says list_issues changes things: get_agent stops listing it as a read.
+  const current = await stored();
+  await f.config.putConnectionAccount({
+    ...current,
+    policy: { ...current.policy, discoveredTools: LINEAR_TOOLS.map((tool) => tool.name === 'list_issues' ? { ...tool, readOnlyHint: false } : tool) },
+  }, current.revision);
+  const tools = (structured(await call('get_agent', { agentId: 'agent_research' })).connections as Array<Record<string, any>>)
+    .find(({ connectionId }) => connectionId === 'linear')!.tools;
+  assert.deepEqual(tools, { allowedTools: ['list_issues', 'get_issue', 'save_issue'], writeTools: ['save_issue'] });
+});
+
+test('a catalog service\'s tools are marked only by whoever may change that connection: a member\'s own, not the team\'s', async (t) => {
+  const { f, teamId, as } = await harness(t, 'catalog-marks-authority', { member: true });
+  // The member created the Agent, so they may change it and its connections they own.
+  await createFixtureAgent(f, 'agent_shared', { name: 'Shared', creatorMembershipId: f.admin.membership.id });
+  await f.config.ensureWorkspaceInstallation({ workspaceId: teamId, transportMode: 'direct', defaultAgentId: 'agent_shared' });
+  const team = await bindReadyCatalog(f, teamId, 'agent_shared', 'linear');
+  const own = await bindReadyCatalog(f, teamId, 'agent_shared', 'sentry', { ownerKind: 'member', ownerMembershipId: f.admin.membership.id });
+  const member = as('admin');
+  const before = await version(member, 'agent_shared');
+  const refused = errorOf(await member('update_connection', {
+    agentId: 'agent_shared', connectionId: 'linear', version: before, changes: { readTools: ['list_issues'] }, idempotencyKey: 'team',
+  }), 'not_allowed');
+  assert.equal(refused.message, 'Only a Chickpea Admin can change or remove a team connection.');
+  assert.equal(await version(member, 'agent_shared'), before, 'refused before anything was written');
+  const policies = async (id: string) => {
+    const [account] = (await f.config.listConnectionAccounts(teamId)).filter((candidate) => candidate.id === id);
+    return account!.policy.kind === 'mcp' ? account!.policy.toolPolicies : null;
+  };
+  assert.equal(await policies(team.id), undefined);
+
+  assert.equal(structured(await member('update_connection', {
+    agentId: 'agent_shared', connectionId: 'sentry', version: before, changes: { readTools: ['list_issues'] }, idempotencyKey: 'own',
+  })).status, 'done');
+  assert.deepEqual(await policies(own.id), { list_issues: { effect: 'read' } });
+  assert.equal(await policies(team.id), undefined, 'the team connection is not written');
+});
+
+test('a reviewed catalog connector lists no tools to mark, and update_connection refuses it before the service would', async (t) => {
+  const { f, teamId, call } = await harness(t, 'catalog-marks-reviewed');
+  await installAgent(f);
+  const account = await f.config.putConnectionAccount({
+    id: 'connection_bugsnag_team', workspaceId: teamId, ownerKind: 'team', providerId: 'bugsnag', label: 'BugSnag', lifecycle: 'ready',
+    createdByMembershipId: f.owner.membership.id, secretRefId: 'secret_bugsnag',
+    policy: {
+      kind: 'mcp', url: BUGSNAG_MCP_SERVER_URL, transport: 'streamable-http', authMode: 'oauth', headerNames: [], oauthScope: 'api',
+      toolAccessMode: 'review', presetId: 'bugsnag', discoveredTools: [{ name: 'list_errors', readOnlyHint: true }], allowedTools: ['list_errors'],
+    },
+  } as Omit<ConnectionAccount, 'revision' | 'createdAt' | 'updatedAt'>);
+  await f.config.putAgentConnectionBinding({
+    agentId: 'agent_research', connectionAccountId: account.id, providerId: 'bugsnag', allowedCapabilities: [], enabled: true,
+  });
+  const row = (structured(await call('get_agent', { agentId: 'agent_research' })).connections as Array<Record<string, any>>)
+    .find(({ connectionId }) => connectionId === 'bugsnag')!;
+  assert.deepEqual(row, { connectionId: 'bugsnag', name: 'BugSnag', kind: 'service', owner: 'team', status: 'ready' },
+    'its tools are chosen on the Agent\'s page in Admin, where Chickpea\'s review marks them');
+  const before = await version(call, 'agent_research');
+  const refused = errorOf(await call('update_connection', {
+    agentId: 'agent_research', connectionId: 'bugsnag', version: before, changes: { readTools: ['list_errors'] }, idempotencyKey: 'reviewed',
+  }), 'invalid_input');
+  assert.deepEqual([refused.message, refused.nextStep], [
+    'Research has no custom connection with that connectionId.',
+    'Send a custom_api or custom_mcp connectionId from get_agent. A catalog service\'s settings are Chickpea\'s; reconnect_service signs it in again.',
+  ]);
+  assert.equal(await version(call, 'agent_research'), before);
+});
+
+test('a tool a catalog server adds later is not a read until someone marks it', async (t) => {
+  const { f, teamId, call } = await harness(t, 'catalog-marks-new-tool');
+  await installAgent(f);
+  const account = await bindReadyCatalog(f, teamId, 'agent_research', 'linear');
+  structured(await call('update_connection', {
+    agentId: 'agent_research', connectionId: 'linear', version: await version(call, 'agent_research'),
+    changes: { readTools: ['list_issues'] }, idempotencyKey: 'mark',
+  }));
+  // The server lists a new tool that says it only reads, and the connection allows it, as a reconnect would.
+  const [current] = (await f.config.listConnectionAccounts(teamId)).filter(({ id }) => id === account.id);
+  if (current!.policy.kind !== 'mcp') throw new Error('not an MCP account');
+  await f.config.putConnectionAccount({
+    ...current!,
+    policy: {
+      ...current!.policy,
+      discoveredTools: [...LINEAR_TOOLS, { name: 'list_projects', readOnlyHint: true }],
+      allowedTools: [...current!.policy.allowedTools, 'list_projects'],
+    },
+  }, current!.revision);
+  const tools = async () => (structured(await call('get_agent', { agentId: 'agent_research' })).connections as Array<Record<string, any>>)
+    .find(({ connectionId }) => connectionId === 'linear')!.tools;
+  assert.deepEqual(await tools(), { allowedTools: ['list_issues', 'get_issue', 'save_issue', 'list_projects'], readTools: ['list_issues'] });
+  structured(await call('update_connection', {
+    agentId: 'agent_research', connectionId: 'linear', version: await version(call, 'agent_research'),
+    changes: { readTools: ['list_projects'] }, idempotencyKey: 'mark-new',
+  }));
+  assert.deepEqual((await tools()).readTools, ['list_issues', 'list_projects']);
 });
 
 test('a custom API whose stored prefix predates the rule still renames and gains a neighbor; a changed prefix meets the rule', async (t) => {
