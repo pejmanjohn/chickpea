@@ -31,6 +31,12 @@ export interface RunReviewStart {
    * the Agent's own words.
    */
   grantsWebsiteLogins: boolean;
+  /**
+   * The website logins the run's plan froze at admission. A copy removes
+   * them as well as the catalog it reads when it is built, so the username of
+   * a login deleted or replaced during the run still leaves it.
+   */
+  planWebsiteLogins?: readonly { host: string; username?: string }[];
   /** The Slack turn job the run answers; follow-ups dispatched into its run under that id are copied with it. */
   turnJobId?: string;
   /** Where the installation's review key and website logins are kept; reached only once a copy is built. */
@@ -189,11 +195,16 @@ class Session implements RunReviewSession {
     const settings = this.start.settings();
     // A catalog that cannot be read keeps no copy, as a review key that cannot be read does.
     // The builder and its scrub rules load here, after the reply, so no Worker startup loads them.
-    const [key, websiteLogins, { buildRunReviewRecord, runReviewPseudonymizer }] = await Promise.all([
+    const [key, catalog, { buildRunReviewRecord, runReviewPseudonymizer }] = await Promise.all([
       loadOrCreateRunReviewKey(settings, this.start.prefetched),
       websiteLoginNames(settings),
       import('./record.ts'),
     ]);
+    const planned = this.start.planWebsiteLogins ?? [];
+    const websiteLogins = {
+      hosts: [...catalog.hosts, ...planned.map((login) => login.host)],
+      usernames: [...catalog.usernames, ...planned.flatMap((login) => login.username ? [login.username] : [])],
+    };
     const now = new Date().toISOString();
     const record = buildRunReviewRecord({
       runId: ending.runId,

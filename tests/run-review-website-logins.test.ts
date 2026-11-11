@@ -420,6 +420,23 @@ test('a copy drops the username of every login the installation saved, read when
   assert.equal(records[0]!.context[0]?.text, 'Signed in to https://ledger.example.net/home?[omitted] as [credential redacted]');
 });
 
+test('a copy drops the logins the run\'s plan froze, though the catalog no longer holds them', async (t) => {
+  const records = fakePort(t);
+  const session = await startRunReview(HOSTED_ENV, {
+    surface: 'dm',
+    grantsWebsiteLogins: false,
+    planWebsiteLogins: [{ host: 'portal.example.org', username: USERNAME }, { host: 'ledger.example.net' }],
+    settings: () => catalogSettings('[]'),
+  });
+  await session!.finish({
+    ...ENDING,
+    answer: `Signed in to https://portal.example.org/home?sid=SYNTHSID as ${USERNAME}, then https://ledger.example.net/r?t=SYNTHT`,
+  });
+  assert.equal(records.length, 1);
+  assert.equal(records[0]!.answer,
+    'Signed in to https://portal.example.org/home?[omitted] as [credential redacted], then https://ledger.example.net/r?[omitted]');
+});
+
 test('a catalog that cannot be read or parsed keeps no copy', async (t) => {
   const records = fakePort(t);
   const warnings: string[] = [];
