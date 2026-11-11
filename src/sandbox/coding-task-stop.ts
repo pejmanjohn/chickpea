@@ -305,7 +305,10 @@ export function cloudflareCodingWorkerStopClient(
         instanceId,
         submissionId,
         signal,
-      }, options.pollIntervalMs === undefined ? {} : { pollIntervalMs: options.pollIntervalMs });
+      }, {
+        reconnect: () => route(instanceId),
+        ...(options.pollIntervalMs === undefined ? {} : { pollIntervalMs: options.pollIntervalMs }),
+      });
       return settlement.outcome;
     },
   };

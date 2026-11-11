@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import { CHICKPEA_CODING_WORKER_AGENT_NAME } from '../src/agents/names.ts';
 import type { SandboxPolicyStorage } from '../src/sandbox/cloudflare-policy.ts';
+import { agentObjectBindingName } from '../src/slack/bounded-agent-observation.ts';
 import {
   parseCodingTaskRecord,
   putStoredCodingTask,
@@ -18,6 +19,7 @@ import {
   type CodingTaskStopPorts,
   type CodingWorkerStopClient,
 } from '../src/sandbox/coding-task-stop.ts';
+import { acrossStalledReads, cutAgentObject } from './helpers/cut-agent-object.ts';
 
 function memoryStorage(): SandboxPolicyStorage & { values: Map<string, unknown> } {
   const values = new Map<string, unknown>();
@@ -329,4 +331,20 @@ test('the Cloudflare worker client aborts through the worker\'s route and reads 
   // Without the binding there can be no coding jobs; only a use fails.
   await assert.rejects(cloudflareCodingWorkerStopClient({}).abort('codingworker_1'), /unavailable/);
   abortReplies = [];
+});
+
+// Defect caught: the stop's settlement wait joining a stalled read through
+// the stub that stalled, so a job that did stop is reported unconfirmed.
+test('the Cloudflare worker client joins a stalled settlement read through a new stub', async (t) => {
+  const agentObject = cutAgentObject(() => Response.json(
+    [{ type: 'stream-checkpoint' }, { type: 'submission-settled', submissionId: 'sub-1', outcome: 'aborted' }],
+    { headers: { 'Stream-Next-Offset': '1' } },
+  ));
+  const client = cloudflareCodingWorkerStopClient({
+    [agentObjectBindingName(CHICKPEA_CODING_WORKER_AGENT_NAME)]: agentObject.namespace,
+  });
+  const outcome = await acrossStalledReads(t, () =>
+    client.awaitSettlement('codingworker_1', 'sub-1', new AbortController().signal));
+  assert.equal(outcome, 'aborted');
+  assert.equal(agentObject.stubs(), 2);
 });

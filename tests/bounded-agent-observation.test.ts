@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { AgentInstanceNotFoundError, AgentRunError } from '@flue/runtime';
 
 import {
+  agentSubmissionSettledBounded,
   AgentObjectBindingUnavailableError,
   CHICKPEA_SLACK_AGENT_BINDING,
   createBoundedAgentReplyReader,
@@ -13,6 +14,7 @@ import {
 } from '../src/slack/bounded-agent-observation.ts';
 import { WORKSPACE_MILESTONE_DATA_NAME } from '../src/slack/coding-worker-run.ts';
 import { createWorkspaceMilestoneRelay } from '../src/slack/workspace-milestone-relay.ts';
+import { acrossStalledReads, cutAgentObject } from './helpers/cut-agent-object.ts';
 
 /**
  * Pages use the real updates-view protocol: Flue prepends a
@@ -494,4 +496,16 @@ test('a read fails once no read is left in flight, with the last failure', async
     sleep: async () => {},
     reconnect: () => async () => { throw new Error('still being replaced'); },
   }), (error: unknown) => error === lost);
+});
+
+// Defect caught: the one-pass settlement read joining a stalled read through
+// the stub that stalled, which a cut instance holds until the platform fails
+// it minutes later.
+test('the one-pass settlement read joins a stalled read through a new stub', async (t) => {
+  const agentObject = cutAgentObject(() => settledPage());
+  const settledNow = await acrossStalledReads(t, () => agentSubmissionSettledBounded(
+    { [CHICKPEA_SLACK_AGENT_BINDING]: agentObject.namespace }, TARGET,
+  ));
+  assert.equal(settledNow, true);
+  assert.equal(agentObject.stubs(), 2);
 });

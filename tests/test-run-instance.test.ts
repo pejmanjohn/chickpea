@@ -13,14 +13,17 @@ import {
   type RunRef,
 } from '../src/config/platform-funding.ts';
 import type { PlatformEnv } from '../src/config/state-backend.ts';
-import type { AgentConversationSnapshot } from '../src/slack/bounded-agent-observation.ts';
+import { CHICKPEA_TEST_TURN_AGENT_NAME } from '../src/agents/names.ts';
+import { agentObjectBindingName, type AgentConversationSnapshot } from '../src/slack/bounded-agent-observation.ts';
 import { withoutImages } from '../src/agents/practice-steps.ts';
 import {
   cloudflareTestRunInstancePort,
+  readSettledAgentSubmissionBounded,
   testRunSettlement,
   type SettledAgentSubmission,
 } from '../src/state/test-run-instance.ts';
 import type { UsageMicros } from '../src/usage/usage-display.ts';
+import { acrossStalledReads, cutAgentObject } from './helpers/cut-agent-object.ts';
 import { EVERY_PROVIDER_FUNDED, NO_RUN_FEES } from './helpers/platform-funding.ts';
 
 function answered(text: string): SettledAgentSubmission {
@@ -92,4 +95,29 @@ test('a test run is credited back as a direct message is: never while its instal
   configureInstallationAdmission(async () => 'admitted');
   await port.creditBack('sub_admitted', 'chickpea');
   assert.deepEqual(credits, [{ run: { installationId: 'inst_credit', runId: 'sub_admitted' }, reason: 'chickpea' }]);
+});
+
+// Defects caught: the settlement read joining a stalled read through the stub
+// that stalled, and the reply read through it after a new stub answered.
+test('a stalled settlement read is joined through a new stub, which also reads the reply', async (t) => {
+  const history = {
+    v: 1,
+    conversationId: 'conv_1',
+    offset: '0_9',
+    messages: [
+      { id: 'm_user', role: 'user', parts: [{ type: 'text', text: 'How many tickets?' }] },
+      { id: 'm_reply', role: 'assistant', submissionId: 'sub_1', parts: [{ type: 'text', text: 'Two tickets.' }] },
+    ],
+    settlements: [{ submissionId: 'sub_1', outcome: 'completed' }],
+  };
+  const agentObject = cutAgentObject((request) => new URL(request.url).searchParams.get('view') === 'history'
+    ? Response.json(history)
+    : Response.json([{ type: 'stream-checkpoint' }, { type: 'submission-settled', submissionId: 'sub_1', outcome: 'completed' }]));
+  const settled = await acrossStalledReads(t, () => readSettledAgentSubmissionBounded(
+    { [agentObjectBindingName(CHICKPEA_TEST_TURN_AGENT_NAME)]: agentObject.namespace },
+    { agentName: CHICKPEA_TEST_TURN_AGENT_NAME, instanceId: 'agent_1', submissionId: 'sub_1' },
+  ));
+  assert.equal(settled?.outcome, 'completed');
+  assert.equal(settled?.completed?.reply.text, 'Two tickets.');
+  assert.equal(agentObject.stubs(), 2);
 });

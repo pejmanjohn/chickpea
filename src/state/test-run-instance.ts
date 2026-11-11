@@ -19,13 +19,8 @@ import {
 } from '../config/installation-scope.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import {
-  AgentObjectBindingUnavailableError,
   agentObjectBindingName,
-  agentObjectNamespace,
-  agentObjectRoute,
-  agentViewBase,
-  observeAgentSettlementBounded,
-  readAgentView,
+  readAgentSubmissionBounded,
   type AgentConversationSnapshot,
   type BoundedObservationTarget,
   type ObservedSettlement,
@@ -104,25 +99,10 @@ export async function readSettledAgentSubmissionBounded(
   env: Record<string, unknown> | undefined,
   target: Pick<BoundedObservationTarget, 'agentName' | 'instanceId' | 'submissionId'>,
 ): Promise<SettledAgentSubmission | undefined> {
-  const bindingName = agentObjectBindingName(target.agentName);
-  const binding = agentObjectNamespace(env, bindingName);
-  if (!binding) throw new AgentObjectBindingUnavailableError(bindingName);
-  const route = agentObjectRoute(binding, target.instanceId);
-  const caughtUp = new Error('caught up');
-  let settlement: ObservedSettlement;
-  try {
-    settlement = await observeAgentSettlementBounded(route, target, { sleep: () => Promise.reject(caughtUp) });
-  } catch (error) {
-    if (error === caughtUp) return undefined;
-    throw error;
-  }
-  if (settlement.outcome !== 'completed') return settlement;
-  const view = await readAgentView(route, target, `${agentViewBase(target.agentName, target.instanceId)}?view=history`);
-  const history = await view.json() as AgentConversationSnapshot;
-  return {
-    ...settlement,
-    completed: { reply: replyFromSnapshot(history, target.submissionId), history },
-  };
+  const settled = await readAgentSubmissionBounded(env, target, { history: true });
+  if (!settled?.history) return settled;
+  const { history, ...settlement } = settled;
+  return { ...settlement, completed: { reply: replyFromSnapshot(history, target.submissionId), history } };
 }
 
 /** A settled submission as the run's outcome: the reply with its steps, or why it failed. */
