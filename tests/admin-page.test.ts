@@ -422,6 +422,7 @@ type ModelProviderFixture = {
   configured: boolean;
   source: string;
   suggestions: string[];
+  modelNames?: Record<string, string>;
   authMethods?: {
     activeMethod?: 'api_key' | 'subscription';
     apiKeyConfigured: boolean;
@@ -15938,8 +15939,8 @@ test('on Chickpea\'s models the Agent model picker lists the models Chickpea off
   await flushAsync();
 
   const list = harness.app.innerHTML.match(/<div class="combo-list" role="listbox">[\s\S]*?<div class="combo-settings">/)?.[0] ?? '';
-  assert.match(list, /<div class="combo-group">anthropic<span class="src">· Chickpea’s models<\/span><\/div>/);
-  assert.match(list, /<div class="combo-group">openrouter<span class="src">· Chickpea’s models<\/span><\/div>/);
+  assert.match(list, /<div class="combo-group">Anthropic<span class="src">· Chickpea’s models<\/span><\/div>/);
+  assert.match(list, /<div class="combo-group">OpenRouter<span class="src">· Chickpea’s models<\/span><\/div>/);
   assert.deepEqual(
     [...list.matchAll(/data-action="pick-model" data-model="([^"]+)"/g)].map((match) => match[1]),
     [OFFERED_MODEL, 'anthropic/claude-sonnet-5-5', ...PLATFORM_OPENROUTER.suggestions],
@@ -18988,7 +18989,7 @@ test('Settings shows the Cloudflare provider card on the Cloudflare target with 
   click({ target: actionTarget({ 'data-action': 'new-profile' }) });
   click({ target: actionTarget({ 'data-action': 'profile-model' }) });
   await flushAsync();
-  assert.doesNotMatch(harness.app.innerHTML, /<div class="combo-group">workers-ai/);
+  assert.doesNotMatch(harness.app.innerHTML, /<div class="combo-group">Cloudflare Workers AI/);
 });
 
 test('Workers AI toggle restores its confirmed state when saving fails', async () => {
@@ -19075,7 +19076,7 @@ test('Workers AI renders Off on a fresh load and recovers a failed model refresh
   click({ target: actionTarget({ 'data-action': 'new-profile' }) });
   click({ target: actionTarget({ 'data-action': 'profile-model' }) });
   await flushAsync();
-  assert.match(harness.app.innerHTML, /<div class="combo-group">workers-ai/);
+  assert.match(harness.app.innerHTML, /<div class="combo-group">Cloudflare Workers AI/);
 });
 
 test('Workers AI toggle ignores an older providers response that resolves after the PUT', async () => {
@@ -19254,7 +19255,7 @@ test('a failed async Model load preserves page position, focus, and caret', asyn
   assert.deepEqual(harness.modelSelectionRanges.at(-1), [5, 5]);
 });
 
-test('the profile Model picker labels Cloudflare binding suggestions as workers-ai', async () => {
+test('the profile Model picker labels Cloudflare binding suggestions as Cloudflare Workers AI', async () => {
   const harness = runAdminPageHarness({
     modelProviders: [
       {
@@ -19274,8 +19275,8 @@ test('the profile Model picker labels Cloudflare binding suggestions as workers-
   click({ target: actionTarget({ 'data-action': 'profile-model' }) });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /<div class="combo-group">workers-ai<span class="src">· Workers AI binding<\/span><\/div>/);
-  assert.doesNotMatch(harness.app.innerHTML, /<div class="combo-group">cloudflare<span/);
+  assert.match(harness.app.innerHTML, /<div class="combo-group">Cloudflare Workers AI<span class="src">· Workers AI binding<\/span><\/div>/);
+  assert.doesNotMatch(harness.app.innerHTML, /<div class="combo-group">(cloudflare|workers-ai)<span/);
   // The binding group's options carry the cloudflare/ specifier prefix, built
   // from the starred favorites (not the leaked src path or a raw @cf id).
   assert.match(harness.app.innerHTML, /data-model="cloudflare\/@cf\/zai-org\/glm-5\.2"/);
@@ -19319,9 +19320,9 @@ test('the profile Model picker renders the FULL live Anthropic list with a user-
   await flushAsync();
 
   const html = harness.app.innerHTML;
-  // The group is labeled by provider id with a user-facing phrase — never the
+  // The group is labeled by provider name with a user-facing phrase — never the
   // leaked src path.
-  assert.match(html, /<div class="combo-group">anthropic<span class="src">· via your key<\/span><\/div>/);
+  assert.match(html, /<div class="combo-group">Anthropic<span class="src">· via your key<\/span><\/div>/);
   assert.doesNotMatch(html, /registered in src\/app\.ts/);
   // Every live model renders as an anthropic/ specifier.
   assert.match(html, /data-model="anthropic\/claude-fable-5"/);
@@ -19360,6 +19361,47 @@ test('the profile Model picker filters options by the typed specifier', async ()
   assert.doesNotMatch(html, /data-model="anthropic\/claude-haiku-4-5"/);
 });
 
+test('the profile Model picker names each model beside its id and finds it by name', async () => {
+  const harness = runAdminPageHarness({
+    modelProviders: [
+      {
+        id: 'google',
+        configured: true,
+        source: 'registered in src/app.ts',
+        suggestions: ['google/gemini-4-argon'],
+        modelNames: { 'google/gemini-4-argon': 'Gemini 4 Argon' },
+      },
+      {
+        id: 'openrouter',
+        configured: true,
+        source: 'via OPENROUTER_API_KEY',
+        suggestions: ['openrouter/deepseek/deepseek-v4.1-flash', 'openrouter/acme/ops-large'],
+        modelNames: { 'openrouter/deepseek/deepseek-v4.1-flash': 'DeepSeek: DeepSeek V4.1 Flash' },
+      },
+    ],
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click);
+  assert.ok(input);
+  click({ target: actionTarget({ 'data-action': 'new-profile' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-model' }) });
+  await flushAsync();
+
+  let html = harness.app.innerHTML;
+  assert.match(html, /<div class="combo-group">Google Gemini<span class="src">· via your key<\/span><\/div>/);
+  assert.match(html, /data-model="google\/gemini-4-argon"><span class="combo-name">Gemini 4 Argon<\/span><span class="combo-id"> · google\/gemini-4-argon<\/span><\/button>/);
+  assert.match(html, /data-model="openrouter\/acme\/ops-large">openrouter\/acme\/ops-large<\/button>/);
+
+  // "gemini 4" is in the name only; the id spells it gemini-4.
+  input({ target: inputTarget({ 'data-action': 'profile-model' }, 'Gemini 4') });
+  await flushAsync();
+  html = harness.app.innerHTML;
+  assert.match(html, /data-model="google\/gemini-4-argon"/);
+  assert.doesNotMatch(html, /data-model="openrouter\//);
+});
+
 test('the profile Model picker suppresses configured provider groups with no favorites', async () => {
   const harness = runAdminPageHarness({
     modelProviders: [
@@ -19381,7 +19423,7 @@ test('the profile Model picker suppresses configured provider groups with no fav
   click({ target: actionTarget({ 'data-action': 'profile-model' }) });
   await flushAsync();
 
-  assert.doesNotMatch(harness.app.innerHTML, /<div class="combo-group">openrouter/);
+  assert.doesNotMatch(harness.app.innerHTML, /<div class="combo-group">OpenRouter/);
   assert.doesNotMatch(harness.app.innerHTML, /no providers configured/);
   assert.match(harness.app.innerHTML, /Star models in Settings to add picker shortcuts/);
 });
