@@ -6,6 +6,7 @@
  */
 import { base64ToBytes } from '../security/base64url.ts';
 import type { CdpClient } from './cdp.ts';
+import { escapeQuoted } from './redaction.ts';
 
 export interface PageInfo {
   url: string;
@@ -137,7 +138,7 @@ function axString(value: AXValue | undefined): string {
 function cleanName(raw: string): string {
   const collapsed = raw.replace(/\s+/g, ' ').trim();
   const truncated = collapsed.length > MAX_NAME_LENGTH ? `${collapsed.slice(0, MAX_NAME_LENGTH)}…` : collapsed;
-  return truncated.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return escapeQuoted(truncated);
 }
 
 function roleOf(node: AXNode): string {
@@ -233,12 +234,14 @@ export class BrowserPage {
 
   /**
    * Reads the page as an accessibility snapshot. Pass the `pageInfo` a
-   * `navigate` or `act` just returned to skip reading it again.
+   * `navigate` or `act` just returned to skip reading it again. `redact` gets
+   * each name and value as the page gave it, before the snapshot collapses,
+   * cuts or escapes it.
    */
-  async snapshot(options: { maxNodes?: number; pageInfo?: PageInfo } = {}): Promise<PageSnapshot> {
+  async snapshot(options: { maxNodes?: number; pageInfo?: PageInfo; redact?: (text: string) => string } = {}): Promise<PageSnapshot> {
     const maxNodes = options.maxNodes ?? 400;
     const tree = await this.cdp<{ nodes?: AXNode[] }>('Accessibility.getFullAXTree');
-    const lines = buildSnapshotLines(tree.nodes ?? []);
+    const lines = buildSnapshotLines(tree.nodes ?? [], options.redact);
     const kept = lines.slice(0, maxNodes);
     const truncated = lines.length > kept.length;
     const refs = new Map<string, ElementRef>();
@@ -454,8 +457,11 @@ const SELECT_OPTION_FUNCTION = `function (wanted) {
   return { ok: true, value: match.value };
 }`;
 
-/** Builds the indented snapshot lines from a flat CDP AX node list. */
-export function buildSnapshotLines(nodes: AXNode[]): SnapshotLine[] {
+/**
+ * Builds the indented snapshot lines from a flat CDP AX node list. Refs keep
+ * an element's real name, so an approved step finds it again in a later turn.
+ */
+export function buildSnapshotLines(nodes: AXNode[], redact: (text: string) => string = (text) => text): SnapshotLine[] {
   const byId = new Map<string, AXNode>();
   for (const node of nodes) byId.set(node.nodeId, node);
   const roots = nodes.filter((node) => !node.parentId || !byId.has(node.parentId));
@@ -494,12 +500,13 @@ export function buildSnapshotLines(nodes: AXNode[]): SnapshotLine[] {
     if (visited.has(node.nodeId)) return;
     visited.add(node.nodeId);
     const role = roleOf(node);
-    const rawName = axString(node.name).replace(/\s+/g, ' ').trim();
+    const axName = axString(node.name);
+    const rawName = axName.replace(/\s+/g, ' ').trim();
     const indent = '  '.repeat(depth);
 
     if (isStructural(node)) {
       let text = `${indent}- ${role}`;
-      if (rawName) text += ` "${cleanName(rawName)}"`;
+      if (rawName) text += ` "${cleanName(redact(axName))}"`;
       const line: SnapshotLine = { text: '' };
       if (INTERACTIVE_ROLES.has(role) && typeof node.backendDOMNodeId === 'number') {
         refCounter += 1;
@@ -507,7 +514,7 @@ export function buildSnapshotLines(nodes: AXNode[]): SnapshotLine[] {
         text += ` [ref=${id}]`;
         line.ref = { id, target: { backendDOMNodeId: node.backendDOMNodeId, role, name: rawName } };
       }
-      text += describeState(node);
+      text += describeState(node, redact);
       line.text = text;
       lines.push(line);
       for (const child of children(node)) visit(child, depth + 1, rawName, visited);
@@ -519,7 +526,7 @@ export function buildSnapshotLines(nodes: AXNode[]): SnapshotLine[] {
       // Skip text that only repeats its parent's accessible name (e.g. a link's label).
       if (parentName && (rawName === parentName || parentName.includes(rawName))) return;
       const label = role === 'StaticText' ? 'text' : role;
-      lines.push({ text: `${indent}- ${label} "${cleanName(rawName)}"` });
+      lines.push({ text: `${indent}- ${label} "${cleanName(redact(axName))}"` });
       return;
     }
 
@@ -531,7 +538,7 @@ export function buildSnapshotLines(nodes: AXNode[]): SnapshotLine[] {
   return lines;
 }
 
-function describeState(node: AXNode): string {
+function describeState(node: AXNode, redact: (text: string) => string): string {
   const parts: string[] = [];
   const role = roleOf(node);
   const level = property(node, 'level');
@@ -545,7 +552,7 @@ function describeState(node: AXNode): string {
   if (expanded === true || expanded === 'true') parts.push('expanded');
   const disabled = property(node, 'disabled');
   if (disabled === true || disabled === 'true') parts.push('disabled');
-  const value = axString(node.value).replace(/\s+/g, ' ').trim();
+  const value = redact(axString(node.value)).replace(/\s+/g, ' ').trim();
   if (value && role !== 'heading') parts.push(`value="${cleanName(value)}"`);
   return parts.length ? ` ${parts.join(' ')}` : '';
 }

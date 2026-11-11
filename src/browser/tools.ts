@@ -378,11 +378,11 @@ export function createBrowserTools(options: BrowserToolsOptions) {
 
   const readPage = async (pageInfo?: PageInfo) => {
     const { page } = await requireOpenPage(session);
-    const snap = await page.snapshot(pageInfo ? { pageInfo } : {});
+    const snap = await page.snapshot({ ...(pageInfo ? { pageInfo } : {}), redact });
     // Cap before redacting, keeping a margin so a secret at the cut is still whole when redacted.
     const kept = MAX_SNAPSHOT_CHARS + REDACTION_MARGIN_CHARS;
     const capped = capSnapshot(redact(snap.text.slice(0, kept)), snap.truncated || snap.text.length > kept);
-    return { url: redact(snap.url), title: redact(snap.title), snapshot: capped.snapshot, truncated: capped.truncated };
+    return { url: session.redactUrl(snap.url), title: redact(snap.title), snapshot: capped.snapshot, truncated: capped.truncated };
   };
 
   const { askApproval, runApproved } = createBrowserApprovalSteps({

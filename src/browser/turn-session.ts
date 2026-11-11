@@ -15,6 +15,7 @@
 import type { CdpClient, CdpSocket } from './cdp.ts';
 import type { BrowserPage } from './page.ts';
 import type { BrowserProvider } from './provider.ts';
+import { TypedSecrets } from './redaction.ts';
 
 export const DEFAULT_BROWSER_SESSION_MS = 10 * 60 * 1000;
 export const BROWSER_VIEWPORT = { width: 1280, height: 800 } as const;
@@ -81,8 +82,6 @@ interface OpenOptions {
 export const BROWSER_HANDOFF_SECONDS = 600;
 /** Refusing downloads is best effort; a browser that does not answer must not hold up the session. */
 const DOWNLOAD_POLICY_TIMEOUT_MS = 5_000;
-/** Secrets shorter than this are not redacted from page text (they would erase ordinary words). */
-const MIN_REDACTED_LENGTH = 4;
 
 function sameBinding(left: BrowserSessionBinding | undefined, right: BrowserSessionBinding | undefined): boolean {
   return left?.loginId === right?.loginId;
@@ -98,7 +97,7 @@ export class BrowserTurnSession {
   private opening: Promise<ActiveSession> | undefined;
   private closing: Promise<BrowserSessionClosedInfo | undefined> | undefined;
   private usedMs = 0;
-  private readonly redactions = new Set<string>();
+  private readonly secrets = new TypedSecrets();
   /** Logins handed to a person this turn; browsing them again must wait for the reply. */
   readonly handedOff = new Set<string>();
   private readonly now: () => number;
@@ -144,17 +143,19 @@ export class BrowserTurnSession {
   }
 
   /**
-   * Remember a secret typed this turn so page text and errors shown to the
-   * model replace it with [redacted].
+   * Remember a secret typed this turn so page text, URLs and errors shown to
+   * the model replace it with [redacted], in every form the page can show it.
    */
   addRedaction(value: string): void {
-    if (value.length >= MIN_REDACTED_LENGTH) this.redactions.add(value);
+    this.secrets.add(value);
   }
 
   redact(text: string): string {
-    let result = text;
-    for (const secret of this.redactions) result = result.split(secret).join('[redacted]');
-    return result;
+    return this.secrets.redact(text);
+  }
+
+  redactUrl(url: string): string {
+    return this.secrets.redactUrl(url);
   }
 
   /** The open session, whichever login it is bound to; opens a public one when none is open. */

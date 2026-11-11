@@ -227,7 +227,9 @@ export function createBrowserApprovalSteps(context: BrowserApprovalContext) {
     if (!websiteLoginMatchesUrl(login.host, new URL(info.url))) {
       return refuse(`The page is no longer on ${login.host}. Open it with browser_open first.`);
     }
-    const description = context.redact(describeBrowserAction(target, data.action, data));
+    // The name is redacted before the description cuts it to length.
+    const named = { role: target.role, name: context.redact(target.name) };
+    const description = context.redact(describeBrowserAction(named, data.action, data));
     const settings = await approvals.settings();
     const at = context.now().getTime();
     // Cleanup of old records runs at most once a turn, and only once there is something to clear.
