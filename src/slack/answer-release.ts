@@ -10,6 +10,8 @@ import {
   PRESENTATION_TOOL_NAMES,
 } from './presentation-tool-policy.ts';
 import { isEmptyFileDeliveryResult } from './progressive-relay.ts';
+import { SLACK_DISPLAY_COMPONENTS_DATA_NAME } from './ui/display-tools.ts';
+import { KEY_SETUP_TOOL_DATA_NAME } from './ui/surface.ts';
 
 /**
  * Settled characters a model step must hold, with no tool call in it, before
@@ -81,6 +83,13 @@ export interface AnswerReleaseShadowRecord extends PreToolTextCounts {
   answerSteps: number;
   /** The settled length of the last step that completed without a tool call. */
   finalAnswerChars?: number;
+  /**
+   * Display component (cards, chart, details) and key-setup data parts the
+   * response wrote. Neither blocks here; the release keeps both terminal at
+   * first, so these say how many released replies that would hold back.
+   */
+  displayParts: number;
+  keySetupParts: number;
 }
 
 interface Release {
@@ -135,25 +144,32 @@ export class AnswerReleaseShadow {
   #step: Step | undefined;
   #state: ShadowState = { phase: 'holding' };
   #ended = false;
+  #faulted = false;
   #toolSteps = 0;
   #answerSteps = 0;
   readonly #preToolText = PRE_TOOL_TEXT_EDGES.map(() => 0);
   #finalAnswerChars: number | undefined;
+  #displayParts = 0;
+  #keySetupParts = 0;
 
   constructor(private readonly now: () => number = Date.now) {}
 
-  /** Never throws: an observer fault ends the shadow, never the turn. */
+  /**
+   * Never throws: an observer fault ends the shadow, never the turn. A
+   * shadow that faulted reports nothing, since its counts stopped mid-response.
+   */
   onEvent(chunk: ConversationStreamChunk, submissionId: string): void {
     try {
       this.#observe(chunk, submissionId);
     } catch {
       this.#ended = true;
+      this.#faulted = true;
     }
   }
 
-  /** Undefined until the response's first step started. */
+  /** Undefined until the response's first step started, and after a fault. */
   record(): AnswerReleaseShadowRecord | undefined {
-    if (this.#messageId === undefined) return undefined;
+    if (this.#messageId === undefined || this.#faulted) return undefined;
     const state = this.#state;
     const release = state.phase === 'released' || state.phase === 'retired' ? state.release : undefined;
     return {
@@ -171,6 +187,8 @@ export class AnswerReleaseShadow {
       ...Object.fromEntries(PRE_TOOL_TEXT_EDGES.map((edge, index) =>
         [`preToolText${edge}`, this.#preToolText[index]!])) as PreToolTextCounts,
       ...(this.#finalAnswerChars === undefined ? {} : { finalAnswerChars: this.#finalAnswerChars }),
+      displayParts: this.#displayParts,
+      keySetupParts: this.#keySetupParts,
     };
   }
 
@@ -224,6 +242,8 @@ export class AnswerReleaseShadow {
       return;
     }
     if (chunk.type === 'data-part') {
+      if (chunk.name === SLACK_DISPLAY_COMPONENTS_DATA_NAME) this.#displayParts += 1;
+      if (chunk.name === KEY_SETUP_TOOL_DATA_NAME) this.#keySetupParts += 1;
       const block = dataPartBlock(chunk.name, chunk.data);
       if (block) this.#follow(block);
       return;

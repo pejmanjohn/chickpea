@@ -510,6 +510,8 @@ function shadowRecord(overrides: Partial<AnswerReleaseShadowRecord> = {}): Answe
     preToolText600: 0,
     preToolText800: 0,
     finalAnswerChars: 120,
+    displayParts: 0,
+    keySetupParts: 0,
     ...overrides,
   };
 }
@@ -594,6 +596,8 @@ test('turn_latency times the first answer text as shown and as a host release wo
     preToolText600: 0,
     preToolText800: 0,
     finalAnswerChars: 120,
+    displayParts: 0,
+    keySetupParts: 0,
     admissionToReleaseMs: 3_000,
     receiptToReleaseMs: 4_000,
   });

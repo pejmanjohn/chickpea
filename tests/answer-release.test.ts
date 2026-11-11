@@ -12,6 +12,8 @@ import {
 import { FILE_DELIVERY_DATA_NAME } from '../src/slack/file-delivery-completion.ts';
 import { SLACK_AGENT_CREATION_TERMINAL_DATA_NAME } from '../src/slack/agent-creation-terminal.ts';
 import { streamableSlackMarkdownPrefix } from '../src/slack/message-format.ts';
+import { SLACK_DISPLAY_COMPONENTS_DATA_NAME } from '../src/slack/ui/display-tools.ts';
+import { KEY_SETUP_TOOL_DATA_NAME } from '../src/slack/ui/surface.ts';
 
 const SUBMISSION = 'submission_shadow';
 const MESSAGE = 'message_shadow';
@@ -258,6 +260,30 @@ test('the shadow reads only its submission, once, and stops at a reset after the
   shadow.onEvent(chunk({ type: 'message-started', messageId: MESSAGE, submissionId: SUBMISSION }, 7), SUBMISSION);
   shadow.onEvent(chunk({ type: 'message-delta', messageId: MESSAGE, kind: 'text', delta: prose(900).join('') }, 8), SUBMISSION);
   assert.deepEqual([shadow.record()?.outcome, shadow.record()?.block], ['blocked', 'conversation_reset']);
+});
+
+// Defect caught: a reply with cards or a key setup counted as one the first
+// release would stream, with nothing in the record to tell it apart.
+test('display and key-setup parts are counted and do not block', () => {
+  const record = response()
+    .step().tool('present_cards').data(SLACK_DISPLAY_COMPONENTS_DATA_NAME, [{ kind: 'cards' }])
+    .data(KEY_SETUP_TOOL_DATA_NAME, { ran: true }).complete()
+    .step().text(prose(900)).complete()
+    .record();
+  assert.equal(record.outcome, 'released');
+  assert.deepEqual([record.displayParts, record.keySetupParts], [1, 1]);
+  const plain = response().step().text(prose(900)).complete().record();
+  assert.deepEqual([plain.displayParts, plain.keySetupParts], [0, 0]);
+});
+
+// Defects caught: a chunk the shadow cannot read throws into the turn's
+// read, or its half-counted response is logged as a whole one.
+test('a fault ends the shadow without throwing and reports nothing', () => {
+  const run = response().step().text(prose(900));
+  assert.equal(run.record().outcome, 'released');
+  assert.doesNotThrow(() => run.shadow.onEvent({ type: 'message-delta' } as ConversationStreamChunk, SUBMISSION));
+  run.tool('web_search').complete();
+  assert.equal(run.shadow.record(), undefined);
 });
 
 // Defect caught: the record carries text, or a field the log would drop.
