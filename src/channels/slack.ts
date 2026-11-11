@@ -1612,6 +1612,7 @@ async function resolveInstallationBotUserId(
 ): Promise<string | undefined> {
   return credentials.botUserId ?? installedBotUserId ?? resolveBotUserId(platformEnv);
 }
+/** The gateway's execution, unless it names an Agent app or a direct installation's own bot. */
 export interface SlackEventExecution {
   transport: SlackTransport;
   client: ReturnType<typeof createSlackWebClient>;
@@ -1619,6 +1620,8 @@ export interface SlackEventExecution {
   stores?: AppStores;
   /** The Agent whose own Slack app received this delivery: it runs as that bot on a direct installation. */
   agentApp?: { agentId: string };
+  /** A direct installation's own bot, with the credentials its transport was made from. */
+  direct?: { credentials: ResolvedSlackInstallationCredentials };
   /** Chickpea's own bot, beside an Agent app's `transport`. */
   installationBot?: SlackTransport;
   /** Where Agents' private-use placements are read when not through `transport` (agentAppPlacementFacts). */
@@ -1722,6 +1725,35 @@ export async function processGatewaySlackEnvelope(
     ...(providedExecution?.durableIngress ? { durableIngress: true } : {}),
   }, undefined, undefined, { installation });
   return 'accepted';
+}
+
+/** A direct installation's own bot on the caller's ports; undefined without a bot token. */
+export function directSlackExecution(input: {
+  stores: AppStores;
+  credentials: ResolvedSlackInstallationCredentials;
+  botUserId: string;
+  enqueueTurn(job: TurnJob): Promise<StateRpcResult<null>>;
+}): SlackEventExecution | undefined {
+  const { stores, credentials } = input;
+  if (!credentials.botToken) return undefined;
+  return {
+    transport: createDirectSlackTransport(credentials.botToken, ownerUserGroupToken(credentials, stores.settings)),
+    client: createSlackWebClient(credentials.botToken),
+    botUserId: input.botUserId,
+    stores,
+    enqueueTurn: input.enqueueTurn,
+    direct: { credentials },
+  };
+}
+
+/** Admit a direct installation's verified event on its execution's ports (directSlackExecution). */
+export async function processDirectSlackEvent(
+  payload: SlackEventFixture,
+  platformEnv: PlatformEnv | undefined,
+  execution: SlackEventExecution,
+  installation: WorkspaceInstallation,
+): Promise<void> {
+  await processSlackEvent(payload, platformEnv, execution, undefined, undefined, { installation });
 }
 
 // The Node relay runs turns in this process and admits their asks and hand-offs here.
@@ -3353,8 +3385,9 @@ async function processSlackEvent(
   const stores = execution?.stores ?? resolveStores(platformEnv);
   const installation = known?.installation ?? await stores.config.getWorkspaceInstallation(payload.team_id);
   if (!installation || installation.health === 'revoked') return;
-  if (execution && !execution.agentApp && installation.transportMode !== 'gateway') return;
-  if (!execution && installation.transportMode !== 'direct') return;
+  // An Agent app's caller checks its installation.
+  const transportMode = !execution || execution.direct ? 'direct' : 'gateway';
+  if (!execution?.agentApp && installation.transportMode !== transportMode) return;
   // An edit steers its message's turn, then the public record below takes the new text too.
   const edit = ask ? undefined : parseSlackMessageEdit(payload);
   if (edit) await steerWithSlackEdit({ edit, state: stores.slackState, execution, platformEnv });
@@ -3399,7 +3432,7 @@ async function processSlackEvent(
     }, threadRoute);
   }
   const credentials = execution
-    ? ({ connectionRevision: null } as ResolvedSlackInstallationCredentials)
+    ? execution.direct?.credentials ?? ({ connectionRevision: null } as ResolvedSlackInstallationCredentials)
     : known?.credentials ??
       await resolveSlackInstallationCredentials(slackInstallationCredentialId(platformEnv), platformEnv);
 
