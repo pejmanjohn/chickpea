@@ -154,7 +154,6 @@ import { createSlackReadGate, sharesSlackAppReadBudget } from './read-budget.ts'
 import { resolveSlackContextNames } from './context-names.ts';
 import type { FlueDispatchReceiptV1 } from './turn-job-types.ts';
 import type { SlackProgressiveReadRelay } from './progressive-relay.ts';
-import { AnswerReleaseShadow } from './answer-release.ts';
 import {
   TurnLatencyTracker,
   type TurnFirstWrite,
@@ -536,7 +535,10 @@ export async function runTurn(
     ...(options.runAttempt === undefined ? {} : { attempt: options.runAttempt }),
   });
   tracker.markFolded(followUps.length);
-  const answerRelease = new AnswerReleaseShadow();
+  // Loaded at a turn's first use, so the shadow stays out of what a Worker
+  // loads at startup. A turn whose load fails runs without one.
+  const answerRelease = await import('./answer-release.ts')
+    .then(({ AnswerReleaseShadow }) => new AnswerReleaseShadow(), () => undefined);
   const { onDelivered, onDeferredTerminal } = options;
   let stopped = false;
   try {
@@ -544,7 +546,7 @@ export async function runTurn(
       ...options,
       onSlackWrite: (surface) => tracker.markSlackWrite(surface),
       onAnswerTextStreamed: () => tracker.markStreamedAnswerText(),
-      onConversationChunk: (chunk, submissionId) => answerRelease.onEvent(chunk, submissionId),
+      onConversationChunk: (chunk, submissionId) => answerRelease?.onEvent(chunk, submissionId),
       onFollowUpsInformed: (count) => tracker.markFoldedInformed(count),
       onRead: () => tracker.markRead(),
       onMidRunReply: () => tracker.markMidRunReply(),
@@ -564,9 +566,9 @@ export async function runTurn(
           }
         : {}),
     }, followUps, receipts);
-    tracker.emit(stopped ? 'stopped' : 'returned', answerRelease.record());
+    tracker.emit(stopped ? 'stopped' : 'returned', answerRelease?.record());
   } catch (error) {
-    tracker.emit('threw', answerRelease.record());
+    tracker.emit('threw', answerRelease?.record());
     throw error;
   }
 }
