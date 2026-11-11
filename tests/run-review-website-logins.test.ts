@@ -23,6 +23,7 @@ import {
 } from '../src/review/record.ts';
 import { BROWSER_LINK_OMITTED, type RunReviewWebsiteLogins } from '../src/review/website-logins.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
+import { toContextMessage } from '../src/slack/thread-context.ts';
 import { FakeCdpSocket, fakeBrowserProvider } from './helpers/fake-cdp-socket.ts';
 
 const KEY = new Uint8Array(32).fill(7);
@@ -168,6 +169,19 @@ test('every hosted browser link goes whole, whatever its host', () => {
   assert.equal(record.answer, `Debugger: ${BROWSER_LINK_OMITTED} and ${BROWSER_LINK_OMITTED}`);
 });
 
+test('a hand-off link a later turn reads back from Slack goes from both places its context row holds it', () => {
+  const liveView = 'https://live.provider.example/s/SYNTHLIVE?view=full&t=SYNTHLIVETOKEN';
+  // Slack returns the message with a rich_text block, and a context row lists that block's links under the text.
+  const row = toContextMessage({
+    ts: '1792915200.000100', user: 'U0BOT12345', text: browserHandoffMessage('portal.example.com', liveView),
+    blocks: [{ type: 'rich_text', elements: [{ type: 'rich_text_section', elements: [{ type: 'link', url: liveView, text: 'Open the browser' }] }] }],
+  }, { botUserId: 'U0BOT12345' });
+  assert.match(row?.text ?? '', /Links in this Slack message:\n- https:\/\/live\.provider\.example\/s\/SYNTHLIVE/);
+  const record = copy({ context: [{ author: 'Billing Agent', role: 'agent', text: row!.text, files: [] }] });
+  assert.deepEqual(kept(record, ['SYNTHLIVE', 'live.provider']), []);
+  assert.match(record.context[0]?.text ?? '', /Links in this Slack message:\n- \[browser link omitted\]$/);
+});
+
 test('a saved username leaves every field, in any case and in every escaped or encoded form', () => {
   const snapshot = [
     '- textbox "Email" [ref=e1] value="Ops.Synthetic@example.com"',
@@ -201,6 +215,7 @@ test('a saved username leaves every field, in any case and in every escaped or e
 test('a username split across snapshot lines, or cut before a … or at the collector\'s cap, leaves no part of it', () => {
   const split = '- text "Account"\n  - text "Ops.Synthetic"\n  - link "@" [ref=e4]\n  - text "example.com"';
   const cutAtSnapshotCap = `- text "Signed in as Ops.Synthetic@ex\n… (snapshot cut at 12000 characters)`;
+  const splitAfterState = '- button "Ops.Synthetic" [ref=e3] expanded\n  - text "@example.com"\n- heading "Ops.Synthetic" level=2\n- text "@example.com"';
   const longQuery = `https://billing.example.com/report?filter=${'x'.repeat(200)} `;
   const cutEnd = ' Signed in as Ops.Synth';
   const collected = longQuery.repeat(Math.ceil(COLLECTED_FIELD_CHARS / longQuery.length))
@@ -211,6 +226,7 @@ test('a username split across snapshot lines, or cut before a … or at the coll
     steps: [
       browserStep('browser_snapshot', {}, { snapshot: split }),
       browserStep('browser_snapshot', {}, { snapshot: cutAtSnapshotCap }),
+      browserStep('browser_snapshot', {}, { snapshot: splitAfterState }),
       browserStep('browser_snapshot', {}, { snapshot: '- textbox "Email" [ref=e1] value="Ops.Synthetic@exam…"' }),
       { kind: 'tool', name: 'web_fetch', input: '{}', output: collected },
     ],
@@ -219,10 +235,11 @@ test('a username split across snapshot lines, or cut before a … or at the coll
   const outputs = record.steps.map((step) => step.kind === 'tool' ? step.output ?? '' : '');
   assert.equal(JSON.parse(outputs[0]!).snapshot, '- text "Account"\n  - text "[credential redacted]"');
   assert.equal(JSON.parse(outputs[1]!).snapshot, '- text "Signed in as [credential redacted]\n… (snapshot cut at 12000 characters)');
+  assert.equal(JSON.parse(outputs[2]!).snapshot, '- button "[credential redacted]"\n- heading "[credential redacted]"');
   assert.equal(record.context[0]?.text, 'Signed in as [credential redacted]…');
-  assert.ok(new TextEncoder().encode(outputs[3]!).byteLength < RUN_REVIEW_FIELD_BYTES,
+  assert.ok(new TextEncoder().encode(outputs[4]!).byteLength < RUN_REVIEW_FIELD_BYTES,
     'the cut field shrank below the record\'s cap, so its cut end reaches the copy');
-  assert.match(outputs[3]!, /Signed in as \[credential redacted\]$/);
+  assert.match(outputs[4]!, /Signed in as \[credential redacted\]$/);
 });
 
 test('usernames match whole words, and one under four characters only as a whole value in a browser step', () => {

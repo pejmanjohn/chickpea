@@ -51,7 +51,7 @@ const STEP_URL = urlPatterns(STEP_URL_CHAR);
 // Any host followed by a path or a query, as a browser step's input may name a page.
 const ANY_SCHEMELESS_URL = String.raw`${HOST_START}(?:[a-z0-9-]+\.)+[a-z]{2,}${STEP_URL.afterHost}`;
 
-const HANDOFF_LINK = new RegExp(String.raw`<[^<>|]*\|${escapeRegExp(BROWSER_HANDOFF_LINK_LABEL)}>`, 'g');
+const HANDOFF_LINK = new RegExp(String.raw`<([^<>|]*)\|${escapeRegExp(BROWSER_HANDOFF_LINK_LABEL)}>`, 'g');
 
 /** Shapes of a hosted browser's live view, debugger or connect link, whatever its host. */
 function browserLink(scheme: string | undefined, hostname: string, path: string, suffix: string): boolean {
@@ -76,7 +76,8 @@ export interface WebsiteLoginScrub {
   /**
    * Link rules, on text no other rule has changed: a replacement that holds
    * a space would end a URL early and leave the rest of it. A hosted browser
-   * link goes whole. Every URL loses its userinfo. A URL on a login's site,
+   * link goes whole, and so does a hand-off message's link wherever else the
+   * same text holds it. Every URL loses its userinfo. A URL on a login's site,
    * or any URL in a browser step, keeps its scheme, host and path, loses
    * token-shaped path segments, and loses everything from its first `;`,
    * `?` or `#`.
@@ -131,8 +132,11 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
 
   return {
     links(text, browserStep) {
-      return text
-        .replace(HANDOFF_LINK, BROWSER_LINK_OMITTED)
+      // A thread context row lists a message's links again under its text, unescaped (slack/rich-text-links.ts).
+      const handoffs = unique([...text.matchAll(HANDOFF_LINK)]
+        .flatMap(([, url]) => url ? [url, unescapedSlackText(url)] : []));
+      return handoffs
+        .reduce((value, url) => value.split(url).join(BROWSER_LINK_OMITTED), text.replace(HANDOFF_LINK, BROWSER_LINK_OMITTED))
         .replace(browserStep ? linkPatterns.browserStep : linkPatterns.anywhere, (raw) => scrubLink(raw, browserStep));
     },
     usernames(text, { browserStep, cut }) {
@@ -162,8 +166,9 @@ const UNSPACED_LETTER = String.raw`[\p{scx=Han}\p{scx=Hiragana}\p{scx=Katakana}\
 // Not inside a word, though an unspaced letter or a JSON, percent or Slack escape may sit right before it.
 const WORD_START = String.raw`(?:(?<!${WORD_CHAR})|(?<=${UNSPACED_LETTER}|\\[nrtbf]|\\u[0-9A-Fa-f]{4}|%[0-9A-Fa-f]{2}|&(?:amp|lt|gt);))`;
 const WORD_END = String.raw`(?:(?!${WORD_CHAR})|(?=${UNSPACED_LETTER}))`;
-// Where a snapshot ends one node's text and starts the next: `"`, a line break, `- text "`.
-const NODE_BREAK = String.raw`(?:\\*"(?: \[ref=e\d+\])?(?:\s|\\+[nrt])+-\s[A-Za-z]+\s\\*")?`;
+// Where a snapshot ends one node's text and starts the next: `"`, its ref and state, a line break, `- text "`.
+const NODE_STATE = String.raw`(?: (?:level=\d+|checked(?:=mixed)?|selected|expanded|disabled))*`;
+const NODE_BREAK = String.raw`(?:\\*"(?: \[ref=e\d+\])?${NODE_STATE}(?:\s|\\+[nrt])+-\s[A-Za-z]+\s\\*")?`;
 const CUT_AHEAD = String.raw`(?:\s|\\+[nrt])*${CUT_MARK}`;
 
 const encoder = new TextEncoder();
@@ -241,6 +246,10 @@ function asciiRuns(text: string): string[] {
 function once<T>(make: () => T): () => T {
   let value: T | undefined;
   return () => (value ??= make());
+}
+
+function unescapedSlackText(text: string): string {
+  return text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
 }
 
 function unique(values: readonly string[]): string[] {
