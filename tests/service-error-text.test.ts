@@ -275,6 +275,25 @@ test('a secret value with no end drops everything after its label', () => {
   assert.equal(filter("password: it's alpha, beta gamma"), 'password: […]');
 });
 
+test('a secret value that starts on a later line still goes', () => {
+  assert.equal(filter('password:\nhunter'), 'password: […]');
+  assert.equal(filter('Bearer\nword'), 'Bearer […]');
+  assert.equal(filter('{"pin":\n1234}'), '{ "pin": […]');
+  assert.equal(filter('pin=\n1234'), '[…]');
+});
+
+test('a label’s name may hold an index and end in closing punctuation', () => {
+  const cases: [string, string][] = [
+    ['{"api_key[0]":"winter","status":"error"}', '{ […] "status": "error"}'],
+    ['{"user[password]":"winter","status":"error"}', '{ […] "status": "error"}'],
+    ['user[password]=alpha beta\nstatus: 401', '[…] status: 401'],
+    ['“password”: winter', '“password”: […]'],
+    ['(password): winter', '(password): […]'],
+    ['**password**: winter', '**password**: […]'],
+  ];
+  for (const [text, shown] of cases) assert.equal(filter(text), shown, text);
+});
+
 test('a label names a secret by any part, an acronym’s too, or by its last word', () => {
   for (const label of [
     'client_key', 'X-Api-Key', 'privateKey', 'sessionId', 'key', 'pin', 'passcode',
@@ -341,6 +360,7 @@ test('a hostile 16 KiB text takes linear time', () => {
     // Secret labels and the extents of their values.
     fill('a:'), fill('token:'), fill('token:"'), fill('{"token":['), `tokens:${fill('[')}`, fill('token: a\n '),
     `token:"${fill(String.raw`\"`)}`, `token:[${fill(String.raw`"]\"`)}`, fill(`${'a'.repeat(64)}${'\\'.repeat(512)}`),
+    fill('['), fill(`${'a'.repeat(64)}${')”*'.repeat(200)}`), fill('a[password]='), fill('password:\n'),
   ]) {
     const start = performance.now();
     filter(text);

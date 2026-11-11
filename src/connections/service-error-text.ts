@@ -79,7 +79,7 @@ const SECRET_WORDS = [
   'auth', 'authorization', 'credential', 'credentials', 'session', 'sessionid', 'sessid', 'sid', 'cookie',
   'cookies', 'signature', 'sig', 'otp', 'jwt', 'bearer', 'private',
 ];
-const LABEL_PARTS = /[_.\-]+|(?<=[\p{Ll}\p{N}])(?=\p{Lu})|(?<=\p{Lu})(?=\p{Lu}\p{Ll})/u;
+const LABEL_PARTS = /[_.\-\[\]]+|(?<=[\p{Ll}\p{N}])(?=\p{Lu})|(?<=\p{Lu})(?=\p{Lu}\p{Ll})/u;
 
 const withSingular = (word: string) => word.endsWith('s') ? [word, word.slice(0, -1)] : [word];
 
@@ -87,16 +87,19 @@ function namesASecret(name: string): boolean {
   const isSecretWord = (part: string) =>
     withSingular(part.toLowerCase()).some((form) => SECRET_WORDS.includes(form));
   if (name.split(LABEL_PARTS).some(isSecretWord)) return true;
-  const joined = name.replace(/[_.\-]/g, '').toLowerCase();
+  const joined = name.replace(/[_.\-\[\]]/g, '').toLowerCase();
   return withSingular(joined).some((form) => SECRET_WORDS.some((word) => form.endsWith(word)));
 }
 
 /**
- * A label: a whole run of letters, digits and `_ . -`, its closing quote if it has one, then `:`
- * or `=`. Or an auth scheme as a word before whitespace. Starting only where a run starts keeps
- * the search linear, so a name has no length limit.
+ * A label: a whole run of letters, digits, `_ . -` and index brackets (`user[password]`), then
+ * any closing quotes, parentheses or markup (`“password”`, `**password**`), then `:` or `=`. Or
+ * an auth scheme as a word before whitespace. Starting only where a run starts keeps the search
+ * linear, so a name has no length limit.
  */
-const LABEL = /(?<![\p{L}\p{N}_.\-])([\p{L}\p{N}_.\-]+)(?:\\*["'`\uE000])?[ \t]*[:=]|(?<![\p{L}\p{N}_])(?:bearer|basic)(?=\s)/giu;
+const LABEL = /(?<![\p{L}\p{N}_.\-\[\]])([\p{L}\p{N}_.\-\[\]]+)[\\)}>"'`”’»*|–—\uE000]*[ \t]*[:=]|(?<![\p{L}\p{N}_])(?:bearer|basic)(?=\s)/giu;
+/** Whitespace before a value, which may start on a later line. */
+const SPACE = /\s*/y;
 /** Spaces, and line breaks a space or tab continues: a folded line. */
 const BLANK = /(?:[ \t]|(?:\r\n?|\n)(?=[ \t]))*/y;
 /** What an escaped quote decodes to while secret values are found, so it never ends their string. */
@@ -109,7 +112,8 @@ const CLOSERS: Readonly<Record<string, string>> = { '{': '}', '[': ']' };
  * kept. A value has an extent, and a whitespace chunk is not it: a quoted value ends at its
  * closing quote, an object or array at its closing bracket, and any other value, or an auth
  * scheme's, at the end of its line, folded lines included, or at a `,`, `;` or `&` outside
- * quotes. A value with no end takes the rest of the text.
+ * quotes. A value with no end takes the rest of the text, and a label that ends its line takes
+ * the next line as its value.
  */
 function hideSecretValues(text: string): string {
   let kept = '';
@@ -118,7 +122,7 @@ function hideSecretValues(text: string): string {
   for (let match = LABEL.exec(text); match; match = LABEL.exec(text)) {
     const name = match[1];
     if (name !== undefined && !namesASecret(name)) continue;
-    const start = skipBlank(text, LABEL.lastIndex);
+    const start = skip(SPACE, text, LABEL.lastIndex);
     const end = name === undefined ? lineEnd(text, start) : valueEnd(text, start);
     if (end === start) continue;
     kept += `${text.slice(from, start)}${HIDDEN}`;
@@ -127,10 +131,10 @@ function hideSecretValues(text: string): string {
   return kept + text.slice(from);
 }
 
-function skipBlank(text: string, at: number): number {
-  BLANK.lastIndex = at;
-  BLANK.exec(text);
-  return BLANK.lastIndex;
+function skip(pattern: RegExp, text: string, at: number): number {
+  pattern.lastIndex = at;
+  pattern.exec(text);
+  return pattern.lastIndex;
 }
 
 function valueEnd(text: string, start: number): number {
@@ -149,7 +153,7 @@ function lineEnd(text: string, start: number): number {
     } else if (character === ',' || character === ';' || character === '&') {
       return at;
     } else if (character === '\n' || character === '\r') {
-      const folded = skipBlank(text, at);
+      const folded = skip(BLANK, text, at);
       if (folded === at) return at;
       at = folded - 1;
     }
