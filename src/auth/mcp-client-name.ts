@@ -1,27 +1,19 @@
 const MCP_CLIENT_NAME_DISPLAY_LIMIT = 60;
 
 /**
- * Apps Chickpea names itself, by exact client ID. Any other app's name is its
- * own claim, so a stranger's document that calls itself ChatGPT gets the
- * generic text, as does ChatGPT's per-callback client ID.
+ * App properties keyed by exact OAuth client ID, never an app's claimed name.
+ * Consent and return-page names are independent of whether the app draws cards.
  */
-const KNOWN_MCP_APPS: ReadonlyMap<string, string> = new Map([['https://chatgpt.com/oauth/client.json', 'ChatGPT']]);
-
-/**
- * Apps a finished setup link sends the person back to by name, in Chickpea's
- * own words. The page never repeats an app's claim, so an unlisted or
- * look-alike app reads "your app". ChatGPT is named only by its client ID.
- */
-const RETURN_APPS_BY_CLIENT_ID: ReadonlyMap<string, string> = new Map([
-  ...KNOWN_MCP_APPS,
-  ['https://chatgpt.com/oauth/codex/client.json', 'Codex'],
-  ['https://claude.ai/oauth/mcp-oauth-client-metadata', 'Claude'],
-  ['https://claude.ai/oauth/claude-code-client-metadata', 'Claude Code'],
-  ['https://cursor.com/oauth/mcp-client.json', 'Cursor'],
-  ['https://vscode.dev/oauth/client-metadata.json', 'VS Code'],
-  ['https://insiders.vscode.dev/oauth/client-metadata.json', 'VS Code'],
-  ['https://zed.dev/oauth/client-metadata.json', 'Zed'],
-  ['https://goose-docs.ai/oauth/client-metadata.json', 'Goose'],
+const KNOWN_MCP_APPS: ReadonlyMap<string, { name: string; consent?: true; cards?: true }> = new Map([
+  ['https://chatgpt.com/oauth/client.json', { name: 'ChatGPT', consent: true, cards: true }],
+  ['https://chatgpt.com/oauth/codex/client.json', { name: 'Codex' }],
+  ['https://claude.ai/oauth/mcp-oauth-client-metadata', { name: 'Claude', cards: true }],
+  ['https://claude.ai/oauth/claude-code-client-metadata', { name: 'Claude Code' }],
+  ['https://cursor.com/oauth/mcp-client.json', { name: 'Cursor' }],
+  ['https://vscode.dev/oauth/client-metadata.json', { name: 'VS Code' }],
+  ['https://insiders.vscode.dev/oauth/client-metadata.json', { name: 'VS Code' }],
+  ['https://zed.dev/oauth/client-metadata.json', { name: 'Zed' }],
+  ['https://goose-docs.ai/oauth/client-metadata.json', { name: 'Goose' }],
 ]);
 
 /** Lowercase registered names, as the clients send them, without a trailing "(server name)". */
@@ -39,16 +31,21 @@ const RETURN_APPS_BY_REGISTERED_NAME: ReadonlyMap<string, string> = new Map([
 ]);
 
 export function knownMcpAppName(clientId: string | undefined): string | undefined {
-  return KNOWN_MCP_APPS.get(clientId ?? '');
+  const app = KNOWN_MCP_APPS.get(clientId ?? '');
+  return app?.consent ? app.name : undefined;
+}
+
+export function knownMcpCardClient(clientId: string): boolean {
+  return KNOWN_MCP_APPS.get(clientId)?.cards === true;
 }
 
 export function returnAppForClientId(clientId: string): string | undefined {
-  return RETURN_APPS_BY_CLIENT_ID.get(clientId);
+  return KNOWN_MCP_APPS.get(clientId)?.name;
 }
 
 /** The app to name in Chickpea's own words: a known client ID, else a known registered name, else none. */
 export function returnAppName(clientId: string | undefined, registeredName: string | undefined): string | undefined {
-  return RETURN_APPS_BY_CLIENT_ID.get(clientId ?? '') ?? returnAppForRegisteredName(registeredName);
+  return returnAppForClientId(clientId ?? '') ?? returnAppForRegisteredName(registeredName);
 }
 
 export function returnAppForRegisteredName(name: string | undefined): string | undefined {

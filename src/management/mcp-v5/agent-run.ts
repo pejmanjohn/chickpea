@@ -220,7 +220,7 @@ async function personFor(
   }
   const member = snapshot.team?.members.find(({ slackUserId }) => slackUserId === asPerson);
   if (!member) {
-    fail('not_found', 'No one in this Chickpea workspace has that slackUserId.', {
+    fail('not_found', 'That person isn\'t in this workspace.', {
       nextStep: 'Call list_members for the slackUserIds.',
     });
   }

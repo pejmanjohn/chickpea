@@ -82,6 +82,7 @@ const MANAGEMENT_MCP_TOOL_NAMES = [
   'disconnect_app',
   'confirm_change',
   'decline_change',
+  'get_confirmation',
   'undo_change',
 ];
 

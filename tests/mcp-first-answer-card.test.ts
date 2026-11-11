@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 
 import * as agentCard from '../src/mcp-cards/agent-card/model.ts';
-import type { Call, Presentation, ToolResult } from '../src/mcp-cards/card-model.ts';
+import { hostErrorOf, type Call, type Presentation, type ToolResult } from '../src/mcp-cards/card-model.ts';
 import * as connectCard from '../src/mcp-cards/connect-card/model.ts';
 import { GIVE_UP_MS, HELD_FOR_MS, HELD_RETRY_MS, KEY_FOR_MS, plainText } from '../src/mcp-cards/first-answer.ts';
 import { TEST_RUN_VISIBLE_MS } from '../src/management/test-runs.ts';
@@ -267,8 +267,8 @@ test('Check again on the slow view reads the run once, and shows its answer once
 // Mutation proof (item 1): read only from structuredContent, this refusal looks like the host ending the call, and the card retries for three minutes.
 test('a refusal that no retry passes reaches the first answer when the host answers with an error that carries the result', async (t) => {
   const wraps: Record<string, (result: ToolResult) => ToolResult> = {
-    result: (result) => ({ isError: true, hostError: { code: -32603, message: 'Tool call failed', data: result } }),
-    envelope: (result) => ({ isError: true, hostError: { code: -32603, message: 'Tool call failed', data: { status: 'error', mcp_tool_result: result } } }),
+    result: (result) => ({ isError: true, hostError: hostErrorOf({ code: -32603, message: 'Tool call failed', data: result }) }),
+    envelope: (result) => ({ isError: true, hostError: hostErrorOf({ code: -32603, message: 'Tool call failed', data: { status: 'error', mcp_tool_result: result } }) }),
   };
   for (const [how, wrap] of Object.entries(wraps)) {
     const limited = await readyCard(t, `first-answer-limit-${how}`);

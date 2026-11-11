@@ -3,9 +3,12 @@ import type { TestContext } from 'node:test';
 
 import type { McpAuthenticatedPrincipal } from '../../src/auth/mcp-oauth-routes.ts';
 import { workspaceManagementMcpFetch } from '../../src/management/mcp.ts';
+import { CARD_REFUSAL_TOOL_NAMES } from '../../src/management/mcp-v5/tools.ts';
 import type { WorkspaceManagementServiceInput } from '../../src/management/service.ts';
 import {
   buttonCount,
+  hostErrorOf,
+  hostFailed,
   type Call,
   type CardEvent,
   type CardState,
@@ -15,6 +18,7 @@ import {
   type ToolResult,
 } from '../../src/mcp-cards/card-model.ts';
 import { SLACK_SETTING_KEYS } from '../../src/slack/credentials.ts';
+import { chatGptError, GATEWAY_TIMEOUT, RESOURCE_NOT_FOUND } from './chatgpt-delivery.ts';
 import { createManagementAdapterFixture } from './management-adapter-fixture.ts';
 
 export const NOW = 1_800_000_000_000;
@@ -51,9 +55,17 @@ export async function cardServer(
     role: 'owner',
     clientId: `client_${suffix}`,
   };
-  const fetch = workspaceManagementMcpFetch({ principal, service: f.service, baseUrl: BASE_URL });
+  const { call, send } = await connected(workspaceManagementMcpFetch({ principal, service: f.service, baseUrl: BASE_URL }), options.cards === true);
+  /** The same workspace through another sign-in: another person, or the same person in another app. */
+  const as = async (other: McpAuthenticatedPrincipal) =>
+    (await connected(workspaceManagementMcpFetch({ principal: other, service: f.service, baseUrl: BASE_URL }), options.cards === true)).call;
+  return { f, clock, call, send, as, principal, teamId: f.owner.binding.slackTeamId };
+}
+
+/** A client of one MCP handler: `send` returns a request's JSON-RPC response as the server wrote it. */
+async function connected(fetch: ReturnType<typeof workspaceManagementMcpFetch>, cards: boolean) {
   const headers = { accept: 'application/json, text/event-stream', 'content-type': 'application/json', 'mcp-protocol-version': '2025-11-25' };
-  const session = options.cards
+  const session = cards
     ? (await fetch(jsonRequest(headers, {
         jsonrpc: '2.0', id: 0, method: 'initialize',
         params: {
@@ -63,17 +75,35 @@ export async function cardServer(
         },
       }))).headers.get('mcp-session-id')
     : null;
-  assert.equal(Boolean(session), Boolean(options.cards), 'a client that draws cards gets a session');
-  const call: ServerCall = async (name, args = {}) => {
+  assert.equal(Boolean(session), cards, 'a client that draws cards gets a session');
+  const send = async (method: string, params: Record<string, unknown>): Promise<string> => {
     const response = await fetch(jsonRequest(
       { ...headers, ...session ? { 'mcp-session-id': session } : {} },
-      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } },
+      { jsonrpc: '2.0', id: 1, method, params },
     ));
     const body = await response.text();
-    const json = body.trimStart().startsWith('{') ? body : body.split('\n').find((line) => line.startsWith('data: '))!.slice(6);
-    return (JSON.parse(json) as { result: ToolResult }).result;
+    return body.trimStart().startsWith('{') ? body : body.split('\n').find((line) => line.startsWith('data: '))!.slice(6);
   };
-  return { f, clock, call, teamId: f.owner.binding.slackTeamId };
+  const call: ServerCall = async (name, args = {}) =>
+    (JSON.parse(await send('tools/call', { name, arguments: args })) as { result: ToolResult }).result;
+  return { call, send };
+}
+
+/**
+ * A card's calls as ChatGPT answers them (probes 12 and 13), through the
+ * card's bridge: a result with `isError` becomes a JSON-RPC error that keeps
+ * only its text, a tool in `unlisted`, which ChatGPT has not listed yet,
+ * never reaches the server, and one in `timedOut` runs on the server but is
+ * answered with Cloudflare's 504 page.
+ */
+export function asChatGpt(server: ServerCall, { unlisted = [], timedOut = [] }: { unlisted?: readonly string[]; timedOut?: readonly string[] } = {}): ServerCall {
+  const failed = (error: unknown) => ({ isError: true, hostError: hostErrorOf(error) });
+  return async (name, args) => {
+    if (unlisted.includes(name)) return failed(RESOURCE_NOT_FOUND);
+    const result = await server(name, args);
+    if (timedOut.includes(name)) return failed(GATEWAY_TIMEOUT);
+    return result.isError ? failed(chatGptError(result as Parameters<typeof chatGptError>[0])) : result;
+  };
 }
 
 /** A JSON-RPC POST as an HTTP client sends one, its length included. */
@@ -158,6 +188,13 @@ function onlyReads<V extends { kind: string }>(
   }
 }
 
+/** Every tool a card calls sends its refusals to a card session as results, which ChatGPT hands a card whole. */
+function refusesAsResults(effects: readonly Effect[]): void {
+  for (const effect of effects) {
+    if (effect.type === 'call') assert.ok(CARD_REFUSAL_TOOL_NAMES.has(effect.call.tool), `a card calls ${effect.call.tool}, whose refusals stay errors`);
+  }
+}
+
 /** A call by what it sends: its tool and arguments. */
 function callKey(made: Call): string {
   return JSON.stringify([made.tool, made.args]);
@@ -186,6 +223,7 @@ export function cardHost<V extends { kind: string }, A extends string>(
   async function follow(from: CardState<V>, event: CardEvent<A>, deep: boolean): Promise<void> {
     const next = model.step(from, event);
     onlyReads(from, event, next.effects, model, pressed, pressedCalls);
+    refusesAsResults(next.effects);
     if (!deep) return;
     for (const effect of next.effects) {
       if (effect.type !== 'call') continue;
@@ -193,6 +231,11 @@ export function cardHost<V extends { kind: string }, A extends string>(
       await follow(next.state, { type: 'reply', call: effect.call, result: await server(effect.call.tool, effect.call.args), now: clock.now }, false);
     }
   }
+
+  /** As run-card answers a call: the host's own failure, with nothing of Chickpea's in it, is no answer. */
+  const answered = (call: Call, result: ToolResult): CardEvent<A> => hostFailed(result)
+    ? { type: 'unreachable', call, now: clock.now }
+    : { type: 'reply', call, result, now: clock.now };
 
   const self = {
     get state() { return state; },
@@ -206,6 +249,7 @@ export function cardHost<V extends { kind: string }, A extends string>(
     async dispatch(event: CardEvent<A>): Promise<void> {
       const next = model.step(state, event);
       onlyReads(state, event, next.effects, model, pressed, pressedCalls);
+      refusesAsResults(next.effects);
       if (event.type === 'press') {
         const made = next.effects.flatMap((effect) => effect.type === 'call' ? [effect.call] : []);
         // Only the latest press that called is one the card can still carry; a press that calls nothing keeps it.
@@ -229,13 +273,13 @@ export function cardHost<V extends { kind: string }, A extends string>(
         if (effect.type !== 'call') continue;
         const result = await server(effect.call.tool, effect.call.args);
         if (self.hold(effect.call)) held.push({ call: effect.call, result });
-        else await self.dispatch({ type: 'reply', call: effect.call, result, now: clock.now });
+        else await self.dispatch(answered(effect.call, result));
       }
     },
     /** The oldest held call's answer arrives: its reply, or the host giving up on it. */
     async answer(how: 'reply' | 'unreachable' = 'reply'): Promise<void> {
       const { call, result } = held.shift()!;
-      await self.dispatch(how === 'reply' ? { type: 'reply', call, result, now: clock.now } : { type: 'unreachable', call, now: clock.now });
+      await self.dispatch(how === 'reply' ? answered(call, result) : { type: 'unreachable', call, now: clock.now });
     },
     result: (result: ToolResult) => self.dispatch({ type: 'result', result, now: clock.now }),
     press: (action: A) => self.dispatch({ type: 'press', action, now: clock.now }),

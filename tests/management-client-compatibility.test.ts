@@ -146,6 +146,7 @@ const MCP_TOOL_ANNOTATIONS = {
   confirm_change: DESTRUCTIVE_5,
   // A card's Keep: it retires a pending confirmation and changes nothing the person has.
   decline_change: ADDS_5,
+  get_confirmation: READ_5,
   undo_change: DESTRUCTIVE_5,
   // 4.5: a link that adds a connection is additive, but adding an open MCP server asks it for
   // its tools, and each call makes a new link. Everything else replaces, removes or revokes.

@@ -86,6 +86,7 @@
   var API_CONNECTION_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"];
   var GOOGLE_WORKSPACE_SCOPES = CONFIG.googleWorkspaceScopes;
   var MCP_CLIENTS_LOAD_ERROR = "Couldn’t load client settings. Reopen Settings to retry.";
+  var CONNECTED_APPS_LOAD_ERROR = "Your connected apps could not be loaded. Try again.";
   var MODELS_NOT_LOADED = { providers: [] };
   var CHANNEL_TRY_PROMPT = "@Chickpea Give me three useful ways you can help this channel, each with an example prompt I could try next.";
   var state = {
@@ -315,6 +316,9 @@
     // setup copy; the picked client is a view preference and is never stored.
     mcpClients: { loading: false, error: "", data: null, notice: "", noticeFor: "" },
     mcpClientPick: "claude-code",
+    // Settings → Connected apps: the signed-in person's own apps. confirm and
+    // busy each hold one appId: the row asking "Disconnect?" and the one going.
+    connectedApps: { loading: false, error: "", apps: [], confirm: "", busy: "", actionError: "", notice: "" },
     // The welcome's copy button shows a check for a moment after a copy.
     firstAgentPromptCopied: false,
     firstAgentPromptManual: false,
@@ -1056,10 +1060,11 @@
     });
     state.leavePrompt = null;
     if (parts[1] === "plan" && BILLING_OFFERED) { openBilling(new URLSearchParams(location.search || "")); return; }
-    // Coding agents is the one Settings page every member can open; any other
-    // settings path collapses onto it rather than bouncing back to the Agent.
+    // Coding agents and Connected apps are the Settings pages every member
+    // can open; any other settings path collapses onto Coding agents rather
+    // than bouncing back to the Agent.
     if (!WORKSPACE_ADMIN_UI && parts[1] === "settings") {
-      openSettings("agents-clients");
+      openSettings(parts[2] === "connected-apps" ? "connected-apps" : "agents-clients");
       return;
     }
     if (!WORKSPACE_ADMIN_UI && parts[1] && parts[1] !== "agents") {
@@ -1944,19 +1949,21 @@
 
   function settingsRailHtml() {
     var codingAgents = { id: "agents-clients", name: "MCP", meta: "Claude Code, Codex, Cursor" };
-    // Members reach Settings only for their own coding-agent connection.
+    var connectedApps = { id: "connected-apps", name: "Connected apps", meta: "Apps signed in as you" };
+    // Members reach Settings only for their own coding-agent connection and apps.
     var sections = WORKSPACE_ADMIN_UI ? [
       { id: "connectors", name: "Connectors", meta: "Managed integrations" },
       { id: "providers", name: "Model providers", meta: "Keys and models" },
       { id: "github", name: "GitHub", meta: "Accounts and access" },
       { id: "sandbox", name: "Coding sandbox", meta: "Workspace runtime" },
       { id: "browser", name: "Browser", meta: "Real browser for Agents" },
-      codingAgents
+      codingAgents,
+      connectedApps
     ].filter(function (section) {
       // The host runs a hosted installation's coding sandbox.
       return (BROWSER_SETUP_OFFERED || section.id !== "browser") && (SELF_HOSTED || !HOST_MANAGED_SETTINGS_SECTIONS.includes(section.id));
-    }) : [codingAgents];
-    if (WORKSPACE_ADMIN_UI && HELP_IMPROVE_OFFERED) sections.splice(sections.length - 1, 0, { id: "help-improve", name: HELP_IMPROVE_COPY.label });
+    }) : [codingAgents, connectedApps];
+    if (WORKSPACE_ADMIN_UI && HELP_IMPROVE_OFFERED) sections.splice(sections.indexOf(codingAgents), 0, { id: "help-improve", name: HELP_IMPROVE_COPY.label });
     if (WORKSPACE_ADMIN_UI && INSTALLATION_OWNER && SELF_HOSTED) sections.push({ id: "updates", name: "About &amp; updates", meta: "Version and support" });
     var primaryShell = isPrimaryAdminSurface();
     var html = '<nav class="rail' + (primaryShell ? ' primary-shell-sidebar' : '') + '" aria-label="Settings">' +
@@ -6696,11 +6703,13 @@
     var workspaceModel = (state.workspaceDefault && state.workspaceDefault.modelId) ||
       (projected.source === "workspace_default" ? projected.effectiveModel : "") || "";
     var source = model ? "Pinned" : "Workspace default";
-    var effective = model || workspaceModel || "Not selected";
+    var effectiveId = model || workspaceModel;
+    var effectiveName = agentChatModelName(projected, effectiveId);
+    var effective = effectiveName || effectiveId || "Not selected";
     var effort = appliedEffortLabel(agentEffortView(draft));
-    var sourceSummary = '<div class="workspace-default-meta"><span class="badge-src">' + source + '</span><span class="mono hint">' + esc(effective + (effort ? " · " + effort : "")) + '</span></div>';
+    var sourceSummary = '<div class="workspace-default-meta"><span class="badge-src">' + source + '</span><span class="' + (effectiveName ? "hint" : "mono hint") + '">' + esc(effective + (effort ? " · " + effort : "")) + '</span></div>';
     if (draft.canEdit === false) {
-      return '<div class="field"><span class="field-label">Model</span>' + sourceSummary + '<div class="input mono" aria-label="Agent model">' + esc(effective) + '</div></div>';
+      return '<div class="field"><span class="field-label">Model</span>' + sourceSummary + '<div class="input mono" aria-label="Agent model">' + esc(effectiveId ? modelOptionLabel(effectiveId, effectiveName) : "Not selected") + '</div></div>';
     }
     var open = state.modelPickerOpen;
     // Click-to-open combobox (F6): the input is always the current pin; clicking
@@ -6708,13 +6717,20 @@
     // The popover is a positioned overlay so it never reflows the form.
     return '<div class="field"><label class="field-label" for="p-model">Model</label>' + sourceSummary +
       '<div class="model-combo">' +
-      '<input class="input mono model-combo-input" id="p-model" name="model" type="text" value="' + esc(model) + '" autocomplete="off" role="combobox" aria-expanded="' + (open ? "true" : "false") + '" aria-haspopup="listbox" placeholder="' + esc(workspaceModel ? "Workspace default — " + workspaceModel : "Workspace default") + '" data-action="profile-model">' +
+      '<input class="input mono model-combo-input" id="p-model" name="model" type="text" value="' + esc(model) + '" autocomplete="off" role="combobox" aria-expanded="' + (open ? "true" : "false") + '" aria-haspopup="listbox" placeholder="' + esc(workspaceModel ? "Workspace default — " + (agentChatModelName(projected, workspaceModel) || workspaceModel) : "Workspace default") + '" data-action="profile-model">' +
       icon("chevron-down", "model-combo-caret") +
       (open ? modelPickerHtml(model) : "") +
       '</div>' +
       '<p class="hint">' + (model ? 'This Agent stays on its pinned model until you <button type="button" class="link-btn" data-action="profile-model-reset">use the Workspace default</button>.' : 'This Agent follows live Workspace default changes.') + ' Manage choices in <button type="button" class="link-btn" data-action="open-settings">Settings &nearr;</button></p>' +
       modelWarningHtml(model) +
       '</div>';
+  }
+
+  // The picker names only the models it offers; the Agent's projection also
+  // names the model the Agent runs on.
+  function agentChatModelName(policy, model) {
+    if (!model) return "";
+    return chatModelName(model) || (policy.effectiveModel === model && policy.effectiveModelName) || "";
   }
 
   var EFFORT_LABELS = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
@@ -6875,15 +6891,17 @@
     var workspaceModel = (state.workspaceImageRole && state.workspaceImageRole.modelId) ||
       (projected.source === "workspace_default" ? projected.effectiveModel : "") || "";
     var source = model ? "Pinned" : "Workspace default";
-    var effective = model || workspaceModel || "Not selected";
-    var sourceSummary = '<div class="workspace-default-meta"><span class="badge-src">' + source + '</span><span class="mono hint">' + esc(effective) + '</span></div>';
+    var effectiveId = model || workspaceModel;
+    var effectiveName = imageModelName(effectiveId);
+    var effective = effectiveName || effectiveId || "Not selected";
+    var sourceSummary = '<div class="workspace-default-meta"><span class="badge-src">' + source + '</span><span class="' + (effectiveName ? "hint" : "mono hint") + '">' + esc(effective) + '</span></div>';
     if (draft.canEdit === false) {
-      return '<div class="field"><span class="field-label">Image model</span>' + sourceSummary + '<div class="input mono" aria-label="Agent image model">' + esc(effective) + '</div></div>';
+      return '<div class="field"><span class="field-label">Image model</span>' + sourceSummary + '<div class="input mono" aria-label="Agent image model">' + esc(effectiveId ? modelOptionLabel(effectiveId, effectiveName) : "Not selected") + '</div></div>';
     }
     var open = state.imageModelPickerOpen;
     return '<div class="field"><label class="field-label" for="p-image-model">Image model</label>' + sourceSummary +
       '<div class="model-combo">' +
-      '<input class="input mono model-combo-input" id="p-image-model" name="imageModel" type="text" value="' + esc(model) + '" autocomplete="off" role="combobox" aria-expanded="' + (open ? "true" : "false") + '" aria-haspopup="listbox" placeholder="' + esc(workspaceModel ? "Workspace default — " + workspaceModel : "Workspace default") + '" data-action="profile-image-model">' +
+      '<input class="input mono model-combo-input" id="p-image-model" name="imageModel" type="text" value="' + esc(model) + '" autocomplete="off" role="combobox" aria-expanded="' + (open ? "true" : "false") + '" aria-haspopup="listbox" placeholder="' + esc(workspaceModel ? "Workspace default — " + (imageModelName(workspaceModel) || workspaceModel) : "Workspace default") + '" data-action="profile-image-model">' +
       icon("chevron-down", "model-combo-caret") +
       (open ? imageModelPickerHtml(model) : "") +
       '</div>' +
@@ -6912,13 +6930,13 @@
       if (groups.indexOf(model.providerId) < 0) groups.push(model.providerId);
     });
     groups.forEach(function (providerId) {
-      html += '<div class="combo-group">' + esc(providerId) + '</div>';
+      html += '<div class="combo-group">' + esc(providerMeta(providerId).name) + '</div>';
       models.filter(function (model) { return model.providerId === providerId; })
         .forEach(function (model) {
           var note = model.authMethod === "subscription"
             ? " \u00b7 ChatGPT subscription \u00b7 generation only" + (model.maxOutputs === 1 ? " \u00b7 one per call" : "")
             : model.lowerCost ? " \u00b7 lower cost" : "";
-          html += '<button type="button" class="combo-opt ' + (current === model.id ? "active" : "") + '" data-action="pick-image-model" data-model="' + esc(model.id) + '">' + esc(model.id + note) + '</button>';
+          html += '<button type="button" class="combo-opt ' + (current === model.id ? "active" : "") + '" data-action="pick-image-model" data-model="' + esc(model.id) + '">' + modelOptionHtml(model.id, model.name, note) + '</button>';
         });
     });
     return html + settingsRow + '</div>';
@@ -10798,11 +10816,29 @@
     return providerId;
   }
 
-  // The picker's per-provider group label is user-facing and never leaks the
-  // internal src path. "cloudflare" shows as "workers-ai"; every other provider
-  // keeps its own id.
-  function pickerGroupLabel(providerId) {
-    return providerId === "cloudflare" ? "workers-ai" : providerId;
+  // Suggestions are named in /admin/api/models; a vendor's full live list,
+  // which the picker shows once loaded, names its own rows.
+  function chatModelName(specifier) {
+    var providers = state.models && state.models.providers ? state.models.providers : [];
+    for (var i = 0; i < providers.length; i++) {
+      var names = providers[i].modelNames;
+      if (names && Object.prototype.hasOwnProperty.call(names, specifier)) return names[specifier];
+    }
+    var slash = specifier.indexOf("/");
+    var live = slash > 0 ? state.providerModels[specifier.slice(0, slash)] : null;
+    var modelId = specifier.slice(slash + 1);
+    var row = (live || []).filter(function (model) { return model.id === modelId; })[0];
+    return (row && row.display_name) || "";
+  }
+
+  function modelOptionLabel(id, name) {
+    return name ? name + " \u00b7 " + id : id;
+  }
+
+  function modelOptionHtml(id, name, note) {
+    return name
+      ? '<span class="combo-name">' + esc(name) + '</span><span class="combo-id"> \u00b7 ' + esc(id + note) + '</span>'
+      : esc(id + note);
   }
 
   // Translate the RuntimeModelProvider.source string into a user-facing phrase.
@@ -10850,15 +10886,17 @@
       sawConfigured = true;
       var models = pickerModelsFor(provider, adminId);
       if (filter) {
-        models = models.filter(function (model) { return model.toLowerCase().indexOf(filter) >= 0; });
+        models = models.filter(function (model) {
+          return model.toLowerCase().indexOf(filter) >= 0 || chatModelName(model).toLowerCase().indexOf(filter) >= 0;
+        });
       }
       if (!models.length) return;
       rendered = true;
-      var label = pickerGroupLabel(provider.id);
+      var label = providerMeta(adminId).name;
       var phrase = pickerSourcePhrase(provider.source);
       html += '<div class="combo-group">' + esc(label) + (phrase ? '<span class="src">· ' + esc(phrase) + '</span>' : "") + '</div>';
       models.forEach(function (model) {
-        html += '<button type="button" class="combo-opt ' + (current === model ? "active" : "") + '" data-action="pick-model" data-model="' + esc(model) + '">' + esc(model) + '</button>';
+        html += '<button type="button" class="combo-opt ' + (current === model ? "active" : "") + '" data-action="pick-model" data-model="' + esc(model) + '">' + modelOptionHtml(model, chatModelName(model), "") + '</button>';
       });
     });
     // Owner-approved affordance: a pinned Settings action row below the combo
@@ -12425,10 +12463,115 @@
     } catch (_) { failed(); }
   }
 
+  // ---- Settings: Connected apps ---------------------------------------------
+  // The apps the signed-in person connected to Chickpea, only their own. A row
+  // asks before it disconnects, as a website login row asks before removal.
+
+  function connectedAppName(app) {
+    return app && app.name ? app.name : "Unnamed app";
+  }
+
+  function connectedAppRowHtml(app) {
+    var current = state.connectedApps;
+    var name = connectedAppName(app);
+    var parts = app.nameFromApp ? ["Name provided by the app"] : [];
+    parts.push("Connected " + formatScheduledDay(Date.parse(app.connectedAt)));
+    var lastActive = app.lastActiveAt ? websiteLoginRelativeTime(app.lastActiveAt) : "";
+    if (lastActive) parts.push("last active " + lastActive);
+    var meta = parts.map(function (part, index) {
+      return (index ? '<span class="agent-schedule-separator" aria-hidden="true">&middot;</span>' : "") +
+        '<span class="agent-schedule-meta-item">' + esc(part) + '</span>';
+    }).join("");
+    var confirming = current.confirm === app.appId;
+    var busy = current.busy === app.appId;
+    var actions = confirming ? "" : '<div class="agent-schedule-actions">' +
+      '<button type="button" class="btn btn-ghost btn-sm agent-schedule-delete" data-action="connected-app-disconnect" data-app-id="' + esc(app.appId) + '" aria-label="Disconnect ' + esc(name) + '"' + (current.busy ? " disabled" : "") + '>Disconnect</button></div>';
+    var confirm = confirming
+      ? '<div class="action-well" style="grid-column: 1 / -1;"><div class="danger-copy"><span class="hint">Disconnect ' + esc(name) + '? It is signed out of Chickpea within 15 minutes, even if you are using it right now. To use it again, connect it and sign in again.</span>' +
+        (current.actionError ? '<span class="field-error" role="alert">' + esc(current.actionError) + '</span>' : "") + '</div>' +
+        '<button type="button" class="btn btn-ghost btn-sm" data-action="connected-app-disconnect-keep"' + (busy ? " disabled" : "") + '>Keep</button>' +
+        '<button type="button" class="btn btn-danger btn-sm" data-action="connected-app-disconnect-confirm" data-app-id="' + esc(app.appId) + '"' + (busy ? " disabled" : "") + '>' + (busy ? "Disconnecting&hellip;" : "Disconnect") + '</button></div>'
+      : "";
+    return '<article class="agent-schedule-row connected-app-row"><div class="agent-schedule-copy"><div class="agent-schedule-heading"><span class="agent-schedule-name">' + esc(name) + '</span></div>' +
+      '<div class="agent-schedule-meta">' + meta + '</div></div>' + actions + confirm + '</article>';
+  }
+
+  function connectedAppsSettingsHtml() {
+    var current = state.connectedApps;
+    var head = '<div class="section-head"><div><h1 class="page-title">Connected apps</h1>' +
+      '<p class="hint">Apps you connected to Chickpea, such as ChatGPT or Claude Code. Each one acts as you and can do only what you can do.</p></div></div>';
+    var notice = current.notice ? '<p class="hint connected-apps-notice" role="status" tabindex="-1" data-role="connected-apps-notice">' + esc(current.notice) + '</p>' : "";
+    var body;
+    if (current.loading) {
+      body = '<p class="hint">Loading&hellip;</p>';
+    } else if (current.error) {
+      body = '<p class="field-error" role="alert">' + esc(current.error) + '</p>' +
+        '<p><button type="button" class="btn btn-soft" data-action="connected-apps-retry">Retry</button></p>';
+    } else if (!current.apps.length) {
+      body = '<p class="hint">You have no connected apps.</p>';
+    } else {
+      body = '<div class="agent-schedule-list">' + current.apps.map(connectedAppRowHtml).join("") + '</div>';
+    }
+    return '<div class="connected-apps-page">' + head + notice + body + '</div>';
+  }
+
+  function loadConnectedApps(generation) {
+    var current = state.connectedApps;
+    return api("/admin/api/connected-apps", { cache: "no-store" }).then(function (body) {
+      if (state.connectedApps !== current || !settingsLoadIsCurrent(generation)) return;
+      current.loading = false;
+      current.error = "";
+      current.apps = body && Array.isArray(body.apps) ? body.apps : [];
+      if (current.confirm && !current.apps.some(function (app) { return app.appId === current.confirm; })) current.confirm = "";
+      render();
+    }).catch(function () {
+      if (state.connectedApps !== current || !settingsLoadIsCurrent(generation)) return;
+      current.loading = false;
+      current.error = CONNECTED_APPS_LOAD_ERROR;
+      render();
+    });
+  }
+
+  function disconnectConnectedApp(appId) {
+    var current = state.connectedApps;
+    if (!appId || current.busy || current.confirm !== appId) return;
+    var app = current.apps.filter(function (candidate) { return candidate.appId === appId; })[0];
+    var name = connectedAppName(app);
+    var generation = state.settingsLoadGeneration;
+    current.busy = appId;
+    current.actionError = "";
+    current.notice = "";
+    render();
+    function gone(notice) {
+      if (state.connectedApps !== current) return;
+      current.busy = "";
+      current.confirm = "";
+      current.notice = notice;
+      current.apps = current.apps.filter(function (candidate) { return candidate.appId !== appId; });
+      render();
+      focusSlackLiveRegion("connected-apps-notice");
+      // The reload draws the page again; keep focus on what happened.
+      return loadConnectedApps(generation).then(function () {
+        if (state.connectedApps === current && current.notice === notice) focusSlackLiveRegion("connected-apps-notice");
+      });
+    }
+    return postJson("/admin/api/connected-apps/disconnect", "POST", { appId: appId }).then(function () {
+      return gone(name + " is disconnected. It is signed out of Chickpea within 15 minutes.");
+    }).catch(function (error) {
+      if (error && error.status === 404) return gone(name + " was already disconnected.");
+      if (state.connectedApps !== current) return;
+      current.busy = "";
+      current.actionError = name + " could not be disconnected. Try again.";
+      render();
+      focusAction("connected-app-disconnect-confirm");
+    });
+  }
+
   function settingsMainHtml() {
-    // Coding agents is the one page a plain member can reach, so it returns
-    // before any owner-only panel is built.
+    // Coding agents and Connected apps are the pages a plain member can reach,
+    // so they return before any owner-only panel is built.
     if (state.settingsSection === "agents-clients") return codingAgentsSettingsHtml();
+    if (state.settingsSection === "connected-apps") return connectedAppsSettingsHtml();
     if (state.settingsSection === "updates" && INSTALLATION_OWNER) return installationPageHtml();
     if (state.settingsSection === "slack") {
       return '<div class="section-head"><div><h1 class="page-title">Slack</h1><p class="hint">Manage the workspace installation and transport behavior. Agent handles and avatars live on each Agent.</p></div></div>' +
@@ -12759,7 +12902,7 @@
     }
     var options = workspaceDefaultModelOptions();
     var optionHtml = options.map(function (model) {
-      return '<option value="' + esc(model) + '"' + (model === state.workspaceDefaultDraft ? ' selected' : '') + '>' + esc(model) + '</option>';
+      return '<option value="' + esc(model) + '"' + (model === state.workspaceDefaultDraft ? ' selected' : '') + '>' + esc(modelOptionLabel(model, chatModelName(model))) + '</option>';
     }).join("");
     if (!optionHtml) optionHtml = '<option value="">No configured models</option>';
     var count = Number(current.inheritingAgentCount || 0);
@@ -12827,6 +12970,11 @@
 
   function imageModelById(modelId) {
     return imageModelCatalog().filter(function (model) { return model.id === modelId; })[0] || null;
+  }
+
+  function imageModelName(modelId) {
+    var known = imageModelById(modelId);
+    return known ? known.name : "";
   }
 
   function imageModelProviderId(modelId) {
@@ -12899,7 +13047,8 @@
     var optionHtml = '<option value=""' + (draft ? "" : " selected") + '>Not set</option>' +
       values.map(function (modelId) {
         var model = imageModelById(modelId);
-        var label = model ? model.name + " · " + modelId + (model.authMethod === "subscription" ? " · ChatGPT subscription · generation only" + (model.maxOutputs === 1 ? " · one per call" : "") : "") : modelId;
+        var label = modelOptionLabel(modelId, model ? model.name : "") +
+          (model && model.authMethod === "subscription" ? " · ChatGPT subscription · generation only" + (model.maxOutputs === 1 ? " · one per call" : "") : "");
         return '<option value="' + esc(modelId) + '"' + (modelId === draft ? ' selected' : '') + '>' + esc(label) + '</option>';
       }).join("");
     var changed = draft !== chosen;
@@ -12953,7 +13102,7 @@
     if (chosen && values.indexOf(chosen) < 0) values.unshift(chosen);
     var optionHtml = '<option value=""' + (draft ? "" : " selected") + '>Not set</option>' +
       values.map(function (modelId) {
-        return '<option value="' + esc(modelId) + '"' + (modelId === draft ? ' selected' : '') + '>' + esc(modelId) + '</option>';
+        return '<option value="' + esc(modelId) + '"' + (modelId === draft ? ' selected' : '') + '>' + esc(modelOptionLabel(modelId, chatModelName(modelId))) + '</option>';
       }).join("");
     var changed = workspaceModelDraftChanged("workspaceCodingRole");
     var disabled = state.workspaceCodingRoleBusy ? " disabled" : "";
@@ -13522,18 +13671,18 @@
       "coding-agents": "agents-clients"
     };
     var section = aliases[String(value || "")] || String(value || "");
-    // A member's only Settings page is Coding agents.
-    if (!WORKSPACE_ADMIN_UI) return "agents-clients";
+    // A member's Settings pages are Coding agents and Connected apps.
+    if (!WORKSPACE_ADMIN_UI) return section === "connected-apps" ? section : "agents-clients";
     if (section === "updates" && INSTALLATION_OWNER && SELF_HOSTED) return section;
     if (section === "browser" && !BROWSER_SETUP_OFFERED) return "providers";
     if (!SELF_HOSTED && HOST_MANAGED_SETTINGS_SECTIONS.includes(section)) return "providers";
     if (section === "help-improve" && HELP_IMPROVE_OFFERED) return section;
-    return ["slack", "connectors", "providers", "github", "sandbox", "browser", "agents-clients"].includes(section) ? section : "providers";
+    return ["slack", "connectors", "providers", "github", "sandbox", "browser", "agents-clients", "connected-apps"].includes(section) ? section : "providers";
   }
 
   // These sections fetch their own data when opened, so switching to or from
   // one goes through openSettings; the rest share the general Settings load.
-  var SETTINGS_SECTIONS_WITH_OWN_LOAD = ["connectors", "browser", "updates", "help-improve", "agents-clients"];
+  var SETTINGS_SECTIONS_WITH_OWN_LOAD = ["connectors", "browser", "updates", "help-improve", "agents-clients", "connected-apps"];
 
   function settingsLoadIsCurrent(generation) {
     return generation === undefined || generation === state.settingsLoadGeneration;
@@ -13572,6 +13721,12 @@
       state.mcpClients = { loading: true, error: "", data: null, notice: "", noticeFor: "" };
       render();
       loadMcpClients(generation);
+      return;
+    }
+    if (state.settingsSection === "connected-apps") {
+      state.connectedApps = { loading: true, error: "", apps: [], confirm: "", busy: "", actionError: "", notice: "" };
+      render();
+      loadConnectedApps(generation);
       return;
     }
     if (state.settingsSection === "updates") { loadInstallation(false); return; }
@@ -16541,6 +16696,23 @@
     if (action === "onboarding-open-dashboard") { enterProfiles(null); }
     if (action === "open-coding-agents") { openSettings("agents-clients"); }
     if (action === "mcp-clients-retry") { openSettings("agents-clients"); }
+    if (action === "connected-apps-retry") { openSettings("connected-apps"); }
+    if (action === "connected-app-disconnect" && !state.connectedApps.busy) {
+      state.connectedApps.confirm = target.getAttribute("data-app-id") || "";
+      state.connectedApps.actionError = "";
+      state.connectedApps.notice = "";
+      render();
+      focusAction("connected-app-disconnect-keep");
+    }
+    if (action === "connected-app-disconnect-keep" && !state.connectedApps.busy) {
+      var keptAppId = state.connectedApps.confirm;
+      state.connectedApps.confirm = "";
+      state.connectedApps.actionError = "";
+      render();
+      var keptDisconnect = document.querySelector('[data-action="connected-app-disconnect"][data-app-id="' + String(keptAppId).replace(/["\\]/g, "") + '"]');
+      if (keptDisconnect && keptDisconnect.focus) keptDisconnect.focus();
+    }
+    if (action === "connected-app-disconnect-confirm") { disconnectConnectedApp(target.getAttribute("data-app-id") || ""); }
     if (action === "mcp-client-pick") {
       state.mcpClientPick = target.getAttribute("data-client") || "claude-code";
       state.mcpClients.notice = "";

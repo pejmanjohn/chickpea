@@ -1,6 +1,7 @@
 import { McpServer, createMcpHandler, type Transport } from '@modelcontextprotocol/server';
 import type { z } from 'zod';
 
+import { knownMcpCardClient } from '../auth/mcp-client-name.ts';
 import type { McpAuthenticatedPrincipal, McpRequestHandler } from '../auth/mcp-oauth-routes.ts';
 import {
   type PlatformEnv,
@@ -42,6 +43,7 @@ import {
 import { createLiveWorkspaceManagementService } from './live-service.ts';
 import { observeMcpRequests } from './mcp-request-telemetry.ts';
 import {
+  CARD_REFUSAL_TOOL_NAMES,
   FIVE_ZERO_TOOL_INPUT_SCHEMAS,
   FIVE_ZERO_TOOL_NAMES,
   registerFiveZeroTools,
@@ -180,13 +182,13 @@ class ObservedMcpServer extends McpServer {
    */
   readonly v4Only: Array<{ remove(): void }> = [];
 
-  constructor(private readonly cardSession: boolean) {
+  constructor(private readonly clientId: string, private readonly cardSession: boolean) {
     super(WORKSPACE_MANAGEMENT_SERVER_INFO, { instructions: WORKSPACE_MANAGEMENT_INSTRUCTIONS });
   }
 
-  /** The client draws cards: it said so at `initialize`, or this 2026-07-28 request says so. */
+  /** A known OAuth card client stays one even when its session or capabilities are missing. */
   cardHost(): boolean {
-    return this.cardSession || declaresCards(this.server.getClientCapabilities());
+    return knownMcpCardClient(this.clientId) || this.cardSession || declaresCards(this.server.getClientCapabilities());
   }
 
   override connect(transport: Transport): Promise<void> {
@@ -194,12 +196,22 @@ class ObservedMcpServer extends McpServer {
     // person's press, and 5.0 covers every 4.x tool, so a card host gets
     // only 5.0, and no prompt or guide that tells its model to call a 4.x
     // tool. Its capabilities are known here, after everything registers.
-    if (this.cardHost()) for (const registered of this.v4Only.splice(0)) registered.remove();
+    const hidesV4 = this.cardHost();
+    if (hidesV4) for (const registered of this.v4Only.splice(0)) registered.remove();
+    // Shaped first, so the request metric reads each result as the tool made it: a refusal
+    // that leaves a card session as a result still counts as a refusal.
+    shapeFiveZeroResults(
+      transport,
+      FIVE_ZERO_TOOL_NAME_SET,
+      { session: () => this.cardHost(), tools: CARD_REFUSAL_TOOL_NAMES },
+      hidesV4 ? WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAME_SET : undefined,
+    );
     observeMcpRequests(transport, { ...MCP_TOOL_INPUT_SCHEMAS, ...FIVE_ZERO_TOOL_INPUT_SCHEMAS });
-    shapeFiveZeroResults(transport, FIVE_ZERO_TOOL_NAME_SET);
     return super.connect(transport);
   }
 }
+
+const WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAME_SET = new Set<string>(WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES);
 
 const READ_ONLY = { readOnlyHint: true } as const;
 /** destructiveHint defaults to true, so a write the person need not confirm says false. */
@@ -251,7 +263,7 @@ export function workspaceManagementMcpFetch(
 export function createWorkspaceManagementMcpServer(
   input: WorkspaceManagementMcpServerInput,
 ): McpServer {
-  const server = new ObservedMcpServer(input.cardSession === true);
+  const server = new ObservedMcpServer(input.principal.clientId, input.cardSession === true);
   const adapter = {
     service: input.service,
     resolveContext: async () => mcpActorContext(input.principal),

@@ -30,6 +30,7 @@ export const CANONICAL_ADMIN_VISUAL_STATES = Object.freeze({
   settingsUpdates: Object.freeze({ path: '/admin/settings/updates', actions: Object.freeze(['Preview report']) }),
   settingsProviders: Object.freeze({ path: '/admin/settings/providers', actions: Object.freeze([]) }),
   settingsCodingAgents: Object.freeze({ path: '/admin/settings/agents-clients', actions: Object.freeze([]) }),
+  settingsConnectedApps: Object.freeze({ path: '/admin/settings/connected-apps', actions: Object.freeze([]) }),
   settingsBrowser: Object.freeze({ path: '/admin/settings/browser', actions: Object.freeze([]) }),
   agentInstructions: Object.freeze({ path: '/admin/agents/agent_research', actions: Object.freeze([]) }),
   agentBlankDescription: Object.freeze({ path: '/admin/agents/agent_customer', actions: Object.freeze([]) }),
@@ -1122,6 +1123,29 @@ export async function startAdminVisualFixture(options = {}) {
           },
         ] : [],
       });
+    });
+    // Connected apps reads the person's Better Auth grants, which the fixture
+    // has none of: the real route answers 409 after authorization, and the
+    // fixture answers with sample apps in its place.
+    const day = 86_400_000;
+    const visualIso = (ago) => new Date(Date.now() - ago).toISOString();
+    let visualConnectedApps = [
+      { appId: 'https://chatgpt.com/oauth/client.json', name: 'ChatGPT', connectedAt: visualIso(9 * day), lastActiveAt: visualIso(2 * 3_600_000) },
+      { appId: 'https://claude.ai/oauth/claude-code-client-metadata', name: 'Claude Code', connectedAt: visualIso(30 * day), lastActiveAt: visualIso(3 * day) },
+      { appId: 'visual_client_pipeline', name: 'Pipeline reporter', nameFromApp: true, connectedAt: visualIso(day), lastActiveAt: null },
+    ];
+    app.use('/admin/api/connected-apps/*', async (c, next) => {
+      await next();
+      if (c.req.method !== 'POST' || c.res.status !== 409) return;
+      const { appId } = await c.req.json();
+      const found = visualConnectedApps.find((candidate) => candidate.appId === appId);
+      visualConnectedApps = visualConnectedApps.filter((candidate) => candidate !== found);
+      c.res = found ? Response.json({ name: found.name }) : Response.json({ error: 'not_found' }, { status: 404 });
+    });
+    app.use('/admin/api/connected-apps', async (c, next) => {
+      await next();
+      if (c.req.method !== 'GET' || c.res.status !== 409) return;
+      c.res = Response.json({ apps: visualConnectedApps });
     });
     app.use('/admin/api/installation', async (c, next) => {
       await next();

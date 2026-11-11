@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
 import { test, type TestContext } from 'node:test';
 
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server';
 
+import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
+import { createBetterAuthPublicHandler } from '../src/auth/better-auth-routes.ts';
 import type { McpAuthenticatedPrincipal } from '../src/auth/mcp-oauth-routes.ts';
 import { DISCOVERY_GUIDE_URI } from '../src/management/agent-authoring/index.ts';
 import { DISCOVERY_GUIDE, DISCOVERY_GUIDE_FIVE_ZERO } from '../src/management/agent-authoring/discovery-guide.ts';
@@ -23,7 +26,7 @@ import { CARD_SHOWS_IT, forCardHost } from '../src/management/mcp-v5/card-host.t
 import { writeHints } from '../src/management/mcp-v5/conventions.ts';
 import type { FiveZeroDeps } from '../src/management/mcp-v5/reads.ts';
 import { changeResultOutput, getWorkspaceInput } from '../src/management/mcp-v5/schemas.ts';
-import { registerFiveZeroTool, type FiveZeroTool, type FiveZeroToolName } from '../src/management/mcp-v5/tools.ts';
+import { CARD_REFUSAL_TOOL_NAMES, registerFiveZeroTool, type FiveZeroTool, type FiveZeroToolName } from '../src/management/mcp-v5/tools.ts';
 import { createFixtureAgent, createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 import { jsonRequest } from './helpers/mcp-card-host.ts';
 
@@ -70,7 +73,7 @@ async function harness(t: TestContext, suffix: string) {
     const text = await response.text();
     assert.equal(response.status, 200, text);
     const json = text.trimStart().startsWith('{') ? text : text.split('\n').find((line) => line.startsWith('data: '))!.slice(6);
-    return { response, message: JSON.parse(json) as { result?: any; error?: { code: number; message: string } } };
+    return { response, json, message: JSON.parse(json) as { result?: any; error?: { code: number; message: string } } };
   };
   const post = async (body: Record<string, unknown>, headers: Record<string, string> = {}, via = fetch) => {
     const { response, message } = await send(body, headers, via);
@@ -117,7 +120,7 @@ async function harness(t: TestContext, suffix: string) {
     workspaceId: teamId, channelId: 'C_SUPPORT', agentId: 'agent_support', status: 'active',
     createdByMembershipId: f.owner.membership.id, channelLabel: 'support',
   });
-  return { f, teamId, connect, modern, modernRequest, fetchAs, post };
+  return { f, teamId, connect, modern, modernRequest, fetchAs, post, send };
 }
 
 async function version(call: (name: string, args?: Record<string, unknown>) => Promise<ToolResult>, agentId: string) {
@@ -558,6 +561,269 @@ const promptText = (message: { result?: any }) =>
 const resourceText = (message: { result?: any }) =>
   (message.result.contents as Array<{ text?: string }>).map(({ text }) => text ?? '').join('\n');
 const V4_GUIDES = [WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI, WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI];
+
+function withoutCardSignals(
+  h: Awaited<ReturnType<typeof harness>>,
+  clientId: string,
+  protocol: string,
+  clientName = 'test-client',
+) {
+  const request = (method: string, params: Record<string, unknown> = {}) => h.send({
+    method,
+    params: {
+      ...params,
+      ...protocol === MODERN ? { _meta: {
+        'io.modelcontextprotocol/protocolVersion': MODERN,
+        'io.modelcontextprotocol/clientInfo': { name: clientName, version: '1' },
+        'io.modelcontextprotocol/clientCapabilities': {},
+      } } : {},
+    },
+  }, {
+    'mcp-protocol-version': protocol,
+    ...protocol === MODERN ? { 'mcp-method': method,
+      ...typeof params.name === 'string' ? { 'mcp-name': params.name } : typeof params.uri === 'string' ? { 'mcp-name': params.uri } : {},
+    } : {},
+  }, h.fetchAs(clientId));
+  const call = async (name: string, args: Record<string, unknown> = {}) =>
+    (await request('tools/call', { name, arguments: args })).message.result as ToolResult;
+  return { request, call };
+}
+
+for (const [app, clientId] of [
+  ['ChatGPT', 'https://chatgpt.com/oauth/client.json'],
+  ['claude.ai', 'https://claude.ai/oauth/mcp-oauth-client-metadata'],
+] as const) for (const protocol of [LEGACY, MODERN]) {
+  test(`${app} on ${protocol} keeps tokens from its model without session headers or card capabilities`, async (t) => {
+    const h = await harness(t, `oauth-${app}-${protocol}-tokens`);
+    const { call } = withoutCardSignals(h, clientId, protocol);
+    const off = await call('update_agent', {
+      agentId: 'agent_support', version: await version(call, 'agent_support'), on: false, idempotencyKey: 'off',
+    });
+    const confirmToken = off._meta?.['chickpea/held']?.confirmToken;
+    assert.equal(typeof confirmToken, 'string', 'the card holds the confirmation');
+    assert.equal(off.structuredContent!.confirmation.confirmToken, undefined);
+    assert.ok(!modelView(off).includes(confirmToken), 'neither text nor structured content exposes the token');
+    assert.equal(off.structuredContent!.confirmation.inAdmin, true);
+    assert.match(off.structuredContent!.summary, /Confirm on the card above, or in Admin: https:\/\/chickpea\.example\.test\/admin/);
+    assert.equal((await h.f.config.getAgent('agent_support')).enabled, true, 'the fallback leaves the change pending');
+
+    const done = await call('confirm_change', { confirmToken });
+    const undoToken = done._meta?.['chickpea/held']?.undoToken;
+    assert.equal(done.structuredContent!.status, 'done');
+    assert.equal(typeof undoToken, 'string', 'the card holds undo too');
+    assert.equal(done.structuredContent!.undoToken, undefined);
+    assert.ok(!modelView(done).includes(undoToken));
+    assert.equal((await h.f.config.getAgent('agent_support')).enabled, false);
+  });
+
+  test(`${app} on ${protocol} hides 4.x tools, prompts and guides without session headers or card capabilities`, async (t) => {
+    const h = await harness(t, `oauth-${app}-${protocol}-v4`);
+    const { request } = withoutCardSignals(h, clientId, protocol);
+    const tools = (await request('tools/list')).message.result.tools as Array<{ name: string }>;
+    const names = tools.map(({ name }) => name);
+    assert.deepEqual(V4_TOOLS.filter((name) => names.includes(name)), []);
+    assert.ok(names.includes('update_agent') && names.includes('confirm_change'));
+    assert.deepEqual((await request('prompts/list')).message.result.prompts, []);
+    for (const name of WORKSPACE_MANAGEMENT_PROMPT_NAMES) {
+      assert.ok(refusedCall((await request('prompts/get', { name, arguments: promptArguments(name) })).message));
+    }
+    const resources = (await request('resources/list')).message.result.resources as Array<{ uri: string }>;
+    assert.deepEqual(V4_GUIDES.filter((uri) => resources.some((resource) => resource.uri === uri)), []);
+    for (const uri of V4_GUIDES) {
+      assert.ok(refusedCall((await request('resources/read', { uri })).message));
+    }
+    for (const { uri } of resources) {
+      assert.deepEqual(v4Named(resourceText((await request('resources/read', { uri })).message)), [], uri);
+    }
+    assert.equal(resourceText((await request('resources/read', { uri: DISCOVERY_GUIDE_URI })).message), DISCOVERY_GUIDE_FIVE_ZERO);
+    const read = (await request('tools/call', { name: 'get_workspace', arguments: {} })).message.result;
+    for (const name of V4_TOOLS) {
+      const message = (await request('tools/call', { name, arguments: name === 'apply_workspace_changes' ? V4_OFF : {} })).message;
+      assert.equal(message.result?.isError, true, name);
+      assert.equal(message.result.structuredContent.error.code, 'not_found', name);
+      assert.equal(message.result.structuredContent.error.retryable, false);
+      const error = message.result.structuredContent.error;
+      assert.equal(message.result.content[0].text, `${error.message}\n${error.nextStep}`);
+      assert.equal(message.error, undefined, 'the refusal uses the 5.0 result shape');
+      assert.equal(message.result.resultType, read.resultType, 'stamped as the SDK stamps every result on this revision');
+    }
+    assert.equal(read.resultType, protocol === MODERN ? 'complete' : undefined);
+    assert.equal((await h.f.config.getAgent('agent_support')).enabled, true);
+  });
+}
+
+for (const [app, initialClientId] of [
+  ['Codex', 'https://chatgpt.com/oauth/codex/client.json'],
+  ['unknown', 'client_unknown'],
+  ['ChatGPT lookalike', 'https://chatgpt.com/oauth/client.json/other'],
+  ['claude.ai lookalike', 'https://claude.ai/oauth/mcp-oauth-client-metadata/other'],
+  ['registered ChatGPT', ''],
+] as const) {
+  test(`${app} keeps per-session card detection and the plain-client results`, async (t) => {
+    const h = await harness(t, `oauth-plain-${app}`);
+    let clientId: string = initialClientId;
+    if (app === 'registered ChatGPT') {
+      const backend = new NodeBetterAuthBackend(':memory:');
+      t.after(() => backend.close());
+      const register = createBetterAuthPublicHandler({ backend, baseURL: BASE_URL, secret: randomBytes(32).toString('base64url') });
+      const response = await register(new Request(`${BASE_URL}/api/auth/oauth2/register`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          client_name: 'ChatGPT', redirect_uris: ['https://app.example.test/callback'],
+          grant_types: ['authorization_code'], response_types: ['code'], token_endpoint_auth_method: 'none',
+        }),
+      }));
+      assert.equal(response.status, 201);
+      clientId = (await response.json() as { client_id: string }).client_id;
+      assert.notEqual(clientId, 'https://chatgpt.com/oauth/client.json');
+    }
+    for (const protocol of [LEGACY, MODERN]) {
+      const { request, call } = withoutCardSignals(h, clientId, protocol, 'ChatGPT');
+      const names = ((await request('tools/list')).message.result.tools as Array<{ name: string }>).map(({ name }) => name);
+      assert.deepEqual(V4_TOOLS.filter((name) => !names.includes(name)), []);
+      assert.deepEqual(((await request('prompts/list')).message.result.prompts as Array<{ name: string }>).map(({ name }) => name),
+        [...WORKSPACE_MANAGEMENT_PROMPT_NAMES]);
+      const resources = (await request('resources/list')).message.result.resources as Array<{ uri: string }>;
+      assert.ok(V4_GUIDES.every((uri) => resources.some((resource) => resource.uri === uri)));
+      assert.equal(resourceText((await request('resources/read', { uri: DISCOVERY_GUIDE_URI })).message), DISCOVERY_GUIDE);
+      const off = await call('update_agent', {
+        agentId: 'agent_support', version: await version(call, 'agent_support'), on: false, idempotencyKey: `off-${protocol}`,
+      });
+      assert.equal(typeof off.structuredContent!.confirmation.confirmToken, 'string');
+      assert.equal(off._meta?.['chickpea/held'], undefined);
+    }
+    const { call } = await h.connect(CARDS, h.fetchAs(clientId));
+    const off = await call('update_agent', {
+      agentId: 'agent_support', version: await version(call, 'agent_support'), on: false, idempotencyKey: 'off-cards',
+    });
+    assert.equal(typeof off._meta?.['chickpea/held']?.confirmToken, 'string', 'declared cards still work for this client');
+    assert.equal(off.structuredContent!.confirmation.confirmToken, undefined);
+  });
+}
+
+// Mutation proof (A4 with #729): the hidden call's branch after the result-only return, or a refusal for a hidden
+// tool sent as a card refusal, or the client ID left out of the decision the refusals read, fails this test.
+for (const [app, clientId] of [
+  ['ChatGPT', 'https://chatgpt.com/oauth/client.json'],
+  ['claude.ai', 'https://claude.ai/oauth/mcp-oauth-client-metadata'],
+] as const) for (const protocol of [LEGACY, MODERN]) {
+  test(`${app} on ${protocol} with only its client ID gets refusals as results, no 4.x tool, and tokens only in _meta`, async (t) => {
+    const h = await harness(t, `oauth-${app}-${protocol}-refusals`);
+    const { request, call } = withoutCardSignals(h, clientId, protocol);
+    const stamp = protocol === MODERN ? 'complete' : undefined;
+    const metrics: Array<Record<string, unknown>> = [];
+    t.mock.method(console, 'info', (record: unknown) => {
+      if (record && typeof record === 'object') metrics.push(record as Record<string, unknown>);
+    });
+    const counted = () => metrics.splice(0).filter(({ event }) => event === 'mcp.request').map(({ tool, outcome }) => ({ tool, outcome }));
+
+    const tools = (await request('tools/list')).message.result.tools as Array<{ name: string; outputSchema?: Record<string, unknown> }>;
+    assert.deepEqual(V4_TOOLS.filter((name) => tools.some((tool) => tool.name === name)), []);
+    const withRefusal = tools.filter(({ outputSchema }) => outputSchema !== undefined && 'anyOf' in outputSchema).map(({ name }) => name);
+    assert.deepEqual(withRefusal, tools.filter(({ name, outputSchema }) => CARD_REFUSAL_TOOL_NAMES.has(name) && outputSchema).map(({ name }) => name));
+    assert.ok(withRefusal.includes('update_agent') && withRefusal.includes('confirm_change'), 'the card session\'s output schemas');
+    counted();
+
+    const refused = await call('confirm_change', { confirmToken: 'changeset_unknown' }) as ToolResult & { resultType?: string };
+    assert.deepEqual([refused.isError, refused.structuredContent!.error.code, refused.resultType], [false, 'not_found', stamp]);
+    assert.match(refused.content[0]!.text, /^Refused \(not_found\): /, 'a refusal leaves as a result');
+    const invalid = await call('get_confirmation', { confirmToken: '' });
+    assert.deepEqual([invalid.isError, invalid.structuredContent!.error.code], [false, 'invalid_input'], 'and one the SDK made');
+    const archive = await call('archive_agent', { agentId: 'agent_missing', version: '0123456789abcdef', idempotencyKey: 'archive' });
+    assert.equal(archive.isError, true, 'a tool no card receives keeps isError');
+    assert.deepEqual(counted().map(({ outcome }) => outcome), ['tool_error', 'input_refused', 'tool_error']);
+
+    for (const name of ['confirm_workspace_change', 'apply_workspace_changes']) {
+      const hidden = (await request('tools/call', { name, arguments: name === 'apply_workspace_changes' ? V4_OFF : { confirmToken: 'changeset_unknown' } })).message;
+      assert.equal(hidden.error, undefined, name);
+      assert.deepEqual(
+        [hidden.result.isError, hidden.result.structuredContent.error.code, hidden.result.content[0].text, hidden.result.resultType],
+        [true, 'not_found', 'That tool is not available.\nCall tools/list to see the available tools.', stamp],
+        `${name}: a hidden 4.x tool is not found, never a card refusal, and stamped as every result on this revision`,
+      );
+      assert.deepEqual(counted(), [{ tool: name, outcome: 'jsonrpc_error' }], 'counted as the SDK answered it');
+    }
+
+    const off = await call('update_agent', {
+      agentId: 'agent_support', version: await version(call, 'agent_support'), on: false, idempotencyKey: 'off',
+    });
+    const confirmToken = off._meta?.['chickpea/held']?.confirmToken;
+    assert.equal(typeof confirmToken, 'string', 'the card holds the confirmation');
+    assert.ok(!modelView(off).includes(confirmToken));
+    const stale = await call('update_agent', { agentId: 'agent_support', version: '0123456789abcdef', on: false, idempotencyKey: 'stale' });
+    assert.equal(stale.isError, false, 'a write\'s refusal is a result too');
+    assert.ok(!JSON.stringify(stale).includes(confirmToken));
+    const done = await call('confirm_change', { confirmToken });
+    const undoToken = done._meta?.['chickpea/held']?.undoToken;
+    assert.equal(typeof undoToken, 'string');
+    assert.ok(!modelView(done).includes(undoToken) && !modelView(done).includes(confirmToken));
+    const again = await call('confirm_change', { confirmToken });
+    assert.deepEqual([again.structuredContent!.status, again._meta?.['chickpea/held']?.undoToken], ['done', undoToken], 'a replay answers as the first did');
+    assert.ok(!modelView(again).includes(confirmToken) && !modelView(again).includes(undoToken), 'and its model reads neither token');
+    assert.equal((await h.f.config.getAgent('agent_support')).enabled, false);
+  });
+}
+
+for (const [app, clientId] of [
+  ['ChatGPT', 'https://chatgpt.com/oauth/client.json'],
+  ['claude.ai', 'https://claude.ai/oauth/mcp-oauth-client-metadata'],
+] as const) for (const protocol of [LEGACY, MODERN]) {
+  test(`${app} on ${protocol} gets the practice tools and the card's names for them with refusals as results`, async (t) => {
+    const h = await harness(t, `oauth-${app}-${protocol}-practice`);
+    const { request, call } = withoutCardSignals(h, clientId, protocol);
+    const tools = (await request('tools/list')).message.result.tools as Array<{ name: string; outputSchema?: Record<string, unknown> }>;
+    const practice = ['practice_agent', 'get_practice_run', 'try_agent_once', 'get_test_run'];
+    assert.deepEqual(practice.map((name) => 'anyOf' in (tools.find((tool) => tool.name === name)?.outputSchema ?? {})), [true, true, true, true]);
+    for (const [name, args] of [
+      ['practice_agent', { agentId: 'agent_support', question: 'Who is overdue?' }],
+      ['get_practice_run', { runToken: 'tr_unknown' }],
+      ['try_agent_once', { agentId: 'agent_support', idempotencyKey: 'try' }],
+      ['get_test_run', { runToken: 'tr_unknown' }],
+    ] as const) {
+      const refused = await call(name, args);
+      assert.equal(refused.isError, false, `${name}: a refusal leaves as a result`);
+      assert.match(refused.content[0]!.text, new RegExp(`^Refused \\(${refused.structuredContent!.error.code}\\): `), name);
+    }
+  });
+}
+
+// Every byte a plain client gets: the same for Codex, an unknown client, and the client the harness signs in as.
+test('Codex and an unknown client get the same bytes as any plain client, refusals and 4.x tools included', async (t) => {
+  const h = await harness(t, 'oauth-plain-bytes');
+  const script: Array<[string, Record<string, unknown>]> = [
+    ['tools/list', {}],
+    ['prompts/list', {}],
+    ['resources/list', {}],
+    ['resources/read', { uri: DISCOVERY_GUIDE_URI }],
+    ['tools/call', { name: 'confirm_change', arguments: { confirmToken: 'changeset_unknown' } }],
+    ['tools/call', { name: 'get_confirmation', arguments: { confirmToken: '' } }],
+    ['tools/call', { name: 'update_agent', arguments: { agentId: 'agent_support', version: '0123456789abcdef', on: false, idempotencyKey: 'stale' } }],
+    ['tools/call', { name: 'confirm_workspace_change', arguments: { confirmToken: 'changeset_unknown' } }],
+    ['tools/call', { name: 'get_operation', arguments: {} }],
+    ['tools/call', { name: 'get_agent', arguments: { agentId: 'agent_support' } }],
+  ];
+  const bytes = async (clientId: string, protocol: string) => {
+    const { request } = withoutCardSignals(h, clientId, protocol);
+    const answers: string[] = [];
+    for (const [method, params] of script) answers.push((await request(method, params)).json);
+    return answers;
+  };
+  for (const protocol of [LEGACY, MODERN]) {
+    const plain = await bytes('client_oauth-plain-bytes', protocol);
+    assert.deepEqual(await bytes('https://chatgpt.com/oauth/codex/client.json', protocol), plain, `Codex on ${protocol}`);
+    assert.deepEqual(await bytes('client_unknown', protocol), plain, `an unknown client on ${protocol}`);
+    assert.notDeepEqual(await bytes('https://chatgpt.com/oauth/client.json', protocol), plain, 'the control: ChatGPT\'s ID changes them');
+    if (protocol === LEGACY) {
+      assert.equal(plain[4], '{"result":{"content":[{"type":"text","text":"That confirmation isn\'t one of yours, so nothing changed.\\nUse the confirmToken from the needs_confirmation result in this conversation."}],' +
+        '"structuredContent":{"error":{"code":"not_found","message":"That confirmation isn\'t one of yours, so nothing changed.","retryable":false,' +
+        '"nextStep":"Use the confirmToken from the needs_confirmation result in this conversation."}},"isError":true},"jsonrpc":"2.0","id":1}',
+        'a plain client\'s refusal, byte for byte as before');
+      const listed = JSON.parse(plain[0]!).result.tools as Array<{ name: string; outputSchema?: Record<string, unknown> }>;
+      assert.deepEqual(listed.filter(({ outputSchema }) => outputSchema && 'anyOf' in outputSchema).map(({ name }) => name), []);
+      assert.deepEqual(V4_TOOLS.filter((name) => !listed.some((tool) => tool.name === name)), []);
+    }
+  }
+});
 
 test('a client that draws cards gets no prompt or guide that tells its model to call a 4.x tool', async (t) => {
   const { connect, modernRequest } = await harness(t, 'card-v4-briefs');

@@ -2363,22 +2363,30 @@ test('activated Agents inherit the Workspace default and a pinned Agent can rese
   }
 });
 
-test('the Agents list names each Agent model from the active catalog', async () => {
+test('the Agents list names each Agent model from the active catalog, then Pi', async () => {
   const fixture = harness();
   try {
-    await fixture.store.createAgent({
-      ...createDemoStarterAgent(), id: 'agent_cataloged', name: 'Cataloged', model: 'anthropic/claude-opus-5-5',
-    });
-    await fixture.store.createAgent({
-      ...createDemoStarterAgent(), id: 'agent_uncataloged', name: 'Uncataloged', model: 'local-stub/uncataloged',
-    });
+    const pinned = {
+      agent_cataloged: 'openai/gpt-6.1-terra',
+      agent_gemini: 'google/gemini-4-argon',
+      agent_openrouter: 'openrouter/deepseek/deepseek-v4.1-flash',
+      agent_workers_ai: 'cloudflare/@cf/zai-org/glm-4.7-flash',
+      agent_uncataloged: 'local-stub/uncataloged',
+    };
+    for (const [id, model] of Object.entries(pinned)) {
+      await fixture.store.createAgent({ ...createDemoStarterAgent(), id, name: id, model });
+    }
 
     const response = await fixture.app.request('http://localhost/admin/api/agents', { headers: auth() });
     assert.equal(response.status, 200, await response.clone().text());
     const { agents } = await response.json() as { agents: Array<Record<string, any>> };
     const policy = (id: string) => agents.find((agent) => agent.id === id)?.modelPolicy;
-    assert.equal(policy('agent_cataloged').effectiveModel, 'anthropic/claude-opus-5-5');
-    assert.equal(policy('agent_cataloged').effectiveModelName, 'Claude Opus 5.5');
+    assert.equal(policy('agent_cataloged').effectiveModel, 'openai/gpt-6.1-terra');
+    // Pi 1.1 has no GPT-6.1 Terra; only the catalog names it.
+    assert.equal(policy('agent_cataloged').effectiveModelName, 'GPT-6.1 Terra');
+    assert.equal(policy('agent_gemini').effectiveModelName, 'Gemini 4 Argon');
+    assert.equal(policy('agent_openrouter').effectiveModelName, 'DeepSeek: DeepSeek V4.1 Flash');
+    assert.equal(policy('agent_workers_ai').effectiveModelName, 'GLM-4.7-Flash');
     assert.equal(policy('agent_uncataloged').effectiveModel, 'local-stub/uncataloged');
     assert.equal(policy('agent_uncataloged').effectiveModelName, null);
   } finally {

@@ -40,6 +40,8 @@ export interface FiveZeroTool {
   card?: CardName;
   /** No card draws it, but on a card host only a card's press calls it, so the card holds its result's tokens. */
   holdsTokens?: true;
+  /** No card draws it and the model calls it too, but a card also calls it. */
+  cardCalls?: true;
   /** Sends requests outside Chickpea, to hosts the workspace configured. */
   openWorld?: true;
   /** A write's hints; a tool without them reads only. */
@@ -59,6 +61,7 @@ function tool<I extends z.ZodType<Structured>, O extends z.ZodType<Structured>>(
   profile?: true;
   card?: CardName;
   holdsTokens?: true;
+  cardCalls?: true;
   openWorld?: true;
   write?: ReturnType<typeof writeHints>;
   text?: (output: z.output<O>) => Promise<string>;
@@ -99,6 +102,7 @@ export const FIVE_ZERO_TOOLS = {
     description: 'One Agent as it is now: instructions, models, skills, connections, website logins, repositories, Slack Channels and Slack status, plus the version a later change sends back. Read it before you propose a change; check_agent says how it is doing. A member sees only the Agents they may edit. Reads only; changes nothing.',
     input: schemas.getAgentInput,
     output: schemas.getAgentOutput,
+    cardCalls: true,
     run: (deps, args) => reads.getAgent(deps, args),
   }),
   list_services: tool({
@@ -148,6 +152,7 @@ export const FIVE_ZERO_TOOLS = {
     description: 'Where one setup link stands, by the setupToken it came with: waiting, opened, signing in, done, failed, cancelled or expired, what it sets up, when it expires, and the Agent\'s connection it sets up, as it is now. Only the person\'s own links. Reads only; changes nothing.',
     input: schemas.getSetupStatusInput,
     output: schemas.getSetupStatusOutput,
+    cardCalls: true,
     run: (deps, args) => reads.getSetupStatus(deps, args),
   }),
   export_agents: tool({
@@ -195,6 +200,7 @@ export const FIVE_ZERO_TOOLS = {
     output: schemas.practiceRunOutput,
     // A GET can act on some services, and a read mark binds to a tool's name, so it stays destructive (finding 7).
     write: writeHints({ destructive: true, openWorld: true }),
+    cardCalls: true,
     text: async (output) => (await import('./test-runs.ts')).practiceText(output),
     run: async (deps, args) => (await import('./test-runs.ts')).practiceAgent(deps, args),
   }),
@@ -203,6 +209,7 @@ export const FIVE_ZERO_TOOLS = {
     description: 'Where one practice run stands, by the runToken practice_agent returned, with its answer and what it read once it has them. Waits up to 20 seconds. Only your own runs, for an hour. Reads only; changes nothing.',
     input: schemas.getPracticeRunInput,
     output: schemas.practiceRunOutput,
+    cardCalls: true,
     text: async (output) => (await import('./test-runs.ts')).practiceText(output),
     run: async (deps, args) => (await import('./test-runs.ts')).getPracticeRun(deps, args),
   }),
@@ -464,6 +471,7 @@ export const FIVE_ZERO_TOOLS = {
     input: schemas.connectModelProviderInput,
     output: schemas.changeResultOutput,
     write: writeHints({ destructive: true, idempotent: false }),
+    cardCalls: true,
     run: (deps, args) => writes.connectModelProvider(deps, args),
   }),
   remove_model_provider_key: tool({
@@ -519,6 +527,14 @@ export const FIVE_ZERO_TOOLS = {
     write: writeHints({ destructive: false }),
     run: (deps, args) => writes.declineChange(deps, args),
   }),
+  get_confirmation: tool({
+    title: 'Get a confirmation',
+    description: 'For the confirmation card: where one of your confirmations stands, by its confirmToken: pending, applied, cancelled or expired. Reads only; changes nothing.',
+    input: schemas.getConfirmationInput,
+    output: schemas.getConfirmationOutput,
+    visibility: ['app'],
+    run: (deps, args) => writes.getConfirmation(deps, args),
+  }),
   undo_change: tool({
     title: 'Undo a change',
     description: 'Reverse one change by the undoToken it returned, while what it changed is still as the change left it. It overwrites the current state with the earlier one. When the reverse is destructive, such as removing a connection, it returns needs_confirmation first. Each undoToken works once, even when the reverse waits for confirmation, and only for the person and app whose change returned it.',
@@ -534,6 +550,25 @@ export type FiveZeroToolName = keyof typeof FIVE_ZERO_TOOLS;
 
 /** In registration order, after the 4.x tools. */
 export const FIVE_ZERO_TOOL_NAMES = Object.keys(FIVE_ZERO_TOOLS) as FiveZeroToolName[];
+
+/** A result a card draws, one only a card asks for, or one only a card's press asks for: on a card host, the card holds its tokens. */
+function heldByCard(definition: FiveZeroTool): boolean {
+  return definition.card !== undefined || definition.visibility?.includes('model') === false || definition.holdsTokens === true;
+}
+
+/**
+ * A card can get this tool's result: the tools above, and those a card also
+ * calls. On a card session their refusals are results, so the card can read
+ * them (card-host.ts `cardRefusal`). Any other tool's refusal reaches only
+ * the model, and stays `isError`.
+ */
+function cardReceives(definition: FiveZeroTool): boolean {
+  return heldByCard(definition) || definition.cardCalls === true;
+}
+
+export const CARD_REFUSAL_TOOL_NAMES: ReadonlySet<string> = new Set(
+  FIVE_ZERO_TOOL_NAMES.filter((name) => cardReceives(FIVE_ZERO_TOOLS[name])),
+);
 
 /** One schema per 5.0 tool, for request telemetry's refusal check. */
 export const FIVE_ZERO_TOOL_INPUT_SCHEMAS: Readonly<Record<string, z.ZodType>> = Object.fromEntries(
@@ -564,9 +599,7 @@ export function registerFiveZeroTool(
   definition: FiveZeroTool,
   cardHost: () => boolean,
 ): void {
-  // A result only a card sees, one a card draws, or one only a card's press asks for: on a card host, the card holds its tokens.
-  const drawn = definition.card !== undefined || definition.visibility?.includes('model') === false ||
-    definition.holdsTokens === true;
+  const drawn = heldByCard(definition);
   server.registerTool(name, {
     title: definition.title,
     description: definition.description,
@@ -609,7 +642,6 @@ export function registerFiveZeroTool(
         reason: failure.code,
         durationMs: Date.now() - startedAt,
       });
-      // PR R: practice_agent's and get_practice_run's refusals on a card session become results here, through R's shared helper.
       return mcpErrorResult(failure);
     }
   });

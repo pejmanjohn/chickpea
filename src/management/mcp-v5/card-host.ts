@@ -1,5 +1,9 @@
+import { z } from 'zod';
+
 import { ADMIN_PATH, adminOrigin } from '../admin-links.ts';
 import { offNextStep, type ChangeResult } from './changes.ts';
+import { mcpErrorText, type McpToolError } from './conventions.ts';
+import { cardRefusalOutput } from './schemas.ts';
 
 /**
  * Whether a card draws this connection's results. A client that declares
@@ -58,6 +62,35 @@ async function initializeDeclaresCards(request: Request): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * A refusal on a card session, as a result. ChatGPT answers a card's call
+ * whose result has `isError` with a JSON-RPC error that keeps only the text,
+ * inside its own wrapper (probe 12), so a card could never read the code or
+ * the sentence. The text leads with the refusal and its code, so the model
+ * still learns the call was refused.
+ */
+export function cardRefusal(error: McpToolError) {
+  return {
+    content: [{ type: 'text' as const, text: `Refused (${error.code}): ${mcpErrorText(error)}` }],
+    structuredContent: { error },
+    isError: false as const,
+  };
+}
+
+let refusalSchema: Record<string, unknown> | undefined;
+
+/**
+ * A tool's output schema on a card session, when its refusals are results:
+ * its own output, or the refusal. A result's `structuredContent` must match
+ * the schema a client listed, and a client may check it.
+ */
+export function withRefusalOutput(schema: Record<string, unknown>): Record<string, unknown> {
+  const { $schema, ...own } = schema;
+  refusalSchema ??= z.toJSONSchema(cardRefusalOutput, { io: 'output', target: 'draft-2020-12' }) as Record<string, unknown>;
+  const { $schema: _same, ...refusal } = refusalSchema;
+  return { ...$schema === undefined ? {} : { $schema }, type: 'object', anyOf: [own, refusal] };
 }
 
 /** Tokens a card holds instead of the model: confirm and undo. */

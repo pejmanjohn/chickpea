@@ -360,6 +360,7 @@ function runHarness(options: HarnessOptions = {}) {
           configured: true,
           source: 'via ANTHROPIC_API_KEY',
           suggestions: [OPUS, SONNET, HAIKU],
+          modelNames: { [OPUS]: 'Claude Opus 5.5' },
         }],
       }));
     }
@@ -531,6 +532,7 @@ function runHarness(options: HarnessOptions = {}) {
     agentPatchBodies,
     fetchCalls,
     focusedAction: () => focusedAction,
+    modelInput,
     imageModelInput,
     resolveImageRolePut() {
       assert.ok(imageRolePutResolver, 'expected an image role PUT to be pending');
@@ -720,11 +722,14 @@ test('the Agent image picker lists image models only', async () => {
   assert.match(picker, new RegExp(`data-action="pick-image-model" data-model="${FLARE.replace('/', '\\/')}"`));
   assert.match(picker, new RegExp(`data-action="pick-image-model" data-model="${SUNBURST.replace('/', '\\/')}"`));
   assert.match(picker, new RegExp(`data-action="pick-image-model" data-model="${CHATGPT_IMAGE.replace('/', '\\/')}"`));
-  assert.match(picker, /openai\/chatgpt-image · ChatGPT subscription · generation only/);
-  assert.match(picker, />openai\/gpt-image-2\.5-flare · lower cost</);
-  assert.match(picker, />openai\/gpt-image-2\.5-sunburst · lower cost</);
-  assert.match(picker, />openai\/gpt-image-2\.6-flare</);
-  assert.match(picker, />openai\/gpt-image-2\.6-sunburst</);
+  assert.match(picker, /<div class="combo-group">OpenAI<\/div>/);
+  const option = (name: string, rest: string) =>
+    `<span class="combo-name">${name}</span><span class="combo-id"> · ${rest}</span></button>`;
+  assert.ok(picker.includes(option('ChatGPT Image', 'openai/chatgpt-image · ChatGPT subscription · generation only · one per call')));
+  assert.ok(picker.includes(option('GPT Image 2.5 Flare', 'openai/gpt-image-2.5-flare · lower cost')));
+  assert.ok(picker.includes(option('GPT Image 2.5 Sunburst', 'openai/gpt-image-2.5-sunburst · lower cost')));
+  assert.ok(picker.includes(option('GPT Image 2.6 Flare', 'openai/gpt-image-2.6-flare')));
+  assert.ok(picker.includes(option('GPT Image 2.6 Sunburst', 'openai/gpt-image-2.6-sunburst')));
   assert.doesNotMatch(picker, new RegExp(`data-action="pick-image-model" data-model="${CHAT_MODEL.replace('/', '\\/')}"`));
 });
 
@@ -785,8 +790,9 @@ test('an Agent image override is saved and reads back as Pinned on its Model tab
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'model' }) });
   await flushAsync();
   assert.match(harness.app.innerHTML, new RegExp(
-    `<label class="field-label" for="p-image-model">Image model</label><div class="workspace-default-meta"><span class="badge-src">Pinned</span><span class="mono hint">${SUNBURST.replace('/', '\\/')}</span>`,
+    '<label class="field-label" for="p-image-model">Image model</label><div class="workspace-default-meta"><span class="badge-src">Pinned</span><span class="hint">GPT Image 2.5 Sunburst</span>',
   ));
+  assert.equal(harness.imageModelInput.value, SUNBURST, 'the input keeps the specifier people type');
 });
 
 /**
@@ -851,6 +857,27 @@ test('Settings offers the default coding model from the chat models, unset by de
   assert.match(html, /data-action="workspace-coding-model-save" disabled/);
   // The section sits beside the image model, after it.
   assert.ok(html.indexOf('workspace-image-model-heading') < html.indexOf('workspace-coding-model-heading'));
+});
+
+test('Settings names each chat model beside its id in the default and coding selects', async () => {
+  const harness = runHarness({
+    initialPath: '/admin/settings/providers',
+    workspaceDefault: { modelId: OPUS, effort: null, revision: 2 },
+  });
+  await flushAsync();
+
+  const options = (id: string) => {
+    const select = harness.app.innerHTML.match(new RegExp(`<select class="input mono" id="${id}"[\\s\\S]*?</select>`))?.[0] ?? '';
+    return [...select.matchAll(/<option value="([^"]+)"[^>]*>([^<]*)<\/option>/g)].map((match) => [match[1], match[2]]);
+  };
+  const named = [
+    [CHAT_MODEL, CHAT_MODEL],
+    [OPUS, `Claude Opus 5.5 · ${OPUS}`],
+    [SONNET, SONNET],
+    [HAIKU, HAIKU],
+  ];
+  assert.deepEqual(options('workspace-default-model'), named);
+  assert.deepEqual(options('workspace-coding-model'), named);
 });
 
 test('saving the default coding model sends the revision and re-renders the readback', async () => {
@@ -965,7 +992,7 @@ test('choosing an Agent effort marks it dirty and saves modelEffort with the mod
   const html = harness.app.innerHTML;
   assert.doesNotMatch(html, /save-bar-sticky is-clean/);
   assert.deepEqual(effortRadios(html, 'profile-effort').find(([, checked]) => checked), ['xhigh', true, false]);
-  assert.match(html, new RegExp(`<span class="mono hint">${OPUS.replace('/', '\\/')} · Extra high</span>`));
+  assert.match(html, /<span class="hint">Claude Opus 5\.5 · Extra high<\/span>/);
 
   click({ target: actionTarget({ 'data-action': 'save-profile' }) });
   await flushAsync();
@@ -1059,7 +1086,7 @@ test('an Agent following the Workspace default shows its effort, disabled, until
   ]);
   assert.match(html, /Follows the Workspace default\. Pin a model to choose a different effort\./);
   assert.doesNotMatch(html, /Standard is/);
-  assert.match(html, new RegExp(`<span class="mono hint">${OPUS.replace('/', '\\/')} · High</span>`));
+  assert.match(html, /<span class="hint">Claude Opus 5\.5 · High<\/span>/);
 
   // Pinning again starts from the model's standard level, not the cleared effort.
   click({ target: comboTarget({ 'data-action': 'profile-model' }) });
@@ -1089,6 +1116,44 @@ test('a read-only Agent shows its effort as text', async () => {
   const html = harness.app.innerHTML;
   assert.match(html, /<div class="input" aria-label="Agent effort">Extra high<\/div>/);
   assert.deepEqual(effortRadios(html, 'profile-effort'), []);
+});
+
+test('an Agent Model tab names its models and keeps the specifiers in the inputs', async () => {
+  const modelField = (html: string) => html.slice(html.indexOf('<label class="field-label" for="p-model">'), html.indexOf('<div class="model-combo">'));
+  let harness = runHarness({ initialPath: '/admin/agents/agent_release?tab=model', agents: [pinnedAgent(OPUS, null)] });
+  await flushAsync();
+  assert.match(modelField(harness.app.innerHTML), /<span class="badge-src">Pinned<\/span><span class="hint">Claude Opus 5\.5<\/span>/);
+  assert.equal(harness.modelInput.value, OPUS);
+
+  // The picker cannot name an Agent's model it does not offer; the projection still can.
+  const gemini = 'google/gemini-4-argon';
+  harness = runHarness({
+    initialPath: '/admin/agents/agent_release?tab=model',
+    agents: [pinnedAgent(gemini, null, { modelPolicy: { source: 'pinned', effectiveModel: gemini, effectiveModelName: 'Gemini 4 Argon', live: true } })],
+  });
+  await flushAsync();
+  assert.match(modelField(harness.app.innerHTML), /<span class="hint">Gemini 4 Argon<\/span>/);
+
+  harness = runHarness({
+    initialPath: '/admin/agents/agent_release?tab=model',
+    agents: [{ ...releaseAgent, model: undefined, modelPolicy: { source: 'workspace_default', effectiveModel: OPUS, live: true } }],
+    workspaceDefault: { modelId: OPUS, effort: null, revision: 2 },
+  });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /id="p-model" name="model" type="text" value="" [^>]*placeholder="Workspace default — Claude Opus 5\.5"/);
+  assert.match(harness.app.innerHTML, /id="p-image-model" name="imageModel" type="text" value="" [^>]*placeholder="Workspace default — GPT Image 2\.5 Flare"/);
+
+  harness = runHarness({
+    initialPath: '/admin/agents/agent_release?tab=model',
+    agents: [pinnedAgent(OPUS, null, {
+      canEdit: false,
+      imageModel: SUNBURST,
+      imageModelPolicy: { source: 'pinned', effectiveModel: SUNBURST },
+    })],
+  });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /<div class="input mono" aria-label="Agent model">Claude Opus 5\.5 · anthropic\/claude-opus-5-5<\/div>/);
+  assert.match(harness.app.innerHTML, /<div class="input mono" aria-label="Agent image model">GPT Image 2\.5 Sunburst · openai\/gpt-image-2\.5-sunburst<\/div>/);
 });
 
 test('an effort the server refuses shows its message with the other save errors', async () => {

@@ -831,7 +831,7 @@ export class WorkspaceManagementService {
     };
   }
 
-  /** Ends one of the person's own MCP clients at once; there is no Admin UI to confirm in. */
+  /** Ends one of the person's own MCP clients at once; Admin's Connected apps page confirms first. */
   async revokeMcpClient(
     context: ApplyWorkspaceChangesInput['context'],
     clientId: string,
@@ -864,11 +864,11 @@ export class WorkspaceManagementService {
   private async ownMcpClients(context: ApplyWorkspaceChangesInput['context']): Promise<{
     clients: BetterAuthMcpOAuthClients;
     betterAuthUserId: string;
-    currentClientId: string;
+    currentClientId: string | undefined;
   }> {
     const actor = await this.requireLiveActor(context);
-    if (actor.origin.kind !== 'mcp') {
-      throw new ManagementError('forbidden', 'Connected MCP clients are listed and revoked over the Chickpea MCP.');
+    if (actor.origin.kind === 'slack') {
+      throw new ManagementError('forbidden', 'Connected MCP clients are listed and revoked over the Chickpea MCP or in Admin.');
     }
     const [clients, bindings] = await Promise.all([
       this.stores.mcpOAuthClients?.(),
@@ -879,7 +879,11 @@ export class WorkspaceManagementService {
     if (!clients || !betterAuthUserId) {
       throw new ManagementError('invalid_request', 'This deployment does not sign MCP clients in with Chickpea accounts.');
     }
-    return { clients, betterAuthUserId, currentClientId: actor.origin.clientId };
+    return {
+      clients,
+      betterAuthUserId,
+      currentClientId: actor.origin.kind === 'mcp' ? actor.origin.clientId : undefined,
+    };
   }
 
   async proposeSkillImport(
@@ -4184,6 +4188,32 @@ export class WorkspaceManagementService {
       throw new ManagementError('operation_in_progress', 'The confirmation is already applying.');
     }
     return undefined;
+  }
+
+  /**
+   * Where one confirmation stands, for its own person only: whether a card
+   * that mounts again can still confirm or keep it. A claim whose lease ran
+   * out waits for a confirm to finish it, so it reads as pending. A set that
+   * completed with nothing applied, or was retired, can no longer apply.
+   * Reads only.
+   */
+  async workspaceChangeStanding(
+    input: ConfirmWorkspaceChangeInput,
+  ): Promise<'pending' | 'applied' | 'cancelled' | 'expired'> {
+    const actor = await this.requireLiveActor(input.context);
+    const proposal = await this.stores.management.getChangeSetProposal(input.proposalId);
+    if (!proposal) throw new ManagementError('proposal_not_found', 'The confirmation was not found.');
+    this.assertProposalBinding(actor, proposal);
+    switch (proposal.status) {
+      case 'pending':
+        return proposal.expiresAt !== undefined && this.now() >= proposal.expiresAt ? 'expired' : 'pending';
+      case 'applying':
+        return this.now() - proposal.updatedAt < MANAGEMENT_CHANGE_SET_APPLY_LEASE_MS ? 'applied' : 'pending';
+      case 'completed':
+        return proposal.result?.status === 'failed' ? 'cancelled' : 'applied';
+      case 'stale':
+        return 'cancelled';
+    }
   }
 
   /**

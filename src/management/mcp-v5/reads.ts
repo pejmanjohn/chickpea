@@ -724,7 +724,13 @@ export async function listConnectedApps(deps: FiveZeroDeps): Promise<Out<typeof 
       ...(client.lastUsedAt ? { lastActive: { display: displayDate(client.lastUsedAt) } } : {}),
       thisApp: client.current,
     })),
+    ...connectedAppsLink(deps),
   };
+}
+
+/** Where the person sees and disconnects their apps without asking a model. */
+export function connectedAppsLink(deps: FiveZeroDeps): { adminUrl?: string } {
+  return withAdminUrl(adminSettingsLinks(deps.baseUrl, 'connected-apps', deps.env)?.admin);
 }
 
 export async function getCreationStatus(
