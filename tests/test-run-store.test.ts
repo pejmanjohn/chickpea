@@ -362,7 +362,9 @@ test('a conversation takes 10 questions, within the hour from its first; then it
   const installation = hostedInstallation('inst_test_store_follow_bounds');
   const store = testRuns(installation);
   const { practiceId } = conversation(installation);
-  for (let turn = 2; turn <= PRACTICE_TURNS; turn += 1) {
+  // Ten, by the ruling: the constant is not trusted to say so.
+  assert.equal(PRACTICE_TURNS, 10);
+  for (let turn = 2; turn <= 10; turn += 1) {
     const next = admission(installation, { practiceId, question: `Turn ${turn}?` });
     assert.equal(store.admit(next, NOON + turn * 1_000).kind, 'admitted', `turn ${turn}`);
     assert.equal(store.get(next.testRunId)!.turn, turn);
@@ -438,8 +440,9 @@ test('a listing holds only the caller\'s own runs of that Agent from the last ho
   assert.deepEqual(store.list({ ...query, organizationId: 'org_other' }, NOON + 4_000), []);
   assert.deepEqual(store.list(query, NOON + AN_HOUR).map(({ turn }) => turn), [2], 'the first turn\'s hour is over');
   assert.deepEqual(store.list(query, NOON + AN_HOUR + 1_000), [], 'nothing after the hour');
-  for (let run = 0; run < PRACTICE_LISTED_RUNS + 5; run += 1) store.admit(admission(installation, { question: `Q${run}?` }), NOON + 10_000 + run);
+  for (let run = 0; run < 25; run += 1) store.admit(admission(installation, { question: `Q${run}?` }), NOON + 10_000 + run);
   const listed = store.list(query, NOON + 20_000);
-  assert.equal(listed.length, PRACTICE_LISTED_RUNS);
-  assert.equal(listed[0]!.question, `Q${PRACTICE_LISTED_RUNS + 4}?`, 'newest first');
+  assert.equal(listed.length, 20, 'the newest 20, which the result budget is measured for');
+  assert.equal(PRACTICE_LISTED_RUNS, 20);
+  assert.equal(listed[0]!.question, 'Q24?', 'newest first');
 });
