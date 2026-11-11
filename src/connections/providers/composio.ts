@@ -2032,6 +2032,19 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
   }
 
   async execute(input: ManagedConnectionExecutionInput): Promise<ManagedConnectionExecutionResult> {
+    try {
+      const result = await this.executeCapability(input);
+      recordExecution(input.policy, input.capability, result.logId);
+      return result;
+    } catch (error) {
+      recordExecutionFailure(input.policy, input.capability, error);
+      throw error;
+    }
+  }
+
+  private async executeCapability(
+    input: ManagedConnectionExecutionInput,
+  ): Promise<ManagedConnectionExecutionResult> {
     let apiKey: string;
     try {
       apiKey = this.requireApiKey();
@@ -2224,9 +2237,10 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
         throw new NotionPageUnavailableError();
       }
       if (result.successful === false) {
+        const providerStatus = reportedProviderStatus(result.data);
         throw new ManagedProviderRequestError(
           'provider_unavailable',
-          'Composio reported that the managed connection request did not succeed',
+          reportedFailureMessage(providerStatus, await reportedFailureReason(result.error, apiKey)),
           {
             providerTool: capability.tool,
             providerVersion,
@@ -2234,12 +2248,12 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
             providerToolCallCount,
             capabilityToolDispatched,
             definiteFailure: true,
+            ...(providerStatus === undefined ? {} : { providerStatus }),
             ...(result.logId ? { providerLogId: result.logId } : {}),
           },
         );
       }
       if (result.error) throw new Error('remote execution failed');
-      recordExecution(input.policy, input.capability, result.logId);
       let sanitizedData = capability.sanitize(
         notionGate ? await notionGate.after(result.data) : result.data,
         executionArguments,
@@ -2263,6 +2277,7 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
               remoteCallCount,
               providerToolCallCount,
               capabilityToolDispatched,
+              ...(result.logId ? { providerLogId: result.logId } : {}),
             },
           );
         }
@@ -5577,4 +5592,63 @@ function recordExecution(
     capability,
     ...(logId ? { providerLogId: logId } : {}),
   }));
+}
+
+/** Content-free: never the error's message, the arguments or the result. */
+function recordExecutionFailure(
+  policy: ConnectionAccountManagedPolicy,
+  capability: string,
+  error: unknown,
+): void {
+  const metadata = error instanceof ManagedProviderRequestError ||
+      error instanceof ManagedAuthorizationExpiredError
+    ? error.metadata
+    : undefined;
+  console.warn(JSON.stringify({
+    event: 'chickpea.managed_connection.execute_failed',
+    adapterId: policy.adapterId,
+    toolkit: policy.toolkit,
+    capability,
+    outcome: error instanceof ManagedProviderRequestError
+      ? error.code
+      : error instanceof ManagedAuthorizationExpiredError ? 'authorization_expired' : 'failed',
+    ...(metadata?.capabilityToolDispatched === undefined
+      ? {}
+      : { dispatched: metadata.capabilityToolDispatched }),
+    ...(metadata?.httpStatus === undefined ? {} : { httpStatus: metadata.httpStatus }),
+    ...(metadata?.providerStatus === undefined ? {} : { providerStatus: metadata.providerStatus }),
+    ...(metadata?.providerLogId ? { providerLogId: metadata.providerLogId } : {}),
+  }));
+}
+
+function reportedFailureMessage(
+  providerStatus: number | undefined,
+  reason: string | undefined,
+): string {
+  const outcome = 'Composio reported that the managed connection request did not succeed' +
+    (providerStatus === undefined ? '' : ` (status ${providerStatus})`);
+  if (!reason) return outcome;
+  return `${outcome}. If the service error points to the request, change the request before ` +
+    `retrying. Service error: ${reason}`;
+}
+
+/**
+ * Composio's own failure text, which can echo the request, so only what reads as language
+ * reaches the model. The filter loads on the first reported failure, not at Worker startup.
+ */
+async function reportedFailureReason(error: unknown, apiKey: string): Promise<string | undefined> {
+  if (typeof error !== 'string') return undefined;
+  const { serviceErrorText } = await import('../service-error-text.ts');
+  return serviceErrorText(error, [apiKey]) || undefined;
+}
+
+/** The connected service's HTTP status, when Composio's failed result carries one. */
+function reportedProviderStatus(data: unknown): number | undefined {
+  if (!isRecord(data)) return undefined;
+  for (const value of [data.status_code, data.statusCode, data.status]) {
+    if (Number.isInteger(value) && Number(value) >= 400 && Number(value) <= 599) {
+      return Number(value);
+    }
+  }
+  return undefined;
 }

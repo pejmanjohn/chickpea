@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 
 import type { ConnectionAccountManagedPolicy } from '../src/config/types.ts';
 import { MANAGED_ARTIFACT_ARGUMENT } from '../src/connections/artifacts.ts';
+import { MANAGED_CONNECTOR_CATALOG } from '../src/connections/catalog/index.ts';
 import {
   ManagedAuthorizationAllocatedError,
   ManagedAuthorizationExpiredError,
@@ -174,8 +175,402 @@ test('direct execution rejects Composio responses that explicitly report unsucce
   }), (error: unknown) =>
     error instanceof ManagedProviderRequestError &&
     error.code === 'provider_unavailable' &&
+    error.message === 'Composio reported that the managed connection request did not succeed' &&
     error.metadata.providerLogId === 'log_unsuccessful' &&
     error.metadata.capabilityToolDispatched === true);
+});
+
+const SYNTHETIC_SLACK_TOKEN = `xoxb-${'1'.repeat(12)}-${'a'.repeat(24)}`;
+const SYNTHETIC_PROVIDER_ERROR =
+  `Invalid filter: property "synthetic_stage" does not exist on contacts. Sent with ${SYNTHETIC_SLACK_TOKEN}. ` +
+  'detail '.repeat(400);
+
+function failingSearchProvider(response: {
+  data: Record<string, unknown>;
+  error: string | null;
+  successful: boolean;
+  logId?: string;
+}) {
+  return new ComposioManagedConnectionProvider({
+    apiKey: 'test-key',
+    createClient: async () => ({
+      sessions: { async create() { throw new Error('session execution must not be used'); } },
+      tools: { async execute() { return response; } },
+    }),
+  });
+}
+
+test('a Composio-reported failure gives the model the service reason, filtered and bounded', async () => {
+  const provider = failingSearchProvider({
+    data: { status_code: 400 },
+    error: SYNTHETIC_PROVIDER_ERROR,
+    successful: false,
+    logId: 'log_reason',
+  });
+
+  const error = await provider.execute({
+    policy: POLICY,
+    capability: 'gmail.messages.search',
+    arguments: { query: 'is:unread' },
+  }).then(() => assert.fail('a reported failure must reject'), (failure: unknown) => failure);
+
+  assert.ok(error instanceof ManagedProviderRequestError);
+  assert.equal(error.code, 'provider_unavailable');
+  assert.equal(error.metadata.providerStatus, 400);
+  assert.equal(error.metadata.providerLogId, 'log_reason');
+  const prefix = 'Composio reported that the managed connection request did not succeed (status 400). ' +
+    'If the service error points to the request, change the request before retrying. Service error: ';
+  assert.ok(error.message.startsWith(prefix), error.message);
+  const reason = error.message.slice(prefix.length);
+  assert.ok(reason.startsWith('Invalid filter: property "synthetic_stage" does not exist on contacts. ' +
+    'Sent with […] detail detail'), reason);
+  assert.ok(!error.message.includes('xoxb-'));
+  assert.ok(reason.length <= 1_000 && reason.endsWith(' detail…'), reason);
+});
+
+test('a reported failure without a status names none', async () => {
+  const provider = failingSearchProvider({
+    data: { status: 'error', status_code: 'bad' },
+    error: 'Rate window exceeded for this synthetic account',
+    successful: false,
+  });
+
+  await assert.rejects(provider.execute({
+    policy: POLICY,
+    capability: 'gmail.messages.search',
+    arguments: { query: 'is:unread' },
+  }), (error: unknown) =>
+    error instanceof ManagedProviderRequestError &&
+    error.metadata.providerStatus === undefined &&
+    error.message === 'Composio reported that the managed connection request did not succeed. ' +
+      'If the service error points to the request, change the request before retrying. ' +
+      'Service error: Rate window exceeded for this synthetic account');
+});
+
+const REPORTED_FAILURE_PREFIX = 'Composio reported that the managed connection request did not succeed. ' +
+  'If the service error points to the request, change the request before retrying. Service error: ';
+
+async function reportedFailureMessage(error: string): Promise<string> {
+  const failure = await failingSearchProvider({ data: {}, error, successful: false }).execute({
+    policy: POLICY,
+    capability: 'gmail.messages.search',
+    arguments: { query: 'is:unread' },
+  }).then(() => assert.fail('a reported failure must reject'), (thrown: unknown) => thrown);
+  assert.ok(failure instanceof ManagedProviderRequestError);
+  return failure.message;
+}
+
+test('every reproduction from the reviews of this change reaches the model as […]', async () => {
+  const cases: [string, string][] = [
+    // The #737 security review.
+    ['Authorization: Bearer syntheticOAuthToken42', 'Authorization: […]'],
+    ['{"access_token":"syntheticOAuthToken42","refresh_token":"syntheticRefreshToken42"}', '{ "access_token": […] "refresh_token": […]'],
+    // The first security re-review.
+    ['Cookie: sessionid=syntheticSession42; theme=light', 'Cookie: […]'],
+    ['Set-Cookie: sid=syntheticSession42; HttpOnly', 'Set-Cookie: […] HttpOnly'],
+    ['Invalid API key provided: sk_live_syntheticStripeCredential42', 'Invalid API key provided: […]'],
+    [String.raw`Request body: {\"client_secret\":\"syntheticClientSecret42\"}`, 'Request body: { "client_secret": […]'],
+    [String.raw`403 for https:\/\/files.example.test\/object?X-Amz-Signature=syntheticSignature42`, '403 for […]'],
+    ['Request body: client%5Fsecret=syntheticClientSecret42', 'Request body: […]'],
+    ['Request body: {&quot;client_secret&quot;:&quot;syntheticClientSecret42&quot;}', 'Request body: […]'],
+    // The second security re-review.
+    ['Cookie: sid="SyntheticCookie42"; theme=light', 'Cookie: […]'],
+    ['Set-Cookie: sid="SyntheticCookie42"; HttpOnly', 'Set-Cookie: […] HttpOnly'],
+    ...['%40', '%2F', '%3F', '%23'].map((escape): [string, string] =>
+      [`https://user:first${escape}SyntheticTail42@db.example.test/v1`, '[…]']),
+    ['https://files.example.test/object?x=first%22SyntheticTail42', '[…]'],
+    [String.raw`{"client_secret":"first\"SyntheticTail42"}`, '{ "client_secret": […]'],
+    [
+      '{"error":"invalid_client","error_description":"Invalid client_secret: first,SyntheticTail42"}',
+      '{ "error": "invalid_client", "error_description": "Invalid client_secret: […]',
+    ],
+    ['password=first;SyntheticTail42', '[…]'],
+    ['api_key=first%20SyntheticTail42', '[…]'],
+    // `first` reads as a word, so only the label rule drops it.
+    ['Authorization: Bearer first\nSyntheticTail42', 'Authorization: […]'],
+    [String.raw`Authorization: Bearer first\nSyntheticTail42`, 'Authorization: […]'],
+    ['{"cookies":{"nested":{"sid":"SyntheticInner42"},"other":"SyntheticOther42"}}', '{ "cookies": […]'],
+    ['Invalid API key provided: keySyntheticAb123', 'Invalid API key provided: […]'],
+    ['HTTP 403 record for other-tenant@example.test: balance overdue', 'HTTP 403 record for […] balance overdue'],
+    // The third security re-review. Every value here passes the allowlist, so only its label drops it.
+    [
+      '{"credentials":{"note":"}","user":"syntheticuser","value":"winter-meadow"},"status":"error"}',
+      '{ "credentials": […] "status": "error"}',
+    ],
+    ['{"tokens":["]", "winter-meadow", "1234"]}', '{ "tokens": […]'],
+    ['{"client_secret":"alpha beta gamma"}', '{ "client_secret": […]'],
+    ['Authorization: Bearer alpha\n beta\n gamma', 'Authorization: […]'],
+    ['password: 1234 5678', 'password: […]'],
+    [String.raw`{"client_secret":"alpha\u0020beta"}`, '{ "client_secret": […]'],
+    [String.raw`{"client_secret":"alpha\nbeta"}`, '{ "client_secret": […]'],
+    [String.raw`{"client_secret":"alpha\" beta"}`, '{ "client_secret": […]'],
+    ['{"password":"зимний луг"}', '{ "password": […]'],
+    ['password: abcdefgh ijklmnop qrstuvwx', 'password: […]'],
+    ['{"APISecret":"winter-meadow"}', '{ "APISecret": […]'],
+    ['{"JWTToken":"1234"}', '{ "JWTToken": […]'],
+    ['HTTPPassword: winter', 'HTTPPassword: […]'],
+    // The automatic commit review.
+    [
+      '{"clientsecret":"winter","accesstoken":"meadow","sessionid":"alpha","PHPSESSID":"beta"}',
+      '{ "clientsecret": […] "accesstoken": […] "sessionid": […] "PHPSESSID": […]',
+    ],
+    // The automatic commit review of the label pass.
+    ['password:\nhunter', 'password: […]'],
+    ['“password”: winter', '“password”: […]'],
+    ['user[password]=alpha beta', '[…]'],
+    // The first review's cases, with the turn's Composio key. An unquoted secret value runs to
+    // the end of its line, so the first `token=` takes the rest of it.
+    [
+      '401 Client Error: Unauthorized for url: ' +
+        'https://synthetic-user:synthetic-pass@api.example.test/1/boards/synthetic?key=synthetic-key-value&token=synthetic-token-value ' +
+        'after Authorization: Bearer synthetic.bearer-value_1234 and refresh_token=synthetic-refresh-value ' +
+        'and {"api_key":"synthetic-api-key-value"} with test-key. Bearer authentication failed.',
+      '401 Client Error: Unauthorized for url: […]',
+    ],
+    [
+      'Upstream echoed {"access_token":"syntheticOAuthToken42","refresh_token":"syntheticRefreshToken42"} ' +
+        'and Authorization: Basic c3ludGhldGljOnN5bnRoZXRpYw== and "authorization":"syntheticOpaqueValue" ' +
+        'and a header of Basic c3ludGhldGljOnBhc3M9 too. Basic authentication is required.',
+      'Upstream echoed { "access_token": […] "refresh_token": […] and Authorization: […]',
+    ],
+    [
+      'Upstream echoed\nrefresh_token=synthetic-refresh-value\n{"api_key":"synthetic-api-key-value"} with test-key.\n' +
+        'a header of Basic c3ludGhldGljOnBhc3M9\nBasic authentication is required.',
+      'Upstream echoed […] { "api_key": […] with […] a header of Basic […] Basic […]',
+    ],
+  ];
+  for (const [error, reason] of cases) {
+    assert.equal(await reportedFailureMessage(error), `${REPORTED_FAILURE_PREFIX}${reason}`, error);
+  }
+});
+
+test('a token the 1,000-character cut lands in shows no part of itself', async () => {
+  const words = 'detail '.repeat(142);
+  assert.ok(words.length < 999 && words.length + SYNTHETIC_SLACK_TOKEN.length > 999);
+  assert.equal(
+    await reportedFailureMessage(`${words}${SYNTHETIC_SLACK_TOKEN} and more`),
+    `${REPORTED_FAILURE_PREFIX}${words.trimEnd()}…`,
+  );
+});
+
+test('a typical validation error reaches the model whole', async () => {
+  const error = "Property 'x' is not allowed for object type 'contacts'";
+  assert.equal(await reportedFailureMessage(error), `${REPORTED_FAILURE_PREFIX}${error}`);
+});
+
+test('a YouTube write that cannot be verified logs its Composio log ID', async (t) => {
+  const lines: Record<string, unknown>[] = [];
+  t.mock.method(console, 'warn', (line: unknown) => {
+    lines.push(JSON.parse(String(line)) as Record<string, unknown>);
+  });
+  const policy: ConnectionAccountManagedPolicy = {
+    ...POLICY,
+    toolkit: 'youtube',
+    accountRef: 'ca_youtube',
+    allowedCapabilities: ['youtube.videos.update'],
+    resourceConstraints: {
+      channelIds: [{ handle: 'channel_chickpea', providerRef: 'UCchickpea', label: 'Chickpea' }],
+    },
+  };
+  let updated = false;
+  const provider = new ComposioManagedConnectionProvider({
+    apiKey: 'test-key',
+    createClient: async () => ({
+      sessions: { async create() { throw new Error('session execution must not be used'); } },
+      tools: {
+        async execute(tool) {
+          if (tool === 'YOUTUBE_LIST_CHANNELS') {
+            return { data: { items: [{ id: 'UCchickpea', snippet: { title: 'Chickpea' } }] }, error: null };
+          }
+          if (tool === 'YOUTUBE_UPDATE_VIDEO') {
+            updated = true;
+            return { data: { id: 'video_1' }, error: null, successful: true, logId: 'log_update' };
+          }
+          // The ownership check before the write succeeds; the readback after it does not.
+          return updated
+            ? { data: {}, error: 'synthetic readback failure', successful: false }
+            : { data: { items: [{ id: 'video_1', snippet: { channelId: 'UCchickpea' } }] }, error: null };
+        },
+      },
+    }),
+  });
+
+  await assert.rejects(provider.execute({
+    policy,
+    capability: 'youtube.videos.update',
+    arguments: { channelHandle: 'channel_chickpea', videoId: 'video_1', title: 'Updated demo' },
+  }), (error: unknown) =>
+    error instanceof ManagedProviderRequestError && error.code === 'ambiguous' &&
+    error.metadata.providerLogId === 'log_update');
+  assert.deepEqual(lines, [{
+    event: 'chickpea.managed_connection.execute_failed',
+    adapterId: 'composio',
+    toolkit: 'youtube',
+    capability: 'youtube.videos.update',
+    outcome: 'ambiguous',
+    dispatched: true,
+    providerLogId: 'log_update',
+  }]);
+});
+
+function captureExecutionLines(t: TestContext) {
+  const lines: Record<string, unknown>[] = [];
+  const output: string[] = [];
+  for (const method of ['log', 'warn'] as const) {
+    t.mock.method(console, method, (line: unknown) => {
+      output.push(String(line));
+      try {
+        lines.push(JSON.parse(String(line)) as Record<string, unknown>);
+      } catch {
+        // Not a structured event.
+      }
+    });
+  }
+  const events = () => lines.filter(({ event }) =>
+    typeof event === 'string' && event.startsWith('chickpea.managed_connection.execute'));
+  return { lines, output, events };
+}
+
+test('each managed call logs one content-free line, success or failure', async (t) => {
+  const { lines, output, events } = captureExecutionLines(t);
+  const execute = (provider: ComposioManagedConnectionProvider) => provider.execute({
+    policy: POLICY,
+    capability: 'gmail.messages.search',
+    arguments: { query: 'from:synthetic-sender@example.test' },
+  });
+
+  await assert.rejects(execute(failingSearchProvider({
+    data: { status_code: 400 },
+    error: SYNTHETIC_PROVIDER_ERROR,
+    successful: false,
+    logId: 'log_reported',
+  })));
+  assert.deepEqual(events(), [{
+    event: 'chickpea.managed_connection.execute_failed',
+    adapterId: 'composio',
+    toolkit: 'gmail',
+    capability: 'gmail.messages.search',
+    outcome: 'provider_unavailable',
+    dispatched: true,
+    providerStatus: 400,
+    providerLogId: 'log_reported',
+  }]);
+
+  lines.length = 0;
+  await assert.rejects(execute(new ComposioManagedConnectionProvider({
+    apiKey: 'test-key',
+    getConnectedAccount: async () => ({
+      id: POLICY.accountRef, status: 'ACTIVE', isDisabled: false,
+      toolkit: POLICY.toolkit, userId: POLICY.principalRef,
+    }),
+    createClient: async () => ({
+      sessions: { async create() { throw new Error('session execution must not be used'); } },
+      tools: {
+        async execute() {
+          throw Object.assign(new Error('synthetic gateway failure'), { status: 502 });
+        },
+      },
+    }),
+  })));
+  assert.deepEqual(events(), [{
+    event: 'chickpea.managed_connection.execute_failed',
+    adapterId: 'composio',
+    toolkit: 'gmail',
+    capability: 'gmail.messages.search',
+    outcome: 'provider_unavailable',
+    dispatched: true,
+    httpStatus: 502,
+  }]);
+
+  lines.length = 0;
+  await execute(new ComposioManagedConnectionProvider({
+    apiKey: 'test-key',
+    createClient: async () => ({
+      sessions: { async create() { throw new Error('session execution must not be used'); } },
+      tools: {
+        async execute() {
+          return { data: { messages: [] }, error: null, successful: true, logId: 'log_success' };
+        },
+      },
+    }),
+  }));
+  assert.deepEqual(events(), [{
+    event: 'chickpea.managed_connection.execute',
+    adapterId: 'composio',
+    toolkit: 'gmail',
+    capability: 'gmail.messages.search',
+    providerLogId: 'log_success',
+  }]);
+
+  for (const content of ['synthetic_stage', 'synthetic-sender', 'synthetic gateway failure', 'xoxb-']) {
+    assert.ok(!output.some((line) => line.includes(content)), `logs carry no ${content}`);
+  }
+});
+
+test('throttled, expired and unexpected failures each log their outcome and no text', async (t) => {
+  const { lines, output, events } = captureExecutionLines(t);
+  const throwingProvider = (failure: Error, accountStatus = 'ACTIVE') =>
+    new ComposioManagedConnectionProvider({
+      apiKey: 'test-key',
+      getConnectedAccount: async () => ({
+        id: POLICY.accountRef, status: accountStatus, isDisabled: false,
+        toolkit: POLICY.toolkit, userId: POLICY.principalRef,
+      }),
+      createClient: async () => ({
+        sessions: { async create() { throw new Error('session execution must not be used'); } },
+        tools: { async execute() { throw failure; } },
+      }),
+    });
+  const search = {
+    policy: POLICY,
+    capability: 'gmail.messages.search',
+    arguments: { query: 'from:synthetic-sender@example.test' },
+  };
+  const gmailLine = {
+    event: 'chickpea.managed_connection.execute_failed',
+    adapterId: 'composio',
+    toolkit: 'gmail',
+    capability: 'gmail.messages.search',
+  };
+
+  await assert.rejects(throwingProvider(Object.assign(new Error('synthetic rate limit'), {
+    status: 429,
+    headers: new Headers({ 'retry-after': '30', 'x-ratelimit-remaining': '0' }),
+  })).execute(search), (error: unknown) =>
+    error instanceof ManagedProviderRequestError && error.code === 'throttled');
+  assert.deepEqual(events(), [{ ...gmailLine, outcome: 'throttled', dispatched: true, httpStatus: 429 }]);
+
+  lines.length = 0;
+  await assert.rejects(
+    throwingProvider(Object.assign(new Error('synthetic unauthorized'), { status: 401 }), 'EXPIRED')
+      .execute(search),
+    ManagedAuthorizationExpiredError,
+  );
+  assert.deepEqual(events(), [{
+    ...gmailLine, outcome: 'authorization_expired', dispatched: true, httpStatus: 401,
+  }]);
+
+  // A manifest connector's chunk that fails to load is the error no provider path converts.
+  lines.length = 0;
+  t.mock.method(MANAGED_CONNECTOR_CATALOG, 'detail', () => ({
+    async load() { throw new Error('synthetic chunk failure'); },
+  }));
+  await assert.rejects(throwingProvider(new Error('no Composio call')).execute({
+    policy: { ...POLICY, toolkit: 'cal', allowedCapabilities: ['cal.fetch_all_bookings'] },
+    capability: 'cal.fetch_all_bookings',
+    arguments: {},
+  }), /synthetic chunk failure/);
+  assert.deepEqual(events(), [{
+    event: 'chickpea.managed_connection.execute_failed',
+    adapterId: 'composio',
+    toolkit: 'cal',
+    capability: 'cal.fetch_all_bookings',
+    outcome: 'failed',
+  }]);
+
+  for (const content of ['synthetic rate limit', 'synthetic unauthorized', 'synthetic chunk failure', 'synthetic-sender']) {
+    assert.ok(!output.some((line) => line.includes(content)), `logs carry no ${content}`);
+  }
 });
 
 test('post-dispatch write transport failures are ambiguous while reads remain safely retryable', async () => {

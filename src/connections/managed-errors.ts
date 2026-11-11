@@ -18,6 +18,8 @@ export interface ManagedProviderFailureMetadata {
   remoteCallCount: number;
   providerToolCallCount: number;
   httpStatus?: number;
+  /** The connected service's status, when the provider's own result reports one. */
+  providerStatus?: number;
   rateLimitRemaining?: number;
   retryAfterMs?: number;
   providerLogId?: string;
