@@ -200,7 +200,7 @@ function failingSearchProvider(response: {
   });
 }
 
-test('a Composio-reported failure gives the model the service reason, redacted and bounded', async () => {
+test('a Composio-reported failure gives the model the service reason, filtered and bounded', async () => {
   const provider = failingSearchProvider({
     data: { status_code: 400 },
     error: SYNTHETIC_PROVIDER_ERROR,
@@ -223,7 +223,7 @@ test('a Composio-reported failure gives the model the service reason, redacted a
   assert.ok(error.message.startsWith(prefix), error.message);
   const reason = error.message.slice(prefix.length);
   assert.ok(reason.startsWith('Invalid filter: property "synthetic_stage" does not exist on contacts. ' +
-    'Sent with [redacted].'), reason);
+    'Sent with […] detail detail'), reason);
   assert.ok(!error.message.includes('xoxb-'));
   assert.ok(reason.length <= 1_000 && reason.endsWith(' detail…'), reason);
 });
@@ -260,68 +260,53 @@ async function reportedFailureMessage(error: string): Promise<string> {
   return failure.message;
 }
 
-test('a reported failure keeps URL queries, URL logins and named credentials from the model', async () => {
-  assert.equal(
-    await reportedFailureMessage(
-      '401 Client Error: Unauthorized for url: ' +
-      'https://synthetic-user:synthetic-pass@api.example.test/1/boards/synthetic?key=synthetic-key-value&token=synthetic-token-value ' +
-      'after Authorization: Bearer synthetic.bearer-value_1234 and refresh_token=synthetic-refresh-value ' +
-      'and {"api_key":"synthetic-api-key-value"} with test-key. Bearer authentication failed.',
-    ),
-    `${REPORTED_FAILURE_PREFIX}401 Client Error: Unauthorized for url: ` +
-      'https://api.example.test/1/boards/synthetic?[redacted] ' +
-      'after Authorization: Bearer [redacted] and refresh_token=[redacted] ' +
-      'and {"api_key":"[redacted]"} with [redacted]. Bearer authentication failed.',
-  );
-  assert.equal(
-    await reportedFailureMessage(
-      'Upstream echoed {"access_token":"syntheticOAuthToken42","refresh_token":"syntheticRefreshToken42"} ' +
-      'and Authorization: Basic c3ludGhldGljOnN5bnRoZXRpYw== and "authorization":"syntheticOpaqueValue" ' +
-      'and a header of Basic c3ludGhldGljOnBhc3M9 too. Basic authentication is required.',
-    ),
-    `${REPORTED_FAILURE_PREFIX}Upstream echoed {"access_token":"[redacted]","refresh_token":"[redacted]"} ` +
-      'and Authorization: Basic [redacted] and "authorization":"[redacted]" ' +
-      'and a header of Basic [redacted] too. Basic authentication is required.',
-  );
-});
-
-test('a credential the redaction bound cuts is dropped, not shown in part', async () => {
-  // Indented text: once its whitespace collapses, the end of the scanned text is in view.
-  const lead = `Upstream said:${' '.repeat(1_700)}${'detail '.repeat(42)}`;
-  assert.ok(lead.length < 2_024 && lead.length + SYNTHETIC_SLACK_TOKEN.length > 2_024);
-
-  const indented = await reportedFailureMessage(`${lead}${SYNTHETIC_SLACK_TOKEN} and more`);
-  assert.equal(indented, `${REPORTED_FAILURE_PREFIX}Upstream said: ${'detail '.repeat(42)}[redacted] and more`);
-
-  // A redacted key shortens the text the same way. The bound falls inside the token, where it
-  // is too short to match its signature.
-  const key = `-----BEGIN PRIVATE KEY----- ${'A'.repeat(1_200)} -----END PRIVATE KEY-----`;
-  const head = `${`${key} ${'detail '.repeat(200)}`.slice(0, 2_015)} `;
-  assert.ok(head.length === 2_016 && !head.includes('  '));
-  const shortened = await reportedFailureMessage(`${head}${SYNTHETIC_SLACK_TOKEN} and more`);
-  assert.equal(
-    shortened,
-    `${REPORTED_FAILURE_PREFIX}[redacted] ${head.slice(key.length + 1).trimEnd()}…`,
-  );
-});
-
-test('a reported failure keeps cookies, key shapes, escaped fields and escaped signed URLs from the model', async () => {
+test('every reproduction from the reviews of this change reaches the model as […]', async () => {
   const cases: [string, string][] = [
-    ['Cookie: sessionid=syntheticSession42; theme=light', 'Cookie: [redacted]'],
-    ['Set-Cookie: sid=syntheticSession42; HttpOnly', 'Set-Cookie: [redacted]'],
-    ['Invalid API key provided: sk_live_syntheticStripeCredential42', 'Invalid API key provided: [redacted]'],
+    // The #737 security review.
+    ['Authorization: Bearer syntheticOAuthToken42', 'Authorization: Bearer […]'],
+    ['{"access_token":"syntheticOAuthToken42","refresh_token":"syntheticRefreshToken42"}', '[…]'],
+    // The first security re-review.
+    ['Cookie: sessionid=syntheticSession42; theme=light', 'Cookie: […]'],
+    ['Set-Cookie: sid=syntheticSession42; HttpOnly', 'Set-Cookie: […] HttpOnly'],
+    ['Invalid API key provided: sk_live_syntheticStripeCredential42', 'Invalid API key provided: […]'],
+    [String.raw`Request body: {\"client_secret\":\"syntheticClientSecret42\"}`, 'Request body: […]'],
+    [String.raw`403 for https:\/\/files.example.test\/object?X-Amz-Signature=syntheticSignature42`, '403 for […]'],
+    ['Request body: client%5Fsecret=syntheticClientSecret42', 'Request body: […]'],
+    ['Request body: {&quot;client_secret&quot;:&quot;syntheticClientSecret42&quot;}', 'Request body: […]'],
+    // The second security re-review.
+    ['Cookie: sid="SyntheticCookie42"; theme=light', 'Cookie: […]'],
+    ['Set-Cookie: sid="SyntheticCookie42"; HttpOnly', 'Set-Cookie: […] HttpOnly'],
+    ...['%40', '%2F', '%3F', '%23'].map((escape): [string, string] =>
+      [`https://user:first${escape}SyntheticTail42@db.example.test/v1`, '[…]']),
+    ['https://files.example.test/object?x=first%22SyntheticTail42', '[…]'],
+    [String.raw`{"client_secret":"first\"SyntheticTail42"}`, '[…]'],
     [
-      String.raw`Request body: {\"client_secret\":\"syntheticClientSecret42\"}`,
-      'Request body: {"client_secret":"[redacted]"}',
+      '{"error":"invalid_client","error_description":"Invalid client_secret: first,SyntheticTail42"}',
+      '[…] client_secret: […]',
+    ],
+    ['password=first;SyntheticTail42', '[…]'],
+    ['api_key=first%20SyntheticTail42', '[…]'],
+    // `first` is a plain word, the residual every allowlist of words has; the rest is dropped.
+    ['Authorization: Bearer first\nSyntheticTail42', 'Authorization: Bearer first […]'],
+    [String.raw`Authorization: Bearer first\nSyntheticTail42`, 'Authorization: Bearer first […]'],
+    ['{"cookies":{"nested":{"sid":"SyntheticInner42"},"other":"SyntheticOther42"}}', '[…]'],
+    ['Invalid API key provided: keySyntheticAb123', 'Invalid API key provided: […]'],
+    ['HTTP 403 record for other-tenant@example.test: balance overdue', 'HTTP 403 record for […] balance overdue'],
+    // The first review's cases, with the turn's Composio key.
+    [
+      '401 Client Error: Unauthorized for url: ' +
+        'https://synthetic-user:synthetic-pass@api.example.test/1/boards/synthetic?key=synthetic-key-value&token=synthetic-token-value ' +
+        'after Authorization: Bearer synthetic.bearer-value_1234 and refresh_token=synthetic-refresh-value ' +
+        'and {"api_key":"synthetic-api-key-value"} with test-key. Bearer authentication failed.',
+      '401 Client Error: Unauthorized for url: […] after Authorization: Bearer […] and […] and […] with […] ' +
+        'Bearer authentication failed.',
     ],
     [
-      String.raw`403 for https:\/\/files.example.test\/object?X-Amz-Signature=syntheticSignature42`,
-      '403 for https://files.example.test/object?[redacted]',
-    ],
-    ['Request body: client%5Fsecret=syntheticClientSecret42', 'Request body: client_secret=[redacted]'],
-    [
-      'Request body: {&quot;client_secret&quot;:&quot;syntheticClientSecret42&quot;}',
-      'Request body: {"client_secret":"[redacted]"}',
+      'Upstream echoed {"access_token":"syntheticOAuthToken42","refresh_token":"syntheticRefreshToken42"} ' +
+        'and Authorization: Basic c3ludGhldGljOnN5bnRoZXRpYw== and "authorization":"syntheticOpaqueValue" ' +
+        'and a header of Basic c3ludGhldGljOnBhc3M9 too. Basic authentication is required.',
+      'Upstream echoed […] and Authorization: Basic […] and […] and a header of Basic […] too. ' +
+        'Basic authentication is required.',
     ],
   ];
   for (const [error, reason] of cases) {
@@ -329,54 +314,18 @@ test('a reported failure keeps cookies, key shapes, escaped fields and escaped s
   }
 });
 
+test('a token the 1,000-character cut lands in shows no part of itself', async () => {
+  const words = 'detail '.repeat(142);
+  assert.ok(words.length < 999 && words.length + SYNTHETIC_SLACK_TOKEN.length > 999);
+  assert.equal(
+    await reportedFailureMessage(`${words}${SYNTHETIC_SLACK_TOKEN} and more`),
+    `${REPORTED_FAILURE_PREFIX}${words.trimEnd()}…`,
+  );
+});
+
 test('a typical validation error reaches the model whole', async () => {
   const error = "Property 'x' is not allowed for object type 'contacts'";
   assert.equal(await reportedFailureMessage(error), `${REPORTED_FAILURE_PREFIX}${error}`);
-});
-
-test('no part of a token or a secret value shows at either bound', async () => {
-  // A long run the scrubber removes first brings the end of the scanned text into view.
-  const removed = 'Q2hpY2twZWFTeW50aGV0aWNLZXkxMjM0NTY3ODkw';
-
-  // A quoted value with spaces, cut by the scan bound inside its third word.
-  const field = '"password": "correct horse battery staple" rest';
-  const fieldLead = `${removed.repeat(28)} ${'detail '.repeat(125)}`;
-  assert.equal(`${fieldLead}${field}`.slice(2_022, 2_026), ' bat');
-  assert.equal(
-    await reportedFailureMessage(`${fieldLead}${field}`),
-    `${REPORTED_FAILURE_PREFIX}[redacted] ${'detail '.repeat(125)}"password": "[redacted]…`,
-  );
-
-  // A cookie run cut by the scan bound.
-  const cookie = 'Cookie: theme=light; sid=syntheticSession42; lang=en-US; tz=UTC rest';
-  const cookieLead = `${removed.repeat(28)} ${'detail '.repeat(122)}`;
-  assert.equal(`${cookieLead}${cookie}`.slice(2_022, 2_026), 'ng=e');
-  assert.equal(
-    await reportedFailureMessage(`${cookieLead}${cookie}`),
-    `${REPORTED_FAILURE_PREFIX}[redacted] ${'detail '.repeat(122)}Cookie: [redacted]…`,
-  );
-
-  // A token run longer than the margin, cut by the scan bound: none of it shows.
-  const token = 'Zk3pQ9xLm2Rt7VbN4cWd'.repeat(100);
-  const tokenLead = `${removed.repeat(5)} ${'detail '.repeat(110)}`;
-  assert.ok(tokenLead.length > 1_000 - 32 && tokenLead.length < 1_000);
-  assert.equal(
-    await reportedFailureMessage(`${tokenLead}${token} rest`),
-    `${REPORTED_FAILURE_PREFIX}[redacted] ${'detail '.repeat(110).trimEnd()}…`,
-  );
-
-  // A short token the 16,384-character source bound lands in, in text that collapses to little.
-  const indented = `detail ${' '.repeat(16_370)}syntheticShortTail42 rest`;
-  assert.equal(indented.slice(16_380, 16_388), 'theticSh');
-  assert.equal(await reportedFailureMessage(indented), `${REPORTED_FAILURE_PREFIX}detail…`);
-
-  // A short unrecognized token the 1,000-character cut lands in.
-  const words = 'detail '.repeat(142);
-  assert.ok(words.length < 999 && words.length + 'syntheticShort42'.length > 999);
-  assert.equal(
-    await reportedFailureMessage(`${words}syntheticShort42 and more`),
-    `${REPORTED_FAILURE_PREFIX}${words.trimEnd()}…`,
-  );
 });
 
 test('a YouTube write that cannot be verified logs its Composio log ID', async (t) => {

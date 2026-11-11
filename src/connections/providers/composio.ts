@@ -33,7 +33,6 @@ import {
   ManagedAuthorityDeniedError,
   ManagedProviderRequestError,
 } from '../managed-errors.ts';
-import { scrubServiceErrorText } from '../service-error-text.ts';
 import { manifestComposioCapabilities } from './composio/manifest-capabilities.ts';
 import type { ComposioManifest } from '../catalog/composio-manifests.ts';
 import {
@@ -2241,7 +2240,7 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
         const providerStatus = reportedProviderStatus(result.data);
         throw new ManagedProviderRequestError(
           'provider_unavailable',
-          reportedFailureMessage(providerStatus, reportedFailureReason(result.error, apiKey)),
+          reportedFailureMessage(providerStatus, await reportedFailureReason(result.error, apiKey)),
           {
             providerTool: capability.tool,
             providerVersion,
@@ -5622,12 +5621,6 @@ function recordExecutionFailure(
   }));
 }
 
-const MAX_REPORTED_FAILURE_REASON_CHARS = 1_000;
-// The scrubber reads this much more than the model does, so a shape the model's cut splits is
-// still whole when it is scrubbed.
-const REPORTED_FAILURE_SCRUB_MARGIN_CHARS = 1_024;
-const MAX_REPORTED_FAILURE_SOURCE_CHARS = 16_384;
-
 function reportedFailureMessage(
   providerStatus: number | undefined,
   reason: string | undefined,
@@ -5639,31 +5632,14 @@ function reportedFailureMessage(
     `retrying. Service error: ${reason}`;
 }
 
-/** Composio's own failure text, which can echo the request, so it is scrubbed and bounded. */
-function reportedFailureReason(error: unknown, apiKey: string): string | undefined {
-  if (typeof error !== 'string') return undefined;
-  // Whitespace collapses first, so the bounds count the characters the model would read.
-  const text = cutBeforeToken(error, MAX_REPORTED_FAILURE_SOURCE_CHARS)
-    .replace(/[\s\u0000-\u001f\u007f]+/g, ' ').trim();
-  const scanChars = MAX_REPORTED_FAILURE_REASON_CHARS + REPORTED_FAILURE_SCRUB_MARGIN_CHARS;
-  const cut = error.length > MAX_REPORTED_FAILURE_SOURCE_CHARS || text.length > scanChars;
-  // Everything is scrubbed before the model's cut, so no rule sees a split shape.
-  const reason = scrubServiceErrorText(cutBeforeToken(text, scanChars), [apiKey]);
-  if (!cut && reason.length <= MAX_REPORTED_FAILURE_REASON_CHARS) return reason || undefined;
-  const shown = cutBeforeToken(reason, MAX_REPORTED_FAILURE_REASON_CHARS - 1).trimEnd();
-  return shown ? `${shown}…` : undefined;
-}
-
 /**
- * The first `max` characters, less the token a cut lands in, however long: its start can be
- * part of a credential that no rule recognizes once it is cut. A scan, not a regex: `\S+$`
- * takes quadratic time over a long token followed by a space.
+ * Composio's own failure text, which can echo the request, so only what reads as language
+ * reaches the model. The filter loads on the first reported failure, not at Worker startup.
  */
-function cutBeforeToken(text: string, max: number): string {
-  if (text.length <= max) return text;
-  let end = max;
-  while (end > 0 && !/\s/.test(text.charAt(end))) end -= 1;
-  return text.slice(0, end);
+async function reportedFailureReason(error: unknown, apiKey: string): Promise<string | undefined> {
+  if (typeof error !== 'string') return undefined;
+  const { serviceErrorText } = await import('../service-error-text.ts');
+  return serviceErrorText(error, [apiKey]) || undefined;
 }
 
 /** The connected service's HTTP status, when Composio's failed result carries one. */

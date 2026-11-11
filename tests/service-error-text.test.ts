@@ -1,171 +1,266 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { scrubServiceErrorText } from '../src/connections/service-error-text.ts';
+import { serviceErrorText } from '../src/connections/service-error-text.ts';
 
-// Every credential below is synthetic.
-const scrub = (text: string) => scrubServiceErrorText(text, ['synthetic-composio-key']);
+// Every credential, identifier and message below is synthetic.
+const filter = (text: string) => serviceErrorText(text, ['synthetic-composio-key']);
+const keeps = (text: string) => assert.equal(filter(text), text, text);
+const drops = (core: string) => assert.equal(filter(`before ${core} after`), 'before […] after', core);
 
-test('a typical validation error survives whole', () => {
+test('a word stays in any script and in a word’s case, with an apostrophe inside it', () => {
+  for (const word of [
+    'contacts', 'Contacts', 'INVALID', 'objectType', 'HubSpot', 'OAuth', 'URLs', "doesn't", 'don’t',
+    'Ungültige', 'недопустимое', '无效的属性', 'twentyLettersInWords',
+  ]) {
+    keeps(`before ${word} after`);
+  }
+});
+
+test('a word with a digit, over 20 letters or in a generated key’s case is dropped', () => {
+  for (const core of ['syntheticToken42', 'SyntheticTail42', 'twentyOneLettersInWords', 'kQzPmXvTrLwNbHjD', 'aBcDeFgH']) {
+    drops(core);
+  }
+});
+
+test('a number of up to four digits stays, and a longer one is dropped', () => {
+  keeps('status 400 after 1000 tries, 0 left');
+  for (const core of ['12345', '123456', '4000000000000002']) drops(core);
+});
+
+test('an identifier of words stays', () => {
+  for (const identifier of [
+    'hs_lead_status', 'contacts.email', 'body.parent.page_id', 'requests[0].update_cells.fields', 'INVALID_ARGUMENT',
+    'non-existent', 'hs_v2_date_entered_lead', 'line_2', 'oauth2_scope', 'sheets.googleapis.com', 'crm.objects.contacts.read',
+  ]) {
+    keeps(`before ${identifier} after`);
+  }
+});
+
+test('an identifier with a forbidden character, too many digits or a long or numbered run is dropped', () => {
+  for (const core of [
+    'token=value', 'chat:write', 'files/object', 'member@example', 'first%second', 'first&second', 'first+second',
+    'first#second', 'first?second', String.raw`first\second`,
+    // A word plus a number alone reads as a password.
+    'summer24',
+    // Digits after a long run are how a synthetic or generated value ends.
+    'x_syntheticSecret42',
+    'sk_a1_b2_c3',
+    'client_secret_syntheticCredentialValueLong',
+    '12_synthetic_value',
+    `${'ab_'.repeat(21)}abc`,
+  ]) {
+    drops(core);
+  }
+});
+
+test('edge punctuation is set aside, and a backslash inside a chunk drops it', () => {
+  keeps(`("x"), [0] 'contacts'. {} - — “quoted” …`);
+  // JSON escaped twice keeps one backslash before each quote after the single unescape.
+  assert.equal(
+    filter(String.raw`Property \\\"hs_lead_status\\\" does not exist`),
+    String.raw`Property \"hs_lead_status\" does not exist`,
+  );
+  assert.equal(filter(String.raw`Bearer first\\nSyntheticTail`), 'Bearer […]');
+});
+
+test('JSON string escapes are decoded once', () => {
+  assert.equal(filter(String.raw`Property "hs_lead_status" is unknown\nTry again`), 'Property "hs_lead_status" is unknown Try again');
+  assert.equal(filter(String.raw`Path \/v1\/objects is not allowed`), 'Path […] is not allowed');
+  assert.equal(filter(String.raw`Field \\u0041BC failed`), 'Field […] failed');
+});
+
+test('the turn key and the shared credential signatures drop their chunk first', () => {
+  assert.equal(
+    filter(`Rejected synthetic-composio-key, then xoxb-${'1'.repeat(12)}-${'a'.repeat(24)} and Bearer xoxb-${'2'.repeat(12)}-${'b'.repeat(24)}.`),
+    'Rejected […] then […] and Bearer […]',
+  );
+});
+
+test('a run of dropped chunks becomes one marker', () => {
+  assert.equal(filter('a %1 %2\n%3 b %4'), 'a […] b […]');
+});
+
+test('the text is cut between chunks to 1,000 characters, ending in an ellipsis', () => {
+  const words = 'detail '.repeat(200);
+  const shown = filter(words);
+  assert.equal(shown, `${'detail '.repeat(142).trimEnd()}…`);
+  assert.ok(shown.length <= 1_000);
+  // A dropped chunk at the cut leaves no marker before the ellipsis.
+  assert.equal(filter(`${'detail '.repeat(142)}%dropped ${'detail '.repeat(10)}`), `${'detail '.repeat(142).trimEnd()}…`);
+  assert.equal(filter('detail '.repeat(142).trimEnd()), 'detail '.repeat(142).trimEnd());
+});
+
+test('only the first 16,384 characters are read, and the chunk the cut lands in is dropped whole', () => {
+  // `syntheticpassphrase` is a word, so a cut that kept part of it would show its start.
+  const lead = `detail${' '.repeat(16_372)}`;
+  const text = `${lead}syntheticpassphrase rest`;
+  assert.equal(text.slice(16_378, 16_386), 'syntheti');
+  assert.equal(filter(text), 'detail…');
+  assert.equal(filter(`${'%a '.repeat(5_461)}%a`), '');
+});
+
+/**
+ * Synthetic failures written in the styles the services document: HubSpot's, Notion's and
+ * Google's error objects, Python's dict repr as an SDK prints them, an HTTP client's status
+ * line and Slack's Web API bodies. `keeps` holds what the model needs to correct the request.
+ */
+const UUID = '00000000-1111-2222-3333-444444444444';
+const CORPUS: { text: string; keeps: string[] }[] = [
+  {
+    text: String.raw`{"status": "error", "message": "Property values were not valid: [{\"isValid\":false,\"message\":\"Property \\\"hs_lead_statu\\\" does not exist\",\"error\":\"PROPERTY_DOESNT_EXIST\",\"name\":\"hs_lead_statu\"}]", "correlationId": "${UUID}", "category": "VALIDATION_ERROR"}`,
+    keeps: ['Property values were not valid', String.raw`\"hs_lead_statu\" does not`, '"category": "VALIDATION_ERROR"'],
+  },
+  {
+    text: `{"status": "error", "message": "This app hasn't been granted all required scopes to make this call. Read more about required scopes here: https://developers.example.test/scopes.", "correlationId": "${UUID}", "errors": [{"message": "One or more of the following scopes are required.", "context": {"requiredGranularScopes": ["crm.objects.contacts.read"]}}], "category": "MISSING_SCOPES"}`,
+    keeps: ["This app hasn't been granted all required scopes", 'crm.objects.contacts.read', 'MISSING_SCOPES'],
+  },
+  {
+    text: `{"status": "error", "message": "You have reached your secondly limit.", "errorType": "RATE_LIMIT", "correlationId": "${UUID}", "policyName": "SECONDLY"}`,
+    keeps: ['You have reached your secondly limit.', '"RATE_LIMIT"', '"SECONDLY"'],
+  },
+  {
+    text: '404 Client Error: Not Found for url: https://api.example.test/crm/v3/objects/contacts/9000000001',
+    keeps: ['404 Client Error: Not Found for url: […]'],
+  },
+  {
+    text: "{'status': 'error', 'message': 'Invalid input JSON on line 1, column 42: Unable to find property synthetic_stage on object type contacts', 'category': 'VALIDATION_ERROR', 'subCategory': 'INVALID_PROPERTY'}",
+    keeps: ['Unable to find property synthetic_stage on object type contacts', "'INVALID_PROPERTY'"],
+  },
+  {
+    text: String.raw`{"object": "error", "status": 400, "code": "validation_error", "message": "body failed validation: body.parent.page_id should be a valid uuid, instead was \"not-a-uuid\"."}`,
+    keeps: ['"status": 400', '"validation_error"', 'body.parent.page_id should be a valid uuid'],
+  },
+  {
+    text: `{"object":"error","status":404,"code":"object_not_found","message":"Could not find database with ID: ${UUID}. Make sure the relevant pages and databases are shared with your integration."}`,
+    keeps: ['not find database with ID: […] Make sure the relevant pages and databases are shared'],
+  },
+  {
+    text: '{"object": "error", "status": 429, "code": "rate_limited", "message": "You have been rate limited. Please try again in a few minutes."}',
+    keeps: ['"status": 429', '"rate_limited"', 'Please try again in a few minutes.'],
+  },
+  {
+    text: '{"object": "error", "status": 403, "code": "restricted_resource", "message": "Insufficient permissions for this endpoint."}',
+    keeps: ['"status": 403', '"restricted_resource"', 'Insufficient permissions for this endpoint.'],
+  },
+  {
+    text: 'body failed validation: body.properties.Stage.select.name should be a string, instead was 42.',
+    keeps: ['body.properties.Stage.select.name should be a string, instead was 42.'],
+  },
+  {
+    text: 'Could not find property with name or id: Stage Owner',
+    keeps: ['Could not find property with name or id: Stage Owner'],
+  },
+  {
+    text: String.raw`{"error": {"code": 400, "message": "Invalid value at 'requests[0].update_cells.fields', \"userEnteredValue.synthetic\"", "status": "INVALID_ARGUMENT"}}`,
+    keeps: ['"code": 400', "'requests[0].update_cells.fields'", 'userEnteredValue.synthetic', 'INVALID_ARGUMENT'],
+  },
+  {
+    text: '{"error": {"code": 403, "message": "Request had insufficient authentication scopes.", "errors": [{"message": "Insufficient Permission", "domain": "global", "reason": "insufficientPermissions"}], "status": "PERMISSION_DENIED", "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "ACCESS_TOKEN_SCOPE_INSUFFICIENT", "domain": "googleapis.com"}]}}',
+    keeps: ['"code": 403', 'insufficient authentication scopes', 'PERMISSION_DENIED', 'ACCESS_TOKEN_SCOPE_INSUFFICIENT'],
+  },
+  {
+    text: "Quota exceeded for quota metric 'Read requests' and limit 'Read requests per minute per user' of service 'sheets.googleapis.com' for consumer 'project_number:000000000000'.",
+    keeps: ["limit 'Read requests per minute per user' of service 'sheets.googleapis.com' for consumer […]"],
+  },
+  {
+    text: `<HttpError 404 when requesting https://www.example.test/calendar/v3/calendars/primary/events/synthetic?alt=json returned "Not Found". Details: "[{'domain': 'global', 'reason': 'notFound', 'message': 'Not Found'}]">`,
+    keeps: ['<HttpError 404 when requesting […] returned "Not Found".', "'notFound'"],
+  },
+  {
+    text: 'Invalid JSON payload received. Unknown name "valueInputOptin": Cannot find field.',
+    keeps: ['Unknown name "valueInputOptin": Cannot find field.'],
+  },
+  {
+    text: "The request to the Slack API failed. (url: https://slack.example.test/api/chat.postMessage)\nThe server responded with: {'ok': False, 'error': 'not_in_channel'}",
+    keeps: ["The server responded with: {'ok': False, 'error': 'not_in_channel'}"],
+  },
+  { text: "The server responded with: {'ok': False, 'error': 'ratelimited'}", keeps: ["'error': 'ratelimited'"] },
+  {
+    text: "The server responded with: {'ok': False, 'error': 'invalid_blocks', 'errors': ['must provide a valid block_id [json-pointer:/blocks/0/block_id]']}",
+    keeps: ["'invalid_blocks'", 'must provide a valid block_id'],
+  },
+  {
+    text: "The server responded with: {'ok': False, 'error': 'missing_scope', 'needed': 'chat:write', 'provided': 'channels:read,users:read'}",
+    keeps: ["'error': 'missing_scope', 'needed': […]"],
+  },
+  { text: '{"ok":false,"error":"channel_not_found"}', keeps: [] },
+  { text: '{"ok":false,"error":"missing_scope","needed":"chat:write","provided":"channels:read,users:read"}', keeps: [] },
+];
+
+/** Whitespace chunks once JSON escapes are decoded: an escaped line break splits, others do not. */
+function sourceChunks(text: string): number {
+  return text.replace(/\\[nrt]/g, ' ').split(/\s+/).filter(Boolean).length;
+}
+
+test('realistic service errors keep their field names, error codes and statuses', (t) => {
+  let chunks = 0;
+  let kept = 0;
+  for (const { text, keeps: phrases } of CORPUS) {
+    const shown = filter(text);
+    for (const phrase of phrases) assert.ok(shown.includes(phrase), `${phrase}\n  in ${shown}`);
+    chunks += sourceChunks(text);
+    kept += shown.split(' ').filter((chunk) => chunk && chunk !== '[…]').length;
+  }
+  t.diagnostic(`${kept} of ${chunks} chunks kept (${(100 * kept / chunks).toFixed(1)}%)`);
+  assert.ok(kept / chunks >= 0.9, `${kept} of ${chunks}`);
+});
+
+test('compact JSON keeps none of its glued values, a known cost', () => {
+  assert.equal(filter('{"ok":false,"error":"channel_not_found"}'), '[…]');
+  assert.equal(filter('Request body: {"client_secret":"syntheticClientSecretValue"}'), 'Request body: […]');
+});
+
+/** Synthetic keys from a seeded generator (mulberry32), so each run checks the same ones. */
+function syntheticKeys(alphabet: string, length: number, count: number): string[] {
+  let seed = 0x5eed + length;
+  const next = () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let mixed = Math.imul(seed ^ (seed >>> 15), seed | 1);
+    mixed ^= mixed + Math.imul(mixed ^ (mixed >>> 7), mixed | 61);
+    return ((mixed ^ (mixed >>> 14)) >>> 0) / 2 ** 32;
+  };
+  return Array.from({ length: count }, () =>
+    Array.from({ length }, () => alphabet.charAt(Math.floor(next() * alphabet.length))).join(''));
+}
+
+const LOWER = 'abcdefghijklmnopqrstuvwxyz';
+const LETTERS = `${LOWER}${LOWER.toUpperCase()}`;
+const BASE62 = `${LETTERS}0123456789`;
+const shownKeys = (keys: string[]) => keys.filter((key) => filter(`key ${key} rejected`) !== 'key […] rejected');
+
+test('a generated key over 20 characters is dropped', () => {
+  const shapes: [string, string[]][] = [
+    ['base62, 21 to 64', [21, 24, 32, 40, 64].flatMap((length) => syntheticKeys(BASE62, length, 400))],
+    ['hex, 32 to 64', [32, 40, 64].flatMap((length) => syntheticKeys('0123456789abcdef', length, 400))],
+    ['base64url, 32 and 43', [32, 43].flatMap((length) => syntheticKeys(`${BASE62}-_`, length, 400))],
+    ['base64, 40', syntheticKeys(`${BASE62}+/`, 40, 400)],
+    ['a Stripe-style prefix', syntheticKeys(BASE62, 24, 400).map((key) => `sk_live_${key}`)],
+    ['a JWT shape', syntheticKeys(`${BASE62}-_`, 36, 400).map((key) => `${key.slice(0, 12)}.${key.slice(12, 24)}.${key.slice(24)}`)],
+    ['lowercase letters, 21 to 32', [21, 24, 32].flatMap((length) => syntheticKeys(LOWER, length, 400))],
+  ];
+  for (const [shape, keys] of shapes) assert.deepEqual(shownKeys(keys), [], shape);
+});
+
+test('a short key with no digit can read as a word: always in one case, rarely in mixed case', () => {
+  // Exactly 17,711 of the 2^20 case patterns of 20 letters read as a word: 1.69%.
+  const mixed = shownKeys(syntheticKeys(LETTERS, 20, 4_000)).length;
+  assert.ok(mixed <= 100, `${mixed} of 4,000 mixed-case 20-letter keys`);
+  // A 16-character base62 key has no digit 6% of the time: 0.24% read as a word.
+  const base62 = shownKeys(syntheticKeys(BASE62, 16, 4_000)).length;
+  assert.ok(base62 <= 40, `${base62} of 4,000 16-character base62 keys`);
+  assert.deepEqual(shownKeys(syntheticKeys(LOWER, 20, 100)).length, 100);
+});
+
+test('a hostile 16 KiB text takes linear time', () => {
+  const fill = (unit: string) => unit.repeat(Math.ceil(16_384 / unit.length)).slice(0, 16_384);
   for (const text of [
-    "Property 'x' is not allowed for object type 'contacts'",
-    'HTTP 400: Invalid value at \'requests[0].update_cells.fields\' for property hs_analytics_first_touch_converting_campaign',
-    '{"error":{"code":400,"message":"Unknown field","status":"INVALID_ARGUMENT"},"errorCode":"PROPERTY_DOESNT_EXIST",' +
-      '"private":false,"token":null,"session":""}',
-    'POST https://api.example.test/crm/v3/objects/contacts/search failed with 400 Bad Request',
+    `${'.'.repeat(16_383)}x`, fill(String.raw`\"`), fill(String.raw`\n`), fill('%a '), fill('-----BEGIN '),
+    fill('xoxb-'), fill(`${'ab_'.repeat(21)}a `), fill('((((((((((((((((a '), fill('aB'),
   ]) {
-    assert.equal(scrub(text), text);
-  }
-});
-
-test('the existing redaction still runs: the turn key and the shared signatures', () => {
-  assert.equal(
-    scrub(`Rejected synthetic-composio-key and xoxb-${'1'.repeat(12)}-${'a'.repeat(24)}`),
-    'Rejected [redacted] and [redacted]',
-  );
-});
-
-test('a Cookie or Set-Cookie header loses every pair after it', () => {
-  assert.equal(scrub('Sent Cookie: theme=light; SID=syntheticSession42 to the API'), 'Sent Cookie: [redacted] to the API');
-  assert.equal(
-    scrub('Set-Cookie: lang=en; sid=syntheticSession42; HttpOnly; Path=/ was returned'),
-    'Set-Cookie: [redacted] was returned',
-  );
-  assert.equal(
-    scrub('{"headers":{"Cookie":"theme=light; sid=syntheticSession42"}}'),
-    '{"headers":{"Cookie":"[redacted]"}}',
-  );
-  assert.equal(
-    scrub('{"set-cookie": ["lang=en; HttpOnly", "sid=syntheticSession42"], "status": 401}'),
-    '{"set-cookie": [redacted], "status": 401}',
-  );
-  assert.equal(scrub('"cookies": {"sid": "syntheticSession42"}'), '"cookies": [redacted]');
-});
-
-test('a secret-named field loses its value in every syntax', () => {
-  const cases: [string, string][] = [
-    ['client_secret=syntheticClientSecret42 rest', 'client_secret=[redacted] rest'],
-    ['X-Api-Key: syntheticApiKey42 rest', 'X-Api-Key: [redacted] rest'],
-    ['{"client_secret":"synthetic Client Secret 42"}', '{"client_secret":"[redacted]"}'],
-    ["{'client_secret': 'syntheticClientSecret42'}", "{'client_secret': '[redacted]'}"],
-    [':password => "syntheticPassword42"', ':password => "[redacted]"'],
-    ['("x-session-id", "syntheticSession42")', '("x-session-id", "[redacted]")'],
-    ['params[api_key]=syntheticApiKey42', 'params[api_key]=[redacted]'],
-    ['"refresh_tokens":["syntheticRefresh42","syntheticRefresh43"]', '"refresh_tokens":[redacted]'],
-    ['"credentials":{"client_id":"public-id","client_secret":"syntheticClientSecret42"}', '"credentials":[redacted]'],
-    ['<sessionToken>syntheticSession42</sessionToken>', '<sessionToken>[redacted]</sessionToken>'],
-    ['token: Bearer syntheticBearerValue', 'token: Bearer [redacted]'],
-    ['Authorization: Custom syntheticCustomValue', 'Authorization: Custom [redacted]'],
-    ['"Authorization":"Bearer synthetic bearer value"', '"Authorization":"[redacted]"'],
-  ];
-  for (const [text, scrubbed] of cases) assert.equal(scrub(text), scrubbed, text);
-});
-
-test('every secret word names a secret field, in any case and with any separator', () => {
-  const names = [
-    'client_secret', 'access-token', 'apiKey', 'api.key', 'API KEY', 'password', 'passwd', 'pwd', 'x-auth',
-    'credentials', 'sessionId', 'COOKIE', 'cookieValue', 'Signature', 'sig', 'auth_code', 'otp', 'bearer', 'private_key',
-    'privatePem',
-  ];
-  for (const name of names) {
-    assert.equal(scrub(`${name}: syntheticValue42 ok`), `${name}: [redacted] ok`, name);
-  }
-  assert.equal(scrub('otp=123456'), 'otp=[redacted]');
-  // A name that is secret only for "code" keeps a status or an error code, never a code value.
-  assert.equal(scrub('statusCode=404 error_code=NOT_FOUND code=4/0SyntheticCode'), 'statusCode=404 error_code=NOT_FOUND code=[redacted]');
-});
-
-test('escaped and encoded text is decoded, and only the decoded text is scrubbed and returned', () => {
-  const field = '{"client_secret":"[redacted]"}';
-  const cases: [string, string][] = [
-    [String.raw`{\"client_secret\":\"syntheticClientSecret42\"}`, field],
-    [String.raw`{\\\"client_secret\\\":\\\"syntheticClientSecret42\\\"}`, field],
-    [String.raw`{\u0022client_secret\u0022:\u0022syntheticClientSecret42\u0022}`, field],
-    [String.raw`{\x22client_secret\x22:\x22syntheticClientSecret42\x22}`, field],
-    ['%7B%22client_secret%22%3A%22syntheticClientSecret42%22%7D', field],
-    ['client%5Fsecret=syntheticClientSecret42', 'client_secret=[redacted]'],
-    ['client%255Fsecret%253DsyntheticClientSecret42', 'client_secret=[redacted]'],
-    ['{&quot;client_secret&quot;:&quot;syntheticClientSecret42&quot;}', field],
-    ['{&#34;client_secret&#x22;:&#34;syntheticClientSecret42&#34;}', field],
-    ['{&amp;quot;client_secret&amp;quot;:&amp;quot;syntheticClientSecret42&amp;quot;}', field],
-    [String.raw`Cookie: sid=syntheticSession42\r\nHost: api.example.test`, 'Cookie: [redacted] Host: api.example.test'],
-  ];
-  for (const [text, scrubbed] of cases) assert.equal(scrub(text), scrubbed, text);
-});
-
-test('a URL keeps no login, query, fragment or token-shaped path segment, with or without a scheme', () => {
-  const cases: [string, string][] = [
-    [
-      String.raw`403 for https:\/\/files.example.test\/object?X-Amz-Signature=syntheticSignature42`,
-      '403 for https://files.example.test/object?[redacted]',
-    ],
-    [
-      'GET files.example.test/object?Expires=1700000000&Policy=c3ludGhldGlj',
-      'GET files.example.test/object?[redacted]',
-    ],
-    ['https://app.example.test/callback#state=syntheticState42', 'https://app.example.test/callback#[redacted]'],
-    ['https://synthetic-user:synthetic-pass@api.example.test/v1', 'https://api.example.test/v1'],
-    ['https://syntheticLoginValue@git.example.test/org/repo.git', 'https://git.example.test/org/repo.git'],
-    ['//cdn.example.test/v1/object?Policy=c3ludGhldGlj', '//cdn.example.test/v1/object?[redacted]'],
-    ['connect synthetic-user:synthetic-pass@db.example.test:5432 failed', 'connect db.example.test:5432 failed'],
-    [
-      'POST https://hooks.example.test/services/Zk3pQ9xLm2Rt7VbN4cWd failed',
-      'POST https://hooks.example.test/services/[redacted] failed',
-    ],
-    // Neighbouring segments that are not words count as one token, as a decoded %2F splits one.
-    [
-      'POST https://hooks.example.test/services/T0SYNTH01/B0SYNTH02/Zk3pQ9xLm2Rt7 failed',
-      'POST https://hooks.example.test/services/[redacted] failed',
-    ],
-    [
-      'GET https://api.example.test/v1/tokens/aB3dE5fG7hI9%2FkL1mN3oP5qR7%2FsT9uV1wX3yZ5/info',
-      'GET https://api.example.test/v1/tokens/[redacted]/info',
-    ],
-    ['GET v1/files/Zk3pQ9xLm2Rt7VbN4cWd failed', 'GET v1/files/[redacted] failed'],
-    // A segment the long-run rule would split at its tilde.
-    ['GET https://cdn.example.test/v1/Zk3pQ9xLm2~Rt7VbN4cWd/file.png', 'GET https://cdn.example.test/v1/[redacted]/file.png'],
-    ['GET /crm/v3/objects/contacts/12345678901/associations failed', 'GET /crm/v3/objects/contacts/12345678901/associations failed'],
-    ['GET /v1/download?Policy=c3ludGhldGlj&Key-Pair-Id=K2SYNTH failed', 'GET /v1/download?[redacted] failed'],
-    [
-      'redirect_uri=https%3A%2F%2Fapp.example.test%2Fcb%3Fstate%3DsyntheticState42',
-      'redirect_uri=https://app.example.test/cb?[redacted]',
-    ],
-    ['Did you mean contacts.search?', 'Did you mean contacts.search?'],
-  ];
-  for (const [text, scrubbed] of cases) assert.equal(scrub(text), scrubbed, text);
-});
-
-test('a bearer or basic value outside a header is removed', () => {
-  assert.equal(
-    scrub('Sent Bearer synthetic.value-42 and Basic c3ludGhldGlj. Basic authentication failed.'),
-    'Sent Bearer [redacted] and Basic [redacted] Basic authentication failed.',
-  );
-});
-
-test('known token prefixes are removed whatever their length', () => {
-  for (const token of [
-    'sk_live_syntheticStripeCredential42', 'rk_test_synthetic42', 'whsec_synthetic42', 'glpat-synthetic42',
-    'ya29.synthetic-access42', 'shpat_synthetic42', 'ntn_synthetic42', 'lin_api_synthetic42', 'ATATTsynthetic42',
-    'SG.synthetic42.value42', 'npm_synthetic42', 'figd_synthetic42', `sk-${'synthetic'}OpenAiKey42`,
-  ]) {
-    assert.equal(scrub(`Invalid API key provided: ${token} today`), 'Invalid API key provided: [redacted] today', token);
-  }
-});
-
-test('a long base64, base64url or hex run is removed, and a long run of words is not', () => {
-  for (const run of [
-    'Q2hpY2twZWFTeW50aGV0aWNLZXkxMjM0NTY3ODkw',
-    'wJalrXUtnFEMI/K7MDENG+bPxRfiCYSYNTHETIC==',
-    '5f3c9a1e7b2d4f6a8c0e1b3d5f7a9c2e',
-    'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzeW50aGV0aWMifQ.c3ludGhldGljU2lnbmF0dXJl',
-  ]) {
-    assert.equal(scrub(`Rejected ${run} now`), 'Rejected [redacted] now', run);
-  }
-  for (const words of [
-    'properties.hs_analytics_first_touch_converting_campaign',
-    '/crm/v3/objects/contacts/batch/read/associations',
-    'firstTouchConvertingCampaignForTheQuarter2',
-  ]) {
-    assert.equal(scrub(`Unknown ${words} now`), `Unknown ${words} now`, words);
+    const start = performance.now();
+    filter(text);
+    const elapsed = performance.now() - start;
+    assert.ok(elapsed < 50, `${elapsed.toFixed(1)} ms for ${text.slice(0, 16)}…`);
   }
 });
