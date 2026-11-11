@@ -191,17 +191,18 @@ test('a settled routine occurrence is copied as a routine run, its task as the t
   assert.equal(JSON.stringify(record).includes('U0MEMBER12'), false);
 });
 
-test('a routine whose Agent is granted a website login is not copied, though its plan froze no login', async (t) => {
+test('a routine whose Agent is granted a website login is copied, though its plan froze no login', async (t) => {
   state(t);
   const records = reviewPort();
   t.mock.method(console, 'warn', () => undefined);
-  // No browser key is connected, so the plan freezes no login; the grant still counts.
+  // No browser key is connected, so the plan freezes no login.
   const config = {
     ...CONFIG,
     agent: { ...CONFIG.agent, websiteLogins: [{ loginId: `wl_${'c'.repeat(32)}`, level: 'check', enabled: true }] },
   } as EffectiveSlackConfig;
   await occurrence({ channelShared: false, config });
-  assert.equal(records.length, 0);
+  assert.equal(records.length, 1);
+  assert.equal(records[0]?.surface, 'routine');
 });
 
 async function activateDirectRoutine(

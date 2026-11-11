@@ -273,7 +273,7 @@ const OTHER_AGENTS_CATALOG = JSON.stringify([
 test('a copy drops the username of every login the installation saved, read when the copy is built', async (t) => {
   const records = fakePort(t);
   const settings = catalogSettings(OTHER_AGENTS_CATALOG);
-  const session = await startRunReview(HOSTED_ENV, { surface: 'channel', grantsWebsiteLogins: false, settings: () => settings });
+  const session = await startRunReview(HOSTED_ENV, { surface: 'channel', settings: () => settings });
   session!.ingest(chunk({ type: 'message-started', messageId: 'm', submissionId: SUBMISSION }), SUBMISSION);
   session!.ingest(chunk({ type: 'tool-input', messageId: 'm', toolCallId: 'c1', toolName: 'inspect_workspace', input: {} }), SUBMISSION);
   session!.ingest(chunk({
@@ -294,20 +294,20 @@ test('a catalog that cannot be read or parsed keeps no copy', async (t) => {
   const warnings: string[] = [];
   t.mock.method(console, 'warn', (line: string) => { warnings.push(line); });
   for (const settings of [catalogSettings('not json'), catalogSettings('{"logins":[]}'), catalogSettings(undefined, true)]) {
-    const session = await startRunReview(HOSTED_ENV, { surface: 'dm', grantsWebsiteLogins: false, settings: () => settings });
+    const session = await startRunReview(HOSTED_ENV, { surface: 'dm', settings: () => settings });
     await session!.finish(ENDING);
   }
   assert.equal(records.length, 0);
   assert.deepEqual(warnings, Array(3).fill(JSON.stringify({ component: 'run_review', event: 'record_failed' })));
 
-  const none = await startRunReview(HOSTED_ENV, { surface: 'dm', grantsWebsiteLogins: false, settings: () => catalogSettings(undefined) });
+  const none = await startRunReview(HOSTED_ENV, { surface: 'dm', settings: () => catalogSettings(undefined) });
   await none!.finish(ENDING);
   assert.equal(records.length, 1, 'an installation with no logins is copied');
 });
 
 test('a copy built from settled history drops the same values', async (t) => {
   const records = fakePort(t);
-  const session = await startRunReview(HOSTED_ENV, { surface: 'dm', grantsWebsiteLogins: false, settings: () => catalogSettings(OTHER_AGENTS_CATALOG) });
+  const session = await startRunReview(HOSTED_ENV, { surface: 'dm', settings: () => catalogSettings(OTHER_AGENTS_CATALOG) });
   await session!.finish({
     ...ENDING,
     history: {
@@ -463,7 +463,7 @@ test('one synthetic signed-in run, streamed or read from history, keeps its page
     'ops.synthetic', PASSWORD, code, 'SYNTHCODE123', 'SYNTHTOKEN789', 'browserbase', 'SYNTHSESS', TOTP_SEED,
   ];
 
-  const streamed = await startRunReview(HOSTED_ENV, { surface: 'dm', grantsWebsiteLogins: false, settings: () => store });
+  const streamed = await startRunReview(HOSTED_ENV, { surface: 'dm', settings: () => store });
   streamed!.ingest(chunk({ type: 'message-started', messageId: 'm', submissionId: SUBMISSION }), SUBMISSION);
   calls.forEach((call, index) => {
     streamed!.ingest(chunk({ type: 'tool-input', messageId: 'm', toolCallId: `c${index}`, toolName: call.name, input: call.input }), SUBMISSION);
@@ -472,7 +472,7 @@ test('one synthetic signed-in run, streamed or read from history, keeps its page
   streamed!.ingest(chunk({ type: 'message-delta', messageId: 'm', kind: 'text', delta: answer }), SUBMISSION);
   await streamed!.finish({ ...ENDING, context: DM_CONTEXT, answer });
 
-  const settled = await startRunReview(HOSTED_ENV, { surface: 'dm', grantsWebsiteLogins: false, settings: () => store });
+  const settled = await startRunReview(HOSTED_ENV, { surface: 'dm', settings: () => store });
   await settled!.finish({
     ...ENDING,
     context: DM_CONTEXT,

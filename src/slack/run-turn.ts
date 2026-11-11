@@ -55,7 +55,6 @@ import {
   renderFrontDeskBlock,
   type SlackFrontDeskHandoffRequest,
 } from './front-desk.ts';
-import { runGrantsWebsiteLogins } from '../browser/capability.ts';
 import type {
   SlackInteractionProgress,
   SlackInteractionProgressPatch,
@@ -1348,7 +1347,6 @@ async function runTurnAttempt(
         sharedChannel: slackConversationKind(turn) === 'im'
           ? turn.sharedChannel === true
           : turn.sharedChannel !== false,
-        grantsWebsiteLogins: runGrantsWebsiteLogins(runtimePlanDecision.runtimePlan, assignment.agent.websiteLogins),
         ...(options.turnId ? { turnJobId: options.turnId } : {}),
         settings: () => settingsStore ?? getSettingsStore(platformEnv),
         ...(options.runReviewSettings ? { prefetched: options.runReviewSettings } : {}),
