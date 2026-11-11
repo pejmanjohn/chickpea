@@ -13,7 +13,7 @@ import { skillUploadBatches, skillUploadFile } from './skills.ts';
 import { CredentialStore, resolveConfigDir } from './store.ts';
 import { callManagementTool, collectEnvelopeHints, renderEnvelopeHints, renderToolList, requireManagementTools, type ToolEnvelope } from './tools.ts';
 import { CLI_VERSION } from './version.ts';
-import { renderWorkspaceSummary } from './workspace.ts';
+import { listAllAgents, renderWorkspaceSummary } from './workspace.ts';
 
 export interface CliDeps {
   fetch: typeof fetch;
@@ -40,7 +40,8 @@ Usage:
   chickpea chatgpt connect <deployment-url>            Connect a ChatGPT plan to this installation
   chickpea login <deployment-url>                     Sign in through the browser and save a session
   chickpea logout <deployment-url>                    Revoke the saved session and delete it
-  chickpea workspace inspect <deployment-url>         Summarize the workspace, your role, and Agents
+  chickpea workspace inspect <deployment-url> [--include-archived]
+                                                      Summarize the workspace, your role, and Agents
   chickpea tools list <deployment-url>                List every management tool
   chickpea call <deployment-url> <tool> [--args json | --args-file file]
                                                       Call a management tool; prints normalized { ok, result | error } JSON
@@ -150,7 +151,7 @@ export async function run(argv: readonly string[], overrides: Partial<CliDeps> =
       case 'logout':
         return await commandLogout(rest, io, deps);
       case 'workspace':
-        return await commandWorkspace(rest, io, deps);
+        return await commandWorkspace(rest, flags, io, deps);
       case 'tools':
         return await commandTools(rest, io, deps);
       case 'call':
@@ -263,17 +264,18 @@ async function withConnection<T>(
   }
 }
 
-async function commandWorkspace(args: readonly string[], io: Io, deps: CliDeps): Promise<number> {
+async function commandWorkspace(args: readonly string[], flags: ParsedArgs['flags'], io: Io, deps: CliDeps): Promise<number> {
+  const usage = 'chickpea workspace inspect <deployment-url> [--include-archived] [--json]';
   const [subcommand, ...rest] = args;
   if (subcommand !== 'inspect') {
-    throw new CliError('UNKNOWN_COMMAND', `Unknown workspace subcommand "${subcommand ?? ''}"`, 'Usage: chickpea workspace inspect <deployment-url> [--json]');
+    throw new CliError('UNKNOWN_COMMAND', `Unknown workspace subcommand "${subcommand ?? ''}"`, `Usage: ${usage}`);
   }
-  const origin = requireOrigin(rest, 'chickpea workspace inspect <deployment-url> [--json]');
+  const origin = requireOrigin(rest, usage);
   const envelope = await withConnection(origin, io, deps, async (client): Promise<ToolEnvelope> => {
-    await requireManagementTools(client, ['get_workspace', 'list_agents']);
+    const tools = await requireManagementTools(client, ['get_workspace', 'list_agents']);
     const workspace = await callManagementTool(client, 'get_workspace', {});
     if (!workspace.ok) return workspace;
-    const agents = await callManagementTool(client, 'list_agents', {});
+    const agents = await listAllAgents(client, tools.get('list_agents'), flags.has('--include-archived'));
     if (!agents.ok) return agents;
     return { ok: true, result: { workspace: workspace.result, ...(agents.result as object) } };
   });

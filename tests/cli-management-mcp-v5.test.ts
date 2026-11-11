@@ -10,6 +10,7 @@ test('CLI commands use Core 5.0 over local HTTP, including refusals and validati
   const f = await createManagementAdapterFixture('cli_v5');
   t.after(() => f.close());
   await createFixtureAgent(f, 'agent_research');
+  await createFixtureAgent(f, 'agent_retired', { name: 'Retired', lifecycle: 'archived', enabled: false });
   const deployment: FakeDeployment = new FakeDeployment({
     createMcpServer: () => createWorkspaceManagementMcpServer({
       principal: {
@@ -34,7 +35,15 @@ test('CLI commands use Core 5.0 over local HTTP, including refusals and validati
   const inspect = await command(['workspace', 'inspect', deployment.url, '--json']);
   assert.equal(inspect.code, 0, inspect.stderr);
   assert.equal(JSON.parse(inspect.stdout).workspace.you.role, 'owner');
-  assert.ok(JSON.parse(inspect.stdout).agents.some((agent: { agentId: string }) => agent.agentId === 'agent_research'));
+  const listed = (stdout: string) => (JSON.parse(stdout).agents as Array<{ agentId: string }>).map(({ agentId }) => agentId);
+  assert.ok(listed(inspect.stdout).includes('agent_research'));
+  // A Core with list_agents paging (#761) leaves archived Agents out by default; an older one lists them.
+  const pages = JSON.parse(inspect.stdout).archivedLeftOut === true;
+  assert.equal(listed(inspect.stdout).includes('agent_retired'), !pages);
+  const withArchived = await command(['workspace', 'inspect', deployment.url, '--include-archived', '--json']);
+  assert.equal(withArchived.code, 0, withArchived.stderr);
+  assert.deepEqual(listed(withArchived.stdout).sort(), ['agent_research', 'agent_retired']);
+  assert.equal(JSON.parse(withArchived.stdout).archivedLeftOut, undefined);
 
   const exported = await command(['recipe', 'export', deployment.url, '--agents', 'agent_research']);
   assert.equal(exported.code, 0, exported.stderr);

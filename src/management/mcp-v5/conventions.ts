@@ -244,6 +244,20 @@ export function mcpErrorText(error: McpToolError): string {
   ].filter((line): line is string => line !== undefined).join('\n');
 }
 
+/**
+ * A listed output schema that accepts fields it does not name. A client may
+ * check each result against the schema it listed and keep that listing, so
+ * an `additionalProperties: false` anywhere in it would refuse every result
+ * once a release adds a field there (`tools` on `get_agent`). The server still
+ * checks its own results strictly before they leave (tools.ts).
+ */
+export function openOutputSchema<T>(schema: T): T {
+  if (Array.isArray(schema)) return schema.map(openOutputSchema) as T;
+  if (typeof schema !== 'object' || schema === null) return schema;
+  return Object.fromEntries(Object.entries(schema).flatMap(([key, value]) =>
+    key === 'additionalProperties' && value === false ? [] : [[key, openOutputSchema(value)]])) as T;
+}
+
 export function mcpErrorResult(error: McpToolError) {
   return {
     content: [{ type: 'text' as const, text: mcpErrorText(error) }],

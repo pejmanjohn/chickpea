@@ -26,7 +26,9 @@ export interface RunHistorySources {
   schedulePost(routineRunId: string): Promise<{ channelId: string; messageTs: string } | undefined>;
   /**
    * What the bill says each run cost, where this deployment has one to read;
-   * undefined where it has none, so a list price estimate stands in.
+   * undefined where it has none, so a list price estimate stands in. A run
+   * the bill was read for and names no row of was billed nothing, and is 0
+   * here; a run missing from the map shows no amount.
    */
   charges(items: readonly UsageOperationDetail[]): Promise<ReadonlyMap<string, RunCharge> | undefined>;
   /**

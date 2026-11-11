@@ -50,7 +50,7 @@ export function compileTestRunPlan(parts: AgentRunPlanParts, test: TestRunConver
   });
 }
 
-/** The caller's connections a test run cannot read through at all; a run with any is refused. */
+/** The caller's connections a test run cannot read through at all; a run leaves each out and lists it with its fix. */
 export function untestableConnections(connections: readonly EffectiveConnectionAccount[]): EffectiveConnectionAccount[] {
   return connections.filter((connection) => readsOnly(connection).length === 0);
 }

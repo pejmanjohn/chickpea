@@ -93,9 +93,9 @@ test('get_service lists the tool as a read with an outputSchema, and list_servic
   const tool = tools.find(({ name }) => name === 'get_service')!;
   assert.deepEqual(tool.annotations, { readOnlyHint: true, destructiveHint: false, openWorldHint: false });
   assert.deepEqual(tool.securitySchemes, [{ type: 'oauth2', scopes: ['chickpea:workspace'] }]);
-  const output = tool.outputSchema as { type: string; additionalProperties: boolean; required: string[] };
+  const output = tool.outputSchema as { type: string; additionalProperties?: boolean; required: string[] };
   assert.equal(output.type, 'object');
-  assert.equal(output.additionalProperties, false);
+  assert.equal(output.additionalProperties, undefined, 'a listed output accepts a field a later release adds');
   assert.deepEqual(
     [...output.required].sort(),
     ['account', 'capabilitiesKnown', 'description', 'name', 'nextStep', 'practice', 'service', 'signIn'],
@@ -195,6 +195,13 @@ test('a member reads the catalog too, and is told only an Owner or Admin connect
   const notion = service(await call('get_service', { service: 'Notion' }));
   assert.equal(notion.practice, 'reads_ready');
   assert.match(notion.nextStep, /owner me \(only an Owner or Admin connects a team account\)/);
+  assert.doesNotMatch(notion.nextStep, /marks a team account/, 'nothing to mark for a managed service');
+  // A service whose reads are marked: the member marks their own account's tools, an Owner or Admin a team account's.
+  const linear = service(await call('get_service', { service: 'linear' }));
+  assert.match(linear.nextStep, /Mark only the tools the person confirms only read\. The person can mark the tools of their own account; only an Owner or Admin marks a team account's\.$/);
+  const owner = await harness(t, 'svc-member-owner');
+  assert.doesNotMatch(service(await owner.call('get_service', { service: 'linear' })).nextStep, /only an Owner or Admin marks/);
+  assert.doesNotMatch(service(await call('get_service', { service: 'bugsnag' })).nextStep, /marks a team account/, 'a reviewed one is chosen in Admin');
 });
 
 test('every catalog service returns under 28,000 characters, and every managed one lists a read', async (t) => {

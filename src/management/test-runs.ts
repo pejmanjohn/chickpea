@@ -12,6 +12,7 @@ import type { StateDb } from '../state/state-db.ts';
 import type { UsageStoreLogic } from '../usage/store.ts';
 import type {
   PracticeAsk,
+  PracticeKeptResult,
   PracticeRunListing,
   PracticeRunsQuery,
   PracticeTurn,
@@ -23,6 +24,8 @@ import type {
   TestRunRow,
   TestRunSettlement,
   TestRunStatus,
+  TestRunStepQuery,
+  TestRunStepResult,
 } from './test-run-types.ts';
 
 /** A run answered this recently answers the same ask on the same plan again, rather than run twice. */
@@ -31,10 +34,11 @@ export const PRACTICE_REPEAT_MS = 2 * 60_000;
  * A settled run reads as not found this long after it settled, and it is
  * erased then. A run still going always reads: it can run as long as a direct
  * message, past the hour. A practice conversation takes follow-ups for as
- * long from its first question; each turn it quotes settled after that, so
- * every one is still kept.
+ * long from its latest answer; it quotes only the turns still kept.
  */
 export const TEST_RUN_VISIBLE_MS = 60 * 60_000;
+/** What get_practice_run returns of a step's kept result at once, in characters. */
+export const PRACTICE_STEP_READ_CHARS = 20_000;
 /** A practice conversation's questions, at most. */
 export const PRACTICE_TURNS = 10;
 /** A listing's runs, newest first, at most. */
@@ -46,6 +50,7 @@ export const TEST_RUN_WAKE_MS = 10_000;
 const ERASE_BATCH = 250;
 const HAS_TEXT = '(result_json IS NOT NULL OR question IS NOT NULL OR question_digest IS NOT NULL)';
 const SETTLED = "status NOT IN ('admitted', 'running')";
+const LIVE = "status IN ('admitted', 'running')";
 /** When a run's hour starts: its settlement, or for a row from before practice runs, its admission. */
 const HOUR_FROM = 'COALESCE(settled_at, created_at)';
 
@@ -102,14 +107,33 @@ export function installTestRunSchema(db: StateDb): void {
   );
   // And when the next run's text is an hour past its settlement.
   db.exec(`CREATE INDEX IF NOT EXISTS management_test_runs_text_idx ON management_test_runs (${HOUR_FROM}) WHERE ${HAS_TEXT}`);
+  // A step's cut result, kept whole within the run's total, beside its run and for its hour (practice-steps.ts).
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS management_test_run_results (
+      test_run_id TEXT NOT NULL,
+      step INTEGER NOT NULL,
+      data TEXT NOT NULL,
+      PRIMARY KEY (test_run_id, step)
+    )`,
+  );
 }
 
 /**
  * A run's text goes once it can no longer be read, whether or not its
  * instance is erased yet: the question, the reply, its steps and the
- * question's digest.
+ * question's digest, and the results kept beside it. Kept results go first,
+ * and whenever no run they belong to can still be read, so none outlives its
+ * run's text, whatever stopped an earlier pass.
  */
 function eraseTestRunText(db: StateDb, at: number): number {
+  db.run(
+    `DELETE FROM management_test_run_results WHERE NOT EXISTS (
+       SELECT 1 FROM management_test_runs AS run
+       WHERE run.test_run_id = management_test_run_results.test_run_id
+         AND (run.${LIVE} OR COALESCE(run.settled_at, run.created_at) > ?)
+     )`,
+    at - TEST_RUN_VISIBLE_MS,
+  );
   return db.run(
     `UPDATE management_test_runs SET result_json = NULL, question = NULL, question_digest = NULL
      WHERE ${HAS_TEXT} AND ${SETTLED} AND ${HOUR_FROM} <= ?`,
@@ -142,7 +166,7 @@ interface Caller {
 }
 
 type Conversation =
-  | { kind: 'open'; practiceId: string; turn: number; earlier: PracticeTurn[] }
+  | { kind: 'open'; practiceId: string; turn: number; earlier: PracticeTurn[]; expired: number }
   | Extract<TestRunAdmission, { kind: 'ended' | 'in_progress' }>;
 
 /** Admitted or running: not settled yet. */
@@ -185,7 +209,9 @@ export class TestRunStoreLogic {
       const repeat = same.find((row) => row.status === 'answered' && row.settledAt !== null &&
         row.settledAt >= at - PRACTICE_REPEAT_MS && row.planDigest === request.planDigest);
       if (repeat) return { kind: 'repeat', row: repeat };
-      let conversation: Extract<Conversation, { kind: 'open' }> = { kind: 'open', practiceId: request.newPracticeId, turn: 1, earlier: [] };
+      let conversation: Extract<Conversation, { kind: 'open' }> = {
+        kind: 'open', practiceId: request.newPracticeId, turn: 1, earlier: [], expired: 0,
+      };
       if (request.practiceId !== null) {
         const continued = this.conversation(request, request.practiceId, at);
         if (continued.kind !== 'open') return continued;
@@ -223,41 +249,53 @@ export class TestRunStoreLogic {
       }
       // The run starts at admission, on the clock its terminal is written by.
       this.usage.admitOperation({ ...request.usage, startedAt: at });
-      return { kind: 'admitted', row: this.require(request.testRunId), earlier: conversation.earlier };
+      return { kind: 'admitted', row: this.require(request.testRunId), earlier: conversation.earlier, expired: conversation.expired };
     });
   }
 
   /**
    * The conversation a follow-up continues, from the caller's own rows: open
-   * while its first turn is kept, names this Agent, is inside its hour and
-   * has a turn left. Its turns run one after another, so the next waits for
-   * the last to settle. A failed turn is not quoted to the next.
+   * while it names this Agent, has a turn left, and its latest answer is
+   * under an hour old (with none answered, the end of its first turn). A
+   * turn's row goes an hour after it settles, so a conversation whose first
+   * turn is gone and whose rows hold no answer has ended: whether an answer
+   * that old is still a row or not, it reads the same. Its turns run one
+   * after another, so the next waits for the last to settle, however long
+   * that takes. Each turn keeps its text for its own hour, so a follow-up
+   * quotes the answered turns still kept and counts the older ones it can't.
+   * A failed turn is not quoted to the next.
    */
   private conversation(ask: Caller & PracticeAsk, practiceId: string, at: number): Conversation {
     const turns = this.db.all(
       `SELECT * FROM management_test_runs
-       WHERE organization_id = ? AND actor_membership_id = ? AND practice_id = ?
+       WHERE organization_id = ? AND actor_membership_id = ? AND practice_id = ? AND turn IS NOT NULL
        ORDER BY turn`,
       ask.organizationId,
       ask.actorMembershipId,
       practiceId,
     ).map((row) => testRunFromRow(row));
-    const first = turns[0];
-    const last = turns.at(-1)?.turn ?? 0;
-    if (!first || first.turn !== 1 || first.agentId !== ask.agentId || at >= first.createdAt + TEST_RUN_VISIBLE_MS ||
-        last >= PRACTICE_TURNS) {
-      return { kind: 'ended' };
-    }
+    const latest = turns.at(-1);
+    const last = latest?.turn ?? 0;
+    if (!latest || turns.some(({ agentId }) => agentId !== ask.agentId) || last >= PRACTICE_TURNS) return { kind: 'ended' };
     const going = turns.find(liveTestRun);
     if (going) return { kind: 'in_progress', runToken: going.runToken };
+    const since = turns.findLast(({ status }) => status === 'answered') ?? turns.find(({ turn }) => turn === 1);
+    if (!since || !readable(since, at)) return { kind: 'ended' };
+    const kept = turns.filter((row) => row.status === 'answered' && row.question !== null && readable(row, at));
+    // Turns settle in order, so the ones gone or past their hour are the oldest; a failed one is never quoted anyway.
+    const expired = last - turns.length + turns.filter((row) => row.status === 'answered' && !kept.includes(row)).length;
     return {
       kind: 'open',
       practiceId,
       turn: last + 1,
-      earlier: turns.flatMap(({ status, turn, question, result }): PracticeTurn[] =>
-        status === 'answered' && turn !== null && question !== null
-          ? [{ turn, question, reply: result?.reply ?? '', steps: result?.steps ?? [] }]
-          : []),
+      earlier: kept.map(({ turn, question, result }) => ({
+        turn: turn!,
+        question: question!,
+        reply: result?.reply ?? '',
+        steps: result?.steps ?? [],
+        ...(result?.moreSteps ? { moreSteps: result.moreSteps } : {}),
+      })),
+      expired,
     };
   }
 
@@ -271,11 +309,15 @@ export class TestRunStoreLogic {
     );
   }
 
-  /** The caller's practice runs of one Agent whose text is still kept, newest first; another person's never. */
+  /**
+   * The caller's practice runs of one Agent they can still read, newest
+   * first: each going, or settled within its hour, as `read` reads them.
+   * Another person's never.
+   */
   list(query: PracticeRunsQuery, at: number): PracticeRunListing[] {
     return this.db.all(
       `SELECT * FROM management_test_runs
-       WHERE organization_id = ? AND actor_membership_id = ? AND agent_id = ? AND created_at > ?
+       WHERE organization_id = ? AND actor_membership_id = ? AND agent_id = ? AND (${LIVE} OR ${HOUR_FROM} > ?)
          AND practice_id IS NOT NULL AND turn IS NOT NULL AND question IS NOT NULL
        ORDER BY created_at DESC, turn DESC
        LIMIT ?`,
@@ -399,23 +441,57 @@ export class TestRunStoreLogic {
 
   /** As `settle`, for a terminal Usage refused: the run settles all the same, and its terminal is owed. */
   settleWithoutTerminal(testRunId: string, settlement: TestRunSettlement): boolean {
-    return this.settleRow(testRunId, settlement);
+    return this.db.transaction(() => this.settleRow(testRunId, settlement));
   }
 
-  /** What admission stored of the run (what it could not use, what it ran) stays beside its outcome. */
+  /**
+   * What admission stored of the run (what it could not use, what it ran)
+   * stays beside its outcome, and the results its steps cut are kept beside
+   * the row. Call it inside a transaction.
+   */
   private settleRow(testRunId: string, settlement: TestRunSettlement): boolean {
     const admitted = this.get(testRunId)?.result ?? {};
     const result = { ...admitted, ...settlement.result };
-    return this.db.run(
+    const settled = this.db.run(
       `UPDATE management_test_runs
        SET status = ?, failure = ?, result_json = ?, plan_json = NULL, settled_at = ?
-       WHERE test_run_id = ? AND status IN ('admitted', 'running')`,
+       WHERE test_run_id = ? AND ${LIVE}`,
       settlement.status,
       settlement.status === 'failed' ? settlement.failure : null,
       Object.keys(result).length > 0 ? JSON.stringify(result) : null,
       settlement.terminal.finishedAt,
       testRunId,
     ).changes > 0;
+    if (settled && settlement.status === 'answered') this.keepResults(testRunId, settlement.results ?? []);
+    return settled;
+  }
+
+  private keepResults(testRunId: string, results: readonly PracticeKeptResult[]): void {
+    for (const { step, data } of results) {
+      this.db.run(
+        'INSERT OR REPLACE INTO management_test_run_results (test_run_id, step, data) VALUES (?, ?, ?)',
+        testRunId,
+        step,
+        data,
+      );
+    }
+  }
+
+  /**
+   * What the store kept of one listed step's cut result, from `offset`: the
+   * caller's own answered run only, and only while they can read it.
+   */
+  stepResult(query: TestRunStepQuery, at: number): TestRunStepResult | undefined {
+    const row = this.read(query, at);
+    if (row?.status !== 'answered') return undefined;
+    const kept = this.db.get(
+      'SELECT data FROM management_test_run_results WHERE test_run_id = ? AND step = ?',
+      row.testRunId,
+      query.step,
+    );
+    if (!kept) return undefined;
+    const data = String(kept.data);
+    return { data: data.slice(query.offset, query.offset + PRACTICE_STEP_READ_CHARS), kept: data.length };
   }
 
   markErased(testRunId: string, at: number): void {

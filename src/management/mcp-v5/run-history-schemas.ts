@@ -21,7 +21,7 @@ const zHandle = z.string().min(1).max(1_024);
 export const listAgentRunsInput = z.strictObject({
   agentId: z.string().regex(AGENT_ID_PATTERN).describe('An agentId from list_agents.'),
   place: z.enum(RUN_HISTORY_PLACES).optional()
-    .describe('my_dms: your direct messages with the Agent; channels: public Slack Channels; schedules: its schedules. Omit for all three.'),
+    .describe('my_dms: your direct messages with the Agent; channels: public Slack Channels. Omit for both. Schedule runs aren\'t listed yet, so schedules returns none.'),
   since: z.iso.datetime({ offset: true }).optional()
     .describe(`ISO time. The default is ${RUN_HISTORY_DEFAULT_DAYS} days ago; at most ${RUN_HISTORY_DAYS} days back.`),
   limit: z.number().int().min(1).max(RUN_HISTORY_PAGE.most).optional()

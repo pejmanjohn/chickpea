@@ -1,0 +1,337 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "agentId": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "handle": {
+      "type": "string"
+    },
+    "avatarUrl": {
+      "description": "Its picture in Slack, for a card to draw.",
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "on",
+        "off",
+        "archived"
+      ]
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{16}$"
+    },
+    "instructions": {
+      "type": "string"
+    },
+    "whoCanEdit": {
+      "type": "string",
+      "enum": [
+        "creator_and_admins",
+        "all_workspace_members"
+      ]
+    },
+    "model": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "pinned",
+            "workspace_default"
+          ]
+        },
+        "effort": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "imageModel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "imageSource": {
+          "type": "string",
+          "enum": [
+            "pinned",
+            "workspace_default"
+          ]
+        }
+      },
+      "required": [
+        "model",
+        "source",
+        "effort",
+        "imageModel",
+        "imageSource"
+      ],
+      "additionalProperties": false
+    },
+    "slack": {
+      "type": "object",
+      "properties": {
+        "presence": {
+          "type": "string",
+          "enum": [
+            "ready",
+            "joining",
+            "needs_attention",
+            "not_in_slack"
+          ]
+        },
+        "problem": {
+          "type": "string"
+        },
+        "ownApp": {
+          "type": "boolean"
+        },
+        "groupDms": {
+          "type": "string",
+          "enum": [
+            "yes",
+            "no",
+            "unknown"
+          ]
+        }
+      },
+      "required": [
+        "presence",
+        "ownApp",
+        "groupDms"
+      ],
+      "additionalProperties": false
+    },
+    "skills": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "from": {
+            "type": "string",
+            "enum": [
+              "github",
+              "suggested",
+              "custom"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "enabled",
+          "from"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "connections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "connectionId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "service",
+              "custom_api",
+              "custom_mcp"
+            ]
+          },
+          "owner": {
+            "type": "string",
+            "enum": [
+              "team",
+              "member"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "waiting_for_setup",
+              "needs_attention",
+              "off"
+            ]
+          },
+          "custom": {
+            "type": "object",
+            "properties": {
+              "hosts": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "pathPrefixes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "methods": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "headerName": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              },
+              "allowedTools": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "readTools": {
+                "description": "MCP: allowed tools marked as reads. A test run calls only these.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "writeTools": {
+                "description": "MCP: allowed tools marked as writes. A tool in neither is unmarked.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "guide": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "connectionId",
+          "name",
+          "kind",
+          "status"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "websiteLogins": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "loginId": {
+            "type": "string"
+          },
+          "site": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "loginId",
+          "site"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "repositories": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "repository": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "channels": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "channelId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "channelId"
+        ],
+        "additionalProperties": false
+      },
+      "description": "The Slack Channels it answers in, besides direct messages."
+    },
+    "links": {
+      "type": "object",
+      "properties": {
+        "admin": {
+          "type": "string"
+        },
+        "slack": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "admin"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "agentId",
+    "name",
+    "status",
+    "version",
+    "instructions",
+    "whoCanEdit",
+    "model",
+    "slack",
+    "skills",
+    "connections",
+    "websiteLogins",
+    "repositories",
+    "channels"
+  ],
+  "additionalProperties": false
+}

@@ -256,8 +256,9 @@ test('explain_agent and check_agent declare read-only hints, and only check_agen
   assert.deepEqual(checkTool.annotations, { ...OWNER_ONLY, openWorldHint: true });
   for (const tool of [explainTool, checkTool]) {
     assert.deepEqual(tool.securitySchemes, [{ type: 'oauth2', scopes: ['chickpea:workspace'] }], tool.name);
-    const output = tool.outputSchema as { additionalProperties?: boolean };
-    assert.equal(output.additionalProperties, false, `${tool.name}: a strict output schema`);
+    const output = tool.outputSchema as { type?: string; additionalProperties?: boolean };
+    assert.equal(output.type, 'object', `${tool.name}: an output schema`);
+    assert.equal(output.additionalProperties, undefined, `${tool.name}: a listed output accepts a field a later release adds`);
   }
 });
 

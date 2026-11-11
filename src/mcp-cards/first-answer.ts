@@ -1,5 +1,4 @@
 import { isAgentId } from '../config/agent-id.ts';
-import { leftOutService, markReadsLabel } from '../management/practice-words.ts';
 import {
   agentNamed,
   call,
@@ -584,23 +583,20 @@ function testRun(value: unknown): Run | undefined {
     ...isRecord(value.before) && typeof value.before.runToken === 'string' && typeof value.before.agentVersion === 'string'
       ? { before: { runToken: value.before.runToken, agentVersion: value.before.agentVersion } }
       : {},
-    leftOut: leftOutOf(value.off, value.fixes),
+    leftOut: leftOutOf(value.leftOut),
   };
 }
 
 /**
- * The connections a run left out, by the line Chickpea writes in `off` for
- * each, with the fix that marks a custom MCP connection's read tools when
- * the result has one. Admin's fixes name no service, so none is matched.
+ * The connections a run left out, from the result's own field, each with
+ * the tool fix that marks its read tools when it has one. A link to Admin
+ * is not offered here: the answer's second button stays Change something.
  */
-function leftOutOf(off: unknown, fixes: unknown): LeftOut[] {
-  const lines = Array.isArray(off) ? off.filter((line): line is string => typeof line === 'string') : [];
-  const offered = Array.isArray(fixes) ? fixes.map(fixOf).filter((fix): fix is Fix => fix !== undefined) : [];
-  return lines.flatMap((line) => {
-    const service = leftOutService(line);
-    if (service === undefined) return [];
-    const fix = offered.find((candidate) => 'tool' in candidate && candidate.label === markReadsLabel(service));
-    return [{ service, ...fix ? { fix } : {} }];
+function leftOutOf(leftOut: unknown): LeftOut[] {
+  return (Array.isArray(leftOut) ? leftOut : []).flatMap((entry): LeftOut[] => {
+    if (!isRecord(entry) || typeof entry.service !== 'string') return [];
+    const fix = fixOf(entry.fix);
+    return [{ service: entry.service, ...fix && 'tool' in fix ? { fix } : {} }];
   });
 }
 
