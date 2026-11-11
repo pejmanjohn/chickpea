@@ -458,9 +458,10 @@ Before you set it, know what it removes:
 - **Thinking in compaction.** A compaction summary no longer sees what the
   Agent thought, only what it wrote and the tools it called.
 
-Slack shows no thinking text either way.
-To see the effect, compare `firstTextMs` with `durationMs` on `model_step`.
-See [runtime observability](runtime-observability.md).
+Slack shows no thinking text either way. On staging, Claude Opus 5.5's answer
+text still arrived at the end of each step with `omitted`, so measure before
+you rely on it: compare `firstTextMs` with `durationMs` on `model_step`. See
+[runtime observability](runtime-observability.md).
 
 ## Upgrade and compatibility policy
 
