@@ -78,8 +78,6 @@ import {
   objectInstallationEnv,
   requireInstallationScope,
 } from './config/installation-scope.ts';
-import { promiseBackedStatePort } from './config/local-state-port.ts';
-import { localSlackStateStore } from './slack/local-state-store.ts';
 import type { UiSurfaceRpcRequest } from './slack/ui/surface-store.ts';
 import {
   getConfigStore,
@@ -275,7 +273,12 @@ import {
 } from './slack/turn-jobs.ts';
 import type { TurnFoldRequest, TurnSteeringDecision } from './slack/turn-job-types.ts';
 import { DoSqlStateDb } from './state/do-state-db.ts';
-import { buildTagStateStores, type TagStateStores } from './state/tag-state-stores.ts';
+import {
+  buildTagStateStores,
+  localGatewayAppStores,
+  localTurnEnqueue,
+  type TagStateStores,
+} from './state/tag-state-stores.ts';
 import type {
   HostObjectStorage,
   ObjectExportRequest,
@@ -3924,34 +3927,8 @@ function localGatewayDeploymentClient(
   });
 }
 
-/** Enqueues a turn admitted inside this state store into its own queue. */
-function localTurnEnqueue(stores: TagStateStores) {
-  return async (job: TurnJob) => {
-    stores.turnJobs.enqueue(job);
-    return { ok: true as const, value: null };
-  };
-}
-
 async function loadKeyFormFor(delivery: GatewayInboundDelivery): Promise<typeof import('./slack/key-form.ts') | undefined> {
   return isKeyFormDelivery(delivery) ? import('./slack/key-form.ts') : undefined;
-}
-
-function localGatewayAppStores(stores: TagStateStores): AppStores {
-  // Store logic methods are synchronous inside the owning DO, while every
-  // public port is Promise-shaped. Adapt the methods instead of casting them:
-  // callers may attach `.catch(...)` directly rather than awaiting first.
-  return {
-    identity: promiseBackedStatePort(stores.identity),
-    config: promiseBackedStatePort(stores.config),
-    snapshots: promiseBackedStatePort(stores.snapshots),
-    slackState: localSlackStateStore(stores),
-    settings: promiseBackedStatePort(stores.settings),
-    memory: promiseBackedStatePort(stores.memory),
-    routines: promiseBackedStatePort(stores.routines),
-    usage: promiseBackedStatePort(stores.usage),
-    work: promiseBackedStatePort(stores.work),
-    management: promiseBackedStatePort(stores.management),
-  } as unknown as AppStores;
 }
 
 /**

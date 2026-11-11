@@ -2,7 +2,8 @@ import { deploymentServesManyInstallations } from '../config/installation-scope.
 import { onboardingJourneyStart } from '../config/onboarding-state.ts';
 import { SettingsStoreLogic } from '../config/settings-store.ts';
 import { SnapshotStoreLogic } from '../config/snapshot-store.ts';
-import type { PlatformEnv } from '../config/state-backend.ts';
+import { promiseBackedStatePort } from '../config/local-state-port.ts';
+import type { AppStores, PlatformEnv } from '../config/state-backend.ts';
 import { ConfigStoreLogic } from '../config/store.ts';
 import {
   InstallationBindingLogic,
@@ -14,8 +15,10 @@ import { TestRunStoreLogic } from '../management/test-runs.ts';
 import { MemoryStoreLogic } from '../memory/store.ts';
 import { agentRoutineDeletion, RoutineStoreLogic } from '../routines/store.ts';
 import { SlackStateLogic } from '../slack/claim-store.ts';
+import { localSlackStateStore } from '../slack/local-state-store.ts';
 import { GatewayInboxStoreLogic } from '../slack/gateway/inbox.ts';
 import { SlackRunPresentationStoreLogic } from '../slack/run-presentations.ts';
+import type { TurnJob } from '../slack/turn-job-types.ts';
 import { TurnJobStoreLogic } from '../slack/turn-jobs.ts';
 import { UiSurfaceStoreLogic } from '../slack/ui/surface-store.ts';
 import { UsageStoreLogic } from '../usage/store.ts';
@@ -106,5 +109,32 @@ export function buildTagStateStores(
             : undefined,
       },
     }),
+  };
+}
+
+/** The public store ports over a state store's own logic, for work it runs itself. */
+export function localGatewayAppStores(stores: TagStateStores): AppStores {
+  // Store logic methods are synchronous inside the owning DO, while every
+  // public port is Promise-shaped. Adapt the methods instead of casting them:
+  // callers may attach `.catch(...)` directly rather than awaiting first.
+  return {
+    identity: promiseBackedStatePort(stores.identity),
+    config: promiseBackedStatePort(stores.config),
+    snapshots: promiseBackedStatePort(stores.snapshots),
+    slackState: localSlackStateStore(stores),
+    settings: promiseBackedStatePort(stores.settings),
+    memory: promiseBackedStatePort(stores.memory),
+    routines: promiseBackedStatePort(stores.routines),
+    usage: promiseBackedStatePort(stores.usage),
+    work: promiseBackedStatePort(stores.work),
+    management: promiseBackedStatePort(stores.management),
+  } as unknown as AppStores;
+}
+
+/** Enqueues a turn admitted inside this state store into its own queue. */
+export function localTurnEnqueue(stores: Pick<TagStateStores, 'turnJobs'>) {
+  return async (job: TurnJob) => {
+    stores.turnJobs.enqueue(job);
+    return { ok: true as const, value: null };
   };
 }
