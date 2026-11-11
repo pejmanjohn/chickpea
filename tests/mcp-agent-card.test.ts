@@ -206,7 +206,7 @@ test('a retired card version reads as one static card that asks the person to as
   assert.doesNotMatch(retired, /<(?:script|button|a|form|input|img|link|iframe)\b|\bon\w+=|url\(/i, 'no buttons, calls, links, pictures or loads');
   for (const card of CARD_NAMES) {
     const oldest = cardVersions(card)[0]!;
-    // Agent card v1 to v12, connect card v1 to v10 and health card v1 to v6 were drawn in staging test chats.
+    // Agent card v1 to v11, connect card v1 to v9 and health card v1 to v6 never reached a production chat.
     assert.ok(oldest > 1, `${card} has retired versions`);
     for (const v of [1, oldest - 1]) {
       const uri = `ui://chickpea/${card}-v${v}`;
