@@ -959,8 +959,9 @@ function flueEvent(event: Record<string, unknown>): FlueObservation {
 
 // Defects caught: message or tool text in the record, first token timed from
 // the wrong request or from a later token, the turn read on every streamed
-// token, cached input folded into input, and a request that ended without a
-// start (or with an error) dropped.
+// token, cached input folded into input, a request that ended without a
+// start (or with an error) dropped, and a model token that differs from the
+// one turn_latency logs for the same model.
 test('model_step logs each model request\'s first token, duration, tokens and tool calls without content', () => {
   const time = clock(5_000);
   const { records, sink } = captureSink();
@@ -983,6 +984,7 @@ test('model_step logs each model request\'s first token, duration, tokens and to
     purpose: 'agent',
     durationMs: 6_200,
     isError: false,
+    request: { providerId: 'openrouter', providerName: 'openrouter', requestedModel: 'synthetic/model-2.5', api: 'openai-completions' },
     response: {
       finishReason: 'toolUse',
       usage: { input: 1_200, output: 340, cacheRead: 30_000, cacheWrite: 900, totalTokens: 32_440, cost: {} },
@@ -1001,6 +1003,7 @@ test('model_step logs each model request\'s first token, duration, tokens and to
     component: 'runtime',
     event: 'model_step',
     turnRef: opaqueTurnRef('evt:T_LATENCY:1785509000.000100'),
+    modelToken: modelToken('openrouter/synthetic/model-2.5'),
     purpose: 'agent',
     outcome: 'toolUse',
     durationMs: 6_200,
@@ -1013,11 +1016,13 @@ test('model_step logs each model request\'s first token, duration, tokens and to
   }, {
     component: 'runtime',
     event: 'model_step',
+    modelToken: 'unknown',
     purpose: 'compaction',
     outcome: 'error',
     durationMs: 900,
   }]);
   assertContentFree(records[0]!);
+  assert.equal(records[0]!.modelToken, 'openrouter_synthetic_model_2_5');
 });
 
 test('turn_latency omits durations it cannot measure and never throws', () => {

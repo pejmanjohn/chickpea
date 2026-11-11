@@ -1049,8 +1049,9 @@ const FIRST_TOKEN_EVENTS: ReadonlySet<FlueObservation['type']> = new Set([
 
 /**
  * Times each model request from Flue's `turn_request` to its first streamed
- * token (text, thinking, or a tool call's arguments), and logs Flue's
- * duration, its token counts and its tool calls when its `turn` ends.
+ * token (text, thinking, or a tool call's arguments), and logs the model that
+ * served it, Flue's duration, its token counts and its tool calls when its
+ * `turn` ends.
  * `inputTokens` excludes the cached input that `cachedInputTokens` counts.
  */
 export class ModelStepMarks {
@@ -1087,8 +1088,10 @@ export class ModelStepMarks {
         // A step whose turn cannot be read is still logged, without its turn.
       }
       const { usage, output, finishReason } = event.response;
+      const { request } = event;
       emitRuntimeLatency('model_step', {
         turnRef: opaqueTurnRef(turnJobId),
+        modelToken: modelToken(request && `${request.providerId}/${request.requestedModel}`),
         purpose: event.purpose,
         outcome: event.isError ? 'error' : finishReason,
         durationMs: event.durationMs,
