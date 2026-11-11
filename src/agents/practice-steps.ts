@@ -8,7 +8,7 @@
 import { CONNECTION_REQUEST_METHODS, CONNECTION_REQUEST_TOOL_NAME } from '../connections/request-tool.ts';
 import { MANAGED_CONNECTOR_CATALOG } from '../connections/catalog/index.ts';
 import { matchesEgressPrefix } from '../config/egress.ts';
-import type { PracticeStep } from '../management/test-run-types.ts';
+import type { PracticeKeptResult, PracticeStep } from '../management/test-run-types.ts';
 import { redactCredentialLikeContent } from '../security/content-validation.ts';
 import { READ_WEB_PAGE_TOOL_NAME, WEB_SEARCH_TOOL_NAME } from '../web/names.ts';
 import { skillDisplayName, type RuntimePlanV2 } from './runtime-plan.ts';
@@ -18,6 +18,13 @@ export const PRACTICE_REPLY_CHARS = 6_000;
 /** A run's raw results together, and one result at most; each gets `min(one, floor(all / results))`. */
 const PRACTICE_RESULTS_CHARS = 12_000;
 export const PRACTICE_RESULT_CHARS = 1_500;
+/**
+ * What the store keeps of a run's cut results beyond their excerpts, in
+ * characters, all its steps together: each cut result whole, first step
+ * first, until this is spent. The result that spends it keeps its start; a
+ * later one keeps only its excerpt.
+ */
+export const PRACTICE_KEPT_RESULTS_CHARS = 400_000;
 /** A step's input, `why`, or an `off` line. */
 export const PRACTICE_LINE_CHARS = 200;
 /** A service's or connection's name, wherever a result shows it: a connection's label can be 160 characters, and each step repeats it. */
@@ -43,12 +50,15 @@ interface PracticeSteps {
   read: string[];
   /** The skills it loaded, over every call. */
   skills: string[];
+  /** More of each cut result than its excerpt, for the store to keep beside the run. */
+  results?: PracticeKeptResult[];
 }
 
 /**
  * Every call of the run, in order: a skill load as a skill, anything else as
  * a tool. The first 25 are listed, each result cut to the run's bound, and
- * the rest are counted.
+ * the rest are counted. Each listed result that was cut is also kept as the
+ * Agent read it, within the run's total, for get_practice_run to read by step.
  */
 export function practiceSteps(plan: RuntimePlanV2, calls: readonly PracticeToolCall[]): PracticeSteps {
   const read = new Set<string>();
@@ -62,7 +72,37 @@ export function practiceSteps(plan: RuntimePlanV2, calls: readonly PracticeToolC
     if (steps.length < PRACTICE_STEPS) steps.push(step);
   }
   const more = calls.length - steps.length;
-  return { steps: bounded(steps), read: [...read], skills: [...skills], ...more > 0 ? { moreSteps: more } : {} };
+  const listed = bounded(steps);
+  const results = keptResults(steps, listed);
+  return {
+    steps: listed,
+    read: [...read],
+    skills: [...skills],
+    ...more > 0 ? { moreSteps: more } : {},
+    ...results.length > 0 ? { results } : {},
+  };
+}
+
+/**
+ * The whole of each result its excerpt cut, first step first, until the
+ * run's total is spent; the one that spends it keeps its start, and only
+ * when that is more than its excerpt.
+ */
+function keptResults(whole: readonly PracticeStep[], listed: readonly PracticeStep[]): PracticeKeptResult[] {
+  let room = PRACTICE_KEPT_RESULTS_CHARS;
+  return whole.flatMap(({ result }, index): PracticeKeptResult[] => {
+    const excerpt = listed[index]?.result;
+    if (!result || !excerpt) return [];
+    const data = result.data.slice(0, room).toWellFormed();
+    if (data.length <= excerptLength(excerpt)) return [];
+    room -= data.length;
+    return [{ step: index + 1, data }];
+  });
+}
+
+/** An excerpt's own characters, without Chickpea's cut line. */
+export function excerptLength(result: NonNullable<PracticeStep['result']>): number {
+  return result.truncated ? result.data.lastIndexOf('\n[cut by Chickpea: ') : result.data.length;
 }
 
 /**
@@ -116,7 +156,46 @@ function toolStep(plan: RuntimePlanV2, call: PracticeToolCall): PracticeStep {
     return { ...requested, ...call.error !== undefined ? errorOutcome(call.error) : requestOutcome(call.output) };
   }
   if (call.error !== undefined) return { ...named, ...errorOutcome(call.error) };
-  return { ...named, outcome: 'ok', result: raw(asText(call.output)) };
+  const result = raw(asText(call.output));
+  if (call.toolName === READ_WEB_PAGE_TOOL_NAME || call.toolName === WEB_SEARCH_TOOL_NAME) {
+    return { ...named, ...webOutcome(call.toolName, call.output), result };
+  }
+  return { ...named, outcome: 'ok', result };
+}
+
+/**
+ * A web tool answers a refusal or a read that brought nothing back as its
+ * output, not as an error: Chickpea's own `outcome` field says which.
+ */
+function webOutcome(tool: string, output: unknown): Pick<PracticeStep, 'outcome' | 'why'> {
+  const said = parsedObject(output);
+  if (said?.outcome === 'refused') {
+    return {
+      outcome: 'refused',
+      why: tool === WEB_SEARCH_TOOL_NAME ? 'Chickpea refused this search, so nothing was sent.' : 'Chickpea refused this page, so nothing was read.',
+    };
+  }
+  if (said?.outcome === 'unreadable') {
+    return {
+      outcome: 'failed',
+      why: typeof said.status === 'number' ? `The site answered with HTTP status ${said.status}.` : 'The page couldn\'t be read.',
+    };
+  }
+  if (said?.outcome === 'unavailable') return { outcome: 'failed', why: 'The search service didn\'t answer with results.' };
+  return { outcome: 'ok' };
+}
+
+/** An output that is a JSON object, or the text of one. */
+function parsedObject(output: unknown): Record<string, unknown> | undefined {
+  let value = output;
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value) as unknown;
+    } catch {
+      return undefined;
+    }
+  }
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
 /** The method a request asked for, from its own arguments: GET when it named none, as the tool defaults; "request" for one the tool knows not. */
@@ -228,7 +307,7 @@ function bounded(steps: PracticeStep[]): PracticeStep[] {
 
 /** A result cut to `keep` characters of its data, again if it was cut before; `size` stays its length before any cut. */
 export function cutResult(result: NonNullable<PracticeStep['result']>, keep: number): NonNullable<PracticeStep['result']> {
-  const kept = result.truncated ? result.data.slice(0, result.data.lastIndexOf('\n[cut by Chickpea: ')) : result.data;
+  const kept = result.data.slice(0, excerptLength(result));
   if (kept.length <= keep) return result;
   return {
     data: `${kept.slice(0, keep)}\n[cut by Chickpea: first ${keep.toLocaleString('en-US')} of ${result.size.toLocaleString('en-US')} characters]`,

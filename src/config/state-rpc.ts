@@ -5,6 +5,8 @@ import type {
   TestRunReplayQuery,
   TestRunStartRequest,
   TestRunStartResult,
+  TestRunStepQuery,
+  TestRunStepResult,
   TestRunView,
 } from '../management/test-run-types.ts';
 import type {
@@ -641,6 +643,8 @@ export interface TagStateRpc {
   testRunObserve(query: TestRunQuery): Promise<StateRpcResult<TestRunView | null>>;
   /** The caller's practice runs of one Agent from the last hour, read only (TestRunStoreLogic.list). */
   testRunList(query: PracticeRunsQuery): Promise<StateRpcResult<PracticeRunListing[]>>;
+  /** What the store kept of one step's cut result, read only (TestRunStoreLogic.stepResult). */
+  testRunStepResult(query: TestRunStepQuery): Promise<StateRpcResult<TestRunStepResult | null>>;
   slackTurnRecoveryRequired(id: string, reason: string): Promise<StateRpcResult<null>>;
   slackTurnRecoveryList(limit: number): Promise<StateRpcResult<SlackTurnRecoveryItem[]>>;
   slackInstallationRecoveryRetry(workspaceId: string): Promise<StateRpcResult<number>>;

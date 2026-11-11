@@ -29,6 +29,8 @@ const PRACTICE: Readonly<Record<Service['practice'], string>> = {
 };
 
 const REVIEWED_PRACTICE = 'Its tools are listed once someone connects it, and a practice run leaves it out until they are chosen on the Agent\'s page in Admin; it then uses the ones Chickpea knows only read.';
+/** Who marks a connection's tools, for a member: only an Owner or Admin changes a team account. */
+const MEMBER_MARKS = 'The person can mark the tools of their own account; only an Owner or Admin marks a team account\'s.';
 
 export async function getService(
   deps: FiveZeroDeps,
@@ -42,9 +44,9 @@ export async function getService(
     });
   }
   const described = describe(preset);
-  const owner = snapshot.caller.role === 'member'
-    ? 'owner me (only an Owner or Admin connects a team account)'
-    : 'owner team or me';
+  const member = snapshot.caller.role === 'member';
+  const owner = member ? 'owner me (only an Owner or Admin connects a team account)' : 'owner team or me';
+  const practice = described.reviewed ? REVIEWED_PRACTICE : PRACTICE[described.practice];
   return {
     service: preset.id,
     name: preset.name,
@@ -55,7 +57,8 @@ export async function getService(
     ...(described.capabilities ? { capabilities: described.capabilities } : {}),
     capabilitiesKnown: described.capabilitiesKnown,
     practice: described.practice,
-    nextStep: `connect_service with service ${preset.id}, an agentId and ${owner} connects it. ${described.reviewed ? REVIEWED_PRACTICE : PRACTICE[described.practice]}`,
+    nextStep: `connect_service with service ${preset.id}, an agentId and ${owner} connects it. ${practice}${
+      member && !described.reviewed && described.practice === 'needs_read_marks' ? ` ${MEMBER_MARKS}` : ''}`,
   };
 }
 

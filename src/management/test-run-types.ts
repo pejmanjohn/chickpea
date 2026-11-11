@@ -38,6 +38,17 @@ export interface PracticeStep {
   method?: string;
 }
 
+/**
+ * More of a listed step's cut result than its excerpt: the result as the
+ * Agent read it, after the step's exclusions and redaction, whole or up to
+ * the run's total. `step` counts the listed steps from 1. The store keeps it
+ * beside the run, for the run's hour, and never in the run's result.
+ */
+export interface PracticeKeptResult {
+  step: number;
+  data: string;
+}
+
 /** What a run ran: the version handle get_agent returns, never a revision or an internal ID. */
 interface PracticeRan {
   agentVersion: string;
@@ -53,6 +64,12 @@ export type PracticeFix =
   | { label: string; url: string }
   | { label: string; tool: string; arguments: Record<string, unknown> };
 
+/** A connection a run left out, since nothing in it is marked as a read, by its name, with its fix when it has one. */
+export interface PracticeLeftOut {
+  service: string;
+  fix?: PracticeFix;
+}
+
 /**
  * What a run keeps for its caller. Admission writes what it ran, what a
  * Slack message could use that it could not, and what it could; settlement
@@ -65,6 +82,8 @@ export interface TestRunResult {
   /** A follow-up's oldest answered turns that its message left out for length: the Agent never saw them. */
   droppedTurns?: number;
   off?: string[];
+  /** Each connection left out, as its own field: `off` says the same in a sentence a result's fit can cut. */
+  leftOut?: PracticeLeftOut[];
   available?: Array<{ service: string; tools: string[] }>;
   fixes?: PracticeFix[];
   reply?: string;
@@ -134,7 +153,7 @@ export interface TestRunAdmissionRequest extends PracticeAsk {
   /** The compiled plan's digest without what each compile makes anew. */
   planDigest: string;
   /** What admission knows of the run, kept beside its outcome. */
-  admitted: Pick<TestRunResult, 'ran' | 'partial' | 'off' | 'available' | 'fixes'>;
+  admitted: Pick<TestRunResult, 'ran' | 'partial' | 'off' | 'leftOut' | 'available' | 'fixes'>;
 }
 
 /** An earlier answered turn of a practice conversation, as the store quotes it to the next. */
@@ -143,11 +162,17 @@ export interface PracticeTurn {
   question: string;
   reply: string;
   steps: readonly PracticeStep[];
+  /** Its calls past the listed steps. */
+  moreSteps?: number;
 }
 
 export type TestRunAdmission =
-  /** `earlier`: the conversation's answered turns, oldest first; none for a first question. */
-  | { kind: 'admitted'; row: TestRunRow; earlier: PracticeTurn[] }
+  /**
+   * `earlier`: the conversation's answered turns still kept, oldest first;
+   * none for a first question. `expired`: its oldest turns past their hour,
+   * whose text is gone, so nothing quotes them.
+   */
+  | { kind: 'admitted'; row: TestRunRow; earlier: PracticeTurn[]; expired: number }
   /** The same caller's key for the same ask: the stored run, before any check. */
   | { kind: 'replayed'; row: TestRunRow }
   /** The same ask, going now: that run. */
@@ -161,8 +186,8 @@ export type TestRunAdmission =
   | { kind: 'in_progress'; runToken?: string }
   /**
    * The conversation a follow-up names is not the caller's open one with
-   * this Agent: unknown, another person's or another Agent's, past its hour,
-   * or at its last turn.
+   * this Agent: unknown, another person's or another Agent's, an hour past
+   * its latest answer, or at its last turn.
    */
   | { kind: 'ended' };
 
@@ -175,7 +200,7 @@ export interface TestRunModelAccessBinding {
 }
 
 export type TestRunSettlement =
-  | { status: 'answered'; result: TestRunResult; terminal: RecordUsageTerminalInput }
+  | { status: 'answered'; result: TestRunResult; results?: PracticeKeptResult[]; terminal: RecordUsageTerminalInput }
   | { status: 'failed'; failure: TestRunFailure; result?: TestRunResult; terminal: RecordUsageTerminalInput };
 
 /** What a run's caller learns of it: never its instance, submission, plan or IDs. */
@@ -225,6 +250,22 @@ export interface TestRunQuery {
   runToken: string;
 }
 
+/** One listed step of the caller's run, read from `offset`: get_practice_run with `step`. */
+export interface TestRunStepQuery extends TestRunQuery {
+  /** From 1, as the run's steps are listed. */
+  step: number;
+  offset: number;
+}
+
+/**
+ * What the store kept of a step's result beyond its excerpt: at most
+ * `PRACTICE_STEP_READ_CHARS` from the offset, and how long all it kept is.
+ */
+export interface TestRunStepResult {
+  data: string;
+  kept: number;
+}
+
 /** A key names a run only for the same ask: any other reads as no run. */
 export interface TestRunReplayQuery extends PracticeAsk {
   organizationId: string;
@@ -257,7 +298,9 @@ export interface TestRunStore {
   replay(query: TestRunReplayQuery): Promise<TestRunView | undefined>;
   /** The caller's run, settled a step further if one is due; another's, or one past its hour, is none. */
   observe(query: TestRunQuery): Promise<TestRunView | undefined>;
-  /** The caller's practice runs of one Agent whose text is still kept, newest first, as they stand. */
+  /** The caller's practice runs of one Agent they can still read, newest first, as they stand. */
   list(query: PracticeRunsQuery): Promise<PracticeRunListing[]>;
+  /** What the store kept of one step's cut result, while the caller can read the run; none past its excerpt is undefined. */
+  stepResult(query: TestRunStepQuery): Promise<TestRunStepResult | undefined>;
 }
 

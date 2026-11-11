@@ -11,6 +11,7 @@ import { installationScopeOfObjectName, requireInstallationScope } from '../conf
 import type { CreditBackReason, PlatformFundingRefusal } from '../config/platform-funding.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type {
+  PracticeKeptResult,
   PracticeRunListing,
   PracticeRunsQuery,
   PracticeStep,
@@ -22,6 +23,8 @@ import type {
   TestRunSettlement,
   TestRunStartRequest,
   TestRunStartResult,
+  TestRunStepQuery,
+  TestRunStepResult,
   TestRunView,
 } from '../management/test-run-types.ts';
 import { liveTestRun as live, type TestRunStoreLogic } from '../management/test-runs.ts';
@@ -69,6 +72,8 @@ export type TestRunInstanceSettlement =
       steps: PracticeStep[];
       moreSteps?: number;
       skills?: string[];
+      /** More of each cut result than its excerpt, kept beside the run. */
+      results?: PracticeKeptResult[];
       metadata?: ChickpeaResponseMetadata;
     }
   | {
@@ -173,8 +178,9 @@ export class TestRunLifecycle {
     }
     const { row } = admission;
     const { message, quoted } = practiceMessage(run.question, admission.earlier);
-    // Before any wait, so the run is still admitted: the result says which turns its Agent never saw.
-    if (quoted < admission.earlier.length) testRuns.recordDroppedTurns(row.testRunId, admission.earlier.length - quoted);
+    // Before any wait, so the run is still admitted: the result says how many turns its Agent never saw.
+    const dropped = admission.expired + admission.earlier.length - quoted;
+    if (dropped > 0) testRuns.recordDroppedTurns(row.testRunId, dropped);
     const { quotesEarlierTurns: _sent, ...data } = request.initialData;
     const initialData = quoted > 0 ? { ...data, quotesEarlierTurns: true as const } : data;
     await this.deps.armAlarm(testRuns.nextDueAt(at) ?? at);
@@ -231,6 +237,11 @@ export class TestRunLifecycle {
   /** A read of the rows as they stand: no run is stepped for it. */
   async list(query: PracticeRunsQuery): Promise<PracticeRunListing[]> {
     return this.deps.stores().testRuns.list(query, this.now());
+  }
+
+  /** A read of one step's kept result as it stands: no run is stepped for it. */
+  async stepResult(query: TestRunStepQuery): Promise<TestRunStepResult | undefined> {
+    return this.deps.stores().testRuns.stepResult(query, this.now());
   }
 
   /** A caller's read runs the run's step and re-arms the alarm, which a cancellation deletes. */
@@ -370,10 +381,11 @@ export class TestRunLifecycle {
     mode: TestRunStepMode,
   ): Promise<void> {
     if (settled.kind === 'answered') {
-      const { kind: _kind, metadata, ...result } = settled;
+      const { kind: _kind, metadata, results, ...result } = settled;
       await this.write(row, {
         status: 'answered',
         result,
+        ...(results ? { results } : {}),
         terminal: this.terminal(row, { status: 'answered', ...(metadata ? { metadata } : {}) }, now),
       }, null);
       return;

@@ -6,13 +6,13 @@
  * matching only a first turn. The same ask going is that run, and one
  * answered on the same plan in the last two minutes is that run again
  * (`repeat`). A follow-up continues the caller's own conversation with that
- * Agent inside its hour and its turns, as the store holds it, or reads as
- * ended. A settled run reads for the hour from its settlement, with what
+ * Agent within an hour of its latest answer and inside its turns, as the
+ * store holds it, or reads as ended. A settled run reads for the hour from its settlement, with what
  * admission stored beside its outcome, and an answered first question names
  * the latest earlier answer to it from another version of the Agent
  * (`before`). A run reads as `outcome` says until it first reads as settled,
  * and keeps that outcome; a start answers `refuse` instead of admitting one
- * while it is set.
+ * while it is set. It keeps no step's result beyond its excerpt.
  */
 import type {
   PracticeAsk,
@@ -60,8 +60,8 @@ export class StubTestRuns implements TestRunStore {
     if (practiceId !== null) {
       const turns = this.runs.filter(({ request: { run }, view }) =>
         view.practiceId === practiceId && run.actorMembershipId === request.run.actorMembershipId);
-      const first = turns[0]?.view;
-      if (!first || first.agentId !== request.run.agentId || this.now() >= first.createdAt + TEST_RUN_VISIBLE_MS ||
+      const latest = turns.findLast((run) => this.settle(run)?.status === 'answered') ?? turns.at(-1);
+      if (!latest || turns.some(({ view }) => view.agentId !== request.run.agentId) || !this.visible(latest) ||
           turns.length >= PRACTICE_TURNS) {
         return { kind: 'ended' };
       }
@@ -97,6 +97,10 @@ export class StubTestRuns implements TestRunStore {
         runToken: run.view.runToken, practiceId: run.view.practiceId!, turn: run.view.turn!, status: this.read(run).status,
         question: run.view.question!, createdAt: run.view.createdAt,
       }));
+  }
+
+  async stepResult(): Promise<undefined> {
+    return undefined;
   }
 
   private find(ask: Ask & Pick<TestRunReplayQuery, 'idempotencyKey'>) {

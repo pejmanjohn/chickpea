@@ -20,6 +20,7 @@ import type {
   TestRunQuery,
   TestRunReplayQuery,
   TestRunStartRequest,
+  TestRunStepQuery,
   TestRunStore,
 } from '../management/test-run-types.ts';
 import type {
@@ -391,7 +392,7 @@ const REPLAY_SAFE_STATE_METHODS = new Set([
   'slackPresentationTransition', // compare-and-swap on the projection version
   // A keyed admission returns the stored run on a repeat; a read runs at most one idempotent settle step.
   'testRunStart', 'testRunReplay', 'testRunObserve',
-  'testRunList', // a read
+  'testRunList', 'testRunStepResult', // reads
   // The same instance and submission get the same answer: a repeat finds the submission it bound.
   'testRunModelAccessBind',
   // Version-fenced; a replay finds exactly what the committed call wrote and succeeds.
@@ -3450,5 +3451,9 @@ export class CfTestRunStore implements TestRunStore {
 
   list(query: PracticeRunsQuery) {
     return rpcVia(this.stub, 'testRunList', (stub) => stub.testRunList(query));
+  }
+
+  async stepResult(query: TestRunStepQuery) {
+    return orUndefined(await rpcVia(this.stub, 'testRunStepResult', (stub) => stub.testRunStepResult(query)));
   }
 }

@@ -84,7 +84,7 @@ export async function getWorkspace(deps: FiveZeroDeps): Promise<Out<typeof schem
   return {
     ...(snapshot.slackTeamName ? { name: snapshot.slackTeamName } : {}),
     you: { ...(name ? { name } : {}), role: snapshot.caller.role },
-    agentCount: agentRows(snapshot, deps.baseUrl, undefined).length,
+    agentCount: agentRows(snapshot).length,
     ...withAdminUrl(adminUrl),
     adminOnly: [
       { what: 'Agent pictures', ...withUrl(adminUrl) },
@@ -94,35 +94,52 @@ export async function getWorkspace(deps: FiveZeroDeps): Promise<Out<typeof schem
   };
 }
 
+/** list_agents' result, its text block and `structuredContent` together, in characters at most. */
+export const LIST_AGENTS_BUDGET_CHARS = 20_000;
+/** A listed Agent's description, on one line, at most. */
+const LISTED_DESCRIPTION_CHARS = 100;
+
+/**
+ * The Agents the caller can use, archived ones only when asked, each as a
+ * list needs it: get_agent has the rest. One page stays inside the budget;
+ * `nextCursor` is where the next starts.
+ */
 export async function listAgents(
   deps: FiveZeroDeps,
   input: Out<typeof schemas.listAgentsInput>,
 ): Promise<Out<typeof schemas.listAgentsOutput>> {
-  const { context, snapshot } = await readWorkspace(deps);
-  const rows = agentRows(snapshot, deps.baseUrl, await deps.service.slackAppLink(context));
+  const { snapshot } = await readWorkspace(deps);
   const mine = new Set(snapshot.agents
     .filter(({ creatorMembershipId }) => creatorMembershipId === snapshot.caller.membershipId)
     .map(({ id }) => id));
-  return {
-    agents: input.include === 'mine' ? rows.filter(({ agentId }) => mine.has(agentId)) : rows,
+  const rows = agentRows(snapshot).filter(({ agentId, status }) =>
+    (input.include !== 'mine' || mine.has(agentId)) && (input.includeArchived === true || status !== 'archived'));
+  const from = Number(input.cursor ?? 0);
+  const page = (count: number): Out<typeof schemas.listAgentsOutput> => ({
+    agents: rows.slice(from, from + count),
     canCreate: true,
-  };
+    ...(from + count < rows.length ? { nextCursor: String(from + count) } : {}),
+  });
+  // The text block is the same JSON, so a page counts twice.
+  const fits = (count: number) => 2 * JSON.stringify(page(count)).length <= LIST_AGENTS_BUDGET_CHARS;
+  let count = Math.min(1, Math.max(0, rows.length - from));
+  while (from + count < rows.length && fits(count + 1)) count += 1;
+  return page(count);
 }
 
 /** Every Agent the caller can use: the ones they can edit, then shared ones they cannot. */
-function agentRows(snapshot: ManagementWorkspaceSnapshot, baseUrl: string | undefined, slack: string | undefined): AgentRow[] {
+function agentRows(snapshot: ManagementWorkspaceSnapshot): AgentRow[] {
   const editable = snapshot.agents.map((agent): AgentRow => {
     const handle = agentHandle(agent);
-    const links = agentLinks(baseUrl, agent.id, slack);
+    const description = agent.description?.replace(/\s+/g, ' ').trim();
     return {
       agentId: agent.id,
       name: agent.name,
       ...(handle ? { handle } : {}),
-      ...(agent.description ? { description: agent.description } : {}),
+      ...(description ? { description: shortDescription(description) } : {}),
       status: agentStatus(agent),
       canEdit: true,
       needsAttention: needsAttention(agent),
-      ...(links ? { links } : {}),
     };
   });
   const listed = new Set(editable.map(({ agentId }) => agentId));
@@ -135,6 +152,10 @@ function agentRows(snapshot: ManagementWorkspaceSnapshot, baseUrl: string | unde
     needsAttention: [],
   }));
   return [...editable, ...shared];
+}
+
+function shortDescription(description: string): string {
+  return description.length > LISTED_DESCRIPTION_CHARS ? `${description.slice(0, LISTED_DESCRIPTION_CHARS - 1)}…` : description;
 }
 
 function agentHandle(agent: SnapshotAgent): string | undefined {

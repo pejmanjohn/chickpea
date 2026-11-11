@@ -317,6 +317,8 @@ import type {
   TestRunReplayQuery,
   TestRunStartRequest,
   TestRunStartResult,
+  TestRunStepQuery,
+  TestRunStepResult,
   TestRunView,
 } from './management/test-run-types.ts';
 import { StateSchemaMarker, stateSchemaFingerprint } from './state/schema-lifecycle.ts';
@@ -1943,6 +1945,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
 
   async testRunList(query: PracticeRunsQuery): Promise<StateRpcResult<PracticeRunListing[]>> {
     return this.callTestRuns(async () => (await this.testRuns()).list(query));
+  }
+
+  async testRunStepResult(query: TestRunStepQuery): Promise<StateRpcResult<TestRunStepResult | null>> {
+    return this.callTestRuns(async () => await (await this.testRuns()).stepResult(query) ?? null);
   }
 
   /** One lifecycle per object: it holds which runs' steps are going and which it aborted. */
