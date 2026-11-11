@@ -352,18 +352,21 @@ test('a member who cannot change the Agent sees public runs only in Channels Sla
   await sharedAgent(w);
   await w.run({ conversation: 'named_channel', channelId: 'C_PUBLIC', requester: 'owner', recordedPublic: true, ask: 'in general' });
   await w.run({ conversation: 'named_channel', channelId: 'C_OTHER', requester: 'owner', recordedPublic: true, ask: 'in other' });
+  await w.run({ conversation: 'direct_message', channelId: 'D_SOMEONE', requester: null, startedAt: Date.now() - 26 * 60 * MINUTE });
+  const twoDays = { since: new Date(Date.now() - 2 * 24 * 60 * MINUTE).toISOString() };
   w.share.directory = ['C_PUBLIC'];
-  const page = await list(w, {}, 'member');
+  const page = await list(w, twoDays, 'member');
   assert.deepEqual(page.runs.map(({ where }) => where.channelId), ['C_PUBLIC']);
   assert.equal(page.runs[0]!.ask, undefined, 'someone else\'s words come one run at a time, from get_agent_run');
   assert.equal(page.runs[0]!.charged, undefined, 'a member sees no cost of a run they did not ask');
   assert.equal(page.summary?.notShown, undefined, 'a member who cannot change the Agent gets no count');
+  assert.equal((await list(w, twoDays)).summary?.notShown?.runs, 1, 'the Owner, who can, does');
   assert.deepEqual(structured(await w.member('get_agent_run', { runId: page.runs[0]!.runId })).ask, { label: LABEL, text: 'in general' });
 
   w.share.directory = 'unavailable';
   assert.deepEqual((await list(w, {}, 'member')).runs, [], 'an unavailable directory hides every Channel run');
   assert.equal(code(await w.member('get_agent_run', { runId: page.runs[0]!.runId })), 'not_found');
-  assert.equal((await list(w)).runs.length, 2, 'the Owner needs no directory');
+  assert.equal((await list(w, twoDays)).runs.length, 2, 'the Owner needs no directory');
 });
 
 test('a schedule made while its Channel was public is hidden once the Channel is private', async (t) => {
