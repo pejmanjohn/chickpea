@@ -231,11 +231,11 @@ test('a URL on an IDN login site loses its token whatever form the URL and the s
   assert.equal(record.trigger.text,
     'Open https://bücher.example/cb?[omitted] or bücher.example/cb?[omitted] or ' +
     'https://BÜCHER.example./cb?[omitted] or shop.bücher.example/r/cb?[omitted] or ' +
-    'bücher.example/cb?[omitted] or [omitted]/cb?[omitted] or ' +
+    '[omitted]/cb?[omitted] or [omitted]/cb?[omitted] or ' +
     'https://[omitted]/cb?[omitted] or [omitted]/cb?[omitted] or ' +
     'https://XN--BCHER-KVA.example/cb?[omitted] or xn--caf-dma.example/cb?[omitted]. ' +
     'Elsewhere https://[omitted]/cb?[omitted]. Public: https://straße.example/s?q=kept and пример.рф/s?q=kept',
-  'a fullwidth host reads as NFKC writes it, and one with an escape or an ideographic full stop, or that no URL can hold, goes');
+  'a host written in a form a link does not show as itself (an escape, a fullwidth or ideographic full stop), or that no URL can hold, goes');
   const [opened] = record.steps;
   assert.ok(opened?.kind === 'tool');
   assert.equal(opened.input, '{"url":"bücher.example/cb?[omitted]"}');
@@ -319,28 +319,64 @@ test('a link reads as NFKC without default-ignorable characters, so a decomposed
   const links = `bu${diaeresis}cher.example/cb?code=SYNTHNFKC1 https://bu${diaeresis}cher.example/cb?code=SYNTHNFKC2 ` +
     `bill${softHyphen}ing.example.com/cb?code=SYNTHNFKC3 https://bill${zeroWidthSpace}ing.example.com/cb?code=SYNTHNFKC4 ` +
     `billing${selector}.example.com/cb?code=SYNTHNFKC5 bill${wordJoiner}ing.example.com/cb?code=SYNTHNFKC6 ` +
-    `${wide('billing.example.com')}/cb${wide('?')}code=SYNTHNFKC7 billing.bu${diaeresis}cher/cb?code=SYNTHNFKC8 ` +
+    `${wide('billing')}.example.com/cb${wide('?')}code=SYNTHNFKC7 billing.bu${diaeresis}cher/cb?code=SYNTHNFKC8 ` +
     // A soft hyphen as a JSON escape, and a mark no label may start with, which no URL can hold.
     `bill${'\\'}u00ading.example.com/cb?code=SYNTHNFKC9 ${diaeresis}billing.example.com/cb?code=SYNTHNFKC10`;
   const scrubbed = 'bücher.example/cb?[omitted] https://bücher.example/cb?[omitted] ' +
     'billing.example.com/cb?[omitted] https://billing.example.com/cb?[omitted] ' +
     'billing.example.com/cb?[omitted] billing.example.com/cb?[omitted] ' +
-    'billing.example.com/cb?[omitted] billing.bücher/cb?[omitted] ' +
+    'billing.example.com/[omitted] billing.bücher/cb?[omitted] ' +
     'billing.example.com/cb?[omitted] [omitted]/cb?[omitted]';
-  // Text around a link stays as written, whatever NFKC would make of it.
-  const around = `${wide('See')} ❤${selector} (${wide('billing.example.com/cb?code=')}SYNTHNFKC12${wide(')')} ${wide('now')}${softHyphen}.`;
+  // Text around a link stays as written, whatever NFKC would make of it. A fullwidth `?` or `)` is no query mark or
+  // sentence mark: a browser reads it as part of the path.
+  const around = `${wide('See')} ❤${selector} (${wide('billing')}.example.com/cb?code=SYNTHNFKC12${wide(')')} ${wide('now')}${softHyphen}.`;
   const record = copy({
     context: [{ author: 'U012ABCDEF3', role: 'human', text: links, files: [] }],
     steps: [{ kind: 'tool', name: 'browser_snapshot', input: '{}', output: `${links} shop.exa${diaeresis}mple/x?q=SYNTHNFKC11` }],
     answer: `${links} ${around}`,
   }, logins);
   assert.deepEqual(kept(record, ['SYNTHNFKC']), []);
-  assert.equal(record.answer, `${scrubbed} ${wide('See')} ❤${selector} (billing.example.com/cb?[omitted]) ${wide('now')}${softHyphen}.`,
+  assert.equal(record.answer, `${scrubbed} ${wide('See')} ❤${selector} (billing.example.com/cb?[omitted] ${wide('now')}${softHyphen}.`,
     'a link comes back as the rules read it, and only its own characters go');
   assert.equal(record.context[0]?.text, scrubbed);
   const [shown] = record.steps;
   assert.ok(shown?.kind === 'tool');
   assert.equal(shown.output, `${scrubbed} shop.exämple/x?[omitted]`, 'in a browser step a decomposed top-level label reads as a name');
+
+  // NFKC can lengthen text, as a ligature becomes two letters, and the link after it is still replaced where it was written.
+  const ligatures = String.fromCodePoint(0xfb01).repeat(64);
+  const escapedThenLonger = `{"note":"${'\\'}u0041 ${ligatures} billing.example.com/cb?code=SYNTHNFKC13 ${ligatures}"}`;
+  const lengthened = copy({ steps: [{ kind: 'tool', name: 'read_mail', input: '{}', output: escapedThenLonger }] }, logins);
+  assert.equal(lengthened.steps[0]?.kind === 'tool' && lengthened.steps[0].output,
+    `{"note":"${'\\'}u0041 ${ligatures} billing.example.com/cb?[omitted] ${ligatures}"}`);
+});
+
+test('NFKC never ends, splits or hides a link the written text does not', () => {
+  // A character NFKC turns into whitespace or ASCII punctuation is read as written, as a browser reads it in a link.
+  const [diaeresis, acute, wideQuote, wideLess, wideGreater, wideBackslash, wideSolidus, wideBar, wideLowLine, wideAt] =
+    [0xa8, 0xb4, 0xff02, 0xff1c, 0xff1e, 0xff3c, 0xff0f, 0xff5c, 0xff3f, 0xff20].map((point) => String.fromCodePoint(point));
+  const marks = [diaeresis, acute, wideQuote, wideLess, wideGreater, wideBackslash];
+  const links = `${marks.map((mark, index) => `https://billing.example.com/cb${mark}x?code=SYNTHSTRUCT${index}`).join(' ')} ` +
+    `https://billing.example.com/magic/short${wideSolidus}token ${wideLowLine}billing.example.com/cb?code=SYNTHSTRUCT6 ` +
+    `${wideAt}billing.example.com/cb?code=SYNTHSTRUCT7`;
+  const scrubbed = `${marks.map(() => 'https://billing.example.com/[omitted]?[omitted]').join(' ')} ` +
+    `https://billing.example.com/magic/[omitted] ${wideLowLine}billing.example.com/cb?[omitted] ${wideAt}billing.example.com/cb?[omitted]`;
+  // Nor does NFKC take one away: `<` and a combining long solidus would be `≮`, and Slack's markup would be gone.
+  const handoff = `<${String.fromCodePoint(0x338)}https://live.provider.example/s/SYNTHLIVE|Open the browser>`;
+  const record = copy({
+    trigger: { author: 'U012ABCDEF3', text: `${links} <https://billing.example.com/cb${wideBar}x?code=SYNTHSTRUCT8>`, files: [] },
+    context: [{ author: 'Billing Agent', role: 'agent', text: handoff, files: [] }],
+    steps: [{ kind: 'tool', name: 'browser_snapshot', input: '{}', output: links }],
+    answer: links,
+  });
+  assert.deepEqual(kept(record, ['SYNTHSTRUCT', 'short' + wideSolidus + 'token', 'SYNTHLIVE']), []);
+  assert.equal(record.context[0]?.text, BROWSER_LINK_OMITTED);
+  assert.equal(record.answer, scrubbed);
+  assert.equal(record.trigger.text, `${scrubbed} <https://billing.example.com/[omitted]?[omitted]>`,
+    'a fullwidth bar is no Slack label\'s');
+  const [shown] = record.steps;
+  assert.ok(shown?.kind === 'tool');
+  assert.equal(shown.output, scrubbed);
 });
 
 test('an IP host compares with a login\'s site as a URL reads it, and a scheme-less IP link counts in a browser step', () => {

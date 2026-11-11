@@ -230,6 +230,7 @@ export interface WebsiteLoginScrub {
  */
 export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginScrub {
   const budget = new ScrubBudget();
+  const viewBuffers: ViewBuffers = [{ starts: new Int32Array(0), ends: new Int32Array(0) }, { starts: new Int32Array(0), ends: new Int32Array(0) }];
   const hostnames = new Set(logins.hosts.map((host) => {
     const site = host.trim().replace(/:\d+$/, '');
     return asciiHost(site) ?? site.toLowerCase();
@@ -346,11 +347,11 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
   return {
     links(text, browserStep) {
       budget.spend(text.length);
-      const view = linkView(text);
+      const view = linkView(text, viewBuffers);
       if (!view.text.includes(HANDOFF_LABEL)) return scrubLinks(text, view, browserStep);
       const handedOff = withoutHandoffs(text, view);
       budget.spend(handedOff.length);
-      return scrubLinks(handedOff, linkView(handedOff), browserStep);
+      return scrubLinks(handedOff, linkView(handedOff, viewBuffers), browserStep);
     },
     usernames(text, { browserStep, cut }) {
       if (!index) return text;
@@ -379,9 +380,17 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
  * zero-width character, a variation selector). So a fullwidth or decomposed
  * letter reads as a URL reads it, and a mark that no letter takes stays.
  * Each code unit keeps where it was written, so a link is replaced there.
+ * The view lasts until the next one written into the same buffers.
  */
-function linkView(written: string): Written {
-  return normalized(jsonDecoded(written));
+function linkView(written: string, [decoding, normalizing]: ViewBuffers): Written {
+  return normalized(jsonDecoded(written, decoding), normalizing);
+}
+
+/** Where a field's views write their maps: one for decoding, one for NFKC. A copy reuses them field after field. */
+type ViewBuffers = [MapBuffers, MapBuffers];
+interface MapBuffers {
+  starts: Int32Array;
+  ends: Int32Array;
 }
 
 // What a JSON escape other than `\uXXXX` writes.
@@ -390,9 +399,9 @@ const JSON_ESCAPED: ReadonlyMap<number, string> = new Map([
 ]);
 
 /** `text` with each JSON escape decoded. A run of backslashes before no escape reads as one backslash. */
-function jsonDecoded(text: string): Written {
+function jsonDecoded(text: string, buffers: MapBuffers): Written {
   if (!text.includes('\\')) return { text };
-  const out = new WrittenText(text.length);
+  const out = new WrittenText(text.length, buffers);
   let from = 0;
   for (let at = text.indexOf('\\'); at >= 0; at = text.indexOf('\\', at)) {
     out.copy({ text }, from, at);
@@ -421,17 +430,33 @@ function nfkc(text: string): string {
   return text.replace(IGNORABLES, '').normalize('NFKC').replace(IGNORABLES, '');
 }
 
+// What the link rules read as a link's structure: whitespace, and ASCII other than a letter or a digit.
+const STRUCTURE = /[\s\x00-\x2f\x3a-\x40\x5b-\x60\x7b-\x7f]/;
+
 /**
- * `view` in NFKC without default-ignorable code points. No ASCII character
- * joins one before it, so each run of other characters is read with the one
- * ASCII character before it, apart from the rest. Inside a run each cluster
- * (a code point and those that join it) keeps where it was written, unless
- * reading the clusters apart would change the run; then the whole run does.
+ * A cluster as the link rules read it: in NFKC without default-ignorable
+ * code points, unless NFKC would turn it into or out of whitespace or ASCII
+ * punctuation (`¨` into a space and a mark, a fullwidth `＂`, `／` or `．`,
+ * `<` and a combining long solidus into `≮`). A browser reads those as
+ * written in a link, so they stay, and NFKC never ends, splits or hides a
+ * link the written text does not.
  */
-function normalized(view: Written): Written {
+function clusterRead(cluster: string): string {
+  const bare = cluster.replace(IGNORABLES, '');
+  const read = nfkc(bare);
+  return read !== bare && (STRUCTURE.test(read) || STRUCTURE.test(bare)) ? bare : read;
+}
+
+/**
+ * `view` in NFKC without default-ignorable code points, cluster by cluster:
+ * a code point and those that join it. No ASCII character joins one before
+ * it, so only runs of other characters, with the ASCII character before
+ * each, are read. Each cluster keeps where it was written.
+ */
+function normalized(view: Written, buffers: MapBuffers): Written {
   const { text } = view;
   if (!NOT_ASCII.test(text) || (!IGNORABLE.test(text) && text.normalize('NFKC') === text)) return view;
-  const out = new WrittenText(text.length);
+  const out = new WrittenText(text.length, buffers);
   // Each cluster read once per field, and whether each code point joins the one before it.
   const reads = new Map<string, string>();
   const joins = new Map<number, boolean>();
@@ -447,58 +472,32 @@ function normalized(view: Written): Written {
     const start = run.index > 0 ? run.index - 1 : 0;
     const end = run.index + run[0].length;
     const segment = text.slice(start, end);
-    const read = nfkc(segment);
-    if (read === segment) continue;
-    const mark = out.mark();
-    const markFrom = from;
-    let readAt = 0;
-    for (let at = start, next = start; at < end && readAt >= 0; at = next) {
+    if (nfkc(segment) === segment) continue;
+    for (let at = start, next = start; at < end; at = next) {
       next = at + (text.codePointAt(at)! > 0xffff ? 2 : 1);
       while (next < end && joinsBefore(text.codePointAt(next)!)) next += text.codePointAt(next)! > 0xffff ? 2 : 1;
       const cluster = text.slice(at, next);
-      let piece = reads.get(cluster);
-      if (piece === undefined) reads.set(cluster, piece = nfkc(cluster));
-      if (!read.startsWith(piece, readAt)) {
-        readAt = -1;
-      } else {
-        readAt += piece.length;
-        if (piece === cluster) continue;
-        out.copy(view, from, at);
-        out.push(piece, ...written(view, at, next));
-        from = next;
-      }
+      let read = reads.get(cluster);
+      if (read === undefined) reads.set(cluster, read = clusterRead(cluster));
+      if (read === cluster) continue;
+      out.copy(view, from, at);
+      out.push(read, ...written(view, at, next));
+      from = next;
     }
-    if (readAt === read.length) continue;
-    out.reset(mark);
-    out.copy(view, markFrom, start);
-    out.push(read, ...written(view, start, end));
-    from = end;
   }
   out.copy(view, from, text.length);
   return out.done();
 }
 
-/** Text built from parts of a view, each code unit with where it was written. */
+/** Text built from parts of a view, each code unit with where it was written, in `buffers`. */
 class WrittenText {
   #parts: string[] = [];
-  #starts: Int32Array;
-  #ends: Int32Array;
+  #buffers: MapBuffers;
   #length = 0;
 
-  constructor(capacity: number) {
-    this.#starts = new Int32Array(capacity + 16);
-    this.#ends = new Int32Array(capacity + 16);
-  }
-
-  /** Where the text ends now, for `reset`. */
-  mark(): [parts: number, length: number] {
-    return [this.#parts.length, this.#length];
-  }
-
-  /** The text as it was at `mark`. */
-  reset([parts, length]: [parts: number, length: number]): void {
-    this.#parts.length = parts;
-    this.#length = length;
+  constructor(capacity: number, buffers: MapBuffers) {
+    this.#buffers = buffers;
+    this.#room(capacity);
   }
 
   /** `view.text[from, to)`, written where the view says. */
@@ -506,9 +505,10 @@ class WrittenText {
     if (to <= from) return;
     this.#room(to - from);
     this.#parts.push(view.text.slice(from, to));
+    const { starts, ends } = this.#buffers;
     for (let index = from; index < to; index += 1) {
-      this.#starts[this.#length] = view.starts ? view.starts[index]! : index;
-      this.#ends[this.#length] = view.ends ? view.ends[index]! : index + 1;
+      starts[this.#length] = view.starts ? view.starts[index]! : index;
+      ends[this.#length] = view.ends ? view.ends[index]! : index + 1;
       this.#length += 1;
     }
   }
@@ -517,24 +517,24 @@ class WrittenText {
   push(text: string, start: number, end: number): void {
     this.#room(text.length);
     this.#parts.push(text);
-    this.#starts.fill(start, this.#length, this.#length + text.length);
-    this.#ends.fill(end, this.#length, this.#length + text.length);
+    this.#buffers.starts.fill(start, this.#length, this.#length + text.length);
+    this.#buffers.ends.fill(end, this.#length, this.#length + text.length);
     this.#length += text.length;
   }
 
   #room(units: number): void {
-    if (this.#length + units <= this.#starts.length) return;
-    const capacity = Math.max(this.#starts.length * 2, this.#length + units);
-    const starts = new Int32Array(capacity);
-    const ends = new Int32Array(capacity);
-    starts.set(this.#starts);
-    ends.set(this.#ends);
-    this.#starts = starts;
-    this.#ends = ends;
+    const { starts, ends } = this.#buffers;
+    if (this.#length + units <= starts.length) return;
+    const capacity = Math.max(starts.length * 2, this.#length + units);
+    this.#buffers.starts = new Int32Array(capacity);
+    this.#buffers.ends = new Int32Array(capacity);
+    this.#buffers.starts.set(starts.subarray(0, this.#length));
+    this.#buffers.ends.set(ends.subarray(0, this.#length));
   }
 
   done(): Written {
-    return { text: this.#parts.join(''), starts: this.#starts.subarray(0, this.#length), ends: this.#ends.subarray(0, this.#length) };
+    const { starts, ends } = this.#buffers;
+    return { text: this.#parts.join(''), starts: starts.subarray(0, this.#length), ends: ends.subarray(0, this.#length) };
   }
 }
 
