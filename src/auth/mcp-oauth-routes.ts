@@ -32,6 +32,7 @@ import { BetterAuthMcpOAuthContinuationStore } from './mcp-oauth-continuation.ts
 import { challengeRedeemed } from './mcp-oauth-redemption.ts';
 import { hostedLoginFence, type HostedLoginFence } from './hosted-login.ts';
 import { validateBrowserMutationProvenance } from './request-provenance.ts';
+import { ADMIN_CONNECTED_APPS_PATH } from '../management/connect.ts';
 import { createWorkspaceManagementMcpHandler } from '../management/mcp.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import { CONNECT_FONTS, fontFaceCss } from '../assets/fonts.ts';
@@ -509,6 +510,7 @@ button[value=allow]{background:var(--gold);color:#3b3220;box-shadow:0 2px 0 var(
 button[value=allow]:active{transform:translateY(1px);box-shadow:0 1px 0 var(--gold-press)}
 button[value=deny]{background:transparent;color:var(--text-2);border:1px solid var(--line)}
 a{color:#8a6410}
+p.foot{margin:18px 0 0;font-size:14px}
 `.trim();
 
 function brandPage(title: string, body: string): string {
@@ -575,7 +577,13 @@ export function renderMcpConsentPage(input: {
         <input type="hidden" name="oauth_query" value="${escapeHtml(input.oauthQuery)}">
         <button type="submit" name="decision" value="allow">Allow</button>
         <button type="submit" name="decision" value="deny">Deny</button>
-      </form>`);
+      </form>
+${disconnectLine(known ?? 'the app')}`);
+}
+
+/** Where the person disconnects the app later; a new tab, so a consent in progress stays open. */
+function disconnectLine(app: string): string {
+  return `      <p class="foot">You can disconnect ${escapeHtml(app)} any time from <a href="${ADMIN_CONNECTED_APPS_PATH}" target="_blank" rel="noopener noreferrer">Connected apps</a> in Chickpea.</p>`;
 }
 
 /**
@@ -597,7 +605,8 @@ export function renderMcpAlreadyConnectedPage(clientId: string | undefined, clie
   const app = name ? escapeHtml(name) : 'This app';
   const back = name ? escapeHtml(name) : 'it';
   return brandPage('Already connected', `      <h1>Already connected</h1>
-      <p>${app} is already connected to Chickpea. You can close this tab and go back to ${back}.</p>`);
+      <p>${app} is already connected to Chickpea. You can close this tab and go back to ${back}.</p>
+${disconnectLine(name ?? 'it')}`);
 }
 
 function alreadyConnectedResponse(clientId: string | undefined, clientName: string | undefined): Response {
