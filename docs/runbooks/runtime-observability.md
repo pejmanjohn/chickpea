@@ -315,11 +315,14 @@ channel IDs, settings keys or values, or error text. Emission never throws.
 | `thread_runner_alarm` | Once per `SlackThreadRunner.alarm()` invocation (Cloudflare) | `outcome` (`idle`, `drained`, `threw`), `jobs`, `ran`, `yielded`, `carried`, `dropped`, `durationMs` |
 | `runner_boot` | Once per `SlackThreadRunner` activation (an instance constructed in memory), at the first call it serves (Cloudflare) | `firstMethod` (`wake` for the state store waking it at a delivery's receipt, `admit`, `alarm`, `stop`, `status`, `observedStatus`, `midRunReply`, `runFacts`, `presentationGet`, `presentationTransition`, or `host` for a host function), `cold` (the first runner its isolate constructed), `constructMs` (the constructor through its resume check), `constructToFirstCallMs`, and with `wake` or `admit`: `turnRef` and `sentToConstructMs` (the state store's send to the constructor's start) |
 | `agent_boot` | Once per Flue agent object activation (a Slack thread's Agent, a routine run, a coding worker), at the first call it serves (Cloudflare) | `agentClass` (the generated Durable Object class), `firstMethod` (`wake` for the state store waking a thread's object as it hands the turn to its runner, or a runner waking it once the turn's plan froze, `stage` for a runner staging a turn's input, `fetch` for a Flue dispatch or read, `alarm`, or `host`), `cold` (the first agent object its isolate constructed), `constructMs`, `constructToFirstCallMs`, and with `wake` or `stage`: `turnRef` and `sentToConstructMs` (the sender's clock before it addressed the object, to the constructor's start) |
-| `turn_latency` | Once per relay attempt of one turn (both lanes) | `turnRef`, `runRef`, `lane` (`cloudflare`, `node`), `executor` (`alarm`, `runner`, `node`), `attempt`, `outcome` (`returned`, `threw`, `stopped`: a stopped run's ending), `firstWrite`, `final` (`delivered`, `deferred`, `none`), `admissionToStartMs`, `admissionToFirstWriteMs`, `admissionToFinalMs`, `receiptToAdmissionMs`, `receiptToFirstWriteMs`, `handoffMs` (a runner turn's first attempt: see below), `runnerWakeLeadMs` (a runner turn's first attempt, when the state store woke its runner at receipt: how long before the hand-off it sent the wake), `admissionStatusMs` (a runner turn's first attempt, when the state store tried to show its status before the hand-off: how long the hand-off waited for it; see below), `agentStageMs` (staging the turn's input beside the thread's Agent before dispatch, and loading the connector details its render reads: see below), `agentWakeLeadMs` (a Cloudflare turn whose Agent object was woken: how long before staging the wake was sent), `agentWakeSource` (with `agentWakeLeadMs`: `admission` or `plan`, which wake it counts from), `startToStageMs` (from the attempt's start to that staging's start: see below), `attemptMs`, `folded` (present when the turn took follow-ups: how many queued messages it read with its own), `foldedInformed` (of those, how many were a teammate's, read as information only), `read` (present when the turn replaced a mid-run 👀 with 👍: how many) |
+| `store_boot` | Once per `TagStateStore` activation, at the first RPC or alarm it serves (Cloudflare) | `firstMethod` (`rpc` or `alarm`), `cold` (the first state store its isolate constructed), `versionChanged` (this activation installed the schema: the first on its Worker version), `constructMs` (the constructor through its resume check), `constructToFirstCallMs` |
+| `turn_latency` | Once per relay attempt of one turn (both lanes) | `turnRef`, `runRef`, `lane` (`cloudflare`, `node`), `executor` (`alarm`, `runner`, `node`), `attempt`, `outcome` (`returned`, `threw`, `stopped`: a stopped run's ending), `firstWrite`, `final` (`delivered`, `deferred`, `none`), `admissionToStartMs`, `admissionToFirstWriteMs`, `admissionToFinalMs`, `receiptToAdmissionMs`, `receiptToFirstWriteMs`, `handoffMs` (a runner turn's first attempt: see below), `runnerWakeLeadMs` (a runner turn's first attempt, when the state store woke its runner at receipt: how long before the hand-off it sent the wake), `admissionStatusMs` (a runner turn's first attempt, when the state store tried to show its status before the hand-off: how long the hand-off waited for it; see below), `agentStageMs` (staging the turn's input beside the thread's Agent before dispatch, and loading the connector details its render reads: see below), `agentWakeLeadMs` (a Cloudflare turn whose Agent object was woken: how long before staging the wake was sent), `agentWakeSource` (with `agentWakeLeadMs`: `admission` or `plan`, which wake it counts from), `startToStageMs` (from the attempt's start to that staging's start: see below), `attemptMs`, `folded` (present when the turn took follow-ups: how many queued messages it read with its own), `foldedInformed` (of those, how many were a teammate's, read as information only), `read` (present when the turn replaced a mid-run 👀 with 👍: how many), `admissionToModelStartMs` and `receiptToModelStartMs` (to the moment the turn's first Flue dispatch is sent; absent on an attempt that sent none), `receiptToFinalMs`, `modelSteps`, `toolCalls` and `toolMs` (the model work the attempt's reply observation saw: see below) |
 | `turn_fold` | When the state store confirms that a running turn's model read messages sent while it worked (both lanes) | `turnRef`, `late` (how many messages this confirmation covers; each message is counted once), `informed` (of those, how many were a teammate's, read as information only), `turn` (of those, how many it read after a tool step rather than before its reply), `edits` (edits of messages it had already read, counted apart from `late`) |
 | `turn_fold` (edit) | Once per delivery of a person's edit of a message (both lanes) | `op` (`edit_admission`), `outcome` (`admitted`, `already_admitted` for a redelivery, `no_live_turn`, `not_foldable`, `not_author`, `stale`, `unchanged`, `unsupported` for a state store without edit admission, or `failed` when admission threw and the delivery is retried) |
 | `turn_fold` (coding job) | When a coding job's wait pauses for new messages, a later wait for it ends, or the Agent passes it guidance | `turnRef`, `op` (`coding_pause`, `coding_resume` or `coding_relay`), `outcome` (pause: `messages` or `unchecked`; resume: `completed`, `paused` or a failure reason; relay: `sent`, `finished`, `stopped` or `not_sent`) |
 | `state_rpc` | Sampled calls from a `Cf*Store` proxy into `TagStateStore` | `method` (RPC name), `op` (request kind for `*Execute` RPCs), `ms`, `slow`, `ok`, `isolateCalls`, `isolateSlowCalls` |
+| `state_rpc_summary` | Once per scope: a direct Slack delivery on Cloudflare (`slack_delivery`, from Core's handler to the end of its admission chain), or a relay attempt of one turn (`turn`) | `scope`, `turnRef` (`turn` only), `calls`, `rounds`, `totalMs`, `busyMs`, `failed`, `slowestMethod`, `slowestMs`, `spanMs`, `receiptToStartMs` (`slack_delivery` only), `callsBeforeModelStart`, `roundsBeforeModelStart`, `busyMsBeforeModelStart` (`turn` only: see below) |
+| `model_step` | Once per model request an agent makes, logged by the object that makes it (both lanes) | `turnRef` (a Slack thread's request), `purpose` (`agent`, `compaction`, `compaction_prefix`), `outcome` (the provider's finish reason, such as `stop` or `toolUse`, or `error`), `durationMs`, `firstTokenMs`, `inputTokens`, `cachedInputTokens`, `cacheWriteTokens`, `outputTokens`, `toolCalls` |
 | `gateway_delivery` | Once per authenticated gateway delivery at Worker admission (Cloudflare) | `transport` (`http`, `socket`), `deliveryKind` (`event`, `agent_selected`, `channel_agent_add`), `eventType` and `subtype` (Slack's event vocabulary), `outcome` (`accepted`, `duplicate`, `rejected`, `failed`, `filtered`), `lagMs`, `slackLagMs`, socket only: `source` (`store`, `recent`, `filter`), `filterReason`, `queueMs`, `admitMs`, `inFlight`, `sessionPhase`, `sessionHealth`, `sessionAttempt`, `sessionGeneration`, `sessionAgeMs` |
 | `slack_read` | Once per Slack `conversations.history` or `conversations.replies` read for context or a read tool | `source` (`prefetch`, `tool`), `method` (`history`, `replies`), `outcome` (`ok`, `refused` by the shared read budget, `rate_limited`), `gated` (the shared app's one-a-minute budget applies), `limit`, `returned`, `includesRoot`, `reachesAnchor` (the page reached the triggering message), `hasCursor`, `order` (`oldest_first`, `newest_first`, `mixed`) |
 | `interaction_judgment` | Once per guaranteed Slack turn (a DM or a mention) the turn judged itself, after its classifier settled (both lanes) | `turnRef`, `recordedBy` (`shortcut`, `clef`, `model`, `unrecorded`), `basis` (the recorded disposition), `basisMs`, `clef` (`read`, `unavailable`, `timeout`, `error`, `unparseable`, `skipped`), `clefMs`, `clefInputTokens` (Clef is platform infrastructure, so this is where its cost is counted), `clefChoice`, `clefTop`, `clefTextMass` (P(reply) + P(work)) and `clefMemory` (each in thousandths), `gate` (`dispatch`, `await_model`), `clefLate` (Clef would have dispatched but the model recorded first), `model` (the classifier's disposition), `modelFailed`, `modelMs`, `refinement` (after a Clef basis: `none`, `labels`, `disagreed`, `model_unavailable`), `agreed` (Clef's disposition equals the model's), and from Clef's separate management call (absent after a shortcut): `management` (`read`, `unavailable`, `timeout`, `error`, `unparseable`), `managementMs`, `managementInputTokens`, `managementTop` (its noul, in thousandths), `managementFired` (at or above 0.5, so the turn's first request mounts the workspace change tools) |
@@ -496,9 +499,11 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   (receipt = the inbox's `accepted_at`) and `receiptToFirstWriteMs` is the
   user-facing first-status latency. A direct installation on Cloudflare is
   admitted by the Worker over the state store's RPCs: its receipt is the
-  Worker's clock when it verified the delivery, sent to the state store with
-  the wake above (`noteSlackDelivery`), so `receiptToAdmissionMs` is the
-  Worker's admission chain. A front desk hand-off's turn (the takeover row)
+  host's arrival time for the request when the host passes one
+  (`withSlackArrival`), else the Worker's clock when Core's handler started.
+  It is sent to the state store with the wake above (`noteSlackDelivery`), so
+  `receiptToAdmissionMs` is the Worker's admission chain, including a host's
+  own work before Core (a health gate) and a state store that boots for it. A front desk hand-off's turn (the takeover row)
   takes its receipt from Chickpea's decision (`noteFrontDeskHandoff`), so its
   receipt fields measure the takeover's own admission chain, not the person's
   message; keep such rows apart when aggregating first-status latency. For
@@ -559,6 +564,41 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   session, and the deploy prints `Still waiting: the Slack gateway did not
   answer on this version's session; reconnecting it.` HTTP delivery has no
   socket and is not probed.
+- The three reply measures read from one `turn_latency` record, all from
+  receipt: `receiptToFirstWriteMs` (first status), `receiptToModelStartMs`
+  (model start: the turn's first Flue dispatch is about to be sent), and
+  `receiptToFinalMs` (end to end). Model start is absent on an attempt that
+  reattached to a dispatch an earlier attempt sent. `modelSteps` counts the
+  model steps the attempt's reply observation saw start for its submission
+  (Flue's per-step turn id), `toolCalls` its tool calls (an answer
+  declaration excluded), and `toolMs` the tools' own reported durations
+  summed; a reattached observation that begins with a snapshot sees only the
+  later steps. `model_step`, joined by `turnRef`, is the full per-request
+  record.
+- `model_step` is logged in the object that runs the model (a Slack thread's
+  Agent object on Cloudflare), from Flue's observations: `firstTokenMs` is
+  from Flue's `turn_request` to the request's first streamed text, thinking or
+  tool-call arguments, and `durationMs` is Flue's own duration for the
+  request. `inputTokens` excludes the cached input `cachedInputTokens` counts,
+  so the prompt cache's hit rate is `cachedInputTokens / (inputTokens +
+  cachedInputTokens + cacheWriteTokens)`. Token fields are absent when the
+  provider reported no usage. `toolCalls` counts the tool calls in that
+  response. Only Slack thread requests carry `turnRef`.
+- `store_boot` makes a state store that left memory visible: its time against
+  a delivery's arrival is the boot the delivery waited for. No caller sends
+  its clock to the store, so it has no `sentToConstructMs`; `cold` means the
+  isolate's first state store, as for the runner.
+- `state_rpc_summary` counts every state store call of its scope, timed at the
+  caller, where `state_rpc` logs only slow or sampled calls. A round is a run
+  of overlapping calls: one starts while none is in flight. `busyMs` is the
+  time at least one call was in flight, and `totalMs` the sum of the calls'
+  times. `slack_delivery` covers Core's direct handler and the admission
+  chain it starts, and is logged when that chain ends (deliveries that start
+  none log nothing); `receiptToStartMs` is the time before Core's handler
+  started, which is the host's work when the receipt is the host's arrival.
+  `turn` covers one attempt, logged right after its `turn_latency`; the
+  `*BeforeModelStart` fields are the calls made before the dispatch was sent.
+  A scope that made no call logs nothing, so a Node install logs none.
 - `state_rpc` is logged by the calling isolate (a Flue agent Durable Object,
   CodingWorker, or the Worker), not by `TagStateStore`. Every call at or above
   250 ms, and every failed call, is logged with `slow`/`ok`; otherwise one call
@@ -584,7 +624,7 @@ To query a deployed Worker, discover the `event` key with `/telemetry/keys`
 alongside the verified service filter. For a percentile, use a calculations
 query with, for example, `{ operator: 'p95', key: '<verified admissionToFirstWriteMs key>', keyType: 'number' }`
 grouped by `lane`. During a bounded live capture, `wrangler tail --search turn_latency`
-(or `relay_alarm`, `thread_runner_alarm`, `state_rpc`, `gateway_delivery`) narrows the stream; `entrypoint` shows which
+(or `relay_alarm`, `thread_runner_alarm`, `state_rpc`, `state_rpc_summary`, `store_boot`, `model_step`, `gateway_delivery`) narrows the stream; `entrypoint` shows which
 Durable Object logged a `state_rpc`. `npm run diagnose` does not project these
 events; join them to a Run through `runRef` and the time window. On a Node
 install the same objects print to the process log, for example

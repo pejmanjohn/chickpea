@@ -41,6 +41,7 @@ import { SlackRunPresentationStoreLogic } from '../src/slack/run-presentations.t
 import type { CredentialKeyring } from '../src/slack/secret-envelope.ts';
 import type { ThreadRunnerJob } from '../src/slack/thread-runner-jobs.ts';
 import { threadRunnerStub } from '../src/slack/thread-runner-rpc.ts';
+import { withSlackArrival } from '../src/slack/slack-arrival.ts';
 import { slackTurnExecutor } from '../src/slack/turn-executor-flag.ts';
 import type { TurnJob } from '../src/slack/turn-job-types.ts';
 import { TurnJobStoreLogic, type PendingTurnJob } from '../src/slack/turn-jobs.ts';
@@ -470,7 +471,8 @@ interface DirectWorker {
   /** The failures the Worker logged. */
   failures: string[];
   stores: ReturnType<typeof buildTagStateStores>;
-  deliver(body: Record<string, unknown>, ctx?: ExecutionContext): Promise<Response>;
+  /** `arrivedAt`: the host's arrival time for the request (withSlackArrival). */
+  deliver(body: Record<string, unknown>, ctx?: ExecutionContext, arrivedAt?: number): Promise<Response>;
   event(event: Record<string, unknown>): Record<string, unknown>;
 }
 
@@ -607,7 +609,7 @@ async function withDirectWorker(
       notes,
       failures,
       stores,
-      async deliver(body, ctx) {
+      async deliver(body, ctx, arrivedAt) {
         const raw = JSON.stringify(body);
         const timestamp = String(Math.floor(Date.now() / 1_000));
         const signature = createHmac('sha256', SIGNING_SECRET).update(`v0:${timestamp}:${raw}`).digest('hex');
@@ -619,7 +621,7 @@ async function withDirectWorker(
             'x-slack-signature': `v0=${signature}`,
           },
           body: raw,
-        }, env, ctx);
+        }, arrivedAt === undefined ? env : withSlackArrival(env, arrivedAt), ctx);
       },
       event(event) {
         events += 1;
@@ -686,6 +688,39 @@ test('on the Cloudflare target the Worker notes a verified message to the state 
     assert.equal((await worker.deliver(worker.event(WORKER_MENTION))).status, 200);
     await new Promise((resolve) => setTimeout(resolve, 30));
     assert.equal(worker.notes.length, 0, 'a gateway installation gets no note from the direct path');
+  });
+});
+
+// Defects caught: the receipt clock started inside Core's handler, after the
+// host's own work (a health gate, a cold state store), so turn_latency hid it;
+// a host time in the future accepted; and the delivery's state store calls
+// unlogged, or logged before its admission chain ends.
+test("a host's arrival time is a direct delivery's receipt, and the delivery logs its state store calls", async (t) => {
+  const summaries: Array<Record<string, unknown>> = [];
+  t.mock.method(console, 'info', (record: unknown) => {
+    if ((record as { event?: unknown } | undefined)?.event === 'state_rpc_summary') summaries.push(record as Record<string, unknown>);
+  });
+  await withDirectWorker(t, async (worker) => {
+    const arrivedAt = Date.now() - 1_800;
+    assert.equal((await worker.deliver(worker.event(WORKER_MENTION), undefined, arrivedAt)).status, 200);
+    await settled(() => summaries.length > 0 || worker.failures.length > 0);
+    assert.deepEqual(worker.failures, []);
+    assert.equal(worker.notes[0]?.receivedAt, arrivedAt, "the note carries the host's arrival");
+    assert.ok(worker.log.includes('rpc:admitSlackTurn'), 'the summary follows admission');
+    const [summary] = summaries;
+    assert.equal(summary?.scope, 'slack_delivery');
+    assert.ok(Number(summary?.receiptToStartMs) >= 1_800, `the wait before Core's handler: ${summary?.receiptToStartMs}`);
+    const calls = Number(summary?.calls);
+    assert.ok(calls >= 3 && calls <= worker.log.filter((entry) => entry.startsWith('rpc:')).length, `calls: ${calls}`);
+    assert.ok(Number(summary?.rounds) >= 1 && Number(summary?.rounds) <= calls);
+    assert.match(String(summary?.slowestMethod), /^[a-z][A-Za-z]+$/);
+
+    worker.notes.length = 0;
+    const before = Date.now();
+    assert.equal((await worker.deliver(worker.event(DM), undefined, Date.now() + 60_000)).status, 200);
+    await settled(() => worker.notes.length > 0);
+    assert.ok(worker.notes[0]!.receivedAt >= before && worker.notes[0]!.receivedAt <= Date.now(),
+      'a host time in the future is not a receipt');
   });
 });
 
