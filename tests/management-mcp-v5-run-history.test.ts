@@ -126,7 +126,7 @@ async function world(t: TestContext, suffix: string, share: Shared = shared(), i
       handleSecret: async () => ({ secret: SECRET, installationId }),
     };
     return {
-      runHistory: sources,
+      runHistory: async () => sources,
       slackFacts: async ({ agent }) => ({
         async lookupChannel(channelId: string) {
           share.reads.push(`slack:${channelId}`);

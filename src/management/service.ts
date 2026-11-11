@@ -611,8 +611,11 @@ export interface WorkspaceManagementServiceInput {
   ) => Promise<T>;
   /** Better Auth's record of people's MCP clients; undefined where Better Auth does not sign people in. */
   mcpOAuthClients?: () => Promise<BetterAuthMcpOAuthClients | undefined>;
-  /** What list_agent_runs and get_agent_run read; a deployment without them has no run history. */
-  runHistory?: RunHistorySources;
+  /**
+   * What list_agent_runs and get_agent_run read, opened on first use so it
+   * stays out of Worker startup; a deployment without them has no run history.
+   */
+  runHistory?: () => Promise<RunHistorySources>;
   now?: () => number;
   randomId?: () => string;
   randomCapability?: () => string;
@@ -4169,7 +4172,7 @@ export class WorkspaceManagementService {
     slackChannel(channelId: string): Promise<SlackChannel | undefined>;
   } | undefined> {
     await this.requireLiveActor(context);
-    const sources = this.stores.runHistory;
+    const sources = await this.stores.runHistory?.();
     if (!sources) return undefined;
     const user = await this.stores.identity.getUser(context.userId);
     let facts: Promise<PrivateAgentPlacementFacts> | undefined;
