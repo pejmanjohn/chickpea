@@ -6,6 +6,7 @@ import { after, test, type TestContext } from 'node:test';
 import { Hono } from 'hono';
 import pg from 'pg';
 
+import { ADMIN_ROUTE_PATHS } from '../src/admin/route-paths.ts';
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import { mapBetterAuthMembership, type BetterAuthMembershipRecord } from '../src/auth/better-auth-backend.ts';
 import { withBetterAuthBackend } from '../src/auth/better-auth-environment.ts';
@@ -21,6 +22,7 @@ import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import type { PlatformEnv } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
+import { lazyRoutes } from '../src/http/lazy-routes.ts';
 import { identityError } from '../src/identity/errors.ts';
 import type { AuthControl, IdentityStore } from '../src/identity/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
@@ -76,14 +78,15 @@ async function signedInAdmin(lacking: readonly string[] = []) {
     },
   });
   const countedIdentity = counted<IdentityStore>(older, calls, 'identity');
+  // As src/app.ts mounts Admin: behind the application's gate, loaded on first request.
   const app = new Hono();
   app.use('*', recoveryOnlyGate(() => countedIdentity));
-  app.route('/', createAdminRoutes({
+  app.route('/', lazyRoutes('Admin routes', ADMIN_ROUTE_PATHS, async () => createAdminRoutes({
     identity: countedIdentity,
     settings: counted(settings, calls, 'settings'),
     store: counted(config, calls, 'config'),
     betterAuthEnvironment: environment,
-  }));
+  })));
   // Each request's own calls, the deferred audit writes included.
   const get = async (path: string) => {
     calls.length = 0;
@@ -214,6 +217,28 @@ test('one request shares its auth control read; a failed read is retried, and ea
   fail = true;
   reads = 0;
   assert.deepEqual(await (await app.request('https://admin.example/')).json(), { reads: 2 });
+});
+
+test('a lazily mounted app shares the read, and keeps it when a body limit swaps the Request', async () => {
+  const control = { authMode: 'slack_active', healthGate: 'normal' } as AuthControl;
+  let reads = 0;
+  const read = async () => {
+    reads += 1;
+    return control;
+  };
+  const mounted = new Hono().get('/', async (c) => {
+    assert.equal(await requestAuthControl(c, read), control);
+    c.req.raw = new Request(c.req.raw);
+    assert.equal(await requestAuthControl(c, read), control);
+    return c.json({ reads });
+  });
+  const app = new Hono();
+  app.use('*', async (c, next) => {
+    await requestAuthControl(c, read);
+    return next();
+  });
+  app.route('/', lazyRoutes('probe', ['/'], async () => mounted));
+  assert.deepEqual(await (await app.request('https://admin.example/')).json(), { reads: 1 });
 });
 
 // Skipped only when CHICKPEA_TEST_POSTGRES_BIN is set empty; a missing server fails.

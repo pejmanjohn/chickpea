@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import { Hono } from 'hono';
@@ -194,6 +195,13 @@ function withAdmin(h: Awaited<ReturnType<typeof harness>>): Hono {
   }));
   return app;
 }
+
+test('src/app.ts mounts the setup router before Admin, as withAdmin does', () => {
+  const source = readFileSync(new URL('../src/app.ts', import.meta.url), 'utf8');
+  const setup = source.indexOf('createManagementSetupRoutes(');
+  assert.ok(setup > 0 && source.indexOf('createAdminRoutes(', setup) > setup,
+    "a setup link's OAuth return reaches the setup router before Admin's /oauth/callback");
+});
 
 function pendingKeyFor(accountId: string): string {
   return mcpOAuthSettingKeys(connectionAccountOAuthRef(accountId))[1];
