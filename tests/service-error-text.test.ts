@@ -319,6 +319,14 @@ test('a known secret goes whole even when it holds a character that ends a label
   }
 });
 
+test('a known secret inside a label does not hide the label from the value pass', () => {
+  const secret = 'Abcdefghijkl';
+  for (const text of [`token_${secret}=winter meadow`, `"x_${secret}_key": "winter meadow"`, `${secret}_password: winter meadow`]) {
+    const shown = serviceErrorText(text, [secret]);
+    for (const part of ['Abcdefghijkl', 'winter', 'meadow']) assert.ok(!shown.includes(part), `${part} in ${shown}`);
+  }
+});
+
 test('a secret word that is not a label keeps what follows', () => {
   keeps('"keyword": "contacts", "error_code": "INVALID_ARGUMENT"');
   keeps('token expired, sign in again');
