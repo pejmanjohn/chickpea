@@ -21,11 +21,19 @@ const platformTimers: HoldTimers = {
 
 /**
  * Keeps a Durable Object in memory until a deadline. Cloudflare hibernates an
- * idle object after 10 seconds unless it has a pending timer, and evicts it
- * only once that timer fires or 15 minutes after it was set; a scheduled
- * alarm blocks neither. So the hold is one pending timer, moved only later.
- * Once it fires, the object hibernates on the platform's ordinary rules. The
- * object pays duration charges while held.
+ * idle object after 10 seconds unless it has a pending timer; a scheduled
+ * alarm does not stop that. So the hold is one pending timer, moved only
+ * later. Whether the timer also blocks eviction depends on the Worker's
+ * compatibility date:
+ * - From 2026-10-01, or with the `durable_object_io_tasks_prevent_eviction`
+ *   flag, it does, until it fires or 15 minutes after it was set.
+ * - Before that date and without the flag, as in wrangler.jsonc today, an
+ *   object that cannot hibernate is still evicted after 70 to 140 seconds
+ *   with no request or alarm. The state store's keep-warm tick is such an
+ *   alarm. A thread's runner and Agent object have none, so their hold ends
+ *   there.
+ * Once the timer fires, the object hibernates on the platform's ordinary
+ * rules. The object pays duration charges while held.
  */
 export class ResidencyHold {
   private timer: unknown;

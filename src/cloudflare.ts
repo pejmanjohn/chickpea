@@ -3178,7 +3178,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
    * KEEP_WARM_WINDOW_MS; undefined outside the window, and before any turn is
    * known. Armed as the latest the alarm may wait (armAlarmNoLaterThan keeps
    * an earlier due time), so a firing inside the window re-arms it. The
-   * conversationHold keeps the store in memory; the tick does not.
+   * conversationHold stops the store hibernating; the tick alone does not.
+   * Where a pending timer does not block eviction (see ResidencyHold), each
+   * firing restarts the 70 to 140 seconds an idle object has before it.
    */
   private keepWarmTickAt(): number | undefined {
     const now = Date.now();
