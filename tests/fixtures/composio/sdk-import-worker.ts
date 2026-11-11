@@ -12,6 +12,7 @@ export default {
       apiKey: 'ak_workerd_import_smoke',
       baseURL: backendUrl,
       allowTracking: false,
+      disableVersionCheck: true,
       sensitiveFileUploadProtection: true,
     });
     const link = await client.connectedAccounts.link(

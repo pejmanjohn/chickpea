@@ -110,7 +110,7 @@ test('webhook secret derivation matches the official Composio SDK', async () => 
     },
   });
   const signed = await signature(secret, `${webhookId}.${timestamp}.${body}`);
-  const composio = new Composio({ apiKey: 'test-key', allowTracking: false });
+  const composio = new Composio({ apiKey: 'test-key', allowTracking: false, disableVersionCheck: true });
 
   const sdkResult = await composio.triggers.verifyWebhook({
     id: webhookId,
