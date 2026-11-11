@@ -238,9 +238,6 @@ export async function executeTurnJob(
     return false;
   }
   const stoppedBeforeDispatch = gate === 'stopped_before_dispatch';
-  // An attempt that already holds its envelope prepares no dispatch, so
-  // nothing later would end its prefetched reads: it reads the state store.
-  if (job.dispatchEnvelope) endTurnReads();
   if (!job.turn.interactionIntent && job.progress.interactionIntent) {
     job.turn.interactionIntent = job.progress.interactionIntent;
   }

@@ -473,6 +473,34 @@ test('against a state store without the batch, the turn reads as it did', async 
   });
 });
 
+// Defects caught: an attempt that already holds its dispatch envelope never
+// prepares a dispatch, so nothing ended its batched reads, and its settings
+// and credential records stayed as read at its start for the whole run; an
+// approval turn's Add key card reading the Agent and its connections as
+// batched before the state store applied the approval.
+test('an attempt that prepares no dispatch gets no batch: one past its preparation, and a management approval', async () => {
+  const log: string[] = [];
+  const stub = loggingStub({}, log);
+  const env = { TAG_STATE: { getByName: () => stub } } as unknown as PlatformEnv;
+  const job = {
+    id: 'turn_a',
+    turn: { workspaceId: 'T1', channelId: 'D1', channelType: 'im', threadTs: '1.0', messageTs: '1.0' },
+    assignment: { agentId: READY_AGENT, agent: { id: READY_AGENT } },
+  } as unknown as PendingTurnJob;
+  const sent = async () => {
+    await new Promise((resolve) => setImmediate(resolve));
+    return log.splice(0);
+  };
+  assert.equal(prefetchTurnReads(env, { ...job, dispatchEnvelope: { instanceId: 'agent' } } as unknown as PendingTurnJob), undefined,
+    'an attempt past its preparation');
+  assert.equal(prefetchTurnReads(env, {
+    ...job, turn: { ...job.turn, managementApprovalProposalId: 'proposal_a' },
+  } as unknown as PendingTurnJob), undefined, 'a management approval');
+  assert.deepEqual(await sent(), [], 'and neither sends a batch');
+  assert.ok(prefetchTurnReads(env, job) instanceof TurnReads, 'a first attempt of any other turn has its batch');
+  assert.deepEqual(await sent(), ['stateReadBatch']);
+});
+
 // Defect caught: the Work run and binding a turn's lifecycle opens with left
 // out of the batch, or batched under other arguments than the reads send.
 test("a runner's batch answers the turn's Work run and the binding its presentation names", async () => {

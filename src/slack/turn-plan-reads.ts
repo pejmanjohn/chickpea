@@ -87,8 +87,20 @@ export function turnPlanReads(
   return reads;
 }
 
-/** The turn's reads, its batch sent now; a state store without the batch, or that fails it, answers nothing. */
-export function prefetchTurnReads(env: PlatformEnv, job: PendingTurnJob, bindingId?: string): TurnReads {
+/**
+ * The turn's reads, its batch sent now; a state store without the batch, or
+ * that fails it, answers nothing. Only dispatch preparation ends them before
+ * the run, so an attempt that prepares no dispatch gets none:
+ *
+ * - one that already holds its dispatch envelope (a reattached run, a retry
+ *   after preparation), whose settings and credential records would
+ *   otherwise stay as read at its start for the whole run;
+ * - a management approval, which skips memory and the plan, and which the
+ *   state store applies with its own stores: a write this turn's proxies
+ *   never see, before the Add key card reads the Agent and its connections.
+ */
+export function prefetchTurnReads(env: PlatformEnv, job: PendingTurnJob, bindingId?: string): TurnReads | undefined {
+  if (job.dispatchEnvelope || job.turn.managementApprovalProposalId) return undefined;
   const answered = Promise.resolve().then(async () => {
     const reads = turnPlanReads(job, env, bindingId);
     const answers = await timedStateRpc('stateReadBatch', tagStateStub(env).stateReadBatch(reads));
