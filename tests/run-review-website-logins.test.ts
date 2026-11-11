@@ -650,7 +650,8 @@ test('a login site\'s or the hosted browser\'s link percent-encoded whole, once 
 
 test('a percent-encoded space, quote, angle bracket or backslash inside an address ends no link, so the token after it goes', () => {
   // A browser reads `%20` in an address as data. Decoded as a space, it would end the link and leave the token after it.
-  const inside = ['%20', '%22', '%3C', '%3E', '%5C', '%2520', '%5C%22', '%C2%A0', '%26lt%3B'];
+  // PHP's htmlentities with ENT_HTML5 writes `%` as `&percnt;`, and a JSON serializer may escape it.
+  const inside = ['%20', '%22', '%3C', '%3E', '%5C', '%2520', '%5C%22', '%C2%A0', '%26lt%3B', '&percnt;20', '&percnt;22', `${'\\'}u002520`];
   const links = inside.map((escape, index) => `https://billing.example.com/cb?x=a${escape}b&code=SYNTHSTAND${index}`).join(' ');
   const others = 'https://other.example/s?q=a%20b%22c%3Cd and https://other.example/r?note=a%20b&next=' +
     encodeURIComponent('https://billing.example.com/cb?code=SYNTHSTAND9');
@@ -1059,6 +1060,31 @@ test('a field of nested escapes takes at most four decoding passes, each read on
     usernames: Array(7).fill(true),
     layers: [false, false, false, false, true],
   }, 'an address encoded four times loses its token; one encoded five times is deliberate, and its fifth layer stays');
+});
+
+test('each decoding pass counts against the copy\'s budget', () => {
+  // `%2525` takes two passes to read as `%`, and a third finds nothing left to decode.
+  const field = '%2525'.repeat(40_000);
+  const scrub = websiteLoginScrub({ hosts: ['billing.example.com'], usernames: [] });
+  for (let read = 0; read < 30; read += 1) assert.equal(scrub.links(field, false), field);
+  assert.throws(() => {
+    for (let read = 0; read < 10; read += 1) scrub.links(field, false);
+  }, (error) => error instanceof RunReviewScrubLimit && error.event === 'scrub_over_budget');
+});
+
+test('a character reference or percent escape of no character stays as written, and the copy is kept', () => {
+  const none = '&#0; &#xD800; &#1114112; &#x110000; &#99999999999; %C0%AF %E0%80%AF %ED%A0%80 %F4%90%80%80 %F5%80%80%80';
+  const record = copy({
+    steps: [{
+      kind: 'tool', name: 'browser_snapshot', input: '{}',
+      output: `${none} https://billing.example.com/cb?code=SYNTHNONE1 https://other.example/a%E0%80%AFb?x=1`,
+    }],
+    answer: `${none} as Ops.Synthetic@example.com`,
+  });
+  assert.equal(record.answer, `${none} as [credential redacted]`);
+  // A browser decodes no overlong form, so `%E0%80%AF` is no `/` and its segment is no word.
+  assert.equal(record.steps[0]?.kind === 'tool' && record.steps[0].output,
+    `${none} https://billing.example.com/cb?[omitted] https://other.example/[omitted]?[omitted]`);
 });
 
 test('each host read in another script counts its parse against the copy\'s budget', () => {

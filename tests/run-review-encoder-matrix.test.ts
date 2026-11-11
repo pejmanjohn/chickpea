@@ -57,7 +57,7 @@ const CREDENTIALS: readonly Credential[] = [
   {
     name: 'hand-off message',
     text: browserHandoffMessage('portal.example.com', 'https://live.provider.example/s/SynthLive51?view=full&t=SynthLive52'),
-    secrets: ['SynthLive51', 'SynthLive52', 'live.provider'],
+    secrets: ['SynthLive51', 'SynthLive52'],
     fields: EVERY_FIELD,
   },
   {

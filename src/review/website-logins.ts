@@ -358,10 +358,10 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
     links(text, browserStep) {
       budget.spend(text.length);
       const view = readView(text, maps, budget);
-      if (!HANDOFF_LABEL.test(view.text)) return scrubLinks(text, linkView(view, text, maps), browserStep);
+      if (!HANDOFF_LABEL.test(view.text)) return scrubLinks(text, linkView(view, maps), browserStep);
       const handedOff = withoutHandoffs(text, view);
       budget.spend(handedOff.length);
-      return scrubLinks(handedOff, linkView(readView(handedOff, maps, budget), handedOff, maps), browserStep);
+      return scrubLinks(handedOff, linkView(readView(handedOff, maps, budget), maps), browserStep);
     },
     usernames(text, { browserStep, cut }) {
       if (!index) return text;
@@ -387,12 +387,15 @@ interface Written {
   text: string;
   starts?: Int32Array;
   ends?: Int32Array;
+  /** 1 where a code unit came through percent decoding: of its own escape, or of text an escape of it is written in. */
+  percent?: Uint8Array;
 }
 
 /** Where one pass over a field writes its view's maps. */
 interface MapBuffers {
   starts: Int32Array;
   ends: Int32Array;
+  percent: Uint8Array;
 }
 
 /**
@@ -402,8 +405,8 @@ interface MapBuffers {
  */
 class ViewMaps {
   readonly #sets: readonly [MapBuffers, MapBuffers] = [
-    { starts: new Int32Array(0), ends: new Int32Array(0) },
-    { starts: new Int32Array(0), ends: new Int32Array(0) },
+    { starts: new Int32Array(0), ends: new Int32Array(0), percent: new Uint8Array(0) },
+    { starts: new Int32Array(0), ends: new Int32Array(0), percent: new Uint8Array(0) },
   ];
 
   /** Where a pass that reads `view` writes. */
@@ -456,7 +459,7 @@ function decodedOnce(view: Written, buffers: MapBuffers): Written | undefined {
     if (escape.end === at + 1 && escape.text === text[at]) continue;
     out ??= new WrittenText(text.length, buffers);
     out.copy(view, from, at);
-    out.push(escape.text, ...written(view, at, escape.end));
+    out.push(escape.text, view, at, escape.end, escape.percent);
     from = escape.end;
   }
   if (!out) return undefined;
@@ -468,6 +471,7 @@ function decodedOnce(view: Written, buffers: MapBuffers): Written | undefined {
 interface Escape {
   text: string;
   end: number;
+  percent?: boolean;
 }
 
 function escapeAt(text: string, at: number): Escape | undefined {
@@ -551,7 +555,7 @@ function percentEscapeAt(text: string, at: number): Escape | undefined {
   // Too long a form, a surrogate, or past Unicode: not a character.
   if ((bytes === 3 && (point < 0x800 || (point >= 0xd800 && point <= 0xdfff))) ||
       (bytes === 4 && (point < 0x10000 || point > 0x10ffff))) return undefined;
-  return { text: String.fromCodePoint(point), end: at + bytes * 3 };
+  return { text: String.fromCodePoint(point), end: at + bytes * 3, percent: true };
 }
 
 function hexByteAt(text: string, at: number): number {
@@ -592,22 +596,26 @@ const STAND_INS = /[\u{F0000}-\u{FFFFD}]/gu;
 
 /**
  * `view` as the link rules read it. A character that would end a link is a
- * stand-in that ends none where it was written percent-encoded (`%20`,
- * `%22`, `%3C`, or an escape inside one, as `%5C%22` writes `\"`): it is an
- * address's data, as a browser reads it, so decoding never ends or splits a
- * link the written text does not.
+ * stand-in that ends none where it came through percent decoding: `%20`,
+ * `%2520`, `%5C%22` (an escaped quote), or `&percnt;20` from a serializer
+ * that names `%` in HTML. Percent encoding is an address's own, so what it
+ * writes is the address's data, as a browser reads it, and decoding never
+ * ends or splits a link the written text does not. A JSON or HTML escape of
+ * a quote or a space reads as the text before it was serialized, which the
+ * rules read as they read any text: no URL serializer writes either in an
+ * address.
  */
-function linkView(view: Written, source: string, maps: ViewMaps): Written {
-  const { text, starts } = view;
-  if (!starts || !source.includes('%')) return view;
+function linkView(view: Written, maps: ViewMaps): Written {
+  const { text, percent } = view;
+  if (!percent?.includes(1)) return view;
   let out: WrittenText | undefined;
   let from = 0;
   for (const end of text.matchAll(LINK_ENDS)) {
     const at = end.index;
-    if (source.charCodeAt(starts[at]!) !== PERCENT) continue;
+    if (!percent[at]) continue;
     out ??= new WrittenText(text.length, maps.for(view));
     out.copy(view, from, at);
-    out.push(String.fromCodePoint(STAND_IN + text.charCodeAt(at)), ...written(view, at, at + 1));
+    out.push(String.fromCodePoint(STAND_IN + text.charCodeAt(at)), view, at, at + 1);
     from = at + 1;
   }
   if (!out) return view;
@@ -683,7 +691,7 @@ function normalized(view: Written, maps: ViewMaps): Written {
       if (read === undefined) reads.set(cluster, read = clusterRead(cluster));
       if (read === cluster) continue;
       out.copy(view, from, at);
-      out.push(read, ...written(view, at, next));
+      out.push(read, view, at, next);
       from = next;
     }
   }
@@ -707,36 +715,48 @@ class WrittenText {
     if (to <= from) return;
     this.#room(to - from);
     this.#parts.push(view.text.slice(from, to));
-    const { starts, ends } = this.#buffers;
+    const { starts, ends, percent } = this.#buffers;
     for (let index = from; index < to; index += 1) {
       starts[this.#length] = view.starts ? view.starts[index]! : index;
       ends[this.#length] = view.ends ? view.ends[index]! : index + 1;
+      percent[this.#length] = view.percent ? view.percent[index]! : 0;
       this.#length += 1;
     }
   }
 
-  /** `text`, every code unit of it written at `[start, end)`. */
-  push(text: string, start: number, end: number): void {
+  /** `text` in place of `view.text[from, to)`, every code unit of it written where all of that was. */
+  push(text: string, view: Written, from: number, to: number, percentEscape = false): void {
     this.#room(text.length);
     this.#parts.push(text);
+    const [start, end] = written(view, from, to);
+    let percent = percentEscape;
+    for (let index = from; !percent && view.percent && index < to; index += 1) percent = view.percent[index] === 1;
     this.#buffers.starts.fill(start, this.#length, this.#length + text.length);
     this.#buffers.ends.fill(end, this.#length, this.#length + text.length);
+    this.#buffers.percent.fill(percent ? 1 : 0, this.#length, this.#length + text.length);
     this.#length += text.length;
   }
 
   #room(units: number): void {
-    const { starts, ends } = this.#buffers;
+    const { starts, ends, percent } = this.#buffers;
     if (this.#length + units <= starts.length) return;
     const capacity = Math.max(starts.length * 2, this.#length + units);
     this.#buffers.starts = new Int32Array(capacity);
     this.#buffers.ends = new Int32Array(capacity);
+    this.#buffers.percent = new Uint8Array(capacity);
     this.#buffers.starts.set(starts.subarray(0, this.#length));
     this.#buffers.ends.set(ends.subarray(0, this.#length));
+    this.#buffers.percent.set(percent.subarray(0, this.#length));
   }
 
   done(): Written {
-    const { starts, ends } = this.#buffers;
-    return { text: this.#parts.join(''), starts: starts.subarray(0, this.#length), ends: ends.subarray(0, this.#length) };
+    const { starts, ends, percent } = this.#buffers;
+    return {
+      text: this.#parts.join(''),
+      starts: starts.subarray(0, this.#length),
+      ends: ends.subarray(0, this.#length),
+      percent: percent.subarray(0, this.#length),
+    };
   }
 }
 
@@ -827,8 +847,7 @@ class ViewWriter {
 
   point(point: number, start: number, end: number): void {
     if (point < 0x80) {
-      // JSON's `\b` reads as a space, as its `\t` and `\f` do.
-      if (point === PLUS || point === SPACE || (point >= 0x08 && point <= 0x0d)) this.space(start, end);
+      if (point === PLUS || point === SPACE || (point >= 0x09 && point <= 0x0d)) this.space(start, end);
       else this.#unit(point >= 0x41 && point <= 0x5a ? point + 0x20 : point, start, end);
       return;
     }

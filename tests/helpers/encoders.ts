@@ -21,6 +21,13 @@ const LATIN1_NAMES = (
   'yacute thorn yuml'
 ).split(' ');
 
+const HTML5_ASCII_NAMES: Readonly<Record<string, string>> = {
+  '\t': 'Tab', '\n': 'NewLine', '!': 'excl', '"': 'quot', '#': 'num', '$': 'dollar', '%': 'percnt', '&': 'amp', '\'': 'apos',
+  '(': 'lpar', ')': 'rpar', '*': 'ast', '+': 'plus', ',': 'comma', '.': 'period', '/': 'sol', ':': 'colon', ';': 'semi',
+  '<': 'lt', '=': 'equals', '>': 'gt', '?': 'quest', '@': 'commat', '[': 'lsqb', '\\': 'bsol', ']': 'rsqb', '^': 'Hat',
+  '_': 'lowbar', '`': 'grave', '{': 'lcub', '|': 'verbar', '}': 'rcub',
+};
+
 function hexByte(byte: number): string {
   return byte.toString(16).toUpperCase().padStart(2, '0');
 }
@@ -128,6 +135,17 @@ export const PRODUCERS: readonly Producer[] = [
       // HTML 4.01 names every Latin-1 character; this helper takes no text past them, whose names it does not hold.
       if (point < 0xa0 || point > 0xff) throw new Error(`No HTML 4.01 name here for U+${point.toString(16)}.`);
       return `&${LATIN1_NAMES[point - 0xa0]};`;
+    }).join(''),
+  },
+  // ENT_QUOTES | ENT_HTML5 names ASCII punctuation too, `%` as `&percnt;` and `/` as `&sol;`. Any name HTML gives a character reads the same.
+  {
+    name: 'PHP htmlentities(ENT_HTML5)',
+    encode: (text) => [...text].map((char) => {
+      const point = char.codePointAt(0)!;
+      const name = HTML5_ASCII_NAMES[char] ?? (point >= 0xa0 && point <= 0xff ? LATIN1_NAMES[point - 0xa0] : undefined);
+      if (name) return `&${name};`;
+      if (point < 0x80) return char;
+      throw new Error(`No HTML5 name here for U+${point.toString(16)}.`);
     }).join(''),
   },
   // What a browser's address bar shows: the host in its own script, no scheme or `www.`, UTF-8 escapes as their characters.
