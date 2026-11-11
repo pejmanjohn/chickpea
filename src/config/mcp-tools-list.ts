@@ -134,13 +134,18 @@ export async function readToolsListAnswer(response: Response, answer: ToolsListA
 function rewriteAnswer(value: unknown, answer: ToolsListAnswer): unknown {
   if (Array.isArray(value)) throw answer.refuse('batch');
   if (!isRecord(value) || value.jsonrpc !== '2.0') throw answer.refuse('json-rpc');
-  if (value.id !== answer.id) throw answer.refuse('response-id');
+  if (!answersRequest(value.id, answer.id)) throw answer.refuse('response-id');
   if ('error' in value) {
     if ('result' in value) throw answer.refuse('json-rpc');
     return value;
   }
   if (!isRecord(value.result) || !Array.isArray(value.result.tools)) throw answer.refuse('json-rpc');
   return { ...value, result: answer.page(value.result as ToolsListResult) };
+}
+
+/** The MCP client matches an answer to its request by `Number(id)`, so `"3"` answers request 3. */
+function answersRequest(id: unknown, requestId: unknown): boolean {
+  return id === requestId || (typeof id === 'string' && typeof requestId === 'number' && Number(id) === requestId);
 }
 
 /**

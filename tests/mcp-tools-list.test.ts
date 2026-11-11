@@ -631,6 +631,20 @@ test('a listing larger than the cap is refused on both bodies', async (t) => {
   assert.deepEqual(logs.refused.map(({ reason }) => reason), ['response-size', 'response-size', 'response-size']);
 });
 
+test('an answer whose id is the request id as a string is read, as the MCP client reads it', async (t) => {
+  const logs = captureLogs(t);
+  const server = mcpServer((rpc) => Response.json({
+    jsonrpc: '2.0', id: String(rpc.id), result: { tools: ['extra', 'gamma', 'alpha'].map(listedTool) },
+  }));
+  await withRuntimeConnection(connectionConfig(), server.fetch, async (definition) => {
+    assert.deepEqual(await mountedNames(definition), ['mcp__srv__alpha', 'mcp__srv__gamma']);
+  });
+  await assert.rejects(filter().filterResponse({ id: 3 }, new Response(answer(3, []).replace('"id":3', '"id":"4"'), {
+    headers: { 'content-type': 'application/json' },
+  }), 'Example Tools'), /\(response-id\)/);
+  assert.deepEqual(logs.refused.map(({ reason }) => reason), ['response-id']);
+});
+
 test('a JSON-RPC error with a result too, or another JSON-RPC version, is refused', async (t) => {
   captureLogs(t);
   for (const payload of [
