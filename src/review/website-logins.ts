@@ -112,10 +112,11 @@ const UNREADABLE_NAME = new RegExp(`^${NAME}$`, 'iu');
  */
 const BROWSER_STEP_HOST = new RegExp(String.raw`^(?:${NAME}|\d{1,3}(?:\.\d{1,3}){3}|\[[\da-f:.]+\])$`, 'iu');
 
-// The hand-off label, each of its spaces written as one or as a form's `+`.
-const HANDOFF_LABEL_TEXT = escapeRegExp(BROWSER_HANDOFF_LINK_LABEL).replace(/ /g, '[ +]');
-const HANDOFF_LINK = new RegExp(String.raw`<([^<>|]*)\|${HANDOFF_LABEL_TEXT}>`, 'g');
-const HANDOFF_LABEL = new RegExp(String.raw`\|${HANDOFF_LABEL_TEXT}>`);
+// The hand-off label, each of its spaces written as one, as a form's `+`, or percent-encoded, which the link view
+// reads as a stand-in (see withStandIns); and Slack's brackets around a link, as written or percent-encoded.
+const HANDOFF_LABEL_TEXT = escapeRegExp(BROWSER_HANDOFF_LINK_LABEL).replace(/ /g, String.raw`[ +\u{F0020}]`);
+const HANDOFF_LINK = new RegExp(String.raw`[<\u{F003C}]([^<>|\u{F003C}\u{F003E}]*)\|${HANDOFF_LABEL_TEXT}[>\u{F003E}]`, 'gu');
+const HANDOFF_LABEL = new RegExp(String.raw`\|${HANDOFF_LABEL_TEXT}[>\u{F003E}]`, 'u');
 /** What a hand-off message links to: an absolute web address, too long to be a word of other text. */
 const HANDOFF_URL = /^https?:\/\/[^\s<>|"\\]{8,}$/i;
 /** A run of text a hand-off URL could be: nothing that ends one. */
@@ -357,11 +358,11 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
   return {
     links(text, browserStep) {
       budget.spend(text.length);
-      const view = readView(text, maps, budget);
-      if (!HANDOFF_LABEL.test(view.text)) return scrubLinks(text, linkView(view, maps), browserStep);
+      const view = linkView(text, maps, budget);
+      if (!HANDOFF_LABEL.test(view.text)) return scrubLinks(text, view, browserStep);
       const handedOff = withoutHandoffs(text, view);
       budget.spend(handedOff.length);
-      return scrubLinks(handedOff, linkView(readView(handedOff, maps, budget), maps), browserStep);
+      return scrubLinks(handedOff, linkView(handedOff, maps, budget), browserStep);
     },
     usernames(text, { browserStep, cut }) {
       if (!index) return text;
@@ -577,15 +578,16 @@ function hexValue(code: number): number {
 // ---------------------------------------------------------------------------
 
 /**
- * `written` as the hand-off rule reads it, and the link rules but for their
- * stand-ins (see linkView): its escapes decoded, then in Unicode NFKC,
+ * `written` as the link and hand-off rules read it: its escapes decoded,
+ * each character that came through percent decoding and would end a link
+ * read as a stand-in that ends none (see withStandIns), then in Unicode NFKC
  * without the default-ignorable code points a URL drops from a host (a soft
  * hyphen, a zero-width character, a variation selector). So a fullwidth or
  * decomposed letter reads as a URL reads it, and a mark that no letter takes
  * stays.
  */
-function readView(written: string, maps: ViewMaps, budget: ScrubBudget): Written {
-  return normalized(decoded(written, maps, budget), maps);
+function linkView(written: string, maps: ViewMaps, budget: ScrubBudget): Written {
+  return normalized(withStandIns(decoded(written, maps, budget), maps), maps);
 }
 
 // What ends a link (see URL_CHAR).
@@ -595,17 +597,16 @@ const STAND_IN = 0xf0000;
 const STAND_INS = /[\u{F0000}-\u{FFFFD}]/gu;
 
 /**
- * `view` as the link rules read it. A character that would end a link is a
- * stand-in that ends none where it came through percent decoding: `%20`,
- * `%2520`, `%5C%22` (an escaped quote), or `&percnt;20` from a serializer
- * that names `%` in HTML. Percent encoding is an address's own, so what it
- * writes is the address's data, as a browser reads it, and decoding never
- * ends or splits a link the written text does not. A JSON or HTML escape of
- * a quote or a space reads as the text before it was serialized, which the
- * rules read as they read any text: no URL serializer writes either in an
- * address.
+ * `view` with each character that would end a link a stand-in that ends
+ * none, where it came through percent decoding: `%20`, `%2520`, `%5C%22`
+ * (an escaped quote), or `&percnt;20` from a serializer that names `%` in
+ * HTML. Percent encoding is an address's own, so what it writes is the
+ * address's data, as a browser reads it, and decoding never ends or splits a
+ * link the written text does not. A JSON or HTML escape of a quote or a
+ * space reads as the text before it was serialized, which the rules read as
+ * they read any text: no URL serializer writes either in an address.
  */
-function linkView(view: Written, maps: ViewMaps): Written {
+function withStandIns(view: Written, maps: ViewMaps): Written {
   const { text, percent } = view;
   if (!percent?.includes(1)) return view;
   let out: WrittenText | undefined;

@@ -667,6 +667,18 @@ test('a percent-encoded space, quote, angle bracket or backslash inside an addre
   assert.equal(record.steps[0]?.kind === 'tool' && record.steps[0].output, scrubbed);
 });
 
+test('a hand-off link goes percent-encoded whole, and a hand-off URL holding an encoded space goes wherever the text repeats it', () => {
+  const liveView = 'https://live.provider.example/s/SYNTHHAND1?note=a%20b&t=SYNTHHAND2';
+  const message = browserHandoffMessage('portal.example.com', liveView);
+  const record = copy({
+    context: [{ author: 'Billing Agent', role: 'agent', text: `${message}\nLinks in this Slack message:\n- ${liveView}`, files: [] }],
+    steps: [{ kind: 'tool', name: 'browser_snapshot', input: '{}', output: encodeURIComponent(message) }],
+    answer: new URLSearchParams({ text: message }).toString(),
+  });
+  assert.deepEqual(kept(record, ['SYNTHHAND', 'live.provider']), []);
+  assert.match(record.context[0]?.text ?? '', /\[browser link omitted\] and sign in;.*\nLinks in this Slack message:\n- \[browser link omitted\]$/s);
+});
+
 test('a login site\'s link, a hand-off link and a username written in HTML character references leave every field', () => {
   // Python's encode('ascii', 'xmlcharrefreplace') and html.escape, and PHP's htmlentities, as the security delta re-review wrote them.
   const logins = { hosts: [normalizeWebsiteLoginHost('bücher.example')], usernames: ['müller.synthetic@example.com'] };
