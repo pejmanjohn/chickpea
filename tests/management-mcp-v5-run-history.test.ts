@@ -684,6 +684,19 @@ test('the one-call read limit moves by whole UTC days, so since cannot find wher
     return { partial: page.summary?.partial, more: page.nextCursor !== undefined };
   };
   assert.deepEqual(await read(at(998)), await read(at(1_001)), 'a since on either side of the 1,000th hidden run reads the same');
+
+  // Someone who can change the Agent reads its private Channel runs, so for them the whole day is what keeps since from finding one.
+  const editor = await world(t, 'read-limit-editor');
+  await createFixtureAgent(editor.f, AGENT);
+  for (let index = 0; index < 1_005; index += 1) {
+    await editor.run({ conversation: 'named_channel', channelId: 'G_PRIVATE', requester: 'member', recordedPublic: false, startedAt: at(index) });
+  }
+  const edge = async (since: number) => {
+    const page = await list(editor, { since: new Date(since).toISOString() });
+    assert.deepEqual(page.runs, []);
+    return { partial: page.summary?.partial, more: page.nextCursor !== undefined, notShown: page.summary?.notShown?.runs };
+  };
+  assert.deepEqual(await edge(at(998)), await edge(at(1_001)), 'a since on either side of the 1,000th private Channel run reads the same');
 });
 
 test('a since still to come lists nothing; a run before since is not listed, though hidden runs are counted by the day', async (t) => {
@@ -848,7 +861,7 @@ test('a Channel run shows only while Chickpea\'s own app, the one app that hears
   assert.equal(structured(await w.call('get_agent_run', { runId: row.runId })).outcome, 'answered');
 });
 
-test('a run keeps one runId on every list, and a page one cursor', async (t) => {
+test('a run keeps one runId on every list; a cursor is new on every call and reads the same page', async (t) => {
   const w = await world(t, 'stable');
   await createFixtureAgent(w.f, AGENT);
   await w.run({ conversation: 'direct_message', channelId: 'D_OWNER', requester: 'owner', ask: 'one' });
@@ -857,10 +870,91 @@ test('a run keeps one runId on every list, and a page one cursor', async (t) => 
   const first = await list(w, { limit: 1, since });
   const again = await list(w, { limit: 1, since });
   assert.equal(again.runs[0]!.runId, first.runs[0]!.runId);
-  assert.equal(again.nextCursor, first.nextCursor);
+  assert.notEqual(again.nextCursor, first.nextCursor);
+  assert.deepEqual((await list(w, { cursor: again.nextCursor })).runs, (await list(w, { cursor: first.nextCursor })).runs);
   const both = await list(w, { since });
   assert.notEqual(both.runs[0]!.runId, both.runs[1]!.runId);
   assert.equal(both.runs[0]!.runId, first.runs[0]!.runId);
+  assert.deepEqual((await list(w, { cursor: first.nextCursor })).runs.map(({ runId }) => runId), [both.runs[1]!.runId]);
+});
+
+test('a cursor that holds a hidden run\'s place tells a poller nothing: never equal, always one length', async (t) => {
+  const w = await world(t, 'cursor-poll');
+  await createFixtureAgent(w.f, AGENT);
+  const now = Date.now();
+  await w.run({ conversation: 'direct_message', channelId: 'D_OWNER', requester: 'owner', ask: 'mine', startedAt: now - 2 * MINUTE });
+  // Someone who can change the Agent reads its private Channel runs too, so past the read limit the cursor is one's place.
+  for (let index = 0; index < 1_005; index += 1) {
+    await w.run({
+      conversation: 'named_channel', channelId: index % 2 ? 'G_PRIVATE' : 'G_PRIVATE_WITH_A_LONGER_ID', requester: 'member',
+      recordedPublic: false, startedAt: now - 5 * MINUTE - index * 1_000,
+    });
+  }
+  const poll = async () => {
+    const page = await list(w, { since: new Date(now - 60 * MINUTE).toISOString(), place: 'my_dms' });
+    assert.equal(page.runs.length, 1);
+    assert.equal(page.summary?.partial, true);
+    return page.nextCursor!;
+  };
+  const cursors = [await poll(), await poll()];
+  // Each hidden run moves the place the cursor holds, to a run whose ID is another length.
+  for (let arrived = 0; arrived < 2; arrived += 1) {
+    await w.run({ conversation: 'named_channel', channelId: 'G_PRIVATE', requester: 'member', recordedPublic: false, startedAt: Date.now() - 1_000 + arrived });
+    cursors.push(await poll());
+  }
+  assert.equal(new Set(cursors).size, cursors.length, 'no two cursors are equal, with or without a new hidden run');
+  assert.deepEqual([...new Set(cursors.map(({ length }) => length))], [cursors[0]!.length], 'every cursor is one length');
+  assert.equal((await list(w, { cursor: cursors.at(-1) })).runs.length, 0, 'and still reads on from its place');
+});
+
+test('past the read limit a first page keeps whole UTC days, so no hidden run that arrives moves what someone who can change the Agent sees', async (t) => {
+  const w = await world(t, 'whole-days');
+  await createFixtureAgent(w.f, AGENT);
+  const day = 24 * 60 * MINUTE;
+  const today = Math.floor(Date.now() / day) * day;
+  // Newest first: 600 private Channel runs yesterday, 300 public the day before, then the caller's own DM and 300 private.
+  for (let index = 0; index < 600; index += 1) {
+    await w.run({ conversation: 'named_channel', channelId: 'G_PRIVATE', requester: 'member', recordedPublic: false, startedAt: today - 1_000 - index * MINUTE });
+  }
+  for (let index = 0; index < 300; index += 1) {
+    await w.run({ conversation: 'named_channel', channelId: 'C_PUBLIC', requester: 'member', recordedPublic: true, startedAt: today - day - 1_000 - index * MINUTE });
+  }
+  await w.run({ conversation: 'direct_message', channelId: 'D_OWNER', requester: 'owner', ask: 'three days back', startedAt: today - 2 * day - 500 });
+  for (let index = 0; index < 300; index += 1) {
+    await w.run({ conversation: 'named_channel', channelId: 'G_PRIVATE', requester: 'member', recordedPublic: false, startedAt: today - 2 * day - 1_000 - index * MINUTE });
+  }
+  const since = new Date(today - 3 * day).toISOString();
+  const view = async (args: Record<string, unknown> = {}) => {
+    const { nextCursor, summary, ...page } = await list(w, { since, limit: 25, ...args });
+    const { to: _end, ...counts } = summary ?? {};
+    return { ...page, summary: counts, more: nextCursor !== undefined };
+  };
+  const before = { all: await view(), dms: await view({ place: 'my_dms' }) };
+  // The read stopped inside the third day back; only the two whole days are counted, and the DM waits for the next page.
+  assert.equal(before.all.summary.partial, true);
+  assert.equal(before.all.summary.runs, 300);
+  assert.equal(before.all.summary.notShown?.runs, 600);
+  assert.deepEqual(before.dms.runs, []);
+  assert.equal(before.dms.more, true);
+  for (let arrived = 0; arrived < 3; arrived += 1) {
+    await w.run({ conversation: 'named_channel', channelId: 'G_PRIVATE', requester: 'member', recordedPublic: false, startedAt: Math.max(today, Date.now() - 500 + arrived) });
+    assert.deepEqual({ all: await view(), dms: await view({ place: 'my_dms' }) }, before, `hidden run ${arrived + 1} today`);
+  }
+
+  // Every run the caller sees is still listed once, the day the first page left included.
+  const listed: string[] = [];
+  let cursor: string | undefined;
+  for (let pages = 0; pages < 40; pages += 1) {
+    const page: Page = await list(w, cursor ? { cursor } : { since, limit: 25 });
+    listed.push(...page.runs.map(({ runId }) => runId));
+    cursor = page.nextCursor;
+    if (!cursor) break;
+  }
+  assert.equal(cursor, undefined, 'the pages end');
+  assert.equal(listed.length, 301);
+  assert.equal(new Set(listed).size, 301);
+  const dms = await list(w, { since, place: 'my_dms' });
+  assert.deepEqual((await list(w, { cursor: dms.nextCursor })).runs.map(({ ask }) => ask), ['three days back']);
 });
 
 const AUTH_SECRET = 'ab'.repeat(32);
