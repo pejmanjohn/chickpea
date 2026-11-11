@@ -52,6 +52,8 @@ const STEP_URL = urlPatterns(STEP_URL_CHAR);
 const ANY_SCHEMELESS_URL = String.raw`${HOST_START}(?:[a-z0-9-]+\.)+[a-z]{2,}${STEP_URL.afterHost}`;
 
 const HANDOFF_LINK = new RegExp(String.raw`<([^<>|]*)\|${escapeRegExp(BROWSER_HANDOFF_LINK_LABEL)}>`, 'g');
+/** What a hand-off message links to: an absolute web address, too long to be a word of other text. */
+const HANDOFF_URL = /^https?:\/\/[^\s<>|"\\]{8,}$/i;
 
 /** Shapes of a hosted browser's live view, debugger or connect link, whatever its host. */
 function browserLink(scheme: string | undefined, hostname: string, path: string, suffix: string): boolean {
@@ -133,10 +135,17 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
   return {
     links(text, browserStep) {
       // A thread context row lists a message's links again under its text, unescaped (slack/rich-text-links.ts).
+      // Anyone can write the label, so only a whole URL counts, and only where it stands alone: a
+      // replacement inside other text would break up a URL or a username before its own rule saw it.
       const handoffs = unique([...text.matchAll(HANDOFF_LINK)]
-        .flatMap(([, url]) => url ? [url, unescapedSlackText(url)] : []));
+        .flatMap(([, url]) => url ? [url, unescapedSlackText(url)] : [])
+        .filter((url) => HANDOFF_URL.test(url)));
       return handoffs
-        .reduce((value, url) => value.split(url).join(BROWSER_LINK_OMITTED), text.replace(HANDOFF_LINK, BROWSER_LINK_OMITTED))
+        .reduce(
+          (value, url) => value.replace(
+            new RegExp(String.raw`(?<![^\s<"])${escapeRegExp(url)}(?![^\s>|"\\])`, 'g'), BROWSER_LINK_OMITTED),
+          text.replace(HANDOFF_LINK, BROWSER_LINK_OMITTED),
+        )
         .replace(browserStep ? linkPatterns.browserStep : linkPatterns.anywhere, (raw) => scrubLink(raw, browserStep));
     },
     usernames(text, { browserStep, cut }) {
