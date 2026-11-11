@@ -18,8 +18,12 @@ export const PRACTICE_HISTORY_BYTES = 48 * 1024;
 /** One turn's line naming what it read, at most. */
 const DIGEST_CHARS = 1_000;
 
-/** Every character a model may read as the end of a line, a lone carriage return and the Unicode separators included. */
-const LINE_BREAK = /\r\n?|[\n\v\f\x85\u2028\u2029]/;
+/**
+ * Every character a model, or code on the way to it, may read as the end of
+ * a line: a lone carriage return, the Unicode separators, and the file, group
+ * and record separators, where Python's `splitlines` breaks too.
+ */
+const LINE_BREAK = /\r\n?|[\n\v\f\x1c-\x1e\x85\u2028\u2029]/;
 
 export const PRACTICE_HISTORY_HEADING = 'Earlier in this practice conversation (quoted):';
 export const PRACTICE_NEW_QUESTION = 'New question:';
