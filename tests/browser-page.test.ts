@@ -500,6 +500,26 @@ test('screenshot reads the page before and after the capture, and changes nothin
   client.close();
 });
 
+test('a page that could hold no sign-in secret is not read for a screenshot until one is typed into it', async () => {
+  const { socket, client, secrets } = await pageWithRefs();
+  const page = new BrowserPage(client, SESSION, { sleep: async () => undefined, secrets, mayHoldSecret: false });
+  await page.snapshot();
+  socket.responders.set('Page.captureScreenshot', () => ({ result: { data: 'iVBORw0KGgo=' } }));
+  socket.responders.set('DOMSnapshot.captureSnapshot', () => ({
+    result: domSnapshot({ inputs: [{ id: 30, type: 'password', value: 'Synthetic-Pass-1234' }] }),
+  }));
+  const from = socket.sent.length;
+  assert.ok('bytes' in await page.screenshot());
+  assert.deepEqual(socket.sent.slice(from).map(({ method }) => method), ['Page.captureScreenshot']);
+  await page.fillSecret('e3', 'Synthetic-Pass-1234');
+  assert.equal(secrets.empty, true, 'only the typing tells the page');
+  assert.deepEqual(await page.screenshot(), { withheld: 'field' });
+
+  const unknown = new BrowserPage(client, SESSION, { sleep: async () => undefined, secrets: new TypedSecrets() });
+  assert.deepEqual(await unknown.screenshot(), { withheld: 'field' }, 'a page not told whether it could hold a secret checks');
+  client.close();
+});
+
 test('screenshot is withheld, with nothing captured, while a password field holds a value, and taken once the form is gone', async () => {
   const { socket, page, client } = setup();
   let page1 = domSnapshot({ inputs: [{ id: 40, type: 'password', value: 'Synthetic-Pass-1234' }] });

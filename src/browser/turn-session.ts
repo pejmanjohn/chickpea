@@ -50,6 +50,12 @@ export interface BrowserTurnSessionDeps {
    * it is bound to a login whose grant allows actions.
    */
   policy?: BrowserPolicy;
+  /**
+   * Whether the run grants a website login. Only false lets a session skip
+   * checking pictures for a sign-in secret, until a secret is typed into it.
+   * A hand-off session always checks.
+   */
+  grantsWebsiteLogins?: boolean;
   connect: (connectUrl: string) => Promise<CdpSocket>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -75,6 +81,7 @@ interface ActiveSession {
 
 interface OpenOptions {
   binding?: BrowserSessionBinding;
+  /** A hand-off session, kept alive for a person to sign in. */
   keepAlive?: boolean;
   timeoutSeconds?: number;
 }
@@ -270,6 +277,7 @@ export class BrowserTurnSession {
           });
         const page = new BrowserPage(client, pageSessionId, {
           secrets: this.secrets,
+          mayHoldSecret: this.deps.grantsWebsiteLogins !== false || options.keepAlive === true,
           ...(this.deps.sleep ? { sleep: this.deps.sleep } : {}),
         });
         const active: ActiveSession = { sessionId: handle.id, client, page, startedAt, ...(binding ? { binding } : {}) };

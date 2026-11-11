@@ -43,6 +43,12 @@ export interface BrowserPageOptions {
   sleep?: (ms: number) => Promise<void>;
   /** Secrets typed this turn: no snapshot or screenshot shows them. */
   secrets?: TypedSecrets;
+  /**
+   * Whether the session could hold a sign-in secret before one is typed into
+   * it: the run grants a website login, or a person is handed it to sign in.
+   * Absent, it could. Only false skips the picture check (`secretOnPage`).
+   */
+  mayHoldSecret?: boolean;
 }
 
 export interface ScreenshotOptions {
@@ -201,10 +207,13 @@ export class BrowserPage {
   private readonly attaching = new Set<Promise<void>>();
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly secrets: TypedSecrets;
+  /** Set once, by the session or by typing a secret, and never cleared. */
+  private mayHoldSecret: boolean;
 
   constructor(readonly client: CdpClient, readonly sessionId: string, options: BrowserPageOptions = {}) {
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.secrets = options.secrets ?? new TypedSecrets();
+    this.mayHoldSecret = options.mayHoldSecret ?? true;
   }
 
   private cdp<T extends Record<string, unknown> = Record<string, unknown>>(
@@ -437,6 +446,7 @@ export class BrowserPage {
     if (!target) throw new Error(`Unknown element reference ${ref}; take a new snapshot`);
     const backendNodeId = target.backendDOMNodeId;
     const secret = !options.visible;
+    if (secret) this.mayHoldSecret = true;
     const before = secret ? await this.accessibilityNodes().then(fieldValues, () => undefined) : undefined;
     if (secret) await this.addSecretFields([backendNodeId]);
     await this.cdp('DOM.scrollIntoViewIfNeeded', { backendNodeId }).catch(() => undefined);
@@ -465,9 +475,10 @@ export class BrowserPage {
   }
 
   /**
-   * A screenshot, unless the page could show a sign-in secret in it: the page
-   * is checked before and after the capture, and the capture is withheld when
-   * either check finds one (`secretOnPage`). Nothing on the page changes.
+   * A screenshot, unless the page could show a sign-in secret in it: in a
+   * session that could hold one, the page is checked before and after the
+   * capture, and the capture is withheld when either check finds one
+   * (`secretOnPage`). Nothing on the page changes.
    */
   async screenshot(options: ScreenshotOptions = {}): Promise<Screenshot> {
     const before = await this.secretOnPage();
@@ -481,9 +492,12 @@ export class BrowserPage {
    * Why a picture of the page now could show a sign-in secret, if it could:
    * read from the browser's snapshot of every document in the page and in
    * each out-of-process frame, open and closed shadow roots included. A frame
-   * that cannot be read makes the page `unchecked`.
+   * that cannot be read makes the page `unchecked`. A session that could not
+   * hold a secret, in a turn that typed none, is not read: that costs tens of
+   * milliseconds a picture, and more on a large page.
    */
   async secretOnPage(): Promise<SecretOnPage | undefined> {
+    if (!this.mayHoldSecret && this.secrets.empty) return undefined;
     try {
       const frames = await this.frameSessions();
       const captures = await Promise.all([this.sessionId, ...frames.keys()].map(async (sessionId) => ({
