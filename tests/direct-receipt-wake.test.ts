@@ -19,6 +19,7 @@ import type { IdentityStore } from '../src/identity/types.ts';
 import { admissionStatusPresentation, showAdmissionStatus } from '../src/slack/admission-activity.ts';
 import { admissionAgentInstance } from '../src/slack/admission-agent-wake.ts';
 import { withAgentAppExecution } from '../src/slack/agent-apps/live.ts';
+import { configureAgentSlackApps } from '../src/slack/agent-apps/host.ts';
 import { CHICKPEA_SLACK_AGENT_BINDING } from '../src/slack/bounded-agent-observation.ts';
 import type { SlackCanonicalAdmissionInput, SlackDeliveryNote } from '../src/slack/claim-store.ts';
 import { generateCredentialKeyring, workerCredentialKeySlot } from '../src/slack/credential-keyring.ts';
@@ -746,4 +747,33 @@ test('a note the state store never answers or refuses neither delays nor fails t
       await new Promise((resolve) => setImmediate(resolve));
     }, { note: answer });
   }
+});
+
+// Defect caught: the direct path learning the Agent apps' bots by loading
+// every Agent's config (configListAgents) on every delivery.
+test("the Worker's direct path reads the Agent apps' bots without loading any Agent's config", async (t) => {
+  const calls = async (withAgentApps: boolean) => {
+    configureAgentSlackApps(withAgentApps ? {
+      requestUrls: () => ({ events: 'https://cloud.test/e', interactions: 'https://cloud.test/i' }),
+      redirectUri: 'https://cloud.test/slack/agent-apps/callback',
+      allowUrl: (agentId) => `https://cloud.test/slack/agent-apps/allow/${agentId}`,
+    } : undefined);
+    let log: string[] = [];
+    try {
+      await withDirectWorker(t, async (worker) => {
+        assert.equal((await worker.deliver(worker.event(DM))).status, 200);
+        await settled(() => worker.log.includes('rpc:admitSlackTurn') || worker.failures.length > 0);
+        assert.deepEqual(worker.failures, []);
+        log = worker.log.filter((entry) => entry.startsWith('rpc:config'));
+      });
+    } finally {
+      configureAgentSlackApps(undefined);
+    }
+    const count = (method: string) => log.filter((entry) => entry === `rpc:${method}`).length;
+    return { agents: count('configListAgents'), bots: count('configListAgentAppBots') };
+  };
+  const without = await calls(false);
+  const withApps = await calls(true);
+  assert.equal(without.bots, 0, 'without the Agent-app port no bot is read');
+  assert.deepEqual(withApps, { agents: without.agents, bots: 1 }, 'the port adds one bot read and no Agent list');
 });

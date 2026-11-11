@@ -109,6 +109,7 @@ import type {
   SlackFrontDeskHandoffNote,
 } from '../slack/claim-store.ts';
 import type { SlackMessageEdit } from '../slack/edits.ts';
+import type { AgentAppBot } from '../slack/agent-app-bots.ts';
 import type {
   FlueDispatchEnvelopeV1,
   FlueDispatchReceiptV1,
@@ -342,6 +343,8 @@ export interface TagStateRpc {
   // -- config: agents ------------------------------------------------------
   configListAgents(): Promise<StateRpcResult<CustomAgentConfig[]>>;
   configListUserAgents(): Promise<StateRpcResult<CustomAgentConfig[]>>;
+  /** Added after configListAgents: a store on older code lacks it (CfConfigStore.listAgentAppBots). */
+  configListAgentAppBots(): Promise<StateRpcResult<AgentAppBot[]>>;
   configGetAgent(agentId: string): Promise<StateRpcResult<CustomAgentConfig>>;
   configGetAgentFirstAsk(agentId: string): Promise<StateRpcResult<string | null>>;
   configMaterializeChickpeaAgent(): Promise<StateRpcResult<CustomAgentConfig>>;

@@ -3,6 +3,7 @@ import { withAgentAppExecution } from './slack/agent-apps/index.ts';
 import { GATEWAY_HTTP_SETTING, parseHttpDeliveryState, verifyHttpDelivery, httpDeliveryReceipt, HttpDeliveryError } from './slack/gateway/http-delivery.ts';
 import { GATEWAY_BINDING_SETTING } from './slack/gateway/client.ts';
 import type { GatewayAdmissionResult, GatewayInboundDelivery, GatewayWorkspaceBinding } from './slack/gateway/protocol.ts';
+import type { AgentAppBot } from './slack/agent-app-bots.ts';
 import { gatewayUiReceiptNow, isKeyFormDelivery } from './slack/gateway/ui-receipt.ts';
 import { scheduleActionRpcResult } from './management/slack-schedule-rpc.ts';
 import {
@@ -1266,6 +1267,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
 
   async configListUserAgents(): Promise<StateRpcResult<CustomAgentConfig[]>> {
     return this.call((stores) => stores.config.listUserAgents());
+  }
+
+  async configListAgentAppBots(): Promise<StateRpcResult<AgentAppBot[]>> {
+    return this.call((stores) => stores.config.listAgentAppBots());
   }
 
   async configGetAgent(agentId: string): Promise<StateRpcResult<CustomAgentConfig>> {
