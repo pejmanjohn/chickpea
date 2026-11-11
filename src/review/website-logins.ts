@@ -118,15 +118,23 @@ function browserbaseHost(hostname: string): boolean {
   return hostname === 'browserbase.com' || hostname.endsWith('.browserbase.com');
 }
 
+// A path segment a site is unlikely to take as a bearer: a plain word or a short number.
+const PLAIN_SEGMENT = /^(?:[A-Za-z]{1,20}|\d{1,4})$/;
+// What a sentence may put right after a link.
+const SENTENCE_MARKS = '.,!)\'';
+
 /**
- * A path segment that looks like a token rather than a word or an ID: long,
- * with a long run that mixes letters and digits or a very long run. A short
- * or word-like token is not recognized.
+ * A path segment of a link on a login's site, or of any link in a browser
+ * step, kept only where it reads as a plain word of up to 20 letters or a
+ * number of up to 4 digits. Any other segment, an ID or a slug as much as a
+ * token, may be what the site takes as its sign-in bearer, so it goes. The
+ * marks a sentence puts after a link stay after either.
  */
-function tokenShaped(segment: string): boolean {
-  if (segment.length < 20) return false;
-  return (segment.match(/[A-Za-z0-9]+/g) ?? []).some((run) =>
-    run.length >= 24 || (run.length >= 10 && /[A-Za-z]/.test(run) && /\d/.test(run)));
+function plainSegment(segment: string): string {
+  let end = segment.length;
+  while (end > 0 && SENTENCE_MARKS.includes(segment[end - 1]!)) end -= 1;
+  const word = segment.slice(0, end);
+  return word === '' || PLAIN_SEGMENT.test(word) ? segment : `${URL_PART_OMITTED}${segment.slice(end)}`;
 }
 
 export interface WebsiteLoginScrub {
@@ -135,12 +143,12 @@ export interface WebsiteLoginScrub {
    * a space would end a URL early and leave the rest of it. A hosted browser
    * link goes whole, and so does a hand-off message's link wherever else the
    * same text holds it. Every URL loses its userinfo. A URL on a login's site,
-   * or any URL in a browser step, keeps its scheme, host and path, loses
-   * token-shaped path segments, and loses everything from its first `;`,
-   * `?` or `#`. So does a URL whose host cannot be read as one, and its host
-   * goes too. A link inside
-   * another one's path or query, as a Slack link's label or a redirect holds
-   * it, goes by its own rule.
+   * or any URL in a browser step, keeps its scheme and host, keeps a path
+   * segment only where it is a plain word or a short number (so its IDs and
+   * slugs go too), and loses everything from its first `;`, `?` or `#`.
+   * So does a URL whose host cannot be read as one, and its host goes too.
+   * Elsewhere a link inside another one's path or query, as a Slack link's
+   * label or a redirect holds it, goes by its own rule.
    */
   links(text: string, browserStep: boolean): string;
   /**
@@ -225,8 +233,9 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
     if (!browserStep && readable && !loginSite(hostname)) {
       return `${start}${scrubLinks(rest, browserStep)}`;
     }
-    const kept = path.split('/').map((segment) => tokenShaped(segment) ? URL_PART_OMITTED : segment).join('/');
-    return `${start}${scrubLinks(kept, browserStep)}${suffix ? `?${URL_PART_OMITTED}` : ''}`;
+    // A Slack link's label may follow `|`, and a page's path may hold one, so each side is read as segments.
+    budget.spend(path.length);
+    return `${start}${path.replace(/[^/|]+/g, plainSegment)}${suffix ? `?${URL_PART_OMITTED}` : ''}`;
   };
 
   // An email address's local part goes where it stands alone too, as a site's greeting writes it.
@@ -318,7 +327,8 @@ function searchView(written: string, decode = true): SearchView {
   const view = new ViewWriter(length);
   for (let index = 0; index < length;) {
     const code = text.charCodeAt(index);
-    if (decode && code === BACKSLASH) {
+    const escapeEnd = decode ? unicodeEscapeEnd(text, index) : -1;
+    if (decode && code === BACKSLASH && escapeEnd < 0) {
       // A serializer that escapes a field again doubles its backslashes, so a run of them reads as one.
       let next = index + 1;
       while (text.charCodeAt(next) === BACKSLASH) next += 1;
@@ -329,9 +339,6 @@ function searchView(written: string, decode = true): SearchView {
       } else if (ESCAPED_SPACES.has(escaped)) {
         view.space(startOf(index), endOf(next));
         index = next + 1;
-      } else if (escaped === LETTER_U && /^[0-9A-Fa-f]{4}$/.test(text.slice(next + 1, next + 5))) {
-        view.point(parseInt(text.slice(next + 1, next + 5), 16), startOf(index), endOf(next + 4));
-        index = next + 5;
       } else {
         view.point(BACKSLASH, startOf(index), endOf(next - 1));
         index = next;
@@ -346,12 +353,39 @@ function searchView(written: string, decode = true): SearchView {
         continue;
       }
     }
-    const point = text.codePointAt(index)!;
-    const width = point > 0xffff ? 2 : 1;
-    view.point(point, startOf(index), endOf(index + width - 1));
-    index += width;
+    // A code unit as written or JSON-escaped. JSON writes a character past U+FFFF as an escape of each half of
+    // its pair, so a high half then a low one, either written either way, read as that one character.
+    let unit = escapeEnd < 0 ? code : escapedUnit(text, escapeEnd);
+    let end = escapeEnd < 0 ? index + 1 : escapeEnd;
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const lowEnd = decode ? unicodeEscapeEnd(text, end) : -1;
+      const low = lowEnd < 0 ? text.charCodeAt(end) : escapedUnit(text, lowEnd);
+      if (low >= 0xdc00 && low <= 0xdfff) {
+        unit = 0x10000 + ((unit - 0xd800) << 10) + (low - 0xdc00);
+        end = lowEnd < 0 ? end + 1 : lowEnd;
+      }
+    }
+    view.point(unit, startOf(index), endOf(end - 1));
+    index = end;
   }
   return view.done();
+}
+
+/** Where a JSON `\uXXXX` escape that starts at `index`, after any run of backslashes, ends; -1 for none. */
+function unicodeEscapeEnd(text: string, index: number): number {
+  if (text.charCodeAt(index) !== BACKSLASH) return -1;
+  let next = index + 1;
+  while (text.charCodeAt(next) === BACKSLASH) next += 1;
+  if (text.charCodeAt(next) !== LETTER_U) return -1;
+  for (let digit = next + 1; digit <= next + 4; digit += 1) {
+    if (hexValue(text.charCodeAt(digit)) < 0) return -1;
+  }
+  return next + 5;
+}
+
+/** The code unit a `\uXXXX` escape that ends at `end` writes. */
+function escapedUnit(text: string, end: number): number {
+  return parseInt(text.slice(end - 4, end), 16);
 }
 
 /** Builds a SearchView one code point at a time. */

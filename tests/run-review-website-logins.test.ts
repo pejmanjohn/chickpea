@@ -87,7 +87,7 @@ test('link rules see each URL whole, before a username or a key replacement can 
   assert.equal(record.trigger.text, 'I landed on https://billing.example.com/callback?[omitted]');
   assert.equal(record.answer, 'Done: https://billing.example.com/api?[omitted]');
   const opened = record.steps[1]?.kind === 'tool' ? record.steps[1] : undefined;
-  assert.equal(opened?.input, '{"url":"https://billing.example.com/u/[credential redacted]/callback?[omitted]"}');
+  assert.equal(opened?.input, '{"url":"https://billing.example.com/u/[omitted]/callback?[omitted]"}');
 
   const hostWord = copy({ answer: 'See https://billing.example.com/callback?code=SYNTHCODE123' },
     { hosts: ['billing.example.com'], usernames: ['billing'] });
@@ -95,7 +95,7 @@ test('link rules see each URL whole, before a username or a key replacement can 
     'a username that is part of the host replaces only that word, after the URL lost its query');
 });
 
-test('a URL on a login\'s site, or any URL in a browser step, keeps its scheme, host and path', () => {
+test('a URL on a login\'s site, or any URL in a browser step, keeps its scheme, host and path words, and loses its query', () => {
   const record = copy({
     trigger: {
       author: 'U012ABCDEF3',
@@ -127,9 +127,40 @@ test('a URL on a login\'s site, or any URL in a browser step, keeps its scheme, 
   assert.match(opened.output ?? '', /"url":"https:\/\/app\.billing\.example\.com\/home\?\[omitted\]"/);
   assert.equal(snapshot.output, '{"url":"https://search.example/?[omitted]"}', 'in a browser step every URL loses its query');
   assert.equal(record.answer, 'Signed in: https://billing.example.com/callback?[omitted] ' +
-    'Help: https://billing.example.com/help/how-to-update-your-billing-address and /invoices/INV-2041. ' +
+    'Help: https://billing.example.com/help/[omitted] and /invoices/INV-2041. ' +
     'Public: https://search.example/?q=kept#top. Elsewhere: https://auth.example.com/magic?token=PERSONS-OWN-LINK',
-  'a slug, a short ID, a public query and another site\'s link a person shares stay');
+  'a login site\'s slug goes, and a path outside a link, a public query and another site\'s link a person shares stay');
+});
+
+test('a URL on a login\'s site, or any URL in a browser step, keeps a path segment only where it reads as a word or a short number', () => {
+  // A site may take any short path segment as its sign-in bearer, so length is no proof a segment is safe.
+  const record = copy({
+    trigger: {
+      author: 'U012ABCDEF3',
+      text: 'Use https://billing.example.com/magic/k7Qx2 or <https://billing.example.com/m/48213|Sign in> or ' +
+        'billing.example.com/invoices/2041/a1b2c3, then https://billing.example.com/account/settings. ' +
+        'Public: https://search.example/s/k7Qx2/48213/how-to-pay',
+      files: [],
+    },
+    steps: [browserStep('browser_open', { url: 'https://docs.example.org/guide/k7Qx2/12345' }, {
+      url: 'https://docs.example.org/Guide/v2/2041?tab=1',
+      title: 'Docs',
+    })],
+    answer: 'Then https://ledger.example.net/r/1234/12345/abcdefghijklmnopqrst/abcdefghijklmnopqrstu/how-to-pay ' +
+      '(see https://billing.example.com/help).',
+  });
+  assert.deepEqual(kept(record, ['k7Qx2', '12345', '48213', 'a1b2c3', 'abcdefghijklmnopqrstu', 'v2']), [
+    'k7Qx2', '48213',
+  ], 'only the public link keeps its segments');
+  assert.equal(record.trigger.text, 'Use https://billing.example.com/magic/[omitted] or <https://billing.example.com/m/[omitted]|Sign in> or ' +
+    'billing.example.com/invoices/2041/[omitted], then https://billing.example.com/account/settings. ' +
+    'Public: https://search.example/s/k7Qx2/48213/how-to-pay');
+  const [opened] = record.steps;
+  assert.ok(opened?.kind === 'tool');
+  assert.equal(opened.input, '{"url":"https://docs.example.org/guide/[omitted]/[omitted]"}');
+  assert.equal(opened.output, '{"url":"https://docs.example.org/Guide/[omitted]/2041?[omitted]","title":"Docs"}');
+  assert.equal(record.answer, 'Then https://ledger.example.net/r/1234/[omitted]/abcdefghijklmnopqrst/[omitted]/[omitted] ' +
+    '(see https://billing.example.com/help).');
 });
 
 test('a page\'s address keeps its \' and |, and a JSON-escaped & or =, inside the URL a copy cuts', () => {
@@ -149,7 +180,7 @@ test('a page\'s address keeps its \' and |, and a JSON-escaped & or =, inside th
   assert.deepEqual(kept(record, ['SYNTHCODE123', 'SYNTHMAGIC0123']), []);
   const [opened, read] = record.steps;
   assert.ok(opened?.kind === 'tool' && read?.kind === 'tool');
-  assert.equal(opened.input, '{"url":"https://portal.example.org/users/o\'brien/callback?[omitted]"}');
+  assert.equal(opened.input, '{"url":"https://portal.example.org/users/[omitted]/callback?[omitted]"}');
   assert.match(opened.output ?? '', /"url":"https:\/\/billing\.example\.com\/callback\?\[omitted\]"/);
   assert.equal(JSON.parse(read.output ?? '{}').text, '{"link":"https://billing.example.com/magic?[omitted]","next":"x"}');
 });
@@ -172,7 +203,7 @@ test('in prose and Slack text a URL keeps its \' and |, a link inside another go
   });
   assert.deepEqual(kept(record, ['SYNTHCODE', 'SYNTHSESS', 'browserbase']), []);
   assert.equal(record.trigger.text,
-    'Try https://billing.example.com/users/o\'brien/callback?[omitted] and <https://billing.example.com/cb?[omitted]>');
+    'Try https://billing.example.com/users/[omitted]/callback?[omitted] and <https://billing.example.com/cb?[omitted]>');
   assert.equal(record.context[0]?.text, '<https://go.example.org/r|https://billing.example.com/cb?[omitted]> or ' +
     'https://go.example.org/r?next=https://ledger.example.net/cb?[omitted]');
   assert.equal(record.answer, `Watch at ${BROWSER_LINK_OMITTED} or ${BROWSER_LINK_OMITTED} now`);
@@ -257,6 +288,37 @@ test('a username leaves a JSON unicode escape or an HTML entity of any of its ma
   assert.deepEqual(kept(record, ['brien', 'example.com']), []);
   assert.equal(record.answer, '[credential redacted] or [credential redacted] or [credential redacted]');
   assert.equal(record.steps[0]?.kind === 'tool' && record.steps[0].output, '{"body":"[credential redacted]"}');
+});
+
+test('a username leaves the JSON escapes of a character past U+FFFF, one per half, in either case, mixed with the character as written or escaped again', () => {
+  // U+10400 folds to U+10428, so each half of its pair alone folds to neither.
+  const name = `${String.fromCodePoint(0x10400)}synthetic`;
+  const [high, low] = [name.charCodeAt(0), name.charCodeAt(1)];
+  const small = String.fromCodePoint(0x10428);
+  const escape = (unit: number, backslashes = 1) => `${'\\'.repeat(backslashes)}u${unit.toString(16).padStart(4, '0')}`;
+  const everyUnit = Array.from({ length: name.length }, (_, index) => escape(name.charCodeAt(index)).toUpperCase().replace('\\U', '\\u')).join('');
+  const forms = [
+    `${escape(high)}${escape(low)}synthetic`,
+    `${escape(high)}${String.fromCharCode(low)}synthetic`,
+    `${String.fromCharCode(high)}${escape(low)}synthetic`,
+    `${escape(high, 2)}${escape(low, 2)}synthetic`,
+    everyUnit,
+    `${escape(small.charCodeAt(0))}${escape(small.charCodeAt(1))}SYNTHETIC`,
+  ];
+  assert.ok(forms.every((form) => !form.includes(name)) && JSON.parse(`"${forms[0]}"`) === name && everyUnit.includes('\\uD801'),
+    'the test text holds the escapes, and JSON reads the first as the username');
+  assert.equal(JSON.parse(`"${forms[5]}"`), name.toLowerCase().replace('synthetic', 'SYNTHETIC'), 'and the last as its other case');
+  // A lone half is a character of its own: it stays, and the username beside it still goes.
+  const lone = `${escape(high)}x ${escape(high)}${forms[0]}`;
+  const record = copy({
+    context: [{ author: 'U012ABCDEF3', role: 'human', text: `Signed in as ${forms[0]} today`, files: [] }],
+    steps: [{ kind: 'tool', name: 'read_page', input: '{}', output: `{"user":"${forms[3]}","next":"x"}` }],
+    answer: `${forms.join(' or ')}; ${lone}.`,
+  }, { hosts: [], usernames: [name] });
+  assert.deepEqual(kept(record, ['synthetic']), []);
+  assert.equal(record.context[0]?.text, 'Signed in as [credential redacted] today');
+  assert.equal(record.steps[0]?.kind === 'tool' && record.steps[0].output, '{"user":"[credential redacted]","next":"x"}');
+  assert.equal(record.answer, `${forms.map(() => '[credential redacted]').join(' or ')}; ${escape(high)}x ${escape(high)}[credential redacted].`);
 });
 
 test('a username percent-encoded in every character, or in mixed forms, leaves the copy and the text around it stays as written', () => {
