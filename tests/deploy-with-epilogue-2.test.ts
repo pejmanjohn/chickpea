@@ -893,6 +893,41 @@ test('deploy accepts the thread runner executor only on an artifact that carries
   assert.equal(fallbackResult.status, 0, fallbackResult.stderr);
 });
 
+// Defects caught: a malformed or over-limit window that reaches a Worker,
+// which then silently holds nothing, and a preflight that refuses the default.
+test('deploy accepts a residency hold window up to 15 minutes, or none, and refuses any other value', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness);
+
+  for (const value of [undefined, '0', '600000', '900000']) {
+    const result = runHarness(harness, [
+      '--skip-build', '--dry-run', ...(value === undefined ? [] : ['--var', `CHICKPEA_RESIDENCY_HOLD_MS:${value}`]),
+    ]);
+    assert.equal(result.status, 0, `${value}: ${result.stderr}`);
+  }
+  rmSync(harness.logPath, { force: true });
+  for (const value of ['900001', '10m', '-1', '6e5', ' 600000']) {
+    const result = runHarness(harness, ['--skip-build', '--dry-run', `--var=CHICKPEA_RESIDENCY_HOLD_MS:${value}`]);
+    assert.equal(result.status, 1, value);
+    assert.match(result.stderr, /CHICKPEA_RESIDENCY_HOLD_MS must be a whole number of milliseconds up to 900000/, value);
+  }
+  assert.equal(existsSync(harness.logPath), false, 'nothing deployed with a refused window');
+
+  // The artifact's own vars, where an upgrade puts the installation's value.
+  writeCutoverArtifact(harness, { residencyHold: '600000' });
+  const kept = runHarness(harness, ['--skip-build', '--dry-run']);
+  assert.equal(kept.status, 0, kept.stderr);
+  rmSync(harness.logPath, { force: true });
+  writeCutoverArtifact(harness, { residencyHold: '10m' });
+  const edited = runHarness(harness, ['--skip-build', '--dry-run']);
+  assert.equal(edited.status, 1);
+  assert.match(edited.stderr, /CHICKPEA_RESIDENCY_HOLD_MS must be a whole number of milliseconds up to 900000/);
+  assert.equal(existsSync(harness.logPath), false, 'nothing deployed with a refused window in the vars');
+  const corrected = runHarness(harness, ['--skip-build', '--dry-run', '--var', 'CHICKPEA_RESIDENCY_HOLD_MS:0']);
+  assert.equal(corrected.status, 0, corrected.stderr);
+});
+
 test('sandbox preflight reports every blocking problem before build, D1, or upload', (context) => {
   const harness = sandboxHarness(context);
   const result = runHarness(harness, ['--profile', 'acme'], sandboxEnv(harness, {

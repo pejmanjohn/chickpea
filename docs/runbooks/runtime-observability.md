@@ -350,11 +350,14 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   for a firing with no awaited work): the fields measure awaited work, such
   as a Slack call inside a drain.
 - `keepWarm`: while a person has talked to the installation in the last 10
-  minutes, the state store arms its alarm no later than 20 s ahead so the
-  object stays in memory (it is evicted about 30 s after its last activity,
-  and the next message then waits about a second at ingress for its first
-  state read). An idle firing inside that window reports `keepWarm: true` and
-  re-arms the tick; a due time earlier than the tick is kept. Expect up to
+  minutes, the state store arms its alarm no later than 20 s ahead. The alarm
+  alone does not keep the object in memory; a deployment that sets a
+  [residency hold](operations.md#hold-a-conversations-objects-in-memory)
+  does. Without one, the store leaves memory about 10 s after its last
+  activity, and the next message waits up to about 2.4 s at ingress for its
+  first state read. An idle firing inside those 10 minutes reports
+  `keepWarm: true` and re-arms the tick; a due time earlier than the tick is
+  kept. Expect up to
   three idle records a minute per installation during a conversation, and
   none once it has been quiet for 10 minutes. A store that starts cold reads
   the window from its newest turn row; an Agent's ask or a setup wake opens

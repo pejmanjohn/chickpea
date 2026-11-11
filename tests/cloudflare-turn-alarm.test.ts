@@ -40,6 +40,7 @@ import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { reportInteractiveDelivery } from '../src/config/hosted-activity.ts';
 import { installationOwnershipOf, installationScopeOf } from '../src/config/installation-scope.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
+import { ResidencyHold, residencyHoldMs } from '../src/state/residency-hold.ts';
 import { turnJob as maintenanceTurnJob } from './fixtures/state-db/maintenance.ts';
 import { createAgentAskCollector } from '../src/slack/agent-asks.ts';
 import { admissionStatusPresentation, showAdmissionStatus } from '../src/slack/admission-activity.ts';
@@ -63,7 +64,7 @@ assert.ok(stateClass && ts.isClassDeclaration(stateClass));
 const methodNames = [
   'enqueueTurn', 'admitSlackTurn', 'resumeTurnAfterOAuth', 'slackInstallationRecoveryRetry',
   'maintainWork', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode', 'keepWarmTickAt',
-  'testRunModelAccessBind',
+  'testRunModelAccessBind', 'hold',
 ];
 const methods = methodNames.map((name) => {
   const method = stateClass.members.find((member) =>
@@ -119,6 +120,8 @@ type Probe = {
 };
 const ProbeClass = vm.runInNewContext(compiled, {
   Date,
+  ResidencyHold,
+  residencyHoldMs,
   oauthResumeTurnJobId: (id: string) => `oauthresume:${id}`,
   slackTurnExecutor: (env: Record<string, unknown>) => slackTurnExecutor(env, {}),
 }) as new () => Probe;
@@ -277,6 +280,8 @@ for (const { withPendingTurn, testRun } of [
     const AlarmProbe = vm.runInNewContext(alarmCode, {
       ...stopGlobals,
       Date,
+      ResidencyHold,
+      residencyHoldMs,
       setTimeout,
       clearTimeout,
       AbortController,
@@ -430,7 +435,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
   const { alarmYieldIsFree } = await import('../src/slack/alarm-turn-drain.ts');
   const alarmMethods = [
     'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'alarm', 'drainRelayAlarm', 'dispatchToRunners', 'admitToRunner', 'wakeAgentAtHandoff',
-    'showStatusAtHandoff', 'dispatchingWhile', 'deliverStopNotices', 'keepWarmTickAt',
+    'showStatusAtHandoff', 'dispatchingWhile', 'deliverStopNotices', 'keepWarmTickAt', 'hold',
   ].map((name) => {
     const method = (stateClass as ts.ClassDeclaration).members.find((member) =>
       ts.isMethodDeclaration(member) && member.name.getText(source) === name);
@@ -461,6 +466,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
   const AlarmProbe = vm.runInNewContext(alarmCode, {
     ...stopGlobals,
     Date, setTimeout, clearTimeout, AbortController, Promise,
+    ResidencyHold, residencyHoldMs,
     MAX_TURN_DRAIN_BATCH: 16,
     RUNNER_DISPATCH_MAX_PAGES: 16,
     admissionStatusPresentation,
@@ -974,7 +980,7 @@ test('an OAuth continuation already handed to a thread runner is admitted there 
 function admissionHarness(runner: { refuse?: boolean } = {}) {
   const methods = [
     'admitSlackTurn', 'admitToRunner', 'wakeAgentAtHandoff', 'showStatusAtHandoff', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan',
-    'admissionWakeAt', 'runnerMode', 'keepWarmTickAt',
+    'admissionWakeAt', 'runnerMode', 'keepWarmTickAt', 'hold',
   ].map((name) => {
     const method = (stateClass as ts.ClassDeclaration).members.find((member) =>
       ts.isMethodDeclaration(member) && member.name.getText(source) === name);
@@ -988,6 +994,8 @@ function admissionHarness(runner: { refuse?: boolean } = {}) {
   const admissions: Array<{ id: string; threadKey: string }> = [];
   const AdmissionProbe = vm.runInNewContext(code, {
     Date,
+    ResidencyHold,
+    residencyHoldMs,
     console: { warn() {} },
     admissionStatusPresentation,
     showAdmissionStatus,

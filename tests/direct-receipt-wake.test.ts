@@ -48,6 +48,7 @@ import { TurnJobStoreLogic, type PendingTurnJob } from '../src/slack/turn-jobs.t
 import type { SlackEvent } from '../src/slack/types.ts';
 import { DoSqlStateDb } from '../src/state/do-state-db.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
+import { ResidencyHold, residencyHoldMs } from '../src/state/residency-hold.ts';
 import { buildTagStateStores } from '../src/state/tag-state-stores.ts';
 import { withCloudflareUserAgent } from './helpers/cloudflare-target.ts';
 import { AGENT_MENTION, delivery, message, withLane, type Lane } from './helpers/gateway-admission-lane.ts';
@@ -92,13 +93,15 @@ const ReceiptProbe = vm.runInNewContext(
     `${['RELAY_BATCH_WINDOW_MS', 'KEEP_WARM_WINDOW_MS', 'KEEP_WARM_TICK_MS', 'localSlackPresentationState'].map(moduleStatement).join('\n')}
 class ReceiptProbe { ${[
       'noteSlackDelivery', 'wakeRunnerAtReceipt', 'sendRunnerWake', 'createAlarmIdentityResolver', 'admitSlackTurn', 'admitToRunner',
-      'wakeAgentAtHandoff', 'showStatusAtHandoff', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode', 'keepWarmTickAt',
+      'wakeAgentAtHandoff', 'showStatusAtHandoff', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode', 'keepWarmTickAt', 'hold',
     ].map(stateMethod).join('\n')} }\nReceiptProbe`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
   ).outputText,
   {
     Date,
     Promise,
+    ResidencyHold,
+    residencyHoldMs,
     console: { warn() {} },
     receiptRunnerWake,
     threadRunnerStub,

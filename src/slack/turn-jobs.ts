@@ -2633,6 +2633,17 @@ export class TurnJobStoreLogic {
     return row?.newest == null ? undefined : Number(row.newest);
   }
 
+  /** Whether the row is a person's turn, as newestEnqueuedAt counts one. */
+  isPersonTurn(id: string): boolean {
+    return this.db.get(
+      `SELECT 1 AS person FROM turn_jobs
+       WHERE id = ?
+         AND json_extract(turn_json, '$.agentAsk') IS NULL
+         AND json_extract(turn_json, '$.setupWake') IS NULL`,
+      id,
+    ) !== undefined;
+  }
+
   /** Pending rows the state store's alarm owns; runner rows wake their runner. */
   hasPending(executionAuthority: RunExecutionAuthority = 'legacy'): boolean {
     return this.db.get(

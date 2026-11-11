@@ -76,6 +76,14 @@ test('installation preserves supported vars and resources without copying secret
   }
   assert.throws(() => overlayInstallation({ ...config, kv_namespaces: [{ binding: 'NEW_CACHE', id: 'new' }] }, installation, { worker: 'custom', profile: 'core' }), /unsupported resource/);
 });
+// Defect caught: an upgrade that refuses, or drops, an installation's residency hold window.
+test('an upgrade keeps the residency hold window an installation set', () => {
+  const remote: any = fixture();
+  remote.bindings.push({ name: 'CHICKPEA_RESIDENCY_HOLD_MS', type: 'plain_text', text: '600000' });
+  const installation = validateInstallation(remote);
+  const config = { name: 'custom', vars: { CHICKPEA_APP_VERSION: '0.1.1', CHICKPEA_SOURCE_COMMIT: 'b'.repeat(40) }, d1_databases: [{ binding: 'AUTH_DB', database_name: 'auth', database_id: '' }], durable_objects: { bindings: [{ name: 'TAG_STATE', class_name: 'TagStateStore' }] }, ai: { binding: 'AI' }, assets: { binding: 'ASSETS' }, version_metadata: { binding: 'CF_VERSION_METADATA' } };
+  assert.equal(overlayInstallation(config, installation, { worker: 'custom', profile: 'core' }).vars.CHICKPEA_RESIDENCY_HOLD_MS, '600000');
+});
 test('a retired variable does not block an upgrade and is not carried forward', () => {
   const value: any = fixture();
   value.bindings.push({ name: 'SLACK_TAG_UNASSIGNED_HINT', type: 'plain_text', text: 'false' });
