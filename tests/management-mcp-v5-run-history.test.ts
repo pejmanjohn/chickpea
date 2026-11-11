@@ -516,6 +516,8 @@ test('hidden runs are counted in whole UTC days before today, so since cannot pi
   assert.equal((await list(w, { since: new Date(hiddenAt + MINUTE).toISOString() })).summary?.notShown?.runs, 1);
   assert.equal((await list(w, { since: new Date(hiddenAt - MINUTE).toISOString() })).summary?.notShown?.runs, 1);
   await w.run({ conversation: 'direct_message', channelId: 'D_MEMBER', requester: 'member', startedAt: Math.max(today, Date.now() - MINUTE) });
+  // A hidden Channel run is read with the rest, and is held back from today's count all the same.
+  await w.run({ conversation: 'named_channel', channelId: 'G_PRIVATE', requester: 'member', recordedPublic: false, startedAt: Math.max(today, Date.now() - MINUTE) });
   assert.equal((await list(w, { since: new Date(hiddenAt - MINUTE).toISOString() })).summary?.notShown?.runs, 1, 'today is not counted yet');
 });
 
@@ -922,4 +924,18 @@ test('live sources: what a run cost is its own bill rows, by billing run, net of
   const page = await list(w);
   assert.deepEqual(page.runs.map(({ charged }) => charged), [{ amount: '$0.04' }, { amount: '$0' }, undefined]);
   assert.deepEqual([...new Set(reads)], ['installation_bill']);
+});
+
+test('the usage store refuses a run history scope it cannot read as written', async () => {
+  const usage = new SqliteUsageStore(':memory:');
+  const query = { from: Date.now() - 24 * 60 * MINUTE, to: Date.now() };
+  for (const runHistory of [
+    { membershipId: 'mem_1', rows: 'all' },
+    { membershipId: '', rows: 'visible' },
+    { membershipId: 'mem_1', rows: 'visible', channelIds: Array.from({ length: 2_001 }, (_, index) => `C${index}`) },
+    { membershipId: 'mem_1', rows: 'visible', channelIds: 'C_PUBLIC' },
+  ]) {
+    await assert.rejects(usage.listOperations({ ...query, runHistory: runHistory as never }), /run history/i, JSON.stringify(runHistory).slice(0, 80));
+  }
+  assert.deepEqual((await usage.listOperations({ ...query, runHistory: { membershipId: 'mem_1', rows: 'visible', channelIds: [] } })).items, []);
 });
