@@ -223,10 +223,9 @@ test('a Composio-reported failure gives the model the service reason, redacted a
   assert.ok(error.message.startsWith(prefix), error.message);
   const reason = error.message.slice(prefix.length);
   assert.ok(reason.startsWith('Invalid filter: property "synthetic_stage" does not exist on contacts. ' +
-    'Sent with [credential redacted].'), reason);
+    'Sent with [redacted].'), reason);
   assert.ok(!error.message.includes('xoxb-'));
-  assert.equal(reason.length, 1_000);
-  assert.ok(reason.endsWith('…'));
+  assert.ok(reason.length <= 1_000 && reason.endsWith(' detail…'), reason);
 });
 
 test('a reported failure without a status names none', async () => {
@@ -272,7 +271,7 @@ test('a reported failure keeps URL queries, URL logins and named credentials fro
     `${REPORTED_FAILURE_PREFIX}401 Client Error: Unauthorized for url: ` +
       'https://api.example.test/1/boards/synthetic?[redacted] ' +
       'after Authorization: Bearer [redacted] and refresh_token=[redacted] ' +
-      'and {"api_key":"[redacted]"} with [credential redacted]. Bearer authentication failed.',
+      'and {"api_key":"[redacted]"} with [redacted]. Bearer authentication failed.',
   );
   assert.equal(
     await reportedFailureMessage(
@@ -292,7 +291,7 @@ test('a credential the redaction bound cuts is dropped, not shown in part', asyn
   assert.ok(lead.length < 2_024 && lead.length + SYNTHETIC_SLACK_TOKEN.length > 2_024);
 
   const indented = await reportedFailureMessage(`${lead}${SYNTHETIC_SLACK_TOKEN} and more`);
-  assert.equal(indented, `${REPORTED_FAILURE_PREFIX}Upstream said: ${'detail '.repeat(42)}[credential redacted] and more`);
+  assert.equal(indented, `${REPORTED_FAILURE_PREFIX}Upstream said: ${'detail '.repeat(42)}[redacted] and more`);
 
   // A redacted key shortens the text the same way. The bound falls inside the token, where it
   // is too short to match its signature.
@@ -302,7 +301,81 @@ test('a credential the redaction bound cuts is dropped, not shown in part', asyn
   const shortened = await reportedFailureMessage(`${head}${SYNTHETIC_SLACK_TOKEN} and more`);
   assert.equal(
     shortened,
-    `${REPORTED_FAILURE_PREFIX}[credential redacted] ${head.slice(key.length + 1).trimEnd()}…`,
+    `${REPORTED_FAILURE_PREFIX}[redacted] ${head.slice(key.length + 1).trimEnd()}…`,
+  );
+});
+
+test('a reported failure keeps cookies, key shapes, escaped fields and escaped signed URLs from the model', async () => {
+  const cases: [string, string][] = [
+    ['Cookie: sessionid=syntheticSession42; theme=light', 'Cookie: [redacted]'],
+    ['Set-Cookie: sid=syntheticSession42; HttpOnly', 'Set-Cookie: [redacted]'],
+    ['Invalid API key provided: sk_live_syntheticStripeCredential42', 'Invalid API key provided: [redacted]'],
+    [
+      String.raw`Request body: {\"client_secret\":\"syntheticClientSecret42\"}`,
+      'Request body: {"client_secret":"[redacted]"}',
+    ],
+    [
+      String.raw`403 for https:\/\/files.example.test\/object?X-Amz-Signature=syntheticSignature42`,
+      '403 for https://files.example.test/object?[redacted]',
+    ],
+    ['Request body: client%5Fsecret=syntheticClientSecret42', 'Request body: client_secret=[redacted]'],
+    [
+      'Request body: {&quot;client_secret&quot;:&quot;syntheticClientSecret42&quot;}',
+      'Request body: {"client_secret":"[redacted]"}',
+    ],
+  ];
+  for (const [error, reason] of cases) {
+    assert.equal(await reportedFailureMessage(error), `${REPORTED_FAILURE_PREFIX}${reason}`, error);
+  }
+});
+
+test('a typical validation error reaches the model whole', async () => {
+  const error = "Property 'x' is not allowed for object type 'contacts'";
+  assert.equal(await reportedFailureMessage(error), `${REPORTED_FAILURE_PREFIX}${error}`);
+});
+
+test('no part of a token or a secret value shows at either bound', async () => {
+  // A long run the scrubber removes first brings the end of the scanned text into view.
+  const removed = 'Q2hpY2twZWFTeW50aGV0aWNLZXkxMjM0NTY3ODkw';
+
+  // A quoted value with spaces, cut by the scan bound inside its third word.
+  const field = '"password": "correct horse battery staple" rest';
+  const fieldLead = `${removed.repeat(28)} ${'detail '.repeat(125)}`;
+  assert.equal(`${fieldLead}${field}`.slice(2_022, 2_026), ' bat');
+  assert.equal(
+    await reportedFailureMessage(`${fieldLead}${field}`),
+    `${REPORTED_FAILURE_PREFIX}[redacted] ${'detail '.repeat(125)}"password": "[redacted]…`,
+  );
+
+  // A cookie run cut by the scan bound.
+  const cookie = 'Cookie: theme=light; sid=syntheticSession42; lang=en-US; tz=UTC rest';
+  const cookieLead = `${removed.repeat(28)} ${'detail '.repeat(122)}`;
+  assert.equal(`${cookieLead}${cookie}`.slice(2_022, 2_026), 'ng=e');
+  assert.equal(
+    await reportedFailureMessage(`${cookieLead}${cookie}`),
+    `${REPORTED_FAILURE_PREFIX}[redacted] ${'detail '.repeat(122)}Cookie: [redacted]…`,
+  );
+
+  // A token run longer than the margin, cut by the scan bound: none of it shows.
+  const token = 'Zk3pQ9xLm2Rt7VbN4cWd'.repeat(100);
+  const tokenLead = `${removed.repeat(5)} ${'detail '.repeat(110)}`;
+  assert.ok(tokenLead.length > 1_000 - 32 && tokenLead.length < 1_000);
+  assert.equal(
+    await reportedFailureMessage(`${tokenLead}${token} rest`),
+    `${REPORTED_FAILURE_PREFIX}[redacted] ${'detail '.repeat(110).trimEnd()}…`,
+  );
+
+  // A short token the 16,384-character source bound lands in, in text that collapses to little.
+  const indented = `detail ${' '.repeat(16_370)}syntheticShortTail42 rest`;
+  assert.equal(indented.slice(16_380, 16_388), 'theticSh');
+  assert.equal(await reportedFailureMessage(indented), `${REPORTED_FAILURE_PREFIX}detail…`);
+
+  // A short unrecognized token the 1,000-character cut lands in.
+  const words = 'detail '.repeat(142);
+  assert.ok(words.length < 999 && words.length + 'syntheticShort42'.length > 999);
+  assert.equal(
+    await reportedFailureMessage(`${words}syntheticShort42 and more`),
+    `${REPORTED_FAILURE_PREFIX}${words.trimEnd()}…`,
   );
 });
 

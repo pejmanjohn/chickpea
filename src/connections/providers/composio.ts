@@ -33,7 +33,7 @@ import {
   ManagedAuthorityDeniedError,
   ManagedProviderRequestError,
 } from '../managed-errors.ts';
-import { redactConnectionText } from '../response.ts';
+import { scrubServiceErrorText } from '../service-error-text.ts';
 import { manifestComposioCapabilities } from './composio/manifest-capabilities.ts';
 import type { ComposioManifest } from '../catalog/composio-manifests.ts';
 import {
@@ -5623,10 +5623,9 @@ function recordExecutionFailure(
 }
 
 const MAX_REPORTED_FAILURE_REASON_CHARS = 1_000;
-// Redaction scans this much more than the model reads. It is also longer than any part of a
-// credential that a cut can leave too short to match its signature.
-const REPORTED_FAILURE_REDACTION_MARGIN_CHARS = 1_024;
-const REPORTED_FAILURE_CUT_TOKEN = new RegExp(`\\S{1,${REPORTED_FAILURE_REDACTION_MARGIN_CHARS}}$`);
+// The scrubber reads this much more than the model does, so a shape the model's cut splits is
+// still whole when it is scrubbed.
+const REPORTED_FAILURE_SCRUB_MARGIN_CHARS = 1_024;
 const MAX_REPORTED_FAILURE_SOURCE_CHARS = 16_384;
 
 function reportedFailureMessage(
@@ -5640,43 +5639,29 @@ function reportedFailureMessage(
     `retrying. Service error: ${reason}`;
 }
 
-/** Composio's own failure text, which can echo the request, so it is redacted and bounded. */
+/** Composio's own failure text, which can echo the request, so it is scrubbed and bounded. */
 function reportedFailureReason(error: unknown, apiKey: string): string | undefined {
   if (typeof error !== 'string') return undefined;
   // Whitespace collapses first, so the bounds count the characters the model would read.
-  const text = error.slice(0, MAX_REPORTED_FAILURE_SOURCE_CHARS)
+  const text = cutBeforeToken(error, MAX_REPORTED_FAILURE_SOURCE_CHARS)
     .replace(/[\s\u0000-\u001f\u007f]+/g, ' ').trim();
-  const scanChars = MAX_REPORTED_FAILURE_REASON_CHARS + REPORTED_FAILURE_REDACTION_MARGIN_CHARS;
+  const scanChars = MAX_REPORTED_FAILURE_REASON_CHARS + REPORTED_FAILURE_SCRUB_MARGIN_CHARS;
   const cut = error.length > MAX_REPORTED_FAILURE_SOURCE_CHARS || text.length > scanChars;
-  // The token a cut ends in is dropped: it can be the start of a credential that redaction
-  // no longer recognizes. Cut PEM armor holds spaces, and redaction removes it to its end.
-  const scanned = cut ? text.slice(0, scanChars).replace(REPORTED_FAILURE_CUT_TOKEN, '') : text;
-  const reason = redactReportedFailureText(scanned, apiKey).trim();
-  if (!reason) return undefined;
-  return !cut && reason.length <= MAX_REPORTED_FAILURE_REASON_CHARS
-    ? reason
-    : `${reason.slice(0, MAX_REPORTED_FAILURE_REASON_CHARS - 1)}…`;
+  // Everything is scrubbed before the model's cut, so no rule sees a split shape.
+  const reason = scrubServiceErrorText(cutBeforeToken(text, scanChars), [apiKey]);
+  if (!cut && reason.length <= MAX_REPORTED_FAILURE_REASON_CHARS) return reason || undefined;
+  const shown = cutBeforeToken(reason, MAX_REPORTED_FAILURE_REASON_CHARS - 1).trimEnd();
+  return shown ? `${shown}…` : undefined;
 }
 
 /**
- * The rule of the browser tools' error text: no credential, no URL query (it can hold a key or
- * a signature), and no named key or token. A URL's login, an Authorization header's value and
- * a bearer or basic value go as well. A credential that is none of these, in plain prose, has
- * no shape to find.
+ * The first `max` characters, less the token a cut lands in, however long: its start can be
+ * part of a credential that no rule recognizes once it is cut.
  */
-function redactReportedFailureText(text: string, apiKey: string): string {
-  return redactConnectionText(
-    text
-      .replace(/\b(https?:\/\/)[^\s/?#@"'<>]*@/gi, '$1')
-      .replace(/\b(https?:\/\/[^\s?"'<>]*)\?[^\s"'<>]*/gi, '$1?[redacted]')
-      .replace(/((?:api[-_]?key|token|secret|password)["']?\s*[=:]\s*["']?)[^\s&"',}]+/gi, '$1[redacted]')
-      // An Authorization header's value, after its scheme when it names one.
-      .replace(/(authorization["']?\s*[=:]\s*["']?(?:[a-z]+\s+)?)[^\s"',}]+/gi, '$1[redacted]')
-      // Outside a header, a bearer or basic value holds a digit or a mark; the word after
-      // "Bearer" or "Basic" in prose holds neither.
-      .replace(/\b((?:Bearer|Basic)\s+)(?=[\w.~+/=-]*[\d._~+/=])[\w.~+/=-]{8,}/gi, '$1[redacted]'),
-    [apiKey],
-  );
+function cutBeforeToken(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const head = text.slice(0, max);
+  return /\s/.test(text.charAt(max)) ? head : head.replace(/\S+$/, '');
 }
 
 /** The connected service's HTTP status, when Composio's failed result carries one. */
