@@ -117,6 +117,7 @@ import {
   nativeCredentialRequired,
   type ConnectionAccountService,
 } from '../connections/store.ts';
+import { resolveConnectionAccountSecret } from '../config/connector-secrets.ts';
 import {
   projectAgentWebsiteLogins,
   removableAgentWebsiteLogin,
@@ -4548,7 +4549,8 @@ export class WorkspaceManagementService {
         };
       }
       const policy = account.policy;
-      if (!nativeCredentialRequired(policy)) {
+      // A saved optional key, such as Exa's, is replaced on the same key page.
+      if (!nativeCredentialRequired(policy) && !await this.optionalKeySaved(account)) {
         throw new ManagementError('invalid_request', 'This MCP connection does not require setup.');
       }
       const oauth = policy.authMode === 'oauth';
@@ -4579,6 +4581,13 @@ export class WorkspaceManagementService {
       },
       scopes: [`repository:${repository.fullName}`],
     };
+  }
+
+  /** Whether a key-optional MCP connection holds a saved key, which reconnect_service may replace. */
+  private async optionalKeySaved(account: ConnectionAccount): Promise<boolean> {
+    const { policy } = account;
+    if (policy.kind !== 'mcp' || policy.credentialHeaderName === undefined || !this.stores.settings) return false;
+    return await resolveConnectionAccountSecret(account, this.stores.env, this.stores.settings) !== undefined;
   }
 
   private async requireLiveActor(

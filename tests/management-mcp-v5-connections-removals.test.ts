@@ -6,9 +6,9 @@ import { createMcpHandler } from '@modelcontextprotocol/server';
 import type { McpAuthenticatedPrincipal } from '../src/auth/mcp-oauth-routes.ts';
 import { createWebsiteLogin } from '../src/browser/logins.ts';
 import { BUGSNAG_MCP_SERVER_URL } from '../src/config/bugsnag-policy.ts';
+import { saveConnectionAccountSecret } from '../src/config/connector-secrets.ts';
 import type { ConnectionAccount } from '../src/config/types.ts';
 import { createWorkspaceManagementMcpServer } from '../src/management/mcp.ts';
-import type { WorkspaceManagementServiceInput } from '../src/management/service.ts';
 import type { PrepareConnectorSetupResult } from '../src/management/types.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import {
@@ -30,7 +30,7 @@ type ToolResult = {
 };
 type Call = (name: string, args?: Record<string, unknown>) => Promise<ToolResult>;
 type Person = 'owner' | 'admin';
-type Overrides = Partial<WorkspaceManagementServiceInput>;
+type Overrides = Parameters<typeof createManagementAdapterFixture>[1];
 
 async function harness(t: TestContext, suffix: string, options: { member?: boolean; overrides?: Overrides } = {}) {
   const f = await createManagementAdapterFixture(suffix, options.overrides ?? {});
@@ -507,6 +507,53 @@ test('check_agent sends an abandoned catalog sign-in to reconnect_service, whose
   assertFocusedSetup(followed.setup);
   const setup = await f.management.getSetup(followed.setup.setupToken);
   assert.deepEqual([setup?.action, setup?.target.connectionId], ['catalog_connection', account.id]);
+});
+
+test('reconnect_service replaces a saved optional key, such as Exa\'s, and still refuses a connection with no key to replace', async (t) => {
+  // Live wiring hands the service its settings, where a saved key lives.
+  const { f, teamId, call } = await harness(t, 'reconnect-optional-key', { overrides: ({ settings }) => ({ settings }) });
+  await installAgent(f);
+  const exa = await f.config.putConnectionAccount({
+    id: `connection_e${'0'.repeat(31)}`, workspaceId: teamId, ownerKind: 'team', providerId: 'exa', label: 'Exa',
+    lifecycle: 'ready', createdByMembershipId: f.owner.membership.id, secretRefId: 'secret_exa',
+    policy: {
+      kind: 'mcp', url: 'https://mcp.exa.ai/mcp', transport: 'streamable-http', authMode: 'none', headerNames: ['x-api-key'],
+      credentialHeaderName: 'x-api-key', credentialOptional: true,
+      discoveredTools: [{ name: 'web_search_exa' }], allowedTools: ['web_search_exa'], presetId: 'exa',
+    },
+  } as Omit<ConnectionAccount, 'revision' | 'createdAt' | 'updatedAt'>);
+  await f.config.putAgentConnectionBinding({
+    agentId: 'agent_research', connectionAccountId: exa.id, providerId: 'exa', allowedCapabilities: [], enabled: true,
+  });
+  const reconnect = (connectionId: string) => call('reconnect_service', { agentId: 'agent_research', connectionId });
+
+  // Exa used without a key has none to replace, as before.
+  const keyless = errorOf(await reconnect('exa'), 'invalid_input');
+  assert.equal(keyless.message, 'This MCP connection does not require setup.');
+
+  await saveConnectionAccountSecret(exa.secretRefId, 'exa-test-key', undefined, f.settings);
+  const keyed = structured(await reconnect('exa'));
+  assert.equal(keyed.status, 'needs_setup');
+  assert.match(keyed.summary, /Open the link to reconnect Exa\.$/);
+  assert.equal(JSON.stringify(keyed).includes('exa-test-key'), false, 'the saved key never reaches the result');
+  const setup = await f.management.getSetup(keyed.setup.setupToken);
+  assert.deepEqual(
+    [setup?.action, setup?.target.connectionId, setup?.target.replacement, setup?.target.formFields],
+    ['mcp_credentials', exa.id, true, ['header:x-api-key']],
+    'the person types the new key on Chickpea\'s key page',
+  );
+
+  // A server that takes no key at all is still refused, even holding a stray secret, since its page has no key field.
+  structured(await call('connect_service', {
+    agentId: 'agent_research',
+    custom: { kind: 'mcp', name: 'Docs', url: 'https://mcp.docs.example/mcp', auth: 'none' },
+    version: await version(call, 'agent_research'),
+    idempotencyKey: 'docs',
+  }));
+  const docs = (await f.config.listConnectionAccounts(teamId)).find(({ label }) => label === 'Docs')!;
+  await saveConnectionAccountSecret(docs.secretRefId, 'stray-secret', undefined, f.settings);
+  const open = errorOf(await reconnect('docs'), 'invalid_input');
+  assert.equal(open.message, 'This MCP connection does not require setup.');
 });
 
 test('a member cannot connect or reconnect a team connection, or change an Agent they cannot edit', async (t) => {
