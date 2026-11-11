@@ -73,8 +73,13 @@ function reply(wire: Wire, payload: unknown): Response {
 /** A Streamable HTTP server; `answerList` answers each tools/list POST. */
 function mcpServer(answerList: (rpc: Rpc) => Response) {
   const calls: string[] = [];
+  const gets: Request[] = [];
   const fetch = (async (input, init) => {
     const request = new Request(input, init);
+    if (request.method === 'GET') {
+      gets.push(request);
+      return eventStream([': resumed\n\n']);
+    }
     if (request.method !== 'POST') return new Response(null, { status: 405 });
     const rpc = await request.json() as Rpc;
     if (rpc.id === undefined) return new Response(null, { status: 202 });
@@ -88,7 +93,7 @@ function mcpServer(answerList: (rpc: Rpc) => Response) {
     }
     throw new Error(`Unexpected synthetic MCP request: ${rpc.method}`);
   }) as typeof globalThis.fetch;
-  return { fetch, calls };
+  return { fetch, calls, gets };
 }
 
 function pagedServer(wire: Wire, pages: readonly (readonly ListedTool[])[]) {
@@ -201,14 +206,16 @@ async function mountedNames(definition: McpConnectionDefinition): Promise<string
 function captureLogs(t: TestContext) {
   const missing: Array<Record<string, unknown>> = [];
   const refused: Array<Record<string, unknown>> = [];
+  const http: Array<Record<string, unknown>> = [];
   const info = console.info.bind(console);
   t.mock.method(console, 'info', (event: unknown, ...rest: unknown[]) => {
     const name = (event as { event?: string } | undefined)?.event;
     if (name === 'chickpea.mcp.tools_missing') missing.push(event as Record<string, unknown>);
     else if (name === 'chickpea.mcp.tools_list_refused') refused.push(event as Record<string, unknown>);
-    else if (name !== 'chickpea.mcp.http') info(event, ...rest);
+    else if (name === 'chickpea.mcp.http') http.push(event as Record<string, unknown>);
+    else info(event, ...rest);
   });
-  return { missing, refused };
+  return { missing, refused, http };
 }
 
 const missingLine = (missing: string[], listedCount: number, taskOnly: string[] = []) => ({
@@ -261,7 +268,7 @@ test('a full listing logs nothing and mounts the whole grant in grant order', as
     assert.equal(definition.tools, undefined, 'Flue mounts the filtered listing, not a strict allowlist');
     assert.deepEqual(await mountedNames(definition), ['mcp__srv__alpha', 'mcp__srv__beta', 'mcp__srv__gamma']);
   });
-  assert.deepEqual(logs, { missing: [], refused: [] });
+  assert.deepEqual([logs.missing, logs.refused], [[], []]);
 });
 
 test('a test run mounts the same intersection', async (t) => {
@@ -435,6 +442,47 @@ test('a tool call for a listed but ungranted tool is refused before it leaves Ch
     }), /not selected for this Agent/);
   });
   assert.deepEqual(server.calls, []);
+});
+
+// --- the standalone GET stream is answered locally -------------------------
+
+function preparedMcpExecutor(tool: object): (args: unknown) => Promise<string> {
+  const symbol = Object.getOwnPropertySymbols(tool).find((candidate) => candidate.description === 'flue.preparedToolAdapter');
+  assert.ok(symbol);
+  return (args) => (Reflect.get(tool, symbol) as { execute(args: unknown): Promise<string> }).execute(args);
+}
+
+test('the standalone GET stream never reaches the server, and the connection still mounts and calls', async (t) => {
+  const logs = captureLogs(t);
+  const server = pagedServer('json', [['extra', 'alpha']]);
+  await withRuntimeConnection(connectionConfig(), server.fetch, async (definition) => {
+    const connection = await createMcpConnection(definition);
+    try {
+      assert.deepEqual(connection.tools.map(({ name }) => name), ['mcp__srv__alpha']);
+      assert.equal(await preparedMcpExecutor(connection.tools[0]!)({}), 'done');
+    } finally {
+      await connection.close();
+    }
+    const standalone = await definition.fetch!(URL_, { method: 'GET', headers: { accept: 'text/event-stream' } });
+    assert.equal(standalone.status, 405);
+  });
+  assert.deepEqual(server.gets, []);
+  assert.deepEqual(server.calls, ['alpha']);
+  assert.deepEqual(logs.http.filter(({ httpMethod }) => httpMethod === 'GET'), [], 'the local answer is not logged');
+});
+
+test('a GET that resumes a stream with Last-Event-ID still reaches the server', async (t) => {
+  const logs = captureLogs(t);
+  const server = pagedServer('json', [['alpha']]);
+  await withRuntimeConnection(connectionConfig(), server.fetch, async (definition) => {
+    const resumed = await definition.fetch!(URL_, {
+      method: 'GET', headers: { accept: 'text/event-stream', 'last-event-id': '7' },
+    });
+    assert.equal(resumed.status, 200);
+    assert.equal(await resumed.text(), ': resumed\n\n');
+  });
+  assert.deepEqual(server.gets.map((request) => request.headers.get('last-event-id')), ['7']);
+  assert.deepEqual(logs.http.map(({ httpMethod, status }) => [httpMethod, status]), [['GET', 200]]);
 });
 
 // --- the legacy SSE transport keeps Flue's strict allowlist ----------------

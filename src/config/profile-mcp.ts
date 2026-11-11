@@ -346,7 +346,7 @@ export function resolveRuntimePlanMcpConnections(
       ...(toolsList ? {} : { tools: allowedTools }),
       optional: declaration.optional,
       timeoutMs: 30_000,
-      fetch: fetchWithLiveHeaders,
+      fetch: toolsList ? withoutStandaloneStream(fetchWithLiveHeaders) : fetchWithLiveHeaders,
       ...(declaration.authMode === 'none'
         ? {}
         : {
@@ -563,6 +563,24 @@ function runtimeAllowedToolsForServer(server: McpConnectionConfig): string[] {
   return isMetaAdsMcpConnection(server)
     ? metaAdsRuntimeAllowedTools(server)
     : [...server.allowedTools];
+}
+
+/**
+ * Answer a Streamable HTTP connection's standalone GET stream locally with
+ * 405, which the MCP client reads as "no stream". The server could send a
+ * tools/list answer there that the filter never reads, and Flue uses nothing
+ * else from it. A GET with `Last-Event-ID` resumes a request's own stream and
+ * goes through; it cannot happen during a listing, whose POST answer must
+ * hold the result.
+ */
+function withoutStandaloneStream(fetchFn: typeof fetch): typeof fetch {
+  return async (input, init) => {
+    const method = init?.method ?? (input instanceof Request ? input.method : 'GET');
+    if (method.toUpperCase() === 'GET' && !new Request(input, init).headers.has('last-event-id')) {
+      return new Response(null, { status: 405, statusText: 'Method Not Allowed' });
+    }
+    return fetchFn(input, init);
+  };
 }
 
 function usesMetaAdsOutputAdapter(connection: Pick<McpConnectionConfig, 'url'>): boolean {
