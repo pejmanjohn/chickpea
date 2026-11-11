@@ -60,7 +60,7 @@ export class StubTestRuns implements TestRunStore {
     if (practiceId !== null) {
       const turns = this.runs.filter(({ request: { run }, view }) =>
         view.practiceId === practiceId && run.actorMembershipId === request.run.actorMembershipId);
-      const latest = turns.findLast((run) => this.settle(run)?.status === 'answered') ?? turns.at(-1);
+      const latest = turns.findLast((run) => this.settle(run)?.status === 'answered') ?? turns[0];
       if (!latest || turns.some(({ view }) => view.agentId !== request.run.agentId) || !this.visible(latest) ||
           turns.length >= PRACTICE_TURNS) {
         return { kind: 'ended' };

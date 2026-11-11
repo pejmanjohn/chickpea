@@ -535,7 +535,7 @@ test('a first answer slower than an hour can still be followed up, for an hour f
     [2, ['Who is overdue?'], 0]);
 });
 
-test('a conversation with no answer counts its hour from its latest turn; a failed one opens nothing past it', () => {
+test('a conversation with no answer counts its hour from the end of its first turn; a failed one opens nothing past it', () => {
   const installation = hostedInstallation('inst_test_store_follow_failed');
   const store = testRuns(installation);
   const first = admission(installation, { question: 'Who is overdue?' });
@@ -549,6 +549,52 @@ test('a conversation with no answer counts its hour from its latest turn; a fail
   fail(late, lost.testRunId);
   assert.deepEqual(testRuns(late).admit(admission(late, { practiceId: `pr_${lost.testRunId}`, question: 'Again?' }), NOON + AN_HOUR),
     { kind: 'ended' });
+});
+
+test('a failed turn after the latest answer opens nothing past that answer\'s hour, whether or not the answer\'s row is gone', () => {
+  const failAt = (installation: HostedInstallation, testRunId: string, at: number) => {
+    const row = installation.stores.testRuns.get(testRunId)!;
+    const recorder = new TestRunUsageRecorder(installation.stores.usage.getOperation(row.usageOperationId)!.operation);
+    assert.equal(installation.stores.testRuns.settle(testRunId, { status: 'failed', failure: 'failed', terminal: recorder.failed(at, null) }), true);
+  };
+  for (const erased of [false, true]) {
+    const installation = hostedInstallation(`inst_test_store_follow_failed_after_${erased}`);
+    const store = testRuns(installation);
+    const { practiceId, first } = conversation(installation);
+    const second = admission(installation, { practiceId, question: 'And last week?' });
+    assert.equal(store.admit(second, NOON + 50 * 60_000).kind, 'admitted');
+    failAt(installation, second.testRunId, NOON + 51 * 60_000);
+    // Inside the answer's hour the conversation goes on, quoting the answer and never the failed turn.
+    const inside = store.admit(admission(installation, { practiceId, question: 'Inside?' }), NOON + AN_HOUR - 1);
+    assert.deepEqual(inside.kind === 'admitted' && [inside.row.turn, inside.earlier.map(({ turn }) => turn)], [3, [1]]);
+    failAt(installation, inside.kind === 'admitted' ? inside.row.testRunId : '', NOON + AN_HOUR - 1);
+    if (erased) {
+      store.markErased(first.testRunId, NOON + AN_HOUR);
+      assert.equal(store.eraseExpired(NOON + AN_HOUR), 1, 'the answered turn\'s row is deleted at its hour');
+      assert.equal(store.get(first.testRunId), undefined);
+    }
+    // The failed turns are minutes old; the latest answer is an hour old.
+    assert.deepEqual(store.admit(admission(installation, { practiceId, question: 'Past it?' }), NOON + AN_HOUR), { kind: 'ended' },
+      erased ? 'its row gone' : 'its row still there');
+  }
+  // With none answered, the hour runs from the first turn's end, whichever rows are left.
+  for (const erased of [false, true]) {
+    const installation = hostedInstallation(`inst_test_store_follow_all_failed_${erased}`);
+    const store = testRuns(installation);
+    const first = admission(installation, { question: 'Who is overdue?' });
+    store.admit(first, NOON);
+    failAt(installation, first.testRunId, NOON);
+    const practiceId = `pr_${first.testRunId}`;
+    const second = admission(installation, { practiceId, question: 'Again?' });
+    assert.equal(store.admit(second, NOON + 50 * 60_000).kind, 'admitted');
+    failAt(installation, second.testRunId, NOON + 51 * 60_000);
+    if (erased) {
+      store.markErased(first.testRunId, NOON + AN_HOUR);
+      assert.equal(store.eraseExpired(NOON + AN_HOUR), 1);
+    }
+    assert.deepEqual(store.admit(admission(installation, { practiceId, question: 'Once more?' }), NOON + AN_HOUR), { kind: 'ended' },
+      erased ? 'its first row gone' : 'its first row still there');
+  }
 });
 
 test('a conversation whose first turn is gone goes on from its later turns, and counts the gone one as unseen', () => {

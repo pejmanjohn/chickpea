@@ -256,11 +256,14 @@ export class TestRunStoreLogic {
   /**
    * The conversation a follow-up continues, from the caller's own rows: open
    * while it names this Agent, has a turn left, and its latest answer is
-   * under an hour old (with none answered, its latest turn). Its turns run
-   * one after another, so the next waits for the last to settle, however
-   * long that takes. Each turn keeps its text for its own hour, so a
-   * follow-up quotes the answered turns still kept and counts the older ones
-   * it can't. A failed turn is not quoted to the next.
+   * under an hour old (with none answered, the end of its first turn). A
+   * turn's row goes an hour after it settles, so a conversation whose first
+   * turn is gone and whose rows hold no answer has ended: whether an answer
+   * that old is still a row or not, it reads the same. Its turns run one
+   * after another, so the next waits for the last to settle, however long
+   * that takes. Each turn keeps its text for its own hour, so a follow-up
+   * quotes the answered turns still kept and counts the older ones it can't.
+   * A failed turn is not quoted to the next.
    */
   private conversation(ask: Caller & PracticeAsk, practiceId: string, at: number): Conversation {
     const turns = this.db.all(
@@ -276,8 +279,8 @@ export class TestRunStoreLogic {
     if (!latest || turns.some(({ agentId }) => agentId !== ask.agentId) || last >= PRACTICE_TURNS) return { kind: 'ended' };
     const going = turns.find(liveTestRun);
     if (going) return { kind: 'in_progress', runToken: going.runToken };
-    const since = turns.findLast(({ status }) => status === 'answered') ?? latest;
-    if (!readable(since, at)) return { kind: 'ended' };
+    const since = turns.findLast(({ status }) => status === 'answered') ?? turns.find(({ turn }) => turn === 1);
+    if (!since || !readable(since, at)) return { kind: 'ended' };
     const kept = turns.filter((row) => row.status === 'answered' && row.question !== null && readable(row, at));
     // Turns settle in order, so the ones gone or past their hour are the oldest; a failed one is never quoted anyway.
     const expired = last - turns.length + turns.filter((row) => row.status === 'answered' && !kept.includes(row)).length;
