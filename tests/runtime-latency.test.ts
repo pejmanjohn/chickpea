@@ -14,6 +14,7 @@ import {
   emitRelayAlarm,
   emitThreadRunnerAlarm,
   emitRuntimeLatency,
+  modelToken,
   opaqueRunRef,
   opaqueTurnRef,
   recordStateRpc,
@@ -121,6 +122,25 @@ test('runtime latency records keep only numbers, booleans, tokens, and opaque re
   });
   assert.match(String(record?.runRef), /^run_[0-9a-f]{24}$/);
   assertContentFree(record!);
+});
+
+// Defects caught: a model id logged as written (slashes, dots, capitals),
+// one longer than the token shape that is dropped instead of cut, a missing
+// id that leaves no token to group by, and a token field that admits capitals.
+test('modelToken turns a model id into a lowercase token, and the log keeps only that shape', () => {
+  assert.equal(modelToken('anthropic/claude-opus-5.5'), 'anthropic_claude_opus_5_5');
+  assert.equal(modelToken('openrouter/Google/Gemini-3.0-Pro:free'), 'openrouter_google_gemini_3_0_pro_free');
+  assert.equal(modelToken(undefined), 'unknown');
+  assert.equal(modelToken(''), 'unknown');
+  assert.equal(modelToken('/claude-opus-5.5'), 'unknown', 'a token starts with a letter');
+  const long = modelToken(`openrouter/${'synthetic-model-'.repeat(8)}`);
+  assert.equal(long.length, 64);
+  assert.ok(long.startsWith('openrouter_synthetic_model_'));
+  const { records, sink } = captureSink();
+  emitRuntimeLatency('turn_latency', { modelToken: long }, sink);
+  emitRuntimeLatency('turn_latency', { modelToken: 'Anthropic_Claude' }, sink);
+  assert.equal(records[0]?.modelToken, long);
+  assert.equal('modelToken' in records[1]!, false, 'only modelToken output passes');
 });
 
 // Defect caught: a free-text or probability field reaches Workers Logs as
@@ -461,7 +481,7 @@ test('turn_latency measures admission to the first acknowledged write and to fin
   const { records, sink } = captureSink();
   const tracker = new TurnLatencyTracker(
     { admittedAt: 9_000, lane: 'cloudflare', executor: 'alarm' },
-    { turnJobId: 'evt:T_LATENCY:1785509000.000100', runId: 'run-raw', attempt: 1 },
+    { turnJobId: 'evt:T_LATENCY:1785509000.000100', runId: 'run-raw', attempt: 1, model: 'anthropic/claude-opus-5.5' },
     time.now,
     sink,
   );
@@ -482,6 +502,7 @@ test('turn_latency measures admission to the first acknowledged write and to fin
     lane: 'cloudflare',
     executor: 'alarm',
     attempt: 1,
+    modelToken: 'anthropic_claude_opus_5_5',
     outcome: 'returned',
     firstWrite: 'agent_session',
     final: 'delivered',
@@ -518,22 +539,25 @@ function shadowRecord(overrides: Partial<AnswerReleaseShadowRecord> = {}): Answe
 
 // Defects caught: a status or task card counted as answer text, a stream
 // start not counted, the shadow time taken from a retired release (whose
-// answer still waits for the terminal), or an epoch timestamp logged as is.
+// answer still waits for the terminal), an epoch timestamp logged as is, a
+// shadow that cannot be read per model, or a task-card stream it does not name.
 test('turn_latency times the first answer text as shown and as a host release would have shown it', () => {
   const { records, sink } = captureSink();
   const run = (
     streamAt: number | undefined,
     answerRelease: AnswerReleaseShadowRecord | undefined,
+    taskCard = false,
   ) => {
     const time = clock(10_000);
     const tracker = new TurnLatencyTracker(
       { receivedAt: 8_000, admittedAt: 9_000, lane: 'cloudflare', executor: 'runner' },
-      { turnJobId: 'evt:T_LATENCY:1785509000.000100', runId: 'run-raw', attempt: 1 },
+      { turnJobId: 'evt:T_LATENCY:1785509000.000100', runId: 'run-raw', attempt: 1, model: 'anthropic/claude-sonnet-5.5' },
       time.now,
       sink,
     );
     time.advance(500);
     tracker.markSlackWrite('activity_status');
+    if (taskCard) tracker.markTaskCardStreamed();
     if (streamAt !== undefined) {
       time.advance(streamAt - time.now());
       tracker.markStreamedAnswerText();
@@ -569,17 +593,21 @@ test('turn_latency times the first answer text as shown and as a host release wo
   const retired = run(undefined, shadowRecord({
     outcome: 'retired', late: 'tool', releasedAt: 12_000, releaseChars: 430, releaseHoldMs: 600, releaseToLateMs: 1_200,
     toolSteps: 1, preToolText1: 1, preToolText100: 1, preToolText200: 1, preToolText300: 1, preToolText400: 1,
-  }));
+  }), true);
   assert.equal(retired.receiptToShadowAnswerTextMs, 22_000, 'a retired release leaves the answer to the terminal');
+  assert.equal(retired.modelToken, 'anthropic_claude_sonnet_5_5');
+  assert.equal('taskCardStream' in retired, false, 'the task card is on answer_release only');
 
   const shadowLogs = records.filter((record) => record.event === 'answer_release');
   assert.equal(shadowLogs.length, 3);
+  assert.equal(shadowLogs[0]?.taskCardStream, false, 'a reply whose stream carried no task card');
   assert.deepEqual(shadowLogs.at(-1), {
     component: 'runtime',
     event: 'answer_release',
     turnRef: opaqueTurnRef('evt:T_LATENCY:1785509000.000100'),
     runRef: opaqueRunRef('run-raw'),
     attempt: 1,
+    modelToken: 'anthropic_claude_sonnet_5_5',
     outcome: 'retired',
     late: 'tool',
     holdChars: 400,
@@ -598,6 +626,7 @@ test('turn_latency times the first answer text as shown and as a host release wo
     finalAnswerChars: 120,
     displayParts: 0,
     keySetupParts: 0,
+    taskCardStream: true,
     admissionToReleaseMs: 3_000,
     receiptToReleaseMs: 4_000,
   });
@@ -735,6 +764,7 @@ test('turn_latency omits durations it cannot measure and never throws', () => {
     event: 'turn_latency',
     lane: 'node',
     executor: 'node',
+    modelToken: 'unknown',
     outcome: 'returned',
     firstWrite: 'none',
     final: 'deferred',

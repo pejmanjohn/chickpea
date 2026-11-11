@@ -430,6 +430,8 @@ export interface RunTurnOptions {
   onSlackWrite?: (surface: TurnFirstWrite) => void;
   /** Set by `runTurn` itself when `turnLatency` is present: Slack acknowledged streamed answer text. */
   onAnswerTextStreamed?: () => void;
+  /** Set by `runTurn` itself when `turnLatency` is present: Slack acknowledged native task card rows on the reply's stream. */
+  onTaskCardStreamed?: () => void;
   /**
    * Set by `runTurn` itself when `turnLatency` is present: every chunk the
    * reply's observation reads, beside the dispatched submission. Must not throw.
@@ -533,6 +535,7 @@ export async function runTurn(
     ...(options.turnId ? { turnJobId: options.turnId } : {}),
     ...(options.runId ? { runId: options.runId } : {}),
     ...(options.runAttempt === undefined ? {} : { attempt: options.runAttempt }),
+    model: resolvedAssignmentModel(assignment),
   });
   tracker.markFolded(followUps.length);
   // Loaded at a turn's first use, so the shadow stays out of what a Worker
@@ -546,6 +549,7 @@ export async function runTurn(
       ...options,
       onSlackWrite: (surface) => tracker.markSlackWrite(surface),
       onAnswerTextStreamed: () => tracker.markStreamedAnswerText(),
+      onTaskCardStreamed: () => tracker.markTaskCardStreamed(),
       onConversationChunk: (chunk, submissionId) => answerRelease?.onEvent(chunk, submissionId),
       onFollowUpsInformed: (count) => tracker.markFoldedInformed(count),
       onRead: () => tracker.markRead(),
@@ -758,6 +762,9 @@ async function runTurnAttempt(
           : {}),
         ...(options.onAnswerTextStreamed
           ? { onAnswerTextStreamed: options.onAnswerTextStreamed }
+          : {}),
+        ...(options.onTaskCardStreamed
+          ? { onTaskCardStreamed: options.onTaskCardStreamed }
           : {}),
       })
     : undefined;

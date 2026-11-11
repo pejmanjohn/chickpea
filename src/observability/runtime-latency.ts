@@ -40,6 +40,8 @@ const TOKEN = /^[a-z][a-z0-9_]{0,63}$/i;
 const OPAQUE_REF = /^(run|turn)_[0-9a-f]{24}$/;
 /** A Cloudflare Worker version id (a UUID), or a fixed token instead of one. */
 const VERSION_ID = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[a-z][a-z0-9_]{0,63})$/i;
+/** What `modelToken` returns. */
+const MODEL_TOKEN = /^[a-z][a-z0-9_]{0,63}$/;
 
 /** The only string fields any event may carry, and their allowed shapes. */
 const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
@@ -78,7 +80,19 @@ const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
   supersededBy: VERSION_ID,
   agentClass: TOKEN,
   agentWakeSource: TOKEN,
+  modelToken: MODEL_TOKEN,
 };
+
+/**
+ * A model id as a log token, so records can be read per model:
+ * `anthropic/claude-opus-5.5` becomes `anthropic_claude_opus_5_5`. Lowercase,
+ * every character outside a-z and 0-9 becomes `_`, cut to 64 characters, and
+ * `unknown` when there is no id or it does not start with a letter.
+ */
+export function modelToken(modelId: string | undefined): string {
+  const token = (modelId ?? '').toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 64);
+  return MODEL_TOKEN.test(token) ? token : 'unknown';
+}
 
 export function emitRuntimeLatency(
   event: RuntimeLatencyEvent,
@@ -417,11 +431,13 @@ export class TurnLatencyTracker {
   private agentWake: { sentAt: number; source: 'admission' | 'plan' } | undefined;
   private agentWakeLeadMs: number | undefined;
   private startToStageMs: number | undefined;
+  private taskCardStreamed = false;
   private emitted = false;
 
+  /** `model`: the model id the turn runs with, logged as its `modelToken`. */
   constructor(
     private readonly context: TurnLatencyContext,
-    private readonly ids: { turnJobId?: string; runId?: string; attempt?: number },
+    private readonly ids: { turnJobId?: string; runId?: string; attempt?: number; model?: string | undefined },
     private readonly now: () => number = Date.now,
     private readonly sink?: RuntimeLatencySink,
   ) {
@@ -439,6 +455,11 @@ export class TurnLatencyTracker {
   /** Slack acknowledged answer text on a stream; only the first is kept. */
   markStreamedAnswerText(): void {
     this.answerText ??= { surface: 'stream', at: this.now() };
+  }
+
+  /** Slack acknowledged native task card rows on the reply's stream before its terminal. */
+  markTaskCardStreamed(): void {
+    this.taskCardStreamed = true;
   }
 
   /** The turn took this many queued messages as follow-ups. */
@@ -510,12 +531,14 @@ export class TurnLatencyTracker {
     const releasedAnswerAt = answerRelease?.outcome === 'released' ? answerRelease.releasedAt : undefined;
     const shadowAnswerTextAt = releasedAnswerAt === undefined ? answerTextAt
       : Math.min(releasedAnswerAt, answerTextAt ?? releasedAnswerAt);
+    const model = modelToken(this.ids.model);
     emitRuntimeLatency('turn_latency', {
       turnRef: opaqueTurnRef(this.ids.turnJobId),
       runRef: opaqueRunRef(this.ids.runId),
       lane: this.context.lane,
       executor: this.context.executor,
       attempt: this.ids.attempt,
+      modelToken: model,
       outcome,
       firstWrite: this.firstWrite?.surface ?? 'none',
       final: this.final?.kind ?? 'none',
@@ -548,7 +571,9 @@ export class TurnLatencyTracker {
       turnRef: opaqueTurnRef(this.ids.turnJobId),
       runRef: opaqueRunRef(this.ids.runId),
       attempt: this.ids.attempt,
+      modelToken: model,
       ...shadow,
+      taskCardStream: this.taskCardStreamed,
       admissionToReleaseMs: since(releasedAt),
       receiptToReleaseMs: sinceReceipt(releasedAt),
     }, this.sink);

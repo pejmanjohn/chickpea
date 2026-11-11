@@ -190,8 +190,12 @@ async function harness(turn: NormalizedSlackTurn, memoryBody: string, fixture?: 
     }),
   };
   const outcomes: Array<string | undefined> = [];
-  const run = (agentPrompt: NonNullable<Parameters<typeof runTurn>[3]>['agentPrompt']) =>
+  const run = (
+    agentPrompt: NonNullable<Parameters<typeof runTurn>[3]>['agentPrompt'],
+    extra: Partial<NonNullable<Parameters<typeof runTurn>[3]>> = {},
+  ) =>
     runTurn(turn, resolved, undefined, {
+      ...extra,
       client,
       runId,
       turnId: turnJobId,
@@ -429,4 +433,49 @@ test('an own write over memory another writer changed fails the lease: the failu
     console.warn = warn;
     h.close();
   }
+});
+
+// Defect caught: the reply's stream opened as the native task card, and the
+// turn's answer_release record says it carried none, so retirements on such
+// streams cannot be counted apart.
+test("a turn whose reply stream opens as the task card says so on its answer_release record", async (t) => {
+  const turn = dmTurn('1790200006.000100');
+  const h = await harness(turn, '');
+  const logs: Record<string, unknown>[] = [];
+  t.mock.method(console, 'info', (record: unknown) => {
+    if ((record as { event?: unknown } | undefined)?.event === 'answer_release') {
+      logs.push(record as Record<string, unknown>);
+    }
+  });
+  try {
+    const transition = (mutation: Parameters<typeof h.store.transition>[0]['mutation']) => {
+      const current = h.store.get(h.runId)!;
+      const result = h.store.transition({
+        runId: h.runId, workBindingGeneration: 1, runFencingToken: 0,
+        expectedProjectionVersion: current.projectionVersion, expectedStreamState: current.stream.state, mutation,
+      });
+      assert.equal(result.outcome, 'applied');
+      return result.outcome === 'applied' ? result.presentation : undefined;
+    };
+    const planned = transition({ kind: 'adopt_plan', taskLabels: ['Read the calendar', 'Write the answer'] });
+    assert.ok(planned?.plan);
+    transition({ kind: 'transition_task', taskId: planned.plan.tasks[0]!.id, to: 'in_progress' });
+    const submissionId = 'submission_memstream_card';
+    await h.run(async (input) => {
+      const relay = await input.prepareProgressiveRelay?.({
+        instanceId: h.instanceId,
+        receipt: { submissionId, acceptedAt: '2026-11-06T12:00:00.000Z', uid: 'uid_memstream_card' },
+      });
+      input.onConversationChunk?.({
+        type: 'message-started', conversationId: 'conversation', submissionId,
+        messageId: 'message_memstream_card', position: { batch: 1, index: 0 },
+      }, submissionId);
+      await relay?.closeAndDrain();
+      return answerResult(ANSWER);
+    }, { turnLatency: { lane: 'cloudflare', executor: 'runner' } });
+    const start = h.slack.find(({ method }) => method === 'chat.startStream');
+    assert.ok(JSON.stringify(start?.input.chunks).includes('task_update'), 'the stream opened as the task card');
+    assert.equal(logs.length, 1);
+    assert.equal(logs[0]?.taskCardStream, true);
+  } finally { h.close(); }
 });

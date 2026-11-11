@@ -825,8 +825,9 @@ test('a turn wakes its Agent object once its plan is saved, before it stages, an
 });
 
 // Defects caught: the turn's observation never reaches the shadow (no
-// answer_release record), the record names another run, or the shadow time
-// comes out later than the answer Slack showed.
+// answer_release record), the record names another run, the shadow time
+// comes out later than the answer Slack showed, or neither record names the
+// turn's model.
 test('a turn logs what the host release rule would have done with its reply', async (t) => {
   const logs: Record<string, unknown>[] = [];
   t.mock.method(console, 'info', (record: unknown) => {
@@ -857,6 +858,9 @@ test('a turn logs what the host release rule would have done with its reply', as
   assert.equal(release.outcome, 'released');
   assert.equal(release.runRef, latency.runRef);
   assert.equal(release.answerSteps, 1);
+  assert.equal(release.modelToken, 'local_stub_first_status', `from ${dmAssignment.model}`);
+  assert.equal(latency.modelToken, release.modelToken);
+  assert.equal(release.taskCardStream, false);
   assert.ok(Number(release.receiptToReleaseMs) >= 400);
   assert.equal(latency.firstAnswerText, 'final');
   assert.ok(Number(latency.receiptToShadowAnswerTextMs) + 20 <= Number(latency.receiptToFirstAnswerTextMs),
