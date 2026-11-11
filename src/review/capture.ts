@@ -8,13 +8,7 @@ import { decodeBase64Url, encodeBase64Url } from '../security/base64url.ts';
 import type { SlackTurnContext } from '../slack/thread-context.ts';
 import { RunReviewCollector } from './collector.ts';
 import { runReview, type RunReviewPort } from './port.ts';
-import {
-  buildRunReviewRecord,
-  runReviewPseudonymizer,
-  type RunReviewInput,
-  type RunReviewOutcome,
-  type RunReviewSurface,
-} from './record.ts';
+import type { RunReviewInput, RunReviewOutcome, RunReviewSurface } from './record.ts';
 
 /** 32 random bytes, written once by compare-and-set; independent of the telemetry opt-out. */
 export const RUN_REVIEW_PSEUDONYM_SETTING = 'review.pseudonym.v1';
@@ -183,9 +177,11 @@ class Session implements RunReviewSession {
     }
     const settings = this.start.settings();
     // A catalog that cannot be read keeps no copy, as a review key that cannot be read does.
-    const [key, websiteLogins] = await Promise.all([
+    // The builder and its scrub rules load here, after the reply, so no Worker startup loads them.
+    const [key, websiteLogins, { buildRunReviewRecord, runReviewPseudonymizer }] = await Promise.all([
       loadOrCreateRunReviewKey(settings, this.start.prefetched),
       websiteLoginNames(settings),
+      import('./record.ts'),
     ]);
     const now = new Date().toISOString();
     const record = buildRunReviewRecord({

@@ -23,6 +23,7 @@ import {
 } from '../src/review/record.ts';
 import { BROWSER_LINK_OMITTED, type RunReviewWebsiteLogins } from '../src/review/website-logins.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
+import { toContextMessage } from '../src/slack/thread-context.ts';
 import { FakeCdpSocket, fakeBrowserProvider } from './helpers/fake-cdp-socket.ts';
 
 const KEY = new Uint8Array(32).fill(7);
@@ -130,6 +131,28 @@ test('a URL on a login\'s site, or any URL in a browser step, keeps its scheme, 
   'a slug, a short ID, a public query and another site\'s link a person shares stay');
 });
 
+test('a page\'s address keeps its \' and |, and a JSON-escaped & or =, inside the URL a copy cuts', () => {
+  // A connector's text result that another program serialized: Go and Gson write `&` and `=` as JSON escapes.
+  const escaped = (char: string) => `${'\\'}u${char.charCodeAt(0).toString(16).padStart(4, '0')}`;
+  const mail = `{"link":"https://billing.example.com/magic?email=a${escaped('&')}token${escaped('=')}SYNTHMAGIC0123","next":"x"}`;
+  assert.equal(mail.includes('&') || mail.includes('token='), false, 'the test text holds the escapes');
+  const record = copy({
+    steps: [
+      browserStep('browser_open', { url: 'https://portal.example.org/users/o\'brien/callback?code=SYNTHCODE123' }, {
+        url: 'https://billing.example.com/callback?scope=read|write&code=SYNTHCODE123',
+        snapshot: '- link "Search" [ref=e1]',
+      }),
+      { kind: 'tool', name: 'read_mail', input: '{}', output: JSON.stringify({ text: mail }) },
+    ],
+  });
+  assert.deepEqual(kept(record, ['SYNTHCODE123', 'SYNTHMAGIC0123']), []);
+  const [opened, read] = record.steps;
+  assert.ok(opened?.kind === 'tool' && read?.kind === 'tool');
+  assert.equal(opened.input, '{"url":"https://portal.example.org/users/o\'brien/callback?[omitted]"}');
+  assert.match(opened.output ?? '', /"url":"https:\/\/billing\.example\.com\/callback\?\[omitted\]"/);
+  assert.equal(JSON.parse(read.output ?? '{}').text, '{"link":"https://billing.example.com/magic?[omitted]","next":"x"}');
+});
+
 test('every hosted browser link goes whole, whatever its host', () => {
   const record = copy({
     trigger: { author: 'U012ABCDEF3', text: 'Is https://www.browserbase.com/sessions/SYNTHSESS3 still open?', files: [] },
@@ -144,6 +167,19 @@ test('every hosted browser link goes whole, whatever its host', () => {
   assert.deepEqual(kept(record, ['browserbase', 'SYNTHSESS', 'SYNTHPAGE', 'SYNTHLIVE', 'SYNTHJWT', 'SYNTHBROWSER', 'devtools']), []);
   assert.match(record.context[0]?.text ?? '', /^billing\.example\.com needs you to sign in before I can continue\. \[browser link omitted\] and sign in;/);
   assert.equal(record.answer, `Debugger: ${BROWSER_LINK_OMITTED} and ${BROWSER_LINK_OMITTED}`);
+});
+
+test('a hand-off link a later turn reads back from Slack goes from both places its context row holds it', () => {
+  const liveView = 'https://live.provider.example/s/SYNTHLIVE?view=full&t=SYNTHLIVETOKEN';
+  // Slack returns the message with a rich_text block, and a context row lists that block's links under the text.
+  const row = toContextMessage({
+    ts: '1792915200.000100', user: 'U0BOT12345', text: browserHandoffMessage('portal.example.com', liveView),
+    blocks: [{ type: 'rich_text', elements: [{ type: 'rich_text_section', elements: [{ type: 'link', url: liveView, text: 'Open the browser' }] }] }],
+  }, { botUserId: 'U0BOT12345' });
+  assert.match(row?.text ?? '', /Links in this Slack message:\n- https:\/\/live\.provider\.example\/s\/SYNTHLIVE/);
+  const record = copy({ context: [{ author: 'Billing Agent', role: 'agent', text: row!.text, files: [] }] });
+  assert.deepEqual(kept(record, ['SYNTHLIVE', 'live.provider']), []);
+  assert.match(record.context[0]?.text ?? '', /Links in this Slack message:\n- \[browser link omitted\]$/);
 });
 
 test('a saved username leaves every field, in any case and in every escaped or encoded form', () => {
@@ -179,6 +215,7 @@ test('a saved username leaves every field, in any case and in every escaped or e
 test('a username split across snapshot lines, or cut before a … or at the collector\'s cap, leaves no part of it', () => {
   const split = '- text "Account"\n  - text "Ops.Synthetic"\n  - link "@" [ref=e4]\n  - text "example.com"';
   const cutAtSnapshotCap = `- text "Signed in as Ops.Synthetic@ex\n… (snapshot cut at 12000 characters)`;
+  const splitAfterState = '- button "Ops.Synthetic" [ref=e3] expanded\n  - text "@example.com"\n- heading "Ops.Synthetic" level=2\n- text "@example.com"';
   const longQuery = `https://billing.example.com/report?filter=${'x'.repeat(200)} `;
   const cutEnd = ' Signed in as Ops.Synth';
   const collected = longQuery.repeat(Math.ceil(COLLECTED_FIELD_CHARS / longQuery.length))
@@ -189,6 +226,7 @@ test('a username split across snapshot lines, or cut before a … or at the coll
     steps: [
       browserStep('browser_snapshot', {}, { snapshot: split }),
       browserStep('browser_snapshot', {}, { snapshot: cutAtSnapshotCap }),
+      browserStep('browser_snapshot', {}, { snapshot: splitAfterState }),
       browserStep('browser_snapshot', {}, { snapshot: '- textbox "Email" [ref=e1] value="Ops.Synthetic@exam…"' }),
       { kind: 'tool', name: 'web_fetch', input: '{}', output: collected },
     ],
@@ -197,10 +235,11 @@ test('a username split across snapshot lines, or cut before a … or at the coll
   const outputs = record.steps.map((step) => step.kind === 'tool' ? step.output ?? '' : '');
   assert.equal(JSON.parse(outputs[0]!).snapshot, '- text "Account"\n  - text "[credential redacted]"');
   assert.equal(JSON.parse(outputs[1]!).snapshot, '- text "Signed in as [credential redacted]\n… (snapshot cut at 12000 characters)');
+  assert.equal(JSON.parse(outputs[2]!).snapshot, '- button "[credential redacted]"\n- heading "[credential redacted]"');
   assert.equal(record.context[0]?.text, 'Signed in as [credential redacted]…');
-  assert.ok(new TextEncoder().encode(outputs[3]!).byteLength < RUN_REVIEW_FIELD_BYTES,
+  assert.ok(new TextEncoder().encode(outputs[4]!).byteLength < RUN_REVIEW_FIELD_BYTES,
     'the cut field shrank below the record\'s cap, so its cut end reaches the copy');
-  assert.match(outputs[3]!, /Signed in as \[credential redacted\]$/);
+  assert.match(outputs[4]!, /Signed in as \[credential redacted\]$/);
 });
 
 test('usernames match whole words, and one under four characters only as a whole value in a browser step', () => {
@@ -214,6 +253,21 @@ test('usernames match whole words, and one under four characters only as a whole
   const output = short.steps[0]?.kind === 'tool' ? short.steps[0].output ?? '' : '';
   assert.equal(JSON.parse(output).snapshot, '- textbox "User" [ref=e1] value="[credential redacted]"\n- text "bob approved it"');
   assert.equal(short.answer, 'bob approved it.');
+});
+
+test('a username leaves prose written without spaces between words', () => {
+  const record = copy({
+    trigger: { author: 'U012ABCDEF3', text: 'ユーザー名Ops.Synthetic@example.comでログインしてください', files: [] },
+    context: [{ author: 'U012ABCDEF3', role: 'human', text: '已使用ops.synthetic@example.com登录', files: [] }],
+    answer: 'ops.synthetic@example.com으로 로그인했습니다. เข้าสู่ระบบด้วยops.synthetic@example.comแล้ว',
+  });
+  assert.deepEqual(kept(record, ['ops.synthetic']), []);
+  assert.equal(record.trigger.text, 'ユーザー名[credential redacted]でログインしてください');
+  assert.equal(record.context[0]?.text, '已使用[credential redacted]登录');
+  assert.equal(record.answer, '[credential redacted]으로 로그인했습니다. เข้าสู่ระบบด้วย[credential redacted]แล้ว');
+
+  const admin = copy({ answer: '管理者adminです。sysadminです。' }, { hosts: [], usernames: ['admin'] });
+  assert.equal(admin.answer, '管理者[credential redacted]です。sysadminです。', 'a Latin word still keeps a username inside it');
 });
 
 function fakePort(t: TestContext): RunReviewRecordV1[] {

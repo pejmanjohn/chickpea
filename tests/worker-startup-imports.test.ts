@@ -52,6 +52,8 @@ const LAZY_MODULES: Record<string, string> = {
   'src/slack/ui/agent-card-redraw.ts': "update_card's first call (agents/slack-thread.ts)",
   'src/slack/funding-refusal-reply.ts': 'an out-of-usage reply or an Ask an Owner click (slack/run-turn.ts, channels/slack.ts)',
   'src/routines/pause-notice.ts': "a routine's out-of-usage pause, or the good run after it (routines/execution.ts)",
+  'src/review/record.ts': "a run's Help improve Chickpea copy being built, after its reply (review/capture.ts)",
+  'src/review/website-logins.ts': "a run's Help improve Chickpea copy being built, after its reply (review/record.ts, from review/capture.ts)",
   'src/admin/usage-report.ts': "a hosted Usage report or activity page (admin/usage-api.ts)",
   'src/admin/billing-api.ts': "the Plan page's API, on its first request (admin/routes.ts)",
   'src/state/test-run-lifecycle.ts': "a state store's first test run, test-run alarm pass or cancellation pass (cloudflare.ts)",
