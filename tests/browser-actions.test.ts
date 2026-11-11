@@ -121,6 +121,34 @@ test('stop spends a pending action, and a newer question replaces the older one'
   settings.close();
 });
 
+test('a record in this version\'s format is claimed; one stored before it is read and approved, then expired unclaimed', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const current = await pending(settings);
+  await resolveBrowserActionReply({ settings, word: 'approve', scope: SCOPE, messageTs: '1800000001.000100', now: T0 + 1 });
+  const claimed = await claimApprovedBrowserAction({ settings, id: current.id, scope: SCOPE, messageTs: '1800000001.000100', now: T0 + 2 });
+  assert.equal(claimed.status, 'consumed');
+
+  const older = await pending(settings, { url: 'https://billing.example.com/reset/Synthetic-Pass-1234/confirm' });
+  const stored = JSON.parse((await settings.getSetting(`browseraction_${older.id}`))!);
+  delete stored.format;
+  await settings.setSetting(`browseraction_${older.id}`, JSON.stringify(stored));
+  assert.equal((await getBrowserAction(settings, older.id))?.status, 'pending');
+  assert.deepEqual(
+    await resolveBrowserActionReply({ settings, word: 'approve', scope: SCOPE, messageTs: '1800000002.000100', now: T0 + 3 }),
+    { kind: 'approved', id: older.id },
+  );
+  await assert.rejects(
+    claimApprovedBrowserAction({ settings, id: older.id, scope: SCOPE, messageTs: '1800000002.000100', now: T0 + 4 }),
+    (error: unknown) => error instanceof BrowserActionError && error.code === 'outdated',
+  );
+  assert.equal((await getBrowserAction(settings, older.id))?.status, 'expired');
+  await assert.rejects(
+    claimApprovedBrowserAction({ settings, id: older.id, scope: SCOPE, messageTs: '1800000002.000100', now: T0 + 5 }),
+    (error: unknown) => error instanceof BrowserActionError && error.code === 'expired',
+  );
+  settings.close();
+});
+
 test('actions expire after 15 minutes, before or after approval, and the sweep clears settled records', async () => {
   const settings = new SqliteSettingsStore(':memory:');
   const late = await pending(settings);

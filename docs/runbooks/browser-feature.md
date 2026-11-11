@@ -99,6 +99,10 @@ state, deploy path, and first checks when a browser tool fails.
   press. An approved step that fails is reported by that description, never
   by its error, which could repeat what the record stored to a turn that
   cannot redact it.
+- Records carry `format: 2`. A record without it was stored by a version
+  that did not check every string, so claiming it expires it unreplayed, and
+  the Agent asks for approval again. Such a record expires at most 15
+  minutes after the last Worker of the earlier version stops serving.
 
 ## Deploys
 

@@ -186,6 +186,7 @@ function approvalErrorMessage(error: BrowserActionError): string {
   switch (error.code) {
     case 'consumed': return 'That approval was already used. Take a new snapshot and ask again if another step is needed.';
     case 'expired': return 'That approval expired. Take a new snapshot and ask again if the step is still right.';
+    case 'outdated': return 'That step was held for approval before Chickpea was updated, so it can no longer be taken. Take a new snapshot and ask the person to approve it again if it is still right.';
     case 'not_approved': return 'The person has not approved that step with their latest reply. Ask them to reply exactly "approve" in this thread, and end your reply.';
     default: return 'That approval is not for this conversation. Ask the person again if the step is still right.';
   }

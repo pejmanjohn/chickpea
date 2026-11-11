@@ -20,6 +20,13 @@ import { sha256HexNode } from '../security/digest.ts';
 import type { BrowserAction } from './page.ts';
 
 export const BROWSER_ACTION_TTL_MS = 15 * 60_000;
+/**
+ * The format of the records this version stores. Format 2 holds only strings
+ * the asking turn checked for a secret typed in it. A record in another
+ * format, such as one an earlier version stored without the field, is spent
+ * unreplayed when claimed: the claiming turn cannot check it.
+ */
+const BROWSER_ACTION_FORMAT = 2;
 const RECORD_PREFIX = 'browseraction_';
 const THREAD_PREFIX = 'browseraction_thread_';
 const INDEX_KEY = 'browseraction_index';
@@ -47,6 +54,8 @@ export interface BrowserFormStep {
 
 export interface BrowserActionRecord {
   id: string;
+  /** Absent from records stored before format 2. */
+  format?: number;
   workspaceId: string;
   actorSlackUserId: string;
   actorMembershipId?: string;
@@ -89,7 +98,7 @@ export interface BrowserActionScope {
   actorMembershipId?: string;
 }
 
-export type BrowserActionErrorCode = 'not_found' | 'wrong_scope' | 'not_approved' | 'consumed' | 'expired';
+export type BrowserActionErrorCode = 'not_found' | 'wrong_scope' | 'not_approved' | 'consumed' | 'expired' | 'outdated';
 
 export class BrowserActionError extends Error {
   readonly name = 'BrowserActionError';
@@ -123,6 +132,7 @@ export async function createBrowserAction(
   if (!ID_PATTERN.test(id)) throw new BrowserActionError('not_found');
   const record: BrowserActionRecord = {
     id,
+    format: BROWSER_ACTION_FORMAT,
     workspaceId: input.workspaceId,
     actorSlackUserId: input.actorSlackUserId,
     ...(input.actorMembershipId ? { actorMembershipId: input.actorMembershipId } : {}),
@@ -222,8 +232,9 @@ export async function resolveBrowserActionReply(input: {
 }
 
 /**
- * The approved turn claims its action once: same scope, approved by this
- * turn's own message, not expired. Claiming consumes it.
+ * The approved turn claims its action once: same scope, in this version's
+ * format, approved by this turn's own message, not expired. Claiming consumes
+ * it; a record in another format is expired instead.
  */
 export async function claimApprovedBrowserAction(input: {
   settings: SettingsStore;
@@ -247,6 +258,10 @@ export async function claimApprovedBrowserAction(input: {
     if (record.status === 'expired' || record.expiresAt <= now) {
       outcome.failure = 'expired';
       return record.status === 'expired' ? undefined : { ...record, status: 'expired', updatedAt: now };
+    }
+    if (record.format !== BROWSER_ACTION_FORMAT) {
+      outcome.failure = 'outdated';
+      return { ...record, status: 'expired', updatedAt: now };
     }
     if (record.status !== 'approved' || record.approvedMessageTs !== input.messageTs) {
       outcome.failure = 'not_approved';

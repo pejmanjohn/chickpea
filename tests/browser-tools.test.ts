@@ -1512,7 +1512,7 @@ test('an approved step that fails names itself by the description the person app
     browser.responders.set('DOM.resolveNode', () => ({ result: { object: { objectId: 'node-1' } } }));
     browser.responders.set('Runtime.callFunctionOn', () => ({ result: { result: { value: { ok: false, options: ['Monthly'] } } } }));
   };
-  // Records as an earlier version stored them: a key, an address, an option or a step before holding a typed secret.
+  // Records holding a secret the asking turn did not know, such as one the person typed in a hand-off: a key, an address, an option or a step before.
   const stored: Array<[string, Record<string, unknown>, ((browser: FormBrowser) => void)?]> = [
     ['key', { action: 'press', key: secret }],
     ['address', { url: `https://billing.example.com/reset/${secret}/confirm` }, (browser) => {
