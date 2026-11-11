@@ -20,7 +20,7 @@ import type {
   TestRunStartResult,
   TestRunView,
 } from '../management/test-run-types.ts';
-import { PRACTICE_CREDITED_TIMEOUTS, type TestRunStoreLogic } from '../management/test-runs.ts';
+import type { TestRunStoreLogic } from '../management/test-runs.ts';
 import type { ChickpeaResponseMetadata } from '../usage/response-metadata.ts';
 import { TestRunUsageRecorder } from '../usage/test-run-usage.ts';
 import type { UsageStoreLogic } from '../usage/store.ts';
@@ -392,23 +392,14 @@ export class TestRunLifecycle {
   /**
    * Settles the row with its usage terminal. A terminal Usage refuses never
    * keeps the run live: the row settles without it, and each later step
-   * until the erase writes one with its usage unreported. A deadline is
-   * credited back as a direct message's is, for the person's first
-   * timeouts each UTC day; later ones are charged, so a client that keeps
-   * running out the clock pays for it.
+   * until the erase writes one with its usage unreported. A failure that is
+   * Chickpea's, a deadline included, is credited back every time, exactly
+   * as a direct message's is.
    */
-  private async write(row: TestRunRow, settlement: TestRunSettlement, reason: CreditBackReason | null): Promise<void> {
+  private async write(row: TestRunRow, settlement: TestRunSettlement, creditBack: CreditBackReason | null): Promise<void> {
     const { testRuns } = this.deps.stores();
-    let creditBack = reason;
-    if (creditBack === 'timeout' && settlement.status === 'failed' && settlement.failure === 'deadline' &&
-        testRuns.timeoutsToday(row, this.now()) >= PRACTICE_CREDITED_TIMEOUTS) {
-      creditBack = null;
-    }
-    if (row.submissionId !== null && reason !== null) {
-      settlement = {
-        ...settlement,
-        result: { ...settlement.result, ...(creditBack ? { creditedBack: true as const } : { timeoutCharged: true as const }) },
-      };
+    if (row.submissionId !== null && creditBack !== null) {
+      settlement = { ...settlement, result: { ...settlement.result, creditedBack: true as const } };
     }
     let settled: boolean;
     try {

@@ -485,7 +485,7 @@ test('a cancellation whose abort the instance settles is cancelled, not a timeou
   assert.equal(context.instances.calls.some(([call]) => call.startsWith('credit_back')), false);
 });
 
-test('a person\'s first two timeouts a UTC day are credited back, as a direct message\'s are; the third is charged and says so', async () => {
+test('every timeout is credited back, as a direct message\'s is, however many a person has had', async () => {
   const context = setup('inst_lifecycle_timeout_credit');
   const timedOut = async (actorMembershipId: string) => {
     const run = await started(context, { actorMembershipId });
@@ -493,29 +493,24 @@ test('a person\'s first two timeouts a UTC day are credited back, as a direct me
     await context.lifecycle.pass();
     return run.row();
   };
-  const first = await timedOut('membership_ada');
-  const second = await timedOut('membership_ada');
-  const other = await timedOut('membership_bo');
-  const third = await timedOut('membership_ada');
-  const credited = context.instances.calls.filter(([call]) => call === 'credit_back:timeout').map(([, submission]) => submission);
-  assert.deepEqual(credited, [first.submissionId, second.submissionId, other.submissionId], 'another person\'s timeouts are their own');
-  assert.deepEqual([first.failure, first.result], ['deadline', { off: ['Posting, files and images in Slack'], creditedBack: true }]);
-  assert.deepEqual([third.failure, third.result], ['deadline', { off: ['Posting, files and images in Slack'], timeoutCharged: true }]);
-  // A deadline the instance reports is held to the same rule.
-  const fourth = await started(context, { actorMembershipId: 'membership_ada' });
-  context.instances.settlements.set(fourth.instanceId, { kind: 'failed', failure: 'deadline', creditBack: 'timeout' });
+  const runs = [];
+  for (let index = 0; index < 4; index += 1) runs.push(await timedOut('membership_ada'));
+  const credited = () => context.instances.calls.filter(([call]) => call === 'credit_back:timeout').map(([, submission]) => submission);
+  assert.deepEqual(credited(), runs.map(({ submissionId }) => submissionId), 'no count of a person\'s timeouts decides it');
+  for (const run of runs) {
+    assert.deepEqual([run.failure, run.result], ['deadline', { off: ['Posting, files and images in Slack'], creditedBack: true }]);
+  }
+  // A deadline the instance reports is credited back the same way.
+  const reported = await started(context, { actorMembershipId: 'membership_ada' });
+  context.instances.settlements.set(reported.instanceId, { kind: 'failed', failure: 'deadline', creditBack: 'timeout' });
   await context.lifecycle.pass();
-  assert.equal(fourth.row().result?.timeoutCharged, true);
-  assert.equal(context.instances.calls.filter(([call]) => call === 'credit_back:timeout').length, 3);
-  // A failure Chickpea owns that is no timeout is credited back whatever the count.
-  const fifth = await started(context, { actorMembershipId: 'membership_ada' });
-  context.instances.settlements.set(fifth.instanceId, { kind: 'failed', failure: 'failed', creditBack: 'chickpea' });
+  assert.equal(reported.row().result?.creditedBack, true);
+  assert.equal(credited().length, 5);
+  // So is any other failure Chickpea owns.
+  const ours = await started(context, { actorMembershipId: 'membership_ada' });
+  context.instances.settlements.set(ours.instanceId, { kind: 'failed', failure: 'failed', creditBack: 'chickpea' });
   await context.lifecycle.pass();
-  assert.equal(fifth.row().result?.creditedBack, true);
-  // The next UTC day starts the count again.
-  context.clock.advance(24 * 60 * 60_000);
-  const tomorrow = await timedOut('membership_ada');
-  assert.equal(tomorrow.result?.creditedBack, true);
+  assert.equal(ours.row().result?.creditedBack, true);
 });
 
 test('admission steps no one else\'s run: another member\'s stuck instance never delays it', async () => {

@@ -22,16 +22,15 @@ import type {
   TestRunStatus,
 } from './test-run-types.ts';
 
-/** A run settled this recently answers the same ask on the same plan again, rather than run twice. */
+/** A run answered this recently answers the same ask on the same plan again, rather than run twice. */
 export const PRACTICE_REPEAT_MS = 2 * 60_000;
-/** A person's first timed-out runs each UTC day are credited back, as a direct message's are; later ones are charged. */
-export const PRACTICE_CREDITED_TIMEOUTS = 2;
-/** A run reads as not found this long after its admission, and its text is erased then. */
+/** A run reads as not found this long after its admission, and it is erased then. */
 export const TEST_RUN_VISIBLE_MS = 60 * 60_000;
 /** How often the state store's alarm looks at a run whose instance is not erased yet. */
 export const TEST_RUN_WAKE_MS = 10_000;
 
-const DAY_MS = 24 * 60 * 60_000;
+/** Rows one alarm deletes; the next alarm takes the rest. */
+const ERASE_BATCH = 250;
 const HAS_TEXT = '(result_json IS NOT NULL OR question IS NOT NULL OR question_digest IS NOT NULL)';
 
 /**
@@ -78,12 +77,8 @@ export function installTestRunSchema(db: StateDb): void {
      ON management_test_runs (actor_membership_id, idempotency_key)`,
   );
   db.exec('CREATE INDEX IF NOT EXISTS management_test_runs_instance_idx ON management_test_runs (instance_id)');
+  // The hour's rows of the installation: the same ask going or just settled reads them.
   db.exec('CREATE INDEX IF NOT EXISTS management_test_runs_day_idx ON management_test_runs (organization_id, created_at)');
-  // A person's runs: the same ask going or just settled, and their timeouts today.
-  db.exec(
-    `CREATE INDEX IF NOT EXISTS management_test_runs_person_idx
-     ON management_test_runs (organization_id, actor_membership_id, created_at)`,
-  );
   // Every alarm asks whether any instance is left to erase.
   db.exec(
     `CREATE INDEX IF NOT EXISTS management_test_runs_unerased_idx
@@ -94,9 +89,9 @@ export function installTestRunSchema(db: StateDb): void {
 }
 
 /**
- * A run's text goes once it can no longer be read: the question, the reply,
- * its steps and the question's digest. The alarm runs this whenever it wakes,
- * and wakes for it (`nextDueAt`).
+ * A run's text goes once it can no longer be read, whether or not its
+ * instance is erased yet: the question, the reply, its steps and the
+ * question's digest.
  */
 function eraseTestRunText(db: StateDb, at: number): number {
   return db.run(
@@ -107,26 +102,22 @@ function eraseTestRunText(db: StateDb, at: number): number {
 }
 
 /**
- * The retention sweep's part: a settled row loses its text once it can no
- * longer be read, and goes once that hour and its UTC day have both passed
- * and its instance is erased. The timeout credit rule reads it until then.
+ * A run goes once it can no longer be read: its text at its hour, and the
+ * row with it once its instance is erased. Nothing counts a run after that.
+ * The alarm runs this whenever it wakes, and wakes for it (`nextDueAt`); the
+ * retention sweep runs it too. Returns the rows it deleted.
  */
 export function cleanupTestRunRetention(db: StateDb, at: number, limit: number): number {
   eraseTestRunText(db, at);
   return db.run(
     `DELETE FROM management_test_runs WHERE test_run_id IN (
        SELECT test_run_id FROM management_test_runs
-       WHERE erased_at IS NOT NULL AND created_at <= ? AND created_at < ?
+       WHERE erased_at IS NOT NULL AND created_at <= ?
        ORDER BY created_at LIMIT ?
      )`,
     at - TEST_RUN_VISIBLE_MS,
-    utcDayStart(at),
     limit,
   ).changes;
-}
-
-export function utcDayStart(at: number): number {
-  return Math.floor(at / DAY_MS) * DAY_MS;
 }
 
 interface Caller {
@@ -149,7 +140,7 @@ export class TestRunStoreLogic {
   }
 
   /**
-   * One transaction: the key, the same ask going or settled moments ago on
+   * One transaction: the key, the same ask going or answered moments ago on
    * the same plan, the conversation's last turn still going, then the row and
    * the run's usage operation. A key that names another ask, or a run past
    * its hour, is treated as absent: the run starts under a key of its own.
@@ -167,8 +158,9 @@ export class TestRunStoreLogic {
       const same = this.sameAsks(request, at);
       const running = same.find((row) => row.status === 'admitted' || row.status === 'running');
       if (running) return { kind: 'running', row: running };
-      const repeat = same.find((row) => row.settledAt !== null && row.settledAt >= at - PRACTICE_REPEAT_MS &&
-        row.planDigest === request.planDigest);
+      // Only an answer is given again: a run that failed is asked again, as a direct message would be.
+      const repeat = same.find((row) => row.status === 'answered' && row.settledAt !== null &&
+        row.settledAt >= at - PRACTICE_REPEAT_MS && row.planDigest === request.planDigest);
       if (repeat) return { kind: 'repeat', row: repeat };
       // A conversation's turns run one after another: the next waits for the last to settle.
       const turn = request.practiceId === null ? undefined : this.row(
@@ -213,7 +205,7 @@ export class TestRunStoreLogic {
     });
   }
 
-  /** The caller's runs of the same ask that are going, or settled within the repeat window; newest first. */
+  /** The caller's runs of the same ask that are going, or settled within the repeat window; newest first. Their installation's hour of rows is all the table holds. */
   private sameAsks(ask: Caller & PracticeAsk, at: number): TestRunRow[] {
     return this.db.all(
       `SELECT * FROM management_test_runs
@@ -225,18 +217,6 @@ export class TestRunStoreLogic {
       at - TEST_RUN_VISIBLE_MS,
       at - PRACTICE_REPEAT_MS,
     ).map((row) => testRunFromRow(row)).filter((row) => sameAsk(row, ask));
-  }
-
-  /** The caller's other runs today that ran out of time: the credit-back rule reads it. */
-  timeoutsToday(row: Pick<TestRunRow, 'testRunId' | 'organizationId' | 'actorMembershipId'>, at: number): number {
-    return Number(this.db.get(
-      `SELECT COUNT(*) AS runs FROM management_test_runs
-       WHERE organization_id = ? AND actor_membership_id = ? AND created_at >= ? AND failure = 'deadline' AND test_run_id <> ?`,
-      row.organizationId,
-      row.actorMembershipId,
-      utcDayStart(at),
-      row.testRunId,
-    )?.runs ?? 0);
   }
 
   /**
@@ -340,9 +320,9 @@ export class TestRunStoreLogic {
       .map((row) => testRunFromRow(row)));
   }
 
-  /** Runs this hour's-end erase on every alarm, so the text never waits for the five-minute retention sweep. */
-  eraseExpiredText(at: number): number {
-    return eraseTestRunText(this.db, at);
+  /** Runs the hour's-end erase on every alarm, so a run never waits for the five-minute retention sweep. Returns the rows it deleted. */
+  eraseExpired(at: number): number {
+    return cleanupTestRunRetention(this.db, at, ERASE_BATCH);
   }
 
   hasUnerased(): boolean {
@@ -351,8 +331,9 @@ export class TestRunStoreLogic {
 
   /**
    * When the alarm looks again: soon while any run's instance is not erased,
-   * and when the oldest run's text is an hour old. Text already due waits
-   * one look, so an erase that keeps failing never spins the alarm.
+   * and when the oldest run's text is an hour old, which is when the run
+   * goes. Text already due waits one look, so an erase that keeps failing
+   * never spins the alarm.
    */
   nextDueAt(now: number): number | undefined {
     const look = this.hasUnerased() ? now + TEST_RUN_WAKE_MS : undefined;

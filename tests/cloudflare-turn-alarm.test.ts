@@ -343,7 +343,7 @@ for (const { withPendingTurn, testRun } of [
         newestEnqueuedAt: () => undefined,
       },
       gatewayInbox: { hasPending: () => false, nextPendingDueAt: () => undefined },
-      testRuns: { hasUnerased: () => testRun, nextDueAt: (now: number) => testRun ? now + 10_000 : undefined, eraseExpiredText: () => 0 },
+      testRuns: { hasUnerased: () => testRun, nextDueAt: (now: number) => testRun ? now + 10_000 : undefined, eraseExpired: () => 0 },
     };
     let passes = 0;
     (drainingProbe as unknown as { testRuns(): Promise<{ pass(): Promise<unknown> }> }).testRuns =
@@ -647,7 +647,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
       endTurn: (id: string, turnJobs: { markDelivered(id: string): unknown }) => turnJobs.markDelivered(id),
     },
     gatewayInbox: { hasPending: () => false, nextPendingDueAt: () => undefined },
-    testRuns: { hasUnerased: () => false, nextDueAt: () => undefined, eraseExpiredText: () => 0 },
+    testRuns: { hasUnerased: () => false, nextDueAt: () => undefined, eraseExpired: () => 0 },
     presentations: { get: (runId: string) => ({ runId, projectionVersion: 3 }) },
     config: {
       getWorkspaceInstallation: (workspaceId: string) => ({

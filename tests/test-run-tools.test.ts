@@ -599,7 +599,7 @@ test('get_test_run reads only a lost Agent as expired; any other failure is repo
   await assert.rejects(getTestRun({ ...failing, service }, { runToken: run.runToken }, timing), /did not answer/);
 });
 
-test('a failed run says why: a timeout says whether it was charged, and a plan\'s refusal is a direct message\'s own words', async (t) => {
+test('a failed run says why: a timeout was not charged, however many came before, and a plan\'s refusal is a direct message\'s own words', async (t) => {
   const { f, deps, instances, timing, clock } = await harness(t, 'failures');
   await seedAgent(f);
   const resumesAt = Date.UTC(2027, 0, 16);
@@ -618,18 +618,16 @@ test('a failed run says why: a timeout says whether it was charged, and a plan\'
     const run = await tryAgentOnce(deps(f.owner), { agentId: 'agent_tested', idempotencyKey: `key_fail_${index}` }, timing);
     assert.deepEqual([run.status, run.reply], ['failed', undefined]);
     assert.match(String(run.problem), problem);
-    // Past the repeat window: the card asks the same stored question each time.
-    clock.advance(121_000);
+    // A run that failed is never given again: the card's same stored question runs anew each time.
+    clock.advance(1_000);
   }
-  // Two more timeouts today: the person's third is charged.
+  // A person's later timeouts are credited back like the first: no count of them charges one.
   instances.settleEvery = { kind: 'failed', failure: 'deadline', creditBack: 'timeout' };
-  const second = await practiceAgent(deps(f.owner), { agentId: 'agent_tested', question: 'Slow one?' }, timing);
-  assert.deepEqual([second.problem, second.usage?.charged], ['The practice run took too long and was stopped. It wasn\'t charged.', false]);
-  clock.advance(1_000);
-  const third = await practiceAgent(deps(f.owner), { agentId: 'agent_tested', question: 'Slow two?' }, timing);
-  assert.equal(third.problem,
-    'The practice run took too long and was stopped. It was charged, because earlier practice runs today also ran out of time.');
-  assert.deepEqual(third.usage && [third.usage.charged], [true]);
+  for (const question of ['Slow one?', 'Slow two?', 'Slow three?']) {
+    const slow = await practiceAgent(deps(f.owner), { agentId: 'agent_tested', question }, timing);
+    assert.deepEqual([slow.problem, slow.usage?.charged], ['The practice run took too long and was stopped. It wasn\'t charged.', false]);
+    clock.advance(1_000);
+  }
 });
 
 test('the ask is sent as a person\'s text: Slack\'s control characters escaped', () => {

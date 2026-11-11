@@ -187,9 +187,9 @@ export class TestRunStateStore extends DurableObject {
     }
   }
 
-  /** As the state store's alarm: an hour-old run's text goes, every run takes a step, and the alarm looks again when one is due. */
+  /** As the state store's alarm: an hour-old run goes, every run takes a step, and the alarm looks again when one is due. */
   async wake() {
-    this.testRuns.eraseExpiredText(Date.now() + this.offset);
+    this.testRuns.eraseExpired(Date.now() + this.offset);
     await this.lifecycle.pass();
     const due = this.lifecycle.nextDueAt();
     if (due !== undefined) await this.ctx.storage.setAlarm(due);

@@ -124,7 +124,7 @@ export async function getTestRun(
 /**
  * Admission, in order: the Agent and the caller, the question, a key's
  * replay, Slack's say on the caller's DM, the model, the compile; then the
- * store, which returns the same ask going or settled moments ago on the same
+ * store, which returns the same ask going or answered moments ago on the same
  * plan rather than run it twice. Plan funding limits it as a direct message.
  */
 async function ask(
@@ -591,11 +591,9 @@ function problemText(view: TestRunView, agentName: string): string {
   const result = view.result ?? {};
   switch (view.failure) {
     case 'deadline':
-      if (result.creditedBack) return 'The practice run took too long and was stopped. It wasn\'t charged.';
-      if (result.timeoutCharged) {
-        return 'The practice run took too long and was stopped. It was charged, because earlier practice runs today also ran out of time.';
-      }
-      return 'The practice run took too long and was stopped.';
+      return result.creditedBack
+        ? 'The practice run took too long and was stopped. It wasn\'t charged.'
+        : 'The practice run took too long and was stopped.';
     case 'out_of_usage':
     case 'daily_limit':
       // A direct message's own words: the plan refused it.

@@ -2643,8 +2643,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       this.lastRetentionSweepAt = retentionStartedAt;
       retentionMs = Date.now() - retentionStartedAt;
     }
-    // A practice run's text goes an hour after it was asked, on the wake nextDueAt arms for it.
-    stores.testRuns.eraseExpiredText(retentionStartedAt);
+    // A practice run goes an hour after it was asked, on the wake nextDueAt arms for it.
+    stores.testRuns.eraseExpired(retentionStartedAt);
     // New turns go to their thread's SlackThreadRunner (the default executor)
     // and this alarm only finishes turns it already dispatched to Flue: rows
     // admitted before the runner became the default. The emergency gate

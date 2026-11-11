@@ -226,7 +226,7 @@ function idleStore(costs: PartCosts, options: {
     testRuns: {
       hasUnerased: () => options.testRunUnerased === true,
       nextDueAt: (now: number) => options.testRunUnerased ? now + 10_000 : undefined,
-      eraseExpiredText: () => 0,
+      eraseExpired: () => 0,
     },
   };
   return { ...store, reads: () => reads, sweeps: () => sweeps, cleanupChecks: () => cleanupChecks };

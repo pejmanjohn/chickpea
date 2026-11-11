@@ -72,8 +72,6 @@ export interface TestRunResult {
   funding?: PlatformFundingRefusal;
   /** A failure Chickpea credited back, as a direct message's is. */
   creditedBack?: true;
-  /** A deadline past the person's credited timeouts today: charged. */
-  timeoutCharged?: true;
 }
 
 export interface TestRunRow {
@@ -139,7 +137,7 @@ export type TestRunAdmission =
   | { kind: 'replayed'; row: TestRunRow }
   /** The same ask, going now: that run. */
   | { kind: 'running'; row: TestRunRow }
-  /** The same ask on the same plan, settled moments ago: that run. */
+  /** The same ask on the same plan, answered moments ago: that run. */
   | { kind: 'repeat'; row: TestRunRow }
   /**
    * The conversation's last turn is still going, with its token; or, with

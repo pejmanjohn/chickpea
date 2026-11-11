@@ -86,7 +86,7 @@ interface Row {
  * runs side by side, a follow-up during its turn, a cancellation mid-run, the
  * restore refusal while an instance is not erased, the 150-second bound and
  * the forced erase, a restore inside a run whose instance is gone, and the
- * text's erase at its hour.
+ * run's erase at its hour.
  */
 test('a practice run is admitted, dispatched, settled and erased on workerd, and its bounds hold', { timeout: 300_000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'chickpea-test-run-'));
@@ -242,15 +242,14 @@ test('a practice run is admitted, dispatched, settled and erased on workerd, and
     assert.equal(erased.failure, 'deadline');
     await until(next.request.run.testRunId, (current) => current.erasedAt !== null, 'the next run erased');
 
-    // With every instance erased, the alarm wakes next for the oldest text's hour, and then every run's text goes.
+    // With every instance erased, the alarm wakes next for the oldest run's hour, and then every run goes, text and row.
     await ofCaller('membership_caller', next.request.run.runToken);
     const oldest = await row(dropped.request.run.testRunId);
     assert.equal(await call('/alarm-at'), oldest.createdAt + 60 * MINUTE);
     await call('/advance', { ms: 60 * MINUTE });
     await call('/wake');
     for (const { request } of [answered, dropped, ...together, slow, beside, cancelled, stuck, next]) {
-      const old = await row(request.run.testRunId);
-      assert.deepEqual([old.question, old.result], [null, null], `${request.run.testRunId}: its text is gone`);
+      assert.equal(await row(request.run.testRunId), null, `${request.run.testRunId}: the run is gone`);
     }
     assert.equal(await ofCaller('membership_caller', next.request.run.runToken), null, 'and its caller reads it no more');
   } finally {

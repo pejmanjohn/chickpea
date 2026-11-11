@@ -16,7 +16,6 @@ const AN_HOUR = 60 * 60_000;
 
 /** Midday, UTC, on a fixed day. */
 const NOON = Date.UTC(2027, 0, 15, 12);
-const MIDNIGHT = Date.UTC(2027, 0, 16);
 
 function admission(installation: HostedInstallation, options: Parameters<typeof startRequest>[1] = {}): TestRunAdmissionRequest {
   const request = startRequest(installation, { at: NOON, ...options });
@@ -142,25 +141,18 @@ test('an older Worker version\'s one-run lock reads as in progress, never as an 
   assert.equal(installation.stores.usage.getOperation(held.usage.operationId), undefined, 'and no usage operation');
 });
 
-test('a person\'s timeouts today are counted from their own rows, for the credit-back rule', () => {
-  const installation = hostedInstallation('inst_test_store_timeouts');
+test('only an answer is given again: the same ask after a run that failed runs again, as a direct message would', () => {
+  const installation = hostedInstallation('inst_test_store_failed_again');
   const store = testRuns(installation);
-  const timedOut = (actorMembershipId: string, at: number) => {
-    const request = admission(installation, { actorMembershipId });
-    store.admit(request, at);
-    const recorder = new TestRunUsageRecorder(installation.stores.usage.getOperation(request.usage.operationId)!.operation);
-    store.settle(request.testRunId, { status: 'failed', failure: 'deadline', terminal: recorder.interrupted(at + 150_000, null) });
-    return store.get(request.testRunId)!;
-  };
-  timedOut('membership_ada', NOON - 2 * 3_600_000);
-  const yesterday = timedOut('membership_ada', MIDNIGHT - 2 * 24 * 3_600_000);
-  timedOut('membership_bo', NOON);
-  const mine = timedOut('membership_ada', NOON);
-  assert.equal(store.timeoutsToday(mine, NOON + 200_000), 1, 'today\'s other one; not yesterday\'s, not another person\'s, not this one');
-  assert.equal(store.timeoutsToday(yesterday, NOON + 200_000), 2);
+  const first = admission(installation, { question: 'Who is overdue?', planDigest: 'plan_a' });
+  store.admit(first, NOON);
+  const recorder = new TestRunUsageRecorder(installation.stores.usage.getOperation(first.usage.operationId)!.operation);
+  store.settle(first.testRunId, { status: 'failed', failure: 'out_of_usage', terminal: recorder.failed(NOON + 5_000, null) });
+  const again = store.admit(admission(installation, { question: 'Who is overdue?', planDigest: 'plan_a' }), NOON + 10_000);
+  assert.equal(again.kind, 'admitted', 'a plan that refused the first may allow the second');
 });
 
-test('a run\'s text is erased at its hour, and the alarm wakes for it in an idle workspace', () => {
+test('a run is erased at its hour, text and row, and the alarm wakes for it in an idle workspace', () => {
   const installation = hostedInstallation('inst_test_store_text');
   const store = testRuns(installation);
   const request = admission(installation);
@@ -169,11 +161,20 @@ test('a run\'s text is erased at its hour, and the alarm wakes for it in an idle
   store.markErased(request.testRunId, NOON + 30_000);
   assert.equal(store.hasUnerased(), false, 'nothing is left for the run pass');
   assert.equal(store.nextDueAt(NOON + 60_000), NOON + AN_HOUR, 'the wake is the hour');
-  assert.equal(store.eraseExpiredText(NOON + AN_HOUR - 1), 0);
-  assert.equal(store.eraseExpiredText(NOON + AN_HOUR), 1);
-  const row = store.get(request.testRunId)!;
-  assert.deepEqual([row.question, row.questionDigest, row.result], [null, null, null]);
+  assert.equal(store.eraseExpired(NOON + AN_HOUR - 1), 0);
+  assert.ok(store.get(request.testRunId)?.result, 'inside its hour it reads whole');
+  assert.equal(store.eraseExpired(NOON + AN_HOUR), 1);
+  assert.equal(store.get(request.testRunId), undefined, 'the row goes with its text: nothing counts a run afterwards');
   assert.equal(store.nextDueAt(NOON + AN_HOUR), undefined, 'then nothing wakes it');
+  // A run whose instance is not erased yet loses its text at the hour, and its row once the instance is erased.
+  const held = admission(installation);
+  store.admit(held, NOON);
+  answer(installation, held.testRunId);
+  assert.equal(store.eraseExpired(NOON + AN_HOUR), 0);
+  const row = store.get(held.testRunId)!;
+  assert.deepEqual([row.question, row.questionDigest, row.result], [null, null, null]);
+  store.markErased(held.testRunId, NOON + AN_HOUR);
+  assert.equal(store.eraseExpired(NOON + AN_HOUR + 1), 1);
   // A wake already due waits one look, so an erase that keeps failing never spins the alarm.
   const stuck = admission(installation);
   store.admit(stuck, NOON);
@@ -272,31 +273,24 @@ test('only the caller reads a run, by its token, for an hour', () => {
   assert.equal(testRuns(installation).read(query, NOON + AN_HOUR), undefined);
 });
 
-test('retention keeps a run until its hour and UTC day have passed and its instance is erased; the timeout rule reads it until then', () => {
+test('retention erases a run once its hour has passed and its instance is erased, whatever the day', () => {
   const installation = hostedInstallation('inst_test_store_retention');
   const { management } = installation.stores;
-  const late = Date.UTC(2027, 0, 15, 23, 30);
   const erased = admission(installation);
-  testRuns(installation).admit(erased, late);
-  answer(installation, erased.testRunId, late);
-  testRuns(installation).markErased(erased.testRunId, late + 60_000);
+  testRuns(installation).admit(erased, NOON);
+  answer(installation, erased.testRunId, NOON);
+  testRuns(installation).markErased(erased.testRunId, NOON + 60_000);
   const unerased = admission(installation);
-  testRuns(installation).admit(unerased, late + 1);
-  answer(installation, unerased.testRunId, late + 1);
+  testRuns(installation).admit(unerased, NOON + 1);
+  answer(installation, unerased.testRunId, NOON + 1);
 
-  management.cleanupRetention(late + AN_HOUR / 2, 250);
+  management.cleanupRetention(NOON + AN_HOUR / 2, 250);
   assert.ok(testRuns(installation).get(erased.testRunId)?.result, 'inside its hour, its reply stays');
-  // Past the hour and past midnight: the erased run goes, the unerased one stays, reply removed.
-  management.cleanupRetention(late + AN_HOUR + 1, 250);
-  assert.equal(testRuns(installation).get(erased.testRunId), undefined);
-  assert.equal(testRuns(installation).get(unerased.testRunId)?.result, null, 'its reply goes once it cannot be read');
-
-  // Today's settled runs are kept, bare, so the timeout rule still counts them.
-  const today = admission(installation);
-  testRuns(installation).admit(today, NOON);
-  answer(installation, today.testRunId);
-  testRuns(installation).markErased(today.testRunId, NOON);
+  // Past the hour, the same UTC day: the erased run goes, the unerased one stays, reply removed.
   management.cleanupRetention(NOON + AN_HOUR + 1, 250);
-  assert.ok(testRuns(installation).get(today.testRunId), 'kept until its UTC day ends');
-  assert.equal(testRuns(installation).get(today.testRunId)?.result, null);
+  assert.equal(testRuns(installation).get(erased.testRunId), undefined, 'no bare row is kept to the end of the day');
+  assert.equal(testRuns(installation).get(unerased.testRunId)?.result, null, 'its reply goes once it cannot be read');
+  testRuns(installation).markErased(unerased.testRunId, NOON + AN_HOUR + 2);
+  management.cleanupRetention(NOON + AN_HOUR + 3, 250);
+  assert.equal(testRuns(installation).get(unerased.testRunId), undefined, 'and its row once its instance is erased');
 });
