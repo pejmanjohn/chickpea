@@ -67,10 +67,10 @@ const moduleStatement = (name: string) => {
 
 const StoreProbe = vm.runInNewContext(
   ts.transpileModule(
-    `${['RELAY_BATCH_WINDOW_MS', 'KEEP_WARM_WINDOW_MS', 'KEEP_WARM_TICK_MS', 'localSlackPresentationState', 'slackEventConversationKey']
+    `${['RELAY_BATCH_WINDOW_MS', 'KEEP_WARM_WINDOW_MS', 'KEEP_WARM_TICK_MS', 'RECEIPT_OUTBOX_WRITERS', 'localSlackPresentationState', 'slackEventConversationKey']
       .map(moduleStatement).join('\n')}
 class StoreProbe { ${[
-      'admitSlackDelivery', 'admitDirectDelivery', 'admittingSlackState', 'afterSlackAdmission', 'admitToRunner',
+      'admitSlackDelivery', 'admitDirectDelivery', 'admittingSlackState', 'afterSlackAdmission', 'admitToRunner', 'armReceiptDrainAfter',
       'wakeRunnerAtReceipt', 'sendRunnerWake', 'createAlarmIdentityResolver', 'wakeAgentAtHandoff', 'showStatusAtHandoff',
       'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode', 'keepWarmTickAt', 'hold', 'offerCreatedStop',
     ].map(stateMethod).join('\n')} }\nStoreProbe`,

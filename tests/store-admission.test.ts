@@ -218,7 +218,56 @@ test("a store replaced mid-call is followed by the Worker's chain, which finds w
       }),
     });
   });
+
+  // Defect caught: the alarm armed only after the hand-off (the keep-warm
+  // tick), so a turn whose store stops between its commit and its hand-off
+  // waits for an unrelated wake: the Worker's chain finds the claims taken and
+  // hands nothing over.
+  await t.test('between the commit and the hand-off', async (t) => {
+    let releaseStatus!: () => void;
+    const statusShown = new Promise<void>((resolve) => { releaseStatus = resolve; });
+    let probe: DirectStore | undefined;
+    // The alarms armed when the first status write began.
+    let armedAtStatus: number[] | undefined;
+    let admitting: Promise<unknown> | undefined;
+    await withDirectWorker(t, async (worker) => {
+      probe = worker.store;
+      const before = Date.now();
+      await deliver(worker, worker.event(DM));
+      assert.deepEqual(turns(worker), ['msg:D1:6000.000100'], 'one turn, committed by the store');
+      assert.equal(worker.store.handed.length, 0, 'the store stopped before its hand-off');
+      assert.ok(armedAtStatus?.some((at) => at >= before + 15_000 && at <= Date.now() + 20_000),
+        'the alarm was armed at the commit, a keep-warm tick away, before the status write began');
+      releaseStatus();
+      await admitting;
+    }, {
+      env: STORE_PATH,
+      slack: async (method) => {
+        if (method === 'assistant.threads.setStatus' && !armedAtStatus) {
+          armedAtStatus = [...probe!.alarms];
+          await statusShown;
+        }
+        return undefined;
+      },
+      admission: replacedMidCall(async (store, delivery) => {
+        admitting = store.admitSlackDelivery(delivery);
+        await settled(() => armedAtStatus !== undefined);
+      }),
+    });
+  });
   assert.deepEqual([...new Set(records.fallbacks.map(({ reason }) => reason))], ['disconnected']);
+});
+
+// Defect caught: Chickpea's introduction to a person, queued by their first
+// message, waiting for the next keep-warm tick. The Worker's claim arms the
+// alarm for it (managementExecute); the store's own claim is a local call.
+test("a person's first message arms the alarm for Chickpea's introduction at once", async (t) => {
+  await withDirectWorker(t, async (worker) => {
+    await deliver(worker, worker.event(DM));
+    const due = worker.stores.management.nextOutboxDueAt();
+    assert.ok(due !== undefined && due <= Date.now(), 'the first message queued the introduction');
+    assert.ok(worker.store.alarms.some((at) => at <= Date.now()), 'the alarm is armed for it now, not at the keep-warm tick');
+  }, { env: STORE_PATH });
 });
 
 // Defects caught: a later message of a thread admitted before an earlier

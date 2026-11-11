@@ -2614,6 +2614,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
           }
         } finally {
           release();
+          // As managementExecute: Chickpea's introduction, queued by a person's first message, is sent now.
+          await this.armReceiptDrainAfter('claim_introduction').catch(() => undefined);
         }
         await Promise.all(handOffs);
         return { ok: true, value: { outcome: 'processed' } };
