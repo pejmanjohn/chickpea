@@ -133,11 +133,21 @@ export async function listPracticeRuns(
       turn,
       when: when(createdAt),
       status: statusOf({ status }),
-      question: practiceLine(question),
+      question: listedQuestion(question),
       ...(agentVersion ? { agentVersion } : {}),
     })),
     note: 'Your own practice runs of this Agent from the last hour. get_practice_run returns one\'s answer and steps; practice_agent with its practiceId asks a follow-up.',
   };
+}
+
+/**
+ * A listed question on one line that JSON writes in at most twice its
+ * length, which the listing's budget is measured for: a control character
+ * or half a surrogate pair would be six characters there.
+ */
+function listedQuestion(question: string): string {
+  // eslint-disable-next-line no-control-regex
+  return practiceLine(question.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')).toWellFormed();
 }
 
 /** The card's first answer: the stored first question, in the shape the card reads. */

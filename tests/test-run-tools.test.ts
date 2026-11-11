@@ -1104,23 +1104,29 @@ test('list_practice_runs reads as not found for an Agent the caller can\'t chang
   assert.equal(errorOf(await unserved.call('list_practice_runs', { agentId: 'agent_tested' })).code, 'test_run_unavailable');
 });
 
-test('a listing at its longest fits the result budget', async () => {
-  const runs = new StubTestRuns({ status: 'answered', failure: null, result: null });
-  const longest = '"\\'.repeat(2_000);
-  runs.list = async () => Array.from({ length: PRACTICE_LISTED_RUNS }, (_, index) => ({
-    runToken: `tr_${'a'.repeat(32)}`, practiceId: `pr_${'b'.repeat(32)}`, turn: 10, status: 'answered' as const,
-    question: longest, createdAt: Date.UTC(2026, 10, 11, 12, index), agentVersion: 'f'.repeat(16),
-  }));
-  const output = await (await import('../src/management/mcp-v5/test-runs.ts')).listPracticeRuns({
-    service: {
-      testRunStore: async () => runs,
-      agentReader: async () => ({ agent: { id: 'agent_tested' } }),
-    } as never,
-    context: async () => ({ userId: 'u', membershipId: 'm', organizationId: 'o', origin: { kind: 'mcp' as const, clientId: 'c' } }),
-    baseUrl: BASE_URL,
-  }, { agentId: 'agent_tested' });
-  assert.equal(output.runs.length, PRACTICE_LISTED_RUNS);
-  // The text block repeats the JSON: both together.
-  const size = 2 * JSON.stringify(output).length;
-  assert.ok(size <= PRACTICE_RESULT_BUDGET_CHARS, `${size} characters`);
+test('a listing at its longest fits the result budget, whatever its questions hold', async () => {
+  const { listPracticeRuns } = await import('../src/management/mcp-v5/test-runs.ts');
+  // What JSON writes longest: a quote or backslash is two characters; a control character or half a surrogate pair would be six.
+  const longest = ['"\\'.repeat(2_000), String.fromCodePoint(1).repeat(4_000), String.fromCodePoint(0xd800).repeat(4_000),
+    `${'"'.repeat(198)}${String.fromCodePoint(0x1f600)}`];
+  for (const question of longest) {
+    const runs = new StubTestRuns({ status: 'answered', failure: null, result: null });
+    runs.list = async () => Array.from({ length: PRACTICE_LISTED_RUNS }, (_, index) => ({
+      runToken: `tr_${'a'.repeat(32)}`, practiceId: `pr_${'b'.repeat(32)}`, turn: 10, status: 'answered' as const,
+      question, createdAt: Date.UTC(2026, 10, 11, 12, index), agentVersion: 'f'.repeat(16),
+    }));
+    const output = await listPracticeRuns({
+      service: {
+        testRunStore: async () => runs,
+        agentReader: async () => ({ agent: { id: 'agent_tested' } }),
+      } as never,
+      context: async () => ({ userId: 'u', membershipId: 'm', organizationId: 'o', origin: { kind: 'mcp' as const, clientId: 'c' } }),
+      baseUrl: BASE_URL,
+    }, { agentId: 'agent_tested' });
+    assert.equal(output.runs.length, PRACTICE_LISTED_RUNS);
+    assert.ok(output.runs.every((run) => run.question.length <= 200));
+    // The text block repeats the JSON: both together.
+    const size = 2 * JSON.stringify(output).length;
+    assert.ok(size <= PRACTICE_RESULT_BUDGET_CHARS, `${size} characters for ${JSON.stringify(question.slice(0, 2))}`);
+  }
 });
