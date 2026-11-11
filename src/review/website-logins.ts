@@ -35,21 +35,23 @@ const URL_CHAR = String.raw`[^\s"'<>|\\]`;
 const STEP_URL_CHAR = String.raw`[^\s"<>\\]`;
 // The JSON escape of `&`, `'`, `+` or `=` does not end a URL: Go, Gson and .NET write them that way.
 const ESCAPED_ASCII = String.raw`\\+u00(?:26|27|2[bB]|3[dD])`;
+// A slash, which JSON may escape with a backslash: PHP does by default.
+const SLASH = String.raw`\\*\/`;
 const HOST_START = String.raw`(?<![\p{L}\p{N}.@/_-])`;
 
 /** A URL with a scheme, and what follows a scheme-less host, over one class of URL characters. */
 function urlPatterns(char: string): { scheme: string; afterHost: string } {
-  const more = String.raw`${char}*(?:${ESCAPED_ASCII}${char}*)*`;
+  const more = String.raw`${char}*(?:(?:${ESCAPED_ASCII}|\\+\/)${char}*)*`;
   return {
-    scheme: String.raw`\b(?:https?|wss?):\/\/${char}${more}`,
-    afterHost: String.raw`(?::\d+)?(?:\/${more}|[;?#]${char}${more})`,
+    scheme: String.raw`\b(?:https?|wss?):${SLASH}${SLASH}${char}${more}`,
+    afterHost: String.raw`(?::\d+)?(?:${SLASH}${more}|[;?#]${char}${more})`,
   };
 }
 
 const TEXT_URL = urlPatterns(URL_CHAR);
 const STEP_URL = urlPatterns(STEP_URL_CHAR);
-// Any host followed by a path or a query, as a browser step's input may name a page.
-const ANY_SCHEMELESS_URL = String.raw`${HOST_START}(?:[a-z0-9-]+\.)+[a-z]{2,}${STEP_URL.afterHost}`;
+// Any host followed by a path or a query, as a browser step's input may name a page. A host may end in a dot.
+const ANY_SCHEMELESS_URL = String.raw`${HOST_START}(?:[a-z0-9-]+\.)+[a-z]{2,}\.?${STEP_URL.afterHost}`;
 
 const HANDOFF_LINK = new RegExp(String.raw`<([^<>|]*)\|${escapeRegExp(BROWSER_HANDOFF_LINK_LABEL)}>`, 'g');
 /** What a hand-off message links to: an absolute web address, too long to be a word of other text. */
@@ -98,21 +100,24 @@ export function websiteLoginScrub(logins: RunReviewWebsiteLogins): WebsiteLoginS
   const loginSite = (hostname: string) =>
     hostnames.some((host) => hostname === host || hostname.endsWith(`.${host}`));
   const loginSchemeless = hostnames.length
-    ? String.raw`${HOST_START}(?:[a-z0-9-]+\.)*(?:${hostnames.map(escapeRegExp).join('|')})${TEXT_URL.afterHost}`
+    ? String.raw`${HOST_START}(?:[a-z0-9-]+\.)*(?:${hostnames.map(escapeRegExp).join('|')})\.?${TEXT_URL.afterHost}`
     : undefined;
   const linkPatterns = {
     anywhere: new RegExp([TEXT_URL.scheme, loginSchemeless].filter(Boolean).join('|'), 'giu'),
     browserStep: new RegExp([STEP_URL.scheme, ANY_SCHEMELESS_URL].join('|'), 'giu'),
   };
 
-  const scrubLink = (raw: string, browserStep: boolean): string => {
+  const scrubLink = (matched: string, browserStep: boolean): string => {
+    // A plain slash is valid JSON too, so the link comes back without its escapes.
+    const raw = matched.replace(/\\+\//g, '/');
     const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(raw);
     const afterScheme = scheme ? raw.slice(scheme[0].length) : raw;
     const authorityEnd = afterScheme.search(/[/;?#]/);
     const authority = authorityEnd < 0 ? afterScheme : afterScheme.slice(0, authorityEnd);
     const rest = authorityEnd < 0 ? '' : afterScheme.slice(authorityEnd);
     const host = authority.slice(authority.lastIndexOf('@') + 1);
-    const hostname = host.replace(/:\d*$/, '').toLowerCase();
+    // `host.example.` names the same site as `host.example`.
+    const hostname = host.replace(/:\d*$/, '').replace(/\.+$/, '').toLowerCase();
     const pathEnd = rest.search(/[;?#]/);
     const path = pathEnd < 0 ? rest : rest.slice(0, pathEnd);
     const suffix = pathEnd < 0 ? '' : rest.slice(pathEnd);
@@ -193,7 +198,13 @@ function charPattern(char: string): string {
     '<': '<|&lt;',
     '>': '>|&gt;',
   };
-  return `(?:${escaped[char] ?? escapeRegExp(char)}|${percent})`;
+  // A serializer may write a mark or a non-ASCII letter by its number: a JSON unicode escape, or an HTML entity.
+  const code = char.codePointAt(0)!;
+  const hex = code.toString(16);
+  const numbered = ASCII_WORD.test(char) || code > 0xffff
+    ? ''
+    : String.raw`|\\+u${hex.padStart(4, '0')}|&#(?:0*${code}|x0*${hex});`;
+  return `(?:${escaped[char] ?? escapeRegExp(char)}|${percent}${numbered})`;
 }
 
 interface UsernameMatcher {
