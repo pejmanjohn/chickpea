@@ -58,18 +58,20 @@ function isEnvelope(value: unknown): value is ToolEnvelope {
   return false;
 }
 
-export async function requireManagementTools(client: Client, names: readonly string[]): Promise<void> {
-  const available = new Set<string>();
+/** Lists the deployment's tools and refuses when one of `names` is missing; returns them by name. */
+export async function requireManagementTools(client: Client, names: readonly string[]): Promise<Map<string, Tool>> {
+  const available = new Map<string, Tool>();
   let cursor: string | undefined;
   do {
     const page = await client.listTools(cursor ? { cursor } : {});
-    for (const tool of page.tools) available.add(tool.name);
+    for (const tool of page.tools) available.set(tool.name, tool);
     cursor = page.nextCursor;
   } while (cursor);
   const missing = names.filter((name) => !available.has(name));
   if (missing.length) {
     throw new CliError('UPDATE_REQUIRED', `Update your Chickpea Core to use this command; missing 5.0 tools: ${missing.join(', ')}`);
   }
+  return available;
 }
 
 export async function callManagementTool(
