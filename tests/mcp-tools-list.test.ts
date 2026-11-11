@@ -1234,6 +1234,19 @@ test('after the last legacy SSE page, the stream passes answers without reading 
   await stream.close();
 });
 
+test('a legacy SSE listing still owed when another closes the window is filtered, and other answers pass', async (t) => {
+  captureLogs(t);
+  const stream = await legacyStream();
+  stream.sse.request({ id: 3, method: 'tools/list' }, 'Example Tools');
+  stream.sse.request({ id: 5, method: 'tools/list' }, 'Example Tools');
+  stream.push(`data: ${answer(3, [{ name: 'alpha' }, { name: 'gamma' }])}\n\n`);
+  await stream.read();
+  const call = 'data: {"jsonrpc":"2.0","id":4,"result":{"content":[]}}\n\n';
+  stream.push(`${call}data: ${answer(5, [{ name: 'extra' }, { name: 'gamma' }])}\n\n`);
+  assert.equal(await stream.read(), `${call}data: ${answer(5, [{ name: 'gamma' }])}\n\n`);
+  await stream.close();
+});
+
 test('an event stream is split the way the MCP client splits it, loses its event ids, and ends at the answer', async (t) => {
   captureLogs(t);
   const listing = answer(3, [{ name: 'extra' }, { name: 'alpha' }]);
