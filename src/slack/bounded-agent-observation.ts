@@ -52,6 +52,8 @@ export interface BoundedObservationTarget {
    * first caught-up page.
    */
   initialIdleCandidate?: boolean;
+  /** A read had not answered after `stalledReadMs`, and a fresh one joined it. */
+  onStalledRead?: () => void;
 }
 
 /**
@@ -75,6 +77,10 @@ export interface BoundedObservationOptions {
   adaptive?: Partial<AdaptivePollPolicy>;
   /** Test seam for the idle clock; production uses `Date.now`. */
   now?: () => number;
+  /** A fresh route to the same instance, for a read that stalled; absent reads again through `route`. */
+  reconnect?: () => AgentUpdatesRoute | Promise<AgentUpdatesRoute>;
+  /** Test seam; production waits 10 s. */
+  stalledReadMs?: number;
 }
 
 export interface ObservedSettlement {
@@ -100,11 +106,88 @@ const RESET_CHUNK = 'conversation-reset';
 const CHECKPOINT_CHUNK = 'stream-checkpoint';
 const NEXT_OFFSET_HEADER = 'Stream-Next-Offset';
 const UP_TO_DATE_HEADER = 'Stream-Up-To-Date';
+const DEFAULT_STALLED_READ_MS = 10_000;
+const MAX_READS_IN_FLIGHT = 3;
 
-export async function observeAgentSettlementBounded(
+interface AgentViewPage {
+  headers: Headers;
+  body: unknown;
+}
+
+/**
+ * Reads of one agent instance's views. A read answers in well under a second,
+ * but when the agent object's instance is cut mid-run, a read in flight to it
+ * may never answer (2026-11-11: six minutes, until the platform failed it)
+ * while the run resumes on a new instance. So a read that has not answered
+ * after 10 s is joined by a fresh one through a new route, and the first
+ * answer wins. A slow read is never abandoned for that: the oldest of three
+ * in flight is. A read that fails ends the wait only when no other is in
+ * flight, so a fresh read that fails while the object is being replaced does
+ * not spend one of the turn's attempts.
+ */
+class AgentView {
+  constructor(
+    private route: AgentUpdatesRoute,
+    private readonly target: Pick<BoundedObservationTarget, 'agentName' | 'instanceId' | 'onStalledRead'>,
+    private readonly options: Pick<BoundedObservationOptions, 'reconnect' | 'stalledReadMs'>,
+  ) {}
+
+  read(url: string, signal?: AbortSignal): Promise<AgentViewPage> {
+    throwIfAborted(signal);
+    const stalledReadMs = this.options.stalledReadMs ?? DEFAULT_STALLED_READ_MS;
+    const reads: AbortController[] = [];
+    return new Promise((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let settled = false;
+      const settle = (finish: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+        for (const read of reads) read.abort();
+        finish();
+      };
+      const onAbort = () => settle(() => reject(abortError(signal!)));
+      const send = (route: AgentUpdatesRoute) => {
+        const read = new AbortController();
+        reads.push(read);
+        readAgentViewPage(route, this.target, url, read.signal).then(
+          (page) => settle(() => { this.route = route; resolve(page); }),
+          (error: unknown) => {
+            const at = reads.indexOf(read);
+            if (at < 0) return;
+            reads.splice(at, 1);
+            if (reads.length === 0) settle(() => reject(error));
+          },
+        );
+        timer = setTimeout(stalled, stalledReadMs);
+      };
+      const stalled = () => {
+        this.target.onStalledRead?.();
+        if (reads.length >= MAX_READS_IN_FLIGHT) reads.shift()!.abort();
+        Promise.resolve().then(() => this.options.reconnect?.() ?? this.route).then(
+          (route) => { if (!settled) send(route); },
+          (error: unknown) => settle(() => reject(error)),
+        );
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      send(this.route);
+    });
+  }
+}
+
+export function observeAgentSettlementBounded(
   route: AgentUpdatesRoute,
   target: BoundedObservationTarget,
   options: BoundedObservationOptions = {},
+): Promise<ObservedSettlement> {
+  return observeSettlement(new AgentView(route, target, options), target, options);
+}
+
+async function observeSettlement(
+  view: AgentView,
+  target: BoundedObservationTarget,
+  options: BoundedObservationOptions,
 ): Promise<ObservedSettlement> {
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const hotPollIntervalMs = Math.min(HOT_POLL_INTERVAL_MS, pollIntervalMs);
@@ -119,8 +202,8 @@ export async function observeAgentSettlementBounded(
   let offset = '-1';
   for (;;) {
     throwIfAborted(target.signal);
-    const response = await readAgentView(route, target, `${base}?view=updates&offset=${encodeURIComponent(offset)}`);
-    const chunks = await response.json() as ConversationStreamChunk[];
+    const page = await view.read(`${base}?view=updates&offset=${encodeURIComponent(offset)}`, target.signal);
+    const chunks = page.body as ConversationStreamChunk[];
     let settlement: ObservedSettlement | undefined;
     let delivered = 0;
     for (const chunk of chunks) {
@@ -134,14 +217,14 @@ export async function observeAgentSettlementBounded(
       lastChunkAt = now();
       if (caughtUpOnce) seeded = false;
     }
-    const next = response.headers.get(NEXT_OFFSET_HEADER);
+    const next = page.headers.get(NEXT_OFFSET_HEADER);
     const advanced = next !== null && next !== offset;
     if (next !== null) offset = next;
     // A caught-up page (declared by the route, or an idle page whose cursor
     // did not move) waits without holding any request open inside the agent
     // object. Only a lagging page, with more data already behind it, reads
     // again at once.
-    const caughtUp = response.headers.get(UP_TO_DATE_HEADER) === 'true' ||
+    const caughtUp = page.headers.get(UP_TO_DATE_HEADER) === 'true' ||
       (delivered === 0 && !advanced);
     if (!caughtUp) continue;
     caughtUpOnce = true;
@@ -208,6 +291,7 @@ export interface BoundedReplyReaderInput {
   signal?: AbortSignal;
   isIdleCandidate?: () => boolean;
   initialIdleCandidate?: boolean;
+  onStalledRead?: () => void;
 }
 
 export type BoundedReplyReader = (input: BoundedReplyReaderInput) => Promise<AgentReply>;
@@ -224,11 +308,15 @@ export function createBoundedAgentReplyReader(input: {
   sleep?: BoundedObservationOptions['sleep'];
   adaptive?: BoundedObservationOptions['adaptive'];
   now?: BoundedObservationOptions['now'];
+  stalledReadMs?: number;
 }): BoundedReplyReader {
-  return async ({ instanceId, receipt, onEvent, signal, isIdleCandidate, initialIdleCandidate }) => {
-    const route = await input.resolveRoute(instanceId);
-    const target = { agentName: input.agentName, instanceId };
-    const settlement = await observeAgentSettlementBounded(route, {
+  return async ({ instanceId, receipt, onEvent, signal, isIdleCandidate, initialIdleCandidate, onStalledRead }) => {
+    const target = { agentName: input.agentName, instanceId, ...(onStalledRead ? { onStalledRead } : {}) };
+    const view = new AgentView(await input.resolveRoute(instanceId), target, {
+      reconnect: () => input.resolveRoute(instanceId),
+      ...(input.stalledReadMs !== undefined ? { stalledReadMs: input.stalledReadMs } : {}),
+    });
+    const settlement = await observeSettlement(view, {
       ...target,
       submissionId: receipt.submissionId,
       onEvent,
@@ -248,8 +336,8 @@ export function createBoundedAgentReplyReader(input: {
         ...(settlement.error === undefined ? {} : { cause: settlement.error }),
       });
     }
-    const history = await readAgentView(route, target, `${agentViewBase(input.agentName, instanceId)}?view=history`);
-    const snapshot = await history.json() as AgentConversationSnapshot;
+    const history = await view.read(`${agentViewBase(input.agentName, instanceId)}?view=history`);
+    const snapshot = history.body as AgentConversationSnapshot;
     return { ...replyFromSnapshot(snapshot, receipt.submissionId), uid: receipt.uid, submissionId: receipt.submissionId };
   };
 }
@@ -262,8 +350,9 @@ export async function readAgentView(
   route: AgentUpdatesRoute,
   target: Pick<BoundedObservationTarget, 'agentName' | 'instanceId'>,
   url: string,
+  signal?: AbortSignal,
 ): Promise<Response> {
-  const response = await route(new Request(url));
+  const response = await route(new Request(url, signal ? { signal } : undefined));
   if (response.ok) return response;
   if (response.status === 404) {
     const body = await response.json().catch(() => undefined) as { error?: { type?: string } } | undefined;
@@ -272,6 +361,16 @@ export async function readAgentView(
     }
   }
   throw new Error(`Bounded agent observation for "${target.agentName}" failed with status ${response.status}.`);
+}
+
+async function readAgentViewPage(
+  route: AgentUpdatesRoute,
+  target: Pick<BoundedObservationTarget, 'agentName' | 'instanceId'>,
+  url: string,
+  signal: AbortSignal,
+): Promise<AgentViewPage> {
+  const response = await readAgentView(route, target, url, signal);
+  return { headers: response.headers, body: await response.json() };
 }
 
 /** The agent's Durable Object namespace binding, as the Worker env exposes it. */
@@ -366,7 +465,11 @@ export class BoundedObservationAbortedError extends Error {
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
-  if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new BoundedObservationAbortedError();
+  if (signal?.aborted) throw abortError(signal);
+}
+
+function abortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new BoundedObservationAbortedError();
 }
 
 function abortableSleep(milliseconds: number, signal?: AbortSignal): Promise<void> {
