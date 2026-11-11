@@ -128,7 +128,7 @@ test('the ready card offers its first answer, starts it only on the press, and s
 
   const shown = card.shown;
   assert.equal(shown.title, 'Invoice Chaser\'s first answer');
-  assert.deepEqual(shown.subtitle, [{ text: 'A test run: it made only read requests and sent nothing to Slack.' }]);
+  assert.deepEqual(shown.subtitle, [{ text: 'A practice run: it made only read requests and sent nothing to Slack.' }]);
   assert.deepEqual(shown.blocks, [
     { kind: 'note', text: `First question: “${ASK}”` },
     {
@@ -171,7 +171,7 @@ test('a run still going is followed with get_practice_run at once, and a failed 
     { kind: 'note', text: `First question: “${ASK}”` },
     { kind: 'steps', steps: [{ label: 'Invoice Chaser is answering', state: 'now' }] },
   ]);
-  assert.deepEqual(card.shown.subtitle, [{ text: 'A test run: it makes only read requests and sends nothing to Slack.' }]);
+  assert.deepEqual(card.shown.subtitle, [{ text: 'A practice run: it makes only read requests and sends nothing to Slack.' }]);
   assert.deepEqual(card.labels(), [], 'nothing to press while it runs');
   const runToken = runs.runs[0]!.view.runToken;
   assert.deepEqual(card.calls('get_practice_run').map(({ args }) => args), [{ runToken }], 'asked again at once');
@@ -324,7 +324,7 @@ test('a late reply never moves a newer view', async (t) => {
   // The retry is out when the first call's answer, or its failure, comes after all.
   const retrying = card.state;
   const failed: ToolResult = {
-    structuredContent: { ...first.result.structuredContent as object, status: 'failed', problem: 'The test run didn\'t finish. Ask Invoice Chaser in Slack instead.' },
+    structuredContent: { ...first.result.structuredContent as object, status: 'failed', problem: 'The practice run didn\'t finish. Ask Invoice Chaser in Slack instead.' },
   };
   await card.dispatch({ type: 'reply', call: first.call, result: failed, now: clock.now });
   await card.dispatch({ type: 'unreachable', call: first.call, now: clock.now });
@@ -372,7 +372,7 @@ test('a card that mounts again mid-run reads the run it knows, and waits for a p
   await lost.dispatch({ type: 'reread', now: clock.now });
   await lost.dispatch({ type: 'tick', now: clock.now });
   assert.deepEqual(lost.calls(), [], 'a mount sends nothing');
-  assert.deepEqual(lost.shown.blocks, [{ kind: 'text', text: 'This card closed before the test run answered.' }]);
+  assert.deepEqual(lost.shown.blocks, [{ kind: 'text', text: 'This card closed before the practice run answered.' }]);
   assert.deepEqual(lost.labels(), ['See its first answer (primary)']);
   await lost.press('try_once');
   assert.deepEqual(lost.calls('practice_agent').map(({ args }) => args), [first!.args], 'the press sends the same key');
@@ -428,7 +428,7 @@ async function connect(w: Awaited<ReturnType<typeof world>>, agentId: string, ac
 const told = (card: { effects: Array<{ type: string }> }) => (card.effects.findLast(({ type }) => type === 'context') as { text: string } | undefined)?.text.split('\n').at(-1);
 
 test('every refusal reads plainly on the card, with its own next step and no code or ID', async (t) => {
-  const NOT_STARTED = 'The person pressed "See its first answer" for the Agent "Invoice Chaser" (@invoices) on the card, but the test run did not start.';
+  const NOT_STARTED = 'The person pressed "See its first answer" for the Agent "Invoice Chaser" (@invoices) on the card, but the practice run did not start.';
   const shown = (card: { shown: { blocks: unknown[] } }) => card.shown.blocks;
 
   // A deployment that serves no test runs.
@@ -703,12 +703,12 @@ test('a link or message the host refused counts only when this view offered it, 
   assert.equal(answered.card.state.error, 'That did not work. Try again.');
 });
 
-test('while another test run holds the workspace, the card asks again every 5 seconds for a minute, then offers Try again with the same key', async (t) => {
+test('while Chickpea says another practice run is going, the card asks again every 5 seconds for a minute, then offers Try again with the same key', async (t) => {
   const { card, runs, clock } = await readyCard(t, 'first-answer-held');
   runs.refuse = { kind: 'in_progress' };
   await card.press('try_once');
   const [first] = card.calls('practice_agent');
-  assert.deepEqual(card.shown.blocks, [{ kind: 'steps', steps: [{ label: 'Waiting for another test run in this workspace to finish', state: 'now' }] }]);
+  assert.deepEqual(card.shown.blocks, [{ kind: 'steps', steps: [{ label: 'Waiting for another practice run to finish', state: 'now' }] }]);
   assert.deepEqual(card.effects.at(-1), { type: 'timer', inMs: HELD_RETRY_MS });
   for (let waited = HELD_RETRY_MS; waited < HELD_FOR_MS; waited += HELD_RETRY_MS) {
     clock.now += HELD_RETRY_MS;

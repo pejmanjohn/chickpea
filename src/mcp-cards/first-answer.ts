@@ -33,7 +33,7 @@ import {
  * Saved card is the same run after a change, drawn as Before and After. Only
  * a press starts one. The press sends practice_agent with the view's key and
  * no question, and every call this view sends again for that press, after
- * the host gave up on one or while another run held the workspace, carries
+ * the host gave up on one or while another practice run was going, carries
  * the same key, so it gets the run the first call started. get_practice_run
  * then follows the run until it answers, fails, or three minutes pass. A key
  * past the hour Chickpea keeps a run for starts nothing, so a press after
@@ -105,7 +105,7 @@ type State = CardState<FirstAnswer>;
 export const GIVE_UP_MS = 3 * 60_000;
 export const HELD_RETRY_MS = 5_000;
 export const HELD_FOR_MS = 60_000;
-/** Chickpea keeps a test run, and replays its key, for an hour. */
+/** Chickpea keeps a practice run, and replays its key, for an hour. */
 export const KEY_FOR_MS = 60 * 60_000;
 /** The most of an answer a card keeps for Before, so the host's widget state stays small. */
 export const KEPT_ANSWER_CHARS = 2_000;
@@ -254,7 +254,7 @@ function fromAsk(view: FirstAnswer, stage: Extract<Stage, { kind: 'asking' }>, r
   return settled(stage.heldSince === undefined ? view : { ...view, startedAt: now }, run, now);
 }
 
-/** Another run holds the workspace: the same call again in 5 s, for a minute. */
+/** Chickpea said another practice run is still going: the same call again in 5 s, for a minute. */
 function held(view: FirstAnswer, heldSince: number): Next<FirstAnswer> {
   return { state: { view: { ...view, stage: { kind: 'asking', heldSince, retry: true } }, busy: true }, effects: [{ type: 'timer', inMs: HELD_RETRY_MS }] };
 }
@@ -365,7 +365,7 @@ function fixOf(fix: unknown): Fix | undefined {
 function refused(view: FirstAnswer, problem: string, then: 'fix' | 'again' | 'slack', fix?: Fix): Next<FirstAnswer> {
   return tell(
     show({ ...view, stage: { kind: 'stopped', problem, then, ...fix ? { fix } : {} } }),
-    `${pressed(view)}, but the test run did not start.`,
+    `${pressed(view)}, but the practice run did not start.`,
   );
 }
 
@@ -457,17 +457,17 @@ function testRun(value: unknown): Run | undefined {
 }
 
 function didNotStart(view: FirstAnswer): string {
-  return `The test run didn't start. Ask ${view.tested.name} in Slack instead.`;
+  return `The practice run didn't start. Ask ${view.tested.name} in Slack instead.`;
 }
 
 function didNotFinish(view: FirstAnswer): string {
-  return `The test run didn't finish. Ask ${view.tested.name} in Slack instead.`;
+  return `The practice run didn't finish. Ask ${view.tested.name} in Slack instead.`;
 }
 
 // What the card shows.
 
-const RUNNING_LINE = 'A test run: it makes only read requests and sends nothing to Slack.';
-const ANSWERED_LINE = 'A test run: it made only read requests and sent nothing to Slack.';
+const RUNNING_LINE = 'A practice run: it makes only read requests and sends nothing to Slack.';
+const ANSWERED_LINE = 'A practice run: it made only read requests and sent nothing to Slack.';
 
 export function presentFirstAnswer(view: FirstAnswer): Omit<Presentation<FirstAnswerAction>, 'busy' | 'error'> {
   const { tested, stage } = view;
@@ -478,7 +478,7 @@ export function presentFirstAnswer(view: FirstAnswer): Omit<Presentation<FirstAn
     case 'asking': {
       const step = stage.heldSince === undefined
         ? `Asking ${tested.name} its first question`
-        : 'Waiting for another test run in this workspace to finish';
+        : 'Waiting for another practice run to finish';
       return { ...head, announce: `${title}. ${step}.`, subtitle: [{ text: RUNNING_LINE }], blocks: [{ kind: 'steps', steps: [{ label: step, state: 'now' }] }], buttons: [] };
     }
     case 'running':
@@ -534,7 +534,7 @@ export function presentFirstAnswer(view: FirstAnswer): Omit<Presentation<FirstAn
       };
     }
     case 'lost': {
-      const line = 'This card closed before the test run answered.';
+      const line = 'This card closed before the practice run answered.';
       return {
         ...head,
         announce: `${title}. ${line}`,

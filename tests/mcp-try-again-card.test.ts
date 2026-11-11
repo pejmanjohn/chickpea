@@ -249,7 +249,7 @@ test('Undo stays beside a Try it again answer and undoes the save', async (t) =>
 });
 
 test('a refusal or a failed run shows its own sentence on Try it again, as ChatGPT delivers it', async (t) => {
-  const NOT_STARTED = 'The person pressed "Try it again" for the Agent "Invoice Chaser" (@invoices) on the card, but the test run did not start.';
+  const NOT_STARTED = 'The person pressed "Try it again" for the Agent "Invoice Chaser" (@invoices) on the card, but the practice run did not start.';
 
   // Slack would refuse the person a DM: no Try again, which would read the same.
   const guest = await world(t, 'try-again-guest');

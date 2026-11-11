@@ -1267,12 +1267,12 @@ try {
     assert.doesNotMatch(await browser.inCard('document.querySelector(".cp-card").textContent'), /Help center/, 'nothing of what the run left out');
     await shot('4-answered-partial');
 
-    // Another run holds the workspace: the card asks again every 5 s, and after a minute offers Try again.
+    // Chickpea says another practice run is going: the card asks again every 5 s, and after a minute offers Try again.
     runs.refuse = { kind: 'in_progress' };
     await open('readyQuiet');
     await browser.waitForTitle(/said hello to you in Slack$/, 10_000);
     await browser.click('try_once');
-    await shows('/Waiting for another test run in this workspace to finish/', 'the wait');
+    await shows('/Waiting for another practice run to finish/', 'the wait');
     await shot('4-waiting');
     await later(61_000);
     await shows('/A practice run is still going\. Wait for it, then ask again\./', 'Try again', 10_000);
