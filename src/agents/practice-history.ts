@@ -18,6 +18,9 @@ export const PRACTICE_HISTORY_BYTES = 48 * 1024;
 /** One turn's line naming what it read, at most. */
 const DIGEST_CHARS = 1_000;
 
+/** Every character a model may read as the end of a line, a lone carriage return and the Unicode separators included. */
+const LINE_BREAK = /\r\n?|[\n\v\f\x85\u2028\u2029]/;
+
 export const PRACTICE_HISTORY_HEADING = 'Earlier in this practice conversation (quoted):';
 export const PRACTICE_NEW_QUESTION = 'New question:';
 
@@ -46,7 +49,7 @@ function turnBlock({ turn, question, reply, steps }: PracticeTurn): string {
 
 /** Every line behind `> `, so nothing quoted can stand as a line of Chickpea's own. */
 function quoted(text: string): string {
-  return escapeSlackControlCharacters(text).split('\n').map((line) => line ? `> ${line}` : '>').join('\n');
+  return escapeSlackControlCharacters(text).split(LINE_BREAK).map((line) => line ? `> ${line}` : '>').join('\n');
 }
 
 /**
@@ -78,10 +81,15 @@ export function practiceDigest(steps: readonly PracticeStep[]): string {
 
 /** [service, tool] for a call; [skill, 'skill'] for a skill load; [tool] for a call of no service. */
 function digestNames(step: PracticeStep): string[] {
-  if (step.kind === 'skill') return [practiceLine(step.tool), 'skill'];
-  const tool = step.tool === CONNECTION_REQUEST_TOOL_NAME ? requestMethod(step.input) : practiceLine(step.tool);
+  if (step.kind === 'skill') return [oneLine(step.tool), 'skill'];
+  const tool = step.tool === CONNECTION_REQUEST_TOOL_NAME ? requestMethod(step.input) : oneLine(step.tool);
   const service = step.service ?? (step.tool === READ_WEB_PAGE_TOOL_NAME || step.tool === WEB_SEARCH_TOOL_NAME ? 'the web' : undefined);
-  return service ? [practiceLine(service), tool] : [tool];
+  return service ? [oneLine(service), tool] : [tool];
+}
+
+/** A service's or tool's own name on the digest's one line: `practiceLine` keeps a NEL, which is no space to it. */
+function oneLine(text: string): string {
+  return practiceLine(text.split(LINE_BREAK).join(' '));
 }
 
 /** A request's method from its one-line input; GET when the whole input names none, as the tool defaults. */

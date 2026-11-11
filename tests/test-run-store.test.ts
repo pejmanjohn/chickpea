@@ -400,6 +400,9 @@ test('a follow-up while its conversation\'s last turn is going gets that turn\'s
   store.admit(second, NOON + 1_000);
   assert.deepEqual(store.admit(admission(installation, { practiceId, question: 'And today?' }), NOON + 2_000),
     { kind: 'in_progress', runToken: second.runToken });
+  // Only the caller's open conversation with this Agent says so: named with another Agent it has ended, and no token is returned.
+  assert.deepEqual(store.admit(admission(installation, { agentId: 'agent_other', practiceId, question: 'And today?' }), NOON + 2_000),
+    { kind: 'ended' });
 });
 
 test('a follow-up gets its conversation\'s answered turns in order, with their steps; a failed turn is left out', () => {
