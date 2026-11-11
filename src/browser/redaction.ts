@@ -31,6 +31,26 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/**
+ * A whitespace run of a secret as a URL may carry it: whitespace, `+`, or an
+ * encoded space, tab, line break or no-break space.
+ */
+const URL_SPACE = '(?:\\s|\\+|%20|%0[9a-dA-D]|%[cC]2%[aA]0)+';
+
+/**
+ * One character of a secret as a URL may carry it: as it is, or percent-encoded
+ * in either hex case. A script that joins a typed value into an address leaves
+ * some characters as they are and encodes others, so each one matches both ways.
+ */
+function urlChar(char: string): string {
+  if (char === ' ') return URL_SPACE;
+  const encoded = [...new TextEncoder().encode(char)]
+    .map((byte) => `%${byte.toString(16).padStart(2, '0').replace(/[a-f]/g, (digit) => `[${digit}${digit.toUpperCase()}]`)}`)
+    .join('');
+  // The encoded form first: `%` is the start of its own encoding, `%25`.
+  return `(?:${encoded}|${escapeRegExp(char)})`;
+}
+
 /** Decodes each run of %XX escapes; a run that is not valid UTF-8 stays as it is. */
 function percentDecode(text: string): string {
   return text.replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
@@ -83,6 +103,7 @@ export class TypedSecrets {
   private readonly short = new Set<string>();
   private readonly inline = new Set<string>();
   private pattern: RegExp | undefined;
+  private urlPattern: RegExp | undefined;
   private cutForms: CutForm[] = [];
 
   add(value: string): void {
@@ -100,6 +121,7 @@ export class TypedSecrets {
     // Each whitespace run matches any whitespace, so a collapsed or rewrapped form matches too.
     this.pattern = new RegExp(forms.map((form) => form.split(' ').map(escapeRegExp).join('\\s+')).join('|'), 'g');
     this.cutForms = forms.map(cutForm);
+    this.urlPattern = new RegExp(forms.map((form) => [...form].map(urlChar).join('')).join('|'), 'g');
   }
 
   redact(text: string): string {
@@ -112,11 +134,15 @@ export class TypedSecrets {
 
   /**
    * Also redacts a secret the URL carries percent- or form-encoded, as a sign-in
-   * form that submits by GET writes it. Each path segment, query key or value
-   * and fragment part is one field, so a short secret is found there too.
+   * form that submits by GET writes it, or with only some characters encoded,
+   * as a script that joins a typed value into an address leaves it. Each path
+   * segment, query key or value and fragment part is then one field, so a
+   * short secret is found there too.
    */
   redactUrl(url: string): string {
-    return this.redact(url).replace(/[^/?#&=;:@]+/g, (part) => {
+    // The URL forms first: as plain text, a secret that ends in `%` would match the start of its own `%25`.
+    const text = this.redact(this.urlPattern ? url.replace(this.urlPattern, REDACTED) : url);
+    return text.replace(/[^/?#&=;:@]+/g, (part) => {
       const decoded = [percentDecode(part.replace(/\+/g, ' ')), percentDecode(part)];
       return decoded.some((each) => this.redact(each) !== each) ? REDACTED : part;
     });
