@@ -39,7 +39,7 @@ test('an identifier of words stays', () => {
 
 test('an identifier with a forbidden character, too many digits or a long or numbered run is dropped', () => {
   for (const core of [
-    'token=value', 'chat:write', 'files/object', 'member@example', 'first%second', 'first&second', 'first+second',
+    'field=value', 'chat:write', 'files/object', 'member@example', 'first%second', 'first&second', 'first+second',
     'first#second', 'first?second', String.raw`first\second`,
     // A word plus a number alone reads as a password.
     'summer24',
@@ -210,34 +210,82 @@ test('compact JSON reads as it would pretty-printed', () => {
   assert.equal(filter('{"status":"error","errors":[{"field":"hs_lead_status"}]}'), '{ "status": "error", "errors": [{ "field": "hs_lead_status"}]}');
 });
 
-test('the value after a secret label or an auth scheme is dropped, even when it reads as a word', () => {
-  assert.equal(filter('password: hunter rejected'), 'password: […] rejected');
-  assert.equal(filter('password = hunter rejected'), 'password […] rejected');
-  assert.equal(filter('Authorization: Bearer first rejected'), 'Authorization: […] rejected');
-  assert.equal(filter('Bearer first rejected'), 'Bearer […] rejected');
-  assert.equal(filter('basic words rejected'), 'basic […] rejected');
-  assert.equal(filter('Request body: {"client_secret":"plain words"}'), 'Request body: { "client_secret": […] words"}');
-  assert.equal(filter('{"access_token":"wordlike","scope":"read"}'), '{ "access_token": […] "scope": "read"}');
-  assert.equal(filter('X-Api-Key: wordlike missing'), 'X-Api-Key: […] missing');
-});
-
-test('a label names a secret when any part of it is a secret word', () => {
-  assert.equal(filter('{"client_key":"wordlike","key":"other"}'), '{ "client_key": […] "key": […]');
-  assert.equal(filter('{"pin":"1234"} rejected'), '{ "pin": […] rejected');
-  assert.equal(filter('privateKey: wordlike rejected'), 'privateKey: […] rejected');
-  assert.equal(filter('{"sessionId":"plainword","passcode":"words"}'), '{ "sessionId": […] "passcode": […]');
-});
-
-test('a secret label drops a whole object or array value', () => {
+test('a quoted secret value is dropped up to its closing quote, whatever it holds', () => {
+  assert.equal(filter('{"client_secret":"alpha beta gamma","status":"error"}'), '{ "client_secret": […] "status": "error"}');
+  assert.equal(filter("{'password': 'alpha beta', 'error': 'invalid_grant'}"), "{'password': […] 'error': 'invalid_grant'}");
+  assert.equal(filter('{"password":"зимний луг","status":"error"}'), '{ "password": […] "status": "error"}');
+  // Decoded escapes: a space, a line break and a quote inside the value.
+  for (const value of [String.raw`alpha\u0020beta`, String.raw`alpha\nbeta`, String.raw`alpha\" beta`, String.raw`]} alpha [{`]) {
+    assert.equal(filter(`{"client_secret":"${value}","status":"error"}`), '{ "client_secret": […] "status": "error"}', value);
+  }
+  // JSON inside a JSON string: its quotes were escaped once, and the value's own quote twice.
   assert.equal(
-    filter('{"credentials":{"user":"plainuser","password":"words"},"status":"error"}'),
+    filter(String.raw`Body: {\"client_secret\":\"alpha \\\"beta\\\" gamma\",\"status\":\"error\"}`),
+    'Body: { "client_secret": […] "status": "error"}',
+  );
+  // A private-use character stands for an escaped quote inside the filter, so one in the text,
+  // written out or escaped, cannot end the value early.
+  for (const lookalike of ['\uE000', String.raw`\uE000`]) {
+    assert.equal(
+      filter(String.raw`{\"client_secret\":\"alpha` + lookalike + String.raw` beta gamma\"}`),
+      '{ "client_secret": […]',
+    );
+  }
+});
+
+test('an unquoted secret value is dropped to the end of its line, folded lines included, or to a , ; or &', () => {
+  assert.equal(filter('password: 1234 5678'), 'password: […]');
+  assert.equal(filter('password: abcdefgh ijklmnop qrstuvwx\nerror_code: INVALID_ARGUMENT'), 'password: […] error_code: INVALID_ARGUMENT');
+  assert.equal(filter('Authorization: Bearer alpha\n beta\n\tgamma\r\n delta\nstatus: 401'), 'Authorization: […] status: 401');
+  assert.equal(filter('Authorization:\n Bearer alpha beta\nstatus: 401'), 'Authorization: […] status: 401');
+  assert.equal(filter('token: alpha beta, then sign in again'), 'token: […] then sign in again');
+  assert.equal(filter('Cookie: sid="alpha; beta" gamma; theme=light'), 'Cookie: […]');
+  assert.equal(filter('Set-Cookie: sid=alpha beta; HttpOnly'), 'Set-Cookie: […] HttpOnly');
+});
+
+test('an auth scheme drops the rest of its value the same way', () => {
+  assert.equal(filter('Upstream sent Bearer alpha beta\nstatus: 401'), 'Upstream sent Bearer […] status: 401');
+  assert.equal(filter('basic alpha beta; retry'), 'basic […] retry');
+  assert.equal(filter('Bearer "alpha beta" gamma\nstatus: 401'), 'Bearer […] status: 401');
+  keeps('{ "type": "bearer", "status": 401}');
+});
+
+test('a secret label drops a whole object or array value, brackets and quotes in its strings included', () => {
+  assert.equal(
+    filter('{"credentials":{"user":"plainuser","keys":["alpha",{"beta":"gamma"}]},"status":"error"}'),
     '{ "credentials": […] "status": "error"}',
   );
+  assert.equal(
+    filter('{"credentials":{"note":"}","user":"syntheticuser","value":"winter meadow"},"status":"error"}'),
+    '{ "credentials": […] "status": "error"}',
+  );
+  assert.equal(
+    filter(String.raw`{"credentials":{"note":"]} \" [{","value":"winter meadow"},"status":"error"}`),
+    '{ "credentials": […] "status": "error"}',
+  );
+  assert.equal(filter('{"tokens":["]", "winter-meadow", "1234"],"status":"error"}'), '{ "tokens": […] "status": "error"}');
   assert.equal(filter('tokens: ["alpha", "beta"] rejected'), 'tokens: […] rejected');
   assert.equal(filter('"cookies": { "sid": "plain" , "theme": "dark" } then 403'), '"cookies": […] then 403');
 });
 
-test('a secret label used as a plain word keeps the next word', () => {
+test('a secret value with no end drops everything after its label', () => {
+  assert.equal(filter('{"client_secret":"alpha beta gamma'), '{ "client_secret": […]');
+  assert.equal(filter('{"credentials":{"user":"alpha","value":"beta gamma"'), '{ "credentials": […]');
+  assert.equal(filter('{"tokens":["alpha"} beta gamma'), '{ "tokens": […]');
+  assert.equal(filter("password: it's alpha, beta gamma"), 'password: […]');
+});
+
+test('a label names a secret by any part, an acronym’s too, or by its last word', () => {
+  for (const label of [
+    'client_key', 'X-Api-Key', 'privateKey', 'sessionId', 'key', 'pin', 'passcode',
+    'APISecret', 'APISecrets', 'JWTToken', 'JWTTokens', 'HTTPPassword', 'APISecretValue', 'HTTPPasswordHint',
+    'clientsecret', 'accesstoken', 'refreshtokens', 'sessionid', 'JSESSIONID', 'PHPSESSID',
+  ]) {
+    assert.equal(filter(`{"${label}":"winter","status":"error"}`), `{ "${label}": […] "status": "error"}`, label);
+  }
+});
+
+test('a secret word that is not a label keeps what follows', () => {
   keeps('"keyword": "contacts", "error_code": "INVALID_ARGUMENT"');
   keeps('token expired, sign in again');
   keeps('The session has ended');
@@ -290,6 +338,9 @@ test('a hostile 16 KiB text takes linear time', () => {
   for (const text of [
     `${'.'.repeat(16_383)}x`, fill(String.raw`\"`), fill(String.raw`\n`), fill('%a '), fill('-----BEGIN '),
     fill('xoxb-'), fill(`${'ab_'.repeat(21)}a `), fill('((((((((((((((((a '), fill('aB'),
+    // Secret labels and the extents of their values.
+    fill('a:'), fill('token:'), fill('token:"'), fill('{"token":['), `tokens:${fill('[')}`, fill('token: a\n '),
+    `token:"${fill(String.raw`\"`)}`, `token:[${fill(String.raw`"]\"`)}`, fill(`${'a'.repeat(64)}${'\\'.repeat(512)}`),
   ]) {
     const start = performance.now();
     filter(text);

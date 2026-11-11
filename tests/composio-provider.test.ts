@@ -292,21 +292,47 @@ test('every reproduction from the reviews of this change reaches the model as [�
     ['{"cookies":{"nested":{"sid":"SyntheticInner42"},"other":"SyntheticOther42"}}', '{ "cookies": […]'],
     ['Invalid API key provided: keySyntheticAb123', 'Invalid API key provided: […]'],
     ['HTTP 403 record for other-tenant@example.test: balance overdue', 'HTTP 403 record for […] balance overdue'],
-    // The first review's cases, with the turn's Composio key.
+    // The third security re-review. Every value here passes the allowlist, so only its label drops it.
+    [
+      '{"credentials":{"note":"}","user":"syntheticuser","value":"winter-meadow"},"status":"error"}',
+      '{ "credentials": […] "status": "error"}',
+    ],
+    ['{"tokens":["]", "winter-meadow", "1234"]}', '{ "tokens": […]'],
+    ['{"client_secret":"alpha beta gamma"}', '{ "client_secret": […]'],
+    ['Authorization: Bearer alpha\n beta\n gamma', 'Authorization: […]'],
+    ['password: 1234 5678', 'password: […]'],
+    [String.raw`{"client_secret":"alpha\u0020beta"}`, '{ "client_secret": […]'],
+    [String.raw`{"client_secret":"alpha\nbeta"}`, '{ "client_secret": […]'],
+    [String.raw`{"client_secret":"alpha\" beta"}`, '{ "client_secret": […]'],
+    ['{"password":"зимний луг"}', '{ "password": […]'],
+    ['password: abcdefgh ijklmnop qrstuvwx', 'password: […]'],
+    ['{"APISecret":"winter-meadow"}', '{ "APISecret": […]'],
+    ['{"JWTToken":"1234"}', '{ "JWTToken": […]'],
+    ['HTTPPassword: winter', 'HTTPPassword: […]'],
+    // The automatic commit review.
+    [
+      '{"clientsecret":"winter","accesstoken":"meadow","sessionid":"alpha","PHPSESSID":"beta"}',
+      '{ "clientsecret": […] "accesstoken": […] "sessionid": […] "PHPSESSID": […]',
+    ],
+    // The first review's cases, with the turn's Composio key. An unquoted secret value runs to
+    // the end of its line, so the first `token=` takes the rest of it.
     [
       '401 Client Error: Unauthorized for url: ' +
         'https://synthetic-user:synthetic-pass@api.example.test/1/boards/synthetic?key=synthetic-key-value&token=synthetic-token-value ' +
         'after Authorization: Bearer synthetic.bearer-value_1234 and refresh_token=synthetic-refresh-value ' +
         'and {"api_key":"synthetic-api-key-value"} with test-key. Bearer authentication failed.',
-      '401 Client Error: Unauthorized for url: […] after Authorization: […] and […] and { "api_key": […] with […] ' +
-        'Bearer […] failed.',
+      '401 Client Error: Unauthorized for url: […]',
     ],
     [
       'Upstream echoed {"access_token":"syntheticOAuthToken42","refresh_token":"syntheticRefreshToken42"} ' +
         'and Authorization: Basic c3ludGhldGljOnN5bnRoZXRpYw== and "authorization":"syntheticOpaqueValue" ' +
         'and a header of Basic c3ludGhldGljOnBhc3M9 too. Basic authentication is required.',
-      'Upstream echoed { "access_token": […] "refresh_token": […] and Authorization: […] and "authorization": […] ' +
-        'and a header of Basic […] too. Basic […] is required.',
+      'Upstream echoed { "access_token": […] "refresh_token": […] and Authorization: […]',
+    ],
+    [
+      'Upstream echoed\nrefresh_token=synthetic-refresh-value\n{"api_key":"synthetic-api-key-value"} with test-key.\n' +
+        'a header of Basic c3ludGhldGljOnBhc3M9\nBasic authentication is required.',
+      'Upstream echoed […] { "api_key": […] with […] a header of Basic […] Basic […]',
     ],
   ];
   for (const [error, reason] of cases) {
