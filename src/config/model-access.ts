@@ -53,11 +53,14 @@ import {
   OPENAI_PLATFORM_COMPAT_PROVIDER_ID,
   isRevisionedAlias,
 } from '../model-catalog/provider-alias.ts';
+import { upstreamFirstTextMark } from '../observability/runtime-latency.ts';
 import { isRecord } from '../security/content-validation.ts';
 import {
+  mediaType,
   modelRequestRecord,
   NO_PROVIDER_REPORT,
   providerReportReader,
+  readEventData,
   usageInstallationId,
   type ModelRequestAttribution,
   type ModelRequestEnd,
@@ -610,6 +613,58 @@ function listPricedProvider(providerId: string): ListPricedProvider | undefined 
   return Object.hasOwn(LIST_PRICE_MODES, providerId) ? providerId as ListPricedProvider : undefined;
 }
 
+interface FirstTextEvent {
+  /** Only event data that contains it is parsed. */
+  readonly marker: string;
+  text(event: Record<string, unknown>): unknown;
+}
+
+/** The streamed event that carries a provider's answer text, as its API sends it. */
+const FIRST_TEXT_EVENTS: Partial<Record<ModelAccessProviderId, FirstTextEvent>> = {
+  anthropic: {
+    marker: '"text_delta"',
+    text: (event) =>
+      event.type === 'content_block_delta' && isRecord(event.delta) && event.delta.type === 'text_delta'
+        ? event.delta.text
+        : undefined,
+  },
+  openai: {
+    marker: '"response.output_text.delta"',
+    text: (event) => (event.type === 'response.output_text.delta' ? event.delta : undefined),
+  },
+};
+
+function carriesText(data: string, kind: FirstTextEvent): boolean {
+  if (!data.includes(kind.marker)) return false;
+  try {
+    const event: unknown = JSON.parse(data);
+    const text = isRecord(event) ? kind.text(event) : undefined;
+    return typeof text === 'string' && text.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Calls `mark` when the provider's first answer text reaches this fetch. The
+ * caller gets the provider's response itself at once; the scan reads a copy
+ * of its body and stops at that text, so it never holds a byte the caller reads.
+ */
+function firstTextFetch(base: typeof fetch | undefined, kind: FirstTextEvent, mark: () => void): typeof fetch {
+  return async (input, init) => {
+    const response = await (base ?? globalThis.fetch)(input, init);
+    const copy = response.ok && mediaType(response.headers) === 'text/event-stream' ? response.clone().body : null;
+    if (copy) {
+      void readEventData(copy, (data) => {
+        if (!carriesText(data, kind)) return false;
+        mark();
+        return true;
+      }).catch(() => undefined);
+    }
+    return response;
+  };
+}
+
 /**
  * The request the proxy of registered provider `registeredId` sends: the
  * cell's key, endpoint and headers injected over whatever the caller passed,
@@ -643,6 +698,9 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
   const listPriced = platformGrant && listPricedProvider(platformGrant.providerId);
   const reporting = providerId === 'openrouter' ? 'openrouter' : listPriced;
   const reader = reporting && providerReportReader(reporting, options?.fetch);
+  const firstText = providerId && FIRST_TEXT_EVENTS[providerId];
+  const markFirstText = firstText && upstreamFirstTextMark();
+  const sentFetch = markFirstText ? firstTextFetch(reader?.fetch ?? options?.fetch, firstText, markFirstText) : reader?.fetch;
   const payloadMode = platformGrant
     ? listPriced && LIST_PRICE_MODES[listPriced]
     : bound && CUSTOMER_PAYLOAD_MODES[bound.grant.providerId];
@@ -661,7 +719,7 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
       ...options,
       apiKey: access.apiKey,
       ...(access.headers ? { headers: { ...options?.headers, ...access.headers } } : {}),
-      ...(reader ? { fetch: reader.fetch } : {}),
+      ...(sentFetch ? { fetch: sentFetch } : {}),
       ...(payloadHook ? { onPayload: payloadHook.onPayload } : {}),
     } as TOptions,
     redact: (stream) => withoutKeyInErrors(stream, access.apiKey),

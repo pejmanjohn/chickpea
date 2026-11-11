@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 
-import type { FlueObservation } from '@flue/runtime';
+import type { FlueExecutionOperation, FlueObservation } from '@flue/runtime';
 
 import type { AnswerReleaseShadowRecord } from '../slack/answer-release.ts';
 import type { HostReleaseRecord } from '../slack/host-release-relay.ts';
@@ -1115,20 +1115,48 @@ const FIRST_TOKEN_EVENTS: ReadonlySet<FlueObservation['type']> = new Set([
   'text_delta', 'thinking_start', 'thinking_delta', 'toolcall_delta',
 ]);
 
+interface OpenModelStep {
+  readonly startedAt: number;
+  firstTokenAt?: number;
+  firstTextAt?: number;
+  upstreamFirstTextAt?: number;
+}
+
+const upstreamFirstTextMarks = new AsyncLocalStorage<() => void>();
+
+/**
+ * Inside a model step's request, stamps the step's `upstreamFirstTextMs` the
+ * first time it is called. The model access proxy calls it as the provider's
+ * first answer text reaches the Worker, before any parser reads it.
+ */
+export function upstreamFirstTextMark(): (() => void) | undefined {
+  return upstreamFirstTextMarks.getStore();
+}
+
 /**
  * Times each model request from Flue's `turn_request` to its first streamed
- * token (text, thinking, or a tool call's arguments) and to its first
- * non-empty text, and logs the model that served it, Flue's duration, its
- * token counts and its tool calls when its `turn` ends.
+ * token (text, thinking, or a tool call's arguments), to its first non-empty
+ * text, and to the provider's first text on the wire, and logs the model that
+ * served it, Flue's duration, its token counts and its tool calls when its
+ * `turn` ends.
  * `inputTokens` excludes the cached input that `cachedInputTokens` counts.
  */
 export class ModelStepMarks {
-  private readonly open = new Map<string, { startedAt: number; firstTokenAt?: number; firstTextAt?: number }>();
+  private readonly open = new Map<string, OpenModelStep>();
 
   constructor(
     private readonly now: () => number = Date.now,
     private readonly sink?: RuntimeLatencySink,
   ) {}
+
+  /** Runs a Flue model operation with its open step's `upstreamFirstTextMark` in scope. */
+  intercept<T>(operation: FlueExecutionOperation, next: () => Promise<T>): Promise<T> {
+    const open = operation.type === 'model' ? this.open.get(operation.turnId) : undefined;
+    if (!open) return next();
+    return upstreamFirstTextMarks.run(() => {
+      open.upstreamFirstTextAt ??= this.now();
+    }, next);
+  }
 
   /** `turnJobIdOf`: the Slack turn the request belongs to, read only when a request ends. */
   observe(event: FlueObservation, turnJobIdOf: () => string | undefined = () => undefined): void {
@@ -1168,6 +1196,7 @@ export class ModelStepMarks {
         durationMs: event.durationMs,
         firstTokenMs: open?.firstTokenAt === undefined ? undefined : open.firstTokenAt - open.startedAt,
         firstTextMs: open?.firstTextAt === undefined ? undefined : open.firstTextAt - open.startedAt,
+        upstreamFirstTextMs: open?.upstreamFirstTextAt === undefined ? undefined : open.upstreamFirstTextAt - open.startedAt,
         inputTokens: usage?.input,
         cachedInputTokens: usage?.cacheRead,
         cacheWriteTokens: usage?.cacheWrite,

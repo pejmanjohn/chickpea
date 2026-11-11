@@ -219,22 +219,34 @@ async function readCopy(copy: Response, read: BodyReader, found: (parsed: unknow
 }
 
 async function readEventStream(copy: Response, found: (parsed: unknown) => void): Promise<void> {
-  const reader = copy.body?.getReader();
-  if (!reader) return;
-  const decoder = new TextDecoder();
-  let data: string[] = [];
-  const dispatch = () => {
-    const payload = data.join('\n');
-    data = [];
-    if (payload === '[DONE]' || !payload.includes('"usage"')) return;
+  if (!copy.body) return;
+  await readEventData(copy.body, (payload) => {
+    if (payload === '[DONE]' || !payload.includes('"usage"')) return false;
     try {
       found(JSON.parse(payload));
     } catch {}
+    return false;
+  });
+}
+
+/**
+ * Hands each server-sent event's data to `take` as its bytes arrive, until
+ * `take` returns true, which cancels `body` and returns at once, or the body ends.
+ */
+export async function readEventData(body: ReadableStream<Uint8Array>, take: (data: string) => boolean): Promise<void> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let data: string[] = [];
+  const dispatch = (): boolean => {
+    const payload = data.join('\n');
+    data = [];
+    return payload !== '' && take(payload);
   };
-  const take = (raw: string) => {
-    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
-    if (line === '') dispatch();
-    else if (line.startsWith('data:')) data.push(line.slice(line.startsWith('data: ') ? 6 : 5));
+  const line = (raw: string): boolean => {
+    const text = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+    if (text === '') return dispatch();
+    if (text.startsWith('data:')) data.push(text.slice(text.startsWith('data: ') ? 6 : 5));
+    return false;
   };
   let pending = '';
   for (;;) {
@@ -242,13 +254,17 @@ async function readEventStream(copy: Response, found: (parsed: unknown) => void)
     pending += decoder.decode(value, { stream: !done });
     let start = 0;
     for (let end = pending.indexOf('\n'); end >= 0; end = pending.indexOf('\n', start)) {
-      take(pending.slice(start, end));
+      if (line(pending.slice(start, end))) {
+        // A cloned body's cancel settles only once the other branch ends too.
+        void reader.cancel().catch(() => undefined);
+        return;
+      }
       start = end + 1;
     }
     pending = pending.slice(start);
     if (done) break;
   }
-  if (pending) take(pending);
+  if (pending && line(pending)) return;
   dispatch();
 }
 
@@ -269,7 +285,7 @@ function recordAt(value: unknown, key: string): Record<string, unknown> | undefi
   return isRecord(member) ? member : undefined;
 }
 
-function mediaType(headers: Headers): string {
+export function mediaType(headers: Headers): string {
   return headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() ?? '';
 }
 
