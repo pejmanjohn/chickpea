@@ -17,6 +17,7 @@ import {
 } from '../src/state/installation-objects.ts';
 import { quiesceStateStoreForRestore } from '../src/state/state-store-host.ts';
 import type { TestRunLifecycle } from '../src/state/test-run-lifecycle.ts';
+import { TestRunUsageRecorder } from '../src/usage/test-run-usage.ts';
 import { FakeTestRunInstances, startRequest, TestClock, testRunLifecycle } from './helpers/test-runs.ts';
 
 /** How long a caller reads their run, and when its text goes. */
@@ -483,6 +484,25 @@ test('a cancellation whose abort the instance settles is cancelled, not a timeou
   assert.deepEqual([row().status, row().failure], ['failed', 'cancelled']);
   assert.ok(context.instances.on(instanceId).includes('erase'));
   assert.equal(context.instances.calls.some(([call]) => call.startsWith('credit_back')), false);
+});
+
+test('a settlement that loses to one already written credits nothing back', async () => {
+  const context = setup('inst_lifecycle_settle_lost');
+  const { request, row } = await started(context);
+  const { testRuns, usage } = context.installation.stores;
+  const read = context.instances.settlement.bind(context.instances);
+  // The run answers while this step's read of its instance is out, and the read comes back a timeout.
+  context.instances.settlement = async (id) => {
+    await read(id);
+    const recorder = new TestRunUsageRecorder(usage.getOperation(row().usageOperationId)!.operation);
+    assert.equal(testRuns.settle(request.run.testRunId, {
+      status: 'answered', result: { reply: 'Two are overdue.', read: [] }, terminal: recorder.completed(undefined, context.clock.now(), row().submissionId),
+    }), true);
+    return { kind: 'failed', failure: 'deadline', creditBack: 'timeout' };
+  };
+  await context.lifecycle.step(request.run.testRunId);
+  assert.deepEqual([row().status, row().result?.reply, row().result?.creditedBack], ['answered', 'Two are overdue.', undefined]);
+  assert.deepEqual(context.instances.calls.filter(([call]) => call.startsWith('credit_back')), [], 'an answer is charged: nothing is credited');
 });
 
 test('every timeout is credited back, as a direct message\'s is, however many a person has had', async () => {

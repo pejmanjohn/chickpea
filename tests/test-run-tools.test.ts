@@ -875,6 +875,17 @@ test('two people practice at once, and one person in two conversations', async (
   assert.equal(new Set(runs.map(({ practiceId }) => practiceId)).size, 3);
 });
 
+test('a long connection name is cut to 60 characters in its off line and its fix, so each still says what it is for', async (t) => {
+  const { f, teamId, call, instances } = await harness(t, 'practice_long_name');
+  await seedAgent(f);
+  await connect(f, teamId, 'agent_tested', { id: 'connection_docs', providerId: 'docs', label: 'D'.repeat(160), policy: docsMcp() });
+  instances.settleEvery = { kind: 'answered', reply: 'Nothing on the web.', read: [], steps: [] };
+  const run = structured(await call('practice_agent', { agentId: 'agent_tested', question: 'What do the docs say?' }));
+  const name = `${'D'.repeat(59)}…`;
+  assert.equal((run.off as string[])[3], `${name} was not available in this practice run, so an answer that needs it can't be judged here.`);
+  assert.equal((run.fixes as Array<{ label: string }>)[0]!.label, `Mark ${name}'s read tools`);
+});
+
 test('a connection with nothing that reads is left out of the run, listed with its fix, and the run says it is partial', async (t) => {
   const { f, teamId, call, instances } = await harness(t, 'practice_partial');
   await seedAgent(f);

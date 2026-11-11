@@ -69,6 +69,13 @@ test('an attempt the 25-call limit ended is a failure that stopped at the limit 
   assert.deepEqual(ended({ message: 'The agent threw.' }), { kind: 'failed', failure: 'failed', creditBack: 'chickpea' });
 });
 
+test('a run Flue timed out, or one aborted, is a deadline credited back as a timeout', () => {
+  // The usual timeout: Flue ends the submission at its own 120 seconds, before the store's 150.
+  assert.deepEqual(testRunSettlement({ outcome: 'failed', error: { type: 'submission_timeout', message: 'The submission timed out.' } }, 'sub_1', undefined),
+    { kind: 'failed', failure: 'deadline', creditBack: 'timeout' });
+  assert.deepEqual(testRunSettlement({ outcome: 'aborted' }, 'sub_1', undefined), { kind: 'failed', failure: 'deadline', creditBack: 'timeout' });
+});
+
 test('a test run is credited back as a direct message is: never while its installation is suspended or ended', async (t) => {
   const credits: Array<{ run: RunRef; reason: CreditBackReason }> = [];
   configurePlatformFunding({
