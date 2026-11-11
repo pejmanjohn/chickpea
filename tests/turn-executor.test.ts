@@ -15,6 +15,7 @@ import {
 import { AgentObservationYield, AgentPromptFailure } from '../src/slack/flue-dispatch.ts';
 import { SlackInstallationUnavailableError } from '../src/slack/installation-execution.ts';
 import type { RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import type { JudgmentCalls } from '../src/slack/interaction-intent.ts';
 import type { RunTurnOptions } from '../src/slack/run-turn.ts';
 import {
   executeTurnJob,
@@ -180,6 +181,54 @@ test('a run that claims its follow-ups records its attempt beside the claim, and
   committed.resolve();
   assert.equal(await run, true);
   assert.deepEqual(events.slice(3), ['attempt committed', 'claim answered']);
+});
+
+// Defect caught: the judgment's calls wait for the installation and the fold
+// they can run beside, never reach the turn that adopts them, or start for a
+// turn stopped before its dispatch, which judges nothing.
+test("the judgment's calls start before the installation and the fold, and reach the turn", async () => {
+  const events: string[] = [];
+  const calls = { startedAt: 1 } as unknown as JudgmentCalls;
+  let settingsSeen: unknown;
+  const h = fakePorts(async (options) => {
+    await options.claimFold!({ phase: 'start', headId: 'turn_1' });
+    events.push('runTurn');
+    await options.onDelivered?.('completed' as never);
+  }, async () => {
+    events.push('installation');
+    return { workspaceId: 'T1', client: {} as WebClient };
+  });
+  Object.assign(h.ports, {
+    startJudgment: (_turn: unknown, _assignment: unknown, _env: unknown, settings: unknown) => {
+      events.push('judgment');
+      settingsSeen = settings;
+      return calls;
+    },
+  });
+  Object.assign(h.ports.turnJobs, {
+    fold: async () => {
+      events.push('fold');
+      return { messages: [], requesterText: '' };
+    },
+  });
+  assert.equal(await executeTurnJob(pendingJob(), h.ports, h.options), true);
+  assert.deepEqual(events, ['judgment', 'installation', 'fold', 'runTurn']);
+  assert.equal(h.runs[0]?.earlyJudgment, calls);
+  assert.equal(settingsSeen, h.ports.settingsStore);
+
+  let started = 0;
+  const stopped = fakePorts(async () => undefined);
+  Object.assign(stopped.ports, {
+    startJudgment: () => {
+      started += 1;
+      return calls;
+    },
+  });
+  await executeTurnJob(pendingJob({
+    stop: { schemaVersion: 1, role: 'stopped', source: 'typed', stopperUserId: 'U2', cutoffTs: '1785900000.000200', stoppedAt: 1 },
+  } as Partial<PendingTurnJob>), stopped.ports, stopped.options);
+  assert.equal(started, 0, 'a turn stopped before its dispatch starts no calls');
+  assert.equal(stopped.runs[0]?.earlyJudgment, undefined);
 });
 
 test('a rate-limited attempt asks for a retry no sooner than the gateway allows, bounded to one window', async () => {

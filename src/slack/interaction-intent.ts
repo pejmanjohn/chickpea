@@ -428,14 +428,90 @@ export interface GuaranteedInteractionJudgmentOptions {
    * Tests hold its answer here and fake Clef at its real boundary, `env.AI`.
    */
   readonly classify?: (context: SlackInteractionIntentContext) => Promise<SlackInteractionClassification>;
+  /**
+   * Calls the turn started before its fold. The judgment adopts them when
+   * they were asked about this context, and otherwise asks again.
+   */
+  readonly early?: JudgmentCalls;
+}
+
+/**
+ * A guaranteed turn's three judgment calls on one context: Clef's
+ * interaction and management calls and the model classifier. Starting them
+ * writes nothing, so a turn may start them before its fold. Each never
+ * rejects.
+ */
+export interface JudgmentCalls {
+  readonly context: SlackInteractionIntentContext & { guaranteed: true };
+  readonly startedAt: number;
+  readonly clef: Promise<ClefOutcome>;
+  readonly management: Promise<ClefManagementOutcome>;
+  readonly model: Promise<{ readonly classification: SlackInteractionClassification; readonly ms: number }>;
+}
+
+/** Start the calls, unless a shortcut rule decides the context and nothing would be asked. */
+export function startJudgmentCalls(
+  context: SlackInteractionIntentContext & { guaranteed: true },
+  options: Pick<GuaranteedInteractionJudgmentOptions, 'env' | 'settings' | 'classify'>,
+): JudgmentCalls | undefined {
+  return resolveImmediateSlackInteractionIntent(context) ? undefined : askJudgmentCalls(context, options);
+}
+
+function askJudgmentCalls(
+  context: SlackInteractionIntentContext & { guaranteed: true },
+  options: Pick<GuaranteedInteractionJudgmentOptions, 'env' | 'settings' | 'classify'>,
+): JudgmentCalls {
+  const startedAt = Date.now();
+  const classify = options.classify ?? ((input: SlackInteractionIntentContext) =>
+    classifySlackInteraction(input, options.env, undefined, undefined, {
+      ...(options.settings ? { settings: options.settings } : {}),
+    }));
+  return {
+    context,
+    startedAt,
+    // The model side never rejects by contract; a rejection would otherwise hang `basis`.
+    model: classify(context).then(
+      (classification) => ({ classification, ms: Date.now() - startedAt }),
+      () => ({ classification: { intent: fallbackIntent(true), failed: true }, ms: Date.now() - startedAt }),
+    ),
+    clef: readClefInteraction(context, options.env),
+    management: readClefManagement(context, options.env),
+  };
+}
+
+/** Every field of the context, so a field added to it is compared too. */
+const JUDGMENT_CONTEXT_FIELDS = {
+  workspaceId: true,
+  channelId: true,
+  eventId: true,
+  text: true,
+  source: true,
+  guaranteed: true,
+  profileInstructions: true,
+  recentContext: true,
+  reactionTargetText: true,
+  activeWork: true,
+  requestedModel: true,
+} as const satisfies Record<keyof SlackInteractionIntentContext, true>;
+
+function sameJudgmentContext(a: SlackInteractionIntentContext, b: SlackInteractionIntentContext): boolean {
+  return (Object.keys(JUDGMENT_CONTEXT_FIELDS) as Array<keyof SlackInteractionIntentContext>)
+    .every((field) => JSON.stringify(a[field]) === JSON.stringify(b[field]));
 }
 
 /** The judgment's final state and what it observed, flattened for the `interaction_judgment` event. Holds no text. */
 export interface InteractionJudgmentTrace {
   readonly recordedBy: 'shortcut' | 'clef' | 'model' | 'unrecorded';
   readonly basis?: SlackInteractionDisposition;
-  /** From the judgment's start to the recorded basis. */
+  /**
+   * From the judgment's start to the recorded basis. With calls started
+   * before the judgment (`earlyMs`), it can be shorter than `clefMs`.
+   */
   readonly basisMs?: number;
+  /** The judgment adopted calls started this long before it. */
+  readonly earlyMs?: number;
+  /** Calls started before the fold asked about other text, so the judgment asked again. */
+  readonly rejudged?: boolean;
   /** How Clef ended; `skipped` after a shortcut. */
   readonly clef: ClefOutcome['kind'] | 'skipped';
   readonly clefMs?: number;
@@ -496,21 +572,18 @@ export function judgeGuaranteedInteraction(
     return { basis, lateChecklist: Promise.resolve(undefined), managementLikely: Promise.resolve(false), settled };
   }
 
-  const classify = options.classify ?? ((input: SlackInteractionIntentContext) =>
-    classifySlackInteraction(input, options.env, undefined, undefined, {
-      ...(options.settings ? { settings: options.settings } : {}),
-    }));
-  // The model side never rejects by contract; a rejection would otherwise hang `basis`.
-  const model = classify(context).then(
-    (classification) => ({ classification, ms: Date.now() - startedAt }),
-    () => ({ classification: { intent: fallbackIntent(true), failed: true }, ms: Date.now() - startedAt }),
-  );
-  const clef = readClefInteraction(context, options.env).then((outcome) => ({
+  const adopted = options.early && sameJudgmentContext(options.early.context, context) ? options.early : undefined;
+  const calls = adopted ?? askJudgmentCalls(context, options);
+  const { model, management } = calls;
+  const clef = calls.clef.then((outcome) => ({
     outcome,
     early: earlyInteractionJudgment(outcome),
   }));
-  const management = readClefManagement(context, options.env);
   const managementLikely = management.then(managementFired);
+  const adoption = {
+    ...(adopted ? { earlyMs: startedAt - adopted.startedAt } : {}),
+    ...(options.early && !adopted ? { rejudged: true } : {}),
+  };
 
   // Exactly one decider. A promise keeps its first resolution, so whichever
   // settles first decides and a late Clef dispatch records nothing.
@@ -558,17 +631,20 @@ export function judgeGuaranteedInteraction(
 
   const settled = Promise.allSettled([basis, lateMeter, refined]).then(async () => {
     const [{ outcome, early }, { classification, ms }, d, managed] = await Promise.all([clef, model, decided, management]);
-    return emit(judgmentTrace(judgment, basisMs, {
-      clef: outcome,
-      management: managed,
-      gate: early.kind,
-      clefLate: early.kind === 'dispatch' && d.by === 'model',
-      model: classification,
-      modelMs: ms,
-      agreed: outcome.kind === 'read' && !classification.failed
-        ? (early.kind === 'dispatch' ? early.intent.disposition : outcome.reading.choice) === classification.intent.disposition
-        : undefined,
-    }));
+    return emit({
+      ...judgmentTrace(judgment, basisMs, {
+        clef: outcome,
+        management: managed,
+        gate: early.kind,
+        clefLate: early.kind === 'dispatch' && d.by === 'model',
+        model: classification,
+        modelMs: ms,
+        agreed: outcome.kind === 'read' && !classification.failed
+          ? (early.kind === 'dispatch' ? early.intent.disposition : outcome.reading.choice) === classification.intent.disposition
+          : undefined,
+      }),
+      ...adoption,
+    });
   });
 
   return { basis, lateChecklist, managementLikely, settled };

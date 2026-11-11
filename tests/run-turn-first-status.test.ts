@@ -295,7 +295,10 @@ async function firstStatusTimeline(
       }
       return { ok: true };
     },
-    assistant: { threads: { setStatus: slack('assistant.threads.setStatus') } },
+    assistant: { threads: {
+      setStatus: slack('assistant.threads.setStatus'),
+      setTitle: slack('assistant.threads.setTitle'),
+    } },
     reactions: {
       add: async (input: Record<string, unknown>) => {
         reactionsAdded.push(input);
@@ -624,6 +627,30 @@ test('a confident Clef reply dispatches on its record before the classifier answ
     assert.ok(dispatched < answered, `the dispatch does not wait for the classifier: ${timeline.join(' ')}`);
     assert.deepEqual(recordedIntents, [{ disposition: 'reply', reason: 'substantive_request' }]);
     assert.equal(clef.calls.length, 1);
+  });
+});
+
+// Defect caught: the title's Slack call still waits for the basis, so it
+// stays in the stage's tail; or it goes before the opening status, is sent
+// twice, or is no longer recorded.
+test('the title goes to Slack after the opening status and before the basis, once, and is recorded set', async () => {
+  const clef = fakeClefEnv('reply', { delayMs: 150 });
+  platformEnv = clef.env;
+  holdClassifierAnswer = answerAfterDispatch;
+  const titleMs: number[] = [];
+  await withScriptedClassifier(async () => {
+    const { timeline, presentation } = await firstStatusTimeline(
+      'dm', null, { onTitle: (ms) => titleMs.push(ms) }, classifiedAssignment,
+    );
+    const status = timeline.indexOf('slack:assistant.threads.setStatus');
+    const titled = timeline.indexOf('slack:assistant.threads.setTitle');
+    const recorded = timeline.indexOf('turnJobs.recordInteractionIntent');
+    assert.ok(status >= 0 && titled >= 0 && recorded >= 0, `status, title and basis: ${timeline.join(' ')}`);
+    assert.ok(status < titled, `the title follows the opening status: ${timeline.join(' ')}`);
+    assert.ok(titled < recorded, `the title does not wait for the basis: ${timeline.join(' ')}`);
+    assert.equal(timeline.filter((entry) => entry === 'slack:assistant.threads.setTitle').length, 1);
+    assert.equal(presentation?.title?.outcome, 'set', 'the outcome is recorded');
+    assert.equal(titleMs.length, 1, 'its time is reported once');
   });
 });
 
