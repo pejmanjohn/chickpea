@@ -18,6 +18,7 @@ import {
   isMetaAdsHelperTool,
   isMetaAdsWriteTool,
   isReviewedMetaAdsTool,
+  metaAdsHelperRuntimeArgumentNames,
   metaAdsNonAccountIdArgumentNames,
   metaAdsWriteSchemaContract,
 } from './meta-ads-policy.ts';
@@ -350,10 +351,14 @@ export function projectMcpToolInputSchema(
     }
     for (const [name, definition] of Object.entries(properties)) {
       if (metaAdsHelper) {
-        if (!supportedMetaAdsHelperProperty(metaAdsToolName!, name, definition, required.has(name))) {
+        const shape = metaAdsHelperPropertyShape(metaAdsToolName!, name);
+        if (shape) {
+          if (!shape(definition) || containsNestedAccountSelector(definition)) ambiguous = true;
+        } else if (looksLikeAlternateAccountSelector(name) || containsNestedExactAccountSelector(definition)) {
+          // Another optional argument is never shown to the model or sent, so
+          // only an account in it matters.
           ambiguous = true;
         }
-        if (containsNestedAccountSelector(definition)) ambiguous = true;
         continue;
       }
       if (metaAdsWrite) {
@@ -394,7 +399,8 @@ export function projectMcpToolInputSchema(
       if (!isRequired) ambiguous = true;
     }
     if (metaAdsHelper) {
-      if (accountFields.length !== 0) ambiguous = true;
+      const runtime = metaAdsHelperRuntimeArgumentNames(metaAdsToolName!);
+      if ([...required].some((name) => !runtime.includes(name))) ambiguous = true;
     }
   }
   if (metaAdsHelper) {
@@ -458,28 +464,14 @@ function safelyOmittedMetaAdsWriteProperty(definition: unknown): boolean {
     (Array.isArray(definition.default) && definition.default.length === 0);
 }
 
-function supportedMetaAdsHelperProperty(
-  tool: string,
-  name: string,
-  definition: unknown,
-  required: boolean,
-): boolean {
-  if (name === 'advertiser_request') {
-    return simpleString(definition);
-  }
-  if (name === 'client_conversation_id') {
-    return simpleStringOrNullableString(definition);
-  }
-  if (tool === META_ADS_ACCOUNT_HELPER && name === 'cursor') {
-    return !required && simpleStringOrNullableString(definition);
-  }
-  if (tool === META_ADS_ACCOUNT_HELPER && name === 'limit') {
-    return !required && simpleNumberSchema(definition);
-  }
-  if (tool === META_ADS_FIELD_HELPER && name === 'field_names') {
-    return simpleStringArray(definition);
-  }
-  return false;
+/** The reviewed shape of a helper property, or undefined for one the contract doesn't name. */
+function metaAdsHelperPropertyShape(tool: string, name: string): ((definition: unknown) => boolean) | undefined {
+  if (name === 'advertiser_request') return simpleString;
+  if (name === 'client_conversation_id') return simpleStringOrNullableString;
+  if (tool === META_ADS_ACCOUNT_HELPER && name === 'cursor') return simpleStringOrNullableString;
+  if (tool === META_ADS_ACCOUNT_HELPER && name === 'limit') return simpleNumberSchema;
+  if (tool === META_ADS_FIELD_HELPER && name === 'field_names') return simpleStringArray;
+  return undefined;
 }
 
 function simpleStringArray(value: unknown): boolean {

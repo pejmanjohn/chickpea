@@ -316,13 +316,15 @@ export function metaAdsToolSchemaSupported(tool: McpConnectionToolInfo): boolean
       (!contract.entityType || schema.propertyNames.includes('entity_type'));
   }
   if (!isMetaAdsHelperTool(tool.name)) return metaAdsAccountField(tool) !== undefined;
-  if (schema.accountFields.length !== 0) return false;
-  if (tool.name === META_ADS_ACCOUNT_HELPER) {
-    return schema.propertyNames.every((name) =>
-      [...(META_ADS_HELPER_RUNTIME_ARGUMENTS[META_ADS_ACCOUNT_HELPER] ?? []), 'cursor', 'limit'].includes(name));
-  }
-  return schema.propertyNames.every((name) =>
-    (META_ADS_HELPER_RUNTIME_ARGUMENTS[META_ADS_FIELD_HELPER] ?? []).includes(name));
+  // Meta adds optional helper arguments over time. Discovery marks a helper
+  // ambiguous when it requires an unreviewed one; the model is shown, and a
+  // call may send, only metaAdsRuntimePropertyNames.
+  return schema.accountFields.length === 0 && !schema.propertyNames.some((name) => /account/i.test(name));
+}
+
+/** The arguments a helper call may send. Discovery refuses a helper that requires any other. */
+export function metaAdsHelperRuntimeArgumentNames(name: string): readonly string[] {
+  return isMetaAdsHelperTool(name) ? META_ADS_HELPER_RUNTIME_ARGUMENTS[name] ?? [] : [];
 }
 
 /** Trusted server-owned effect metadata for the reviewed Meta tool contract. */
@@ -337,10 +339,8 @@ export function metaAdsRuntimePropertyNames(
   const matches = connection.discoveredTools.filter((tool) => tool.name === name);
   if (matches.length !== 1 || !metaAdsToolSchemaSupported(matches[0]!)) return undefined;
   if (isMetaAdsHelperTool(name)) {
-    const names = matches[0]!.inputSchema?.propertyNames ?? [];
-    const allowed = META_ADS_HELPER_RUNTIME_ARGUMENTS[name];
-    if (!allowed) return undefined;
-    return names.filter((value) => allowed.includes(value));
+    const allowed = metaAdsHelperRuntimeArgumentNames(name);
+    return (matches[0]!.inputSchema?.propertyNames ?? []).filter((value) => allowed.includes(value));
   }
   const names = matches[0]!.inputSchema?.propertyNames;
   return Array.isArray(names) && names.length > 0 && names.length <= MAX_META_ADS_SCHEMA_PROPERTIES &&
