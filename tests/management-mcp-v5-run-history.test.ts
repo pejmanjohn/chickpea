@@ -15,6 +15,7 @@ import type { PlatformEnv } from '../src/config/state-backend.ts';
 import type { AuthControl } from '../src/identity/types.ts';
 import { createWorkspaceManagementMcpServer } from '../src/management/mcp.ts';
 import { liveRunHistorySources } from '../src/management/run-history-live.ts';
+import { reconcileSlackPublicContextMutation } from '../src/slack/public-context.ts';
 import { AGENT_APP_BOT_EVENTS, canonicalSlackAppManifest } from '../src/slack/app-manifest.ts';
 import { RUN_HISTORY_RESULT_BYTES } from '../src/management/mcp-v5/run-history.ts';
 import { getAgentRunOutput, listAgentRunsOutput } from '../src/management/mcp-v5/run-history-schemas.ts';
@@ -410,22 +411,31 @@ test('a member who cannot change the Agent sees public runs only in Channels Sla
   assert.equal((await list(w, twoDays)).runs.length, 2, 'the Owner needs no directory');
 });
 
-test('a schedule made while its Channel was public is hidden once the Channel is private', async (t) => {
-  const w = await world(t, 'schedule-private');
+// Mutation proof: reading routine runs in the list again shows the public Channel schedule, the own DM schedule, or
+// counts the Channel schedule with no ledger run in notShown.
+test('schedule runs are not listed yet: schedules returns none with a note, and no list or count holds one', async (t) => {
+  const w = await world(t, 'schedules-not-listed');
   await createFixtureAgent(w.f, AGENT);
-  const scheduled = await w.run({ kind: 'routine_run', conversation: 'named_channel', channelId: 'C_PUBLIC', requester: 'owner', recordedPublic: true });
-  w.share.posts.set(scheduled.routineRunId, { channelId: 'C_PUBLIC', messageTs: '1800000000.000100' });
-  const before = await list(w);
-  assert.equal(before.runs.length, 1);
-  assert.deepEqual(before.runs[0]!.where, { kind: 'schedule', schedule: 'Morning digest', postsTo: 'channel', channelId: 'C_PUBLIC', channelName: 'general' });
-  const detail = structured(await w.call('get_agent_run', { runId: before.runs[0]!.runId }));
-  assert.equal(detail.ask, undefined, 'a schedule run has no ask; list_schedules has its task');
-  assert.deepEqual(detail.reply, { state: 'not_kept' });
-  assert.equal(detail.slackUrl, 'https://slack.com/archives/C_PUBLIC/p1800000000000100');
+  const yesterday = Date.now() - 26 * 60 * MINUTE;
+  const since = new Date(yesterday - 60 * MINUTE).toISOString();
+  // A Channel schedule run as on Cloud: no ledger run, so nothing could confirm it public.
+  await w.run({ kind: 'routine_run', conversation: 'named_channel', channelId: 'C_PUBLIC', requester: 'owner', startedAt: yesterday });
+  await w.run({ kind: 'routine_run', conversation: 'named_channel', channelId: 'C_PUBLIC', requester: 'owner', recordedPublic: true, startedAt: yesterday - MINUTE });
+  await w.run({ kind: 'routine_run', conversation: 'direct_message', channelId: 'D_OWNER', requester: 'owner', startedAt: yesterday - 2 * MINUTE });
+  await w.run({ kind: 'routine_run', conversation: 'direct_message', channelId: 'D_MEMBER', requester: 'member', startedAt: yesterday - 3 * MINUTE });
+  await w.run({ conversation: 'direct_message', channelId: 'D_OWNER', requester: 'owner', ask: 'hi', startedAt: yesterday - 4 * MINUTE });
 
-  w.share.channels.C_PUBLIC = { ...w.share.channels.C_PUBLIC!, private: true };
-  assert.deepEqual((await list(w)).runs, []);
-  assert.equal(code(await w.call('get_agent_run', { runId: before.runs[0]!.runId })), 'not_found');
+  const all = await list(w, { since });
+  assert.deepEqual(all.runs.map(({ where }) => where), [{ kind: 'your_dm' }]);
+  assert.equal(all.summary?.runs, 1);
+  assert.equal(all.summary?.notShown, undefined, 'a schedule run is in no count it could not be listed in');
+
+  const schedules = await list(w, { place: 'schedules', since });
+  assert.deepEqual(schedules.runs, []);
+  assert.deepEqual([schedules.summary, schedules.nextCursor], [undefined, undefined], 'no count stands in for runs not read');
+  assert.match(schedules.note as string, /^Schedule runs aren't listed here yet\. list_schedules shows when each schedule last ran/);
+  assert.match(schedules.nextStep as string, /list_schedules/);
+  assert.equal(code(await w.call('list_agent_runs', { agentId: 'agent_unknown', place: 'schedules' })), 'not_found', 'the Agent is still checked');
 });
 
 test('a public Channel run is hidden once the Agent\'s app has left the Channel', async (t) => {
@@ -495,17 +505,6 @@ test('the summary counts only runs the caller sees; a hidden run moves no field'
   assert.deepEqual(before.failures, { failed: 1 });
 });
 
-test('another person\'s DM schedule run is in no row and no count; your own is listed', async (t) => {
-  const w = await world(t, 'dm-schedules');
-  await createFixtureAgent(w.f, AGENT);
-  const yesterday = Date.now() - 26 * 60 * MINUTE;
-  await w.run({ kind: 'routine_run', conversation: 'direct_message', channelId: 'D_MEMBER', requester: 'member', startedAt: yesterday });
-  await w.run({ kind: 'routine_run', conversation: 'direct_message', channelId: 'D_OWNER', requester: 'owner', startedAt: yesterday - MINUTE });
-  const page = await list(w, { place: 'schedules', since: new Date(yesterday - 60 * MINUTE).toISOString() });
-  assert.deepEqual(page.runs.map(({ where }) => where), [{ kind: 'schedule', schedule: 'Morning digest', postsTo: 'your_dm' }]);
-  assert.equal(page.summary?.notShown, undefined);
-});
-
 test('hidden runs are counted in whole UTC days before today, so since cannot pin one down', async (t) => {
   const w = await world(t, 'whole-days');
   await createFixtureAgent(w.f, AGENT);
@@ -539,6 +538,30 @@ test('a message deleted in Slack is not returned, and nothing else stands in for
   assert.deepEqual(detail.ask, { state: 'not_kept' });
   assert.deepEqual(detail.reply, { state: 'not_kept' });
   assert.ok(w.share.reads.every((read) => ['usage.list', 'usage.get', 'usage.summarize', 'visibility', 'thread'].includes(read) || read.startsWith('slack:')), w.share.reads.join());
+});
+
+// Mutation proof: dropping the placeholder check in askRow serves Slack's placeholder as the ask, in the list and the run.
+test('an ask Slack replaced with its placeholder for a deleted message reads as not kept, as a deleted one does', async (t) => {
+  const w = await world(t, 'tombstone');
+  await createFixtureAgent(w.f, AGENT);
+  const asked = await w.run({ conversation: 'direct_message', channelId: 'D_OWNER', requester: 'owner', ask: 'delete me', reply: 'an answer' });
+  // A person who typed those words themselves.
+  const typed = await w.run({ conversation: 'direct_message', channelId: 'D_OWNER', requester: 'owner', ask: 'This message was deleted.', reply: 'ok' });
+  // Deleting a message that has replies: Slack keeps a placeholder in its place and sends it as an edit.
+  assert.equal(await reconcileSlackPublicContextMutation(w.f.config, w.workspaceId, {
+    type: 'message', subtype: 'message_changed', channel: 'D_OWNER', ts: '1900000000.000001', event_ts: '1900000000.000001',
+    message: { type: 'message', channel: 'D_OWNER', subtype: 'tombstone', user: 'USLACKBOT', text: 'This message was deleted.', ts: asked.messageTs, thread_ts: asked.messageTs },
+  }), true);
+  const record = await w.f.config.listSlackPublicContext(w.workspaceId, 'D_OWNER', asked.messageTs);
+  assert.equal(record.find(({ messageTs }) => messageTs === asked.messageTs)?.text, 'This message was deleted.', 'the record holds the placeholder');
+
+  const byId = new Map((await list(w)).runs.map((row) => [row.when, row]));
+  const deletedRow = byId.get(new Date(asked.startedAt).toISOString())!;
+  assert.equal(deletedRow.ask, undefined);
+  const detail = structured(await w.call('get_agent_run', { runId: deletedRow.runId }));
+  assert.deepEqual([detail.ask, detail.reply], [{ state: 'not_kept' }, { state: 'not_kept' }]);
+  const typedRow = byId.get(new Date(typed.startedAt).toISOString())!;
+  assert.equal(typedRow.ask, 'This message was deleted.', 'words the person sent are theirs');
 });
 
 test('a reply two runs of the Agent could own is not kept rather than guessed', async (t) => {
@@ -716,13 +739,11 @@ test('a since still to come lists nothing; a run before since is not listed, tho
   }
 });
 
-test('a Channel Slack calls a group DM is hidden; a schedule\'s post in another Channel gets no link', async (t) => {
-  const w = await world(t, 'mpim-and-post');
+test('a Channel Slack calls a group DM is hidden', async (t) => {
+  const w = await world(t, 'mpim');
   await createFixtureAgent(w.f, AGENT);
-  const scheduled = await w.run({ kind: 'routine_run', conversation: 'named_channel', channelId: 'C_PUBLIC', requester: 'owner', recordedPublic: true });
-  w.share.posts.set(scheduled.routineRunId, { channelId: 'G_PRIVATE', messageTs: '1800000000.000100' });
-  const [row] = (await list(w)).runs;
-  assert.equal(structured(await w.call('get_agent_run', { runId: row!.runId })).slackUrl, undefined);
+  await w.run({ conversation: 'named_channel', channelId: 'C_PUBLIC', requester: 'owner', recordedPublic: true });
+  assert.equal((await list(w)).runs.length, 1);
   w.share.channels.C_PUBLIC = { ...w.share.channels.C_PUBLIC!, mpim: true };
   assert.deepEqual((await list(w)).runs, []);
 });
@@ -1032,8 +1053,10 @@ test('live sources: what a run cost is its own bill rows, by billing run, net of
   await w.run({ conversation: 'direct_message', channelId: 'D_OWNER', requester: 'owner', billingRunId: 'flue_one', startedAt: Date.now() - 3 * MINUTE });
   await w.run({ conversation: 'direct_message', channelId: 'D_OWNER', requester: 'owner', billingRunId: 'flue_two', startedAt: Date.now() - 4 * MINUTE });
   await w.run({ conversation: 'direct_message', channelId: 'D_OWNER', requester: 'owner', startedAt: Date.now() - 5 * MINUTE });
+  // The bill leaves out a run whose rows net to nothing: billed nothing, not hidden.
+  await w.run({ conversation: 'direct_message', channelId: 'D_OWNER', requester: 'owner', billingRunId: 'flue_free', startedAt: Date.now() - 6 * MINUTE });
   const page = await list(w);
-  assert.deepEqual(page.runs.map(({ charged }) => charged), [{ amount: '$0.04' }, { amount: '$0' }, undefined]);
+  assert.deepEqual(page.runs.map(({ charged }) => charged), [{ amount: '$0.04' }, { amount: '$0' }, undefined, { amount: '$0' }]);
   assert.deepEqual([...new Set(reads)], ['installation_bill']);
 });
 

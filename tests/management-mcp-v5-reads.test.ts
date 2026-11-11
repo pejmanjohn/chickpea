@@ -188,7 +188,7 @@ for (const protocol of [LEGACY, MODERN]) {
     const profile = tools.find(({ name }) => name === 'get_account')!.outputSchema as Record<string, unknown>;
     assert.deepEqual(Object.keys(profile.properties as object).sort(), ['email', 'id', 'name', 'nickname']);
     assert.deepEqual(profile.required, ['id']);
-    assert.equal(profile.additionalProperties, false);
+    assert.equal(profile.additionalProperties, undefined, 'a listed output accepts a field a later release adds');
   });
 }
 

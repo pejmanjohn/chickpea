@@ -12,7 +12,10 @@ import { MCP_ERROR_CODES } from './conventions.ts';
 /**
  * Inputs and outputs of the 5.0 management tools. Every output is strict, so
  * the SDK's output check refuses a field the contract does not name: no
- * internal ID, revision or per-step duration can ride along unnoticed.
+ * internal ID, revision or per-step duration can ride along unnoticed. Its
+ * listed JSON Schema is open (`openOutputSchema`), so a client holding an
+ * older listing accepts a field a later release adds. Inputs stay strict in
+ * both: an argument a tool does not name is refused.
  */
 
 const zText = (max: number) => z.string().min(1).max(max);
