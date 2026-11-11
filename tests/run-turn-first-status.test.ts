@@ -1088,7 +1088,7 @@ test('the reply text is marked visible when Slack acknowledges the stream start,
 // Defect caught: the reply waits for the answer's usage record and its Work
 // settlement, response and delivery records before Slack sees it, each up to
 // its 100 ms budget.
-test('the reply goes out before its usage and Work records land, and is marked delivered after them', async (t) => {
+test('the reply goes out before its usage and Work records land, and the usage record lands before the turn is marked delivered', async (t) => {
   const warnings: string[] = [];
   t.mock.method(console, 'warn', (...values: unknown[]) => { warnings.push(values.map(String).join(' ')); });
   let release!: () => void;

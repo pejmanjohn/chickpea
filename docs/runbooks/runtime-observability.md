@@ -555,7 +555,9 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   adds its rest, the update that replaces it, or the post. `receiptToFinalMs`
   is later: it also waits for the stream's stop, the reply's cards and the
   status clear. Both are absent on an attempt that showed no reply text of its
-  own, such as one that replays a reply an earlier attempt delivered.
+  own, such as one that replays a reply an earlier attempt delivered. On a row
+  whose `firstAnswerText` is `final`, `receiptToFirstAnswerTextMs` equals
+  `receiptToFinalMs`, so read this field for when the text showed.
 - `answer_release` is a shadow of the host release rule
   (`src/slack/answer-release.ts`) and changes nothing in Slack. The rule
   releases a model step's text once its settled prefix (what
