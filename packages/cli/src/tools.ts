@@ -113,11 +113,14 @@ export function collectEnvelopeHints(envelope: ToolEnvelope): EnvelopeHints {
   }
   walk(result, (key, value) => {
     if (key === 'setupUrl' && typeof value === 'string') setupLinks.add(value);
-    if (!value || typeof value !== 'object') return;
-    const child = value as Record<string, unknown>;
-    if (key === 'confirmation' && typeof child.confirmToken === 'string') confirmTokens.add(child.confirmToken);
-    if (key === 'setup' && typeof child.url === 'string') setupPages.add(child.url);
   });
+  // 5.0 keeps both at the top of a change result. The token goes into a shell
+  // command the person may paste, so anything but a plain handle is skipped.
+  const top = result && typeof result === 'object' && !Array.isArray(result) ? result as Record<string, unknown> : {};
+  const confirmToken = (top.confirmation as { confirmToken?: unknown } | undefined)?.confirmToken;
+  if (typeof confirmToken === 'string' && /^[\w.:-]{1,128}$/.test(confirmToken)) confirmTokens.add(confirmToken);
+  const setupPage = (top.setup as { url?: unknown } | undefined)?.url;
+  if (typeof setupPage === 'string' && /^https?:\/\/[^\s\p{Cc}]+$/u.test(setupPage)) setupPages.add(setupPage);
   return {
     confirmations: [...confirmations],
     setupLinks: [...setupLinks],

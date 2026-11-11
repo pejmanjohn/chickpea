@@ -173,6 +173,14 @@ test('5.0 results that wait for confirmation or issue a setup link carry the sam
   assert.deepEqual(lines.slice(1), [`  ${SETUP_URL}`, 'Cancel it with the cancel_setup_link tool if it leaks.']);
   const confirm = renderEnvelopeHints(collectEnvelopeHints({ ok: true, result: waiting }), 'https://chickpea.example');
   assert.equal(confirm.at(-1), `  chickpea call https://chickpea.example confirm_change --args '{"confirmToken":"confirm_1"}'`);
+  // Only a plain handle at the top of the result becomes a command to paste.
+  for (const result of [
+    { confirmation: { confirmToken: "x'; rm -rf ~; '", preview: 'x' } },
+    { agent: { confirmation: { confirmToken: 'nested_1' }, setup: { url: SETUP_URL } } },
+    { setup: { url: 'https://chickpea.example/setup\u001b[2J' } },
+  ]) {
+    assert.deepEqual(collectEnvelopeHints({ ok: true, result }), { confirmations: [], setupLinks: [], confirmTokens: [], setupPages: [] });
+  }
   // A card host's result holds the token for the card; nothing to confirm from here.
   assert.deepEqual(collectEnvelopeHints({ ok: true, result: { status: 'needs_confirmation', confirmation: { preview: 'x' } } }).confirmTokens, []);
 });
