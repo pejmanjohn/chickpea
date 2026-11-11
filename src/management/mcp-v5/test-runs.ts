@@ -2,9 +2,11 @@
  * practice_agent and get_practice_run (practice runs §1, addendum 1): one
  * read-only run of an Agent on a question, as the caller's direct message
  * would run it, posting nowhere, with its answer and every step it took.
- * try_agent_once and get_test_run are the first-answer card's names for the
- * same runs, kept until the card moves over (PR C). Every check is here; the
- * state store admits, dispatches, settles and erases. Loaded at a call.
+ * try_agent_once and get_test_run are the same two calls under the names
+ * that Agent cards published before practice runs send, in the shape those
+ * cards read. They go when the card versions collapse to one before the
+ * production pin. Every check is here; the state store admits, dispatches,
+ * settles and erases. Loaded at a call.
  */
 import { createHash, randomBytes } from 'node:crypto';
 
@@ -79,9 +81,6 @@ const REAL_TIME: TestRunTiming = {
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
 
-/** How a caller's names for a run differ: the card's first answer refuses a connection practice leaves out. */
-type Caller = 'practice' | 'card';
-
 interface Asked {
   view: TestRunView;
   agentName: string;
@@ -93,7 +92,7 @@ export async function practiceAgent(
   input: z.infer<typeof schemas.practiceAgentInput>,
   timing: TestRunTiming = REAL_TIME,
 ): Promise<PracticeOutput> {
-  return practiceResult(await ask(deps, input, 'practice', timing));
+  return practiceResult(await ask(deps, input, timing));
 }
 
 export async function getPracticeRun(
@@ -104,15 +103,16 @@ export async function getPracticeRun(
   return practiceResult(await follow(deps, input.runToken, timing));
 }
 
-/** The card's first answer: the stored first question, in the shape the card reads. */
+/** practice_agent with no question, for a card published before it. */
 export async function tryAgentOnce(
   deps: FiveZeroDeps,
   input: z.infer<typeof schemas.tryAgentOnceInput>,
   timing: TestRunTiming = REAL_TIME,
 ): Promise<AliasOutput> {
-  return aliasResult(await ask(deps, input, 'card', timing));
+  return aliasResult(await ask(deps, input, timing));
 }
 
+/** get_practice_run, for a card published before it. */
 export async function getTestRun(
   deps: FiveZeroDeps,
   input: z.infer<typeof schemas.getTestRunInput>,
@@ -130,7 +130,6 @@ export async function getTestRun(
 async function ask(
   deps: FiveZeroDeps,
   input: { agentId: string; question?: string | undefined; idempotencyKey?: string | undefined },
-  caller: Caller,
   timing: TestRunTiming,
 ): Promise<Asked> {
   const until = timing.now() + PRACTICE_RETURNS_BY_MS;
@@ -162,7 +161,6 @@ async function ask(
     questionDigest: asked.questionDigest,
     idempotencyKey: input.idempotencyKey ?? `minted_${token(20)}`,
     ...(member.timezone ? { timezone: member.timezone } : {}),
-    caller,
   });
   const started = await store.start(request);
   if (started.kind === 'in_progress') {
@@ -260,13 +258,13 @@ async function requireSlackDm(deps: FiveZeroDeps, reading: AgentAdmissionReading
  * it: the model policy, then the credential with its use registered, then
  * the real route, narrowed to reads. A connection the caller has yet to set
  * up refuses the run. One with nothing that reads is left out of it, listed
- * with its fix; the card's first answer refuses it instead.
+ * with its fix.
  */
 async function resolvePracticeRun(
   deps: FiveZeroDeps,
   reading: AgentAdmissionReading,
   resolved: Awaited<ReturnType<typeof resolveAgentModel>>,
-  asked: { question: string; questionDigest: string; idempotencyKey: string; timezone?: string; caller: Caller },
+  asked: { question: string; questionDigest: string; idempotencyKey: string; timezone?: string },
 ) {
   const { stores, agent, workspaceId, actor } = reading;
   const { assignment } = resolved;
@@ -302,9 +300,8 @@ async function resolvePracticeRun(
   const untestable = untestableConnections(parts.connections);
   const fixes: PracticeFix[] = [];
   for (const connection of untestable) {
-    const left = await notTestable(deps, reading, connection);
-    if (asked.caller === 'card') fail('not_testable', left.message, left.options);
-    if (left.options.fix) fixes.push(left.options.fix);
+    const fix = await practiceFix(deps, reading, connection);
+    if (fix) fixes.push(fix);
   }
   const memory = await stores.memory?.getAgentMemory(agent.id);
   const memoryBlock = memory ? agentMemoryPromptBlock(memory.body) : undefined;
@@ -444,49 +441,32 @@ function practiceAvailable(plan: RuntimePlanV2): Array<{ service: string; tools:
 }
 
 /**
- * Why a run can't use a connection, with what fixes it. A custom MCP
- * connection's tools are marked as reads with update_connection, by whoever
- * may change that connection, as in Admin; one that allows no tools has none
- * to mark, so its tools are chosen in Admin first. A managed service's read
- * tools, or a reviewed connector's (Bugsnag or Meta Ads, added by URL too),
- * are chosen on the Agent's page in Admin, and update_connection refuses a
- * reviewed one. Nothing marks a catalog MCP service's tools, so it gets no fix.
+ * What lets a run use a connection it left out. A custom MCP connection's
+ * tools are marked as reads with update_connection, by whoever may change
+ * that connection, as in Admin; one that allows no tools has none to mark, so
+ * its tools are chosen in Admin first. A managed service's read tools, or a
+ * reviewed connector's (Bugsnag or Meta Ads, added by URL too), are chosen on
+ * the Agent's page in Admin, and update_connection refuses a reviewed one.
+ * Nothing marks a catalog MCP service's tools, so it gets no fix.
  */
-async function notTestable(
+async function practiceFix(
   deps: FiveZeroDeps,
   reading: AgentAdmissionReading,
   { account, policy }: EffectiveConnectionAccount,
-): Promise<{ message: string; options: { nextStep?: string; fix?: McpErrorFix } }> {
-  const { agent } = reading;
-  const cannot = `None of ${account.label}'s tools are marked as reads, so a practice run can't use it.`;
+): Promise<McpErrorFix | undefined> {
   if (policy.kind === 'mcp' && !policy.presetId && !isMcpToolReviewRequired(policy)) {
-    if (!canManageOwnedResource(reading.actor, account)) {
-      return { message: `${cannot} An Owner or Admin can mark the tools that only read as reads.`, options: {} };
-    }
+    if (!canManageOwnedResource(reading.actor, account)) return undefined;
     // update_connection marks only allowed tools, and get_agent names none to allow, so Admin chooses them.
-    if (policy.allowedTools.length === 0) {
-      const fix = agentAdminFix(deps, reading, 'Choose its tools in Admin');
-      return {
-        message: `${account.label} allows no tools yet, so a practice run can't use it. Choose its tools on the Agent's page in Admin, then mark the ones that only read.`,
-        options: fix ? { fix } : {},
-      };
-    }
+    if (policy.allowedTools.length === 0) return agentAdminFix(deps, reading, 'Choose its tools in Admin');
     // The connectionId get_agent shows for it: its provider ID, or its own when two share one.
-    const lanes = (await agentConnectionsOf(deps, reading.context, agent.id))?.mcpServers.map(({ id }) => id) ?? [];
+    const agentId = reading.agent.id;
+    const lanes = (await agentConnectionsOf(deps, reading.context, agentId))?.mcpServers.map(({ id }) => id) ?? [];
     const connectionId = lanes.find((id) => id === account.id) ?? lanes.find((id) => id === account.providerId) ?? account.id;
-    return {
-      message: `${cannot} Mark the tools that only read as reads, then try again.`,
-      options: {
-        nextStep: 'Ask the person which of its tools only look things up. Mark a tool as a read only when the person confirms it only reads; never from its name alone. Then call update_connection with those in changes.readTools and the version get_agent returns.',
-        fix: { label: `Mark ${practiceName(account.label)}'s read tools`, tool: 'update_connection', arguments: { agentId: agent.id, connectionId } },
-      },
-    };
+    return { label: `Mark ${practiceName(account.label)}'s read tools`, tool: 'update_connection', arguments: { agentId, connectionId } };
   }
-  const fix = policy.kind === 'managed' || isMcpToolReviewRequired(policy)
+  return policy.kind === 'managed' || isMcpToolReviewRequired(policy)
     ? agentAdminFix(deps, reading, 'Open the Agent in Admin')
     : undefined;
-  // With a fix, the card says what to do after it; asking in Slack is for when there is none.
-  return fix ? { message: cannot, options: { fix } } : { message: `${cannot} Ask ${agent.name} in Slack instead.`, options: {} };
 }
 
 /** The question as a Slack person's text reaches the model: plain, with Slack's control characters escaped. */

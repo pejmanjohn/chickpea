@@ -1,0 +1,844 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Chickpea connect card</title>
+<style>/*
+ * Framework-free MCP App styles.
+ */
+
+@layer base {
+  :root {
+    color-scheme: light dark;
+    --background: var(
+      --color-background-primary,
+      light-dark(rgb(255 255 255), rgb(24 24 24))
+    );
+    --foreground: var(
+      --color-text-primary,
+      light-dark(rgb(26 28 31), rgb(255 255 255))
+    );
+    --card: color-mix(in oklab, var(--foreground) 5%, var(--background));
+    --card-foreground: var(--color-text-primary, var(--foreground));
+    --primary: var(
+      --color-text-info,
+      light-dark(rgb(51 156 255), rgb(131 195 255))
+    );
+    --primary-foreground: var(
+      --color-text-inverse,
+      light-dark(rgb(255 255 255), rgb(13 13 13))
+    );
+    --secondary: var(
+      --color-background-secondary,
+      light-dark(rgb(255 255 255 / 96%), rgb(54 54 54 / 96%))
+    );
+    --secondary-foreground: var(--color-text-primary, var(--foreground));
+    --muted: color-mix(in srgb, var(--foreground) 10%, transparent);
+    --muted-foreground: var(
+      --color-text-secondary,
+      light-dark(rgb(26 28 31 / 49.4%), rgb(255 255 255 / 49.8%))
+    );
+    --accent: var(
+      --color-background-info,
+      light-dark(rgb(229 242 255), rgb(13 39 63))
+    );
+    --accent-foreground: var(--color-text-info, var(--primary));
+    --destructive: var(
+      --color-text-warning,
+      light-dark(rgb(226 85 7), rgb(255 133 73))
+    );
+    --border: var(
+      --color-border-secondary,
+      light-dark(rgb(26 28 31 / 8%), rgb(255 255 255 / 8.2%))
+    );
+    --input: var(
+      --color-border-primary,
+      light-dark(rgb(26 28 31 / 11.8%), rgb(255 255 255 / 12%))
+    );
+    --ring: var(--color-ring-primary, var(--primary));
+    --font-size-base: var(--font-text-md-size, 14px);
+    --radius: var(--border-radius-lg, 12.5px);
+  }
+
+  :root[data-theme="light"] {
+    color-scheme: light;
+  }
+
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+  }
+
+  body {
+    margin: 0;
+    color: var(--foreground);
+    background: var(--background);
+    font-size: max(11px, var(--font-size-base));
+    font-weight: var(--font-weight-normal, 430);
+    line-height: 1.5;
+  }
+
+  /* MCP sandboxes can force their own font on body, so restore the host font below it. */
+  body,
+  body > * {
+    font-family: var(
+      --font-sans,
+      -apple-system,
+      system-ui,
+      "Segoe UI",
+      sans-serif
+    );
+  }
+
+  h1,
+  h2,
+  h3,
+  p {
+    margin-block: 0;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-weight: var(--font-weight-medium, 500);
+    line-height: 1.25;
+  }
+
+  h1 {
+    font-size: calc(var(--font-size-base) * 1.7142857143);
+  }
+
+  h2 {
+    font-size: calc(var(--font-size-base) * 1.4285714286);
+  }
+
+  h3 {
+    font-size: calc(var(--font-size-base) * 1.2857142857);
+  }
+}
+
+@layer components {
+  .cursor-interaction {
+    cursor: var(--cursor-interaction, pointer);
+  }
+
+  .card {
+    min-width: 0;
+    padding: 12px;
+    overflow-wrap: break-word;
+    border-radius: calc(var(--radius) * 1.6);
+    corner-shape: superellipse(1.5);
+    color: var(--card-foreground);
+    background: var(--card);
+  }
+
+  .btn,
+  .form-check-input,
+  .form-control,
+  .form-select {
+    box-sizing: border-box;
+    font: inherit;
+  }
+
+  .btn {
+    appearance: button;
+    display: inline-flex;
+    inline-size: fit-content;
+    max-inline-size: 100%;
+    min-height: 28px;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    margin: 0;
+    padding: 0 8px;
+    border: 1px solid var(--input);
+    border-radius: var(--radius);
+    corner-shape: superellipse(1.5);
+    color: var(--secondary-foreground);
+    background: var(--secondary);
+    cursor: var(--cursor-interaction, pointer);
+    text-align: center;
+    text-decoration: none;
+    white-space: nowrap;
+    user-select: none;
+  }
+
+  .btn:not(:disabled):hover {
+    background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+  }
+
+  .btn-primary {
+    border-color: transparent;
+    color: var(--primary-foreground);
+    background: var(--foreground);
+    background-clip: padding-box;
+  }
+
+  .btn-primary:not(:disabled):hover {
+    background: color-mix(in srgb, var(--foreground) 80%, transparent);
+    background-clip: padding-box;
+  }
+
+  .btn-ghost {
+    border-color: transparent;
+    color: var(--muted-foreground);
+    background: transparent;
+  }
+
+  .btn-ghost:not(:disabled):hover {
+    color: var(--foreground);
+    background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+  }
+
+  .btn:not(.btn-primary):is([aria-pressed="true"], [aria-selected="true"]) {
+    border-color: var(--primary);
+    color: var(--primary-foreground);
+    background: var(--primary);
+  }
+
+  .btn:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  .btn:disabled,
+  .form-check-input:disabled,
+  .form-control:disabled,
+  .form-select:disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
+  }
+
+  .form-label {
+    display: block;
+    margin-bottom: 6px;
+    color: var(--foreground);
+  }
+
+  .form-control,
+  .form-select {
+    display: block;
+    width: 100%;
+    min-height: 28px;
+    padding: 0 8px;
+    outline: none;
+    border: 1px solid var(--input);
+    border-radius: var(--radius);
+    corner-shape: superellipse(1.5);
+    color: var(--foreground);
+    background: var(--secondary);
+  }
+
+  .form-control::placeholder {
+    color: var(--muted-foreground);
+  }
+
+  .form-select {
+    appearance: none;
+    padding-right: 32px;
+    background-image:
+      linear-gradient(45deg, transparent 50%, var(--muted-foreground) 50%),
+      linear-gradient(135deg, var(--muted-foreground) 50%, transparent 50%);
+    background-position:
+      calc(100% - 14px) 50%,
+      calc(100% - 10px) 50%;
+    background-repeat: no-repeat;
+    background-size: 4px 4px;
+    cursor: var(--cursor-interaction, pointer);
+  }
+
+  .form-select:not(:disabled):hover {
+    background-color: color-mix(
+      in srgb,
+      var(--foreground) 6%,
+      var(--secondary)
+    );
+  }
+
+  textarea.form-control {
+    min-height: 72px;
+    padding: 8px 10px;
+    resize: vertical;
+  }
+
+  .form-control:focus-visible,
+  .form-select:focus-visible {
+    border-color: var(--ring);
+    box-shadow: inset 0 0 0 1px var(--ring);
+  }
+
+  .form-check {
+    display: flex;
+    min-height: 20px;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .form-check-input {
+    appearance: none;
+    display: grid;
+    width: 16px;
+    height: 16px;
+    flex: 0 0 auto;
+    place-items: center;
+    margin: 0;
+    border: 1px solid var(--input);
+    border-radius: 5px;
+    corner-shape: superellipse(1.5);
+    color: var(--primary-foreground);
+    background: var(--secondary);
+    cursor: var(--cursor-interaction, pointer);
+  }
+
+  .form-check-input:checked {
+    border-color: var(--primary);
+    background: var(--primary);
+  }
+
+  .form-check-input:checked::after {
+    width: 7px;
+    height: 4px;
+    border-bottom: 2px solid currentColor;
+    border-left: 2px solid currentColor;
+    content: "";
+    transform: translateY(-1px) rotate(-45deg);
+  }
+
+  .form-check-input:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  .form-check-label {
+    color: var(--foreground);
+  }
+
+  svg.lucide {
+    display: block;
+    width: 16px;
+    height: 16px;
+    flex: none;
+    stroke-width: 1.6;
+  }
+
+  .text-small {
+    font-size: max(11px, calc(var(--font-size-base) - 2px));
+  }
+
+  .text-muted {
+    color: var(--muted-foreground);
+  }
+
+  .text-destructive {
+    color: var(--destructive);
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+}
+
+/*
+ * The Agent card in ChatGPT's own look: its type, colors and black primary
+ * buttons, from the host's style variables. Chickpea shows only in the avatar
+ * and the quote accent. Without host variables the colors fall back to the
+ * mockup's palette, and without a host theme to light.
+ */
+
+:root:not([data-theme]) {
+  color-scheme: light;
+}
+
+:root {
+  --cp-bg: var(--color-background-primary, light-dark(#ffffff, #181818));
+  --cp-fg: var(--color-text-primary, light-dark(#0d0d0d, #ededed));
+  /* Secondary text stays at AA contrast; the host's tertiary text does not. */
+  --cp-muted: var(--color-text-secondary, light-dark(#5d5d5d, #cdcdcd));
+  --cp-line: var(--color-border-primary, light-dark(#e5e5e5, rgb(255 255 255 / 20%)));
+  --cp-soft: light-dark(#f7f7f7, rgb(255 255 255 / 6%));
+  --cp-ok: light-dark(#1a7f37, #40c977);
+  --cp-warn: light-dark(#a15c00, #f0a050);
+  --cp-danger: #c62828;
+  --cp-danger-hover: #a31f1f;
+  --cp-accent: #e8901a;
+  --cp-size: var(--font-text-md-size, 14px);
+}
+
+html,
+body {
+  background: var(--cp-bg);
+  color: var(--cp-fg);
+}
+
+body {
+  font-size: var(--cp-size);
+  line-height: 1.45;
+}
+
+.cp-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 16px;
+  overflow-wrap: anywhere;
+}
+
+.cp-hdr {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.cp-avatar {
+  flex: none;
+  display: block;
+}
+
+.cp-avatar svg,
+.cp-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Slack's rounded square, cropped as Admin and the setup page crop it. */
+.cp-avatar img {
+  object-fit: cover;
+}
+
+.cp-avatar-lg {
+  width: 44px;
+  height: 44px;
+}
+
+.cp-avatar-lg img {
+  border-radius: 12px;
+}
+
+.cp-avatar-sm {
+  width: 26px;
+  height: 26px;
+}
+
+.cp-avatar-sm img {
+  border-radius: 7px;
+}
+
+/* On an alert card, an Agent's picture keeps the alert art's red. */
+.cp-avatar-alert img {
+  outline: 2px solid var(--cp-danger);
+  outline-offset: 1px;
+}
+
+.cp-heading {
+  min-width: 0;
+}
+
+.cp-title {
+  margin: 0;
+  font-size: calc(var(--cp-size) * 1.143);
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+/* Focus lands here after a redraw only so the keyboard stays on the card. */
+.cp-title:focus {
+  outline: none;
+}
+
+.cp-sub {
+  margin: 2px 0 0;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.93);
+}
+
+.cp-ok {
+  color: var(--cp-ok);
+}
+
+.cp-warn {
+  color: var(--cp-warn);
+}
+
+.cp-text {
+  margin: 12px 0 0;
+  white-space: pre-line;
+}
+
+.cp-sect {
+  margin: 14px 0 6px;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.79);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.cp-sect + .cp-text {
+  margin-top: 0;
+}
+
+.cp-quote {
+  margin: 6px 0;
+  padding: 2px 0 2px 10px;
+  border-left: 3px solid var(--cp-accent);
+  white-space: pre-line;
+}
+
+.cp-note {
+  margin: 6px 0 0;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.93);
+}
+
+.cp-note.cp-warn {
+  color: var(--cp-warn);
+}
+
+.cp-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--cp-line);
+  border-radius: 12px;
+  background: var(--cp-soft);
+}
+
+.cp-msg {
+  display: grid;
+  grid-template-columns: 26px 1fr;
+  gap: 8px;
+  font-size: calc(var(--cp-size) * 0.964);
+}
+
+/*
+ * A host may pass an example's line breaks as they are; they show as written.
+ * A long one shows its start and an ellipsis: the tool's result holds it whole.
+ */
+.cp-said {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.cp-clamp-2 {
+  -webkit-line-clamp: 2;
+}
+
+.cp-clamp-5 {
+  -webkit-line-clamp: 5;
+}
+
+.cp-init {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border-radius: 7px;
+  background: #4a6cc4;
+  color: #ffffff;
+  font-size: calc(var(--cp-size) * 0.86);
+  font-weight: 600;
+}
+
+.cp-line {
+  margin: 10px 0 0;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.964);
+}
+
+.cp-line b {
+  color: var(--cp-fg);
+  font-weight: 500;
+}
+
+.cp-chip {
+  display: inline-flex;
+  padding: 0 9px;
+  border: 1px solid var(--cp-line);
+  border-radius: 999px;
+  background: var(--cp-soft);
+  color: var(--cp-fg);
+  font-size: calc(var(--cp-size) * 0.9);
+}
+
+.cp-foot {
+  margin: 14px 0 0;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.93);
+}
+
+.cp-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: calc(var(--cp-size) * 0.964);
+}
+
+.cp-steps li {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.cp-ic {
+  display: inline-grid;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  box-sizing: border-box;
+  place-items: center;
+  border-radius: 50%;
+  font-size: 11px;
+}
+
+.cp-ic-done {
+  background: color-mix(in srgb, var(--cp-ok) 14%, transparent);
+  color: var(--cp-ok);
+}
+
+.cp-ic-now {
+  border: 2px solid var(--cp-accent);
+  border-right-color: transparent;
+  animation: cp-spin 0.9s linear infinite;
+}
+
+.cp-ic-todo {
+  border: 1.5px solid var(--cp-line);
+}
+
+.cp-ic-failed {
+  background: color-mix(in srgb, var(--cp-danger) 14%, transparent);
+  color: light-dark(var(--cp-danger), #ff8a80);
+  font-weight: 700;
+}
+
+@keyframes cp-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cp-ic-now {
+    animation: none;
+  }
+}
+
+.cp-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 14px;
+}
+
+.cp-card .btn {
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  font-size: calc(var(--cp-size) * 0.964);
+  font-weight: 600;
+}
+
+.cp-btn-primary {
+  border-color: transparent;
+  color: var(--color-text-inverse, light-dark(#ffffff, #0d0d0d));
+  background: var(--cp-fg);
+}
+
+.cp-btn-primary:not(:disabled):hover {
+  background: color-mix(in srgb, var(--cp-fg) 82%, var(--cp-bg));
+}
+
+.cp-btn-danger {
+  border-color: transparent;
+  color: #ffffff;
+  background: var(--cp-danger);
+}
+
+.cp-btn-danger:not(:disabled):hover {
+  background: var(--cp-danger-hover);
+}
+
+.cp-btn-secondary {
+  border-color: var(--cp-line);
+  color: var(--cp-fg);
+  background: var(--cp-bg);
+}
+
+.cp-card .btn:focus-visible {
+  outline: 2px solid var(--color-ring-primary, light-dark(#0169cc, #ffffff));
+  outline-offset: 2px;
+}
+
+.cp-acts[hidden],
+.cp-error[hidden] {
+  display: none;
+}
+
+.cp-error {
+  margin: 10px 0 0;
+  color: light-dark(#b42318, #ff8a80);
+  font-size: calc(var(--cp-size) * 0.93);
+}
+
+.cp-rows {
+  display: flex;
+  flex-direction: column;
+  container-type: inline-size;
+  margin: 12px 0 0;
+  padding: 0;
+  border: 1px solid var(--cp-line);
+  border-radius: 14px;
+  list-style: none;
+}
+
+.cp-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border-top: 1px solid var(--cp-line);
+  font-size: calc(var(--cp-size) * 0.964);
+}
+
+.cp-row:first-child {
+  border-top: 0;
+}
+
+/* A narrow card puts a row's link under its words instead of squeezing them. */
+@container (max-width: 520px) {
+  .cp-row:has(> .cp-link-go) {
+    grid-template-columns: 22px minmax(0, 1fr);
+    row-gap: 2px;
+  }
+
+  .cp-row > .cp-link-go {
+    grid-column: 2;
+    justify-self: start;
+    white-space: normal;
+    text-align: start;
+  }
+}
+
+.cp-row-detail {
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.893);
+  white-space: pre-line;
+}
+
+.cp-row-detail.cp-warn {
+  color: var(--cp-warn);
+}
+
+.cp-tile {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 6px;
+  background: var(--cp-fg);
+  color: var(--cp-bg);
+  font-size: calc(var(--cp-size) * 0.86);
+  font-weight: 700;
+}
+
+.cp-ic-warning {
+  background: color-mix(in srgb, var(--cp-warn) 16%, transparent);
+  color: var(--cp-warn);
+  font-weight: 700;
+}
+
+.cp-ic-unknown {
+  border: 1.5px solid var(--cp-line);
+  color: var(--cp-muted);
+  font-weight: 700;
+}
+
+.cp-card .btn-sm {
+  min-height: 30px;
+  padding: 0 12px;
+  font-size: calc(var(--cp-size) * 0.893);
+  white-space: nowrap;
+}
+
+.cp-link {
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--cp-fg);
+  font: inherit;
+  font-size: calc(var(--cp-size) * 0.93);
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.cp-link-go::after {
+  content: " →" / "";
+}
+
+.cp-link:not(:disabled):hover {
+  text-decoration: underline;
+}
+
+.cp-link:disabled {
+  color: var(--cp-muted);
+}
+
+.cp-link:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid var(--color-ring-primary, light-dark(#0169cc, #ffffff));
+  outline-offset: 2px;
+}
+
+/* Two answers side by side where there is room, one above the other on a phone. */
+.cp-panes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 10px;
+  margin: 10px 0 0;
+}
+
+.cp-pane {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--cp-line);
+  border-radius: 12px;
+  font-size: calc(var(--cp-size) * 0.964);
+}
+
+.cp-pane-label {
+  margin: 0 0 4px;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.79);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.cp-pane-text {
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+</style></head>
+<body><div id="card"></div><script>"use strict";(()=>{function ae(e){return g(e)?{..."code"in e?{code:e.code}:{},...g(e.data)?{data:e.data}:{}}:{}}function ce({told:e=[],outcome:n},t){return{modelContent:e.join(`
+`),privateContent:{card:{version:t,told:e,...n===void 0?{}:{outcome:n}}}}}var G=2e3,Ze=16e3,de=2*6e4;function L(e=0){return Math.min(G*2**e,Ze)}var a=(e,n=[])=>({state:e,effects:n}),f=(e,n=[])=>({state:{view:e,busy:!1},effects:n}),S=(e,n)=>({type:"call",call:{tool:e,args:n}}),T=(e,n)=>({...e,effects:[{type:"context",text:n},...e.effects]}),en=6,nn=1500;function ue(e,n={}){return(t,r)=>{if(t.checking&&r.type==="press")return{state:t,effects:[]};let i=e(t,r.type==="result"||r.type==="reply"?{...r,result:tn(r.result)}:r),{told:s=[],outcome:o}=t,l=0;if(r.type==="result"){({told:s,outcome:o}=r.kept??{told:[]});let c=o===void 0?void 0:n.resume?.(i.state.view,o);c&&(i={state:{view:c,busy:!1},effects:[]});let h=e({...i.state,seq:t.seq},{type:"reread",now:r.now});l=h.effects.filter(({type:w})=>w==="call").length;let b=new Set(h.effects.map(({type:w})=>w));i={state:h.state,effects:[...i.effects.filter(({type:w})=>!b.has(w)),...h.effects]}}else if(t.checking&&i.state.view===t.view){let c=(r.type==="reply"||r.type==="unreachable")&&r.call.seq===t.seq;l=t.checking-(c?1:0)}let d=i.effects.flatMap(c=>c.type==="context"?[c.text]:[]);d.length>0&&(s=z([...s.filter(c=>!d.includes(c)),...d]),o=n.remember?.(i.state.view)??o);let y=i.state.view===t.view?t.seq:t.seq+1,{told:p,outcome:k,checking:_,...A}=i.state;return{state:{...A,seq:y,...s.length?{told:s}:{},...o===void 0?{}:{outcome:o},...l>0?{checking:l}:{}},effects:[...d.length>0?[{type:"context",text:s.join(`
+`)}]:[],...i.effects.flatMap(c=>c.type==="context"?[]:c.type==="call"?[{...c,call:{...c.call,seq:y}}]:[c])]}}}function z(e){let n=e.slice(-en);for(;n.length>1&&n.join(`
+`).length>nn;)n=n.slice(1);return n}function $(e,n){return n.seq!==e.seq}function tn(e){let n=e._meta?.["chickpea/held"],t=e.structuredContent;if(!g(n)||!g(t))return e;let r=typeof n.confirmToken=="string"?n.confirmToken:void 0,i=typeof n.undoToken=="string"?n.undoToken:void 0;return{...e,structuredContent:{...t,...i?{undoToken:i}:{},...r&&g(t.confirmation)?{confirmation:{...t.confirmation,confirmToken:r}}:{}}}}var x="That did not work. Try again.",le="Chickpea could not be reached. Try again.",H={kind:"notice",title:"Nothing to show here."};function E(e){return typeof e=="string"&&URL.parse(e)?.protocol==="https:"?e:void 0}var se=60;function N(e,n){let t=e.length>se?`${e.slice(0,se-1)}\u2026`:e;return`the Agent ${JSON.stringify(t)}${n?` (@${n})`:""}`}function pe(e,n){return typeof n!="object"||n===null||Array.isArray(n)?e:{...e,_meta:{...n,...e._meta}}}var oe=200;function rn(e){let n=e.replace(/\s+/g," ").trim();return n.length>oe?`${n.slice(0,oe-1)}\u2026`:n}function M(e){return JSON.stringify(rn(e))}function fe(e,n){if(n.length===0)return`Try it: message @${e} in Slack.`;let t=n.length<=2?n.join(" or "):`${n.slice(0,-1).join(", ")} or ${n.at(-1)}`;return`Try it: mention @${e} in ${t}.`}function g(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function R(e){for(let n of sn(e)){let t=g(n.structuredContent)?n.structuredContent.error:void 0;if(g(t)&&typeof t.code=="string"&&typeof t.message=="string")return{code:t.code,message:t.message,retryable:t.retryable,fix:t.fix}}}function sn(e){let n=e.hostError?.data,t=r=>g(r)?[r.mcp_tool_result,r.call_tool_result].filter(g):[];return[e,...t(e._meta),...g(n)?[n,...t(n),...t(n._meta)]:[]]}function C(e){return R(e)?.message??(e.isError?x:void 0)}function W(e){return R(e)?.code}function ge(e){return e.hostError!==void 0&&R(e)===void 0}function ke(e){return e===void 0||g(e)&&typeof e.label=="string"&&(typeof e.url=="string"||typeof e.tool=="string"&&g(e.arguments))}function he(e){return e.tool==="reconnect_service"||e.tool==="connect_model_provider"||e.tool==="connect_service"&&!("custom"in e.arguments)}function ye(e){let n=e._meta?.["chickpea/tool"];return typeof n=="string"?n:void 0}function we(e){return n=>{let t;try{t=e(n)}catch{return{busy:n.busy,error:n.error,avatar:"none",title:H.title,blocks:[],buttons:[]}}return n.checking?{...t,busy:!0}:t}}var on="2026-01-26",an=6e4,P=class{constructor(n){this.appInfo=n;window.addEventListener("message",t=>{t.source===window.parent&&this.#s(t.data)}),this.on("ui/notifications/host-context-changed",t=>{let r=t,{styles:i,...s}=this.hostContext??{},o=r.theme!==void 0&&r.theme!==s.theme&&!r.styles;this.hostContext={...s,...i&&!o?{styles:i}:{},...r}})}appInfo;#i=1;#e=new Map;#t=new Map;hostContext;hostCapabilities;on(n,t){this.#t.set(n,[...this.#t.get(n)??[],t])}async connect(){let n=await this.#n("ui/initialize",{appInfo:this.appInfo,appCapabilities:{availableDisplayModes:["inline"]},protocolVersion:on});this.hostContext=n?.hostContext,this.hostCapabilities=n?.hostCapabilities,this.#r("ui/notifications/initialized",{}),new ResizeObserver(()=>this.#r("ui/notifications/size-changed",{height:Math.ceil(document.body.getBoundingClientRect().height)})).observe(document.body)}async callTool(n,t,r){let i=(s,o)=>o===void 0?s:{isError:!0,hostError:ae(o)};try{return i(await this.#n("tools/call",{name:n,arguments:t},(s,o)=>r(i(s,o))))}catch(s){if(s instanceof Error)throw s;return i(void 0,s)}}async sendMessage(n){let t=this.hostCapabilities?.experimental?.["openai/message"]?.draft!==void 0,r=n.draft!==void 0&&t?n.draft:n.sent;K(await this.#n("ui/message",{role:"user",content:[{type:"text",text:r}],...r===n.draft?{_meta:{"openai/message":{target:"active",send:!1}}}:{}}))}async updateModelContext(n){K(await this.#n("ui/update-model-context",{content:[{type:"text",text:n}]}))}async openLink(n){if(window.openai?.openExternal)try{await window.openai.openExternal({href:n,redirectUrl:!1});return}catch{}K(await this.#n("ui/open-link",{url:n}))}#r(n,t){window.parent.postMessage({jsonrpc:"2.0",method:n,params:t},"*")}#n(n,t,r){let i=this.#i++;return new Promise((s,o)=>{let l=setTimeout(()=>{r?this.#e.set(i,{resolve:d=>r(d),reject:d=>r(void 0,d??{})}):this.#e.delete(i),o(new Error(`${n} timed out`))},an);this.#e.set(i,{resolve:d=>{clearTimeout(l),s(d)},reject:d=>{clearTimeout(l),o(d)}}),window.parent.postMessage({jsonrpc:"2.0",id:i,method:n,params:t},"*")})}#s(n){if(!(!n||n.jsonrpc!=="2.0")){if(n.method===void 0){let t=typeof n.id=="number"?this.#e.get(n.id):void 0;if(!t)return;this.#e.delete(n.id),n.error?t.reject(n.error):t.resolve(n.result);return}for(let t of this.#t.get(n.method)??[])t(n.params);n.id!==void 0&&window.parent.postMessage({jsonrpc:"2.0",id:n.id,result:{}},"*")}}};function K(e){if(e?.isError===!0)throw new Error("The host refused it")}function cn(e){document.documentElement.setAttribute("data-theme",e),document.documentElement.style.colorScheme=e}function dn(e){for(let[n,t]of Object.entries(e))t!==void 0&&document.documentElement.style.setProperty(n,t)}var me=[];function Y(e){e?.theme&&cn(e.theme);let n=e?.["openai/interactionCursor"],t={...e?.styles?.variables,"--cursor-interaction":typeof n=="string"&&/^[a-z-]+$/.test(n)?n:void 0};for(let r of me)t[r]===void 0&&document.documentElement.style.removeProperty(r);dn(t),me=Object.keys(t).filter(r=>t[r]!==void 0)}var be=(e,n,t)=>`<svg viewBox="0 0 44 44" aria-hidden="true" focusable="false"><rect width="44" height="44" rx="12" fill="${e}"/><path d="M22 6c-9 0-14 8-14 18v14h28V24C36 14 31 6 22 6z" fill="${n}"/><path d="M22 12c-6 0-9.5 6-9.5 13.5S16 38 22 38s9.5-5 9.5-12.5S28 12 22 12z" fill="${t}"/><circle cx="18.5" cy="26" r="1.3" fill="#3a2a1e"/><circle cx="25.5" cy="26" r="1.3" fill="#3a2a1e"/><path d="M20.5 30.2q1.5 1.2 3 0" stroke="#3a2a1e" stroke-width="1.1" fill="none" stroke-linecap="round"/></svg>`,un={agent:be("#3a2a1e","#E8901A","#f3d9b1"),alert:be("#2a1f2e","#c2453a","#f1d3b8")},ln={done:"done",now:"in progress",todo:"to do",failed:"failed"},xe={done:{glyph:"\u2713",words:"done"},now:{glyph:"",words:"in progress"},failed:{glyph:"!",words:"needs attention"},warning:{glyph:"!",words:"warning"},unknown:{glyph:"?",words:"unknown"}};function u(e,n,t){let r=document.createElement(e);return n&&(r.className=n),t!==void 0&&(r.textContent=t),r}var Ae=new Set;function Ce(e,n,t){let r=u("span",`cp-avatar cp-avatar-${n}`),i=()=>{r.innerHTML=un[e]};if(!t||Ae.has(t))return i(),r;e==="alert"&&r.classList.add("cp-avatar-alert");let s=u("img");return s.alt="",s.decoding="async",s.addEventListener("error",()=>{Ae.add(t),i()},{once:!0}),s.src=t,r.append(s),r}function pn(e){let n=u("p","cp-sub");for(let t of e)n.append(t.tone?u("span",`cp-${t.tone}`,t.text):t.text);return n}function fn(e,n,t){switch(e.kind){case"text":return u("p","cp-text",e.text);case"quote":return u("blockquote","cp-quote",e.text);case"section":return u("h3","cp-sect",e.label);case"note":return u("p",`cp-note${e.tone?` cp-${e.tone}`:""}`,e.text);case"exchange":{let r=(d,y,p)=>{let k=u("div");return k.append(u("span","sr-only",`${d}: `),u("div",`cp-said cp-clamp-${p}`,y)),k},i=u("span","cp-init","Y");i.setAttribute("aria-hidden","true");let s=u("div","cp-msg");s.append(i,r("You",e.ask,2));let o=u("div","cp-msg");o.append(Ce(n,"sm",t),r(e.agent,e.answer,5));let l=u("div","cp-thread");return l.append(s,o),l}case"line":{let r=u("p","cp-line");for(let i of e.parts)r.append("chip"in i?u("span","cp-chip",i.chip):i.strong?u("b",void 0,i.text):i.text);return r}case"steps":{let r=u("ul","cp-steps");for(let{label:i,state:s}of e.steps){let o=u("li"),l=u("span",`cp-ic cp-ic-${s}`,s==="done"?"\u2713":s==="failed"?"!":"");l.setAttribute("aria-hidden","true"),o.append(l,i,u("span","sr-only",` (${ln[s]})`)),r.append(o)}return r}case"rows":{let r=u("ul","cp-rows");return r.append(...e.rows.map(gn)),r}case"panes":{let r=u("div","cp-panes");for(let{label:i,text:s}of e.panes){let o=u("section","cp-pane");o.append(u("h3","cp-pane-label",i),u("div","cp-pane-text",s)),r.append(o)}return r}}}function gn(e){let n=u("li","cp-row");if(e.icon==="tile"){let i=u("span","cp-tile",e.tile??"");i.setAttribute("aria-hidden","true"),n.append(i)}else{let i=xe[e.icon],s=u("span",`cp-ic cp-ic-${e.icon}`,i.glyph);s.setAttribute("aria-hidden","true"),n.append(s)}let t=u("div","cp-row-body"),r=u("div","cp-row-title",e.title);if(e.icon!=="tile"&&r.append(u("span","sr-only",` (${xe[e.icon].words})`)),t.append(r),e.detail&&t.append(u("div",`cp-row-detail${e.tone?` cp-${e.tone}`:""}`,e.detail)),n.append(t),e.control){let{label:i,action:s,style:o}=e.control;n.append(_e(i,s,o==="link"?"cp-link cp-link-go":o==="toggle"?"cp-link":`btn btn-sm cp-btn-${o}`))}return n}function _e(e,n,t){let r=u("button",`${t} cursor-interaction`,e);return r.type="button",r.dataset.action=n,r}function Se(e,n){let t=u("p","sr-only");t.setAttribute("aria-live","polite");let r=u("main","cp-card"),i=u("div","cp-content"),s=u("div","cp-acts"),o=u("p","cp-error");o.setAttribute("role","alert"),r.append(i,s,o),e.replaceChildren(t,r),r.addEventListener("click",p=>{let k=p.target?.closest("button[data-action]");k instanceof HTMLButtonElement&&!k.disabled&&n(k.dataset.action)});let l="",d="",y=new Map;return{render(p){let k=JSON.stringify(p);if(k===l)return;l=k;let _=r.contains(document.activeElement),A=p.announce??p.title;t.textContent!==A&&(t.textContent=A);let c=u("header","cp-hdr"),h=p.avatar==="none"?"agent":p.avatar,{avatarUrl:b}=p;p.avatar!=="none"&&c.append(Ce(p.avatar,"lg",b));let w=u("div","cp-heading"),I=u("h2","cp-title");if(I.tabIndex=-1,p.done){let m=u("span","cp-ok","\u2713 ");m.setAttribute("aria-hidden","true"),I.append(m)}I.append(p.title),w.append(I),p.subtitle&&w.append(pn(p.subtitle)),c.append(w);let v=new Map,Qe=p.blocks.map(m=>{let U=JSON.stringify([m,h,b]),ie=!v.has(U)&&y.get(U)||fn(m,h,b);return v.has(U)||v.set(U,ie),ie});y=v,i.replaceChildren(c,...Qe,...p.foot?[u("p","cp-foot",p.foot)]:[]);let re=JSON.stringify(p.buttons);re!==d&&(d=re,s.replaceChildren(...p.buttons.map(m=>_e(m.label,m.action,`btn cp-btn-${m.tone}`)))),s.hidden=p.buttons.length===0;for(let m of r.querySelectorAll("button"))m.disabled=p.busy,m.toggleAttribute("aria-busy",p.busy);o.textContent=p.error??"",o.hidden=!p.error,_&&!r.contains(document.activeElement)&&I.focus({preventScroll:!0})}}}var kn=1e3,hn=1e3;function Ee(e,n){let t=new P({name:e,version:String(9)}),r=n.initial,i,s=0,o,l=Se(document.getElementById("card"),c=>d({type:"press",action:c,now:Date.now()}));function d(c){let h=n.step(r,c),b=h.state.told!==r.told||h.state.outcome!==r.outcome;r=h.state,c.type==="press"&&(o=void 0),b&&c.type!=="result"&&yn(r),l.render(n.present(r));for(let w of h.effects)p(w)}function y(c,h){ge(h)?d({type:"unreachable",call:c,now:Date.now()}):d({type:"reply",call:c,result:h,now:Date.now()})}function p(c){switch(c.type){case"call":{let h=w=>y(c.call,w),b=w=>{(!w.isError||R(w))&&h(w)};t.callTool(c.call.tool,c.call.args,b).then(h,()=>d({type:"unreachable",call:c.call,now:Date.now()}));return}case"timer":clearTimeout(i),i=setTimeout(()=>d({type:"tick",now:Date.now()}),c.inMs);return;case"message":t.sendMessage(c).catch(()=>d({type:"refused",effect:c,now:Date.now()}));return;case"open":t.openLink(c.url).catch(()=>d({type:"refused",effect:c,now:Date.now()}));return;case"context":t.updateModelContext(c.text).catch(()=>{});return}}function k(){let c=Date.now();c-s<kn||r.view.kind==="waiting"||(s=c,d({type:"reread",now:c}))}function _(c,h){o={result:c,kept:h!==void 0},s=Date.now(),d({type:"result",result:c,kept:h,now:Date.now()})}t.on("ui/notifications/tool-result",c=>{r.view.kind==="waiting"&&_(pe(c,window.openai?.toolResponseMetadata),Te())}),t.on("ui/notifications/tool-cancelled",()=>d({type:"no_result",now:Date.now()})),t.on("ui/notifications/host-context-changed",()=>Y(t.hostContext)),window.addEventListener("openai:set_globals",()=>{let c=o&&!o.kept?Te():void 0;o&&c&&_(o.result,c)}),window.addEventListener("focus",k),document.addEventListener("visibilitychange",()=>{document.visibilityState==="visible"&&k()});let A=!0;new IntersectionObserver(([c])=>{c?.isIntersecting&&!A&&k(),A=c?.isIntersecting??A}).observe(document.body),l.render(n.present(r)),t.connect().then(()=>Y(t.hostContext),()=>d({type:"no_result",now:Date.now()}))}function Te(){let n=window.openai?.widgetState?.privateContent?.card;if(n?.version!==9||!Array.isArray(n.told))return;let t=n.told.filter(r=>typeof r=="string"&&r.length<=hn);return{told:z(t),...n.outcome===void 0?{}:{outcome:n.outcome}}}function yn(e){Promise.resolve(window.openai?.setWidgetState?.(ce(e,9))).catch(()=>{})}function Re(e){let n=e.flatMap(({name:r})=>r?[`#${r.replace(/^#/,"")}`]:[]),t=e.length-n.length;return t===0?n:[...n,t===1?"a private Channel":`${t} private Channels`]}function $e(e){return typeof e.plain=="string"&&e.plain!==""?e.plain:wn[e.part][e.status]}var wn={connection:{ok:"Connected.",warning:"Connected, but something needs a look.",failing:"It is not working.",unknown:"The check could not tell whether it works."},model:{ok:"It can run.",warning:"It may not run as expected.",failing:"It cannot run now.",unknown:"The check could not tell whether it can run."},slack:{ok:"Ready in Slack.",warning:"Not ready in Slack yet.",failing:"It has a problem in Slack.",unknown:"The check could not tell whether it is ready in Slack."},channel:{ok:"Answers here.",warning:"Not answering here yet.",failing:"It cannot answer here.",unknown:"The check could not tell whether it answers here."},schedule:{ok:"On schedule.",warning:"Some of its runs need a look.",failing:"Its runs are failing.",unknown:"The check could not tell whether it runs."},repository:{ok:"GitHub access is installed.",warning:"GitHub access needs a look.",failing:"It cannot reach this repository.",unknown:"The check could not tell whether it can reach this repository."},website_login:{ok:"Ready to sign in.",warning:"This login needs a look.",failing:"It cannot sign in.",unknown:"The check could not tell whether it can sign in."},admission:{ok:"A message reaches it.",warning:"A message may not reach it.",failing:"A message does not reach it.",unknown:"Slack decides when the message arrives."}};var F=3*6e4,mn=5e3,bn=6e4,xn=60*6e4,Ne=2e3;function Le(e,n){return Q(e,void 0,n)}function An(e,n,t){return Q(e,n,t)}function Q(e,n,t){return Z({kind:"first_answer",tested:e,...n?{again:n}:{},key:`try:${e.agentId}:${t}`,keyedAt:t,startedAt:t,stage:{kind:"asking"}})}function Z(e){return{state:{view:e,busy:!0},effects:[S("practice_agent",{agentId:e.tested.agentId,idempotencyKey:e.key})]}}function V(e){return S("get_practice_run",{runToken:e})}function Cn(e){if(e.stage.kind!=="answered")return e.again?.before;let n=Be(e.stage.reply);return n.length<=Ne?n:`${n.slice(0,Ne-1).trimEnd()}\u2026`}function Me(e,n){switch(n.type){case"press":return e.busy?a(e):_n(e,n.action,n.now);case"reply":return $(e,n.call)?a(e):Tn(e,n.call.tool,n.result,n.now);case"unreachable":return $(e,n.call)?a(e):Vn(e,n.call.tool,n.now);case"refused":return Sn(e,n.effect);case"tick":return On(e,n.now);case"reread":return e.busy?a(e):vn(e);default:return a(e)}}function _n(e,n,t){let{view:r}=e,{stage:i,tested:s}=r;switch(n){case"try_once":return i.kind==="answered"&&r.again?An(s,{...r.again,before:Cn(r)},t):i.kind==="lost"||i.kind==="stopped"&&(i.then==="again"||i.then==="fix"&&i.acted!==void 0)?Fe(r,t):a(e);case"try_fix":{let o=i.kind==="stopped"?i.fix:void 0;return i.kind!=="stopped"||!o?a(e):"url"in o?f({...r,stage:{...i,acted:{kind:"page",url:o.url}}},[{type:"open",url:o.url}]):he(o)?{state:{view:{...r,stage:{...i,fixing:!0}},busy:!0},effects:[S(o.tool,o.arguments)]}:f({...r,stage:{...i,acted:{kind:"chat"}}},[Ve(r,o)])}case"check_again":return i.kind!=="slow"?a(e):i.runToken?{state:{view:r,busy:!0},effects:[V(i.runToken)]}:Fe(r,t);case"open_slack":return s.slackUrl?a(e,[{type:"open",url:s.slackUrl}]):a(e);case"change_something":return i.kind==="answered"?a(e,[{type:"message",draft:`Change ${s.name}: `,sent:`Change ${s.name}: `}]):a(e);default:return a(e)}}function Fe(e,n){return n-e.keyedAt<xn-F-6e4?Z({...e,startedAt:n,stage:{kind:"asking"}}):Q(e.tested,e.again,n)}function Ve(e,n){return{type:"message",sent:`${n.label} for ${e.tested.name}.`}}function Sn(e,n){let{view:t}=e,{stage:r,tested:i}=t;if(r.kind==="stopped"&&r.acted&&(r.acted.kind==="page"?n.type==="open"&&n.url===r.acted.url:n.type==="message")){let{acted:o,...l}=r;return a({view:{...t,stage:l},busy:!1,error:x})}return(n.type==="open"?n.url===i.slackUrl&&(r.kind==="answered"||r.kind==="stopped"||r.kind==="slow"):r.kind==="answered")?a({...e,error:x}):a(e)}function Tn(e,n,t,r){let{view:i}=e,{stage:s}=i;return n==="practice_agent"&&s.kind==="asking"?En(i,s,t,r):n==="get_practice_run"&&(s.kind==="running"||s.kind==="slow")?$n(e,t,r):s.kind==="stopped"&&s.fixing?Mn(i,s,t):a({...e,busy:!1})}function En(e,n,t,r){let i=W(t);if(t.isError&&i===void 0)return Oe(e,n,r);if(i==="in_progress"){let o=n.heldSince??r;return r-o>=bn?D(e,C(t)??x,"again"):Rn(e,o)}if(i!==void 0)return In(e,i,t);let s=He(t.structuredContent);return s?X(n.heldSince===void 0?e:{...e,startedAt:r},s,r):D(e,Pe(e),"slack")}function Rn(e,n){return{state:{view:{...e,stage:{kind:"asking",heldSince:n,retry:!0}},busy:!0},effects:[{type:"timer",inMs:mn}]}}function Oe(e,n,t){if(t-e.startedAt>=F)return O(e,void 0);let r=(n.failures??0)+1;return{state:{view:{...e,stage:{...n,failures:r,retry:!0}},busy:!0},effects:[{type:"timer",inMs:L(r-1)}]}}function $n(e,n,t){let{view:r}=e,{stage:i}=r;if(W(n)==="not_found")return q(r,{kind:"stopped",problem:C(n),then:"slack"},B(r,"but its answer is no longer there"));let o=C(n)?void 0:He(n.structuredContent);return i.kind==="slow"?o&&o.status!=="running"?X(r,o,t):o?f({...r,stage:{...i,again:!0}}):a({...e,busy:!1}):i.kind!=="running"?a({...e,busy:!1}):o?X(r,o,t):ve(r,i,t)}function ve(e,n,t){if(t-e.startedAt>=F)return O(e,n.runToken);let r=(n.failures??0)+1;return{state:{view:{...e,stage:{...n,failures:r,retry:!0}},busy:!0},effects:[{type:"timer",inMs:L(r-1)}]}}function X(e,n,t){switch(n.status){case"answered":return q(e,{kind:"answered",ask:n.ask,reply:n.reply??"",read:n.read??[]},e.again?`${ee(e)}. ${Nn}`:B(e,"and it answered its first question there"));case"failed":return q(e,{kind:"stopped",problem:n.problem??Un(e),then:"slack"},B(e,"but it did not finish answering"));case"running":{if(t-e.startedAt>=F)return O(e,n.runToken);let r={kind:"running",runToken:n.runToken,ask:n.ask};return{state:{view:e.stage.kind==="running"&&e.stage.runToken===n.runToken&&!e.stage.retry&&!e.stage.failures?e:{...e,stage:r},busy:!0},effects:[V(n.runToken)]}}}}function O(e,n){return q(e,{kind:"slow",...n?{runToken:n}:{}},B(e,"but its answer did not come back in time"))}function q(e,n,t){return T(f({...e,stage:n}),t)}var Nn="A practice answer is shown on the card.";function B(e,n){return e.again?`${ee(e)}, ${n}.`:`The person ran ${N(e.tested.name,e.tested.handle)} once from the card, ${n}.`}function ee(e){return`The person pressed ${M(Ue(e))} for ${N(e.tested.name,e.tested.handle)} on the card`}function Ue(e){return e.again?"Try it again":"See its first answer"}var Fn=new Set(["needs_setup","not_testable","model_unavailable","not_allowed","usage_limit","not_found","temporarily_unavailable","test_run_unavailable"]);function In(e,n,t){let r=R(t);if(!Fn.has(n)||!r)return D(e,Pe(e),"slack");let i=Ln(r.fix);return D(e,r.message,i?"fix":r.retryable===!0?"again":"slack",i)}function Ln(e){if(!(!ke(e)||e===void 0))return"url"in e&&E(e.url)===void 0?void 0:e}function D(e,n,t,r){return T(f({...e,stage:{kind:"stopped",problem:n,then:t,...r?{fix:r}:{}}}),`${ee(e)}, but the test run did not start.`)}function Mn(e,n,t){let{fixing:r,...i}=n,s=C(t),o=t.structuredContent,l=!s&&g(o)&&g(o.setup)?o.setup:void 0,d=E(l?.url);if(!d||!n.fix){let y=g(o)&&typeof o.summary=="string"?o.summary:void 0;return a({view:{...e,stage:i},busy:!1,error:s??y??x})}return typeof l?.setupToken!="string"?f({...e,stage:{...i,acted:{kind:"chat"}}},[Ve(e,n.fix)]):T(f({...e,stage:{...i,acted:{kind:"page",url:d}}},[{type:"open",url:d}]),`The person pressed ${M(n.fix.label)} for ${N(e.tested.name,e.tested.handle)} on the card, which opened Chickpea's page. They can try it again once they finish there.`)}function Vn(e,n,t){let{view:r}=e,{stage:i}=r;if(n==="practice_agent"&&i.kind==="asking")return Oe(r,i,t);if(n==="get_practice_run"&&i.kind==="running")return ve(r,i,t);if(i.kind==="stopped"&&i.fixing){let{fixing:s,...o}=i;return a({view:{...r,stage:o},busy:!1,error:le})}return a({...e,busy:!1})}function On(e,n){let{view:t}=e,{stage:r}=t;if(!e.busy||!("retry"in r)||!r.retry)return a(e);if(r.kind==="asking"){let{retry:o,...l}=r;return r.heldSince===void 0&&n-t.startedAt>=F?O(t,void 0):Z({...t,stage:l})}if(n-t.startedAt>=F)return O(t,r.runToken);let{retry:i,...s}=r;return{state:{view:{...t,stage:s},busy:!0},effects:[V(r.runToken)]}}function vn(e){let{view:n}=e,{stage:t}=n;switch(t.kind){case"asking":return f({...n,stage:{kind:"lost"}});case"running":{let{retry:r,failures:i,...s}=t;return{state:{view:{...n,stage:s},busy:!0},effects:[V(t.runToken)]}}case"slow":return t.runToken?a(e,[V(t.runToken)]):a(e);default:return a(e)}}function He(e){if(!(!g(e)||typeof e.runToken!="string"||typeof e.question!="string")&&!(e.status!=="running"&&e.status!=="answered"&&e.status!=="failed"))return{status:e.status,runToken:e.runToken,ask:e.question,...typeof e.reply=="string"?{reply:e.reply.replaceAll("&lt;","<")}:{},...Array.isArray(e.read)?{read:e.read.filter(n=>typeof n=="string")}:{},...typeof e.problem=="string"?{problem:e.problem}:{}}}function Pe(e){return`The test run didn't start. Ask ${e.tested.name} in Slack instead.`}function Un(e){return`The test run didn't finish. Ask ${e.tested.name} in Slack instead.`}var J="A test run: it makes only read requests and sends nothing to Slack.",Hn="A test run: it made only read requests and sent nothing to Slack.";function qe(e){let{tested:n,stage:t}=e,r=`${n.name}'s first answer`,i={avatar:"agent",avatarUrl:n.avatarUrl,title:r},s=n.slackUrl?[{label:"Open in Slack",action:"open_slack",tone:"primary"}]:[];switch(t.kind){case"asking":{let o=t.heldSince===void 0?`Asking ${n.name} its first question`:"Waiting for another test run in this workspace to finish";return{...i,announce:`${r}. ${o}.`,subtitle:[{text:J}],blocks:[{kind:"steps",steps:[{label:o,state:"now"}]}],buttons:[]}}case"running":return{...i,announce:`${r}. ${n.name} is answering.`,subtitle:[{text:J}],blocks:[Ie(t.ask),{kind:"steps",steps:[{label:`${n.name} is answering`,state:"now"}]}],buttons:[]};case"answered":{let o=Bn(n,t.ask),l=Be(t.reply),d=e.again?.before,y=e.again?[...d?[{label:"Before",text:d}]:[],{label:"After",text:l}]:[...o?[{label:"What we promised",text:o}]:[],{label:"What it answered",text:l}],p={label:"Change something",action:"change_something",tone:"secondary"};return{...i,announce:`${r}. It answered.`,subtitle:[{text:Hn}],blocks:[Ie(t.ask),{kind:"panes",panes:y},...t.read.length?[{kind:"note",text:`It read ${jn(t.read)}.`}]:[]],buttons:e.again?[{label:"Try it again",action:"try_once",tone:"primary"},p]:[...s,p]}}case"stopped":return{...i,announce:`${r}. ${t.problem}`,blocks:[{kind:"text",text:t.problem},...t.acted?[{kind:"note",text:Pn[t.acted.kind]}]:[]],buttons:qn(t,s)};case"slow":{let o=t.again?`It's still answering. Check again in a moment, or ask ${n.name} in Slack.`:`Its answer is taking longer than it should. Check again in a moment, or ask ${n.name} in Slack.`;return{...i,announce:`${r}. ${o}`,blocks:[{kind:"text",text:o}],buttons:[{label:"Check again",action:"check_again",tone:"primary"},...s.map(l=>({...l,tone:"secondary"}))]}}case"lost":{let o="This card closed before the test run answered.";return{...i,announce:`${r}. ${o}`,subtitle:[{text:J}],blocks:[{kind:"text",text:o}],buttons:[{label:Ue(e),action:"try_once",tone:"primary"}]}}}}var Pn={page:"Finish on the Chickpea page that opened, then try again.",chat:"Finish it in the chat, then try again."};function qn(e,n){let t={label:"Try again",action:"try_once",tone:"primary"},r=s=>e.fix?[{label:e.fix.label,action:"try_fix",tone:s}]:[],i=n.map(s=>({...s,tone:"secondary"}));switch(e.then){case"again":return[t,...i];case"fix":return e.acted?[t,...r("secondary")]:[...r("primary"),...i];case"slack":return n}}function Ie(e){return{kind:"note",text:`First question: \u201C${e}\u201D`}}function Bn(e,n){let{promised:t}=e,r=i=>i.replace(/\s+/g," ").trim();return t&&r(t.ask)===r(n)?t.answer:void 0}function Be(e){return Dn(e).trim()||"It gave no answer."}function Dn(e){let n=[],t=r=>`\0${n.push(r)-1}\0`;return e.replace(/\u0000/g,"").replace(/^[ \t]*```[^\n]*\n([\s\S]*?)^[ \t]*```[ \t]*$\n?/gm,(r,i)=>t(i)).replace(/^[ \t]*```.*$\n?/gm,"").replace(/`([^`\n]+)`/g,(r,i)=>t(i)).replace(/!?\[([^\]\n]*)\]\([^)\n]*\)/g,"$1").replace(/^[ \t]*\|?(?:[ \t]*:?-+:?[ \t]*\|)+(?:[ \t]*:?-+:?[ \t]*)?$\n?/gm,"").replace(/^[ \t]*\|(.*)\|[ \t]*$/gm,(r,i)=>i.split("|").map(s=>s.trim()).join(" \xB7 ")).replace(/^[ \t]*([-*_])(?:[ \t]*\1){2,}[ \t]*$\n?/gm,"").replace(/^[ \t]*(?:>[ \t]?)+/gm,"").replace(/^#{1,6}[ \t]+/gm,"").replace(/^([ \t]*)[-*+][ \t]+/gm,"$1\u2022 ").replace(/(\*\*|__|~~)(?=\S)([^\n]*?\S)\1/g,"$2").replace(/(^|[^\w*])\*(?=[^\s*])([^*\n]*?[^\s*])\*(?![\w*])/gm,"$1$2").replace(/(^|[^\w_])_(?=[^\s_])([^_\n]*?[^\s_])_(?![\w_])/gm,"$1$2").replace(/\u0000(\d+)\u0000/g,(r,i)=>n[Number(i)]??"")}function jn(e){return e.length<=2?e.join(" and "):`${e.slice(0,-1).join(", ")} and ${e.at(-1)}`}var ze={view:{kind:"waiting"},busy:!1,seq:0},We=ue(Gn);function Gn(e,n){let{view:t}=e;if(t.kind==="first_answer"&&n.type!=="result")return Me({...e,view:t},n);switch(n.type){case"result":return zn(n.result);case"press":return e.busy?a(e):Wn(e,n.action,n.now);case"reply":return $(e,n.call)?a(e):Kn(e,n.call.tool,n.result,n.now);case"unreachable":return $(e,n.call)?a(e):e.view.kind==="finishing"?j(e,{...e.view,failures:(e.view.failures??0)+1},n.now):e.view.kind==="connected"&&e.view.check==="checking"?f(ne(e.view)):a(e);case"refused":return et(e,n.effect);case"no_result":return e.view.kind==="waiting"?f(H):a(e);case"tick":return e.view.kind==="finishing"&&!e.view.slow?a(e,[Ye(e.view)]):a(e);case"reread":return Ke(e)}}function zn(e){let n=C(e);if(n)return f({kind:"notice",title:n});let t=e.structuredContent;if(!tt(t))return f(H);let r=ye(e)==="reconnect_service"?"reconnect":"connect",i=t.agent&&{agentId:t.agent.agentId,name:t.agent.name,handle:t.agent.handle,slackUrl:E(t.agent.links?.slack),avatarUrl:E(t.agent.avatarUrl),channels:Re(t.agent.channels??[])},{setup:s}=t;return t.status!=="needs_setup"||!rt(s)?f({kind:"notice",title:t.summary.replace(/\.$/,"")}):f({kind:s.setupToken&&E(s.url)?"start":"elsewhere",flow:r,agent:i,setup:s})}function Wn(e,n,t){let{view:r}=e;switch(n){case"connect":return r.kind==="start"?f({...te(r),kind:"finishing",startedAt:t},[{type:"open",url:r.setup.url},Je(G)]):a(e);case"done":return r.kind==="finishing"?Ke(e):a(e);case"open_slack":return r.kind==="connected"&&r.agent?.slackUrl?a(e,[{type:"open",url:r.agent.slackUrl}]):a(e);case"new_link":return r.kind==="ended"?a(e,[{type:"message",sent:nt(r)}]):a(e);case"try_once":{let i=r.kind==="connected"&&r.firstAsk?r.agent:void 0;return i?Le({agentId:i.agentId,name:i.name,handle:i.handle,avatarUrl:i.avatarUrl,slackUrl:i.slackUrl},t):a(e)}default:return a(e)}}function Kn(e,n,t,r){let{view:i}=e,s=C(t);if(n==="get_setup_status"){let o=s?void 0:t.structuredContent;return i.kind!=="start"&&i.kind!=="finishing"&&i.kind!=="ended"?a(e):it(o)?Jn(e,i,o,r):i.kind==="finishing"?j(e,{...i,failures:(i.failures??0)+1},r):a(e)}if(n==="check_agent"&&i.kind==="connected"&&i.check==="checking"){let o=s?[]:t.structuredContent?.checks,l=Array.isArray(o)?o.find(d=>g(d)&&d.part==="connection"&&d.connectionId===i.connectionId&&typeof d.status=="string"&&Yn.has(d.status)):void 0;return f(l?{...i,check:{status:l.status,words:$e(l)}}:ne(i))}return a(e)}var Yn=new Set(["ok","warning","failing","unknown"]);function ne({check:e,...n}){return n}function Jn(e,n,t,r){let{connection:i}=t,s=n.flow==="reconnect"?n.before??i?.status??"none":void 0,o=i?.status==="ready"&&(n.flow==="connect"||s!=="ready"),l=M(n.setup.what),d=n.agent?` ${n.flow==="reconnect"?"for":"to"} ${N(n.agent.name)}`:"";if(t.status==="done"||o){let k=Qn(n,i,t.agent?.hasFirstAsk===!0);return n.kind==="finishing"?T(k,n.flow==="reconnect"?`${l} is signed in again${d}.`:`${l} is connected${d} now.`):k}let y={...te(n),...s?{before:s}:{}};if(t.status==="failed"||t.status==="cancelled"||t.status==="expired"){if(n.kind==="ended"&&n.why===t.status&&n.before===s)return a(e);let k=f({...y,kind:"ended",why:t.status});return n.kind==="finishing"?T(k,`${l} did not connect${d}: the link ${Xn[t.status]}. Nothing changed.`):k}let p=t.status!=="waiting"||n.kind==="finishing"&&n.opened?{opened:!0}:{};if(n.kind==="finishing"){let{failures:k,..._}=n;return j(e,{..._,...y,...p},r)}return n.kind==="start"&&t.status!=="waiting"?j(e,{...y,...p,kind:"finishing",startedAt:r},r):n.before===s?a(e):f({...n,...y})}var Xn={failed:"failed",cancelled:"was cancelled",expired:"expired"};function Qn(e,n,t){let r=n&&n.kind!=="service"&&e.agent,i={kind:"connected",flow:e.flow,agent:e.agent,service:e.setup.what,...n?{connectionId:n.connectionId}:{},...r?{check:"checking"}:{},...t&&e.agent?{firstAsk:!0}:{}};return f(i,r?[S("check_agent",{agentId:e.agent.agentId})]:[])}function j(e,n,t){let r=t-n.startedAt>=de?{...n,slow:!0}:n,i=r.slow?[]:[Je(L(r.failures))];return e.view.kind==="finishing"&&!e.error&&Zn(e.view,r)?a(e,i):f(r,i)}function Zn(e,n){let t={...e},r={...n};return Object.keys({...t,...r}).every(i=>t[i]===r[i])}function Ke(e){let{view:n}=e;switch(n.kind){case"finishing":case"start":case"ended":return a(e,[Ye(n)]);case"connected":return n.check==="checking"?f(ne(n)):a(e);default:return a(e)}}function et(e,n){let{view:t}=e;return t.kind==="finishing"&&n.type==="open"&&n.url===t.setup.url?t.opened?a(e):a({view:{...te(t),kind:"start"},busy:!1,error:x}):(t.kind==="connected"?n.type==="open"&&n.url===t.agent?.slackUrl:t.kind==="ended"&&n.type==="message")?a({...e,error:x}):a(e)}function Ye(e){return S("get_setup_status",{setupToken:e.setup.setupToken})}function Je(e){return{type:"timer",inMs:e}}function te(e){return{flow:e.flow,agent:e.agent,setup:e.setup,...e.before?{before:e.before}:{}}}function nt(e){let n=e.setup.what,t=e.agent?.name;return e.flow==="reconnect"?`Send me a new link to sign ${n} in again${t?` for ${t}`:""}.`:`Send me a new link to connect ${n}${t?` to ${t}`:""}.`}function tt(e){return g(e)&&typeof e.status=="string"&&typeof e.summary=="string"}function rt(e){return g(e)&&typeof e.url=="string"&&typeof e.what=="string"}function it(e){return g(e)&&typeof e.status=="string"}var st="You sign in on Chickpea's page, never in this chat.",Xe=we(ot);function ot(e){let n={busy:e.busy,error:e.error},{view:t}=e;switch(t.kind){case"waiting":return{...n,avatar:"none",title:"Loading\u2026",blocks:[],buttons:[]};case"notice":return{...n,avatar:"none",title:t.title,blocks:[],buttons:[]};case"first_answer":return{...n,...qe(t)};case"connected":{let r=ct(t);return{...n,...je(t.flow,t.service,t.agent),announce:De(r),blocks:[{kind:"rows",rows:[r]}],...!t.agent?.slackUrl&&t.agent?.handle?{foot:fe(t.agent.handle,t.agent.channels??[])}:{},buttons:[]}}default:{let r=at(t);return{...n,...je(t.flow,t.setup.what,t.agent),...t.kind==="finishing"||t.kind==="ended"?{announce:De(r)}:{},subtitle:[{text:st}],blocks:[{kind:"rows",rows:[r]}],buttons:[]}}}}function De(e){return e.detail?`${e.title}. ${e.detail}`:e.title}function je(e,n,t){return{avatar:"agent",avatarUrl:t?.avatarUrl,title:e==="reconnect"?`Sign ${n} in again`:t?`Connect ${n} to ${t.name}`:`Connect ${n}`}}function at(e){let n=e.setup.what;switch(e.kind){case"start":return{icon:"tile",tile:Ge(n),title:n,detail:ut(e),control:{label:e.flow==="reconnect"?"Reconnect":"Connect",action:"connect",style:"primary"}};case"finishing":return{icon:"now",title:`Waiting for ${n}`,detail:e.slow?"Finish on the Chickpea page that opened, then press I'm done.":"Finish on the Chickpea page that opened, then come back.",control:{label:"I'm done",action:"done",style:"secondary"}};case"ended":return{icon:"failed",title:e.why==="expired"?"This link expired":e.why==="cancelled"?"This link was cancelled":`${n} did not connect`,detail:"Ask for a new link to try again.",control:{label:"Get a new link",action:"new_link",style:"secondary"}};case"elsewhere":return{icon:"tile",tile:Ge(n),title:n,detail:"Chickpea can't connect it from this card. Use the link in the chat."}}}function ct(e){let{check:n}=e;return{icon:"done",title:`${e.service} is connected`,...n==="checking"?{detail:"Chickpea is checking it\u2026"}:n?{detail:`Chickpea checked it. ${n.words}`,...n.status==="ok"||n.status==="unknown"?{}:{tone:"warn"}}:{},...dt(e)}}function dt(e){return e.firstAsk&&e.agent?{control:{label:"See its first answer",action:"try_once",style:"secondary"}}:e.agent?.slackUrl?{control:{label:"Open in Slack",action:"open_slack",style:"secondary"}}:{}}function ut(e){if(e.setup.owner==="member")return"Your own account";if(e.setup.owner==="team")return e.agent?`For everyone who uses ${e.agent.name}`:"For everyone who uses it"}function Ge(e){return[...e.trim()][0]?.toUpperCase()??"?"}Ee("chickpea-connect-card",{initial:ze,step:We,present:Xe});})();
+</script></body>
+</html>

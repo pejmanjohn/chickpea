@@ -10,10 +10,11 @@ import {
 import { normalizeAgentHandle } from '../../slack/agent-presence/handles.ts';
 import { adminOrigin } from '../admin-links.ts';
 import { summarizeTextChange } from '../text-changes.ts';
-import type {
-  ManagementActorContext,
-  ManagementAgentPatch,
-  ManagementWorkspaceSnapshot,
+import {
+  ManagementError,
+  type ManagementActorContext,
+  type ManagementAgentPatch,
+  type ManagementWorkspaceSnapshot,
 } from '../types.ts';
 import { fail } from './conventions.ts';
 import { agentAvatar, agentVersion, readWorkspace, requireAgent, slackDirectory, type FiveZeroDeps } from './reads.ts';
@@ -180,11 +181,22 @@ export async function proposeAgentChange(
     ...change,
     idempotencyKey: randomUUID(),
   });
+  // The card offers "Try it again" after the save only for an Agent practice_agent can ask with no question.
+  const [needsConfirmation, firstAsk] = await Promise.all([
+    deps.service.agentPatchNeedsConfirmation(context, agent.id, agentPatch(change)),
+    deps.service.agentReader(context, agent.id).then(
+      ({ stores }) => stores.config.getAgentFirstAsk?.(agent.id),
+      (error: unknown) => {
+        if (error instanceof ManagementError) return undefined;
+        throw error;
+      },
+    ),
+  ]);
   return {
-    agent: { name: agent.name, ...(handle ? { handle } : {}), ...agentAvatar(deps, agent) },
+    agent: { name: agent.name, ...(handle ? { handle } : {}), ...agentAvatar(deps, agent), ...(firstAsk ? { hasFirstAsk: true } : {}) },
     changes,
     save: { tool: 'update_agent', arguments: save },
-    needsConfirmation: await deps.service.agentPatchNeedsConfirmation(context, agent.id, agentPatch(change)),
+    needsConfirmation,
   };
 }
 

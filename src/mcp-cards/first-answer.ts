@@ -28,18 +28,21 @@ import {
 } from './card-model.ts';
 
 /**
- * "See its first answer": one read-only test run of an Agent, as a view a
- * card shows in place of its own. Only a press starts one. The press sends
- * try_agent_once with the view's key, and every call this view sends again
- * for that press, after the host gave up on one or while another run held
- * the workspace, carries the same key, so it gets the run the first call
- * started. get_test_run then follows the run until it answers, fails, or
- * three minutes pass. A key past the hour Chickpea keeps a run for starts
- * nothing, so a press after that sends a new one.
+ * "See its first answer": one practice run of an Agent on its saved first
+ * question, as a view a card shows in place of its own. "Try it again" on a
+ * Saved card is the same run after a change, drawn as Before and After. Only
+ * a press starts one. The press sends practice_agent with the view's key and
+ * no question, and every call this view sends again for that press, after
+ * the host gave up on one or while another run held the workspace, carries
+ * the same key, so it gets the run the first call started. get_practice_run
+ * then follows the run until it answers, fails, or three minutes pass. A key
+ * past the hour Chickpea keeps a run for starts nothing, so a press after
+ * that sends a new one.
  *
  * `busy` holds while this page has a call out or a retry due. A card that
  * mounts again has neither: its re-read follows a run it knows of with
- * get_test_run, and asks for a press for one it does not.
+ * get_practice_run, and asks for a press for one it does not. The run's
+ * token stays in the card's own memory, never in what the host keeps.
  */
 
 export type FirstAnswerAction = 'try_once' | 'try_fix' | 'open_slack' | 'change_something' | 'check_again';
@@ -58,9 +61,9 @@ export interface Tested {
 type Acted = { kind: 'page'; url: string } | { kind: 'chat' };
 
 type Stage =
-  /** try_agent_once is out, or with `retry`, due again on the next tick. */
+  /** practice_agent is out, or with `retry`, due again on the next tick. */
   | { kind: 'asking'; failures?: number; heldSince?: number; retry?: true }
-  /** get_test_run is out, or with `retry`, due again on the next tick. */
+  /** get_practice_run is out, or with `retry`, due again on the next tick. */
   | { kind: 'running'; runToken: string; ask: string; failures?: number; retry?: true }
   | { kind: 'answered'; ask: string; reply: string; read: string[] }
   /**
@@ -74,10 +77,21 @@ type Stage =
   /** The card mounted again while its first call was out: that answer went to the card that closed. */
   | { kind: 'lost' };
 
+/** "Try it again", pressed on a Saved card. */
+export interface Again {
+  /** The Saved card's title, which a card that mounts again comes back to. */
+  summary: string;
+  /** The last practice answer the card has, as it showed it. */
+  before?: string | undefined;
+  /** The Saved card's Undo, which the Agent card offers beside the answer. Never kept by the host. */
+  undoToken?: string | undefined;
+}
+
 export interface FirstAnswer {
   kind: 'first_answer';
   tested: Tested;
-  /** Every try_agent_once this view sends carries it. */
+  again?: Again | undefined;
+  /** Every practice_agent this view sends carries it. */
   key: string;
   /** When the key was made: past KEY_FOR_MS it starts nothing. */
   keyedAt: number;
@@ -93,21 +107,42 @@ export const HELD_RETRY_MS = 5_000;
 export const HELD_FOR_MS = 60_000;
 /** Chickpea keeps a test run, and replays its key, for an hour. */
 export const KEY_FOR_MS = 60 * 60_000;
+/** The most of an answer a card keeps for Before, so the host's widget state stays small. */
+export const KEPT_ANSWER_CHARS = 2_000;
 
 /** The press on "See its first answer". */
 export function tryOnce(tested: Tested, now: number): Next<FirstAnswer> {
-  return ask({ kind: 'first_answer', tested, key: `try:${tested.agentId}:${now}`, keyedAt: now, startedAt: now, stage: { kind: 'asking' } });
+  return start(tested, undefined, now);
 }
 
+/** The press on "Try it again": the same question, its answer drawn after the one before. */
+export function tryAgain(tested: Tested, again: Again, now: number): Next<FirstAnswer> {
+  return start(tested, again, now);
+}
+
+function start(tested: Tested, again: Again | undefined, now: number): Next<FirstAnswer> {
+  return ask({
+    kind: 'first_answer', tested, ...again ? { again } : {}, key: `try:${tested.agentId}:${now}`, keyedAt: now, startedAt: now, stage: { kind: 'asking' },
+  });
+}
+
+/** With no question, the run asks the first question saved when the Agent was created. */
 function ask(view: FirstAnswer): Next<FirstAnswer> {
   return {
     state: { view, busy: true },
-    effects: [call('try_agent_once', { agentId: view.tested.agentId, idempotencyKey: view.key })],
+    effects: [call('practice_agent', { agentId: view.tested.agentId, idempotencyKey: view.key })],
   };
 }
 
 function poll(runToken: string): Effect {
-  return call('get_test_run', { runToken });
+  return call('get_practice_run', { runToken });
+}
+
+/** The last practice answer this view has, as the card showed it, cut to what it keeps. */
+export function lastAnswer(view: FirstAnswer): string | undefined {
+  if (view.stage.kind !== 'answered') return view.again?.before;
+  const answer = shownAnswer(view.stage.reply);
+  return answer.length <= KEPT_ANSWER_CHARS ? answer : `${answer.slice(0, KEPT_ANSWER_CHARS - 1).trimEnd()}…`;
 }
 
 export function stepFirstAnswer<A extends string>(state: State, event: CardEvent<A>): Next<FirstAnswer> {
@@ -134,6 +169,7 @@ function press(state: State, action: string, now: number): Next<FirstAnswer> {
   const { stage, tested } = view;
   switch (action) {
     case 'try_once': {
+      if (stage.kind === 'answered' && view.again) return tryAgain(tested, { ...view.again, before: lastAnswer(view) }, now);
       const again = stage.kind === 'lost' ||
         (stage.kind === 'stopped' && (stage.then === 'again' || (stage.then === 'fix' && stage.acted !== undefined)));
       return again ? askAgainByPress(view, now) : stay(state);
@@ -167,7 +203,7 @@ function press(state: State, action: string, now: number): Next<FirstAnswer> {
 function askAgainByPress(view: FirstAnswer, now: number): Next<FirstAnswer> {
   return now - view.keyedAt < KEY_FOR_MS - GIVE_UP_MS - 60_000
     ? ask({ ...view, startedAt: now, stage: { kind: 'asking' } })
-    : tryOnce(view.tested, now);
+    : start(view.tested, view.again, now);
 }
 
 /** A fix the card does not run itself: the model proposes it in the chat first. */
@@ -196,8 +232,8 @@ function refusedEffect(state: State, effect: Extract<CardEvent<string>, { type: 
 function reply(state: State, tool: string, result: ToolResult, now: number): Next<FirstAnswer> {
   const { view } = state;
   const { stage } = view;
-  if (tool === 'try_agent_once' && stage.kind === 'asking') return fromAsk(view, stage, result, now);
-  if (tool === 'get_test_run' && (stage.kind === 'running' || stage.kind === 'slow')) return polled(state, result, now);
+  if (tool === 'practice_agent' && stage.kind === 'asking') return fromAsk(view, stage, result, now);
+  if (tool === 'get_practice_run' && (stage.kind === 'running' || stage.kind === 'slow')) return polled(state, result, now);
   if (stage.kind === 'stopped' && stage.fixing) return fixed(view, stage, result);
   return stay({ ...state, busy: false });
 }
@@ -223,7 +259,7 @@ function held(view: FirstAnswer, heldSince: number): Next<FirstAnswer> {
   return { state: { view: { ...view, stage: { kind: 'asking', heldSince, retry: true } }, busy: true }, effects: [{ type: 'timer', inMs: HELD_RETRY_MS }] };
 }
 
-/** The host gave up on try_agent_once: the same call again, waiting longer each time, for three minutes from the press. */
+/** The host gave up on practice_agent: the same call again, waiting longer each time, for three minutes from the press. */
 function askAgain(view: FirstAnswer, stage: Extract<Stage, { kind: 'asking' }>, now: number): Next<FirstAnswer> {
   if (now - view.startedAt >= GIVE_UP_MS) return slow(view, undefined);
   const failures = (stage.failures ?? 0) + 1;
@@ -260,12 +296,12 @@ function pollAgain(view: FirstAnswer, stage: Extract<Stage, { kind: 'running' }>
 
 type Run = { status: 'running' | 'answered' | 'failed'; runToken: string; ask: string; reply?: string; read?: string[]; problem?: string };
 
-/** Where a run stands, from try_agent_once or get_test_run. */
+/** Where a run stands, from practice_agent or get_practice_run. */
 function settled(view: FirstAnswer, run: Run, now: number): Next<FirstAnswer> {
   switch (run.status) {
     case 'answered':
       return finished(view, { kind: 'answered', ask: run.ask, reply: run.reply ?? '', read: run.read ?? [] },
-        ran(view, 'and it answered its first question there'));
+        view.again ? `${pressed(view)}. ${PRACTICE_SHOWN}` : ran(view, 'and it answered its first question there'));
     case 'failed':
       return finished(view, { kind: 'stopped', problem: run.problem ?? didNotFinish(view), then: 'slack' },
         ran(view, 'but it did not finish answering'));
@@ -273,7 +309,7 @@ function settled(view: FirstAnswer, run: Run, now: number): Next<FirstAnswer> {
       if (now - view.startedAt >= GIVE_UP_MS) return slow(view, run.runToken);
       const stage: Stage = { kind: 'running', runToken: run.runToken, ask: run.ask };
       const same = view.stage.kind === 'running' && view.stage.runToken === run.runToken && !view.stage.retry && !view.stage.failures;
-      // get_test_run waits up to 20 s for the run, so the card asks again at once.
+      // get_practice_run waits up to 20 s for the run, so the card asks again at once.
       return {
         state: { view: same ? view : { ...view, stage }, busy: true },
         effects: [poll(run.runToken)],
@@ -290,8 +326,21 @@ function finished(view: FirstAnswer, stage: Stage, told: string): Next<FirstAnsw
   return tell(show({ ...view, stage }), told);
 }
 
+/** What the host's model hears of a Try it again answer: never the answer, which is the Agent's and may quote a service. */
+export const PRACTICE_SHOWN = 'A practice answer is shown on the card.';
+
 function ran(view: FirstAnswer, outcome: string): string {
-  return `The person ran ${agentNamed(view.tested.name, view.tested.handle)} once from the card, ${outcome}.`;
+  return view.again
+    ? `${pressed(view)}, ${outcome}.`
+    : `The person ran ${agentNamed(view.tested.name, view.tested.handle)} once from the card, ${outcome}.`;
+}
+
+function pressed(view: FirstAnswer): string {
+  return `The person pressed ${quoted(pressLabel(view))} for ${agentNamed(view.tested.name, view.tested.handle)} on the card`;
+}
+
+function pressLabel(view: FirstAnswer): string {
+  return view.again ? 'Try it again' : 'See its first answer';
 }
 
 /** Refusals whose words are written for the person; any other reads as a run that did not start. */
@@ -316,7 +365,7 @@ function fixOf(fix: unknown): Fix | undefined {
 function refused(view: FirstAnswer, problem: string, then: 'fix' | 'again' | 'slack', fix?: Fix): Next<FirstAnswer> {
   return tell(
     show({ ...view, stage: { kind: 'stopped', problem, then, ...fix ? { fix } : {} } }),
-    `The person pressed "See its first answer" for ${agentNamed(view.tested.name, view.tested.handle)} on the card, but the test run did not start.`,
+    `${pressed(view)}, but the test run did not start.`,
   );
 }
 
@@ -341,8 +390,8 @@ function fixed(view: FirstAnswer, stage: Extract<Stage, { kind: 'stopped' }>, re
 function unreachable(state: State, tool: string, now: number): Next<FirstAnswer> {
   const { view } = state;
   const { stage } = view;
-  if (tool === 'try_agent_once' && stage.kind === 'asking') return askAgain(view, stage, now);
-  if (tool === 'get_test_run' && stage.kind === 'running') return pollAgain(view, stage, now);
+  if (tool === 'practice_agent' && stage.kind === 'asking') return askAgain(view, stage, now);
+  if (tool === 'get_practice_run' && stage.kind === 'running') return pollAgain(view, stage, now);
   if (stage.kind === 'stopped' && stage.fixing) {
     const { fixing: _fixing, ...rest } = stage;
     return stay({ view: { ...view, stage: rest }, busy: false, error: UNREACHABLE });
@@ -388,14 +437,20 @@ function reread(state: State): Next<FirstAnswer> {
   }
 }
 
+/**
+ * A practice run as the card draws it: its question, answer and what it read,
+ * never its steps or their raw results. Chickpea escapes a `<` that could
+ * open a tag for clients that render the answer; the card draws it as text,
+ * so it shows the `<` the Agent wrote.
+ */
 function testRun(value: unknown): Run | undefined {
-  if (!isRecord(value) || typeof value.runToken !== 'string' || typeof value.ask !== 'string') return undefined;
+  if (!isRecord(value) || typeof value.runToken !== 'string' || typeof value.question !== 'string') return undefined;
   if (value.status !== 'running' && value.status !== 'answered' && value.status !== 'failed') return undefined;
   return {
     status: value.status,
     runToken: value.runToken,
-    ask: value.ask,
-    ...typeof value.reply === 'string' ? { reply: value.reply } : {},
+    ask: value.question,
+    ...typeof value.reply === 'string' ? { reply: value.reply.replaceAll('&lt;', '<') } : {},
     ...Array.isArray(value.read) ? { read: value.read.filter((name): name is string => typeof name === 'string') } : {},
     ...typeof value.problem === 'string' ? { problem: value.problem } : {},
   };
@@ -436,26 +491,22 @@ export function presentFirstAnswer(view: FirstAnswer): Omit<Presentation<FirstAn
       };
     case 'answered': {
       const promised = promisedFor(tested, stage.ask);
-      const answer = plainText(stage.reply).trim() || 'It gave no answer.';
+      const answer = shownAnswer(stage.reply);
+      const before = view.again?.before;
+      const panes = view.again
+        ? [...before ? [{ label: 'Before', text: before }] : [], { label: 'After', text: answer }]
+        : [...promised ? [{ label: 'What we promised', text: promised }] : [], { label: 'What it answered', text: answer }];
+      const change: Button<FirstAnswerAction> = { label: 'Change something', action: 'change_something', tone: 'secondary' };
       return {
         ...head,
         announce: `${title}. It answered.`,
         subtitle: [{ text: ANSWERED_LINE }],
         blocks: [
           askedLine(stage.ask),
-          {
-            kind: 'panes',
-            panes: [
-              ...promised ? [{ label: 'What we promised', text: promised }] : [],
-              { label: 'What it answered', text: answer },
-            ],
-          },
+          { kind: 'panes', panes },
           ...stage.read.length ? [{ kind: 'note' as const, text: `It read ${joinNames(stage.read)}.` }] : [],
         ],
-        buttons: [
-          ...slack,
-          { label: 'Change something', action: 'change_something', tone: 'secondary' },
-        ],
+        buttons: view.again ? [{ label: 'Try it again', action: 'try_once', tone: 'primary' }, change] : [...slack, change],
       };
     }
     case 'stopped':
@@ -489,7 +540,7 @@ export function presentFirstAnswer(view: FirstAnswer): Omit<Presentation<FirstAn
         announce: `${title}. ${line}`,
         subtitle: [{ text: RUNNING_LINE }],
         blocks: [{ kind: 'text', text: line }],
-        buttons: [{ label: 'See its first answer', action: 'try_once', tone: 'primary' }],
+        buttons: [{ label: pressLabel(view), action: 'try_once', tone: 'primary' }],
       };
     }
   }
@@ -524,6 +575,10 @@ function promisedFor(tested: Tested, ask: string): string | undefined {
   const { promised } = tested;
   const same = (text: string) => text.replace(/\s+/g, ' ').trim();
   return promised && same(promised.ask) === same(ask) ? promised.answer : undefined;
+}
+
+function shownAnswer(reply: string): string {
+  return plainText(reply).trim() || 'It gave no answer.';
 }
 
 /**
