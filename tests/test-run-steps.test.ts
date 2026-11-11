@@ -40,6 +40,13 @@ test('an MCP call is named by its server\'s tool and the service an Admin named,
   assert.doesNotMatch(JSON.stringify(step), /conn_probe|mcp__/);
 });
 
+test('a key the Agent put in a call\'s arguments never leaves in the step\'s input line', () => {
+  const { steps: [step] } = steps([{
+    toolName: 'mcp__conn_probe_7f3__probe_search', input: { q: 'refunds', token: KEY }, output: 'ok',
+  }]);
+  assert.equal(step!.input, '{"q":"refunds","token":"[credential redacted]"}');
+});
+
 test('a connection request keeps its status, URL and body; its connection, headers and any key never leave', () => {
   const { steps: [step] } = steps([{
     toolName: 'connection_request',
