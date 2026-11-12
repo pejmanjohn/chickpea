@@ -782,13 +782,21 @@ channel IDs, settings keys or values, or error text. Emission never throws.
     replaces it. Flue's `turn` observation does not carry it.
 - `compaction` is logged when Flue's compaction of an agent's context ends,
   from its `compaction_start` and `compaction` events.
-  - `tokensBefore` is Flue's estimate of the context it compacted, the number
-    it compares with its line: the last response's reported usage, plus
-    about 4 characters a token for any message after it.
-  - `trigger` is `threshold` when that estimate passed the model's window
-    less Flue's reserve after a turn (980,000 tokens for a 1,000,000-token
-    window, Flue's default), `overflow` when the provider refused a request
-    as too large and Flue compacted before it retried, or `manual`.
+  - `tokensBefore` is Flue's estimate of the context it compacted
+    (`compaction_start`'s `estimatedTokens`): the last successful response's
+    reported usage, plus about 4 characters a token for any message after
+    it.
+  - `trigger` is `threshold` when the last response's reported usage passed
+    the model's window less Flue's reserve after a turn (980,000 tokens for
+    a 1,000,000-token window, Flue's default), `overflow` when the provider
+    refused a request as too large, or answered one with usage above the
+    window, and Flue compacted before any retry, or `manual`.
+  - Flue compares the response's usage alone with its line, so after
+    `threshold` `tokensBefore` is that number unless messages follow the
+    response. After `overflow` Flue compared nothing. The refused request
+    reported no usage, so `tokensBefore` is the last successful response's
+    usage plus the 4-character estimate of what came after it, and it can
+    read below the window.
   - `summaryOutputTokens` is the summary's output tokens across Flue's one or
     two summary requests, whose `model_step` records carry `purpose`
     `compaction` and `compaction_prefix`. A failed compaction (`outcome`
