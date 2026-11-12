@@ -56,10 +56,17 @@ export function createSlackRequesterNotifier(input: SlackRequesterNotifierInput)
   };
 }
 
-/** The hand-off message. The live-view URL appears only here, never in model context. */
+export const BROWSER_HANDOFF_LINK_LABEL = 'Open the browser';
+
+/**
+ * The hand-off message, the only place the live-view URL appears. The tool's
+ * output never carries it. In a one-to-one DM it is an ordinary message, so
+ * the next turn's thread context reads it back and that turn's model sees the
+ * link; a copy drops it (src/review/website-logins.ts).
+ */
 export function browserHandoffMessage(host: string, liveViewUrl: string): string {
   return `${escapeSlackControlCharacters(host)} needs you to sign in before I can continue. ` +
-    `${renderSlackActionLink(liveViewUrl, 'Open the browser')} and sign in; ` +
+    `${renderSlackActionLink(liveViewUrl, BROWSER_HANDOFF_LINK_LABEL)} and sign in; ` +
     'it stays open for 10 minutes and only this link reaches it. ' +
     'When you are done, reply here and I will pick up where I left off.';
 }

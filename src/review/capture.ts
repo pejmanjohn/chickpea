@@ -1,5 +1,6 @@
 import type { ConversationStreamChunk } from '@flue/runtime';
 
+import { websiteLoginNames } from '../browser/logins.ts';
 import { installationScopeOf } from '../config/installation-scope.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
@@ -7,13 +8,7 @@ import { decodeBase64Url, encodeBase64Url } from '../security/base64url.ts';
 import type { SlackTurnContext } from '../slack/thread-context.ts';
 import { RunReviewCollector } from './collector.ts';
 import { runReview, type RunReviewPort } from './port.ts';
-import {
-  buildRunReviewRecord,
-  runReviewPseudonymizer,
-  type RunReviewInput,
-  type RunReviewOutcome,
-  type RunReviewSurface,
-} from './record.ts';
+import type { RunReviewInput, RunReviewOutcome, RunReviewRecordV1, RunReviewSurface } from './record.ts';
 
 /** 32 random bytes, written once by compare-and-set; independent of the telemetry opt-out. */
 export const RUN_REVIEW_PSEUDONYM_SETTING = 'review.pseudonym.v1';
@@ -36,9 +31,15 @@ export interface RunReviewStart {
    * the Agent's own words.
    */
   grantsWebsiteLogins: boolean;
+  /**
+   * The website logins the run's plan froze at admission. A copy removes
+   * them as well as the catalog it reads when it is built, so the username of
+   * a login deleted or replaced during the run still leaves it.
+   */
+  planWebsiteLogins?: readonly { host: string; username?: string }[];
   /** The Slack turn job the run answers; follow-ups dispatched into its run under that id are copied with it. */
   turnJobId?: string;
-  /** Where the installation's review key is kept; reached only once a copy is built. */
+  /** Where the installation's review key and website logins are kept; reached only once a copy is built. */
   settings: () => SettingsStore;
   /** A read of the key already made, as a thread runner's is; it answers the first read only. */
   prefetched?: SettingsStore;
@@ -191,9 +192,21 @@ class Session implements RunReviewSession {
         source = 'history';
       }
     }
-    const key = await loadOrCreateRunReviewKey(this.start.settings(), this.start.prefetched);
+    const settings = this.start.settings();
+    // A catalog that cannot be read keeps no copy, as a review key that cannot be read does.
+    // The builder and its scrub rules load here, after the reply, so no Worker startup loads them.
+    const [key, catalog, { buildRunReviewRecord, runReviewPseudonymizer, RunReviewScrubLimit }] = await Promise.all([
+      loadOrCreateRunReviewKey(settings, this.start.prefetched),
+      websiteLoginNames(settings),
+      import('./record.ts'),
+    ]);
+    const planned = this.start.planWebsiteLogins ?? [];
+    const websiteLogins = {
+      hosts: [...catalog.hosts, ...planned.map((login) => login.host)],
+      usernames: [...catalog.usernames, ...planned.flatMap((login) => login.username ? [login.username] : [])],
+    };
     const now = new Date().toISOString();
-    const record = buildRunReviewRecord({
+    const input: RunReviewInput = {
       runId: ending.runId,
       recordedAt: now,
       surface: this.start.surface,
@@ -212,7 +225,17 @@ class Session implements RunReviewSession {
       },
       truncated: collector?.truncated ?? false,
       source,
-    }, runReviewPseudonymizer(key));
+      websiteLogins,
+    };
+    let record: RunReviewRecordV1;
+    try {
+      record = buildRunReviewRecord(input, runReviewPseudonymizer(key));
+    } catch (error) {
+      // A scrub past its limits keeps no copy. Its line names the limit and nothing of the run.
+      if (!(error instanceof RunReviewScrubLimit)) throw error;
+      warn(error.event);
+      return;
+    }
     if (abandoned()) return;
     await this.port.record(this.installationId, record);
   }

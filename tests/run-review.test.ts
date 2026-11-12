@@ -99,6 +99,7 @@ function input(overrides: Partial<RunReviewInput> = {}): RunReviewInput {
     timings: { settledAt: '2026-10-25T12:00:01.000Z' },
     truncated: false,
     source: 'stream',
+    websiteLogins: { hosts: [], usernames: [] },
     ...overrides,
   };
 }
