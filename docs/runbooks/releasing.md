@@ -37,6 +37,82 @@ against the commit where the candidate leaves `origin/main`. It also refuses an
 edit to an applied D1 migration file. It reads SQL only, so a TypeScript
 migration that rewrites rows through code is left to review.
 
+### RPC contract
+
+A deploy does not replace a Durable Object that is in memory. Cloudflare can
+keep a held state store, runner or Agent on its old build for about five
+minutes, while the new Worker and new objects call it, and it calls them. For
+those minutes two builds call each other in both directions.
+
+`npm run verify:rpc-contract` checks that they can. It reads every class that
+`wrangler.jsonc` deploys: the state store, the thread runner, the gateway
+session, the Sandbox and the five Flue Agents. For each public method, it
+resolves the parameter and return types through the TypeScript checker. It
+also reads three payloads that cross an object boundary as JSON: the staged
+turn input, the coding worker binding and the runner job payload. It records
+them in `contracts/rpc-surface.json`, with each named type defined once under
+`types`, and compares them with the snapshot at the commit where the branch
+leaves `origin/main`.
+
+| Change from the base | Result |
+| --- | --- |
+| A method, an optional parameter or field, or a union member added | Passes; the report notes it |
+| A method removed or renamed | Refused |
+| A parameter added, removed or retyped | Refused |
+| A field added as required, removed, renamed, or made optional or required | Refused |
+| A union member removed from a parameter or a return | Refused |
+| A new version of the Flue or Sandbox base, or of a package whose types cross a boundary | Refused |
+
+An addition passes, but the other build cannot use it yet:
+
+- A call to a method that a held object lacks rejects, and runs nothing.
+- `withStoreFallback` (`src/config/store-fallback.ts`) covers a state store
+  method: the caller takes its old path. The report says whether each new store
+  method is behind it.
+- Nothing covers runner, gateway, Sandbox or Agent calls. **A new runner or
+  Agent method lands one release before its first caller.** A new store method
+  does the same, unless its caller uses `withStoreFallback`. The report lists
+  the callers it finds in the build.
+- A new union member in a return reaches an old caller once new code produces
+  it. Check that the old code tolerates a value it does not know.
+
+The check cannot see a change in meaning under an unchanged type. A
+store-side behavior change still gets a line in the PR description that judges
+both directions.
+
+**When it runs.** `verify:train` runs it first. Each PR runs it too, because a
+change to any type an object takes or returns makes the snapshot stale. Then
+run `npm run verify:rpc-contract -- --update` and commit the file. When two
+PRs in a train both changed it, merge them and run `--update` again.
+
+**Give a reason.** A refused change passes only with a reason: why the two
+builds can serve side by side, and the release that makes it safe. Put it in
+one of two places:
+
+- The snapshot's `contract` section, keyed by the subject the report names,
+  with `to` set to the digest the report prints. The reason holds only while
+  the subject keeps that value, and `--update` drops it once the subject
+  changes again.
+
+  ```json
+  "contract": {
+    "type SlackWorkspaceManagementRpcRequest": {
+      "to": "71e61f7d164c",
+      "reason": "No Slack Agent registers the four removed tool names. A held store answers them forbidden, as before."
+    }
+  }
+  ```
+
+- A commit message on the branch, as a line `contract: <subject>: <reason>`.
+
+**Compare two commits.** `npm run verify:rpc-contract -- --base <serving>
+--head <candidate>` judges one commit against another, such as the Core pin
+production serves against the next one. A commit without a snapshot is read
+from its source, with this checkout's dependencies. The default base is
+`origin/main`, not what production serves. A method added in one train and
+called in the next passes both trains, so a promotion that spans them needs
+this run against the serving pin.
+
 ## Before the first release
 
 - Land release preparation through a GitHub PR or a maintainer-authorized local

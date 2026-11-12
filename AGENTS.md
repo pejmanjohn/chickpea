@@ -160,7 +160,8 @@ which here means Chickpea Cloud running a pinned Core commit.
   of captured request bodies.
 - Each PR runs `npm run test:mcp` when it touches the management MCP program,
   and the tests related to anything else it changes, plus `npm run typecheck`,
-  `npm run verify:hygiene`, and the budgets:
+  `npm run verify:hygiene`, `npm run verify:rpc-contract` (see
+  [RPC contract](docs/runbooks/releasing.md#rpc-contract)), and the budgets:
   `npm run verify:host -- --wait-ms 600000 npm run verify:budgets`. T3 live
   checks stay per PR.
 - PRs merge in trains. A train is the merge batch the batch smoke runs on: one
@@ -179,9 +180,10 @@ which here means Chickpea Cloud running a pinned Core commit.
   branch or drop it, rebuild the train from that merge on, and repeat the
   regression. A failure that needs two PRs together is fixed in the later one.
 - A full regression is
-  `npm run verify:host -- --wait-ms 3600000 npm run verify:train`: a build,
-  both startup budgets for each merge, then the full suite. Run it on the
-  train's merged tree, because two PRs can each pass alone and fail together.
+  `npm run verify:host -- --wait-ms 3600000 npm run verify:train`: the RPC
+  contract, a build, both startup budgets for each merge, then the full suite.
+  Run it on the train's merged tree, because two PRs can each pass alone and
+  fail together.
   A commit added to the train afterwards repeats it, unless it changes only
   comments or docs. Cloud pins a train's tip, never a merge inside it.
   A `verify:regression` plan with `fullTests: false` runs a subset and is not
