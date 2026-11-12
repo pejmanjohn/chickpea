@@ -211,7 +211,14 @@ test('workspace inspect stops after 50 pages with an error instead of printing p
   assert.equal(result.code, 1);
   assert.equal(result.stdout, '');
   assert.match(result.stderr, /^chickpea: TOO_MANY_PAGES: list_agents had more than 50 pages/);
+  assert.ok(result.stderr.includes(`list_agents --args '{"cursor":"<nextCursor>"}'`), result.stderr);
   assert.equal(paged.toolCalls.slice(before).filter(({ name }) => name === 'list_agents').length, 50);
+
+  // The hint pages the same list the person asked for.
+  const archived = await runCli(['workspace', 'inspect', paged.url, '--include-archived'], { store: pagedStore });
+  assert.equal(archived.code, 1);
+  assert.equal(archived.stdout, '');
+  assert.ok(archived.stderr.includes(`list_agents --args '{"includeArchived":true,"cursor":"<nextCursor>"}'`), archived.stderr);
 });
 
 test('recipe export uses export_agents and prints the recipe unchanged', async () => {

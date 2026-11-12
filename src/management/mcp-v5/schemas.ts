@@ -47,7 +47,7 @@ export const listAgentsInput = z.strictObject({
   include: z.enum(['all', 'mine']).optional()
     .describe('all (the default) lists every Agent you can use; mine lists the ones you created.'),
   includeArchived: z.boolean().optional().describe('true lists archived Agents too, which are left out by default.'),
-  cursor: z.string().regex(/^[1-9]\d{0,5}$/).optional()
+  cursor: z.string().min(1).max(256).optional()
     .describe('The nextCursor of the previous page, with the same include and includeArchived.'),
 });
 export const getAgentInput = z.strictObject({ agentId: zAgentId });

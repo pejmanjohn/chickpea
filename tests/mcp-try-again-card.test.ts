@@ -425,6 +425,7 @@ test('a refusal or a failed run shows its own sentence on Try it again, as ChatG
   funded.runs.outcome = { status: 'failed', failure: 'out_of_usage', result: { funding: { kind: 'credits_exhausted' } } } as TestRunOutcome;
   await out.press('try_once');
   assert.deepEqual(out.shown.blocks, [{ kind: 'text', text: 'This workspace is out of usage for now, so I can\'t start this one. Once an Owner adds more, send it again.' }]);
+  assert.equal(out.shown.title, 'Couldn\'t practice with Invoice Chaser', 'a run that started and failed has no answer to be "after this change"');
   assert.deepEqual(out.labels(), ['Open in Slack (primary)', 'Undo the change (secondary)']);
   assert.equal(told(out), 'The person pressed "Try it again" for the Agent "Invoice Chaser" (@invoices) on the card, but it did not finish answering.');
 

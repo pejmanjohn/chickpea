@@ -779,6 +779,9 @@ export function practiceText(output: PracticeOutput): string {
   }
   if (output.moreSteps) lines.push(`…and ${output.moreSteps} more ${output.moreSteps === 1 ? 'call' : 'calls'}.`);
   if (output.off?.length) lines.push('', `Not available in a practice run: ${output.off.join('; ')}`);
+  if (output.before) {
+    lines.push('', `Before: an earlier answer to this question, from version ${output.before.agentVersion}. get_practice_run with runToken ${output.before.runToken} reads it.`);
+  }
   lines.push('', `Next: ${output.nextStep}`);
   return lines.join('\n');
 }

@@ -1,11 +1,12 @@
 import type { z } from 'zod';
 
-import { CHICKPEA_AGENT_ID } from '../../config/agent-id.ts';
+import { AGENT_ID_PATTERN, CHICKPEA_AGENT_ID } from '../../config/agent-id.ts';
 import { isMcpToolReviewRequired } from '../../config/mcp-access.ts';
 import { mcpToolDeclaredRead } from '../../config/mcp-tool-policy.ts';
 import { resolveConnectorCatalogPreset } from '../../config/presets.ts';
 import type { PlatformEnv } from '../../config/state-backend.ts';
 import type { CustomAgentConfig, McpConnectionConfig } from '../../config/types.ts';
+import { decodeBase64Url, encodeBase64Url } from '../../security/base64url.ts';
 import { agentAvatarInstallation, sameOriginAgentAvatarUrl } from '../../slack/agent-presence/avatar-assets.ts';
 import {
   ADMIN_PATH,
@@ -101,30 +102,55 @@ const LISTED_DESCRIPTION_CHARS = 100;
 
 /**
  * The Agents the caller can use, archived ones only when asked, each as a
- * list needs it: get_agent has the rest. One page stays inside the budget;
- * `nextCursor` is where the next starts.
+ * list needs it: get_agent has the rest. One page stays inside the budget.
+ * They come in agentId order, and `nextCursor` names the last one listed, so
+ * an Agent created or archived between pages never moves another one.
  */
 export async function listAgents(
   deps: FiveZeroDeps,
   input: Out<typeof schemas.listAgentsInput>,
 ): Promise<Out<typeof schemas.listAgentsOutput>> {
+  const after = input.cursor === undefined ? undefined : cursorAgentId(input.cursor);
   const { snapshot } = await readWorkspace(deps);
   const mine = new Set(snapshot.agents
     .filter(({ creatorMembershipId }) => creatorMembershipId === snapshot.caller.membershipId)
     .map(({ id }) => id));
-  const rows = agentRows(snapshot).filter(({ agentId, status }) =>
-    (input.include !== 'mine' || mine.has(agentId)) && (input.includeArchived === true || status !== 'archived'));
-  const from = Number(input.cursor ?? 0);
+  const rows = agentRows(snapshot)
+    .filter(({ agentId, status }) => (after === undefined || agentId > after) &&
+      (input.include !== 'mine' || mine.has(agentId)) && (input.includeArchived === true || status !== 'archived'))
+    .sort((left, right) => left.agentId < right.agentId ? -1 : left.agentId > right.agentId ? 1 : 0);
   const page = (count: number): Out<typeof schemas.listAgentsOutput> => ({
-    agents: rows.slice(from, from + count),
+    agents: rows.slice(0, count),
     canCreate: true,
-    ...(from + count < rows.length ? { nextCursor: String(from + count) } : {}),
+    ...(count < rows.length ? { nextCursor: agentsCursor(rows[count - 1]!.agentId) } : {}),
   });
   // The text block is the same JSON, so a page counts twice.
   const fits = (count: number) => 2 * JSON.stringify(page(count)).length <= LIST_AGENTS_BUDGET_CHARS;
-  let count = Math.min(1, Math.max(0, rows.length - from));
-  while (from + count < rows.length && fits(count + 1)) count += 1;
+  let count = Math.min(1, rows.length);
+  while (count < rows.length && fits(count + 1)) count += 1;
   return page(count);
+}
+
+const AGENTS_CURSOR_PREFIX = 'after1_';
+
+function agentsCursor(agentId: string): string {
+  return `${AGENTS_CURSOR_PREFIX}${encodeBase64Url(new TextEncoder().encode(agentId))}`;
+}
+
+/** The Agent a cursor names. Anything else, such as an offset an earlier Chickpea gave, starts the list again. */
+function cursorAgentId(cursor: string): string {
+  let agentId: string | undefined;
+  if (cursor.startsWith(AGENTS_CURSOR_PREFIX)) {
+    try {
+      agentId = new TextDecoder('utf-8', { fatal: true }).decode(decodeBase64Url(cursor.slice(AGENTS_CURSOR_PREFIX.length)));
+    } catch {
+      agentId = undefined;
+    }
+  }
+  if (agentId !== undefined && AGENT_ID_PATTERN.test(agentId)) return agentId;
+  return fail('invalid_input', 'Chickpea can\'t continue the list from that cursor.', {
+    nextStep: 'Call list_agents without a cursor to start again from the first page.',
+  });
 }
 
 /** Every Agent the caller can use: the ones they can edit, then shared ones they cannot. */

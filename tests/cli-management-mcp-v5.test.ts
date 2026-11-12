@@ -77,3 +77,53 @@ test('CLI commands use Core 5.0 over local HTTP, including refusals and validati
   assert.equal(JSON.parse(invalid.stdout).error.code, 'invalid_input');
   assert.equal(JSON.parse(invalid.stdout).error.message, 'Chickpea did not accept that request.');
 });
+
+test('CLI 0.3.0 reads every page of Core\'s list_agents through the cursor it is given, while Agents are created mid-read', async (t) => {
+  const f = await createManagementAdapterFixture('cli_v5_pages');
+  t.after(() => f.close());
+  const ids = Array.from({ length: 50 }, (_, index) => `agent_page_${String(index).padStart(2, '0')}`);
+  for (const id of ids) await createFixtureAgent(f, id, { name: `${id} ${'n'.repeat(40)}`, description: 'd'.repeat(300) });
+  // Once inspect starts, each read after get_workspace's and the first page's adds an Agent that sorts ahead of every listed one.
+  let reads: number | undefined;
+  const service = new Proxy(f.service, {
+    get(target, property) {
+      if (property !== 'inspectWorkspace') {
+        const value = Reflect.get(target, property, target) as unknown;
+        return typeof value === 'function' ? value.bind(target) : value;
+      }
+      return async (...args: Parameters<typeof target.inspectWorkspace>) => {
+        if (reads !== undefined && ++reads > 2) await createFixtureAgent(f, `agent_0_mid_${reads}`);
+        return target.inspectWorkspace(...args);
+      };
+    },
+  });
+  const deployment: FakeDeployment = new FakeDeployment({
+    createMcpServer: () => createWorkspaceManagementMcpServer({
+      principal: {
+        betterAuthUserId: f.owner.binding.betterAuthUserId!,
+        userId: f.owner.user.id,
+        membershipId: f.owner.membership.id,
+        organizationId: f.owner.membership.organizationId,
+        role: 'owner',
+        clientId: 'cli_v5_pages',
+      },
+      service,
+      baseUrl: deployment.url,
+    }),
+  });
+  await deployment.start();
+  t.after(() => deployment.stop());
+  const store = temporaryStore();
+  const login = await runCli(['login', deployment.url], { store, openBrowser: fakeBrowser, loginTimeoutMs: 10_000 });
+  assert.equal(login.code, 0, login.stderr);
+
+  reads = 0;
+  const inspect = await runCli(['workspace', 'inspect', deployment.url, '--json'], { store });
+  assert.equal(inspect.code, 0, inspect.stderr);
+  assert.ok(reads >= 3, `${reads} reads: at least two pages`);
+  assert.deepEqual(
+    (JSON.parse(inspect.stdout).agents as Array<{ agentId: string }>).map(({ agentId }) => agentId),
+    ids,
+    'every Agent there for the whole read, once each',
+  );
+});

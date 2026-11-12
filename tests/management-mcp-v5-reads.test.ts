@@ -266,6 +266,50 @@ test('list_agents leaves archived Agents out unless asked, keeps each entry shor
   assert.equal(refused.isError, true);
 });
 
+test('a list_agents cursor never skips or repeats an Agent when another is archived or created between pages', async (t) => {
+  const { f, call } = await harness(t, 'list-stable');
+  const ids = Array.from({ length: 50 }, (_, index) => `agent_page_${String(index).padStart(2, '0')}`);
+  for (const id of ids) await createFixtureAgent(f, id, { name: `${id} ${'n'.repeat(40)}`, description: 'd'.repeat(300) });
+  const listed = (page: Record<string, unknown>) => (page.agents as Array<{ agentId: string }>).map(({ agentId }) => agentId);
+  /** Every page, with `between` run once after the first. */
+  const read = async (between: () => Promise<unknown>) => {
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    let pages = 0;
+    do {
+      if (pages === 1) await between();
+      const page = structured(await call('list_agents', cursor ? { cursor } : {}));
+      seen.push(...listed(page));
+      cursor = page.nextCursor as string | undefined;
+      pages += 1;
+    } while (cursor);
+    assert.ok(pages >= 2, `${pages} pages`);
+    return seen;
+  };
+  const first = structured(await call('list_agents'));
+  assert.equal(typeof first.nextCursor, 'string');
+  assert.equal(ids.some((id) => (first.nextCursor as string).includes(id)), false, 'the cursor names no Agent in plain text');
+
+  // An Agent on the first page archived before the second: an offset would skip the next page's first Agent.
+  const archived = await read(() => f.config.updateAgent('agent_page_00', { lifecycle: 'archived', enabled: false }));
+  assert.deepEqual(archived, ids, 'in agentId order, each once, the archived one as the first page listed it');
+
+  // An Agent created ahead of the cursor before the second page: an offset would list one Agent twice.
+  const created = await read(() => createFixtureAgent(f, 'agent_new_0'));
+  assert.deepEqual(created, ids.slice(1), 'none twice; the new one sorts before the cursor and waits for the next read');
+  assert.deepEqual(listed(structured(await call('list_agents'))).slice(0, 2), ['agent_new_0', 'agent_page_01']);
+
+  // An offset cursor from before is refused, so a list read across an update starts again instead of shifting.
+  for (const cursor of ['40', 'after1_', 'after1_%%%', `after1_${Buffer.from('Not An Id!').toString('base64url')}`]) {
+    const error = errorOf(await call('list_agents', { cursor }));
+    assert.deepEqual([error.code, error.message, error.nextStep], [
+      'invalid_input',
+      'Chickpea can\'t continue the list from that cursor.',
+      'Call list_agents without a cursor to start again from the first page.',
+    ], cursor);
+  }
+});
+
 test('list_agents, get_agent and the other reads carry handles and versions, never revisions', async (t) => {
   const { f, call } = await harness(t, 'reads');
   await createFixtureAgent(f, 'agent_research', { description: 'Finds sources.' });

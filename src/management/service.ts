@@ -71,6 +71,7 @@ import {
   type ChannelConfig,
   type ConnectionAccount,
   type ConnectionAccountApiPolicy,
+  type ConnectionAccountMcpPolicy,
   type ConnectionAccountOwnerKind,
   type ConnectionAccountPolicy,
   agentAppIsLive,
@@ -4549,8 +4550,10 @@ export class WorkspaceManagementService {
         };
       }
       const policy = account.policy;
-      // A saved optional key, such as Exa's, is replaced on the same key page.
-      if (!nativeCredentialRequired(policy) && !await this.optionalKeySaved(account)) {
+      // A saved optional key, such as Exa's, is replaced on the same key page. One that needs attention, as a failed
+      // removal leaves it, gets the page whether or not that removal already deleted its key.
+      if (!nativeCredentialRequired(policy) &&
+          !(keyOptional(policy) && (account.lifecycle === 'needs_attention' || await this.optionalKeySaved(account)))) {
         throw new ManagementError('invalid_request', 'This MCP connection does not require setup.');
       }
       const oauth = policy.authMode === 'oauth';
@@ -8499,6 +8502,11 @@ export function withoutRevisions<T extends { accountRevision: number; bindingAcc
   return connection;
 }
 
+/** An MCP connection that works without a key and takes one, such as Exa. */
+function keyOptional(policy: ConnectionAccountApiPolicy | ConnectionAccountMcpPolicy): boolean {
+  return policy.kind === 'mcp' && policy.credentialHeaderName !== undefined && !nativeCredentialRequired(policy);
+}
+
 /** How a person reconnects a connection that needs attention in place, when they may manage it. */
 function connectionReconnect(
   principal: AuthPrincipal,
@@ -8514,7 +8522,7 @@ function connectionReconnect(
       ? { tool: 'prepare_connector_setup', connector: connector.id, ownerKind: account.ownerKind }
       : undefined;
   }
-  if (!nativeCredentialRequired(policy)) return undefined;
+  if (!nativeCredentialRequired(policy) && !keyOptional(policy)) return undefined;
   return {
     tool: 'apply_workspace_changes',
     operation: {
