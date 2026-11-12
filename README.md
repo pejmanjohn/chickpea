@@ -371,7 +371,7 @@ What keeps a chat window from being a loophole:
 - **Who can change what.** `@Chickpea` can create Agents and edit any Agent you're permitted to edit. A routed Agent can inspect and edit only itself, still bound by your permissions.
 - **Proposals before consequences.** Two kinds of change arrive as a frozen read-only proposal: anything the Agent inferred rather than you stated, and anything that changes what an Agent can do, reach, or delete. Nothing applies until you approve it.
 - **No ceremony for small edits.** Simple reversible single-field changes apply directly, and you can undo them.
-- **MCP gets the same treatment.** Requests are scoped to that requester's permissions and held to the same approvals. The authoring guide is published at `chickpea://guide/agent-authoring/v1`, and the [workspace management MCP runbook](docs/runbooks/workspace-management-mcp.md) covers authority and proposal semantics.
+- **MCP gets the same treatment.** Requests are scoped to that requester's permissions and held to the same approvals. The `get_guide` tool serves the guidance a client follows, and the [workspace management MCP runbook](docs/runbooks/workspace-management-mcp.md) covers authority and proposal semantics.
 
 ### CLI
 
@@ -554,13 +554,9 @@ and proposes one Agent built on work you already do, naming what it looked at.
 Nothing it reads is sent to Chickpea. When you say yes, it creates the Agent,
 which then sends you a message in Slack.
 
-In Claude Code, `/mcp__chickpea__new-agent` opens the same guided flow from the
-slash menu; `/mcp__chickpea__status`, `/mcp__chickpea__edit-agent`, `/mcp__chickpea__connect`,
-`/mcp__chickpea__schedule`, and `/mcp__chickpea__import-skill` cover the rest.
-
-These are MCP prompts, not installed local skills. In Codex, ask for the same
-work in plain language; they do not appear in the `$` skills picker. No separate
-skills installation is required in either client.
+Ask for the rest the same way, in plain words: check on an Agent, edit it,
+connect a service, or schedule work. No separate skills installation is
+required.
 
 Chickpea applies your existing permissions. Changes that expand access or
 require confirmation produce a proposal for you to approve. Connecting an

@@ -19,7 +19,7 @@ Docs: `/agents/models-and-providers/`. Record areas: `providers`. Legacy contrac
 
 - Admin: Settings → Model providers (Owner or Admin) for provider cards, the three defaults and the catalog line; an Agent's Model tab for pins.
 - Slack: every reply runs on the resolved model. Ask an Agent with the image role to make an image, or to edit one posted in the thread.
-- MCP: `inspect_workspace` shows provider availability. `prepare_provider_setup` (Owner or Admin) returns a requester-bound key link; `remove_provider_credential` is confirmation-gated. The image role is Admin-only.
+- MCP: `list_models` shows provider availability. `connect_model_provider` (Owner or Admin) returns a requester-bound key link; `remove_model_provider_key` is confirmation-gated. The image role is Admin-only.
 
 ## How to drive it on a lane
 
@@ -28,7 +28,7 @@ Docs: `/agents/models-and-providers/`. Record areas: `providers`. Legacy contrac
 - Before changing a default or role, register it with `record resource --ownership restore --expected-file` holding the model id. Never pin the role revision: it is a monotonic counter, so cleanup could never verify.
 - Case shape: `case-add --area providers --proof slack --proof admin`. Add `--proof model` only for a separately graded model-only judgment.
 - Requests: "<run marker> make a square image of a lighthouse"; post a small logo and ask for an ad that keeps it; with the image role unset, ask for an image.
-- Variants: the unset role gets an honest reply naming Settings → Model providers → Default image model; a pinned run Agent answers in a new thread on its pin; `prepare_provider_setup` for an environment-managed provider returns `invalid_request`.
+- Variants: the unset role gets an honest reply naming Settings → Model providers → Default image model; a pinned run Agent answers in a new thread on its pin; `connect_model_provider` for an environment-managed provider is refused.
 - Cleanup: archive run Agents and restore each changed default, role or pin by value.
 
 ## Proof and gotchas

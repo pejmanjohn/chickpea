@@ -18,7 +18,7 @@ Docs: `/agents/memory/`. Record areas: `memory`. Legacy contracts: LC-07.
 
 - Slack: `!` commands or plain requests to the Agent in a granted channel, its DM or a thread.
 - Admin: Agents → the Agent → Memory.
-- MCP: `inspect_memory` returns the body and revision, and the `update_agent_memory` operation needs that revision as `expectedRevision`. A standalone memory edit applies directly.
+- MCP: `get_agent_memory` returns the body and its `version`, and `update_agent_memory` needs that version. A memory edit applies directly.
 
 ## How to drive it on a lane
 
@@ -27,12 +27,12 @@ Docs: `/agents/memory/`. Record areas: `memory`. Legacy contracts: LC-07.
 - Implicit: state one durable, non-sensitive response preference in ordinary conversation, then check that a fresh turn on another surface follows it.
 - Conflict: keep an unsaved Memory draft in one Admin tab while another tab or Slack saves, then return to the draft.
 - Forget: ask the Agent to forget the fact, or save an empty body in Admin, then ask again from both surfaces.
-- Case shape: `case-add --area memory --proof slack --proof admin` (or `--proof mcp` with `inspect_memory`) and `--max-wait-ms 120000`.
+- Case shape: `case-add --area memory --proof slack --proof admin` (or `--proof mcp` with `get_agent_memory`) and `--max-wait-ms 120000`.
 - Cleanup: archive the disposable Agent (registered with `--kind agent --ownership owned --cleanup-preset archived-agent`). On the fixtures Agent, restore the exact body with `--ownership restore` and keep revision numbers out of the expected file, because every write advances them.
 
 ## Proof and gotchas
 
-- Recall in the same thread proves nothing, because thread history carries it. Proof is the body in the Memory tab or `inspect_memory`, plus recall in fresh conversations on both surfaces.
+- Recall in the same thread proves nothing, because thread history carries it. Proof is the body in the Memory tab or `get_agent_memory`, plus recall in fresh conversations on both surfaces.
 - An answer that seems to remember is not proof of storage, and silence after forget is not proof of deletion. Read the body.
 - Keep raw memory bodies in private evidence only.
 - Implicit capture must store one bounded preference, not incidental prose. Old memory-footer copy showing up in Slack fails the case.

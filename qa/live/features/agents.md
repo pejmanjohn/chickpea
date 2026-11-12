@@ -19,7 +19,7 @@ Docs: `/agents/agents/`, `/agents/create-an-agent/`, `/agents/instructions/`, `/
 
 - Slack: mention `@Chickpea` in the channel where the Agent should work and describe the job; for an edit, mention the Agent or `@Chickpea` and approve in the same thread.
 - Admin: **Agents → New Agent** (`/admin/agents/new`), then **Choose first channel**. The profile's overflow menu holds **Archive Agent** and **Restore Agent**; the avatar is changed only on the Agent page.
-- MCP: one `create_agent` operation in `apply_workspace_changes`. Publishing is a separate `grant_agent_channel` operation that applies at once, and only a destructive change waits for `confirm_workspace_change`.
+- MCP: `create_agent` creates the Agent at once. Publishing it is `add_agent_to_channel`, which also applies at once, and only a destructive change waits for `confirm_change`.
 
 ## How to drive it on a lane
 
