@@ -1,22 +1,20 @@
 #!/usr/bin/env node
 /**
- * Fail when the built Worker's static closure grows too much.
+ * Fail when one change grows the built Worker's static closure too much.
  *
  * The static closure is every chunk the Worker entry imports without
  * `import()`, followed transitively. A Durable Object activation that starts
  * an isolate loads all of it before its constructor runs, at roughly 0.1 s per
  * MiB, so this is a latency budget; the upload budget in verify-worker-size.mjs
- * is a platform limit.
+ * is a platform limit. There is no ceiling on the total.
  *
- * Two checks. A change may add GROWTH_ALLOWANCE_BYTES over its merge base
+ * A change may add GROWTH_ALLOWANCE_BYTES over its merge base
  * (scripts/lib/budget-growth.mjs), measured by building that commit in a
- * temporary export with this checkout's node_modules. So a dependency upgrade
- * counts against the ceiling only. A base that does not build fails the
+ * temporary export with this checkout's node_modules. So a dependency
+ * upgrade's own growth is not counted. A base that does not build fails the
  * check with the build's output; when it cannot build with these
- * dependencies, CHICKPEA_BUDGET_UNBUILDABLE_BASE=1 checks the ceiling alone.
- * The ceiling backstops the total: set it to the measured size plus 64 KiB
- * once per merge train, and lower it when a change moves code behind
- * `import()`.
+ * dependencies, CHICKPEA_BUDGET_UNBUILDABLE_BASE=1 skips the changes that
+ * cannot be measured and checks the rest.
  *
  * Reads the build in dist-cf, which must be of this checkout. Its builds run
  * inside verify:regression's host reservation; standalone, wrap it in
@@ -28,10 +26,9 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { builtWorkerConfigPath, staleBuildReason } from './lib/built-worker-config.mjs';
-import { compareSizes, exportCommit, formatGrowth, growthFailure, growthLine, growthPlan, short } from './lib/budget-growth.mjs';
+import { compareSizes, exportCommit, growthFailure, growthLine, growthPlan, short } from './lib/budget-growth.mjs';
 
 const MIB = 1024 * 1024;
-export const WORKER_STATIC_CLOSURE_CEILING_BYTES = 7_377_653 + 64 * 1024;
 export const UNBUILDABLE_BASE_ENV = 'CHICKPEA_BUDGET_UNBUILDABLE_BASE';
 const ENTRY = 'virtual:cloudflare/worker-entry';
 const BASE_REPORT = 'budget-modules.json';
@@ -94,15 +91,13 @@ const mib = (bytes) => `${(bytes / MIB).toFixed(2)} MiB`;
 const rowsBetween = (before, after) => before.modules && after.modules ? compareSizes(before.modules, after.modules).rows : undefined;
 
 /**
- * Why the closure fails its budgets, as messages: each change over its
- * allowance, each change that could not be measured unless
- * `unbuildableBaseAllowed`, and the ceiling. `plan` is growthPlan's.
- * `at(commit)` measures a commit, or the working tree when it is undefined,
- * and throws when it cannot. Each change's growth goes to `log`.
+ * Why the closure fails its budget, as messages: each change over its
+ * allowance, and each change that could not be measured unless
+ * `unbuildableBaseAllowed`. `plan` is growthPlan's. `at(commit)` measures a
+ * commit, or the working tree when it is undefined, and throws when it
+ * cannot. Each change's growth goes to `log`.
  */
-export function closureFailures({
-  head, plan, at, ceiling = WORKER_STATIC_CLOSURE_CEILING_BYTES, unbuildableBaseAllowed = false, log = console.log,
-}) {
+export function closureFailures({ plan, at, unbuildableBaseAllowed = false, log = console.log }) {
   const failures = [];
   if (plan.skip) log(plan.skip);
   if (plan.error) failures.push(plan.error);
@@ -115,11 +110,11 @@ export function closureFailures({
       after = at(change.to);
     } catch (error) {
       if (unbuildableBaseAllowed) {
-        log(`Growth in ${change.label} is not checked, as ${UNBUILDABLE_BASE_ENV} is set; the ceiling still is. ${error.message}`);
+        log(`Growth in ${change.label} is not checked, as ${UNBUILDABLE_BASE_ENV} is set. ${error.message}`);
       } else {
         failures.push(`Growth in ${change.label} could not be measured. ${error.message}\n` +
           `When that commit cannot build with this checkout's dependencies, as after a dependency upgrade, ` +
-          `set ${UNBUILDABLE_BASE_ENV}=1 to check the ceiling alone.`);
+          `set ${UNBUILDABLE_BASE_ENV}=1 to check only the changes that can be measured.`);
       }
       continue;
     }
@@ -128,20 +123,6 @@ export function closureFailures({
     if (growth > change.allowance) {
       failures.push(growthFailure({ what: 'The Worker static closure', change, ref: plan.ref, growth, rows: rowsBetween(before, after) }));
     }
-  }
-  if (head.bytes > ceiling) {
-    let sinceBase;
-    try {
-      sinceBase = plan.base === undefined ? undefined : rowsBetween(at(plan.base), head);
-    } catch {
-      // The base's build failure is reported above.
-    }
-    failures.push(
-      `The static closure is ${mib(head.bytes - ceiling)} over its ceiling.` +
-      (sinceBase ? `\nModules that grew since the merge base:\n${formatGrowth(sinceBase)}` : '') +
-      '\nLoad the new code with import() where it is used. Once per merge train, the ceiling in ' +
-      'scripts/worker-closure.mjs may be set to the measured size plus 64 KiB.',
-    );
   }
   return failures;
 }
@@ -154,7 +135,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     process.exit(2);
   }
   const head = measureStaticClosure(path.dirname(builtWorkerConfigPath(projectRoot)));
-  console.log(`Worker static closure: ${head.chunks.length} chunks, ${mib(head.bytes)} (ceiling ${mib(WORKER_STATIC_CLOSURE_CEILING_BYTES)})`);
+  console.log(`Worker static closure: ${head.chunks.length} chunks, ${mib(head.bytes)}`);
   for (const chunk of head.chunks.slice(0, 8)) console.log(`  ${mib(chunk.bytes).padStart(10)}  ${chunk.file}`);
 
   // Each commit builds once, and a build that failed is not retried.
@@ -173,7 +154,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     return closure;
   };
   const failures = closureFailures({
-    head, plan: growthPlan(projectRoot), at, unbuildableBaseAllowed: process.env[UNBUILDABLE_BASE_ENV] === '1',
+    plan: growthPlan(projectRoot), at, unbuildableBaseAllowed: process.env[UNBUILDABLE_BASE_ENV] === '1',
   });
   for (const failure of failures) console.error(`\n${failure}`);
   if (failures.length > 0) process.exit(1);

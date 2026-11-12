@@ -480,3 +480,46 @@ test('member Slack requests register custom MCP declarations on text and attachm
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('a Slack turn logs the custom MCP connection Flue drops, under its own instance', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { createMcpConnection, observe } = await import('@flue/runtime');
+  const { withEnv } = await import('./helpers/env.ts');
+  const { closeNodeStateStores, getConfigStore } = await import('../src/config/state-backend.ts');
+  const { emitMcpConnectionUnavailable } = await import('../src/config/mcp-unavailable.ts');
+  const { opaqueId } = await import('../src/work/admission.ts');
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-mcp-drop-'));
+  const lines: Array<Record<string, unknown>> = [];
+  const stopObserving = observe((observation) =>
+    emitMcpConnectionUnavailable(observation, { info: (line) => lines.push(line) }));
+  try {
+    await withEnv({ SLACK_STATE_DB_PATH: join(directory, 'state.db'), OPENAI_API_KEY: 'sk-synthetic' }, async () => {
+      // The live Agent and a provider key, so the render passes its fences.
+      await getConfigStore().createAgent({
+        id: HOOK_AGENT.id, name: HOOK_AGENT.name, instructions: HOOK_AGENT.instructions, enabled: true,
+        skills: [], mcpServers: [], apiConnections: [], repositories: [],
+      });
+      const plan = hookRuntimePlan(undefined, true);
+      const context = createFlueContext({
+        id: 'mcp-drop-hook', agentName: 'chickpea-slack-v2', env: {},
+        agentConfig: { resolveModel: () => ({}) } as never,
+        // The empty fixture holds no member, so the connection's auth refuses
+        // the requester before any request; the fetch would fail the test.
+        mcpConnections: { resolve: (definition) => createMcpConnection({
+          ...definition, fetch: async () => { throw new Error('This test sends no MCP request.'); },
+        }) },
+      });
+      await context.initializeRootHarness(ChickpeaSlack, slackDelivery(plan), plan);
+    });
+    assert.deepEqual(lines, [{
+      event: 'chickpea.mcp.connection_unavailable', connectionId: 'connection_sql', reason: 'policy_changed',
+      flueInstanceRef: opaqueId('flueinstance', 'mcp-drop-hook'),
+    }]);
+  } finally {
+    stopObserving();
+    closeNodeStateStores();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
