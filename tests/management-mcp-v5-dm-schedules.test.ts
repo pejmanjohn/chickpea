@@ -26,6 +26,8 @@ function fakeSlack(options: { openFails?: boolean } = {}) {
     started: [] as Array<{ conversationId: string; agent: string; text: string }>,
     withdrawn: [] as Array<{ conversationId: string; threadTs: string }>,
   };
+  /** What changes between the first message and the save. */
+  const hooks: { afterStart?: () => Promise<unknown> } = {};
   const threads: NonNullable<WorkspaceManagementServiceInput['directScheduleThreads']> = {
     async open({ slackUserId }) {
       calls.opened.push(slackUserId);
@@ -34,13 +36,14 @@ function fakeSlack(options: { openFails?: boolean } = {}) {
     },
     async start({ conversationId, agent, text }) {
       calls.started.push({ conversationId, agent: agent.name, text });
+      await hooks.afterStart?.();
       return THREAD_TS;
     },
     async withdraw({ conversationId, threadTs }) {
       calls.withdrawn.push({ conversationId, threadTs });
     },
   };
-  return { calls, threads };
+  return { calls, hooks, threads };
 }
 
 /**
@@ -198,10 +201,19 @@ test('save_schedule refuses any DM Slack would not let the caller schedule in, a
   errorOf(await member('save_schedule', { ...DM_SCHEDULE, when: { once: '2020-01-01T09:00' }, idempotencyKey: 'past' }), 'invalid_input');
   assert.equal(slack.calls.started.length, 0, 'a timing the save refuses posts nothing');
 
-  // Refused after its first message: the message goes, and no schedule stays.
   errorOf(await member('save_schedule', {
     ...DM_SCHEDULE, requiredConnections: ['conn_missing'], idempotencyKey: 'missing-connection',
   }), 'invalid_input');
+  // The tool takes a longer name than a schedule keeps.
+  errorOf(await member('save_schedule', { ...DM_SCHEDULE, name: 'Morning check '.repeat(8), idempotencyKey: 'long-name' }), 'invalid_input');
+  assert.equal(slack.calls.started.length, 0, 'a connection or text the save refuses posts nothing');
+
+  // Refused after its first message, here because the Agent was turned off
+  // in between: the message goes, and no schedule stays.
+  slack.hooks.afterStart = () => f.config.updateAgent('agent_research', { enabled: false });
+  assert.equal((await member('save_schedule', { ...DM_SCHEDULE, idempotencyKey: 'turned-off' })).isError, true);
+  delete slack.hooks.afterStart;
+  await f.config.updateAgent('agent_research', { enabled: true });
   assert.equal(slack.calls.started.length, 1);
   assert.deepEqual(slack.calls.withdrawn, [{ conversationId: `D_${f.member.user.slackUserId}`, threadTs: THREAD_TS }]);
   assert.deepEqual(await f.routines.listRoutines(teamId), []);

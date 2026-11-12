@@ -32,6 +32,7 @@ import {
   type RoutineOutputPolicy,
   type RoutineStore,
 } from './types.ts';
+import { validateRoutineDefinition } from './validation.ts';
 
 // The schedule tool refuses a create, or an edit of the current version
 // that changes the task, with this same sentence before the action is
@@ -232,19 +233,7 @@ export async function executeSlackScheduleCommand(
           actorMembershipId: command.actorMembershipId }));
     }
     const direct = Boolean(command.directDestination) || existing?.destination.kind === 'direct_thread';
-    const definition = {
-      name: command.name,
-      description: command.description,
-      taskText: command.taskText,
-      triggerKind: projection.schedule.kind === 'cron' ? 'schedule' as const : 'once' as const,
-      scheduleInput: projection.schedule.kind === 'cron'
-        ? projection.schedule.expression
-        : projection.schedule.localDateTime,
-      scheduleJson: projection.scheduleJson,
-      timezone: command.timezone,
-      outputPolicy: command.outputPolicy,
-      authorityMode: direct ? 'live_direct_member_v1' as const : 'live_channel_v1' as const,
-    };
+    const definition = scheduleDefinition(command, projection, direct);
     const request = command.routineId
       ? {
           action: 'edit' as const,
@@ -415,8 +404,62 @@ function isAuthorityFailureSafeState(
     routine.state === 'pending_authority';
 }
 
+type SaveCommand = Extract<SlackScheduleCommand, { kind: 'save' }>;
+
+function scheduleDefinition(
+  command: SaveCommand,
+  projection: ReturnType<typeof scheduleTimingProjection> | Awaited<ReturnType<typeof preserveScheduleProjection>>,
+  direct: boolean,
+) {
+  return {
+    name: command.name,
+    description: command.description,
+    taskText: command.taskText,
+    triggerKind: projection.schedule.kind === 'cron' ? 'schedule' as const : 'once' as const,
+    scheduleInput: projection.schedule.kind === 'cron'
+      ? projection.schedule.expression
+      : projection.schedule.localDateTime,
+    scheduleJson: projection.scheduleJson,
+    timezone: command.timezone,
+    outputPolicy: command.outputPolicy,
+    authorityMode: direct ? 'live_direct_member_v1' as const : 'live_channel_v1' as const,
+  };
+}
+
+/**
+ * What a save that creates a schedule refuses from the request alone: its
+ * timing, its text and its connections. A caller that acts before the save,
+ * as a DM schedule's first message does, checks here first, so a request
+ * the save would refuse has no effect.
+ */
+export async function checkScheduleCreation(
+  command: SaveCommand,
+  dependencies: Pick<SlackScheduleCommandDependencies, 'config' | 'now'>,
+): Promise<void> {
+  if (command.schedule.kind === 'preserve') {
+    throw new RoutineStateError('routine_invalid_schedule', 'Preserving a schedule requires its ID and expected version.');
+  }
+  const projection = scheduleTimingProjection(command.schedule, command.timezone, (dependencies.now ?? Date.now)());
+  validateRoutineDefinition(scheduleDefinition(command, projection, Boolean(command.directDestination)));
+  if (command.requiredConnectionAccountIds === undefined) {
+    throw new RoutineStateError('routine_connections_required', ROUTINE_CONNECTIONS_REQUIRED_MESSAGE);
+  }
+  const eligible = await resolveEffectiveConnectionAccounts({
+    config: dependencies.config,
+    workspaceId: command.workspaceId,
+    agentId: command.agentId,
+    actorMembershipId: command.actorMembershipId,
+  });
+  try {
+    selectScheduleConnectionAccounts(command.requiredConnectionAccountIds, undefined, eligible);
+  } catch (error) {
+    if (!(error instanceof RoutineAuthorityError)) throw error;
+    throw new RoutineStateError('routine_connections_invalid', error.message);
+  }
+}
+
 /** A timing's next runs, or the RoutineStateError a save refuses it with. */
-export function scheduleTimingProjection(
+function scheduleTimingProjection(
   schedule: Exclude<Extract<SlackScheduleCommand, { kind: 'save' }>['schedule'], { kind: 'preserve' }>,
   timezone: string,
   at: number,

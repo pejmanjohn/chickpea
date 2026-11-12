@@ -147,9 +147,9 @@ import {
   RoutineAuthorityError,
 } from '../routines/agent-authority.ts';
 import {
+  checkScheduleCreation,
   deterministicRoutineId,
   executeSlackScheduleCommand,
-  scheduleTimingProjection,
   SlackScheduleCommandError,
   type SlackScheduleCommand,
 } from '../routines/slack-command.ts';
@@ -6023,10 +6023,11 @@ export class WorkspaceManagementService {
   /**
    * A new DM schedule made over MCP posts in a thread of its own in the
    * caller's DM, which its Agent starts. A retry of the same save finds the
-   * routine it made and keeps that thread. Its timing is checked first, so a
-   * schedule the save would refuse posts nothing.
+   * routine it made and keeps that thread. Its timing, text and connections
+   * are checked first, so a request the save would refuse posts nothing.
    */
   private async startInitiatorScheduleThread(
+    actor: LiveManagementActor,
     mutationId: string,
     operation: Extract<ManagementOperation, { kind: 'save_routine' }>,
     conversationId: string,
@@ -6035,8 +6036,9 @@ export class WorkspaceManagementService {
     if (prior?.destination.kind === 'direct_thread' && prior.destination.conversationId === conversationId) {
       return { threadTs: prior.destination.threadTs, posted: false };
     }
-    if (operation.schedule.kind !== 'preserve') {
-      scheduleTimingProjection(operation.schedule, operation.timezone, this.now());
+    const command = this.scheduleCommand(actor, mutationId, operation, conversationId);
+    if (command.kind === 'save') {
+      await checkScheduleCreation(command, { config: this.stores.config as ConfigStore, now: this.now });
     }
     const agent = await this.stores.config.getAgent(operation.agentId);
     try {
@@ -6371,7 +6373,7 @@ export class WorkspaceManagementService {
       : undefined;
     let thread: { threadTs: string; posted: boolean } | undefined;
     try {
-      if (initiatorDm) thread = await this.startInitiatorScheduleThread(mutationId, initiatorDm, channelId);
+      if (initiatorDm) thread = await this.startInitiatorScheduleThread(actor, mutationId, initiatorDm, channelId);
       const command = this.scheduleCommand(actor, mutationId, operation, channelId, thread?.threadTs);
       const result = await executeSlackScheduleCommand(command, {
         routines: this.stores.routines!,
