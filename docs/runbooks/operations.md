@@ -284,19 +284,34 @@ objects in memory for a window after each turn:
 - the thread's Agent object, after the last request of any turn it serves
 
 The value is the window in milliseconds, a whole number up to `900000`
-(15 minutes, the longest one pending timer holds an object). Unset, empty or
-`0` holds nothing. That is the default, and Chickpea then behaves as it did
-before the setting existed. To turn the hold on, deploy with the variable:
+(15 minutes). Unset, empty or `0` holds nothing. That is the default, and
+Chickpea then behaves as it did before the setting existed. To turn the hold
+on, deploy with the variable:
 
 ```sh
 npm run deploy -- --var CHICKPEA_RESIDENCY_HOLD_MS:600000
 ```
 
-The deploy refuses any other value. A Worker that reads one anyway, for
-example after an edit in the Cloudflare dashboard, holds nothing. Upgrades
-keep the variable.
+The state store can hold longer than a thread's objects. An installation has
+one store, and each message waits for its first read, while every thread has
+its own runner and Agent object. The deployment variable
+`CHICKPEA_STORE_RESIDENCY_HOLD_MS` sets the store's own window, a whole number
+of milliseconds up to `3600000` (an hour). Unset or empty, the store takes the
+`CHICKPEA_RESIDENCY_HOLD_MS` window. `0` turns the store's hold off and leaves
+the thread's objects held. To hold the store for an hour and a thread's
+objects for 10 minutes:
 
-Before you turn it on, check these four points:
+```sh
+npm run deploy -- --var CHICKPEA_RESIDENCY_HOLD_MS:600000 --var CHICKPEA_STORE_RESIDENCY_HOLD_MS:3600000
+```
+
+The deploy refuses any other value for either variable. A Worker that reads
+one anyway, for example after an edit in the Cloudflare dashboard, holds
+nothing for a refused `CHICKPEA_RESIDENCY_HOLD_MS`, and gives the store the
+`CHICKPEA_RESIDENCY_HOLD_MS` window for a refused
+`CHICKPEA_STORE_RESIDENCY_HOLD_MS`. Upgrades keep both variables.
+
+Before you turn it on, check these five points:
 
 - **The thread's objects need a compatibility date of 2026-10-01 or later.**
   The hold is a pending timer. A pending timer always stops an object from
@@ -304,6 +319,8 @@ Before you turn it on, check these four points:
   compatibility date `2026-10-01`, or with the
   `durable_object_io_tasks_prevent_eviction` compatibility flag
   ([changelog](https://developers.cloudflare.com/changelog/post/2026-10-01-pending-io-keep-alive/)).
+  One timer stops eviction for at most 15 minutes from when it was set, so
+  the hold sets a new timer at least every 14 minutes until the window ends.
   `wrangler.jsonc` has neither. Without them, the state store stays in memory
   only while its 20-second keep-warm alarm runs, because each firing counts
   as activity. The alarm runs for 10 minutes after a person's turn is
@@ -317,14 +334,17 @@ Before you turn it on, check these four points:
   A 10-minute window is 76.8 GB-s per object. On Workers Paid that is about
   $0.00096 at $12.50 per million GB-s, after the 400,000 GB-s included each
   month. An installation whose people talk to it at least every 10 minutes
-  keeps its state store in memory all day, about 11,000 GB-s.
+  keeps its state store in memory all day, about 11,000 GB-s. An hour's store
+  window costs about $0.0058 for each hour the store waits for the next
+  message, and it never costs more than a store held all day.
 - **Workers Free can run out.** Workers Free allows 13,000 GB-s of duration a
   day. Past it, the installation's Durable Objects fail until 00:00 UTC. With
   a 10-minute window, the state store uses about 461 GB-s per hour of
   conversation. Each thread conversation adds about 154 GB-s for its runner
   and Agent object once eviction is blocked. Eight active hours and about 60
-  thread conversations reach the limit. Turn the hold on only on Workers
-  Paid.
+  thread conversations reach the limit. An hour's store window adds every
+  pause under an hour, and the hour after the day's last message, at about
+  461 GB-s an hour. Turn the hold on only on Workers Paid.
 - **After a deploy, recently active conversations run the previous code for
   up to 5 minutes.** Cloudflare defers a code update for an object in memory
   for up to 300 seconds, and an object that has left memory starts on the new
@@ -335,6 +355,12 @@ Before you turn it on, check these four points:
   in the last window, can exercise the previous release's state store, runner
   and Agent object. Wait 5 minutes before such a check, or run it in a
   workspace that has been quiet for longer than the window.
+- **A held object's last records reach Workers Logs when its hold ends.**
+  Cloudflare writes an invocation's logs when it ends, and the hold's timer
+  keeps the object's latest request open. On staging, a held runner's
+  end-of-turn records arrived about 10 minutes after its turn. Read an
+  object's records at least its window plus a minute after the last turn: an
+  hour and a minute for a store held an hour.
 
 ### Admit Slack messages in the state store
 

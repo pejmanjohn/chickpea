@@ -34,7 +34,7 @@ import type { TurnJob } from '../src/slack/turn-job-types.ts';
 import { TurnJobStoreLogic, type PendingTurnJob } from '../src/slack/turn-jobs.ts';
 import type { SlackEvent } from '../src/slack/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
-import { ResidencyHold, residencyHoldMs } from '../src/state/residency-hold.ts';
+import { ResidencyHold, storeResidencyHoldMs } from '../src/state/residency-hold.ts';
 import { AGENT_MENTION, message, withLane, delivery, type Lane } from './helpers/gateway-admission-lane.ts';
 
 /**
@@ -80,7 +80,7 @@ class HandoffProbe { ${[
     Date,
     Promise,
     ResidencyHold,
-    residencyHoldMs,
+    storeResidencyHoldMs,
     console: { warn() {} },
     MAX_TURN_DRAIN_BATCH: 16,
     RUNNER_DISPATCH_MAX_PAGES: 4,

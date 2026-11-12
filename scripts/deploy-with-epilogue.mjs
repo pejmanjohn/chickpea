@@ -73,7 +73,12 @@ import {
   DEPLOYMENT_ACTIVATION_ISSUED_AT_BINDING,
   mintDeploymentActivation,
 } from '../src/auth/deployment-activation.mjs';
-import { parseResidencyHoldMs, RESIDENCY_HOLD_VARIABLE } from '../src/state/residency-hold.ts';
+import {
+  parseResidencyHoldMs,
+  parseStoreResidencyHoldMs,
+  RESIDENCY_HOLD_VARIABLE,
+  STORE_RESIDENCY_HOLD_VARIABLE,
+} from '../src/state/residency-hold.ts';
 
 const runnerRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // Invoke wrangler's bin with the current node (mirrors flue-build-cf.mjs):
@@ -805,10 +810,13 @@ function validateTurnExecutorArtifact(artifact) {
   }
 }
 
-// A Worker holds nothing for a residency hold window it cannot read, so refuse
-// one here, where the operator sees why.
+// A Worker ignores a residency hold window it cannot read, so refuse one here,
+// where the operator sees why.
 function validateResidencyHold(artifact) {
   parseResidencyHoldMs(cliVariable(RESIDENCY_HOLD_VARIABLE) ?? artifact.config.vars?.[RESIDENCY_HOLD_VARIABLE]);
+  parseStoreResidencyHoldMs(
+    cliVariable(STORE_RESIDENCY_HOLD_VARIABLE) ?? artifact.config.vars?.[STORE_RESIDENCY_HOLD_VARIABLE],
+  );
 }
 
 function validateAgentViewArtifact(artifact) {

@@ -40,7 +40,7 @@ import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { reportInteractiveDelivery } from '../src/config/hosted-activity.ts';
 import { installationOwnershipOf, installationScopeOf } from '../src/config/installation-scope.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
-import { ResidencyHold, residencyHoldMs } from '../src/state/residency-hold.ts';
+import { ResidencyHold, storeResidencyHoldMs } from '../src/state/residency-hold.ts';
 import { turnJob as maintenanceTurnJob } from './fixtures/state-db/maintenance.ts';
 import { createAgentAskCollector } from '../src/slack/agent-asks.ts';
 import { admissionStatusPresentation, showAdmissionStatus } from '../src/slack/admission-activity.ts';
@@ -121,7 +121,7 @@ type Probe = {
 const ProbeClass = vm.runInNewContext(compiled, {
   Date,
   ResidencyHold,
-  residencyHoldMs,
+  storeResidencyHoldMs,
   oauthResumeTurnJobId: (id: string) => `oauthresume:${id}`,
   slackTurnExecutor: (env: Record<string, unknown>) => slackTurnExecutor(env, {}),
 }) as new () => Probe;
@@ -281,7 +281,7 @@ for (const { withPendingTurn, testRun } of [
       ...stopGlobals,
       Date,
       ResidencyHold,
-      residencyHoldMs,
+      storeResidencyHoldMs,
       setTimeout,
       clearTimeout,
       AbortController,
@@ -467,7 +467,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
   const AlarmProbe = vm.runInNewContext(alarmCode, {
     ...stopGlobals,
     Date, setTimeout, clearTimeout, AbortController, Promise,
-    ResidencyHold, residencyHoldMs,
+    ResidencyHold, storeResidencyHoldMs,
     MAX_TURN_DRAIN_BATCH: 16,
     RUNNER_DISPATCH_MAX_PAGES: 16,
     admissionStatusPresentation,
@@ -997,7 +997,7 @@ function admissionHarness(runner: { refuse?: boolean } = {}) {
   const AdmissionProbe = vm.runInNewContext(code, {
     Date,
     ResidencyHold,
-    residencyHoldMs,
+    storeResidencyHoldMs,
     console: { warn() {} },
     admissionStatusPresentation,
     showAdmissionStatus,

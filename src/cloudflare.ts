@@ -308,7 +308,7 @@ import type {
   ObjectRestoreRestartRequest,
 } from './state/object-host.ts';
 import type { InstallationWorkspaceObject } from './state/object-inventory.ts';
-import { ResidencyHold, residencyHoldMs } from './state/residency-hold.ts';
+import { ResidencyHold, storeResidencyHoldMs } from './state/residency-hold.ts';
 import { stateStoreHostFunctions, type StateStoreHostRpc } from './state/state-store-host.ts';
 import type { TestRunLifecycle } from './state/test-run-lifecycle.ts';
 import type {
@@ -829,9 +829,10 @@ const RELAY_BATCH_WINDOW_MS = 250;
  * drain (see keepWarmTickAt). The tick alone does not keep the store in
  * memory: a store that left it made the next message pay 1.5-2.4 s at ingress
  * for its first state read (production, 2026-11-10). Where the deployment
- * sets a residency hold (ResidencyHold), the store holds itself for that
- * window, and a store that restarted inside it holds itself again at its next
- * tick (drainRelayAlarm). Constants, not settings; Node has no alarms.
+ * sets a residency hold (ResidencyHold), the store holds itself for its
+ * window (hold()), which may outlast this one, and a store that restarted
+ * inside it holds itself again at its next alarm (drainRelayAlarm). Constants,
+ * not settings; Node has no alarms.
  */
 const KEEP_WARM_WINDOW_MS = 10 * 60_000;
 const KEEP_WARM_TICK_MS = 20_000;
@@ -3390,12 +3391,13 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
   }
 
   /**
-   * This store's residency hold, for the window the deployment sets
-   * (RESIDENCY_HOLD_VARIABLE): from a person's admitted turn, and again from
-   * its end, which the runner reports (threadRunnerTurn).
+   * This store's residency hold, for the store's window the deployment sets
+   * (STORE_RESIDENCY_HOLD_VARIABLE, else RESIDENCY_HOLD_VARIABLE): from a
+   * person's admitted turn, and again from its end, which the runner reports
+   * (threadRunnerTurn).
    */
   private hold(): ResidencyHold {
-    this.conversationHold ??= new ResidencyHold(residencyHoldMs(this.env as PlatformEnv));
+    this.conversationHold ??= new ResidencyHold(storeResidencyHoldMs(this.env as PlatformEnv));
     return this.conversationHold;
   }
 

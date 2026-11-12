@@ -37,7 +37,7 @@ import { slackTurnExecutor } from '../src/slack/turn-executor-flag.ts';
 import type { TurnJob } from '../src/slack/turn-job-types.ts';
 import { TurnJobStoreLogic, type PendingTurnJob } from '../src/slack/turn-jobs.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
-import { ResidencyHold, residencyHoldMs } from '../src/state/residency-hold.ts';
+import { ResidencyHold, storeResidencyHoldMs } from '../src/state/residency-hold.ts';
 import { delivery, message, withLane, type Lane, type Wake } from './helpers/gateway-admission-lane.ts';
 
 /**
@@ -248,7 +248,7 @@ class HandoffProbe { ${[
     Date,
     Promise,
     ResidencyHold,
-    residencyHoldMs,
+    storeResidencyHoldMs,
     console: { warn() {} },
     frontDeskHandoffRunnerWake,
     threadRunnerStub,
