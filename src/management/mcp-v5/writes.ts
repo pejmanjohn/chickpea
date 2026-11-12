@@ -27,7 +27,7 @@ import {
   STALE_NEXT_STEP,
   type ChangeResult,
 } from './changes.ts';
-import { fail, mcpToolError, versionToken } from './conventions.ts';
+import { fail, guideFirst, mcpToolError, versionToken } from './conventions.ts';
 import { agentPatch, resolveChannels } from './proposals.ts';
 import { forManagedAgent, type FiveZeroDeps } from './reads.ts';
 import type * as schemas from './schemas.ts';
@@ -145,7 +145,8 @@ export async function createAgent(
   const agentId = created.status === 'completed'
     ? created.outcomes[0]?.changed?.find(({ kind }) => kind === 'agent')?.id
     : undefined;
-  if (!agentId || !input.channels?.length) return changeResult(deps, context, created, agentId ? { agentId } : {});
+  if (!agentId) return changeResult(deps, context, created);
+  if (!input.channels?.length) return afterCreation(await changeResult(deps, context, created, { agentId }));
 
   // The Agent exists now, so a grant that fails is a warning, never the result.
   const granted = await applyChange(deps, context, {
@@ -173,13 +174,19 @@ export async function createAgent(
     ? [`It could not be added to its Channels: ${granted.message}`]
     : outcomes.filter(({ disposition }) => disposition !== 'applied')
       .map((outcome) => `It could not be added to one of its Channels: ${outcome.instruction ?? 'the grant did not apply.'}`);
-  return {
+  return afterCreation({
     ...result,
     ...(version ? { version } : {}),
     summary: `${result.summary} It joins ${added} Channel${added === 1 ? '' : 's'}.`,
-    nextStep: 'get_creation_status follows its arrival in Slack.',
     ...(notAdded.length ? { warnings: [...result.warnings ?? [], ...notAdded] } : {}),
-  };
+  });
+}
+
+/** A new Agent's next part of the job, unless it is off: an Agent that is off answers no one, so its own next step stays. */
+function afterCreation(result: ChangeResult): ChangeResult {
+  return result.status === 'done' && result.nextStep === undefined
+    ? { ...result, nextStep: `Next, agree on its test questions and test drive it the way the person expects. ${guideFirst('scope')}` }
+    : result;
 }
 
 function idTaken(result: ApplyWorkspaceChangesResult): boolean {
@@ -620,12 +627,15 @@ export async function saveSchedule(
       }];
     },
   });
-  return changeResult(deps, context, result, {
+  const saved = await changeResult(deps, context, result, {
     agentId: input.agentId,
     summary: input.scheduleId ? 'Saved the schedule.'
       : input.dm ? (name) => `Created the schedule. Every run posts in one thread in your DM with ${name}, which it just started.`
         : 'Created the schedule. The Agent posts on it from now on.',
   });
+  return saved.status === 'done' && saved.nextStep === undefined
+    ? { ...saved, nextStep: `Tell the person when it next runs: list_schedules shows its nextRun. To see later how its runs go, check on it. ${guideFirst('check-in')}` }
+    : saved;
 }
 
 /** Whether a change names a place other than where the schedule posts now. */

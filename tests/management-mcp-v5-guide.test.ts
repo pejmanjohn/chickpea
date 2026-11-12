@@ -227,6 +227,32 @@ test('a chat app never gets a fenced block, however the fence is written', () =>
   }
 });
 
+/** Each tool that starts a multi-step job, and the topic it sends a client with no Chickpea skill to. */
+const STARTS_A_JOB = {
+  propose_agent: 'start',
+  practice_agent: 'test-drive',
+  update_agent: 'edit',
+  save_schedule: 'schedule',
+  add_agent_to_channel: 'roll-out',
+  check_agent: 'check-in',
+} as const satisfies Record<string, PlaybookTopic>;
+
+for (const cardSession of [true, false]) {
+  test(`each tool that starts a multi-step job sends a client with no skill to its guide, near 60 words, ${cardSession ? 'with' : 'without'} cards`, async (t) => {
+    const { rpc, guide } = await harness(t, `guide-pointers-${cardSession}`, cardSession);
+    const listed = (await rpc('tools/list', {})).tools as ListedTool[];
+    for (const [name, topic] of Object.entries(STARTS_A_JOB)) {
+      const { description } = listed.find((tool) => tool.name === name)!;
+      assert.ok(description.includes(`With no Chickpea skill loaded, call get_guide topic ${topic} first.`), `${name}: ${description}`);
+      const words = description.split(/\s+/).length;
+      assert.ok(words <= 70, `${name}: ${words} words; keep a description near 60`);
+      assert.equal((await guide({ topic })).structuredContent?.topic, topic, `${name} names a topic get_guide serves`);
+    }
+    assert.deepEqual(listed.filter(({ description }) => description.includes('get_guide topic')).map(({ name }) => name).sort(),
+      Object.keys(STARTS_A_JOB).sort(), 'only a tool that starts a job sends a client to the guide');
+  });
+}
+
 test('who can message a new Agent reads the same everywhere: only its creator, until it joins a Channel', async (t) => {
   const { rpc } = await harness(t, 'guide-reach', true);
   const listed = (await rpc('tools/list', {})).tools as ListedTool[];
