@@ -1659,6 +1659,8 @@ export class ManagementError extends Error {
       | 'routines_unavailable_on_target'
       | 'schedule_authority_missing'
       | 'slack_unavailable'
+      /** Slack refused for a reason that stays until someone changes it, so a retry cannot work. */
+      | 'slack_refused'
       | 'mcp_client_not_found'
       | 'key_rejected'
       | 'key_unconfirmed'
