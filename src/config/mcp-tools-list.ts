@@ -1,4 +1,5 @@
 import { declaredContentLength, readBoundedText } from '../http/bounded-body.ts';
+import { McpToolsListRefusedError } from './mcp-errors.ts';
 
 /**
  * Meta's Ads server sends the largest tool list Chickpea mounts. Every server
@@ -72,7 +73,7 @@ export function createMcpToolsListFilter(options: McpToolsListFilterOptions) {
   };
   const noGrantedTools = (displayName: string, reason: string) => {
     logRefusal(reason);
-    return new Error(
+    return new McpToolsListRefusedError(
       `${displayName} no longer offers any of the tools this Agent may use. ` +
       'An Admin can pick its tools again in Chickpea Admin.',
     );
@@ -86,7 +87,7 @@ export function createMcpToolsListFilter(options: McpToolsListFilterOptions) {
       page = rewriteTools ? rewriteTools(result.tools) : { tools: result.tools };
     } catch (error) {
       logRefusal('rewrite');
-      throw error;
+      throw new McpToolsListRefusedError(error instanceof Error ? error.message : String(error), { cause: error });
     }
     const listed = new Map<string, Record<string, unknown>>();
     for (const tool of page.tools) {
@@ -242,7 +243,7 @@ export function createMcpToolsListFilter(options: McpToolsListFilterOptions) {
 }
 
 function unsupportedResponse(displayName: string, reason: string): Error {
-  return new Error(`${displayName} tool discovery returned an unsupported response (${reason}).`);
+  return new McpToolsListRefusedError(`${displayName} tool discovery returned an unsupported response (${reason}).`);
 }
 
 /**

@@ -25,6 +25,7 @@ import {
   reviewedMetaAdsTools,
   sanitizeMetaAdsAccountHelperResponse,
 } from './meta-ads-response.ts';
+import { McpConnectionChangedError } from './mcp-errors.ts';
 import { createMcpToolsListFilter, type ToolsRewrite } from './mcp-tools-list.ts';
 import { assertMetaAdsWriteAccountOwnership, META_ADS_OWNERSHIP_ORIGIN } from './meta-ads-write-guard.ts';
 import { META_ADS_OAUTH_MANAGEMENT_SCOPE } from './mcp-oauth-clients.ts';
@@ -240,7 +241,7 @@ export function resolveRuntimePlanMcpConnections(
       let server: McpConnectionConfig | undefined;
       if (accountContext) {
         if (!(await isActiveConnectionActor({ ...accountContext, identity: getIdentityStore(env) }))) {
-          throw new Error('Connection account is not available to this actor');
+          throw new McpConnectionChangedError('Connection account is not available to this actor');
         }
         const accounts = await resolveEffectiveConnectionAccounts({
           ...accountContext, config, agentId: profileId,
@@ -252,7 +253,7 @@ export function resolveRuntimePlanMcpConnections(
       }
       if (!server || !runtimeMcpDeclarationStillAllowed(server, effectiveDeclaration) ||
           (options.readsOnly && !effectiveDeclaration.allowedTools.every((tool) => mcpToolDeclaredRead(server, tool)))) {
-        throw new Error('MCP connection policy changed; a new agent instance is required.');
+        throw new McpConnectionChangedError('MCP connection policy changed; a new agent instance is required.');
       }
       try {
         onConnectionStart?.({ id: server.id, displayName: server.displayName });
