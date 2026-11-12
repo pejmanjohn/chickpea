@@ -436,6 +436,69 @@ Before you turn it on, know these points:
 - **`stream_answer` stays mounted.** A model that declares still locks its
   later tools, as before; the host release does not wait for the declaration.
 
+### Clear old tool results on Anthropic
+
+Most of a long thread's prompt is old tool results. Each model request sends
+them again, and the prompt cache must hold them. With the deployment variable
+`CHICKPEA_ANTHROPIC_TOOL_RESULT_CLEARING` set to `on`, an Agent's requests to
+the Anthropic API ask Anthropic to clear old tool results on its side
+([context editing](https://platform.claude.com/docs/en/build-with-claude/context-editing),
+`clear_tool_uses_20250919`). When a prompt passes 250,000 input tokens,
+Anthropic replaces the oldest results with a placeholder. It keeps the
+results of the 8 most recent tool uses, every tool call with its input, and
+all message text. It clears only when it can remove at least 60,000 tokens.
+
+```sh
+npm run deploy -- --var CHICKPEA_ANTHROPIC_TOOL_RESULT_CLEARING:on
+```
+
+Unset, or any other value, sends requests as before. That is the default. On
+Node, set the variable in the process environment. Upgrades keep it and its
+settings.
+
+Three more variables change the settings. Each takes a whole number. A value
+that is not one, or is out of range, is ignored and the default applies; the
+deploy does not refuse it.
+
+| Variable | Default | Range | What it sets |
+| --- | --- | --- | --- |
+| `CHICKPEA_ANTHROPIC_TOOL_RESULT_CLEARING_TRIGGER_TOKENS` | 250000 | 1 to 1000000 | The prompt's size, before clearing, above which Anthropic clears |
+| `CHICKPEA_ANTHROPIC_TOOL_RESULT_CLEARING_KEEP_TOOL_USES` | 8 | 1 to 100 | How many of the most recent tool uses keep their results |
+| `CHICKPEA_ANTHROPIC_TOOL_RESULT_CLEARING_CLEAR_AT_LEAST_TOKENS` | 60000 | 1 to 1000000 | The least a clearing must remove, or Anthropic skips it |
+
+Before you turn it on, know these points:
+
+- **Only an Agent's requests to the Anthropic API change.** Own-key and
+  credits requests both do. Requests to OpenAI, OpenRouter, Gemini or a
+  ChatGPT plan do not, and neither do compaction summaries or one-off
+  requests such as an attachment read.
+- **An Agent forgets old tool data.** In a thread past the trigger, the Agent
+  no longer sees the bodies of tool results older than its last 8 tool uses.
+  It still sees each call it made and what it wrote about the result, and it
+  can make the call again. Nothing tells the person. The results of
+  `activate_skill`, `read_skill_resource`, `inspect_memory` and
+  `update_agent_memory` are never cleared, because they are instructions,
+  not data.
+- **Each clearing rewrites the cache once.** The prompt changes from the
+  first newly cleared result to its end, and Anthropic charges a cache write
+  for that part. Between clearings the cleared prompt does not change, so
+  later requests read the cache. The defaults make clearings rare and large.
+- **Thinking stays valid.** Anthropic clears on its side, so no earlier
+  thinking block fails its check that the conversation is unchanged.
+- **Each request is as large as before.** Chickpea's stored conversation
+  keeps every result, and each request still sends the whole history. Only
+  the prompt the model reads gets smaller.
+- **Compaction sees the cleared size.** Flue compacts when the prompt size
+  the provider reports nears the model's window. Anthropic reports the size
+  after clearing, so a thread with clearing on stays far below that line and
+  seldom compacts. If the history outgrows Anthropic's request size limit,
+  Anthropic refuses the request and Flue compacts then, as it does today.
+
+To check it, read `model_step`: `clearedToolUses` and `clearedInputTokens`
+are what Anthropic cleared from each request's prompt, and a rise between two
+steps of one thread is a new clearing. See
+[runtime observability](runtime-observability.md).
+
 ## Upgrade and compatibility policy
 
 For routine Cloudflare updates, follow the

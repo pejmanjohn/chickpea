@@ -1181,6 +1181,8 @@ export interface ModelStepProbe {
   upstreamFirstText(): void;
   /** The proxy starts holding the step's terminal event for its charge; the returned call ends the hold. */
   holdForCharge(): (settled: SettledModelRequest) => void;
+  /** The provider reported the tool results it cleared from the request's prompt, earlier clearings included. */
+  toolResultsCleared(cleared: { toolUses: number; inputTokens: number }): void;
 }
 
 interface OpenModelStep {
@@ -1191,6 +1193,7 @@ interface OpenModelStep {
   size?: ModelRequestSize;
   sincePreviousRequestMs?: number;
   settled?: SettledModelRequest & { chargeWaitMs: number };
+  cleared?: { toolUses: number; inputTokens: number };
 }
 
 const modelStepProbes = new AsyncLocalStorage<ModelStepProbe>();
@@ -1212,8 +1215,9 @@ function cacheWriteSplit(usage: SettledModelRequest['usage'] | undefined) {
  * served it, Flue's duration, its token counts and its tool calls when its
  * `turn` ends, with the request's size measured at `turn_request` and the
  * time since its Agent object's previous request. What only the proxy sees
- * (the 1-hour cache writes, the shared prefix, the charge's hold) arrives
- * through `modelStepProbe` before the step ends.
+ * (the 1-hour cache writes, the shared prefix, the charge's hold, the tool
+ * results the provider cleared) arrives through `modelStepProbe` before the
+ * step ends.
  * `inputTokens` excludes the cached input that `cachedInputTokens` counts.
  */
 export class ModelStepMarks {
@@ -1239,6 +1243,9 @@ export class ModelStepMarks {
         return (settled) => {
           open.settled = { ...settled, chargeWaitMs: this.now() - heldAt };
         };
+      },
+      toolResultsCleared: (cleared) => {
+        open.cleared = { toolUses: cleared.toolUses, inputTokens: cleared.inputTokens };
       },
     }, next);
   }
@@ -1304,6 +1311,8 @@ export class ModelStepMarks {
         sincePreviousRequestMs: open?.sincePreviousRequestMs,
         sharedPrefix: open?.settled?.sharedPrefix === null ? 'none' : open?.settled?.sharedPrefix,
         chargeWaitMs: open?.settled?.chargeWaitMs,
+        clearedToolUses: open?.cleared?.toolUses,
+        clearedInputTokens: open?.cleared?.inputTokens,
       }, this.sink);
     } catch {
       // Observability is best effort and never changes the model request.
