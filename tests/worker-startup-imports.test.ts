@@ -38,7 +38,7 @@ const LAZY_MODULES: Record<string, string> = {
   'src/auth/better-auth-routes.ts': "Better Auth's public routes (auth/better-auth-runtime.ts)",
   'src/auth/mcp-oauth-routes.ts': 'the MCP resource and its sign-in pages (app.ts)',
   'src/management/mcp.ts': 'the management MCP server (auth/mcp-oauth-routes.ts)',
-  'src/management/agent-authoring/discovery-guide.ts': 'the discovery guide resource (management/mcp.ts)',
+  'src/management/playbook': 'get_guide and the discovery guide resource (management/mcp-v5/tools.ts, management/mcp.ts)',
   'src/management/recipes.ts': 'a workspace recipe export or preview (management/service.ts)',
   'src/management/setup-return-app.ts': "a finished MCP setup link's success page (management/setup-routes.ts)",
   'src/slack/group-dm/runtime.ts': "start_slack_group_dm's first call (slack/group-dm/tools.ts)",

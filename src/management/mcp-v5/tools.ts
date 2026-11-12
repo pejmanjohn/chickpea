@@ -21,6 +21,7 @@ import { explainAgent } from './explain.ts';
 import { proposeAgent, proposeAgentChange } from './proposals.ts';
 import * as removals from './removals.ts';
 import * as connections from './connections.ts';
+import * as guide from './guide.ts';
 import * as reads from './reads.ts';
 import type { FiveZeroDeps } from './reads.ts';
 import * as runHistory from './run-history-schemas.ts';
@@ -92,6 +93,14 @@ export const FIVE_ZERO_TOOLS = {
     input: schemas.getWorkspaceInput,
     output: schemas.getWorkspaceOutput,
     run: (deps) => reads.getWorkspace(deps),
+  }),
+  get_guide: tool({
+    title: 'Get the Chickpea guide',
+    description: 'How to do a multi-step job with these tools, such as setting up a first Agent, test driving one, or rolling it out to a team: one topic of Chickpea\'s guide, in Markdown, with the ground rules every topic shares. Omit topic for the list of topics. Reads only; changes nothing.',
+    input: guide.getGuideInput,
+    output: guide.getGuideOutput,
+    text: async (output) => guide.guideText(output),
+    run: async (_deps, args) => guide.getGuide(args),
   }),
   list_agents: tool({
     title: 'List Agents',

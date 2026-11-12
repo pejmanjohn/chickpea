@@ -1,0 +1,231 @@
+import assert from 'node:assert/strict';
+import { test, type TestContext } from 'node:test';
+
+import { createMcpHandler } from '@modelcontextprotocol/server';
+
+import type { McpAuthenticatedPrincipal } from '../src/auth/mcp-oauth-routes.ts';
+import { DISCOVERY_GUIDE_URI } from '../src/management/agent-authoring/index.ts';
+import { WORKSPACE_MANAGEMENT_INSTRUCTIONS_MAX_CHARACTERS } from '../src/management/instructions.ts';
+import { createWorkspaceManagementMcpServer, WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES } from '../src/management/mcp.ts';
+import { MCP_ERROR_CODES } from '../src/management/mcp-v5/conventions.ts';
+import { GUIDE_RESULT_MAX_CHARACTERS, getGuideOutput } from '../src/management/mcp-v5/guide.ts';
+import { MCP_MANAGEMENT_OPERATION_KINDS } from '../src/management/schemas.ts';
+import PLAYBOOK from '../src/management/playbook/playbook.json' with { type: 'json' };
+import { PLAYBOOK_TOPICS, playbookSection, type PlaybookTopic } from '../src/management/playbook/index.ts';
+// @ts-expect-error Build tooling JavaScript helper.
+import { readPlaybook } from '../scripts/build-playbook.mjs';
+import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+
+type ToolResult = {
+  content: Array<{ type: string; text: string }>;
+  structuredContent?: Record<string, unknown>;
+  isError?: boolean;
+};
+type ListedTool = {
+  name: string;
+  inputSchema: unknown;
+  outputSchema?: unknown;
+  annotations?: Record<string, unknown>;
+  _meta?: { ui?: { visibility?: string[] } };
+};
+
+const LAST_SENTENCE = 'For a multi-step job, call get_guide first unless a Chickpea skill is loaded.';
+
+/** Core's MCP server in process, as a client that draws cards (5.0 tools only) or one that does not. */
+async function harness(t: TestContext, suffix: string, cardSession: boolean) {
+  const f = await createManagementAdapterFixture(suffix);
+  t.after(() => f.close());
+  const principal: McpAuthenticatedPrincipal = {
+    betterAuthUserId: f.owner.binding.betterAuthUserId ?? 'ba_owner',
+    userId: f.owner.user.id,
+    membershipId: f.owner.membership.id,
+    organizationId: f.owner.membership.organizationId,
+    role: 'owner',
+    clientId: `client_${suffix}`,
+  };
+  const handler = createMcpHandler(
+    () => createWorkspaceManagementMcpServer({ principal, service: f.service, baseUrl: 'https://chickpea.example.test', cardSession }),
+    { legacy: 'stateless' },
+  );
+  const rpc = async (method: string, params: Record<string, unknown>) => {
+    const response = await handler.fetch(new Request('http://localhost/mcp', {
+      method: 'POST',
+      headers: {
+        accept: 'application/json, text/event-stream',
+        'content-type': 'application/json',
+        'mcp-protocol-version': '2025-11-25',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+    }));
+    const body = await response.text();
+    assert.equal(response.status, 200, body);
+    const json = body.trimStart().startsWith('{')
+      ? body
+      : body.split('\n').find((line) => line.startsWith('data: '))!.slice('data: '.length);
+    return (JSON.parse(json) as { result?: any }).result;
+  };
+  const guide = async (args: Record<string, unknown>) =>
+    (await rpc('tools/call', { name: 'get_guide', arguments: args })) as ToolResult;
+  return { rpc, guide };
+}
+
+/** Every property name, enum value and const a JSON schema lists, at any depth. */
+function vocabulary(schema: unknown, into: Set<string>): Set<string> {
+  if (Array.isArray(schema)) {
+    for (const each of schema) vocabulary(each, into);
+  } else if (typeof schema === 'object' && schema !== null) {
+    const record = schema as Record<string, unknown>;
+    if (typeof record.properties === 'object' && record.properties !== null) {
+      for (const key of Object.keys(record.properties)) into.add(key);
+    }
+    for (const value of [record.const, ...(Array.isArray(record.enum) ? record.enum : [])]) {
+      if (typeof value === 'string') into.add(value);
+    }
+    for (const [key, value] of Object.entries(record)) if (key !== 'description') vocabulary(value, into);
+  }
+  return into;
+}
+
+test('playbook.json is the Markdown, and every include names a partial some section uses', () => {
+  assert.deepEqual(PLAYBOOK, readPlaybook(), 'playbook.json is stale: run npm run playbook:build');
+  assert.deepEqual(Object.keys(PLAYBOOK.sections).sort(), [...PLAYBOOK_TOPICS].sort(), 'one Markdown file per topic');
+  const included = new Set<string>();
+  for (const [topic, text] of Object.entries(PLAYBOOK.sections) as Array<[PlaybookTopic, string]>) {
+    assert.match(text, /^# \S.*\n/, `${topic}.md opens with its title`);
+    for (const [, name] of text.matchAll(/^<!-- include: ([a-z-]+) -->$/gm)) {
+      assert.ok(name! in PLAYBOOK.partials, `${topic}.md includes a missing partial: ${name}`);
+      included.add(name!);
+    }
+    assert.ok(included.has('rules') && text.includes('<!-- include: rules -->'), `${topic}.md carries the ground rules`);
+    assert.doesNotMatch(playbookSection(topic).guide, /<!-- include/, `${topic}: every include is expanded`);
+  }
+  assert.deepEqual(Object.keys(PLAYBOOK.partials).filter((name) => !included.has(name)), [], 'no partial goes unused');
+});
+
+for (const cardSession of [true, false]) {
+  test(`get_guide serves each topic within the size cap, to a client ${cardSession ? 'that draws cards' : 'without cards'}`, async (t) => {
+    const { rpc, guide } = await harness(t, `guide-${cardSession}`, cardSession);
+    const listed = (await rpc('tools/list', {})).tools as ListedTool[];
+    const tool = listed.find(({ name }) => name === 'get_guide');
+    assert.ok(tool, 'every client lists get_guide');
+    assert.deepEqual(tool.annotations, { readOnlyHint: true, destructiveHint: false, openWorldHint: false });
+    assert.equal(tool._meta?.ui?.visibility, undefined, 'the model sees it, not only a card');
+
+    for (const topic of PLAYBOOK_TOPICS) {
+      const result = await guide({ topic });
+      assert.notEqual(result.isError, true, JSON.stringify(result));
+      const output = getGuideOutput.parse(result.structuredContent);
+      const { title, guide: section } = playbookSection(topic);
+      assert.equal(output.topic, topic);
+      assert.equal(output.title, title);
+      assert.equal(output.guide, section);
+      assert.equal(output.topics, undefined);
+      assert.deepEqual(result.content, [{ type: 'text', text: section }], `${topic}: the text block is the section itself`);
+      const size = result.content[0]!.text.length + JSON.stringify(result.structuredContent).length;
+      assert.ok(size <= GUIDE_RESULT_MAX_CHARACTERS, `${topic}: ${size} characters, text block and structuredContent together`);
+    }
+
+    for (const [asked, topic] of [['Test Drive', 'test-drive'], ['roll_out', 'roll-out'], [' check in ', 'check-in']] as const) {
+      assert.equal((await guide({ topic: asked })).structuredContent?.topic, topic, asked);
+    }
+
+    for (const [args, nextStep] of [
+      [{}, /^Call get_guide again with the topic that fits the job\.$/],
+      [{ topic: '' }, /^Call get_guide again/],
+      [{ topic: 'billing' }, /^The guide has no such topic\. Call get_guide again/],
+      [{ topic: 'get-started' }, /^The guide has no such topic\./],
+    ] as const) {
+      const result = await guide(args);
+      assert.notEqual(result.isError, true, JSON.stringify(result));
+      const output = getGuideOutput.parse(result.structuredContent);
+      assert.equal(output.guide, undefined);
+      assert.match(output.nextStep, nextStep);
+      assert.deepEqual(output.topics?.map(({ topic }) => topic), [...PLAYBOOK_TOPICS]);
+      for (const { topic, title, about } of output.topics!) {
+        assert.equal(title, playbookSection(topic).title);
+        assert.ok(about.length > 20 && about.length <= 120 && !about.includes('\n'), `${topic}: one line about it`);
+        assert.ok(result.content[0]!.text.includes(`- ${topic}: ${about}`), `${topic} is in the text block`);
+      }
+    }
+
+    const discovery = await rpc('resources/read', { uri: DISCOVERY_GUIDE_URI });
+    assert.equal(discovery.contents[0].text, playbookSection('research').guide, 'the discovery guide URI serves the research section');
+  });
+}
+
+test('the server instructions end by sending a client without a skill to get_guide, within 512 characters', async (t) => {
+  const { rpc } = await harness(t, 'guide-instructions', false);
+  const { instructions } = await rpc('initialize', {
+    protocolVersion: '2025-11-25',
+    capabilities: {},
+    clientInfo: { name: 'guide-test', version: '1.0.0' },
+  }) as { instructions: string };
+  assert.ok(instructions.endsWith(` ${LAST_SENTENCE}`), instructions);
+  assert.ok(instructions.length <= WORKSPACE_MANAGEMENT_INSTRUCTIONS_MAX_CHARACTERS, `${instructions.length} characters`);
+  assert.equal(WORKSPACE_MANAGEMENT_INSTRUCTIONS_MAX_CHARACTERS, 512);
+});
+
+test('each section names only 5.0 tools, and the fields, values and topics they list', async (t) => {
+  const { rpc } = await harness(t, 'guide-names', true);
+  const listed = (await rpc('tools/list', {})).tools as ListedTool[];
+  const tools = new Set(listed.map(({ name }) => name));
+  const cardOnly = new Set(listed.filter(({ _meta }) => _meta?.ui?.visibility && !_meta.ui.visibility.includes('model')).map(({ name }) => name));
+  assert.ok(cardOnly.has('decline_change'), 'the card host lists its card-only tools');
+  const words = new Set([...MCP_ERROR_CODES, 'true', 'false', ...PLAYBOOK_TOPICS]);
+  for (const { inputSchema, outputSchema } of listed) vocabulary([inputSchema, outputSchema], words);
+  const fourX = [...WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES, ...MCP_MANAGEMENT_OPERATION_KINDS].filter((name) => !tools.has(name));
+
+  for (const topic of PLAYBOOK_TOPICS) {
+    const section = playbookSection(topic).guide;
+    for (const name of fourX) assert.doesNotMatch(section, new RegExp(`\\b${name}\\b`), `${topic}: ${name} is 4.x`);
+    for (const [word] of section.matchAll(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g)) {
+      assert.ok(tools.has(word) || words.has(word), `${topic}: ${word} is no 5.0 tool, and no value a 5.0 schema lists`);
+    }
+    for (const [, span] of section.matchAll(/`([A-Za-z_][\w-]*(?:\.[A-Za-z_]\w*)*)`/g)) {
+      for (const part of span!.split('.')) {
+        assert.ok(tools.has(part) || words.has(part), `${topic}: \`${span}\` names ${part}, which no 5.0 tool lists`);
+      }
+    }
+    for (const line of section.split('\n')) {
+      for (const name of cardOnly) {
+        if (line.includes(`\`${name}\``)) assert.match(line, /\b(Don't|don't|Never|never) call\b/, `${topic}: ${name} is card-only`);
+      }
+    }
+    for (const [, named] of section.matchAll(/`get_guide` topic `([^`]+)`/g)) {
+      assert.ok((PLAYBOOK_TOPICS as readonly string[]).includes(named!), `${topic}: get_guide topic ${named} does not exist`);
+      assert.notEqual(named, topic, `${topic} hands over to itself`);
+    }
+    assert.doesNotMatch(section, /`get_guide`(?! topic `)/, `${topic}: name another topic as \`get_guide\` topic \`name\``);
+  }
+});
+
+test('the playbook is host-neutral, and keeps the research and roll-out boundaries', () => {
+  for (const topic of PLAYBOOK_TOPICS) {
+    const section = playbookSection(topic).guide;
+    // The plugin vendors these files into skills that must stay provider-neutral.
+    assert.doesNotMatch(section, /\bthis skill\b|\bClaude\b|\bplugin\b|\bmarketplace\b|\binstall\b/i, topic);
+    assert.ok(section.includes('**If your client shows Chickpea cards**'), `${topic}: cards are conditional`);
+    assert.ok(section.includes('Never send a Slack message for the person.'), `${topic}: carries the ground rules`);
+  }
+
+  const research = playbookSection('research').guide;
+  const chat = research.indexOf('**In a chat app, such as ChatGPT:** work only from this conversation');
+  const coding = research.indexOf('**As a coding agent on the person\'s computer, such as Codex:**');
+  assert.ok(chat > 0 && coding > chat, 'a chat app works only from the conversation; a coding agent reads its machine');
+  assert.match(research.slice(chat, coding), /Never ask for their chat history, and don't search their mail, calendar or other connected apps/);
+  for (const reach of ['Your own past sessions, memory and notes', 'Ask first, one source at a time']) {
+    assert.ok(research.indexOf(reach) > coding, `only a coding agent: ${reach}`);
+  }
+
+  const rollOut = playbookSection('roll-out').guide;
+  for (const name of ['get_agent', 'list_slack_channels', 'add_agent_to_channel', 'update_agent']) {
+    assert.ok(rollOut.includes(`\`${name}\``), `roll-out uses ${name}`);
+  }
+  assert.match(rollOut, /Never post it or send it to anyone: the person posts it where they choose\./);
+
+  const checkIn = playbookSection('check-in').guide;
+  for (const name of ['list_agents', 'check_agent', 'list_agent_runs', 'get_agent_run']) {
+    assert.ok(checkIn.includes(`\`${name}\``), `check-in uses ${name}`);
+  }
+  assert.match(checkIn, /## 3\. Turn real asks into tests/);
+});
