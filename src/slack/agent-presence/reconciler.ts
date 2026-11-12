@@ -12,6 +12,7 @@ import {
   type SlackUserGroup,
 } from '../transport/types.ts';
 import { agentSlackHandle } from '../agent-asks.ts';
+import { routeRepliesToAgent } from '../requested-conversations/replies.ts';
 import type { AgentPresenceAnnouncements } from './announcements.ts';
 import {
   AgentPresenceError,
@@ -400,14 +401,22 @@ export class AgentPresenceReconciler {
     );
     const appBot = await this.dependencies.agentApps?.bringBotIn(published, { id: input.channelId, private: channel.private });
     if (pendingGrant.status !== 'active') {
-      await this.announceBestEffort('joinedChannel', published.id, (announce) => announce.joinedChannel({
-        workspaceId: input.workspaceId,
-        channelId: input.channelId,
-        channelIsPrivate: channel.private,
-        agent: published,
-        grantRevision: grant.revision,
-        ...(appBot?.placement === 'in_channel' ? { appBot: appBot.transport } : {}),
-      }));
+      await this.announceBestEffort('joinedChannel', published.id, async (announce) => {
+        const welcome = await announce.joinedChannel({
+          workspaceId: input.workspaceId,
+          channelId: input.channelId,
+          channelIsPrivate: channel.private,
+          agent: published,
+          grantRevision: grant.revision,
+          ...(appBot?.placement === 'in_channel' ? { appBot: appBot.transport } : {}),
+        });
+        // The welcome invites people to keep going in a thread with the Agent; a reply under it is one.
+        if (welcome) {
+          await routeRepliesToAgent(config, {
+            workspaceId: input.workspaceId, channelId: input.channelId, messageTs: welcome.ts, text: welcome.text, agent: published,
+          });
+        }
+      });
     }
     return { agent: published, grant, ...(appBot ? { appBot: appBot.placement } : {}) };
   }
