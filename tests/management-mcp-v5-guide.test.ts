@@ -186,7 +186,16 @@ test('every coding-agent fence in the Markdown is a whole line and closed, and n
 });
 
 test('no section tells a chat app what only a coding agent can do, and a coding agent still reads it (ruling D6)', () => {
-  const codingAgentOnly = /coding agent|\bCodex\b|on the person's computer|working directory|current folder|write files/i;
+  // A word list can't know a sentence nobody has written yet. It names what a chat app has no way to do:
+  // reach a computer, its folders and files, a shell, or a client's own sessions. A new sentence for
+  // coding agents goes inside a fence, and its telling words go here.
+  const codingAgentOnly = new RegExp([
+    'coding agent', String.raw`\bCodex\b`, 'Claude Code', 'on the person\'s computer', 'their (?:computer|machine|projects)',
+    'working directory', String.raw`(?:current|this) (?:folder|directory)`, 'write files', 'local files?', 'file ?system',
+    'command-line', String.raw`\bshell\b`, String.raw`\bscripts?\b`, String.raw`\bREADMEs?\b`, String.raw`\bcommits?\b`, String.raw`\brepos?\b`, 'codebase',
+    'environment file', 'key file', 'secret store', 'your own past sessions', 'in this client',
+    String.raw`save (?:it|them) (?:in|to) `,
+  ].join('|'), 'i');
   for (const topic of PLAYBOOK_TOPICS) {
     const served = playbookSection(topic, 'chat-app').guide;
     assert.doesNotMatch(served, codingAgentOnly, `${topic}: a chat app is told only what it can do`);

@@ -39,7 +39,7 @@ Then one line for everything that's fine, such as "4 other Agents and 3 schedule
 
 End with the fixes and new test questions you'd suggest, and let the person choose. Make no change until they say which.
 
-After a fix, call `check_agent` again. If the Agent still has a problem, offer to test drive it (`get_guide` topic `test-drive`).
+After a fix, call `check_agent` again. If the check passes and the Agent still gets the person's ask wrong, offer to test drive it (`get_guide` topic `test-drive`).
 
 **Why didn't it answer?** Call `check_agent` with the `place` where the person wrote: omit it for their direct messages, or pass the Channel's `channelId` from `get_agent`. The `admission` check says whether a message from them there reaches this Agent, and why not.
 
