@@ -69,6 +69,7 @@ import {
 } from '../config/runtime-model.ts';
 import { parseMemoryCommand } from '../memory/commands.ts';
 import { handleMemoryCommand, prepareMemoryTurn } from '../memory/runtime.ts';
+import { promptMemory } from '../memory/thread-memory.ts';
 import {
   handleRoutineSlackRequest,
   routineResponseVisibility,
@@ -1803,15 +1804,27 @@ async function runTurnAttempt(
     const promptContext = continuation
       ? slackContextSinceWatermark(context, continuation.messageTs, assignment.agentId)
       : context;
+    // A frozen plan's turn carries the memory only when the thread's
+    // transcript lacks it; without a plan, every prompt carries it.
+    const memory = runtimePlanDecision
+      ? promptMemory({
+          block: preparedMemory?.promptBlock,
+          memoryEpoch: runtimePlanDecision.runtimePlan.memoryEpoch,
+          previous: continuation,
+        })
+      : preparedMemory?.promptBlock
+        ? { placement: 'prompt' as const, replacesEarlier: false }
+        : { placement: 'none' as const };
     const continuityNote = continuation && runtimePlanDecision
       ? threadContinuityNote({
           previous: continuation,
           plan: runtimePlanDecision.runtimePlan,
           turn,
           sharedThread: slackConversationKind(turn) !== 'im',
+          memory: memory.placement,
         })
       : undefined;
-    return { frozenHandoff, context, promptContext, continuityNote };
+    return { frozenHandoff, context, promptContext, continuityNote, memory };
   };
 
   // 1. Visible work: set best-effort native status. A rejection degrades to
@@ -2111,12 +2124,12 @@ async function runTurnAttempt(
       await statusTurn.setStatus(initialStatus);
     }
 
-    const { frozenHandoff, context, promptContext, continuityNote } =
+    const { frozenHandoff, context, promptContext, continuityNote, memory } =
       await (contextRead ?? readTurnContext());
     review.context = promptContext;
     // A frozen plan reaches the render with the turn's staged input, so the
-    // memory is rendered as an instruction there, once, instead of piling up
-    // in the thread's transcript turn after turn.
+    // memory is staged there too: the thread's Agent object adds it to its
+    // instructions while the thread's context lacks it (thread-memory.ts).
     const memoryRendered = runtimePlanDecision !== undefined;
     const admittedListIds = runtimePlanDecision
       ? collectAdmittedSlackListIds({
@@ -2201,8 +2214,8 @@ async function runTurnAttempt(
         ? { frontDeskBlock: renderFrontDeskBlock(assignment.frontDesk, Date.now()) }
         : {}),
       ...(handoffBlock ? { handoffBlock } : {}),
-      ...(preparedMemory?.promptBlock && !memoryRendered
-        ? { memoryBlock: preparedMemory.promptBlock }
+      ...(preparedMemory?.promptBlock && memory.placement === 'prompt'
+        ? { memoryBlock: preparedMemory.promptBlock, memoryReplacesEarlier: memory.replacesEarlier }
         : {}),
       ...(continuityNote ? { continuityNote } : {}),
       memorySelected: (preparedMemory?.selection?.entries.length ?? 0) > 0,

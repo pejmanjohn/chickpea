@@ -52,7 +52,7 @@ export interface SlackTurnInputV1 {
   instanceId: string;
   /** Kept as admitted; parsing re-validates it against its harness revision. */
   runtimePlan: AdmittedRuntimePlanData;
-  /** This turn's Agent memory, rendered as an instruction. */
+  /** This turn's Agent memory block, an instruction while the thread's context lacks it (thread-memory.ts). */
   memoryBlock?: string;
   submissionId?: string;
   observation?: FlueTurnObservationV1;

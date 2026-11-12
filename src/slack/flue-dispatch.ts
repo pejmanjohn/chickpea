@@ -288,7 +288,7 @@ interface PromptSlackAgentInput {
    * instance renders this turn's plan, not its creation data.
    */
   runtimePlan?: RuntimePlanV2;
-  /** This turn's Agent memory block, rendered as an instruction. */
+  /** This turn's Agent memory block, staged for the instructions of a thread whose context lacks it. */
   memoryBlock?: string;
   /** Focused seam; production stages in the agent object or the host process. */
   stageTurnInput?: (input: SlackTurnInputV1) => Promise<void>;

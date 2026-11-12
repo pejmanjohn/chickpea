@@ -154,7 +154,7 @@ import {
   slackThreadCloudflareExtension,
   validTurnJobId,
 } from './turn-input.ts';
-import { ADVISORY_MEMORY_FINAL_CHECK } from '../slack/web-client-context.ts';
+import { useThreadMemoryInstruction } from '../memory/thread-memory.ts';
 import {
   WorkspaceSession,
   defaultWorkspaceId,
@@ -898,7 +898,8 @@ export function ChickpeaSlack({ id }: AgentProps) {
     resolveAgentPlatformEnv,
     async (env) => plan.runtimeModel ?? (await prepareRuntimePlanModel(plan, env, turn)).model,
   );
-  if (memoryBlock) useInstruction(`${memoryBlock}\n\n${ADVISORY_MEMORY_FINAL_CHECK}`);
+  const memoryInstruction = useThreadMemoryInstruction(id, memoryBlock, delivery.body);
+  if (memoryInstruction) useInstruction(memoryInstruction);
   return slackSystemBase({
     kind: slackAgentKind(plan.agentId),
     managementMounted: managementEnabled,
