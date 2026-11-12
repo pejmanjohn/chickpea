@@ -23,7 +23,7 @@ Docs: `/agents/repositories/`, `/agents/coding-sandbox/`, `/reference/limits/`. 
 
 - Admin: Settings → GitHub, Settings → Coding sandbox, Settings → Model providers → Default coding model, and the Agent's Repositories tab. All need Owner or Admin.
 - Slack: ask a granted Agent for repository work in a new thread. Asking `@Chickpea` for repository access returns a setup link, never a grant in the channel.
-- MCP: `get_agent` lists repositories, and a repository change through `set_agent_repositories` is confirmation-gated. GitHub App setup and the sandbox have no MCP handoff.
+- MCP: `get_agent` lists repositories, and `set_agent_repositories` sets the whole list and applies at once; a repository Chickpea cannot reach yet returns a GitHub access link. GitHub App setup and the sandbox have no MCP handoff.
 
 ## How to drive it on a lane
 

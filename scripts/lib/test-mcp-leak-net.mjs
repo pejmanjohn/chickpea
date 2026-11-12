@@ -13,7 +13,8 @@
  *   exactly one tool's name (src/management/mcp-v5/explain.ts);
  * - run history (list_agent_runs, get_agent_run): the quoted words of a Slack
  *   turn, `ask` and `reply`, which can name the tools that turn called;
- * - the removal answer, an error whose code is `tool_removed`.
+ * - the removal answer, an error whose code is `tool_removed`: it may name the
+ *   removed tool that was called, and no other.
  *
  * Test fixtures must not put the 21 names into user text (instructions,
  * skills, memory): the net cannot tell user text from Chickpea's.
@@ -70,11 +71,11 @@ const QUOTED = new Set(['ask', 'reply']);
  * `answer` is a `tools/call` result, or a JSON-RPC error's `error`.
  */
 export function leaksIn(tool, answer) {
-  if (answer?.isError === true && answer.structuredContent?.error?.code === 'tool_removed') return [];
+  const removed = answer?.isError === true && answer.structuredContent?.error?.code === 'tool_removed';
   const leaks = [];
   const visit = (value, path) => {
     if (typeof value === 'string') {
-      const names = [...new Set(value.match(NAMED) ?? [])];
+      const names = [...new Set(value.match(NAMED) ?? [])].filter((name) => !(removed && name === tool));
       if (names.length && !allowed(tool, path, value)) leaks.push({ tool, path: path.join('.'), names, text: excerpt(value) });
     } else if (Array.isArray(value)) {
       value.forEach((item, index) => visit(item, [...path, String(index)]));

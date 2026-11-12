@@ -13,3 +13,6 @@ draws cards lists, in order, over its JSON with keys sorted.
 `tests/management-mcp-v5-card-host-tools.test.ts` checks the listing against
 it, so removing the 4.x surface cannot change what OpenAI reviews. Rewrite it
 with `CHICKPEA_UPDATE_CARD_HOST_TOOLS=1` only for a change you mean to make.
+To see what changed, run the test on both commits with
+`CHICKPEA_CARD_HOST_TOOLS_OUT=<a file outside the repository>` and diff the
+two files.

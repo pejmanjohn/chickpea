@@ -80,6 +80,9 @@ test('the net allows explain_agent\'s Slack tool names, run history\'s quoted wo
     structuredContent: { ok: false, error: { code: 'tool_removed', message: 'Chickpea 5.0 removed inspect_workspace.' } },
   };
   assert.deepEqual(leaksIn('inspect_workspace', removed), []);
+  const sentOn = { ...removed, structuredContent: { ok: false, error: { code: 'tool_removed', message: 'Chickpea 5.0 removed inspect_workspace.', nextStep: 'Call get_operation.' } } };
+  assert.deepEqual((leaksIn('inspect_workspace', sentOn) as Leak[]).map(({ path, names }) => [path, names]),
+    [['structuredContent.error.nextStep', ['get_operation']]], 'a removal answer names its own tool only');
   const refused = { ...removed, structuredContent: { error: { code: 'not_found', message: 'Use inspect_workspace.' } } };
   assert.equal((leaksIn('get_agent', refused) as Leak[]).length, 2, 'any other error is read like a success');
 
