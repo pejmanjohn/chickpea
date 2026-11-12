@@ -102,10 +102,11 @@ export const FIVE_ZERO_TOOLS = {
   }),
   get_agent: tool({
     title: 'Get Agent',
-    description: 'One Agent as it is now: instructions, models, skills, connections, website logins, repositories, Slack Channels and Slack status, plus the version a later change sends back. Read it before you propose a change; check_agent says how it is doing. A member sees only the Agents they may edit. Reads only; changes nothing.',
+    description: 'One Agent as it is now: instructions, models, skills, connections, website logins, repositories, Slack Channels and Slack status, plus the version a later change sends back. Read it before you propose a change; check_agent says how it is doing. includeSkillText adds each skill\'s text, to edit it; skill with offset reads a long one in parts. A member sees only the Agents they may edit. Reads only; changes nothing.',
     input: schemas.getAgentInput,
     output: schemas.getAgentOutput,
     cardCalls: true,
+    text: async (output) => (await import('./skill-text.ts')).agentText(output),
     run: (deps, args) => reads.getAgent(deps, args),
   }),
   list_services: tool({
