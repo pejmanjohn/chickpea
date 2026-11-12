@@ -281,8 +281,11 @@ test('who can message a new Agent reads the same everywhere: only its creator, u
 
 test('a check-in checks every Agent the person can edit, and no section is quoted or cited to the person', () => {
   const checkIn = playbookSection('check-in').guide;
-  assert.ok(checkIn.includes('3. For each Agent the person can edit (`canEdit` true), `check_agent` with its `agentId`, the ones with `needsAttention` first.'),
+  assert.ok(checkIn.includes('3. For each Agent that is on and the person can edit (`status` `on`, `canEdit` true), `check_agent` with its `agentId`, the ones with `needsAttention` first.'),
     'needsAttention holds only what stored state shows, so it never decides which Agents get checked');
+  // An Owner can edit every Agent, and each check_agent tests custom connections live.
+  assert.ok(checkIn.includes('With more than 10 of them, check the 10 that matter most, flagged ones and then ones with a schedule, and tell the person how many you didn\'t check.'),
+    'a large workspace gets a bounded check-in that says what it skipped');
   for (const topic of PLAYBOOK_TOPICS) {
     assert.ok(playbookSection(topic).guide.includes('- Never quote this guide or skill to the person, cite it as the reason for a step, or show its file path, unless they ask.'), topic);
   }
