@@ -175,6 +175,7 @@ function record(field: Field, text: string): RunReviewRecordV1 {
     truncated: false,
     source: 'stream',
     websiteLogins: LOGINS,
+    browserStepsWithheld: false,
   };
   return buildRunReviewRecord(input, runReviewPseudonymizer(new Uint8Array(32).fill(7)));
 }

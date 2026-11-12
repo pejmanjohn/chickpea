@@ -107,6 +107,11 @@ export interface RunReviewInput {
   source: RunReviewRecordV1['source'];
   /** Every website login the installation saved, whichever Agents it is granted to. */
   websiteLogins: RunReviewWebsiteLogins;
+  /**
+   * The run grants a website login: each browser step keeps its tool name,
+   * whether it failed, and its duration, and nothing else.
+   */
+  browserStepsWithheld: boolean;
 }
 
 export const RUN_REVIEW_FIELD_BYTES = 16 * 1024;
@@ -119,6 +124,7 @@ export const RUN_REVIEW_RECORD_BYTES = 256 * 1024;
  */
 export const RUN_REVIEW_READS_OMITTED_UNLESS_CURRENT: ReadonlySet<string> = new Set(['read_slack_thread', 'read_slack_channel']);
 export const OTHER_CONVERSATION_OMITTED = '[other conversation omitted]';
+export const BROWSER_STEP_OMITTED = '[browser step omitted]';
 
 const PSEUDONYM_LABEL = 'chickpea-run-review-user-v1\0';
 const PSEUDONYM_HEX_CHARS = 20;
@@ -153,8 +159,9 @@ export function runReviewPseudonymizer(key: Uint8Array): (slackUserId: string) =
  * run ID, Agent ID and model, which no page or person writes; recognizable
  * credentials; every Slack user ID; then its cap again, since a replacement
  * can be longer than what it replaced. File notes keep only a name and size;
- * and a Slack List or canvas tool's output and error, and a Slack read's
- * result from another conversation, are omitted. The builder adds no Slack
+ * a Slack List or canvas tool's output and error, a Slack read's result from
+ * another conversation, and, in a run that grants a website login, every
+ * browser step's input, output and error are omitted. The builder adds no Slack
  * team, channel, thread or message IDs. Past the record cap the oldest steps
  * go first, then the oldest context.
  *
@@ -228,6 +235,7 @@ function shapeRecord(
     })),
     steps: input.steps.map((step): RunReviewStep => {
       if (step.kind !== 'tool') return { kind: step.kind, text: field(step.text, 'text') };
+      if (input.browserStepsWithheld && BROWSER_TOOLS.has(step.name)) return withheldBrowserStep(step);
       const kind: FieldKind = BROWSER_TOOLS.has(step.name) ? 'browser' : 'text';
       return {
         kind: 'tool',
@@ -262,6 +270,34 @@ function sharingUnknownTool(toolName: string): boolean {
 }
 
 const BROWSER_TOOLS: ReadonlySet<string> = new Set(BROWSER_TOOL_NAMES);
+
+/**
+ * A browser step of a run that may browse signed in. Its name is one of
+ * Chickpea's own tool names, so it is kept as written and never scrubbed; the
+ * rest could hold a signed-in page, a sign-in link or a typed credential in
+ * any form. A step that failed, as the framework or the tool itself reports
+ * it, keeps an error; one that worked keeps an output.
+ */
+function withheldBrowserStep(step: Extract<RunReviewStep, { kind: 'tool' }>): RunReviewStep {
+  const failed = step.error !== undefined || (step.output !== undefined && browserOutputFailed(step.output));
+  return {
+    kind: 'tool',
+    name: step.name,
+    input: BROWSER_STEP_OMITTED,
+    ...(failed ? { error: BROWSER_STEP_OMITTED } : step.output === undefined ? {} : { output: BROWSER_STEP_OMITTED }),
+    ...(step.durationMs === undefined ? {} : { durationMs: step.durationMs }),
+  };
+}
+
+/** A browser tool returns its own failures and refusals as output: an `error`, `refused: true` or `attached: false` (browser/tools.ts). */
+function browserOutputFailed(output: string): boolean {
+  try {
+    const result = JSON.parse(output) as { error?: unknown; refused?: unknown; attached?: unknown } | null;
+    return result?.error !== undefined || result?.refused === true || result?.attached === false;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * What a field holds: text, a browser step's text, or a token that Chickpea
