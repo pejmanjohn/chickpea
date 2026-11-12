@@ -29,7 +29,7 @@ Docs: `/admin/management-mcp/`, `/reference/management-mcp-tools/`. Record areas
 - Case shape: `case-add --area agents --proof mcp --proof admin`. Add `--proof slack` once the created Agent is published and mentioned.
 - Requests: create one run-marked Agent with a caller-chosen `agentId`; edit its instructions and grant it a channel, each in one call; archive and restore it in one call each; archive it again, then delete it and read the confirmation preview before confirming; `connect_service` for a catalog connector.
 - Denial variants: `confirm_change` after an edit moved the revision returns stale; `connect_model_provider` for an environment-managed provider is refused; Member-role checks need a registered Member actor, which lanes may lack.
-- Removal answers: `chickpea-cli call <lane origin> inspect_workspace` prints `{ ok: false, error: { code: 'tool_removed', … } }` and exits 1. A raw `prompts/list` answers `-32601`, with HTTP 404 on the 2026-07-28 protocol and 200 on the 2025 ones.
+- Removal answers: `chickpea-cli call <lane origin> inspect_workspace` prints `{ ok: false, error: { code: 'tool_removed', … } }` and exits 1. A raw `prompts/list` answers an empty list with HTTP 200 on every protocol revision.
 - Cleanup: archive created Agents (`--cleanup-preset archived-agent`), revoke unused setup links, and run `chickpea-cli logout <lane origin>` to revoke the client's refresh token. Its last access token keeps working against `/mcp` for up to 15 minutes, so a revocation readback waits for that token's expiry before expecting a 401.
 
 ## Proof and gotchas

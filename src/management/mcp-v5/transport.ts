@@ -49,7 +49,8 @@ const NO_CARDS: CardRefusals = { session: () => false, tools: new Set() };
  *   error result, which a client passes to its model; it carries the
  *   `resultType` a 2026-07-28 client requires, when the request names its
  *   revision, and stays an error on a card session too. A prompt's or
- *   resource's keeps its code and gets a message saying what replaced it.
+ *   resource's keeps its code and gets a message saying what replaced it. The
+ *   server keeps an empty prompts capability (mcp.ts), so both arrive in-band.
  */
 export function shapeFiveZeroResults(
   transport: Transport,

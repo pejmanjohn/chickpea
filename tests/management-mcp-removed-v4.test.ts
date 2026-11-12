@@ -84,7 +84,7 @@ for (const [who, clientId] of CLIENTS) for (const protocol of LEGS) {
         protocolVersion: protocol, capabilities: {}, clientInfo: { name: 'test-client', version: '1' },
       })).message.result;
       assert.equal(initialized.serverInfo.version, '5.0.0');
-      assert.equal(initialized.capabilities.prompts, undefined, 'no prompts capability');
+      assert.deepEqual(initialized.capabilities.prompts, { listChanged: true }, 'the prompts capability, as a card host saw it before 5.0.0');
     }
     const listed = (await send(clientId, protocol, 'tools/list')).message.result.tools as Array<{ name: string }>;
     assert.deepEqual(listed.map(({ name }) => name), FIVE_ZERO_TOOL_NAMES, 'the 5.0 tools, and only those');
@@ -98,17 +98,18 @@ for (const [who, clientId] of CLIENTS) for (const protocol of LEGS) {
       assert.equal(message.error, undefined, `${name}: a result its client hands to the model`);
       assert.deepEqual(message.result, { ...removedToolResult(name), ...modern ? { resultType: 'complete' } : {} }, name);
     }
-    // Measured on SDK 2.4.0: the 2026-07-28 leg's entry gate answers an unknown method with HTTP 404, and the
-    // body still carries the message. The 2025 legs answer it in-band, with 200.
-    const methodNotFound = modern ? 404 : 200;
+    // The server keeps an empty prompts capability, so every leg answers in-band with HTTP 200. Without it,
+    // SDK 2.4.0's entry gate answers both methods on 2026-07-28 with HTTP 404, which can read as a broken connection.
     for (const name of REMOVED_PROMPT_NAMES) {
       const answer = await send(clientId, protocol, 'prompts/get', { name, arguments: {} });
-      assert.deepEqual(answer, { status: methodNotFound, message: {
-        jsonrpc: '2.0', id: 1, error: { code: -32601, message: removedPromptMessage(name) },
+      assert.deepEqual(answer, { status: 200, message: {
+        jsonrpc: '2.0', id: 1, error: { code: -32602, message: removedPromptMessage(name) },
       } }, name);
     }
     const promptList = await send(clientId, protocol, 'prompts/list');
-    assert.deepEqual([promptList.status, promptList.message.error?.code, promptList.message.result], [methodNotFound, -32601, undefined]);
+    assert.equal(promptList.status, 200);
+    assert.equal(promptList.message.error, undefined);
+    assert.deepEqual(promptList.message.result.prompts, [], 'no prompts, as a card host got before 5.0.0');
     for (const uri of REMOVED_RESOURCE_URIS) {
       const answer = await send(clientId, protocol, 'resources/read', { uri });
       assert.deepEqual(answer, { status: 200, message: {

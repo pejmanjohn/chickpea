@@ -157,7 +157,7 @@ test('supported coding clients share public PKCE registration and stateless MCP 
         };
         assert.equal(initializeResult.serverInfo.version, WORKSPACE_MANAGEMENT_SERVER_INFO.version, client.name);
         assert.equal(initializeResult.instructions, WORKSPACE_MANAGEMENT_INSTRUCTIONS, `${client.name} gets the 5.0 instructions`);
-        assert.equal(initializeResult.capabilities.prompts, undefined, `${client.name} is offered no prompts`);
+        assert.deepEqual(initializeResult.capabilities.prompts, { listChanged: true }, `${client.name} is offered an empty prompt list`);
       }
 
       const listed = await mcpCall(handler.fetch, client.protocol, 'tools/list', {});

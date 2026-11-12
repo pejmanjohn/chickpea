@@ -36,7 +36,14 @@ const FIVE_ZERO_TOOL_NAME_SET: ReadonlySet<string> = new Set(FIVE_ZERO_TOOL_NAME
  */
 class ObservedMcpServer extends McpServer {
   constructor(private readonly clientId: string, private readonly cardSession: boolean) {
-    super(WORKSPACE_MANAGEMENT_SERVER_INFO, { instructions: WORKSPACE_MANAGEMENT_INSTRUCTIONS });
+    super(WORKSPACE_MANAGEMENT_SERVER_INFO, {
+      instructions: WORKSPACE_MANAGEMENT_INSTRUCTIONS,
+      // 5.0.0 removed the prompts, and the capability stays, empty, as a card host
+      // always saw it: `prompts/list` answers an empty list with HTTP 200 on every
+      // protocol revision. Without it the SDK answers 2026-07-28 with HTTP 404, which
+      // a client can read as a broken connection.
+      capabilities: { prompts: {} },
+    });
   }
 
   /** A known OAuth card client stays one even when its session or capabilities are missing. */
