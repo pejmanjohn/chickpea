@@ -20,12 +20,8 @@ import { projectEffectiveMcpConnections, resolveEffectiveConnectionAccounts } fr
 import type { ManagementApiConnection, ManagementMcpConnection } from '../src/management/agent-connections.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
 import {
-  invokeWorkspaceManagementTool,
-  type WorkspaceManagementToolArguments,
-  type WorkspaceManagementToolName,
-} from '../src/management/tool-adapter.ts';
-import {
   AgentWriteRuleError,
+  type ManagementActorContext,
   type ManagementApplyResult,
   type ManagementOperation,
   type ManagementWorkspaceSnapshot,
@@ -74,30 +70,27 @@ async function withFixture(
   }
 }
 
-async function mcpTool<TName extends WorkspaceManagementToolName>(
-  f: Fixture,
-  name: TName,
-  args: WorkspaceManagementToolArguments[TName],
-): Promise<unknown> {
-  const response = await invokeWorkspaceManagementTool({
-    service: f.service,
-    resolveContext: async () => ({
-      userId: f.owner.user.id,
-      membershipId: f.owner.membership.id,
-      organizationId: f.owner.membership.organizationId,
-      origin: { kind: 'mcp', clientId: 'connection-accounts-test' },
-    }),
-  }, name, args);
-  assert.equal(response.ok, true, JSON.stringify(response));
-  return (response as { result: unknown }).result;
+/** The Owner over MCP, as the 5.0 tools reach the service. */
+function ownerMcp(f: Fixture): ManagementActorContext {
+  return {
+    userId: f.owner.user.id,
+    membershipId: f.owner.membership.id,
+    organizationId: f.owner.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'connection-accounts-test' },
+  };
+}
+
+async function confirmChange(f: Fixture, proposalId: string): Promise<ManagementApplyResult> {
+  const { confirmed: _confirmed, ...result } = await f.service.confirmWorkspaceChange({ context: ownerMcp(f), proposalId });
+  return result;
 }
 
 async function apply(f: Fixture, idempotencyKey: string, operations: ManagementOperation[]) {
-  return await mcpTool(f, 'apply_workspace_changes', { idempotencyKey, operations }) as ManagementApplyResult;
+  return await f.service.applyWorkspaceChanges({ context: ownerMcp(f), idempotencyKey, operations }) as ManagementApplyResult;
 }
 
 async function inspectAgent(f: Fixture, agentId: string) {
-  const snapshot = await mcpTool(f, 'inspect_workspace', {}) as ManagementWorkspaceSnapshot;
+  const snapshot: ManagementWorkspaceSnapshot = await f.service.inspectWorkspace(ownerMcp(f));
   const agent = snapshot.agents.find(({ id }) => id === agentId);
   assert.ok(agent, `inspection lists ${agentId}`);
   return agent;
@@ -311,9 +304,7 @@ test('a management edit that changes or removes a connection retires its credent
       patch: { apiConnections: [] },
     }]);
     assert.equal(pending.status, 'confirmation_required', 'removing a connection asks first over MCP');
-    const confirmed = await mcpTool(f, 'confirm_workspace_change', {
-      proposalId: pending.outcomes[0]!.proposalId!,
-    }) as ManagementApplyResult;
+    const confirmed = await confirmChange(f, pending.outcomes[0]!.proposalId!);
     assert.equal(confirmed.status, 'completed', JSON.stringify(confirmed.outcomes));
     assert.equal(await f.settings.getSetting(secretKey), undefined, 'removal retires the credential');
     const revoked = (await f.config.listConnectionAccounts(TEAM)).find(({ id }) => id === account.id);
@@ -767,9 +758,7 @@ async function seedOauthAccounts(f: Fixture, agent: CustomAgentConfig): Promise<
 
 async function confirmed(f: Fixture, pending: ManagementApplyResult): Promise<ManagementApplyResult> {
   assert.equal(pending.status, 'confirmation_required', JSON.stringify(pending.outcomes));
-  const result = await mcpTool(f, 'confirm_workspace_change', {
-    proposalId: pending.outcomes[0]!.proposalId!,
-  }) as ManagementApplyResult;
+  const result = await confirmChange(f, pending.outcomes[0]!.proposalId!);
   assert.equal(result.status, 'completed', JSON.stringify(result.outcomes));
   return result;
 }

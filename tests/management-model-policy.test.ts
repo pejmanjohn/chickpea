@@ -23,7 +23,6 @@ import {
 } from '../src/management/schemas.ts';
 import { resolveSlackApprovalActor } from '../src/management/slack-approval.ts';
 import { invokeSlackWorkspaceManagementTool } from '../src/management/slack-tools.ts';
-import { invokeWorkspaceManagementTool } from '../src/management/tool-adapter.ts';
 import {
   ManagementError,
   type ManagementActorContext,
@@ -45,6 +44,7 @@ import {
   type ManagementAdapterFixture,
 } from './helpers/management-adapter-fixture.ts';
 import { EVERY_PROVIDER_FUNDED, NO_RUN_FEES } from './helpers/platform-funding.ts';
+import { confirmThroughService, serviceResult } from './helpers/management-service-result.ts';
 import { withPersonApproval } from './helpers/slack-person-approval.ts';
 import { slackTurnSignal } from './helpers/slack-turn-signal.ts';
 
@@ -154,12 +154,7 @@ async function inspect(
   service: ReturnType<typeof createLiveWorkspaceManagementService>,
   context: ManagementActorContext,
 ): Promise<Snapshot> {
-  const response = await invokeWorkspaceManagementTool({
-    service,
-    resolveContext: async () => context,
-  }, 'inspect_workspace', {});
-  assert.equal(response.ok, true, JSON.stringify(response));
-  return (response as { result: Snapshot }).result;
+  return await service.inspectWorkspace(context) as unknown as Snapshot;
 }
 
 let keys = 0;
@@ -168,12 +163,7 @@ async function apply(
   context: ManagementActorContext,
   operations: ManagementOperation[],
 ): Promise<ManagementApplyResult> {
-  const response = await invokeWorkspaceManagementTool({
-    service,
-    resolveContext: async () => context,
-  }, 'apply_workspace_changes', { idempotencyKey: `model-policy-${++keys}`, operations });
-  assert.equal(response.ok, true, JSON.stringify(response));
-  return (response as { result: ManagementApplyResult }).result;
+  return await service.applyWorkspaceChanges({ context, idempotencyKey: `model-policy-${++keys}`, operations }) as ManagementApplyResult;
 }
 
 async function undo(
@@ -181,12 +171,7 @@ async function undo(
   context: ManagementActorContext,
   operationId: string,
 ): Promise<ManagementApplyResult> {
-  const response = await invokeWorkspaceManagementTool({
-    service,
-    resolveContext: async () => context,
-  }, 'undo_workspace_change', { operationId, idempotencyKey: `model-policy-undo-${++keys}` });
-  assert.equal(response.ok, true, JSON.stringify(response));
-  return (response as { result: ManagementApplyResult }).result;
+  return await service.undoWorkspaceChange({ context, operationId, idempotencyKey: `model-policy-undo-${++keys}` });
 }
 
 /** The code of the refusal an undo gets, which must leave everything as it was. */
@@ -195,10 +180,8 @@ async function refusedUndo(
   context: ManagementActorContext,
   operationId: string,
 ): Promise<string> {
-  const response = await invokeWorkspaceManagementTool({
-    service,
-    resolveContext: async () => context,
-  }, 'undo_workspace_change', { operationId, idempotencyKey: `model-policy-undo-${++keys}` });
+  const response = await serviceResult(() =>
+    service.undoWorkspaceChange({ context, operationId, idempotencyKey: `model-policy-undo-${++keys}` }));
   assert.equal(response.ok, false, JSON.stringify(response));
   return (response as { error: { code: string } }).error.code;
 }
@@ -746,10 +729,7 @@ test('on an ask turn an Agent image model waits for the person on its own, and t
     assert.equal((await f.config.getAgentModelRole(desk.id, 'image'))?.modelId, undefined, 'nothing is pinned yet');
 
     const personTurn = signal({ text: 'approve', eventId: 'Ev_MODEL_YES', messageTs: '700.5' });
-    const approved = await invokeWorkspaceManagementTool({
-      service,
-      resolveContext: () => resolveSlackApprovalActor(personTurn, f.identity, proposalId),
-    }, 'confirm_workspace_change', { proposalId });
+    const approved = await confirmThroughService(service, () => resolveSlackApprovalActor(personTurn, f.identity, proposalId), proposalId);
     assert.ok(approved.ok, JSON.stringify(approved));
     assert.deepEqual((approved.result as ManagementApplyResult).outcomes.map(({ disposition }) => disposition), ['applied']);
     assert.equal((await f.config.getAgentModelRole(desk.id, 'image'))?.modelId, FLARE);

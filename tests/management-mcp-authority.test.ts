@@ -19,6 +19,7 @@ import type {
   ManagementOperation,
 } from '../src/management/types.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+import { confirmThroughService } from './helpers/management-service-result.ts';
 
 type Fixture = Awaited<ReturnType<typeof createManagementAdapterFixture>>;
 type Person = Fixture['owner'] | Fixture['admin'];
@@ -75,7 +76,6 @@ async function call<TName extends WorkspaceManagementToolName>(
 
 interface ToolResults {
   apply_workspace_changes: ManagementApplyResult;
-  confirm_workspace_change: ManagementApplyResult;
   undo_workspace_change: ManagementApplyResult;
   import_skill: ImportSkillResult;
 }
@@ -106,7 +106,9 @@ async function confirm(
   person: Pick<Person, 'user' | 'membership'>,
   proposalId: string,
 ): Promise<ManagementApplyResult> {
-  return succeed(f, person, 'confirm_workspace_change', { proposalId });
+  const response = await confirmThroughService(f.service, mcpContext(person), proposalId);
+  assert.equal(response.ok, true, JSON.stringify(response));
+  return (response as { result: ManagementApplyResult }).result;
 }
 
 function assertApplied(result: ManagementApplyResult, label: string): void {
@@ -677,7 +679,7 @@ test('MCP keeps only the newest destructive change confirmable', () => withFixtu
     itemId: 'delete', kind: 'delete_agent', agentId: second.id, expectedRevision: second.revision,
   }]), 'second delete');
 
-  const stale = await call(f, f.owner, 'confirm_workspace_change', { proposalId: firstProposal });
+  const stale = await confirmThroughService(f.service, mcpContext(f.owner), firstProposal);
   assert.equal(stale.ok ? undefined : stale.error.code, 'proposal_stale');
   assert.equal((await f.config.getAgent(first.id)).id, first.id);
 }));

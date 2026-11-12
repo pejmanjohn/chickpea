@@ -11,7 +11,6 @@ import {
   type SlackManagementSignal,
 } from '../src/management/slack-tools.ts';
 import { startedWithoutPerson } from '../src/management/service.ts';
-import { invokeWorkspaceManagementTool } from '../src/management/tool-adapter.ts';
 import type {
   ManagementApplyResult,
   ManagementOperation,
@@ -20,6 +19,7 @@ import { normalizeSlackTurn } from '../src/slack/turn-normalization.ts';
 import type { NormalizedSlackTurn, SlackAgentAsk } from '../src/slack/types.ts';
 import { channelThreadMessage } from './helpers/slack-fixtures.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+import { confirmThroughService } from './helpers/management-service-result.ts';
 import { slackTurnSignal } from './helpers/slack-turn-signal.ts';
 
 type Fixture = Awaited<ReturnType<typeof createManagementAdapterFixture>>;
@@ -73,10 +73,8 @@ async function setup(suffix: string) {
     args: Parameters<typeof invokeSlackWorkspaceManagementTool<TName>>[0]['args'],
   ) => invokeSlackWorkspaceManagementTool({ signal: toolSignal, identity: f.identity, service: f.service, name, args });
   /** The person's typed "approve" or Approve click, as the Slack host applies it. */
-  const approve = (approvalSignal: SlackManagementSignal, proposalId: string) => invokeWorkspaceManagementTool({
-    service: f.service,
-    resolveContext: () => resolveSlackApprovalActor(approvalSignal, f.identity, proposalId),
-  }, 'confirm_workspace_change', { proposalId });
+  const approve = (approvalSignal: SlackManagementSignal, proposalId: string) =>
+    confirmThroughService(f.service, () => resolveSlackApprovalActor(approvalSignal, f.identity, proposalId), proposalId);
   return { f, workspaceId, createAgent, signal, tool, approve };
 }
 
@@ -182,9 +180,9 @@ test('one approval applies exactly the batch the person was shown, and only the 
     assert.deepEqual(await routineNames(f), []);
     assert.equal((await f.memory.getAgentMemory(desk.id)).body, '');
 
-    const selfApproved = await tool(signal(desk.id, {
+    const selfApproved = await confirmThroughService(f.service, () => resolveSlackManagementActor(signal(desk.id, {
       text: 'Approved.', eventId: 'Ev_BATCH_SELF', messageTs: '700.4', agentAsk: ask(),
-    }), 'confirm_workspace_change', { proposalId });
+    }), f.identity), proposalId);
     assert.equal(selfApproved.ok, false, 'an ask turn cannot approve it');
     assert.deepEqual(await routineNames(f), []);
 

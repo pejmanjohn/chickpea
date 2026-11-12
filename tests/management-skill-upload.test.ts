@@ -5,10 +5,8 @@ import { createMcpHandler } from '@modelcontextprotocol/server';
 
 import type { SkillConfig } from '../src/config/types.ts';
 import { createWorkspaceManagementMcpServer } from '../src/management/mcp.ts';
-import { invokeWorkspaceManagementTool, type WorkspaceManagementToolArguments } from '../src/management/tool-adapter.ts';
 import type {
   ManagementActorContext,
-  ManagementApplyResult,
   UploadSkillsResult,
 } from '../src/management/types.ts';
 import {
@@ -18,10 +16,11 @@ import {
   withManagementAdapterFixture,
   type ManagementAdapterFixture,
 } from './helpers/management-adapter-fixture.ts';
+import { serviceResult } from './helpers/management-service-result.ts';
 import { buildZip, skillMarkdown } from './helpers/zip.ts';
 
-type UploadArgs = WorkspaceManagementToolArguments['upload_skills'];
-type Envelope = { ok: true; result: unknown } | { ok: false; error: { code: string; message: string } };
+/** What upload_skill_files sends the service, besides who is asking. */
+type UploadArgs = Omit<Parameters<ManagementAdapterFixture['service']['uploadSkills']>[0], 'context'>;
 
 const KEPT: SkillConfig[] = [
   { name: 'house-style', description: 'Write in the house style.', instructions: 'Use short sentences.', enabled: true },
@@ -43,12 +42,13 @@ function uploadFiles(): NonNullable<UploadArgs['files']> {
   ];
 }
 
-async function call(
+/** The service's skill upload, which upload_skill_files and the Slack door both call. */
+function call(
   f: ManagementAdapterFixture,
   args: UploadArgs,
   context: ManagementActorContext = ownerMcpContext(f),
-): Promise<Envelope> {
-  return invokeWorkspaceManagementTool({ service: f.service, resolveContext: async () => context }, 'upload_skills', args);
+) {
+  return serviceResult(() => f.service.uploadSkills({ context, ...args }));
 }
 
 async function upload(f: ManagementAdapterFixture, args: UploadArgs): Promise<UploadSkillsResult> {
@@ -59,7 +59,7 @@ async function upload(f: ManagementAdapterFixture, args: UploadArgs): Promise<Up
 
 const names = (skills: Array<{ name: string }>) => skills.map(({ name }) => name);
 
-test('upload_skills installs every skill in the files and keeps the Agent\'s other skills', () =>
+test('an upload installs every skill in the files and keeps the Agent\'s other skills', () =>
   withManagementAdapterFixture('upload-add', async (f) => {
     const agent = await createFixtureAgent(f, 'agent_upload', { skills: KEPT });
     const result = await upload(f, { agentId: agent.id, files: uploadFiles(), idempotencyKey: 'upload-1' });
@@ -93,15 +93,8 @@ test('upload_skills installs every skill in the files and keeps the Agent\'s oth
     assert.equal(saved.revision, agent.revision + 1);
 
     assert.ok(result.status === 'updated');
-    const operation = await invokeWorkspaceManagementTool({
-      service: f.service,
-      resolveContext: async () => ownerMcpContext(f),
-    }, 'get_operation', { operationId: result.operationId });
-    assert.equal(
-      ((operation as { result: { operation: ManagementApplyResult } }).result.operation).status,
-      'completed',
-      'the change is on the durable operation record',
-    );
+    const operation = await f.service.getOperation(ownerMcpContext(f), result.operationId);
+    assert.equal(operation && 'status' in operation ? operation.status : undefined, 'completed', 'the change is on the durable operation record');
   }));
 
 test('identical skills are unchanged and different same-name skills wait for replaceExisting', () =>
@@ -143,11 +136,8 @@ test('undo restores the skills from before the upload', () =>
     const agent = await createFixtureAgent(f, 'agent_upload', { skills: KEPT });
     const result = await upload(f, { agentId: agent.id, files: uploadFiles(), idempotencyKey: 'upload-1' });
     assert.ok(result.status === 'updated');
-    const undone = await invokeWorkspaceManagementTool({
-      service: f.service,
-      resolveContext: async () => ownerMcpContext(f),
-    }, 'undo_workspace_change', { operationId: result.operationId, idempotencyKey: 'undo-upload' });
-    assert.equal((undone as { result: ManagementApplyResult }).result.status, 'completed', JSON.stringify(undone));
+    const undone = await f.service.undoWorkspaceChange({ context: ownerMcpContext(f), operationId: result.operationId, idempotencyKey: 'undo-upload' });
+    assert.equal(undone.status, 'completed', JSON.stringify(undone));
     assert.deepEqual((await f.config.getAgent(agent.id)).skills, KEPT);
   }));
 
@@ -171,7 +161,7 @@ test('a retry with the same key returns the first receipt without writing again'
     assert.deepEqual(await f.config.getAgent(agent.id), written);
   }));
 
-test('upload_skills keeps edit authority, refuses bad input whole, and takes no file content in Slack', () =>
+test('an upload keeps edit authority, refuses bad input whole, and takes no file content in Slack', () =>
   withManagementAdapterFixture('upload-refusals', async (f) => {
     const agent = await createFixtureAgent(f, 'agent_upload', { skills: KEPT });
     const member = (await f.identity.provisionSlackMember({
@@ -212,7 +202,7 @@ test('upload_skills keeps edit authority, refuses bad input whole, and takes no 
     assert.deepEqual((await f.config.getAgent(full.id)).skills, fullSkills);
   }));
 
-test('the MCP door lists upload_skills and installs an archive sent as base64', () =>
+test('the MCP door lists upload_skill_files and installs an archive sent as base64', () =>
   withManagementAdapterFixture('upload-mcp', async (f) => {
     const agent = await createFixtureAgent(f, 'agent_upload', { skills: KEPT });
     const handler = createMcpHandler(() => createWorkspaceManagementMcpServer({
@@ -231,26 +221,28 @@ test('the MCP door lists upload_skills and installs an archive sent as base64', 
     const listed = await mcpCall(handler.fetch, 'tools/list', {}) as {
       tools: Array<{ name: string; inputSchema: { required?: string[] } }>;
     };
-    const tool = listed.tools.find(({ name }) => name === 'upload_skills');
+    const tool = listed.tools.find(({ name }) => name === 'upload_skill_files');
     assert.deepEqual(tool?.inputSchema.required?.toSorted(), ['agentId', 'files', 'idempotencyKey']);
     const item = (tool?.inputSchema as { properties: { files: { items: Record<string, unknown> } } }).properties.files.items;
     assert.equal(item.anyOf ?? item.oneOf, undefined, 'a file is one flat object, not a union clients must pick from');
     assert.deepEqual(item.required, ['name']);
 
     const called = await mcpCall(handler.fetch, 'tools/call', {
-      name: 'upload_skills',
+      name: 'upload_skill_files',
       arguments: { agentId: agent.id, files: [{ name: 'skills.zip', base64: archive }], idempotencyKey: 'mcp-upload' },
-    }) as { structuredContent: { ok: boolean; result: UploadSkillsResult } };
-    assert.equal(called.structuredContent.ok, true, JSON.stringify(called));
-    assert.deepEqual(names(called.structuredContent.result.added), ['alpha', 'beta']);
+    }) as { isError?: boolean; structuredContent: { status: string; added: string[] } };
+    assert.notEqual(called.isError, true, JSON.stringify(called));
+    assert.equal(called.structuredContent.status, 'done');
+    assert.deepEqual(called.structuredContent.added, ['alpha', 'beta']);
     assert.deepEqual(names((await f.config.getAgent(agent.id)).skills), ['house-style', 'triage', 'alpha', 'beta']);
 
     const both = await mcpCall(handler.fetch, 'tools/call', {
-      name: 'upload_skills',
+      name: 'upload_skill_files',
       arguments: { agentId: agent.id, files: [{ name: 'SKILL.md', text: 'x', base64: 'eA==' }], idempotencyKey: 'mcp-both' },
-    }) as { isError?: boolean; content: Array<{ text: string }> };
+    }) as { isError?: boolean; structuredContent: { error: { code: string; nextStep: string } } };
     assert.equal(both.isError, true, 'a file carries text or base64, not both');
-    assert.match(both.content[0]!.text, /^Input validation error/);
+    assert.equal(both.structuredContent.error.code, 'invalid_input');
+    assert.match(both.structuredContent.error.nextStep, /files\.0: Send text or base64, not both\./);
   }));
 
 async function mcpCall(
