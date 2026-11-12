@@ -6,11 +6,15 @@ import { assertMcpToolArgumentKeys } from '../src/config/mcp-tool-policy.ts';
 import {
   META_ADS_ACCOUNT_HELPER,
   META_ADS_FIELD_HELPER,
+  META_ADS_REVIEWED_TOOL_EFFECTS,
   compileMetaAdsToolAccess,
+  isMetaAdsAccountScopeTool,
   isMetaAdsWriteTool,
   metaAdsRuntimeAllowedTools,
   metaAdsRuntimePropertyNames,
+  metaAdsSendableArgumentNames,
   metaAdsToolSchemaSupported,
+  metaAdsWriteSchemaContract,
 } from '../src/config/meta-ads-policy.ts';
 import { reviewedMetaAdsTools } from '../src/config/meta-ads-response.ts';
 import type { McpConnectionConfig, McpConnectionToolInfo } from '../src/config/types.ts';
@@ -36,6 +40,11 @@ const NEVER_SENT: Readonly<Record<string, readonly string[]>> = {
   ads_create_ad: ['adset_spec'],
   ads_activate_entity: ['object_ids'],
   ads_create_creative: ['product_set_id'],
+  // Its blocked routes, and four ID routes its contract never classified.
+  ads_create_ad_set: [
+    'brand_audience_id', 'budget_split_set_id', 'campaign_spec', 'conversion_goal_id', 'include_in_ad_study_cell_id',
+    'include_in_ad_study_id', 'rf_prediction_id', 'saved_audience_id', 'source_adset_id', 'value_rule_set_id',
+  ],
 };
 
 const HELPER_ARGUMENTS: Readonly<Record<string, readonly string[]>> = {
@@ -77,6 +86,31 @@ test('each reviewed Meta tool may send exactly its reviewed arguments, whatever 
   const users = metaDiscoveredTool('ads_update_custom_audience_users', META_PRE_NOVEMBER_NAMES.ads_update_custom_audience_users);
   assert.deepEqual([...metaAdsRuntimePropertyNames(connectionOf(users), users.name)!].sort(),
     reviewedArguments(users.name));
+});
+
+test('no sendable list names a hidden filter, a blocked route, or an unclassified ID or account', () => {
+  const reviewed = Object.keys(META_ADS_REVIEWED_TOOL_EFFECTS);
+  assert.equal(reviewed.length, 22);
+  for (const name of reviewed) {
+    const sendable = metaAdsSendableArgumentNames(name);
+    assert.ok(sendable.length > 0, name);
+    assert.equal(new Set(sendable).size, sendable.length, name);
+    const contract = metaAdsWriteSchemaContract(name);
+    const routes = new Set(['client_conversation_id', ...(contract?.ownershipFields ?? []), ...(contract?.referenceFields ?? [])]);
+    for (const value of sendable) {
+      assert.equal((NEVER_SENT[name] ?? []).includes(value), false, `${name}: ${value}`);
+      assert.equal(contract?.blockedRuntimeFields.includes(value) ?? false, false, `${name}: ${value}`);
+      if (value === 'ad_account_id') {
+        assert.equal(isMetaAdsAccountScopeTool(name), false, `${name}: ${value}`);
+      } else if (/account/i.test(value) || /(?:^|_)ids?$/i.test(value)) {
+        assert.ok(routes.has(value), `${name}: ${value}`);
+      }
+    }
+    if (!isMetaAdsAccountScopeTool(name)) assert.ok(sendable.includes('ad_account_id'), name);
+    // Including the writes whose live schemas are unavailable.
+    assert.deepEqual([...sendable].sort(), reviewedArguments(name), name);
+  }
+  assert.deepEqual(metaAdsSendableArgumentNames('ads_account_get_activity_logs'), []);
 });
 
 test("no tool reviewed before November sends Meta's November correlation fields", () => {

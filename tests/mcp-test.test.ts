@@ -823,7 +823,7 @@ test('Meta write projection retains bounded large schemas and closes blocked or 
   }, 'ads_create_ad_set').ambiguous, true, 'known payloads cannot introduce a nested account route');
 });
 
-test('Meta projection keeps entity filters optional and unknown or nested selectors closed', () => {
+test('Meta projection keeps entity filters optional, hides unreviewed selectors, and closes nested ones', () => {
   const schema = (required: string[], properties: Record<string, unknown>) => ({
     type: 'object', required, properties: { ad_account_id: { type: 'string' }, ...properties },
   });
@@ -833,12 +833,23 @@ test('Meta projection keeps entity filters optional and unknown or nested select
   assert.equal(projectMcpToolInputSchema(schema(['ad_account_id', 'object_ids'], {
     object_ids: { type: 'array', items: { type: 'string' } },
   }), 'ads_get_ad_entities').ambiguous, true, 'required entity targets remain unsupported');
+  // A read never shows or sends an argument outside its contract, so an
+  // optional one only matters when it names an account.
   assert.equal(projectMcpToolInputSchema(schema(['ad_account_id'], {
     object_ids: { type: 'array', items: { type: 'string' } },
-  }), 'ads_get_opportunity_score').ambiguous, true, 'exceptions are tool-specific');
+  }), 'ads_get_opportunity_score').ambiguous, false, 'a filter outside the contract is hidden');
   assert.equal(projectMcpToolInputSchema(schema(['ad_account_id'], {
     campaign_id: { type: 'string' },
-  }), 'ads_get_ad_entities').ambiguous, true, 'unknown target selectors remain unsupported');
+  }), 'ads_get_ad_entities').ambiguous, false, 'an unknown optional selector is hidden');
+  assert.equal(projectMcpToolInputSchema(schema(['ad_account_id', 'campaign_id'], {
+    campaign_id: { type: 'string' },
+  }), 'ads_get_ad_entities').ambiguous, true, 'an unknown required selector cannot be withheld');
+  for (const [label, extra] of [
+    ['account-like name', { business_account: { type: 'string' } }],
+    ['nested account', { reporting_purpose: { type: 'object', properties: { ad_account_id: { type: 'string' } } } }],
+  ] as const) {
+    assert.equal(projectMcpToolInputSchema(schema(['ad_account_id'], extra), 'ads_get_ad_entities').ambiguous, true, label);
+  }
   assert.equal(projectMcpToolInputSchema(schema(['ad_account_id'], {
     filtering: { type: 'array', items: {
       type: 'object', properties: { campaign_id: { type: 'string' } },

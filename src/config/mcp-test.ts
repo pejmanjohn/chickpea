@@ -18,8 +18,7 @@ import {
   isMetaAdsHelperTool,
   isMetaAdsWriteTool,
   isReviewedMetaAdsTool,
-  metaAdsHelperRuntimeArgumentNames,
-  metaAdsNonAccountIdArgumentNames,
+  metaAdsSendableArgumentNames,
   metaAdsWriteSchemaContract,
 } from './meta-ads-policy.ts';
 import {
@@ -317,6 +316,12 @@ function toDiscovered(id: string, raw: ToolDefinition): McpConnectionToolInfo {
  * ad-account argument. The full schema is hashed, not persisted. Unsupported
  * root composition, alternate account selectors, optional account fields, and
  * unbounded schemas remain discoverable but cannot become account-scoped tools.
+ *
+ * A reviewed Meta tool is also ambiguous when its schema requires an argument
+ * outside its sendable list: no call could satisfy both Meta and the key check.
+ * A reviewed read or helper ignores any other optional argument unless it
+ * names an account, because the model never sees it and a call never sends it.
+ * A write keeps checking every argument against its schema contract.
  */
 export function projectMcpToolInputSchema(
   inputSchema: unknown,
@@ -326,8 +331,10 @@ export function projectMcpToolInputSchema(
   const accountFields: McpToolInputSchemaProjection['accountFields'] = [];
   let propertyNames: string[] = [];
   let ambiguous = bounded.truncated;
-  const metaAdsHelper = metaAdsToolName !== undefined && isMetaAdsHelperTool(metaAdsToolName);
-  const metaAdsWrite = metaAdsToolName !== undefined && isMetaAdsWriteTool(metaAdsToolName);
+  const metaAds = metaAdsToolName !== undefined && isReviewedMetaAdsTool(metaAdsToolName) ? metaAdsToolName : undefined;
+  const metaAdsHelper = metaAds !== undefined && isMetaAdsHelperTool(metaAds);
+  const metaAdsWrite = metaAds !== undefined && isMetaAdsWriteTool(metaAds);
+  const sendable = metaAds ? metaAdsSendableArgumentNames(metaAds) : [];
   const helperEmptyProperties = metaAdsHelper && isRecord(inputSchema) && inputSchema.properties === undefined;
   if (!isRecord(inputSchema) || inputSchema.type !== 'object' ||
       (!isRecord(inputSchema.properties) && !helperEmptyProperties)) {
@@ -342,16 +349,13 @@ export function projectMcpToolInputSchema(
     const required = Array.isArray(inputSchema.required) && inputSchema.required.every((value) => typeof value === 'string')
       ? new Set(inputSchema.required as string[])
       : new Set<string>();
-    const nonAccountIdArguments = new Set(metaAdsToolName
-      ? metaAdsNonAccountIdArgumentNames(metaAdsToolName)
-      : []);
     if (inputSchema.required !== undefined &&
         (!Array.isArray(inputSchema.required) || !inputSchema.required.every((value) => typeof value === 'string'))) {
       ambiguous = true;
     }
     for (const [name, definition] of Object.entries(properties)) {
       if (metaAdsHelper) {
-        const shape = metaAdsHelperPropertyShape(metaAdsToolName!, name);
+        const shape = metaAdsHelperPropertyShape(metaAds!, name);
         if (shape) {
           if (!shape(definition) || containsNestedAccountSelector(definition)) ambiguous = true;
         } else if (looksLikeAlternateAccountSelector(name) || containsNestedExactAccountSelector(definition)) {
@@ -368,23 +372,20 @@ export function projectMcpToolInputSchema(
           accountFields.push({ name, type: 'string', required: isRequired });
           if (!isRequired) ambiguous = true;
         } else if (!supportedMetaAdsWriteProperty(
-          metaAdsToolName!, name, definition, required.has(name),
+          metaAds!, name, definition, required.has(name),
         )) {
           ambiguous = true;
         }
         continue;
       }
       if (name !== 'ad_account_id' && name !== 'account_id') {
-        if (nonAccountIdArguments.has(name)) {
-          if (name === 'client_conversation_id') {
-            if (!simpleStringOrNullableString(definition)) ambiguous = true;
-          } else if (required.has(name)) {
-            // Entity filters are safe only when callers can omit them. Runtime
-            // projection also removes them from the accepted argument keys.
-            ambiguous = true;
-          }
+        if (!metaAds) {
+          if (looksLikeAlternateTargetSelector(name) || containsNestedAccountSelector(definition)) ambiguous = true;
+        } else if (sendable.includes(name)) {
+          // A sendable argument reaches Meta, so it can't carry another target.
+          if (name === 'client_conversation_id' && !simpleStringOrNullableString(definition)) ambiguous = true;
           if (containsNestedAccountSelector(definition)) ambiguous = true;
-        } else if (looksLikeAlternateTargetSelector(name) || containsNestedAccountSelector(definition)) {
+        } else if (looksLikeAlternateAccountSelector(name) || containsNestedExactAccountSelector(definition)) {
           ambiguous = true;
         }
         continue;
@@ -398,19 +399,18 @@ export function projectMcpToolInputSchema(
       accountFields.push({ name, type: 'string', required: isRequired });
       if (!isRequired) ambiguous = true;
     }
-    if (metaAdsHelper) {
-      const runtime = metaAdsHelperRuntimeArgumentNames(metaAdsToolName!);
-      if ([...required].some((name) => !runtime.includes(name) || !Object.hasOwn(properties, name))) ambiguous = true;
+    if (metaAds && [...required].some((name) => !sendable.includes(name) || !Object.hasOwn(properties, name))) {
+      ambiguous = true;
     }
   }
   if (metaAdsHelper) {
     if (accountFields.length !== 0) ambiguous = true;
   } else if (metaAdsWrite) {
-    const contract = metaAdsWriteSchemaContract(metaAdsToolName!);
+    const contract = metaAdsWriteSchemaContract(metaAds!);
     if (!contract || accountFields.length !== (contract.accountScoped ? 1 : 0) ||
         contract.ownershipFields.some((field) => !propertyNames.includes(field)) ||
         (contract.entityType && !propertyNames.includes('entity_type'))) ambiguous = true;
-  } else if (accountFields.length !== 1) {
+  } else if (accountFields.length !== 1 || (metaAds && !sendable.includes(accountFields[0]!.name))) {
     ambiguous = true;
   }
   return {
