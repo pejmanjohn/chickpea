@@ -183,17 +183,31 @@ const SIGNED_IN_STEPS: RunReviewInput['steps'] = [
     output: 'Open https://www.browserbase.com/devtools-fullscreen/inspector.html?wss=connect.browserbase.com/debug/SYNTHSESS',
   },
   { kind: 'tool', name: 'browser_snapshot', input: '{}' },
+  // A browser tool reports its own failures and refusals as output.
+  {
+    kind: 'tool', name: 'browser_sign_in', input: '{"loginId":"wl_synthetic"}',
+    output: JSON.stringify({ refused: true, reason: 'ops.synthetic@example.com may only check billing.example.com.' }),
+  },
+  { kind: 'tool', name: 'browser_screenshot', input: '{}', output: JSON.stringify({ attached: false, reason: 'too-large', note: 'Invoice INV-2041' }) },
+  { kind: 'tool', name: 'browser_look', input: '{}', output: JSON.stringify({ error: 'Synthetic-Pass-5678 is on the page.' }) },
+  // A cut output no longer parses: it worked, as far as the copy can tell.
+  { kind: 'tool', name: 'browser_snapshot', input: '{}', output: '{"snapshot":"- text \\"Invoice INV-2041' },
   { kind: 'tool', name: 'web_fetch', input: '{"url":"https://status.example.org"}', output: 'All systems normal.', durationMs: 90 },
   { kind: 'text', text: 'Your invoice is due.' },
 ];
 
-test('a copy of a run that grants a website login keeps only each browser step\'s name, outcome and duration', () => {
+test('a copy of a run that grants a website login keeps only each browser step\'s name, whether it failed, and its duration', () => {
   const record = buildRunReviewRecord(input({ steps: SIGNED_IN_STEPS, browserStepsWithheld: true }), runReviewPseudonymizer(KEY));
+  const failed = (name: string) => ({ kind: 'tool', name, input: BROWSER_STEP_OMITTED, error: BROWSER_STEP_OMITTED });
   assert.deepEqual(record.steps, [
     { kind: 'tool', name: 'browser_open', input: BROWSER_STEP_OMITTED, output: BROWSER_STEP_OMITTED, durationMs: 812 },
-    { kind: 'tool', name: 'browser_act', input: BROWSER_STEP_OMITTED, error: BROWSER_STEP_OMITTED, durationMs: 20_000 },
+    { ...failed('browser_act'), durationMs: 20_000 },
     { kind: 'tool', name: 'browser_handoff', input: BROWSER_STEP_OMITTED, output: BROWSER_STEP_OMITTED },
     { kind: 'tool', name: 'browser_snapshot', input: BROWSER_STEP_OMITTED },
+    failed('browser_sign_in'),
+    failed('browser_screenshot'),
+    failed('browser_look'),
+    { kind: 'tool', name: 'browser_snapshot', input: BROWSER_STEP_OMITTED, output: BROWSER_STEP_OMITTED },
     { kind: 'tool', name: 'web_fetch', input: '{"url":"https://status.example.org"}', output: 'All systems normal.', durationMs: 90 },
     { kind: 'text', text: 'Your invoice is due.' },
   ]);
@@ -203,6 +217,14 @@ test('a copy of a run that grants a website login keeps only each browser step\'
 
   const every = buildRunReviewRecord(input({ steps: SIGNED_IN_STEPS, browserStepsWithheld: false }), runReviewPseudonymizer(KEY));
   assert.match(JSON.stringify(every.steps), /Invoice INV-2041 is due/, 'a run that grants no login keeps its browser steps');
+});
+
+test('a saved username that is a word of the marker or a browser tool\'s name leaves a withheld step as it is', () => {
+  const steps: RunReviewInput['steps'] = [{ kind: 'tool', name: 'browser_open', input: '{}', output: '{}' }];
+  const record = buildRunReviewRecord(input({
+    steps, browserStepsWithheld: true, websiteLogins: { hosts: ['billing.example.com'], usernames: ['browser', 'omitted', 'step', 'open'] },
+  }), runReviewPseudonymizer(KEY));
+  assert.deepEqual(record.steps, [{ kind: 'tool', name: 'browser_open', input: BROWSER_STEP_OMITTED, output: BROWSER_STEP_OMITTED }]);
 });
 
 test('a run that grants a website login is captured, asks the host, and its copy withholds the browser steps it streamed', async (t) => {

@@ -109,7 +109,7 @@ export interface RunReviewInput {
   websiteLogins: RunReviewWebsiteLogins;
   /**
    * The run grants a website login: each browser step keeps its tool name,
-   * which of output and error it had, and its duration, and nothing else.
+   * whether it failed, and its duration, and nothing else.
    */
   browserStepsWithheld: boolean;
 }
@@ -273,18 +273,33 @@ const BROWSER_TOOLS: ReadonlySet<string> = new Set(BROWSER_TOOL_NAMES);
 
 /**
  * A browser step of a run that may browse signed in. Its name is one of
- * Chickpea's own tool names, so it is kept as written; the rest could hold a
- * signed-in page, a sign-in link or a typed credential in any form.
+ * Chickpea's own tool names, so it is kept as written and never scrubbed; the
+ * rest could hold a signed-in page, a sign-in link or a typed credential in
+ * any form. A step that failed, as the framework or the tool itself reports
+ * it, keeps an error; one that worked keeps an output.
  */
 function withheldBrowserStep(step: Extract<RunReviewStep, { kind: 'tool' }>): RunReviewStep {
+  const failed = step.error !== undefined || (step.output !== undefined && browserOutputFailed(step.output));
   return {
     kind: 'tool',
     name: step.name,
     input: BROWSER_STEP_OMITTED,
-    ...(step.output === undefined ? {} : { output: BROWSER_STEP_OMITTED }),
-    ...(step.error === undefined ? {} : { error: BROWSER_STEP_OMITTED }),
+    ...(failed ? { error: BROWSER_STEP_OMITTED } : step.output === undefined ? {} : { output: BROWSER_STEP_OMITTED }),
     ...(step.durationMs === undefined ? {} : { durationMs: step.durationMs }),
   };
+}
+
+/** A browser tool returns its own failures and refusals as output: an `error`, `refused: true` or `attached: false` (browser/tools.ts). */
+function browserOutputFailed(output: string): boolean {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    return false;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return false;
+  const result = parsed as { error?: unknown; refused?: unknown; attached?: unknown };
+  return result.error !== undefined || result.refused === true || result.attached === false;
 }
 
 /**
