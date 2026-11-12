@@ -5,7 +5,7 @@
   "classes": {
     "FlueChickpeaCodingWorkerV1Agent": {
       "source": "src/agents/coding-worker.ts",
-      "base": "@flue/runtime 2.3.0",
+      "base": "@flue/runtime 2.3.0, agents 0.20.1",
       "methods": {
         "alarm": {
           "params": [
@@ -112,7 +112,7 @@
     },
     "FlueChickpeaRoutineExecutionV2Agent": {
       "source": "src/agents/routine-execution.ts",
-      "base": "@flue/runtime 2.3.0",
+      "base": "@flue/runtime 2.3.0, agents 0.20.1",
       "methods": {
         "alarm": {
           "params": [
@@ -203,7 +203,7 @@
     },
     "FlueChickpeaRoutineIntentV2Agent": {
       "source": "src/agents/routine-intent.ts",
-      "base": "@flue/runtime 2.3.0",
+      "base": "@flue/runtime 2.3.0, agents 0.20.1",
       "methods": {
         "alarm": {
           "params": [
@@ -284,7 +284,7 @@
     },
     "FlueChickpeaSlackV2Agent": {
       "source": "src/agents/slack-thread.ts",
-      "base": "@flue/runtime 2.3.0",
+      "base": "@flue/runtime 2.3.0, agents 0.20.1",
       "methods": {
         "alarm": {
           "params": [
@@ -404,7 +404,7 @@
     },
     "FlueChickpeaTestTurnV1Agent": {
       "source": "src/agents/test-turn.ts",
-      "base": "@flue/runtime 2.3.0",
+      "base": "@flue/runtime 2.3.0, agents 0.20.1",
       "methods": {
         "alarm": {
           "params": [

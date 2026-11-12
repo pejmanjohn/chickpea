@@ -17,7 +17,7 @@
  * See docs/runbooks/releasing.md#rpc-contract.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -142,7 +142,8 @@ export function formatReport({ base, head, verdict, read, labels, stale }) {
       ...subjects.map(([subject, digest], index) =>
         `    ${JSON.stringify(subject)}: { "to": "${digest}", "reason": "..." }${index < subjects.length - 1 ? ',' : ''}`),
       '  }',
-      'or as a line in a commit message: contract: <subject>: <reason>',
+      'or as lines in a commit message:',
+      ...subjects.map(([subject, digest]) => `  contract: ${subject} ${digest}: ...`),
     );
   }
   if (stale) lines.push(`${SNAPSHOT} does not match the source. Run npm run verify:rpc-contract -- --update and commit it.`);
@@ -186,6 +187,7 @@ export function run(argv, root = ROOT) {
   if (!options.head) {
     if (options.update) {
       const contract = keptReasons(snapshot?.contract, head);
+      mkdirSync(path.join(root, path.dirname(SNAPSHOT)), { recursive: true });
       writeFileSync(path.join(root, SNAPSHOT), snapshotText(head, contract));
       snapshot = { contract };
     } else {

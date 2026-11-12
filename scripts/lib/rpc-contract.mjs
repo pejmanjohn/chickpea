@@ -8,8 +8,8 @@
  *   meet the base build with it.
  * - refused: a call the two builds already make can break, because one
  *   sends, reads or returns what the other no longer has. It passes only
- *   with a `contract:` reason: in the snapshot's `contract` section, pinned
- *   to the subject's head value, or as a commit line.
+ *   with a `contract:` reason, pinned to the subject's head value: in the
+ *   snapshot's `contract` section, or as a commit line.
  *
  * Changed meaning under an unchanged type is not visible here.
  */
@@ -87,6 +87,8 @@ const KINDS = {
   'param-removed': { allowed: () => false, says: ({ name }) => `parameter \`${name}\` removed: an object on the base build still reads it` },
   'param-optional': { allowed: () => false, says: ({ name }) => `parameter \`${name}\` became optional: an object on the base build expects it` },
   'param-required': { allowed: () => false, says: ({ name }) => `parameter \`${name}\` became required: a caller on the base build may leave it out` },
+  'param-renamed': { allowed: () => true, says: ({ from, to }) => `parameter \`${from}\` is now \`${to}\`: arguments go by position, so check it still means the same` },
+  'param-moved': { allowed: () => false, says: ({ from, to }) => `parameter \`${to}\` now takes the place of \`${from}\`: arguments go by position, so the two builds send them in different orders` },
   'field-added': {
     allowed: ({ optional }) => optional,
     says: ({ name, optional, position }) => optional ? `optional field \`${name}\` added`
@@ -245,6 +247,10 @@ function compareMethod(base, head, context) {
     if (!before) { report('param-added', { name: after.name, optional: Boolean(after.optional || after.rest) }, []); continue; }
     if (!after) { report('param-removed', { name: before.name }, []); continue; }
     const label = `(${after.name})`;
+    if (before.name !== after.name) {
+      const moved = base.params.some(({ name }) => name === after.name) || head.params.some(({ name }) => name === before.name);
+      report(moved ? 'param-moved' : 'param-renamed', { from: before.name, to: after.name }, []);
+    }
     if (Boolean(before.optional) !== Boolean(after.optional)) report(after.optional ? 'param-optional' : 'param-required', { name: after.name }, []);
     if (Boolean(before.rest) !== Boolean(after.rest)) report('type-changed', { from: before.rest ? 'rest' : 'single', to: after.rest ? 'rest' : 'single' }, [label]);
     compareNode(before.type, after.type, { ...context, position: 'param' }, [label]);
@@ -302,31 +308,36 @@ function union(left, right) {
   return [...new Set([...left, ...right])].sort();
 }
 
-const COMMIT_REASON = /^contract:\s*(.+?):\s+(\S.*)$/gim;
+const COMMIT_REASON = /^contract:\s*(.+?)\s+([0-9a-f]{12}|removed):\s+(\S.*)$/gim;
 
-/** `contract: <subject>: <reason>` lines in commit messages, by subject. */
+/**
+ * `contract: <subject> <digest>: <reason>` lines in commit messages, each as
+ * a one-subject section like the snapshot's. The digest pins the reason to
+ * the subject's head value, so it does not cover a later change to it.
+ */
 export function commitReasons(messages) {
-  const reasons = new Map();
+  const sections = [];
   for (const message of messages) {
-    for (const [, subject, reason] of message.matchAll(COMMIT_REASON)) reasons.set(subject.trim(), reason.trim());
+    for (const [, subject, to, reason] of message.matchAll(COMMIT_REASON)) {
+      sections.push({ [subject.trim()]: { to: to.toLowerCase(), reason: reason.trim() } });
+    }
   }
-  return reasons;
+  return sections;
 }
 
 /**
  * Splits changes into noted, accepted and refused. A refused change is
- * accepted by a snapshot reason pinned to the head value of its subject, or
- * by a commit reason naming its subject.
+ * accepted by a reason, from the snapshot or a commit, that names its
+ * subject and is pinned to the subject's head value.
  */
-export function judge(changes, head, { snapshotReasons = [], commitReasons: fromCommits = new Map() } = {}) {
+export function judge(changes, head, { snapshotReasons = [], commitReasons: fromCommits = [] } = {}) {
   const noted = [];
   const accepted = [];
   const refused = [];
   for (const change of changes) {
     if (change.allowed) { noted.push(change); continue; }
     const digest = subjectDigest(subjectValue(head, change.subject));
-    const pinned = snapshotReasons.find((reasons) => reasons[change.subject]?.to === digest)?.[change.subject];
-    const reason = pinned?.reason ?? fromCommits.get(change.subject);
+    const { reason } = [...snapshotReasons, ...fromCommits].find((reasons) => reasons[change.subject]?.to === digest)?.[change.subject] ?? {};
     if (reason) accepted.push({ ...change, reason });
     else refused.push({ ...change, digest });
   }

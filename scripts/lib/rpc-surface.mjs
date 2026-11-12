@@ -108,7 +108,8 @@ export function readSurface(root, { payloads: payloadTypes = PAYLOADS } = {}) {
       if (found || (node !== fn && ts.isFunctionLike(node))) return;
       if (ts.isReturnStatement(node)) {
         const value = unwrapExpression(node.expression);
-        if (value && ts.isClassExpression(value)) { found = value; return; }
+        const returned = value && ts.isIdentifier(value) ? declarationOf(value) : value;
+        if (returned && ts.isClassLike(returned)) { found = returned; return; }
       }
       ts.forEachChild(node, visit);
     };
@@ -120,29 +121,33 @@ export function readSurface(root, { payloads: payloadTypes = PAYLOADS } = {}) {
     classNode.heritageClauses?.find((heritage) => heritage.token === ts.SyntaxKind.ExtendsKeyword)?.types[0]?.expression;
 
   /**
-   * The class an extends expression names, while it is this program's own
-   * source: a class, a mixin call that returns a class expression, or a
-   * variable holding either. Undefined at an outside base or a parameter.
+   * A class and the classes it extends in this program's own source, nearest
+   * first: a class, a mixin call, or a variable holding either. A mixin's
+   * class extends its parameter, so its chain goes on in the call's
+   * arguments. The chain ends at an outside base or a parameter. A mixin
+   * whose class cannot be read fails the run, so its methods are not
+   * silently left out.
    */
-  function classFromExpression(expression) {
+  function classChain(expression) {
     expression = unwrapExpression(expression);
-    if (!expression) return undefined;
-    if (ts.isClassExpression(expression)) return expression;
+    if (!expression) return [];
+    if (ts.isClassLike(expression)) return [expression, ...classChain(extendsExpression(expression))];
     const callee = ts.isCallExpression(expression) ? unwrapExpression(expression.expression) : expression;
     const declaration = declarationOf(callee);
-    if (!declaration || !isOwnSource(declaration.getSourceFile())) return undefined;
-    if (ts.isCallExpression(expression)) return returnedClass(declaration);
-    if (ts.isClassLike(declaration)) return declaration;
-    if (ts.isVariableDeclaration(declaration)) return classFromExpression(declaration.initializer);
-    return undefined;
+    if (!declaration || !isOwnSource(declaration.getSourceFile())) return [];
+    if (ts.isCallExpression(expression)) {
+      const returned = returnedClass(declaration);
+      if (!returned) throw new Error(`The RPC contract cannot read the class that ${callee.getText()}() returns (${relative(declaration.getSourceFile().fileName)}); return a class from it directly`);
+      return [...classChain(returned), ...expression.arguments.flatMap(classChain)];
+    }
+    if (ts.isClassLike(declaration)) return classChain(declaration);
+    if (ts.isVariableDeclaration(declaration)) return classChain(declaration.initializer);
+    return [];
   }
 
-  const parentClass = (classNode) => classFromExpression(extendsExpression(classNode));
-
   /** The outside package a class chain ends at, as `package version`; undefined at DurableObject itself. */
-  function outsideBase(classNode) {
-    let node = classNode;
-    for (let parent = parentClass(node); parent; parent = parentClass(node)) node = parent;
+  function outsideBase(chain) {
+    const node = chain.at(-1);
     const expression = unwrapExpression(extendsExpression(node));
     if (!expression) return undefined;
     const file = declarationOf(ts.isCallExpression(expression) ? unwrapExpression(expression.expression) : expression)?.getSourceFile();
@@ -201,7 +206,8 @@ export function readSurface(root, { payloads: payloadTypes = PAYLOADS } = {}) {
     return returnedClass(declarationOf(initializer));
   }
 
-  const flueVersion = versionOf('@flue/runtime');
+  // Flue generates each Agent class over the Agents SDK's base, which package.json pins on its own.
+  const agentBase = ['@flue/runtime', 'agents'].map((pkg) => `${pkg} ${versionOf(pkg) ?? 'unknown'}`).join(', ');
   const targets = [];
   const unknown = [];
   for (const name of deployedClasses(root)) {
@@ -211,7 +217,7 @@ export function readSurface(root, { payloads: payloadTypes = PAYLOADS } = {}) {
     if (agent) {
       const node = agent.extension ? extensionClass(agent.extension) : undefined;
       if (agent.extension && !node) unknown.push(`${name}: its cloudflare export names no class this check can read`);
-      targets.push({ name, node, file: agent.file, base: `@flue/runtime ${flueVersion ?? 'unknown'}` });
+      targets.push({ name, node, file: agent.file, base: agentBase });
       continue;
     }
     unknown.push(`${name}: wrangler.jsonc deploys it, but no exported class or Flue agent in src declares it`);
@@ -391,8 +397,7 @@ export function readSurface(root, { payloads: payloadTypes = PAYLOADS } = {}) {
   const classRanges = [];
   for (const target of targets) {
     const methods = {};
-    const chain = [];
-    for (let node = target.node; node; node = parentClass(node)) chain.push(node);
+    const chain = classChain(target.node);
     for (const node of chain) {
       classRanges.push({ node, file: node.getSourceFile(), pos: node.pos, end: node.end });
       for (const member of node.members) {
@@ -403,7 +408,7 @@ export function readSurface(root, { payloads: payloadTypes = PAYLOADS } = {}) {
       }
     }
     const entry = { source: relative(target.file.fileName) };
-    const base = target.base ?? (target.node ? outsideBase(target.node) : undefined);
+    const base = target.base ?? (chain.length ? outsideBase(chain) : undefined);
     if (base) entry.base = base;
     entry.methods = sortKeys(methods);
     classes[target.name] = entry;
