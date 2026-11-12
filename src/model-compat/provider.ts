@@ -35,6 +35,7 @@ import {
 } from '../model-catalog/provider-alias.ts';
 import type { CatalogProviderId, ModelAuthLane } from '../model-catalog/types.ts';
 import { createChickpeaPiProvider } from '../config/pi-provider.ts';
+import { observingProviderStreamErrors } from './provider-stream-errors.ts';
 import {
   attachmentNativePdfRequest,
   recordAttachmentNativePdfRequiredFailure,
@@ -217,16 +218,18 @@ export function createModelCompatibilityStream(
   ): AssistantMessageEventStream => {
     if (route.provider === 'openai') {
       const model = adapterModel as Model<'openai-responses'>;
+      const fetch = observingProviderStreamErrors(selectedOptions?.fetch);
+      const openAiOptions = fetch ? { ...selectedOptions, fetch } : selectedOptions;
       return simple
         ? (adapters.openAiStreamSimple ?? streamSimpleOpenAi)(
           model,
           normalizeContext(mappedContext),
-          selectedOptions as SimpleStreamOptions | undefined,
+          openAiOptions as SimpleStreamOptions | undefined,
         )
         : (adapters.openAiStream ?? streamOpenAi)(
           model,
           normalizeContext(mappedContext),
-          selectedOptions as OpenAIResponsesOptions | undefined,
+          openAiOptions as OpenAIResponsesOptions | undefined,
         );
     }
     const model = adapterModel as Model<'anthropic-messages'>;

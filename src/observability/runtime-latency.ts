@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 
-import type { FlueObservation } from '@flue/runtime';
+import type { FlueObservation, ModelRequestInput } from '@flue/runtime';
 
 import type { AnswerReleaseShadowRecord } from '../slack/answer-release.ts';
 import type { HostReleaseRecord } from '../slack/host-release-relay.ts';
@@ -97,6 +97,7 @@ const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
   scope: TOKEN,
   slowestMethod: TOKEN,
   purpose: TOKEN,
+  largestToolResultTool: /^[A-Za-z][A-Za-z0-9_-]{0,127}$/,
 };
 
 /**
@@ -1115,15 +1116,44 @@ const FIRST_TOKEN_EVENTS: ReadonlySet<FlueObservation['type']> = new Set([
   'text_delta', 'thinking_start', 'thinking_delta', 'toolcall_delta',
 ]);
 
+interface ModelRequestSize {
+  /** UTF-8 bytes of the model input as JSON, as Flue assembled it: system prompt, messages and tools. */
+  requestBytes: number;
+  toolResults: number;
+  /** UTF-8 bytes of the largest tool result's text, and an image's base64 characters. */
+  largestToolResultBytes?: number;
+  largestToolResultTool?: string;
+}
+
+const utf8 = new TextEncoder();
+
+/** Sizes only: the input is measured, never kept. */
+function modelRequestSize(input: ModelRequestInput): ModelRequestSize {
+  let toolResults = 0;
+  let largest: { bytes: number; tool: string } | undefined;
+  for (const message of input.messages) {
+    if (message.role !== 'toolResult') continue;
+    toolResults += 1;
+    const bytes = message.content.reduce((sum, part) =>
+      sum + (part.type === 'text' ? utf8.encode(part.text).byteLength : part.data.length), 0);
+    if (!largest || bytes > largest.bytes) largest = { bytes, tool: message.toolName };
+  }
+  return {
+    requestBytes: utf8.encode(JSON.stringify(input)).byteLength,
+    toolResults,
+    ...(largest ? { largestToolResultBytes: largest.bytes, largestToolResultTool: largest.tool } : {}),
+  };
+}
+
 /**
  * Times each model request from Flue's `turn_request` to its first streamed
  * token (text, thinking, or a tool call's arguments), and logs the model that
  * served it, Flue's duration, its token counts and its tool calls when its
- * `turn` ends.
+ * `turn` ends, with the request's size measured at `turn_request`.
  * `inputTokens` excludes the cached input that `cachedInputTokens` counts.
  */
 export class ModelStepMarks {
-  private readonly open = new Map<string, { startedAt: number; firstTokenAt?: number }>();
+  private readonly open = new Map<string, { startedAt: number; firstTokenAt?: number; size?: ModelRequestSize }>();
 
   constructor(
     private readonly now: () => number = Date.now,
@@ -1137,7 +1167,14 @@ export class ModelStepMarks {
       if (turnId === undefined) return;
       if (event.type === 'turn_request') {
         this.open.delete(turnId);
-        this.open.set(turnId, { startedAt: this.now() });
+        const startedAt = this.now();
+        let size: ModelRequestSize | undefined;
+        try {
+          size = modelRequestSize(event.request.input);
+        } catch {
+          // A request that cannot be measured is still timed.
+        }
+        this.open.set(turnId, { startedAt, ...(size ? { size } : {}) });
         if (this.open.size > MODEL_STEP_OPEN_LIMIT) this.open.delete(this.open.keys().next().value!);
         return;
       }
@@ -1169,6 +1206,7 @@ export class ModelStepMarks {
         cacheWriteTokens: usage?.cacheWrite,
         outputTokens: usage?.output,
         toolCalls: output?.content.filter((part) => part.type === 'toolCall').length,
+        ...open?.size,
       }, this.sink);
     } catch {
       // Observability is best effort and never changes the model request.
