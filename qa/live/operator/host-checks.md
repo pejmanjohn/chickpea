@@ -149,6 +149,12 @@ its caller exits, so a killed caller leaves no pass running on. The stop
 reaches only that command's own group, never another owner's processes.
 SIGINT, SIGTERM and SIGHUP sent to the wrapper also reach the group.
 
+Inside a test pass, `run-tests.mjs` stops a single hung test file first: a
+file that starts and finishes no test for three minutes gets a `[run-tests]
+HUNG:` line with its name, the test it was running and its processes, which
+are killed so the file fails and reruns alone. A stall stop on a test pass
+therefore means the runner itself stopped, not one test file.
+
 A reserved command is watched only when `--stall-ms MS` or `CHICKPEA_STALL_MS`
 sets a window, because builds and lane deploys run under the reservation and
 some print nothing for long stretches. Without one it runs as before, in the
