@@ -23,6 +23,7 @@ import {
 } from '../src/slack/installation-execution.ts';
 import { assembleRetainedSlackContext } from '../src/slack/public-context.ts';
 import { REQUESTED_SLACK_BOT_SCOPES } from '../src/slack/scopes.ts';
+import { SlackTransportError } from '../src/slack/transport/types.ts';
 import { hydrateTurnSlackContext } from '../src/slack/turn-context-reads.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { assembleSlackPrompt } from '../src/slack/web-client-context.ts';
@@ -370,6 +371,19 @@ test('when Slack cannot open the DM, nothing is posted or saved, and it is retry
     },
     { error: slackRejects('token_revoked'), reasonCode: 'token_revoked', retryable: false, message: RECONNECT },
     { error: slackRejects('user_not_found'), reasonCode: 'user_not_found', retryable: false, message: DM_REFUSED },
+    // The shared gateway's own failures: one it marks retryable can pass, and a refusal it relays from Slack stays.
+    {
+      error: new SlackTransportError('conversations.open', 'gateway_unreachable', { retryable: true }),
+      reasonCode: 'gateway_unreachable', retryable: true, message: TRY_AGAIN,
+    },
+    {
+      error: new SlackTransportError('conversations.open', 'gateway_rate_limited', { retryable: true, retryAfterMs: 1_000 }),
+      reasonCode: 'gateway_rate_limited', retryable: true, message: TRY_AGAIN,
+    },
+    {
+      error: new SlackTransportError('conversations.open', 'user_not_found', { retryable: false }),
+      reasonCode: 'user_not_found', retryable: false, message: DM_REFUSED,
+    },
   ];
   for (const [index, expected] of cases.entries()) {
     const warnings = captureWarnings(t);

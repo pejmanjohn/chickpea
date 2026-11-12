@@ -107,6 +107,7 @@ import type { GatewayAttachmentClient } from '../slack/gateway/client.ts';
 import { isTransientSlackApiError } from '../slack/credentials.ts';
 import { slackPlatformErrorCode } from '../slack/errors.ts';
 import { SlackInstallationUnavailableError } from '../slack/installation-execution.ts';
+import { SlackTransportError } from '../slack/transport/types.ts';
 import { isValidRepositoryFullName } from '../config/github-app.ts';
 import { newAgentCredentialIncarnation } from '../config/connection-credential-binding.ts';
 import {
@@ -10590,7 +10591,9 @@ function scheduleDmFailure(error: unknown): { reasonCode: string; retryable: boo
   }
   const code = slackPlatformErrorCode(error);
   if (!code) return { reasonCode: 'unknown', retryable: true, connectionBroken: false };
-  const retryable = isTransientSlackApiError(code);
+  // The shared gateway says itself whether its failure can pass: unreachable,
+  // rate-limited and 5xx carry codes of its own that Slack's list does not name.
+  const retryable = isTransientSlackApiError(code) || (error instanceof SlackTransportError && error.retryable);
   return { reasonCode: code, retryable, connectionBroken: !retryable && SLACK_CONNECTION_BROKEN.has(code) };
 }
 
