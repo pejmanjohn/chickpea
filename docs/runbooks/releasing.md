@@ -72,7 +72,7 @@ An addition passes, but the other build cannot use it yet:
 - Nothing covers runner, gateway, Sandbox or Agent calls. **A new runner or
   Agent method lands one release before its first caller.** A new store method
   does the same, unless its caller uses `withStoreFallback`. The report lists
-  the callers it finds in the build.
+  the calls in the build that may reach a new method.
 - A new union member in a return reaches an old caller once new code produces
   it. Check that the old code tolerates a value it does not know.
 

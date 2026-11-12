@@ -112,13 +112,13 @@ function describeAddition(change, head, read) {
   if (change.kind !== 'method-added') return change.says;
   const [className, method] = change.subject.split('.');
   const callers = read?.callersOf(method) ?? [];
-  const where = callers.length ? ` Callers in this build: ${callers.slice(0, 3).join(', ')}${callers.length > 3 ? ', ...' : ''}.` : '';
+  const where = callers.length ? ` Calls that may reach it in this build: ${callers.slice(0, 3).join(', ')}${callers.length > 3 ? ', ...' : ''}.` : '';
   if (className === STATE_STORE_CLASS && head.classes[className].methods[method].fallback) {
     return `${change.says}, behind withStoreFallback.${where}`;
   }
   const guard = className === STATE_STORE_CLASS ? 'No withStoreFallback' : 'No fallback covers this class';
   return `${change.says}. ${guard}: a caller rejects against an object still on the base build, `
-    + `so its first caller lands a release later.${where || ' No caller in this build.'}`;
+    + `so its first caller lands a release later.${where || ' No call reaches it in this build.'}`;
 }
 
 export function formatReport({ base, head, verdict, read, labels, stale }) {
