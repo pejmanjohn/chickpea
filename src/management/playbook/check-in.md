@@ -16,7 +16,7 @@ Give the person a short report on their Agents: what needs attention, how the te
 
 ## 2. Use
 
-For the Agent the person asked about, or the ones they care about most, call `list_agent_runs` with its `agentId`. On the first page, `summary` covers the window, the last 7 days unless you pass `since` (at most 90 days back): how many runs, how many people asked, how many failed or stopped, and when it last ran. You see your own direct messages with the Agent and its runs in public Channels. Other people's direct messages, group DMs and private Channels are only counted. Schedule runs aren't listed yet: `list_schedules` shows each schedule's `lastRun`.
+For the Agent the person asked about, or the ones they care about most, call `list_agent_runs` with its `agentId`. On the first page, `summary` covers the window, the last 7 days unless you pass `since` (at most 90 days back): how many runs, how many people asked, how many failed or stopped, and when it last ran. You see your own direct messages with the Agent and its runs in public Channels. Other people's direct messages, group DMs and private Channels are never shown. Someone who can change the Agent gets a count of them. Schedule runs aren't listed yet: `list_schedules` shows each schedule's `lastRun`.
 
 - **No runs, or very few:** the team may not know it's there. Offer to roll it out (`get_guide` topic `roll-out`).
 - **Failed or stopped runs, or an answer the person says was wrong:** call `get_agent_run` with its `runId` for the question and the Agent's reply.

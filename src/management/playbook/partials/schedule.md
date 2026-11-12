@@ -13,6 +13,6 @@ Save it only after the person says yes. Call `save_schedule` with:
 
 To change a schedule, send its `scheduleId` and `version` from `list_schedules` with the full new settings. `{ "keep": true }` as `when` keeps its timing. Send `requiredConnections` again when the task changes. For a direct-message schedule (`where.kind` `dm`), leave `channelId` out.
 
-- **Pause or turn off:** `pause_schedule` with `scheduleId` and `version`. Add `turnOff` `true` to turn it off. `resume_schedule` starts it again.
+- **Pause or turn off:** `pause_schedule` with `scheduleId` and `version`. Add `turnOff` `true` to turn it off. `resume_schedule` with `scheduleId` and its `version` from `list_schedules` starts it again.
 - **Run it now:** `run_schedule_now` with `scheduleId` posts right away and can't be taken back, so ask first.
 - **Delete:** `delete_schedule` with `scheduleId` and `version`. Chickpea asks first (below).
