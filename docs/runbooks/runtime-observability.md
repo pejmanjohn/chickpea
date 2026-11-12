@@ -296,9 +296,12 @@ Ignore `[chickpea:activity]` refresh, queue, and rate events when hunting a
 stall; they fire on every poll.
 
 `memory_metric {"event":"delivery_lease","outcome":"rejected"}` means the turn
-lost access before it delivered, and one `chickpea.turn.agent_failure` line
-follows (see [Memory lease failures](#memory-lease-failures)). A change to
-memory never causes it. `outcome: "deferred"` means the check could not decide
+or routine run lost access before it delivered. For a Slack turn, one
+`chickpea.turn.agent_failure` line follows (see
+[Memory lease failures](#memory-lease-failures)), unless a coding turn posts
+its recovered notice instead. A routine run logs no such line: it fails with
+"Channel access changed while the routine was running." A change to memory
+never causes it. `outcome: "deferred"` means the check could not decide
 because Slack was rate-limited or the state store was being replaced; the
 attempt retries, and Slack still shows "Thinking…". Record the thread, its
 route owner, and the triggering message rather than resending the request.

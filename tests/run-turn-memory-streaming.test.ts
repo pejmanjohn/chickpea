@@ -382,6 +382,24 @@ test('an Agent disabled mid-turn fails the lease: the failure notice replaces th
   }
 });
 
+// Defect caught: with access lost, the model's draft posted in place of the
+// coding turn's recovered notice.
+test('an Agent disabled mid-turn posts a recovered notice in place of the draft, never the draft', async () => {
+  const turn = dmTurn('1790200009.000100');
+  const h = await harness(turn, MEMORY);
+  const notice = 'Pull request #12 is already open.';
+  try {
+    await h.run(async () => {
+      const live = await h.config.getAgent(assignment.agentId);
+      await h.config.updateAgent(assignment.agentId, { enabled: false }, live.revision);
+      return answerResult(ANSWER);
+    }, { beforeDelivery: async () => notice });
+    const slack = JSON.stringify(h.slack);
+    assert.ok(slack.includes(notice), `the recovered notice posts: ${slack}`);
+    assert.equal(slack.includes('Your stand-up is at 9:30'), false, 'the draft never posts');
+  } finally { h.close(); }
+});
+
 /** The turn's own write, as the `update_agent_memory` tool applies it. */
 async function writeOwnMemory(
   f: ManagementAdapterFixture,

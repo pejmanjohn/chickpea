@@ -359,6 +359,12 @@ test('a stale Slack group mapping from an interrupted create repairs into the Ag
     assert.equal(await prepared.validateLease(), true, 'a forget never holds back the reply');
     await getMemoryStateStore().putAgentMemory({ agentId: agent.id, expectedRevision: 2, body: 'Second write.' });
     assert.equal(await prepared.validateLease(), true, "another writer's save never holds back the reply");
+    // Another Agent's active grant in the same Channel is not this Agent's.
+    await config.putAgentChannelGrant({
+      workspaceId: turn.workspaceId, channelId: turn.channelId, agentId: 'agent_default',
+      status: 'active', createdByMembershipId: 'membership_owner',
+      channelLabel: 'support', channelIsPrivate: false,
+    });
     await config.putAgentChannelGrant({
       workspaceId: turn.workspaceId, channelId: turn.channelId, agentId: agent.id,
       status: 'needs_attention', createdByMembershipId: 'membership_owner',
@@ -625,6 +631,8 @@ test("a Channel lease asks Slack beside its store reads, and the store's answer 
     };
     const slackCalls: string[] = [];
     let rateLimited = false;
+    let botInChannel = true;
+    let members = [turn.userId, 'U_CHICKPEA'];
     const client = {
       auth: { test: async () => ({ user_id: 'U_CHICKPEA' }) },
       conversations: {
@@ -633,11 +641,11 @@ test("a Channel lease asks Slack beside its store reads, and the store's answer 
           if (rateLimited) {
             throw new SlackTransportError('conversations.info', 'gateway_rate_limited', { retryable: true });
           }
-          return { channel: { id: turn.channelId, context_team_id: turn.workspaceId, is_member: true } };
+          return { channel: { id: turn.channelId, context_team_id: turn.workspaceId, is_member: botInChannel } };
         },
         members: async () => {
           slackCalls.push('conversations.members');
-          return { members: [turn.userId, 'U_CHICKPEA'] };
+          return { members };
         },
       },
       users: {
@@ -678,6 +686,13 @@ test("a Channel lease asks Slack beside its store reads, and the store's answer 
 
     await getMemoryStateStore().putAgentMemory({ agentId: agent.id, expectedRevision: 0, body: 'Changed mid-run.' });
     assert.equal(await prepared.validateLease(), true, 'a changed memory never ends the lease');
+    members = [turn.userId];
+    assert.equal(await prepared.validateLease(), false, 'the bot missing from the member list ends the lease');
+    members = [turn.userId, 'U_CHICKPEA'];
+    botInChannel = false;
+    assert.equal(await prepared.validateLease(), false, 'Slack no longer showing the bot in the Channel ends the lease');
+    botInChannel = true;
+    assert.equal(await prepared.validateLease(), true);
     const live = await config.getAgent(agent.id);
     await config.updateAgent(agent.id, { enabled: false }, live.revision);
     rateLimited = true;
