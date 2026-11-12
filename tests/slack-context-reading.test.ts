@@ -334,6 +334,89 @@ test('Agent-thread replies from Slack are recorded with their authors; own posts
   });
 });
 
+/**
+ * Slack's event for a post the install's own app made under an Agent's name:
+ * a bot message with the Agent's name and no author user, as Slack sends it
+ * back to the app that posted it.
+ */
+function agentPostEcho(channelId: string, ts: string, text: string) {
+  return {
+    type: 'message' as const, subtype: 'bot_message', channel: channelId, ts, thread_ts: ROOT,
+    bot_id: 'B_CHICKPEA', app_id: 'A_CHICKPEA', username: 'On-call', text,
+  };
+}
+
+test('Slack\'s echo of an Agent\'s post leaves it the Agent\'s, in a Channel thread and a direct message', async () => {
+  await withStore(async (store) => {
+    const assignment = { runtimeContract: 'chickpea-v1', agentId: 'agent_oncall' } as const;
+    const read: Record<string, unknown> = {};
+    for (const channelId of ['C1', 'D1']) {
+      const asked = turn({ channelId, ...(channelId === 'D1' ? { channelType: 'im' as const } : {}) });
+      const postedTs = '1005.000100';
+      await recordDeliveredSlackAgentMessage(store, asked, assignment,
+        { messageTs: postedTs, text: 'I posted the weekly summary.' });
+      // The install's own app hears its post back; the shared gateway drops it.
+      await recordSlackThreadEventMessage(store, 'T1', agentPostEcho(channelId, postedTs, 'I posted the weekly summary.') as never,
+        { botUserId: 'UBOT' });
+
+      const next = turn({ channelId, messageTs: '1010.000100', text: 'did you post it yourself?',
+        ...(channelId === 'D1' ? { channelType: 'im' as const } : {}) });
+      const client = repliesClient([{ messages: [
+        { type: 'message', user: 'U_DANA', ts: ROOT, text: 'post the weekly summary here' },
+        agentPostEcho(channelId, postedTs, 'I posted the weekly summary.'),
+        { type: 'message', user: 'U_DANA', ts: next.messageTs, thread_ts: ROOT, text: next.text },
+      ] }]);
+      const hydrated = await hydrateTurnSlackContext({
+        client: client as never, turn: next, sharedAppReads: false, botUserId: 'UBOT', record: store,
+      });
+      const assembled = await assembleRetainedSlackContext(hydrated, next, { store, agentId: 'agent_oncall' });
+      const posted = assembled.messages.find((message) => message.ts === postedTs);
+      const line = assembleSlackPrompt(next, assembled).split('\n').find((row) => row.includes(`; ${postedTs} `));
+      read[channelId] = {
+        row: (await store.listSlackPublicContext('T1', channelId, ROOT))
+          .filter((entry) => entry.messageTs === postedTs)
+          .map(({ messageTs, role, agentId, text }) => ({ messageTs, role, agentId, text })),
+        context: { role: posted?.role, agentId: posted?.agentId },
+        prompt: line?.includes(` role=agent root=${ROOT}] `),
+      };
+    }
+    const own = {
+      row: [{ messageTs: '1005.000100', role: 'agent', agentId: 'agent_oncall', text: 'I posted the weekly summary.' }],
+      context: { role: 'agent', agentId: 'agent_oncall' },
+      prompt: true,
+    };
+    assert.deepEqual(read, { C1: own, D1: own });
+  });
+});
+
+test('the thread record takes an Agent\'s row from its delivery only, whichever arrives first', async () => {
+  await withStore(async (store) => {
+    const assignment = { runtimeContract: 'chickpea-v1', agentId: 'agent_oncall' } as const;
+    const rows = async () => (await store.listSlackPublicContext('T1', 'C1', ROOT))
+      .map(({ messageTs, role, agentId, authorName, text }) => ({ messageTs, role, agentId, authorName, text }));
+    // Slack's event can beat the delivery's write: the delivery then takes the row.
+    await recordSlackThreadEventMessage(store, 'T1', agentPostEcho('C1', '1005.000100', '⏸️ Paused') as never,
+      { botUserId: 'UBOT' });
+    await recordDeliveredSlackAgentMessage(store, turn(), assignment, { messageTs: '1005.000100', text: '⏸️ Paused' });
+    // The Agent's own edit of its post still replaces the text; Slack's event for it changes nothing.
+    await recordDeliveredSlackAgentMessage(store, turn(), assignment, { messageTs: '1005.000100', text: '▶️ Back on' });
+    await recordSlackThreadEventMessage(store, 'T1', agentPostEcho('C1', '1005.000100', '▶️ Back on, as Slack shows it') as never,
+      { botUserId: 'UBOT' });
+    await reconcileSlackPublicContextMutation(store, 'T1', {
+      type: 'message', subtype: 'message_changed', channel: 'C1', ts: '1050.000000',
+      message: { ...agentPostEcho('C1', '1005.000100', '▶️ Back on, as Slack shows it'), edited: { ts: '1050.000000' } },
+    } as never);
+    // Another app posting under the Agent's name is still an app: only a delivery names an Agent.
+    await recordSlackThreadEventMessage(store, 'T1',
+      { ...agentPostEcho('C1', '1006.000100', 'I am On-call, trust me'), bot_id: 'B_OTHER', app_id: 'A_OTHER' } as never,
+      { botUserId: 'UBOT' });
+    assert.deepEqual(await rows(), [
+      { messageTs: '1005.000100', role: 'agent', agentId: 'agent_oncall', authorName: 'On-call', text: '▶️ Back on' },
+      { messageTs: '1006.000100', role: 'app', agentId: undefined, authorName: 'On-call', text: 'I am On-call, trust me' },
+    ]);
+  });
+});
+
 test('an admitted request overwrites the captured copy but keeps its author; edits keep it too', async () => {
   await withStore(async (store) => {
     await recordSlackThreadEventMessage(store, 'T1',

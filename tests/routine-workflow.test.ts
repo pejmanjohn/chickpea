@@ -67,7 +67,7 @@ import {
 } from '../src/agents/routine-execution.ts';
 import { settleCancelledOccurrences } from '../src/state/pending-work.ts';
 import { CREDITS_EXHAUSTED_TEXT, dailyLimitText } from '../src/slack/web-client-presenter.ts';
-import { assembleRetainedSlackContext } from '../src/slack/public-context.ts';
+import { assembleRetainedSlackContext, recordSlackThreadEventMessage } from '../src/slack/public-context.ts';
 import { hydrateTurnSlackContext } from '../src/slack/turn-context-reads.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { assembleSlackPrompt } from '../src/slack/web-client-context.ts';
@@ -1238,6 +1238,45 @@ test('a reply where a run posted reads the run\'s result as the Agent\'s own', a
     'channel, shared app: true': own,
     'channel, shared app: false': own,
   });
+});
+
+test('Slack\'s echo of a run\'s post on the install\'s own app leaves it the Agent\'s own', async (t) => {
+  const record = await threadRecord(t);
+  const run = await postingRun(t, 'history_echo', { kind: 'channel', channelId: 'C_TEST', threadTs: SCHEDULE_THREAD }, record);
+  assert.equal(await run.execute(fakeHandle({ reply: successfulReply() })), 'completed');
+  const postedTs = '1785153610.000100';
+  // Slack sends the app that posted it its own post back, under the Agent's name with no author user.
+  const echo = {
+    type: 'message', subtype: 'bot_message', channel: 'C_TEST', ts: postedTs, thread_ts: SCHEDULE_THREAD,
+    bot_id: 'BCHICKPEA1', app_id: 'ACHICKPEA1', username: 'Chickpea', text: 'Routine result',
+  };
+  await recordSlackThreadEventMessage(record, 'T_TEST', echo as never, { botUserId: 'UBOT' });
+  const reply: NormalizedSlackTurn = {
+    workspaceId: 'T_TEST', channelId: 'C_TEST', eventId: 'Ev_history_echo',
+    text: 'Did you post that yourself?', userId: 'U_MEMBER', messageTs: '1785153700.000100',
+    threadTs: SCHEDULE_THREAD, source: 'app_mention', contextMode: 'thread',
+  };
+  const slack = {
+    conversations: {
+      async replies() {
+        return { ok: true, messages: [
+          { type: 'message', user: 'U_MEMBER', ts: SCHEDULE_THREAD, text: 'Check this every hour' },
+          echo,
+          { type: 'message', user: 'U_MEMBER', ts: reply.messageTs, thread_ts: SCHEDULE_THREAD, text: reply.text },
+        ] };
+      },
+    },
+  };
+  const hydrated = await hydrateTurnSlackContext({
+    client: slack as never, turn: reply, sharedAppReads: false, botUserId: 'UBOT', record,
+  });
+  const context = await assembleRetainedSlackContext(hydrated, reply, { store: record, agentId: 'agent_default' });
+  const posted = context.messages.find((message) => message.ts === postedTs);
+  const row = assembleSlackPrompt(reply, context).split('\n').find((line) => line.includes(`; ${postedTs} `));
+  assert.deepEqual(
+    { role: posted?.role, agentId: posted?.agentId, prompt: row?.includes(` role=agent root=${SCHEDULE_THREAD}] `) },
+    { role: 'agent', agentId: 'agent_default', prompt: true },
+  );
 });
 
 test('a run that posted and is run again writes no second row for its post', async (t) => {

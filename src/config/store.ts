@@ -1849,6 +1849,10 @@ export class ConfigStoreLogic {
     const row = validatedSlackPublicContextRow(input);
     if (input.agentId) this.getAgent(input.agentId);
     const now = Date.now();
+    // Only a write that names an Agent replaces an Agent's row. Slack sends an
+    // install's own app each post it made under an Agent's name back as a bot
+    // message with no author user, which reads as an app's; that copy must not
+    // relabel the message. The Agent's own edits come through the delivery path.
     this.db.run(
       `INSERT INTO config_slack_public_context (
         workspace_id, channel_id, root_ts, message_ts, role, text, agent_id, content_version_ts,
@@ -1867,9 +1871,10 @@ export class ConfigStoreLogic {
         file_refs_json = COALESCE(excluded.file_refs_json, config_slack_public_context.file_refs_json),
         gap_before_ts = COALESCE(config_slack_public_context.gap_before_ts, excluded.gap_before_ts),
         updated_at = excluded.updated_at
-      WHERE config_slack_public_context.content_version_ts IS NULL OR
-        (excluded.content_version_ts IS NOT NULL AND
-         CAST(excluded.content_version_ts AS REAL) >= CAST(config_slack_public_context.content_version_ts AS REAL))`,
+      WHERE (config_slack_public_context.role <> 'agent' OR excluded.role = 'agent') AND
+        (config_slack_public_context.content_version_ts IS NULL OR
+         (excluded.content_version_ts IS NOT NULL AND
+          CAST(excluded.content_version_ts AS REAL) >= CAST(config_slack_public_context.content_version_ts AS REAL)))`,
       ...slackPublicContextValues(input, row),
       now,
     );
