@@ -70,6 +70,14 @@ const VERIFY_HOST = fileURLToPath(new URL('./verify-host.mjs', import.meta.url))
 
 const CONCURRENCY = 8;
 const MAX_RETRIED_FILES = CONCURRENCY;
+// Each file's process runs without V8's two background code compilers. Node
+// 24.22.1's process.exit(), which --test-force-exit calls after a file's last
+// test, can deadlock: it joins V8's worker threads while a background Maglev
+// or Sparkplug compile on one of them waits for the exiting main thread to
+// collect garbage (nodejs/node#64274). Every hang captured on this host had
+// one of these two waiting; on a busy host the same file hung 5 times in
+// 1,500 runs with them and 0 in 1,500 without (2026-11-12).
+const CHILD_V8_FLAGS = ['--no-maglev', '--no-concurrent-sparkplug'];
 // How long a stalled file whose processes were killed may take to end before
 // the pass is stopped: killed processes end at once, so a file still running
 // is held by a process outside its tree.
@@ -172,7 +180,7 @@ async function runFiles(list, concurrency, signal) {
   delete process.env.NODE_TEST_CONTEXT;
   const stuck = new AbortController();
   const stream = run({
-    files: list, concurrency, execArgv: ['--import', 'tsx', '--import', REPORT_PIPE],
+    files: list, concurrency, execArgv: [...CHILD_V8_FLAGS, '--import', 'tsx', '--import', REPORT_PIPE],
     timeout: runnerTestTimeoutMs(list), forceExit: true, signal: signal ? AbortSignal.any([signal, stuck.signal]) : stuck.signal,
   });
   // Every failure event names its file, including a file whose process exited

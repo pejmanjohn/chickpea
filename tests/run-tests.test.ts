@@ -253,6 +253,11 @@ test('a hung test that holds a live handle fails at the per-test timeout instead
   assert.ok(Date.now() - started < 60_000, 'both passes end within seconds of the timeout');
 });
 
+test('each file runs without the V8 background compilers that can deadlock its exit', () => {
+  const result = runRunner(['v8-flags.test.ts']);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+});
+
 // The stall window for fixtures: long enough for a fixture to load on a busy host.
 const STALL = { RUN_TESTS_FIXTURE_STALL_MS: '6000' };
 
