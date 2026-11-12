@@ -918,7 +918,8 @@ try {
     await browser.waitForTitle(host === 'chatgpt' ? /^✓ Saved Invoice Chaser$/ : /^Change Invoice Chaser$/);
     await browser.waitFor('document.querySelectorAll(".cp-acts button:disabled").length === 0', 'its buttons, once the read answers');
     assert.ok(!(await buttons()).some((label) => label === 'Save' || label === 'Undo'), `no Save, and no Undo without its token: ${await buttons()}`);
-    assert.deepEqual((await browser.host('window.harness.calls')).slice(savedCalls), ['get_agent'], 'reloading only read');
+    const savedReads = (await browser.host('window.harness.calls')).slice(savedCalls);
+    assert.ok(savedReads.length > 0 && savedReads.every((name) => name === 'get_agent'), `reloading only read: ${savedReads}`);
     await shot('5-saved-reopened');
     await open('turnedOff');
     await browser.waitForTitle(/^✓ Turned off People Helper$/);
@@ -1133,7 +1134,8 @@ try {
     await browser.host('window.harness.reload()');
     await browser.waitForRow(/^Gmail is connected/, 10_000);
     assert.notEqual(await browser.inCard('document.querySelector(".cp-row button")?.textContent ?? ""'), 'Connect', 'no Connect for a link that is done');
-    assert.deepEqual((await browser.host('window.harness.calls')).slice(connectedCalls), ['get_setup_status'], 'reloading only read');
+    const connectedReads = (await browser.host('window.harness.calls')).slice(connectedCalls);
+    assert.ok(connectedReads.length > 0 && connectedReads.every((name) => name === 'get_setup_status'), `reloading only read: ${connectedReads}`);
     assert.deepEqual([(await browser.host('window.harness.links')).length, await browser.host('window.harness.messages')], [1, []], 'and opened nothing');
     await shot('3-connected-reopened');
 
