@@ -136,19 +136,19 @@ async function main(list) {
   const typecheck = withTypecheck ? startTypecheck(controller) : undefined;
   const { failed, stopped } = await runFiles(list, CONCURRENCY, controller.signal);
   const result = (exitCode, retries = [], failedOnRetry = false) => ({ exitCode, retries, failedOnRetry });
-  if (typecheck && (await typecheck) !== 0) return result(1);
-  if (stopped) return { ...result(1), stopped };
+  // A stopped pass must say so on every path out: the caller exits on it, and would otherwise stay alive on the stuck file's pipe.
+  if ((typecheck && (await typecheck) !== 0) || stopped) return { ...result(1), stopped };
   if (failed.length === 0) return result(0);
   if (failed.length > MAX_RETRIED_FILES) {
     console.error(`\n[run-tests] ${failed.length} test files failed; not retrying.`);
     return result(1);
   }
   console.log(`\n[run-tests] ${failed.length} file(s) failed under ${CONCURRENCY}-way concurrency; rerunning each alone once:\n${listing(failed)}`);
-  const { failed: stillFailing } = await runFiles(failed, 1);
+  const { failed: stillFailing, stopped: stoppedAlone } = await runFiles(failed, 1);
   const retries = failed.map((file) => ({ file, alone: stillFailing.includes(file) ? 'fail' : 'pass' }));
   if (stillFailing.length > 0) {
     console.error(`\n[run-tests] still failing alone:\n${listing(stillFailing)}`);
-    return result(1, retries);
+    return { ...result(1, retries), stopped: stoppedAlone };
   }
   if (failOnRetry) {
     console.error(`\n[run-tests] PASSED ONLY ON RETRY: ${failed.length} file(s) failed under ${CONCURRENCY}-way concurrency and passed alone; --fail-on-retry fails the run on any retry:\n${listing(failed)}`);

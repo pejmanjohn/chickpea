@@ -301,6 +301,24 @@ test('a file held open by a process outside its own stops the pass, named, inste
   }
 });
 
+test('a file held open by a process outside its own in the rerun alone ends the runner too, instead of leaving it waiting on that process', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-run-tests-'));
+  const pidFile = join(directory, 'orphan.pid');
+  try {
+    const started = Date.now();
+    const result = runRunner(['orphan.test.ts'], { ...STALL, RUN_TESTS_FIXTURE_ORPHAN_PID_FILE: pidFile, RUN_TESTS_FIXTURE_ORPHAN_FAIL_FIRST_MARKER: join(directory, 'failed-first') });
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, /rerunning each alone once:\n {2}\S*orphan\.test\.ts/);
+    assert.match(result.stderr, /\S*orphan\.test\.ts has still not ended after its processes were stopped: something outside them holds its output\. Stopping the pass\./);
+    assert.match(result.stderr, /still failing alone:\n {2}\S*orphan\.test\.ts/);
+    // The process left behind lives for a minute; the runner must not wait for it.
+    assert.ok(Date.now() - started < 45_000, 'the runner exits within seconds of the window');
+  } finally {
+    try { process.kill(Number(readFileSync(pidFile, 'utf8')), 'SIGKILL'); } catch {}
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('the fixture timeout override shortens only a pass over the runner\'s own fixtures', () => {
   const hang = join(FIXTURES, 'hang.test.ts');
   const real = resolve(FIXTURES, '../../run-tests.test.ts');
