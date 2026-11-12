@@ -602,7 +602,7 @@ export const proposeAgentOutput = z.strictObject({
     needs: z.array(z.strictObject({ service: z.string(), name: z.string(), connected: z.literal(false) })),
     answersIn: z.array(z.strictObject({ channelId: z.string(), name: z.string().optional() })),
     model: z.string().optional(),
-    workspaceName: z.string().optional().describe('The Slack workspace whose people can message it once it exists.'),
+    workspaceName: z.string().optional().describe('The Slack workspace it would join. Until it joins a Channel, only its creator can message it.'),
     avatarUrl: z.string().optional().describe('The default picture it gets in Slack; create.arguments.avatar names it.'),
   }),
   create: z.strictObject({ tool: z.literal('create_agent'), arguments: createAgentInputSchema }),

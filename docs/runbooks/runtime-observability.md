@@ -295,11 +295,16 @@ state Durable Object), `logs[].message[]`, `exceptions[]`, and `outcome`.
 Ignore `[chickpea:activity]` refresh, queue, and rate events when hunting a
 stall; they fire on every poll.
 
-A run that keeps logging `memory_metric {"event":"delivery_lease","outcome":"rejected"}`
-every few seconds has not failed: it is waiting for the thread's delivery lease
-held by another run or incarnation and will look like "Thinking…" in Slack.
-Record the thread, its route owner, and the triggering message, then diagnose
-from `src/slack/claim-store.ts` rather than resending the request.
+`memory_metric {"event":"delivery_lease","outcome":"rejected"}` means the turn
+or routine run lost access before it delivered. For a Slack turn, one
+`chickpea.turn.agent_failure` line follows (see
+[Memory lease failures](#memory-lease-failures)), unless a coding turn posts
+its recovered notice instead. A routine run logs no such line: it fails with
+"Channel access changed while the routine was running." A change to memory
+never causes it. `outcome: "deferred"` means the check could not decide
+because Slack was rate-limited or the state store was being replaced; the
+attempt retries, and Slack still shows "Thinking…". Record the thread, its
+route owner, and the triggering message rather than resending the request.
 
 ## Turn latency and relay alarm logs
 
@@ -830,11 +835,14 @@ structured `console.warn` object with `event: "chickpea.turn.agent_failure"`,
 `reason: "memory_delivery_lease_rejected"`, the `agentId`, and `stage`:
 `before_run` (refused before the model ran) or `after_run` (refused before the
 answer was delivered). When the answer had begun streaming, the notice
-replaces the streamed message, marked `_Corrected_`. The lease holds while
-the Agent is enabled, the installation is not revoked, the bot delivering the
-reply is the installation's or the Agent's own live app's, the Agent's memory
-is unchanged since the turn read it, and, in a Channel, the Agent's grant
-stands and both the person and that bot are members. A turn whose memory could not be
+replaces the streamed message, marked `_Corrected_`. The lease checks access
+only. It holds while the Agent is enabled and not archived, the installation
+is not revoked, the bot delivering the reply is the installation's or the
+Agent's own live app's, and, in a Channel or group DM, Slack still reports the
+same open conversation with both the person and that bot as members, and in a
+Channel the Agent's grant stands. Memory is not part of the lease: another
+run's save or a forget never holds back a reply, and the next turn's prompt
+reads memory fresh. A routine's result uses the same lease. A turn whose memory could not be
 prepared is quarantined: its lease always fails, so its line says
 `reason: "memory_quarantined"` instead, and the preceding `memory_metric`
 line with event `quarantine` gives the cause. The turn's preceding

@@ -370,14 +370,13 @@ export async function executeRoutineOccurrence(
     }
     await prepared.workLifecycle?.markInvoked();
 
+    const { runtimePlan } = executionInitialData(prepared.envelope);
     review = await startRunReview(input.env, {
       surface: 'routine',
       // Fails closed: a Channel routine is copied only once Slack said its Channel is unshared.
       sharedChannel: prepared.routine.destination.kind !== 'direct_thread' && prepared.access.channelShared !== false,
-      grantsWebsiteLogins: runGrantsWebsiteLogins(
-        executionInitialData(prepared.envelope).runtimePlan,
-        prepared.access.config.agent.websiteLogins,
-      ),
+      grantsWebsiteLogins: runGrantsWebsiteLogins(runtimePlan, prepared.access.config.agent.websiteLogins),
+      ...(runtimePlan.websiteLogins ? { planWebsiteLogins: runtimePlan.websiteLogins } : {}),
       settings: () => dependencies.settingsStore ?? getSettingsStore(input.env),
     });
     const remainingMs = prepared.run.deadlineAt - now();
@@ -418,8 +417,7 @@ export async function executeRoutineOccurrence(
     });
     modelSettled = true;
     if (
-      prepared.prompt.prompt !== executionPrompt(prepared.envelope) ||
-      prepared.prompt.memoryEpoch !== executionInitialData(prepared.envelope).runtimePlan.memoryEpoch ||
+      !prepared.prompt.matchesApartFromMemory(executionPrompt(prepared.envelope)) ||
       !(await prepared.prompt.validateMemoryLease())
     ) {
       throw new RoutineRuntimeError(

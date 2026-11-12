@@ -789,7 +789,7 @@ try {
     assert.deepEqual(await browser.inCard('[...document.querySelectorAll(".cp-msg .sr-only")].map((node) => node.textContent)'),
       ['You: ', 'Invoice Chaser: '], 'a screen reader hears who said each line of the example');
     assert.deepEqual(await smallPrint(), [
-      'Answers in your DMs and #finance. Anyone in Acme can message it.',
+      'Answers in your DMs and #finance. Everyone in its Channels can ask it there.',
       'Needs Stripe · you sign in after it\'s created',
     ]);
     await shot('1-proposal');
@@ -861,7 +861,7 @@ try {
     await open('proposalLong');
     await browser.waitForTitle(/^Churn Watch$/);
     assert.deepEqual(await said(), [{ lines: 2, cut: true }, { lines: 5, cut: true }], 'a long question shows two lines, a long reply five');
-    assert.deepEqual(await smallPrint(), ['Answers in your DMs, #finance and #billing. Anyone in Acme can message it.'], 'no Needs without a service');
+    assert.deepEqual(await smallPrint(), ['Answers in your DMs, #finance and #billing. Everyone in its Channels can ask it there.'], 'no Needs without a service');
     await shot('1-proposal-long');
     await open('proposalBare');
     await browser.waitForTitle(/^Churn Watch$/);
