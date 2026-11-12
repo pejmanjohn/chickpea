@@ -10,6 +10,12 @@ import { renderAgentChannelWelcome } from '../message-format.ts';
 import type { SlackTransport } from '../transport/types.ts';
 import { agentAvatarInstallation, agentAvatarUrlForPresentation } from './avatar-assets.ts';
 
+/** A Channel welcome Slack accepted. */
+export interface PostedAgentWelcome {
+  ts: string;
+  text: string;
+}
+
 export interface AgentPresenceAnnouncements {
   joinedChannel(input: {
     workspaceId: string;
@@ -19,7 +25,7 @@ export interface AgentPresenceAnnouncements {
     grantRevision: number;
     /** An Agent's own app bot, once it is in the Channel. */
     appBot?: Pick<SlackTransport, 'postMessage'>;
-  }): Promise<void>;
+  }): Promise<PostedAgentWelcome | undefined>;
   handleWentLive(agent: CustomAgentConfig): Promise<void>;
 }
 
@@ -45,15 +51,17 @@ export function agentPresenceAnnouncements(deps: {
       // An app has no Channel message events: its thread's unmentioned replies reach it only through Chickpea's bot.
       const hearsThreadReplies = !ownBot || await botIsIn(deps.installationBot, input.channelId);
       const avatarUrl = ownBot ? undefined : deps.avatarUrl(input.agent);
-      await sender.postMessage({
+      const text = renderAgentChannelWelcome({
+        name: input.agent.name, description: input.agent.description, hearsThreadReplies, ...live,
+      });
+      const posted = await sender.postMessage({
         channelId: input.channelId,
-        text: renderAgentChannelWelcome({
-          name: input.agent.name, description: input.agent.description, hearsThreadReplies, ...live,
-        }),
+        text,
         ...(ownBot ? {} : { persona: { name: input.agent.name, ...(avatarUrl ? { avatarUrl } : {}) } }),
         idempotencyKey: `agent-channel-welcome:${input.workspaceId}:${input.channelId}:` +
           `${input.agent.id}:${input.grantRevision}`,
       });
+      return { ts: posted.ts, text };
     },
     async handleWentLive(agent) {
       const live = agentSlackHandle(agent);
