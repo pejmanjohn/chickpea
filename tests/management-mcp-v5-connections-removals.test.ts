@@ -583,11 +583,19 @@ test('check_agent sends an optional-key connection a failed removal left needing
   };
   const exa = await optionalKey('exa', 'Exa', 'exa');
   const search = await optionalKey('search', 'Search');
+  structured(await call('connect_service', {
+    agentId: 'agent_research',
+    custom: { kind: 'mcp', name: 'Docs', url: 'https://mcp.docs.example/mcp', auth: 'none' },
+    version: await version(call, 'agent_research'),
+    idempotencyKey: 'docs',
+  }));
+  const docs = (await f.config.listConnectionAccounts(teamId)).find(({ label }) => label === 'Docs')!;
 
-  // Exa's key stays: the removal stopped while retiring it.
+  // Exa's key stays: the removal stopped while retiring it. Docs, which takes no key, stopped at the same step.
   const deleteSetting = f.settings.deleteSetting.bind(f.settings);
   f.settings.deleteSetting = async () => { throw new Error('settings unavailable'); };
   await failedRemoval('exa');
+  await failedRemoval('docs');
   f.settings.deleteSetting = deleteSetting;
   // Search's key is gone: the removal stopped after retiring it, as a newer write to the account won.
   const putConnectionAccount = f.config.putConnectionAccount.bind(f.config);
@@ -598,7 +606,7 @@ test('check_agent sends an optional-key connection a failed removal left needing
   await failedRemoval('search');
   f.config.putConnectionAccount = putConnectionAccount;
   const lifecycle = async (id: string) => (await f.config.listConnectionAccounts(teamId)).find((account) => account.id === id)?.lifecycle;
-  assert.deepEqual([await lifecycle(exa.id), await lifecycle(search.id)], ['needs_attention', 'needs_attention']);
+  assert.deepEqual([await lifecycle(exa.id), await lifecycle(search.id), await lifecycle(docs.id)], ['needs_attention', 'needs_attention', 'needs_attention']);
   assert.deepEqual(
     [await resolveConnectionAccountSecret(exa, undefined, f.settings), await resolveConnectionAccountSecret(search, undefined, f.settings)],
     ['exa-key', undefined],
@@ -616,6 +624,11 @@ test('check_agent sends an optional-key connection a failed removal left needing
     const setup = await f.management.getSetup(followed.setup.setupToken);
     assert.equal(setup?.target.connectionId, connectionId === 'exa' ? exa.id : search.id, name);
   }
+  // A server that takes no key has no key page to send: Admin, as before.
+  const keyless = checked.checks.find((check: { part: string; name: string }) => check.part === 'connection' && check.name === 'Docs');
+  assert.deepEqual([keyless.status, keyless.fix.label, keyless.fix.tool], ['failing', 'Reconnect it in Admin', undefined]);
+  assert.equal(errorOf(await call('reconnect_service', { agentId: 'agent_research', connectionId: 'docs' }), 'invalid_input').message,
+    'This MCP connection does not require setup.');
 });
 
 test('a member cannot connect or reconnect a team connection, or change an Agent they cannot edit', async (t) => {

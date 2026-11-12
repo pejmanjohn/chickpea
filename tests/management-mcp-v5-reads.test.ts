@@ -29,6 +29,7 @@ import {
   ownerSlackDmContext,
   type ManagementAdapterFixture,
 } from './helpers/management-adapter-fixture.ts';
+import { MEMBER_SLACK_USER, slackFacts } from './helpers/management-authority-fixture.ts';
 
 const LEGACY = '2025-11-25';
 const MODERN = '2026-07-28';
@@ -53,8 +54,13 @@ type ToolResult = {
   isError?: boolean;
 };
 
-async function harness(t: TestContext, suffix: string, as: 'owner' | 'member' = 'owner') {
-  const f = await createManagementAdapterFixture(suffix);
+async function harness(
+  t: TestContext,
+  suffix: string,
+  as: 'owner' | 'member' = 'owner',
+  overrides: Parameters<typeof createManagementAdapterFixture>[1] = {},
+) {
+  const f = await createManagementAdapterFixture(suffix, overrides);
   t.after(() => f.close());
   if (as === 'member') {
     await f.identity.updateMembershipAuthority({
@@ -298,6 +304,27 @@ test('a list_agents cursor never skips or repeats an Agent when another is archi
   const created = await read(() => createFixtureAgent(f, 'agent_new_0'));
   assert.deepEqual(created, ids.slice(1), 'none twice; the new one sorts before the cursor and waits for the next read');
   assert.deepEqual(listed(structured(await call('list_agents'))).slice(0, 2), ['agent_new_0', 'agent_page_01']);
+
+  // A Member's list joins the Agents they edit and shared ones, which Slack's directory sorts by name, in the one order
+  // the cursor keeps: by agentId.
+  const member = await harness(t, 'list-stable-member', 'member', {
+    slackFacts: slackFacts({ C_SUPPORT: { name: 'support', private: false, member: true, archived: false } }, { [MEMBER_SLACK_USER]: ['C_SUPPORT'] }),
+  });
+  const inSlack = (handle: string) => ({
+    slackPresence: {
+      requestedHandle: handle, normalizedHandle: handle, desiredState: 'active' as const, health: 'healthy' as const,
+      avatar: { kind: 'generated' as const, revision: 1, seed: handle },
+    },
+  });
+  await createFixtureAgent(member.f, 'agent_b', { name: 'Bravo', editPolicy: 'all_workspace_members' });
+  for (const [id, name] of [['agent_a', 'Zulu'], ['agent_c', 'Alpha']]) {
+    await createFixtureAgent(member.f, id, { name, ...inSlack(name.toLowerCase()) });
+    await grantChannel(member.f, id);
+  }
+  assert.deepEqual(
+    (structured(await member.call('list_agents')).agents as Array<{ agentId: string; canEdit: boolean }>).map(({ agentId, canEdit }) => [agentId, canEdit]),
+    [['agent_a', false], ['agent_b', true], ['agent_c', false]],
+  );
 
   // An offset cursor from before is refused, so a list read across an update starts again instead of shifting.
   for (const cursor of ['40', 'after1_', 'after1_%%%', `after1_${Buffer.from('Not An Id!').toString('base64url')}`]) {
