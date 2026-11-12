@@ -26,7 +26,7 @@ import {
   AGENT_AUTHORING_GUIDE_VERSION,
   DISCOVERY_GUIDE_URI,
 } from '../src/management/agent-authoring/index.ts';
-import { DISCOVERY_GUIDE } from '../src/management/agent-authoring/discovery-guide.ts';
+import { playbookSection } from '../src/management/playbook/index.ts';
 import {
   AGENT_AUTHORING_GUIDE_MCP,
   AGENT_AUTHORING_GUIDE_MCP_DIGEST,
@@ -101,6 +101,7 @@ const MCP_TOOL_ANNOTATIONS = {
   revoke_mcp_client: WRITE,
   get_account: READ_5,
   get_workspace: READ_5,
+  get_guide: READ_5,
   list_agents: READ_5,
   get_agent: READ_5,
   list_services: READ_5,
@@ -454,8 +455,8 @@ test('supported coding clients share public PKCE registration and stateless MCP 
       ), `${client.name} must list the discovery guide`);
       const discovery = await mcpCall(handler.fetch, client.protocol, 'resources/read', { uri: DISCOVERY_GUIDE_URI });
       assert.deepEqual((discovery.result as { contents: unknown[] }).contents, [
-        { uri: DISCOVERY_GUIDE_URI, mimeType: 'text/markdown', text: DISCOVERY_GUIDE },
-      ], `${client.name} must read the discovery guide`);
+        { uri: DISCOVERY_GUIDE_URI, mimeType: 'text/markdown', text: playbookSection('research').guide },
+      ], `${client.name} must read the discovery guide, the playbook's research section`);
       const listedDescriptions = listedTools.map(({ name, description }) => `${name}: ${description ?? ''}`);
       for (const line of listedDescriptions) {
         if (line.startsWith('discover_slack_channels:')) continue;
@@ -510,7 +511,7 @@ test('server instructions are the 5.0 text: short, linkless, and naming only 5.0
 test('workspace management MCP publishes the version 4 server contract', () => {
   assert.deepEqual(WORKSPACE_MANAGEMENT_SERVER_INFO, {
     name: 'chickpea-workspace',
-    version: '4.5.0',
+    version: '4.6.0',
   });
   assert.match(WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI, /\/v2$/);
 });

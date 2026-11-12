@@ -129,7 +129,7 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
     'undo_workspace_change', 'get_operation', 'revoke_setup_link',
     'list_mcp_clients', 'revoke_mcp_client',
     // 5.0 tools (management/mcp-v5/tools.ts).
-    'get_account', 'get_workspace', 'list_agents', 'get_agent', 'list_services', 'get_service', 'list_models',
+    'get_account', 'get_workspace', 'get_guide', 'list_agents', 'get_agent', 'list_services', 'get_service', 'list_models',
     'list_members', 'list_slack_channels', 'get_agent_memory', 'list_schedules', 'get_setup_status',
     'export_agents', 'list_connected_apps', 'propose_agent', 'propose_agent_change',
     'get_creation_status', 'practice_agent', 'get_practice_run', 'list_practice_runs', 'explain_agent', 'check_agent',
