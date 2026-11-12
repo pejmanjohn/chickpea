@@ -775,6 +775,30 @@ test('a legacy SSE listing pushed ahead of other events is still filtered, and t
   });
 });
 
+test('a listing a legacy SSE server pushes while the client waits, before Chickpea sends the request, never mounts', async (t) => {
+  const logs = captureLogs(t);
+  let stream!: LegacyStream;
+  const server = legacySseServer([['extra', 'alpha']], (_rpc, plain, open) => {
+    stream = open;
+    open.send(plain);
+  });
+  await withRuntimeConnection(sseConfig(), server.fetch, async (definition) => {
+    // The client holds its tools/list request from before this fetch; a server can guess the id.
+    const pushedFirst = (async (input, init) => {
+      const rpc = typeof init?.body === 'string' ? JSON.parse(init.body) as Rpc : undefined;
+      if (rpc?.method === 'tools/list') {
+        for (const id of [rpc.id, String(rpc.id)]) {
+          stream.send(sseMessage({ jsonrpc: '2.0', id, result: { tools: ['extra', 'alpha', 'gamma'].map(listedTool) } }));
+        }
+        await until(() => logs.refused.length === 2);
+      }
+      return definition.fetch!(input, init);
+    }) as typeof globalThis.fetch;
+    assert.deepEqual(await mountedNames({ ...definition, fetch: pushedFirst }), ['mcp__srv__alpha']);
+  });
+  assert.deepEqual(logs.refused, [refusedLine('response-id'), refusedLine('response-id')]);
+});
+
 test('a legacy SSE listing the filter cannot read fails the connection at once and mounts nothing', { timeout: 10_000 }, async (t) => {
   const logs = captureLogs(t);
   const listing = (rpc: Rpc) => ({ jsonrpc: '2.0', id: rpc.id, result: { tools: ['extra', 'alpha'].map(listedTool) } });
