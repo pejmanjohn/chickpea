@@ -95,9 +95,17 @@ function thrownCause(error: unknown): Cause | undefined {
   return { reason: 'other' };
 }
 
-/** What Flue reports when it cannot connect, read from its own fixed wording and the MCP client's. */
+/**
+ * What Flue reports when it cannot connect, read from its own fixed wording,
+ * the MCP client's, and the listing filter's refusals, which on legacy SSE
+ * reach the client as a JSON-RPC error rather than a thrown error.
+ */
 function messageReason(server: string, message: string): McpUnavailableReason {
   if (message === 'Request timed out' || message === 'Maximum total timeout exceeded') return 'timeout';
+  if (/ tool discovery returned an unsupported response \([a-z]+(?:-[a-z]+)*\)\.$/.test(message) ||
+      message.endsWith(' no longer offers any of the tools this Agent may use. An Admin can pick its tools again in Chickpea Admin.')) {
+    return 'tools_list_refused';
+  }
   if ((message.startsWith(`[flue] MCP server "${server}" does not expose `) &&
       message.includes(' named in the tools allowlist. Discovered tools: ')) ||
       message.startsWith(`[flue] MCP server "${server}" tools allowlist repeats `)) {

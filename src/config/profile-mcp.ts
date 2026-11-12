@@ -188,7 +188,7 @@ export function resolveProfileMcpConnections(
  * and resolves credentials from the trusted settings seam. With `readsOnly`
  * (a test run), every tool must also still be declared a read.
  *
- * On Streamable HTTP, Flue mounts what tools/list returns, and every listing
+ * Flue mounts what tools/list returns, and every listing, on either transport,
  * is filtered to the granted tools the server still lists, in grant order. A
  * tool the server stops listing leaves the rest working, and comes back when
  * the server lists it again; the grant itself is never rewritten. A Meta tool
@@ -266,16 +266,13 @@ export function resolveRuntimePlanMcpConnections(
       allowedOrigin: new URL(validated.url).origin,
       authorizeRequest: async () => { await requireCurrentServer(); },
     });
-    // The legacy SSE transport answers tools/list on its GET stream, which the
-    // filter does not read, so it keeps Flue's strict allowlist.
-    const toolsList = declaration.transport === 'streamable-http'
-      ? createMcpToolsListFilter({ connectionId: declaration.id, grant: allowedTools })
-      : undefined;
+    const toolsList = createMcpToolsListFilter({
+      connectionId: declaration.id, grant: allowedTools, transport: declaration.transport,
+    });
     const fetchWithLiveHeaders = withMcpHttpTelemetry(async (input, init) => {
       const request = new Request(input, init);
       const rpc = await mcpRpcRequest(request);
       const invocation = mcpToolInvocationIn(rpc);
-      const readAnswer = toolsList?.request(rpc);
       if (invocation) {
         if (!effectiveDeclaration.allowedTools.includes(invocation.name)) {
           throw new Error('MCP tool is not selected for this Agent.');
@@ -286,7 +283,6 @@ export function resolveRuntimePlanMcpConnections(
         }
       }
       const { server, env } = await requireCurrentServer();
-      const advertisedRequest = !toolsList && usesMetaAdsOutputAdapter(server) ? request.clone() : undefined;
       if (invocation && isMetaAdsMcpConnection(server)) {
         assertServerMcpToolInvocation(server, effectiveDeclaration.allowedTools, invocation);
       }
@@ -320,15 +316,12 @@ export function resolveRuntimePlanMcpConnections(
         assertServerMcpToolInvocation(current, effectiveDeclaration.allowedTools, invocation);
       }
       await requireCurrentServer();
+      const readAnswer = toolsList.request(rpc, server.displayName, metaAdsToolsRewrite(server));
       const response = await guardedFetch(new Request(request, { headers }));
       if (response.status === 401 && declaration.authMode === 'oauth') {
         rejectedAccessToken = presentedBearerToken(headers);
       }
-      const advertised = readAnswer
-        ? await readAnswer(response, server.displayName, metaAdsToolsRewrite(server))
-        : advertisedRequest
-          ? await advertiseMetaAdsAccountHelperOutput(advertisedRequest, response)
-          : response;
+      const advertised = readAnswer ? await readAnswer(response) : response;
       if (!invocation || !isMetaAdsMcpConnection(server)) {
         return advertised;
       }
@@ -342,10 +335,9 @@ export function resolveRuntimePlanMcpConnections(
       name: declaration.id,
       url: validated.url,
       transport: declaration.transport,
-      ...(toolsList ? {} : { tools: allowedTools }),
       optional: declaration.optional,
       timeoutMs: 30_000,
-      fetch: toolsList ? toolsList.guardGets(fetchWithLiveHeaders) : fetchWithLiveHeaders,
+      fetch: toolsList.guardGets(fetchWithLiveHeaders),
       ...(declaration.authMode === 'none'
         ? {}
         : {

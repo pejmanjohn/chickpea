@@ -8,6 +8,7 @@ import { McpToolsListRefusedError } from './mcp-errors.ts';
 const MAX_TOOLS_LIST_BYTES = 8_000_000;
 /** Flue's per-request MCP timeout; reading an answer during the listing never takes longer. */
 const TOOLS_LIST_DEADLINE_MS = 30_000;
+const JSON_RPC_INTERNAL_ERROR = -32603;
 
 export type ToolsListResult = Record<string, unknown> & { tools: unknown[] };
 
@@ -37,30 +38,36 @@ interface RequestAnswer {
 export type ToolsRewrite = (tools: unknown[]) => { tools: unknown[]; withheld?: ReadonlyMap<string, string[]> };
 
 /** Reads one request's response before the MCP client sees it. */
-export type McpAnswerReader =
-  (response: Response, displayName: string, rewriteTools?: ToolsRewrite) => Promise<Response>;
+export type McpAnswerReader = (response: Response) => Promise<Response>;
 
 interface McpToolsListFilterOptions {
   connectionId: string;
   /** The tools this Agent may use, in the order the model sees them. */
   grant: readonly string[];
+  /** Streamable HTTP answers a request on its own POST; legacy SSE answers every request on the GET stream. */
+  transport: 'streamable-http' | 'sse';
 }
 
 /**
- * Narrow every tools/list answer of one Streamable HTTP connection to the
- * granted tools the server still lists, in grant order, first listing of a
- * name only, without a name the request's rewrite withholds.
+ * Narrow every tools/list answer of one MCP connection to the granted tools
+ * the server still lists, in grant order, first listing of a name only,
+ * without a name the request's rewrite withholds.
  *
  * The MCP client resolves a pending request from any stream it reads, so the
  * listing has a window: it opens with the connection's first request (again
  * with `initialize` or any tools/list) and closes once a last page has passed
- * the filter. Inside it, the client reads only each request's own response
- * up to that request's answer, and nothing from a GET. After it, tool calls
- * and their resumption GETs pass untouched.
+ * the filter. On Streamable HTTP, inside it the client reads only each
+ * request's own response up to that request's answer, and nothing from a GET.
+ * On legacy SSE every answer arrives on the GET stream; inside the window
+ * each answer there must answer a request sent while it was open, and one
+ * the filter cannot read fails every answer still owed. After it, tool calls
+ * and their streams pass unread.
  */
 export function createMcpToolsListFilter(options: McpToolsListFilterOptions) {
   let listing = newListing();
   let listingOpen = true;
+  /** Legacy SSE: the answers the GET stream owes, by request id. */
+  const owed = new Map<unknown, { answer: RequestAnswer; displayName: string }>();
   const logRefusal = (reason: string) => {
     console.info({ event: 'chickpea.mcp.tools_list_refused', connectionId: options.connectionId, reason });
   };
@@ -126,14 +133,63 @@ export function createMcpToolsListFilter(options: McpToolsListFilterOptions) {
     return result;
   };
 
+  /** Every answer the stream owes becomes this error, so the client fails each request now, not at its timeout. */
+  const failOwed = (error: (displayName: string) => Error): StreamEvent[] => {
+    const failed = [...owed.values()].map(({ answer, displayName }) => ({
+      data: JSON.stringify({
+        jsonrpc: '2.0', id: answer.id, error: { code: JSON_RPC_INTERNAL_ERROR, message: error(displayName).message },
+      }),
+    }));
+    owed.clear();
+    return failed;
+  };
+  const refuseOnStream = (reason: string) => {
+    logRefusal(reason);
+    return failOwed((displayName) => unsupportedResponse(displayName, reason));
+  };
+
+  /**
+   * One legacy SSE GET stream event as the client may read it. While the
+   * listing is open or an answer is owed, a message event is a request, a
+   * notification, an answer the stream owes, or, after the listing, another
+   * request's answer; anything else is dropped and fails every owed answer.
+   */
+  const streamEvent = (event: StreamEvent): StreamEvent[] => {
+    if ((!listingOpen && owed.size === 0) || 'retry' in event || !isMessageType(event.event)) return [event];
+    let value: unknown;
+    try {
+      value = JSON.parse(event.data) as unknown;
+    } catch {
+      return refuseOnStream('invalid-json');
+    }
+    if (isRecord(value) && !('result' in value) && !('error' in value)) return [event];
+    if (!isRecord(value)) return refuseOnStream(Array.isArray(value) ? 'batch' : 'json-rpc');
+    const owing = [...owed.values()].find(({ answer }) => answersRequest(value.id, answer.id));
+    // Inside the window the client may hold a listing request it has not sent yet.
+    if (!owing) return listingOpen ? refuseOnStream('response-id') : [event];
+    let rewritten: unknown;
+    try {
+      rewritten = rewriteAnswer(value, owing.answer);
+    } catch (error) {
+      return failOwed(() => error instanceof Error ? error : new Error(String(error)));
+    }
+    owed.delete(owing.answer.id);
+    return [{ ...event, data: JSON.stringify(rewritten) }];
+  };
+
   return {
     /**
-     * Note a POST's JSON-RPC request before it is sent. Returns the reader its
-     * response must pass: every tools/list answer, and while the listing is
-     * open every request's answer. Notifications and the client's own
-     * responses carry no answer and pass.
+     * Note a POST's JSON-RPC request right before it is sent. Every
+     * tools/list answer, and while the listing is open every request's
+     * answer, must pass the filter: on Streamable HTTP through the reader
+     * returned for its response, on legacy SSE on the GET stream.
+     * Notifications and the client's own responses carry no answer and pass.
      */
-    request(rpc: { id?: unknown; method?: unknown; params?: unknown } | undefined): McpAnswerReader | undefined {
+    request(
+      rpc: { id?: unknown; method?: unknown; params?: unknown } | undefined,
+      displayName: string,
+      rewriteTools?: ToolsRewrite,
+    ): McpAnswerReader | undefined {
       if (rpc?.id === undefined || typeof rpc.method !== 'string') return undefined;
       const { id, method } = rpc;
       if (method === 'initialize' || method === 'tools/list') listingOpen = true;
@@ -143,35 +199,41 @@ export function createMcpToolsListFilter(options: McpToolsListFilterOptions) {
         else listing.cursors.add(cursor);
       }
       if (!listingOpen) return undefined;
-      return async (response, displayName, rewriteTools) => {
-        // An HTTP error carries no answer the client reads; it fails or retries it.
-        if (!response.ok) return response;
-        const refuse = (reason: string) => {
-          logRefusal(reason);
-          return new McpToolsListRefusedError(`${displayName} tool discovery returned an unsupported response (${reason}).`);
-        };
-        if (method === 'tools/list') {
-          return readToolsListAnswer(response, {
-            id, refuse, page: (page) => filterPage(page, displayName, refuse, rewriteTools),
-          });
-        }
-        const result = method === 'initialize'
-          ? (value: Record<string, unknown>) => requireTools(value, displayName)
-          : (value: Record<string, unknown>) => value;
-        return readRequestAnswer(response, { id, result, refuse });
+      const refuse = (reason: string) => {
+        logRefusal(reason);
+        return unsupportedResponse(displayName, reason);
       };
+      const answer: RequestAnswer = method === 'tools/list'
+        ? toolsListAnswer({ id, refuse, page: (page) => filterPage(page, displayName, refuse, rewriteTools) })
+        : {
+            id, refuse,
+            result: method === 'initialize' ? (value) => requireTools(value, displayName) : (value) => value,
+          };
+      if (options.transport === 'sse') {
+        owed.set(id, { answer, displayName });
+        return undefined;
+      }
+      // An HTTP error carries no answer the client reads; it fails or retries it.
+      return async (response) => response.ok ? readRequestAnswer(response, answer) : response;
     },
     /**
-     * Answer locally, with the 405 the MCP client reads as "no stream", every
-     * GET while the listing is open, and the standalone GET stream always:
-     * Flue uses nothing it carries. After the listing, a GET with
-     * `Last-Event-ID` resumes a tool call's own stream and goes through.
+     * On Streamable HTTP, answer locally, with the 405 the MCP client reads
+     * as "no stream", every GET while the listing is open, and the
+     * standalone GET stream always: Flue uses nothing it carries. After the
+     * listing, a GET with `Last-Event-ID` resumes a tool call's own stream
+     * and goes through. On legacy SSE, every GET stream, a reconnect's too,
+     * reaches the client only through the filter.
      */
     guardGets(fetchFn: typeof fetch): typeof fetch {
       return async (input, init) => {
         const method = init?.method ?? (input instanceof Request ? input.method : 'GET');
-        if (method.toUpperCase() === 'GET' &&
-            (listingOpen || !new Request(input, init).headers.has('last-event-id'))) {
+        if (method.toUpperCase() !== 'GET') return fetchFn(input, init);
+        if (options.transport === 'sse') {
+          const response = await fetchFn(input, init);
+          // The client reads only a 200 stream.
+          return response.status === 200 && response.body ? filteredEventStream(response, streamEvent) : response;
+        }
+        if (listingOpen || !new Request(input, init).headers.has('last-event-id')) {
           return new Response(null, { status: 405, statusText: 'Method Not Allowed' });
         }
         return fetchFn(input, init);
@@ -180,20 +242,28 @@ export function createMcpToolsListFilter(options: McpToolsListFilterOptions) {
   };
 }
 
+function unsupportedResponse(displayName: string, reason: string): Error {
+  return new McpToolsListRefusedError(`${displayName} tool discovery returned an unsupported response (${reason}).`);
+}
+
 /**
  * Read the answer to one tools/list POST from its own response and rewrite
  * its result. Only a 200 with a JSON or event-stream body that holds the
  * answer to `answer.id` passes; a JSON-RPC error answer passes unchanged.
  */
 export function readToolsListAnswer(response: Response, answer: ToolsListAnswer): Promise<Response> {
-  return readRequestAnswer(response, {
+  return readRequestAnswer(response, toolsListAnswer(answer));
+}
+
+function toolsListAnswer(answer: ToolsListAnswer): RequestAnswer {
+  return {
     id: answer.id,
     refuse: answer.refuse,
     result: (result) => {
       if (!Array.isArray(result.tools)) throw answer.refuse('json-rpc');
       return answer.page(result as ToolsListResult);
     },
-  });
+  };
 }
 
 /**
@@ -295,12 +365,39 @@ async function readEventStreamAnswer(response: Response, answer: RequestAnswer):
   }
 }
 
+/**
+ * A GET event stream as the client will read it: split as it splits events,
+ * each event passed through `read`, and written back in one canonical form
+ * without event ids, which the SDK never sends back when it reconnects.
+ */
+function filteredEventStream(response: Response, read: (event: StreamEvent) => StreamEvent[]): Response {
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  const parse = eventStreamParser();
+  return rebuiltResponse(response, new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) return controller.close();
+        const text = parse(decoder.decode(chunk.value, { stream: true })).flatMap(read).map(serializeEvent).join('');
+        if (text) return controller.enqueue(encoder.encode(text));
+      }
+    },
+    cancel: (reason) => reader.cancel(reason),
+  }));
+}
+
 type StreamEvent = { id?: string; event?: string; data: string } | { retry: string };
+
+/** The MCP client reads only message events. */
+function isMessageType(type: string | undefined): boolean {
+  return type === undefined || type === 'message';
+}
 
 /** The event rewritten when it holds a response; undefined to forward it as it is. */
 function answerIn(event: StreamEvent, answer: RequestAnswer): StreamEvent | undefined {
-  // The MCP client reads only message events.
-  if ('retry' in event || (event.event !== undefined && event.event !== 'message')) return undefined;
+  if ('retry' in event || !isMessageType(event.event)) return undefined;
   let value: unknown;
   try {
     value = JSON.parse(event.data) as unknown;
@@ -386,7 +483,7 @@ function newListing() {
   };
 }
 
-function rebuiltResponse(response: Response, body: string): Response {
+function rebuiltResponse(response: Response, body: BodyInit): Response {
   const headers = new Headers(response.headers);
   headers.delete('content-length');
   headers.delete('content-encoding');

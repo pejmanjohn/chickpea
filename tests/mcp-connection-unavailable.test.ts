@@ -113,12 +113,14 @@ const CASES: Record<string, Case> = {
   'a tools/list that never answers': { reason: 'timeout', timeoutMs: 250, fetch: server({ list: (_rpc, request) => hang(request) }) },
   'a connection changed since the plan': { reason: 'policy_changed', fetch: server(), declaration: { displayName: 'Renamed Tools' } },
   'a listing without any granted tool': { reason: 'tools_list_refused', fetch: server({ list: listing([UNGRANTED]) }) },
+  'a malformed listing': { reason: 'tools_list_refused', fetch: server({ list: listing(['alpha', { name: 7 }]) }) },
+  // On legacy SSE the filter's refusal reaches the client as a JSON-RPC error
+  // on the GET stream, so only its fixed wording names the reason.
   'a legacy SSE listing without a granted tool': {
-    reason: 'allowlist', fetch: legacySseServer(['alpha', UNGRANTED]), connection: { transport: 'sse' }, declaration: { transport: 'sse' },
+    reason: 'tools_list_refused', fetch: legacySseServer([UNGRANTED]), connection: { transport: 'sse' }, declaration: { transport: 'sse' },
   },
-  'a legacy SSE granted tool that needs tasks': {
-    reason: 'task_support',
-    fetch: legacySseServer(['alpha', { name: 'beta', execution: { taskSupport: 'required' } }, UNGRANTED]),
+  'a malformed legacy SSE listing': {
+    reason: 'tools_list_refused', fetch: legacySseServer(['alpha', { name: 7 }]),
     connection: { transport: 'sse' }, declaration: { transport: 'sse' },
   },
   'two granted names that collide in Flue': {
@@ -347,6 +349,9 @@ test('Flue messages fall back to fixed shapes only for the server they name; any
   drop('srv', '[flue] MCP server "srv" tools allowlist repeats "alpha".');
   drop('srv', '[flue] MCP server "other" does not expose "beta" named in the tools allowlist. Discovered tools: alpha.');
   drop('srv', `[flue] MCP tools from server "srv" produced duplicate tool name "mcp__srv__a_b".`);
+  drop('srv', '[flue] MCP tool "beta" from server "srv" requires task-based execution, which is not supported — remove it from the tools allowlist.');
+  drop('srv', 'Meta Ads tool discovery returned an unsupported response (duplicate-account-helper).');
+  drop('srv', `${RAW}: Example Tools tool discovery returned an unsupported response (tool). ${RAW}`);
   drop('srv', `Version negotiation failed: ${RAW} (HTTP 401) timed out`);
   drop('a server name with spaces', 'Request timed out');
   drop('srv', 'Request timed out', 'Some other warning');
@@ -357,6 +362,9 @@ test('Flue messages fall back to fixed shapes only for the server they name; any
     ['srv', 'allowlist'],
     ['srv', 'other'],
     ['srv', 'duplicate_tool_name'],
+    ['srv', 'task_support'],
+    ['srv', 'tools_list_refused'],
+    ['srv', 'other'],
     ['srv', 'other'],
     ['(other)', 'timeout'],
   ]);
