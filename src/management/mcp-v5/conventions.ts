@@ -151,12 +151,12 @@ export class McpToolFailure extends Error {
 export function fail(
   code: McpErrorCode,
   message: string,
-  options: { nextStep?: string; fix?: McpErrorFix } = {},
+  options: { nextStep?: string; fix?: McpErrorFix; retryable?: boolean } = {},
 ): never {
   throw new McpToolFailure({
     code,
     message,
-    retryable: RETRYABLE.has(code),
+    retryable: options.retryable ?? RETRYABLE.has(code),
     ...(options.nextStep ? { nextStep: options.nextStep } : {}),
     ...(options.fix ? { fix: options.fix } : {}),
   });
@@ -194,6 +194,7 @@ const SERVICE_CODES: Readonly<Record<string, McpErrorCode>> = {
   effort_not_supported: 'model_unavailable',
   effort_requires_model: 'model_unavailable',
   slack_unavailable: 'slack_unavailable',
+  slack_refused: 'slack_unavailable',
   routines_unavailable_on_target: 'schedule_unavailable',
   schedule_authority_missing: 'schedule_unavailable',
   undo_unavailable: 'nothing_to_undo',
@@ -212,6 +213,14 @@ export function fiveZeroCode(code: string): McpErrorCode {
 
 export function isRetryable(code: McpErrorCode): boolean {
   return RETRYABLE.has(code);
+}
+
+/** Service codes a retry cannot fix, though a retry often fixes their 5.0 code. */
+const PERMANENT_SERVICE_CODES: ReadonlySet<string> = new Set(['slack_refused']);
+
+/** Whether the same call can work later, for a service or outcome code. */
+export function serviceCodeRetryable(code: string): boolean {
+  return !PERMANENT_SERVICE_CODES.has(code) && RETRYABLE.has(fiveZeroCode(code));
 }
 
 const UNEXPECTED: McpToolError = {
@@ -236,7 +245,7 @@ export function mcpToolError(error: unknown): McpToolError {
     return {
       code,
       message: error.message,
-      retryable: RETRYABLE.has(code),
+      retryable: serviceCodeRetryable(error.code),
       ...(error.links?.admin ? { fix: { label: 'Open Chickpea Admin', url: error.links.admin } } : {}),
     };
   }
