@@ -561,8 +561,9 @@ const promptText = (message: { result?: any }) =>
 const resourceText = (message: { result?: any }) =>
   (message.result.contents as Array<{ text?: string }>).map(({ text }) => text ?? '').join('\n');
 const V4_GUIDES = [WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI, WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI];
-/** What the discovery guide URI serves every client. */
+/** What the discovery guide URI serves a client without cards, and one that draws them (a chat app: ruling D6). */
 const RESEARCH = playbookSection('research').guide;
+const RESEARCH_CHAT_APP = playbookSection('research', 'chat-app').guide;
 
 function withoutCardSignals(
   h: Awaited<ReturnType<typeof harness>>,
@@ -637,7 +638,7 @@ for (const [app, clientId] of [
     for (const { uri } of resources) {
       assert.deepEqual(v4Named(resourceText((await request('resources/read', { uri })).message)), [], uri);
     }
-    assert.equal(resourceText((await request('resources/read', { uri: DISCOVERY_GUIDE_URI })).message), RESEARCH);
+    assert.equal(resourceText((await request('resources/read', { uri: DISCOVERY_GUIDE_URI })).message), RESEARCH_CHAT_APP);
     const read = (await request('tools/call', { name: 'get_workspace', arguments: {} })).message.result;
     for (const name of V4_TOOLS) {
       const message = (await request('tools/call', { name, arguments: name === 'apply_workspace_changes' ? V4_OFF : {} })).message;
@@ -849,7 +850,7 @@ test('a client that draws cards gets no prompt or guide that tells its model to 
     for (const { uri } of resources) {
       assert.deepEqual(v4Named(resourceText((await request('resources/read', { uri })).message)), [], `${leg}: ${uri}`);
     }
-    assert.equal(resourceText((await request('resources/read', { uri: DISCOVERY_GUIDE_URI })).message), RESEARCH,
+    assert.equal(resourceText((await request('resources/read', { uri: DISCOVERY_GUIDE_URI })).message), RESEARCH_CHAT_APP,
       `${leg}: the discovery guide stays, as the playbook's research section`);
   }
 });

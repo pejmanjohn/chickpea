@@ -40,11 +40,26 @@ const PARTIALS: Readonly<Record<string, string>> = PLAYBOOK.partials;
 const INCLUDE = /^<!-- include: ([a-z-]+) -->$/gm;
 
 /** One section as a client reads it, its partials in place, and its title from its heading. */
-export function playbookSection(topic: PlaybookTopic): { title: string; guide: string } {
-  const guide = SECTIONS[topic]
-    .replace(INCLUDE, (line, name: string) => PARTIALS[name]?.trimEnd() ?? line)
+export function playbookSection(topic: PlaybookTopic, reader: PlaybookReader = 'any'): { title: string; guide: string } {
+  const guide = forReader(SECTIONS[topic]
+    .replace(INCLUDE, (line, name: string) => PARTIALS[name]?.trimEnd() ?? line), reader)
     .trimEnd();
   return { title: guide.slice('# '.length, guide.indexOf('\n')), guide };
+}
+
+/**
+ * Who reads a section. A chat app (a client that draws cards: ChatGPT,
+ * claude.ai) gets no `<!-- coding-agent -->` block, so it never sees the rules
+ * for reading local files, past sessions or connected sources (maintainer
+ * ruling D6: ChatGPT works only from the chat). Any other client gets every
+ * block, without the fence lines.
+ */
+export type PlaybookReader = 'chat-app' | 'any';
+const CODING_AGENT_BLOCK = /^<!-- coding-agent -->\n[\s\S]*?^<!-- \/coding-agent -->\n\n?/gm;
+const CODING_AGENT_FENCE = /^<!-- \/?coding-agent -->\n/gm;
+
+function forReader(text: string, reader: PlaybookReader): string {
+  return text.replace(reader === 'chat-app' ? CODING_AGENT_BLOCK : CODING_AGENT_FENCE, '');
 }
 
 /** The topic a client meant, in any case and with spaces or underscores for hyphens. */

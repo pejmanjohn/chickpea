@@ -573,7 +573,7 @@ export function createWorkspaceManagementMcpServer(
     description: 'Read before you propose an Agent whose job the person has not named: how to find one in their own work and propose one specific Agent. The same text as get_guide with topic research.',
     mimeType: 'text/markdown',
   }, async (uri) => ({
-    contents: [{ uri: uri.href, mimeType: 'text/markdown', text: playbookSection('research').guide }],
+    contents: [{ uri: uri.href, mimeType: 'text/markdown', text: playbookSection('research', server.cardHost() ? 'chat-app' : 'any').guide }],
   }));
 
   server.v4Only.push(...registerWorkspaceManagementPrompts(server, input.baseUrl, input.env));

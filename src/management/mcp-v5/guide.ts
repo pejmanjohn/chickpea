@@ -5,6 +5,7 @@ import {
   PLAYBOOK_TOPICS,
   playbookSection,
   playbookTopic,
+  type PlaybookReader,
 } from '../playbook/index.ts';
 
 /**
@@ -40,9 +41,9 @@ const LIST_NEXT_STEP = 'Call get_guide again with the topic that fits the job.';
 const UNKNOWN_NEXT_STEP = `The guide has no such topic. ${LIST_NEXT_STEP}`;
 const SECTION_NEXT_STEP = 'Follow it step by step. When it names another topic, call get_guide with that topic.';
 
-export function getGuide(args: z.output<typeof getGuideInput>): GuideResult {
+export function getGuide(args: z.output<typeof getGuideInput>, reader: PlaybookReader = 'any'): GuideResult {
   const topic = playbookTopic(args.topic);
-  if (topic) return { topic, ...playbookSection(topic), nextStep: SECTION_NEXT_STEP };
+  if (topic) return { topic, ...playbookSection(topic, reader), nextStep: SECTION_NEXT_STEP };
   return {
     topics: PLAYBOOK_TOPICS.map((each) => ({
       topic: each,
