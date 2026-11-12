@@ -1139,7 +1139,8 @@ function modelRequestSize(input: ModelRequestInput): ModelRequestSize {
     if (!largest || bytes > largest.bytes) largest = { bytes, tool: message.toolName };
   }
   return {
-    requestBytes: utf8.encode(JSON.stringify(input)).byteLength,
+    // Counted without a second copy of the input: it can hold megabytes of image data.
+    requestBytes: Buffer.byteLength(JSON.stringify(input)),
     toolResults,
     ...(largest ? { largestToolResultBytes: largest.bytes, largestToolResultTool: largest.tool } : {}),
   };

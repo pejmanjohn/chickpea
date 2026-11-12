@@ -82,6 +82,9 @@ test('a structured copy that a text block repeats is dropped before anything is 
   assert.deepEqual([largeCut.duplicateDropped, largeCut.cut], [true, true]);
   assert.ok(largeCut.text.startsWith('{"rows":[{"id":0,'), 'the kept copy is the server\'s compact one');
   assert.match(largeCut.text, NOTE);
+  assert.match(largeCut.text, new RegExp(`this result was ${Math.ceil(bytes(JSON.stringify(large)) / 1024)} KiB`),
+    'the note gives the size of the one copy the model could have had');
+  assert.equal(largeCut.originalBytes, bytes(both), 'the log line keeps the size of both copies');
 });
 
 test('only an MCP tool\'s one-text-block result is bounded; any other tool or shape passes as it is', async () => {

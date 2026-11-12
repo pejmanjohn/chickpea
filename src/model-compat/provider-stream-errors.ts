@@ -36,7 +36,11 @@ export function observingProviderStreamErrors(base: typeof fetch | undefined): t
       async pull(controller) {
         const chunk = await reader.read();
         if (chunk.done) return controller.close();
-        scan(decoder.decode(chunk.value, { stream: true }));
+        try {
+          scan(decoder.decode(chunk.value, { stream: true }));
+        } catch {
+          // Reading the code is best effort and never changes the stream.
+        }
         controller.enqueue(chunk.value);
       },
       cancel: (reason) => reader.cancel(reason),

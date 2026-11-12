@@ -22,7 +22,7 @@ export function boundMcpToolResultText(text: string) {
   if (bytes.byteLength <= MCP_TOOL_RESULT_MAX_BYTES) {
     return { text: single!, originalBytes, keptBytes: bytes.byteLength, duplicateDropped, cut: false };
   }
-  const note = `\n\n[Cut at the 128 KiB limit: this result was ${Math.ceil(originalBytes / 1024)} KiB, and ` +
+  const note = `\n\n[Cut at the 128 KiB limit: this result was ${Math.ceil(bytes.byteLength / 1024)} KiB, and ` +
     'only its beginning is shown above. To get a complete result, narrow the request: fewer rows, a shorter ' +
     'time range, or fewer fields.]';
   let end = MCP_TOOL_RESULT_MAX_BYTES - encoder.encode(note).byteLength;
