@@ -6,7 +6,7 @@ Give the person a short report on their Agents: what needs attention, how the te
 
 ## 1. Health
 
-**One Agent** ("check on Ops", "how is Ops doing", a health check of one): find its `agentId` with `list_agents`, then call `check_agent` with it. Don't stop at `list_agents` or `get_agent`: `check_agent` checks every part (connections, model, Slack presence, Channels, schedules, repositories, website logins) and returns each problem with a `fix`. It tests each custom connection once and changes nothing. If your client shows Chickpea cards and a card shows its result, say one short sentence and go on to use.
+**One Agent** ("check on Ops", "how is Ops doing", "is Ops healthy", a health check of one): find its `agentId` with `list_agents`, then call `check_agent` with it. Don't stop at `list_agents` or `get_agent`: `check_agent` checks every part (connections, model, Slack presence, Channels, schedules, repositories, website logins) and returns each problem with a `fix`. It tests each custom connection once and changes nothing. If your client shows Chickpea cards and a card shows its result, say one short sentence and go on to use.
 
 **All of them:**
 
@@ -38,6 +38,8 @@ Then the use, in two or three lines: runs in the window, how many people asked, 
 Then one line for everything that's fine, such as "4 other Agents and 3 schedules look healthy." Don't list healthy items one by one unless the person asks.
 
 End with the fixes and new test questions you'd suggest, and let the person choose. Make no change until they say which.
+
+After a fix, call `check_agent` again. If the Agent still has a problem, offer to test drive it (`get_guide` topic `test-drive`).
 
 **Why didn't it answer?** Call `check_agent` with the `place` where the person wrote: omit it for their direct messages, or pass the Channel's `channelId` from `get_agent`. The `admission` check says whether a message from them there reaches this Agent, and why not.
 

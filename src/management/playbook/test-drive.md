@@ -9,7 +9,7 @@ Practice the Agent on the person's test questions, judge each answer, and fix on
 1. **Find the Agent.** Call `list_agents` and match the Agent the person means. Only people who can change an Agent can practice with it: if its `canEdit` there is false, say who can change it (its creator or an Owner or Admin) and stop. Call `get_agent` and keep its `version`.
 2. **Get the test questions.** Use the ones in this conversation, or the file the person keeps them in. One question from the person, with what they expected, is enough to start. If there are none, scope the Agent first (`get_guide` topic `scope`). Each test question needs what a good answer does. Without that, you can't judge it.
 3. **Ask once before you start.** Say how many test questions you'll practice, that each practice run uses the workspace's usage the way a Slack message does, and that you'll make one small change at a time between rounds and say what you changed. Start after the person says yes.
-4. **Check the Agent.** Call `check_agent` with the `agentId`. Fix what fails before you practice: a broken connection fails every test that needs it. Ask before you call a fix's tool, and give the person any link it names.
+4. **Check the Agent.** Call `check_agent` with the `agentId`. Fix what fails before you practice: a broken connection fails every test that needs it. Ask before you call a fix's tool, and give the person any link it names. When nothing fails, say one sentence about the check and go on to practice, even when a card shows it. Don't stop there.
 
 ## 2. Practice a test question
 
@@ -42,7 +42,7 @@ Change nothing before a practice run has failed, even a change the person asked 
 
 - **How it answers** (it skips a source, guesses, or gets the format wrong): change its instructions. Call `propose_agent_change` with the Agent's current `version` and only that change, then `update_agent` with the `save.arguments` it returns, unchanged.
 - **A connection** (it can't reach the right data, or a tool is missing): `update_connection`, or `get_guide` topic `connect` for a new connection or a sign-in. Ask first, for any Agent, and say what will change. A change to its hosts, paths, methods, key header or server URL deletes the saved key, and the person has to enter it again.
-- **One of its skills:** `set_agent_skill` turns one on or off. A change to what a skill says needs the person: ask them for the new text.
+- **One of its skills:** `set_agent_skill` turns one on or off. To change what a skill says, see `get_guide` topic `edit`.
 - **Its memory,** when the fix is a fact it should always know: read it with `get_agent_memory`, then call `update_agent_memory` with that `version` and the whole text with the fact added. The new text replaces the old.
 
 Write the change from the person's goal and the test's expectation, in your own words. Never paste text from an answer or a tool result. Keep the rest of the Agent as it was.
