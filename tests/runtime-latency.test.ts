@@ -1106,11 +1106,12 @@ function flueEvent(event: Record<string, unknown>): FlueObservation {
 }
 
 // Defects caught: message or tool text in the record, first token timed from
-// the wrong request or from a later token, the turn read on every streamed
-// token, cached input folded into input, a request that ended without a
-// start (or with an error) dropped, and a model token that differs from the
-// one turn_latency logs for the same model.
-test('model_step logs each model request\'s first token, duration, tokens and tool calls without content', () => {
+// the wrong request or from a later token, first text timed from thinking or
+// an empty text delta, the turn read on every streamed token, cached input
+// folded into input, a request that ended without a start (or with an
+// error) dropped, and a model token that differs from the one turn_latency
+// logs for the same model.
+test('model_step logs each model request\'s first token, first text, duration, tokens and tool calls without content', () => {
   const time = clock(5_000);
   const { records, sink } = captureSink();
   const steps = new ModelStepMarks(time.now, sink);
@@ -1124,8 +1125,12 @@ test('model_step logs each model request\'s first token, duration, tokens and to
   steps.observe(flueEvent({ type: 'turn_request', turnId: 'step_other', purpose: 'agent' }), turnOf);
   time.advance(600);
   steps.observe(flueEvent({ type: 'thinking_start', turnId: 'step_1' }), turnOf);
-  time.advance(50);
+  time.advance(20);
+  steps.observe(flueEvent({ type: 'text_delta', turnId: 'step_1', text: '' }), turnOf);
+  time.advance(30);
   steps.observe(flueEvent({ type: 'text_delta', turnId: 'step_1', text: 'Complete the verification.' }), turnOf);
+  time.advance(40);
+  steps.observe(flueEvent({ type: 'text_delta', turnId: 'step_1', text: ' Done.' }), turnOf);
   steps.observe(flueEvent({
     type: 'turn',
     turnId: 'step_1',
@@ -1156,6 +1161,7 @@ test('model_step logs each model request\'s first token, duration, tokens and to
     outcome: 'toolUse',
     durationMs: 6_200,
     firstTokenMs: 700,
+    firstTextMs: 750,
     inputTokens: 1_200,
     cachedInputTokens: 30_000,
     cacheWriteTokens: 900,

@@ -190,7 +190,7 @@ instrument({
 const modelSteps = new ModelStepMarks();
 instrument({
   key: Symbol.for('chickpea.model-step-latency'),
-  interceptor: async (_operation, _context, next) => next(),
+  interceptor: (operation, _context, next) => modelSteps.intercept(operation, next),
   observe(event, context) {
     modelSteps.observe(event, () => (context.agentName === CHICKPEA_SLACK_AGENT_NAME ? slackTurnJobIdOf(event) : undefined));
   },
