@@ -176,7 +176,7 @@ const REASON_TOKENS = new Set([
   'paid_plan_required', 'user_group_policy_denied', 'two_factor_required',
   'handle_collision', 'name_collision', 'invalid_handle', 'channel_membership_required',
   'private_channel_invite_required', 'rate_limited', 'user_group_create_ambiguous',
-  'slack_unavailable', 'slack_operation_failed', 'agent_off',
+  'slack_unavailable', 'slack_refused', 'slack_operation_failed', 'agent_off',
   // 5.0 error codes (management/mcp-v5/conventions.ts) not already above.
   'not_allowed', 'not_found', 'invalid_input', 'changed_since_read', 'confirmation_expired',
   'in_progress', 'key_reused', 'still_in_use', 'setup_link_unusable', 'model_unavailable',

@@ -281,16 +281,14 @@ test('a memory lease that ends a turn in the generic failure logs one operator l
     .map((call) => call.arguments[0] as { event?: string })
     .filter((line) => line?.event === 'chickpea.turn.agent_failure');
 
-  const changed = await runAsTheAppBot(h, dmTurn(5), async () => {
-    await getMemoryStateStore(h.env).putAgentMemory({ agentId: h.agent.id, body: 'Refunds go to account 7.', expectedRevision: 1 });
-  });
-  assert.ok(changed.posted.includes(AGENT_FAILURE_TEXT), 'memory changed while the model ran');
+  // The archive starts while the model runs: the turn already holds the app's bot.
+  const changed = await runAsTheAppBot(h, dmTurn(5), () => startUninstalling(h));
+  assert.ok(changed.posted.includes(AGENT_FAILURE_TEXT), 'the app began uninstalling while the model ran');
   assert.deepEqual(failures(), [
     { event: 'chickpea.turn.agent_failure', reason: 'memory_delivery_lease_rejected', stage: 'after_run', agentId: h.agent.id },
   ]);
 
-  // The turn already holds the app's bot (resolved once per Agent) when the archive starts.
-  await startUninstalling(h);
+  // The turn already holds the app's bot (resolved once per Agent) while it uninstalls.
   const ended = await runAsTheAppBot(h, dmTurn(6));
   assert.equal(ended.memoryBlocks.length, 0, 'the model never ran');
   assert.ok(ended.posted.includes(AGENT_FAILURE_TEXT), 'the app is being uninstalled');
@@ -300,6 +298,28 @@ test('a memory lease that ends a turn in the generic failure logs one operator l
   for (const posted of [changed.posted, ended.posted]) {
     assert.equal(/memory_delivery_lease_rejected|before_run|after_run|agent_failure/.test(posted), false, 'nothing diagnostic reaches Slack');
   }
+}));
+
+test('memory another run saves after a turn read it, before its first lease check, still lets the model run', async (t) => withHarness(t, async (h) => {
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  const store = getMemoryStateStore(h.env);
+  let saved: Promise<unknown> | undefined;
+  // The selection metric is the last step of reading the turn's memory.
+  t.mock.method(console, 'info', (...args: unknown[]) => {
+    if (saved || args[0] !== '[chickpea] memory_metric' || !String(args[1]).includes('"selection"')) return;
+    saved = store.putAgentMemory({ agentId: h.agent.id, body: `${MEMORY}\nRefunds close within a week.`, expectedRevision: 1 });
+  });
+  const { memoryBlocks, posted } = await runAsTheAppBot(h, dmTurn(40));
+  assert.ok(saved, 'another run saved after this turn read its memory');
+  await saved;
+  assert.equal(memoryBlocks.length, 1, 'the model ran');
+  assert.match(memoryBlocks[0] ?? '', /account 99/, 'on the memory the turn read');
+  assert.doesNotMatch(memoryBlocks[0] ?? '', /within a week/);
+  assert.ok(posted.includes(ANSWER), 'the answer was posted');
+  assert.equal(posted.includes(AGENT_FAILURE_TEXT), false);
+  assert.deepEqual(warn.mock.calls.map((call) => call.arguments[0] as { event?: string })
+    .filter((line) => line?.event === 'chickpea.turn.agent_failure'), []);
+  assert.equal((await store.getAgentMemory(h.agent.id)).revision, 2);
 }));
 
 test("an app Agent's Channel history reads Chickpea's bot and other Agent apps as Agents, and its own posts too", async (t) => withHarness(t, async (h) => {

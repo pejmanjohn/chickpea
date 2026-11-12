@@ -217,6 +217,24 @@ export async function listWebsiteLogins(store: Pick<SettingsStore, 'getSetting' 
   return logins.map((login, index) => withState(login, states[index]));
 }
 
+/**
+ * Every saved login's site and username, from entries `listWebsiteLogins`
+ * skips as malformed too, for a copy of a run to remove. Throws when the
+ * catalog row does not parse, so no copy is built without them.
+ */
+export async function websiteLoginNames(
+  store: Pick<SettingsStore, 'getSetting'>,
+): Promise<{ hosts: string[]; usernames: string[] }> {
+  const raw = await store.getSetting(WEBSITE_LOGINS_SETTING);
+  const entries: unknown = raw === undefined ? [] : JSON.parse(raw);
+  if (!Array.isArray(entries)) throw new Error('The website login catalog is malformed.');
+  const values = (key: 'host' | 'username') => entries.flatMap((entry: unknown) => {
+    const value = entry && typeof entry === 'object' ? (entry as Record<string, unknown>)[key] : undefined;
+    return typeof value === 'string' && value.trim() ? [value] : [];
+  });
+  return { hosts: values('host'), usernames: values('username') };
+}
+
 export async function getWebsiteLogin(
   store: SettingsStore,
   id: string,

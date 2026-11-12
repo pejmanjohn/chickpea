@@ -22,6 +22,7 @@ export const META_ADS_WRITE_TOOL_EFFECTS = {
 
 /** Tools reviewed against Meta's official Ads MCP documentation. */
 export const META_ADS_REVIEWED_TOOL_EFFECTS = {
+  ads_account_get_activity_logs: 'read',
   ads_get_ad_account_custom_audiences: 'read',
   ads_get_ad_accounts: 'read',
   ads_get_ad_entities: 'read',
@@ -149,9 +150,14 @@ const META_ADS_WRITE_SCHEMA_CONTRACTS = {
  * Custom audiences and custom conversions, reviewed in November, keep their
  * live names minus `dataset_id` and Meta's November correlation fields
  * (`advertiser_job`, `after_answer_offer_report`, `scheduled_task_run`), which
- * no tool sends. The helpers send request metadata only: no pagination.
+ * no tool sends. The activity log sends its time window, category and limit
+ * only: no `object_id` or `user_id` filter and no correlation field. The
+ * helpers send request metadata only: no pagination.
  */
 const META_ADS_SENDABLE_ARGUMENTS = {
+  ads_account_get_activity_logs: [
+    'ad_account_id', 'end_time', 'event_category', 'limit', 'start_time',
+  ],
   ads_get_ad_account_custom_audiences: [
     'ad_account_id', 'advertiser_request', 'client_conversation_id', 'cursor', 'limit', 'subtype_filter',
   ],

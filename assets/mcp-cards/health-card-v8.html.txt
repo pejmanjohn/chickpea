@@ -1,0 +1,844 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Chickpea health card</title>
+<style>/*
+ * Framework-free MCP App styles.
+ */
+
+@layer base {
+  :root {
+    color-scheme: light dark;
+    --background: var(
+      --color-background-primary,
+      light-dark(rgb(255 255 255), rgb(24 24 24))
+    );
+    --foreground: var(
+      --color-text-primary,
+      light-dark(rgb(26 28 31), rgb(255 255 255))
+    );
+    --card: color-mix(in oklab, var(--foreground) 5%, var(--background));
+    --card-foreground: var(--color-text-primary, var(--foreground));
+    --primary: var(
+      --color-text-info,
+      light-dark(rgb(51 156 255), rgb(131 195 255))
+    );
+    --primary-foreground: var(
+      --color-text-inverse,
+      light-dark(rgb(255 255 255), rgb(13 13 13))
+    );
+    --secondary: var(
+      --color-background-secondary,
+      light-dark(rgb(255 255 255 / 96%), rgb(54 54 54 / 96%))
+    );
+    --secondary-foreground: var(--color-text-primary, var(--foreground));
+    --muted: color-mix(in srgb, var(--foreground) 10%, transparent);
+    --muted-foreground: var(
+      --color-text-secondary,
+      light-dark(rgb(26 28 31 / 49.4%), rgb(255 255 255 / 49.8%))
+    );
+    --accent: var(
+      --color-background-info,
+      light-dark(rgb(229 242 255), rgb(13 39 63))
+    );
+    --accent-foreground: var(--color-text-info, var(--primary));
+    --destructive: var(
+      --color-text-warning,
+      light-dark(rgb(226 85 7), rgb(255 133 73))
+    );
+    --border: var(
+      --color-border-secondary,
+      light-dark(rgb(26 28 31 / 8%), rgb(255 255 255 / 8.2%))
+    );
+    --input: var(
+      --color-border-primary,
+      light-dark(rgb(26 28 31 / 11.8%), rgb(255 255 255 / 12%))
+    );
+    --ring: var(--color-ring-primary, var(--primary));
+    --font-size-base: var(--font-text-md-size, 14px);
+    --radius: var(--border-radius-lg, 12.5px);
+  }
+
+  :root[data-theme="light"] {
+    color-scheme: light;
+  }
+
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+  }
+
+  body {
+    margin: 0;
+    color: var(--foreground);
+    background: var(--background);
+    font-size: max(11px, var(--font-size-base));
+    font-weight: var(--font-weight-normal, 430);
+    line-height: 1.5;
+  }
+
+  /* MCP sandboxes can force their own font on body, so restore the host font below it. */
+  body,
+  body > * {
+    font-family: var(
+      --font-sans,
+      -apple-system,
+      system-ui,
+      "Segoe UI",
+      sans-serif
+    );
+  }
+
+  h1,
+  h2,
+  h3,
+  p {
+    margin-block: 0;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-weight: var(--font-weight-medium, 500);
+    line-height: 1.25;
+  }
+
+  h1 {
+    font-size: calc(var(--font-size-base) * 1.7142857143);
+  }
+
+  h2 {
+    font-size: calc(var(--font-size-base) * 1.4285714286);
+  }
+
+  h3 {
+    font-size: calc(var(--font-size-base) * 1.2857142857);
+  }
+}
+
+@layer components {
+  .cursor-interaction {
+    cursor: var(--cursor-interaction, pointer);
+  }
+
+  .card {
+    min-width: 0;
+    padding: 12px;
+    overflow-wrap: break-word;
+    border-radius: calc(var(--radius) * 1.6);
+    corner-shape: superellipse(1.5);
+    color: var(--card-foreground);
+    background: var(--card);
+  }
+
+  .btn,
+  .form-check-input,
+  .form-control,
+  .form-select {
+    box-sizing: border-box;
+    font: inherit;
+  }
+
+  .btn {
+    appearance: button;
+    display: inline-flex;
+    inline-size: fit-content;
+    max-inline-size: 100%;
+    min-height: 28px;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    margin: 0;
+    padding: 0 8px;
+    border: 1px solid var(--input);
+    border-radius: var(--radius);
+    corner-shape: superellipse(1.5);
+    color: var(--secondary-foreground);
+    background: var(--secondary);
+    cursor: var(--cursor-interaction, pointer);
+    text-align: center;
+    text-decoration: none;
+    white-space: nowrap;
+    user-select: none;
+  }
+
+  .btn:not(:disabled):hover {
+    background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+  }
+
+  .btn-primary {
+    border-color: transparent;
+    color: var(--primary-foreground);
+    background: var(--foreground);
+    background-clip: padding-box;
+  }
+
+  .btn-primary:not(:disabled):hover {
+    background: color-mix(in srgb, var(--foreground) 80%, transparent);
+    background-clip: padding-box;
+  }
+
+  .btn-ghost {
+    border-color: transparent;
+    color: var(--muted-foreground);
+    background: transparent;
+  }
+
+  .btn-ghost:not(:disabled):hover {
+    color: var(--foreground);
+    background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+  }
+
+  .btn:not(.btn-primary):is([aria-pressed="true"], [aria-selected="true"]) {
+    border-color: var(--primary);
+    color: var(--primary-foreground);
+    background: var(--primary);
+  }
+
+  .btn:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  .btn:disabled,
+  .form-check-input:disabled,
+  .form-control:disabled,
+  .form-select:disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
+  }
+
+  .form-label {
+    display: block;
+    margin-bottom: 6px;
+    color: var(--foreground);
+  }
+
+  .form-control,
+  .form-select {
+    display: block;
+    width: 100%;
+    min-height: 28px;
+    padding: 0 8px;
+    outline: none;
+    border: 1px solid var(--input);
+    border-radius: var(--radius);
+    corner-shape: superellipse(1.5);
+    color: var(--foreground);
+    background: var(--secondary);
+  }
+
+  .form-control::placeholder {
+    color: var(--muted-foreground);
+  }
+
+  .form-select {
+    appearance: none;
+    padding-right: 32px;
+    background-image:
+      linear-gradient(45deg, transparent 50%, var(--muted-foreground) 50%),
+      linear-gradient(135deg, var(--muted-foreground) 50%, transparent 50%);
+    background-position:
+      calc(100% - 14px) 50%,
+      calc(100% - 10px) 50%;
+    background-repeat: no-repeat;
+    background-size: 4px 4px;
+    cursor: var(--cursor-interaction, pointer);
+  }
+
+  .form-select:not(:disabled):hover {
+    background-color: color-mix(
+      in srgb,
+      var(--foreground) 6%,
+      var(--secondary)
+    );
+  }
+
+  textarea.form-control {
+    min-height: 72px;
+    padding: 8px 10px;
+    resize: vertical;
+  }
+
+  .form-control:focus-visible,
+  .form-select:focus-visible {
+    border-color: var(--ring);
+    box-shadow: inset 0 0 0 1px var(--ring);
+  }
+
+  .form-check {
+    display: flex;
+    min-height: 20px;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .form-check-input {
+    appearance: none;
+    display: grid;
+    width: 16px;
+    height: 16px;
+    flex: 0 0 auto;
+    place-items: center;
+    margin: 0;
+    border: 1px solid var(--input);
+    border-radius: 5px;
+    corner-shape: superellipse(1.5);
+    color: var(--primary-foreground);
+    background: var(--secondary);
+    cursor: var(--cursor-interaction, pointer);
+  }
+
+  .form-check-input:checked {
+    border-color: var(--primary);
+    background: var(--primary);
+  }
+
+  .form-check-input:checked::after {
+    width: 7px;
+    height: 4px;
+    border-bottom: 2px solid currentColor;
+    border-left: 2px solid currentColor;
+    content: "";
+    transform: translateY(-1px) rotate(-45deg);
+  }
+
+  .form-check-input:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  .form-check-label {
+    color: var(--foreground);
+  }
+
+  svg.lucide {
+    display: block;
+    width: 16px;
+    height: 16px;
+    flex: none;
+    stroke-width: 1.6;
+  }
+
+  .text-small {
+    font-size: max(11px, calc(var(--font-size-base) - 2px));
+  }
+
+  .text-muted {
+    color: var(--muted-foreground);
+  }
+
+  .text-destructive {
+    color: var(--destructive);
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+}
+
+/*
+ * The Agent card in ChatGPT's own look: its type, colors and black primary
+ * buttons, from the host's style variables. Chickpea shows only in the avatar
+ * and the quote accent. Without host variables the colors fall back to the
+ * mockup's palette, and without a host theme to light.
+ */
+
+:root:not([data-theme]) {
+  color-scheme: light;
+}
+
+:root {
+  --cp-bg: var(--color-background-primary, light-dark(#ffffff, #181818));
+  --cp-fg: var(--color-text-primary, light-dark(#0d0d0d, #ededed));
+  /* Secondary text stays at AA contrast; the host's tertiary text does not. */
+  --cp-muted: var(--color-text-secondary, light-dark(#5d5d5d, #cdcdcd));
+  --cp-line: var(--color-border-primary, light-dark(#e5e5e5, rgb(255 255 255 / 20%)));
+  --cp-soft: light-dark(#f7f7f7, rgb(255 255 255 / 6%));
+  --cp-ok: light-dark(#1a7f37, #40c977);
+  --cp-warn: light-dark(#a15c00, #f0a050);
+  --cp-danger: #c62828;
+  --cp-danger-hover: #a31f1f;
+  --cp-accent: #e8901a;
+  --cp-size: var(--font-text-md-size, 14px);
+}
+
+html,
+body {
+  background: var(--cp-bg);
+  color: var(--cp-fg);
+}
+
+body {
+  font-size: var(--cp-size);
+  line-height: 1.45;
+}
+
+.cp-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 16px;
+  overflow-wrap: anywhere;
+}
+
+.cp-hdr {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.cp-avatar {
+  flex: none;
+  display: block;
+}
+
+.cp-avatar svg,
+.cp-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Slack's rounded square, cropped as Admin and the setup page crop it. */
+.cp-avatar img {
+  object-fit: cover;
+}
+
+.cp-avatar-lg {
+  width: 44px;
+  height: 44px;
+}
+
+.cp-avatar-lg img {
+  border-radius: 12px;
+}
+
+.cp-avatar-sm {
+  width: 26px;
+  height: 26px;
+}
+
+.cp-avatar-sm img {
+  border-radius: 7px;
+}
+
+/* On an alert card, an Agent's picture keeps the alert art's red. */
+.cp-avatar-alert img {
+  outline: 2px solid var(--cp-danger);
+  outline-offset: 1px;
+}
+
+.cp-heading {
+  min-width: 0;
+}
+
+.cp-title {
+  margin: 0;
+  font-size: calc(var(--cp-size) * 1.143);
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+/* Focus lands here after a redraw only so the keyboard stays on the card. */
+.cp-title:focus {
+  outline: none;
+}
+
+.cp-sub {
+  margin: 2px 0 0;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.93);
+}
+
+.cp-ok {
+  color: var(--cp-ok);
+}
+
+.cp-warn {
+  color: var(--cp-warn);
+}
+
+.cp-text {
+  margin: 12px 0 0;
+  white-space: pre-line;
+}
+
+.cp-sect {
+  margin: 14px 0 6px;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.79);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.cp-sect + .cp-text {
+  margin-top: 0;
+}
+
+.cp-quote {
+  margin: 6px 0;
+  padding: 2px 0 2px 10px;
+  border-left: 3px solid var(--cp-accent);
+  white-space: pre-line;
+}
+
+.cp-note {
+  margin: 6px 0 0;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.93);
+}
+
+.cp-note.cp-warn {
+  color: var(--cp-warn);
+}
+
+.cp-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--cp-line);
+  border-radius: 12px;
+  background: var(--cp-soft);
+}
+
+.cp-msg {
+  display: grid;
+  grid-template-columns: 26px 1fr;
+  gap: 8px;
+  font-size: calc(var(--cp-size) * 0.964);
+}
+
+/*
+ * A host may pass an example's line breaks as they are; they show as written.
+ * A long one shows its start and an ellipsis: the tool's result holds it whole.
+ */
+.cp-said {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.cp-clamp-2 {
+  -webkit-line-clamp: 2;
+}
+
+.cp-clamp-5 {
+  -webkit-line-clamp: 5;
+}
+
+.cp-init {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border-radius: 7px;
+  background: #4a6cc4;
+  color: #ffffff;
+  font-size: calc(var(--cp-size) * 0.86);
+  font-weight: 600;
+}
+
+.cp-line {
+  margin: 10px 0 0;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.964);
+}
+
+.cp-line b {
+  color: var(--cp-fg);
+  font-weight: 500;
+}
+
+.cp-chip {
+  display: inline-flex;
+  padding: 0 9px;
+  border: 1px solid var(--cp-line);
+  border-radius: 999px;
+  background: var(--cp-soft);
+  color: var(--cp-fg);
+  font-size: calc(var(--cp-size) * 0.9);
+}
+
+.cp-foot {
+  margin: 14px 0 0;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.93);
+}
+
+.cp-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: calc(var(--cp-size) * 0.964);
+}
+
+.cp-steps li {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.cp-ic {
+  display: inline-grid;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  box-sizing: border-box;
+  place-items: center;
+  border-radius: 50%;
+  font-size: 11px;
+}
+
+.cp-ic-done {
+  background: color-mix(in srgb, var(--cp-ok) 14%, transparent);
+  color: var(--cp-ok);
+}
+
+.cp-ic-now {
+  border: 2px solid var(--cp-accent);
+  border-right-color: transparent;
+  animation: cp-spin 0.9s linear infinite;
+}
+
+.cp-ic-todo {
+  border: 1.5px solid var(--cp-line);
+}
+
+.cp-ic-failed {
+  background: color-mix(in srgb, var(--cp-danger) 14%, transparent);
+  color: light-dark(var(--cp-danger), #ff8a80);
+  font-weight: 700;
+}
+
+@keyframes cp-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cp-ic-now {
+    animation: none;
+  }
+}
+
+.cp-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 14px;
+}
+
+.cp-card .btn {
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  font-size: calc(var(--cp-size) * 0.964);
+  font-weight: 600;
+}
+
+.cp-btn-primary {
+  border-color: transparent;
+  color: var(--color-text-inverse, light-dark(#ffffff, #0d0d0d));
+  background: var(--cp-fg);
+}
+
+.cp-btn-primary:not(:disabled):hover {
+  background: color-mix(in srgb, var(--cp-fg) 82%, var(--cp-bg));
+}
+
+.cp-btn-danger {
+  border-color: transparent;
+  color: #ffffff;
+  background: var(--cp-danger);
+}
+
+.cp-btn-danger:not(:disabled):hover {
+  background: var(--cp-danger-hover);
+}
+
+.cp-btn-secondary {
+  border-color: var(--cp-line);
+  color: var(--cp-fg);
+  background: var(--cp-bg);
+}
+
+.cp-card .btn:focus-visible {
+  outline: 2px solid var(--color-ring-primary, light-dark(#0169cc, #ffffff));
+  outline-offset: 2px;
+}
+
+.cp-acts[hidden],
+.cp-error[hidden] {
+  display: none;
+}
+
+.cp-error {
+  margin: 10px 0 0;
+  color: light-dark(#b42318, #ff8a80);
+  font-size: calc(var(--cp-size) * 0.93);
+}
+
+.cp-rows {
+  display: flex;
+  flex-direction: column;
+  container-type: inline-size;
+  margin: 12px 0 0;
+  padding: 0;
+  border: 1px solid var(--cp-line);
+  border-radius: 14px;
+  list-style: none;
+}
+
+.cp-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border-top: 1px solid var(--cp-line);
+  font-size: calc(var(--cp-size) * 0.964);
+}
+
+.cp-row:first-child {
+  border-top: 0;
+}
+
+/* A narrow card puts a row's link under its words instead of squeezing them. */
+@container (max-width: 520px) {
+  .cp-row:has(> .cp-link-go) {
+    grid-template-columns: 22px minmax(0, 1fr);
+    row-gap: 2px;
+  }
+
+  .cp-row > .cp-link-go {
+    grid-column: 2;
+    justify-self: start;
+    white-space: normal;
+    text-align: start;
+  }
+}
+
+.cp-row-detail {
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.893);
+  white-space: pre-line;
+}
+
+.cp-row-detail.cp-warn {
+  color: var(--cp-warn);
+}
+
+.cp-tile {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 6px;
+  background: var(--cp-fg);
+  color: var(--cp-bg);
+  font-size: calc(var(--cp-size) * 0.86);
+  font-weight: 700;
+}
+
+.cp-ic-warning {
+  background: color-mix(in srgb, var(--cp-warn) 16%, transparent);
+  color: var(--cp-warn);
+  font-weight: 700;
+}
+
+.cp-ic-unknown {
+  border: 1.5px solid var(--cp-line);
+  color: var(--cp-muted);
+  font-weight: 700;
+}
+
+.cp-card .btn-sm {
+  min-height: 30px;
+  padding: 0 12px;
+  font-size: calc(var(--cp-size) * 0.893);
+  white-space: nowrap;
+}
+
+.cp-link {
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--cp-fg);
+  font: inherit;
+  font-size: calc(var(--cp-size) * 0.93);
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.cp-link-go::after {
+  content: " →" / "";
+}
+
+.cp-link:not(:disabled):hover {
+  text-decoration: underline;
+}
+
+.cp-link:disabled {
+  color: var(--cp-muted);
+}
+
+.cp-link:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid var(--color-ring-primary, light-dark(#0169cc, #ffffff));
+  outline-offset: 2px;
+}
+
+/* Two answers side by side where there is room, one above the other on a phone. */
+.cp-panes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 10px;
+  margin: 10px 0 0;
+}
+
+.cp-pane {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--cp-line);
+  border-radius: 12px;
+  font-size: calc(var(--cp-size) * 0.964);
+}
+
+.cp-pane-label {
+  margin: 0 0 4px;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.79);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.cp-pane-text {
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+</style></head>
+<body><div id="card"></div><script>"use strict";(()=>{function G(e){return f(e)?{..."code"in e?{code:e.code}:{},...f(e.data)?{data:e.data}:{}}:{}}function be({told:e=[],outcome:t},n){return{modelContent:e.join(`
+`),privateContent:{card:{version:n,told:e,...t===void 0?{}:{outcome:t}}}}}var Ce=1e3;function K(e,t){let n=f(e)?e.privateContent:void 0,o=f(n)&&f(n.card)?n.card:void 0;if(o?.version!==t||!Array.isArray(o.told))return;let i=o.told.filter(r=>typeof r=="string"&&r.length<=Ce);return{told:Y(i),...o.outcome===void 0?{}:{outcome:o.outcome}}}function J(e,t,n,o){return o.keepsState?(n.state.told!==e.told||n.state.outcome!==e.outcome)&&t.type!=="result"?[{type:"state",state:be(n.state,o.version)}]:[]:n.effects.flatMap(r=>r.type==="context"?[{type:"context",text:r.text}]:[])}var Xe=2*6e4;var g=(e,t=[])=>({state:e,effects:t}),b=(e,t=[])=>({state:{view:e,busy:!1},effects:t}),T=(e,t)=>({type:"call",call:{tool:e,args:t}}),H=(e,t)=>({...e,effects:[{type:"context",text:t},...e.effects]}),Re=6,Ee=1500;function X(e,t={}){return(n,o)=>{if(n.checking&&o.type==="press")return{state:n,effects:[]};let i=e(n,o.type==="result"||o.type==="reply"?{...o,result:ve(o.result)}:o),{told:r=[],outcome:s}=n,p=0;if(o.type==="result"){({told:r,outcome:s}=o.kept??{told:[]});let l=s===void 0?void 0:t.resume?.(i.state.view,s);l&&(i={state:{view:l,busy:!1},effects:[]});let a=e({...i.state,seq:n.seq},{type:"reread",now:o.now});p=a.effects.filter(({type:k})=>k==="call").length;let y=new Set(a.effects.map(({type:k})=>k));i={state:a.state,effects:[...i.effects.filter(({type:k})=>!y.has(k)),...a.effects]}}else if(n.checking&&i.state.view===n.view){let l=(o.type==="reply"||o.type==="unreachable")&&o.call.seq===n.seq;p=n.checking-(l?1:0)}let u=i.effects.flatMap(l=>l.type==="context"?[l.text]:[]);u.length>0&&(r=Y([...r.filter(l=>!u.includes(l)),...u]),s=t.remember?.(i.state.view)??s);let w=i.state.view===n.view?n.seq:n.seq+1,{told:d,outcome:h,checking:R,...C}=i.state;return{state:{...C,seq:w,...r.length?{told:r}:{},...s===void 0?{}:{outcome:s},...p>0?{checking:p}:{}},effects:[...u.length>0?[{type:"context",text:r.join(`
+`)}]:[],...i.effects.flatMap(l=>l.type==="context"?[]:l.type==="call"?[{...l,call:{...l.call,seq:w}}]:[l])]}}}function Y(e){let t=e.slice(-Re);for(;t.length>1&&t.join(`
+`).length>Ee;)t=t.slice(1);return t}function O(e,t){return t.seq!==e.seq}function ve(e){let t=e._meta?.["chickpea/held"],n=e.structuredContent;if(!f(t)||!f(n))return e;let o=typeof t.confirmToken=="string"?t.confirmToken:void 0,i=typeof t.undoToken=="string"?t.undoToken:void 0;return{...e,structuredContent:{...n,...i?{undoToken:i}:{},...o&&f(n.confirmation)?{confirmation:{...n.confirmation,confirmToken:o}}:{}}}}var E="That did not work. Try again.",Q="Chickpea could not be reached. Try again.",S={kind:"notice",title:"Nothing to show here."};function _(e){return typeof e=="string"&&URL.parse(e)?.protocol==="https:"?e:void 0}var z=60;function I(e,t){let n=e.length>z?`${e.slice(0,z-1)}\u2026`:e;return`the Agent ${JSON.stringify(n)}${t?` (@${t})`:""}`}function Z(e,t){return typeof t!="object"||t===null||Array.isArray(t)?e:{...e,_meta:{...t,...e._meta}}}var F=200;function Ae(e){let t=e.replace(/\s+/g," ").trim();return t.length>F?`${t.slice(0,F-1)}\u2026`:t}function ee(e){return JSON.stringify(Ae(e))}function f(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function M(e){for(let t of Te(e)){let n=f(t.structuredContent)?t.structuredContent.error:void 0;if(f(n)&&typeof n.code=="string"&&typeof n.message=="string")return{code:n.code,message:n.message,retryable:n.retryable,fix:n.fix}}}function Te(e){let t=e.hostError?.data,n=o=>f(o)?[o.mcp_tool_result,o.call_tool_result].filter(f):[];return[e,...n(e._meta),...f(t)?[t,...n(t),...n(t._meta)]:[]]}function N(e){return M(e)?.message??(e.isError?E:void 0)}function te(e){return e.hostError!==void 0&&M(e)===void 0}function ne(e){return e===void 0||f(e)&&typeof e.label=="string"&&(typeof e.url=="string"||typeof e.tool=="string"&&f(e.arguments))}function oe(e){return e.tool==="reconnect_service"||e.tool==="connect_model_provider"||e.tool==="connect_service"&&!("custom"in e.arguments)}function re(e){return t=>{let n;try{n=e(t)}catch{return{busy:t.busy,error:t.error,avatar:"none",title:S.title,blocks:[],buttons:[]}}return t.checking?{...n,busy:!0}:n}}var Se="2026-01-26",_e=6e4,V=class{constructor(t){this.appInfo=t;window.addEventListener("message",n=>{n.source===window.parent&&this.#i(n.data)}),this.on("ui/notifications/host-context-changed",n=>{let o=n,{styles:i,...r}=this.hostContext??{},s=o.theme!==void 0&&o.theme!==r.theme&&!o.styles;this.hostContext={...r,...i&&!s?{styles:i}:{},...o}})}appInfo;#r=1;#e=new Map;#n=new Map;hostContext;hostCapabilities;on(t,n){this.#n.set(t,[...this.#n.get(t)??[],n])}async connect(){let t=await this.#t("ui/initialize",{appInfo:this.appInfo,appCapabilities:{availableDisplayModes:["inline"]},protocolVersion:Se});this.hostContext=t?.hostContext,this.hostCapabilities=t?.hostCapabilities,this.#o("ui/notifications/initialized",{}),new ResizeObserver(()=>this.#o("ui/notifications/size-changed",{height:Math.ceil(document.body.getBoundingClientRect().height)})).observe(document.body)}async callTool(t,n,o){let i=(r,s)=>s===void 0?r:{isError:!0,hostError:G(s)};try{return i(await this.#t("tools/call",{name:t,arguments:n},(r,s)=>o(i(r,s))))}catch(r){if(r instanceof Error)throw r;return i(void 0,r)}}async sendMessage(t){let n=this.hostCapabilities?.experimental?.["openai/message"]?.draft!==void 0,o=t.draft!==void 0&&n?t.draft:t.sent;L(await this.#t("ui/message",{role:"user",content:[{type:"text",text:o}],...o===t.draft?{_meta:{"openai/message":{target:"active",send:!1}}}:{}}))}async updateModelContext(t){L(await this.#t("ui/update-model-context",{content:[{type:"text",text:t}]}))}async openLink(t){if(window.openai?.openExternal)try{await window.openai.openExternal({href:t,redirectUrl:!1});return}catch{}L(await this.#t("ui/open-link",{url:t}))}#o(t,n){window.parent.postMessage({jsonrpc:"2.0",method:t,params:n},"*")}#t(t,n,o){let i=this.#r++;return new Promise((r,s)=>{let p=setTimeout(()=>{o?this.#e.set(i,{resolve:u=>o(u),reject:u=>o(void 0,u??{})}):this.#e.delete(i),s(new Error(`${t} timed out`))},_e);this.#e.set(i,{resolve:u=>{clearTimeout(p),r(u)},reject:u=>{clearTimeout(p),s(u)}}),window.parent.postMessage({jsonrpc:"2.0",id:i,method:t,params:n},"*")})}#i(t){if(!(!t||t.jsonrpc!=="2.0")){if(t.method===void 0){let n=typeof t.id=="number"?this.#e.get(t.id):void 0;if(!n)return;this.#e.delete(t.id),t.error?n.reject(t.error):n.resolve(t.result);return}for(let n of this.#n.get(t.method)??[])n(t.params);t.id!==void 0&&window.parent.postMessage({jsonrpc:"2.0",id:t.id,result:{}},"*")}}};function L(e){if(e?.isError===!0)throw new Error("The host refused it")}function Me(e){document.documentElement.setAttribute("data-theme",e),document.documentElement.style.colorScheme=e}function Ve(e){for(let[t,n]of Object.entries(e))n!==void 0&&document.documentElement.style.setProperty(t,n)}var ie=[];function P(e){e?.theme&&Me(e.theme);let t=e?.["openai/interactionCursor"],n={...e?.styles?.variables,"--cursor-interaction":typeof t=="string"&&/^[a-z-]+$/.test(t)?t:void 0};for(let o of ie)n[o]===void 0&&document.documentElement.style.removeProperty(o);Ve(n),ie=Object.keys(n).filter(o=>n[o]!==void 0)}var se=(e,t,n)=>`<svg viewBox="0 0 44 44" aria-hidden="true" focusable="false"><rect width="44" height="44" rx="12" fill="${e}"/><path d="M22 6c-9 0-14 8-14 18v14h28V24C36 14 31 6 22 6z" fill="${t}"/><path d="M22 12c-6 0-9.5 6-9.5 13.5S16 38 22 38s9.5-5 9.5-12.5S28 12 22 12z" fill="${n}"/><circle cx="18.5" cy="26" r="1.3" fill="#3a2a1e"/><circle cx="25.5" cy="26" r="1.3" fill="#3a2a1e"/><path d="M20.5 30.2q1.5 1.2 3 0" stroke="#3a2a1e" stroke-width="1.1" fill="none" stroke-linecap="round"/></svg>`,$e={agent:se("#3a2a1e","#E8901A","#f3d9b1"),alert:se("#2a1f2e","#c2453a","#f1d3b8")},He={done:"done",now:"in progress",todo:"to do",failed:"failed"},ae={done:{glyph:"\u2713",words:"done"},now:{glyph:"",words:"in progress"},failed:{glyph:"!",words:"needs attention"},warning:{glyph:"!",words:"warning"},unknown:{glyph:"?",words:"unknown"}};function c(e,t,n){let o=document.createElement(e);return t&&(o.className=t),n!==void 0&&(o.textContent=n),o}var ce=new Set;function le(e,t,n){let o=c("span",`cp-avatar cp-avatar-${t}`),i=()=>{o.innerHTML=$e[e]};if(!n||ce.has(n))return i(),o;e==="alert"&&o.classList.add("cp-avatar-alert");let r=c("img");return r.alt="",r.decoding="async",r.addEventListener("error",()=>{ce.add(n),i()},{once:!0}),r.src=n,o.append(r),o}function Oe(e){let t=c("p","cp-sub");for(let n of e)t.append(n.tone?c("span",`cp-${n.tone}`,n.text):n.text);return t}function Ie(e,t,n){switch(e.kind){case"text":return c("p","cp-text",e.text);case"quote":return c("blockquote","cp-quote",e.text);case"section":return c("h3","cp-sect",e.label);case"note":return c("p",`cp-note${e.tone?` cp-${e.tone}`:""}`,e.text);case"exchange":{let o=(u,w,d)=>{let h=c("div");return h.append(c("span","sr-only",`${u}: `),c("div",`cp-said cp-clamp-${d}`,w)),h},i=c("span","cp-init","Y");i.setAttribute("aria-hidden","true");let r=c("div","cp-msg");r.append(i,o("You",e.ask,2));let s=c("div","cp-msg");s.append(le(t,"sm",n),o(e.agent,e.answer,5));let p=c("div","cp-thread");return p.append(r,s),p}case"line":{let o=c("p","cp-line");for(let i of e.parts)o.append("chip"in i?c("span","cp-chip",i.chip):i.strong?c("b",void 0,i.text):i.text);return o}case"steps":{let o=c("ul","cp-steps");for(let{label:i,state:r}of e.steps){let s=c("li"),p=c("span",`cp-ic cp-ic-${r}`,r==="done"?"\u2713":r==="failed"?"!":"");p.setAttribute("aria-hidden","true"),s.append(p,i,c("span","sr-only",` (${He[r]})`)),o.append(s)}return o}case"rows":{let o=c("ul","cp-rows");return o.append(...e.rows.map(Ne)),o}case"panes":{let o=c("div","cp-panes");for(let{label:i,text:r}of e.panes){let s=c("section","cp-pane");s.append(c("h3","cp-pane-label",i),c("div","cp-pane-text",r)),o.append(s)}return o}}}function Ne(e){let t=c("li","cp-row");if(e.icon==="tile"){let i=c("span","cp-tile",e.tile??"");i.setAttribute("aria-hidden","true"),t.append(i)}else{let i=ae[e.icon],r=c("span",`cp-ic cp-ic-${e.icon}`,i.glyph);r.setAttribute("aria-hidden","true"),t.append(r)}let n=c("div","cp-row-body"),o=c("div","cp-row-title",e.title);if(e.icon!=="tile"&&o.append(c("span","sr-only",` (${ae[e.icon].words})`)),n.append(o),e.detail&&n.append(c("div",`cp-row-detail${e.tone?` cp-${e.tone}`:""}`,e.detail)),t.append(n),e.control){let{label:i,action:r,style:s}=e.control;t.append(de(i,r,s==="link"?"cp-link cp-link-go":s==="toggle"?"cp-link":`btn btn-sm cp-btn-${s}`))}return t}function de(e,t,n){let o=c("button",`${n} cursor-interaction`,e);return o.type="button",o.dataset.action=t,o}function ue(e,t){let n=c("p","sr-only");n.setAttribute("aria-live","polite");let o=c("main","cp-card"),i=c("div","cp-content"),r=c("div","cp-acts"),s=c("p","cp-error");s.setAttribute("role","alert"),o.append(i,r,s),e.replaceChildren(n,o),o.addEventListener("click",d=>{let h=d.target?.closest("button[data-action]");h instanceof HTMLButtonElement&&!h.disabled&&t(h.dataset.action)});let p="",u="",w=new Map;return{render(d){let h=JSON.stringify(d);if(h===p)return;p=h;let R=o.contains(document.activeElement),C=d.announce??d.title;n.textContent!==C&&(n.textContent=C);let l=c("header","cp-hdr"),a=d.avatar==="none"?"agent":d.avatar,{avatarUrl:y}=d;d.avatar!=="none"&&l.append(le(d.avatar,"lg",y));let k=c("div","cp-heading"),m=c("h2","cp-title");if(m.tabIndex=-1,d.done){let x=c("span","cp-ok","\u2713 ");x.setAttribute("aria-hidden","true"),m.append(x)}m.append(d.title),k.append(m),d.subtitle&&k.append(Oe(d.subtitle)),l.append(k);let v=new Map,xe=d.blocks.map(x=>{let A=JSON.stringify([x,a,y]),U=!v.has(A)&&w.get(A)||Ie(x,a,y);return v.has(A)||v.set(A,U),U});w=v,i.replaceChildren(l,...xe,...d.foot?[c("p","cp-foot",d.foot)]:[]);let W=JSON.stringify(d.buttons);W!==u&&(u=W,r.replaceChildren(...d.buttons.map(x=>de(x.label,x.action,`btn cp-btn-${x.tone}`)))),r.hidden=d.buttons.length===0;for(let x of o.querySelectorAll("button"))x.disabled=d.busy,x.toggleAttribute("aria-busy",d.busy);s.textContent=d.error??"",s.hidden=!d.error,R&&!o.contains(document.activeElement)&&m.focus({preventScroll:!0})}}}var Le=1e3;function fe(e,t){let n=new V({name:e,version:String(8)}),o=t.initial,i,r=0,s,p=ue(document.getElementById("card"),a=>u({type:"press",action:a,now:Date.now()}));function u(a){let y=t.step(o,a),k=J(o,a,y,{keepsState:Pe(),version:8});o=y.state,a.type==="press"&&(s=void 0),p.render(t.present(o));for(let m of k)w(m);for(let m of y.effects)h(m)}function w(a){a.type==="state"?Promise.resolve(window.openai?.setWidgetState?.(a.state)).catch(()=>{}):n.updateModelContext(a.text).catch(()=>{})}function d(a,y){te(y)?u({type:"unreachable",call:a,now:Date.now()}):u({type:"reply",call:a,result:y,now:Date.now()})}function h(a){switch(a.type){case"call":{let y=m=>d(a.call,m),k=m=>{(!m.isError||M(m))&&y(m)};n.callTool(a.call.tool,a.call.args,k).then(y,()=>u({type:"unreachable",call:a.call,now:Date.now()}));return}case"timer":clearTimeout(i),i=setTimeout(()=>u({type:"tick",now:Date.now()}),a.inMs);return;case"message":n.sendMessage(a).catch(()=>u({type:"refused",effect:a,now:Date.now()}));return;case"open":n.openLink(a.url).catch(()=>u({type:"refused",effect:a,now:Date.now()}));return;case"context":return}}function R(){let a=Date.now();a-r<Le||o.view.kind==="waiting"||(r=a,u({type:"reread",now:a}))}function C(a,y){s={result:a,kept:y!==void 0},r=Date.now(),u({type:"result",result:a,kept:y,now:Date.now()})}n.on("ui/notifications/tool-result",a=>{o.view.kind==="waiting"&&C(Z(a,window.openai?.toolResponseMetadata),pe())}),n.on("ui/notifications/tool-cancelled",()=>u({type:"no_result",now:Date.now()})),n.on("ui/notifications/host-context-changed",()=>P(n.hostContext)),window.addEventListener("openai:set_globals",()=>{let a=s&&!s.kept?pe():void 0;s&&a&&C(s.result,a)}),window.addEventListener("focus",R),document.addEventListener("visibilitychange",()=>{document.visibilityState==="visible"&&R()});let l=!0;new IntersectionObserver(([a])=>{a?.isIntersecting&&!l&&R(),l=a?.isIntersecting??l}).observe(document.body),p.render(t.present(o)),n.connect().then(()=>P(n.hostContext),()=>u({type:"no_result",now:Date.now()}))}function Pe(){return typeof window.openai?.setWidgetState=="function"}function pe(){return K(window.openai?.widgetState,8)}function D(e){return typeof e.plain=="string"&&e.plain!==""?e.plain:De[e.part][e.status]}var De={connection:{ok:"Connected.",warning:"Connected, but something needs a look.",failing:"It is not working.",unknown:"The check could not tell whether it works."},model:{ok:"It can run.",warning:"It may not run as expected.",failing:"It cannot run now.",unknown:"The check could not tell whether it can run."},slack:{ok:"Ready in Slack.",warning:"Not ready in Slack yet.",failing:"It has a problem in Slack.",unknown:"The check could not tell whether it is ready in Slack."},channel:{ok:"Answers here.",warning:"Not answering here yet.",failing:"It cannot answer here.",unknown:"The check could not tell whether it answers here."},schedule:{ok:"On schedule.",warning:"Some of its runs need a look.",failing:"Its runs are failing.",unknown:"The check could not tell whether it runs."},repository:{ok:"GitHub access is installed.",warning:"GitHub access needs a look.",failing:"It cannot reach this repository.",unknown:"The check could not tell whether it can reach this repository."},website_login:{ok:"Ready to sign in.",warning:"This login needs a look.",failing:"It cannot sign in.",unknown:"The check could not tell whether it can sign in."},admission:{ok:"A message reaches it.",warning:"A message may not reach it.",failing:"A message does not reach it.",unknown:"Slack decides when the message arrives."}};var ge={view:{kind:"waiting"},busy:!1,seq:0},he=X(qe);function qe(e,t){switch(t.type){case"result":return je(t.result);case"press":return e.busy||e.view.kind!=="health"?g(e):Be(e,e.view,t.action);case"reply":return O(e,t.call)?g(e):Ue(e,t.call.tool,t.result);case"unreachable":return O(e,t.call)?g(e):t.call.tool==="get_agent"||e.view.kind!=="health"?g(e):g({view:$(e.view),busy:!1,error:Q});case"refused":return g({...e,error:E});case"no_result":return e.view.kind==="waiting"?b(S):g(e);case"tick":return g(e);case"reread":return!e.busy&&e.view.kind==="health"?g(e,[T("get_agent",{agentId:e.view.checked.agent.agentId})]):g(e)}}function je(e){let t=N(e);return t?b({kind:"notice",title:t}):we(e.structuredContent)?b({kind:"health",checked:e.structuredContent}):b(S)}function Be(e,t,n){switch(n){case"show":return b({...t,open:!0});case"hide":{let{open:o,...i}=t;return b(i)}case"check_again":return t.checked.person.you?{state:{view:t,busy:!0},effects:[We(t.checked)]}:g(e);default:{let o=Number(n.slice(4)),i=t.checked.checks[o],r=i?.fix;if(!i||!r)return g(e);if("url"in r){let s=_(r.url);return s?g(e,[{type:"open",url:s}]):g(e)}return oe(r)?{state:{view:{...t,fixing:o},busy:!0},effects:[T(r.tool,r.arguments)]}:g(e,[ye(t,o)])}}}function ye(e,t){let n=e.checked.checks[t];return{type:"message",sent:`Fix ${n.name} for ${e.checked.agent.name}: ${n.fix.label}.`}}function We(e){return T("check_agent",{agentId:e.agent.agentId,...e.place.kind==="channel"&&e.place.channelId?{place:e.place.channelId}:{}})}function Ue(e,t,n){let{view:o}=e;if(o.kind!=="health")return g(e);let i=N(n),r=n.structuredContent;if(t==="get_agent")return e.busy||i?g(e):ze(e,o,r);if(t==="check_agent"){if(i||!we(r))return g({view:o,busy:!1,error:i??E});let d=r.checks.filter(({status:h})=>h==="failing"||h==="warning").length;return H(b({kind:"health",checked:r,...o.open?{open:!0}:{}}),`The person checked ${I(r.agent.name)} again from the card: ${d===0?"no problems found":`${d} ${d===1?"thing needs":"things need"} attention`}.`)}let s=!i&&f(r)&&f(r.setup)?r.setup:void 0,p=_(s?.url);if(!p||o.fixing===void 0){let d=f(r)&&typeof r.summary=="string"?r.summary:void 0;return g({view:$(o),busy:!1,error:i??d??E})}if(typeof s?.setupToken!="string")return b($(o),[ye(o,o.fixing)]);let u=[...(o.opened??[]).filter(d=>d!==o.fixing),o.fixing],w=o.checked.checks[o.fixing]?.fix;return H(b({...$(o),opened:u},[{type:"open",url:p}]),`The person pressed ${ee(w?.label??"Fix it")} for ${I(o.checked.agent.name)} on the card, which opened Chickpea's page. It changes when they finish there.`)}function ze(e,t,n){let o=f(n)&&Array.isArray(n.connections)?n.connections:void 0;if(!o)return g(e);let i=Object.fromEntries(o.map(({connectionId:p,status:u})=>[p,u]));if(!t.before)return b({...t,before:i});let s=t.checked.checks.filter(({part:p,status:u,connectionId:w})=>p==="connection"&&u!=="ok"&&w!==void 0&&t.before[w]!=="ready"&&i[w]==="ready").map(({connectionId:p})=>p).filter(p=>!t.fixed?.includes(p));return s.length?b({...t,fixed:[...t.fixed??[],...s]}):g(e)}function $({fixing:e,...t}){return t}function we(e){return f(e)&&f(e.agent)&&typeof e.agent.name=="string"&&f(e.person)&&f(e.place)&&Array.isArray(e.checks)&&e.checks.every(t=>f(t)&&typeof t.name=="string"&&typeof t.detail=="string"&&typeof t.part=="string"&&Object.hasOwn(me,t.part)&&typeof t.status=="string"&&Object.hasOwn(j,t.status)&&ne(t.fix))}var me={connection:"connections",model:"model",slack:"Slack",channel:"Channels",schedule:"schedules",repository:"repositories",website_login:"website logins",admission:"who can reach it"},j={failing:0,warning:1,unknown:2,ok:3},ke=re(Fe);function Fe(e){let t={busy:e.busy,error:e.error},{view:n}=e;switch(n.kind){case"waiting":return{...t,avatar:"none",title:"Loading\u2026",blocks:[],buttons:[]};case"notice":return{...t,avatar:"none",title:n.title,blocks:[],buttons:[]};case"health":return{...t,...Ge(n)}}}function Ge(e){let{checked:t}=e,n=t.checks.map((l,a)=>({check:l,index:a,status:Ke(e,l)})),o=n.filter(({status:l})=>l==="failing"||l==="warning"),i=n.filter(({status:l})=>l==="unknown"),r=n.filter(({status:l})=>l==="ok"),s=[...o,...i].sort((l,a)=>j[l.status]-j[a.status]||l.index-a.index),p=t.agent.handle?`@${t.agent.handle}`:t.agent.name,u=[...new Set(t.checks.map(({part:l})=>me[l]))],w=s.length>0,d=[...s.map(l=>q(e,l)),...r.length?[{icon:"done",title:`${r.length} ${w?"other ":""}${r.length===1?"part looks":"parts look"} healthy`,control:e.open?{label:"Hide",action:"hide",style:"toggle"}:{label:"Show",action:"show",style:"toggle"}}]:[],...e.open?r.map(l=>q(e,l)):[]],h=o.length>0?`${o.length} ${o.length===1?"thing needs":"things need"} attention`:i.length>0?"No problems found":"Everything looks healthy",R=e.opened?.at(-1),C=R===void 0?void 0:n[R];return{avatar:n.some(({status:l})=>l==="failing")?"alert":"agent",avatarUrl:_(t.agent.avatarUrl),title:h,...C?{announce:`${h}. ${B(C.check)}: ${q(e,C).detail}`}:{},subtitle:[{text:`${p} \xB7 checked its ${Je(u)}`}],blocks:d.length?[{kind:"rows",rows:d}]:[],buttons:t.person.you?[{label:"Check again",action:"check_again",tone:"secondary"}]:[]}}function Ke(e,t){return t.connectionId!==void 0&&e.fixed?.includes(t.connectionId)?"ok":t.status}function q(e,{check:t,index:n,status:o}){if(o==="ok")return{icon:"done",title:B(t),detail:e.fixed?.includes(t.connectionId??"")?"Connected.":D(t)};let i=e.opened?.includes(n);return{icon:i?"now":o==="failing"?"failed":o==="warning"?"warning":"unknown",title:B(t),detail:i?"Finish on the Chickpea page that opened, then come back.":D(t),...t.fix?{control:{label:t.fix.label,action:`fix:${n}`,style:"link"}}:{}}}function B(e){let{channelId:t}=e;if(e.part==="channel"&&t&&e.name===t)return"A private Channel";let n=e.part==="admission"&&t&&e.name.endsWith(`, in ${t}`)?`${e.name.slice(0,-t.length)}a private Channel`:e.name;return e.part==="admission"?`${n.charAt(0).toUpperCase()}${n.slice(1)}`:n}function Je(e){return e.length<=2?e.join(" and "):`${e.slice(0,-1).join(", ")} and ${e.at(-1)}`}fe("chickpea-health-card",{initial:ge,step:he,present:ke});})();
+</script></body>
+</html>

@@ -52,7 +52,7 @@ import {
 import type { ConnectionAccount, ConnectionAccountPolicy } from '../src/config/types.ts';
 import { projectMcpToolInputSchema } from '../src/config/mcp-test.ts';
 import {
-  META_ACCOUNT_READ_NAMES, META_DEFERRED_READS, META_HELD_READ, metaAccountReadSchema,
+  META_ACCOUNT_READ_NAMES, META_DEFERRED_READS, metaAccountReadSchema,
 } from './helpers/meta-ads-account-reads.ts';
 import { getConnectorPreset } from '../src/config/presets.ts';
 import {
@@ -8430,7 +8430,7 @@ test("Admin offers Meta's helpers after a fresh discovery shows Meta's added opt
   } finally { fixture.store.close(); fixture.settings.close(); }
 });
 
-test("Admin offers Meta's account-wide reads as available reports, grants each for the approved accounts, and refuses the activity log, creatives and errors", async () => {
+test("Admin offers Meta's account-wide reads, the activity log among them, as available reports, grants each for the approved accounts, and refuses creatives and errors", async () => {
   const fixture = harness();
   const request = (path: string, method: string, body?: unknown) => fixture.app.request(`http://localhost${path}`, {
     method, headers: auth(), ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
@@ -8449,16 +8449,17 @@ test("Admin offers Meta's account-wide reads as available reports, grants each f
     });
     assert.equal(created.status, 201, await created.clone().text());
     const id = ((await created.json()) as Record<string, any>).account.id as string;
-    const refusedReads = [META_HELD_READ.name, ...META_DEFERRED_READS.map(({ name }) => name)];
+    const refusedReads = META_DEFERRED_READS.map(({ name }) => name);
     const discoveredTools = [...META_ACCOUNT_READ_NAMES, ...refusedReads].map((name) =>
       ({ name, inputSchema: projectMcpToolInputSchema(metaAccountReadSchema(name), name) }));
     const pending = (await fixture.store.listConnectionAccounts('T_TEST')).find((account) => account.id === id)!;
     if (pending.policy.kind !== 'mcp') throw new Error('expected MCP');
-    // The activity log was granted while it was reviewed, as on Amber during the 775 probe.
+    // The activity log was granted while #775 reviewed it, as on Amber during that probe, and stays granted.
+    const activityLog = 'ads_account_get_activity_logs';
     const ready = await fixture.store.putConnectionAccount({
       ...pending, lifecycle: 'ready', policy: {
-        ...pending.policy, discoveredTools, allowedTools: [META_HELD_READ.name],
-        toolPolicies: { [META_HELD_READ.name]: { effect: 'read', argumentConstraints: { ad_account_id: ['123'] } } },
+        ...pending.policy, discoveredTools, allowedTools: [activityLog],
+        toolPolicies: { [activityLog]: { effect: 'read', argumentConstraints: { ad_account_id: ['123'] } } },
       },
     }, pending.revision);
     const inventory = await request('/admin/api/agents/agent_support/connections?workspaceId=T_TEST', 'GET');

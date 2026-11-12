@@ -1,7 +1,6 @@
 import { planAllowsConnectionFileUpload } from '../connections/file-upload-tool.ts';
 import { conversationThreadImageInventory } from './thread-images.ts';
 import { retainThreadFiles, threadFileManifest } from './thread-files.ts';
-import { verifyOwnMemoryWrite } from './memory-update-terminal.ts';
 import type { ConversationStreamChunk } from '@flue/runtime';
 import { WebClient } from '@slack/web-api';
 
@@ -1467,6 +1466,9 @@ async function runTurnAttempt(
           ? turn.sharedChannel === true
           : turn.sharedChannel !== false,
         grantsWebsiteLogins: runGrantsWebsiteLogins(runtimePlanDecision.runtimePlan, assignment.agent.websiteLogins),
+        ...(runtimePlanDecision.runtimePlan.websiteLogins
+          ? { planWebsiteLogins: runtimePlanDecision.runtimePlan.websiteLogins }
+          : {}),
         ...(options.turnId ? { turnJobId: options.turnId } : {}),
         settings: () => settingsStore ?? getSettingsStore(platformEnv),
         ...(options.runReviewSettings ? { prefetched: options.runReviewSettings } : {}),
@@ -2680,74 +2682,12 @@ async function runTurnAttempt(
         ? undefined
         : { codingWorkspaceOpened: agentResult.codingWorkspaceOpened },
     );
-    let ownMemoryWrite = false;
-    if (agentResult?.memoryUpdate && preparedMemory?.validateReceiptLease) {
-      // The turn's own write changes memory, which fails the ordinary lease.
-      // A verified own-turn receipt stands in for it; the answer delivers as is.
-      try {
-        const dependencies = resolveManagementApprovalDependencies(options.managementApproval, () => {
-          const identity = options.appStores?.identity ?? getIdentityStore(platformEnv);
-          const config = options.appStores?.config ?? getConfigStore(platformEnv);
-          const management = options.appStores?.management ?? getManagementStore(platformEnv);
-          return {
-            identity,
-            config,
-            management,
-            service: createLiveWorkspaceManagementService(platformEnv, {
-              identity,
-              ...(settingsStore ? { settings: settingsStore } : {}),
-              ...(options.usageStore ? { usage: options.usageStore } : {}),
-              overrides: {
-                identity,
-                config,
-                management,
-                ...(publicUrl ? { setupBaseUrl: publicUrl } : {}),
-                ...(options.appStores
-                  ? {
-                      memory: options.appStores.memory,
-                      routines: options.appStores.routines,
-                      work: options.appStores.work,
-                    }
-                  : {}),
-              },
-            }),
-          };
-        });
-        const turnJobId = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
-        const requesterText = personRequestText(turn);
-        const signal = {
-          agentId: assignment.agent.id,
-          workspaceId: turn.workspaceId,
-          channelId: turn.channelId,
-          threadTs: conversationThreadTs(turn, assignment.runtimeContract),
-          conversationKind: slackConversationKind(turn),
-          slackUserId: turn.userId,
-          eventId: turn.eventId,
-          messageTs: turn.messageTs,
-          turnJobId,
-          ...(requesterText === undefined ? {} : { requesterText }),
-          ...(turn.requesterTimezone ? { requesterTimezone: turn.requesterTimezone } : {}),
-        } as const;
-        const actor = await resolveSlackManagementActor(signal, dependencies.identity);
-        ownMemoryWrite = await verifyOwnMemoryWrite({
-          hint: agentResult.memoryUpdate,
-          agentId: assignment.agent.id,
-          turnJobId,
-          getOperation: (operationId) => dependencies.service.getOperation(actor, operationId),
-          validateReceiptLease: preparedMemory.validateReceiptLease,
-        });
-      } catch {
-        // Unavailable receipts or revoked actors retain the ordinary lease check.
-        ownMemoryWrite = false;
-      }
-    }
     // Confirmation only prevents reinjecting the same selection into this
     // transcript. A concurrent turn can legitimately advance the epoch before
     // this one finishes; that bookkeeping race must not discard a completed,
     // lease-valid answer.
     await preparedMemory?.confirmInjection();
-    const leaseValid = ownMemoryWrite ||
-      (await (earlyLeaseCheck ?? preparedMemory?.validateLease()) ?? true);
+    const leaseValid = await (earlyLeaseCheck ?? preparedMemory?.validateLease()) ?? true;
     if (preparedMemory?.ownerBound && !leaseValid && !recoveredText) {
       logMemoryLeaseFailure('after_run', assignment.agentId, preparedMemory.quarantined === true);
       await statusTurn.prepareFinal();
@@ -2756,11 +2696,8 @@ async function runTurnAttempt(
       await finishDelivery('failed');
       return;
     }
-    text = resolveMemoryDeliveryText(
-      text,
-      recoveredText,
-      leaseValid,
-    );
+    // Access ended: only a coding turn's recovered notice still posts, never the draft.
+    if (!leaseValid && recoveredText) text = recoveredText;
     if (installationContext) {
       text = renderSlackSelfMention(text, installationContext.botUserId);
     }
@@ -3314,21 +3251,9 @@ export async function freezeRuntimePlanForTurn(input: {
   return { decision, unavailableFallback: parts.sandboxUnavailableFallback };
 }
 
-const MEMORY_CHANGED_RETRY_TEXT =
-  'Agent memory or Slack access changed while I was answering, so I withheld the draft. Before trying again, check whether any requested external action already completed.';
-
-/** An answer whose delivery no memory write, Agent creation or hand-off decides: the lease alone fences it. */
+/** An answer whose delivery no Agent creation or hand-off decides: the lease alone fences it. */
 function plainAnswer(result: AgentDispatchResult): boolean {
-  return !result.memoryUpdate && !result.agentCreationTerminal && !result.frontDeskHandoff;
-}
-
-function resolveMemoryDeliveryText(
-  draft: string,
-  recoveredText: string | undefined,
-  leaseValid: boolean,
-): string {
-  if (leaseValid) return draft;
-  return recoveredText || MEMORY_CHANGED_RETRY_TEXT;
+  return !result.agentCreationTerminal && !result.frontDeskHandoff;
 }
 
 /**

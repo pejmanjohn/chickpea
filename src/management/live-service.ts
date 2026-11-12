@@ -99,7 +99,7 @@ export function createLiveWorkspaceManagementService(
   const config = overrides.config ?? getConfigStore(env);
   const slackCredentials = options.slackCredentials ?? getSlackCredentialDependencies(env);
   const scheduleThreads = async () =>
-    (await import('./schedule-threads-live.ts')).liveScheduleThreads(env, config as ConfigStore, settings);
+    (await import('./schedule-threads-live.ts')).liveScheduleThreads(env, config as ConfigStore, settings, slackCredentials);
   const slackTransport = async (workspaceId: string): Promise<SlackTransport> => {
     const installation = await config.getWorkspaceInstallation(workspaceId);
     if (!installation || installation.health === 'revoked') {

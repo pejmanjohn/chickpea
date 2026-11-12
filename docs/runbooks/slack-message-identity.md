@@ -341,8 +341,8 @@ example, the model call re-ran after the isolate was lost), the stream is
 stopped and its message replaced with the answer and a `_Corrected_` marker.
 It uses the same bound and split as recovery, with room for the marker, and
 the same fresh-post fallback on a definite content error. A delivery lease that
-fails after the answer streamed (memory another writer changed during the
-turn, a disabled Agent, a lost Channel grant) takes the same correction, with
+fails after the answer streamed (a disabled Agent, a lost Channel grant; a
+memory change never fails it) takes the same correction, with
 the failure notice as the final. A stream already retired for its age keeps
 its prefix, and the notice posts as a new reply.
 

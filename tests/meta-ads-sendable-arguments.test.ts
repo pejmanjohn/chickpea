@@ -29,6 +29,8 @@ import {
 
 // The filters and routes Chickpea never sends, by tool.
 const NEVER_SENT: Readonly<Record<string, readonly string[]>> = {
+  // Its ID filters, and the correlation fields every older read kept.
+  ads_account_get_activity_logs: ['advertiser_request', 'client_conversation_id', 'object_id', 'user_id'],
   ads_get_ad_entities: ['object_ids'],
   ads_get_customconversions: ['dataset_id'],
   ads_insights_advertiser_context: ['entity_ids'],
@@ -54,8 +56,9 @@ const HELPER_ARGUMENTS: Readonly<Record<string, readonly string[]>> = {
 
 /**
  * The reviewed contract: what a tool could send before Meta's November change,
- * minus its hidden filters. Custom audiences and custom conversions were
- * reviewed against their live names, minus Meta's November correlation fields.
+ * minus its hidden filters. Custom audiences, custom conversions and the
+ * activity log were reviewed against their live names, minus Meta's November
+ * correlation fields.
  */
 function reviewedArguments(name: string): string[] {
   if (HELPER_ARGUMENTS[name]) return [...HELPER_ARGUMENTS[name]!].sort();
@@ -73,7 +76,7 @@ const connectionOf = (...discoveredTools: McpConnectionToolInfo[]) => ({ discove
 
 test('each reviewed Meta tool may send exactly its reviewed arguments, whatever else its live schema lists', () => {
   const liveTools = Object.keys(META_LIVE_NAMES);
-  assert.equal(liveTools.length, 21);
+  assert.equal(liveTools.length, 22);
   for (const name of liveTools) {
     const tool = metaDiscoveredTool(name);
     if (UNAVAILABLE_LIVE.includes(name)) {
@@ -91,7 +94,7 @@ test('each reviewed Meta tool may send exactly its reviewed arguments, whatever 
 
 test('no sendable list names a hidden filter, a blocked route, or an unclassified ID or account', () => {
   const reviewed = Object.keys(META_ADS_REVIEWED_TOOL_EFFECTS);
-  assert.equal(reviewed.length, 22);
+  assert.equal(reviewed.length, 23);
   for (const name of reviewed) {
     const sendable = metaAdsSendableArgumentNames(name);
     assert.ok(sendable.length > 0, name);
@@ -111,7 +114,8 @@ test('no sendable list names a hidden filter, a blocked route, or an unclassifie
     // Including the writes whose live schemas are unavailable.
     assert.deepEqual([...sendable].sort(), reviewedArguments(name), name);
   }
-  assert.deepEqual(metaAdsSendableArgumentNames('ads_account_get_activity_logs'), []);
+  assert.deepEqual(metaAdsSendableArgumentNames('ads_account_get_activity_logs'),
+    ['ad_account_id', 'end_time', 'event_category', 'limit', 'start_time']);
 });
 
 test("no reviewed tool sends Meta's November correlation fields", () => {
@@ -180,6 +184,43 @@ test('an added optional argument, ID-shaped or not, is neither shown nor sendabl
       assert.equal(Object.hasOwn(shown, added), false, label);
       assert.deepEqual(Object.keys(shown).sort(), reviewedArguments(name).filter((value) => Object.hasOwn(schema.properties, value)), label);
     }
+  }
+});
+
+test("the activity log is shown its time window, category and limit, and its limit asks for 50 to start", () => {
+  const name = 'ads_account_get_activity_logs';
+  const schema = metaToolSchema(name, META_LIVE_NAMES[name], {
+    extra: { limit: { type: 'integer', description: 'Maximum number of entries.' } },
+  });
+  const tool = metaDiscoveredTool(name);
+  const { tools } = reviewedMetaAdsTools([listed(name, schema)], connectionOf(tool));
+  const shown = (tools[0] as { inputSchema: { properties: Record<string, { description?: string }> } }).inputSchema.properties;
+  assert.deepEqual(Object.keys(shown).sort(), ['ad_account_id', 'end_time', 'event_category', 'limit', 'start_time']);
+  assert.match(shown.limit!.description!, /^Maximum number of entries\. Start with 50\. /);
+  assert.equal(shown.start_time!.description, undefined);
+  // Without Meta's own description the hint stands alone; another read's limit gets none.
+  const bare = reviewedMetaAdsTools([listed(name, metaToolSchema(name))], connectionOf(tool)).tools[0] as typeof tools[0];
+  assert.match((bare as { inputSchema: { properties: Record<string, { description?: string }> } })
+    .inputSchema.properties.limit!.description!, /^Start with 50\. /);
+  const audiences = 'ads_get_ad_account_custom_audiences';
+  const other = reviewedMetaAdsTools([listed(audiences, metaToolSchema(audiences))], connectionOf(metaDiscoveredTool(audiences)));
+  assert.deepEqual((other.tools[0] as { inputSchema: { properties: Record<string, unknown> } }).inputSchema.properties.limit,
+    { type: 'integer' });
+});
+
+test('the activity log is unavailable, and withheld from a stale discovery, if Meta requires a correlation field it never sends', () => {
+  const name = 'ads_account_get_activity_logs';
+  // Stored before Meta required the field, so admission still passes.
+  const stale = metaDiscoveredTool(name);
+  for (const field of ['advertiser_request', 'client_conversation_id']) {
+    const required = ['ad_account_id', field];
+    const fresh = metaDiscoveredTool(name, META_LIVE_NAMES[name], { required });
+    assert.equal(fresh.inputSchema?.ambiguous, true, field);
+    assert.equal(metaAdsRuntimePropertyNames(connectionOf(fresh), name), undefined, field);
+    const schema = metaToolSchema(name, META_LIVE_NAMES[name], { required });
+    const { tools, withheld } = reviewedMetaAdsTools([listed(name, schema)], connectionOf(stale));
+    assert.deepEqual(tools, [], field);
+    assert.deepEqual(withheld?.get(name), [field], field);
   }
 });
 
@@ -322,9 +363,8 @@ test('a reconnect drops a granted tool whose stored account field differs from t
 test('a reconnect drops a granted tool the reviewed contract no longer admits, even with an unchanged schema', (t) => {
   captureInfo(t);
   const live = Object.keys(META_LIVE_NAMES).map((name) => metaDiscoveredTool(name));
-  const held = metaDiscoveredTool('ads_account_get_activity_logs', [
-    'ad_account_id', 'advertiser_request', 'client_conversation_id', 'end_time', 'event_category', 'limit',
-    'object_id', 'start_time', 'user_id',
+  const held = metaDiscoveredTool('ads_get_creatives', [
+    'ad_account_id', 'advertiser_request', 'client_conversation_id', 'creative_ids', 'cursor', 'fields', 'limit',
   ]);
   const stored = { ...grantOn(live), discoveredTools: [...live, held] };
   stored.allowedTools = [...stored.allowedTools, held.name];

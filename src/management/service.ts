@@ -104,7 +104,11 @@ import { readSlackSkillFiles } from './slack-skill-files.ts';
 import type { SkillReplacementQuestion } from './skill-replacement-judge.ts';
 import { providerPrefix } from '../config/model-access.ts';
 import type { GatewayAttachmentClient } from '../slack/gateway/client.ts';
-import { isValidRepositoryFullName } from '../config/github-app.ts';
+import { isTransientSlackApiError } from '../slack/credentials.ts';
+import { slackPlatformErrorCode } from '../slack/errors.ts';
+import { SlackInstallationUnavailableError } from '../slack/installation-execution.ts';
+import { SlackTransportError } from '../slack/transport/types.ts';
+import { getGithubConnection, isValidRepositoryFullName, type GithubConnection } from '../config/github-app.ts';
 import { newAgentCredentialIncarnation } from '../config/connection-credential-binding.ts';
 import {
   applyConnectionCapabilityCeiling,
@@ -362,6 +366,13 @@ const DM_ROUTINE_RUNS_AS_OWNER = 'A DM routine always runs as the person whose D
 const MCP_DM_ROUTINE_KEEPS_AGENT = "A DM routine keeps its Agent over MCP. To change the Agent, ask Chickpea in that DM.";
 const SLACK_ACCESS_UNCONFIRMED = "Slack could not confirm this member's access. Try again.";
 const SCHEDULE_DM_UNAVAILABLE = 'Slack could not post in your DM, so the schedule was not saved. Try again.';
+const SCHEDULE_SLACK_DISCONNECTED = 'Chickpea\'s Slack connection needs to be reconnected in Admin, so the schedule was not saved. Save it again after that.';
+const SCHEDULE_DM_REFUSED = 'Slack would not let Chickpea post in your DM, so the schedule was not saved. A schedule in a Channel can still post.';
+/** Slack's codes for a bot token it no longer honors, or one without the access it needs. */
+const SLACK_CONNECTION_BROKEN = new Set([
+  'account_inactive', 'invalid_auth', 'missing_scope', 'no_permission', 'not_allowed_token_type', 'not_authed',
+  'team_access_not_granted', 'token_expired', 'token_revoked',
+]);
 
 /**
  * Slack revokes Channel reach from inside Slack, so it rechecks that the
@@ -4233,6 +4244,17 @@ export class WorkspaceManagementService {
     return { actor, agent: await this.requireEditableAgent(actor, agentId), stores: this.stores };
   }
 
+  /**
+   * For list_agents: the stored GitHub connection, as check_agent reads it,
+   * or undefined where this deployment keeps no settings. A read that fails
+   * counts as no connection, as it does in check_agent.
+   */
+  async githubConnection(context: ManagementActorContext): Promise<GithubConnection | undefined> {
+    await this.requireLiveActor(context, { cleanupRetention: false });
+    if (!this.stores.settings) return undefined;
+    return getGithubConnection(this.stores.settings, this.stores.env).catch((): GithubConnection => ({ mode: 'none' }));
+  }
+
   private async generatedAvatarSeeds(): Promise<string[]> {
     return (await this.stores.config.listUserAgents()).flatMap((agent) => {
       const avatar = agent.slackPresence?.avatar;
@@ -6033,10 +6055,7 @@ export class WorkspaceManagementService {
     try {
       return await threads.open({ workspaceId, slackUserId: user.slackUserId });
     } catch (error) {
-      console.warn('[chickpea:management] schedule DM did not open', JSON.stringify({
-        errorName: error instanceof Error ? error.name : 'unknown',
-      }));
-      throw new ManagementError('slack_unavailable', SCHEDULE_DM_UNAVAILABLE);
+      throw scheduleDmRefusal('schedule DM did not open', error);
     }
   }
 
@@ -6072,10 +6091,7 @@ export class WorkspaceManagementService {
         posted: true,
       };
     } catch (error) {
-      console.warn('[chickpea:management] schedule thread did not start', JSON.stringify({
-        errorName: error instanceof Error ? error.name : 'unknown',
-      }));
-      throw new ManagementError('slack_unavailable', SCHEDULE_DM_UNAVAILABLE);
+      throw scheduleDmRefusal('schedule thread did not start', error);
     }
   }
 
@@ -6151,6 +6167,7 @@ export class WorkspaceManagementService {
     } catch (error) {
       console.warn('[chickpea:management] schedule thread not withdrawn', JSON.stringify({
         errorName: error instanceof Error ? error.name : 'unknown',
+        reasonCode: scheduleDmFailure(error).reasonCode,
       }));
     }
   }
@@ -10583,6 +10600,36 @@ function membershipRevision(membership: Membership): number {
     hash = Math.imul(hash, 16_777_619);
   }
   return hash >>> 0;
+}
+
+/**
+ * Why Slack did not open or post in a DM schedule's DM, as a content-free
+ * code, and whether trying again can help: only when the cause can pass by
+ * itself. A permanent one is the Slack connection's when Chickpea cannot
+ * use the installation or Slack no longer honors its token.
+ */
+function scheduleDmFailure(error: unknown): { reasonCode: string; retryable: boolean; connectionBroken: boolean } {
+  if (error instanceof SlackInstallationUnavailableError) {
+    return { reasonCode: error.reasonCode, retryable: error.retryable, connectionBroken: !error.retryable };
+  }
+  const code = slackPlatformErrorCode(error);
+  if (!code) return { reasonCode: 'unknown', retryable: true, connectionBroken: false };
+  // The shared gateway says itself whether its failure can pass: unreachable,
+  // rate-limited and 5xx carry codes of its own that Slack's list does not name.
+  const retryable = isTransientSlackApiError(code) || (error instanceof SlackTransportError && error.retryable);
+  return { reasonCode: code, retryable, connectionBroken: !retryable && SLACK_CONNECTION_BROKEN.has(code) };
+}
+
+/** The refusal of a DM schedule Slack would not open or post in: retryable only when a retry can work. */
+function scheduleDmRefusal(warning: string, error: unknown): ManagementError {
+  const failure = scheduleDmFailure(error);
+  console.warn(`[chickpea:management] ${warning}`, JSON.stringify({
+    errorName: error instanceof Error ? error.name : 'unknown',
+    reasonCode: failure.reasonCode,
+    retryable: failure.retryable,
+  }));
+  if (failure.retryable) return new ManagementError('slack_unavailable', SCHEDULE_DM_UNAVAILABLE);
+  return new ManagementError('slack_refused', failure.connectionBroken ? SCHEDULE_SLACK_DISCONNECTED : SCHEDULE_DM_REFUSED);
 }
 
 function isExpectedMutationError(error: unknown): boolean {

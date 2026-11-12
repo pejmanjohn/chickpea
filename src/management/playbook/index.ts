@@ -29,7 +29,7 @@ export const PLAYBOOK_TOPIC_ABOUT = {
   scope: 'Agree on an Agent\'s job and write test questions, each with what a good answer does.',
   connect: 'Connect a service, sign one in again, add a custom API or MCP server, or mark which tools only read.',
   'test-drive': 'Practice an Agent on its test questions, judge each answer, and fix one thing at a time.',
-  edit: 'Change an Agent: its instructions, name, model, memory, skills or Channels, or turn it off.',
+  edit: 'Change an Agent: its instructions, name, model, memory, skills or Channels. Turn it off, or delete it.',
   schedule: 'Make an Agent post on a schedule, after practicing its task once.',
   'roll-out': 'Share an Agent with the team: its Channels, who can change it, and an announcement the person posts.',
   'check-in': 'See how Agents are doing and how the team uses them, and turn failed real asks into tests.',

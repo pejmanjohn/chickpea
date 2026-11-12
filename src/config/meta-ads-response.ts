@@ -11,6 +11,18 @@ export const META_ADS_ACCOUNT_HELPER_DESCRIPTION =
   'Verify which owner-approved Meta ad accounts are enabled and queryable. ' +
   'Returns only approved account records in ad_accounts. Do not send ad-account IDs, cursors, or pagination arguments.';
 
+/**
+ * Hints appended to a reviewed argument's description. An activity-log call
+ * without a limit returned 2.33 MB for one week on Amber, so the first call
+ * asks for a page that fits in one tool result.
+ */
+const META_ADS_ARGUMENT_HINTS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  ads_account_get_activity_logs: {
+    limit: 'Start with 50. Without a limit, one week of history can be too large to read in full. ' +
+      'For more, narrow start_time, end_time or event_category, or raise the limit.',
+  },
+};
+
 export const META_ADS_ACCOUNT_HELPER_OUTPUT_SCHEMA = {
   type: 'object',
   properties: {
@@ -105,8 +117,10 @@ export function reviewedMetaAdsTools(
       withheld.set(tool.name, reviewed ? loggedNames(unreviewed) : []);
       return [];
     }
+    const hints = META_ADS_ARGUMENT_HINTS[tool.name];
     const properties = Object.entries(isRecord(schema.properties) ? schema.properties : {})
-      .filter(([name]) => reviewed.includes(name));
+      .filter(([name]) => reviewed.includes(name))
+      .map(([name, definition]) => [name, withHint(definition, hints?.[name])]);
     return [{ ...tool, inputSchema: { ...schema, properties: Object.fromEntries(properties) } }];
   });
   return { tools: shown, withheld };
@@ -397,6 +411,12 @@ function unsupportedToolListing(reason: string): Error {
 function boundedText(value: unknown): value is string {
   return typeof value === 'string' && value.length <= MAX_META_ADS_ACCOUNT_TEXT &&
     !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value);
+}
+
+function withHint(definition: unknown, hint: string | undefined): unknown {
+  if (!hint || !isRecord(definition)) return definition;
+  const own = typeof definition.description === 'string' ? definition.description.trim() : '';
+  return { ...definition, description: own ? `${own} ${hint}` : hint };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

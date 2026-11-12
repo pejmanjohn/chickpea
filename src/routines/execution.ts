@@ -84,6 +84,7 @@ import {
   deliverRoutineRecoveryNotice,
   deliverRoutineResult,
   routineDeliveryFailure,
+  type RoutineThreadRecord,
 } from './delivery.ts';
 import {
   CREDITS_EXHAUSTED_TEXT,
@@ -160,6 +161,8 @@ interface RoutineExecutionDependencies {
   persistenceTelemetrySink?: RoutinePersistenceTelemetrySink;
   productTelemetry?: ProductTelemetryCapture;
   loadCatalog?: typeof loadModelCatalog;
+  /** Where a run's posts go as the Agent's own messages; production writes the config store. */
+  threadRecord?: RoutineThreadRecord;
 }
 
 interface PreparedExecution {
@@ -176,6 +179,7 @@ interface PreparedExecution {
   persistence: RoutinePersistenceTracker;
   sandboxUnavailableFallback: boolean;
   productTelemetry?: ProductTelemetryCapture;
+  threadRecord: RoutineThreadRecord;
 }
 
 /** Execute or reattach one durable routine attempt from app-owned checkpoints. */
@@ -297,6 +301,7 @@ export async function executeRoutineOccurrence(
             store: input.store,
             runId: current.id,
             access: freshAccess,
+            threadRecord: dependencies.threadRecord ?? getConfigStore(input.env),
           }, withCreditedBack(terminalRun.publicError ?? failure.publicError, creditedBack));
         }
       }
@@ -365,14 +370,13 @@ export async function executeRoutineOccurrence(
     }
     await prepared.workLifecycle?.markInvoked();
 
+    const { runtimePlan } = executionInitialData(prepared.envelope);
     review = await startRunReview(input.env, {
       surface: 'routine',
       // Fails closed: a Channel routine is copied only once Slack said its Channel is unshared.
       sharedChannel: prepared.routine.destination.kind !== 'direct_thread' && prepared.access.channelShared !== false,
-      grantsWebsiteLogins: runGrantsWebsiteLogins(
-        executionInitialData(prepared.envelope).runtimePlan,
-        prepared.access.config.agent.websiteLogins,
-      ),
+      grantsWebsiteLogins: runGrantsWebsiteLogins(runtimePlan, prepared.access.config.agent.websiteLogins),
+      ...(runtimePlan.websiteLogins ? { planWebsiteLogins: runtimePlan.websiteLogins } : {}),
       settings: () => dependencies.settingsStore ?? getSettingsStore(input.env),
     });
     const remainingMs = prepared.run.deadlineAt - now();
@@ -413,8 +417,7 @@ export async function executeRoutineOccurrence(
     });
     modelSettled = true;
     if (
-      prepared.prompt.prompt !== executionPrompt(prepared.envelope) ||
-      prepared.prompt.memoryEpoch !== executionInitialData(prepared.envelope).runtimePlan.memoryEpoch ||
+      !prepared.prompt.matchesApartFromMemory(executionPrompt(prepared.envelope)) ||
       !(await prepared.prompt.validateMemoryLease())
     ) {
       throw new RoutineRuntimeError(
@@ -681,6 +684,7 @@ async function prepareExecution(
     persistence,
     sandboxUnavailableFallback,
     ...(dependencies.productTelemetry ? { productTelemetry: dependencies.productTelemetry } : {}),
+    threadRecord: dependencies.threadRecord ?? getConfigStore(input.env),
   };
 }
 
@@ -910,6 +914,7 @@ async function finalizeSettlement(
             changeKeyHash: settlement.result.changeKeyHash,
             ...(settlement.result.artifacts ? { artifacts: settlement.result.artifacts } : {}),
             ...(prepared.workLifecycle ? { workLifecycle: prepared.workLifecycle } : {}),
+            threadRecord: prepared.threadRecord,
           }, prepared.access.client);
         } catch (error) {
           if (!(error instanceof RoutineRuntimeError)) throw error;
@@ -997,6 +1002,7 @@ async function finalizeSettlement(
     runId: prepared.run.id,
     access: prepared.access,
     ...(prepared.workLifecycle ? { workLifecycle: prepared.workLifecycle } : {}),
+    threadRecord: prepared.threadRecord,
   }, withCreditedBack(settlement.publicError, creditedBack));
   await deliverPauseNoticeBestEffort(prepared);
   return 'completed';
@@ -1538,6 +1544,7 @@ async function deliverFailureNoticeBestEffort(
     runId: string;
     access: RoutineRuntimeAccess;
     workLifecycle?: ShadowWorkLifecycle;
+    threadRecord: RoutineThreadRecord;
   },
   publicError: string,
 ): Promise<void> {
@@ -1552,6 +1559,7 @@ async function deliverFailureNoticeBestEffort(
       routine,
       access: input.access,
       ...(input.workLifecycle ? { workLifecycle: input.workLifecycle } : {}),
+      threadRecord: input.threadRecord,
     };
     await (run.failureClass === 'spend_limited'
       ? (await import('./pause-notice.ts')).deliverRoutinePauseNotice(notice)

@@ -53,13 +53,6 @@ interface PreparedMemoryTurn {
   /** The memory could not be prepared: the turn has none, and its lease always fails. */
   quarantined?: true;
   validateLease(): Promise<boolean>;
-  /**
-   * Only after independently verifying this turn's own applied receipt. Holds
-   * when that write sits on the injected snapshot, directly or through this
-   * turn's own earlier writes, and is still the live revision: memory another
-   * writer changed fails it.
-   */
-  validateReceiptLease?(revision: number, chainedFrom?: number): Promise<boolean>;
   confirmInjection(): Promise<boolean>;
 }
 
@@ -204,12 +197,9 @@ export async function prepareMemoryTurn(input: {
       visibilityBarrierAt: null,
       ownerBound: true,
       confirmInjection: async () => true,
-      validateReceiptLease: async (revision, chainedFrom) =>
-        (revision === memory.revision + 1 || chainedFrom === memory.revision) &&
-        outsideTurnReads(() => validateAgentMemoryLease(input.turn, runtime, memory, revision)),
       validateLease: async () => {
         const valid = await deferredLeaseMetric(
-          () => outsideTurnReads(() => validateAgentMemoryLease(input.turn, runtime, memory)),
+          () => outsideTurnReads(() => validateAgentMemoryLease(input.turn, runtime)),
         );
         emitMemoryMetric('delivery_lease', { outcome: valid ? 'valid' : 'rejected' });
         return valid;
@@ -493,11 +483,13 @@ function installationAnswersAs(
   return agentAppIsLive(agent.slackPresence) && agent.slackPresence.app.botUserId === botUserId;
 }
 
+/**
+ * Access only. Memory is not compared: another run's save or a forget never
+ * holds back a reply, and the next turn's prompt reads memory fresh.
+ */
 async function validateAgentMemoryLease(
   turn: NormalizedSlackTurn,
   runtime: AgentMemoryRuntime,
-  selected: AgentMemory,
-  receiptRevision?: number,
 ): Promise<boolean> {
   try {
     const config = runtime.config;
@@ -520,17 +512,13 @@ async function validateAgentMemoryLease(
         ])
       : undefined;
     slackFacts?.catch(() => undefined);
-    const [agent, installation, current] = await Promise.all([
+    const [agent, installation] = await Promise.all([
       config.getAgent(runtime.assignment.agentId),
       config.getWorkspaceInstallation(turn.workspaceId),
-      runtime.state.getAgentMemory(runtime.assignment.agentId),
     ]);
     if (!agent.enabled || agent.lifecycle === 'archived' ||
         !installation || installation.health === 'revoked' ||
-        (runtime.botUserId !== null && !installationAnswersAs(installation, agent, runtime.botUserId)) ||
-        (receiptRevision === undefined
-          ? current.revision !== selected.revision || current.body !== selected.body
-          : current.revision !== receiptRevision)) return false;
+        (runtime.botUserId !== null && !installationAnswersAs(installation, agent, runtime.botUserId))) return false;
     if (kind === 'im') return true;
     if (channelGrants) {
       const grants = await channelGrants;
