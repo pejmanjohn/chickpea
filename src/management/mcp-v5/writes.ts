@@ -623,7 +623,7 @@ export async function saveSchedule(
   return changeResult(deps, context, result, {
     agentId: input.agentId,
     summary: input.scheduleId ? 'Saved the schedule.'
-      : input.dm ? (name) => `Created the schedule. It posts each run in a new thread in your DM with ${name}.`
+      : input.dm ? (name) => `Created the schedule. Every run posts in one thread in your DM with ${name}, which it just started.`
         : 'Created the schedule. The Agent posts on it from now on.',
   });
 }

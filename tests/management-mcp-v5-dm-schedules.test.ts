@@ -120,7 +120,7 @@ test('save_schedule with dm "me" posts in the caller\'s own DM, in a thread its 
 
   const created = structured(await member('save_schedule', { ...DM_SCHEDULE, idempotencyKey: 'dm-create' }));
   assert.equal(created.status, 'done');
-  assert.equal(created.summary, 'Created the schedule. It posts each run in a new thread in your DM with Research.');
+  assert.equal(created.summary, 'Created the schedule. Every run posts in one thread in your DM with Research, which it just started.');
   assert.deepEqual(slack.calls.opened.at(-1), f.member.user.slackUserId, 'the DM is the signed-in person\'s own');
   assert.deepEqual(slack.calls.started, [{
     conversationId: dm,
