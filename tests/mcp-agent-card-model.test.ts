@@ -74,7 +74,7 @@ test('Create in Slack sends the proposal\'s create_agent arguments unchanged, th
   assert.deepEqual(shown.subtitle, [{ text: '@invoices' }], 'the handle, and no "handle is free"');
   assert.deepEqual(shown.blocks.map(words), [
     `You: ${PROPOSAL.sampleAsk} / Invoice Chaser: ${PROPOSAL.promisedAnswer}`,
-    'Answers in **your DMs**. Anyone in Acme can message it.',
+    'Answers in **your DMs**. Only you can message it until it joins a Channel.',
     'Needs [Stripe] · you sign in after it\'s created',
   ], 'shown by example, then where it answers and who can message it, then the service it needs');
   assert.equal(shown.foot, undefined, 'who can message it is on the line with where it answers');
@@ -545,10 +545,10 @@ test('a Channel without a name shows as a private Channel, never its ID', async 
   await f.config.putChannel({ workspaceId: teamId, channelId: 'C0PRIVATE1', lifecycle: 'active' });
   await f.config.putChannel({ workspaceId: teamId, channelId: 'C_FINANCE', label: 'finance', lifecycle: 'active' });
   await agentCard.result(await call('propose_agent', { ...PROPOSAL, channels: ['C0PRIVATE1', '#finance'] }));
-  assert.equal(words(agentCard.shown.blocks[1]), 'Answers in **your DMs, #finance and a private Channel**. Anyone in Acme can message it.');
+  assert.equal(words(agentCard.shown.blocks[1]), 'Answers in **your DMs, #finance and a private Channel**. Everyone in its Channels can ask it there.');
 });
 
-test('the proposal shows it by example: no labels, Needs only for a service, and who can message it with or without the workspace name', async (t) => {
+test('the proposal shows it by example: no labels, Needs only for a service, and who can message it, the same without the workspace name', async (t) => {
   const { f, call, card: agentCard, clock, teamId } = await harness(t, 'card-by-example');
   await f.config.putChannel({ workspaceId: teamId, channelId: 'C_FINANCE', label: 'finance', lifecycle: 'active' });
   const answer = 'Overdue this week:\n• Acme Co: $4,200, 41 days\n• Birch Ltd: $860, 33 days';
@@ -564,7 +564,7 @@ test('the proposal shows it by example: no labels, Needs only for a service, and
   assert.deepEqual(shown.subtitle, [{ text: '@invoices' }]);
   assert.deepEqual(shown.blocks, [
     { kind: 'exchange', ask: 'who is overdue this week?', answer, agent: 'Invoice Chaser' },
-    { kind: 'line', parts: [{ text: 'Answers in ' }, { text: 'your DMs and #finance', strong: true }, { text: '. Anyone in Acme can message it.' }] },
+    { kind: 'line', parts: [{ text: 'Answers in ' }, { text: 'your DMs and #finance', strong: true }, { text: '. Everyone in its Channels can ask it there.' }] },
   ], 'the example in place of the job, its line breaks kept and its ends trimmed; no Needs line without a service');
   const drawn = JSON.stringify(shown);
   for (const gone of ['handle is free', 'Example in Slack', PROPOSAL.job]) {
@@ -574,7 +574,7 @@ test('the proposal shows it by example: no labels, Needs only for a service, and
   const { workspaceName: _workspace, ...unnamed } = proposal.structuredContent.proposal;
   const elsewhere = card(call, clock);
   await elsewhere.result({ ...proposal, structuredContent: { ...proposal.structuredContent, proposal: unnamed } });
-  assert.equal(words(elsewhere.shown.blocks[1]), 'Answers in **your DMs and #finance**. Anyone in your Slack workspace can message it.');
+  assert.equal(words(elsewhere.shown.blocks[1]), 'Answers in **your DMs and #finance**. Everyone in its Channels can ask it there.');
 
   const needing = card(call, clock);
   await needing.result(await call('propose_agent', { ...PROPOSAL, services: ['Stripe', 'HubSpot'] }));
@@ -603,7 +603,7 @@ test('a proposal with no example shows its job, and Create still makes the Agent
   for (const sampleExchange of [undefined, { ask: ' ', answer: 'An answer.' }, { ask: 'A question?', answer: '\n' }, { ask: 'A question?' }, 'neither']) {
     const bare = card(call, clock);
     await bare.result(without(sampleExchange));
-    assert.deepEqual(bare.shown.blocks.map(words), [PROPOSAL.job, 'Answers in **your DMs**. Anyone in Acme can message it.'],
+    assert.deepEqual(bare.shown.blocks.map(words), [PROPOSAL.job, 'Answers in **your DMs**. Only you can message it until it joins a Channel.'],
       `${JSON.stringify(sampleExchange)}: the job where the example would go`);
   }
 

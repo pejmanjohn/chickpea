@@ -281,7 +281,7 @@ export const FIVE_ZERO_TOOLS = {
   }),
   create_agent: tool({
     title: 'Create an Agent',
-    description: 'Create a new Agent, an AI teammate in Slack, and add it to the Channels named. It adds a teammate everyone in the Slack workspace can mention, sends one welcome message to you, and posts a welcome in each public Channel it joins, which cannot be taken back. Applies at once. A near-duplicate returns similar_agent_exists instead. Connect services afterwards with their setup links.',
+    description: 'Create a new Agent, an AI teammate in Slack, and add it to the Channels named. Until it joins a Channel, only you can message it. It sends you one welcome message, and posts a welcome in each public Channel it joins, which cannot be taken back. Applies at once. A near-duplicate returns similar_agent_exists instead. Connect services afterwards with their setup links.',
     input: schemas.createAgentInputSchema,
     output: schemas.changeResultOutput,
     // Hints are per tool, so the Channel welcome a call may post makes every call destructive.

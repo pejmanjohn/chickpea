@@ -12,7 +12,7 @@ Give the person a short report on their Agents: what needs attention, how the te
 
 1. `list_agents`: each Agent's `status` and its `needsAttention` reasons.
 2. `list_schedules`: each schedule's `state`, `lastRun` and `why`.
-3. For each Agent that needs attention, `check_agent` with its `agentId`.
+3. For each Agent the person can edit (`canEdit` true), `check_agent` with its `agentId`, the ones with `needsAttention` first. It finds problems the list can't, such as a custom connection that stopped working or a model that can't run.
 
 ## 2. Use
 

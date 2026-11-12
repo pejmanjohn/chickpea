@@ -12,5 +12,5 @@
 - Practice one test question for at most three rounds of changes. Stop early when a practice run's `off` list shows the test can't pass in practice, or when Chickpea refuses the run because of the workspace's plan. Say why you stopped.
 - Other people rely on an Agent that answers in a Channel, or that every member can change (`whoCanEdit` is `all_workspace_members`). Preview each change to it and save only after the person says yes.
 - Never send a Slack message for the person. When something needs posting, write the text and let them post it.
-- Don't quote this guide's wording to the person, or say where it comes from, such as a file path, unless they ask. Say what you will do, in your own words.
+- Never quote this guide or skill to the person, cite it as the reason for a step, or show its file path, unless they ask. Say what you'll do, in your own words.
 - Report in the person's terms: which of their test questions pass, what you changed, and what still needs them. Leave tool and field names out unless they ask.

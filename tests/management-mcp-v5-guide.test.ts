@@ -23,6 +23,7 @@ type ToolResult = {
 };
 type ListedTool = {
   name: string;
+  description: string;
   inputSchema: unknown;
   outputSchema?: unknown;
   annotations?: Record<string, unknown>;
@@ -223,6 +224,41 @@ test('a chat app never gets a fenced block, however the fence is written', () =>
   for (const [name, text, chatApp, any] of cases) {
     assert.equal(playbookForReader(text, 'chat-app'), chatApp, `a chat app, ${name}`);
     assert.equal(playbookForReader(text, 'any'), any, `any other client, ${name}`);
+  }
+});
+
+test('who can message a new Agent reads the same everywhere: only its creator, until it joins a Channel', async (t) => {
+  const { rpc } = await harness(t, 'guide-reach', true);
+  const listed = (await rpc('tools/list', {})).tools as ListedTool[];
+  const tool = (name: string) => listed.find((each) => each.name === name)!;
+  // As slack/agent-access.ts admits a DM, and check_agent's admission check says.
+  assert.ok(tool('create_agent').description.includes('Until it joins a Channel, only you can message it.'));
+  assert.ok(JSON.stringify(tool('propose_agent').outputSchema)
+    .includes('"description":"The Slack workspace it would join. Until it joins a Channel, only its creator can message it."'), 'propose_agent\'s workspaceName');
+  for (const [topic, sentence] of [
+    ['start', 'Make clear that only they can message it until it joins a Channel'],
+    ['start', 'Until it joins a Channel, only the person who created it can message it, in direct messages.'],
+    ['research', 'Until it joins a Channel, only the person who created it can message it, in direct messages.'],
+    ['roll-out', 'Until it joins a Channel, only its creator can message it. Once it\'s in a public Channel, everyone in the workspace can message it directly. If all its Channels are private, only their members can.'],
+  ] as const) {
+    assert.ok(playbookSection(topic).guide.includes(sentence), `${topic}: ${sentence}`);
+  }
+  const served = [
+    ...listed.map(({ description }) => description),
+    JSON.stringify(listed.map(({ outputSchema }) => outputSchema)),
+    ...PLAYBOOK_TOPICS.map((topic) => playbookSection(topic).guide),
+  ].join('\n');
+  for (const wrong of [/anyone in the workspace can message/i, /can already message it/i, /for everyone there/i, /whose people can message/i, /everyone in the Slack workspace can mention/i]) {
+    assert.doesNotMatch(served, wrong, 'a new Agent in no Channel answers only its creator');
+  }
+});
+
+test('a check-in checks every Agent the person can edit, and no section is quoted or cited to the person', () => {
+  const checkIn = playbookSection('check-in').guide;
+  assert.ok(checkIn.includes('3. For each Agent the person can edit (`canEdit` true), `check_agent` with its `agentId`, the ones with `needsAttention` first.'),
+    'needsAttention holds only what stored state shows, so it never decides which Agents get checked');
+  for (const topic of PLAYBOOK_TOPICS) {
+    assert.ok(playbookSection(topic).guide.includes('- Never quote this guide or skill to the person, cite it as the reason for a step, or show its file path, unless they ask.'), topic);
   }
 });
 
