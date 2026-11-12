@@ -1,51 +1,87 @@
-// Synthetic input schemas for Meta's account-wide reads, shaped from Meta's
-// one-line tool descriptions. The docs name no arguments, so every name below
-// is a guess that the Amber probe checks against Meta's live listing. `filters`
-// are the ID-shaped filters each description mentions, which Chickpea never
-// lets a call send.
+// Meta's account-wide reads with the property names its live tools/list gave
+// on 2026-11-11. Discovery stores the names and the account field's flags, not
+// definitions, so the other types and required lists are stand-ins. `filters`
+// are each read's ID-shaped filters, which Chickpea never lets a call send.
 const text = { type: 'string' };
 const count = { type: 'integer' };
 const list = { type: 'array', items: text };
 
-export const META_ACCOUNT_READS: ReadonlyArray<{
+const correlation = {
+  advertiser_job: text,
+  advertiser_request: text,
+  after_answer_offer_report: text,
+  client_conversation_id: { type: ['string', 'null'] },
+  scheduled_task_run: text,
+};
+
+export interface MetaLiveRead {
   name: string;
-  filters: Readonly<Record<string, unknown>>;
-  other: Readonly<Record<string, unknown>>;
-}> = [
+  properties: Readonly<Record<string, unknown>>;
+  required: readonly string[];
+  filters: readonly string[];
+}
+
+export const META_ACCOUNT_READS: readonly MetaLiveRead[] = [
   {
     name: 'ads_account_get_activity_logs',
-    filters: { object_id: text, user_id: text },
-    other: { category: text, cursor: text, limit: count, since: text, until: text },
+    properties: {
+      ad_account_id: text, ...correlation, end_time: text, event_category: text, limit: count,
+      object_id: text, start_time: text, user_id: text,
+    },
+    required: ['ad_account_id'],
+    filters: ['object_id', 'user_id'],
   },
-  { name: 'ads_get_errors', filters: { entity_ids: list }, other: { limit: count } },
-  { name: 'ads_get_creatives', filters: {}, other: { cursor: text, fields: list, limit: count } },
-  { name: 'ads_get_ad_account_custom_audiences', filters: {}, other: { cursor: text, limit: count, subtype: text } },
-  { name: 'ads_get_customconversions', filters: {}, other: { cursor: text, limit: count } },
+  {
+    name: 'ads_get_ad_account_custom_audiences',
+    properties: { ad_account_id: text, ...correlation, cursor: text, limit: count, subtype_filter: text },
+    required: ['ad_account_id'],
+    filters: [],
+  },
+  {
+    name: 'ads_get_customconversions',
+    properties: { ad_account_id: text, ...correlation, cursor: text, dataset_id: text, limit: count },
+    required: ['ad_account_id'],
+    filters: ['dataset_id'],
+  },
 ];
 
 export const META_ACCOUNT_READ_NAMES = META_ACCOUNT_READS.map(({ name }) => name);
 
-/** Every property of a read's synthetic schema, before `extra`. */
-export function metaAccountReadProperties(name: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
-  const read = META_ACCOUNT_READS.find((entry) => entry.name === name);
-  if (!read) throw new Error(`No synthetic schema for ${name}.`);
-  return {
-    ad_account_id: text,
-    advertiser_request: text,
-    client_conversation_id: { type: ['string', 'null'] },
-    ...read.filters,
-    ...read.other,
-    ...extra,
-  };
+/**
+ * Reads left for batch 2, which checks who owns the IDs they take. Creatives
+ * makes the account optional and takes creative IDs; errors takes entity IDs
+ * and no account.
+ */
+export const META_DEFERRED_READS: readonly MetaLiveRead[] = [
+  {
+    name: 'ads_get_creatives',
+    properties: { ad_account_id: text, ...correlation, creative_ids: list, cursor: text, fields: list, limit: count },
+    required: [],
+    filters: [],
+  },
+  {
+    name: 'ads_get_errors',
+    properties: { ...correlation, entity_ids: list, limit: count },
+    required: [],
+    filters: [],
+  },
+];
+
+function liveRead(name: string): MetaLiveRead {
+  const read = [...META_ACCOUNT_READS, ...META_DEFERRED_READS].find((entry) => entry.name === name);
+  if (!read) throw new Error(`No live shape for ${name}.`);
+  return read;
 }
 
+/** A read's live input schema, with `extra` properties added and `required` replaced when given. */
 export function metaAccountReadSchema(
   name: string,
   options: { extra?: Record<string, unknown>; required?: string[] } = {},
-): Record<string, unknown> {
+): { type: 'object'; properties: Record<string, unknown>; required: string[] } {
+  const read = liveRead(name);
   return {
     type: 'object',
-    properties: metaAccountReadProperties(name, options.extra),
-    required: options.required ?? ['ad_account_id'],
+    properties: { ...read.properties, ...options.extra },
+    required: options.required ?? [...read.required],
   };
 }

@@ -51,7 +51,7 @@ import {
 } from '../src/config/connector-secrets.ts';
 import type { ConnectionAccount, ConnectionAccountPolicy } from '../src/config/types.ts';
 import { projectMcpToolInputSchema } from '../src/config/mcp-test.ts';
-import { META_ACCOUNT_READ_NAMES, metaAccountReadSchema } from './helpers/meta-ads-account-reads.ts';
+import { META_ACCOUNT_READ_NAMES, META_DEFERRED_READS, metaAccountReadSchema } from './helpers/meta-ads-account-reads.ts';
 import { getConnectorPreset } from '../src/config/presets.ts';
 import {
   agentCredentialConfigurationBinding,
@@ -8428,7 +8428,7 @@ test("Admin offers Meta's helpers after a fresh discovery shows Meta's added opt
   } finally { fixture.store.close(); fixture.settings.close(); }
 });
 
-test("Admin offers Meta's account-wide reads as available reports and grants each for the approved accounts", async () => {
+test("Admin offers Meta's account-wide reads as available reports, grants each for the approved accounts, and refuses creatives and errors", async () => {
   const fixture = harness();
   const request = (path: string, method: string, body?: unknown) => fixture.app.request(`http://localhost${path}`, {
     method, headers: auth(), ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
@@ -8447,7 +8447,8 @@ test("Admin offers Meta's account-wide reads as available reports and grants eac
     });
     assert.equal(created.status, 201, await created.clone().text());
     const id = ((await created.json()) as Record<string, any>).account.id as string;
-    const discoveredTools = META_ACCOUNT_READ_NAMES.map((name) =>
+    const deferred = META_DEFERRED_READS.map(({ name }) => name);
+    const discoveredTools = [...META_ACCOUNT_READ_NAMES, ...deferred].map((name) =>
       ({ name, inputSchema: projectMcpToolInputSchema(metaAccountReadSchema(name), name) }));
     const pending = (await fixture.store.listConnectionAccounts('T_TEST')).find((account) => account.id === id)!;
     if (pending.policy.kind !== 'mcp') throw new Error('expected MCP');
@@ -8456,8 +8457,18 @@ test("Admin offers Meta's account-wide reads as available reports and grants eac
     }, pending.revision);
     const inventory = await request('/admin/api/agents/agent_support/connections?workspaceId=T_TEST', 'GET');
     assert.equal(inventory.status, 200, await inventory.clone().text());
-    assert.deepEqual((await inventory.json() as Record<string, any>).attached[0].mcpToolAccess,
-      META_ACCOUNT_READ_NAMES.map((name) => ({ name, available: true, effect: 'read' })));
+    assert.deepEqual((await inventory.json() as Record<string, any>).attached[0].mcpToolAccess, [
+      ...META_ACCOUNT_READ_NAMES.map((name) => ({ name, available: true, effect: 'read' })),
+      // Unreviewed tools are treated as writes, and these two stay unavailable.
+      ...deferred.map((name) => ({ name, available: false, effect: 'write' })),
+    ]);
+    for (const name of deferred) {
+      const refused = await request(`/admin/api/agents/agent_support/connections/${id}/mcp/tools`, 'PUT', {
+        expectedRevision: ready.revision, allowedTools: [...META_ACCOUNT_READ_NAMES, name], approvedAccountIds: ['123'],
+      });
+      assert.equal(refused.status, 400, name);
+      assert.match(((await refused.json()) as Record<string, any>).message, /not in the reviewed access contract/, name);
+    }
     const saved = await request(`/admin/api/agents/agent_support/connections/${id}/mcp/tools`, 'PUT', {
       expectedRevision: ready.revision, allowedTools: META_ACCOUNT_READ_NAMES, approvedAccountIds: ['123'],
     });

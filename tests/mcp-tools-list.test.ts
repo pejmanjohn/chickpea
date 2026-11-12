@@ -23,7 +23,8 @@ import { withEnv } from './helpers/env.ts';
 import {
   META_ACCOUNT_READ_NAMES,
   META_ACCOUNT_READS,
-  metaAccountReadProperties,
+  META_DEFERRED_READS,
+  metaAccountReadSchema,
 } from './helpers/meta-ads-account-reads.ts';
 
 // Synthetic tool names only. `alpha`, `beta`, and `gamma` are granted; the
@@ -951,30 +952,31 @@ test("after a fresh discovery stores Meta's added helper arguments, the helpers 
   assert.deepEqual(logs.missing, []);
 });
 
-test("Meta's account-wide reads mount from a fresh discovery with their filters hidden and refused", async (t) => {
+test("Meta's account-wide reads mount from their live schemas with their filters hidden and refused", async (t) => {
   const logs = captureLogs(t);
-  const live = META_ACCOUNT_READS.map(({ name }) =>
-    liveMetaTool(name, metaAccountReadProperties(name), ['ad_account_id']));
-  const discoveredTools = live.map(({ name, inputSchema }) =>
+  const listed = [...META_ACCOUNT_READS, ...META_DEFERRED_READS].map(({ name }) =>
+    ({ name, description: `Synthetic ${name}.`, inputSchema: metaAccountReadSchema(name) }));
+  const discoveredTools = listed.map(({ name, inputSchema }) =>
     ({ name, inputSchema: projectMcpToolInputSchema(inputSchema, name) }));
   const access = compileMetaAdsToolAccess({
     discoveredTools, requestedTools: META_ACCOUNT_READ_NAMES, approvedAccountIds: ['123450001'],
   });
   const meta = metaConnection({ ...access, discoveredTools });
-  const server = pagedServer('json', [[...live, 'ads_synthetic_unreviewed']]);
+  const server = pagedServer('json', [[...listed, 'ads_synthetic_unreviewed']]);
   await withRuntimeConnection(meta, server.fetch, async (definition) => {
     const connection = await createMcpConnection(definition);
     try {
+      // Creatives and errors are listed and discovered, but never mount.
       assert.deepEqual(connection.tools.map(({ name }) => name), META_ACCOUNT_READ_NAMES.map((name) => `mcp__meta__${name}`));
-      for (const [index, { name, filters }] of META_ACCOUNT_READS.entries()) {
+      for (const { name, properties, filters } of META_ACCOUNT_READS) {
         const tool = mounted(connection, name);
         const shown = shownSchema(tool);
-        assert.deepEqual(Object.keys(shown.properties).sort(), Object.keys(live[index]!.inputSchema.properties)
-          .filter((property) => !Object.hasOwn(filters, property)).sort(), name);
+        assert.deepEqual(Object.keys(shown.properties).sort(),
+          Object.keys(properties).filter((property) => !filters.includes(property)).sort(), name);
         assert.deepEqual(shown.required, ['ad_account_id'], name);
         const call = preparedMcpExecutor(tool);
-        for (const filter of Object.keys(filters)) {
-          await assert.rejects(call({ ad_account_id: '123450001', [filter]: ['1'] }),
+        for (const filter of filters) {
+          await assert.rejects(call({ ad_account_id: '123450001', [filter]: '1' }),
             new RegExp(`does not permit the argument ${filter}`));
         }
         await assert.rejects(call({ ad_account_id: '999000999' }), /permits ad_account_id only with an approved value/);

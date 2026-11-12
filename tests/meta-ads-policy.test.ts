@@ -26,7 +26,7 @@ import type { McpConnectionConfig, McpConnectionToolInfo } from '../src/config/t
 import {
   META_ACCOUNT_READ_NAMES,
   META_ACCOUNT_READS,
-  metaAccountReadProperties,
+  META_DEFERRED_READS,
   metaAccountReadSchema,
 } from './helpers/meta-ads-account-reads.ts';
 
@@ -244,11 +244,11 @@ test('a helper that requires an unreviewed argument or has an account field is s
   }
 });
 
-function accountRead(name: string, schema = metaAccountReadSchema(name)): McpConnectionToolInfo {
+function accountRead(name: string, schema: Record<string, unknown> = metaAccountReadSchema(name)): McpConnectionToolInfo {
   return { name, inputSchema: projectMcpToolInputSchema(schema, name) };
 }
 
-test("Meta's account-wide reads are admitted with one required account field and never send their filters", () => {
+test("Meta's account-wide reads are admitted from their live schemas and never send their filters", () => {
   const discoveredTools = META_ACCOUNT_READ_NAMES.map((name) => accountRead(name));
   for (const tool of discoveredTools) {
     assert.equal(metaAdsToolEffect(tool.name), 'read', tool.name);
@@ -263,34 +263,29 @@ test("Meta's account-wide reads are admitted with one required account field and
     [name, { effect: 'read', argumentConstraints: { ad_account_id: ['123450001'] } }])));
   const connection = { discoveredTools, ...compiled };
   assert.deepEqual(metaAdsRuntimeAllowedTools(connection), META_ACCOUNT_READ_NAMES);
-  for (const { name, filters } of META_ACCOUNT_READS) {
+  for (const { name, properties, filters } of META_ACCOUNT_READS) {
     const runtime = metaAdsRuntimePropertyNames(connection, name)!;
-    assert.deepEqual(runtime, Object.keys(metaAccountReadProperties(name))
-      .filter((property) => !Object.hasOwn(filters, property)).sort(), name);
+    assert.deepEqual(runtime, Object.keys(properties).filter((property) => !filters.includes(property)).sort(), name);
     assert.ok(runtime.includes('client_conversation_id'), name);
-    for (const filter of Object.keys(filters)) {
+    for (const filter of filters) {
       assert.throws(() => assertMcpToolArgumentKeys(name, { ad_account_id: '123450001', [filter]: '1' }, runtime),
         new RegExp(`does not permit the argument ${filter}`));
     }
   }
 });
 
-test("the activity log's Graph-named object and user filters are admitted but never sent", () => {
-  const name = 'ads_account_get_activity_logs';
-  const graphNamed = metaAccountReadSchema(name, { extra: {
-    oid: { type: 'string' }, uid: { type: 'string' }, extra_oids: { type: 'array', items: { type: 'string' } },
-  } });
-  const tool = accountRead(name, graphNamed);
-  assert.equal(metaAdsToolSchemaSupported(tool), true);
-  const runtime = metaAdsRuntimePropertyNames({ discoveredTools: [tool] }, name)!;
-  for (const filter of ['object_id', 'oid', 'extra_oids', 'user_id', 'uid']) {
-    assert.equal(runtime.includes(filter), false, filter);
-    assert.throws(() => assertMcpToolArgumentKeys(name, { ad_account_id: '123450001', [filter]: '1' }, runtime),
-      new RegExp(`does not permit the argument ${filter}`));
-  }
-  for (const filter of ['oid', 'uid', 'extra_oids']) {
-    assert.equal(accountRead(name, { ...graphNamed, required: ['ad_account_id', filter] }).inputSchema?.ambiguous,
-      true, `a required ${filter} would narrow every call, so it is refused`);
+// The lists catch ID-shaped names only. A selector under another name passes
+// until reads are checked against an allowlist of arguments.
+test('a non-ID-shaped selector added to an account-wide read is admitted and sendable', () => {
+  const selectors = [['entities', { type: 'array', items: { type: 'string' } }], ['business', { type: 'string' }]] as const;
+  for (const { name } of META_ACCOUNT_READS) {
+    for (const [selector, definition] of selectors) {
+      const tool = accountRead(name, metaAccountReadSchema(name, { extra: { [selector]: definition } }));
+      assert.equal(metaAdsToolSchemaSupported(tool), true, `${name}: ${selector}`);
+      const runtime = metaAdsRuntimePropertyNames({ discoveredTools: [tool] }, name)!;
+      assert.ok(runtime.includes(selector), `${name}: ${selector}`);
+      assert.doesNotThrow(() => assertMcpToolArgumentKeys(name, { ad_account_id: '123450001', [selector]: '1' }, runtime));
+    }
   }
 });
 
@@ -309,7 +304,7 @@ test("Meta's account-wide reads are refused with another account field, an optio
       ['an account nested in an argument', metaAccountReadSchema(name, {
         extra: { filtering: { type: 'object', properties: { account_id: text } } },
       })],
-      ...Object.keys(filters).map((filter): [string, Record<string, unknown>] =>
+      ...filters.map((filter): [string, Record<string, unknown>] =>
         [`${filter} required`, metaAccountReadSchema(name, { required: ['ad_account_id', filter] })]),
     ];
     for (const [label, schema] of refused) {
@@ -320,6 +315,26 @@ test("Meta's account-wide reads are refused with another account field, an optio
         discoveredTools: [tool], requestedTools: [name], approvedAccountIds: ['123450001'],
       }), /cannot be restricted to an approved ad account/, `${name}: ${label}`);
     }
+  }
+});
+
+test("Meta's creatives and errors reads are refused as their live schemas stand", () => {
+  const accountFields: Record<string, unknown> = {
+    ads_get_creatives: [{ name: 'ad_account_id', type: 'string', required: false }],
+    ads_get_errors: [],
+  };
+  for (const { name } of META_DEFERRED_READS) {
+    const tool = accountRead(name);
+    assert.equal(metaAdsToolEffect(tool.name), undefined, name);
+    assert.deepEqual(tool.inputSchema?.accountFields, accountFields[name], name);
+    assert.equal(metaAdsToolSchemaSupported(tool), false, name);
+    assert.throws(() => compileMetaAdsToolAccess({
+      discoveredTools: [tool], requestedTools: [name], approvedAccountIds: ['123450001'],
+    }), /is not in the reviewed access contract/, name);
+    assert.deepEqual(metaAdsRuntimeAllowedTools({
+      discoveredTools: [tool], allowedTools: [name],
+      toolPolicies: { [name]: { effect: 'read', argumentConstraints: { ad_account_id: ['123450001'] } } },
+    }), [], name);
   }
 });
 

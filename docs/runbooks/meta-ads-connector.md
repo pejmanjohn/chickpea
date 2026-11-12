@@ -40,9 +40,9 @@ who will sign in from Chickpea to the app first.
 
 Reporting tools answer for one approved ad account per call. Besides
 campaign reporting and insights, they cover the account's change history,
-delivery errors, creatives, custom audiences and custom conversions. Their
-optional filters for particular campaigns, ads, objects or people stay
-unavailable, so each answers for the whole account.
+custom audiences and custom conversions. Their optional filters for
+particular campaigns, ads, objects, people or datasets stay unavailable, so
+each answers for the whole account.
 
 The tool catalog is gated by the schemas returned by the latest Meta discovery.
 Chickpea shows only tools whose current schemas pass its safety checks. The
