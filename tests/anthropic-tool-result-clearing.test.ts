@@ -35,10 +35,12 @@ import {
   DEFAULT_TOOL_RESULT_CLEARING,
   TOOL_RESULT_CLEARING_SETTING_VARIABLES,
   TOOL_RESULT_CLEARING_VARIABLE,
+  UNCLEARED_TOOLS,
   clearedToolResults,
   toolResultClearing,
   withToolResultClearing,
 } from '../src/config/tool-result-clearing.ts';
+import { WORKSPACE_CHANGE_TOOL_NAMES } from '../src/management/workspace-change-tools.ts';
 import type { ModelRequestPurpose } from '../src/usage/model-requests.ts';
 import { ModelStepMarks } from '../src/observability/runtime-latency.ts';
 import { EVERY_PROVIDER_FUNDED, NO_RUN_FEES } from './helpers/platform-funding.ts';
@@ -328,7 +330,18 @@ test('a credits-funded Anthropic step keeps its pin and shared prefix and carrie
   assert.deepEqual(rest, offRest, 'the shared prefix\'s breakpoints and every other field are as without clearing');
   assert.deepEqual(betas, [...(offBetas as string[]), CONTEXT_MANAGEMENT_BETA]);
   const [edit] = (contextManagement as { edits: Array<Record<string, unknown>> }).edits;
-  assert.deepEqual(edit?.exclude_tools, ['activate_skill', 'read_skill_resource', 'inspect_memory', 'update_agent_memory']);
+  // The change tools mount only after agent-authoring is activated, so this request does not define them.
+  assert.deepEqual(edit?.exclude_tools, UNCLEARED_TOOLS.filter((name) => name !== 'apply_workspace_changes'));
+});
+
+// Defect caught: an excluded name that no tool has, as after a rename, which
+// would leave that tool's results clearable with no other test failing.
+test('every tool whose results are never cleared is one Core mounts', () => {
+  const mounted = new Set<string>(WORKSPACE_CHANGE_TOOL_NAMES);
+  for (const request of sharedPrefixRequests(MODEL.anthropic)) {
+    for (const mountedTool of (request.body as { tools: Array<{ name: string }> }).tools) mounted.add(mountedTool.name);
+  }
+  assert.deepEqual(UNCLEARED_TOOLS.filter((name) => !mounted.has(name)), []);
 });
 
 /** A finished step with no content: what the credits hook did is in the payload. */

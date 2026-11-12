@@ -475,16 +475,23 @@ Before you turn it on, know these points:
 - **An Agent forgets old tool data.** In a thread past the trigger, the Agent
   no longer sees the bodies of tool results older than its last 8 tool uses.
   It still sees each call it made and what it wrote about the result, and it
-  can make the call again. Nothing tells the person. The results of
-  `activate_skill`, `read_skill_resource`, `inspect_memory` and
-  `update_agent_memory` are never cleared, because they are instructions,
-  not data.
+  can make the call again. Nothing tells the person.
+- **Some results are never cleared**, because the Agent cannot fetch them
+  again. `activate_skill`, `read_skill_resource`, `inspect_memory`,
+  `update_agent_memory` and `request_chickpea_handoff` return instructions.
+  `present_cards`, `prepare_connector_setup`, `apply_workspace_changes` and
+  `manage_agent_skill` return a short receipt with a handle that a later
+  call needs: a card set's ref, a setup link's operation ID, or the
+  operation ID an undo takes. A connection's or an MCP server's tools are
+  not on the list, whatever they return.
 - **Each clearing rewrites the cache once.** The prompt changes from the
   first newly cleared result to its end, and Anthropic charges a cache write
   for that part. Between clearings the cleared prompt does not change, so
   later requests read the cache. The defaults make clearings rare and large.
-- **Thinking stays valid.** Anthropic clears on its side, so no earlier
-  thinking block fails its check that the conversation is unchanged.
+- **Thinking should stay valid.** Anthropic clears on its side, so no earlier
+  thinking block should fail its check that the conversation is unchanged.
+  One probe request confirmed it. No `model_step` field counts a dropped
+  thinking block yet, so the log cannot show a case where it fails.
 - **Each request is as large as before.** Chickpea's stored conversation
   keeps every result, and each request still sends the whole history. Only
   the prompt the model reads gets smaller.
@@ -493,6 +500,12 @@ Before you turn it on, know these points:
   after clearing, so a thread with clearing on stays far below that line and
   seldom compacts. If the history outgrows Anthropic's request size limit,
   Anthropic refuses the request and Flue compacts then, as it does today.
+- **Nothing else bounds a thread's size.** Without clearing, compaction
+  keeps a request to a few megabytes. With it, the stored conversation and
+  each request grow until that limit, which is 32 MB. Each step builds,
+  serializes and uploads a request of that size, and no test has measured
+  the Worker's memory at it. Watch `requestBytes` on `model_step`, and keep
+  clearing off where a thread could reach tens of megabytes.
 
 To check it, read `model_step`: `clearedToolUses` and `clearedInputTokens`
 are what Anthropic cleared from each request's prompt, and a rise between two

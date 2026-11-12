@@ -54,11 +54,18 @@ const SETTING_RANGES: Readonly<Record<keyof ToolResultClearing, readonly [number
 };
 
 /**
- * Tools whose results are instructions the Agent keeps following, not data
- * it can fetch again: a skill's instructions and its supporting files, and
- * the Agent's memory. Their results are never cleared.
+ * Tools whose results are never cleared, because the Agent cannot fetch
+ * them again. Some are instructions it keeps following: a skill's
+ * instructions and supporting files, its memory, and the instruction a
+ * handoff returns. The others are short receipts holding a handle no read
+ * tool returns: the card set ref `update_card` takes, the setup link's
+ * operation ID `revoke_setup_link` takes, and the operation ID
+ * `undo_workspace_change` takes.
  */
-export const UNCLEARED_TOOLS = ['activate_skill', 'read_skill_resource', 'inspect_memory', 'update_agent_memory'] as const;
+export const UNCLEARED_TOOLS = [
+  'activate_skill', 'read_skill_resource', 'inspect_memory', 'update_agent_memory', 'request_chickpea_handoff',
+  'present_cards', 'prepare_connector_setup', 'apply_workspace_changes', 'manage_agent_skill',
+] as const;
 
 /** The clearing `env` turns on, or undefined when it is off. */
 export function toolResultClearing(env: PlatformEnv | undefined): ToolResultClearing | undefined {
