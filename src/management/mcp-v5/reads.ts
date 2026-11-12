@@ -104,26 +104,27 @@ const LISTED_DESCRIPTION_CHARS = 100;
 /**
  * The Agents the caller can use, archived ones only when asked, each as a
  * list needs it: get_agent has the rest. One page stays inside the budget.
- * They come in agentId order, and `nextCursor` names the last one listed, so
- * an Agent created or archived between pages never moves another one.
+ * The ones the caller can edit come first, then shared ones, each group in
+ * agentId order, and `nextCursor` names the last one listed, so an Agent
+ * created or archived between pages never moves another one.
  */
 export async function listAgents(
   deps: FiveZeroDeps,
   input: Out<typeof schemas.listAgentsInput>,
 ): Promise<Out<typeof schemas.listAgentsOutput>> {
-  const after = input.cursor === undefined ? undefined : cursorAgentId(input.cursor);
+  const after = input.cursor === undefined ? undefined : cursorPlace(input.cursor);
   const { snapshot } = await readWorkspace(deps);
   const mine = new Set(snapshot.agents
     .filter(({ creatorMembershipId }) => creatorMembershipId === snapshot.caller.membershipId)
     .map(({ id }) => id));
   const rows = agentRows(snapshot)
-    .filter(({ agentId, status }) => (after === undefined || agentId > after) &&
-      (input.include !== 'mine' || mine.has(agentId)) && (input.includeArchived === true || status !== 'archived'))
-    .sort((left, right) => left.agentId < right.agentId ? -1 : left.agentId > right.agentId ? 1 : 0);
+    .filter((row) => (after === undefined || listOrder(row, after) > 0) &&
+      (input.include !== 'mine' || mine.has(row.agentId)) && (input.includeArchived === true || row.status !== 'archived'))
+    .sort(listOrder);
   const page = (count: number): Out<typeof schemas.listAgentsOutput> => ({
     agents: rows.slice(0, count),
     canCreate: true,
-    ...(count < rows.length ? { nextCursor: agentsCursor(rows[count - 1]!.agentId) } : {}),
+    ...(count < rows.length ? { nextCursor: agentsCursor(rows[count - 1]!) } : {}),
   });
   // The text block is the same JSON, so a page counts twice.
   const fits = (count: number) => 2 * JSON.stringify(page(count)).length <= LIST_AGENTS_BUDGET_CHARS;
@@ -132,23 +133,35 @@ export async function listAgents(
   return page(count);
 }
 
-const AGENTS_CURSOR_PREFIX = 'after1_';
+/** Where an Agent stands in the list: its group, then its ID. */
+type ListPlace = Pick<AgentRow, 'agentId' | 'canEdit'>;
 
-function agentsCursor(agentId: string): string {
-  return `${AGENTS_CURSOR_PREFIX}${encodeBase64Url(new TextEncoder().encode(agentId))}`;
+function listOrder(left: ListPlace, right: ListPlace): number {
+  if (left.canEdit !== right.canEdit) return left.canEdit ? -1 : 1;
+  return left.agentId < right.agentId ? -1 : left.agentId > right.agentId ? 1 : 0;
 }
 
-/** The Agent a cursor names. Anything else, such as an offset an earlier Chickpea gave, starts the list again. */
-function cursorAgentId(cursor: string): string {
-  let agentId: string | undefined;
+const AGENTS_CURSOR_PREFIX = 'after1_';
+
+function agentsCursor({ agentId, canEdit }: ListPlace): string {
+  return `${AGENTS_CURSOR_PREFIX}${encodeBase64Url(new TextEncoder().encode(`${canEdit ? 'e' : 's'}:${agentId}`))}`;
+}
+
+/** The place a cursor names. Anything else, such as an offset an earlier Chickpea gave, is refused. */
+function cursorPlace(cursor: string): ListPlace {
+  let place: string | undefined;
   if (cursor.startsWith(AGENTS_CURSOR_PREFIX)) {
     try {
-      agentId = new TextDecoder('utf-8', { fatal: true }).decode(decodeBase64Url(cursor.slice(AGENTS_CURSOR_PREFIX.length)));
+      place = new TextDecoder('utf-8', { fatal: true }).decode(decodeBase64Url(cursor.slice(AGENTS_CURSOR_PREFIX.length)));
     } catch {
-      agentId = undefined;
+      place = undefined;
     }
   }
-  if (agentId !== undefined && AGENT_ID_PATTERN.test(agentId)) return agentId;
+  const group = place?.slice(0, 2);
+  const agentId = place?.slice(2);
+  if ((group === 'e:' || group === 's:') && agentId !== undefined && AGENT_ID_PATTERN.test(agentId)) {
+    return { agentId, canEdit: group === 'e:' };
+  }
   return fail('invalid_input', 'Chickpea can\'t continue the list from that cursor.', {
     nextStep: 'Call list_agents without a cursor to start again from the first page.',
   });

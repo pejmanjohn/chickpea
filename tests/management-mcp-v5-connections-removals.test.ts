@@ -669,6 +669,26 @@ test('a member cannot connect or reconnect a team connection, or change an Agent
   }), 'not_allowed');
   assert.equal(await version(member, 'agent_shared'), before, 'refused before anything was written');
   assert.deepEqual((await lanes(owner, 'agent_shared')).apiConnections.map(({ allowedHosts }) => allowedHosts), [['api.statusboard.example']]);
+
+  // A team connection a failed removal left needing attention, its optional key gone: an Owner gets its key page,
+  // a member gets neither the page nor a fix that names it.
+  const search = await f.config.putConnectionAccount({
+    id: 'connection_search', workspaceId: teamId, ownerKind: 'team', providerId: 'search', label: 'Search',
+    lifecycle: 'needs_attention', createdByMembershipId: f.owner.membership.id, secretRefId: 'secret_search',
+    policy: {
+      kind: 'mcp', url: 'https://mcp.search.example/mcp', transport: 'streamable-http', authMode: 'none', headerNames: ['x-api-key'],
+      credentialHeaderName: 'x-api-key', credentialOptional: true, discoveredTools: [{ name: 'search' }], allowedTools: ['search'],
+    },
+  } as Omit<ConnectionAccount, 'revision' | 'createdAt' | 'updatedAt'>);
+  await f.config.putAgentConnectionBinding({
+    agentId: 'agent_shared', connectionAccountId: search.id, providerId: 'search', allowedCapabilities: [], enabled: true,
+  });
+  errorOf(await member('reconnect_service', { agentId: 'agent_shared', connectionId: 'search' }), 'not_allowed');
+  const fixOf = async (call: typeof member) => structured(await call('check_agent', { agentId: 'agent_shared' })).checks
+    .find((check: { part: string; name: string }) => check.part === 'connection' && check.name === 'Search').fix;
+  const memberFix = await fixOf(member);
+  assert.deepEqual([memberFix.label, memberFix.tool], ['Reconnect it in Admin', undefined]);
+  assert.equal((await fixOf(owner)).tool, 'reconnect_service');
 });
 
 test('update_connection changes a custom connection, links its key again when it would go somewhere new, and leaves catalog ones alone', async (t) => {
