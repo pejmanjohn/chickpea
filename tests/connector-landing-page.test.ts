@@ -437,6 +437,36 @@ test('Cancel on a catalog page cancels an app\'s link and sends the person back 
   assert.doesNotMatch(cancelled, /\/admin|Slack/);
 });
 
+test('a raster connector logo fills its tile at every size the pages draw it', () => {
+  const imageLogos: string[] = [];
+  for (const preset of CONNECTION_CATALOG_PRESETS) {
+    const page = 'managedToolkit' in preset
+      ? renderManagedConnectionSetupPage({ setup: { ...setup, target: {
+          ...setup.target, provider: preset.managedToolkit, targetLabel: preset.name, presetId: preset.id,
+        } }, agent: sprout })
+      : renderCatalogConnectionSetupPage({ setup: catalogSetup(preset.id, preset.name), agent: sprout });
+    const [, className, content] = page.match(/<div class="connector-row">\s*<span class="([^"]*)"[^>]*>(<img |<svg |[^<])/) ?? [];
+    assert.ok(className, `${preset.id} draws its logo in the connector row`);
+    if (content === '<img ') imageLogos.push(preset.id);
+    assert.equal(className.split(' ').includes('connector-logo-raster'), content === '<img ', preset.id);
+  }
+  assert.ok(['exa', 'bugsnag', 'google-ads', 'reddit-ads-managed'].every((id) => imageLogos.includes(id)), imageLogos.join(' '));
+
+  const exa = catalogSetup('exa', 'Exa');
+  const success = renderManagedConnectionSuccessPage({ setup: { ...exa, status: 'completed' }, agent: sprout });
+  assert.equal(success.match(/<span class="([^"]*)"[^>]*><img src="\/connectors\/exa\.png"/)?.[1], 'connector-logo pair-logo connector-logo-raster');
+
+  const rule = (selector: string) => {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return success.match(new RegExp(`\\n${escaped} \\{([^}]*)\\}`))?.[1] ?? '';
+  };
+  assert.match(rule('.connector-logo-raster img'), /display: block;[\s\S]*height: 100%;[\s\S]*object-fit: cover;[\s\S]*width: 100%;/);
+  for (const tile of ['.connector-logo-raster', '.connector-row .connector-logo-raster']) {
+    assert.match(rule(tile), /padding: 0;/, tile);
+  }
+  assert.match(rule('.connector-logo-raster'), /overflow: hidden;/);
+});
+
 test('an access review offers Select all and Deselect all only when a tool can be selected', () => {
   type Tools = NonNullable<ConnectorLandingPageInput['accessReview']>['tools'];
   const review = (tools: Tools) => renderCatalogConnectionAccessReviewPage({
