@@ -146,13 +146,14 @@ const META_ADS_WRITE_SCHEMA_CONTRACTS = {
  * Tools reviewed before Meta's November change keep the names their schemas
  * listed then, minus the entity filters and alternate routes Chickpea never
  * sends (`object_ids`, `entity_ids`, and each write's `blockedRuntimeFields`).
- * Custom audiences and custom conversions keep their reviewed live names,
- * minus `dataset_id`. The helpers send request metadata only: no pagination.
+ * Custom audiences and custom conversions, reviewed in November, keep their
+ * live names minus `dataset_id` and Meta's November correlation fields
+ * (`advertiser_job`, `after_answer_offer_report`, `scheduled_task_run`), which
+ * no tool sends. The helpers send request metadata only: no pagination.
  */
 const META_ADS_SENDABLE_ARGUMENTS = {
   ads_get_ad_account_custom_audiences: [
-    'ad_account_id', 'advertiser_job', 'advertiser_request', 'after_answer_offer_report', 'client_conversation_id',
-    'cursor', 'limit', 'scheduled_task_run', 'subtype_filter',
+    'ad_account_id', 'advertiser_request', 'client_conversation_id', 'cursor', 'limit', 'subtype_filter',
   ],
   ads_get_ad_accounts: [
     'advertiser_request', 'client_conversation_id',
@@ -163,8 +164,7 @@ const META_ADS_SENDABLE_ARGUMENTS = {
     'time_increment', 'time_range',
   ],
   ads_get_customconversions: [
-    'ad_account_id', 'advertiser_job', 'advertiser_request', 'after_answer_offer_report', 'client_conversation_id',
-    'cursor', 'limit', 'scheduled_task_run',
+    'ad_account_id', 'advertiser_request', 'client_conversation_id', 'cursor', 'limit',
   ],
   ads_get_field_context: [
     'advertiser_request', 'client_conversation_id', 'field_names',

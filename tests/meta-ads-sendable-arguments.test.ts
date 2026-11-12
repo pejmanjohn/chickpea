@@ -55,11 +55,12 @@ const HELPER_ARGUMENTS: Readonly<Record<string, readonly string[]>> = {
 /**
  * The reviewed contract: what a tool could send before Meta's November change,
  * minus its hidden filters. Custom audiences and custom conversions were
- * reviewed against their live names.
+ * reviewed against their live names, minus Meta's November correlation fields.
  */
 function reviewedArguments(name: string): string[] {
   if (HELPER_ARGUMENTS[name]) return [...HELPER_ARGUMENTS[name]!].sort();
-  const names = META_PRE_NOVEMBER_NAMES[name] ?? META_LIVE_NAMES[name]!;
+  const names = META_PRE_NOVEMBER_NAMES[name] ??
+    META_LIVE_NAMES[name]!.filter((value) => !(META_NOVEMBER_CORRELATION as readonly string[]).includes(value));
   return names.filter((value) => !(NEVER_SENT[name] ?? []).includes(value)).sort();
 }
 
@@ -113,8 +114,11 @@ test('no sendable list names a hidden filter, a blocked route, or an unclassifie
   assert.deepEqual(metaAdsSendableArgumentNames('ads_account_get_activity_logs'), []);
 });
 
-test("no tool reviewed before November sends Meta's November correlation fields", () => {
-  for (const name of Object.keys(META_PRE_NOVEMBER_NAMES)) {
+test("no reviewed tool sends Meta's November correlation fields", () => {
+  for (const name of Object.keys(META_ADS_REVIEWED_TOOL_EFFECTS)) {
+    for (const field of META_NOVEMBER_CORRELATION) {
+      assert.equal(metaAdsSendableArgumentNames(name).includes(field), false, `${name}: ${field}`);
+    }
     const tool = metaDiscoveredTool(name, META_LIVE_NAMES[name] ?? META_PRE_NOVEMBER_NAMES[name]);
     const runtime = metaAdsRuntimePropertyNames(connectionOf(tool), name);
     if (!runtime) continue;
