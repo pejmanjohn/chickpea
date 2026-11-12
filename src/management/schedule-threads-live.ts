@@ -3,21 +3,29 @@ import type { PlatformEnv } from '../config/state-backend.ts';
 import type { ConfigStore } from '../config/store.ts';
 import { agentAvatarInstallation, agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
 import { resolveSlackPublicUrl } from '../slack/credentials.ts';
+import type { SlackCredentialResolutionDependencies } from '../slack/installation-credentials.ts';
 import { resolveSlackInstallationExecutionContext } from '../slack/installation-execution.ts';
 import type { WorkspaceManagementServiceInput } from './service.ts';
 
 /**
  * A DM schedule's Slack, through the installation bot every DM schedule run
  * posts with (routines/runtime.ts): the same DM, then the same name and
- * picture its runs post under (routines/delivery.ts).
+ * picture its runs post under (routines/delivery.ts). The bot token comes
+ * from `credentials`, the store the deployment keeps it in; a settings store
+ * holds none on a direct installation, which every hosted one is.
  */
 export function liveScheduleThreads(
   env: PlatformEnv | undefined,
   config: ConfigStore,
   settings: SettingsStore,
+  credentials: SlackCredentialResolutionDependencies,
 ): NonNullable<WorkspaceManagementServiceInput['directScheduleThreads']> {
   const client = async (workspaceId: string) => {
-    const execution = await resolveSlackInstallationExecutionContext(workspaceId, env, { config, settings });
+    const execution = await resolveSlackInstallationExecutionContext(workspaceId, env, {
+      config,
+      settings,
+      credentialDependencies: credentials,
+    });
     if (execution.workspaceId !== workspaceId) throw new Error('The Slack installation is for another workspace.');
     return execution.client;
   };

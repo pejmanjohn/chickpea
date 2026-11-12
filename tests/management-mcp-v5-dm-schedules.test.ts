@@ -5,14 +5,28 @@ import * as v from 'valibot';
 import { createMcpHandler } from '@modelcontextprotocol/server';
 
 import type { McpAuthenticatedPrincipal } from '../src/auth/mcp-oauth-routes.ts';
+import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
+import { SqliteSettingsStore } from '../src/config/settings-store.ts';
+import type { PlatformEnv } from '../src/config/state-backend.ts';
+import { createLiveWorkspaceManagementService } from '../src/management/live-service.ts';
 import { createWorkspaceManagementMcpServer } from '../src/management/mcp.ts';
 import { managementOperationValibotSchema, managementOperationZodSchema } from '../src/management/schemas.ts';
-import type { WorkspaceManagementServiceInput } from '../src/management/service.ts';
+import type { WorkspaceManagementService, WorkspaceManagementServiceInput } from '../src/management/service.ts';
 import type { ManagementOperation } from '../src/management/types.ts';
+import {
+  invalidateSlackInstallationCredentialCache,
+  writeHostedSlackBotCredentials,
+} from '../src/slack/installation-credentials.ts';
+import {
+  resetIdentityVerificationsForTests,
+  SlackInstallationUnavailableError,
+} from '../src/slack/installation-execution.ts';
 import { assembleRetainedSlackContext } from '../src/slack/public-context.ts';
+import { REQUESTED_SLACK_BOT_SCOPES } from '../src/slack/scopes.ts';
 import { hydrateTurnSlackContext } from '../src/slack/turn-context-reads.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { assembleSlackPrompt } from '../src/slack/web-client-context.ts';
+import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { authorityFixture, chickpeaDm, createAgent, NOW, type Person } from './helpers/management-authority-fixture.ts';
 
 type ToolResult = {
@@ -24,7 +38,7 @@ type ToolResult = {
 const THREAD_TS = '1800000000.000100';
 
 /** Slack as a DM schedule made over MCP sees it: what opened, what was posted, what was taken back. */
-function fakeSlack(options: { openFails?: boolean } = {}) {
+function fakeSlack(options: { openError?: unknown } = {}) {
   const calls = {
     opened: [] as string[],
     started: [] as Array<{ conversationId: string; agent: string; text: string }>,
@@ -35,7 +49,7 @@ function fakeSlack(options: { openFails?: boolean } = {}) {
   const threads: NonNullable<WorkspaceManagementServiceInput['directScheduleThreads']> = {
     async open({ slackUserId }) {
       calls.opened.push(slackUserId);
-      if (options.openFails) throw new Error('slack down');
+      if (options.openError) throw options.openError;
       return `D_${slackUserId}`;
     },
     async start({ conversationId, agent, text }) {
@@ -59,38 +73,52 @@ async function harness(t: TestContext, suffix: string, slack = fakeSlack()) {
   const f = await authorityFixture(suffix, { directScheduleThreads: slack.threads });
   t.after(() => f.close());
   await createAgent(f, f.member, 'agent_research', { name: 'Research' });
-  const as = (person: Person, role: 'owner' | 'member') => {
-    const principal: McpAuthenticatedPrincipal = {
-      betterAuthUserId: person.binding.betterAuthUserId ?? `ba_${role}`,
-      userId: person.user.id,
-      membershipId: person.membership.id,
-      organizationId: person.membership.organizationId,
-      role,
-      clientId: `client_${suffix}`,
-    };
-    const handler = createMcpHandler(
-      () => createWorkspaceManagementMcpServer({ principal, service: f.service, baseUrl: 'https://chickpea.example.test' }),
-      { legacy: 'stateless' },
-    );
-    return async (name: string, args: Record<string, unknown> = {}): Promise<ToolResult> => {
-      const response = await handler.fetch(new Request('http://localhost/mcp', {
-        method: 'POST',
-        headers: {
-          accept: 'application/json, text/event-stream',
-          'content-type': 'application/json',
-          'mcp-protocol-version': '2025-11-25',
-        },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
-      }));
-      const body = await response.text();
-      assert.equal(response.status, 200, body);
-      const json = body.trimStart().startsWith('{')
-        ? body
-        : body.split('\n').find((line) => line.startsWith('data: '))!.slice('data: '.length);
-      return (JSON.parse(json) as { result: ToolResult }).result;
-    };
+  return {
+    f,
+    slack,
+    member: mcpCaller(f.service, f.member, 'member', suffix),
+    owner: mcpCaller(f.service, f.owner, 'owner', suffix),
+    teamId: f.workspaceId,
   };
-  return { f, slack, member: as(f.member, 'member'), owner: as(f.owner, 'owner'), teamId: f.workspaceId };
+}
+
+/** The person, signed in over MCP, calling one tool. */
+function mcpCaller(service: WorkspaceManagementService, person: Person, role: 'owner' | 'member', suffix: string) {
+  const principal: McpAuthenticatedPrincipal = {
+    betterAuthUserId: person.binding.betterAuthUserId ?? `ba_${role}`,
+    userId: person.user.id,
+    membershipId: person.membership.id,
+    organizationId: person.membership.organizationId,
+    role,
+    clientId: `client_${suffix}`,
+  };
+  const handler = createMcpHandler(
+    () => createWorkspaceManagementMcpServer({ principal, service, baseUrl: 'https://chickpea.example.test' }),
+    { legacy: 'stateless' },
+  );
+  return async (name: string, args: Record<string, unknown> = {}): Promise<ToolResult> => {
+    const response = await handler.fetch(new Request('http://localhost/mcp', {
+      method: 'POST',
+      headers: {
+        accept: 'application/json, text/event-stream',
+        'content-type': 'application/json',
+        'mcp-protocol-version': '2025-11-25',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+    }));
+    const body = await response.text();
+    assert.equal(response.status, 200, body);
+    const json = body.trimStart().startsWith('{')
+      ? body
+      : body.split('\n').find((line) => line.startsWith('data: '))!.slice('data: '.length);
+    return (JSON.parse(json) as { result: ToolResult }).result;
+  };
+}
+
+function captureWarnings(t: TestContext): string[] {
+  const lines: string[] = [];
+  t.mock.method(console, 'warn', (...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+  return lines;
 }
 
 function structured(result: ToolResult): Record<string, any> {
@@ -312,10 +340,178 @@ test('save_schedule refuses any DM Slack would not let the caller schedule in, a
   assert.equal(slack.calls.started.length, 1);
 });
 
-test('when Slack cannot open the DM, nothing is posted or saved', async (t) => {
-  const { f, slack, member, teamId } = await harness(t, 'dm-down', fakeSlack({ openFails: true }));
-  const down = errorOf(await member('save_schedule', { ...DM_SCHEDULE, idempotencyKey: 'down' }), 'slack_unavailable');
-  assert.equal(down.message, 'Slack could not post in your DM, so the schedule was not saved. Try again.');
-  assert.equal(slack.calls.started.length, 0);
+const TRY_AGAIN = 'Slack could not post in your DM, so the schedule was not saved. Try again.';
+const RECONNECT = 'Chickpea\'s Slack connection needs to be reconnected in Admin, so the schedule was not saved. Save it again after that.';
+const DM_REFUSED = 'Slack would not let Chickpea post in your DM, so the schedule was not saved. A schedule in a Channel can still post.';
+const NO_RETRY = 'Retrying will not help, and neither will opening the DM in Slack. Tell the person what the message says to do.';
+
+/** A Slack Web API rejection, as the Slack SDK throws it. */
+function slackRejects(error: string): Error {
+  return Object.assign(new Error(`An API error occurred: ${error}`), {
+    code: 'slack_webapi_platform_error', data: { ok: false, error },
+  });
+}
+
+test('when Slack cannot open the DM, nothing is posted or saved, and it is retryable only when a retry can work', async (t) => {
+  const cases: Array<{ error: unknown; reasonCode: string; retryable: boolean; message: string }> = [
+    { error: new Error('socket hang up'), reasonCode: 'unknown', retryable: true, message: TRY_AGAIN },
+    { error: slackRejects('ratelimited'), reasonCode: 'ratelimited', retryable: true, message: TRY_AGAIN },
+    {
+      error: new SlackInstallationUnavailableError('T1', 'credential_resolution_failed', { retryable: true }),
+      reasonCode: 'credential_resolution_failed', retryable: true, message: TRY_AGAIN,
+    },
+    {
+      error: new SlackInstallationUnavailableError('T1', 'installation_revoked'),
+      reasonCode: 'installation_revoked', retryable: false, message: RECONNECT,
+    },
+    {
+      error: new SlackInstallationUnavailableError('T1', 'credentials_missing'),
+      reasonCode: 'credentials_missing', retryable: false, message: RECONNECT,
+    },
+    { error: slackRejects('token_revoked'), reasonCode: 'token_revoked', retryable: false, message: RECONNECT },
+    { error: slackRejects('user_not_found'), reasonCode: 'user_not_found', retryable: false, message: DM_REFUSED },
+  ];
+  for (const [index, expected] of cases.entries()) {
+    const warnings = captureWarnings(t);
+    const { f, slack, member, teamId } = await harness(t, `dm-down-${index}`, fakeSlack({ openError: expected.error }));
+    const down = errorOf(await member('save_schedule', { ...DM_SCHEDULE, idempotencyKey: 'down' }), 'slack_unavailable');
+    assert.equal(down.message, expected.message, expected.reasonCode);
+    assert.equal(down.retryable, expected.retryable, expected.reasonCode);
+    assert.equal(down.nextStep, expected.retryable ? undefined : NO_RETRY, expected.reasonCode);
+    assert.equal(slack.calls.started.length, 0);
+    assert.deepEqual(await f.routines.listRoutines(teamId), []);
+    assert.ok(warnings.some((line) => line.startsWith('[chickpea:management] schedule DM did not open') &&
+      line.includes(`"reasonCode":"${expected.reasonCode}"`)), `the log names why: ${warnings.join('\n')}`);
+  }
+});
+
+const HOSTED_BOT_TOKEN = 'xoxb-hosted-dm-schedule';
+
+/**
+ * Slack's Web API as a hosted installation's bot reaches it: every call
+ * names the bot token it came with, and a DM opens as the person's own.
+ */
+function hostedSlackApi(t: TestContext, teamId: string) {
+  const calls: Array<{ method: string; token: string; body: Record<string, string> }> = [];
+  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = input instanceof Request ? input : new Request(String(input), init);
+    const url = new URL(request.url);
+    assert.equal(url.hostname, 'slack.com', `only Slack is called: ${url.href}`);
+    const method = url.pathname.split('/').at(-1)!;
+    const text = await request.text();
+    const body = Object.fromEntries(new URLSearchParams(text));
+    calls.push({ method, token: request.headers.get('authorization') ?? '', body });
+    switch (method) {
+      case 'auth.test':
+        return Response.json({ ok: true, team_id: teamId, user_id: 'UCHICKPEA1', app_id: 'ACHICKPEA1', bot_id: 'BCHICKPEA1' });
+      case 'conversations.open':
+        return Response.json({ ok: true, channel: { id: `D_${body.users}`, is_im: true } });
+      case 'chat.postMessage':
+        return Response.json({ ok: true, channel: body.channel, ts: THREAD_TS });
+      default:
+        return Response.json({ ok: false, error: 'unknown_method' });
+    }
+  });
+  return calls;
+}
+
+/**
+ * Chickpea Cloud: a deployment serving many installations, whose Slack
+ * workspace installed Chickpea's hosted app, so its bot token lives in the
+ * deployment's encrypted credential store and its installation is direct.
+ * The service is the one the MCP route builds, with its own Slack.
+ */
+async function hostedHarness(t: TestContext, suffix: string, options: { botToken: boolean }) {
+  const restore = Object.fromEntries(['CHICKPEA_TENANCY', 'SLACK_STATE_DB_PATH', 'SLACK_API_URL', 'SLACK_BOT_TOKEN']
+    .map((name) => [name, process.env[name]]));
+  process.env.CHICKPEA_TENANCY = 'installation';
+  process.env.SLACK_STATE_DB_PATH = ':memory:';
+  delete process.env.SLACK_API_URL;
+  delete process.env.SLACK_BOT_TOKEN;
+  const keyring = useDeploymentKeyring(t);
+  const f = await authorityFixture(suffix);
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => {
+    f.close();
+    settings.close();
+    invalidateSlackInstallationCredentialCache();
+    resetIdentityVerificationsForTests();
+    for (const [name, value] of Object.entries(restore)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+  const env = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: `inst_${suffix}` }) as PlatformEnv;
+  const credentials = { state: f.identity, keyring };
+  if (options.botToken) {
+    await writeHostedSlackBotCredentials(credentials, null, {
+      botToken: HOSTED_BOT_TOKEN, botUserId: 'UCHICKPEA1', appId: 'ACHICKPEA1', teamId: f.workspaceId,
+      grantedScopes: [...REQUESTED_SLACK_BOT_SCOPES], validatedAt: NOW,
+    });
+  }
+  assert.equal((await f.config.getWorkspaceInstallation(f.workspaceId))?.transportMode, 'direct');
+  await createAgent(f, f.member, 'agent_research', { name: 'Research' });
+  const service = createLiveWorkspaceManagementService(env, {
+    identity: f.identity,
+    settings,
+    slackCredentials: credentials,
+    overrides: {
+      config: f.config,
+      management: f.management,
+      routines: f.routines,
+      routineSchedulingAvailable: true,
+      setupBaseUrl: 'http://localhost',
+      now: () => NOW,
+    },
+  });
+  return { f, member: mcpCaller(service, f.member, 'member', suffix), teamId: f.workspaceId };
+}
+
+test('on Chickpea Cloud, save_schedule with dm "me" opens the caller\'s DM as the installation\'s bot, posts its first message as the Agent and saves', async (t) => {
+  const warnings = captureWarnings(t);
+  const { f, member, teamId } = await hostedHarness(t, 'hosted-dm', { botToken: true });
+  const slack = hostedSlackApi(t, teamId);
+  const dm = `D_${f.member.user.slackUserId}`;
+
+  const created = structured(await member('save_schedule', { ...DM_SCHEDULE, idempotencyKey: 'hosted-dm' }));
+  assert.equal(created.status, 'done', JSON.stringify(created));
+  assert.equal(created.summary, 'Created the schedule. Every run posts in one thread in your DM with Research, which it just started.');
+
+  const opened = slack.filter(({ method }) => method === 'conversations.open').map(({ body }) => body.users);
+  assert.ok(opened.length > 0);
+  assert.deepEqual([...new Set(opened)], [f.member.user.slackUserId], 'the DM is the signed-in person\'s own');
+  const posted = slack.filter(({ method }) => method === 'chat.postMessage');
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0]!.body.channel, dm);
+  assert.equal(posted[0]!.body.username, 'Research', 'the first message is the Agent\'s');
+  assert.equal(posted[0]!.body.text, 'I\'ll post *Morning check* in this thread when it runs.');
+  assert.deepEqual([...new Set(slack.map(({ token }) => token))], [`Bearer ${HOSTED_BOT_TOKEN}`],
+    'every Slack call is the hosted installation\'s own bot');
+
+  const [routine, ...others] = await f.routines.listRoutines(teamId, dm);
+  assert.deepEqual(others, []);
+  assert.deepEqual(routine?.destination, {
+    kind: 'direct_thread', conversationId: dm, threadTs: THREAD_TS, ownerMembershipId: f.member.membership.id,
+  });
+  assert.equal(routine.state, 'active');
+  assert.equal((await f.config.getAgentThreadRoute(teamId, dm, THREAD_TS))?.agentId, 'agent_research');
+  assert.deepEqual((await f.config.listSlackPublicContext(teamId, dm, THREAD_TS))
+    .map(({ messageTs, role, agentId }) => ({ messageTs, role, agentId })),
+  [{ messageTs: THREAD_TS, role: 'agent', agentId: 'agent_research' }], 'the thread records its first message as the Agent\'s');
+  assert.deepEqual(warnings.filter((line) => line.includes('schedule')), []);
+});
+
+test('on Chickpea Cloud, an installation with no bot token refuses a DM schedule for good, and says what to do', async (t) => {
+  const warnings = captureWarnings(t);
+  const { f, member, teamId } = await hostedHarness(t, 'hosted-dm-no-bot', { botToken: false });
+  const slack = hostedSlackApi(t, teamId);
+
+  const refused = errorOf(await member('save_schedule', { ...DM_SCHEDULE, idempotencyKey: 'no-bot' }), 'slack_unavailable');
+  assert.equal(refused.message, RECONNECT);
+  assert.equal(refused.retryable, false);
+  assert.equal(refused.nextStep, NO_RETRY);
+  assert.deepEqual(slack.filter(({ method }) => method !== 'auth.test'), [], 'nothing is opened or posted');
   assert.deepEqual(await f.routines.listRoutines(teamId), []);
+  assert.ok(warnings.some((line) => line.startsWith('[chickpea:management] schedule DM did not open') &&
+    line.includes('"reasonCode":"credentials_missing"')), warnings.join('\n'));
 });
