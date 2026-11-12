@@ -57,11 +57,12 @@ leaves `origin/main`.
 | Change from the base | Result |
 | --- | --- |
 | A method, an optional parameter or field, or a union member added | Passes; the report notes it |
+| A parameter given a new name, in the same place | Passes; the report notes it |
 | A method removed or renamed | Refused |
-| A parameter added, removed or retyped | Refused |
+| A parameter added, removed, retyped or moved to another place | Refused |
 | A field added as required, removed, renamed, or made optional or required | Refused |
 | A union member removed from a parameter or a return | Refused |
-| A new version of the Flue or Sandbox base, or of a package whose types cross a boundary | Refused |
+| A new version of the Flue, Agents SDK or Sandbox base, or of a package whose types cross a boundary | Refused |
 
 An addition passes, but the other build cannot use it yet:
 
@@ -76,23 +77,42 @@ An addition passes, but the other build cannot use it yet:
 - A new union member in a return reaches an old caller once new code produces
   it. Check that the old code tolerates a value it does not know.
 
-The check cannot see a change in meaning under an unchanged type. A
-store-side behavior change still gets a line in the PR description that judges
-both directions.
+The check reads declared types on the object's side, so it cannot see:
+
+- **A change in meaning under an unchanged type.** A store-side behavior
+  change, a stricter parse of a `string` or `unknown` argument, or a new
+  route inside an Agent's `fetch` passes unseen.
+- **A value typed `unknown`.** `putCodingTask(record)`, the `initialData` of
+  a routine or test run, and the arguments of `stateReadBatch` are examples.
+  List a payload that crosses as JSON under `PAYLOADS` in
+  `scripts/lib/rpc-surface.mjs` to have it read.
+- **A caller's own stub type.** A caller that casts a binding to an interface
+  it declares, as `src/agents/turn-input.ts` does for `chickpeaWake`, can
+  change what it sends while the class's signature stays the same.
+- **Flue's and the Agents SDK's own methods and routes** (`?view=updates`,
+  `?view=history`, `/abort`). Only a version change shows.
+- **A deploy var that two object classes read**, and stored rows.
+- **Cloud's own classes and the methods its subclasses add.**
+
+A change of one of these kinds still gets a line in the PR description that
+judges both directions.
 
 **When it runs.** `verify:train` runs it first. Each PR runs it too, because a
 change to any type an object takes or returns makes the snapshot stale. Then
 run `npm run verify:rpc-contract -- --update` and commit the file. When two
-PRs in a train both changed it, merge them and run `--update` again.
+PRs in a train both changed it, merge them and run `--update` again. If the
+merge changed a subject that one of them gave a reason for, the reason no
+longer names its value: restate it with the new digest, in the merge commit's
+message or in the snapshot.
 
 **Give a reason.** A refused change passes only with a reason: why the two
-builds can serve side by side, and the release that makes it safe. Put it in
-one of two places:
+builds can serve side by side, and the release that makes it safe. A reason
+names the subject and the digest the report prints for it. It holds only while
+the subject keeps that value, so a later change to the same subject needs its
+own reason. Put it in one of two places:
 
-- The snapshot's `contract` section, keyed by the subject the report names,
-  with `to` set to the digest the report prints. The reason holds only while
-  the subject keeps that value, and `--update` drops it once the subject
-  changes again.
+- The snapshot's `contract` section, keyed by the subject, with `to` set to
+  the digest. `--update` drops it once the subject changes again.
 
   ```json
   "contract": {
@@ -103,7 +123,10 @@ one of two places:
   }
   ```
 
-- A commit message on the branch, as a line `contract: <subject>: <reason>`.
+- A commit message on the branch, as a line
+  `contract: <subject> <digest>: <reason>`. The report prints the line to
+  copy, for example
+  `contract: type SlackWorkspaceManagementRpcRequest 71e61f7d164c: No Slack Agent registers the four removed tool names.`
 
 **Compare two commits.** `npm run verify:rpc-contract -- --base <serving>
 --head <candidate>` judges one commit against another, such as the Core pin
@@ -111,7 +134,10 @@ production serves against the next one. A commit without a snapshot is read
 from its source, with this checkout's dependencies. The default base is
 `origin/main`, not what production serves. A method added in one train and
 called in the next passes both trains, so a promotion that spans them needs
-this run against the serving pin.
+this run against the serving pin. Each reason in the range was written
+against `origin/main` of its day, and the run accepts it again. Read every
+`accepted` line of this run against the serving pin: "no caller since the last
+release" may not hold for the build production still serves.
 
 ## Before the first release
 
