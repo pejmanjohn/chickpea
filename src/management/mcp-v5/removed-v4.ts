@@ -36,7 +36,7 @@ export const REMOVED_TOOLS = {
   inspect_memory: { replacedBy: ['get_agent_memory'] },
   inspect_routines: { replacedBy: ['list_schedules'] },
   export_workspace_recipe: { replacedBy: ['export_agents'] },
-  preview_workspace_recipe: { replacedBy: ['create_agent', 'update_agent'] },
+  preview_workspace_recipe: { replacedBy: ['propose_agent'] },
   import_skill: { replacedBy: ['import_skill_from_github'] },
   upload_skills: { replacedBy: ['upload_skill_files'] },
   manage_agent_skill: { replacedBy: ['set_agent_skill'] },

@@ -140,6 +140,11 @@ test('a removed tool\'s answer names its replacements, keeps 4.x\'s ok: false, a
   assert.equal(removedToolResult('inspect_workspace').structuredContent.error.message,
     'Chickpea 5.0 removed inspect_workspace. Use get_workspace, list_agents, get_agent, list_services, list_models, list_members or list_slack_channels instead. ' +
     'Start a new session or reconnect Chickpea to load the 5.0 tools. If you use chickpea-cli, update it with npx chickpea-cli@latest.');
+  // A recipe preview's replacement is the tool that previews, not the ones that write.
+  assert.deepEqual(removedToolResult('preview_workspace_recipe').structuredContent.error.replacedBy, ['propose_agent']);
+  assert.equal(removedToolResult('preview_workspace_recipe').structuredContent.error.message,
+    'Chickpea 5.0 removed preview_workspace_recipe. Use propose_agent instead. ' +
+    'Start a new session or reconnect Chickpea to load the 5.0 tools. If you use chickpea-cli, update it with npx chickpea-cli@latest.');
   // The ids that carry over, and the confirmation that does not.
   assert.match(removedToolResult('undo_workspace_change').structuredContent.error.nextStep, /undo_change takes the change's operationId as its undoToken\.$/);
   assert.match(removedToolResult('get_operation').structuredContent.error.nextStep, /get_setup_status takes a setup link's setupOperationId as its setupToken\.$/);

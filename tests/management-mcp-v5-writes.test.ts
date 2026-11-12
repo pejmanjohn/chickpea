@@ -360,6 +360,12 @@ test('a confirmation a 4.x tool left pending expired with 5.0.0; its ids carry o
   assert.match(refused.nextStep as string, /new idempotencyKey/);
   assert.equal((await f.config.getAgent(agent.id)).enabled, true);
   assert.deepEqual(structured(await call('get_confirmation', { confirmToken })), { status: 'expired' });
+  // The rule reads the caller's door, and a set is bound to the door that made it: a person's approval in
+  // Slack, where a set with no expiry is ordinary, never reaches this one.
+  const fromSlack = ownerSlackDmContext(f);
+  await assert.rejects(f.service.confirmWorkspaceChange({ context: withPersonApproval(fromSlack, confirmToken), proposalId: confirmToken }),
+    (error: unknown) => error instanceof ManagementError && error.code === 'proposal_binding_mismatch');
+  assert.equal((await f.config.getAgent(agent.id)).enabled, true);
   const replayed = await f.service.applyWorkspaceChanges({ context: fourX, idempotencyKey: 'legacy-off', operations: off });
   assert.ok('outcomes' in replayed && replayed.presentation === undefined && replayed.confirmation === undefined);
   // decline_change still retires it.
