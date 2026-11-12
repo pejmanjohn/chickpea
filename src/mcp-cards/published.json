@@ -18,7 +18,7 @@
     {
       "version": 15,
       "sha256": "ea77ed54d01455d104d413ec0d79de241c47fe4b152eef1f2af700eec72cd336",
-      "released": false
+      "released": true
     }
   ],
   "connect-card": [
@@ -40,7 +40,7 @@
     {
       "version": 13,
       "sha256": "84f72be723cbbd372a4f88dc3ea37e36c6e294c90ebfa44c8bc493f9f52ad3ce",
-      "released": false
+      "released": true
     }
   ],
   "health-card": [
@@ -52,7 +52,7 @@
     {
       "version": 8,
       "sha256": "8ad589368aca848c64ecf34f789ea202ade9fd889daf516a2ab29ce0ac7578b1",
-      "released": false
+      "released": true
     }
   ]
 }
