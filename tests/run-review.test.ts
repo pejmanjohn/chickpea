@@ -19,6 +19,7 @@ import {
   type RunReviewPort,
 } from '../src/review/port.ts';
 import {
+  BROWSER_STEP_OMITTED,
   buildRunReviewRecord,
   OTHER_CONVERSATION_OMITTED,
   RUN_REVIEW_FIELD_BYTES,
@@ -100,6 +101,7 @@ function input(overrides: Partial<RunReviewInput> = {}): RunReviewInput {
     truncated: false,
     source: 'stream',
     websiteLogins: { hosts: [], usernames: [] },
+    browserStepsWithheld: false,
     ...overrides,
   };
 }
@@ -159,14 +161,76 @@ test('a session starts only with a port, an installation, a capturing host and a
   assert.equal(await startRunReview(HOSTED_ENV, { surface: 'dm', grantsWebsiteLogins: false, settings }), undefined, 'so does a synchronous throw');
 });
 
-test('a run that grants a website login is never captured, never asks the host, and says why without content', async (t) => {
-  const { capturingCalls } = fakePort(t);
+// Synthetic stand-ins for what a signed-in browser step can hold.
+const SIGNED_IN_SECRETS = [
+  'ops.synthetic@example.com', 'Synthetic-Pass-5678', 'SYNTHTOKEN789', 'browserbase', 'SYNTHSESS', 'Invoice INV-2041',
+];
+const SIGNED_IN_STEPS: RunReviewInput['steps'] = [
+  {
+    kind: 'tool', name: 'browser_open',
+    input: JSON.stringify({ url: 'https://billing.example.com/magic/SYNTHTOKEN789' }),
+    output: JSON.stringify({ url: 'https://billing.example.com/invoices', snapshot: '- text "Invoice INV-2041 is due."' }),
+    durationMs: 812,
+  },
+  {
+    kind: 'tool', name: 'browser_act',
+    input: JSON.stringify({ ref: 'e1', action: 'type', text: 'Synthetic-Pass-5678' }),
+    error: 'Typing into textbox "ops.synthetic@example.com" timed out.',
+    durationMs: 20_000,
+  },
+  {
+    kind: 'tool', name: 'browser_handoff', input: '{}',
+    output: 'Open https://www.browserbase.com/devtools-fullscreen/inspector.html?wss=connect.browserbase.com/debug/SYNTHSESS',
+  },
+  { kind: 'tool', name: 'browser_snapshot', input: '{}' },
+  { kind: 'tool', name: 'web_fetch', input: '{"url":"https://status.example.org"}', output: 'All systems normal.', durationMs: 90 },
+  { kind: 'text', text: 'Your invoice is due.' },
+];
+
+test('a copy of a run that grants a website login keeps only each browser step\'s name, outcome and duration', () => {
+  const record = buildRunReviewRecord(input({ steps: SIGNED_IN_STEPS, browserStepsWithheld: true }), runReviewPseudonymizer(KEY));
+  assert.deepEqual(record.steps, [
+    { kind: 'tool', name: 'browser_open', input: BROWSER_STEP_OMITTED, output: BROWSER_STEP_OMITTED, durationMs: 812 },
+    { kind: 'tool', name: 'browser_act', input: BROWSER_STEP_OMITTED, error: BROWSER_STEP_OMITTED, durationMs: 20_000 },
+    { kind: 'tool', name: 'browser_handoff', input: BROWSER_STEP_OMITTED, output: BROWSER_STEP_OMITTED },
+    { kind: 'tool', name: 'browser_snapshot', input: BROWSER_STEP_OMITTED },
+    { kind: 'tool', name: 'web_fetch', input: '{"url":"https://status.example.org"}', output: 'All systems normal.', durationMs: 90 },
+    { kind: 'text', text: 'Your invoice is due.' },
+  ]);
+  // No saved login names these values, so only the withholding keeps them out.
+  const serialized = JSON.stringify(record).toLowerCase();
+  assert.deepEqual(SIGNED_IN_SECRETS.filter((value) => serialized.includes(value.toLowerCase())), []);
+
+  const every = buildRunReviewRecord(input({ steps: SIGNED_IN_STEPS, browserStepsWithheld: false }), runReviewPseudonymizer(KEY));
+  assert.match(JSON.stringify(every.steps), /Invoice INV-2041 is due/, 'a run that grants no login keeps its browser steps');
+});
+
+test('a run that grants a website login is captured, asks the host, and its copy withholds the browser steps it streamed', async (t) => {
+  const { records, capturingCalls } = fakePort(t);
   const warnings: string[] = [];
   t.mock.method(console, 'warn', (line: string) => { warnings.push(line); });
-  assert.equal(await startRunReview(HOSTED_ENV, { surface: 'dm', grantsWebsiteLogins: true, settings: () => memorySettings() }),
-    undefined);
-  assert.deepEqual(capturingCalls, []);
-  assert.deepEqual(warnings, [JSON.stringify({ component: 'run_review', event: 'website_logins_granted' })]);
+  const session = await startRunReview(HOSTED_ENV, { surface: 'dm', grantsWebsiteLogins: true, settings: () => memorySettings() });
+  assert.ok(session);
+  assert.deepEqual(capturingCalls, [INSTALLATION]);
+  session.ingest(chunk({ type: 'message-started', messageId: 'm', submissionId: SUBMISSION }), SUBMISSION);
+  session.ingest(chunk({
+    type: 'tool-input', messageId: 'm', toolCallId: 'c1', toolName: 'browser_open',
+    input: { url: 'https://billing.example.com/magic/SYNTHTOKEN789' },
+  }), SUBMISSION);
+  session.ingest(chunk({
+    type: 'tool-output', toolCallId: 'c1', durationMs: 640,
+    output: { snapshot: '- text "Invoice INV-2041 is due." - textbox "Email" value="ops.synthetic@example.com"' },
+  }), SUBMISSION);
+  session.ingest(chunk({ type: 'message-delta', messageId: 'm', kind: 'text', delta: 'Your invoice is due.' }), SUBMISSION);
+  await session.finish({ ...ENDING, answer: 'Your invoice is due.' });
+  assert.equal(records.length, 1);
+  assert.deepEqual(records[0]!.record.steps, [
+    { kind: 'tool', name: 'browser_open', input: BROWSER_STEP_OMITTED, output: BROWSER_STEP_OMITTED, durationMs: 640 },
+    { kind: 'text', text: 'Your invoice is due.' },
+  ]);
+  const serialized = JSON.stringify(records[0]!.record).toLowerCase();
+  assert.deepEqual(SIGNED_IN_SECRETS.filter((value) => serialized.includes(value.toLowerCase())), []);
+  assert.deepEqual(warnings, []);
 });
 
 test('a slow capturing answer fails closed after about a second', async (t) => {

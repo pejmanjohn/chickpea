@@ -57,6 +57,7 @@ function copy(overrides: Partial<RunReviewInput>, websiteLogins: RunReviewWebsit
     truncated: false,
     source: 'stream',
     websiteLogins,
+    browserStepsWithheld: false,
     ...overrides,
   }, runReviewPseudonymizer(KEY));
 }
