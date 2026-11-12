@@ -8,7 +8,7 @@ import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
 import { createBetterAuthPublicHandler } from '../src/auth/better-auth-routes.ts';
 import type { McpAuthenticatedPrincipal } from '../src/auth/mcp-oauth-routes.ts';
 import { DISCOVERY_GUIDE_URI } from '../src/management/agent-authoring/index.ts';
-import { DISCOVERY_GUIDE, DISCOVERY_GUIDE_FIVE_ZERO } from '../src/management/agent-authoring/discovery-guide.ts';
+import { playbookSection } from '../src/management/playbook/index.ts';
 import { codingAgentAuthoringGuideResource } from '../src/management/agent-authoring/mcp-guide.ts';
 import {
   V4_TOOL_REPLACEMENTS,
@@ -561,6 +561,9 @@ const promptText = (message: { result?: any }) =>
 const resourceText = (message: { result?: any }) =>
   (message.result.contents as Array<{ text?: string }>).map(({ text }) => text ?? '').join('\n');
 const V4_GUIDES = [WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI, WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI];
+/** What the discovery guide URI serves a client without cards, and one that draws them (a chat app: ruling D6). */
+const RESEARCH = playbookSection('research').guide;
+const RESEARCH_CHAT_APP = playbookSection('research', 'chat-app').guide;
 
 function withoutCardSignals(
   h: Awaited<ReturnType<typeof harness>>,
@@ -635,7 +638,9 @@ for (const [app, clientId] of [
     for (const { uri } of resources) {
       assert.deepEqual(v4Named(resourceText((await request('resources/read', { uri })).message)), [], uri);
     }
-    assert.equal(resourceText((await request('resources/read', { uri: DISCOVERY_GUIDE_URI })).message), DISCOVERY_GUIDE_FIVE_ZERO);
+    assert.equal(resourceText((await request('resources/read', { uri: DISCOVERY_GUIDE_URI })).message), RESEARCH_CHAT_APP);
+    assert.equal((await request('tools/call', { name: 'get_guide', arguments: { topic: 'research' } })).message.result.structuredContent.guide, RESEARCH_CHAT_APP);
+    assert.notEqual(RESEARCH_CHAT_APP, RESEARCH);
     const read = (await request('tools/call', { name: 'get_workspace', arguments: {} })).message.result;
     for (const name of V4_TOOLS) {
       const message = (await request('tools/call', { name, arguments: name === 'apply_workspace_changes' ? V4_OFF : {} })).message;
@@ -685,7 +690,7 @@ for (const [app, initialClientId] of [
         [...WORKSPACE_MANAGEMENT_PROMPT_NAMES]);
       const resources = (await request('resources/list')).message.result.resources as Array<{ uri: string }>;
       assert.ok(V4_GUIDES.every((uri) => resources.some((resource) => resource.uri === uri)));
-      assert.equal(resourceText((await request('resources/read', { uri: DISCOVERY_GUIDE_URI })).message), DISCOVERY_GUIDE);
+      assert.equal(resourceText((await request('resources/read', { uri: DISCOVERY_GUIDE_URI })).message), RESEARCH);
       const off = await call('update_agent', {
         agentId: 'agent_support', version: await version(call, 'agent_support'), on: false, idempotencyKey: `off-${protocol}`,
       });
@@ -847,8 +852,8 @@ test('a client that draws cards gets no prompt or guide that tells its model to 
     for (const { uri } of resources) {
       assert.deepEqual(v4Named(resourceText((await request('resources/read', { uri })).message)), [], `${leg}: ${uri}`);
     }
-    assert.equal(resourceText((await request('resources/read', { uri: DISCOVERY_GUIDE_URI })).message), DISCOVERY_GUIDE_FIVE_ZERO,
-      `${leg}: the discovery guide stays, in 5.0 terms`);
+    assert.equal(resourceText((await request('resources/read', { uri: DISCOVERY_GUIDE_URI })).message), RESEARCH_CHAT_APP,
+      `${leg}: the discovery guide stays, as the playbook's research section`);
   }
 });
 
@@ -869,7 +874,7 @@ test('a client without cards keeps every prompt and guide as before', async (t) 
     }
     const uris = ((await request('resources/list')).message.result.resources as Array<{ uri: string }>).map(({ uri }) => uri);
     assert.deepEqual(V4_GUIDES.filter((uri) => !uris.includes(uri)), [], leg);
-    assert.equal(resourceText((await request('resources/read', { uri: DISCOVERY_GUIDE_URI })).message), DISCOVERY_GUIDE, leg);
+    assert.equal(resourceText((await request('resources/read', { uri: DISCOVERY_GUIDE_URI })).message), RESEARCH, leg);
     assert.equal(resourceText((await request('resources/read', { uri: WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI })).message),
       JSON.stringify(codingAgentAuthoringGuideResource()), leg);
   }

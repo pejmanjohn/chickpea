@@ -21,6 +21,7 @@ import { explainAgent } from './explain.ts';
 import { proposeAgent, proposeAgentChange } from './proposals.ts';
 import * as removals from './removals.ts';
 import * as connections from './connections.ts';
+import * as guide from './guide.ts';
 import * as reads from './reads.ts';
 import type { FiveZeroDeps } from './reads.ts';
 import * as runHistory from './run-history-schemas.ts';
@@ -51,7 +52,13 @@ export interface FiveZeroTool {
   write?: ReturnType<typeof writeHints>;
   /** Its text block, in place of the JSON, when its result's text says more in fewer characters. */
   text?(output: Structured): Promise<string>;
-  run(deps: FiveZeroDeps, args: Structured): Promise<Structured>;
+  run(deps: FiveZeroDeps, args: Structured, call: FiveZeroCall): Promise<Structured>;
+}
+
+/** What a tool knows about the client calling it. */
+export interface FiveZeroCall {
+  /** The client draws cards (ChatGPT, claude.ai): a chat app, not a coding agent. */
+  cardHost: boolean;
 }
 
 /** Checks that `run` takes what `input` parses and returns what `output` accepts. */
@@ -68,7 +75,7 @@ function tool<I extends z.ZodType<Structured>, O extends z.ZodType<Structured>>(
   openWorld?: true;
   write?: ReturnType<typeof writeHints>;
   text?: (output: z.output<O>) => Promise<string>;
-  run: (deps: FiveZeroDeps, args: z.output<I>) => Promise<z.output<O>>;
+  run: (deps: FiveZeroDeps, args: z.output<I>, call: FiveZeroCall) => Promise<z.output<O>>;
 }): FiveZeroTool {
   return definition;
 }
@@ -92,6 +99,14 @@ export const FIVE_ZERO_TOOLS = {
     input: schemas.getWorkspaceInput,
     output: schemas.getWorkspaceOutput,
     run: (deps) => reads.getWorkspace(deps),
+  }),
+  get_guide: tool({
+    title: 'Get the Chickpea guide',
+    description: 'How to do a multi-step job with these tools, such as setting up a first Agent, test driving one, or rolling it out to a team: one topic of Chickpea\'s guide, in Markdown, with the ground rules every topic shares. Omit topic for the list of topics. Reads only; changes nothing.',
+    input: guide.getGuideInput,
+    output: guide.getGuideOutput,
+    text: async (output) => guide.guideText(output),
+    run: async (_deps, args, call) => guide.getGuide(args, call.cardHost ? 'chat-app' : 'any'),
   }),
   list_agents: tool({
     title: 'List Agents',
@@ -641,7 +656,7 @@ export function registerFiveZeroTool(
     try {
       // Checked here, not only by the SDK after the handler returns, so an
       // output the contract does not allow is an error in the metric and the log.
-      const parsed = definition.output.safeParse(await definition.run(deps, args));
+      const parsed = definition.output.safeParse(await definition.run(deps, args, { cardHost: cardHost() }));
       if (!parsed.success) throw new OutputRejected(parsed.error.issues.map((issue) => issue.path.join('.')));
       emitManagementMetric('tool.call', { surface: 'mcp', tool: name, outcome: 'success', durationMs: Date.now() - startedAt });
       // Whatever the tool, a card host's model never gets a confirm token.

@@ -202,7 +202,7 @@ export const AGENT_SKILL_CREATION_GUIDE_MCP_SUBSTITUTIONS: ReadonlyArray<readonl
 ];
 
 /** Each pair must match `source` exactly once, so an edit to the source fails at load, not in a client. */
-export function applySubstitutions(
+function applySubstitutions(
   source: string,
   label: string,
   substitutions: ReadonlyArray<readonly [from: string, to: string]>,
