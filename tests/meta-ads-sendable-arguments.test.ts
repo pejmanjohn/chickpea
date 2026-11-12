@@ -208,6 +208,22 @@ test("the activity log is shown its time window, category and limit, and its lim
     { type: 'integer' });
 });
 
+test('the activity log is unavailable, and withheld from a stale discovery, if Meta requires a correlation field it never sends', () => {
+  const name = 'ads_account_get_activity_logs';
+  // Stored before Meta required the field, so admission still passes.
+  const stale = metaDiscoveredTool(name);
+  for (const field of ['advertiser_request', 'client_conversation_id']) {
+    const required = ['ad_account_id', field];
+    const fresh = metaDiscoveredTool(name, META_LIVE_NAMES[name], { required });
+    assert.equal(fresh.inputSchema?.ambiguous, true, field);
+    assert.equal(metaAdsRuntimePropertyNames(connectionOf(fresh), name), undefined, field);
+    const schema = metaToolSchema(name, META_LIVE_NAMES[name], { required });
+    const { tools, withheld } = reviewedMetaAdsTools([listed(name, schema)], connectionOf(stale));
+    assert.deepEqual(tools, [], field);
+    assert.deepEqual(withheld?.get(name), [field], field);
+  }
+});
+
 test('a newly required unreviewed argument makes the tool unavailable on every tool kind', () => {
   for (const [kind, name] of KINDS) {
     for (const added of ['reporting_purpose', 'advertiser_job', 'business']) {

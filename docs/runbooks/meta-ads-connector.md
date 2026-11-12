@@ -45,7 +45,9 @@ particular campaigns, ads, objects, people or datasets stay unavailable, so
 each answers for the whole account. The change history
 (`ads_account_get_activity_logs`) can run to megabytes for one week, so the
 Agent is told to start with 50 entries and narrow the time window or event
-category for more. A larger answer is cut to fit the model's context.
+category for more. A larger answer is cut to fit the model's context. An
+account connected before the change history was offered lists it after its
+next Reconnect.
 
 The tool catalog is gated by the schemas returned by the latest Meta discovery.
 Chickpea shows only tools whose current schemas pass its safety checks. Each
