@@ -9201,6 +9201,11 @@
     state.customMcpToolEditor = { accountId: accountId, revision: entry.account.revision, metaAds: metaAds, bugsnag: bugsnag, accountIds: accountIds.join(', '),
       tools: (entry.account.policy.discoveredTools || []).filter(function (tool) { return !ceiling.length || ceiling.indexOf(tool.name) >= 0; }).map(function (tool) { return Object.assign({}, tool, (entry.mcpToolAccess || []).find(function (access) { return access.name === tool.name; }) || {}); }),
       selectedTools: entry.account.policy.allowedTools.slice(), busy: false, error: '' };
+    if (metaAds) {
+      // A grant can name a tool the picker hides; Save must not send it back.
+      var selectable = customMcpSelectableTools(state.customMcpToolEditor).map(function (tool) { return tool.name; });
+      state.customMcpToolEditor.selectedTools = state.customMcpToolEditor.selectedTools.filter(function (name) { return selectable.indexOf(name) >= 0; });
+    }
     if (!metaAds && selectAllIfEmpty && !state.customMcpToolEditor.selectedTools.length) {
       state.customMcpToolEditor.selectedTools = state.customMcpToolEditor.tools.filter(function (tool) { return !bugsnag || bugsnagReadTool(tool); }).map(function (tool) { return tool.name; });
     }

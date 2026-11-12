@@ -8298,8 +8298,8 @@ test('Meta Ads installation config and account review reject forged grants', asy
       'ads_get_opportunity_score',
       'ads_create_campaign',
     ].map((name) => ({ name, inputSchema: {
-      propertyNames: ['account_id'],
-      accountFields: [{ name: 'account_id' as const, type: 'string' as const, required: true }],
+      propertyNames: ['ad_account_id'],
+      accountFields: [{ name: 'ad_account_id' as const, type: 'string' as const, required: true }],
       ambiguous: false,
       fingerprint: 'a'.repeat(64),
     } }));
@@ -8342,7 +8342,7 @@ test('Meta Ads installation config and account review reject forged grants', asy
     const saved = await request(toolsPath, 'PUT', { expectedRevision: ready.revision, allowedTools: ['ads_get_ad_entities'], approvedAccountIds: ['123'], toolPolicies: { ads_get_ad_entities: { effect: 'read', argumentConstraints: { account_id: ['999'] } } } });
     assert.equal(saved.status, 200, await saved.clone().text());
     const savedAccount = (await saved.json() as Record<string, any>).account;
-    assert.deepEqual(savedAccount.policy.toolPolicies.ads_get_ad_entities.argumentConstraints, { account_id: ['123'] });
+    assert.deepEqual(savedAccount.policy.toolPolicies.ads_get_ad_entities.argumentConstraints, { ad_account_id: ['123'] });
     assert.equal(savedAccount.policy.toolPolicies.ads_get_ad_entities.effect, 'read');
     const expanded = await request(toolsPath, 'PUT', { expectedRevision: savedAccount.revision,
       allowedTools: ['ads_get_ad_entities', 'ads_get_opportunity_score', 'ads_create_campaign'], approvedAccountIds: ['123'] });

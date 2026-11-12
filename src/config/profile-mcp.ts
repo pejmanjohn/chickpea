@@ -192,7 +192,7 @@ export function resolveProfileMcpConnections(
  * is filtered to the granted tools the server still lists, in grant order. A
  * tool the server stops listing leaves the rest working, and comes back when
  * the server lists it again; the grant itself is never rewritten. A Meta tool
- * shows only the arguments reviewed on the current row.
+ * shows only the arguments its reviewed contract lets a call send.
  */
 export function resolveRuntimePlanMcpConnections(
   profileId: string,

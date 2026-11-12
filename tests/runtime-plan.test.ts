@@ -22,6 +22,8 @@ import { sandboxThreadKey } from '../src/sandbox/thread-key.ts';
 import { attachedContainerPlan } from './helpers/attached-container-plan.ts';
 import legacyFixture from './fixtures/runtime-plan/v0.1.26-attached-container.json' with { type: 'json' };
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
+import { projectMcpPolicyInstructions } from '../src/config/mcp-policy-instructions.ts';
+import { metaDiscoveredTool } from './helpers/meta-ads-live-tools.ts';
 import { revisionedAlias } from '../src/model-catalog/provider-alias.ts';
 import {
   runtimePlanConnectedServicesInstruction,
@@ -208,6 +210,49 @@ test('runtime plans freeze approved MCP effects and keep legacy declarations rea
   const invalid = structuredClone(plan);
   invalid.mcpConnections[0]!.readOnlyTools = ['unapproved'];
   assert.throws(() => parseRuntimePlanV2(invalid), /invalid tool effect/);
+});
+
+const META_HELPER = 'ads_get_ad_accounts';
+
+test("a Meta grant's restriction text names only the tools the reviewed contract lets mount", () => {
+  const effectiveConnections = structuredClone(EFFECTIVE_CONNECTIONS);
+  const account = { ad_account_id: ['123450001'] };
+  const scope = { $meta_ads_approved_account_id: ['123450001'] };
+  const policy = {
+    kind: 'mcp' as const, url: 'https://mcp.facebook.com/ads', transport: 'streamable-http' as const,
+    authMode: 'oauth' as const, headerNames: [], presetId: 'meta-ads', toolAccessMode: 'review' as const,
+    discoveredTools: [
+      metaDiscoveredTool('ads_get_ad_entities'),
+      metaDiscoveredTool(META_HELPER),
+      // Granted while it was reviewed, and held back since.
+      metaDiscoveredTool('ads_account_get_activity_logs', [
+        'ad_account_id', 'advertiser_request', 'client_conversation_id', 'end_time', 'limit', 'start_time',
+      ]),
+    ],
+    // ads_update_custom_audience_users is granted, and Meta no longer lists it.
+    allowedTools: ['ads_get_ad_entities', META_HELPER, 'ads_account_get_activity_logs', 'ads_update_custom_audience_users'],
+    toolPolicies: {
+      ads_get_ad_entities: { effect: 'read' as const, argumentConstraints: account },
+      [META_HELPER]: { effect: 'read' as const, argumentConstraints: scope },
+      ads_account_get_activity_logs: { effect: 'read' as const, argumentConstraints: account },
+      ads_update_custom_audience_users: { effect: 'write' as const, argumentConstraints: scope },
+    },
+  };
+  effectiveConnections[0] = {
+    ...effectiveConnections[0]!,
+    account: { ...effectiveConnections[0]!.account, id: 'meta', label: 'Meta Ads', providerId: 'meta-ads', policy },
+    policy,
+  };
+  const plan = compile({ effectiveConnections });
+  const meta = plan.mcpConnections.find(({ id }) => id === 'meta')!;
+  assert.deepEqual(meta.toolArgumentConstraints, { ads_get_ad_entities: account, [META_HELPER]: scope });
+  const instructions = projectMcpPolicyInstructions(plan.mcpConnections);
+  assert.deepEqual(instructions.restrictions, [{ connection: 'meta', tools: { ads_get_ad_entities: account } }]);
+  assert.deepEqual(instructions.metaHelperScopes, [
+    { connection: 'meta', tool: META_HELPER, approvedAccountIds: ['123450001'] },
+  ]);
+  assert.deepEqual(instructions.metaWriteScopes, []);
+  assert.doesNotMatch(JSON.stringify(instructions), /activity_logs|custom_audience_users/);
 });
 
 test('the sandbox conversation key stays a Slack coordinate instead of a Flue instance id', () => {

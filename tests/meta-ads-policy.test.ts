@@ -113,16 +113,20 @@ test('empty Meta review remains empty without requiring an account', () => {
 
 test('compiler emits exact account constraints with server-owned reviewed effects', () => {
   assert.deepEqual(compileMetaAdsToolAccess({
-    discoveredTools: [discovered(reportTool), discovered(scoreTool, 'account_id')],
+    discoveredTools: [discovered(reportTool), discovered(scoreTool)],
     requestedTools: [reportTool, scoreTool, reportTool],
     approvedAccountIds: [' act_123 ', 'act_123', 'act_456'],
   }), {
     allowedTools: [reportTool, scoreTool],
     toolPolicies: {
       [reportTool]: { effect: 'read', argumentConstraints: { ad_account_id: ['act_123', 'act_456'] } },
-      [scoreTool]: { effect: 'read', argumentConstraints: { account_id: ['act_123', 'act_456'] } },
+      [scoreTool]: { effect: 'read', argumentConstraints: { ad_account_id: ['act_123', 'act_456'] } },
     },
   });
+  // Each tool's contract names its account field; Meta has only ever used ad_account_id.
+  assert.throws(() => compileMetaAdsToolAccess({
+    discoveredTools: [discovered(scoreTool, 'account_id')], requestedTools: [scoreTool], approvedAccountIds: ['act_123'],
+  }), /cannot be restricted to an approved ad account/);
 });
 
 test('helpers remain explicit grants and store account scope without a provider argument', () => {
@@ -158,7 +162,8 @@ test('helper schema or scope drift revokes runtime access', () => {
   assert.deepEqual(metaAdsRuntimeConstraint(connection, META_ADS_ACCOUNT_HELPER), {
     [META_ADS_APPROVED_ACCOUNT_SCOPE]: ['act_123'],
   });
-  assert.deepEqual(metaAdsRuntimePropertyNames(connection, META_ADS_ACCOUNT_HELPER), []);
+  assert.deepEqual(metaAdsRuntimePropertyNames(connection, META_ADS_ACCOUNT_HELPER),
+    ['advertiser_request', 'client_conversation_id']);
   account.inputSchema!.ambiguous = true;
   assert.deepEqual(metaAdsRuntimeAllowedTools(connection), []);
   account.inputSchema!.ambiguous = false;
@@ -275,22 +280,24 @@ test("Meta's account-wide reads are admitted from their live schemas and never s
   }
 });
 
-// The lists catch ID-shaped names only. A selector under another name passes
-// until reads are checked against an allowlist of arguments.
-test('a non-ID-shaped selector added to an account-wide read is admitted and sendable', () => {
-  const selectors = [['entities', { type: 'array', items: { type: 'string' } }], ['business', { type: 'string' }]] as const;
-  for (const { name } of META_ACCOUNT_READS) {
+test('a selector added to an account-wide read, ID-shaped or not, is hidden and refused', () => {
+  const selectors = [
+    ['entities', { type: 'array', items: { type: 'string' } }], ['business', { type: 'string' }],
+    ['object_ids', { type: 'array', items: { type: 'string' } }],
+  ] as const;
+  for (const { name, properties, filters } of META_ACCOUNT_READS) {
     for (const [selector, definition] of selectors) {
       const tool = accountRead(name, metaAccountReadSchema(name, { extra: { [selector]: definition } }));
       assert.equal(metaAdsToolSchemaSupported(tool), true, `${name}: ${selector}`);
       const runtime = metaAdsRuntimePropertyNames({ discoveredTools: [tool] }, name)!;
-      assert.ok(runtime.includes(selector), `${name}: ${selector}`);
-      assert.doesNotThrow(() => assertMcpToolArgumentKeys(name, { ad_account_id: '123450001', [selector]: '1' }, runtime));
+      assert.deepEqual([...runtime].sort(), Object.keys(properties).filter((property) => !filters.includes(property)).sort());
+      assert.throws(() => assertMcpToolArgumentKeys(name, { ad_account_id: '123450001', [selector]: '1' }, runtime),
+        new RegExp(`does not permit the argument ${selector}`), `${name}: ${selector}`);
     }
   }
 });
 
-test("Meta's account-wide reads are refused with another account field, an optional account, or an unreviewed ID", () => {
+test("Meta's account-wide reads are refused with another account field, an optional account, or a required unreviewed argument", () => {
   const text = { type: 'string' };
   for (const { name, filters } of META_ACCOUNT_READS) {
     const refused: Array<[string, Record<string, unknown>]> = [
@@ -300,8 +307,9 @@ test("Meta's account-wide reads are refused with another account field, an optio
       ['an unlisted required ID', metaAccountReadSchema(name, {
         extra: { business_id: text }, required: ['ad_account_id', 'business_id'],
       })],
-      // Listed for ads_get_ad_entities, not for these reads.
-      ['an unlisted optional ID', metaAccountReadSchema(name, { extra: { object_ids: { type: 'array', items: text } } })],
+      ['an unlisted required argument', metaAccountReadSchema(name, {
+        extra: { reporting_purpose: text }, required: ['ad_account_id', 'reporting_purpose'],
+      })],
       ['an account nested in an argument', metaAccountReadSchema(name, {
         extra: { filtering: { type: 'object', properties: { account_id: text } } },
       })],
@@ -363,14 +371,16 @@ test("Meta's activity log is refused, and a stored grant for it never runs", () 
 test('compiler rejects tools without one required scalar account field', () => {
   const invalid: McpConnectionToolInfo[] = [
     { name: reportTool },
-    discovered(reportTool, 'account_id', {
-      accountFields: [{ name: 'account_id', type: 'string', required: false }],
+    discovered(reportTool, 'ad_account_id', {
+      accountFields: [{ name: 'ad_account_id', type: 'string', required: false }],
     }),
-    discovered(reportTool, 'account_id', { ambiguous: true }),
-    discovered(reportTool, 'account_id', { accountFields: [
+    discovered(reportTool, 'ad_account_id', { ambiguous: true }),
+    discovered(reportTool, 'ad_account_id', { accountFields: [
       { name: 'account_id', type: 'string', required: true },
       { name: 'ad_account_id', type: 'string', required: true },
     ] }),
+    // A stored account field the stored names don't list.
+    discovered(reportTool, 'ad_account_id', { propertyNames: ['fields'] }),
   ];
   for (const tool of invalid) {
     assert.throws(() => compileMetaAdsToolAccess({
@@ -414,12 +424,12 @@ test('all reviewed Meta writes require explicit selection and compile with write
 
 test('write compiler rejects missing target evidence and duplicate discovery', () => {
   const update = discoveredWrite('ads_update_entity');
-  assert.throws(() => compileMetaAdsToolAccess({
-    discoveredTools: [{ ...update, inputSchema: {
-      ...update.inputSchema!, propertyNames: ['ad_account_id', 'entity_type'],
-    } }],
-    requestedTools: ['ads_update_entity'], approvedAccountIds: ['act_123'],
-  }), /cannot be restricted/);
+  for (const propertyNames of [['ad_account_id', 'entity_type'], ['ad_account_id', 'entity_id']]) {
+    assert.throws(() => compileMetaAdsToolAccess({
+      discoveredTools: [{ ...update, inputSchema: { ...update.inputSchema!, propertyNames } }],
+      requestedTools: ['ads_update_entity'], approvedAccountIds: ['act_123'],
+    }), /cannot be restricted/, propertyNames.join());
+  }
   assert.throws(() => compileMetaAdsToolAccess({
     discoveredTools: [update, structuredClone(update)],
     requestedTools: ['ads_update_entity'], approvedAccountIds: ['act_123'],
@@ -539,15 +549,18 @@ test('runtime revalidates current schema against its exact stored constraint', (
   assert.equal(metaAdsRuntimeConstraint(connection, reportTool), undefined);
 });
 
-test('runtime permits correlation metadata but withholds optional entity target arguments', () => {
+test('runtime sends the contract arguments, whatever the stored names, and never an entity filter', () => {
   const tool = discovered(reportTool, 'ad_account_id', {
     propertyNames: [
-      'ad_account_id', 'advertiser_request', 'client_conversation_id', 'fields', 'object_ids',
+      'ad_account_id', 'advertiser_job', 'advertiser_request', 'client_conversation_id', 'fields', 'object_ids',
     ],
   });
-  assert.deepEqual(metaAdsRuntimePropertyNames({ discoveredTools: [tool] }, reportTool), [
-    'ad_account_id', 'advertiser_request', 'client_conversation_id', 'fields',
+  const runtime = metaAdsRuntimePropertyNames({ discoveredTools: [tool] }, reportTool)!;
+  assert.deepEqual(runtime, [
+    'ad_account_id', 'advertiser_request', 'breakdowns', 'client_conversation_id', 'cursor', 'date_preset', 'fields',
+    'filtering', 'include_additional_context', 'level', 'limit', 'object_state', 'sort', 'time_increment', 'time_range',
   ]);
+  for (const hidden of ['object_ids', 'advertiser_job']) assert.equal(runtime.includes(hidden), false, hidden);
 });
 
 test('create-ad runtime rejects the optional adset_spec alternate parent route', () => {

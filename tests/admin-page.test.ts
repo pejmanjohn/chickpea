@@ -19874,6 +19874,48 @@ test('Meta tool review shows only available reporting and write tools, and Selec
   });
 });
 
+test('a plain Save in Meta tool review drops a granted tool the picker cannot show', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: { attached: [ownedConnection({
+      id: 'connection_meta', workspaceId: 'T_DESIGN', revision: 4,
+      ownerKind: 'member', providerId: 'meta-ads', label: 'Meta Ads',
+      lifecycle: 'ready', credentialConfigured: true,
+      policy: {
+        kind: 'mcp', url: 'https://mcp.facebook.com/ads', transport: 'streamable-http',
+        authMode: 'oauth', headerNames: [], presetId: 'meta-ads', toolAccessMode: 'review',
+        discoveredTools: [
+          { name: 'ads_get_ad_entities', description: 'Synthetic provider description.', available: true, effect: 'read' },
+          // Granted while it was reviewed, and held back since.
+          { name: 'ads_account_get_activity_logs', description: 'Synthetic provider description.', available: false, effect: 'write' },
+        ],
+        // Granted, and no longer listed by Meta.
+        allowedTools: ['ads_get_ad_entities', 'ads_account_get_activity_logs', 'ads_update_custom_audience_users'],
+        toolPolicies: {
+          ads_get_ad_entities: { effect: 'read', argumentConstraints: { ad_account_id: ['123'] } },
+          ads_account_get_activity_logs: { effect: 'read', argumentConstraints: { ad_account_id: ['123'] } },
+          ads_update_custom_audience_users: { effect: 'write', argumentConstraints: { $meta_ads_approved_account_id: ['123'] } },
+        },
+      },
+    })] },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'custom-mcp-tools-open', 'data-connection-id': 'connection_meta' }) });
+  assert.match(harness.app.innerHTML, /1 of 1 selected/);
+  assert.doesNotMatch(harness.app.innerHTML, /ads_account_get_activity_logs|ads_update_custom_audience_users/);
+  click({ target: actionTarget({ 'data-action': 'custom-mcp-tools-save' }) });
+  await flushAsync();
+  assert.deepEqual(harness.connectionToolsPuts[0]?.body, {
+    expectedRevision: 4, allowedTools: ['ads_get_ad_entities'], approvedAccountIds: ['123'],
+  });
+});
+
 test("Meta tool review describes the account-wide reads in Chickpea's words, as reports", async () => {
   const reads: Array<[string, string]> = [
     ['ads_get_ad_account_custom_audiences', "View the account&#39;s custom and lookalike audiences."],

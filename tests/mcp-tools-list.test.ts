@@ -948,7 +948,7 @@ const META_STORED = [
   { name: META_ADS_ACCOUNT_HELPER, inputSchema: { ...metaHelperSchema,
     propertyNames: ['advertiser_request', 'client_conversation_id', 'cursor', 'limit'] } },
   { name: META_REPORT, inputSchema: reportSchema(
-    ['ad_account_id', 'client_conversation_id', 'date_preset', 'entity_ids'], 'd'.repeat(64)) },
+    ['ad_account_id', 'analysis_metric', 'client_conversation_id', 'entity_ids'], 'd'.repeat(64)) },
   { name: META_ENTITIES, inputSchema: reportSchema(
     ['ad_account_id', 'client_conversation_id', 'fields', 'object_ids'], 'e'.repeat(64)) },
 ];
@@ -993,7 +993,7 @@ const liveHelper = {
   outputSchema: { type: 'object', properties: { accounts: { type: 'array' } }, required: ['accounts'] },
 };
 const liveReport = (required = ['ad_account_id']) => liveMetaTool(META_REPORT, {
-  ad_account_id: text, client_conversation_id: text, date_preset: text, entity_ids: list,
+  ad_account_id: text, client_conversation_id: text, analysis_metric: text, entity_ids: list,
 }, required);
 const liveEntities = liveMetaTool(META_ENTITIES, {
   ad_account_id: text, client_conversation_id: text, fields: list, object_ids: list,
@@ -1018,7 +1018,7 @@ test('each mounted Meta tool shows the model only its reviewed arguments, never 
       assert.deepEqual(connection.tools.map(({ name }) => name), META_GRANT.map((name) => `mcp__meta__${name}`));
       assert.deepEqual(shownSchema(mounted(connection, META_REPORT)), {
         type: 'object',
-        properties: { ad_account_id: text, client_conversation_id: text, date_preset: text },
+        properties: { ad_account_id: text, client_conversation_id: text, analysis_metric: text },
         required: ['ad_account_id'],
         additionalProperties: false,
       });
@@ -1063,7 +1063,7 @@ test('a Meta call built from every argument the model is shown passes the key ch
   }, metaDeclaration());
   assert.deepEqual(server.calls, [META_REPORT]);
   assert.deepEqual(server.callArguments, [{
-    ad_account_id: '123450001', client_conversation_id: 'synthetic', date_preset: 'synthetic',
+    ad_account_id: '123450001', client_conversation_id: 'synthetic', analysis_metric: 'synthetic',
   }]);
 });
 
