@@ -3507,11 +3507,12 @@ test('runTurn fails a lease-rejected turn closed instead of returning silently',
   );
 });
 
-// A verified own-turn write delivers the model's own answer with its table
-// and display components, whatever the write changed: an addition, a rewrite,
-// a forget, a replayed call, or a second write on top of the first. Memory
-// changed by another writer during the turn still fails the ordinary lease,
-// and a receipt whose lease no longer holds at delivery fails closed.
+// A turn that writes its memory delivers the model's own answer with its
+// table and display components, whatever the write changed: an addition, a
+// rewrite, a forget, a replayed call, or a second write on top of the first.
+// Memory another writer changes during the turn, or forgets before delivery,
+// never holds the answer back. Only lost access, such as the Agent disabled
+// before delivery, fails closed.
 const MEMORY_DRAFT = 'The absolute increase is 31. Noted for next time. Secret canary: BLUEBIRD.';
 const MEMORY_DRAFT_TABLE = {
   caption: 'Synthetic figures',
@@ -3535,20 +3536,20 @@ for (const scenario of [
   { name: 'a second write on top of the first', before: 'Secret canary: BLUEBIRD.\nKeep links.',
     first: 'Secret canary: BLUEBIRD.\nKeep links.\nAudit word: saffron.',
     body: 'Keep links.\nAudit word: saffron.', outcome: 'answer', table: true },
-  // Another writer's forget lands before this turn's write: the ordinary lease decides.
+  // Another writer's forget lands before this turn's write.
   { name: 'memory another writer changed during the turn', before: 'Secret canary: BLUEBIRD.',
-    body: 'Use readable dates.', concurrent: true, outcome: 'failure', table: true },
+    body: 'Use readable dates.', concurrent: true, outcome: 'answer', table: true },
   { name: 'a write forgotten before delivery', before: 'Secret canary: BLUEBIRD.\nKeep links.',
     body: 'Secret canary: BLUEBIRD.\nKeep links.\nAudit word: saffron.',
-    outcome: 'failure', table: true, afterWrite: 'forget', finalBody: '' },
-  // Another writer lands between the turn's two writes: the chain is broken.
+    outcome: 'answer', table: true, afterWrite: 'forget', finalBody: '' },
+  // Another writer lands between the turn's two writes.
   { name: 'memory another writer changed between two writes', before: 'Secret canary: BLUEBIRD.',
     first: 'Secret canary: BLUEBIRD.\nAudit word: saffron.', between: true,
-    body: 'Use readable dates.', outcome: 'failure', table: true },
+    body: 'Use readable dates.', outcome: 'answer', table: true },
   { name: 'two writes, the last forgotten before delivery', before: 'Secret canary: BLUEBIRD.\nKeep links.',
     first: 'Secret canary: BLUEBIRD.\nKeep links.\nAudit word: saffron.',
     body: 'Secret canary: BLUEBIRD.\nKeep links.\nAudit word: saffron.\nUse readable dates.',
-    outcome: 'failure', table: true, afterWrite: 'forget', finalBody: '' },
+    outcome: 'answer', table: true, afterWrite: 'forget', finalBody: '' },
   { name: 'a write with the Agent disabled before delivery', before: 'Secret canary: BLUEBIRD.\nKeep links.',
     body: 'Secret canary: BLUEBIRD.\nKeep links.\nAudit word: saffron.',
     outcome: 'failure', table: true, afterWrite: 'disable' },
@@ -3561,7 +3562,7 @@ for (const scenario of [
 }>) {
 const verb = { answer: 'delivers the answer for', failure: 'fails closed for' }[scenario.outcome];
 test(`a successful own-turn memory write ${verb} ${scenario.name}`, async () => {
-  const { createMemoryWriteChain, executeSlackMemoryUpdate } = await import('../src/management/slack-memory-actions.ts');
+  const { executeSlackMemoryUpdate } = await import('../src/management/slack-memory-actions.ts');
   const { resolveSlackManagementActor } = await import('../src/management/slack-tools.ts');
   const f = await createManagementAdapterFixture('memory-delivery');
   try {
@@ -3591,14 +3592,12 @@ test(`a successful own-turn memory write ${verb} ${scenario.name}`, async () => 
       slackUserId: turn.userId, eventId: turn.eventId, messageTs: turn.messageTs, turnJobId,
       requesterText: turn.text,
     };
-    // The tool's chain starts at the revision this turn was injected with.
-    const chain = createMemoryWriteChain(turnJobId, expectedRevision, undefined);
     const performWrite = (
       revision = expectedRevision + ('concurrent' in scenario ? 1 : 0),
       body = scenario.first ?? scenario.body,
     ) => executeSlackMemoryUpdate({
       signal,
-      data: { expectedRevision: revision, body }, chain,
+      data: { expectedRevision: revision, body },
       apply: async (args) => ({ ok: true, result: await f.service.applyWorkspaceChanges({
         context: await resolveSlackManagementActor(signal, f.identity), ...args,
       }) }),
@@ -3609,11 +3608,6 @@ test(`a successful own-turn memory write ${verb} ${scenario.name}`, async () => 
     const posts: string[] = [];
     let checkpointed = false;
     let delivered: string | undefined;
-    const getOperation = f.service.getOperation.bind(f.service);
-    f.service.getOperation = async (...args) => {
-      assert.equal(checkpointed, true, 'checkpoint must precede receipt/visibility validation');
-      return getOperation(...args);
-    };
     const client = {
       conversations: { history: async () => ({ ok: true, messages: [] }) },
       chat: {

@@ -9,7 +9,7 @@ import type { WebClient } from '@slack/web-api';
 import { compileRuntimePlanV2, deriveRuntimePlanInstanceId } from '../src/agents/runtime-plan.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
-import { createMemoryWriteChain, executeSlackMemoryUpdate } from '../src/management/slack-memory-actions.ts';
+import { executeSlackMemoryUpdate } from '../src/management/slack-memory-actions.ts';
 import { resolveSlackManagementActor } from '../src/management/slack-tools.ts';
 import { SqliteMemoryStateStore } from '../src/memory/store.ts';
 import { parseCurrentRequestEnvelope } from '../src/memory/tool-policy.ts';
@@ -29,8 +29,8 @@ import { createManagementAdapterFixture, type ManagementAdapterFixture } from '.
 /**
  * An Agent with memory streams its answer like any other, including a turn
  * that writes its own memory. Memory another writer changes during the turn
- * still fails the delivery lease: the streamed text is replaced by the
- * failure notice.
+ * never holds the answer back: the lease checks access only, so an Agent
+ * disabled mid-turn still replaces the streamed text with the failure notice.
  */
 
 const assignment: ResolvedAssignment = {
@@ -316,6 +316,17 @@ for (const [label, memoryBody] of [['with memory', MEMORY], ['without memory', '
   });
 }
 
+/** The answer streamed and closed as the reply: nothing replaced or posted beside it. */
+function assertStreamClosedAsReply(h: Harness): void {
+  assert.ok(streamedText(h).startsWith('Your stand-up is at 9:30'), 'the answer streamed');
+  assert.deepEqual(h.slack.map(({ method }) => method).filter((method) =>
+    method === 'chat.update' || method === 'chat.delete' || method === 'chat.postMessage'), [],
+  'the stream closes as the reply: nothing replaced or posted beside it');
+  assert.equal(JSON.stringify(h.slack).includes(AGENT_FAILURE_TEXT), false, 'no failure notice');
+  assert.deepEqual(h.outcomes, ['succeeded']);
+  assert.equal(h.store.get(h.runId)?.stream.presentationOutcome, 'progressive');
+}
+
 /** The lease failed after the answer streamed: the notice replaced the streamed message, nothing else posted. */
 function assertStreamCorrectedToFailure(h: Harness, warnings: unknown[]): void {
   assert.ok(streamedText(h).startsWith('Your stand-up is at 9:30'), 'the answer had streamed');
@@ -335,8 +346,24 @@ function assertStreamCorrectedToFailure(h: Harness, warnings: unknown[]): void {
   assert.equal(h.store.get(h.runId)?.stream.presentationOutcome, 'corrected');
 }
 
-test('memory another writer forgets mid-turn fails the lease: the failure notice replaces the streamed answer', async () => {
+test('memory another writer forgets mid-turn never holds back the answer: the stream closes as the reply', async () => {
   const turn = dmTurn('1790200003.000100');
+  const h = await harness(turn, MEMORY);
+  try {
+    await h.run(async (input) => {
+      await streamAnswer(h, input, ANSWER);
+      // An Owner saves an empty body in Admin while the answer streams.
+      const live = await h.memory.getAgentMemory(assignment.agentId);
+      await h.memory.putAgentMemory({ agentId: assignment.agentId, body: '', expectedRevision: live.revision });
+      return answerResult(ANSWER);
+    });
+    assertStreamClosedAsReply(h);
+    assert.equal((await h.memory.getAgentMemory(assignment.agentId)).body, '', 'the forget stands');
+  } finally { h.close(); }
+});
+
+test('an Agent disabled mid-turn fails the lease: the failure notice replaces the streamed answer', async () => {
+  const turn = dmTurn('1790200008.000100');
   const h = await harness(turn, MEMORY);
   const warnings: unknown[] = [];
   const warn = console.warn;
@@ -344,9 +371,8 @@ test('memory another writer forgets mid-turn fails the lease: the failure notice
   try {
     await h.run(async (input) => {
       await streamAnswer(h, input, ANSWER);
-      // An Owner saves an empty body in Admin while the answer streams.
-      const live = await h.memory.getAgentMemory(assignment.agentId);
-      await h.memory.putAgentMemory({ agentId: assignment.agentId, body: '', expectedRevision: live.revision });
+      const live = await h.config.getAgent(assignment.agentId);
+      await h.config.updateAgent(assignment.agentId, { enabled: false }, live.revision);
       return answerResult(ANSWER);
     });
     assertStreamCorrectedToFailure(h, warnings);
@@ -356,7 +382,7 @@ test('memory another writer forgets mid-turn fails the lease: the failure notice
   }
 });
 
-/** The turn's own write, as the `update_agent_memory` tool applies it, with the receipt delivery verifies. */
+/** The turn's own write, as the `update_agent_memory` tool applies it. */
 async function writeOwnMemory(
   f: ManagementAdapterFixture,
   h: Harness,
@@ -379,8 +405,6 @@ async function writeOwnMemory(
   const { receipt } = await executeSlackMemoryUpdate({
     signal,
     data: { expectedRevision, body },
-    // The injected revision: the body the harness saved before the turn.
-    chain: createMemoryWriteChain(h.turnJobId, 1, undefined),
     apply: async (args) => ({ ok: true, result: await f.service.applyWorkspaceChanges({
       context: await resolveSlackManagementActor(signal, f.identity), ...args,
     }) }),
@@ -403,24 +427,16 @@ test('a turn that writes its own memory streams its answer and closes the stream
       await streamAnswer(h, input, ANSWER);
       return { ...answerResult(ANSWER), memoryUpdate };
     });
-    assert.ok(streamedText(h).startsWith('Your stand-up is at 9:30'), 'the answer streamed');
-    assert.deepEqual(h.slack.map(({ method }) => method).filter((method) =>
-      method === 'chat.update' || method === 'chat.delete' || method === 'chat.postMessage'), [],
-    'the stream closes as the reply: nothing replaced or posted beside it');
-    assert.deepEqual(h.outcomes, ['succeeded']);
-    assert.equal(h.store.get(h.runId)?.stream.presentationOutcome, 'progressive');
+    assertStreamClosedAsReply(h);
     const saved = await f.memory.getAgentMemory(assignment.agentId);
     assert.equal(saved.revision, 2, 'the own write stands');
   } finally { h.close(); }
 });
 
-test('an own write over memory another writer changed fails the lease: the failure notice replaces the streamed answer', async () => {
+test('an own write over memory another writer changed never holds back the answer: the stream closes as the reply', async () => {
   const f = await createManagementAdapterFixture('memstream-stale-write', {}, { teamId: assignment.workspaceId });
   const turn = ownWriteTurn(f, '1790200005.000100');
   const h = await harness(turn, MEMORY, f);
-  const warnings: unknown[] = [];
-  const warn = console.warn;
-  console.warn = (...args: unknown[]) => { warnings.push(args[0]); };
   try {
     await h.run(async (input) => {
       // An Owner forgets everything in Admin before the turn's own write lands.
@@ -429,11 +445,9 @@ test('an own write over memory another writer changed fails the lease: the failu
       await streamAnswer(h, input, ANSWER);
       return { ...answerResult(ANSWER), memoryUpdate };
     });
-    assertStreamCorrectedToFailure(h, warnings);
-  } finally {
-    console.warn = warn;
-    h.close();
-  }
+    assertStreamClosedAsReply(h);
+    assert.equal((await f.memory.getAgentMemory(assignment.agentId)).revision, 3, 'both writes stand');
+  } finally { h.close(); }
 });
 
 // Incident 2026-11-12: a run made an external write and finished its answer

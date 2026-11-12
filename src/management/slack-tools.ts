@@ -78,10 +78,8 @@ import type { ManagementApplyResult } from './types.ts';
 import type { SlackAgentCreationTerminalIntent } from '../slack/agent-creation-terminal.ts';
 import {
   SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION,
-  createMemoryWriteChain,
   executeSlackMemoryUpdate,
   slackUpdateAgentMemoryInputSchema,
-  type MemoryWriteChainState,
 } from './slack-memory-actions.ts';
 import { parseAdmittedSlackListIds } from '../slack/lists/admission.ts';
 import { parseAttachmentFileIds } from '../slack/attachment-file-ids.ts';
@@ -161,7 +159,6 @@ export type PlatformEnvResolver = () => Promise<PlatformEnv | undefined>;
 
 const SLACK_MANAGEMENT_TURN_GUARD_STATE = 'slack-management-turn-guard';
 const SLACK_CONNECTION_TRY_TURN_STATE = 'slack-connection-try-turn';
-const SLACK_MEMORY_WRITE_CHAIN_STATE = 'slack-memory-write-chain';
 const SLACK_AGENT_CREATION_TURN_STATE = 'slack-agent-creation-turn';
 
 const MUTATING_TOOLS = new Set<WorkspaceManagementToolName>([
@@ -678,13 +675,6 @@ export function useWorkspaceManagementSlackTools(
     { turnJobId: signal.turnJobId, tries: 0 },
   );
   const connectionTryTurn = createConnectionTryTurn(signal.turnJobId, connectionTryState, persistConnectionTryState);
-  const [memoryWriteChainState, persistMemoryWriteChain] = usePersistentState<MemoryWriteChainState>(
-    SLACK_MEMORY_WRITE_CHAIN_STATE,
-  );
-  // The plan's memory epoch is the injected memory revision + 1.
-  const memoryWriteChain = createMemoryWriteChain(
-    signal.turnJobId, plan.memoryEpoch - 1, memoryWriteChainState, persistMemoryWriteChain,
-  );
 
   // System Chickpea's routing reads the same in every workspace, so it opens the shared system block instead.
   if (plan.agentId !== CHICKPEA_AGENT_ID) useInstruction(slackManagementRoutingInstruction(plan.agentId));
@@ -784,7 +774,7 @@ export function useWorkspaceManagementSlackTools(
     input: slackUpdateAgentMemoryInputSchema,
     async run({ data }) {
       const { result, receipt } = await executeSlackMemoryUpdate({
-        signal, data, chain: memoryWriteChain,
+        signal, data,
         apply: (args) => invokeLiveSlackTool(
           signalAfterPageRead(signal, pageRead()), resolvePlatformEnv, 'apply_workspace_changes', args, turnGuard,
         ),

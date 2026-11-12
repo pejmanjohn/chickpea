@@ -4,7 +4,7 @@ import type { WebClient } from '@slack/web-api';
 import { getConfigStore, getSlackStateStore, type PlatformEnv } from '../config/state-backend.ts';
 import { assembleRetainedSlackContext } from '../slack/public-context.ts';
 import { resolvedAssignmentFromEffectiveConfig } from '../config/effective-config.ts';
-import { prepareMemoryTurn } from '../memory/runtime.ts';
+import { agentMemoryPromptBlock, prepareMemoryTurn } from '../memory/runtime.ts';
 import { createSlackWebClient } from '../slack/run-turn.ts';
 import { resolveSlackContextNames } from '../slack/context-names.ts';
 import { sharesSlackAppReadBudget } from '../slack/read-budget.ts';
@@ -37,6 +37,28 @@ export interface PreparedRoutinePrompt {
   memoryEpoch: number;
   confirmMemory(): Promise<void>;
   validateMemoryLease(): Promise<boolean>;
+  /**
+   * Whether a prompt an earlier attempt dispatched is this one apart from its
+   * memory. Memory saved between attempts never fails the run; any other
+   * difference, such as the Slack rows it carries, still does.
+   */
+  matchesApartFromMemory(dispatched: string): boolean;
+}
+
+/** Stands in for a memory body, so a prompt can be compared without one. */
+const MEMORY_SLOT = '\u0000memory\u0000';
+
+function matchesApartFromMemory(dispatched: string, render: (memoryBlock?: string) => string): boolean {
+  if (dispatched === render()) return true;
+  const block = agentMemoryPromptBlock(MEMORY_SLOT) ?? '';
+  const shell = render(block);
+  const at = shell.indexOf(MEMORY_SLOT);
+  const tail = shell.length - at - MEMORY_SLOT.length;
+  if (at < 0 || at !== shell.lastIndexOf(MEMORY_SLOT) || dispatched.length < at + tail) return false;
+  const body = dispatched.slice(at, dispatched.length - tail);
+  // Only a body the memory block itself renders: never a fence or other prompt text.
+  return shell.replace(MEMORY_SLOT, () => body) === dispatched &&
+    agentMemoryPromptBlock(body) === block.replace(MEMORY_SLOT, () => body);
 }
 
 interface NormalizedRoutineResult {
@@ -143,16 +165,13 @@ export async function prepareRoutinePrompt(
       maxMessages: 20,
     }),
   );
-  const ordinaryPrompt = assembleSlackPrompt(turn, context, {
-    ...(memory.promptBlock ? { memoryBlock: memory.promptBlock } : {}),
-    memorySelected: (memory.selection?.entries.length ?? 0) > 0,
-  });
+  const render = (memoryBlock?: string) => [
+    ...routineExecutionInstructions(routine.destination.kind, Boolean(routine.destination.threadTs)),
+    '',
+    assembleSlackPrompt(turn, context, memoryBlock ? { memoryBlock, memorySelected: true } : {}),
+  ].join('\n');
   return {
-    prompt: [
-      ...routineExecutionInstructions(routine.destination.kind, Boolean(routine.destination.threadTs)),
-      '',
-      ordinaryPrompt,
-    ].join('\n'),
+    prompt: render(memory.promptBlock),
     turn,
     context,
     memoryEpoch: memory.memoryEpoch,
@@ -160,6 +179,7 @@ export async function prepareRoutinePrompt(
       await memory.confirmInjection();
     },
     validateMemoryLease: memory.validateLease,
+    matchesApartFromMemory: (dispatched) => matchesApartFromMemory(dispatched, render),
   };
 }
 

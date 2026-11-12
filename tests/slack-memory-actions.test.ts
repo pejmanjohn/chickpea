@@ -1,4 +1,4 @@
-import { appliedMemoryReceipt, parseSlackMemoryUpdate, verifyOwnMemoryWrite } from '../src/slack/memory-update-terminal.ts';
+import { appliedMemoryReceipt, parseSlackMemoryUpdate } from '../src/slack/memory-update-terminal.ts';
 import { resolveSlackManagementActor } from '../src/management/slack-tools.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -7,7 +7,6 @@ import { toJsonSchema } from '@valibot/to-json-schema';
 import { validateToolArguments } from '@earendil-works/pi-ai';
 
 import {
-  createMemoryWriteChain,
   executeSlackMemoryUpdate,
   slackMemoryUpdateArguments,
   slackUpdateAgentMemoryInputSchema,
@@ -80,21 +79,9 @@ test('memory tool delegates scoped, idempotent writes and forget to existing man
     const hint = appliedMemoryReceipt(saved.result, agent.id)!;
     assert.ok(hint);
     assert.deepEqual(parseSlackMemoryUpdate([hint]), hint);
-    const legacyHint = { ...hint, summary: 'I updated my memory.', preservesContext: true };
+    const legacyHint = { ...hint, summary: 'I updated my memory.', preservesContext: true, chainedFrom: 0 };
     assert.deepEqual(parseSlackMemoryUpdate([legacyHint]), hint, 'older receipts still read, without their legacy fields');
     assert.deepEqual(parseSlackMemoryUpdate([hint, hint]), hint);
-    const actor = await resolveSlackManagementActor(signal, f.identity);
-    const verify = (turnJobId = signal.turnJobId, live = true, nextHint = hint) =>
-      verifyOwnMemoryWrite({
-        hint: nextHint, agentId: agent.id, turnJobId,
-        getOperation: (id) => f.service.getOperation(actor, id),
-        validateReceiptLease: async (revision) => live && revision === (await f.memory.getAgentMemory(agent.id)).revision,
-      });
-    assert.equal(await verify(), true, 'a durable own-turn receipt verifies');
-    assert.equal(await verify('other-turn'), false, 'another turn cannot reuse a receipt');
-    assert.equal(await verify('other-turn', true, legacyHint), false, 'legacy fields cannot bypass receipt verification');
-    assert.equal(await verify(signal.turnJobId, false), false, 'revoked visibility fails closed');
-    assert.equal(await verify(signal.turnJobId, true, { ...hint, revision: 99 }), false);
 
     assert.deepEqual(await invoke(), saved, 'retry returns the same receipt');
     assert.equal((await f.memory.getAgentMemory(agent.id)).revision, 1);
@@ -117,16 +104,14 @@ test('memory tool delegates scoped, idempotent writes and forget to existing man
     }));
     assert.equal(forget.ok, true);
     assert.equal((await f.memory.getAgentMemory(agent.id)).body, '');
-    assert.equal(await verify(), false, 'a later forget invalidates an earlier receipt');
   } finally { f.close(); }
 });
 
 test('memory tool handler returns the applied receipt and nothing for a failed write', async () => {
   let applied = 0;
-  const chain = createMemoryWriteChain('t', 0, undefined);
   const { receipt } = await executeSlackMemoryUpdate({
     signal: { agentId: 'a', turnJobId: 't' },
-    data: { expectedRevision: 0, body: 'Use readable dates.' }, chain,
+    data: { expectedRevision: 0, body: 'Use readable dates.' },
     apply: async () => {
       applied += 1;
       return { ok: true, result: { status: 'completed', operationId: 'op', outcomes: [{
@@ -135,39 +120,19 @@ test('memory tool handler returns the applied receipt and nothing for a failed w
     },
   });
   assert.equal(applied, 1);
-  assert.deepEqual(receipt, { operationId: 'op', revision: 1, chainedFrom: 0 });
+  assert.deepEqual(receipt, { operationId: 'op', revision: 1 });
   const rejected = await executeSlackMemoryUpdate({
     signal: { agentId: 'a', turnJobId: 't' },
-    data: { expectedRevision: 0, body: 'Use dates.' }, chain,
+    data: { expectedRevision: 0, body: 'Use dates.' },
     apply: async () => ({ ok: false, error: { code: 'revision_conflict', message: 'Changed' } }),
   });
   assert.equal(rejected.receipt, undefined, 'a failed write never emits a receipt');
 });
 
-test('only writes that each apply on the injected revision or an earlier own write are chained', () => {
-  const receipt = (revision: number) => ({ operationId: `op_${revision}`, revision });
-  const persisted: unknown[] = [];
-  const chain = createMemoryWriteChain('t', 3, undefined, (state) => persisted.push(state));
-  assert.deepEqual(chain.link(3, receipt(4)), { ...receipt(4), chainedFrom: 3 }, 'the first write on the snapshot');
-  assert.deepEqual(chain.link(4, receipt(5)), { ...receipt(5), chainedFrom: 3 }, 'a write on the first');
-  assert.deepEqual(chain.link(3, receipt(4)), { ...receipt(4), chainedFrom: 3 }, 'a replayed call stays in the chain');
-  assert.deepEqual(chain.link(6, receipt(7)), receipt(7), 'a write on another writer\'s revision is not chained');
-  assert.deepEqual(chain.link(7, receipt(8)), receipt(8), 'nor is any write after the break');
-  assert.deepEqual(persisted.at(-1), { turnJobId: 't', from: 3, head: 5 });
-
-  const redriven = createMemoryWriteChain('t', 3, { turnJobId: 't', from: 3, head: 5 });
-  assert.deepEqual(redriven.link(5, receipt(6)), { ...receipt(6), chainedFrom: 3 }, 'a redrive keeps the chain');
-  const otherTurn = createMemoryWriteChain('u', 3, { turnJobId: 't', from: 3, head: 5 });
-  assert.deepEqual(otherTurn.link(5, receipt(6)), receipt(6), 'another turn starts its own chain');
-  const otherSnapshot = createMemoryWriteChain('t', 5, { turnJobId: 't', from: 3, head: 5 });
-  assert.deepEqual(otherSnapshot.link(5, receipt(6)), { ...receipt(6), chainedFrom: 5 }, 'a new snapshot restarts the chain');
-  assert.equal(parseSlackMemoryUpdate([{ ...receipt(6), chainedFrom: 3 }])?.chainedFrom, 3, 'the mark survives a stored settlement');
-});
-
 test('a reply with several memory receipts hands delivery the newest one', () => {
   const reply = (receipts: unknown[]): AgentReply => ({ text: 'ok', data: { slackMemoryUpdate: receipts }, submissionId: 's' });
-  const first = { operationId: 'management_first', revision: 4, chainedFrom: 3 };
-  const second = { operationId: 'management_second', revision: 5, chainedFrom: 3 };
+  const first = { operationId: 'management_first', revision: 4 };
+  const second = { operationId: 'management_second', revision: 5 };
   assert.deepEqual(resultFromAgentReply(reply([first, second]), null).memoryUpdate, second);
   assert.deepEqual(resultFromAgentReply(reply([second, first]), null).memoryUpdate, second);
   assert.deepEqual(resultFromAgentReply(reply([first, first]), null).memoryUpdate, first, 'a redriven call repeats its receipt');
