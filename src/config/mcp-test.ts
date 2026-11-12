@@ -410,7 +410,7 @@ export function projectMcpToolInputSchema(
     if (!contract || accountFields.length !== (contract.accountScoped ? 1 : 0) ||
         contract.ownershipFields.some((field) => !propertyNames.includes(field)) ||
         (contract.entityType && !propertyNames.includes('entity_type'))) ambiguous = true;
-  } else if (accountFields.length !== 1 || (metaAds && !sendable.includes(accountFields[0]!.name))) {
+  } else if (accountFields.length !== 1) {
     ambiguous = true;
   }
   return {

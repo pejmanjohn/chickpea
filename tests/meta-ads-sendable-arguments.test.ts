@@ -297,6 +297,24 @@ test('a reconnect that removes the account field or adds a second one drops the 
   }
 });
 
+test('a reconnect drops a granted tool whose stored account field differs from the one it has now', (t) => {
+  captureInfo(t);
+  const live = Object.keys(META_LIVE_NAMES).map((name) => metaDiscoveredTool(name));
+  const stored = grantOn(live);
+  // A stored discovery that named the account account_id, as no Meta schema has.
+  const name = 'ads_get_opportunity_score';
+  const legacy: McpConnectionToolInfo = { name, inputSchema: {
+    ...live.find((tool) => tool.name === name)!.inputSchema!,
+    propertyNames: ['account_id', 'advertiser_request', 'client_conversation_id'],
+    accountFields: [{ name: 'account_id', type: 'string', required: true }],
+    fingerprint: 'c'.repeat(64),
+  } };
+  const previous = { ...stored, discoveredTools: live.map((tool) => tool.name === name ? legacy : tool) };
+  const allowed = allowedToolsAfterMcpDiscovery(previous, live);
+  assert.equal(allowed.includes(name), false);
+  assert.equal(allowed.length, META_ACCOUNT_GRANT.length - 1);
+});
+
 test('a reconnect drops a granted tool the reviewed contract no longer admits, even with an unchanged schema', (t) => {
   captureInfo(t);
   const live = Object.keys(META_LIVE_NAMES).map((name) => metaDiscoveredTool(name));

@@ -410,15 +410,16 @@ export function metaAdsToolSchemaSupported(tool: McpConnectionToolInfo): boolean
   const names = schema.propertyNames;
   if (!Array.isArray(names) || names.length > MAX_META_ADS_SCHEMA_PROPERTIES || new Set(names).size !== names.length ||
       names.some((value) => typeof value !== 'string' || value.length === 0 || value.length > 120)) return false;
+  // Every account-shaped name must be one the contract reviewed, such as the
+  // account field itself or a boost's ig_account_id.
   const sendable = metaAdsSendableArgumentNames(tool.name);
-  // The contract reviewed its own account-shaped names, such as a boost's ig_account_id.
   if (names.some((name) => /account/i.test(name) && !sendable.includes(name))) return false;
   if (isMetaAdsAccountScopeTool(tool.name)) {
     if (schema.accountFields.length !== 0) return false;
   } else {
     const [field] = schema.accountFields;
     if (schema.accountFields.length !== 1 || !field || field.type !== 'string' || !field.required ||
-        !names.includes(field.name) || !sendable.includes(field.name)) return false;
+        !names.includes(field.name)) return false;
   }
   const contract = metaAdsWriteSchemaContract(tool.name);
   return !contract || (contract.ownershipFields.every((field) => names.includes(field)) &&

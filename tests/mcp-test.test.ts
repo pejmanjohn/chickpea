@@ -841,6 +841,9 @@ test('Meta projection keeps entity filters optional, hides unreviewed selectors,
   assert.equal(projectMcpToolInputSchema(schema(['ad_account_id'], {
     campaign_id: { type: 'string' },
   }), 'ads_get_ad_entities').ambiguous, false, 'an unknown optional selector is hidden');
+  assert.equal(projectMcpToolInputSchema(schema(['ad_account_id'], {
+    reporting_purpose: { type: 'object', properties: { campaign_id: { type: 'string' } } },
+  }), 'ads_get_ad_entities').ambiguous, false, 'IDs nested in a hidden argument are hidden with it');
   assert.equal(projectMcpToolInputSchema(schema(['ad_account_id', 'campaign_id'], {
     campaign_id: { type: 'string' },
   }), 'ads_get_ad_entities').ambiguous, true, 'an unknown required selector cannot be withheld');

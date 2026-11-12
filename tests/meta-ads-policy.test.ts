@@ -371,14 +371,16 @@ test("Meta's activity log is refused, and a stored grant for it never runs", () 
 test('compiler rejects tools without one required scalar account field', () => {
   const invalid: McpConnectionToolInfo[] = [
     { name: reportTool },
-    discovered(reportTool, 'account_id', {
-      accountFields: [{ name: 'account_id', type: 'string', required: false }],
+    discovered(reportTool, 'ad_account_id', {
+      accountFields: [{ name: 'ad_account_id', type: 'string', required: false }],
     }),
-    discovered(reportTool, 'account_id', { ambiguous: true }),
-    discovered(reportTool, 'account_id', { accountFields: [
+    discovered(reportTool, 'ad_account_id', { ambiguous: true }),
+    discovered(reportTool, 'ad_account_id', { accountFields: [
       { name: 'account_id', type: 'string', required: true },
       { name: 'ad_account_id', type: 'string', required: true },
     ] }),
+    // A stored account field the stored names don't list.
+    discovered(reportTool, 'ad_account_id', { propertyNames: ['fields'] }),
   ];
   for (const tool of invalid) {
     assert.throws(() => compileMetaAdsToolAccess({
@@ -422,12 +424,12 @@ test('all reviewed Meta writes require explicit selection and compile with write
 
 test('write compiler rejects missing target evidence and duplicate discovery', () => {
   const update = discoveredWrite('ads_update_entity');
-  assert.throws(() => compileMetaAdsToolAccess({
-    discoveredTools: [{ ...update, inputSchema: {
-      ...update.inputSchema!, propertyNames: ['ad_account_id', 'entity_type'],
-    } }],
-    requestedTools: ['ads_update_entity'], approvedAccountIds: ['act_123'],
-  }), /cannot be restricted/);
+  for (const propertyNames of [['ad_account_id', 'entity_type'], ['ad_account_id', 'entity_id']]) {
+    assert.throws(() => compileMetaAdsToolAccess({
+      discoveredTools: [{ ...update, inputSchema: { ...update.inputSchema!, propertyNames } }],
+      requestedTools: ['ads_update_entity'], approvedAccountIds: ['act_123'],
+    }), /cannot be restricted/, propertyNames.join());
+  }
   assert.throws(() => compileMetaAdsToolAccess({
     discoveredTools: [update, structuredClone(update)],
     requestedTools: ['ads_update_entity'], approvedAccountIds: ['act_123'],
