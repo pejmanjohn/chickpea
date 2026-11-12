@@ -22,8 +22,10 @@ export const META_ADS_WRITE_TOOL_EFFECTS = {
 
 /** Tools reviewed against Meta's official Ads MCP documentation. */
 export const META_ADS_REVIEWED_TOOL_EFFECTS = {
+  ads_get_ad_account_custom_audiences: 'read',
   ads_get_ad_accounts: 'read',
   ads_get_ad_entities: 'read',
+  ads_get_customconversions: 'read',
   ads_get_field_context: 'read',
   ads_get_opportunity_score: 'read',
   ads_insights_advertiser_context: 'read',
@@ -145,10 +147,16 @@ const META_ADS_HELPER_RUNTIME_ARGUMENTS: Readonly<Record<string, readonly string
  * entity filters whose names end in `_id`/`_ids`. Entity-filter semantics are
  * not used as account-scope evidence: those arguments remain unavailable at
  * runtime so callers can only target the exact constrained `ad_account_id`.
+ *
+ * Each list names the ID-shaped arguments in the tool's live schema. Only
+ * ID-shaped names are checked, so a filter Meta adds under another name, such
+ * as `entities`, stays sendable.
  */
 const META_ADS_NON_ACCOUNT_ID_ARGUMENTS = {
+  ads_get_ad_account_custom_audiences: ['client_conversation_id'],
   ads_get_ad_accounts: [],
   ads_get_ad_entities: ['client_conversation_id', 'object_ids'],
+  ads_get_customconversions: ['client_conversation_id', 'dataset_id'],
   ads_get_field_context: [],
   ads_get_opportunity_score: ['client_conversation_id'],
   ads_insights_advertiser_context: ['client_conversation_id', 'entity_ids'],

@@ -107,8 +107,10 @@ function scopedMetaSchema(): Record<string, unknown> {
 }
 
 const reviewedMetaToolNames = [
+  'ads_get_ad_account_custom_audiences',
   'ads_get_ad_accounts',
   'ads_get_ad_entities',
+  'ads_get_customconversions',
   'ads_get_field_context',
   'ads_get_opportunity_score',
   'ads_insights_advertiser_context',
