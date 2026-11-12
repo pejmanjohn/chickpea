@@ -147,7 +147,11 @@ ends before all of its tests report (no test at all, no summary of its own, or
 fewer tests than that summary counts), is rerun once alone; a file that then
 passes is logged as `RETRIED IN ISOLATION`, and a file that fails or comes up
 short twice fails the run. node:test itself passes any file whose process
-exits 0. `verify:regression`'s focused test steps pass `--fail-on-retry`, so a
+exits 0. A file whose process starts and finishes no test for three minutes,
+longer than any test may run, is logged as `HUNG` with the test it was
+running and its processes, which the runner kills, so the file fails and
+reruns alone instead of silencing the pass; one that still does not end stops
+the pass. `verify:regression`'s focused test steps pass `--fail-on-retry`, so a
 file that passes only alone fails the step there, and every step's receipt
 and the run summary list each file a runner reran (`retries`). Local
 verification servers take loopback ports from `scripts/lib/verification-ports.mjs`:
