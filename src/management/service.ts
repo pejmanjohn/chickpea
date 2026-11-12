@@ -6091,15 +6091,19 @@ export class WorkspaceManagementService {
    * The first message this save posted goes in its thread's record as the
    * Agent's own, as the Agent's replies do, so a reply turn there reads it
    * as the Agent's. Slack's events never record a thread's first message,
-   * so only this write puts it there.
+   * so only this write puts it there. `posted` is the message this call
+   * posted: a save that kept another thread records nothing.
    */
   private async recordScheduleThreadOpening(
     routine: RoutineDefinition,
     operation: Extract<ManagementOperation, { kind: 'save_routine' }>,
+    posted: { conversationId: string; threadTs: string },
   ): Promise<void> {
     const config = this.stores.config;
-    if (routine.destination.kind !== 'direct_thread' || !config.putSlackPublicContext) return;
-    const { conversationId, threadTs } = routine.destination;
+    const { destination } = routine;
+    if (destination.kind !== 'direct_thread' || destination.conversationId !== posted.conversationId ||
+        destination.threadTs !== posted.threadTs || !config.putSlackPublicContext) return;
+    const { conversationId, threadTs } = posted;
     try {
       const installation = await config.getWorkspaceInstallation(routine.workspaceId);
       if (!installation) return;
@@ -6421,7 +6425,9 @@ export class WorkspaceManagementService {
       });
       if (initiatorDm && result.effect === 'saved') {
         await this.giveScheduleThread(result.routine, initiatorDm.agentId);
-        if (thread?.posted) await this.recordScheduleThreadOpening(result.routine, initiatorDm);
+        if (thread?.posted) {
+          await this.recordScheduleThreadOpening(result.routine, initiatorDm, { conversationId: channelId, threadTs: thread.threadTs });
+        }
       }
       if (operation.kind === 'save_routine' && result.effect === 'saved' && result.created) {
         this.stores.productTelemetry?.capture({
