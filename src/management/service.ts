@@ -986,7 +986,7 @@ export class WorkspaceManagementService {
       return {
         status: 'replacement_confirmation_required',
         instruction: actor.origin.kind === 'mcp'
-          ? `Skill ${skill.name} already exists with different content. If the person wants it replaced, call import_skill again with source ${skill.sourceUrl}, replaceExisting true, and a new idempotencyKey.`
+          ? `Skill ${skill.name} already exists with different content. If the person wants it replaced, import it again from source ${skill.sourceUrl} with replaceExisting true and a new idempotencyKey.`
           : `Skill ${skill.name} already exists with different content. Ask the requester to reply exactly \`replace ${skill.name} from ${skill.sourceUrl}\`. On that new message, call import_skill with that immutable source, replaceExisting true, and a new idempotencyKey. Do not ask for a separate approval after that clarification.`,
         import: { ...metadata, replacedExisting: true },
       };
@@ -2394,7 +2394,7 @@ export class WorkspaceManagementService {
     if (accountIds.size > 1) {
       throw new ManagementError(
         'invalid_request',
-        `More than one connection uses ${connectionId}. Name the one to test by its id from inspect_workspace.`,
+        `More than one connection uses ${connectionId}, so Chickpea could not tell which one to test. Name it by its own connection id.`,
       );
     }
     return this.stores.testConnection({
@@ -3062,7 +3062,7 @@ export class WorkspaceManagementService {
               operationKind: operation.kind,
               disposition: 'failed',
               code: 'confirmation_needs_own_call',
-              instruction: 'This change needs the person\'s confirmation, and a confirmation cannot hold a setup request or a second change to the same object. The other operations in this call were handled without it, so check their outcomes. Resend only this operation, in its own apply_workspace_changes call.',
+              instruction: 'This change needs the person\'s confirmation, and a confirmation cannot hold a setup request or a second change to the same object. The other operations in this call were handled without it, so check their outcomes. Resend only this operation, in a call of its own.',
             });
           }
         } else if (operation.kind === 'request_setup') {
@@ -10314,7 +10314,7 @@ function skillUploadResult(
       ? {
           instruction: slack
             ? `${conflictNames} ${plan.conflicts.length === 1 ? 'was' : 'were'} left unchanged because the person's message did not ask to replace ${them}. Show presentation.slack, which tells the person how to replace ${them}.`
-            : `${conflictNames} already ${plan.conflicts.length === 1 ? 'exists' : 'exist'} on the Agent with different content. If the person wants ${them} replaced, call upload_skills again with the same files, replaceExisting true, and a new idempotencyKey.`,
+            : `${conflictNames} already ${plan.conflicts.length === 1 ? 'exists' : 'exist'} on the Agent with different content. If the person wants ${them} replaced, upload the same files again with replaceExisting true and a new idempotencyKey.`,
         }
       : {}),
     presentation: {

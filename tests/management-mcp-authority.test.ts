@@ -663,7 +663,7 @@ test('MCP sends back a destructive change that cannot share a confirmation with 
     ['failed', 'revision_conflict'],
   ]);
   assert.match(result.outcomes[0]?.instruction ?? '', /other operations in this call were handled without it/);
-  assert.match(result.outcomes[0]?.instruction ?? '', /Resend only this operation, in its own apply_workspace_changes call/);
+  assert.match(result.outcomes[0]?.instruction ?? '', /Resend only this operation, in a call of its own\./);
   assert.deepEqual(await connectedIds(f, agent.id, 'mcp'), ['knowledge']);
 }));
 
