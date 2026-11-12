@@ -16,10 +16,14 @@
 
 const CALL_TIMEOUT_MS = 30_000;
 
-/** Opens a tab on `url` in the browser debugging on `port`. */
+/**
+ * Opens a tab on `url` in the browser debugging on `port`. Chrome keeps the
+ * `/json/new` query only up to its first `&`, then decodes it once, so the
+ * whole URL goes as one encoded component.
+ */
 export async function openTab(port, url, { fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket } = {}) {
   const base = `http://127.0.0.1:${port}`;
-  const target = await (await fetchImpl(`${base}/json/new?${encodeURI(url)}`, { method: 'PUT', signal: AbortSignal.timeout(10_000) })).json();
+  const target = await (await fetchImpl(`${base}/json/new?${encodeURIComponent(url)}`, { method: 'PUT', signal: AbortSignal.timeout(10_000) })).json();
   const socket = new WebSocketImpl(target.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => {
     socket.onopen = resolve;
