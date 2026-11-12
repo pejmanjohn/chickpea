@@ -3,11 +3,7 @@ import { test } from 'node:test';
 
 import { UnknownAgentError } from '../src/config/errors.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
-import {
-  invokeWorkspaceManagementTool,
-  type WorkspaceManagementToolArguments,
-  type WorkspaceManagementToolName,
-} from '../src/management/tool-adapter.ts';
+import type { WorkspaceManagementToolResult } from '../src/management/tool-adapter.ts';
 import type {
   ManagementActorContext,
   ManagementApplyResult,
@@ -16,9 +12,9 @@ import type {
 import { AgentPresenceReconciler, type AgentAppPresenceHooks } from '../src/slack/agent-presence/reconciler.ts';
 import type { SlackTransport, SlackUserGroup } from '../src/slack/transport/types.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+import { confirmThroughService, serviceResult } from './helpers/management-service-result.ts';
 
 type Fixture = Awaited<ReturnType<typeof createManagementAdapterFixture>>;
-type ToolResponse = { ok: true; result: unknown } | { ok: false; error: { code: string; message: string } };
 
 class UserGroupDirectory implements SlackTransport {
   readonly mode = 'direct';
@@ -100,26 +96,19 @@ function ownerContext(f: Fixture): ManagementActorContext {
   };
 }
 
-function call<TName extends WorkspaceManagementToolName>(
-  f: Fixture,
-  name: TName,
-  args: WorkspaceManagementToolArguments[TName],
-): Promise<ToolResponse> {
-  return invokeWorkspaceManagementTool({ service: f.service, resolveContext: async () => ownerContext(f) }, name, args);
+/** The Owner's undo over MCP, as 5.0's undo_change makes it. */
+function undo(f: Fixture, args: { operationId: string; idempotencyKey: string }): Promise<WorkspaceManagementToolResult> {
+  return serviceResult(() => f.service.undoWorkspaceChange({ context: ownerContext(f), ...args }));
 }
 
-async function succeed<TName extends WorkspaceManagementToolName>(
-  f: Fixture,
-  name: TName,
-  args: WorkspaceManagementToolArguments[TName],
-): Promise<ManagementApplyResult> {
-  const response = await call(f, name, args);
-  assert.equal(response.ok, true, JSON.stringify(response));
-  return (response as { result: ManagementApplyResult }).result;
+async function succeed(response: Promise<WorkspaceManagementToolResult>): Promise<ManagementApplyResult> {
+  const settled = await response;
+  assert.equal(settled.ok, true, JSON.stringify(settled));
+  return (settled as { result: ManagementApplyResult }).result;
 }
 
-function apply(f: Fixture, idempotencyKey: string, operations: ManagementOperation[]) {
-  return succeed(f, 'apply_workspace_changes', { idempotencyKey, operations });
+async function apply(f: Fixture, idempotencyKey: string, operations: ManagementOperation[]): Promise<ManagementApplyResult> {
+  return await f.service.applyWorkspaceChanges({ context: ownerContext(f), idempotencyKey, operations }) as ManagementApplyResult;
 }
 
 function dispositions(result: ManagementApplyResult) {
@@ -172,10 +161,10 @@ test('undo of a description change on a published Agent puts it back after prese
     assert.ok(edited.revision > revisionBefore + 1, 'syncing the user group wrote revisions after the edit');
     assert.equal(slack.groups[0]?.description, 'Finds and qualifies leads.');
 
-    const undone = await succeed(f, 'undo_workspace_change', {
+    const undone = await succeed(undo(f, {
       operationId: changed.operationId,
       idempotencyKey: 'undo-describe',
-    });
+    }));
     assert.equal(undone.status, 'completed', JSON.stringify(undone.outcomes));
     const restored = await f.config.getAgent('agent_scout');
     assert.equal(restored.description, 'Finds leads.');
@@ -190,17 +179,17 @@ test('a later presence sync does not block undo, but someone else\'s edit does',
     const first = await changeDescription(f, 'describe-first', 'Finds and qualifies leads.');
     const afterEdit = (await f.config.getAgent('agent_scout')).revision;
     assert.ok((await presence.retry('agent_scout')).revision > afterEdit, 'a later sync wrote more revisions');
-    const undone = await succeed(f, 'undo_workspace_change', {
+    const undone = await succeed(undo(f, {
       operationId: first.changed.operationId,
       idempotencyKey: 'undo-first',
-    });
+    }));
     assert.equal(undone.status, 'completed', JSON.stringify(undone.outcomes));
     assert.equal((await f.config.getAgent('agent_scout')).description, 'Finds leads.');
 
     const second = await changeDescription(f, 'describe-second', 'Qualifies leads only.');
     const current = await f.config.getAgent('agent_scout');
     await f.config.updateAgent(current.id, { instructions: 'Qualify leads.' }, current.revision);
-    const refused = await call(f, 'undo_workspace_change', {
+    const refused = await undo(f, {
       operationId: second.changed.operationId,
       idempotencyKey: 'undo-second',
     });
@@ -244,7 +233,7 @@ test('an Agent published from MCP can be archived and then deleted, and its hand
       expectedRevision: before.revision,
     }]);
     assert.equal(held.status, 'confirmation_required', JSON.stringify(held.outcomes));
-    const confirmed = await succeed(f, 'confirm_workspace_change', { proposalId: held.outcomes[0]!.proposalId! });
+    const confirmed = await succeed(confirmThroughService(f.service, ownerContext(f), held.outcomes[0]!.proposalId!));
     assert.equal(confirmed.status, 'completed', JSON.stringify(confirmed.outcomes));
     await assert.rejects(f.config.getAgent(before.id), UnknownAgentError);
     assert.deepEqual(slack.groups.map(({ id, disabled }) => [id, disabled]), [['S1', true]],
@@ -308,7 +297,7 @@ test('an Agent with its own Slack app is not deleted until archive retires the a
       expectedRevision: retired.revision,
     }]);
     assert.equal(held.status, 'confirmation_required', JSON.stringify(held.outcomes));
-    const confirmed = await succeed(f, 'confirm_workspace_change', { proposalId: held.outcomes[0]!.proposalId! });
+    const confirmed = await succeed(confirmThroughService(f.service, ownerContext(f), held.outcomes[0]!.proposalId!));
     assert.equal(confirmed.status, 'completed', JSON.stringify(confirmed.outcomes));
     await assert.rejects(f.config.getAgent(retired.id), UnknownAgentError);
   }, (f) => ({

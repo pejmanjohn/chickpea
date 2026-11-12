@@ -136,10 +136,10 @@ async function installAgent(f: ManagementAdapterFixture, agentId = 'agent_resear
   await f.config.ensureWorkspaceInstallation({ workspaceId: f.owner.binding.slackTeamId!, transportMode: 'direct', defaultAgentId: agentId });
 }
 
-/** An Agent's writable connection lanes, as the 4.x inspect_workspace shows them. */
-async function lanes(call: Call, agentId: string): Promise<{ apiConnections: Array<Record<string, any>>; mcpServers: Array<Record<string, any>> }> {
-  const inspected = JSON.parse((await call('inspect_workspace')).content[0]!.text) as { result: { agents: Array<{ id: string }> } };
-  return inspected.result.agents.find(({ id }) => id === agentId) as never;
+/** An Agent's writable connection lanes as the service stores them, read as the Owner over MCP. */
+async function lanes(f: ManagementAdapterFixture, agentId: string): Promise<{ apiConnections: Array<Record<string, any>>; mcpServers: Array<Record<string, any>> }> {
+  const inspected = await f.service.inspectWorkspace(ownerMcpContext(f));
+  return inspected.agents.find(({ id }) => id === agentId) as never;
 }
 
 /** The one-connection setup page with a token to follow it, never Admin. */
@@ -312,7 +312,7 @@ test('connect_service adds a custom API or MCP connection, then links its key; a
   const setup = await f.management.getSetup(added.setup.setupToken);
   assert.equal(setup?.action, 'api_credential');
   assert.equal(setup?.target.checkPath, '/v1/me');
-  const [entry] = (await lanes(call, 'agent_research')).apiConnections;
+  const [entry] = (await lanes(f, 'agent_research')).apiConnections;
   assert.deepEqual(
     [entry?.id, entry?.allowedHosts, entry?.pathPrefixes, entry?.headerName, entry?.headerValuePrefix, entry?.allowedMethods],
     ['statusboard_api', ['api.statusboard.example'], ['/v1'], 'Authorization', 'Bearer ', ['GET', 'HEAD']],
@@ -320,7 +320,7 @@ test('connect_service adds a custom API or MCP connection, then links its key; a
   assert.equal(added.version, await version(call, 'agent_research'), 'the version after the add');
 
   const retried = structured(await call('connect_service', args));
-  assert.equal((await lanes(call, 'agent_research')).apiConnections.length, 1, 'the retry replays the add');
+  assert.equal((await lanes(f, 'agent_research')).apiConnections.length, 1, 'the retry replays the add');
   assert.notEqual(retried.setup.setupToken, added.setup.setupToken, 'and makes a fresh link, since a stored result keeps none');
 
   const again = errorOf(await call('connect_service', { ...args, version: await version(call, 'agent_research'), idempotencyKey: 'twice' }), 'invalid_input');
@@ -361,7 +361,7 @@ test('a custom connection waiting for its key is not taken for an unfinished cat
   const setup = await f.management.getSetup(catalog.setup.setupToken);
   assert.equal(setup?.action, 'catalog_connection');
   assert.notEqual((setup?.target as { replacement?: boolean } | undefined)?.replacement, true, 'a new connection, not a replacement');
-  const [entry] = (await lanes(call, 'agent_research')).apiConnections;
+  const [entry] = (await lanes(f, 'agent_research')).apiConnections;
   assert.deepEqual(entry?.allowedHosts, ['api.mycorp.example'], 'the custom connection is unchanged');
 });
 
@@ -374,14 +374,14 @@ test('two custom connections whose names share a slug get their own IDs, and a r
   const japanese = structured(await add('日本語', 'api.jp.example', 'jp'));
   const chineseArgs = { agentId: 'agent_research', custom: { kind: 'api', name: '中文', hosts: ['api.cn.example'] }, version: await version(call, 'agent_research'), idempotencyKey: 'cn' };
   const chinese = structured(await call('connect_service', chineseArgs));
-  assert.deepEqual((await lanes(call, 'agent_research')).apiConnections.map(({ id, displayName, allowedHosts }) => [id, displayName, allowedHosts])
+  assert.deepEqual((await lanes(f, 'agent_research')).apiConnections.map(({ id, displayName, allowedHosts }) => [id, displayName, allowedHosts])
     .sort(([left], [right]) => left.localeCompare(right)),
   [['connection', '日本語', ['api.jp.example']], ['connection-2', '中文', ['api.cn.example']]]);
   assert.equal((await f.management.getSetup(japanese.setup.setupToken))?.target.targetLabel, '日本語');
   assert.equal((await f.management.getSetup(chinese.setup.setupToken))?.target.targetLabel, '中文');
   // A retry replays the add, and links the connection it added, found by name.
   const retried = structured(await call('connect_service', chineseArgs));
-  assert.equal((await lanes(call, 'agent_research')).apiConnections.length, 2);
+  assert.equal((await lanes(f, 'agent_research')).apiConnections.length, 2);
   assert.equal((await f.management.getSetup(retried.setup.setupToken))?.target.targetLabel, '中文');
 
   const again = errorOf(await add('中文', 'api.cn2.example', 'cn-again'), 'invalid_input');
@@ -390,7 +390,7 @@ test('two custom connections whose names share a slug get their own IDs, and a r
   structured(await add('Acme EU', 'eu2.acme.example', 'acme-eu-2'));
   // An account's ID starts with connection_, which a new connection's never does.
   structured(await add('Connection Manager', 'api.manager.example', 'manager'));
-  assert.deepEqual((await lanes(call, 'agent_research')).apiConnections.map(({ id }) => id).sort(),
+  assert.deepEqual((await lanes(f, 'agent_research')).apiConnections.map(({ id }) => id).sort(),
     ['acme_eu', 'acme_eu-2', 'connection', 'connection-2', 'connection-manager']);
 });
 
@@ -420,12 +420,12 @@ test('custom connect_service refuses the other kind\'s fields, a prefix it would
   const keyed = errorOf(await connect({ ...api, headerValuePrefix: 'Token 3f9a8b7c6d5e4f3a2b1c0d ' }), 'invalid_input');
   assert.match(keyed.message, /value prefix is the text before the key/);
   errorOf(await connect({ ...api, headerValuePrefix: `${'x '.repeat(16)}y` }), 'invalid_input');
-  assert.deepEqual(await lanes(call, 'agent_research').then(({ apiConnections, mcpServers }) => [apiConnections, mcpServers]), [[], []], 'nothing was added');
+  assert.deepEqual(await lanes(f, 'agent_research').then(({ apiConnections, mcpServers }) => [apiConnections, mcpServers]), [[], []], 'nothing was added');
 
   // What the connection can send is kept: "Bearer " in Authorization, and an open server.
   structured(await connect({ ...mcp, headerValuePrefix: 'Bearer ' }));
   structured(await connect({ kind: 'mcp', name: 'Docs', url: 'https://mcp.docs.example/mcp', auth: 'none' }));
-  assert.deepEqual((await lanes(call, 'agent_research')).mcpServers.map(({ displayName, authMode }) => [displayName, authMode])
+  assert.deepEqual((await lanes(f, 'agent_research')).mcpServers.map(({ displayName, authMode }) => [displayName, authMode])
     .sort(([left], [right]) => left.localeCompare(right)), [['Docs', 'none'], ['Tracker', 'bearer']]);
 });
 
@@ -668,7 +668,7 @@ test('a member cannot connect or reconnect a team connection, or change an Agent
     changes: { hosts: ['api.elsewhere.example'] }, idempotencyKey: 'member-change',
   }), 'not_allowed');
   assert.equal(await version(member, 'agent_shared'), before, 'refused before anything was written');
-  assert.deepEqual((await lanes(owner, 'agent_shared')).apiConnections.map(({ allowedHosts }) => allowedHosts), [['api.statusboard.example']]);
+  assert.deepEqual((await lanes(f, 'agent_shared')).apiConnections.map(({ allowedHosts }) => allowedHosts), [['api.statusboard.example']]);
 
   // A team connection a failed removal left needing attention, its optional key gone: an Owner gets its key page,
   // a member gets neither the page nor a fix that names it.
@@ -705,7 +705,7 @@ test('update_connection changes a custom connection, links its key again when it
     changes: { guide: 'Search before you read.' }, idempotencyKey: 'guide',
   }));
   assert.deepEqual([guided.status, guided.setup], ['done', undefined]);
-  assert.equal((await lanes(call, 'agent_research')).mcpServers[0]?.guide, 'Search before you read.');
+  assert.equal((await lanes(f, 'agent_research')).mcpServers[0]?.guide, 'Search before you read.');
   errorOf(await call('update_connection', {
     agentId: 'agent_research', connectionId: 'docs', version: await version(call, 'agent_research'),
     changes: { hosts: ['api.example.com'] }, idempotencyKey: 'hosts-on-mcp',
@@ -722,7 +722,7 @@ test('update_connection changes a custom connection, links its key again when it
     changes: { hosts: ['api.statusboard.example', 'eu.statusboard.example'] }, idempotencyKey: 'hosts',
   }));
   assert.equal(moved.status, 'needs_setup');
-  assert.deepEqual((await lanes(call, 'agent_research')).apiConnections[0]?.allowedHosts, ['api.statusboard.example', 'eu.statusboard.example']);
+  assert.deepEqual((await lanes(f, 'agent_research')).apiConnections[0]?.allowedHosts, ['api.statusboard.example', 'eu.statusboard.example']);
   errorOf(await call('update_connection', {
     agentId: 'agent_research', connectionId: 'statusboard_api', version: guided.version,
     changes: { guide: 'stale' }, idempotencyKey: 'stale',
@@ -767,7 +767,7 @@ test('update_connection marks a custom MCP connection\'s tools as reads or write
     changes: { readTools: ['search', 'read_page'], writeTools: ['delete_page'] }, idempotencyKey: 'mark',
   }));
   assert.deepEqual([marked.status, marked.setup], ['done', undefined], 'marks apply at once and keep the connection\'s key');
-  assert.deepEqual((await lanes(call, 'agent_research')).mcpServers[0]?.toolPolicies, {
+  assert.deepEqual((await lanes(f, 'agent_research')).mcpServers[0]?.toolPolicies, {
     search: { effect: 'read' },
     read_page: { effect: 'read', argumentConstraints: { space: ['eng'] } },
     delete_page: { effect: 'write' },
@@ -790,14 +790,14 @@ test('update_connection marks a custom MCP connection\'s tools as reads or write
   assert.match((await refused({ readTools: ['export_all'] }, 'unallowed')).message, /^Docs does not allow export_all, so it cannot be marked\.$/);
   assert.match((await refused({ readTools: ['search'], writeTools: ['search'] }, 'both')).message, /as a read or as a write, not both/);
   // An empty list marks nothing, so it is refused rather than saved as a new version.
-  const marksBefore = (await lanes(call, 'agent_research')).mcpServers[0]?.toolPolicies;
+  const marksBefore = (await lanes(f, 'agent_research')).mcpServers[0]?.toolPolicies;
   for (const [changes, key] of [[{ readTools: [] }, 'empty-read'], [{ readTools: [], writeTools: [] }, 'empty-both'],
     [{ name: 'Docs wiki', writeTools: [] }, 'empty-with-name']] as const) {
     const empty = await refused(changes, key);
     assert.deepEqual([empty.message, empty.nextStep], ['An empty readTools or writeTools marks nothing, so nothing changed.',
       'Name at least one of its allowedTools from get_agent in readTools or writeTools, or leave both out.']);
   }
-  assert.deepEqual((await lanes(call, 'agent_research')).mcpServers[0]?.toolPolicies, marksBefore);
+  assert.deepEqual((await lanes(f, 'agent_research')).mcpServers[0]?.toolPolicies, marksBefore);
   assert.equal(await version(call, 'agent_research'), before, 'a refused mark writes nothing');
 
   structured(await call('connect_service', {
@@ -823,7 +823,7 @@ test('a mark goes with its tool\'s allowance: a tool update_connection allows ag
   const change = async (changes: Record<string, unknown>, key: string) => assert.equal(structured(await call('update_connection', {
     agentId: 'agent_research', connectionId: 'docs', version: await version(call, 'agent_research'), changes, idempotencyKey: key,
   })).status, 'done');
-  const marks = async () => (await lanes(call, 'agent_research')).mcpServers[0]?.toolPolicies;
+  const marks = async () => (await lanes(f, 'agent_research')).mcpServers[0]?.toolPolicies;
   await change({ readTools: ['search', 'delete_page'] }, 'mark');
   await change({ allowedTools: ['search', 'read_page'] }, 'narrow');
   assert.deepEqual(await marks(), { search: { effect: 'read' } }, 'a dis-allowed tool loses its mark');
@@ -874,7 +874,7 @@ test('undo_change takes back a mark: a connection that had none is left unmarked
   const undone = structured(await call('undo_change', { undoToken: first.undoToken, idempotencyKey: 'undo-first' }));
   assert.equal(undone.status, 'done');
   assert.deepEqual([(await docs()).readTools, (await docs()).writeTools], [undefined, undefined], 'the first mark is gone');
-  assert.deepEqual((await lanes(call, 'agent_research')).mcpServers[0]?.toolPolicies ?? {}, {});
+  assert.deepEqual((await lanes(f, 'agent_research')).mcpServers[0]?.toolPolicies ?? {}, {});
 
   await mark(['search'], 'earlier');
   const later = await mark(['delete_page'], 'later');
@@ -1170,7 +1170,7 @@ test('a custom API whose stored prefix predates the rule still renames and gains
     changes: { headerValuePrefix: 'Token 3f9a8b7c6d5e4f3a2b1c0d ' }, idempotencyKey: 'change',
   }), 'invalid_input');
   assert.match(keyed.message, /value prefix is the text before the key/);
-  const legacy = (await lanes(call, 'agent_research')).apiConnections.find(({ id }) => id === 'legacy');
+  const legacy = (await lanes(f, 'agent_research')).apiConnections.find(({ id }) => id === 'legacy');
   assert.deepEqual([legacy?.displayName, legacy?.headerValuePrefix], ['Old API', stored]);
 });
 
@@ -1186,7 +1186,7 @@ test('remove_connection confirms first, as policy.ts says, then confirm_change d
   const proposed = structured(await call('remove_connection', { agentId: 'agent_research', connectionId: 'docs', idempotencyKey: 'remove' }));
   assert.equal(proposed.status, 'needs_confirmation');
   assert.match(proposed.confirmation.preview, /Disconnect \*\*Docs\*\* from \*\*Research\*\*/);
-  assert.equal((await lanes(call, 'agent_research')).mcpServers.length, 1, 'nothing changed yet');
+  assert.equal((await lanes(f, 'agent_research')).mcpServers.length, 1, 'nothing changed yet');
   const done = structured(await call('confirm_change', { confirmToken: proposed.confirmation.confirmToken }));
   assert.deepEqual([done.status, done.summary], ['done', 'Disconnected Docs from Research.'], 'it names what the person confirmed');
   assert.deepEqual(structured(await call('get_agent', { agentId: 'agent_research' })).connections, []);

@@ -19,7 +19,7 @@ Docs: `/agents/schedules/`. Record areas: `routines`, `delivery`. Legacy contrac
 
 - Slack: ask the Agent where the work belongs, and name an existing schedule to change it.
 - Admin: Agents → the Agent → Schedules for Pause, Resume and Delete. Audit logs has no nav button and is reached by its Admin path. Schedules are never created or edited in Admin.
-- MCP: `inspect_routines` reads schedules. Saving, running, pausing and resuming apply at once; deleting needs confirmation.
+- MCP: `list_schedules` reads schedules. Saving, running, pausing and resuming apply at once; deleting needs confirmation.
 
 ## How to drive it on a lane
 

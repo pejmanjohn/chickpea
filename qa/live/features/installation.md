@@ -18,7 +18,7 @@ Docs: `/start/get-started-cloudflare/`, `/start/get-started-node/`, `/slack/set-
 
 - Admin: the private `/admin/setup` page, then Settings → About & updates, and Destinations → Slack → Connection for Reconnect with Slack.
 - Slack: the install consent, the DM with Chickpea, and the App Home tab.
-- MCP: a coding agent following an install guide, which ends with `inspect_workspace` and one `create_agent`.
+- MCP: a coding agent following an install guide, which proves the connection with a read-only call and ends by creating one Agent.
 
 ## How to drive it on a lane
 

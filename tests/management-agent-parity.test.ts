@@ -32,10 +32,7 @@ import {
   executeHostSlackManagementApproval,
   resolveHostSlackManagementApproval,
 } from '../src/management/slack-approval.ts';
-import {
-  invokeWorkspaceManagementTool,
-  workspaceManagementSemanticInvocation,
-} from '../src/management/tool-adapter.ts';
+import { workspaceManagementSemanticInvocation } from '../src/management/tool-adapter.ts';
 import { narrateSemanticActivity } from '../src/activity/semantic.ts';
 import {
   managementOperationValibotSchema,
@@ -52,6 +49,7 @@ import type {
 import { ManagementError } from '../src/management/types.ts';
 import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+import { confirmThroughService } from './helpers/management-service-result.ts';
 import { approveAsPerson, withPersonApproval } from './helpers/slack-person-approval.ts';
 import { appMention, channelThreadMessage } from './helpers/slack-fixtures.ts';
 
@@ -339,15 +337,12 @@ test('Slack and MCP share exact proposal semantics while preserving origin bindi
     const pending = await f.management.getChangeSetProposal(result.proposalId);
     assert.ok(pending);
 
-    const mcpConfirmation = await invokeWorkspaceManagementTool({
-      service: f.service,
-      resolveContext: async () => ({
-        userId: f.admin.user.id,
-        membershipId: f.admin.membership.id,
-        organizationId: f.admin.membership.organizationId,
-        origin: { kind: 'mcp', clientId: 'proposal-surface-parity' },
-      }),
-    }, 'confirm_workspace_change', { proposalId: result.proposalId });
+    const mcpConfirmation = await confirmThroughService(f.service, {
+      userId: f.admin.user.id,
+      membershipId: f.admin.membership.id,
+      organizationId: f.admin.membership.organizationId,
+      origin: { kind: 'mcp', clientId: 'proposal-surface-parity' },
+    }, result.proposalId);
     assert.deepEqual(mcpConfirmation, {
       ok: false,
       error: {
@@ -4211,20 +4206,13 @@ test('inspection exposes the Agent Channel grant revision separately from its Ch
       revision: grant.revision,
     }]);
 
-    const mcpInspection = await invokeWorkspaceManagementTool({
-      service: f.service,
-      resolveContext: async () => ({
-        userId: f.admin.user.id,
-        membershipId: f.admin.membership.id,
-        organizationId: f.admin.membership.organizationId,
-        origin: { kind: 'mcp', clientId: 'inspect-grant-revision-client' },
-      }),
-    }, 'inspect_workspace', {});
-    assert.equal(mcpInspection.ok, true);
-    const mcpChannel = mcpInspection.ok
-      ? (mcpInspection.result as ManagementWorkspaceSnapshot).channels.find(({ channelId }) =>
-          channelId === updatedChannel.channelId)
-      : undefined;
+    const mcpInspection = await f.service.inspectWorkspace({
+      userId: f.admin.user.id,
+      membershipId: f.admin.membership.id,
+      organizationId: f.admin.membership.organizationId,
+      origin: { kind: 'mcp', clientId: 'inspect-grant-revision-client' },
+    });
+    const mcpChannel = mcpInspection.channels.find(({ channelId }) => channelId === updatedChannel.channelId);
     assert.equal(mcpChannel?.grants[0]?.revision, grant.revision);
 
     const slackInspection = await invokeSlackWorkspaceManagementTool({

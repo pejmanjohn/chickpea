@@ -349,7 +349,7 @@ test('Check again runs the check only when pressed, and gives the button back if
 
 test('a connection the check could not test reads as unknown, in plain words', async (t) => {
   const { f, teamId, call, card } = await harness(t, 'health-ambiguous', {
-    connection_docs: new ManagementError('invalid_request', 'More than one connection uses docs. Name the one to test by its id from inspect_workspace.'),
+    connection_docs: new ManagementError('invalid_request', 'More than one connection uses docs, so Chickpea could not tell which one to test. Name it by its own connection id.'),
   });
   await seedOps(f, teamId);
   const result = await call('check_agent', { agentId: 'agent_ops' });
@@ -359,7 +359,7 @@ test('a connection the check could not test reads as unknown, in plain words', a
   await health.result(result);
   assert.ok(rows(health.shown).includes('unknown · Docs MCP · The check could not tell whether it works.'));
   assertPlain(health.shown, [docs.connectionId, 'connection_docs']);
-  assert.doesNotMatch(JSON.stringify(health.shown), /inspect_workspace/);
+  assert.doesNotMatch(JSON.stringify(health.shown), /More than one connection/, 'the card shows plain words, not the service\'s reason');
   // Zendesk answered: its healthy row, once shown, says so without the status.
   await health.press('show');
   assert.ok(rows(health.shown).includes('done · Zendesk · It answered.'), rows(health.shown).join('\n'));

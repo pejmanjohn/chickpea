@@ -9,6 +9,7 @@ import type {
 } from '../src/management/types.ts';
 import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+import { confirmThroughService } from './helpers/management-service-result.ts';
 
 const agentInput = {
   id: 'agent_support',
@@ -189,10 +190,7 @@ test('reviewed proposals carry Slack and Markdown copy of the same change', asyn
       /call confirm_workspace_change with the proposalId/,
     );
 
-    const confirmation = await invokeWorkspaceManagementTool({
-      service: f.service,
-      resolveContext: async () => mcpContext(f, 'links-proposal'),
-    }, 'confirm_workspace_change', { proposalId: proposal.proposalId });
+    const confirmation = await confirmThroughService(f.service, mcpContext(f, 'links-proposal'), proposal.proposalId);
     assert.equal(confirmation.ok, true);
     const confirmed = confirmation.result as ManagementApplyResult;
     assert.equal(confirmed.status, 'completed');

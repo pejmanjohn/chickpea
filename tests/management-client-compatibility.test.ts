@@ -546,7 +546,7 @@ test('management and evaluation runbooks track the additive authoring contract',
   assert.match(evaluation, /no-guide-v1/);
   assert.match(evaluation, /npm run evaluate:agent-authoring:live/);
   assert.match(evaluation, /must not be committed/i);
-  assert.match(readme, new RegExp(WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI));
+  assert.match(readme, /The `get_guide` tool serves the guidance a client follows/);
 });
 
 async function mcpCall(
