@@ -2,11 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as v from 'valibot';
 
-import {
-  MCP_MANAGEMENT_OPERATION_KINDS,
-  managementOperationValibotSchema,
-  managementOperationZodSchema,
-} from '../src/management/schemas.ts';
+import { managementOperationValibotSchema } from '../src/management/schemas.ts';
 import type {
   ManagementActorContext,
   ManagementApplyResult,
@@ -155,12 +151,8 @@ test('changing a routine\'s Agent stays in Slack; taking over its Runs as is MCP
     itemId: 'take-over', kind: 'take_over_routine', workspaceId: 'T1', channelId: 'C1',
     routineId: 'routine_1', expectedVersion: 1, requiredConnectionAccountIds: [],
   };
-  assert.equal(managementOperationZodSchema.safeParse(reassign).success, false);
   assert.equal(v.safeParse(managementOperationValibotSchema, reassign).success, true);
-  assert.equal(managementOperationZodSchema.safeParse(takeOver).success, true);
   assert.equal(v.safeParse(managementOperationValibotSchema, takeOver).success, false);
-  assert.equal(MCP_MANAGEMENT_OPERATION_KINDS.includes('take_over_routine'), true);
-  assert.equal((MCP_MANAGEMENT_OPERATION_KINDS as readonly string[]).includes('reassign_routine_agent'), false);
 });
 
 test('an editor takes over a Channel routine whose Runs as authority broke, and it resumes', () =>

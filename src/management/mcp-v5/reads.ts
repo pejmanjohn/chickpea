@@ -751,7 +751,7 @@ async function setupConnection(
 }
 
 /**
- * One Agent's connections as inspect_workspace lists them, read alone: a card
+ * One Agent's connections as the workspace snapshot lists them, read alone: a card
  * polls get_setup_status every 2 s, so never the workspace snapshot or Slack.
  * Also whether it has a first ask, which decides the connect card's next step.
  * undefined when the snapshot would not list the Agent for this caller.

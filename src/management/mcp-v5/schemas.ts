@@ -575,7 +575,7 @@ export const getSetupStatusOutput = z.strictObject({
   }).optional().describe('The Agent\'s connection this link sets up, as it is now. ready means it works, even when it was set up another way and the link is still waiting.'),
 });
 
-/** The recipe v2 document, unchanged from `export_workspace_recipe`. */
+/** The recipe v2 document, as the service exports it. */
 export const exportAgentsOutput = z.looseObject({ schemaVersion: z.number() });
 
 export const listConnectedAppsOutput = z.strictObject({

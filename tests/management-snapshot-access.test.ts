@@ -26,6 +26,7 @@ import {
   type ManagementAdapterFixture,
 } from './helpers/management-adapter-fixture.ts';
 import { confirmThroughService, serviceResult } from './helpers/management-service-result.ts';
+import { CONFIRMATION_LIFETIME_MS } from '../src/management/mcp-v5/changes.ts';
 
 type Person = Pick<ManagementAdapterFixture['owner'], 'user' | 'membership'>;
 
@@ -40,7 +41,7 @@ function mcp(person: Person, clientId = 'client_current'): ManagementActorContex
 
 /** The service calls the 5.0 tools make, each in the `{ ok, result | error }` shape. */
 const undo = (f: ManagementAdapterFixture, context: ManagementActorContext, args: { operationId: string; idempotencyKey: string }) =>
-  serviceResult(() => f.service.undoWorkspaceChange({ context, ...args }));
+  serviceResult(() => f.service.undoWorkspaceChange({ context, ...args, confirmationLifetimeMs: CONFIRMATION_LIFETIME_MS }));
 const listClients = (f: ManagementAdapterFixture, context: ManagementActorContext) =>
   serviceResult(() => f.service.listMcpClients(context));
 const revokeClient = (f: ManagementAdapterFixture, context: ManagementActorContext, clientId: string) =>
@@ -53,7 +54,9 @@ async function succeed<T>(response: Promise<WorkspaceManagementToolResult>): Pro
 }
 
 const apply = (f: ManagementAdapterFixture, context: ManagementActorContext, key: string, operations: ManagementOperation[]) =>
-  succeed<ManagementApplyResult>(serviceResult(() => f.service.applyWorkspaceChanges({ context, idempotencyKey: key, operations })));
+  succeed<ManagementApplyResult>(serviceResult(() => f.service.applyWorkspaceChanges({
+    context, idempotencyKey: key, operations, confirmationLifetimeMs: CONFIRMATION_LIFETIME_MS,
+  })));
 
 const inspect = (f: ManagementAdapterFixture, context: ManagementActorContext): Promise<ManagementWorkspaceSnapshot> =>
   f.service.inspectWorkspace(context);

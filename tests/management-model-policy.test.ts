@@ -19,7 +19,6 @@ import { createLiveWorkspaceManagementService } from '../src/management/live-ser
 import { createManagementModelSources } from '../src/management/model-sources.ts';
 import {
   managementOperationValibotSchema,
-  managementOperationZodSchema,
 } from '../src/management/schemas.ts';
 import { resolveSlackApprovalActor } from '../src/management/slack-approval.ts';
 import { invokeSlackWorkspaceManagementTool } from '../src/management/slack-tools.ts';
@@ -793,11 +792,9 @@ test('both doors accept the model operations and refuse a role or model they do 
     { itemId: 'f', kind: 'set_agent_image_model', agentId: 'agent_research', expectedRevision: 3 },
   ];
   for (const operation of accepted) {
-    assert.equal(managementOperationZodSchema.safeParse(operation).success, true, JSON.stringify(operation));
     assert.equal(v.safeParse(managementOperationValibotSchema, operation).success, true, JSON.stringify(operation));
   }
   for (const operation of refused) {
-    assert.equal(managementOperationZodSchema.safeParse(operation).success, false, JSON.stringify(operation));
     assert.equal(v.safeParse(managementOperationValibotSchema, operation).success, false, JSON.stringify(operation));
   }
 });

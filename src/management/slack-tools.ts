@@ -1115,7 +1115,7 @@ function withApprovalInstruction(
     ? result.result.outcomes.some(({ disposition }) => disposition === 'confirmation_required')
     : pendingProposalIdFromResult(result) !== undefined;
   if (!waits) return result;
-  const { confirmationTool: _confirmationTool, ...value } = result.result as Record<string, unknown>;
+  const value = result.result as Record<string, unknown>;
   const instruction = askTurn ? PERSON_APPROVAL_INSTRUCTION : CHANGE_SET_APPROVAL_INSTRUCTION;
   return { ok: true, result: { ...value, instruction } };
 }

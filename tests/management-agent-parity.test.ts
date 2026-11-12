@@ -36,7 +36,6 @@ import { workspaceManagementSemanticInvocation } from '../src/management/tool-ad
 import { narrateSemanticActivity } from '../src/activity/semantic.ts';
 import {
   managementOperationValibotSchema,
-  managementOperationZodSchema,
 } from '../src/management/schemas.ts';
 import type {
   ManagementActorContext,
@@ -52,6 +51,7 @@ import { createManagementAdapterFixture } from './helpers/management-adapter-fix
 import { confirmThroughService } from './helpers/management-service-result.ts';
 import { approveAsPerson, withPersonApproval } from './helpers/slack-person-approval.ts';
 import { appMention, channelThreadMessage } from './helpers/slack-fixtures.ts';
+import { CONFIRMATION_LIFETIME_MS } from '../src/management/mcp-v5/changes.ts';
 
 const agentInput = {
   id: 'agent_support',
@@ -149,7 +149,6 @@ test('management operation schemas expose Agent presence, Channel reach, and lif
     },
   ];
   for (const operation of operations) {
-    assert.equal(managementOperationZodSchema.safeParse(operation).success, true, operation.kind);
     assert.equal(v.safeParse(managementOperationValibotSchema, operation).success, true, operation.kind);
   }
   for (const invalidId of ['.', '..']) {
@@ -158,7 +157,6 @@ test('management operation schemas expose Agent presence, Channel reach, and lif
       kind: 'create_agent' as const,
       agent: { ...agentInput, id: invalidId },
     };
-    assert.equal(managementOperationZodSchema.safeParse(operation).success, false);
     assert.equal(v.safeParse(managementOperationValibotSchema, operation).success, false);
   }
   for (const operation of [
@@ -175,7 +173,6 @@ test('management operation schemas expose Agent presence, Channel reach, and lif
       patch: { model: 'claude-haiku-4-5' },
     },
   ]) {
-    assert.equal(managementOperationZodSchema.safeParse(operation).success, false);
     assert.equal(v.safeParse(managementOperationValibotSchema, operation).success, false);
   }
 });
@@ -1802,7 +1799,7 @@ test('change-set proposal preflights the whole set and stales before the first w
     userId: f.admin.user.id,
     membershipId: f.admin.membership.id,
     organizationId: f.admin.membership.organizationId,
-    origin: { kind: 'mcp', clientId: 'whole-set-client' },
+    origin: { kind: 'admin', sessionId: 'whole-set-client' },
   };
   try {
     for (const [id, name] of [['agent_alpha', 'Alpha'], ['agent_beta', 'Beta']] as const) {
@@ -2626,7 +2623,7 @@ test('admitted change sets durably complete with a content-free failure when an 
     userId: f.admin.user.id,
     membershipId: f.admin.membership.id,
     organizationId: f.admin.membership.organizationId,
-    origin: { kind: 'mcp', clientId: 'partial-client' },
+    origin: { kind: 'admin', sessionId: 'partial-client' },
   };
   for (const [id, name] of [['agent_first', 'First'], ['agent_second', 'Second']] as const) {
     await f.config.createAgent({
@@ -2938,7 +2935,7 @@ test('pending change sets do not follow an Agent id across delete and recreate',
     userId: f.admin.user.id,
     membershipId: f.admin.membership.id,
     organizationId: f.admin.membership.organizationId,
-    origin: { kind: 'mcp', clientId: 'pending-agent-replacement-client' },
+    origin: { kind: 'admin', sessionId: 'pending-agent-replacement-client' },
   };
   const createInput = (id: string) => ({
     id,
@@ -3070,7 +3067,7 @@ test('an unexpected preflight outage leaves the reviewed change set pending for 
     userId: f.admin.user.id,
     membershipId: f.admin.membership.id,
     organizationId: f.admin.membership.organizationId,
-    origin: { kind: 'mcp', clientId: 'transient-preflight-client' },
+    origin: { kind: 'admin', sessionId: 'transient-preflight-client' },
   };
   let membershipChecks = 0;
   const service = new WorkspaceManagementService({
@@ -3118,7 +3115,7 @@ test('a confirmed disable of an Agent with Channel reach keeps its Channel grant
     userId: f.admin.user.id,
     membershipId: f.admin.membership.id,
     organizationId: f.admin.membership.organizationId,
-    origin: { kind: 'mcp', clientId: 'disable-agent-client' },
+    origin: { kind: 'admin', sessionId: 'disable-agent-client' },
   };
   try {
     const agent = await f.config.createAgent({
@@ -3598,7 +3595,7 @@ test('concurrent confirmations acquire one change-set execution claim', async ()
     userId: f.admin.user.id,
     membershipId: f.admin.membership.id,
     organizationId: f.admin.membership.organizationId,
-    origin: { kind: 'mcp', clientId: 'concurrent-claim-client' },
+    origin: { kind: 'admin', sessionId: 'concurrent-claim-client' },
   };
   let removalCalls = 0;
   const service = new WorkspaceManagementService({
@@ -3645,7 +3642,7 @@ test('confirmation preflights deterministic failures before an earlier item writ
     userId: f.admin.user.id,
     membershipId: f.admin.membership.id,
     organizationId: f.admin.membership.organizationId,
-    origin: { kind: 'mcp', clientId: 'admission-preflight-client' },
+    origin: { kind: 'admin', sessionId: 'admission-preflight-client' },
   };
   try {
     const first = await f.config.createAgent({
@@ -4455,6 +4452,7 @@ test('confirmed Agent deletion uses the live cleanup boundary before removing th
   try {
     const proposed = await service.applyWorkspaceChanges({
       context,
+      confirmationLifetimeMs: CONFIRMATION_LIFETIME_MS,
       idempotencyKey: 'delete-owned-agent',
       operations: [{
         itemId: 'delete', kind: 'delete_agent', agentId: 'agent_delete', expectedRevision: 1,
@@ -4597,11 +4595,9 @@ test('management pins an effort only with a model that accepts it, and a model c
       { itemId: 'create', kind: 'create_agent', agent: { ...agentInput, modelEffort: 'max' } },
       { itemId: 'update', kind: 'update_agent', agentId: 'agent_support', expectedRevision: 1, patch: { modelEffort: null } },
     ] as const) {
-      assert.equal(managementOperationZodSchema.safeParse(operation).success, true, operation.kind);
       assert.equal(v.safeParse(managementOperationValibotSchema, operation).success, true, operation.kind);
     }
     const minimal = { itemId: 'create', kind: 'create_agent', agent: { ...agentInput, modelEffort: 'minimal' } };
-    assert.equal(managementOperationZodSchema.safeParse(minimal).success, false);
     assert.equal(v.safeParse(managementOperationValibotSchema, minimal).success, false);
 
     // Haiku 4.5 accepts low, medium, and high.

@@ -313,12 +313,13 @@ test('reading another Slack channel makes a reply a task, the current thread doe
 
 test('setting up Chickpea itself never makes a reply a task', () => {
   const setup = {
-    'Agent authoring': ['propose_workspace_changes', 'apply_workspace_changes', 'confirm_workspace_change', 'undo_workspace_change', 'get_operation'],
+    // The Slack door's tools; confirm_workspace_change and prepare_provider_setup were MCP-only and went in 5.0.0.
+    'Agent authoring': ['propose_workspace_changes', 'apply_workspace_changes', 'undo_workspace_change', 'get_operation'],
     schedules: ['manage_scheduled_work', 'inspect_routines'],
     skills: ['propose_skill_import', 'import_skill', 'upload_skills', 'manage_agent_skill'],
     destinations: ['discover_slack_channels', 'prepare_connector_setup', 'test_connection', 'authorize_personal_connection', 'revoke_setup_link'],
     'connection keys': ['save_connection_key', 'try_connection'],
-    settings: ['inspect_workspace', 'prepare_provider_setup', 'export_workspace_recipe', 'preview_workspace_recipe'],
+    settings: ['inspect_workspace', 'export_workspace_recipe', 'preview_workspace_recipe'],
     memory: ['update_agent_memory', 'inspect_memory'],
   };
   for (const [area, names] of Object.entries(setup)) {

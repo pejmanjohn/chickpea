@@ -25,7 +25,7 @@ type Check = Output['checks'][number];
 /**
  * Every part of one Agent, checked the way Admin would, with a fix the
  * caller can act on for each failing part. No model call. The only requests
- * that leave Chickpea are today's test_connection checks of the Agent's own
+ * that leave Chickpea are the service's connection checks of the Agent's own
  * custom API and MCP connections. Each row's `plain` is what a card shows:
  * its detail without a status code, the service's own words or an ID.
  */
@@ -255,9 +255,8 @@ async function repositoryChecks(deps: FiveZeroDeps, reading: AgentRunReading): P
     const name = grant.allRepos ? `${grant.accountLogin}/*` : grant.fullName;
     if (grant.installationId === null) {
       return withFix({ part: 'repository', name, status: 'failing', detail: `Chickpea's GitHub App is not installed for ${grant.accountLogin}.` },
-        // No 5.0 tool hands out a GitHub access link on its own, and the
-        // 4.x one is hidden from clients that draw cards; the Agent's page
-        // in Admin gives that access to Owners and Members alike.
+        // No 5.0 tool hands out a GitHub access link on its own; the
+        // Agent's page in Admin gives that access to Owners and Members alike.
         agentAdminFix(deps, reading, 'Give GitHub access in Admin'));
     }
     if (active && !active.has(grant.installationId)) {

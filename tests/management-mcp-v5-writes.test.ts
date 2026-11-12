@@ -7,12 +7,15 @@ import type { McpAuthenticatedPrincipal } from '../src/auth/mcp-oauth-routes.ts'
 import { createWorkspaceManagementMcpServer } from '../src/management/mcp.ts';
 import { confirmedSummary } from '../src/management/mcp-v5/changes.ts';
 import type { WorkspaceManagementServiceInput } from '../src/management/service.ts';
-import type { ManagementChangeSetPreview } from '../src/management/types.ts';
+import { ManagementError, type ManagementActorContext, type ManagementChangeSetPreview } from '../src/management/types.ts';
 import {
   createFixtureAgent,
   createManagementAdapterFixture,
+  ownerSlackDmContext,
   type ManagementAdapterFixture,
 } from './helpers/management-adapter-fixture.ts';
+import { serviceResult } from './helpers/management-service-result.ts';
+import { withPersonApproval } from './helpers/slack-person-approval.ts';
 
 const NOW = 1_800_000_000_000;
 const THIRTY_MINUTES = 30 * 60_000;
@@ -127,6 +130,14 @@ async function grantChannel(f: ManagementAdapterFixture, teamId: string, agentId
   });
 }
 
+/** The owner signed in through one app, as the 5.0 tools reach the service. */
+function mcpOwner(f: ManagementAdapterFixture, clientId: string): ManagementActorContext {
+  return {
+    userId: f.owner.user.id, membershipId: f.owner.membership.id, organizationId: f.owner.membership.organizationId,
+    origin: { kind: 'mcp', clientId },
+  };
+}
+
 async function version(call: Call, agentId: string): Promise<string> {
   return structured(await call('get_agent', { agentId })).version;
 }
@@ -217,10 +228,10 @@ test('update_agent checks the version, replays a retry, refuses a reused key, an
   }), 'changed_since_read');
   assert.deepEqual(await f.config.getAgent('agent_research'), afterSave);
   // The stored result is bound to its app too: its own app reads it by ID, another app finds nothing.
-  const readBack = (from: Call) => from('get_operation', { operationId: saved.undoToken })
-    .then(({ content }) => JSON.parse(content[0]!.text) as { ok: boolean; error?: { code: string } });
-  assert.equal((await readBack(call)).ok, true);
-  assert.equal((await readBack(as('owner', 'client_other_app'))).error?.code, 'operation_not_found');
+  const readBack = (clientId: string) => serviceResult(() => f.service.getOperation(mcpOwner(f, clientId), saved.undoToken));
+  assert.equal((await readBack('client_update')).ok, true);
+  const elsewhere = await readBack('client_other_app');
+  assert.equal(elsewhere.ok ? undefined : elsewhere.error.code, 'operation_not_found');
   errorOf(await call('update_agent', {
     agentId: 'agent_research', version: saved.version, description: 'Other words.', idempotencyKey: 'describe',
   }), 'key_reused');
@@ -296,9 +307,9 @@ test('a confirmToken expires 30 minutes after it was made; a new call makes a fr
   assert.equal((await f.config.getAgent('agent_research')).enabled, true);
   errorOf(await call('update_agent', args), 'confirmation_expired');
 
-  // The service enforces it, so the 4.x confirmation refuses the token too.
-  const legacy = JSON.parse((await call('confirm_workspace_change', { proposalId: confirmToken })).content[0]!.text);
-  assert.deepEqual([legacy.ok, legacy.error.code], [false, 'proposal_expired']);
+  // The service enforces it, so no door confirms the token.
+  await assert.rejects(f.service.confirmWorkspaceChange({ context: mcpOwner(f, 'client_expiry'), proposalId: confirmToken }),
+    (error: unknown) => error instanceof ManagementError && error.code === 'proposal_expired');
 
   const fresh = structured(await call('update_agent', { ...args, idempotencyKey: 'off-again' }));
   assert.notEqual(fresh.confirmation.confirmToken, confirmToken);
@@ -321,62 +332,84 @@ test('the confirmation preview shows a crafted Agent name as its text, on one li
   assert.doesNotMatch(preview, /(?<!\\)!\[|(?<!\\)\]\(/, 'no image or link survives');
   assert.doesNotMatch(preview, /^\s*(?:\\?\[Click|\\?\*\\?\*Nothing)/m, 'the name adds no line');
 
-  // The 4.x preview is the same Markdown.
-  const applied = JSON.parse((await call('apply_workspace_changes', {
-    idempotencyKey: 'legacy-off',
+  // The change set's own Markdown, which the Slack door carries, is the same.
+  const applied = await f.service.applyWorkspaceChanges({
+    context: mcpOwner(f, 'client_preview'), idempotencyKey: 'set-off', confirmationLifetimeMs: THIRTY_MINUTES,
     operations: [{ itemId: 'off', kind: 'update_agent', agentId: agent.id, expectedRevision: agent.revision, patch: { enabled: false } }],
-  })).content[0]!.text);
-  assert.ok(applied.result.presentation.markdown.includes(`**${shown} — `), applied.result.presentation.markdown);
-});
-
-test('a 4.x confirmation still never expires', async (t) => {
-  const { f, clock, call, teamId } = await harness(t, 'legacy');
-  const agent = await createFixtureAgent(f, 'agent_research');
-  await grantChannel(f, teamId, 'agent_research');
-  const applied = JSON.parse((await call('apply_workspace_changes', {
-    idempotencyKey: 'legacy-off',
-    operations: [{ itemId: 'off', kind: 'update_agent', agentId: agent.id, expectedRevision: agent.revision, patch: { enabled: false } }],
-  })).content[0]!.text);
-  assert.equal(applied.result.status, 'confirmation_required');
-  assert.equal(applied.result.confirmation, undefined);
-  clock.now += 24 * 60 * THIRTY_MINUTES;
-  const confirmed = JSON.parse((await call('confirm_workspace_change', {
-    proposalId: applied.result.outcomes[0].proposalId,
-  })).content[0]!.text);
-  assert.deepEqual([confirmed.ok, confirmed.result.status], [true, 'completed']);
-  assert.equal((await f.config.getAgent('agent_research')).enabled, false);
-});
-
-// Mutation proof (review SHOULD 3 and 4): the 4.x tool passing the confirmed preview on, and the
-// service attaching it to a confirmation that never expires.
-test('only a 5.0 confirmation names what was confirmed: the 4.x confirm and a 4.x set carry no preview', async (t) => {
-  const { f, call, teamId } = await harness(t, 'confirmed-4x');
-  const agent = await createFixtureAgent(f, 'agent_research');
-  await grantChannel(f, teamId, 'agent_research');
-  const { confirmToken } = structured(await call('update_agent', {
-    agentId: agent.id, version: await version(call, agent.id), on: false, idempotencyKey: 'off',
-  })).confirmation;
-  const text = (await call('confirm_workspace_change', { proposalId: confirmToken })).content[0]!.text;
-  const legacy = JSON.parse(text);
-  assert.deepEqual([legacy.ok, legacy.result.status], [true, 'completed']);
-  assert.equal('confirmed' in legacy.result, false, 'a 4.x result keeps its shape');
-  assert.doesNotMatch(text, /"before"|creatorMembershipId/, 'and shows none of the stored record');
-  assert.equal((await f.config.getAgent(agent.id)).enabled, false);
-
-  await f.config.updateAgent(agent.id, { enabled: true });
-  const current = await f.config.getAgent(agent.id);
-  const applied = JSON.parse((await call('apply_workspace_changes', {
-    idempotencyKey: 'legacy-off',
-    operations: [{ itemId: 'off', kind: 'update_agent', agentId: agent.id, expectedRevision: current!.revision, patch: { enabled: false } }],
-  })).content[0]!.text);
-  const confirmed = await f.service.confirmWorkspaceChange({
-    context: {
-      userId: f.owner.user.id, membershipId: f.owner.membership.id, organizationId: f.owner.membership.organizationId,
-      origin: { kind: 'mcp', clientId: 'client_confirmed-4x' },
-    },
-    proposalId: applied.result.outcomes[0].proposalId,
   });
-  assert.deepEqual([confirmed.status, 'confirmed' in confirmed], ['completed', false], 'a set with no expiry gets no preview from the service');
+  assert.ok('presentation' in applied && applied.presentation?.markdown?.includes(`**${shown} — `), JSON.stringify(applied));
+});
+
+// What a 4.x tool left behind: apply_workspace_changes and undo_workspace_change made sets with no
+// expiry, through the same service call this makes. 5.0.0 removed the tool that confirmed them.
+test('a confirmation a 4.x tool left pending expired with 5.0.0; its ids carry over, and Slack\'s never expire', async (t) => {
+  const { f, call, teamId } = await harness(t, 'legacy');
+  const agent = await createFixtureAgent(f, 'agent_research');
+  await grantChannel(f, teamId, 'agent_research');
+  const fourX = mcpOwner(f, 'client_legacy');
+  const off = [{ itemId: 'off', kind: 'update_agent' as const, agentId: agent.id, expectedRevision: agent.revision, patch: { enabled: false } }];
+  const left = await f.service.applyWorkspaceChanges({ context: fourX, idempotencyKey: 'legacy-off', operations: off });
+  assert.ok('outcomes' in left && left.status === 'confirmation_required');
+  assert.equal(left.confirmation, undefined, 'a set with no expiry');
+  assert.equal(left.presentation, undefined, 'shows no preview: it reads as expired');
+  const confirmToken = left.outcomes[0]!.proposalId!;
+  assert.equal((await f.management.getChangeSetProposal(confirmToken))?.expiresAt, undefined);
+
+  // confirm_change refuses it as expired and applies nothing; get_confirmation says so; a replay shows no preview.
+  const refused = errorOf(await call('confirm_change', { confirmToken }), 'confirmation_expired');
+  assert.match(refused.nextStep as string, /new idempotencyKey/);
+  assert.equal((await f.config.getAgent(agent.id)).enabled, true);
+  assert.deepEqual(structured(await call('get_confirmation', { confirmToken })), { status: 'expired' });
+  const replayed = await f.service.applyWorkspaceChanges({ context: fourX, idempotencyKey: 'legacy-off', operations: off });
+  assert.ok('outcomes' in replayed && replayed.presentation === undefined && replayed.confirmation === undefined);
+  // decline_change still retires it.
+  assert.equal(structured(await call('decline_change', { confirmToken })).status, 'unchanged');
+  assert.equal((await f.management.getChangeSetProposal(confirmToken))?.status, 'stale');
+
+  // A set a 4.x tool confirmed before 5.0.0 still replays its result.
+  const done = await f.service.applyWorkspaceChanges({ context: fourX, idempotencyKey: 'legacy-off-2', operations: off });
+  assert.ok('outcomes' in done);
+  const doneToken = done.outcomes[0]!.proposalId!;
+  const record = (await f.management.getChangeSetProposal(doneToken))!;
+  await f.management.claimChangeSetProposal({
+    proposalId: doneToken, organizationId: record.organizationId, actorUserId: record.actorUserId,
+    actorMembershipId: record.actorMembershipId, originKey: record.originKey, approvalScopeKey: record.approvalScopeKey, at: NOW,
+  });
+  const completed = { ...done, status: 'completed' as const };
+  await f.management.completeChangeSetProposal(doneToken, completed, NOW);
+  assert.deepEqual(await f.service.confirmWorkspaceChange({ context: fourX, proposalId: doneToken }), completed);
+
+  // The ids that carry over: a 4.x change's operationId undoes through undo_change, and a 4.x setup link's
+  // setupOperationId reads through get_setup_status.
+  const renamed = await f.service.applyWorkspaceChanges({
+    context: fourX, idempotencyKey: 'legacy-rename',
+    operations: [{ itemId: 'name', kind: 'update_agent', agentId: agent.id, expectedRevision: (await f.config.getAgent(agent.id)).revision,
+      patch: { description: 'Renamed by 4.x.' } }],
+  });
+  assert.ok('outcomes' in renamed && renamed.status === 'completed');
+  const undone = structured(await call('undo_change', { undoToken: renamed.operationId, idempotencyKey: 'undo-4x' }));
+  assert.equal(undone.status, 'done');
+  assert.equal((await f.config.getAgent(agent.id)).description, undefined);
+  const setup = await f.service.applyWorkspaceChanges({
+    context: fourX, idempotencyKey: 'legacy-setup',
+    operations: [{ itemId: 'key', kind: 'request_setup', target: { kind: 'provider_credential', providerId: 'openai' } }],
+  });
+  assert.ok('outcomes' in setup);
+  const setupToken = setup.outcomes[0]!.setupOperationId!;
+  assert.equal(typeof setupToken, 'string');
+  assert.equal(structured(await call('get_setup_status', { setupToken })).status, 'waiting');
+
+  // Slack's sets have no expiry by design, and the person's approval still applies one; it names no confirmed preview.
+  const slack = ownerSlackDmContext(f);
+  const held = await f.service.applyWorkspaceChanges({ context: slack, idempotencyKey: 'slack-off', operations: [{
+    ...off[0]!, expectedRevision: (await f.config.getAgent(agent.id)).revision,
+  }] });
+  assert.ok('outcomes' in held && held.status === 'confirmation_required', JSON.stringify(held));
+  const slackToken = held.outcomes[0]!.proposalId!;
+  assert.equal((await f.management.getChangeSetProposal(slackToken))?.expiresAt, undefined);
+  const approved = await f.service.confirmWorkspaceChange({ context: withPersonApproval(slack, slackToken), proposalId: slackToken });
+  assert.deepEqual([approved.status, 'confirmed' in approved], ['completed', false]);
+  assert.equal((await f.config.getAgent(agent.id)).enabled, false);
 });
 
 test('undo_change reverses a change once, replays its retry, and confirms a destructive reverse first', async (t) => {
@@ -421,8 +454,6 @@ test('undo_change reverses a change once, replays its retry, and confirms a dest
   // Asking for the confirmation used the token: its retry replays, and another undo is refused.
   assert.deepEqual(structured(await call('undo_change', { undoToken: on.undoToken, idempotencyKey: 'undo-on' })), reverse);
   errorOf(await call('undo_change', { undoToken: on.undoToken, idempotencyKey: 'undo-on-again' }), 'nothing_to_undo');
-  const legacy = JSON.parse((await call('undo_workspace_change', { operationId: on.undoToken, idempotencyKey: 'undo-on-4x' })).content[0]!.text);
-  assert.deepEqual([legacy.ok, legacy.error.code], [false, 'undo_unavailable']);
   const reversed = structured(await call('confirm_change', { confirmToken: reverse.confirmation.confirmToken }));
   // A confirmed undo names what it did, as its confirmation asked it.
   assert.deepEqual([reversed.status, reversed.summary], ['done', 'Turned off Research.']);

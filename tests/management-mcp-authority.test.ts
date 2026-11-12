@@ -7,7 +7,6 @@ import type { ManagementApiConnection, ManagementMcpConnection } from '../src/ma
 import { AGENT_AUTHORING_GUIDE_VERSION } from '../src/management/agent-authoring/index.ts';
 import type { WorkspaceManagementServiceInput } from '../src/management/service.ts';
 import {
-  invokeWorkspaceManagementTool,
   type WorkspaceManagementToolArguments,
   type WorkspaceManagementToolName,
 } from '../src/management/tool-adapter.ts';
@@ -19,7 +18,7 @@ import type {
   ManagementOperation,
 } from '../src/management/types.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
-import { confirmThroughService } from './helpers/management-service-result.ts';
+import { confirmThroughService, invokeAsDoor } from './helpers/management-service-result.ts';
 
 type Fixture = Awaited<ReturnType<typeof createManagementAdapterFixture>>;
 type Person = Fixture['owner'] | Fixture['admin'];
@@ -68,7 +67,7 @@ async function call<TName extends WorkspaceManagementToolName>(
   name: TName,
   args: WorkspaceManagementToolArguments[TName],
 ): Promise<{ ok: true; result: unknown } | { ok: false; error: { code: string; message: string } }> {
-  return invokeWorkspaceManagementTool({
+  return invokeAsDoor({
     service: f.service,
     resolveContext: async () => mcpContext(person),
   }, name, args);
@@ -696,8 +695,9 @@ test('MCP retries a direct archive whose first attempt failed after the write', 
       agentId: agent.id,
       expectedRevision: agent.revision,
     }];
-    const lost = await call(f, f.owner, 'apply_workspace_changes', { idempotencyKey: 'archive-retry', operations });
-    assert.equal(lost.ok ? undefined : lost.error.code, 'management_error');
+    // The lost response reaches the 5.0 write as an unexpected error, which it reports as temporarily_unavailable.
+    await assert.rejects(call(f, f.owner, 'apply_workspace_changes', { idempotencyKey: 'archive-retry', operations }),
+      /The archive response was lost after the write\./);
     assert.equal((await f.config.getAgent(agent.id)).lifecycle, 'archived');
 
     assertApplied(await apply(f, f.owner, 'archive-retry', operations), 'retried archive');

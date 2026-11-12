@@ -24,9 +24,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const MCP_TEST_PATTERNS = [
-  // The management service and MCP server: 4.x and 5.0 tools, the card host,
-  // prompts, confirmations, undo, proposals, previews and the write rules MCP
-  // shares with Admin.
+  // The management service and MCP server: the 5.0 tools and the answers to
+  // removed 4.x names, the card host, confirmations, undo, proposals, previews
+  // and the write rules MCP shares with Admin.
   'tests/management-*.test.ts',
   // The cards' models and renders, MCP OAuth and clients, tool policy.
   'tests/mcp-*.test.ts',

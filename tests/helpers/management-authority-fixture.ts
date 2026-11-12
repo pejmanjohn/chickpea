@@ -22,6 +22,7 @@ import { agentRoutineDeletion, SqliteRoutineStore } from '../../src/routines/sto
 import type { SlackChannel } from '../../src/slack/transport/types.ts';
 import { SqliteWorkStore } from '../../src/work/store.ts';
 import { createSlackOwner } from './slack-owner.ts';
+import { CONFIRMATION_LIFETIME_MS } from '../../src/management/mcp-v5/changes.ts';
 
 export const NOW = 1_800_000_000_000;
 export const MEMBER_SLACK_USER = 'U87654321';
@@ -196,13 +197,17 @@ export function chickpeaChannel(f: Fixture, person: Person, channelId: string): 
   };
 }
 
+/** Applies as the context's door does: an MCP caller as a 5.0 write, whose confirmation expires. */
 export async function apply(
   f: Fixture,
   context: ManagementActorContext,
   idempotencyKey: string,
   operations: ManagementOperation[],
 ): Promise<ManagementApplyResult> {
-  const result = await f.service.applyWorkspaceChanges({ context, idempotencyKey, operations });
+  const result = await f.service.applyWorkspaceChanges({
+    context, idempotencyKey, operations,
+    ...context.origin.kind === 'mcp' ? { confirmationLifetimeMs: CONFIRMATION_LIFETIME_MS } : {},
+  });
   assert.ok('outcomes' in result, JSON.stringify(result));
   return result;
 }

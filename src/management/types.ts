@@ -246,8 +246,8 @@ export type ManagementOperation =
       channelId?: string;
       /**
        * `initiator_dm`: a new thread in the MCP caller's own DM with Chickpea.
-       * Only 5.0 `save_schedule` builds it; the 4.x operation schemas never
-       * accept it.
+       * Only 5.0 `save_schedule` builds it; the Slack door's operation
+       * schema never accepts it.
        */
       destination?: { kind: 'current_dm_thread' | 'current_channel_thread' | 'initiator_dm' };
       routineId?: string;
@@ -1332,7 +1332,6 @@ export interface ProposeWorkspaceChangesResult {
   };
   preview: ManagementChangeSetPreview;
   presentation: ManagementPresentation;
-  confirmationTool: 'confirm_workspace_change';
 }
 
 export interface ProposeSkillImportInput {

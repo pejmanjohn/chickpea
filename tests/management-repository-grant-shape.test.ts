@@ -10,7 +10,6 @@ import {
 import { validateManagementOperations } from '../src/management/contracts.ts';
 import {
   managementOperationValibotSchema,
-  managementOperationZodSchema,
 } from '../src/management/schemas.ts';
 import type { ManagementActorContext, ManagementOperation } from '../src/management/types.ts';
 import { ManagementError } from '../src/management/types.ts';
@@ -74,21 +73,16 @@ test('one predicate defines the repository grant shape', () => {
 
 test('management schemas refuse allRepos with a repository fullName and name the fix', () => {
   const invalid = updateRepositories([inconsistentAllRepos]);
-  const zod = managementOperationZodSchema.safeParse(invalid);
-  assert.equal(zod.success, false);
-  assert.ok(zod.error?.issues.some(({ message }) => message === REPOSITORY_GRANT_SHAPE_MESSAGE));
   const valibot = v.safeParse(managementOperationValibotSchema, invalid);
   assert.equal(valibot.success, false);
   assert.ok(valibot.issues?.some(({ message }) => message === REPOSITORY_GRANT_SHAPE_MESSAGE));
 
   for (const repositories of [[validAllRepos], [validSingleRepo], [validAllRepos, validSingleRepo]]) {
     const valid = updateRepositories(repositories);
-    assert.equal(managementOperationZodSchema.safeParse(valid).success, true);
     assert.equal(v.safeParse(managementOperationValibotSchema, valid).success, true);
   }
   // A single-repository grant still needs a repository name.
   const unnamed = updateRepositories([{ ...validSingleRepo, fullName: '' }]);
-  assert.equal(managementOperationZodSchema.safeParse(unnamed).success, false);
   assert.equal(v.safeParse(managementOperationValibotSchema, unnamed).success, false);
 });
 

@@ -115,7 +115,6 @@ test('shared creation tool descriptions agree on immediate standalone apply', ()
 test('workspace proposal guidance stays inside the typed configuration schema', () => {
   const proposal = workspaceManagementToolDescription('propose_workspace_changes');
   const apply = workspaceManagementToolDescription('apply_workspace_changes');
-  const confirm = workspaceManagementToolDescription('confirm_workspace_change');
   const inspection = workspaceManagementToolDescription('inspect_workspace');
   const slack = slackManagementInstruction('agent_synthetic');
 
@@ -131,8 +130,6 @@ test('workspace proposal guidance stays inside the typed configuration schema', 
   assert.match(apply, /typed Chickpea workspace configuration changes/i);
   assert.match(apply, /does not execute actions in Slack Lists or connected services/i);
   assert.match(apply, /confirmation-required configuration operations/i);
-  assert.match(confirm, /"Are you sure\?" step/);
-  assert.match(confirm, /does not confirm actions in Slack or connected services/i);
   assert.match(proposal, /the person's approval applies it/);
   assert.doesNotMatch(proposal, /confirm_workspace_change/, 'Slack has no confirm tool');
 });
@@ -485,16 +482,6 @@ test('behavioral evaluation corpus is versioned, synthetic, and guide-bound', as
   assert.ok(corpus.cases
     .filter(({ id }) => !id.startsWith('new-agent-'))
     .every(({ actingScope }) => (actingScope ?? 'user_agent') === 'user_agent'));
-});
-
-test('the deployed MCP verifier stays pinned to the canonical guide version', async () => {
-  const verifierSource = await readFile(
-    new URL('../scripts/verify-management-mcp.mjs', import.meta.url),
-    'utf8',
-  );
-  assert.ok(verifierSource.includes(
-    `const AGENT_AUTHORING_GUIDE_VERSION = '${AGENT_AUTHORING_GUIDE_VERSION}';`,
-  ));
 });
 
 // Production 2026-11-06: a coding agent ran test_connection while the key's

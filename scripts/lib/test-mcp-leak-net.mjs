@@ -2,11 +2,10 @@
  * Preloaded into every test file's process by scripts/run-tests.mjs.
  *
  * The 4.x leak net: no result of Chickpea's management MCP server names one of
- * the 21 4.x tools, which 5.0.0 removes, so a client on the 5.0 tools is never
+ * the 21 4.x tools, which 5.0.0 removed, so a client on the 5.0 tools is never
  * told to call one. It reads every `tools/call` answer the server sends, as
  * the client gets it: successes and errors, in `content` and
- * `structuredContent`. It skips only a 4.x tool's own answer while the server
- * still serves that tool.
+ * `structuredContent`.
  *
  * Allowed, by name:
  * - explain_agent's list of the tools an Agent has in Slack: a string that is
@@ -35,7 +34,7 @@ import {
   WebStandardStreamableHTTPServerTransport,
 } from '@modelcontextprotocol/server';
 
-/** The 4.x tools, as `WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES` lists them (tests/mcp-leak-net.test.ts). */
+/** The 4.x tools, as `REMOVED_TOOL_NAMES` lists them (src/management/mcp-v5/removed-v4.ts; tests/mcp-leak-net.test.ts). */
 export const V4_TOOL_NAMES = Object.freeze([
   'inspect_workspace',
   'prepare_connector_setup',
@@ -147,7 +146,7 @@ for (const Transport of [WebStandardStreamableHTTPServerTransport, PerRequestHTT
 
 const connect = McpServer.prototype.connect;
 McpServer.prototype.connect = function (transport) {
-  if (this.server?._serverInfo?.name === SERVER_NAME) watch(this, transport);
+  if (this.server?._serverInfo?.name === SERVER_NAME) watch(transport);
   return connect.call(this, transport);
 };
 
@@ -157,11 +156,7 @@ McpServer.prototype.connect = function (transport) {
  * (mcp-v5/transport.ts) are already on `send`, and the patched prototype
  * `send` they call reads each answer after them.
  */
-function watch(server, transport) {
-  const registered = server._registeredTools;
-  if (typeof registered !== 'object' || registered === null) {
-    throw new Error('The 4.x leak net cannot read McpServer._registeredTools; update scripts/lib/test-mcp-leak-net.mjs for this SDK.');
-  }
+function watch(transport) {
   if (!SENDS.has(prototypeSend(transport))) {
     throw new Error(`The 4.x leak net does not watch ${transport?.constructor?.name ?? 'this transport'}; add its class in scripts/lib/test-mcp-leak-net.mjs.`);
   }
@@ -171,8 +166,7 @@ function watch(server, transport) {
   transport.onmessage = (message, extra) => {
     try {
       const name = message?.method === 'tools/call' && 'id' in message ? message.params?.name : undefined;
-      // A 4.x tool's own answer while this server serves it is the 4.x surface, not a leak.
-      if (typeof name === 'string' && !(V4.has(name) && Object.hasOwn(registered, name))) open.set(message.id, name);
+      if (typeof name === 'string') open.set(message.id, name);
     } catch {
       // Watching never changes how a message is dispatched.
     }

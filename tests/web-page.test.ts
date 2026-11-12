@@ -5,7 +5,7 @@ import { defineTool } from '@flue/runtime';
 import * as v from 'valibot';
 
 import type { ManagementApiConnection } from '../src/management/agent-connections.ts';
-import { WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES } from '../src/management/mcp.ts';
+import { FIVE_ZERO_TOOL_NAMES } from '../src/management/mcp-v5/tools.ts';
 import { slackApplyWorkspaceChangesValibotSchema } from '../src/management/schemas.ts';
 import {
   invokeSlackWorkspaceManagementTool,
@@ -396,7 +396,7 @@ test('a page whose body stalls after its headers is cancelled at the timeout', a
 
 test('the web tools are not management tools, so the MCP door never offers them', () => {
   for (const name of ['read_web_page', 'web_search', 'read_public_doc']) {
-    assert.ok(!(WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES as readonly string[]).includes(name), name);
+    assert.ok(!(FIVE_ZERO_TOOL_NAMES as readonly string[]).includes(name), name);
     assert.ok(!(WORKSPACE_MANAGEMENT_TOOL_NAMES as readonly string[]).includes(name), name);
   }
 });

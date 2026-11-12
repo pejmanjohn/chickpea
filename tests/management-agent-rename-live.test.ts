@@ -442,11 +442,11 @@ test('saving a description proposal from the MCP card leaves an off Agent off an
   });
 });
 
-test('a 4.x rename leaves an off Agent off and renames its Slack group', async (t) => {
+test('an update_agent rename leaves an off Agent off and renames its Slack group', async (t) => {
   await withEnv({ CHICKPEA_TENANCY: undefined, SLACK_STATE_DB_PATH: ':memory:' }, async () => {
-    const { mcp, renameArgs, desk, slack } = await offDeskFixture(t);
-    const applied = await mcp('apply_workspace_changes', await renameArgs({ name: 'Front Desk' }));
-    assert.deepEqual([applied.ok, applied.result.outcomes[0].disposition], [true, 'applied']);
+    const { mcp, version, desk, slack } = await offDeskFixture(t);
+    const renamed = await mcp('update_agent', { agentId: 'agent_desk', version: await version(), name: 'Front Desk', idempotencyKey: 'rename' });
+    assert.equal(renamed.status, 'done');
     assert.deepEqual(await desk(), { ...DESK, name: 'Front Desk', enabled: false });
     assert.equal(slack.groups.find(({ id }) => id === 'S0DESK')?.name, 'Front Desk');
   });
@@ -474,20 +474,7 @@ function addDeskToSales(teamId: string, idempotencyKey: string) {
   };
 }
 
-test('a 4.x Channel add for an off Agent is refused with what to do, and the Agent stays off', async (t) => {
-  await withEnv({ CHICKPEA_TENANCY: undefined, SLACK_STATE_DB_PATH: ':memory:' }, async () => {
-    const { f, mcp, desk, teamId } = await offDeskFixture(t);
-    const applied = await mcp('apply_workspace_changes', addDeskToSales(teamId, 'add-off-4x'));
-    const [outcome] = applied.result.outcomes;
-    assert.deepEqual(
-      [outcome.disposition, outcome.code, outcome.instruction],
-      ['failed', 'agent_off', DESK_IS_OFF],
-    );
-    assert.deepEqual(await desk(), { ...DESK, enabled: false });
-    assert.deepEqual(await f.config.listAgentChannelGrants(teamId, 'C_SALES'), []);
-  });
-});
-
+// Over MCP, add_agent_to_channel refuses an off Agent the same way (management-mcp-v5-writes).
 test('a Slack request to add an off Agent to a Channel is refused before any approval, and the Agent stays off', async (t) => {
   await withEnv({ CHICKPEA_TENANCY: undefined, SLACK_STATE_DB_PATH: ':memory:' }, async () => {
     const { f, tool, desk, teamId } = await offDeskFixture(t);

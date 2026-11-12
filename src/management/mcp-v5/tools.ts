@@ -81,8 +81,8 @@ function tool<I extends z.ZodType<Structured>, O extends z.ZodType<Structured>>(
 }
 
 /**
- * The 5.0 tools beside the 4.x surface: reads, read-only previews, a
- * card-only read, and single-purpose writes.
+ * The 5.0 tools, the whole management MCP surface: reads, read-only
+ * previews, a card-only read, and single-purpose writes.
  */
 export const FIVE_ZERO_TOOLS = {
   get_account: tool({
@@ -573,7 +573,7 @@ export const FIVE_ZERO_TOOLS = {
 
 export type FiveZeroToolName = keyof typeof FIVE_ZERO_TOOLS;
 
-/** In registration order, after the 4.x tools. */
+/** In registration order. */
 export const FIVE_ZERO_TOOL_NAMES = Object.keys(FIVE_ZERO_TOOLS) as FiveZeroToolName[];
 
 /** A result a card draws, one only a card asks for, or one only a card's press asks for: on a card host, the card holds its tokens. */

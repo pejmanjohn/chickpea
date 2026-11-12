@@ -28,14 +28,12 @@ import {
   type ManagementApiConnection,
   type ManagementMcpConnection,
 } from '../src/management/agent-connections.ts';
+import { CONFIRMATION_LIFETIME_MS } from '../src/management/mcp-v5/changes.ts';
 import type { WorkspaceRecipe, WorkspaceRecipePreview } from '../src/management/recipes.ts';
 import {
   applyWorkspaceChangesValibotSchema,
-  applyWorkspaceChangesZodSchema,
   vApiConnection,
   vMcpConnection,
-  zApiConnection,
-  zMcpConnection,
 } from '../src/management/schemas.ts';
 import type { WorkspaceManagementServiceInput } from '../src/management/service.ts';
 import {
@@ -178,7 +176,7 @@ function mcpContext(f: Fixture): ManagementActorContext {
   };
 }
 
-/** Calls a tool the way the MCP door does: the SDK validates with the Zod schema first. */
+/** Calls a Slack door tool's service path as the MCP signed-in person, as a 5.0 tool reaches the same service. */
 async function mcpTool<TName extends WorkspaceManagementToolName>(
   f: Fixture,
   name: TName,
@@ -196,14 +194,17 @@ async function mcpApply(
   f: Fixture,
   payload: { idempotencyKey: string; operations: unknown[] },
 ): Promise<ManagementApplyResult> {
-  const parsed = applyWorkspaceChangesZodSchema.safeParse(payload);
-  assert.equal(parsed.success, true, `the MCP schema accepts the payload: ${parsed.error?.message}`);
-  const slack = v.safeParse(applyWorkspaceChangesValibotSchema, payload);
-  assert.equal(slack.success, true, 'the Slack schema accepts the payload');
-  return await mcpTool(f, 'apply_workspace_changes', {
-    idempotencyKey: parsed.data!.idempotencyKey,
-    operations: parsed.data!.operations as ManagementOperation[],
-  }) as ManagementApplyResult;
+  const parsed = v.safeParse(applyWorkspaceChangesValibotSchema, payload);
+  assert.equal(parsed.success, true, 'the write schema accepts the payload');
+  // As a 5.0 write applies: its confirmation expires.
+  const result = await f.service.applyWorkspaceChanges({
+    context: mcpContext(f),
+    idempotencyKey: payload.idempotencyKey,
+    operations: payload.operations as ManagementOperation[],
+    confirmationLifetimeMs: CONFIRMATION_LIFETIME_MS,
+  });
+  assert.ok('outcomes' in result, JSON.stringify(result));
+  return result;
 }
 
 async function inspect(f: Fixture, agentId: string): Promise<SnapshotAgent> {
@@ -334,11 +335,9 @@ const SERVER_OWNED_KEYS = [
   'identity',
 ];
 
-test('both write schemas accept exactly the client connection fields', () => {
+test('the write schema accepts exactly the client connection fields', () => {
   for (const [label, keys, fields] of [
-    ['MCP door, MCP server', Object.keys(zMcpConnection.shape), MCP_CLIENT_FIELDS],
     ['Slack door, MCP server', Object.keys(vMcpConnection.entries), MCP_CLIENT_FIELDS],
-    ['MCP door, API connection', Object.keys(zApiConnection.shape), API_CLIENT_FIELDS],
     ['Slack door, API connection', Object.keys(vApiConnection.entries), API_CLIENT_FIELDS],
   ] as const) {
     assert.deepEqual([...keys].sort(), [...fields].sort(), label);
@@ -433,7 +432,7 @@ test('a client cannot forge connection status or discovered tools', () =>
     const current = await inspect(f, stored.id);
     const [clientConnection] = current.mcpServers;
     assert.ok(clientConnection);
-    const accepts = (connection: Record<string, unknown>) => applyWorkspaceChangesZodSchema.safeParse({
+    const accepts = (connection: Record<string, unknown>) => v.safeParse(applyWorkspaceChangesValibotSchema, {
       idempotencyKey: 'forge-over-mcp',
       operations: [{
         itemId: 'forge',
@@ -443,11 +442,11 @@ test('a client cannot forge connection status or discovered tools', () =>
         patch: { mcpServers: [connection] },
       }],
     }).success;
-    assert.equal(accepts({ ...clientConnection }), true, 'the MCP schema accepts the client fields');
+    assert.equal(accepts({ ...clientConnection }), true, 'the write schema accepts the client fields');
     assert.equal(accepts({ ...clientConnection, lifecycleStatus: 'ready' }), false,
-      'the MCP schema refuses lifecycleStatus');
+      'the write schema refuses lifecycleStatus');
     assert.equal(accepts({ ...clientConnection, discoveredTools: forgedTools }), false,
-      'the MCP schema refuses discoveredTools');
+      'the write schema refuses discoveredTools');
 
     const forgedExisting: McpConnectionConfig = {
       ...clientConnection,
@@ -824,9 +823,10 @@ test('a recipe overwrite that drops a connection asks first over MCP, then keeps
     assert.ok((pending.presentation?.markdown ?? '').trim().length > 0, 'the removal has a readable preview');
     assert.deepEqual(await accountsOf(f, researcher.id), accountsBefore, 'nothing changes before the confirmation');
 
-    const confirmed = await mcpTool(f, 'confirm_workspace_change', {
+    const confirmed = await f.service.confirmWorkspaceChange({
+      context: mcpContext(f),
       proposalId: pending.outcomes[0]!.proposalId!,
-    }) as ManagementApplyResult;
+    });
     assert.equal(confirmed.status, 'completed', JSON.stringify(confirmed.outcomes));
     const after = await accountsOf(f, researcher.id);
     assert.equal(after.get('notion')?.lifecycle, 'revoked');
@@ -856,9 +856,10 @@ test('a recipe overwrite that disables an Agent in Channels asks first over MCP'
     assert.equal(pending.status, 'confirmation_required', JSON.stringify(pending.outcomes));
     assert.equal((await f.config.getAgent(researcher.id)).enabled, true);
 
-    const confirmed = await mcpTool(f, 'confirm_workspace_change', {
+    const confirmed = await f.service.confirmWorkspaceChange({
+      context: mcpContext(f),
       proposalId: pending.outcomes[0]!.proposalId!,
-    }) as ManagementApplyResult;
+    });
     assert.equal(confirmed.status, 'completed', JSON.stringify(confirmed.outcomes));
     assert.equal((await f.config.getAgent(researcher.id)).enabled, false);
     assert.deepEqual((await f.config.listAgentChannelGrants(workspaceId, 'C_RESEARCH'))

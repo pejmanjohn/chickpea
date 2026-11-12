@@ -58,7 +58,7 @@ import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { CONNECTOR_PAGE_FONTS, fontFaceCss } from '../src/assets/fonts.ts';
 import { formatManagementSetupReceipt, type SetupWakeRequest } from '../src/management/receipts.ts';
 import { WorkspaceManagementService } from '../src/management/service.ts';
-import { applyWorkspaceChangesValibotSchema, applyWorkspaceChangesZodSchema } from '../src/management/schemas.ts';
+import { applyWorkspaceChangesValibotSchema } from '../src/management/schemas.ts';
 import { createManagementSetupRoutes, safeFailureCode } from '../src/management/setup-routes.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
 import {
@@ -73,6 +73,7 @@ import { FAKE_AUTH_SERVER, fakeMcpOAuthProvider } from './helpers/fake-mcp-oauth
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 import { unstyledClasses } from './helpers/unstyled-classes.ts';
+import { CONFIRMATION_LIFETIME_MS } from '../src/management/mcp-v5/changes.ts';
 
 const START = 1_800_100_000_000;
 const CAPABILITY = 'c'.repeat(43);
@@ -737,6 +738,7 @@ test('management provider impact includes the Workspace default and inheriting A
 
     const proposed = await service.applyWorkspaceChanges({
       context,
+      confirmationLifetimeMs: CONFIRMATION_LIFETIME_MS,
       idempotencyKey: 'remove_anthropic_default',
       operations: [{
         itemId: 'remove_anthropic',
@@ -2147,12 +2149,9 @@ test('both doors take a check path on an API connection setup only', () => {
   });
   const api = setup({ kind: 'api_connection', connectionId: 'tasks', path: '/v1/tasks' });
   const mcp = setup({ kind: 'mcp_connection', connectionId: 'linear', path: '/v1/tasks' });
-  assert.ok(applyWorkspaceChangesZodSchema.safeParse(api).success);
   assert.ok(v.safeParse(applyWorkspaceChangesValibotSchema, api).success);
-  assert.equal(applyWorkspaceChangesZodSchema.safeParse(mcp).success, false);
   assert.equal(v.safeParse(applyWorkspaceChangesValibotSchema, mcp).success, false);
   const bare = setup({ kind: 'api_connection', connectionId: 'tasks', path: 'v1/tasks' });
-  assert.equal(applyWorkspaceChangesZodSchema.safeParse(bare).success, false, 'a path starts with one slash');
   assert.equal(v.safeParse(applyWorkspaceChangesValibotSchema, bare).success, false);
 });
 

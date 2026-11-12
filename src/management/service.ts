@@ -876,7 +876,7 @@ export class WorkspaceManagementService {
     if (!client) {
       throw new ManagementError(
         'mcp_client_not_found',
-        'None of your connected MCP clients has that clientId. Call list_mcp_clients for the current list.',
+        'None of your connected apps has that appId.',
       );
     }
     await clients.revokeOAuthClientForUser(betterAuthUserId, clientId);
@@ -3375,7 +3375,7 @@ export class WorkspaceManagementService {
       : undefined;
     if (changeSet?.status !== 'pending') return result;
     // An expired confirmation shows nothing to confirm.
-    if (changeSet.expiresAt !== undefined && this.now() >= changeSet.expiresAt) return result;
+    if (this.changeSetExpired(actor, changeSet)) return result;
     const messageTs = actor.origin.kind === 'slack' ? actor.origin.messageTs : undefined;
     const shown = messageTs && changeSet.proposedMessageTs !== messageTs
       ? await this.stores.management.putChangeSetProposal({
@@ -3612,6 +3612,19 @@ export class WorkspaceManagementService {
     throw error;
   }
 
+  /**
+   * Whether a pending set waited past its confirmation. Every 5.0 tool gives
+   * the sets it makes a lifetime, and a Slack set has none by design, so an
+   * MCP set without one was made by a 4.x tool. Contract 5.0.0 removed the
+   * tool that confirmed it, so it expired with them.
+   */
+  private changeSetExpired(
+    actor: LiveManagementActor,
+    changeSet: Pick<ManagementChangeSetProposalRecord, 'expiresAt'>,
+  ): boolean {
+    return changeSet.expiresAt === undefined ? actor.origin.kind === 'mcp' : this.now() >= changeSet.expiresAt;
+  }
+
   private async confirmChangeSetProposal(
     actor: LiveManagementActor,
     existing: ManagementChangeSetProposalRecord,
@@ -3625,7 +3638,7 @@ export class WorkspaceManagementService {
       throw new ManagementError('proposal_stale', 'The confirmation is no longer available.');
     }
     // Only a pending set expires; a completed one replays above.
-    if (existing.status === 'pending' && existing.expiresAt !== undefined && this.now() >= existing.expiresAt) {
+    if (existing.status === 'pending' && this.changeSetExpired(actor, existing)) {
       throw new ManagementError('proposal_expired', 'This confirmation expired, so nothing changed.');
     }
     if (managementOperationDigest(existing.operations) !== existing.digest) {
@@ -4271,7 +4284,7 @@ export class WorkspaceManagementService {
     this.assertProposalBinding(actor, proposal);
     switch (proposal.status) {
       case 'pending':
-        return proposal.expiresAt !== undefined && this.now() >= proposal.expiresAt ? 'expired' : 'pending';
+        return this.changeSetExpired(actor, proposal) ? 'expired' : 'pending';
       case 'applying':
         return this.now() - proposal.updatedAt < MANAGEMENT_CHANGE_SET_APPLY_LEASE_MS ? 'applied' : 'pending';
       case 'completed':
@@ -9441,7 +9454,6 @@ function publicChangeSetProposal(
       slack: formatSlackChangeSetProposal(preview),
       markdown: formatMarkdownChangeSetProposal(preview),
     },
-    confirmationTool: 'confirm_workspace_change',
   };
 }
 

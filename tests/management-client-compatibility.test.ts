@@ -8,38 +8,16 @@ import type { McpAuthenticatedPrincipal } from '../src/auth/mcp-oauth-routes.ts'
 import { validatePublicMcpClientRegistration } from '../src/auth/mcp-oauth.ts';
 import {
   createWorkspaceManagementMcpServer,
-  V4_TOOL_REPLACEMENTS,
-  V4_TOOLS_DEPRECATED_ON,
-  WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI,
-  WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI,
-  WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES,
-  WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES,
   WORKSPACE_MANAGEMENT_SERVER_INFO,
 } from '../src/management/mcp.ts';
 import {
   WORKSPACE_MANAGEMENT_INSTRUCTIONS,
   WORKSPACE_MANAGEMENT_INSTRUCTIONS_MAX_CHARACTERS,
-  workspaceManagementAdminOrigin,
 } from '../src/management/instructions.ts';
-import {
-  AGENT_AUTHORING_GUIDE_DIGEST,
-  AGENT_AUTHORING_GUIDE_VERSION,
-  DISCOVERY_GUIDE_URI,
-} from '../src/management/agent-authoring/index.ts';
+import { AGENT_AUTHORING_GUIDE_URI, DISCOVERY_GUIDE_URI } from '../src/management/agent-authoring/index.ts';
 import { playbookSection } from '../src/management/playbook/index.ts';
-import {
-  AGENT_AUTHORING_GUIDE_MCP,
-  AGENT_AUTHORING_GUIDE_MCP_DIGEST,
-  AGENT_SKILL_CREATION_GUIDE_MCP,
-} from '../src/management/agent-authoring/mcp-guide.ts';
-import { MCP_MANAGEMENT_OPERATION_KINDS } from '../src/management/schemas.ts';
-import {
-  WORKSPACE_MANAGEMENT_PROMPT_NAMES,
-  WORKSPACE_MANAGEMENT_PROMPTS,
-  workspaceManagementPromptText,
-  type WorkspaceManagementPromptArguments,
-  type WorkspaceManagementPromptName,
-} from '../src/management/prompts.ts';
+import { REMOVED_TOOL_NAMES } from '../src/management/mcp-v5/removed-v4.ts';
+import { FIVE_ZERO_TOOL_NAMES } from '../src/management/mcp-v5/tools.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 import { REAL_MCP_CLIENT_REGISTRATIONS } from './helpers/mcp-client-registrations.ts';
 
@@ -48,27 +26,6 @@ const DEPLOYMENT_BASE_URL = 'https://chickpea-team.example.test/';
 /** Wording a coding agent must never be told; it has no Slack thread, DM, or Slack preview. */
 const SLACK_ONLY_WORDING = /presentation\.slack|\bDMs?\b|Slack turn|Slack Lists|Slack conversation|requester message|current command on Slack|progress UI/;
 
-/**
- * One invocation with only the required arguments and one with every optional
- * argument supplied, so a client that fills the whole slash-command line and a
- * client that fills none both get a rendered brief.
- */
-const PROMPT_INVOCATIONS: {
-  [K in WorkspaceManagementPromptName]: ReadonlyArray<WorkspaceManagementPromptArguments[K]>;
-} = {
-  'new-agent': [{}, { purpose: 'answer billing questions from the support channel' }],
-  'edit-agent': [{ handle: 'editor' }, { handle: '@editor', change: 'keep British spelling' }],
-  connect: [{ service: 'gmail' }, { service: 'Google Calendar', handle: '@notes' }],
-  schedule: [{ handle: 'notes' }, { handle: '@notes', what: 'post the standup digest' }],
-  'import-skill': [
-    { url: 'owner/repo' },
-    { url: 'https://github.com/owner/repo/tree/main/skills/changelog', handle: '@brief' },
-  ],
-  status: [{}],
-};
-
-const READ = { readOnlyHint: true };
-const WRITE = { readOnlyHint: false, destructiveHint: false, idempotentHint: true };
 /** A 5.0 read states all three hints. */
 const READ_5 = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
 
@@ -76,29 +33,7 @@ const READ_5 = { readOnlyHint: true, destructiveHint: false, openWorldHint: fals
 const ADDS_5 = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 const DESTRUCTIVE_5 = { ...ADDS_5, destructiveHint: true };
 
-/** Only confirm_workspace_change and confirm_change carry out a change the person must approve first. */
 const MCP_TOOL_ANNOTATIONS = {
-  inspect_workspace: READ,
-  prepare_connector_setup: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
-  prepare_provider_setup: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
-  discover_slack_channels: READ,
-  test_connection: READ,
-  save_connection_key: WRITE,
-  try_connection: READ,
-  inspect_memory: READ,
-  inspect_routines: READ,
-  export_workspace_recipe: READ,
-  preview_workspace_recipe: READ,
-  import_skill: WRITE,
-  upload_skills: WRITE,
-  manage_agent_skill: WRITE,
-  apply_workspace_changes: WRITE,
-  confirm_workspace_change: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
-  undo_workspace_change: WRITE,
-  get_operation: READ,
-  revoke_setup_link: WRITE,
-  list_mcp_clients: READ,
-  revoke_mcp_client: WRITE,
   get_account: READ_5,
   get_workspace: READ_5,
   get_guide: READ_5,
@@ -218,9 +153,11 @@ test('supported coding clients share public PKCE registration and stateless MCP 
         const initializeResult = initialized.result as {
           serverInfo: { version: string };
           instructions?: string;
+          capabilities: Record<string, unknown>;
         };
         assert.equal(initializeResult.serverInfo.version, WORKSPACE_MANAGEMENT_SERVER_INFO.version, client.name);
         assert.equal(initializeResult.instructions, WORKSPACE_MANAGEMENT_INSTRUCTIONS, `${client.name} gets the 5.0 instructions`);
+        assert.equal(initializeResult.capabilities.prompts, undefined, `${client.name} is offered no prompts`);
       }
 
       const listed = await mcpCall(handler.fetch, client.protocol, 'tools/list', {});
@@ -235,253 +172,46 @@ test('supported coding clients share public PKCE registration and stateless MCP 
           _meta?: unknown;
         }>;
       }).tools;
-      assert.deepEqual(
-        listedTools.map(({ name }) => name),
-        WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES,
-        client.name,
-      );
-      assert.ok(
-        listedTools.find(({ name }) => name === 'prepare_connector_setup')
-          ?.inputSchema?.required?.includes('agentId'),
-        `${client.name} must require an explicit Agent for connector setup`,
-      );
+      assert.deepEqual(listedTools.map(({ name }) => name), FIVE_ZERO_TOOL_NAMES, `${client.name} lists the 5.0 tools only`);
       assert.deepEqual(
         Object.fromEntries(listedTools.map(({ name, annotations }) => [name, annotations])),
         MCP_TOOL_ANNOTATIONS,
         `${client.name} must disclose which tools write and which can destroy`,
       );
-      for (const listedTool of listedTools.filter(({ name }) =>
-        (WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES as readonly string[]).includes(name))) {
-        assert.deepEqual(
-          [listedTool.outputSchema, listedTool.securitySchemes, listedTool._meta],
-          [undefined, undefined, undefined],
-          `${client.name} ${listedTool.name}: a 4.x descriptor keeps its 4.x shape`,
-        );
-        const replacedBy: readonly string[] = V4_TOOL_REPLACEMENTS[listedTool.name as keyof typeof V4_TOOL_REPLACEMENTS];
-        assert.match(listedTool.description ?? '', new RegExp(`^Deprecated ${V4_TOOLS_DEPRECATED_ON}: use [^\\n]+\\.$`), listedTool.name);
-        assert.ok(replacedBy.length > 0 && replacedBy.every((name) =>
-          listedTools.some((tool) => tool.name === name) && listedTool.description!.includes(name)),
-        `${client.name} ${listedTool.name} names listed 5.0 replacements`);
+      for (const { name, outputSchema, securitySchemes } of listedTools) {
+        assert.ok(outputSchema !== undefined && securitySchemes !== undefined, `${client.name} ${name} is a 5.0 descriptor`);
       }
-      const immediateSkillImport = listedTools.find(({ name }) => name === 'import_skill');
-      for (const field of ['agentId', 'source', 'idempotencyKey', 'guideVersion']) {
-        assert.ok(
-          immediateSkillImport?.inputSchema?.required?.includes(field),
-          `${client.name} must require immediate skill import ${field}`,
-        );
-      }
-      const managedSkill = listedTools.find(({ name }) => name === 'manage_agent_skill');
-      for (const field of ['agentId', 'action', 'skillName', 'idempotencyKey']) {
-        assert.ok(
-          managedSkill?.inputSchema?.required?.includes(field),
-          `${client.name} must require managed skill ${field}`,
-        );
-      }
-      assert.ok(
-        listedTools.find(({ name }) => name === 'prepare_connector_setup')
-          ?.inputSchema?.required?.includes('ownerKind'),
-        `${client.name} must require an explicit personal or Team connection owner`,
-      );
-      assert.deepEqual(
-        listedTools.find(({ name }) => name === 'save_connection_key')?.inputSchema?.required?.toSorted(),
-        ['connectionId', 'key', 'path'],
-        `${client.name} must require a read path for a key's check`,
-      );
-      assert.deepEqual(
-        listedTools.find(({ name }) => name === 'try_connection')?.inputSchema?.required,
-        ['path'],
-        `${client.name} must require the path a try GETs`,
-      );
-      const inspected = await mcpCall(handler.fetch, client.protocol, 'tools/call', {
-        name: 'inspect_workspace',
-        arguments: {},
-      });
-      const inspectedResult = JSON.parse((inspected.result as {
-        content: Array<{ text: string }>;
-      }).content[0]!.text);
-      assert.equal(inspectedResult.ok, true, client.name);
-      assert.ok(
-        inspectedResult.result.connectors.some((connector: { id: string }) => connector.id === 'gmail'),
-        `${client.name} should discover the connector catalog`,
-      );
-
-      const connectorHandoff = await mcpCall(handler.fetch, client.protocol, 'tools/call', {
-        name: 'prepare_connector_setup',
-        arguments: { agentId: agent.id, connector: 'Gmail', ownerKind: 'member' },
-      });
-      const connectorResult = JSON.parse((connectorHandoff.result as {
-        content: Array<{ text: string }>;
-      }).content[0]!.text) as { ok: boolean; result: { handoffUrl: string; setupOperationId: string } };
-      assert.equal(connectorResult.ok, true, client.name);
-      assert.equal(
-        new URL(connectorResult.result.handoffUrl).pathname,
-        `/setup/${connectorResult.result.setupOperationId}`,
-        `${client.name} gets the one-connection setup page, not Admin`,
-      );
-
-      const missingAgent = await mcpCall(handler.fetch, client.protocol, 'tools/call', {
-        name: 'prepare_connector_setup',
-        arguments: { connector: 'Gmail', ownerKind: 'member' },
-      });
-      assert.equal((missingAgent.result as { isError?: boolean }).isError, true, client.name);
-
-      const missingPath = await mcpCall(handler.fetch, client.protocol, 'tools/call', {
-        name: 'save_connection_key',
-        arguments: { agentId: agent.id, connectionId: 'statusboard', key: 'synthetic-key' },
-      });
-      const pathRefusal = missingPath.result as { isError?: boolean; content: Array<{ text: string }> };
-      assert.equal(pathRefusal.isError, true, client.name);
-      assert.match(pathRefusal.content[0]!.text, /^Input validation error: .*\bpath\b/, client.name);
-      assert.doesNotMatch(JSON.stringify(missingPath), /synthetic-key/, `${client.name} must not echo the key`);
-
-      const operationSchema = await mcpCall(handler.fetch, client.protocol, 'resources/read', {
-        uri: WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI,
-      });
-      const resource = (operationSchema.result as {
-        contents: Array<{ uri: string; text: string }>;
-      }).contents[0]!;
-      assert.equal(resource.uri, WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI);
-      const contract = JSON.parse(resource.text) as {
-        schemaVersion: number;
-        tools: string[];
-        operationKinds: string[];
-        prompts: string[];
-        deprecated: Record<string, { since: string; replacedBy: string[] }>;
-      };
-      assert.equal(contract.schemaVersion, 2);
-      assert.deepEqual(Object.keys(contract.deprecated), [...WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES], client.name);
-      assert.deepEqual(contract.deprecated.revoke_mcp_client, { since: V4_TOOLS_DEPRECATED_ON, replacedBy: ['disconnect_app'] });
-      assert.deepEqual(contract.tools, WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES, client.name);
-      assert.deepEqual(contract.operationKinds, MCP_MANAGEMENT_OPERATION_KINDS);
-      assert.deepEqual(contract.prompts, WORKSPACE_MANAGEMENT_PROMPT_NAMES, client.name);
-
-      const promptList = await mcpCall(handler.fetch, client.protocol, 'prompts/list', {});
-      const listedPrompts = (promptList.result as {
-        prompts: Array<{
-          name: string;
-          title?: string;
-          description?: string;
-          arguments?: Array<{ name: string; description?: string; required?: boolean }>;
-        }>;
-      }).prompts;
-      assert.deepEqual(
-        listedPrompts.map(({ name }) => name),
-        WORKSPACE_MANAGEMENT_PROMPT_NAMES,
-        `${client.name} must advertise every workspace prompt in order`,
-      );
-      for (const prompt of listedPrompts) {
-        const definition = WORKSPACE_MANAGEMENT_PROMPTS[prompt.name as WorkspaceManagementPromptName];
-        assert.equal(prompt.title, definition.title, `${client.name} ${prompt.name} title`);
-        assert.equal(prompt.description, definition.description, `${client.name} ${prompt.name} description`);
-        assert.ok((prompt.title ?? '').length > 0 && (prompt.description ?? '').length > 0, prompt.name);
-        assert.deepEqual(
-          (prompt.arguments ?? []).map(({ name, description, required }) => ({
-            name,
-            description,
-            required: required === true,
-          })),
-          definition.arguments.map(({ name, description, required }) => ({ name, description, required })),
-          `${client.name} ${prompt.name} arguments`,
-        );
-        for (const { name } of prompt.arguments ?? []) {
-          // Claude Code splits a slash command's arguments on whitespace, so each name is one token.
-          assert.match(name, /^[a-z]+$/, `${client.name} ${prompt.name} argument ${name}`);
-        }
+      const listedDescriptions = listedTools.map(({ name, description }) => `${name}: ${description ?? ''}`);
+      for (const line of listedDescriptions) {
+        assert.doesNotMatch(line, /presentation\.slack|\bDM\b|Slack turn|Slack Lists|Slack conversation|requester message/, `${client.name} ${line.slice(0, 40)}`);
       }
 
-      for (const name of WORKSPACE_MANAGEMENT_PROMPT_NAMES) {
-        for (const args of PROMPT_INVOCATIONS[name]) {
-          const got = await mcpCall(handler.fetch, client.protocol, 'prompts/get', {
-            name,
-            arguments: args,
-          });
-          const messages = (got.result as {
-            messages: Array<{ role: string; content: { type: string; text: string } }>;
-          }).messages;
-          assert.equal(messages.length, 1, `${client.name} ${name} must return one message`);
-          assert.equal(messages[0]!.role, 'user', `${client.name} ${name} role`);
-          assert.equal(messages[0]!.content.type, 'text', `${client.name} ${name} content type`);
-          const text = messages[0]!.content.text;
-          assert.equal(
-            text,
-            workspaceManagementPromptText(name, args, DEPLOYMENT_BASE_URL),
-            `${client.name} ${name} must serve the rendered brief`,
-          );
-          assert.ok(
-            text.includes(`${new URL(DEPLOYMENT_BASE_URL).origin}/admin`),
-            `${client.name} ${name} must link the real Admin origin`,
-          );
-          assert.doesNotMatch(text, SLACK_ONLY_WORDING, `${client.name} ${name}`);
-        }
-      }
-
-      const missingArgument = await mcpCall(handler.fetch, client.protocol, 'prompts/get', {
-        name: 'edit-agent',
-        arguments: {},
-      });
-      assert.equal(
-        (missingArgument.error as { code?: number } | undefined)?.code,
-        -32602,
-        `${client.name} must reject a prompt missing a required argument`,
-      );
-      assert.equal(missingArgument.result, undefined, client.name);
+      const workspace = await mcpCall(handler.fetch, client.protocol, 'tools/call', { name: 'get_workspace', arguments: {} });
+      const workspaceResult = workspace.result as { isError?: boolean; structuredContent: { you: { role: string } } };
+      assert.notEqual(workspaceResult.isError, true, client.name);
+      assert.equal(workspaceResult.structuredContent.you.role, 'admin', client.name);
 
       const resources = await mcpCall(handler.fetch, client.protocol, 'resources/list', {});
-      assert.ok((resources.result as { resources: Array<{ uri: string }> }).resources.some(
-        ({ uri }) => uri === WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI,
-      ));
-      const guideResult = await mcpCall(handler.fetch, client.protocol, 'resources/read', {
-        uri: WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI,
-      });
-      const guide = JSON.parse((guideResult.result as {
-        contents: Array<{ text: string }>;
-      }).contents[0]!.text) as {
-        version: string;
-        digest: string;
-        guide: string;
-        files: Record<string, string>;
-      };
-      assert.deepEqual(guide, {
-        version: AGENT_AUTHORING_GUIDE_VERSION,
-        digest: AGENT_AUTHORING_GUIDE_DIGEST,
-        variant: 'coding-agent',
-        variantDigest: AGENT_AUTHORING_GUIDE_MCP_DIGEST,
-        guide: AGENT_AUTHORING_GUIDE_MCP,
-        files: { 'skill-creation.md': AGENT_SKILL_CREATION_GUIDE_MCP },
-      });
-      assert.doesNotMatch(guide.guide.slice(guide.guide.indexOf('# Chickpea Agent authoring')), /presentation\.slack/);
-      assert.ok((resources.result as { resources: Array<{ uri: string }> }).resources.some(
-        ({ uri }) => uri === DISCOVERY_GUIDE_URI,
-      ), `${client.name} must list the discovery guide`);
+      assert.deepEqual(
+        (resources.result as { resources: Array<{ uri: string }> }).resources
+          .map(({ uri }) => uri).filter((uri) => !uri.startsWith('ui://chickpea/')),
+        [DISCOVERY_GUIDE_URI],
+        `${client.name} lists the discovery guide beside the card templates`,
+      );
       const discovery = await mcpCall(handler.fetch, client.protocol, 'resources/read', { uri: DISCOVERY_GUIDE_URI });
       assert.deepEqual((discovery.result as { contents: unknown[] }).contents, [
         { uri: DISCOVERY_GUIDE_URI, mimeType: 'text/markdown', text: playbookSection('research').guide },
       ], `${client.name} must read the discovery guide, the playbook's research section`);
-      const listedDescriptions = listedTools.map(({ name, description }) => `${name}: ${description ?? ''}`);
-      for (const line of listedDescriptions) {
-        if (line.startsWith('discover_slack_channels:')) continue;
-        assert.doesNotMatch(line, /presentation\.slack|\bDM\b|Slack turn|Slack Lists|Slack conversation|requester message/, `${client.name} ${line.slice(0, 40)}`);
-      }
 
-      const before = await f.config.getAgent(agent.id);
-      const applied = await mcpCall(handler.fetch, client.protocol, 'tools/call', {
-        name: 'apply_workspace_changes',
-        arguments: {
-          idempotencyKey: `client-${client.name}`,
-          operations: [{
-            itemId: 'description',
-            kind: 'update_agent',
-            agentId: agent.id,
-            expectedRevision: before.revision,
-            patch: { description: `Edited by ${client.name}.` },
-          }],
-        },
+      const read = await mcpCall(handler.fetch, client.protocol, 'tools/call', { name: 'get_agent', arguments: { agentId: agent.id } });
+      const { version } = (read.result as { structuredContent: { version: string } }).structuredContent;
+      const updated = await mcpCall(handler.fetch, client.protocol, 'tools/call', {
+        name: 'update_agent',
+        arguments: { agentId: agent.id, version, description: `Edited by ${client.name}.`, idempotencyKey: `client-${client.name}` },
       });
-      const appliedResult = JSON.parse((applied.result as {
-        content: Array<{ text: string }>;
-      }).content[0]!.text) as { ok: boolean; result: { status: string } };
-      assert.equal(appliedResult.ok, true, client.name);
-      assert.equal(appliedResult.result.status, 'completed', client.name);
+      const updatedResult = updated.result as { isError?: boolean; structuredContent: { status: string } };
+      assert.equal(updatedResult.isError, undefined, JSON.stringify(updated));
+      assert.equal(updatedResult.structuredContent.status, 'done', client.name);
       assert.equal((await f.config.getAgent(agent.id)).description, `Edited by ${client.name}.`);
     }
   } finally {
@@ -496,24 +226,17 @@ test('server instructions are the 5.0 text: short, linkless, and naming only 5.0
     assert.ok(text.includes(required), `instructions must mention ${required}`);
   }
   assert.ok(!/https?:|\/admin|chickpea:\/\//.test(text), 'no link, Admin path or resource URI');
-  for (const name of WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES) {
-    assert.ok(!new RegExp(`\\b${name}\\b`).test(text), `instructions must not name the deprecated ${name}`);
+  for (const name of REMOVED_TOOL_NAMES) {
+    assert.ok(!new RegExp(`\\b${name}\\b`).test(text), `instructions must not name the removed ${name}`);
   }
   assert.doesNotMatch(text, SLACK_ONLY_WORDING);
-
-  assert.equal(workspaceManagementAdminOrigin(undefined), undefined);
-  assert.equal(workspaceManagementAdminOrigin('not a url'), undefined);
-  assert.equal(workspaceManagementAdminOrigin('ftp://chickpea.example.test'), undefined);
-  assert.equal(workspaceManagementAdminOrigin('https://chickpea.example.test/setup/abc?x=1#y'), 'https://chickpea.example.test');
-  assert.equal(workspaceManagementAdminOrigin('http://localhost:8787/'), 'http://localhost:8787');
 });
 
-test('workspace management MCP publishes the version 4 server contract', () => {
+test('workspace management MCP publishes the version 5 server contract', () => {
   assert.deepEqual(WORKSPACE_MANAGEMENT_SERVER_INFO, {
     name: 'chickpea-workspace',
-    version: '4.6.0',
+    version: '5.0.0',
   });
-  assert.match(WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI, /\/v2$/);
 });
 
 test('the deployed MCP verifier pins this server version and tool inventory', async () => {
@@ -525,7 +248,7 @@ test('the deployed MCP verifier pins this server version and tool inventory', as
     verifier.indexOf('const MANAGEMENT_MCP_TOOL_NAMES = ['),
     verifier.indexOf('];', verifier.indexOf('const MANAGEMENT_MCP_TOOL_NAMES = [')),
   );
-  assert.deepEqual([...inventory.matchAll(/'([a-z_]+)'/g)].map(([, name]) => name), WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES);
+  assert.deepEqual([...inventory.matchAll(/'([a-z_]+)'/g)].map(([, name]) => name), FIVE_ZERO_TOOL_NAMES);
 });
 
 test('management and evaluation runbooks track the additive authoring contract', async () => {
@@ -535,13 +258,14 @@ test('management and evaluation runbooks track the additive authoring contract',
     readFile(new URL('../README.md', import.meta.url), 'utf8'),
   ]);
   for (const value of [
-    WORKSPACE_MANAGEMENT_SERVER_INFO.version,
-    WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI,
+    `contract version \`${WORKSPACE_MANAGEMENT_SERVER_INFO.version}\``,
+    AGENT_AUTHORING_GUIDE_URI,
     'propose_workspace_changes',
-    'confirm_workspace_change',
+    'tool_removed',
+    'replacedBy',
   ]) assert.match(management, new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-  assert.doesNotMatch(management, /contract version `2\.0\.0`/);
-  assert.match(management, /\/mcp__chickpea__new-agent/);
+  assert.doesNotMatch(management, /contract version `[234]\.\d+\.\d+`/);
+  assert.match(management, /5\.0\.0 removed the six MCP prompts/);
   assert.match(management, /prompts\/list/);
   assert.match(evaluation, /no-guide-v1/);
   assert.match(evaluation, /npm run evaluate:agent-authoring:live/);
