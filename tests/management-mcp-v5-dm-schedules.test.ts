@@ -10,7 +10,7 @@ import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import type { PlatformEnv } from '../src/config/state-backend.ts';
 import { createLiveWorkspaceManagementService } from '../src/management/live-service.ts';
 import { createWorkspaceManagementMcpServer } from '../src/management/mcp.ts';
-import { managementOperationValibotSchema, managementOperationZodSchema } from '../src/management/schemas.ts';
+import { managementOperationValibotSchema } from '../src/management/schemas.ts';
 import type { WorkspaceManagementService, WorkspaceManagementServiceInput } from '../src/management/service.ts';
 import type { ManagementOperation } from '../src/management/types.ts';
 import {
@@ -331,7 +331,6 @@ test('save_schedule refuses any DM Slack would not let the caller schedule in, a
     name: 'Morning check', description: '', taskText: 'Summarize.',
     schedule: { kind: 'cron', expression: '0 9 * * 1-5' }, timezone: 'UTC', outputPolicy: 'post',
   };
-  assert.equal(managementOperationZodSchema.safeParse(fromSlack).success, false);
   assert.equal(v.safeParse(managementOperationValibotSchema, fromSlack).success, false);
   const slackApply = await f.service.applyWorkspaceChanges({
     context: chickpeaDm(f, f.member), idempotencyKey: 'from-slack', operations: [fromSlack],

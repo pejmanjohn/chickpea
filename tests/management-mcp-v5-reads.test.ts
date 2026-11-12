@@ -6,8 +6,6 @@ import { createMcpHandler } from '@modelcontextprotocol/server';
 import type { McpAuthenticatedPrincipal } from '../src/auth/mcp-oauth-routes.ts';
 import {
   createWorkspaceManagementMcpServer,
-  WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES,
-  WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES,
 } from '../src/management/mcp.ts';
 import {
   accountProfileId,
@@ -161,14 +159,13 @@ async function grantChannel(f: ManagementAdapterFixture, agentId: string, status
 }
 
 for (const protocol of [LEGACY, MODERN]) {
-  test(`every 5.0 tool states its hints, securitySchemes and outputSchema, after the 4.x tools (${protocol})`, async (t) => {
+  test(`every 5.0 tool states its hints, securitySchemes and outputSchema (${protocol})`, async (t) => {
     const { rpc } = await harness(t, `descriptors-${protocol.slice(0, 4)}`);
     const { tools } = (await rpc('tools/list', {}, protocol)).result as {
       tools: Array<Record<string, unknown> & { name: string; description: string }>;
     };
-    assert.deepEqual(tools.map(({ name }) => name), [...WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES, ...FIVE_ZERO_TOOL_NAMES]);
-    assert.deepEqual(tools.map(({ name }) => name), WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES);
-    for (const tool of tools.filter(({ name }) => (FIVE_ZERO_TOOL_NAMES as readonly string[]).includes(name))) {
+    assert.deepEqual(tools.map(({ name }) => name), FIVE_ZERO_TOOL_NAMES);
+    for (const tool of tools) {
       const annotations = tool.annotations as Record<string, unknown>;
       if (annotations.readOnlyHint === false) {
         // A write's hints are pinned tool by tool in management-client-compatibility.
@@ -565,7 +562,7 @@ test('propose_agent_change previews an edit, says when saving confirms, and refu
   assert.match(stale.nextStep as string, /get_agent/);
 });
 
-test('5.0 errors share one shape, including the SDK\'s input refusals; 4.x errors are unchanged', async (t) => {
+test('5.0 errors share one shape, including the SDK\'s input refusals and a removed tool\'s answer', async (t) => {
   const { call } = await harness(t, 'errors');
   const missing = errorOf(await call('get_agent', { agentId: 'agent_missing' }));
   assert.equal(missing.code, 'not_found');
@@ -584,10 +581,10 @@ test('5.0 errors share one shape, including the SDK\'s input refusals; 4.x error
   const unknownSetup = errorOf(await call('get_setup_status', { setupToken: 'setup_missing' }));
   assert.equal(unknownSetup.code, 'not_found');
 
-  const legacyRefusal = await call('get_operation', { operationId: '' });
-  assert.equal(legacyRefusal.isError, true);
-  assert.equal(legacyRefusal.structuredContent, undefined, 'a 4.x refusal keeps its plain text');
-  assert.match(legacyRefusal.content[0]!.text, /^Input validation error: /);
+  // A removed 4.x tool's answer is the one result that keeps 4.x's ok: false (management-mcp-removed-v4).
+  const removed = await call('get_operation', { operationId: '' });
+  assert.equal(removed.isError, true);
+  assert.deepEqual([removed.structuredContent?.ok, errorOf(removed).code], [false, 'tool_removed']);
 });
 
 test('list_members is for Owners and Admins; a member gets not_allowed', async (t) => {

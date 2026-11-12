@@ -13,6 +13,7 @@ import { AgentPresenceReconciler, type AgentAppPresenceHooks } from '../src/slac
 import type { SlackTransport, SlackUserGroup } from '../src/slack/transport/types.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 import { confirmThroughService, serviceResult } from './helpers/management-service-result.ts';
+import { CONFIRMATION_LIFETIME_MS } from '../src/management/mcp-v5/changes.ts';
 
 type Fixture = Awaited<ReturnType<typeof createManagementAdapterFixture>>;
 
@@ -98,7 +99,7 @@ function ownerContext(f: Fixture): ManagementActorContext {
 
 /** The Owner's undo over MCP, as 5.0's undo_change makes it. */
 function undo(f: Fixture, args: { operationId: string; idempotencyKey: string }): Promise<WorkspaceManagementToolResult> {
-  return serviceResult(() => f.service.undoWorkspaceChange({ context: ownerContext(f), ...args }));
+  return serviceResult(() => f.service.undoWorkspaceChange({ context: ownerContext(f), ...args, confirmationLifetimeMs: CONFIRMATION_LIFETIME_MS }));
 }
 
 async function succeed(response: Promise<WorkspaceManagementToolResult>): Promise<ManagementApplyResult> {
@@ -108,7 +109,9 @@ async function succeed(response: Promise<WorkspaceManagementToolResult>): Promis
 }
 
 async function apply(f: Fixture, idempotencyKey: string, operations: ManagementOperation[]): Promise<ManagementApplyResult> {
-  return await f.service.applyWorkspaceChanges({ context: ownerContext(f), idempotencyKey, operations }) as ManagementApplyResult;
+  return await f.service.applyWorkspaceChanges({
+    context: ownerContext(f), idempotencyKey, operations, confirmationLifetimeMs: CONFIRMATION_LIFETIME_MS,
+  }) as ManagementApplyResult;
 }
 
 function dispositions(result: ManagementApplyResult) {

@@ -3,11 +3,10 @@ import type { FlueObservation } from '@flue/runtime';
 import { MCP_CLIENT_REGISTRATION_DENIALS } from '../auth/mcp-oauth.ts';
 import type { ManagementOperation } from './types.ts';
 import {
-  AGENT_AUTHORING_GUIDE_URI,
   AGENT_AUTHORING_GUIDE_VERSION,
   DISCOVERY_GUIDE_URI,
 } from './agent-authoring/index.ts';
-import { MANAGEMENT_OPERATION_SCHEMA_URI } from './schemas.ts';
+import { REMOVED_RESOURCE_URIS } from './mcp-v5/removed-v4.ts';
 
 export type ManagementMetricValue = boolean | number | string;
 
@@ -154,8 +153,9 @@ const EXACT_METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
     'notifications/initialized', 'notifications/cancelled', 'notifications/progress',
     'notifications/roots/list_changed',
   ]),
-  // Chickpea's own static guides only: any other URI can carry an identifier.
-  resource: new Set([AGENT_AUTHORING_GUIDE_URI, DISCOVERY_GUIDE_URI, MANAGEMENT_OPERATION_SCHEMA_URI]),
+  // Chickpea's own fixed URIs only, any other can carry an identifier: the discovery
+  // guide, and the resources 5.0.0 removed, so reads of them stay countable.
+  resource: new Set([DISCOVERY_GUIDE_URI, ...REMOVED_RESOURCE_URIS]),
 };
 
 const REASON_TOKENS = new Set([

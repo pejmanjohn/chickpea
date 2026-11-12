@@ -1,9 +1,8 @@
 import { createHash } from 'node:crypto';
 import type { z } from 'zod';
 
-import { formatChangeSetProposal } from '../change-set-presentation.ts';
 import { managementOriginKey } from '../contracts.ts';
-import { MARKDOWN_PRESENTATION_DIALECT } from '../markdown-presentation.ts';
+import { formatMarkdownChangeSetProposal } from '../markdown-presentation.ts';
 import {
   ManagementError,
   type ApplyWorkspaceChangesResult,
@@ -193,7 +192,7 @@ async function confirmationResult(
     ...(agent ? { agent } : {}),
     confirmation: {
       confirmToken: pending.proposalId,
-      preview: formatChangeSetProposal(preview, CONFIRMATION_DIALECT),
+      preview: formatMarkdownChangeSetProposal(preview),
       expiresAt: new Date(result.confirmation.expiresAt).toISOString(),
       // Admin has a button for every change that waits here but deleting an Agent.
       inAdmin: !preview.changes.some(({ operationKind }) => operationKind === 'delete_agent'),
@@ -218,13 +217,6 @@ async function agentChannels(
       grants.some((grant) => grant.agentId === agentId && grant.status === 'active'))
     .map(({ label }) => ({ name: label })));
 }
-
-/** The 4.x preview, closing with a line for the person instead of a tool name. */
-const CONFIRMATION_DIALECT = {
-  ...MARKDOWN_PRESENTATION_DIALECT,
-  approvalInstruction: 'Nothing changes until you confirm.',
-  truncatedApprovalInstruction: 'Nothing changes until you confirm.',
-};
 
 export const EXPIRED_NEXT_STEP = 'Call the tool that proposed the change again, with a new idempotencyKey, for a fresh preview and confirmToken.';
 

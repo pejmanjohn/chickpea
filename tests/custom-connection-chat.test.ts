@@ -14,7 +14,7 @@ import {
   invokeSlackWorkspaceManagementTool,
   type SlackManagementSignal,
 } from '../src/management/slack-tools.ts';
-import { saveConnectionKeyValibotSchema, saveConnectionKeyZodSchema } from '../src/management/schemas.ts';
+import { saveConnectionKeyValibotSchema } from '../src/management/schemas.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
 import {
   invokeWorkspaceManagementTool,
@@ -331,14 +331,11 @@ test('the MCP door adds a custom connection at once without typed URLs', async (
   } finally { f.close(); }
 });
 
-test('both doors refuse save_connection_key without a path before anything runs', () => {
+test('save_connection_key refuses a key without a path before anything runs', () => {
   const { path: _path, ...withoutPath } = SAVE;
   const slack = v.safeParse(saveConnectionKeyValibotSchema, withoutPath);
   assert.deepEqual(slack.success ? [] : slack.issues.map((issue) => issue.path?.map(({ key }) => key)), [['path']]);
-  const mcp = saveConnectionKeyZodSchema.safeParse({ ...withoutPath, agentId: 'agent_scribe' });
-  assert.deepEqual(mcp.success ? [] : mcp.error.issues.map((issue) => issue.path), [['path']]);
   assert.ok(v.safeParse(saveConnectionKeyValibotSchema, SAVE).success);
-  assert.ok(saveConnectionKeyZodSchema.safeParse({ ...SAVE, agentId: 'agent_scribe' }).success);
 });
 
 test('save_connection_key refuses a key the requester did not type in this message, and sends nothing', async () => {

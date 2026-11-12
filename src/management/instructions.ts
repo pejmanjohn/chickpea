@@ -10,8 +10,6 @@
  * internal identifier.
  */
 
-import { adminOrigin } from './admin-links.ts';
-
 export const WORKSPACE_MANAGEMENT_INSTRUCTIONS_MAX_CHARACTERS = 512;
 
 export const WORKSPACE_MANAGEMENT_INSTRUCTIONS = [
@@ -25,11 +23,3 @@ export const WORKSPACE_MANAGEMENT_INSTRUCTIONS = [
   'For a multi-step job, call get_guide first unless a Chickpea skill is loaded.',
 ].join(' ');
 
-/**
- * A deployment base URL's origin, or undefined when it is missing or
- * unparsable, so a prompt falls back to a relative Admin path instead of a
- * broken link.
- */
-export function workspaceManagementAdminOrigin(baseUrl?: string): string | undefined {
-  return adminOrigin(baseUrl);
-}

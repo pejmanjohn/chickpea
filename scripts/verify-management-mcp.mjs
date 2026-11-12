@@ -2,31 +2,15 @@
 import { readFileSync } from 'node:fs';
 
 const REQUEST_TIMEOUT_MS = 15_000;
-const AGENT_AUTHORING_GUIDE_URI = 'chickpea://guide/agent-authoring/v1';
-const AGENT_AUTHORING_GUIDE_VERSION = '1.0.49';
-const MANAGEMENT_MCP_SERVER_VERSION = '4.6.0';
+const DISCOVERY_GUIDE_URI = 'chickpea://guide/discovery/v1';
+const MANAGEMENT_MCP_SERVER_VERSION = '5.0.0';
+/** Contract 5.0.0 removed these resources; each answers with what replaced it. */
+const REMOVED_RESOURCE_URIS = [
+  'chickpea://schema/operations/v2',
+  'chickpea://guide/agent-authoring/v1',
+  'chickpea://workspace',
+];
 const MANAGEMENT_MCP_TOOL_NAMES = [
-  'inspect_workspace',
-  'prepare_connector_setup',
-  'prepare_provider_setup',
-  'discover_slack_channels',
-  'test_connection',
-  'save_connection_key',
-  'try_connection',
-  'inspect_memory',
-  'inspect_routines',
-  'export_workspace_recipe',
-  'preview_workspace_recipe',
-  'import_skill',
-  'upload_skills',
-  'manage_agent_skill',
-  'apply_workspace_changes',
-  'confirm_workspace_change',
-  'undo_workspace_change',
-  'get_operation',
-  'revoke_setup_link',
-  'list_mcp_clients',
-  'revoke_mcp_client',
   'get_account',
   'get_workspace',
   'get_guide',
@@ -158,36 +142,30 @@ async function main(rawBaseUrl) {
   const listed = await mcpCall(base, token, 'tools/list', {});
   const names = listed?.tools?.map?.((tool) => tool?.name).filter(Boolean) ?? [];
   requireEqual(names.join(','), MANAGEMENT_MCP_TOOL_NAMES.join(','), 'MCP tool inventory');
-  const resources = await mcpCall(base, token, 'resources/list', {});
-  if (!(resources?.resources ?? []).some((resource) => resource?.uri === AGENT_AUTHORING_GUIDE_URI)) {
-    throw new Error('MCP resource inventory omitted the Agent-authoring guide.');
+  const resources = (await mcpCall(base, token, 'resources/list', {}))?.resources ?? [];
+  if (!resources.some((resource) => resource?.uri === DISCOVERY_GUIDE_URI)) {
+    throw new Error('MCP resource inventory omitted the discovery guide.');
   }
-  const guideResult = await mcpCall(base, token, 'resources/read', {
-    uri: AGENT_AUTHORING_GUIDE_URI,
-  });
-  const guide = JSON.parse(guideResult?.contents?.[0]?.text ?? '{}');
-  requireEqual(guide.version, AGENT_AUTHORING_GUIDE_VERSION, 'Agent-authoring guide version');
-  if (typeof guide.digest !== 'string' || !/^[a-f0-9]{64}$/.test(guide.digest) ||
-      typeof guide.guide !== 'string' || guide.guide.length < 1 ||
-      typeof guide.files?.['skill-creation.md'] !== 'string' ||
-      guide.files['skill-creation.md'].length < 1) {
-    throw new Error('Agent-authoring guide content or digest is invalid.');
+  if (resources.some((resource) => REMOVED_RESOURCE_URIS.includes(resource?.uri))) {
+    throw new Error('MCP resource inventory still lists a resource 5.0.0 removed.');
   }
-  const inspected = await mcpCall(base, token, 'tools/call', {
-    name: 'inspect_workspace',
-    arguments: {},
-  });
-  const snapshot = assertSuccessfulToolResult(inspected, 'workspace inspection');
-
-  const reinspected = assertSuccessfulToolResult(await mcpCall(base, token, 'tools/call', {
-    name: 'inspect_workspace',
-    arguments: {},
-  }), 'repeat workspace inspection');
-  requireEqual(
-    reinspected?.effectiveRevision,
-    snapshot?.effectiveRevision,
-    'configuration revision across read-only verification',
-  );
+  const discovery = await mcpCall(base, token, 'resources/read', { uri: DISCOVERY_GUIDE_URI });
+  if (typeof discovery?.contents?.[0]?.text !== 'string' || discovery.contents[0].text.length < 1) {
+    throw new Error('The discovery guide is empty.');
+  }
+  // Two reads of a workspace nobody changes answer the same, and write nothing.
+  for (const tool of ['get_workspace', 'list_agents']) {
+    const first = assertSuccessfulToolResult(await mcpCall(base, token, 'tools/call', { name: tool, arguments: {} }), tool);
+    const again = assertSuccessfulToolResult(await mcpCall(base, token, 'tools/call', { name: tool, arguments: {} }), `repeat ${tool}`);
+    requireEqual(JSON.stringify(again), JSON.stringify(first), `${tool} across read-only verification`);
+  }
+  // A removed 4.x tool answers with its replacement, as a result its client hands to its model.
+  const removed = await mcpCall(base, token, 'tools/call', { name: 'inspect_workspace', arguments: {} });
+  const answer = removed?.structuredContent;
+  if (removed?.isError !== true || answer?.ok !== false || answer?.error?.code !== 'tool_removed' ||
+      !Array.isArray(answer.error.replacedBy) || !answer.error.replacedBy.includes('get_workspace')) {
+    throw new Error('A removed 4.x tool did not answer tool_removed with its replacement.');
+  }
 
   // A second stateless call exercises disconnect/reconnect semantics without
   // retaining a server session or printing the private workspace snapshot.
@@ -195,17 +173,21 @@ async function main(rawBaseUrl) {
   if ((relisted?.tools?.length ?? 0) !== names.length) {
     throw new Error('Stateless reconnect returned a different tool inventory.');
   }
-  console.log(`ok authenticated guide, read-only inspection, and stateless reconnect (${names.length} tools)`);
+  console.log(`ok authenticated discovery guide, repeated reads, removal answer, and stateless reconnect (${names.length} tools)`);
 
   const applyPath = process.env.MANAGEMENT_MCP_CANARY_APPLY_PATH?.trim();
   if (!applyPath) return;
   if (process.env.MANAGEMENT_MCP_ALLOW_MUTATION !== '1') {
     throw new Error('Set MANAGEMENT_MCP_ALLOW_MUTATION=1 to authorize the supplied canary apply payload.');
   }
-  const argumentsValue = JSON.parse(readFileSync(applyPath, 'utf8'));
+  // A JSON file: { "tool": "<a 5.0 write tool>", "arguments": { ... } }.
+  const canary = JSON.parse(readFileSync(applyPath, 'utf8'));
+  if (typeof canary?.tool !== 'string' || !MANAGEMENT_MCP_TOOL_NAMES.includes(canary.tool)) {
+    throw new Error('The canary payload must name a tool this server lists.');
+  }
   const applied = await mcpCall(base, token, 'tools/call', {
-    name: 'apply_workspace_changes',
-    arguments: argumentsValue,
+    name: canary.tool,
+    arguments: canary.arguments ?? {},
   });
   assertSuccessfulToolResult(applied, 'authorized canary mutation');
   console.log('ok authorized canary mutation (response body intentionally suppressed)');
@@ -232,12 +214,14 @@ async function mcpCall(base, token, method, params) {
   return envelope.result;
 }
 
+/** A 5.0 result's structured content; an error result names only its code. */
 function assertSuccessfulToolResult(result, label) {
-  const text = result?.content?.[0]?.text;
-  if (typeof text !== 'string') throw new Error(`${label} returned no text result.`);
-  const envelope = JSON.parse(text);
-  if (envelope?.ok !== true) throw new Error(`${label} returned a tool error.`);
-  return envelope.result;
+  const structured = result?.structuredContent;
+  if (result?.isError === true) {
+    throw new Error(`${label} returned a tool error${typeof structured?.error?.code === 'string' ? ` (${structured.error.code})` : ''}.`);
+  }
+  if (!structured || typeof structured !== 'object') throw new Error(`${label} returned no structured result.`);
+  return structured;
 }
 
 function mcpHeaders(method, params) {

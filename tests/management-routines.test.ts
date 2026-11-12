@@ -356,7 +356,8 @@ test('a routed Agent manages and inspects only its own routines', async () => {
       userId: f.admin.user.id,
       membershipId: f.admin.membership.id,
       organizationId: f.admin.membership.organizationId,
-      origin: { kind: 'mcp' as const, clientId: 'routine-admin' },
+      // An Admin seeds the other Agent's routine; MCP never proposes a change set.
+      origin: { kind: 'admin' as const, sessionId: 'routine-admin' },
     };
     const salesProposal = await f.service.proposeWorkspaceChanges({
       context: adminContext,

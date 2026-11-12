@@ -17,6 +17,7 @@ import {
   ownerMcpContext,
   type ManagementAdapterFixture,
 } from './helpers/management-adapter-fixture.ts';
+import { CONFIRMATION_LIFETIME_MS } from '../src/management/mcp-v5/changes.ts';
 
 /**
  * U3b-2: the 5.0 connection and removal tools, through the MCP door. Each
@@ -209,14 +210,36 @@ function spyConnectorSetup(f: ManagementAdapterFixture) {
   return calls;
 }
 
+// Contract 5.0.0 reads an MCP set with no lifetime as one a 4.x tool left, so every 5.0 call must give one.
+test('every 5.0 call that applies through the service gives its confirmation a lifetime, a setup link included', async (t) => {
+  const { f, call } = await harness(t, 'lifetimes');
+  await createFixtureAgent(f, 'agent_research');
+  const lifetimes: Array<number | undefined> = [];
+  const original = f.service.applyWorkspaceChanges.bind(f.service);
+  f.service.applyWorkspaceChanges = async (input) => {
+    lifetimes.push(input.confirmationLifetimeMs);
+    return original(input);
+  };
+  const keyed = structured(await call('connect_service', {
+    agentId: 'agent_research',
+    custom: { kind: 'mcp', name: 'Tracker', url: 'https://mcp.tracker.example/mcp' },
+    version: await version(call, 'agent_research'),
+    idempotencyKey: 'tracker',
+  }));
+  assert.equal(keyed.status, 'needs_setup');
+  assert.equal(lifetimes.length, 2, 'the add, then its setup link (issueSetup)');
+  assert.deepEqual(lifetimes, [CONFIRMATION_LIFETIME_MS, CONFIRMATION_LIFETIME_MS]);
+});
+
 test('connect_service hands out exactly the link prepare_connector_setup makes, from the same method', async (t) => {
   const { f, call } = await harness(t, 'connect-catalog');
   await createFixtureAgent(f, 'agent_research');
   const calls = spyConnectorSetup(f);
 
-  const v4 = JSON.parse((await call('prepare_connector_setup', {
+  // What the Slack door's prepare_connector_setup gets from the method, for the same person and app.
+  const direct = await f.service.prepareConnectorSetup(ownerMcpContext(f, 'client_connect-catalog'), {
     agentId: 'agent_research', connector: 'gmail', ownerKind: 'member',
-  })).content[0]!.text) as { ok: true; result: PrepareConnectorSetupResult };
+  });
   const connected = structured(await call('connect_service', {
     agentId: 'agent_research', service: 'Gmail', owner: 'me', idempotencyKey: 'gmail',
   }));
@@ -226,7 +249,7 @@ test('connect_service hands out exactly the link prepare_connector_setup makes, 
   assert.equal(connected.setup.url, calls[1]!.result.handoffUrl, 'the link is the method\'s, never built by the tool');
   assert.equal(connected.setup.setupToken, calls[1]!.result.setupOperationId);
   assertFocusedSetup(connected.setup);
-  assert.equal(v4.result.handoffUrl, calls[0]!.result.handoffUrl);
+  assert.equal(direct.handoffUrl, calls[0]!.result.handoffUrl);
   assert.equal(connected.setup.what, 'Gmail');
   assert.equal(connected.agent.agentId, 'agent_research');
   assert.match(connected.summary, /^Open the link to connect Gmail to Research\.$/);

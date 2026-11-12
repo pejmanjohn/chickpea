@@ -8,9 +8,8 @@ import type { ManagementChangeSetPreview } from './types.ts';
 /** A generous cap; coding agents read the whole proposal, not a Slack block. */
 const MARKDOWN_PRESENTATION_TEXT_LIMIT = 20_000;
 
-const MARKDOWN_APPROVAL_INSTRUCTION =
-  'Show these changes to the person. When they approve, call confirm_workspace_change with the ' +
-  'proposalId; if they want something different, inspect again and send a new change.';
+/** The line for the person that closes a preview: whatever door shows it confirms in its own way. */
+const MARKDOWN_APPROVAL_INSTRUCTION = 'Nothing changes until you confirm.';
 
 /** Portable Markdown: double-asterisk bold, list bullets, and stored text escaped as CommonMark. */
 export const MARKDOWN_PRESENTATION_DIALECT: ChangeSetPresentationDialect = {

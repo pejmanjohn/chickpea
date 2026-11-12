@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 
-import { WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES } from '../src/management/mcp.ts';
+import { REMOVED_TOOL_NAMES } from '../src/management/mcp-v5/removed-v4.ts';
 // @ts-expect-error Executable helpers are JavaScript, shared with the runners.
 import { leaksIn, takeLeaks, V4_TOOL_NAMES } from '../scripts/lib/test-mcp-leak-net.mjs';
 import { cardServer } from './helpers/mcp-card-host.ts';
@@ -13,8 +13,8 @@ type Leak = { tool: string; path: string; names: string[]; text: string };
 const RUNNER = new URL('../scripts/run-tests.mjs', import.meta.url).pathname;
 const PLANTED = new URL('./fixtures/mcp-leak-net/planted.test.mjs', import.meta.url).pathname;
 
-test('the net knows the same 21 4.x tools the server serves', () => {
-  assert.deepEqual([...V4_TOOL_NAMES], [...WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES]);
+test('the net knows the same 21 4.x tools 5.0.0 removed', () => {
+  assert.deepEqual([...V4_TOOL_NAMES], [...REMOVED_TOOL_NAMES]);
 });
 
 test('run-tests fails the one test whose management result names a 4.x tool, and passes the clean ones', () => {
@@ -47,12 +47,12 @@ test('the net reads the real server: a 4.x name in an Agent\'s instructions reac
   assert.ok(leaks.some(({ path }) => path.startsWith('content.')), 'and in the text block');
 });
 
-test('a 4.x tool\'s own answer is the 4.x surface while the server serves it, not a leak', async (t) => {
-  const { f, call } = await cardServer(t, 'leak-net-served');
-  await createFixtureAgent(f, 'agent_planted', { name: 'Planted', instructions: 'Start with inspect_workspace.' });
-  const inspected = await call('inspect_workspace', {});
-  assert.notEqual(inspected.isError, true, JSON.stringify(inspected));
-  assert.match(JSON.stringify(inspected), /Start with inspect_workspace/);
+test('every removed tool\'s answer from the real server names only that tool among the 21', async (t) => {
+  const { call } = await cardServer(t, 'leak-net-removed');
+  for (const name of REMOVED_TOOL_NAMES) {
+    const answer = await call(name, {});
+    assert.equal(answer.structuredContent?.error?.code, 'tool_removed', name);
+  }
   assert.deepEqual(takeLeaks(), []);
 });
 

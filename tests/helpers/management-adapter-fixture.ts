@@ -12,6 +12,7 @@ import {
   WorkspaceManagementService,
   type WorkspaceManagementServiceInput,
 } from '../../src/management/service.ts';
+import { CONFIRMATION_LIFETIME_MS } from '../../src/management/mcp-v5/changes.ts';
 import { invokeWorkspaceManagementTool } from '../../src/management/tool-adapter.ts';
 import type {
   ManagementActorContext,
@@ -152,13 +153,24 @@ export function ownerSlackDmContext(f: ManagementAdapterFixture): ManagementActo
   };
 }
 
-/** Calls apply_workspace_changes through the tool adapter, as both doors do. */
+/**
+ * Applies operations as each door does: Slack's through its tool adapter,
+ * and MCP's as a 5.0 write does, through the service with a confirmation
+ * that expires.
+ */
 export async function applyThroughAdapter(
   f: ManagementAdapterFixture,
   context: ManagementActorContext,
   idempotencyKey: string,
   operations: ManagementOperation[],
 ): Promise<ManagementApplyResult> {
+  if (context.origin.kind === 'mcp') {
+    const result = await f.service.applyWorkspaceChanges({
+      context, idempotencyKey, operations, confirmationLifetimeMs: CONFIRMATION_LIFETIME_MS,
+    });
+    assert.ok('outcomes' in result, JSON.stringify(result));
+    return result;
+  }
   const response = await invokeWorkspaceManagementTool({
     service: f.service,
     resolveContext: async () => context,

@@ -12,8 +12,8 @@ Docs: `/admin/management-mcp/`, `/reference/management-mcp-tools/`. Record areas
 - `confirm_change` applies that change exactly as previewed, only for the same requester from the same client. A changed revision, digest, permission or origin makes it stale or denied. `decline_change` drops it.
 - A one-change call can be reversed with `undo_change` and its `undoToken`, which asks first only when the inverse is destructive. Changes take effect on the next admitted Slack event.
 - Setup handoffs: `connect_service` and `reconnect_service` return the focused setup page for one connection (`/setup/<id>`), locked to one Agent. Over MCP only the person who asked can open it, for 24 hours. A connector that page cannot serve gets the Agent's Admin page instead. `connect_model_provider` (Owner or Admin) returns a 24-hour link bound to the requester; `cancel_setup_link` cancels one, and `get_setup_status` reads one.
-- Change results carry `agent.links.admin` and `agent.links.slack`; the client reports the outcome itself. Admin-only settings (GitHub, coding sandbox, browser, connectors, avatars) have no tool; the server's instructions point to their Admin pages. A hosted deployment's instructions, `status` prompt and `/connect.md` leave out the coding sandbox and browser, which its Admin does not show.
-- Six MCP prompts (`new-agent`, `edit-agent`, `connect`, `schedule`, `import-skill`, `status`) that clients may show as slash commands.
+- Change results carry `agent.links.admin` and `agent.links.slack`; the client reports the outcome itself. Admin-only settings (GitHub, coding sandbox, browser, connectors, avatars) have no tool; `get_workspace`'s Admin-only list points to their Admin pages. A hosted deployment's `get_workspace` Admin-only list and `/connect.md` leave out the coding sandbox and browser, which its Admin does not show.
+- Since contract 5.0.0 the server has no MCP prompts, and every client lists the same 5.0 tools. A call of a removed 4.x tool gets a `tool_removed` error result naming its replacement in `replacedBy`; a removed prompt or resource gets a protocol error saying what replaced it.
 - `/connect` and `/connect.md` are public and answer before setup; `/mcp` answers 404 until Slack is connected.
 
 ## How a person reaches it
@@ -29,6 +29,7 @@ Docs: `/admin/management-mcp/`, `/reference/management-mcp-tools/`. Record areas
 - Case shape: `case-add --area agents --proof mcp --proof admin`. Add `--proof slack` once the created Agent is published and mentioned.
 - Requests: create one run-marked Agent with a caller-chosen `agentId`; edit its instructions and grant it a channel, each in one call; archive and restore it in one call each; archive it again, then delete it and read the confirmation preview before confirming; `connect_service` for a catalog connector.
 - Denial variants: `confirm_change` after an edit moved the revision returns stale; `connect_model_provider` for an environment-managed provider is refused; Member-role checks need a registered Member actor, which lanes may lack.
+- Removal answers: `chickpea-cli call <lane origin> inspect_workspace` prints `{ ok: false, error: { code: 'tool_removed', … } }` and exits 1. A raw `prompts/list` answers an empty list with HTTP 200 on every protocol revision.
 - Cleanup: archive created Agents (`--cleanup-preset archived-agent`), revoke unused setup links, and run `chickpea-cli logout <lane origin>` to revoke the client's refresh token. Its last access token keeps working against `/mcp` for up to 15 minutes, so a revocation readback waits for that token's expiry before expecting a 401.
 
 ## Proof and gotchas

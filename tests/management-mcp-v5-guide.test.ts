@@ -6,10 +6,11 @@ import { createMcpHandler } from '@modelcontextprotocol/server';
 import type { McpAuthenticatedPrincipal } from '../src/auth/mcp-oauth-routes.ts';
 import { DISCOVERY_GUIDE_URI } from '../src/management/agent-authoring/index.ts';
 import { WORKSPACE_MANAGEMENT_INSTRUCTIONS_MAX_CHARACTERS } from '../src/management/instructions.ts';
-import { createWorkspaceManagementMcpServer, WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES } from '../src/management/mcp.ts';
+import { createWorkspaceManagementMcpServer } from '../src/management/mcp.ts';
+import { REMOVED_TOOL_NAMES } from '../src/management/mcp-v5/removed-v4.ts';
 import { MCP_ERROR_CODES } from '../src/management/mcp-v5/conventions.ts';
 import { GUIDE_RESULT_MAX_CHARACTERS, getGuideOutput } from '../src/management/mcp-v5/guide.ts';
-import { MCP_MANAGEMENT_OPERATION_KINDS } from '../src/management/schemas.ts';
+import { managementOperationValibotSchema } from '../src/management/schemas.ts';
 import PLAYBOOK from '../src/management/playbook/playbook.json' with { type: 'json' };
 import { PLAYBOOK_TOPICS, playbookForReader, playbookSection, type PlaybookTopic } from '../src/management/playbook/index.ts';
 // @ts-expect-error Build tooling JavaScript helper.
@@ -312,7 +313,8 @@ test('each section names only 5.0 tools, and the fields, values and topics they 
   assert.ok(cardOnly.has('decline_change'), 'the card host lists its card-only tools');
   const words = new Set([...MCP_ERROR_CODES, 'true', 'false', ...PLAYBOOK_TOPICS]);
   for (const { inputSchema, outputSchema } of listed) vocabulary([inputSchema, outputSchema], words);
-  const fourX = [...WORKSPACE_MANAGEMENT_MCP_V4_TOOL_NAMES, ...MCP_MANAGEMENT_OPERATION_KINDS].filter((name) => !tools.has(name));
+  const operationKinds = managementOperationValibotSchema.options.map((option) => option.entries.kind.literal);
+  const fourX = [...REMOVED_TOOL_NAMES, ...operationKinds].filter((name) => !tools.has(name));
 
   for (const topic of PLAYBOOK_TOPICS) {
     const section = playbookSection(topic).guide;

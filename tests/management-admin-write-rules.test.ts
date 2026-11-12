@@ -28,6 +28,7 @@ import {
 } from '../src/management/types.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+import { CONFIRMATION_LIFETIME_MS } from '../src/management/mcp-v5/changes.ts';
 
 type Fixture = Awaited<ReturnType<typeof createManagementAdapterFixture>>;
 
@@ -86,7 +87,9 @@ async function confirmChange(f: Fixture, proposalId: string): Promise<Management
 }
 
 async function apply(f: Fixture, idempotencyKey: string, operations: ManagementOperation[]) {
-  return await f.service.applyWorkspaceChanges({ context: ownerMcp(f), idempotencyKey, operations }) as ManagementApplyResult;
+  return await f.service.applyWorkspaceChanges({
+    context: ownerMcp(f), idempotencyKey, operations, confirmationLifetimeMs: CONFIRMATION_LIFETIME_MS,
+  }) as ManagementApplyResult;
 }
 
 async function inspectAgent(f: Fixture, agentId: string) {

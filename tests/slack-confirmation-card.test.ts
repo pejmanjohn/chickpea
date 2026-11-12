@@ -109,7 +109,7 @@ async function confirmationFixture(
 
   let sequence = 0;
   const send = <TName extends 'manage_agent_skill' | 'undo_workspace_change' | 'apply_workspace_changes' |
-    'propose_workspace_changes' | 'confirm_workspace_change'>(
+    'propose_workspace_changes'>(
     agentId: string,
     requesterText: string,
     name: TName,
