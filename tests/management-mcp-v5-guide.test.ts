@@ -185,6 +185,31 @@ test('every coding-agent fence in the Markdown is a whole line and closed, and n
   }
 });
 
+test('no section tells a chat app what only a coding agent can do, and a coding agent still reads it (ruling D6)', () => {
+  // A word list can't know a sentence nobody has written yet. It names what a chat app has no way to do:
+  // reach a computer, its folders and files, a shell, or a client's own sessions. A new sentence for
+  // coding agents goes inside a fence, and its telling words go here.
+  const codingAgentOnly = new RegExp([
+    'coding agent', String.raw`\bCodex\b`, 'Claude Code', 'on the person\'s computer', 'their (?:computer|machine|projects)',
+    'working directory', String.raw`(?:current|this) (?:folder|directory)`, 'write files', 'local files?', 'file ?system',
+    'command-line', String.raw`\bshell\b`, String.raw`\bscripts?\b`, String.raw`\bREADMEs?\b`, String.raw`\bcommits?\b`, String.raw`\brepos?\b`, 'codebase',
+    'environment file', 'key file', 'secret store', 'your own past sessions', 'in this client',
+    String.raw`save (?:it|them) (?:in|to) `,
+  ].join('|'), 'i');
+  for (const topic of PLAYBOOK_TOPICS) {
+    const served = playbookSection(topic, 'chat-app').guide;
+    assert.doesNotMatch(served, codingAgentOnly, `${topic}: a chat app is told only what it can do`);
+  }
+  for (const [topic, sentence] of [
+    ['start', 'If you are a coding agent on the person\'s computer and they would rather you look at their projects than answer, research first'],
+    ['scope', 'If you can write files in the current folder, offer to save them in `chickpea/<agent handle>-tests.md` there'],
+    ['research', '**As a coding agent on the person\'s computer, such as Codex:**'],
+  ] as const) {
+    assert.ok(playbookSection(topic).guide.includes(sentence), `${topic}: any other client still reads: ${sentence}`);
+  }
+  assert.match(playbookSection('scope', 'chat-app').guide, /judged on\.\n\nUnless you saved them, tell the person that a new chat won't have them/);
+});
+
 test('a chat app never gets a fenced block, however the fence is written', () => {
   const cases: Array<[string, string, string, string]> = [
     ['at the start', '<!-- coding-agent -->\nlocal\n<!-- /coding-agent -->\n\nrest\n', 'rest\n', 'local\n\nrest\n'],
