@@ -425,7 +425,20 @@ test('a refusal or a failed run shows its own sentence on Try it again, as ChatG
   funded.runs.outcome = { status: 'failed', failure: 'out_of_usage', result: { funding: { kind: 'credits_exhausted' } } } as TestRunOutcome;
   await out.press('try_once');
   assert.deepEqual(out.shown.blocks, [{ kind: 'text', text: 'This workspace is out of usage for now, so I can\'t start this one. Once an Owner adds more, send it again.' }]);
+  assert.equal(out.shown.title, 'Couldn\'t practice with Invoice Chaser', 'a run that started and failed has no answer to be "after this change"');
   assert.deepEqual(out.labels(), ['Open in Slack (primary)', 'Undo the change (secondary)']);
+  // Once the card shows an answer from after the save, a run that fails goes under it, and the heading still names it.
+  const answeredFirst = await world(t, 'try-again-funding-after-answer');
+  await firstAnswer(answeredFirst);
+  answeredFirst.clock.now += 60_000;
+  const shown = await answeredFirst.saved();
+  answeredFirst.runs.outcome = answered(SECOND);
+  await shown.press('try_once');
+  answeredFirst.runs.outcome = { status: 'failed', failure: 'out_of_usage', result: { funding: { kind: 'credits_exhausted' } } } as TestRunOutcome;
+  answeredFirst.clock.now += 3 * 60_000;
+  await shown.press('try_once');
+  assert.deepEqual(labels(shown), ['Before', 'After']);
+  assert.equal(shown.shown.title, 'Invoice Chaser after this change');
   assert.equal(told(out), 'The person pressed "Try it again" for the Agent "Invoice Chaser" (@invoices) on the card, but it did not finish answering.');
 
   // Before ChatGPT lists practice_agent ("MCP Resource not found"): unreachable, tried again, then Check again.

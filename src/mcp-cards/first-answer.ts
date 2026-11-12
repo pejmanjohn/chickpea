@@ -619,11 +619,12 @@ const ANSWERED_LINE = 'A practice run: it made only read requests and sent nothi
 
 /**
  * The heading follows what the card shows: the first answer, the answer
- * after a save beside the one from before it, or a run that did not start.
+ * after a save beside the one from before it, or a run that did not start,
+ * or on Try it again did not finish, with no answer above it.
  */
 function titleOf(view: FirstAnswer): string {
   const { tested: { name }, stage } = view;
-  if (stage.kind === 'stopped' && stage.refused) return `Couldn't practice with ${name}`;
+  if (stage.kind === 'stopped' && (stage.refused || view.again && !view.earlier)) return `Couldn't practice with ${name}`;
   if (!view.again) return `${name}'s first answer`;
   const alone = stage.kind === 'answered' && stage.reading === undefined && stage.before === undefined;
   return alone ? `${name}'s answer` : `${name} after this change`;

@@ -2439,6 +2439,66 @@ test('a saved optional MCP key, such as Exa\'s, is replaced on the key page in t
   }
 });
 
+test('an optional-key MCP connection that needs attention, its key gone, is ready again from the key page', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => START });
+  const owner = await createSlackOwner(identity, { now: START, suffix: 'mcp-optional-key-attention' });
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const management = new SqliteManagementStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const agent = await config.createAgent({
+      id: 'agent_research', name: 'Research', creatorMembershipId: owner.membership.id,
+      editPolicy: 'creator_and_admins', instructions: 'Search the web.', enabled: true,
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const { account: created } = await new ConnectionAccountService({ config, settings }).createForAgent({
+      principal: browserPrincipal(owner),
+      agentId: agent.id,
+      workspaceId: owner.user.slackTeamId,
+      ownerKind: 'team',
+      allowedCapabilities: [],
+      providerId: 'search',
+      label: 'Search',
+      policy: {
+        kind: 'mcp', url: 'https://mcp.search.example/mcp', transport: 'streamable-http', authMode: 'none',
+        headerNames: ['x-api-key'], credentialHeaderName: 'x-api-key', credentialOptional: true,
+        discoveredTools: [{ name: 'search' }], allowedTools: ['search'],
+      },
+    });
+    // A removal that failed after retiring the key and before revoking the account leaves it so.
+    const search = await config.putConnectionAccount({ ...created, lifecycle: 'needs_attention' }, created.revision);
+    const service = new WorkspaceManagementService({
+      identity, config, management, settings, setupBaseUrl: 'http://localhost', now: () => START,
+      randomId: () => 'mcp_optional_attention', randomCapability: () => CAPABILITY,
+    });
+    const setupId = await requestConnectionSetup(service, owner, {
+      kind: 'mcp_connection', agentId: agent.id, connectionId: 'search',
+    });
+    const app = createManagementSetupRoutes({
+      management, config, settings, identity,
+      now: () => START,
+      authenticatePrincipal: async () => browserPrincipal(owner),
+      deliverReceipt: async () => ({ deliveryRef: 'mcp:receipt' }),
+      discoverMcp: async () => ({ tools: [{ name: 'search' }] }),
+      identifyMcp: async () => undefined,
+    });
+    const cookie = await claimSetup(app, setupId);
+    const completed = await postSetupForm(app, setupId, 'complete', cookie, { 'header:x-api-key': 'new-search-key' });
+    assert.equal(completed.status, 303, await completed.clone().text());
+
+    assert.equal(await storedSecret(settings, search), 'new-search-key');
+    const ready = await currentAccount(config, search);
+    assert.equal(ready.lifecycle, 'ready');
+    assert.ok(ready.policy.kind === 'mcp');
+    assert.equal(ready.policy.credentialOptional, true, 'the key stays optional');
+  } finally {
+    identity.close();
+    config.close();
+    management.close();
+    settings.close();
+  }
+});
+
 test('an MCP header setup the server rejects names the host and saves nothing', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => START });
   const owner = await createSlackOwner(identity, { now: START, suffix: 'mcp-header-rejected' });

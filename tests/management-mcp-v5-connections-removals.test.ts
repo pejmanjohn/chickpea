@@ -6,7 +6,7 @@ import { createMcpHandler } from '@modelcontextprotocol/server';
 import type { McpAuthenticatedPrincipal } from '../src/auth/mcp-oauth-routes.ts';
 import { createWebsiteLogin } from '../src/browser/logins.ts';
 import { BUGSNAG_MCP_SERVER_URL } from '../src/config/bugsnag-policy.ts';
-import { saveConnectionAccountSecret } from '../src/config/connector-secrets.ts';
+import { resolveConnectionAccountSecret, saveConnectionAccountSecret } from '../src/config/connector-secrets.ts';
 import type { ConnectionAccount } from '../src/config/types.ts';
 import { createWorkspaceManagementMcpServer } from '../src/management/mcp.ts';
 import type { PrepareConnectorSetupResult } from '../src/management/types.ts';
@@ -556,6 +556,81 @@ test('reconnect_service replaces a saved optional key, such as Exa\'s, and still
   assert.equal(open.message, 'This MCP connection does not require setup.');
 });
 
+// A saved key a service rejects leaves the account ready (check_agent's own test reports key_rejected). The one
+// way an optional-key account needs attention is a removal that fails after closing it, before revoking it.
+test('check_agent sends an optional-key connection a failed removal left needing attention to reconnect_service, key or no key', async (t) => {
+  const { f, teamId, call } = await harness(t, 'reconnect-optional-attention', { overrides: ({ settings }) => ({ settings }) });
+  await installAgent(f);
+  const optionalKey = async (providerId: string, label: string, presetId?: string) => {
+    const account = await f.config.putConnectionAccount({
+      id: `connection_${providerId}`, workspaceId: teamId, ownerKind: 'team', providerId, label,
+      lifecycle: 'ready', createdByMembershipId: f.owner.membership.id, secretRefId: `secret_${providerId}`,
+      policy: {
+        kind: 'mcp', url: `https://mcp.${providerId}.example/mcp`, transport: 'streamable-http', authMode: 'none', headerNames: ['x-api-key'],
+        credentialHeaderName: 'x-api-key', credentialOptional: true,
+        discoveredTools: [{ name: 'search' }], allowedTools: ['search'], ...presetId ? { presetId } : {},
+      },
+    } as Omit<ConnectionAccount, 'revision' | 'createdAt' | 'updatedAt'>);
+    await f.config.putAgentConnectionBinding({
+      agentId: 'agent_research', connectionAccountId: account.id, providerId, allowedCapabilities: [], enabled: true,
+    });
+    await saveConnectionAccountSecret(account.secretRefId, `${providerId}-key`, undefined, f.settings);
+    return account;
+  };
+  const failedRemoval = async (connectionId: string) => {
+    const proposed = structured(await call('remove_connection', { agentId: 'agent_research', connectionId, idempotencyKey: `remove-${connectionId}` }));
+    assert.equal((await call('confirm_change', { confirmToken: proposed.confirmation.confirmToken })).isError, true);
+  };
+  const exa = await optionalKey('exa', 'Exa', 'exa');
+  const search = await optionalKey('search', 'Search');
+  structured(await call('connect_service', {
+    agentId: 'agent_research',
+    custom: { kind: 'mcp', name: 'Docs', url: 'https://mcp.docs.example/mcp', auth: 'none' },
+    version: await version(call, 'agent_research'),
+    idempotencyKey: 'docs',
+  }));
+  const docs = (await f.config.listConnectionAccounts(teamId)).find(({ label }) => label === 'Docs')!;
+
+  // Exa's key stays: the removal stopped while retiring it. Docs, which takes no key, stopped at the same step.
+  const deleteSetting = f.settings.deleteSetting.bind(f.settings);
+  f.settings.deleteSetting = async () => { throw new Error('settings unavailable'); };
+  await failedRemoval('exa');
+  await failedRemoval('docs');
+  f.settings.deleteSetting = deleteSetting;
+  // Search's key is gone: the removal stopped after retiring it, as a newer write to the account won.
+  const putConnectionAccount = f.config.putConnectionAccount.bind(f.config);
+  f.config.putConnectionAccount = async (account, revision) => {
+    if (account.id === search.id && account.lifecycle === 'revoked') throw new Error('revision moved');
+    return putConnectionAccount(account, revision);
+  };
+  await failedRemoval('search');
+  f.config.putConnectionAccount = putConnectionAccount;
+  const lifecycle = async (id: string) => (await f.config.listConnectionAccounts(teamId)).find((account) => account.id === id)?.lifecycle;
+  assert.deepEqual([await lifecycle(exa.id), await lifecycle(search.id), await lifecycle(docs.id)], ['needs_attention', 'needs_attention', 'needs_attention']);
+  assert.deepEqual(
+    [await resolveConnectionAccountSecret(exa, undefined, f.settings), await resolveConnectionAccountSecret(search, undefined, f.settings)],
+    ['exa-key', undefined],
+  );
+
+  const checked = structured(await call('check_agent', { agentId: 'agent_research' }));
+  for (const [name, connectionId] of [['Exa', 'exa'], ['Search', 'search']] as const) {
+    const row = checked.checks.find((check: { part: string; name: string }) => check.part === 'connection' && check.name === name);
+    assert.deepEqual([row.status, row.detail, row.fix], ['failing', 'It needs to be reconnected.', {
+      label: `Reconnect ${name}`, tool: 'reconnect_service', arguments: { agentId: 'agent_research', connectionId },
+    }], `${name}: as a connection whose key is required, never "Reconnect it in Admin"`);
+    const followed = structured(await call(row.fix.tool, row.fix.arguments));
+    assert.equal(followed.status, 'needs_setup', name);
+    assertFocusedSetup(followed.setup);
+    const setup = await f.management.getSetup(followed.setup.setupToken);
+    assert.equal(setup?.target.connectionId, connectionId === 'exa' ? exa.id : search.id, name);
+  }
+  // A server that takes no key has no key page to send: Admin, as before.
+  const keyless = checked.checks.find((check: { part: string; name: string }) => check.part === 'connection' && check.name === 'Docs');
+  assert.deepEqual([keyless.status, keyless.fix.label, keyless.fix.tool], ['failing', 'Reconnect it in Admin', undefined]);
+  assert.equal(errorOf(await call('reconnect_service', { agentId: 'agent_research', connectionId: 'docs' }), 'invalid_input').message,
+    'This MCP connection does not require setup.');
+});
+
 test('a member cannot connect or reconnect a team connection, or change an Agent they cannot edit', async (t) => {
   const { f, teamId, as } = await harness(t, 'connect-member', { member: true });
   await createFixtureAgent(f, 'agent_owner_only');
@@ -594,6 +669,26 @@ test('a member cannot connect or reconnect a team connection, or change an Agent
   }), 'not_allowed');
   assert.equal(await version(member, 'agent_shared'), before, 'refused before anything was written');
   assert.deepEqual((await lanes(owner, 'agent_shared')).apiConnections.map(({ allowedHosts }) => allowedHosts), [['api.statusboard.example']]);
+
+  // A team connection a failed removal left needing attention, its optional key gone: an Owner gets its key page,
+  // a member gets neither the page nor a fix that names it.
+  const search = await f.config.putConnectionAccount({
+    id: 'connection_search', workspaceId: teamId, ownerKind: 'team', providerId: 'search', label: 'Search',
+    lifecycle: 'needs_attention', createdByMembershipId: f.owner.membership.id, secretRefId: 'secret_search',
+    policy: {
+      kind: 'mcp', url: 'https://mcp.search.example/mcp', transport: 'streamable-http', authMode: 'none', headerNames: ['x-api-key'],
+      credentialHeaderName: 'x-api-key', credentialOptional: true, discoveredTools: [{ name: 'search' }], allowedTools: ['search'],
+    },
+  } as Omit<ConnectionAccount, 'revision' | 'createdAt' | 'updatedAt'>);
+  await f.config.putAgentConnectionBinding({
+    agentId: 'agent_shared', connectionAccountId: search.id, providerId: 'search', allowedCapabilities: [], enabled: true,
+  });
+  errorOf(await member('reconnect_service', { agentId: 'agent_shared', connectionId: 'search' }), 'not_allowed');
+  const fixOf = async (call: typeof member) => structured(await call('check_agent', { agentId: 'agent_shared' })).checks
+    .find((check: { part: string; name: string }) => check.part === 'connection' && check.name === 'Search').fix;
+  const memberFix = await fixOf(member);
+  assert.deepEqual([memberFix.label, memberFix.tool], ['Reconnect it in Admin', undefined]);
+  assert.equal((await fixOf(owner)).tool, 'reconnect_service');
 });
 
 test('update_connection changes a custom connection, links its key again when it would go somewhere new, and leaves catalog ones alone', async (t) => {

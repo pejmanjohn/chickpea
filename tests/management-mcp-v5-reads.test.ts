@@ -29,6 +29,7 @@ import {
   ownerSlackDmContext,
   type ManagementAdapterFixture,
 } from './helpers/management-adapter-fixture.ts';
+import { MEMBER_SLACK_USER, slackFacts } from './helpers/management-authority-fixture.ts';
 
 const LEGACY = '2025-11-25';
 const MODERN = '2026-07-28';
@@ -53,8 +54,13 @@ type ToolResult = {
   isError?: boolean;
 };
 
-async function harness(t: TestContext, suffix: string, as: 'owner' | 'member' = 'owner') {
-  const f = await createManagementAdapterFixture(suffix);
+async function harness(
+  t: TestContext,
+  suffix: string,
+  as: 'owner' | 'member' = 'owner',
+  overrides: Parameters<typeof createManagementAdapterFixture>[1] = {},
+) {
+  const f = await createManagementAdapterFixture(suffix, overrides);
   t.after(() => f.close());
   if (as === 'member') {
     await f.identity.updateMembershipAuthority({
@@ -264,6 +270,77 @@ test('list_agents leaves archived Agents out unless asked, keeps each entry shor
   assert.equal(new Set(seen).size, seen.length, 'no Agent twice');
   const refused = await call('list_agents', { cursor: 'abc' });
   assert.equal(refused.isError, true);
+});
+
+test('a list_agents cursor never skips or repeats an Agent when another is archived or created between pages', async (t) => {
+  const { f, call } = await harness(t, 'list-stable');
+  const ids = Array.from({ length: 50 }, (_, index) => `agent_page_${String(index).padStart(2, '0')}`);
+  for (const id of ids) await createFixtureAgent(f, id, { name: `${id} ${'n'.repeat(40)}`, description: 'd'.repeat(300) });
+  const listed = (page: Record<string, unknown>) => (page.agents as Array<{ agentId: string }>).map(({ agentId }) => agentId);
+  /** Every page, with `between` run once after the first. */
+  const read = async (between: () => Promise<unknown>) => {
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    let pages = 0;
+    do {
+      if (pages === 1) await between();
+      const page = structured(await call('list_agents', cursor ? { cursor } : {}));
+      seen.push(...listed(page));
+      cursor = page.nextCursor as string | undefined;
+      pages += 1;
+    } while (cursor);
+    assert.ok(pages >= 2, `${pages} pages`);
+    return seen;
+  };
+  const first = structured(await call('list_agents'));
+  assert.equal(typeof first.nextCursor, 'string');
+  assert.equal(ids.some((id) => (first.nextCursor as string).includes(id)), false, 'the cursor names no Agent in plain text');
+
+  // An Agent on the first page archived before the second: an offset would skip the next page's first Agent.
+  const archived = await read(() => f.config.updateAgent('agent_page_00', { lifecycle: 'archived', enabled: false }));
+  assert.deepEqual(archived, ids, 'in agentId order, each once, the archived one as the first page listed it');
+
+  // An Agent created ahead of the cursor before the second page: an offset would list one Agent twice.
+  const created = await read(() => createFixtureAgent(f, 'agent_new_0'));
+  assert.deepEqual(created, ids.slice(1), 'none twice; the new one sorts before the cursor and waits for the next read');
+  assert.deepEqual(listed(structured(await call('list_agents'))).slice(0, 2), ['agent_new_0', 'agent_page_01']);
+
+  // A Member's list keeps the Agents they can edit first, then shared ones, which Slack's directory sorts by name:
+  // each group in agentId order, and the cursor carries the group, so a page boundary inside either one holds.
+  const member = await harness(t, 'list-stable-member', 'member', {
+    slackFacts: slackFacts({ C_SUPPORT: { name: 'support', private: false, member: true, archived: false } }, { [MEMBER_SLACK_USER]: ['C_SUPPORT'] }),
+  });
+  const inSlack = (handle: string) => ({
+    slackPresence: {
+      requestedHandle: handle, normalizedHandle: handle, desiredState: 'active' as const, health: 'healthy' as const,
+      avatar: { kind: 'generated' as const, revision: 1, seed: handle },
+    },
+  });
+  for (const [id, name] of [['agent_b', 'Bravo'], ['agent_d', 'Delta']] as const) {
+    await createFixtureAgent(member.f, id, { name, editPolicy: 'all_workspace_members' });
+  }
+  for (const [id, name] of [['agent_a', 'Zulu'], ['agent_c', 'Alpha']] as const) {
+    await createFixtureAgent(member.f, id, { name, ...inSlack(name.toLowerCase()) });
+    await grantChannel(member.f, id);
+  }
+  const memberList = async (after?: string) => (structured(await member.call('list_agents', after === undefined ? {} : {
+    cursor: `after1_${Buffer.from(after).toString('base64url')}`,
+  })).agents as Array<{ agentId: string; canEdit: boolean }>).map(({ agentId, canEdit }) => [agentId, canEdit]);
+  assert.deepEqual(await memberList(), [['agent_b', true], ['agent_d', true], ['agent_a', false], ['agent_c', false]]);
+  assert.deepEqual(await memberList('e:agent_b'), [['agent_d', true], ['agent_a', false], ['agent_c', false]]);
+  assert.deepEqual(await memberList('e:agent_d'), [['agent_a', false], ['agent_c', false]], 'every shared Agent follows the last one they edit');
+  assert.deepEqual(await memberList('s:agent_a'), [['agent_c', false]], 'no Agent they edit follows a shared one, whatever its ID');
+  assert.deepEqual(await memberList('s:agent_c'), []);
+
+  // An offset cursor from before is refused, so a list read across an update starts again instead of shifting.
+  for (const cursor of ['40', 'after1_', 'after1_%%%', ...['e:Not An Id!', 'agent_page_01', 'x:agent_page_01', 'e:'].map((place) => `after1_${Buffer.from(place).toString('base64url')}`)]) {
+    const error = errorOf(await call('list_agents', { cursor }));
+    assert.deepEqual([error.code, error.message, error.nextStep], [
+      'invalid_input',
+      'Chickpea can\'t continue the list from that cursor.',
+      'Call list_agents without a cursor to start again from the first page.',
+    ], cursor);
+  }
 });
 
 test('list_agents, get_agent and the other reads carry handles and versions, never revisions', async (t) => {
