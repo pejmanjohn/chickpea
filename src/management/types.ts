@@ -242,9 +242,14 @@ export type ManagementOperation =
       requiredConnectionAccountIds?: string[];
       agentId: string;
       workspaceId: string;
-      /** Required for Channel work. Direct work resolves only from trusted Slack origin. */
+      /** Required for Channel work. Direct work resolves only from trusted Slack origin, or the signed-in MCP caller. */
       channelId?: string;
-      destination?: { kind: 'current_dm_thread' | 'current_channel_thread' };
+      /**
+       * `initiator_dm`: a new thread in the MCP caller's own DM with Chickpea.
+       * Only 5.0 `save_schedule` builds it; the 4.x operation schemas never
+       * accept it.
+       */
+      destination?: { kind: 'current_dm_thread' | 'current_channel_thread' | 'initiator_dm' };
       routineId?: string;
       expectedVersion?: number;
       name: string;

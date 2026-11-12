@@ -569,8 +569,11 @@ export async function saveSchedule(
   deps: FiveZeroDeps,
   input: In<typeof schemas.saveScheduleInput>,
 ): Promise<ChangeResult> {
-  if (input.scheduleId === undefined && (input.when.keep || input.channelId === undefined)) {
-    fail('invalid_input', 'A new schedule needs a channelId and a time: cron, once or inMinutes.');
+  if (input.channelId !== undefined && input.dm !== undefined) {
+    fail('invalid_input', 'Send channelId or dm, not both: a schedule posts in one place.');
+  }
+  if (input.scheduleId === undefined && (input.when.keep || (input.channelId === undefined && input.dm === undefined))) {
+    fail('invalid_input', 'A new schedule needs where it posts, a channelId or dm: "me", and a time: cron, once or inMinutes.');
   }
   if (input.scheduleId !== undefined && input.version === undefined) {
     fail('invalid_input', 'Send the version list_schedules returned with the scheduleId.');
@@ -588,6 +591,11 @@ export async function saveSchedule(
       if (existing && existing.schedule.taskText !== input.task && input.requiredConnections === undefined) {
         fail('invalid_input', connectionsNeeded);
       }
+      if (existing && movesSchedule(existing.schedule, input)) {
+        fail('invalid_input', 'A schedule keeps where it posts, so nothing changed.', {
+          nextStep: 'To post somewhere else, create a new schedule there and delete this one with delete_schedule.',
+        });
+      }
       const snapshot = existing?.snapshot ?? await deps.service.inspectWorkspace(context);
       const channelId = input.channelId ?? existing?.schedule.channelId ?? undefined;
       return [{
@@ -596,6 +604,8 @@ export async function saveSchedule(
         agentId: input.agentId,
         workspaceId: existing?.workspaceId ?? slackTeamId(snapshot),
         ...(channelId ? { channelId } : {}),
+        // Only the caller's own DM: the service finds it from who is signed in.
+        ...(!existing && input.dm === 'me' ? { destination: { kind: 'initiator_dm' as const } } : {}),
         ...(existing ? { routineId: existing.schedule.id, expectedVersion: existing.schedule.version } : {}),
         name: input.name,
         description: input.description ?? '',
@@ -612,8 +622,16 @@ export async function saveSchedule(
   });
   return changeResult(deps, context, result, {
     agentId: input.agentId,
-    summary: input.scheduleId ? 'Saved the schedule.' : 'Created the schedule. The Agent posts on it from now on.',
+    summary: input.scheduleId ? 'Saved the schedule.'
+      : input.dm ? (name) => `Created the schedule. It posts each run in a new thread in your DM with ${name}.`
+        : 'Created the schedule. The Agent posts on it from now on.',
   });
+}
+
+/** Whether a change names a place other than where the schedule posts now. */
+function movesSchedule(schedule: Schedule, input: In<typeof schemas.saveScheduleInput>): boolean {
+  if (schedule.destination.kind === 'direct_message') return input.channelId !== undefined;
+  return input.dm !== undefined || (input.channelId !== undefined && input.channelId !== schedule.channelId);
 }
 
 /** A change to one schedule; its result names the schedule's new version, not its Agent. */

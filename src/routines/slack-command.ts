@@ -200,11 +200,7 @@ export async function executeSlackScheduleCommand(
     await requireSchedulingAvailable(dependencies);
     const projection = command.schedule.kind === 'preserve'
       ? await preserveScheduleProjection(command, dependencies.routines, now())
-      : command.schedule.kind === 'cron'
-        ? normalizeRoutineSchedule(command.schedule.expression, command.timezone, now())
-        : command.schedule.kind === 'once'
-          ? normalizeOneTimeSchedule(command.schedule.localDateTime, command.timezone, now())
-          : normalizeRelativeOneTimeSchedule(command.schedule.minutes, command.timezone, now());
+      : scheduleTimingProjection(command.schedule, command.timezone, now());
     const existing = command.routineId
       ? await dependencies.routines.getRoutine(command.routineId)
       : undefined;
@@ -419,7 +415,21 @@ function isAuthorityFailureSafeState(
     routine.state === 'pending_authority';
 }
 
-function deterministicRoutineId(actionKey: string, itemId: string): string {
+/** A timing's next runs, or the RoutineStateError a save refuses it with. */
+export function scheduleTimingProjection(
+  schedule: Exclude<Extract<SlackScheduleCommand, { kind: 'save' }>['schedule'], { kind: 'preserve' }>,
+  timezone: string,
+  at: number,
+) {
+  return schedule.kind === 'cron'
+    ? normalizeRoutineSchedule(schedule.expression, timezone, at)
+    : schedule.kind === 'once'
+      ? normalizeOneTimeSchedule(schedule.localDateTime, timezone, at)
+      : normalizeRelativeOneTimeSchedule(schedule.minutes, timezone, at);
+}
+
+/** The routine a save that creates one makes, the same on every retry of that action. */
+export function deterministicRoutineId(actionKey: string, itemId: string): string {
   return `routine_${hashRoutineValue(`${actionKey}:${itemId}`).slice(0, 32)}`;
 }
 

@@ -420,7 +420,7 @@ export const FIVE_ZERO_TOOLS = {
   }),
   save_schedule: tool({
     title: 'Save a schedule',
-    description: 'Create a schedule (routine) that makes an Agent post in a Slack Channel on its own, or change one: its task, timing, time zone and whether it posts every time. The Agent posts on that schedule from then on. Changing one overwrites it; send its version from list_schedules. Applies at once.',
+    description: 'Create a schedule (routine) that makes an Agent post in a Slack Channel on its own, or change one: its task, timing, time zone and whether it posts every time. dm "me" in place of a channelId makes it post in your own direct messages with the Agent. The Agent posts on that schedule from then on. Changing one overwrites it; send its version from list_schedules. Applies at once.',
     input: schemas.saveScheduleInput,
     output: schemas.changeResultOutput,
     write: writeHints({ destructive: true }),

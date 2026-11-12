@@ -210,7 +210,9 @@ export const setAgentSkillInput = z.strictObject({
 });
 export const saveScheduleInput = z.strictObject({
   agentId: zAgentId,
-  channelId: zChannelId.optional().describe('Where it posts: a Channel the Agent answers in. Required for a new schedule.'),
+  channelId: zChannelId.optional().describe('Where it posts: a Channel the Agent answers in. A new schedule needs channelId or dm.'),
+  dm: z.literal('me').optional()
+    .describe('"me" posts in your own direct messages with the Agent, in a new thread it starts there, instead of a Channel. Only for a new schedule.'),
   scheduleId: zScheduleId.optional().describe('Omit to create a schedule; set to change one.'),
   version: zScheduleVersion.optional().describe('Required with scheduleId: the version list_schedules returned.'),
   name: zText(200),
