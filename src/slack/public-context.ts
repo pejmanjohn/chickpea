@@ -359,7 +359,11 @@ export async function assembleRetainedSlackContext(
     // must be omitted for this turn's watermark. No old version is invented.
     const fetched = rows.get(entry.messageTs);
     if (fetched?.contentVersionTs && (!entry.contentVersionTs ||
-        !atOrBeforeSlackWatermark(fetched.contentVersionTs, entry.contentVersionTs))) continue;
+        !atOrBeforeSlackWatermark(fetched.contentVersionTs, entry.contentVersionTs))) {
+      // Slack's copy of a post under an Agent's name names no Agent: the record does.
+      if (entry.role === 'agent') rows.set(entry.messageTs, { ...fetched, ...retainedAuthor(entry, fetched), role: 'agent' });
+      continue;
+    }
     rows.set(entry.messageTs, retainedContextMessage(entry, fetched));
   }
   const watermark = slackContextWatermark(turn, followUps);

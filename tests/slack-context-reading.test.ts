@@ -389,6 +389,28 @@ test('Slack\'s echo of an Agent\'s post leaves it the Agent\'s, in a Channel thr
   });
 });
 
+test('Slack\'s newer copy of an Agent\'s edited post keeps its text and the record\'s Agent', async () => {
+  await withStore(async (store) => {
+    const assignment = { runtimeContract: 'chickpea-v1', agentId: 'agent_oncall' } as const;
+    await recordDeliveredSlackAgentMessage(store, turn(), assignment, { messageTs: '1005.000100', text: '⏸️ Paused' });
+    // The install's own app reads the thread, and Slack's copy carries a later edit than the record.
+    const client = repliesClient([{ messages: [
+      { type: 'message', user: 'U_DANA', ts: ROOT, text: 'post the weekly summary here' },
+      { ...agentPostEcho('C1', '1005.000100', '▶️ Back on'), edited: { user: 'UBOT', ts: '1006.000000' } },
+    ] }]);
+    const hydrated = await hydrateTurnSlackContext({
+      client: client as never, turn: turn(), sharedAppReads: false, botUserId: 'UBOT', record: store,
+    });
+    const assembled = await assembleRetainedSlackContext(hydrated, turn(), { store, agentId: 'agent_oncall' });
+    const posted = assembled.messages.find((message) => message.ts === '1005.000100');
+    const line = assembleSlackPrompt(turn(), assembled).split('\n').find((row) => row.includes('; 1005.000100 '));
+    assert.deepEqual(
+      { role: posted?.role, agentId: posted?.agentId, text: posted?.text, prompt: line?.includes(` role=agent root=${ROOT}] `) },
+      { role: 'agent', agentId: 'agent_oncall', text: '▶️ Back on', prompt: true },
+    );
+  });
+});
+
 test('the thread record takes an Agent\'s row from its delivery only, whichever arrives first', async () => {
   await withStore(async (store) => {
     const assignment = { runtimeContract: 'chickpea-v1', agentId: 'agent_oncall' } as const;
