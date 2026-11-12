@@ -141,8 +141,9 @@ async function sendStep(
   provider: Provider,
   env: PlatformEnv,
   { purpose = 'reply', answer = anthropicAnswer() }: { purpose?: ModelRequestPurpose; answer?: string } = {},
-): Promise<{ sent: Sent; record: Record<string, unknown> }> {
+): Promise<{ sent: Sent; record: Record<string, unknown>; observed: string[] }> {
   const records: Record<string, unknown>[] = [];
+  const observed: string[] = [];
   const steps = new ModelStepMarks(() => 0, { info: (record) => records.push(record) });
   let sent: Sent | undefined;
   const network: typeof fetch = async (input, init) => {
@@ -161,7 +162,13 @@ async function sendStep(
   steps.observe(observation({ type: 'turn_request', turnId: 'step_1', purpose: 'agent', instanceId: 'agent_thread' }));
   await withModelAccess(grant(provider), env, purpose, () => steps.intercept({ type: 'model', turnId: 'step_1' }, async () => {
     const stream = registeredPiProvider(provider)!.streamSimple(
-      modelOf(provider), normalizeContext(context(provider)), { fetch: network, maxRetries: 0 },
+      modelOf(provider), normalizeContext(context(provider)), {
+        fetch: network,
+        maxRetries: 0,
+        onProviderStreamEvent: (event) => {
+          observed.push(String((event as { type?: unknown }).type));
+        },
+      },
     );
     await stream.result();
   }));
@@ -171,7 +178,7 @@ async function sendStep(
   assert.ok(sent, `pi-ai sent the ${provider} request`);
   const record = records.at(-1);
   assert.equal(record?.event, 'model_step');
-  return { sent, record: record! };
+  return { sent, record: record!, observed };
 }
 
 const EXPECTED_EDIT = {
@@ -186,8 +193,9 @@ const EXPECTED_EDIT = {
 // replaces pi-ai's own betas (interleaved thinking, fallbacks, thinking
 // binding) instead of joining them; a hook that drops or rewrites anything
 // else pi-ai built, `thinking.block_binding` included; settings other than
-// the design's; an excluded tool the request does not define; and the
-// streamed `message_delta`'s applied edits not reaching model_step.
+// the design's; an excluded tool the request does not define; the streamed
+// `message_delta`'s applied edits not reaching model_step; and the caller's
+// own stream observer replaced by the one that reads them.
 test('an own-key Anthropic step carries the clearing edit and its beta only with the variable on, keeps pi-ai\'s betas and request, and logs what the provider cleared', async (t) => {
   proxied(t);
   const off = await sendStep('anthropic', OFF);
@@ -211,6 +219,8 @@ test('an own-key Anthropic step carries the clearing edit and its beta only with
   );
   assert.equal(on.record.clearedToolUses, 43);
   assert.equal(on.record.clearedInputTokens, 517_000);
+  assert.deepEqual(on.observed, off.observed, 'the caller\'s own stream observer still sees every event');
+  assert.ok(on.observed.includes('message_delta'));
   assert.equal('sharedPrefix' in on.record, false, 'an own-key request still looks for no shared prefix');
 
   const none = await sendStep('anthropic', ON, { answer: anthropicAnswer({ applied_edits: [] }) });
@@ -263,10 +273,9 @@ function sharedPayload(): { id: SharedPrefixId; payload: Record<string, unknown>
   };
 }
 
-// Defects caught: the credits hook without the edit, the edit placed before
-// the shared prefix is chosen (so the prefix check sees another request),
-// the pin or the shared prefix's breakpoints lost, and the charge given
-// another prefix than the request carried.
+// Defects caught: the credits hook without the edit, the pin or the shared
+// prefix's breakpoints lost, and the charge given another prefix than the
+// request carried.
 test('a credits-funded Anthropic step keeps its pin and shared prefix and carries the clearing edit', async (t) => {
   proxied(t);
   resetPlatformFundingForTests();
