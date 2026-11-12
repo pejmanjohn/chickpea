@@ -98,6 +98,7 @@ const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
   slowestMethod: TOKEN,
   purpose: TOKEN,
   largestToolResultTool: /^[A-Za-z][A-Za-z0-9_-]{0,127}$/,
+  sharedPrefix: /^(?:none|[a-z]+\/[a-z_]{1,63})$/,
 };
 
 /**
@@ -1112,6 +1113,8 @@ export function emitGatewayDelivery(
 
 /** Requests started and not yet ended that one isolate keeps marks for. */
 const MODEL_STEP_OPEN_LIMIT = 64;
+/** Agent objects whose last request start one isolate remembers. */
+const MODEL_STEP_THREAD_LIMIT = 256;
 const FIRST_TOKEN_EVENTS: ReadonlySet<FlueObservation['type']> = new Set([
   'text_delta', 'thinking_start', 'thinking_delta', 'toolcall_delta',
 ]);
@@ -1146,23 +1149,42 @@ function modelRequestSize(input: ModelRequestInput): ModelRequestSize {
   };
 }
 
+/** What the model access proxy knows once a step's request ends, and the step's record does not. */
+export interface SettledModelRequest {
+  /** The provider's final cache writes; `cacheWrite1h` only where it reports the split (Anthropic). */
+  usage: { cacheWrite: number; cacheWrite1h?: number };
+  /** The shared prompt prefix the payload hook sent, null when it sent none, undefined when no hook ran. */
+  sharedPrefix: string | null | undefined;
+}
+
+/** What the model access proxy reports about the model step whose request it sends. */
+export interface ModelStepProbe {
+  /** The provider's first answer text reached the Worker, before any parser read it. */
+  upstreamFirstText(): void;
+  /** The proxy starts holding the step's terminal event for its charge; the returned call ends the hold. */
+  holdForCharge(): (settled: SettledModelRequest) => void;
+}
+
 interface OpenModelStep {
   readonly startedAt: number;
   firstTokenAt?: number;
   firstTextAt?: number;
   upstreamFirstTextAt?: number;
   size?: ModelRequestSize;
+  sincePreviousRequestMs?: number;
+  settled?: SettledModelRequest & { chargeWaitMs: number };
 }
 
-const upstreamFirstTextMarks = new AsyncLocalStorage<() => void>();
+const modelStepProbes = new AsyncLocalStorage<ModelStepProbe>();
 
-/**
- * Inside a model step's request, stamps the step's `upstreamFirstTextMs` the
- * first time it is called. The model access proxy calls it as the provider's
- * first answer text reaches the Worker, before any parser reads it.
- */
-export function upstreamFirstTextMark(): (() => void) | undefined {
-  return upstreamFirstTextMarks.getStore();
+/** Inside a model step's request, the probe that reports to that step's `model_step` record. */
+export function modelStepProbe(): ModelStepProbe | undefined {
+  return modelStepProbes.getStore();
+}
+
+function cacheWriteSplit(usage: SettledModelRequest['usage'] | undefined) {
+  if (usage?.cacheWrite1h === undefined) return {};
+  return { cacheWrite1hTokens: usage.cacheWrite1h, cacheWrite5mTokens: usage.cacheWrite - usage.cacheWrite1h };
 }
 
 /**
@@ -1170,23 +1192,36 @@ export function upstreamFirstTextMark(): (() => void) | undefined {
  * token (text, thinking, or a tool call's arguments), to its first non-empty
  * text, and to the provider's first text on the wire, and logs the model that
  * served it, Flue's duration, its token counts and its tool calls when its
- * `turn` ends, with the request's size measured at `turn_request`.
+ * `turn` ends, with the request's size measured at `turn_request` and the
+ * time since its Agent object's previous request. What only the proxy sees
+ * (the 1-hour cache writes, the shared prefix, the charge's hold) arrives
+ * through `modelStepProbe` before the step ends.
  * `inputTokens` excludes the cached input that `cachedInputTokens` counts.
  */
 export class ModelStepMarks {
   private readonly open = new Map<string, OpenModelStep>();
+  /** Each Agent object's last request start, in memory only: an isolate that restarts starts empty. */
+  private readonly lastRequestAt = new Map<string, number>();
 
   constructor(
     private readonly now: () => number = Date.now,
     private readonly sink?: RuntimeLatencySink,
   ) {}
 
-  /** Runs a Flue model operation with its open step's `upstreamFirstTextMark` in scope. */
+  /** Runs a Flue model operation with its open step's `modelStepProbe` in scope. */
   intercept<T>(operation: FlueExecutionOperation, next: () => Promise<T>): Promise<T> {
     const open = operation.type === 'model' ? this.open.get(operation.turnId) : undefined;
     if (!open) return next();
-    return upstreamFirstTextMarks.run(() => {
-      open.upstreamFirstTextAt ??= this.now();
+    return modelStepProbes.run({
+      upstreamFirstText: () => {
+        open.upstreamFirstTextAt ??= this.now();
+      },
+      holdForCharge: () => {
+        const heldAt = this.now();
+        return (settled) => {
+          open.settled = { ...settled, chargeWaitMs: this.now() - heldAt };
+        };
+      },
     }, next);
   }
 
@@ -1204,7 +1239,12 @@ export class ModelStepMarks {
         } catch {
           // A request that cannot be measured is still timed.
         }
-        this.open.set(turnId, { startedAt, ...(size ? { size } : {}) });
+        const previousAt = this.previousRequestAt(event.instanceId, startedAt);
+        this.open.set(turnId, {
+          startedAt,
+          ...(size ? { size } : {}),
+          ...(previousAt === undefined ? {} : { sincePreviousRequestMs: startedAt - previousAt }),
+        });
         if (this.open.size > MODEL_STEP_OPEN_LIMIT) this.open.delete(this.open.keys().next().value!);
         return;
       }
@@ -1239,12 +1279,26 @@ export class ModelStepMarks {
         inputTokens: usage?.input,
         cachedInputTokens: usage?.cacheRead,
         cacheWriteTokens: usage?.cacheWrite,
+        ...cacheWriteSplit(open?.settled?.usage),
         outputTokens: usage?.output,
         toolCalls: output?.content.filter((part) => part.type === 'toolCall').length,
         ...open?.size,
+        sincePreviousRequestMs: open?.sincePreviousRequestMs,
+        sharedPrefix: open?.settled?.sharedPrefix === null ? 'none' : open?.settled?.sharedPrefix,
+        chargeWaitMs: open?.settled?.chargeWaitMs,
       }, this.sink);
     } catch {
       // Observability is best effort and never changes the model request.
     }
+  }
+
+  /** The Agent object's previous request start, recording this one's in its place. */
+  private previousRequestAt(instanceId: string | undefined, startedAt: number): number | undefined {
+    if (instanceId === undefined) return undefined;
+    const previousAt = this.lastRequestAt.get(instanceId);
+    this.lastRequestAt.delete(instanceId);
+    this.lastRequestAt.set(instanceId, startedAt);
+    if (this.lastRequestAt.size > MODEL_STEP_THREAD_LIMIT) this.lastRequestAt.delete(this.lastRequestAt.keys().next().value!);
+    return previousAt;
   }
 }

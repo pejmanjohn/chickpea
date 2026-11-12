@@ -15,6 +15,7 @@ import {
   emitRelayAlarm,
   emitThreadRunnerAlarm,
   emitRuntimeLatency,
+  modelStepProbe,
   modelToken,
   ModelStepMarks,
   opaqueRunRef,
@@ -31,6 +32,7 @@ import {
   StoreBootMarks,
   timedStateRpc,
   TurnLatencyTracker,
+  type SettledModelRequest,
 } from '../src/observability/runtime-latency.ts';
 import type { SlackStateStore } from '../src/slack/claim-store.ts';
 import { stopNodeTurnRelay, wakeNodeTurnRelay } from '../src/slack/node-turn-relay.ts';
@@ -1223,6 +1225,62 @@ test('model_step carries its request\'s size and its largest tool result\'s size
   assert.equal(records[0]!.outcome, 'error', 'a failed step carries the sizes that may explain it');
   for (const record of records) assertContentFree(record);
   assert.doesNotMatch(JSON.stringify(records), /é|AAAA/);
+});
+
+// Defects caught: a gap measured from another Agent object's request, from
+// the previous request's end instead of its start, one carried into a fresh
+// isolate (it has no memory of the thread), and a gap on a thread's first request.
+test('model_step carries the time since its Agent object\'s previous request, and none for a first request or after a restart', () => {
+  const time = clock(10_000);
+  const { records, sink } = captureSink();
+  const steps = new ModelStepMarks(time.now, sink);
+  const step = (marks: ModelStepMarks, turnId: string, instanceId: string, runMs: number) => {
+    marks.observe(flueEvent({ type: 'turn_request', turnId, purpose: 'agent', instanceId }));
+    time.advance(runMs);
+    marks.observe(flueEvent({ type: 'turn', turnId, purpose: 'agent', durationMs: runMs, isError: false, response: {} }));
+    return records.at(-1)!.sincePreviousRequestMs;
+  };
+  assert.equal(step(steps, 'step_1', 'agent_thread_a', 4_000), undefined, 'a thread\'s first request');
+  time.advance(30_000);
+  assert.equal(step(steps, 'step_2', 'agent_thread_b', 1_000), undefined, 'another thread\'s first request');
+  time.advance(6_000);
+  assert.equal(step(steps, 'step_3', 'agent_thread_a', 2_000), 41_000, 'from step_1\'s start to step_3\'s start');
+  assert.equal(step(new ModelStepMarks(time.now, sink), 'step_4', 'agent_thread_a', 500), undefined,
+    'a restarted isolate remembers no earlier request');
+});
+
+// Defects caught: the 1-hour split dropped or the 5-minute part logged as the
+// total, a shared prefix ID refused by the log's shape or logged when no hook
+// ran, `none` missing when the hook ran without one, the charge's hold timed
+// from the step's start, and a probe outside a model step.
+test('model_step carries what the proxy reports as it settles: the cache write split, the shared prefix and the charge\'s hold', async () => {
+  const time = clock(0);
+  const { records, sink } = captureSink();
+  const steps = new ModelStepMarks(time.now, sink);
+  assert.equal(modelStepProbe(), undefined, 'no probe outside a model step');
+  const settle = async (turnId: string, settled: SettledModelRequest) => {
+    steps.observe(flueEvent({ type: 'turn_request', turnId, purpose: 'agent', instanceId: `agent_${turnId}` }));
+    await steps.intercept({ type: 'model', turnId }, async () => {
+      time.advance(1_500);
+      const release = modelStepProbe()!.holdForCharge();
+      time.advance(240);
+      release(settled);
+    });
+    steps.observe(flueEvent({ type: 'turn', turnId, purpose: 'agent', durationMs: 1_740, isError: false,
+      response: { usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: settled.usage.cacheWrite, totalTokens: 15, cost: {} } } }));
+    const { cacheWriteTokens, cacheWrite1hTokens, cacheWrite5mTokens, sharedPrefix, chargeWaitMs } = records.at(-1)!;
+    return { cacheWriteTokens, cacheWrite1hTokens, cacheWrite5mTokens, sharedPrefix, chargeWaitMs };
+  };
+  assert.deepEqual(await settle('step_shared', { usage: { cacheWrite: 1_500, cacheWrite1h: 1_000 }, sharedPrefix: 'user/interactive_streaming' }), {
+    cacheWriteTokens: 1_500, cacheWrite1hTokens: 1_000, cacheWrite5mTokens: 500, sharedPrefix: 'user/interactive_streaming', chargeWaitMs: 240,
+  });
+  assert.deepEqual(await settle('step_missed', { usage: { cacheWrite: 900, cacheWrite1h: 0 }, sharedPrefix: null }), {
+    cacheWriteTokens: 900, cacheWrite1hTokens: 0, cacheWrite5mTokens: 900, sharedPrefix: 'none', chargeWaitMs: 240,
+  });
+  assert.deepEqual(await settle('step_unsplit', { usage: { cacheWrite: 700 }, sharedPrefix: undefined }), {
+    cacheWriteTokens: 700, cacheWrite1hTokens: undefined, cacheWrite5mTokens: undefined, sharedPrefix: undefined, chargeWaitMs: 240,
+  }, 'a provider that reports no split, on a request no payload hook built');
+  for (const record of records) assertContentFree(record);
 });
 
 test('turn_latency omits durations it cannot measure and never throws', () => {

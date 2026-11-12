@@ -53,7 +53,7 @@ import {
   OPENAI_PLATFORM_COMPAT_PROVIDER_ID,
   isRevisionedAlias,
 } from '../model-catalog/provider-alias.ts';
-import { upstreamFirstTextMark } from '../observability/runtime-latency.ts';
+import { modelStepProbe, type ModelStepProbe } from '../observability/runtime-latency.ts';
 import { isRecord } from '../security/content-validation.ts';
 import {
   mediaType,
@@ -698,9 +698,11 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
   const listPriced = platformGrant && listPricedProvider(platformGrant.providerId);
   const reporting = providerId === 'openrouter' ? 'openrouter' : listPriced;
   const reader = reporting && providerReportReader(reporting, options?.fetch);
+  const probe = modelStepProbe();
   const firstText = providerId && FIRST_TEXT_EVENTS[providerId];
-  const markFirstText = firstText && upstreamFirstTextMark();
-  const sentFetch = markFirstText ? firstTextFetch(reader?.fetch ?? options?.fetch, firstText, markFirstText) : reader?.fetch;
+  const sentFetch = probe && firstText
+    ? firstTextFetch(reader?.fetch ?? options?.fetch, firstText, probe.upstreamFirstText)
+    : reader?.fetch;
   const payloadMode = platformGrant
     ? listPriced && LIST_PRICE_MODES[listPriced]
     : bound && CUSTOMER_PAYLOAD_MODES[bound.grant.providerId];
@@ -710,7 +712,7 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
     purpose: cell.purpose,
   });
   const send = (start: (model: TModel) => AssistantMessageEventStream) =>
-    sendRequest(cell, sent, request, platformGrant, reader, payloadHook, start);
+    sendRequest(cell, sent, request, platformGrant, reader, payloadHook, probe, start);
   if (!bound) return { model, options, redact: (stream) => stream, send };
   const { access } = bound;
   return {
@@ -734,10 +736,11 @@ function sendRequest<TModel extends Model<Api>>(
   platformGrant: ModelAccessGrant | undefined,
   reader: ProviderReportReader | undefined,
   payloadHook: RequestPayload | undefined,
+  probe: ModelStepProbe | undefined,
   start: (model: TModel) => AssistantMessageEventStream,
 ): AssistantMessageEventStream {
   const { installationId } = cell;
-  const settle = recorder || platformGrant ? settleRequest(cell, request, platformGrant, reader, payloadHook) : undefined;
+  const settle = recorder || platformGrant ? settleRequest(cell, request, platformGrant, reader, payloadHook, probe) : undefined;
   if (!installationId && !platformGrant) {
     const source = start(model);
     if (!settle) return source;
@@ -822,10 +825,18 @@ function settleRequest(
   platformGrant: ModelAccessGrant | undefined,
   reader: ProviderReportReader | undefined,
   payloadHook: RequestPayload | undefined,
+  probe: ModelStepProbe | undefined,
 ): (final: AssistantMessage) => Promise<void> {
   const listPriced = platformGrant && listPricedProvider(platformGrant.providerId);
   const mode = listPriced && LIST_PRICE_MODES[listPriced];
-  return (final) => heldForCharge(cell, settleRecord(cell.env, request, platformGrant, payloadHook?.sharedPrefix() ?? null, async () => {
+  return async (final) => {
+    const release = probe?.holdForCharge();
+    const sharedPrefix = payloadHook?.sharedPrefix();
+    await heldForCharge(cell, settleRecord(cell.env, request, platformGrant, sharedPrefix ?? null, () => buildRecord(final)));
+    release?.({ usage: final.usage, sharedPrefix });
+  };
+
+  async function buildRecord(final: AssistantMessage): Promise<ModelRequestRecord> {
     const finishedAt = Date.now();
     const report = await reader?.report() ?? NO_PROVIDER_REPORT;
     const record = modelRequestRecord({
@@ -844,7 +855,7 @@ function settleRequest(
       });
     }
     return record;
-  }));
+  }
 }
 
 /** The caller waits for the request's charge; the cell's scope waits for its record (see runInCell). */
