@@ -70,13 +70,54 @@ export interface Memory {
  * The widget state a card writes: `modelContent` is what it told the host's
  * model, and `privateContent` holds the same sentences and the outcome for a
  * card that mounts again. ChatGPT hides `privateContent` from its model only
- * beside a `modelContent`, even an empty one (probe 12), so both always go.
+ * beside a `modelContent`, even an empty one (probe 12), so both always go,
+ * in one write (`hostWrites`).
  * `modelContent` holds no ID, token or instructions. `privateContent` holds
  * no instructions, and one token only: a practice run's, while it is still
  * going (first-answer.ts `stillAnswering`).
  */
 export function keptState({ told = [], outcome }: { told?: string[] | undefined; outcome?: unknown }, version: number) {
   return { modelContent: told.join('\n'), privateContent: { card: { version, told, ...outcome === undefined ? {} : { outcome } } } };
+}
+
+/** A sentence a host kept that is longer than any a card writes is not one. */
+const TOLD_SENTENCE_MAX = 1_000;
+
+/** What a card of this version kept in its host's widget state, read as untrusted. */
+export function keptMemory(saved: unknown, version: number): Memory | undefined {
+  const content = isRecord(saved) ? saved.privateContent : undefined;
+  const card = isRecord(content) && isRecord(content.card) ? content.card : undefined;
+  if (card?.version !== version || !Array.isArray(card.told)) return undefined;
+  const told = card.told.filter((line): line is string => typeof line === 'string' && line.length <= TOLD_SENTENCE_MAX);
+  return { told: boundedTold(told), ...card.outcome === undefined ? {} : { outcome: card.outcome } };
+}
+
+/** What a card sends its host after a step, besides its calls, timers, links and messages. */
+export type HostWrite =
+  /** The widget state of a host that keeps one: what the card told the model, and what it keeps for a remount. */
+  | { type: 'state'; state: ReturnType<typeof keptState> }
+  /** `ui/update-model-context`, to a host that keeps no widget state. */
+  | { type: 'context'; text: string };
+
+/**
+ * What the host's model learns of a step, and what a host that keeps widget
+ * state keeps of it. ChatGPT keeps a `ui/update-model-context` in the place
+ * it keeps a card's widget state, so one sent after the state replaced it:
+ * a reloaded card found nothing it had kept, and offered Create, Save or
+ * Turn off again (live check 2 bug 3, dry run M4). A host with widget state
+ * gets only the state, whose `modelContent` its model reads; any other host
+ * gets the model update. The state is written when what the card told or
+ * its outcome moved, never for the result it mounts with.
+ */
+export function hostWrites<V extends { kind: string }>(
+  before: CardState<V>,
+  event: CardEvent<string>,
+  next: Step<V>,
+  host: { keepsState: boolean; version: number },
+): HostWrite[] {
+  if (!host.keepsState) return next.effects.flatMap((effect): HostWrite[] => effect.type === 'context' ? [{ type: 'context', text: effect.text }] : []);
+  const moved = next.state.told !== before.told || next.state.outcome !== before.outcome;
+  return moved && event.type !== 'result' ? [{ type: 'state', state: keptState(next.state, host.version) }] : [];
 }
 
 export interface Call {
@@ -97,7 +138,7 @@ export type Effect =
    * What the card did, for the host's model on its next turn. A model's
    * `tell` names the newest press's outcome, never what the card shows;
    * `sequenced` sends it with everything the card told before, because each
-   * update replaces this card's last one.
+   * update replaces this card's last one. `hostWrites` says how it goes.
    */
   | { type: 'context'; text: string };
 
