@@ -344,10 +344,6 @@ test('a stale Slack group mapping from an interrupted create repairs into the Ag
     config.getAgent = async () => { throw reset; };
     try {
       await assert.rejects(prepared.validateLease(), (error: unknown) => error === reset);
-      await assert.rejects(
-        prepared.validateReceiptLease?.(prepared.memoryEpoch) ?? Promise.reject(new Error('missing')),
-        (error: unknown) => error === reset,
-      );
       config.getAgent = async () => { throw new Error('unknown agent'); };
       assert.equal(await prepared.validateLease(), false, 'a real lookup failure still rejects the lease');
       // A merely retryable error is not a free store-disconnect retry, but it
@@ -360,20 +356,21 @@ test('a stale Slack group mapping from an interrupted create repairs into the Ag
       Reflect.deleteProperty(config, 'getAgent');
     }
     await getMemoryStateStore().putAgentMemory({ agentId: agent.id, expectedRevision: 1, body: '' });
-    assert.equal(await prepared.validateLease(), false, 'forget must suppress the stale model draft');
-    assert.equal(await prepared.validateReceiptLease?.(2), true, 'verified current receipt may acknowledge without disclosing memory');
-    assert.equal(await prepared.validateReceiptLease?.(1), false);
+    assert.equal(await prepared.validateLease(), true, 'a forget never holds back the reply');
     await getMemoryStateStore().putAgentMemory({ agentId: agent.id, expectedRevision: 2, body: 'Second write.' });
-    assert.equal(await prepared.validateReceiptLease?.(3), false, 'a receipt two writes past the snapshot needs a chain');
-    assert.equal(await prepared.validateReceiptLease?.(3, 2), false, 'a chain must start at the injected revision');
-    assert.equal(await prepared.validateReceiptLease?.(3, 1), true, 'a chain of own writes from the injected revision holds');
-    assert.equal(await prepared.validateReceiptLease?.(2, 1), false, 'a chained receipt must still be live');
+    assert.equal(await prepared.validateLease(), true, "another writer's save never holds back the reply");
+    // Another Agent's active grant in the same Channel is not this Agent's.
+    await config.putAgentChannelGrant({
+      workspaceId: turn.workspaceId, channelId: turn.channelId, agentId: 'agent_default',
+      status: 'active', createdByMembershipId: 'membership_owner',
+      channelLabel: 'support', channelIsPrivate: false,
+    });
     await config.putAgentChannelGrant({
       workspaceId: turn.workspaceId, channelId: turn.channelId, agentId: agent.id,
       status: 'needs_attention', createdByMembershipId: 'membership_owner',
       channelLabel: 'support', channelIsPrivate: false,
     });
-    assert.equal(await prepared.validateReceiptLease?.(3, 1), false, 'receipt never bypasses channel revocation');
+    assert.equal(await prepared.validateLease(), false, 'a Channel grant no longer active ends the lease');
 
   } finally {
     closeNodeStateStores();
@@ -472,6 +469,14 @@ test('an explicit Chickpea mention inside a DM keeps a valid delivery lease', as
     });
     assert.doesNotMatch(prepared.conversationKey, /:workspace-management$/);
     assert.equal(await prepared.validateLease(), true);
+    const memory = await getMemoryStateStore().getAgentMemory(routed.assignment.agentId);
+    await getMemoryStateStore().putAgentMemory({
+      agentId: routed.assignment.agentId, expectedRevision: memory.revision, body: 'Saved by another run.',
+    });
+    assert.equal(await prepared.validateLease(), true, "another writer's save never holds back a DM reply");
+    const live = await config.getWorkspaceInstallation(turn.workspaceId);
+    await config.updateWorkspaceInstallation(turn.workspaceId, { health: 'revoked' }, live!.revision);
+    assert.equal(await prepared.validateLease(), false, 'a revoked installation ends the lease');
   } finally {
     closeNodeStateStores();
     if (previousStatePath === undefined) delete process.env.SLACK_STATE_DB_PATH;
@@ -626,6 +631,8 @@ test("a Channel lease asks Slack beside its store reads, and the store's answer 
     };
     const slackCalls: string[] = [];
     let rateLimited = false;
+    let botInChannel = true;
+    let members = [turn.userId, 'U_CHICKPEA'];
     const client = {
       auth: { test: async () => ({ user_id: 'U_CHICKPEA' }) },
       conversations: {
@@ -634,11 +641,11 @@ test("a Channel lease asks Slack beside its store reads, and the store's answer 
           if (rateLimited) {
             throw new SlackTransportError('conversations.info', 'gateway_rate_limited', { retryable: true });
           }
-          return { channel: { id: turn.channelId, context_team_id: turn.workspaceId, is_member: true } };
+          return { channel: { id: turn.channelId, context_team_id: turn.workspaceId, is_member: botInChannel } };
         },
         members: async () => {
           slackCalls.push('conversations.members');
-          return { members: [turn.userId, 'U_CHICKPEA'] };
+          return { members };
         },
       },
       users: {
@@ -678,8 +685,18 @@ test("a Channel lease asks Slack beside its store reads, and the store's answer 
     assert.equal(await lease, true);
 
     await getMemoryStateStore().putAgentMemory({ agentId: agent.id, expectedRevision: 0, body: 'Changed mid-run.' });
+    assert.equal(await prepared.validateLease(), true, 'a changed memory never ends the lease');
+    members = [turn.userId];
+    assert.equal(await prepared.validateLease(), false, 'the bot missing from the member list ends the lease');
+    members = [turn.userId, 'U_CHICKPEA'];
+    botInChannel = false;
+    assert.equal(await prepared.validateLease(), false, 'Slack no longer showing the bot in the Channel ends the lease');
+    botInChannel = true;
+    assert.equal(await prepared.validateLease(), true);
+    const live = await config.getAgent(agent.id);
+    await config.updateAgent(agent.id, { enabled: false }, live.revision);
     rateLimited = true;
-    assert.equal(await prepared.validateLease(), false, "a changed memory ends the lease, whatever Slack says");
+    assert.equal(await prepared.validateLease(), false, 'a disabled Agent ends the lease, whatever Slack says');
   } finally {
     closeNodeStateStores();
     if (previousStatePath === undefined) delete process.env.SLACK_STATE_DB_PATH;

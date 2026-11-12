@@ -406,6 +406,7 @@ function dependencies(events: string[] = []) {
       memoryEpoch: 1,
       validateMemoryLease: async () => true,
       confirmMemory: async () => undefined,
+      matchesApartFromMemory: (dispatched: string) => dispatched === `Execute ${run.id}`,
     }),
   };
 }

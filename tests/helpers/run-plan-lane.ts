@@ -261,6 +261,7 @@ export async function freezeRoutineFixturePlan(
         memoryEpoch: 3,
         validateMemoryLease: async () => true,
         confirmMemory: async () => undefined,
+        matchesApartFromMemory: (dispatched: string) => dispatched === `Execute ${occurrence.id}`,
       }),
       handle: {
         id: 'routineagent_run_plan',

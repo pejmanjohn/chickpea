@@ -417,8 +417,7 @@ export async function executeRoutineOccurrence(
     });
     modelSettled = true;
     if (
-      prepared.prompt.prompt !== executionPrompt(prepared.envelope) ||
-      prepared.prompt.memoryEpoch !== executionInitialData(prepared.envelope).runtimePlan.memoryEpoch ||
+      !prepared.prompt.matchesApartFromMemory(executionPrompt(prepared.envelope)) ||
       !(await prepared.prompt.validateMemoryLease())
     ) {
       throw new RoutineRuntimeError(
