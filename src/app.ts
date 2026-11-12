@@ -55,6 +55,8 @@ import { runFeeInterceptor } from './config/run-fee-interceptor.ts';
 import { observeModelAccess } from './config/model-access.ts';
 import { workspaceRegistryInterceptor } from './sandbox/workspace-registry.ts';
 import { emitMcpConnectionUnavailable } from './config/mcp-unavailable.ts';
+import { mcpToolResultBoundInterceptor } from './config/mcp-tool-result-bound.ts';
+import { providerStreamErrorTurnInterceptor } from './model-compat/provider-stream-errors.ts';
 import {
   observeResponseMetadata,
   responseMetadataInterceptor,
@@ -210,6 +212,23 @@ instrument({
   key: Symbol.for('chickpea.mcp-connection-unavailable'),
   interceptor: async (_operation, _context, next) => next(),
   observe: (event) => emitMcpConnectionUnavailable(event),
+  dispose() {},
+});
+
+// Every MCP tool result the model sees is at most 128 KiB.
+instrument({
+  key: Symbol.for('chickpea.mcp-tool-result-bound'),
+  interceptor: mcpToolResultBoundInterceptor,
+  observe() {},
+  dispose() {},
+});
+
+// The code of an error a provider sent inside a model's stream, for the
+// agent model turn failed line.
+instrument({
+  key: Symbol.for('chickpea.provider-stream-error-turn'),
+  interceptor: providerStreamErrorTurnInterceptor,
+  observe() {},
   dispose() {},
 });
 

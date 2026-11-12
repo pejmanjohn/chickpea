@@ -29,10 +29,14 @@ interface McpHttpTelemetryDependencies {
 
 const MAX_INSPECTED_BODY_BYTES = 64 * 1024;
 const TOOL_NAME_PATTERN = /^[A-Za-z0-9_.:/-]{1,128}$/;
+/** A `Response` with these cannot have a body. */
+const NULL_BODY_STATUSES = new Set([101, 204, 205, 304]);
 
 /**
- * Observe one MCP HTTP attempt without consuming response bodies or recording
- * URLs, headers, arguments, SQL, prompts, results, tokens, or error text.
+ * Observe one MCP HTTP attempt without recording URLs, headers, arguments,
+ * SQL, prompts, results, tokens, or error text. `durationMs` runs to the
+ * headers. A tool call is logged when its body ends, with the bytes read:
+ * a streamed result may have no `Content-Length`.
  */
 export function withMcpHttpTelemetry(
   fetchFn: typeof fetch,
@@ -46,16 +50,21 @@ export function withMcpHttpTelemetry(
     const request = requestFacts(input, init);
     try {
       const response = await fetchFn(input, init);
-      safelyEmit(emit, {
+      const durationMs = elapsed(startedAt, now());
+      const line = (responseBytes: number | null): McpHttpTelemetryEvent => ({
         event: 'chickpea.mcp.http',
         connectionId: context.connectionId,
         authMode: context.authMode,
         ...request,
         status: response.status,
         outcome: httpOutcome(request.httpMethod, response),
-        durationMs: elapsed(startedAt, now()),
-        responseBytes: contentLength(response.headers),
+        durationMs,
+        responseBytes,
       });
+      if (request.rpcMethod === 'tools/call' && response.body && !NULL_BODY_STATUSES.has(response.status)) {
+        return countedResponse(response, (bytes) => safelyEmit(emit, line(bytes)));
+      }
+      safelyEmit(emit, line(contentLength(response.headers)));
       return response;
     } catch (error) {
       safelyEmit(emit, {
@@ -123,6 +132,35 @@ function rpcFacts(body: string): Pick<McpHttpTelemetryEvent, 'rpcMethod' | 'tool
 function httpOutcome(httpMethod: string, response: Response): McpHttpOutcome {
   if (response.ok) return 'ok';
   return httpMethod === 'GET' && response.status === 405 ? 'stream_unavailable' : 'http_error';
+}
+
+/** The same response; `done` gets the bytes the client read, once: at the body's end, failure or cancel. */
+function countedResponse(response: Response, done: (bytes: number) => void): Response {
+  const reader = response.body!.getReader();
+  let bytes = 0;
+  let open = true;
+  const end = () => {
+    if (open) done(bytes);
+    open = false;
+  };
+  return new Response(new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const chunk = await reader.read().catch((error: unknown) => {
+        end();
+        throw error;
+      });
+      if (chunk.done) {
+        end();
+        return controller.close();
+      }
+      bytes += chunk.value.byteLength;
+      controller.enqueue(chunk.value);
+    },
+    cancel(reason) {
+      end();
+      return reader.cancel(reason);
+    },
+  }), response);
 }
 
 function contentLength(headers: Headers | undefined): number | null {
