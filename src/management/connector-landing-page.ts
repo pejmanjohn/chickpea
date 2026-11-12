@@ -583,7 +583,10 @@ function connectorLogo(setup: ManagementSetupRecord, extraClass = ''): string {
   if (!logo) {
     return `<span class="${className} connector-logo-fallback"${style} aria-hidden="true">${escapeHtml(monogram(setup.target.targetLabel))}</span>`;
   }
-  if ('raster' in logo && logo.raster || 'full' in logo && logo.full) {
+  if (logo.raster) {
+    return `<span class="${className} connector-logo-raster"${style} aria-hidden="true">${logo.svg}</span>`;
+  }
+  if (logo.full) {
     return `<span class="${className}"${style} aria-hidden="true">${logo.svg}</span>`;
   }
   return `<span class="${className}"${style} aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor">${logo.svg}</svg></span>`;
@@ -788,6 +791,7 @@ body {
   padding: 7px;
   width: 48px;
 }
+.connector-row .connector-logo-raster { border-radius: 11px; padding: 0; }
 .connector-logo {
   align-items: center;
   background: var(--card);
@@ -804,6 +808,8 @@ body {
 .connector-logo svg { display: block; height: 100%; width: 100%; }
 .connector-logo > svg { fill: currentColor; }
 .connector-logo svg[width] { height: 100%; width: 100%; }
+.connector-logo-raster { overflow: hidden; padding: 0; }
+.connector-logo-raster img { display: block; height: 100%; object-fit: cover; width: 100%; }
 .connector-logo-fallback { background: var(--connector-accent, #FF7A59); color: #fff; font-weight: 850; }
 .choice-block {
   border-bottom: 0;
