@@ -330,7 +330,7 @@ channel IDs, settings keys or values, or error text. Emission never throws.
 | `state_rpc_summary` | Once per scope: a direct Slack delivery on Cloudflare (`slack_delivery`, from Core's handler to the end of its admission chain), or a relay attempt of one turn (`turn`) | `scope`, `turnRef` (`turn` only), `calls`, `rounds`, `totalMs`, `busyMs`, `failed`, `slowestMethod`, `slowestMs`, `spanMs`, `receiptToStartMs` (`slack_delivery` only), `path` (`slack_delivery` only: `store` when the state store admitted it in one call, `worker` when this Worker admitted it, `fallback` when the store could not take the call or its admission failed), `reason` (with `fallback`: the `state_rpc_fallback` reason, or `store_failed` when the store answered a failure or the call was never sent: the Worker does not admit the delivery, "Slack event intake failed" is logged beside it, and `turns` on the store's `slack_store_admission` record says whether it committed a turn before it failed), `callsBeforeModelStart`, `roundsBeforeModelStart`, `busyMsBeforeModelStart` (`turn` only: see below) |
 | `slack_store_admission` | Once per Slack delivery a state store admits itself (`CHICKPEA_SLACK_ADMISSION=store`, Cloudflare) | `outcome` (`processed`, `refused`, `failed`), `reason` (with `refused`: `recovery_only`, `installation`), `turns` (the turns its canonical admissions committed; one admitted without one, such as an edit's or a legacy turn, is not counted), `rpcCalls` (calls the store made to itself over RPC while admitting: 0, or admission built a store from its env), `orderWaitMs` (the wait for its thread's earlier messages), `rateLimited` (Slack calls rate-limited while admitting; the store fails them at once instead of waiting out `Retry-After`), `receiptToStartMs`, `durationMs` (through the first status and the hand-off) |
 | `state_rpc_fallback` | When a Worker's call to a state store method added in a later release rejects, and the Worker takes the older path once (`withStoreFallback`). A deploy leaves a store on its old code for up to 5 minutes, so `method_missing` is expected only then | `method` (the newer RPC), `reason` (`method_missing`: the store's code lacks it; `disconnected`: the store was replaced mid-call; `rejected`: any other rejection) |
-| `model_step` | Once per model request an agent makes, logged by the object that makes it (both lanes) | `turnRef` (a Slack thread's request), `modelToken` (the model that served the request), `purpose` (`agent`, `compaction`, `compaction_prefix`), `outcome` (the provider's finish reason, such as `stop` or `toolUse`, or `error`), `durationMs`, `firstTokenMs`, `firstTextMs`, `upstreamFirstTextMs`, `inputTokens`, `cachedInputTokens`, `cacheWriteTokens`, `outputTokens`, `toolCalls`, and the request's size: `requestBytes` (UTF-8 bytes of the model input as JSON, as Flue assembled it), `toolResults` (tool results in it), `largestToolResultBytes` (UTF-8 bytes of the largest one's text) and `largestToolResultTool` (its tool's name) |
+| `model_step` | Once per model request an agent makes, logged by the object that makes it (both lanes) | `turnRef` (a Slack thread's request), `modelToken` (the model that served the request), `purpose` (`agent`, `compaction`, `compaction_prefix`), `outcome` (the provider's finish reason, such as `stop` or `toolUse`, or `error`), `durationMs`, `firstTokenMs`, `firstTextMs`, `upstreamFirstTextMs`, `inputTokens`, `cachedInputTokens`, `cacheWriteTokens`, `outputTokens`, `toolCalls`, and the request's size: `requestBytes` (UTF-8 bytes of the model input as JSON, as Flue assembled it), `toolResults` (tool results in it), `largestToolResultBytes` (UTF-8 bytes of the largest one's text) and `largestToolResultTool` (its tool's name), `systemPromptHash`, `systemPromptBytes`, `toolsHash` and `toolsBytes` (see below), and `cacheWrite1hTokens` and `cacheWrite5mTokens` (`cacheWriteTokens` split by cache lifetime), `sincePreviousRequestMs`, `sharedPrefix` and `chargeWaitMs` (see below) |
 | `gateway_delivery` | Once per authenticated gateway delivery at Worker admission (Cloudflare) | `transport` (`http`, `socket`), `deliveryKind` (`event`, `agent_selected`, `channel_agent_add`), `eventType` and `subtype` (Slack's event vocabulary), `outcome` (`accepted`, `duplicate`, `rejected`, `failed`, `filtered`), `lagMs`, `slackLagMs`, socket only: `source` (`store`, `recent`, `filter`), `filterReason`, `queueMs`, `admitMs`, `inFlight`, `sessionPhase`, `sessionHealth`, `sessionAttempt`, `sessionGeneration`, `sessionAgeMs` |
 | `slack_read` | Once per Slack `conversations.history` or `conversations.replies` read for context or a read tool | `source` (`prefetch`, `tool`), `method` (`history`, `replies`), `outcome` (`ok`, `refused` by the shared read budget, `rate_limited`), `gated` (the shared app's one-a-minute budget applies), `limit`, `returned`, `includesRoot`, `reachesAnchor` (the page reached the triggering message), `hasCursor`, `order` (`oldest_first`, `newest_first`, `mixed`) |
 | `interaction_judgment` | Once per guaranteed Slack turn (a DM or a mention) the turn judged itself, after its classifier settled (both lanes) | `turnRef`, `recordedBy` (`shortcut`, `clef`, `model`, `unrecorded`), `basis` (the recorded disposition), `basisMs` (from the judgment's start in the attempt to the recorded basis: see below), `earlyMs` (the judgment adopted Clef calls its executor started this long before it), `rejudged` (Clef calls started before the fold asked about a request the fold then changed, so the judgment dropped them and asked Clef again), `clef` (`read`, `unavailable`, `timeout`, `error`, `unparseable`, `skipped`), `clefMs`, `clefInputTokens` (Clef is platform infrastructure, so this is where its cost is counted), `clefChoice`, `clefTop`, `clefTextMass` (P(reply) + P(work)) and `clefMemory` (each in thousandths), `gate` (`dispatch`, `await_model`), `clefLate` (Clef would have dispatched but the model recorded first), `model` (the classifier's disposition), `modelFailed`, `modelMs`, `refinement` (after a Clef basis: `none`, `labels`, `disagreed`, `model_unavailable`), `agreed` (Clef's disposition equals the model's), and from Clef's separate management call (absent after a shortcut): `management` (`read`, `unavailable`, `timeout`, `error`, `unparseable`), `managementMs`, `managementInputTokens`, `managementTop` (its noul, in thousandths), `managementFired` (at or above 0.5, so the turn's first request mounts the workspace change tools) |
@@ -713,6 +713,44 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   measured at `turn_request`, so a request the provider refused still carries
   them: a failed step with a `largestToolResultBytes` near the model's window
   points at that tool's result.
+- `systemPromptHash` and `toolsHash` are the first 8 hex characters of the
+  SHA-256 of the request's system prompt and of its tools as JSON, as Flue
+  assembled them, before the proxy's payload hook. `systemPromptBytes` and
+  `toolsBytes` are their UTF-8 sizes. They say that a part changed, never
+  what it holds. A step with `cacheWriteTokens` above 0 whose
+  `systemPromptHash` differs from the same Agent object's previous step is a
+  rewrite after the system prompt changed, as when the Agent's memory did.
+  Each pair is absent when the request has no such part.
+- More `model_step` fields say why a step's prompt cache missed and what
+  held its end. The model access proxy reports all but
+  `sincePreviousRequestMs` as the request settles, so a request it refused
+  before sending carries none of those.
+  - `cacheWrite1hTokens` and `cacheWrite5mTokens` split `cacheWriteTokens` by
+    lifetime, from the provider's final usage: Anthropic's
+    `cache_creation.ephemeral_1h_input_tokens`, and the rest of
+    `cache_creation_input_tokens`. Both are absent for providers that do not
+    report the split, OpenAI's included.
+  - `sincePreviousRequestMs` is from the start of the previous model request
+    the same Agent object made, of any purpose, to this request's start.
+    Each isolate keeps the last start of up to 256 Agent objects in memory
+    and writes nothing. The field is absent on an object's first request in
+    its isolate: a new thread, or
+    the first request after the object left memory with its isolate. It is
+    also absent after 256 other objects made requests in that isolate since
+    the object's last one. A first
+    step with `cachedInputTokens` 0 and `sincePreviousRequestMs` above
+    300,000 points at a 5-minute cache entry that expired.
+  - `sharedPrefix` is the shared prompt prefix the request carried, the ID
+    its platform charge receives (`user/interactive_streaming`: the Agent
+    kind, then the capability tools mounted after the universal ones). It is
+    `none` when a payload hook ran and the request carried no shared
+    prefix: a miss, a reduced request, or OpenAI's cache sharing, which
+    names none on a platform-funded or an own-key request. It is absent when
+    no hook ran, as on an own-key Anthropic request.
+  - `chargeWaitMs` is how long the proxy held the step's end (Pi's `done` or
+    `error` event) to build its usage record and settle a platform-funded
+    request's charge, at most 2 s. It is 0 on a customer-funded request,
+    which holds nothing for a charge.
 - A Slack Agent's failed model step also logs `[chickpea] agent model turn
   failed:` with the provider's facts, never its message: `providerFailureKind`
   `http` with `providerHttpStatus` and the error body's `providerErrorType` and
