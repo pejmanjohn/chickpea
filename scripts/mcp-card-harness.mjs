@@ -1398,7 +1398,7 @@ try {
     await browser.waitForTitle(/^✓ Saved Renewals Desk$/);
     await browser.click('try_once');
     await shows('/This workspace is out of usage for now, so I can\'t start this one\./', 'the funding refusal');
-    await browser.waitForTitle(/^Renewals Desk after this change$/);
+    await browser.waitForTitle(/^Couldn't practice with Renewals Desk$/);
     await plain('Try it again refused');
     await shot('5-try-again-refused');
     current.slack.guest = true;

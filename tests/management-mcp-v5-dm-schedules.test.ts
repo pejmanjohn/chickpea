@@ -9,7 +9,11 @@ import { createWorkspaceManagementMcpServer } from '../src/management/mcp.ts';
 import { managementOperationValibotSchema, managementOperationZodSchema } from '../src/management/schemas.ts';
 import type { WorkspaceManagementServiceInput } from '../src/management/service.ts';
 import type { ManagementOperation } from '../src/management/types.ts';
-import { authorityFixture, chickpeaDm, createAgent, type Person } from './helpers/management-authority-fixture.ts';
+import { assembleRetainedSlackContext } from '../src/slack/public-context.ts';
+import { hydrateTurnSlackContext } from '../src/slack/turn-context-reads.ts';
+import type { NormalizedSlackTurn } from '../src/slack/types.ts';
+import { assembleSlackPrompt } from '../src/slack/web-client-context.ts';
+import { authorityFixture, chickpeaDm, createAgent, NOW, type Person } from './helpers/management-authority-fixture.ts';
 
 type ToolResult = {
   content: Array<{ type: string; text: string }>;
@@ -181,6 +185,77 @@ test('save_schedule with dm "me" posts in the caller\'s own DM, in a thread its 
   assert.equal(slack.calls.withdrawn.length, 0);
 });
 
+test('a reply in a DM schedule\'s thread reads its first message as the Agent\'s own', async (t) => {
+  const { f, member, teamId } = await harness(t, 'dm-history');
+  structured(await member('save_schedule', { ...DM_SCHEDULE, idempotencyKey: 'dm-history' }));
+  const dm = `D_${f.member.user.slackUserId}`;
+  const opening = 'I\'ll post *Morning check* in this thread when it runs.';
+  const replyTs = '1800000500.000200';
+  const reply: NormalizedSlackTurn = {
+    workspaceId: teamId,
+    channelId: dm,
+    channelType: 'im',
+    eventId: 'Ev_dm_history',
+    text: 'What was the first message in this thread? Quote it and say who posted it.',
+    userId: f.member.user.slackUserId,
+    messageTs: replyTs,
+    threadTs: THREAD_TS,
+    source: 'dm_message',
+    contextMode: 'thread',
+  };
+  // Slack's copy of the first message: posted under the Agent's name, with no author user.
+  const slack = {
+    conversations: {
+      async replies() {
+        return {
+          ok: true,
+          messages: [
+            { type: 'message', subtype: 'bot_message', bot_id: 'BCHICKPEA1', username: 'Research', ts: THREAD_TS, text: opening },
+            { type: 'message', user: f.member.user.slackUserId, ts: replyTs, thread_ts: THREAD_TS, text: reply.text },
+          ],
+        };
+      },
+    },
+  };
+  // The shared app reads a thread once a minute, and the run that just
+  // posted took this minute's read. An install's own app reads Slack freely.
+  const spentBudget = {
+    async reserveSlackRead() { return { outcome: 'exhausted' as const, retryAt: NOW + 60_000, budgetVersion: 1 }; },
+    async applySlackReadCooldown() { return { cooldownUntil: 0, budgetVersion: 1 }; },
+  };
+  for (const sharedAppReads of [true, false]) {
+    const hydrated = await hydrateTurnSlackContext({
+      client: slack as never,
+      turn: reply,
+      sharedAppReads,
+      botUserId: 'UCHICKPEA1',
+      state: spentBudget,
+      record: f.config,
+    });
+    const context = await assembleRetainedSlackContext(hydrated, reply, { store: f.config, agentId: 'agent_research' });
+    const first = context.messages.find((message) => message.ts === THREAD_TS);
+    assert.ok(first, `the first message is in the context (shared app: ${sharedAppReads})`);
+    assert.equal(first.text, opening);
+    assert.equal(first.role, 'agent', `posted by an Agent, not an outside app (shared app: ${sharedAppReads})`);
+    assert.equal(first.agentId, 'agent_research', 'and that Agent is the one answering');
+
+    const prompt = assembleSlackPrompt(reply, context);
+    assert.match(prompt, /Current Slack thread context \(same Slack root as this request\):\n/);
+    const row = prompt.split('\n').find((line) => line.includes(`; ${THREAD_TS} `));
+    assert.ok(row?.includes(` role=agent root=${THREAD_TS}] `) && row.endsWith(`: ${opening}`), prompt);
+    assert.doesNotMatch(prompt, /incomplete/);
+  }
+});
+
+test('when the thread record cannot take the first message, the schedule and the message stay', async (t) => {
+  const { f, slack, member, teamId } = await harness(t, 'dm-unrecorded');
+  f.config.putSlackPublicContext = () => { throw new Error('state down'); };
+  assert.equal(structured(await member('save_schedule', { ...DM_SCHEDULE, idempotencyKey: 'unrecorded' })).status, 'done');
+  assert.equal(slack.calls.started.length, 1);
+  assert.deepEqual(slack.calls.withdrawn, [], 'its runs post in that thread, so its first message stays');
+  assert.equal((await f.routines.listRoutines(teamId)).length, 1);
+});
+
 test('save_schedule refuses any DM Slack would not let the caller schedule in, and posts nothing', async (t) => {
   const { f, slack, member, owner, teamId } = await harness(t, 'dm-refuse');
 
@@ -217,6 +292,8 @@ test('save_schedule refuses any DM Slack would not let the caller schedule in, a
   assert.equal(slack.calls.started.length, 1);
   assert.deepEqual(slack.calls.withdrawn, [{ conversationId: `D_${f.member.user.slackUserId}`, threadTs: THREAD_TS }]);
   assert.deepEqual(await f.routines.listRoutines(teamId), []);
+  assert.deepEqual(await f.config.listSlackPublicContext(teamId, `D_${f.member.user.slackUserId}`, THREAD_TS), [],
+    'nor does the thread record keep it');
 
   // Only the 5.0 door builds it: the 4.x schemas refuse it, and the service refuses it from Slack.
   const fromSlack: ManagementOperation = {

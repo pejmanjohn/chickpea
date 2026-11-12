@@ -71,6 +71,7 @@ import {
   type ChannelConfig,
   type ConnectionAccount,
   type ConnectionAccountApiPolicy,
+  type ConnectionAccountMcpPolicy,
   type ConnectionAccountOwnerKind,
   type ConnectionAccountPolicy,
   agentAppIsLive,
@@ -174,6 +175,7 @@ import {
 } from '../slack/agent-access.ts';
 import { agentStillInSlackRefusal, archiveBeforeDeleting } from '../slack/agent-presence/left-slack.ts';
 import { THREAD_TTL_MS } from '../slack/state-limits.ts';
+import { recordDeliveredSlackAgentMessage } from '../slack/public-context.ts';
 import { MAX_SLACK_ATTACHMENTS } from '../slack/attachment-file-ids.ts';
 import { defaultAgentAvatarSeedFor, nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
 import { stripResolvedSlackCommandAddress, type SlackCommandAddress } from '../slack/command-address.ts';
@@ -448,7 +450,10 @@ export interface WorkspaceManagementServiceInput {
     | 'putAgentScheduleReference'
     | 'listConnectionAccounts'
     | 'listAgentConnectionBindings'
-  > & Partial<Pick<ConfigStore, 'deleteAgentWithMemory' | 'getAgentFirstAsk' | 'getAgentThreadRoute' | 'putAgentThreadRoute'>>;
+  > & Partial<Pick<
+    ConfigStore,
+    'deleteAgentWithMemory' | 'getAgentFirstAsk' | 'getAgentThreadRoute' | 'putAgentThreadRoute' | 'putSlackPublicContext'
+  >>;
   management: ManagementStore;
   /**
    * Slack for a DM schedule made over MCP: the caller's DM with Chickpea's
@@ -4570,8 +4575,10 @@ export class WorkspaceManagementService {
         };
       }
       const policy = account.policy;
-      // A saved optional key, such as Exa's, is replaced on the same key page.
-      if (!nativeCredentialRequired(policy) && !await this.optionalKeySaved(account)) {
+      // A saved optional key, such as Exa's, is replaced on the same key page. One that needs attention, as a failed
+      // removal leaves it, gets the page whether or not that removal already deleted its key.
+      if (!nativeCredentialRequired(policy) &&
+          !(keyOptional(policy) && (account.lifecycle === 'needs_attention' || await this.optionalKeySaved(account)))) {
         throw new ManagementError('invalid_request', 'This MCP connection does not require setup.');
       }
       const oauth = policy.authMode === 'oauth';
@@ -6083,6 +6090,41 @@ export class WorkspaceManagementService {
     }
   }
 
+  /**
+   * The first message this save posted goes in its thread's record as the
+   * Agent's own, as the Agent's replies do, so a reply turn there reads it
+   * as the Agent's. Slack's events never record a thread's first message,
+   * so only this write puts it there. `posted` is the message this call
+   * posted: a save that kept another thread records nothing.
+   */
+  private async recordScheduleThreadOpening(
+    routine: RoutineDefinition,
+    operation: Extract<ManagementOperation, { kind: 'save_routine' }>,
+    posted: { conversationId: string; threadTs: string },
+  ): Promise<void> {
+    const config = this.stores.config;
+    const { destination } = routine;
+    if (destination.kind !== 'direct_thread' || destination.conversationId !== posted.conversationId ||
+        destination.threadTs !== posted.threadTs || !config.putSlackPublicContext) return;
+    const { conversationId, threadTs } = posted;
+    try {
+      const installation = await config.getWorkspaceInstallation(routine.workspaceId);
+      if (!installation) return;
+      await recordDeliveredSlackAgentMessage(
+        { putSlackPublicContext: config.putSlackPublicContext.bind(config) },
+        { workspaceId: routine.workspaceId, channelId: conversationId, threadTs },
+        { runtimeContract: installation.runtimeContract, agentId: operation.agentId },
+        { messageTs: threadTs, text: scheduleThreadOpening(operation.name) },
+      );
+    } catch (error) {
+      // The message stays: the schedule is saved and runs in its thread, and
+      // a reply turn there then reads the message from Slack.
+      console.warn('[chickpea:management] schedule thread opening not recorded', JSON.stringify({
+        errorName: error instanceof Error ? error.name : 'unknown',
+      }));
+    }
+  }
+
   /** The first message goes when its save did not make the schedule. */
   private async withdrawScheduleThread(
     mutationId: string,
@@ -6384,7 +6426,12 @@ export class WorkspaceManagementService {
         schedulingAvailable: () => this.isRoutineSchedulingAvailable(),
         now: this.now,
       });
-      if (initiatorDm && result.effect === 'saved') await this.giveScheduleThread(result.routine, initiatorDm.agentId);
+      if (initiatorDm && result.effect === 'saved') {
+        await this.giveScheduleThread(result.routine, initiatorDm.agentId);
+        if (thread?.posted) {
+          await this.recordScheduleThreadOpening(result.routine, initiatorDm, { conversationId: channelId, threadTs: thread.threadTs });
+        }
+      }
       if (operation.kind === 'save_routine' && result.effect === 'saved' && result.created) {
         this.stores.productTelemetry?.capture({
           event: 'schedule_created',
@@ -8646,6 +8693,11 @@ export function withoutRevisions<T extends { accountRevision: number; bindingAcc
   return connection;
 }
 
+/** An MCP connection that works without a key and takes one, such as Exa. */
+function keyOptional(policy: ConnectionAccountApiPolicy | ConnectionAccountMcpPolicy): boolean {
+  return policy.kind === 'mcp' && policy.credentialHeaderName !== undefined && !nativeCredentialRequired(policy);
+}
+
 /** How a person reconnects a connection that needs attention in place, when they may manage it. */
 function connectionReconnect(
   principal: AuthPrincipal,
@@ -8661,7 +8713,7 @@ function connectionReconnect(
       ? { tool: 'prepare_connector_setup', connector: connector.id, ownerKind: account.ownerKind }
       : undefined;
   }
-  if (!nativeCredentialRequired(policy)) return undefined;
+  if (!nativeCredentialRequired(policy) && !keyOptional(policy)) return undefined;
   return {
     tool: 'apply_workspace_changes',
     operation: {

@@ -897,12 +897,18 @@ test('an answered first question names the caller\'s latest earlier answer to it
   const again = await ask();
   assert.notEqual(again.runToken, first.runToken, 'past the repeat window: a second run');
   assert.equal(again.before, undefined, 'the same version says nothing of a change');
+  assert.doesNotMatch(result(await call('get_practice_run', { runToken: again.runToken })), /^Before:/m);
 
   await edit('Keep the support queue moving, and name the oldest first.');
   const after = await ask();
   assert.deepEqual(after.before, { runToken: again.runToken, agentVersion: again.ran!.agentVersion }, 'the latest earlier answer, of the version before');
   assert.notEqual(after.ran!.agentVersion, again.ran!.agentVersion);
-  assert.deepEqual(structured(await call('get_practice_run', { runToken: after.runToken })).before, after.before, 'get_practice_run names it too');
+  const read = await call('get_practice_run', { runToken: after.runToken });
+  assert.deepEqual(structured(read).before, after.before, 'get_practice_run names it too');
+  // A client that shows its model only the text block learns of it, and how to read it, there.
+  assert.ok(result(read).includes(
+    `\n\nBefore: an earlier answer to this question, from version ${again.ran!.agentVersion}. get_practice_run with runToken ${again.runToken} reads it.\n\nNext: `,
+  ), result(read));
   assert.equal((await ask('Who paid?')).before, undefined, 'another question has none');
 
   // The answer of the same version as this one, after the edit, is never the one named.

@@ -113,6 +113,8 @@ report (no test at all, no summary of their own, or fewer tests than that
 summary counts), are rerun once, alone. A file that passes alone is logged as
 `RETRIED IN ISOLATION` and the run still passes; the step's receipt and the run
 summary list it under `retries`. Note it in the release notes.
+A file that starts and finishes no test for three minutes is logged as `HUNG`,
+its processes are killed, and it reruns alone like any other failure.
 A file that fails or comes up short twice, or more failing files than the
 runner's concurrency, fails the run. Verification servers take loopback ports from a fixed range outside
 the OS ephemeral range, locked per host under
