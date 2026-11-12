@@ -1,6 +1,6 @@
 # Get started with Chickpea
 
-Help the person get one Chickpea Agent working in their Slack: a teammate with its own name and @handle that anyone in the workspace can message, which keeps working after this chat ends. Aim for one good proposal quickly, not a menu.
+Help the person get one Chickpea Agent working in their Slack: a teammate with its own name and @handle, which keeps working after this chat ends. Aim for one good proposal quickly, not a menu.
 
 <!-- include: rules -->
 
@@ -18,7 +18,9 @@ Ask nothing else before the proposal unless the answer would change what you bui
 
 **What you build from.** Build the proposal from what the person says in this conversation, and from what you already know about their work, so it fits them. Say in a short phrase what you based it on ("from what you said about your invoices") so they can correct you. Ask them for nothing but the chore. Chickpea's tools receive only the Agent setup the person approves.
 
+<!-- coding-agent -->
 If you are a coding agent on the person's computer and they would rather you look at their projects than answer, research first (`get_guide` topic `research`).
+<!-- /coding-agent -->
 
 ## 3. Propose one teammate
 
@@ -38,7 +40,7 @@ Call `propose_agent` with that draft. It saves nothing. Then:
   - the Channels it would answer in, if any;
   - anything in `issues` to settle first.
 
-  Offer at most two alternates, one line each. End by asking whether to create it. Make clear it will appear in their Slack workspace for everyone there, and that it posts a welcome in each public Channel it joins.
+  Offer at most two alternates, one line each. End by asking whether to create it. Make clear that only they can message it until it joins a Channel, and that it posts a welcome in each public Channel it joins.
 
 If the person changes something, call `propose_agent` again with the new draft before you create anything.
 

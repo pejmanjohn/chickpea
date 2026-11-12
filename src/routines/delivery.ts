@@ -2,6 +2,12 @@ import { ErrorCode, WebClient, type ChatPostMessageResponse } from '@slack/web-a
 
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
+import type { ConfigStore } from '../config/store.ts';
+import {
+  recordDeliveredSlackAgentMessage,
+  recordedArtifactFiles,
+  type SlackPublicDelivery,
+} from '../slack/public-context.ts';
 import {
   appendSlackReplyFooter,
   buildSlackAdminUrl,
@@ -58,6 +64,9 @@ export interface RoutineDeliveryReceipt {
   channelId: string;
   messageTs: string;
 }
+
+/** The thread record a run's posts go in as the Agent's own messages (recordRoutinePost). */
+export type RoutineThreadRecord = Pick<ConfigStore, 'getWorkspaceInstallation' | 'putSlackPublicContext'>;
 
 type RoutineRecoveryDeliveryOutcome =
   | 'accepted'
@@ -136,6 +145,7 @@ export async function deliverRoutineResult(
     changeKeyHash: string | null;
     artifacts?: readonly SlackArtifactReceipt[];
     workLifecycle?: ShadowWorkLifecycle;
+    threadRecord?: RoutineThreadRecord;
     now?: () => number;
     sleep?: (delayMs: number) => Promise<void>;
     fileTransport?: SlackFileTransport;
@@ -164,7 +174,13 @@ export async function deliverRoutineResult(
     }, completedFiles)
     : renderRoutineDelivery(message, footer);
   const approvedOutput = canonicalSlackReplyText(input.message, 'markdown');
-  return deliverRoutineSlackMessage({ ...input, approvedOutput, unfurlArtifacts: completedFiles.length > 0 }, rendered, client);
+  return deliverRoutineSlackMessage({
+    ...input,
+    approvedOutput,
+    // As a reply's record does: the note on a file Slack did not take, and the files it shares.
+    recordedPost: { text: canonicalSlackReplyText(message, 'markdown'), ...recordedArtifactFiles(completedFiles) },
+    unfurlArtifacts: completedFiles.length > 0,
+  }, rendered, client);
 }
 
 export async function deliverRoutineFailureNotice(
@@ -175,6 +191,7 @@ export async function deliverRoutineFailureNotice(
     access: RoutineRuntimeAccess;
     publicError: string;
     workLifecycle?: ShadowWorkLifecycle;
+    threadRecord?: RoutineThreadRecord;
     now?: () => number;
     sleep?: (delayMs: number) => Promise<void>;
   },
@@ -223,6 +240,10 @@ export interface ClaimedRoutineMessageInput {
   access: RoutineRuntimeAccess;
   changeKeyHash: string | null;
   approvedOutput: string;
+  /** Where a post Slack confirmed goes as the Agent's own message. Absent, it is not recorded. */
+  threadRecord?: RoutineThreadRecord;
+  /** The post's row in that record when it holds more than `approvedOutput`. */
+  recordedPost?: Omit<SlackPublicDelivery, 'messageTs'>;
   unfurlArtifacts?: boolean;
   workLifecycle?: ShadowWorkLifecycle;
   now?: () => number;
@@ -346,7 +367,50 @@ async function postClaimedRoutineMessage(
       'Slack delivery returned an incomplete receipt; Chickpea did not retry it.',
     );
   }
-  return recordRoutineDelivered(input, workAttemptId, channelId, messageTs, now);
+  // The post is in Slack whether or not its receipt is kept, so the record takes it either way.
+  try {
+    return await recordRoutineDelivered(input, workAttemptId, channelId, messageTs, now);
+  } finally {
+    await recordRoutinePost(input.threadRecord, input.routine, input.access.config.agentId, {
+      channelId, messageTs, text: input.approvedOutput, ...input.recordedPost,
+    });
+  }
+}
+
+/**
+ * A post a run made under its Agent's name goes in its thread's record as
+ * the Agent's own message, as a Slack turn's replies do. Slack's copy has
+ * no author user, so a reply turn that reads it from Slack takes it for an
+ * outside app's, and one on the shared app, whose read the run may have
+ * just spent, does not see it at all. A top-level post roots the thread its
+ * replies start. The row is keyed by the message: writing it again replaces
+ * it. The post stands whether or not the record takes it.
+ */
+export async function recordRoutinePost(
+  record: RoutineThreadRecord | undefined,
+  routine: Pick<RoutineDefinition, 'workspaceId' | 'destination'>,
+  agentId: string,
+  post: SlackPublicDelivery & { channelId: string },
+): Promise<void> {
+  if (!record) return;
+  try {
+    const installation = await record.getWorkspaceInstallation(routine.workspaceId);
+    if (!installation) return;
+    await recordDeliveredSlackAgentMessage(
+      record,
+      {
+        workspaceId: routine.workspaceId,
+        channelId: post.channelId,
+        threadTs: routine.destination.threadTs ?? post.messageTs,
+      },
+      { runtimeContract: installation.runtimeContract, agentId },
+      post,
+    );
+  } catch (error) {
+    console.warn('[chickpea] routine post not recorded in its thread', JSON.stringify({
+      errorName: error instanceof Error ? error.name : 'unknown',
+    }));
+  }
 }
 
 async function recordRoutineDelivered(

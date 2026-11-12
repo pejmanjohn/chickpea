@@ -107,6 +107,7 @@ function scopedMetaSchema(): Record<string, unknown> {
 }
 
 const reviewedMetaToolNames = [
+  'ads_account_get_activity_logs',
   'ads_get_ad_account_custom_audiences',
   'ads_get_ad_accounts',
   'ads_get_ad_entities',

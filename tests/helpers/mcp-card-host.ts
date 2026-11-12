@@ -9,6 +9,8 @@ import {
   buttonCount,
   hostErrorOf,
   hostFailed,
+  hostWrites,
+  keptMemory,
   type Call,
   type CardEvent,
   type CardState,
@@ -202,23 +204,39 @@ function callKey(made: Call): string {
 
 type Refused = Extract<CardEvent<string>, { type: 'refused' }>['effect'];
 
+/** The card version a test's host keeps state for: a reopened card is the same version. */
+const CARD_VERSION = 9;
+
+/**
+ * Where a card's host keeps what it wrote. ChatGPT keeps the card's widget
+ * state, and keeps a `ui/update-model-context` in the same place, as the
+ * model-visible part: either write replaces the other (live check 2 bug 3,
+ * dry run M4). claude.ai keeps nothing across a reload.
+ */
+export type CardHostKind = 'chatgpt' | 'claude';
+
 /**
  * A host for a card's model: it runs calls on the server, records every
  * effect, and checks every presentation. After every step it also tries a
  * re-read, a tick, a refusal of the last link or message and a lost result on
  * a copy, as if the card came back into view, its timer fired or the host
  * answered just then, and follows their reads one reply or failure deep.
+ * It keeps what the card writes to its host, as that host keeps it, and
+ * `reopen` mounts the card again from that, as a reloaded chat does.
  */
 export function cardHost<V extends { kind: string }, A extends string>(
   model: CardModelUnderTest<V, A>,
   server: (name: string, args?: Record<string, unknown>) => Promise<ToolResult>,
   clock: { now: number },
+  host: CardHostKind = 'chatgpt',
 ) {
   let state = model.initial;
   const effects: Effect[] = [];
   const held: Array<{ call: Call; result: ToolResult }> = [];
   const pressed = new WeakSet<Call>();
   const pressedCalls = new Set<string>();
+  let widgetState: unknown;
+  let modelReads: string | undefined;
 
   async function follow(from: CardState<V>, event: CardEvent<A>, deep: boolean): Promise<void> {
     const next = model.step(from, event);
@@ -240,6 +258,10 @@ export function cardHost<V extends { kind: string }, A extends string>(
   const self = {
     get state() { return state; },
     get shown(): Presentation<A> { return model.present(state); },
+    /** What the host keeps of this card for a reload: ChatGPT's widget state, or nothing. */
+    get widgetState(): unknown { return widgetState; },
+    /** What the host's model reads of this card now. */
+    get modelReads(): string | undefined { return modelReads; },
     effects,
     /** Calls made, by tool name. */
     calls: (tool?: string) => effects.flatMap((effect) => effect.type === 'call' && (!tool || effect.call.tool === tool) ? [effect.call] : []),
@@ -250,6 +272,10 @@ export function cardHost<V extends { kind: string }, A extends string>(
       const next = model.step(state, event);
       onlyReads(state, event, next.effects, model, pressed, pressedCalls);
       refusesAsResults(next.effects);
+      for (const write of hostWrites(state, event, next, { keepsState: host === 'chatgpt', version: CARD_VERSION })) {
+        modelReads = write.type === 'state' ? write.state.modelContent : write.text;
+        if (host === 'chatgpt') widgetState = write.type === 'state' ? write.state : { modelContent: write.text };
+      }
       if (event.type === 'press') {
         const made = next.effects.flatMap((effect) => effect.type === 'call' ? [effect.call] : []);
         // Only the latest press that called is one the card can still carry; a press that calls nothing keeps it.
@@ -284,6 +310,18 @@ export function cardHost<V extends { kind: string }, A extends string>(
     result: (result: ToolResult) => self.dispatch({ type: 'result', result, now: clock.now }),
     press: (action: A) => self.dispatch({ type: 'press', action, now: clock.now }),
     labels: () => model.present(state).buttons.map(({ label, tone }) => `${label} (${tone})`),
+    /**
+     * The chat reloads: the card starts again in a new frame, its effects and
+     * presses forgotten, and mounts with the result it was first drawn with
+     * and what this host kept of it. The host keeps what it kept.
+     */
+    async reopen(result: ToolResult): Promise<void> {
+      state = model.initial;
+      effects.length = 0;
+      held.length = 0;
+      pressedCalls.clear();
+      await self.dispatch({ type: 'result', result, kept: keptMemory(widgetState, CARD_VERSION), now: clock.now });
+    },
   };
   return self;
 }

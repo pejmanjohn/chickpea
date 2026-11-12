@@ -19886,14 +19886,14 @@ test('a plain Save in Meta tool review drops a granted tool the picker cannot sh
         authMode: 'oauth', headerNames: [], presetId: 'meta-ads', toolAccessMode: 'review',
         discoveredTools: [
           { name: 'ads_get_ad_entities', description: 'Synthetic provider description.', available: true, effect: 'read' },
-          // Granted while it was reviewed, and held back since.
-          { name: 'ads_account_get_activity_logs', description: 'Synthetic provider description.', available: false, effect: 'write' },
+          // Granted by a build that admitted it; the reviewed contract doesn't.
+          { name: 'ads_get_creatives', description: 'Synthetic provider description.', available: false, effect: 'write' },
         ],
         // Granted, and no longer listed by Meta.
-        allowedTools: ['ads_get_ad_entities', 'ads_account_get_activity_logs', 'ads_update_custom_audience_users'],
+        allowedTools: ['ads_get_ad_entities', 'ads_get_creatives', 'ads_update_custom_audience_users'],
         toolPolicies: {
           ads_get_ad_entities: { effect: 'read', argumentConstraints: { ad_account_id: ['123'] } },
-          ads_account_get_activity_logs: { effect: 'read', argumentConstraints: { ad_account_id: ['123'] } },
+          ads_get_creatives: { effect: 'read', argumentConstraints: { ad_account_id: ['123'] } },
           ads_update_custom_audience_users: { effect: 'write', argumentConstraints: { $meta_ads_approved_account_id: ['123'] } },
         },
       },
@@ -19908,7 +19908,7 @@ test('a plain Save in Meta tool review drops a granted tool the picker cannot sh
   await flushAsync();
   click({ target: actionTarget({ 'data-action': 'custom-mcp-tools-open', 'data-connection-id': 'connection_meta' }) });
   assert.match(harness.app.innerHTML, /1 of 1 selected/);
-  assert.doesNotMatch(harness.app.innerHTML, /ads_account_get_activity_logs|ads_update_custom_audience_users/);
+  assert.doesNotMatch(harness.app.innerHTML, /ads_get_creatives|ads_update_custom_audience_users/);
   click({ target: actionTarget({ 'data-action': 'custom-mcp-tools-save' }) });
   await flushAsync();
   assert.deepEqual(harness.connectionToolsPuts[0]?.body, {
@@ -19918,10 +19918,11 @@ test('a plain Save in Meta tool review drops a granted tool the picker cannot sh
 
 test("Meta tool review describes the account-wide reads in Chickpea's words, as reports", async () => {
   const reads: Array<[string, string]> = [
+    ['ads_account_get_activity_logs', "View the account&#39;s change history, including who made each change."],
     ['ads_get_ad_account_custom_audiences', "View the account&#39;s custom and lookalike audiences."],
     ['ads_get_customconversions', "View the account&#39;s custom conversions."],
   ];
-  const unavailable = ['ads_account_get_activity_logs', 'ads_get_creatives', 'ads_get_errors'];
+  const unavailable = ['ads_get_creatives', 'ads_get_errors'];
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
     connectionAccounts: { attached: [ownedConnection({
@@ -19955,8 +19956,8 @@ test("Meta tool review describes the account-wide reads in Chickpea's words, as 
     assert.match(harness.app.innerHTML, new RegExp(`${name} · Reporting</span><span class="tool-desc">${description}<`));
   }
   for (const name of unavailable) assert.doesNotMatch(harness.app.innerHTML, new RegExp(name));
-  assert.doesNotMatch(harness.app.innerHTML, /Synthetic provider description|change history/);
-  assert.match(harness.app.innerHTML, /0 of 2 selected/);
+  assert.doesNotMatch(harness.app.innerHTML, /Synthetic provider description/);
+  assert.match(harness.app.innerHTML, /0 of 3 selected/);
 });
 
 test('background connection refresh keeps a same-Agent tool editor visible and in place', async () => {

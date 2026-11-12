@@ -2,7 +2,7 @@
 import type { z } from 'zod';
 
 import { browserCapabilityForTurn } from '../../browser/capability.ts';
-import { getGithubConnection } from '../../config/github-app.ts';
+import { getGithubConnection, type GithubConnection } from '../../config/github-app.ts';
 import { isProviderKeyId, PROVIDER_DISPLAY_NAMES } from '../../config/provider-key-ids.ts';
 import type { ConnectionCheckOutcome } from '../../connections/connection-check.ts';
 import { ADMIN_PATH, adminOrigin, adminSettingsLinks, adminTeamLinks } from '../admin-links.ts';
@@ -16,7 +16,15 @@ import {
   type AgentRunReading,
 } from './agent-run.ts';
 import type { McpErrorFix } from './conventions.ts';
-import { agentAvatar, connectionRows, presenceProblem, type FiveZeroDeps } from './reads.ts';
+import {
+  agentAvatar,
+  connectionRows,
+  NOT_IN_SLACK,
+  notInSlack,
+  presenceProblem,
+  repositoryProblems,
+  type FiveZeroDeps,
+} from './reads.ts';
 import type * as schemas from './schemas.ts';
 
 type Output = z.infer<typeof schemas.checkAgentOutput>;
@@ -164,9 +172,7 @@ export async function modelChecks(
 async function slackChecks(deps: FiveZeroDeps, reading: AgentRunReading): Promise<Check[]> {
   const presence = reading.snapshotAgent.slackPresence;
   const name = presence?.normalizedHandle ? `@${presence.normalizedHandle}` : 'Slack';
-  if (!presence || presence.health === 'unpublished') {
-    return [{ part: 'slack', name, status: 'warning', detail: 'It is not in Slack yet, so no one can mention it.' }];
-  }
+  if (notInSlack(presence)) return [{ part: 'slack', name, status: 'warning', detail: NOT_IN_SLACK }];
   if (presence.health === 'healthy') return [{ part: 'slack', name, status: 'ok', detail: 'Ready in Slack.' }];
   if (presence.health === 'pending') return [{ part: 'slack', name, status: 'warning', detail: 'Still joining Slack.' }];
   return [withFix({ part: 'slack', name, status: 'failing', detail: presenceProblem(presence.errorCode) },
@@ -239,32 +245,28 @@ async function scheduleChecks(deps: FiveZeroDeps, reading: AgentRunReading): Pro
 async function repositoryChecks(deps: FiveZeroDeps, reading: AgentRunReading): Promise<Check[]> {
   const grants = reading.agent.repositories.filter(({ enabled }) => enabled);
   if (grants.length === 0 || !reading.stores.settings) return [];
-  const connection = await getGithubConnection(reading.stores.settings, reading.stores.env).catch(() => undefined);
-  if (!connection || connection.mode === 'none') {
+  const github = await getGithubConnection(reading.stores.settings, reading.stores.env)
+    .catch((): GithubConnection => ({ mode: 'none' }));
+  const problems = repositoryProblems(grants, github);
+  const [first] = problems;
+  if (first?.kind === 'github_not_connected') {
     return [withFix({
       part: 'repository',
       name: 'GitHub',
       status: 'failing',
-      detail: `GitHub is not connected to Chickpea, so it cannot reach its repositories.${reading.actor.role === 'member' ? ' An Owner or Admin can connect it.' : ''}`,
+      detail: `${first.detail}${reading.actor.role === 'member' ? ' An Owner or Admin can connect it.' : ''}`,
     }, settingsFix(deps, reading, 'github', 'Connect GitHub in Admin'))];
   }
-  const active = connection.platform
-    ? new Set(connection.platform.bindings.map(({ githubInstallationId }) => githubInstallationId))
-    : undefined;
   return grants.map((grant): Check => {
     const name = grant.allRepos ? `${grant.accountLogin}/*` : grant.fullName;
-    if (grant.installationId === null) {
-      return withFix({ part: 'repository', name, status: 'failing', detail: `Chickpea's GitHub App is not installed for ${grant.accountLogin}.` },
-        // No 5.0 tool hands out a GitHub access link on its own, and the
-        // 4.x one is hidden from clients that draw cards; the Agent's page
-        // in Admin gives that access to Owners and Members alike.
-        agentAdminFix(deps, reading, 'Give GitHub access in Admin'));
-    }
-    if (active && !active.has(grant.installationId)) {
-      return withFix({ part: 'repository', name, status: 'failing', detail: `GitHub access for ${grant.accountLogin} is suspended or was removed.` },
-        settingsFix(deps, reading, 'github', 'Open GitHub in Admin'));
-    }
-    return { part: 'repository', name, status: 'ok', detail: 'GitHub access is installed.' };
+    const problem = problems.find((each) => 'grant' in each && each.grant === grant);
+    if (!problem) return { part: 'repository', name, status: 'ok', detail: 'GitHub access is installed.' };
+    return withFix({ part: 'repository', name, status: 'failing', detail: problem.detail }, problem.kind === 'app_not_installed'
+      // No 5.0 tool hands out a GitHub access link on its own, and the
+      // 4.x one is hidden from clients that draw cards; the Agent's page
+      // in Admin gives that access to Owners and Members alike.
+      ? agentAdminFix(deps, reading, 'Give GitHub access in Admin')
+      : settingsFix(deps, reading, 'github', 'Open GitHub in Admin'));
   });
 }
 

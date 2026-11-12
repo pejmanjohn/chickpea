@@ -5,6 +5,8 @@ import { INITIAL, present, step, type Action, type View } from '../src/mcp-cards
 import {
   hostErrorOf,
   hostFailed,
+  hostWrites,
+  keptMemory,
   keptState,
   refusalOf,
   sequenced,
@@ -17,8 +19,8 @@ import {
   type Memory,
   type ToolResult,
 } from '../src/mcp-cards/card-model.ts';
-import { createFixtureAgent } from './helpers/management-adapter-fixture.ts';
-import { cardHost, cardServer, type CardModelUnderTest } from './helpers/mcp-card-host.ts';
+import { createFixtureAgent, type ManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+import { cardHost, cardServer, type CardHostKind, type CardModelUnderTest } from './helpers/mcp-card-host.ts';
 
 /**
  * What the live check on ChatGPT found, against Core's real MCP server:
@@ -59,7 +61,17 @@ async function world(t: TestContext, suffix: string) {
     await f.config.updateAgent('agent_support', { enabled: true });
     return call('update_agent', { agentId: 'agent_support', version: await version(), on: false, idempotencyKey: `off-${keys += 1}` });
   };
-  return { ...server, version, turnOff, card: () => cardHost(AGENT_CARD, call, clock) };
+  return { ...server, version, turnOff, card: (host?: CardHostKind) => cardHost(AGENT_CARD, call, clock, host) };
+}
+
+/** What Slack does after create_agent: the Agent joins, and its hello is delivered. */
+async function arrive(f: ManagementAdapterFixture, clock: { now: number }, agentId: string): Promise<void> {
+  const agent = await f.config.getAgent(agentId);
+  await f.config.updateAgent(agentId, { slackPresence: { ...agent!.slackPresence!, health: 'healthy' } });
+  const claimed = await f.management.claimDueOutbox(clock.now, 25, clock.now + 60_000);
+  const hello = claimed.find(({ receipt }) => 'kind' in receipt && receipt.kind === 'agent_created_welcome');
+  assert.ok(hello, 'create_agent queued a hello');
+  await f.management.settleOutbox({ outboxId: hello.outboxId, outcome: 'delivered', at: clock.now, deliveryRef: 'D1:1.1' });
 }
 
 const tokenOf = (result: ToolResult) => (result._meta?.['chickpea/held'] as { confirmToken: string }).confirmToken;
@@ -222,6 +234,103 @@ test('a card that mounts again comes back to what its presses did, and never off
   const changed = await reopen(preview, undefined);
   assert.deepEqual([changed.labels(), changed.shown.blocks.at(-1)],
     [['Cancel (secondary)'], { kind: 'note', text: 'It changed since this preview. Ask again for a fresh one.', tone: 'warn' }]);
+});
+
+// Mutation proof (dry run M4): sending ChatGPT a `ui/update-model-context` after the widget state, as run-card
+// did, leaves ChatGPT only the model's sentences, and every card here reloads with its first buttons again.
+test('reloaded in ChatGPT, each card comes back to what its presses did, offers none of its first buttons again, and only reads', async (t) => {
+  const { call, f, clock, turnOff, version, card } = await world(t, 'memory-reload');
+  const tools = (opened: ReturnType<typeof card>) => opened.calls().map(({ tool }) => tool);
+  const kept = (opened: ReturnType<typeof card>) => keptMemory(opened.widgetState, 9)?.outcome;
+
+  // Created from the proposal, then arrived in Slack: the Agent's card, never Create again.
+  const proposal = await call('propose_agent', {
+    name: 'Invoice Chaser', handle: 'invoices', job: 'Chases overdue invoices.', instructions: '# Job\nChase invoices.',
+    sampleAsk: 'who is overdue?', promisedAnswer: 'I list them.',
+  });
+  const created = card();
+  await created.result(proposal);
+  await created.press('create');
+  await arrive(f, clock, 'agent_invoice_chaser');
+  await created.dispatch({ type: 'tick', now: clock.now });
+  assert.equal(created.shown.title, '@invoices said hello to you in Slack');
+  assert.equal(created.modelReads, [
+    'The person created the Agent "Invoice Chaser" (@invoices) from the card. It is joining Slack now.',
+    'The person created the Agent "Invoice Chaser" (@invoices) from the card. It is ready in Slack and said hello to them there.',
+  ].join('\n'), 'ChatGPT\'s model reads what the card told it, from the widget state');
+  created.hold = ({ tool }) => tool === 'get_creation_status';
+  await created.reopen(proposal);
+  assert.deepEqual([created.shown.title, created.labels(), tools(created)], ['Invoice Chaser', [], ['get_creation_status']],
+    'while it reads where the Agent stands: its steps, and nothing to press');
+  await created.answer();
+  assert.deepEqual([created.shown.title, created.labels()], ['@invoices said hello to you in Slack', ['See its first answer (secondary)']]);
+  assert.deepEqual(created.effects.filter(({ type }) => type === 'context'), [], 'its arrival is not news to the model');
+  assert.deepEqual(kept(created), { kind: 'created', name: 'Invoice Chaser', agentId: 'agent_invoice_chaser' }, 'what ChatGPT kept');
+  created.hold = () => false;
+
+  // Saved on a change card: Saved, never Save again.
+  const preview = await call('propose_agent_change', { agentId: 'agent_support', version: await version(), change: { description: 'Answers support questions.' } });
+  const saving = card();
+  await saving.result(preview);
+  await saving.press('save');
+  assert.equal(saving.shown.title, 'Saved Support Desk');
+  await saving.reopen(preview);
+  assert.deepEqual([saving.shown.title, saving.shown.done, saving.labels(), tools(saving)], ['Saved Support Desk', true, [], ['get_agent']]);
+
+  // Saved, then undone: no Save, and no Undo that would save it again.
+  const second = await call('propose_agent_change', { agentId: 'agent_support', version: await version(), change: { description: 'Answers billing questions.' } });
+  const undoing = card();
+  await undoing.result(second);
+  await undoing.press('save');
+  await undoing.press('undo');
+  await undoing.reopen(second);
+  assert.deepEqual([undoing.shown.title, undoing.labels(), tools(undoing)], ['Undid the change', [], ['get_agent']]);
+
+  // Kept on a confirmation, then turned off on another: neither asks again.
+  const keptOn = await turnOff();
+  const keeping = card();
+  await keeping.result(keptOn);
+  await keeping.press('keep');
+  await keeping.reopen(keptOn);
+  assert.deepEqual([keeping.shown.title, keeping.labels(), tools(keeping)], ['Kept as it is', [], []]);
+  const off = await turnOff();
+  const confirming = card();
+  await confirming.result(off);
+  await confirming.press('confirm');
+  await confirming.reopen(off);
+  assert.deepEqual([confirming.shown.title, confirming.labels(), tools(confirming)], ['Turned off Support Desk', [], ['get_agent']]);
+  assert.equal((await f.config.getAgent('agent_support'))!.enabled, false, 'nothing a reload did turned it back on');
+  assert.equal((await f.config.listAgents()).filter(({ name }) => name === 'Invoice Chaser').length, 1, 'and nothing made a second Agent');
+});
+
+test('claude.ai keeps nothing across a reload, so it gets each sentence as a model update, and a reloaded card asks Chickpea', async (t) => {
+  const { call, version, card } = await world(t, 'memory-reload-claude');
+  const preview = await call('propose_agent_change', { agentId: 'agent_support', version: await version(), change: { description: 'Answers support questions.' } });
+  const saving = card('claude');
+  await saving.result(preview);
+  await saving.press('save');
+  assert.deepEqual([saving.widgetState, saving.modelReads], [undefined, 'The person saved the change to the Agent "Support Desk" from the card.']);
+  await saving.reopen(preview);
+  assert.deepEqual([saving.labels(), saving.shown.blocks.at(-1)],
+    [['Cancel (secondary)'], { kind: 'note', text: 'It changed since this preview. Ask again for a fresh one.', tone: 'warn' }], 'no Save for what changed since');
+});
+
+// Mutation proof (dry run M4): any update to the host's model besides the widget state fails the first case.
+test('a host that keeps widget state gets one write, holding what its model reads and what the card keeps; any other host gets the model update', () => {
+  const before: CardState<View> = { view: { kind: 'notice', title: 'Before' }, busy: false, seq: 1, told: ['Earlier.'] };
+  const next = { state: { ...before, seq: 2, told: ['Earlier.', 'Now.'], outcome: { kind: 'notice', title: 'Now' } }, effects: [{ type: 'context' as const, text: 'Earlier.\nNow.' }] };
+  const press = { type: 'press', action: 'keep', now: 0 } as const;
+  assert.deepEqual(hostWrites(before, press, next, { keepsState: true, version: 3 }), [{ type: 'state', state: keptState(next.state, 3) }]);
+  assert.equal(keptState(next.state, 3).modelContent, 'Earlier.\nNow.', 'the model reads the same sentences either way');
+  assert.deepEqual(hostWrites(before, press, next, { keepsState: false, version: 3 }), [{ type: 'context', text: 'Earlier.\nNow.' }]);
+  // Mounting with what was kept writes nothing back, and a step that tells nothing writes nothing.
+  const mounted = { state: next.state, effects: [] };
+  assert.deepEqual(hostWrites(INITIAL, { type: 'result', result: {}, kept: { told: next.state.told }, now: 0 }, mounted, { keepsState: true, version: 3 }), []);
+  assert.deepEqual(hostWrites(next.state, { type: 'reread', now: 0 }, { state: { ...next.state, seq: 3 }, effects: [] }, { keepsState: true, version: 3 }), []);
+  // What the host kept is read back only for the same card version.
+  assert.deepEqual(keptMemory(keptState(next.state, 3), 3), { told: ['Earlier.', 'Now.'], outcome: { kind: 'notice', title: 'Now' } });
+  assert.equal(keptMemory(keptState(next.state, 3), 4), undefined);
+  assert.equal(keptMemory({ modelContent: 'Earlier.\nNow.' }, 3), undefined, 'a model update ChatGPT kept is not what the card kept');
 });
 
 // Mutation proof (item 2): a card that takes presses at once offers Turn off before it knows the Agent is there.

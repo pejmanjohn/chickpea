@@ -8,13 +8,14 @@ import type { AgentInstanceHandle, ConversationStreamChunk, DispatchReceipt } fr
 import { WebClient } from '@slack/web-api';
 
 import { ROUTINE_RESULT_DATA_NAME } from '../src/agents/routine-execution-data.ts';
+import { WEBSITE_LOGINS_SETTING } from '../src/browser/logins.ts';
 import type { EffectiveSlackConfig } from '../src/config/effective-config.ts';
 import {
   configureInstallationAdmission,
   resetInstallationAdmissionForTests,
 } from '../src/config/installation-admission.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
-import { closeNodeStateStores } from '../src/config/state-backend.ts';
+import { closeNodeStateStores, getSettingsStore } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { configureRunReview } from '../src/review/port.ts';
 import type { RunReviewRecordV1 } from '../src/review/record.ts';
@@ -85,6 +86,7 @@ function reviewPort(): RunReviewRecordV1[] {
 async function occurrence(
   access: Partial<RoutineRuntimeAccess> = {},
   direct?: { statePath: string; destination: DirectDestination },
+  taskText = TASK,
 ): Promise<void> {
   const store = new SqliteRoutineStore(direct?.statePath ?? ':memory:', () => DUE_AT);
   const channelId = direct?.destination.conversationId ?? 'C_REVIEW';
@@ -96,7 +98,7 @@ async function occurrence(
         action: 'create', routineId: 'routine_review', nextRunAt: DUE_AT, projectedDailyStarts: 0,
         reservations: [{ windowStart: DUE_AT, count: 1 }],
         definition: {
-          name: 'Incidents', description: '', taskText: TASK, timezone: 'UTC', outputPolicy: 'post',
+          name: 'Incidents', description: '', taskText, timezone: 'UTC', outputPolicy: 'post',
           authorityMode: direct ? 'live_direct_member_v1' : 'live_channel_v1',
           triggerKind: 'once', scheduleInput: '2026-10-25T09:00',
           scheduleJson: JSON.stringify({ version: 1, kind: 'once', localDateTime: '2026-10-25T09:00', at: DUE_AT }),
@@ -191,17 +193,27 @@ test('a settled routine occurrence is copied as a routine run, its task as the t
   assert.equal(JSON.stringify(record).includes('U0MEMBER12'), false);
 });
 
-test('a routine whose Agent is granted a website login is not copied, though its plan froze no login', async (t) => {
+test('a routine whose Agent is granted a website login is copied without the login\'s username, though its plan froze no login', async (t) => {
   state(t);
   const records = reviewPort();
   t.mock.method(console, 'warn', () => undefined);
-  // No browser key is connected, so the plan freezes no login; the grant still counts.
+  const loginId = `wl_${'c'.repeat(32)}`;
+  await getSettingsStore(ENV).setSetting(WEBSITE_LOGINS_SETTING, JSON.stringify([{
+    id: loginId, host: 'status.example.com', label: 'Status', ownerKind: 'team',
+    createdByMembershipId: 'mem_owner', method: 'credentials', username: 'oncall.synthetic@example.com', createdAt: 1,
+  }]));
+  // No browser key is connected, so the plan freezes no login; the catalog still names the username.
   const config = {
     ...CONFIG,
-    agent: { ...CONFIG.agent, websiteLogins: [{ loginId: `wl_${'c'.repeat(32)}`, level: 'check', enabled: true }] },
+    agent: { ...CONFIG.agent, websiteLogins: [{ loginId, level: 'check', enabled: true }] },
   } as EffectiveSlackConfig;
-  await occurrence({ channelShared: false, config });
-  assert.equal(records.length, 0);
+  await occurrence({ channelShared: false, config }, undefined,
+    'Sign in as oncall.synthetic@example.com at https://status.example.com/login?token=SYNTHTOKEN789 and post the open incidents.');
+  assert.equal(records.length, 1);
+  assert.equal(records[0]?.surface, 'routine');
+  assert.equal(records[0]?.trigger.text,
+    'Sign in as [credential redacted] at https://status.example.com/login?[omitted] and post the open incidents.');
+  assert.equal(/oncall\.synthetic|SYNTHTOKEN789/i.test(JSON.stringify(records[0])), false);
 });
 
 async function activateDirectRoutine(

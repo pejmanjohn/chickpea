@@ -60,15 +60,16 @@ async function readyCard(t: TestContext, suffix: string) {
   const w = await world(t, suffix);
   const { call, clock } = w;
   const card = cardHost(AGENT_CARD, call, clock);
-  await card.result(await call('propose_agent', {
+  const proposal = await call('propose_agent', {
     name: 'Invoice Chaser', handle: 'invoices', job: 'Chases overdue invoices.', instructions: '# Job\nChase invoices.',
     sampleAsk: ASK, promisedAnswer: PROMISED,
-  }));
+  });
+  await card.result(proposal);
   await card.press('create');
   await sayHello(w, (card.state.view as { agentId: string }).agentId);
   await card.dispatch({ type: 'tick', now: clock.now });
   assert.equal(card.state.view.kind, 'ready', JSON.stringify(card.state.view));
-  return { ...w, card };
+  return { ...w, card, proposal };
 }
 
 /**
@@ -334,6 +335,26 @@ test('a run still going when the card stops waiting keeps its token where the mo
   await tampered.dispatch({ type: 'result', result, now: clock.now, kept: { told: [], outcome: { ...memory.outcome as object, runToken: 'not a token!' } } });
   assert.deepEqual([tampered.state.view.kind, tampered.calls('get_practice_run')], ['proposal', []]);
 
+});
+
+// Mutation proof (dry run M4): a model update sent to ChatGPT after the widget state replaces the run's token,
+// and the reloaded card offers Create in Slack again, whose first answer would start a second run.
+test('reloaded in ChatGPT while its first answer is still coming, the card reads that one run and offers nothing that starts another', async (t) => {
+  const { card, runs, clock, proposal } = await readyCard(t, 'first-answer-reload');
+  fastTime(t);
+  runs.outcome = { status: 'running', failure: null, result: null };
+  card.hold = (made) => made.tool === 'get_practice_run';
+  await card.press('try_once');
+  clock.now += GIVE_UP_MS;
+  await card.answer();
+  assert.deepEqual(card.shown.blocks, [{ kind: 'text', text: 'Still working on it.' }]);
+  card.hold = () => false;
+  await card.reopen(proposal);
+  const runToken = runs.runs[0]!.view.runToken;
+  assert.deepEqual(card.calls().map(({ tool, args }) => [tool, args]), [['get_practice_run', { runToken }]], 'one read of the run it started');
+  assert.deepEqual([card.shown.blocks, card.labels()], [[{ kind: 'text', text: 'Still working on it.' }], ['Check again (primary)']]);
+  assert.equal(runs.starts.length, 1, 'no second run');
+  assert.equal(card.modelReads?.includes(runToken), false, 'ChatGPT\'s model never reads the token');
 });
 
 // Mutation proof (item 1): read only from structuredContent, this refusal looks like the host ending the call, and the card retries for three minutes.

@@ -67,6 +67,10 @@ import {
 } from '../src/agents/routine-execution.ts';
 import { settleCancelledOccurrences } from '../src/state/pending-work.ts';
 import { CREDITS_EXHAUSTED_TEXT, dailyLimitText } from '../src/slack/web-client-presenter.ts';
+import { assembleRetainedSlackContext } from '../src/slack/public-context.ts';
+import { hydrateTurnSlackContext } from '../src/slack/turn-context-reads.ts';
+import type { NormalizedSlackTurn } from '../src/slack/types.ts';
+import { assembleSlackPrompt } from '../src/slack/web-client-context.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import type { UsageMicros } from '../src/usage/usage-display.ts';
 import type { UsageStore } from '../src/usage/types.ts';
@@ -402,6 +406,7 @@ function dependencies(events: string[] = []) {
       memoryEpoch: 1,
       validateMemoryLease: async () => true,
       confirmMemory: async () => undefined,
+      matchesApartFromMemory: (dispatched: string) => dispatched === `Execute ${run.id}`,
     }),
   };
 }
@@ -1066,6 +1071,9 @@ test('a routine out of usage posts one notice for the pause, edits it at its nex
   });
   const env = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_pause_notice' });
   const base = dependencies();
+  const record = await threadRecord(t);
+  const noticeRows = async () => (await record.listSlackPublicContext('T_TEST', 'C_TEST', '1785153601.000000'))
+    .map(({ messageTs, role, agentId, text }) => ({ messageTs, role, agentId, text }));
   const occurrence = async (index: number, handle: AgentInstanceHandle) => {
     let { run, attempt } = fixture;
     if (index > 0) {
@@ -1082,6 +1090,7 @@ test('a routine out of usage posts one notice for the pause, edits it at its nex
       ...base,
       resolveAccess: async (...args: Parameters<typeof base.resolveAccess>) => ({ ...await base.resolveAccess(...args), client }),
       handle,
+      threadRecord: record,
     }), 'completed');
   };
 
@@ -1092,6 +1101,9 @@ test('a routine out of usage posts one notice for the pause, edits it at its nex
   assert.match(posts[0]!.text ?? '', /Until then I'll skip runs without posting again\./);
   const routine = await store.getRoutine(fixture.routine.id);
   assert.deepEqual([routine?.state, routine?.consecutiveFailures], ['active', 0], 'running out of usage never pauses a routine');
+  const [paused] = await noticeRows();
+  assert.deepEqual([paused?.role, paused?.agentId], ['agent', 'agent_default'], 'the notice is the Agent\'s own message');
+  assert.match(paused?.text ?? '', /^⏸️ \*\*Execution fixture is paused\*\*\n/);
 
   await occurrence(3, fakeHandle({ reply: successfulReply() }));
   assert.equal(posts.length, 2);
@@ -1100,6 +1112,10 @@ test('a routine out of usage posts one notice for the pause, edits it at its nex
   assert.deepEqual([updates[0]!.channel, updates[0]!.ts], ['C_TEST', '1785153601.000000'], 'the pause\'s notice is edited');
   assert.match(updates[0]!.text, /^▶️ Execution fixture is back on\n/);
   assert.match(updates[0]!.text, /It skipped 3 runs and ran again /);
+  const edited = await noticeRows();
+  assert.equal(edited.length, 1, 'the edit replaces the notice\'s row');
+  assert.deepEqual([edited[0]?.role, edited[0]?.agentId], ['agent', 'agent_default']);
+  assert.match(edited[0]?.text ?? '', /^▶️ \*\*Execution fixture is back on\*\*\n\nIt skipped 3 runs and ran again /);
 
   await occurrence(4, fakeHandle({ reply: successfulReply() }));
   assert.equal(updates.length, 1, 'a later good run edits nothing');
@@ -1111,6 +1127,176 @@ test('a routine out of usage posts one notice for the pause, edits it at its nex
   assert.match(posts[3]!.text ?? '', /is paused/);
   await occurrence(7, fakeHandle({ readError: OUT_OF_USAGE() }));
   assert.equal(posts.length, 4);
+});
+
+/** The thread record on the chickpea-v1 contract, which a Slack turn's replies go in. */
+async function threadRecord(t: TestContext): Promise<SqliteConfigStore> {
+  const record = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [createDemoStarterAgent()] });
+  t.after(() => record.close());
+  await record.ensureWorkspaceInstallation({ workspaceId: 'T_TEST', transportMode: 'gateway' });
+  return record;
+}
+
+/** A routine fixture whose run posts `ts` through `client`, recorded in `record`. */
+async function postingRun(t: TestContext, suffix: string, destination: RoutineDestination, record: SqliteConfigStore) {
+  const store = new SqliteRoutineStore(':memory:', () => NOW);
+  t.after(() => store.close());
+  const fixture = await admittedFixture(store, suffix, undefined, undefined, undefined, destination);
+  const posts: Array<{ thread_ts?: string; text?: string }> = [];
+  const client = {
+    chat: {
+      postMessage: async (message: { thread_ts?: string; text?: string }) => {
+        posts.push(message);
+        return { ok: true, channel: 'C_TEST', ts: `17851536${posts.length}0.000100` };
+      },
+    },
+  } as unknown as WebClient;
+  const base = dependencies();
+  const execute = (handle: AgentInstanceHandle, routines: RoutineStore = store) => executeRoutineOccurrence(
+    { env: {}, store: routines, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt },
+    {
+      ...base,
+      resolveAccess: async (...args: Parameters<typeof base.resolveAccess>) => ({ ...await base.resolveAccess(...args), client }),
+      handle,
+      threadRecord: record,
+    },
+  );
+  return { store, fixture, posts, execute };
+}
+
+const SCHEDULE_THREAD = '1785100000.000100';
+
+test('a reply where a run posted reads the run\'s result as the Agent\'s own', async (t) => {
+  const record = await threadRecord(t);
+  // The shared app reads a thread once a minute, and the run that just
+  // posted took this minute's read. An install's own app reads Slack freely.
+  const spentBudget = {
+    async reserveSlackRead() { return { outcome: 'exhausted' as const, retryAt: NOW + 60_000, budgetVersion: 1 }; },
+    async applySlackReadCooldown() { return { cooldownUntil: 0, budgetVersion: 1 }; },
+  };
+  // What each reply reads as the result, so one run shows every case that fails.
+  const read: Record<string, unknown> = {};
+  // In the thread the schedule was made in, and at the top of its Channel, where the result starts the thread.
+  for (const [where, destination] of [
+    ['thread', { kind: 'channel', channelId: 'C_TEST', threadTs: SCHEDULE_THREAD }],
+    ['channel', { kind: 'channel', channelId: 'C_TEST' }],
+  ] as const) {
+    const run = await postingRun(t, `history_${where}`, destination, record);
+    assert.equal(await run.execute(fakeHandle({ reply: successfulReply() })), 'completed');
+    assert.equal(run.posts.length, 1);
+    assert.equal(run.posts[0]?.thread_ts, 'threadTs' in destination ? SCHEDULE_THREAD : undefined);
+    const postedTs = '1785153610.000100';
+    const root = 'threadTs' in destination ? destination.threadTs : postedTs;
+    const reply: NormalizedSlackTurn = {
+      workspaceId: 'T_TEST',
+      channelId: 'C_TEST',
+      eventId: `Ev_history_${where}`,
+      text: 'What did you post here, and who posted it?',
+      userId: 'U_MEMBER',
+      messageTs: '1785153700.000100',
+      threadTs: root,
+      source: 'app_mention',
+      contextMode: 'thread',
+    };
+    // Slack's copy of the result: posted under the Agent's name, with no author user.
+    const slack = {
+      conversations: {
+        async replies() {
+          return {
+            ok: true,
+            messages: [
+              ...(root === postedTs ? [] : [{ type: 'message', user: 'U_MEMBER', ts: root, text: 'Check this every hour' }]),
+              { type: 'message', subtype: 'bot_message', bot_id: 'BCHICKPEA1', username: 'Chickpea', ts: postedTs, thread_ts: root, text: 'Routine result' },
+              { type: 'message', user: 'U_MEMBER', ts: reply.messageTs, thread_ts: root, text: reply.text },
+            ],
+          };
+        },
+      },
+    };
+    for (const sharedAppReads of [true, false]) {
+      const hydrated = await hydrateTurnSlackContext({
+        client: slack as never,
+        turn: reply,
+        sharedAppReads,
+        botUserId: 'UBOT',
+        state: spentBudget,
+        record,
+      });
+      const context = await assembleRetainedSlackContext(hydrated, reply, { store: record, agentId: 'agent_default' });
+      const posted = context.messages.find((message) => message.ts === postedTs);
+      const row = assembleSlackPrompt(reply, context).split('\n').find((line) => line.includes(`; ${postedTs} `));
+      read[`${where}, shared app: ${sharedAppReads}`] = posted
+        ? { role: posted.role, agentId: posted.agentId, text: posted.text, prompt: row?.includes(` role=agent root=${root}] `) && row.endsWith(': Routine result') }
+        : 'missing';
+    }
+  }
+  // Posted by the Agent answering the reply, not by an outside app, and the prompt says so.
+  const own = { role: 'agent', agentId: 'agent_default', text: 'Routine result', prompt: true };
+  assert.deepEqual(read, {
+    'thread, shared app: true': own,
+    'thread, shared app: false': own,
+    'channel, shared app: true': own,
+    'channel, shared app: false': own,
+  });
+});
+
+test('a run that posted and is run again writes no second row for its post', async (t) => {
+  const record = await threadRecord(t);
+  const run = await postingRun(t, 'history_again', { kind: 'channel', channelId: 'C_TEST', threadTs: SCHEDULE_THREAD }, record);
+  // The run stops after its post, before it settles, and the heartbeat runs it again.
+  let stopAfterPost = true;
+  const stopping = new Proxy(run.store, {
+    get(target, property) {
+      const value = Reflect.get(target, property, target) as unknown;
+      if (property === 'transitionRun') {
+        return async (input: Parameters<RoutineStore['transitionRun']>[0]) => {
+          if (stopAfterPost && input.to === 'succeeded') {
+            stopAfterPost = false;
+            throw new Error('the Worker restarted');
+          }
+          return target.transitionRun(input);
+        };
+      }
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  }) as RoutineStore;
+  const handle = fakeHandle({ reply: successfulReply() });
+  await assert.rejects(run.execute(handle, stopping), /the Worker restarted/);
+  assert.equal(await run.execute(handle, stopping), 'completed');
+  assert.equal(await run.execute(handle, stopping), 'superseded');
+  assert.equal((await run.store.getRun(run.fixture.run.id))?.status, 'succeeded');
+  assert.equal(run.posts.length, 1, 'the run posted once');
+  const rows = await record.listSlackPublicContext('T_TEST', 'C_TEST', SCHEDULE_THREAD);
+  assert.deepEqual(rows.map(({ messageTs, role, agentId, text }) => ({ messageTs, role, agentId, text })), [
+    { messageTs: '1785153610.000100', role: 'agent', agentId: 'agent_default', text: 'Routine result' },
+  ]);
+});
+
+test('a run\'s "needs attention" notice is the Agent\'s own message in its thread', async (t) => {
+  const record = await threadRecord(t);
+  const run = await postingRun(t, 'history_notice', { kind: 'channel', channelId: 'C_TEST', threadTs: SCHEDULE_THREAD }, record);
+  assert.equal(await run.execute(fakeHandle({ readError: new Error('provider down') })), 'completed');
+  assert.equal(run.posts.length, 1);
+  assert.match(run.posts[0]?.text ?? '', /Routine needs attention/);
+  const rows = await record.listSlackPublicContext('T_TEST', 'C_TEST', SCHEDULE_THREAD);
+  assert.deepEqual(rows.map(({ messageTs, role, agentId }) => ({ messageTs, role, agentId })), [
+    { messageTs: '1785153610.000100', role: 'agent', agentId: 'agent_default' },
+  ]);
+  assert.match(rows[0]!.text, /^⚠️ \*\*Routine needs attention\*\*\n\*\*Execution fixture\*\*\n\n/);
+});
+
+test('when the thread record cannot take a run\'s post, the post stands and one line is logged', async (t) => {
+  const record = await threadRecord(t);
+  record.putSlackPublicContext = () => { throw new Error('state down'); };
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  const run = await postingRun(t, 'history_unrecorded', { kind: 'channel', channelId: 'C_TEST', threadTs: SCHEDULE_THREAD }, record);
+  assert.equal(await run.execute(fakeHandle({ reply: successfulReply() })), 'completed');
+  const settled = await run.store.getRun(run.fixture.run.id);
+  assert.deepEqual([settled?.status, settled?.deliveryStatus, run.posts.length], ['succeeded', 'delivered', 1]);
+  assert.deepEqual(
+    warn.mock.calls.map((call) => call.arguments).filter(([line]) => String(line).includes('not recorded')),
+    [['[chickpea] routine post not recorded in its thread', '{"errorName":"Error"}']],
+  );
 });
 
 test('a result Slack could not take is credited back only when Slack refused it for load', async (t) => {

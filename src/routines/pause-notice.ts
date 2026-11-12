@@ -6,9 +6,11 @@ import type { ShadowWorkLifecycle } from '../work/lifecycle.ts';
 import {
   deliverRoutineSlackMessage,
   formatScheduledTime,
+  recordRoutinePost,
   routineNotice,
   routineSlackClient,
   type RoutineDeliveryReceipt,
+  type RoutineThreadRecord,
 } from './delivery.ts';
 import type { RoutineRuntimeAccess } from './runtime.ts';
 import type { RoutineDefinition, RoutineRun, RoutineStore } from './types.ts';
@@ -26,6 +28,7 @@ export async function deliverRoutinePauseNotice(
     routine: RoutineDefinition;
     access: RoutineRuntimeAccess;
     workLifecycle?: ShadowWorkLifecycle;
+    threadRecord?: RoutineThreadRecord;
     now?: () => number;
     sleep?: (delayMs: number) => Promise<void>;
   },
@@ -55,9 +58,18 @@ const PAUSE_REASONS = {
   fleet: 'Chickpea has paused free trial usage for now. It runs again on schedule once trials resume.',
 } as const;
 
-/** Edits the pause's notice once `run`, the next run after it, succeeds. Best effort: a later run never retries it. */
+/**
+ * Edits the pause's notice once `run`, the next run after it, succeeds, and
+ * its thread's record with it. Best effort: a later run never retries it.
+ */
 export async function closeRoutinePauseNotice(
-  input: { store: RoutineStore; run: RoutineRun; routine: RoutineDefinition; access: RoutineRuntimeAccess },
+  input: {
+    store: RoutineStore;
+    run: RoutineRun;
+    routine: RoutineDefinition;
+    access: RoutineRuntimeAccess;
+    threadRecord?: RoutineThreadRecord;
+  },
 ): Promise<void> {
   const skipped = await pauseSkips(input.store, input.run);
   const notice = skipped.findLast(({ deliveryStatus }) => deliveryStatus === 'delivered');
@@ -76,6 +88,11 @@ export async function closeRoutinePauseNotice(
     text: rendered.text,
     ...(rendered.blocks ? { blocks: rendered.blocks } : {}),
   } as unknown as Parameters<WebClient['chat']['update']>[0]);
+  await recordRoutinePost(input.threadRecord, input.routine, input.access.config.agentId, {
+    channelId: notice.deliveryChannelId,
+    messageTs: notice.deliveryMessageTs,
+    text: canonicalSlackReplyText(text, 'markdown'),
+  });
 }
 
 /**

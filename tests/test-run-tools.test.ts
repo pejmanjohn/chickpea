@@ -1062,8 +1062,9 @@ test('the worst result fits the budget, the reply whole once and the room left o
   assert.match(worst.output.reply, /^x{6000}\n\[cut by Chickpea: first 6,000 of 24,000 characters\]$/, 'the reply keeps its 6,000, once');
   assert.ok(worst.text.includes(`> ${'x'.repeat(600)}\n${PRACTICE_TEXT_REPLY_REST}\n`), 'the text block quotes its first 600 and points to the rest');
   assert.ok(!worst.text.includes('x'.repeat(601)), 'and no second copy');
-  // The next step says how to read more of a cut result, which costs its sentence twice: 172 each, from 180.
-  assert.ok(worst.kept.every((keep) => keep === worst.kept[0] && keep >= 170), `the room left goes to raw results: ${worst.kept[0]} each`);
+  // The next step says how to read more of a cut result, and a first question's sends a client with no skill
+  // to the test-drive guide; each sentence costs twice its length: 163 each, from 180.
+  assert.ok(worst.kept.every((keep) => keep === worst.kept[0] && keep >= 160), `the room left goes to raw results: ${worst.kept[0]} each`);
   assert.ok(worst.output.nextStep.includes('call get_practice_run with this runToken and step'), 'and says how to read more');
   assert.ok(worst.output.steps!.every(({ result: raw }) => raw!.size >= 48_000 &&
     raw!.data.endsWith(` of ${raw!.size.toLocaleString('en-US')} characters]`)), 'each cut result still says how much it was');
@@ -1110,8 +1111,9 @@ test('a heavy run of 8 results keeps 1,500 characters of each, 12,000 in all, be
   const heavy = await budgeted(t, 'practice_budget_heavy', heavyRun('x', { service: 'Probe', tool: 'probe_board_search' }, 8, false));
   assert.ok(heavy.size <= PRACTICE_RESULT_BUDGET_CHARS, `${heavy.size} characters`);
   assert.deepEqual(heavy.kept, Array(8).fill(PRACTICE_RESULT_CHARS));
-  // The longest question gives up its last characters to the sentence that says how to read more of a cut result.
-  assert.match(heavy.output.question, /^q{3800,}\n\[cut by Chickpea: first [\d,]+ of 4,000 characters\]$/);
+  // The longest question gives up its last characters to the sentences that say how to read more of a cut
+  // result and, for a first question, where the test-drive guide is.
+  assert.match(heavy.output.question, /^q{3600,}\n\[cut by Chickpea: first [\d,]+ of 4,000 characters\]$/);
   assert.ok(heavy.output.nextStep.includes('call get_practice_run with this runToken and step'));
   assert.match(heavy.output.reply, /first 6,000 of 24,000 characters\]$/);
 });
@@ -1137,6 +1139,8 @@ test('a follow-up with practiceId quotes the earlier turn to the Agent, from the
   };
   const first = structured(await call('practice_agent', { agentId: 'agent_tested', question: 'Who is overdue?' }));
   assert.match(String(first.nextStep), /To ask a follow-up in this conversation, send practiceId with the next question\./);
+  assert.ok(String(first.nextStep).startsWith('With no Chickpea skill loaded, call get_guide topic test-drive first. One read covers every test question. Show the person the answer.'),
+    'a new practice conversation, as each test question starts, sends a client with no skill to the test-drive guide before it judges');
 
   const { version } = structured(await call('get_agent', { agentId: 'agent_tested' })) as { version: string };
   assert.equal(structured(await call('update_agent', {
@@ -1147,6 +1151,7 @@ test('a follow-up with practiceId quotes the earlier turn to the Agent, from the
     agentId: 'agent_tested', question: 'Why didn\'t you check Stripe?', practiceId: first.practiceId,
   }));
   assert.deepEqual([second.status, second.practiceId, second.turn, second.question], ['answered', first.practiceId, 2, 'Why didn\'t you check Stripe?']);
+  assert.doesNotMatch(String(second.nextStep), /get_guide/, 'a follow-up is judged the way the first answer was');
   const [, dispatch] = instances.dispatched;
   assert.equal(dispatch!.message, [
     'Earlier in this practice conversation (quoted):',

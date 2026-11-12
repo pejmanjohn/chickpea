@@ -23,6 +23,7 @@ type ToolResult = {
 };
 type ListedTool = {
   name: string;
+  description: string;
   inputSchema: unknown;
   outputSchema?: unknown;
   annotations?: Record<string, unknown>;
@@ -185,6 +186,31 @@ test('every coding-agent fence in the Markdown is a whole line and closed, and n
   }
 });
 
+test('no section tells a chat app what only a coding agent can do, and a coding agent still reads it (ruling D6)', () => {
+  // A word list can't know a sentence nobody has written yet. It names what a chat app has no way to do:
+  // reach a computer, its folders and files, a shell, or a client's own sessions. A new sentence for
+  // coding agents goes inside a fence, and its telling words go here.
+  const codingAgentOnly = new RegExp([
+    'coding agent', String.raw`\bCodex\b`, 'Claude Code', 'on the person\'s computer', 'their (?:computer|machine|projects)',
+    'working directory', String.raw`(?:current|this) (?:folder|directory)`, 'write files', 'local files?', 'file ?system',
+    'command-line', String.raw`\bshell\b`, String.raw`\bscripts?\b`, String.raw`\bREADMEs?\b`, String.raw`\bcommits?\b`, String.raw`\brepos?\b`, 'codebase',
+    'environment file', 'key file', 'secret store', 'your own past sessions', 'in this client',
+    String.raw`save (?:it|them) (?:in|to) `,
+  ].join('|'), 'i');
+  for (const topic of PLAYBOOK_TOPICS) {
+    const served = playbookSection(topic, 'chat-app').guide;
+    assert.doesNotMatch(served, codingAgentOnly, `${topic}: a chat app is told only what it can do`);
+  }
+  for (const [topic, sentence] of [
+    ['start', 'If you are a coding agent on the person\'s computer and they would rather you look at their projects than answer, research first'],
+    ['scope', 'If you can write files in the current folder, offer to save them in `chickpea/<agent handle>-tests.md` there'],
+    ['research', '**As a coding agent on the person\'s computer, such as Codex:**'],
+  ] as const) {
+    assert.ok(playbookSection(topic).guide.includes(sentence), `${topic}: any other client still reads: ${sentence}`);
+  }
+  assert.match(playbookSection('scope', 'chat-app').guide, /judged on\.\n\nUnless you saved them, tell the person that a new chat won't have them/);
+});
+
 test('a chat app never gets a fenced block, however the fence is written', () => {
   const cases: Array<[string, string, string, string]> = [
     ['at the start', '<!-- coding-agent -->\nlocal\n<!-- /coding-agent -->\n\nrest\n', 'rest\n', 'local\n\nrest\n'],
@@ -198,6 +224,70 @@ test('a chat app never gets a fenced block, however the fence is written', () =>
   for (const [name, text, chatApp, any] of cases) {
     assert.equal(playbookForReader(text, 'chat-app'), chatApp, `a chat app, ${name}`);
     assert.equal(playbookForReader(text, 'any'), any, `any other client, ${name}`);
+  }
+});
+
+/** Each tool that starts a multi-step job, and the topic it sends a client with no Chickpea skill to. */
+const STARTS_A_JOB = {
+  propose_agent: 'start',
+  practice_agent: 'test-drive',
+  update_agent: 'edit',
+  save_schedule: 'schedule',
+  add_agent_to_channel: 'roll-out',
+  check_agent: 'check-in',
+} as const satisfies Record<string, PlaybookTopic>;
+
+for (const cardSession of [true, false]) {
+  test(`each tool that starts a multi-step job sends a client with no skill to its guide, near 60 words, ${cardSession ? 'with' : 'without'} cards`, async (t) => {
+    const { rpc, guide } = await harness(t, `guide-pointers-${cardSession}`, cardSession);
+    const listed = (await rpc('tools/list', {})).tools as ListedTool[];
+    for (const [name, topic] of Object.entries(STARTS_A_JOB)) {
+      const { description } = listed.find((tool) => tool.name === name)!;
+      assert.ok(description.includes(`With no Chickpea skill loaded, call get_guide topic ${topic} first.`), `${name}: ${description}`);
+      const words = description.split(/\s+/).length;
+      assert.ok(words <= 70, `${name}: ${words} words; keep a description near 60`);
+      assert.equal((await guide({ topic })).structuredContent?.topic, topic, `${name} names a topic get_guide serves`);
+    }
+    assert.deepEqual(listed.filter(({ description }) => description.includes('get_guide topic')).map(({ name }) => name).sort(),
+      Object.keys(STARTS_A_JOB).sort(), 'only a tool that starts a job sends a client to the guide');
+  });
+}
+
+test('who can message a new Agent reads the same everywhere: only its creator, until it joins a Channel', async (t) => {
+  const { rpc } = await harness(t, 'guide-reach', true);
+  const listed = (await rpc('tools/list', {})).tools as ListedTool[];
+  const tool = (name: string) => listed.find((each) => each.name === name)!;
+  // As slack/agent-access.ts admits a DM, and check_agent's admission check says.
+  assert.ok(tool('create_agent').description.includes('Until it joins a Channel, only you can message it.'));
+  assert.ok(JSON.stringify(tool('propose_agent').outputSchema)
+    .includes('"description":"The Slack workspace it would join. Until it joins a Channel, only its creator can message it."'), 'propose_agent\'s workspaceName');
+  for (const [topic, sentence] of [
+    ['start', 'Make clear that only they can message it until it joins a Channel'],
+    ['start', 'Until it joins a Channel, only the person who created it can message it, in direct messages.'],
+    ['research', 'Until it joins a Channel, only the person who created it can message it, in direct messages.'],
+    ['roll-out', 'Until it joins a Channel, only its creator can message it. Once it\'s in a public Channel, everyone in the workspace can message it directly. If all its Channels are private, only their members can.'],
+  ] as const) {
+    assert.ok(playbookSection(topic).guide.includes(sentence), `${topic}: ${sentence}`);
+  }
+  const served = [
+    ...listed.map(({ description }) => description),
+    JSON.stringify(listed.map(({ outputSchema }) => outputSchema)),
+    ...PLAYBOOK_TOPICS.map((topic) => playbookSection(topic).guide),
+  ].join('\n');
+  for (const wrong of [/anyone in the workspace can message/i, /can already message it/i, /for everyone there/i, /whose people can message/i, /everyone in the Slack workspace can mention/i]) {
+    assert.doesNotMatch(served, wrong, 'a new Agent in no Channel answers only its creator');
+  }
+});
+
+test('a check-in checks every Agent the person can edit, and no section is quoted or cited to the person', () => {
+  const checkIn = playbookSection('check-in').guide;
+  assert.ok(checkIn.includes('3. For each Agent that is on and the person can edit (`status` `on`, `canEdit` true), `check_agent` with its `agentId`, the ones with `needsAttention` first.'),
+    'needsAttention holds only what stored state shows, so it never decides which Agents get checked');
+  // An Owner can edit every Agent, and each check_agent tests custom connections live.
+  assert.ok(checkIn.includes('With more than 10 of them, check the 10 that matter most, flagged ones and then ones with a schedule, and tell the person how many you didn\'t check.'),
+    'a large workspace gets a bounded check-in that says what it skipped');
+  for (const topic of PLAYBOOK_TOPICS) {
+    assert.ok(playbookSection(topic).guide.includes('- Never quote this guide or skill to the person, cite it as the reason for a step, or show its file path, unless they ask.'), topic);
   }
 });
 

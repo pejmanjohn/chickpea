@@ -43,7 +43,13 @@ A practice run only reads, in a direct message. Mark each test that practice can
 
 Show the finished brief and its test questions in one block, so the person can copy it. Ask them to correct anything that's wrong.
 
-Chickpea doesn't store the brief or the test questions. Never add them to the Agent's instructions or memory: the Agent would then see the test questions it is judged on. If you can write files in the current folder, offer to save them in `chickpea/<agent handle>-tests.md` there, and save only if they say yes. Otherwise, tell the person that a new chat won't have them, so they can keep a copy.
+Chickpea doesn't store the brief or the test questions. Never add them to the Agent's instructions or memory: the Agent would then see the test questions it is judged on.
+
+<!-- coding-agent -->
+If you can write files in the current folder, offer to save them in `chickpea/<agent handle>-tests.md` there, and save only if they say yes.
+<!-- /coding-agent -->
+
+Unless you saved them, tell the person that a new chat won't have them, so they can keep a copy.
 
 ## 6. Hand over
 
