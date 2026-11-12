@@ -14,6 +14,7 @@ import { resolveSlackManagementActor } from '../src/management/slack-tools.ts';
 import { SqliteMemoryStateStore } from '../src/memory/store.ts';
 import { parseCurrentRequestEnvelope } from '../src/memory/tool-policy.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
+import type { SlackArtifactReceipt } from '../src/slack/artifact-receipts.ts';
 import type { AgentDispatchResult } from '../src/slack/flue-dispatch.ts';
 import { SlackRunPresentationStoreLogic } from '../src/slack/run-presentations.ts';
 import { runTurn } from '../src/slack/run-turn.ts';
@@ -433,6 +434,70 @@ test('an own write over memory another writer changed fails the lease: the failu
     console.warn = warn;
     h.close();
   }
+});
+
+// Incident 2026-11-12: a run made an external write and finished its answer
+// without touching memory. Another run of the same Agent saved memory
+// meanwhile, and the delivery lease posted the generic failure instead.
+test('memory another writer appends while a run answers never holds back its answer, table, or file', async (t) => {
+  const turn = dmTurn('1790200007.000100');
+  const h = await harness(turn, MEMORY);
+  const warnings: unknown[] = [];
+  t.mock.method(console, 'warn', (line: unknown) => { warnings.push(line); });
+  const file: SlackArtifactReceipt = {
+    schemaVersion: 2, fileId: 'F0SYNTH01', filename: 'draft-outline.md', kind: 'file', byteLength: 512,
+    stagedAt: 1_790_200_007_000, completedAt: 1_790_200_007_500,
+    permalink: 'https://synthetic.slack.com/files/U0SYNTH/F0SYNTH01/draft-outline.md',
+    destination: {
+      workspaceId: assignment.workspaceId, agentId: assignment.agentId,
+      channelId: assignment.channelId, threadTs: turn.threadTs,
+    },
+  };
+  const table = {
+    caption: 'Synthetic draft sections', presentation: 'static' as const,
+    columns: [{ header: 'Section' }, { header: 'Status' }],
+    rows: [['Overview', 'Drafted'], ['Audience', 'Drafted'], ['Steps', 'Drafted'], ['Examples', 'Drafted'],
+      ['Limits', 'Drafted'], ['Related', 'Drafted'], ['Review', 'Pending']],
+  };
+  try {
+    await h.run(async (input) => {
+      const relay = await input.prepareProgressiveRelay?.({
+        instanceId: h.instanceId,
+        receipt: { submissionId: 'submission_memstream_incident', acceptedAt: '2026-11-12T01:28:35.000Z', uid: 'uid_incident' },
+      });
+      relay?.onEvent({
+        type: 'message-started', conversationId: 'conversation',
+        submissionId: 'submission_memstream_incident', messageId: 'message_incident', position: { batch: 1, index: 0 },
+      });
+      relay?.onEvent({
+        type: 'tool-input', conversationId: 'conversation', messageId: 'message_incident',
+        toolCallId: 'connection_call_1', toolName: 'connection_request',
+        input: { method: 'POST', path: '/synthetic/drafts' }, position: { batch: 2, index: 0 },
+      });
+      relay?.onEvent({
+        type: 'tool-output', conversationId: 'conversation', toolCallId: 'connection_call_1',
+        output: '{"status":201,"id":"draft_synthetic"}', position: { batch: 3, index: 0 },
+      });
+      // Another run of this Agent saves its memory while this one answers.
+      const live = await h.memory.getAgentMemory(assignment.agentId);
+      await h.memory.putAgentMemory({
+        agentId: assignment.agentId, body: `${MEMORY}\n\nThe sprint review is on Fridays.`, expectedRevision: live.revision,
+      });
+      await relay?.closeAndDrain();
+      return { ...answerResult(ANSWER), tablePresentations: [table], artifacts: [file] };
+    });
+    const slack = JSON.stringify(h.slack);
+    assert.deepEqual(h.outcomes, ['succeeded'], `the answer delivers: ${slack}`);
+    assert.ok(slack.includes('Your stand-up is at 9:30'), 'the answer reached Slack');
+    assert.ok(slack.includes('Synthetic draft sections') && slack.includes('Overview'), 'with its table');
+    assert.ok(slack.includes('F0SYNTH01'), 'with its file');
+    assert.equal(slack.includes(AGENT_FAILURE_TEXT), false, 'no failure notice');
+    assert.equal(slack.includes('_Corrected_'), false, 'nothing replaced the answer');
+    assert.deepEqual(warnings.filter((line) =>
+      (line as { event?: string } | undefined)?.event === 'chickpea.turn.agent_failure'), [], 'no operator failure line');
+    const saved = await h.memory.getAgentMemory(assignment.agentId);
+    assert.equal(saved.revision, 2, "the other run's save stands");
+  } finally { h.close(); }
 });
 
 // Defect caught: the reply's stream opened as the native task card, and the
